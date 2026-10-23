@@ -43,12 +43,31 @@ public:
         });
     }
 
+    // UD-5: reads and commits both refresh panels, but only a confirmed
+    // commit authorizes retaining Graph inverses. Notify that fact before any
+    // subscriber can request the new document, even for an already seen digest.
+    void publishCommitted(const std::string &digest, const QObject *from = nullptr) {
+        if (digest.empty()) return;
+        const auto subscribers = commit_subscribers_;
+        for (const auto &[context, handler] : subscribers)
+            if (!context.isNull() && handler) handler(digest);
+        std::erase_if(commit_subscribers_, [](const auto &entry) {
+            return entry.first.isNull();
+        });
+        publish(digest, from);
+    }
+
+    void subscribeCommitted(QObject *context, Handler handler) {
+        commit_subscribers_.emplace_back(QPointer<QObject>{context}, std::move(handler));
+    }
+
     // The handler lives as long as `context` does.
     void subscribe(QObject *context, Handler handler) {
         subscribers_.emplace_back(QPointer<QObject>{context}, std::move(handler));
     }
 
 private:
+    std::vector<std::pair<QPointer<QObject>, Handler>> commit_subscribers_;
     std::string current_;
     std::vector<std::pair<QPointer<QObject>, Handler>> subscribers_;
 };

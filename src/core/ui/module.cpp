@@ -1,3 +1,8 @@
+#include "../loader/imageloader.hpp"
+#include "../renderer/uicontainer.hpp"
+#include "../gamelogic/gamelogicreload.hpp"
+#include "../watch/userdataguard.hpp"
+#include "../userpublic/userdataerror.hpp"
 #include "module.hpp"
 
 #include "../loader/basicconfig.hpp"
@@ -20,7 +25,7 @@ namespace {
 void requireDocument(DocumentParseResult parsed, UiDocument &out) {
     if (!parsed) {
         const auto &error = parsed.errors.front();
-        throw std::runtime_error("pelican.ui v1 " + std::string{toString(error.code)} + " at " +
+        throw UserDataError("pelican.ui v1 " + std::string{toString(error.code)} + " at " +
                                  error.path + ": " + error.message);
     }
     out = std::move(*parsed.document);
@@ -61,7 +66,7 @@ void emitVisual(const DocumentNode &node, const LayoutRecord &layout,
     const auto source = visual.source_rect;
     if (margins.left < 0 || margins.top < 0 || margins.right < 0 || margins.bottom < 0 ||
         margins.left + margins.right > source.width() || margins.top + margins.bottom > source.height())
-        throw std::runtime_error("pelican.ui v1 invalid nine_patch margins: " + node.path);
+        throw UserDataError("pelican.ui v1 invalid nine_patch margins: " + node.path);
     const auto width = static_cast<std::int32_t>(layout.rect_ui.width());
     const auto height = static_cast<std::int32_t>(layout.rect_ui.height());
     const auto left = std::min(margins.left, width);
@@ -94,7 +99,7 @@ void visitNodes(const DocumentNode &node, const std::map<std::string, const Layo
     if (visible && node.color[3] != 0 && layout != layouts.end() &&
         (node.type == "panel" || node.type == "image")) {
         const auto visual = visuals.find(node.sprite);
-        if (visual == visuals.end()) throw std::runtime_error("pelican.ui v1 unresolved sprite: " + node.sprite);
+        if (visual == visuals.end()) throw UserDataError("pelican.ui v1 unresolved sprite: " + node.sprite);
         emitVisual(node, *layout->second, visual->second, viewport, commands, node.color);
     }
     if (visible && node.type == "button" && layout != layouts.end()) {
@@ -145,7 +150,49 @@ const DocumentNode *findNodeRecursive(const DocumentNode &node, std::string_view
 
 } // namespace
 
-UiModule::UiModule() : UiModule(nlohmann::json::parse(GET_MODULE(ProjectBasicConfig).uiConfigJson())) {}
+UiModule::UiModule() : bitmap_font{BitmapFont::bundledDebugFont()} {
+    source_reference = GET_MODULE(ProjectBasicConfig).uiConfigReference();
+    reloadAuthoredDocument();
+}
+
+void UiModule::reloadAuthoredDocument() {
+    if (source_reference.empty()) return; // An explicit document has no file owner.
+    const auto reference = source_reference;
+    const auto version = userDataFileVersion(reference) + ":" +
+        std::to_string(configuredGameLogicStatus().generation);
+    if (source_version == version) return;
+    source_version = version;
+    document_ready = false;
+    auto scope = userDataScope("renderer", "ui_document", invalidGameObjectId, version);
+    scope.fields["document"] = reference;
+    scope.fields["document_kind"] = "root";
+    guardUserData(scope, [&] {
+        const auto bytes = [&] {
+            try { return GET_MODULE(PathResolver).loadText(reference); }
+            catch (const std::runtime_error &error) { throw UserDataError(error.what()); }
+        }();
+        const auto authored = [&] {
+            try { return nlohmann::json::parse(bytes); }
+            catch (const nlohmann::json::exception &error) { throw UserDataError(error.what()); }
+        }();
+        auto candidate = UiModule{authored};
+        if (auto *textures = FastModuleContainer::tryGet<UIContainer>())
+            textures->syncPages(candidate.pages());
+        const auto revision = data_revision + 1;
+        *this = std::move(candidate);
+        source_reference = reference;
+        source_version = version;
+        data_revision = revision;
+    });
+}
+
+UserDataScope UiModule::evaluationScope() const {
+    auto scope = userDataScope("renderer", "ui", invalidGameObjectId,
+        source_version + document.key + ":" + std::to_string(data_revision));
+    scope.fields["document"] = source_reference.empty() ? document.key : source_reference;
+    scope.fields["document_kind"] = "root";
+    return scope;
+}
 
 UiModule::UiModule(const nlohmann::json &document_json) : bitmap_font{BitmapFont::bundledDebugFont()} {
     ++parser_invocations;
@@ -160,7 +207,7 @@ UiModule::UiModule(const nlohmann::json &document_json) : bitmap_font{BitmapFont
     };
     if (has_text(has_text, document.root)) {
         if (texture_pages.size() + 1 >= std::numeric_limits<std::uint16_t>::max())
-            throw std::runtime_error("limit_exceeded: UI texture page count exceeds uint16");
+            throw UserDataError("limit_exceeded: UI texture page count exceeds uint16");
         font_page_id = static_cast<std::uint16_t>(texture_pages.size() + 1);
         texture_pages.push_back({.id = font_page_id, .stable_name = "engine:debug_text_font",
                                  .embedded_resource = "debug_text_font.png",
@@ -170,23 +217,27 @@ UiModule::UiModule(const nlohmann::json &document_json) : bitmap_font{BitmapFont
     createRuntimeWidgets(document.root);
 }
 
-void UiModule::loadVisuals(const DocumentNode &node) {
+void UiModule::loadVisuals(const DocumentNode &node) try {
     if (!node.sprite.empty() && !visuals.contains(node.sprite)) {
         const auto resolved = GET_MODULE(PathResolver).resolveExistingFileReference(node.sprite);
         const auto *fragment = std::get_if<ResolvedPathFragment>(&resolved);
         if (fragment == nullptr || fragment->fragment.kind != "sprite")
-            throw std::runtime_error("pelican.ui v1 expected #sprite/name reference: " + node.sprite);
+            throw UserDataError("pelican.ui v1 expected #sprite/name reference: " + node.sprite);
         std::ifstream stream{fragment->path};
         if (!stream) throw std::runtime_error("pelican.atlas v1 file not found: " + fragment->path.string());
         const auto atlas = parseAtlasV1(nlohmann::json::parse(stream), fragment->path);
         const auto &sprite = findAtlasSprite(atlas, fragment->fragment.path);
         const auto &page = atlas.pages.at(sprite.page);
+        const auto image = loadImageFile(page.image_path);
+        if (image.width != static_cast<std::uint32_t>(page.size.x) ||
+            image.height != static_cast<std::uint32_t>(page.size.y))
+            throw UserDataError("UI atlas page dimensions do not match its image: " + node.sprite);
         auto found_page = std::find_if(texture_pages.begin(), texture_pages.end(),
                                        [&](const UiTexturePage &entry) { return entry.image_path == page.image_path; });
         std::uint16_t page_id;
         if (found_page == texture_pages.end()) {
             if (texture_pages.size() + 1 >= std::numeric_limits<std::uint16_t>::max())
-                throw std::runtime_error("limit_exceeded: UI texture page count exceeds uint16");
+                throw UserDataError("limit_exceeded: UI texture page count exceeds uint16");
             page_id = static_cast<std::uint16_t>(texture_pages.size() + 1);
             texture_pages.push_back({.id = page_id,
                                      .stable_name = "atlas:" + fragment->path.generic_string() + "/page:" + std::to_string(sprite.page),
@@ -196,7 +247,8 @@ void UiModule::loadVisuals(const DocumentNode &node) {
         visuals.emplace(node.sprite, ResolvedVisual{page_id, registered_page.stable_name, sprite.rect, page.size});
     }
     for (const auto &child : node.children) loadVisuals(child);
-}
+} catch (const std::runtime_error &error) { throw UserDataError(error.what()); }
+  catch (const nlohmann::json::exception &error) { throw UserDataError(error.what()); }
 
 void UiModule::createRuntimeWidgets(const DocumentNode &node) {
     const auto id = widget_arena.create({.stable_id = node.path, .type = node.type,
@@ -213,7 +265,10 @@ void UiModule::syncLayout(vk::Extent2D extent, double ui_scale) {
     const auto viewport = ViewportTransform::letterboxed(
         {static_cast<std::int32_t>(extent.width), static_cast<std::int32_t>(extent.height)}, ui_scale);
     const auto solved = solveLayout(document, viewport.content_rect_ui);
-    if (!solved) throw std::runtime_error("pelican.ui layout failed before input routing");
+    if (!solved) {
+        const auto &error = solved.errors.front();
+        throw UserDataError("pelican.ui v1 " + std::string{toString(error.code)} + " at " + error.path + ": " + error.message);
+    }
     for (const auto &record : solved.widgets) {
         const auto found = widget_ids.find(record.id);
         if (found == widget_ids.end()) continue;
@@ -279,6 +334,7 @@ void UiModule::handlePointer(const RoutedPointerEvent &event) {
 }
 
 RouteFrameResult UiModule::routeFrameInput(Pelican::InputState &input, vk::Extent2D extent, double ui_scale) {
+    if (!document_ready) return {};
     syncLayout(extent, ui_scale);
     const auto viewport = ViewportTransform::letterboxed(
         {static_cast<std::int32_t>(extent.width), static_cast<std::int32_t>(extent.height)}, ui_scale);
@@ -353,6 +409,7 @@ void UiModule::syncDocumentFromArena() {
         if (const auto id = widget_ids.find(node.path); id != widget_ids.end()) {
             if (const auto *state = widget_arena.resolve(id->second)) {
                 if (state->text != node.text) {
+                    ++data_revision;
                     node.text = state->text;
                     if (node.intrinsic_from_text) node.intrinsic_size = measureTextIntrinsic(node.type, node.text);
                 }
@@ -372,6 +429,7 @@ bool UiModule::applySinkValue(std::string_view path, UiProperty property, double
     switch (property) {
     case UiProperty::visible: state->visible = value != 0.0; return true;
     case UiProperty::value:
+        if (state->value != value) ++data_revision;
         state->value = value;
         findMutableNode(path)->value = value;
         return true;
@@ -381,6 +439,10 @@ bool UiModule::applySinkValue(std::string_view path, UiProperty property, double
 }
 
 DrawBatch UiModule::buildFrame(vk::Extent2D extent, double ui_scale) const {
+    DrawBatch result;
+    if (!document_ready) return result;
+    auto scope = evaluationScope();
+    guardUserData(scope, [&] {
     if (extent.width > static_cast<std::uint32_t>(INT32_MAX) || extent.height > static_cast<std::uint32_t>(INT32_MAX))
         throw std::runtime_error("limit_exceeded: UI framebuffer extent exceeds int32");
     const auto viewport = ViewportTransform::letterboxed(
@@ -388,7 +450,7 @@ DrawBatch UiModule::buildFrame(vk::Extent2D extent, double ui_scale) const {
     const auto solved = solveLayout(document, viewport.content_rect_ui);
     if (!solved) {
         const auto &error = solved.errors.front();
-        throw std::runtime_error("pelican.ui v1 " + std::string{toString(error.code)} + " at " + error.path +
+        throw UserDataError("pelican.ui v1 " + std::string{toString(error.code)} + " at " + error.path +
                                  ": " + error.message);
     }
     std::map<std::string, const LayoutRecord *, std::less<>> layouts;
@@ -397,7 +459,7 @@ DrawBatch UiModule::buildFrame(vk::Extent2D extent, double ui_scale) const {
         layouts.emplace(record.id, &record);
         if (!clip_ids.contains(record.clip_ui)) {
             if (clip_ids.size() >= maxUniqueClips)
-                throw std::runtime_error("limit_exceeded: UI document '" + document.key + "' has more than 256 unique clips");
+                throw UserDataError("limit_exceeded: UI document '" + document.key + "' has more than 256 unique clips");
             clip_ids.emplace(record.clip_ui, static_cast<std::uint16_t>(clip_ids.size()));
         }
     }
@@ -408,7 +470,9 @@ DrawBatch UiModule::buildFrame(vk::Extent2D extent, double ui_scale) const {
         const auto layout = layouts.at(command.widget_id);
         command.key.clip_id = clip_ids.at(layout->clip_ui);
     }
-    return buildDrawBatch(std::move(commands), document.key);
+    result = buildDrawBatch(std::move(commands), document.key);
+    });
+    return result;
 }
 
 } // namespace Pelican::ui

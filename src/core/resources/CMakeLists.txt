@@ -13,7 +13,7 @@ function(embed_shader file_name)
             ${CMAKE_CURRENT_SOURCE_DIR}/${file_name}
             -V
             --target-env ${PELICAN_SHADER_TARGET_ENV}
-            -o ${CMAKE_CURRENT_SOURCE_DIR}/${file_name}.spv
+            -o ${CMAKE_CURRENT_BINARY_DIR}/${file_name}.spv
         DEPENDS ${file_name} shaders/include/pelican_sets.glsl
                 shaders/include/pelican_frame.glsl
                 shaders/include/pelican_view.glsl
@@ -29,9 +29,9 @@ function(embed_shader file_name)
                 shaders/include/pelican_skinning.glsl
                 shaders/include/pelican_morph.glsl
                 shaders/include/pelican_vat.glsl
-        OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/${file_name}.spv
+        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/${file_name}.spv
     )
-    b_embed(pelican_resources ${file_name}.spv)
+    b_embed(pelican_resources ${file_name}.spv "${CMAKE_CURRENT_BINARY_DIR}/${file_name}.spv")
 endfunction(embed_shader)
 
 embed_shader(default.vert)
@@ -50,6 +50,9 @@ embed_shader(debug_text.frag)
 embed_shader(fullscreen.vert)
 embed_shader(fullscreen.frag)
 embed_shader(scene_present.frag)
+# BS-1: the built-in fallback generation's one pass; SPIR-V as well, so a
+# build without the runtime shader compiler starts on it too.
+embed_shader(fallback_clear.frag)
 embed_shader(rt_shadow_mask.frag)
 embed_shader(rt_shadow_mask_pipeline.rgen)
 embed_shader(rt_shadow_mask_pipeline.rmiss)
@@ -168,6 +171,7 @@ b_embed(pelican_resources fullscreen.frag)
 # VI-1: source only. Its variadic input count is a define the engine sets
 # per pass, so there is no build-time SPIR-V.
 b_embed(pelican_resources passthrough.frag)
+b_embed(pelican_resources fallback_clear.frag)
 b_embed(pelican_resources scene_present.frag)
 b_embed(pelican_resources rt_shadow_mask.frag)
 b_embed(pelican_resources rt_shadow_mask_pipeline.rgen)

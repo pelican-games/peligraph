@@ -2,6 +2,7 @@
 
 #include "panelhelp.hpp"
 #include "graphattachmentwidget.hpp"
+#include "materialassignwidget.hpp"
 #include "componentaddlist.hpp"
 
 #include "../model/inspectormodel.hpp"
@@ -36,6 +37,7 @@
 #include <QPointer>
 #include <QPlainTextEdit>
 #include <QScrollArea>
+#include <QSet>
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QTimer>
@@ -126,6 +128,10 @@ struct InspectorWidget::Impl {
     QPointer<QPushButton> take_from_game;
     GraphAttachmentWidget *graph_attachments = nullptr;
     QHash<qint64, quint64> graph_transport_requests;
+    // MT-1s, decision 5: the Material rows of an object that shows a model.
+    MaterialAssignWidget *material_assign = nullptr;
+    // EB-6s, decision 5: scroll to them once they are shown.
+    bool reveal_material_rows = false;
     QLabel *selection_label = nullptr;
     QLabel *notice_label = nullptr;
     // PM-3c: the read-only view of a spawned object, in place of the fields.
@@ -149,9 +155,14 @@ struct InspectorWidget::Impl {
     QLabel *ray_notice = nullptr;
     QPushButton *ray_tasks = nullptr;
     std::function<void(const QString &)> ray_group_action;
+    // RTL-2s, decision 4: Assign hit group... on the Material rows.
+    std::function<void(const QString &)> assign_hit_group_action;
+    QPushButton *assign_hit_group = nullptr;
     std::function<void(const QString &, const QString &)> graph_source_reveal_action;
     // RSX: the main window's engine restart.
     std::function<void(const QString &)> engine_restart_action;
+    // MI-1s, decision 2: Import... beside the model field.
+    std::function<void(std::function<void(const std::string &)>)> model_import_action;
     std::optional<Json> displayed_ray_payload;
     QPointer<QDialog> add_component_dialog;
     QComboBox *component_types = nullptr;
@@ -165,12 +176,18 @@ struct InspectorWidget::Impl {
     QHash<QString, QString> component_drafts;
     QString displayed_component;
     QPushButton *confirm_add_component = nullptr;
+    // RTL-2s-c: Enable hit groups..., beside a Ray geometry that needs it.
+    QPushButton *component_enable_hit_groups = nullptr;
+    std::function<void()> enable_hit_groups_action;
     QPushButton *refresh_component_types = nullptr;
     std::optional<Json> displayed_candidates;
     std::string adding_scene;
     std::uint64_t adding_object = 0;
     QPushButton *undo_button = nullptr;
     QPushButton *redo_button = nullptr;
+    QAction *undo_action = nullptr;
+    QAction *redo_action = nullptr;
+    bool scene_history_focus = true;
     QPushButton *cancel_preview_button = nullptr;
     QTimer *pending_timer = nullptr;
     QTimer *watch_timer = nullptr;
@@ -178,6 +195,12 @@ struct InspectorWidget::Impl {
     // UX-13c: the request the engine has just refused as an unknown method
     // (-32601); its failure, which follows at once, says so to the model.
     qint64 unknown_method_transport = 0;
+    // MT-2s: the Material rows' set_object_material requests out, and the one
+    // the engine has just refused with the sentence it reads as; its failure,
+    // which follows at once, hands the model that sentence.
+    QSet<qint64> object_material_transports;
+    qint64 refused_object_material_transport = 0;
+    QString refused_object_material_sentence;
     std::uint64_t rendered_content_revision =
         std::numeric_limits<std::uint64_t>::max();
     bool rebuilding = false;
@@ -307,6 +330,46 @@ struct InspectorWidget::Impl {
                          [this](const QString &reason) {
                              if (engine_restart_action) engine_restart_action(reason);
                          });
+        material_assign = new MaterialAssignWidget(
+            MaterialAssignWidget::Hooks{
+                .send = [this](const QString &method, const QJsonObject &params, QString *error) {
+                    return viewport.requestRpc(method, params, error);
+                },
+                .restart = [this](const QString &reason) {
+                    if (engine_restart_action) engine_restart_action(reason);
+                },
+                // MT-2s, decision 5: a scene edit of this session, so the
+                // Undo above takes it back.
+                .edit_object = [this](const QJsonObject &params, const QString &description, QString *error) {
+                    const auto parsed = Json::parse(
+                        QJsonDocument(params).toJson(QJsonDocument::Compact).toStdString(), nullptr, false);
+                    const auto outcome = model.submitObjectMaterial(
+                        parsed.is_discarded() ? Json::object() : parsed, description.toStdString());
+                    if (outcome == SpawnOutcome::Refused && error != nullptr)
+                        *error = QString::fromStdString(model.notice().message);
+                    synchronize();
+                    dispatchRequests();
+                    return outcome != SpawnOutcome::Refused;
+                },
+            },
+            &owner);
+        layout->addWidget(material_assign);
+        // RTL-2s, decision 4: the material picked here, in the Ray layout
+        // section's Hit group assignments.
+        assign_hit_group = new QPushButton(owner.tr("Assign hit group..."), material_assign);
+        assign_hit_group->setObjectName(QStringLiteral("pelican.inspectorAssignHitGroup"));
+        assign_hit_group->setToolTip(owner.tr("The hit group the ray tracing tasks answer this material with "
+                                              "(Rendering settings > Ray layout)"));
+        assign_hit_group->setEnabled(false);
+        if (material_assign->layout() != nullptr) material_assign->layout()->addWidget(assign_hit_group);
+        QObject::connect(material_assign, &MaterialAssignWidget::rowsPresented, &owner,
+                         [this] { synchronizeAssignHitGroup(); });
+        QObject::connect(assign_hit_group, &QPushButton::clicked, &owner, [this] {
+            if (!assign_hit_group_action) return;
+            const auto material = material_assign->assignableMaterial();
+            if (material.isEmpty()) return;
+            assign_hit_group_action(material);
+        });
 
         notice_label = new QLabel(&owner);
         notice_label->setObjectName(QStringLiteral("pelican.inspectorNotice"));
@@ -394,6 +457,7 @@ struct InspectorWidget::Impl {
                                              QKeySequence{Qt::CTRL | Qt::SHIFT | Qt::Key_Z}}}}) {
             auto *action = new QAction(button->text(), &owner);
             action->setObjectName(QString::fromLatin1(name));
+            (button == undo_button ? undo_action : redo_action) = action;
             action->setShortcuts(keys);
             action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
             owner.addAction(action);
@@ -423,7 +487,9 @@ struct InspectorWidget::Impl {
                          &owner, [this] {
                              transport_requests.clear();
                              graph_transport_requests.clear();
+                             object_material_transports.clear();
                              graph_attachments->setConnected(true);
+                             material_assign->engineAvailable();
                              model.startSession();
                              synchronize();
                              dispatchRequests();
@@ -433,7 +499,9 @@ struct InspectorWidget::Impl {
             [this](const QString &message) {
                 transport_requests.clear();
                 graph_transport_requests.clear();
+                object_material_transports.clear();
                 graph_attachments->setConnected(false);
+                material_assign->engineUnavailable();
                 model.stopSession(message.toStdString());
                 synchronize();
             });
@@ -441,6 +509,7 @@ struct InspectorWidget::Impl {
             &viewport, &EmbeddedViewport::inspectorRpcSucceeded, &owner,
             [this](qint64 transport_request_id,
                    const QByteArray &result_json) {
+                if (material_assign->receiveResult(transport_request_id, result_json)) return;
                 const auto graph_pending = graph_transport_requests.find(transport_request_id);
                 if (graph_pending != graph_transport_requests.end()) {
                     const auto id = graph_pending.value();
@@ -455,6 +524,7 @@ struct InspectorWidget::Impl {
                 }
                 const std::uint64_t model_request_id = pending.value();
                 transport_requests.erase(pending);
+                object_material_transports.remove(transport_request_id);
                 model.receiveRpcResult(
                     model_request_id,
                     std::string_view{
@@ -467,6 +537,7 @@ struct InspectorWidget::Impl {
         QObject::connect(
             &viewport, &EmbeddedViewport::inspectorRpcFailed, &owner,
             [this](qint64 transport_request_id, const QString &message) {
+                if (material_assign->receiveFailure(transport_request_id, message)) return;
                 const auto graph_pending = graph_transport_requests.find(transport_request_id);
                 if (graph_pending != graph_transport_requests.end()) {
                     const auto id = graph_pending.value();
@@ -481,16 +552,31 @@ struct InspectorWidget::Impl {
                 }
                 const std::uint64_t model_request_id = pending.value();
                 transport_requests.erase(pending);
+                object_material_transports.remove(transport_request_id);
+                const bool refused =
+                    std::exchange(refused_object_material_transport, 0) == transport_request_id;
                 model.receiveRpcFailure(
-                    model_request_id, message.toStdString(),
-                    std::exchange(unknown_method_transport, 0) == transport_request_id);
+                    model_request_id,
+                    refused ? std::exchange(refused_object_material_sentence, {}).toStdString()
+                            : message.toStdString(),
+                    std::exchange(unknown_method_transport, 0) == transport_request_id, refused);
                 synchronize();
                 dispatchRequests();
             });
         QObject::connect(
             &viewport, &EmbeddedViewport::engineRpcRefused, &owner,
-            [this](qint64 transport_request_id, int code, const QString &,
-                   const QJsonValue &) {
+            [this](qint64 transport_request_id, int code, const QString &message,
+                   const QJsonValue &data) {
+                if (material_assign->receiveRefusal(transport_request_id, code, message, data)) return;
+                // MT-2s, decision 7: a refused set_object_material is said
+                // in the Material rows and, as one sentence, by the Inspector.
+                const auto error_code =
+                    data.toObject().value(QStringLiteral("error_code")).toString();
+                if (object_material_transports.contains(transport_request_id) && !error_code.isEmpty()) {
+                    refused_object_material_transport = transport_request_id;
+                    refused_object_material_sentence =
+                        material_assign->objectEditRefused(error_code, message, data);
+                }
                 unknown_method_transport =
                     code == -32601 && transport_requests.contains(transport_request_id)
                         ? transport_request_id
@@ -512,9 +598,15 @@ struct InspectorWidget::Impl {
         synchronize();
         if (viewport.rpcReady()) {
             graph_attachments->setConnected(true);
+            material_assign->engineAvailable();
             model.startSession();
             dispatchRequests();
         }
+    }
+
+    void synchronizeAssignHitGroup() {
+        assign_hit_group->setEnabled(static_cast<bool>(assign_hit_group_action) &&
+                                     !material_assign->assignableMaterial().isEmpty());
     }
 
     void setSelection(std::optional<OutlinerObjectKey> selection,
@@ -536,6 +628,7 @@ struct InspectorWidget::Impl {
         add_component_button->setVisible(!shown);
         ray_occurrences_button->setVisible(!shown);
         graph_attachments->setVisible(!shown);
+        if (shown) material_assign->setSubject({});
     }
 
     void showRuntimeObject(const RuntimeObject &object) {
@@ -973,6 +1066,8 @@ struct InspectorWidget::Impl {
                 transport_requests.insert(
                     transport_request_id,
                     static_cast<quint64>(request.request_id));
+                if (request.method == "set_object_material")
+                    object_material_transports.insert(transport_request_id);
             }
             synchronize();
         }
@@ -1004,6 +1099,19 @@ struct InspectorWidget::Impl {
         layout->addWidget(component_types);
         component_description = plainLabel(owner.tr("Loading component types..."), dialog);
         layout->addWidget(component_description);
+        // RTL-2s-c (RTL-2s decision 5): a Ray geometry needs a ray layout;
+        // the way to one is the Ray layout section's Enable hit groups.
+        component_enable_hit_groups = new QPushButton(owner.tr("Enable hit groups..."), dialog);
+        component_enable_hit_groups->setObjectName(QStringLiteral("pelican.componentAddEnableHitGroups"));
+        component_enable_hit_groups->setToolTip(
+            owner.tr("Open the Ray layout section (Rendering settings), where hit groups are enabled"));
+        component_enable_hit_groups->hide();
+        layout->addWidget(component_enable_hit_groups, 0, Qt::AlignLeft);
+        QObject::connect(component_enable_hit_groups, &QPushButton::clicked, dialog, [this, dialog] {
+            if (!enable_hit_groups_action) return;
+            dialog->close();
+            enable_hit_groups_action();
+        });
         component_declaration = new QPlainTextEdit(dialog);
         component_declaration->setObjectName(QStringLiteral("pelican.componentAddDeclaration"));
         layout->addWidget(component_declaration);
@@ -1196,6 +1304,8 @@ struct InspectorWidget::Impl {
         }
         const auto &candidate = catalog->at("candidates").at(row->candidate);
         synchronizeComponentAssets(candidate, ready && row->addable);
+        component_enable_hit_groups->setVisible(!row->addable && row->key == "pelican_ray_instance" &&
+                                                static_cast<bool>(enable_hit_groups_action));
         const auto name = QString::fromStdString(candidate.at("key").get<std::string>());
         if (displayed_component != name || !component_drafts.contains(name)) {
             displayed_component = name;
@@ -1404,6 +1514,22 @@ struct InspectorWidget::Impl {
                       : owner.tr("Refresh to load geometry for the current selection."));
     }
 
+    // MT-1s, decision 5: the model the selected object shows (its
+    // simplemodelview's), and the object's name.
+    std::optional<std::pair<std::string, std::string>> materialSubject() const {
+        const auto &snapshot = model.snapshot();
+        if (!snapshot || runtime_shown) return std::nullopt;
+        for (const auto &component : snapshot->components) {
+            if (component.name != "simplemodelview" || !component.authored_json.is_object()) continue;
+            const auto found = component.authored_json.find("model");
+            if (found == component.authored_json.end() || !found->is_string() ||
+                found->get_ref<const std::string &>().empty())
+                continue;
+            return std::pair{found->get<std::string>(), snapshot->name.value_or(std::string{})};
+        }
+        return std::nullopt;
+    }
+
     void synchronize() {
         const bool scene_dirty = model.hasUnsavedChanges();
         const bool scene_busy = model.busy() || model.refreshBlocked();
@@ -1430,6 +1556,26 @@ struct InspectorWidget::Impl {
             ? std::optional<GraphAttachmentOwner>{{snapshot->scene_id, snapshot->authoring_object_id}}
             : std::nullopt);
         ray_occurrences_button->setEnabled(model.snapshot().has_value() && !model.busy() && !model.refreshBlocked());
+        {
+            // MT-2s: the object itself and the revision it was read at, so
+            // the rows read its materials again after any edit or Undo.
+            const auto subject = materialSubject();
+            MaterialAssignSession::Subject material_subject;
+            if (subject && snapshot) {
+                material_subject = {.model = subject->first,
+                                    .name = subject->second,
+                                    .object = snapshot->authoring_object_id,
+                                    .scene_id = snapshot->scene_id,
+                                    .revision = snapshot->scene_revision};
+            }
+            material_assign->setSubject(material_subject);
+            material_assign->setSceneBusy(model.busy() || model.refreshBlocked());
+            // EB-6s, decision 5: asked to show them before they were.
+            if (reveal_material_rows && !material_subject.model.empty()) {
+                reveal_material_rows = false;
+                scroll->ensureWidgetVisible(material_assign);
+            }
+        }
         synchronizeRayDialog();
         add_component_button->setEnabled(model.canRequestComponentAddCandidates());
         synchronizeComponentAddDialog();
@@ -1458,23 +1604,16 @@ struct InspectorWidget::Impl {
             take_from_game->setVisible(offered);
             take_from_game->setEnabled(offered && model.canTakeTransformFromGame());
         }
-        switch (notice.kind) {
-        case InspectorNoticeKind::Error:
-            notice_label->setStyleSheet(
-                QStringLiteral("color: #d94c3d;"));
-            break;
-        case InspectorNoticeKind::Success:
-            notice_label->setStyleSheet(
-                QStringLiteral("color: #388e3c;"));
-            break;
-        case InspectorNoticeKind::Information:
-            notice_label->setStyleSheet(
-                QStringLiteral("color: #4f7cac;"));
-            break;
-        case InspectorNoticeKind::None:
-            notice_label->setStyleSheet({});
-            break;
-        }
+        const QString notice_style = notice.kind == InspectorNoticeKind::Error
+            ? QStringLiteral("color: #d94c3d;")
+            : notice.kind == InspectorNoticeKind::Success
+                ? QStringLiteral("color: #388e3c;")
+                : notice.kind == InspectorNoticeKind::Information
+                    ? QStringLiteral("color: #4f7cac;") : QString{};
+        // Qt repolishes even an identical stylesheet. The 40 ms pending poll
+        // must not invalidate the dock layout and repaint the whole window.
+        if (notice_label->styleSheet() != notice_style)
+            notice_label->setStyleSheet(notice_style);
 
         refresh_button->setEnabled(model.selection().has_value() &&
                                    !model.refreshBlocked() && !model.busy());
@@ -1489,6 +1628,14 @@ struct InspectorWidget::Impl {
         }
         undo_button->setEnabled(model.canUndoRedo());
         redo_button->setEnabled(model.canUndoRedo());
+        const auto undo_label = QString::fromStdString(model.undoLabel());
+        const auto redo_label = QString::fromStdString(model.redoLabel());
+        undo_action->setText(undo_label.isEmpty() ? owner.tr("Undo") : owner.tr("Undo %1").arg(undo_label));
+        redo_action->setText(redo_label.isEmpty() ? owner.tr("Redo") : owner.tr("Redo %1").arg(redo_label));
+        undo_button->setToolTip(undo_action->text());
+        redo_button->setToolTip(redo_action->text());
+        undo_action->setEnabled(model.canUndoRedo() && scene_history_focus);
+        redo_action->setEnabled(model.canUndoRedo() && scene_history_focus);
         cancel_preview_button->setEnabled(model.busy() &&
                                           model.refreshBlocked());
 
@@ -1687,6 +1834,14 @@ struct InspectorWidget::Impl {
                     }
         }
         for (const auto &list : component.lists) {
+            // MT-2s, decision 6: a list the Material rows choose is not typed
+            // here as well.
+            if (!inspectorListShown(component.name, list.path)) {
+                auto *note = plainLabel(owner.tr("Chosen in the Material rows above"), group);
+                note->setObjectName(QStringLiteral("pelican.inspectorListElsewhere"));
+                form->addRow(QString::fromStdString(list.path), note);
+                continue;
+            }
             addList(*form, group, list);
         }
         if (component.widgets.empty() && component.lists.empty()) {
@@ -2031,7 +2186,35 @@ struct InspectorWidget::Impl {
                 synchronize();
                 dispatchRequests();
             });
-        return choices;
+        if (texture) return choices;
+        // MI-1s, decision 2: a model file from outside, registered, and the
+        // field set to the name it was registered as.
+        auto *row = new QWidget(parent);
+        auto *row_layout = new QHBoxLayout(row);
+        row_layout->setContentsMargins(0, 0, 0, 0);
+        row_layout->setSpacing(4);
+        choices->setParent(row);
+        row_layout->addWidget(choices, 1);
+        auto *import = new QPushButton(owner.tr("Import\xE2\x80\xA6"), row);
+        import->setObjectName(QStringLiteral("pelican.inspectorModelImport"));
+        import->setToolTip(owner.tr("Choose a .glb, .gltf or .vrm file: it is copied into "
+                                    "assets/models (unless it is in the project already), "
+                                    "registered as a model, and this field set to it"));
+        import->setVisible(static_cast<bool>(model_import_action));
+        direct_editors.push_back(import);
+        row_layout->addWidget(import);
+        QObject::connect(import, &QPushButton::clicked, &owner, [this, key = descriptor.field_key] {
+            if (!model_import_action) return;
+            const QPointer<QWidget> alive{&owner};
+            model_import_action([this, alive, key](const std::string &name) {
+                if (!alive) return;
+                model.refreshModelAssets();
+                model.commitWidgetValue(key, name);
+                synchronize();
+                dispatchRequests();
+            });
+        });
+        return row;
     }
 
     void configureNumeric(QDoubleSpinBox &editor,
@@ -2094,6 +2277,9 @@ struct InspectorWidget::Impl {
             editor->setDecimals(2);
             editor->setSingleStep(1.0);
             editor->setSuffix(QString{QChar{0x00B0}});
+            // UX-14, decision 3: a camera's yaw and pitch say their basis.
+            if (const auto tip = inspectorAngleTip(descriptor); !tip.empty())
+                editor->setToolTip(QString::fromStdString(tip));
         }
         editor->setValue(descriptor.value.get<double>() * binding->scale);
         binding->editors.push_back(editor);
@@ -2215,10 +2401,8 @@ struct InspectorWidget::Impl {
             QString tip;
         };
         const std::array<Angle, 2> fields{
-            Angle{"azimuth", -180.0, 180.0,
-                  owner.tr("Azimuth: the turn about +Y from +Z towards +X, in degrees")},
-            Angle{"elevation", -90.0, 90.0,
-                  owner.tr("Elevation: degrees above the horizon (negative points down)")}};
+            Angle{"azimuth", -180.0, 180.0, QString::fromStdString(inspectorDirectionAngleTip(0))},
+            Angle{"elevation", -90.0, 90.0, QString::fromStdString(inspectorDirectionAngleTip(1))}};
         for (std::size_t index = 0; index < 2; ++index) {
             auto *editor = new QDoubleSpinBox(angles);
             editor->setObjectName(fieldObjectName("pelican.inspectorDirection", descriptor) +
@@ -2535,7 +2719,15 @@ InspectorWidget::InspectorWidget(EmbeddedViewport *viewport, QWidget *parent)
     impl_ = std::make_unique<Impl>(*this, *viewport);
 }
 
-InspectorWidget::~InspectorWidget() = default;
+InspectorWidget::~InspectorWidget() {
+    // QWidget clears focus before QObject disconnects its children. Stop the
+    // editors' callbacks now, while Impl and their bindings are still alive.
+    // This also covers text fields and every numeric representation.
+    for (QObject *child : findChildren<QObject *>()) {
+        child->removeEventFilter(this);
+        QObject::disconnect(child, nullptr, this, nullptr);
+    }
+}
 
 void InspectorWidget::setGraphSourceRevealAction(
     std::function<void(const QString &, const QString &)> action) {
@@ -2547,8 +2739,47 @@ void InspectorWidget::setEngineRestartAction(
     impl_->engine_restart_action = std::move(action);
 }
 
+std::optional<std::pair<std::string, std::string>> InspectorWidget::materialSubject() const {
+    return impl_->materialSubject();
+}
+
+void InspectorWidget::setModelImportAction(
+    std::function<void(std::function<void(const std::string &name)> registered)> action) {
+    impl_->model_import_action = std::move(action);
+}
+
+void InspectorWidget::modelsChanged() {
+    impl_->model.refreshModelAssets();
+    impl_->dispatchRequests();
+}
+
+void InspectorWidget::resetMaterialState() {
+    impl_->material_assign->session().open();
+}
+
+void InspectorWidget::materialsChanged() { impl_->material_assign->materialsChanged(); }
+
+void InspectorWidget::materialBindingsChanged() { impl_->material_assign->bindingsChanged(); }
+
+void InspectorWidget::revealMaterialRows() {
+    if (impl_->material_assign->isVisible() && impl_->scroll != nullptr) {
+        impl_->scroll->ensureWidgetVisible(impl_->material_assign);
+        return;
+    }
+    impl_->reveal_material_rows = true;
+}
+
 void InspectorWidget::setRayGroupAction(std::function<void(const QString &)> action) {
     impl_->ray_group_action = std::move(action);
+}
+
+void InspectorWidget::setEnableHitGroupsAction(std::function<void()> action) {
+    impl_->enable_hit_groups_action = std::move(action);
+}
+
+void InspectorWidget::setAssignHitGroupAction(std::function<void(const QString &material)> action) {
+    impl_->assign_hit_group_action = std::move(action);
+    impl_->synchronizeAssignHitGroup();
 }
 
 void InspectorWidget::setSelection(
@@ -2580,6 +2811,15 @@ bool InspectorWidget::previewGizmoEdit(std::string_view field_key,
 void InspectorWidget::finishGizmoEdit(std::string_view field_key,
                                       bool commit) {
     impl_->finishGizmoEdit(field_key, commit);
+}
+
+QAction *InspectorWidget::undoAction() const noexcept { return impl_->undo_action; }
+QAction *InspectorWidget::redoAction() const noexcept { return impl_->redo_action; }
+
+void InspectorWidget::setSceneHistoryFocus(bool enabled) {
+    impl_->scene_history_focus = enabled;
+    impl_->undo_action->setEnabled(enabled && impl_->model.canUndoRedo());
+    impl_->redo_action->setEnabled(enabled && impl_->model.canUndoRedo());
 }
 
 bool InspectorWidget::saveScene() { return impl_->saveScene(); }
@@ -2635,6 +2875,11 @@ void InspectorWidget::setPlaySessionHooks(PlaySessionHooks hooks) {
 void InspectorWidget::playSessionChanged() { impl_->synchronize(); }
 void InspectorWidget::adoptRestoredRevisionAsSaved() {
     impl_->model.adoptRestoredRevisionAsSaved();
+}
+void InspectorWidget::refreshHistoryLabels() {
+    impl_->model.refreshHistoryLabels();
+    impl_->synchronize();
+    impl_->dispatchRequests();
 }
 void InspectorWidget::refreshFromEngine() {
     impl_->model.requestRefresh();

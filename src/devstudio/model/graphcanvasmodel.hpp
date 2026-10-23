@@ -2,6 +2,7 @@
 
 #include "frameplanmodel.hpp"
 #include "inspectormodel.hpp"
+#include "raylayoutmodel.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -693,6 +694,9 @@ struct GraphCanvasPlanPass {
     std::vector<GraphCanvasPlanReplace> replaces;
     // The endpoint the execution plan selected for it, when it says.
     std::string backend;
+    // GL-5e, decision 6: the document that brought it (get_frame_plan's
+    // provider_ref: a feature's or the preset's reference), when the plan says.
+    std::string provider_reference;
     // A material pass: its shader is the materials' (shader_resolution
     // material_owned), or it carries a material filter or variant.
     bool material = false;
@@ -780,9 +784,16 @@ struct GraphCanvasFoldedNode {
     };
     bool takes_lines = false;
     std::vector<InputSocket> input_sockets;
+    // GL-5a, decision 1: who owns it. A pass the root's rendering section
+    // declares (F-6) is edited in the Graph's detail column; one of the
+    // preset (`preset` its name, when the authoring context said) or of a
+    // feature is read only here.
+    bool rendering_section = false;
+    std::string preset;
 
     [[nodiscard]] bool enterable() const noexcept { return feature_group || material; }
-    // "From the rendering section (<source>): read only here. ..."
+    // "From the rendering section: edit it here.", "From preset <name>: read
+    // only here. Expand to edit…", "From feature <name>: ...".
     [[nodiscard]] std::string tooltip() const;
     bool operator==(const GraphCanvasFoldedNode &) const = default;
 };
@@ -848,6 +859,9 @@ struct GraphCanvasLayerRow {
     // The frame plan node the row stands for (an L1 pass row): a click on
     // it selects that node in the Frame Plan.
     std::string plan_node;
+    // GL-5e, decision 5: what the row's right-click acts on -- the resource
+    // of an L2 resource row, the candidate of an L3 backend candidate row.
+    std::string subject;
 
     bool operator==(const GraphCanvasLayerRow &) const = default;
 };
@@ -996,6 +1010,9 @@ class GraphCanvasModel {
         EngineShaders,
         // PS-1s, decision 4: rerun_once {node?}.
         RerunOnce,
+        // RTL-2s-c: get_ray_layout, read after a context that names a ray
+        // layout (the Ray tracing section's names and the templates').
+        RayLayout,
     };
     struct PendingRequest {
         std::uint64_t id = 0;
@@ -1021,6 +1038,8 @@ class GraphCanvasModel {
     // rather than letting the user read a refused write as a bug.
     std::string root_schema_;
     std::string source_reference_;
+    // UD-3: the authored root value; null means the member is absent.
+    nlohmann::json material_route_default_;
     nlohmann::json nodes_ = nlohmann::json::array();
     nlohmann::json definitions_ = nlohmann::json::object();
     // UX-13b, decision 4 (engine CT-5): get_graph_instances'
@@ -1130,10 +1149,15 @@ class GraphCanvasModel {
     struct HistoryEntry {
         nlohmann::json forward;
         nlohmann::json inverse;
-        // GL-1d, decision 3: what the forward list sends beside its ops
-        // (`material_route_default`), or null. An Undo sends the inverse
-        // alone: the route default is the project's, not the list's.
+        // Params travel with the corresponding op list in the same request.
         nlohmann::json params;
+        std::uint64_t serial = 0;
+        nlohmann::json inverse_params;
+        // UD-5: a render entry can temporarily replace the graph. The inverse
+        // and forward become available again only on their corresponding side.
+        std::string before_graph;
+        std::string after_graph;
+        std::string after_source_digest;
     };
     enum class HistoryAction { Edit, Undo, Redo };
     struct PendingHistory {
@@ -1143,6 +1167,8 @@ class GraphCanvasModel {
     std::vector<HistoryEntry> undo_;
     std::vector<HistoryEntry> redo_;
     std::optional<PendingHistory> pending_history_;
+    std::uint64_t next_history_serial_ = 1;
+    void discardPendingHistory();
     // Q-13. A placement refused because another panel's commit moved the
     // document is written again, once, against the document read next. The
     // placement is the canvas's own (the document only keeps it), so the same
@@ -1164,6 +1190,8 @@ class GraphCanvasModel {
     // History belongs to exactly one committed document. A refresh showing
     // another writer's revision invalidates it instead of overwriting them.
     std::string history_digest_;
+    std::string render_commit_digest_;
+    std::string history_graph_;
     static constexpr std::size_t historyCapacity = 100;
     // LP-4c, decision 7: each op is inverted against the document the ops
     // before it produced, which a copy of the document is walked through.
@@ -1281,6 +1309,9 @@ class GraphCanvasModel {
     nlohmann::json render_authoring_ = nlohmann::json::object();
     std::uint64_t authoring_revision_ = 0;
     void requestRenderAuthoring();
+    // RTL-2s-c: get_ray_layout as it last arrived; nullopt while unknown.
+    std::optional<RayLayoutRead> ray_layout_read_;
+    void takeRenderAuthoring(nlohmann::json context);
     // UX-2: the context was asked for once for its render_target_vocabulary
     // (askRenderTargetVocabulary), on this connection.
     bool vocabulary_asked_ = false;
@@ -1340,6 +1371,8 @@ class GraphCanvasModel {
     bool plan_origin_aware_ = false;
     std::vector<PlanBarrier> plan_barriers_;
     std::vector<PlanResource> plan_resources_;
+    // GL-5f, decision 3: resources[].loop_origin, by the resource's name.
+    std::map<std::string, FramePlanLoopOrigin, std::less<>> plan_resource_origins_;
     std::vector<PlanAliasGroup> plan_alias_groups_;
     std::vector<PlanScope> plan_scopes_;
     std::vector<PlanDecision> plan_decisions_;
@@ -1389,6 +1422,8 @@ class GraphCanvasModel {
     [[nodiscard]] std::string foldedOwnerOf(const GraphCanvasPlanPass &pass) const;
     [[nodiscard]] std::vector<GraphCanvasFoldedNode> rootFoldedNodes() const;
     [[nodiscard]] std::vector<GraphCanvasFoldedNode> featurePassNodes(std::string_view feature) const;
+    // GL-5a, decision 1: the folded node's owner, from the authoring context.
+    void markFoldedOwner(GraphCanvasFoldedNode &node) const;
     [[nodiscard]] const GraphCanvasPlanPass *planPass(std::string_view name) const;
     // The plan's passes a node of `scope` made: a root node's, or a body
     // node's copies (as loopElementRead finds them).
@@ -1494,6 +1529,25 @@ class GraphCanvasModel {
     // OT-1: another project is opened. Its document is not the one the
     // history is about, even if its digest happened to match.
     void forgetHistory();
+    // RT-D: the Graph inverses were invalidated. Other histories retain
+    // their own entries; their owner removes only the Graph records.
+    std::function<void()> historyCleared;
+    // RT-D: submission reserves the tab's order; only a commit binds an
+    // entry or moves it. Failed submissions and abandoned edits close it.
+    enum class HistoryMove { Push, Undo, Redo };
+    std::function<void()> historySubmitted;
+    std::function<void(std::uint64_t, HistoryMove, bool)> historyMoved;
+    [[nodiscard]] std::uint64_t undoSerial() const { return undo_.empty() ? 0 : undo_.back().serial; }
+    [[nodiscard]] std::uint64_t redoSerial() const { return redo_.empty() ? 0 : redo_.back().serial; }
+    // Only a confirmed Studio commit may advance the history's CAS base.
+    // Merely observing a digest (including a file reload) grants no permission.
+    void renderDocumentCommitted(std::string digest) {
+        if (!history_digest_.empty() && digest != history_digest_)
+            render_commit_digest_ = std::move(digest);
+    }
+    void renderHistoryRestored(std::string digest) {
+        renderDocumentCommitted(std::move(digest));
+    }
 
     void refresh();
     void requestCatalog();
@@ -1717,10 +1771,12 @@ class GraphCanvasModel {
     // to hold the document still between the read and the write.
     bool canEdit() const noexcept { return canRefresh() && !digest_.empty(); }
     bool canUndo() const noexcept {
-        return canEdit() && !undo_.empty() && digest_ == history_digest_;
+        return canEdit() && !undo_.empty() && digest_ == history_digest_ &&
+               undo_.back().after_graph == history_graph_;
     }
     bool canRedo() const noexcept {
-        return canEdit() && !redo_.empty() && digest_ == history_digest_;
+        return canEdit() && !redo_.empty() && digest_ == history_digest_ &&
+               redo_.back().before_graph == history_graph_;
     }
     bool undo();
     bool redo();
@@ -1762,6 +1818,8 @@ class GraphCanvasModel {
     // its zone, so a node there is edited in its definition while the canvas
     // shows the root; every op these send carries `scope: <definition>`.
     // The forms above are these with the current scope.
+    // Lightweight identity lookup for menus that do not need resolved ports.
+    [[nodiscard]] std::string nodeOperation(std::string_view scope, std::string_view id) const;
     [[nodiscard]] nlohmann::json nodeParameters(std::string_view scope,
                                                 std::string_view id) const;
     [[nodiscard]] bool canConnect(std::string_view scope, std::string_view from_node,
@@ -1860,6 +1918,13 @@ class GraphCanvasModel {
     // ($main, planar, an author's) are not in it.
     [[nodiscard]] const std::vector<GraphCanvasViewFamily> &viewFamilies() const noexcept {
         return view_families_;
+    }
+    // GL-5e, decision 1: the family and axes the last frame plan gives the
+    // pass `name` (its view_family and view_axes), or null when it runs in a
+    // family without axes.
+    [[nodiscard]] const GraphCanvasViewFamily *planPassView(std::string_view name) const {
+        const auto found = plan_node_views_.find(name);
+        return found == plan_node_views_.end() ? nullptr : &found->second;
     }
     // The render targets of the last frame plan, for the count
     // expression's mip_levels_of / layers_of.
@@ -2181,6 +2246,17 @@ class GraphCanvasModel {
         return render_authoring_;
     }
     [[nodiscard]] std::uint64_t authoringRevision() const noexcept { return authoring_revision_; }
+    // RTL-2s-c: the project's ray group layout as get_ray_layout answers it
+    // (parseRayLayoutRead, the Ray layout section's reading): asked after a
+    // context whose ray_layout names a document, a read without a layout
+    // when it names none, nullopt until either (or from an engine without
+    // ray layouts). Moves the authoring revision when it arrives.
+    [[nodiscard]] const std::optional<RayLayoutRead> &rayLayoutRead() const noexcept {
+        return ray_layout_read_;
+    }
+    // GL-5a, decision 1: whether the context lists `pass` of the plan's graph
+    // as one the root's rendering section declares (editable_root_pass).
+    [[nodiscard]] bool renderingSectionPass(std::string_view pass) const;
     // The last plan in the Frame Plan's terms, as far as a pass's input
     // sockets need it: its graph, each pass with its pass_inputs, and which
     // resources are buffers.
@@ -2259,6 +2335,9 @@ class GraphCanvasModel {
     // of its own); a context without the vocabulary is not asked again. The
     // request goes out with the next dispatch.
     void askRenderTargetVocabulary();
+    // GL-5b, decision 2: the context read again now -- a render target was
+    // declared from the Graph, and one already on its way may predate it.
+    void readRenderAuthoringAgain();
     // The catalog's image types, in its order: the legacy one after the rest.
     [[nodiscard]] std::vector<GraphCanvasImageType> imageTypes() const;
     [[nodiscard]] std::optional<GraphCanvasImageType> imageType(std::string_view semantic) const;
@@ -2594,6 +2673,12 @@ class GraphCanvasModel {
     [[nodiscard]] bool planOriginAware() const noexcept { return plan_origin_aware_; }
     // Decision 4: where Open in Graph lands for one frame plan node.
     [[nodiscard]] GraphCanvasPlanTarget planNodeTarget(std::string_view plan_node) const;
+    // GL-5c, decision 3. Whether this tab edits the plan node: a graph node
+    // made it (planNodeTarget names a node in a body, or a root node the
+    // document holds), or it is a pass of the rendering section, which the
+    // detail column edits (GL-5a). False for a preset's or a feature's pass,
+    // read only here, and for a node the last plan does not hold.
+    [[nodiscard]] bool planPassEditedHere(std::string_view plan_node) const;
     // The frame plan nodes drawn under one root canvas node, in plan order.
     [[nodiscard]] std::vector<std::string> planNodesOf(std::string_view canvas_node) const;
     // Decision 2: bands and the Layers section are shown on the real root,
@@ -2610,6 +2695,14 @@ class GraphCanvasModel {
     // What concerns no node: the decisions whose from_nodes is empty and the
     // backend candidates -- the Layers section with nothing picked.
     [[nodiscard]] std::vector<GraphCanvasLayerRow> graphLayerRows() const;
+    // GL-5f, decision 3: node `node` of a loop's body `scope` (an image the
+    // loop copies, picked in its zone or with the body open): the L2 resource
+    // rows of its copies, each row's subject the copy's resource.
+    [[nodiscard]] std::vector<GraphCanvasLayerRow> bodyLayerRows(std::string_view scope,
+                                                                 std::string_view node) const;
+    // The loop copy a plan resource is (get_frame_plan resources[].loop_origin).
+    [[nodiscard]] std::optional<FramePlanLoopOrigin> planResourceLoopOrigin(
+        std::string_view resource) const;
     [[nodiscard]] const std::vector<GraphCanvasPlanDiagnostic> &planDiagnostics() const noexcept {
         return plan_diagnostics_;
     }
@@ -2652,6 +2745,11 @@ class GraphCanvasModel {
     // leaving it), and what "Expand to edit…" runs from here.
     [[nodiscard]] bool foldedEditRefused() const noexcept { return folded_refused_; }
     [[nodiscard]] GraphCanvasFoldedExpand foldedExpand() const;
+    // GL-5d, decision 4: the same for a folded node of the root canvas, by
+    // its id (its right-click): a material pass no feature made is decomposed,
+    // a feature's fold -- or a pass inside one -- is replaced by the feature's
+    // loop version when the engine ships one. Empty kind for anything else.
+    [[nodiscard]] GraphCanvasFoldedExpand foldedNodeExpand(std::string_view id) const;
     static constexpr std::string_view foldedEditNotice =
         "This is the engine's folded implementation: expand it to edit.";
 
@@ -2872,6 +2970,11 @@ class GraphCanvasModel {
     [[nodiscard]] const std::optional<GraphCanvasParameterRefusal> &parameterRefusal() const noexcept {
         return parameter_refusal_;
     }
+    // RTL-2s, decision 3: a ray tracing refusal met elsewhere (the Problems
+    // window's row, the Ray layout's edit) marked as an edit's own is: the
+    // node its task names (`node`, else `task`) in the root, and
+    // parameterRefusal() at the ray type / group / miss its fields name.
+    void markRayTracingRefusal(const nlohmann::json &error, const std::string &sentence);
 };
 
 // UX-8, decision 9: sound files copied into a project's assets/audio. Each
@@ -2922,5 +3025,19 @@ struct GraphCanvasImageImport {
 };
 GraphCanvasImageImport importProjectImage(const std::filesystem::path &project_root,
                                           const std::filesystem::path &file);
+
+// MI-1s, decision 1: a file copied into the project's assets/<folder>
+// ("models", "images", ...), under its own name or `<stem>_2`, `_3`... when
+// that is taken (nothing is overwritten). `reference` is the copy as the
+// project names it ("assets/models/box.glb"), `copy` where it is on disk.
+// `error` says why nothing was copied. The Graph's parameter Import... and
+// Add Object > Model from file... both copy through this.
+struct ProjectFileCopy {
+    std::string reference;
+    std::filesystem::path copy;
+    std::string error;
+};
+ProjectFileCopy copyIntoProjectAssets(const std::filesystem::path &project_root, std::string_view folder,
+                                      const std::filesystem::path &file);
 
 } // namespace PelicanStudio

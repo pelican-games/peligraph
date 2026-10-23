@@ -1,12 +1,8 @@
 # 第10章 前提知識の補足(このコードが当然としていること)
 
-調査時点: 2026-07-21 / 基準コミット: `85882ec`
-(§10.1 末尾の 5 項目 — cube イメージ / subresource range / mip 数の上限 / タイル常駐 / dynamic rendering local read — のみ 2026-07-31 / 基準コミット `ef76292`)
-(§10.4 の 2 項目 — PE の import directory / 名前付き mutex と `Global\` 名前空間 — のみ 2026-09-04 / 基準コミット `8864050`)
-(§10.1 の swapchain 4 項目 — maxImageCount の 0 / currentExtent の特別値 / sharing mode / vulkan-hpp の戻り値規約 — のみ 2026-07-31 / 基準コミット `ab731bb`。frame target が surface/swapchain の世代管理へ作り替わったのに合わせて書き直したもの)
-(**§10.8 の 6 項目 — 2026-09-17 / 基準コミット `82054c05`。** v0 で入った共通グラフ・package・オフライン時刻の周りで、「エンジン固有の設計」ではなく**一般的な作法**にあたる話をまとめたものです。本文は他の 2026-09-04 項目と同じ「使用場所」書式で、行番号はリンクに寄せてあります)
-(§10.1 の「色空間と伝達関数」と §10.5 の 3 項目 — Floyd–Warshall 法 / GJK と EPA / JSON-RPC 2.0 の予約エラーコード — のみ 2026-09-04 / 基準コミット `76f61371`。他章から「第10章へ委譲」と書かれていた一般知識を後から補ったもの)
-(**2026-09-04 に足した 70 項目と、既存項目への「追記」段落 — 基準コミット `349a2d38`。** src を初読した読み手が「一般知識が足りなくて読めない」と挙げた 109 件を既存項目と突き合わせ、重複を除いた残りです。**この 70 項目と追記段落だけは markdown リンクで書かれており、[`tools/doclink.py`](../../tools/doclink.py) が行番号を追従させます** — 下の「行番号は追従されません」は、それ以前に書かれた 73 項目の本文にかかります)
+最終確認: 2026-10-07
+
+基準コミット: `85882ec` / `ef76292` / `8864050` / `ab731bb` / `82054c05` / `76f61371` / `349a2d38`(追従しない行番号は各項目の調査基準)。
 
 第2〜9章の「🧩 難所」ブロックが**このコードベース固有の難しさ**を扱うのに対して、この章は **pelican2 のコードが「知っている前提」で書かれている一般知識**をまとめたものです。仕様の細部や定番イディオムの名前を知らないと、コード自体は素直なのに読めない — そういう箇所を拾ってあります。
 
@@ -27,202 +23,35 @@
 
 各項目は「一般知識の説明」→「どこに出てくるか」の順です。後者の見出しは、先発の 73 項目が「**このリポジトリでは**」、2026-09-04 に足した 70 項目が「**使用場所**」で、後者にはリンクの後ろに「**このコードベースでの注意**」が付くことがあります(一般論と違う使われ方をしている場合だけ)。上から読む必要はありません。コードで見慣れない書き方に出会ったときに引いてください。
 
-## この章の索引
-
-全 149 項目。分類ごとに知識名だけを並べます(節そのものへの見出しリンクは張っていません — ブラウザの検索で名前を引いてください)。
-
-**10.1 Vulkan の仕様と作法**(34 項目)
-
-- swapchain の maxImageCount が 0 のとき
-- VkSurfaceCapabilitiesKHR::currentExtent の 0xFFFFFFFF
-- 色空間と伝達関数(OETF / EOTF)、linear と sRGB
-- sRGB フォーマットをスコアで選ぶ理由
-- present mode で必ず存在するのは FIFO だけ
-- sharing mode: eExclusive と eConcurrent
-- usage flags と format feature flags は別物
-- timeout に 0 を渡す waitForFences / acquireNextImageKHR
-- vulkan-hpp の戻り値規約(いつ Result が返り、いつ例外が飛ぶか)
-- vk::DrawIndexedIndirectCommand の各フィールド
-- drawIndexed の vertexOffset はインデックス値に加算される
-- drawIndirect の stride は構造体より大きくてよい
-- multiDrawIndirect、drawIndirectFirstInstance、shaderDrawParameters(gl_BaseInstance)
-- bufferRowLength / bufferImageHeight の 0 は「詰めて配置」
-- cube イメージは「6 レイヤ + CUBE_COMPATIBLE フラグ」でしかない
-- image view の subresource range(baseMipLevel / levelCount / baseArrayLayer / layerCount)
-- mip 数の上限は `floor(log2(max(w,h))) + 1`
-- LAZILY_ALLOCATED メモリと TRANSIENT_ATTACHMENT(タイル常駐)
-- dynamic rendering local read(input attachment を dynamic rendering で使う)
-- descriptor set と WriteDescriptorSet(binding 番号がシェーダとの契約)
-- descriptor binding flags と ePartiallyBound(descriptor indexing / bindless)
-- descriptor type の使い分け(combined image sampler / storage image / sampled image + sampler)
-- pNext チェーンと vulkan-hpp の StructureChain / unlink
-- 機能照会(getFeatures2 の chain)と拡張関数の動的解決
-- VMA(Vulkan Memory Allocator)の usage と allocation flags
-- buffer device address と usage flags
-- std140 / std430 レイアウト規則
-- 頂点入力の binding / attribute / stride
-- multiview と view mask
-- sampler の filter と address mode
-- レイトレーシング: shader group と SBT(handle size / stride / base alignment)
-- レイトレーシング: AS ビルドの入力とメモリ要件(maxVertex / instance 配列 / scratch)
-- レイトレーシング: instance flags と any-hit シェーダ
-- in-flight フレームと GPU 資源の寿命
-
-**10.2 glTF / 3D アセット形式の仕様**(12 項目)
-
-- GLB のコンテナ構造(ヘッダ + JSON チャンク + BIN チャンク)
-- buffer / bufferView / accessor の三層と byteStride
-- sparse accessor
-- normalized 整数属性を float へ戻す規則(UNORM / SNORM)
-- node.weights と mesh.weights の優先順位
-- primitive.mode(トポロジ)と TRIANGLES 以外を扱わない実装が多い理由
-- extensions / extensionsUsed / extensionsRequired と extras
-- 行列から TRS を分解できない場合(skew / perspective 成分)
-- VRM / VRMA が glTF 拡張として乗っていること
-- glTF の node.matrix は列優先の 16 要素
-- animation channel の出力 accessor の型は target_path で決まる
-- JOINTS_0 / WEIGHTS_0(skin ローカルの joint index と重みの正規化)
-
-**10.3 C++ とビルドのイディオム**(40 項目)
-
-- RAII ハンドルラッパ(コピー禁止・ムーブのみ)
-- pimpl と「デストラクタは .cpp で定義する」規則
-- CRTP(奇妙に再帰したテンプレートパターン)による強い型付け
-- 世代付きハンドル(index + generation)と SlotMap
-- 単調増加する generation / epoch を「変わったか」の検出に使う
-- std::erase_if(erase-remove イディオムの置き換え)
-- std::tie による多段キーの辞書式比較
-- C++20 の指示付き初期化子(designated initializers)
-- デフォルト化された operator<=>(三方比較)
-- std::vector<bool> の特殊化
-- std::filesystem の error_code オーバーロード(投げない版)
-- プラットフォーム分岐の #ifdef で、同名関数を 2 回定義する
-- windows.h を include する前の NOMINMAX
-- 機能フラグをマクロ「値」で渡し、#ifdef ではなく #if で見る
-- thread_local + RAII による「今このスレッドが実行中のもの」
-- スコープガード(巻き戻しをデストラクタに置き、成功時に無効化する)
-- double-checked locking と acquire / release
-- compare_exchange による所有権の一度きりの確定
-- ビットパッキングとビットマスクのイディオム
-- shared_ptr / weak_ptr による寿命の「リース」
-- 参照カウンタ付きの遅延解放と、受付/排出を分ける状態機械
-- moved-from 状態の契約
-- 型消去: std::any と any_cast
-- Result 型で例外型を境界の外に出さない
-- std::variant + std::visit + if constexpr のディスパッチ
-- fold 式と std::apply(タプルライク型の全要素処理)
-- consteval とコンパイル時の throw
-- __COUNTER__ と ADL タグディスパッチによる「登録済みの型の列挙」
-- メンバーポインタの非型テンプレート引数
-- concept / requires 節と、特殊化による trait チェーン
-- std::span によるイテレータ型・要素数の消去
-- 関数スコープ static の一度きり初期化
-- static_assert + sizeof による ABI レイアウトの凍結
-- std::bit_cast と浮動小数点のビット表現(-0.0 の正規化)
-- 整数オーバーフローの事前検査
-- swap-and-pop(末尾要素で穴を埋める削除)
-- C++20 の jthread / stop_token / condition_variable_any による協調停止
-- 固定長バッファ(例外も動的確保もしない経路のため)
-- 自己参照ラムダによる再帰
-- コールバック連鎖(既存のフックを move して包む)
-
-**10.4 OS・プロセス・ファイルの作法**(13 項目)
-
-- 実行中の DLL は Windows では上書きできない(シャドウコピー)
-- 同じパスの LoadLibrary / dlopen は参照カウントされる
-- POSIX のプロセスグループと setpgid、kill(-pid) で子孫ごと止める
-- Windows の Job オブジェクト(プロセスグループの対応物)
-- PE の import directory / delay-import directory を、イメージをマップせずに読む
-- Windows の名前付き mutex と `Global\` 名前空間(machine-wide の相互排他)
-- 子プロセスのパイプ読みとデッドロック回避
-- ファイル監視 API は取りこぼす前提で使う
-- 一時ファイル + rename による原子的置換
-- Windows のファイル共有モードとロック検出(ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION)
-- プロセス生存判定と PID の型
-- 動的ライブラリのエラー取得(GetLastError と dlerror)
-- std::filesystem の canonical / weakly_canonical とルート名
-
-**10.5 アルゴリズムとデータ処理の定番**(20 項目)
-
-- Kahn 法のトポロジカルソートと、未知の依存先を無視する実装
-- Floyd–Warshall 法と推移閉包(到達可能性の全点対計算)
-- GJK と EPA(凸形状の距離計算と貫通量計算)
-- CRC-32 の初期値 0xFFFFFFFF と最終反転(なぜ 0 から始めないか)
-- zlib / deflate の BFINAL ビットと「非圧縮(stored)ブロック」
-- デッドゾーンの取り方(成分ごと vs 半径)と、方向を保つ再スケール
-- 走査順(DFS)と表示順(ソートキー)を分けて考えること
-- JSON-RPC 2.0 の予約エラーコード(出典は RFC ではない)
-- 正規表現でパスやページ名を検証するときの、区切り文字とドットの扱い
-- Möller–Trumbore 光線-三角形交差
-- 軸への投影による分離判定(AABB の slab 法と OBB の分離軸定理)
-- Time of Impact(TOI)と conservative advancement
-- FNV-1a とハッシュ値の合成(0x9e3779b9)
-- ソート済み列に対する隣接検査(adjacent_find)
-- 再帰的な型の循環検知(訪問スタック)
-- SPIR-V のバイナリ形式
-- JSON Pointer(RFC 6901)
-- nlohmann::json の型判定・キー順・JSON null
-- IEEE 754 の倍精度と JSON の「安全な整数」2^53−1
-- JSON-RPC 2.0 の request / response の形と行区切り framing
-
-**10.6 座標・数値の約束事**(21 項目)
-
-- NDC(正規化デバイス座標)と Vulkan の座標系
-- GLM の `_RH_ZO` / `_NO` サフィックスの意味
-- ビューポート変換と「負の height」による Y 反転
-- w 除算(パースペクティブ除算)と w ≤ 0 のガード
-- `ndc * 0.5 + 0.5` と、その逆変換の `2 / size`
-- NDC 空間のオフセットは、w を掛けてクリップ空間で足す
-- 画像の行 0 は上端 — CPU ラスタの Y の向き
-- ピクセル中心は n + 0.5、テクセル中心は (i + 0.5) / size
-- `floor(x + 0.5)` と `round()` は同じ丸めではない
-- ε 比較:絶対誤差・相対誤差・その混合
-- 長さは二乗のまま比較し、ε も二乗する
-- NaN はあらゆる比較で false — `isfinite` を先に置く
-- 「ε 以内なら等しい」は同値関係ではない
-- 区間演算(interval arithmetic)と有向丸め
-- ULP と nextafter によるパディング
-- 四元数: 単位性の判定とベクトル回転の展開形
-- GLM の quat コンストラクタ引数順は (w, x, y, z)
-- TRS の合成順序と world → local の逆算
-- 法線の変換は transpose(inverse(M))
-- 切り上げ除算と mip 寸法のシフト
-- view 行列の逆行列とカメラの前方軸
-
-**10.7 OpenXR ランタイムの作法**(3 項目)
-
-- swapchain image の acquire → wait → release 契約
-- XR_TIMEOUT_EXPIRED は正常系(失敗ではない)
-- XR_KHR_composition_layer_depth(深度をランタイムへ渡す)
-
-**10.8 宣言的なグラフと拡張の作法**(6 項目)
-
-- レジストリと登録順(登録順が文書の意味を変えない、という条件)
-- semantic type と logical type(不透明な型がハンドルを運ぶ理由)
-- 評価の分類(direct / replay / baked / recorded)と変更の費用(value / recompile / rebuild)
-- 排他 create を「決定」の primitive にする(O_EXCL / hard link)
-- 内容アドレスによる vendoring(sha256 が同一性、ABI の本当の gate は別)
-- 連続時刻を固定ステップのタイムラインへ量子化する
-
 ## 10.1 Vulkan の仕様と作法
 
 ### swapchain の maxImageCount が 0 のとき
 
-`vk::SurfaceCapabilitiesKHR` の `minImageCount` / `maxImageCount` は、そのサーフェスに対して作れる swapchain イメージ枚数の範囲です。Vulkan 仕様では `maxImageCount` の 0 は「特別値で、上限がない(メモリなど他の要因が許す限り何枚でもよい)」と定義されています。**仕様上の位置**は "Window System Integration (WSI)" 章 → "Surface Queries" 節 → 構造体 `VkSurfaceCapabilitiesKHR` の項です(章・節の**番号**は仕様の版ごとに動くので、ここでは番号を書きません。HTML 版はアンカー `#VkSurfaceCapabilitiesKHR` で直接引けます。次項の `currentExtent` も同じ構造体の同じ項です)。0 を素直に上限として扱うと `std::min` で枚数が 0 になり、swapchain 作成が即失敗します。そのため「`maxImageCount > 0` のときだけクランプする」という書き方が定型になります。`minImageCount + 1` を狙うのも定型で、最低枚数ちょうどだと presentation engine が 1 枚握っている間 CPU が次のイメージを取得できず待たされるためです。なお `minImageCount` は「これ以上を要求せよ」という下限であり、ドライバはそれより多く返してくることがあるので、実際の枚数は `getSwapchainImagesKHR` の戻り値で数え直す必要があります。
+`vk::SurfaceCapabilitiesKHR` の `minImageCount` / `maxImageCount` は、そのサーフェスに対して作れる swapchain イメージ枚数の範囲です。Vulkan 仕様では `maxImageCount` の 0 は「特別値で、上限がない(メモリなど他の要因が許す限り何枚でもよい)」と定義されています。**仕様上の位置**は "Window System Integration (WSI)" 章 → "Surface Queries" 節 → 構造体 `VkSurfaceCapabilitiesKHR` の項です(章・節の**番号**は仕様の版ごとに動くので、ここでは番号を書きません。HTML 版はアンカー `#VkSurfaceCapabilitiesKHR` で直接引けます。次項の `currentExtent` も同じ構造体の同じ項です)。0 を素直に上限として扱うと `std::min` で枚数が 0 になり、swapchain 作成が即失敗します。
 
-**このリポジトリでは**: `src/core/vkcore/swapchainframetarget.cpp` の `chooseSwapchainImageCount()`(175 行)が `minImageCount + 1` を要求し(177 行)、`maxImageCount > 0` のときだけ `std::min` でクランプします(178〜181 行)。この値は `createSwapchain()` の `create_info.minImageCount`(313 行)へ渡す「下限の要求」でしかなく、実枚数はドライバが返します。数え直しをするのは swapchain 世代を 1 つ組み立てる `buildEpoch()`(963 行)で、`device.getSwapchainImagesKHR()`(1059〜1061 行)の戻りをそのまま `epoch->images` にし、**その個数ぶん**だけ color image view(`createColorImageViews()`、1062 行)・present semaphore(1079〜1081 行)・present 待ちフラグ(1082〜1083 行)・`VK_EXT_swapchain_maintenance1` の present fence(1086〜1095 行)・debug 名(1160〜1171 行)を回します。同じ epoch の中でも acquire semaphore とコマンドバッファは**イメージ枚数ではなく in-flight フレーム数**で回る(1076〜1078 行、1113〜1127 行)ので、「枚数で回るもの」と「フレームスロット数で回るもの」を混同すると present 待ちが 1 本足りない、という壊れ方をします。`+1` を狙うのは presentation engine が 1 枚握っている間も CPU が次のイメージを acquire できるようにするためで、`maxImageCount == 0` を上限として扱うと枚数 0 で swapchain 作成が即失敗し、そもそも表示に入れません。
+そのため「`maxImageCount > 0` のときだけクランプする」という書き方が定型になります。`minImageCount + 1` を狙うのも定型で、最低枚数ちょうどだと presentation engine が 1 枚握っている間 CPU が次のイメージを取得できず待たされるためです。なお `minImageCount` は「これ以上を要求せよ」という下限であり、ドライバはそれより多く返してくることがあるので、実際の枚数は `getSwapchainImagesKHR` の戻り値で数え直す必要があります。
+
+**このリポジトリでは**: `src/core/vkcore/swapchainframetarget.cpp` の `chooseSwapchainImageCount()`(175 行)が `minImageCount + 1` を要求し(177 行)、`maxImageCount > 0` のときだけ `std::min` でクランプします(178〜181 行)。
+
+この値は `createSwapchain()` の `create_info.minImageCount`(313 行)へ渡す「下限の要求」でしかなく、実枚数はドライバが返します。数え直しをするのは swapchain 世代を 1 つ組み立てる `buildEpoch()`(963 行)で、`device.getSwapchainImagesKHR()`(1059〜1061 行)の戻りをそのまま `epoch->images` にし、**その個数ぶん**だけ color image view(`createColorImageViews()`、1062 行)・present semaphore(1079〜1081 行)・present 待ちフラグ(1082〜1083 行)・`VK_EXT_swapchain_maintenance1` の present fence(1086〜1095 行)・debug 名(1160〜1171 行)を回します。
+
+同じ epoch の中でも acquire semaphore とコマンドバッファは**イメージ枚数ではなく in-flight フレーム数**で回る(1076〜1078 行、1113〜1127 行)ので、「枚数で回るもの」と「フレームスロット数で回るもの」を混同すると present 待ちが 1 本足りない、という壊れ方をします。`+1` を狙うのは presentation engine が 1 枚握っている間も CPU が次のイメージを acquire できるようにするためで、`maxImageCount == 0` を上限として扱うと枚数 0 で swapchain 作成が即失敗し、そもそも表示に入れません。
 
 ### VkSurfaceCapabilitiesKHR::currentExtent の 0xFFFFFFFF
 
 `currentExtent` はサーフェスの現在のサイズですが、仕様では「`width` と `height` がともに `0xFFFFFFFF`(= `UINT32_MAX`)のとき、サーフェスサイズは swapchain 側の `imageExtent` によって決まる」という特別値になっています。前項と同じ `VkSurfaceCapabilitiesKHR`("Window System Integration (WSI)" 章 → "Surface Queries" 節、アンカー `#VkSurfaceCapabilitiesKHR`)の記述です。これは Wayland のように「ウィンドウのサイズをアプリが決める」プラットフォーム向けの規定です。この場合はアプリが自前でフレームバッファサイズを調べ、`minImageExtent` / `maxImageExtent` の範囲にクランプして渡す必要があります。逆に特別値でなければ `currentExtent` をそのまま使うのが正解で、独自に計算した値を渡すと不一致になります。ウィンドウ最小化時に extent が 0 になる環境もあるため、0 のときはフレームを作らず抜ける、という分岐も定型です。
 
-**このリポジトリでは**: `chooseSwapchainExtent()`(swapchainframetarget.cpp:185)が `currentExtent.width != std::numeric_limits<uint32_t>::max()` なら presentation engine が決めた `currentExtent` をそのまま採り(188〜191 行)、特別値のときだけ引数のフレームバッファ実サイズを `minImageExtent` / `maxImageExtent` へ `std::clamp` します(192〜201 行)。その実サイズは `Window::framebufferSnapshot()`(`src/core/os/window.cpp`:291)が返す `FramebufferExtentSnapshot`(extent と `revision` の組)で、GLFW の framebuffer size コールバックが mutex 下で書き込み、サイズが実際に変わったときだけ `revision` を進めます(window.cpp 216〜236 行)。決まった extent は epoch の `OutputCompileFacts` になり、publish 時に `Camera::setScreenSize()` へ渡って投影の縦横比になります(初期化 866 行 / epoch 差し替え 1660 行)。
+**このリポジトリでは**: `chooseSwapchainExtent()`(swapchainframetarget.cpp:185)が `currentExtent.width != std::numeric_limits<uint32_t>::max()` なら presentation engine が決めた `currentExtent` をそのまま採り(188〜191 行)、特別値のときだけ引数のフレームバッファ実サイズを `minImageExtent` / `maxImageExtent` へ `std::clamp` します(192〜201 行)。
+
+その実サイズは `Window::framebufferSnapshot()`(`src/core/os/window.cpp`:291)が返す `FramebufferExtentSnapshot`(extent と `revision` の組)で、GLFW の framebuffer size コールバックが mutex 下で書き込み、サイズが実際に変わったときだけ `revision` を進めます(window.cpp 216〜236 行)。決まった extent は epoch の `OutputCompileFacts` になり、publish 時に `Camera::setScreenSize()` へ渡って投影の縦横比になります(初期化 866 行 / epoch 差し替え 1660 行)。
 
 **「非ゼロになるまで待つ」入口はもうありません。**最小化などで extent が 0 のとき、`beginFrame()` は冒頭のスナップショット検査で `FrameBeginDisposition::unavailable` + `FrameUnavailableReason::zero_extent` を返して即座に抜け(2006〜2014 行)、`pumpMaintenance()`(1604 行)が復旧状態機械を `suspended_zero_extent` へ落とします(1853〜1865 行)。非ゼロに戻ったフレームで `resumeFromPositiveExtent()`(1887 行)が復帰し、そこから初めて swapchain の作り直しを予約します。`createSwapchain()` 自身もゼロ extent を `std::invalid_argument` で弾き(231〜235 行)、起動時にゼロだった場合は「bootstrap がエンジンループをブロックできない」として throw します(811〜818 行)。ブロックせず毎フレーム「今は出せない」と答える形にしてあるので、サイズ 0 の swapchain を作らないまま OpenXR のミラー窓もエンジンループも止まりません。
 
 ### 色空間と伝達関数(OETF / EOTF)、linear と sRGB
 
-ライティングの加減乗除は「光の量に比例する値」= **linear(リニア)空間**で行わないと合いません。一方で 8 bit の画像や表示装置は、人の明るさ感度に合わせて非線形に符号化した値を扱います。この linear → 符号値の変換を **OETF**(opto-electronic transfer function、光電気伝達関数)、符号値 → linear の逆変換を **EOTF**(electro-optical transfer function、電気光伝達関数)と呼びます。sRGB は「この伝達関数 + 原色(色域) + 白色点」の組で定義された色空間で、伝達関数はよく指数 2.2 のべき乗で近似されますが、規格上は暗部だけを直線にした区分関数です — 順方向は `c <= 0.0031308 ? 12.92*c : 1.055*pow(c, 1/2.4) - 0.055`。この区分点 `0.0031308` と係数 `12.92` / `1.055` / 指数 `2.4` の出典は sRGB の規格そのもの、**IEC 61966-2-1:1999**(および Amendment A1:2003)の伝達関数定義です(検索するならこの規格番号で引けます)。したがって `pow(c, 1/2.2)` は近似であって sRGB そのものではありません。8 bit のまま linear で持つと暗部の階調が足りず縞(バンディング)が出るため、「計算は linear の float、保存と表示は符号化した 8 bit」という配分が定番になります。なお色空間は伝達関数だけでなく原色と白色点も含む語なので、「linear か sRGB か」という言い方は厳密には伝達関数の有無の対比です。
+ライティングの加減乗除は「光の量に比例する値」= **linear(リニア)空間**で行わないと合いません。一方で 8 bit の画像や表示装置は、人の明るさ感度に合わせて非線形に符号化した値を扱います。この linear → 符号値の変換を **OETF**(opto-electronic transfer function、光電気伝達関数)、符号値 → linear の逆変換を **EOTF**(electro-optical transfer function、電気光伝達関数)と呼びます。sRGB は「この伝達関数 + 原色(色域) + 白色点」の組で定義された色空間で、伝達関数はよく指数 2.2 のべき乗で近似されますが、規格上は暗部だけを直線にした区分関数です — 順方向は `c <= 0.0031308 ? 12.92*c : 1.055*pow(c, 1/2.4) - 0.055`。
+
+この区分点 `0.0031308` と係数 `12.92` / `1.055` / 指数 `2.4` の出典は sRGB の規格そのもの、**IEC 61966-2-1:1999**(および Amendment A1:2003)の伝達関数定義です(検索するならこの規格番号で引けます)。したがって `pow(c, 1/2.2)` は近似であって sRGB そのものではありません。8 bit のまま linear で持つと暗部の階調が足りず縞(バンディング)が出るため、「計算は linear の float、保存と表示は符号化した 8 bit」という配分が定番になります。なお色空間は伝達関数だけでなく原色と白色点も含む語なので、「linear か sRGB か」という言い方は厳密には伝達関数の有無の対比です。
 
 **このリポジトリでは**: この区分関数がそのまま `src/core/resources/output_transform.frag` の `linearToSrgb()`(11〜16 行)にあり、swapchain が `*_SRGB` を採れずハードウェアの OETF が使えないときだけ `PELICAN_OUTPUT_UNORM_FALLBACK` 付きで呼ばれます(21 行)。どちらの経路で sRGB になったかは [第6章](06_rendering_vulkan_shader.md) §6.7 の `OutputCompileFacts::encoding_path`(`srgb_hardware` / `srgb_shader_unorm`)が申告し、中間の `display` target を linear 8 bit にしない理由(§6.1 の難所「format_class が format を上書き」)もこの「8 bit は符号化して持つ」に帰着します。
 
@@ -230,7 +59,9 @@
 
 Vulkan では、`*_SRGB` 形式のイメージに書き込むと線形値→sRGB 伝達関数のエンコードがハードウェアで自動的に掛かり、シェーダからサンプリングすると逆にデコードされて線形値が返ります(変換対象は RGB のみで、アルファには掛かりません)。つまり sRGB フォーマットを選べば、シェーダ側は最後までリニア空間で計算したままでよく、`pow(c, 1/2.2)` 相当を自前で書かなくて済みます。UNORM 形式を選ぶとこの自動変換がないので、同じシェーダのままだと画面が暗く沈みます。一方 `colorSpace` の `eSrgbNonlinear` は「presentation engine はこのイメージのデータを sRGB エンコード済みとして扱う」という別の宣言で、フォーマットとセットで意味を持ちます。サーフェスが返すフォーマット一覧に希望のものがあるとは限らないため、「必須」ではなくスコア付けして降順に並べ、先頭を採る書き方にしておくと、非対応環境でも起動だけはできます。
 
-**このリポジトリでは**: `createSwapchain()` の `pred_fmt` / `score_func`(swapchainframetarget.cpp:56〜68)が sRGB+`eSrgbNonlinear` に 20、UNORM+`eSrgbNonlinear` に 10、他に 0 を付け、`std::stable_sort` の降順で `surface_fmts[0]` を採ります(69・81 行)。採れた経路は `caps().color_path` が `"srgb"` / `"unorm_fallback"` として報告します(434〜444 行)。オフスクリーン側は `OffscreenFrameTarget` コンストラクタが `eR8G8B8A8Srgb` を第一候補にし、feature が無ければ `eR8G8B8A8Unorm` に落とします(offscreenframetarget.cpp:102・108〜116)。sRGB を採れればシェーダはリニアのまま書き込み、HW が sRGB エンコードするので `pow(c, 1/2.2)` を持たずに済み、ヘッドレスとオンスクリーンで同じシェーダ・同じ絵になります。UNORM しか無い環境でも起動は通し、`color_path` でどちらの経路だったかをテスト側が判別できます。同じ「加点して `stable_sort` で降順、先頭を採る」形は物理デバイスの選択にも使われていて(2026-09-04 追記)、[pickPhysicalDevice()](../../src/core/vkcore/core.cpp#L523) が「graphics と present が同一 queue family」に +100 のような重みを付けます。こちらは `(score, index)` のペアを逆順イテレータで `stable_sort` する形なので、同点でも添字が並び順を決め、同じマシンでは毎回同じ GPU が選ばれます。
+**このリポジトリでは**: `createSwapchain()` の `pred_fmt` / `score_func`(swapchainframetarget.cpp:56〜68)が sRGB+`eSrgbNonlinear` に 20、UNORM+`eSrgbNonlinear` に 10、他に 0 を付け、`std::stable_sort` の降順で `surface_fmts[0]` を採ります(69・81 行)。採れた経路は `caps().color_path` が `"srgb"` / `"unorm_fallback"` として報告します(434〜444 行)。オフスクリーン側は `OffscreenFrameTarget` コンストラクタが `eR8G8B8A8Srgb` を第一候補にし、feature が無ければ `eR8G8B8A8Unorm` に落とします(offscreenframetarget.cpp:102・108〜116)。
+
+sRGB を採れればシェーダはリニアのまま書き込み、HW が sRGB エンコードするので `pow(c, 1/2.2)` を持たずに済み、ヘッドレスとオンスクリーンで同じシェーダ・同じ絵になります。UNORM しか無い環境でも起動は通し、`color_path` でどちらの経路だったかをテスト側が判別できます。同じ「加点して `stable_sort` で降順、先頭を採る」形は物理デバイスの選択にも使われていて(2026-09-04 追記)、[pickPhysicalDevice()](../../src/core/vkcore/core.cpp#L523) が「graphics と present が同一 queue family」に +100 のような重みを付けます。こちらは `(score, index)` のペアを逆順イテレータで `stable_sort` する形なので、同点でも添字が並び順を決め、同じマシンでは毎回同じ GPU が選ばれます。
 
 ### present mode で必ず存在するのは FIFO だけ
 
@@ -242,7 +73,9 @@ Vulkan では、`*_SRGB` 形式のイメージに書き込むと線形値→sRGB
 
 Vulkan のバッファ/イメージは「どのキューファミリからアクセスされるか」を作成時に宣言します。`VK_SHARING_MODE_EXCLUSIVE` は「同時に 1 つのキューファミリだけが所有する」モードで、別ファミリから触るには queue family ownership transfer(release 側と acquire 側の 2 本のバリア)を明示的に記録しなければなりません。`VK_SHARING_MODE_CONCURRENT` は `pQueueFamilyIndices` に列挙したファミリから所有権移動なしにアクセスできますが、実装によっては圧縮などの最適化が無効になり性能が落ちます。そのため「graphics と present が同一ファミリなら EXCLUSIVE、別なら CONCURRENT」という分岐が定番です。仕様上も CONCURRENT のときは `queueFamilyIndexCount` が 2 以上かつ各インデックスが相異なる必要があるので、同一ファミリで CONCURRENT を指定するのは単に違反です。
 
-**このリポジトリでは**: `createSwapchain()`(swapchainframetarget.cpp:219)が、引数で受け取った graphics / present の family index を比べ(329〜337 行)、同一なら `eExclusive`、異なれば `eConcurrent` にして 2 ファミリの配列を `setQueueFamilyIndices()` で渡します。graphics 側は device 作成時に決まった 1 つ(784〜785 行)ですが、present 側は **surface epoch が持つ値**で、`buildEpoch()` が swapchain を作るたびに `request.surface_epoch->presentation_queue_family` を渡します(997〜999 行 / 1019〜1021 行)。surface を作り直す復旧経路では `querySurfacePresentationQueue()`(`src/core/vkcore/windowsurface.cpp`:108)が新しい surface に対して present 可能なファミリを選び直すので(1277〜1282 行)、同じプロセスの中でも epoch ごとに present ファミリが変わりえます。つまりこの分岐は起動時 1 回の判定ではなく、swapchain を作るたびに評価されます。同一ファミリで CONCURRENT を指定するのは仕様違反(index が相異なる必要がある)、別ファミリで EXCLUSIVE のまま present するには所有権移動バリアを自前で書かねばならず、どちらも欠けると特定のハードでだけ swapchain が壊れるか検証エラーになります。GPU ごとにキューファミリ構成が違う中で、この一分岐が配布先の多様な環境で同じコードを通す移植性を担保しています。
+**このリポジトリでは**: `createSwapchain()`(swapchainframetarget.cpp:219)が、引数で受け取った graphics / present の family index を比べ(329〜337 行)、同一なら `eExclusive`、異なれば `eConcurrent` にして 2 ファミリの配列を `setQueueFamilyIndices()` で渡します。graphics 側は device 作成時に決まった 1 つ(784〜785 行)ですが、present 側は **surface epoch が持つ値**で、`buildEpoch()` が swapchain を作るたびに `request.surface_epoch->presentation_queue_family` を渡します(997〜999 行 / 1019〜1021 行)。
+
+surface を作り直す復旧経路では `querySurfacePresentationQueue()`(`src/core/vkcore/windowsurface.cpp`:108)が新しい surface に対して present 可能なファミリを選び直すので(1277〜1282 行)、同じプロセスの中でも epoch ごとに present ファミリが変わりえます。つまりこの分岐は起動時 1 回の判定ではなく、swapchain を作るたびに評価されます。同一ファミリで CONCURRENT を指定するのは仕様違反(index が相異なる必要がある)、別ファミリで EXCLUSIVE のまま present するには所有権移動バリアを自前で書かねばならず、どちらも欠けると特定のハードでだけ swapchain が壊れるか検証エラーになります。GPU ごとにキューファミリ構成が違う中で、この一分岐が配布先の多様な環境で同じコードを通す移植性を担保しています。
 
 ### usage flags と format feature flags は別物
 
@@ -262,13 +95,17 @@ vulkan-hpp は `VULKAN_HPP_NO_EXCEPTIONS` を定義していなければ既定�
 
 **このリポジトリでは**: `SwapchainFrameTarget::beginFrame()`(swapchainframetarget.cpp:1981)が、成功コードを 2 つ持つ `waitForFences` の戻り値を `vk::Result` として受けて分岐し(2036〜2054 行 — 非ブロック時の `eTimeout` だけ「まだ」に畳み、それ以外の非 `eSuccess` は throw)、`acquireNextImageKHR` は `vk::ResultValue<std::uint32_t>` を `.result` / `.value` に分解します(2062〜2099 行)。ここで効いてくるのが「**エラーコードは戻り値には現れない**」という規約の裏側で、`eErrorOutOfDateKHR` や `eErrorSurfaceLostKHR` は例外として飛んできます。そのため呼び出しは `try` / `catch (const vk::SystemError &)` で囲まれ、`resultFromSystemError()`(461 行、`error.code().value()` を `vk::Result` に戻すだけの関数)で戻り値経路と同じ `vk::Result` に揃えてから、ひとつの判定表へ流します。
 
-判定表は 2 段です。`classifyWsiResult()`(`src/core/vkcore/swapchainrecovery.cpp`:40)が `eSuccess` → `ready`、`eSuboptimalKHR` → `refresh_advisory`、`eTimeout` / `eNotReady` → `not_ready`、`eErrorOutOfDateKHR` → `swapchain_unavailable`、`eErrorSurfaceLostKHR` → `surface_unavailable`、と結果コードを意味へ翻訳し、`decideWindowWsiRecovery()`(87 行)が**どの呼び出し地点で観測したか**(`acquire` / `present` / `swapchain_create` など)と組にして行動を決めます。同じ `eNotReady` でも acquire なら 1 フレーム落とすだけ、準備呼び出しなら bounded retry — という違いを 1 か所に閉じ込めるための分け方で、`swapchainrecovery.hpp` 55〜58 行のコメントがその意図を書いています。`beginFrame()` 側はその行動を受けて、`drop_frame` なら `unavailable`(2106〜2115 行)、`replace_swapchain` なら次の swapchain 準備を予約して `output_out_of_date` を返します(2116〜2132 行)。`presentKHR` も同じ形で、成功扱いの `eSuboptimalKHR` は戻り値・エラーは例外として catch し(2462〜2506 行)、`proceed_and_refresh` なら**そのフレームは表示しつつ**次の作り直しを予約します(2185〜2188 行)。オフスクリーン側の `OffscreenFrameTarget::beginFrame()`(offscreenframetarget.cpp:149)は WSI を持たないぶん単純で、`waitForFences` の戻り値だけを同じ形で見て、非 `eSuccess` を `vk::to_string(fence_result)` 付きで throw します(162〜177 行)。これらを「成功=例外なし」と決めつけて値だけ使うと TIMEOUT / NOT_READY / SUBOPTIMAL を成功と誤読し、逆に「エラーは全部例外だから catch すれば十分」と決めつけると `eSuboptimalKHR` の作り直し要求を取りこぼします。
+判定表は 2 段です。`classifyWsiResult()`(`src/core/vkcore/swapchainrecovery.cpp`:40)が `eSuccess` → `ready`、`eSuboptimalKHR` → `refresh_advisory`、`eTimeout` / `eNotReady` → `not_ready`、`eErrorOutOfDateKHR` → `swapchain_unavailable`、`eErrorSurfaceLostKHR` → `surface_unavailable`、と結果コードを意味へ翻訳し、`decideWindowWsiRecovery()`(87 行)が**どの呼び出し地点で観測したか**(`acquire` / `present` / `swapchain_create` など)と組にして行動を決めます。
+
+同じ `eNotReady` でも acquire なら 1 フレーム落とすだけ、準備呼び出しなら bounded retry — という違いを 1 か所に閉じ込めるための分け方で、`swapchainrecovery.hpp` 55〜58 行のコメントがその意図を書いています。`beginFrame()` 側はその行動を受けて、`drop_frame` なら `unavailable`(2106〜2115 行)、`replace_swapchain` なら次の swapchain 準備を予約して `output_out_of_date` を返します(2116〜2132 行)。`presentKHR` も同じ形で、成功扱いの `eSuboptimalKHR` は戻り値・エラーは例外として catch し(2462〜2506 行)、`proceed_and_refresh` なら**そのフレームは表示しつつ**次の作り直しを予約します(2185〜2188 行)。
+
+オフスクリーン側の `OffscreenFrameTarget::beginFrame()`(offscreenframetarget.cpp:149)は WSI を持たないぶん単純で、`waitForFences` の戻り値だけを同じ形で見て、非 `eSuccess` を `vk::to_string(fence_result)` 付きで throw します(162〜177 行)。これらを「成功=例外なし」と決めつけて値だけ使うと TIMEOUT / NOT_READY / SUBOPTIMAL を成功と誤読し、逆に「エラーは全部例外だから catch すれば十分」と決めつけると `eSuboptimalKHR` の作り直し要求を取りこぼします。
 
 ### vk::DrawIndexedIndirectCommand の各フィールド
 
 `VkDrawIndexedIndirectCommand` は `vkCmdDrawIndexed` の引数をそのまま GPU 可読なメモリ上の構造体にしたもので、フィールドの順序と意味は仕様で固定されています。`indexCount` は描画するインデックスの個数、`instanceCount` はインスタンス数、`firstIndex` はインデックスバッファ内の開始位置(バイトではなくインデックス要素単位)、`vertexOffset` は `int32_t` でインデックス値に加算される頂点オフセット、`firstInstance` は最初のインスタンス ID です。`firstIndex` と `vertexOffset` はどちらも「オフセット」ですが軸が違い、前者はインデックスバッファ側、後者は頂点バッファ側を指します。集約初期化で 5 つの数値を並べて書くとこの順序を取り違えても型が通ってしまうため、読む側は仕様順を覚えておく必要があります。
 
-**このリポジトリでは**: `makeDrawItemSnapshot()`(polygoninstancecontainer.cpp:256)が 5 項目を名前付きの `DrawIndexedArguments`(`index_count` / `instance_count = 1` / `first_index = index_offset` / `vertex_offset = vert_offset` / `first_instance = instance.index`)に保存し(274〜281 行)、`drawqueuebuilder.cpp` の `materialize()`(215 行)が同じ順で集約初期化して `vk::DrawIndexedIndirectCommand{...}` に変換します(217〜223 行)。model 登録(391 行)も hot-reload の rebuild(873 行)も同じ helper を通ります。名前付きの中間表を挟むことで 5 つの数値の並びを GPU 構造体の直書きまで持ち込まず、取り違えを防いでいます。とくに `first_instance = instance.index`(スロット番号がシェーダの `gl_BaseInstance` になる約束)を 1 か所に固定しているので、staging とリロードで別々に書いてずれることがありません。
+**このリポジトリでは**: [第6章 §6.4 の使用箇所](06_rendering_vulkan_shader.md#background-usage-01)。
 
 ### drawIndexed の vertexOffset はインデックス値に加算される
 
@@ -280,13 +117,15 @@ vulkan-hpp は `VULKAN_HPP_NO_EXCEPTIONS` を定義していなければ既定�
 
 `vkCmdDrawIndexedIndirect` の `stride` は「連続する draw パラメータ間のバイト間隔」で、仕様の要件は `drawCount > 1` のとき「4 の倍数、かつ `sizeof(VkDrawIndexedIndirectCommand)` 以上」であることだけです。ちょうど `sizeof(VkDrawIndexedIndirectCommand)` である必要はありません。そのため、コマンド構造体を先頭メンバに持つ自前の構造体を配列にして、`stride` にその `sizeof` を渡す、というイディオムが使えます。GPU は各要素の先頭 20 バイトだけを読み、残りの CPU 側メタデータ(マテリアル ID など)は無視されます。`offset` の方も 4 の倍数である必要があり、またバッファは `VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT` 付きで作られていなければなりません。
 
-**このリポジトリでは**: `drawqueuebuilder.hpp` の `struct RenderCommand` が先頭に `vk::DrawIndexedIndirectCommand command;` を置き、後ろに material / node_index などの CPU 側メタを足します(21〜28 行、`static_assert(offsetof(RenderCommand, command) == 0)` が「先頭 20 バイト=draw 引数」の前提を守ります)。`DrawQueueBuilder` は `.offset = segment.first_command * sizeof(RenderCommand)`、`.stride = sizeof(RenderCommand)` を組み(drawqueuebuilder.cpp:503〜511)、消費側の `materialrender.cpp` が `cmd_buf.drawIndexedIndirect(indirect_buf.buffer.get(), draw_call.offset, draw_call.draw_count, draw_call.stride)` を発行します(76 行)。GPU は各要素の先頭 20 バイトだけを読み残りのメタは無視するので、GPU が読む draw 引数と CPU 側の material 情報を同じ配列に同居させ、パス切替を跨いだ 1 本の indirect バッファで回せます。バッファは `createIndirectBuf()` が `eIndirectBuffer` 付きで確保します(polygoninstancecontainer.cpp:30)。
+**このリポジトリでは**: `drawqueuebuilder.hpp` の `struct RenderCommand` が先頭に `vk::DrawIndexedIndirectCommand command;` を置き、後ろに material / node_index などの CPU 側メタを足します(21〜28 行、`static_assert(offsetof(RenderCommand, command) == 0)` が「先頭 20 バイト=draw 引数」の前提を守ります)。
+
+`DrawQueueBuilder` は `.offset = segment.first_command * sizeof(RenderCommand)`、`.stride = sizeof(RenderCommand)` を組み(drawqueuebuilder.cpp:503〜511)、消費側の `materialrender.cpp` が `cmd_buf.drawIndexedIndirect(indirect_buf.buffer.get(), draw_call.offset, draw_call.draw_count, draw_call.stride)` を発行します(76 行)。GPU は各要素の先頭 20 バイトだけを読み残りのメタは無視するので、GPU が読む draw 引数と CPU 側の material 情報を同じ配列に同居させ、パス切替を跨いだ 1 本の indirect バッファで回せます。バッファは `createIndirectBuf()` が `eIndirectBuffer` 付きで確保します(polygoninstancecontainer.cpp:30)。
 
 ### multiDrawIndirect、drawIndirectFirstInstance、shaderDrawParameters(gl_BaseInstance)
 
 `vkCmdDrawIndexedIndirect` の `drawCount` に 2 以上を渡すには、`VkPhysicalDeviceFeatures::multiDrawIndirect` が有効化されている必要があります(無効なら `drawCount` は 0 か 1 に限られます)。さらに `VkPhysicalDeviceLimits::maxDrawIndirectCount` が上限です。indirect command の `firstInstance` を 0 以外にするには `VkPhysicalDeviceFeatures::drawIndirectFirstInstance` が必要です。GLSL 側で `gl_BaseInstance` / `gl_BaseVertex` / `gl_DrawID` を読むのはさらに別の機能で、Vulkan 1.1 の `shaderDrawParameters`(元は `VK_KHR_shader_draw_parameters`)が要ります。feature は「物理デバイスが対応しているか」を照会したうえで、`vkCreateDevice` の `pEnabledFeatures` / `VkPhysicalDeviceFeatures2` で明示的に有効化しないと使えません(照会しただけでは有効になりません)。
 
-**このリポジトリでは**: `core.cpp` の `queryDeviceFeatureSupport()`(219 行)が 3 feature を `getFeatures2` の chain で照会し、1 つでも欠ける device は `firstMissingRequiredVulkanFeature()` で選外にします(279〜280 行)。選ばれた device では `multiDrawIndirect` / `drawIndirectFirstInstance` / `vk11.shaderDrawParameters` をすべて true にして `createLogicalDevice()` の `vk::StructureChain` に載せます(350〜370 行)。`PolygonInstanceContainer::triggerUpdate()` は `limits.maxDrawIndirectCount` を build request に渡し、builder が同じ material の連続範囲を上限以下へ分割します(657〜660 行)。`first_instance = instance.index` がシェーダで `gl_BaseInstance` になり、`default.vert` の `pelicanObjects.objects[gl_BaseInstance].model`(29 行)で per-instance のモデル行列を引きます。この 3 点が揃わないと「1 回の間接描画で drawCount>1」「各 draw が別々の firstInstance を持つ」「シェーダがそれを読む」が成立せずバッチが崩れるため、照会だけでは有効にならない feature を明示 enable し、非対応 GPU は起動時に弾いています。
+**このリポジトリでは**: [第6章 §6.12 の使用箇所](06_rendering_vulkan_shader.md#background-usage-02)。
 
 ### bufferRowLength / bufferImageHeight の 0 は「詰めて配置」
 
@@ -310,7 +149,9 @@ Vulkan にキューブ専用のイメージ型はありません。`VkImageCreat
 
 `VkImageViewCreateInfo::subresourceRange` は「イメージのどの部分を見るか」を切り取る窓です。`levelCount` に `VK_REMAINING_MIP_LEVELS`、`layerCount` に `VK_REMAINING_ARRAY_LAYERS` を渡すと「base から残り全部」を意味します。**アタッチメントとして使うビューは `levelCount == 1` でなければならず**、そのときのレンダーエリアは元 extent を `>> baseMipLevel` した実サイズ(最小 1)になります。2 つのビューが同じイメージの**重ならない**範囲を指していれば、同時に別用途で使えます。
 
-**このリポジトリでは**: `ImageSubresourceRange`(`src/project/imagesubresource.hpp`:79)が `base_mip_level` / `level_count` / `base_array_layer` / `layer_count` に加えて `mip_count_mode`(`fixed` / `remaining`)を持ち、`resolveImageSubresourceRange()`(169 行)が **Vulkan のビューを作る前に必ず明示的な数へ解決**します(コメント: `remaining is an authored/runtime-relative count, resolved to an explicit count before a Vulkan image view is cached or created`)。範囲の妥当性は `validImageSubresourceRange()`(149 行)、重なり判定は `imageSubresourceRangesOverlap()`(189 行)です。生成したビューは `(range, dimension)` を鍵にキャッシュされます(`rendertargetcontainer.hpp` の `subresource_image_views` 36 行 / `attachment_subresource_image_views` 46 行)。レンダーエリアの縮小は `attachmentExtent()` が担当します。
+**このリポジトリでは**: `ImageSubresourceRange`(`src/project/imagesubresource.hpp`:79)が `base_mip_level` / `level_count` / `base_array_layer` / `layer_count` に加えて `mip_count_mode`(`fixed` / `remaining`)を持ち、`resolveImageSubresourceRange()`(169 行)が **Vulkan のビューを作る前に必ず明示的な数へ解決**します(コメント: `remaining is an authored/runtime-relative count, resolved to an explicit count before a Vulkan image view is cached or created`)。
+
+範囲の妥当性は `validImageSubresourceRange()`(149 行)、重なり判定は `imageSubresourceRangesOverlap()`(189 行)です。生成したビューは `(range, dimension)` を鍵にキャッシュされます(`rendertargetcontainer.hpp` の `subresource_image_views` 36 行 / `attachment_subresource_image_views` 46 行)。レンダーエリアの縮小は `attachmentExtent()` が担当します。
 
 ```cpp
 // render_pass_frame_setup.cpp:118-128
@@ -320,7 +161,7 @@ return { std::max(1u, base.width >> mip), std::max(1u, base.height >> mip) };
 
 `remaining` をそのまま Vulkan へ渡さず先に解決するのは、キャッシュ鍵として比較するときに「同じ範囲なのに別の鍵」になるのを避けるためで、宣言側の相対表現と物理側の絶対値をこの 1 か所で切り離しています。
 
-同じ「1 枚のイメージを複数の窓から見る」使い分けは render target の外にもあります(2026-09-04 追記): [VulkanXrCompositionGraphics](../../src/core/openxr/openxrcompositiongraphics.cpp#L48) は OpenXR が返す 1 枚の配列イメージから、`layerCount = 2` の 2D array ビューと、レイヤごとの `layerCount = 1` の 2D ビューを両方作ります。[ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetaskcontainer.cpp#L1022) と [MaterialDescriptorBuilder::build()](../../src/core/material/materialdescriptorbuilder.cpp#L442) も、`baseArrayLayer` / `layerCount` を変えたビューで同じイメージの別レイヤを descriptor へ載せます。
+同じ「1 枚のイメージを複数の窓から見る」使い分けは render target の外にもあります(2026-09-04 追記): [VulkanXrCompositionGraphics](../../src/core/openxr/openxrcompositiongraphics.cpp#L48) は OpenXR が返す 1 枚の配列イメージから、`layerCount = 2` の 2D array ビューと、レイヤごとの `layerCount = 1` の 2D ビューを両方作ります。[ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetaskcontainer.cpp#L1028) と [MaterialDescriptorBuilder::build()](../../src/core/material/materialdescriptorbuilder.cpp#L442) も、`baseArrayLayer` / `layerCount` を変えたビューで同じイメージの別レイヤを descriptor へ載せます。
 
 ### mip 数の上限は `floor(log2(max(w,h))) + 1`
 
@@ -337,19 +178,25 @@ return { std::max(1u, base.width >> mip), std::max(1u, base.height >> mip) };
 
 タイルベース GPU では、1 つのレンダリングパスの中でしか使わないアタッチメントを DRAM へ書き戻さず、タイルメモリに留めたままにできます。Vulkan ではこれを `VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT` と `VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT` の組で表現します。lazily-allocated メモリは実際には物理メモリが割り当てられないことがあり、アタッチメント以外の用途(サンプリング・コピー・storage)には使えません。デスクトップ GPU にはこのメモリタイプ自体が無いことも多く、その場合は普通のイメージへフォールバックする必要があります。
 
-**このリポジトリでは**: `RenderTargetStorageMode`(`src/core/renderingpass/rendertargetstoragemode.hpp`:10〜14)の `transient_attachment` / `tile_local_attachment` が、確保時に `vk::MemoryPropertyFlagBits::eLazilyAllocated` を **preferred** として渡します(`rendertargetcontainer.cpp` 259〜269 行)。どの resource がそこへ落ちるかを決めるのは物理ターゲット計画で、条件は `tile_local_eligible`(`src/project/targetrenderplanning.cpp`:2173〜2191)にまとまっています — 読みが `same_pixel` であること、書きも読みもあること、attachment アクセスだけであること(storage / transfer / host が混ざらない)、single sample、`require_store` でないこと、など。1 つでも外れれば `materialized` に戻ります。この enum のコメントが「render-target allocator が実際に実装しているモードだけを渡す」ことを明言しており、計画側の表現(`VulkanResourceRepresentation`)とは意図的に別の型になっています。
+**このリポジトリでは**: `RenderTargetStorageMode`(`src/core/renderingpass/rendertargetstoragemode.hpp`:10〜14)の `transient_attachment` / `tile_local_attachment` が、確保時に `vk::MemoryPropertyFlagBits::eLazilyAllocated` を **preferred** として渡します(`rendertargetcontainer.cpp` 259〜269 行)。
+
+どの resource がそこへ落ちるかを決めるのは物理ターゲット計画で、条件は `tile_local_eligible`(`src/project/targetrenderplanning.cpp`:2173〜2191)にまとまっています — 読みが `same_pixel` であること、書きも読みもあること、attachment アクセスだけであること(storage / transfer / host が混ざらない)、single sample、`require_store` でないこと、など。1 つでも外れれば `materialized` に戻ります。この enum のコメントが「render-target allocator が実際に実装しているモードだけを渡す」ことを明言しており、計画側の表現(`VulkanResourceRepresentation`)とは意図的に別の型になっています。
 
 ### dynamic rendering local read(input attachment を dynamic rendering で使う)
 
 従来 `VkRenderPass` の subpass でしかできなかった「同じピクセルの前段出力を input attachment として読む」を dynamic rendering でも可能にするのが `VK_KHR_dynamic_rendering_local_read` です。有効にすると (a) イメージレイアウト `VK_IMAGE_LAYOUT_RENDERING_LOCAL_READ_KHR`、(b) `vkCmdSetRenderingInputAttachmentIndicesKHR` によるカラー/深度 → input attachment index の対応付け、(c) パイプライン側の `VkRenderingInputAttachmentIndexInfoKHR` が使えるようになります。同一レンダリングインスタンス内の前段→後段の依存は、イメージバリアではなく `VK_DEPENDENCY_BY_REGION_BIT` 付きのメモリバリア(= フレームバッファローカル依存)で表します。これは「タイルを跨がない読み方だけが許される」ことの表明で、`same_pixel` 以外の読みには使えません。
 
-**このリポジトリでは**: 拡張の照会は `src/core/vkcore/core.cpp` 310〜322 行(拡張が列挙にあるときだけ `PhysicalDeviceDynamicRenderingLocalReadFeaturesKHR` を chain して問い合わせる)、有効化は 427〜430 行(拡張名の追加)と 491〜510 行(feature を立て、非対応なら `unlink()` で chain から外す)です。**必須ではない optional feature** なので、無い環境でも起動します。コマンド側の設定は `VulkanManageCore::setRenderingInputAttachmentIndices()`(`core.hpp`:103、実装 `core.cpp`:774)、パイプライン側は `GraphicsPipelineRenderingLocalReadContract`(`src/core/shader/pipelinefactory.hpp`:27〜44)を `vk::RenderingInputAttachmentIndexInfoKHR` へ積みます(`pipelinefactory.cpp` 417〜421 行、非対応時は 455〜461 行で `unlink()`)。レイアウト遷移の stage/access は `render_target_layout_tracker.cpp` の `eRenderingLocalReadKHR` の枝(50 行・97 行)、融合 scope 内の依存が by-region なのは `RenderPassExecutor::renderingScopeDependency()`(`render_pass_executor.cpp`:459〜488)です。[第6章](06_rendering_vulkan_shader.md) §6.1 の「難所 — 論理グラフは値に版を打つ」で `same_pixel` が物理表現の決定入力だと書いたのは、最終的にこの拡張の制約に接続するためです。
+**このリポジトリでは**: 拡張の照会は `src/core/vkcore/core.cpp` 310〜322 行(拡張が列挙にあるときだけ `PhysicalDeviceDynamicRenderingLocalReadFeaturesKHR` を chain して問い合わせる)、有効化は 427〜430 行(拡張名の追加)と 491〜510 行(feature を立て、非対応なら `unlink()` で chain から外す)です。
+
+**必須ではない optional feature** なので、無い環境でも起動します。コマンド側の設定は `VulkanManageCore::setRenderingInputAttachmentIndices()`(`core.hpp`:103、実装 `core.cpp`:774)、パイプライン側は `GraphicsPipelineRenderingLocalReadContract`(`src/core/shader/pipelinefactory.hpp`:27〜44)を `vk::RenderingInputAttachmentIndexInfoKHR` へ積みます(`pipelinefactory.cpp` 417〜421 行、非対応時は 455〜461 行で `unlink()`)。
+
+レイアウト遷移の stage/access は `render_target_layout_tracker.cpp` の `eRenderingLocalReadKHR` の枝(50 行・97 行)、融合 scope 内の依存が by-region なのは `RenderPassExecutor::renderingScopeDependency()`(`render_pass_executor.cpp`:459〜488)です。[第6章](06_rendering_vulkan_shader.md) §6.1 の「難所 — 論理グラフは値に版を打つ」で `same_pixel` が物理表現の決定入力だと書いたのは、最終的にこの拡張の制約に接続するためです。
 
 ### descriptor set と WriteDescriptorSet(binding 番号がシェーダとの契約)
 
 Vulkan のシェーダは資源を `layout(set = S, binding = B)` で受け取ります。CPU 側はその (set, binding) に対して `VkWriteDescriptorSet`(`dstSet` / `dstBinding` / `descriptorType` / バッファまたはイメージの情報)を組んで `vkUpdateDescriptorSets` を呼び、set の形そのものは `VkDescriptorSetLayout` が、確保元は `VkDescriptorPool` が持ちます。**仕様上の位置**は Vulkan 仕様 "Resource Descriptors" 章(HTML 版のアンカー `#VkWriteDescriptorSet` / `#VkDescriptorSetLayoutBinding`)です。GLSL 側の数値と C++ 側の数値が一致しているかをコンパイラは検査しないので、両方から読まれる定数表を 1 つ置いてそれを唯一の出所にする、というのが定型になります。
 
-**使用場所**: [pelican_sets.glsl の binding 定数](../../src/core/resources/shaders/include/pelican_sets.glsl#L9) / [FrameResources::configureViewCount()](../../src/core/renderer/frameresources.cpp#L110)(`writes[0].dstBinding = PELICAN_FRAME_UBO_BINDING` として同じ定数を使う) / [PolygonInstanceContainer::PolygonInstanceContainer()](../../src/core/renderer/polygoninstancecontainer.cpp#L243) / [ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetaskcontainer.cpp#L1022)
+**使用場所**: [pelican_sets.glsl の binding 定数](../../src/core/resources/shaders/include/pelican_sets.glsl#L9) / [FrameResources::configureViewCount()](../../src/core/renderer/frameresources.cpp#L110)(`writes[0].dstBinding = PELICAN_FRAME_UBO_BINDING` として同じ定数を使う) / [PolygonInstanceContainer::PolygonInstanceContainer()](../../src/core/renderer/polygoninstancecontainer.cpp#L246) / [ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetaskcontainer.cpp#L1028)
 
 **このコードベースでの注意**: 定数表は GLSL のヘッダ側にあり、C++ からも同じマクロ名で読まれます。番号を動かすときは、シェーダと C++ の両方が同じヘッダを見ていることが前提です。
 
@@ -357,25 +204,25 @@ Vulkan のシェーダは資源を `layout(set = S, binding = B)` で受け取�
 
 `VK_EXT_descriptor_indexing`(Vulkan 1.2 でコア入り)は、descriptor 配列を「実行時に決まる添字で引く」ための機能群です。`VkDescriptorSetLayoutBindingFlagsCreateInfo` に立てる `VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT` は「配列の一部の要素が未書き込みでも、シェーダがその要素を読まない限り有効」という緩和で、テクスチャ枠を N 個ぶん確保しておいて実際には数個しか埋めない bindless 構成には必須です。関連する緩和に `VARIABLE_DESCRIPTOR_COUNT` と `UPDATE_AFTER_BIND` があり、シェーダ側で非一様な添字を使うには `nonuniformEXT()` が要ります。**外部で引くときの名前**は Vulkan 仕様の "Descriptor Set Layout" 節と拡張名 `VK_EXT_descriptor_indexing` です。
 
-**使用場所**: [rayMaterialDescriptorBindingFlags()](../../src/core/shader/pipelinefactory.cpp#L205)(3 binding のうちテクスチャ配列にだけ `ePartiallyBound` を立てる) / [PipelineFactory::descriptorSetLayoutKeysFor()](../../src/core/shader/pipelinefactory.cpp#L494)(ray レイアウトのとき set 3 の `binding_flags` にそれを積み、`vk::DescriptorSetLayoutBindingFlagsCreateInfo` として layout 作成へ渡す) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1232)(生成される GLSL 側の `nonuniformEXT(row.texture_index)`)
+**使用場所**: [rayMaterialDescriptorBindingFlags()](../../src/core/shader/pipelinefactory.cpp#L190)(3 binding のうちテクスチャ配列にだけ `ePartiallyBound` を立てる) / [PipelineFactory::descriptorSetLayoutKeysFor()](../../src/core/shader/pipelinefactory.cpp#L484)(ray レイアウトのとき set 3 の `binding_flags` にそれを積み、`vk::DescriptorSetLayoutBindingFlagsCreateInfo` として layout 作成へ渡す) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1253)(生成される GLSL 側の `nonuniformEXT(row.texture_index)`)
 
 ### descriptor type の使い分け(combined image sampler / storage image / sampled image + sampler)
 
 同じイメージでも、シェーダからの触り方によって descriptor type が変わります。読み取りサンプリングは `COMBINED_IMAGE_SAMPLER`(イメージとサンプラを 1 つの descriptor に束ねる)、計算シェーダからの書き込みは `STORAGE_IMAGE`、そしてイメージとサンプラを別々の descriptor(`SAMPLED_IMAGE` + `SAMPLER`)に分ける形の 3 通りが基本です。分離型は「同じ画像を複数のサンプラで引く」「サンプラだけ差し替える」ときに効き、bindless なテクスチャ配列とサンプラ配列を独立に組める代わりに binding が 1 本増えます。**仕様上の位置**は "Descriptor Types" 節(`VK_DESCRIPTOR_TYPE_*` の列挙)です。
 
-**使用場所**: [MaterialContainer::registerMaterial()](../../src/core/material/materialcontainer.cpp#L798)(`split_custom_samplers` のとき `eSampledImage` + `eSampler` の 2 binding へ割る) / [ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetaskcontainer.cpp#L1022)
+**使用場所**: [MaterialContainer::registerMaterial()](../../src/core/material/materialcontainer.cpp#L807)(`split_custom_samplers` のとき `eSampledImage` + `eSampler` の 2 binding へ割る) / [ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetaskcontainer.cpp#L1028)
 
 ### pNext チェーンと vulkan-hpp の StructureChain / unlink
 
 Vulkan の構造体は `sType` と `pNext` を持ち、拡張機能ぶんの構造体を `pNext` で数珠つなぎにして 1 回の呼び出しに載せます。vulkan-hpp の `vk::StructureChain<A, B, C>` はこの連結を型で表現したもので、`get<B>()` で要素を取り出し、`unlink<B>()` で**実行時に**その要素を鎖から外せます(`relink<B>()` で戻せます)。外すことは「その機能を要求しない」という意味になるので、拡張の無い環境で同じコードを通す常套手段です。逆に鎖へ残したまま非対応のデバイスへ渡すと、検証レイヤに叱られるか、そのまま失敗します。
 
-**使用場所**: [createLogicalDevice()](../../src/core/vkcore/core.cpp#L562)(feature 構造体を chain に積み、非対応なら `unlink()`) / [PipelineFactory::createGraphicsPipeline()](../../src/core/shader/pipelinefactory.cpp#L562) / [FrameResources::FramePublication](../../src/core/renderer/frameresources.cpp#L403)(descriptor write の `pNext` に acceleration structure 情報を足す)
+**使用場所**: [createLogicalDevice()](../../src/core/vkcore/core.cpp#L549)(feature 構造体を chain に積み、非対応なら `unlink()`) / [PipelineFactory::createGraphicsPipeline()](../../src/core/shader/pipelinefactory.cpp#L547) / [FrameResources::FramePublication](../../src/core/renderer/frameresources.cpp#L403)(descriptor write の `pNext` に acceleration structure 情報を足す)
 
 ### 機能照会(getFeatures2 の chain)と拡張関数の動的解決
 
 「この GPU がその機能を持つか」は `vkGetPhysicalDeviceFeatures2` に feature 構造体を `pNext` で繋いで問い合わせます。chain 全体が一度に埋まるので、複数の拡張を 1 回で照会できます。重要なのは **照会しただけでは有効にならない**ことで、`vkCreateDevice` の `pNext` に同じ構造体を(true にして)渡して初めて使えます。拡張のエントリポイントは Vulkan のローダに静的リンクされていないことがあるため、`vkGetDeviceProcAddr` で取得し、null なら「その拡張は無い」と判断します(vulkan-hpp では dispatcher に取り込みます)。
 
-**使用場所**: [queryDeviceFeatureSupport()](../../src/core/vkcore/core.cpp#L316)(照会側) / [createLogicalDevice()](../../src/core/vkcore/core.cpp#L562)(有効化側) / [VulkanManageCore::VulkanManageCore()](../../src/core/vkcore/core.cpp#L925)
+**使用場所**: [queryDeviceFeatureSupport()](../../src/core/vkcore/core.cpp#L316)(照会側) / [createLogicalDevice()](../../src/core/vkcore/core.cpp#L549)(有効化側) / [VulkanManageCore::VulkanManageCore()](../../src/core/vkcore/core.cpp#L931)
 
 **このコードベースでの注意**: 必須の feature が 1 つでも欠ける物理デバイスは選外にし、optional なもの(dynamic rendering local read など)だけ `unlink()` で落とします。「必須」と「あれば使う」がこの 2 つの経路で分かれています。
 
@@ -383,19 +230,19 @@ Vulkan の構造体は `sType` と `pNext` を持ち、拡張機能ぶんの構�
 
 VMA は Vulkan のメモリタイプ選択とサブアロケーションを引き受ける定番ライブラリ(AMD 製、構造体名 `VmaAllocationCreateInfo`)です。`VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE` は「デバイスローカルを優先しつつ、必要なら他のヒープへ落ちてよい」という意図の宣言で、`VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT` は「CPU からは前へ前へと書くだけで読み返さない」という宣言です。この 2 つを組むと write-combined なホスト可視メモリが選ばれやすくなり、ステージングバッファを別に持たずに直接書けます(読み返すと極端に遅いのが write-combined の性質です)。budget 追跡(`VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT`)や buffer device address(`VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT`)はアロケータ作成時に宣言が要ります。
 
-**使用場所**: [createAllocator()](../../src/core/vkcore/core.cpp#L821) / [createIndexBuf()](../../src/core/model/vertbufcontainer.cpp#L29) / [createVertBuf()](../../src/core/model/vertbufcontainer.cpp#L38)
+**使用場所**: [createAllocator()](../../src/core/vkcore/core.cpp#L816) / [createIndexBuf()](../../src/core/model/vertbufcontainer.cpp#L29) / [createVertBuf()](../../src/core/model/vertbufcontainer.cpp#L38)
 
 ### buffer device address と usage flags
 
 `VkPhysicalDeviceBufferDeviceAddressFeatures::bufferDeviceAddress`(Vulkan 1.2 コア)を有効にすると、`vkGetBufferDeviceAddress` でバッファの GPU 仮想アドレスを 64bit 整数として取得でき、シェーダから `buffer_reference` でポインタのように辿れます。ただし**アドレスを取る予定のバッファは、作成時に `VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT` を立てておかなければなりません**(後から取ることはできません)。レイトレーシングの BLAS 入力に使うバッファはさらに `VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR` が要ります。得たアドレスに整列要件があるときは `address % alignment` の余りから前方へ寄せるのが定型です。
 
-**使用場所**: [geometryBuildInputUsage()](../../src/core/model/vertbufcontainer.cpp#L17)(capability があるときだけ 2 つの usage を足す) / [recordBuild()](../../src/core/renderer/accelerationstructure.cpp#L175) / [PipelineFactory::createRayTracingShaderBindingTable()](../../src/core/shader/pipelinefactory.cpp#L832)
+**使用場所**: [geometryBuildInputUsage()](../../src/core/model/vertbufcontainer.cpp#L17)(capability があるときだけ 2 つの usage を足す) / [recordBuild()](../../src/core/renderer/accelerationstructure.cpp#L175) / [PipelineFactory::createRayTracingShaderBindingTable()](../../src/core/shader/pipelinefactory.cpp#L817)
 
 ### std140 / std430 レイアウト規則
 
 GLSL の uniform ブロックは既定で **std140**、storage ブロックは **std430** のレイアウト規則に従います(GLSL 仕様の "Standard Uniform Block Layout" / "Standard Shader Storage Block Layout")。std140 では、スカラーは自身のサイズ、`vec2` は 8、`vec3` と `vec4` は 16 バイト境界に置かれ(`vec3` は**サイズ 12・アラインメント 16**)、**配列の要素と構造体は 16 バイトの倍数へ切り上げられます**。std430 はこの「配列・構造体を 16 へ切り上げる」規則だけが緩み、要素の素のアラインメントがそのまま使われます。C++ 側で同じバイト列を作るには `alignas` を明示し、`offsetof` の `static_assert` で固定するのが定型で、これを怠るとシェーダ側が 1 メンバぶんずれた値を読みます。
 
-**使用場所**: [FrameUniformData](../../src/core/renderer/frameresources.hpp#L48)(型自体が `alignas(16)`。vec4 / mat4 のメンバに `alignas(16)`、`vec2` の 2 本には `alignas(8)`、後続の `uint32_t` 4 本には指定なしで自然に 4 バイト刻みに詰まり、直後の offset / `sizeof` の `static_assert` 群がその並びを凍結します) / [RayMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L405) / [RayProfileMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L417)
+**使用場所**: [FrameUniformData](../../src/core/renderer/frameresources.hpp#L48)(型自体が `alignas(16)`。vec4 / mat4 のメンバに `alignas(16)`、`vec2` の 2 本には `alignas(8)`、後続の `uint32_t` 4 本には指定なしで自然に 4 バイト刻みに詰まり、直後の offset / `sizeof` の `static_assert` 群がその並びを凍結します) / [RayMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L448) / [RayProfileMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L460)
 
 **このコードベースでの注意**: レイトレーシング側は「profile 有り/無しで別の行構造体」を用意し、profile が無い構成では以前の ABI をバイト単位で保つようにしてあります。同じ意味の行なのに型が 2 つあるのはそのためです。
 
@@ -403,7 +250,7 @@ GLSL の uniform ブロックは既定で **std140**、storage ブロックは *
 
 `VkPipelineVertexInputStateCreateInfo` は 2 つの配列で頂点レイアウトを表します。`VkVertexInputBindingDescription` が「何番のバッファを 1 頂点あたり何バイト進めて読むか」(binding と stride)、`VkVertexInputAttributeDescription` が「その binding の何バイト目から、どの形式で、シェーダの `location` いくつへ渡すか」です。stride は頂点構造体の `sizeof`、offset は `offsetof` に一致していなければならず、ここがずれるとコンパイルも検証も通ったまま形状だけが壊れます。
 
-**使用場所**: [CommonVertStruct](../../src/core/model/vertbufcontainer.hpp#L23)(`pos` / `normal` / `tangent` / `texcoord` / `color` が offset 0 / 12 / 24 / 40 / 48、`sizeof` 64 を `static_assert` で固定) / [VertBufContainer::getDescription()](../../src/core/model/vertbufcontainer.cpp#L645)(その offset から attribute description を組む) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L390)
+**使用場所**: [CommonVertStruct](../../src/core/model/vertbufcontainer.hpp#L23)(`pos` / `normal` / `tangent` / `texcoord` / `color` が offset 0 / 12 / 24 / 40 / 48、`sizeof` 64 を `static_assert` で固定) / [VertBufContainer::getDescription()](../../src/core/model/vertbufcontainer.cpp#L661)(その offset から attribute description を組む) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L406)
 
 **このコードベースでの注意**: 順序は vec3 pos / vec3 normal / **vec4 tangent** / vec2 texcoord / vec4 color です(tangent が texcoord より前)。この 64 バイトの並びは、パイプラインの attribute description・シェーダの `layout(location=)`・レイトレーシング側が頂点バッファを生バイトとして引くときの word オフセット、という 3 か所の共通の出所になっています。
 
@@ -411,19 +258,21 @@ GLSL の uniform ブロックは既定で **std140**、storage ブロックは *
 
 `VK_KHR_multiview`(Vulkan 1.1 コア)は、1 回の描画で複数のビュー(VR の左右目など)へ同時に書くための機能です。`viewMask` の**立っているビットの位置**が、シェーダで読める `gl_ViewIndex` の取りうる値になります。連続する N ビューなら `(1u << N) - 1u` が定型のマスクですが、N が 32 のときは左シフトが未定義になるため `UINT32_MAX` を直接使う分岐が要ります。dynamic rendering では `VkRenderingInfo::viewMask`、パイプライン側では `VkPipelineRenderingCreateInfo::viewMask` に同じ値を置き、両者が一致していなければなりません。
 
-**使用場所**: [validateGraphicsReflection()](../../src/core/shader/pipelinefactory.cpp#L250)(view_count が [2,32] であること、マスクが連続であること、シェーダが `gl_ViewIndex` を消費することを検査) / [PipelineFactory::createGraphicsPipeline()](../../src/core/shader/pipelinefactory.cpp#L562) / [FrameResources::selectMultiview()](../../src/core/renderer/frameresources.cpp#L651)
+**使用場所**: [validateGraphicsReflection()](../../src/core/shader/pipelinefactory.cpp#L235)(view_count が [2,32] であること、マスクが連続であること、シェーダが `gl_ViewIndex` を消費することを検査) / [PipelineFactory::createGraphicsPipeline()](../../src/core/shader/pipelinefactory.cpp#L547) / [FrameResources::selectMultiview()](../../src/core/renderer/frameresources.cpp#L651)
 
 ### sampler の filter と address mode
 
 `VkSamplerCreateInfo` の `magFilter` / `minFilter` は拡大・縮小時の補間で、`VK_FILTER_NEAREST` はテクセルをそのまま読み、`VK_FILTER_LINEAR` は近傍を線形補間します。`addressModeU/V/W` は [0,1] の外を引いたときの折り返し方(repeat / clamp to edge / mirror / clamp to border)で、3 軸ぶん独立に指定できますが、3D テクスチャや cube では 3 軸を揃えないと軸ごとに違う挙動になります。`mipmapMode` と `minLod` / `maxLod` は別軸で、mip を持たないイメージでも指定自体は必要です。
 
-**使用場所**: [createSampler()](../../src/core/renderingpass/computetaskcontainer.cpp#L716) / [ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetaskcontainer.cpp#L1022)
+**使用場所**: [createSampler()](../../src/core/renderingpass/computetaskcontainer.cpp#L717) / [ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetaskcontainer.cpp#L1028)
 
 ### レイトレーシング: shader group と SBT(handle size / stride / base alignment)
 
-`VK_KHR_ray_tracing_pipeline` のパイプラインは、ステージ配列(`pStages`)とグループ配列(`pGroups`)の 2 段でできています。グループは `GENERAL`(raygen / miss / callable)と `TRIANGLES_HIT_GROUP`(closest hit + 任意の any hit)などの種類を持ち、各グループは pStages 内の添字を指します。**グループの並び順がそのまま SBT(Shader Binding Table)の並び順**になります。`vkGetRayTracingShaderGroupHandlesKHR` で取れる不透明ハンドルは 1 個あたり `shaderGroupHandleSize` バイト、SBT の 1 レコードは `shaderGroupHandleAlignment` に、raygen / miss / hit / callable の**各領域の先頭アドレスは `shaderGroupBaseAlignment`** に揃える必要があります(いずれも `VkPhysicalDeviceRayTracingPipelinePropertiesKHR`)。`vkCmdTraceRaysKHR` に渡す 4 つの `VkStridedDeviceAddressRegionKHR` はこの stride で読まれます。
+`VK_KHR_ray_tracing_pipeline` のパイプラインは、ステージ配列(`pStages`)とグループ配列(`pGroups`)の 2 段でできています。グループは `GENERAL`(raygen / miss / callable)と `TRIANGLES_HIT_GROUP`(closest hit + 任意の any hit)などの種類を持ち、各グループは pStages 内の添字を指します。
 
-**使用場所**: [PipelineFactory::createRayTracingPipeline()](../../src/core/shader/pipelinefactory.cpp#L718)(stage 配列と group 配列を組む) / [PipelineFactory::createRayTracingShaderBindingTable()](../../src/core/shader/pipelinefactory.cpp#L832)(ハンドルを領域ごとに詰め、確保したアドレスの余りから base alignment へ寄せる) / [packRayTracingHitTable()](../../src/core/shader/raygrouplayout.cpp#L2294)
+**グループの並び順がそのまま SBT(Shader Binding Table)の並び順**になります。`vkGetRayTracingShaderGroupHandlesKHR` で取れる不透明ハンドルは 1 個あたり `shaderGroupHandleSize` バイト、SBT の 1 レコードは `shaderGroupHandleAlignment` に、raygen / miss / hit / callable の**各領域の先頭アドレスは `shaderGroupBaseAlignment`** に揃える必要があります(いずれも `VkPhysicalDeviceRayTracingPipelinePropertiesKHR`)。`vkCmdTraceRaysKHR` に渡す 4 つの `VkStridedDeviceAddressRegionKHR` はこの stride で読まれます。
+
+**使用場所**: [PipelineFactory::createRayTracingPipeline()](../../src/core/shader/pipelinefactory.cpp#L703)(stage 配列と group 配列を組む) / [PipelineFactory::createRayTracingShaderBindingTable()](../../src/core/shader/pipelinefactory.cpp#L817)(ハンドルを領域ごとに詰め、確保したアドレスの余りから base alignment へ寄せる) / [packRayTracingHitTable()](../../src/core/shader/raygrouplayout.cpp#L2304)
 
 **このコードベースでの注意**: base alignment を満たすために `total_size + (base_alignment - 1)` を確保し、実アドレスの余りから内部オフセットを決めています。確保したバッファの先頭が揃っている保証は無い、という前提での書き方です。
 
@@ -431,7 +280,7 @@ GLSL の uniform ブロックは既定で **std140**、storage ブロックは *
 
 BLAS の三角形ジオメトリ(`VkAccelerationStructureGeometryTrianglesDataKHR`)で間違えやすいのが `maxVertex` で、これは頂点数ではなく「**使用しうる最大の頂点インデックス**」、つまり密な配列なら `vertex_count - 1` です。プリミティブ数は三角形リスト前提で `index_count / 3` を `VkAccelerationStructureBuildRangeInfoKHR::primitiveCount` に渡します。TLAS 側では `VkAccelerationStructureInstanceKHR` の配列を**16 バイト境界**に置く必要があり、instance が 0 件でも「有効なアドレス」を渡さなければならない(null は不可)ため、1 件ぶんの空領域を確保しておくのが定型です。ビルド用の scratch バッファは `VkPhysicalDeviceAccelerationStructurePropertiesKHR::minAccelerationStructureScratchOffsetAlignment` に揃えたアドレスを渡します。
 
-**使用場所**: [RayQueryAccelerationStructureScope::recordFrame()](../../src/core/renderer/accelerationstructure.cpp#L1139)(`vertex_count - 1` を maxVertex に、`index_count / 3` を primitiveCount に、instance 0 件でも 1 件ぶん確保) / [recordBuild()](../../src/core/renderer/accelerationstructure.cpp#L175)(scratch の alignment) / [allocateAddressedBuffer()](../../src/core/renderer/accelerationstructure.cpp#L116)
+**使用場所**: [RayQueryAccelerationStructureScope::recordFrame()](../../src/core/renderer/accelerationstructure.cpp#L1168)(`vertex_count - 1` を maxVertex に、`index_count / 3` を primitiveCount に、instance 0 件でも 1 件ぶん確保) / [recordBuild()](../../src/core/renderer/accelerationstructure.cpp#L175)(scratch の alignment) / [allocateAddressedBuffer()](../../src/core/renderer/accelerationstructure.cpp#L116)
 
 **このコードベースでの注意**: triangles data は名前付きでなく**位置**で集約初期化されているので、format / vertexData / vertexStride / maxVertex / indexType / indexData の順序を知らないと `vertex_count - 1` がどのフィールドか読めません。
 
@@ -439,13 +288,13 @@ BLAS の三角形ジオメトリ(`VkAccelerationStructureGeometryTrianglesDataKH
 
 TLAS の各 instance は `VkGeometryInstanceFlagsKHR` を持ち、`FORCE_OPAQUE` は「このインスタンスは不透明として扱う」= **any-hit シェーダを呼ばない**、`FORCE_NO_OPAQUE` はその逆です。両方を同時に立てるのは矛盾なので、宣言側で弾く必要があります。any-hit シェーダは交差**候補**ごとに(順不同で、同じ交差に対して複数回)呼ばれ、`ignoreIntersectionEXT` でその候補を棄却します。三角形の hit attribute は組み込みで `vec2` の重心座標(残り 1 成分は `1 - u - v`)、プリミティブ番号は `gl_PrimitiveID` です。したがってアルファ抜きを any-hit で実装している構成で `FORCE_OPAQUE` を立てると、抜きが丸ごと無効になります。
 
-**使用場所**: [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1676)(`force_opaque` と `force_no_opaque` の同時指定を `conflicting_flags` として拒否) / [validateRayProfileAccelerationStructureFlags()](../../src/core/renderer/accelerationstructure.cpp#L531) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1232)(`hitAttributeEXT vec2` を受け、cutoff 未満で `ignoreIntersectionEXT`)
+**使用場所**: [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1718)(`force_opaque` と `force_no_opaque` の同時指定を `conflicting_flags` として拒否) / [validateRayProfileAccelerationStructureFlags()](../../src/core/renderer/accelerationstructure.cpp#L531) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1253)(`hitAttributeEXT vec2` を受け、cutoff 未満で `ignoreIntersectionEXT`)
 
 ### in-flight フレームと GPU 資源の寿命
 
 GPU に投入したコマンドバッファは、対応する fence が signal されるまで「まだ実行中かもしれない」ものです。そのコマンドバッファが参照している資源(バッファ・イメージ・acceleration structure・SBT・descriptor set)は、その間は破棄も上書きもできません。CPU が先へ進むために同じ資源を N セット用意して添字で回すのが in-flight frame で、この N はスワップチェーンのイメージ枚数とは**別の数**です。破棄を「fence 完了後」まで遅らせる仕組み(遅延解放キュー)と、フレームが掴んだ資源を型を消して握っておく仕組み(lease)を組むのが定型になります。
 
-**使用場所**: [Renderer::renderLogicalFrame()](../../src/core/vkcore/renderer.cpp#L5258) / [GpuSubmissionLease](../../src/core/vkcore/frametarget.hpp#L53) / [DeletionQueueCore::flushAll()](../../src/core/vkcore/deletionqueue.cpp#L88)
+**使用場所**: [第6章 §6.11 の使用箇所](06_rendering_vulkan_shader.md#background-usage-07)。
 
 ## 10.2 glTF / 3D アセット形式の仕様
 
@@ -457,23 +306,33 @@ GPU に投入したコマンドバッファは、対応する fence が signal �
 
 ### buffer / bufferView / accessor の三層と byteStride
 
-glTF の頂点データは 3 層に分かれています。`buffer` が生バイト列(GLB なら BIN チャンク)、`bufferView` がその中の連続した一区画(`byteOffset` / `byteLength` / 任意の `byteStride`)、`accessor` が bufferView に型を与えた読み取り口(`componentType` / `type` / `count` / bufferView 先頭からの相対 `byteOffset`)です。要素 i の先頭バイト位置は `bufferView.byteOffset + accessor.byteOffset + i * stride` で、**stride は `bufferView.byteStride` が定義されていればその値、未定義なら要素サイズ(= componentType のサイズ × type の成分数)**という規則になります。`byteStride` は頂点属性用の bufferView にのみ許され、インデックス用には置けないため、インターリーブ配置か否かは bufferView 側だけを見れば分かります。また accessor の offset は componentType のサイズの倍数でなければならない、という整列要件があるので、任意オフセットからの `reinterpret_cast` が仕様上は安全になっています。tinygltf の `Accessor::ByteStride(bufferView)` はこの「未定義なら密詰め」の場合分けをまとめた関数です。
+glTF の頂点データは 3 層に分かれています。`buffer` が生バイト列(GLB なら BIN チャンク)、`bufferView` がその中の連続した一区画(`byteOffset` / `byteLength` / 任意の `byteStride`)、`accessor` が bufferView に型を与えた読み取り口(`componentType` / `type` / `count` / bufferView 先頭からの相対 `byteOffset`)です。要素 i の先頭バイト位置は `bufferView.byteOffset + accessor.byteOffset + i * stride` で、**stride は `bufferView.byteStride` が定義されていればその値、未定義なら要素サイズ(= componentType のサイズ × type の成分数)**という規則になります。
 
-**このリポジトリでは**: `src/core/model/gltf.cpp` の `getDataFromAccessor()`(611 行)が `p_data = buffer.data + accessor.byteOffset + bufferView.byteOffset`(685 行)を求め、`stride = accessor.ByteStride(buffer_view)`(651 行)を `readComponentByType()` に渡して `std::memcpy(&value, p_data + stride*i, element_size)` → `static_cast<OutType>(value)`(606〜607 行)と 1 要素ずつ読み進めます。POSITION / NORMAL / TANGENT からインデックスまで、頂点データはすべてこの 1 つのテンプレートを通ります。stride の決定を `ByteStride`(未定義なら要素サイズ)に委ねているので、インターリーブ配置でも密詰めでも同じコードで正しく読めます。stride を要素サイズ決め打ちにすると、複数属性を 1 本の bufferView に詰めたアセットで隣の属性を踏んで壊れます。`src/devcli/distconfig.cpp` の `parseVatBufferViews()`(627 行)は同じ buffer/byteOffset/byteLength の三層を生 JSON から読み直します。
+`byteStride` は頂点属性用の bufferView にのみ許され、インデックス用には置けないため、インターリーブ配置か否かは bufferView 側だけを見れば分かります。また accessor の offset は componentType のサイズの倍数でなければならない、という整列要件があるので、任意オフセットからの `reinterpret_cast` が仕様上は安全になっています。tinygltf の `Accessor::ByteStride(bufferView)` はこの「未定義なら密詰め」の場合分けをまとめた関数です。
+
+**このリポジトリでは**: `src/core/model/gltf.cpp` の `getDataFromAccessor()`(611 行)が `p_data = buffer.data + accessor.byteOffset + bufferView.byteOffset`(685 行)を求め、`stride = accessor.ByteStride(buffer_view)`(651 行)を `readComponentByType()` に渡して `std::memcpy(&value, p_data + stride*i, element_size)` → `static_cast<OutType>(value)`(606〜607 行)と 1 要素ずつ読み進めます。
+
+POSITION / NORMAL / TANGENT からインデックスまで、頂点データはすべてこの 1 つのテンプレートを通ります。stride の決定を `ByteStride`(未定義なら要素サイズ)に委ねているので、インターリーブ配置でも密詰めでも同じコードで正しく読めます。stride を要素サイズ決め打ちにすると、複数属性を 1 本の bufferView に詰めたアセットで隣の属性を踏んで壊れます。`src/devcli/distconfig.cpp` の `parseVatBufferViews()`(627 行)は同じ buffer/byteOffset/byteLength の三層を生 JSON から読み直します。
 
 ### sparse accessor
 
-`accessor.sparse` は「大半の要素が同じ値で、一部だけ違う」データを圧縮して持つための仕組みです。**仕様上の位置**は glTF 2.0 仕様(Khronos glTF 2.0 Specification)の Concepts 章 → Accessors 節 → "Sparse Accessors" の項で、`accessor.sparse` / `sparse.indices` / `sparse.values` というプロパティ名でそのまま引けます。`sparse.count` 個の差分があり、`sparse.indices`(bufferView + byteOffset + componentType)が上書きする要素番号を、`sparse.values`(bufferView + byteOffset)がその値を持ちます。ベースになる値は accessor 本体の `bufferView` から読み、**accessor に `bufferView` が無い場合はすべてゼロ**という扱いになるのがポイントで、「bufferView が無い accessor」は壊れているのではなく sparse 専用の正当な形です。indices の componentType は UNSIGNED_BYTE / UNSIGNED_SHORT / UNSIGNED_INT のいずれかで、値は狭義単調増加でなければなりません。用途としてはモーフターゲット(数万頂点のうち動くのは顔の一部だけ)が典型です。読み込み側から見ると通常の密なパスとは別のコードパスが要るので、対応せずエラーにする実装は珍しくありません。
+`accessor.sparse` は「大半の要素が同じ値で、一部だけ違う」データを圧縮して持つための仕組みです。**仕様上の位置**は glTF 2.0 仕様(Khronos glTF 2.0 Specification)の Concepts 章 → Accessors 節 → "Sparse Accessors" の項で、`accessor.sparse` / `sparse.indices` / `sparse.values` というプロパティ名でそのまま引けます。`sparse.count` 個の差分があり、`sparse.indices`(bufferView + byteOffset + componentType)が上書きする要素番号を、`sparse.values`(bufferView + byteOffset)がその値を持ちます。
+
+ベースになる値は accessor 本体の `bufferView` から読み、**accessor に `bufferView` が無い場合はすべてゼロ**という扱いになるのがポイントで、「bufferView が無い accessor」は壊れているのではなく sparse 専用の正当な形です。indices の componentType は UNSIGNED_BYTE / UNSIGNED_SHORT / UNSIGNED_INT のいずれかで、値は狭義単調増加でなければなりません。用途としてはモーフターゲット(数万頂点のうち動くのは顔の一部だけ)が典型です。読み込み側から見ると通常の密なパスとは別のコードパスが要るので、対応せずエラーにする実装は珍しくありません。
 
 **このリポジトリでは**: `src/core/model/gltf.cpp` の `readMorphDeltaAccessor()`(773 行)と `src/core/loader/vrmadecoder.cpp` の `readFloatAccessor()`(330 行)がどちらも `accessor.sparse.isSparse` を検査し、前者は morph target v1、後者は VRMA-C0 で非対応として throw します。両関数はモーフ位置差分と VRMA のアニメーションサンプラを、いずれも bufferView に連続配置された範囲として直接読む(`p_data + stride*i`)ため、sparse を通すには別の散布パスが要ります。対応を表明せず即エラーにすることで、sparse を含むアセット(bufferView 無し = 全ゼロを正当とする形)を静かに読んで無音で崩れるのを防いでいます。
 
 ### normalized 整数属性を float へ戻す規則(UNORM / SNORM)
 
-`accessor.normalized` が true のとき、格納された整数は 0..1 または -1..1 に写像された固定小数点値として解釈されます。glTF 2.0 仕様が定める復号式は、unsigned byte が `f = c / 255.0`、unsigned short が `f = c / 65535.0`、signed byte が `f = max(c / 127.0, -1.0)`、signed short が `f = max(c / 32767.0, -1.0)` です。signed 側で `max(..., -1.0)` が付くのは、-128/127 や -32768/32767 が -1 をわずかに下回るためで、これは OpenGL / Vulkan の SNORM 変換と同じ扱いです(外部を当たるときの正式名は、Vulkan 仕様 Fundamentals 章の "Fixed-Point Data Conversions" 節、OpenGL 仕様なら同名の節です。glTF 2.0 側は `accessor.normalized` の項)。除数が 128 や 32768 ではなく 127 / 32767 なのは、0 と ±1 の両方を正確に表せるようにするためです。`normalized` は整数 componentType にのみ指定でき、FLOAT や 32bit INT、インデックス用 accessor には指定できません。したがって「整数のまま読んで static_cast する」実装は、normalized 属性が来た瞬間に 255 倍ずれた値を出すことになります。
+`accessor.normalized` が true のとき、格納された整数は 0..1 または -1..1 に写像された固定小数点値として解釈されます。glTF 2.0 仕様が定める復号式は、unsigned byte が `f = c / 255.0`、unsigned short が `f = c / 65535.0`、signed byte が `f = max(c / 127.0, -1.0)`、signed short が `f = max(c / 32767.0, -1.0)` です。
+
+signed 側で `max(..., -1.0)` が付くのは、-128/127 や -32768/32767 が -1 をわずかに下回るためで、これは OpenGL / Vulkan の SNORM 変換と同じ扱いです(外部を当たるときの正式名は、Vulkan 仕様 Fundamentals 章の "Fixed-Point Data Conversions" 節、OpenGL 仕様なら同名の節です。glTF 2.0 側は `accessor.normalized` の項)。除数が 128 や 32768 ではなく 127 / 32767 なのは、0 と ±1 の両方を正確に表せるようにするためです。`normalized` は整数 componentType にのみ指定でき、FLOAT や 32bit INT、インデックス用 accessor には指定できません。したがって「整数のまま読んで static_cast する」実装は、normalized 属性が来た瞬間に 255 倍ずれた値を出すことになります。
 
 **このリポジトリでは**: `getDataFromAccessor()` の `readComponentByType()`(595〜607 行)は `std::memcpy(&value, ...)` で読んだ生の整数を `static_cast<OutType>(value)` するだけで `/255` を掛けないため、UNORM 属性を渡すと 255 倍(short なら 65535 倍)ずれた値が出ます。エンジンはこの復号を丸ごと避けるため、モーフ差分やアニメーションを運ぶ経路では FLOAT しか読まず、`readMorphDeltaAccessor()`(780〜784 行)と `src/core/loader/vrmadecoder.cpp` の `readFloatAccessor()`(327〜329 行)が「非 normalized の FLOAT + 期待する type」を明示的に要求して弾きます。正規化整数属性は v1 の契約外なので、255 倍ずれた頂点を素通しするより load 時点でエラーにする方針です。
 
-**2026-09-04 追記 — 復号そのものは実装されています。**上の「復号を丸ごと避ける」は現在のコードには当てはまりません。[normalizedIntegerComponent()](../../src/core/model/gltfaccessorreader.hpp#L70) が上記の復号式(unsigned は `value / max`、signed は `max(value / max, -1)`)をそのまま持ち、[getDataFromAccessor()](../../src/core/model/gltf.cpp#L1418) が `accessor.normalized` のとき [readNormalizedScalar()](../../src/core/model/gltfaccessorreader.hpp#L87) / [readNormalizedVector()](../../src/core/model/gltfaccessorreader.hpp#L110) へ分岐します。除数に `std::numeric_limits<InType>::max()`(127 / 255 / 32767 / 65535)を使うのが仕様どおりで、128 や 32768 ではありません。変わっていないのは `readComponentByType()` の側で、こちらは今も `static_cast` するだけなので、normalized な accessor を非正規化の読み口へ回すと 255 倍ずれます。分岐の入口で「normalized なのに行き先が整数」を例外にしているのはそのためです。モーフ差分と VRMA サンプラが FLOAT のみを要求する点は変わりません。
+**2026-09-04 追記 — 復号そのものは実装されています。**上の「復号を丸ごと避ける」は現在のコードには当てはまりません。[normalizedIntegerComponent()](../../src/core/model/gltfaccessorreader.hpp#L70) が上記の復号式(unsigned は `value / max`、signed は `max(value / max, -1)`)をそのまま持ち、[getDataFromAccessor()](../../src/core/model/gltf.cpp#L1394) が `accessor.normalized` のとき [readNormalizedScalar()](../../src/core/model/gltfaccessorreader.hpp#L87) / [readNormalizedVector()](../../src/core/model/gltfaccessorreader.hpp#L110) へ分岐します。
+
+除数に `std::numeric_limits<InType>::max()`(127 / 255 / 32767 / 65535)を使うのが仕様どおりで、128 や 32768 ではありません。変わっていないのは `readComponentByType()` の側で、こちらは今も `static_cast` するだけなので、normalized な accessor を非正規化の読み口へ回すと 255 倍ずれます。分岐の入口で「normalized なのに行き先が整数」を例外にしているのはそのためです。モーフ差分と VRMA サンプラが FLOAT のみを要求する点は変わりません。
 
 ### node.weights と mesh.weights の優先順位
 
@@ -503,25 +362,27 @@ glTF のノード変換は `matrix`(列優先の 16 要素)か `translation` / `
 
 `.vrm` と `.vrma` はどちらも独自フォーマットではなく、**中身は普通の GLB** です。VRM 1.0 はルートの `extensions` に `VRMC_vrm` を置き、humanoid のボーン割り当て・表情(expressions)・視線(lookAt)・一人称表示(firstPerson)といった「人型としての意味付け」を持ちます。関連拡張として `VRMC_springBone`、`VRMC_node_constraint`、`VRMC_materials_mtoon` などが別々の拡張名で並びます。VRM 0.x は互換性のないスキーマを `VRM` という別キーで持つため、両者は別物として分岐する必要があります。VRMA(VRM Animation)は `VRMC_vrm_animation` 拡張で、glTF の `animations` 自体は普通のノードアニメーションのまま、拡張側が「どのノードがどの humanoid ボーン/表情/視線に対応するか」の対応表だけを与えます。つまりリターゲットに必要な意味情報が拡張側、数値データはコア側、という分担です。
 
-**このリポジトリでは**: `src/core/model/vrmsemantic.cpp` の `decodeVrmSemantic()`(481 行)は `VRMC_vrm` を引き、無ければ `VRM`(0.x)の存在を info 診断として報告して素の glTF 扱いで返します(=.vrm でもメッシュとしては開けます)。見つかれば `specVersion == "1.0"` を要求し、`humanoid.humanBones` を辿ってノードと人型ボーンを対応付けます。`VRMC_node_constraint` はノード単位の `extensions` から読みます(352〜362 行)。VRMA は `src/core/loader/vrmadecoder.cpp`(579〜592 行)が `extensionsUsed` のエイリアス記載・ルート拡張・`specVersion == "1.0"` を要求したうえで、数値は `model.animations.front()`(コア側)を読み、`decodeSemanticMappings(extension, ...)` が「どのノードがどのボーン/表情か」の対応表(拡張側)を与えます。意味は拡張側・数値はコア側という分担なので、コアの glTF ロードを変えずに VRM/VRMA の意味層を加算的に載せられます。
+**このリポジトリでは**: `src/core/model/vrmsemantic.cpp` の `decodeVrmSemantic()`(481 行)は `VRMC_vrm` を引き、無ければ `VRM`(0.x)の存在を info 診断として報告して素の glTF 扱いで返します(=.vrm でもメッシュとしては開けます)。見つかれば `specVersion == "1.0"` を要求し、`humanoid.humanBones` を辿ってノードと人型ボーンを対応付けます。`VRMC_node_constraint` はノード単位の `extensions` から読みます(352〜362 行)。
+
+VRMA は `src/core/loader/vrmadecoder.cpp`(579〜592 行)が `extensionsUsed` のエイリアス記載・ルート拡張・`specVersion == "1.0"` を要求したうえで、数値は `model.animations.front()`(コア側)を読み、`decodeSemanticMappings(extension, ...)` が「どのノードがどのボーン/表情か」の対応表(拡張側)を与えます。意味は拡張側・数値はコア側という分担なので、コアの glTF ロードを変えずに VRM/VRMA の意味層を加算的に載せられます。
 
 ### glTF の node.matrix は列優先の 16 要素
 
 glTF 2.0 の `node.matrix` は 16 個の数値の配列ですが、**並びは column-major(列優先)**と仕様で決まっています(Concepts 章 → Nodes and Hierarchy 節)。つまり先頭 4 要素が第 1 列で、平行移動成分は添字 12・13・14 に来ます。GLM の `glm::mat4` も列優先なので、16 要素をそのまま流し込めば正しく入ります。row-major 前提の行列ライブラリへ同じ順で入れると転置されたものになり、回転と平行移動が入れ替わった見た目になります。`node.matrix` と TRS(`translation` / `rotation` / `scale`)は排他で、両方を持つノードは不正です。
 
-**使用場所**: [InternalGltfLoader::nodeTransform()](../../src/core/model/gltf.cpp#L1489) / [InternalGltfLoader::nodeRestPose()](../../src/core/model/gltf.cpp#L1532)
+**使用場所**: [InternalGltfLoader::nodeTransform()](../../src/core/model/gltf.cpp#L1465) / [InternalGltfLoader::nodeRestPose()](../../src/core/model/gltf.cpp#L1508)
 
 ### animation channel の出力 accessor の型は target_path で決まる
 
 glTF のアニメーションは channel(何を動かすか)と sampler(いつ・どんな値か)の組でできています。channel の `target.path` が `"translation"` / `"scale"` なら sampler の output accessor は VEC3、`"rotation"` なら VEC4(四元数、`[x, y, z, w]` 順)、`"weights"` ならスカラーの列(モーフターゲット数 × キーフレーム数)です。つまり**出力の型は宣言されているのではなく target_path から決まる**ので、読み込み側は path ごとに期待する型を切り替えて accessor を検証します。input accessor は常に秒を表すスカラーの単調増加列で、補間は `STEP` / `LINEAR` / `CUBICSPLINE` のいずれかです(CUBICSPLINE は 1 キーあたり接線込みで 3 倍の要素を持ちます)。
 
-**使用場所**: [InternalGltfLoader::loadAnimationClip()](../../src/core/model/gltf.cpp#L1564) / [readFloatAccessor()](../../src/core/loader/vrmadecoder.cpp#L320)
+**使用場所**: [InternalGltfLoader::loadAnimationClip()](../../src/core/model/gltf.cpp#L1540) / [readFloatAccessor()](../../src/core/loader/vrmadecoder.cpp#L320)
 
 ### JOINTS_0 / WEIGHTS_0(skin ローカルの joint index と重みの正規化)
 
 スキンメッシュの頂点属性 `JOINTS_0` は 4 本ぶんの joint 番号、`WEIGHTS_0` はそれに対応する 4 つの重みです。ここで押さえるべきは 2 点あります。1 つ目、**JOINTS_0 の番号は `skin.joints` 配列の中の添字**であって、glTF のノード番号でも、複数の skin を 1 本のパレットへ詰めたときの絶対番号でもありません。複数 skin を同じ行列パレットに載せるなら、skin ごとの先頭オフセットを足して絶対番号へ直す必要があります。2 つ目、**重みは合計 1** でなければ、パレット合成が伸び縮みします(仕様も正規化を要求しています)。合計が 0 の頂点は「スキンされていない」ので、割り算をしてはいけません。
 
-**使用場所**: [InternalGltfLoader::loadMesh()](../../src/core/model/gltf.cpp#L2258)(joint 番号の範囲検査と `joint_offset` の加算) / [VertBufContainer::addSkinnedPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L451)(`sum > 0` のときだけ 4 成分を合計で割る)
+**使用場所**: [InternalGltfLoader::loadMesh()](../../src/core/model/gltf.cpp#L2209)(joint 番号の範囲検査と `joint_offset` の加算) / [VertBufContainer::addSkinnedPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L467)(`sum > 0` のときだけ 4 成分を合計で割る)
 
 ## 10.3 C++ とビルドのイディオム
 
@@ -535,33 +396,39 @@ OS のハンドル(Win32 の `HANDLE`、POSIX の fd)を確実に閉じるため
 
 `std::unique_ptr<Impl>` を持ち、`Impl` の定義をヘッダから隠す pimpl では、デストラクタをヘッダで暗黙生成させてはいけません。`std::default_delete<Impl>::operator()` は `sizeof(Impl) > 0` を静的表明しており、不完全型のまま実体化するとコンパイルエラーか未定義動作になります。そのためヘッダでは `~T();` と宣言だけし、`Impl` が完全型になった .cpp 側で `T::~T() = default;` と定義するのが定石です。さらに、デストラクタを自前で宣言するとムーブコンストラクタ・ムーブ代入の暗黙生成が抑止される(rule of five)ので、それらもヘッダで宣言し .cpp で `= default` する必要があります。ムーブ代入は古い pimpl を破棄するため、これも完全型が必要です。
 
-**このリポジトリでは**: 宣言は `src/core/renderer/polygoninstancecontainer.hpp` の `StagedModelInstance`(206〜222 行、`struct Impl;` 前方宣言と 4 つの特殊メンバ宣言)、定義は `src/core/renderer/polygoninstancecontainer.cpp` の `Impl` 実体(297 行)の直後に並ぶ `= default` 群(309〜314 行)です。`Impl` は「1 インスタンス分の完全に確保済み候補」(`skin_palette` / `draw_items` / `morph_weight_frame` など重い状態)をまとめ、公開ヘッダには `unique_ptr<Impl>` 越しの不透明ハンドルだけを見せます。`stageModelInstance()` が値で返し、`publishModelInstance(StagedModelInstance staged)` が値で受けてムーブ消費する(コピーは `delete`)ため、これは「失敗しない公開点まで運ぶ一意所有トークン」です。`Impl` が完全型になる .cpp でデストラクタとムーブを `= default` するので、ヘッダを include する呼び出し側は `Impl` のレイアウトを知らずに済み、コンパイル依存が切れます。
+**このリポジトリでは**: 宣言は `src/core/renderer/polygoninstancecontainer.hpp` の `StagedModelInstance`(206〜222 行、`struct Impl;` 前方宣言と 4 つの特殊メンバ宣言)、定義は `src/core/renderer/polygoninstancecontainer.cpp` の `Impl` 実体(297 行)の直後に並ぶ `= default` 群(309〜314 行)です。`Impl` は「1 インスタンス分の完全に確保済み候補」(`skin_palette` / `draw_items` / `morph_weight_frame` など重い状態)をまとめ、公開ヘッダには `unique_ptr<Impl>` 越しの不透明ハンドルだけを見せます。
+
+`stageModelInstance()` が値で返し、`publishModelInstance(StagedModelInstance staged)` が値で受けてムーブ消費する(コピーは `delete`)ため、これは「失敗しない公開点まで運ぶ一意所有トークン」です。`Impl` が完全型になる .cpp でデストラクタとムーブを `= default` するので、ヘッダを include する呼び出し側は `Impl` のレイアウトを知らずに済み、コンパイル依存が切れます。
 
 ### CRTP(奇妙に再帰したテンプレートパターン)による強い型付け
 
 `struct Derived : Base<Derived>` のように、自分自身をテンプレート引数として基底に渡す書き方を CRTP(Curiously Recurring Template Pattern)と呼びます。基底が実体化される時点で `Derived` はまだ不完全型ですが、メンバ関数の本体とシグネチャは「使われたときに」実体化されるため、基底の中で `Derived` を型として書けます。これに空の派生クラスを組み合わせると、内部表現は同じ整数でも型としては別物になる「強い typedef(phantom type)」が作れ、別種のハンドル同士の取り違えをコンパイルエラーにできます。ハッシュ関数オブジェクトを基底の入れ子 `struct Hash` として持たせておくと、`std::unordered_map<H, V, H::Hash>` のように派生型ごとに使い回せます。
 
-**このリポジトリでは**: `src/core/handle.hpp` の `BasicHandle<T, Base>`(9〜19 行、入れ子 `struct Hash` 付き)と、それを空派生させるマクロ `PELICAN_DEFINE_HANDLE`、適用例の `SoundHandle`(24 行)。`SoundHandle` は `std::uint64_t` を包む phantom type で、`src/core/audio/audio.cpp` の `playSound()` が `SoundHandle{next_handle++}`(439 行)で採番し、`src/core/audio/audio.hpp` の `std::unordered_map<SoundHandle, Voice, SoundHandle::Hash> voices`(33 行)のキーにします。`stopSound()` / `isPlaying()` はこのハンドルを `voices.find()` で引き、`Hash` は CRTP 基底の入れ子なので派生型ごとにそのまま使い回せます。内部表現が同じ `uint64` でも、`GameContext` 経由でユーザーのゲームコードが握る `SoundHandle` に別種の id(エンティティ id など)を取り違えて渡すと、型が別物なのでコンパイルエラーになります。
+**このリポジトリでは**: [第3章 §3.8 の使用箇所](03_project_and_loading.md#background-usage-03)。
+
+### free list(空きリスト)
+
+解放した index を貯めておき、次の生成で再利用するための列。pelican2 では後入れ先出しで取り出すので、**同じ操作列なら同じ再利用順**になります(決定性のため)。
 
 ### 世代付きハンドル(index + generation)と SlotMap
 
 配列の添字をそのままハンドルとして外に配ると、スロットが解放されて別のオブジェクトに再利用されたとき、古いハンドルが新しい住人を指してしまいます(ABA 問題)。定番の解法が「添字 + 世代番号」の組をハンドルにする方式で、スロットが死ぬたびに世代を +1 し、参照時に `generations[index] == handle.generation` を確認します。これで有効性判定が O(1) の整数比較 2 回で済み、解放済みハンドルは必ず弾かれます。空きスロットはフリーリスト(空き添字のスタック)で管理し、再利用時も添字は据え置き・世代だけ進めます。この構造はコミュニティでは slot map / generational index / generational arena と呼ばれ、EnTT のエンティティ ID(index + version)や Rust の `slotmap` クレートが同じ考え方です。世代 0 を「無効」に予約しておくと、ゼロ初期化されたハンドルが自動的に無効になります。
 
-**このリポジトリでは**: `src/core/renderer/modelinstance.hpp` の `ModelInstanceId{index, generation, scene_epoch}` と、`src/core/renderer/modelinstanceslots.hpp/.cpp` の `ModelInstanceSlots`(`generations_` / `alive_` / `free_indices_`)。`isLive()`(modelinstanceslots.cpp:10)が「scene_epoch 一致 ∧ `alive_[index]` ∧ `generations_[index] == id.generation`」の 3 条件を O(1) で確認し、外れれば `requireLive()`(15 行)が `"stale ModelInstanceId"` を throw します。`retire()`(62 行)はスロットを殺すとき `generations_` を +1 して `free_indices_` に積み、`nextId()` / `publish()` が空き添字を据え置きのまま世代だけ進めて再利用します。`ModelInstanceId` は公開ハンドルとしてユーザーのゲームコードがフレームや(ゲームロジックの)ホットリロードをまたいで保持するので、スロットが別モデルに再利用された後に古いハンドルを渡しても世代不一致で必ず弾かれ、他人のインスタンスを黙って書き換える ABA 事故を防げます。
-
-同じ形はモデル以外にもあります(2026-09-04 追記): [makeLogicalAssetId()](../../src/core/watch/reloadtransaction.cpp#L19) は index と generation を 64bit の上下 32bit へ詰めて 1 つの id にし、[liveRecord()](../../src/core/watch/reloadtransaction.cpp#L77) が世代不一致を stale として弾きます。フレーム側は [IFrameTarget::consumeFrame()](../../src/core/vkcore/frametarget.hpp#L280) が `expected_serial` を突き合わせて、前フレームのトークンで今フレームを終わらせることを防ぎます。index 空間が `uint32` で有限である以上、再利用のたびに世代を進める側にも枯渇検査が要る、というのは共通の注意点です。
+**このリポジトリでは**: [第3章 §3.8 の使用箇所](03_project_and_loading.md#background-usage-04)。
 
 ### 単調増加する generation / epoch を「変わったか」の検出に使う
 
 データ本体を突き合わせずに「前回見たときから変わったか」を判定したいとき、変更のたびに +1 される単調増加カウンタ(revision / generation / epoch、論理時計)を横に持たせるのが定番です。等値比較だけで陳腐化を検出でき、大小比較を使えば「古い更新の取りこぼし受理」や「同じ更新の二重適用」も拒否できます(受け取った revision が保持中の値以下なら重複とみなす)。粒度を変えた複数のカウンタを併用するのも普通で、「スロット単位」「レイアウト単位」「シーン全体」で別々に持てば、無効化の影響範囲を必要最小限にできます。有限幅なので折り返しへの備えが要り、0 を無効値に予約しているなら折り返し時に 0 を飛ばす、あるいは上限に達したスロットは再利用をやめる、といった扱いをします。
 
-**このリポジトリでは**: `src/core/renderer/polygoninstancecontainer.cpp` の `frame_revision` による `duplicate_revision` 判定(985〜997 行)が代表例です。アニメフレームは単調増加する `frame.frame_revision` を持ち、`animation_revisions[index]` 以下なら本体(スキンパレット等)を突き合わせずに `duplicate_revision` を返して捨て、世代不一致なら `stale_generation` を返します。`resetSlot()`(503 行)はスロット再利用のたびに `animation_generations` を +1 し、`0`(無効値)へ折り返したらもう一度 +1 して飛ばします。シーン全体の破棄は `modelinstanceslots.cpp` の `clearPrepared()`(99 行)が `scene_epoch_` を +1 します。この 3 粒度(revision / slot generation / scene epoch)のおかげで、同じフレームの二重適用や古い更新の取りこぼし受理を等値・大小比較だけで拒否でき、同じ入力列なら同じ状態になる決定性を保てます。
+**このリポジトリでは**: [第6章 §6.10 の使用箇所](06_rendering_vulkan_shader.md#background-usage-05)。
 
 ### std::erase_if(erase-remove イディオムの置き換え)
 
 C++20 で入った非メンバ関数 `std::erase_if(container, pred)` は、条件に合う要素を全部消して消した個数を返します。従来のシーケンスコンテナでは `v.erase(std::remove_if(v.begin(), v.end(), pred), v.end())` と 2 段階で書く必要があり(erase-remove イディオム)、`erase` を忘れると要素が残ったままサイズだけ変わらないという典型バグを踏みました。連想コンテナでは remove_if がそもそも使えない(`std::pair<const Key, T>` は代入できない)ため、以前はイテレータを回しながら `it = m.erase(it)` と書く必要があり、こちらも `erase_if` で 1 行になります。オーバーロードはコンテナごとに各ヘッダ(`<vector>` `<map>` `<unordered_map>` など)で定義されるので、使う側は該当ヘッダを include しておく必要があります。連想コンテナに渡す述語は `value_type`、つまりキーと値のペアを受け取るため、`entry.first` でキーを見る形になります。
 
-**このリポジトリでは**: `src/core/renderer/polygoninstancecontainer.cpp` の `removeModelInstance()`(522 行、`std::vector<DrawItemSnapshot> draw_inventory` から消えたインスタンス由来の draw item を全消し)と `resetSlot()`(512 行、`unordered_map material_absolute_override_frames` から `entry.first.instance_identity == identity` の上書きフレームを削除)、`src/project/assetsmanifest.cpp` の `generateAssetsManifest()`(523 行、`std::map` の `cache`)。マニフェスト側は「今回のスキャンで生存が確認された鍵集合」に無い古い行を `entry.first.starts_with(prefix)` で namespace ごとに掃除します。シーケンスコンテナ(vector)と連想コンテナ(map / unordered_map)で書き方が違う削除を 1 行に統一でき、erase-remove の `erase` 忘れや、連想コンテナでのイテレータ無効化バグを避けられます。
+**このリポジトリでは**: `src/core/renderer/polygoninstancecontainer.cpp` の `removeModelInstance()`(522 行、`std::vector<DrawItemSnapshot> draw_inventory` から消えたインスタンス由来の draw item を全消し)と `resetSlot()`(512 行、`unordered_map material_absolute_override_frames` から `entry.first.instance_identity == identity` の上書きフレームを削除)、`src/project/assetsmanifest.cpp` の `generateAssetsManifest()`(523 行、`std::map` の `cache`)。
+
+マニフェスト側は「今回のスキャンで生存が確認された鍵集合」に無い古い行を `entry.first.starts_with(prefix)` で namespace ごとに掃除します。シーケンスコンテナ(vector)と連想コンテナ(map / unordered_map)で書き方が違う削除を 1 行に統一でき、erase-remove の `erase` 忘れや、連想コンテナでのイテレータ無効化バグを避けられます。
 
 ### std::tie による多段キーの辞書式比較
 
@@ -585,7 +452,9 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 `std::vector<bool>` は標準が規定する部分特殊化で、実装は 1 要素 1 ビットに詰めてよいことになっています。その代償として `operator[]` が返すのは `bool&` ではなくプロキシ型 `std::vector<bool>::reference` で、`bool *` を返す `data()` は存在せず、範囲 for で `for (auto &b : v)` と書くとコンパイルエラーになります(`auto` か `auto &&` なら通ります)。個々の要素にアドレスが無いため、他のコンテナと同じ「要素への参照・ポインタが取れる」前提が崩れる、というのが有名な落とし穴です。一方で、添字代入・`push_back`・`std::fill` はプロキシ経由で普通に動くので、ビット列として使う分には素直に使えます。要素のアドレスが必要なときは `std::vector<char>` や `std::deque<bool>`、固定長なら `std::bitset` に替えるのが定石です。
 
-**このリポジトリでは**: `src/core/renderer/polygoninstancecontainer.hpp` の `model_history_valid` / `morph_history_valid`(232・248 行)、`src/core/renderer/modelinstanceslots.hpp` の `alive_`。どちらもインスタンスごとの 1 ビットのフラグ列として、`std::fill(..., true/false)`(polygoninstancecontainer.cpp:723・745・767 行)と添字代入(495・509 行)だけで扱い、要素のアドレスもポインタも取りません。`history_valid` が false のスロットは `triggerUpdate(const DrawQueueFramePlan &)` で `previous = current` にして(571〜578 行)テンポラル履歴(モーションベクタ)の初期状態を表し、`alive_` はスロット生存の可否そのものです。プロキシ参照の落とし穴(`bool&` や `data()` が取れない)を踏まない使い方に限定したうえで、インスタンス数ぶんのビット列をコンパクトに持てます。逆に「参照が要る」側の例が [InternalGltfLoader::headRelatedNodes()](../../src/core/model/gltf.cpp#L681) で(2026-09-04 追記)、ノードごとの判定結果を一度だけ計算してキャッシュするメモ化テーブルを `std::vector<std::uint8_t>` で持ち、その `const &` を返します。`std::vector<bool>` だと返せるのがプロキシになるため、真偽値の列でも `uint8_t` を選ぶのはこの理由です。
+**このリポジトリでは**: `src/core/renderer/polygoninstancecontainer.hpp` の `model_history_valid` / `morph_history_valid`(232・248 行)、`src/core/renderer/modelinstanceslots.hpp` の `alive_`。どちらもインスタンスごとの 1 ビットのフラグ列として、`std::fill(..., true/false)`(polygoninstancecontainer.cpp:723・745・767 行)と添字代入(495・509 行)だけで扱い、要素のアドレスもポインタも取りません。`history_valid` が false のスロットは `triggerUpdate(const DrawQueueFramePlan &)` で `previous = current` にして(571〜578 行)テンポラル履歴(モーションベクタ)の初期状態を表し、`alive_` はスロット生存の可否そのものです。
+
+プロキシ参照の落とし穴(`bool&` や `data()` が取れない)を踏まない使い方に限定したうえで、インスタンス数ぶんのビット列をコンパクトに持てます。逆に「参照が要る」側の例が [InternalGltfLoader::headRelatedNodes()](../../src/core/model/gltf.cpp#L678) で(2026-09-04 追記)、ノードごとの判定結果を一度だけ計算してキャッシュするメモ化テーブルを `std::vector<std::uint8_t>` で持ち、その `const &` を返します。`std::vector<bool>` だと返せるのがプロキシになるため、真偽値の列でも `uint8_t` を選ぶのはこの理由です。
 
 ### std::filesystem の error_code オーバーロード(投げない版)
 
@@ -609,25 +478,27 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 ビルドオプションでサブシステムを丸ごと外す構成では、マクロを「定義する/しない」ではなく「0 か 1 の値として常に定義する」流儀があります。CMake の `target_compile_definitions(tgt PUBLIC FOO=$<BOOL:${FOO}>)` はまさにこれで、OFF のときも `FOO=0` が渡ります。したがってソース側は `#ifdef FOO` では **常に真になってしまい**、必ず `#if FOO` と書かなければなりません。この流儀の利点は、名前の綴り間違いを `-Wundef` で検出できることと、定義漏れと OFF を区別できることです。もう一点の勘所は `PUBLIC` と `PRIVATE` の使い分けで、フラグがヘッダの中身(宣言されるメンバや関数)を変える場合、利用側にも同じ値が伝わらないと ODR 違反や ABI 不一致になるため `PUBLIC` にする必要があります。逆に .cpp の中だけで効くフラグは `PRIVATE` で十分です。
 
-**このリポジトリでは**: `src/core/CMakeLists.txt` の `target_compile_definitions(pelican_core PUBLIC PELICAN_WITH_AUDIO=$<BOOL:${PELICAN_WITH_AUDIO}> ...)`(6〜15 行)と、`PELICAN_ENGINE_BUILD=1` などの `PRIVATE` 側(17〜20 行)。OFF でも `PELICAN_WITH_AUDIO=0` が常に届くので、参照側は `#ifdef` ではなく `#if` で見ます。`src/core/appflow/loop.cpp` の `#if PELICAN_WITH_AUDIO`(260 行)/ `#if PELICAN_WITH_PHYSICS`(254 行)は Audio・PhysWorld モジュールの生成そのものを丸ごと囲み、`src/core/persistence/persistence.hpp` の `#if PELICAN_WITH_AUDIO`(42 行)は `applyAudioSettings` 等の**メンバ宣言**を囲みます。後者のようにヘッダの中身が変わるフラグは、利用側にも同じ値が届かないと ODR 違反や ABI 不一致になるため `PUBLIC` にする必要があり、.cpp 内だけで効く `PELICAN_ENGINE_BUILD` は `PRIVATE` で足ります。
+**このリポジトリでは**: `src/core/CMakeLists.txt` の `target_compile_definitions(pelican_core PUBLIC PELICAN_WITH_AUDIO=$<BOOL:${PELICAN_WITH_AUDIO}> ...)`(6〜15 行)と、`PELICAN_ENGINE_BUILD=1` などの `PRIVATE` 側(17〜20 行)。OFF でも `PELICAN_WITH_AUDIO=0` が常に届くので、参照側は `#ifdef` ではなく `#if` で見ます。
+
+`src/core/appflow/loop.cpp` の `#if PELICAN_WITH_AUDIO`(260 行)/ `#if PELICAN_WITH_PHYSICS`(254 行)は Audio・PhysWorld モジュールの生成そのものを丸ごと囲み、`src/core/persistence/persistence.hpp` の `#if PELICAN_WITH_AUDIO`(42 行)は `applyAudioSettings` 等の**メンバ宣言**を囲みます。後者のようにヘッダの中身が変わるフラグは、利用側にも同じ値が届かないと ODR 違反や ABI 不一致になるため `PUBLIC` にする必要があり、.cpp 内だけで効く `PELICAN_ENGINE_BUILD` は `PRIVATE` で足ります。
 
 ### thread_local + RAII による「今このスレッドが実行中のもの」
 
 「いま実行中のトランザクション」「いま登録中のオブザーバ」のような、呼び出しの深いところまで届けたい文脈を、引数で引き回さずに参照するためのイディオムです。名前空間スコープの `thread_local` なポインタに現在値を置き、その差し替えを RAII クラス(コンストラクタで `std::exchange` して旧値を保存、デストラクタで書き戻す)に閉じ込めます。RAII にしておけば例外で抜けても必ず前の値に戻り、入れ子も正しく動きます。`thread_local` なのでスレッドごとに独立し、別スレッドの実行中トランザクションを踏むことがありません。素の大域変数 + 手書きの復元にすると、途中の `return` や例外で復元を飛ばした瞬間に「終わったはずのトランザクションが実行中に見える」壊れ方をします。
 
-**使用場所**: [PendingSceneTransactionScope](../../src/core/loader/scene.cpp#L225) / [thread_local な active_effect_transaction の宣言](../../src/core/loader/effecttransaction.cpp#L20) / [ScopedRenderPipelineCompanionReloadObserver のコンストラクタ](../../src/core/watch/reloadservice.cpp#L99)
+**使用場所**: [PendingSceneTransactionScope](../../src/core/loader/scene.cpp#L227) / [thread_local な active_effect_transaction の宣言](../../src/core/loader/effecttransaction.cpp#L20) / [ScopedRenderPipelineCompanionReloadObserver のコンストラクタ](../../src/core/watch/reloadservice.cpp#L114)
 
 ### スコープガード(巻き戻しをデストラクタに置き、成功時に無効化する)
 
 「途中で失敗したら、それまでの副作用を取り消す」を例外安全に書く定型です。ローカルなガード型のデストラクタに巻き戻し処理を書き、正常系の最後で「もう巻き戻さない」印(commit / dismiss と呼ばれることが多い)を立ててガードを無効化します。こうすると、途中のどの `throw` からでも巻き戻しが走り、成功経路でだけ走りません(`std::scope_exit` / `scope_fail` は C++ 標準ライブラリ拡張の同種の道具です)。ガードに「そもそも何もしていない」状態を表す番兵(世代番号が 0、ハンドルが無効など)を持たせて、staging 前に抜けたときに巻き戻しを飛ばす形もよく使われます。
 
-**使用場所**: [LogicalFrameAbortGuard](../../src/core/vkcore/renderer.cpp#L3135) / [StagedRuntimeRollbackGuard](../../src/core/vkcore/renderer.cpp#L3162) / [ConstructionScope](../../src/core/container.hpp#L174)(構築中スタックの pop を必ず走らせる) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L390)(`catch (...)` で確保済みの範囲を返す)
+**使用場所**: [LogicalFrameAbortGuard](../../src/core/vkcore/renderer.cpp#L3176) / [StagedRuntimeRollbackGuard](../../src/core/vkcore/renderer.cpp#L3203) / [ConstructionScope](../../src/core/container.hpp#L174)(構築中スタックの pop を必ず走らせる) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L406)(`catch (...)` で確保済みの範囲を返す)
 
 ### double-checked locking と acquire / release
 
 「初回だけ高コストな初期化をし、以降はロックなしで読みたい」ときの定型です。まずロックを取らずにフラグを読み、未初期化ならロックを取ってから**もう一度**読み、まだなら初期化する、という二重検査になります。ここで肝心なのがメモリ順序で、フラグを `memory_order_release` で書き、`memory_order_acquire` で読むことで「フラグが true に見えた時点で、初期化中に書いた内容もすべて見える」ことが保証されます。`relaxed` にすると、フラグだけ先に見えて中身が未完成のオブジェクトを掴む、という再現しにくいバグになります。C++11 以降の関数内 static 変数はこれを言語側が保証するので、自前で書くのは「初期化の場所を自分で決めたい」場合に限られます。
 
-**使用場所**: [FastModuleContainer::get()](../../src/core/container.hpp#L149)(acquire で読み、`scoped_lock` の内側で再検査し、最後に release で `__ready()` を立てる)
+**使用場所**: [第2章 §2.2 の使用箇所](02_runtime_lifecycle.md#background-usage-06)。
 
 ### compare_exchange による所有権の一度きりの確定
 
@@ -639,7 +510,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 2 つの 32bit 値を 1 つの 64bit に詰める `(hi << 32) | lo` は、単なる節約ではなく「2 つのキーの辞書順比較を、整数 1 回の比較で行う」ための表現です(上位に来た値が優先される)。復元はシフトとマスクで、詰める前に両方が 32bit に収まることを確かめておかないと静かに桁が落ちます。関連する定型が `(1u << n) - 1u`(下位 n ビットを立てる)で、n がビット幅と同じときは左シフトが未定義になるため別扱いが要ります。フラグ集合では「同時に立ってはいけない組み合わせ」を `(x & A) != 0 && (x & B) != 0` の形で検査するのが定石です。
 
-**使用場所**: [sceneBehaviorAttachmentSeq()](../../src/core/gamelogic/behaviorarena.cpp#L72)(32bit を超える入力を `length_error` で弾いてから詰める) / [refreshSceneAttachmentSequence()](../../src/core/gamelogic/behaviorarena.cpp#L455) / [validateGraphicsReflection()](../../src/core/shader/pipelinefactory.cpp#L250)(view_count 32 のときだけ `UINT32_MAX` へ分岐) / [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1676)(相反フラグの検査)
+**使用場所**: [sceneBehaviorAttachmentSeq()](../../src/core/gamelogic/behaviorarena.cpp#L74)(32bit を超える入力を `length_error` で弾いてから詰める) / [refreshSceneAttachmentSequence()](../../src/core/gamelogic/behaviorarena.cpp#L457) / [validateGraphicsReflection()](../../src/core/shader/pipelinefactory.cpp#L235)(view_count 32 のときだけ `UINT32_MAX` へ分岐) / [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1718)(相反フラグの検査)
 
 ### shared_ptr / weak_ptr による寿命の「リース」
 
@@ -657,31 +528,33 @@ GPU 資源のように「今すぐには壊せない」ものを溜める破棄�
 
 C++ のムーブは、移動元を「有効だが未規定の状態」にします。標準ライブラリの型なら破棄と再代入は必ず安全ですが、それ以外に何が保証されるかは型ごとの契約です。自前のトークン型では、この未規定さを**能動的に使う**ことがあります — ムーブされた側を「もう commit してはいけない」印にして、二重コミットを型の側で潰す、という書き方です。読む側から見ると「ムーブしたあとに何もしていないのに状態が変わる」ように見えるので、契約がコメントか名前に書かれていないと読めません。
 
-**使用場所**: [ProjectBasicConfig::importSceneDocument()](../../src/core/loader/basicconfig.cpp#L793)(トークンを move して以降を無効化する)
+**使用場所**: [ProjectBasicConfig::importSceneDocument()](../../src/core/loader/basicconfig.cpp#L792)(トークンを move して以降を無効化する)
 
 ### 型消去: std::any と any_cast
 
+テンプレートで知っていた型情報を、**サイズ・アライメント・関数ポインタの表**で表して、実行時に任意の型を同じコードで扱えるようにする手法。ECS の列は `void*` + 「構築 / 破棄 / 詰め替え」の関数ポインタで持たれています。
+
 `std::any` は「任意の 1 個のコピー可能な値」を型を隠して保持する箱で、取り出しは `std::any_cast<T>` です。型が違えば `std::bad_any_cast` を投げます(ポインタ版は null を返します)。異なるコーデックが返す異種の値を 1 つのコンテナで運ぶような場面で、共通の基底クラスを作らずに済ませる手段になります。取り出し側は必ず失敗しうるので、`bad_any_cast` をその境界の例外契約(たとえば `std::invalid_argument`)へ翻訳しておくと、呼び出し側が 1 種類の失敗だけを見ればよくなります。
 
-**使用場所**: [codecValue()](../../src/core/loader/componentcodec.cpp#L447)(`any_cast` の失敗を `invalid_argument` に翻訳) / [prepareSceneBindings()](../../src/core/loader/scene.cpp#L305)
+**使用場所**: [codecValue()](../../src/core/loader/componentcodec.cpp#L455)(`any_cast` の失敗を `invalid_argument` に翻訳) / [prepareSceneBindings()](../../src/core/loader/scene.cpp#L307)
 
 ### Result 型で例外型を境界の外に出さない
 
 モジュールの内側では例外で失敗を運びつつ、外向きの API では成功/失敗を値(`Result` 型)で返す、という二層構造です。境界の関数が内部例外だけを `catch` して `Result::failure()` に畳むことで、呼び出し側が実装都合の例外型を知らずに済みます。重要なのは「どの例外を捕まえるか」で、内部の型だけを捕まえて `std::exception` や `...` を素通しにするか、あるいは全部畳んで種類を失うか、を意識的に決める必要があります。前者なら想定外のバグは伝播し、後者ならすべてが「失敗」に見えます。
 
-**使用場所**: [componentcodec.cpp の decode ラッパテンプレート](../../src/core/loader/componentcodec.cpp#L56)
+**使用場所**: [componentcodec.cpp の decode ラッパテンプレート](../../src/core/loader/componentcodec.cpp#L57)
 
 ### std::variant + std::visit + if constexpr のディスパッチ
 
 `std::variant` の中身で分岐する定型は、`std::visit` に総称ラムダを渡し、その中で `using T = std::decay_t<decltype(value)>;` として `if constexpr (std::same_as<T, X>)` で枝を書く形です。`std::visit` は全ての候補型を扱えることをコンパイル時に要求するので、型を足したときに「その枝を書き忘れた」がコンパイルエラーになります(`switch` の default と違って取りこぼせません)。`std::monostate` は「値が入っていない」を表すための空の型で、必ず別扱いの枝が要ります。総称ラムダの中で `if constexpr` を使うと、偽の枝は実体化されないので、その型に無いメンバを参照する枝も書けます。これは同じ理由でテンプレート引数ごとのコード生成一般に使われ、依存名の中でメンバーテンプレートを呼ぶときは `obj.template f<...>()` の `.template` 修飾が要ります(パーサに「これはテンプレート」と教えるため)。
 
-**使用場所**: [numericRange()](../../src/core/imgui/inspector.cpp#L38) / [freezeJournalOperation()](../../src/core/communication/editorjournal.cpp#L1958) / [PipelineFactory::rebuildPrepared()](../../src/core/shader/pipelinefactory.cpp#L1906) / [appendBehaviorEventHandlerAt()](../../src/core/userpublic/details/behavior/registerer.hpp#L137)(`if constexpr` の枝と `lookup.template operator()<Index>()`)
+**使用場所**: [numericRange()](../../src/core/imgui/inspector.cpp#L38) / [freezeJournalOperation()](../../src/core/communication/editorjournal.cpp#L1976) / [PipelineFactory::rebuildPrepared()](../../src/core/shader/pipelinefactory.cpp#L1894) / [appendBehaviorEventHandlerAt()](../../src/core/userpublic/details/behavior/registerer.hpp#L137)(`if constexpr` の枝と `lookup.template operator()<Index>()`)
 
 ### fold 式と std::apply(タプルライク型の全要素処理)
 
 C++17 の fold 式は、パラメータパックを 1 つの式に畳み込みます。`(f(args), ...)` はカンマ fold で、**左から右へ順に評価されることが規格で保証されます**(通常の関数引数の評価順は未規定なので、順序が意味を持つ処理はこちらで書く必要があります)。`(pred(args) && ...)` は全称判定で、短絡も効きます。要素が `std::tuple` に入っているときは `std::apply(f, t)` で全要素を一度に受け取り、その中で fold にかけるのが定型です。スキーマ宣言のように「宣言順が結果の順序になる」処理は、この評価順の保証に依存しています。
 
-**使用場所**: [collectBehaviorEventHandlers()](../../src/core/userpublic/details/behavior/registerer.hpp#L148)(カンマ fold で全 Index を順に処理) / [materializeSchemaNode()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L972)(`std::apply` + fold) / [decodeStructObject()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L754) / [materializeBehaviorParamsSchemaFingerprint()](../../src/core/userpublic/details/behavior/registerer.hpp#L184)
+**使用場所**: [collectBehaviorEventHandlers()](../../src/core/userpublic/details/behavior/registerer.hpp#L148)(カンマ fold で全 Index を順に処理) / [materializeSchemaNode()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L974)(`std::apply` + fold) / [decodeStructObject()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L756) / [materializeBehaviorParamsSchemaFingerprint()](../../src/core/userpublic/details/behavior/registerer.hpp#L184)
 
 ### consteval とコンパイル時の throw
 
@@ -689,7 +562,7 @@ C++20 の `consteval` 関数は必ず定数評価されます。定数評価の�
 
 **使用場所**: [validateFloatingRange()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L414)(範囲が非有限、または min > max なら文字列を throw) / [field()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L486)(フィールド名が空、または予約接頭辞 `$` で始まるなら throw)
 
-**このコードベースでの注意**: 同じ `consteval` でも、[structFieldType()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L369) と [legacyBranchDescriptorsAreStrictlyOrdered()](../../src/core/loader/componentcodec.cpp#L1994) は `throw` ではなく `static_assert`(前者は `always_false_v` のフォールバック、後者は戻り値を呼び出し側の `static_assert` が見る形)で落とします。「引数の値に対する検査」は throw、「型やテーブル全体に対する検査」は `static_assert`、という使い分けです。
+**このコードベースでの注意**: 同じ `consteval` でも、[structFieldType()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L369) と [legacyBranchDescriptorsAreStrictlyOrdered()](../../src/core/loader/componentcodec.cpp#L2036) は `throw` ではなく `static_assert`(前者は `always_false_v` のフォールバック、後者は戻り値を呼び出し側の `static_assert` が見る形)で落とします。「引数の値に対する検査」は throw、「型やテーブル全体に対する検査」は `static_assert`、という使い分けです。
 
 ### __COUNTER__ と ADL タグディスパッチによる「登録済みの型の列挙」
 
@@ -701,7 +574,7 @@ C++20 の `consteval` 関数は必ず定数評価されます。定数評価の�
 
 C++17 以降、`template <auto Member>` でメンバーへのポインタを非型テンプレート引数として受け取れます。`decltype(Member)` は `T Owner::*` の形なので、traits で所有者型 `Owner` とメンバー型 `T` を取り出せ、実際の代入は `object.*Member = value;` と書けます。スキーマ定義が「この JSON のキーはこの構造体のこのフィールド」という対応を、文字列でもオフセットでもなく**型として**持てるのがこのイディオムの狙いで、フィールドを消したり型を変えたりするとスキーマ側がコンパイルエラーになります。
 
-**使用場所**: [StructFieldDeclaration](../../src/core/userpublic/details/schema/structfieldschema.hpp#L473) / [field()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L486) / [decodeStructPolicyField()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L565)
+**使用場所**: [StructFieldDeclaration](../../src/core/userpublic/details/schema/structfieldschema.hpp#L473) / [field()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L486) / [decodeStructPolicyField()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L567)
 
 ### concept / requires 節と、特殊化による trait チェーン
 
@@ -713,7 +586,7 @@ C++20 の `concept` と `requires` 式は「この型がこう使えるか」を
 
 `std::array<T, N>` は N ごとに別の型なので、そのまま非テンプレートの関数に渡せません。`std::span<const T>`(C++20)はポインタと個数の組を持つ非所有のビューで、`array` でも `vector` でも生配列でも同じ引数型で受けられるようにします。所有しないので**元の配列より長生きしてはいけない**のが唯一にして最大の注意点で、テンポラリから作った span を返すと即座にダングリングになります。
 
-**使用場所**: [fieldSpan()](../../src/core/loader/componentcodec.cpp#L1903) / [ReleaseReport](../../src/core/model/modelresourcerelease.hpp#L36)(`view()` が固定長配列の先頭 N 件を span で返す)
+**使用場所**: [fieldSpan()](../../src/core/loader/componentcodec.cpp#L1945) / [ReleaseReport](../../src/core/model/modelresourcerelease.hpp#L36)(`view()` が固定長配列の先頭 N 件を span で返す)
 
 ### 関数スコープ static の一度きり初期化
 
@@ -731,19 +604,19 @@ DLL 境界を越えて渡す構造体は、両側が同じレイアウトでビ�
 
 C++20 の `std::bit_cast<To>(from)` は、同じサイズの型の間でビット列をそのまま読み替えます(`reinterpret_cast` や union 経由と違い未定義動作になりません)。浮動小数点をハッシュやダイジェストに入れるとき必ず問題になるのが `-0.0` で、`-0.0 == +0.0` は true なのにビット列は違うため、素直にバイト化すると「等しい値なのに違うダイジェスト」が出ます。バイト化の直前に `if (v == 0.0f) v = 0.0f;` と書いて符号を落とすのが定型です(NaN も同様にビット表現が一意でないので、そもそも弾くのが安全です)。
 
-**使用場所**: [appendResolverFloat()](../../src/core/loader/resolvedscene.cpp#L163)(NaN を例外にし、`0.0F` を代入し直してから `bit_cast`) / [canonicalTransformIdentity()](../../src/core/renderer/accelerationstructure.cpp#L552) / [encodeRecord()](../../src/core/shader/raygrouplayout.cpp#L385)
+**使用場所**: [appendResolverFloat()](../../src/core/loader/resolvedscene.cpp#L163)(NaN を例外にし、`0.0F` を代入し直してから `bit_cast`) / [canonicalTransformIdentity()](../../src/core/renderer/accelerationstructure.cpp#L552) / [encodeRecord()](../../src/core/shader/raygrouplayout.cpp#L391)
 
 ### 整数オーバーフローの事前検査
 
 符号なし整数の演算は折り返し、符号付きはオーバーフロー自体が未定義動作なので、**起こしてから検出することはできません**。掛け算は `lhs > max / rhs`(rhs が 0 でないとき)、足し算は `lhs > max - rhs` の形で、演算する**前**に判定します。除算に置き換えるのがポイントで、`lhs * rhs > max` と書くと検査そのものが折り返します。サイズ計算(幅 × 高さ × バイト数)のように外から来た値を掛ける経路では、この検査を通した専用のヘルパを 1 つ用意して全部そこを通すのが定型です。
 
-**使用場所**: [checkedMultiply()](../../src/core/renderingpass/computetaskdefinitionjson.cpp#L197) / [parseExtentDerivedBufferSize()](../../src/core/renderingpass/computetaskdefinitionjson.cpp#L223)
+**使用場所**: [checkedMultiply()](../../src/core/renderingpass/computetaskdefinitionjson.cpp#L198) / [parseExtentDerivedBufferSize()](../../src/core/renderingpass/computetaskdefinitionjson.cpp#L224)
 
 ### swap-and-pop(末尾要素で穴を埋める削除)
 
 順序を保つ必要のない配列から途中の要素を消すとき、後続を全部前へ詰める(O(n))代わりに、**末尾の要素を穴へ移してから末尾を 1 つ縮める**と O(1) で済みます。順序が壊れることと、消した要素の添字を外に配っていた場合はそれが別の要素を指すようになること(だから世代付きハンドルが要る)が代償です。実装上は「消す位置が末尾自身のときは移動しない」分岐を忘れると自己代入になります。関連して、コンテナを逆順に走査するのは「見つけた時点で末尾側から使う」「途中で消しても未走査部分が動かない」ようにするためです。
 
-**使用場所**: [ECSArchetypeMigrationToken::State::publish()](../../src/core/ecs/archetypemigration.cpp#L93)(`relocate_one(atUnchecked(source_row), atUnchecked(source_last_row))` してから `--count`) / [ECSArchetypeMigration::prepare()](../../src/core/ecs/archetypemigration.cpp#L452)(archetype の chunk 列を `rbegin()` から走査して空きのある chunk を選ぶ)
+**使用場所**: [第4章 §4.7 の使用箇所](04_ecs_deep_dive.md#background-usage-08)。
 
 ### C++20 の jthread / stop_token / condition_variable_any による協調停止
 
@@ -755,13 +628,13 @@ C++20 の `std::bit_cast<To>(from)` は、同じサイズの型の間でビッ�
 
 デストラクタや遅延解放のように「例外を投げられない・投げたくない」経路では、`std::string` や `std::vector` の確保が失敗しうること自体が問題になります。そこで、固定容量の配列 + 現在の件数、というだけの型を用意し、溢れたぶんは中身を捨てて**件数だけ数える**、という設計にします。診断情報の完全性を捨てて、失敗しないことと `noexcept` を取るわけです。読む側は「なぜここだけ `std::string` でないのか」の答えがこれだと分かっている必要があります。
 
-**使用場所**: [FixedEffectError](../../src/core/loader/effecttransaction.hpp#L124)(固定長の文字列 2 本を持つ) / [ReleaseReport](../../src/core/model/modelresourcerelease.hpp#L36)(容量 8、溢れは `overflow_count` に数える) / [VertBufContainer::releaseGeometryNow()](../../src/core/model/vertbufcontainer.cpp#L526)
+**使用場所**: [FixedEffectError](../../src/core/loader/effecttransaction.hpp#L124)(固定長の文字列 2 本を持つ) / [ReleaseReport](../../src/core/model/modelresourcerelease.hpp#L36)(容量 8、溢れは `overflow_count` に数える) / [VertBufContainer::releaseGeometryNow()](../../src/core/model/vertbufcontainer.cpp#L542)
 
 ### 自己参照ラムダによる再帰
 
 ラムダは自分自身を名前で呼べません(`auto` で宣言した変数の型が、その初期化子の中ではまだ決まっていないため)。回避策として、自分自身を第 1 引数で受け取り `self(self, ...)` の形で呼ぶイディオムがあります(Y コンビネータ風、C++23 の "deducing this" があれば不要になります)。JSON のように任意の深さを持つ木を、その場限りの述語で走査したいときによく使われます。
 
-**使用場所**: [UI document の木を下る `has_text`](../../src/core/ui/module.cpp#L157)(`self(self, child)` で子を再帰) / [親名の循環検出](../../src/project/sceneformat.cpp#L233)。`RpcServer::handleLine()` にあった `contains_resolution_error(contains_resolution_error, result)`(応答 JSON から `resolution_error` を再帰探索)は、名前付きの自己再帰関数 [`embedsResolutionError()`](../../src/core/communication/editorrpchandlers.cpp#L50) として editor 側へ移り、この形では残っていません。
+**使用場所**: [UI document の木を下る `has_text`](../../src/core/ui/module.cpp#L204)(`self(self, child)` で子を再帰) / [親名の循環検出](../../src/project/sceneformat.cpp#L233)。`RpcServer::handleLine()` にあった `contains_resolution_error(contains_resolution_error, result)`(応答 JSON から `resolution_error` を再帰探索)は、名前付きの自己再帰関数 [`embedsResolutionError()`](../../src/core/communication/editorrpchandlers.cpp#L50) として editor 側へ移り、この形では残っていません。
 
 ### コールバック連鎖(既存のフックを move して包む)
 
@@ -775,7 +648,7 @@ C++20 の `std::bit_cast<To>(from)` は、同じサイズの型の間でビッ�
 
 Windows は、イメージセクションとしてマップされた実行ファイル/DLL のファイルを書き込み・削除から保護します。`LoadLibrary` が成功している間、そのファイルへの書き込みオープンは `ERROR_SHARING_VIOLATION`、削除は `ERROR_ACCESS_DENIED` で拒否されます。したがってエンジンが `game_logic.dll` を直接ロードしたままだと、ビルドツール側のリンクが「出力ファイルを開けない」で失敗します。POSIX にはこの制約がなく、`dlopen` 中のファイルを普通に置き換えられます(既存のマッピングが古い inode を保持し続けるだけ)ので、この回避策は Windows 由来です。定番の対処が **シャドウコピー**、つまりビルド成果物をロード用の別ディレクトリへコピーし、コピーの方をロードして原本には触らないやり方です。なお名前の変更(rename)だけは実行中でも許されるため、「リネームで退避してから上書き」という変種もあります。MSVC の `.pdb` も、デバッガがアタッチしていると同様にロックされるため、シンボルを見せたいならコピーと一緒に運ぶ必要があります。
 
-**このリポジトリでは**: `src/core/gamelogic/gamelogicreload.cpp` の `makeShadowCopy()` が、`initialize()` で決めた process 固有の `shadow_directory`(= `source_path.parent_path() / ".pelican-hot-reload" / <pid>`)へ `copy_file(..., overwrite_existing)` で成果物を写し、`.pdb` も追随させます。`loadCopy()` の `LoadLibraryW` は常にこのコピー側にだけ効かせます。自動 poll は原本 `source_path` の `(last_write_time, file_size)` が 2 回続けて一致するまで待ち、さらに write share を許さない read lease を取ってから shadow copy を作るため、リンカが truncate/refill 中の部分 DLL を raw import 診断へ渡しません。writer がまだ開いていれば次フレームで再試行しますが、3 回連続で busy なら `game_logic_source_busy@1` を pending status として公開し、writer が閉じれば次の poll で通常どおり再試行します。起動時には死んだ pid の shadow directory を sweep し、正常 shutdown では自分の pid directory を削除します。狙いは「ビルドツールが書く原本」と「エンジンがマップするファイル」の分離で、process 間でも shadow copy 名が衝突しません。これをしないとゲームを動かしたままリビルドしたときにロック済みの原本へリンカが書けず失敗します。
+**このリポジトリでは**: [第2章 §2.11 の使用箇所](02_runtime_lifecycle.md#background-usage-09)。
 
 ### 同じパスの LoadLibrary / dlopen は参照カウントされる
 
@@ -797,19 +670,27 @@ Windows には「プロセスツリーをまとめて殺す」API が素直な�
 
 ### PE の import directory / delay-import directory を、イメージをマップせずに読む
 
-Windows の実行イメージ(PE)は先頭に DOS スタブ、続いて `PE\0\0` シグネチャ、COFF ヘッダ、optional ヘッダを持ち、optional ヘッダの末尾に **data directory** の配列が並びます。この配列の 1 番が import directory、13 番が delay-import directory です。どちらのエントリも `(RVA, size)` の組で、RVA(relative virtual address)は「イメージがメモリへマップされたときの、イメージ先頭からの相対アドレス」を指します。**ファイルをそのまま読む場合、RVA はファイルオフセットではありません** — section テーブルを走査し、RVA を含む section を見つけて `raw_offset + (rva - virtual_address)` へ翻訳する必要があります。import directory の各記述子(20 byte)は「元 thunk 配列の RVA」「モジュール名の RVA」「first thunk の RVA」を持ち、thunk 配列の各要素は最上位ビットが立っていれば **ordinal import**(下位 16 bit が序数)、そうでなければ「hint(2 byte) + NUL 終端名」を指す RVA、つまり **named import** です。要素の幅は PE32 で 4 byte、PE32+(64bit)で 8 byte です。delay-import 記述子は歴史的経緯で、フィールドが RVA の版と**絶対アドレス**の版があり、後者は `image_base` を引いて RVA へ直す必要があります。
+Windows の実行イメージ(PE)は先頭に DOS スタブ、続いて `PE\0\0` シグネチャ、COFF ヘッダ、optional ヘッダを持ち、optional ヘッダの末尾に **data directory** の配列が並びます。この配列の 1 番が import directory、13 番が delay-import directory です。どちらのエントリも `(RVA, size)` の組で、RVA(relative virtual address)は「イメージがメモリへマップされたときの、イメージ先頭からの相対アドレス」を指します。
 
-**このリポジトリでは**: `src/core/gamelogic/gamelogicimports.cpp` が `LoadLibraryW` の前に走る診断用の最小 reader を持ちます。`importDirectoryIndex = 1` / `delayImportDirectoryIndex = 13`(19〜20 行)で 2 つの directory だけを取り、`fileOffset()`(212 行)が section テーブル経由で RVA をファイルオフセットへ翻訳します。`appendThunkImports()`(306 行)が PE32 / PE32+ の幅と ordinal フラグ(`0x80000000` / `0x8000000000000000`)を分け、`GameLogicPeImportKind` の 4 種へ分類します。delay 側の `delayFieldRva()`(293 行)が「絶対アドレス版」を `image_base` の減算で RVA へ直します。ファイルは 256 MiB、記述子は 4096 件、thunk は 65536 件で打ち切りますが、コメントが明記しているとおり **これは PE 形式の制限ではなく parser の作業量制限**で、壊れた入力が無制限の走査や確保にならないようにするためのものです。`directoryDescriptorOffset()`(248 行)が「directory と記述子が同じ section にあること」まで見るのも同じ理由(section 境界を越えた記述子を正当に見せないため)です。この reader が読むのは top-level の import だけで、`GetProcAddress` や依存 DLL 経由の解決は範囲外です。
+**ファイルをそのまま読む場合、RVA はファイルオフセットではありません** — section テーブルを走査し、RVA を含む section を見つけて `raw_offset + (rva - virtual_address)` へ翻訳する必要があります。import directory の各記述子(20 byte)は「元 thunk 配列の RVA」「モジュール名の RVA」「first thunk の RVA」を持ち、thunk 配列の各要素は最上位ビットが立っていれば **ordinal import**(下位 16 bit が序数)、そうでなければ「hint(2 byte) + NUL 終端名」を指す RVA、つまり **named import** です。要素の幅は PE32 で 4 byte、PE32+(64bit)で 8 byte です。delay-import 記述子は歴史的経緯で、フィールドが RVA の版と**絶対アドレス**の版があり、後者は `image_base` を引いて RVA へ直す必要があります。
+
+**このリポジトリでは**: [第2章 §2.11 の使用箇所](02_runtime_lifecycle.md#background-usage-10)。
 
 ### Windows の名前付き mutex と `Global\` 名前空間(machine-wide の相互排他)
 
-`CreateMutexA/W` の第 3 引数に名前を渡すと、その名前がプロセスを跨ぐ待ち合わせ点になります。名前は kernel object namespace に属し、接頭辞で可視範囲が変わります — `Local\` は呼び出し元のログオンセッション内、`Global\` はマシン全体(全セッション)です。接頭辞を省くと Terminal Services の設定次第で `Local\` 相当になるため、「同じマシンで走る別セッションのプロセスと排他したい」なら `Global\` を明示します。所有スレッドが `ReleaseMutex` せずに終了すると、次に待っていたスレッドは `WAIT_ABANDONED` を受け取ります。これは失敗ではなく **「取れたが、前の所有者が異常終了した」** の意味で、多くの用途では `WAIT_OBJECT_0` と同じに扱います。注意が要るのは *section*(file mapping)オブジェクトで、`Global\` 名前空間に**新規作成**するには `SeCreateGlobalPrivilege` が要ります。mutex と違って、昇格していないプロセスは `Global\` の名前付き共有メモリを作れません。POSIX 側に直接の対応物は無く、`flock` / `fcntl` のファイルロックや `$XDG_RUNTIME_DIR` 下のロックファイルで、UID とセッションに閉じた範囲を作るのが定番です。
+`CreateMutexA/W` の第 3 引数に名前を渡すと、その名前がプロセスを跨ぐ待ち合わせ点になります。名前は kernel object namespace に属し、接頭辞で可視範囲が変わります — `Local\` は呼び出し元のログオンセッション内、`Global\` はマシン全体(全セッション)です。接頭辞を省くと Terminal Services の設定次第で `Local\` 相当になるため、「同じマシンで走る別セッションのプロセスと排他したい」なら `Global\` を明示します。所有スレッドが `ReleaseMutex` せずに終了すると、次に待っていたスレッドは `WAIT_ABANDONED` を受け取ります。これは失敗ではなく **「取れたが、前の所有者が異常終了した」** の意味で、多くの用途では `WAIT_OBJECT_0` と同じに扱います。
 
-**このリポジトリでは**: `test/gpu_lease_run.cpp` が GPU テストの直列化に使います。`CreateMutexA(nullptr, FALSE, ("Global\\" + name).c_str())`(157 行)が **lease の本体**で、待ちは `WaitForSingleObject`(172 行)、`WAIT_OBJECT_0` と `WAIT_ABANDONED` を**どちらも取得成功**として扱います(前の holder が落ちても GPU が永久にロックされないため)。診断用の holder レコード(保持者 pid とトークン)は別の file mapping で、コメントが明記しているとおり `Global\` の section 作成には `SeCreateGlobalPrivilege` が要り、昇格していないテスト実行では作れません。そこでまず `Global\` を試し、失敗したらセッション名前空間へ落として(164〜169 行)、少なくとも timeout メッセージが pid 0 ではなく実際の保持者を名指しできるようにしています。**lease 自体は常に `Global\` の mutex なので、この fallback で排他が弱まることはありません。** POSIX 側は同じファイルの別実装で、UID と `$XDG_RUNTIME_DIR` に閉じた範囲であることを冒頭のコントラクト(6〜7 行)が明記しています。待ち時間が締め切りを超えたら skip ではなく `gpu_lease_timeout@1{holder_pid=...}` / exit 124 の失敗にする、というのがこの lease の設計判断です。
+注意が要るのは *section*(file mapping)オブジェクトで、`Global\` 名前空間に**新規作成**するには `SeCreateGlobalPrivilege` が要ります。mutex と違って、昇格していないプロセスは `Global\` の名前付き共有メモリを作れません。POSIX 側に直接の対応物は無く、`flock` / `fcntl` のファイルロックや `$XDG_RUNTIME_DIR` 下のロックファイルで、UID とセッションに閉じた範囲を作るのが定番です。
+
+**このリポジトリでは**: `test/gpu_lease_run.cpp` が GPU テストの直列化に使います。`CreateMutexA(nullptr, FALSE, ("Global\\" + name).c_str())`(157 行)が **lease の本体**で、待ちは `WaitForSingleObject`(172 行)、`WAIT_OBJECT_0` と `WAIT_ABANDONED` を**どちらも取得成功**として扱います(前の holder が落ちても GPU が永久にロックされないため)。
+
+診断用の holder レコード(保持者 pid とトークン)は別の file mapping で、コメントが明記しているとおり `Global\` の section 作成には `SeCreateGlobalPrivilege` が要り、昇格していないテスト実行では作れません。そこでまず `Global\` を試し、失敗したらセッション名前空間へ落として(164〜169 行)、少なくとも timeout メッセージが pid 0 ではなく実際の保持者を名指しできるようにしています。**lease 自体は常に `Global\` の mutex なので、この fallback で排他が弱まることはありません。** POSIX 側は同じファイルの別実装で、UID と `$XDG_RUNTIME_DIR` に閉じた範囲であることを冒頭のコントラクト(6〜7 行)が明記しています。待ち時間が締め切りを超えたら skip ではなく `gpu_lease_timeout@1{holder_pid=...}` / exit 124 の失敗にする、というのがこの lease の設計判断です。
 
 ### 子プロセスのパイプ読みとデッドロック回避
 
-子プロセスの stdout/stderr をパイプで受け取るとき、古典的なデッドロックが 2 種類あります。ひとつは、親が「まず子の終了を待ってから読む」と書いた場合で、子の出力がパイプのカーネルバッファ(数十 KB 程度、`CreatePipe` に 0 を渡せばシステム既定)を超えると子は `write` でブロックし、親は終了を待ち続けて双方が止まります。回避策は、待機と読み出しを並行させること — スレッドを分けるか、POSIX なら `select`/`poll`、Windows なら OVERLAPPED I/O を使います。もうひとつは EOF の取りこぼしで、`read` が 0 を返す(`ReadFile` が失敗する)のは**書き込み端のハンドルが 1 つ残らず閉じられたとき**なので、親が自分の持つ書き込み端を閉じ忘れると読み出しスレッドは永久に返ってきません。さらに厄介なのは、子が終了しても**継承した書き込み端を握ったままの孫**が生きていると同じことが起きる点で、これがプロセスグループ/Job ごと殺す動機のひとつになります。Windows では `CreateProcess` を `bInheritHandles = TRUE` で呼ぶと継承可能なハンドルが一括で渡るため、読み出し端は `SetHandleInformation(..., HANDLE_FLAG_INHERIT, 0)` で明示的に継承対象から外すのが作法です。
+子プロセスの stdout/stderr をパイプで受け取るとき、古典的なデッドロックが 2 種類あります。ひとつは、親が「まず子の終了を待ってから読む」と書いた場合で、子の出力がパイプのカーネルバッファ(数十 KB 程度、`CreatePipe` に 0 を渡せばシステム既定)を超えると子は `write` でブロックし、親は終了を待ち続けて双方が止まります。回避策は、待機と読み出しを並行させること — スレッドを分けるか、POSIX なら `select`/`poll`、Windows なら OVERLAPPED I/O を使います。もうひとつは EOF の取りこぼしで、`read` が 0 を返す(`ReadFile` が失敗する)のは**書き込み端のハンドルが 1 つ残らず閉じられたとき**なので、親が自分の持つ書き込み端を閉じ忘れると読み出しスレッドは永久に返ってきません。
+
+さらに厄介なのは、子が終了しても**継承した書き込み端を握ったままの孫**が生きていると同じことが起きる点で、これがプロセスグループ/Job ごと殺す動機のひとつになります。Windows では `CreateProcess` を `bInheritHandles = TRUE` で呼ぶと継承可能なハンドルが一括で渡るため、読み出し端は `SetHandleInformation(..., HANDLE_FLAG_INHERIT, 0)` で明示的に継承対象から外すのが作法です。
 
 **このリポジトリでは**: `src/devcli/processrunner.cpp` の `readPipe()`(Windows 138 行 / POSIX 268 行)を stdout・stderr それぞれ専用の `std::thread` で回し(226〜227 行 / 326〜327 行)、待機ループと並行に排出するので、出力がパイプバッファを超えても「終了待ち→読み出し」型のデッドロックに陥りません。親は起動直後に自分の書き込み端を手放し(Windows `stdout_write.reset()` 223〜224 行 / POSIX `::close(stdout_pipe[1])` 322〜323 行)、Windows では読み出し端を `SetHandleInformation(..., HANDLE_FLAG_INHERIT, 0)`(165〜166 行)で継承対象から外します。終了処理で `job.reset()`(260 行)/ `::kill(-pid, SIGKILL)`(373 行)を先に済ませてから `join()` するのは、子が抜けても孫が握ったままの書き込み端を閉じ、読み出しスレッドを EOF で確実に返すためです(258〜259 行 / 371〜372 行のコメント)。
 
@@ -823,7 +704,7 @@ Windows の実行イメージ(PE)は先頭に DOS スタブ、続いて `PE\0\0`
 
 保存先を直接開いて上書きすると、書き込みの途中でクラッシュ/電断が起きたときに「半分だけ新しい」ファイルが残ります。これを避ける定番が **write-to-temp + rename** です。同じディレクトリに一時ファイルを作って全部書き、flush/close で内容を確定させてから、`rename` で本来の名前に被せます。POSIX の `rename(2)` は、置換先が既に存在する場合でもリンクは他プロセスから常に可視で、古いファイルか新しいファイルのどちらかを指す(中間状態は観測されない)と規定しており、この不可分性がこのイディオムの根拠です。一時ファイルを**同じディレクトリに作る**のは、`rename` が別ファイルシステムをまたぐと `EXDEV` で失敗するからで、`/tmp` に置くと破綻します。厳密な耐障害性まで求めるなら、`rename` の原子性は「見える内容」の話であって「ディスクに届いたか」は別問題なので、ファイルと親ディレクトリの `fsync` が要ります。Windows での対応物は `MoveFileExW` に `MOVEFILE_REPLACE_EXISTING` を渡す形で、`MOVEFILE_WRITE_THROUGH` を併せると移動がディスクに反映されるまで関数が戻りません。
 
-**このリポジトリでは**: `src/core/loader/basicconfig.cpp` の `saveSceneDocument()`(693 行)が、`temporaryScenePath()`(453 行)で保存先の `parent_path()` に `<filename>.pelican-save-<nonce>-<seq>.tmp` を作り(同一ディレクトリなので `EXDEV` を踏まない)、`writeAndFlushSceneFile()`(488 行、write→flush→close)で全部書き切ってから `replaceSceneFileAtomically()`(508 行)で被せます。置換直前にディスクのダイジェストを取り直して TOCTOU 窓を閉じ(754 行)、Windows では `MoveFileExW(..., MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`(511〜512 行)、それ以外は `std::filesystem::rename()`(520 行)を呼び、失敗時は `TemporarySceneFile` の RAII(479 行)が一時ファイルを消します。シーンファイルはローダとファイル監視が読む唯一の真実なので、直書きして保存中に落ちると「半分だけ新しい」壊れたプロジェクトが残る — 原子的置換はどの瞬間に落ちても旧か新の完全な方だけを観測させます。
+**このリポジトリでは**: [第3章 §3.2 の使用箇所](03_project_and_loading.md#background-usage-11)。
 
 ### Windows のファイル共有モードとロック検出(ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION)
 
@@ -849,7 +730,7 @@ POSIX と違い、Windows ではファイルを開くときに「他のプロセ
 
 `std::filesystem::canonical(p)` は実在するパスしか正規化できず、存在しなければ例外(または `error_code`)になります。対して `weakly_canonical(p)` は「存在する先頭部分だけを解決し、残りは字句的に正規化する」ので、これから作るファイルのパスにも使えます。Windows 固有の落とし穴が**ルート名**で、`path::has_root_name()` は `C:` や `\\server` の有無を返します。`C:\dir`(ルート名 + ルートディレクトリ)は絶対パスですが、`C:dir` は「ドライブ C の**カレントディレクトリ**からの相対」であり、しかも `current_path()` がドライブごとに存在するため、プロセスのカレントだけでは決まりません。この曖昧な形は受け付けずに拒否するのが安全です。
 
-**使用場所**: [weaklyCanonicalOrAbsolute()](../../src/core/communication/rpcserver.cpp#L1104) / [absoluteCapturePath()](../../src/core/communication/rpcserver.cpp#L1096) / [projectRootString()](../../src/core/communication/rpcserver.cpp#L1048) / [resolveDeclaration()](../../src/core/asset/model.cpp#L248)
+**使用場所**: [weaklyCanonicalOrAbsolute()](../../src/core/communication/rpcserver.cpp#L1111) / [absoluteCapturePath()](../../src/core/communication/rpcserver.cpp#L1103) / [projectRootString()](../../src/core/communication/rpcserver.cpp#L1055) / [resolveDeclaration()](../../src/core/asset/model.cpp#L300)
 
 ## 10.5 アルゴリズムとデータ処理の定番
 
@@ -859,13 +740,13 @@ Kahn 法は、入次数(その頂点へ入ってくる辺の数)が 0 の頂点�
 
 依存先を頂点表から引けなかったときに `continue` で読み飛ばす実装は、「この依存はソート対象グラフの外にある」= すでに満たされている前提として扱う、という意味になります。辺を張らないので入次数も増えず、その頂点は最初から ready 側に入ります。部分グラフだけを並べ替えるときの定石ですが、代償として「依存先の名前を書き間違えた」ケースが黙って通ることになります。
 
-**このリポジトリでは**: `src/core/watch/reloadtransaction.cpp` の `topologicalOrder()`(105 行〜)。`ReloadCoordinator::execute()` は 1 トランザクション分のアクタを全部 `stage()` した後にこれを呼び、返ったインデックス順で staged 済みリソースを並べ替えてから `registry_.publish(ordered)`(337 行)へ渡します。各アクタの `after` に並ぶ依存先を `actor_for` から引いて「依存先 → 依存元」の辺を張って入次数を数え、`if (found == actor_for.end()) continue;`(118 行)で同一トランザクション外の依存(外側で既に満たされている前提)を読み飛ばします。この順序が要るのは `publish()` が渡された順に `content_revision` を進めて逆依存辺を張り直すためで、依存先を先に確定させないと依存元が古い版を掴みます。末尾の `result.size() != actors.size()`(137 行)が循環依存のトランザクションを例外にし、ホットリロードの差し替えを「全部通すか、全部やめるか」の原子的な単位に保ちます。
+**このリポジトリでは**: [第6章 §6.10 の使用箇所](06_rendering_vulkan_shader.md#background-usage-12)。
 
 ### Floyd–Warshall 法と推移閉包(到達可能性の全点対計算)
 
 Floyd–Warshall 法(フロイド・ウォーシャル法)は、全頂点対の最短距離を求める古典的な動的計画法です。「中継してよい頂点を `0..k` に限ったときの答え」を `k` について 1 つずつ広げていく形をしていて、3 重ループの**最外が中継点 `k`** であることが正しさの条件になります(`k` の反復を 1 つ終えた時点で「中継点として `0..k` だけを使う答え」が完成している、というのが保たれる不変条件です)。距離ではなく「到達できるか否か」だけを bool で持てば同じ骨格が**推移閉包**(a→b と b→c があるなら a→c を張る、を閉じるまで繰り返した関係)の計算になり、更新式は `reach[i][j] |= reach[i][k] && reach[k][j]` になります。計算量は頂点数 V に対して O(V³)、記憶量は O(V²) で、疎なグラフでも密行列を持つぶん重いかわりに、実装が 3 行で済み辺の追加順に依存しません。ループ順を入れ替える(`k` を内側へ動かす)と、まだ更新されていない `reach[i][k]` を読むため閉包が不完全になりますが、**グラフの形によっては正しい答えが出てしまう**ので、テストで気づきにくい壊れ方をします。
 
-**このリポジトリでは**: `src/core/renderingpass/frameplanner.cpp` の `transitiveClosure()` が到達可否版で、`validateWritesAreOrdered()` が「同じ resource に書く 2 node のどちらが先か決まっているか」を `reach(a,b) || reach(b,a)` で検査します。frame graph は node 数が数十なので O(V³) が問題にならず、密行列のほうが読みやすい、という選択です。設計上の意味と壊し方は [第6章](06_rendering_vulkan_shader.md) §6.3 の難所「writes-writes の曖昧検出」にあります。
+**このリポジトリでは**: [第6章 §6.3 の使用箇所](06_rendering_vulkan_shader.md#background-usage-13)。
 
 ### GJK と EPA(凸形状の距離計算と貫通量計算)
 
@@ -873,9 +754,7 @@ Floyd–Warshall 法(フロイド・ウォーシャル法)は、全頂点対の�
 
 **EPA**(Expanding Polytope Algorithm)は、GJK が「交差している」で終わったときに続けて走らせるアルゴリズムです。GJK が残した単体を種にして、Minkowski 差の境界へ向けて多面体を膨らませ続け、原点に最も近い面を見つけます。その面の法線と距離が、貫通を解消するのに必要な最小の移動 = **MTD**(minimum translation distance、最小移動距離)になります。GJK 単体では「どれだけめり込んでいるか」が出ない(交差の判定で止まる)ので、距離は GJK、貫通量は EPA、という役割分担になるのが定番です。どちらも反復法なので、最大反復数と収束の ε をどう置くかが実装ごとの差になります。
 
-**このリポジトリでは**: `src/core/phys/physquerysweep.cpp` が両方を持ちます。反復上限は定数で `kGjkIterations = 40` / `kEpaIterations = 256`、EPA の収束判定は `kEpaTolerance = 1.0e-6F`(19〜21 行)。GJK 側は 442 行のループで最近接点と分離判定を出し、交差した組だけ `EpaFace` を張り替える `penetration()`(657 行)へ進んで貫通量を求めます。呼び出し面と、ε クラスタや collider identity による順序付けの契約は [第5章](05_gameplay_and_services.md) の physics query 節にあります。
-
-内訳の関数は次のとおりです(2026-09-04 追記)。形状ごとの support 関数が [support()](../../src/core/phys/physquerysweep.cpp#L155)、Minkowski 差の支持点(`support(A,d) - support(B,-d)`)が [supportDifference()](../../src/core/phys/physquerysweep.cpp#L256)、GJK 本体が [convexDistance()](../../src/core/phys/physquerysweep.cpp#L433) です。単体から原点への最近点は、部分集合をビットマスクで列挙して各々の重心座標を連立方程式で解き、負の重みが出ない解のうち最短を選ぶ **Johnson のアルゴリズム**([closestForSubset()](../../src/core/phys/physquerysweep.cpp#L310) と [closestToOrigin()](../../src/core/phys/physquerysweep.cpp#L373))で、四面体が原点を含むかは符号付き体積の比 = 重心座標が全て非負かで判定します([tetraContainsOrigin()](../../src/core/phys/physquerysweep.cpp#L519)、面上のケースを内側へ倒す数値マージン付き)。掃引判定の入口は [shapeCast()](../../src/core/phys/physquerysweep.cpp#L757) です。
+**このリポジトリでは**: [第5章 §5.7 の使用箇所](05_gameplay_and_services.md#background-usage-14)。
 
 ### CRC-32 の初期値 0xFFFFFFFF と最終反転(なぜ 0 から始めないか)
 
@@ -913,17 +792,17 @@ zlib ラッパ(RFC 1950)は deflate データの前に CMF/FLG の 2 バイト�
 
 `-32700` のような負の大きな数がエラーコードとして出てくるのは JSON-RPC 2.0 の規約です。まず出典について — **JSON-RPC 2.0 は IETF の RFC ではありません**。JSON-RPC Working Group が jsonrpc.org で公開している仕様(2010-03-26、2013-01-04 修正)で、RFC 番号は割り当てられていません(RFC があるのは JSON のデータ形式のほう = RFC 8259 です)。予約コードは仕様の **§5.1 "Error object"** の表に載っていて、次の 5 つが事前定義です。
 
-```text
--32700  Parse error       受け取ったテキストが JSON として不正
--32600  Invalid Request   JSON ではあるが Request object として不正
--32601  Method not found  そのメソッドが無い
--32602  Invalid params    パラメータが不正
--32603  Internal error    サーバ内部エラー
-```
+| コード | 名前 | 意味 |
+|---|---|---|
+| -32700 | Parse error | 受け取ったテキストが JSON として不正 |
+| -32600 | Invalid Request | JSON ではあるが Request object として不正 |
+| -32601 | Method not found | そのメソッドが無い |
+| -32602 | Invalid params | パラメータが不正 |
+| -32603 | Internal error | サーバ内部エラー |
 
 さらに `-32000` から `-32099` が「実装が定義してよいサーバエラー」として予約され、`-32768` から `-32000` までの全体が「仕様側の予約域」です。したがって**アプリ固有のエラーは、予約域の外(`-31999` 以上、あるいは正の値)を使うか、`-32000..-32099` の実装定義枠を使うか**のどちらかになります。この数値がなぜ飛び飛びなのかに意味はなく、既存実装との衝突を避けるために選ばれた区画です。
 
-**このリポジトリでは**: `src/project/jsonrpc.hpp` の `namespace JsonRpcErrorCodes`(12〜19 行)が `parseError = -32700` / `invalidRequest = -32600` / `methodNotFound = -32601` / `invalidParams = -32602` と、実装定義枠の `applicationError = -32000` / `renderDocCaptureError = -32010` を持ちます。事前定義の 4 つは仕様どおりで、後ろ 2 つは `-32000..-32099` の枠内に収めた pelican 固有コードです([第7章](07_tools_rpc_tests.md) の protocol 層)。`-32603` internal error は現在この enum に無く、内部失敗も `applicationError` に寄せています。
+**このリポジトリでは**: [第7章 §7.7 の使用箇所](07_tools_rpc_tests.md#background-usage-15)。
 
 ### 正規表現でパスやページ名を検証するときの、区切り文字とドットの扱い
 
@@ -931,7 +810,9 @@ C++ の `std::regex` は既定で ECMAScript 文法です。この文法では `
 
 `std::regex_match` は文字列全体との一致を要求し、部分一致を探す `std::regex_search` とは別物です。したがって `regex_match` に渡すパターンの `^` と `$` は冗長ですが、意図を読み手に示すために残されることがよくあります。「セグメント/セグメント/…」の形は `SEG(/SEG)*` と書くのが定番で、これなら先頭・末尾の空セグメントや連続スラッシュを構造的に弾けます。
 
-**このリポジトリでは**: `src/core/ui/semanticfixture.cpp` の名前空間スコープの `std::regex` 群(54-59 行)を、`validateSemanticFixtureSchema()` が UI セマンティクスの正準フィクスチャ JSON の各トークンに `std::regex_match` で当てます。`widget_re`(55 行)は widget id や trace target を(187/84 行)、`texture_re`(57 行)は draw_run の texture を(201 行)、`pointer_re`(58 行)は error path の JSON Pointer(`~` の後は 0/1 のみ)を(217 行)検査します。`texture_re` の `(\\.[A-Za-z0-9_-]+)*` は `module.cpp` が吐く stable_name `"atlas:" + path + "/page:" + n`(module.cpp 178 行)のドット付きセグメントを表しており、`.` をエスケープしないと `.` が `/` や任意文字にも当たって崩れたテクスチャ ID が通ってしまいます。ここを厳密に照合することで、カバレッジゲート(`runSemanticCoverageGate()`)の契約であるフィクスチャがセマンティクス検査より前にすり抜けるのを防いでいます。
+**このリポジトリでは**: `src/core/ui/semanticfixture.cpp` の名前空間スコープの `std::regex` 群(54-59 行)を、`validateSemanticFixtureSchema()` が UI セマンティクスの正準フィクスチャ JSON の各トークンに `std::regex_match` で当てます。`widget_re`(55 行)は widget id や trace target を(187/84 行)、`texture_re`(57 行)は draw_run の texture を(201 行)、`pointer_re`(58 行)は error path の JSON Pointer(`~` の後は 0/1 のみ)を(217 行)検査します。
+
+`texture_re` の `(\\.[A-Za-z0-9_-]+)*` は `module.cpp` が吐く stable_name `"atlas:" + path + "/page:" + n`(module.cpp 178 行)のドット付きセグメントを表しており、`.` をエスケープしないと `.` が `/` や任意文字にも当たって崩れたテクスチャ ID が通ってしまいます。ここを厳密に照合することで、カバレッジゲート(`runSemanticCoverageGate()`)の契約であるフィクスチャがセマンティクス検査より前にすり抜けるのを防いでいます。
 
 ### Möller–Trumbore 光線-三角形交差
 
@@ -961,7 +842,7 @@ C++ の `std::regex` は既定で ECMAScript 文法です。この文法では `
 
 複数のハッシュ値を 1 つに混ぜるときの定型が `h ^= v + 0x9e3779b9 + (h << 6) + (h >> 2)` で、Boost の `hash_combine` がこの形です。`0x9e3779b9` は黄金比の逆数を 32bit 固定小数で表した値(2^32 / φ)で、ビットが偏りなく散っている定数として選ばれています(64bit 版は `0x9e3779b97f4a7c15`)。単に XOR や加算で混ぜると、同じ値の組み合わせが打ち消し合って衝突します。
 
-**使用場所**: [hashWord()](../../src/core/vkcore/swapchainframetarget.cpp#L120)(64bit FNV-1a を 8 バイトぶん回す) / [surfaceSupportFingerprint()](../../src/core/vkcore/swapchainframetarget.cpp#L130)(offset basis 14695981039346656037 から始める) / [hashCombine()](../../src/core/shader/pipelinefactory.cpp#L69)
+**使用場所**: [hashWord()](../../src/core/vkcore/swapchainframetarget.cpp#L120)(64bit FNV-1a を 8 バイトぶん回す) / [surfaceSupportFingerprint()](../../src/core/vkcore/swapchainframetarget.cpp#L130)(offset basis 14695981039346656037 から始める) / [hashCombine()](../../src/core/shader/pipelinefactory.cpp#L72)
 
 ### ソート済み列に対する隣接検査(adjacent_find)
 
@@ -985,19 +866,19 @@ SPIR-V モジュールは 32bit ワードの列です。先頭 5 ワードがヘ
 
 `/a/b/0` の形でJSON 文書内の 1 か所を指す標準記法が **JSON Pointer(RFC 6901)** です。`/` 区切りの各トークンはオブジェクトのキーか配列の添字で、空文字列のポインタは文書全体を指します。キーに `/` や `~` が含まれる場合のエスケープがあり、**`~0` が `~`、`~1` が `/`** です。復号は RFC 6901 が順序まで規定していて、**先に `~1` → `/`、後から `~0` → `~`** の順でなければなりません。逆順にすると `~01` が `~1`(正解)ではなく `/` になります。nlohmann::json では `json::json_pointer` 型で表現し、`at(pointer)` は不在で例外、`operator[]` は不在の位置を作ってしまう、という違いがあります。エラー報告の「どのフィールドが悪いか」を機械可読に返す用途で広く使われます。
 
-**使用場所**: [prepareSet()](../../src/core/communication/editorjournalops.cpp#L648)(`Json::json_pointer{field_path}` でフィールド位置を解決) / [parseEditorMutationRequest()](../../src/core/communication/editorjournal.cpp#L2952)(構築できるかだけを検査する) / [appendResolverFloat()](../../src/core/loader/resolvedscene.cpp#L163)(エラーに `/resolver_inputs/<field>` を載せる)
+**使用場所**: [prepareSet()](../../src/core/communication/editorjournalops.cpp#L648)(`Json::json_pointer{field_path}` でフィールド位置を解決) / [parseEditorMutationRequest()](../../src/core/communication/editorjournal.cpp#L3070)(構築できるかだけを検査する) / [appendResolverFloat()](../../src/core/loader/resolvedscene.cpp#L163)(エラーに `/resolver_inputs/<field>` を載せる)
 
 ### nlohmann::json の型判定・キー順・JSON null
 
 nlohmann::json は数値を「符号なし整数 / 符号付き整数 / 浮動小数」の 3 つに区別して保持し、`is_number_unsigned()` / `is_number_integer()` / `is_number_float()` で見分けられます(`is_number_integer()` は符号なしにも true を返すので、負値を拒否したいときは順序に注意が要ります)。`nlohmann::ordered_json` は `std::map` ではなく挿入順を保つ連想コンテナを使う別名で、出力の安定性が要るとき(差分を取る、ダイジェストを取る)に選びます。もう 1 つの落とし穴が `std::optional` の出力で、**値が無いときにキーへ代入しないとキー自体が消えます**。「キーはあるが null」を出したいなら明示的に `nullptr` を代入する必要があり、この 2 つは受け手にとって別物です。
 
-**使用場所**: [exactUnsigned()](../../src/core/communication/editorjournal.cpp#L69)(`is_number_unsigned()` を先に見て、次に `is_number_integer()` — この順でないと符号なしが符号付き枝へ落ちる) / [validateStructSigned()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L201)(同じ 2 段の順序) / [editorComponentQueryJson()](../../src/core/communication/editorcommandservice.cpp#L1781)(値が無ければ `OrderedJson(nullptr)` を明示的に置く)
+**使用場所**: [exactUnsigned()](../../src/core/communication/editorjournal.cpp#L80)(`is_number_unsigned()` を先に見て、次に `is_number_integer()` — この順でないと符号なしが符号付き枝へ落ちる) / [validateStructSigned()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L202)(同じ 2 段の順序) / [editorComponentQueryJson()](../../src/core/communication/editorcommandservice.cpp#L1802)(値が無ければ `OrderedJson(nullptr)` を明示的に置く)
 
 ### IEEE 754 の倍精度と JSON の「安全な整数」2^53−1
 
 JSON の数値には型の区別が無く、多くの実装(JavaScript の `JSON.parse` を含む)は倍精度浮動小数点で受けます。IEEE 754 の倍精度は仮数部が 53 ビットなので、**絶対値が 2^53 = 9007199254740992 を超える整数は 1 刻みで表せません**。したがって「往復しても壊れない整数」の上限は 2^53−1 = 9007199254740991(JavaScript の `Number.MAX_SAFE_INTEGER`)です。64bit の ID をそのまま JSON に載せる設計は、この値域で切るか、文字列として運ぶかのどちらかを選ぶ必要があります。
 
-**使用場所**: [exactUnsigned()](../../src/core/communication/editorjournal.cpp#L69)(`maxExactJsonInteger` を超える値を `invalid_argument`) / [BehaviorAttachmentArena::reserveRuntimeAttachmentIdentity()](../../src/core/gamelogic/behaviorarena.cpp#L1230)(ハンドル空間の枯渇として `overflow_error`) / [max_exact_struct_json_integer の定義](../../src/core/userpublic/details/schema/structfieldjson.hpp#L199)
+**使用場所**: [exactUnsigned()](../../src/core/communication/editorjournal.cpp#L80)(`maxExactJsonInteger` を超える値を `invalid_argument`) / [BehaviorAttachmentArena::reserveRuntimeAttachmentIdentity()](../../src/core/gamelogic/behaviorarena.cpp#L1277)(ハンドル空間の枯渇として `overflow_error`) / [max_exact_struct_json_integer の定義](../../src/core/userpublic/details/schema/structfieldjson.hpp#L200)
 
 **このコードベースでの注意**: 境界の取り方が 2 つあります。journal と behavior arena は 2^53−1(9007199254740991)を上限に、スキーマ検証側は 2^53(9007199254740992)を上限にしています。前者が「安全な整数」の定義どおり、後者は 2^53 ちょうどを許す(表現自体は可能な)側です。
 
@@ -1005,7 +886,7 @@ JSON の数値には型の区別が無く、多くの実装(JavaScript の `JSON
 
 JSON-RPC 2.0 の request は `{"jsonrpc": "2.0", "method": ..., "params": ..., "id": ...}` で、`params` は配列かオブジェクトのみ(スカラーは不可)、`id` を持たないものは **notification** と呼ばれ応答を返してはいけません。response は `result` と `error` の**どちらか一方だけ**を持たなければならず、両方あるものも両方無いものも不正です。この仕様自体には転送方式が定められていないため、行区切り(1 行 1 メッセージ)や `Content-Length` ヘッダ(LSP 方式)といった framing は実装側の取り決めになります。行区切りを採る場合、Windows で生まれたテキストは行末に `\r` が残るので、JSON へ渡す前に落とす必要があります(`\r` は JSON の空白文字なので実害が出ないこともありますが、id の照合や digest には効きます)。予約エラーコードは前掲の項を参照してください。
 
-**使用場所**: [RpcServer::run()](../../src/core/communication/rpcserver.cpp#L1226)(`getline` の後に末尾 `\r` を落として 1 行 1 応答) / [RpcServer::handleLine()](../../src/core/communication/rpcserver.cpp#L1161) / [parseJsonRpcRequest()](../../src/project/jsonrpc.cpp#L148)
+**使用場所**: [RpcServer::run()](../../src/core/communication/rpcserver.cpp#L1233)(`getline` の後に末尾 `\r` を落として 1 行 1 応答) / [RpcServer::handleLine()](../../src/core/communication/rpcserver.cpp#L1168) / [parseJsonRpcRequest()](../../src/project/jsonrpc.cpp#L148)
 
 ## 10.6 座標・数値の約束事
 
@@ -1019,13 +900,21 @@ JSON-RPC 2.0 の request は `{"jsonrpc": "2.0", "method": ..., "params": ..., "
 
 GLM の射影行列生成関数は名前に規約が埋め込まれています。`RH` は右手系のビュー空間(カメラは -Z を向く)、`LH` は左手系。`ZO` は深度出力が **Z**ero-to-**O**ne、`NO` は **N**egative-one-to-**O**ne です。サフィックス無しの `glm::perspective` は `GLM_FORCE_DEPTH_ZERO_TO_ONE` というコンパイル時マクロの有無で `_ZO` / `_NO` に切り替わるため、マクロの定義漏れで深度が壊れる事故が起きやすい箇所です。サフィックス付きの関数を直接呼べばマクロに依存しません。なお GLM の `perspectiveRH_ZO` は `Result[1][1]` が正であり、Y 軸の反転は射影行列側では行われません。
 
-**このリポジトリでは**: 射影は [`clipspace.hpp`](../../src/core/renderer/clipspace.hpp#L35) の 3 関数に集めてあります(✅CC-1、`c8367b87`)。`vulkanPerspective(yfov, aspect, znear, zfar)` は `glm::perspectiveRH_ZO`、`vulkanOrtho(...)` は `glm::orthoRH_ZO` をサフィックス付きで呼び、その結果の y 行の符号を反転します(`flipClipY`。`[1][1]` が負になる)。XR の非対称の射影 `vulkanAsymmetric(...)` は成分を自前で書いて同じ反転を掛けます。flat の camera は `camera.cpp` の `cameraProjectionMatrix()` がこれを呼び(`rebuildProjectionMatrix()` と scene camera の `rebuildPreparedProjection()` の両方がここを通る)、editor の preview・spot と directional の影も同じ関数です。深度 `[0,1]`・右手系という前提は深度バッファ・TAA・preview まで全経路で共有されるため、もしどこか 1 つの翻訳単位で `GLM_FORCE_DEPTH_ZERO_TO_ONE` を定義し忘れると、その TU だけ `glm::perspective` が `[-1,1]` 深度を吐き、include 順に依存して深度クリア/比較が壊れます。サフィックスを明示することでこの規約をマクロから切り離し、view の [`viewFromBasis()`](../../src/core/renderer/clipspace.hpp#L94)(`glm::lookAtRH`。−Z を向く右手系)とも符号を合わせています。CC-1 から `[1][1]` が負なので、射影の成分を直接読む code は符号に依らない形にします(例: [clustered_light_select.comp](../../src/core/resources/shaders/compute/clustered_light_select.comp#L82) は `abs(pelicanFrame.projection[1][1])` で読む)。
+**このリポジトリでは**: 射影は [`clipspace.hpp`](../../src/core/renderer/clipspace.hpp#L35) の 3 関数に集めてあります(✅CC-1、`c8367b87`)。`vulkanPerspective(yfov, aspect, znear, zfar)` は `glm::perspectiveRH_ZO`、`vulkanOrtho(...)` は `glm::orthoRH_ZO` をサフィックス付きで呼び、その結果の y 行の符号を反転します(`flipClipY`。`[1][1]` が負になる)。XR の非対称の射影 `vulkanAsymmetric(...)` は成分を自前で書いて同じ反転を掛けます。
+
+flat の camera は `camera.cpp` の `cameraProjectionMatrix()` がこれを呼び(`rebuildProjectionMatrix()` と scene camera の `rebuildPreparedProjection()` の両方がここを通る)、editor の preview・spot と directional の影も同じ関数です。深度 `[0,1]`・右手系という前提は深度バッファ・TAA・preview まで全経路で共有されるため、もしどこか 1 つの翻訳単位で `GLM_FORCE_DEPTH_ZERO_TO_ONE` を定義し忘れると、その TU だけ `glm::perspective` が `[-1,1]` 深度を吐き、include 順に依存して深度クリア/比較が壊れます。
+
+サフィックスを明示することでこの規約をマクロから切り離し、view の [`viewFromBasis()`](../../src/core/renderer/clipspace.hpp#L94)(`glm::lookAtRH`。−Z を向く右手系)とも符号を合わせています。CC-1 から `[1][1]` が負なので、射影の成分を直接読む code は符号に依らない形にします(例: [clustered_light_select.comp](../../src/core/resources/shaders/compute/clustered_light_select.comp#L82) は `abs(pelicanFrame.projection[1][1])` で読む)。
 
 ### ビューポート変換と「負の height」による Y 反転
 
 NDC からフレームバッファ座標への変換は Vulkan 仕様 "Controlling the Viewport" に式として書かれています。`x_f = (p_x/2)·x_d + o_x`、`y_f = (p_y/2)·y_d + o_y`、`z_f = p_z·z_d + o_z` で、`p_x` = viewport.width、`o_x` = viewport.x + width/2、`p_y` = viewport.height、`o_y` = viewport.y + height/2、`p_z` = maxDepth - minDepth、`o_z` = minDepth です。ここで **height に負の値を入れると y の符号が反転する**というのが VK_KHR_maintenance1(Vulkan 1.1 でコアに昇格)で入った仕様で、「OpenGL 流の Y 上向き NDC をそのまま使うためのトリック」として広く使われています。逆に height を正のままにするなら、NDC の +Y は画面下方向という Vulkan 本来の向きになります。
 
-**このリポジトリでは**: **viewport は正の height のまま、y の反転は camera の射影の中で行います**(✅CC-1、`c8367b87`。[design_coordinate_convention.md](../design_coordinate_convention.md) §2)。`src/core/vkcore/offscreenframetarget.cpp` の `setViewportAndScissor()`(85 行)と `src/core/vkcore/swapchainframetarget.cpp` のフレーム開始処理が、どちらも `viewport.height` に **正の** `extent.height` を、`minDepth=0 / maxDepth=1` を入れます。つまり負 height の Y 反転トリックは使わず、NDC の +Y はフレームバッファ下方向に対応し、clip・NDC・画素・uv はすべて y 下で揃います。例外は利用者が clip を直接書く `raster` pass の `clip_y: "up"`(✅CC-2、`1501685a`)だけで、その pass を描く間だけ負の height の viewport にして戻します([`setClipYViewport()`](../../src/core/vkcore/render_pass_dispatch.cpp#L44))。world(y 上)から画面(y 下)への変換点は射影の 1 か所で、[`vulkanPerspective()`](../../src/core/renderer/clipspace.hpp#L35) などが clip の y を反転します。負の height ではなく射影で反転するのは、NDC と画素と uv の向きを揃えたまま(`uv = ndc * 0.5 + 0.5`)にしておけば、TAA の jitter・velocity・再投影、SSAO、影の参照、gizmo の投影など NDC と画素の対応に依る code を変えずに済むからです(設計 §3.4 の「変えなくてよい所」)。この符号は engine 全体の約束事で、`src/core/renderer/projectionjitter.cpp` の `projectionJitterSample()`(69〜70 行コメント)が「positive-height だから CPU/シェーダ/画像の符号が一致する」と明記します。y の反転は jitter を足す前の射影に入っているので、この約束は CC-1 の前後で変わっていません。片方のターゲットだけ反転させると、ジッタやピクセルスナップが逆向きに効いて preview と実画面がずれるため、GPU 各ターゲットと CPU ラスタで Y の向きを 1 つに固定しています。
+**このリポジトリでは**: **viewport は正の height のまま、y の反転は camera の射影の中で行います**(✅CC-1、`c8367b87`。[design_coordinate_convention.md](../design_coordinate_convention.md) §2)。`src/core/vkcore/offscreenframetarget.cpp` の `setViewportAndScissor()`(85 行)と `src/core/vkcore/swapchainframetarget.cpp` のフレーム開始処理が、どちらも `viewport.height` に **正の** `extent.height` を、`minDepth=0 / maxDepth=1` を入れます。
+
+つまり負 height の Y 反転トリックは使わず、NDC の +Y はフレームバッファ下方向に対応し、clip・NDC・画素・uv はすべて y 下で揃います。例外は利用者が clip を直接書く `raster` pass の `clip_y: "up"`(✅CC-2、`1501685a`)だけで、その pass を描く間だけ負の height の viewport にして戻します([`setClipYViewport()`](../../src/core/vkcore/render_pass_dispatch.cpp#L44))。world(y 上)から画面(y 下)への変換点は射影の 1 か所で、[`vulkanPerspective()`](../../src/core/renderer/clipspace.hpp#L35) などが clip の y を反転します。
+
+負の height ではなく射影で反転するのは、NDC と画素と uv の向きを揃えたまま(`uv = ndc * 0.5 + 0.5`)にしておけば、TAA の jitter・velocity・再投影、SSAO、影の参照、gizmo の投影など NDC と画素の対応に依る code を変えずに済むからです(設計 §3.4 の「変えなくてよい所」)。この符号は engine 全体の約束事で、`src/core/renderer/projectionjitter.cpp` の `projectionJitterSample()`(69〜70 行コメント)が「positive-height だから CPU/シェーダ/画像の符号が一致する」と明記します。y の反転は jitter を足す前の射影に入っているので、この約束は CC-1 の前後で変わっていません。片方のターゲットだけ反転させると、ジッタやピクセルスナップが逆向きに効いて preview と実画面がずれるため、GPU 各ターゲットと CPU ラスタで Y の向きを 1 つに固定しています。
 
 CC-1 より前は、射影が y を反転せず viewport の height も正だったので、右手系の world が y 下の画面にそのまま写り、**3D の画面は world の鏡像**でした(+X が画面の左)。鏡に写すと画面上の三角形の巻き方も逆になるので、glTF の表(反時計回り)は画面では時計回りに見え、面の表を時計回りに固定することで cull は正しく働いていました。絵が破綻しないので長く気付かれませんでした([第9章 §9.8](09_black_magic_and_gotchas.md) の「画面は長く world の鏡像だった」)。
 
@@ -1039,7 +928,9 @@ CC-1 より前は、射影が y を反転せず viewport の height も正だっ
 
 [-1, 1] を [0, 1] に写すアフィン変換が `v * 0.5 + 0.5`、そこにサイズを掛ければピクセル座標になる、というのがグラフィクスで最も頻出するイディオムです。同じ式は UV 生成(フルスクリーン三角形)でもシャドウマップの参照でも使われます。重要なのは**逆向き**で、「ピクセル単位のオフセット」を NDC のオフセットに直すときは `2 * px / size`、つまり 0.5 の逆数である 2 が掛かります。この 2 が抜けると、ジッタやスナップの効きが常にちょうど半分になります。
 
-**このリポジトリでは**: 順方向は `src/core/resources/sprite.vert` の `anchorFramebuffer = (anchorNdc * 0.5 + 0.5) * pelicanFrame.resolution.xy`(49 行)で、アンカーの NDC をフレームバッファのピクセル座標に直します。逆方向は同じ shader の `deltaNdc = (snappedFramebuffer - anchorFramebuffer) * 2.0 * pelicanFrame.resolution.zw`(51〜52 行)で、`floor(+0.5)` でピクセル境界にスナップした差分を NDC に戻します。この `2.0` が `*0.5+0.5` の 0.5 の逆数で、抜けるとスナップもジッタ(`src/core/renderer/projectionjitter.cpp` の `jitter_ndc = 2.0f * offset_px / size`)も常に半分しか効かず、pixel perfect が半ピクセルずれて滲み、TAA のサンプル網目も半分に縮んで残像除去が弱まります。`resolution.zw` に 1/width・1/height が入るのは `src/core/vkcore/renderer.cpp` の `data.resolution = glm::vec4{width, height, inverse_width, inverse_height}`(206〜207 行)で、除算を乗算にしてあります。
+**このリポジトリでは**: 順方向は `src/core/resources/sprite.vert` の `anchorFramebuffer = (anchorNdc * 0.5 + 0.5) * pelicanFrame.resolution.xy`(49 行)で、アンカーの NDC をフレームバッファのピクセル座標に直します。逆方向は同じ shader の `deltaNdc = (snappedFramebuffer - anchorFramebuffer) * 2.0 * pelicanFrame.resolution.zw`(51〜52 行)で、`floor(+0.5)` でピクセル境界にスナップした差分を NDC に戻します。
+
+この `2.0` が `*0.5+0.5` の 0.5 の逆数で、抜けるとスナップもジッタ(`src/core/renderer/projectionjitter.cpp` の `jitter_ndc = 2.0f * offset_px / size`)も常に半分しか効かず、pixel perfect が半ピクセルずれて滲み、TAA のサンプル網目も半分に縮んで残像除去が弱まります。`resolution.zw` に 1/width・1/height が入るのは `src/core/vkcore/renderer.cpp` の `data.resolution = glm::vec4{width, height, inverse_width, inverse_height}`(206〜207 行)で、除算を乗算にしてあります。
 
 ### NDC 空間のオフセットは、w を掛けてクリップ空間で足す
 
@@ -1077,13 +968,15 @@ Vulkan のラスタライズ規則では、整数のフレームバッファ座�
 
 **このリポジトリでは**: `src/core/phys/physquery.cpp` の `normalizedQuat()`(99 行)と `closestPointOnSegment()`(226 行)、`src/core/phys/physworld.cpp` の `normalized()`(65 行)、`src/core/phys/joltphysicsprovider.cpp` の `normalizeOr()`(143 行)が、正規化の割り算前に `len_sq = dot(v,v)` を `kEpsilon * kEpsilon`(kEpsilon=1e-5)と比べ、下回れば単位クォータニオンや端点・フォールバックベクトルを返して割り算を回避します。`normalizedQuat()` はコライダ変換の `rotateVector()` などが通る要所です。ε を二乗するのが要点で、`len_sq <= kEpsilon` のままだと実効の長さ閾値が `sqrt(1e-5)≈3.2e-3` と約 300 倍緩くなり、ほぼ縮退した回転/線分がガードをすり抜けて極小長で割られ、NaN/inf が raycast や overlap の結果に伝播して決定的物理が壊れます。
 
-**長さそのものが要るときは `std::hypot`**(2026-09-04 追記)。比較ではなく実際の長さが必要な場面では、`sqrt(x*x + y*y + z*z)` は途中の二乗でオーバーフロー / アンダーフローしますが、`std::hypot` は内部で桁を揃えるためその範囲で耐えます(C++17 で 3 引数版が入りました)。RPC `raycast` の [方向の長さを測る所](../../src/core/communication/rpcserver.cpp#L1264) は `direction` の長さを `std::hypot` で測り、0 か有限でなければ invalid params にします(以前の例の `basic_config.camera.up` は CC-1 で撤去されました)。
+**長さそのものが要るときは `std::hypot`**(2026-09-04 追記)。比較ではなく実際の長さが必要な場面では、`sqrt(x*x + y*y + z*z)` は途中の二乗でオーバーフロー / アンダーフローしますが、`std::hypot` は内部で桁を揃えるためその範囲で耐えます(C++17 で 3 引数版が入りました)。RPC `raycast` の [方向の長さを測る所](../../src/core/communication/rpcserver.cpp#L1271) は `direction` の長さを `std::hypot` で測り、0 か有限でなければ invalid params にします(以前の例の `basic_config.camera.up` は CC-1 で撤去されました)。
 
 ### NaN はあらゆる比較で false — `isfinite` を先に置く
 
 IEEE 754 では NaN を含む順序比較(`<`, `<=`, `>`, `>=`, `==`)はすべて false を返し、`!=` だけが true を返します。この非対称性のせいで、`if (d <= eps) return fallback;` と `if (d > eps) { ... }` は NaN の扱いが逆になり、条件の書き方ひとつで挙動が変わります。しかも inf - inf や 0 * inf は NaN を生むので、正規化やレイキャストのように除算と減算が混ざる経路では簡単に混入します。ε 比較そのもので NaN を弾こうとせず、`std::isfinite` による有限性チェックを比較の**前**に明示的に置く、というのが定石です。
 
-**このリポジトリでは**: `src/core/userpublic/sprite/pixelpolicy.cpp` の `evaluatePixelContract()` が冒頭で `!std::isfinite(pixels_per_unit) || pixels_per_unit <= 0.0`(41 行)を先に弾いて比率計算に入る前に `invalid_pixels_per_unit` を返し、`classifyStrictSprite()` も軸整列判定の前に `finiteBasis()`(14〜16 行)を通します。Jolt 側は `normalizeOr()`(143 行)が `!std::isfinite(length_squared) ||` を `<= kEpsilon*kEpsilon` 比較の前に置きます。NaN は `<,<=,>,>=` をすべて false にするので、素の `d <= eps` は d が NaN のとき静かに逆の枝へ行きます — 正規化や投影は減算と除算が混ざり NaN/inf を生みやすい経路です。`isfinite` を先頭に置くことで、NaN の `pixels_per_unit` は「eligible」に化けず却下され、NaN 長のベクトルは NaN 法線ではなくフォールバックに落ち、壊れたアセット/設定が「描けてしまう壊れフレーム」ではなくきれいな拒否になります。
+**このリポジトリでは**: `src/core/userpublic/sprite/pixelpolicy.cpp` の `evaluatePixelContract()` が冒頭で `!std::isfinite(pixels_per_unit) || pixels_per_unit <= 0.0`(41 行)を先に弾いて比率計算に入る前に `invalid_pixels_per_unit` を返し、`classifyStrictSprite()` も軸整列判定の前に `finiteBasis()`(14〜16 行)を通します。
+
+Jolt 側は `normalizeOr()`(143 行)が `!std::isfinite(length_squared) ||` を `<= kEpsilon*kEpsilon` 比較の前に置きます。NaN は `<,<=,>,>=` をすべて false にするので、素の `d <= eps` は d が NaN のとき静かに逆の枝へ行きます — 正規化や投影は減算と除算が混ざり NaN/inf を生みやすい経路です。`isfinite` を先頭に置くことで、NaN の `pixels_per_unit` は「eligible」に化けず却下され、NaN 長のベクトルは NaN 法線ではなくフォールバックに落ち、壊れたアセット/設定が「描けてしまう壊れフレーム」ではなくきれいな拒否になります。
 
 ### 「ε 以内なら等しい」は同値関係ではない
 
@@ -1110,13 +1003,13 @@ IEEE 754 では NaN を含む順序比較(`<`, `<=`, `>`, `>=`, `==`)はすべ�
 
 四元数 q でベクトル v を回すとき、`q * v * conj(q)` を素直に計算する代わりに `t = 2 * cross(q.xyz, v); v' = v + q.w * t + cross(q.xyz, t)` と展開するのが標準的です。行列を作らずに済み、乗算回数も少なくなります。この式は q が単位四元数であることを前提にしているので、上の判定を通っていない値を渡すと大きさまで変わります。
 
-**使用場所**: [requireNonZeroQuat()](../../src/core/loader/componentcodec.cpp#L432)(`norm_squared <= epsilon` を拒否するだけで正規化はしない) / [rotateVector()](../../src/core/phys/physquery.cpp#L107)(上の展開形) / [normalizedQuat()](../../src/core/phys/physquery.cpp#L97)
+**使用場所**: [requireNonZeroQuat()](../../src/core/loader/componentcodec.cpp#L440)(`norm_squared <= epsilon` を拒否するだけで正規化はしない) / [rotateVector()](../../src/core/phys/physquery.cpp#L107)(上の展開形) / [normalizedQuat()](../../src/core/phys/physquery.cpp#L97)
 
 ### GLM の quat コンストラクタ引数順は (w, x, y, z)
 
 `glm::quat` のコンストラクタは **`{w, x, y, z}` の順**で成分を取ります(メンバ変数としての `.x .y .z .w` の並びとは別の話です)。一方 glTF の `rotation`、多くのワイヤ形式、そして人が書く JSON は `[x, y, z, w]` の順で格納します。したがって配列から読むときは必ず並べ替えが要り、忘れると「軸と角度が入れ替わった」ような、しかし一見それらしく見える回転になります。型は同じなのでコンパイラは何も言いません。
 
-**使用場所**: [InternalGltfLoader::nodeTransform()](../../src/core/model/gltf.cpp#L1489) / [requireQuatField()](../../src/core/communication/rpcserver.cpp#L305)(配列の 0,1,2,3 を x,y,z,w に読んでから `glm::quat{w, x, y, z}` を組む)
+**使用場所**: [InternalGltfLoader::nodeTransform()](../../src/core/model/gltf.cpp#L1465) / [requireQuatField()](../../src/core/communication/rpcserver.cpp#L310)(配列の 0,1,2,3 を x,y,z,w に読んでから `glm::quat{w, x, y, z}` を組む)
 
 ### TRS の合成順序と world → local の逆算
 
@@ -1124,13 +1017,13 @@ IEEE 754 では NaN を含む順序比較(`<`, `<=`, `>`, `>=`, `==`)はすべ�
 
 親の world 変換から子の local を復元するときは、この逆を逆順に当てます — 並進を引き、親回転の逆を掛け、親スケールで割る。スケールで割る以上、**成分が 0 に近い親スケールでは逆算が発散します**ので、閾値を置いて拒否するのが定石です。非一様スケールと回転が混ざると local の scale が一意に決まらない(せん断が生じる)ことにも注意が要ります。
 
-**使用場所**: [PolygonInstanceContainer::prepareTrs()](../../src/core/renderer/polygoninstancecontainer.cpp#L2226)(合成側) / [projectTransform()](../../src/core/loader/componentcodec.cpp#L675)(逆算側、`invertible_epsilon` で 0 スケールを拒否)
+**使用場所**: [PolygonInstanceContainer::prepareTrs()](../../src/core/renderer/polygoninstancecontainer.cpp#L2427)(合成側) / [projectTransform()](../../src/core/loader/componentcodec.cpp#L683)(逆算側、`invertible_epsilon` で 0 スケールを拒否)
 
 ### 法線の変換は transpose(inverse(M))
 
 頂点位置を行列 M で変換するとき、法線に同じ M を掛けると、**非一様スケールやせん断があった場合に面と垂直でなくなります**。正しくは M の左上 3×3 の逆転置行列 `transpose(inverse(mat3(M)))` を掛けます(接平面上のベクトルとの内積が 0 に保たれる、という条件から導かれるので「normal matrix」と呼ばれます)。回転と一様スケールだけなら逆転置は元の行列の定数倍になるので、正規化してしまえば同じ結果になり、この違いが表に出ません。接線(tangent)は面に**平行**なベクトルなので本来は M をそのまま掛ける方が理屈に合いますが、同じ normal matrix を使う実装も多くあります。
 
-**使用場所**: [InternalGltfLoader::transformVertexData()](../../src/core/model/gltf.cpp#L711)(`glm::transpose(glm::inverse(glm::mat3{transform}))` を法線と接線の両方に掛け、長さが 0 でないときだけ正規化する)
+**使用場所**: [InternalGltfLoader::transformVertexData()](../../src/core/model/gltf.cpp#L708)(`glm::transpose(glm::inverse(glm::mat3{transform}))` を法線と接線の両方に掛け、長さが 0 でないときだけ正規化する)
 
 ### 切り上げ除算と mip 寸法のシフト
 
@@ -1138,13 +1031,13 @@ IEEE 754 では NaN を含む順序比較(`<`, `<=`, `>`, `>=`, `==`)はすべ�
 
 mip レベル m の寸法は `max(1, n >> m)` です(2 で割ることを右シフトで書いたもの)。`max(1, ...)` が要るのは、一方の辺が先に 1 に達しても mip チェーンは続くためで、これを忘れると 0 サイズのディスパッチや 0 除算になります。
 
-**使用場所**: [parseExtentDerivedBufferSize()](../../src/core/renderingpass/computetaskdefinitionjson.cpp#L223)(タイル数の切り上げ) / [imageExtentDispatchGroups()](../../src/core/renderingpass/computetaskcontainer.cpp#L630)(`max(1u, dimension >> mip)` の後に切り上げ除算)
+**使用場所**: [parseExtentDerivedBufferSize()](../../src/core/renderingpass/computetaskdefinitionjson.cpp#L224)(タイル数の切り上げ) / [imageExtentDispatchGroups()](../../src/core/renderingpass/computetaskcontainer.cpp#L631)(`max(1u, dimension >> mip)` の後に切り上げ除算)
 
 ### view 行列の逆行列とカメラの前方軸
 
 ビュー行列 V は world → view の変換なので、その逆 `world_from_view = inverse(V)` は view → world、つまり**カメラの姿勢そのもの**です。列優先の 4×4 では、第 0・1・2 列が**ビュー空間の +X / +Y / +Z 軸**を world 座標で表し、第 3 列がカメラ位置になります。右手座標系のカメラは −Z を向くので、第 2 列は「前」ではなく**後ろ向き**であり、視線ベクトルは `-world_from_view[2]` です(この符号の取り違えが、ソートや背面判定が丸ごと反転するよくある原因です)。ビュー行列が直交かつ一様スケールなら、逆行列は回転部の転置 + 平行移動の付け替えで安く求まりますが、素直に `inverse()` を呼んでも意味は同じです。
 
-**使用場所**: [drawQueueSortView()](../../src/core/renderer/polygoninstancecontainer.cpp#L52)(`inverse(view)` の第 2 列を符号反転して正規化し、描画順のソート軸にする)
+**使用場所**: [drawQueueSortView()](../../src/core/renderer/polygoninstancecontainer.cpp#L55)(`inverse(view)` の第 2 列を符号反転して正規化し、描画順のソート軸にする)
 
 ✅CC-1(`c8367b87`)から、camera の view は transform の回転から作り(前方 R·(0,0,−1)、up R·(0,1,0)。[`viewFromWorld()`](../../src/core/renderer/clipspace.hpp#L100))、`world_from_view` は camera の transform(位置と回転)そのものになりました。XR の `world_from_stage = inverse(active camera の view)` もこれに依っています。CC-1 より前は前方が R·(0,0,+1) で、`world_from_view` は transform と一致しませんでした。
 
@@ -1192,7 +1085,11 @@ OpenXR の swapchain は Vulkan の WSI とは別の API で、1 枚のイメー
 
 **使用場所**: [`SemanticTypeId`](../../src/project/logicalrendertype.hpp#L24) / [`SemanticTypeSchema`](../../src/project/logicalrendertype.hpp#L108) / [`LogicalType`](../../src/project/logicalrendertype.hpp#L128)(構成子 + semantic + 引数)/ [`LogicalTypeRegistry::canonicalize()`](../../src/project/logicalrendertype.hpp#L146) / 不透明型の実例は [`pelican.pose@1` の説明](../../src/project/posegraphmodule.hpp#L11)
 
-**このコードベースでの注意**: 登録されている semantic は 11 種です。値・音・イベントの 3 つ(`pelican.value.scalar@1` / `pelican.audio.voice@1` / `pelican.event.playback_control@1`)に加えて、`pelican.render` module が 6 つ(`storage_buffer@1` / `attribute@1` / `color_signal@1` / `depth@1` / `legacy_opaque_image@1` / `legacy_opaque_resource@1`、[`logicalrendertype.cpp`](../../src/project/logicalrendertype.cpp#L583) を [`graphmodule.cpp`](../../src/project/graphmodule.cpp#L883) が登録し、[`renderPorts()`](../../src/project/graphmodule.cpp#L328) 経由でポートに現れます)、pose module が 2 つ(`pelican.pose@1` / `pelican.rig@1`、[`posegraphmodule.cpp`](../../src/project/posegraphmodule.cpp#L74))です。`opaque` を持つのは姿勢とリグの 2 つで、ただし `pelican.rig@1` はポートには現れません(ノードの parameter として名前で指定します)。Studio 側は**型名にソケットの形を割り当てる表**を JSON で持っており、新しい型は C++ を書かずに [`graph_socket_styles.json`](../../src/devstudio/resources/graph_socket_styles.json) へ名前を足すだけで絵が付きます。
+**このコードベースでの注意**: 登録されている semantic は 11 種です。
+
+値・音・イベントの 3 つ(`pelican.value.scalar@1` / `pelican.audio.voice@1` / `pelican.event.playback_control@1`)に加えて、`pelican.render` module が 6 つ(`storage_buffer@1` / `attribute@1` / `color_signal@1` / `depth@1` / `legacy_opaque_image@1` / `legacy_opaque_resource@1`、[`logicalrendertype.cpp`](../../src/project/logicalrendertype.cpp#L583) を [`graphmodule.cpp`](../../src/project/graphmodule.cpp#L883) が登録し、[`renderPorts()`](../../src/project/graphmodule.cpp#L328) 経由でポートに現れます)、pose module が 2 つ(`pelican.pose@1` / `pelican.rig@1`、[`posegraphmodule.cpp`](../../src/project/posegraphmodule.cpp#L74))です。
+
+`opaque` を持つのは姿勢とリグの 2 つで、ただし `pelican.rig@1` はポートには現れません(ノードの parameter として名前で指定します)。Studio 側は**型名にソケットの形を割り当てる表**を JSON で持っており、新しい型は C++ を書かずに [`graph_socket_styles.json`](../../src/devstudio/resources/graph_socket_styles.json) へ名前を足すだけで絵が付きます。
 
 ### 評価の分類(direct / replay / baked / recorded)と変更の費用(value / recompile / rebuild)
 
@@ -1202,7 +1099,7 @@ OpenXR の swapchain は Vulkan の WSI とは別の API で、1 枚のイメー
 
 **小さな例**: UI のスライダを 1 フレームに 60 回動かすとします。`value` のパラメータなら毎回そのまま適用してよく、`rebuild` のパラメータなら操作が終わるまで適用を遅らせるのが正解です。分類が無いと、どちらも同じ扱いになり、前者は不必要に重く、後者は 1 秒間に 60 回の再構築になります。
 
-**使用場所**: [`GraphOperationEvaluation`](../../src/project/graphcomposition.hpp#L267) / [`GraphParameterChange`](../../src/project/graphcomposition.hpp#L271) / 状態無しで `replay` を評価しようとしたときの拒否 [`graph.evaluation_requires_state@1` の送出](../../src/core/userpublic/valuegraph.cpp#L61)
+**使用場所**: [`GraphOperationEvaluation`](../../src/project/graphcomposition.hpp#L267) / [`GraphParameterChange`](../../src/project/graphcomposition.hpp#L271) / 状態無しで `replay` を評価しようとしたときの拒否 [`graph.evaluation_requires_state@1` の送出](../../src/core/userpublic/valuegraph.cpp#L62)
 
 **このコードベースでの注意**: 分類はノードごとに**強い方へ引き上げられます**(§9.24「per-node の評価分類は `max()` でしか動かない」)。また費用側の既定は op ごとの 1 値ですが、パラメータ単位の表(`parameter_changes`)も持てます([宣言](../../src/project/graphcomposition.hpp#L285))。
 
@@ -1212,7 +1109,7 @@ OpenXR の swapchain は Vulkan の WSI とは別の API で、1 枚のイメー
 
 **小さな例**: 「作業が完了した」ことをディレクトリに残したいとします。`state.json` の `status` を `"prepared"` → `"committed"` に書き換える設計は、(a) 書き換えの途中でクラッシュすると状態が読めない、(b) ウイルススキャナがそのファイルを開いていると置き換えに失敗しうる、という 2 つの弱点があります。**別名 `committed` を排他 create する**設計なら、書き換えは一度も起きず、「存在するかどうか」だけが決定になります。掃除の順序だけは考える必要があって、「決定の印」より先に「やることリスト」を消すのが安全側です — 逆順に消して途中で止まると、完了済みの作業が未完了に見えます。
 
-**使用場所**: [`linkExclusive()`](../../src/project/projectdocumenttransaction.cpp#L217)(hard link で名前を公開し、失敗は外部改変として報告)/ [`publishCommittedMarker()`](../../src/project/projectdocumenttransaction.cpp#L374) / [掃除の順序](../../src/project/projectdocumenttransaction.cpp#L591)
+**使用場所**: [`linkExclusive()`](../../src/project/projectdocumenttransaction.cpp#L219)(hard link で名前を公開し、失敗は外部改変として報告)/ [`publishCommittedMarker()`](../../src/project/projectdocumenttransaction.cpp#L376) / [掃除の順序](../../src/project/projectdocumenttransaction.cpp#L593)
 
 ### 内容アドレスによる vendoring(sha256 が同一性、ABI の本当の gate は別)
 
@@ -1232,7 +1129,7 @@ OpenXR の swapchain は Vulkan の WSI とは別の API で、1 枚のイメー
 
 **小さな例**: `fps = 60` で `t = 2.0` を指定すると frame 120 になります。`--frames 2` なら出力される 2 枚は、通常実行の 120 枚目・121 枚目と**バイト単位で一致**していなければおかしい。ここで丸めを `floor(t·fps − ε)` に変えると 119 が選ばれ、この一致が壊れます(壊れ方がテストで見えるので、丸めの選択はテストで固定できます)。
 
-**使用場所**: [`parseStartFrame()`](../../src/player/main.cpp#L326)(`llround(seconds * fps)`。テキストとして parse し、綴り違い・非有限・負を 1 つの名前へ集約)/ [replay prologue](../../src/core/appflow/loop.cpp#L672)(`start_frames − 1` フレームを capture 無しで回してから出力を始める)
+**使用場所**: [`parseStartFrame()`](../../src/player/main.cpp#L330)(`llround(seconds * fps)`。テキストとして parse し、綴り違い・非有限・負を 1 つの名前へ集約)/ [replay prologue](../../src/core/appflow/loop.cpp#L674)(`start_frames − 1` フレームを capture 無しで回してから出力を始める)
 
 ## 関連文書
 

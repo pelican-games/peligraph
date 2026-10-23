@@ -426,7 +426,7 @@ StepsFor stepsForKey(std::string key, MaterialDrawStepList steps) {
     return [key = std::move(key), steps = std::move(steps)](
                const MaterialDrawSubject &subject)
                -> std::optional<MaterialDrawStepList> {
-        if (subject.key != key) return std::nullopt;
+        if (subject.key != key && subject.material_key != key) return std::nullopt;
         return steps;
     };
 }
@@ -696,7 +696,7 @@ TEST_CASE("LP-2 an override step draws a range again with its own pipeline",
     runDrawLoopCase("Vulkan LP-2 draw loop unavailable", [](DrawLoopScene &scene) {
         setUpDrawLoopScene(scene);
         auto &materials = GET_MODULE(MaterialContainer);
-        REQUIRE(materials.drawLoopSubject(scene.material).key == loopKey());
+        REQUIRE(materials.drawLoopSubject(scene.material).material_key == loopKey());
 
         // No rule: the cube's front faces are blue and the away quad is
         // culled.
@@ -1077,7 +1077,7 @@ TEST_CASE("LP-2 a glTF loaded later is judged by the live rules",
         // glTF materials are matched by asset and index, not by name.
         *scene.steps = [](const MaterialDrawSubject &subject)
             -> std::optional<MaterialDrawStepList> {
-            if (subject.key == "models/tri.glb#material[0]") {
+            if (subject.material_key == "models/tri.glb#material[0]") {
                 return MaterialDrawStepList{};
             }
             return std::nullopt;
@@ -1098,9 +1098,9 @@ TEST_CASE("LP-2 a glTF loaded later is judged by the live rules",
         REQUIRE(first.value >= 0);
         REQUIRE(second.value >= 0);
         auto &materials = GET_MODULE(MaterialContainer);
-        CHECK(materials.drawLoopSubject(first).key ==
+        CHECK(materials.drawLoopSubject(first).material_key ==
               "models/tri.glb#material[0]");
-        CHECK(materials.drawLoopSubject(second).key ==
+        CHECK(materials.drawLoopSubject(second).material_key ==
               "models/tri.glb#material[1]");
         const auto *steps = liveTable().find("deferred_geometry", first);
         REQUIRE(steps != nullptr);

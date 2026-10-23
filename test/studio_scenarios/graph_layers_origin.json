@@ -35,7 +35,7 @@
     {"label": "pick that row", "cmd": "select", "name": "pelican.framePlanBarriers", "text": "9"},
     {"label": "Open in Graph on it", "cmd": "action", "name": "pelican.framePlan.openRowInGraph"},
     {"label": "the zone's tab moved to the else branch: its body cascade is drawn", "cmd": "wait", "name": "pelican.graphCanvasView::graph_node#cascade/depth", "visible": true, "timeout_ms": 30000},
-    {"label": "and element 0's body is not", "cmd": "wait", "name": "pelican.graphCanvasView::graph_node#near/depth", "visible": false, "timeout_ms": 10000},
+    {"label": "and element 0's body is not", "cmd": "wait", "name": "pelican.graphCanvasView::graph_node#near/depth", "missing": true, "timeout_ms": 10000},
     {"label": "a picture of the copy's body node picked", "expect": "screenshot", "name": "pelican.graphCanvas", "path": "layers_copy.png"},
 
     {"label": "nothing was written: the root holds its seven nodes", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "nodes.$len", "value": 7}

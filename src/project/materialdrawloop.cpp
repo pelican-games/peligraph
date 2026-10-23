@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -17,15 +18,17 @@ void throwMaterialDrawLoopRefusal(std::string_view code,
 std::string materialDrawSubjectKey(
     std::string_view name, std::string_view source_document,
     std::string_view source_asset,
-    std::optional<std::uint32_t> source_material_index) {
+    std::optional<std::uint32_t> source_material_index, std::optional<bool> skinned) {
+    const std::string mode_suffix = skinned
+        ? (*skinned ? "#vertex/skinned" : "#vertex/standard") : "";
     if (!source_document.empty()) {
-        return std::string{source_document} + "#" + std::string{name};
+        return std::string{source_document} + "#" + std::string{name} + mode_suffix;
     }
     if (source_material_index) {
         return std::string{source_asset} + "#material[" +
-               std::to_string(*source_material_index) + "]";
+               std::to_string(*source_material_index) + "]" + mode_suffix;
     }
-    return std::string{name};
+    return std::string{name} + mode_suffix;
 }
 
 bool materialRouteIsTransparent(MaterialRouteClass route) noexcept {
@@ -45,7 +48,7 @@ void validateMaterialDrawStep(const MaterialDrawStep &step,
             throwMaterialDrawLoopRefusal(
                 materialDrawVariantMissingCode,
                 {{"node", node},
-                 {"material", subject.key},
+                 {"material", subject.materialKey()},
                  {"material_variant", step.variant}});
         }
         return;
@@ -58,7 +61,7 @@ void validateMaterialDrawStep(const MaterialDrawStep &step,
         if (blends != materialRouteIsTransparent(subject.route)) {
             throwMaterialDrawLoopRefusal(
                 materialDrawPhaseCrossingCode,
-                {{"node", node}, {"material", subject.key}});
+                {{"node", node}, {"material", subject.materialKey()}});
         }
     }
     if (!step.defines.empty() && !runtime_shader_compiler) {
@@ -102,7 +105,8 @@ bool graphLoopTagFilterMatches(const GraphLoopTagFilter &filter,
 
 bool graphLoopDrawConditionMatches(const GraphLoopDrawCondition &condition,
                                    const MaterialDrawSubject &subject) {
-    if (condition.material && *condition.material != subject.key) {
+    if (condition.material && *condition.material != subject.key &&
+        *condition.material != subject.material_key) {
         return false;
     }
     if (condition.tags &&
@@ -200,12 +204,22 @@ void applyMaterialDrawLoopElementsToFramePlanJson(
         if (pass == rules.passes.end() || !pass->second.classify) continue;
         auto elements = nlohmann::json::array();
         std::vector<bool> taken(pass->second.branch_count, false);
+        std::map<std::pair<std::string, std::size_t>, std::size_t> material_rows;
         for (const auto &subject : subjects) {
             const auto choice = pass->second.classify(subject);
             if (!choice) continue;
-            elements.push_back({{"element", subject.key},
-                                {"index", elements.size()},
-                                {"branch", choice->branch}});
+            // One row per material and branch. Different geometry modes may
+            // take different branches, but never become authored names.
+            const auto [row, inserted] = material_rows.try_emplace(
+                std::make_pair(subject.materialKey(), choice->branch), elements.size());
+            if (inserted) elements.push_back({{"element", subject.materialKey()},
+                                              {"index", elements.size()},
+                                              {"branch", choice->branch},
+                                              {"vertex_modes", nlohmann::json::array()}});
+            auto &modes = elements.at(row->second).at("vertex_modes");
+            const auto mode = subject.skinned ? "skinned" : "standard";
+            if (std::find(modes.begin(), modes.end(), mode) == modes.end())
+                modes.push_back(mode);
             if (choice->branch < taken.size()) taken[choice->branch] = true;
         }
         auto unmatched = nlohmann::json::array();

@@ -7,6 +7,12 @@
   "probe_no_automation": false,
   "steps": [
     {
+      "label": "the engine is ready before the menu-only checks and their invariant snapshots",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 3
+    },
+    {
       "label": "the window has finished building",
       "cmd": "wait",
       "name": "pelican.framePlan",

@@ -13,6 +13,7 @@
 #include "../src/core/log.hpp"
 #include "../src/core/material/projectmaterialasset.hpp"
 #include "../src/core/material/materialcontainer.hpp"
+#include "../src/core/renderingpass/framegraphruntime.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/engineprimitives.hpp"
 #include "../src/core/fullscreenpass/fullscreenpasscontainer.hpp"
@@ -607,6 +608,109 @@ void writeForwardOnlyProject(const std::filesystem::path &root, bool forward_def
 
 } // namespace
 
+TEST_CASE("UD-1 removing the last material pass commits for restart and starts like a blank project",
+          "[ud1][primitives][material-routing][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("ud1_restart");
+    const auto root = dir.root / "project";
+    initializeProjectTemplate(root, ProjectTemplate::Blank);
+    const auto path = root / "passes/main_rendering_config.json";
+    const auto blank = readFile(path);
+    const auto capture = dir.root / "capture.png";
+    const auto blank_shader = readFile(root / "shaders/present.frag");
+    // Compare a fresh blank startup with the startup after the edit. Both
+    // register a cube but have no material pass to draw it.
+    std::vector<unsigned char> blank_pixels;
+    const auto spawn = [](Rpc &rpc) {
+        (void)rpc.result("step_frame");
+        const auto actor = rpc.result("open_editor_session", {{"display_name", "UD-1"}})
+                               .at("actor_id").get<std::uint64_t>();
+        const auto result = rpc.edit(actor, spawnCube("engine://primitives/cube"));
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+    };
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        spawn(rpc);
+        blank_pixels = rpc.frame(capture);
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+    writeForwardOnlyProject(root, true);
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        const auto background = rpc.frame(capture);
+        spawn(rpc);
+        const auto drawn = rpc.frame(capture);
+        REQUIRE(differingPixels(background, drawn) > 64);
+        const auto generation = GET_MODULE(FrameGraphRuntimeContainer).snapshot();
+        REQUIRE(generation != nullptr);
+        const auto settle = [&](const Json &accepted) {
+            REQUIRE(accepted.at("status") == "accepted");
+            Json result;
+            for (int attempt = 0; attempt < 8; ++attempt) {
+                (void)rpc.result("step_frame");
+                result = rpc.result("get_edit_result", {{"ticket", accepted.at("ticket")}});
+                if (result.value("status", std::string{}) != "pending") return result;
+            }
+            FAIL("UD-1 render edit stayed pending");
+            return result;
+        };
+        const auto current = rpc.result("get_render_documents").at("documents").at(0);
+        auto incompatible = readFile(path);
+        const std::string opaque = "forward_opaque_v1";
+        const auto contract = incompatible.find(opaque);
+        REQUIRE(contract != std::string::npos);
+        incompatible.replace(contract, opaque.size(), "forward_transparent_v1");
+        const auto refused = settle(rpc.result("restore_render_documents",
+            {{"documents", Json::array({{{"reference", current.at("reference")},
+                                         {"base_digest", current.at("digest")},
+                                         {"content", incompatible}}})}}));
+        INFO(refused.dump(2));
+        REQUIRE(refused.at("status") == "rejected");
+        CHECK(refused.at("error").at("code") == "material_route_unserved@1");
+        CHECK_FALSE(refused.contains("restart_required"));
+        CHECK(GET_MODULE(FrameGraphRuntimeContainer).snapshot() == generation);
+        CHECK(readFile(path) == current.at("content").get<std::string>());
+        const auto accepted = rpc.result("restore_render_documents",
+            {{"documents", Json::array({{{"reference", current.at("reference")},
+                                         {"base_digest", current.at("digest")},
+                                         {"content", blank}}})}});
+        REQUIRE(accepted.at("status") == "accepted");
+        Json result;
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            (void)rpc.result("step_frame");
+            result = rpc.result("get_edit_result", {{"ticket", accepted.at("ticket")}});
+            if (result.value("status", std::string{}) != "pending") break;
+        }
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+        CHECK(result.at("restart_required") == true);
+        CHECK(result.at("restart_reason").at("code") == "material_passes_removed");
+        CHECK(readFile(path) == blank);
+        CHECK(GET_MODULE(FrameGraphRuntimeContainer).snapshot() == generation);
+        // The commit must not retire resources still used by the old frame.
+        CHECK(differingPixels(drawn, rpc.frame(capture)) == 0);
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+    writeFile(root / "shaders/present.frag", blank_shader);
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        spawn(rpc);
+        CHECK_FALSE(GET_MODULE(RenderingPassContainer).hasMaterialPasses());
+        CHECK(differingPixels(blank_pixels, rpc.frame(capture)) == 0);
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+}
+
 TEST_CASE("G-4 a forward-only direct root draws the basic cube once material_route_default is forward",
           "[g4][primitives][material-routing][gpu]") {
     setupLogger(true);
@@ -639,7 +743,7 @@ TEST_CASE("G-4 a forward-only direct root draws the basic cube once material_rou
     auto &standard = GET_MODULE(StandardMaterialResource);
     CHECK(materials.routeForMaterial(standard.standardTransparentMaterial()) ==
           MaterialRouteClass::forward_opaque);
-    for (const auto *suffix : {"sphere", "skinned_fallback", "default"}) {
+    for (const auto *suffix : {"sphere", "default"}) {
         CAPTURE(suffix);
         const auto info = standard.builtinMaterialInfo(suffix, standard.whiteTexture());
         CHECK(info.route == MaterialRouteClass::forward_opaque);
@@ -650,35 +754,27 @@ TEST_CASE("G-4 a forward-only direct root draws the basic cube once material_rou
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 
-TEST_CASE("G-4 a forward-only direct root without the forward default stops loading by name",
+TEST_CASE("G-4 a forward-only direct root without the forward default registers error materials",
           "[g4][primitives][material-routing][gpu]") {
     setupLogger(true);
     const auto dir = makeTempDir("g4_auto");
     const auto root = makeBlankProject(dir.root);
     writeForwardOnlyProject(root, false);
 
-    std::string failure;
-    try {
-        FastModuleContainer modules;
-        configureHeadless(root);
-        Rpc rpc;
-        const auto loaded = rpc.call("load_scene", {{"name", "default_scene"}});
-        if (loaded.contains("error")) {
-            failure = loaded.dump();
-        } else {
-            // The composition root's boot step (appflow/loop.cpp) makes the
-            // engine's built-in materials before the first frame.
-            GET_MODULE(Renderer).prepareRuntimeModules();
-        }
-        if (auto *core = FastModuleContainer::tryGet<VulkanManageCore>()) core->waitIdle();
-    } catch (const std::exception &error) {
-        failure = error.what();
+    FastModuleContainer modules;
+    configureHeadless(root);
+    Rpc rpc;
+    REQUIRE(rpc.call("load_scene", {{"name", "default_scene"}}).contains("result"));
+    GET_MODULE(Renderer).prepareRuntimeModules();
+    CHECK(rpc.result("get_status").at("render_pipeline").at("state") == "ready");
+    const auto problems = rpc.result("get_problems").at("problems");
+    REQUIRE_FALSE(problems.empty());
+    for (const auto &problem : problems) {
+        CHECK(problem.at("code") == "material.route_unserved@1");
+        CHECK(problem.at("fields").at("authored_route") == "deferred_geometry");
+        CHECK(problem.at("fields").at("substitute_route") == "forward_opaque");
     }
-    INFO(failure);
-    CHECK(failure.find("material_route_unserved@1") != std::string::npos);
-    CHECK(failure.find("'pelican.builtin.transparent' (engine built-in)") != std::string::npos);
-    CHECK(failure.find("route 'deferred_geometry'") != std::string::npos);
-    CHECK(failure.find("Hint: set material_route_default to ") != std::string::npos);
+    GET_MODULE(VulkanManageCore).waitIdle();
 }
 
 TEST_CASE("G-4 an edit that leaves the engine's materials without a pass is refused through the running renderer",
@@ -798,10 +894,12 @@ TEST_CASE("G-4 an edit that leaves the engine's materials without a pass is refu
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 
-// RS-1: the Graph palette's first material pass on a blank project (the
-// template's own rendering section: `present` only). The live engine cannot
-// rebuild its materials' pipelines for the G-buffer, so the edit is committed
-// for the next start and answers restart_required; the next start takes it.
+// RS-1: a G-buffer material pass on a blank project (the template's own
+// rendering section: `present` only) whose albedo/emissive are the HDR
+// table's R16G16B16A16_SFLOAT, where the live materials hold the SDR table
+// (no hdr feature; MC-1). The live engine cannot rebuild its materials'
+// pipelines for those colour formats, so the edit is committed for the next
+// start and answers restart_required; the next start takes it.
 TEST_CASE("RS-1 a graph edit the live materials cannot take is committed and asks for a restart",
           "[rs1][primitives][material-routing][rpc][gpu]") {
     setupLogger(true);
@@ -810,8 +908,8 @@ TEST_CASE("RS-1 a graph edit the live materials cannot take is committed and ask
     initializeProjectTemplate(root, ProjectTemplate::Blank);
     const auto rendering_path = root / "passes/main_rendering_config.json";
 
-    // What the palette's render.material_pass (deferred_geometry_v1) sends:
-    // the pass and the six G-buffer images it writes, one op list.
+    // render.material_pass (deferred_geometry_v1) and the six G-buffer images
+    // it writes, one op list, in the HDR table's formats.
     const Json color_type{{"semantic", "pelican.render.color_signal@1"},
                           {"arguments", {{"reference", "scene"}, {"transfer", "linear"},
                                          {"range", "extended"}}}};
@@ -909,6 +1007,183 @@ TEST_CASE("RS-1 a graph edit the live materials cannot take is committed and ask
     (void)rpc.result("render_frame");
     CHECK(rpc.result("get_frame_plan").dump().find("render_material_pass") != std::string::npos);
     GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+namespace {
+
+// MC-1: the ops the Graph palette sends for render.material_pass
+// (deferred_geometry_v1) on a graph root -- GL-1d's else-only draw_loop and
+// its body, the five G-buffer images and a depth, then the pass -- with the
+// format of the scene-class sockets (albedo, emissive) as the argument.
+Json mc1PaletteDeferredOps(const char *scene_format) {
+    const Json color_type{{"semantic", "pelican.render.color_signal@1"},
+                          {"arguments", {{"reference", "scene"}, {"transfer", "linear"},
+                                         {"range", "extended"}}}};
+    Json ops = Json::array();
+    ops.push_back({{"op", "add_definition"},
+                   {"name", "render_material_pass_draw"},
+                   {"definition",
+                    {{"nodes", Json::array({{{"id", "step"},
+                                             {"op", "draw.material"},
+                                             {"parameters", Json::object()},
+                                             {"outputs", Json::array({"draws"})}}})},
+                     {"outputs", {{"draws", {{"node", "step"}, {"port", "draws"}}}}}}}});
+    ops.push_back({{"op", "add_node"},
+                   {"scope", "root"},
+                   {"node", {{"id", "render_material_pass_draws"},
+                             {"op", "graph.loop"},
+                             {"parameters",
+                              {{"over", {{"draw_items", {{"contract", "deferred_geometry_v1"}}}}},
+                               {"tier", "draw_loop"},
+                               {"order", {{"by", "phase_default"}}},
+                               {"branches", Json::array({{{"body", "render_material_pass_draw"}}})}}},
+                             {"outputs", Json::array({"draws"})}}}});
+    const auto image = [&](const std::string &socket, const Json &type, const char *format,
+                           const char *usage) {
+        const auto id = "render_material_pass__" + socket;
+        ops.push_back({{"op", "add_node"},
+                       {"scope", "root"},
+                       {"node", {{"id", id},
+                                 {"op", "render.image"},
+                                 {"parameters", {{"type", type},
+                                                 {"format", format},
+                                                 {"extent_scale", 1.0},
+                                                 {"usage", Json::array({usage, "SAMPLED"})}}},
+                                 {"outputs", Json::array({"resource"})}}}});
+        return Json{{"node", id}, {"port", "resource"}};
+    };
+    Json inputs = Json::object();
+    for (const std::string socket : {"albedo", "normal", "material", "worldpos", "emissive"}) {
+        const char *format = socket == "material"                       ? "R8G8B8A8_UNORM"
+                             : socket == "albedo" || socket == "emissive" ? scene_format
+                                                                         : "R16G16B16A16_SFLOAT";
+        inputs[socket] = image(socket, color_type, format, "COLOR_ATTACHMENT");
+    }
+    inputs["depth"] = image("depth",
+                            Json{{"semantic", "pelican.render.depth@1"},
+                                 {"arguments", {{"representation", "device"}, {"space", "projection"}}}},
+                            "D32_SFLOAT", "DEPTH_STENCIL_ATTACHMENT");
+    inputs["draws"] = {{"node", "render_material_pass_draws"}, {"port", "draws"}};
+    ops.push_back({{"op", "add_node"},
+                   {"scope", "root"},
+                   {"node", {{"id", "render_material_pass"},
+                             {"op", "render.material_pass"},
+                             {"parameters", {{"material_contract", "deferred_geometry_v1"},
+                                             {"pass_set", "main_render"}}},
+                             {"inputs", inputs},
+                             {"outputs", Json::array()}}}});
+    return ops;
+}
+
+// Sends a ticket and steps frames until it is no longer pending.
+Json mc1Ticket(Rpc &rpc, std::string_view method, Json params) {
+    const auto context = rpc.result("get_render_authoring_context");
+    params["base_source_digest"] = context.at("source_digest").at("hex");
+    const auto accepted = rpc.result(method, std::move(params));
+    INFO(accepted.dump(2));
+    REQUIRE(accepted.at("status") == "accepted");
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        (void)rpc.result("step_frame");
+        auto result = rpc.result("get_edit_result", {{"ticket", accepted.at("ticket")}});
+        if (result.value("status", std::string{}) != "pending") return result;
+    }
+    FAIL("the ticket stayed pending");
+    return Json{};
+}
+
+} // namespace
+
+// MC-1: on a blank project (no material pass, no hdr feature) the live
+// materials -- the built-in ones and a spawned cube's default grey -- hold
+// the compatibility G-buffer contract of the SDR table, which is what the
+// Frame Plan's form writes (scene-class targets B8G8R8A8_SRGB). The palette's
+// deferred pass on the graph's nodes with those same formats is applied to
+// the running engine: committed with no restart, in the next frame plan, and
+// it draws the cube. The HDR table (R16G16B16A16_SFLOAT albedo/emissive) is a
+// real change of those materials' colour formats, and still asks for the
+// restart (RS-1).
+TEST_CASE("MC-1 the palette's deferred material pass on the graph's nodes is applied without a restart",
+          "[mc1][rs1][primitives][material-routing][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("mc1_palette_deferred");
+    const Json passthrough{{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}};
+
+    SECTION("the SDR table the live materials hold: applied in place") {
+        const auto root = dir.root / "sdr";
+        initializeProjectTemplate(root, ProjectTemplate::Blank);
+        const auto capture = dir.root / "sdr.png";
+        FastModuleContainer modules;
+        configureHeadless(root);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        GET_MODULE(Renderer).prepareRuntimeModules();
+        (void)rpc.result("step_frame");
+        // What the Frame Plan's form reads to choose the table.
+        const auto features =
+            rpc.result("get_render_authoring_context").value("enabled_feature_names", Json{});
+        std::cout << "MC-1 enabled_feature_names = " << features.dump() << "\n";
+        CHECK(features.is_array());
+        CHECK(features.dump().find("\"hdr\"") == std::string::npos);
+        const auto actor =
+            rpc.result("open_editor_session", {{"display_name", "MC-1"}}).at("actor_id").get<std::uint64_t>();
+        const auto spawned = rpc.edit(actor, spawnCube("engine://primitives/cube"));
+        INFO(spawned.dump(2));
+        REQUIRE(spawned.at("status") == "committed");
+        const auto background = rpc.frame(capture);
+
+        const auto committed = mc1Ticket(rpc, "edit_graph_document", {{"ops", mc1PaletteDeferredOps("B8G8R8A8_SRGB")}});
+        INFO(committed.dump(2));
+        std::cout << "MC-1 SDR result = " << committed.dump() << "\n";
+        REQUIRE(committed.at("status") == "committed");
+        CHECK(committed.value("restart_required", false) == false);
+        CHECK_FALSE(committed.contains("restart_reason"));
+        CHECK(rpc.result("get_frame_plan").dump().find("render_material_pass") != std::string::npos);
+
+        // present shows what the pass wrote: the same engine, the next frames.
+        const auto shown = mc1Ticket(rpc, "edit_preset_pass",
+                                     {{"graph", "main_render"},
+                                      {"pass_name", "present"},
+                                      {"input", Json::array({"render_material_pass__albedo"})},
+                                      {"output", {{"color", {"display"}}, {"depth", nullptr}}},
+                                      {"shader", passthrough}});
+        INFO(shown.dump(2));
+        REQUIRE(shown.at("status") == "committed");
+        CHECK(shown.value("restart_required", false) == false);
+        const auto drawn = rpc.frame(capture);
+        CHECK(differingPixels(background, drawn) > 64);
+        // The albedo the pass cleared, with the cube drawn into it by the
+        // live material's pipeline: lit where the cube is, not everywhere.
+        std::size_t lit = 0;
+        for (std::size_t pixel = 0; pixel + 3 < drawn.size(); pixel += 4)
+            if (drawn[pixel] > 8 || drawn[pixel + 1] > 8 || drawn[pixel + 2] > 8) ++lit;
+        std::cout << "MC-1 lit albedo pixels = " << lit << " of " << drawn.size() / 4 << "\n";
+        CHECK(lit > 64);
+        CHECK(lit < drawn.size() / 4 - 64);
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+
+    SECTION("the HDR table changes the live materials' colour formats: a restart, as RS-1") {
+        const auto root = dir.root / "hdr";
+        initializeProjectTemplate(root, ProjectTemplate::Blank);
+        FastModuleContainer modules;
+        configureHeadless(root);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        GET_MODULE(Renderer).prepareRuntimeModules();
+        (void)rpc.result("step_frame");
+        const auto committed =
+            mc1Ticket(rpc, "edit_graph_document", {{"ops", mc1PaletteDeferredOps("R16G16B16A16_SFLOAT")}});
+        INFO(committed.dump(2));
+        std::cout << "MC-1 HDR result = " << committed.dump() << "\n";
+        REQUIRE(committed.at("status") == "committed");
+        CHECK(committed.at("restart_required") == true);
+        const auto &reason = committed.at("restart_reason");
+        CHECK(reason.at("code") == "material_physical_contract_changed");
+        CHECK(reason.at("pass") == "render_material_pass");
+        CHECK(reason.at("detail") == Json::array({"color_formats"}));
+        (void)rpc.result("render_frame");
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
 }
 
 // RS-2: the Graph palette's Forward opaque material pass on a blank project,
@@ -1598,6 +1873,9 @@ TEST_CASE("EL-1 get_render_authoring_context lists the materials a draw_loop jud
     const auto tagged_entry = listed("el1_tagged");
     const auto named_entry = listed("el1_named");
     CHECK(outlined_entry.at("id") == "materials/el1.material.json#el1_outlined");
+    CHECK(outlined_entry.at("vertex_modes") == Json::array({"standard", "skinned"}));
+    CHECK(std::count_if(context.at("materials").begin(), context.at("materials").end(),
+                       [&](const Json &entry) { return entry.at("id") == outlined_entry.at("id"); }) == 1);
     CHECK(outlined_entry.at("tags") == Json::array({"el1_hero"}));
     CHECK(outlined_entry.at("variants") == Json::array({"outline"}));
     CHECK(outlined_entry.at("builtin") == false);
@@ -1659,7 +1937,10 @@ TEST_CASE("EL-1 get_render_authoring_context lists the materials a draw_loop jud
     REQUIRE(loop.is_object());
     const auto branch_of = [&](const Json &material_entry) {
         for (const auto &element : loop.at("elements"))
-            if (element.at("element") == material_entry.at("id")) return element.at("branch").get<int>();
+            if (element.at("element") == material_entry.at("id")) {
+                CHECK(element.at("vertex_modes") == Json::array({"standard", "skinned"}));
+                return element.at("branch").get<int>();
+            }
         FAIL("the draw_loop has no element " << material_entry.at("id"));
         return -1;
     };
@@ -2212,9 +2493,11 @@ TEST_CASE("RL-1 reload_render_documents takes in a root rewritten on disk, and r
         CHECK_FALSE(aliased(physical()));
     }
 
-    // 3. What cannot compose is refused by name; the live frame and the
-    // editor's document stay, the disk keeps the bytes, and once the file is
-    // put back an edit on the previous digest goes through.
+    // 3. What cannot compose is refused by name; the live frame stays and the
+    // disk keeps the bytes. RR-1: the editor holds the refused bytes as its
+    // base (get_render_documents says they are not live), so once the file is
+    // put back a reload publishes it again and an edit on the previous digest
+    // goes through.
     const auto before_refusals = digest();
     const auto before_bytes = readFile(rendering_path);
     const auto refused = [&](const std::string &bytes) {
@@ -2223,14 +2506,17 @@ TEST_CASE("RL-1 reload_render_documents takes in a root rewritten on disk, and r
         INFO(result.dump(2));
         REQUIRE(result.at("status") == "rejected");
         CHECK_FALSE(result.at("error").value("code", std::string{}).empty());
-        CHECK(digest() == before_refusals);
+        const auto held = rpc.result("get_render_documents");
+        CHECK(held.at("live") == false);
+        CHECK(held.at("documents").at(0).at("content") == bytes);
         CHECK(readFile(rendering_path) == bytes);
         CHECK_FALSE(aliased(physical()));
         return result.at("error");
     };
     {
         const auto error = refused("{ \"schema\": \"pelican.graph\", ");
-        CHECK(error.at("code") == "render_pipeline_preflight_failed");
+        // BS-1b: a root that is not JSON is refused by that name.
+        CHECK(error.at("code") == "render_document_syntax@1");
         CHECK(error.at("method") == "reload_render_documents");
     }
     {
@@ -2242,6 +2528,14 @@ TEST_CASE("RL-1 reload_render_documents takes in a root rewritten on disk, and r
         CHECK(refused(missing.dump(2)).at("code") == "render_pipeline_preflight_failed");
     }
     writeFile(rendering_path, before_bytes);
+    {
+        const auto result = reload();
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+        CHECK_FALSE(result.contains("no_change"));
+        CHECK(result.at("source_digest").at("hex") == before_refusals);
+        CHECK(rpc.result("get_render_documents").at("live") == true);
+    }
     {
         const auto result = settle(rpc.result(
             "edit_target_planning", {{"base_source_digest", before_refusals},

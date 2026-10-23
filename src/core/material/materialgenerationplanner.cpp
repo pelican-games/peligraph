@@ -2,6 +2,8 @@
 #include "materialdrawlooptable.hpp"
 #include "materiallimits.hpp"
 #include "materialphysicalcontractchanged.hpp"
+#include "materialpassesremoved.hpp"
+#include "materialstartupunserved.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
 #include "../renderingpass/materialpassattachments.hpp"
@@ -247,7 +249,19 @@ resolveMaterialPipelineRenderingContract(
                 info.route, info.shader_contract,
                 info.exact_pass);
     if (bindings.empty()) {
-        if (rendering_passes.hasMaterialPasses()) {
+        // PB-1: the start of a --render-fallback launch writes the material
+        // down and goes on as if no material pass existed; the renderer then
+        // starts the fallback generation with the refusal.
+        auto *startup_unserved =
+            rendering_passes.hasMaterialPasses()
+                ? FastModuleContainer::tryGet<MaterialStartupUnserved>()
+                : nullptr;
+        if (startup_unserved != nullptr && startup_unserved->collecting) {
+            startup_unserved->add(
+                info.route, info.shader_contract,
+                describeUnservedMaterial(info.name, info.source_document,
+                                         info.source_asset));
+        } else if (rendering_passes.hasMaterialPasses()) {
             // G-4: the same rule, code and hint as an edit ticket's
             // candidate check; at load it stays fatal, in readable text.
             auto text = materialRouteUnservedText(
@@ -741,14 +755,19 @@ MaterialGenerationPlanner::resolveLiveMaterialBindings(
         generation, material.route,
         material.shader_contract, material.exact_pass);
     if (!bindings.empty()) {
+        if (material.unserved) {
+            for (auto &binding : bindings)
+                for (auto &state : binding.output_states)
+                    if (state.blend) state.blend->enabled = false;
+        }
         return bindings;
     }
     // G-4: the same rule as registration. A graph with one material pass must
     // serve every registered material, whether or not the published graph
     // did. A graph with no material pass at all (an RT-only project) draws
-    // no material, but may not drop a route the published graph consumed;
-    // MaterialGenerationPlanner::requireEveryMaterialServed has refused both
-    // already, and this is the per-material backstop for the first.
+    // no material. Dropping a previously consumed route requires a restart;
+    // requireEveryMaterialServed has requested it before this per-material
+    // backstop is reached.
     if (!generationHasMaterialPasses(generation)) {
         return std::nullopt;
     }
@@ -765,6 +784,14 @@ MaterialGenerationPlanner::CandidateRoute
 MaterialGenerationPlanner::candidateRoute(
     const MaterialContainer &container,
     const MaterialContainer::InternalMaterialInfo &material) {
+    // A local error material remains on its substitute while the authored
+    // default is unchanged. A G-4 default edit still validates the authored
+    // route (and requires the usual restart to lower it anew).
+    if (material.unserved &&
+        (!container.candidate_route_default || *container.candidate_route_default ==
+            projectMaterialLoweringCapabilities().route_default)) {
+        return {material.route, material.shader_contract, true};
+    }
     if (!material.default_routes) {
         return {material.route, material.shader_contract, true};
     }
@@ -781,12 +808,10 @@ MaterialGenerationPlanner::candidateRoute(
 void MaterialGenerationPlanner::requireEveryMaterialServed(
     const MaterialContainer &container,
     const RendererRuntimeGeneration &generation) {
-    // Two rules, one code. A candidate with any material pass must serve
-    // every registered material. A candidate with none (an RT-only graph)
-    // may draw no material, but it may not drop a route the published graph
-    // did consume. With nothing published yet (a ray-tracing startup
-    // generation stays staged until its first submitted frame) no route was
-    // consumed, so there is nothing to drop.
+    // A candidate with material passes must serve every material (G-4).
+    // Without any, it is a valid startup document. If live materials used
+    // the old passes, request a restart instead of retaining their pipeline
+    // and binding metadata in a no-material-pass generation (UD-1).
     const bool has_material_passes =
         generationHasMaterialPasses(generation);
     std::shared_ptr<const RendererRuntimeGeneration> previous;
@@ -805,7 +830,8 @@ void MaterialGenerationPlanner::requireEveryMaterialServed(
                 if (generationServesMaterial(
                         generation, candidate.route,
                         candidate.shader_contract,
-                        material.exact_pass)) {
+                        material.unserved && !candidate.live
+                            ? material.unserved->authored_exact_pass : material.exact_pass)) {
                     return;
                 }
             } else if (materialBindingsForGeneration(
@@ -855,11 +881,14 @@ void MaterialGenerationPlanner::requireEveryMaterialServed(
             }
         }
         if (!rules.empty()) {
-            const auto ids = container.drawLoopMaterials();
+            std::vector<GlobalMaterialId> ids;
             std::vector<MaterialDrawSubject> subjects;
-            subjects.reserve(ids.size());
-            for (const auto id : ids) {
-                subjects.push_back(container.drawLoopSubject(id));
+            for (const auto id : container.drawLoopMaterials()) {
+                for (const auto mode : vertexModes) {
+                    if (!container.supportsVertexMode(id, mode)) continue;
+                    ids.push_back(id);
+                    subjects.push_back(container.drawLoopSubject(id, mode));
+                }
             }
             for (const auto index :
                  materialDrawLoopUnservedSubjects(rules, subjects)) {
@@ -883,6 +912,7 @@ void MaterialGenerationPlanner::requireEveryMaterialServed(
         }
     }
     if (unserved.empty()) return;
+    if (!has_material_passes) throw MaterialPassesRemoved{};
     throw std::runtime_error(materialRouteUnservedMessage(
         unserved, activeRenderingConfigReference()));
 }
@@ -1219,8 +1249,10 @@ void MaterialGenerationPlanner::validateCompatibility(
             const auto live =
                 liveRenderingContract(material);
             for (const auto &binding : *bindings) {
-                if (!binding.ray_query && GET_MODULE(PipelineFactory).pipelineUsesRayQueryFrameSet(material.pipeline))
-                    throw std::runtime_error("Material pass '" + binding.pass_name + "' uses an acceleration structure but does not declare ray_query");
+                for (const auto pipeline : material.pipeline) {
+                    if (pipeline && !binding.ray_query && GET_MODULE(PipelineFactory).pipelineUsesRayQueryFrameSet(*pipeline))
+                        throw std::runtime_error("Material pass '" + binding.pass_name + "' uses an acceleration structure but does not declare ray_query");
+                }
                 if (binding.output_schema !=
                     material.output_schema) {
                     const auto live_schema =
@@ -1318,8 +1350,11 @@ MaterialGenerationPlanner::prepareReload(
             generation, material.route, material.shader_contract, material.exact_pass);
         const bool allowed = !bindings.empty() && std::all_of(
             bindings.begin(), bindings.end(), [](const auto &binding) { return binding.ray_query; });
-        auto [entry, inserted] = pipeline_ray_query.emplace(material.pipeline.value, allowed);
-        if (!inserted) entry->second = entry->second && allowed;
+        for (const auto pipeline : material.pipeline) {
+            if (!pipeline) continue;
+            auto [entry, inserted] = pipeline_ray_query.emplace(pipeline->value, allowed);
+            if (!inserted) entry->second = entry->second && allowed;
+        }
     });
     std::vector<MetadataUpdate> metadata_updates;
     // LP-2: what a base pipeline this plan rebuilds is rebuilt for, so the
@@ -1458,77 +1493,85 @@ MaterialGenerationPlanner::prepareReload(
             auto candidate_resource_interface =
                 std::move(resource_plan.updated_bindings);
 
-            auto pipeline_desc =
-                pipeline_factory.graphicsDesc(
-                    material.pipeline);
-            if (!pipeline_desc.frag) {
-                throw std::logic_error(
-                    "material pipeline has no fragment shader");
-            }
-            if (candidate_schema !=
-                    material.output_schema ||
-                candidate_physical_defines !=
-                    current_physical_defines) {
-                append_shader_override({
-                    .fragment =
-                        *pipeline_desc.frag,
-                    .physical_defines =
-                        std::move(
-                            candidate_physical_defines),
-                    .material_output_schema =
-                        candidate_schema,
-                });
-            }
+            for (const auto pipeline : material.pipeline) {
+                if (!pipeline) continue;
+                auto pipeline_desc = pipeline_factory.graphicsDesc(*pipeline);
+                if (!pipeline_desc.frag) {
+                    throw std::logic_error(
+                        "material pipeline has no fragment shader");
+                }
+                if (candidate_schema !=
+                        material.output_schema ||
+                    candidate_physical_defines !=
+                        current_physical_defines) {
+                    append_shader_override({
+                        .fragment =
+                            *pipeline_desc.frag,
+                        .physical_defines = candidate_physical_defines,
+                        .material_output_schema =
+                            candidate_schema,
+                    });
+                    if (const auto paired = GET_MODULE(ShaderLibrary).surfaceFragmentForVertex(pipeline_desc.vert);
+                        paired && *paired != *pipeline_desc.frag) {
+                        append_shader_override({
+                            .fragment = *paired,
+                            .physical_defines = candidate_physical_defines,
+                            .material_output_schema = candidate_schema,
+                        });
+                    }
+                }
 
-            MaterialInfo validation_info;
-            validation_info.output_schema =
-                candidate_schema;
-            validation_info.render_state =
-                material.render_state;
-            validation_info.vat = material.vat;
-            validation_info.custom_textures.resize(
-                material
-                    .custom_sampler_resolutions
-                    .size());
-            validateMaterialCapabilities(
-                validation_info,
-                candidate_rendering);
+                MaterialInfo validation_info;
+                validation_info.output_schema =
+                    candidate_schema;
+                validation_info.render_state =
+                    material.render_state;
+                validation_info.vat = material.vat;
+                validation_info.custom_textures.resize(
+                    material
+                        .custom_sampler_resolutions
+                        .size());
+                validateMaterialCapabilities(
+                    validation_info,
+                    candidate_rendering);
 
-            auto candidate_pipeline_desc =
-                pipeline_desc;
-            candidate_pipeline_desc.allow_ray_query = pipeline_ray_query.at(material.pipeline.value);
-            candidate_pipeline_desc.color_formats =
-                candidate_rendering.color_formats;
-            candidate_pipeline_desc.depth_format =
-                candidate_rendering.depth_format;
-            candidate_pipeline_desc
-                .rasterization_samples =
-                candidate_rendering
-                    .rasterization_samples;
-            candidate_pipeline_desc.local_read =
-                candidate_rendering.local_read;
-            candidate_pipeline_desc.resource_interface =
-                candidate_resource_interface;
-            candidate_pipeline_desc
-                .color_attachment_states =
-                candidate_rendering
-                        .output_states.empty()
-                    ? std::vector<
-                          GraphicsPipelineColorAttachmentState>{}
-                    : resolveMaterialColorAttachmentStates(
-                          validation_info,
-                          candidate_rendering);
-            if (candidate_pipeline_desc !=
-                pipeline_desc) {
-                append_pipeline_override({
-                    .handle = material.pipeline,
-                    .desc = std::move(
-                        candidate_pipeline_desc),
-                });
-                overridden_bases.try_emplace(
-                    material.pipeline.value,
-                    OverriddenBase{validation_info,
-                                   candidate_rendering});
+                auto candidate_pipeline_desc =
+                    pipeline_desc;
+                candidate_pipeline_desc.allow_ray_query = pipeline_ray_query.at(pipeline->value);
+                candidate_pipeline_desc.color_formats =
+                    candidate_rendering.color_formats;
+                candidate_pipeline_desc.depth_format =
+                    candidate_rendering.depth_format;
+                candidate_pipeline_desc
+                    .rasterization_samples =
+                    candidate_rendering
+                        .rasterization_samples;
+                candidate_pipeline_desc.local_read =
+                    candidate_rendering.local_read;
+                candidate_pipeline_desc.resource_interface =
+                    candidate_resource_interface;
+                candidate_pipeline_desc
+                    .color_attachment_states =
+                    candidate_rendering
+                            .output_states.empty()
+                        ? std::vector<
+                              GraphicsPipelineColorAttachmentState>{}
+                        : resolveMaterialColorAttachmentStates(
+                              validation_info,
+                              candidate_rendering);
+                if (candidate_pipeline_desc !=
+                    pipeline_desc) {
+                    append_pipeline_override({
+                        .handle = *pipeline,
+                        .desc = std::move(
+                            candidate_pipeline_desc),
+                    });
+                    overridden_bases.try_emplace(
+                        pipeline->value,
+                        OverriddenBase{validation_info,
+                                       candidate_rendering});
+                }
+
             }
 
             // accumulate

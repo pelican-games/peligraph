@@ -41,6 +41,7 @@ class EmbeddedViewport final : public QWidget {
     ~EmbeddedViewport() override;
 
     void openProject(const QString &project_root);
+    void finishEmbeddedWindowResize();
     // G-4. Stops the running engine and starts it again on the same project,
     // for a committed setting the engine reads only at start. The editor gate
     // closes at once (engineRpcBecameUnavailable carries `reason`) and opens
@@ -91,6 +92,9 @@ class EmbeddedViewport final : public QWidget {
     // The project this viewport runs a player on, and whether one runs.
     const QString &projectRoot() const noexcept { return project_root_; }
     bool engineRunning() const noexcept { return process_.isRunning(); }
+    // MR-1s: the engine process's id (0 when none runs) -- a scenario tells a
+    // restart from none by it.
+    qint64 engineProcessId() const noexcept { return process_.processId(); }
     qint64 requestMigrationRpc(const QString &method,
                                const QJsonObject &params,
                                QString *error = nullptr);
@@ -127,6 +131,8 @@ class EmbeddedViewport final : public QWidget {
     void pickObjectSucceeded(qint64 request_id,
                              const QByteArray &result_json);
     void pickObjectFailed(qint64 request_id, const QString &message);
+    // Synchronous boundary, before stop/restart can drain old RPC replies.
+    void engineSessionEnding();
     void engineRpcBecameAvailable();
     void engineRpcBecameUnavailable(const QString &message);
     void engineProcessExitedWithFailure(const QString &fatal_error_line);
@@ -153,11 +159,13 @@ class EmbeddedViewport final : public QWidget {
     // parsing it again on the GUI thread stopped the window.
     void engineStatusParsed(qint64 request_id, const nlohmann::json &status);
     void engineInputActiveChanged(bool active);
+    void studioShortcutPressed(int key, Qt::KeyboardModifiers modifiers);
     // MG-1. `refusal` is the line the player wrote:
     // "project.migration_required@1: {documents:[...]}".
     void projectMigrationRequired(const QString &refusal);
 
   private:
+    quint32 studio_shortcut_keys_down_ = 0;
     EngineProcess process_;
     EngineFailureModel engine_failure_model_;
     QWidget *native_host_ = nullptr;

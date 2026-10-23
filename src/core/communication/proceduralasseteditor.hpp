@@ -15,6 +15,11 @@ struct ProceduralAssetEditorDependencies {
     // Prepare privately, call source_commit as the last fallible action,
     // then publish the prepared runtime state without throwing.
     std::function<void(std::string_view, const std::function<void()> &)> apply;
+    // MI-1: whether asset_data bytes are what the engine has published now
+    // (another writer -- register_model, create_material, bind_material --
+    // wrote and published them). Such bytes become this editor's source in
+    // place of the ones it holds. Empty: never.
+    std::function<bool(std::string_view)> source_published;
 };
 
 class ProceduralAssetEditorService {
@@ -30,9 +35,10 @@ class ProceduralAssetEditorService {
     std::map<std::string, Result> results_;
     std::vector<Result> completed_;
     std::uint64_t next_ticket_ = 1;
+    void adoptPublishedSource();
   public:
     explicit ProceduralAssetEditorService(ProceduralAssetEditorDependencies dependencies);
-    Result get(const Json &params) const;
+    Result get(const Json &params);
     Result edit(const Json &params);
     Result result(const Json &params) const;
     void commitPending() noexcept;

@@ -1,3 +1,4 @@
+#include "../userpublic/userdataerror.hpp"
 #include "camera.hpp"
 #include "../launchconfig.hpp"
 #include "../loader/basicconfig.hpp"
@@ -534,7 +535,7 @@ void Camera::setViewCamera(ViewCamera view) {
 void Camera::setActiveCamera(std::string_view name) {
     const auto camera_it = scene_cameras.find(std::string{name});
     if (camera_it == scene_cameras.end()) {
-        throw std::runtime_error("unknown camera name: " + std::string{name});
+        throw UserDataError("unknown camera name: " + std::string{name});
     }
     // PM-1b: the editor camera is a view, not a scene camera to choose.
     if (!editor_camera_name.empty()) {

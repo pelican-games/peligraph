@@ -260,6 +260,15 @@ NativePrimaryPointerState
 NativeWindowHost::primaryPointerState(NativeWindowHandle child_handle) noexcept {
     NativePrimaryPointerState result;
     result.button_down = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    for (std::size_t index = 0; index < StudioShortcutKeys.size(); ++index) {
+        const int key = StudioShortcutKeys[index] == Qt::Key_Delete ? VK_DELETE : StudioShortcutKeys[index];
+        if (GetAsyncKeyState(key) & 0x8000) result.shortcut_keys_down |= quint32{1} << index;
+    }
+    if (GetAsyncKeyState(VK_CONTROL) & 0x8000) result.shortcut_modifiers |= Qt::ControlModifier;
+    if (GetAsyncKeyState(VK_SHIFT) & 0x8000) result.shortcut_modifiers |= Qt::ShiftModifier;
+    if (GetAsyncKeyState(VK_MENU) & 0x8000) result.shortcut_modifiers |= Qt::AltModifier;
+    if ((GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000)
+        result.shortcut_modifiers |= Qt::MetaModifier;
     HWND child = asHwnd(child_handle);
     POINT cursor{};
     if (!IsWindow(child) || !GetCursorPos(&cursor)) {

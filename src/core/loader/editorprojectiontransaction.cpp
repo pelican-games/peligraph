@@ -5,6 +5,7 @@
 #include "componentcodec.hpp"
 #include "basicconfig.hpp"
 #include "../../project/sceneformat.hpp"
+#include "../asset/model.hpp"
 #include "../gamelogic/behaviorarena.hpp"
 #include "../geomhelper/geomhelper.hpp"
 
@@ -402,6 +403,15 @@ EditorProjectionError errorFromException(EditorProjectionErrorCode fallback,
         return EditorProjectionError{fallback, std::move(path), error.what(),
                                      prefab->code()};
     }
+    // MI-1: the model a simplemodelview names is not registered.
+    if (const auto *model = dynamic_cast<const UnknownModelAssetError *>(&error)) {
+        return EditorProjectionError{
+            .code = fallback,
+            .object_path = std::move(path),
+            .message = error.what(),
+            .data = {{"model", model->model()}, {"reason", "model_unknown"}},
+        };
+    }
     return EditorProjectionError{fallback, std::move(path), error.what()};
 }
 
@@ -568,7 +578,7 @@ EditorProjectionCommand makeSetComponentValueCommand(
                     }
                 }
                 *component =
-                    Json::parse(codec->encodeCanonical(decoded).dump());
+                    Json::parse(codec->encodeAuthored(decoded, authored_component).dump());
             } catch (const EditorProjectionException &) {
                 throw;
             } catch (const LegacyRejectException &error) {
@@ -647,7 +657,11 @@ EditorProjectionCommand makeReparentCommand(
                 }
                 const auto local = inverseLocal(old_world, parent_world, path);
                 auto *transform = findComponent(*object, "transform");
-                *transform = canonicalTransformJson(local);
+                const auto before = decodeTransformObject(*object, path);
+                const auto previous = canonicalTransformJson(before);
+                const auto next = canonicalTransformJson(local);
+                for (const auto &[key, item] : next.items())
+                    if (transform->contains(key) || previous.at(key) != item) (*transform)[key] = item;
 
                 // Re-run the closure after changing local to prove the
                 // preserve-world postcondition before any adapter prepare.

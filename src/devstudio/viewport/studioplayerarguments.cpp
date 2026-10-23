@@ -43,6 +43,10 @@ StudioPlayerLaunch studioPlayerLaunch(std::vector<std::string> configured,
         if (argument == "--rpc") {
             continue;
         }
+        // BS-1s: always passed, once.
+        if (argument == "--render-fallback") {
+            continue;
+        }
         if (argument == "--project") {
             if (index + 1 < configured.size()) {
                 ++index;
@@ -77,8 +81,14 @@ StudioPlayerLaunch studioPlayerLaunch(std::vector<std::string> configured,
         additional.push_back(argument);
     }
 
+    // BS-1s, decision 1 (engine BS-1): a rendering configuration the engine
+    // cannot compose at start does not stop the engine Studio starts. It
+    // draws one flat colour, says why in get_status.render_pipeline, and
+    // takes the fixed configuration through reload_render_documents or a
+    // render edit; Studio shows the refusal instead of a stopped viewport.
     std::vector<std::string> arguments{
         "--rpc",
+        "--render-fallback",
         "--project",
         project_root,
         "--feature-overlay",

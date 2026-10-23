@@ -1,8 +1,12 @@
+#include "../project/windowsutf8.hpp"
 #include "view/uimain.hpp"
 #include <argparse/argparse.hpp>
 #include <iostream>
 
 int main(int argc, char *argv[]) {
+    if (!Pelican::processUsesUtf8CodePage()) {
+        std::cerr << "WARNING: " << Pelican::nonUtf8CodePageWarning << '\n';
+    }
     argparse::ArgumentParser program("Pelican Studio");
     program.add_argument("--project")
         .default_value(std::string{})

@@ -71,7 +71,7 @@ struct ShaderSandbox {
                ("pelican_shader_stem_" + suffix);
         root = base / "project";
         std::filesystem::create_directories(root / "shaders");
-        std::filesystem::copy_file(sourceRoot() / "src/core/resources/fullscreen.vert.spv",
+        std::filesystem::copy_file(std::filesystem::path{PELICAN_TEST_BUILT_RESOURCES} / "fullscreen.vert.spv",
                                    root / "shaders" / "fullscreen.vert.spv");
         writeText(root / "shaders" / "note.txt", "not a shader");
         writeText(
@@ -105,7 +105,7 @@ std::vector<uint32_t> readSpirvWords(const std::filesystem::path &path) {
 
 TEST_CASE("shader library loads SPIR-V files and reports dirty reloads", "[shader]") {
     ShaderLibrary library{ShaderLibraryModuleMode::reflection_only};
-    const auto shader_path = sourceRoot() / "src/core/resources/fullscreen.vert.spv";
+    const auto shader_path = std::filesystem::path{PELICAN_TEST_BUILT_RESOURCES} / "fullscreen.vert.spv";
     const auto id = library.loadFromFile(shader_path);
 
     const auto &bundle = library.get(id);
@@ -207,7 +207,7 @@ TEST_CASE("shader library resolves shader stem project format fixtures", "[shade
 
 TEST_CASE("shader library keeps embedded SPIR-V bundles out of reload tracking", "[shader]") {
     ShaderLibrary library{ShaderLibraryModuleMode::reflection_only};
-    const auto spirv = readSpirvWords(sourceRoot() / "src/core/resources/fullscreen.vert.spv");
+    const auto spirv = readSpirvWords(std::filesystem::path{PELICAN_TEST_BUILT_RESOURCES} / "fullscreen.vert.spv");
     const auto id = library.loadFromSpirv(
         spirv, ShaderStage::vertex, "embedded_fullscreen.vert");
 
@@ -222,7 +222,7 @@ TEST_CASE("shader library keeps old bundle when reload fails", "[shader]") {
     std::filesystem::remove_all(work_dir);
     REQUIRE(std::filesystem::create_directories(work_dir));
     const auto shader_path = work_dir / "reload.vert.spv";
-    std::filesystem::copy_file(sourceRoot() / "src/core/resources/fullscreen.vert.spv", shader_path);
+    std::filesystem::copy_file(std::filesystem::path{PELICAN_TEST_BUILT_RESOURCES} / "fullscreen.vert.spv", shader_path);
 
     ShaderLibrary library{ShaderLibraryModuleMode::reflection_only};
     const auto id = library.loadFromFile(shader_path);
@@ -294,6 +294,38 @@ TEST_CASE(
             std::pair<std::string, std::string>>{
             {"generated_color.glsl",
              "vec4 generatedColor() { return vec4(0.25); }\n"}}));
+#endif
+}
+
+TEST_CASE("shader retirement keeps failures attached to surviving reload units",
+          "[shader][hot-reload][registration-lifetime]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    FastModuleContainer modules;
+    ShaderSandbox sandbox;
+    GET_MODULE(PathResolver).setup(sandbox.root, false);
+    ShaderLibrary library{ShaderLibraryModuleMode::reflection_only};
+    const std::string valid = "#version 450\nvoid main() { gl_Position = vec4(0); }\n";
+    const auto first = sandbox.root / "shaders" / "first.vert";
+    const auto second = sandbox.root / "shaders" / "second.vert";
+    const auto third = sandbox.root / "shaders" / "third.vert";
+    for (const auto &path : {first, second, third}) writeText(path, valid);
+    const auto a = library.loadFromFile(first);
+    const auto b = library.loadFromFile(second);
+    const auto c = library.loadFromFile(third);
+    writeText(second, "invalid GLSL");
+    REQUIRE_FALSE(library.reload(b));
+    const std::vector expected{watch::makeAssetKey("shaders/second.vert")};
+    REQUIRE(library.failedReloadSources() == expected);
+
+    // Removing an earlier unit shifts indices, but never moves the failure
+    // to the unrelated third shader.
+    library.retireRegistrations({a});
+    CHECK(library.failedReloadSources() == expected);
+    library.retireRegistrations({b});
+    CHECK(library.failedReloadSources().empty());
+    CHECK(library.registrationCount() == 1);
+    CHECK(library.reload(c));
+    CHECK(library.failedReloadSources().empty());
 #endif
 }
 

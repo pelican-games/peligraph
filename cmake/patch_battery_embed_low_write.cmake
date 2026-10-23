@@ -164,6 +164,25 @@ if(copy_already_patched EQUAL -1)
   set(contents_changed TRUE)
 endif()
 
+# Keep resource lookup names stable while generated inputs live in the build tree.
+set(old_embed_path [=[get_filename_component(FULL_PATH "${FILENAME}" ABSOLUTE)]=])
+set(new_embed_path [=[get_filename_component(FULL_PATH "${FILENAME}" ABSOLUTE)
+    if (ARGC GREATER 2)
+        set(FULL_PATH "${ARGV2}")
+    endif()]=])
+string(FIND "${contents}" "${new_embed_path}" path_already_patched)
+if(path_already_patched EQUAL -1)
+  string(FIND "${contents}" "${old_embed_path}" path_patch_location)
+  if(path_patch_location EQUAL -1)
+    message(FATAL_ERROR "battery-embed input path declaration changed")
+  endif()
+  string(REPLACE "${old_embed_path}" "${new_embed_path}" contents "${contents}")
+  string(REPLACE
+    [=[source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" PREFIX "/embed" FILES ${FULL_PATH})]=]
+    [=[source_group("embed" FILES ${FULL_PATH})]=] contents "${contents}")
+  set(contents_changed TRUE)
+endif()
+
 if(contents_changed)
   file(WRITE "${battery_embed_cmake}" "${contents}")
 endif()

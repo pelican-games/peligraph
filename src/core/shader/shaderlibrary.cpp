@@ -7,6 +7,7 @@
 #include "../loader/pathresolver.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
+#include "../watch/problemlist.hpp"
 #include "../../project/materiallowering.hpp"
 #include "../../project/sha256stream.hpp"
 #include "../../project/shadersourceresolver.hpp"
@@ -165,7 +166,8 @@ void appendPathUnique(std::vector<std::filesystem::path> &paths,
 
 bool isCompilerOwnedSurfaceDefine(
     std::string_view define) {
-    return define.starts_with(
+    return define == "PELICAN_SKINNED" || define.starts_with("PELICAN_SKINNED=") ||
+           define.starts_with(
                surfaceScreenInputLocalReadDefinePrefix) ||
            define.starts_with(
                surfaceResourceLocalReadDefinePrefix);
@@ -769,6 +771,15 @@ bool ShaderLibrary::runtimeCompilerAvailable() noexcept {
 #endif
 }
 
+std::optional<ShaderBundleId> ShaderLibrary::surfaceFragmentForVertex(ShaderBundleId vertex) const {
+    const auto found = unit_by_bundle.find(vertex);
+    if (found == unit_by_bundle.end()) return std::nullopt;
+    const auto &unit = reload_units.at(found->second);
+    if (!std::holds_alternative<SurfaceReloadRecipe>(unit.recipe) ||
+        unit.bundle_ids.size() != 2 || unit.bundle_ids[0] != vertex) return std::nullopt;
+    return unit.bundle_ids[1];
+}
+
 SurfaceShaderBundleIds ShaderLibrary::compileWithAdditionalDefines(
     ShaderBundleId vertex, ShaderBundleId fragment,
     std::span<const std::string> additional_defines) {
@@ -803,6 +814,21 @@ SurfaceShaderBundleIds ShaderLibrary::compileWithAdditionalDefines(
         }
     }
     const auto compile_file = [&](ShaderBundleId id) {
+        // A skinned surface vertex shares the standard surface fragment. Compile
+        // each stage from its own recipe so vertex-only defines stay vertex-only.
+        if (const auto unit = unit_by_bundle.find(id); unit != unit_by_bundle.end()) {
+            const auto &reload = reload_units.at(unit->second);
+            if (const auto *surface = std::get_if<SurfaceReloadRecipe>(&reload.recipe);
+                surface && reload.bundle_ids.size() == 2) {
+                const bool is_vertex = reload.bundle_ids[0] == id;
+                const auto document = surface->embedded_surface
+                    ? *surface->embedded_surface
+                    : parseSurfaceFormat(readBinaryFile(surface->path.string()), surface->source_name);
+                const auto compiled = loadFromSurface(document, surface->source_name,
+                    surface->pass, appended(surface->defines), surface->material_output_schema);
+                return is_vertex ? compiled.vertex : compiled.fragment;
+            }
+        }
         const auto &bundle = bundles.get(id);
         if (bundle.source_path.empty() ||
             lowerExtension(bundle.source_path) == ".spv") {
@@ -902,8 +928,8 @@ ShaderLibrary::prepareUnits(const std::set<std::size_t> &units,
             std::erase_if(
                 effective_defines,
                 [](const auto &define) {
-                    return isCompilerOwnedSurfaceDefine(
-                        define);
+                    return define.starts_with(surfaceScreenInputLocalReadDefinePrefix) ||
+                           define.starts_with(surfaceResourceLocalReadDefinePrefix);
                 });
             for (const auto &define :
                  override->physical_defines) {
@@ -1033,7 +1059,7 @@ SurfaceShaderBundleIds ShaderLibrary::loadFromSurfaceForMaterial(
         }
     }
     if (std::any_of(
-            defines.begin(), defines.end(),
+            material.defines.begin(), material.defines.end(),
             isCompilerOwnedSurfaceDefine)) {
         throw std::runtime_error(
             "material defines cannot override the compiler-owned "
@@ -1338,6 +1364,15 @@ ShaderReloadTrackingStatus ShaderLibrary::reloadTrackingStatus() const noexcept 
     return {reload_units.size(), unit_by_bundle.size(), units_by_dependency.size()};
 }
 
+std::vector<watch::AssetKey> ShaderLibrary::failedReloadSources() const {
+    std::vector<watch::AssetKey> sources;
+    for (const auto unit : units_failed_since_publish)
+        if (unit < reload_units.size()) sources.push_back(reload_units[unit].primary_source);
+    std::ranges::sort(sources);
+    sources.erase(std::unique(sources.begin(), sources.end()), sources.end());
+    return sources;
+}
+
 bool ShaderLibrary::reload(ShaderBundleId id) {
     auto &current = bundles.get(id);
     if (current.source_path.empty()) {
@@ -1438,6 +1473,7 @@ void ShaderLibrary::retireRegistrations(
     std::vector<ShaderBundleId> next_bundle_ids;
     std::vector<ShaderBundleId> next_dirty;
     std::vector<ReloadUnit> next_units;
+    std::set<std::size_t> next_failed_units;
     std::unordered_map<ShaderBundleId, std::size_t,
                        ShaderBundleId::Hash>
         next_unit_by_bundle;
@@ -1457,7 +1493,8 @@ void ShaderLibrary::retireRegistrations(
             }
         }
         next_units.reserve(reload_units.size());
-        for (const auto &unit : reload_units) {
+        for (std::size_t old_index = 0; old_index < reload_units.size(); ++old_index) {
+            const auto &unit = reload_units[old_index];
             const auto retiring_count =
                 std::count_if(
                     unit.bundle_ids.begin(),
@@ -1466,6 +1503,8 @@ void ShaderLibrary::retireRegistrations(
                         return retiring.contains(id);
                     });
             if (retiring_count == 0) {
+                if (units_failed_since_publish.contains(old_index))
+                    next_failed_units.insert(next_units.size());
                 next_units.push_back(unit);
             } else if (retiring_count !=
                        unit.bundle_ids.size()) {
@@ -1497,9 +1536,20 @@ void ShaderLibrary::retireRegistrations(
     bundle_ids.swap(next_bundle_ids);
     dirty_bundles.swap(next_dirty);
     reload_units.swap(next_units);
+    units_failed_since_publish.swap(next_failed_units);
     unit_by_bundle.swap(next_unit_by_bundle);
     units_by_dependency.swap(
         next_units_by_dependency);
+
+    // A replaced generation can retire a failed shader without another
+    // shader reload. Its diagnostic must leave with its registration;
+    // failures of surviving shaders retain their original detail.
+    try {
+        std::vector<std::string> failed;
+        for (const auto &key : failedReloadSources()) failed.push_back(watch::assetKeyString(key));
+        syncShaderProblems(problemSourceHotReload, failed, {});
+    } catch (...) {
+    }
 
     for (const auto id : ids) {
         auto retired = bundles.extract(id, false);

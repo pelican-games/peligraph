@@ -10,6 +10,8 @@ add_library(pelican_studio_view STATIC
     frameplaneditcapability.cpp
     frameplaneditcapability.hpp
     renderconfigdigest.hpp
+    rendereditticketclient.cpp
+    rendereditticketclient.hpp
     # UX-6b: the frame's GPU time and the last edit's before and after.
     planperfhub.cpp
     planperfhub.hpp
@@ -34,6 +36,10 @@ add_library(pelican_studio_view STATIC
     fullscreenpasswidget.hpp
     fullscreenpasssettings.cpp
     fullscreenpasssettings.hpp
+    # GL-5a: the edit_preset_pass the Pass Editor and the Graph's folded pass
+    # fields build alike.
+    presetpassedit.cpp
+    presetpassedit.hpp
     # UX-4a: the forms that edit parts of a pass declaration (Pass Editor now,
     # the Graph's detail panel next).
     passforms/passform.cpp
@@ -58,6 +64,8 @@ add_library(pelican_studio_view STATIC
     shaderdiagnostics.hpp
     shaderreloadfollower.cpp
     shaderreloadfollower.hpp
+    renderdocumentwatcher.cpp
+    renderdocumentwatcher.hpp
     inspectorwidget.cpp
     inspectorwidget.hpp
     outlinertree.cpp
@@ -94,6 +102,9 @@ add_library(pelican_studio_view STATIC
     # SG-1: a canvas.stack's Layers panel.
     graphcanvaslayerspanel.cpp
     graphcanvaslayerspanel.hpp
+    # GL-5a: a folded pass of the rendering section, edited beside the canvas.
+    graphcanvasfoldedpassfields.cpp
+    graphcanvasfoldedpassfields.hpp
     # AB-1s: Bake analysis, Use in Graph / in a shader, and Re-bake.
     graphcanvasaudioanalysis.cpp
     graphcanvasaudioanalysis.hpp
@@ -125,6 +136,23 @@ add_library(pelican_studio_view STATIC
     viewselectfield.hpp
     playcontrols.cpp
     playcontrols.hpp
+    # HW-2s / AV-1s: the Assets dock.
+    assetsdock.cpp
+    assetsdock.hpp
+    # MT-1s: the Materials dock and the Inspector's Material rows.
+    materialsdock.cpp
+    materialsdock.hpp
+    materialassignwidget.cpp
+    materialassignwidget.hpp
+    # RTL-2s: the Ray layout section of the Rendering settings tab.
+    raylayoutwidget.cpp
+    raylayoutwidget.hpp
+    # BS-1s: the row above the viewport while the engine draws its placeholder.
+    renderfallbacknotice.cpp
+    renderfallbacknotice.hpp
+    # PB-1s: the Problems dock.
+    problemsdock.cpp
+    problemsdock.hpp
     studioscreen.cpp
     studioscreen.hpp
 )

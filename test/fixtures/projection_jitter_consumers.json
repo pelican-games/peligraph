@@ -322,7 +322,7 @@
       "source": "src/core/resources/ssao.frag",
       "consumer": "ssao",
       "role": "view-to-clip sample projection",
-      "needles": ["offset = pelicanFrame.projection * offset;"]
+      "needles": ["vec4 clip = pelicanFrame.projection * vec4(viewPoint, 1.0);"]
     },
     {
       "source": "src/core/resources/taa_resolve.frag",

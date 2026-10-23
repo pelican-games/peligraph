@@ -4,6 +4,8 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <nlohmann/json.hpp>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -62,8 +64,14 @@ class AuthoredRenderConfigDocument {
 
     explicit AuthoredRenderConfigDocument(std::string bytes,
                                           bool require_features);
+    struct UnparsedTag {};
+    AuthoredRenderConfigDocument(std::string bytes, UnparsedTag);
 
   public:
+    // BS-1b: a root whose bytes are not JSON at all (renderDocumentSyntax
+    // below), held as its bytes and digest only, so it can be listed and
+    // replaced whole. It locates nothing; a reader that parses it refuses.
+    static AuthoredRenderConfigDocument unparsed(std::string bytes);
     // All three refuse a root that is not `pelican.graph` with
     // RenderConfigLegacyRoot.
     static AuthoredRenderConfigDocument initialize(std::string bytes);
@@ -114,6 +122,35 @@ class AuthoredRenderConfigDocument {
 };
 
 std::string renderConfigSourceDigest(std::string_view bytes);
+
+// BS-1b: a render document (the rendering root, or a feature or preset a
+// composition reads) whose bytes are not JSON. It is refused by this name
+// wherever it is met: at the start of a launch with --render-fallback
+// (get_status.render_pipeline.refusal), by reload_render_documents,
+// restore_render_documents, an edit's preflight, and a structural edit of a
+// held root that does not parse. Its fields:
+//   {document, line?, column?, reason}
+// `document` is the reference spelled as CT-2 names a document
+// (project://<path>), `line` and `column` (1-based) where the parser stopped,
+// `reason` the parser's words.
+inline constexpr std::string_view renderDocumentSyntaxCode =
+    "render_document_syntax@1";
+// The fields, or nullopt when `bytes` is JSON.
+std::optional<nlohmann::json> renderDocumentSyntax(std::string_view bytes,
+                                                   std::string_view reference);
+// "render_document_syntax@1: <document> is not valid JSON at line L, column
+// C: <reason>".
+std::string renderDocumentSyntaxMessage(const nlohmann::json &fields);
+// What a composition throws for such a document: what() is
+// "render_document_syntax@1: <fields JSON>" (splitCodedRefusalMessage).
+class RenderDocumentSyntaxError : public std::runtime_error {
+  public:
+    explicit RenderDocumentSyntaxError(const nlohmann::json &fields);
+};
+// nlohmann::json::parse of a render document, refusing bytes that are not
+// JSON with RenderDocumentSyntaxError.
+nlohmann::json parseRenderDocument(std::string_view bytes,
+                                   std::string_view reference);
 
 // A render-authoring candidate is a document set, not a replacement string
 // for the root document. References use PathResolver's canonical key so an

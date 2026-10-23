@@ -145,7 +145,7 @@ constexpr std::string_view scene_json = R"json({
             {
               "name": "light",
               "type": "directional",
-              "direction": [-0.5, -1.0, 0.25],
+              "direction": [-0.5, -1.0, -0.25],
               "intensity": 1.0,
               "color": [1.0, 0.95, 0.85]
             }

@@ -49,6 +49,9 @@ FramePlanEditCapability framePlanEditCapability(EmbeddedViewport &viewport) {
         .addAuthoredPass = send("add_authored_pass"),
         .decomposeMaterialPass = send("decompose_material_pass"),
         .editTargetPlanning = send("edit_target_planning"),
+        // UX-15b.
+        .editVulkanPlanPins = send("edit_vulkan_plan_pins"),
+        .putVulkanPhysicalFragment = send("put_vulkan_physical_fragment"),
         .requestRootDocument = [&viewport](const QString &reference, QString *error) {
             return viewport.requestRpc(
                 QStringLiteral("get_render_documents"),

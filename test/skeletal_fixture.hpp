@@ -25,6 +25,8 @@ struct Options {
     // times themselves, so this is the only way to get a clip whose start is
     // not 0 -- which is what most authored assets actually look like.
     float animation_time_offset = 0.0f;
+    float animation_time_scale = 1.0f;
+    bool extra_joint = false;
 };
 
 namespace detail {
@@ -66,10 +68,12 @@ inline std::vector<std::uint8_t> makeGlb(Options options) {
                                            {1, 0, 0, 0}, {1, 0, 0, 0}};
     const std::vector<glm::vec4> weights(4, glm::vec4{1.0f, 0.0f, 0.0f, 0.0f});
     const std::vector<std::uint16_t> indices{0, 1, 2, 2, 1, 3};
-    const std::vector<glm::mat4> inverse_bind{
+    std::vector<glm::mat4> inverse_bind{
         glm::mat4{1.0f}, glm::translate(glm::mat4{1.0f}, glm::vec3{0.0f, -1.0f, 0.0f})};
+    if (options.extra_joint) inverse_bind.push_back(glm::mat4{1.0f});
     const auto offset = options.animation_time_offset;
-    const std::vector<float> times{0.0f + offset, 1.0f + offset, 2.0f + offset};
+    const std::vector<float> times{offset, options.animation_time_scale + offset,
+                                   2.0f * options.animation_time_scale + offset};
     const float s = 0.7071067811865475f;
     const std::vector<glm::vec4> rotations{{0, 0, 0, 1}, {0, 0, s, s}, {0, 0, 1, 0}};
     const std::vector<glm::vec3> translations{{0, 1, 0}, {1, 1, 0}, {2, 1, 0}};
@@ -113,6 +117,11 @@ inline std::vector<std::uint8_t> makeGlb(Options options) {
         {"animations", animations}, {"bufferViews", views}, {"accessors", accessors},
         {"buffers", {{{"byteLength", bin.size()}}}},
     };
+    if (options.extra_joint) {
+        json["nodes"][2]["children"] = {3};
+        json["nodes"].push_back({{"name", "ExtraJoint"}});
+        json["skins"][0]["joints"].push_back(3);
+    }
     if (options.morph_target)
         json["meshes"][0]["primitives"][0]["targets"] = nlohmann::json::array({{{"POSITION", morph_accessor}}});
     if (options.invalid_animation_accessor) {

@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -247,8 +248,10 @@ TEST_CASE("component addition catalog uses codec defaults and excludes attached 
     CHECK_FALSE(model->at("unavailable_reason").get<std::string>().empty());
     CHECK_FALSE(model->contains("component"));
     CHECK(model->at("component_template") == nlohmann::ordered_json{{"name", "simplemodelview"}});
-    REQUIRE(model->at("schema_fields").size() == 1);
+    // MT-2: the object's own material rows beside the model.
+    REQUIRE(model->at("schema_fields").size() == 2);
     CHECK(model->at("schema_fields")[0].at("name") == "model");
+    CHECK(model->at("schema_fields")[1].at("name") == "materials");
     auto authored_model = model->at("component_template");
     authored_model["model"] = "character";
     const auto model_decoded = requireComponentCodec("simplemodelview").decodeAuthored(authored_model);
@@ -488,6 +491,97 @@ TEST_CASE("list_assets does not call a model declared as an engine primitive mis
     CHECK(std::count_if(assets.begin(), assets.end(), [](const auto &asset) {
               return asset.status == "missing";
           }) == 1);
+}
+
+// EB-1: a model's path is listed as asset_data writes it (the published copy
+// holds it resolved, which goes to resolved_path), and a material document is
+// listed once per material it holds, by name; one that does not read is
+// listed by its path as invalid, one that is not there as missing.
+TEST_CASE("EB-1 list_assets lists project-relative paths beside the resolved file, and materials by name",
+          "[editor-command][asset-picker][eb1]") {
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("pelican_eb1_list_assets_" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    struct Cleanup {
+        std::filesystem::path root;
+        ~Cleanup() {
+            std::error_code ignored;
+            std::filesystem::remove_all(root, ignored);
+        }
+    } cleanup{root};
+    const auto write = [&](const std::string &relative, const std::string &contents) {
+        std::filesystem::create_directories((root / relative).parent_path());
+        std::ofstream{root / relative, std::ios::binary} << contents;
+    };
+    write("models/box.glb", "glTF");
+    write("materials/paint.material.json",
+          R"({"schema":"pelican.material","version":1,"materials":[{"name":"paint"},{"name":"coat"}]})");
+    write("materials/broken.material.json", "not json");
+    PathResolver resolver;
+    resolver.setup(root, false);
+
+    const auto absolute = (root / "models/box.glb").generic_string();
+    const auto materials = nlohmann::json::array({{{"path", "materials/paint.material.json"}},
+                                                  {{"path", "materials/broken.material.json"}},
+                                                  {{"path", "materials/gone.material.json"}}});
+    const auto published =
+        nlohmann::json{{"models", {{{"name", "box"}, {"path", absolute}}}}, {"materials", materials}}.dump();
+    const auto authored =
+        nlohmann::json{{"models", {{{"name", "box"}, {"path", "project://models/box.glb"}}}}, {"materials", materials}}
+            .dump();
+
+    const auto find = [](const std::vector<EditorAssetQueryResult> &assets,
+                         std::string_view id) -> const EditorAssetQueryResult & {
+        const auto found = std::find_if(assets.begin(), assets.end(), [&](const auto &asset) { return asset.id == id; });
+        REQUIRE(found != assets.end());
+        return *found;
+    };
+    // With the document the copy was made from: its spelling.
+    const auto assets = collectEditorAssets(published, resolver, authored);
+    const auto &box = find(assets, "box");
+    CHECK(box.path == "project://models/box.glb");
+    REQUIRE(box.resolved_path);
+    CHECK(std::filesystem::path{*box.resolved_path}.is_absolute());
+    CHECK(std::filesystem::equivalent(*box.resolved_path, root / "models/box.glb"));
+    CHECK(box.status == "loaded");
+    // Without it: project-relative.
+    CHECK(find(collectEditorAssets(published, resolver), "box").path == "models/box.glb");
+
+    for (const auto id : {"paint", "coat"}) {
+        CAPTURE(id);
+        const auto &material = find(assets, id);
+        CHECK(material.kind == "material");
+        CHECK(material.path == "materials/paint.material.json");
+        CHECK(material.store == "project");
+        CHECK(material.status == "loaded");
+        REQUIRE(material.resolved_path);
+        CHECK(std::filesystem::equivalent(*material.resolved_path, root / "materials/paint.material.json"));
+    }
+    const auto &broken = find(assets, "materials/broken.material.json");
+    CHECK(broken.kind == "material");
+    CHECK(broken.status == "invalid");
+    const auto &gone = find(assets, "materials/gone.material.json");
+    CHECK(gone.kind == "material");
+    CHECK(gone.status == "missing");
+    CHECK_FALSE(gone.resolved_path);
+
+    // The wire form: resolved_path only where a file resolved.
+    const auto document = AuthoringSceneDocument::load(readJson(authoringFixturePath()).dump(), SceneRevision{41});
+    const EditorCommandService service{EditorCommandServiceDependencies{
+        .document = [&document]() -> const AuthoringSceneDocument & { return document; },
+        .resolved_scene = explicitResolvedProvider(document),
+        .current_scene_id = [] { return std::string{"main"}; },
+        .runtime_query = fakeRuntime,
+        .assets = [&] { return collectEditorAssets(published, resolver, authored); },
+    }};
+    const EditorCommandRpcAdapter rpc{service};
+    const auto listed = rpc.listAssets(nlohmann::json::object());
+    for (const auto &asset : listed.at("assets")) {
+        CAPTURE(asset.dump());
+        const bool engine = asset.at("store") == "engine";
+        const bool missing = asset.at("status") == "missing";
+        CHECK(asset.contains("resolved_path") == (!engine && !missing));
+    }
 }
 
 TEST_CASE("simplemodelview choices offer the engine primitives before the project's models",
@@ -732,6 +826,30 @@ TEST_CASE("ray occurrence production RPC exposes inventory and tri-state resolut
                           {"status", "absent"},
                           {"occurrence_id",
                            "ffffffffffffffffffffffffffffffff"}});
+}
+
+// EB-3: a project without a ray group layout has no ray rows; get_ray_table
+// says so by its mode, with empty rows and groups.
+TEST_CASE("EB-3 get_ray_table without a ray group layout answers mode none and no rows",
+          "[editor-command][rpc][eb3]") {
+    auto document = AuthoringSceneDocument::load(
+        readJson(authoringFixturePath()).dump(), SceneRevision{1});
+    const EditorCommandService service{EditorCommandServiceDependencies{
+        .document = [&document]() -> const AuthoringSceneDocument & {
+            return document;
+        },
+        .resolved_scene = explicitResolvedProvider(document),
+        .current_scene_id = [] { return std::string{"main"}; },
+        .ray_table = [] { return EditorRayTableResult{.mode = "none"}; },
+    }};
+    const EditorCommandRpcAdapter rpc{service};
+    const auto table = rpc.getRayTable(nlohmann::json::object());
+    CHECK(table.at("mode") == "none");
+    CHECK(table.at("rows") == nlohmann::ordered_json::array());
+    CHECK(table.at("groups") == nlohmann::ordered_json::array());
+    CHECK(table.at("generation").is_null());
+    CHECK(table.at("total") == 0);
+    CHECK(table.at("truncated") == false);
 }
 
 TEST_CASE("get_components publishes recursive v3 component catalog nodes",
@@ -1456,4 +1574,49 @@ TEST_CASE("scene_outline rejects malformed selectors on the registered RPC wire"
     REQUIRE_FALSE(rpc.sceneOutline({{"scene_id", "main"}, {"if_scene_revision", maxExactEditorJsonInteger}}).at("not_modified").get<bool>());
 }
 
+} // namespace Pelican
+
+namespace Pelican {
+TEST_CASE("SV1f export_scene_snapshot preserves numeric semantics across Save and reopen",
+          "[editor-command][snapshot][sv1f]") {
+    for (const auto transform : {
+             R"({"name":"transform","pos":[0,1,-2],"rotation":[0,0,0,1]})",
+             R"({"name":"transform","pos":[0.0,1.0,-2.0],"rotation":[0.0,0.0,0.0,1.0]})"}) {
+        CAPTURE(transform);
+        const std::string untouched = R"({ "name":"unknown_read_only", "payload":[0.0,1e-03] })";
+        const std::string bytes = std::string{"\xef\xbb\xbf"} +
+            "{\r\n  \"schema\":\"pelican.scene\",\"version\":2,\r\n"
+            "  \"next_authoring_object_id\":2,\"scenes\":{\"main\":{\"objects\":[{"
+            "\"name\":\"Mover\",\"authoring_object_id\":1,\"components\":[" +
+            transform + "," + untouched + "]}]}}}\r\n";
+        auto document = AuthoringSceneDocument::load(bytes, SceneRevision{1});
+        CHECK(AuthoringSceneAuthority::encodePersistent(document) == bytes);
+        const auto check_reopen = [&](const AuthoringSceneDocument &before) {
+            const auto answer = makeQueryService(before).exportSceneSnapshotV2({});
+            const auto saved = AuthoringSceneAuthority::encodePersistent(before);
+            const auto reopened = AuthoringSceneDocument::load(saved, SceneRevision{1});
+            const auto after = makeQueryService(reopened).exportSceneSnapshotV2({});
+            // Like QD-1's canonical JSON text, this distinguishes 0 from 0.0.
+            // json::operator== alone would silently accept that regression.
+            CHECK(after.semantic_scene_bytes == answer.semantic_scene_bytes);
+            CHECK(after.digest.hex == answer.digest.hex);
+            CHECK(saved.find(untouched) != std::string::npos);
+            CHECK(saved.starts_with("\xef\xbb\xbf"));
+            CHECK(saved.ends_with("\r\n"));
+            CHECK(AuthoringSceneAuthority::encodePersistent(reopened) == saved);
+            return saved;
+        };
+        check_reopen(document);
+        auto raw = test_support::authoring(document).rawJson();
+        auto component = raw["scenes"]["main"]["objects"][0]["components"][0];
+        component["pos"] = {5.0, 0.0, -2.0};
+        makeSetComponentValueCommand("main", "Mover", "transform", component).apply(raw);
+        const auto edited = test_support::authoring(document).stage(raw, SceneRevision{2});
+        const auto saved = nlohmann::json::parse(check_reopen(edited));
+        const auto &saved_component = saved["scenes"]["main"]["objects"][0]["components"][0];
+        CHECK(saved_component["pos"].dump() == "[5,0,-2]");
+        CHECK(saved_component["rotation"].dump() == "[0,0,0,1]");
+        CHECK_FALSE(saved_component.contains("scale"));
+    }
+}
 } // namespace Pelican

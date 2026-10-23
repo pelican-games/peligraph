@@ -1,8 +1,12 @@
+#include "jsondocument.hpp"
 #include "renderconfigdocument.hpp"
+
+#include "graphcomposition.hpp"
 
 #include <algorithm>
 #include <optional>
 #include <cctype>
+#include <cstdio>
 #include <nlohmann/json.hpp>
 #include <picosha2.h>
 #include <stdexcept>
@@ -428,6 +432,57 @@ std::string renderConfigSourceDigest(std::string_view bytes) {
     return picosha2::hash256_hex_string(bytes.begin(), bytes.end());
 }
 
+std::optional<nlohmann::json> renderDocumentSyntax(std::string_view bytes,
+                                                   std::string_view reference) {
+    std::string reason;
+    try {
+        (void)nlohmann::json::parse(bytes);
+        return std::nullopt;
+    } catch (const nlohmann::json::parse_error &error) {
+        reason = error.what();
+    }
+    nlohmann::json fields{
+        {"document",
+         graphDocumentReference(reference).value_or(std::string{reference})}};
+    // The parser says "[json.exception.parse_error.101] parse error at line
+    // L, column C: <reason>".
+    unsigned long line = 0;
+    unsigned long column = 0;
+    int consumed = 0;
+    if (const auto at = reason.find("at line "); at != std::string::npos &&
+        std::sscanf(reason.c_str() + at, "at line %lu, column %lu: %n", &line,
+                    &column, &consumed) == 2 &&
+        consumed > 0) {
+        fields["line"] = line;
+        fields["column"] = column;
+        reason.erase(0, at + static_cast<std::size_t>(consumed));
+    }
+    fields["reason"] = std::move(reason);
+    return fields;
+}
+
+std::string renderDocumentSyntaxMessage(const nlohmann::json &fields) {
+    std::string where;
+    if (fields.contains("line") && fields.contains("column"))
+        where = " at line " + fields.at("line").dump() + ", column " +
+                fields.at("column").dump();
+    return std::string{renderDocumentSyntaxCode} + ": " +
+           fields.value("document", std::string{}) + " is not valid JSON" +
+           where + ": " + fields.value("reason", std::string{});
+}
+
+RenderDocumentSyntaxError::RenderDocumentSyntaxError(
+    const nlohmann::json &fields)
+    : std::runtime_error(std::string{renderDocumentSyntaxCode} + ": " +
+                         fields.dump()) {}
+
+nlohmann::json parseRenderDocument(std::string_view bytes,
+                                   std::string_view reference) {
+    if (auto fields = renderDocumentSyntax(bytes, reference))
+        throw RenderDocumentSyntaxError{*fields};
+    return nlohmann::json::parse(bytes);
+}
+
 RenderConfigSectionUnlocated::RenderConfigSectionUnlocated()
     : std::invalid_argument(
           "graph root render config has no rendering section object") {}
@@ -647,16 +702,25 @@ AuthoredRenderConfigDocument::parse(std::string bytes) {
     return AuthoredRenderConfigDocument{std::move(bytes), true};
 }
 
+AuthoredRenderConfigDocument::AuthoredRenderConfigDocument(std::string bytes,
+                                                           UnparsedTag)
+    : bytes_{std::move(bytes)}, digest_{renderConfigSourceDigest(bytes_)} {}
+
+AuthoredRenderConfigDocument
+AuthoredRenderConfigDocument::unparsed(std::string bytes) {
+    return AuthoredRenderConfigDocument{std::move(bytes), UnparsedTag{}};
+}
+
 AuthoredRenderConfigDocument AuthoredRenderConfigDocument::withRootValue(
     std::string_view key, std::string_view json_value) const {
     if (!nlohmann::json::accept(json_value))
         throw std::invalid_argument("render config root replacement must be one valid JSON value");
-    JsonCursor value_cursor{json_value};
-    value_cursor.skipWhitespace();
-    const auto value_begin = value_cursor.position();
-    value_cursor.skipValue();
-    const auto value = json_value.substr(value_begin, value_cursor.position() - value_begin);
     const auto location = locateRootMembers(bytes_, key);
+    const auto previous = location.selected_found
+        ? std::string_view{bytes_}.substr(location.selected_begin, location.selected_end - location.selected_begin)
+        : std::string_view{};
+    const auto value = renderJsonDocumentValue(
+        nlohmann::ordered_json::parse(json_value), previous, bytes_, 1);
     auto edited = bytes_;
     if (location.selected_found) {
         edited.replace(location.selected_begin, location.selected_end - location.selected_begin, value);
@@ -693,12 +757,12 @@ AuthoredRenderConfigDocument AuthoredRenderConfigDocument::withSectionValue(
     if (isGraphRootKey(key)) return withRootValue(key, json_value);
     if (!nlohmann::json::accept(json_value))
         throw std::invalid_argument("render config section replacement must be one valid JSON value");
-    JsonCursor value_cursor{json_value};
-    value_cursor.skipWhitespace();
-    const auto value_begin = value_cursor.position();
-    value_cursor.skipValue();
-    const auto value = json_value.substr(value_begin, value_cursor.position() - value_begin);
     const auto location = locateSectionMembers(bytes_, key);
+    const auto previous = location.selected_found
+        ? std::string_view{bytes_}.substr(location.selected_begin, location.selected_end - location.selected_begin)
+        : std::string_view{};
+    const auto value = renderJsonDocumentValue(
+        nlohmann::ordered_json::parse(json_value), previous, bytes_, 2);
     auto edited = bytes_;
     if (location.selected_found) {
         edited.replace(location.selected_begin, location.selected_end - location.selected_begin, value);

@@ -251,7 +251,9 @@ nlohmann::json AssetsVerification::detailJson() const {
 }
 
 void AssetsVerification::run() {
+    std::scoped_lock disk_lock{disk};
     {
+        // Held for testing, the run holds the disk as one that is hashing does.
         std::unique_lock lock{mutex};
         changed.wait(lock, [&] { return stop_requested.load() || !held_for_testing; });
         if (stop_requested.load()) {
@@ -260,30 +262,33 @@ void AssetsVerification::run() {
             return;
         }
     }
-    std::scoped_lock disk_lock{disk};
-    std::vector<AssetStoreStatus> store_list;
-    std::filesystem::path cache;
-    bool strict_assets = false;
-    {
+    for (;;) {
+        std::vector<AssetStoreStatus> store_list;
+        std::filesystem::path cache;
+        bool strict_assets = false;
+        {
+            std::scoped_lock lock{mutex};
+            store_list = stores;
+            cache = cache_path;
+            strict_assets = strict;
+            stale = false;
+        }
+        std::optional<Record> done;
+        try {
+            auto summary = verifyAssetStores(store_list, cache, strict_assets, false);
+            done = Record{.verified_at = utcNow(), .stores = std::move(summary.results)};
+        } catch (const std::exception &failure) {
+            LOG_WARNING(logger, "assets manifest: verification failed: {}", failure.what());
+        }
         std::scoped_lock lock{mutex};
-        store_list = stores;
-        cache = cache_path;
-        strict_assets = strict;
-    }
-    std::optional<Record> done;
-    try {
-        auto summary = verifyAssetStores(store_list, cache, strict_assets, false);
-        done = Record{.verified_at = utcNow(), .stores = std::move(summary.results)};
-    } catch (const std::exception &failure) {
-        LOG_WARNING(logger, "assets manifest: verification failed: {}", failure.what());
-    }
-    {
-        std::scoped_lock lock{mutex};
+        // PJ-1: the stores changed while this read the previous ones.
+        if (stale && !stop_requested.load()) continue;
         if (done) {
             record = std::move(done);
             skipped_reason.reset();
         }
         running = false;
+        break;
     }
     changed.notify_all();
 }
@@ -342,11 +347,23 @@ nlohmann::json AssetsVerification::updateManifest(const std::string &name) {
                                           "' declares no manifest in project.json",
                                       nlohmann::json::object({{"store", name}})};
     }
+    // EB-1: a run in progress reads the store and the hash cache this writes,
+    // and runs as long as hashing takes; the RPC thread (the frame) does not
+    // wait for it. The update is refused until the run is done.
+    const auto refuseRunning = [&] {
+        throw AssetsVerificationError{assetsVerificationRunningErrorCode,
+                                      "update_assets_manifest: the asset stores are being verified; update the "
+                                      "manifest of '" + name + "' once get_status says the verification is done",
+                                      nlohmann::json::object({{"store", name}})};
+    };
+    {
+        std::scoped_lock lock{mutex};
+        if (running) refuseRunning();
+    }
     AssetManifestGenerationResult generated;
     {
-        // A run in progress reads the hash cache this writes: it finishes
-        // first.
-        std::scoped_lock disk_lock{disk};
+        std::unique_lock disk_lock{disk, std::try_to_lock};
+        if (!disk_lock.owns_lock()) refuseRunning();
         try {
             generated = generateAssetsManifest(store->root, *store->manifest, cache, store->name, false);
         } catch (const std::exception &failure) {
@@ -366,6 +383,70 @@ nlohmann::json AssetsVerification::updateManifest(const std::string &name) {
                           {"hashed", generated.hashed},
                           {"cached", generated.cache_hits}};
     answer["state"] = verify().at("state");
+    return answer;
+}
+
+nlohmann::json AssetsVerification::redeclareStores(std::vector<AssetStoreStatus> store_list,
+                                                   const std::vector<std::string> &generate) {
+    std::filesystem::path cache;
+    {
+        std::scoped_lock lock{mutex};
+        if (!configured) {
+            throw AssetsVerificationError{assetsVerificationUnavailableErrorCode,
+                                          "edit_project_settings: this host does not verify assets",
+                                          nlohmann::json::object()};
+        }
+        cache = cache_path;
+    }
+    auto generated = nlohmann::json::array();
+    auto failed = nlohmann::json::array();
+    std::vector<const AssetStoreStatus *> to_write;
+    for (const auto &name : generate) {
+        const auto found = std::find_if(store_list.begin(), store_list.end(),
+                                        [&](const AssetStoreStatus &store) { return store.name == name; });
+        if (found == store_list.end() || !found->manifest) continue;
+        std::error_code ec;
+        if (std::filesystem::exists(*found->manifest, ec) || ec) continue;
+        to_write.push_back(&*found);
+    }
+    if (!to_write.empty()) {
+        // A run in progress reads the hash cache this writes: it finishes
+        // first.
+        std::scoped_lock disk_lock{disk};
+        for (const auto *store : to_write) {
+            try {
+                const auto written =
+                    generateAssetsManifest(store->root, *store->manifest, cache, store->name, false);
+                LOG_INFO(logger, "manifest {}: {} files ({} hashed, {} cached) -> {}", store->name, written.files,
+                         written.hashed, written.cache_hits, store->manifest->string());
+                generated.push_back({{"store", store->name},
+                                     {"manifest", store->manifest->generic_string()},
+                                     {"files", written.files},
+                                     {"hashed", written.hashed},
+                                     {"cached", written.cache_hits}});
+            } catch (const std::exception &failure) {
+                LOG_WARNING(logger, "manifest {}: cannot write {}: {}", store->name, store->manifest->string(),
+                            failure.what());
+                failed.push_back({{"store", store->name},
+                                  {"manifest", store->manifest->generic_string()},
+                                  {"reason", failure.what()}});
+            }
+        }
+    }
+    {
+        std::scoped_lock lock{mutex};
+        stores = std::move(store_list);
+        const bool any = std::any_of(stores.begin(), stores.end(), [](const AssetStoreStatus &store) {
+            return store.manifest || store.manifest_error;
+        });
+        // No store declares a manifest any more: there is nothing the last
+        // result stands for.
+        if (!any) record.reset();
+        if (running) stale = true;
+    }
+    auto answer = verify();
+    answer["generated"] = std::move(generated);
+    answer["failed"] = std::move(failed);
     return answer;
 }
 

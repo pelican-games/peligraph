@@ -1,3 +1,5 @@
+#include "../renderer/camera.hpp"
+#include "../renderer/shadowvalidation.hpp"
 #include "renderingpassconfigregistration.hpp"
 #include "graphimagesource.hpp"
 #include "graphinputs.hpp"
@@ -341,9 +343,13 @@ std::vector<CompiledComputeTask> compileComputeTasks(
                 &dependencies.runtime
                      .shader_defines,
                 ray_tracing_project,
-            });
+            }, true);
         compiled.push_back(CompiledComputeTask{definition, task_id});
     }
+    std::vector<ComputeTaskId> ids;
+    ids.reserve(compiled.size());
+    for (const auto &task : compiled) ids.push_back(task.task_id);
+    dependencies.compute_task_container.prepareDescriptorGeneration(ids);
     return compiled;
 }
 
@@ -1175,6 +1181,10 @@ void RegistrationStages::prepare() {
             effectiveRenderCompilerProgram(
                 dependencies.front().options),
             compiler_input);
+    if (const auto *camera = FastModuleContainer::tryGet<Camera>())
+        for (const auto &variant : compiler_output.variants)
+            if (variant.compiled_pipeline)
+                requireCameraShadowDistance(camera->getProjectionSpec().znear, *variant.compiled_pipeline);
     source_documents = std::make_shared<const RenderGraphDocumentSnapshot>(std::move(loaded_documents));
 #if PELICAN_WITH_AUDIO
     // A build without audio never gets here with a voice: pelican.audio is not
@@ -1183,6 +1193,8 @@ void RegistrationStages::prepare() {
     // The check that every voice's asset decodes is also its one decode
     // (AU-1 decision 7): Audio keeps the buffer, and the voices share it.
     if (value_graph) {
+        if (value_graph->requiresSoundBindings())
+            throw UserDataError("scene audio.volume/audio.pitch requires a connected voice instead of target");
         for (const auto &[node, asset] : value_graph->audioSources())
             (void)GET_MODULE(Audio).prepareSound(asset);
     }
@@ -1538,6 +1550,19 @@ RegisteredRenderGraphVariantFamily RegistrationStages::publish() {
             variant.options
                 .validate_prepared_generation(
                     prepared_generation.candidate());
+        }
+    }
+    // RTL-1b: whether the root names a ray group layout is fixed when the
+    // process starts. A candidate of the other mode is refused here, after
+    // its tasks were parsed, its shaders compiled and its generation
+    // validated, and before anything is staged or published: the editor
+    // then knows the mode was the only thing in the way and commits the
+    // documents for the next start (restart_required).
+    if (first.options.judge_ray_layout_mode) {
+        if (const auto *runtime =
+                FastModuleContainer::tryGet<RayLayoutRuntimeState>()) {
+            runtime->validate(
+                rayLayoutSemanticMode(ray_tracing_project.get()));
         }
     }
     std::function<void(

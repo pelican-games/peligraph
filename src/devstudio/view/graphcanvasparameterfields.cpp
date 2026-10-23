@@ -1,6 +1,7 @@
 #include "graphcanvasparameterfields.hpp"
 
 #include "featureparameterform.hpp"
+#include "graphcanvascomputefields.hpp"
 #include "graphcanvasposefields.hpp"
 #include "graphcanvasrenderfields.hpp"
 #include "studiotheme.hpp"
@@ -147,12 +148,56 @@ std::pair<std::string, std::string> firstStep(std::string path) {
     return {path.substr(0, end), path.substr(end)};
 }
 
-std::filesystem::path freeName(const std::filesystem::path &folder, const std::filesystem::path &file) {
-    auto target = folder / file.filename();
-    std::error_code error;
-    for (int index = 2; std::filesystem::exists(target, error); ++index)
-        target = folder / (file.stem().string() + "_" + std::to_string(index) + file.extension().string());
-    return target;
+// CT-6s, decision 1: the ray tracing stage a field of render.compute's
+// ray_tracing names its shaders for, by the field's name ("misses" holds
+// miss shaders); empty for any other name.
+std::string rayShaderStage(std::string_view name) {
+    if (name == "raygen" || name == "miss" || name == "closesthit" || name == "anyhit" ||
+        name == "intersection" || name == "callable")
+        return std::string{name};
+    if (name == "misses") return "miss";
+    return {};
+}
+
+bool isRayShaderStage(std::string_view stage) { return !stage.empty() && rayShaderStage(stage) == stage; }
+
+// Whether an entry is a shader, or a list, map or choice of them.
+bool holdsShader(const Json &entry) {
+    if (!entry.is_object()) return false;
+    if (textOf(entry, "kind") == "shader") return true;
+    for (const char *under : {"items", "variants"}) {
+        const auto found = entry.find(under);
+        if (found == entry.end()) continue;
+        if (found->is_array() && std::ranges::any_of(*found, [](const Json &each) { return holdsShader(each); }))
+            return true;
+        if (found->is_object() && holdsShader(*found)) return true;
+    }
+    return false;
+}
+
+// The stage a "shader:<stage>" hint names: the word after the colon (a row
+// of a list carries its list's description after it).
+std::string hintedShaderStage(std::string_view hint) {
+    if (!hint.starts_with("shader:")) return {};
+    const auto rest = hint.substr(7);
+    return std::string{rest.substr(0, rest.find(' '))};
+}
+
+// CT-6s, decision 2: a render.compute's dispatch.groups_from / rays_from
+// port is one of the task's own image ports (the keys of its `ports`, as the
+// parameters around it hold them).
+std::optional<std::vector<std::string>> taskPortChoices(const Json &schema, const GraphParameterChoices *choices,
+                                                        const Json &around) {
+    if (choices == nullptr || choices->op != "render.compute" || textOf(schema, "name") != "port")
+        return std::nullopt;
+    std::vector<std::string> ports;
+    const auto declared = around.is_object() ? around.find("ports") : Json::const_iterator{};
+    if (around.is_object() && declared != around.end() && declared->is_object())
+        for (const auto &[port, declaration] : declared->items()) {
+            const auto kind = declaration.is_object() ? textOf(declaration, "kind") : std::string{};
+            if (kind.empty() || kind == "image") ports.push_back(port);
+        }
+    return ports;
 }
 
 } // namespace
@@ -291,6 +336,10 @@ QString graphUnionVariantLabel(std::string_view name, const Json &variant) {
     if (kind == "number") return QObject::tr("Number");
     if (kind == "string") return QObject::tr("Name");
     if (kind == "object") return QObject::tr("Custom");
+    // CT-6s: one shader or several (ray_tracing.miss), a list of counts
+    // (dispatch.groups).
+    if (kind == "shader") return QObject::tr("Shader");
+    if (kind == "array") return QObject::tr("List");
     return qtext(kind);
 }
 
@@ -322,6 +371,9 @@ struct GraphParameterEditor::Parts {
     struct RowParts {
         QWidget *row = nullptr;
         QLineEdit *key = nullptr;
+        // RTL-2s, decision 1: a map whose keys the table lists
+        // (key_choices_from): the key is picked, `key` its line.
+        QComboBox *key_choice = nullptr;
         GraphParameterEditor *editor = nullptr;
     };
     QVBoxLayout *rows_layout = nullptr;
@@ -775,7 +827,10 @@ void GraphParameterEditor::buildUnion() {
         if (editor != nullptr && editor->value().is_null()) {
             const bool was = loading_;
             loading_ = true;
-            editor->setValue(itemFallback(editor->schema()));
+            // CT-6s: one shader made a list keeps it as the list's first row.
+            const bool keeps = editor->kind() == "array" && set_ && !value_.is_null() &&
+                               !value_.is_array() && !isExpressionValue(value_);
+            editor->setValue(keeps ? Json::array({value_}) : itemFallback(editor->schema()));
             loading_ = was;
         }
         showUnion();
@@ -800,7 +855,10 @@ void GraphParameterEditor::loadUnion(const Json &shown) {
                           (variant_kind == "number" && shown.is_number()) ||
                           (variant_kind == "string" && shown.is_string()) ||
                           (variant_kind == "object" && shown.is_object() && !isExpressionValue(shown)) ||
-                          (variant_kind == "enum" && shown.is_string());
+                          (variant_kind == "enum" && shown.is_string()) ||
+                          // CT-6s: a shader's path, or a list.
+                          (variant_kind == "shader" && shown.is_string()) ||
+                          (variant_kind == "array" && shown.is_array());
         if (fits) picked = static_cast<int>(at);
     }
     if (picked < 0 && shown.is_null()) {
@@ -863,8 +921,12 @@ void GraphParameterEditor::buildObject() {
         if (!field.is_object()) continue;
         const auto name = textOf(field, "name");
         if (name.empty()) continue;
-        const auto field_hint =
-            shader && textOf(field, "kind") == "string" ? "shader:" + name : hint;
+        auto field_hint = shader && textOf(field, "kind") == "string" ? "shader:" + name : hint;
+        // CT-6s, decision 1: a ray tracing stage's shaders are that stage's
+        // (render.compute's ray_tracing.raygen / miss / misses / closesthit,
+        // and a hit group's closesthit / anyhit / intersection).
+        if (const auto stage = rayShaderStage(name); !stage.empty() && holdsShader(field))
+            field_hint = "shader:" + stage;
         auto *editor = new GraphParameterEditor(field, choices_, child(qtext(name)), field_hint, parts.body);
         auto *label = new QLabel(qtext(name) + (field.value("required", false) ? QStringLiteral(" *")
                                                                                 : QString{}),
@@ -912,6 +974,13 @@ void GraphParameterEditor::buildRows() {
             std::set<std::string> taken;
             for (const auto &row : parts_->rows)
                 if (row.key != nullptr) taken.insert(row.key->text().toStdString());
+            // RTL-2s, decision 1: the first name the table lists that no row
+            // has yet, so nothing has to be typed.
+            for (const auto &listed : keyChoices())
+                if (!taken.contains(listed)) {
+                    key = listed;
+                    break;
+                }
             for (int index = 1; key.empty() || taken.contains(key); ++index) key = "key" + std::to_string(index);
         }
         addRow(itemFallback(items), key);
@@ -928,7 +997,27 @@ void GraphParameterEditor::addRow(const Json &value, const std::string &key) {
     line->setContentsMargins(0, 0, 0, 0);
     Parts::RowParts entry;
     entry.row = row;
-    if (kind() != "array") {
+    if (kind() != "array" && schema_.contains("key_choices_from")) {
+        // RTL-2s, decision 1 (engine RTL-1b): the key picked from the names
+        // the source lists (a miss, a ray type, a hit group), or typed.
+        entry.key_choice = new QComboBox(row);
+        entry.key_choice->setObjectName(child(QString::number(index) + QStringLiteral(".key")));
+        entry.key_choice->setEditable(true);
+        entry.key_choice->setInsertPolicy(QComboBox::NoInsert);
+        entry.key_choice->setMaximumWidth(140);
+        entry.key_choice->setToolTip(tr("Picked from the names the engine lists here, or typed."));
+        entry.key = entry.key_choice->lineEdit();
+        fillKeyChoice(*entry.key_choice, key);
+        line->addWidget(entry.key_choice);
+        connect(entry.key_choice, &QComboBox::currentIndexChanged, this, [this] {
+            if (!loading_) changed(false);
+        });
+        connect(entry.key, &QLineEdit::editingFinished, this, [this, field = entry.key] {
+            if (!field->isModified()) return;
+            field->setModified(false);
+            changed(false);
+        });
+    } else if (kind() != "array") {
         entry.key = new QLineEdit(qtext(key), row);
         entry.key->setObjectName(child(QString::number(index) + QStringLiteral(".key")));
         entry.key->setMaximumWidth(110);
@@ -961,6 +1050,29 @@ void GraphParameterEditor::addRow(const Json &value, const std::string &key) {
     });
     parts.rows_layout->addWidget(row);
     parts.rows.push_back(entry);
+}
+
+std::vector<std::string> GraphParameterEditor::keyChoices() const {
+    const auto from = schema_.find("key_choices_from");
+    if (from == schema_.end() || !from->is_object() || choices_ == nullptr || choices_->model == nullptr) return {};
+    const auto rpc = textOf(*from, "rpc");
+    const auto where = from->value("where", Json{});
+    if (rpc == "get_render_authoring_context")
+        return graphParameterChoicesFromReply(choices_->model->renderAuthoringContext(), textOf(*from, "key"),
+                                              textOf(*from, "field"), where);
+    if (rpc == "get_graph_catalog")
+        return graphParameterChoicesFromReply(choices_->model->catalogChoices(), textOf(*from, "key"),
+                                              textOf(*from, "field"), where);
+    return {};
+}
+
+void GraphParameterEditor::fillKeyChoice(QComboBox &combo, const std::string &key) const {
+    const QSignalBlocker block{combo};
+    combo.clear();
+    for (const auto &listed : keyChoices()) combo.addItem(qtext(listed), qtext(listed));
+    const auto index = combo.findData(qtext(key));
+    combo.setCurrentIndex(index);
+    combo.setEditText(qtext(key));
 }
 
 std::vector<std::pair<std::string, std::string>> GraphParameterEditor::comboChoices() const {
@@ -1054,9 +1166,13 @@ std::vector<std::pair<std::string, std::string>> GraphParameterEditor::comboChoi
         return result;
     }
     if (k == "shader" || hint_.starts_with("shader:")) {
-        std::string stage = hint_.starts_with("shader:") ? hint_.substr(7) : std::string{};
-        if (choices_->op == "render.compute") stage = "compute";
-        if (stage != "vertex" && stage != "fragment" && stage != "compute") stage.clear();
+        std::string stage = hintedShaderStage(hint_);
+        // CT-6s, decision 1: a ray tracing stage lists that stage's files
+        // (.rgen, .rmiss, .rchit, .rahit, .rint, .rcall) and the engine's
+        // shaders of it; render.compute's own shader is a compute shader.
+        if (choices_->op == "render.compute" && !isRayShaderStage(stage)) stage = "compute";
+        if (stage != "vertex" && stage != "fragment" && stage != "compute" && !isRayShaderStage(stage))
+            stage.clear();
         std::vector<std::string> values;
         if (choices_->model != nullptr)
             for (const auto &shader : choices_->model->engineShaders())
@@ -1065,6 +1181,8 @@ std::vector<std::pair<std::string, std::string>> GraphParameterEditor::comboChoi
             if (stage.empty() || shader_stage.toStdString() == stage) values.push_back(reference.toStdString());
         return plain(std::move(values));
     }
+    if (k == "string")
+        if (auto ports = taskPortChoices(schema_, choices_.get(), around_)) return plain(std::move(*ports));
     if (k == "string" && choices_->strings)
         if (auto known = choices_->strings(textOf(schema_, "name"), around_)) return plain(std::move(*known));
     return result;
@@ -1096,8 +1214,9 @@ void GraphParameterEditor::fillCombo() {
     const bool string_kind = kind() == "string" && !hint_.starts_with("shader:");
     if (string_kind) {
         // A string Studio knows nothing of is typed.
-        const bool known = choices_ != nullptr && choices_->strings &&
-                           choices_->strings(textOf(schema_, "name"), around_).has_value();
+        const bool known = taskPortChoices(schema_, choices_.get(), around_).has_value() ||
+                           (choices_ != nullptr && choices_->strings &&
+                            choices_->strings(textOf(schema_, "name"), around_).has_value());
         parts.combo->setVisible(known);
         parts.text->setVisible(!known);
         parts.plain = known ? static_cast<QWidget *>(parts.combo) : parts.text;
@@ -1141,7 +1260,12 @@ void GraphParameterEditor::refreshChoices(const Json &around) {
     for (const auto &[name, editor] : parts_->fields) editor->refreshChoices(around);
     // UX-12e, decision 1: a list's rows (usage, format_candidates) and a
     // union's shapes read their lists again too.
-    for (const auto &row : parts_->rows) row.editor->refreshChoices(around);
+    for (const auto &row : parts_->rows) {
+        // RTL-2s, decision 1: and a map's keys (not the one being typed).
+        if (row.key_choice != nullptr && !row.key->hasFocus())
+            fillKeyChoice(*row.key_choice, row.key->text().toStdString());
+        row.editor->refreshChoices(around);
+    }
     for (const auto &shape : parts_->shapes)
         if (shape.editor != nullptr) shape.editor->refreshChoices(around);
     // UX-13b, decision 5: a required union not written starts on its listed
@@ -1403,26 +1527,25 @@ void GraphParameterEditor::importAsset() {
             if (imported.reference.empty() || imported.convert) return;
             reference = "project://" + imported.reference;
         } else {
-            const auto folder = root / "assets" /
-                                (asset_kind == "model"            ? "models"
-                                 : asset_kind == "image"          ? "images"
-                                 : asset_kind == "analysis_table" ? "analysis"
-                                                                  : "files");
-            std::error_code error;
-            std::filesystem::create_directories(folder, error);
-            const auto target = freeName(folder, file);
-            if (error || !std::filesystem::copy_file(file, target, error) || error) return;
+            // MI-1s: the copy Add Object > Model from file... makes too.
+            const auto copied = copyIntoProjectAssets(root,
+                                                      asset_kind == "model"            ? "models"
+                                                      : asset_kind == "image"          ? "images"
+                                                      : asset_kind == "analysis_table" ? "analysis"
+                                                                                       : "files",
+                                                      file);
+            if (!copied.error.empty()) return;
             // A baked table reads its record beside it (`<file>.import.json`).
             if (asset_kind == "analysis_table") {
+                std::error_code error;
                 auto record = file;
                 record += ".import.json";
-                auto copied = target;
-                copied += ".import.json";
+                auto beside = copied.copy;
+                beside += ".import.json";
                 if (std::filesystem::exists(record, error))
-                    std::filesystem::copy_file(record, copied, error);
+                    std::filesystem::copy_file(record, beside, error);
             }
-            const auto relative = target.lexically_relative(root).generic_u8string();
-            reference = "project://" + std::string{relative.begin(), relative.end()};
+            reference = "project://" + copied.reference;
         }
         set_ = true;
         value_ = reference;
@@ -1484,7 +1607,9 @@ const std::vector<OwnFields> &ownFields() {
         {"render.raster",
          {"ports", "shader", "draw", "schedule", "raster_state", "color_load_op", "color_store_op",
           "clear_color"}},
-        {"render.compute", {"ports", "shader", "ray_tracing", "schedule"}},
+        // CT-6s, decision 1: ray_tracing is the generic fields' (engine
+        // CT-6), each stage's shaders narrowed to that stage's.
+        {"render.compute", {"ports", "shader", "schedule"}},
         {"render.material_pass",
          {"material_contract", "material_variant", "material_filter", "material_range",
           "material_outputs", "material_output_states", "screen_inputs", "surface_resources",
@@ -1509,6 +1634,10 @@ bool listsFromRpc(const Json &entry) {
     if (!entry.is_object()) return false;
     // UX-13b, decision 1: the catalog's are Studio's already.
     if (const auto from = entry.find("choices_from");
+        from != entry.end() && from->is_object() && textOf(*from, "rpc") == "get_render_authoring_context")
+        return true;
+    // RTL-2s, decision 1: a map's keys too (ray_tracing's misses, hit_shaders).
+    if (const auto from = entry.find("key_choices_from");
         from != entry.end() && from->is_object() && textOf(*from, "rpc") == "get_render_authoring_context")
         return true;
     for (const char *under : {"fields", "items", "variants"})
@@ -1609,15 +1738,16 @@ void GraphCanvasParameterFields::showNode(const GraphCanvasNode *node, const std
     node_ = node->id;
     scope_ = scope;
     op_ = node->op;
-    // The rows are made again for another node, op or table; otherwise only
-    // the values are read again.
-    const QStringList parts{qtext(scope), qtext(node->id), qtext(node->op), qtext(table.dump()),
+    // The rows belong to the scope, op and schema. A sibling node
+    // reuses them, with its choice context and values updated below.
+    const QStringList parts{qtext(scope), qtext(node->op), qtext(table.dump()),
                             qtext(project_root_.generic_string())};
     const auto shown = parts.join(QChar{0x1f}).toStdString();
     if (shown != shown_) {
         shown_ = shown;
         rebuild(*node, table);
     }
+    if (choices_) choices_->node = node_;
     if (rows_.empty()) {
         hide();
         return;
@@ -1643,6 +1773,14 @@ void GraphCanvasParameterFields::showNode(const GraphCanvasNode *node, const std
                                             : row.editor->toolTip());
         }
         if (row.name == "view_select") form_->setRowVisible(row.label, !view);
+        // CT-6s, decision 1: a compute task that runs a shader has no ray
+        // tracing to show (the two exclude each other; Shader picks which).
+        // RTL-2s, decision 1: with a ray group layout, the compute fields'
+        // ray tracing section shows it in the layout's terms instead.
+        if (row.name == "ray_tracing" && node->op == "render.compute")
+            form_->setRowVisible(row.label, node->parameters.is_object() &&
+                                                node->parameters.contains("ray_tracing") &&
+                                                !rayLayoutSectionShown(model_, node->parameters));
     }
     load(*node);
     followEditable();
@@ -1670,7 +1808,8 @@ void GraphCanvasParameterFields::rebuild(const GraphCanvasNode &node, const Json
     // The place's and the view's fields show these.
     if (GraphCanvasModel::showsPlace(node.op))
         for (const auto *name : {"insert", "pass_set", "canonical_anchor"}) skipped.emplace_back(name);
-    auto choices = std::make_shared<GraphParameterChoices>();
+    choices_ = std::make_shared<GraphParameterChoices>();
+    const auto &choices = choices_;
     choices->model = &model_;
     choices->scope = scope_;
     choices->node = node.id;

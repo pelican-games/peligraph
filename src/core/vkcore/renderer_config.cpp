@@ -5,6 +5,7 @@
 #include "../launchconfig.hpp"
 #include "../log.hpp"
 #include "../material/materialcontainer.hpp"
+#include "../material/materialpassesremoved.hpp"
 #include "../profiler.hpp"
 #include "../renderer/debugdraw.hpp"
 #include "../renderer/debugtext.hpp"
@@ -23,6 +24,7 @@
 #include "../renderingpass/renderingpassconfigloader.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
+#include "../shader/raytracingrefusal.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "../shader/pipelinefactory.hpp"
 #include "../ui/module.hpp"
@@ -32,6 +34,7 @@
 #include "../../project/renderfeatureoverlay.hpp"
 #include "../../project/featurecompose.hpp"
 #include "../../project/graphcomposition.hpp"
+#include "../../project/renderconfigdocument.hpp"
 #include "../../project/renderconfigsection.hpp"
 #include "../../project/renderpipeline.hpp"
 #include "../../project/vulkanviewplanning.hpp"
@@ -132,12 +135,19 @@ void requireRuntimeFeatureModules(
                                      ? module_initialized(module.module)
                                      : module.initialized();
         if (initialized) continue;
-        throw std::runtime_error(
-            "Render pipeline hot reload cannot enable feature '" +
-            std::string{requirement.feature} +
-            "' after module creation is frozen; missing runtime module " +
-            std::string{module.module});
+        // PB-1: by name (render_feature_requires_restart@1).
+        throw std::runtime_error(renderFeatureRequiresRestartMessage(
+            requirement.feature, module.module));
     }
+}
+
+// The readable text of a refusal that travels as "<code>: <fields>", for a
+// reason shown as words (the feature catalog's unavailable_reason).
+std::string readableRefusal(std::string message) {
+    if (auto coded = splitCodedRefusalMessage(message);
+        coded && coded->code == renderFeatureRequiresRestartCode)
+        return renderFeatureRequiresRestartText(coded->fields);
+    return message;
 }
 
 RenderFeatureRuntimeAvailabilityEnvironment
@@ -233,7 +243,7 @@ RenderFeatureRuntimeAvailability evaluateRenderFeatureRuntimeAvailability(
     } catch (const std::exception &error) {
         return {
             .available = false,
-            .unavailable_reason = error.what(),
+            .unavailable_reason = readableRefusal(error.what()),
         };
     } catch (...) {
         return {
@@ -408,6 +418,171 @@ void registerXrMirrorIntermediate(vk::Extent2D extent) {
 
 } // namespace
 
+std::string renderPipelineFallbackConfigJson(
+    std::string_view default_pass_name) {
+    const nlohmann::json pass{
+        {"name", std::string{renderPipelineFallbackPassName}},
+        {"type", "fullscreen"},
+        {"input", nlohmann::json::array()},
+        {"output",
+         {{"color", nlohmann::json::array({"display"})},
+          {"depth", nullptr}}},
+        {"shader",
+         {{"vertex", "engine://fullscreen"},
+          {"fragment", "engine://fallback_clear"}}},
+    };
+    const nlohmann::json config{
+        {"schema", "pelican.graph"},
+        {"version", 1},
+        {"definitions", nlohmann::json::object()},
+        {"nodes", nlohmann::json::array()},
+        {"outputs", nlohmann::json::object()},
+        {"rendering",
+         {{"rendering_passes",
+           nlohmann::json::array(
+               {{{"name", std::string{default_pass_name}},
+                 {"passes", nlohmann::json::array({pass})}}})}}},
+    };
+    return config.dump(2);
+}
+
+bool isRenderPipelineFallbackConfig(std::string_view rendering_config_json) {
+    const auto config = nlohmann::json::parse(rendering_config_json, nullptr, false);
+    if (!config.is_object()) return false;
+    const auto rendering = config.find("rendering");
+    if (rendering == config.end() || !rendering->is_object() ||
+        rendering->contains("ray_group_layout"))
+        return false;
+    const auto graphs = rendering->find("rendering_passes");
+    if (graphs == rendering->end() || !graphs->is_array() || graphs->size() != 1) return false;
+    const auto &graph = graphs->front();
+    const auto passes = graph.is_object() ? graph.find("passes") : graph.end();
+    if (passes == graph.end() || !passes->is_array() || passes->size() != 1) return false;
+    const auto &pass = passes->front();
+    if (!pass.is_object() || pass.value("name", std::string{}) != renderPipelineFallbackPassName)
+        return false;
+    const auto shader = pass.find("shader");
+    return shader != pass.end() && shader->is_object() &&
+           shader->value("fragment", std::string{}) == "engine://fallback_clear";
+}
+
+nlohmann::json renderPipelineRefusalJson(
+    const std::exception &error, std::string_view root_json,
+    std::string_view root_reference) {
+    // BS-1b: a root that is not JSON is refused by that name, whatever
+    // reader met it first.
+    if (!root_json.empty())
+        if (auto fields = renderDocumentSyntax(root_json, root_reference)) {
+            (*fields)["code"] = std::string{renderDocumentSyntaxCode};
+            (*fields)["message"] = renderDocumentSyntaxMessage(*fields);
+            return std::move(*fields);
+        }
+    const auto root =
+        nlohmann::json::parse(root_json, nullptr, false);
+    nlohmann::json refusal = nlohmann::json::object();
+    std::string code;
+    std::string message = error.what();
+    if (const auto *graph =
+            dynamic_cast<const GraphRegistryError *>(&error)) {
+        // CT-2: named after the root unless the refusal already is.
+        const auto named = graphRefusalInDocument(
+            *graph, root, root_reference);
+        if (named.detail().is_object()) refusal = named.detail();
+        code = named.code();
+        message = named.what();
+    } else if (const auto *ray =
+                   dynamic_cast<const RayTracingRefusal *>(&error)) {
+        // RTL-1b: a ray tracing task's refusal by the parser's code, with
+        // the fields it was raised with; the message is the parser's.
+        if (ray->fields().is_object()) refusal = ray->fields();
+        code = ray->code();
+        // EB-7: a task the root graph's own node made (a render.compute node
+        // of that id at the root's top level) is that node's, as the
+        // editor's reload refusal says it. A task of a feature, a preset or
+        // a definition's instance is left without: telling those apart needs
+        // the composition, which this refusal does not have.
+        if (const auto task = refusal.find("task");
+            task != refusal.end() && task->is_string() &&
+            !refusal.contains("document") && !refusal.contains("node") &&
+            root.is_object())
+            if (const auto nodes = root.find("nodes");
+                nodes != root.end() && nodes->is_array())
+                for (const auto &node : *nodes)
+                    if (node.is_object() &&
+                        node.value("id", std::string{}) == task->get<std::string>() &&
+                        node.value("op", std::string{}) == "render.compute") {
+                        refusal["document"] = graphDocumentReference(root_reference)
+                                                  .value_or(std::string{root_reference});
+                        refusal["node"] = task->get<std::string>();
+                        break;
+                    }
+    } else if (auto coded = splitCodedRefusalMessage(error.what())) {
+        if (coded->fields.is_object()) refusal = coded->fields;
+        code = coded->code;
+        addGraphRefusalSource(refusal, code, root, root_reference);
+        // BS-1b: a feature or preset that is not JSON, said in words.
+        if (code == renderDocumentSyntaxCode)
+            message = renderDocumentSyntaxMessage(refusal);
+        if (code == renderFeatureRequiresRestartCode)
+            message = renderFeatureRequiresRestartText(refusal);
+        // PB-1: as an edit ticket's rejection says it.
+        if (code == materialRouteUnservedCode)
+            message = materialRouteUnservedText(refusal);
+    } else if (auto frozen = frozenModuleRefusalFields(error.what())) {
+        // PB-1: a module first asked for after the freeze, by name.
+        refusal = std::move(*frozen);
+        code = std::string{renderFeatureRequiresRestartCode};
+        message = renderFeatureRequiresRestartText(refusal);
+    } else {
+        code = std::string{renderPipelineUnnamedRefusalCode};
+    }
+    refusal["code"] = std::move(code);
+    refusal["message"] = std::move(message);
+    return refusal;
+}
+
+std::string renderFeatureRequiresRestartMessage(
+    std::optional<std::string_view> feature, std::string_view module) {
+    nlohmann::json fields = nlohmann::json::object();
+    if (feature) fields["feature"] = std::string{*feature};
+    fields["module"] = std::string{module};
+    return std::string{renderFeatureRequiresRestartCode} + ": " +
+           fields.dump();
+}
+
+std::string renderFeatureRequiresRestartText(const nlohmann::json &fields) {
+    const auto module = fields.value("module", std::string{});
+    std::string text = std::string{renderFeatureRequiresRestartCode} + ": ";
+    if (fields.contains("feature"))
+        text += "feature '" + fields.value("feature", std::string{}) + "' needs";
+    else
+        text += "the rendering configuration needs";
+    return text + " runtime module " + module +
+           ", which this engine was started without; restart the engine to "
+           "enable it";
+}
+
+std::optional<nlohmann::json> frozenModuleRefusalFields(
+    std::string_view message) {
+    constexpr std::string_view open = "Module '";
+    constexpr std::string_view frozen =
+        "' was first requested after the runtime module graph was frozen";
+    const auto at = message.find(frozen);
+    if (!message.starts_with(open) || at == std::string_view::npos)
+        return std::nullopt;
+    std::string module{message.substr(open.size(), at - open.size())};
+    // The type as the compiler spells it: "struct Pelican::ui::UiModule".
+    for (const std::string_view prefix : {"struct ", "class ", "Pelican::"})
+        if (module.starts_with(prefix)) module.erase(0, prefix.size());
+    nlohmann::json fields = nlohmann::json::object();
+    for (const auto &requirement : runtime_feature_modules)
+        for (const auto &required : requirement.modules)
+            if (required.module == module)
+                fields["feature"] = std::string{requirement.feature};
+    fields["module"] = std::move(module);
+    return fields;
+}
+
 RenderingPassId loadDefaultRenderingPassFromConfig() {
     return loadRenderGraphVariantsFromConfig().flat;
 }
@@ -491,6 +666,10 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
     RenderingPassConfigRegistrationDependencies::Options
         flat_options;
     flat_options.load_document = hooks.load_document;
+    // RTL-1b (BS-1): the engine's fallback generation stands in for a project
+    // with or without a ray group layout, so its mode is not judged.
+    flat_options.judge_ray_layout_mode =
+        !isRenderPipelineFallbackConfig(rendering_config_json);
     flat_options.validate_prepared_generation =
         [default_pass_name, &prepared_flat_rendering_pass_id,
          validate_live_materials =
@@ -617,6 +796,11 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
             "Failed to load main rendering configuration: {}",
             named.what());
         throw named;
+    } catch (const MaterialPassesRemoved &restart) {
+        // UD-1: this is a valid document committed for the next startup,
+        // not a configuration error. Keep the typed restart reason intact.
+        LOG_INFO(logger, "Render configuration requires restart: {}", restart.what());
+        throw;
     } catch (const std::exception &error) {
         // CT-2: the graph refusals that travel as "<code>: <JSON>" (the
         // view_select and draw-loop codes) take the same fields. Only a plain
@@ -640,6 +824,18 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
                     throw named;
                 }
             }
+        }
+        // PB-1: a module the composition asked for first after the module
+        // graph was frozen (one the feature table does not list) is the
+        // same refusal as a listed one: only a restart creates it.
+        if (auto frozen = frozenModuleRefusalFields(error.what())) {
+            const std::runtime_error named{
+                std::string{renderFeatureRequiresRestartCode} + ": " +
+                frozen->dump()};
+            LOG_ERROR(logger,
+                      "Failed to load main rendering configuration: {}",
+                      named.what());
+            throw named;
         }
         LOG_ERROR(
             logger,

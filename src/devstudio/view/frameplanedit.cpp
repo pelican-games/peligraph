@@ -1426,6 +1426,22 @@ Json renderTargetDeclaration(const RenderTargetFormValues &values,
     return declaration;
 }
 
+std::string proposedRenderTargetName(const FramePlanAuthoring &authoring,
+                                     std::string_view pass) {
+    std::vector<std::string> taken;
+    taken.reserve(authoring.render_targets.size());
+    for (const auto &[name, target] : authoring.render_targets) {
+        (void)target;
+        taken.push_back(name);
+    }
+    if (!pass.empty()) return proposedColorTargetName(pass, taken);
+    const std::string base = "render_target";
+    std::string candidate = base;
+    for (int index = 2; std::ranges::find(taken, candidate) != taken.end(); ++index)
+        candidate = base + "_" + std::to_string(index);
+    return candidate;
+}
+
 FramePlanEditRequest framePlanRenderTargetAddRequest(
     const FramePlanAuthoring &authoring, const RenderTargetFormValues &values) {
     if (!authoring.received)
@@ -1501,6 +1517,14 @@ std::string framePlanRenderTargetRejection(const Json &error,
                 if (user.is_string()) users.push_back(user.get<std::string>());
         return name + " is still used by " + join(users) +
                ": disconnect it there before deleting or renaming it.";
+    }
+    // GL-5d, decision 3: a graph's render.target_ref still names it (the
+    // composition refuses the candidate, graph.target_ref_unknown@1).
+    if (code == "graph.target_ref_unknown@1") {
+        const auto node = textOr(error, "node");
+        return name + " is still named by the Graph's render.target_ref " +
+               (node.empty() ? std::string{"node"} : node) +
+               ": delete that node before deleting or renaming the target.";
     }
     if (code == "render_target_not_editable")
         return name + " cannot be changed here: it is " +
@@ -2122,6 +2146,109 @@ FramePlanEditRequest framePlanTaskViewSelectRequest(
                           {"task_name", task},
                           {"task", std::move(declaration)}};
     return request;
+}
+
+// --- UX-15b: the lower layer's decisions (engine EL-2).
+
+std::string framePlanPackageFamily(const std::string &graph) {
+    // get_frame_plan does not name the family. The rendering pass of an XR
+    // frame is the default pass name with "#xr" after it; every other graph
+    // the Frame Plan shows is taken to be the flat one. An inference.
+    return graph.ends_with("#xr") ? "xr" : "flat";
+}
+
+namespace {
+
+// What every one of the four needs before it can be sent.
+std::string lowerLayerPrecondition(const FramePlanAuthoring &authoring,
+                                   const FramePlanModel &model) {
+    if (!authoring.received) return "The render authoring context has not arrived yet.";
+    if (!model.physical_plan.available())
+        return "The frame plan has no physical target plan (" +
+               model.physical_plan.unavailable_reason_code + ").";
+    return {};
+}
+
+FramePlanEditRequest lowerLayerRequest(const FramePlanAuthoring &authoring,
+                                       const FramePlanModel &model, const char *method,
+                                       const char *field, Json package) {
+    FramePlanEditRequest request;
+    request.method = method;
+    request.params = Json{{"base_source_digest", authoring.source_digest},
+                          {"family", framePlanPackageFamily(model.physical_plan.graph)},
+                          {field, package}};
+    // A null package erases the one for this graph only.
+    if (package.is_null()) request.params["graph"] = model.physical_plan.graph;
+    return request;
+}
+
+Json packageOf(const std::string &text) {
+    return text.empty() ? Json(nullptr) : Json::parse(text, nullptr, false);
+}
+
+} // namespace
+
+FramePlanEditRequest framePlanBackendPinRequest(const FramePlanAuthoring &authoring,
+                                                const FramePlanModel &model,
+                                                const std::string &candidate) {
+    if (auto why = lowerLayerPrecondition(authoring, model); !why.empty()) return refuse(why);
+    const auto row = std::ranges::find(model.backend_candidates, candidate,
+                                       &FramePlanBackendCandidate::candidate);
+    if (row == model.backend_candidates.end())
+        return refuse(candidate + " is not a backend candidate of this plan.");
+    if (!row->selected && !row->feasible)
+        return refuse(candidate + " was rejected by the planner: only a Selected or Feasible "
+                                  "candidate can be pinned.");
+    if (model.physical_plan.pinned_backend_candidate == candidate)
+        return refuse(candidate + " is pinned already.");
+    auto pin = packageOf(model.physical_plan.ejectable_pin_package);
+    if (!pin.is_object() || !pin.contains("pins") || !pin.at("pins").is_object())
+        return refuse("The plan ejects no pin package to pin a candidate with.");
+    pin["pins"]["backend_candidate"] = candidate;
+    auto request = lowerLayerRequest(authoring, model, "edit_vulkan_plan_pins", "pin",
+                                     std::move(pin));
+    request.notice = "Pinned " + candidate + ".";
+    return request;
+}
+
+FramePlanEditRequest framePlanBackendUnpinRequest(const FramePlanAuthoring &authoring,
+                                                  const FramePlanModel &model) {
+    if (auto why = lowerLayerPrecondition(authoring, model); !why.empty()) return refuse(why);
+    if (model.physical_plan.applied_pin_package.empty())
+        return refuse("No backend candidate is pinned.");
+    auto request = lowerLayerRequest(authoring, model, "edit_vulkan_plan_pins", "pin", nullptr);
+    request.notice = "Unpinned " + model.physical_plan.pinned_backend_candidate +
+                     ": the planner picks the candidate again.";
+    return request;
+}
+
+FramePlanEditRequest framePlanPhysicalFreezeRequest(const FramePlanAuthoring &authoring,
+                                                    const FramePlanModel &model) {
+    if (auto why = lowerLayerPrecondition(authoring, model); !why.empty()) return refuse(why);
+    auto fragment = packageOf(model.physical_plan.ejectable_physical_fragment);
+    if (!fragment.is_object())
+        return refuse("The plan ejects no physical fragment to freeze.");
+    auto request = lowerLayerRequest(authoring, model, "put_vulkan_physical_fragment",
+                                     "fragment", std::move(fragment));
+    request.notice = model.physical_plan.applied_physical_fragment.empty()
+                         ? "Physical plan frozen."
+                         : "Physical plan frozen again from the current plan.";
+    return request;
+}
+
+FramePlanEditRequest framePlanPhysicalRemoveRequest(const FramePlanAuthoring &authoring,
+                                                    const FramePlanModel &model) {
+    if (auto why = lowerLayerPrecondition(authoring, model); !why.empty()) return refuse(why);
+    if (model.physical_plan.applied_physical_fragment.empty())
+        return refuse("The physical plan is not frozen.");
+    auto request = lowerLayerRequest(authoring, model, "put_vulkan_physical_fragment",
+                                     "fragment", nullptr);
+    request.notice = "The frozen physical plan was removed.";
+    return request;
+}
+
+bool framePlanPhysicalFragmentStale(const nlohmann::json &error) {
+    return error.is_object() && error.value("code", std::string{}) == "physical_fragment_stale";
 }
 
 } // namespace PelicanStudio

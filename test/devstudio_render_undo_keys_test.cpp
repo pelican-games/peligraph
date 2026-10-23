@@ -25,6 +25,10 @@
 #include "../src/devstudio/viewport/nativewindowhost.hpp"
 #include "../src/devstudio/viewport/viewportgeometry.hpp"
 #include "outlinertree.hpp"
+#include "graphattachmentwidget.hpp"
+#include "graphcanvaswidget.hpp"
+#include "renderconfigdigest.hpp"
+#include <QListWidget>
 
 #include <QAction>
 #include <QApplication>
@@ -95,6 +99,8 @@ class FakeEngine {
     // Every request, by method, in order.
     std::vector<std::pair<std::string, Json>> requests;
     std::uint64_t revision = 1;
+    bool attachments = false;
+    bool detached = false;
 
     std::size_t count(const std::string &method) const {
         std::size_t found = 0;
@@ -195,8 +201,20 @@ class FakeEngine {
                                        {"content", "preset " + preset_digest_.substr(0, 1)}}})}};
         if (method == "edit_preset_pass" || method == "restore_render_documents")
             return Json{{"status", "accepted"}, {"ticket", method + ":" + std::to_string(next_ticket_++)}};
+        if (attachments && method == "get_graph_instances")
+            return Json{{"source_digest", {{"hex", std::string(64, detached ? 'b' : 'a')}}},
+                {"nodes", Json::array()}, {"definitions", {{"unit", {{"nodes", Json::array()}}}}},
+                {"instances", detached ? Json::array() : Json::array({
+                    {{"id", "left"}, {"op", "graph.instance"}, {"definition", "unit"}, {"owner", {{"scene", "main"}, {"object", 2}}}}})}};
+        if (attachments && method == "edit_graph_instances")
+            return Json{{"status", "accepted"}, {"ticket", "attachment:1"}};
         if (method == "get_edit_result") {
             const auto ticket = params.at("ticket").get<std::string>();
+            if (ticket.starts_with("attachment:")) {
+                detached = true;
+                return Json{{"status", "committed"}, {"committed", true},
+                            {"source_digest", {{"hex", std::string(64, 'b')}}}};
+            }
             if (ticket.starts_with("scene:"))
                 return Json{{"status", "committed"}, {"committed_revision", ++revision}};
             preset_digest_ = ticket.starts_with("edit_preset_pass") ? PresetAfter : PresetBefore;
@@ -409,6 +427,35 @@ TEST_CASE("RU-1 Ctrl+Z is the render history's in the Frame Plan and the Pass Ed
     rig.press(pass_editor, Qt::Key_Z);
     CHECK(rig.render_undos == undos + 1);
     REQUIRE(rig.pumpUntil([&] { return rig.window.render_history_->redoStack().size() == 1; }));
+}
+
+
+TEST_CASE("RT-A MainWindow Attachment commit publishes through production wiring and rereads Graph", "[devstudio][rta][widget]") {
+    Rig rig;
+    rig.engine.attachments = true;
+    REQUIRE(rig.window.showRenderToolsTab(QStringLiteral("graph")));
+    rig.window.graph_canvas_->refresh();
+    REQUIRE(rig.pumpUntil([&] { return rig.window.graph_canvas_->model().digest() == std::string(64, 'a'); }));
+    CHECK(rig.window.render_digest_->current() == std::string(64, 'a'));
+    auto &outliner = *rig.window.outliner_;
+    auto *cube = rig.row("Cube");
+    REQUIRE(cube);
+    QTest::mouseClick(outliner.viewport(), Qt::LeftButton, {}, outliner.visualItemRect(cube).center());
+    auto &instances = rig.named<QListWidget>("pelican.graphAttachments");
+    REQUIRE(rig.pumpUntil([&] { return instances.count() == 1; }));
+    instances.setCurrentRow(0);
+    auto &detach = rig.named<QPushButton>("pelican.graphDetach");
+    REQUIRE(detach.isEnabled());
+    rig.pumpFor(100);
+    const auto reads = rig.engine.count("get_graph_instances");
+    const auto edits = rig.engine.count("edit_graph_instances");
+    detach.click();
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.detached &&
+        rig.window.graph_canvas_->model().digest() == std::string(64, 'b'); }));
+    CHECK(rig.engine.count("edit_graph_instances") == edits + 1);
+    CHECK(rig.window.render_digest_->current() == std::string(64, 'b'));
+    // Attachment's own read plus the Graph tab's documentMoved read.
+    CHECK(rig.engine.count("get_graph_instances") >= reads + 2);
 }
 
 } // namespace PelicanStudio

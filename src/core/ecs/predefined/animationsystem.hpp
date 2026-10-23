@@ -19,6 +19,8 @@ class ModelAssetContainer;
 class PathResolver;
 class PolygonInstanceContainer;
 struct AnimationSystemState;
+namespace Animation { class AnimationAssetRegistry; }
+namespace test_support { struct AnimationSystemTestAccess; }
 
 // AG-3a. What one animation component was doing on the frame that just ran.
 // The two component paths answer from different places -- a graph keeps its own
@@ -43,6 +45,8 @@ struct AnimationComponentTrace {
 };
 
 DECLARE_MODULE(AnimationSystem) {
+    friend struct test_support::AnimationSystemTestAccess;
+    Animation::AnimationAssetRegistry &assetRegistry();
     std::unique_ptr<AnimationSystemState> state;
     EngineTime *engine_time = nullptr;
     PolygonInstanceContainer *instances = nullptr;

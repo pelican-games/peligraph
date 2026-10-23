@@ -1,0 +1,31 @@
+{
+  "schema": "pelican.scene",
+  "version": 2,
+  "scenes": {
+    "default_scene": {
+      "objects": [
+        {
+          "name": "MainCamera",
+          "components": [
+            {"name": "transform", "pos": [0.0, 0.0, 3.0], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [1.0, 1.0, 1.0]},
+            {"name": "camera"}
+          ]
+        },
+        {
+          "name": "Cube",
+          "components": [
+            {"name": "transform", "pos": [-1.2, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.8, 0.8, 0.8]},
+            {"name": "simplemodelview", "model": "engine://primitives/cube"}
+          ]
+        },
+        {
+          "name": "Ball",
+          "components": [
+            {"name": "transform", "pos": [1.2, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [0.6, 0.6, 0.6]},
+            {"name": "pelican_procedural_geometry", "asset": "ball"}
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -35,6 +35,14 @@
 
 namespace Pelican {
 
+// Geometry selects the vertex program; appearance remains one material.
+// Extend this mode when VAT playback moves from materials to geometry.
+enum class VertexMode { standard, skinned };
+inline constexpr std::array vertexModes{VertexMode::standard, VertexMode::skinned};
+inline constexpr VertexMode vertexMode(bool skinned) noexcept {
+    return skinned ? VertexMode::skinned : VertexMode::standard;
+}
+
 class MaterialContainer;
 namespace test_support {
 void setMaterialReleaseFailureForTesting(MaterialContainer &, bool) noexcept;
@@ -110,6 +118,14 @@ DECLARE_MODULE(MaterialContainer) {
         std::vector<vk::UniqueDescriptorSet> descriptors;
     };
 
+    struct UnservedMaterial {
+        MaterialRouteClass authored_route;
+        MaterialShaderContract authored_shader_contract;
+        std::optional<std::string> authored_exact_pass;
+        MaterialRouteClass substitute_route;
+        std::string substitute_pass;
+        std::string reason;
+    };
     struct InternalMaterialInfo {
         struct TextureBinding {
             GlobalTextureId texture;
@@ -128,7 +144,10 @@ DECLARE_MODULE(MaterialContainer) {
         using ScreenInputDescriptor =
             MaterialScreenInputDescriptorSet;
 
-        PipelineHandle pipeline;
+        std::array<std::optional<PipelineHandle>, 2> pipeline;
+        PipelineHandle pipelineFor(VertexMode mode = VertexMode::standard) const {
+            return pipeline.at(static_cast<std::size_t>(mode)).value();
+        }
         std::uint64_t ray_generation = 0;
         std::shared_ptr<const void> ray_lease;
         std::string name;
@@ -144,6 +163,7 @@ DECLARE_MODULE(MaterialContainer) {
         std::vector<MaterialOutputAttachmentState>
             pipeline_output_states;
         std::vector<std::string> tags;
+        std::optional<UnservedMaterial> unserved;
         MaterialRouteClass route = MaterialRouteClass::deferred_geometry;
         MaterialShaderContract shader_contract = MaterialShaderContract::gbuffer_v1;
         std::optional<MaterialOutputSchema> output_schema;
@@ -158,7 +178,7 @@ DECLARE_MODULE(MaterialContainer) {
         std::vector<SurfaceResourcePortDefinition>
             declared_resource_ports;
         SurfaceRenderState render_state;
-        bool skinned = false;
+        std::optional<ShaderBundleId> skinned_vert_shader;
         GlobalTextureId base_color_texture;
         GlobalTextureId metallic_roughness_texture;
         GlobalTextureId normal_texture;
@@ -204,7 +224,6 @@ DECLARE_MODULE(MaterialContainer) {
         // A hidden runtime resource must never enter a draw queue through
         // the parent's selection tags.
         variant.tags.clear();
-        variant.skinned = base.skinned;
         variant.base_color_texture =
             base.base_color_texture;
         variant.metallic_roughness_texture =
@@ -244,9 +263,8 @@ DECLARE_MODULE(MaterialContainer) {
     std::unique_ptr<MaterialValuesReloadHandler> material_values_reload_handler;
     mutable std::uint64_t next_screen_input_binding_revision = 1;
     std::uint64_t next_ray_material_generation = 1;
-    // LP-2: set while registerMaterialVariants registers the variant
-    // records, which are no draw-loop subjects of their own.
-    bool registering_variant_records = false;
+    // A family publishes only after its base and hidden variants are ready.
+    bool defer_material_publication = false;
     bool fail_material_release_for_testing = false;
     bool fail_texture_release_for_testing = false;
     // Declared last and explicitly closed at destructor entry. Deferred slot
@@ -293,6 +311,9 @@ DECLARE_MODULE(MaterialContainer) {
     RetiredTextureResources
     commitTextureRebind(GlobalTextureId texture, InternalTextureResource replacement,
                         std::vector<StagedMaterialDescriptor> descriptors);
+    void updateRayAlphaCutoff(InternalMaterialInfo &material,
+                              const Std140Layout &layout,
+                              std::span<const std::byte> values);
     bool materialValuesLayoutMatches(GlobalMaterialId material,
                                      const Std140Layout &layout) const;
     const InternalMaterialInfo::ScreenInputDescriptor *ensureScreenInputDescriptor(
@@ -312,6 +333,8 @@ DECLARE_MODULE(MaterialContainer) {
     GlobalTextureId registerReloadableTextureFile(const watch::AssetKey &key,
                                                   const std::filesystem::path &path);
     GlobalMaterialId registerMaterial(MaterialInfo info);
+    nlohmann::json materialRouteStatus(GlobalMaterialId material) const;
+    void publishUnservedProblems() const;
     struct RayDeformationMaterial {
         std::optional<MaterialInfo::VatPlaybackInfo> vat;
         std::array<vk::DescriptorImageInfo, 2> images;
@@ -322,6 +345,10 @@ DECLARE_MODULE(MaterialContainer) {
         std::string name;
         MaterialInfo material;
     };
+    // Registers the base and its variants before live draw-loop validation.
+    GlobalMaterialId registerMaterial(
+        MaterialInfo info,
+        std::vector<NamedMaterialVariantRegistration> variants);
     // Registers a complete set atomically from the caller's perspective.
     // Variant resources are implementation details retired with their base.
     void registerMaterialVariants(
@@ -348,6 +375,9 @@ DECLARE_MODULE(MaterialContainer) {
         const watch::AssetKey &key, const std::filesystem::path &path,
         MaterialSurfaceCatalog surfaces,
         std::span<const ReloadableMaterialValuesBinding> bindings);
+    // MT-3: the document's materials were registered again (edit_material);
+    // the values of the previous registration are no longer reloaded.
+    void forgetReloadableMaterialValuesFile(const watch::AssetKey &key);
     // Same-layout SSBO update surface used by HR1-M. It never changes the
     // logical material id, descriptor set, or pipeline.
     void updateMaterialValues(GlobalMaterialId material, const Std140Layout &layout,
@@ -433,6 +463,19 @@ DECLARE_MODULE(MaterialContainer) {
     const std::string &materialName(GlobalMaterialId material) const {
         return materials.get(material).name;
     }
+    // RTL-1a: what a ray binding's material selector matches this material
+    // by: its source document, or the model asset and glTF material index
+    // its rows carry.
+    struct RayBindingIdentity {
+        std::string document;
+        std::string asset;
+        std::optional<std::uint32_t> source_material_index;
+    };
+    RayBindingIdentity rayBindingIdentity(GlobalMaterialId material) const {
+        const auto &info = materials.get(material);
+        return {info.source_document, info.source_asset,
+                info.source_material_index};
+    }
     std::uint64_t rayMaterialGeneration(
         GlobalMaterialId material) const {
         return materials.get(material).ray_generation;
@@ -452,16 +495,19 @@ DECLARE_MODULE(MaterialContainer) {
     // LP-2: what a material pass last bound, by the effective pipeline and
     // descriptor set rather than by the material that asked for them. Two
     // steps of one range can share a material and still differ in pipeline.
-    struct MaterialDrawBindState {
-        std::optional<PipelineHandle> pipeline;
-        vk::DescriptorSet descriptor_set;
-    };
     struct MaterialDrawBinding {
         vk::PipelineLayout layout;
         PipelineHandle pipeline;
         vk::DescriptorSet descriptor_set;
         bool pipeline_bound = false;
         bool descriptor_set_bound = false;
+    };
+    struct MaterialDrawBindState {
+        std::optional<PipelineHandle> pipeline;
+        vk::DescriptorSet descriptor_set;
+        VertexMode mode = VertexMode::standard;
+
+        MaterialDrawBinding update(MaterialDrawBinding next, VertexMode next_mode);
     };
     // Binds `material`'s descriptor set and screen inputs with `pipeline`
     // (nullopt: the material's own), skipping what `bound` already holds.
@@ -472,23 +518,31 @@ DECLARE_MODULE(MaterialContainer) {
         GlobalMaterialId material,
         std::optional<PipelineHandle> pipeline,
         MaterialDrawBindState &bound,
-        RenderPassViewInvocation invocation = {}) const;
+        RenderPassViewInvocation invocation = {},
+        VertexMode mode = VertexMode::standard) const;
     // LP-2: the registered materials a draw-loop rule is asked about: every
     // material except the records registered for named variants.
     std::vector<GlobalMaterialId> drawLoopMaterials() const;
-    MaterialDrawSubject drawLoopSubject(GlobalMaterialId material) const;
-    PipelineHandle materialPipeline(GlobalMaterialId material) const;
+    MaterialDrawSubject drawLoopSubject(GlobalMaterialId material,
+        VertexMode mode = VertexMode::standard) const;
+    std::vector<MaterialDrawSubject> drawLoopSubjects() const;
+    bool supportsVertexMode(GlobalMaterialId material, VertexMode mode) const;
+    PipelineHandle materialPipeline(GlobalMaterialId material,
+        VertexMode mode = VertexMode::standard) const;
     // The base material's live pipeline description with the render state
     // overridden (blend factors, cull, depth), as makeMaterialPipelineDesc
     // would have written it for that state.
     GraphicsPipelineDesc drawOverridePipelineDesc(
         GlobalMaterialId base,
-        const MaterialDrawRenderStateOverride &render_state) const;
+        const MaterialDrawRenderStateOverride &render_state,
+        VertexMode mode = VertexMode::standard) const;
     void rebindScreenInputs(const RenderTargetImageViewResolver &rt_views) const;
     vk::PipelineLayout getPipelineLayout() const;
-    vk::PipelineLayout pipelineLayout(GlobalMaterialId material) const;
+    vk::PipelineLayout pipelineLayout(GlobalMaterialId material,
+        VertexMode mode = VertexMode::standard) const;
     vk::PipelineLayout pipelineLayout(const PassDefinition &pass,
-                                      GlobalMaterialId material) const;
+                                      GlobalMaterialId material,
+                                      VertexMode mode = VertexMode::standard) const;
 };
 
 } // namespace Pelican

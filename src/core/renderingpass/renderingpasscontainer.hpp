@@ -70,6 +70,23 @@ struct MaterialPassRenderingBinding {
         default;
 };
 
+// FO-2: where a material pass was declared, read from the composed render
+// pipeline of the generation materialPassRenderingBindings reads.
+//   name:               the authored name (the pass name when not renamed)
+//   source:             "project" (the preset's or the root's), "feature" or
+//                       "engine"
+//   provider_reference: a feature's document
+//   graph_node:         a node of the rendering root's graph that made it
+//                       (not set for a loop's copy)
+//   preset_reference:   the pipeline preset the root selects
+struct MaterialPassDeclaration {
+    std::string name;
+    std::string source;
+    std::string provider_reference;
+    std::optional<std::string> graph_node;
+    std::optional<std::string> preset_reference;
+};
+
 DECLARE_MODULE(RenderingPassContainer) {
     ResourceContainer<RenderingPassId, CompiledRenderingPass> rendering_passes;
     std::unordered_map<std::string, RenderingPassId> name_to_id;
@@ -102,6 +119,13 @@ DECLARE_MODULE(RenderingPassContainer) {
     snapshot() const noexcept;
     std::uint64_t activeGeneration() const noexcept;
     bool hasMaterialPasses() const;
+    struct SubstituteMaterialPass {
+        std::string name;
+        MaterialRouteClass route;
+        MaterialShaderContract shader_contract;
+    };
+    std::optional<SubstituteMaterialPass> substituteMaterialPass(
+        MaterialShaderContract preferred) const;
     bool supportsMaterialPass(MaterialRouteClass route,
                               MaterialShaderContract shader_contract,
                               const std::optional<std::string> &exact_pass = std::nullopt) const;
@@ -131,6 +155,13 @@ DECLARE_MODULE(RenderingPassContainer) {
             std::nullopt) const;
     vk::SampleCountFlagBits materialRasterizationSamples(
         MaterialShaderContract shader_contract) const;
+    // FO-2: the declaration of `pass_name` (a MaterialPassRenderingBinding's
+    // pass_name); nullopt when no published or prepared generation knows it.
+    std::optional<MaterialPassDeclaration> materialPassDeclaration(
+        std::string_view pass_name) const;
+    // FO-2: the generation materialPassRenderingBindings reads (the active
+    // one, or the one prepared for the first frame); 0 before there is one.
+    std::uint64_t materialPassGeneration() const noexcept;
 };
 
 } // namespace Pelican

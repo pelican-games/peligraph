@@ -1,0 +1,15 @@
+{
+  "schema": "pelican.asset_data",
+  "version": 2,
+  "models": [],
+  "textures": [],
+  "materials": [],
+  "procedural_geometry": [
+    {
+      "name": "ball",
+      "kind": "aabb_v1",
+      "aabb": {"min": [-1.0, -1.0, -1.0], "max": [1.0, 1.0, 1.0]},
+      "record": {}
+    }
+  ]
+}

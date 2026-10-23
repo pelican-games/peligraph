@@ -9,6 +9,8 @@
 #include "mainwindow.hpp"
 #include "renderfeatureswidget.hpp"
 #include "graphattachmentwidget.hpp"
+#include "graphcanvasreadcapability.hpp"
+#include "graphcanvaswidget.hpp"
 #include "passforms/attachmentopsform.hpp"
 #include "passforms/rasterstateform.hpp"
 #include "passforms/shaderdefinesform.hpp"
@@ -35,9 +37,12 @@
 #include <QByteArray>
 #include <QClipboard>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QCheckBox>
 #include <QGroupBox>
 #include <QDialog>
+#include <QEventLoop>
+#include <QTimer>
 #include <QDir>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -86,6 +91,18 @@ QApplication &application() {
     static char *arguments[] = {application_name};
     static QApplication instance{argument_count, arguments};
     return instance;
+}
+
+// RT-A defers the first ticket poll to the Qt event loop. Let the widget's
+// actual scheduler send it; the caller still checks the method and ticket.
+void waitForGraphEditPoll(GraphAttachmentWidget &panel) {
+    QEventLoop loop;
+    QObject::connect(&panel, &GraphAttachmentWidget::rpcRequested, &loop,
+                     [&loop](quint64, const QString &method, const QJsonObject &) {
+                         if (method == QStringLiteral("get_edit_result")) loop.quit();
+                     });
+    QTimer::singleShot(1000, &loop, &QEventLoop::quit);
+    loop.exec();
 }
 
 std::string readText(const std::filesystem::path &path) {
@@ -2552,10 +2569,12 @@ TEST_CASE("Studio edits material and raster connections and restores the fullscr
         expected.erase("raster_state");
     }
     if (pass_type == "material" && named) {
-        auto &other = required<QPlainTextEdit>(form, "pelican.fullscreenPass.materialOther");
-        other.setPlainText("[]");
+        // UX-15a, decision 6: GPU draws with no buffer to read are no
+        // declaration the engine takes.
+        auto &gpu_draws = required<QCheckBox>(form, "pelican.fullscreenPass.gpuDrawSource");
+        gpu_draws.setChecked(true);
         CHECK_FALSE(save.isEnabled());
-        other.clear();
+        gpu_draws.setChecked(false);
         // UX-11, decision 2: the Tags are a picker; a tag no material lists
         // is typed in its "+ new tag" line.
         auto &new_tag = required<QLineEdit>(form, "pelican.fullscreenPass.materialFilter.include.newTag");
@@ -2756,7 +2775,9 @@ TEST_CASE("Inspector graph panel authors attachments and preserves rejected draf
     save.click();
     REQUIRE(requests.back().params.value("base_source_digest").toString() == "source-after-conflict");
     reply({{"status", "accepted"}, {"ticket", "ticket-1"}});
+    waitForGraphEditPoll(panel);
     REQUIRE(requests.back().method == "get_edit_result");
+    REQUIRE(requests.back().params.value("ticket").toString() == "ticket-1");
     reply({{"status", "committed"}});
     REQUIRE_FALSE(dialog.isVisible());
     REQUIRE(requests.back().method == "get_graph_instances");
@@ -2772,6 +2793,9 @@ TEST_CASE("Inspector graph panel authors attachments and preserves rejected draf
     panel.setOwner(GraphAttachmentOwner{"main", 73});
     REQUIRE(list.count() == 0);
     reply({{"status", "accepted"}, {"ticket", "ticket-2"}});
+    waitForGraphEditPoll(panel);
+    REQUIRE(requests.back().method == "get_edit_result");
+    REQUIRE(requests.back().params.value("ticket").toString() == "ticket-2");
     reply({{"status", "committed"}});
     reply(context);
     REQUIRE(list.count() == 1);
@@ -2858,7 +2882,9 @@ TEST_CASE("Inspector instance inputs show their supply and switch one to a curve
 
     // Once the edit lands, the row reads "connected" and offers the way back.
     reply({{"status", "accepted"}, {"ticket", "ticket-1"}});
+    waitForGraphEditPoll(panel);
     REQUIRE(requests.back().method == "get_edit_result");
+    REQUIRE(requests.back().params.value("ticket").toString() == "ticket-1");
     reply({{"status", "committed"}});
     REQUIRE(requests.back().method == "get_graph_instances");
     Json connected = context;
@@ -3026,6 +3052,146 @@ TEST_CASE("F-6 the Pass Editor saves a direct root's own pass with the root dige
     CHECK(params.at("input") == Json::array({"scene_color"}));
     CHECK(params.at("output") == present.at("output"));
     CHECK(params.at("shader") == present.at("shader"));
+}
+
+TEST_CASE("GL-5a the Pass Editor and the Graph's detail column send the same edit_preset_pass "
+          "for the same change of the root's pass",
+          "[devstudio][fullscreen-pass][preset-pass-edit][gl5a]") {
+    (void)application();
+    // A Blank pipeline project's present, offered as the root's own (F-6).
+    const Json present{{"name", "present"},
+                       {"type", "fullscreen"},
+                       {"input", Json::array()},
+                       {"output", {{"color", Json::array({"display"})}, {"depth", nullptr}}},
+                       {"shader", {{"vertex", "engine://fullscreen"},
+                                   {"fragment", "engine://passthrough"}}}};
+    const Json context{
+        {"source_reference", "project://passes/main_rendering_config.json"},
+        {"source_digest", {{"hex", std::string(64, 'a')}}},
+        {"config_kind", "direct"},
+        {"graphs",
+         Json::array({{{"name", "main_render"},
+                       {"passes", Json::array({{{"name", "present"},
+                                                {"declaration", present},
+                                                {"editable_preset_pass", false},
+                                                {"editable_feature_pass", false},
+                                                {"editable_root_pass", true},
+                                                {"root_declaration", present},
+                                                {"provenance", {{"source", "project"},
+                                                                {"provider_feature", ""},
+                                                                {"provider_reference", ""}}}}})},
+                       {"anchor_candidates",
+                        Json::array({{{"position", 0}, {"insert", "before:present"}},
+                                     {{"position", 1}, {"insert", "after:present"}}})}}})},
+        {"managed_fragments", Json::array()}};
+    const std::string fragment = "engine://fullscreen";
+
+    // The Frame Plan's Edit pass: the Pass Editor, its fragment changed, Save.
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    authoring.succeed(authoring.requests.back().id, context);
+    const auto plan = minimalFramePlan(
+        "main_render", Json::array({resource("scene_color"), resource("display")}));
+    form.receiveResult(QByteArray::fromStdString(plan.dump()));
+    form.editPresetPass(QStringLiteral("main_render"), QStringLiteral("present"));
+    authoring.succeed(authoring.requests.back().id, context);
+    refresh.succeed(refresh.requests.back(), QByteArray::fromStdString(plan.dump()));
+    required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment")
+        .setText(QString::fromStdString(fragment));
+    auto &save = required<QPushButton>(form, "pelican.fullscreenPass.save");
+    REQUIRE(save.isEnabled());
+    save.click();
+    REQUIRE(authoring.requests.back().method == QStringLiteral("edit_preset_pass"));
+    const auto from_editor = Json::parse(
+        QJsonDocument(authoring.requests.back().params).toJson().toStdString());
+
+    // The Graph: present picked on the canvas, the same fragment picked in
+    // its detail column.
+    struct Call {
+        QString method;
+        QByteArray body;
+    };
+    std::vector<Call> calls;
+    std::function<void(qint64, QByteArray)> deliver;
+    GraphCanvasReadCapability graph;
+    const auto note = [&calls](const char *method) {
+        calls.push_back({QString::fromLatin1(method), {}});
+        return static_cast<qint64>(calls.size());
+    };
+    graph.ready = [](QObject *, auto handler) { handler(true, {}); };
+    graph.requestGraphInstances = [note](QString *) { return note("get_graph_instances"); };
+    graph.requestGraphCatalog = [note](QString *) { return note("get_graph_catalog"); };
+    graph.requestGraphValues = [note](const QString &, QString *) { return note("get_graph_values"); };
+    graph.requestGraphNodeValues = [note](const QString &, QString *) {
+        return note("get_graph_node_values");
+    };
+    graph.requestStatus = [note](QString *) { return note("get_status"); };
+    graph.requestFramePlan = [note](QString *) { return note("get_frame_plan"); };
+    graph.requestRenderAuthoringContext = [note](QString *) {
+        return note("get_render_authoring_context");
+    };
+    graph.requestEngineShaders = [note](QString *) { return note("get_engine_shaders"); };
+    graph.requestEditResult = [note](const QString &, QString *) { return note("get_edit_result"); };
+    graph.requestEditPresetPass = [&calls](const QJsonObject &params, QString *) {
+        calls.push_back({QStringLiteral("edit_preset_pass"),
+                         QJsonDocument(params).toJson(QJsonDocument::Compact)});
+        return static_cast<qint64>(calls.size());
+    };
+    graph.result = [&deliver](QObject *, auto handler) { deliver = handler; };
+    graph.failure = [](QObject *, auto) {};
+    GraphCanvasWidget canvas{graph};
+    canvas.resize(1100, 700);
+    canvas.show();
+    QCoreApplication::processEvents();
+    const auto answer = [&](const char *method, const Json &reply) {
+        qint64 id = 0;
+        for (std::size_t index = 0; index < calls.size(); ++index)
+            if (calls[index].method == QLatin1String{method}) id = static_cast<qint64>(index) + 1;
+        REQUIRE(id != 0);
+        REQUIRE(deliver);
+        deliver(id, QByteArray::fromStdString(reply.dump()));
+        QCoreApplication::processEvents();
+    };
+    answer("get_graph_catalog", Json{{"schema", "pelican.graph_catalog"},
+                                     {"version", 1},
+                                     {"modules", Json::array()}});
+    answer("get_graph_instances", Json{{"source_digest", {{"hex", std::string(64, 'a')}}},
+                                       {"source_reference", context.at("source_reference")},
+                                       {"root_schema", "pelican.graph"},
+                                       {"instances", Json::array()},
+                                       {"nodes", Json::array()},
+                                       {"definitions", Json::object()},
+                                       {"layout", Json::object()}});
+    auto graph_plan = plan;
+    graph_plan["nodes"] = Json::array({{{"name", "present"},
+                                        {"kind", "render"},
+                                        {"order", 0},
+                                        {"level", 0},
+                                        {"source", "project"},
+                                        {"reads", Json::array()},
+                                        {"writes", Json::array({"display"})},
+                                        {"reads_history", Json::array()},
+                                        {"declaration_index", 0}}});
+    answer("get_frame_plan", graph_plan);
+    answer("get_render_authoring_context", context);
+    canvas.scene().selectNode("present");
+    QCoreApplication::processEvents();
+    auto &pick = required<QComboBox>(canvas, "pelican.graphCanvasFoldedPass.fragment");
+    REQUIRE(pick.isVisible());
+    const int index = pick.findData(QString::fromStdString(fragment));
+    REQUIRE(index >= 0);
+    pick.setCurrentIndex(index);
+    QCoreApplication::processEvents();
+    const auto sent = std::ranges::find(calls, QStringLiteral("edit_preset_pass"), &Call::method);
+    REQUIRE(sent != calls.end());
+    const auto from_graph = Json::parse(sent->body.toStdString());
+
+    // Decision 4: one builder, the same params.
+    INFO(from_editor.dump());
+    INFO(from_graph.dump());
+    CHECK(from_graph == from_editor);
+    CHECK(from_graph.at("shader").at("fragment") == fragment);
 }
 
 TEST_CASE("G-5 New... on a pass that already reads shaders/<its name>.frag "
@@ -5173,6 +5339,87 @@ TEST_CASE("LP-4b the Pass Editor's View field: one row per axis the engine "
             const auto params = fixture.save();
             CHECK(params.at("view_select") == Json{{"cascade", 2}});
         }
+    }
+}
+
+TEST_CASE("GL-5f New pass on a root that selects no preset is the Graph's render.fullscreen; "
+          "on a preset's root, or where the Graph does not place it, the form is a new pass's",
+          "[devstudio][fullscreen-pass][gl5f]") {
+    (void)application();
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    authoring.available = false;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    QStringList placed;
+    bool places = true;
+    form.setGraphPlaceAction([&](const QString &op) {
+        placed.push_back(op);
+        return places;
+    });
+    const auto context = [](const char *kind) {
+        const Json pass{{"name", "present"},
+                        {"type", "fullscreen"},
+                        {"input", Json::array()},
+                        {"output", {{"color", Json::array({"display"})}, {"depth", nullptr}}},
+                        {"shader", {{"vertex", "engine://fullscreen"},
+                                    {"fragment", "engine://passthrough"}}}};
+        Json result{{"source_reference", "project://passes/main_rendering_config.json"},
+                    {"source_digest", {{"hex", std::string(64, 'a')}}},
+                    {"config_kind", kind},
+                    {"graphs", Json::array({{{"name", "main_render"},
+                                             {"passes", Json::array({{{"name", "present"},
+                                                                      {"declaration", pass},
+                                                                      {"provenance", {{"source", "project"}}}}})},
+                                             {"anchor_candidates",
+                                              Json::array({{{"position", 0}, {"insert", "before:present"}},
+                                                           {{"position", 1}, {"insert", "after:present"}}})}}})},
+                    {"managed_fragments", Json::array()}};
+        if (std::string_view{kind} == "preset")
+            result["pipeline_preset"] = {{"reference", "engine://pipelines/hybrid_v1.json"},
+                                         {"name", "hybrid_v1"},
+                                         {"version", 1}};
+        return result;
+    };
+    auto &new_pass = required<QPushButton>(form, "pelican.fullscreenPass.new");
+    auto &name = required<QLineEdit>(form, "pelican.fullscreenPass.name");
+
+    // Pressed before the engine said what the root is: nothing is placed and
+    // the form is left alone until the context comes.
+    new_pass.click();
+    CHECK(placed.isEmpty());
+    authoring.available = true;
+    authoring.ready_handler(true, {});
+    REQUIRE_FALSE(authoring.requests.empty());
+    REQUIRE(authoring.requests.back().method == QStringLiteral("get_render_authoring_context"));
+    authoring.succeed(authoring.requests.back().id, context("direct"));
+    // The context says direct: the press is answered by the Graph.
+    CHECK(placed == QStringList{QStringLiteral("render.fullscreen")});
+
+    // With the context in hand, each press is the Graph's at once, and the
+    // form keeps what it held.
+    name.setText(QStringLiteral("kept"));
+    new_pass.click();
+    CHECK(placed.size() == 2);
+    CHECK(name.text() == QStringLiteral("kept"));
+
+    SECTION("the Graph does not place it (a root it read as no graph): the form is a new pass's") {
+        places = false;
+        new_pass.click();
+        CHECK(placed.size() == 3);
+        CHECK(name.text().isEmpty());
+        CHECK_FALSE(name.isReadOnly());
+    }
+    SECTION("a preset's root: the form, and the Graph is not asked") {
+        form.documentRestored();
+        REQUIRE(authoring.requests.back().method == QStringLiteral("get_render_authoring_context"));
+        authoring.succeed(authoring.requests.back().id, context("preset"));
+        REQUIRE(required<QLabel>(form, "pelican.fullscreenPass.authoringStatus")
+                    .text()
+                    .contains(QStringLiteral("preset")));
+        name.setText(QStringLiteral("typed"));
+        new_pass.click();
+        CHECK(placed.size() == 2);
+        CHECK(name.text().isEmpty());
     }
 }
 } // namespace PelicanStudio

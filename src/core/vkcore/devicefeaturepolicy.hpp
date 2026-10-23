@@ -12,6 +12,18 @@
 
 namespace Pelican {
 
+struct VulkanDeviceCandidate {
+    std::string name;
+    std::uint32_t api_version = 0;
+    vk::PhysicalDeviceType type = vk::PhysicalDeviceType::eOther;
+    bool suitable = false;
+    bool unified_queue = false;
+};
+// Returns an index in enumeration order. Overrides never bypass requirements.
+std::size_t selectVulkanPhysicalDevice(std::span<const VulkanDeviceCandidate> devices,
+                                      const std::string &override_device = {});
+
+
 struct RayQueryDeviceSupport {
     bool acceleration_structure_feature = false;
     bool ray_query_feature = false;

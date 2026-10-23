@@ -150,6 +150,11 @@ struct PolygonInstanceContainerTestAccess {
             instances.requireLive(id, "previousModelMatrixForTesting"));
     }
 
+    static std::size_t animationNodeCount(const Container &instances, ModelInstanceId id) {
+        return instances.slots.animation_node_matrices.at(
+            instances.requireLive(id, "animationNodeCountForTesting")).size();
+    }
+
     static std::uint64_t currentAnimationRevision(const Container &instances,
                                                   ModelInstanceId id) {
         return instances.slots.animation_revisions.at(

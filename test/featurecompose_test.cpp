@@ -4596,6 +4596,155 @@ TEST_CASE("binding buffer scalars seed the feature's runtime_f32 buffer and refu
         Catch::Matchers::ContainsSubstring("one float per declared byte quad"));
 }
 
+// EB-1: a frame graph buffer entry names only the keys the buffer parser
+// reads. A misspelled key -- in a rendering section's buffers[] or on a
+// graph's render.buffer node lowered into one -- is refused by name instead
+// of being ignored (an `initial_f23` used to start the buffer from zero).
+TEST_CASE("EB-1 a buffer entry with a key the frame graph does not read is refused by name",
+          "[render-feature][graph-composition][eb1]") {
+    const auto refusal = [](const auto &resolve) -> nlohmann::json {
+        try {
+            (void)resolve();
+        } catch (const GraphRegistryError &error) {
+            CHECK(error.code() == "graph.buffer_key_unknown@1");
+            return error.detail();
+        } catch (const std::exception &error) {
+            FAIL("expected graph.buffer_key_unknown@1, got: " << error.what());
+        }
+        FAIL("expected graph.buffer_key_unknown@1");
+        return nullptr;
+    };
+    // A feature's buffers[] (composed into the frame graph's buffers).
+    const auto composeWith = [](nlohmann::json buffer) {
+        const nlohmann::json feature{{"schema", "pelican.render_feature"},
+                                     {"version", 1},
+                                     {"name", "levels"},
+                                     {"buffers", nlohmann::json::array({std::move(buffer)})}};
+        auto config = baseConfigWithFeature("levels.json");
+        config["features"] = nlohmann::json::array({"levels.json"});
+        return composeRenderFeatureConfig(
+            config, RenderFeatureComposeDependencies{[text = feature.dump()](std::string_view) { return text; }, true});
+    };
+    const nlohmann::json level{{"name", "levels.level"}, {"size", 4}, {"lifetime", "persistent"},
+                               {"host_source", "runtime_f32"}, {"initial_f32", nlohmann::json::array({0.5})}};
+    REQUIRE_NOTHROW(composeWith(level));
+    auto misspelled = level;
+    misspelled["initial_f23"] = misspelled.at("initial_f32");
+    misspelled.erase("initial_f32");
+    const auto detail = refusal([&] { return composeWith(misspelled); });
+    CHECK(detail.at("buffer") == "levels.level");
+    CHECK(detail.at("key") == "initial_f23");
+    CHECK(detail.at("allowed") == nlohmann::json::array({"name", "size", "size_from_extent", "index_buffer",
+                                                         "host_source", "command_layout", "initial_f32",
+                                                         "view_family", "lifetime"}));
+
+    auto graph = nlohmann::json::parse(R"({
+      "schema":"pelican.graph","version":1,"definitions":{},
+      "nodes":[{"id":"data","op":"render.buffer",
+                "parameters":{"size":16,"element":"float","lifetime":"persistent","lifetme":"transient"},
+                "outputs":["resource"]},
+               {"id":"run","op":"render.compute","parameters":{
+                 "shader":"project://shaders/custom","dispatch":{"groups":[1,1,1]},
+                 "ports":{"values":{"access":"write","element":"float"}}},
+                 "inputs":{"values":{"node":"data","port":"resource"}},"outputs":["values"]}],
+      "outputs":{"data":{"node":"run","port":"values"}},
+      "rendering":{"render_targets":[],"rendering_passes":[]}
+    })");
+    const auto node = refusal([&] { return resolveRenderPipeline(RenderPipelineRequest{graph}, {}); });
+    CHECK(node.at("buffer") == "data");
+    CHECK(node.at("key") == "lifetme");
+    graph.at("nodes").at(0).at("parameters").erase("lifetme");
+    REQUIRE_NOTHROW(resolveRenderPipeline(RenderPipelineRequest{graph}, {}));
+}
+
+TEST_CASE("FO-1 an image entry with a key the frame graph does not read is refused by name",
+          "[render-feature][graph-composition][fo1]") {
+    using Json = nlohmann::json;
+    const Json allowed{"name", "format", "format_class", "format_candidates", "extent_scale", "width",
+                       "height", "layers", "mip_levels", "dimension", "usage", "history",
+                       "clear_color", "role", "lifetime", "initial", "sample_count", "source"};
+    const auto refusal = [](const auto &resolve) -> Json {
+        try {
+            (void)resolve();
+        } catch (const GraphRegistryError &error) {
+            CHECK(error.code() == "graph.image_key_unknown@1");
+            return error.detail();
+        } catch (const std::exception &error) {
+            FAIL("expected graph.image_key_unknown@1, got: " << error.what());
+        }
+        FAIL("expected graph.image_key_unknown@1");
+        return nullptr;
+    };
+    const auto noFeature = RenderFeatureComposeDependencies{[](std::string_view) -> std::string {
+        throw std::runtime_error("no feature is read");
+    }, true};
+
+    // A rendering section's render_targets[].
+    auto config = baseConfigWithFeature("unused.json");
+    config["features"] = Json::array();
+    REQUIRE_NOTHROW(composeRenderFeatureConfig(config, noFeature));
+    auto &target = config.at("render_targets").at(0);
+    const auto name = target.at("name").get<std::string>();
+    target["extnet_scale"] = target.value("extent_scale", 1.0);
+    const auto section = refusal([&] { return composeRenderFeatureConfig(config, noFeature); });
+    CHECK(section.at("image") == name);
+    CHECK(section.at("key") == "extnet_scale");
+    CHECK(section.at("allowed") == allowed);
+
+    // A feature's render_targets[].
+    const auto composeWith = [](Json image) {
+        const Json feature{{"schema", "pelican.render_feature"},
+                           {"version", 1},
+                           {"name", "tinted"},
+                           {"render_targets", Json::array({std::move(image)})}};
+        auto with_feature = baseConfigWithFeature("tinted.json");
+        with_feature["features"] = Json::array({"tinted.json"});
+        return composeRenderFeatureConfig(
+            with_feature,
+            RenderFeatureComposeDependencies{[text = feature.dump()](std::string_view) { return text; }, true});
+    };
+    const Json tint{{"name", "tinted.tint"}, {"extent_scale", 0.5}, {"format", "R16G16B16A16_SFLOAT"},
+                    {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}};
+    REQUIRE_NOTHROW(composeWith(tint));
+    auto misspelled = tint;
+    misspelled["histroy"] = true;
+    const auto feature = refusal([&] { return composeWith(misspelled); });
+    CHECK(feature.at("image") == "tinted.tint");
+    CHECK(feature.at("key") == "histroy");
+
+    // A graph's render.image node.
+    const Json type{{"semantic", "pelican.render.color_signal@1"},
+                    {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+    Json graph{{"schema", "pelican.graph"}, {"version", 1},
+        {"nodes", Json::array({
+            {{"id", "image"}, {"op", "render.image"},
+             {"parameters", {{"type", type}, {"format", "R32G32B32A32_SFLOAT"}, {"extent_scale", 1.0},
+                             {"lifetme", "persistent"}}},
+             {"outputs", {"resource"}}},
+            {{"id", "draw"}, {"op", "render.fullscreen"},
+             {"parameters", {{"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "project://custom"}}},
+                 {"color_load_op", "dont_care"},
+                 {"ports", {{"color", {{"kind", "image"}, {"type", type}, {"access", "write"},
+                                       {"attachment", "color"}, {"location", 0}}}}}}},
+             {"inputs", {{"color", {{"node", "image"}, {"port", "resource"}}}}}, {"outputs", {"color"}}}
+        })}, {"outputs", {{"color", {{"node", "draw"}, {"port", "color"}}}}},
+        {"rendering", {{"render_targets", Json::array()}, {"rendering_passes", Json::array()}}}};
+    // EN-2: a render.image's parameters are refused by name before they are
+    // lowered into an entry (graph.image_parameter_unknown@1 {node, key}).
+    Json node;
+    try {
+        (void)resolveRenderPipeline(RenderPipelineRequest{graph}, {});
+        FAIL("expected graph.image_parameter_unknown@1");
+    } catch (const GraphRegistryError &error) {
+        CHECK(error.code() == "graph.image_parameter_unknown@1");
+        node = error.detail();
+    }
+    CHECK(node.at("node") == "image");
+    CHECK(node.at("key") == "lifetme");
+    graph.at("nodes").at(0).at("parameters").erase("lifetme");
+    REQUIRE_NOTHROW(resolveRenderPipeline(RenderPipelineRequest{graph}, {}));
+}
+
 TEST_CASE("common graph buffer ports lower into native compute declarations", "[render-feature][graph-composition]") {
     auto document = nlohmann::json::parse(R"({
       "schema":"pelican.graph","version":1,
@@ -6764,9 +6913,12 @@ TEST_CASE("LP-3a a draw_loop's branches choose each material's draw steps",
                                                  {outlined, unlit, skipped, hidden, plain, deferred});
     CHECK(filled.at("loops").at(0) == Json{
         {"node", "forward_opaque_draws"}, {"tier", "draw_loop"}, {"count", 3},
-        {"elements", Json::array({{{"element", "m.json#outlined"}, {"index", 0}, {"branch", 0}},
-                                  {{"element", "m.json#skip"}, {"index", 1}, {"branch", 1}},
-                                  {{"element", "asset.glb#material[0]"}, {"index", 2}, {"branch", 2}}})},
+        {"elements", Json::array({{{"element", "m.json#outlined"}, {"index", 0}, {"branch", 0},
+                                   {"vertex_modes", Json::array({"standard"})}},
+                                  {{"element", "m.json#skip"}, {"index", 1}, {"branch", 1},
+                                   {"vertex_modes", Json::array({"standard"})}},
+                                  {{"element", "asset.glb#material[0]"}, {"index", 2}, {"branch", 2},
+                                   {"vertex_modes", Json::array({"standard"})}}})},
         {"unmatched_branches", Json::array()}, {"pass", "forward_opaque"}});
     applyMaterialDrawLoopElementsToFramePlanJson(plan, *composed.material_draw_loops, {plain});
     CHECK(plan.at("loops").at(0).at("unmatched_branches") == Json::array({0, 1}));
@@ -9994,6 +10146,42 @@ TEST_CASE("FR-1 a feature names the targets it leaves to the pipeline and is ref
                         Catch::Matchers::ContainsSubstring("required_targets"));
 }
 
+TEST_CASE("RG-3 a target bound to a feature's depth parameter is refused unwritten as depth, with depth writers",
+          "[render-feature][temporal][taa][fr3]") {
+    using Json = nlohmann::json;
+    auto document = readJson(std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+                             "projects/example/passes/main_rendering_config.json");
+    auto &config = renderingSectionOf(document);
+    auto &targets = config.at("render_targets");
+    const auto lit_color = std::find_if(targets.begin(), targets.end(), [](const Json &target) {
+        return target.value("name", std::string{}) == "lit_color";
+    });
+    REQUIRE(lit_color != targets.end());
+    (*lit_color)["format_class"] = "scene";
+    // taa's depth bound to a depth target nothing draws.
+    targets.push_back({{"name", "taa_bound_depth"}, {"extent_scale", 1.0}, {"format", "D32_SFLOAT"},
+                       {"format_class", "data"}, {"role", "data"},
+                       {"usage", Json::array({"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"})}});
+    config["features"].push_back("engine://features/velocity.json");
+    config["features"].push_back(Json{{"ref", "engine://features/taa.json"},
+                                      {"parameters", {{"depth", "taa_bound_depth"}}}});
+
+    const auto [code, fields] = lp0aRefusal(document);
+    CHECK(code == "feature.required_target_unwritten@1");
+    CHECK(fields.at("target") == "taa_bound_depth");
+    // The parameter's declaration (DEPTH_STENCIL_ATTACHMENT) types the bound
+    // target, so the passes offered are the ones drawing a depth target.
+    CHECK(fields.at("type") == fr1DeviceDepth());
+    const auto &candidates = fields.at("writer_candidates");
+    REQUIRE_FALSE(candidates.empty());
+    bool offscreen_depth = false;
+    for (const auto &candidate : candidates) {
+        CHECK(candidate.at("port") == "depth");
+        if (candidate.at("resource") == "offscreen_depth") offscreen_depth = true;
+    }
+    CHECK(offscreen_depth);
+}
+
 TEST_CASE("FR-1 a snapshot after a name the pipeline lacks is refused with the names it takes",
           "[render-feature][snapshot][fr1]") {
     using Json = nlohmann::json;
@@ -10122,6 +10310,57 @@ TEST_CASE("FR-2 a feature inserted after a pass the pipeline lacks is refused wi
     fixed["rendering"]["rendering_passes"][0]["passes"][0]["name"] = "deferred_lighting";
     const auto composed = lp0aCompose(fixed);
     CHECK(passByName(composed.config, "sky_background").at("input") == Json::array({"scene_depth"}));
+}
+
+TEST_CASE("LC-1 serial graph loops compose and plan with shared or distinct bodies and carry", "[graphloop][lc1]") {
+    using Json = nlohmann::json;
+    for (const bool shared : {false, true}) {
+        for (const bool carry : {false, true}) {
+            DYNAMIC_SECTION("shared=" << shared << " carry=" << carry) {
+                auto document = lp1eBlankRenderingConfig();
+                document["definitions"] = {{"body_a", lp1bChainBody()}, {"body_b", lp1bChainBody()}};
+                auto a = lp1aRange(2, "body_a");
+                auto b = lp1aRange(2, shared ? "body_a" : "body_b");
+                if (carry) {
+                    a["carry"] = b["carry"] = Json::array({{{"from", "out"}, {"to", "source"}}});
+                }
+                auto nodes = lp1bSeed();
+                nodes.push_back(lp1aLoop("a", a, {{"source", {{"node", "seed"}, {"port", "color"}}}}, {"out"}));
+                nodes.push_back(lp1aLoop("b", b, {{"source", {{"node", "a"}, {"port", "out"}}}}, {"out"}));
+                document["nodes"] = nodes;
+                document["rendering"]["rendering_passes"][0]["passes"][0]["input"] = {"b.out"};
+                const auto composed = lp0aCompose(document);
+                const auto declared = lp0bDeclared(composed.config);
+                INFO("declared order: " << Json(declared).dump());
+                REQUIRE_NOTHROW(compileComposition(composed));
+                const auto order = lp0bPlanOrder(composed);
+                CHECK(lp0bIndex(order, "a/0/step") < lp0bIndex(order, "a/1/step"));
+                CHECK(lp0bIndex(order, "a/1/step") < lp0bIndex(order, "b/0/step"));
+                CHECK(lp0bIndex(order, "b/0/step") < lp0bIndex(order, "b/1/step"));
+                CHECK(lp1bSource(composed.config, "b/0/step") == "a/1/image");
+                CHECK(lp1bSource(composed.config, "b/1/step") == (carry ? "b/0/image" : "a/1/image"));
+                for (const auto *name : {"a/0/image", "a/1/image", "b/0/image", "b/1/image"})
+                    CHECK(lp1bTarget(composed.config, name).at("name") == name);
+                CHECK(lp0bIndex(order, "b/1/step") < lp0bIndex(order, "present"));
+                CHECK(passByName(composed.config, "present").at("input") == Json::array({"b/1/image"}));
+            }
+        }
+    }
+}
+
+TEST_CASE("LC-1 serial loop cycles identify the closed node path", "[graphloop][lc1]") {
+    using Json = nlohmann::json;
+    auto document = lp1eBlankRenderingConfig();
+    document["definitions"] = {{"body", lp1bChainBody()}};
+    document["nodes"] = Json::array({
+        lp1aLoop("a", lp1aRange(2, "body"), {{"source", {{"node", "b"}, {"port", "out"}}}}, {"out"}),
+        lp1aLoop("b", lp1aRange(2, "body"), {{"source", {{"node", "a"}, {"port", "out"}}}}, {"out"})});
+    try {
+        (void)lp0aCompose(document);
+        FAIL("a real loop cycle must be refused");
+    } catch (const std::invalid_argument &error) {
+        CHECK(std::string{error.what()} == "cyclic subgraph connection: a -> b -> a");
+    }
 }
 
 } // namespace Pelican

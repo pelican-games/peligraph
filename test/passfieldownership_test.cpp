@@ -133,6 +133,32 @@ nlohmann::json featureCorpusConfig(
             }
         }
     }
+    // taa は velocity feature と組む(出荷の使い方)。
+    // FR-3: a target a feature reads is one something in the pipeline writes.
+    // taa reads the velocity the shipped velocity feature writes and the depth
+    // the pipeline draws; on hybrid_v1 that is scene_depth, not the default
+    // offscreen_depth. Compose it as the manual's two-line recipe does,
+    // instead of declaring stand-ins nobody writes.
+    if (reference == "engine://features/taa.json") {
+        auto &targets = config.at("render_targets");
+        targets.erase(
+            std::remove_if(
+                targets.begin(), targets.end(),
+                [](const auto &target) {
+                    const auto name = target.value("name", std::string{});
+                    return name == "velocity" || name == "offscreen_depth";
+                }),
+            targets.end());
+        parameters["depth"] = "scene_depth";
+        config["features"] = nlohmann::json::array({
+            "engine://features/velocity.json",
+            {
+                {"ref", reference},
+                {"parameters", std::move(parameters)},
+            },
+        });
+        return config;
+    }
     config["features"] = nlohmann::json::array({
         {
             {"ref", reference},
@@ -195,8 +221,12 @@ void collectFullscreenManifestEntries(
     std::string_view relative_path,
     std::vector<FullscreenManifestEntry> &entries) {
     if (node.is_object()) {
-        if (node.value("type", std::string{}) ==
-                "fullscreen" &&
+        // FR-4: a feature's required_targets entry carries a logical image
+        // `type` object ({semantic, arguments}); only a string `type` names
+        // a pass type.
+        const auto type = node.find("type");
+        if (type != node.end() && type->is_string() &&
+            *type == "fullscreen" &&
             node.contains("name") &&
             node.at("name").is_string()) {
             entries.push_back({

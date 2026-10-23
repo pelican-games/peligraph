@@ -1,5 +1,6 @@
 #include "distconfig.hpp"
 
+#include "assetscommand.hpp"
 #include "../project/assetdataformat.hpp"
 #include "../project/importmanifest.hpp"
 #include "../project/projectformat.hpp"
@@ -828,6 +829,47 @@ DistConfigOptions parseWithList(std::string_view value) {
     return options;
 }
 
+// EB-1: dist-config's asset check. Prints one line per store that declares a
+// manifest (or one line that none does) and returns nullopt when nothing
+// differs; otherwise names every file that differs, on stderr, and returns 1.
+std::optional<int> verifyAssetsForDistribution(const std::filesystem::path &project_arg) {
+    std::vector<DeclaredAssetStoreVerification> stores;
+    try {
+        stores = verifyDeclaredAssetStores(project_arg);
+    } catch (const std::exception &error) {
+        std::cerr << "dist-config: assets_verify_failed@1: the asset stores could not be verified: "
+                  << error.what() << "\n"
+                  << "dist-config: pass --skip-assets-verify to write the preset without the check" << std::endl;
+        return 1;
+    }
+    if (stores.empty()) {
+        std::cout << "assets verify: no asset store declares a manifest; nothing to verify" << std::endl;
+        return std::nullopt;
+    }
+    int differences = 0;
+    for (const auto &store : stores) {
+        if (store.result.issues.empty()) {
+            std::cout << "assets verify: " << store.name << ": " << store.result.matched
+                      << " files match " << store.manifest.generic_string() << std::endl;
+            continue;
+        }
+        std::cerr << "dist-config: assets_manifest_mismatch@1: asset store '" << store.name << "' ("
+                  << store.root.generic_string() << ") differs from " << store.manifest.generic_string() << "\n";
+        for (const auto &issue : store.result.issues) {
+            std::cerr << "  " << assetManifestIssueKindLabel(issue.kind) << ": "
+                      << (issue.file.empty() ? issue.message : issue.file) << "\n";
+            ++differences;
+        }
+    }
+    if (differences == 0) return std::nullopt;
+    std::cerr << "dist-config: " << differences
+              << " asset file(s) differ from their manifest; no preset was written. If these files are what "
+                 "ships, write the manifest again (pelican_cli assets manifest --project <project>), or pass "
+                 "--skip-assets-verify"
+              << std::endl;
+    return 1;
+}
+
 } // namespace
 
 DistConfigResult deriveDistConfig(const std::filesystem::path &project_arg,
@@ -847,7 +889,8 @@ DistConfigResult deriveDistConfig(const std::filesystem::path &project_arg,
     DistConfigResult result;
     result.project_root = project.root;
     result.project_file = project.project_file;
-    result.with_rpc = options.with_rpc;
+    result.with_studio = options.with_studio;
+    result.with_rpc = options.with_rpc || options.with_studio;
     result.with_seqplayer = options.with_seqplayer;
     result.with_openxr = options.with_openxr;
     result.with_exr = !scan.exr_refs.empty();
@@ -855,7 +898,7 @@ DistConfigResult deriveDistConfig(const std::filesystem::path &project_arg,
                             ? firstWithCount(scan.exr_refs)
                             : "no .exr references in asset_data_json or ui_config_json";
     result.with_vat = deriveVatEnabled(scan, result.vat_reason);
-    result.rpc_reason = result.with_rpc ? "enabled by --with rpc"
+    result.rpc_reason = result.with_studio ? "enabled by --with-studio" : result.with_rpc ? "enabled by --with rpc"
                                         : "distribution default; pass --with rpc to enable";
     result.seqplayer_reason = result.with_seqplayer ? "enabled by --with seqplayer"
                                                     : "distribution default; pass --with seqplayer to enable";
@@ -887,6 +930,8 @@ std::string renderDistConfigPreset(const DistConfigResult &result) {
     out << "# PELICAN_WITH_INTRO_LINK: OFF - the intro link is development tooling, never shipped\n";
     out << "# BUILD_TESTING: OFF - distribution builds exclude developer tests and test tooling\n\n";
 
+    out << "set(PELICAN_PLAYER_GUI_SUBSYSTEM ON CACHE BOOL \"\" FORCE)\n";
+    out << "set(SKIP_DEVSTUDIO " << boolString(!result.with_studio) << " CACHE BOOL \"\" FORCE)\n";
     out << "set(PELICAN_WITH_VAT " << boolString(result.with_vat) << " CACHE BOOL \"\" FORCE)\n";
     out << "set(PELICAN_WITH_EXR " << boolString(result.with_exr) << " CACHE BOOL \"\" FORCE)\n";
     out << "set(PELICAN_WITH_RPC " << boolString(result.with_rpc) << " CACHE BOOL \"\" FORCE)\n";
@@ -905,6 +950,7 @@ std::string renderDistConfigPreset(const DistConfigResult &result) {
 int runDistConfigCommand(int argc, char *argv[]) {
     argparse::ArgumentParser program("Pelican Cli dist-config");
     program.add_argument("project").help("project directory or project.json");
+    program.add_argument("--with-studio").flag().help("include Studio and its RPC transport");
     program.add_argument("--with")
         .default_value(std::string{})
         .metavar("rpc,seqplayer,openxr")
@@ -913,11 +959,23 @@ int runDistConfigCommand(int argc, char *argv[]) {
         .default_value(std::string{"dist-preset.cmake"})
         .metavar("file")
         .help("output CMake cache preset file");
+    program.add_argument("--skip-assets-verify")
+        .flag()
+        .help("do not check the asset stores against their manifests (assets verify --full)");
 
     try {
         program.parse_args(argc, argv);
-        const auto options = parseWithList(program.get<std::string>("--with"));
+        auto options = parseWithList(program.get<std::string>("--with"));
+        options.with_studio = program.get<bool>("--with-studio");
         const auto result = deriveDistConfig(program.get<std::string>("project"), options);
+        // EB-1: a distribution ships the assets its manifests name. Every
+        // store that declares a manifest is checked as `assets verify --full`
+        // checks it, and any difference fails before the preset is written.
+        if (program.get<bool>("--skip-assets-verify")) {
+            std::cout << "assets verify: skipped (--skip-assets-verify)" << std::endl;
+        } else if (const auto failed = verifyAssetsForDistribution(program.get<std::string>("project"))) {
+            return *failed;
+        }
         const auto out_path = absolutePath(program.get<std::string>("--out"));
         writeTextFile(out_path, renderDistConfigPreset(result));
         std::cout << "wrote " << pathString(out_path) << std::endl;

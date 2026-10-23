@@ -5,6 +5,7 @@
 #include "projectformat.hpp"
 #include "projectpathresolver.hpp"
 #include "rendereditcompletion.hpp"
+#include "renderconfigdocument.hpp"
 
 #include <algorithm>
 #include <array>
@@ -47,6 +48,8 @@ std::string diagnostic(const Json &response) {
     const auto code_text = error.contains("code") && error.at("code").is_string()
                                ? error.at("code").get<std::string>()
                                : std::string{};
+    // RTL-2s, decision 3: a ray tracing refusal says where, from its fields.
+    if (auto ray = rayTracingRefusalDescription(error); !ray.empty()) return prefix + ray;
     if (auto known = knownRefusalDescription(code_text, message); !known.empty())
         return prefix + known;
     if (error.contains("code")) {
@@ -670,8 +673,9 @@ void GraphCanvasModel::clearContext() {
     // one other than history_digest_ clears it (see receiveRpcResult). Only
     // the edit in the air went with the engine. Another project clears it
     // through forgetHistory().
-    pending_history_.reset();
+    discardPendingHistory();
     digest_.clear();
+    material_route_default_ = nullptr;
     layout_retry_.reset();
     layout_retrying_ = false;
     nodes_ = Json::array();
@@ -844,6 +848,7 @@ void GraphCanvasModel::requestLoopReports() {
         plan_graph_.clear();
         plan_buffers_.clear();
         render_authoring_ = Json::object();
+        ray_layout_read_.reset();
         ++authoring_revision_;
         plan_retry_wanted_ = false;
         return;
@@ -1041,7 +1046,8 @@ void GraphCanvasModel::receiveRpcFailure(std::uint64_t id, std::string message) 
         // UX-5b: nor is one without get_engine_shaders: the lists stay the
         // fixed ones.
         if (kind == RequestKind::Loops || kind == RequestKind::Templates ||
-            kind == RequestKind::Authoring || kind == RequestKind::EngineShaders)
+            kind == RequestKind::Authoring || kind == RequestKind::EngineShaders ||
+            kind == RequestKind::RayLayout)
             return;
         if (kind == RequestKind::LoopPage) {
             loop_pages_done_.insert(std::exchange(loop_page_node_, {}));
@@ -1121,7 +1127,8 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             if (response.contains("error") && !shaders_failed) {
                 if (pending.kind == RequestKind::Templates ||
                     pending.kind == RequestKind::Authoring ||
-                    pending.kind == RequestKind::EngineShaders)
+                    pending.kind == RequestKind::EngineShaders ||
+                    pending.kind == RequestKind::RayLayout)
                     return;
                 if (pending.kind == RequestKind::Loops) {
                     // Q-19: an engine with no plan yet is asked again --
@@ -1205,7 +1212,21 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                 return;
             }
             if (pending.kind == RequestKind::Authoring) {
-                render_authoring_ = response.is_object() ? response : Json::object();
+                auto context = response.is_object() ? response : Json::object();
+                auto previous_visuals = render_authoring_;
+                auto next_visuals = context;
+                // A layout save changes the root digest, not the authoring
+                // data drawn by the canvas. Still refresh the editing token
+                // and authoring revision, without rebuilding every item.
+                previous_visuals.erase("source_digest");
+                next_visuals.erase("source_digest");
+                const bool changed = previous_visuals != next_visuals;
+                takeRenderAuthoring(std::move(context));
+                if (changed) ++report_revision_;
+                return;
+            }
+            if (pending.kind == RequestKind::RayLayout) {
+                ray_layout_read_ = parseRayLayoutRead(response);
                 ++authoring_revision_;
                 ++report_revision_;
                 return;
@@ -1335,7 +1356,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                             if (edit_scope == "root") edit_scope.clear();
                             break;
                         }
-                pending_history_.reset();
+                discardPendingHistory();
                 edit_notice_ = {InspectorNoticeKind::Error, diagnostic(response)};
                 // GL-1b, decision 3: an engine that cannot yet answer a graph
                 // edit with restart_required refuses a change to a live
@@ -1404,7 +1425,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             ticket_.clear();
             layout_retrying_ = false;
             saved_note_.clear();
-            pending_history_.reset();
+            discardPendingHistory();
             edit_notice_ = {InspectorNoticeKind::Error, error.what()};
             refresh();
         }
@@ -1450,6 +1471,8 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             root_schema == root_schema_ && source_reference == source_reference_ &&
             (layout != layout_ || incoming_definitions != definitions_) &&
             withoutPlacement(incoming_definitions) == withoutPlacement(definitions_);
+        history_graph_ = Pelican::renderConfigSourceDigest(
+            Json{{"nodes", nodes}, {"definitions", withoutPlacement(incoming_definitions)}}.dump());
         definitions_reported_ = reported;
         definitions_ = std::move(incoming_definitions);
         // UX-13b, decision 4 (engine CT-5): who runs each definition.
@@ -1459,9 +1482,20 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
         nodes_ = std::move(nodes);
         root_schema_ = std::move(root_schema);
         source_reference_ = std::move(source_reference);
+        material_route_default_ = response.value("material_route_default", Json{});
         digest_ = response.value("source_digest", Json::object()).value("hex", std::string{});
-        if (!history_digest_.empty() && digest_ != history_digest_)
-            clearHistory();
+        if (!history_digest_.empty() && digest_ != history_digest_) {
+            const auto committed_digest = std::exchange(render_commit_digest_, std::string{});
+            if (!committed_digest.empty() && digest_ == committed_digest)
+                history_digest_ = digest_;
+            else
+                clearHistory();
+        }
+        // The first read of our own commit supplies the engine's actual graph,
+        // also after a restart. Render commits never rewrite this association.
+        if (digest_ == history_digest_ && !undo_.empty() && undo_.back().after_graph.empty() &&
+            undo_.back().after_source_digest == digest_)
+            undo_.back().after_graph = history_graph_;
         context_received_ = true;
         failure_ = {};
         // Q-13: the placement a moved document refused, against this one.
@@ -2736,14 +2770,16 @@ bool GraphCanvasModel::submitHistory(HistoryAction action, HistoryEntry entry) {
             return op.is_object() && op.value("op", std::string{}) == "set_layout";
         });
     Json params{{"base_source_digest", digest_}, {"ops", std::move(ops)}};
-    // GL-1d, decision 3: what the list sends beside its ops goes with it and
-    // with its Redo, never with its Undo.
-    if (action != HistoryAction::Undo && entry.params.is_object())
-        for (const auto &[key, value] : entry.params.items())
+    // UD-3: the inverse restores root values in the same ticket as its ops.
+    const auto &history_params = action == HistoryAction::Undo ? entry.inverse_params : entry.params;
+    if (history_params.is_object())
+        for (const auto &[key, value] : history_params.items())
             if (!(route_default_unknown_ && key == "material_route_default"))
                 params[key] = value;
+    if (action == HistoryAction::Edit) entry.before_graph = history_graph_;
     pending_history_ = PendingHistory{action, std::move(entry)};
     edit_notice_ = {InspectorNoticeKind::Information, "Saving the graph change..."};
+    if (action == HistoryAction::Edit && historySubmitted) historySubmitted();
     request(RequestKind::Submit, "edit_graph_document", std::move(params));
     return true;
 }
@@ -2760,8 +2796,9 @@ bool GraphCanvasModel::retryWithoutRouteDefault(const std::string &message) {
         return false;
     route_default_unknown_ = true;
     auto retry = std::move(*pending_history_);
-    pending_history_.reset();
+    discardPendingHistory();
     retry.entry.params.erase("material_route_default");
+    retry.entry.inverse_params.erase("material_route_default");
     return submitHistory(retry.action, std::move(retry.entry));
 }
 
@@ -2769,11 +2806,21 @@ void GraphCanvasModel::forgetHistory() {
     clearHistory();
 }
 
+void GraphCanvasModel::discardPendingHistory() {
+    if (!pending_history_) return;
+    const auto pending = std::exchange(pending_history_, std::nullopt);
+    const auto move = pending->action == HistoryAction::Edit ? HistoryMove::Push
+                    : pending->action == HistoryAction::Undo ? HistoryMove::Undo : HistoryMove::Redo;
+    if (historyMoved) historyMoved(pending->entry.serial, move, false);
+}
+
 void GraphCanvasModel::clearHistory() {
     undo_.clear();
     redo_.clear();
-    pending_history_.reset();
+    discardPendingHistory();
     history_digest_.clear();
+    render_commit_digest_.clear();
+    if (historyCleared) historyCleared();
 }
 
 void GraphCanvasModel::commitHistory(const Json &response) {
@@ -2791,6 +2838,11 @@ void GraphCanvasModel::commitHistory(const Json &response) {
                                                                   : pending.entry.forward)
         if (op.is_object() && text(op, "op") == "rename_definition")
             committed_renames_[text(op, "from")] = text(op, "to");
+    if (pending.action == HistoryAction::Edit) {
+        pending.entry.serial = next_history_serial_++;
+        pending.entry.after_source_digest = digest;
+    }
+    const auto serial = pending.entry.serial;
     if (pending.action == HistoryAction::Undo) {
         undo_.pop_back();
         redo_.push_back(std::move(pending.entry));
@@ -2801,6 +2853,10 @@ void GraphCanvasModel::commitHistory(const Json &response) {
         if (undo_.size() > historyCapacity) undo_.erase(undo_.begin());
     }
     history_digest_ = digest;
+    render_commit_digest_.clear();
+    const auto move = pending.action == HistoryAction::Edit ? HistoryMove::Push
+                    : pending.action == HistoryAction::Undo ? HistoryMove::Undo : HistoryMove::Redo;
+    if (historyMoved) historyMoved(serial, move, true);
 }
 
 bool GraphCanvasModel::undo() {
@@ -2809,6 +2865,11 @@ bool GraphCanvasModel::undo() {
 
 bool GraphCanvasModel::redo() {
     return canRedo() && submitHistory(HistoryAction::Redo, redo_.back());
+}
+
+std::string GraphCanvasModel::nodeOperation(std::string_view scope, std::string_view id) const {
+    const auto *node = findNode(scope, id);
+    return node == nullptr ? std::string{} : text(*node, "op");
 }
 
 Json GraphCanvasModel::nodeParameters(std::string_view id) const {
@@ -3430,34 +3491,39 @@ Json GraphCanvasModel::addNodeOpsIn(std::string_view in_scope, const std::string
                               {"arguments", Json{{"reference", "scene"}, {"transfer", "linear"},
                                                  {"range", "extended"}}}};
         const auto image = [&](const std::string &socket, const Json &type,
-                               const char *format, const char *attachment_usage) {
+                               const MaterialPassSlot &slot) {
             const auto image_id = id + "__" + socket;
             ops.push_back(Json{{"op", "add_node"}, {"scope", scope},
                 {"node", Json{{"id", image_id}, {"op", "render.image"},
-                              {"parameters", Json{{"type", type}, {"format", format},
+                              {"parameters", Json{{"type", type}, {"format", slot.format},
                                                   {"extent_scale", 1.0},
-                                                  {"usage", Json::array({attachment_usage,
-                                                                         "SAMPLED"})}}},
+                                                  {"usage", slot.usage}}},
                               {"outputs", Json::array({"resource"})}}}});
             return Json{{"node", image_id}, {"port", "resource"}};
         };
+        // MC-1s: the formats are the contract's table, the one the Frame
+        // Plan's material pass form makes its targets with. A material pass
+        // without a material_outputs schema is checked against the physical
+        // contract the live materials were registered with, and those follow
+        // the pipeline's HDR switch: without "hdr" among the enabled features
+        // (a Blank project) a G-buffer's albedo and emissive are B8G8R8A8_SRGB.
+        // Any other format changes the contract, and the engine restarts
+        // (material_physical_contract_changed).
+        std::vector<MaterialPassSlot> colors;
+        std::optional<MaterialPassSlot> depth;
+        for (auto &slot : materialPassSlots(contract, materialPassHdr(render_authoring_)))
+            if (slot.depth) depth = std::move(slot);
+            else colors.push_back(std::move(slot));
+        const auto sockets = materialPassColorSockets(parameters);
+        if (!depth || sockets.size() != colors.size()) return Json::array();
         Json inputs = Json::object();
-        for (const auto &socket : materialPassColorSockets(parameters)) {
-            // The engine checks a material pass without a material_outputs
-            // schema against its compatibility formats, choosing the HDR set
-            // when the first attachment is R16G16B16A16_SFLOAT: every G-buffer
-            // attachment is wide there except `material`, which is eight bits
-            // a channel. A forward pass's colour is always wide.
-            const bool wide = socket != "material";
-            inputs[socket] = image(socket, color_type,
-                                   wide ? "R16G16B16A16_SFLOAT" : "R8G8B8A8_UNORM",
-                                   "COLOR_ATTACHMENT");
-        }
+        for (std::size_t index = 0; index < sockets.size(); ++index)
+            inputs[sockets[index]] = image(sockets[index], color_type, colors[index]);
         inputs["depth"] = image("depth",
                                 Json{{"semantic", "pelican.render.depth@1"},
                                      {"arguments", Json{{"representation", "device"},
                                                         {"space", "projection"}}}},
-                                "D32_SFLOAT", "DEPTH_STENCIL_ATTACHMENT");
+                                *depth);
         inputs["draws"] = Json{{"node", loop}, {"port", "draws"}};
         node["parameters"] = std::move(parameters);
         node["inputs"] = std::move(inputs);
@@ -3622,8 +3688,10 @@ bool GraphCanvasModel::addNodeIn(std::string_view scope, const std::string &op,
     if (params.empty()) return submitOps(std::move(ops));
     if (folded_stash_) return refuseFoldedEdit(ops);
     auto inverse = inverseOps(ops);
-    return submitHistory(HistoryAction::Edit,
-                         {std::move(ops), std::move(inverse), std::move(params)});
+    HistoryEntry entry{std::move(ops), std::move(inverse), std::move(params)};
+    if (entry.params.contains("material_route_default"))
+        entry.inverse_params = Json{{"material_route_default", material_route_default_}};
+    return submitHistory(HistoryAction::Edit, std::move(entry));
 }
 
 Json GraphCanvasModel::addNodeParams(std::string_view scope, const std::string &op,
@@ -4744,6 +4812,65 @@ std::string GraphCanvasModel::showLoopOrigin(std::string_view loop, std::int64_t
     return body;
 }
 
+namespace {
+
+// RTL-2s, decision 3: the place of render.compute's parameters a ray
+// tracing refusal names, as the fields name a parameter
+// ("ray_tracing.hit_shaders.<ray type>.<group>[.<stage>]",
+// "ray_tracing.misses.<miss>", "ray_tracing.traced_ray_types[.<ray type>]",
+// "ray_tracing.raygen", ...); empty for a code that is not the ray tracing
+// task parser's (rtl1b's table).
+std::string rayTracingRefusalParameter(const std::string &code, const Json &fields) {
+    const bool ray = code.starts_with("pelican.ray_tracing.") || code == "pelican.ray_group_name_unknown@1" ||
+                     code == "pelican.procedural_group_requires_intersection@1" ||
+                     code == "pelican.ray_group_type_declared_in_task@1" ||
+                     code == "pelican.ray_profile_authored_anyhit@1";
+    if (!ray || !fields.is_object()) return {};
+    const auto ray_type = text(fields, "ray_type");
+    const auto group = text(fields, "group");
+    const auto miss = text(fields, "miss");
+    const auto stage = text(fields, "stage");
+    std::string place = "ray_tracing";
+    if (code == "pelican.ray_group_name_unknown@1") {
+        const auto kind = text(fields, "kind");
+        const auto name = text(fields, "name");
+        if (kind == "miss") return place + ".misses" + (name.empty() ? "" : "." + name);
+        if (kind == "ray_type") return place + ".traced_ray_types" + (name.empty() ? "" : "." + name);
+        if (kind == "group") return place + ".hit_shaders";
+        return place;
+    }
+    if (code == "pelican.ray_tracing.traced_ray_types_invalid@1")
+        return place + ".traced_ray_types" + (ray_type.empty() ? "" : "." + ray_type);
+    if (code == "pelican.ray_tracing.invalid_recursion@1") return place + ".max_recursion";
+    if (code == "pelican.ray_tracing.callable_records_invalid@1") return place + ".callable_records";
+    if (!miss.empty()) return place + ".misses." + miss;
+    if (code.starts_with("pelican.ray_tracing.miss_shader_")) return place + ".misses";
+    if (!ray_type.empty()) {
+        place += ".hit_shaders." + ray_type;
+        if (group.empty()) return place;
+        place += "." + group;
+        if (code == "pelican.procedural_group_requires_intersection@1" || stage == "intersection")
+            return place + ".intersection";
+        if (code == "pelican.ray_profile_authored_anyhit@1") return place + ".anyhit";
+        // RTL-3s, decision 6 (engine EB-3): the record's and the payload's
+        // refusals name the stage of the cell.
+        if (stage == "closesthit" || stage == "anyhit") return place + "." + stage;
+        return place;
+    }
+    if (code == "pelican.ray_tracing.hit_shader_missing@1") return place + ".hit_shaders";
+    if (stage == "raygen") return place + ".raygen";
+    return place;
+}
+
+} // namespace
+
+void GraphCanvasModel::markRayTracingRefusal(const Json &error, const std::string &sentence) {
+    markRefusal(error, sentence, {});
+    // RTL-2s-c: met elsewhere (the Ray layout section's edit), so the canvas
+    // and the node's fields draw it on their next look.
+    ++report_revision_;
+}
+
 void GraphCanvasModel::markRefusal(const Json &error, const std::string &reason,
                                    const std::string &scope) {
     refusal_marks_.clear();
@@ -4793,6 +4920,20 @@ void GraphCanvasModel::markRefusal(const Json &error, const std::string &reason,
     if (const auto missing = graphRefusalFields(error, "graph.render_node_parameters_missing@1")) {
         mark(scope, text(*missing, "node"));
         return;
+    }
+    // RTL-2s, decision 3 (engine RTL-1b / RTL-1c): the ray tracing task
+    // parser's refusal names its task -- a graph node's also its `node` --
+    // and the ray type, group, miss or stage: the node is marked and its ray
+    // tracing red at that place.
+    if (const auto place = rayTracingRefusalParameter(code, fields); !place.empty()) {
+        auto node = text(fields, "node");
+        if (node.empty()) node = text(fields, "task");
+        const auto in = findNode(scope, node) != nullptr ? scope : std::string{};
+        if (!node.empty() && findNode(in, node) != nullptr) {
+            mark(in, node);
+            parameter_refusal_ = GraphCanvasParameterRefusal{in, node, place, reason};
+            return;
+        }
     }
     // UX-13b, decision 3 (engine CT-5): a buffer a render.scalar cannot
     // write. Named with its sink, it is the graph's: one edit makes it what
@@ -4915,6 +5056,11 @@ InspectorNotice GraphCanvasModel::notice() const {
     // they are waiting to hear about.
     if (edit_notice_.kind == InspectorNoticeKind::Error) return edit_notice_;
     if (failure_.kind != InspectorNoticeKind::None) return failure_;
+    // A topology commit still needs its document read back before the
+    // canvas has the new sockets. Placement-only commits already have their
+    // geometry on screen and keep their immediate saved notice.
+    if (plan_after_commit_ && edit_notice_.kind == InspectorNoticeKind::Success)
+        return {InspectorNoticeKind::Information, "Loading the saved graph..."};
     if (edit_notice_.kind != InspectorNoticeKind::None) return edit_notice_;
     if (context_received_ && !catalog_received_)
         return {InspectorNoticeKind::Information,
@@ -5574,8 +5720,12 @@ GraphCanvasFoldedNode singlePassNode(const GraphCanvasPlanPass &pass) {
 } // namespace
 
 std::string GraphCanvasFoldedNode::tooltip() const {
-    return "From the rendering section (" + source +
-           "): read only here. Frame Plan and Features edit it.";
+    if (rendering_section) return "From the rendering section: edit it here.";
+    // §4 rule 3: readable here; expanded to be edited.
+    const auto owner = !feature.empty() ? "feature " + featureShortName(feature)
+                       : !preset.empty() ? "preset " + preset
+                                         : "the preset (" + source + ")";
+    return "From " + owner + ": read only here. Expand to edit\xE2\x80\xA6";
 }
 
 std::string GraphCanvasDomainStub::text() const {
@@ -5612,6 +5762,7 @@ void GraphCanvasModel::readPlanPasses(const Json &plan) {
             pass.kind = text(node, "kind");
             pass.source = text(node, "source");
             pass.feature = text(node, "provider_feature");
+            pass.provider_reference = text(node, "provider_ref");
             pass.reads = planStrings(node, "reads");
             pass.history_reads = planStrings(node, "reads_history");
             pass.writes = planStrings(node, "writes");
@@ -5805,8 +5956,34 @@ std::vector<GraphCanvasFoldedNode> GraphCanvasModel::rootFoldedNodes() const {
         }
         found->passes.push_back(pass.name);
     }
-    for (auto &node : result) foldedBoundary(node, plan_passes_);
+    for (auto &node : result) {
+        foldedBoundary(node, plan_passes_);
+        markFoldedOwner(node);
+    }
     return result;
+}
+
+bool GraphCanvasModel::renderingSectionPass(std::string_view pass) const {
+    const auto graphs = render_authoring_.find("graphs");
+    if (graphs == render_authoring_.end() || !graphs->is_array()) return false;
+    for (const auto &graph : *graphs) {
+        if (!graph.is_object() || text(graph, "name") != plan_graph_) continue;
+        const auto passes = graph.find("passes");
+        if (passes == graph.end() || !passes->is_array()) return false;
+        for (const auto &entry : *passes)
+            if (entry.is_object() && text(entry, "name") == pass)
+                return entry.value("editable_root_pass", false);
+    }
+    return false;
+}
+
+void GraphCanvasModel::markFoldedOwner(GraphCanvasFoldedNode &node) const {
+    node.rendering_section = !node.feature_group && node.feature.empty() &&
+                             node.passes.size() == 1 && renderingSectionPass(node.passes.front());
+    if (node.rendering_section || !node.feature.empty()) return;
+    if (const auto preset = render_authoring_.find("pipeline_preset");
+        preset != render_authoring_.end() && preset->is_object())
+        node.preset = text(*preset, "name");
 }
 
 std::vector<GraphCanvasFoldedNode> GraphCanvasModel::featurePassNodes(std::string_view feature) const {
@@ -5815,6 +5992,7 @@ std::vector<GraphCanvasFoldedNode> GraphCanvasModel::featurePassNodes(std::strin
         if (pass.feature != feature || pass.kind == "anchor") continue;
         result.push_back(singlePassNode(pass));
         foldedBoundary(result.back(), plan_passes_);
+        markFoldedOwner(result.back());
     }
     return result;
 }
@@ -5946,6 +6124,28 @@ void GraphCanvasModel::requestRenderAuthoring() {
     read(RequestKind::Authoring, "get_render_authoring_context", Json::object());
 }
 
+void GraphCanvasModel::takeRenderAuthoring(Json context) {
+    render_authoring_ = std::move(context);
+    ++authoring_revision_;
+    // RTL-2s-c: the ray layout's names are get_ray_layout's (the Ray layout
+    // section's reading); the context only says whether there is one.
+    const auto found = render_authoring_.find("ray_layout");
+    if (found == render_authoring_.end() || !found->is_object()) {
+        ray_layout_read_.reset();
+        return;
+    }
+    const auto reference = found->find("reference");
+    if (reference != found->end() && reference->is_string()) {
+        read(RequestKind::RayLayout, "get_ray_layout", Json::object());
+        return;
+    }
+    // No layout: nothing to ask.
+    RayLayoutRead none;
+    if (const auto mode = found->find("mode"); mode != found->end() && mode->is_string())
+        none.mode = mode->get<std::string>();
+    ray_layout_read_ = std::move(none);
+}
+
 FramePlanModel GraphCanvasModel::passInputPlan() const {
     FramePlanModel plan;
     plan.graph = plan_graph_;
@@ -6067,6 +6267,17 @@ void GraphCanvasModel::readPlanLayers(const Json &plan) {
     plan_diagnostics_.clear();
     deactivated_nodes_.clear();
     plan_fold_decisions_.clear();
+    // GL-5f, decision 3: which resources are a loop's copies.
+    plan_resource_origins_.clear();
+    if (const auto resources = plan.find("resources"); resources != plan.end() && resources->is_array())
+        for (const auto &resource : *resources) {
+            if (!resource.is_object()) continue;
+            const auto origin = resource.find("loop_origin");
+            if (origin == resource.end() || !origin->is_object()) continue;
+            plan_resource_origins_[text(resource, "name")] =
+                FramePlanLoopOrigin{text(*origin, "loop"), origin->value("element", std::int64_t{0}),
+                                    text(*origin, "node")};
+        }
     // An engine with GL-2a always publishes these two, empty or not.
     plan_origin_aware_ = plan.contains("diagnostics") || plan.contains("deactivated_graph_nodes") ||
                          std::ranges::any_of(plan_passes_, [](const GraphCanvasPlanPass &pass) {
@@ -6254,6 +6465,16 @@ GraphCanvasPlanTarget GraphCanvasModel::planNodeTarget(std::string_view name) co
     return target;
 }
 
+bool GraphCanvasModel::planPassEditedHere(std::string_view name) const {
+    const auto target = planNodeTarget(name);
+    if (target.kind.empty()) return false;
+    // A node in a body: an instance's, or a loop's copy.
+    if (target.kind != "root") return true;
+    // A graph node of the root, or a folded node standing for the pass.
+    if (findNode({}, target.node) != nullptr) return true;
+    return renderingSectionPass(name);
+}
+
 std::vector<std::string> GraphCanvasModel::planNodesOf(std::string_view canvas_node) const {
     std::vector<std::string> result;
     if (canvas_node.empty()) return result;
@@ -6264,6 +6485,31 @@ std::vector<std::string> GraphCanvasModel::planNodesOf(std::string_view canvas_n
         if (owner == canvas_node) result.push_back(pass.name);
     }
     return result;
+}
+
+// GL-5f, decision 3.
+std::vector<GraphCanvasLayerRow> GraphCanvasModel::bodyLayerRows(std::string_view scope,
+                                                                 std::string_view node) const {
+    std::vector<GraphCanvasLayerRow> rows;
+    if (scope.empty() || node.empty() || folded_stash_ || plan_passes_.empty()) return rows;
+    const std::string dot{kDot};
+    for (const auto &[name, origin] : plan_resource_origins_) {
+        if (origin.node != node || loopOriginScope(origin.loop, origin.element, origin.node) != scope)
+            continue;
+        auto line = "resource " + name + dot + "loop " + origin.loop + " [" +
+                    std::to_string(origin.element) + "]";
+        const auto found = std::ranges::find(plan_resources_, name, &PlanResource::name);
+        if (found != plan_resources_.end() && !found->format.empty()) line += dot + found->format;
+        rows.push_back({"L2", "resource", line, {}, name});
+    }
+    return rows;
+}
+
+std::optional<FramePlanLoopOrigin> GraphCanvasModel::planResourceLoopOrigin(
+    std::string_view resource) const {
+    const auto found = plan_resource_origins_.find(resource);
+    if (found == plan_resource_origins_.end()) return std::nullopt;
+    return found->second;
 }
 
 bool GraphCanvasModel::layersShown() const {
@@ -6409,7 +6655,7 @@ std::vector<GraphCanvasLayerRow> GraphCanvasModel::layerRows(std::string_view ca
         if (!resource.format.empty()) line += dot + resource.format;
         for (const auto &group : plan_alias_groups_)
             if (listed(group.resources, resource.name)) line += dot + "alias " + group.id;
-        rows.push_back({"L2", "resource", line, {}});
+        rows.push_back({"L2", "resource", line, {}, resource.name});
     }
     for (const auto &group : plan_alias_groups_)
         if (meets(group.from_nodes, nodes))
@@ -6444,6 +6690,40 @@ std::vector<GraphCanvasLayerRow> GraphCanvasModel::layerRows(std::string_view ca
         if (!pass->backend.empty() && pass->backend != graph)
             rows.push_back({"L3", "backend", "backend " + pass->backend + " (" + name + ")", name});
     }
+    // RTL-2s-c (RTL-2s decision 4): a ray tracing task's shader binding
+    // table as its ray layout lays it out -- the hit groups (one record per
+    // group and ray type), the ray types it traces, its misses -- and the
+    // acceleration structure its rays are traced against.
+    if (const auto *node = findNode({}, canvas_node); node != nullptr && text(*node, "op") == "render.compute") {
+        const auto parameters = node->value("parameters", Json::object());
+        const auto rt = parameters.is_object() ? parameters.value("ray_tracing", Json(nullptr)) : Json(nullptr);
+        if (rt.is_object() && ray_layout_read_ && ray_layout_read_->layout.usable() && rayTracingUsesLayout(rt)) {
+            const auto &layout = ray_layout_read_->layout.document;
+            const auto join = [](const std::vector<std::string> &names) {
+                std::string line;
+                for (const auto &name : names) line += (line.empty() ? "" : ", ") + name;
+                return line;
+            };
+            std::vector<std::string> groups;
+            for (const auto &group : rayLayoutGroups(layout))
+                groups.push_back(group.name + (group.type == "procedural" ? " (procedural)" : "") +
+                                 (group.name == rayLayoutDefaultGroup(layout) ? " (default)" : ""));
+            std::vector<std::string> traced;
+            for (const auto &type : rt.value("traced_ray_types", Json::array()))
+                if (type.is_string()) traced.push_back(type.get<std::string>());
+            rows.push_back({"L3", "ray_layout", "hit groups " + join(groups), {}});
+            rows.push_back({"L3", "ray_layout",
+                            "ray types traced " + join(traced) + " of " + join(rayLayoutRayTypes(layout)), {}});
+            rows.push_back({"L3", "ray_layout", "misses " + join(rayLayoutMisses(layout)), {}});
+            const auto structure = rt.value("acceleration_structure", Json(nullptr));
+            rows.push_back({"L3", "ray_layout",
+                            "acceleration structure " +
+                                (structure.is_string() ? structure.get<std::string>()
+                                 : structure.is_null() ? std::string{"scene"}
+                                                       : structure.dump()),
+                            {}});
+        }
+    }
     return rows;
 }
 
@@ -6451,6 +6731,27 @@ std::vector<GraphCanvasLayerRow> GraphCanvasModel::graphLayerRows() const {
     std::vector<GraphCanvasLayerRow> rows;
     if (!layersShown()) return rows;
     const std::string dot{kDot};
+    // UX-15b, decision 5 (GL-2b's hole): a feature whose passes graph nodes
+    // took the place of, every one, has no folded node to carry its
+    // "is replaced by" rows (layerRows). The graph's own rows carry them.
+    const auto folded = rootFoldedNodes();
+    std::vector<std::string> said;
+    for (const auto &pass : plan_passes_)
+        for (const auto &replaced : pass.replaces) {
+            const bool on_feature =
+                std::ranges::any_of(folded, [&](const GraphCanvasFoldedNode &node) {
+                    return node.feature_group && (node.feature == replaced.feature ||
+                                                  featureShortName(node.feature) == replaced.feature);
+                });
+            if (on_feature) continue;
+            auto owner = graphOwnerOf(pass);
+            if (owner.empty()) owner = pass.name;
+            const auto line = "pass " + replaced.pass + " of " + replaced.feature +
+                              " is replaced by graph node " + owner;
+            if (listed(said, line)) continue;
+            said.push_back(line);
+            rows.push_back({"L1", "replaced", line, pass.name});
+        }
     for (const auto &decision : plan_decisions_)
         if (decision.from_nodes.empty())
             rows.push_back({"L3", "decision",
@@ -6465,7 +6766,8 @@ std::vector<GraphCanvasLayerRow> GraphCanvasModel::graphLayerRows() const {
                             (candidate.selected   ? "selected"
                              : candidate.feasible ? "feasible"
                                                   : "rejected"),
-                        {}});
+                        {},
+                        candidate.candidate});
     return rows;
 }
 
@@ -6671,6 +6973,26 @@ GraphCanvasFoldedExpand GraphCanvasModel::foldedExpand() const {
     return expand;
 }
 
+GraphCanvasFoldedExpand GraphCanvasModel::foldedNodeExpand(std::string_view id) const {
+    GraphCanvasFoldedExpand expand;
+    if (folded_stash_ || !currentScope().empty()) return expand;
+    for (const auto &node : foldedNodes()) {
+        if (node.id != id) continue;
+        // As foldedExpand reads the trail: a material pass is its own step
+        // when no feature made it, else its feature's.
+        if (node.material && !node.feature_group && node.feature.empty()) {
+            expand.kind = "decompose";
+            expand.graph = plan_graph_;
+            expand.pass = node.id;
+        } else if (!node.feature.empty() && templates_.contains(node.feature)) {
+            expand.kind = "replace";
+            expand.feature = node.feature;
+        }
+        break;
+    }
+    return expand;
+}
+
 bool GraphCanvasModel::refuseFoldedEdit(const Json &ops) {
     // A drag inside the view moves nothing that is kept, and says nothing.
     const bool placement = ops.is_array() && std::ranges::all_of(ops, [](const Json &op) {
@@ -6849,6 +7171,11 @@ void GraphCanvasModel::askRenderTargetVocabulary() {
         }))
         return;
     vocabulary_asked_ = true;
+    read(RequestKind::Authoring, "get_render_authoring_context", Json::object());
+}
+
+void GraphCanvasModel::readRenderAuthoringAgain() {
+    if (!connected_) return;
     read(RequestKind::Authoring, "get_render_authoring_context", Json::object());
 }
 
@@ -8472,6 +8799,22 @@ std::vector<std::string> GraphCanvasModel::computeOpenSockets(std::string_view s
     return open;
 }
 
+namespace {
+
+// RTL-2s, decision 1: the ray tracing a project stem makes. Without a ray
+// group layout, the stem's raygen, miss and closest hit; with one, the
+// layout's form by the rule Enable hit groups uses (rayTracingInLayoutForm,
+// RTL-2s-c): the first ray type traced, every miss and every group's cell
+// the stem (a procedural group's intersection too), so the task the palette
+// places is whole. The fields' grid changes each place afterwards.
+Json rayTracingOfStem(const std::optional<RayLayoutRead> &read, const std::string &reference) {
+    Json legacy{{"raygen", reference}, {"miss", reference}, {"closesthit", reference}};
+    if (!read || !read->layout.usable() || rayLayoutRayTypes(read->layout.document).empty()) return legacy;
+    return rayTracingInLayoutForm(legacy, read->layout.document, reference);
+}
+
+} // namespace
+
 Json GraphCanvasModel::computeShaderOps(std::string_view scope, const std::string &node,
                                         const std::string &reference) const {
     const auto known = shaderInterface(reference);
@@ -8548,7 +8891,7 @@ Json GraphCanvasModel::computeShaderOps(std::string_view scope, const std::strin
     parameters.erase("shader");
     parameters.erase("ray_tracing");
     if (ray_tracing)
-        parameters["ray_tracing"] = Json{{"raygen", reference}, {"miss", reference}, {"closesthit", reference}};
+        parameters["ray_tracing"] = rayTracingOfStem(ray_layout_read_, reference);
     else
         parameters["shader"] = reference;
     parameters["ports"] = ports;

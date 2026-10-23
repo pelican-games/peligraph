@@ -48,6 +48,7 @@
 #include <QPushButton>
 #include <QShowEvent>
 #include <QSignalBlocker>
+#include <QScopeGuard>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QTabBar>
@@ -477,7 +478,8 @@ struct FramePlanWidget::Impl {
     // that line and nothing else.
     QString shown_reload_notice;
     // VI-3a: what the edit in flight says once it has committed, and what
-    // the last committed one said; it outlasts the refreshed plan's summary
+    // the last committed one (including Render Undo / Redo) said; it
+    // outlasts the refreshed plan's summary
     // until the next edit is sent.
     QString submitted_notice;
     QString commit_notice;
@@ -485,6 +487,9 @@ struct FramePlanWidget::Impl {
     // that shows it arrives, and keep saying it while it stands.
     bool announce_reload_refusal = false;
     QString shown_refusal_line;
+    QString canvas_edit_failure;
+    QString canvas_edit_failure_detail;
+    bool populate_after_drag = false;
     QPushButton *refusal_disconnect = nullptr;
     QPushButton *refusal_open_shader = nullptr;
     std::function<void(const QString &, const QString &)> preset_pass_edit_action;
@@ -492,6 +497,22 @@ struct FramePlanWidget::Impl {
     FramePlanWidget::GraphNodeOpenAction graph_node_open_action;
     FramePlanWidget::GraphLoopNodeOpenAction graph_loop_node_open_action;
     FramePlanWidget::GraphPassOpenAction graph_pass_open_action;
+    // GL-5c, decisions 1 and 2: who places the palette's node on the Graph
+    // tab for an Add on a graph root, and the Add that waits for the context
+    // to say whether the root selects a preset (with what it does if so).
+    FramePlanWidget::GraphPlaceAction graph_place_action;
+    std::string pending_graph_place;
+    std::function<void()> pending_graph_fallback;
+    // GL-5c, decision 3: whether the Graph tab edits a pass of the plan.
+    std::function<bool(const QString &pass)> graph_edits_pass;
+    // GL-5c, decision 5: the entries that open in the Graph, whose tooltips
+    // say so once the context says where they go.
+    QPushButton *edit_task_button = nullptr;
+    QPushButton *edit_pass_button = nullptr;
+    QPushButton *add_material_button = nullptr;
+    QAction *add_material_action = nullptr;
+    QAction *add_fullscreen_action = nullptr;
+    QAction *add_task_action = nullptr;
     // LP-4e: who hears that a decompose committed, and the loop it made.
     std::function<void(const QString &loop)> loop_decomposed_action;
     std::string decomposed_loop;
@@ -510,6 +531,8 @@ struct FramePlanWidget::Impl {
     std::function<void(const QString &, const QString &, const QStringList &)> pass_connection_action;
     std::function<void(const QString &, const QStringList &, quint64)> node_order_action;
     qint64 pending_request = 0;
+    // BS-1s: the status line the engine's placeholder plan put there.
+    QString fallback_line;
     // Q-18. Another panel's edit that committed can change the plan (the
     // Graph tab's loop count, a branch, a view axis). In view, the plan is
     // read again at once -- after the read in flight, which may predate the
@@ -526,6 +549,24 @@ struct FramePlanWidget::Impl {
     static constexpr int max_unpublished_plan_retries = 40;
     static constexpr int unpublished_plan_retry_ms = 250;
     qint64 pending_gpu_timing_request = 0;
+    // RTL-2s b, decision 4: the SBT table -- which hit group each object's
+    // geometry lands in, and its record. RTL-3s, decision 1 (engine EB-3):
+    // every object's rows in one get_ray_table, a page of SbtPage rows at a
+    // time (Show more asks for the next). Asked again when the ray-query
+    // scene's shape moves.
+    struct SbtRow {
+        std::string object;
+        std::string group;
+        std::string source;
+        std::string record;
+    };
+    static constexpr std::size_t SbtPage = 256;
+    qint64 pending_sbt = 0;
+    std::vector<SbtRow> sbt_rows;
+    std::string sbt_asked_for;
+    bool sbt_known = false;
+    // The rows the engine has past the ones read (truncated).
+    std::size_t sbt_total = 0;
     // Half of what gates the GPU timing clock: whether the engine still has
     // anything to report. The other half is whether anyone is looking at the
     // panel, and either can change without the other.
@@ -538,6 +579,9 @@ struct FramePlanWidget::Impl {
     std::function<void()> task_insert_action;
     FramePlanAuthoring authoring;
     FramePlanTaskAuthoring task_authoring;
+    // Root digest changes alone do not change the drawn plan or its fields.
+    Json authoring_visuals;
+    Json task_authoring_visuals;
     qint64 pending_authoring_request = 0;
     // GL-3a, decision 8: the root's target_planning (read with the root
     // document after each authoring context), for the rows' Serial /
@@ -547,6 +591,40 @@ struct FramePlanWidget::Impl {
     QAction *planning_serial = nullptr;
     QAction *planning_isolate = nullptr;
     QAction *planning_no_alias = nullptr;
+    // --- UX-15b: the lower layer's decisions (EL-2), named so a scenario
+    // fires them: Pin this candidate acts on the picked Backends row.
+    QAction *backend_pin = nullptr;
+    QAction *backend_unpin = nullptr;
+    QAction *physical_freeze = nullptr;
+    QAction *physical_remove = nullptr;
+    QAction *physical_eject_again = nullptr;
+    // Beside the line of a physical_fragment_stale refusal.
+    QPushButton *eject_again = nullptr;
+    // The bands on screen. A tree lets go of a row's widget only later
+    // (deleteLater), so a band is deleted here before its tree is filled
+    // again, and its name never answers for two widgets at once.
+    // The tree is asked to let go of the widget first: deleting an index widget
+    // the view still lists leaves it in the view's editors, and the next layout
+    // (a clear() that changes the selection) reads the freed widget.
+    struct Band {
+        QPointer<QTreeWidget> tree;
+        QPointer<QWidget> widget;
+    };
+    std::vector<Band> bands;
+    void dropBands() {
+        for (auto &band : std::exchange(bands, {})) {
+            if (!band.widget) continue;
+            if (band.tree)
+                for (int row = 0; row < band.tree->topLevelItemCount(); ++row) {
+                    auto *item = band.tree->topLevelItem(row);
+                    if (band.tree->itemWidget(item, 0) == band.widget) {
+                        band.tree->removeItemWidget(item, 0);
+                        break;
+                    }
+                }
+            delete band.widget.data();
+        }
+    }
     qint64 pending_task_request = 0;
     qint64 pending_edit_request = 0;
     qint64 pending_ticket_request = 0;
@@ -707,22 +785,25 @@ struct FramePlanWidget::Impl {
         // N-7 rule 1: the gesture is described where the gesture is made.
         auto *order_nodes = new QPushButton(owner.tr("Order..."), &owner);
         order_nodes->setObjectName(QStringLiteral("pelican.framePlanOrderNodes"));
+        // GL-5d, decision 6: the Graph's Order… on a rendering-section pass
+        // is this one.
+        order_nodes->setToolTip(owner.tr(
+            "The order of the plan's nodes (data dependencies still decide). The same as "
+            "Order… on a pass of the rendering section in the Graph."));
         toolbar->addWidget(order_nodes);
-        QObject::connect(order_nodes, &QPushButton::clicked, &owner, [this] {
-            if (!model || !node_order_action) return;
-            if (!model->runtime_generation || *model->runtime_generation == 0) {
-                showStatus(owner.tr("Node ordering needs a published runtime generation"), owner.tr("Node ordering requires a published runtime generation. Refresh the Frame Plan first."));
-                return;
-            }
-            QStringList names;
-            for (const auto &node : model->nodes) names.push_back(QString::fromStdString(node.name));
-            node_order_action(QString::fromStdString(model->graph), names, *model->runtime_generation);
-        });
+        QObject::connect(order_nodes, &QPushButton::clicked, &owner, [this] { orderNodes(); });
         auto *edit_task = new QPushButton(owner.tr("Edit task"), &owner);
         edit_task->setObjectName(QStringLiteral("pelican.framePlanEditTask"));
+        edit_task_button = edit_task;
         toolbar->addWidget(edit_task);
         QObject::connect(edit_task, &QPushButton::clicked, &owner, [this] {
             const auto &selected = logical_scene->selectedNode();
+            // GL-5c, decision 3: a task a render.compute node made is the
+            // Graph's to edit.
+            if (selected && editsInGraph(*selected)) {
+                openInGraph(*selected);
+                return;
+            }
             if (!selected || !model || !task_edit_action) return;
             const auto node = std::ranges::find(model->nodes, selected->name, &FramePlanNode::name);
             if (node == model->nodes.end() || node->kind != "compute" || node->authored_name.empty()) {
@@ -733,20 +814,32 @@ struct FramePlanWidget::Impl {
         });
         auto *edit_pass = new QPushButton(owner.tr("Edit pass"), &owner);
         edit_pass->setObjectName(QStringLiteral("pelican.framePlanEditPresetPass"));
+        edit_pass_button = edit_pass;
         toolbar->addWidget(edit_pass);
         QObject::connect(edit_pass, &QPushButton::clicked, &owner, [this] {
             const auto &selected = logical_scene->selectedNode();
+            // GL-5c, decision 3: a pass the Graph edits opens there.
+            if (selected && editsInGraph(*selected)) {
+                openInGraph(*selected);
+                return;
+            }
             if (selected && preset_pass_edit_action)
                 preset_pass_edit_action(QString::fromStdString(selected->graph), QString::fromStdString(selected->name));
         });
         auto *new_target = new QPushButton(owner.tr("New render target..."), &owner);
         new_target->setObjectName(
             QStringLiteral("pelican.framePlanNewRenderTarget"));
+        // GL-5d, decision 6.
+        new_target->setToolTip(owner.tr(
+            "Declare a render target. The same form as the Graph's New render target… (a "
+            "render.target_ref's combo); a double-click on a resource edits it, as Edit "
+            "target… on its reference in the Graph does."));
         toolbar->addWidget(new_target);
         auto *new_material_pass =
             new QPushButton(owner.tr("Add material pass..."), &owner);
         new_material_pass->setObjectName(
             QStringLiteral("pelican.framePlanAddMaterialPass"));
+        add_material_button = new_material_pass;
         toolbar->addWidget(new_material_pass);
         toolbar->addWidget(makePanelHelpButton(
             &owner, "pelican.framePlan.help", ManualFramePlanAnchor,
@@ -793,6 +886,17 @@ struct FramePlanWidget::Impl {
         QObject::connect(reload_authoring, &QPushButton::clicked, &owner,
                          [this] { reloadAuthoring(); });
         status_row->addWidget(reload_authoring);
+        // UX-15b, decision 2: a frozen plan the graph moved away from.
+        eject_again = new QPushButton(owner.tr("Eject again"), &owner);
+        eject_again->setObjectName(
+            QStringLiteral("pelican.framePlan.physical.ejectAgainButton"));
+        eject_again->setToolTip(owner.tr(
+            "Freeze the physical plan again from the plan on screen: one change, "
+            "which Undo takes back."));
+        eject_again->hide();
+        QObject::connect(eject_again, &QPushButton::clicked, &owner,
+                         [this] { freezePhysicalPlan(); });
+        status_row->addWidget(eject_again);
         // Q-14: the two ways out of a pass whose shader does not read the
         // inputs it was given.
         const auto actions = shaderInputContractActions();
@@ -852,6 +956,10 @@ struct FramePlanWidget::Impl {
         logical_splitter->setObjectName(
             QStringLiteral("pelican.framePlanLogicalSplitter"));
         logical_scene = new FramePlanGraphicsScene(&owner);
+        logical_scene->gestureEnded = [this] {
+            if (std::exchange(populate_after_drag, false) && model) populate();
+            updateCanvasEnabled();
+        };
         logical_scene->connectionFeedback = [this](const QString &message) { showStatus(oneLine(message), message); };
         logical_scene->connectionRequested = [this](const FramePlanNodeKey &from, const FramePlanNodeKey &to) {
             if (!model || (!task_connection_action && !pass_connection_action)) {
@@ -950,6 +1058,11 @@ struct FramePlanWidget::Impl {
         // bands do not carry lives in the two forms that already exist.
         logical_scene->nodeEditRequested =
             [this](const FramePlanNodeKey &node) {
+                // GL-5c, decision 3: what the Graph edits opens there.
+                if (editsInGraph(node)) {
+                    openInGraph(node);
+                    return;
+                }
                 const auto task = authoredTask(node.name);
                 if (!task.empty()) {
                     if (task_edit_action) task_edit_action(text(task));
@@ -1013,30 +1126,39 @@ struct FramePlanWidget::Impl {
         add_pass->setObjectName(
             QStringLiteral("pelican.framePlan.addFullscreenPass"));
         owner.addAction(add_pass);
+        add_fullscreen_action = add_pass;
         QObject::connect(add_pass, &QAction::triggered, &owner, [this] {
-            const auto anchor = logical_scene->insertAnchor();
-            if (!anchor) {
-                showStatus(owner.tr(
-                    "Select the node the new pass should follow first."));
-                return;
-            }
-            if (logical_scene->nodeAddRequested)
-                logical_scene->nodeAddRequested(*anchor, false);
+            // GL-5c, decision 1: on a graph root, the palette's fullscreen pass.
+            addThrough("render.fullscreen", [this] {
+                const auto anchor = logical_scene->insertAnchor();
+                if (!anchor) {
+                    showStatus(owner.tr(
+                        "Select the node the new pass should follow first."));
+                    return;
+                }
+                if (logical_scene->nodeAddRequested)
+                    logical_scene->nodeAddRequested(*anchor, false);
+            });
         });
         auto *add_task = new QAction(
             QStringLiteral("Add compute task..."), &owner);
         add_task->setObjectName(
             QStringLiteral("pelican.framePlan.addComputeTask"));
         owner.addAction(add_task);
+        add_task_action = add_task;
         QObject::connect(add_task, &QAction::triggered, &owner, [this] {
-            const auto anchor = logical_scene->insertAnchor();
-            if (logical_scene->nodeAddRequested)
-                logical_scene->nodeAddRequested(
-                    anchor ? *anchor
-                           : FramePlanNodeKey{model ? model->graph
-                                                    : std::string{},
-                                              std::string{}},
-                    true);
+            // GL-5c, decision 2: on a graph root, the palette's compute task
+            // (the root's rendering section declares no compute_tasks, MG-2b).
+            addThrough("render.compute", [this] {
+                const auto anchor = logical_scene->insertAnchor();
+                if (logical_scene->nodeAddRequested)
+                    logical_scene->nodeAddRequested(
+                        anchor ? *anchor
+                               : FramePlanNodeKey{model ? model->graph
+                                                        : std::string{},
+                                                  std::string{}},
+                        true);
+            });
         });
         logical_scene->setInsertActions(add_pass, add_task);
         // Q-12: a task a render.compute node made is edited in the Graph
@@ -1046,6 +1168,10 @@ struct FramePlanWidget::Impl {
         // entries and acting on the node right-clicked (or picked).
         auto *fix_sockets = new QAction(QStringLiteral("Fix sockets"), &owner);
         fix_sockets->setObjectName(QStringLiteral("pelican.framePlan.fixSockets"));
+        // GL-5d, decision 6: the Graph offers the same on the pass.
+        fix_sockets->setToolTip(owner.tr(
+            "One fixed declaration per connected input, in the pass's shader. The same as "
+            "Fix sockets on the pass in the Graph (its right-click or its detail column)."));
         owner.addAction(fix_sockets);
         QObject::connect(fix_sockets, &QAction::triggered, &owner, [this] {
             if (const auto node = logical_scene->insertAnchor()) fixSockets(*node);
@@ -1055,6 +1181,9 @@ struct FramePlanWidget::Impl {
             new QAction(QStringLiteral("Make sockets variadic"), &owner);
         variadic_sockets->setObjectName(
             QStringLiteral("pelican.framePlan.makeSocketsVariadic"));
+        variadic_sockets->setToolTip(owner.tr(
+            "Put back the line Fix sockets replaced. The same as Make sockets variadic on the "
+            "pass in the Graph."));
         owner.addAction(variadic_sockets);
         QObject::connect(variadic_sockets, &QAction::triggered, &owner, [this] {
             if (const auto node = logical_scene->insertAnchor())
@@ -1147,8 +1276,11 @@ struct FramePlanWidget::Impl {
         add_material->setObjectName(
             QStringLiteral("pelican.framePlan.addMaterialPass"));
         owner.addAction(add_material);
-        QObject::connect(add_material, &QAction::triggered, &owner,
-                         [this] { openMaterialPassForm(); });
+        add_material_action = add_material;
+        // GL-5c, decision 1: on a graph root, the palette's material pass.
+        QObject::connect(add_material, &QAction::triggered, &owner, [this] {
+            addThrough("render.material_pass", [this] { openMaterialPassForm(); });
+        });
         QObject::connect(new_material_pass, &QPushButton::clicked,
                          add_material, &QAction::trigger);
         logical_scene->setMaterialPassAction(add_material);
@@ -1312,6 +1444,27 @@ struct FramePlanWidget::Impl {
                                            owner.tr("Isolate"), "isolate");
         planning_no_alias = planning_action("pelican.framePlan.planning.noAlias",
                                             owner.tr("No alias"), "no_alias");
+        // UX-15b, decisions 1 and 2. Always on: what cannot be sent says why
+        // on the status line.
+        const auto lower_action = [this](const char *name, const QString &label,
+                                         void (Impl::*run)()) {
+            auto *action = new QAction(label, &owner);
+            action->setObjectName(QString::fromLatin1(name));
+            owner.addAction(action);
+            QObject::connect(action, &QAction::triggered, &owner, [this, run] { (this->*run)(); });
+            return action;
+        };
+        backend_pin = lower_action("pelican.framePlan.backend.pin",
+                                   owner.tr("Pin this candidate"), &Impl::pinPickedCandidate);
+        backend_unpin = lower_action("pelican.framePlan.backend.unpin", owner.tr("Unpin"),
+                                     &Impl::unpinBackend);
+        physical_freeze = lower_action("pelican.framePlan.physical.freeze",
+                                       owner.tr("Freeze this physical plan"),
+                                       &Impl::freezePhysicalPlan);
+        physical_remove = lower_action("pelican.framePlan.physical.remove", owner.tr("Remove"),
+                                       &Impl::removeFrozenPlan);
+        physical_eject_again = lower_action("pelican.framePlan.physical.ejectAgain",
+                                            owner.tr("Eject again"), &Impl::freezePhysicalPlan);
         for (QTreeWidget *tree : {passes, resources, physical, decisions, backends, barriers}) {
             tree->setContextMenuPolicy(Qt::CustomContextMenu);
             QObject::connect(tree, &QWidget::customContextMenuRequested, &owner,
@@ -1320,8 +1473,12 @@ struct FramePlanWidget::Impl {
 
         QObject::connect(tabs, &QTabWidget::currentChanged, &owner,
                          [this](int) { refreshRawJson(); });
-        QObject::connect(refresh, &QPushButton::clicked, &owner,
-                         [this] { requestRefresh(); });
+        QObject::connect(refresh, &QPushButton::clicked, &owner, [this] {
+            // RTL-3s, decision 1: Refresh reads the SBT table again too (a
+            // record value changes no count the table is keyed on).
+            sbt_asked_for.clear();
+            requestRefresh();
+        });
         QObject::connect(logical_scene, &QGraphicsScene::selectionChanged,
                          &owner,
                          [this] {
@@ -1370,6 +1527,7 @@ struct FramePlanWidget::Impl {
                              pending_edit_request = 0;
                              pending_ticket_request = 0;
                              pending_ticket.clear();
+                             eject_again->hide();
                              submitted_method.clear();
                              submitted_target.clear();
                              pending_target_selection.clear();
@@ -1431,6 +1589,9 @@ struct FramePlanWidget::Impl {
     }
 
     void clearTrees() {
+        populate_after_drag = false;
+        canvas_edit_failure.clear();
+        canvas_edit_failure_detail.clear();
         logical_scene->resetGraph();
         populateLogicalDetails();
         {
@@ -1439,6 +1600,7 @@ struct FramePlanWidget::Impl {
             target->setCurrentIndex(-1);
         }
         target->setEnabled(false);
+        dropBands();
         passes->clear();
         resources->clear();
         physical->clear();
@@ -1491,6 +1653,7 @@ struct FramePlanWidget::Impl {
     }
 
     void showUnavailable(const QString &reason) {
+        commit_notice.clear();
         pending_request = 0;
         plan_reread = false;
         pending_gpu_timing_request = 0;
@@ -1546,10 +1709,45 @@ struct FramePlanWidget::Impl {
         showStatus(oneLine(fatal_error_line), fatal_error_line);
     }
 
+    // BS-1s, decision 2: true when the plan is the engine's placeholder,
+    // which the status row then says (renderFallbackSentence); a plan of the
+    // project's takes that line away again.
+    bool showRenderFallback(const QByteArray &result_json) {
+        RenderPipelineReading reading;
+        if (result_json.contains("\"render_pipeline\"")) {
+            try {
+                reading = readRenderPipeline(Json::parse(
+                    result_json.constData(), result_json.constData() + result_json.size()));
+            } catch (const std::exception &) {
+            }
+        }
+        if (reading.state == RenderPipelineReading::State::Fallback) {
+            fallback_line = QString::fromStdString(renderFallbackSentence(reading));
+            status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
+            showStatus(fallback_line,
+                       fallback_line + QLatin1Char('\n') +
+                           QString::fromStdString(reading.refusal.value("message", std::string{})));
+            return true;
+        }
+        if (!fallback_line.isEmpty() && status->text() == fallback_line) {
+            status->setStyleSheet({});
+            showStatus({});
+        }
+        fallback_line.clear();
+        return false;
+    }
+
     // N-7 rule 2: the panel has one status row. It is one line, it carries
     // the long form as its tooltip, and an empty line takes the row with it.
     void showStatus(const QString &line, const QString &detail = {}) {
         setPanelNotice(status, line, detail.isEmpty() ? line : detail);
+        // GL-5d: an action the Graph tab ran here says it there too.
+        if (status_said) {
+            const auto said = status_said;
+            if (!running_when_read && pending_edit_request == 0 && pending_ticket.isEmpty())
+                status_said = {};
+            said(line);
+        }
     }
 
     // --- F-3. A shader that failed to reload is marked on the node that
@@ -1697,6 +1895,30 @@ struct FramePlanWidget::Impl {
         return found->authored_name;
     }
 
+    // FX-9: the next gesture must use the context read after the commit.
+    // A read that starts during an existing drag must still let it release.
+    void updateCanvasEnabled() {
+        if (!logical || logical_scene->dragging()) return;
+        // Disabling a live editor sends FocusOut and would commit its draft
+        // merely because a read started. Let this existing input finish.
+        if (logical_scene->editingInline() && pending_edit_request == 0 &&
+            pending_ticket.isEmpty() && !retry_pending) return;
+        logical->setEnabled(pending_edit_request == 0 && pending_ticket.isEmpty() &&
+                            pending_ticket_request == 0 && !retry_pending &&
+                            pending_authoring_request == 0 && pending_task_request == 0 &&
+                            pending_request == 0);
+    }
+
+    QString namedCanvasFailure(const FramePlanEditRequest &request, const QString &reason) {
+        if (request.method != "edit_preset_pass" || !request.params.contains("input"))
+            return reason;
+        const auto pass = text(request.params.value("pass_name", std::string{}));
+        canvas_edit_failure = reason.contains(pass) ? reason
+            : owner.tr("%1: not saved: %2").arg(pass, reason);
+        canvas_edit_failure_detail = canvas_edit_failure;
+        return canvas_edit_failure;
+    }
+
     void connectEditSignals() {
         if (edit_signals_connected) return;
         edit_signals_connected = true;
@@ -1716,6 +1938,7 @@ struct FramePlanWidget::Impl {
     // traffic on the editor channel, or take work from the panel in front.
     // They are asked for again the moment this one is shown.
     void requestAuthoringContext(bool even_hidden = false) {
+        const auto finished = qScopeGuard([this] { updateCanvasEnabled(); });
         if (!edit.requestAuthoringContext || pending_authoring_request != 0 ||
             (!owner.isVisible() && !even_hidden))
             return;
@@ -1726,6 +1949,7 @@ struct FramePlanWidget::Impl {
     }
 
     void requestTaskAuthoring(bool even_hidden = false) {
+        const auto finished = qScopeGuard([this] { updateCanvasEnabled(); });
         if (!edit.requestTaskAuthoring || pending_task_request != 0 ||
             (!owner.isVisible() && !even_hidden))
             return;
@@ -1835,13 +2059,30 @@ struct FramePlanWidget::Impl {
 
     // One gesture, kept as the function that builds its request from the
     // context, so a refusal for a moved document can build it once more.
-    void submitBuilt(std::function<FramePlanEditRequest()> build) {
+    void submitBuilt(std::function<FramePlanEditRequest()> build,
+                     const std::string &canvas_node = {}) {
+        if (!canvas_node.empty()) {
+            // A failed context read can refuse before there is an RPC payload
+            // from which to recover the pass name. Keep the gesture's name in
+            // the builder too, including the existing external-change retry.
+            build = [build = std::move(build), canvas_node] {
+                auto request = build();
+                if (!request.sendable() &&
+                    request.line.find(canvas_node) == std::string::npos &&
+                    request.refusal.find(canvas_node) == std::string::npos) {
+                    request.line = canvas_node + ": not saved: " +
+                        (request.line.empty() ? request.refusal : request.line);
+                }
+                return request;
+            };
+        }
         if (!submit(build())) return;
         submitted_build = std::move(build);
         submitted_retried = false;
     }
 
     bool submit(const FramePlanEditRequest &request) {
+        const auto finished = qScopeGuard([this] { updateCanvasEnabled(); });
         if (!request.sendable()) {
             const QString reason = text(request.refusal.empty()
                                             ? std::string{"Nothing to change."}
@@ -1861,10 +2102,13 @@ struct FramePlanWidget::Impl {
                 fix.inputs = *request.passthrough_inputs;
                 offerContractButtons(std::move(fix), true);
             }
+            canvas_edit_failure = status->text();
+            canvas_edit_failure_detail = status->toolTip();
             return false;
         }
         if (pending_edit_request != 0 || !pending_ticket.isEmpty()) {
-            showStatus(owner.tr("Wait for the current change to finish."));
+            showStatus(namedCanvasFailure(request,
+                owner.tr("Wait for the current change to finish.")));
             return false;
         }
         const auto method = text(request.method);
@@ -1879,9 +2123,14 @@ struct FramePlanWidget::Impl {
                 ? edit.decomposeMaterialPass
             // GL-3a, decision 8.
             : request.method == "edit_target_planning" ? edit.editTargetPlanning
-                                                      : nullptr;
+            // UX-15b.
+            : request.method == "edit_vulkan_plan_pins" ? edit.editVulkanPlanPins
+            : request.method == "put_vulkan_physical_fragment"
+                ? edit.putVulkanPhysicalFragment
+                : nullptr;
         if (!sender) {
-            showStatus(owner.tr("Canvas editing is unavailable: %1").arg(method));
+            showStatus(namedCanvasFailure(request,
+                owner.tr("Canvas editing is unavailable: %1").arg(method)));
             return false;
         }
         QJsonObject params;
@@ -1895,7 +2144,8 @@ struct FramePlanWidget::Impl {
         QString error;
         pending_edit_request = sender(params, &error);
         if (pending_edit_request == 0) {
-            showStatus(oneLine(error), error);
+            const auto message = namedCanvasFailure(request, error);
+            showStatus(oneLine(message), message);
             return false;
         }
         // Q-13: an edit sent without its builder is not rebuilt; submitBuilt
@@ -1906,7 +2156,10 @@ struct FramePlanWidget::Impl {
         hideShaderContract();
         refusal_disconnect->hide();
         refusal_open_shader->hide();
+        eject_again->hide();
         shown_refusal_line.clear();
+        canvas_edit_failure.clear();
+        canvas_edit_failure_detail.clear();
         submitted_notice = text(request.notice);
         commit_notice.clear();
         picked_loop_line.clear();
@@ -1919,6 +2172,7 @@ struct FramePlanWidget::Impl {
     }
 
     void requestTicketResult() {
+        const auto finished = qScopeGuard([this] { updateCanvasEnabled(); });
         if (!edit.requestEditResult || pending_ticket.isEmpty() ||
             pending_ticket_request != 0)
             return;
@@ -1926,18 +2180,24 @@ struct FramePlanWidget::Impl {
         pending_ticket_request = edit.requestEditResult(pending_ticket, &error);
         if (pending_ticket_request == 0) {
             pending_ticket.clear();
-            showStatus(oneLine(error), error);
+            const auto message = namedCanvasFailure(submitted_request, error);
+            showStatus(oneLine(message), message);
         }
     }
 
     bool receiveEditResult(qint64 request_id, const QByteArray &bytes) {
+        const auto finished = qScopeGuard([this] { updateCanvasEnabled(); });
         if (receivePlanning(request_id, bytes)) return true;
         if (request_id != 0 && request_id == pending_authoring_request) {
             pending_authoring_request = 0;
+            bool changed = true;
             try {
-                authoring = framePlanAuthoringFromContext(
-                    Json::parse(bytes.constData(),
-                                bytes.constData() + bytes.size()));
+                auto context = Json::parse(bytes.constData(), bytes.constData() + bytes.size());
+                const bool had_context = authoring.received;
+                authoring = framePlanAuthoringFromContext(context);
+                if (context.is_object()) context.erase("source_digest");
+                changed = !had_context || authoring_visuals != context;
+                authoring_visuals = std::move(context);
             } catch (const std::exception &) {
                 authoring = {};
             }
@@ -1947,7 +2207,7 @@ struct FramePlanWidget::Impl {
             if (authoring.received) publishDigest(authoring.source_digest);
             // GL-3a, decision 8: and the root's target_planning with it.
             if (authoring.received) requestPlanning();
-            if (model) populate();
+            if (model && changed) populate();
             // Q-13: the document moved while this read was on its way.
             if (std::exchange(authoring_reread, false))
                 requestAuthoringContext(true);
@@ -1961,6 +2221,15 @@ struct FramePlanWidget::Impl {
             if (std::exchange(pending_material_form, false) &&
                 authoring.received)
                 openMaterialPassForm();
+            // GL-5c: an Add that waited to know whether the root selects a
+            // preset, and the tooltips that say where the Adds go.
+            if (authoring.received) {
+                syncDelegationTips();
+                if (!pending_graph_place.empty()) {
+                    const auto op = std::exchange(pending_graph_place, {});
+                    addThrough(op, std::exchange(pending_graph_fallback, {}));
+                }
+            }
             if (pending_material_pass) {
                 if (std::exchange(material_context_stale, false))
                     requestAuthoringContext(true);
@@ -1975,22 +2244,29 @@ struct FramePlanWidget::Impl {
                     showStatus(text(name + " is not a render target in the "
                                            "current authoring context."));
             }
+            // GL-5d: the Graph's action that waited for this context.
+            runWhenRead();
             return true;
         }
         if (request_id != 0 && request_id == pending_task_request) {
             pending_task_request = 0;
+            bool changed = true;
             try {
-                task_authoring = framePlanTaskAuthoringFromCatalog(
-                    Json::parse(bytes.constData(),
-                                bytes.constData() + bytes.size()));
+                auto context = Json::parse(bytes.constData(), bytes.constData() + bytes.size());
+                const bool had_context = task_authoring.received;
+                task_authoring = framePlanTaskAuthoringFromCatalog(context);
+                if (context.is_object()) context.erase("source_digest");
+                changed = !had_context || task_authoring_visuals != context;
+                task_authoring_visuals = std::move(context);
             } catch (const std::exception &) {
                 task_authoring = {};
             }
             task_authoring.root_reference = authoring.source_reference;
             if (task_authoring.received) publishDigest(task_authoring.source_digest);
-            if (model) populate();
+            if (model && changed) populate();
             if (std::exchange(task_reread, false)) requestTaskAuthoring(true);
             resumeRetry();
+            runWhenRead();  // GL-5f, decision 2
             return true;
         }
         if (request_id != 0 && request_id == pending_edit_request) {
@@ -2034,18 +2310,26 @@ struct FramePlanWidget::Impl {
     void refuse(const Json &response) {
         if (retryAfterExternalModification(response)) return;
         const bool moved = errorCode(response) == "external_modification";
-        const QString message = rejectionText(response) + materialFailureNote();
+        const QString message = namedCanvasFailure(
+            submitted_request, rejectionText(response) + materialFailureNote());
         submitted_build = {};
         if (moved) {
             offerReload(message);
             return;
         }
         status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
-        if (offerShaderContract(response, message)) return;
+        if (offerShaderContract(response, message)) {
+            canvas_edit_failure = status->text();
+            canvas_edit_failure_detail = status->toolTip();
+            return;
+        }
         // UX-5a: the line is the sentence; the tooltip (and Copy message)
         // has the engine's whole message as well.
         const QString whole = responseDetail(response);
         showStatus(oneLine(message), message.contains(whole) ? message : message + QLatin1Char('\n') + whole);
+        canvas_edit_failure_detail = status->toolTip();
+        // UX-15b, decision 2: the frozen plan is older than the graph.
+        if (framePlanPhysicalFragmentStale(refusalOf(response))) eject_again->show();
     }
 
     // --- Q-14. The pass's inputs and its shader's declarations disagree:
@@ -2149,15 +2433,26 @@ struct FramePlanWidget::Impl {
     // with `source` as its text (the engine's own, or it with its sockets
     // fixed), and the edit that makes the pass draw with the copy. The
     // pass's shader.defines stay as they are. Returns the file written.
-    std::optional<QString> copyEngineShader(const std::string &graph,
-                                            const std::string &pass,
-                                            std::string_view source) {
+    // GL-5d: a pass a graph node draws takes the copy through `graph_fragment`
+    // (the node's shader.fragment, the Graph tab's edit), not edit_preset_pass,
+    // which only reaches a pass the rendering section declares.
+    std::optional<QString> copyEngineShader(
+        const std::string &graph, const std::string &pass, std::string_view source,
+        const std::function<bool(const QString &reference)> &graph_fragment = {}) {
         try {
             const auto name = engineShaderCopyName(*project_root, pass);
             const auto written = writeShaderTemplate(*project_root, name, source);
             if (!written.created)
                 throw std::runtime_error(written.path.string() +
                                          " is already there");
+            if (graph_fragment) {
+                if (graph_fragment(text(written.reference)))
+                    return QStringLiteral("shaders/%1.frag").arg(text(name));
+                showStatus(owner.tr("Wrote %1, but the Graph could not move %2 onto it.")
+                               .arg(QStringLiteral("shaders/%1.frag").arg(text(name)),
+                                    text(pass)));
+                return std::nullopt;
+            }
             submitBuilt([this, graph, pass, reference = written.reference] {
                 return framePlanPassShaderRequest(authoring, graph, pass,
                                                   "fragment", reference);
@@ -2197,8 +2492,12 @@ struct FramePlanWidget::Impl {
 
     // --- VI-3b. Fix sockets: the variadic group becomes one fixed
     // declaration per connected input, in the pass's shader file.
-    void fixSockets(const FramePlanNodeKey &node) {
-        if (!model || node.graph != model->graph) return;
+    void fixSockets(const FramePlanNodeKey &node,
+                    const std::function<bool(const QString &reference)> &graph_fragment = {}) {
+        if (!model || node.graph != model->graph) {
+            showStatus(owner.tr("The frame plan has no pass %1: refresh it.").arg(text(node.name)));
+            return;
+        }
         const auto fix = framePlanSocketFix(authoring, *model, node.graph, node.name);
         if (!fix.refusal.empty()) {
             status->setStyleSheet({});
@@ -2219,8 +2518,8 @@ struct FramePlanWidget::Impl {
                 return;
             }
             const auto file = copyEngineShader(node.graph, node.name,
-                                               rewritten.source);
-            if (file && pending_edit_request != 0)
+                                               rewritten.source, graph_fragment);
+            if (file && (pending_edit_request != 0 || graph_fragment))
                 showStatus(owner.tr("Copied engine://passthrough to %1 with "
                                     "its sockets fixed; sending the new "
                                     "fragment...")
@@ -2262,7 +2561,10 @@ struct FramePlanWidget::Impl {
     // Make sockets variadic: the block Fix sockets wrote, back to the line it
     // replaced. A declaration written by hand is never touched.
     void makeSocketsVariadic(const FramePlanNodeKey &node) {
-        if (!model || node.graph != model->graph) return;
+        if (!model || node.graph != model->graph) {
+            showStatus(owner.tr("The frame plan has no pass %1: refresh it.").arg(text(node.name)));
+            return;
+        }
         const auto found = fixedSocketsSource(node);
         if (!found) {
             showStatus(owner.tr("%1's shader has no sockets Studio fixed.")
@@ -2399,8 +2701,9 @@ struct FramePlanWidget::Impl {
             }
             submitted_build = {};
             // Q-13: every other panel learns the revision this commit made.
-            publishDigest(response.value("source_digest", Json::object())
-                              .value("hex", std::string{}));
+            if (digest_hub)
+                digest_hub->publishCommitted(response.value("source_digest", Json::object())
+                                                .value("hex", std::string{}), &owner);
             status->setStyleSheet({});
             if (submitted_method == "edit_render_targets" && !pending_material_pass)
                 pending_target_selection = submitted_target;
@@ -2435,9 +2738,13 @@ struct FramePlanWidget::Impl {
             // on top of the answer the user is waiting for. The summary line
             // replaces this one when the new plan arrives, which is the right
             // order: "committed" is what happened, the summary is what is now.
-            requestAuthoringContext();
-            requestTaskAuthoring();
-            requestRefresh();
+            // A read already in flight can predate this commit. Keep the
+            // canvas blocked until a fresh reply follows that older one.
+            if (pending_authoring_request != 0) authoring_reread = true;
+            else requestAuthoringContext();
+            if (pending_task_request != 0) task_reread = true;
+            else requestTaskAuthoring();
+            readPlanAgain();
             status->setStyleSheet({});
             commit_notice = std::exchange(submitted_notice, {});
             showStatus(commit_notice.isEmpty()
@@ -2562,12 +2869,14 @@ struct FramePlanWidget::Impl {
     }
 
     bool receiveEditFailure(qint64 request_id, const QString &message) {
+        const auto finished = qScopeGuard([this] { updateCanvasEnabled(); });
         if (request_id == 0) return false;
         if (request_id == pending_authoring_request) {
             pending_authoring_request = 0;
             authoring = {};
             authoring_reread = false;
             resumeRetry();
+            runWhenRead();
             return true;
         }
         if (request_id == pending_task_request) {
@@ -2575,6 +2884,7 @@ struct FramePlanWidget::Impl {
             task_authoring = {};
             task_reread = false;
             resumeRetry();
+            runWhenRead();  // GL-5f, decision 2
             return true;
         }
         if (request_id != pending_edit_request &&
@@ -2584,7 +2894,8 @@ struct FramePlanWidget::Impl {
         pending_ticket_request = 0;
         pending_ticket.clear();
         status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
-        showStatus(oneLine(message), message);
+        const auto named = namedCanvasFailure(submitted_request, message);
+        showStatus(oneLine(named), named);
         return true;
     }
 
@@ -2615,7 +2926,7 @@ struct FramePlanWidget::Impl {
                                                       names, connect)
                        : framePlanTaskResourceRequest(task_authoring, task,
                                                       names, connect);
-        });
+        }, task.empty() ? consumer.name : std::string{});
     }
 
     // VI-3a: a drop on a pass whose sockets come from its shader.
@@ -2629,7 +2940,7 @@ struct FramePlanWidget::Impl {
                                                          graph, pass,
                                                          resource, drop)
                          : FramePlanEditRequest{};
-        });
+        }, consumer.name);
     }
 
     // VI-3a: one input of such a pass taken out -- a socket dragged away,
@@ -2642,7 +2953,7 @@ struct FramePlanWidget::Impl {
             return model ? framePlanSocketDisconnectRequest(
                                authoring, *model, graph, pass, input_index)
                          : FramePlanEditRequest{};
-        });
+        }, consumer.name);
     }
 
     // --- VI-3a rule 4. A reload the engine refused for a pass because the
@@ -2869,38 +3180,21 @@ struct FramePlanWidget::Impl {
                 "Reading the render authoring context..."));
             return;
         }
-        RenderTargetFormValues values;
-        values.name = std::exchange(new_target_name, {});
-        renderTargetForm().present(RenderTargetForm::Mode::create, values,
-                                   authoring.render_target_formats,
-                                   authoring.render_target_usages);
+        // GL-5b, decision 2: the Graph's New render target… opens the same way.
+        presentNewRenderTarget(renderTargetForm(), authoring,
+                               std::exchange(new_target_name, {}));
     }
 
     void openRenderTargetForm(const std::string &name) {
-        const auto *row = authoring.findRenderTarget(name);
-        if (row == nullptr) {
+        if (authoring.findRenderTarget(name) == nullptr) {
             // The context may simply be older than the plan on screen: ask
             // for it once and open the form when it answers.
             pending_form_target = name;
             requestAuthoringContext();
             return;
         }
-        if (row->editable) {
-            renderTargetForm().present(
-                RenderTargetForm::Mode::edit,
-                renderTargetFormValues(row->authored.empty() ? row->declaration
-                                                             : row->authored),
-                authoring.render_target_formats,
-                authoring.render_target_usages);
-            return;
-        }
-        renderTargetForm().present(
-            RenderTargetForm::Mode::read_only,
-            renderTargetFormValues(row->declaration),
-            authoring.render_target_formats, authoring.render_target_usages,
-            owner.tr("Read-only: %1.")
-                .arg(text(framePlanRenderTargetOrigin(row->source, name,
-                                                      authoring.preset_name))));
+        // GL-5d, decision 3: the Graph's Edit target… opens it the same way.
+        (void)presentRenderTargetEdit(renderTargetForm(), authoring, name);
     }
 
     // Q-12. The node that made this Frame Plan node's task, when a
@@ -3060,6 +3354,7 @@ struct FramePlanWidget::Impl {
         const auto names = rowNodes(item);
         QMenu menu;
         addPlanningEntries(menu, item);
+        addLowerLayerEntries(menu, tree, item);
         if (names.size() > 1) {
             QMenu *each = menu.addMenu(owner.tr("Open in Graph"));
             for (const auto &name : names) {
@@ -3152,6 +3447,96 @@ struct FramePlanWidget::Impl {
         request.notice = title + (on ? " set on " : " taken off ") + name + ".";
         submit(request);
     }
+    // --- UX-15b, decisions 1 and 2: a backend pinned from its Backends row,
+    // and the physical plan frozen from the Physical plan tab. Each is one
+    // edit (EL-2), which RU-1's Undo takes back.
+    static constexpr int BackendCandidateRole = Qt::UserRole + 73;
+    static std::string candidateOf(const QTreeWidgetItem *item) {
+        for (; item != nullptr; item = item->parent()) {
+            const auto name = item->data(0, BackendCandidateRole).toString();
+            if (!name.isEmpty()) return name.toStdString();
+        }
+        return {};
+    }
+    static FramePlanEditRequest noPlanYet() {
+        FramePlanEditRequest request;
+        request.refusal = "The frame plan has not arrived yet.";
+        return request;
+    }
+    void pinCandidate(const std::string &candidate) {
+        submitBuilt([this, candidate] {
+            return model ? framePlanBackendPinRequest(authoring, *model, candidate) : noPlanYet();
+        });
+    }
+    void pinPickedCandidate() {
+        const auto candidate = candidateOf(backends->currentItem());
+        if (candidate.empty()) {
+            showStatus(owner.tr("Pick a candidate row on the Backends tab first."));
+            return;
+        }
+        pinCandidate(candidate);
+    }
+    void unpinBackend() {
+        submitBuilt([this] {
+            return model ? framePlanBackendUnpinRequest(authoring, *model) : noPlanYet();
+        });
+    }
+    void freezePhysicalPlan() {
+        submitBuilt([this] {
+            return model ? framePlanPhysicalFreezeRequest(authoring, *model) : noPlanYet();
+        });
+    }
+    void removeFrozenPlan() {
+        submitBuilt([this] {
+            return model ? framePlanPhysicalRemoveRequest(authoring, *model) : noPlanYet();
+        });
+    }
+    // A candidate row's right-click: Pin this candidate, switched off (with
+    // the reason as its tooltip) where it cannot be sent; Unpin while a pin
+    // applies.
+    void addLowerLayerEntries(QMenu &menu, const QTreeWidget &tree, const QTreeWidgetItem *item) {
+        if (&tree != backends || !model) return;
+        const auto candidate = candidateOf(item);
+        if (candidate.empty()) return;
+        const auto request = framePlanBackendPinRequest(authoring, *model, candidate);
+        const bool idle = pending_edit_request == 0 && pending_ticket.isEmpty();
+        QAction *pin = menu.addAction(owner.tr("Pin this candidate"));
+        pin->setObjectName(QStringLiteral("pelican.framePlan.backend.pinEntry"));
+        pin->setEnabled(request.sendable() && idle);
+        pin->setToolTip(text(request.refusal));
+        QObject::connect(pin, &QAction::triggered, &owner,
+                         [this, candidate] { pinCandidate(candidate); });
+        if (!model->physical_plan.pinned_backend_candidate.empty()) {
+            QAction *unpin = menu.addAction(owner.tr("Unpin"));
+            unpin->setEnabled(idle);
+            QObject::connect(unpin, &QAction::triggered, &owner, [this] { unpinBackend(); });
+        }
+        menu.setToolTipsVisible(true);
+        menu.addSeparator();
+    }
+    // A row across the whole tree, first, holding `line` and its buttons.
+    QLabel *addBand(QTreeWidget *tree, const QString &line, const char *label_name,
+                    std::initializer_list<std::pair<QAction *, const char *>> buttons) {
+        auto *item = new QTreeWidgetItem;
+        tree->insertTopLevelItem(0, item);
+        item->setFirstColumnSpanned(true);
+        auto *band = new QWidget;
+        auto *row = new QHBoxLayout(band);
+        row->setContentsMargins(4, 2, 4, 2);
+        auto *label = new QLabel(line, band);
+        label->setObjectName(QString::fromLatin1(label_name));
+        row->addWidget(label);
+        for (const auto &[action, name] : buttons) {
+            auto *button = new QPushButton(action->text(), band);
+            button->setObjectName(QString::fromLatin1(name));
+            QObject::connect(button, &QPushButton::clicked, action, &QAction::trigger);
+            row->addWidget(button);
+        }
+        row->addStretch(1);
+        tree->setItemWidget(item, 0, band);
+        bands.push_back(Band{tree, band});
+        return label;
+    }
     void requestPlanning() {
         if (!edit.requestRootDocument || authoring.source_reference.empty() ||
             pending_planning_request != 0)
@@ -3210,6 +3595,144 @@ struct FramePlanWidget::Impl {
                                       : item->sceneBoundingRect();
         if (picked.isValid()) logical->centerOn(picked.center());
         showStatus(owner.tr("%1 is picked.").arg(text(name)));
+    }
+
+    // --- GL-5c: the Frame Plan as a mode of the Graph.
+
+    // Decisions 1 and 2. An Add on a root that is a graph and selects no
+    // preset (Blank's) places the palette's node -- `op` -- on the Graph tab,
+    // in the graph's `nodes`, as the palette does; on a root that selects a
+    // preset, `own` runs: the Frame Plan's form, as before. A context not
+    // read yet is read first.
+    void addThrough(const std::string &op, std::function<void()> own) {
+        if (graph_place_action) {
+            if (!authoring.received) {
+                pending_graph_place = op;
+                pending_graph_fallback = std::move(own);
+                requestAuthoringContext();
+                showStatus(owner.tr("Reading the render authoring context..."));
+                return;
+            }
+            if (authoring.direct && graph_place_action(text(op))) return;
+        }
+        if (own) own();
+    }
+
+    // --- GL-5d: the Graph's Order… / Fix sockets / Make sockets variadic are
+    // this panel's own, run from the Graph tab -- while this panel may be out
+    // of view, when it reads nothing on its own (N-8). Each waits for the plan
+    // and the authoring context read again, and the status lines it leaves go
+    // to `said` (the Graph's notice) as well as to this panel's row.
+
+    // Order...: the plan's nodes, in the plan's order, for the Features tab's
+    // node order dialog.
+    void orderNodes() {
+        if (!model || !node_order_action) {
+            showStatus(owner.tr("Node ordering is unavailable: no frame plan has been read."));
+            return;
+        }
+        if (!model->runtime_generation || *model->runtime_generation == 0) {
+            showStatus(owner.tr("Node ordering needs a published runtime generation"), owner.tr("Node ordering requires a published runtime generation. Refresh the Frame Plan first."));
+            return;
+        }
+        QStringList names;
+        for (const auto &node : model->nodes) names.push_back(QString::fromStdString(node.name));
+        node_order_action(QString::fromStdString(model->graph), names, *model->runtime_generation);
+    }
+
+    struct WhenRead {
+        std::function<void()> action;
+        std::function<void(const QString &)> said;
+        bool tasks = false;  // GL-5f, decision 2
+    };
+    std::vector<WhenRead> when_read;
+    // Who hears this panel's status lines: the caller of the action running,
+    // and of the edit it sent, until that edit is done.
+    std::function<void(const QString &)> status_said;
+    bool running_when_read = false;
+
+    void whenRead(std::function<void()> action, std::function<void(const QString &)> said,
+                  bool tasks = false) {
+        when_read.push_back({std::move(action), std::move(said), tasks});
+        if (planReadable()) readPlanAgain();
+        if (pending_authoring_request != 0) authoring_reread = true;
+        else requestAuthoringContext(true);
+        // GL-5f, decision 2: the task catalog, read only while shown otherwise.
+        if (tasks) {
+            if (pending_task_request != 0) task_reread = true;
+            else requestTaskAuthoring(true);
+        }
+        // Whatever could not be asked for, what is in hand is all there is.
+        runWhenRead();
+    }
+
+    // Once neither read is on its way.
+    void runWhenRead() {
+        if (when_read.empty() || pending_request != 0 || plan_reread ||
+            pending_authoring_request != 0 || authoring_reread)
+            return;
+        // GL-5f, decision 2.
+        if ((pending_task_request != 0 || task_reread) &&
+            std::ranges::any_of(when_read, &WhenRead::tasks))
+            return;
+        auto actions = std::exchange(when_read, {});
+        for (auto &entry : actions) {
+            status_said = std::move(entry.said);
+            running_when_read = true;
+            if (entry.action) entry.action();
+            running_when_read = false;
+            if (pending_edit_request == 0 && pending_ticket.isEmpty()) status_said = {};
+        }
+    }
+
+    // Decision 3. What Edit pass / Edit task and a double-click open on the
+    // Graph tab: a loop's copy (its body node), a task a render.compute node
+    // made, and a pass the Graph edits (a graph node's, or the rendering
+    // section's in its detail column). A preset's or a feature's pass, read
+    // only there, opens in the Pass Editor as before.
+    bool editsInGraph(const FramePlanNodeKey &node) const {
+        if (!graph_edits_pass) return false;
+        if (loopOriginOf(node) != nullptr || graphNodeOf(node) != nullptr) return true;
+        const auto *pass = planPassOf(node);
+        return pass != nullptr && pass->kind != "compute" && graph_edits_pass(text(pass->name));
+    }
+
+    // Decision 5: the entries that go to the Graph say so.
+    void syncDelegationTips() {
+        const bool graph = graph_place_action && authoring.received && authoring.direct;
+        const auto tip = [graph](const QString &op, const QString &own) {
+            return graph ? QObject::tr("Opens in the Graph: the palette's %1, placed in the "
+                                       "graph's nodes and picked there.")
+                               .arg(op)
+                         : own;
+        };
+        const QString material = tip(QStringLiteral("render.material_pass"),
+                                     QObject::tr("The material pass form: the pass goes into "
+                                                 "a fragment of the project."));
+        if (add_material_button) add_material_button->setToolTip(material);
+        if (add_material_action) add_material_action->setToolTip(material);
+        if (add_fullscreen_action)
+            add_fullscreen_action->setToolTip(
+                tip(QStringLiteral("render.fullscreen"),
+                    QObject::tr("The Pass Editor, on a new pass after the node picked.")));
+        if (add_task_action)
+            add_task_action->setToolTip(tip(QStringLiteral("render.compute"),
+                                            QObject::tr("The Task Editor, on a new task.")));
+        // Decision 3: Edit pass / Edit task go where the pass is edited.
+        if (edit_pass_button)
+            edit_pass_button->setToolTip(
+                graph_edits_pass
+                    ? QObject::tr("Opens in the Graph: a pass the Graph edits (a graph node's, "
+                                  "or the rendering section's) is picked there, its detail "
+                                  "column open. A preset's or a feature's pass opens in the "
+                                  "Pass Editor.")
+                    : QObject::tr("Opens the picked pass in the Pass Editor."));
+        if (edit_task_button)
+            edit_task_button->setToolTip(
+                graph_edits_pass
+                    ? QObject::tr("Opens in the Graph: a task a render.compute node made is "
+                                  "picked there. Any other task opens in the Task Editor.")
+                    : QObject::tr("Opens the picked task in the Task Editor."));
     }
 
     void openInGraph(const std::optional<FramePlanNodeKey> &node) {
@@ -3357,6 +3880,7 @@ struct FramePlanWidget::Impl {
     }
 
     void requestRefresh() {
+        const auto finished = qScopeGuard([this] { updateCanvasEnabled(); });
         if (pending_request != 0) {
             return;
         }
@@ -3405,8 +3929,83 @@ struct FramePlanWidget::Impl {
         }
     }
 
+    // RTL-2s b, decision 4; RTL-3s, decision 1.
+    void requestSbtTable(const std::string &shape) {
+        if (pending_sbt != 0 || shape == sbt_asked_for || !viewport.rpcReady()) return;
+        sbt_asked_for = shape;
+        sbt_rows.clear();
+        sbt_total = 0;
+        requestSbtPage(0);
+    }
+
+    void requestSbtPage(std::size_t offset) {
+        pending_sbt = viewport.requestRpc(
+            QStringLiteral("get_ray_table"),
+            QJsonObject{{QStringLiteral("limit"), static_cast<qint64>(SbtPage)},
+                        {QStringLiteral("offset"), static_cast<qint64>(offset)}},
+            nullptr);
+    }
+
+    // Show more: the next page after the rows read.
+    void requestMoreSbt() {
+        if (pending_sbt != 0 || !viewport.rpcReady() || sbt_rows.size() >= sbt_total) return;
+        requestSbtPage(sbt_rows.size());
+    }
+
+    static std::string sbtRecordText(const nlohmann::json &fields) {
+        std::string record;
+        if (fields.is_array()) {
+            for (const auto &field : fields) {
+                if (!record.empty()) record += ", ";
+                record += field.is_object() && field.contains("name")
+                              ? field.value("name", std::string{}) + "=" + field.value("value", nlohmann::json{}).dump()
+                              : field.dump();
+            }
+        } else if (fields.is_object()) {
+            for (const auto &[name, value] : fields.items())
+                record += (record.empty() ? "" : ", ") + name + "=" + value.dump();
+        }
+        return record;
+    }
+
+    bool receiveSbt(qint64 request_id, const QByteArray &result_json) {
+        if (request_id == 0 || request_id != pending_sbt) return false;
+        pending_sbt = 0;
+        const auto reply = nlohmann::json::parse(result_json.toStdString(), nullptr, false);
+        const auto rows = reply.is_object() ? reply.value("rows", nlohmann::json::array()) : nlohmann::json::array();
+        for (const auto &entry : rows) {
+            if (!entry.is_object()) continue;
+            const auto text_of = [&](const char *key) {
+                const auto found = entry.find(key);
+                return found != entry.end() && found->is_string() ? found->get<std::string>() : std::string{};
+            };
+            SbtRow row{text_of("object"), text_of("group"), {}, sbtRecordText(entry.value("record_fields", nlohmann::json{}))};
+            // A row no assignment picked answers from the layout's default
+            // group (no binding of its own).
+            const auto binding = entry.find("binding_index");
+            if (!row.group.empty() && (binding == entry.end() || binding->is_null())) row.source = "layout_default";
+            if (row.object.empty()) row.object = "#" + std::to_string(entry.value("authoring_object_id", 0));
+            sbt_rows.push_back(std::move(row));
+        }
+        sbt_total = reply.is_object() && reply.value("total", nlohmann::json{}).is_number_unsigned()
+                        ? reply.at("total").get<std::size_t>()
+                        : sbt_rows.size();
+        finishSbt();
+        return true;
+    }
+
+    void finishSbt() {
+        sbt_known = true;
+        if (model) {
+            physical->clear();
+            populatePhysicalPlan();
+        }
+    }
+
     void receiveRpcResult(qint64 request_id, const QByteArray &result_json) {
+        const auto finished = qScopeGuard([this] { updateCanvasEnabled(); });
         if (reload_follower->receive(request_id, result_json)) return;
+        if (receiveSbt(request_id, result_json)) return;
         if (request_id == pending_gpu_timing_request) {
             pending_gpu_timing_request = 0;
             consumeGpuTimingResult(result_json);
@@ -3425,6 +4024,8 @@ struct FramePlanWidget::Impl {
         owner.receiveResult(result_json);
         // Q-18: a commit landed while this read was out; it may predate it.
         if (std::exchange(plan_reread, false)) requestRefresh();
+        // GL-5d: the Graph's action that waited for this read.
+        runWhenRead();
     }
 
     void consumeGpuTimingResult(const QByteArray &result_json) {
@@ -3506,6 +4107,11 @@ struct FramePlanWidget::Impl {
                 placement_loaded = true;
                 loadPlacement();
             }
+            // BS-1s, decision 2: the plan of the engine's placeholder says so
+            // (get_frame_plan carries render_pipeline while it lasts). There
+            // is nothing of the project's to edit in it, so its documents are
+            // not read for editing either.
+            if (showRenderFallback(result_json)) return;
             requestAuthoringContext();
             requestTaskAuthoring();
             followShaderSources();
@@ -3520,7 +4126,15 @@ struct FramePlanWidget::Impl {
     }
 
     void receiveFailure(qint64 request_id, const QString &message) {
+        const auto finished = qScopeGuard([this] { updateCanvasEnabled(); });
         if (reload_follower->fail(request_id, message)) return;
+        // RTL-2s b, decision 4: an object the engine could not answer for is
+        // left out of the SBT table.
+        // RTL-3s, decision 1: an engine without get_ray_table lists none.
+        if (request_id != 0 && request_id == pending_sbt) {
+            pending_sbt = 0;
+            return;
+        }
         if (request_id == pending_gpu_timing_request) {
             pending_gpu_timing_request = 0;
             logical_scene->setGpuTiming(FramePlanGpuTimingSnapshot{
@@ -3557,6 +4171,9 @@ struct FramePlanWidget::Impl {
             return;
         }
         showFailure(message);
+        // GL-5d: an action that waited runs on what is in hand, and says why
+        // it cannot.
+        runWhenRead();
     }
 
     // F-7: the Target combo's first entry is the whole frame, not a target;
@@ -3574,9 +4191,18 @@ struct FramePlanWidget::Impl {
     }
 
     void populate() {
+        if (logical_scene->dragging()) {
+            populate_after_drag = true;
+            return;
+        }
+        populate_after_drag = false;
+        // FX-8: a refresh can land between selecting a row and pressing Pin.
+        // Carry the candidate identity, never a pointer into the rebuilt tree.
+        const auto picked_backend = candidateOf(backends->currentItem());
         const TreeFillGuard filling{passes,    resources, physical,
                                     decisions, backends,  barriers,
                                     materials, logical_details};
+        dropBands();
         passes->clear();
         resources->clear();
         physical->clear();
@@ -3616,6 +4242,15 @@ struct FramePlanWidget::Impl {
         populatePhysicalPlan();
         populateDecisions();
         populateBackends();
+        if (!picked_backend.empty())
+            for (int row = 0; row < backends->topLevelItemCount(); ++row) {
+                auto *item = backends->topLevelItem(row);
+                if (candidateOf(item) == picked_backend) {
+                    backends->setCurrentItem(item);
+                    break;
+                }
+            }
+        addBackendBand();
         populateBarriers();
         populateMaterials();
         raw_json_stale = true;
@@ -3700,6 +4335,10 @@ struct FramePlanWidget::Impl {
         if (!commit_notice.isEmpty()) showStatus(commit_notice);
         showPickedLoopLine();
         updateReloadRefusal();
+        if (!canvas_edit_failure.isEmpty()) {
+            status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
+            showStatus(oneLine(canvas_edit_failure), canvas_edit_failure_detail);
+        }
     }
 
     // Q-4. The reply, laid out for reading, is built only while somebody is
@@ -3886,6 +4525,15 @@ struct FramePlanWidget::Impl {
 
             auto *facts = groupItem(item, owner.tr("Plan facts"));
             addFact(facts, owner.tr("Source"), text(node.source));
+            // UX-15b, decision 5: the rewrite that put the pass here.
+            if (model)
+                if (const auto lines = framePlanReplacedByLines(*model, node.name);
+                    !lines.empty()) {
+                    QStringList said;
+                    for (const auto &line : lines) said.push_back(text(line));
+                    addFact(facts, owner.tr("Replaced by"), said.join(QStringLiteral("; ")));
+                    item->setToolTip(1, owner.tr("Replaced by %1").arg(said.join(QStringLiteral("; "))));
+                }
             addFact(facts, owner.tr("Provider feature"),
                     text(node.provider_feature));
             addFact(facts, owner.tr("Provider ref"),
@@ -4086,10 +4734,9 @@ struct FramePlanWidget::Impl {
             elements.insert(elements.end(), more->second.begin(), more->second.end());
         const auto total = std::max(loop.elementCount(), elements.size());
         auto *group = groupItem(item, owner.tr("Draw loop %1").arg(text(loop.node)), total);
-        std::map<std::size_t, std::vector<std::string>> by_branch;
+        std::map<std::size_t, std::vector<const FramePlanLoopElement *>> by_branch;
         for (const auto &element : elements)
-            by_branch[element.branch].push_back(
-                element.key.empty() ? std::to_string(element.element) : element.key);
+            by_branch[element.branch].push_back(&element);
         for (const auto branch : loop.unmatched_branches) by_branch.try_emplace(branch);
         for (const auto &[branch, keys] : by_branch) {
             auto *row = groupItem(group, owner.tr("Branch %1").arg(branch), keys.size());
@@ -4098,7 +4745,16 @@ struct FramePlanWidget::Impl {
                         owner.tr("none: no material takes this branch"));
                 continue;
             }
-            for (const auto &key : keys) addFact(row, owner.tr("Material"), text(key));
+            for (const auto *element : keys) {
+                auto *material = new QTreeWidgetItem(row);
+                material->setText(1, owner.tr("Material"));
+                material->setText(2,
+                    text(element->key.empty() ? std::to_string(element->element) : element->key));
+                QStringList modes;
+                for (const auto &mode : element->vertex_modes) modes.push_back(text(mode));
+                if (!modes.empty()) addFact(material, owner.tr("Vertex modes"),
+                                           modes.join(QStringLiteral(" / ")));
+            }
         }
         if (elements.size() < total) {
             auto *more = new QTreeWidgetItem(group);
@@ -4166,12 +4822,19 @@ struct FramePlanWidget::Impl {
         for (const auto &candidate : model->backend_candidates) {
             auto *candidate_item = new QTreeWidgetItem(backends);
             setRowNodes(candidate_item, candidate.from_nodes);
+            // UX-15b, decision 1: the row Pin this candidate acts on.
+            candidate_item->setData(0, BackendCandidateRole, text(candidate.candidate));
+            if (candidate.selected || candidate.feasible)
+                candidate_item->setToolTip(
+                    0, owner.tr("Right-click: Pin this candidate, so the planner keeps it."));
             candidate_item->setText(0, text(candidate.candidate));
             candidate_item->setText(
                 1, candidate.selected
                        ? owner.tr("Selected")
                        : (candidate.feasible ? owner.tr("Feasible")
                                              : owner.tr("Rejected")));
+            if (candidate.candidate == model->physical_plan.pinned_backend_candidate)
+                candidate_item->setText(1, owner.tr("%1, pinned").arg(candidate_item->text(1)));
             candidate_item->setText(2, text(candidate.endpoint));
             QFont font = candidate_item->font(0);
             font.setBold(true);
@@ -4193,6 +4856,24 @@ struct FramePlanWidget::Impl {
                 item->setText(4, text(diagnostic.detail));
             }
         }
+    }
+
+    // UX-15b, decision 1: the pin the document applies, first, with the way
+    // off it; without one, where the way on is.
+    void addBackendBand() {
+        if (!model->physical_plan.available()) return;
+        const auto &pinned = model->physical_plan.pinned_backend_candidate;
+        if (!model->physical_plan.applied_pin_package.empty())
+            addBand(backends,
+                    owner.tr("Pinned: %1").arg(pinned.empty() ? owner.tr("(no candidate named)")
+                                                              : text(pinned)),
+                    "pelican.framePlan.backend.state",
+                    {{backend_unpin, "pelican.framePlan.backend.unpinButton"}});
+        else
+            addBand(backends,
+                    owner.tr("Not pinned: the planner picks the candidate. Right-click a "
+                             "Selected or Feasible row to pin it."),
+                    "pelican.framePlan.backend.state", {});
     }
 
     void populateResources() {
@@ -4319,6 +5000,30 @@ struct FramePlanWidget::Impl {
                             *model->physical_plan.output_width))
                         .arg(static_cast<qulonglong>(
                             *model->physical_plan.output_height)));
+            }
+
+            // UX-15b, decision 5: what rewrote the graph before it was
+            // planned, and by which provider.
+            if (!model->physical_plan.rewrites.empty()) {
+                auto *rewrites = groupItem(state, owner.tr("Compile rewrites"),
+                                           model->physical_plan.rewrites.size());
+                for (const auto &rewrite : model->physical_plan.rewrites) {
+                    auto *item = new QTreeWidgetItem(rewrites);
+                    setRowNodes(item, rewrite.replacement_nodes);
+                    item->setText(0, text(rewrite.name));
+                    item->setText(1, rewrite.kind == "subgraph_replacement"
+                                         ? owner.tr("Subgraph replacement")
+                                     : rewrite.kind == "graph_transform"
+                                         ? owner.tr("Graph transform")
+                                         : owner.tr("Render strategy"));
+                    item->setText(2, text(rewrite.provider));
+                    item->setText(3, rewrite.replacement_nodes.empty()
+                                         ? text(framePlanRewriteLine(rewrite))
+                                         : owner.tr("%1 -> %2")
+                                               .arg(joined(rewrite.source_nodes),
+                                                    joined(rewrite.replacement_nodes)));
+                    item->setToolTip(3, text(framePlanRewriteLine(rewrite)));
+                }
             }
 
             auto *aliases = groupItem(
@@ -4480,6 +5185,128 @@ struct FramePlanWidget::Impl {
             }
         }
         populateTransferSourceRows();
+        populateRayQuery();
+        addPhysicalBand();
+    }
+
+    // UX-15b, decision 2: whether the document freezes the physical plan,
+    // first, and the one button that changes it.
+    void addPhysicalBand() {
+        if (!model->physical_plan.available()) return;
+        if (!model->physical_plan.applied_physical_fragment.empty())
+            addBand(physical,
+                    owner.tr("Frozen: every compile keeps the physical plan the document "
+                             "holds."),
+                    "pelican.framePlan.physical.state",
+                    {{physical_remove, "pelican.framePlan.physical.removeButton"}});
+        else
+            addBand(physical,
+                    owner.tr("Not frozen: the planner decides the physical plan each compile."),
+                    "pelican.framePlan.physical.state",
+                    {{physical_freeze, "pelican.framePlan.physical.freezeButton"}});
+    }
+
+    // UX-15b, decision 4: the ray-query scene's resident BLAS. A project
+    // without ray tracing asks for none, and the section is not shown.
+    void populateRayQuery() {
+        if (!model->ray_query || !model->ray_query->shown()) return;
+        const auto &scene = *model->ray_query;
+        auto *group = new QTreeWidgetItem(physical);
+        group->setText(0, owner.tr("Ray query acceleration structures"));
+        QFont font = group->font(0);
+        font.setBold(true);
+        group->setFont(0, font);
+        group->setText(1, scene.requested ? owner.tr("Requested") : owner.tr("Not requested"));
+        group->setText(2, owner.tr("%1 resident BLAS, %2 TLAS instances")
+                              .arg(static_cast<qulonglong>(scene.resident_blas_keys.size()))
+                              .arg(static_cast<qulonglong>(scene.tlas_instance_count)));
+        addFact(group, owner.tr("Active BLAS"),
+                QString::number(static_cast<qulonglong>(scene.active_blas_count)));
+        addFact(group, owner.tr("BLAS variants"),
+                QString::number(static_cast<qulonglong>(scene.blas_variant_count)));
+        if (!scene.named_tlas_instance_counts.empty()) {
+            auto *named = groupItem(group, owner.tr("Named TLAS"),
+                                    scene.named_tlas_instance_counts.size());
+            for (const auto &[name, count] : scene.named_tlas_instance_counts)
+                addFact(named, text(name),
+                        owner.tr("%1 instances").arg(static_cast<qulonglong>(count)));
+        }
+        auto *keys = groupItem(group, owner.tr("Resident BLAS"), scene.resident_blas_keys.size());
+        keys->setToolTip(1, owner.tr("One BLAS per geometry the scene keeps built; every TLAS "
+                                     "shares them."));
+        for (std::size_t index = 0; index < scene.resident_blas_keys.size(); ++index) {
+            const auto &key = scene.resident_blas_keys[index];
+            auto *item = new QTreeWidgetItem(keys);
+            item->setText(0, QStringLiteral("#%1").arg(static_cast<qulonglong>(index)));
+            item->setText(1, text(key.geometry_kind));
+            item->setText(2, owner.tr("allocation %1")
+                                 .arg(static_cast<qulonglong>(key.geometry_allocation_id)));
+            item->setText(3, owner.tr("%1 geometries, flags 0x%2")
+                                 .arg(static_cast<qulonglong>(key.geometry_count))
+                                 .arg(static_cast<qulonglong>(key.geometry_flags), 0, 16));
+        }
+        // RTL-2s b, decision 4: which hit group each object's geometry lands
+        // in (the SBT's rows), and its record; a row no assignment picked is
+        // in the layout's default group.
+        requestSbtTable(std::to_string(scene.tlas_instance_count) + "|" +
+                        std::to_string(scene.resident_blas_keys.size()) + "|" +
+                        std::to_string(scene.active_blas_count));
+        if (sbt_known) {
+            auto *sbt = groupItem(group, owner.tr("Hit groups (SBT)"), sbt_rows.size());
+            sbt->setToolTip(1, owner.tr("Each object's geometry, the hit group its rays reach and the "
+                                        "record that group reads (get_ray_table)."));
+            for (const auto &row : sbt_rows) {
+                auto *item = new QTreeWidgetItem(sbt);
+                item->setText(0, text(row.object));
+                item->setText(1, row.source == "layout_default"
+                                     ? owner.tr("%1 (default group, no assignment)").arg(text(row.group))
+                                     : text(row.group));
+                item->setText(2, row.record.empty() ? owner.tr("no record") : text(row.record));
+                // RTL-2s-c: the columns are narrow; the whole line on hover.
+                for (int column = 0; column < 3; ++column) item->setToolTip(column, item->text(column));
+            }
+            // RTL-3s, decision 1: the engine's rows past the ones read.
+            if (sbt_total > sbt_rows.size()) {
+                auto *more = new QTreeWidgetItem(sbt);
+                more->setText(0, owner.tr("%1 more rows").arg(static_cast<qulonglong>(sbt_total - sbt_rows.size())));
+                auto *button = new QPushButton(owner.tr("Show more"));
+                button->setObjectName(QStringLiteral("pelican.framePlan.sbtShowMore"));
+                button->setToolTip(owner.tr("The next %1 rows of the table (get_ray_table's offset)")
+                                       .arg(static_cast<qulonglong>(SbtPage)));
+                QObject::connect(button, &QPushButton::clicked, &owner, [this] { requestMoreSbt(); });
+                physical->setItemWidget(more, 1, button);
+            }
+            // RTL-2s-c: open, so the rows are what a person sees first.
+            sbt->setExpanded(true);
+        }
+        // RTL-2s b, decision 4 (engine RTL-1b): each named TLAS's own BLAS,
+        // and what the scene kept out.
+        for (const auto &[name, listed] : scene.named_tlas_blas) {
+            auto *named = groupItem(group, owner.tr("TLAS %1: BLAS").arg(text(name)), listed.size());
+            // RTL-3s: read by its name in the first column, and open.
+            named->setText(0, owner.tr("TLAS %1").arg(text(name)));
+            named->setExpanded(true);
+            for (const auto &key : listed) {
+                auto *item = new QTreeWidgetItem(named);
+                item->setText(0, text(key.geometry_kind));
+                item->setText(1, owner.tr("allocation %1")
+                                     .arg(static_cast<qulonglong>(key.geometry_allocation_id)));
+                item->setText(2, owner.tr("%1 geometries, flags 0x%2")
+                                     .arg(static_cast<qulonglong>(key.geometry_count))
+                                     .arg(static_cast<qulonglong>(key.geometry_flags), 0, 16));
+            }
+        }
+        if (!scene.excluded_counts.empty() || !scene.excluded_names.empty()) {
+            auto *excluded = groupItem(group, owner.tr("Excluded"), scene.excluded_counts.size());
+            excluded->setToolTip(1, owner.tr("Kept out of the acceleration structures: skinned, morphed or "
+                                             "VAT geometry, and what a BLAS cannot hold."));
+            for (const auto &[reason, count] : scene.excluded_counts)
+                addFact(excluded, text(reason), QString::number(static_cast<qulonglong>(count)));
+            for (const auto &name : scene.excluded_names) addFact(excluded, owner.tr("object"), text(name));
+        }
+        group->setExpanded(true);
+        // RTL-3s, decision 1: the object and the hit group read whole.
+        for (int column = 0; column < 2; ++column) physical->resizeColumnToContents(column);
     }
 
     // UX-6a, decision 4: an image the planner keeps out of aliasing that has
@@ -4711,15 +5538,78 @@ void FramePlanWidget::receiveShaderReloadOutcome(
     impl_->applyShaderReloadOutcome(outcome);
 }
 
-void FramePlanWidget::setWatchedRenderDocuments(
-    std::vector<std::filesystem::path> files,
-    std::function<void(const QString &path)> changed) {
-    impl_->reload_follower->setDocumentFiles(std::move(files), std::move(changed));
+void FramePlanWidget::observeEngineStatus(const nlohmann::json &status) {
+    impl_->reload_follower->observeStatus(readShaderReloadStatus(status));
 }
 
 void FramePlanWidget::fixSockets(const QString &graph, const QString &pass) {
     impl_->fixSockets(FramePlanNodeKey{graph.toStdString(), pass.toStdString()});
 }
+
+void FramePlanWidget::fixSockets(const QString &graph, const QString &pass,
+                                 std::function<bool(const QString &reference)> graph_fragment) {
+    impl_->fixSockets(FramePlanNodeKey{graph.toStdString(), pass.toStdString()}, graph_fragment);
+}
+
+void FramePlanWidget::makeSocketsVariadic(const QString &graph, const QString &pass) {
+    impl_->makeSocketsVariadic(FramePlanNodeKey{graph.toStdString(), pass.toStdString()});
+}
+
+void FramePlanWidget::orderNodes() { impl_->orderNodes(); }
+
+void FramePlanWidget::whenRead(std::function<void()> action,
+                               std::function<void(const QString &line)> said, bool tasks) {
+    impl_->whenRead(std::move(action), std::move(said), tasks);
+}
+
+// --- GL-5e: this panel's own functions, run for the Graph tab.
+
+void FramePlanWidget::removePass(const QString &graph, const QString &pass) {
+    impl_->removeNode(FramePlanNodeKey{graph.toStdString(), pass.toStdString()});
+}
+
+void FramePlanWidget::runShaderContract(const QString &graph, const QString &pass,
+                                        const QString &fragment, const QStringList &inputs,
+                                        bool unsupplied, std::optional<std::size_t> binding,
+                                        bool use_passthrough) {
+    Impl::ShaderContractFix fix;
+    fix.graph = graph.toStdString();
+    fix.pass = pass.toStdString();
+    fix.fragment = fragment.toStdString();
+    for (const auto &input : inputs) fix.inputs.push_back(input.toStdString());
+    fix.unsupplied = unsupplied;
+    fix.binding = binding;
+    impl_->contract_fix = std::move(fix);
+    if (use_passthrough) impl_->useEnginePassthrough();
+    else impl_->openContractShader();
+}
+
+void FramePlanWidget::runReloadRefusal(const QString &graph, const QString &pass,
+                                       bool disconnect) {
+    const auto name = pass.toStdString();
+    std::optional<Impl::ReloadRefusalFix> fix;
+    if (impl_->model && impl_->model->graph == graph.toStdString())
+        if (const auto node = std::ranges::find(impl_->model->nodes, name, &FramePlanNode::name);
+            node != impl_->model->nodes.end())
+            fix = impl_->reloadRefusalFor(*node);
+    if (!fix) {
+        impl_->showStatus(tr("%1's shader reloaded since: nothing to disconnect.").arg(pass));
+        return;
+    }
+    impl_->reload_refusal_fix = std::move(fix);
+    if (disconnect) impl_->disconnectRefusedInput();
+    else impl_->openRefusedShader();
+}
+
+void FramePlanWidget::pinBackendCandidate(const QString &candidate) {
+    impl_->pinCandidate(candidate.toStdString());
+}
+
+void FramePlanWidget::unpinBackend() { impl_->unpinBackend(); }
+
+void FramePlanWidget::freezePhysicalPlan() { impl_->freezePhysicalPlan(); }
+
+void FramePlanWidget::removeFrozenPhysicalPlan() { impl_->removeFrozenPlan(); }
 
 std::vector<FramePlanViewAxis> FramePlanWidget::taskViewAxes(
     const QString &task) const {
@@ -4833,6 +5723,16 @@ void FramePlanWidget::showMaterialRoutes(const QString &pass) {
     impl_->showMaterialRoutes(pass);
 }
 
+void FramePlanWidget::setGraphPlaceAction(GraphPlaceAction action) {
+    impl_->graph_place_action = std::move(action);
+    if (impl_->authoring.received) impl_->syncDelegationTips();
+}
+
+void FramePlanWidget::setGraphEditsPassQuery(std::function<bool(const QString &pass)> query) {
+    impl_->graph_edits_pass = std::move(query);
+    impl_->syncDelegationTips();
+}
+
 void FramePlanWidget::setGraphPassOpenAction(GraphPassOpenAction action) {
     impl_->graph_pass_open_action = std::move(action);
 }
@@ -4912,6 +5812,10 @@ void FramePlanWidget::setRenderHistoryActions(QAction *undo, QAction *redo) {
 
 void FramePlanWidget::showRenderHistoryLine(const QString &line) {
     if (line.isEmpty()) return;
+    // FX-5: restoring documents starts a plan read before the history
+    // announces its result. Keep that result when the reply arrives later,
+    // just as a canvas edit's completion survives its own plan refresh.
+    impl_->commit_notice = line;
     impl_->status->setStyleSheet({});
     impl_->showStatus(line);
 }

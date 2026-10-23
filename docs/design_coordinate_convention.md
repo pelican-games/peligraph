@@ -152,7 +152,7 @@ world 空間は変えない(右手系、+Y 上、メートル、glTF と同じ)�
 | **CC-1b** | `up` の撤去と名前付きの断り、変換の script、雛形と `default_config.json`、出荷の project 7 本と test の文書の書き換え(camera を持つものだけ)、game code の左右、補正の除去、RT の shader | ✅ `c8367b87`(同上)。sprite_demo の game code は直す必要が無かった |
 | **CC-1c** | golden の作り直しと確かめ、RGBA8 の hash と trace の fixture、向きを数値で見ている test(`gizmo_test`、`camera_test`、`projection_jitter_consumers.json`) | ✅ `c8367b87`(同上)。golden 27 件(§5 の結果) |
 | **CC-2** | raster の pass の `clip_y` と、NDC と uv の変換の関数、雛形の shader | ✅ `1501685a`(2026-10-03)。`front_face` は入れ替えない(§3.5 の訂正)。雛形の shader の書き換えは commit に無い |
-| docs | manual(2・3・4・6・10 章)、source-code-guide(5 章の +Z 前方の難所、10 章の viewport の節)、`design_camera_system.md` ほか §1 の記述 | ✅ manual 2・3・4・6・8・10・13 章、source-code-guide 5・6・8・9・10 章、`design_camera_system.md` / `design_project_format.md` / `design_project_format_web_profile.md` / `design_openxr.md` / `design_taa_jitter.md` / `design_2d_game_layer.md` / `design_pathtracing.md`、`v0_freeze.md`、台帳(branch `agent/cc-docs`) |
+| docs | manual(2・3・4・6・10 章)、source-code-guide(5 章の +Z 前方の難所、10 章の viewport の節)、`design_camera_system.md` ほか §1 の記述 | ✅ manual 2・3・4・6・8・10・13 章、source-code-guide 5・6・8・9・10 章、`design_camera_system.md` / `design_project_format.md` / `design_project_format_web_profile.md` / `design_openxr.md` / `design_taa_jitter.md` / `design_2d_game_layer.md`、`v0_freeze.md`、台帳(branch `agent/cc-docs`) |
 | Studio(GUI session) | viewport の左右に依る scenario 6〜8 本の期待値、Inspector の方位角 / 仰角と yaw / pitch の欄の確かめ | GUI session が持つ(この文書では未確認) |
 
 着地は、GUI session と engine session が develop への着地を止めた状態で行う(両 session と合意済み)。外部の web viewer(別 repo)は同じ規約に追随する必要がある。

@@ -13,6 +13,11 @@
 // primitive failing in the same conditions the new one survives.
 #include "../src/core/communication/renderconfigtransaction.hpp"
 #include "../src/project/renderconfigdocument.hpp"
+#include "../src/core/communication/materialdocumentrpc.hpp"
+#include "../src/core/communication/rpcserver.hpp"
+#include "../src/core/loader/pathresolver.hpp"
+#include "../src/core/watch/reloadservice.hpp"
+#include <sstream>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -773,5 +778,175 @@ TEST_CASE(
     REQUIRE(readBytes(crashFragmentDocument(project.root)) == crashFragment);
 }
 #endif
+
+
+namespace {
+struct JournalRpc {
+    PathResolver paths;
+    std::istringstream input;
+    std::ostringstream output;
+    RpcServer server{input, output};
+    explicit JournalRpc(const std::filesystem::path &root, watch::ReloadService *reload = nullptr) {
+        paths.setup(root, false);
+        configureMaterialDocumentRpcHandlers(server, paths, reload);
+    }
+    Json call(std::string_view method, const Json &params = Json::object()) {
+        const auto response = Json::parse(server.processLine(Json{
+            {"jsonrpc", "2.0"}, {"id", 1}, {"method", method}, {"params", params}}.dump()));
+        INFO(response.dump());
+        REQUIRE(response.contains("result"));
+        return response.at("result");
+    }
+};
+ProjectCandidateDocument journalEdit(const std::filesystem::path &root, const std::string &name,
+                                     std::optional<std::string> next) {
+    const auto path = root / name;
+    const bool exists = std::filesystem::exists(path);
+    return {.reference = name, .normalized_reference = name, .path = path,
+        .operation = !next ? ProjectDocumentOperation::erase : exists ? ProjectDocumentOperation::replace : ProjectDocumentOperation::create,
+        .expected = {exists ? ProjectDocumentExistence::present : ProjectDocumentExistence::missing,
+                     exists ? projectDocumentDigest(readBytes(path)) : std::string{}},
+        .bytes = next.value_or("")};
+}
+void journalWrite(const std::filesystem::path &root, const std::string &name, std::optional<std::string> next) {
+    const auto edit = journalEdit(root, name, std::move(next));
+    (void)commitProjectDocuments(root, std::span{&edit, std::size_t{1}});
+}
+}
+
+TEST_CASE("RV-1 materialdocumentrpc journal restores four created replaced and deleted documents", "[RV-1][document-journal]") {
+    TemporaryDirectory project{"rv1-four"};
+    const std::string original = "\xef\xbb\xbf{ \"first\": 1, \"second\": 2 }\r\n";
+    writeBytes(project.root / "pass.json", original);
+    writeBytes(project.root / "bindings.json", "bindings before\n");
+    writeBytes(project.root / "deleted.material", "deleted before\r\n");
+    JournalRpc rpc(project.root);
+    rpc.call("mark_document_baseline");
+    journalWrite(project.root, "created.material", "new material");
+    journalWrite(project.root, "pass.json", "pass after");
+    journalWrite(project.root, "bindings.json", "bindings after");
+    journalWrite(project.root, "deleted.material", std::nullopt);
+    journalWrite(project.root, "pass.json", "pass edited twice");
+    const auto entries = rpc.call("get_document_journal");
+    REQUIRE(entries.at("documents").size() == 4);
+    REQUIRE(entries.at("dirty") == true);
+    const auto result = rpc.call("revert_documents_to_baseline", {{"closing", true}});
+    REQUIRE(result.at("restored").size() == 4);
+    REQUIRE(result.at("conflicts").empty());
+    REQUIRE_FALSE(std::filesystem::exists(project.root / "created.material"));
+    REQUIRE(readBytes(project.root / "deleted.material") == "deleted before\r\n");
+    REQUIRE(readBytes(project.root / "pass.json") == original);
+    REQUIRE(readBytes(project.root / "bindings.json") == "bindings before\n");
+    REQUIRE(rpc.call("get_document_journal").at("dirty") == false);
+    REQUIRE_FALSE(std::filesystem::exists(project.root / ".pelican/document_journal"));
+}
+
+TEST_CASE("RV-1 materialdocumentrpc revert preserves external edits and restores other paths", "[RV-1][document-journal]") {
+    TemporaryDirectory project{"rv1-conflict"};
+    JournalRpc rpc(project.root);
+    writeBytes(project.root / "changed", "before");
+    writeBytes(project.root / "deleted", "before");
+    journalWrite(project.root, "changed", "engine");
+    journalWrite(project.root, "deleted", std::nullopt);
+    journalWrite(project.root, "other", "engine");
+    // A truncated material is still an external edit, independent of JSON parsing.
+    const std::string broken = "{\"materials\": []";
+    writeBytes(project.root / "changed", broken);
+    REQUIRE(rpc.call("get_document_journal").at("dirty") == true);
+    writeBytes(project.root / "deleted", "external recreation");
+    const auto result = rpc.call("revert_documents_to_baseline", {{"closing", true}});
+    REQUIRE(result.at("conflicts") == Json::array({"changed", "deleted"}));
+    REQUIRE(readBytes(project.root / "changed") == broken);
+    REQUIRE(readBytes(project.root / "deleted") == "external recreation");
+    REQUIRE_FALSE(std::filesystem::exists(project.root / "other"));
+}
+
+TEST_CASE("RV-1 materialdocumentrpc Save advances baseline and restart keeps it", "[RV-1][document-journal][save]") {
+    TemporaryDirectory project{"rv1-restart"};
+    writeBytes(project.root / "graph", "opened");
+    {
+        JournalRpc rpc(project.root);
+        journalWrite(project.root, "graph", "saved");
+        rpc.call("mark_document_baseline");
+        REQUIRE(rpc.call("get_document_journal").at("dirty") == false);
+        journalWrite(project.root, "graph", "restart_required");
+    }
+    JournalRpc restarted(project.root);
+    REQUIRE(restarted.call("get_document_journal").at("dirty") == true);
+    journalWrite(project.root, "graph", "after restart");
+    restarted.call("revert_documents_to_baseline", {{"closing", true}});
+    REQUIRE(readBytes(project.root / "graph") == "saved");
+}
+
+TEST_CASE("RV-1 document journal rolls back with failed transactions and publication", "[RV-1][document-journal]") {
+    TemporaryDirectory project{"rv1-rollback"};
+    JournalRpc rpc(project.root);
+    writeBytes(project.root / "graph", "before");
+    auto edit = journalEdit(project.root, "graph", "after");
+    SECTION("transaction failure leaves no journal or source changes") {
+        REQUIRE_THROWS(commitProjectDocuments(project.root, std::span{&edit, std::size_t{1}},
+            [](std::size_t index, const auto &) { if (index == 1) throw std::runtime_error("fault"); }));
+    }
+    SECTION("defensive publication rollback includes journal metadata") {
+        auto receipt = commitProjectDocuments(project.root, std::span{&edit, std::size_t{1}});
+        REQUIRE(rpc.call("get_document_journal").at("dirty") == true);
+        rollbackCommittedProjectDocuments(std::move(receipt));
+    }
+    REQUIRE(readBytes(project.root / "graph") == "before");
+    REQUIRE(rpc.call("get_document_journal").at("dirty") == false);
+}
+
+TEST_CASE("RV-1 player transaction without RPC does not create a document journal", "[RV-1][document-journal]") {
+    TemporaryDirectory project{"rv1-player"};
+    journalWrite(project.root, "graph", "after");
+    REQUIRE_FALSE(std::filesystem::exists(project.root / ".pelican/document_journal"));
+}
+
+TEST_CASE("RV-1 materialdocumentrpc running revert uses normal file reload participants", "[RV-1][document-journal]") {
+    TemporaryDirectory project{"rv1-reload"};
+    watch::ReloadService reload;
+    bool reloaded = false;
+    reload.registerParticipant({.name = "rv1.test.documents", .file = watch::FileReloadRole{
+        .claims = [](const watch::ReloadRequest &request) { return request.key == watch::makeAssetKey("project://graph"); },
+        .apply = watch::BatchReloadApply{.apply_batch = [&](std::span<const watch::ReloadRequest>) {
+            reloaded = readBytes(project.root / "graph") == "before";
+            return reloaded;
+        }}}});
+    JournalRpc rpc(project.root, &reload);
+    writeBytes(project.root / "graph", "before");
+    journalWrite(project.root, "graph", "after");
+    const auto result = rpc.call("revert_documents_to_baseline");
+    REQUIRE(reloaded);
+    REQUIRE(result.at("reload_pending_restart").empty());
+}
+
+
+TEST_CASE("RV-1 materialdocumentrpc restart retains unsaved opened baseline", "[RV-1][document-journal]") {
+    TemporaryDirectory project{"rv1-restart-opened"};
+    writeBytes(project.root / "graph", "opened");
+    {
+        JournalRpc rpc(project.root);
+        journalWrite(project.root, "graph", "restart_required");
+    }
+    JournalRpc restarted(project.root);
+    REQUIRE(restarted.call("get_document_journal").at("dirty") == true);
+    restarted.call("revert_documents_to_baseline", {{"closing", true}});
+    REQUIRE(readBytes(project.root / "graph") == "opened");
+}
+
+TEST_CASE("RV-1 document journal keeps binary bytes and rejects stale CAS without recording it", "[RV-1][document-journal]") {
+    TemporaryDirectory project{"rv1-binary"};
+    JournalRpc rpc(project.root);
+    const std::string original{"\0\xff\xfe\x80\r\n", 6};
+    writeBytes(project.root / "asset.bin", original);
+    auto stale = journalEdit(project.root, "asset.bin", "not committed");
+    writeBytes(project.root / "asset.bin", "external");
+    REQUIRE_THROWS_AS(commitProjectDocuments(project.root, std::span{&stale, std::size_t{1}}), ProjectDocumentExternalModification);
+    REQUIRE(rpc.call("get_document_journal").at("dirty") == false);
+    writeBytes(project.root / "asset.bin", original);
+    journalWrite(project.root, "asset.bin", "new binary");
+    rpc.call("revert_documents_to_baseline", {{"closing", true}});
+    REQUIRE(readBytes(project.root / "asset.bin") == original);
+}
 
 } // namespace Pelican

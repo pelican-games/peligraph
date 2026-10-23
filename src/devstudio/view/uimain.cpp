@@ -1,4 +1,5 @@
 #include "uimain.hpp"
+#include "../guitrace.hpp"
 #include "mainwindow.hpp"
 #include "studioscreen.hpp"
 #include "../automation/automationserver.hpp"
@@ -23,7 +24,17 @@ std::string renderToolsTabList() {
 }
 
 int uimain(int argc, char **argv, LaunchOptions options) {
-    QApplication app(argc, argv);
+    class TracedApplication final : public QApplication {
+    public:
+        using QApplication::QApplication;
+        bool notify(QObject *receiver, QEvent *event) override {
+            if (!GuiTrace::sink) return QApplication::notify(receiver, event);
+            const GuiTraceSpan trace{"qt_notify", double(event->type())};
+            const GuiTraceSpan receiver_trace{receiver->metaObject()->className(), double(event->type())};
+            return QApplication::notify(receiver, event);
+        }
+    };
+    TracedApplication app(argc, argv);
     QCoreApplication::setOrganizationName(QStringLiteral("Pelican"));
     QCoreApplication::setApplicationName(QStringLiteral("Pelican Studio"));
 

@@ -1,6 +1,6 @@
 # 第7章 入力と UI
 
-対象: pelican2(2026-07-21 時点)/ このマニュアルはコードを正とする
+最終確認: 2026-10-07
 
 ## この章で学ぶこと
 
@@ -11,7 +11,7 @@
 - 実装済みの UI 基盤 `pelican.ui` v1(ウィジェット・レイアウト・イベント emit)と、ゲームコード(`ctx.ui()`)・共通グラフ(`ui.*` sink)から UI を書く方法(GP-3)
 - テキスト HUD(`debug_text`)の使い方
 
-(`WP69` のような **WP** 番号は開発の作業単位です。読み方は [第1章 §1.0](01_overview.md)、状態の一覧は [第11章 §11.1](11_status.md)。)
+(`WP69` のような **WP** 番号は開発の作業単位です。読み方は [第1章 §1.0](01_overview.md)、台帳・履歴の参照先は [第11章 §11.1](11_status.md#111-wp-の台帳はどこにあるか)。)
 
 ## 7.1 入力システムの全体像 — 四層構造
 
@@ -30,7 +30,7 @@ L1 の要点(✅WP69 で改訂):
 - `FrameInput` は「順序付きイベント列(`ordered_events` — 全イベントに単調増加の `event_seq` が付き、途中座標・発生順が保持される。`event_seq` は時刻ではなく**通し番号**(`std::uint64_t`。0 から採番し、フレームをまたいでも巻き戻らない — [inputstate.hpp:99](../../src/core/os/inputstate.hpp#L99)))」と「集約スナップショット」の両方を持ちます。**この 2 つは同じフレームの同じ入力を 2 通りに見せたもの**で、重複でも競合でもありません(順番が要るならイベント列、いまの状態が要るならスナップショット)。スナップショット側では従来どおり同一フレームの「押して離す」は pressed / released が両方立ちます。
 - **入力消費マスク**: ここでいう**消費**は「先に受け取った層がその入力を握り、下の層へ渡さない」ことです。消費の優先順は ImGui → `pelican.ui` → アクション層。UI がポインタを hit / capture したフレームは、そのポインタがアクション層から見えなくなります。
 - ImGui が消費者に入るのは**通常ウィンドウ起動のときだけ**です。headless / rpc / リプレイ / golden に加え、✅WP138 以降は **XR session が active な間もエンジンは ImGui frame を begin しません**(XR グラフに `imgui` パスが無いため。論理フレーム境界でゲートが閉じたときは開始済みフレームを閉じてから外します)。この場合の消費順は `pelican.ui` → アクション層になります([第6章](06_rendering.md) §6.12)。
-- フレーム位相は「イベント凍結 → 入力凍結(リプレイ注入→収録)→ アクション確定(ImGui → UI → Actions)→ イベント配送 → ゲーム更新」の固定順で、通常ループと rpc ループで同一です。
+- 入力はフレーム内で不変になり、通常ループと RPC の状態更新は[第1章のフレーム順の図](01_overview.md#frame-order)に従います。
 
 ## 7.2 アクション定義とバインディングプロファイル
 
@@ -172,7 +172,7 @@ ctx.input().setCursorMode(Pelican::CursorMode::locked);   // normal / hidden / l
 ]}}
 ```
 
-`mouse_move` の `x` / `y` は**窓座標**です(framebuffer ピクセルではありません)。注入した移動は OS からの移動と同じ event になり、`ctx.input().pointer()` と UI の入力ルータがフレームの換算で framebuffer ピクセルにします([注入の受け口](../../src/core/communication/rpcserver.cpp#L862))。headless は 1 倍なので、窓座標とピクセルは同じ値です。
+`mouse_move` の `x` / `y` は**窓座標**です(framebuffer ピクセルではありません)。注入した移動は OS からの移動と同じ event になり、`ctx.input().pointer()` と UI の入力ルータがフレームの換算で framebuffer ピクセルにします([注入の受け口](../../src/core/communication/rpcserver.cpp#L869))。headless は 1 倍なので、窓座標とピクセルは同じ値です。
 
 ### 収録とリプレイ(✅WP89 = I3)
 
@@ -194,7 +194,7 @@ pelican_player --project mygame --replay session.jsonl         # リプレイ(�
 
 > ⚠ **破壊的変更(WP87):** 旧 `ui_overlay.json` の `images` 配列形式は**削除されました**(パースエラーになります)。現行の UI は `pelican.ui` v1 ドキュメントです。ファイル名は従来どおり `basic_config.ui_config_json` で指します。
 
-2026-07-10 時点で「レビュー Reject 中・実装ゼロ」(= 設計レビューで差し戻され、コードが 1 行も無い状態。レビュー記録は [../design_reviews/](../design_reviews/))だった `pelican.ui` は、レビュー条件を折り込んだ v8 設計で承認され、U0(CPU 基盤)→ U1(GPU 描画)→ U2(対話ウィジェット)まで実装済みです。
+`pelican.ui` v1 の CPU 基盤・GPU 描画・対話ウィジェットは実装済みです。
 
 ### 有効化(2 段)
 
@@ -237,7 +237,7 @@ pelican_player --project mygame --replay session.jsonl         # リプレイ(�
 - **機械可読スキーマが正**: [../schemas/pelican.ui.schema.json](../schemas/pelican.ui.schema.json)(`additionalProperties: false` の closed schema — 未知フィールドは拒否)。
 - トップレベル: `schema` / `version: 1` / `key`(1〜256 文字)/ `root` 必須、`revision` / `direction`(`"ltr"` のみ)任意。
 - **ウィジェット語彙 6 種**(語彙 = 書ける `type` の値の全集合。これ以外は拒否): `panel` / `image` / `label` / `button` / `gauge` / `stack`。
-- **`gauge` の描画(✅GP-3)**: 左端から伸びる横棒を 1 本描きます。棒の幅は **floor(ゲージの幅 × clamp(`value`, 0, 1))**(UI 単位)で、色は `color`。`color` を省くと既定色 `{96, 200, 120, 255}` になります([visitNodes() の gauge 分岐](../../src/core/ui/module.cpp#L106) / [既定色](../../src/core/ui/document.cpp#L243))。`value` は文書に書けるほか、実行時に `ctx.ui().setValue` と `ui.value` sink で書き換えられます(下の「ゲームコードと共通グラフから UI を書く」)。背景の枠は描かないので、地が要るなら親の `panel` に色を付けます。
+- **`gauge` の描画(✅GP-3)**: 左端から伸びる横棒を 1 本描きます。棒の幅は **floor(ゲージの幅 × clamp(`value`, 0, 1))**(UI 単位)で、色は `color`。`color` を省くと既定色 `{96, 200, 120, 255}` になります([visitNodes() の gauge 分岐](../../src/core/ui/module.cpp#L111) / [既定色](../../src/core/ui/document.cpp#L243))。`value` は文書に書けるほか、実行時に `ctx.ui().setValue` と `ui.value` sink で書き換えられます(下の「ゲームコードと共通グラフから UI を書く」)。背景の枠は描かないので、地が要るなら親の `panel` に色を付けます。
 - 主なプロパティ: 共通 `id`(`^[a-z0-9_]+$`)/ `layout` / `visibility` / `enabled` / `hit_testable` / `layer` / `emit` / `children`。描画系 `sprite`(atlas 参照は `<name>.atlas.json#sprite/<名前>` 形式)/ `color` / `hover_color` / `pressed_color` / `text` / `text_color` / `nine_patch`(panel)。
 - レイアウト: 軸ごとの `mode: fixed|content|fill`(+ min/max/weight)、`anchor_min/max`、`offsets`、`stack`(horizontal/vertical)+ `gap` / `padding` / `align` / `justify`。計算は決定的(binary64 固定)。
   - `mode` は x 軸・y 軸それぞれに書き、その軸の長さの決め方を選びます: **`fixed`** = 書いた `value` をそのまま使う / **`content`** = 中身(子とテキスト・画像)から算出した固有サイズを使う / **`fill`** = 親 `stack` の余りを `weight` の比で分け合う。いずれも `min` / `max` で挟まれます([axisSize()](../../src/core/ui/layout.cpp#L76) と [distribute()](../../src/core/ui/layout.cpp#L93))。`content` の親の下に `fill` の子を置くと循環なので名指しエラーです。
@@ -252,7 +252,7 @@ pelican_player --project mygame --replay session.jsonl         # リプレイ(�
   "emit": { "on_click": { "event": "MenuStart" } } }
 ```
 
-emit のソースには static 値のほか `stable_id` / `drag_delta_ui` / `widget_value` が使えます。それぞれ、イベント payload のそのフィールドに **`stable_id`** = 発火したウィジェットの安定 ID(親からの `親id/子id` パス)、**`drag_delta_ui`** = 直前の位置からのドラッグ移動量 `[x, y]`(UI 座標)、**`widget_value(パス)`** = ウィジェット自身の現在値、を入れます([document.cpp](../../src/core/ui/document.cpp#L196) / [module.cpp](../../src/core/ui/module.cpp#L241))。rpc 経由のクリックとリプレイの決定性は結合テストで担保されています。
+emit のソースには static 値のほか `stable_id` / `drag_delta_ui` / `widget_value` が使えます。それぞれ、イベント payload のそのフィールドに **`stable_id`** = 発火したウィジェットの安定 ID(親からの `親id/子id` パス)、**`drag_delta_ui`** = 直前の位置からのドラッグ移動量 `[x, y]`(UI 座標)、**`widget_value(パス)`** = ウィジェット自身の現在値、を入れます([document.cpp](../../src/core/ui/document.cpp#L196) / [module.cpp](../../src/core/ui/module.cpp#L296))。rpc 経由のクリックとリプレイの決定性は結合テストで担保されています。
 
 ### ゲームコードと共通グラフから UI を書く(✅GP-3)
 
@@ -271,7 +271,7 @@ if (auto r = ui.setText("root/hud/score", "SCORE 120"); !r)
 ```
 
 - **path** は root から自分までの `id` を `/` でつないだ文字列で、root の `id` も含みます(root `root` の子 `hud` の子 `score` なら `root/hud/score`)。`id` は兄弟の間でしか一意ではないので、node を区別するのは path です。emit の `stable_id` に入る文字列と同じです([path の組み立て](../../src/core/ui/document.cpp#L234))。
-- 書ける性質は node の型で決まります。`setText` は `label` / `button`、`setValue` は `gauge`、`setVisible` はすべての node です([uiNodeHasProperty()](../../src/core/ui/module.cpp#L301))。
+- 書ける性質は node の型で決まります。`setText` は `label` / `button`、`setValue` は `gauge`、`setVisible` はすべての node です([uiNodeHasProperty()](../../src/core/ui/module.cpp#L357))。
 - 戻り値は [`UiWriteResult`](../../src/core/userpublic/ui_write.hpp#L39)(`[[nodiscard]]`)です。`ok()` / `operator bool` / `error()` / `errorName()` を持ち、失敗は例外ではなく戻り値で返ります。理由は [`UiWriteError`](../../src/core/userpublic/ui_write.hpp#L10) の 4 つで、複数当てはまるときは**この順で先のもの**を返します。
 
 | 順 | 名前 | いつ |
@@ -281,8 +281,8 @@ if (auto r = ui.setText("root/hud/score", "SCORE 120"); !r)
 | 3 | `ui.property_mismatch@1` | node の型がその性質を持たない(例: gauge への `setText`)、または `setValue` の値が有限でない |
 | 4 | `ui.sink_conflict@1` | 公開中の rendering config の `ui.*` sink が同じ (path, 性質) を書いている(下記) |
 
-- **書き込みは呼んだ時点で検査され、フレーム境界で適用されます。** 受け付けた書き込みは列に積まれ、そのフレームのゲームコードがすべて走ったあと、描画の前に一度にまとめて入ります([commitFrameWrites() の呼び出し](../../src/core/appflow/framephase.cpp#L269))。断られた書き込みは何も積みません。
-- `setText` で文字列を変えると、`label` / `button` の大きさ(`content` 軸の固有サイズ)を測り直します。測り直すのは固有サイズが文字列から測られた node だけで、`intrinsic_size` を文書に書いた node はそのままです([syncDocumentFromArena()](../../src/core/ui/module.cpp#L351))。
+- **書き込みは呼んだ時点で検査され、フレーム境界で適用されます。** 受け付けた書き込みは列に積まれ、そのフレームのゲームコードがすべて走ったあと、描画の前に一度にまとめて入ります([commitFrameWrites() の呼び出し](../../src/core/appflow/framephase.cpp#L277))。断られた書き込みは何も積みません。
+- `setText` で文字列を変えると、`label` / `button` の大きさ(`content` 軸の固有サイズ)を測り直します。測り直すのは固有サイズが文字列から測られた node だけで、`intrinsic_size` を文書に書いた node はそのままです([syncDocumentFromArena()](../../src/core/ui/module.cpp#L407))。
 - **scene load 中に書いても、load の transaction には入りません。** 公開 API の分類は `nonparticipant.ui-document` で([manifest の行](../../src/core/loader/sceneparticipantmanifest.cpp#L228))、UI 文書は scene の参加者ではないので、load が失敗しても書き込みは次のフレーム境界で入ります。
 
 #### `ui.*` sink — 共通グラフから書く
@@ -307,9 +307,9 @@ graph module **`pelican.ui`**(version 1)は常に登録されます(UI にはビ
 ]
 ```
 
-- sink の値は毎フレーム、グラフの publish の時点で UI へ直接入り、そのフレームの UI パスが描きます([renderer.cpp の ui_writer](../../src/core/vkcore/renderer.cpp#L6150))。
+- sink の値は毎フレーム、グラフの publish の時点で UI へ直接入り、そのフレームの UI パスが描きます([renderer.cpp の ui_writer](../../src/core/vkcore/renderer.cpp#L6362))。
 - **単一 writer の単位は `(文書, path, 性質)`** です。`ui.*` の sink は owner に属さないので、`pose.*` の「owner 単位」とは単位が違います。同じ node でも `value` と `visible` は別の単位です。
-- rendering config を準備する時点で、次の理由で名前付きに断ります(準備で断られた config はどのフレームにも届きません。[validateUiSinks()](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L112)、衝突は [Graph の binding 検査](../../src/core/userpublic/valuegraph.cpp#L643)):
+- rendering config を準備する時点で、次の理由で名前付きに断ります(準備で断られた config はどのフレームにも届きません。[validateUiSinks()](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L114)、衝突は [Graph の binding 検査](../../src/core/userpublic/valuegraph.cpp#L652)):
   - `ui.feature_unreferenced@1` — `ui.*` sink を持つ config が `engine://features/ui.json` を参照していない
   - `ui.node_unknown@1` / `ui.property_mismatch@1` — `parameters.node` の path が無い / その node が性質を持たない(例: `ui.value` の先が label)
   - `ui.sink_conflict@1` — 2 本の sink が同じ (path, 性質) を書く
@@ -318,7 +318,7 @@ graph module **`pelican.ui`**(version 1)は常に登録されます(UI にはビ
 
 #### GP-3 が残した穴
 
-- `setVisible(false)`(と `ui.visible` の 0)で消えるのは**その node 自身の quad だけ**で、子は描かれ続けます(描画の走査が子へ無条件に降りるため。[visitNodes() の子への再帰](../../src/core/ui/module.cpp#L136))。子ごと隠したいときは子にもそれぞれ書きます。
+- `setVisible(false)`(と `ui.visible` の 0)で消えるのは**その node 自身の quad だけ**で、子は描かれ続けます(描画の走査が子へ無条件に降りるため。[visitNodes() の子への再帰](../../src/core/ui/module.cpp#L141))。子ごと隠したいときは子にもそれぞれ書きます。
 - 文書で `visibility: "collapsed"` にした node は、`setVisible(true)` でも描かれません。collapsed の node はレイアウトに載らず([place()](../../src/core/ui/layout.cpp#L142))、描画はレイアウトの無い node を飛ばします。
 - 衝突の検出は**公開済み**の rendering config の sink を見ます。最初の publish より前の `ctx.ui()` の書き込みでは、sink との衝突を検出しません(公開中の世代が無ければ「sink は無い」と答えるため)。
 

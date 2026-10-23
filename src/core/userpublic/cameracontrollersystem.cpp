@@ -1,3 +1,5 @@
+#include "../loader/controllervalidation.hpp"
+#include "../watch/userdataguard.hpp"
 #include "gamesystem.hpp"
 
 #include "../launchconfig.hpp"
@@ -212,26 +214,24 @@ OrbitInput readRuntimeFreeCameraInput(GameContext &ctx) {
 
     // A chord such as Shift+MMB also satisfies the unmodified MMB binding.
     // Resolve that deliberate input-profile overlap by operation priority.
-    // Pointer axes are the screen's (x right, y down), as pan, look and the
-    // controllers below read them.
+    // Drag the viewed scene with the pointer. The orbit controller accepts
+    // camera motion, so editor pointer deltas have the opposite sign. Keep
+    // authored camera actions and the projection convention unchanged.
     if (ctx.actionHeld("pelican_view_zoom_drag")) {
         result.zoom -= pointer_y;
     } else if (ctx.actionHeld("pelican_view_pan")) {
-        result.pan.x += pointer_x;
-        result.pan.y += pointer_y;
+        result.pan.x -= pointer_x;
+        result.pan.y -= pointer_y;
     } else if (ctx.actionHeld("pelican_view_orbit")) {
-        result.look.x += pointer_x;
-        result.look.y += pointer_y;
+        result.look.x -= pointer_x;
+        result.look.y -= pointer_y;
     }
     return result;
 }
 
 SceneObjectTransform requireTargetTransform(std::string_view camera_name, const ControllerSpec &controller) {
     auto &scene = GET_MODULE(SceneLoader);
-    if (!scene.hasObjectTransform(controller.target)) {
-        throw std::runtime_error("camera '" + std::string{camera_name} + "' controller target '" +
-                                 controller.target + "' has no transform");
-    }
+    requireControllerTarget(camera_name, controller.target, scene.hasObjectTransform(controller.target));
     return scene.objectTransform(controller.target);
 }
 
@@ -376,10 +376,16 @@ bool launchedInEditState() {
 
 void updateControlledCameras(GameContext &ctx, ControlledCameras which) {
     auto &states = controllerStates();
+    std::set<std::string> live;
     {
         auto &camera = GET_MODULE(Camera);
         const auto &controlled_cameras = camera.controlledSceneCameraNames();
         const auto active_camera = camera.activeCameraName();
+        for (const auto &name : controlled_cameras) {
+            auto &scene = GET_MODULE(SceneLoader);
+            live.insert(userDataScope("CameraController", "camera",
+                scene.objectId(name).value_or(invalidGameObjectId)).key);
+        }
         const auto &editor_camera = camera.editorCameraName();
 
         for (const auto &camera_name : controlled_cameras) {
@@ -397,6 +403,16 @@ void updateControlledCameras(GameContext &ctx, ControlledCameras which) {
                 continue;
             }
 
+            auto &scene = GET_MODULE(SceneLoader);
+            auto scope = userDataScope("CameraController", "camera",
+                scene.objectId(camera_name).value_or(invalidGameObjectId),
+                camera_name + controllerSignature(*controller) +
+                (scene.hasObjectTransform(controller->target) ? ":target" : ":missing"));
+            live.insert(scope.key);
+            guardUserData(scope, [&] {
+            if (!is_editor_camera)
+                requireControllerActions(internal::inputActionMap(),
+                    controller->type == ControllerType::Orbit, controller->type == ControllerType::Fly);
             auto &state = states[camera_name];
             resetIfNeeded(ctx, state, *controller);
 
@@ -413,12 +429,14 @@ void updateControlledCameras(GameContext &ctx, ControlledCameras which) {
                 break;
             }
             applyPoseToSceneCamera(camera_name, pose);
+            });
 
             if (active_camera.empty()) {
                 break;
             }
         }
     }
+    retainUserDataScopes("CameraController/", live);
 }
 
 // The editor half: an editor system (it runs while the game is stopped, on the
@@ -496,5 +514,13 @@ struct BuiltinCameraControllerSystemRegistration {
 };
 const BuiltinCameraControllerSystemRegistration builtinCameraControllerSystem_registration;
 } // namespace
+
+namespace internal {
+// pelican_core is a static archive and nothing else refers to this file, so a
+// host that links it without /WHOLEARCHIVE (the player does; the golden
+// harness does not) drops the registration above with it, and the built-in
+// controllers never run there. A call to this anchor keeps the object file.
+void linkBuiltinCameraControllerSystem() noexcept {}
+} // namespace internal
 
 } // namespace Pelican

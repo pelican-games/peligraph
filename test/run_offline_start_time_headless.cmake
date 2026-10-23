@@ -19,6 +19,12 @@ if(NOT DEFINED OUT_DIR)
     message(FATAL_ERROR "OUT_DIR is required")
 endif()
 
+# The same rejection cases run without a GPU in the limits-only CTest.
+if(LIMITS_ONLY)
+    include("${CMAKE_CURRENT_LIST_DIR}/run_offline_start_time_limits.cmake")
+    return()
+endif()
+
 file(REMOVE_RECURSE "${OUT_DIR}")
 file(MAKE_DIRECTORY "${OUT_DIR}/project/passes")
 file(MAKE_DIRECTORY "${OUT_DIR}/project/shaders")
@@ -241,6 +247,9 @@ run_player("non-numeric time" FALSE text_stderr --start-time later --frames 1)
 if(NOT text_stderr MATCHES "offline\\.time_invalid@1")
     message(FATAL_ERROR "--start-time later was not refused by name:\n${text_stderr}")
 endif()
+
+# FX-6: overflow, replay-budget limits, and nearest-frame boundary semantics.
+include("${CMAKE_CURRENT_LIST_DIR}/run_offline_start_time_limits.cmake")
 
 # --headless is not optional: there is no fixed-step timeline to count without it.
 execute_process(

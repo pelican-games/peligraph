@@ -325,10 +325,8 @@ TEST_CASE("UX-4a MaterialSettingsForm gives back the ten settings it was given, 
     expected.erase("material_range");
     CHECK(form.settings() == expected);
 
-    // Other is JSON, and only for the settings with no fields.
-    required<QPlainTextEdit>(form, "materialOther").setPlainText(R"({"material_variant":"x"})");
-    CHECK_THROWS(form.settings());
-    required<QPlainTextEdit>(form, "materialOther").clear();
+    // UX-15a, decision 6: GPU draws off takes gpu_draw_source away.
+    required<QCheckBox>(form, "gpuDrawSource").setChecked(false);
     expected.erase("gpu_draw_source");
     CHECK(form.settings() == expected);
 
@@ -341,6 +339,64 @@ TEST_CASE("UX-4a MaterialSettingsForm gives back the ten settings it was given, 
     CHECK(added.at("material_outputs").at("outputs").size() == 1);
     required<QPushButton>(form, "materialResources.add").click();
     CHECK(form.settings().at("screen_inputs") == Json{{"opaque_color", ""}});
+}
+
+TEST_CASE("UX-15a decision 6: MaterialSettingsForm's gpu_draw_source is fields -- its buffers "
+          "picked among the buffers given, its layout, counts and offsets -- not JSON",
+          "[devstudio][pass-forms][ux15a]") {
+    (void)application();
+    MaterialSettingsForm form{prefix};
+    form.setBufferCandidates({"draw_candidates", "visible_draws", "visible_draw_count",
+                              "draw_segments"});
+    CHECK(form.findChild<QPlainTextEdit *>(prefix + QStringLiteral(".materialOther")) == nullptr);
+    // What a pass holds comes back as it was, a key the fields do not show
+    // included, and a buffer no longer given still offered.
+    const Json source{{"commands", "old_commands"},
+                      {"count", "visible_draw_count"},
+                      {"max_draw_count", 2},
+                      {"command_offset", 0},
+                      {"fallback", "cpu_draw_queue"},
+                      {"execution", "automatic"},
+                      {"future", true}};
+    form.load(Json{{"type", "material"}, {"gpu_draw_source", source}});
+    CHECK(required<QCheckBox>(form, "gpuDrawSource").isChecked());
+    CHECK(form.settings() == Json{{"gpu_draw_source", source}});
+    auto &commands = required<QComboBox>(form, "gpuDrawSource.commands");
+    CHECK(commands.currentText() == QStringLiteral("old_commands"));
+    CHECK(commands.count() == 5);
+    // Picked, not typed: another buffer, the segments layout and its buffer.
+    choose(commands, "visible_draws");
+    choose(required<QComboBox>(form, "gpuDrawSource.layout"), "draw_queue_segments_v1");
+    auto &segments = required<QComboBox>(form, "gpuDrawSource.segments");
+    CHECK(segments.isEnabled());
+    CHECK(segments.currentData().toString() == QStringLiteral("draw_segments"));
+    required<QSpinBox>(form, "gpuDrawSource.maxDrawCount").setValue(256);
+    required<QSpinBox>(form, "gpuDrawSource.countOffset").setValue(8);
+    choose(required<QComboBox>(form, "gpuDrawSource.execution"), "cpu");
+    auto changed = source;
+    changed["commands"] = "visible_draws";
+    changed["layout"] = "draw_queue_segments_v1";
+    changed["segments"] = "draw_segments";
+    changed["max_draw_count"] = 256;
+    changed["count_offset"] = 8;
+    changed["execution"] = "cpu";
+    CHECK(form.settings() == Json{{"gpu_draw_source", changed}});
+
+    // A pass without it: on picks the buffers by their names.
+    form.load(Json{{"type", "material"}});
+    auto &on = required<QCheckBox>(form, "gpuDrawSource");
+    CHECK_FALSE(on.isChecked());
+    CHECK(form.settings() == Json::object());
+    on.setChecked(true);
+    CHECK(form.settings() == Json{{"gpu_draw_source",
+                                   {{"commands", "draw_candidates"},
+                                    {"count", "visible_draw_count"},
+                                    {"max_draw_count", 1}}}});
+    // With no buffer to read, there is nothing the engine would take.
+    form.setBufferCandidates({});
+    form.load(Json{{"type", "material"}});
+    required<QCheckBox>(form, "gpuDrawSource").setChecked(true);
+    CHECK_THROWS(form.settings());
 }
 
 TEST_CASE("UX-11 decision 2: MaterialSettingsForm's Tags are picked among the engine's "

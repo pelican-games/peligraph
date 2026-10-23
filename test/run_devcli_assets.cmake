@@ -149,7 +149,13 @@ if(NOT player_result EQUAL 0 OR NOT EXISTS "${OUT_DIR}/frames/non_strict.png")
     message(FATAL_ERROR "non-strict startup verification stopped project loading\n${player_stdout}\n${player_stderr}")
 endif()
 string(CONCAT player_output "${player_stdout}" "${player_stderr}")
-if(NOT player_output MATCHES "assets manifest: 1 stores,.*1 info, 0 warnings, 0 errors")
+if(DEFINED HOT_RELOAD AND NOT HOT_RELOAD)
+    # EB-4: a PELICAN_WITH_HOT_RELOAD=OFF player checks the assets at start
+    # only under --strict-assets (below); without it there is no summary.
+    if(player_output MATCHES "assets manifest:")
+        message(FATAL_ERROR "PELICAN_WITH_HOT_RELOAD=OFF ran the startup check without --strict-assets\n${player_output}")
+    endif()
+elseif(NOT player_output MATCHES "assets manifest: 1 stores,.*1 info, 0 warnings, 0 errors")
     message(FATAL_ERROR "startup summary is missing or misclassified\n${player_output}")
 endif()
 

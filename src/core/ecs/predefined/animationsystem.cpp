@@ -1,3 +1,4 @@
+#include "../../watch/userdataguard.hpp"
 #include "animationsystem.hpp"
 
 #include "../../animation/animationjobs.hpp"
@@ -11,6 +12,8 @@
 #include "../../asset/model.hpp"
 #include "../../loader/pathresolver.hpp"
 #include "../../model/skeletalanimation.hpp"
+#include "../../model/animationcomponentvalidation.hpp"
+#include "../../watch/problemlist.hpp"
 #include "../../renderer/polygoninstancecontainer.hpp"
 #if PELICAN_WITH_ANIMATION
 #include "../../animation/posegraphruntime.hpp"
@@ -22,6 +25,7 @@
 #include "../../renderingpass/graphinputs.hpp"
 #include "../../renderingpass/graphmodelsource.hpp"
 #include "../../renderingpass/renderingpasscontainer.hpp"
+#include "../../watch/reloadgate.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -55,12 +59,18 @@ struct AnimationSystemState {
                 Animation::animationServiceRuntime().unregisterObject(object_name);
         }
     };
+    std::unordered_map<EntityId, const SkeletalAnimationClip *> clips;
     Animation::AnimationAssetRegistry assets;
     std::vector<EntityId> candidates;
     // AG-3a. `<model name>\0<clip reference>` -> the clip's own [start, end].
     // A status read resolves a clip reference once; the bounds are a property
     // of the asset, so a second read of the same clip is arithmetic only.
-    std::map<std::string, std::pair<double, double>> clip_bounds;
+    struct ClipBounds {
+        std::weak_ptr<const SkeletalModelData> identity;
+        double begin;
+        double end;
+    };
+    std::map<std::string, ClipBounds> clip_bounds;
     std::unordered_map<EntityId, std::unique_ptr<GraphBinding>> graphs;
 
     AnimationGraph::EvaluatorV1 *currentEvaluator(EntityId entity) const {
@@ -76,17 +86,42 @@ struct AnimationSystemState {
 AnimationSystem::AnimationSystem() : state{std::make_unique<AnimationSystemState>()} {}
 AnimationSystem::~AnimationSystem() = default;
 
+Animation::AnimationAssetRegistry &AnimationSystem::assetRegistry() { return state->assets; }
+
 void AnimationSystem::prepareEcsWorkerDependencies(DependencyQuery chunks) {
     state->candidates.clear();
     for (const auto &chunk : chunks) {
         const auto entities = std::get<EntityId *>(chunk.components);
         state->candidates.insert(state->candidates.end(), entities, entities + chunk.count);
     }
-    if (chunks.empty()) return;
-    engine_time = &GET_MODULE(EngineTime);
-    instances = &GET_MODULE(PolygonInstanceContainer);
-    models = &GET_MODULE(ModelAssetContainer);
-    path_resolver = &GET_MODULE(PathResolver);
+    state->clips.clear();
+    std::set<std::string> live_scopes;
+    if (!chunks.empty()) {
+        engine_time = &GET_MODULE(EngineTime);
+        instances = &GET_MODULE(PolygonInstanceContainer);
+        models = &GET_MODULE(ModelAssetContainer);
+        path_resolver = &GET_MODULE(PathResolver);
+        for (const auto &chunk : chunks) {
+            const auto entities = std::get<EntityId *>(chunk.components);
+            const auto animations = std::get<AnimationComponent *>(chunk.components);
+            const auto views = std::get<SimpleModelViewComponent *>(chunk.components);
+            for (size_t i = 0; i < chunk.count; ++i) {
+                if (!animations[i].graph.empty() || !views[i].model_instance_id) continue;
+                auto scope = userDataScope("AnimationSystem", "animation", entities[i],
+                    views[i].model_name + userDataFileVersion(animations[i].clip));
+                scope.code = "animation.component_invalid@1";
+                scope.fields["object"] = views[i].authoring_object_id;
+                scope.fields["clip"] = animations[i].clip;
+                live_scopes.insert(scope.key);
+                guardUserData(scope, [&] {
+                    const auto &model = models->getModelTemplateByName(views[i].model_name);
+                    state->clips.emplace(entities[i], &requireAnimationComponentClip(
+                        model.skeletal.get(), animations[i].clip, *path_resolver));
+                });
+            }
+        }
+    }
+    retainUserDataScopes("AnimationSystem/animation/", live_scopes);
 }
 
 void AnimationSystem::process(QueryComponents components, size_t count) {
@@ -105,26 +140,11 @@ void AnimationSystem::process(QueryComponents components, size_t count) {
     for (size_t i = 0; i < count; ++i) {
         if (!animations[i].graph.empty()) continue;
         if (!model_views[i].model_instance_id) continue;
+        const auto found = state->clips.find(std::get<EntityId *>(components)[i]);
+        if (found == state->clips.end()) continue;
         auto &model = models->getModelTemplateByName(model_views[i].model_name);
-        if (!model.skeletal) {
-            throw std::runtime_error("animation component clip '" + animations[i].clip +
-                                     "' is attached to a model without a glTF skin");
-        }
-        const auto resolved = path_resolver->resolveExistingFileReference(animations[i].clip);
-        const auto *reference = std::get_if<ResolvedPathFragment>(&resolved);
-        if (reference == nullptr || reference->fragment.kind != "animation") {
-            throw std::runtime_error("animation component clip must be a #animation fragment: " +
-                                     animations[i].clip);
-        }
-        std::error_code source_error, clip_error;
-        const auto model_source = std::filesystem::weakly_canonical(model.skeletal->source_path, source_error);
-        const auto clip_source = std::filesystem::weakly_canonical(reference->path, clip_error);
-        if (source_error || clip_error || model_source != clip_source) {
-            throw std::runtime_error("animation component clip source does not match the skinned model: " +
-                                     animations[i].clip);
-        }
-        const auto &clip = findAnimationClip(*model.skeletal, reference->fragment.path);
-        const auto &asset = state->assets.getOrCreate(*model.skeletal);
+        const auto &clip = *found->second;
+        const auto &asset = state->assets.getOrCreate(model.skeletal);
         const auto &clip_resource = Animation::findClip(asset, clip);
 
         auto local_pose = Animation::PoseViewV1{};
@@ -183,17 +203,35 @@ void AnimationSystem::updateGraphs() {
     auto &service = Animation::animationServiceRuntime();
     internal::ScopedRegistrationOwner owner{internal::engineRegistrationOwner};
     std::unordered_set<EntityId> live;
+    std::set<std::string> live_scopes;
     for (const auto entity : state->candidates) {
         const auto *animation = ecs.tryComponent<AnimationComponent>(entity);
         const auto *view = ecs.tryComponent<SimpleModelViewComponent>(entity);
         if (!animation || animation->graph.empty() || !view || !view->model_instance_id) continue;
         live.insert(entity);
+        auto scope = userDataScope("AnimationSystem", "animation_graph", entity,
+            userDataFileVersion(animation->graph) + view->model_name);
+        if (animation->parameters)
+            for (const auto &row : animation->parameters->rows)
+                scope.version += ":" + row.value.parameter + "=" + nlohmann::json(row.value.value).dump();
+        live_scopes.insert(scope.key);
+        if (!guardUserData(scope, [&] {
         auto &model = GET_MODULE(ModelAssetContainer).getModelTemplateByName(view->model_name);
-        if (!model.skeletal) throw std::runtime_error("animation graph requires a skinned model");
+        if (!model.skeletal) throw UserDataError("animation graph requires a skinned model");
         auto &resolver = GET_MODULE(PathResolver);
-        const auto path = resolver.resolveExistingFile(animation->graph);
-        const auto modified = std::filesystem::last_write_time(path);
         auto found = state->graphs.find(entity);
+        // EB-7: a hot reload build looks at the graph file every frame and
+        // reads it again when it changed; a distribution build looks once,
+        // when it first reads the file, and keeps that write time.
+        const bool read_before =
+            found != state->graphs.end() && found->second->reference == animation->graph;
+        const auto modified =
+            watch::looksAgainAtReadFile(PELICAN_WITH_HOT_RELOAD != 0, read_before)
+                ? [&] {
+                    try { return std::filesystem::last_write_time(resolver.resolveExistingFile(animation->graph)); }
+                    catch (const std::runtime_error &error) { throw UserDataError(error.what()); }
+                }()
+                : found->second->modified;
         const auto epoch = scene.runtimeSceneEpoch();
         const auto named = scene.objectName(entity);
         const auto object_name = named.value_or("__animation_component:" +
@@ -213,7 +251,7 @@ void AnimationSystem::updateGraphs() {
         if (replace) {
             // Parse before releasing the previous writer. A malformed edited
             // asset must not silently discard the existing graph state.
-            auto document = AnimationGraph::parseDocumentV1(resolver.loadText(animation->graph));
+            auto document = requireAnimationComponentGraph(model.skeletal.get(), *animation, resolver);
             state->graphs.erase(entity);
             auto binding = std::make_unique<AnimationSystemState::GraphBinding>();
             binding->reference = animation->graph;
@@ -232,21 +270,23 @@ void AnimationSystem::updateGraphs() {
             if (binding->parameters)
                 for (const auto &row : binding->parameters->rows)
                     if (binding->evaluator->setParameter(row.value.parameter, row.value.value) != Animation::Status::ok)
-                        throw std::runtime_error("animation graph parameter override failed: " + row.value.parameter);
+                        throw UserDataError("animation graph parameter override failed: " + row.value.parameter);
             if (binding->evaluator->bind() != Animation::Status::ok)
-                throw std::runtime_error("animation graph bind failed: " + binding->evaluator->lastError());
+                throw UserDataError("animation graph bind failed: " + binding->evaluator->lastError());
             found = state->graphs.emplace(entity, std::move(binding)).first;
         }
         auto &binding = *found->second;
         if (binding.time_set_revision != time.timeSetRevision()) {
             const auto status = binding.evaluator->notify(Animation::AnimationNotificationKind::set_time, time.now());
-            if (status != Animation::Status::ok) throw std::runtime_error("animation graph clock reset failed");
+            if (status != Animation::Status::ok) throw UserDataError("animation graph clock reset failed");
             binding.time_set_revision = time.timeSetRevision();
         }
         if (binding.evaluator->prepareTick(time.now(), time.dt(), time.evaluationIndex()) != Animation::Status::ok)
-            throw std::runtime_error("animation graph tick preparation failed");
+            throw UserDataError("animation graph tick preparation failed");
+        })) state->graphs.erase(entity);
     }
     std::erase_if(state->graphs, [&](const auto &entry) { return !live.contains(entry.first); });
+    retainUserDataScopes("AnimationSystem/animation_graph/", live_scopes);
     updatePoseGraphs();
 }
 
@@ -288,7 +328,7 @@ void AnimationSystem::updatePoseGraphs() {
             // A pose sink writes a named scene sink. An unnamed object has no
             // stable identity to hand a writer to; say so instead of inventing one.
             if (!named)
-                throw std::runtime_error("pose sink requires a named scene object");
+                throw UserDataError("pose sink requires a named scene object");
             return named;
         };
         frame.verify_rig = [&](const GraphInstanceOwner &instance, const std::string &rig,
@@ -427,28 +467,33 @@ std::vector<AnimationComponentTrace> AnimationSystem::componentTrace() {
             trace.transition_progress = status.transition_progress;
             trace.frame_revision = status.frame_revision;
         } else if (!animation->clip.empty()) {
+            if (!state->clips.contains(entity)) continue;
             const auto *view = ecs.tryComponent<SimpleModelViewComponent>(entity);
             if (view == nullptr || !view->model_instance_id) continue;
             if (models == nullptr || path_resolver == nullptr) continue;
             const auto key = view->model_name + '\0' + animation->clip;
             auto bounds = state->clip_bounds.find(key);
-            if (bounds == state->clip_bounds.end()) {
-                try {
-                    auto &model = models->getModelTemplateByName(view->model_name);
-                    if (!model.skeletal) continue;
+            try {
+                const auto &model = models->getModelTemplateByName(view->model_name);
+                if (!model.skeletal) continue;
+                if (bounds == state->clip_bounds.end() || bounds->second.identity.expired() ||
+                    bounds->second.identity.lock() != model.skeletal ||
+                    bounds->second.identity.owner_before(model.skeletal) ||
+                    model.skeletal.owner_before(bounds->second.identity)) {
                     const auto resolved = path_resolver->resolveExistingFileReference(animation->clip);
                     const auto *reference = std::get_if<ResolvedPathFragment>(&resolved);
                     if (reference == nullptr || reference->fragment.kind != "animation") continue;
-                    const auto &clip = findAnimationClip(*model.skeletal, reference->fragment.path);
-                    bounds = state->clip_bounds.emplace(key,
-                        std::pair<double, double>{clip.start, clip.end}).first;
-                } catch (const std::exception &) {
-                    // An unresolvable clip is the frame's own error to raise;
-                    // observing the frame must not raise it a second time.
-                    continue;
+                    const auto &clip = findAnimationClip(*model.skeletal, reference->fragment);
+                    bounds = state->clip_bounds.insert_or_assign(key,
+                        AnimationSystemState::ClipBounds{model.skeletal, clip.start, clip.end}).first;
                 }
+            } catch (const std::exception &) {
+                // An unresolvable clip is the frame's own error to raise;
+                // observing the frame must not raise it a second time.
+                continue;
             }
-            const auto [begin, end] = bounds->second;
+            const auto begin = bounds->second.begin;
+            const auto end = bounds->second.end;
             const auto at = sampled(begin, end, time.now(), animation->speed,
                                     animation->loop != 0, animation->start_time);
             const auto span = end - begin;

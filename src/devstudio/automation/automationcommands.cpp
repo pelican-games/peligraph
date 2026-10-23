@@ -5,6 +5,7 @@
 #include "../view/graphcanvaswidget.hpp"
 #include "../view/nodegraphics.hpp"
 #include "../viewport/embeddedviewport.hpp"
+#include "../viewport/viewportgeometry.hpp"
 
 #include <optional>
 #include <cmath>
@@ -19,7 +20,10 @@
 #include <QApplication>
 #include <QColor>
 #include <QComboBox>
+#include <QCryptographicHash>
 #include <QDir>
+#include <QDirIterator>
+#include <QFile>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFileInfo>
@@ -30,11 +34,13 @@
 #include <QGraphicsTextItem>
 #include <QGraphicsView>
 #include <QGuiApplication>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QKeySequence>
 #include <QLineEdit>
+#include <QLayout>
 #include <QModelIndex>
 #include <QMenu>
 #include <QMouseEvent>
@@ -606,18 +612,20 @@ QJsonArray rectJson(const QRect &rect) {
     return QJsonArray{rect.x(), rect.y(), rect.width(), rect.height()};
 }
 
+QPointF sceneHotspot(const Target &target) {
+    const QVariant spot = target.item->data(NodeGraphHotspotRole);
+    if (spot.canConvert<QPointF>() && spot.isValid())
+        return target.item->mapToScene(spot.toPointF());
+    return target.item->sceneBoundingRect().center();
+}
+
 // Where inside `target.widget` a synthetic press lands.
 QPoint hotspot(const Target &target) {
     if (target.row) return target.row->center();
     if (target.isSceneItem()) {
         // LP-4d1: an item whose middle is something else (a zone's frame
         // holds its body) names where a press meant for it lands.
-        const QVariant spot = target.item->data(NodeGraphHotspotRole);
-        if (spot.canConvert<QPointF>() && spot.isValid())
-            return target.view->mapFromScene(
-                target.item->mapToScene(spot.toPointF()));
-        const QPointF centre = target.item->sceneBoundingRect().center();
-        return target.view->mapFromScene(centre);
+        return target.view->mapFromScene(sceneHotspot(target));
     }
     return target.widget->rect().center();
 }
@@ -946,7 +954,7 @@ AutomationReply commandList(const AutomationHost &host,
             Target target;
             target.widget = widget;
             target.owner = widget;
-            entries.push_back(QJsonObject{
+            QJsonObject entry{
                 {QStringLiteral("name"), name},
                 {QStringLiteral("class"),
                  QString::fromLatin1(widget->metaObject()->className())},
@@ -955,7 +963,13 @@ AutomationReply commandList(const AutomationHost &host,
                 {QStringLiteral("geometry"), rectJson(globalRect(target))},
                 {QStringLiteral("text"), widgetText(*widget)},
                 {QStringLiteral("shortcut"), widgetShortcut(*widget)},
-            });
+            };
+            // SK-1: a check box's text is its caption, so whether it is ticked
+            // is read here, as an action's is.
+            if (const auto *button = qobject_cast<const QAbstractButton *>(widget);
+                button != nullptr && button->isCheckable())
+                entry.insert(QStringLiteral("checked"), button->isChecked());
+            entries.push_back(entry);
         }
         // Drawn items are addressable too: a value pill has no widget of its
         // own, and naming it by node and port is what lets a scenario click it
@@ -999,6 +1013,74 @@ AutomationReply commandList(const AutomationHost &host,
         {QStringLiteral("count"), static_cast<int>(entries.size())},
         {QStringLiteral("widgets"), entries},
     });
+}
+
+// Ignore passive decoration, but respect the first mouse/selection surface in
+// Qt's stacking order. A body's selectable node is an independent target even
+// though the loop frame is its graphics ancestor.
+// A target that takes no press itself (a node's heading) is clicked through
+// the item that owns it: the press lands on an ancestor with no independently
+// selectable item between them, and that is the click the target names.
+bool clickBelongsTo(const QGraphicsItem *hit, const QGraphicsItem *target) {
+    for (auto *item = hit; item != nullptr; item = item->parentItem()) {
+        if (item == target) return true;
+        if (item->flags().testFlag(QGraphicsItem::ItemIsSelectable)) break;
+    }
+    if (hit == nullptr) return false;
+    for (auto *item = target->parentItem(); item != nullptr; item = item->parentItem()) {
+        if (item == hit) return true;
+        if (item->flags().testFlag(QGraphicsItem::ItemIsSelectable)) return false;
+    }
+    return false;
+}
+
+QGraphicsItem *clickSurface(const Target &target, const QPoint &point,
+                            Qt::MouseButton button) {
+    for (auto *item : target.view->items(point)) {
+        if (item->isEnabled() &&
+            (item->acceptedMouseButtons().testFlag(button) ||
+             item->flags().testFlag(QGraphicsItem::ItemIsSelectable)))
+            return item;
+    }
+    return nullptr;
+}
+
+bool findClickPoint(const Target &target, Qt::MouseButton button, QPoint *point,
+                    QString *covered_by) {
+    const auto usable = [&](const QPoint &candidate) {
+        if (!target.widget->rect().contains(candidate) ||
+            !target.item->contains(target.item->mapFromScene(
+                target.view->mapToScene(candidate)))) return false;
+        auto *hit = clickSurface(target, candidate, button);
+        if (clickBelongsTo(hit, target.item)) return true;
+        if (hit != nullptr && covered_by->isEmpty()) {
+            // Prefer the owning named node over an anonymous decoration.
+            auto *owner = hit;
+            while (owner->parentItem() &&
+                   !owner->flags().testFlag(QGraphicsItem::ItemIsSelectable))
+                owner = owner->parentItem();
+            *covered_by = sceneItemName(*target.view, *owner, 0);
+            if (covered_by->isEmpty())
+                *covered_by = QStringLiteral("unnamed scene item (type %1)").arg(hit->type());
+        }
+        return false;
+    };
+    if (usable(*point)) return true;
+    const QRect bounds = target.view->mapFromScene(target.item->sceneBoundingRect())
+                             .boundingRect().intersected(target.widget->rect());
+    // Keep the heading's row first, then try every visible integer pixel in
+    // top-to-bottom, left-to-right order. Test the rounded event coordinate,
+    // not merely a floating-point point within the bounding box.
+    for (int x = bounds.left(); x <= bounds.right(); ++x) {
+        const QPoint candidate{x, point->y()};
+        if (usable(candidate)) { *point = candidate; return true; }
+    }
+    for (int y = bounds.top(); y <= bounds.bottom(); ++y)
+        for (int x = bounds.left(); x <= bounds.right(); ++x) {
+            const QPoint candidate{x, y};
+            if (usable(candidate)) { *point = candidate; return true; }
+        }
+    return false;
 }
 
 AutomationReply commandClick(const AutomationHost &host,
@@ -1046,6 +1128,29 @@ AutomationReply commandClick(const AutomationHost &host,
             BadRequest, QStringLiteral("unknown keyboard modifier"));
     QPoint point;
     if (!pointFor(request, target, &point, &rejected)) return rejected;
+    // A named scene item may be outside the current pan. Qt can silently
+    // drop an off-viewport press; bring its hotspot (a loop's heading, not
+    // its body) into view before sending the ordinary mouse event. Explicit
+    // coordinates still mean exactly the position the caller requested.
+    if (target.isSceneItem() && !request.contains(QStringLiteral("point")) &&
+        !request.contains(QStringLiteral("scene")) &&
+        !target.view->viewport()->rect().contains(point)) {
+        target.view->centerOn(target.view->mapToScene(point));
+        point = hotspot(target);
+    }
+    bool point_reselected = false;
+    if (target.isSceneItem() && !request.contains(QStringLiteral("point")) &&
+        !request.contains(QStringLiteral("scene"))) {
+        const QPoint original = point;
+        QString covered_by;
+        if (!findClickPoint(target, button, &point, &covered_by))
+            return AutomationReply::failure(
+                BadRequest, covered_by.isEmpty()
+                    ? QStringLiteral("the item named \"%1\" has no clickable viewport point").arg(named)
+                    : QStringLiteral("the item named \"%1\" is covered by \"%2\"")
+                          .arg(named, covered_by));
+        point_reselected = point != original;
+    }
     const QRect where = globalRect(target);
     QWidget *receiver = pointerReceiver(target, &point);
     if (double_click)
@@ -1054,10 +1159,121 @@ AutomationReply commandClick(const AutomationHost &host,
         QTest::mouseClick(receiver, button, modifiers, point);
     return AutomationReply::success(QJsonObject{
         {QStringLiteral("point"), QJsonArray{point.x(), point.y()}},
+        {QStringLiteral("point_reselected"), point_reselected},
         {QStringLiteral("geometry"), rectJson(where)},
         {QStringLiteral("visible"), targetVisible(target)},
     });
 }
+
+// A timer-driven gesture returns to the GUI event loop between moves. Both
+// automation and the offscreen harness use NodeCanvasView::dragPaced.
+AutomationReply commandDragPaced(const AutomationHost &host, const QJsonObject &request) {
+    const auto invalid = [](const char *field) {
+        return AutomationReply::failure(QStringLiteral("automation.drag_paced.invalid_%1@1").arg(field),
+                                        QStringLiteral("Invalid drag_paced field: %1").arg(field));
+    };
+    const auto integer = [](const QJsonValue &value, int low, int high) {
+        const double n = value.toDouble();
+        return value.isDouble() && std::isfinite(n) && std::trunc(n) == n && n >= low && n <= high;
+    };
+    for (const char *field : {"name", "node", "pick"})
+        if (request.contains(field) && (!request.value(field).isString() || request.value(field).toString().isEmpty()))
+            return invalid(field);
+    if (request.contains("node") == request.contains("pick")) return invalid("selection");
+    if (request.contains("pick") && request.value("pick") != "most_connected_derived") return invalid("pick");
+    if (request.contains("duration_ms") && !integer(request.value("duration_ms"), 1, 10000)) return invalid("duration_ms");
+    if (request.contains("interval_ms") && !integer(request.value("interval_ms"), 1, 100)) return invalid("interval_ms");
+    if (request.contains("hold_ms") && !integer(request.value("hold_ms"), 0, 2000)) return invalid("hold_ms");
+    const int duration = request.value("duration_ms").toInt(NodeCanvasView::DragDurationMs);
+    const int interval = request.value("interval_ms").toInt(NodeCanvasView::DragIntervalMs);
+    const int hold = request.value("hold_ms").toInt(NodeCanvasView::DragHoldMs);
+    if (duration < interval) return invalid("duration_ms");
+    QPoint delta{NodeCanvasView::DragDeltaX, NodeCanvasView::DragDeltaY};
+    if (request.contains("delta")) {
+        const auto values = request.value("delta").toArray();
+        if (!request.value("delta").isArray() || values.size() != 2 ||
+            !integer(values[0], -10000, 10000) || !integer(values[1], -10000, 10000)) return invalid("delta");
+        delta = QPoint{values[0].toInt(), values[1].toInt()};
+    }
+    auto *view = dynamic_cast<NodeCanvasView *>(findGraphicsView(
+        host, request.value("name").toString(QStringLiteral("pelican.graphCanvasView"))));
+    if (view == nullptr || view->scene() == nullptr)
+        return AutomationReply::failure(BadRequest, QStringLiteral("drag_paced needs a node canvas"));
+    // Let initial context/plan replies settle before choosing a fixed path.
+    QEventLoop settling;
+    QTimer::singleShot(500, &settling, &QEventLoop::quit);
+    settling.exec();
+    QGraphicsItem *picked = nullptr;
+    int best_degree = -1;
+    const bool derived = request.value("pick").toString() == QLatin1String{"most_connected_derived"};
+    const QString requested = request.value("node").toString();
+    const auto items = view->scene()->items();
+    for (QGraphicsItem *item : items) {
+        if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasNodeItem} ||
+            !item->isVisible() || !(item->flags() & QGraphicsItem::ItemIsMovable)) continue;
+        const QString name = item->data(NodeGraphNameRole).toString();
+        if (!derived) {
+            if (name == requested && item->data(GraphCanvasZoneScopeRole).toString().isEmpty()) {
+                picked = item;
+                break;
+            }
+            continue;
+        }
+        if (!item->data(GraphCanvasDerivedRole).toBool()) continue;
+        int degree = 0;
+        for (QGraphicsItem *edge : items) {
+            const QString kind = nodeGraphItemKind(*edge);
+            if ((kind == QLatin1String{GraphCanvasDerivedEdgeItem} ||
+                 kind == QLatin1String{GraphCanvasPassInputEdgeItem}) &&
+                (edge->data(NodeGraphFromNameRole).toString() == name ||
+                 edge->data(NodeGraphToNameRole).toString() == name)) ++degree;
+        }
+        if (degree > best_degree || (degree == best_degree && picked &&
+            name < picked->data(NodeGraphNameRole).toString())) {
+            picked = item;
+            best_degree = degree;
+        }
+    }
+    if (picked == nullptr)
+        return AutomationReply::failure(BadRequest, QStringLiteral("drag_paced node was not found"));
+    const QString name = picked->data(NodeGraphNameRole).toString();
+    view->centerOn(picked);
+    // Flush the centering before choosing the fixed viewport coordinates.
+    QCoreApplication::processEvents();
+    // A queued context may rebuild the scene while centering is delivered.
+    picked = nullptr;
+    for (auto *item : view->scene()->items())
+        if (nodeGraphItemKind(*item) == QLatin1String{GraphCanvasNodeItem} &&
+            item->data(NodeGraphNameRole).toString() == name &&
+            item->data(GraphCanvasZoneScopeRole).toString().isEmpty()) { picked = item; break; }
+    if (!picked) return AutomationReply::failure(BadRequest, QStringLiteral("drag_paced node disappeared"));
+    const QVariant hotspot = picked->data(NodeGraphHotspotRole);
+    const QPointF local = hotspot.isValid() ? hotspot.toPointF() : QPointF{60.0, 15.0};
+    const QPoint from = view->mapFromScene(picked->mapToScene(local));
+    if (!view->viewport()->rect().contains(from) || !view->viewport()->rect().contains(from + delta))
+        return AutomationReply::failure(BadRequest, QStringLiteral("drag_paced path leaves the viewport"));
+    auto result = view->dragPaced(from, delta, duration, interval, hold);
+    result.insert("pick", request.contains("pick") ? request.value("pick").toString() : QStringLiteral("node"));
+    result.insert("node", name);
+    return AutomationReply::success(result);
+}
+
+AutomationReply commandTraceDump(const AutomationHost &host, const QJsonObject &request) {
+    auto *view = dynamic_cast<NodeCanvasView *>(findGraphicsView(
+        host, request.value("name").toString(QStringLiteral("pelican.graphCanvasView"))));
+    if (view == nullptr)
+        return AutomationReply::failure(BadRequest, QStringLiteral("trace_dump needs a node canvas"));
+    if (request.contains("enabled")) view->dragTrace().setEnabled(request.value("enabled").toBool());
+    if (view->scene() && view->scene()->mouseGrabberItem())
+        return AutomationReply::failure(BadRequest, QStringLiteral("trace_dump waits until the gesture ends"));
+    const QString path = request.value("path").toString();
+    if (!path.isEmpty() && !view->dragTrace().write(path))
+        return AutomationReply::failure(BadRequest, QStringLiteral("trace_dump could not write the file"));
+    auto result = view->dragTrace().dump();
+    if (!request.value("records").toBool(true)) result.remove("records");
+    return AutomationReply::success(result);
+}
+
 
 AutomationReply commandDrag(const AutomationHost &host,
                             const QJsonObject &request) {
@@ -1077,6 +1293,14 @@ AutomationReply commandDrag(const AutomationHost &host,
             return false;
         }
         if (!gestureTarget(host, spec, target, rejected)) return false;
+        // FX-8: refuse before either endpoint receives a press. Only this
+        // no-side-effect refusal can safely be retried by the driver.
+        if (!targetEnabled(*target)) {
+            *rejected = AutomationReply::failure(
+                BadRequest, QStringLiteral("the widget named \"%1\" is disabled")
+                                .arg(spec.value(QStringLiteral("name")).toString()));
+            return false;
+        }
         return pointFor(spec, *target, point, rejected);
     };
     Target from_target;
@@ -1105,25 +1329,101 @@ AutomationReply commandDrag(const AutomationHost &host,
             BadRequest, QStringLiteral("unknown keyboard modifier"));
     const int steps =
         std::clamp(request.value(QStringLiteral("steps")).toInt(8), 1, 200);
+    const auto namedItem = [&](const char *key, const Target &target) {
+        const auto value = request.value(QLatin1String{key});
+        const auto spec = value.toObject();
+        return target.isSceneItem() &&
+               (value.isString() || (!spec.contains(QStringLiteral("point")) &&
+                                     !spec.contains(QStringLiteral("scene"))));
+    };
+    QGraphicsView *pan_view = nullptr;
+    QPointF scene_from;
+    QPointF scene_to;
+    QJsonObject framing;
+    if (namedItem("from", from_target) && namedItem("to", to_target) &&
+        from_target.view == to_target.view) {
+        auto *view = from_target.view;
+        const auto original_transform = view->transform();
+        scene_from = sceneHotspot(from_target);
+        scene_to = sceneHotspot(to_target);
+        const auto endpointName = [&request](const char *key) {
+            const auto value = request.value(QLatin1String{key});
+            return value.isString() ? value.toString()
+                                    : value.toObject().value(QStringLiteral("name")).toString();
+        };
+        const auto hits = [view](const Target &target, const QPoint &point) {
+            return view->viewport()->rect().contains(point) &&
+                   target.item->contains(target.item->mapFromScene(view->mapToScene(point)));
+        };
+        if (!hits(from_target, from) || !hits(to_target, to)) {
+            // FX-8: Fit may have run before the latest document was drawn.
+            // Even an on-screen socket can be smaller than a pixel after Fit:
+            // rounding its centre then misses the shape and sends no edit.
+            // Frame the named endpoints at a usable scale before the press.
+            // Explicit coordinates keep their requested meaning.
+            const auto bounds = QRectF{scene_from, scene_to}.normalized();
+            view->fitInView(bounds.adjusted(-40, -40, 40, 40), Qt::KeepAspectRatio);
+            from = hotspot(from_target);
+            to = hotspot(to_target);
+        }
+        if (!hits(from_target, from) || !hits(to_target, to)) {
+            // FX-8 fix2: distant sockets cannot always share a usable frame.
+            // Keep at least the original zoom (and at least unit scale),
+            // then validate both centred hotspots before delivering any input.
+            view->setTransform(original_transform);
+            const qreal scale = std::min(
+                std::hypot(original_transform.m11(), original_transform.m12()),
+                std::hypot(original_transform.m21(), original_transform.m22()));
+            if (scale > 0 && scale < 1) view->scale(1 / scale, 1 / scale);
+            view->centerOn(to_target.item);
+            to = hotspot(to_target);
+            const bool to_hits = hits(to_target, to);
+            view->centerOn(from_target.item);
+            from = hotspot(from_target);
+            if (!to_hits || !hits(from_target, from))
+                return AutomationReply::failure(
+                    BadRequest, QStringLiteral("cannot target named drag endpoints at this zoom: %1 -> %2")
+                                    .arg(endpointName("from"), endpointName("to")));
+            pan_view = view;
+        }
+        framing.insert(QStringLiteral("path"), pan_view ? QStringLiteral("panned")
+                                                       : QStringLiteral("framed"));
+        framing.insert(QStringLiteral("scale"), view->transform().m11());
+    }
     QWidget *widget = pointerReceiver(from_target, &from);
     pointerReceiver(to_target, &to);
     sendMouse(widget, QEvent::MouseButtonPress, from, button, modifiers);
     for (int step = 1; step <= steps; ++step) {
-        const QPoint interpolated{
-            from.x() + (to.x() - from.x()) * step / steps,
-            from.y() + (to.y() - from.y()) * step / steps};
+        QPoint interpolated;
+        if (pan_view) {
+            const QPointF scene_point = scene_from + (scene_to - scene_from) * (qreal(step) / steps);
+            pan_view->centerOn(scene_point);
+            interpolated = pan_view->mapFromScene(scene_point);
+        } else {
+            interpolated = QPoint{
+                from.x() + (to.x() - from.x()) * step / steps,
+                from.y() + (to.y() - from.y()) * step / steps};
+        }
         sendMouse(widget, QEvent::MouseMove, interpolated, Qt::NoButton,
                   modifiers);
     }
+    if (pan_view) {
+        pan_view->centerOn(to_target.item);
+        to = hotspot(to_target);
+        sendMouse(widget, QEvent::MouseMove, to, Qt::NoButton, modifiers);
+    }
     sendMouse(widget, QEvent::MouseButtonRelease, to, button, modifiers);
-    return AutomationReply::success(QJsonObject{
+    QJsonObject result{
         {QStringLiteral("from"), QJsonArray{from.x(), from.y()}},
         {QStringLiteral("to"), QJsonArray{to.x(), to.y()}},
         {QStringLiteral("button"),
          request.value(QStringLiteral("button")).toString(
              QStringLiteral("left"))},
         {QStringLiteral("steps"), steps},
-    });
+    };
+    for (auto it = framing.begin(); it != framing.end(); ++it)
+        result.insert(it.key(), it.value());
+    return AutomationReply::success(result);
 }
 
 // `wheel`, `move`, `press` and `release`: the gestures a canvas is driven with.
@@ -1436,6 +1736,9 @@ AutomationReply commandKey(const AutomationHost &host,
                 WidgetMissing,
                 QStringLiteral("no widget or drawn item is named \"%1\"")
                     .arg(name));
+        if (!targetEnabled(target))
+            return AutomationReply::failure(
+                BadRequest, QStringLiteral("the widget named \"%1\" is disabled").arg(name));
         QWidget *embedded = embeddedWidget(target);
         widget = embedded != nullptr ? embedded : target.widget;
     } else {
@@ -1505,6 +1808,9 @@ AutomationReply commandType(const AutomationHost &host,
                 WidgetMissing,
                 QStringLiteral("no widget or drawn item is named \"%1\"")
                     .arg(name));
+        if (!targetEnabled(target))
+            return AutomationReply::failure(
+                BadRequest, QStringLiteral("the widget named \"%1\" is disabled").arg(name));
         QWidget *embedded = embeddedWidget(target);
         widget = embedded != nullptr ? embedded : target.widget;
         // A view is a conduit, not a destination: its scene already decided
@@ -1562,122 +1868,193 @@ AutomationReply commandText(const AutomationHost &host,
 // menu. setCurrentIndex emits the combo's own currentIndexChanged, which is
 // the signal a popup choice emits too, so the receiving code cannot tell the
 // two apart.
+//
+// QA-1: many combos and lists are filled by an answer of the engine's
+// (list_surfaces, get_material_bindings, ...), and the answer arrives on the
+// engine's clock, not the driver's. A select that refused the moment the
+// entry was not there lost a race the scenario could not see: the step before
+// had waited for the row to be on screen, and its entries came a few
+// milliseconds later. So a widget that is not there yet, or an entry it does
+// not hold yet, is waited for with the event loop running -- as `wait` does --
+// up to timeout_ms (SelectWaitMs by default), and the refusal says how long it
+// waited and what the widget held then. A widget that is there and switched
+// off is still refused at once (Q-17): waiting for it to come on would let a
+// select through at a moment a person could not have made it.
+constexpr int SelectWaitMs = 5000;
+
+// What a combo or a list holds, for a refusal: the first entries, in order.
+QString entriesOf(const QStringList &entries) {
+    constexpr int Shown = 40;
+    if (entries.isEmpty()) return QStringLiteral("nothing");
+    QStringList quoted;
+    for (int at = 0; at < entries.size() && at < Shown; ++at)
+        quoted.push_back(QStringLiteral("\"%1\"").arg(entries[at]));
+    QString line = quoted.join(QStringLiteral(", "));
+    if (entries.size() > Shown)
+        line += QStringLiteral(" and %1 more").arg(entries.size() - Shown);
+    return line;
+}
+
 AutomationReply commandSelect(const AutomationHost &host,
                               const QJsonObject &request) {
     const QString name = request.value(QStringLiteral("name")).toString();
     if (name.isEmpty())
         return AutomationReply::failure(BadRequest,
                                         QStringLiteral("name is required"));
-    QWidget *widget = findWidget(host, name);
-    if (widget == nullptr)
-        return AutomationReply::failure(
-            WidgetMissing,
-            QStringLiteral("no widget is named \"%1\"").arg(name));
     const QJsonValue text = request.value(QStringLiteral("text"));
     const QJsonValue index = request.value(QStringLiteral("index"));
     if (!text.isString() && !index.isDouble())
         return AutomationReply::failure(
             BadRequest, QStringLiteral("select needs text or index"));
-    // Q-17: a switched-off widget is refused by name, as click refuses one
-    // (Q-16). A person cannot pick in it; setCurrentIndex could, and the
-    // panel behind it had said "not now" by switching it off.
-    if (!widget->isEnabled())
-        return AutomationReply::failure(
-            BadRequest,
-            QStringLiteral("the widget named \"%1\" is disabled").arg(name));
+    const QString wanted_entry =
+        text.isString() ? text.toString() : QString::number(index.toInt());
+    const int timeout = timeoutOf(request, SelectWaitMs);
+    QElapsedTimer elapsed;
+    elapsed.start();
 
-    if (auto *combo = qobject_cast<QComboBox *>(widget)) {
-        int row = index.isDouble() ? index.toInt(-1)
-                                   : combo->findText(text.toString());
-        if (row < 0 || row >= combo->count())
-            return AutomationReply::failure(
-                BadRequest,
-                QStringLiteral("\"%1\" has no entry %2")
-                    .arg(name, text.isString() ? text.toString()
-                                               : QString::number(index.toInt())));
-        const QString wanted = combo->itemText(row);
-        // The combo is held while its own signal runs: a panel that rebuilds
-        // its rows from here leaves this one to go when the event loop comes
-        // back, and it is read below.
-        const QPointer<QComboBox> held{combo};
-        combo->setCurrentIndex(row);
-        // Q-17: the choice has to still be there once the panel has heard
-        // it. A panel that refused it puts the value it holds back, and a
-        // select that answered "ok" over that let the scenario go on as if
-        // it had chosen, and fail steps later on what the choice never did.
-        // A picker -- a list that hands its entry to a field and goes back to
-        // its placeholder, "Pick..." -- holds no entry afterwards (index -1):
-        // it took the choice by using it. Any other entry is not the one
-        // chosen.
-        if (!held.isNull() && held->currentIndex() >= 0 &&
-            (held->currentIndex() != row || held->currentText() != wanted))
-            return AutomationReply::failure(
-                BadRequest, QStringLiteral("\"%1\" did not take \"%2\"; it holds \"%3\"")
-                                .arg(name, wanted, held->currentText()));
-        return AutomationReply::success(QJsonObject{
-            {QStringLiteral("name"), name},
-            {QStringLiteral("index"), row},
-            {QStringLiteral("text"), combo->itemText(row)},
-        });
-    }
+    // What the last look found, for the refusal once the time is up.
+    bool found = false;
+    bool is_combo = false;
+    QStringList held;
+    for (;;) {
+        // waited_ms is the time until the entry was found, not counting what
+        // the choice itself then set off in the panel.
+        const double waited = static_cast<double>(elapsed.elapsed());
+        QWidget *widget = findWidget(host, name);
+        found = widget != nullptr;
+        if (widget != nullptr) {
+            // Q-17: a switched-off widget is refused by name, as click refuses
+            // one (Q-16). A person cannot pick in it; setCurrentIndex could,
+            // and the panel behind it had said "not now" by switching it off.
+            if (!widget->isEnabled())
+                return AutomationReply::failure(
+                    BadRequest,
+                    QStringLiteral("the widget named \"%1\" is disabled").arg(name));
 
-    auto *view = qobject_cast<QAbstractItemView *>(widget);
-    if (view == nullptr || view->model() == nullptr)
-        return AutomationReply::failure(
-            BadRequest,
-            QStringLiteral("\"%1\" is not a list, a tree or a combo box")
-                .arg(name));
-    // Every index the view can show, in the order it shows them, so `index`
-    // means the row a reader counts down the panel rather than a row of some
-    // one level of the tree.
-    // Only a tree has folded rows; a flat view's children are all there is.
-    auto *tree = qobject_cast<QTreeView *>(view);
-    std::vector<QModelIndex> rows;
-    const std::function<void(const QModelIndex &)> walk =
-        [&](const QModelIndex &parent) {
-            const int count = view->model()->rowCount(parent);
-            for (int row = 0; row < count; ++row) {
-                const QModelIndex child = view->model()->index(row, 0, parent);
-                if (!child.isValid()) continue;
-                rows.push_back(child);
-                if (tree != nullptr && tree->isExpanded(child)) walk(child);
+            if (auto *combo = qobject_cast<QComboBox *>(widget)) {
+                is_combo = true;
+                const int row = index.isDouble()
+                                    ? index.toInt(-1)
+                                    : combo->findText(text.toString());
+                if (row >= 0 && row < combo->count()) {
+                    const QString wanted = combo->itemText(row);
+                    // The combo is held while its own signal runs: a panel
+                    // that rebuilds its rows from here leaves this one to go
+                    // when the event loop comes back, and it is read below.
+                    const QPointer<QComboBox> kept{combo};
+                    combo->setCurrentIndex(row);
+                    // Q-17: the choice has to still be there once the panel
+                    // has heard it. A panel that refused it puts the value it
+                    // holds back, and a select that answered "ok" over that
+                    // let the scenario go on as if it had chosen, and fail
+                    // steps later on what the choice never did. A picker -- a
+                    // list that hands its entry to a field and goes back to
+                    // its placeholder, "Pick..." -- holds no entry afterwards
+                    // (index -1): it took the choice by using it. Any other
+                    // entry is not the one chosen.
+                    if (!kept.isNull() && kept->currentIndex() >= 0 &&
+                        (kept->currentIndex() != row ||
+                         kept->currentText() != wanted))
+                        return AutomationReply::failure(
+                            BadRequest,
+                            QStringLiteral("\"%1\" did not take \"%2\"; it holds \"%3\"")
+                                .arg(name, wanted, kept->currentText()));
+                    return AutomationReply::success(QJsonObject{
+                        {QStringLiteral("name"), name},
+                        {QStringLiteral("index"), row},
+                        {QStringLiteral("text"), wanted},
+                        {QStringLiteral("waited_ms"), waited},
+                    });
+                }
+                held.clear();
+                for (int at = 0; at < combo->count(); ++at)
+                    held.push_back(combo->itemText(at));
+            } else {
+                is_combo = false;
+                auto *view = qobject_cast<QAbstractItemView *>(widget);
+                if (view == nullptr || view->model() == nullptr)
+                    return AutomationReply::failure(
+                        BadRequest,
+                        QStringLiteral("\"%1\" is not a list, a tree or a combo box")
+                            .arg(name));
+                // Every index the view can show, in the order it shows them,
+                // so `index` means the row a reader counts down the panel
+                // rather than a row of some one level of the tree. Only a
+                // tree has folded rows; a flat view's children are all there
+                // is.
+                auto *tree = qobject_cast<QTreeView *>(view);
+                std::vector<QModelIndex> rows;
+                const std::function<void(const QModelIndex &)> walk =
+                    [&](const QModelIndex &parent) {
+                        const int count = view->model()->rowCount(parent);
+                        for (int row = 0; row < count; ++row) {
+                            const QModelIndex child =
+                                view->model()->index(row, 0, parent);
+                            if (!child.isValid()) continue;
+                            rows.push_back(child);
+                            if (tree != nullptr && tree->isExpanded(child))
+                                walk(child);
+                        }
+                    };
+                walk(QModelIndex{});
+                QModelIndex chosen;
+                if (index.isDouble()) {
+                    const int wanted = index.toInt(-1);
+                    if (wanted >= 0 && wanted < static_cast<int>(rows.size()))
+                        chosen = rows[static_cast<std::size_t>(wanted)];
+                } else {
+                    for (const QModelIndex &row : rows)
+                        if (row.data(Qt::DisplayRole).toString() ==
+                            text.toString()) {
+                            chosen = row;
+                            break;
+                        }
+                }
+                if (chosen.isValid()) {
+                    view->scrollTo(chosen);
+                    const QRect rect = view->visualRect(chosen);
+                    if (rect.isEmpty())
+                        return AutomationReply::failure(
+                            BadRequest,
+                            QStringLiteral("the row \"%1\" of \"%2\" is not on screen")
+                                .arg(chosen.data(Qt::DisplayRole).toString(), name));
+                    const QPoint point = rect.center();
+                    QTest::mouseClick(view->viewport(), Qt::LeftButton,
+                                      Qt::NoModifier, point);
+                    return AutomationReply::success(QJsonObject{
+                        {QStringLiteral("name"), name},
+                        {QStringLiteral("text"),
+                         chosen.data(Qt::DisplayRole).toString()},
+                        {QStringLiteral("point"),
+                         QJsonArray{point.x(), point.y()}},
+                        {QStringLiteral("selected"),
+                         view->currentIndex() == chosen},
+                        {QStringLiteral("waited_ms"), waited},
+                    });
+                }
+                held.clear();
+                for (const QModelIndex &row : rows)
+                    held.push_back(row.data(Qt::DisplayRole).toString());
             }
-        };
-    walk(QModelIndex{});
-    QModelIndex chosen;
-    if (index.isDouble()) {
-        const int wanted = index.toInt(-1);
-        if (wanted >= 0 && wanted < static_cast<int>(rows.size()))
-            chosen = rows[static_cast<std::size_t>(wanted)];
-    } else {
-        for (const QModelIndex &row : rows)
-            if (row.data(Qt::DisplayRole).toString() == text.toString()) {
-                chosen = row;
-                break;
-            }
+        }
+        if (elapsed.elapsed() >= timeout) break;
+        QTest::qWait(25);
     }
-    if (!chosen.isValid())
+    if (!found)
         return AutomationReply::failure(
-            BadRequest,
-            QStringLiteral("\"%1\" holds no row %2")
-                .arg(name, text.isString() ? text.toString()
-                                           : QString::number(index.toInt())));
-    view->scrollTo(chosen);
-    const QRect rect = view->visualRect(chosen);
-    if (rect.isEmpty())
-        return AutomationReply::failure(
-            BadRequest,
-            QStringLiteral("the row \"%1\" of \"%2\" is not on screen")
-                .arg(chosen.data(Qt::DisplayRole).toString(), name));
-    const QPoint point = rect.center();
-    QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, point);
-    return AutomationReply::success(QJsonObject{
-        {QStringLiteral("name"), name},
-        {QStringLiteral("text"), chosen.data(Qt::DisplayRole).toString()},
-        {QStringLiteral("point"), QJsonArray{point.x(), point.y()}},
-        {QStringLiteral("selected"),
-         view->currentIndex() == chosen},
-    });
+            WidgetMissing,
+            QStringLiteral("no widget is named \"%1\" (waited %2 ms)")
+                .arg(name)
+                .arg(elapsed.elapsed()));
+    return AutomationReply::failure(
+        BadRequest,
+        QStringLiteral("\"%1\" %2 %3 (waited %4 ms; it holds %5)")
+            .arg(name,
+                 is_combo ? QStringLiteral("has no entry")
+                          : QStringLiteral("holds no row"),
+                 wanted_entry)
+            .arg(elapsed.elapsed())
+            .arg(entriesOf(held)));
 }
 
 AutomationReply commandWait(const AutomationHost &host,
@@ -1717,9 +2094,13 @@ AutomationReply commandWait(const AutomationHost &host,
                        target.owner->isEnabled();
         bool satisfied = true;
         if (missing.isBool()) satisfied = satisfied && (last_found != missing.toBool());
-        if (visible.isBool()) satisfied = satisfied && last_visible == visible.toBool();
+        // QD-1 (GL-5g's rule 5): hidden and switched off are states of a
+        // thing that is there. A name that resolves to nothing satisfied
+        // both, so a misspelt name passed; "gone" is `missing: true`.
+        if (visible.isBool())
+            satisfied = satisfied && last_found && last_visible == visible.toBool();
         if (enabled.isBool())
-            satisfied = satisfied && last_enabled == enabled.toBool();
+            satisfied = satisfied && last_found && last_enabled == enabled.toBool();
         if (text.isString()) satisfied = satisfied && last_found && last_text == text.toString();
         if (contains.isString())
             satisfied = satisfied && last_found &&
@@ -1727,6 +2108,7 @@ AutomationReply commandWait(const AutomationHost &host,
         if (satisfied)
             return AutomationReply::success(QJsonObject{
                 {QStringLiteral("name"), name},
+                {QStringLiteral("found"), last_found},
                 {QStringLiteral("text"), last_text},
                 {QStringLiteral("visible"), last_visible},
                 {QStringLiteral("enabled"), last_enabled},
@@ -1922,6 +2304,9 @@ AutomationReply commandWaitEngine(const AutomationHost &host,
     QJsonObject reply{
         {QStringLiteral("ready"), true},
         {QStringLiteral("waited_ms"), static_cast<double>(elapsed.elapsed())},
+        // MR-1s: which engine process answered, so a scenario can say none
+        // was started in between.
+        {QStringLiteral("process_id"), static_cast<double>(host.viewport->engineProcessId())},
     };
     if (frames > 0)
         reply.insert(QStringLiteral("published_frames"), static_cast<double>(published));
@@ -1950,6 +2335,103 @@ AutomationReply commandRpc(const AutomationHost &host,
     });
 }
 
+// PX-2: give the engine's viewport one size for a whole scenario. A point a
+// scenario reads back from the picture is a fraction of its width and height,
+// and the camera's vertical field of view is fixed: when the window's panels
+// change the viewport's shape, a point written "beside the box" lands on it.
+// So the viewport is held at `width` x `height` picture pixels -- what the
+// engine draws into, and what a screenshot of it measures -- and the window
+// grows or shrinks by the same amount, leaving every panel around it as it
+// was. Opening or closing a panel later takes its room from the panels or the
+// window, never from the viewport. `free` gives it back to the layout.
+AutomationReply commandViewportSize(const AutomationHost &host,
+                                    const QJsonObject &request) {
+    const QString name = request.value(QStringLiteral("name"))
+                             .toString(QStringLiteral("pelican.viewportHost"));
+    const Target target = resolveTarget(host, name);
+    if (!target.valid() || target.isSceneItem() || target.row)
+        return AutomationReply::failure(
+            WidgetMissing, QStringLiteral("no widget is named \"%1\"").arg(name));
+    QWidget *surface = target.widget;
+    QWidget *window = surface->window();
+    QWidget *container = surface->parentWidget();
+    // What the layout gave it before the first fix, so `free` returns that
+    // rather than a guess.
+    const char *kept_minimum = "pelicanAutomationFreeMinimumSize";
+    const char *kept_maximum = "pelicanAutomationFreeMaximumSize";
+    const char *kept_container_width = "pelicanAutomationFreeMinimumWidth";
+    if (!surface->property(kept_minimum).isValid()) {
+        surface->setProperty(kept_minimum, surface->minimumSize());
+        surface->setProperty(kept_maximum, surface->maximumSize());
+    }
+    const QSize before = surface->size();
+    QSize wanted;
+    if (request.value(QStringLiteral("free")).toBool(false)) {
+        surface->setMinimumSize(surface->property(kept_minimum).toSize());
+        surface->setMaximumSize(surface->property(kept_maximum).toSize());
+        if (container && container->property(kept_container_width).isValid())
+            container->setMinimumWidth(container->property(kept_container_width).toInt());
+    } else {
+        const int width = request.value(QStringLiteral("width")).toInt(0);
+        const int height = request.value(QStringLiteral("height")).toInt(0);
+        if (width <= 0 || height <= 0)
+            return AutomationReply::failure(
+                BadRequest,
+                QStringLiteral("width and height are required, in picture "
+                               "pixels, above 0 (or free: true)"));
+        // Picture pixels are physical; the layout is in Qt's logical pixels.
+        const qreal ratio = surface->devicePixelRatioF();
+        wanted = QSize{std::max(1, qRound(width / ratio)),
+                       std::max(1, qRound(height / ratio))};
+        surface->setFixedSize(wanted);
+        // The live viewport deliberately permits its layout to collapse to
+        // one pixel. A fixed automation surface must also reserve space in
+        // that container, or a dock covers part of the photographed viewport
+        // after Reset Layout even though the surface itself still says 720.
+        if (container && container != window) {
+            if (!container->property(kept_container_width).isValid())
+                container->setProperty(kept_container_width, container->minimumWidth());
+            const QMargins margins = container->layout()
+                ? container->layout()->contentsMargins() : QMargins{};
+            container->setMinimumWidth(std::max(container->property(kept_container_width).toInt(),
+                                               wanted.width() + margins.left() + margins.right()));
+        }
+        if (window != surface && !window->isMaximized() &&
+            !window->isFullScreen())
+            window->resize(window->size() + (wanted - before));
+    }
+    QElapsedTimer elapsed;
+    elapsed.start();
+    const int settle = timeoutOf(request, 5000);
+    QCoreApplication::processEvents();
+    while (wanted.isValid() && surface->size() != wanted &&
+           elapsed.elapsed() < settle)
+        QTest::qWait(25);
+    const QSize logical = surface->size();
+    const QSize picture =
+        embeddedViewportPixelExtent(logical, surface->devicePixelRatioF());
+    const QJsonObject reply{
+        {QStringLiteral("name"), name},
+        {QStringLiteral("fixed"), wanted.isValid()},
+        // The size the engine is given, as embedded_viewport asks for it.
+        {QStringLiteral("width"), picture.width()},
+        {QStringLiteral("height"), picture.height()},
+        {QStringLiteral("logical"), QJsonArray{logical.width(), logical.height()}},
+        {QStringLiteral("device_pixel_ratio"), surface->devicePixelRatioF()},
+        {QStringLiteral("window"),
+         QJsonArray{window->width(), window->height()}},
+    };
+    if (wanted.isValid() && logical != wanted)
+        return AutomationReply::failure(
+            WaitTimeout,
+            QStringLiteral("the viewport stayed %1x%2 instead of %3x%4")
+                .arg(logical.width())
+                .arg(logical.height())
+                .arg(wanted.width())
+                .arg(wanted.height()));
+    return AutomationReply::success(reply);
+}
+
 AutomationReply commandOpenProject(const AutomationHost &host,
                                    const QJsonObject &request) {
     const QString directory = request.value(QStringLiteral("dir")).toString();
@@ -1965,28 +2447,14 @@ AutomationReply commandOpenProject(const AutomationHost &host,
             ProjectFailed,
             QStringLiteral("this window cannot open a project"));
     host.open_project(directory);
-    // Switching projects stops the engine and starts another, and the stop is
-    // asynchronous: for a moment the viewport still answers RPC, and it is the
-    // old engine answering. Return only once it has let go, so a `wait_engine`
-    // after this waits for the new one rather than agreeing with the old one.
-    // A project that was already open restarts nothing, and says so.
-    const int settle = timeoutOf(request, 20000);
-    bool restarted = false;
-    if (host.viewport != nullptr && host.viewport->rpcReady()) {
-        QElapsedTimer elapsed;
-        elapsed.start();
-        while (elapsed.elapsed() < settle) {
-            if (!host.viewport->rpcReady()) {
-                restarted = true;
-                break;
-            }
-            QTest::qWait(25);
-        }
-    }
+    // MainWindow closes currentEngineReady() synchronously when navigation
+    // is requested. Return so the caller can answer Save/Discard/Cancel;
+    // wait_engine owns the asynchronous wait for the replacement process.
+    const bool restarted = host.viewport != nullptr &&
+        (host.viewport->restartPending() || !host.viewport->rpcReady());
     return AutomationReply::success(QJsonObject{
         {QStringLiteral("dir"), QDir(directory).absolutePath()},
-        // False when the viewport kept the engine it had: opening the project
-        // that is already open is a no-op, by EmbeddedViewport's own rule.
+        // Includes navigation waiting for an unsaved-changes answer.
         {QStringLiteral("engine_restarting"), restarted},
     });
 }
@@ -2122,15 +2590,266 @@ AutomationReply commandScreenshot(const AutomationHost &host,
         reply.insert(QStringLiteral("desktop_obstructed"), true);
     if (!wanted_pixels.empty()) {
         QJsonArray pixels;
+        // MT-1s: and each as [r, g, b] (0-255), so a step can ask which way
+        // a colour leans ("red above green") without knowing its shade.
+        QJsonArray channels;
         for (const QPointF &at : wanted_pixels) {
             const int x = std::clamp(static_cast<int>(at.x() * image.width()),
                                      0, image.width() - 1);
             const int y = std::clamp(static_cast<int>(at.y() * image.height()),
                                      0, image.height() - 1);
-            pixels.append(QColor(image.pixel(x, y)).name());
+            const QColor color{image.pixel(x, y)};
+            pixels.append(color.name());
+            channels.append(QJsonArray{color.red(), color.green(), color.blue()});
         }
         reply.insert(QStringLiteral("pixels"), pixels);
+        reply.insert(QStringLiteral("rgb"), channels);
     }
+    return AutomationReply::success(reply);
+}
+
+// --------------------------------------------------------------------------
+// QD-1: what the driver checks after a scenario's last step
+//
+// Studio keeps one Undo per kind of document, each behind its own control: the
+// scene's (the Inspector's buttons, the engine's journal of its session), the
+// render edits' (Edit > Undo Render Edit, which the Frame Plan, the Pass
+// Editor and the render panels share), the Graph tab's, and the docks' own
+// (Materials, a Material row's Every <model>, Assets), the last three with no
+// Redo. `history` reads every one of them by the name its control already
+// has, and with `kind` + `step` presses one -- the way the control would be
+// pressed, whether or not its panel is on screen.
+
+struct HistoryKind {
+    const char *kind;
+    const char *undo;
+    const char *redo; // nullptr: this history has no Redo
+};
+
+constexpr HistoryKind HistoryKinds[] = {
+    {"scene", "pelican.inspectorUndo", "pelican.inspectorRedo"},
+    {"render", "pelican.edit.undoRenderEdit", "pelican.edit.redoRenderEdit"},
+    {"graph", "pelican.graphCanvas.undo", "pelican.graphCanvas.redo"},
+    {"materials", "pelican.materials.undo", nullptr},
+    {"material_row", "pelican.inspectorMaterialUndo", nullptr},
+    {"assets", "pelican.assets.undo", nullptr},
+};
+
+// Every named widget and action, looked up once: `history` is read after each
+// step, and walking the whole window per control made that a tenth of a second.
+struct NamedControls {
+    QHash<QString, QWidget *> widgets;
+    QHash<QString, QAction *> actions;
+};
+
+NamedControls namedControls(const AutomationHost &host) {
+    NamedControls found;
+    QSet<QString> wanted;
+    for (const HistoryKind &kind : HistoryKinds) {
+        wanted.insert(QString::fromLatin1(kind.undo));
+        if (kind.redo != nullptr) wanted.insert(QString::fromLatin1(kind.redo));
+    }
+    // namedWidgets() puts a visible widget before a hidden namesake, as
+    // findWidget() reads it; keep the first.
+    for (QWidget *widget : namedWidgets())
+        if (wanted.contains(widget->objectName()) &&
+            !found.widgets.contains(widget->objectName()))
+            found.widgets.insert(widget->objectName(), widget);
+    for (QAction *action : namedActions(host))
+        if (wanted.contains(action->objectName()) &&
+            !found.actions.contains(action->objectName()))
+            found.actions.insert(action->objectName(), action);
+    return found;
+}
+
+QJsonObject historyControlJson(const NamedControls &controls, const QString &name) {
+    QJsonObject control{{QStringLiteral("name"), name}};
+    if (QWidget *widget = controls.widgets.value(name)) {
+        control.insert(QStringLiteral("found"), true);
+        control.insert(QStringLiteral("enabled"), widget->isEnabled());
+        control.insert(QStringLiteral("visible"), widget->isVisible());
+        control.insert(QStringLiteral("text"), widgetText(*widget));
+        control.insert(QStringLiteral("tooltip"), widget->toolTip());
+        return control;
+    }
+    if (QAction *action = controls.actions.value(name)) {
+        control.insert(QStringLiteral("found"), true);
+        control.insert(QStringLiteral("enabled"), action->isEnabled());
+        control.insert(QStringLiteral("visible"), action->isVisible());
+        control.insert(QStringLiteral("text"), withoutMnemonic(action->text()));
+        control.insert(QStringLiteral("tooltip"), action->toolTip());
+        // FX-5: Graph's labels are simply Undo / Redo. The model's monotonic
+        // item identity distinguishes another edit even when those labels
+        // and enabled state did not change. Strings preserve all 64 bits.
+        if (auto *graph = dynamic_cast<GraphCanvasWidget *>(action->parent());
+            graph && (name == QLatin1String("pelican.graphCanvas.undo") ||
+                      name == QLatin1String("pelican.graphCanvas.redo"))) {
+            const auto serial = name.endsWith(QLatin1String(".undo"))
+                                    ? graph->model().undoSerial()
+                                    : graph->model().redoSerial();
+            control.insert(QStringLiteral("graph_serial"), QString::number(serial));
+        }
+        return control;
+    }
+    control.insert(QStringLiteral("found"), false);
+    control.insert(QStringLiteral("enabled"), false);
+    control.insert(QStringLiteral("visible"), false);
+    return control;
+}
+
+QJsonObject historyStateJson(const AutomationHost &host) {
+    const NamedControls controls = namedControls(host);
+    QJsonObject kinds;
+    for (const HistoryKind &kind : HistoryKinds) {
+        QJsonObject entry{
+            {QStringLiteral("undo"),
+             historyControlJson(controls, QString::fromLatin1(kind.undo))}};
+        entry.insert(QStringLiteral("redo"),
+                     kind.redo == nullptr
+                         ? QJsonValue{}
+                         : QJsonValue{historyControlJson(
+                               controls, QString::fromLatin1(kind.redo))});
+        kinds.insert(QString::fromLatin1(kind.kind), entry);
+    }
+    return kinds;
+}
+
+AutomationReply commandHistory(const AutomationHost &host,
+                               const QJsonObject &request) {
+    const QString kind_name = request.value(QStringLiteral("kind")).toString();
+    const QString step = request.value(QStringLiteral("step")).toString();
+    if (kind_name.isEmpty() && step.isEmpty())
+        return AutomationReply::success(
+            QJsonObject{{QStringLiteral("kinds"), historyStateJson(host)}});
+    if (step != QLatin1String("undo") && step != QLatin1String("redo"))
+        return AutomationReply::failure(
+            BadRequest, QStringLiteral("step is undo or redo, with a kind"));
+    const HistoryKind *kind = nullptr;
+    QStringList known;
+    for (const HistoryKind &candidate : HistoryKinds) {
+        known.push_back(QString::fromLatin1(candidate.kind));
+        if (kind_name == QLatin1String(candidate.kind)) kind = &candidate;
+    }
+    if (kind == nullptr)
+        return AutomationReply::failure(
+            BadRequest, QStringLiteral("unknown history \"%1\"; known: %2")
+                            .arg(kind_name, known.join(QStringLiteral(", "))));
+    const char *control_name = step == QLatin1String("undo") ? kind->undo : kind->redo;
+    if (control_name == nullptr)
+        return AutomationReply::failure(
+            BadRequest, QStringLiteral("the %1 history has no Redo").arg(kind_name));
+    const QString name = QString::fromLatin1(control_name);
+    if (QWidget *widget = findWidget(host, name)) {
+        auto *button = qobject_cast<QAbstractButton *>(widget);
+        if (button == nullptr)
+            return AutomationReply::failure(
+                BadRequest, QStringLiteral("\"%1\" is not a button").arg(name));
+        if (!button->isEnabled())
+            return AutomationReply::failure(
+                BadRequest, QStringLiteral("the widget named \"%1\" is disabled").arg(name));
+        button->click();
+    } else if (QAction *action = findAction(host, name)) {
+        if (!action->isEnabled())
+            return AutomationReply::failure(
+                BadRequest, QStringLiteral("the action named \"%1\" is disabled").arg(name));
+        action->trigger();
+    } else {
+        return AutomationReply::failure(
+            WidgetMissing, QStringLiteral("no widget or action is named \"%1\"").arg(name));
+    }
+    QCoreApplication::processEvents();
+    return AutomationReply::success(QJsonObject{
+        {QStringLiteral("pressed"), name},
+        {QStringLiteral("kinds"), historyStateJson(host)},
+    });
+}
+
+// The project's documents as they stand: every file under the project's
+// directory (but `.pelican/` and logs) by its sha256, and what the engine says
+// of the documents it holds in memory -- the scene (unsaved edits are only
+// there), the render documents, the materials and project.json's settings --
+// plus the scene journal, from which a reader counts what each session can
+// still undo. A method the engine refuses is written down, not fatal: a
+// project the engine did not start still has files.
+const char *const ProjectStateMethods[] = {
+    "export_scene_snapshot", "get_render_documents", "list_materials",
+    "get_project_settings",  "query_journal",
+};
+
+AutomationReply commandProjectState(const AutomationHost &host,
+                                    const QJsonObject &request) {
+    if (host.viewport == nullptr)
+        return AutomationReply::failure(
+            EngineNotReady, QStringLiteral("this window has no engine viewport"));
+    const QString root = host.viewport->projectRoot();
+    QJsonObject reply{
+        {QStringLiteral("dir"), root.isEmpty() ? QString{} : QDir(root).absolutePath()},
+        {QStringLiteral("engine_ready"), host.viewport->currentEngineReady()},
+        {QStringLiteral("engine_process_id"),
+         static_cast<double>(host.viewport->engineProcessId())},
+    };
+    // `brief`: which project and which engine, nothing read.
+    if (request.value(QStringLiteral("brief")).toBool(false))
+        return AutomationReply::success(reply);
+    QJsonArray files;
+    if (!root.isEmpty() && QFileInfo(root).isDir()) {
+        const QDir base(root);
+        QStringList paths;
+        QDirIterator walk(root, QDir::Files | QDir::Hidden | QDir::NoDotAndDotDot,
+                          QDirIterator::Subdirectories);
+        while (walk.hasNext()) {
+            const QString path = walk.next();
+            const QString relative = base.relativeFilePath(path);
+            if (relative.startsWith(QStringLiteral(".pelican/")) ||
+                relative.endsWith(QStringLiteral(".log")))
+                continue;
+            paths.push_back(relative);
+        }
+        paths.sort();
+        for (const QString &relative : paths) {
+            QFile file(base.filePath(relative));
+            QJsonObject entry{{QStringLiteral("path"), relative},
+                              {QStringLiteral("size"), static_cast<double>(file.size())}};
+            if (file.open(QIODevice::ReadOnly)) {
+                QCryptographicHash hash(QCryptographicHash::Sha256);
+                hash.addData(&file);
+                entry.insert(QStringLiteral("sha256"),
+                             QString::fromLatin1(hash.result().toHex()));
+            } else {
+                entry.insert(QStringLiteral("error"), file.errorString());
+            }
+            files.push_back(entry);
+        }
+    }
+    reply.insert(QStringLiteral("files"), files);
+    QJsonObject documents;
+    if (host.viewport->currentEngineReady()) {
+        const int timeout = timeoutOf(request);
+        // The journal holds every edit's commands and is the slow part; a
+        // reader that only asks "did anything move" leaves it out.
+        const bool journal = request.value(QStringLiteral("journal")).toBool(true);
+        // `methods`: only these of the list (a poll that asks "did anything
+        // move" reads the scene, the one document only the engine holds).
+        QStringList only;
+        for (const QJsonValue &name : request.value(QStringLiteral("methods")).toArray())
+            only.push_back(name.toString());
+        for (const char *method : ProjectStateMethods) {
+            if (!journal && std::strcmp(method, "query_journal") == 0) continue;
+            if (!only.isEmpty() && !only.contains(QString::fromLatin1(method))) continue;
+            QJsonObject params;
+            if (std::strcmp(method, "export_scene_snapshot") == 0) {
+                params.insert(QStringLiteral("schema_version"), 2);
+                params.insert(QStringLiteral("allow_pending"), true);
+            }
+            auto outcome = callEngineRpc(host, QString::fromLatin1(method), params, timeout);
+            documents.insert(QString::fromLatin1(method),
+                             outcome.failure
+                                 ? QJsonValue{QJsonObject{
+                                       {QStringLiteral("error"), outcome.failure->message}}}
+                                 : *outcome.result);
+        }
+    }
+    reply.insert(QStringLiteral("rpc"), documents);
     return AutomationReply::success(reply);
 }
 
@@ -2139,6 +2858,7 @@ AutomationReply commandScreenshot(const AutomationHost &host,
 QStringList automationCommandNames() {
     return {QStringLiteral("list"),         QStringLiteral("click"),
             QStringLiteral("double_click"), QStringLiteral("drag"),
+            QStringLiteral("drag_paced"), QStringLiteral("trace_dump"),
             QStringLiteral("wheel"),        QStringLiteral("move"),
             QStringLiteral("press"),        QStringLiteral("release"),
             QStringLiteral("key"),          QStringLiteral("type"),
@@ -2148,7 +2868,9 @@ QStringList automationCommandNames() {
             QStringLiteral("layout_stats"),
             QStringLiteral("wait"),         QStringLiteral("wait_engine"),
             QStringLiteral("rpc"),          QStringLiteral("open_project"),
-            QStringLiteral("screenshot"),   QStringLiteral("quit")};
+            QStringLiteral("screenshot"),   QStringLiteral("viewport_size"),
+            QStringLiteral("history"),      QStringLiteral("project_state"),
+            QStringLiteral("quit")};
 }
 
 AutomationReply runAutomationCommand(const AutomationHost &host,
@@ -2160,6 +2882,8 @@ AutomationReply runAutomationCommand(const AutomationHost &host,
     if (command == QLatin1String("double_click"))
         return commandClick(host, request, true);
     if (command == QLatin1String("drag")) return commandDrag(host, request);
+    if (command == QLatin1String("drag_paced")) return commandDragPaced(host, request);
+    if (command == QLatin1String("trace_dump")) return commandTraceDump(host, request);
     if (command == QLatin1String("wheel")) return commandWheel(host, request);
     if (command == QLatin1String("move"))
         return commandPointer(host, request, PointerAction::move);
@@ -2186,6 +2910,11 @@ AutomationReply runAutomationCommand(const AutomationHost &host,
         return commandOpenProject(host, request);
     if (command == QLatin1String("screenshot"))
         return commandScreenshot(host, request);
+    if (command == QLatin1String("viewport_size"))
+        return commandViewportSize(host, request);
+    if (command == QLatin1String("history")) return commandHistory(host, request);
+    if (command == QLatin1String("project_state"))
+        return commandProjectState(host, request);
     // `quit` is answered by the server: it has to finish writing this reply
     // before the event loop it is running in goes away.
     return AutomationReply::failure(

@@ -181,6 +181,7 @@ class GraphCanvasImageFields final : public QWidget {
     QWidget *arguments_ = nullptr;
     QFormLayout *arguments_form_ = nullptr;
     std::vector<QComboBox *> argument_boxes_;
+    std::vector<GraphCanvasTypeArgument> argument_rows_;
     QWidget *usage_ = nullptr;
     std::vector<std::pair<std::string, QCheckBox *>> usage_boxes_;
     QLineEdit *usage_text_ = nullptr;
@@ -224,6 +225,11 @@ class GraphCanvasImageFields final : public QWidget {
     void showSizeExpression(bool expression);
     void putSizeExpression(bool half);
 };
+
+// UX-5b: one entry of a shader list: the reference as its data, its label
+// and tooltip saying when the engine connects its ports by hand. GL-5a: the
+// Graph's folded pass fields fill their lists with it too.
+void addShaderChoice(QComboBox &combo, const std::string &reference);
 
 // UX-2, decision 2: the shaders of the selected render.fullscreen or
 // render.raster, picked from the Pass Editor's list (the project's shaders

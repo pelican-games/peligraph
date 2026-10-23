@@ -8,9 +8,11 @@
 #include "../launchconfig.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../material/materialcontainer.hpp"
+#include "../material/projectmaterialasset.hpp"
 #include "../shader/pipelinefactory.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "reloadgate.hpp"
+#include "problemlist.hpp"
 
 #include <algorithm>
 #include <nlohmann/json.hpp>
@@ -22,6 +24,19 @@ namespace Pelican::watch {
 namespace {
 thread_local RenderPipelineCompanionReloadObserver
     render_pipeline_companion_reload_observer;
+
+// PB-1 stage 4: after a shader reload, the problem list holds the shader
+// files the library still holds as failed. Never in the reload's way.
+void noteShaderProblems(const ShaderLibrary &library, std::string_view source,
+                        std::string_view error) noexcept {
+    try {
+        std::vector<std::string> failed;
+        for (const auto &key : library.failedReloadSources())
+            failed.push_back(assetKeyString(key));
+        syncShaderProblems(source, failed, error);
+    } catch (...) {
+    }
+}
 
 // VI-1b: every shader reload checks each fullscreen / raster candidate
 // against its pass's inputs by the rule edit and load use; a candidate that
@@ -402,8 +417,21 @@ bool ReloadService::applyShaderReloadBatch(
         library->recordReloadFailure(changed_keys, runtime.error);
         addCompileRefusalFields(runtime);
     }
+    noteShaderProblems(*library, problemSourceHotReload, runtime.error);
     mergeShaderRuntimeResult(runtime);
     return runtime.committed;
+}
+
+void ReloadService::reloadModelsNow(std::span<const AssetKey> keys) {
+    ensureBuiltInParticipants();
+    auto *models = FastModuleContainer::tryGet<ModelAssetContainer>();
+    if (models == nullptr) throw std::runtime_error("model reload: no model container is running");
+    std::vector<ReloadRequest> requests;
+    requests.reserve(keys.size());
+    for (const auto &key : keys) requests.push_back(ReloadRequest{.key = key, .kind = ReloadKind::modified});
+    auto prepared = transactions_.prepare(models->makeReloadGroup(requests, transactions_), retireSink());
+    prepared->preparePublication();
+    prepared->commit();
 }
 
 std::unique_ptr<PreparedReloadTransaction> ReloadService::prepareRenderPipelineModelReload(
@@ -544,6 +572,8 @@ void ReloadService::applyRenderPipelineCompanionReload(
         if (!recorded_keys.empty()) {
             library->recordReloadFailure(
                 recorded_keys, runtime.error);
+            noteShaderProblems(*library, problemSourceHotReload,
+                               runtime.error);
         }
         mergeShaderRuntimeResult(
             std::move(runtime));
@@ -555,11 +585,15 @@ void ReloadService::applyRenderPipelineCompanionReload(
         if (!recorded_keys.empty()) {
             library->recordReloadFailure(
                 recorded_keys, runtime.error);
+            noteShaderProblems(*library, problemSourceHotReload,
+                               runtime.error);
         }
         mergeShaderRuntimeResult(
             std::move(runtime));
         throw;
     }
+    if (!shader_keys.empty())
+        noteShaderProblems(*library, problemSourceHotReload, runtime.error);
     mergeShaderRuntimeResult(
         std::move(runtime));
 }
@@ -619,9 +653,11 @@ RuntimeReloadResult ReloadService::forceShaderReload() {
             for (const auto &key : changed_keys) changed.push_back(assetKeyString(key));
             runtime.error_fields["changed"] = std::move(changed);
         }
+        noteShaderProblems(*library, problemSourceReloadRpc, {});
         return runtime;
     }
     library->recordReloadFailure(changed_keys, runtime.error);
+    noteShaderProblems(*library, problemSourceReloadRpc, runtime.error);
     auto changed = nlohmann::ordered_json::array();
     for (const auto &key : changed_keys) changed.push_back(assetKeyString(key));
     runtime.error_code = std::string{shaderReloadFailedErrorCode};
@@ -799,6 +835,41 @@ void ReloadService::ensureBuiltInParticipants() {
         });
     }
 
+    // EB-2: a material document refused at start, fixed on disk.
+    if (!has_participant(materialDocumentReloadParticipantName)) {
+        registerParticipant(ReloadParticipant{
+            .name = std::string{materialDocumentReloadParticipantName},
+            .file = FileReloadRole{
+                .claims = [](const ReloadRequest &request) {
+                    const auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>();
+                    return project != nullptr && project->refusedReferenceOf(request.key).has_value();
+                },
+                .apply = BatchReloadApply{
+                    .apply_batch = [](std::span<const ReloadRequest> requests) {
+                        auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>();
+                        if (project == nullptr) return false;
+                        std::string errors;
+                        for (const auto &request : requests) {
+                            // A refused document that is gone stays refused.
+                            const auto reference = project->refusedReferenceOf(request.key);
+                            if (!reference || request.kind == ReloadKind::removed) continue;
+                            try {
+                                const auto recovered = project->recoverDocument(*reference);
+                                if (recovered.restart_reason) appendReloadError(errors, *recovered.restart_reason);
+                            } catch (const std::exception &error) {
+                                // Still refused: the problem it has stays.
+                                appendReloadError(errors, "material document '" + *reference +
+                                                              "' still does not register: " + error.what());
+                            }
+                        }
+                        if (!errors.empty()) throw std::runtime_error(errors);
+                        return true;
+                    },
+                },
+            },
+        });
+    }
+
     auto *models = FastModuleContainer::tryGet<ModelAssetContainer>();
     const bool model_participant_registered = has_participant(modelReloadParticipantName);
     if (models != model_participant_source_ ||
@@ -868,7 +939,13 @@ void ReloadService::ensureBuiltInParticipants() {
 }
 
 void ReloadService::setup(const PathResolver &resolver) {
-    if (watcher_) watcher_->stop();
+    if (watcher_) {
+        watcher_->stop();
+        const auto replaced = watcher_->status();
+        carried_scans_ += replaced.scans;
+        carried_hashed_files_ += replaced.hashed_files;
+        carried_hashed_bytes_ += replaced.hashed_bytes;
+    }
     ensureBuiltInParticipants();
     std::vector<WatchStore> stores;
     stores.push_back({"project", resolver.projectRoot(), {}});
@@ -916,6 +993,18 @@ void ReloadService::applyFrame() {
         });
     }
     transactions_.applyFrame(retireSink());
+    // FO-2: a material document refused because a pass does not declare what
+    // its material uses is registered again once the published render
+    // pipeline changes (a render edit or reload may have declared it).
+    if (auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>()) {
+        try {
+            project->retryPassContractRefusals();
+            // EB-6: the scene objects' own materials nothing registered holds.
+            project->syncObjectMaterialProblems();
+        } catch (const std::exception &error) {
+            if (logger) LOG_WARNING(logger, "material documents refused for a pass were not tried again: {}", error.what());
+        }
+    }
 }
 
 ReloadCoordinator::RetireSink ReloadService::retireSink() {
@@ -1341,6 +1430,10 @@ bool ReloadService::applyRequestForTesting(const ReloadRequest &request) {
     return applyRequest(request);
 }
 
+std::vector<bool> ReloadService::reloadDocuments(std::span<const ReloadRequest> requests) {
+    return applyRequests(requests);
+}
+
 std::vector<bool> ReloadService::applyRequestsForTesting(
     std::span<const ReloadRequest> requests) {
     return applyRequests(requests);
@@ -1413,6 +1506,15 @@ ReloadTransitionFacts ReloadService::transitionFacts() const {
 nlohmann::json ReloadService::statusJson() const {
     const auto gate = GET_MODULE(ReloadGate).snapshot();
     const auto resources = transactions_.status();
+    const auto runtime = runtimeStatusJson();
+    auto render_error = nlohmann::json(nullptr);
+    if (const auto found = runtime.find(std::string{renderPipelineReloadParticipantName});
+        found != runtime.end()) {
+        render_error = found->value("details", nlohmann::json::object())
+                            .value("domain_error", nlohmann::json(nullptr));
+        if (!found->value("details", nlohmann::json::object()).contains("domain_error"))
+            render_error = found->value("last_error", nlohmann::json(nullptr));
+    }
     auto resource_error = nlohmann::json(nullptr);
     if (resources.last_reload_error) {
         resource_error = {{"path", resources.last_reload_error->path},
@@ -1431,18 +1533,24 @@ nlohmann::json ReloadService::statusJson() const {
                 {"error", gate.reason.empty() ? nlohmann::json(nullptr) : nlohmann::json(gate.reason)},
                 {"applied", resources.applied}, {"failed", resources.failed},
                 {"participants", participantNames()},
-                {"runtime", runtimeStatusJson()},
+                {"runtime", runtime},
+            {"last_error", render_error},
                 {"model_catalog", model_catalog},
                 {"last_reload_error", std::move(resource_error)},
                 {"watch", watch},
-                {"scans", 0}, {"hashed_files", 0}, {"hashed_bytes", 0}};
+                {"scans", carried_scans_}, {"hashed_files", carried_hashed_files_},
+                {"hashed_bytes", carried_hashed_bytes_}};
     }
-    const auto status = watcher_->status();
+    auto status = watcher_->status();
+    status.scans += carried_scans_;
+    status.hashed_files += carried_hashed_files_;
+    status.hashed_bytes += carried_hashed_bytes_;
     return {{"state", watcherStateName(status.state)}, {"epoch", status.epoch},
             {"error", status.error.empty() ? nlohmann::json(nullptr) : nlohmann::json(status.error)},
             {"applied", resources.applied}, {"failed", resources.failed},
             {"participants", participantNames()},
-            {"runtime", runtimeStatusJson()},
+            {"runtime", runtime},
+            {"last_error", render_error},
             {"model_catalog", model_catalog},
             {"last_reload_error", std::move(resource_error)},
             {"watch", watch},

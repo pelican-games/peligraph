@@ -21,17 +21,21 @@
 #include "../fullscreenpass/fullscreeninputbindingmismatch.hpp"
 #include "../fullscreenpass/shaderinputmismatchjson.hpp"
 #include "../material/materialphysicalcontractchanged.hpp"
+#include "../material/materialpassesremoved.hpp"
 #include "../renderingpass/passshaderdefines.hpp"
 #include "../loader/engineresources.hpp"
 #include "../renderingpass/frameplanner.hpp"
+#include "../renderingpass/renderingsamplecount.hpp"
 #include "../renderer/viewfamilyproviderregistry.hpp"
 #include "../renderingpass/passdefinitionjsonparser.hpp"
 #include "../renderingpass/renderingpassjsonhelpers.hpp"
 #include "../renderingpass/rendertargetjsonparser.hpp"
 #include "../renderingpass/rendertargetmetadataresolver.hpp"
 #include "../renderingpass/rendertargetnameresolver.hpp"
+#include "../shader/raytracingrefusal.hpp"
 #include "../shader/shaderreflection.hpp"
 #include "../vkcore/renderer_config.hpp"
+#include "../watch/problemlist.hpp"
 
 #include <algorithm>
 #include <array>
@@ -87,7 +91,11 @@ bool isCarriedRefusalCode(std::string_view code) {
            // built (the steps are judged against the loaded materials).
            isMaterialDrawLoopRefusalCode(code) ||
            // LC-1: a push-constant range partly over the loop index.
-           code == shaderLoopPushOverlapCode;
+           code == shaderLoopPushOverlapCode ||
+           // BS-1b: a feature or preset that is not JSON.
+           code == renderDocumentSyntaxCode ||
+           // PB-1: a feature whose module this engine started without.
+           code == renderFeatureRequiresRestartCode;
 }
 
 // LP-0a: a graph refusal that only composing the candidate can raise (a
@@ -203,11 +211,25 @@ OrderedJson withPreflightRefusalFields(OrderedJson details,
 
 // RS-1: the restart_reason of a runtime refusal that was only a live
 // material's physical rendering contract, or nullopt for any other failure.
+// RTL-1b: or only the ray layout mode (whether the root names a ray group
+// layout), {code: ray_layout_mode_changed, from, to: "none" | "layout",
+// message}. UD-1 also accepts removing all material passes for the next
+// startup, while the current generation keeps its resources until restart.
 std::optional<OrderedJson> physicalContractRestartReason(
     const std::exception_ptr &error) {
     if (!error) return std::nullopt;
     try {
         std::rethrow_exception(error);
+    } catch (const RayLayoutModeChanged &change) {
+        return OrderedJson{
+            {"code", rayLayoutModeChangedCode},
+            {"from", std::string{rayLayoutModeName(change.from())}},
+            {"to", std::string{rayLayoutModeName(change.to())}},
+            {"message", change.what()},
+        };
+    } catch (const MaterialPassesRemoved &change) {
+        return OrderedJson{{"code", materialPassesRemovedCode},
+                           {"message", change.what()}};
     } catch (const MaterialPhysicalContractChanged &change) {
         const auto &info = change.info();
         return OrderedJson{
@@ -228,6 +250,10 @@ std::string carriedRefusalMessage(const CodedRefusal &refusal) {
     if (refusal.code == materialRouteUnservedCode) {
         return materialRouteUnservedText(refusal.fields);
     }
+    if (refusal.code == renderDocumentSyntaxCode)
+        return renderDocumentSyntaxMessage(refusal.fields);
+    if (refusal.code == renderFeatureRequiresRestartCode)
+        return renderFeatureRequiresRestartText(refusal.fields);
     return refusal.code + ": " +
            refusal.fields.value("message", refusal.fields.dump());
 }
@@ -381,8 +407,13 @@ struct GeometrySpaceDocument {
     std::string bytes;
 };
 
+// RTL-1a: a project layout is read as the editor holds it (`read` gives its
+// bytes and base digest: inside edit_batch what the batch's earlier edits
+// made of it, with the digest it had before the batch; otherwise the disk).
 GeometrySpaceDocument geometrySpaceDocument(
-    const Json &config, const RenderConfigEditorDependencies &dependencies, bool procedural = false) {
+    const Json &config, const RenderConfigEditorDependencies &dependencies,
+    const std::function<std::pair<std::string, std::string>(const std::string &)> &read,
+    bool procedural = false) {
     GeometrySpaceDocument result;
     const auto reference = config.find("ray_group_layout");
     if (reference == config.end()) {
@@ -393,15 +424,19 @@ GeometrySpaceDocument geometrySpaceDocument(
         const auto source = reference->get<std::string>();
         result.info["source_reference"] = source;
         const bool engine = source.starts_with("engine://");
+        std::string digest;
         if (engine) {
             result.bytes = engineResourceOrThrow(source.substr(9));
+            digest = renderConfigSourceDigest(result.bytes);
         } else {
             if (!dependencies.resolve_document_path || !dependencies.normalize_reference)
                 throw std::runtime_error("Project document access is unavailable.");
             result.path = dependencies.resolve_document_path(source);
-            result.bytes = readFileBytes(result.path);
+            auto held = read(source);
+            result.bytes = std::move(held.first);
+            digest = std::move(held.second);
         }
-        result.info["source_digest"] = digestJson(renderConfigSourceDigest(result.bytes));
+        result.info["source_digest"] = digestJson(digest);
         const auto layout = parseRayGroupLayout(result.bytes, source);
         result.info["space"] = layout.acceleration_structure && (procedural
                                    ? layout.acceleration_structure->procedural_world_space
@@ -417,6 +452,111 @@ GeometrySpaceDocument geometrySpaceDocument(
     }
     return result;
 }
+
+// RTL-1a: a document as the engine writes it (materialdocumentrpc.cpp's
+// renderJsonDocument, projectsettingsrpc.cpp's renderProjectJson): two
+// spaces, and the previous file's own line ending and final newline. A new
+// file is LF with a final newline.
+std::string renderJsonDocument(const OrderedJson &document,
+                               std::string_view previous) {
+    auto text = document.dump(2);
+    if (previous.empty() || previous.ends_with('\n')) text += '\n';
+    if (previous.find("\r\n") == std::string_view::npos) return text;
+    std::string crlf;
+    crlf.reserve(text.size() + text.size() / 16);
+    for (const char ch : text) {
+        if (ch == '\n') crlf += '\r';
+        crlf += ch;
+    }
+    return crlf;
+}
+
+// RTL-1a: the order a key of a ray document takes when the previous file
+// did not have it (the parsers' own order), then by name.
+std::size_t rayDocumentKeyRank(std::string_view key) {
+    static constexpr std::array<std::string_view, 19> order{
+        "schema", "version", "ray_types", "default_group", "groups",
+        "misses", "engine_record", "record", "portable_profile",
+        "acceleration_structure", "bindings", "material", "procedural",
+        "document", "asset", "source_material_index", "name", "type",
+        "group"};
+    const auto found = std::find(order.begin(), order.end(), key);
+    return static_cast<std::size_t>(found - order.begin());
+}
+
+// RTL-1a: `value` (a request's whole document, whose keys nlohmann::json
+// sorts) with the keys in the order `previous` had them, a new key after
+// them in rayDocumentKeyRank's order. An array element follows the previous
+// element at its index (or the last one).
+OrderedJson orderedLike(const Json &value, const OrderedJson *previous) {
+    if (value.is_object()) {
+        std::vector<std::string> keys;
+        if (previous != nullptr && previous->is_object())
+            for (const auto &[key, child] : previous->items()) {
+                (void)child;
+                if (value.contains(key)) keys.push_back(key);
+            }
+        std::vector<std::string> added;
+        for (const auto &[key, child] : value.items()) {
+            (void)child;
+            if (std::find(keys.begin(), keys.end(), key) == keys.end())
+                added.push_back(key);
+        }
+        std::stable_sort(added.begin(), added.end(),
+                         [](const std::string &left, const std::string &right) {
+                             return rayDocumentKeyRank(left) <
+                                    rayDocumentKeyRank(right);
+                         });
+        keys.insert(keys.end(), added.begin(), added.end());
+        auto result = OrderedJson::object();
+        for (const auto &key : keys) {
+            const OrderedJson *child = nullptr;
+            if (previous != nullptr && previous->is_object())
+                if (const auto found = previous->find(key);
+                    found != previous->end())
+                    child = &*found;
+            result[key] = orderedLike(value.at(key), child);
+        }
+        return result;
+    }
+    if (value.is_array()) {
+        auto result = OrderedJson::array();
+        for (std::size_t index = 0; index < value.size(); ++index) {
+            const OrderedJson *child = nullptr;
+            if (previous != nullptr && previous->is_array() &&
+                !previous->empty())
+                child = &previous->at(std::min(index, previous->size() - 1));
+            result.push_back(orderedLike(value.at(index), child));
+        }
+        return result;
+    }
+    return OrderedJson::parse(value.dump());
+}
+
+// RTL-1a: the code a ray parser's message starts with
+// ("pelican.<name>@<n>: ..."), or `fallback`.
+std::string rayParserCode(std::string_view message, std::string_view fallback) {
+    const auto colon = message.find(": ");
+    if (colon != std::string_view::npos) {
+        const auto code = message.substr(0, colon);
+        const auto at = code.rfind('@');
+        if (code.starts_with("pelican.") && at != std::string_view::npos &&
+            at + 1 < code.size() &&
+            std::all_of(code.begin() + static_cast<std::ptrdiff_t>(at + 1),
+                        code.end(), [](unsigned char ch) {
+                            return ch >= '0' && ch <= '9';
+                        }))
+            return std::string{code};
+    }
+    return std::string{fallback};
+}
+
+constexpr std::string_view rayLayoutDestinationExistsCode =
+    "pelican.ray_layout_destination_exists@1";
+constexpr std::string_view rayGroupLayoutInvalidCode =
+    "pelican.ray_group_layout_invalid@1";
+constexpr std::string_view rayBindingsInvalidCode =
+    "pelican.ray_bindings_invalid@1";
 
 OrderedJson runtimeJson(const RenderConfigRuntimeSnapshot &runtime) {
     return {{"published_generation", runtime.published_generation},
@@ -460,6 +600,14 @@ std::vector<std::string> allFeatureReferences(std::string_view bytes) {
         }
     }
     return result;
+}
+
+// G-4's material_route_default of the root the editor holds. BS-1b: one that
+// is not JSON authors none, as the engine on its fallback generation read none.
+MaterialRouteDefault heldRouteDefault(std::string_view held_root) {
+    const auto held = Json::parse(held_root, nullptr, false);
+    if (held.is_discarded()) return readMaterialRouteDefault(Json::object());
+    return readMaterialRouteDefault(renderingSectionOrEmpty(held));
 }
 
 bool hasManagedFragmentMarker(std::string_view bytes) {
@@ -790,6 +938,89 @@ AuthoringLoweringContext loweringContext(const RenderConfigEditorDependencies &d
         });
 }
 
+// RTL-1c: the root's rendering section (a root that is not JSON names no
+// ray documents).
+Json rootRenderingSection(std::string_view root_bytes) {
+    try {
+        return renderingSectionOrEmpty(Json::parse(root_bytes));
+    } catch (const std::exception &) {
+        return Json::object();
+    }
+}
+
+// RTL-1c: a ray document (ray_group_layout / ray_bindings) the root's
+// rendering section names, read the one way every reader reads it.
+// `reference` empty: the root names none (or not by a string).
+struct RootRayDocument {
+    std::string reference;
+    std::optional<std::string> bytes;      // nullopt: it did not read
+    std::optional<std::string> read_error; // why it did not read
+};
+
+RootRayDocument rootRayDocument(const Json &section, std::string_view key,
+                                const RenderConfigEditorDependencies &dependencies) {
+    RootRayDocument result;
+    const auto found = section.find(std::string{key});
+    if (found == section.end() || !found->is_string()) return result;
+    result.reference = found->get<std::string>();
+    try {
+        if (result.reference.starts_with("engine://")) {
+            result.bytes = engineResourceOrThrow(result.reference.substr(9));
+        } else {
+            if (!dependencies.resolve_document_path)
+                throw std::runtime_error("Project document access is unavailable.");
+            result.bytes = readFileBytes(dependencies.resolve_document_path(result.reference));
+        }
+    } catch (const std::exception &error) {
+        result.read_error = error.what();
+    }
+    return result;
+}
+
+// RTL-1b / RTL-1c: the ray group layout the root names, parsed. The one
+// reader of it: get_ray_layout (its layout entry and names), the authoring
+// context's ray_layout names and get_shader_interface's generated header.
+// `error`: why it did not read or parse (`layout` is then nullopt).
+struct RootRayGroupLayout {
+    RootRayDocument document;
+    std::optional<RayGroupLayout> layout;
+    std::optional<std::string> error;
+};
+
+RootRayGroupLayout rootRayGroupLayout(const Json &section,
+                                      const RenderConfigEditorDependencies &dependencies) {
+    RootRayGroupLayout result{.document = rootRayDocument(section, "ray_group_layout", dependencies)};
+    if (result.document.read_error) {
+        result.error = result.document.read_error;
+    } else if (result.document.bytes) {
+        try {
+            result.layout = parseRayGroupLayout(*result.document.bytes, result.document.reference);
+        } catch (const std::exception &error) {
+            result.error = error.what();
+        }
+    }
+    return result;
+}
+
+RootRayGroupLayout rootRayGroupLayoutOf(std::string_view root_bytes,
+                                        const RenderConfigEditorDependencies &dependencies) {
+    return rootRayGroupLayout(rootRenderingSection(root_bytes), dependencies);
+}
+
+// RTL-1c: the ray layout mode the process runs in, as get_ray_layout.mode
+// and get_render_authoring_context.ray_layout.mode both answer it:
+// "none" | "layout", null when it is not configured.
+OrderedJson rayLayoutModeJson(const RenderConfigEditorDependencies &dependencies) {
+    std::optional<RayLayoutSemanticMode> mode;
+    if (dependencies.ray_layout_mode) {
+        try {
+            mode = dependencies.ray_layout_mode();
+        } catch (const std::exception &) {
+        }
+    }
+    return mode ? OrderedJson(std::string{rayLayoutModeName(*mode)}) : OrderedJson(nullptr);
+}
+
 } // namespace
 
 std::vector<RenderFeatureCatalogEntry>
@@ -943,8 +1174,13 @@ composeRenderFeatureCatalog(
 RenderConfigEditorService::RenderConfigEditorService(
     RenderConfigEditorDependencies dependencies)
     : dependencies_{std::move(dependencies)},
-      document_{AuthoredRenderConfigDocument::inspect(
-          dependencies_.source_bytes)} {
+      // BS-1b: a root that is not JSON (an engine on its fallback generation
+      // was refused it) is held as its bytes, to be listed and replaced.
+      document_{Json::accept(dependencies_.source_bytes)
+                    ? AuthoredRenderConfigDocument::inspect(
+                          dependencies_.source_bytes)
+                    : AuthoredRenderConfigDocument::unparsed(
+                          dependencies_.source_bytes)} {
     if (dependencies_.source_reference.empty() ||
         dependencies_.source_path.empty() || !dependencies_.gate ||
         !dependencies_.runtime_snapshot || !dependencies_.apply_candidate) {
@@ -995,8 +1231,10 @@ RenderConfigEditorService::~RenderConfigEditorService() {
 
 void RenderConfigEditorService::loadManagedDocumentBaselines() {
     managed_documents_.clear();
+    // BS-1b: a root that is not JSON names no fragment.
     if (!dependencies_.normalize_reference ||
-        !dependencies_.resolve_document_path) {
+        !dependencies_.resolve_document_path ||
+        !Json::accept(document_.bytes())) {
         return;
     }
     for (const auto &reference : allFeatureReferences(document_.bytes())) {
@@ -1033,6 +1271,16 @@ void RenderConfigEditorService::loadManagedDocumentBaselines() {
 
 RenderConfigCandidateDocumentSet
 RenderConfigEditorService::currentDocumentSet() const {
+    return documentSetOf(document_);
+}
+
+RenderConfigCandidateDocumentSet
+RenderConfigEditorService::readDocumentSet() const {
+    return documentSetOf(readDocument());
+}
+
+RenderConfigCandidateDocumentSet RenderConfigEditorService::documentSetOf(
+    const AuthoredRenderConfigDocument &root) const {
     std::vector<RenderConfigCandidateDocument> documents;
     documents.reserve(managed_documents_.size() + 1);
     documents.push_back(RenderConfigCandidateDocument{
@@ -1042,8 +1290,8 @@ RenderConfigEditorService::currentDocumentSet() const {
         .operation = RenderConfigDocumentOperation::replace,
         .expected =
             {RenderConfigDocumentExistence::present,
-             document_.sourceDigest()},
-        .bytes = document_.bytes(),
+             root.sourceDigest()},
+        .bytes = root.bytes(),
     });
     for (const auto &[key, managed] : managed_documents_) {
         (void)key;
@@ -1080,6 +1328,30 @@ RenderConfigEditorService::heldDocument(const std::string &reference) const {
     auto bytes = readFileBytes(dependencies_.resolve_document_path(reference));
     auto digest = renderConfigSourceDigest(bytes);
     return {.bytes = std::move(bytes), .base_digest = std::move(digest)};
+}
+
+// RTL-1a: renderconfigeditor.hpp.
+RenderConfigEditorService::HeldOptionalDocument
+RenderConfigEditorService::heldOptionalDocument(const std::string &reference) const {
+    if (batch_ && dependencies_.normalize_reference) {
+        const auto normalized = dependencies_.normalize_reference(reference);
+        for (const auto &document : batch_->documents) {
+            if (document.normalized_reference != normalized) continue;
+            if (document.operation == RenderConfigDocumentOperation::erase)
+                return {.present = false, .batch = true, .expected = document.expected};
+            return {.present = true, .batch = true, .bytes = document.bytes,
+                    .expected = document.expected};
+        }
+    }
+    const auto path = dependencies_.resolve_document_path(reference);
+    std::error_code error;
+    if (std::filesystem::symlink_status(path, error).type() ==
+        std::filesystem::file_type::not_found)
+        return {.expected = {RenderConfigDocumentExistence::missing, {}}};
+    auto bytes = readFileBytes(path);
+    auto digest = renderConfigSourceDigest(bytes);
+    return {.present = true, .bytes = std::move(bytes),
+            .expected = {RenderConfigDocumentExistence::present, std::move(digest)}};
 }
 
 RenderConfigEditorService::GateSnapshot
@@ -1154,6 +1426,28 @@ std::optional<OrderedJson> RenderConfigEditorService::preflightGraphVariants(
     return std::nullopt;
 }
 
+// UD-4: a live lifetime/route refusal is not proof that the source is
+// startup-readable. Resolve the candidate's documents again, without the
+// published generation's resources, and use startup's logical graph compiler
+// before allowing either kind of restart commit to write any document.
+std::optional<OrderedJson> RenderConfigEditorService::restartGraphRejection(
+    const RenderConfigCandidateDocumentSet &candidate) const {
+    const auto details = OrderedJson{{"participant", "pelican.render_pipeline"},
+                                    {"document", dependencies_.source_reference}};
+    if (!dependencies_.resolve_authoring_context)
+        return rejection("render_config_restart_validation_unavailable",
+                         "The restart candidate requires the project document resolver", details);
+    try {
+        const auto composed = dependencies_.resolve_authoring_context(candidate);
+        const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+        const auto targets = parseRenderTargetDefinitionsFromJson(composed.config);
+        (void)compileRenderingLogicalGraphs(graphs, targets);
+    } catch (const std::exception &error) {
+        return preflightRejection(error, details);
+    }
+    return std::nullopt;
+}
+
 const RenderFeatureCatalogEntry *
 RenderConfigEditorService::findCatalogReference(
     std::string_view reference) const noexcept {
@@ -1167,9 +1461,9 @@ OrderedJson RenderConfigEditorService::getRenderFeatures(
     const Json &params) const {
     requireOnly(params, {}, "get_render_features");
     const auto uneditable_entries =
-        document_.uneditableFeatureEntryCount();
+        readDocument().uneditableFeatureEntryCount();
     auto instances = OrderedJson::array();
-    const auto root = Json::parse(document_.bytes());
+    const auto root = Json::parse(readDocument().bytes());
     const auto append_instances = [&](const Json &features, std::string_view scope,
                                       const std::string &source_reference, const std::string &source_digest,
                                       bool source_editable) {
@@ -1230,9 +1524,9 @@ OrderedJson RenderConfigEditorService::getRenderFeatures(
     }
     };
     append_instances(renderingSectionOrEmpty(root).value("features", Json::array()), "root",
-                     dependencies_.source_reference, document_.sourceDigest(), true);
+                     dependencies_.source_reference, readDocument().sourceDigest(), true);
     if (dependencies_.resolve_authoring_context) {
-        const auto current = dependencies_.resolve_authoring_context(currentDocumentSet());
+        const auto current = dependencies_.resolve_authoring_context(readDocumentSet());
         if (current.pipeline_preset && current.pipeline_preset_bytes) {
             const auto preset = Json::parse(*current.pipeline_preset_bytes);
             append_instances(preset.at("config").value("features", Json::array()), "preset",
@@ -1240,15 +1534,15 @@ OrderedJson RenderConfigEditorService::getRenderFeatures(
                              current.pipeline_preset->reference.starts_with("project://"));
         }
     }
-    return {{"source_reference", dependencies_.source_reference},
-            {"source_digest", digestJson(document_.sourceDigest())},
-            {"features", document_.featureReferences()},
+    return markRead(OrderedJson{{"source_reference", dependencies_.source_reference},
+            {"source_digest", digestJson(readDocument().sourceDigest())}, {"live", readLive()},
+            {"features", readDocument().featureReferences()},
             {"feature_instances", std::move(instances)},
             {"has_uneditable_feature_entries",
              uneditable_entries != 0},
             {"uneditable_feature_entry_count",
              uneditable_entries},
-            {"runtime", runtimeJson(dependencies_.runtime_snapshot())}};
+            {"runtime", runtimeJson(dependencies_.runtime_snapshot())}});
 }
 
 OrderedJson RenderConfigEditorService::listRenderFeatures(
@@ -1860,6 +2154,10 @@ RenderConfigEditorService::checkAuthoringPreconditions(
              {"reason", primaryReason(gate.reasons)},
              {"gate_epoch", gate.epoch}});
     }
+    // RR-1: while the held root is not JSON, an edit on the root the reads
+    // answer from (readable_document_) is external_modification, as an edit
+    // on a digest from before a reload always was: the disk is not that root.
+    // On the held bytes' digest it is render_document_syntax@1 (below).
     if (base_digest != document_.sourceDigest()) {
         return rejection(
             "external_modification",
@@ -1882,7 +2180,22 @@ RenderConfigEditorService::checkAuthoringPreconditions(
     } catch (const std::exception &error) {
         return rejection("external_modification", error.what());
     }
-    return std::nullopt;
+    // BS-1b: nothing in a root that is not JSON can be edited in place; it is
+    // fixed on disk and reloaded, or replaced whole (restore_render_documents).
+    return syntaxRejection(document_.bytes(), dependencies_.source_reference,
+                           method);
+}
+
+std::optional<OrderedJson> RenderConfigEditorService::syntaxRejection(
+    std::string_view bytes, std::string_view reference,
+    std::string_view method) const {
+    const auto fields = renderDocumentSyntax(bytes, reference);
+    if (!fields) return std::nullopt;
+    auto details = OrderedJson::object();
+    details["method"] = std::string{method};
+    for (const auto &[key, value] : fields->items()) details[key] = value;
+    return rejection(std::string{renderDocumentSyntaxCode},
+                     renderDocumentSyntaxMessage(*fields), std::move(details));
 }
 
 OrderedJson RenderConfigEditorService::queueRootEdit(
@@ -2003,6 +2316,8 @@ const std::vector<std::pair<std::string_view, BatchEdit>> &batchEdits() {
         {"add_compute_task", &RenderConfigEditorService::addComputeTask},
         {"edit_ray_callable_records", &RenderConfigEditorService::editRayCallableRecords},
         {"edit_scene_acceleration_structures", &RenderConfigEditorService::editSceneAccelerationStructures},
+        // RTL-1a: the layout and the bindings, beside the tasks that name them.
+        {"edit_ray_layout", &RenderConfigEditorService::editRayLayout},
         // FR-4.
         {"edit_preset_pass", &RenderConfigEditorService::editPresetPass},
         {"edit_compute_task", &RenderConfigEditorService::editComputeTask},
@@ -2204,8 +2519,25 @@ OrderedJson RenderConfigEditorService::editBatch(const Json &params) {
         merged.source_only = merged.source_only && ticket.source_only;
         merged.restart_required = merged.restart_required || ticket.restart_required;
         merged.reload_managed_baselines = merged.reload_managed_baselines || ticket.reload_managed_baselines;
-        for (const auto &[key, value] : ticket.result_extras.items())
-            if (!merged.result_extras.contains(key)) merged.result_extras[key] = value;
+        for (const auto &[key, value] : ticket.result_extras.items()) {
+            if (key == "procedural_records_before") {
+                // Several edits of one asset in a batch restore to the first
+                // value; edits of different assets retain both inverses.
+                auto &before = merged.result_extras[key];
+                if (!before.is_object()) before = OrderedJson::object();
+                for (const auto &[reference, bytes] : value.items()) {
+                    const auto records = OrderedJson::parse(bytes.get<std::string>());
+                    auto held = before.contains(reference)
+                                    ? OrderedJson::parse(before.at(reference).get<std::string>())
+                                    : OrderedJson::object();
+                    for (const auto &[name, record] : records.items())
+                        if (!held.contains(name)) held[name] = record;
+                    before[reference] = held.dump();
+                }
+            } else if (!merged.result_extras.contains(key)) {
+                merged.result_extras[key] = value;
+            }
+        }
     }
     merged.result_extras["methods"] = methods;
     auto checks = std::move(batch_->checks);
@@ -2251,9 +2583,9 @@ OrderedJson RenderConfigEditorService::editBatch(const Json &params) {
 
 OrderedJson RenderConfigEditorService::getRayCallableRecords(const Json &params) const {
     requireOnly(params, {}, "get_ray_callable_records");
-    const auto root = Json::parse(document_.bytes());
+    const auto root = Json::parse(readDocument().bytes());
     const auto config = dependencies_.resolve_authoring_context
-        ? dependencies_.resolve_authoring_context(currentDocumentSet()).config
+        ? dependencies_.resolve_authoring_context(readDocumentSet()).config
         : renderingSectionOrEmpty(root);
     const auto overrides = renderingSectionOrEmpty(root).value("ray_task_callable_records", Json::object());
     auto tasks = Json::array();
@@ -2268,8 +2600,8 @@ OrderedJson RenderConfigEditorService::getRayCallableRecords(const Json &params)
             {"callables", callables}, {"authored_records", ray.at("callable_records")},
             {"records", overrides.value(name, ray.at("callable_records"))}});
     }
-    return {{"source_reference", dependencies_.source_reference},
-            {"source_digest", digestJson(document_.sourceDigest())}, {"tasks", tasks}};
+    return markRead(OrderedJson{{"source_reference", dependencies_.source_reference},
+            {"source_digest", digestJson(readDocument().sourceDigest())}, {"live", readLive()}, {"tasks", tasks}});
 }
 
 OrderedJson RenderConfigEditorService::editRayCallableRecords(const Json &params) {
@@ -2301,10 +2633,10 @@ OrderedJson RenderConfigEditorService::editRayCallableRecords(const Json &params
 
 OrderedJson RenderConfigEditorService::getSceneAccelerationStructures(const Json &params) const {
     requireOnly(params, {}, "get_scene_acceleration_structures");
-    const auto root = Json::parse(document_.bytes());
+    const auto root = Json::parse(readDocument().bytes());
     Json connections = Json::array();
     const auto config = dependencies_.resolve_authoring_context
-        ? dependencies_.resolve_authoring_context(currentDocumentSet()).config
+        ? dependencies_.resolve_authoring_context(readDocumentSet()).config
         : renderingSectionOrEmpty(root);
     const auto overrides = renderingSectionOrEmpty(root).value("ray_task_acceleration_structures", Json::object());
     for (const auto &task : config.value("compute_tasks", Json::array())) {
@@ -2315,12 +2647,16 @@ OrderedJson RenderConfigEditorService::getSceneAccelerationStructures(const Json
         connections.push_back({{"name", name}, {"authored_acceleration_structure", authored},
             {"acceleration_structure", overrides.value(name, authored)}});
     }
-    return {{"source_reference", dependencies_.source_reference},
-            {"source_digest", digestJson(document_.sourceDigest())},
+    const auto read = [this](const std::string &reference) {
+        auto held = heldDocument(reference);
+        return std::pair{std::move(held.bytes), std::move(held.base_digest)};
+    };
+    return markRead(OrderedJson{{"source_reference", dependencies_.source_reference},
+            {"source_digest", digestJson(readDocument().sourceDigest())}, {"live", readLive()},
             {"task_connections", connections},
-            {"triangle_geometry", geometrySpaceDocument(config, dependencies_).info},
-            {"procedural_geometry", geometrySpaceDocument(config, dependencies_, true).info},
-            {"definitions", renderingSectionOrEmpty(root).value("scene_acceleration_structures", Json::array())}};
+            {"triangle_geometry", geometrySpaceDocument(config, dependencies_, read).info},
+            {"procedural_geometry", geometrySpaceDocument(config, dependencies_, read, true).info},
+            {"definitions", renderingSectionOrEmpty(root).value("scene_acceleration_structures", Json::array())}});
 }
 
 OrderedJson RenderConfigEditorService::editSceneAccelerationStructures(const Json &params) {
@@ -2342,7 +2678,15 @@ OrderedJson RenderConfigEditorService::editSceneAccelerationStructures(const Jso
             const auto config = dependencies_.resolve_authoring_context
                 ? dependencies_.resolve_authoring_context(currentDocumentSet()).config
                 : renderingSectionOrEmpty(parsed);
-            auto layout = geometrySpaceDocument(config, dependencies_, params.contains("procedural_space"));
+            // RTL-1a: as the editor holds the layout, so a second AS edit in
+            // one edit_batch builds on the first.
+            auto layout = geometrySpaceDocument(
+                config, dependencies_,
+                [this](const std::string &reference) {
+                    auto held = heldDocument(reference);
+                    return std::pair{std::move(held.bytes), std::move(held.base_digest)};
+                },
+                params.contains("procedural_space"));
             if (!layout.info.at("editable").get<bool>())
                 return rejection(params.contains("procedural_space") ? "procedural_space_not_editable" : "triangle_space_not_editable", layout.info.value("reason", std::string{"Ray group layout is not editable"}));
             if (layout.info.at("source_digest").at("hex") != digest)
@@ -2357,7 +2701,8 @@ OrderedJson RenderConfigEditorService::editSceneAccelerationStructures(const Jso
                     return rejection(error_code, "Coordinate space must be geometry or world");
                 document["acceleration_structure"][field] = space;
             }
-            const auto bytes = document.dump(2);
+            // RTL-1a: the key order and the file's own line ending kept.
+            const auto bytes = renderJsonDocument(document, layout.bytes);
             const auto reference = layout.info.at("source_reference").get<std::string>();
             (void)parseRayGroupLayout(bytes, reference);
             layout_documents.push_back({
@@ -2400,6 +2745,559 @@ OrderedJson RenderConfigEditorService::editSceneAccelerationStructures(const Jso
         }, layout_documents);
 }
 
+namespace {
+
+// RTL-1a: the engine record field names a layout declares (raygrouplayout.cpp).
+std::string_view rayEngineRecordName(RayEngineRecordField field) {
+    switch (field) {
+    case RayEngineRecordField::material_index: return "material_index";
+    case RayEngineRecordField::geometry_index: return "geometry_index";
+    case RayEngineRecordField::geometry_kind: return "geometry_kind";
+    case RayEngineRecordField::procedural_transform: return "procedural_transform";
+    }
+    return "unknown";
+}
+
+// RTL-1a: get_ray_layout.names of a parsed layout, or the empty names.
+OrderedJson rayLayoutNames(const std::optional<RayGroupLayout> &layout) {
+    OrderedJson names{{"ray_types", OrderedJson::array()},
+                      {"groups", OrderedJson::array()},
+                      {"misses", OrderedJson::array()},
+                      {"default_group", nullptr},
+                      {"record", OrderedJson::array()},
+                      {"engine_record", OrderedJson::array()}};
+    if (!layout) return names;
+    names["ray_types"] = layout->ray_types;
+    for (std::size_t index = 0; index < layout->groups.size(); ++index)
+        names["groups"].push_back(
+            {{"name", layout->groups[index]},
+             {"type", index < layout->group_types.size() &&
+                              layout->group_types[index] == RayGroupType::procedural
+                          ? "procedural" : "triangles"}});
+    names["misses"] = layout->misses;
+    names["default_group"] = layout->default_group;
+    for (const auto &member : layout->record)
+        names["record"].push_back({{"name", member.name},
+                                   {"type", rayRecordTypeName(member.type)}});
+    for (const auto field : layout->engine_record)
+        names["engine_record"].push_back(rayEngineRecordName(field));
+    return names;
+}
+
+// RTL-1a: a procedural record judged against a layout's record, by the
+// parser that judges a material binding's record (the same rule asset_data's
+// records meet when the scene rows are resolved).
+void requireRayRecordMatches(const Json &record, const RayGroupLayout &layout,
+                             const std::string &source) {
+    if (layout.groups.empty()) return;
+    const Json probe{{"schema", "pelican.ray_bindings"},
+                     {"version", rayBindingsVersion},
+                     {"bindings", Json::array({{{"material", {{"document", source}}},
+                                                {"group", layout.groups.front()},
+                                                {"record", record}}})}};
+    (void)parseRayBindings(probe.dump(), layout, source);
+}
+
+} // namespace
+
+OrderedJson RenderConfigEditorService::getRayLayout(const Json &params) const {
+    constexpr std::string_view method = "get_ray_layout";
+    requireOnly(params, {}, method);
+    const auto &root = readDocument();
+    // RTL-1c: the layout is read by the reader the authoring context and
+    // get_shader_interface read it by (one source for every name listed).
+    const auto section = rootRenderingSection(root.bytes());
+    const auto root_layout = rootRayGroupLayout(section, dependencies_);
+    const auto &layout = root_layout.layout;
+    const auto describe = [&](const RootRayDocument &document, bool is_layout) -> OrderedJson {
+        if (document.reference.empty()) return nullptr;
+        const auto &reference = document.reference;
+        OrderedJson entry{{"reference", reference},
+                          {"digest", nullptr},
+                          {"document", nullptr}};
+        if (!document.bytes) {
+            entry["error"] = {{"code", std::string{renderDocumentMissingCode}},
+                              {"message", document.read_error.value_or(std::string{})}};
+            return entry;
+        }
+        const auto &bytes = *document.bytes;
+        entry["digest"] = renderConfigSourceDigest(bytes);
+        if (const auto syntax = renderDocumentSyntax(bytes, reference)) {
+            entry["error"] = {{"code", std::string{renderDocumentSyntaxCode}},
+                              {"message", renderDocumentSyntaxMessage(*syntax)}};
+            entry["text"] = bytes;
+        } else {
+            entry["document"] = OrderedJson::parse(bytes);
+        }
+        std::optional<std::string> parse_error;
+        if (is_layout) {
+            parse_error = root_layout.error;
+        } else if (layout) {
+            try {
+                (void)parseRayBindings(bytes, *layout, reference);
+            } catch (const std::exception &error) {
+                parse_error = error.what();
+            }
+        }
+        if (parse_error && !entry.contains("error"))
+            entry["error"] = {
+                {"code", rayParserCode(*parse_error,
+                                       is_layout ? rayGroupLayoutInvalidCode
+                                                 : rayBindingsInvalidCode)},
+                {"message", *parse_error}};
+        return entry;
+    };
+    auto layout_entry = describe(root_layout.document, true);
+    auto bindings_entry =
+        describe(rootRayDocument(section, "ray_bindings", dependencies_), false);
+
+    // What a binding may select, spelled as a scene row is matched. A
+    // document selector names the document only, so one entry per document.
+    // EB-2: used_by {count, objects: [first 8 object names]} -- the objects
+    // drawing a model that draws the material (merged over an entry's
+    // materials) -- and, for an asset selector, `model`: the model's
+    // registered name.
+    auto materials = OrderedJson::array();
+    if (dependencies_.ray_selectable_materials) {
+        struct Entry {
+            OrderedJson json;
+            std::vector<std::string> models;
+            std::vector<RaySelectableMaterial::User> users;
+            std::set<std::string> user_keys;
+        };
+        std::vector<Entry> entries;
+        std::map<std::string, std::size_t> by_selector;
+        const auto addUsers = [](Entry &entry, const RaySelectableMaterial &material) {
+            for (const auto &model : material.models)
+                if (std::find(entry.models.begin(), entry.models.end(), model) == entry.models.end())
+                    entry.models.push_back(model);
+            for (const auto &user : material.users)
+                if (entry.user_keys.insert(user.key).second) entry.users.push_back(user);
+        };
+        for (const auto &material : dependencies_.ray_selectable_materials()) {
+            OrderedJson selector;
+            std::string label = material.name;
+            if (!material.document.empty()) {
+                selector = {{"document", material.document}};
+                label += " (" + material.document + ")";
+            } else if (!material.asset.empty() && material.source_material_index) {
+                selector = {{"asset", material.asset},
+                            {"source_material_index", *material.source_material_index}};
+                label += " (" + material.asset + " #" +
+                         std::to_string(*material.source_material_index) + ")";
+            } else {
+                continue;
+            }
+            const auto [found, inserted] = by_selector.emplace(selector.dump(), entries.size());
+            if (!inserted) {
+                addUsers(entries.at(found->second), material);
+                continue;
+            }
+            Entry entry{.json = {{"label", std::move(label)},
+                                 {"name", material.name},
+                                 {"selector", std::move(selector)}}};
+            addUsers(entry, material);
+            entries.push_back(std::move(entry));
+        }
+        for (auto &entry : entries) {
+            auto objects = OrderedJson::array();
+            for (std::size_t index = 0; index < entry.users.size() && index < 8; ++index)
+                objects.push_back(entry.users[index].label);
+            entry.json["used_by"] = {{"count", entry.users.size()}, {"objects", std::move(objects)}};
+            if (entry.json.at("selector").contains("asset"))
+                entry.json["model"] = entry.models.empty() ? OrderedJson(nullptr) : OrderedJson(entry.models.front());
+            materials.push_back(std::move(entry.json));
+        }
+    }
+    auto procedurals = OrderedJson::array();
+    if (dependencies_.ray_asset_data) {
+        try {
+            if (const auto asset_data = dependencies_.ray_asset_data()) {
+                const auto document = OrderedJson::parse(readFileBytes(asset_data->path));
+                for (const auto &asset : document.value("procedural_geometry", OrderedJson::array())) {
+                    if (!asset.is_object() || !asset.contains("name")) continue;
+                    OrderedJson entry{{"asset", asset.at("name")}};
+                    if (asset.contains("record")) entry["record_fields"] = asset.at("record");
+                    procedurals.push_back(std::move(entry));
+                }
+            }
+        } catch (const std::exception &) {
+            // asset_data that does not read lists no procedural asset.
+        }
+    }
+    // The bindings the last resolved scene rows matched to no row, when they
+    // were resolved from the bindings bytes listed here.
+    auto unresolved = OrderedJson::array();
+    if (dependencies_.ray_unresolved_bindings && bindings_entry.is_object() &&
+        bindings_entry.at("document").is_object()) {
+        try {
+            const auto observed = dependencies_.ray_unresolved_bindings();
+            const auto bindings = bindings_entry.at("document").value(
+                "bindings", OrderedJson::array());
+            if (observed && observed->bindings_digest ==
+                                bindings_entry.at("digest").get<std::string>()) {
+                for (const auto index : observed->indices) {
+                    if (index >= bindings.size()) continue;
+                    const auto &binding = bindings.at(index);
+                    OrderedJson selector =
+                        binding.contains("procedural")
+                            ? OrderedJson{{"procedural", binding.at("procedural")}}
+                            : binding.value("material", OrderedJson::object());
+                    unresolved.push_back({{"index", index},
+                                          {"selector", std::move(selector)},
+                                          {"group", binding.value("group", OrderedJson())}});
+                }
+            }
+        } catch (const std::exception &) {
+        }
+    }
+    return markRead(OrderedJson{
+        {"source_reference", dependencies_.source_reference},
+        {"source_digest", digestJson(root.sourceDigest())},
+        {"live", readLive()},
+        // RTL-1c: the mode the process runs in, which the documents above
+        // may already differ from until the engine starts again.
+        {"mode", rayLayoutModeJson(dependencies_)},
+        {"layout", std::move(layout_entry)},
+        {"bindings", std::move(bindings_entry)},
+        {"names", rayLayoutNames(layout)},
+        {"selectable_materials", std::move(materials)},
+        {"selectable_procedural_assets", std::move(procedurals)},
+        {"unresolved_bindings", std::move(unresolved)},
+    });
+}
+
+OrderedJson RenderConfigEditorService::editRayLayout(const Json &params) {
+    constexpr std::string_view method = "edit_ray_layout";
+    requireOnly(params, {"base_source_digest", "layout", "base_layout_digest",
+                         "bindings", "base_bindings_digest", "procedural_records"},
+                method);
+    const auto base_digest = requireString(params, "base_source_digest", method);
+    if (!isLowerHexDigest(base_digest))
+        throw std::invalid_argument("edit_ray_layout base_source_digest must be 64 lowercase hex characters");
+    const bool edits_layout = params.contains("layout");
+    const bool edits_bindings = params.contains("bindings");
+    const bool edits_records = params.contains("procedural_records");
+    if (!edits_layout && !edits_bindings && !edits_records)
+        throw std::invalid_argument("edit_ray_layout requires layout, bindings or procedural_records");
+    for (const auto *field : {"layout", "bindings"})
+        if (params.contains(field) && !params.at(field).is_object() && !params.at(field).is_null())
+            throw std::invalid_argument(std::string{"edit_ray_layout "} + field + " must be an object or null");
+    const auto base_of = [&](const char *field) -> std::optional<std::string> {
+        const auto found = params.find(field);
+        if (found == params.end() || found->is_null()) return std::nullopt;
+        if (!found->is_string() || !isLowerHexDigest(found->get_ref<const std::string &>()))
+            throw std::invalid_argument(std::string{"edit_ray_layout "} + field +
+                                        " must be 64 lowercase hex characters or null");
+        return found->get<std::string>();
+    };
+    const auto base_layout = base_of("base_layout_digest");
+    const auto base_bindings = base_of("base_bindings_digest");
+    if (edits_records) {
+        const auto &records = params.at("procedural_records");
+        if (!records.is_object())
+            throw std::invalid_argument("edit_ray_layout procedural_records must be an object {asset: record}");
+        for (const auto &[asset, record] : records.items()) {
+            (void)asset;
+            if (!record.is_object())
+                throw std::invalid_argument("edit_ray_layout procedural_records values must be record objects");
+        }
+    }
+    if (!dependencies_.normalize_reference || !dependencies_.resolve_document_path)
+        return rejection("method_unavailable", "edit_ray_layout requires the project document resolver",
+                         {{"method", std::string{method}}});
+    // The gate and the root's CAS first, as every edit answers them first.
+    if (auto rejected = checkAuthoringPreconditions(
+            gateSnapshot(), base_digest, method, "render config editing is currently disabled"))
+        return *rejected;
+
+    const auto root_json = Json::parse(document_.bytes());
+    const auto &section = renderingSectionOrEmpty(root_json);
+    const auto details = [&](OrderedJson extra = OrderedJson::object()) {
+        extra["method"] = std::string{method};
+        return extra;
+    };
+
+    // One ray document of the edit: where it is, as the editor holds it, and
+    // what the edit makes of it.
+    struct RayDocumentEdit {
+        std::string reference;
+        bool named = false;        // the root names it now
+        bool name_it = false;      // the edit writes the root's key
+        bool unname_it = false;    // the edit takes the root's key out
+        std::optional<std::string> bytes; // the document after the edit
+        std::optional<RenderConfigCandidateDocument> write;
+    };
+    const auto root_directory = [&] {
+        auto reference = dependencies_.source_reference;
+        if (reference.starts_with("project://")) reference.erase(0, 10);
+        return std::filesystem::path{reference}.parent_path().generic_string();
+    }();
+    const auto prepare = [&](std::string_view key, std::string_view file_name,
+                             std::string_view kind, bool edits,
+                             const std::optional<std::string> &base,
+                             RayDocumentEdit &edit) -> std::optional<OrderedJson> {
+        const auto found = section.find(std::string{key});
+        edit.named = found != section.end();
+        if (edit.named) {
+            if (!found->is_string() || found->get_ref<const std::string &>().empty())
+                return rejection("pelican.ray_tracing.root_invalid@1",
+                                 "pelican.ray_tracing.root_invalid@1: " + std::string{key} +
+                                     " must be a non-empty string reference",
+                                 details({{"key", std::string{key}}}));
+            edit.reference = found->get<std::string>();
+        }
+        if (!edits) {
+            if (edit.named) {
+                if (edit.reference.starts_with("engine://")) {
+                    edit.bytes = engineResourceOrThrow(edit.reference.substr(9));
+                } else {
+                    const auto held = heldOptionalDocument(edit.reference);
+                    if (held.present) edit.bytes = held.bytes;
+                }
+            }
+            return std::nullopt;
+        }
+        const auto &value = params.at(key == "ray_group_layout" ? "layout" : "bindings");
+        if (value.is_null()) {
+            edit.unname_it = edit.named;
+            return std::nullopt;
+        }
+        if (!edit.named) {
+            edit.reference = "project://" +
+                             (root_directory.empty() ? std::string{} : root_directory + "/") +
+                             std::string{file_name};
+            edit.name_it = true;
+        }
+        if (edit.reference.starts_with("engine://") ||
+            edit.reference.find('#') != std::string::npos)
+            return renderDocumentNotWritable(method, edit.reference);
+        std::filesystem::path path;
+        try {
+            path = dependencies_.resolve_document_path(edit.reference);
+        } catch (const std::exception &) {
+            return renderDocumentNotWritable(method, edit.reference);
+        }
+        if (!isWithinDirectory(dependencies_.project_root, path))
+            return renderDocumentNotWritable(method, edit.reference);
+        const auto held = heldOptionalDocument(edit.reference);
+        if (edit.name_it && held.present)
+            return rejection(std::string{rayLayoutDestinationExistsCode},
+                             "A file is already at " + edit.reference +
+                                 ", which the root does not name as its " + std::string{key} +
+                                 "; name it in the root or move it",
+                             details({{"path", edit.reference}, {"document_kind", std::string{kind}}}));
+        // The CAS: a document that is there is held to the digest it was
+        // read with (inside edit_batch, the digest before the batch; one an
+        // earlier edit of the batch wrote may be left out). One that is not
+        // there has none.
+        if (held.present && !held.batch && !base)
+            throw std::invalid_argument("edit_ray_layout requires base_" +
+                                        std::string{key == "ray_group_layout" ? "layout" : "bindings"} +
+                                        "_digest for the existing " + edit.reference);
+        if (base && (!held.present || *base != held.expected.digest))
+            return rejection("external_modification",
+                             "Ray document " + edit.reference + " changed since it was read",
+                             details({{"reference", edit.reference},
+                                      {"expected_digest", held.present
+                                                              ? OrderedJson(held.expected.digest)
+                                                              : OrderedJson(nullptr)},
+                                      {"provided_digest", *base}}));
+        // The same content is not written again (a client sends the object,
+        // so bytes cannot be compared).
+        if (held.present) {
+            const auto previous = Json::parse(held.bytes, nullptr, false);
+            if (!previous.is_discarded() && previous == value) {
+                edit.bytes = held.bytes;
+                return std::nullopt;
+            }
+        }
+        const auto previous = held.present ? OrderedJson::parse(held.bytes, nullptr, false)
+                                           : OrderedJson(OrderedJson::value_t::discarded);
+        auto bytes = renderJsonDocument(
+            orderedLike(value, previous.is_discarded() ? nullptr : &previous),
+            held.present ? std::string_view{held.bytes} : std::string_view{});
+        edit.bytes = bytes;
+        edit.write = RenderConfigCandidateDocument{
+            .reference = edit.reference,
+            .normalized_reference = dependencies_.normalize_reference(edit.reference),
+            .path = path,
+            .operation = held.present && !(held.batch && held.expected.existence ==
+                                                             RenderConfigDocumentExistence::missing)
+                             ? RenderConfigDocumentOperation::replace
+                             : RenderConfigDocumentOperation::create,
+            .expected = held.present || held.batch
+                            ? held.expected
+                            : RenderConfigDocumentExpectedState{RenderConfigDocumentExistence::missing, {}},
+            .bytes = std::move(bytes),
+        };
+        return std::nullopt;
+    };
+    RayDocumentEdit layout_edit;
+    RayDocumentEdit bindings_edit;
+    try {
+        if (auto refused = prepare("ray_group_layout", "ray_layout.json", "ray_group_layout",
+                                   edits_layout, base_layout, layout_edit))
+            return *refused;
+        if (auto refused = prepare("ray_bindings", "ray_bindings.json", "ray_bindings",
+                                   edits_bindings, base_bindings, bindings_edit))
+            return *refused;
+    } catch (const std::invalid_argument &) {
+        throw;
+    } catch (const std::exception &error) {
+        return rejection("external_modification", error.what(), details());
+    }
+
+    // Judged at once by the parsers the engine reads them with: the layout,
+    // then the bindings with the layout the edit leaves.
+    const bool layout_final =
+        (layout_edit.named && !layout_edit.unname_it) || layout_edit.name_it;
+    const bool bindings_final =
+        (bindings_edit.named && !bindings_edit.unname_it) || bindings_edit.name_it;
+    const bool has_layout = layout_final && layout_edit.bytes.has_value();
+    const bool has_bindings = bindings_final && bindings_edit.bytes.has_value();
+    if (bindings_final && !layout_final)
+        return rejection("pelican.ray_tracing.bindings_without_layout@1",
+                         "pelican.ray_tracing.bindings_without_layout@1: ray_bindings requires ray_group_layout",
+                         details());
+    // The layout is read when the edit writes it, or writes what it judges.
+    std::optional<RayGroupLayout> layout;
+    if (has_layout && (layout_edit.write || bindings_edit.write || edits_records)) {
+        try {
+            layout = parseRayGroupLayout(*layout_edit.bytes, layout_edit.reference);
+        } catch (const std::exception &error) {
+            return rejection(rayParserCode(error.what(), rayGroupLayoutInvalidCode), error.what(),
+                             details({{"reference", layout_edit.reference},
+                                      {"document_kind", "ray_group_layout"}}));
+        }
+    }
+    if (bindings_edit.write && !layout)
+        return rejection("pelican.ray_tracing.bindings_without_layout@1",
+                         "pelican.ray_tracing.bindings_without_layout@1: the ray group layout " +
+                             layout_edit.reference + " is not there to judge the bindings",
+                         details({{"reference", layout_edit.reference}}));
+    if (bindings_edit.write) {
+        try {
+            (void)parseRayBindings(*bindings_edit.bytes, *layout, bindings_edit.reference);
+        } catch (const std::exception &error) {
+            return rejection(rayParserCode(error.what(), rayBindingsInvalidCode), error.what(),
+                             details({{"reference", bindings_edit.reference},
+                                      {"document_kind", "ray_bindings"}}));
+        }
+    }
+
+    // Stage D: asset_data's procedural records rewritten with the layout, in
+    // the same ticket. Every procedural record must have exactly the layout's
+    // fields after the edit.
+    std::optional<RenderConfigCandidateDocument> asset_data_write;
+    // EB-2: the records the edit replaces, for restore_render_documents.
+    OrderedJson previous_records = OrderedJson::object();
+    if (edits_records) {
+        const auto asset_data = dependencies_.ray_asset_data ? dependencies_.ray_asset_data()
+                                                             : std::nullopt;
+        if (!asset_data)
+            return rejection("asset_data_unavailable",
+                             "edit_ray_layout procedural_records requires the project's asset_data",
+                             details());
+        if (!layout)
+            return rejection("pelican.ray_tracing.bindings_without_layout@1",
+                             "procedural records require a ray group layout", details());
+        HeldOptionalDocument held;
+        try {
+            held = heldOptionalDocument(asset_data->reference);
+        } catch (const std::exception &error) {
+            return rejection("external_modification", error.what(),
+                             details({{"reference", asset_data->reference}}));
+        }
+        if (!held.present)
+            return rejection("asset_data_unavailable", "asset_data is not there: " + asset_data->reference,
+                             details({{"reference", asset_data->reference}}));
+        auto document = OrderedJson::parse(held.bytes, nullptr, false);
+        if (document.is_discarded() || !document.is_object())
+            return rejection(std::string{renderDocumentSyntaxCode},
+                             "asset_data is not a JSON object: " + asset_data->reference,
+                             details({{"reference", asset_data->reference}}));
+        auto &assets = document["procedural_geometry"];
+        if (!assets.is_array()) assets = OrderedJson::array();
+        for (const auto &[name, record] : params.at("procedural_records").items()) {
+            const auto found = std::find_if(assets.begin(), assets.end(), [&](const auto &asset) {
+                return asset.is_object() && asset.value("name", std::string{}) == name;
+            });
+            if (found == assets.end())
+                return rejection("asset_not_found", "Unknown procedural asset: " + name,
+                                 details({{"asset", name}}));
+            const OrderedJson previous =
+                found->contains("record") ? found->at("record") : OrderedJson(OrderedJson::value_t::discarded);
+            previous_records[name] = previous.is_discarded() ? OrderedJson(nullptr) : previous;
+            (*found)["record"] = orderedLike(record, previous.is_discarded() ? nullptr : &previous);
+        }
+        for (const auto &asset : assets) {
+            if (!asset.is_object()) continue;
+            const auto name = asset.value("name", std::string{});
+            try {
+                requireRayRecordMatches(Json::parse(asset.value("record", OrderedJson::object()).dump()),
+                                        *layout, asset_data->reference + "#" + name);
+            } catch (const std::exception &error) {
+                return rejection(rayParserCode(error.what(), "pelican.ray_binding_record_invalid@1"),
+                                 error.what(), details({{"reference", asset_data->reference}, {"asset", name}}));
+            }
+        }
+        auto bytes = renderJsonDocument(document, held.bytes);
+        if (bytes != held.bytes)
+            asset_data_write = RenderConfigCandidateDocument{
+                .reference = asset_data->reference,
+                .normalized_reference = dependencies_.normalize_reference(asset_data->reference),
+                .path = asset_data->path,
+                .operation = RenderConfigDocumentOperation::replace,
+                .expected = held.expected,
+                .bytes = std::move(bytes),
+            };
+    }
+
+    const auto records_reference = asset_data_write ? asset_data_write->reference : std::string{};
+    const auto records_digest = asset_data_write ? std::optional<std::string>{renderConfigSourceDigest(
+                                                       asset_data_write->bytes)}
+                                                 : std::nullopt;
+    std::vector<RenderConfigCandidateDocument> documents;
+    // A document goes before the root that names it.
+    for (auto *write : {&layout_edit.write, &bindings_edit.write, &asset_data_write})
+        if (*write) documents.push_back(std::move(**write));
+    const bool changed = !documents.empty() || layout_edit.name_it || layout_edit.unname_it ||
+                         bindings_edit.name_it || bindings_edit.unname_it;
+    auto answer = queueRootEdit(
+        base_digest, std::string{method},
+        [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
+            if (layout_edit.name_it)
+                candidate = candidate.withSectionValue("ray_group_layout", Json(layout_edit.reference).dump());
+            if (layout_edit.unname_it) candidate = candidate.withoutSectionValue("ray_group_layout");
+            if (bindings_edit.name_it)
+                candidate = candidate.withSectionValue("ray_bindings", Json(bindings_edit.reference).dump());
+            if (bindings_edit.unname_it) candidate = candidate.withoutSectionValue("ray_bindings");
+            return std::nullopt;
+        },
+        documents);
+    if (answer.value("status", std::string{}) != "accepted") return answer;
+    // EB-2: these bytes, once committed, restore to the records they replaced.
+    if (records_digest) procedural_record_versions_.insert_or_assign(*records_digest, previous_records);
+    const auto digest_of = [](const RayDocumentEdit &edit) {
+        return edit.bytes && !edit.unname_it ? OrderedJson(renderConfigSourceDigest(*edit.bytes))
+                                             : OrderedJson(nullptr);
+    };
+    OrderedJson extras{{"changed", changed},
+                       {"layout_reference", has_layout ? OrderedJson(layout_edit.reference) : OrderedJson(nullptr)},
+                       {"layout_digest", digest_of(layout_edit)},
+                       {"bindings_reference", has_bindings ? OrderedJson(bindings_edit.reference) : OrderedJson(nullptr)},
+                       {"bindings_digest", digest_of(bindings_edit)}};
+    if (records_digest)
+        // Keep numeric types and member order through clients (including Qt JSON)
+        // that otherwise turn 0.0 into 0 or reorder object members.
+        extras["procedural_records_before"] = {{records_reference, previous_records.dump()}};
+    if (!pending_.empty() && pending_.back().id == answer.value("ticket", std::string{}))
+        pending_.back().result_extras = extras;
+    for (const auto &[key, value] : extras.items()) answer[key] = value;
+    return answer;
+}
+
 OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
     const Json &params) const {
     requireOnly(params, {}, "get_render_authoring_context");
@@ -2408,7 +3306,7 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
             "render authoring context resolver is unavailable");
     }
     const auto resolved =
-        dependencies_.resolve_authoring_context(currentDocumentSet());
+        dependencies_.resolve_authoring_context(readDocumentSet());
     const auto runtime = dependencies_.runtime_snapshot();
 
     std::optional<OrderedJson> editable_preset;
@@ -2421,7 +3319,7 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
     std::optional<OrderedJson> editable_root;
     if (!resolved.pipeline_preset) {
         try {
-            editable_root = OrderedJson::parse(document_.bytes());
+            editable_root = OrderedJson::parse(readDocument().bytes());
         } catch (const std::exception &) {
             editable_root.reset();
         }
@@ -2586,7 +3484,7 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
 
     OrderedJson result{
         {"source_reference", dependencies_.source_reference},
-        {"source_digest", digestJson(document_.sourceDigest())},
+        {"source_digest", digestJson(readDocument().sourceDigest())}, {"live", readLive()},
         {"published_generation", runtime.published_generation},
         // G-1: what the running pipeline enabled. A scene-class target is
         // R16G16B16A16_SFLOAT only with "hdr" among them, which decides the
@@ -2616,7 +3514,7 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
         }
     }
     const auto origins =
-        renderTargetOrigins(resolved, document_.bytes(), fragment_targets);
+        renderTargetOrigins(resolved, readDocument().bytes(), fragment_targets);
     auto editable_targets = OrderedJson::array();
     auto other_targets = OrderedJson::array();
     for (const auto &declaration :
@@ -2685,6 +3583,12 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
             if (entry.is_object() && entry.contains("name") && entry.at("name").is_string())
                 acceleration_structures.push_back(entry.at("name"));
     result["acceleration_structures"] = std::move(acceleration_structures);
+    // RTL-1b: the names a ray tracing task gives (the catalog's ray_tracing
+    // choices): the ray group layout's ray types, groups and misses, read
+    // from the document the root names (so they are there before a restart
+    // takes a layout the mode does not have yet), and the mode this process
+    // runs in.
+    result["ray_layout"] = rayLayoutAuthoringNames();
     // EL-1: the names a draw_loop branch's `when` and draw.variant take, from
     // what the draw-loop tables judge (MaterialDrawSubject): `id` is the
     // matching key `when.material` compares, `tags` what `when.tags` / `where`
@@ -2693,16 +3597,24 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
     // builtinMaterialNamePrefix (describeUnservedMaterial reads it so too).
     auto materials = OrderedJson::array();
     std::set<std::string> material_tags;
+    std::map<std::string, std::size_t> material_rows;
     if (dependencies_.draw_loop_materials) {
         for (const auto &subject : dependencies_.draw_loop_materials()) {
             material_tags.insert(subject.tags.begin(), subject.tags.end());
-            materials.push_back({
-                {"id", subject.key},
+            const auto [row, inserted] = material_rows.try_emplace(
+                subject.materialKey(), materials.size());
+            if (inserted) materials.push_back({
+                {"id", subject.materialKey()},
                 {"name", subject.name},
                 {"tags", subject.tags},
                 {"variants", subject.variants},
                 {"builtin", subject.name.starts_with(builtinMaterialNamePrefix)},
+                {"vertex_modes", OrderedJson::array()},
             });
+            auto &modes = materials.at(row->second).at("vertex_modes");
+            const auto mode = subject.skinned ? "skinned" : "standard";
+            if (std::find(modes.begin(), modes.end(), mode) == modes.end())
+                modes.push_back(mode);
         }
     }
     result["materials"] = std::move(materials);
@@ -2732,7 +3644,7 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
         if (resolved.pipeline_preset_bytes)
             result["pipeline_preset"]["source_digest"] = digestJson(renderConfigSourceDigest(*resolved.pipeline_preset_bytes));
     }
-    return result;
+    return markRead(std::move(result));
 }
 
 OrderedJson RenderConfigEditorService::forkRenderPipeline(const Json &params) {
@@ -2785,7 +3697,7 @@ OrderedJson RenderConfigEditorService::getComputeTaskAuthoring(const Json &param
     requireOnly(params, {}, "get_compute_task_authoring");
     if (!dependencies_.resolve_authoring_context)
         throw std::logic_error("render authoring context resolver is unavailable");
-    const auto context = dependencies_.resolve_authoring_context(currentDocumentSet());
+    const auto context = dependencies_.resolve_authoring_context(readDocumentSet());
     // MG-3b: the tasks a render.compute node made. GL-2a: the composition
     // says which node made each task (RenderPassProvenance::graph_origin),
     // and where that node is authored, so the editor no longer expands the
@@ -2870,37 +3782,39 @@ OrderedJson RenderConfigEditorService::getComputeTaskAuthoring(const Json &param
                                  {"declaration_json", resource.dump(2)}});
         }
     }
-    return {{"source_digest", digestJson(document_.sourceDigest())}, {"tasks", std::move(tasks)},
-            {"resources", std::move(resources)}};
+    return markRead(OrderedJson{{"source_digest", digestJson(readDocument().sourceDigest())}, {"live", readLive()}, {"tasks", std::move(tasks)},
+            {"resources", std::move(resources)}});
 }
 
 OrderedJson RenderConfigEditorService::getFrameNodeOrder(const Json &params) const {
     requireOnly(params, {}, "get_frame_node_order");
-    return {{"source_digest", digestJson(document_.sourceDigest())},
+    return markRead(OrderedJson{{"source_digest", digestJson(readDocument().sourceDigest())}, {"live", readLive()},
             {"published_generation", dependencies_.runtime_snapshot().published_generation},
-            {"orders", renderingSectionOrEmpty(Json::parse(document_.bytes()))
-                           .value("frame_node_order", Json::object())}};
+            {"orders", renderingSectionOrEmpty(Json::parse(readDocument().bytes()))
+                           .value("frame_node_order", Json::object())}});
 }
 
 OrderedJson RenderConfigEditorService::getGraphInstances(const Json &params) const {
     requireOnly(params, {}, "get_graph_instances");
-    const auto root = Json::parse(document_.bytes());
+    const auto root = Json::parse(readDocument().bytes());
     // MG-2b: the document is always a pelican.graph root (anything else is
     // refused as render_config.legacy_root@1 before it becomes document_).
     auto instances = Json::array();
     auto nodes = root.at("nodes");
     for (const auto &node : nodes)
         if (node.at("op") == "graph.instance") instances.push_back(node);
-    return {{"source_reference", dependencies_.source_reference},
+    return markRead(OrderedJson{{"source_reference", dependencies_.source_reference},
         // N-8: what the root document is. Since MG-2b it is always
         // "pelican.graph"; the field stays because Studio reads it.
         {"root_schema", root.value("schema", std::string{})},
-        {"source_digest", digestJson(document_.sourceDigest())},
+        {"source_digest", digestJson(readDocument().sourceDigest())}, {"live", readLive()},
         {"instances", std::move(instances)},
         // The whole root array too: an editor that connects an input has to
         // name a producer that is already there, and has to avoid an id that
         // is already taken.
         {"nodes", std::move(nodes)},
+        // UD-3: preserve absence as well as the authored value for Graph Undo.
+        {"material_route_default", renderingSectionOrEmpty(root).value("material_route_default", Json{})},
         {"definitions", root.value("definitions", Json::object())},
         // CT-5: who uses each definition (graphDefinitionInstances).
         {"definition_instances", graphDefinitionInstances(root)},
@@ -2908,7 +3822,7 @@ OrderedJson RenderConfigEditorService::getGraphInstances(const Json &params) con
         // travels inside its body, so this is the one that needs naming, and
         // reporting it here is what keeps the canvas from needing a read of
         // its own for something the document already carries.
-        {"layout", root.value("layout", Json::object())}};
+        {"layout", root.value("layout", Json::object())}});
 }
 
 OrderedJson RenderConfigEditorService::editGraphInstances(const Json &params) {
@@ -3014,11 +3928,11 @@ OrderedJson RenderConfigEditorService::editGraphDocument(const Json &params) {
 
 OrderedJson RenderConfigEditorService::getFoldGroups(const Json &params) const {
     requireOnly(params, {}, "get_fold_groups");
-    const auto root = Json::parse(document_.bytes());
+    const auto root = Json::parse(readDocument().bytes());
     auto groups = OrderedJson::array();
     for (const auto &report : reportGraphFoldGroups(root, parseGraphFoldGroups(root)))
         groups.push_back(graphFoldGroupReportToJson(report));
-    return {{"source_digest", digestJson(document_.sourceDigest())}, {"fold_groups", std::move(groups)}};
+    return markRead(OrderedJson{{"source_digest", digestJson(readDocument().sourceDigest())}, {"live", readLive()}, {"fold_groups", std::move(groups)}});
 }
 
 // --- CV-1b: the authoring lowerings' view of the root.
@@ -3817,7 +4731,15 @@ OrderedJson RenderConfigEditorService::getShaderInterface(const Json &params) co
     }
     // EL-5: a worker thread reflects the stem's files; until it is done
     // this answers {status: building} at once.
-    return shaderInterfaceStatusJson(reference, refresh, dependencies_.resolve_shader_reference);
+    // RTL-1b: a project with a ray group layout gives its ray tracing
+    // shaders the generated header the task compiles them with
+    // (__pelican_ray_group_layout.glsl), so they compile here on their own.
+    std::vector<std::pair<std::string, std::string>> virtual_includes;
+    if (const auto root = rootRayGroupLayoutOf(readDocument().bytes(), dependencies_); root.layout)
+        virtual_includes.emplace_back(std::string{rayGroupLayoutVirtualIncludeName},
+                                      makeRayGroupLayoutVirtualInclude(*root.layout));
+    return shaderInterfaceStatusJson(reference, refresh, dependencies_.resolve_shader_reference,
+                                     std::move(virtual_includes));
 }
 
 OrderedJson RenderConfigEditorService::editFrameNodeOrder(const Json &params) {
@@ -3839,7 +4761,12 @@ RenderConfigEditorService::requestedRouteDefault(const Json &params,
     RequestedRouteDefault requested;
     const auto found = params.find("material_route_default");
     if (found == params.end()) return requested;
-    requested.value = requestedMaterialRouteDefault(*found, method);
+    if (method == "edit_graph_document" && found->is_null()) {
+        requested.value = MaterialRouteDefault::automatic;
+        requested.remove = true;
+    } else {
+        requested.value = requestedMaterialRouteDefault(*found, method);
+    }
     if (*requested.value == MaterialRouteDefault::forward &&
         !runtime_shader_compiler_available) {
         requested.refusal = rejection(
@@ -3855,9 +4782,14 @@ RenderConfigEditorService::requestedRouteDefault(const Json &params,
 
 bool RenderConfigEditorService::writeRouteDefault(
     AuthoredRenderConfigDocument &candidate,
-    MaterialRouteDefault requested) const {
+    MaterialRouteDefault requested, bool remove) const {
     const auto current = readMaterialRouteDefault(
         renderingSectionOrEmpty(Json::parse(document_.bytes())));
+    if (remove) {
+        candidate = candidate.withoutSectionValue(materialRouteDefaultKey);
+        // Removing explicit auto only restores source presence, not routes.
+        return requested != current;
+    }
     if (requested == current) return false;
     candidate = candidate.withSectionValue(
         std::string{materialRouteDefaultKey},
@@ -3880,7 +4812,7 @@ OrderedJson RenderConfigEditorService::queueGraphRootEdit(
             // section is refused by queueRootEdit as
             // render_config_section_unlocated, as add_authored_pass refuses it.
             if (route_default.value)
-                restart_required = writeRouteDefault(candidate, *route_default.value);
+                restart_required = writeRouteDefault(candidate, *route_default.value, route_default.remove);
             return std::nullopt;
         },
         {}, std::nullopt,
@@ -4316,6 +5248,87 @@ std::optional<OrderedJson> RenderConfigEditorService::physicalFragmentStaleRefus
         details["expected"] = info.expected;
         details["actual"] = info.actual;
         return rejection("physical_fragment_stale", stale.what(), std::move(details));
+    } catch (...) {
+    }
+    return std::nullopt;
+}
+
+OrderedJson RenderConfigEditorService::rayLayoutAuthoringNames() const {
+    OrderedJson result{
+        {"mode", rayLayoutModeJson(dependencies_)},
+        {"reference", nullptr},
+        {"ray_types", OrderedJson::array()},
+        {"groups", OrderedJson::array()},
+        {"misses", OrderedJson::array()},
+        {"default_group", nullptr},
+    };
+    // RTL-1c: the names get_ray_layout.names lists, from the same reader.
+    const auto root = rootRayGroupLayoutOf(readDocument().bytes(), dependencies_);
+    if (!root.document.reference.empty()) result["reference"] = root.document.reference;
+    if (root.layout) {
+        auto names = rayLayoutNames(root.layout);
+        for (const char *key : {"ray_types", "groups", "misses", "default_group"})
+            result[key] = std::move(names[key]);
+    } else if (root.error) {
+        // A layout that cannot be read lists no names; the rest of the
+        // context is answered as before.
+        const auto &message = *root.error;
+        const auto colon = message.find(": ");
+        const auto code = colon != std::string::npos && message.substr(0, colon).find('@') != std::string::npos
+                              ? message.substr(0, colon)
+                              : std::string{"ray_layout_unreadable"};
+        result["error"] = {{"code", code}, {"message", message}};
+    }
+    return result;
+}
+
+std::optional<OrderedJson> RenderConfigEditorService::rayTracingTaskRefusal(
+    const std::exception_ptr &error, const RenderConfigCandidateDocumentSet *documents,
+    OrderedJson details) const {
+    if (!error) return std::nullopt;
+    try {
+        std::rethrow_exception(error);
+    } catch (const RayTracingRefusal &refusal) {
+        const auto &fields = refusal.fields();
+        if (fields.is_object())
+            for (const auto &[key, value] : fields.items())
+                if (!details.contains(key)) details[key] = OrderedJson::parse(value.dump());
+        // Where the task is declared, read as get_compute_task_authoring
+        // reads it: the composition says which document (or graph node)
+        // made each task. The parser's refusal came after composition, so
+        // the candidate composes again here.
+        const auto task = fields.is_object() ? fields.find("task") : fields.end();
+        if (task != fields.end() && task->is_string() && documents != nullptr &&
+            dependencies_.resolve_authoring_context) {
+            try {
+                const auto context = dependencies_.resolve_authoring_context(*documents);
+                const auto name = task->get<std::string>();
+                const auto provenance = std::find_if(
+                    context.pass_provenance.begin(), context.pass_provenance.end(),
+                    [&](const auto &entry) { return entry.name == name; });
+                if (provenance != context.pass_provenance.end()) {
+                    const bool from_feature =
+                        provenance->source == RenderPipelineProvenanceSource::feature;
+                    const GraphNodeOrigin *graph_node =
+                        !from_feature && provenance->graph_origin && provenance->graph_origin->loop.empty()
+                            ? &*provenance->graph_origin
+                            : nullptr;
+                    const bool from_preset =
+                        !from_feature && graph_node == nullptr && context.pipeline_preset.has_value();
+                    if (!details.contains("document"))
+                        details["document"] = from_feature  ? provenance->provider_reference
+                                              : from_preset ? context.pipeline_preset->reference
+                                                            : dependencies_.source_reference;
+                    if (graph_node != nullptr && !details.contains("node")) {
+                        details["node"] = graph_node->node;
+                        if (!graph_node->definition.empty()) details["definition"] = graph_node->definition;
+                    }
+                }
+            } catch (const std::exception &) {
+                // Without the composition the refusal still has its task.
+            }
+        }
+        return rejection(refusal.code(), refusal.what(), std::move(details));
     } catch (...) {
     }
     return std::nullopt;
@@ -5475,8 +6488,20 @@ OrderedJson writtenDocumentDigests(
 }
 
 std::string_view renderDocumentSchema(std::string_view kind) {
-    return kind == "preset" ? "pelican.render_pipeline"
-                            : "pelican.render_feature";
+    if (kind == "preset") return "pelican.render_pipeline";
+    // RTL-1a: the documents the root's ray_group_layout and ray_bindings name.
+    if (kind == "ray_group_layout") return "pelican.ray_group_layout";
+    if (kind == "ray_bindings") return "pelican.ray_bindings";
+    return "pelican.render_feature";
+}
+
+// RTL-1a: the two kinds the rendering section names by its own keys.
+constexpr std::array<std::pair<std::string_view, std::string_view>, 2>
+    rayRenderDocumentKeys{{{"ray_group_layout", "ray_group_layout"},
+                           {"ray_bindings", "ray_bindings"}}};
+
+bool isRayRenderDocumentKind(std::string_view kind) {
+    return kind == "ray_group_layout" || kind == "ray_bindings";
 }
 
 // RD-1: whether bytes are a render document of the kind the composition
@@ -5490,6 +6515,15 @@ bool isRenderDocumentOfKind(std::string_view bytes, std::string_view kind) {
     } catch (const Json::exception &) {
         return false;
     }
+}
+
+// RTL-1a: whether a document the root names as `kind` is listed (and so read
+// and restored). A layout or bindings document that is not JSON is listed
+// too, to be fixed (BS-1b lists a feature or preset so): the data-only
+// composition never reads it, so nothing else would name it.
+bool isListedRenderDocument(std::string_view bytes, std::string_view kind) {
+    if (isRayRenderDocumentKind(kind) && !Json::accept(bytes)) return true;
+    return isRenderDocumentOfKind(bytes, kind);
 }
 
 void appendFeatureReferences(const Json &features,
@@ -5528,7 +6562,44 @@ RenderConfigEditorService::renderDocumentsOf(
         !dependencies_.normalize_reference ||
         !dependencies_.resolve_document_path)
         return documents;
-    const auto current = dependencies_.resolve_authoring_context(candidate);
+    std::optional<ResolvedRenderConfigAuthoringContext> composed;
+    try {
+        composed.emplace(dependencies_.resolve_authoring_context(candidate));
+    } catch (const std::exception &) {
+        // BS-1: a root that does not compose (the one an engine on its
+        // fallback generation was refused) still lists itself and the
+        // documents its rendering section names that are on disk, so a client
+        // can read and fix them. Where it composes, the preflight that
+        // follows says why it does not.
+        const auto preset_on_disk =
+            [&](const std::string &reference) -> std::optional<std::string> {
+            try {
+                const auto path = dependencies_.resolve_document_path(reference);
+                std::error_code error;
+                if (std::filesystem::is_regular_file(path, error) && !error)
+                    return readFileBytes(path);
+            } catch (const std::exception &) {
+            }
+            return std::nullopt;
+        };
+        for (auto &entry : namedRenderDocuments(root_bytes, preset_on_disk)) {
+            try {
+                std::error_code error;
+                if (!std::filesystem::is_regular_file(entry.path, error) || error)
+                    continue;
+                // BS-1b: one that is not JSON is listed too, to be fixed.
+                const auto bytes = readFileBytes(entry.path);
+                if (Json::accept(bytes) &&
+                    !isListedRenderDocument(bytes, entry.kind))
+                    continue;
+            } catch (const std::exception &) {
+                continue;
+            }
+            documents.push_back(std::move(entry));
+        }
+        return documents;
+    }
+    const auto &current = *composed;
     // A document is writable only when all of these hold: it is not an
     // engine document or a fragment address, it resolves to a regular file
     // inside the project root (symbolic links resolved), and its bytes are the
@@ -5550,7 +6621,7 @@ RenderConfigEditorService::renderDocumentsOf(
             if (!isWithinDirectory(dependencies_.project_root, path)) return;
             std::error_code error;
             if (!std::filesystem::is_regular_file(path, error) || error) return;
-            if (!isRenderDocumentOfKind(readFileBytes(path), kind)) return;
+            if (!isListedRenderDocument(readFileBytes(path), kind)) return;
             documents.push_back(WritableRenderDocument{
                 .reference = reference,
                 .normalized_reference = std::move(normalized),
@@ -5591,6 +6662,15 @@ RenderConfigEditorService::renderDocumentsOf(
     for (const auto &resource : current.resource_provenance)
         features.push_back(resource.provider_reference);
     for (const auto &reference : features) consider(reference, "feature");
+    // RTL-1a: the ray group layout and the ray bindings the root names (a
+    // preset never names them; renderpipeline.cpp refuses it).
+    const auto parsed_root = Json::parse(root_bytes);
+    const auto &section = renderingSectionOrEmpty(parsed_root);
+    for (const auto &[key, kind] : rayRenderDocumentKeys) {
+        const auto found = section.find(std::string{key});
+        if (found != section.end() && found->is_string())
+            consider(found->get<std::string>(), kind);
+    }
     return documents;
 }
 
@@ -5660,6 +6740,12 @@ RenderConfigEditorService::namedRenderDocuments(
         }
         for (auto &feature : features)
             references.emplace_back(std::move(feature), "feature");
+        // RTL-1a: the layout and bindings the root's section names.
+        for (const auto &[key, kind] : rayRenderDocumentKeys) {
+            const auto found = section.find(std::string{key});
+            if (found != section.end() && found->is_string())
+                references.emplace_back(found->get<std::string>(), kind);
+        }
     } catch (const std::exception &) {
         // A root that does not parse names nothing; its content is refused
         // by the restore's own content check.
@@ -5902,7 +6988,9 @@ OrderedJson RenderConfigEditorService::getRenderDocuments(
                              {"digest", renderConfigSourceDigest(bytes)},
                              {"content", std::move(bytes)}});
     }
-    return {{"documents", std::move(documents)}};
+    // RR-1: whether these are the documents the live generation was composed
+    // from (false on the fallback and after a refused reload).
+    return {{"documents", std::move(documents)}, {"live", documentsLive()}};
 }
 
 OrderedJson RenderConfigEditorService::restoreRenderDocuments(
@@ -5920,6 +7008,7 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
         std::string reference;
         std::optional<std::string> base_digest;
         std::optional<std::string> content;
+        std::optional<OrderedJson> procedural_records;
     };
     const auto string_or_null = [&](const Json &entry, const char *field) {
         const auto found = entry.find(field);
@@ -5933,7 +7022,7 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
     };
     std::vector<Restore> restores;
     for (const auto &entry : *requested) {
-        requireOnly(entry, {"reference", "base_digest", "content"},
+        requireOnly(entry, {"reference", "base_digest", "content", "procedural_records"},
                     "restore_render_documents document");
         Restore restore{
             .reference = requireString(entry, "reference", method),
@@ -5948,6 +7037,18 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
                 "restore_render_documents " + restore.reference +
                 ": base_digest and content cannot both be null (a document "
                 "that is not there cannot be deleted)");
+        if (entry.contains("procedural_records")) {
+            if (!entry.at("procedural_records").is_string())
+                throw std::invalid_argument("procedural_records restore requires JSON text");
+            const auto bytes = entry.at("procedural_records").get<std::string>();
+            const auto records = Json::parse(bytes, nullptr, false);
+            if (!records.is_object() || restore.content || !restore.base_digest)
+                throw std::invalid_argument("procedural_records restore requires JSON object text, base_digest and content null");
+            for (const auto &[name, record] : records.items())
+                if (name.empty() || !(record.is_object() || record.is_null()))
+                    throw std::invalid_argument("procedural_records restore values must be record objects or null");
+            restore.procedural_records = OrderedJson::parse(bytes);
+        }
         restores.push_back(std::move(restore));
     }
     if (!dependencies_.resolve_authoring_context ||
@@ -5964,6 +7065,96 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
                           {"reason", primaryReason(gate.reasons)},
                           {"gate_epoch", gate.epoch}});
     }
+
+    // EB-2: asset_data is no render document. It is restored only as the
+    // procedural records edit_ray_layout (or a restore of them) wrote: from
+    // exactly the bytes base_digest names (the digest the commit's documents
+    // answered for it), with content null -- the engine puts the records back
+    // and leaves every other section as it is. A digest it did not write, or
+    // content, is render_document_not_writable {reason:
+    // "procedural_records_only"}; the file changed since is
+    // external_modification.
+    std::optional<RenderConfigCandidateDocument> asset_data_restore;
+    OrderedJson asset_data_replaced = OrderedJson::object();
+    std::string asset_data_reference;
+    if (const auto asset_data = dependencies_.ray_asset_data ? dependencies_.ray_asset_data()
+                                                             : std::optional<RayAssetDataDocument>{}) {
+        const auto normalized_of = [&](const std::string &reference) -> std::optional<std::string> {
+            try {
+                return dependencies_.normalize_reference(reference);
+            } catch (const std::exception &) {
+                return std::nullopt;
+            }
+        };
+        const auto normalized = normalized_of(asset_data->reference);
+        for (auto it = restores.begin(); normalized && it != restores.end();) {
+            if (it->reference.starts_with("engine://") || normalized_of(it->reference) != normalized) {
+                ++it;
+                continue;
+            }
+            if (asset_data_restore)
+                throw std::invalid_argument("restore_render_documents names " + it->reference + " more than once");
+            const auto version = it->base_digest ? procedural_record_versions_.find(*it->base_digest)
+                                                 : procedural_record_versions_.end();
+            if (it->content || (!it->procedural_records && version == procedural_record_versions_.end()))
+                return rejection(std::string{renderDocumentNotWritableCode},
+                                 "asset_data " + it->reference +
+                                     " is restored only as the procedural records edit_ray_layout wrote: name "
+                                     "the digest its commit answered, with content null",
+                                 {{"method", std::string{method}},
+                                  {"reference", it->reference},
+                                  {"reason", "procedural_records_only"}});
+            std::optional<std::string> bytes;
+            try {
+                bytes = readFileBytes(asset_data->path);
+            } catch (const std::exception &) {
+            }
+            const auto current = bytes ? std::optional<std::string>{renderConfigSourceDigest(*bytes)} : std::nullopt;
+            if (current != it->base_digest) {
+                const OrderedJson mismatch{{"reference", it->reference},
+                                           {"expected_digest", current ? OrderedJson(*current) : OrderedJson(nullptr)},
+                                           {"provided_digest", *it->base_digest}};
+                return rejection("external_modification",
+                                 "Render document " + it->reference + " changed since it was read",
+                                 {{"method", std::string{method}},
+                                  {"reference", it->reference},
+                                  {"expected_digest", mismatch.at("expected_digest")},
+                                  {"provided_digest", *it->base_digest},
+                                  {"mismatches", OrderedJson::array({mismatch})}});
+            }
+            auto document = OrderedJson::parse(*bytes);
+            auto &assets = document["procedural_geometry"];
+            const auto &records = it->procedural_records ? *it->procedural_records : version->second;
+            for (const auto &[name, record] : records.items()) {
+                const auto found = std::find_if(assets.begin(), assets.end(), [&](const auto &asset) {
+                    return asset.is_object() && asset.value("name", std::string{}) == name;
+                });
+                if (found == assets.end())
+                    return rejection("asset_not_found", "Unknown procedural asset: " + name,
+                                     {{"method", std::string{method}}, {"asset", name}});
+                asset_data_replaced[name] = found->contains("record") ? found->at("record") : OrderedJson(nullptr);
+                if (record.is_null()) found->erase("record");
+                else (*found)["record"] = record;
+            }
+            asset_data_restore = RenderConfigCandidateDocument{
+                .reference = asset_data->reference,
+                .normalized_reference = *normalized,
+                .path = asset_data->path,
+                .operation = RenderConfigDocumentOperation::replace,
+                .expected = {RenderConfigDocumentExistence::present, *it->base_digest},
+                .bytes = renderJsonDocument(document, *bytes),
+            };
+            asset_data_reference = asset_data->reference;
+            it = restores.erase(it);
+        }
+    }
+    for (const auto &restore : restores)
+        if (restore.procedural_records)
+            return rejection(std::string{renderDocumentNotWritableCode},
+                             "procedural_records may restore only the project's asset_data",
+                             {{"method", std::string{method}}, {"reference", restore.reference},
+                              {"reason", "procedural_records_only"}});
+
     std::vector<WritableRenderDocument> writable;
     try {
         writable = writableRenderDocuments();
@@ -6079,7 +7270,7 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
                 bool of_kind = false;
                 try {
                     of_kind = std::filesystem::is_regular_file(found->path) &&
-                              isRenderDocumentOfKind(readFileBytes(found->path),
+                              isListedRenderDocument(readFileBytes(found->path),
                                                      found->kind);
                 } catch (const std::exception &) {
                 }
@@ -6171,6 +7362,31 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
     // there"), one with content null is deleted.
     auto root = document_;
     auto candidate_documents = currentDocumentSet().documents();
+    // RTL-1a: the ray group layout the restored root names, parsed: this
+    // request's content for it, else what is there now. nullopt when the root
+    // names none, it is deleted, or it does not read (its own entry, or the
+    // runtime, refuses it).
+    const auto restored_ray_layout = [&]() -> std::optional<RayGroupLayout> {
+        try {
+            const auto parsed_root = Json::parse(restored_root);
+            const auto &section = renderingSectionOrEmpty(parsed_root);
+            const auto found = section.find("ray_group_layout");
+            if (found == section.end() || !found->is_string()) return std::nullopt;
+            const auto reference = found->get<std::string>();
+            std::string bytes;
+            if (const auto *restored = restored_content(reference)) {
+                if (!restored->content) return std::nullopt;
+                bytes = *restored->content;
+            } else if (reference.starts_with("engine://")) {
+                bytes = engineResourceOrThrow(reference.substr(9));
+            } else {
+                bytes = readFileBytes(dependencies_.resolve_document_path(reference));
+            }
+            return parseRayGroupLayout(bytes, reference);
+        } catch (const std::exception &) {
+            return std::nullopt;
+        }
+    };
     for (std::size_t index = 0; index < restores.size(); ++index) {
         const auto &restore = restores[index];
         const auto &target = *targets[index];
@@ -6183,6 +7399,11 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
         if (!restore.content) {
             // Deleted: nothing to check but that the composition still
             // composes without it (the candidate's preflight).
+        } else if (auto refused = syntaxRejection(
+                       *restore.content, restore.reference, method)) {
+            // BS-1b: content that is not JSON, by name.
+            (*refused)["error"]["reference"] = restore.reference;
+            return *refused;
         } else if (target.kind == "root") {
             try {
                 root = AuthoredRenderConfigDocument::inspect(*restore.content);
@@ -6193,6 +7414,28 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
                                   {"reference", restore.reference}});
             } catch (const std::exception &error) {
                 return refuse_content(error.what());
+            }
+        } else if (isRayRenderDocumentKind(target.kind)) {
+            // RTL-1a: judged by the parser the engine reads it with. Bindings
+            // are judged with the layout the restored root names, as this
+            // request restores it (an undo puts both back), else as it is.
+            try {
+                if (target.kind == "ray_group_layout") {
+                    (void)parseRayGroupLayout(*restore.content, restore.reference);
+                } else if (const auto layout = restored_ray_layout()) {
+                    (void)parseRayBindings(*restore.content, *layout,
+                                           restore.reference);
+                }
+            } catch (const std::exception &error) {
+                return rejection(
+                    rayParserCode(error.what(),
+                                  target.kind == "ray_group_layout"
+                                      ? rayGroupLayoutInvalidCode
+                                      : rayBindingsInvalidCode),
+                    error.what(),
+                    {{"method", std::string{method}},
+                     {"reference", restore.reference},
+                     {"document_kind", target.kind}});
             }
         } else if (!isRenderDocumentOfKind(*restore.content, target.kind)) {
             return refuse_content(
@@ -6225,6 +7468,35 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
         if (existing != candidate_documents.end()) *existing = std::move(document);
         else candidate_documents.push_back(std::move(document));
     }
+    // EB-2: the procedural records put back, judged with the layout the
+    // restored root names (as edit_ray_layout judges them); the runtime
+    // publishes them with the candidate (RTL-1a stage D).
+    std::optional<std::string> asset_data_restored_digest;
+    if (asset_data_restore) {
+        if (const auto layout = restored_ray_layout()) {
+            const auto document = OrderedJson::parse(asset_data_restore->bytes);
+            for (const auto &asset : document.value("procedural_geometry", OrderedJson::array())) {
+                if (!asset.is_object()) continue;
+                const auto name = asset.value("name", std::string{});
+                try {
+                    requireRayRecordMatches(Json::parse(asset.value("record", OrderedJson::object()).dump()),
+                                            *layout, asset_data_restore->reference + "#" + name);
+                } catch (const std::exception &error) {
+                    return rejection(rayParserCode(error.what(), "pelican.ray_binding_record_invalid@1"),
+                                     error.what(),
+                                     {{"method", std::string{method}},
+                                      {"reference", asset_data_restore->reference},
+                                      {"asset", name}});
+                }
+            }
+        }
+        asset_data_restored_digest = renderConfigSourceDigest(asset_data_restore->bytes);
+        const auto existing = std::find_if(
+            candidate_documents.begin(), candidate_documents.end(),
+            [&](const auto &entry) { return entry.normalized_reference == asset_data_restore->normalized_reference; });
+        if (existing != candidate_documents.end()) *existing = std::move(*asset_data_restore);
+        else candidate_documents.push_back(std::move(*asset_data_restore));
+    }
     // As add_authored_pass and remove_authored_pass order them: a created
     // document exists before a root names it, and a deleted one goes after
     // the root has stopped naming it. The transaction is atomic either way;
@@ -6249,8 +7521,7 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
     bool restart_required = false;
     try {
         restart_required =
-            readMaterialRouteDefault(
-                renderingSectionOrEmpty(Json::parse(document_.bytes()))) !=
+            heldRouteDefault(document_.bytes()) !=
             readMaterialRouteDefault(
                 renderingSectionOrEmpty(Json::parse(root.bytes())));
     } catch (const std::exception &error) {
@@ -6261,8 +7532,16 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
         std::string{method}, gate, document_.sourceDigest(), std::move(root),
         std::move(candidate_set), std::string{},
         /*edits_additional_documents=*/true, {}, restart_required);
-    if (result.value("status", std::string{}) == "accepted")
+    if (result.value("status", std::string{}) == "accepted") {
         pending_.back().reload_managed_baselines = true;
+        // EB-2: restoring these bytes in turn puts back what this replaced.
+        if (asset_data_restored_digest) {
+            procedural_record_versions_.insert_or_assign(*asset_data_restored_digest, asset_data_replaced);
+            auto before = OrderedJson{{asset_data_reference, asset_data_replaced.dump()}};
+            pending_.back().result_extras["procedural_records_before"] = before;
+            result["procedural_records_before"] = std::move(before);
+        }
+    }
     return result;
 }
 
@@ -6299,7 +7578,112 @@ void RenderConfigEditorService::verifyReloadedDocuments(
     }
 }
 
+void RenderConfigEditorService::noteProblems(
+    bool reload, bool source_only, const OrderedJson &result) const {
+    const auto status = result.value("status", std::string{});
+    if (status == "committed") {
+        // A reload takes in what is on disk; an edit that published a new
+        // generation composed every render document it reads. An edit that
+        // published nothing (no_change, or only authored bytes the engine
+        // never reads) composed nothing.
+        if (reload || (!source_only && !result.value("no_change", false)))
+            clearRenderPipelineProblems();
+        return;
+    }
+    if (!reload || !refusesDocuments(result)) return;
+    recordRenderPipelineProblem(
+        problemSourceReloadRpc,
+        Json::parse(result.at("error").dump()), dependencies_.source_reference);
+}
+
+bool RenderConfigEditorService::refusesDocuments(const OrderedJson &result) {
+    if (result.value("status", std::string{}) != "rejected") return false;
+    const auto error = result.find("error");
+    if (error == result.end() || !error->is_object()) return false;
+    const auto code = error->value("code", std::string{});
+    // Refusals of the moment, not of the documents.
+    return !(code == reloadBusyCode || code == "gate_closed" ||
+             code == "external_modification" ||
+             code == "stale_source_digest");
+}
+
+void RenderConfigEditorService::holdRefusedDocuments(
+    AuthoredRenderConfigDocument root,
+    const std::map<std::string, std::string> &digests, bool unparsed) {
+    if (!unparsed) {
+        readable_document_.reset();
+    } else if (!readable_document_ && Json::accept(document_.bytes())) {
+        // The root held until now stays what the structural reads answer
+        // from, with its managed fragments (a root that is not JSON names
+        // none).
+        readable_document_ = document_;
+        readable_document_live_ = documentsLive();
+    }
+    document_ = std::move(root);
+    for (const auto &[normalized, digest] : digests)
+        if (normalized != source_normalized_reference_)
+            known_document_digests_.insert_or_assign(normalized, digest);
+    holds_refused_documents_ = true;
+    // The managed fragments the held root names, as they are on disk.
+    if (!unparsed) loadManagedDocumentBaselines();
+}
+
+const AuthoredRenderConfigDocument &
+RenderConfigEditorService::readDocument() const {
+    return readable_document_ ? *readable_document_ : document_;
+}
+
+bool RenderConfigEditorService::readLive() const {
+    return readable_document_ ? readable_document_live_ : documentsLive();
+}
+
+OrderedJson RenderConfigEditorService::markRead(OrderedJson read) const {
+    if (readable_document_) read["held_unparsed"] = true;
+    return read;
+}
+
+void RenderConfigEditorService::noteHeldDocuments(const Ticket &ticket,
+                                                  const OrderedJson &result) {
+    const auto status = result.value("status", std::string{});
+    if (status == "committed") {
+        // Whatever committed is JSON: the editor holds a root that reads.
+        readable_document_.reset();
+        // As noteProblems clears the render pipeline's problems.
+        if (ticket.reload ||
+            (!ticket.source_only && !result.value("no_change", false)))
+            holds_refused_documents_ = false;
+        return;
+    }
+    if (ticket.reload && refusesDocuments(result)) {
+        try {
+            holdRefusedDocuments(ticket.candidate, ticket.reload_digests);
+        } catch (const std::exception &) {
+            // The refusal is the answer either way; the editor keeps the
+            // documents it held.
+        }
+    }
+}
+
+bool RenderConfigEditorService::documentsLive() const {
+    if (holds_refused_documents_) return false;
+    try {
+        return !(dependencies_.runtime_fallback &&
+                 dependencies_.runtime_fallback());
+    } catch (const std::exception &) {
+        return true;
+    }
+}
+
 OrderedJson RenderConfigEditorService::reloadRenderDocuments(
+    const Json &params, bool preview_open) {
+    auto answer = reloadRenderDocumentsUnnoted(params, preview_open);
+    // A reload refused at once; one accepted is noted when its ticket ends.
+    if (answer.value("status", std::string{}) == "rejected")
+        noteProblems(true, false, answer);
+    return answer;
+}
+
+OrderedJson RenderConfigEditorService::reloadRenderDocumentsUnnoted(
     const Json &params, bool preview_open) {
     constexpr std::string_view method = "reload_render_documents";
     requireOnly(params, {}, method);
@@ -6347,6 +7731,17 @@ OrderedJson RenderConfigEditorService::reloadRenderDocuments(
         return rejection("render_pipeline_preflight_failed", error.what(),
                          preflight_details(dependencies_.source_reference));
     }
+    // BS-1b: one that is not JSON, by name. RR-1: held as its bytes, as an
+    // engine on its fallback holds it, so a restore on its digest replaces
+    // it.
+    if (auto refused = syntaxRejection(
+            root_bytes, dependencies_.source_reference, method)) {
+        holdRefusedDocuments(AuthoredRenderConfigDocument::unparsed(root_bytes),
+                             {}, /*unparsed=*/true);
+        return *refused;
+    }
+    // A root that is JSON but not a pelican.graph object is refused and not
+    // held: the editor holds a graph root or bytes that are not JSON.
     std::optional<AuthoredRenderConfigDocument> root;
     try {
         root = AuthoredRenderConfigDocument::inspect(root_bytes);
@@ -6377,6 +7772,16 @@ OrderedJson RenderConfigEditorService::reloadRenderDocuments(
             .expected = {RenderConfigDocumentExistence::present, digest},
             .bytes = std::move(bytes),
         });
+    };
+    // RR-1: a refusal of what was read makes the root and every document
+    // read so far the editor's base.
+    const auto held_refusal = [&](OrderedJson refusal) {
+        std::map<std::string, std::string> read;
+        for (const auto &document : documents)
+            read.insert_or_assign(document.normalized_reference,
+                                  document.expected.digest);
+        holdRefusedDocuments(*root, read);
+        return refusal;
     };
     add_document(dependencies_.source_reference, source_normalized_reference_,
                  dependencies_.source_path, root_bytes);
@@ -6412,7 +7817,7 @@ OrderedJson RenderConfigEditorService::reloadRenderDocuments(
                                              documents},
             root_bytes);
     } catch (const std::exception &error) {
-        return preflightRejection(error, preflight_details());
+        return held_refusal(preflightRejection(error, preflight_details()));
     }
 
     std::map<std::string, std::string> published;
@@ -6440,9 +7845,9 @@ OrderedJson RenderConfigEditorService::reloadRenderDocuments(
                 add_document(entry.reference, entry.normalized_reference,
                              entry.path, readFileBytes(entry.path));
             } catch (const std::exception &error) {
-                return rejection("render_pipeline_preflight_failed",
-                                 error.what(),
-                                 preflight_details(entry.reference));
+                return held_refusal(
+                    rejection("render_pipeline_preflight_failed", error.what(),
+                              preflight_details(entry.reference)));
             }
         }
         const std::string digest = documents[index].expected.digest;
@@ -6490,27 +7895,32 @@ OrderedJson RenderConfigEditorService::reloadRenderDocuments(
         for (const auto &[asset, differs] : asset_changed)
             if (differs) changed_assets.push_back(asset);
     }
-    const bool no_change = changed.empty() && changed_assets.empty();
-    RenderConfigCandidateDocumentSet candidate_set{
-        source_normalized_reference_, std::move(documents)};
+    // BS-1: on the engine's fallback nothing on disk is live, so the
+    // documents are composed whether or not they changed. RR-1: nor is what
+    // the editor holds after a refused reload.
+    const bool no_change =
+        documentsLive() && changed.empty() && changed_assets.empty();
 
     // G-4: material_route_default is read once per engine start.
     bool restart_required = false;
     try {
         restart_required =
-            readMaterialRouteDefault(
-                renderingSectionOrEmpty(Json::parse(document_.bytes()))) !=
+            heldRouteDefault(document_.bytes()) !=
             readMaterialRouteDefault(
                 renderingSectionOrEmpty(Json::parse(root->bytes())));
     } catch (const std::exception &error) {
-        return preflightRejection(error, preflight_details());
+        return held_refusal(preflightRejection(error, preflight_details()));
     }
     // G-6: every variant the engine registered composes it first.
     if (!no_change) {
-        if (auto refused =
-                preflightGraphVariants(candidate_set, preflight_details()))
-            return *refused;
+        if (auto refused = preflightGraphVariants(
+                RenderConfigCandidateDocumentSet{source_normalized_reference_,
+                                                 documents},
+                preflight_details()))
+            return held_refusal(std::move(*refused));
     }
+    RenderConfigCandidateDocumentSet candidate_set{
+        source_normalized_reference_, std::move(documents)};
 
     const auto ticket_id =
         "render-config-reload-" + std::to_string(next_ticket_++);
@@ -6566,6 +7976,9 @@ void RenderConfigEditorService::completeCommitTransaction(
         if (!result.contains("ticket")) {
             result["ticket"] = transaction->ticket.id;
         }
+        noteProblems(transaction->ticket.reload,
+                     transaction->ticket.source_only, result);
+        noteHeldDocuments(transaction->ticket, result);
         results_[transaction->ticket.id] = result;
         completed_.push_back(std::move(result));
     };
@@ -6608,6 +8021,10 @@ void RenderConfigEditorService::completeCommitTransaction(
             restart_reason =
                 physicalContractRestartReason(applied.exception);
             if (restart_reason) {
+                if (auto refused = restartGraphRejection(*transaction->ticket.candidate_documents)) {
+                    finish(std::move(*refused));
+                    return;
+                }
                 const auto runtime = dependencies_.runtime_snapshot();
                 try {
                     if (transaction->ticket.reload) {
@@ -6682,6 +8099,17 @@ void RenderConfigEditorService::completeCommitTransaction(
                 if (auto refusal = physicalFragmentStaleRefusal(
                         applied.exception,
                         transaction->ticket.candidate.bytes(), details)) {
+                    finish(std::move(*refusal));
+                    return;
+                }
+                // RTL-1b: a ray tracing task's refusal by the parser's
+                // code, with its fields.
+                if (auto refusal = rayTracingTaskRefusal(
+                        applied.exception,
+                        transaction->ticket.candidate_documents
+                            ? &*transaction->ticket.candidate_documents
+                            : nullptr,
+                        details)) {
                     finish(std::move(*refusal));
                     return;
                 }
@@ -6851,6 +8279,8 @@ void RenderConfigEditorService::commitPending() noexcept {
         auto &ticket = *ticket_iterator;
         auto finish = [&](OrderedJson result) {
             if (!result.contains("ticket")) result["ticket"] = ticket.id;
+            noteProblems(ticket.reload, ticket.source_only, result);
+            noteHeldDocuments(ticket, result);
             results_[ticket.id] = result;
             completed_.push_back(std::move(result));
         };
@@ -6970,6 +8400,15 @@ void RenderConfigEditorService::commitPending() noexcept {
                     {"documents", std::move(written_documents)},
                 }, runtime.preview));
                 continue;
+            }
+
+            // A route-default edit can apply live yet still ask for a
+            // restart. Judge its startup graph before apply can commit it.
+            if (ticket.restart_required && ticket.candidate_documents) {
+                if (auto refused = restartGraphRejection(*ticket.candidate_documents)) {
+                    finish(std::move(*refused));
+                    continue;
+                }
             }
 
             transaction = std::make_shared<CommitTransaction>(

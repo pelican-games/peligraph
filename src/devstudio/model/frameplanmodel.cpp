@@ -279,7 +279,8 @@ std::vector<FramePlanLoop> optionalLoops(const Json &root) {
                         entry.value("index", Json{0}), element_context + ".index")),
                     static_cast<std::size_t>(unsignedInteger(
                         entry.value("branch", Json{0}), element_context + ".branch")),
-                    material ? element->get<std::string>() : std::string{}});
+                    material ? element->get<std::string>() : std::string{},
+                    entry.value("vertex_modes", std::vector<std::string>{})});
             }
         }
         loop.pass = optionalStringField(value, "pass", context);
@@ -599,6 +600,129 @@ std::vector<Entry> parseOptionalArray(const Json &object,
                                   std::string{field} + "[" +
                                   std::to_string(index) + "]"));
     }
+    return result;
+}
+
+// --- UX-15b. What the plan ejects and applies, its rewrites, and the
+// ray-query scene. They are read leniently: a plan that predates one of them,
+// or carries one in a shape Studio does not know, still opens.
+
+std::string stringOr(const Json &object, std::string_view field) {
+    if (!object.is_object()) return {};
+    const auto found = object.find(field);
+    return found != object.end() && found->is_string() ? found->get<std::string>()
+                                                       : std::string{};
+}
+
+std::uint64_t unsignedOr(const Json &object, std::string_view field) {
+    if (!object.is_object()) return 0;
+    const auto found = object.find(field);
+    return found != object.end() && found->is_number_unsigned()
+               ? found->get<std::uint64_t>()
+               : 0;
+}
+
+std::vector<std::string> stringsOr(const Json &object, std::string_view field) {
+    std::vector<std::string> result;
+    if (!object.is_object()) return result;
+    const auto found = object.find(field);
+    if (found == object.end() || !found->is_array()) return result;
+    for (const auto &entry : *found)
+        if (entry.is_string()) result.push_back(entry.get<std::string>());
+    return result;
+}
+
+void readPlanPackages(const Json &physical, FramePlanPhysicalPlan &plan) {
+    const auto package = [&](std::string_view field) {
+        const auto found = physical.find(field);
+        return found != physical.end() && found->is_object() ? found->dump() : std::string{};
+    };
+    plan.ejectable_pin_package = package("ejectable_pin_package");
+    plan.ejectable_physical_fragment = package("ejectable_physical_fragment");
+    plan.applied_pin_package = package("applied_pin_package");
+    plan.applied_physical_fragment = package("applied_physical_fragment");
+    if (const auto applied = physical.find("applied_pin_package");
+        applied != physical.end() && applied->is_object())
+        plan.pinned_backend_candidate =
+            stringOr(applied->value("pins", Json::object()), "backend_candidate");
+
+    const auto rewrite = [](const Json &entry, std::string kind, std::string name) {
+        return FramePlanRewrite{
+            .kind = std::move(kind),
+            .name = std::move(name),
+            .provider = stringOr(entry, "provider"),
+            .implementation = stringOr(entry, "implementation"),
+            .source_nodes = stringsOr(entry, "source_nodes"),
+            .replacement_nodes = stringsOr(entry, "replacement_nodes"),
+            .graph_variant = stringOr(entry, "graph_variant"),
+            .explicitly_selected = entry.value("explicitly_selected", false),
+        };
+    };
+    if (const auto found = physical.find("subgraph_replacements");
+        found != physical.end() && found->is_array())
+        for (const auto &entry : *found)
+            if (entry.is_object())
+                plan.rewrites.push_back(
+                    rewrite(entry, "subgraph_replacement", stringOr(entry, "region")));
+    if (const auto found = physical.find("graph_transforms");
+        found != physical.end() && found->is_array())
+        for (const auto &entry : *found)
+            if (entry.is_object())
+                plan.rewrites.push_back(rewrite(entry, "graph_transform", stringOr(entry, "name")));
+    if (const auto found = physical.find("render_strategy");
+        found != physical.end() && found->is_object())
+        plan.rewrites.push_back(rewrite(*found, "render_strategy", stringOr(*found, "name")));
+}
+
+std::optional<FramePlanRayQueryStructures> readRayQueryStructures(const Json &root) {
+    const auto found = root.find("ray_query_acceleration_structures");
+    if (found == root.end() || !found->is_object()) return std::nullopt;
+    const auto &value = *found;
+    FramePlanRayQueryStructures result;
+    result.requested = value.value("requested", false);
+    result.active_blas_count = unsignedOr(value, "active_blas_count");
+    result.blas_variant_count = unsignedOr(value, "blas_variant_count");
+    result.tlas_instance_count = unsignedOr(value, "tlas_instance_count");
+    if (const auto named = value.find("named_tlas_instance_counts");
+        named != value.end() && named->is_object())
+        for (const auto &[name, count] : named->items())
+            result.named_tlas_instance_counts.emplace_back(
+                name, count.is_number_unsigned() ? count.get<std::uint64_t>() : 0);
+    if (const auto keys = value.find("resident_blas_keys");
+        keys != value.end() && keys->is_array())
+        for (const auto &key : *keys)
+            if (key.is_object())
+                result.resident_blas_keys.push_back(FramePlanBlasKey{
+                    .geometry_kind = stringOr(key, "geometry_kind"),
+                    .geometry_allocation_id = unsignedOr(key, "geometry_allocation_id"),
+                    .geometry_flags = unsignedOr(key, "geometry_flags"),
+                    .geometry_count = unsignedOr(key, "geometry_count"),
+                });
+    // RTL-2s b, decision 4 (engine RTL-1b).
+    const auto blasKey = [](const Json &key) {
+        return FramePlanBlasKey{
+            .geometry_kind = stringOr(key, "geometry_kind"),
+            .geometry_allocation_id = unsignedOr(key, "geometry_allocation_id"),
+            .geometry_flags = unsignedOr(key, "geometry_flags"),
+            .geometry_count = unsignedOr(key, "geometry_count"),
+        };
+    };
+    if (const auto named = value.find("named_tlas_blas"); named != value.end() && named->is_object())
+        for (const auto &[name, keys] : named->items()) {
+            std::vector<FramePlanBlasKey> listed;
+            if (keys.is_array())
+                for (const auto &key : keys)
+                    if (key.is_object()) listed.push_back(blasKey(key));
+            result.named_tlas_blas.emplace_back(name, std::move(listed));
+        }
+    if (const auto excluded = value.find("excluded"); excluded != value.end() && excluded->is_object())
+        for (const auto &[name, entry] : excluded->items()) {
+            if (entry.is_number_unsigned() && entry.get<std::uint64_t>() > 0)
+                result.excluded_counts.emplace_back(name, entry.get<std::uint64_t>());
+            else if (entry.is_array())
+                for (const auto &each : entry)
+                    if (each.is_string()) result.excluded_names.push_back(each.get<std::string>());
+        }
     return result;
 }
 
@@ -1507,6 +1631,7 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
             model.physical_plan.wire_sections.push_back(
                 FramePlanWireSection{.name = name, .json = value.dump()});
         }
+        readPlanPackages(physical, model.physical_plan);
 
         const auto &alias_groups =
             requireArrayField(physical, "alias_groups", "physical_target_plan");
@@ -2095,7 +2220,29 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
         }
     }
 
+    model.ray_query = readRayQueryStructures(root);
     return model;
+}
+
+std::string framePlanRewriteLine(const FramePlanRewrite &rewrite) {
+    std::string line = rewrite.kind == "subgraph_replacement" ? "subgraph replacement "
+                       : rewrite.kind == "graph_transform"    ? "graph transform "
+                                                              : "render strategy ";
+    line += rewrite.name.empty() ? std::string{"?"} : rewrite.name;
+    if (!rewrite.provider.empty()) line += " by " + rewrite.provider;
+    if (!rewrite.implementation.empty()) line += " (" + rewrite.implementation + ")";
+    if (!rewrite.graph_variant.empty()) line += ", graph variant " + rewrite.graph_variant;
+    return line;
+}
+
+std::vector<std::string> framePlanReplacedByLines(const FramePlanModel &model,
+                                                  std::string_view node) {
+    std::vector<std::string> lines;
+    for (const auto &rewrite : model.physical_plan.rewrites)
+        if (std::ranges::find(rewrite.replacement_nodes, node) !=
+            rewrite.replacement_nodes.end())
+            lines.push_back(framePlanRewriteLine(rewrite));
+    return lines;
 }
 
 bool materialContractTakesDeferredRoute(std::string_view contract) {
@@ -2112,6 +2259,74 @@ std::string framePlanInitialAssetLine(const FramePlanInitialAsset &initial) {
 bool materialRouteOffersForwardDefault(std::string_view contract,
                                        bool pipeline_has_deferred_pass) {
     return contract == "forward_opaque_v1" && !pipeline_has_deferred_pass;
+}
+
+std::vector<MaterialPassSlot> materialPassSlots(const std::string &contract,
+                                                bool hdr) {
+    const auto color = [](std::string id, std::string role, std::string name,
+                          std::string format, std::string format_class) {
+        return MaterialPassSlot{
+            .id = std::move(id),
+            .role = std::move(role),
+            .default_name = std::move(name),
+            .format = std::move(format),
+            .format_class = std::move(format_class),
+            .usage = {"COLOR_ATTACHMENT", "SAMPLED"},
+        };
+    };
+    std::vector<MaterialPassSlot> outputs;
+    if (contract == "forward_opaque_v1" || contract == "forward_transparent_v1") {
+        // A forward pass writes scene-linear color that is composed before the
+        // one presentation curve: always R16G16B16A16_SFLOAT, HDR or not.
+        outputs.push_back(color("color", "scene color", "scene_color",
+                                "R16G16B16A16_SFLOAT",
+                                "explicit(R16G16B16A16_SFLOAT)"));
+    } else if (contract == "deferred_geometry_v1" ||
+               contract == "legacy_gbuffer_v1") {
+        // The G-buffer table (materialpassattachments.hpp): the SDR and HDR
+        // columns differ only where the target is a scene-class one.
+        const std::string scene = hdr ? "R16G16B16A16_SFLOAT" : "B8G8R8A8_SRGB";
+        outputs.push_back(color("albedo", "albedo", "gbuffer_albedo", scene, "scene"));
+        outputs.push_back(color("normal", "normal", "gbuffer_normal",
+                                "R16G16B16A16_SFLOAT", "data"));
+        outputs.push_back(color("material", "material", "gbuffer_material",
+                                "R8G8B8A8_UNORM", "data"));
+        outputs.push_back(color("world_position", "world position",
+                                "gbuffer_worldpos", "R16G16B16A16_SFLOAT",
+                                "data"));
+        outputs.push_back(color("emissive", "emissive", "gbuffer_emissive",
+                                scene, "scene"));
+    } else {
+        return outputs;
+    }
+    outputs.push_back(MaterialPassSlot{
+        .id = "depth",
+        .role = "depth",
+        .default_name = "scene_depth",
+        .format = "D32_SFLOAT",
+        .format_class = "data",
+        .usage = {"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"},
+        .depth = true,
+    });
+    return outputs;
+}
+
+bool materialPassHdr(bool enabled_features_known,
+                     const std::vector<std::string> &enabled_features) {
+    if (!enabled_features_known) return true;
+    return std::ranges::find(enabled_features, "hdr") != enabled_features.end();
+}
+
+bool materialPassHdr(const Json &authoring_context) {
+    const auto features = authoring_context.is_object()
+                              ? authoring_context.find("enabled_feature_names")
+                              : authoring_context.end();
+    if (features == authoring_context.end() || !features->is_array())
+        return materialPassHdr(false, {});
+    std::vector<std::string> names;
+    for (const auto &feature : *features)
+        if (feature.is_string()) names.push_back(feature.get<std::string>());
+    return materialPassHdr(true, names);
 }
 
 std::string materialRouteUnservedNotice(const Json &error) {

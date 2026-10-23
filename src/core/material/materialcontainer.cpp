@@ -9,6 +9,7 @@
 #include "../renderingpass/rendertargetimageviewresolver.hpp"
 #include "../shader/pelican_sets.hpp"
 #include "../shader/pipelinefactory.hpp"
+#include "../shader/passcontractrefusal.hpp"
 #include "../shader/surfacecompiler.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
@@ -16,9 +17,12 @@
 #include "../vkcore/util.hpp"
 #include "../watch/reloadservice.hpp"
 #include "materialdrawlooptable.hpp"
+#include "materialregistration.hpp"
 #include "materialgenerationplanner.hpp"
 #include "materiallimits.hpp"
 #include "standardmaterialresource.hpp"
+#include "../watch/problemlist.hpp"
+#include "../loader/basicconfig.hpp"
 #include "materialvaluesreloadhandler.hpp"
 #include "texturereloadhandler.hpp"
 #include <algorithm>
@@ -106,11 +110,11 @@ static void validateMaterialInputAttachmentFormat(
 static std::string makePipelineKey(
     const MaterialInfo &info,
     const MaterialPipelineRenderingContract
-        &rendering, bool allow_ray_query) {
+        &rendering, bool allow_ray_query, VertexMode mode) {
     std::ostringstream key;
     key << "ray_query=" << allow_ray_query << ':';
-    key << info.vert_shader.value << ':' << info.frag_shader.value << ':'
-        << info.skinned << ':'
+    key << (mode == VertexMode::skinned ? *info.skinned_vert_shader : info.vert_shader).value
+        << ':' << info.frag_shader.value << ':' << static_cast<int>(mode) << ':'
         << static_cast<int>(info.shader_contract) << ':'
         << static_cast<int>(info.render_state.blend) << ':'
         << static_cast<int>(info.render_state.cull) << ':'
@@ -425,15 +429,15 @@ static GraphicsPipelineDesc makeMaterialPipelineDesc(
     const MaterialPipelineRenderingContract
         &rendering,
     std::vector<ShaderResourceInterfaceBinding>
-        resource_interface, bool allow_ray_query) {
+        resource_interface, bool allow_ray_query, VertexMode mode) {
     GraphicsPipelineDesc desc;
     desc.allow_ray_query = allow_ray_query;
-    desc.vert = info.vert_shader;
+    desc.vert = mode == VertexMode::skinned ? *info.skinned_vert_shader : info.vert_shader;
     desc.frag = info.frag_shader;
     desc.color_formats = rendering.color_formats;
     desc.depth_format = rendering.depth_format;
-    desc.use_engine_vertex_layout = !info.skinned;
-    desc.use_skinned_vertex_layout = info.skinned;
+    desc.use_engine_vertex_layout = mode == VertexMode::standard;
+    desc.use_skinned_vertex_layout = mode == VertexMode::skinned;
     desc.depth_test = info.render_state.depth_test;
     desc.depth_write = info.render_state.depth_write;
     desc.depth_compare = toVkCompare(info.render_state.depth_compare);
@@ -488,7 +492,7 @@ static ReflectedImageViewDimension reflectedTextureDimension(
 static void validateMaterialTextureReflection(
     const MaterialInfo &info,
     const ShaderReflection &reflection,
-    bool split_custom_samplers) {
+    bool split_custom_samplers, bool allow_unused = false) {
     for (std::size_t index = 0;
          index < info.custom_textures.size(); ++index) {
         const auto &texture = info.custom_textures[index];
@@ -512,6 +516,7 @@ static void validateMaterialTextureReflection(
                            image_binding;
             });
         if (image == reflection.bindings.end()) {
+            if (allow_unused) continue;
             throw std::runtime_error(
                 "material texture '" + texture.name +
                 "' is absent from shader reflection at binding " +
@@ -579,7 +584,7 @@ resolveReflectedMaterialPassInputs(
     std::span<const MaterialScreenInputContract>
         declared_screen_inputs,
     std::span<const ShaderResourceInterfaceBinding>
-        resource_interface) {
+        resource_interface, bool ignore_unused = false) {
     const auto &reflection =
         GET_MODULE(PipelineFactory)
             .reflection(pipeline);
@@ -588,6 +593,10 @@ resolveReflectedMaterialPassInputs(
     bindings.reserve(reflection.bindings.size());
     for (const auto &binding :
          reflection.bindings) {
+        // The authored vertex keeps declarations for fragment-only inputs.
+        // Its unused declarations need neither a substitute-pass resource nor
+        // a descriptor write; statically accessed vertex inputs still validate.
+        if (ignore_unused && !binding.accessed) continue;
         if (binding.set !=
             PELICAN_SET_PASS_INPUT) {
             continue;
@@ -822,6 +831,40 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     }
     info.tags = canonicalizeMaterialDrawTags(
         std::move(info.tags), "registered material");
+    std::optional<UnservedMaterial> unserved;
+    const auto &passes = GET_MODULE(RenderingPassContainer);
+    if (!passes.supportsMaterialPass(info.route, info.shader_contract, info.exact_pass)) {
+        if (const auto substitute = passes.substituteMaterialPass(info.shader_contract)) {
+            auto reason = materialRouteUnservedText(
+                {UnservedMaterialRoute{info.route, info.shader_contract,
+                    {describeUnservedMaterial(info.name, info.source_document, info.source_asset)}}},
+                GET_MODULE(ProjectBasicConfig).renderingConfigReference());
+            if (info.exact_pass) reason += " (the material selects exact pass '" + *info.exact_pass + "')";
+            reason += ". Add a pass for the authored route to restore normal rendering.";
+            unserved = UnservedMaterial{info.route, info.shader_contract, info.exact_pass,
+                substitute->route, substitute->name, std::move(reason)};
+            info.route = substitute->route;
+            info.shader_contract = substitute->shader_contract;
+            info.exact_pass = substitute->name;
+            info.output_schema = passes.materialOutputSchema(info.route, info.exact_pass);
+            const auto &shaders = GET_MODULE(ShaderLibrary);
+            const auto &vertex_defines = shaders.get(info.vert_shader).defines;
+            const bool compact_vertex = !shaders.surfaceFragmentForVertex(info.vert_shader) ||
+                std::find(vertex_defines.begin(), vertex_defines.end(), "PELICAN_COMPACT_STANDARD_VERTEX_ABI") != vertex_defines.end();
+            info.frag_shader = StandardMaterialResource::errorFragmentShader(info.route, info.output_schema, compact_vertex);
+            info.render_state.blend = SurfaceBlendMode::opaque;
+            info.render_state.depth_test = true;
+            info.render_state.depth_write = true;
+            info.alpha_mode = MaterialAlphaMode::opaque;
+            // Fragment-only inputs have no meaning in the error surface.
+            // Keep vertex resources and all material values/textures for its authored vertex.
+            info.screen_inputs.clear();
+            std::erase_if(info.resource_ports, [](const auto &port) {
+                return port.stage == SurfaceResourcePortStage::fragment;
+            });
+            for (auto &port : info.resource_ports) port.stage = SurfaceResourcePortStage::vertex;
+        }
+    }
     const auto &fragment_bundle =
         GET_MODULE(ShaderLibrary).get(info.frag_shader);
     if (info.output_schema &&
@@ -842,8 +885,11 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
             *info.output_schema,
             "registered material fragment shader");
     }
-    const auto rendering =
-        resolveMaterialPipelineRenderingContract(info);
+    auto rendering = resolveMaterialPipelineRenderingContract(info);
+    if (unserved) {
+        for (auto &state : rendering.output_states)
+            if (state.blend) state.blend->enabled = false;
+    }
     validateMaterialCapabilities(info, rendering);
     auto resource_interface =
         resolveMaterialResourceInterface(info);
@@ -851,34 +897,62 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         info.route, info.shader_contract, info.exact_pass);
     const bool allow_ray_query = !pass_bindings.empty() && std::all_of(
         pass_bindings.begin(), pass_bindings.end(), [](const auto &binding) { return binding.ray_query; });
-    const auto pipeline_key =
-        makePipelineKey(info, rendering, allow_ray_query);
-    auto pipeline_it = pipelines.find(pipeline_key);
-    if (pipeline_it == pipelines.end() || GET_MODULE(PipelineFactory).graphicsDesc(pipeline_it->second).allow_ray_query != allow_ray_query) {
-        const auto pipeline_handle =
-            GET_MODULE(PipelineFactory)
-                .create(makeMaterialPipelineDesc(
-                    info, rendering,
-                    resource_interface, allow_ray_query));
-        pipeline_it = pipelines.insert_or_assign(pipeline_key, pipeline_handle).first;
-        if (!default_pipeline) {
-            default_pipeline = pipeline_handle;
+    std::array<std::optional<PipelineHandle>, 2> mode_pipelines;
+    for (const auto mode : vertexModes) {
+        if (mode == VertexMode::skinned && !info.skinned_vert_shader) continue;
+        const auto pipeline_key =
+            makePipelineKey(info, rendering, allow_ray_query, mode);
+        auto pipeline_it = pipelines.find(pipeline_key);
+        if (pipeline_it == pipelines.end() || GET_MODULE(PipelineFactory).graphicsDesc(pipeline_it->second).allow_ray_query != allow_ray_query) {
+            const auto pipeline_handle = [&] {
+                try {
+                    return GET_MODULE(PipelineFactory)
+                        .create(makeMaterialPipelineDesc(
+                            info, rendering,
+                            resource_interface, allow_ray_query, mode));
+                } catch (const PassContractRefusal &refusal) {
+                    // FO-2: named by the material and the passes that do not
+                    // declare what its surface uses; the sentence stays.
+                    std::vector<std::string> passes;
+                    for (const auto &binding : pass_bindings)
+                        if (refusal.requirement() != "ray_query" || !binding.ray_query)
+                            if (std::find(passes.begin(), passes.end(), binding.pass_name) == passes.end())
+                                passes.push_back(binding.pass_name);
+                    throw PassContractRefusal(refusal.requirement(), std::move(passes), info.name,
+                                              refusal.what());
+                }
+            }();
+            pipeline_it = pipelines.insert_or_assign(pipeline_key, pipeline_handle).first;
+            if (!default_pipeline && mode == VertexMode::standard) {
+                default_pipeline = pipeline_handle;
+            }
+        }
+        mode_pipelines[static_cast<std::size_t>(mode)] = pipeline_it->second;
+    }
+    const auto pipeline = *mode_pipelines[0];
+    if (mode_pipelines[1]) {
+        const auto &factory = GET_MODULE(PipelineFactory);
+        for (const auto set : std::array<std::uint32_t, 2>{imageDescriptorSetNumber, PELICAN_SET_PASS_INPUT}) {
+            if (makeDescriptorSetLayoutBindings(factory.reflection(pipeline), set) !=
+                makeDescriptorSetLayoutBindings(factory.reflection(*mode_pipelines[1]), set)) {
+                throw std::runtime_error("material '" + info.name +
+                    "' has incompatible standard/skinned descriptor set " + std::to_string(set));
+            }
         }
     }
-    const auto pipeline = pipeline_it->second;
     const auto &pipeline_reflection =
         GET_MODULE(PipelineFactory)
             .reflection(pipeline);
     validateMaterialTextureReflection(
         info, pipeline_reflection,
-        split_custom_samplers);
+        split_custom_samplers, unserved.has_value());
     validateShaderResourceInterfaceReflection(
         resource_interface, pipeline_reflection,
         PELICAN_SET_PASS_INPUT);
     auto reflected_pass_inputs =
         resolveReflectedMaterialPassInputs(
             pipeline, info.screen_inputs,
-            resource_interface);
+            resource_interface, unserved.has_value());
     std::vector<
         InternalMaterialInfo::PassInput>
         pass_inputs;
@@ -1039,6 +1113,11 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     std::vector<vk::WriteDescriptorSet> writes;
     writes.reserve(texture_binding_count + info.custom_textures.size() + 1);
     const auto addImageWrite = [&](uint32_t binding, vk::DescriptorType type) {
+        if (unserved && std::none_of(pipeline_reflection.bindings.begin(), pipeline_reflection.bindings.end(),
+                [&](const auto &reflected) { return reflected.set == imageDescriptorSetNumber && reflected.binding == binding; })) {
+            std::erase_if(texture_bindings, [&](const auto &texture) { return texture.binding == binding; });
+            return;
+        }
         vk::WriteDescriptorSet write;
         write.dstSet = descset.get();
         write.dstBinding = binding;
@@ -1081,7 +1160,7 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
 
     const auto gpu_data = makeMaterialGpuData(info);
     const auto material_id = materials.reg(InternalMaterialInfo{
-        .pipeline = pipeline,
+        .pipeline = mode_pipelines,
         .ray_generation = ray_generation,
         .ray_lease = std::move(ray_lease),
         .name = std::move(info.name),
@@ -1099,6 +1178,7 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         .pipeline_output_states =
             rendering.output_states,
         .tags = std::move(info.tags),
+        .unserved = std::move(unserved),
         .route = info.route,
         .shader_contract = info.shader_contract,
         .output_schema =
@@ -1113,7 +1193,7 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         .declared_resource_ports =
             std::move(info.resource_ports),
         .render_state = info.render_state,
-        .skinned = info.skinned,
+        .skinned_vert_shader = info.skinned_vert_shader,
         .base_color_texture = info.base_color_texture,
         .metallic_roughness_texture = info.metallic_roughness_texture,
         .normal_texture = info.normal_texture,
@@ -1172,7 +1252,7 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         if (texture_reload_handler) texture_reload_handler->materialRegistered(material_id);
         // LP-2: a material registered while generations are alive is
         // judged by their draw-loop rules now, not at the next publication.
-        if (!registering_variant_records) {
+        if (!defer_material_publication) {
             MaterialDrawLoopTable::materialRegisteredInLiveTables(
                 material_id);
         }
@@ -1186,14 +1266,35 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         MaterialDrawLoopTable::materialReleasedFromLiveTables(material_id);
         throw;
     }
+    if (!defer_material_publication) publishUnservedProblems();
     return material_id;
+}
+
+GlobalMaterialId MaterialContainer::registerMaterial(
+    MaterialInfo info,
+    std::vector<NamedMaterialVariantRegistration> variants) {
+    const auto material = registerMaterialFamily(
+        defer_material_publication,
+        [&] { return registerMaterial(std::move(info)); },
+        [&](GlobalMaterialId base) {
+            registerMaterialVariants(base, std::move(variants));
+        },
+        [](GlobalMaterialId base) {
+            MaterialDrawLoopTable::materialRegisteredInLiveTables(base);
+        },
+        [&](GlobalMaterialId base) {
+            ReleaseErrorSink::record("material family rollback release",
+                                    releaseModelResources({base}, {}, false));
+        });
+    if (!defer_material_publication) publishUnservedProblems();
+    return material;
 }
 
 void MaterialContainer::registerMaterialVariants(
     GlobalMaterialId base,
     std::vector<NamedMaterialVariantRegistration> registrations) {
     const auto &registered_base = materials.get(base);
-    const auto base_route = registered_base.route;
+    const auto base_route = registered_base.unserved ? registered_base.unserved->authored_route : registered_base.route;
     MaterialInfo inherited_appearance;
     inheritFromBase(inherited_appearance,
                     registered_base);
@@ -1233,11 +1334,7 @@ void MaterialContainer::registerMaterialVariants(
 
     try {
         {
-            registering_variant_records = true;
-            struct ResetFlag {
-                bool &flag;
-                ~ResetFlag() { flag = false; }
-            } reset_flag{registering_variant_records};
+            ScopedMaterialPublicationDeferral defer{defer_material_publication};
             for (auto &registration : registrations) {
                 inheritFromBase(registration.material,
                                 inherited_appearance);
@@ -1253,7 +1350,9 @@ void MaterialContainer::registerMaterialVariants(
         attached = true;
         // LP-2: the base now has these variants; its draw-loop steps may
         // name them.
-        MaterialDrawLoopTable::materialRegisteredInLiveTables(base);
+        if (!defer_material_publication) {
+            MaterialDrawLoopTable::materialRegisteredInLiveTables(base);
+        }
 
         const auto prewarm =
             [&](const CompiledRenderingPass &rendering_pass) {
@@ -1291,7 +1390,9 @@ void MaterialContainer::registerMaterialVariants(
             // LP-2: tables that already took the new variants judge the
             // base again as it was.
             try {
-                MaterialDrawLoopTable::materialRegisteredInLiveTables(base);
+                if (!defer_material_publication) {
+                    MaterialDrawLoopTable::materialRegisteredInLiveTables(base);
+                }
             } catch (...) {
             }
         }
@@ -1305,6 +1406,7 @@ void MaterialContainer::registerMaterialVariants(
                                  releaseModelResources(std::move(resources), {}, false));
         throw;
     }
+    if (!defer_material_publication) publishUnservedProblems();
 }
 
 GlobalMaterialId MaterialContainer::materialVariantResource(
@@ -1401,6 +1503,8 @@ ReleaseReport MaterialContainer::releaseModelResources(
             }
         }
 
+        publishUnservedProblems();
+
         for (const auto texture : texture_ids) {
             try {
                 const auto reverse = texture_materials.find(texture);
@@ -1464,6 +1568,20 @@ bool sameValuesLayout(const Std140Layout &left, const Std140Layout &right) {
 
 } // namespace
 
+void MaterialContainer::updateRayAlphaCutoff(
+    InternalMaterialInfo &material, const Std140Layout &layout,
+    std::span<const std::byte> values) {
+    const auto cutoff = rayAlphaCutoff(layout, values);
+    if (material.alpha_cutoff == cutoff) return;
+    if (next_ray_material_generation ==
+        std::numeric_limits<std::uint64_t>::max()) {
+        throw std::runtime_error("ray material generation identity exhausted");
+    }
+    material.alpha_cutoff = cutoff;
+    material.ray_generation = next_ray_material_generation++;
+    // The registration and its resources still have the same lifetime lease.
+}
+
 bool MaterialContainer::materialValuesLayoutMatches(GlobalMaterialId material,
                                                      const Std140Layout &layout) const {
     return sameValuesLayout(materials.get(material).custom_values_layout, layout);
@@ -1489,6 +1607,7 @@ void MaterialContainer::updateMaterialValues(GlobalMaterialId material,
                         offsetof(MaterialGpuData, custom_values);
     GET_MODULE(VulkanManageCore).writeBuf(material_buffer, packed.data(), offset,
                                           sizeof(packed));
+    updateRayAlphaCutoff(info, layout, values);
     info.custom_values.assign(values.begin(), values.end());
 }
 
@@ -1507,6 +1626,10 @@ void MaterialContainer::registerReloadableMaterialValuesFile(
             std::make_unique<MaterialValuesReloadHandler>(*this, coordinator);
     }
     material_values_reload_handler->track(key, path, std::move(surfaces), bindings);
+}
+
+void MaterialContainer::forgetReloadableMaterialValuesFile(const watch::AssetKey &key) {
+    if (material_values_reload_handler) material_values_reload_handler->untrack(key);
 }
 
 std::function<void()> MaterialContainer::prepareSurfaceMaterialReload(
@@ -1581,7 +1704,7 @@ MaterialContainer::stageTextureRebind(
         vk::DescriptorSetAllocateInfo allocation;
         allocation.descriptorPool = descriptor_builder.materialPool();
         const auto layout = GET_MODULE(PipelineFactory).descriptorSetLayout(
-            material.pipeline, imageDescriptorSetNumber);
+            material.pipelineFor(), imageDescriptorSetNumber);
         allocation.setSetLayouts({layout});
         auto descriptor = std::move(device.allocateDescriptorSetsUnique(allocation).front());
 
@@ -1833,6 +1956,44 @@ MaterialContainer::materialGpuRecordForTesting(GlobalMaterialId material) const 
     return record;
 }
 
+
+nlohmann::json MaterialContainer::materialRouteStatus(GlobalMaterialId id) const {
+    const auto &material = materials.get(id);
+    nlohmann::json result{{"route", materialRouteClassName(material.unserved
+        ? material.unserved->authored_route : material.route)}, {"unserved", nullptr}};
+    if (material.unserved) {
+        const auto &unserved = *material.unserved;
+        result["unserved"] = {{"code", "material.route_unserved@1"},
+            {"reason", unserved.reason},
+            {"authored_route", materialRouteClassName(unserved.authored_route)},
+            {"substitute_route", materialRouteClassName(unserved.substitute_route)},
+            {"substitute_pass", unserved.substitute_pass}};
+        if (unserved.authored_exact_pass) result["unserved"]["exact_pass"] = *unserved.authored_exact_pass;
+    }
+    return result;
+}
+
+void MaterialContainer::publishUnservedProblems() const {
+    auto *list = FastModuleContainer::tryGet<ProblemList>();
+    if (!list) return;
+    std::vector<nlohmann::json> problems;
+    for (const auto id : drawLoopMaterials()) {
+        const auto &material = materials.get(id);
+        if (!material.unserved) continue;
+        auto fields = materialRouteStatus(id).at("unserved");
+        fields["material"] = material.name;
+        fields["material_id"] = materialDrawSubjectKey(material.name, material.source_document,
+            material.source_asset, material.source_material_index);
+        nlohmann::json problem{{"id", "material.route_unserved@1:" + fields.at("material_id").get<std::string>()},
+            {"code", "material.route_unserved@1"}, {"severity", "error"},
+            {"source", "startup"}, {"message", material.unserved->reason},
+            {"document_kind", "material"}, {"fields", std::move(fields)}};
+        if (!material.source_document.empty()) problem["document"] = material.source_document;
+        else if (!material.source_asset.empty()) problem["document"] = material.source_asset;
+        problems.push_back(std::move(problem));
+    }
+    list->replace("material_routes", std::move(problems));
+}
 
 bool MaterialContainer::isRenderRequired(const PassDefinition &pass,
                                          GlobalMaterialId material_id) const {
@@ -2282,7 +2443,7 @@ MaterialContainer::ensureScreenInputDescriptor(
 
     auto [inserted, unused] = material.screen_input_descriptors.emplace(
         key, descriptor_builder.build(
-                 material.pipeline, std::move(resources),
+                 material.pipelineFor(), std::move(resources),
                  rt_views,
                  next_screen_input_binding_revision));
     (void)unused;
@@ -2303,16 +2464,16 @@ void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id,
     }
     const auto &material = materials.get(material_id);
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
-    const auto pipeline_layout = pipeline_factory.layout(material.pipeline);
+    const auto pipeline_layout = pipeline_factory.layout(material.pipelineFor());
 
     if (!isValidMaterialId(prev_material_id)) {
-        cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline_factory.pipeline(material.pipeline));
+        cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline_factory.pipeline(material.pipelineFor()));
         cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout, imageDescriptorSetNumber,
                                    {material.descset.get()}, {});
     } else {
         const auto &prev_material = materials.get(prev_material_id);
-        if (material.pipeline != prev_material.pipeline)
-            cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline_factory.pipeline(material.pipeline));
+        if (material.pipelineFor() != prev_material.pipelineFor())
+            cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline_factory.pipeline(material.pipelineFor()));
         if (material.descset.get() != prev_material.descset.get())
             cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout,
                                        imageDescriptorSetNumber, {material.descset.get()}, {});
@@ -2344,35 +2505,45 @@ void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id,
 }
 
 MaterialContainer::MaterialDrawBinding
+MaterialContainer::MaterialDrawBindState::update(
+    MaterialDrawBinding next, VertexMode next_mode) {
+    next.pipeline_bound = !pipeline || *pipeline != next.pipeline;
+    // Overrides keep the base layout compatible within one mode.
+    // Keep SK-1's conservative rebind when the vertex mode changes;
+    // only same-mode overrides guarantee the full layout is unchanged.
+    next.descriptor_set_bound = !pipeline || mode != next_mode ||
+                                descriptor_set != next.descriptor_set;
+    pipeline = next.pipeline;
+    descriptor_set = next.descriptor_set;
+    mode = next_mode;
+    return next;
+}
+
+MaterialContainer::MaterialDrawBinding
 MaterialContainer::bindMaterialDraw(
     vk::CommandBuffer cmd_buf, const PassDefinition &pass,
     GlobalMaterialId material_id,
     std::optional<PipelineHandle> pipeline_override,
     MaterialDrawBindState &bound,
-    RenderPassViewInvocation invocation) const {
+    RenderPassViewInvocation invocation, VertexMode mode) const {
     const auto &material = materials.get(material_id);
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
     const auto pipeline =
-        pipeline_override.value_or(material.pipeline);
-    MaterialDrawBinding binding{
+        pipeline_override.value_or(material.pipelineFor(mode));
+    const auto binding = bound.update(MaterialDrawBinding{
         .layout = pipeline_factory.layout(pipeline),
         .pipeline = pipeline,
         .descriptor_set = material.descset.get(),
-    };
-    if (!bound.pipeline || *bound.pipeline != pipeline) {
+    }, mode);
+    if (binding.pipeline_bound) {
         cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics,
                              pipeline_factory.pipeline(pipeline));
-        binding.pipeline_bound = true;
     }
-    if (!bound.pipeline ||
-        bound.descriptor_set != binding.descriptor_set) {
+    if (binding.descriptor_set_bound) {
         cmd_buf.bindDescriptorSets(
             vk::PipelineBindPoint::eGraphics, binding.layout,
             imageDescriptorSetNumber, {binding.descriptor_set}, {});
-        binding.descriptor_set_bound = true;
     }
-    bound.pipeline = pipeline;
-    bound.descriptor_set = binding.descriptor_set;
 
     if (const auto *screen_inputs =
             ensureScreenInputDescriptor(material_id, pass)) {
@@ -2424,19 +2595,21 @@ MaterialContainer::drawLoopMaterials() const {
 }
 
 MaterialDrawSubject MaterialContainer::drawLoopSubject(
-    GlobalMaterialId material_id) const {
+    GlobalMaterialId material_id, VertexMode mode) const {
     const auto &material = materials.get(material_id);
     MaterialDrawSubject subject{
         .key = materialDrawSubjectKey(
             material.name, material.source_document,
             material.source_asset,
-            material.source_material_index),
+            material.source_material_index, mode == VertexMode::skinned),
         .name = material.name,
         .tags = material.tags,
         .route = material.route,
         .contract = material.shader_contract,
-        .skinned = material.skinned,
+        .skinned = mode == VertexMode::skinned,
         .exact_pass = material.exact_pass,
+        .material_key = materialDrawSubjectKey(material.name, material.source_document,
+            material.source_asset, material.source_material_index),
     };
     for (const auto &[name, record] : material.variants) {
         (void)record;
@@ -2445,9 +2618,23 @@ MaterialDrawSubject MaterialContainer::drawLoopSubject(
     return subject;
 }
 
+bool MaterialContainer::supportsVertexMode(GlobalMaterialId material, VertexMode mode) const {
+    return materials.get(material).pipeline.at(static_cast<std::size_t>(mode)).has_value();
+}
+
+std::vector<MaterialDrawSubject> MaterialContainer::drawLoopSubjects() const {
+    std::vector<MaterialDrawSubject> result;
+    for (const auto material : drawLoopMaterials()) {
+        for (const auto mode : vertexModes) {
+            if (supportsVertexMode(material, mode)) result.push_back(drawLoopSubject(material, mode));
+        }
+    }
+    return result;
+}
+
 PipelineHandle MaterialContainer::materialPipeline(
-    GlobalMaterialId material) const {
-    return materials.get(material).pipeline;
+    GlobalMaterialId material, VertexMode mode) const {
+    return materials.get(material).pipelineFor(mode);
 }
 
 GraphicsPipelineDesc materialDrawOverridePipelineDesc(
@@ -2494,14 +2681,14 @@ GraphicsPipelineDesc materialDrawOverridePipelineDesc(
 
 GraphicsPipelineDesc MaterialContainer::drawOverridePipelineDesc(
     GlobalMaterialId base,
-    const MaterialDrawRenderStateOverride &render_state) const {
+    const MaterialDrawRenderStateOverride &render_state, VertexMode mode) const {
     const auto &material = materials.get(base);
     MaterialInfo state;
     state.render_state = material.render_state;
     state.output_schema = material.output_schema;
     state.vat = material.vat;
     return materialDrawOverridePipelineDesc(
-        GET_MODULE(PipelineFactory).graphicsDesc(material.pipeline), state,
+        GET_MODULE(PipelineFactory).graphicsDesc(material.pipelineFor(mode)), state,
         render_state,
         MaterialPipelineRenderingContract{
             .color_formats = material.pipeline_color_formats,
@@ -2545,7 +2732,7 @@ void MaterialContainer::rebindScreenInputs(
             }
             auto replacement =
                 descriptor_builder.build(
-                    material.pipeline,
+                    material.pipelineFor(),
                     descriptor->second.resources,
                     rt_views,
                     next_screen_input_binding_revision);
@@ -2590,18 +2777,18 @@ vk::PipelineLayout MaterialContainer::getPipelineLayout() const {
 }
 
 vk::PipelineLayout MaterialContainer::pipelineLayout(
-    GlobalMaterialId material_id) const {
+    GlobalMaterialId material_id, VertexMode mode) const {
     const auto &material = materials.get(material_id);
-    return GET_MODULE(PipelineFactory).layout(material.pipeline);
+    return GET_MODULE(PipelineFactory).layout(material.pipelineFor(mode));
 }
 
 vk::PipelineLayout MaterialContainer::pipelineLayout(
     const PassDefinition &pass,
-    GlobalMaterialId material_id) const {
+    GlobalMaterialId material_id, VertexMode mode) const {
     material_id =
         resolveMaterialForPass(pass, material_id);
     const auto &material = materials.get(material_id);
-    return GET_MODULE(PipelineFactory).layout(material.pipeline);
+    return GET_MODULE(PipelineFactory).layout(material.pipelineFor(mode));
 }
 
 } // namespace Pelican

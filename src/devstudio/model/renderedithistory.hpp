@@ -1,10 +1,13 @@
 #pragma once
 
+#include <memory>
+
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <set>
 #include <optional>
 #include <string>
 #include <vector>
@@ -76,6 +79,18 @@ class RenderEditHistory {
         std::optional<std::string> content;
     };
 
+    // RTL-2s-c: a file an edit rewrote beside its documents -- a shader the
+    // Ray layout section rewrote with a rename (PELICAN_RAY_TYPE_*), its
+    // record block with a record field. Undo writes `before` back (removes
+    // the file when there was none), Redo writes `after`, each just before
+    // the restore is sent, so the commit compiles the shaders it goes with;
+    // a refused restore writes the other side back.
+    struct FileChange {
+        std::string path;
+        std::optional<std::string> before;
+        std::string after;
+    };
+
     // One item of the history, as the UI names it.
     struct Entry {
         std::string label;
@@ -95,6 +110,23 @@ class RenderEditHistory {
         bool restart_required = false;
         // Names the entry for the read that follows the edit's commit.
         std::uint64_t serial = 0;
+        // RT-D: the original edit's digest link, independent of when its
+        // terminal reply was observed. The submission number disambiguates
+        // repeated digests and anchors synchronous file-only entries.
+        std::string base_source_digest;
+        std::string source_digest;
+        std::uint64_t submitted = 0;
+        // RTL-2s-c: the files the edit rewrote beside its documents.
+        std::vector<FileChange> files;
+        // Asset-data references whose procedural records were changed. They
+        // are not render documents: restore only their records under full-file
+        // CAS, using the explicit inverse below. Older engines may omit it;
+        // the digest-only compatibility path then lasts only until restart.
+        std::set<std::string> records_only;
+        // Explicit inverse per entry. Equal output bytes can have different
+        // predecessors, so their digest alone cannot identify an inverse.
+        // Values are opaque JSON strings preserving numeric types and order.
+        Json procedural_records_before = Json::object();
     };
 
     explicit RenderEditHistory(Transport transport);
@@ -103,6 +135,11 @@ class RenderEditHistory {
     // documents hold, and those that create or remove them. Anything else it
     // ignores.
     [[nodiscard]] static bool recordsMethod(const std::string &method);
+    // RTL-2s, decision 7: an edit_ray_layout (alone or in an edit_batch)
+    // that rewrites procedural records -- asset_data. RTL-3s, decision 3
+    // (engine EB-2): recorded; its asset_data records have a per-entry
+    // inverse under full-file CAS (Entry::records_only).
+    [[nodiscard]] static bool rewritesProceduralRecords(const std::string &method, const Json &params);
     // A request the history has to hear about (the same set).
     [[nodiscard]] static bool followsMethod(const std::string &method);
     // "Edit pass present", "Decompose deferred_geometry", ...
@@ -136,6 +173,20 @@ class RenderEditHistory {
     void beforeRequest(const std::string &method, const Json &params);
     void requestSent(std::int64_t id, const std::string &method, const Json &params);
 
+    // RTL-2s-c: the files the next request rewrote beside its documents,
+    // handed over right before it is sent. The next beforeRequest takes
+    // them -- into its entry when the history records that request, and
+    // drops them otherwise.
+    void attachFiles(std::vector<FileChange> files) { next_files_ = std::move(files); }
+    // RTL-3s, decision 4: an entry of files alone (a raygen's switch Studio
+    // wrote): no document is restored -- Undo writes each file's `before`
+    // back, Redo its `after` -- and the shaders' watch compiles them again.
+    using Completion = std::function<void(std::uint64_t serial)>;
+    // Request identity is needed only until its terminal reply. Zero means
+    // no entry (refusal, lost reply, abandon or a no-op commit).
+    bool followRequest(std::int64_t id, Completion completed);
+    void recordFiles(std::string label, std::vector<FileChange> files, Completion completed = {});
+
     // Whether a reply under `id` is one the history is waiting for.
     [[nodiscard]] bool waitingFor(std::int64_t id) const noexcept;
     // Every reply. False when the id is not one the history is waiting for.
@@ -152,6 +203,9 @@ class RenderEditHistory {
     // The item the next Undo / Redo is about; empty when there is none.
     [[nodiscard]] std::string undoLabel() const;
     [[nodiscard]] std::string redoLabel() const;
+    // Submission order, including requests whose terminal reply is still pending.
+    // A Graph submission captures this boundary to order foreign Render entries.
+    [[nodiscard]] std::uint64_t lastSubmission() const noexcept { return next_submission_ - 1; }
     [[nodiscard]] const std::vector<Entry> &undoStack() const noexcept { return undo_; }
     [[nodiscard]] const std::vector<Entry> &redoStack() const noexcept { return redo_; }
     // The one line about the last Undo / Redo (or why it was not sent).
@@ -169,6 +223,18 @@ class RenderEditHistory {
     // Undo does not reach back past it; `line` marks where it was cut.
     void cut(std::string line);
 
+    // RT-D: entry identity survives stack moves. Push is a new committed
+    // entry (including files alone); Undo/Redo report the completed move.
+    // Push may insert below the top: find the serial in undoStack() after
+    // insertion, rather than assuming that the pushed entry is back().
+    // A refused/failed restore reports ok=false without moving the entry.
+    enum class Move { Push, Undo, Redo };
+    using Movement = std::function<void(std::uint64_t serial, Move direction, bool ok)>;
+    Movement historyMoved;
+    // The subscriber owns the connection. Destroying it disconnects even
+    // when the shared history outlives the tab.
+    std::shared_ptr<Movement> observeMoves(Movement moved);
+
     // The stacks, the busy state or the line changed.
     std::function<void()> changed;
     // A restore committed: its commit result (source_digest, documents) and
@@ -177,6 +243,9 @@ class RenderEditHistory {
 
   private:
     struct PendingEdit {
+        Completion completed;
+        std::string base_source_digest;
+        std::uint64_t submitted = 0;
         std::string method;
         std::string label;
         std::int64_t snapshot_request = 0;
@@ -188,6 +257,10 @@ class RenderEditHistory {
         std::int64_t edit_request = 0;
         std::string ticket;
         std::int64_t poll_request = 0;
+        // RTL-2s-c: attachFiles's, for the entry.
+        std::vector<FileChange> files;
+        // RTL-3s, decision 3: it rewrites procedural records (asset_data).
+        bool records = false;
     };
     // The read of what an edit's commit wrote, for decision 3.
     struct AfterRead {
@@ -213,6 +286,7 @@ class RenderEditHistory {
     std::string line_;
     std::uint64_t line_serial_ = 0;
     std::uint64_t next_serial_ = 1;
+    std::uint64_t next_submission_ = 1;
     // An edit whose beforeRequest ran and whose requestSent has not.
     std::optional<PendingEdit> unsent_;
     std::vector<PendingEdit> pending_;
@@ -222,12 +296,19 @@ class RenderEditHistory {
     bool own_request_ = false;
     // Bumped by clear / abandon: a scheduled poll from before is stale.
     std::uint64_t epoch_ = 0;
+    // RTL-2s-c: attachFiles's, until the next beforeRequest.
+    std::vector<FileChange> next_files_;
+    // Writes an entry's files as Undo (`undoing`) or Redo leaves them.
+    static void writeFiles(const Entry &entry, bool undoing);
 
     std::int64_t send(const std::string &method, const Json &params, std::string *error);
+    std::vector<std::weak_ptr<Movement>> movement_observers_;
+    void notifyMoved(std::uint64_t serial, Move direction, bool ok, Completion completed = {});
     void notify();
     void say(std::string line);
     void pollEdit(std::int64_t edit_request);
     void finishEdit(PendingEdit edit, const Json &commit);
+    void insertUndo(Entry entry);
     void receiveAfterRead(std::uint64_t serial, const Json &result);
     bool startRestore(Direction direction);
     void sendRestore();

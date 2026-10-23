@@ -5,6 +5,7 @@
 #include "../shader/pipelinefactory.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "material.hpp"
+#include "materialcontainer.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -19,6 +20,8 @@
 
 namespace Pelican {
 
+enum class VertexMode;
+
 // One resolved step: the material record that supplies the descriptor set,
 // the GPU material index and the screen inputs, and the pipeline to draw
 // with (nullopt: that material's own pipeline).
@@ -28,6 +31,33 @@ struct ResolvedMaterialDrawStep {
 
     bool operator==(const ResolvedMaterialDrawStep &) const = default;
 };
+
+// Resolve one mode's steps against the base material's shared variant map.
+// Pipeline allocation is needed only for an explicit override step.
+template <typename VariantResource, typename OverridePipeline>
+std::vector<ResolvedMaterialDrawStep> resolveMaterialDrawSteps(
+    GlobalMaterialId material, const MaterialDrawSubject &subject,
+    const MaterialDrawStepList &steps, std::string_view node,
+    bool runtime_compiler_available, VariantResource variant_resource,
+    OverridePipeline override_pipeline) {
+    std::vector<ResolvedMaterialDrawStep> resolved;
+    resolved.reserve(steps.size());
+    for (const auto &step : steps) {
+        validateMaterialDrawStep(step, subject, node, runtime_compiler_available);
+        switch (step.kind) {
+        case MaterialDrawStepKind::material:
+            resolved.push_back({material, std::nullopt});
+            break;
+        case MaterialDrawStepKind::variant:
+            resolved.push_back({variant_resource(step.variant), std::nullopt});
+            break;
+        case MaterialDrawStepKind::override_pipeline:
+            resolved.push_back({material, override_pipeline(step)});
+            break;
+        }
+    }
+    return resolved;
+}
 
 // LP-2: the draw-step table of one renderer runtime generation, keyed by
 // (material pass name, base material). It owns the override pipelines (and,
@@ -61,7 +91,7 @@ class MaterialDrawLoopTable {
     // nullptr: the pass has no entry for this material and draws it the
     // default way. An empty list draws nothing.
     const std::vector<ResolvedMaterialDrawStep> *find(
-        std::string_view pass, GlobalMaterialId material) const;
+        std::string_view pass, GlobalMaterialId material, VertexMode mode = VertexMode::standard) const;
     bool empty() const noexcept { return passes_.empty(); }
     std::uint64_t generation() const noexcept { return generation_; }
     const std::shared_ptr<const MaterialDrawLoopRules> &rules() const noexcept {
@@ -105,9 +135,8 @@ class MaterialDrawLoopTable {
     struct CompiledDefines {
         SurfaceShaderBundleIds bundles;
     };
-    using Entries = std::unordered_map<
-        GlobalMaterialId, std::vector<ResolvedMaterialDrawStep>,
-        GlobalMaterialId::Hash>;
+    using Entries = std::map<std::pair<int, VertexMode>,
+                             std::vector<ResolvedMaterialDrawStep>>;
     // What a build adds, so a refusal can release exactly that.
     struct Additions {
         std::vector<std::string> override_keys;

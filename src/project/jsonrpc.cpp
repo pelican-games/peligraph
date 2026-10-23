@@ -230,14 +230,14 @@ std::string serializeJsonRpcResult(const nlohmann::json &id, const nlohmann::jso
 // Same envelope; the error object keeps its written order code, message, data.
 std::string serializeJsonRpcError(const JsonRpcError &error) {
     std::string response{R"({"jsonrpc":"2.0","id":)"};
-    response += error.id.dump();
+    response += error.id.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
     response += R"(,"error":{"code":)";
-    response += nlohmann::json(error.code).dump();
+    response += nlohmann::json(error.code).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
     response += R"(,"message":)";
-    response += nlohmann::json(error.message).dump();
+    response += nlohmann::json(error.message).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
     if (error.data) {
         response += R"(,"data":)";
-        response += error.data->dump();
+        response += error.data->dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
     }
     response += "}}";
     return response;

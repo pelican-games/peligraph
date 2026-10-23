@@ -14,6 +14,11 @@ try_render_begin       # same; blocking vs zero-wait is now the FrameBeginMode a
 consumeExtentChanged   # no successor: the Renderer compares against internal_render_extent
 render_end             # replaced by IFrameTarget::submit() / abandon() in 993b45e3; a loop.cpp local of the same name hid it until af18788f
 buildScreenInputDescriptor # folded into resolvePassInputImageView() by 923ce648; ch06 names the old home
+sendPassInputEdit       # ch13 explicitly documents its rename to sendPassEdit in GL-5a
+flushDraw              # ch13 explicitly documents its replacement by flushTyped in UX-9
+GraphCanvasModel::rebuildSampleTableReaders # ch13 explicitly records removal in UX-13a
+namedBufferPorts       # ch13 describes the former UX-8 ordering bug
+rayTracedRowNotes      # ch13 explicitly records removal after EB-3 changed the contract
 
 # --- outside this repository by nature ---
 roundEven              # GLSL builtin, explained as background knowledge in ch10

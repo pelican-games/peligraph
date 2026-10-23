@@ -2,6 +2,7 @@
 #include "featurecompose.hpp"
 #include "passfieldownership.hpp"
 #include "rasterpass.hpp"
+#include "renderconfigdocument.hpp"
 #include "renderconfigsection.hpp"
 #include "renderresourcename.hpp"
 
@@ -60,6 +61,61 @@ void requireOnlyKeys(const nlohmann::json &object,
             throw std::runtime_error(std::string{context} + " has unknown key '" +
                                      it.key() + "'");
         }
+    }
+}
+
+// EB-1: every key parseFrameGraphBufferDefinitionsFromJson reads. A buffer
+// entry of the composed config -- a rendering section's, a preset's or a
+// feature's buffers[], or a graph's render.buffer / render.attribute node
+// lowered into one -- names no other: graph.buffer_key_unknown@1 {buffer,
+// key, allowed}. A misspelled initial_f32 is refused instead of the buffer
+// starting from zero.
+constexpr std::array<std::string_view, 9> frame_graph_buffer_keys{
+    "name", "size", "size_from_extent", "index_buffer", "host_source",
+    "command_layout", "initial_f32", "view_family", "lifetime"};
+
+void requireKnownFrameGraphBufferKeys(const nlohmann::json &buffer,
+                                      const std::string &name) {
+    for (auto it = buffer.begin(); it != buffer.end(); ++it) {
+        if (std::find(frame_graph_buffer_keys.begin(),
+                      frame_graph_buffer_keys.end(), it.key()) !=
+            frame_graph_buffer_keys.end())
+            continue;
+        auto allowed = nlohmann::json::array();
+        for (const auto key : frame_graph_buffer_keys)
+            allowed.push_back(std::string{key});
+        throw GraphRegistryError(
+            "graph.buffer_key_unknown@1",
+            {{"buffer", name}, {"key", it.key()}, {"allowed", std::move(allowed)}});
+    }
+}
+
+// FO-1: the same for an image: every key a render target entry is read by
+// (parseRenderTargetDefinitionsFromJson and the format resolver, IA-1's
+// `initial`, a feature parameter's binding constraints' `sample_count`). An
+// entry of the composed config's render_targets[] -- a rendering section's, a
+// preset's or a feature's, or a graph's render.image node lowered into one --
+// names no other: graph.image_key_unknown@1 {image, key, allowed}.
+// EN-2: and `source`, the project image file a render.image reads.
+constexpr std::array<std::string_view, 18> frame_graph_image_keys{
+    "name", "format", "format_class", "format_candidates", "extent_scale",
+    "width", "height", "layers", "mip_levels", "dimension", "usage",
+    "history", "clear_color", "role", "lifetime", "initial", "sample_count",
+    "source"};
+
+void requireKnownFrameGraphImageKeys(const nlohmann::json &image,
+                                     const std::string &name) {
+    for (auto it = image.begin(); it != image.end(); ++it) {
+        if (std::find(frame_graph_image_keys.begin(),
+                      frame_graph_image_keys.end(), it.key()) !=
+            frame_graph_image_keys.end())
+            continue;
+        auto allowed = nlohmann::json::array();
+        for (const auto key : frame_graph_image_keys)
+            allowed.push_back(std::string{key});
+        throw GraphRegistryError(
+            "graph.image_key_unknown@1",
+            {{"image", name}, {"key", it.key()}, {"allowed", std::move(allowed)}});
     }
 }
 
@@ -863,7 +919,10 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
 
     nlohmann::json document;
     try {
-        document = nlohmann::json::parse(load_preset_json(reference));
+        document = parseRenderDocument(load_preset_json(reference), reference);
+    } catch (const RenderDocumentSyntaxError &) {
+        // BS-1b: by name, as it was thrown.
+        throw;
     } catch (const std::exception &error) {
         throw std::runtime_error("failed to load render pipeline preset '" + reference +
                                  "': " + error.what());
@@ -2211,6 +2270,7 @@ void synchronizeRenderPipelineProvenance(
                 requireString(target, "name", "render target");
             validateAuthoredRenderResourceName(
                 name, "render target");
+            requireKnownFrameGraphImageKeys(target, name);
             append_resource(
                 name,
                 "render_target",
@@ -2238,6 +2298,7 @@ void synchronizeRenderPipelineProvenance(
                     requireString(buffer, "name", "buffer");
                 validateAuthoredRenderResourceName(
                     name, "buffer");
+                requireKnownFrameGraphBufferKeys(buffer, name);
                 append_resource(name, "buffer");
             } else {
                 throw std::runtime_error(

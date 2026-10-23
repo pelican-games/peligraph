@@ -44,6 +44,8 @@
 #include "../src/core/log.hpp"
 #include "../src/core/light/lightcontainer.hpp"
 #include "../src/core/material/materialcontainer.hpp"
+#include "../src/core/material/materialpassesremoved.hpp"
+#include "../src/core/material/projectmaterialasset.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/vertbufcontainer.hpp"
 #include "../src/core/phys/physworld.hpp"
@@ -67,6 +69,7 @@
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/renderer.hpp"
 #include "renderer_testaccess.hpp"
+#include "../src/core/watch/problemlist.hpp"
 #include "../src/core/watch/reloadservice.hpp"
 #include "../src/core/userpublic/details/component/registerer.hpp"
 #include "../src/core/userpublic/details/ecs/componentdeclare.hpp"
@@ -996,6 +999,10 @@ TEST_CASE("RT6 named TLAS tasks select independent scene subsets with shared rec
     bool geometry_undeclared = false;
     std::optional<std::string> material_query;
     bool material_undeclared = false;
+    // FO-2: the undeclared material query on a --strict-assets start, and the
+    // pass declaring it afterwards (a reload of the preset).
+    bool material_strict = false;
+    bool material_declared_later = false;
     // Catch2 runs with -w NoAssertions, which fails any section that asserts
     // nothing.  Each case therefore runs the body it selects instead of only
     // setting flags for a body that follows the selection.
@@ -1372,9 +1379,82 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
         CHECK_THROWS_WITH(load(), Catch::Matchers::ContainsSubstring("Auxiliary descriptor contract"));
         return;
     }
-    if (material_undeclared || debug_undeclared || geometry_undeclared) {
+    if ((material_undeclared && material_strict) || debug_undeclared || geometry_undeclared) {
+        if (material_strict) GET_MODULE(EngineLaunchConfig).strict_assets = true;
         CHECK_THROWS_WITH(([&] { load(); (void)renderWp374aProductionRows(); })(),
             Catch::Matchers::ContainsSubstring("does not declare ray_query"));
+        return;
+    }
+    if (material_undeclared) {
+        // FO-2: the engine starts without the material, and the problem names
+        // the pass that does not declare ray_query and the preset declaring it.
+        load();
+        const auto problems = GET_MODULE(ProblemList).problemsOf(materialProblemDomain);
+        const auto with_code = [&](std::string_view code) {
+            std::vector<Json> found;
+            for (const auto &problem : problems)
+                if (problem.value("code", std::string{}) == code) found.push_back(problem);
+            return found;
+        };
+        INFO(Json(problems).dump(2));
+        CHECK(with_code("material.document_invalid@1").empty());
+        const auto unmet = with_code("material.pass_contract_unmet@1");
+        REQUIRE(unmet.size() == 1);
+        const auto &problem = unmet.front();
+        CHECK(problem.at("severity") == "error");
+        CHECK(problem.at("source") == "startup");
+        CHECK(problem.at("document") == "project://material_pipeline.json");
+        CHECK(problem.at("document_kind") == "preset");
+        CHECK(problem.at("fields").at("pass") == "forward_opaque");
+        CHECK(problem.at("fields").at("requirement") == "ray_query");
+        CHECK(problem.at("fields").at("material") == "QueryMaterial");
+        CHECK(problem.at("fields").at("material_document") == "materials/query.material.json");
+        CHECK_THAT(problem.at("fields").at("reason").get<std::string>(),
+                   Catch::Matchers::ContainsSubstring("does not declare ray_query"));
+        CHECK_THAT(problem.at("message").get<std::string>(),
+                   Catch::Matchers::ContainsSubstring(
+                       "material 'QueryMaterial' queries the scene acceleration structure, but pass "
+                       "'forward_opaque' does not declare ray_query: true"));
+        REQUIRE(with_code("material.binding_unresolved@1").size() == 1);
+        const auto refused =
+            GET_MODULE(ProjectMaterialAssetContainer).refusedDocument("materials/query.material.json");
+        REQUIRE(refused.has_value());
+        CHECK(refused->status == "unusable");
+        // The chair draws its own material: nothing queried the TLAS.
+        const auto count_queried = [] {
+            const auto albedo =
+                RendererTestAccess::readRenderTarget(GET_MODULE(Renderer), "lit_color", ImageSubresourceRange{});
+            std::size_t queried = 0;
+            for (std::size_t offset = 0; offset + 7 < albedo.bytes.size(); offset += 8) {
+                std::array<std::uint16_t, 4> pixel;
+                std::memcpy(pixel.data(), albedo.bytes.data() + offset, sizeof(pixel));
+                if (pixel[1] == glm::packHalf1x16(1.0F) && pixel[0] == glm::packHalf1x16(71.0F)) ++queried;
+            }
+            return queried;
+        };
+        REQUIRE(renderWp374aProductionRows().rows.size() == 2);
+        CHECK(count_queried() == 0);
+        if (!material_declared_later) return;
+
+        // FO-2 (EB-2's way back): the preset declares it and is reloaded; at
+        // the next frame start the document is registered again, the chair
+        // rebuilt with it, and the problems leave.
+        auto preset = Json::parse(readWp374aText(project.path / "material_pipeline.json"));
+        for (auto &pass : preset["config"]["rendering_passes"][0]["passes"])
+            if (pass["name"] == "forward_opaque") pass["ray_query"] = {{"acceleration_structure", *material_query}};
+        writeWp374aText(project.path / "material_pipeline.json", preset.dump());
+        auto &reload = GET_MODULE(watch::ReloadService);
+        REQUIRE(reload.applyRequestForTesting(
+            {watch::makeAssetKey("material_pipeline.json"), watch::ReloadKind::modified, {}, 1}));
+        (void)renderWp374aProductionRows();
+        reload.applyFrame();
+        INFO(Json(GET_MODULE(ProblemList).problemsOf(materialProblemDomain)).dump(2));
+        CHECK_FALSE(GET_MODULE(ProjectMaterialAssetContainer)
+                        .refusedDocument("materials/query.material.json")
+                        .has_value());
+        CHECK(GET_MODULE(ProblemList).problemsOf(materialProblemDomain).empty());
+        REQUIRE(renderWp374aProductionRows().rows.size() == 2);
+        CHECK(count_queried() > 0);
         return;
     }
     if (undeclared_query) {
@@ -1556,6 +1636,22 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
     CHECK(diagnostics.named_tlas_instance_counts.at("left") == 1);
     CHECK(diagnostics.named_tlas_instance_counts.at("right") == 1);
     CHECK(diagnostics.named_tlas_instance_counts.at("empty") == 0);
+    // RTL-1b (engine_backlog 4): each named TLAS names its BLASes, as
+    // active_blas_inputs lists them; the one that selects nothing has none.
+    for (const auto *name : {"left", "right"}) {
+        CAPTURE(name);
+        const auto &blas = diagnostics.named_tlas_blas.at(name);
+        CHECK_FALSE(blas.empty());
+        for (const auto &entry : blas)
+            CHECK(std::find(diagnostics.active_blas_inputs.begin(), diagnostics.active_blas_inputs.end(), entry) !=
+                  diagnostics.active_blas_inputs.end());
+    }
+    CHECK(diagnostics.named_tlas_blas.at("empty").empty());
+    {
+        const auto json = rayQueryAccelerationStructureDiagnosticsToJson(diagnostics);
+        CHECK(json.at("named_tlas_blas").at("left").size() == diagnostics.named_tlas_blas.at("left").size());
+        CHECK(json.at("named_tlas_blas").at("empty").empty());
+    }
     CHECK(diagnostics.tlas_build_count == 4);
     CHECK(diagnostics.blas_build_count == 2);
 #if PELICAN_WITH_RPC
@@ -1716,7 +1812,9 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
     SECTION("material selects left TLAS") { material_query = "left"; runCase(); }
     SECTION("material selects right TLAS") { material_query = "right"; runCase(); }
     SECTION("material selects empty TLAS") { material_query = "empty"; runCase(); }
-    SECTION("material query without declaration is rejected") { material_query = "left"; material_undeclared = true; runCase(); }
+    SECTION("material query without declaration starts without the material and names the pass") { material_query = "left"; material_undeclared = true; runCase(); }
+    SECTION("material query without declaration fails a strict start") { material_query = "left"; material_undeclared = true; material_strict = true; runCase(); }
+    SECTION("material query refused at start is taken in once the pass declares ray_query") { material_query = "left"; material_undeclared = true; material_declared_later = true; runCase(); }
     SECTION("fullscreen query without declaration is rejected") { before_as = true; raster = true; undeclared_query = true; runCase(); }
 #else
     SKIP("RT6 named TLAS fixture requires the runtime compiler");
@@ -3434,6 +3532,10 @@ TEST_CASE(
     std::filesystem::create_directories(appearing_dll.parent_path());
     REQUIRE_FALSE(std::filesystem::exists(appearing_dll));
 
+    // Retire modules before static destruction: shader registration leases
+    // still consult diagnostics while their runtime generation is released.
+    FastModuleContainer modules;
+    Wp380RuntimeCleanup cleanup;
     (void)configureWp374aRuntime(project.path);
     GET_MODULE(EngineLaunchConfig).game_logic_dll = appearing_dll;
     REQUIRE_FALSE(initializeConfiguredGameLogic());
@@ -3534,9 +3636,6 @@ TEST_CASE(
                     {{"scene_id", "main"}, {"name", "BehaviorHost"}})
                     .at("components") == host.at("components"));
     }
-    GET_MODULE(BehaviorAttachmentArena).deactivateAll();
-    shutdownConfiguredGameLogic();
-    GET_MODULE(VulkanManageCore).waitIdle();
 #else
     FAIL("WP375b production behavior fixture was not composed");
 #endif
@@ -5575,7 +5674,7 @@ TEST_CASE(
     TestMorphFixture::writeGlb(project.path / "models" / "morph.glb");
     writeWp374aText(
         project.path / "retry_bindings.json",
-        R"json({"schema":"pelican.material_bindings","version":1,"model":"models/morph.glb","bindings":[{"usd_path":"/Retry/Missing","mesh":999,"primitive":0,"material":"missing","routing":{"alpha_mode":"opaque","double_sided":false}}]})json");
+        R"json({"schema":"pelican.material_bindings","version":1,"model":"models/morph.glb","bindings":[{"usd_path":"/Retry/InvalidRouting","mesh":0,"primitive":0,"material":"MorphMaterial","routing":{"alpha_mode":"blend","double_sided":false}}]})json");
     writeWp374aText(
         project.path / "assets.json",
         Json{{"schema", "pelican.asset_data"},
@@ -5620,7 +5719,7 @@ TEST_CASE(
     const auto *failure = std::get_if<PreCommitFailure>(&result);
     REQUIRE(failure != nullptr);
     REQUIRE(failure->phase == SceneLoadPhase::prepare);
-    REQUIRE(failure->error.find("targets missing GLB mesh 999 primitive 0") !=
+    REQUIRE(failure->error.find("does not match binding routing") !=
             std::string::npos);
     REQUIRE(failure->release_errors ==
             std::vector<std::string>{"vertbuf.morph_delta"});
@@ -6821,6 +6920,7 @@ void main() { value += )glsl"} + std::to_string(increment) + "u; }\n";
     };
     writeWp374aText(project.path / "shaders/first.rcall", callable_source(dynamic_records ? 1 : 100));
     writeWp374aText(project.path / "shaders/second.rcall", callable_source(dynamic_records ? 1 : 200));
+    {
     FastModuleContainer modules;
     Wp380RuntimeCleanup cleanup;
     (void)configureWp374aRuntime(project.path);
@@ -6853,8 +6953,15 @@ void main() { value += )glsl"} + std::to_string(increment) + "u; }\n";
     REQUIRE_NOTHROW(GET_MODULE(MaterialContainer).prepareRuntimeGenerationReload(*published));
     if (!dynamic_records) {
         const RendererRuntimeGeneration missing_routes;
-        REQUIRE_THROWS(GET_MODULE(MaterialContainer).validateRuntimeGenerationCompatibility(missing_routes));
-        REQUIRE_THROWS(GET_MODULE(MaterialContainer).prepareRuntimeGenerationReload(missing_routes));
+        // UD-1: a valid startup document needs a restart, not an unserved
+        // route refusal. Neither validation nor preparation retires the
+        // published generation's material/RT resources before that restart.
+        REQUIRE_THROWS_AS(GET_MODULE(MaterialContainer).validateRuntimeGenerationCompatibility(missing_routes),
+                          MaterialPassesRemoved);
+        REQUIRE_THROWS_AS(GET_MODULE(MaterialContainer).prepareRuntimeGenerationReload(missing_routes),
+                          MaterialPassesRemoved);
+        CHECK(GET_MODULE(FrameGraphRuntimeContainer).renderingSnapshot() == published);
+        CHECK(marker() == 207u);
     }
     if (dynamic_records) {
         const auto observed_increment = [&] {
@@ -6941,6 +7048,55 @@ void main() { value += )glsl"} + std::to_string(increment) + "u; }\n";
         CHECK(marker() == 1807u);
         edit(Json::object());
         CHECK(marker() == 607u);
+    }
+    if (!dynamic_records) {
+        auto service = makeEditorRuntimeService(EditorRuntimeServiceOptions{.render_config_editing = true});
+        std::uint64_t rpc_id = 91000;
+        const auto documents = runWp374aRpcBytes(*service, rpc_id++, "get_render_documents", Json::object());
+        const auto &root = documents.at("documents").at(0);
+        auto authored = Json::parse(root.at("content").get<std::string>());
+        auto &rendering = renderingSectionOf(authored);
+        rendering.erase("pipeline");
+        rendering["rendering_passes"] = Json::array({
+            {{"name", "main_render"}, {"passes", Json::array({
+                {{"name", "present"}, {"type", "fullscreen"}, {"input", Json::array()},
+                 {"output", {{"color", {"swapchain"}}, {"depth", nullptr}}},
+                 {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "project://shaders/rt_present"}}}}
+            })}}});
+        writeWp374aText(project.path / "shaders/rt_present.frag",
+            "#version 450\nlayout(location=0) out vec4 color;\nvoid main() { color = vec4(0,0,0,1); }\n");
+        const auto bytes = authored.dump();
+        const auto accepted = runWp374aRpcBytes(*service, rpc_id++, "restore_render_documents",
+            {{"documents", Json::array({{{"reference", root.at("reference")},
+                                         {"base_digest", root.at("digest")}, {"content", bytes}}})}});
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPendingEdits();
+        CHECK(marker() == 307u);
+        const auto result = runWp374aRpcBytes(*service, rpc_id++, "get_edit_result",
+                                             {{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        REQUIRE(result.at("status") == "committed");
+        CHECK(result.at("restart_required") == true);
+        CHECK(result.at("restart_reason").at("code") == "material_passes_removed");
+        CHECK(GET_MODULE(FrameGraphRuntimeContainer).renderingSnapshot() == published);
+        CHECK(readWp374aText(project.path / "hybrid.json") == bytes);
+    }
+    } // Retire the old generation only when its engine stops.
+    if (!dynamic_records) {
+        FastModuleContainer modules;
+        Wp380RuntimeCleanup cleanup;
+        (void)configureWp374aRuntime(project.path);
+        GET_MODULE(ECSPredefinedRegistration).reg();
+        test_support::loadScene(GET_MODULE(SceneLoader), "main");
+        (void)GET_MODULE(StandardMaterialResource);
+        (void)renderWp374aProductionRows();
+        CHECK_FALSE(GET_MODULE(RenderingPassContainer).hasMaterialPasses());
+        const auto output = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer),
+            "wp386_out", ImageSubresourceRange{});
+        REQUIRE(output.bytes.size() >= sizeof(std::uint32_t));
+        std::uint32_t value;
+        std::memcpy(&value, output.bytes.data(), sizeof(value));
+        CHECK(value == 307u);
     }
 }
 
@@ -7418,4 +7574,689 @@ void main() {
     CHECK(GET_MODULE(ProceduralGeometryContainer).proceduralRayInstances() == geometry);
 }
 #endif
+
+// RTL-1a: the production RPC path of edit_ray_layout / get_ray_layout, with
+// a layout the project already has (the WP386 procedural fixture).
+namespace {
+
+#if PELICAN_RUNTIME_SHADER_COMPILER && PELICAN_WITH_RPC
+// One rendered frame; a frame the staged generation fails ends early, and
+// what it threw is returned (empty: the frame drew).
+std::string rtl1aFrame() {
+    try {
+        (void)renderWp374aProductionRows();
+    } catch (const std::exception &error) {
+        return error.what();
+    }
+    return {};
+}
+
+std::array<std::uint32_t, 4> rtl1aFirstPixel(std::string_view target) {
+    const auto image = RendererTestAccess::readRenderTarget(
+        GET_MODULE(Renderer), std::string{target}, ImageSubresourceRange{});
+    std::array<std::uint32_t, 4> pixel{};
+    REQUIRE(image.bytes.size() >= sizeof(pixel));
+    std::memcpy(pixel.data(), image.bytes.data(), sizeof(pixel));
+    return pixel;
+}
+#endif
+
+} // namespace
+
+TEST_CASE("RTL-1a edit_ray_layout adds a miss with its task in one batch, takes records with the layout, and keeps a binding no row matches",
+          "[rtl1a][ray-tracing][production][gpu]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER && PELICAN_WITH_RPC
+    setupLogger();
+    Wp374aProjectRoot project{"rtl1a_procedural"};
+    writeWp386aProceduralProject(project.path);
+    // The closest hit declares the record a later edit adds `scale` to; the
+    // live generation compiled it before, and a new generation compiles it
+    // again.
+    const auto layout_path = project.path / "ray_layout.json";
+    const auto bindings_path = project.path / "ray_bindings.json";
+    const auto feature_path = project.path / "features" / "wp386_procedural.json";
+    const auto assets_path = project.path / "assets.json";
+    FastModuleContainer modules;
+    Wp380RuntimeCleanup cleanup;
+    loadWp374aScene(project.path);
+    // The renderer (and the reload participant edits go through) is made by
+    // the first frame; the editor service finds it then.
+    REQUIRE(rtl1aFrame().empty());
+    auto service = makeEditorRuntimeService(
+        EditorRuntimeServiceOptions{.render_config_editing = true});
+    std::uint64_t rpc_id = 91000;
+    const auto rpc = [&](std::string_view method, Json params) {
+        return runWp374aRpcBytes(*service, rpc_id++, method, std::move(params));
+    };
+    REQUIRE(rtl1aFrame().empty());
+    // An edit's ticket ends at the frame boundary its generation publishes
+    // or is rolled back at.
+    const auto finish = [&](const Json &accepted, std::string *frame_error = nullptr) {
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPendingEdits();
+        auto result = rpc("get_edit_result", {{"ticket", accepted.at("ticket")}});
+        for (int frame = 0; frame < 4 && result.value("status", std::string{}) == "pending"; ++frame) {
+            const auto error = rtl1aFrame();
+            if (frame_error != nullptr && !error.empty()) *frame_error = error;
+            result = rpc("get_edit_result", {{"ticket", accepted.at("ticket")}});
+        }
+        INFO(result.dump());
+        REQUIRE(result.value("status", std::string{}) != "pending");
+        return result;
+    };
+
+    // Acceptance 1: the documents, the names, what a binding may select.
+    const auto read = rpc("get_ray_layout", Json::object());
+    INFO(read.dump());
+    CHECK(read.at("layout").at("reference") == "ray_layout.json");
+    CHECK(read.at("layout").at("document") == Json::parse(readWp374aText(layout_path)));
+    CHECK(read.at("bindings").at("reference") == "ray_bindings.json");
+    CHECK(read.at("names").at("ray_types") == Json::array({"primary"}));
+    CHECK(read.at("names").at("groups") == Json::array({{{"name", "sphere"}, {"type", "procedural"}}}));
+    CHECK(read.at("names").at("misses") == Json::array({"sky"}));
+    CHECK(read.at("names").at("record") == Json::array({{{"name", "radius"}, {"type", "f32"}}}));
+    CHECK(read.at("names").at("engine_record") ==
+          Json::array({"material_index", "geometry_index", "geometry_kind"}));
+    CHECK(read.at("selectable_procedural_assets") ==
+          Json::array({{{"asset", "sphere_asset"}, {"record_fields", {{"radius", 1.0}}}}}));
+    CHECK(read.at("selectable_materials").is_array());
+    CHECK(read.at("unresolved_bindings") == Json::array());
+    std::map<std::string, std::string> kinds;
+    const auto listed = rpc("get_render_documents", Json::object());
+    for (const auto &document : listed.at("documents"))
+        kinds[document.at("reference").get<std::string>()] = document.at("kind").get<std::string>();
+    CHECK(kinds["ray_layout.json"] == "ray_group_layout");
+    CHECK(kinds["ray_bindings.json"] == "ray_bindings");
+    CHECK(kinds["project://features/wp386_procedural.json"] == "feature");
+
+    const auto layout_bytes = readWp374aText(layout_path);
+    const auto feature_bytes = readWp374aText(feature_path);
+    auto with_aux = Json::parse(layout_bytes);
+    with_aux["misses"].push_back({{"name", "aux"}});
+
+    // Acceptance 2: the layout alone leaves the task's misses short. It is
+    // refused when the runtime reads the task, and nothing is written.
+    {
+        const auto result = finish(rpc("edit_ray_layout",
+            {{"base_source_digest", read.at("source_digest").at("hex")},
+             {"layout", with_aux}, {"base_layout_digest", read.at("layout").at("digest")}}));
+        CHECK(result.at("committed") == false);
+        CHECK_THAT(result.at("error").at("message").get<std::string>(),
+                   ContainsSubstring("miss_shader_missing"));
+        // RTL-1c: the refusal at commit is RTL-1b's typed one: the parser's
+        // code, the task and the miss it lacks, the feature that declares it.
+        CHECK(result.at("error").at("code") == "pelican.ray_tracing.miss_shader_missing@1");
+        CHECK(result.at("error").at("task") == "wp386_trace");
+        CHECK(result.at("error").at("miss") == "aux");
+        CHECK(result.at("error").at("document") == "project://features/wp386_procedural.json");
+        CHECK(readWp374aText(layout_path) == layout_bytes);
+        REQUIRE(rtl1aFrame().empty());
+    }
+    // ... and with the task's new miss in the same edit_batch it commits,
+    // and the next frame draws with it.
+    auto feature = Json::parse(feature_bytes);
+    auto task = feature.at("compute_tasks").at(0);
+    task["ray_tracing"]["misses"]["aux"] = "project://shaders/wp386";
+    const auto batch = finish(rpc("edit_batch",
+        {{"base_source_digest", rpc("get_ray_layout", Json::object()).at("source_digest").at("hex")},
+         {"edits", Json::array({
+              {{"method", "edit_ray_layout"},
+               {"params", {{"layout", with_aux}, {"base_layout_digest", read.at("layout").at("digest")}}}},
+              {{"method", "edit_compute_task"},
+               {"params", {{"task_name", "wp386_trace"},
+                           {"base_task_source_digest", renderConfigSourceDigest(feature_bytes)},
+                           {"task", task}}}},
+          })}}));
+    REQUIRE(batch.at("committed") == true);
+    CHECK(Json::parse(readWp374aText(layout_path)) == with_aux);
+    CHECK(Json::parse(readWp374aText(feature_path)).at("compute_tasks").at(0).at("ray_tracing").at("misses").contains("aux"));
+    REQUIRE(rtl1aFrame().empty());
+    CHECK(rtl1aFirstPixel("wp386_out")[0] == 0x386au);
+    const auto after_batch = rpc("get_ray_layout", Json::object());
+    CHECK(after_batch.at("names").at("misses") == Json::array({"sky", "aux"}));
+
+    // Acceptance 3: one restore with both documents takes the batch back.
+    {
+        const auto &written = batch.at("documents");
+        INFO(written.dump());
+        REQUIRE(written.contains("ray_layout.json"));
+        REQUIRE(written.contains("project://features/wp386_procedural.json"));
+        const auto result = finish(rpc("restore_render_documents",
+            {{"documents", Json::array({
+                  {{"reference", "ray_layout.json"},
+                   {"base_digest", written.at("ray_layout.json")}, {"content", layout_bytes}},
+                  {{"reference", "project://features/wp386_procedural.json"},
+                   {"base_digest", written.at("project://features/wp386_procedural.json")},
+                   {"content", feature_bytes}}})}}));
+        REQUIRE(result.at("committed") == true);
+        CHECK(readWp374aText(layout_path) == layout_bytes);
+        CHECK(readWp374aText(feature_path) == feature_bytes);
+        REQUIRE(rtl1aFrame().empty());
+    }
+
+    // Acceptance 7: a binding no scene row matches commits, the frame draws,
+    // and it is listed.
+    {
+        const auto current = rpc("get_ray_layout", Json::object());
+        auto bindings = current.at("bindings").at("document");
+        bindings["bindings"].push_back({{"procedural", "ghost_asset"}, {"group", "sphere"}});
+        const auto result = finish(rpc("edit_ray_layout",
+            {{"base_source_digest", current.at("source_digest").at("hex")},
+             {"bindings", bindings}, {"base_bindings_digest", current.at("bindings").at("digest")}}));
+        REQUIRE(result.at("committed") == true);
+        REQUIRE(rtl1aFrame().empty());
+        CHECK(rtl1aFirstPixel("wp386_out")[0] == 0x386au);
+        CHECK(rpc("get_ray_layout", Json::object()).at("unresolved_bindings") ==
+              Json::array({{{"index", 1}, {"selector", {{"procedural", "ghost_asset"}}}, {"group", "sphere"}}}));
+    }
+
+    // Acceptance 6 (stage D): a record field added to the layout.
+    writeWp374aText(project.path / "shaders" / "wp386.rchit", R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+struct Payload { uint marker; uint q; uint flags; uint tint; };
+layout(location=0) rayPayloadInEXT Payload payload;
+hitAttributeEXT vec2 hit_attribute;
+layout(shaderRecordEXT, std430) buffer RayRecord {
+    uint material_index;
+    uint geometry_index;
+    uint geometry_kind;
+    float radius;
+    float scale;
+} ray_record;
+void main() { payload.marker = 0xdead386au; }
+)glsl");
+    auto with_scale = Json::parse(layout_bytes);
+    with_scale["record"].push_back({{"name", "scale"}, {"type", "f32"}});
+    const auto assets_bytes = readWp374aText(assets_path);
+    {
+        // Without the records: the generation's first frame cannot encode
+        // the procedural row, and the refusal says why (renderer.cpp keeps
+        // the frame's own words in the rolled-back generation's failure).
+        const auto current = rpc("get_ray_layout", Json::object());
+        std::string frame_error;
+        const auto result = finish(rpc("edit_ray_layout",
+            {{"base_source_digest", current.at("source_digest").at("hex")},
+             {"layout", with_scale}, {"base_layout_digest", current.at("layout").at("digest")}}),
+            &frame_error);
+        INFO(frame_error);
+        CHECK(result.at("committed") == false);
+        const auto message = result.at("error").at("message").get<std::string>();
+        CHECK_THAT(message, ContainsSubstring("generation_rolled_back"));
+        CHECK_THAT(message, ContainsSubstring("pelican.ray_binding_record_invalid@1"));
+        CHECK(readWp374aText(layout_path) == layout_bytes);
+        REQUIRE(rtl1aFrame().empty());
+    }
+    {
+        const auto current = rpc("get_ray_layout", Json::object());
+        const auto result = finish(rpc("edit_ray_layout",
+            {{"base_source_digest", current.at("source_digest").at("hex")},
+             {"layout", with_scale}, {"base_layout_digest", current.at("layout").at("digest")},
+             {"procedural_records", {{"sphere_asset", {{"radius", 1.0}, {"scale", 2.0}}}}}}));
+        REQUIRE(result.at("committed") == true);
+        CHECK(result.at("documents").contains("assets.json"));
+        CHECK(Json::parse(readWp374aText(layout_path)) == with_scale);
+        const auto assets = Json::parse(readWp374aText(assets_path));
+        CHECK(assets.at("procedural_geometry").at(0).at("record") == Json{{"radius", 1.0}, {"scale", 2.0}});
+        const auto rows = renderWp374aProductionRows();
+        REQUIRE(rows.rows.size() == 1);
+        const auto parsed = parseRayGroupLayout(readWp374aText(layout_path));
+        REQUIRE(parsed.record.size() == 2);
+        float scale = 0.0F;
+        REQUIRE(rows.rows[0].record_data.size() >= parsed.record[1].offset + sizeof(scale));
+        std::memcpy(&scale, rows.rows[0].record_data.data() + parsed.record[1].offset, sizeof(scale));
+        CHECK(scale == 2.0F);
+        CHECK(rpc("get_ray_layout", Json::object()).at("selectable_procedural_assets") ==
+              Json::array({{{"asset", "sphere_asset"}, {"record_fields", {{"radius", 1.0}, {"scale", 2.0}}}}}));
+        CHECK(readWp374aText(assets_path) != assets_bytes);
+    }
+#else
+    SUCCEED("RTL-1a production edits require the runtime shader compiler and the RPC service");
+#endif
+}
+
+TEST_CASE("RTL-1a a material binding made from selectable_materials matches its row, and one that matches none is listed",
+          "[rtl1a][ray-tracing][production][gpu]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER && PELICAN_WITH_RPC
+    setupLogger();
+    Wp374aProjectRoot project{"rtl1a_materials"};
+    writeWp374aProject(project.path, 3, true, false, true, std::nullopt, true);
+    FastModuleContainer modules;
+    Wp380RuntimeCleanup cleanup;
+    loadWp374aScene(project.path);
+    // The renderer (and the reload participant edits go through) is made by
+    // the first frame; the editor service finds it then.
+    REQUIRE(rtl1aFrame().empty());
+    auto service = makeEditorRuntimeService(
+        EditorRuntimeServiceOptions{.render_config_editing = true});
+    std::uint64_t rpc_id = 92000;
+    const auto rpc = [&](std::string_view method, Json params) {
+        return runWp374aRpcBytes(*service, rpc_id++, method, std::move(params));
+    };
+    REQUIRE(rtl1aFrame().empty());
+    const auto read = rpc("get_ray_layout", Json::object());
+    INFO(read.dump());
+    CHECK(read.at("bindings").is_null());
+    // The chair's glTF material, as its rows name it.
+    const auto &materials = read.at("selectable_materials");
+    const auto chair = std::find_if(materials.begin(), materials.end(), [](const Json &entry) {
+        return entry.at("selector").contains("asset");
+    });
+    REQUIRE(chair != materials.end());
+    const auto bindings = Json{
+        {"schema", "pelican.ray_bindings"}, {"version", 2},
+        {"bindings", Json::array({
+             {{"material", chair->at("selector")}, {"group", "opaque"}, {"record", Json::object()}},
+             {{"material", {{"document", "materials/nothing_uses_this.json"}}},
+              {"group", "opaque"}, {"record", Json::object()}}})}};
+    const auto accepted = rpc("edit_ray_layout",
+        {{"base_source_digest", read.at("source_digest").at("hex")}, {"bindings", bindings}});
+    INFO(accepted.dump());
+    REQUIRE(accepted.at("status") == "accepted");
+    CHECK(accepted.at("bindings_reference") == "project://ray_bindings.json");
+    service->commitPendingEdits();
+    auto result = rpc("get_edit_result", {{"ticket", accepted.at("ticket")}});
+    for (int frame = 0; frame < 4 && result.value("status", std::string{}) == "pending"; ++frame) {
+        REQUIRE(rtl1aFrame().empty());
+        result = rpc("get_edit_result", {{"ticket", accepted.at("ticket")}});
+    }
+    INFO(result.dump());
+    REQUIRE(result.at("committed") == true);
+    REQUIRE(rtl1aFrame().empty());
+    const auto after = rpc("get_ray_layout", Json::object());
+    CHECK(after.at("bindings").at("reference") == "project://ray_bindings.json");
+    CHECK(after.at("unresolved_bindings") ==
+          Json::array({{{"index", 1},
+                        {"selector", {{"document", "materials/nothing_uses_this.json"}}},
+                        {"group", "opaque"}}}));
+    // The row the first binding selects is bound by it.
+    const auto rows = renderWp374aProductionRows();
+    REQUIRE_FALSE(rows.rows.empty());
+    CHECK(std::ranges::any_of(rows.rows, [](const RaySceneRow &row) {
+        return row.binding_index == std::optional<std::size_t>{0};
+    }));
+#else
+    SUCCEED("RTL-1a production edits require the runtime shader compiler and the RPC service");
+#endif
+}
+
+// EB-3: tracing one more ray type, or one fewer, is an edit of the task
+// alone. The layout has a record (three engine fields and radius); the
+// shadow ray's closest hit declares none, as the Studio's template writes it.
+TEST_CASE("EB-3 a ray type traced or no longer traced commits without rewriting a shader, and a record that differs is refused with its place",
+          "[eb3][ray-tracing][production][gpu]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER && PELICAN_WITH_RPC
+    setupLogger();
+    Wp374aProjectRoot project{"eb3_traced"};
+    writeWp386aProceduralProject(project.path);
+    const auto layout_path = project.path / "ray_layout.json";
+    auto layout = Json::parse(readWp374aText(layout_path));
+    layout["ray_types"] = {"primary", "shadow"};
+    writeWp374aText(layout_path, layout.dump(2));
+    const auto shadow_path = project.path / "shaders" / "eb3_shadow.rchit";
+    writeWp374aText(shadow_path, R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+#include "__pelican_ray_group_layout.glsl"
+layout(location = 1) rayPayloadInEXT float occluded;
+hitAttributeEXT vec2 hit_attribute;
+void main() { occluded = 1.0; }
+)glsl");
+    // A record that is not the layout's: radius is missing.
+    writeWp374aText(project.path / "shaders" / "eb3_wrong.rchit", R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+layout(location = 1) rayPayloadInEXT float occluded;
+hitAttributeEXT vec2 hit_attribute;
+layout(shaderRecordEXT, std430) buffer RayRecord {
+    uint material_index;
+    uint geometry_index;
+    uint geometry_kind;
+} ray_record;
+void main() { occluded = float(ray_record.geometry_kind); }
+)glsl");
+    const auto feature_path = project.path / "features" / "wp386_procedural.json";
+    const auto primary_hit_path = project.path / "shaders" / "wp386.rchit";
+    const auto primary_hit_bytes = readWp374aText(primary_hit_path);
+    const auto shadow_bytes = readWp374aText(shadow_path);
+    FastModuleContainer modules;
+    Wp380RuntimeCleanup cleanup;
+    loadWp374aScene(project.path);
+    REQUIRE(rtl1aFrame().empty());
+    auto service = makeEditorRuntimeService(
+        EditorRuntimeServiceOptions{.render_config_editing = true});
+    std::uint64_t rpc_id = 93000;
+    const auto rpc = [&](std::string_view method, Json params) {
+        return runWp374aRpcBytes(*service, rpc_id++, method, std::move(params));
+    };
+    REQUIRE(rtl1aFrame().empty());
+    const auto finish = [&](const Json &answer) {
+        INFO(answer.dump());
+        if (answer.value("status", std::string{}) == "rejected") return answer;
+        REQUIRE(answer.at("status") == "accepted");
+        service->commitPendingEdits();
+        auto result = rpc("get_edit_result", {{"ticket", answer.at("ticket")}});
+        for (int frame = 0; frame < 4 && result.value("status", std::string{}) == "pending"; ++frame) {
+            (void)rtl1aFrame();
+            result = rpc("get_edit_result", {{"ticket", answer.at("ticket")}});
+        }
+        INFO(result.dump());
+        REQUIRE(result.value("status", std::string{}) != "pending");
+        return result;
+    };
+    const auto edit_task = [&](const Json &traced, const std::optional<Json> &shadow_row) {
+        const auto bytes = readWp374aText(feature_path);
+        auto task = Json::parse(bytes).at("compute_tasks").at(0);
+        task["ray_tracing"]["traced_ray_types"] = traced;
+        if (shadow_row) task["ray_tracing"]["hit_shaders"]["shadow"] = *shadow_row;
+        else task["ray_tracing"]["hit_shaders"].erase("shadow");
+        return finish(rpc("edit_compute_task",
+            {{"base_source_digest", rpc("get_ray_layout", Json::object()).at("source_digest").at("hex")},
+             {"task_name", "wp386_trace"},
+             {"base_task_source_digest", renderConfigSourceDigest(bytes)},
+             {"task", task}}));
+    };
+    const auto traced_now = [&] {
+        return Json::parse(readWp374aText(feature_path))
+            .at("compute_tasks").at(0).at("ray_tracing").at("traced_ray_types");
+    };
+    const Json shadow_row{{"sphere", {{"closesthit", "project://shaders/eb3_shadow"},
+                                      {"intersection", "engine://procedural_no_report"}}}};
+    const Json wrong_row{{"sphere", {{"closesthit", "project://shaders/eb3_wrong"},
+                                     {"intersection", "engine://procedural_no_report"}}}};
+
+    // get_ray_table on a procedural row: the asset is its model.
+    {
+        const auto table = rpc("get_ray_table", Json::object());
+        INFO(table.dump());
+        CHECK(table.at("mode") == rpc("get_ray_layout", Json::object()).at("mode"));
+        CHECK(table.at("groups") == Json::array({{{"index", 0}, {"name", "sphere"}, {"type", "procedural"}}}));
+        const auto &rows = table.at("rows");
+        REQUIRE(rows.size() == 1u);
+        CHECK(rows[0].at("object") == "Sphere");
+        CHECK(rows[0].at("geometry") == "procedural");
+        CHECK(rows[0].at("model") == "sphere_asset");
+        CHECK(rows[0].at("group") == "sphere");
+        CHECK(rows[0].at("group_type") == "procedural");
+        CHECK(rows[0].at("binding_index") == 0);
+        CHECK(rows[0].at("record_fields") ==
+              Json::array({{{"name", "radius"}, {"offset", 12}, {"type", "f32"}, {"value", 1.0}}}));
+        CHECK(rows[0].at("tlas") == Json::array({"scene"}));
+        CHECK(table.at("total") == 1);
+        CHECK(table.at("truncated") == false);
+    }
+
+    // Acceptance 1: shadow traced too, its cell filled with a closest hit
+    // that declares no record -- committed, and the frame draws.
+    {
+        const auto result = edit_task(Json::array({"primary", "shadow"}), shadow_row);
+        INFO(result.dump());
+        REQUIRE(result.at("committed") == true);
+        CHECK(traced_now() == Json::array({"primary", "shadow"}));
+        REQUIRE(rtl1aFrame().empty());
+        CHECK(rtl1aFirstPixel("wp386_out")[0] == 0x386au);
+    }
+    // ... and no longer traced: committed.
+    {
+        const auto result = edit_task(Json::array({"primary"}), std::nullopt);
+        INFO(result.dump());
+        REQUIRE(result.at("committed") == true);
+        CHECK(traced_now() == Json::array({"primary"}));
+        REQUIRE(rtl1aFrame().empty());
+        CHECK(rtl1aFirstPixel("wp386_out")[0] == 0x386au);
+    }
+    // No shader was rewritten on the way.
+    CHECK(readWp374aText(primary_hit_path) == primary_hit_bytes);
+    CHECK(readWp374aText(shadow_path) == shadow_bytes);
+
+    const Json layout_record = Json::array({
+        {{"name", "material_index"}, {"offset", 0}, {"type", "u32"}},
+        {{"name", "geometry_index"}, {"offset", 4}, {"type", "u32"}},
+        {{"name", "geometry_kind"}, {"offset", 8}, {"type", "u32"}},
+        {{"name", "radius"}, {"offset", 12}, {"type", "f32"}}});
+    const Json declared_record = Json::array({
+        {{"offset", 0}, {"type", "u32"}}, {{"offset", 4}, {"type", "u32"}},
+        {{"offset", 8}, {"type", "u32"}}});
+    // A declared record that is not the layout's is still refused, by its
+    // code with where it is and what it should be.
+    {
+        const auto result = edit_task(Json::array({"primary", "shadow"}), wrong_row);
+        INFO(result.dump());
+        CHECK(result.at("committed") == false);
+        const auto &error = result.at("error");
+        CHECK(error.at("code") == "pelican.ray_tracing.shader_record_abi_mismatch@1");
+        CHECK(error.at("task") == "wp386_trace");
+        CHECK(error.at("ray_type") == "shadow");
+        CHECK(error.at("group") == "sphere");
+        CHECK(error.at("stage") == "closesthit");
+        CHECK_THAT(error.at("shader").get<std::string>(), ContainsSubstring("eb3_wrong"));
+        CHECK(error.at("document") == "project://features/wp386_procedural.json");
+        CHECK(error.at("expected") == layout_record);
+        CHECK(error.at("actual") == declared_record);
+        CHECK_THAT(error.at("message").get<std::string>(),
+                   ContainsSubstring("pelican.ray_tracing.shader_record_abi_mismatch@1: shader '"));
+        CHECK_THAT(error.at("message").get<std::string>(), ContainsSubstring("member_count=3 expected=4"));
+        CHECK(traced_now() == Json::array({"primary"}));
+        REQUIRE(rtl1aFrame().empty());
+    }
+    // The same documents read from disk by reload_render_documents: the
+    // problem list names it by code and fields.
+    {
+        auto feature = Json::parse(readWp374aText(feature_path));
+        auto &ray_tracing = feature["compute_tasks"][0]["ray_tracing"];
+        ray_tracing["traced_ray_types"] = {"primary", "shadow"};
+        ray_tracing["hit_shaders"]["shadow"] = wrong_row;
+        writeWp374aText(feature_path, feature.dump(2));
+        const auto result = finish(rpc("reload_render_documents", Json::object()));
+        INFO(result.dump());
+        CHECK(result.at("status") == "rejected");
+        CHECK(result.at("error").at("code") == "pelican.ray_tracing.shader_record_abi_mismatch@1");
+        const auto list = problemListJson(FastModuleContainer::tryGet<ProblemList>());
+        INFO(list.dump(2));
+        const auto &problems = list.at("problems");
+        REQUIRE(problems.size() == 1u);
+        const auto &problem = problems.at(0);
+        CHECK(problem.at("source") == "reload_rpc");
+        CHECK(problem.at("code") == "pelican.ray_tracing.shader_record_abi_mismatch@1");
+        CHECK(problem.at("document_kind") == "feature");
+        const auto &fields = problem.at("fields");
+        CHECK(fields.at("task") == "wp386_trace");
+        CHECK(fields.at("ray_type") == "shadow");
+        CHECK(fields.at("group") == "sphere");
+        CHECK(fields.at("stage") == "closesthit");
+        CHECK(fields.at("expected") == layout_record);
+        CHECK(fields.at("actual") == declared_record);
+        REQUIRE(rtl1aFrame().empty());
+    }
+#else
+    SUCCEED("EB-3 production edits require the runtime shader compiler and the RPC service");
+#endif
+}
+
+// EB-7: a procedural group's closest hit whose hit attribute is not its
+// intersection's, read from disk by reload_render_documents: refused by its
+// code with its place (RayTracingRefusal fields, as EB-3's record refusal),
+// listed with them, and the feature saved back as it was clears it.
+TEST_CASE("EB-7 a procedural closest hit whose hit attribute is not its intersection's is refused with its place, "
+          "and the feature saved back clears it",
+          "[eb7][ray-tracing][production][gpu]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER && PELICAN_WITH_RPC
+    setupLogger();
+    Wp374aProjectRoot project{"eb7_attribute"};
+    writeWp386aProceduralProject(project.path);
+    // The layout's record, as the primary closest hit declares it; the hit
+    // attribute is a vec3 where the intersection reports a vec2.
+    writeWp374aText(project.path / "shaders" / "eb7_vec3.rchit", R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+struct Payload { uint marker; uint q; uint flags; uint tint; };
+layout(location=0) rayPayloadInEXT Payload payload;
+hitAttributeEXT vec3 hit_attribute;
+layout(shaderRecordEXT, std430) buffer RayRecord {
+    uint material_index;
+    uint geometry_index;
+    uint geometry_kind;
+    float radius;
+} ray_record;
+void main() { payload.marker = 0xdead386au; }
+)glsl");
+    const auto feature_path = project.path / "features" / "wp386_procedural.json";
+    const auto feature_bytes = readWp374aText(feature_path);
+    FastModuleContainer modules;
+    Wp380RuntimeCleanup cleanup;
+    loadWp374aScene(project.path);
+    REQUIRE(rtl1aFrame().empty());
+    auto service = makeEditorRuntimeService(
+        EditorRuntimeServiceOptions{.render_config_editing = true});
+    std::uint64_t rpc_id = 94000;
+    const auto rpc = [&](std::string_view method, Json params) {
+        return runWp374aRpcBytes(*service, rpc_id++, method, std::move(params));
+    };
+    REQUIRE(rtl1aFrame().empty());
+    const auto finish = [&](const Json &answer) {
+        INFO(answer.dump());
+        if (answer.value("status", std::string{}) == "rejected") return answer;
+        REQUIRE(answer.at("status") == "accepted");
+        service->commitPendingEdits();
+        auto result = rpc("get_edit_result", {{"ticket", answer.at("ticket")}});
+        for (int frame = 0; frame < 4 && result.value("status", std::string{}) == "pending"; ++frame) {
+            (void)rtl1aFrame();
+            result = rpc("get_edit_result", {{"ticket", answer.at("ticket")}});
+        }
+        INFO(result.dump());
+        REQUIRE(result.value("status", std::string{}) != "pending");
+        return result;
+    };
+    const auto require_place = [](const Json &fields) {
+        INFO(fields.dump(2));
+        CHECK(fields.at("task") == "wp386_trace");
+        CHECK(fields.at("stage") == "closesthit");
+        CHECK_THAT(fields.at("shader").get<std::string>(), ContainsSubstring("eb7_vec3"));
+        CHECK(fields.at("ray_type") == "primary");
+        CHECK(fields.at("group") == "sphere");
+        CHECK(fields.at("expected") == "vec2<f32>");
+        CHECK(fields.at("actual") == "vec3<f32>");
+        CHECK_THAT(fields.at("intersection").get<std::string>(), ContainsSubstring("procedural_no_report"));
+    };
+
+    auto feature = Json::parse(feature_bytes);
+    feature["compute_tasks"][0]["ray_tracing"]["hit_shaders"]["primary"]["sphere"]["closesthit"] =
+        "project://shaders/eb7_vec3";
+    writeWp374aText(feature_path, feature.dump(2));
+    {
+        const auto result = finish(rpc("reload_render_documents", Json::object()));
+        INFO(result.dump());
+        REQUIRE(result.at("status") == "rejected");
+        const auto &error = result.at("error");
+        CHECK(error.at("code") == "pelican.procedural_hit_attribute_mismatch@1");
+        CHECK(error.at("document") == "project://features/wp386_procedural.json");
+        CHECK_THAT(error.at("message").get<std::string>(),
+                   ContainsSubstring("pelican.procedural_hit_attribute_mismatch@1: shader '") &&
+                       ContainsSubstring(" must declare the same hit attribute as "));
+        require_place(error);
+        const auto list = problemListJson(FastModuleContainer::tryGet<ProblemList>());
+        INFO(list.dump(2));
+        const auto &problems = list.at("problems");
+        REQUIRE(problems.size() == 1u);
+        CHECK(problems.at(0).at("code") == "pelican.procedural_hit_attribute_mismatch@1");
+        CHECK(problems.at(0).at("document_kind") == "feature");
+        require_place(problems.at(0).at("fields"));
+        REQUIRE(rtl1aFrame().empty());
+        CHECK(rtl1aFirstPixel("wp386_out")[0] == 0x386au);
+    }
+    // Saved back as it was: the next reload takes it in and nothing is listed.
+    writeWp374aText(feature_path, feature_bytes);
+    {
+        const auto result = finish(rpc("reload_render_documents", Json::object()));
+        INFO(result.dump());
+        REQUIRE(result.at("status") == "committed");
+        const auto list = problemListJson(FastModuleContainer::tryGet<ProblemList>());
+        INFO(list.dump(2));
+        CHECK(list.at("problems").empty());
+        REQUIRE(rtl1aFrame().empty());
+        CHECK(rtl1aFirstPixel("wp386_out")[0] == 0x386au);
+    }
+#else
+    SUCCEED("EB-7 production reloads require the runtime shader compiler and the RPC service");
+#endif
+}
+
+// EB-3: get_ray_table answers in one call what get_ray_occurrences answers
+// object by object, from the same occurrences and the same binding function.
+TEST_CASE("EB-3 get_ray_table lists every row in one call, as get_ray_occurrences reads each object's",
+          "[eb3][ray-tracing][production][gpu]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER && PELICAN_WITH_RPC
+    setupLogger();
+    Wp374aProjectRoot project{"eb3_table"};
+    writeWp374aProject(project.path, 3, true, false, true, std::nullopt, true);
+    FastModuleContainer modules;
+    Wp380RuntimeCleanup cleanup;
+    loadWp374aScene(project.path);
+    REQUIRE(rtl1aFrame().empty());
+    auto service = makeEditorRuntimeService(
+        EditorRuntimeServiceOptions{.render_config_editing = true});
+    std::uint64_t rpc_id = 94000;
+    const auto rpc = [&](std::string_view method, Json params) {
+        return runWp374aRpcBytes(*service, rpc_id++, method, std::move(params));
+    };
+    REQUIRE(rtl1aFrame().empty());
+    const auto table = rpc("get_ray_table", Json::object());
+    INFO(table.dump());
+    CHECK(table.at("mode") == rpc("get_ray_layout", Json::object()).at("mode"));
+    CHECK(table.at("groups") == Json::array({{{"index", 0}, {"name", "opaque"}, {"type", "triangles"}}}));
+    CHECK(table.at("acceleration_structures").at(0).at("name") == "scene");
+    const auto &rows = table.at("rows");
+    const auto occurrences = rpc("get_ray_occurrences", {{"name", "Chair"}});
+    INFO(occurrences.dump());
+    const auto &entries = occurrences.at("entries");
+    REQUIRE_FALSE(entries.empty());
+    // The chair is the scene's only ray traced object.
+    CHECK(rows.size() == entries.size());
+    CHECK(table.at("total") == rows.size());
+    CHECK(table.at("truncated") == false);
+    std::size_t bound = 0;
+    for (const auto &entry : entries) {
+        const auto row = std::find_if(rows.begin(), rows.end(), [&](const Json &candidate) {
+            return candidate.at("occurrence_id") == entry.at("occurrence_id");
+        });
+        REQUIRE(row != rows.end());
+        CHECK(row->at("object") == "Chair");
+        CHECK(row->at("authoring_object_id") == entry.at("authoring_object_id"));
+        CHECK(row->at("geometry") == "triangles");
+        CHECK(row->at("model") == entry.at("asset"));
+        CHECK(row->at("mesh") == entry.at("mesh"));
+        CHECK(row->at("primitive") == entry.at("primitive"));
+        CHECK(row->at("material") == entry.at("material"));
+        CHECK(row->at("q") == entry.at("q"));
+        CHECK(row->at("eligibility") == entry.at("eligibility"));
+        const auto &binding = entry.at("binding");
+        if (binding.is_null()) {
+            CHECK(row->at("group").is_null());
+            CHECK(row->at("tlas") == Json::array());
+            continue;
+        }
+        ++bound;
+        CHECK(row->at("group") == binding.at("group_name"));
+        CHECK(row->at("group_type") == "triangles");
+        CHECK(row->at("binding_index") == binding.at("binding_index"));
+        CHECK(row->at("record_fields") == binding.at("record_fields"));
+        CHECK(row->at("material_reference") == binding.at("material_reference"));
+        CHECK(row->at("mask") == binding.at("mask"));
+        CHECK(row->at("tlas") == Json::array({"scene"}));
+    }
+    CHECK(bound > 0u);
+    // Paged: limit and offset over the same rows.
+    const auto first = rpc("get_ray_table", {{"limit", 1}});
+    REQUIRE(first.at("rows").size() == 1u);
+    CHECK(first.at("rows").at(0) == rows.at(0));
+    CHECK(first.at("total") == rows.size());
+    CHECK(first.at("truncated") == (rows.size() > 1u));
+    const auto past = rpc("get_ray_table", {{"offset", rows.size()}});
+    CHECK(past.at("rows").empty());
+    CHECK(past.at("truncated") == false);
+    CHECK(runWp374aRpcResponse(*service, rpc_id++, "get_ray_table", {{"limit", 0}}).contains("error"));
+    CHECK(runWp374aRpcResponse(*service, rpc_id++, "get_ray_table", {{"rows", 1}}).contains("error"));
+#else
+    SUCCEED("EB-3 get_ray_table requires the runtime shader compiler and the RPC service");
+#endif
+}
+
 } // namespace Pelican

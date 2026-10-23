@@ -483,6 +483,36 @@ vertex displacement と custom0/custom1 の経路を全 pass で維持する。B
 JOINTS_0/WEIGHTS_0 と palette を適用してからユーザー hook を呼ぶ。したがって B 層の
 `.surface` 本文はスキニング対応のために変更してはならない。
 
+### project material の skinned 頂点 variant(SK-1)
+
+material は skin の有無を持たない。skin の有無は部品(primitive)の性質で、頂点の mode
+`standard` / `skinned`(`src/core/material/materialcontainer.hpp` の `VertexMode`)として
+描画時に部品ごとに選ばれる。1 つの material が両 mode の pipeline を登録時に持つ。
+
+- project material の登録(`src/core/material/projectmaterialasset.cpp` の `makeMaterialInfo()`)は
+  同じ `.surface` を 2 回 compile し、2 回目だけ `PELICAN_SKINNED` を define に足す。結果は
+  `MaterialInfo::vert_shader` と `MaterialInfo::skinned_vert_shader` に入る。fragment は
+  1 本(1 回目のもの)を両 mode で共有する。
+- `PELICAN_SKINNED` は compiler 所有の define で、material 文書の `defines` に書くと
+  `material defines cannot override the compiler-owned physical shader ABI` で拒否される
+  (`src/core/shader/shaderlibrary.cpp` の `isCompilerOwnedSurfaceDefine()`)。
+- `surface_v1.vert` の `PELICAN_SKINNED` 分岐は location 5 `inJoints`(`ivec4`)・6 `inWeights`
+  を宣言し、`pelican_skinning.glsl` の palette で morph 後の位置・法線・tangent を変換してから
+  `pelican_vertex_displace_v1` を呼ぶ。skinned の pipeline は上の Vertex input の
+  `use_skinned_vertex_layout` で作られる。
+- 両 mode の pipeline は set 1(pass input)と set 2(material)の descriptor set layout が
+  反映で一致しなければならない(不一致は `incompatible standard/skinned descriptor set` で
+  登録拒否)。set 3 binding 2 の `SkinPalette` は skinned の頂点 shader だけが読む。
+- glTF の material は組み込みの `default.vert` / `skinned.vert` を使い、surface が
+  `pelican_vertex_displace_v1` を持つときだけ両 mode を surface から compile する。
+  VAT の派生 material は skinned の頂点 shader を持たない(skin と VAT は 1 primitive に同居できない)。
+- RPC での見え方: `get_render_authoring_context.materials[]` は mode の無い公開 id ごとに 1 行、
+  `get_frame_plan` の `loops[].elements[]` は(公開 id, branch)ごとに 1 行で(2 つの mode が
+  別の branch を取れば同じ id が 2 行)、その行の mode を `vertex_modes`(`"standard"` /
+  `"skinned"` の配列)に並べる。draw loop の `when.material` は公開 id で両 mode に当たり
+  (mode 付きの内部の鍵 `…#vertex/<mode>` を書けばその mode にだけ当たる)、`when.skinned` が
+  mode を区別する。
+
 ## B 層 experimental SPIR-V link ABI (M3b / WP80)
 
 build時に`PELICAN_WITH_SPIRV_LINK=ON`、実行時に

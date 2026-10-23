@@ -10,6 +10,8 @@
 // failed only some of the time.
 
 #include "inspectorwidget.hpp"
+#include "materialassignwidget.hpp"
+#include "graphattachmentwidget.hpp"
 
 // EmbeddedViewport is final and has no test seam. As in the frame-plan test,
 // this translation unit reaches its process and readiness members so the
@@ -24,9 +26,12 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QLabel>
+#include <QLineEdit>
+#include <QListWidget>
 #include <QPointer>
 #include <QPushButton>
 #include <QTest>
@@ -70,7 +75,9 @@ class FakeEngine {
     Json transform{{"pos", Json::array({1.0, 2.0, 3.0})},
                    {"rotation", Json::array({0.0, 0.0, 0.0, 1.0})},
                    {"scale", Json::array({1.0, 1.0, 1.0})}};
-    Json flags{{"enabled", true}};
+    Json flags{{"enabled", true}, {"amount", 1.0}, {"note", "original"}};
+    // MI-1s: a simplemodelview on the object, when a test gives it one.
+    std::optional<Json> model_view;
     std::uint64_t revision = 1;
     int spawns = 0;
     // PM-3b: the Transform the game has given the object (get_components'
@@ -79,6 +86,8 @@ class FakeEngine {
     // The operations of the last `edit`.
     Json last_operations = Json::array();
     int transactions = 0;
+    bool hold_material_reads = false;
+    std::map<std::string, qint64> material_reads;
 
     // Answer everything the panel has asked so far.
     void pump() {
@@ -89,7 +98,15 @@ class FakeEngine {
             const auto id = request.at("id").get<qint64>();
             // The attached-graphs row beside the fields asks for graphs; the
             // fixture project has none to give.
-            if (request.at("method").get<std::string>().starts_with("get_graph_")) {
+            // MI-1s: and the Material rows beside a model ask for materials.
+            const auto method = request.at("method").get<std::string>();
+            if (hold_material_reads && (method == "list_materials" ||
+                                        method == "get_material_bindings" || method == "get_object_materials")) {
+                material_reads[method] = id;
+                continue;
+            }
+            if (method.starts_with("get_graph_") || method == "list_materials" ||
+                method == "get_material_bindings" || method == "get_object_materials") {
                 emit viewport_.inspectorRpcFailed(id, QStringLiteral("no graphs here"));
                 QApplication::processEvents();
                 continue;
@@ -129,6 +146,10 @@ class FakeEngine {
             return;
         }
         if (op != "set_component_value") return;
+        if (operation.at("component_slot") == "simplemodelview" && model_view) {
+            (*model_view)[Json::json_pointer{operation.at("field_path").get<std::string>()}] = operation.at("value");
+            return;
+        }
         Json &component = operation.at("component_slot") == "transform" ? transform : flags;
         component[Json::json_pointer{operation.at("field_path").get<std::string>()}] =
             operation.at("value");
@@ -138,6 +159,20 @@ class FakeEngine {
         const auto schema = [](Json fields) {
             return Json{{"state", "available"}, {"fields", std::move(fields)}};
         };
+        Json result = componentList(schema);
+        if (model_view)
+            result["components"].push_back({{"name", "simplemodelview"},
+                                            {"component_index", 2},
+                                            {"authored_json", *model_view},
+                                            {"editable", true},
+                                            {"pending", false},
+                                            {"codec", {{"state", "registered"}}},
+                                            {"schema", schema(Json::array({{{"name", "model"}, {"type", "string"}}}))}});
+        return result;
+    }
+
+    template <typename Schema>
+    Json componentList(const Schema &schema) const {
         return {{"scene_revision", revision},
                 {"authoring_object_id", 41},
                 {"declaration_index", 2},
@@ -162,7 +197,9 @@ class FakeEngine {
                        {"editable", true},
                        {"pending", false},
                        {"codec", {{"state", "registered"}}},
-                       {"schema", schema(Json::array({{{"name", "enabled"}, {"type", "bool"}}}))}}})}};
+                       {"schema", schema(Json::array({{{"name", "enabled"}, {"type", "bool"}},
+                                                      {{"name", "amount"}, {"type", "f64"}},
+                                                      {{"name", "note"}, {"type", "string"}}}))}}})}};
     }
 
     Json answer(const std::string &method, const Json &params) {
@@ -226,7 +263,13 @@ struct Rig {
     FakeEngine engine{viewport};
     std::unique_ptr<InspectorWidget> inspector;
 
-    Rig() {
+    // MI-1s: `model` puts a simplemodelview on the object, and `prepare`
+    // runs on the Inspector before the object is selected.
+    explicit Rig(std::optional<Json> model = std::nullopt,
+                 const std::function<void(InspectorWidget &)> &prepare = {},
+                 bool hold_material_reads = false) {
+        engine.model_view = std::move(model);
+        engine.hold_material_reads = hold_material_reads;
         QString error;
         REQUIRE(viewport.process_.start(
             {QString::fromUtf8(PELICAN_PROCESS_FIXTURE_PATH), {QStringLiteral("rpc-hold")}, {}},
@@ -238,6 +281,7 @@ struct Rig {
         inspector->show();
         inspector->activateWindow();
         REQUIRE(QTest::qWaitForWindowActive(inspector.get()));
+        if (prepare) prepare(*inspector);
         inspector->setSelection(OutlinerObjectKey{.scene_id = "main", .declaration_index = 2},
                                 QStringLiteral("Plane"));
         REQUIRE(pumpUntil([&] { return field("pelican.inspectorVector.transform.pos.1") != nullptr; }));
@@ -275,6 +319,98 @@ struct Rig {
 };
 
 } // namespace
+
+TEST_CASE("AH-1 inspector hit-group assignment waits for materialassign readback",
+          "[devstudio][inspector][materialassign][ah1]") {
+    QStringList assigned;
+    const auto action = [&](const QString &material) { assigned.push_back(material); };
+    Rig rig{Json{{"model", "engine://primitives/sphere"}},
+            [&](InspectorWidget &inspector) { inspector.setAssignHitGroupAction(action); }, true};
+    auto *button = rig.inspector->findChild<QPushButton *>(QStringLiteral("pelican.inspectorAssignHitGroup"));
+    auto *rows = rig.inspector->findChild<MaterialAssignWidget *>();
+    REQUIRE(button != nullptr);
+    REQUIRE(rows != nullptr);
+    auto *choice = rows->choice();
+    REQUIRE(choice != nullptr);
+    const auto answer = [&](const std::string &method, const Json &result) {
+        REQUIRE(rig.engine.material_reads.contains(method));
+        const auto id = rig.engine.material_reads.at(method);
+        rig.engine.material_reads.erase(method);
+        emit rig.viewport.inspectorRpcSucceeded(id, QByteArray::fromStdString(result.dump()));
+    };
+    const Json primitive{{"mesh", 0}, {"primitive", 0}, {"slot", "material_2"},
+                         {"material", "material_2"}, {"source", "model"},
+                         {"model_material", "material_2"}, {"drawn", "material_2"}};
+    const Json object{{"object", 41}, {"scene_id", "main"}, {"materials", Json::array()},
+                      {"primitives", Json::array({primitive})}};
+    const Json bindings{{"primitives", Json::array({primitive})}};
+    CHECK_FALSE(button->isEnabled());
+    // Setting the action after the selection must obey the same readiness gate.
+    rig.inspector->setAssignHitGroupAction(action);
+    CHECK_FALSE(button->isEnabled());
+    answer("get_object_materials", object);
+    CHECK_FALSE(button->isEnabled());
+    answer("list_materials", Json::object());
+    CHECK_FALSE(button->isEnabled());
+    answer("get_material_bindings", bindings);
+    REQUIRE(button->isEnabled());
+    CHECK(choice->currentData().toString() == QStringLiteral("material_2"));
+    button->click();
+    REQUIRE(assigned == QStringList{QStringLiteral("material_2")});
+
+    // Even a stale enabled button must never pass placeholder text to the action.
+    for (const auto &marker : {QStringLiteral("\x01mixed"), QStringLiteral("\x01current")}) {
+        choice->setItemData(choice->currentIndex(), marker);
+        button->setEnabled(true);
+        button->click();
+        CHECK(assigned.size() == 1);
+    }
+
+    // Refresh starts synchronously; a previous real material cannot enable it while reading.
+    choice->setItemData(choice->currentIndex(), QStringLiteral("material_2"));
+    rows->bindingsChanged();
+    CHECK_FALSE(button->isEnabled());
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.material_reads.contains("get_object_materials"); }));
+    Json mixed = object;
+    auto other = primitive;
+    other["primitive"] = 1;
+    other["material"] = other["drawn"] = "material_3";
+    mixed["primitives"].push_back(other);
+    answer("get_material_bindings", bindings);
+    answer("get_object_materials", mixed);
+    CHECK(choice->currentText() == QStringLiteral("(differs per primitive)"));
+    CHECK_FALSE(button->isEnabled());
+
+    // A later uniform read re-enables it and passes the reference, without the display suffix.
+    rows->bindingsChanged();
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.material_reads.contains("get_object_materials"); }));
+    Json own = object;
+    own["primitives"][0]["source"] = "object";
+    answer("get_material_bindings", bindings);
+    answer("get_object_materials", own);
+    REQUIRE(button->isEnabled());
+    CHECK(choice->currentText() == QStringLiteral("material_2 (this object)"));
+    button->click();
+    CHECK(assigned == QStringList{QStringLiteral("material_2"), QStringLiteral("material_2")});
+
+    rig.inspector->setAssignHitGroupAction({});
+    CHECK_FALSE(button->isEnabled());
+    rig.inspector->setAssignHitGroupAction(action);
+    REQUIRE(button->isEnabled());
+    rig.inspector->setSelection(std::nullopt, {});
+    CHECK_FALSE(button->isEnabled());
+    rig.inspector->setSelection(OutlinerObjectKey{.scene_id = "main", .declaration_index = 2},
+                                QStringLiteral("Sphere"));
+    CHECK_FALSE(button->isEnabled());
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.material_reads.contains("get_object_materials"); }));
+    CHECK_FALSE(button->isEnabled());
+    answer("list_materials", Json::object());
+    answer("get_material_bindings", bindings);
+    answer("get_object_materials", object);
+    CHECK(button->isEnabled());
+    rows->engineUnavailable();
+    CHECK_FALSE(button->isEnabled());
+}
 
 TEST_CASE("Q-7 a committed field gives the Inspector back",
           "[devstudio][inspector][q7][busy][negative-contrast]") {
@@ -411,6 +547,97 @@ TEST_CASE("T-1 a rotation is typed as angles and stored as the quaternion",
     about_y->setFocus(Qt::OtherFocusReason);
     rig.pumpFor(300);
     CHECK(rig.engine.revision == committed);
+}
+
+
+TEST_CASE("FX-4 destroying the Inspector disconnects a focused scalar field",
+          "[devstudio][inspector][lifetime]") {
+    Rig rig;
+    QPointer<QDoubleSpinBox> field = rig.field("pelican.inspectorNumeric.fixture_flags.amount");
+    REQUIRE(field);
+    field->setFocus(Qt::OtherFocusReason);
+    REQUIRE(field->hasFocus());
+    int finished = 0;
+    QObject::connect(field, &QDoubleSpinBox::editingFinished, &rig.viewport, [&] { ++finished; });
+    const auto revision = rig.engine.revision;
+    rig.inspector.reset();
+    // Qt really delivered the teardown signal; only the dead receiver's
+    // callback was removed. No late edit was sent and the field is gone.
+    CHECK(finished > 0);
+    CHECK(field.isNull());
+    rig.pumpFor(100);
+    CHECK(rig.engine.revision == revision);
+}
+
+TEST_CASE("FX-4 destroying the Inspector disconnects a modified text field",
+          "[devstudio][inspector][lifetime]") {
+    Rig rig;
+    QPointer<QLineEdit> field =
+        rig.inspector->findChild<QLineEdit *>(QStringLiteral("pelican.inspectorString"));
+    REQUIRE(field);
+    field->setFocus(Qt::OtherFocusReason);
+    field->selectAll();
+    QTest::keyClicks(field, QStringLiteral("unfinished"));
+    REQUIRE(field->hasFocus());
+    REQUIRE(field->isModified());
+    int finished = 0;
+    QObject::connect(field, &QLineEdit::editingFinished, &rig.viewport, [&] { ++finished; });
+    const auto revision = rig.engine.revision;
+    rig.inspector.reset();
+    CHECK(finished > 0);
+    CHECK(field.isNull());
+    rig.pumpFor(100);
+    CHECK(rig.engine.revision == revision);
+    CHECK(rig.engine.flags.at("note") == "original");
+}
+
+TEST_CASE("FX-4 destroying Attached graphs disconnects a modified input port",
+          "[devstudio][inspector][graph-attachment][lifetime]") {
+    auto &app = application();
+    std::deque<std::pair<quint64, QString>> requests;
+    auto graph = std::make_unique<GraphAttachmentWidget>();
+    QObject::connect(graph.get(), &GraphAttachmentWidget::rpcRequested, &app,
+                     [&](quint64 id, const QString &method, const QJsonObject &) {
+                         requests.emplace_back(id, method);
+                     });
+    graph->setOwner(GraphAttachmentOwner{"main", 41});
+    graph->setConnected(true);
+    REQUIRE(requests.size() == 1);
+    REQUIRE(requests.front().second == QStringLiteral("get_graph_instances"));
+    const auto id = requests.front().first;
+    requests.clear();
+    const Json instance{{"id", "left"}, {"op", "graph.instance"}, {"definition", "unit"},
+                        {"owner", {{"scene", "main"}, {"object", 41}}},
+                        {"parameters", {{"gain", 2.0}}}};
+    const Json document{{"source_digest", {{"hex", "source-a"}}},
+                        {"definitions", {{"unit", {{"nodes", Json::array({
+                            {{"id", "gain"}, {"op", "graph.input"}, {"default", 2.0}}})}}}}},
+                        {"instances", Json::array({instance})},
+                        {"nodes", Json::array({instance})}};
+    graph->receiveRpcResult(id, QByteArray::fromStdString(document.dump()));
+    auto *instances = graph->findChild<QListWidget *>(QStringLiteral("pelican.graphAttachments"));
+    REQUIRE(instances != nullptr);
+    REQUIRE(instances->count() == 1);
+    instances->setCurrentRow(0);
+    graph->show();
+    graph->activateWindow();
+    REQUIRE(QTest::qWaitForWindowActive(graph.get()));
+    QPointer<QLineEdit> field =
+        graph->findChild<QLineEdit *>(QStringLiteral("pelican.graphPort.value.gain"));
+    REQUIRE(field);
+    REQUIRE(field->isEnabled());
+    field->setFocus(Qt::OtherFocusReason);
+    field->selectAll();
+    QTest::keyClicks(field, QStringLiteral("3"));
+    REQUIRE(field->hasFocus());
+    REQUIRE(field->isModified());
+    requests.clear();
+    int finished = 0;
+    QObject::connect(field, &QLineEdit::editingFinished, &app, [&] { ++finished; });
+    graph.reset();
+    CHECK(finished > 0);
+    CHECK(field.isNull());
+    CHECK(requests.empty());
 }
 
 
@@ -553,4 +780,74 @@ TEST_CASE("PM-3c a spawned object's read-only view offers no Take from game",
     CHECK(take()->isVisible());
 }
 
+TEST_CASE("MI-1s decision 2: Import... beside the model field registers a file through the window's action and "
+          "sets the field to the name it was registered as, in one edit",
+          "[devstudio][inspector][mi1s]") {
+    std::function<void(const std::string &)> registered;
+    int imports = 0;
+    Rig rig{Json{{"model", "engine://primitives/cube"}}, [&](InspectorWidget &inspector) {
+                inspector.setModelImportAction([&](std::function<void(const std::string &)> done) {
+                    ++imports;
+                    registered = std::move(done);
+                });
+            }};
+    QPointer<QPushButton> import;
+    REQUIRE(rig.pumpUntil([&] {
+        import = rig.inspector->findChild<QPushButton *>(QStringLiteral("pelican.inspectorModelImport"));
+        return import != nullptr && import->isVisible() && import->isEnabled();
+    }));
+    auto *choices = rig.inspector->findChild<QComboBox *>(QStringLiteral("pelican.inspectorModelChoice"));
+    REQUIRE(choices != nullptr);
+    CHECK(choices->currentText() == QStringLiteral("Cube (built-in)"));
+
+    // The window chooses the file and registers it; nothing is sent until
+    // it says the model is drawn now.
+    const auto edits = rig.engine.transactions;
+    import->click();
+    REQUIRE(imports == 1);
+    rig.pumpFor(100);
+    CHECK(rig.engine.transactions == edits);
+    REQUIRE(registered);
+    registered("checker_box");
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.model_view->at("model") == "checker_box"; }));
+    CHECK(rig.engine.transactions == edits + 1);
+    CHECK(rig.engine.last_operations ==
+          Json::array({{{"op", "set_component_value"},
+                        {"object_id", 41},
+                        {"component_slot", "simplemodelview"},
+                        {"field_path", "/model"},
+                        {"value", "checker_box"}}}));
+    REQUIRE(rig.pumpUntil([&] {
+        auto *field = rig.inspector->findChild<QComboBox *>(QStringLiteral("pelican.inspectorModelChoice"));
+        return field != nullptr && field->currentText() == QStringLiteral("checker_box");
+    }));
+}
+
+} // namespace PelicanStudio
+
+namespace PelicanStudio {
+TEST_CASE("An unchanged Inspector notice does not repolish the idle UI",
+          "[devstudio][inspector][input-latency]") {
+    (void)application();
+    EmbeddedViewport viewport;
+    InspectorWidget widget{&viewport};
+    widget.show();
+    QApplication::processEvents();
+    auto *notice = widget.findChild<QLabel *>(QStringLiteral("pelican.inspectorNotice"));
+    REQUIRE(notice != nullptr);
+    class StyleCounter : public QObject {
+    public:
+        int changes = 0;
+        bool eventFilter(QObject *, QEvent *event) override {
+            if (event->type() == QEvent::StyleChange) ++changes;
+            return false;
+        }
+    } counter;
+    // Information is the idle connected-engine notice in a running Studio.
+    emit viewport.engineRpcBecameAvailable();
+    widget.playSessionChanged();
+    notice->installEventFilter(&counter);
+    for (int i = 0; i < 10; ++i) widget.playSessionChanged();
+    CHECK(counter.changes == 0);
+}
 } // namespace PelicanStudio

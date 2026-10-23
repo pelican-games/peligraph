@@ -1,3 +1,4 @@
+#include "../project/jsondocument.hpp"
 #include "importcommand.hpp"
 
 #include "../project/assetdataformat.hpp"
@@ -287,7 +288,8 @@ void verifyManifestOutputs(const std::filesystem::path &delivery_root, const Imp
 
 ImportCommandResult registerImportedModels(const ProjectPaths &project, const ImportManifest &manifest,
                                            const std::vector<std::filesystem::path> &resolved_outputs) {
-    auto asset_data = readJsonFile(project.asset_data_file, "asset_data_json");
+    const auto original_bytes = readTextFile(project.asset_data_file, "asset_data_json");
+    auto asset_data = nlohmann::ordered_json::parse(original_bytes);
     (void)parseAssetDataFormatJson(asset_data);
 
     std::unordered_set<std::string> existing_names;
@@ -319,7 +321,7 @@ ImportCommandResult registerImportedModels(const ProjectPaths &project, const Im
             continue;
         }
 
-        asset_data["models"].push_back(nlohmann::json{
+        asset_data["models"].push_back(nlohmann::ordered_json{
             {"name", model_name},
             {"path", model_path},
         });
@@ -328,7 +330,7 @@ ImportCommandResult registerImportedModels(const ProjectPaths &project, const Im
         ++result.registered_models;
     }
 
-    writeTextFile(project.asset_data_file, asset_data.dump(2) + "\n");
+    writeTextFile(project.asset_data_file, renderJsonDocument(asset_data, original_bytes));
     return result;
 }
 

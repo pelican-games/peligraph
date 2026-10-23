@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -16,6 +17,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include <schema.hpp>
 
@@ -135,9 +137,13 @@ struct EditorGetComponentsRequest {
 struct EditorAssetQueryResult {
     std::string id;
     std::string kind;
+    // EB-1: as asset_data writes it (project-relative for a project file).
     std::string path;
     std::string store;
     std::string status;
+    // EB-1: the file `path` resolved to (absolute); absent for an engine
+    // primitive, an inline entry, and a path that does not resolve.
+    std::optional<std::string> resolved_path;
 };
 
 struct EditorListAssetsRequest {
@@ -253,6 +259,25 @@ struct EditorRayOccurrencesResult {
     std::uint64_t authoring_object_id = 0;
 };
 
+// EB-3: what get_ray_table reads in one call. entries are the occurrences
+// get_ray_occurrences reads (the same rayOccurrences, for every object at
+// once) and plan the same resolved rows; procedural_assets names each
+// procedural row's asset by its q; group_types are the running layout's
+// ("triangles" / "procedural", by group index); named_acceleration_structures
+// are the published generation's named TLASes with their instance masks;
+// mode is the process's ray layout mode ("none" / "layout", nullopt while
+// not configured).
+struct EditorRayTableResult {
+    std::vector<RayOccurrenceCatalogEntry> entries;
+    std::shared_ptr<const RaySceneRowSnapshot> plan;
+    std::map<std::uint32_t, std::string> procedural_assets;
+    std::vector<std::string> group_types;
+    std::vector<std::pair<std::string, std::uint32_t>> named_acceleration_structures;
+    std::optional<std::string> mode;
+    // Filled by the service: the current scene's object names by id.
+    std::map<std::uint64_t, std::string> object_names;
+};
+
 struct EditorCommandServiceDependencies {
     std::function<const AuthoringSceneDocument &()> document;
     std::function<const ResolvedScene &()> resolved_scene;
@@ -273,6 +298,7 @@ struct EditorCommandServiceDependencies {
         ray_occurrences;
     std::function<RayOccurrenceResolution(std::string_view)>
         resolve_ray_occurrence;
+    std::function<EditorRayTableResult()> ray_table;
 };
 
 class EditorCommandService {
@@ -326,6 +352,7 @@ class EditorCommandService {
         const EditorGetComponentsRequest &request) const;
     RayOccurrenceResolution resolveRayOccurrence(
         std::string_view occurrence_id) const;
+    EditorRayTableResult getRayTable() const;
     EditorListAssetsResult listAssets(const EditorListAssetsRequest &request = {}) const;
     ExportSceneSnapshotResponseV2 exportSceneSnapshotV2(
         const ExportSceneSnapshotRequestV2 &request) const;
@@ -342,6 +369,28 @@ class EditorCommandService {
     nlohmann::ordered_json edit(const nlohmann::json &params);
     nlohmann::ordered_json undo(const nlohmann::json &params);
     nlohmann::ordered_json redo(const nlohmann::json &params);
+    // MT-2 (editorobjectmaterial.cpp). A scene object's own materials:
+    //   set_object_material {actor_id, object, scene_id?, base_scene_revision?,
+    //                        material: name | null, primitive?: {mesh, primitive} | slot?}
+    //   set_object_material {actor_id, object, scene_id?, base_scene_revision?,
+    //                        materials: [{material: name | null, primitive?}]}
+    //     writes the object's simplemodelview.materials rows as one edit
+    //     (the edit's answer: status, ticket, ...) and adds {changed, object,
+    //     scene_id, model, previous: {materials: [{material | null,
+    //     primitive?}]}}; sending previous.materials back as `materials`
+    //     takes it back. Without primitive / slot the material covers every
+    //     primitive; slot covers each primitive carrying that glTF material.
+    //     base_scene_revision defaults to the current revision.
+    //   get_object_materials {object, scene_id?} ->
+    //     {object, scene_id, model, materials: [{row_id, material, primitive?,
+    //      resolved}], primitives: [{mesh, primitive, slot, material,
+    //      source: "object" | "model", model_material, drawn | null}]}
+    //   Refusals: material.object_unknown@1 {object, reason},
+    //   material.model_unknown@1 {model, object, reason},
+    //   material.name_unknown@1 {name, reason},
+    //   material.binding_invalid@1 {model, object, reason}.
+    nlohmann::ordered_json setObjectMaterial(const nlohmann::json &params);
+    nlohmann::ordered_json getObjectMaterials(const nlohmann::json &params) const;
     nlohmann::ordered_json openPreview(const nlohmann::json &params);
     nlohmann::ordered_json updatePreview(const nlohmann::json &params);
     nlohmann::ordered_json commitPreview(const nlohmann::json &params);
@@ -355,6 +404,8 @@ class EditorCommandService {
     nlohmann::ordered_json uninstallPackage(const nlohmann::json &params);
     nlohmann::ordered_json getRayCallableRecords(const nlohmann::json &params) const;
     nlohmann::ordered_json getSceneAccelerationStructures(const nlohmann::json &params) const;
+    // RTL-1a.
+    nlohmann::ordered_json getRayLayout(const nlohmann::json &params) const;
     nlohmann::ordered_json forkRenderPipeline(const nlohmann::json &params);
     nlohmann::ordered_json editPresetPass(const nlohmann::json &params);
     nlohmann::ordered_json editRegionReplacement(const nlohmann::json &params);
@@ -390,6 +441,7 @@ class EditorCommandService {
     nlohmann::ordered_json removeComputeTask(const nlohmann::json &params);
     nlohmann::ordered_json editRayCallableRecords(const nlohmann::json &params);
     nlohmann::ordered_json editSceneAccelerationStructures(const nlohmann::json &params);
+    nlohmann::ordered_json editRayLayout(const nlohmann::json &params);
     nlohmann::ordered_json getRenderAuthoringContext(
         const nlohmann::json &params) const;
     nlohmann::ordered_json addAuthoredPass(const nlohmann::json &params);
@@ -436,6 +488,7 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json getComponentAddCandidates(const nlohmann::json &params) const;
     nlohmann::ordered_json getRayOccurrences(const nlohmann::json &params) const;
     nlohmann::ordered_json resolveRayOccurrence(const nlohmann::json &params) const;
+    nlohmann::ordered_json getRayTable(const nlohmann::json &params) const;
     nlohmann::ordered_json listAssets(const nlohmann::json &params) const;
     nlohmann::ordered_json exportSceneSnapshot(const nlohmann::json &params) const;
     nlohmann::ordered_json importSceneSnapshot(const nlohmann::json &params) const;
@@ -455,6 +508,9 @@ class EditorCommandRpcAdapter {
         const nlohmann::json &params) const;
     nlohmann::ordered_json undo(const nlohmann::json &params) const;
     nlohmann::ordered_json redo(const nlohmann::json &params) const;
+    // MT-2.
+    nlohmann::ordered_json setObjectMaterial(const nlohmann::json &params) const;
+    nlohmann::ordered_json getObjectMaterials(const nlohmann::json &params) const;
     nlohmann::ordered_json openPreview(const nlohmann::json &params) const;
     nlohmann::ordered_json updatePreview(const nlohmann::json &params) const;
     nlohmann::ordered_json commitPreview(const nlohmann::json &params) const;
@@ -468,6 +524,7 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json uninstallPackage(const nlohmann::json &params) const;
     nlohmann::ordered_json getRayCallableRecords(const nlohmann::json &params) const;
     nlohmann::ordered_json getSceneAccelerationStructures(const nlohmann::json &params) const;
+    nlohmann::ordered_json getRayLayout(const nlohmann::json &params) const;
     nlohmann::ordered_json forkRenderPipeline(const nlohmann::json &params) const;
     nlohmann::ordered_json editPresetPass(const nlohmann::json &params) const;
     nlohmann::ordered_json editRegionReplacement(const nlohmann::json &params) const;
@@ -504,6 +561,7 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json removeComputeTask(const nlohmann::json &params) const;
     nlohmann::ordered_json editRayCallableRecords(const nlohmann::json &params) const;
     nlohmann::ordered_json editSceneAccelerationStructures(const nlohmann::json &params) const;
+    nlohmann::ordered_json editRayLayout(const nlohmann::json &params) const;
     nlohmann::ordered_json getRenderAuthoringContext(
         const nlohmann::json &params) const;
     nlohmann::ordered_json addAuthoredPass(

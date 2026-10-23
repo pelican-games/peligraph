@@ -7,6 +7,7 @@ namespace Pelican::DevCli {
 
 struct DistConfigOptions {
     bool with_rpc = false;
+    bool with_studio = false;
     bool with_seqplayer = false;
     bool with_openxr = false;
 };
@@ -18,6 +19,7 @@ struct DistConfigResult {
     bool with_vat = false;
     bool with_exr = false;
     bool with_rpc = false;
+    bool with_studio = false;
     bool with_seqplayer = false;
     bool with_openxr = false;
 

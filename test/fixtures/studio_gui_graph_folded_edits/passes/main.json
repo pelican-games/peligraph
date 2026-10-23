@@ -1,0 +1,64 @@
+{
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {},
+  "nodes": [],
+  "outputs": {},
+  "rendering": {
+    "features": [
+      "project://features/cube_capture.json",
+      "project://passes/authoring/pass-0123456789abcdef0123.json"
+    ],
+    "render_targets": [
+      {
+        "name": "tint_color",
+        "extent_scale": 1,
+        "format": "R16G16B16A16_SFLOAT",
+        "format_class": "explicit(R16G16B16A16_SFLOAT)",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      }
+    ],
+    "rendering_passes": [
+      {
+        "name": "main_render",
+        "passes": [
+          {
+            "name": "face_tint",
+            "type": "fullscreen",
+            "resolution_domain": "independent",
+            "view_family": "$capture/cube",
+            "input": [],
+            "output": {
+              "color": [
+                "cube_capture_color"
+              ],
+              "depth": null
+            },
+            "shader": {
+              "vertex": "engine://fullscreen",
+              "fragment": "engine://passthrough"
+            }
+          },
+          {
+            "name": "present",
+            "type": "fullscreen",
+            "input": [],
+            "output": {
+              "color": [
+                "display"
+              ],
+              "depth": null
+            },
+            "shader": {
+              "vertex": "engine://fullscreen",
+              "fragment": "engine://passthrough"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

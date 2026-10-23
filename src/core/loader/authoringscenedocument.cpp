@@ -1,3 +1,4 @@
+#include "../../project/jsondocument.hpp"
 #include "authoringscenedocument.hpp"
 
 #include "../../project/sceneformat.hpp"
@@ -28,6 +29,7 @@ AuthoringSceneDocument AuthoringSceneDocument::load(std::string_view scene_v1_by
 
     AuthoringSceneDocument document;
     document.revision_ = revision;
+    document.original_bytes_ = scene_v1_bytes;
     document.raw_document_ = nlohmann::json::parse(scene_v1_bytes);
 
     // Validation deliberately runs before identity allocation. The raw tree is
@@ -125,14 +127,14 @@ std::string AuthoringSceneDocument::encodeSemanticAuthoring() const {
 }
 
 std::string AuthoringSceneDocument::encodePersistentAuthoring() const {
-    auto persisted = raw_document_;
+    nlohmann::ordered_json persisted = raw_document_;
     persisted["next_authoring_object_id"] = next_authoring_object_id_value_;
     for (const auto &scene : scene_metadata_) {
         auto &objects = persisted.at("scenes").at(scene.id).at("objects");
         for (std::size_t index = 0; index < scene.objects.size(); ++index)
             objects.at(index)["authoring_object_id"] = scene.objects[index].id.value;
     }
-    return persisted.dump();
+    return renderJsonDocument(persisted, original_bytes_);
 }
 
 AuthoringSceneDocument AuthoringSceneDocument::stageAuthoring(
@@ -174,6 +176,8 @@ AuthoringSceneDocument AuthoringSceneDocument::stageAuthoring(
     }
 
     auto result = *this;
+    // Keep newly authored keys in their insertion order across unsaved edits.
+    result.original_bytes_ = encodePersistentAuthoring();
     result.revision_ = revision;
     result.raw_document_ = std::move(raw_document);
     result.format_version_ = validated.version;
@@ -188,7 +192,9 @@ AuthoringSceneDocumentStage AuthoringSceneDocument::structuralStageAuthoring() c
 
 AuthoringSceneDocumentStage::AuthoringSceneDocumentStage(
     const AuthoringSceneDocument &base)
-    : base_(base) {}
+    : base_(base) {
+    base_.original_bytes_ = base.encodePersistentAuthoring();
+}
 
 std::pair<std::size_t, std::size_t>
 AuthoringSceneDocumentStage::requireObjectLocation(
@@ -451,6 +457,7 @@ void AuthoringSceneDocument::swap(AuthoringSceneDocument &other) noexcept {
     swap(format_version_, other.format_version_);
     swap(uses_prefabs_, other.uses_prefabs_);
     raw_document_.swap(other.raw_document_);
+    original_bytes_.swap(other.original_bytes_);
     warnings_.swap(other.warnings_);
     scene_metadata_.swap(other.scene_metadata_);
     swap(next_authoring_object_id_value_, other.next_authoring_object_id_value_);

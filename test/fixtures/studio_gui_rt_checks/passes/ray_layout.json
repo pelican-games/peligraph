@@ -1,0 +1,18 @@
+{
+  "schema": "pelican.ray_group_layout",
+  "version": 3,
+  "ray_types": ["primary", "shadow"],
+  "default_group": "mesh",
+  "groups": [
+    {"name": "mesh", "type": "triangles"},
+    {"name": "ball", "type": "procedural"}
+  ],
+  "misses": [
+    {"name": "sky"},
+    {"name": "shadow_miss"}
+  ],
+  "engine_record": ["material_index", "geometry_index"],
+  "record": [
+    {"name": "value", "type": "f32"}
+  ]
+}

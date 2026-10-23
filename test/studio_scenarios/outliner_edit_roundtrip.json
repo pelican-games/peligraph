@@ -254,7 +254,7 @@
         }
       },
       "path": "result.objects[3]",
-      "op": "excludes",
+      "op": "lacks_key",
       "value": "parent",
       "retry_ms": 60000
     },

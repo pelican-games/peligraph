@@ -1,3 +1,13 @@
+// The generator is PCG32 (XSH RR output over a 64-bit LCG) after the minimal C
+// implementation pcg-c-basic (pcg_basic.c / pcg_basic.h) by Melissa E. O'Neill,
+// https://www.pcg-random.org, licensed under the Apache License, Version 2.0.
+// From it come the multiplier and the default stream constant, the output
+// step (nextUInt), the seeding sequence (setSeed, as pcg32_srandom_r) and the
+// unbiased bounded draw (randomInt, as pcg32_boundedrand_r). Changed here:
+// rewritten in C++ with per-sequence state, an inclusive [min, max] range for
+// randomInt, and random() combining two outputs into a 53-bit double.
+// The license text is in THIRD_PARTY_NOTICES.md at the repository root.
+
 #include "deterministicrng.hpp"
 
 #include "../loader/basicconfig.hpp"

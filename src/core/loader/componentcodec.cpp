@@ -1,3 +1,4 @@
+#include "../userpublic/details/schema/jsonnumber.hpp"
 #include "componentcodec.hpp"
 #include "../renderer/proceduralgeometrycomponent.hpp"
 
@@ -125,9 +126,17 @@ inline constexpr auto transform_schema = structFields(
     defaulted(field<&TransformCodecData::rotation>("rotation"), quat{0.0f, 0.0f, 0.0f, 1.0f}),
     defaulted(field<&TransformCodecData::scale>("scale"), vec3{1.0f, 1.0f, 1.0f}));
 
+// MT-2: `materials` is the object's own material list (SC-1 rows, edited by
+// row id like animation.parameters).
+struct SimpleModelViewSchemaFields {
+    std::string model;
+    List<ModelMaterialOverride> materials;
+};
+
 inline constexpr auto simple_model_view_schema = structFields(
     componentPolicy("simplemodelview"),
-    required(field<&SimpleModelViewCodecData::model>("model")));
+    required(field<&SimpleModelViewSchemaFields::model>("model")),
+    defaulted(field<&SimpleModelViewSchemaFields::materials>("materials")));
 
 inline constexpr auto camera_schema = structFields(
     componentPolicy("camera"),
@@ -235,7 +244,6 @@ auto materializeSchema(const Schema &schema) {
 }
 
 const auto transform_fields = materializeSchema(transform_schema);
-const auto simple_model_view_fields = materializeSchema(simple_model_view_schema);
 const auto camera_fields = materializeSchema(camera_schema);
 const auto light_fields = materializeSchema(light_schema);
 const auto collider_fields = materializeSchema(collider_schema);
@@ -452,10 +460,10 @@ template <class T> const T &codecValue(const ComponentCodecValue &value, std::st
     return *typed;
 }
 
-OrderedJson encodeVec(vec2 value) { return OrderedJson::array({value.x, value.y}); }
-OrderedJson encodeVec(vec3 value) { return OrderedJson::array({value.x, value.y, value.z}); }
-OrderedJson encodeVec(vec4 value) { return OrderedJson::array({value.x, value.y, value.z, value.w}); }
-OrderedJson encodeVec(quat value) { return OrderedJson::array({value.x, value.y, value.z, value.w}); }
+OrderedJson encodeVec(vec2 value) { return OrderedJson::array({internal::authoredJsonNumber(value.x), internal::authoredJsonNumber(value.y)}); }
+OrderedJson encodeVec(vec3 value) { return OrderedJson::array({internal::authoredJsonNumber(value.x), internal::authoredJsonNumber(value.y), internal::authoredJsonNumber(value.z)}); }
+OrderedJson encodeVec(vec4 value) { return OrderedJson::array({internal::authoredJsonNumber(value.x), internal::authoredJsonNumber(value.y), internal::authoredJsonNumber(value.z), internal::authoredJsonNumber(value.w)}); }
+OrderedJson encodeVec(quat value) { return OrderedJson::array({internal::authoredJsonNumber(value.x), internal::authoredJsonNumber(value.y), internal::authoredJsonNumber(value.z), internal::authoredJsonNumber(value.w)}); }
 
 // The declared schema is the single source of the field names, defaults and
 // ranges a codec accepts. "name" is erased instead of being declared as a
@@ -716,6 +724,32 @@ ComponentCodecValue decodeSimpleModelView(const Json &json) {
     if (const auto *params = optionalObject(json, "simplemodelview", "params")) {
         result.params = *params;
     }
+    if (const auto materials = json.find("materials"); materials != json.end()) {
+        SimpleModelViewSchemaFields fields;
+        internal::decodeStructObject(Json{{"model", result.model}, {"materials", *materials}}, fields,
+                                     simple_model_view_schema, "simplemodelview");
+        // MT-2: a row covers one GLB primitive (mesh and primitive) or every
+        // primitive (neither), and no two rows cover the same.
+        std::set<std::pair<std::int64_t, std::int64_t>> targets;
+        for (const auto &row : fields.materials.rows) {
+            if (row.value.material.empty())
+                codecError(StructFieldErrorCode::OutOfRange, "simplemodelview.materials",
+                           "row " + std::to_string(row.envelope.id) + " names no material");
+            if (row.value.mesh.has_value() != row.value.primitive.has_value())
+                codecError(StructFieldErrorCode::OutOfRange, "simplemodelview.materials",
+                           "row " + std::to_string(row.envelope.id) +
+                               " gives mesh and primitive together, or neither (every primitive)");
+            const auto target = row.value.mesh
+                                    ? std::pair<std::int64_t, std::int64_t>{*row.value.mesh, *row.value.primitive}
+                                    : std::pair<std::int64_t, std::int64_t>{-1, -1};
+            if (!targets.insert(target).second)
+                codecError(StructFieldErrorCode::OutOfRange, "simplemodelview.materials",
+                           "row " + std::to_string(row.envelope.id) +
+                               (row.value.mesh ? " covers a primitive another row covers"
+                                               : " covers every primitive, as another row does"));
+        }
+        result.materials = std::move(fields.materials);
+    }
     return result;
 }
 
@@ -724,6 +758,11 @@ OrderedJson encodeSimpleModelView(const ComponentCodecValue &value) {
     if (data.model.empty()) codecError(StructFieldErrorCode::OutOfRange, "simplemodelview.model", "must not be empty");
     OrderedJson result{{"name", "simplemodelview"}, {"model", data.model}};
     if (data.params) result["params"] = *data.params;
+    if (data.materials) {
+        SimpleModelViewSchemaFields fields{.model = data.model, .materials = *data.materials};
+        result["materials"] =
+            internal::encodeStructObject(fields, simple_model_view_schema, "simplemodelview").at("materials");
+    }
     return result;
 }
 
@@ -731,19 +770,22 @@ void applySimpleModelView(const ComponentCodecValue &value, void *raw_target) {
     if (raw_target == nullptr) throw std::invalid_argument("simplemodelview runtime target is null");
     const auto &data = codecValue<SimpleModelViewCodecData>(value, "simplemodelview");
     auto &target = *static_cast<SimpleModelViewComponent *>(raw_target);
-    if (target.model_name == data.model) return;
+    if (target.model_name == data.model && target.materials == data.materials) return;
+    // A changed model or material list is a new instance, staged by the
+    // update system from the component.
     if (target.model_instance_id) {
         GET_MODULE(PolygonInstanceContainer).removeModelInstance(*target.model_instance_id);
         target.model_instance_id.reset();
     }
     target.model_name = data.model;
+    target.materials = data.materials;
     target.dirty = 1;
 }
 
 ComponentCodecValue projectSimpleModelView(const void *raw_source) {
     if (raw_source == nullptr) throw std::invalid_argument("simplemodelview runtime source is null");
-    return SimpleModelViewCodecData{
-        .model = static_cast<const SimpleModelViewComponent *>(raw_source)->model_name};
+    const auto &source = *static_cast<const SimpleModelViewComponent *>(raw_source);
+    return SimpleModelViewCodecData{.model = source.model_name, .params = std::nullopt, .materials = source.materials};
 }
 
 ComponentCodecValue decodeProceduralGeometry(const Json &json) {
@@ -1036,19 +1078,19 @@ OrderedJson encodeController(const CameraControllerCodecData &data) {
     result["type"] = data.type == CameraControllerCodecType::Orbit
                          ? "orbit"
                          : (data.type == CameraControllerCodecType::Follow ? "follow" : "fly");
-    result["damping"] = data.damping;
+    result["damping"] = internal::authoredJsonNumber(data.damping);
     if (data.type == CameraControllerCodecType::Orbit) {
         if (!data.target.empty()) result["target"] = data.target;
-        result["distance"] = data.distance;
-        result["yaw"] = data.yaw;
-        result["pitch"] = data.pitch;
-        result["sensitivity"] = data.sensitivity;
+        result["distance"] = internal::authoredJsonNumber(data.distance);
+        result["yaw"] = internal::authoredJsonNumber(data.yaw);
+        result["pitch"] = internal::authoredJsonNumber(data.pitch);
+        result["sensitivity"] = internal::authoredJsonNumber(data.sensitivity);
     } else if (data.type == CameraControllerCodecType::Follow) {
         result["target"] = data.target;
         result["offset"] = encodeVec(data.offset);
     } else {
-        result["speed"] = data.speed;
-        result["sensitivity"] = data.sensitivity;
+        result["speed"] = internal::authoredJsonNumber(data.speed);
+        result["sensitivity"] = internal::authoredJsonNumber(data.sensitivity);
     }
     return result;
 }
@@ -1059,15 +1101,15 @@ OrderedJson encodeCamera(const ComponentCodecValue &value) {
     if (data.projection_specified) {
         result["type"] = cameraTypeName(data.projection_kind);
         if (data.projection_kind == CameraProjectionKind::Perspective) {
-            if (data.yfov) result["yfov"] = *data.yfov;
-            if (data.znear) result["znear"] = *data.znear;
-            if (data.zfar) result["zfar"] = *data.zfar;
-            if (data.aspect) result["aspect"] = *data.aspect;
+            if (data.yfov) result["yfov"] = internal::authoredJsonNumber(*data.yfov);
+            if (data.znear) result["znear"] = internal::authoredJsonNumber(*data.znear);
+            if (data.zfar) result["zfar"] = internal::authoredJsonNumber(*data.zfar);
+            if (data.aspect) result["aspect"] = internal::authoredJsonNumber(*data.aspect);
         } else {
-            if (data.xmag) result["xmag"] = *data.xmag;
-            if (data.ymag) result["ymag"] = *data.ymag;
-            if (data.znear) result["znear"] = *data.znear;
-            if (data.zfar) result["zfar"] = *data.zfar;
+            if (data.xmag) result["xmag"] = internal::authoredJsonNumber(*data.xmag);
+            if (data.ymag) result["ymag"] = internal::authoredJsonNumber(*data.ymag);
+            if (data.znear) result["znear"] = internal::authoredJsonNumber(*data.znear);
+            if (data.zfar) result["zfar"] = internal::authoredJsonNumber(*data.zfar);
         }
     }
     if (data.sprite_specified) {
@@ -1458,11 +1500,11 @@ OrderedJson encodeCollider(const ComponentCodecValue &value) {
     data.validate();
     OrderedJson result{{"name", "collider"}, {"shape", data.shape}, {"pos", encodeVec(data.pos)},
                        {"rotation", encodeVec(data.rotation)}};
-    if (data.shape == "sphere") result["radius"] = data.radius;
+    if (data.shape == "sphere") result["radius"] = internal::authoredJsonNumber(data.radius);
     else if (data.shape == "box") result["half_extents"] = encodeVec(data.half_extents);
     else if (data.shape == "capsule") {
-        result["radius"] = data.radius;
-        result["half_height"] = data.half_height;
+        result["radius"] = internal::authoredJsonNumber(data.radius);
+        result["half_height"] = internal::authoredJsonNumber(data.half_height);
     }
     result["layer"] = data.layer;
     result["mask"] = data.mask;
@@ -2014,7 +2056,7 @@ const std::array codecs{
     ComponentCodec{"simplemodelview", ComponentCodecRuntimeKind::Ecs,
                    EditorProjectionPolicy::RendererModel,
                    decodeResult<decodeSimpleModelView>,
-                    encodeSimpleModelView, []() -> const SchemaNode & { static const auto node = SchemaNode::fromFlat(fieldSpan(simple_model_view_fields)); return node; },
+                    encodeSimpleModelView, []() -> const SchemaNode & { static constexpr auto node = internal::materializeSchemaNode(simple_model_view_schema); return node; },
                    applySimpleModelView, projectSimpleModelView, nullptr, nullptr},
     ComponentCodec{"pelican_procedural_geometry",
                    ComponentCodecRuntimeKind::Ecs,
@@ -2140,6 +2182,27 @@ ResolutionResult<ComponentCodecValue> ComponentCodec::decodeAuthored(
     } catch (const StructFieldValidationError &error) {
         legacyReject(std::string{name} + ".schema_validation", error.what());
     }
+}
+
+namespace {
+OrderedJson retainAuthoredFields(const OrderedJson &canonical, const Json &authored) {
+    if (canonical.is_array() && authored.is_array() && canonical.size() == authored.size()) {
+        auto result = OrderedJson::array();
+        for (std::size_t i = 0; i < authored.size(); ++i)
+            result.push_back(retainAuthoredFields(canonical.at(i), authored.at(i)));
+        return result;
+    }
+    if (!canonical.is_object() || !authored.is_object()) return canonical;
+    auto result = OrderedJson::object();
+    for (const auto &[key, item] : authored.items())
+        result[key] = canonical.contains(key) ? retainAuthoredFields(canonical.at(key), item) : OrderedJson(item);
+    return result;
+}
+}
+
+nlohmann::ordered_json ComponentCodec::encodeAuthored(
+    const ComponentCodecValue &value, const Json &authored) const {
+    return retainAuthoredFields(encodeCanonical(value), authored);
 }
 
 nlohmann::ordered_json ComponentCodec::encodeCanonical(const ComponentCodecValue &value) const {

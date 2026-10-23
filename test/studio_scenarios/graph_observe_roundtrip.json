@@ -295,7 +295,20 @@
     },
 
     {
-      "label": "SAVE -- the commit of the edit is the save: open the untouched copy first",
+      "label": "RV-1b File > Save Scene: keep the attachment and edited gain for reopening",
+      "cmd": "action",
+      "name": "pelican.file.saveScene"
+    },
+    {
+      "label": "RV-1b explicit Save establishes the document baseline",
+      "expect": "rpc_equals",
+      "method": "get_document_journal",
+      "path": "dirty",
+      "value": false,
+      "retry_ms": 30000
+    },
+    {
+      "label": "REOPEN -- after explicit Save, open the untouched copy first",
       "cmd": "open_project",
       "dir": "{other_project}"
     },

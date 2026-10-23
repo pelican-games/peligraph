@@ -2,6 +2,7 @@
 
 #include "../log.hpp"
 #include "../os/window.hpp"
+#include "../os/framebufferstability.hpp"
 #include "../renderer/camera.hpp"
 #include "core.hpp"
 #include "image.hpp"
@@ -874,6 +875,7 @@ struct SwapchainFrameTarget::Impl {
         frame_cleanup;
 
     SwapchainBuildWorker build_worker;
+    FramebufferExtentStability framebuffer_stability;
 
     static void cleanupAbandonedFrame(
         void *owner, std::uint64_t serial) noexcept {
@@ -958,6 +960,8 @@ struct SwapchainFrameTarget::Impl {
                 std::move(initial_surface_epoch),
         };
         active_epoch = buildEpoch(initial_request);
+        (void)framebuffer_stability.settled(
+            framebuffer, FramebufferExtentStability::Clock::now());
         published_surface_epoch_id =
             active_epoch->surface_epoch->id;
         published_caps.compile_facts =
@@ -1554,9 +1558,24 @@ struct SwapchainFrameTarget::Impl {
         }
     }
 
+    bool framebufferSettled(FramebufferExtentSnapshot framebuffer) {
+        return framebuffer_stability.settled(
+            framebuffer, FramebufferExtentStability::Clock::now());
+    }
+
     void launchPendingPreparation(
         FramebufferExtentSnapshot framebuffer) {
-        if (build_worker.busy()) return;
+        // All recovery entry points, including acquire/present OUT_OF_DATE,
+        // share this gate. No epoch is consumed while dimensions are moving.
+        if (build_worker.busy() || !framebufferSettled(framebuffer)) return;
+        if (recovery->kind() == WindowOutputStateKind::refresh_pending) {
+            const auto &pending = std::get<WindowOutputRefreshPending>(recovery->state());
+            // A pending WSI result may predate the latest resize. Preserve its
+            // reason and anchor, but prepare only the final framebuffer key.
+            (void)recovery->requestRefresh(
+                pending.old_epoch, requestedRecoveryKey(framebuffer),
+                pending.reason, maintenance_tick);
+        }
         if (recovery->kind() ==
                 WindowOutputStateKind::surface_lost &&
             std::any_of(
@@ -1969,6 +1988,10 @@ struct SwapchainFrameTarget::Impl {
             return result;
         }
 
+        // Retirement/completions above still progress on every logical frame.
+        // New preparation waits for quiet without blocking the message pump.
+        if (!framebufferSettled(framebuffer)) return result;
+
         if (recovery->kind() ==
             WindowOutputStateKind::
                 unavailable_retry) {
@@ -2106,6 +2129,7 @@ struct SwapchainFrameTarget::Impl {
                     abandoned_frame,
                 maintenance_tick);
         }
+        const bool framebuffer_settled = framebufferSettled(framebuffer);
         const auto pump =
             pumpMaintenance(framebuffer);
         if (framebuffer.extent.width == 0 ||
@@ -2130,6 +2154,14 @@ struct SwapchainFrameTarget::Impl {
             recovery->kind() !=
                 WindowOutputStateKind::ready) {
             return unavailableResult();
+        }
+        if (!framebuffer_settled) {
+            // Return before acquire or a fence wait; the flat/XR loop keeps
+            // polling window events and running its non-render work.
+            return {
+                .disposition = FrameBeginDisposition::unavailable,
+                .reason = FrameUnavailableReason::output_out_of_date,
+            };
         }
 
         const bool nonblocking =

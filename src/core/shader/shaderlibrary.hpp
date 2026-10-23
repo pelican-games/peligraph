@@ -292,6 +292,7 @@ DECLARE_MODULE(ShaderLibrary) {
         const LoweredMaterial &material,
         std::vector<std::string> additional_defines = {});
     const ShaderBundle &get(ShaderBundleId id) const;
+    std::optional<ShaderBundleId> surfaceFragmentForVertex(ShaderBundleId vertex) const;
     // LP-2: whether this build can compile GLSL at run time.
     static bool runtimeCompilerAvailable() noexcept;
     // LP-2: compiles a material's vertex and fragment shader again with
@@ -327,6 +328,9 @@ DECLARE_MODULE(ShaderLibrary) {
     void recordReloadFailure(std::span<const watch::AssetKey> changed_keys,
                              std::string_view error);
     ShaderReloadTrackingStatus reloadTrackingStatus() const noexcept;
+    // PB-1: the primary sources of the units a reload failed on and nothing
+    // has republished since (each once, sorted).
+    std::vector<watch::AssetKey> failedReloadSources() const;
     std::vector<ShaderBundleId> takeDirtyBundles();
 
     RegistrationCheckpoint checkpointRegistrations() const;

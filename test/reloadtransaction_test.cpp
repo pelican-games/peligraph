@@ -1,10 +1,17 @@
 #include "../src/core/watch/reloadservice.hpp"
+#include "../src/core/watch/problemlist.hpp"
+#include "../src/core/vkcore/renderer_config.hpp"
+#include "../src/core/shader/raytracingrefusal.hpp"
+#include "../src/project/graphcomposition.hpp"
+#include "../src/core/renderingpass/computedescriptorbudget.hpp"
 #include "../src/core/watch/reloadtransaction.hpp"
 #include "../src/core/watch/reloadgate.hpp"
 #include "../src/core/container.hpp"
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/log.hpp"
+#include "../src/core/model/gltf.hpp"
+#include "gltf_fragment_fixture.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -17,6 +24,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <new>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -43,6 +51,62 @@ ReloadActor replace(LogicalResourceRef target, int value,
 }
 
 } // namespace
+
+// Exercise the production GLB parser and transaction publication without a
+// GPU. ModelAssetContainer and live draw-resource retention are covered by the
+// WP366 renderer case using the same unreadable fixture.
+TEST_CASE("RR1b WP366 unreadable GLB reload preserves published payload and revision",
+          "[rr1b][wp366][reload][cpu]") {
+    setupLogger();
+    FastModuleContainer modules;
+    const auto root = std::filesystem::temp_directory_path() /
+        ("pelican_rr1b_" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+    struct Cleanup {
+        std::filesystem::path root;
+        ~Cleanup() { std::filesystem::remove_all(root); }
+    } cleanup{root};
+    const auto path = root / "tree.glb";
+    auto &loader = GET_MODULE(GltfLoader);
+    TestGltfFragmentFixture::writeGlb(path);
+    ReloadCoordinator coordinator;
+    const auto resource = coordinator.registry().declareResource(
+        "models", makeAssetKey("models/tree.glb"),
+        std::make_shared<const PreparedGltf>(loader.prepareGltfBinary(path.string())));
+    const auto before = coordinator.registry().snapshot();
+    const auto reload = [&] {
+        auto candidate = std::make_shared<PreparedGltf>();
+        ReloadTransactionGroup group{"GLB parse"};
+        group.add(ReloadActor{
+            .name = "tree",
+            .target = resource,
+            .parse = [&loader, &path, candidate] {
+                *candidate = loader.prepareGltfBinary(path.string());
+            },
+            .stage = [candidate] { return StagedResourceData{candidate}; },
+        });
+        coordinator.enqueue(std::move(group));
+        REQUIRE(coordinator.applyFrame() == 1);
+    };
+    TestGltfFragmentFixture::writeUnreadableGlb(path);
+    reload();
+    CHECK(coordinator.status().failed == 1);
+    CHECK(coordinator.status().applied == 0);
+    const auto refused = coordinator.registry().snapshot();
+    CHECK(refused.find(resource)->content_revision == before.find(resource)->content_revision);
+    CHECK(refused.find(resource)->payload == before.find(resource)->payload);
+
+    // The former WP366 failure input only renamed a material to ProjectLeaf.
+    // It is a readable GLB, so recovery must accept it and publish once.
+    TestGltfFragmentFixture::writeGlb(path, false, false, true);
+    reload();
+    CHECK(coordinator.status().failed == 1);
+    CHECK(coordinator.status().applied == 1);
+    const auto recovered = coordinator.registry().snapshot();
+    CHECK(recovered.find(resource)->content_revision == before.find(resource)->content_revision + 1);
+    CHECK(recovered.find(resource)->payload != before.find(resource)->payload);
+}
 
 TEST_CASE("AssetKey is canonical project identity plus fragment", "[wp98][assetkey]") {
     const auto explicit_ref = makeAssetKey("project://assets/models/character.glb#mesh/Cube");
@@ -472,6 +536,9 @@ Hw1Run runHw1Watch(bool rpc, std::optional<nlohmann::json> hot_reload) {
 TEST_CASE("HW-1 a declared watch runs under an RPC driver and never reaches the render pipeline",
           "[hw1][reload-service][status]") {
     if (!logger) setupLogger();
+#if !PELICAN_WITH_HOT_RELOAD
+    SKIP("PELICAN_WITH_HOT_RELOAD=OFF: nothing is watched (AV-1 distribution build ReloadService covers it)");
+#else
     const auto declared = nlohmann::json::array({"assets/textures", "passes/"});
 
     SECTION("RPC driver and a declaration: the texture is applied, the render document is not") {
@@ -512,7 +579,31 @@ TEST_CASE("HW-1 a declared watch runs under an RPC driver and never reaches the 
         CHECK(run.status.at("watch") == nlohmann::json::array());
         CHECK(run.status.at("scans") == 0);
     }
+#endif
 }
+
+#if !PELICAN_WITH_HOT_RELOAD
+// EB-4: the same project in a distribution build. ReloadService::setup()
+// makes no watcher whatever the project declares and whoever drives it; the
+// reason is the build.
+TEST_CASE("AV-1 distribution build ReloadService never watches, declared or not, with or without an RPC driver",
+          "[av1][hw1][reload-service][status][eb4]") {
+    if (!logger) setupLogger();
+    const std::optional<nlohmann::json> declarations[] = {
+        nlohmann::json::array({"assets/textures", "passes/"}), std::nullopt, nlohmann::json::array()};
+    for (const bool rpc : {true, false}) {
+        for (const auto &declaration : declarations) {
+            CAPTURE(rpc, declaration.has_value() ? declaration->dump() : std::string{"undeclared"});
+            const auto run = runHw1Watch(rpc, declaration);
+            CHECK(run.status.at("state") == "disabled");
+            CHECK(run.status.at("error") == "hot reload build disabled");
+            CHECK(run.status.at("scans") == 0);
+            CHECK(run.texture_keys.empty());
+            CHECK(run.render_pipeline_batches == 0);
+        }
+    }
+}
+#endif
 
 TEST_CASE("ReloadService routes requests through one named participant",
           "[r7][reload-participant]") {
@@ -924,6 +1015,162 @@ TEST_CASE("ReloadService schedules runtime participants at their declared bounda
     REQUIRE(status.at("failed") == 1);
     REQUIRE(status.at("last_error") == "manual failure");
     REQUIRE(status.at("details").at("kind") == "fake");
+}
+
+TEST_CASE("CP1 compute descriptor budget counts reflected arrays views and parity", "[compute][cp1]") {
+    ShaderReflection reflection;
+    reflection.bindings = {
+        {.set = PELICAN_SET_PASS_INPUT, .type = vk::DescriptorType::eStorageBuffer, .count = 3},
+        {.set = PELICAN_SET_PASS_INPUT, .type = vk::DescriptorType::eStorageImage, .count = 2},
+        {.set = PELICAN_SET_PASS_INPUT, .type = vk::DescriptorType::eCombinedImageSampler, .count = 1},
+        {.set = 0, .type = vk::DescriptorType::eUniformBuffer, .count = 9},
+    };
+    ComputeDescriptorBudget budget;
+    for (int task = 0; task < 80; ++task) budget.add(reflection, 2);
+    CHECK(budget.sets == 320);
+    CHECK(budget.descriptors.at(vk::DescriptorType::eStorageBuffer) == 960);
+    CHECK(budget.descriptors.at(vk::DescriptorType::eStorageImage) == 640);
+    CHECK(budget.descriptors.at(vk::DescriptorType::eCombinedImageSampler) == 320);
+    CHECK(budget.descriptors.count(vk::DescriptorType::eUniformBuffer) == 0);
+    CHECK(ComputeDescriptorBudget::capacity(budget.sets) == 416);
+    CHECK(ComputeDescriptorBudget::capacity(960) == 1216);
+    CHECK(ComputeDescriptorBudget::capacity(1) == 18);
+    budget.add(ShaderReflection{}, 2);
+    CHECK(budget.sets == 320);
+    CHECK_THROWS(ComputeDescriptorBudget::capacity(std::uint64_t{1} << 32));
+    CHECK_THROWS(budget.add(reflection, std::numeric_limits<std::uint32_t>::max()));
+}
+
+TEST_CASE("CP1 compute descriptor limits apply to each layout not the pool aggregate", "[compute][cp1]") {
+    ShaderReflection reflection;
+    reflection.bindings = {{.set = PELICAN_SET_PASS_INPUT,
+                            .type = vk::DescriptorType::eStorageBuffer, .count = 3}};
+    vk::PhysicalDeviceLimits limits;
+    limits.maxDescriptorSetStorageBuffers = 3;
+    ComputeDescriptorBudget budget;
+    for (int task = 0; task < 80; ++task) {
+        CHECK_NOTHROW(validateComputeDescriptorLayout(reflection, limits, "probe"));
+        budget.add(reflection, 2);
+    }
+    CHECK(budget.descriptors.at(vk::DescriptorType::eStorageBuffer) == 960);
+    limits.maxDescriptorSetStorageBuffers = 2;
+    try {
+        validateComputeDescriptorLayout(reflection, limits, "probe");
+        FAIL("layout above device limit was accepted");
+    } catch (const std::runtime_error &error) {
+        const std::string text = error.what();
+        CHECK(text.starts_with("compute.descriptor_budget@1: "));
+        const auto fields = nlohmann::json::parse(text.substr(text.find(": ") + 2));
+        CHECK(fields.at("count") == 3);
+        CHECK(fields.at("limit") == 2);
+        CHECK(fields.at("task") == "probe");
+    }
+}
+
+TEST_CASE("CP1 compute apply problems replace one row and clear after repair", "[compute][problems][cp1]") {
+    FastModuleContainer modules;
+    auto &problems = GET_MODULE(ProblemList);
+    const nlohmann::json refusal{{"code", "compute.descriptor_pool_exhausted@1"},
+        {"message", "descriptor pool exhausted"}, {"task", "probe"}, {"sets", 320}};
+    recordRenderPipelineProblem(problemSourceHotReload, refusal, "pipeline.json");
+    recordRenderPipelineProblem(problemSourceHotReload, refusal, "pipeline.json");
+    auto rows = problems.problemsOf(renderPipelineProblemDomain);
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].at("code") == "render.config_apply_failed@1");
+    CHECK(rows[0].at("fields").at("reason_code") == "compute.descriptor_pool_exhausted@1");
+    CHECK(rows[0].at("fields").at("reason").at("sets") == 320);
+    clearRenderPipelineProblems();
+    CHECK(problems.problemsOf(renderPipelineProblemDomain).empty());
+}
+
+TEST_CASE("CP1 RPC edit refusals do not add or replace Problems", "[compute][problems][cp1][cpu]") {
+    FastModuleContainer modules;
+    auto &problems = GET_MODULE(ProblemList);
+    const auto validation = GENERATE(0, 1, 2);
+    const auto refusal = [&]() -> std::exception_ptr {
+        if (validation == 0)
+            return std::make_exception_ptr(GraphRegistryError(
+                "frame_node_order.conflicts_dependency@1",
+                {{"graph", "main_render"}, {"first", "present"}, {"second", "left"},
+                 {"reason", "reads"}, {"resource", "left_color"}}));
+        if (validation == 1)
+            return std::make_exception_ptr(RayTracingRefusal(
+                "pelican.ray_tracing.shader_record_abi_mismatch@1",
+                {{"shader", "shaders/wrong_record.rchit"}, {"stage", "closesthit"}},
+                "shader record does not match the ray group layout"));
+        // Not every validator has a named code. An unnamed refusal is
+        // still an RPC answer, not evidence of a device-application failure.
+        return std::make_exception_ptr(std::runtime_error("invalid rendering configuration"));
+    }();
+    const auto reject = [&](const std::exception_ptr &failure) {
+        try {
+            std::rethrow_exception(failure);
+        } catch (const std::exception &error) {
+            // The actual renderer recording boundary, with no Vulkan device.
+            recordRenderPipelineAuthoringFailure(error, "pipeline.json");
+        }
+    };
+    reject(refusal);
+    CHECK(problems.statusJson().at("count") == 0);
+    CHECK(problems.revision() == 0);
+
+    // The same validation failure met from disk or at startup remains a
+    // problem. A subsequent rejected edit must neither clear nor replace it.
+    for (const auto source : {problemSourceStartup, problemSourceHotReload, problemSourceReloadRpc}) {
+        try {
+            std::rethrow_exception(refusal);
+        } catch (const std::exception &error) {
+            recordRenderPipelineProblem(source,
+                renderPipelineRefusalJson(error, {}, "pipeline.json"), "pipeline.json");
+        }
+        const auto before = problems.problemsJson();
+        REQUIRE(before.at("problems").size() == 1);
+        reject(refusal);
+        CHECK(problems.problemsJson() == before);
+    }
+
+    // Preserve CP-1's synchronous application failures as well as its
+    // existing reload replace/repair test immediately above this one.
+    for (const auto &failure : {
+             std::make_exception_ptr(std::runtime_error(
+                 "compute.descriptor_pool_exhausted@1: {\"task\":\"probe\",\"sets\":320}")),
+             std::make_exception_ptr(std::runtime_error(
+                 "compute.descriptor_budget@1: {\"task\":\"probe\",\"count\":4,\"limit\":3}")),
+             std::make_exception_ptr(vk::OutOfDeviceMemoryError("descriptor pool creation")),
+             std::make_exception_ptr(std::bad_alloc{})}) {
+        clearRenderPipelineProblems();
+        reject(failure);
+        reject(failure);
+        const auto before = problems.problemsJson();
+        REQUIRE(before.at("problems").size() == 1);
+        CHECK(before.at("problems").at(0).at("source") == std::string{problemSourceEditRpc});
+        reject(refusal);
+        CHECK(problems.problemsJson() == before);
+        clearRenderPipelineProblems();
+        CHECK(problems.statusJson().at("count") == 0);
+    }
+}
+
+TEST_CASE("CP1 render apply status exposes and clears the current generation error", "[compute][cp1][reload]") {
+    FastModuleContainer modules;
+    if (!logger) setupLogger();
+    ReloadService service;
+    nlohmann::json current_error = "compute.descriptor_budget@1: rejected";
+    service.registerParticipant(ReloadParticipant{
+        .name = std::string{renderPipelineReloadParticipantName},
+        .runtime = RuntimeReloadParticipant{
+            .apply = [&](RuntimeReloadTrigger) {
+                return RuntimeReloadResult{.attempted = true, .error = current_error.get<std::string>()};
+            },
+            .describe = [&](nlohmann::json &out) { out = {{"domain_error", current_error}}; },
+        },
+    });
+    REQUIRE_FALSE(service.applyRuntimeNow(renderPipelineReloadParticipantName).committed);
+    CHECK(service.statusJson().at("last_error") == current_error);
+    // An authored publication may clear the renderer's error before a watcher
+    // has attempted another reload; the participant's old failure is stale.
+    current_error = nullptr;
+    CHECK(service.statusJson().at("last_error").is_null());
 }
 
 } // namespace Pelican::watch

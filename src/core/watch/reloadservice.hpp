@@ -31,6 +31,13 @@ struct RendererRuntimeGeneration;
 namespace Pelican::watch {
 
 inline constexpr std::string_view materialReloadParticipantName = "pelican.materials";
+// EB-2. A material document asset_data lists that the engine refused at start
+// (ProjectMaterialAssetContainer::refusedDocument): a change of its file the
+// watch sees reads it again and, when it registers, takes it in
+// (ProjectMaterialAssetContainer::recoverDocument). A registered document's
+// change stays with pelican.materials (the values reload).
+inline constexpr std::string_view materialDocumentReloadParticipantName =
+    "pelican.material_documents";
 inline constexpr std::string_view shaderReloadParticipantName = "pelican.shaders";
 // F-5. The reload_shaders RPC's refusals.
 inline constexpr std::string_view shaderReloadFailedErrorCode =
@@ -193,6 +200,10 @@ DECLARE_MODULE(ReloadService) {
   public:
     ReloadService() = default;
     ~ReloadService();
+    // Called once the startup resources are loaded, and again (PJ-1) when
+    // project.json's hot_reload or asset_stores change in place: the watcher
+    // is replaced by one over the resolver's stores and declaration as they
+    // are now (its inventory seeded from the disk as it is now).
     void setup(const PathResolver &resolver);
     void applyFrame();
     RuntimeReloadSummary applyRuntimeBoundary(RuntimeReloadBoundary boundary);
@@ -227,6 +238,9 @@ DECLARE_MODULE(ReloadService) {
     ReloadTransitionFacts transitionFacts() const;
     FileWatcher *watcherForTesting() noexcept { return watcher_.get(); }
     ReloadCoordinator &transactions() noexcept { return transactions_; }
+    // Explicit document restoration uses the same participants as the watcher,
+    // including the render pipeline even when an RPC driver owns the watch.
+    std::vector<bool> reloadDocuments(std::span<const ReloadRequest> requests);
     bool applyRequestForTesting(const ReloadRequest &request);
     std::vector<bool> applyRequestsForTesting(std::span<const ReloadRequest> requests);
     void registerParticipant(ReloadParticipant participant);
@@ -241,6 +255,11 @@ DECLARE_MODULE(ReloadService) {
             companion_requests);
     std::unique_ptr<PreparedReloadTransaction> prepareRenderPipelineModelReload(
         std::span<const ReloadRequest> requests);
+    // MT-1 (bind_material): the models `keys` name rebuilt now, through one
+    // model reload transaction committed before this returns (the same group
+    // a file change of theirs would enqueue). Throws what the transaction
+    // threw; nothing is published then.
+    void reloadModelsNow(std::span<const AssetKey> keys);
 
   private:
     struct RuntimeParticipantStatus {
@@ -299,6 +318,11 @@ DECLARE_MODULE(ReloadService) {
     std::unique_ptr<FileWatcher> watcher_;
     // HW-1: project.json `hot_reload` as of setup (nullopt: undeclared).
     std::optional<std::vector<std::string>> watch_paths_;
+    // PJ-1: setup again (edit_project_settings) replaces the watcher; the
+    // FW-1 totals of the watchers it replaced, so status keeps counting.
+    std::uint64_t carried_scans_ = 0;
+    std::uint64_t carried_hashed_files_ = 0;
+    std::uint64_t carried_hashed_bytes_ = 0;
     ReloadCoordinator transactions_;
     std::vector<ReloadParticipant> participants_;
     std::unordered_map<std::string, RuntimeParticipantStatus> runtime_status_;

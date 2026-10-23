@@ -1,0 +1,558 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "rv1_document_baseline",
+  "description": "RV-1: a Blank pipeline with a saved editable graph instance. No scene edit. Exit/Cancel, switch/Discard, switch/Save, Ctrl+S, restart_required and Exit/Discard verify exact document bytes. No pixel checks.",
+  "tab": "graph",
+  "probe_no_automation": false,
+  "invariants": {
+    "undo": false,
+    "reopen": false,
+    "health": false,
+    "reason": "This lifecycle scenario deliberately closes Studio and verifies final bytes after exit."
+  },
+  "steps": [
+    {
+      "label": "engine ready",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "journal dirty state",
+      "expect": "rpc_equals",
+      "method": "get_document_journal",
+      "path": "dirty",
+      "value": false,
+      "retry_ms": 60000
+    },
+    {
+      "label": "remember opened bytes",
+      "file": "copy",
+      "path": "{artifacts}/opened.json",
+      "from": "{project}/passes/main_rendering_config.json"
+    },
+    {
+      "label": "gain pill visible",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_value_pill#left/gain",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "open gain editor",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_value_pill#left/gain"
+    },
+    {
+      "label": "type gain",
+      "cmd": "type",
+      "name": "pelican.graphCanvasView::graph_inline_editor#left/gain",
+      "text": "3.75"
+    },
+    {
+      "label": "commit gain",
+      "cmd": "key",
+      "name": "pelican.graphCanvasView::graph_inline_editor#left/gain",
+      "sequence": "Return"
+    },
+    {
+      "label": "engine graph value",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "path": "nodes[1].parameters.gain",
+      "value": 3.75,
+      "retry_ms": 60000
+    },
+    {
+      "label": "journal dirty state",
+      "expect": "rpc_equals",
+      "method": "get_document_journal",
+      "path": "dirty",
+      "value": true,
+      "retry_ms": 60000
+    },
+    {
+      "label": "journal is durable on disk",
+      "file": "exists",
+      "path": "{project}/.pelican/document_journal/manifest.json",
+      "value": true
+    },
+    {
+      "label": "Exit uses the same unsaved guard",
+      "cmd": "action",
+      "name": "pelican.file.exit"
+    },
+    {
+      "label": "Exit asks",
+      "cmd": "wait",
+      "name": "pelican.unsavedScenePrompt",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "Cancel leaves all edits",
+      "cmd": "click",
+      "name": "pelican.unsavedScenePrompt.cancel"
+    },
+    {
+      "label": "engine graph value",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "path": "nodes[1].parameters.gain",
+      "value": 3.75,
+      "retry_ms": 60000
+    },
+    {
+      "label": "journal dirty state",
+      "expect": "rpc_equals",
+      "method": "get_document_journal",
+      "path": "dirty",
+      "value": true,
+      "retry_ms": 60000
+    },
+    {
+      "label": "RV-1 remember the dirty project engine",
+      "expect": "result",
+      "command": {
+        "cmd": "wait_engine",
+        "timeout_ms": 60000
+      },
+      "path": "process_id",
+      "remember": "dirty_project_pid"
+    },
+    {
+      "label": "RV-1 open_project immediately reports the pending Discard switch",
+      "expect": "result",
+      "command": {
+        "cmd": "open_project",
+        "dir": "{other_project}",
+        "timeout_ms": 500
+      },
+      "path": "engine_restarting",
+      "value": true
+    },
+    {
+      "label": "rendering-only edits prompt",
+      "cmd": "wait",
+      "name": "pelican.unsavedScenePrompt",
+      "contains": "Rendering documents",
+      "timeout_ms": 10000
+    },
+    {
+      "label": "answer prompt",
+      "cmd": "click",
+      "name": "pelican.unsavedScenePrompt.discard"
+    },
+    {
+      "label": "engine transition settles",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "engine ready",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "RV-1 the answering process belongs to the new project",
+      "expect": "result",
+      "command": {
+        "cmd": "wait_engine",
+        "timeout_ms": 180000
+      },
+      "path": "process_id",
+      "op": "ne",
+      "value_of": "dirty_project_pid"
+    },
+    {
+      "label": "RV-1 the new project has only its own clean journal",
+      "expect": "rpc_equals",
+      "method": "get_document_journal",
+      "path": "dirty",
+      "value": false,
+      "retry_ms": 30000
+    },
+    {
+      "label": "T3 Discard restores exact opened bytes",
+      "file": "equals",
+      "path": "{project}/passes/main_rendering_config.json",
+      "other": "{artifacts}/opened.json"
+    },
+    {
+      "label": "leave project",
+      "cmd": "open_project",
+      "dir": "{project}",
+      "timeout_ms": 500
+    },
+    {
+      "label": "engine transition settles",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "engine ready",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "engine graph value",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "path": "nodes[1].parameters.gain",
+      "value": 2.5,
+      "retry_ms": 60000
+    },
+    {
+      "label": "gain pill visible",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_value_pill#left/gain",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "open gain editor",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_value_pill#left/gain"
+    },
+    {
+      "label": "type gain",
+      "cmd": "type",
+      "name": "pelican.graphCanvasView::graph_inline_editor#left/gain",
+      "text": "4.5"
+    },
+    {
+      "label": "commit gain",
+      "cmd": "key",
+      "name": "pelican.graphCanvasView::graph_inline_editor#left/gain",
+      "sequence": "Return"
+    },
+    {
+      "label": "engine graph value",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "path": "nodes[1].parameters.gain",
+      "value": 4.5,
+      "retry_ms": 60000
+    },
+    {
+      "label": "journal dirty state",
+      "expect": "rpc_equals",
+      "method": "get_document_journal",
+      "path": "dirty",
+      "value": true,
+      "retry_ms": 60000
+    },
+    {
+      "label": "select camera before prompt Save",
+      "cmd": "select",
+      "name": "pelican.outliner",
+      "text": "MainCamera"
+    },
+    {
+      "label": "Inspector ready for prompt Save",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "MainCamera",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "remember edited bytes for Save",
+      "file": "copy",
+      "path": "{artifacts}/saved.json",
+      "from": "{project}/passes/main_rendering_config.json"
+    },
+    {
+      "label": "leave project",
+      "cmd": "open_project",
+      "dir": "{other_project}",
+      "timeout_ms": 500
+    },
+    {
+      "label": "rendering-only edits prompt",
+      "cmd": "wait",
+      "name": "pelican.unsavedScenePrompt",
+      "contains": "Rendering documents",
+      "timeout_ms": 10000
+    },
+    {
+      "label": "answer prompt",
+      "cmd": "click",
+      "name": "pelican.unsavedScenePrompt.save"
+    },
+    {
+      "label": "engine transition settles",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "engine ready",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "T3 Save keeps edited bytes",
+      "file": "equals",
+      "path": "{project}/passes/main_rendering_config.json",
+      "other": "{artifacts}/saved.json"
+    },
+    {
+      "label": "leave project",
+      "cmd": "open_project",
+      "dir": "{project}",
+      "timeout_ms": 500
+    },
+    {
+      "label": "engine transition settles",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "engine ready",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "engine graph value",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "path": "nodes[1].parameters.gain",
+      "value": 4.5,
+      "retry_ms": 60000
+    },
+    {
+      "label": "gain pill visible",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_value_pill#left/gain",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "open gain editor",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_value_pill#left/gain"
+    },
+    {
+      "label": "type gain",
+      "cmd": "type",
+      "name": "pelican.graphCanvasView::graph_inline_editor#left/gain",
+      "text": "5.5"
+    },
+    {
+      "label": "commit gain",
+      "cmd": "key",
+      "name": "pelican.graphCanvasView::graph_inline_editor#left/gain",
+      "sequence": "Return"
+    },
+    {
+      "label": "engine graph value",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "path": "nodes[1].parameters.gain",
+      "value": 5.5,
+      "retry_ms": 60000
+    },
+    {
+      "label": "journal dirty state",
+      "expect": "rpc_equals",
+      "method": "get_document_journal",
+      "path": "dirty",
+      "value": true,
+      "retry_ms": 60000
+    },
+    {
+      "label": "select camera so Inspector can save the scene",
+      "cmd": "select",
+      "name": "pelican.outliner",
+      "text": "MainCamera"
+    },
+    {
+      "label": "Inspector holds camera",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "MainCamera",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Inspector is idle before Ctrl+S",
+      "cmd": "wait",
+      "name": "pelican.inspectorUndo",
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Ctrl+S explicitly advances the baseline",
+      "cmd": "key",
+      "name": "pelican.graphCanvasView",
+      "sequence": "Ctrl+S",
+      "route": "window"
+    },
+    {
+      "label": "journal dirty state",
+      "expect": "rpc_equals",
+      "method": "get_document_journal",
+      "path": "dirty",
+      "value": false,
+      "retry_ms": 60000
+    },
+    {
+      "label": "remember Ctrl+S bytes",
+      "file": "copy",
+      "path": "{artifacts}/ctrl_s.json",
+      "from": "{project}/passes/main_rendering_config.json"
+    },
+    {
+      "label": "gain pill visible",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_value_pill#left/gain",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "open gain editor",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_value_pill#left/gain"
+    },
+    {
+      "label": "type gain",
+      "cmd": "type",
+      "name": "pelican.graphCanvasView::graph_inline_editor#left/gain",
+      "text": "6.5"
+    },
+    {
+      "label": "commit gain",
+      "cmd": "key",
+      "name": "pelican.graphCanvasView::graph_inline_editor#left/gain",
+      "sequence": "Return"
+    },
+    {
+      "label": "engine graph value",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "path": "nodes[1].parameters.gain",
+      "value": 6.5,
+      "retry_ms": 60000
+    },
+    {
+      "label": "journal dirty state",
+      "expect": "rpc_equals",
+      "method": "get_document_journal",
+      "path": "dirty",
+      "value": true,
+      "retry_ms": 60000
+    },
+    {
+      "label": "engine identity before restart-required edit",
+      "expect": "result",
+      "command": {
+        "cmd": "project_state",
+        "brief": true
+      },
+      "path": "engine_process_id",
+      "remember": "engine_before_restart"
+    },
+    {
+      "label": "add material pass",
+      "cmd": "click",
+      "name": "pelican.graphCanvasAddNode"
+    },
+    {
+      "label": "palette ready",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "material pass kind",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "material_pass"
+    },
+    {
+      "label": "forward contract",
+      "cmd": "select",
+      "name": "pelican.graphCanvasPaletteContract",
+      "text": "forward_opaque_v1"
+    },
+    {
+      "label": "commit restart-required pass",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
+    },
+    {
+      "label": "new pass appears after restart",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#render_material_pass",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "engine ready",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "journal dirty state",
+      "expect": "rpc_equals",
+      "method": "get_document_journal",
+      "path": "dirty",
+      "value": true,
+      "retry_ms": 60000
+    },
+    {
+      "label": "engine graph value",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "path": "nodes[1].parameters.gain",
+      "value": 6.5,
+      "retry_ms": 60000
+    },
+    {
+      "label": "T5 proves engine process restarted",
+      "expect": "result",
+      "command": {
+        "cmd": "project_state",
+        "brief": true
+      },
+      "path": "engine_process_id",
+      "value_of": "engine_before_restart",
+      "op": "ne"
+    },
+    {
+      "label": "T4 T5 close after restart",
+      "cmd": "action",
+      "name": "pelican.file.exit"
+    },
+    {
+      "label": "document edits still prompt",
+      "cmd": "wait",
+      "name": "pelican.unsavedScenePrompt",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "Discard and close",
+      "cmd": "click",
+      "name": "pelican.unsavedScenePrompt.discard"
+    },
+    {
+      "label": "Studio exits normally",
+      "expect": "studio_closed",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "T4 T5 restore exact Ctrl+S baseline",
+      "file": "equals",
+      "path": "{project}/passes/main_rendering_config.json",
+      "other": "{artifacts}/ctrl_s.json"
+    },
+    {
+      "label": "journal scratch removed",
+      "file": "exists",
+      "path": "{project}/.pelican/document_journal/manifest.json",
+      "value": false,
+      "was": true
+    }
+  ]
+}

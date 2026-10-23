@@ -8,6 +8,7 @@
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
+namespace ui { struct UiTexturePage; }
 
 // UI-specific adapter: page uploads and lifetime live in AtlasAssetResource.
 DECLARE_MODULE(UIContainer) {
@@ -16,6 +17,7 @@ DECLARE_MODULE(UIContainer) {
   public:
     UIContainer();
     ~UIContainer();
+    void syncPages(const std::vector<ui::UiTexturePage> &source_pages);
 
     vk::DescriptorSet descriptor(std::uint16_t page, ui::Sampler sampler) const;
     vk::DescriptorSetLayout descriptorSetLayout() const;

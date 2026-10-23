@@ -72,7 +72,7 @@ std::uintmax_t nonNegativeInteger(const nlohmann::json &value) {
 std::string lowerAscii(std::string_view value) {
     std::string result{value};
     std::transform(result.begin(), result.end(), result.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
+        return static_cast<char>(ch >= 'A' && ch <= 'Z' ? ch + ('a' - 'A') : ch);
     });
     return result;
 }

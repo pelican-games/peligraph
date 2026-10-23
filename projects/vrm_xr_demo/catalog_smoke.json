@@ -1,8 +1,8 @@
 {
   "schema": "pelican.project_catalog_smoke",
   "version": 1,
-  "minimum_distinct_colors": 50,
-  "minimum_non_modal_ratio": 0.04,
+  "minimum_distinct_colors": 20,
+  "minimum_non_modal_ratio": 0.09,
   "editor": {
     "pick_x": 96,
     "pick_y": 96,

@@ -190,6 +190,10 @@ GraphCanvasAudioAnalysis::GraphCanvasAudioAnalysis(GraphCanvasReadCapability &gr
         "Place the table as a persistent image and its layout as a vec4 buffer, connected to the "
         "picked pass when its shader declares them."));
     line_row->addWidget(use_in_shader_);
+    again_ = new QPushButton(QObject::tr("Bake again"), bake_row_);
+    again_->setObjectName(QStringLiteral("pelican.graphCanvasBake.again"));
+    again_->setToolTip(QObject::tr("Send the same bake once more, once the table is no longer in use."));
+    line_row->addWidget(again_);
     column->addLayout(line_row);
     auto *shader_row = new QHBoxLayout;
     shader_row->setContentsMargins(0, 0, 0, 0);
@@ -207,7 +211,11 @@ GraphCanvasAudioAnalysis::GraphCanvasAudioAnalysis(GraphCanvasReadCapability &gr
     copy_->hide();
     use_in_graph_->hide();
     use_in_shader_->hide();
+    again_->hide();
     bake_row_->hide();
+    QObject::connect(again_, &QPushButton::clicked, &owner_, [this] {
+        if (!sent_.is_null() && !running()) bake(Json{sent_});
+    });
     QObject::connect(use_in_graph_, &QPushButton::clicked, &owner_, [this] {
         if (baked_ && hooks_.useInGraph) hooks_.useInGraph(*baked_);
     });
@@ -293,6 +301,8 @@ bool GraphCanvasAudioAnalysis::bake(const Json &params) {
         say(true, error.isEmpty() ? std::string{"bake_audio_analysis could not be sent."} : error.toStdString());
         return false;
     }
+    sent_ = params;
+    again_->hide();
     sound_ = params.value("asset", std::string{});
     out_ = projectRelativeReference(params.value("out", std::string{}));
     started_ = std::chrono::steady_clock::now();
@@ -364,6 +374,7 @@ void GraphCanvasAudioAnalysis::finished(const Json &response) {
                        ? error.value("code", std::string{}) + ": " + error.value("message", std::string{})
                        : "The bake of " + soundName(sound_) + " was refused.";
         say(true, line);
+        again_->setVisible(audioAnalysisOutputLocked(error));
         return;
     }
     baked_ = readAnalysisTable(project_root_, out_);

@@ -38,10 +38,29 @@ import time
 from pathlib import Path
 from typing import Any
 
+# QD-1: the checks every scenario gets after its last step. The module sits
+# beside this script, which Python puts first on sys.path.
+import studio_invariants
+
 REPORT_SCHEMA = "pelican.studio_scenario_report"
 REPORT_VERSION = 1
 # The player reads it when no --audio-backend is given (AU-3).
 AUDIO_BACKEND_VARIABLE = "PELICAN_AUDIO_BACKEND"
+# PX-2: the engine's viewport, in picture pixels, for the whole of every run.
+# A scenario reads pixels back as fractions of the picture, and the camera's
+# vertical field of view is fixed, so a point "beside the box" stays beside it
+# only while the picture keeps its shape; left to the layout, the viewport
+# changed shape whenever a panel was added to Studio. 16:10 is the nearest
+# common shape to the 700x426 (1.64) most points were first written against,
+# and this size is about what the default layout gave the viewport anyway, so
+# the window and its panels barely move. A scenario can name another size with
+# a top-level "viewport": [width, height], or "viewport": null to leave the
+# viewport to the layout (one that checks the layout itself).
+DEFAULT_VIEWPORT = (720, 450)
+# FX-7: only refusals made before an operation can be safely retried.
+ENABLED_WAIT_TIMEOUT_S = 15.0
+ENABLED_WAIT_POLL_S = 0.1
+_ENABLED_WAIT_COMMANDS = frozenset({"click", "double_click", "action", "select", "history", "drag", "key", "type"})
 
 
 class AutomationError(RuntimeError):
@@ -511,14 +530,38 @@ def follow(value: Any, path: str) -> Any:
 
 
 def equal(left: Any, right: Any) -> bool:
+    # QD-1 (GL-5g's rule 3): a bool is not a number. `True == 1` in Python,
+    # and a step that expected `true` of a count of one passed.
     if isinstance(left, bool) or isinstance(right, bool):
-        return left is right or left == right
+        return left is right
     if isinstance(left, (int, float)) and isinstance(right, (int, float)):
         return abs(float(left) - float(right)) <= 1e-9
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(equal(a, b) for a, b in zip(left, right))
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(equal(left[k], right[k]) for k in left)
     return left == right
 
 
 _MISSING = object()
+
+
+class StepMisuse(ValueError):
+    """A comparison that would pass whatever happened (QD-1, GL-5g's rules)."""
+
+
+def kind_of(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "list"
+    return "object"
 
 
 def compare(op: str, actual: Any, expected: Any) -> bool:
@@ -526,16 +569,49 @@ def compare(op: str, actual: Any, expected: Any) -> bool:
 
     `eq` is the one every other expectation uses.  The rest exist because a
     gesture is judged by which way a number moved, not by where it landed.
+
+    QD-1 makes the forms that cannot fail an error rather than a pass:
+    `contains` / `excludes` on an object (Python's `in` reads its keys, so a
+    value never matched; `has_key` / `lacks_key` ask about a key by name), an
+    `excludes` of a value of a kind no element of the list has, and `ne`
+    between two kinds (a string is never a number).
     """
 
     if op == "eq":
         return equal(actual, expected)
     if op == "ne":
+        if None not in (actual, expected) and kind_of(actual) != kind_of(expected):
+            raise StepMisuse(
+                f"ne between a {kind_of(actual)} and a {kind_of(expected)} is always true"
+            )
         return not equal(actual, expected)
-    if op == "contains":
-        return expected in actual
-    if op == "excludes":
-        return expected not in actual
+    if op in ("has_key", "lacks_key"):
+        if not isinstance(actual, dict):
+            raise StepMisuse(f"{op} needs an object, found a {kind_of(actual)}")
+        return (str(expected) in actual) == (op == "has_key")
+    if op in ("contains", "excludes"):
+        if isinstance(actual, dict):
+            raise StepMisuse(
+                f"{op} on an object reads its keys; write has_key / lacks_key for a key, "
+                "or a path to the value"
+            )
+        if isinstance(actual, str):
+            if not isinstance(expected, str):
+                raise StepMisuse(f"{op} in a string needs a string, not a {kind_of(expected)}")
+            if expected == "":
+                raise StepMisuse(f'{op} "" is decided before the step runs')
+        elif isinstance(actual, list):
+            kinds = {kind_of(item) for item in actual}
+            if op == "excludes" and actual and kind_of(expected) not in kinds:
+                raise StepMisuse(
+                    f"excludes a {kind_of(expected)} from a list of {', '.join(sorted(kinds))} "
+                    "is always true"
+                )
+            found = any(equal(item, expected) for item in actual)
+            return found if op == "contains" else not found
+        else:
+            raise StepMisuse(f"{op} needs a string or a list, found a {kind_of(actual)}")
+        return (expected in actual) if op == "contains" else (expected not in actual)
     if op in {"gt", "ge", "lt", "le"}:
         left, right = float(actual), float(expected)
         return {
@@ -560,6 +636,8 @@ class Run:
         self.failures: list[dict[str, Any]] = []
         self.screenshots: list[str] = []
         self.channel: Channel | None = None
+        self.studio: Studio | None = None
+        self.closed = False
         # What a `result` step wrote down for a later step to compare against.
         # A zoom is "bigger than it was", not "1.35": the number a view lands on
         # is the view's business, and a scenario that hard-codes it is testing
@@ -567,6 +645,14 @@ class Run:
         self.remembered: dict[str, Any] = {}
         # EW-2: set when the scenario asks for `watch_engine_windows`.
         self.window_watch: EngineWindowWatch | None = None
+        # QD-1: what the report says of the run besides pass and fail.
+        self.warnings: list[str] = []
+        self.remember_names: dict[str, str] = {}
+        self.used_names: set[str] = set()
+        self.compared_steps = 0
+        self.read_steps = 0
+        self.file_seen: set[tuple[str, str]] = set()
+        self.list_patterns: dict[str, int] = {}
 
     # -- recording -----------------------------------------------------------
 
@@ -581,18 +667,29 @@ class Run:
         detail: str = "",
         started: float = 0.0,
         screenshot: str | None = None,
+        waited_for_enabled_ms: int | None = None,
     ) -> dict[str, Any]:
         index = len(self.steps) + 1
+        # perf_counter uses the high-resolution performance clock on Windows;
+        # monotonic can have a ~15.6 ms tick on Python 3.12. Keep deadline
+        # clocks separate from measurements of short GUI operations.
+        finished = time.perf_counter()
+        duration_ms = (finished - started) * 1000 if started else 0.0
         entry = {
             "index": index,
             "kind": kind,
             "label": label,
             "ok": ok,
-            "duration_ms": round((time.monotonic() - started) * 1000) if started else 0,
+            "duration_ms": round(duration_ms),
+            "duration_precise_ms": duration_ms,
+            "started_perf_s": started,
+            "finished_perf_s": finished,
             "request": request,
             "response": response,
             "detail": detail,
         }
+        if waited_for_enabled_ms is not None:
+            entry["waited_for_enabled_ms"] = waited_for_enabled_ms
         if screenshot:
             entry["screenshot"] = screenshot
         self.steps.append(entry)
@@ -678,15 +775,61 @@ def command_of(step: dict[str, Any]) -> dict[str, Any]:
 _META_KEYS = {"label", "expect", "expect_error", "note", "wait_s"}
 
 
+def _disabled_operation(request: dict[str, Any], reply: dict[str, Any]) -> bool:
+    """Recognise only Studio's pre-operation disabled refusals, not other errors."""
+    if request.get("cmd") not in _ENABLED_WAIT_COMMANDS or reply.get("ok"):
+        return False
+    if request.get("cmd") == "history" and request.get("step") not in {"undo", "redo"}:
+        return False
+    if request.get("cmd") in {"key", "type"} and not request.get("name"):
+        return False
+    error = reply.get("error") or {}
+    if error.get("code") != "automation.bad_request@1":
+        return False
+    message = error.get("message")
+    return isinstance(message, str) and (
+        message == "the window under the point is disabled"
+        or (
+            message.startswith(('the widget named "', 'the action named "', 'the action "'))
+            and message.endswith('" is disabled')
+        )
+    )
+
+
 def run_command_step(run: Run, step: dict[str, Any], label: str) -> bool:
-    started = time.monotonic()
+    started = time.perf_counter()
     request = command_of(step)
     expected_error = step.get("expect_error")
+    timeout = float(step.get("wait_s", 180))
+    wait_started = None
+    waited_for_enabled_ms = None
+    reply = None
     try:
-        reply = run.call(request, timeout=float(step.get("wait_s", 180)))
+        reply = run.call(request, timeout=timeout)
+        if "expect_error" not in step:
+            while _disabled_operation(request, reply):
+                if wait_started is None:
+                    wait_started = time.monotonic()
+                remaining = ENABLED_WAIT_TIMEOUT_S - (time.monotonic() - wait_started)
+                if remaining <= 0:
+                    break
+                time.sleep(min(ENABLED_WAIT_POLL_S, remaining))
+                # Sleep and channel calls can take longer than requested. Never
+                # resend after the deadline, even if the last refusal was disabled.
+                remaining = ENABLED_WAIT_TIMEOUT_S - (time.monotonic() - wait_started)
+                if remaining <= 0:
+                    break
+                reply = run.call(request, timeout=min(timeout, remaining))
+        if wait_started is not None:
+            waited_for_enabled_ms = round((time.monotonic() - wait_started) * 1000)
     except AutomationError as error:
+        detail = str(error)
+        if wait_started is not None:
+            waited_for_enabled_ms = round((time.monotonic() - wait_started) * 1000)
+            detail += f"; waited_for_enabled_ms={waited_for_enabled_ms}; last reply: {reply}"
         run.record(
-            "cmd", label, ok=False, request=request, detail=str(error), started=started
+            "cmd", label, ok=False, request=request, detail=detail, started=started,
+            response=reply, waited_for_enabled_ms=waited_for_enabled_ms,
         )
         return False
     if expected_error:
@@ -726,20 +869,35 @@ def run_command_step(run: Run, step: dict[str, Any], label: str) -> bool:
         return True
     if not reply.get("ok"):
         error = reply.get("error") or {}
+        detail = f"{error.get('code', 'error')}: {error.get('message', '')}"
+        if waited_for_enabled_ms is not None:
+            detail += (
+                f"; waited_for_enabled_ms={waited_for_enabled_ms}"
+                f" (limit {ENABLED_WAIT_TIMEOUT_S * 1000:.0f} ms)"
+            )
         run.record(
             "cmd",
             label,
             ok=False,
             request=request,
             response=reply,
-            detail=f"{error.get('code', 'error')}: {error.get('message', '')}",
+            detail=detail,
             started=started,
             screenshot=run.capture(f"step{len(run.steps) + 1}_failure"),
+            waited_for_enabled_ms=waited_for_enabled_ms,
         )
         return False
     if request.get("cmd") == "screenshot":
         run.screenshots.append(reply["result"]["path"])
-    run.record("cmd", label, ok=True, request=request, response=reply, started=started)
+    # QA-1's suggestion: a select that had to wait over a second for its entry
+    # is a scenario missing a wait before it.
+    waited = (reply.get("result") or {}).get("waited_ms") if isinstance(reply.get("result"), dict) else None
+    if request.get("cmd") == "select" and isinstance(waited, (int, float)) and waited > 1000:
+        run.warnings.append(f'"{label}": select waited {waited:.0f} ms for its entry')
+    run.record(
+        "cmd", label, ok=True, request=request, response=reply, started=started,
+        waited_for_enabled_ms=waited_for_enabled_ms,
+    )
     return True
 
 
@@ -767,7 +925,7 @@ def run_file_step(
     owns.
     """
 
-    started = time.monotonic()
+    started = time.perf_counter()
     action = str(step["file"])
     request = {key: value for key, value in step.items() if key not in _META_KEYS}
     try:
@@ -797,7 +955,29 @@ def run_file_step(
                 raise ValueError(
                     f"{path.name} {'holds' if found else 'does not hold'} {step['text']!r}"
                 )
+            if found:
+                run.file_seen.add(("contains", f"{path}|{step['text']}"))
+            elif step.get("was"):
+                # QD-1 (GL-5g's rule 6): "no longer holds" -- this run saw it
+                # hold the text first, so the absence is news, not a typo.
+                if ("contains", f"{path}|{step['text']}") not in run.file_seen:
+                    raise ValueError(
+                        f"{path.name} never held {step['text']!r} earlier in this run "
+                        "(was: true says it did)"
+                    )
+            elif ("contains", f"{path}|{step['text']}") not in run.file_seen:
+                run.warnings.append(
+                    f'"{label}": {path.name} does not hold {step["text"]!r}, and no step of '
+                    "this run saw it hold it (a misspelt text passes too; was: true says it did)"
+                )
             detail = f"{path.name} {'holds' if found else 'does not hold'} the text"
+        elif action == "equals":
+            source = Path(str(step["other"])).resolve()
+            if not any(source == root or root in source.parents for root in owned):
+                raise ValueError(f"{source} is outside this run")
+            if path.read_bytes() != source.read_bytes():
+                raise ValueError(f"{path.name} differs from {source.name}")
+            detail = f"{path.name} equals {source.name} byte for byte"
         elif action == "copy":
             source = Path(str(step["from"])).resolve()
             if not any(source == root or root in source.parents for root in owned):
@@ -811,7 +991,29 @@ def run_file_step(
             present = path.is_file()
             if present != bool(step.get("value", True)):
                 raise ValueError(f"{path.name} {'exists' if present else 'is missing'}")
+            if present:
+                run.file_seen.add(("exists", str(path)))
+            elif step.get("was") and ("exists", str(path)) not in run.file_seen:
+                raise ValueError(
+                    f"{path.name} was never seen in this run (was: true says it was)"
+                )
+            elif not present and ("exists", str(path)) not in run.file_seen:
+                run.warnings.append(
+                    f'"{label}": {path.name} is missing, and no step of this run saw it '
+                    "(a misspelt path passes too; was: true says it was there)"
+                )
             detail = f"{path.name} {'exists' if present else 'is missing'}"
+        elif action == "list":
+            # QD-1 (GL-5g's rule 6): what a directory holds, so "nothing new
+            # was written in shaders/" can be said without guessing a name.
+            names = sorted(entry.name for entry in path.iterdir()) if path.is_dir() else []
+            if "value" in step and names != sorted(step["value"]):
+                raise ValueError(f"{path.name}/ holds {names}, expected {sorted(step['value'])}")
+            if "count" in step and len(names) != int(step["count"]):
+                raise ValueError(f"{path.name}/ holds {len(names)} entries ({names}), expected {step['count']}")
+            if "value" not in step and "count" not in step:
+                raise ValueError("a list step needs value (the names) or count")
+            detail = f"{path.name}/ holds {names}"
         else:
             raise ValueError(f"unknown file action \"{action}\"")
     except (OSError, ValueError, KeyError) as error:
@@ -830,9 +1032,17 @@ def run_file_step(
 
 
 def run_expect_step(run: Run, step: dict[str, Any], label: str) -> bool:
-    started = time.monotonic()
+    started = time.perf_counter()
     kind = str(step["expect"])
     try:
+        if kind == "studio_closed":
+            if run.studio is None:
+                raise ValueError("Studio was not launched")
+            code = run.studio.wait_for_exit(float(step.get("timeout_ms", 30000)) / 1000)
+            run.closed = code == 0
+            run.record("expect", label, ok=run.closed, request=step,
+                       detail=f"Studio exit code: {code}", started=started)
+            return run.closed
         if kind == "rpc_equals":
             request = {
                 "cmd": "rpc",
@@ -910,6 +1120,27 @@ def run_expect_step(run: Run, step: dict[str, Any], label: str) -> bool:
                 )
             path = str(step.get("path", ""))
             has_expectation = "value" in step or "value_of" in step or "value_format" in step
+            # QD-1 (GL-5g's rule 2): a reading that is neither compared nor
+            # written down for a later step passes whatever it reads. One kept
+            # only for the report's reader says so with `record`.
+            if not has_expectation and not step.get("remember") and not step.get("record"):
+                return _fail(
+                    run, kind, label, request, None,
+                    "a result step compares (value / value_of / value_format), remembers "
+                    "for a later step (remember), or is a reading for the record (record: true)",
+                    started,
+                )
+            if step.get("remember"):
+                run.remember_names.setdefault(str(step["remember"]), label)
+            if "value_of" in step:
+                run.used_names.add(str(step["value_of"]))
+            if "value_format" in step:
+                import string
+
+                run.used_names.update(
+                    field for _, field, _, _ in string.Formatter().parse(str(step["value_format"]))
+                    if field
+                )
             expected: Any = None
             shown = ""
             if "value" in step:
@@ -1000,13 +1231,44 @@ def run_expect_step(run: Run, step: dict[str, Any], label: str) -> bool:
                     f"{op} {shown}",
                     started,
                 )
+            # QD-1 (GL-5g's rule 4): "and it stays so" -- the same reading
+            # again once the engine has drawn this many more frames.
+            if step.get("stable_for_frames"):
+                frames = int(step["stable_for_frames"])
+                status = run.call({"cmd": "rpc", "method": "get_status", "params": {}}, timeout=60.0)
+                published = (((status.get("result") or {}).get("result") or {}).get("render") or {}).get(
+                    "published_frames"
+                )
+                if not status.get("ok") or not isinstance(published, (int, float)):
+                    return _fail(run, kind, label, request, status,
+                                 "stable_for_frames: get_status has no render.published_frames", started)
+                waited = run.call(
+                    {"cmd": "wait_engine", "frames": int(published) + frames, "timeout_ms": 60000},
+                    timeout=90.0,
+                )
+                if not waited.get("ok"):
+                    return _fail(run, kind, label, request, waited,
+                                 f"stable_for_frames: the engine did not draw {frames} more frames", started)
+                again = run.call(request, timeout=float(step.get("wait_s", 120)))
+                try:
+                    later = follow(again["result"], path) if again.get("ok") else _MISSING
+                except (PathError, ValueError):
+                    later = _MISSING
+                if later is _MISSING or not equal(later, actual):
+                    return _fail(
+                        run, kind, label, request, again,
+                        f"{request['cmd']} {path}: {json.dumps(actual)}, then "
+                        f"{json.dumps(None if later is _MISSING else later)} {frames} frames later",
+                        started,
+                    )
             run.record(
                 "expect",
                 label,
                 ok=True,
                 request=request,
                 response={"path": path, "value": actual},
-                detail=f"{request['cmd']} {path} {op} {shown} ({json.dumps(actual)})",
+                detail=f"{request['cmd']} {path} {op} {shown} ({json.dumps(actual)})"
+                + (f", the same {step['stable_for_frames']} frames later" if step.get("stable_for_frames") else ""),
                 started=started,
             )
             return True
@@ -1051,6 +1313,17 @@ def run_expect_step(run: Run, step: dict[str, Any], label: str) -> bool:
         if kind == "visible":
             request = {"cmd": "text", "name": step["name"]}
             reply = run.call(request, timeout=60.0)
+            # QD-1 (GL-5g's rule 5): "not visible" is a question about a thing
+            # that exists. A name that resolves to nothing is not hidden, it
+            # is a typo -- or the thing is gone, which `wait` with `missing`
+            # says.
+            if not reply.get("ok") and not bool(step.get("value", True)):
+                return _fail(
+                    run, kind, label, request, reply,
+                    f"{step['name']} names nothing; visible false needs a widget that is "
+                    "there and hidden (write a wait with missing: true for one that is gone)",
+                    started,
+                )
             visible = bool(reply.get("ok")) and bool(reply["result"]["visible"])
             if visible != bool(step.get("value", True)):
                 return _fail(
@@ -1089,6 +1362,9 @@ def run_expect_step(run: Run, step: dict[str, Any], label: str) -> bool:
                     started,
                 )
             names = [entry["name"] for entry in reply["result"]["widgets"]]
+            run.list_patterns[step["pattern"]] = max(
+                run.list_patterns.get(step["pattern"], 0), len(names)
+            )
             if len(names) != int(step["value"]):
                 return _fail(
                     run,
@@ -1228,12 +1504,84 @@ def _fail(
     return False
 
 
+def fix_viewport(run: Run, scenario: dict[str, Any]) -> bool:
+    """Hold the viewport at the scenario's size before its first step."""
+
+    wanted = scenario.get("viewport", list(DEFAULT_VIEWPORT))
+    if wanted is None:
+        return True
+    started = time.perf_counter()
+    if not (
+        isinstance(wanted, list)
+        and len(wanted) == 2
+        and all(isinstance(value, int) and value > 0 for value in wanted)
+    ):
+        run.record(
+            "viewport",
+            "the viewport's size",
+            ok=False,
+            request={"viewport": wanted},
+            detail='"viewport" is [width, height] in picture pixels, or null',
+            started=started,
+        )
+        return False
+    request = {"cmd": "viewport_size", "width": wanted[0], "height": wanted[1]}
+    reply = run.call(request, timeout=30.0)
+    result = reply.get("result") or {}
+    got = [result.get("width"), result.get("height")]
+    ok = bool(reply.get("ok"))
+    if ok:
+        detail = f"{got[0]}x{got[1]} picture pixels (window {result.get('window')})"
+        # At a scale that does not divide the size, the picture is a pixel off.
+        if not all(isinstance(g, int) for g in got) or any(
+            abs(g - w) > 1 for g, w in zip(got, wanted)
+        ):
+            ok = False
+            detail = f"asked for {wanted[0]}x{wanted[1]}, the engine is given {got[0]}x{got[1]}"
+    else:
+        error = reply.get("error") or {}
+        detail = f"{error.get('code')}: {error.get('message')}"
+    run.record(
+        "viewport",
+        f"the viewport is held at {wanted[0]}x{wanted[1]}",
+        ok=ok,
+        request=request,
+        response=reply,
+        detail=detail,
+        started=started,
+    )
+    return ok
+
+
+def finish_warnings(run: Run) -> None:
+    """QD-1: what passed but says little.
+
+    A name remembered and never compared (GL-5g's rule 2), and a list_count of
+    0 whose pattern matched nothing in any list_count of the run (rule 7):
+    both pass whatever happened.
+    """
+
+    for remembered, where in sorted(run.remember_names.items()):
+        if remembered not in run.used_names:
+            run.warnings.append(
+                f'"{where}" remembered {remembered}, and no later step compared it'
+            )
+    for pattern, most in sorted(run.list_patterns.items()):
+        if most == 0:
+            run.warnings.append(
+                f'list_count "{pattern}" matched nothing anywhere in the run: '
+                "a count of 0 would pass for a misspelt name too"
+            )
+    for warning in run.warnings:
+        print(f"warning: {warning}", flush=True)
+
+
 def probe_no_automation(
     run: Run, studio: Path, pipe: str, artifacts: Path, env: dict[str, str]
 ) -> bool:
     """Acceptance 1, first half: without the flag there is no channel at all."""
 
-    started = time.monotonic()
+    started = time.perf_counter()
     control = Studio(
         [str(studio)], artifacts / "studio_no_automation.log", env
     )
@@ -1325,8 +1673,12 @@ def main() -> int:
         variables[key.strip()] = value
 
     run = Run(scenario, artifacts)
+    epilogue = studio_invariants.Epilogue(
+        run, scenario, variables, repository=Path(__file__).resolve().parents[1]
+    )
+    invariant_outcomes: list[dict[str, Any]] = []
     started_at = time.time()
-    started = time.monotonic()
+    started = time.perf_counter()
     studio: Studio | None = None
     launch_error = ""
     watchdog = Watchdog()
@@ -1347,6 +1699,7 @@ def main() -> int:
 
     try:
         studio = Studio(command, artifacts / "studio.log", env)
+        run.studio = studio
         watchdog.on_trip = studio.stop
         if scenario.get("watch_engine_windows"):
             if sys.platform != "win32":
@@ -1372,11 +1725,33 @@ def main() -> int:
             detail=listening.strip(),
             started=started,
         )
+        viewport_held = fix_viewport(run, scenario)
+        # QD-1: the documents as they were when the engine first answered --
+        # after the scenario's first wait_engine, or, for a scenario that has
+        # none, the files as they are before its first step (waiting for the
+        # engine here would change what such a scenario sees first).
+        if viewport_held and scenario.get("steps") and not any(
+            isinstance(raw, dict) and raw.get("cmd") == "wait_engine"
+            for raw in scenario.get("steps", [])
+        ):
+            epilogue.capture_start(0, need_engine=False)
+        steps_ok = viewport_held
         for index, raw_step in enumerate(scenario.get("steps", []), start=1):
+            if not viewport_held:
+                break
             step = expand(raw_step, variables)
             label = step_label(step, index)
             if "expect" in step:
                 ok = run_expect_step(run, step, label)
+                # QD-1 (GL-5g's rule 8): which steps judged something.
+                reads_only = step["expect"] == "screenshot" or (
+                    step["expect"] == "result"
+                    and not any(key in step for key in ("value", "value_of", "value_format"))
+                )
+                if reads_only:
+                    run.read_steps += 1
+                else:
+                    run.compared_steps += 1
             elif "file" in step:
                 ok = run_file_step(
                     run, step, label, [arguments.project, artifacts]
@@ -1388,8 +1763,13 @@ def main() -> int:
                     "step", label, ok=False, request=step, detail="no cmd and no expect"
                 )
                 ok = False
+            epilogue.after_step(step, index, ok)
             if not ok:
+                steps_ok = False
                 break
+        # A scenario of no steps (a launch check) has nothing to undo or keep.
+        if steps_ok and scenario.get("steps") and not run.closed:
+            invariant_outcomes = studio_invariants.run_invariants(run, epilogue)
     except AutomationError as error:
         launch_error = str(error)
         run.record("launch", " ".join(command), ok=False, detail=launch_error, started=started)
@@ -1399,8 +1779,8 @@ def main() -> int:
     exit_code: int | None = None
     forced_shutdown = False
     if studio is not None:
-        shutdown_started = time.monotonic()
-        if run.channel is not None:
+        shutdown_started = time.perf_counter()
+        if run.channel is not None and not run.closed:
             try:
                 run.channel.send({"cmd": "quit"}, timeout=30.0)
             except AutomationError:
@@ -1432,6 +1812,7 @@ def main() -> int:
             started=shutdown_started,
         )
 
+    finish_warnings(run)
     failed = len(run.failures)
     report = {
         "schema": REPORT_SCHEMA,
@@ -1443,23 +1824,41 @@ def main() -> int:
         "studio": str(arguments.studio.resolve()),
         "automation_socket": local_socket_path(pipe),
         "started": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(started_at)),
-        "duration_ms": round((time.monotonic() - started) * 1000),
+        "duration_ms": round((time.perf_counter() - started) * 1000),
         "ok": failed == 0 and not launch_error,
         "verdict": "green" if (failed == 0 and not launch_error) else "red",
         "steps_run": len(run.steps),
-        "steps_planned": len(scenario.get("steps", [])) + (1 if scenario.get("probe_no_automation") else 0) + 2,
+        "steps_planned": len(scenario.get("steps", []))
+        + (1 if scenario.get("probe_no_automation") else 0)
+        + (0 if scenario.get("viewport", True) is None else 1)
+        + 2,
         "failed_steps": failed,
+        # QD-1 (GL-5g's rule 8): steps that compared something, and readings
+        # that only wrote a value down (screenshots, record, remember).
+        "compared_steps": run.compared_steps,
+        "read_steps": run.read_steps,
+        "warnings": run.warnings,
         "summary": run.summary,
         "failures": run.failures,
         "screenshots": run.screenshots,
         "studio_exit_code": exit_code,
         "studio_shutdown_forced": forced_shutdown,
         "studio_log": str((artifacts / "studio.log").resolve()),
+        # QD-1: what the driver checked after the last step, by invariant.
+        "invariants": invariant_outcomes,
+        "known_red": [
+            {"invariant": outcome["invariant"], "ticket": outcome.get("ticket")}
+            for outcome in invariant_outcomes
+            if outcome.get("status") == "known_red"
+        ],
+        "invariant_timings_s": {key: round(value, 2) for key, value in epilogue.timings.items()},
         "steps": run.steps,
     }
     arguments.report.parent.mkdir(parents=True, exist_ok=True)
     arguments.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
+    for known in report["known_red"]:
+        print(f"{name}: KNOWN RED invariant {known['invariant']} ({known['ticket']})")
     if report["ok"]:
         print(f"{name}: green ({len(run.steps)} steps)")
         return 0

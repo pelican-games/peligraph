@@ -432,14 +432,14 @@ TEST_CASE("glTF fragments load only the selected object and dependencies", "[glt
     REQUIRE(scene_model->model_instance_id);
 
     REQUIRE_THROWS_WITH(loader.loadGltfBinary(glb_path.string(), fragment("mesh", "Cube")),
-                        Catch::Matchers::ContainsSubstring("RootA/Cube") &&
-                            Catch::Matchers::ContainsSubstring("RootB/Cube"));
+                        Catch::Matchers::ContainsSubstring("@<index>") &&
+                            Catch::Matchers::ContainsSubstring("candidates: 0, 1"));
     REQUIRE_THROWS_WITH(loader.loadGltfBinary(glb_path.string(), fragment("mesh", "Missing")),
                         Catch::Matchers::ContainsSubstring("Unknown GLB mesh fragment 'Missing'"));
     REQUIRE_THROWS_WITH(loader.loadGltfBinary(glb_path.string(), fragment("camera", "Main")),
                         Catch::Matchers::ContainsSubstring("Unknown GLB fragment kind 'camera'"));
     REQUIRE_THROWS_WITH(loader.loadGltfBinary(duplicate_path.string(), fragment("node", "RootA")),
-                        Catch::Matchers::ContainsSubstring("Duplicate GLB node full path 'RootA'"));
+                        Catch::Matchers::ContainsSubstring("@<index>"));
     REQUIRE_THROWS_WITH(loader.loadGltfBinary((temp_dir / "not_glb.png").string(),
                                               fragment("mesh", "Cube")),
                         Catch::Matchers::ContainsSubstring("requires a .glb file"));

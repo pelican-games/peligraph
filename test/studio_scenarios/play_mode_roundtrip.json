@@ -965,23 +965,23 @@
       "name": "pelican.framePlan.fitView"
     },
     {
-      "label": "open present in the Pass Editor by its heading",
+      "label": "a double-click on present's heading opens it on the Graph, in its detail column (GL-5c)",
       "cmd": "double_click",
       "name": "pelican.framePlanLogicalView::node_header#present"
     },
     {
-      "label": "the Pass Editor holds the pass",
+      "label": "the column shows present's Fragment",
       "cmd": "wait",
-      "name": "pelican.fullscreenPass.name",
-      "timeout_ms": 60000,
-      "text": "present"
+      "name": "pelican.graphCanvasFoldedPass.fragment",
+      "visible": true,
+      "timeout_ms": 60000
     },
     {
-      "label": "the Pass Editor says its edits stay after Stop",
+      "label": "the render tools say their edits stay after Stop",
       "expect": "result",
       "command": {
         "cmd": "list",
-        "pattern": "pelican.play.renderBanner.passEditor"
+        "pattern": "pelican.play.renderBanner.renderTools"
       },
       "path": "widgets[0].visible",
       "value": true,
@@ -992,28 +992,23 @@
       "expect": "result",
       "command": {
         "cmd": "text",
-        "name": "pelican.play.renderBanner.passEditor"
+        "name": "pelican.play.renderBanner.renderTools"
       },
       "path": "text",
       "value": "Changes here are written to files and stay after Stop."
     },
     {
-      "label": "pick the inverting fragment from the list",
+      "label": "pick the inverting fragment from the list: edit_preset_pass",
       "cmd": "select",
-      "name": "pelican.fullscreenPass.shader.fragmentChoice",
+      "name": "pelican.graphCanvasFoldedPass.fragment",
       "text": "project://shaders/ru1_invert"
     },
     {
-      "label": "Save is ready",
+      "label": "the edit committed",
       "cmd": "wait",
-      "name": "pelican.fullscreenPass.save",
-      "timeout_ms": 60000,
-      "enabled": true
-    },
-    {
-      "label": "save: edit_preset_pass",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.save"
+      "name": "pelican.graphCanvasNotice",
+      "text": "present saved.",
+      "timeout_ms": 120000
     },
     {
       "label": "present draws the inverting fragment",

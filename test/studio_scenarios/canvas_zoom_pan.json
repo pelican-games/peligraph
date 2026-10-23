@@ -14,11 +14,12 @@
       "timeout_ms": 60000
     },
     {
-      "label": "the canvas opens unzoomed",
+      "label": "the canvas has a positive scale (the first fit may already have run)",
       "expect": "result",
       "command": {"cmd": "view_state", "name": "pelican.framePlanLogicalView"},
       "path": "scale",
-      "value": 1.0
+      "op": "gt",
+      "value": 0
     },
     {
       "label": "view_state reads the viewport, not a remembered number",

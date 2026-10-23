@@ -301,8 +301,7 @@ std::string projectBasicConfigSource(const ProjectSource &source) {
 std::string resolveExistingModelReferenceString(PathResolver &resolver, const std::string &ref) {
     const auto resolved = resolver.resolveExistingFileReference(ref);
     if (const auto *fragment = std::get_if<ResolvedPathFragment>(&resolved)) {
-        return fragment->path.string() + "#" + fragment->fragment.kind + "/" +
-               fragment->fragment.path;
+        return fragment->path.string() + "#" + assetFragmentText(fragment->fragment);
     }
     return std::get<std::filesystem::path>(resolved).string();
 }

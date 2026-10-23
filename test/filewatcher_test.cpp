@@ -422,7 +422,10 @@ TEST_CASE("Win32 watcher covers real filesystem changes overflow rename Unicode 
         REQUIRE(waitUntil([&] { return watcher.pendingCount() >= 1; }));
         const auto requests = applyAll(watcher);
         REQUIRE(requests.size() == 1);
-        REQUIRE(requests.front().key.path.find("asset.txt") != std::string::npos);
+        const auto expected = file.lexically_relative(box.root).generic_u8string();
+        REQUIRE(requests.front().key.path == std::string{expected.begin(), expected.end()});
+        REQUIRE(requests.front().key == makeAssetKey(
+            "project://" + std::string{expected.begin(), expected.end()}));
     }
 
     SECTION("both overflow signals force deterministic and stress rescans") {
@@ -928,6 +931,9 @@ TEST_CASE("HW-1 a store the declaration cannot reach is neither scanned nor watc
 
 TEST_CASE("HW-1 central gate: a declaration opens the watch under an RPC driver, nothing else does",
           "[hw1][gate]") {
+#if !PELICAN_WITH_HOT_RELOAD
+    SKIP("PELICAN_WITH_HOT_RELOAD=OFF: the gate never opens (AV-1 distribution build gate covers it)");
+#else
     EngineLaunchConfig config;
     config.shader_hot_reload = true;
     config.rpc = true;
@@ -982,9 +988,13 @@ TEST_CASE("HW-1 central gate: a declaration opens the watch under an RPC driver,
     CHECK(gate.snapshot().reason == "hot_reload empty");
     gate.setWatchDeclaration(WatchDeclaration::listed);
     CHECK(gate.enabled());
+#endif
 }
 
 TEST_CASE("central gate adapts legacy shader flag without a second apply path", "[wp96][gate]") {
+#if !PELICAN_WITH_HOT_RELOAD
+    SKIP("PELICAN_WITH_HOT_RELOAD=OFF: the gate never opens (AV-1 distribution build gate covers it)");
+#else
     EngineLaunchConfig config;
     config.shader_hot_reload = true;
     ReloadGate gate;
@@ -1000,6 +1010,65 @@ TEST_CASE("central gate adapts legacy shader flag without a second apply path", 
     config.strict_assets = true;
     gate.configureFromLaunch(config);
     REQUIRE_FALSE(gate.shaderReloadEnabled());
+#endif
+}
+
+#if !PELICAN_WITH_HOT_RELOAD
+// EB-4: what the two gate cases above check, in a distribution build. The
+// gate never opens, the build is the reason over every other one, and the
+// explicit reload_shaders request is refused only by its own reasons.
+TEST_CASE("AV-1 distribution build gate: never open, the build is the reason, explicit reloads unchanged",
+          "[av1][hw1][gate][eb4]") {
+    EngineLaunchConfig config;
+    config.shader_hot_reload = true;
+    ReloadGate gate;
+    gate.configureFromLaunch(config);
+    CHECK_FALSE(gate.enabled());
+    CHECK_FALSE(gate.shaderReloadEnabled());
+    CHECK(gate.snapshot().reason == "hot reload build disabled");
+    CHECK(gate.explicitShaderReloadRefusal().empty());
+    const auto shut_epoch = gate.snapshot().epoch;
+
+    for (const auto declaration :
+         {WatchDeclaration::listed, WatchDeclaration::empty, WatchDeclaration::undeclared}) {
+        gate.setWatchDeclaration(declaration);
+        CHECK_FALSE(gate.enabled());
+        CHECK(gate.snapshot().reason == "hot reload build disabled");
+    }
+    config.rpc = true;
+    gate.configureFromLaunch(config);
+    gate.setWatchDeclaration(WatchDeclaration::listed);
+    CHECK_FALSE(gate.enabled());
+    CHECK(gate.rpcDriven());
+    CHECK(gate.snapshot().reason == "hot reload build disabled");
+    gate.setReason(ReloadGateReason::replay, true);
+    CHECK(gate.snapshot().reason == "hot reload build disabled");
+    CHECK(gate.explicitShaderReloadRefusal() == "replay");
+    gate.setReason(ReloadGateReason::replay, false);
+    config.strict_assets = true;
+    gate.configureFromLaunch(config);
+    CHECK(gate.snapshot().reason == "hot reload build disabled");
+    CHECK(gate.explicitShaderReloadRefusal() == "strict assets");
+    // Shut the whole time: the epoch never moved.
+    CHECK(gate.snapshot().epoch == shut_epoch);
+}
+#endif
+
+// EB-7: whether a file already read is looked at again on disk. The animation
+// system (an animation graph's file, each frame) and the audio's decode cache
+// (each play) ask this with the build's PELICAN_WITH_HOT_RELOAD: a hot reload
+// build looks every time; a distribution build looks the first time it reads
+// the file and never again. Both answers, in either build.
+TEST_CASE("EB-7 a distribution build looks at a file it read once, a hot reload build every time",
+          "[eb7][hot-reload][distribution]") {
+    // Hot reload build: looked at before the first read and every use after.
+    STATIC_CHECK(looksAgainAtReadFile(true, false));
+    STATIC_CHECK(looksAgainAtReadFile(true, true));
+    // Distribution build: looked at only for the first read.
+    STATIC_CHECK(looksAgainAtReadFile(false, false));
+    STATIC_CHECK_FALSE(looksAgainAtReadFile(false, true));
+    // What this build's callers pass.
+    CHECK(looksAgainAtReadFile(PELICAN_WITH_HOT_RELOAD != 0, true) == (PELICAN_WITH_HOT_RELOAD != 0));
 }
 
 } // namespace Pelican::watch

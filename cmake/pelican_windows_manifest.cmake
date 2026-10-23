@@ -1,0 +1,23 @@
+# .manifest sources are merged by CMake/MSVC with the linker-generated manifest
+# (and any target-specific manifest), preserving requestedExecutionLevel, etc.
+function(pelican_apply_windows_manifest directory)
+  if(NOT WIN32 OR NOT MSVC)
+    return()
+  endif()
+  get_property(targets DIRECTORY "${directory}" PROPERTY BUILDSYSTEM_TARGETS)
+  foreach(target IN LISTS targets)
+    get_target_property(type ${target} TYPE)
+    if(type STREQUAL "EXECUTABLE")
+      target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/cmake/pelican_windows.manifest")
+    endif()
+  endforeach()
+  get_property(children DIRECTORY "${directory}" PROPERTY SUBDIRECTORIES)
+  foreach(child IN LISTS children)
+    # FetchContent directories contain tools owned by dependencies, not Pelican.
+    string(FIND "${child}/" "${CMAKE_SOURCE_DIR}/src/" in_src)
+    string(FIND "${child}/" "${CMAKE_SOURCE_DIR}/test/" in_test)
+    if(in_src EQUAL 0 OR in_test EQUAL 0)
+      pelican_apply_windows_manifest("${child}")
+    endif()
+  endforeach()
+endfunction()

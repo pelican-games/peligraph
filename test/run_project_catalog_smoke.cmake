@@ -30,7 +30,11 @@ function(response_for_id stdout id output_var)
     string(REPLACE "\n" ";" lines "${normalized}")
     set(found "")
     foreach(line IN LISTS lines)
-        if(line MATCHES "\\\"id\\\":${id}([,}])")
+        # The response's own id, read as a member: an "id" inside a result
+        # (get_frame_plan's drawn_materials entries carry one since MP-1)
+        # is not the request's.
+        string(JSON line_id ERROR_VARIABLE line_id_error GET "${line}" id)
+        if(NOT line_id_error AND "${line_id}" STREQUAL "${id}")
             set(found "${line}")
         endif()
     endforeach()
@@ -84,6 +88,17 @@ file(MAKE_DIRECTORY "${OUT_DIR}")
 set(catalog_frames 10)
 set(catalog_frame_names
     0001 0002 0003 0004 0005 0006 0007 0008 0009 0010)
+set(catalog_final_frame_name 0010)
+# A project that declares animation is also captured at this size, and frame
+# 1 against frame 10 has to differ in at least this many pixels. 12 times the
+# 160x90 frame: vrm_xr_demo's idle bob, 0.015 units by frame 10 seen from 5
+# units under a 45 degree field of view, is 0.015 * 1080 / 4.14 = 3.9 px of
+# vertical travel here (0.33 px at 160x90). Its moving edges change about 640
+# pixels per row of travel (2556 for the 4 rows), so 1200 asks for about two
+# rows -- more than one edge row crossing a pixel centre. animgraph_demo and
+# posegraph_demo change 27035 and 55444; a project that does not move, 0.
+set(catalog_animation_size 1920x1080)
+set(catalog_animation_minimum_changed_pixels 1200)
 set(editor_project_dir "")
 set(skipped_projects)
 set(skipped_editor_descriptions)
@@ -224,8 +239,7 @@ foreach(project_manifest IN LISTS project_manifests)
                 "project '${project_relative}' did not render numbered frame ${frame_path}")
         endif()
     endforeach()
-    set(first_png "${project_output_dir}/0001.png")
-    set(final_png "${project_output_dir}/0010.png")
+    set(final_png "${project_output_dir}/${catalog_final_frame_name}.png")
 
     execute_process(
         COMMAND "${PNG_NONUNIFORM_CHECK}" "${final_png}"
@@ -250,6 +264,7 @@ foreach(project_manifest IN LISTS project_manifests)
     # common graph rather than from a state-machine document. This says the
     # project moves, not that a curve drives the blend -- a clip sampled
     # against scene time moves whatever the weight does.
+    file(READ "${project_manifest}" project_manifest_text)
     string(JSON rendering_config_reference ERROR_VARIABLE rendering_config_error
         GET "${project_manifest_text}" basic_config rendering_config_json)
     if(NOT rendering_config_error AND
@@ -272,18 +287,59 @@ foreach(project_manifest IN LISTS project_manifests)
                 "${project_dir}/${rendering_config_reference}")
         endif()
     endif()
+    set(motion_summary "")
     if(animation_declarations)
-        file(READ "${first_png}" first_hex HEX)
-        file(READ "${final_png}" final_hex HEX)
-        if(first_hex STREQUAL final_hex)
+        # The motion is judged on its own, larger capture: at 160x90 a
+        # character's idle motion can be a fraction of a pixel (vrm_xr_demo's
+        # bob is 0.33 px by frame 10), so frame 1 against frame 10 there says
+        # only whether an edge happened to cross a pixel centre. The content
+        # thresholds above stay on the 160x90 frame.
+        set(animation_output_dir "${project_output_dir}/animation")
+        file(MAKE_DIRECTORY "${animation_output_dir}")
+        execute_process(
+            COMMAND "${PLAYER}"
+                --headless
+                --project "${project_dir}"
+                ${game_logic_arguments}
+                --frames ${catalog_frames}
+                --size ${catalog_animation_size}
+                --fps 30
+                --render-out "${animation_output_dir}/%04d.png"
+            RESULT_VARIABLE animation_result
+            OUTPUT_VARIABLE animation_stdout
+            ERROR_VARIABLE animation_stderr
+            TIMEOUT 180
+        )
+        if(NOT animation_result EQUAL 0)
             message(FATAL_ERROR
-                "project '${project_relative}' declares animation but numbered "
-                "frame ${catalog_frames} is byte-identical to frame 1")
+                "project '${project_relative}' failed in pelican_player at "
+                "${catalog_animation_size} with ${animation_result}\n"
+                "stdout:\n${animation_stdout}\nstderr:\n${animation_stderr}")
         endif()
+        require_no_validation_errors(
+            "project '${project_relative}' at ${catalog_animation_size}"
+            "${animation_stdout}" "${animation_stderr}")
+        execute_process(
+            COMMAND "${PNG_NONUNIFORM_CHECK}" --changed
+                "${animation_output_dir}/0001.png"
+                "${animation_output_dir}/${catalog_final_frame_name}.png"
+                ${catalog_animation_minimum_changed_pixels}
+            RESULT_VARIABLE motion_result
+            OUTPUT_VARIABLE motion_stdout
+            ERROR_VARIABLE motion_stderr
+        )
+        if(NOT motion_result EQUAL 0)
+            message(FATAL_ERROR
+                "project '${project_relative}' declares animation but frame "
+                "${catalog_frames} at ${catalog_animation_size} did not move "
+                "from frame 1\nstdout:\n${motion_stdout}\nstderr:\n${motion_stderr}")
+        endif()
+        string(STRIP "${motion_stdout}" motion_summary)
+        set(motion_summary "; ${motion_summary}")
     endif()
 
     string(STRIP "${image_stdout}" image_summary)
-    message(STATUS "project '${project_relative}' passed: ${image_summary}")
+    message(STATUS "project '${project_relative}' passed: ${image_summary}${motion_summary}")
 endforeach()
 
 if(editor_project_dir STREQUAL "")

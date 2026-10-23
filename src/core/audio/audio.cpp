@@ -1,8 +1,10 @@
+#include "../userpublic/userdataerror.hpp"
 #include "audio.hpp"
 
 #include "../launchconfig.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../log.hpp"
+#include "../watch/reloadgate.hpp"
 #include "../../project/graphcomposition.hpp"
 
 // AU-2: Ogg Vorbis through the stb_vorbis that ships with miniaudio. Its
@@ -518,28 +520,50 @@ Audio::PreparedSound Audio::prepareSound(std::string_view path, AudioBus bus) co
     // its write time and size, so an asset edited in place decodes again.
     std::string key{path};
     std::optional<std::pair<std::int64_t, std::uintmax_t>> stamp;
+    bool normalized = false;
     try {
         key = resolver.normalizedReference(path);
-        const auto file = resolver.resolveExistingFile(path);
-        stamp = std::pair{static_cast<std::int64_t>(std::filesystem::last_write_time(file).time_since_epoch().count()),
-                          std::filesystem::file_size(file)};
+        normalized = true;
     } catch (const std::exception &) {
-        // Embedded or missing: loadBytes below reads it or says why it cannot.
+    }
+    // EB-7: a distribution build looks at the file on disk only when it
+    // first decodes it; a hot reload build looks each time it plays.
+    bool read_before = false;
+    {
+        std::lock_guard lock{decode_mutex};
+        read_before = decoded_sounds.contains(key);
+    }
+    const bool look = watch::looksAgainAtReadFile(PELICAN_WITH_HOT_RELOAD != 0, read_before);
+    if (normalized && look) {
+        try {
+            const auto file = resolver.resolveExistingFile(path);
+            stamp = std::pair{
+                static_cast<std::int64_t>(std::filesystem::last_write_time(file).time_since_epoch().count()),
+                std::filesystem::file_size(file)};
+        } catch (const std::exception &) {
+            // Embedded or missing: loadBytes below reads it or says why it cannot.
+        }
     }
     {
         std::lock_guard lock{decode_mutex};
         const auto found = decoded_sounds.find(key);
-        if (found != decoded_sounds.end() && found->second.stamp == stamp)
+        if (found != decoded_sounds.end() && (!look || found->second.stamp == stamp))
             return PreparedSound{found->second.decoded, std::string{path}, bus};
     }
-    auto bytes = resolver.loadBytes(path);
+    auto bytes = [&] {
+        try { return resolver.loadBytes(path); }
+        catch (const std::runtime_error &error) { throw UserDataError(error.what()); }
+    }();
     const std::span<const std::byte> view{bytes.data(), bytes.size()};
     const auto format = detectSoundFormat(path, view);
     // AU-2 decision 3. The header says how long the sound is; a long one is
     // not decoded here -- not for the rendering config's check, not for a
     // voice -- and keeps only its encoded bytes, which each voice's decoder
     // reads as it plays.
-    auto header = readSoundHeader(format, view);
+    auto header = [&] {
+        try { return readSoundHeader(format, view); }
+        catch (const std::runtime_error &error) { throw UserDataError(error.what()); }
+    }();
     const bool streamed = static_cast<double>(header.streamed_frames) >
                           streaming_threshold_seconds * static_cast<double>(header.sample_rate);
     std::shared_ptr<const DecodedSound> decoded;
@@ -547,7 +571,9 @@ Audio::PreparedSound Audio::prepareSound(std::string_view path, AudioBus bus) co
         header.encoded = std::make_shared<const std::vector<std::byte>>(std::move(bytes));
         decoded = std::make_shared<const DecodedSound>(std::move(header));
     } else {
-        decoded = std::make_shared<const DecodedSound>(format == SoundFormat::ogg ? decodeOgg(view, std::move(header)) : decodeWav(view));
+        try {
+            decoded = std::make_shared<const DecodedSound>(format == SoundFormat::ogg ? decodeOgg(view, std::move(header)) : decodeWav(view));
+        } catch (const std::runtime_error &error) { throw UserDataError(error.what()); }
     }
     const auto size = decoded->residentBytes();
     std::lock_guard lock{decode_mutex};

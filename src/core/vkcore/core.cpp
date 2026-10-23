@@ -525,38 +525,25 @@ static vk::PhysicalDevice pickPhysicalDevice(vk::Instance instance, vk::SurfaceK
 
     const auto phys_devices = instance.enumeratePhysicalDevices();
 
-    std::vector<std::pair<int, int>> score_index_pair;
-    // decide device priority
-    for (int i = 0; i < phys_devices.size(); i++) {
-        int score = 0;
-        const auto &phys_device = phys_devices[i];
-
-        {
-            // evaluate queue
-            const auto queue_families = phys_device.getQueueFamilyProperties();
-            const auto queue_set = pickQueues(phys_device, queue_families, surface, headless);
-
-            if (!queue_set)
-                continue;
-            if (headless || queue_set->graphic_queue == queue_set->presentation_queue)
-                score += 100;
+    std::vector<VulkanDeviceCandidate> candidates;
+    for (const auto &device : phys_devices) {
+        const auto properties = device.getProperties();
+        VulkanDeviceCandidate candidate{
+            .name = properties.deviceName.data(),
+            .api_version = properties.apiVersion,
+            .type = properties.deviceType,
+        };
+        // Do not query a 1.3 feature chain on an older device.
+        if (properties.apiVersion >= VK_API_VERSION_1_3) {
+            const auto queues = pickQueues(device, device.getQueueFamilyProperties(), surface, headless);
+            candidate.unified_queue = queues && (headless || queues->graphic_queue == queues->presentation_queue);
+            candidate.suitable = queues &&
+                !firstMissingVulkanExtension(requiredDeviceExtensions(headless), supportedDeviceExtensions(device)) &&
+                !firstMissingRequiredVulkanFeature(queryDeviceFeatureSupport(device).required);
         }
-        const auto required_extensions = requiredDeviceExtensions(headless);
-        const auto supported_extensions = supportedDeviceExtensions(phys_device);
-        if (firstMissingVulkanExtension(required_extensions, supported_extensions)) continue;
-        if (firstMissingRequiredVulkanFeature(
-                queryDeviceFeatureSupport(phys_device).required)) continue;
-
-        score_index_pair.push_back({score, i});
+        candidates.push_back(std::move(candidate));
     }
-
-    if (score_index_pair.empty()) {
-        throw std::runtime_error("No suitable Vulkan physical device found");
-    }
-    std::stable_sort(score_index_pair.rbegin(), score_index_pair.rend());
-    const auto choice_index = score_index_pair[0].second;
-
-    return phys_devices[choice_index];
+    return phys_devices[selectVulkanPhysicalDevice(candidates, GET_MODULE(EngineLaunchConfig).gpu)];
 }
 
 static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, const QueueSet &queues_info,
@@ -577,6 +564,14 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
         }
 #endif
         throw std::runtime_error("required Vulkan device extension missing: " + *missing);
+    }
+    const auto properties = phys_device.getProperties();
+    if (properties.apiVersion < VK_API_VERSION_1_3) {
+        const auto message = std::string(properties.deviceName.data()) + " requires Vulkan 1.3 or newer";
+#if PELICAN_WITH_OPENXR
+        if (use_openxr) throw OpenXr::VulkanBootstrapError(message);
+#endif
+        throw std::runtime_error(message);
     }
     const auto feature_support = queryDeviceFeatureSupport(phys_device);
     if (const auto missing =
@@ -897,6 +892,17 @@ static VulkanBootstrapState bootstrapXrVulkan(
     const auto raw_physical_device =
         OpenXr::getVulkanGraphicsDevice(static_cast<VkInstance>(result.instance.get()));
     result.physical_device = vk::PhysicalDevice{raw_physical_device};
+    const auto &gpu_override = GET_MODULE(EngineLaunchConfig).gpu;
+    if (!gpu_override.empty()) {
+        const auto devices = result.instance->enumeratePhysicalDevices();
+        const auto found = std::find(devices.begin(), devices.end(), result.physical_device);
+        const auto name = std::string(result.physical_device.getProperties().deviceName.data());
+        if (gpu_override != name &&
+            (found == devices.end() || gpu_override != std::to_string(found - devices.begin()))) {
+            throw OpenXr::VulkanBootstrapError("--gpu '" + gpu_override +
+                "' conflicts with the OpenXR runtime GPU: " + name);
+        }
+    }
     const auto surface =
         result.window_surface
             ? result.window_surface->surface.get()

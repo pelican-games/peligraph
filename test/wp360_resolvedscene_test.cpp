@@ -226,7 +226,8 @@ TEST_CASE("WP360 resolver owns source/effective forms defaults and authored iden
     const auto &camera = object.components.at(0);
     REQUIRE(camera.source_json_exact == raw.at(0));
     REQUIRE_FALSE(camera.source_json_exact.contains("znear"));
-    REQUIRE(camera.effective_json.at("yfov") == 0.731f);
+    REQUIRE(camera.effective_json.at("yfov").get<float>() == 0.731f);
+    REQUIRE(camera.effective_json.at("yfov").dump() == "0.731");
     REQUIRE(camera.effective_json.at("znear") == 0.25f);
     REQUIRE(camera.effective_json.at("zfar") == 321.0f);
     REQUIRE(camera.effective_json.at("sprite").at("pixel_perfect") ==
@@ -327,7 +328,8 @@ TEST_CASE("WP360 preview matrix reads resolver-completed values in every UI conf
         {{"kind", "component"}, {"object_id", 1},
          {"component_slot", "camera"}},
     }));
-    REQUIRE(result.at(0).at("data").at("yfov") == 0.731f);
+    REQUIRE(result.at(0).at("data").at("yfov").get<float>() == 0.731f);
+    REQUIRE(result.at(0).at("data").at("yfov").dump() == "0.731");
     REQUIRE(result.at(0).at("data").at("znear") == 0.125f);
     REQUIRE(result.at(0).at("data").at("zfar") == 360.0f);
     STATIC_REQUIRE(PELICAN_WP360_SKIP_DEVSTUDIO == 0 ||

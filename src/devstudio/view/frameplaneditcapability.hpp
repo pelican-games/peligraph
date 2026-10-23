@@ -51,6 +51,12 @@ struct FramePlanEditCapability {
     // document it is read back from (get_render_documents of the root).
     std::function<qint64(const QJsonObject &params, QString *error)>
         editTargetPlanning;
+    // UX-15b: a backend candidate pinned (or unpinned), and the physical
+    // plan frozen (or the frozen one removed) -- EL-2's two package edits.
+    std::function<qint64(const QJsonObject &params, QString *error)>
+        editVulkanPlanPins;
+    std::function<qint64(const QJsonObject &params, QString *error)>
+        putVulkanPhysicalFragment;
     std::function<qint64(const QString &reference, QString *error)>
         requestRootDocument;
     std::function<qint64(const QString &ticket, QString *error)>

@@ -1,4 +1,5 @@
 #include "engineprocess.hpp"
+#include "../guitrace.hpp"
 
 #include <QFileInfo>
 #include <QJsonArray>
@@ -442,6 +443,7 @@ void EngineProcess::setFailure(const QString &message) {
 }
 
 void EngineProcess::drainStandardOutput(bool flush_partial_line) {
+    const GuiTraceSpan trace{"engine_stdout"};
     standard_output_buffer_ += process_.readAllStandardOutput();
 
     for (;;) {
@@ -458,7 +460,8 @@ void EngineProcess::drainStandardOutput(bool flush_partial_line) {
             rpc_line.chop(1);
         }
         if (!routeRpcResponse(rpc_line)) {
-            emit outputReceived(QString::fromLocal8Bit(output_line));
+            const GuiTraceSpan log{"engine_log_delivery", double(output_line.size())};
+            emit outputReceived(QString::fromUtf8(output_line));
         }
     }
 
@@ -466,22 +469,28 @@ void EngineProcess::drainStandardOutput(bool flush_partial_line) {
         const QByteArray output_line = std::move(standard_output_buffer_);
         standard_output_buffer_.clear();
         if (!routeRpcResponse(output_line)) {
-            emit outputReceived(QString::fromLocal8Bit(output_line));
+            const GuiTraceSpan log{"engine_log_delivery", double(output_line.size())};
+            emit outputReceived(QString::fromUtf8(output_line));
         }
     }
 }
 
 void EngineProcess::drainStandardError() {
+    const GuiTraceSpan trace{"engine_stderr"};
     const QByteArray bytes = process_.readAllStandardError();
     if (!bytes.isEmpty()) {
-        const QString output = QString::fromLocal8Bit(bytes);
+        const QString output = QString::fromUtf8(bytes);
         emit standardErrorReceived(output);
         emit outputReceived(output);
     }
 }
 
 bool EngineProcess::routeRpcResponse(const QByteArray &line) {
-    const JsonRpcEnvelope envelope = scanJsonRpcEnvelope(line);
+    const GuiTraceSpan trace{"engine_rpc_route"};
+    const JsonRpcEnvelope envelope = [&] {
+        const GuiTraceSpan scan{"engine_envelope_scan", double(line.size())};
+        return scanJsonRpcEnvelope(line);
+    }();
     if (!envelope.valid || envelope.id.isEmpty()) {
         return false;
     }

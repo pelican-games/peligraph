@@ -1,4 +1,6 @@
 {
+  "invariants": {
+  },
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "loop_zone_read",

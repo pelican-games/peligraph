@@ -72,6 +72,10 @@ struct InspectorWidgetDescriptor {
 // An angle stored in radians (unit rad / radian, or a controller's yaw and
 // pitch) is shown in degrees: the factor from stored to shown, else 1.
 [[nodiscard]] double inspectorDisplayScale(const InspectorWidgetDescriptor &field);
+// UX-14, decision 3: what a camera.controller's yaw or pitch field says of its
+// basis (engine CC-1: yaw 0 is +Z and grows towards -X, pitch towards +Y);
+// empty for any other field.
+[[nodiscard]] std::string inspectorAngleTip(const InspectorWidgetDescriptor &field);
 
 struct InspectorListDescriptor {
     std::string key;
@@ -169,6 +173,13 @@ enum class AddObjectKind : std::uint8_t {
 // plane primitive at (0, -0.5, 0), scaled 8 x 1 x 8.
 [[nodiscard]] nlohmann::json addObjectDeclaration(AddObjectKind kind,
                                                   const std::string &name);
+// MI-1s, decision 1: Add Object > Model from file... -- the same spawn with
+// the registered model's name as simplemodelview.model, at the origin.
+[[nodiscard]] nlohmann::json modelObjectDeclaration(const std::string &name,
+                                                    const std::string &model);
+// The object's base name from a model's: [a-zA-Z0-9_] kept, anything else
+// "_" ("a.b" -> "a_b"); "Model" when nothing is left.
+[[nodiscard]] std::string modelObjectBaseName(std::string_view model);
 
 // T-1: the Inspector shows a transform's rotation as three angles in degrees,
 // X then Y then Z (each about the fixed axes, so the rotation is
@@ -186,13 +197,16 @@ quaternionFromEulerDegrees(const std::array<double, 3> &degrees);
 
 // UX-10, decision 2. A component's vec3 named `direction` (light.direction)
 // is shown as two angles in degrees, and its vec3 stays reachable as Raw:
-// the azimuth turns about +Y from +Z towards +X, in (-180, 180]; the
-// elevation is above the horizon, in [-90, 90] (negative points down). A
-// direction straight up or down has azimuth 0; a zero vector reads as
-// (0, 0). The vector made from angles is unit length.
+// the azimuth turns about +Y from +Z towards -X, in (-180, 180], as a
+// camera.controller's yaw does (UX-14, decision 3); the elevation is above
+// the horizon, in [-90, 90] (negative points down). A direction straight up
+// or down has azimuth 0; a zero vector reads as (0, 0). The vector made from
+// angles is unit length. inspectorDirectionAngleTip(0 / 1) is what the
+// azimuth / elevation field says of it.
 [[nodiscard]] bool isDirectionField(const InspectorWidgetDescriptor &descriptor);
 [[nodiscard]] std::array<double, 2> directionAnglesDegrees(const std::array<double, 3> &direction);
 [[nodiscard]] std::array<double, 3> directionFromAnglesDegrees(const std::array<double, 2> &angles);
+[[nodiscard]] std::string inspectorDirectionAngleTip(std::size_t index);
 // And a vec3 (or vec4) named `color` (light.color, sprite_view.color) is a
 // swatch that opens the colour picker, beside its numbers.
 [[nodiscard]] bool isColorField(const InspectorWidgetDescriptor &descriptor);
@@ -254,6 +268,23 @@ modelReferenceChoices(std::string_view current,
 [[nodiscard]] std::string knownRefusalDescription(std::string_view code,
                                                   std::string_view message,
                                                   bool name_document = true);
+// CT-6s, decision 5: render.compute's ray tracing refused by the task
+// parser (pelican.ray_tracing.*@1, a ray group layout's form where the
+// project has none or the other way round, pelican.ray_layout_mode_change_
+// requires_restart@1), found in the code or anywhere in the message. Answers
+// "<sentence> (<code>).", the task and the field, stage, miss or ray type
+// the message quotes named in it; empty for any other refusal.
+// knownRefusalDescription answers it too.
+[[nodiscard]] std::string rayTracingRefusalDescription(std::string_view code,
+                                                       std::string_view message);
+// RTL-2s, decision 3 (engine RTL-1b / RTL-1c): the same, from a refusal's
+// error object, whose fields sit beside its code (task, ray_type, group,
+// miss, stage; name and kind for pelican.ray_group_name_unknown@1). The
+// codes of the layout's and the assignments' parsers read as a sentence too
+// (RTL-1a), and a refusal's own code goes before one its message quotes (a
+// rolled-back generation). The place is said after the sentence: "(ray type
+// shadow, hit group mesh)".
+[[nodiscard]] std::string rayTracingRefusalDescription(const nlohmann::json &error);
 // LP-4a: the four view_select refusals (LP-Va) are sentences made from the
 // refusal's own fields -- the pass, the view family, the axis, and for a
 // value past the axis its value and length:
@@ -308,8 +339,83 @@ modelReferenceChoices(std::string_view current,
 //   audio.format_unsupported@1        {asset, out}
 //   audio.analysis_failed@1           {asset, out, message}
 // `error` as for graphLoopRefusalDescription. Answers "<sentence>
-// (<code>).", or empty for any other refusal.
+// (<code>).", or empty for any other refusal. UX-14, decision 5 (engine
+// AB-2): audio.analysis_failed@1 with {reason: "output_locked", path} -- the
+// table or its manifest was held open past the engine's retries -- says
+// "the table is in use -- try Bake again" (an em dash), and audioAnalysisOutputLocked is
+// true for it (the bake row then offers Bake again).
 [[nodiscard]] std::string audioAnalysisRefusalDescription(const nlohmann::json &error);
+[[nodiscard]] bool audioAnalysisOutputLocked(const nlohmann::json &error);
+// HW-2s / AV-1s (engine PJ-1 and AV-1): the refusals of the Assets dock's
+// requests -- edit_project_settings, verify_assets and update_assets_manifest
+// -- one sentence each from their fields:
+//   project.settings_change_unsupported@1 {key, store?, reason}
+//   external_modification                 {expected, actual}
+//   project.hot_reload_invalid@1          {key, reason}
+//   project.settings_invalid@1            {key, store?, reason}
+//   project.settings_transaction_busy@1   {path}
+//   assets_store_unknown@1                {store}
+//   assets_manifest_undeclared@1          {store}
+//   assets_manifest_write_failed@1        {store, manifest?, reason}
+//   assets_verification_unavailable@1     {}
+// `error` as for graphLoopRefusalDescription. `undo`: the request was an
+// Undo; a store the engine had when it started cannot be taken away while it
+// runs, and project.settings_change_unsupported@1 then says "so it stays
+// declared". Answers "<sentence> (<code>).", or empty for any
+// other refusal.
+[[nodiscard]] std::string projectSettingsRefusalDescription(const nlohmann::json &error,
+                                                            bool undo = false);
+// MT-1s, decision 7 (engine MT-1): the refusals of the material editor's
+// requests -- list_materials, get_material, get_surface_schema,
+// edit_material, create_material, get_material_bindings, bind_material --
+// one sentence each from their fields:
+//   material.value_invalid@1      {path, param, reason}
+//   material.param_unknown@1      {path, param, kind}
+//   material.document_unknown@1   {path, reason}
+//   material.document_invalid@1   {path, reason}
+//   material.name_unknown@1       {name, reason}
+//   material.name_invalid@1       {name, reason}
+//   material.name_conflict@1      {name, path? | model?}
+//   material.path_invalid@1       {path, reason}
+//   material.path_conflict@1      {path}
+//   material.surface_unknown@1    {surface, reason}
+//   material.model_unknown@1      {model, reason}
+//   material.binding_invalid@1    {model, reason}
+//   material.object_unknown@1     {object, reason}  (MT-2s: set_object_material,
+//                                                    get_object_materials)
+//   material.transaction_busy@1   {path}
+//   material.routing_conflict@1   {path, material, routing, bound_by: [{model, routing}]}
+//                                 (MT-3s: the routing of a bound material taken off)
+//   external_modification         {path, expected, actual}
+// `error` as for graphLoopRefusalDescription. Answers "<sentence>
+// (<code>).", or empty for any other refusal.
+[[nodiscard]] std::string materialRefusalDescription(const nlohmann::json &error);
+// MI-1s, decision 5 (engine MI-1): the refusals of register_model and
+// unregister_model, one sentence each from their fields --
+//   model.path_invalid@1        {path, reason: fragment | dot_segment | backslash | absolute | empty}
+//   model.format_unsupported@1  {path, extension, supported}
+//   model.file_missing@1        {path}
+//   model.path_conflict@1       {path, name}
+//   model.name_invalid@1        {name, reason: empty | fragment | engine_reference | engine_primitive}
+//   model.name_conflict@1       {name}
+//   model.load_failed@1         {path, message}  (the engine's message, as written)
+//   model.unknown@1             {name}
+//   model.in_use@1              {name, count, objects}  ("<name> is used by N objects: a, b, …")
+//   model.transaction_busy@1    {path?}
+//   external_modification       {path, expected, actual}
+// `error` as for graphLoopRefusalDescription. Answers "<sentence>
+// (<code>).", or empty for any other refusal. knownRefusalDescription
+// answers the model.* ones too.
+[[nodiscard]] std::string modelRefusalDescription(const nlohmann::json &error);
+// An edit ticket's `error` whose payload says reason "model_unknown" (engine
+// MI-1: a spawn or a model field naming a model the project has not
+// registered): "Model <name> is not registered in this project", and where it
+// is registered from. Empty for any other error.
+[[nodiscard]] std::string modelUnknownEditDescription(const nlohmann::json &error);
+// MT-2s, decision 6: whether the Inspector draws a component's list with the
+// generic rows (a table and JSON typed per row). A simplemodelview's
+// `/materials` is not drawn there: the Material rows above choose them.
+[[nodiscard]] bool inspectorListShown(std::string_view component, std::string_view list_path);
 // UX-8, decision 13 (c) (engine CT-1): the engine could not read its
 // configuration at start and stopped. Its fatal line ("Pelican fatal error :
 // <message>") reads as "The engine stopped: <the code's sentence> in <file>.
@@ -329,6 +435,49 @@ modelReferenceChoices(std::string_view current,
 // The render document project.json names (basic_config.rendering_config_json,
 // as written there: "passes/main.json"); empty when it cannot be read.
 [[nodiscard]] std::string projectRenderDocument(const std::filesystem::path &project_root);
+// BS-1s, decision 2 (engine BS-1): an engine Studio starts with
+// --render-fallback does not stop when the project's rendering configuration
+// is refused at start. It draws one flat colour and says why in
+// get_status.render_pipeline (and, while it lasts, get_frame_plan's):
+//   {state: "ready", root}
+//   {state: "fallback", root, refusal: {code, ...fields, document?, message}}
+// The refusal is shaped as a render edit's rejected `error`.
+struct RenderPipelineReading {
+    enum class State { Unknown, Ready, Fallback };
+    // Unknown: the reply carries no render_pipeline (an engine before BS-1).
+    State state = State::Unknown;
+    std::string root;
+    nlohmann::json refusal;
+};
+[[nodiscard]] RenderPipelineReading readRenderPipeline(const nlohmann::json &reply);
+// "Showing a placeholder: the rendering setup was refused — <the code's
+// sentence> in <file>. Fix it, then Reload from disk." -- the sentence of
+// the code's table (as engineStoppedSentence finds it), else the engine's
+// message; the file is the refusal's `document` (CT-2), else the root.
+// Empty unless the state is Fallback.
+[[nodiscard]] std::string renderFallbackSentence(const RenderPipelineReading &reading);
+// The file the refusal names, as the project names it ("passes/main.json"),
+// the root when it names none; and the node, empty when it names none.
+[[nodiscard]] std::string renderFallbackDocument(const RenderPipelineReading &reading);
+[[nodiscard]] std::string renderFallbackNode(const RenderPipelineReading &reading);
+// BS-1s, decision 7 (engine BS-1b): render_document_syntax@1 {document,
+// line?, column?, reason} -- a render document whose bytes are not JSON --
+// as "<document> is not valid JSON at line <l>, column <c>: <reason>
+// (render_document_syntax@1)." (the "at line ..." clause only when both are
+// given; the document without project://). Fields beside the code, in
+// error_fields or after the code in the message. Empty for any other
+// refusal. knownRefusalDescription answers it too.
+[[nodiscard]] std::string renderDocumentSyntaxDescription(const nlohmann::json &error);
+// BS-1s, decision 4: a configuration the engine refuses only because the
+// feature it turns on needs a module the running engine was started without.
+// PB-1s, decision 6 (engine PB-1): read by its code,
+// render_feature_requires_restart@1 {feature, module} -- the fields beside
+// the code, in error_fields or after the code in the message -- and answered
+// with `feature` ("debug_draw"); empty for any other refusal. The words of
+// the message are not read. `error` is a rejection's {code, message, ...}, or
+// a problem's fields with its code.
+inline constexpr std::string_view RenderFeatureRequiresRestartCode = "render_feature_requires_restart@1";
+[[nodiscard]] std::string renderRestartFeature(const nlohmann::json &error);
 // LP-0d: the graph variant (preview, XR) that refused an edit, named by
 // `variant` beside the code; empty when the main graph did. LP-4d2: always --
 // graph.loop_variant_missing@1 names the material's variant
@@ -418,8 +567,11 @@ class InspectorModel {
                           std::string_view result_json);
     // `unknown_method`: the engine refused the method itself (JSON-RPC
     // -32601), as one from before scene_outline does (UX-13c).
+    // `refused`: the engine refused the request with an error_code of its
+    // own, so it wrote nothing (MT-2s: a refused set_object_material does
+    // not leave the scene's save state uncertain).
     void receiveRpcFailure(std::uint64_t request_id, std::string message,
-                           bool unknown_method = false);
+                           bool unknown_method = false, bool refused = false);
     void pollPendingOperations();
     void pollExternalChanges();
     // Whether either poll has anything to ask. A panel with no edit in flight
@@ -460,6 +612,9 @@ class InspectorModel {
     // UX-10: the texture ids of the same answer (asked when an object with a
     // sprite_view is loaded too); they move with the same revision.
     const std::optional<std::vector<std::string>> &textureAssets() const noexcept;
+    // MI-1s: a model was registered or taken back; list_assets is asked
+    // again for the selected object's model field.
+    void refreshModelAssets();
     bool addComponent(std::string_view key);
     bool addComponent(std::string_view key, const nlohmann::json &declaration);
     // G-2: one `edit` carrying one `spawn` op, on the scene revision last
@@ -477,6 +632,13 @@ class InspectorModel {
     // new object, these name an object the edit in flight may be changing.
     SpawnOutcome submitSceneEdit(SceneEditKind kind, std::uint64_t subject_id,
                                  nlohmann::json operation, std::string description);
+    // MT-2s (engine MT-2): one set_object_material from the Inspector's
+    // Material rows, through this session's actor (so its Undo is the
+    // scene's Undo), on the scene revision last observed. `params` is the
+    // request without actor_id and base_scene_revision. Refused (the reason
+    // in notice()) while another edit is in flight. A reply that changed
+    // nothing (changed: false) is no edit and says so.
+    SpawnOutcome submitObjectMaterial(nlohmann::json params, std::string description);
     // The last spawn, Outliner edit, undo or redo to reach its end.
     const std::optional<SceneEditOutcome> &lastSceneEdit() const noexcept;
     void abortActivePreview();
@@ -519,6 +681,10 @@ class InspectorModel {
     bool busy() const noexcept;
     bool canEdit() const noexcept;
     bool canUndoRedo() const noexcept;
+    std::string undoLabel() const;
+    std::string redoLabel() const;
+    // Stop can restore an earlier journal and group the kept edits.
+    void refreshHistoryLabels();
     bool canSave() const noexcept;
 };
 

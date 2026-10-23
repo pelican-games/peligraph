@@ -6,6 +6,7 @@
 #include <QString>
 
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -82,5 +83,30 @@ class RenderTargetForm final : public QDialog {
     QPushButton *ok_ = nullptr;
     QPushButton *cancel_ = nullptr;
 };
+
+// GL-5b, decision 2. New render target..., wherever it is offered -- the Frame
+// Plan's toolbar and canvas, the Graph's render.target_ref combo and its detail
+// column's outputs: the form opens in create mode on `name` (empty: the one
+// proposedRenderTargetName proposes), the defaults' format and size
+// (RenderTargetFormValues), and the engine's vocabulary from `authoring`. OK
+// hands the form's submit the values; the RPC is
+// framePlanRenderTargetAddRequest's one edit_render_targets, whoever sends it.
+// GL-5c, decision 4: `kind`, when the place it was opened from knows what the
+// target is for (a material pass's colour output: materialPassColorTargetValues),
+// is what the form opens on instead of the defaults; the name is still `name`.
+void presentNewRenderTarget(RenderTargetForm &form,
+                            const FramePlanAuthoring &authoring,
+                            const std::string &name = {},
+                            const std::optional<RenderTargetFormValues> &kind = std::nullopt);
+
+// GL-5d, decision 3. A declared target opened in the form, wherever it is
+// opened -- a double-click on the Frame Plan's resource, the Graph's Edit
+// target… on a render.target_ref: in edit mode on what the project wrote for
+// it (the authored declaration, else the composed one) when the editor owns it,
+// read only with the line that says where it was declared otherwise. OK hands
+// the submit the values; the RPC is framePlanRenderTargetReplaceRequest's.
+// False, with nothing shown, when the context declares no target `name`.
+bool presentRenderTargetEdit(RenderTargetForm &form, const FramePlanAuthoring &authoring,
+                             const std::string &name);
 
 } // namespace PelicanStudio

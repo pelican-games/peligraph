@@ -217,6 +217,15 @@ void RenderDocumentReload::check(bool forced) {
             differing_assets_.end())
             differing_assets_.push_back(reference);
     }
+    // EB-6s, decision 8 (engine RR-1, EB-7): after a refused reload the
+    // engine's base is the refused version on disk, not the digests held
+    // here (the live ones). A file put back to those bytes is a change to
+    // the engine -- the reload it takes clears the refusal and its problem
+    // -- so it is asked, as long as the last reload stands refused.
+    if (differing_.empty() && differing_assets_.empty() && !forced && refused_) {
+        sendReload();
+        return;
+    }
     if (differing_.empty() && differing_assets_.empty() && !forced) {
         // Decision 2: Studio's own write, or the file is back to what the
         // engine holds -- a refusal said about it no longer applies.
@@ -357,6 +366,8 @@ void RenderDocumentReload::observeReply(const Json &result) {
 
 void RenderDocumentReload::committed(const Json &commit) {
     // What the reload read is the whole set the engine composes now.
+    // Missing documents cannot establish an asset-only reload.
+    bool documents_changed = true;
     if (const auto read = commit.find("documents"); read != commit.end() && read->is_object()) {
         std::map<std::string, Document> documents;
         for (const auto &[reference, digest] : read->items()) {
@@ -365,6 +376,12 @@ void RenderDocumentReload::committed(const Json &commit) {
             if (!path) continue;
             documents.insert_or_assign(reference, Document{*path, digest.get<std::string>()});
         }
+        documents_changed = documents.size() != documents_.size() ||
+            !std::equal(documents.begin(), documents.end(), documents_.begin(),
+                        [](const auto &before, const auto &after) {
+                            return before.first == after.first &&
+                                   before.second.digest == after.second.digest;
+                        });
         documents_ = std::move(documents);
         if (watchChanged) watchChanged();
     }
@@ -404,6 +421,7 @@ void RenderDocumentReload::committed(const Json &commit) {
             listed != commit.end() && listed->is_array())
             for (const auto &reference : *listed)
                 if (reference.is_string()) changed.push_back(reference.get<std::string>());
+        if (documents_changed && historyBoundary) historyBoundary();
         if (reloaded) reloaded(commit);
         auto names = joined(fileNames(changed.empty() && changed_assets.empty() ? differing_
                                                                                  : changed));
@@ -436,16 +454,24 @@ void RenderDocumentReload::refuse(const Json &error) {
                          "; fix the file and save again.";
     // IA-1s, decision 5: a refusal Studio has a sentence for (an initial
     // asset that does not fit its image, IA-2) says it first.
-    if (const auto sentence = graphLoopRefusalDescription(error); !sentence.empty())
+    // BS-1s, decision 7: a document that is not JSON says where.
+    if (auto sentence = renderDocumentSyntaxDescription(error); !sentence.empty())
         detail = sentence + "\n" + detail;
+    else if (const auto graph = graphLoopRefusalDescription(error); !graph.empty())
+        detail = graph + "\n" + detail;
     if (!code.empty() || !message.empty()) {
         detail += "\n" + (code.empty() ? std::string{"refused"} : code);
         if (!where.empty()) detail += " (" + where + ")";
         detail += ": " + message;
     }
     setRefused(true);
+    // RR-1s, decision 4 (engine RR-1): a refused version that is JSON is the
+    // editor's base, and an edit on its digest goes through; only while the
+    // file is not JSON is an edit's external_modification the disk's doing.
+    setRenderDocumentsRefusedOnDisk(code == "render_document_syntax@1");
     say(Notice::Kind::Error, "Could not load " + file + ": fix the file and save again.",
         std::move(detail));
+    if (refusedWith) refusedWith(error);
     if (std::exchange(again_, false)) check(false);
 }
 

@@ -4,7 +4,8 @@ on:
   pull_request:
   push:
     branches:
-      - codex/rendering-phase1-refactor
+      - develop
+      - main
 
 concurrency:
   group: cpu-gate-${{ github.event.pull_request.number || github.ref }}

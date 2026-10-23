@@ -28,19 +28,16 @@ QSize embeddedViewportPixelExtent(const QSize &logical_extent, qreal device_pixe
     };
 }
 
-ViewportResizeCoalescer::ViewportResizeCoalescer(int debounce_ms) noexcept
-    : debounce_ms_(std::max(debounce_ms, 1)) {}
-
 ViewportResizeDecision ViewportResizeCoalescer::request(const QSize &extent, qint64 now_ms,
                                                         ViewportExtentChangeKind kind) noexcept {
-    if (kind == ViewportExtentChangeKind::device_pixel_ratio) {
-        // DPR transitions are rare and stale physical-pixel dimensions visibly
-        // break the embedded output, so they deliberately bypass coalescing.
+    if (kind == ViewportExtentChangeKind::device_pixel_ratio ||
+        kind == ViewportExtentChangeKind::interaction_finished) {
+        // DPR transitions and the native end of a drag flush the latest size.
         pending_extent_.reset();
         if (last_released_extent_ == extent) {
             return {};
         }
-        return release(extent);
+        return release(extent, now_ms);
     }
 
     if (last_released_extent_ == extent) {
@@ -48,46 +45,54 @@ ViewportResizeDecision ViewportResizeCoalescer::request(const QSize &extent, qin
         return {};
     }
 
-    pending_extent_ = extent;
-    last_request_ms_ = now_ms;
-    return {.next_wakeup_ms = debounce_ms_};
+    if (!pending_extent_ && now_ms - last_request_ms_ >= EmbeddedViewportResizeQuietMs) {
+        next_interval_ms_.reset();
+    }
+    if (!next_interval_ms_) {
+        next_interval_ms_ = now_ms + EmbeddedViewportResizeIntervalMs;
+    }
+    if (pending_extent_ != extent) {
+        pending_extent_ = extent;
+        last_request_ms_ = now_ms;
+    }
+    return releasePendingIfDue(now_ms);
 }
 
 ViewportResizeDecision ViewportResizeCoalescer::timerExpired(qint64 now_ms) noexcept {
-    return releasePendingIfSettled(now_ms);
+    return releasePendingIfDue(now_ms);
 }
 
 void ViewportResizeCoalescer::reset() noexcept {
     pending_extent_.reset();
     last_released_extent_.reset();
+    next_interval_ms_.reset();
     last_request_ms_ = 0;
 }
 
 void ViewportResizeCoalescer::reset(const QSize &applied_extent) noexcept {
-    pending_extent_.reset();
+    reset();
     last_released_extent_ = applied_extent;
-    last_request_ms_ = 0;
 }
 
-ViewportResizeDecision ViewportResizeCoalescer::releasePendingIfSettled(qint64 now_ms) noexcept {
+ViewportResizeDecision ViewportResizeCoalescer::releasePendingIfDue(qint64 now_ms) noexcept {
     if (!pending_extent_) {
         return {};
     }
 
-    const qint64 elapsed_ms = now_ms >= last_request_ms_ ? now_ms - last_request_ms_ : 0;
-    if (elapsed_ms < debounce_ms_) {
-        return {
-            .next_wakeup_ms = debounce_ms_ - static_cast<int>(elapsed_ms),
-        };
+    const qint64 deadline = std::min(last_request_ms_ + EmbeddedViewportResizeQuietMs,
+                                     *next_interval_ms_);
+    if (now_ms < deadline) {
+        return {.next_wakeup_ms = static_cast<int>(deadline - now_ms)};
     }
 
     const QSize extent = *pending_extent_;
     pending_extent_.reset();
-    return release(extent);
+    return release(extent, now_ms);
 }
 
-ViewportResizeDecision ViewportResizeCoalescer::release(const QSize &extent) noexcept {
+ViewportResizeDecision ViewportResizeCoalescer::release(const QSize &extent, qint64 now_ms) noexcept {
     last_released_extent_ = extent;
+    next_interval_ms_ = now_ms + EmbeddedViewportResizeIntervalMs;
     return {.extent_to_apply = extent};
 }
 

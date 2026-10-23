@@ -163,6 +163,7 @@ class PELICAN_API Graph {
     // built-in registry; a caller that added or removed a module passes its own.
     Graph(std::string_view document, const GraphModuleRegistry &modules);
     const std::string &serialize() const noexcept { return document_; }
+    bool requiresSoundBindings() const noexcept;
     const ParameterValues &parameterDefaults() const noexcept { return parameter_defaults_; }
     const GraphInstanceOwner *parameterOwner(std::string_view parameter) const noexcept;
     const GraphInstanceOwner *eventOwner(std::string_view input) const noexcept;

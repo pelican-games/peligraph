@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../cameradefinition.hpp"
+#include "../userpublic/components/modelview.hpp"
 #include "../userpublic/details/schema/structfieldschema.hpp"
 #include "resolutionresult.hpp"
 
@@ -145,6 +146,8 @@ void resolveParentOrder(std::size_t count, ShouldStart should_start,
 struct SimpleModelViewCodecData {
     std::string model;
     std::optional<nlohmann::ordered_json> params;
+    // MT-2: the object's own materials (absent: none).
+    std::optional<List<ModelMaterialOverride>> materials;
 };
 
 enum class CameraControllerCodecType : std::uint8_t {
@@ -340,6 +343,8 @@ struct ComponentCodec {
         const nlohmann::json &authored,
         ComponentDecodeSurface surface = ComponentDecodeSurface::runtime) const;
     nlohmann::ordered_json encodeCanonical(const ComponentCodecValue &value) const;
+    nlohmann::ordered_json encodeAuthored(const ComponentCodecValue &value,
+                                           const nlohmann::json &authored) const;
     const SchemaNode &schemaNode() const;
     std::vector<StructFieldSchema> fieldSchema() const;
     void applyRuntime(const ComponentCodecValue &value, void *target) const;

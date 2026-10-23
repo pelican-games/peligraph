@@ -1,6 +1,6 @@
 # 第1章 エンジン全体像
 
-対象: pelican2(HEAD=`82054c05`・2026-09-17。2026-07-21 に全域再確認、2026-09-04 に §1.5 の進捗を更新、2026-09-17 に v0 の段(共通グラフ / 姿勢 / package / 共有部品)を §1.0・§1.5・§1.6 に反映)/ このマニュアルはコードを正とする
+最終確認: 2026-10-07
 
 ## この章で学ぶこと
 
@@ -13,26 +13,7 @@
 
 ## 1.0 この文書で使う記号と基本語
 
-マニュアル全体で断りなく出てくる語です。ここでは 1 語 1〜2 文の最小定義だけを置きます(語の索引は [第14章 用語集](14_glossary.md))。
-
-| 語 | 意味 |
-|---|---|
-| **WP**(Work Package) | 開発の作業単位。台帳 [../implementation_plan.md](../implementation_plan.md) に 1 行として登録され、**1 WP = 1 ブランチ = 1 マージ**です(§1.6)。`WP380a` のような枝番が付きます。状態の一覧は [第11章 §11.1](11_status.md)。 |
-| **D0** | 「**エディタ特権の禁止**」(2026-07-08 ユーザー決定 — [../design_devstudio_direction.md](../design_devstudio_direction.md) §0.5)。標準エディタも公開契約の上に建つ 1 クライアントで、編集操作はまず JSON-RPC メソッドとして定義する、という規則です([第13章](13_editor.md))。 |
-| **codec**(component codec) | シーン JSON のコンポーネント 1 個を受理・検証し、正規形へ直す変換器。engine 同梱のコンポーネントごとに用意され、`decodeAuthored()`(JSON → 値)と `encodeCanonical()`(値 → 正規形 JSON)の対で成り立ちます([componentcodec.hpp](../../src/core/loader/componentcodec.hpp)・[第4章](04_scene_ecs.md) §4.2)。 |
-| **transaction**(トランザクション) | 「**準備(prepare)→ 途中で失敗したら公開状態を変えずに戻す(rollback)→ 全部成功したときだけ一斉に公開(publish)**」という適用の単位。シーンロード・ECS のアーキタイプ移行・ホットリロード・編集の適用がこの形です([第12章](12_codemap.md) §12.6)。 |
-| **JSON-RPC** | 外部プロセスから `pelican_player` を操る制御プロトコル(JSON-RPC 2.0)。stdin/stdout の NDJSON(1 行 = 1 リクエスト)で、stdout はプロトコル専用です(メソッド一覧は [第10章](10_tools.md) §10.3)。 |
-| **`name@1`** | 機械可読な**版付き識別子**の書き方。`@` の前が名前、後ろがその名前の契約の版です。エラーコード(`component_unknown@1`)にも、パスの operation / implementation ID(`pelican.execution.compute@1`)にも使います。 |
-| **決定的**(deterministic) | 同じ入力からは常に同じ結果が出ること。エンジン内部の判定に壁時計・`std::rand` を使わず、固定ループ順序・入力スナップショット・固定ステップ時刻で担保します(下記 設計決定 5、[第8章](08_gameplay.md) §8.10)。 |
-| **named reject**(名指し拒否) | 受理できない入力を黙って無視も推測もせず、**何がどう悪いかを名前(エラーコード・キー名・登録済み id 一覧)付きで**拒否すること(下記 設計決定 1)。 |
-| **purgeable**(パージ可能) | 参照を書いたときだけ機構が存在すること。書かなければ初期化も実行もされず、挙動もコストも変わりません(下記 設計決定 3)。 |
-| **共通グラフ**(`pelican.graph` v1) | 値・描画・姿勢を **1 つの文書のノードと辺**で繋ぐ機構。`definitions`(再利用する部分グラフ)/ `nodes`(root のノード列)/ `outputs` を持ち、op は module が登録します(下記 設計決定 12)。ノード語彙は [第6章 §6.17](06_rendering.md)、編集操作は [第13章 §13.5](13_editor.md)、凍結された op 一覧は [../v0_freeze.md](../v0_freeze.md) §1.3。パーサは [graphcomposition.cpp](../../src/project/graphcomposition.cpp)。 |
-| **姿勢(pose)グラフ** | 共通グラフのうち `pelican.pose` module の op(`pose.clip_sample` / `pose.blend` / `pose.state_machine` / `pose.retarget`)で姿勢を作り、sink `pose.skeletal` で個体へ書く部分。型 `pelican.pose@1` が port を流れます(bytes ではなく stage handle + layout 世代)。書き方は [第8章 §8.13](08_gameplay.md)、装着の排他は [第4章 §4.2](04_scene_ecs.md)。`PELICAN_WITH_ANIMATION=OFF` の build には module ごと存在しません。 |
-| **`graph.instance`(装着)** | 共通グラフの定義を 1 つ実体化するノード。`owner: {scene, object}` を書くとその個体に結び付き、入力 port の値は **辺 > `parameters` > 定義の既定値**の優先で決まります([第4章 §4.1](04_scene_ecs.md))。 |
-| **package**(`pelican.package` v1) | 本体ツリーの外で作った部品一式(feature / graph / component / code)を 1 ディレクトリにまとめたもの。使うときは project へ**複製(vendoring)**します([第3章 §3.11](03_project_format.md))。 |
-| **共有部品(render component)** | materialize 済みの feature 1 本を `user://components/<name>/` へ書き出し、別 project へ取り込める形にしたもの(`pelican.render_component` v1)。[第3章 §3.12](03_project_format.md)。 |
-| **`rendering` 節** | rendering config が `pelican.graph` root の下に入るときの置き場所。文書の最上位は共通グラフが所有し、rendering config のキーは全部 `rendering` の下に来ます([第3章 §3.2](03_project_format.md)・[第6章 §6.16](06_rendering.md))。 |
-| **root motion** | clip に焼かれた「根の移動」を、姿勢ではなく**個体の transform** に渡すこと。`pose.clip_sample{root_motion: "extract", root_node}` で有効になり、owner の local 位置に加算されます([第4章 §4.2](04_scene_ecs.md)・[第8章 §8.13](08_gameplay.md))。 |
+用語は[用語集](14_glossary.md#この用語集の使い方)を参照してください。
 
 ## 1.1 Pelican2 とは
 
@@ -43,8 +24,8 @@ Pelican2 は **C++20 / Vulkan(vulkan.hpp)/ Windows(MSVC)** のゲームエンジ
 | 実行物 | 役割 |
 |---|---|
 | `pelican_player` | ゲームランタイム。ウィンドウ / ヘッドレス / JSON-RPC 駆動([第2章](02_getting_started.md)・[第10章](10_tools.md))。JSON-RPC はヘッドレス(blocking)とウィンドウ(フレーム境界処理)の両方で使えます ✅WP156 |
-| `pelican_cli` | 開発 CLI。11 サブコマンド系統(`assets` / `audio` / `bake-camera` / `image` / `import` / `dist-config` / `package` / `project` / `dump-lowered-material` / `vrm` / `graph-catalog` — [main.cpp](../../src/devcli/main.cpp#L51))。エンジン本体にリンクしない |
-| `pelican_studio` | Qt6 製エディタ 🚧。別 process の player を埋め込み、**その JSON-RPC を実際に呼びます** —— Outliner 選択、Inspector、gizmo、保存、Frame Plan(= フレームグラフを解決した実行計画。[用語集](14_glossary.md))、そして `features[]` の編集と再起動なしの反映([第2章](02_getting_started.md) §2.7・[第10章](10_tools.md) §10.7・[第13章](13_editor.md)) |
+| `pelican_cli` | 開発 CLI。11 サブコマンド系統(`assets` / `audio` / `bake-camera` / `image` / `import` / `dist-config` / `package` / `project` / `dump-lowered-material` / `vrm` / `graph-catalog` — [main.cpp](../../src/devcli/main.cpp#L55))。エンジン本体にリンクしない |
+| `pelican_studio` | Qt6 製エディタ 🚧。別 process の player を埋め込み、**その JSON-RPC を実際に呼びます** —— Outliner 選択、Inspector、gizmo、保存、Frame Plan(= フレームグラフを解決した実行計画。[用語集](14_glossary.md#frameplan))、そして `features[]` の編集と再起動なしの反映([第2章](02_getting_started.md) §2.7・[第10章](10_tools.md) §10.7・[第13章](13_editor.md)) |
 | `pelican-spv-link` | `PELICAN_WITH_SPIRV_LINK=ON`時だけ作るexperimental SPIR-V リンカ CLI([spvlink/main.cpp](../../src/spvlink/main.cpp)・[第10章](10_tools.md)) 🚧 |
 | web ビューア | 別リポジトリ `my_webpage` の WebGPU「Shader Dock」。**同じプロジェクトファイルをブラウザで開く**([第9章](09_web.md)) |
 
@@ -52,30 +33,69 @@ Pelican2 は **C++20 / Vulkan(vulkan.hpp)/ Windows(MSVC)** のゲームエンジ
 
 ## 1.2 データフロー(起動から画面まで)
 
-```
-project.json ──┬─ scene_data_json ──▶ pelican.scene v2 ─▶ ECS(オブジェクト)
-(マニフェスト) │                                        ├▶ LightContainer(light)
-               │                                        ├▶ PhysWorld(collider)
-               │                                        └▶ BehaviorAttachmentArena(behavior)
-               ├─ asset_data_json ──▶ モデル一括ロード(glb/VRM)
-               ├─ rendering_config_json ─▶ feature 合成 ─▶ フレームグラフ ─▶ 描画
-               ├─ input_actions_json ──▶ アクション層(入力)
-               └─ ui_config_json ──▶ UI オーバーレイ
-                                     ▲
-        code/*.cpp(ゲームシステム)──┘ GameContext 経由で毎フレーム操作
+```mermaid
+flowchart LR
+    Project["project.json<br/>(マニフェスト)"]
+    Scene["pelican.scene v2"]
+    ECS["ECS(オブジェクト)"]
+    Light["LightContainer(light)"]
+    Phys["PhysWorld(collider)"]
+    Behavior["BehaviorAttachmentArena(behavior)"]
+    Assets["モデル一括ロード(glb/VRM)"]
+    Features["feature 合成"]
+    Graph["フレームグラフ"]
+    Render["描画"]
+    Input["アクション層(入力)"]
+    UI["UI オーバーレイ"]
+    Code["code/*.cpp(ゲームシステム)"]
+    Project -->|"scene_data_json"| Scene
+    Scene --> ECS
+    Scene --> Light
+    Scene --> Phys
+    Scene --> Behavior
+    Project -->|"asset_data_json"| Assets
+    Project -->|"rendering_config_json"| Features --> Graph --> Render
+    Project -->|"input_actions_json"| Input
+    Project -->|"ui_config_json"| UI
+    Code -->|"GameContext 経由で毎フレーム操作"| UI
 ```
 
-図の読み方: `──▶` は「左のものが右を作る/右へ渡す」向き、`├▶` `└▶` は 1 つの入力から複数の行き先へ分かれる枝、`▲` と `┘` は下から上への合流(ゲームコード `code/*.cpp` が `GameContext` 経由でその上の実体を毎フレーム操作する)を表します。左端の `project.json` から入って、右端の ECS・描画に着地します。`GameContext` は**ゲームコードに公開される唯一の API 面**(facade)で、時刻・入力・オブジェクト操作はすべてここを通ります([gamecontext.hpp](../../src/core/userpublic/gamecontext.hpp)・[第8章](08_gameplay.md))。
+図の読み方: 矢印は「元のものが先のものを作る/先へ渡す」向き、枝は 1 つの入力から複数の行き先への分岐を表します。ゲームコード `code/*.cpp` からの合流は、`GameContext` 経由で UI オーバーレイを毎フレーム操作することを表します。左端の `project.json` から入って、右端の ECS・描画に着地します。`GameContext` は**ゲームコードに公開される唯一の API 面**(facade)で、時刻・入力・オブジェクト操作はすべてここを通ります([gamecontext.hpp](../../src/core/userpublic/gamecontext.hpp)・[第8章](08_gameplay.md))。
 
-毎フレームの流れ(固定順序 — 決定性の土台):
+<a id="frame-order"></a>
 
+### 1 フレームの固定順序
+
+時刻を進めてから状態を更新し、描画します。次の図が各章で参照するフレーム順です。
+
+```mermaid
+flowchart TB
+    A["時刻 advance"]
+    B["reload 公開・編集 commit hook・spawn 境界"]
+    C["freeze_events: イベント凍結<br/>freeze_input: 入力スナップショット確定<br/>freeze_actions: ImGui → UI → Actions"]
+    D["deliver_events: 凍結したイベントを配送"]
+    G["update_game<br/>下記の 1〜5"]
+    H["UI 書込確定 → Scene Graph runtime 更新<br/>窓あり RPC: processFrameBoundary<br/>render"]
+    A --> B --> C --> D --> G --> H
 ```
-時刻 advance → イベント凍結 → 入力スナップショット → アクション凍結 → イベント配送
-→ ECS システム → ゲームシステム(order 順。BehaviorSystem も order=50 として同じ総順序(= 全ゲームシステムが 1 列に並ぶ実行順。定義はこの節の末尾)に参加)
-→ シーン遷移の適用 → 描画
-```
 
-`behavior` はシーンのオブジェクトに直接ぶら下がる毎フレーム処理です。シーンロード時に `behavior` コンポーネントだけが ECS の振り分けから外れて BehaviorAttachmentArena(**arena** = エンジン側が behavior の実体をまとめて所有する置き場)に渡り([scene.cpp](../../src/core/loader/scene.cpp) → [behaviorarena.cpp](../../src/core/gamelogic/behaviorarena.cpp))、実行はゲームシステムと同じ総順序に `order=50` / 名前 `"BehaviorSystem"` で参加します([behavior.hpp](../../src/core/userpublic/behavior.hpp))。ここでいう**総順序**は、登録された全ゲームシステムを `order`(登録時に書く整数)の昇順、同じ `order` なら登録名の辞書順に並べた、1 つに定まる実行順のことです([sortGameSystemRegistrations()](../../src/core/userpublic/details/system/registerer.cpp#L35))。書き方は [第8章](08_gameplay.md)、JSON 側の語彙は [第4章](04_scene_ecs.md) を参照してください。
+update_game の順序:
+
+1. ECS。
+2. ゲームシステム: order・名前順。
+3. Animation: graph 更新・登録 phase。
+4. SeqPlayer。
+5. applyPendingLoad。
+
+根拠: [framephase.hpp:17](../../src/core/appflow/framephase.hpp#L17)、[framephase.cpp:152](../../src/core/appflow/framephase.cpp#L154)、[loop.cpp:710](../../src/core/appflow/loop.cpp#L712)、[loop.cpp:756](../../src/core/appflow/loop.cpp#L758)。
+
+注: `updateFrameState` は時刻 advance と render を含みません。headless の固定フレームと RPC `step_frame` も同じ状態更新順ですが、図の窓あり RPC pump は通りません。edit / paused ではイベント凍結・配送と通常のゲーム処理・pending scene load を飛ばし、入力・editor 用システム・停止時刻の Animation / seq / Graph・描画は続きます(paused の明示的な step はゲーム処理を進めます)。Animation は有効な build のみ、UI 書込確定後の camera bake 記録は該当機能がある場合のみです。
+
+`behavior` はシーンのオブジェクトに直接ぶら下がる毎フレーム処理です。シーンロード時に `behavior` コンポーネントだけが ECS の振り分けから外れて BehaviorAttachmentArena(**arena** = エンジン側が behavior の実体をまとめて所有する置き場)に渡り([scene.cpp](../../src/core/loader/scene.cpp) → [behaviorarena.cpp](../../src/core/gamelogic/behaviorarena.cpp))、実行はゲームシステムと同じ総順序に `order=50` / 名前 `"BehaviorSystem"` で参加します([behavior.hpp](../../src/core/userpublic/behavior.hpp))。
+
+ここでいう**総順序**は、登録された全ゲームシステムを `order`(登録時に書く整数)の昇順、同じ `order` なら登録名の辞書順に並べた、1 つに定まる実行順のことです([sortGameSystemRegistrations()](../../src/core/userpublic/details/system/registerer.cpp#L36))。書き方は [第8章](08_gameplay.md)、JSON 側の語彙は [第4章](04_scene_ecs.md) を参照してください。
+
+描画の「世代」は同時に使う runtime と資源の snapshot で、公開・確定・寿命は[第6章の所有節](06_rendering.md#render-generation)を参照してください。
 
 ## 1.3 リポジトリの地図
 
@@ -93,7 +113,7 @@ pelican2/
 │   │   ├── ecs/          #   ECS コア(コンポーネント登録・predefined)
 │   │   ├── loader/       #   バインダ(PathResolver、basicconfig、scene、画像)
 │   │   ├── model/        #   glTF ロード、VAT
-│   │   ├── asset/        #   asset_data.json → モデル登録
+│   │   ├── asset/
 │   │   ├── os/           #   ウィンドウ(GLFW)、入力スナップショット、アクション層
 │   │   ├── phys/         #   物理クエリ(raycast/overlap/shapeCast、provider 境界)
 │   │   ├── playback/     #   SeqPlayer(transform_seq)、VatPlayer、カメラ焼き出し
@@ -124,6 +144,8 @@ pelican2/
 └── test/                 # Catch2 単体 + fixture + golden + 結合スクリプト(run_*)。件数は第12章
 ```
 
+- **asset/**: `asset_data.json` からモデル登録。
+
 ※ `src/core/` は主要ディレクトリのみを載せています(このほかに `fullscreenpass/` / `geomhelper/` があります)。
 
 ## 1.4 レイヤ構造とレイヤ規則
@@ -134,12 +156,15 @@ pelican2/
 
 > **設計決定(解釈レイヤの分離):** JSON のパース・検証・計画(sceneformat / featurecompose / importmanifest / jsonrpc / materialformat など)は、GPU・Vulkan・モジュール機構に依存しない**純ロジック**として書く。その中核は `src/project/`(静的ライブラリ `pelican_project`、依存は nlohmann_json + ハッシュ用 picosha2 のみ)に分離済みで、`pelican_cli` や将来のエディタはエンジンをリンクせずにプロジェクトを読める。※`frameplanner` も同じ純ロジック方針ですが、実体は分離されておらず `src/core/renderingpass/`(pelican_core 側)にあります。
 
-```
-ゲームコード(プロジェクトの code/)
-    ↓ userpublic(GameContext / GameObjects / PELICAN_REGISTER_SYSTEM)
-エンジン上位層(renderer / renderingpass / loader = バインダ)
-    ↓                     ↖ 解釈レイヤ pelican_project(純ロジック)
-vkcore(Vulkan 低層)
+```mermaid
+flowchart TB
+    Game["ゲームコード(プロジェクトの code/)"]
+    Upper["エンジン上位層<br/>renderer / renderingpass / loader = バインダ"]
+    Project["解釈レイヤ pelican_project(純ロジック)"]
+    Vulkan["vkcore(Vulkan 低層)"]
+    Game -->|"userpublic(GameContext / GameObjects / PELICAN_REGISTER_SYSTEM)"| Upper
+    Project --> Upper
+    Upper --> Vulkan
 ```
 
 ## 1.5 横断的な設計原則
@@ -156,7 +181,7 @@ vkcore(Vulkan 低層)
 
 > **設計決定 5(決定性):** エンジン内部の判定に壁時計・`std::rand`・`random_device` を使わない。固定ループ順序・入力スナップショット・決定的システム実行順・フレーム境界のイベント配送・PCG32 乱数(既定シード 0 — シードから列が一意に決まる決定的な擬似乱数生成器。[deterministicrng.cpp](../../src/core/userpublic/deterministicrng.cpp))・固定ステップ時刻(ヘッドレス)により、**同じ入力からは常に同じ結果**が出る([第8章](08_gameplay.md) §8.10)。
 
-> **設計決定 6(二層モデル — アセット):** エンジンが読む形式は閉じた小集合(ランタイム層 = glb/VRM・PNG/JPG・EXR・WAV / Ogg Vorbis・JSON/JSONL・SPIR-V/GLSL)。FBX/PSD 等(ソース層)はエンジンに 1 バイトも入れず、**外部ツール**(`pelican_cli import` や import-tools)で変換し、`imports/` にファイルとして着地させる(隠れインポートキャッシュは作らない。一覧と手順は [第5章](05_assets.md) §5.1)。
+> **設計決定 6(二層モデル — アセット):** 制作元と実行時の依存を分離するため[二層モデル](05_assets.md#51-二層モデル--この章で最も重要な原則)を使います。
 
 > **設計決定 7(プロジェクト読み取り専有):** エンジン実行時、プロジェクトディレクトリには何も書かない。**例外は利用者が明示的に行う編集の保存だけ**で、書き込みはすべて名前の付いた操作から始まります。書き込み先は `user://` に分離(複数インスタンス並行起動の安全根拠)。パス解決は cwd を使わず、常にプロジェクトルート基準+脱出禁止([第3章](03_project_format.md))。※**「編集の保存」の範囲は v0 で広がりました**: シーンの保存と `features[]` の編集([第13章](13_editor.md))に加えて、`install_package`(`project://packages/<ns>/` への複製 + `project.json` の `packages` への記録 — [第3章 §3.11](03_project_format.md))、`uninstall_package`(その取り消し)、`import_render_feature`(`project://` に feature ファイルを 1 本新規作成 — [第3章 §3.12](03_project_format.md))、`materialize`(engine 参照の feature を project 側の派生として保存 — [第6章](06_rendering.md))が project に書きます。どれも利用者が明示的に呼んだときだけで、エンジンが自発的に書くものはありません。`export_render_feature` の書き先は project ではなく `user://components/` です。
 
@@ -170,14 +195,14 @@ vkcore(Vulkan 低層)
 
 > **設計決定 12(module 登録契約 — 共通グラフの op も「同梱の標準ライブラリ」・✅AG-0/AG-1a):** 共通グラフのノードの語彙は、コードに埋め込まれた表ではなく **module の manifest**([GraphModuleManifest](../../src/project/graphmodule.hpp#L35): 名前空間・版・提供する型・op の契約・sink)で決まります。`registerModule` が登録し、`resolveOperation` が文書のノードを契約へ引き当てます([graphmodule.hpp:51](../../src/project/graphmodule.hpp#L51))。エンジン同梱の 5 module(`pelican.value` / `pelican.audio` / `pelican.render` / `pelican.pose` / `pelican.ui`)も**この入口を通るだけ**で、特権はありません([makeBuiltinGraphModuleRegistry()](../../src/project/graphmodule.cpp#L739))—— 設計決定 11 と同じ形が、feature 層だけでなくノード語彙にも適用されています。
 >
-> 帰結は 2 つです。**(a) 登録されていない op は名指しで拒否される** —— `graph.operation_unregistered@1{node, op}`([graphmodule.cpp:257](../../src/project/graphmodule.cpp#L494))。`PELICAN_WITH_ANIMATION=OFF` の build は `pelican.pose` module を登録しないので、`pose.*` を書いた文書はこの名前で止まります(黙って無視されません)。**(b) 契約はあるが実行 backend が無い op も別の名前で拒否される** —— `graph.operation_unexecutable@1{node, op, backend}`([valuegraph.cpp:289](../../src/core/userpublic/valuegraph.cpp#L555))。「語彙に載っている」と「動く」は別の事実として扱われます。manifest の二重登録も同様に名前付き(`graph.module_duplicate@1` / `graph.operation_duplicate@1` / `graph.type_duplicate@1` / `graph.sink_unregistered@1` — [graphmodule.hpp:51](../../src/project/graphmodule.hpp#L51))で、**拒否された manifest は何も登録しないので、登録順で意味が変わることはありません**。登録済みの語彙は `pelican_cli graph-catalog` で一覧でき([第10章](10_tools.md))、その出力は [../v0_freeze.md](../v0_freeze.md) §1.3 の表と test で照合されています。
+> 帰結は 2 つです。**(a) 登録されていない op は名指しで拒否される** —— `graph.operation_unregistered@1{node, op}`([graphmodule.cpp:257](../../src/project/graphmodule.cpp#L494))。`PELICAN_WITH_ANIMATION=OFF` の build は `pelican.pose` module を登録しないので、`pose.*` を書いた文書はこの名前で止まります(黙って無視されません)。**(b) 契約はあるが実行 backend が無い op も別の名前で拒否される** —— `graph.operation_unexecutable@1{node, op, backend}`([valuegraph.cpp:289](../../src/core/userpublic/valuegraph.cpp#L564))。「語彙に載っている」と「動く」は別の事実として扱われます。manifest の二重登録も同様に名前付き(`graph.module_duplicate@1` / `graph.operation_duplicate@1` / `graph.type_duplicate@1` / `graph.sink_unregistered@1` — [graphmodule.hpp:51](../../src/project/graphmodule.hpp#L51))で、**拒否された manifest は何も登録しないので、登録順で意味が変わることはありません**。登録済みの語彙は `pelican_cli graph-catalog` で一覧でき([第10章](10_tools.md))、その出力は [../v0_freeze.md](../v0_freeze.md) §1.3 の表と test で照合されています。
 
 ## 1.6 開発体制と文書の読み方
 
-このリポジトリは**マルチエージェント開発**で作られています([../agent_operations.md](../agent_operations.md)):
+このリポジトリは**マルチエージェント開発**で作られています:
 
 - **ユーザー(enjoyoriori)** = 意思決定。**Claude** = 設計文書・WP(Work Package)指示書・レビュー・マージ。**codex** = 実装・監査・敵対レビュー。
-- 作業単位は WP。**1 WP = 1 ブランチ = 1 マージ**で、受け入れ基準 = マージ基準。番号は連番ではなく、`380a` `380a-fix` のような枝番が付きます。**2026-09-16〜17 の v0 の段は通し番号ではなく記号 ID**(`AG-0` / `AG-1a` / `AG-1b` / `P-1` / `P-2a-1a〜4b` / `AG-2` / `AG-3a` / `O-1` / `X-1` / `P-2b` / `R-1` / `R-2` / `R-3` / `R1-2` / `N-1` / `N-1b` / `N-2`)で登録されており、これも同じ「1 段 = 1 ブランチ = 1 マージ」です。**行単位の正は [../implementation_plan.md](../implementation_plan.md)**、v0 の段の SHA 一覧は [第11章 §11.1](11_status.md) の v0 表と [../v0_freeze.md](../v0_freeze.md) §5 にあります([第11章](11_status.md) の通し番号の表は WP238e + WP375c〜385 までの転記です)。今後の候補は [../roadmap_backlog_2026-07.md](../roadmap_backlog_2026-07.md) と [../v1_development_plan.md](../v1_development_plan.md)。
+- 作業単位は WP。**1 WP = 1 ブランチ = 1 マージ**で、受け入れ基準がマージ基準です。番号には枝番や記号 ID もあります。台帳は[実装指示書](../implementation_plan.md)、過去の着地は[履歴](../history/manual_landing_notes_2026.md)、今後の候補は[v1 開発計画](../v1_development_plan.md)を参照してください。
 - 統合ブランチは `codex/render-target-runtime-slice`(事実上の開発本線)。
 
 文書の優先順位(矛盾したときの規則):
@@ -203,7 +228,7 @@ vkcore(Vulkan 低層)
 - **ゲームを書く** → [第7章 入力と UI](07_input_ui.md) → [第8章 ゲームロジック](08_gameplay.md)
 - **ブラウザで動かす** → [第9章 Web プロファイル](09_web.md)
 - **CLI・自動化・配布** → [第10章 ツールリファレンス](10_tools.md)
-- **何が実装済みで何が設計だけか** → [第11章 実装状況と文書マップ](11_status.md)
+- **WP の仕様・完了記録と履歴の参照先** → [第11章 §11.1](11_status.md#111-wp-の台帳はどこにあるか)
 - **エンジンのソースを読む** → [第12章 コード読解ガイド](12_codemap.md)(さらに深くは [../source-code-guide/](../source-code-guide/README.md))
 - **エディタ / 編集 RPC** → [第13章 エディタとエディタ RPC](13_editor.md)
 
@@ -212,5 +237,4 @@ vkcore(Vulkan 低層)
 - [../README.md](../README.md) — 設計文書の索引(凍結/ドラフトの区分)
 - [../implementation_plan.md](../implementation_plan.md) — WP 指示書と共通規則
 - [../adding_features.md](../adding_features.md) — 機能追加レシピ集
-- [../agent_operations.md](../agent_operations.md) — マルチエージェント運用
 - [../design_project_format.md](../design_project_format.md) / [../design_project_format_web_profile.md](../design_project_format_web_profile.md) — 二大凍結文書

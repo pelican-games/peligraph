@@ -19,6 +19,7 @@ class QByteArray;
 class QCheckBox;
 class QComboBox;
 class QGraphicsItem;
+class QGraphicsPathItem;
 class QLabel;
 class QMenu;
 class QMessageBox;
@@ -218,6 +219,24 @@ class GraphCanvasFoldController {
     QAction *unfold_action_ = nullptr;
     QAction *toggle_action_ = nullptr;
     QTimer *redraw_timer_ = nullptr;
+    struct LiveFrame {
+        QGraphicsPathItem *outline;
+        QGraphicsPathItem *heading;
+        std::vector<QGraphicsItem *> members;
+        qreal minimum_width;
+    };
+    struct LiveLink {
+        QGraphicsPathItem *line;
+        QGraphicsItem *inner;
+        QGraphicsItem *outside;
+        bool into;
+        bool socket;
+    };
+    std::vector<LiveFrame> live_frames_;
+    std::vector<LiveLink> live_links_;
+    quint64 drawing_generation_ = 0;
+    bool has_drawing_ = false;
+    void followGeometry();
 
     std::vector<GraphFoldGroup> groups_;
     std::set<std::string> folded_display_;

@@ -1,10 +1,12 @@
 #include "audioanalysistables.hpp"
 #include "graphcanvasmodel.hpp"
+#include "tabeditorder.hpp"
 #include "graphcomposition.hpp"
 #include "graphmodule.hpp"
 #include "graphpartition.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <algorithm>
 #include <filesystem>
@@ -832,6 +834,8 @@ struct GraphHistoryHarness {
         return {{"source_reference", "fixture"}, {"root_schema", "pelican.graph"},
                 {"source_digest", {{"hex", digest()}}},
                 {"nodes", document.at("nodes")},
+                {"material_route_default", document.value("rendering", Json::object())
+                                                    .value("material_route_default", Json{})},
                 {"definitions", document.at("definitions")},
                 {"layout", document.value("layout", Json::object())}};
     }
@@ -848,6 +852,10 @@ struct GraphHistoryHarness {
         last_ops = submit.params.at("ops");
         last_params = submit.params;
         auto edited = Pelican::editGraphDocument(document, submit.params.at("ops"));
+        if (const auto route = submit.params.find("material_route_default"); route != submit.params.end()) {
+            if (route->is_null()) edited["rendering"].erase("material_route_default");
+            else edited["rendering"]["material_route_default"] = *route;
+        }
         client.reply(submit, {{"status", "accepted"}, {"ticket", "edit"}});
         REQUIRE_FALSE(client.model.canUndo());
         const auto poll = client.take("get_edit_result");
@@ -1016,6 +1024,33 @@ TEST_CASE("Graph history never replays across another writer or a reconnect",
 // the live materials cannot take) reconnects Studio. The history is about the
 // document, not the connection: the same digest read back keeps Undo, another
 // one clears it, and another project clears it whatever the digest.
+TEST_CASE("UD-1 Graph Undo committed for restart retains Redo on reconnect",
+          "[studio][graph-canvas][graph-history][ud1]") {
+    GraphHistoryHarness h;
+    h.open();
+    const auto before = h.document;
+    REQUIRE(h.client.model.setNodeLabel("clock", "Clock"));
+    h.commit();
+    const auto after = h.document;
+    REQUIRE(h.client.model.undo());
+    const auto submit = h.client.take("edit_graph_document");
+    h.document = Pelican::editGraphDocument(h.document, submit.params.at("ops"));
+    h.client.reply(submit, {{"status", "accepted"}, {"ticket", "undo"}});
+    const auto poll = h.client.take("get_edit_result");
+    ++h.generation;
+    h.client.reply(poll, {{"status", "committed"}, {"committed", true},
+                         {"source_digest", {{"hex", h.digest()}}},
+                         {"restart_required", true},
+                         {"restart_reason", {{"code", "material_passes_removed"}}}});
+    CHECK(h.document == before);
+    h.client.model.setConnected(false);
+    h.open();
+    REQUIRE(h.client.model.canRedo());
+    REQUIRE(h.client.model.redo());
+    h.commit();
+    CHECK(h.document == after);
+}
+
 TEST_CASE("OT-1 an engine restart keeps the graph history for the same document",
           "[studio][graph-canvas][graph-history]") {
     GraphHistoryHarness h;
@@ -1045,6 +1080,52 @@ TEST_CASE("OT-1 an engine restart keeps the graph history for the same document"
         h.open();
         REQUIRE_FALSE(h.client.model.canUndo());
         REQUIRE_FALSE(h.client.model.canRedo());
+    }
+}
+
+
+TEST_CASE("Graph Redo survives a confirmed Render restore only when the graph is unchanged",
+          "[studio][graph-canvas][graph-history]") {
+    GraphHistoryHarness h;
+    h.open();
+    REQUIRE(h.client.model.setNodeLabel("clock", "Clock"));
+    h.commit();
+    REQUIRE(h.client.model.undo());
+    h.commit();
+    REQUIRE(h.client.model.canRedo());
+    ++h.generation;
+    h.client.model.renderHistoryRestored(h.digest());
+    const auto verify = [&](bool retained) {
+        h.client.model.refresh();
+        h.refresh();
+        CHECK(h.client.model.canRedo() == retained);
+        if (retained) {
+            REQUIRE(h.client.model.redo());
+            h.commit();
+            CHECK(h.document["nodes"][0]["label"] == "Clock");
+            CHECK(h.document.contains("rendering"));
+            // Permission is consumed; another revision still clears history.
+            ++h.generation;
+            h.client.model.refresh();
+            h.refresh();
+            CHECK_FALSE(h.client.model.canUndo());
+        }
+    };
+    SECTION("only the rendering section changes, and Redo still applies") {
+        h.document["rendering"] = {{"render_targets", Json::object()}};
+        verify(true);
+    }
+    SECTION("another writer wins before the context is read") {
+        ++h.generation;
+        verify(false);
+    }
+    SECTION("the known restore also changes graph nodes") {
+        h.document["nodes"][0]["label"] = "Other writer";
+        verify(false);
+    }
+    SECTION("opening a project cancels the permission") {
+        h.client.model.forgetHistory();
+        verify(false);
     }
 }
 
@@ -1698,7 +1779,8 @@ std::string lp4eMaterial(std::size_t index) {
 Json lp4eFramePlan(std::size_t total, std::size_t offset, std::size_t held) {
     auto elements = Json::array();
     for (std::size_t index = offset; index < offset + held && index < total; ++index)
-        elements.push_back({{"element", lp4eMaterial(index)}, {"index", index}, {"branch", 0}});
+        elements.push_back({{"element", lp4eMaterial(index)}, {"index", index}, {"branch", 0},
+                            {"vertex_modes", Json::array({"standard", "skinned"})}});
     return {{"schema", "pelican.frame_plan"}, {"version", 1},
             {"loops", Json::array({{{"node", "forward_opaque_draws"}, {"tier", "draw_loop"},
                                     {"pass", "forward_opaque"}, {"count", total},
@@ -1881,6 +1963,81 @@ TEST_CASE("GL-1d the palette's material pass arrives with its draw loop, body an
     }
 }
 
+// MC-1s, decisions 1 and 3: the palette's material pass makes its images with
+// the formats of the contract's table the Frame Plan's form makes its targets
+// with, in the column the authoring context's enabled features pick. A Blank
+// pipeline (no "hdr") gets B8G8R8A8_SRGB albedo and emissive -- the contract
+// the live materials were registered with, so the engine does not restart --
+// and one with "hdr" gets R16G16B16A16_SFLOAT. Forward colour is wide in both.
+TEST_CASE("MC-1s the palette's material pass images take the form's formats for the "
+          "pipeline's HDR switch",
+          "[studio][graph-canvas][mc1s]") {
+    // The image op a pass's socket is connected to, by the id its input names.
+    const auto imageOf = [](const Json &ops, const Json &pass, const std::string &socket) {
+        const auto id = pass.at("inputs").at(socket).at("node").get<std::string>();
+        for (const auto &op : ops)
+            if (op.at("op") == "add_node" && op.at("node").at("id") == id) return op.at("node");
+        FAIL("no image op for " << socket);
+        return Json{};
+    };
+    const auto check = [&](const Json &context, bool hdr) {
+        CHECK(PelicanStudio::materialPassHdr(context) == hdr);
+        DrawLoopHarness h;
+        h.open();
+        // The context the palette asks for when it opens.
+        h.client.model.readRenderAuthoringAgain();
+        h.client.reply(h.client.take("get_render_authoring_context"), context);
+        for (const std::string contract :
+             {"deferred_geometry_v1", "forward_opaque_v1", "forward_transparent_v1"}) {
+            CAPTURE(contract, hdr);
+            REQUIRE(h.client.model.addNode("render.material_pass", contract));
+            h.commit();
+            const auto &pass = h.last_ops.back().at("node");
+            REQUIRE(pass.at("op") == "render.material_pass");
+            // The form's slots: the colour attachments in location order,
+            // then depth, against the pass's sockets in the same order.
+            const auto slots = PelicanStudio::materialPassSlots(contract, hdr);
+            auto sockets = GraphCanvasModel::materialPassColorSockets(pass.at("parameters"));
+            sockets.push_back("depth");
+            REQUIRE(sockets.size() == slots.size());
+            for (std::size_t index = 0; index < slots.size(); ++index) {
+                CAPTURE(sockets[index]);
+                const auto image = imageOf(h.last_ops, pass, sockets[index]);
+                CHECK(image.at("op") == "render.image");
+                CHECK(image.at("parameters").at("format") == slots[index].format);
+                CHECK(image.at("parameters").at("usage") == Json(slots[index].usage));
+            }
+            // The table itself, read as the engine's live materials have it.
+            const std::string scene = hdr ? "R16G16B16A16_SFLOAT" : "B8G8R8A8_SRGB";
+            if (contract == "deferred_geometry_v1") {
+                CHECK(imageOf(h.last_ops, pass, "albedo").at("parameters").at("format") == scene);
+                CHECK(imageOf(h.last_ops, pass, "emissive").at("parameters").at("format") == scene);
+                CHECK(imageOf(h.last_ops, pass, "normal").at("parameters").at("format") ==
+                      "R16G16B16A16_SFLOAT");
+                CHECK(imageOf(h.last_ops, pass, "worldpos").at("parameters").at("format") ==
+                      "R16G16B16A16_SFLOAT");
+                CHECK(imageOf(h.last_ops, pass, "material").at("parameters").at("format") ==
+                      "R8G8B8A8_UNORM");
+            } else {
+                CHECK(imageOf(h.last_ops, pass, "color").at("parameters").at("format") ==
+                      "R16G16B16A16_SFLOAT");
+            }
+            CHECK(imageOf(h.last_ops, pass, "depth").at("parameters").at("format") == "D32_SFLOAT");
+        }
+    };
+    SECTION("a Blank pipeline: no hdr feature") {
+        check(Json{{"enabled_feature_names", Json::array()}}, false);
+    }
+    SECTION("a pipeline with the hdr feature") {
+        check(Json{{"enabled_feature_names", Json::array({"bloom", "hdr"})}}, true);
+    }
+    SECTION("a context that does not say is read as HDR, as the form reads it") {
+        CHECK(PelicanStudio::materialPassHdr(Json::object()));
+        CHECK(PelicanStudio::materialPassHdr(false, {}));
+        CHECK_FALSE(PelicanStudio::materialPassHdr(true, {"bloom"}));
+    }
+}
+
 // GL-1d, decisions 3 and 4: a Forward opaque pass where no pass draws deferred
 // materials carries material_route_default "forward" in the same ticket (the
 // Frame Plan's judgment); an engine that does not take the field is sent the
@@ -1911,9 +2068,9 @@ TEST_CASE("GL-1d a forward material pass sets the route default, and falls back 
         ++h.generation;
         h.client.reply(poll, {{"status", "committed"}, {"source_digest", {{"hex", h.digest()}}}});
         h.refresh();
-        // Its Undo does not send it: the default is the project's.
+        // UD-3: Undo restores the absent default in the pass removal request.
         REQUIRE(h.client.model.undo());
-        CHECK_FALSE(h.client.take("edit_graph_document").params.contains("material_route_default"));
+        CHECK(h.client.take("edit_graph_document").params.at("material_route_default").is_null());
     }
     SECTION("an engine that does not know the field is asked again without it") {
         h.client.model.receiveRpcFailure(
@@ -1947,6 +2104,46 @@ TEST_CASE("GL-1d a forward material pass sets the route default, and falls back 
             return request.method == "edit_graph_document";
         }));
     }
+}
+
+// UD-3: one palette gesture owns both its pass and its root route default.
+TEST_CASE("UD-3 Graph Undo restores the authored route default with the forward pass",
+          "[studio][graph-canvas][graph-history][ud3]") {
+    DrawLoopHarness h;
+    h.document["nodes"] = Json::array();
+    h.document["definitions"] = Json::object();
+    h.document["rendering"] = Json::object();
+    SECTION("the blank root has no default") {
+        CHECK_FALSE(h.document.at("rendering").contains("material_route_default"));
+    }
+    SECTION("the root already draws forward") {
+        h.document["rendering"]["material_route_default"] = "forward";
+        CHECK(h.document.at("rendering").at("material_route_default") == "forward");
+    }
+    SECTION("the root explicitly uses auto") {
+        h.document["rendering"]["material_route_default"] = "auto";
+        CHECK(h.document.at("rendering").at("material_route_default") == "auto");
+    }
+    const auto before = h.document;
+    h.open();
+    REQUIRE(h.client.model.addNode("render.material_pass", "forward_opaque_v1"));
+    h.commit();
+    CHECK(h.last_params.at("material_route_default") == "forward");
+    CHECK(h.document.at("rendering").at("material_route_default") == "forward");
+    CHECK(std::ranges::any_of(h.document.at("nodes"), [](const Json &node) {
+        return node.at("op") == "render.material_pass";
+    }));
+    const auto added = h.document;
+    REQUIRE(h.client.model.undo());
+    h.commit();
+    // Full equality also checks that the pass, draw loop and body are gone.
+    CHECK(h.document == before);
+    CHECK(h.last_params.at("material_route_default") ==
+          before.at("rendering").value("material_route_default", Json{}));
+    REQUIRE(h.client.model.redo());
+    h.commit();
+    CHECK(h.last_params.at("material_route_default") == "forward");
+    CHECK(h.document == added);
 }
 
 // GL-1d: a deferred material pass in the root, or one the frame plan routes
@@ -2752,8 +2949,10 @@ TEST_CASE("GL-1 the plan's passes no graph node made are folded nodes, read only
     // What it reads and hands on; bloom_0 and bloom_1 stay inside.
     CHECK(bloom.reads == std::vector<std::string>{"scene_color"});
     CHECK(bloom.writes == std::vector<std::string>{"scene_color_bloomed"});
-    CHECK(bloom.tooltip() == "From the rendering section (feature:bloom): read only here. "
-                             "Frame Plan and Features edit it.");
+    // GL-5a, decision 1: a feature's fold is read only; the way to edit it is
+    // to expand it.
+    CHECK_FALSE(bloom.rendering_section);
+    CHECK(bloom.tooltip() == "From feature bloom: read only here. Expand to edit\xE2\x80\xA6");
     const auto &gbuffer = folded(nodes, "gbuffer");
     CHECK(gbuffer.material);
     CHECK(gbuffer.type == "material");
@@ -2870,6 +3069,22 @@ TEST_CASE("GL-1 the plan's passes no graph node made are folded nodes, read only
     REQUIRE(model.leaveScope());
     CHECK_FALSE(model.foldedView());
     CHECK(folded(model.foldedNodes(), "feature:bloom").decomposable);
+    // GL-5d, decision 4: what Expand to edit… runs, from the root -- the
+    // folded node's right-click -- as from inside it: a material pass no
+    // feature made is decomposed, a feature with a template replaced, and a
+    // graph node has neither.
+    const auto decompose = model.foldedNodeExpand("gbuffer");
+    CHECK(decompose.kind == "decompose");
+    CHECK(decompose.graph == "main_render");
+    CHECK(decompose.pass == "gbuffer");
+    const auto replace = model.foldedNodeExpand("feature:bloom");
+    CHECK(replace.kind == "replace");
+    CHECK(replace.feature == "engine://features/bloom.json");
+    CHECK(model.foldedNodeExpand("blur").kind.empty());
+    // Inside a folded view the trail decides, not the id.
+    REQUIRE(model.enterFolded("gbuffer"));
+    CHECK(model.foldedNodeExpand("gbuffer").kind.empty());
+    REQUIRE(model.leaveScope());
 }
 
 // GL-2b (design_graph_layers 3.2, 4, 5.1). A frame plan from an engine that
@@ -3064,8 +3279,10 @@ TEST_CASE("GL-2b the plan's origin says which graph node made a pass; bands, Lay
     CHECK(model.layerRows("tint") ==
           std::vector<GraphCanvasLayerRow>{
               {"L1", "pass", "tint \xC2\xB7 render", "tint"},
-              {"L2", "resource", "resource tint_image \xC2\xB7 R8G8B8A8_UNORM \xC2\xB7 alias alias_0", ""},
-              {"L2", "resource", "resource scene_color \xC2\xB7 R16G16B16A16_SFLOAT", ""},
+              // GL-5e, decision 5: a resource row names its resource.
+              {"L2", "resource", "resource tint_image \xC2\xB7 R8G8B8A8_UNORM \xC2\xB7 alias alias_0", "",
+               "tint_image"},
+              {"L2", "resource", "resource scene_color \xC2\xB7 R16G16B16A16_SFLOAT", "", "scene_color"},
               {"L2", "alias", "alias group alias_0: tint_image, canvas", ""},
               {"L2", "scope", "scope scope_0 (render_pass)", ""},
               {"L2", "barrier",
@@ -3096,7 +3313,9 @@ TEST_CASE("GL-2b the plan's origin says which graph node made a pass; bands, Lay
     CHECK(model.graphLayerRows() ==
           std::vector<GraphCanvasLayerRow>{
               {"L3", "decision", "pelican.plan.profile \xC2\xB7 main_render \xE2\x86\x92 default", ""},
-              {"L3", "backend", "candidate vulkan_raster \xC2\xB7 vulkan \xC2\xB7 selected", ""}});
+              // GL-5e, decision 5: and a candidate's row its candidate.
+              {"L3", "backend", "candidate vulkan_raster \xC2\xB7 vulkan \xC2\xB7 selected", "",
+               "vulkan_raster"}});
     CHECK(model.planDiagnostics().size() == 2);
     // Two domains: no band, no Layers.
     model.setDomainShown("value", true);
@@ -3118,6 +3337,43 @@ TEST_CASE("GL-2b the plan's origin says which graph node made a pass; bands, Lay
     CHECK(model.canvasNodeOfPass("sky") == "sky");
     CHECK(model.planNodeTarget("cascades/2/depth") ==
           GraphCanvasPlanTarget{"loop", "depth", "", "", "cascades", 2, false});
+}
+
+// UX-15b, decision 5 (GL-2b's hole): a feature whose passes graph nodes took
+// the place of, every one, has no folded node to say "is replaced by" on; the
+// graph's own Layers rows (nothing picked) say it instead.
+TEST_CASE("UX-15b a feature every pass of which a graph node replaced says so in the graph's "
+          "own Layers rows",
+          "[studio][graph-canvas][ux15b]") {
+    using PelicanStudio::GraphCanvasLayerRow;
+    Harness h;
+    h.open(gl2bDocument());
+    auto plan = gl2bPlan();
+    // shadow_resolve is no feature pass any more: no pass of
+    // shadow_directional is left, only the loop's copies in its place.
+    for (auto &node : plan["nodes"])
+        if (node.at("name") == "shadow_resolve") {
+            node.erase("provider_feature");
+            node["source"] = "engine";
+        }
+    h.reply(h.take("get_frame_plan"), plan);
+    auto &model = h.model;
+    for (const auto &domain : GraphCanvasModel::domainNames())
+        model.setDomainShown(domain, domain == "render");
+    REQUIRE(model.layersShown());
+    for (const auto &node : model.foldedNodes()) CHECK(node.id != "feature:shadow_directional");
+    const GraphCanvasLayerRow replaced{
+        "L1", "replaced",
+        "pass shadow_depth of shadow_directional is replaced by graph node cascades",
+        "cascades/0/depth"};
+    // Once, not once a copy.
+    CHECK(std::ranges::count(model.graphLayerRows(), replaced) == 1);
+
+    // With the feature's folded node there, the row stays on that node.
+    h.model.refresh();
+    h.reply(h.take("get_graph_instances"), gl2bDocument());
+    h.reply(h.take("get_frame_plan"), gl2bPlan());
+    CHECK(std::ranges::count(model.graphLayerRows(), replaced) == 0);
 }
 
 // UX-6b, decision 4 (engine PO-1): an output nothing reads and a binding the
@@ -4664,4 +4920,196 @@ TEST_CASE("UX-13a decision 2: Use in a shader connects the layout by the name th
     CHECK(line.find("#include \"pelican_resource_ports.glsl\"") != std::string::npos);
     CHECK(line.find("pelican_resource_tone_layout.values[0]") != std::string::npos);
     CHECK(line.find("binding") == std::string::npos);
+}
+
+TEST_CASE("GL-5f a loop body's image has Layers rows for the copies the loop made of it, each "
+          "naming the copy's loop origin",
+          "[studio][graph-canvas][gl5f]") {
+    LoopHarness h;
+    h.open();
+    auto plan = lp4cFramePlan();
+    plan["graph"] = "main_render";
+    plan["nodes"] = Json::array(
+        {{{"name", "steps/1/fill"}, {"kind", "fullscreen"},
+          {"loop_origin", {{"loop", "steps"}, {"element", 1}, {"node", "fill"}}}}});
+    const auto copy = [](std::int64_t element) {
+        return Json{{"name", "steps/" + std::to_string(element) + "/image"},
+                    {"kind", "image"},
+                    {"loop_origin", {{"loop", "steps"}, {"element", element}, {"node", "image"}}}};
+    };
+    plan["resources"] =
+        Json::array({copy(0), copy(1), copy(2), {{"name", "lit_color"}, {"kind", "image"}}});
+    plan["physical_target_plan"] = {
+        {"resources", Json::array({{{"logical_resource", "steps/1/image"},
+                                    {"format", "R16G16B16A16_SFLOAT"},
+                                    {"from_nodes", Json::array({"steps/1/fill"})}}})}};
+    h.report(plan);
+    const auto &model = h.client.model;
+    // Elements 1 and 2 run `paint`; element 0 runs `first`.
+    const auto rows = model.bodyLayerRows("paint", "image");
+    REQUIRE(rows.size() == 2);
+    CHECK(rows[0].layer == "L2");
+    CHECK(rows[0].kind == "resource");
+    CHECK(rows[0].subject == "steps/1/image");
+    CHECK(rows[0].text.find("loop steps [1]") != std::string::npos);
+    CHECK(rows[0].text.find("R16G16B16A16_SFLOAT") != std::string::npos);
+    CHECK(rows[1].subject == "steps/2/image");
+    const auto first = model.bodyLayerRows("first", "image");
+    REQUIRE(first.size() == 1);
+    CHECK(first[0].subject == "steps/0/image");
+    CHECK(model.bodyLayerRows("paint", "fill").empty());
+    CHECK(model.bodyLayerRows({}, "image").empty());
+    // What the Remove TRANSFER_SRC of such a row sends with: the Frame Plan's
+    // Physical plan row's loop origin.
+    const auto origin = model.planResourceLoopOrigin("steps/2/image");
+    REQUIRE(origin);
+    CHECK(*origin == PelicanStudio::FramePlanLoopOrigin{"steps", 2, "image"});
+    CHECK_FALSE(model.planResourceLoopOrigin("lit_color"));
+}
+
+TEST_CASE("Authoring refresh after layout save updates the editing digest without redrawing",
+          "[studio][graph-canvas][input-latency]") {
+    Harness h;
+    h.open();
+    Json context{{"source_digest", {{"hex", "first"}}},
+                 {"render_target_vocabulary", {{"formats", {"R8_UNORM"}}}},
+                 {"pipeline_preset", {{"source_digest", {{"hex", "preset-1"}}}}}};
+    const auto deliver = [&] {
+        h.model.readRenderAuthoringAgain();
+        h.reply(h.take("get_render_authoring_context"), context);
+    };
+    deliver();
+    const auto report = h.model.reportRevision();
+    const auto authoring = h.model.authoringRevision();
+    context["source_digest"]["hex"] = "layout-saved";
+    deliver();
+    CHECK(h.model.reportRevision() == report);
+    CHECK(h.model.authoringRevision() > authoring);
+    CHECK(h.model.renderAuthoringContext() == context);
+    SECTION("a preset document changed") {
+        context["pipeline_preset"]["source_digest"]["hex"] = "preset-2";
+        deliver();
+        CHECK(h.model.reportRevision() > report);
+    }
+    SECTION("the vocabulary changed") {
+        context["render_target_vocabulary"]["formats"].push_back("R16_UNORM");
+        deliver();
+        CHECK(h.model.reportRevision() > report);
+    }
+}
+
+TEST_CASE("UD-4 Graph Undo keeps its serial and inverse after refusal and a Render Undo",
+          "[studio][graph-canvas][graph-history][ud4]") {
+    DrawLoopHarness h;
+    h.document = {{"schema", "pelican.graph"}, {"version", 1},
+                  {"nodes", Json::array()}, {"definitions", Json::object()},
+                  {"outputs", Json::object()},
+                  {"rendering", {{"rendering_passes", Json::array({
+                      {{"name", "main_render"}, {"passes", Json::array({
+                          {{"name", "present"}, {"type", "fullscreen"}, {"input", Json::array()},
+                           {"output", {{"color", {"display"}}, {"depth", nullptr}}},
+                           {"shader", {{"fragment", "project://shaders/gradient"},
+                                       {"vertex", "engine://fullscreen"}}}}
+                      })}}
+                  })}}}};
+    PelicanStudio::TabEditOrder order{h.client.model};
+    h.open();
+    REQUIRE(h.client.model.addNode("render.material_pass", "deferred_geometry_v1"));
+    h.commit();
+    const auto added = h.document;
+    const auto records = order.undoRecords();
+    REQUIRE(records.size() == 1);
+    const auto serial = h.client.model.undoSerial();
+
+    // The Frame Plan connects present without changing the Graph nodes.
+    auto &present = h.document["rendering"]["rendering_passes"][0]["passes"][0];
+    present["input"] = {"render_material_pass__albedo"};
+    present["shader"]["fragment"] = "engine://passthrough";
+    ++h.generation;
+    h.client.model.renderDocumentCommitted(h.digest());
+    h.client.model.refresh();
+    h.refresh();
+    const auto connected = h.document;
+    const Json refusal{{"status", "rejected"}, {"committed", false},
+                       {"error", {{"code", "render_pipeline_preflight_failed"},
+                                  {"message", "logical shadow graph node 'present' reads unknown resource 'render_material_pass__albedo'"}}}};
+    Json inverse;
+    REQUIRE(order.undo());
+    auto request = h.client.take("edit_graph_document");
+    inverse = request.params.at("ops");
+    const bool refused_at_commit = GENERATE(false, true);
+    CAPTURE(refused_at_commit);
+    if (!refused_at_commit) { h.client.reply(request, refusal); }
+    else {
+        h.client.reply(request, {{"status", "accepted"}, {"ticket", "ud4"}});
+        h.client.reply(h.client.take("get_edit_result"), refusal);
+    }
+    h.refresh();
+    CHECK(h.document == connected);
+    CHECK(h.client.model.undoSerial() == serial);
+    CHECK(order.undoRecords() == records);
+    CHECK(order.redoRecords().empty());
+    CHECK_FALSE(h.client.model.takeEngineRestart().has_value());
+    CHECK(h.client.model.editNotice().message.find("render_material_pass__albedo") != std::string::npos);
+
+    // Render Undo restores only the rendering section, then announces the
+    // committed digest as MainWindow does. The Graph inverse must survive.
+    h.document["rendering"] = added.at("rendering");
+    ++h.generation;
+    h.client.model.renderHistoryRestored(h.digest());
+    h.client.model.refresh();
+    h.refresh();
+    REQUIRE(order.undoRecords() == records);
+    REQUIRE(order.undo());
+    request = h.client.take("edit_graph_document");
+    CHECK(request.params.at("ops") == inverse);
+    CHECK(request.params.at("base_source_digest") == h.digest());
+    const auto candidate = Pelican::editGraphDocument(h.document, inverse);
+    CHECK(candidate.at("nodes").empty());
+    CHECK(candidate.at("definitions").empty());
+    CHECK(candidate.at("rendering") == added.at("rendering"));
+
+    // Even another refusal of the retried inverse moves neither history.
+    h.client.reply(request, {{"status", "accepted"}, {"ticket", "ud4-retry"}});
+    h.client.reply(h.client.take("get_edit_result"), refusal);
+    h.refresh();
+    CHECK(h.client.model.undoSerial() == serial);
+    CHECK(order.undoRecords() == records);
+    CHECK(order.redoRecords().empty());
+    REQUIRE(order.undo());
+    h.commit();
+    CHECK(h.document.at("nodes").empty());
+    CHECK(h.document.at("rendering") == added.at("rendering"));
+    REQUIRE(order.redoRecords() == records);
+    REQUIRE(order.redo());
+    h.commit();
+    CHECK(h.document == added);
+    CHECK(order.undoRecords() == records);
+}
+
+TEST_CASE("JP-1 graphcanvas Japanese audio and image imports keep UTF-8 references", "[jp1][graphcanvas]") {
+    namespace fs = std::filesystem;
+    const auto root = fs::temp_directory_path() / "pelican_jp1_import";
+    fs::remove_all(root);
+    struct Cleanup { fs::path path; ~Cleanup() { std::error_code ec; fs::remove_all(path, ec); } } cleanup{root};
+    const auto outside = root / "outside";
+    const auto project = root / fs::path{u8"日本語 プロジェクト"};
+    fs::create_directories(outside);
+    for (const auto &name : {u8"音声ソ表.wav", u8"画像ソ表.png", u8"空ソ表.hdr"}) {
+        std::ofstream{outside / fs::path{name}, std::ios::binary} << "fixture";
+    }
+    const auto sound = outside / fs::path{u8"音声ソ表.wav"};
+    CHECK(PelicanStudio::importProjectAudio(project, {sound}).references ==
+          std::vector<std::string>{"project://assets/audio/音声ソ表.wav"});
+    CHECK(PelicanStudio::importProjectAudio(project, {sound}).references ==
+          std::vector<std::string>{"project://assets/audio/音声ソ表_2.wav"});
+    const auto image = outside / fs::path{u8"画像ソ表.png"};
+    CHECK(PelicanStudio::importProjectImage(project, image).reference == "assets/images/画像ソ表.png");
+    CHECK(PelicanStudio::importProjectImage(project, image).reference == "assets/images/画像ソ表_2.png");
+    const auto sky = PelicanStudio::importProjectImage(project, outside / fs::path{u8"空ソ表.hdr"});
+    CHECK(sky.reference == "assets/images/空ソ表.ktx2");
+    REQUIRE(sky.convert.has_value());
+    CHECK(fs::exists(project / fs::path{u8"assets/images/空ソ表.hdr"}));
+    CHECK(fs::exists(project / fs::path{u8"assets/audio/音声ソ表_2.wav"}));
+    CHECK(fs::exists(project / fs::path{u8"assets/images/画像ソ表_2.png"}));
 }

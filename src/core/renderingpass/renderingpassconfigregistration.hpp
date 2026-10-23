@@ -112,6 +112,14 @@ struct RenderingPassConfigRegistrationDependencies {
             after_rollback_prepared_generation;
         RenderPipelineGpuRegistrationFaultPoint fault_point =
             RenderPipelineGpuRegistrationFaultPoint::none;
+        // RTL-1b: whether the candidate's ray layout mode (whether its root
+        // names a ray_group_layout) is judged against the process's
+        // (RayLayoutRuntimeState), after every other check of the candidate
+        // and before it is staged or published: RayLayoutModeChanged. Only
+        // the engine's fallback generation is registered without it (BS-1:
+        // it stands in for any project, with or without a layout). The
+        // transaction reads the first variant's.
+        bool judge_ray_layout_mode = true;
     } options;
 };
 

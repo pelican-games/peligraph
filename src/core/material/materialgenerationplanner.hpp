@@ -145,9 +145,9 @@ struct MaterialGenerationPlanner {
         const MaterialContainer::InternalMaterialInfo &material);
     // G-4: every registered material, built-ins included, needs a receiving
     // pass whenever the candidate has any material pass. A candidate with no
-    // material pass at all is refused when it drops a route the published
-    // generation consumed. Collects all the materials that are left without
-    // a pass and throws material_route_unserved@1 once.
+    // material pass at all requests a restart when it drops a route the
+    // published generation consumed (UD-1). Otherwise collects materials
+    // without a receiving pass and throws material_route_unserved@1 once.
     static void requireEveryMaterialServed(
         const MaterialContainer &container,
         const RendererRuntimeGeneration &generation);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "structfieldschema.hpp"
+#include "jsonnumber.hpp"
 
 #include <cmath>
 #include <cstdint>
@@ -299,6 +300,18 @@ inline double validateStructFloating(const StructJson &value, const StructFieldS
     return result;
 }
 
+template <class Float>
+nlohmann::ordered_json encodeStructFloatingValue(Float value, const StructFieldSchema &schema,
+                                                 const std::string &path) {
+    (void)validateStructFloating(StructJson(value), schema, path, std::same_as<Float, float>);
+    auto result = authoredJsonNumber(value);
+    // A rounded decimal must still satisfy the reader's declared range.
+    const auto number = result.template get<double>();
+    if (const auto *range = std::get_if<std::pair<double, double>>(&schema.range);
+        range && (number < range->first || number > range->second)) return value;
+    return result;
+}
+
 inline std::size_t structVectorLength(StructFieldType type) {
     switch (type) {
     case StructFieldType::Vec2:
@@ -538,24 +551,13 @@ nlohmann::ordered_json encodeStructScalarValue(const Value &value, const PolicyF
         (void)validateStructUnsigned(encoded, schema, path);
         return value;
     } else if constexpr (std::same_as<Value, float> || std::same_as<Value, double>) {
-        const StructJson encoded = value;
-        (void)validateStructFloating(encoded, schema, path, std::same_as<Value, float>);
-        return value;
+        return encodeStructFloatingValue(value, schema, path);
     } else if constexpr (std::same_as<Value, vec2>) {
-        for (const float component : {value.x, value.y}) {
-            (void)validateStructFloating(StructJson(component), schema, path, true);
-        }
-        return nlohmann::ordered_json::array({value.x, value.y});
+        return nlohmann::ordered_json::array({encodeStructFloatingValue(value.x, schema, path), encodeStructFloatingValue(value.y, schema, path)});
     } else if constexpr (std::same_as<Value, vec3>) {
-        for (const float component : {value.x, value.y, value.z}) {
-            (void)validateStructFloating(StructJson(component), schema, path, true);
-        }
-        return nlohmann::ordered_json::array({value.x, value.y, value.z});
+        return nlohmann::ordered_json::array({encodeStructFloatingValue(value.x, schema, path), encodeStructFloatingValue(value.y, schema, path), encodeStructFloatingValue(value.z, schema, path)});
     } else if constexpr (std::same_as<Value, vec4> || std::same_as<Value, quat>) {
-        for (const float component : {value.x, value.y, value.z, value.w}) {
-            (void)validateStructFloating(StructJson(component), schema, path, true);
-        }
-        return nlohmann::ordered_json::array({value.x, value.y, value.z, value.w});
+        return nlohmann::ordered_json::array({encodeStructFloatingValue(value.x, schema, path), encodeStructFloatingValue(value.y, schema, path), encodeStructFloatingValue(value.z, schema, path), encodeStructFloatingValue(value.w, schema, path)});
     } else {
         return value;
     }

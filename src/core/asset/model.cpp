@@ -10,6 +10,8 @@
 #include "../loader/basicconfig.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../material/projectmaterialasset.hpp"
+#include "../material/materialcontainer.hpp"
+#include "../model/vertbufcontainer.hpp"
 #include "../model/engineprimitives.hpp"
 #include "../model/gltf.hpp"
 #include "../parallel_prepare.hpp"
@@ -17,7 +19,9 @@
 #include "../renderingpass/framegraphruntime.hpp"
 #include "../startup.hpp"
 #include "../watch/assetkey.hpp"
+#include "../watch/problemlist.hpp"
 #include "../watch/reloadqueue.hpp"
+#include "../watch/reloadservice.hpp"
 #include "../watch/reloadtransaction.hpp"
 #include "../../project/materialformat.hpp"
 
@@ -102,7 +106,7 @@ std::string lowerExtension(const std::filesystem::path &path) {
 }
 
 std::string fragmentText(const std::optional<AssetFragmentRef> &fragment) {
-    return fragment ? fragment->kind + "/" + fragment->path : std::string{};
+    return fragment ? assetFragmentText(*fragment) : std::string{};
 }
 
 watch::AssetKey logicalModelSource(std::string_view name) {
@@ -209,12 +213,9 @@ PrimitiveMaterialBindingDocument loadMaterialBindings(std::string_view reference
 
 void applyDeclarationBindings(ModelTemplate &model,
                               const ModelDeclaration &declaration) {
-    const auto project_materials =
-        GET_MODULE(ProjectMaterialAssetContainer)
-            .namedMaterials();
-    validateNamedMaterialResolutionDomains(
-        model, project_materials,
-        declaration.name);
+    auto &project = GET_MODULE(ProjectMaterialAssetContainer);
+    const auto project_materials = project.namedMaterials();
+    model.authored_asset_reference = declaration.reference;
     if (!declaration.material_bindings) return;
     const auto fragment = fragmentText(declaration.fragment);
     applyPrimitiveMaterialBindings(
@@ -222,6 +223,57 @@ void applyDeclarationBindings(ModelTemplate &model,
         fragment.empty() ? std::nullopt
                          : std::optional<std::string_view>{fragment},
         project_materials);
+}
+
+// Only a published generation may change Problems. Inspect/preflight and
+// failed reload candidates keep their diagnostics private.
+void publishBindingProblems(const ModelTemplate &model, const std::string &name,
+                            std::string_view source) {
+    std::vector<std::string> unresolved;
+    auto rows = nlohmann::json::array();
+    std::string reasons;
+    auto unresolved_rows = nlohmann::json::array();
+    auto stale_rows = nlohmann::json::array();
+    for (const auto &issue : model.binding_issues) {
+        LOG_WARNING(logger, "model '{}': material bindings row {}: {}",
+                    name, issue.row ? std::to_string(*issue.row) : std::string{"<missing>"}, issue.reason);
+        if (issue.name_mismatch) {
+            stale_rows.push_back({{"row", *issue.row}, {"mesh", issue.mesh}, {"primitive", issue.primitive},
+                {"material", issue.material}, {"written_name", issue.written_name}, {"current_name", issue.current_name}});
+            continue;
+        }
+        if (!issue.material.empty()) {
+            unresolved.push_back(issue.material);
+            unresolved_rows.push_back({{"row", *issue.row}, {"mesh", issue.mesh},
+                                       {"primitive", issue.primitive}, {"usd_path", issue.usd_path},
+                                       {"material", issue.material}, {"reason", issue.reason}});
+            continue;
+        }
+        reasons += (reasons.empty() ? "" : "; ") +
+                   std::string{"row "} + (issue.row ? std::to_string(*issue.row) : "<missing>") +
+                   ": " + issue.reason;
+        rows.push_back({{"row", issue.row ? nlohmann::json(*issue.row) : nlohmann::json(nullptr)},
+                        {"mesh", issue.mesh}, {"primitive", issue.primitive},
+                        {"usd_path", issue.usd_path}, {"reason", issue.reason}});
+    }
+    GET_MODULE(ProjectMaterialAssetContainer).noteUnresolvedBindings(
+        name, std::move(unresolved), std::move(unresolved_rows), source);
+    std::vector<nlohmann::json> problems;
+    if (!stale_rows.empty())
+        problems.push_back({{"severity", std::string{problemSeverityWarning}}, {"source", std::string{source}},
+            {"code", "material.reference_stale@1"}, {"message", "model '" + name + "': stale material reference; index wins"},
+            {"document_kind", std::string{problemKindMaterial}}, {"fields", {{"model", name}, {"rows", std::move(stale_rows)}}}});
+    if (!rows.empty()) {
+        problems.push_back({
+            {"severity", std::string{problemSeverityWarning}},
+            {"source", std::string{source}},
+            {"code", "model.bindings_stale@1"},
+            {"message", "model '" + name + "': material bindings no longer match its primitives; " +
+                        reasons},
+            {"document_kind", std::string{problemKindMaterial}},
+            {"fields", {{"model", name}, {"rows", std::move(rows)}}}});
+    }
+    GET_MODULE(ProblemList).replace("model_bindings/" + name, std::move(problems));
 }
 
 std::set<std::string> occurrenceIds(const ModelTemplate &model) {
@@ -311,8 +363,7 @@ ModelDeclaration resolveDeclaration(std::string name, std::string reference,
     // project-relative key.
     auto authored_reference = container_key.path;
     if (fragment) {
-        authored_reference += "#" + fragment->kind + "/" +
-                              fragment->path;
+        authored_reference += "#" + assetFragmentText(*fragment);
     }
     auto declaration = ModelDeclaration{
         .name = std::move(name),
@@ -327,6 +378,25 @@ ModelDeclaration resolveDeclaration(std::string name, std::string reference,
         declaration.material_bindings =
             loadMaterialBindings(*material_bindings, declaration.name, declaration.path);
     }
+    return declaration;
+}
+
+// A models[] entry of the published asset_data (paths made physical by
+// ProjectBasicConfig), declared as the engine declares it at start.
+ModelDeclaration declarationFromAssetEntry(const nlohmann::json &asset) {
+    std::optional<std::string> material_bindings;
+    if (const auto found = asset.find("material_bindings"); found != asset.end()) {
+        if (!found->is_string()) {
+            throw std::runtime_error("model '" +
+                                     asset.value("name", std::string{"<unnamed>"}) +
+                                     "' material_bindings must be a string reference");
+        }
+        material_bindings = found->get<std::string>();
+    }
+    auto declaration = resolveDeclaration(asset.at("name").get<std::string>(),
+                                          asset.at("path").get<std::string>(), false,
+                                          std::move(material_bindings));
+    declaration.asset_key = CanonicalModelAssetKey{declaration.name};
     return declaration;
 }
 
@@ -369,6 +439,7 @@ struct ModelAssetContainer::Impl {
         std::shared_ptr<const void> live_payload;
         bool declared = false;
         std::vector<watch::AssetKey> dependencies;
+        bool registration_restart_required = false;
     };
     struct CommitBatch {
         struct Installation {
@@ -446,6 +517,7 @@ struct ModelAssetContainer::Impl {
             throw std::runtime_error("duplicate model asset name: " + declaration.name);
         model.asset_id = ModelAssetId{next_asset_identity++};
         model.authored_asset_reference = declaration.reference;
+        model.authored_model_name = declaration.name;
         model.content_revision = 1;
         model.compatibility_revision = 0;
         const auto name = declaration.name;
@@ -454,6 +526,7 @@ struct ModelAssetContainer::Impl {
         if (!inserted) throw std::runtime_error("failed to register model asset: " + name);
         for (const auto &key : found->second.dependencies) by_source[key].insert(name);
         declare(found->second);
+        publishBindingProblems(found->second.model, name, problemSourceStartup);
     }
 
     void publishBatch(const std::shared_ptr<CommitBatch> &batch) noexcept {
@@ -483,6 +556,7 @@ struct ModelAssetContainer::Impl {
             install.payload->owns_candidate = false;
             install.record->live_payload = std::move(install.registry_payload);
             install.record->dependencies = std::move(install.payload->dependencies);
+            install.record->registration_restart_required = false;
         }
         by_source.swap(batch->source_index);
         // The animation rig generation advances inside the same commit that
@@ -515,25 +589,15 @@ ModelAssetContainer::ModelAssetContainer() : impl_{std::make_unique<Impl>()} {
     const auto assets = nlohmann::json::parse(GET_MODULE(ProjectBasicConfig).assetDataJson()).at("models");
     std::vector<ModelDeclaration> declarations;
     declarations.reserve(assets.size());
-    for (const auto &asset : assets) {
-        std::optional<std::string> material_bindings;
-        if (const auto found = asset.find("material_bindings"); found != asset.end()) {
-            if (!found->is_string()) {
-                throw std::runtime_error("model '" +
-                                         asset.value("name", std::string{"<unnamed>"}) +
-                                         "' material_bindings must be a string reference");
-            }
-            material_bindings = found->get<std::string>();
-        }
-        auto declaration = resolveDeclaration(asset.at("name").get<std::string>(),
-                                              asset.at("path").get<std::string>(), false,
-                                              std::move(material_bindings));
-        declaration.asset_key = CanonicalModelAssetKey{declaration.name};
-        declarations.push_back(std::move(declaration));
-    }
+    for (const auto &asset : assets) declarations.push_back(declarationFromAssetEntry(asset));
     const auto prepared = parallelPrepareOrdered<PreparedGltf>(
         declarations.size(),
         [&](std::size_t index) { return prepareDeclaration(declarations[index]); }, 4);
+    // Models can first arrive through a direct reference after startup, even
+    // when the asset list is empty. Their GPU owners must still outlive this
+    // container: modules are destroyed in reverse construction order.
+    (void)GET_MODULE(MaterialContainer);
+    (void)GET_MODULE(VertBufContainer);
     auto &loader = GET_MODULE(GltfLoader);
     try {
         for (std::size_t index = 0; index < declarations.size(); ++index) {
@@ -597,7 +661,7 @@ ModelTemplate &ModelAssetContainer::getModelTemplateByName(const std::string &na
     }
 
     const auto parsed = parsePathReference(name);
-    if (!parsed.fragment) throw std::out_of_range("unknown model asset: " + name);
+    if (!parsed.fragment) throw UnknownModelAssetError{name};
     auto declaration = resolveDeclaration(name, name, true);
     auto prepared = prepareDeclaration(declaration);
     auto dependencies = modelDependencies(declaration, prepared);
@@ -694,6 +758,7 @@ watch::ReloadTransactionGroup ModelAssetContainer::makeReloadGroup(
                 model.asset_id = record.model.asset_id;
                 model.authored_asset_reference =
                     record.declaration.reference;
+                model.authored_model_name = record.declaration.name;
                 model.content_revision = current->content_revision + 1;
                 model.compatibility_revision = current->compatibility_revision +
                                                (item.rig_changed ? 1u : 0u);
@@ -813,6 +878,14 @@ watch::ReloadTransactionGroup ModelAssetContainer::makeReloadGroup(
     });
     group.setPublish([this, batch]() noexcept {
         impl_->publishBatch(batch);
+        // Publication itself is no-throw. A diagnostic allocation failure must
+        // never turn an already installed generation into a failed transaction.
+        try {
+            for (const auto &name : batch->names)
+                publishBindingProblems(impl_->records.at(name).model, name, problemSourceHotReload);
+        } catch (const std::exception &error) {
+            LOG_WARNING(logger, "could not publish model binding diagnostics: {}", error.what());
+        }
     });
     group.setRollback([batch]() noexcept {
         batch->renderer_candidate.reset();
@@ -845,6 +918,163 @@ bool ModelAssetContainer::retireReloadPayload(
         if (logger) LOG_ERROR(logger, "model reload retirement failed with an unknown error");
         return true;
     }
+}
+
+bool ModelAssetContainer::hasModel(const std::string &name) const {
+    return impl_->records.contains(name);
+}
+
+std::vector<ModelMaterialSlot> ModelAssetContainer::materialSlots(const std::string &name) const {
+    const auto &declaration = impl_->records.at(name).declaration;
+    auto preview = GET_MODULE(GltfLoader).inspect(prepareDeclaration(declaration));
+    preview.authored_asset_reference = declaration.reference;
+    std::map<std::pair<std::uint32_t, std::uint32_t>, ModelMaterialSlot> slots;
+    for (const auto &group : preview.material_primitives) {
+        const auto named = std::find_if(preview.named_materials.begin(), preview.named_materials.end(),
+                                        [&](const auto &material) { return material.material == group.material; });
+        for (const auto &primitive : group.primitives) {
+            slots.try_emplace({primitive.mesh_index, primitive.primitive_index},
+                              ModelMaterialSlot{
+                                  .mesh = primitive.mesh_index,
+                                  .primitive = primitive.primitive_index,
+                                  .slot = named != preview.named_materials.end() ? modelMaterialReference(preview, *named) : std::string{},
+                                  .routing = named != preview.named_materials.end()
+                                                 ? named->routing
+                                                 : std::optional<MaterialVariantRouting>{},
+                                  .vat_deformed = primitive.vat_deformed,
+                                  .display_name = named != preview.named_materials.end() ? modelMaterialDisplayName(preview, *named) : std::string{},
+                              });
+        }
+    }
+    std::vector<ModelMaterialSlot> result;
+    result.reserve(slots.size());
+    for (auto &[key, slot] : slots) {
+        (void)key;
+        result.push_back(std::move(slot));
+    }
+    return result;
+}
+
+std::optional<PrimitiveMaterialBindingDocument>
+ModelAssetContainer::declaredMaterialBindings(const std::string &name) const {
+    return impl_->records.at(name).declaration.material_bindings;
+}
+
+std::optional<PrimitiveMaterialBindingDocument>
+ModelAssetContainer::exchangeMaterialBindings(const std::string &name, const std::string &reference) {
+    auto &declaration = impl_->records.at(name).declaration;
+    auto bindings = declaration.engine_primitive
+                        ? loadMaterialBindings(reference, declaration.name, {}, declaration.reference)
+                        : loadMaterialBindings(reference, declaration.name, declaration.path);
+    return std::exchange(declaration.material_bindings, std::move(bindings));
+}
+
+void ModelAssetContainer::restoreMaterialBindings(const std::string &name,
+                                                  std::optional<PrimitiveMaterialBindingDocument> previous) {
+    impl_->records.at(name).declaration.material_bindings = std::move(previous);
+}
+
+watch::AssetKey ModelAssetContainer::reloadKey(const std::string &name) const {
+    return impl_->records.at(name).declaration.container_key;
+}
+
+std::optional<std::string> ModelAssetContainer::modelDeclaringMaterial(std::string_view material) const {
+    for (const auto &[name, record] : impl_->records)
+        for (const auto &named : record.model.named_materials)
+            if (named.name == material) return name;
+    return std::nullopt;
+}
+
+std::vector<std::string>
+ModelAssetContainer::modelsDrawingMaterials(std::span<const GlobalMaterialId> materials) const {
+    std::vector<ModelAssetId> instanced;
+    if (const auto *instances = FastModuleContainer::tryGet<PolygonInstanceContainer>())
+        instanced = instances->modelsDrawingMaterials(materials);
+    std::vector<std::string> result;
+    for (const auto &[name, record] : impl_->records) {
+        const auto drawn = [&] {
+            if (std::find(instanced.begin(), instanced.end(), record.model.asset_id) != instanced.end()) return true;
+            return std::any_of(record.model.material_primitives.begin(), record.model.material_primitives.end(),
+                               [&](const auto &group) {
+                                   return std::find(materials.begin(), materials.end(), group.material) !=
+                                          materials.end();
+                               });
+        };
+        if (drawn()) result.push_back(name);
+    }
+    return result;
+}
+
+void ModelAssetContainer::preflightModel(const std::string &name, const std::string &reference) {
+    auto declaration = resolveDeclaration(name, reference, false);
+    declaration.asset_key = CanonicalModelAssetKey{declaration.name};
+    auto preview = GET_MODULE(GltfLoader).inspect(prepareDeclaration(declaration));
+    applyDeclarationBindings(preview, declaration);
+}
+
+void ModelAssetContainer::registerModel(const std::string &name) {
+    const auto assets = nlohmann::json::parse(GET_MODULE(ProjectBasicConfig).assetDataJson()).at("models");
+    const auto entry = std::find_if(assets.begin(), assets.end(), [&](const nlohmann::json &asset) {
+        return asset.is_object() && asset.value("name", std::string{}) == name;
+    });
+    if (entry == assets.end())
+        throw std::runtime_error("the engine's asset_data declares no model '" + name + "'");
+    auto declaration = declarationFromAssetEntry(*entry);
+    if (const auto held = impl_->records.find(name); held != impl_->records.end()) {
+        if (held->second.declaration.container_key != declaration.container_key)
+            throw std::runtime_error("duplicate model asset name: " + name);
+        // The document may have removed the old bindings while an animation
+        // rig kept this record alive. Adopt the published declaration even if
+        // rebuilding fails: readers must describe what the next start loads.
+        auto &record = held->second;
+        record.declaration = std::move(declaration);
+        record.registration_restart_required = true;
+        auto *reload = FastModuleContainer::tryGet<watch::ReloadService>();
+        if (!reload) throw std::runtime_error("this host has no model reload service");
+        const auto key = record.declaration.container_key;
+        reload->reloadModelsNow(std::span{&key, std::size_t{1}});
+        return;
+    }
+    // As the constructor installs each entry at start.
+    auto prepared = prepareDeclaration(declaration);
+    auto model = GET_MODULE(GltfLoader).commit(prepared, GltfAuthoredAssetReference{declaration.reference});
+    try {
+        applyDeclarationBindings(model, declaration);
+        auto dependencies = modelDependencies(declaration, prepared);
+        impl_->add(std::move(declaration), std::move(model), std::move(dependencies));
+    } catch (...) {
+        ReleaseErrorSink::record("failed model registration release", releaseModelGpuResources(model, false));
+        throw;
+    }
+}
+
+bool ModelAssetContainer::registrationRestartRequired(const std::string &name) const {
+    return impl_->records.at(name).registration_restart_required;
+}
+
+std::optional<std::string> ModelAssetContainer::unregisterModel(const std::string &name) {
+    const auto found = impl_->records.find(name);
+    if (found == impl_->records.end()) return std::nullopt;
+    auto &record = found->second;
+    if (record.model.skeletal)
+        return "the model has an animation rig, which the animation service may still hold";
+    if (const auto *instances = FastModuleContainer::tryGet<PolygonInstanceContainer>();
+        instances && instances->hasModelInstances(record.model.asset_id))
+        return "a live instance still draws the model";
+    if (record.declared && impl_->coordinator != nullptr)
+        (void)impl_->coordinator->registry().destroyResource(record.logical);
+    for (const auto &key : record.dependencies) {
+        const auto source = impl_->by_source.find(key);
+        if (source == impl_->by_source.end()) continue;
+        source->second.erase(name);
+        if (source->second.empty()) impl_->by_source.erase(source);
+    }
+    // As a reload retires a replaced template: frames in flight may still
+    // read its resources.
+    ReleaseErrorSink::record("unregistered model release", releaseModelGpuResources(record.model, true));
+    impl_->records.erase(found);
+    publishBindingProblems(ModelTemplate{}, name, problemSourceEditRpc);
+    return std::nullopt;
 }
 
 ModelAssetId ModelAssetContainer::assetIdForTesting(const std::string &name) const {

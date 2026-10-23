@@ -1,4 +1,5 @@
 #include "automationserver.hpp"
+#include "../guitrace.hpp"
 #include "automationcommands.hpp"
 
 #include <QCoreApplication>
@@ -78,6 +79,7 @@ void AutomationServer::acceptConnection() {
 }
 
 void AutomationServer::readFrom(QLocalSocket *socket) {
+    const GuiTraceSpan trace{"automation_read"};
     while (socket->canReadLine()) {
         QByteArray line = socket->readLine();
         while (line.endsWith('\n') || line.endsWith('\r')) line.chop(1);

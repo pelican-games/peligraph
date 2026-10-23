@@ -67,8 +67,11 @@ class GraphCanvasBakeDialog final : public QDialog {
 //     settings). UX-13a, decision 3: nothing is edited after it -- the
 //     rewritten table is a file the reload watches, and the engine reads it
 //     again in a new generation (IA-3, "Picked up the change to <table>").
+// UX-14, decision 5 (engine AB-2): a bake refused because the table was in
+// use (audio.analysis_failed@1, output_locked) offers Bake again, which sends
+// the same bake_audio_analysis once more.
 // The bake row is `pelican.graphCanvasBake` (`.line`, `.useInGraph`,
-// `.useInShader`, `.shaderLine`, `.copy`), the stale row
+// `.useInShader`, `.shaderLine`, `.copy`, `.again`), the stale row
 // `pelican.graphCanvasStale` (`.line`, `.rebake`).
 class GraphCanvasAudioAnalysis {
   public:
@@ -126,6 +129,7 @@ class GraphCanvasAudioAnalysis {
     QPushButton *use_in_shader_ = nullptr;
     QLineEdit *shader_line_ = nullptr;
     QPushButton *copy_ = nullptr;
+    QPushButton *again_ = nullptr;
     QWidget *stale_row_ = nullptr;
     QLabel *stale_line_ = nullptr;
     QPushButton *rebake_ = nullptr;
@@ -137,6 +141,8 @@ class GraphCanvasAudioAnalysis {
     QString ticket_;
     std::string sound_;
     std::string out_;
+    // What the last bake sent, for Bake again (decision 5).
+    nlohmann::json sent_;
     std::optional<std::chrono::steady_clock::time_point> started_;
     // The last committed bake's table (decisions 2 and 3).
     std::optional<GraphCanvasAnalysisTable> baked_;

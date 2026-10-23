@@ -1,4 +1,7 @@
 #include <argparse/argparse.hpp>
+#include "../core/executabledirectory.hpp"
+#include "../core/playerdiagnostics.hpp"
+#include "../platform/playerconsole.hpp"
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -6,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -246,11 +250,6 @@ std::filesystem::path weaklyCanonicalPath(const std::filesystem::path &path, con
     return canonical;
 }
 
-std::filesystem::path executableDirectory(char *argv0) {
-    const auto exe_path = weaklyCanonicalPath(std::filesystem::absolute(std::filesystem::path{argv0}), "executable");
-    return exe_path.parent_path();
-}
-
 std::optional<std::filesystem::path> findExampleProjectNearExecutable(const std::filesystem::path &exe_dir) {
     auto current = exe_dir;
     while (!current.empty()) {
@@ -269,7 +268,7 @@ std::optional<std::filesystem::path> findExampleProjectNearExecutable(const std:
 }
 
 void configureImplicitProject(ParsedLaunchConfig &parsed, char *argv0) {
-    parsed.project_root = executableDirectory(argv0);
+    parsed.project_root = Pelican::executableDirectory();
     auto project_file = parsed.project_root / "project.json";
     if (!std::filesystem::is_regular_file(project_file)) {
         if (const auto example_project = findExampleProjectNearExecutable(parsed.project_root)) {
@@ -323,6 +322,11 @@ void configureExplicitProject(ParsedLaunchConfig &parsed, const std::string &val
 // The time becomes a frame number here and nowhere else. `llround` is the
 // quantization: a time between two frames names the nearer one, and the engine
 // is never handed a time that falls between steps.
+// A seek replays actual rendered frames. Allow up to one hour of timeline
+// time at any fps, including ordinary music-length seeks, while refusing
+// enormous times before replay. Frame conversion is checked separately.
+constexpr double kMaxOfflineStartSeconds = 3600.0;
+
 std::uint64_t parseStartFrame(const std::string &text, double fps) {
     double seconds = 0.0;
     std::size_t consumed = 0;
@@ -335,11 +339,21 @@ std::uint64_t parseStartFrame(const std::string &text, double fps) {
         throw std::runtime_error(
             "offline.time_invalid@1: --start-time must be a finite, non-negative time in seconds: " + text);
     }
-    const auto frame = std::llround(seconds * fps);
-    if (frame < 0) {
-        throw std::runtime_error("offline.time_invalid@1: --start-time does not land on a frame: " + text);
+    const double frame_position = seconds * fps;
+    const double rounded_frame = std::round(frame_position);
+    // Check before llround: overflow / NaN and an out-of-range conversion
+    // must never reach it. double rounds LLONG_MAX up to 2^63, so reject that
+    // endpoint as well. The timeline limit applies to the input seconds,
+    // preserving the existing nearest-frame quantization within the limit.
+    if (seconds > kMaxOfflineStartSeconds ||
+        !std::isfinite(fps) || fps <= 0.0 || !std::isfinite(rounded_frame) ||
+        rounded_frame >= static_cast<double>(std::numeric_limits<long long>::max()) ||
+        !std::isfinite(1.0 / fps) || !std::isfinite(rounded_frame / fps)) {
+        throw std::runtime_error(
+            "offline.time_invalid@1: --start-time requires a representable frame, finite engine time and at most " +
+            std::to_string(kMaxOfflineStartSeconds) + " seconds: " + text);
     }
-    return static_cast<std::uint64_t>(frame);
+    return static_cast<std::uint64_t>(std::llround(frame_position));
 }
 
 ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
@@ -352,6 +366,11 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
     program.add_argument("--rpc")
         .flag()
         .help("enable stdio JSON-RPC (blocking in headless, frame-boundary in windowed mode)");
+    program.add_argument("--render-fallback")
+        .flag()
+        .help("with --rpc: a rendering configuration that cannot be composed at start runs the "
+              "engine's fallback generation (get_status.render_pipeline says why) until "
+              "reload_render_documents or a render edit publishes a fixed one");
     program.add_argument("--xr")
         .default_value(std::string{"off"})
         .metavar("off|auto|on")
@@ -373,7 +392,8 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
     program.add_argument("--start-time")
         .default_value(std::string{})
         .metavar("seconds")
-        .help("headless: replay up to this time, then render --frames frames from there");
+        .help("headless: replay up to this time, then render --frames frames from there (seconds <= " +
+              std::to_string(kMaxOfflineStartSeconds) + "; nearest frame)");
     program.add_argument("--size").default_value(std::string{"1280x720"}).metavar("WxH").help("headless render size");
     program.add_argument("--render-out").default_value(std::string{}).metavar("path").help("render output path");
     program.add_argument("--log-file")
@@ -381,6 +401,9 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         .metavar("path")
         .help("write this run's log to path (truncated) instead of appending to pelican.log in the working directory");
     program.add_argument("--dump-frame-plan").flag().help("dump the resolved frame plan JSON to stderr");
+    program.add_argument("--console").flag().help("attach to the parent console");
+    program.add_argument("--gpu").default_value(std::string{}).metavar("index|name")
+        .help("override automatic Vulkan GPU selection (zero-based index or device name)");
     program.add_argument("--gpu-labels").flag().help("enable Vulkan debug object names and command labels");
     program.add_argument("--vulkan-validation")
         .metavar("off|on")
@@ -472,6 +495,12 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         if (config.embedded && config.headless) {
             throw std::runtime_error("--embedded cannot be combined with --headless");
         }
+        // BS-1: only a client can read why the engine is on its fallback and
+        // publish the fixed configuration, so the flag needs RPC.
+        config.render_fallback = program.get<bool>("--render-fallback");
+        if (config.render_fallback && !config.rpc) {
+            throw std::runtime_error("--render-fallback requires --rpc");
+        }
         config.xr_mode = parseXrMode(program.get<std::string>("--xr"));
         // AU-3: which mixer the voices reach. The argument wins and leaves the
         // environment unread; the variable lets a harness (Studio's scenario
@@ -550,6 +579,7 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
             config.render_out = std::filesystem::path{render_out};
         }
         config.dump_frame_plan = program.get<bool>("--dump-frame-plan");
+        config.gpu = program.get<std::string>("--gpu");
         config.gpu_labels = program.get<bool>("--gpu-labels");
         if (program.is_used("--vulkan-validation")) {
             config.vulkan_validation = parseVulkanValidationMode(
@@ -681,7 +711,7 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         }
 
 #ifdef PELICAN_GAME_LOGIC_DLL_NAME
-        config.game_logic_dll = executableDirectory(argv[0]) / PELICAN_GAME_LOGIC_DLL_NAME;
+        config.game_logic_dll = Pelican::executableDirectory() / PELICAN_GAME_LOGIC_DLL_NAME;
 #endif
         const auto game_logic = program.get<std::string>("--game-logic");
         if (!game_logic.empty()) {
@@ -701,13 +731,22 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
 } // namespace
 
 int main(int argc, char *argv[]) {
+    Pelican::preparePlayerConsole(argc, argv);
+    bool rpc = false, embedded = false, headless = false;
+    for (int i = 1; i < argc; ++i) {
+        rpc |= std::string_view(argv[i]) == "--rpc";
+        embedded |= std::string_view(argv[i]) == "--embedded";
+        headless |= std::string_view(argv[i]) == "--headless";
+    }
     ParsedLaunchConfig parsed_launch_config;
     try {
         parsed_launch_config = parseLaunchConfig(argc, argv);
-    } catch (const std::exception &) {
+    } catch (const std::exception &error) {
+        Pelican::reportPlayerFatalError(error.what(), rpc, embedded, headless);
         return -1;
     }
 
+    try {
     const auto &launch_config = parsed_launch_config.engine;
     if (!parsed_launch_config.log_file.empty()) {
         Pelican::setLogFilePath(parsed_launch_config.log_file);
@@ -733,7 +772,7 @@ int main(int argc, char *argv[]) {
             parsed_launch_config.project_json =
                 readTextFile(parsed_launch_config.project_file);
         } catch (const Pelican::ProjectMigrationError &error) {
-            std::cerr << error.what() << std::endl;
+            Pelican::reportPlayerFatalError(error.what(), rpc, embedded, headless);
             if (error.code() != Pelican::projectMigrationRequiredCode) {
                 return 1;
             }
@@ -751,7 +790,7 @@ int main(int argc, char *argv[]) {
                       << std::endl;
             return 1;
         } catch (const std::exception &error) {
-            std::cerr << error.what() << std::endl;
+            Pelican::reportPlayerFatalError(error.what(), rpc, embedded, headless);
             return 1;
         }
 
@@ -765,7 +804,7 @@ int main(int argc, char *argv[]) {
                 {.ignore_engine_version =
                      parsed_launch_config.ignore_engine_version});
         } catch (const std::exception &error) {
-            std::cerr << error.what() << std::endl;
+            Pelican::reportPlayerFatalError(error.what(), rpc, embedded, headless);
             return 1;
         }
         path_resolver.setup(parsed_launch_config.project_root, launch_config.allow_absolute_paths,
@@ -798,4 +837,8 @@ int main(int argc, char *argv[]) {
     }
 
     return pl.run() ? 0 : 1;
+    } catch (const std::exception &error) {
+        Pelican::reportPlayerFatalError(error.what(), rpc, embedded, headless);
+        return 1;
+    }
 }

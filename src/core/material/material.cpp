@@ -1,9 +1,25 @@
 #include "material.hpp"
 #include "../loader/basicconfig.hpp"
 
+#include <algorithm>
+#include <cstring>
 #include <stdexcept>
 
 namespace Pelican {
+
+float rayAlphaCutoff(const Std140Layout &layout, std::span<const std::byte> values) {
+    const auto found = std::find_if(
+        layout.members.begin(), layout.members.end(),
+        [](const auto &member) { return member.name == "alpha_cutoff"; });
+    if (found == layout.members.end() || found->size < sizeof(float) ||
+        found->offset > values.size() ||
+        sizeof(float) > values.size() - found->offset) {
+        return 0.5F;
+    }
+    float result = 0.5F;
+    std::memcpy(&result, values.data() + found->offset, sizeof(result));
+    return result;
+}
 
 MaterialLoweringCapabilities projectMaterialLoweringCapabilities() {
     MaterialLoweringCapabilities capabilities;

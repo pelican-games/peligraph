@@ -78,6 +78,20 @@ class FramePlanWidget final : public QWidget {
     // folded node, or its own). False when the Graph tab could not.
     using GraphPassOpenAction = std::function<bool(const QString &pass)>;
     void setGraphPassOpenAction(GraphPassOpenAction action);
+    // GL-5c, decisions 1 and 2. On a root that is a graph and selects no
+    // preset (the context's config_kind "direct", as Blank's), Add material
+    // pass... / Add fullscreen pass... / Add compute task... hand `action`
+    // the palette's op (render.material_pass, render.fullscreen,
+    // render.compute): the Graph tab places it as its palette does. False
+    // when the Graph tab cannot (its root is not a graph): the Frame Plan's
+    // own form opens, as it does on a root that selects a preset.
+    using GraphPlaceAction = std::function<bool(const QString &op)>;
+    void setGraphPlaceAction(GraphPlaceAction action);
+    // GL-5c, decision 3. Whether the Graph tab edits a pass of the plan (a
+    // graph node's, or the rendering section's in its detail column): Edit
+    // pass and a double-click then open it there, through Open in Graph,
+    // instead of the Pass Editor. Unset: the Pass Editor, as before.
+    void setGraphEditsPassQuery(std::function<bool(const QString &pass)> query);
     // GL-2b, decision 3. The Graph tab's Layers row names a plan node: the
     // Logical graph comes forward with it picked (its group opened).
     void showPlanNode(const QString &node);
@@ -164,11 +178,10 @@ class FramePlanWidget final : public QWidget {
     // pass -- the declarations, and so the sockets, may have moved.
     void setExtraShaderSources(NodeShaderSources sources);
     void setShadersReloadedAction(std::function<void()> reloaded);
-    // RL-1s, decision 1: the render documents the window watches go into
-    // the same watcher as the shaders (one watcher, not two); a write to
-    // one calls `changed` with its path and never asks for reload_shaders.
-    void setWatchedRenderDocuments(std::vector<std::filesystem::path> files,
-                                   std::function<void(const QString &path)> changed);
+    // HW-2s, decision 7: a get_status any panel read. Whether the engine's
+    // own watch is open (project.json's hot_reload) decides how a
+    // reload_shaders that found nothing new is read.
+    void observeEngineStatus(const nlohmann::json &status);
     // UX-6a, decision 4: the Physical plan's Remove on an image the planner
     // keeps out of aliasing because it has TRANSFER_SRC. The action takes
     // the flag off the image (the Graph tab's document): the resource, and
@@ -185,6 +198,48 @@ class FramePlanWidget final : public QWidget {
     // connected input (engine://passthrough is copied into the project
     // first). The Pass Editor's Fix sockets comes here.
     void fixSockets(const QString &graph, const QString &pass);
+    // GL-5d, decision 2: the same, for a pass a graph node draws. When
+    // engine://passthrough is copied, `graph_fragment` moves the node onto the
+    // copy (its shader.fragment, the Graph tab's edit) instead of the
+    // edit_preset_pass a pass of the rendering section takes; false when it
+    // could not.
+    void fixSockets(const QString &graph, const QString &pass,
+                    std::function<bool(const QString &reference)> graph_fragment);
+    // VI-3b. Make sockets variadic on one pass, as the canvas menu's entry: the
+    // block Fix sockets wrote, back to the line it replaced.
+    void makeSocketsVariadic(const QString &graph, const QString &pass);
+    // Order...: the node order dialog (the Features tab's, through
+    // setNodeOrderAction) on the plan this panel holds. The toolbar's button
+    // and the Graph's Order… (GL-5d, decision 1) come here.
+    void orderNodes();
+    // GL-5d. Run `action` once this panel has read the plan and the authoring
+    // context again -- the Graph tab runs this panel's Fix sockets, Make
+    // sockets variadic and Order... through it while the panel may be out of
+    // view (it reads nothing then, N-8). The status lines the action leaves,
+    // and the one its edit ends with, are handed to `said` too.
+    // GL-5f, decision 2: with `tasks`, the compute task catalog too (Delete
+    // on an authored task, removePass, builds its edit from it).
+    void whenRead(std::function<void()> action,
+                  std::function<void(const QString &line)> said = {}, bool tasks = false);
+    // GL-5e. The rest of what only this panel did, for the Graph tab to run
+    // (through whenRead) on what is picked there -- each the function this
+    // panel's own entry calls:
+    // decision 3, Delete on a pass the project authored (remove_authored_pass);
+    void removePass(const QString &graph, const QString &pass);
+    // decision 4, the two ways out of a shader that does not read the
+    // inputs a pass was given -- Use engine://passthrough (`use_passthrough`)
+    // or Open the shader -- and of a reload that no longer declares a binding
+    // the pass feeds: Disconnect (`disconnect`) or Open the shader;
+    void runShaderContract(const QString &graph, const QString &pass, const QString &fragment,
+                           const QStringList &inputs, bool unsupplied,
+                           std::optional<std::size_t> binding, bool use_passthrough);
+    void runReloadRefusal(const QString &graph, const QString &pass, bool disconnect);
+    // decision 5, the lower layer's decisions: Pin this candidate, Unpin,
+    // Freeze this physical plan (Eject again is the same), Remove.
+    void pinBackendCandidate(const QString &candidate);
+    void unpinBackend();
+    void freezePhysicalPlan();
+    void removeFrozenPhysicalPlan();
     // LP-4b. The view axes (view_axes) of the node that runs `task` in the
     // current frame plan, for the Task Editor's View field. Empty when the
     // plan holds no such task or its family has no axes.

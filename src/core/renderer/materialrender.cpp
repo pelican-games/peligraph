@@ -302,7 +302,7 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
             std::optional<PipelineHandle> pipeline) {
         const auto binding = material_container.bindMaterialDraw(
             cmd_buf, pass, effective_material, pipeline, bound,
-            invocation);
+            invocation, vertexMode(draw_call.skinned));
         if (binding.pipeline_bound) {
             setViewFrontFace(cmd_buf, dependencies);
         }
@@ -422,12 +422,13 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
         const auto material = draw_calls[range_begin].material;
         auto range_end = range_begin + 1;
         while (range_end < draw_count &&
-               draw_calls[range_end].material == material) {
+               draw_calls[range_end].material == material &&
+               draw_calls[range_end].skinned == draw_calls[range_begin].skinned) {
             ++range_end;
         }
         const auto *steps =
             draw_loops != nullptr
-                ? draw_loops->find(pass.name, material)
+                ? draw_loops->find(pass.name, material, vertexMode(draw_calls[range_begin].skinned))
                 : nullptr;
         const auto step_count = steps != nullptr ? steps->size() : 1;
         for (std::size_t step = 0; step < step_count; ++step) {

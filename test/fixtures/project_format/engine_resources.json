@@ -68,6 +68,8 @@
     "fullscreen.vert",
     "fullscreen.vert.spv",
     "passthrough.frag",
+    "fallback_clear.frag",
+    "fallback_clear.frag.spv",
     "scene_present.frag",
     "scene_present.frag.spv",
     "rt_shadow_mask.frag",

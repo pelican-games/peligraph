@@ -1,3 +1,4 @@
+#include "../userpublic/userdataerror.hpp"
 #include "graphinputs.hpp"
 
 #include "../../project/graphmodule.hpp"
@@ -25,13 +26,13 @@ ValueGraph::Inputs collectGraphInputs(const ValueGraph::Graph &graph, const Scen
     for (const auto &[node, source] : graph.morphSources()) {
         if (!graph.nodeActive(node, inactive)) continue;
         const auto object = scene.graphOwnerObject(source.owner);
-        if (!object) throw std::runtime_error("graph morph owner is unavailable: " + node);
+        if (!object) throw UserDataError("graph morph owner is unavailable: " + node);
         const auto *model = GET_MODULE(ECSCore).getTemplatePublicModule()
             .tryComponent<SimpleModelViewComponent>(*object);
         const auto weight = model && model->model_instance_id
             ? GET_MODULE(PolygonInstanceContainer).morphWeight(*model->model_instance_id, source.node, source.target)
             : std::nullopt;
-        if (!weight) throw std::runtime_error("graph morph target is unavailable: " + node);
+        if (!weight) throw UserDataError("graph morph target is unavailable: " + node);
         inputs["$morph/" + node] = *weight;
     }
     return inputs;

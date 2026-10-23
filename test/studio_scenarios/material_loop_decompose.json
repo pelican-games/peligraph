@@ -1,4 +1,5 @@
 {
+  "invariants": {},
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "material_loop_decompose",

@@ -1,4 +1,7 @@
+#include "graphattachmentwidget.hpp"
 #include "mainwindow.hpp"
+#include "assetsdock.hpp"
+#include "materialsdock.hpp"
 #include "frameplaneditcapability.hpp"
 #include "frameplanwidget.hpp"
 #include "fullscreenpasswidget.hpp"
@@ -11,20 +14,29 @@
 #include "newprojectdialog.hpp"
 #include "panelhelp.hpp"
 #include "playcontrols.hpp"
+#include "problemsdock.hpp"
 #include "projectmigrationwidget.hpp"
 #include "renderconfigdigest.hpp"
+#include "renderdocumentwatcher.hpp"
 #include "planperfhub.hpp"
+#include "renderfallbacknotice.hpp"
 #include "renderfeatureswidget.hpp"
 #include "renderingsettingswidget.hpp"
+#include "raylayoutwidget.hpp"
 #include "rendereditcompletion.hpp"
 #include "runtimeoutliner.hpp"
 #include "studiotheme.hpp"
 #include "../viewport/embeddedviewport.hpp"
 
+#include <QApplication>
+#include <QDialogButtonBox>
+#include <QHeaderView>
+#include <QTableWidget>
 #include <QAbstractButton>
 #include <QAction>
 #include <QActionGroup>
 #include <QCryptographicHash>
+#include <QDesktopServices>
 #include <QAbstractItemView>
 #include <QCoreApplication>
 #include <QCloseEvent>
@@ -35,6 +47,7 @@
 #include <QFileDialog>
 #include <QFrame>
 #include <QFont>
+#include <QHBoxLayout>
 #include <QInputDialog>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -53,6 +66,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScopeGuard>
+#include <QShortcut>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSet>
@@ -67,10 +81,12 @@
 #include <QTreeWidgetItemIterator>
 #include <QElapsedTimer>
 #include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <QVariant>
 
 #include <algorithm>
+#include <cctype>
 #include <exception>
 #include <filesystem>
 #include <optional>
@@ -82,6 +98,10 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
+
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#endif
 
 namespace PelicanStudio {
 namespace {
@@ -232,6 +252,51 @@ MainWindow::MainWindow(const QString &application_config_directory)
     createWorkspace();
     createMenus();
     restoreLastPanelLayout();
+    connect(qApp, &QApplication::focusChanged, &scene_shortcut_context_,
+            [this] {
+        updateSceneShortcuts();
+        // During modal dismissal Qt restores focus before clearing activeModalWidget.
+        // Re-evaluate after that transition so the restored surface gets its actions back.
+        QTimer::singleShot(0, &scene_shortcut_context_, [this] { updateSceneShortcuts(); });
+    });
+    connect(viewport_, &EmbeddedViewport::engineInputActiveChanged, &scene_shortcut_context_,
+            [this] { updateSceneShortcuts(); });
+    connect(viewport_, &EmbeddedViewport::studioShortcutPressed, &scene_shortcut_context_,
+            [this](int key, Qt::KeyboardModifiers modifiers) {
+        if (!viewport_->engineInputActive() || QApplication::activeModalWidget() ||
+            QApplication::activePopupWidget()) return;
+        const QKeySequence sequence{QKeyCombination{modifiers, static_cast<Qt::Key>(key)}};
+        updateSceneShortcuts();
+        for (QAction *action : {inspector_->undoAction(), inspector_->redoAction(),
+                               outliner_->deleteAction(), outliner_->duplicateAction(),
+                               save_scene_action_, findChild<QAction *>(QStringLiteral("pelican.file.newProject")),
+                               findChild<QAction *>(QStringLiteral("pelican.file.openProject"))}) {
+            if (action && action->isEnabled() && action->shortcuts().contains(sequence)) {
+                action->trigger();
+                return;
+            }
+        }
+        // Keep Play's own enabled checks and command handlers.
+        for (QShortcut *shortcut : findChildren<QShortcut *>()) {
+            if (shortcut->objectName().startsWith(QStringLiteral("pelican.play.")) &&
+                shortcut->isEnabled() && shortcut->key() == sequence) {
+                emit shortcut->activated();
+                return;
+            }
+        }
+    });
+    updateSceneShortcuts();
+}
+
+bool MainWindow::nativeEvent(const QByteArray &event_type, void *message, qintptr *result) {
+#ifdef Q_OS_WIN
+    const auto *native_message = static_cast<const MSG *>(message);
+    if (native_message != nullptr && native_message->message == WM_EXITSIZEMOVE &&
+        viewport_ != nullptr) {
+        viewport_->finishEmbeddedWindowResize();
+    }
+#endif
+    return QMainWindow::nativeEvent(event_type, message, result);
 }
 
 void MainWindow::closeEvent(QCloseEvent *event) {
@@ -243,6 +308,7 @@ void MainWindow::closeEvent(QCloseEvent *event) {
         return;
     }
     close_authorized_ = false;
+    invalidateDocumentOperations(true);
     saveLastToolLayout();
     saveLastPanelLayout();
     QMainWindow::closeEvent(event);
@@ -275,6 +341,77 @@ void MainWindow::createWorkspace() {
     viewport_ = new EmbeddedViewport(workspace);
     viewport_->bindSelectionModel(&selection_model_);
     workspace->setHole(viewport_);
+    // BS-1s, decisions 2-4: above the viewport while the engine draws its
+    // placeholder because the rendering setup was refused at start. Its
+    // hooks reach panels made further down; they run only once it shows.
+    file_open_action_ = [](const std::filesystem::path &path) {
+        return QDesktopServices::openUrl(QUrl::fromLocalFile(QString::fromStdWString(path.wstring())));
+    };
+    render_fallback_ = new RenderFallbackNotice(
+        RenderFallbackNotice::Hooks{
+            .reload = [this] {
+                if (render_reload_) render_reload_->reloadNow();
+            },
+            .open_graph = [this](const QString &node) {
+                if (graph_canvas_ == nullptr || render_tabs_ == nullptr) return;
+                docks_[FramePlanDock]->show();
+                docks_[FramePlanDock]->raise();
+                render_tabs_->setCurrentWidget(graph_canvas_);
+                graph_canvas_->revealNodeWhenPresent(node);
+            },
+            .open_file = [this](const QString &document) {
+                const QString root = viewport_->projectRoot();
+                if (root.isEmpty()) return;
+                const auto path = std::filesystem::path{root.toStdWString()} /
+                                  std::filesystem::path{document.toStdWString()};
+                if (!file_open_action_ || !file_open_action_(path))
+                    statusBar()->showMessage(tr("Could not open %1.").arg(document), 8000);
+            },
+            .restart = [this](const QString &reason) { requestEngineRestart(reason); },
+            .read_status = [this] {
+                QString error;
+                (void)viewport_->requestRpc(QStringLiteral("get_status"), QJsonObject{}, &error);
+            },
+            // Decision 8: Show the document reads and restores it.
+            .request = [this](const std::string &method, const nlohmann::json &params,
+                              std::string *error) -> std::int64_t {
+                const auto object =
+                    QJsonDocument::fromJson(QByteArray::fromStdString(params.dump())).object();
+                QString message;
+                const qint64 id =
+                    viewport_->requestRpc(QString::fromStdString(method), object, &message);
+                if (id == 0 && error != nullptr) *error = message.toStdString();
+                return id;
+            },
+            .schedule = [this](int milliseconds, std::function<void()> task) {
+                QTimer::singleShot(milliseconds, this, std::move(task));
+            },
+            .restored = [this](const nlohmann::json &commit) {
+                // Every panel reads the documents again, as after a reload.
+                renderDocumentsRestored(commit, false);
+                // PB-1s: the restore committed; the list follows.
+                if (problems_dock_ != nullptr) problems_dock_->readNow();
+                // RR-1s: and the held version may be the live one now.
+                if (render_fallback_ != nullptr) render_fallback_->readAuthoring();
+            },
+            // RR-1s, decision 4: after a refused reload every structural
+            // edit is based on the version on disk; the panels that hold the
+            // live digest read again.
+            .held_digest = [this](const std::string &digest) {
+                if (render_digest_) render_digest_->publish(digest, nullptr);
+            },
+            .shown_changed = [this](bool shown, const QString &line) {
+                if (shown) {
+                    statusBar()->showMessage(line, 15000);
+                } else if (render_fallback_ != nullptr &&
+                           render_fallback_->session().reading().state ==
+                               RenderPipelineReading::State::Ready) {
+                    statusBar()->showMessage(tr("The project's rendering setup runs again."), 8000);
+                }
+            },
+        },
+        workspace);
+    workspace_layout->addWidget(render_fallback_);
     workspace_layout->addWidget(viewport_, 1);
     migration_panel_ = new ProjectMigrationWidget(
         [this](const QString &method, const QJsonObject &params,
@@ -293,6 +430,112 @@ void MainWindow::createWorkspace() {
     project_list_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     docks_[ProjectDock] =
         makeDock(this, tr("Project"), QStringLiteral("pelican.projectDock"), project_list_);
+    // HW-2s / AV-1s: the asset folders beside Project -- Reload when saved
+    // outside on each row, and the contents check against a manifest.
+    assets_dock_ = new AssetsDock(
+        AssetsDock::Hooks{
+            .send = [this](const QString &method, const QJsonObject &params,
+                           QString *error) { return viewport_->requestRpc(method, params, error); },
+            .restart = [this](const QString &reason) { requestEngineRestart(reason); },
+            .render_documents =
+                [this] {
+                    std::vector<std::filesystem::path> paths;
+                    if (render_reload_)
+                        for (const auto &[reference, document] : render_reload_->documents())
+                            paths.push_back(document.path);
+                    return paths;
+                },
+            // PB-1s: the check's warnings and errors are rows of Problems.
+            .checked =
+                [this](const std::vector<AssetStoreVerification> &stores) {
+                    if (problems_dock_ != nullptr) problems_dock_->setAssetIssues(stores);
+                },
+            // MI-1s, decision 4: Remove from project... on a model's file.
+            .model_at = [this](const std::string &logical) -> std::optional<std::string> {
+                const auto found = registered_model_files_.find(logical);
+                if (found == registered_model_files_.end()) return std::nullopt;
+                return found->second;
+            },
+            .model_bindings =
+                [this](const std::string &model, std::function<void(bool)> answered) {
+                    if (!model_registration_ || !model_registration_->askBindings(model, answered)) answered(false);
+                },
+            .remove_model =
+                [this](const std::string &model, std::function<void(const std::string &)> said) {
+                    model_registration_->unregister(
+                        model,
+                        [this, said](const ModelRegistrationSession::Unregistered &removed) {
+                            modelsChanged();
+                            std::string line = "Removed model " + removed.name + " from the project; " +
+                                               (removed.path.empty() ? std::string{"its file"} : removed.path) +
+                                               " stays on disk.";
+                            // restart_required: the engine's reason, as it is.
+                            if (!removed.live) {
+                                auto reason = removed.restart_reason;
+                                if (!reason.empty())
+                                    reason.front() = static_cast<char>(std::toupper(static_cast<unsigned char>(reason.front())));
+                                line += " " + reason + ".";
+                            }
+                            said(line);
+                        },
+                        said);
+                },
+        },
+        this);
+    assets_dock_->setObjectName(QStringLiteral("pelican.assetsPanel"));
+    docks_[AssetsPanelDock] =
+        makeDock(this, tr("Assets"), QStringLiteral("pelican.assetsDock"), assets_dock_);
+    // MT-1s: the materials beside Assets -- the list, the editor made from
+    // the surface's declaration, New material… and Assign to selected
+    // object. The Inspector is built after it, so the hooks read it late.
+    materials_dock_ = new MaterialsDock(
+        MaterialsDock::Hooks{
+            .send = [this](const QString &method, const QJsonObject &params,
+                           QString *error) { return viewport_->requestRpc(method, params, error); },
+            .restart = [this](const QString &reason) { requestEngineRestart(reason); },
+            .selected_object =
+                [this]() -> std::optional<MaterialsDock::SelectedObject> {
+                    const auto subject = inspector_ != nullptr ? inspector_->materialSubject() : std::nullopt;
+                    if (!subject) return std::nullopt;
+                    return MaterialsDock::SelectedObject{subject->first, subject->second};
+                },
+            .materials_changed =
+                [this] {
+                    if (inspector_ != nullptr) inspector_->materialsChanged();
+                },
+            .bound =
+                [this](const std::string &) {
+                    if (inspector_ != nullptr) inspector_->materialBindingsChanged();
+                },
+            // FO-1s, decision 3: where a refused delete or rename found the
+            // material -- the object's Outliner row, the render document's
+            // text.
+            .reveal_object =
+                [this](const QString &object) {
+                    const auto rows = outliner_->findItems(object, Qt::MatchExactly | Qt::MatchRecursive);
+                    if (rows.isEmpty()) {
+                        statusBar()->showMessage(tr("The Outliner has no object named %1.").arg(object), 8000);
+                        return;
+                    }
+                    outliner_->setCurrentItem(rows.front());
+                    outliner_->scrollToItem(rows.front());
+                },
+            .reveal_document =
+                [this](const QString &document, const QString &find) {
+                    render_fallback_->showDocumentAt(document, 0, 0, find);
+                },
+            // MR-1s, decision 1: a document taken in without a restart.
+            .problems_changed =
+                [this] {
+                    if (problems_dock_ != nullptr) problems_dock_->readNow();
+                },
+            // RTL-3s, decision 8: where a Problems row of the same goes.
+            .open_pass = [this](const std::string &pass) { openPlanPassOnGraph(QString::fromStdString(pass)); },
+        },
+        this);
+    materials_dock_->setObjectName(QStringLiteral("pelican.materialsPanel"));
+    docks_[MaterialsPanelDock] =
+        makeDock(this, tr("Materials"), QStringLiteral("pelican.materialsDock"), materials_dock_);
 
     outliner_ = new OutlinerTree(this);
     // The tree itself is named, not only its dock: picking a scene object is
@@ -334,11 +577,45 @@ void MainWindow::createWorkspace() {
     outliner_notice_->setObjectName(QStringLiteral("pelican.outlinerNotice"));
     applyPanelNoticeStyle(outliner_notice_);
     outliner_notice_->hide();
-    outliner_layout->addWidget(outliner_notice_);
+    // MI-1s: a model registered for the next start is drawn after a restart.
+    auto *outliner_notice_row = new QHBoxLayout;
+    outliner_notice_row->setContentsMargins(0, 0, 0, 0);
+    outliner_notice_row->addWidget(outliner_notice_, 1);
+    outliner_restart_ = new QPushButton(tr("Restart engine"), outliner_panel);
+    outliner_restart_->setObjectName(QStringLiteral("pelican.outliner.restartEngine"));
+    outliner_restart_->hide();
+    connect(outliner_restart_, &QPushButton::clicked, this, [this] {
+        const QString reason = std::exchange(outliner_restart_reason_, {});
+        outliner_restart_->hide();
+        setPanelNotice(outliner_notice_, {});
+        requestEngineRestart(reason);
+    });
+    outliner_notice_row->addWidget(outliner_restart_);
+    outliner_layout->addLayout(outliner_notice_row);
     docks_[OutlinerDock] = makeDock(this, tr("Outliner"),
                                     QStringLiteral("pelican.outlinerDock"), outliner_panel);
 
+    // MI-1s: register_model / unregister_model, answered through the
+    // viewport's replies below.
+    model_registration_ = std::make_unique<ModelRegistrationSession>(ModelRegistrationSession::Transport{
+        .request = [this](const std::string &method, const nlohmann::json &params, std::string *error) -> std::int64_t {
+            if (viewport_ == nullptr || !viewport_->rpcReady()) {
+                if (error != nullptr) *error = "the engine is not running";
+                return 0;
+            }
+            QString message;
+            const auto id = viewport_->requestRpc(
+                QString::fromStdString(method),
+                QJsonDocument::fromJson(QByteArray::fromStdString(params.dump())).object(), &message);
+            if (id == 0 && error != nullptr) *error = message.toStdString();
+            return id;
+        },
+    });
+
     inspector_ = new InspectorWidget(viewport_, this);
+    // MI-1s, decision 2: Import... beside the model field.
+    inspector_->setModelImportAction(
+        [this](std::function<void(const std::string &)> registered) { chooseModelFile(std::move(registered)); });
     docks_[InspectorDock] = makeDock(this, tr("Inspector"),
                                      QStringLiteral("pelican.inspectorDock"),
                                      inspector_);
@@ -360,6 +637,46 @@ void MainWindow::createWorkspace() {
     engine_log_->setPlaceholderText(tr("Engine output will appear here."));
     docks_[EngineLogDock] = makeDock(
         this, tr("Engine Log"), QStringLiteral("pelican.engineLogDock"), engine_log_);
+    // PB-1s: what is wrong with the project now -- the engine's list and the
+    // contents check -- beside Output and the Engine Log; a click on a row
+    // goes where it is fixed, and the status bar counts the rows.
+    problems_dock_ = new ProblemsDock(
+        ProblemsDock::Hooks{
+            .send = [this](const QString &method, const QJsonObject &params,
+                           QString *error) { return viewport_->requestRpc(method, params, error); },
+            .read_status = [this] {
+                QString error;
+                (void)viewport_->requestRpc(QStringLiteral("get_status"), QJsonObject{}, &error);
+            },
+            .open = [this](const ProblemRow &row) { openProblem(row); },
+            .restart = [this](const QString &reason) { requestEngineRestart(reason); },
+            .counted = [this](std::size_t errors, std::size_t warnings) {
+                // RR-1s, decision 1: the held version's row says the list's
+                // sentence.
+                if (render_fallback_ != nullptr && problems_dock_ != nullptr)
+                    render_fallback_->observeProblems(problems_dock_->session().rows());
+                // MR-1s, decisions 2 and 3: the materials the engine took in
+                // or refused on its own, and the files it keeps from before.
+                if (materials_dock_ != nullptr && problems_dock_ != nullptr)
+                    materials_dock_->observeProblems(materialProblemsOf(problems_dock_->session().rows()));
+                if (problems_count_ == nullptr) return;
+                problems_count_->setText(QString::fromStdString(problemsCountLine(errors, warnings)));
+            },
+        },
+        this);
+    problems_dock_->setObjectName(QStringLiteral("pelican.problemsPanel"));
+    docks_[ProblemsPanelDock] =
+        makeDock(this, tr("Problems"), QStringLiteral("pelican.problemsDock"), problems_dock_);
+    // Decision 4: the count on the status bar; a click brings Problems forward.
+    problems_count_ = new QPushButton(this);
+    problems_count_->setObjectName(QStringLiteral("pelican.problemsCount"));
+    problems_count_->setFlat(true);
+    problems_count_->setToolTip(tr("Show the Problems window"));
+    problems_count_->setText(QString::fromStdString(problemsCountLine(0, 0)));
+    problems_count_->hide();
+    connect(problems_count_, &QPushButton::clicked, this, [this] { showProblems(); });
+    statusBar()->addPermanentWidget(problems_count_);
+    render_fallback_->setSeeProblems(true);
     auto *render_tabs = new QTabWidget(this);
     render_tabs_ = render_tabs;
     render_tabs->setObjectName(
@@ -379,6 +696,28 @@ void MainWindow::createWorkspace() {
     // Last, so the tabs before it keep their places (and Ctrl+Tab its steps).
     rendering_settings_ = new RenderingSettingsWidget(viewport_, render_tabs);
     render_tabs->addTab(rendering_settings_, tr("Rendering settings"));
+    // RTL-2s: the ray group layout, a section of the same tab.
+    ray_layout_ = new RayLayoutWidget(viewport_, rendering_settings_);
+    rendering_settings_->addSection(ray_layout_);
+    ray_layout_->setEngineRestartAction([this](const QString &reason) { requestEngineRestart(reason); });
+    ray_layout_->setShowDocumentAction([this](const QString &reference) {
+        render_fallback_->showDocumentAt(reference, 0, 0, {});
+    });
+    // Decision 5: the Task Editor's acceleration structure settings, as its
+    // own button opens them.
+    ray_layout_->setAccelerationStructuresAction([this] {
+        if (auto *open = render_features_->findChild<QPushButton *>(
+                QStringLiteral("pelican.renderFeatures.sceneAccelerationStructures")))
+            open->click();
+    });
+    // RTL-2s-c: a task's refusal of the section's edit marks the Graph's
+    // cell; the shaders an edit rewrites ride on its render history entry.
+    ray_layout_->setRefusalAction([this](const nlohmann::json &error, const std::string &sentence) {
+        if (graph_canvas_ != nullptr) graph_canvas_->model().markRayTracingRefusal(error, sentence);
+    });
+    ray_layout_->setShaderHistoryAction([this](std::vector<RenderEditHistory::FileChange> files) {
+        if (render_history_) render_history_->attachFiles(std::move(files));
+    });
     docks_[FramePlanDock] = makeDock(
         this, tr("Frame Plan"), QStringLiteral("pelican.framePlanDock"),
         withRenderBanner(render_tabs, QStringLiteral("renderTools")));
@@ -450,6 +789,9 @@ void MainWindow::createWorkspace() {
     // F-5: a shader reload's log also goes under the Pass Editor's form.
     frame_plan_->setShaderReloadLogAction([this](const QString &message) {
         fullscreen_pass_->showShaderReloadLog(message);
+        // GL-5g, decision 3: and on the Graph tab's notice row, which is where
+        // a graph node's shader is made (Pass fields' New…).
+        graph_canvas_->showShaderReloadNotice(message);
     });
     connect(render_features_, &RenderFeaturesWidget::renderConfigCommitted, this, [this] { frame_plan_->refresh(); });
     frame_plan_->setNodeOrderAction([this](const QString &graph, const QStringList &names, quint64 generation) {
@@ -576,6 +918,35 @@ void MainWindow::createWorkspace() {
         docks_[FramePlanDock]->raise();
         return true;
     });
+    // GL-5c, decision 3: Edit pass / Edit task and a double-click open what
+    // the Graph tab edits there (through the Open in Graph above).
+    frame_plan_->setGraphEditsPassQuery(
+        [this](const QString &pass) { return graph_canvas_->editsPlanPass(pass); });
+    // GL-5c, decisions 1 and 2: on a graph root, the Frame Plan's Add material
+    // pass / fullscreen pass / compute task is the Graph's palette, on its op.
+    // A root the Graph tab has read and found not to be a graph keeps the
+    // Frame Plan's own forms.
+    frame_plan_->setGraphPlaceAction([this, render_tabs](const QString &op) {
+        const GraphCanvasModel &model = graph_canvas_->model();
+        if (model.contextReceived() && !model.graphRoot()) return false;
+        render_tabs->setCurrentWidget(graph_canvas_);
+        docks_[FramePlanDock]->show();
+        docks_[FramePlanDock]->raise();
+        graph_canvas_->placeFromPalette(op);
+        return true;
+    });
+    // GL-5f, decision 1: the Pass Editor's New pass on a root that selects no
+    // preset (the widget checks config_kind) is the Graph's render.fullscreen,
+    // as the Frame Plan's Add fullscreen pass above is.
+    fullscreen_pass_->setGraphPlaceAction([this, render_tabs](const QString &op) {
+        const GraphCanvasModel &model = graph_canvas_->model();
+        if (model.contextReceived() && !model.graphRoot()) return false;
+        render_tabs->setCurrentWidget(graph_canvas_);
+        docks_[FramePlanDock]->show();
+        docks_[FramePlanDock]->raise();
+        graph_canvas_->placeFromPalette(op);
+        return true;
+    });
     // GL-2b, decision 3: a pass row of the Graph tab's Layers section picks
     // that plan node in the Frame Plan.
     graph_canvas_->setFramePlanNodeAction([this, render_tabs](const QString &node) {
@@ -603,6 +974,94 @@ void MainWindow::createWorkspace() {
             render_tabs->setCurrentWidget(render_features_);
             render_features_->replaceWithLoopVersion(feature);
         });
+    // RTL-2s, decision 4: the Inspector's Assign hit group... opens the Ray
+    // layout section on that material's row.
+    inspector_->setAssignHitGroupAction([this, render_tabs](const QString &material) {
+        docks_[FramePlanDock]->show();
+        docks_[FramePlanDock]->raise();
+        render_tabs->setCurrentWidget(rendering_settings_);
+        ray_layout_->revealMaterial(material);
+    });
+    // RTL-2s-c (RTL-2s decision 5): Add component's Ray geometry without a
+    // ray layout opens the section that enables one.
+    inspector_->setEnableHitGroupsAction([this, render_tabs] {
+        docks_[FramePlanDock]->show();
+        docks_[FramePlanDock]->raise();
+        render_tabs->setCurrentWidget(rendering_settings_);
+        ray_layout_->revealEnable();
+    });
+    // GL-5d, decisions 1 and 2: the Graph's Order… / Fix sockets / Make
+    // sockets variadic are the Frame Plan's own, which reads the plan and the
+    // context again first (it may be behind the Graph tab) and says on the
+    // Graph's line what it did.
+    {
+        const auto said = [this](const QString &line) { graph_canvas_->showFramePlanLine(line); };
+        graph_canvas_->setFramePlanPassActions(
+            [this, said] { frame_plan_->whenRead([this] { frame_plan_->orderNodes(); }, said); },
+            [this, said](const QString &graph, const QString &pass,
+                         std::function<bool(const QString &)> graph_fragment) {
+                frame_plan_->whenRead(
+                    [this, graph, pass, graph_fragment = std::move(graph_fragment)] {
+                        frame_plan_->fixSockets(graph, pass, graph_fragment);
+                    },
+                    said);
+            },
+            [this, said](const QString &graph, const QString &pass) {
+                frame_plan_->whenRead(
+                    [this, graph, pass] { frame_plan_->makeSocketsVariadic(graph, pass); }, said);
+            });
+        // GL-5e: the rest of what only the Frame Plan did, from the Graph --
+        // each the function the Frame Plan's own entry calls, after it read
+        // the plan and the context again (whenRead). Decision 6's two are the
+        // Frame Plan's Shift-drag's (setTaskConnectionAction /
+        // setPresetPassConnectionAction below).
+        GraphCanvasWidget::FramePlanEdits edits;
+        edits.remove_pass = [this, said](const QString &graph, const QString &pass) {
+            // GL-5f, decision 2: and the task catalog (Delete on an authored task).
+            frame_plan_->whenRead([this, graph, pass] { frame_plan_->removePass(graph, pass); }, said,
+                                  true);
+        };
+        edits.shader_contract = [this, said](const GraphCanvasWidget::ShaderContract &contract,
+                                             bool use_passthrough) {
+            QStringList inputs;
+            for (const auto &input : contract.inputs) inputs.push_back(QString::fromStdString(input));
+            frame_plan_->whenRead(
+                [this, contract, inputs, use_passthrough] {
+                    frame_plan_->runShaderContract(
+                        QString::fromStdString(contract.graph), QString::fromStdString(contract.pass),
+                        QString::fromStdString(contract.fragment), inputs, contract.unsupplied,
+                        contract.binding, use_passthrough);
+                },
+                said);
+        };
+        edits.reload_refusal = [this, said](const QString &graph, const QString &pass, bool disconnect) {
+            frame_plan_->whenRead(
+                [this, graph, pass, disconnect] { frame_plan_->runReloadRefusal(graph, pass, disconnect); },
+                said);
+        };
+        edits.pin = [this, said](const QString &candidate) {
+            frame_plan_->whenRead([this, candidate] { frame_plan_->pinBackendCandidate(candidate); }, said);
+        };
+        edits.unpin = [this, said] { frame_plan_->whenRead([this] { frame_plan_->unpinBackend(); }, said); };
+        edits.freeze = [this, said] {
+            frame_plan_->whenRead([this] { frame_plan_->freezePhysicalPlan(); }, said);
+        };
+        edits.remove_frozen = [this, said] {
+            frame_plan_->whenRead([this] { frame_plan_->removeFrozenPhysicalPlan(); }, said);
+        };
+        edits.task_connection = [this](const QString &task, const QStringList &outputs) {
+            render_features_->editComputeTaskConnection(task, outputs);
+        };
+        edits.preset_pass_connection = [this](const QString &graph, const QString &pass,
+                                              const QStringList &outputs) {
+            fullscreen_pass_->editPresetPassConnection(graph, pass, outputs);
+            docks_[FullscreenPassDock]->show();
+            docks_[FullscreenPassDock]->raise();
+        };
+        // GL-5f: the Frame Plan's Edit task (setTaskEditAction above).
+        edits.edit_task = [this](const QString &task) { render_features_->editComputeTask(task); };
+        graph_canvas_->setFramePlanEdits(std::move(edits));
+    }
     inspector_->setRayGroupAction([this, render_tabs](const QString &group) {
         docks_[FramePlanDock]->show();
         docks_[FramePlanDock]->raise();
@@ -637,6 +1096,9 @@ void MainWindow::createWorkspace() {
     graph_canvas_->setRenderConfigDigest(render_digest_);
     render_features_->setRenderConfigDigest(render_digest_);
     rendering_settings_->setRenderConfigDigest(render_digest_);
+    ray_layout_->setRenderConfigDigest(render_digest_);
+    if (auto *attachments = inspector_->findChild<GraphAttachmentWidget *>())
+        attachments->setRenderConfigDigest(render_digest_);
     // UX-6b: one reader of the frame's GPU time and the plan's size for the
     // two panels that show them; every request passes it (createRenderHistory
     // hands it the observer's calls).
@@ -766,8 +1228,13 @@ void MainWindow::createWorkspace() {
                 (void)migration_panel_->acceptRpcRejection(
                     request_id, error_code, message);
             });
+    connect(viewport_, &EmbeddedViewport::engineSessionEnding, this,
+            [this] { invalidateDocumentOperations(); });
     connect(viewport_, &EmbeddedViewport::engineRpcBecameAvailable, this,
             [this] {
+                if (!document_session_ready_ && !document_request_ && !document_prompt_ &&
+                    project_model_ && QDir(displayPath(project_model_->projectRoot())).absolutePath() == viewport_->projectRoot())
+                    requestDocumentOperation(DocumentOperation::Open);
                 migration_panel_->engineOpenedWithoutMigrating();
                 pending_outliner_request_ = 0;
                 // UX-13c: whether this engine knows scene_outline is found
@@ -782,13 +1249,37 @@ void MainWindow::createWorkspace() {
                 dispatchGizmoModel();
                 // RL-1s: what this engine composes is what is watched.
                 if (render_reload_) render_reload_->engineReady();
+                assets_dock_->engineAvailable();
+                materials_dock_->engineAvailable();
+                problems_dock_->engineAvailable();
+                // MI-1s, decision 4: which files are registered models.
+                requestRegisteredModels();
+                problems_count_->show();
+                // RR-1s, decision 1: whether the reads answer from the version
+                // the picture was made from.
+                render_fallback_->readAuthoring();
             });
+    const auto post_commit_errors = std::make_shared<RenderEditPostCommitErrors>();
     connect(viewport_, &EmbeddedViewport::engineRpcBecameUnavailable, this,
-            [this](const QString &) {
+            [this, post_commit_errors](const QString &) {
+                invalidateDocumentOperations();
+                post_commit_errors->engineGone();
                 // RU-1: what the history had in flight went with the engine;
                 // the history stays (its documents are on disk).
                 if (render_history_) render_history_->abandonInFlight();
                 if (render_reload_) render_reload_->engineGone();
+                render_fallback_->engineGone();
+                assets_dock_->engineUnavailable();
+                materials_dock_->engineUnavailable();
+                problems_dock_->engineUnavailable();
+                // MI-1s: what was asked went with the engine; a restart
+                // waited for is under way (or the project changed).
+                model_registration_->engineGone();
+                pending_models_request_ = 0;
+                registered_model_files_.clear();
+                outliner_restart_reason_.clear();
+                outliner_restart_->hide();
+                problems_count_->hide();
                 if (pending_navigation_ != Navigation::None) {
                     cancelNavigation(tr("The engine disconnected. The project remains open."));
                 }
@@ -804,16 +1295,53 @@ void MainWindow::createWorkspace() {
                 gizmo_model_.stopSession();
                 dispatchGizmoModel();
             });
-    connect(viewport_, &EmbeddedViewport::engineInputActiveChanged, this,
+    connect(viewport_, &EmbeddedViewport::engineInputActiveChanged, &scene_shortcut_context_,
             [this](bool) { updateModalTransformPolling(); });
     connect(viewport_, &EmbeddedViewport::inspectorRpcSucceeded, this,
-            [this](qint64 request_id, const QByteArray &result_json) {
+            [this, post_commit_errors](
+                qint64 request_id, const QByteArray &result_json) {
+                if (receiveDocumentResult(request_id, result_json)) return;
                 if (migration_panel_->acceptRpcResult(request_id, result_json))
                     return;
+                // BS-1s, decision 8: Show the document's reads and restore. A
+                // committed restore goes on, to be read as every commit.
+                if (render_fallback_->receiveResult(request_id, result_json)) return;
+                // HW-2s / AV-1s: the Assets dock's settings edits and checks.
+                if (assets_dock_->receiveResult(request_id, result_json)) return;
+                // MT-1s: the Materials dock's reads and writes.
+                if (materials_dock_->receiveResult(request_id, result_json)) return;
+                // MI-1s: register_model, unregister_model, and the registered
+                // models' files.
+                if (model_registration_->owns(request_id) ||
+                    (request_id != 0 && request_id == pending_models_request_)) {
+                    const auto result = nlohmann::json::parse(
+                        result_json.constData(), result_json.constData() + result_json.size(), nullptr, false);
+                    if (request_id == pending_models_request_) {
+                        pending_models_request_ = 0;
+                        registered_model_files_.clear();
+                        // GL-5e, decision 9: models only (EB-1 lists materials
+                        // too), by the project-relative path EB-1 sends.
+                        if (project_model_)
+                            registered_model_files_ =
+                                registeredModelFiles(project_model_->projectRoot(), result);
+                        return;
+                    }
+                    model_registration_->receiveResult(request_id, result.is_discarded() ? nlohmann::json{} : result);
+                    return;
+                }
+                // PB-1s: the engine's list of problems.
+                if (problems_dock_->receiveResult(request_id, result_json)) return;
                 // PM-3a: Pause, Step and the reads that follow them.
                 if (play_controls_ &&
                     play_controls_->receiveResult(request_id, result_json))
                     return;
+                // RT-C: finalize the error after every handler of this reply,
+                // including History's synchronous Undid / Redid notification.
+                std::string post_commit_line;
+                const auto say_post_commit_error = qScopeGuard([this, &post_commit_line] {
+                    if (!post_commit_line.empty())
+                        statusBar()->showMessage(QString::fromStdString(post_commit_line), 15000);
+                });
                 // RL-1s: the reload's own requests; and every committed render
                 // edit's `documents`, which is what Studio wrote (decision 2).
                 // Only an answer that can be one is parsed.
@@ -828,8 +1356,20 @@ void MainWindow::createWorkspace() {
                     } catch (const std::exception &) {
                         result = nlohmann::json{};
                     }
+                    // Deduplicate within this engine session, before the
+                    // handlers run; display only when they have all returned.
+                    post_commit_line = post_commit_errors->take(result);
                     if (render_reload_->receiveResult(request_id, result)) return;
                     render_reload_->observeReply(result);
+                    // BS-1s, decision 3: an edit that committed while the
+                    // engine draws its placeholder may have ended it.
+                    render_fallback_->observeReply(result);
+                    // PB-1s: and a committed edit clears the render
+                    // pipeline's problems.
+                    if (!problems_dock_->session().rows().empty() && result.is_object() &&
+                        (result.value("status", std::string{}) == "committed" ||
+                         result.value("committed", false)))
+                        problems_dock_->readNow();
                 }
                 // RU-1: the render history's own reads, restores and polls,
                 // and the replies to the edits it follows.
@@ -856,7 +1396,8 @@ void MainWindow::createWorkspace() {
                             throw std::runtime_error("invalid scene revision");
                         }
                         inspector_->observeSceneRevision(revision.get<std::uint64_t>());
-                        continueNavigation();
+                        if (pending_navigation_ == Navigation::Restart) continueNavigation();
+                        else requestDocumentOperation(DocumentOperation::Navigation);
                     } catch (const std::exception &) {
                         cancelNavigation(tr("Could not check unsaved changes. The project remains open."));
                     }
@@ -867,8 +1408,18 @@ void MainWindow::createWorkspace() {
             });
     connect(viewport_, &EmbeddedViewport::inspectorRpcFailed, this,
             [this](qint64 request_id, const QString &message) {
+                if (receiveDocumentFailure(request_id, message)) return;
                 if (migration_panel_->acceptRpcFailure(request_id, message))
                     return;
+                if (render_fallback_->receiveFailure(request_id, message)) return;
+                if (assets_dock_->receiveFailure(request_id, message)) return;
+                if (materials_dock_->receiveFailure(request_id, message)) return;
+                if (model_registration_->receiveFailure(request_id, message.toStdString())) return;
+                if (request_id != 0 && request_id == pending_models_request_) {
+                    pending_models_request_ = 0;
+                    return;
+                }
+                if (problems_dock_->receiveFailure(request_id, message)) return;
                 if (play_controls_ &&
                     play_controls_->receiveFailure(request_id, message))
                     return;
@@ -929,6 +1480,8 @@ void MainWindow::createRenderHistory(QWidget *pass_editor) {
     });
     render_history_->changed = [this] { renderHistoryChanged(); };
     render_history_->restored = [this](const nlohmann::json &commit, bool restart) {
+        graph_canvas_->renderHistoryRestored(
+            commit.value("source_digest", nlohmann::json::object()).value("hex", std::string{}));
         renderDocumentsRestored(commit, restart);
     };
     // Every request any panel sends passes here; the history hears only the
@@ -1054,14 +1607,10 @@ void MainWindow::createRenderReload() {
             return hash.result().toHex().toStdString();
         },
     });
-    // Decision 1: one watcher, the Frame Plan's, which already follows the
-    // shaders (UX-6a); the documents ride beside them with their own hook.
+    // RT-B: the window owns the document watch beside its reload policy.
+    render_document_watcher_ = std::make_unique<RenderDocumentWatcher>(*render_reload_);
     render_reload_->watchChanged = [this] {
-        frame_plan_->setWatchedRenderDocuments(render_reload_->watchedFiles(),
-                                               [this](const QString &) {
-                                                   if (render_reload_)
-                                                       render_reload_->fileChanged();
-                                               });
+        render_document_watcher_->setFiles(render_reload_->watchedFiles());
     };
     render_reload_->notice = [this](const RenderDocumentReload::Notice &notice) {
         using Kind = RenderDocumentReload::Notice::Kind;
@@ -1076,9 +1625,23 @@ void MainWindow::createRenderReload() {
         graph_canvas_->showDiskReloadNotice(shown);
         if (!notice.line.empty())
             statusBar()->showMessage(QString::fromStdString(notice.line), 8000);
+        // PB-1s: a reload answered -- its refusal is listed, its commit
+        // (no_change too) takes the render pipeline's problems away.
+        if (problems_dock_ != nullptr) problems_dock_->readNow();
+    };
+    render_reload_->historyBoundary = [this] {
+        // A real outside document edit invalidates both histories. Reloading
+        // only an image leaves their documents and inverse operations intact.
+        if (render_history_) render_history_->cut("\xE2\x80\x94 reloaded from disk \xE2\x80\x94");
+        graph_canvas_->documentsReloadedFromDisk();
     };
     render_reload_->reloaded = [this](const nlohmann::json &commit) {
         renderDocumentsReloaded(commit);
+    };
+    // BS-1s, decision 4: a fixed setup only a restart can run.
+    render_reload_->refusedWith = [this](const nlohmann::json &error) {
+        if (render_fallback_ != nullptr) render_fallback_->observeReloadRefusal(error);
+        if (problems_dock_ != nullptr) problems_dock_->readNow();
     };
     // IA-1s, decision 5: the images' initial assets are watched with the
     // documents.
@@ -1095,13 +1658,161 @@ void MainWindow::createRenderReload() {
         if (render_reload_) render_reload_->reloadNow();
     });
     graph_canvas_->setReloadFromDiskAction(reload_from_disk_action_);
+    // RTL-2s b: a ray tracing task's Enable hit groups… opens the Rendering
+    // settings, where the Ray layout is (RTL-2s a).
+    graph_canvas_->setOpenRayLayout([this] { (void)showRenderToolsTab(QStringLiteral("rendering_settings")); });
+    // RTL-2s-c: and its Callable records... the Render Features' Records dialog.
+    graph_canvas_->setOpenCallableRecords([this] {
+        if (auto *open = render_features_->findChild<QPushButton *>(
+                QStringLiteral("pelican.renderFeatures.callableRecords")))
+            open->click();
+    });
+    // RTL-3s, decision 4: a raygen switch is one entry of the render history.
+    graph_canvas_->setRenderHistory(render_history_ ? &*render_history_ : nullptr);
+}
+
+void MainWindow::showProblems() {
+    docks_[ProblemsPanelDock]->show();
+    docks_[ProblemsPanelDock]->raise();
+}
+
+void MainWindow::openProblem(const ProblemRow &row) {
+    using Place = ProblemRow::Place;
+    const auto text = [](const std::string &value) { return QString::fromStdString(value); };
+    const QString document = text(row.document);
+    // A node the Graph cannot show is found in the text by its id.
+    const QString node_text =
+        row.node.empty() ? QString{} : QLatin1Char('"') + text(row.node) + QLatin1Char('"');
+    switch (row.place) {
+    case Place::GraphNode: {
+        if (graph_canvas_ == nullptr || !showRenderToolsTab(QStringLiteral("graph"))) return;
+        const QString node = text(row.node);
+        const QString scope = row.definition.empty() ? QStringLiteral("root") : text(row.definition);
+        // RTL-2s b, decision 3: a ray tracing task's refusal is marked on
+        // its node, the place its fields name red in its fields.
+        if (row.definition.empty() && !rayTracingRefusalDescription(nlohmann::json{{"code", row.code}}).empty()) {
+            auto error = row.fields.is_object() ? row.fields : nlohmann::json::object();
+            error["code"] = row.code;
+            error["message"] = row.message;
+            if (!error.contains("task")) error["task"] = row.node;
+            graph_canvas_->model().markRayTracingRefusal(error, row.sentence);
+        }
+        if (graph_canvas_->canRevealGraphNode(scope, node)) {
+            (void)graph_canvas_->revealGraphNode(scope, node, {});
+            return;
+        }
+        if (row.definition.empty()) {
+            // The Graph has not read the document yet -- RR-1s: after a
+            // refused reload it reads the version on disk again -- and the
+            // node is selected once it has.
+            graph_canvas_->revealNodeWhenPresent(node);
+            return;
+        }
+        if (!document.isEmpty()) {
+            render_fallback_->showDocumentAt(document, 0, 0, node_text);
+            return;
+        }
+        statusBar()->showMessage(tr("The Graph does not show %1 of %2.").arg(node, text(row.definition)), 8000);
+        return;
+    }
+    case Place::Material:
+        docks_[MaterialsPanelDock]->show();
+        docks_[MaterialsPanelDock]->raise();
+        // FO-1s, decision 2: a model whose bindings name a material no
+        // loaded document holds -- the model's bindings, with what is wrong.
+        if (!row.model.empty()) {
+            materials_dock_->revealModel(row.model, row.sentence);
+            return;
+        }
+        if (!materials_dock_->revealMaterial(row.document, row.material))
+            statusBar()->showMessage(tr("The Materials dock does not list %1.")
+                                         .arg(row.material.empty() ? document : text(row.material)),
+                                     8000);
+        return;
+    case Place::DocumentText:
+        // RR-1s, decision 2: the engine holds the file as it is on disk --
+        // at start and after a refused reload alike -- and restores it.
+        render_fallback_->showDocumentAt(document, row.line, row.column, row.line > 0 ? QString{} : node_text);
+        return;
+    case Place::ShaderFile: {
+        const QString root = viewport_->projectRoot();
+        if (root.isEmpty() || document.isEmpty() || document.startsWith(QStringLiteral("engine://"))) {
+            statusBar()->showMessage(tr("%1 is not a file of this project.").arg(document), 8000);
+            return;
+        }
+        const auto path =
+            std::filesystem::path{root.toStdWString()} / std::filesystem::path{document.toStdWString()};
+        if (!file_open_action_ || !file_open_action_(path))
+            statusBar()->showMessage(tr("Could not open %1.").arg(document), 8000);
+        else if (row.line > 0)
+            statusBar()->showMessage(tr("%1: line %2").arg(document).arg(row.line), 8000);
+        return;
+    }
+    case Place::AssetFile:
+        docks_[AssetsPanelDock]->show();
+        docks_[AssetsPanelDock]->raise();
+        if (!assets_dock_->revealFile(row.asset_path))
+            statusBar()->showMessage(tr("The Assets dock does not show %1.").arg(document), 8000);
+        return;
+    case Place::RenderingSettings:
+        (void)showRenderToolsTab(QStringLiteral("rendering_settings"));
+        return;
+    case Place::Features:
+        (void)showRenderToolsTab(QStringLiteral("render_features"));
+        return;
+    case Place::GraphPass:
+        openPlanPassOnGraph(text(row.pass));
+        return;
+    case Place::SceneObject: {
+        // EB-6s, decision 5 (engine EB-6): the object whose own material no
+        // registered material holds -- picked in the Outliner, its Material
+        // rows in the Inspector.
+        QTreeWidgetItem *found = nullptr;
+        for (QTreeWidgetItemIterator it{outliner_}; *it && found == nullptr; ++it) {
+            const QVariant id = (*it)->data(0, OutlinerAuthoringIdRole);
+            if (!id.isValid() || id.toULongLong() != row.object) continue;
+            if (!row.scene_id.empty() && (*it)->data(0, OutlinerSceneIdRole).toString() != text(row.scene_id)) continue;
+            found = *it;
+        }
+        if (found == nullptr) {
+            statusBar()->showMessage(
+                tr("The Outliner has no object %1.")
+                    .arg(row.object_name.empty() ? QStringLiteral("#%1").arg(row.object) : text(row.object_name)),
+                8000);
+            return;
+        }
+        docks_[OutlinerDock]->show();
+        docks_[InspectorDock]->show();
+        docks_[InspectorDock]->raise();
+        outliner_->setCurrentItem(found);
+        outliner_->scrollToItem(found);
+        if (inspector_ != nullptr) inspector_->revealMaterialRows();
+        return;
+    }
+    case Place::Restart:
+    case Place::None:
+        return;
+    }
+}
+
+void MainWindow::openPlanPassOnGraph(const QString &pass) {
+    // RTL-3s, decision 8 (engine FO-2): the pass a material needs more of --
+    // the node that made it, or its preset's / feature's folded pass.
+    if (graph_canvas_ == nullptr || pass.isEmpty() || !showRenderToolsTab(QStringLiteral("graph"))) return;
+    if (graph_canvas_->revealPlanPass(pass)) return;
+    if (graph_canvas_->canRevealGraphNode(QStringLiteral("root"), pass)) {
+        (void)graph_canvas_->revealGraphNode(QStringLiteral("root"), pass, {});
+        return;
+    }
+    statusBar()->showMessage(tr("The Graph does not show the pass %1.").arg(pass), 8000);
 }
 
 void MainWindow::renderDocumentsReloaded(const nlohmann::json &commit) {
-    // Decision 4: the reload is not an Undo entry, and what the histories
-    // hold was written before the disk changed under them: both end here.
-    if (render_history_) render_history_->cut("\xE2\x80\x94 reloaded from disk \xE2\x80\x94");
-    graph_canvas_->documentsReloadedFromDisk();
+    // Reload is not an Undo entry. The policy already cut history if the
+    // render documents changed; panels still reread an asset-only commit.
+    // BS-1s, decision 3: the placeholder may have given way.
+    if (render_fallback_ != nullptr) render_fallback_->reloadCommitted();
+    if (problems_dock_ != nullptr) problems_dock_->readNow();
     // The way back after any outside change (RU-1's restore): every panel
     // reads the documents again, and RSX's one reader hears a restart.
     renderDocumentsRestored(commit, readRenderEditCompletion(commit).restart_required);
@@ -1181,11 +1892,15 @@ void MainWindow::createMenus() {
     QAction *new_project_action = file_menu->addAction(tr("&New Project..."));
     new_project_action->setObjectName(
         QStringLiteral("pelican.file.newProject"));
+    new_project_action->setShortcut(QKeySequence::New);
+    new_project_action->setShortcutContext(Qt::WindowShortcut);
     connect(new_project_action, &QAction::triggered, this,
             [this]() { chooseNewProject(); });
     QAction *open_project_action = file_menu->addAction(tr("&Open Project..."));
     open_project_action->setObjectName(
         QStringLiteral("pelican.file.openProject"));
+    open_project_action->setShortcut(QKeySequence::Open);
+    open_project_action->setShortcutContext(Qt::WindowShortcut);
     connect(open_project_action, &QAction::triggered, this,
             [this]() { chooseProject(); });
     QAction *save_scene_action = file_menu->addAction(tr("&Save Scene"));
@@ -1201,7 +1916,13 @@ void MainWindow::createMenus() {
                 5000);
             return;
         }
+        if (document_request_ != 0 || !document_session_ready_) {
+            statusBar()->showMessage(tr("Wait for the document baseline check to finish."), 5000);
+            return;
+        }
+        document_save_completion_ = inspector_->sceneSaveCompletion();
         if (inspector_->saveScene()) {
+            document_save_pending_ = true;
             statusBar()->showMessage(tr("Saving scene..."), 3000);
         } else {
             statusBar()->showMessage(
@@ -1226,6 +1947,20 @@ void MainWindow::createMenus() {
     // their own).
     QMenu *edit_menu = menuBar()->addMenu(tr("&Edit"));
     edit_menu->setObjectName(QStringLiteral("pelican.editMenu"));
+    for (QAction *action : {inspector_->undoAction(), inspector_->redoAction()}) {
+        action->setShortcutContext(Qt::WindowShortcut);
+        addAction(action);
+        // A detached dock is its own top-level window.
+        for (QDockWidget *dock : docks_) dock->addAction(action);
+        edit_menu->addAction(action);
+    }
+    edit_menu->addSeparator();
+    for (QAction *action : {outliner_->deleteAction(), outliner_->duplicateAction()}) {
+        action->setShortcutContext(Qt::WindowShortcut);
+        addAction(action);
+        // A detached dock is its own top-level window.
+        for (QDockWidget *dock : docks_) dock->addAction(action);
+    }
     edit_menu->addAction(render_undo_action_);
     edit_menu->addAction(render_redo_action_);
 
@@ -1265,6 +2000,34 @@ void MainWindow::createMenus() {
         connect(show_tab, &QAction::triggered, this,
                 [this, id = id]() { showRenderToolsTab(id); });
     }
+    // HW-2s: the Assets dock brought to the front -- it shares a tab with
+    // Project and the Outliner, and Panels only shows or hides it.
+    QAction *show_assets = view_menu->addAction(tr("&Assets"));
+    show_assets->setObjectName(QStringLiteral("pelican.view.assets"));
+    connect(show_assets, &QAction::triggered, this, [this] {
+        docks_[AssetsPanelDock]->show();
+        docks_[AssetsPanelDock]->raise();
+    });
+    // GL-5c: and the Pass Editor, which the Frame Plan's Add no longer opens
+    // on a graph root (its Add goes to the Graph's palette); its own New pass
+    // and Save still add a pass there, and a preset root's Add still opens it.
+    QAction *show_pass_editor = view_menu->addAction(tr("Pass &Editor"));
+    show_pass_editor->setObjectName(QStringLiteral("pelican.view.passEditor"));
+    connect(show_pass_editor, &QAction::triggered, this, [this] {
+        docks_[FullscreenPassDock]->show();
+        docks_[FullscreenPassDock]->raise();
+    });
+    // MT-1s: and the Materials dock, the tab after it.
+    QAction *show_materials = view_menu->addAction(tr("&Materials"));
+    show_materials->setObjectName(QStringLiteral("pelican.view.materials"));
+    connect(show_materials, &QAction::triggered, this, [this] {
+        docks_[MaterialsPanelDock]->show();
+        docks_[MaterialsPanelDock]->raise();
+    });
+    // PB-1s: and Problems, a tab beside Output and the Engine Log.
+    QAction *show_problems = view_menu->addAction(tr("P&roblems"));
+    show_problems->setObjectName(QStringLiteral("pelican.view.problems"));
+    connect(show_problems, &QAction::triggered, this, [this] { showProblems(); });
 
     QMenu *layout_menu = menuBar()->addMenu(tr("&Layout"));
     layout_menu->setObjectName(QStringLiteral("pelican.layoutMenu"));
@@ -1359,6 +2122,83 @@ void MainWindow::createMenus() {
     createPlayControls(gizmo_toolbar);
 
     createAddObjectMenu();
+    auto *help_menu = menuBar()->addMenu(tr("&Help"));
+    help_menu->setObjectName(QStringLiteral("pelican.helpMenu"));
+    auto *shortcuts = help_menu->addAction(tr("Keyboard Shortcuts…"));
+    shortcuts->setObjectName(QStringLiteral("pelican.help.shortcuts"));
+    connect(shortcuts, &QAction::triggered, this, &MainWindow::showKeyboardShortcuts);
+}
+
+bool MainWindow::sceneFocusGroup() const {
+    // Popups keep the surface that opened them. Text editors (including inline
+    // tree editors and spin-box line edits) retain their own editing keys.
+    if (QApplication::activeModalWidget()) return false;
+    if (viewport_->engineInputActive()) return true;
+    if (textEntryHasFocus()) return false;
+    const QWidget *focus = QApplication::focusWidget();
+    // After a modal closes, Qt can temporarily have no application focus even
+    // though this window remembers the surface to restore. WindowShortcut still
+    // restricts dispatch to the active window.
+    if (!focus) focus = focusWidget();
+    if (!focus) return false;
+    for (const QWidget *surface : {static_cast<QWidget *>(viewport_),
+                                  static_cast<QWidget *>(docks_[OutlinerDock]),
+                                  static_cast<QWidget *>(docks_[InspectorDock]),
+                                  static_cast<QWidget *>(docks_[ProblemsPanelDock]),
+                                  static_cast<QWidget *>(gizmo_toolbar_)}) {
+        if (surface && (surface == focus || surface->isAncestorOf(focus))) return true;
+    }
+    return false;
+}
+
+void MainWindow::updateSceneShortcuts() {
+    inspector_->setSceneHistoryFocus(sceneFocusGroup());
+    updateOutlinerActions();
+}
+
+void MainWindow::showKeyboardShortcuts() {
+    auto *dialog = new QDialog(this);
+    dialog->setObjectName(QStringLiteral("pelican.help.shortcutsDialog"));
+    dialog->setWindowTitle(tr("Keyboard Shortcuts"));
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    auto *layout = new QVBoxLayout(dialog);
+    auto *table = new QTableWidget(dialog);
+    table->setObjectName(QStringLiteral("pelican.help.shortcutsTable"));
+    table->setColumnCount(3);
+    table->setHorizontalHeaderLabels({tr("Surface"), tr("Shortcut"), tr("Command")});
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->verticalHeader()->hide();
+    const QStringList rows[] = {
+        {"Scene: Viewport, Outliner, Inspector, Problems, Play bar", "Ctrl+Z", "Undo scene edit"},
+        {"Scene", "Ctrl+Y / Ctrl+Shift+Z", "Redo scene edit"},
+        {"Scene (selected object)", "Delete / Ctrl+D", "Delete / Duplicate object"},
+        {"Text fields / inline editors", "Ctrl+Z / Delete", "Undo text / Delete text"},
+        {"Rendering: Frame Plan, Pass Editor, Features, Settings", "Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z", "Undo / Redo rendering edit"},
+        {"Graph tab", "Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z", "Undo / Redo graph edit"},
+        {"Materials / Assets", "Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z", "Undo / Redo dock edit"},
+        {"Window", "Ctrl+N / Ctrl+O", "New Project / Open Project"},
+        {"Window", "Ctrl+S", "Save Scene (stop Play first)"},
+        {"Window (outside text fields)", "Ctrl+P", "Play / Stop"},
+        {"Window (outside text fields)", "Ctrl+Shift+P / Ctrl+Alt+P", "Pause / Step"},
+        {"Graph / Frame Plan", "Delete / Backspace", "Delete selected nodes or connections"},
+        {"Graph / Frame Plan", "F", "Fit view"},
+        {"Graph / Frame Plan / active edit", "Escape", "Leave nested view / Cancel edit"},
+    };
+    for (const auto &row : rows) {
+        const int index = table->rowCount();
+        table->insertRow(index);
+        for (int column = 0; column < row.size(); ++column)
+            table->setItem(index, column, new QTableWidgetItem(row[column]));
+    }
+    table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setStretchLastSection(true);
+    table->resizeRowsToContents();
+    layout->addWidget(table);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    dialog->resize(1020, 560);
+    dialog->open();
 }
 
 void MainWindow::createPlayControls(QToolBar *band) {
@@ -1408,11 +2248,33 @@ void MainWindow::createPlayControls(QToolBar *band) {
                 play_controls_->observeStatus(request_id, status);
                 // UX-9, decision 4: the voices on the Graph's bands.
                 if (graph_canvas_ != nullptr) graph_canvas_->observeStatus(status);
+                // HW-2s: the watch, the last reload and the contents check;
+                // and, decision 7, whether the engine's own watch is open.
+                assets_dock_->observeStatus(request_id, status);
+                frame_plan_->observeEngineStatus(status);
+                // BS-1s, decision 2: the engine's placeholder, and why.
+                render_fallback_->observeStatus(status);
+                // PB-1s, decision 2: the list, when its revision moved.
+                problems_dock_->observeStatus(status);
             });
     connect(viewport_, &EmbeddedViewport::engineRpcRefused, this,
             [this](qint64 request_id, int code, const QString &message,
                    const QJsonValue &data) {
                 play_controls_->receiveRefusal(request_id, code, message, data);
+                assets_dock_->receiveRefusal(request_id, code, message, data);
+                materials_dock_->receiveRefusal(request_id, code, message, data);
+                // MI-1s: register_model's and unregister_model's refusals.
+                if (model_registration_->owns(request_id)) {
+                    const QJsonObject object = data.toObject();
+                    const auto fields = nlohmann::json::parse(
+                        QJsonDocument(object.value(QStringLiteral("error_fields")).toObject())
+                            .toJson(QJsonDocument::Compact)
+                            .toStdString(),
+                        nullptr, false);
+                    model_registration_->receiveRefusal(
+                        request_id, object.value(QStringLiteral("error_code")).toString().toStdString(),
+                        message.toStdString(), fields.is_discarded() ? nlohmann::json::object() : fields);
+                }
                 // UX-13c: an engine without scene_outline (-32601).
                 if (request_id != 0 && request_id == pending_outliner_request_ &&
                     code == -32601)
@@ -1592,7 +2454,10 @@ void MainWindow::updatePlayPresentation() {
         // rather than on the next watch (Q-16 would find it too).
         setOutlinerRefreshInterval(OutlinerRefreshMinimumIntervalMs);
         requestOutlinerRefresh();
-        if (inspector_ != nullptr) inspector_->refreshFromEngine();
+        if (inspector_ != nullptr) {
+            inspector_->refreshFromEngine();
+            inspector_->refreshHistoryLabels();
+        }
     }
     shown_play_session_ = session;
     if (after_play_stop_ && !model.busy()) {
@@ -1675,6 +2540,7 @@ void MainWindow::requestEngineRestart(const QString &reason) {
         graph_canvas_->engineRestartDeclined(declined);
         render_features_->engineRestartDeclined(declined);
         rendering_settings_->engineRestartDeclined(declined);
+        ray_layout_->engineRestartDeclined(declined);
         return;
     }
     // Set first: with nothing unsaved the restart happens inside this call.
@@ -1691,8 +2557,125 @@ void MainWindow::requestEngineRestart(const QString &reason) {
 void MainWindow::requestNavigation(Navigation destination, const QString &path) {
     if (pending_navigation_ != Navigation::None) return;
     pending_navigation_ = destination;
+    if (destination == Navigation::Project) viewport_->setRestartPending(true);
     pending_project_path_ = path;
+    // A Save/open baseline operation must finish before asking whether this
+    // project is dirty. Keep the navigation request instead of dropping it.
+    if (document_request_ != 0 || document_save_pending_ || document_prompt_) return;
     checkNavigationRevision();
+}
+
+
+void MainWindow::invalidateDocumentOperations(bool new_project) {
+    // RPC ids belong to an engine, and dialog continuations to this generation.
+    // Invalidate before closing a dialog: reject() emits finished synchronously.
+    ++document_generation_;
+    document_request_ = 0;
+    document_operation_ = DocumentOperation::None;
+    document_save_pending_ = false;
+    navigation_revision_request_ = 0;
+    navigation_waiting_for_save_ = false;
+    if (document_prompt_) {
+        auto *prompt = document_prompt_.data();
+        document_prompt_ = nullptr;
+        prompt->reject();
+    }
+    if (new_project) {
+        document_session_ready_ = false;
+        document_dirty_ = false;
+    }
+}
+
+void MainWindow::requestDocumentOperation(DocumentOperation operation) {
+    if (document_request_ != 0) {
+        cancelNavigation(tr("A document baseline operation is still running. Please retry."));
+        return;
+    }
+    const auto method = operation == DocumentOperation::Open || operation == DocumentOperation::Navigation
+        ? QStringLiteral("get_document_journal")
+        : operation == DocumentOperation::RevertClose || operation == DocumentOperation::RevertRecovery
+            ? QStringLiteral("revert_documents_to_baseline") : QStringLiteral("mark_document_baseline");
+    QString error;
+    document_operation_ = operation;
+    document_request_generation_ = document_generation_;
+    document_request_ = viewport_->requestRpc(method,
+        operation == DocumentOperation::RevertClose ? QJsonObject{{QStringLiteral("closing"), true}} : QJsonObject{}, &error);
+    if (!document_request_) {
+        document_operation_ = DocumentOperation::None;
+        cancelNavigation(tr("Could not update the document baseline: %1").arg(error));
+    }
+}
+
+bool MainWindow::receiveDocumentFailure(qint64 request, const QString &message) {
+    if (!request || request != document_request_ || document_request_generation_ != document_generation_) return false;
+    document_request_ = 0;
+    document_operation_ = DocumentOperation::None;
+    navigation_waiting_for_save_ = false;
+    cancelNavigation(tr("Could not update the document baseline: %1").arg(message));
+    return true;
+}
+
+bool MainWindow::receiveDocumentResult(qint64 request, const QByteArray &bytes) {
+    if (!request || request != document_request_ || document_request_generation_ != document_generation_) return false;
+    const auto result = nlohmann::json::parse(bytes.constData(), bytes.constData() + bytes.size(), nullptr, false);
+    if (!result.is_object() || !result.contains("dirty") || !result.at("dirty").is_boolean())
+        return receiveDocumentFailure(request, tr("Invalid document journal response."));
+    const auto operation = std::exchange(document_operation_, DocumentOperation::None);
+    document_request_ = 0;
+    document_dirty_ = result.at("dirty").get<bool>();
+    if (operation == DocumentOperation::Navigation) {
+        continueNavigation();
+    } else if (operation == DocumentOperation::Open) {
+        if (!document_dirty_) {
+            requestDocumentOperation(DocumentOperation::MarkOpen);
+        } else {
+            auto *prompt = new QMessageBox(QMessageBox::Warning, tr("Previous document changes"),
+                tr("Restore the previous session's rendering document changes?"),
+                QMessageBox::Discard | QMessageBox::Save, this);
+            prompt->setObjectName(QStringLiteral("pelican.documentRecoveryPrompt"));
+            prompt->button(QMessageBox::Discard)->setText(tr("Discard changes"));
+            prompt->button(QMessageBox::Discard)->setObjectName(QStringLiteral("pelican.documentRecoveryPrompt.discard"));
+            prompt->button(QMessageBox::Save)->setText(tr("Keep changes"));
+            prompt->button(QMessageBox::Save)->setObjectName(QStringLiteral("pelican.documentRecoveryPrompt.keep"));
+            prompt->setDefaultButton(QMessageBox::Save);
+            prompt->setAttribute(Qt::WA_DeleteOnClose);
+            document_prompt_ = prompt;
+            connect(prompt, &QMessageBox::finished, this, [this, generation = document_generation_](int answer) {
+                if (generation != document_generation_) return;
+                document_prompt_ = nullptr;
+                requestDocumentOperation(answer == QMessageBox::Discard ? DocumentOperation::RevertRecovery
+                                                                        : DocumentOperation::KeepRecovery);
+            });
+            prompt->open();
+        }
+    } else {
+        document_session_ready_ = true;
+        auto finish = [this, operation, generation = document_generation_] {
+            if (generation != document_generation_) return;
+            document_prompt_ = nullptr;
+            if (operation == DocumentOperation::RevertClose) completeNavigation();
+            else if (operation == DocumentOperation::RevertRecovery) {
+                if (render_history_) render_history_->clear();
+                viewport_->restartEngine(tr("Reading the restored documents..."));
+            } else if (pending_navigation_ != Navigation::None) {
+                if (operation == DocumentOperation::MarkSave) navigation_waiting_for_save_ = false;
+                checkNavigationRevision();
+            }
+        };
+        if (result.contains("conflicts") && !result.at("conflicts").empty()) {
+            QStringList paths;
+            for (const auto &path : result.at("conflicts")) paths << QString::fromStdString(path.get<std::string>());
+            auto *prompt = new QMessageBox(QMessageBox::Warning, tr("Documents changed outside Studio"),
+                tr("These documents were kept because they changed outside Studio:\n%1").arg(paths.join('\n')),
+                QMessageBox::Ok, this);
+            prompt->setObjectName(QStringLiteral("pelican.documentRevertConflicts"));
+            prompt->setAttribute(Qt::WA_DeleteOnClose);
+            document_prompt_ = prompt;
+            connect(prompt, &QMessageBox::finished, this, [finish](int) { finish(); });
+            prompt->open();
+        } else finish();
+    }
+    return true;
 }
 
 void MainWindow::checkNavigationRevision() {
@@ -1728,7 +2711,8 @@ void MainWindow::continueNavigation() {
             [this] { cancelNavigation(); });
         return;
     }
-    if (!inspector_->hasUnsavedSceneChanges() && !inspector_->sceneEditPending()) {
+    if (!inspector_->hasUnsavedSceneChanges() && !inspector_->sceneEditPending() &&
+        (pending_navigation_ == Navigation::Restart || !document_dirty_)) {
         completeNavigation();
         return;
     }
@@ -1736,7 +2720,10 @@ void MainWindow::continueNavigation() {
     const bool restarting = pending_navigation_ == Navigation::Restart;
     auto *prompt = new QMessageBox(QMessageBox::Warning, tr("Unsaved Scene Changes"),
         restarting ? tr("Save your scene changes before the engine restarts?")
-                   : tr("Save your scene changes before leaving this project?"),
+                   : inspector_->hasUnsavedSceneChanges() && document_dirty_
+                         ? tr("The scene and rendering documents have unsaved changes. Save before leaving?")
+                     : document_dirty_ ? tr("Rendering documents have unsaved changes. Save before leaving?")
+                                       : tr("The scene has unsaved changes. Save before leaving?"),
         QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, this);
     if (restarting) {
         prompt->setInformativeText(tr("The engine restarts to apply a setting it reads only at start, and the scene it holds is read again from disk. Cancel keeps this engine running; the setting is saved and applies the next time the engine starts."));
@@ -1763,11 +2750,15 @@ void MainWindow::answerNavigationPrompt(int answer) {
     // A later button click cannot resurrect that request.
     if (pending_navigation_ == Navigation::None) return;
     if (answer == QMessageBox::Discard) {
-        completeNavigation();
+        if (pending_navigation_ == Navigation::Restart || !project_model_) completeNavigation();
+        else requestDocumentOperation(DocumentOperation::RevertClose);
     } else if (answer == QMessageBox::Save) {
         navigation_save_completion_ = inspector_->sceneSaveCompletion();
         navigation_waiting_for_save_ = true;
+        document_save_completion_ = navigation_save_completion_;
+        document_save_pending_ = true;
         if (!inspector_->sceneSaveInFlight() && !inspector_->saveScene()) {
+            document_save_pending_ = false;
             cancelNavigation(tr("Scene save is unavailable. Finish any active edit and retry. The project remains open."));
         } else {
             statusBar()->showMessage(pending_navigation_ == Navigation::Restart
@@ -1784,6 +2775,17 @@ void MainWindow::sceneStateChanged() {
     if (play_controls_ != nullptr &&
         (!play_controls_->model().supported() || play_controls_->model().editing()))
         clean_in_edit_ = !inspector_->hasUnsavedSceneChanges();
+    if (document_save_pending_ && inspector_->sceneSaveCompletion() != document_save_completion_) {
+        document_save_pending_ = false;
+        if (inspector_->lastSceneSaveSucceeded()) {
+            requestDocumentOperation(DocumentOperation::MarkSave);
+            return;
+        }
+        if (pending_navigation_ != Navigation::None) {
+            cancelNavigation(tr("The scene could not be saved. The project remains open."));
+            return;
+        }
+    }
     if (!navigation_waiting_for_save_ ||
         inspector_->sceneSaveCompletion() == navigation_save_completion_) return;
     navigation_waiting_for_save_ = false;
@@ -1808,6 +2810,7 @@ void MainWindow::cancelNavigation(const QString &message) {
         graph_canvas_->engineRestartDeclined(declined);
         render_features_->engineRestartDeclined(declined);
         rendering_settings_->engineRestartDeclined(declined);
+        ray_layout_->engineRestartDeclined(declined);
         return;
     }
     if (!message.isEmpty()) statusBar()->showMessage(message, 8000);
@@ -1816,7 +2819,7 @@ void MainWindow::cancelNavigation(const QString &message) {
 void MainWindow::resetNavigation() {
     // Q-9. Declined, or about to go ahead -- completeNavigation restarts the
     // engine right after this, and restartEngine closes the gate itself.
-    if (pending_navigation_ == Navigation::Restart) {
+    if (pending_navigation_ == Navigation::Restart || pending_navigation_ == Navigation::Project) {
         viewport_->setRestartPending(false);
     }
     pending_navigation_ = Navigation::None;
@@ -1860,7 +2863,9 @@ void MainWindow::openProjectNow(const QString &path) {
         saveLastToolLayout();
         outliner_refresh_timer_->stop();
         pending_outliner_request_ = 0;
+        invalidateDocumentOperations(true);
         inspector_->resetSceneSaveState();
+        inspector_->resetMaterialState();
         pending_spawn_name_.reset();
         pending_created_selection_.reset();
         pending_outliner_edit_.reset();
@@ -1870,6 +2875,8 @@ void MainWindow::openProjectNow(const QString &path) {
         project_model_ = std::move(opened_project);
         // RL-1s: nor anything the reload watched.
         if (render_reload_) render_reload_->open(project_model_->projectRoot());
+        assets_dock_->open(project_model_->projectRoot());
+        materials_dock_->open(project_model_->projectRoot());
         tool_layout_presets_.emplace(
             application_config_directory_,
             displayPath(project_model_->projectRoot()));
@@ -1944,6 +2951,7 @@ void MainWindow::endProjectMigration() {
 
 void MainWindow::leaveCurrentProject(
     const std::filesystem::path &next_project_root) {
+    invalidateDocumentOperations(true);
     saveLastToolLayout();
     outliner_refresh_timer_->stop();
     pending_outliner_request_ = 0;
@@ -1954,6 +2962,8 @@ void MainWindow::leaveCurrentProject(
     endGizmoSessionForProjectSwitch(next_project_root);
     if (render_history_) render_history_->clear();
     if (render_reload_) render_reload_->open({});
+    assets_dock_->open({});
+    materials_dock_->open({});
     selection_model_.bindProject(nullptr);
     project_model_.reset();
     tool_layout_presets_.reset();
@@ -1971,6 +2981,8 @@ void MainWindow::leaveCurrentProject(
 void MainWindow::setShaderSourceOpenAction(
     std::function<bool(const std::filesystem::path &)> action) {
     frame_plan_->setShaderSourceOpenAction(action);
+    // BS-1s: the fallback notice's Open file opens the same way.
+    file_open_action_ = action;
     fullscreen_pass_->setShaderSourceOpenAction(std::move(action));
 }
 
@@ -2062,6 +3074,11 @@ void MainWindow::createAddObjectMenu() {
         connect(action, &QAction::triggered, this,
                 [this, kind = kind] { addObject(kind); });
     }
+    // MI-1s, decision 1: an outside .glb / .gltf / .vrm, registered and placed.
+    add_object_menu_->addSeparator();
+    QAction *model_from_file = add_object_menu_->addAction(tr("Model from file\xE2\x80\xA6"));
+    model_from_file->setObjectName(QStringLiteral("pelican.outliner.addObject.modelFromFile"));
+    connect(model_from_file, &QAction::triggered, this, [this] { addModelFromFile(); });
 
     // OL-1: the right-click menu is the row's first -- Duplicate and Delete,
     // switched off with nothing selected -- and then Add Object.
@@ -2085,13 +3102,106 @@ void MainWindow::createAddObjectMenu() {
     add_button->setObjectName(QStringLiteral("pelican.outliner.addObjectButton"));
     add_button->setText(tr("Add Object"));
     add_button->setToolTip(tr("Add an empty or a primitive shape at the origin, "
-                              "or a wide floor just under it"));
+                              "a wide floor just under it, or a model from a file"));
     add_button->setMenu(add_object_menu_);
     add_button->setPopupMode(QToolButton::InstantPopup);
     scene_toolbar->addWidget(add_button);
 }
 
 void MainWindow::addObject(AddObjectKind kind) {
+    spawnNewObject(addObjectBaseName(kind),
+                   [kind](const std::string &name) { return addObjectDeclaration(kind, name); });
+}
+
+void MainWindow::addModelObject(const std::string &model) {
+    spawnNewObject(modelObjectBaseName(model),
+                   [model](const std::string &name) { return modelObjectDeclaration(name, model); });
+}
+
+void MainWindow::addModelFromFile() {
+    if (!project_model_ || !viewport_->rpcReady()) {
+        statusBar()->showMessage(
+            tr("Add Object needs an open project with its engine running."), 5000);
+        return;
+    }
+    chooseModelFile([this](const std::string &model) { addModelObject(model); });
+}
+
+void MainWindow::chooseModelFile(std::function<void(const std::string &model)> registered) {
+    if (!project_model_ || !viewport_->rpcReady()) {
+        statusBar()->showMessage(tr("A model is added to an open project with its engine running."), 5000);
+        return;
+    }
+    // Qt's own dialog, as the Graph's Import... opens it, so a scenario can
+    // name its file field; window-modal, answered when it closes.
+    auto *dialog = new QFileDialog{this, tr("Model from file")};
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setObjectName(QStringLiteral("pelican.modelImportDialog"));
+    dialog->setOption(QFileDialog::DontUseNativeDialog, true);
+    dialog->setFileMode(QFileDialog::ExistingFile);
+    dialog->setNameFilter(QString::fromUtf8(ModelFileFilter.data(), static_cast<qsizetype>(ModelFileFilter.size())));
+    if (auto *name = dialog->findChild<QLineEdit *>(QStringLiteral("fileNameEdit")))
+        name->setObjectName(QStringLiteral("pelican.modelImportDialog.fileName"));
+    const auto root = project_model_->projectRoot();
+    connect(dialog, &QFileDialog::fileSelected, this,
+            [this, root, registered = std::move(registered)](const QString &picked) {
+                const std::filesystem::path file{picked.toStdWString()};
+                const auto refused = [this](const std::string &sentence) {
+                    const QString message = QString::fromStdString(sentence);
+                    statusBar()->showMessage(message, 10000);
+                    setPanelNotice(outliner_notice_, oneLine(message), message);
+                };
+                statusBar()->showMessage(tr("Registering %1...").arg(picked), 5000);
+                model_registration_->registerFile(
+                    root, file,
+                    [this, registered](const ModelRegistrationSession::Registered &model) {
+                        modelsChanged();
+                        if (!model.live) {
+                            // The registration is written; the engine draws it
+                            // once it starts again, and nothing is placed now.
+                            showOutlinerRestart(
+                                tr("%1 is registered as model %2; restart the engine to use it: %3")
+                                    .arg(QString::fromStdString(model.path), QString::fromStdString(model.name),
+                                         QString::fromStdString(model.restart_reason)),
+                                QString::fromStdString(model.restart_reason));
+                            return;
+                        }
+                        setPanelNotice(outliner_notice_, {});
+                        statusBar()->showMessage(
+                            model.already ? tr("%1 is model %2 already.")
+                                                .arg(QString::fromStdString(model.path),
+                                                     QString::fromStdString(model.name))
+                                          : tr("Registered %1 as model %2.")
+                                                .arg(QString::fromStdString(model.path),
+                                                     QString::fromStdString(model.name)),
+                            5000);
+                        if (registered) registered(model.name);
+                    },
+                    refused);
+            });
+    dialog->open();
+}
+
+void MainWindow::showOutlinerRestart(const QString &line, const QString &reason) {
+    outliner_restart_reason_ = reason;
+    statusBar()->showMessage(line, 10000);
+    setPanelNotice(outliner_notice_, oneLine(line), line);
+    outliner_restart_->show();
+}
+
+void MainWindow::modelsChanged() {
+    if (inspector_ != nullptr) inspector_->modelsChanged();
+    requestRegisteredModels();
+}
+
+void MainWindow::requestRegisteredModels() {
+    if (!viewport_->rpcReady() || pending_models_request_ != 0) return;
+    QString error;
+    pending_models_request_ = viewport_->requestRpc(QStringLiteral("list_assets"), {}, &error);
+}
+
+void MainWindow::spawnNewObject(std::string_view base,
+                                const std::function<nlohmann::json(const std::string &name)> &declaration) {
     if (!project_model_ || !viewport_->rpcReady()) {
         statusBar()->showMessage(
             tr("Add Object needs an open project with its engine running."), 5000);
@@ -2116,11 +3226,10 @@ void MainWindow::addObject(AddObjectKind kind) {
     // A spawn the Outliner has not shown yet still holds its name.
     if (pending_spawn_name_ && pending_spawn_name_->first == scene->scene_id)
         taken.push_back(pending_spawn_name_->second);
-    const std::string name = uniqueObjectName(addObjectBaseName(kind), taken);
+    const std::string name = uniqueObjectName(base, taken);
 
     QString error;
-    const auto outcome = inspector_->spawnObject(
-        scene->scene_id, addObjectDeclaration(kind, name), &error);
+    const auto outcome = inspector_->spawnObject(scene->scene_id, declaration(name), &error);
     const QString shown_name = QString::fromStdString(name);
     if (outcome == SpawnOutcome::Refused) {
         const QString message = tr("Could not add %1: %2").arg(shown_name, error);
@@ -2167,8 +3276,9 @@ void MainWindow::updateOutlinerActions() {
     const auto &selected = selection_model_.selected();
     const bool has_object = project_model_ && selected &&
                             project_model_->findObject(*selected) != nullptr;
-    outliner_->duplicateAction()->setEnabled(has_object);
-    outliner_->deleteAction()->setEnabled(has_object);
+    const bool enabled = has_object && sceneFocusGroup();
+    outliner_->duplicateAction()->setEnabled(enabled);
+    outliner_->deleteAction()->setEnabled(enabled);
     // PM-3c: a runtime row is selected, and they are off because of it.
     const bool runtime = runtime_outliner_ != nullptr && !has_object &&
                          runtime_outliner_->model().selectedObject() != nullptr;
@@ -3178,6 +4288,12 @@ void MainWindow::applyDefaultLayout() {
     addDockWidget(Qt::LeftDockWidgetArea, docks_[ProjectDock]);
     addDockWidget(Qt::LeftDockWidgetArea, docks_[OutlinerDock]);
     tabifyDockWidget(docks_[ProjectDock], docks_[OutlinerDock]);
+    // HW-2s: Assets is the tab next to Project.
+    addDockWidget(Qt::LeftDockWidgetArea, docks_[AssetsPanelDock]);
+    tabifyDockWidget(docks_[ProjectDock], docks_[AssetsPanelDock]);
+    // MT-1s: Materials is the tab after Assets.
+    addDockWidget(Qt::LeftDockWidgetArea, docks_[MaterialsPanelDock]);
+    tabifyDockWidget(docks_[AssetsPanelDock], docks_[MaterialsPanelDock]);
     docks_[ProjectDock]->raise();
 
     addDockWidget(Qt::RightDockWidgetArea, docks_[InspectorDock]);
@@ -3186,8 +4302,11 @@ void MainWindow::applyDefaultLayout() {
     addDockWidget(Qt::BottomDockWidgetArea, docks_[EngineLogDock]);
     addDockWidget(Qt::BottomDockWidgetArea, docks_[FramePlanDock]);
     addDockWidget(Qt::BottomDockWidgetArea, docks_[FullscreenPassDock]);
+    // PB-1s: Problems is the tab after the Engine Log.
+    addDockWidget(Qt::BottomDockWidgetArea, docks_[ProblemsPanelDock]);
     tabifyDockWidget(docks_[OutputDock], docks_[EngineLogDock]);
-    tabifyDockWidget(docks_[EngineLogDock], docks_[FramePlanDock]);
+    tabifyDockWidget(docks_[EngineLogDock], docks_[ProblemsPanelDock]);
+    tabifyDockWidget(docks_[ProblemsPanelDock], docks_[FramePlanDock]);
     tabifyDockWidget(docks_[FramePlanDock], docks_[FullscreenPassDock]);
     docks_[FramePlanDock]->raise();
     resizeDocks({docks_[ProjectDock], docks_[InspectorDock]}, {280, 320}, Qt::Horizontal);

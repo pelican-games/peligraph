@@ -7,9 +7,10 @@ composite that puts `lit_color` on the screen. Its scene is not empty: one box
 (`assets/ground.glb`, a copy of `test/fixtures/ground.glb`), turned so three of
 its faces are seen, and one directional light.
 
-The scenario adds a fullscreen pass after `lighting_pass` that reads the five
-G-buffer targets and writes `lit_color`, with the Pass Editor's "New..." and
-its Deferred lighting starting point. What the viewport shows is then what that
+The scenario adds a fullscreen pass that reads the five G-buffer targets and
+writes `lit_color`: the Pass Editor's New pass places it on the Graph tab
+(GL-5f), render.target_ref nodes name the targets, and New... in its Pass
+fields writes the shader from the Deferred lighting starting point. What the viewport shows is then what that
 shader draws: the box lit by the scene's light over a black background. With
 the light loop of the shader cut, it is black everywhere, which is the check
 that the light reaching the picture is the scene's.

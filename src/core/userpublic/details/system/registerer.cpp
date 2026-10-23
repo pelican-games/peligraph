@@ -1,3 +1,4 @@
+#include "../../../watch/userdataguard.hpp"
 #include "registerer.hpp"
 #include "../../../registrationownerhost.hpp"
 
@@ -85,12 +86,14 @@ void updateRegisteredGameSystems(GameContext &ctx, GameSystemScope scope) {
         if (scope == GameSystemScope::editor_only && !editor) continue;
         if (scope == GameSystemScope::game_only && editor) continue;
         ScopedRegistrationOwner owner_scope{system.owner};
-        if (editor) {
-            ScopedEditorClock editor_clock;
-            system.update(ctx);
-        } else {
-            system.update(ctx);
-        }
+        auto scope = userDataScope("system", system.name, invalidGameObjectId, std::to_string(system.owner));
+        const auto invoke = [&] {
+            if (editor) { ScopedEditorClock editor_clock; system.update(ctx); }
+            else system.update(ctx);
+        };
+        if (system.owner == engineRegistrationOwner) guardUserData(scope, invoke);
+        else guardUserCode(scope, invoke);
+        if (userCodeStopRequested()) break;
     }
 }
 
@@ -100,12 +103,18 @@ void dispatchEventToRegisteredGameSystems(const QueuedEvent &event, GameContext 
         for (const auto &handler : system.event_handlers) {
             if (handler.event_type == event.type && handler.dispatch != nullptr) {
                 ScopedRegistrationOwner owner_scope{system.owner};
-                handler.dispatch(event.payload.get(), ctx);
+                const auto scope = userDataScope("system_event", system.name);
+                if (system.owner == engineRegistrationOwner)
+                    guardUserData(scope, [&] { handler.dispatch(event.payload.get(), ctx); });
+                else guardUserCode(scope, [&] { handler.dispatch(event.payload.get(), ctx); });
             }
         }
         if (system.dispatch_queued_event != nullptr) {
             ScopedRegistrationOwner owner_scope{system.owner};
-            system.dispatch_queued_event(event, ctx);
+            const auto scope = userDataScope("system_event", system.name);
+            if (system.owner == engineRegistrationOwner)
+                guardUserData(scope, [&] { system.dispatch_queued_event(event, ctx); });
+            else guardUserCode(scope, [&] { system.dispatch_queued_event(event, ctx); });
         }
     }
 }

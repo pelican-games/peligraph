@@ -5699,3 +5699,29 @@ TEST_CASE(
 }
 
 } // namespace Pelican
+
+TEST_CASE("MU-1 material substitute prefers a compatible contract then frame order and preserves no-pass",
+          "[mu1][materialgenerationplanner]") {
+    using namespace Pelican;
+    RenderingPassContainer container;
+    CHECK_FALSE(container.substituteMaterialPass(MaterialShaderContract::gbuffer_v1));
+    PassDefinition first;
+    first.name = "first_forward";
+    first.pass_info = MaterialPassInfo{};
+    first.materialInfo().contract = MaterialPassContract::forward_opaque_v1;
+    PassDefinition second;
+    second.name = "second_deferred";
+    second.pass_info = MaterialPassInfo{};
+    second.materialInfo().contract = MaterialPassContract::deferred_geometry_v1;
+    container.registerCompiledRenderingPass(CompiledRenderingPass{
+        "main", {{first, PassId{0}}, {second, PassId{1}}}, {}});
+    const auto matching = container.substituteMaterialPass(MaterialShaderContract::gbuffer_v1);
+    REQUIRE(matching);
+    CHECK(matching->name == "second_deferred");
+    CHECK(matching->route == MaterialRouteClass::deferred_geometry);
+    const auto fallback = container.substituteMaterialPass(MaterialShaderContract::legacy_gbuffer_v1);
+    REQUIRE(fallback);
+    CHECK(fallback->name == "first_forward");
+    CHECK(fallback->route == MaterialRouteClass::forward_opaque);
+    CHECK(fallback->shader_contract == MaterialShaderContract::forward_scene_color_v1);
+}

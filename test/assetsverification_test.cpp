@@ -8,6 +8,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iterator>
 #include <sstream>
 #include <string>
@@ -160,6 +161,9 @@ const nlohmann::json *issueOfKind(const nlohmann::json &store, std::string_view 
 
 TEST_CASE("AV-1 get_assets_verification returns every issue by kind and get_status counts them",
           "[assets-manifest][av1]") {
+#if !PELICAN_WITH_HOT_RELOAD
+    SKIP("PELICAN_WITH_HOT_RELOAD=OFF: the startup check does not run unless strict (AV-1 distribution build startup covers it)");
+#else
     ensureLogger();
     DriftedStore sandbox;
     AssetsVerification verification;
@@ -207,10 +211,14 @@ TEST_CASE("AV-1 get_assets_verification returns every issue by kind and get_stat
 
     const auto refused = wire.call("get_assets_verification", {{"store", "main"}});
     REQUIRE(refused.at("error").at("code") == JsonRpcErrorCodes::invalidParams);
+#endif
 }
 
 TEST_CASE("AV-1 a project whose stores declare no manifest is not_run with the reason",
           "[assets-manifest][av1]") {
+#if !PELICAN_WITH_HOT_RELOAD
+    SKIP("PELICAN_WITH_HOT_RELOAD=OFF: the startup check does not run unless strict (AV-1 distribution build startup covers it)");
+#else
     ensureLogger();
     DriftedStore sandbox;
     AssetsVerification verification;
@@ -233,10 +241,14 @@ TEST_CASE("AV-1 a project whose stores declare no manifest is not_run with the r
     const auto refused = absent.call("verify_assets");
     REQUIRE(refused.at("error").at("code") == JsonRpcErrorCodes::applicationError);
     REQUIRE(refused.at("error").at("data").at("error_code") == "assets_verification_unavailable@1");
+#endif
 }
 
 TEST_CASE("AV-1 verify_assets reruns on a worker, is running meanwhile, and a second call joins it",
           "[assets-manifest][av1]") {
+#if !PELICAN_WITH_HOT_RELOAD
+    SKIP("PELICAN_WITH_HOT_RELOAD=OFF: the startup check does not run unless strict (AV-1 distribution build startup covers it)");
+#else
     ensureLogger();
     DriftedStore sandbox;
     AssetsVerification verification;
@@ -270,7 +282,52 @@ TEST_CASE("AV-1 verify_assets reruns on a worker, is running meanwhile, and a se
     REQUIRE(after.at("stores").at(0).at("hashed").get<int>() +
                 after.at("stores").at(0).at("cached").get<int>() ==
             2);
+#endif
 }
+
+#if !PELICAN_WITH_HOT_RELOAD
+// EB-4: what the startup cases above check, in a distribution build. The
+// startup check is not run unless strict (the reason says why), the explicit
+// verify_assets still runs, and --strict-assets checks as the ON build does.
+TEST_CASE("AV-1 distribution build startup: not_run unless strict, verify_assets still runs",
+          "[assets-manifest][av1][eb4]") {
+    ensureLogger();
+    DriftedStore sandbox;
+    AssetsVerification verification;
+    const auto summary = verification.verifyAtStartup(sandbox.stores(), sandbox.cache, false);
+    REQUIRE(summary.shouldContinueLoading());
+    REQUIRE(summary.stores == 0);
+    VerificationWire wire{&verification};
+    const nlohmann::json not_run{{"state", "not_run"}, {"reason", "PELICAN_WITH_HOT_RELOAD=OFF"}};
+    REQUIRE(wire.status() == not_run);
+    const auto detail = wire.call("get_assets_verification").at("result");
+    REQUIRE(detail.at("state") == "not_run");
+    REQUIRE(detail.at("reason") == "PELICAN_WITH_HOT_RELOAD=OFF");
+    REQUIRE(detail.at("verified_at").is_null());
+    REQUIRE(detail.at("stores").empty());
+
+    REQUIRE(wire.call("verify_assets").at("result") == nlohmann::json{{"state", "running"}});
+    verification.waitForTesting();
+    REQUIRE(wire.status() == nlohmann::json{{"state", "verified"},
+                                            {"stores", 1},
+                                            {"matched", 1},
+                                            {"info", 1},
+                                            {"warnings", 2},
+                                            {"errors", 0}});
+
+    AssetsVerification strict;
+    const auto strict_summary = strict.verifyAtStartup(sandbox.stores(), sandbox.cache, true);
+    REQUIRE_FALSE(strict_summary.shouldContinueLoading());
+    REQUIRE(strict_summary.stores == 1);
+    VerificationWire strict_wire{&strict};
+    REQUIRE(strict_wire.status() == nlohmann::json{{"state", "verified"},
+                                                   {"stores", 1},
+                                                   {"matched", 1},
+                                                   {"info", 0},
+                                                   {"warnings", 0},
+                                                   {"errors", 3}});
+}
+#endif
 
 TEST_CASE("AV-1 update_assets_manifest rewrites the manifest and the rerun matches everything",
           "[assets-manifest][av1]") {
@@ -320,6 +377,50 @@ TEST_CASE("AV-1 update_assets_manifest rewrites the manifest and the rerun match
             nlohmann::json{{"error_code", "assets_manifest_undeclared@1"}, {"error_fields", {{"store", "plain"}}}});
 
     REQUIRE(wire.call("update_assets_manifest").at("error").at("code") == JsonRpcErrorCodes::invalidParams);
+}
+
+// EB-1: update_assets_manifest while a rerun is reading the stores is
+// refused at once (the RPC thread, which is the frame's, never waits for the
+// hashing), and goes through once the run is done.
+TEST_CASE("EB-1 update_assets_manifest during a verification run is refused at once and works after it",
+          "[assets-manifest][av1][eb1]") {
+    ensureLogger();
+    DriftedStore sandbox;
+    AssetsVerification verification;
+    (void)verification.verifyAtStartup(sandbox.stores(), sandbox.cache, false);
+    VerificationWire wire{&verification};
+    const auto manifest_before = [&] {
+        std::ifstream file{sandbox.manifest, std::ios::binary};
+        return std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+    };
+    const auto before = manifest_before();
+
+    // Held, the worker holds the stores as a run that is hashing does.
+    verification.holdForTesting(true);
+    REQUIRE(wire.call("verify_assets").at("result") == nlohmann::json{{"state", "running"}});
+    auto answer = std::async(std::launch::async, [&] {
+        return wire.call("update_assets_manifest", {{"store", "main"}});
+    });
+    const bool answered = answer.wait_for(std::chrono::seconds{10}) == std::future_status::ready;
+    if (!answered) verification.holdForTesting(false);
+    REQUIRE(answered);
+    const auto refused = answer.get();
+    REQUIRE(refused.contains("error"));
+    CHECK(refused.at("error").at("code") == JsonRpcErrorCodes::applicationError);
+    CHECK(refused.at("error").at("data") ==
+          nlohmann::json{{"error_code", "assets_verification_running@1"}, {"error_fields", {{"store", "main"}}}});
+    CHECK(refused.at("error").at("message").get<std::string>().starts_with("update_assets_manifest: "));
+    CHECK(manifest_before() == before);
+    CHECK(wire.status() == nlohmann::json{{"state", "running"}});
+
+    verification.holdForTesting(false);
+    verification.waitForTesting();
+    const auto written = wire.call("update_assets_manifest", {{"store", "main"}});
+    REQUIRE(written.contains("result"));
+    CHECK(written.at("result").at("files") == 2);
+    verification.waitForTesting();
+    CHECK(wire.status().at("warnings") == 0);
+    CHECK(manifest_before() != before);
 }
 
 } // namespace Pelican

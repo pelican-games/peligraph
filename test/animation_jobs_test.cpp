@@ -600,4 +600,41 @@ TEST_CASE("WP99 fixture 8 crossing capacity exact one-short and zero preserve cu
     REQUIRE(exact[2].annotation_identity == 3);
 }
 
+TEST_CASE("AN1 animation registry rejects expired and different owners at the same address", "[animation][an1]") {
+    AnimationAssetRegistry registry;
+    // Destruction and reconstruction in one buffer guarantees actual address
+    // reuse without depending on the platform allocator's free-list policy.
+    alignas(SkeletalModelData) std::byte storage[sizeof(SkeletalModelData)];
+    const auto construct = [&] {
+        auto *model = std::construct_at(reinterpret_cast<SkeletalModelData *>(storage), assetFixture());
+        return std::shared_ptr<const SkeletalModelData>{model, [](const SkeletalModelData *value) {
+            std::destroy_at(value);
+        }};
+    };
+    auto first = construct();
+    const auto *address = first.get();
+    const AnimationAsset stale = registry.getOrCreate(first);
+    CHECK(stale.source_identity.lock() == first);
+    CHECK(registry.getOrCreate(first).rig.handle.identity == stale.rig.handle.identity);
+    first.reset();
+    REQUIRE(stale.source_identity.expired());
+    auto second = construct();
+    REQUIRE(second.get() == address);
+    const auto &replacement = registry.getOrCreate(second);
+    CHECK(replacement.rig.handle.identity != stale.rig.handle.identity);
+    CHECK(stale.rig.generation_state->current.load() != stale.rig.handle.generation);
+    CHECK(replacement.source_identity.lock() == second);
+    CHECK_NOTHROW(findClip(replacement, second->clips.front()));
+
+    // A live but different control block is also a different identity, even
+    // when both shared_ptrs happen to expose the same source address.
+    const auto previous_handle = replacement.rig.handle;
+    auto other_owner = std::shared_ptr<const SkeletalModelData>{second.get(), [](const auto *) {}};
+    const auto &other = registry.getOrCreate(other_owner);
+    CHECK(other.rig.handle.identity != previous_handle.identity);
+    CHECK_FALSE(other.source_identity.owner_before(other_owner));
+    CHECK_FALSE(other_owner.owner_before(other.source_identity));
+    CHECK_THROWS_AS(registry.getOrCreate(std::shared_ptr<const SkeletalModelData>{}), std::invalid_argument);
+}
+
 } // namespace Pelican::Animation

@@ -552,7 +552,7 @@ TEST_CASE("logical value versions derive producer edges without declaration-orde
     cyclic.nodes.at(1).after = {"consumer"};
     requireThrowsContaining(
         [&] { validateCompiledLogicalRenderGraph(registry, cyclic); },
-        "dependency cycle");
+        "dependency cycle: versioned (consumer -> producer -> consumer)");
 }
 
 TEST_CASE("logical graph keeps nominal connections and fast-default independence explicit",

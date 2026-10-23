@@ -278,12 +278,14 @@ TEST_CASE("JSON-RPC FP-2 responses are the same bytes as the ordered_json envelo
     REQUIRE(serializeJsonRpcError(makeJsonRpcError(nullptr, JsonRpcErrorCodes::parseError, "parse error")) ==
             R"({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"parse error"}})");
 
-    // A string that is not UTF-8 is refused by both, as before.
+    // Success serialization remains strict. JP-1 error serialization must
+    // stay usable even when the exception message is not UTF-8.
     const nlohmann::json bad{{"s", std::string{"\xFF"}}};
     REQUIRE_THROWS_AS(orderedEnvelopeResult(1, bad), nlohmann::json::type_error);
     REQUIRE_THROWS_AS(serializeJsonRpcResult(1, bad), nlohmann::json::type_error);
-    REQUIRE_THROWS_AS(serializeJsonRpcError(makeJsonRpcError(1, 1, std::string{"\xFF"})),
-                      nlohmann::json::type_error);
+    const auto recovered = parseResponse(
+        serializeJsonRpcError(makeJsonRpcError(1, 1, bad.at("s").get<std::string>())));
+    REQUIRE(recovered.at("error").at("message") == "\xEF\xBF\xBD");
 }
 
 } // namespace Pelican

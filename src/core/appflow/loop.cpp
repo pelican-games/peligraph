@@ -1,3 +1,4 @@
+#include "../watch/userdataguard.hpp"
 #include "loop.hpp"
 
 #include "../launchconfig.hpp"
@@ -163,7 +164,8 @@ LoopModules resolveLoopModules() {
     // UI input routing precedes rendering, so create the purgeable CPU runtime
     // during loop setup when (and only when) the UI feature is enabled. Lazy
     // creation from the first render would drop first-frame pointer events.
-    if (rendering_passes.isFeatureEnabled("ui")) (void)GET_MODULE(ui::UiModule);
+    if (rendering_passes.isFeatureEnabled("ui"))
+        guardUserData(userDataScope("renderer", "ui_startup"), [&] { (void)GET_MODULE(ui::UiModule); });
 
     auto &engine_time = GET_MODULE(EngineTime);
     // `--camera` used to be applied by SeqPlayer's constructor (always) and
@@ -795,6 +797,9 @@ void Loop::run() {
         modules.camera_bake->start(*launch_config.camera_bake_output, input_sequence.replayFps());
     }
     prepareRuntimeModuleGraph(modules);
+    // PB-1: every material of the start is registered; one a --render-fallback
+    // launch found no pass for starts the fallback generation now.
+    modules.renderer.enterStartupFallbackForUnservedMaterials();
     // Built here rather than inside runInteractive(): the XR objects pull
     // modules, and creation is frozen a few lines below.
     auto xr = createXrRuntime(launch_config);

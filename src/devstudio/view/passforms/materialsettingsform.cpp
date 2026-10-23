@@ -11,7 +11,6 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
-#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -34,8 +33,9 @@ constexpr std::array material_contracts{"legacy_gbuffer_v1", "deferred_geometry_
                                         "forward_opaque_v1", "forward_transparent_v1"};
 constexpr std::array resource_kinds{"screen_inputs", "surface_resources",
                                     "material_resources"};
-// What Other may hold: the settings the form has no fields for.
-constexpr std::array other_keys{"gpu_draw_source"};
+// UX-15a, decision 6: gpu_draw_source's layout that draws several materials
+// (materialpassinfojsonparser.cpp; docs/manual/06_rendering.md).
+constexpr const char *gpu_segments_layout = "draw_queue_segments_v1";
 
 std::vector<std::string> outputTypeNames() {
     std::vector<std::string> result;
@@ -282,15 +282,129 @@ MaterialSettingsForm::MaterialSettingsForm(const QString &object_prefix,
     resources_layout->addWidget(add_resource_, 0, Qt::AlignLeft);
     form->addRow(tr("Resources"), resources_box_);
 
-    other_ = new QPlainTextEdit(this);
-    other_->setObjectName(childName("materialOther"));
-    other_->setMaximumHeight(80);
-    other_->setPlaceholderText(tr("gpu_draw_source (JSON object), when the pass "
-                                  "draws from GPU-written commands"));
-    other_->setToolTip(tr("The settings this form has no fields for, as JSON: "
-                          "{\"gpu_draw_source\": {...}}"));
-    QObject::connect(other_, &QPlainTextEdit::textChanged, this, changed);
-    form->addRow(tr("Other (JSON)"), other_);
+    // UX-15a, decision 6: gpu_draw_source, a field each.
+    auto *gpu_row = new QWidget(this);
+    auto *gpu_row_layout = new QVBoxLayout(gpu_row);
+    gpu_row_layout->setContentsMargins(0, 0, 0, 0);
+    gpu_draw_ = new QCheckBox(tr("Draw from GPU-written commands"), gpu_row);
+    gpu_draw_->setObjectName(childName("gpuDrawSource"));
+    gpu_draw_->setToolTip(tr("gpu_draw_source: a compute task writes this pass's indexed draw "
+                             "commands and their count, and the GPU draws that many"));
+    gpu_row_layout->addWidget(gpu_draw_);
+    gpu_box_ = new QWidget(gpu_row);
+    gpu_box_->setObjectName(childName("gpuDrawSource.fields"));
+    auto *gpu_form = new QFormLayout(gpu_box_);
+    gpu_form->setContentsMargins(0, 0, 0, 0);
+    gpu_layout_ = new QComboBox(gpu_box_);
+    gpu_layout_->setObjectName(childName("gpuDrawSource.layout"));
+    passform::fillOptionalChoices(*gpu_layout_, tr("Default (fixed_state_v1)"),
+                                  {"fixed_state_v1", gpu_segments_layout});
+    gpu_layout_->setToolTip(tr("gpu_draw_source.layout: fixed_state_v1 draws one material "
+                               "(material_range.count 1); draw_queue_segments_v1 draws several, "
+                               "a segment each"));
+    gpu_form->addRow(tr("Layout"), gpu_layout_);
+    const auto buffer = [this](const char *name, const QString &tip) {
+        auto *combo = new QComboBox(gpu_box_);
+        combo->setObjectName(childName(name));
+        combo->setToolTip(tip);
+        return combo;
+    };
+    gpu_commands_ = buffer("gpuDrawSource.commands",
+                           tr("gpu_draw_source.commands: the buffer of indexed draw commands "
+                              "(command_layout indexed_draw)"));
+    gpu_form->addRow(tr("Commands"), gpu_commands_);
+    gpu_count_ = buffer("gpuDrawSource.count",
+                        tr("gpu_draw_source.count: the buffer of the draw count "
+                           "(command_layout draw_count)"));
+    gpu_form->addRow(tr("Count"), gpu_count_);
+    gpu_segments_ = buffer("gpuDrawSource.segments",
+                           tr("gpu_draw_source.segments: the buffer of segments "
+                              "(host_source scene_draw_segments_v1); draw_queue_segments_v1 only"));
+    gpu_form->addRow(tr("Segments"), gpu_segments_);
+    gpu_max_draws_ = new QSpinBox(gpu_box_);
+    gpu_max_draws_->setObjectName(childName("gpuDrawSource.maxDrawCount"));
+    gpu_max_draws_->setRange(1, std::numeric_limits<int>::max());
+    gpu_max_draws_->setToolTip(tr("gpu_draw_source.max_draw_count: the most commands drawn "
+                                  "(with segments: the output command slots in all)"));
+    gpu_form->addRow(tr("Max draws"), gpu_max_draws_);
+    auto *offsets = new QWidget(gpu_box_);
+    auto *offsets_layout = new QHBoxLayout(offsets);
+    offsets_layout->setContentsMargins(0, 0, 0, 0);
+    const auto offset = [this, offsets, offsets_layout](const char *name, const QString &prefix,
+                                                        const QString &tip) {
+        auto *spin = new QSpinBox(offsets);
+        spin->setObjectName(childName(name));
+        spin->setRange(0, std::numeric_limits<int>::max());
+        spin->setSingleStep(4);
+        spin->setPrefix(prefix);
+        spin->setSuffix(tr(" B"));
+        spin->setToolTip(tip);
+        offsets_layout->addWidget(spin);
+        return spin;
+    };
+    gpu_command_offset_ = offset("gpuDrawSource.commandOffset", tr("commands at "),
+                                 tr("gpu_draw_source.command_offset: bytes into the commands "
+                                    "buffer (a multiple of 4)"));
+    gpu_count_offset_ = offset("gpuDrawSource.countOffset", tr("count at "),
+                               tr("gpu_draw_source.count_offset: bytes into the count buffer "
+                                  "(a multiple of 4)"));
+    gpu_form->addRow(tr("Offsets"), offsets);
+    gpu_fallback_ = new QComboBox(gpu_box_);
+    gpu_fallback_->setObjectName(childName("gpuDrawSource.fallback"));
+    passform::fillOptionalChoices(*gpu_fallback_, tr("Default (none)"), {"cpu_draw_queue"});
+    gpu_fallback_->setToolTip(tr("gpu_draw_source.fallback: cpu_draw_queue draws the CPU's draw "
+                                 "queue on a device without drawIndirectCount"));
+    gpu_form->addRow(tr("Fallback"), gpu_fallback_);
+    gpu_execution_ = new QComboBox(gpu_box_);
+    gpu_execution_->setObjectName(childName("gpuDrawSource.execution"));
+    passform::fillOptionalChoices(*gpu_execution_, tr("Default (automatic)"), {"automatic", "cpu"});
+    gpu_execution_->setToolTip(tr("gpu_draw_source.execution: automatic draws from the GPU's "
+                                  "commands where the device can; cpu takes the fallback always"));
+    gpu_form->addRow(tr("Execution"), gpu_execution_);
+    gpu_row_layout->addWidget(gpu_box_);
+    form->addRow(tr("GPU draws"), gpu_row);
+    QObject::connect(gpu_draw_, &QCheckBox::toggled, this, [this](bool on) {
+        // Turned on: the buffers picked by their names, so nothing is typed.
+        if (on && !loading()) {
+            std::string count;
+            for (const auto &name : buffer_candidates_)
+                if (name.find("count") != std::string::npos) {
+                    count = name;
+                    break;
+                }
+            std::string commands;
+            for (const auto &name : buffer_candidates_)
+                if (name != count && name.find("segment") == std::string::npos) {
+                    commands = name;
+                    break;
+                }
+            if (count.empty())
+                for (const auto &name : buffer_candidates_)
+                    if (name != commands) {
+                        count = name;
+                        break;
+                    }
+            if (gpu_commands_->currentIndex() < 0) fillBufferChoices(*gpu_commands_, commands);
+            if (gpu_count_->currentIndex() < 0) fillBufferChoices(*gpu_count_, count);
+        }
+        followGpuDraw();
+        notifyChanged();
+    });
+    QObject::connect(gpu_layout_, qOverload<int>(&QComboBox::currentIndexChanged), this, [this] {
+        // Segments: the buffer whose name says so, when none is picked.
+        if (!loading() && gpu_segments_->currentIndex() < 0)
+            for (const auto &name : buffer_candidates_)
+                if (name.find("segment") != std::string::npos) {
+                    fillBufferChoices(*gpu_segments_, name);
+                    break;
+                }
+        followGpuDraw();
+        notifyChanged();
+    });
+    for (auto *combo : {gpu_commands_, gpu_count_, gpu_segments_, gpu_fallback_, gpu_execution_})
+        QObject::connect(combo, qOverload<int>(&QComboBox::currentIndexChanged), this, changed);
+    for (auto *spin : {gpu_max_draws_, gpu_command_offset_, gpu_count_offset_})
+        QObject::connect(spin, qOverload<int>(&QSpinBox::valueChanged), this, changed);
     reset();
 }
 
@@ -301,6 +415,100 @@ void MaterialSettingsForm::reset() { load(Json::object()); }
 void MaterialSettingsForm::setResourceCandidates(const std::vector<std::string> &resources) {
     resource_candidates_ = resources;
     for (auto &row : resource_rows_) fillResourceReads(*row);
+}
+
+void MaterialSettingsForm::setBufferCandidates(const std::vector<std::string> &buffers) {
+    if (buffers == buffer_candidates_) return;
+    buffer_candidates_ = buffers;
+    const Loading loading{*this};
+    for (auto *combo : {gpu_commands_, gpu_count_, gpu_segments_})
+        fillBufferChoices(*combo, combo->currentData().toString().toStdString());
+}
+
+// The buffers given, and `current` when they do not have it; `current`
+// picked (none when it is empty).
+void MaterialSettingsForm::fillBufferChoices(QComboBox &combo, const std::string &current) {
+    const QSignalBlocker blocker{&combo};
+    combo.clear();
+    for (const auto &name : buffer_candidates_) combo.addItem(text(name), text(name));
+    if (!current.empty() && combo.findData(text(current)) < 0)
+        combo.addItem(text(current), text(current));
+    combo.setCurrentIndex(current.empty() ? -1 : combo.findData(text(current)));
+}
+
+void MaterialSettingsForm::followGpuDraw() {
+    gpu_box_->setVisible(gpu_draw_->isChecked());
+    gpu_segments_->setEnabled(gpu_layout_->currentData().toString() ==
+                              QString::fromLatin1(gpu_segments_layout));
+}
+
+void MaterialSettingsForm::loadGpuDraw(const Json &source) {
+    const bool on = source.is_object();
+    gpu_draw_->setChecked(on);
+    const auto name = [&](const char *key) {
+        return on && source.contains(key) && source.at(key).is_string()
+                   ? source.at(key).get<std::string>()
+                   : std::string{};
+    };
+    fillBufferChoices(*gpu_commands_, name("commands"));
+    fillBufferChoices(*gpu_count_, name("count"));
+    fillBufferChoices(*gpu_segments_, name("segments"));
+    const auto number = [&](const char *key, int fallback) {
+        if (!on || !source.contains(key) || !source.at(key).is_number_integer()) return fallback;
+        const auto value = source.at(key).get<long long>();
+        return static_cast<int>(
+            std::clamp<long long>(value, 0, std::numeric_limits<int>::max()));
+    };
+    gpu_max_draws_->setValue(number("max_draw_count", 1));
+    gpu_command_offset_->setValue(number("command_offset", 0));
+    gpu_count_offset_->setValue(number("count_offset", 0));
+    const auto optional = [&](QComboBox &combo, const char *key) {
+        const Json *value = nullptr;
+        if (on)
+            if (const auto found = source.find(key); found != source.end()) value = &*found;
+        passform::showOptionalValue(combo, value);
+    };
+    optional(*gpu_layout_, "layout");
+    optional(*gpu_fallback_, "fallback");
+    optional(*gpu_execution_, "execution");
+    followGpuDraw();
+}
+
+// gpu_draw_source as the fields say; nullopt when GPU draws are off. What
+// the pass held that the fields do not show stays.
+std::optional<Json> MaterialSettingsForm::gpuDrawSource() const {
+    if (!gpu_draw_->isChecked()) return std::nullopt;
+    const Json original = objectOr(original_, "gpu_draw_source");
+    Json source = original;
+    const auto commands = gpu_commands_->currentData().toString().toStdString();
+    const auto count = gpu_count_->currentData().toString().toStdString();
+    if (commands.empty())
+        throw std::runtime_error("GPU draws need the buffer of their commands.");
+    if (count.empty()) throw std::runtime_error("GPU draws need the buffer of their count.");
+    if (commands == count)
+        throw std::runtime_error("GPU draws read their commands and count from two buffers.");
+    source["commands"] = commands;
+    source["count"] = count;
+    source["max_draw_count"] = gpu_max_draws_->value();
+    for (const auto &[key, spin] : {std::pair{"command_offset", gpu_command_offset_},
+                                    std::pair{"count_offset", gpu_count_offset_}}) {
+        if (spin->value() != 0 || original.contains(key))
+            source[key] = spin->value();
+        else
+            source.erase(key);
+    }
+    putOptional(source, "layout", passform::optionalValue(*gpu_layout_));
+    if (gpu_layout_->currentData().toString() == QString::fromLatin1(gpu_segments_layout)) {
+        const auto segments = gpu_segments_->currentData().toString().toStdString();
+        if (segments.empty())
+            throw std::runtime_error("GPU draws in segments need the buffer of the segments.");
+        source["segments"] = segments;
+    } else {
+        source.erase("segments");
+    }
+    putOptional(source, "fallback", passform::optionalValue(*gpu_fallback_));
+    putOptional(source, "execution", passform::optionalValue(*gpu_execution_));
+    return source;
 }
 
 void MaterialSettingsForm::setResourceNameCandidates(
@@ -391,10 +599,7 @@ void MaterialSettingsForm::load(const Json &declaration) {
         for (const auto &[name, value] : bindings.items()) addResourceRow(kind, name, value);
     }
 
-    Json other = Json::object();
-    for (const auto *key : other_keys)
-        if (original_.contains(key)) other[key] = original_.at(key);
-    other_->setPlainText(other.empty() ? QString{} : text(other.dump(2)));
+    loadGpuDraw(original_.value("gpu_draw_source", Json(nullptr)));
 }
 
 void MaterialSettingsForm::addOutputRow(const Json &output, const Json *state) {
@@ -642,19 +847,7 @@ Json MaterialSettingsForm::settings() const {
         if (any) result[kind] = std::move(bindings);
     }
 
-    const auto other_text = other_->toPlainText().trimmed();
-    if (!other_text.isEmpty()) {
-        const Json other = Json::parse(other_text.toStdString());
-        if (!other.is_object())
-            throw std::runtime_error("Material settings Other must be a JSON object.");
-        for (const auto &[key, value] : other.items()) {
-            if (std::find_if(other_keys.begin(), other_keys.end(),
-                             [&](const char *known) { return key == known; }) ==
-                other_keys.end())
-                throw std::runtime_error("Unknown material setting: " + key);
-            if (!value.is_null()) result[key] = value;
-        }
-    }
+    if (auto source = gpuDrawSource()) result["gpu_draw_source"] = std::move(*source);
     return result;
 }
 

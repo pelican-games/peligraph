@@ -1,4 +1,5 @@
 #include "embeddedviewport.hpp"
+#include "../guitrace.hpp"
 #include "studioplayerarguments.hpp"
 #include "../model/selection.hpp"
 
@@ -528,6 +529,7 @@ void EmbeddedViewport::openProject(const QString &project_root) {
         return;
     }
 
+    emit engineSessionEnding();
     project_root_ = normalized_root;
     setPickingNotice({});
     if (process_.isRunning()) {
@@ -544,6 +546,7 @@ void EmbeddedViewport::restartEngine(const QString &reason) {
     if (project_root_.isEmpty()) {
         return;
     }
+    emit engineSessionEnding();
     if (!process_.isRunning()) {
         restart_after_stop_ = false;
         startEngine();
@@ -654,6 +657,7 @@ qint64 EmbeddedViewport::requestMigrationRpc(const QString &method,
 }
 
 void EmbeddedViewport::closeProject(const QString &reason) {
+    emit engineSessionEnding();
     project_root_.clear();
     restart_after_stop_ = false;
     setPickingNotice({});
@@ -724,6 +728,9 @@ void EmbeddedViewport::startEngine() {
 }
 
 void EmbeddedViewport::stopEngine() {
+    rpc_ready_ = false;
+    readiness_request_ = 0;
+    emit engineSessionEnding();
     if (!process_.isRunning()) {
         return;
     }
@@ -832,12 +839,15 @@ void EmbeddedViewport::attachEngineWindow(NativeWindowHandle window) {
 }
 
 void EmbeddedViewport::emitStatus(qint64 request_id, const QByteArray &result_json) {
+    const GuiTraceSpan trace{"status_response"};
     emit engineStatusRead(result_json);
     // Parsed only once, and only when someone reads it parsed.
     if (!isSignalConnected(QMetaMethod::fromSignal(&EmbeddedViewport::engineStatusParsed))) return;
-    const auto status = nlohmann::json::parse(result_json.constData(),
-                                              result_json.constData() + result_json.size(), nullptr,
-                                              false);
+    const auto status = [&] {
+        const GuiTraceSpan parse{"status_json_parse", double(result_json.size())};
+        return nlohmann::json::parse(result_json.constData(),
+                                    result_json.constData() + result_json.size(), nullptr, false);
+    }();
     static const nlohmann::json none;
     emit engineStatusParsed(request_id, status.is_discarded() ? none : status);
 }
@@ -882,6 +892,10 @@ void EmbeddedViewport::layoutEngineLoadingNotice() {
         return;
     }
     loading_notice_->setGeometry(native_host_->rect());
+}
+
+void EmbeddedViewport::finishEmbeddedWindowResize() {
+    requestEmbeddedWindowResize(ViewportExtentChangeKind::interaction_finished);
 }
 
 void EmbeddedViewport::requestEmbeddedWindowResize(ViewportExtentChangeKind kind) {
@@ -936,6 +950,7 @@ void EmbeddedViewport::focusEmbeddedWindow() {
 }
 
 void EmbeddedViewport::pollPointerFocus() {
+    const GuiTraceSpan trace{"viewport_poll_5ms"};
     const bool pointer_button_down =
         child_window_ != 0 && NativeWindowHost::pointerButtonDownOver(child_window_);
     if (pointer_button_down && !pointer_button_was_down_) {
@@ -983,6 +998,13 @@ void EmbeddedViewport::pollPointerFocus() {
     // Reported as a change, not as a reading: the 5 ms poll must not turn into
     // 200 signals a second.
     setEngineInputActive(child_window_ != 0 && primary_pointer.has_focus);
+    const quint32 pressed = primary_pointer.shortcut_keys_down & ~studio_shortcut_keys_down_;
+    studio_shortcut_keys_down_ = primary_pointer.shortcut_keys_down;
+    if (engine_input_active_) {
+        for (std::size_t index = 0; index < StudioShortcutKeys.size(); ++index)
+            if (pressed & (quint32{1} << index))
+                emit studioShortcutPressed(StudioShortcutKeys[index], primary_pointer.shortcut_modifiers);
+    }
 }
 
 void EmbeddedViewport::setEngineInputActive(bool active) {
@@ -997,6 +1019,7 @@ void EmbeddedViewport::setGizmoNotice(const QString &message) {
 }
 
 void EmbeddedViewport::updateDiagnostics() {
+    const GuiTraceSpan trace{"viewport_diagnostics"};
     if (child_window_ == 0) {
         return;
     }

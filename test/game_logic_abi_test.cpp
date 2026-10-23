@@ -1,3 +1,9 @@
+#include "../src/core/gamelogic/behaviorarena.hpp"
+#include "../src/core/appflow/enginetime.hpp"
+#include "../src/core/ecs/core.hpp"
+#include "../src/core/ecs/predefined.hpp"
+#include "../src/core/userpublic/gameobjects.hpp"
+#include "../src/core/watch/userdataguard.hpp"
 #include "../src/core/gamelogic/gamelogicimports.hpp"
 #include "../src/core/gamelogic/gamelogicreload.hpp"
 #include "../src/core/communication/rpcserver.hpp"
@@ -1233,6 +1239,90 @@ TEST_CASE("WP382a production reload fingerprints every recursive schema input",
     verify_surface("component", fixture(PELICAN_WP382A_V3_COMPONENT_SAME),
                    WP382A_MUTATIONS(COMPONENT));
 #undef WP382A_MUTATIONS
+}
+
+TEST_CASE("RX-1 behavior DLL onInit reload failure rolls back without stopping Play",
+          "[rx1][behavior][reload][wp162][cpu]") {
+    setupLogger();
+    Sandbox sandbox;
+    FastModuleContainer modules;
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &arena = GET_MODULE(BehaviorAttachmentArena);
+    auto &time = GET_MODULE(EngineTime);
+    auto &problems = GET_MODULE(ProblemList);
+    time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
+    REQUIRE(time.playState() == EngineTime::PlayState::playing);
+    const auto entity = GameObjects::createWithComponents(std::span<const ComponentId>{}, {});
+    const auto objects = nlohmann::json::array({{
+        {"name", "ReloadProbe"},
+        {"components", {{{"name", "behavior"}, {"type", "wp162_reload_behavior"},
+                         {"params", {{"count", 2}, {"label", "committed"}}}}}}
+    }});
+    const auto teardown = [&] { arena.deactivateAll(); };
+    const auto rebuild = [&] {
+        auto prepared = prepareSceneBehaviorAttachments(objects, BehaviorRegistryAvailability::active);
+        std::vector<BoundSceneBehaviorAttachment> bound;
+        for (auto &attachment : prepared)
+            bound.push_back({.prepared = std::move(attachment), .entity = entity});
+        arena.publishSceneAttachments(std::move(bound));
+        arena.activatePublished();
+    };
+    // The DLL's first onUpdate emits this event. Seeing it after rollback
+    // proves the restored behavior actually executed, beyond clock progress.
+    GameContext ctx;
+    const auto advance = [&] {
+        finishUserCodeStop();
+        REQUIRE(time.playState() == EngineTime::PlayState::playing);
+        const auto frame = time.frameIndex();
+        time.advance();
+        arena.update(ctx);
+        CHECK(time.frameIndex() == frame + 1);
+        const auto events = internal::getEventRegisterer().pendingEventsForTesting();
+        REQUIRE(events.size() == 1);
+        CHECK(events.front().name == "Wp162QueuedEvent");
+        internal::clearPendingEvents();
+    };
+    replaceFixture(fixture(PELICAN_RX1_RELOAD_FIXTURE_1), sandbox.live());
+    GameLogicReloader reloader;
+    REQUIRE(reloader.initialize(sandbox.live()));
+    rebuild();
+    advance();
+    const auto before = problems.problemsJson();
+    replaceFixture(fixture(PELICAN_RX1_RELOAD_FIXTURE_7), sandbox.live());
+    int rebuilds = 0;
+    const auto attempt = reloader.reloadNowAttempt(teardown, [&] {
+        CHECK(isGameLogicReloadInProgress());
+        ++rebuilds;
+        rebuild();
+    });
+    CHECK(attempt.attempted);
+    CHECK_FALSE(attempt.committed);
+    CHECK(attempt.error_code == std::string{internal::gameLogicReloadFailedErrorCode});
+    CHECK(attempt.error_fields.at("reason") == "WP162 fixture onInit fault");
+    CHECK_FALSE(attempt.error_fields.contains("rollback_error"));
+    CHECK(rebuilds == 2);
+    CHECK(reloader.status().loaded);
+    CHECK(reloader.status().generation == 1);
+    CHECK_FALSE(isGameLogicReloadInProgress());
+    CHECK_FALSE(userCodeStopRequested());
+    CHECK(problems.problemsJson() == before);
+    REQUIRE(arena.snapshot().size() == 1);
+    CHECK(arena.snapshot().front().active);
+    advance();
+
+    // After a successful reload, a later Play activation still uses RX-1.
+    // Commit the fault fixture without activating it inside the transaction.
+    REQUIRE(reloader.reloadNow(teardown, [] {}));
+    CHECK(reloader.status().generation == 2);
+    CHECK_THROWS_AS(rebuild(), UserDataError);
+    CHECK(userCodeStopRequested());
+    const auto failures = problems.problemsJson().at("problems");
+    REQUIRE(failures.size() == 1);
+    CHECK(failures.front().at("code") == "runtime.user_data@1");
+    CHECK(failures.front().at("message") ==
+          "behavior wp162_reload_behavior: WP162 fixture onInit fault");
+    finishUserCodeStop();
+    CHECK(time.playState() == EngineTime::PlayState::edit);
 }
 
 } // namespace Pelican

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "inspectormodel.hpp"
+#include "rendereditticket.hpp"
 
 #include <optional>
 #include <utility>
@@ -49,7 +50,7 @@ struct GraphOutputCandidate {
 // Keeps authored graph edits and their tickets independent of Inspector refreshes.
 // Object IDs come from the Inspector snapshot, never the outliner row index.
 class GraphAttachmentModel {
-    enum class RequestKind { Context, Submit, Result, Catalog, Values };
+    enum class RequestKind { Context, Catalog, Values };
     struct PendingRequest {
         std::uint64_t id;
         std::uint64_t selection_revision;
@@ -61,7 +62,8 @@ class GraphAttachmentModel {
     std::uint64_t next_request_ = 1;
     std::optional<PendingRequest> pending_;
     std::vector<InspectorRpcRequest> requests_;
-    std::string ticket_;
+    RenderEditTicket edit_;
+    std::function<void()> scheduled_poll_;
     std::uint64_t edit_selection_revision_ = 0;
     std::string digest_;
     nlohmann::json definitions_ = nlohmann::json::object();
@@ -84,6 +86,7 @@ class GraphAttachmentModel {
     // owner takes it.
     std::optional<std::string> engine_restart_;
 
+    void edited(const RenderEditTicket::Outcome &outcome);
     void request(RequestKind kind, std::string method, nlohmann::json params);
     void read(RequestKind kind, std::string method, nlohmann::json params);
     void requestValues();
@@ -94,6 +97,11 @@ class GraphAttachmentModel {
     const nlohmann::json *findInstance(std::string_view id) const;
 
   public:
+    GraphAttachmentModel();
+    // The Qt owner supplies its timer and digest hub; model tests use the
+    // explicit poll clock and the same queue of RPC requests.
+    std::function<void(int, std::function<void()>)> scheduleEdit;
+    std::function<void(const std::string &)> publishDigest;
     void setConnected(bool connected);
     void selectOwner(std::optional<GraphAttachmentOwner> owner);
     void refresh();
@@ -102,7 +110,7 @@ class GraphAttachmentModel {
     // ticket is outstanding and its slot is free. False the rest of the time,
     // which is most of the time -- and then nobody has to wake up for it.
     [[nodiscard]] bool pollWanted() const noexcept {
-        return connected_ && !pending_ && !ticket_.empty();
+        return connected_ && edit_.busy() && !edit_.awaitingResponse();
     }
     std::vector<InspectorRpcRequest> takeRpcRequests();
     void receiveRpcResult(std::uint64_t id, std::string_view json);
@@ -141,7 +149,7 @@ class GraphAttachmentModel {
     const auto &notice() const noexcept { return notice_; }
     auto contentRevision() const noexcept { return content_revision_; }
     auto reportRevision() const noexcept { return report_revision_; }
-    bool busy() const noexcept { return pending_.has_value() || !ticket_.empty(); }
+    bool busy() const noexcept { return pending_.has_value() || edit_.busy(); }
     // RSX, decision 1. An edit that committed with restart_required: the
     // line to restart the engine with ("Restarting the engine to apply this
     // change (<code>)..."), once.

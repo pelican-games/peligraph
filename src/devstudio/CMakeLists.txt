@@ -14,7 +14,7 @@ set_target_properties(pelican_studio_layout PROPERTIES
 target_include_directories(pelican_studio_layout PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(pelican_studio_layout PUBLIC Qt6::Core)
 
-add_executable(pelican_studio main.cpp)
+add_executable(pelican_studio main.cpp ../platform/gpupreference.cpp)
 pelican_runtime_target(pelican_studio)
 add_dependencies(pelican_studio pelican_player pelican_cli)
 

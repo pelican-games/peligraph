@@ -16,7 +16,10 @@
 
 #include <nlohmann/json.hpp>
 
+#include <chrono>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <string>
 #include <vector>
@@ -860,6 +863,52 @@ TEST_CASE("LP-4f2 apply_graph_template is recorded as Replace <feature> with <ti
     CHECK(rig.history.redoLabel() == "Replace bloom with Bloom loop");
 }
 
+// UX-15b, decision 3: the Frame Plan's pin and frozen plan (EL-2) are
+// render edits like any other: recorded, named by what they did, undone.
+TEST_CASE("UX-15b a backend pin and a frozen physical plan are recorded, named, and undone",
+          "[devstudio][render-history][ux15b]") {
+    Rig rig;
+    const std::string RootAfter(64, 'f');
+    const Json pin{{"schema", "pelican.vulkan_target_plan_pins"},
+                   {"version", 1},
+                   {"graph", "main_render"},
+                   {"logical_graph_fingerprint", "fnv1a64:0000000000000001"},
+                   {"pins", {{"backend_candidate", "pelican.vulkan.transient_plan@1"}}}};
+    const auto before = rig.sent.size();
+    const auto panel = rig.panelSends(
+        "edit_vulkan_plan_pins", Json{{"base_source_digest", RootA}, {"family", "flat"}, {"pin", pin}});
+    REQUIRE(rig.sent.size() == before + 1);
+    CHECK(rig.sent[before].method == "get_render_documents");
+    rig.answer(rig.sent[before].id, Json{{"documents", bothBefore()}});
+    rig.answer(panel, Json{{"status", "accepted"}, {"ticket", "t-pin"}});
+    REQUIRE(rig.last().method == "get_edit_result");
+    rig.answer(rig.last().id, committed({{Root, RootAfter}}));
+    REQUIRE(rig.last().method == "get_render_documents");
+    rig.answer(rig.last().id,
+               Json{{"documents", Json::array({document(Root, "root", RootAfter, "root after")})}});
+    REQUIRE(rig.history.undoStack().size() == 1);
+    CHECK(rig.history.undoLabel() == "Pin backend pelican.vulkan.transient_plan@1");
+    REQUIRE(rig.history.undo());
+    REQUIRE(rig.last().method == "get_render_documents");
+    rig.answer(rig.last().id,
+               Json{{"documents", Json::array({document(Root, "root", RootAfter, "root after")})}});
+    REQUIRE(rig.last().method == "restore_render_documents");
+    CHECK(rig.last().params.at("documents") ==
+          Json::array({restored(Root, RootAfter, "root bytes")}));
+
+    // The other three gestures, by the package they carry.
+    CHECK(RenderEditHistory::labelFor("edit_vulkan_plan_pins",
+                                      Json{{"pin", nullptr}, {"graph", "main_render"}}) ==
+          "Unpin backend");
+    CHECK(RenderEditHistory::recordsMethod("put_vulkan_physical_fragment"));
+    CHECK(RenderEditHistory::labelFor("put_vulkan_physical_fragment",
+                                      Json{{"fragment", {{"graph", "main_render"}}}}) ==
+          "Freeze physical plan");
+    CHECK(RenderEditHistory::labelFor("put_vulkan_physical_fragment",
+                                      Json{{"fragment", nullptr}, {"graph", "main_render"}}) ==
+          "Remove frozen physical plan");
+}
+
 TEST_CASE("LP-4f2 the entry is named for the template until the engine names the feature",
           "[devstudio][render-history][lp4f2]") {
     CHECK(RenderEditHistory::labelFor(
@@ -874,6 +923,171 @@ TEST_CASE("LP-4f2 the entry is named for the template until the engine names the
     CHECK(RenderEditHistory::graphTemplateLabel(Json{{"status", "accepted"}}).empty());
     CHECK(RenderEditHistory::graphTemplateTitle("engine://graphs/planar_mip_chain_loop.json") ==
           "Planar mip chain loop");
+}
+
+// RTL-2s-c: a ray type renamed in the Ray layout section rewrites the
+// shaders that name it (PELICAN_RAY_TYPE_<name>) beside the documents. The
+// files ride on the edit's entry: Undo writes them back before the restore
+// is sent (the restore's commit compiles them), Redo writes them again, and
+// a request the history does not record drops them.
+TEST_CASE("RTL-2s-c a rename's shaders ride on its history entry: Undo writes them back before the "
+          "restore, Redo writes them again",
+          "[devstudio][render-history][rtl2s]") {
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("pelican_rtl2sc_h_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+    const auto raygen = root / "trace.rgen";
+    const auto read = [&] {
+        std::ifstream file{raygen, std::ios::binary};
+        return std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+    };
+    const auto put = [&](const std::string &text) { std::ofstream{raygen, std::ios::binary} << text; };
+    const auto made = root / "made.rchit";
+    put("PELICAN_RAY_TYPE_sun");
+    std::ofstream{made, std::ios::binary} << "new";
+    Rig rig;
+    // A request the history does not record drops what was handed over.
+    rig.history.attachFiles({{raygen.string(), "dropped", "dropped"}});
+    rig.history.beforeRequest("get_ray_layout", Json::object());
+    rig.history.attachFiles({{raygen.string(), std::string{"PELICAN_RAY_TYPE_shadow"}, "PELICAN_RAY_TYPE_sun"},
+                             {made.string(), std::nullopt, "new"}});
+    rig.edit("edit_batch", Json{{"base_source_digest", RootA}, {"edits", Json::array()}}, rootBefore(),
+             committed({{Root, std::string(64, 'e')}}));
+    REQUIRE(rig.history.undoStack().size() == 1);
+    REQUIRE(rig.history.undoStack().back().files.size() == 2);
+    // Undo: nothing written while the documents are read ...
+    REQUIRE(rig.history.undo());
+    CHECK(read() == "PELICAN_RAY_TYPE_sun");
+    rig.answer(rig.last().id, Json{{"documents", Json::array({document(Root, "root", std::string(64, 'e'), "now")})}});
+    // ... and the shader back (the new file gone) as the restore is sent.
+    REQUIRE(rig.last().method == "restore_render_documents");
+    CHECK(read() == "PELICAN_RAY_TYPE_shadow");
+    CHECK_FALSE(std::filesystem::exists(made));
+    rig.answer(rig.last().id, Json{{"status", "accepted"}, {"ticket", "undo"}});
+    rig.answer(rig.last().id, committed({{Root, RootA}}));
+    // Redo writes them again.
+    REQUIRE(rig.history.redo());
+    rig.answer(rig.last().id, Json{{"documents", Json::array({document(Root, "root", RootA, "root bytes")})}});
+    REQUIRE(rig.last().method == "restore_render_documents");
+    CHECK(read() == "PELICAN_RAY_TYPE_sun");
+    CHECK(std::filesystem::exists(made));
+    // A refused restore puts the files back as the documents still are.
+    rig.answer(rig.last().id, Json{{"status", "rejected"}, {"error", {{"code", "external_modification"}}}});
+    CHECK(read() == "PELICAN_RAY_TYPE_shadow");
+    CHECK_FALSE(std::filesystem::exists(made));
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+}
+
+TEST_CASE("RTL-3s decision 3: an edit that rewrote procedural records is recorded -- Undo restores its asset data "
+          "by digest with the layout, Redo takes it forward, and a restore the engine cannot make after a restart "
+          "stops there",
+          "[devstudio][render-history][rtl3s]") {
+    Rig rig;
+    const std::string Layout = "project://passes/ray_layout.json";
+    const std::string Assets = "project://assets/asset_data.json";
+    const std::string L1(64, '1'), L2(64, '2'), A1(64, 'b'), A2(64, 'c'), A3(64, 'd');
+    const Json params{{"base_source_digest", RootA},
+                      {"layout", Json::object()},
+                      {"procedural_records", {{"ball", {{"value", 1.0}}}}}};
+    const auto before = rig.sent.size();
+    const auto panel = rig.panelSends("edit_ray_layout", params);
+    REQUIRE(rig.sent.size() == before + 1);
+    rig.answer(rig.sent[before].id,
+               Json{{"documents", Json::array({document(Root, "root", RootA, "root bytes"),
+                                               document(Layout, "layout", L1, "layout before")})}});
+    rig.answer(panel, committed({{Layout, L2}, {Assets, A2}}));
+    // The asset data is no render document: not read after the commit.
+    REQUIRE(rig.last().method == "get_render_documents");
+    CHECK(rig.last().params == Json{{"references", Json::array({Layout})}});
+    rig.answer(rig.last().id, Json{{"documents", Json::array({document(Layout, "layout", L2, "layout after")})}});
+    REQUIRE(rig.history.undoStack().size() == 1);
+    CHECK(rig.history.undoStack().back().records_only == std::set<std::string>{Assets});
+    // Undo: the asset data by the digest the commit wrote, content null.
+    const auto undone = rig.restore(true, Json::array({document(Layout, "layout", L2, "layout after")}),
+                                    committed({{Layout, L1}, {Assets, A1}}));
+    CHECK(undone == Json::array({restored(Assets, A2, nullptr), restored(Layout, L2, "layout before")}));
+    // Redo: forward again from the digest the Undo answered.
+    const auto redone = rig.restore(false, Json::array({document(Layout, "layout", L1, "layout before")}),
+                                    committed({{Layout, L2}, {Assets, A3}}));
+    CHECK(redone == Json::array({restored(Assets, A1, nullptr), restored(Layout, L1, "layout after")}));
+    // After the engine started again it no longer knows the digest: one
+    // sentence, and Undo stops at the entry.
+    REQUIRE(rig.history.undo());
+    rig.answer(rig.last().id, Json{{"documents", Json::array({document(Layout, "layout", L2, "layout after")})}});
+    REQUIRE(rig.last().method == "restore_render_documents");
+    rig.answer(rig.last().id, Json{{"status", "rejected"},
+                                   {"error", {{"code", "render_document_not_writable"},
+                                              {"reference", Assets},
+                                              {"reason", "procedural_records_only"}}}});
+    CHECK(rig.history.line().find("keeps the procedural records an edit replaced only while it runs") !=
+          std::string::npos);
+    CHECK(rig.history.undoStack().back().barrier);
+}
+
+TEST_CASE("Procedural record Undo retains each inverse across repeated document digests",
+          "[devstudio][render-history][procedural-history]") {
+    Rig rig;
+    const std::string assets = "project://assets/asset_data.json";
+    const std::string a0(64, '0'), a1(64, '1'), a2(64, '2');
+    const auto records = [](int value) { return Json{{"ball", {{"value", value}}}}; };
+    const auto commit = [&](const std::string &digest, int previous) {
+        auto result = committed({{assets, digest}});
+        result["procedural_records_before"] = {{assets, records(previous).dump()}};
+        return result;
+    };
+    const auto edit = [&](const std::string &digest, int previous, int next) {
+        const auto before = rig.sent.size();
+        const auto panel = rig.panelSends("edit_ray_layout",
+                                         {{"procedural_records", records(next)}});
+        rig.answer(rig.sent[before].id, {{"documents", Json::array()}});
+        rig.answer(panel, commit(digest, previous));
+    };
+    edit(a1, 0, 1);
+    edit(a2, 1, 2);
+    const auto restore = [&](bool undo, const std::string &base, int target,
+                             const std::string &written, int previous) {
+        auto expected = restored(assets, base, nullptr);
+        expected["procedural_records"] = records(target).dump();
+        CHECK(rig.restore(undo, Json::array(), commit(written, previous)) == Json::array({expected}));
+    };
+    restore(true, a2, 1, a1, 2);
+    // The engine just produced a1 again; the earlier entry still restores 0.
+    rig.history.abandonInFlight(); // a same-project engine restart preserves the inverse
+    restore(true, a1, 0, a0, 1);
+    restore(false, a0, 1, a1, 0);
+    restore(false, a1, 2, a2, 1);
+}
+
+TEST_CASE("RTL-3s decision 4: a raygen switch Studio wrote is an entry of its own -- Undo writes the file back "
+          "and Redo writes it again, with no restore sent",
+          "[devstudio][render-history][rtl3s]") {
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("pelican_rtl3s_h_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+    const auto raygen = root / "start.rgen";
+    const auto read = [&] {
+        std::ifstream file{raygen, std::ios::binary};
+        return std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+    };
+    std::ofstream{raygen, std::ios::binary} << "#define TRACE_SECOND_RAY_TYPE 1";
+    Rig rig;
+    rig.history.recordFiles("TRACE_SECOND_RAY_TYPE on in start.rgen",
+                            {{raygen.string(), std::string{"#define TRACE_SECOND_RAY_TYPE 0"},
+                              "#define TRACE_SECOND_RAY_TYPE 1"}});
+    REQUIRE(rig.history.canUndo());
+    CHECK(rig.history.undoLabel() == "TRACE_SECOND_RAY_TYPE on in start.rgen");
+    const auto sent = rig.sent.size();
+    REQUIRE(rig.history.undo());
+    CHECK(read() == "#define TRACE_SECOND_RAY_TYPE 0");
+    CHECK(rig.sent.size() == sent);
+    CHECK(rig.history.canRedo());
+    REQUIRE(rig.history.redo());
+    CHECK(read() == "#define TRACE_SECOND_RAY_TYPE 1");
+    CHECK(rig.sent.size() == sent);
+    CHECK(rig.history.line() == "Redid \"TRACE_SECOND_RAY_TYPE on in start.rgen\".");
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
 }
 
 } // namespace PelicanStudio

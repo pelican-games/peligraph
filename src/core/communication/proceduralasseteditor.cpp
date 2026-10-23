@@ -1,3 +1,4 @@
+#include "../../project/jsondocument.hpp"
 #include "proceduralasseteditor.hpp"
 #include "../../project/assetdataformat.hpp"
 #include <algorithm>
@@ -22,8 +23,21 @@ ProceduralAssetEditorService::ProceduralAssetEditorService(ProceduralAssetEditor
         throw std::invalid_argument("Procedural asset editing requires gate and runtime publication");
 }
 
-ProceduralAssetEditorService::Result ProceduralAssetEditorService::get(const Json &params) const {
+void ProceduralAssetEditorService::adoptPublishedSource() {
+    if (!dependencies_.source_published) return;
+    std::string bytes;
+    try {
+        bytes = readAssetSource(dependencies_.path);
+    } catch (const std::exception &) {
+        return;
+    }
+    if (bytes != dependencies_.source_bytes && dependencies_.source_published(bytes))
+        dependencies_.source_bytes = std::move(bytes);
+}
+
+ProceduralAssetEditorService::Result ProceduralAssetEditorService::get(const Json &params) {
     if (!params.is_object() || !params.empty()) throw std::invalid_argument("get_procedural_assets takes no parameters");
+    adoptPublishedSource();
     const auto source = Json::parse(dependencies_.source_bytes);
     const auto gate = dependencies_.gate();
     const auto digest = renderConfigSourceDigest(dependencies_.source_bytes);
@@ -54,6 +68,7 @@ ProceduralAssetEditorService::Result ProceduralAssetEditorService::edit(const Js
     const auto gate = dependencies_.gate();
     const auto gate_epoch = gate_tracker_.observe(gate);
     if (!gate.can_edit) return rejectAsset("gate_closed", "Asset editing is currently disabled");
+    adoptPublishedSource();
     if (digest != renderConfigSourceDigest(dependencies_.source_bytes) ||
         digest != renderConfigSourceDigest(readAssetSource(dependencies_.path)))
         return rejectAsset("external_modification", "Asset source changed; reload before editing");
@@ -78,7 +93,7 @@ ProceduralAssetEditorService::Result ProceduralAssetEditorService::edit(const Js
     }
     (void)parseAssetDataFormatJson(Json(candidate));
     const auto ticket = "procedural-asset-edit-" + std::to_string(next_ticket_++);
-    pending_.push_back({ticket, digest, candidate.dump(2) + "\n", gate_epoch});
+    pending_.push_back({ticket, digest, renderJsonDocument(candidate, dependencies_.source_bytes), gate_epoch});
     results_[ticket] = {{"ticket", ticket}, {"status", "pending"}, {"committed", false}};
     return {{"status", "accepted"}, {"ticket", ticket}};
 }

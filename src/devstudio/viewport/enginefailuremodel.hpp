@@ -38,6 +38,7 @@ class EngineFailureModel {
     QString pending_line_;
     QString last_fatal_error_line_;
     QString migration_required_line_;
+    QString last_problems_line_;
 
     void appendLine(QString line);
 };

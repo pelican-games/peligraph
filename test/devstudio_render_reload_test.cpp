@@ -56,6 +56,7 @@ struct Rig {
     std::vector<Notice> notices;
     std::vector<Json> reloads;
     int watch_changes = 0;
+    int history_boundaries = 0;
     std::int64_t next_id = 1;
     RenderDocumentReload reload{RenderDocumentReload::Transport{
         .request = [this](const std::string &method, const Json &params, std::string *) {
@@ -76,6 +77,7 @@ struct Rig {
         reload.watchChanged = [this] { ++watch_changes; };
         reload.notice = [this](const Notice &notice) { notices.push_back(notice); };
         reload.reloaded = [this](const Json &commit) { reloads.push_back(commit); };
+        reload.historyBoundary = [this] { ++history_boundaries; };
         setRenderDocumentsRefusedOnDisk(false);
     }
 
@@ -381,9 +383,10 @@ TEST_CASE("RL-1s decision 4: the render undo history is cut at a reload",
     CHECK(history.line() == "\xE2\x80\x94 reloaded from disk \xE2\x80\x94");
 }
 
-TEST_CASE("RL-1s decision 5: while the file stays refused, external_modification reads as "
-          "the disk's sentence",
-          "[devstudio][render_reload]") {
+TEST_CASE("RL-1s decision 5 / RR-1s decision 4: while the file stays refused as not JSON, "
+          "external_modification reads as the disk's sentence; a refused version that is JSON is the "
+          "editor's base, and the engine's words stay",
+          "[devstudio][render_reload][rr1s]") {
     const std::string engine = "render config source changed outside the editor";
     setRenderDocumentsRefusedOnDisk(false);
     // A panel that read before another's commit is told the same code; that
@@ -392,13 +395,29 @@ TEST_CASE("RL-1s decision 5: while the file stays refused, external_modification
 
     Rig rig;
     rig.opened();
+    // RR-1s, decision 4 (engine RR-1): refused, but JSON -- the panels read
+    // the version on disk and edit on its digest; an external_modification
+    // then is not the disk's doing.
     rig.saved(rig.rootPath(), RootB);
     rig.answer(rig.last().id,
                Json{{"status", "rejected"},
                     {"error",
                      {{"code", "render_pipeline_preflight_failed"},
-                      {"message", "syntax error"},
+                      {"message", "graph.port_field_missing@1"},
                       {"reference", Root}}}});
+    CHECK(rig.reload.refused());
+    CHECK_FALSE(renderDocumentsRefusedOnDisk());
+    CHECK(knownRefusalDescription("external_modification", engine).empty());
+
+    // Not JSON: the reads keep the last version that was, whose digest is
+    // not the disk's.
+    rig.reload.reloadNow();
+    rig.answer(rig.last().id,
+               Json{{"status", "rejected"},
+                    {"error",
+                     {{"code", "render_document_syntax@1"},
+                      {"message", "render_document_syntax@1: not valid JSON"},
+                      {"document", Root}}}});
     REQUIRE(renderDocumentsRefusedOnDisk());
     const auto said = knownRefusalDescription("external_modification", engine);
     CHECK(said.starts_with(std::string{renderDiskRefusalSentence}));
@@ -498,4 +517,67 @@ TEST_CASE("IA-1s decision 5: the images' initial assets are watched; changed_ass
     CHECK(std::find(files.begin(), files.end(), lut) == files.end());
 }
 } // namespace
+
+TEST_CASE("EB-6s decision 8: a file broken outside, refused, then put back to the bytes the engine drew is "
+          "asked again -- the engine's base is the refused version -- and the reload's commit clears the refusal",
+          "[devstudio][render_reload][eb6s]") {
+    Rig rig;
+    rig.opened();
+    // Broken outside: asked, and refused (the problem is listed).
+    rig.saved(rig.rootPath(), RootB);
+    REQUIRE(rig.last().method == "reload_render_documents");
+    rig.answer(rig.last().id,
+               Json{{"status", "rejected"},
+                    {"committed", false},
+                    {"error",
+                     {{"code", "render_pipeline_preflight_failed"},
+                      {"message", "graph.port_field_missing@1"},
+                      {"reference", Root}}}});
+    REQUIRE(rig.reload.refused());
+    // Put back to the live bytes outside: the digests held say "the same",
+    // and the engine holds the refused one -- asked all the same.
+    const auto before = rig.sent.size();
+    rig.saved(rig.rootPath(), RootA);
+    REQUIRE(rig.sent.size() == before + 1);
+    CHECK(rig.last().method == "reload_render_documents");
+    rig.ticket(Rig::committed({{Root, RootA}, {Fragment, FragmentA}}, Json::array({Root})));
+    CHECK_FALSE(rig.reload.refused());
+    CHECK(rig.notices.back().kind == Notice::Kind::Success);
+    // Nothing refused: a file holding what the engine holds asks nothing.
+    const auto settled = rig.sent.size();
+    rig.saved(rig.rootPath(), RootA);
+    CHECK(rig.sent.size() == settled);
+}
+
+} // namespace PelicanStudio
+
+
+namespace PelicanStudio {
+TEST_CASE("UD-6 reload history boundary compares the whole document set and digests",
+          "[devstudio][render_reload][ud6]") {
+    Rig rig;
+    rig.opened();
+    Json documents{{Root, RootA}, {Fragment, FragmentA}};
+    const auto verify = [&](bool boundary = true) {
+        rig.reload.reloadNow();
+        auto commit = Rig::committed(documents, Json::array());
+        commit["changed_assets"] = Json::array({"assets/images/ltc_2.ktx2"});
+        rig.ticket(commit);
+        CHECK(rig.history_boundaries == (boundary ? 1 : 0));
+        REQUIRE(rig.reloads.size() == 1); // Every committed reload still refreshes the panels.
+        CHECK(rig.notices.back().kind == Notice::Kind::Success);
+    };
+    SECTION("same documents with an image update") { verify(false); }
+    SECTION("changed root digest") { documents[Root] = RootB; verify(); }
+    SECTION("changed fragment digest") { documents[Fragment] = RootB; verify(); }
+    SECTION("added fragment") { documents["project://passes/new.json"] = RootA; verify(); }
+    SECTION("removed fragment") { documents.erase(Fragment); verify(); }
+    SECTION("same size with a different fragment") {
+        documents.erase(Fragment);
+        documents["project://passes/new.json"] = FragmentA;
+        verify();
+    }
+    SECTION("missing documents is not proof of an asset-only change") { documents = nullptr; verify(); }
+}
+
 } // namespace PelicanStudio

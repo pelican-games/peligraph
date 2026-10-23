@@ -23,6 +23,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -1896,6 +1897,45 @@ TEST_CASE("T-1 rotation angles and the stored quaternion round trip",
     CHECK(near(negated[3], 0.92387953251128674));
 }
 
+TEST_CASE("UX-14 decision 3: a light's azimuth turns as a camera.controller's yaw does -- 0 is +Z, "
+          "growing towards -X -- and the yaw, pitch and azimuth fields say so",
+          "[devstudio][inspector][ux14]") {
+    using PelicanStudio::directionFromAnglesDegrees;
+    const auto near = [](double a, double b) { return std::abs(a - b) <= 1.0e-9; };
+    // The engine's controller (CC-1): direction(yaw, pitch) =
+    // (+Z cos yaw + (-X) sin yaw) cos pitch + (+Y) sin pitch. The same angles
+    // in a light's fields point the same way.
+    constexpr double DegreesPerRadian = 57.295779513082320876798154814105;
+    for (const double yaw : {-150.0, -63.43, 0.0, 30.0, 90.0, 179.0})
+        for (const double pitch : {-60.0, 0.0, 20.0}) {
+            const double y = yaw / DegreesPerRadian;
+            const double p = pitch / DegreesPerRadian;
+            const std::array<double, 3> engine{-std::sin(y) * std::cos(p), std::sin(p),
+                                               std::cos(y) * std::cos(p)};
+            const auto light = directionFromAnglesDegrees({yaw, pitch});
+            INFO(yaw << ", " << pitch);
+            CHECK(near(light[0], engine[0]));
+            CHECK(near(light[1], engine[1]));
+            CHECK(near(light[2], engine[2]));
+        }
+    // The blank template's KeyLight (-0.5, -1, 0.25) travels towards -X: it
+    // comes from the screen's right of the template's camera, azimuth +63.43.
+    CHECK(std::abs(PelicanStudio::directionAnglesDegrees({-0.5, -1.0, 0.25})[0] - 63.43) < 0.01);
+
+    InspectorWidgetDescriptor yaw;
+    yaw.component_slot = "camera";
+    yaw.field_name = "controller.yaw";
+    yaw.kind = InspectorWidgetKind::FloatingPointDrag;
+    CHECK(PelicanStudio::inspectorAngleTip(yaw).find("from +Z towards -X") != std::string::npos);
+    InspectorWidgetDescriptor pitch = yaw;
+    pitch.field_name = "controller.pitch";
+    CHECK(PelicanStudio::inspectorAngleTip(pitch).find("towards +Y") != std::string::npos);
+    InspectorWidgetDescriptor other = yaw;
+    other.field_name = "znear";
+    CHECK(PelicanStudio::inspectorAngleTip(other).empty());
+    CHECK(PelicanStudio::inspectorDirectionAngleTip(0).find("from +Z towards -X") != std::string::npos);
+}
+
 TEST_CASE("UX-10 a light's direction reads as azimuth and elevation, its colour as a swatch, "
           "and a sprite's texture is picked from the textures list_assets reports",
           "[devstudio][inspector][ux10]") {
@@ -1932,11 +1972,12 @@ TEST_CASE("UX-10 a light's direction reads as azimuth and elevation, its colour 
     CHECK(down[0] == 0.0);
     CHECK(near(down[1], -90.0));
     CHECK(directionFromAnglesDegrees({0.0, -90.0}) == std::array<double, 3>{0.0, -1.0, 0.0});
-    // +Z is azimuth 0, +X azimuth 90, on the horizon.
+    // +Z is azimuth 0, -X azimuth 90 (UX-14 decision 3: as a camera's yaw),
+    // on the horizon.
     CHECK(directionFromAnglesDegrees({0.0, 0.0}) == std::array<double, 3>{0.0, 0.0, 1.0});
-    CHECK(directionFromAnglesDegrees({90.0, 0.0}) == std::array<double, 3>{1.0, 0.0, 0.0});
+    CHECK(directionFromAnglesDegrees({90.0, 0.0}) == std::array<double, 3>{-1.0, 0.0, 0.0});
     // A vector that is not unit reads as its direction; zero as (0, 0).
-    const auto slanted = directionAnglesDegrees({2.0, -2.0, 0.0});
+    const auto slanted = directionAnglesDegrees({-2.0, -2.0, 0.0});
     CHECK(near(slanted[0], 90.0));
     CHECK(near(slanted[1], -45.0));
     CHECK(directionAnglesDegrees({0.0, 0.0, 0.0}) == std::array<double, 2>{0.0, 0.0});
@@ -2268,8 +2309,9 @@ TEST_CASE("Q-6 a component this build cannot take reads as a sentence and its co
         {"vat.module_unavailable@1", "This build has no VAT module", "not in this build"},
         {"seqplayer.module_unavailable@1", "This build has no sequence player module", "not in this build"},
         // MG-2a: layouts are v3 only; the code now means "no layout at all".
-        {"pelican.ray_instance_requires_layout_v2@1", "This project has no ray group layout",
-         "needs a ray layout"},
+        {"pelican.ray_instance_requires_layout_v2@1",
+         "No ray group layout: enable hit groups first",
+         "needs hit groups"},
     };
     for (const auto &entry : known) {
         CAPTURE(entry.code);
@@ -2329,9 +2371,10 @@ TEST_CASE("Q-6 a component this build cannot take reads as a sentence and its co
     CHECK(rows.at(3).label == "physics_body " + dash + " not in this build");
     CHECK_FALSE(rows.at(3).addable);
     CHECK(rows.at(3).blocked == "This build has no physics module (physics.module_unavailable@1)");
-    CHECK(rows.at(4).label == "pelican_ray_instance " + dash + " needs a ray layout");
+    CHECK(rows.at(4).label == "pelican_ray_instance " + dash + " needs hit groups");
     CHECK(rows.at(4).blocked ==
-          "This project has no ray group layout (pelican.ray_instance_requires_layout_v2@1)");
+          "No ray group layout: enable hit groups first "
+          "(pelican.ray_instance_requires_layout_v2@1)");
     CHECK_FALSE(rows.at(4).addable);
     CHECK(rows.at(5).label == "animator " + dash + " unavailable");
     CHECK(rows.at(5).blocked == "teleport.module_unavailable@2");
@@ -2714,4 +2757,164 @@ TEST_CASE("PM-3b a Stop that kept nothing on a saved scene leaves it saved",
     plain.observeSceneRevision(5);
     plain.observeSceneRevision(6);
     CHECK(plain.hasUnsavedChanges());
+}
+
+TEST_CASE("MT-2s decision 5: the Material rows' set_object_material is an edit of the Inspector's own "
+          "session, so its Undo is the scene's Undo",
+          "[devstudio][inspector][materials][mt2s]") {
+    using PelicanStudio::SpawnOutcome;
+    InspectorHarness harness;
+    harness.open();
+    const auto revision = harness.model.snapshot()->scene_revision;
+    const auto takeAll = [&](std::string_view method) {
+        std::optional<InspectorRpcRequest> found;
+        for (auto &request : harness.model.takeRpcRequests())
+            if (request.method == method) found = request;
+        REQUIRE(found);
+        return *found;
+    };
+    const Json asked{{"object", 41}, {"scene_id", "main"}, {"materials", Json::array({{{"material", "paint"}}})}};
+
+    // The session's actor and the revision it last saw are added.
+    REQUIRE(harness.model.submitObjectMaterial(asked, "paint on Cube") == SpawnOutcome::Sent);
+    auto sent = harness.take("set_object_material");
+    auto expected = asked;
+    expected["actor_id"] = 9;
+    expected["base_scene_revision"] = revision;
+    CHECK(sent.params == expected);
+    CHECK(harness.model.busy());
+    // One at a time.
+    CHECK(harness.model.submitObjectMaterial(asked, "paint on Cube") == SpawnOutcome::Refused);
+
+    // changed: false is no edit, and no failure.
+    harness.reply(sent, {{"changed", false}, {"object", 41}, {"scene_id", "main"}, {"model", "m"},
+                         {"previous", {{"materials", Json::array()}}}});
+    CHECK_FALSE(harness.model.busy());
+    CHECK(harness.model.notice().kind == InspectorNoticeKind::Information);
+    CHECK(harness.model.notice().message == "paint on Cube: nothing to change.");
+    CHECK_FALSE(harness.model.hasUnsavedChanges());
+
+    // A refusal wrote nothing: the scene does not read as unsaved.
+    REQUIRE(harness.model.submitObjectMaterial(asked, "paint on Cube") == SpawnOutcome::Sent);
+    sent = harness.take("set_object_material");
+    harness.model.receiveRpcFailure(sent.request_id, "No material is named paint (material.name_unknown@1).",
+                                    false, true);
+    CHECK_FALSE(harness.model.hasUnsavedChanges());
+    CHECK(harness.model.notice().message == "No material is named paint (material.name_unknown@1).");
+    takeAll("scene_outline");
+
+    // Committed: it is this session's edit, and Undo sends the session's
+    // actor -- the engine's undo of that actor takes the material back.
+    REQUIRE(harness.model.submitObjectMaterial(asked, "paint on Cube") == SpawnOutcome::Sent);
+    sent = harness.take("set_object_material");
+    harness.reply(sent, {{"status", "committed"},
+                         {"committed_revision", revision + 1},
+                         {"transaction_id", "t1"},
+                         {"changed", true},
+                         {"object", 41},
+                         {"scene_id", "main"},
+                         {"model", "m"},
+                         {"previous", {{"materials", Json::array({{{"material", nullptr}}})}}}});
+    CHECK(harness.model.hasUnsavedChanges());
+    const auto committed = harness.model.takeCommittedEdits();
+    REQUIRE(committed.size() == 1);
+    CHECK(committed.front().label == "paint on Cube");
+    harness.model.takeRpcRequests();
+    harness.model.undo();
+    const auto undo = takeAll("undo");
+    CHECK(undo.params.at("actor_id") == 9);
+}
+
+TEST_CASE("AN-2 animation model refusal shows the removal-first hint in the Inspector", "[animation][inspector]") {
+    InspectorHarness harness;
+    harness.open();
+    const auto field = harness.field("fixture_flags", "enabled").field_key;
+    REQUIRE(harness.model.commitWidgetValue(field, false));
+    harness.reply(harness.take("edit"),
+                  {{"status", "rejected"}, {"error", {
+                      {"code", "animation.component_invalid@1"},
+                      {"message", "animation component clip is attached to a model without a glTF skin"},
+                      {"payload", {{"hint", "Remove animation first before changing the model."}}}}}});
+    CHECK(harness.model.notice().kind == InspectorNoticeKind::Error);
+    CHECK(harness.model.notice().message.find("without a glTF skin") != std::string::npos);
+    CHECK(harness.model.notice().message.find("Remove animation first") != std::string::npos);
+}
+
+TEST_CASE("KB-1 Inspector scene history remains available without object selection", "[devstudio][inspector][shortcut][kb1]") {
+    InspectorHarness harness;
+    harness.open();
+    REQUIRE(harness.model.submitSceneEdit(PelicanStudio::SceneEditKind::Destroy, 41,
+                {{"op", "destroy"}, {"object_id", 41}}, "Delete Cube") == SpawnOutcome::Sent);
+    harness.reply(harness.take("edit"), {{"status", "committed"}, {"committed_revision", 2},
+                                         {"transaction_id", "delete-1"}, {"operation", "edit"}});
+    CHECK(harness.model.undoLabel() == "Delete Cube");
+    harness.model.takeRpcRequests();
+    harness.model.selectObject(std::nullopt);
+    REQUIRE_FALSE(harness.model.snapshot());
+    REQUIRE(harness.model.canUndoRedo());
+    harness.model.undo();
+    auto undo = harness.take("undo");
+    CHECK(undo.params == Json{{"actor_id", 9}, {"base_revision", 2}});
+    harness.reply(undo, {{"status", "committed"}, {"committed_revision", 3},
+                         {"transaction_id", "undo-1"}, {"operation", "undo"}});
+    CHECK(harness.model.undoLabel().empty());
+    CHECK(harness.model.redoLabel() == "Delete Cube");
+    harness.model.redo();
+    harness.reply(harness.take("redo"), {{"status", "rejected"},
+                  {"error", {{"code", "undo_conflict"}, {"message", "conflict"}}}});
+    CHECK(harness.model.redoLabel() == "Delete Cube");
+    harness.model.takeRpcRequests();
+    harness.model.redo();
+    harness.reply(harness.take("redo"), {{"status", "committed"}, {"committed_revision", 4},
+                  {"transaction_id", "redo-1"}, {"operation", "redo"}});
+    CHECK(harness.model.undoLabel() == "Delete Cube");
+    CHECK(harness.model.redoLabel().empty());
+    harness.model.stopSession();
+    CHECK(harness.model.undoLabel().empty());
+    CHECK_FALSE(harness.model.canUndoRedo());
+}
+
+TEST_CASE("KB-1 scene history labels follow the journal restored by Stop", "[devstudio][inspector][shortcut][kb1]") {
+    InspectorHarness harness;
+    harness.open();
+    REQUIRE(harness.model.submitSceneEdit(PelicanStudio::SceneEditKind::Reparent, 41,
+                {{"op", "set_component_value"}, {"object_id", 41}, {"component_slot", "transform"},
+                 {"field_path", "/pos"}, {"value", Json::array({7.0, 2.0, 3.0})}}, "Move Cube") == SpawnOutcome::Sent);
+    harness.reply(harness.take("edit"), {{"status", "committed"}, {"committed_revision", 2},
+                  {"transaction_id", "before-play"}, {"operation", "edit"}});
+    harness.completeRefresh(7.0, 2);
+    REQUIRE(harness.model.submitSceneEdit(PelicanStudio::SceneEditKind::Reparent, 41,
+                {{"op", "set_component_value"}, {"object_id", 41}, {"component_slot", "transform"},
+                 {"field_path", "/pos"}, {"value", Json::array({7.0, 2.0, 3.0})}}, "Move during Play") == SpawnOutcome::Sent);
+    harness.reply(harness.take("edit"), {{"status", "committed"}, {"committed_revision", 3},
+                  {"transaction_id", "during-play"}, {"operation", "edit"}});
+    harness.completeRefresh(9.0, 3);
+    REQUIRE(harness.model.undoLabel() == "Move during Play");
+    harness.model.refreshHistoryLabels();
+    CHECK(harness.model.undoLabel().empty());
+    auto journal = harness.take("query_journal");
+    auto records = Json::array({{{"actor_id", 9}, {"transaction_id", "before-play"}, {"operation_kind", "edit"}}});
+    harness.reply(journal, {{"scene_revision", 4}, {"records", records}});
+    CHECK(harness.model.undoLabel() == "Move Cube");
+    CHECK(harness.model.redoLabel().empty());
+    // Kept changes become one history item; another actor's item is not ours.
+    records.push_back({{"actor_id", 77}, {"transaction_id", "other"}, {"operation_kind", "edit"}});
+    records.push_back({{"actor_id", 9}, {"transaction_id", "kept"}, {"operation_kind", "play_keep"}});
+    harness.model.refreshHistoryLabels();
+    harness.reply(harness.take("query_journal"), {{"scene_revision", 5}, {"records", records}});
+    CHECK(harness.model.undoLabel() == "Keep game changes");
+    records.push_back({{"actor_id", 9}, {"transaction_id", "undo-kept"}, {"operation_kind", "undo"}});
+    harness.model.refreshHistoryLabels();
+    harness.reply(harness.take("query_journal"), {{"scene_revision", 6}, {"records", records}});
+    CHECK(harness.model.undoLabel() == "Move Cube");
+    CHECK(harness.model.redoLabel() == "Keep game changes");
+    // A slow read cannot roll the label back over a newer observed revision.
+    harness.model.refreshHistoryLabels();
+    journal = harness.take("query_journal");
+    harness.model.observeSceneRevision(7);
+    harness.reply(journal, {{"scene_revision", 6}, {"records", records}});
+    records.push_back({{"actor_id", 9}, {"transaction_id", "redo-kept"}, {"operation_kind", "redo"}});
+    harness.reply(harness.take("query_journal"), {{"scene_revision", 7}, {"records", records}});
+    CHECK(harness.model.undoLabel() == "Keep game changes");
+    CHECK(harness.model.redoLabel().empty());
 }

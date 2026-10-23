@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 #include <limits>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -128,6 +129,19 @@ struct ModelCollisionMesh {
     std::vector<std::uint32_t> indices;
 };
 
+// Diagnostics belong to a model generation, including an unpublished reload candidate.
+struct MaterialBindingIssue {
+    std::optional<std::size_t> row; // zero-based bindings array index; absent for an unbound primitive
+    std::uint32_t mesh = 0;
+    std::uint32_t primitive = 0;
+    std::string usd_path;
+    std::string material; // non-empty only for an unresolved material name
+    std::string reason;
+    bool name_mismatch = false;
+    std::string written_name;
+    std::string current_name;
+};
+
 struct ModelTemplate {
     using PrimitiveRefInfo = ModelPrimitiveRefInfo;
 
@@ -141,9 +155,14 @@ struct ModelTemplate {
         std::string name;
         GlobalMaterialId material;
         std::optional<MaterialVariantRouting> routing;
+        // Retained for CPU-only binding validation as well as live loads.
+        bool vat_playback = false;
+        std::optional<int> index;
     };
 
+    bool fragment_name_mismatch = false;
     std::vector<MaterialPrimitives> material_primitives;
+    std::vector<MaterialBindingIssue> binding_issues;
     std::shared_ptr<const std::vector<ModelCollisionMesh>> collision_meshes;
     std::vector<NamedMaterial> named_materials;
     std::shared_ptr<SkeletalModelData> skeletal;
@@ -156,26 +175,34 @@ struct ModelTemplate {
     // resolution and content reload. Ray material asset selectors use this
     // value rather than a transient path or numeric GPU identity.
     std::string authored_asset_reference;
+    // Logical project name, retained for scene override diagnostics.
+    std::string authored_model_name;
+    bool hasPrimitive(std::uint32_t mesh, std::uint32_t primitive) const noexcept;
     std::uint64_t content_revision = 1;
     std::uint64_t compatibility_revision = 0;
 };
 
-// Project-authored names are an additive resolution domain. Validate it
-// separately so an ambiguity fails even when a binding document does not
-// happen to reference the colliding name.
-void validateNamedMaterialResolutionDomains(
-    const ModelTemplate &model,
-    std::span<const ModelTemplate::NamedMaterial>
-        project_materials,
-    std::string_view model_name);
+struct ModelMaterialResolution {
+    const ModelTemplate::NamedMaterial *material = nullptr;
+    std::string reference;
+    bool name_mismatch = false;
+    std::string written_name;
+};
+std::string modelMaterialReference(const ModelTemplate &model, const ModelTemplate::NamedMaterial &material);
+std::string modelMaterialDisplayName(const ModelTemplate &model, const ModelTemplate::NamedMaterial &material);
+ModelMaterialResolution resolveModelMaterial(const ModelTemplate &model, std::string_view reference,
+    std::span<const ModelTemplate::NamedMaterial> project_materials = {});
 
-// A non-empty mapping is a whole-model contract: every loaded primitive must
-// occur exactly once. Fragment loads cannot satisfy that contract and are
-// rejected instead of silently applying a partial mapping.
+// Bindings address whole-model mesh/primitive coordinates. Stale targets,
+// uncovered primitives and missing material names recover with diagnostics;
+// structural errors, routing and VAT violations still fail.
+// keep_own_material is a legacy notification for unresolved material names.
 void applyPrimitiveMaterialBindings(
     ModelTemplate &model, const PrimitiveMaterialBindingDocument &document,
     std::string_view model_name, std::optional<std::string_view> fragment = std::nullopt,
     std::span<const ModelTemplate::NamedMaterial>
-        project_materials = {});
+        project_materials = {},
+    const std::function<bool(const PrimitiveMaterialBinding &)>
+        &keep_own_material = {});
 
 } // namespace Pelican

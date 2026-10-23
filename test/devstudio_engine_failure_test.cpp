@@ -1,6 +1,9 @@
 #include "embeddedviewport.hpp"
 #include "enginefailuremodel.hpp"
 #include "frameplanwidget.hpp"
+#include "problemsdock.hpp"
+#include "renderfallbacknotice.hpp"
+#include "../src/devstudio/model/inspectormodel.hpp"
 
 #include "../src/core/asset/model.hpp"
 #include "../src/core/container.hpp"
@@ -18,11 +21,13 @@
 #include "vulkan_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <nlohmann/json.hpp>
 
 #include <QApplication>
 #include <QByteArray>
+#include <QDialog>
 #include <QDir>
 #include <QEventLoop>
 #include <QJsonDocument>
@@ -38,6 +43,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace PelicanStudio {
 namespace {
@@ -372,51 +378,45 @@ TEST_CASE("Frame plan distinguishes not-started guidance from a running engine f
     REQUIRE(status->text() != not_started);
 }
 
-TEST_CASE("Studio receives the running example fatal text while RPC stdout stays framed",
+// WP298: Studio receives the fatal line an engine stops with, and the RPC
+// replies on the engine's stdout are consumed, never forwarded. MV-1: the
+// stop is a small project's own, not the example's: a camera type the engine
+// does not know is refused while the project is read, before any rendering
+// document, so --render-fallback (which Studio always passes) does not turn
+// it into a placeholder.
+TEST_CASE("Studio receives the running engine's fatal text while RPC stdout stays framed",
           "[devstudio][process][failure][rpc][negative-contrast][wp298][WP380c]") {
     int argument_count = 1;
     char application_name[] = "pelican_engine_failure_entry_test";
     char *arguments[] = {application_name};
     QApplication application{argument_count, arguments};
 
-    const fs::path source_project =
-        filesystemPath(QString::fromUtf8(PELICAN_WP298_EXAMPLE_PROJECT));
-    if (!fs::is_regular_file(
-            source_project / "assets" / "models" / "sponza.glb") ||
-        !fs::is_regular_file(
-            source_project / "assets" / "models" / "AliciaSolid.vrm")) {
-        SKIP("projects/example model assets are not available");
-    }
-
     QTemporaryDir sandbox{
         QDir::temp().filePath(QStringLiteral("pelican_wp298_XXXXXX"))};
     REQUIRE(sandbox.isValid());
-    const fs::path sandbox_root = filesystemPath(sandbox.path());
-    const fs::path test_project = sandbox_root / "projects" / "example";
-    copyExampleProject(source_project, test_project);
-
-    const fs::path rendering_config =
-        test_project / "passes" / "main_rendering_config.json";
-    const fs::path asset_data =
-        test_project / "assets" / "asset_data.json";
-    const std::string original_config = readText(rendering_config);
-    const std::string original_asset_data = readText(asset_data);
-    addAliciaModel(asset_data);
-    removeForwardTransparentPass(rendering_config);
+    const fs::path test_project = filesystemPath(sandbox.path()) / "project";
+    fs::copy(fs::path{PELICAN_UX9_FIXTURE_PROJECT}, test_project,
+             fs::copy_options::recursive);
+    const fs::path project_json = test_project / "project.json";
+    const std::string original_project = readText(project_json);
+    {
+        auto project = nlohmann::json::parse(original_project);
+        project.at("basic_config")["camera"] = {
+            {"type", "fisheye"}, {"yfov", 0.8}, {"znear", 0.1}, {"zfar", 100.0}};
+        writeText(project_json, project.dump(2) + "\n");
+    }
 
     const QString player = QString::fromUtf8(PELICAN_WP298_PLAYER);
     EnvironmentVariableGuard player_path{
         "PELICAN_STUDIO_PLAYER", player.toLocal8Bit()};
+    const QString expected_fatal = QStringLiteral(
+        "Pelican fatal error : basic_config.camera type must be 'perspective' or 'orthographic'");
 
     ViewportObservation broken;
     QString not_started_status;
     QString broken_status;
-    QString broken_detail;
     {
         EnvironmentVariableGuard player_arguments{
-            // Exercise Studio's windowed launch path. A headless child can
-            // never satisfy native-window discovery, so loading large models
-            // may kill it before the intended material-pass failure occurs.
             "PELICAN_STUDIO_PLAYER_ARGUMENTS", QByteArray{"--size 320x180"}};
         EmbeddedViewport viewport;
         FramePlanWidget frame_plan{&viewport};
@@ -434,54 +434,36 @@ TEST_CASE("Studio receives the running example fatal text while RPC stdout stays
         viewport.resize(640, 480);
         viewport.show();
         viewport.openProject(displayPath(test_project));
-        QTimer::singleShot(30000, &stopped_loop, &QEventLoop::quit);
-        if (!broken.stopped) {
-            stopped_loop.exec();
-        }
+        QTimer::singleShot(60000, &stopped_loop, &QEventLoop::quit);
+        if (!broken.stopped) stopped_loop.exec();
         QApplication::processEvents();
         broken_status = status->text();
-        broken_detail = status->toolTip();
     }
 
-    REQUIRE(broken.stopped);
-    const QString engine_fatal = lastFatalLine(broken.standard_error);
     INFO("engine stderr: " << broken.standard_error.toStdString());
     INFO("Studio process output: " << broken.studio_output.toStdString());
-    INFO("running engine fatal line: " << engine_fatal.toStdString());
     INFO("Frame Plan status: " << broken_status.toStdString());
-    INFO("Frame Plan detail: " << broken_detail.toStdString());
-    REQUIRE_FALSE(engine_fatal.isEmpty());
-    REQUIRE(engine_fatal.contains(QStringLiteral("forward_transparent")));
-    // G-4: the load-time refusal carries the same named code and route hint
-    // as an edit ticket's rejection.
-    REQUIRE(engine_fatal.contains(QStringLiteral("material_route_unserved@1")));
-    REQUIRE(engine_fatal.contains(QStringLiteral(
-        "add a forward_transparent_v1 material pass")));
-    // This is EmbeddedViewport's production signal, not a test-side model.
-    REQUIRE(broken.fatal_error_line == engine_fatal);
-    // N-7 keeps a long diagnostic in the tooltip and shows its leading text
-    // in one bounded status row. Logger metadata can make this fatal line
-    // much longer than the short message used by the isolated view test.
-    REQUIRE(broken_detail == engine_fatal);
-    REQUIRE_FALSE(broken_status.isEmpty());
-    REQUIRE(broken_status.size() <= 90);
-    REQUIRE(broken_status.endsWith(QStringLiteral("…")));
-    REQUIRE(engine_fatal.startsWith(broken_status.chopped(1)));
-    REQUIRE(broken_status != not_started_status);
-    // With no pending RPC response, equality means stdout contributed zero bytes.
+    // The engine stopped, and Studio holds the line it stopped with.
+    REQUIRE(broken.stopped);
+    CHECK(broken.fatal_error_line.contains(expected_fatal));
+    CHECK(lastFatalLine(broken.standard_error).contains(expected_fatal));
+    // The Frame Plan's status turned to the line (one line of it, cut to
+    // the width; it has no code to read a sentence from).
+    CHECK(broken_status != not_started_status);
+    // Any RPC reply was consumed by EngineProcess: stdout contributed no
+    // byte to what Studio forwards.
     REQUIRE(broken.studio_output == broken.standard_error);
 
     // Studio gives each project's player its own log, truncated per run.
     const fs::path player_log =
         test_project / ".pelican" / "logs" / "player.log";
     REQUIRE(fs::is_regular_file(player_log));
-    REQUIRE(QString::fromStdString(readText(player_log)).contains(engine_fatal));
+    const std::string broken_log = readText(player_log);
+    CHECK(QString::fromStdString(broken_log).contains(expected_fatal));
 
-    // Restore the deliberately broken example before running the control.
-    writeText(rendering_config, original_config);
-    writeText(asset_data, original_asset_data);
-    REQUIRE(readText(rendering_config) == original_config);
-    REQUIRE(readText(asset_data) == original_asset_data);
+    // The same project with its camera back runs to its frame limit.
+    writeText(project_json, original_project);
+    REQUIRE(readText(project_json) == original_project);
 
     ViewportObservation normal;
     QString running_status;
@@ -526,6 +508,7 @@ TEST_CASE("Studio receives the running example fatal text while RPC stdout stays
         stopped_status = status->text();
     }
 
+    INFO("control engine stderr: " << normal.standard_error.toStdString());
     REQUIRE(normal.stopped);
     REQUIRE(normal.fatal_error_line.isEmpty());
     REQUIRE(lastFatalLine(normal.standard_error).isEmpty());
@@ -540,17 +523,160 @@ TEST_CASE("Studio receives the running example fatal text while RPC stdout stays
     // The control run truncated the file: it holds this run, not the failed one.
     const QString control_log = QString::fromStdString(readText(player_log));
     REQUIRE(control_log.contains(QStringLiteral("starting main loop")));
-    REQUIRE_FALSE(control_log.contains(engine_fatal));
+    REQUIRE(QString::fromStdString(broken_log) != control_log);
 }
 
-// UX-9, decision 5 (engine CT-1): a document the engine cannot read at start
-// -- a buffer port without its element -- stops it with the code named on its
-// fatal line, and the Frame Plan's status says the code's sentence and the
-// file to fix, read from the line the running engine really writes (UX-8
-// decision 13 (c) was written against a line made up in a test).
-TEST_CASE("UX-9 decision 5: an engine stopped at start by a buffer port without its element "
-          "says the code's sentence and the file in the Frame Plan's status",
-          "[devstudio][frame-plan][failure][ux9]") {
+// MU-1 on the example (sponza, the other models and Alicia): an unserved
+// material draws through a substitute pass and gets its own Problems row.
+// MV-1 keeps Alicia morph targets after sponza static vertices.
+TEST_CASE("The example with Alicia keeps rendering for an unserved route and Materials Problems say why",
+          "[devstudio][process][failure][rpc][wp298][pb1s][mv1]") {
+    int argument_count = 1;
+    char application_name[] = "pelican_engine_failure_example_test";
+    char *arguments[] = {application_name};
+    QApplication application{argument_count, arguments};
+
+    const fs::path source_project =
+        filesystemPath(QString::fromUtf8(PELICAN_WP298_EXAMPLE_PROJECT));
+    if (!fs::is_regular_file(
+            source_project / "assets" / "models" / "sponza.glb") ||
+        !fs::is_regular_file(
+            source_project / "assets" / "models" / "AliciaSolid.vrm")) {
+        SKIP("projects/example model assets are not available");
+    }
+
+    QTemporaryDir sandbox{
+        QDir::temp().filePath(QStringLiteral("pelican_wp298_example_XXXXXX"))};
+    REQUIRE(sandbox.isValid());
+    const fs::path sandbox_root = filesystemPath(sandbox.path());
+    const fs::path test_project = sandbox_root / "projects" / "example";
+    copyExampleProject(source_project, test_project);
+
+    const fs::path rendering_config =
+        test_project / "passes" / "main_rendering_config.json";
+    const fs::path asset_data =
+        test_project / "assets" / "asset_data.json";
+    addAliciaModel(asset_data);
+    removeForwardTransparentPass(rendering_config);
+
+    const QString player = QString::fromUtf8(PELICAN_WP298_PLAYER);
+    EnvironmentVariableGuard player_path{
+        "PELICAN_STUDIO_PLAYER", player.toLocal8Bit()};
+
+    // MU-1: Studio keeps the project rendering and lists material-local errors.
+    ViewportObservation broken;
+    QString not_started_status;
+    QString broken_status;
+    nlohmann::json broken_reading;
+    QString notice_line;
+    std::vector<ProblemRow> problem_rows;
+    bool running_after = false;
+    {
+        EnvironmentVariableGuard player_arguments{
+            // Exercise Studio's windowed launch path. A headless child can
+            // never satisfy native-window discovery, so loading large models
+            // may kill it before the intended material-pass refusal occurs.
+            "PELICAN_STUDIO_PLAYER_ARGUMENTS", QByteArray{"--size 320x180"}};
+        EmbeddedViewport viewport;
+        FramePlanWidget frame_plan{&viewport};
+        auto *status = frame_plan.findChild<QLabel *>(
+            QStringLiteral("pelican.framePlanStatus"));
+        REQUIRE(status != nullptr);
+        not_started_status = status->text();
+        RenderFallbackNotice notice{RenderFallbackNotice::Hooks{}};
+        notice.setSeeProblems(true);
+        ProblemsDock problems{ProblemsDock::Hooks{
+            .send = [&viewport](const QString &method, const QJsonObject &params, QString *error) {
+                return viewport.requestRpc(method, params, error);
+            },
+            .read_status = [&viewport] {
+                (void)viewport.requestRpc(QStringLiteral("get_status"), QJsonObject{});
+            },
+        }};
+        QEventLoop ready_loop;
+        QEventLoop rpc_loop;
+        QEventLoop stopped_loop;
+        QObject connection_context;
+        observeViewport(viewport, broken, ready_loop, rpc_loop, stopped_loop,
+                        connection_context);
+        // What the window does with every get_status and every reply.
+        QObject::connect(&viewport, &EmbeddedViewport::engineStatusParsed, &connection_context,
+                         [&](qint64, const nlohmann::json &parsed) {
+                             if (broken_reading.is_null() && parsed.contains("render_pipeline"))
+                                 broken_reading = parsed;
+                             notice.observeStatus(parsed);
+                             problems.observeStatus(parsed);
+                         });
+        QObject::connect(&viewport, &EmbeddedViewport::inspectorRpcSucceeded, &connection_context,
+                         [&](qint64 request_id, const QByteArray &result_json) {
+                             (void)problems.receiveResult(request_id, result_json);
+                         });
+        QObject::connect(&viewport, &EmbeddedViewport::engineRpcBecameAvailable, &connection_context,
+                         [&] { problems.engineAvailable(); });
+
+        viewport.resize(640, 480);
+        viewport.show();
+        viewport.openProject(displayPath(test_project));
+        QTimer::singleShot(60000, &ready_loop, &QEventLoop::quit);
+        if (!broken.rpc_available && !broken.stopped) ready_loop.exec();
+        // The Problems row (get_problems, read once the revision is seen)
+        // and the Frame Plan status of the project generation.
+        QEventLoop listed_loop;
+        QTimer poll;
+        QObject::connect(&poll, &QTimer::timeout, &listed_loop, [&] {
+            if (broken.stopped ||
+                (!problems.session().rows().empty() &&
+                 !broken_reading.is_null()))
+                listed_loop.quit();
+        });
+        poll.start(50);
+        QTimer::singleShot(30000, &listed_loop, &QEventLoop::quit);
+        listed_loop.exec();
+        QApplication::processEvents();
+        broken_status = status->text();
+        notice_line = notice.line()->text();
+        problem_rows = problems.session().rows();
+        running_after = viewport.engineRunning();
+    }
+
+    INFO("engine stderr: " << broken.standard_error.toStdString());
+    INFO("Studio process output: " << broken.studio_output.toStdString());
+    INFO("first get_status: " << broken_reading.dump().substr(0, 2000));
+    INFO("Frame Plan status: " << broken_status.toStdString());
+    INFO("placeholder row: " << notice_line.toStdString());
+    // The engine did not stop: it answered, and still ran when let go.
+    REQUIRE(broken.rpc_available);
+    CHECK_FALSE(broken.stopped);
+    CHECK(running_after);
+    CHECK(broken.fatal_error_line.isEmpty());
+    CHECK(lastFatalLine(broken.standard_error).isEmpty());
+    const auto reading = readRenderPipeline(broken_reading);
+    REQUIRE(reading.state == RenderPipelineReading::State::Ready);
+    CHECK_FALSE(notice_line.startsWith(QStringLiteral("Showing a placeholder")));
+    CHECK_FALSE(broken_status.startsWith(QStringLiteral("Showing a placeholder")));
+    REQUIRE_FALSE(problem_rows.empty());
+    for (const auto &row : problem_rows) {
+        CHECK(row.code == "material.route_unserved@1");
+        CHECK(row.error());
+        CHECK(row.document_kind == "material");
+        CHECK_THAT(row.sentence, Catch::Matchers::ContainsSubstring("forward_transparent"));
+    }
+    // The RPC replies were consumed by EngineProcess: stdout contributed no
+    // byte to what Studio forwards.
+    REQUIRE(broken.studio_output == broken.standard_error);
+}
+
+// UX-9, decision 5 (engine CT-1) -> BS-1s, decision 4 (engine BS-1): a
+// document the engine cannot read at start -- a buffer port without its
+// element -- no longer stops the engine Studio starts (--render-fallback). It
+// keeps running on its placeholder, says why in get_status.render_pipeline,
+// and the Frame Plan's status says the code's sentence and the file to fix,
+// read from what the running engine really answers. The fatal line a player
+// started without the flag writes is still read (engineStoppedSentence, and
+// the test above it).
+TEST_CASE("BS-1s decision 4 (UX-9 decision 5): an engine Studio starts on a buffer port without its element "
+          "keeps running on its placeholder, and the Frame Plan's status says the code's sentence and the file",
+          "[devstudio][frame-plan][failure][ux9][bs1s]") {
     int argument_count = 1;
     char application_name[] = "pelican_engine_failure_ux9_test";
     char *arguments[] = {application_name};
@@ -577,45 +703,66 @@ TEST_CASE("UX-9 decision 5: an engine stopped at start by a buffer port without 
         "PELICAN_STUDIO_PLAYER", QString::fromUtf8(PELICAN_WP298_PLAYER).toLocal8Bit()};
     EnvironmentVariableGuard player_arguments{"PELICAN_STUDIO_PLAYER_ARGUMENTS",
                                               QByteArray{"--size 320x180"}};
-    ViewportObservation broken;
+    const QString expected = QStringLiteral(
+        "Showing a placeholder: the rendering setup was refused — Port data of sim needs element "
+        "(graph.port_field_missing@1) in passes/main.json. Fix it, then Reload from disk.");
+    ViewportObservation observed;
+    nlohmann::json status;
     QString status_text;
-    QString status_detail;
+    bool running_after = false;
     {
         EmbeddedViewport viewport;
         FramePlanWidget frame_plan{&viewport};
-        auto *status = frame_plan.findChild<QLabel *>(QStringLiteral("pelican.framePlanStatus"));
-        REQUIRE(status != nullptr);
+        auto *frame_status = frame_plan.findChild<QLabel *>(QStringLiteral("pelican.framePlanStatus"));
+        REQUIRE(frame_status != nullptr);
         QEventLoop ready_loop;
         QEventLoop rpc_loop;
         QEventLoop stopped_loop;
         QObject connection_context;
-        observeViewport(viewport, broken, ready_loop, rpc_loop, stopped_loop, connection_context);
+        observeViewport(viewport, observed, ready_loop, rpc_loop, stopped_loop, connection_context);
+        // The readiness probe's get_status is the first status read.
+        QObject::connect(&viewport, &EmbeddedViewport::engineStatusParsed, &connection_context,
+                         [&](qint64, const nlohmann::json &parsed) {
+                             if (status.is_null()) status = parsed;
+                         });
         viewport.resize(640, 480);
         viewport.show();
         viewport.openProject(displayPath(project));
-        QTimer::singleShot(60000, &stopped_loop, &QEventLoop::quit);
-        if (!broken.stopped) stopped_loop.exec();
+        QTimer::singleShot(60000, &ready_loop, &QEventLoop::quit);
+        if (!observed.rpc_available && !observed.stopped) ready_loop.exec();
+        // The Frame Plan reads the plan when the engine answers; the plan of
+        // the placeholder carries the same render_pipeline.
+        QEventLoop plan_loop;
+        QTimer poll;
+        QObject::connect(&poll, &QTimer::timeout, &plan_loop, [&] {
+            if (frame_status->text() == expected || observed.stopped) plan_loop.quit();
+        });
+        poll.start(50);
+        QTimer::singleShot(30000, &plan_loop, &QEventLoop::quit);
+        if (frame_status->text() != expected && !observed.stopped) plan_loop.exec();
         QApplication::processEvents();
-        status_text = status->text();
-        status_detail = status->toolTip();
+        status_text = frame_status->text();
+        running_after = viewport.engineRunning();
     }
 
-    REQUIRE(broken.stopped);
-    const QString engine_fatal = lastFatalLine(broken.standard_error);
-    INFO("engine stderr: " << broken.standard_error.toStdString());
-    INFO("running engine fatal line: " << engine_fatal.toStdString());
+    INFO("engine stderr: " << observed.standard_error.toStdString());
     INFO("Frame Plan status: " << status_text.toStdString());
-    REQUIRE(engine_fatal.contains(QStringLiteral("graph.port_field_missing@1")));
-    REQUIRE(broken.fatal_error_line == engine_fatal);
-    // The sentence Studio has for the code, with the port, the node and the
-    // field the engine named. IA-1s, decision 6: the file is the document
-    // the line names (CT-2's "document"), as the project names it.
-    CHECK(status_text ==
-          QStringLiteral("The engine stopped: Port data of sim needs element "
-                         "(graph.port_field_missing@1) in passes/main.json. Fix the file (or "
-                         "Reload from disk) to start it again."));
-    // The line itself stays the detail.
-    CHECK(status_detail == engine_fatal);
+    INFO("first get_status: " << status.dump().substr(0, 2000));
+    // The engine did not stop: it answered, and was still running when the
+    // test let it go.
+    REQUIRE(observed.rpc_available);
+    CHECK_FALSE(observed.stopped);
+    CHECK(running_after);
+    CHECK(observed.fatal_error_line.isEmpty());
+    CHECK(lastFatalLine(observed.standard_error).isEmpty());
+    // It said why, as the edit's refusal names it.
+    const auto reading = readRenderPipeline(status);
+    REQUIRE(reading.state == RenderPipelineReading::State::Fallback);
+    CHECK(reading.refusal.value("code", std::string{}) == "graph.port_field_missing@1");
+    CHECK(renderFallbackNode(reading) == "sim");
+    // The sentence Studio has for the code, with the port, the node, the
+    // field and the document the engine named.
+    CHECK(status_text == expected);
 }
 
 } // namespace PelicanStudio

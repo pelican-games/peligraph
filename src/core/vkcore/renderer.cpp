@@ -1,3 +1,4 @@
+#include "../watch/userdataguard.hpp"
 #include "renderer.hpp"
 #include "../userpublic/valuegraph.hpp"
 #include "../renderingpass/graphinputs.hpp"
@@ -22,6 +23,8 @@
 #include "../watch/assetkey.hpp"
 #include "../watch/reloadgate.hpp"
 #include "../watch/reloadservice.hpp"
+#include "../watch/problemlist.hpp"
+#include "../material/materialstartupunserved.hpp"
 #include "../launchconfig.hpp"
 #include "../light/lightcontainer.hpp"
 #include "../loader/basicconfig.hpp"
@@ -86,6 +89,7 @@
 #include <glm/gtc/matrix_inverse.hpp>
 #include <limits>
 #include <map>
+#include <new>
 #include <set>
 #include <stdexcept>
 #include <string_view>
@@ -104,6 +108,17 @@ struct RenderPipelineReloadState {
     std::uint64_t staged_generation = 0;
     std::string last_error;
 };
+
+namespace {
+
+// RTL-1a: why the logical frame that met a staged generation ended early, as
+// the frame's exception said it (empty: it did not, or not with a message).
+// Set while the frame unwinds, before its rollback guard runs; the rollback
+// takes it into the generation's failure, so the refusal names its cause
+// (a ray scene row refusal, say) instead of only that it was rolled back.
+thread_local std::string staged_frame_failure_cause;
+
+} // namespace
 
 bool Renderer::hasPendingRenderPipelinePublication() const noexcept {
     return render_pipeline_reload_state && render_pipeline_reload_state->staged_generation != 0;
@@ -159,6 +174,17 @@ void RenderPipelinePublicationTransaction::publish(
     GET_MODULE(ProjectBasicConfig)
         .publishRenderingConfigJson(
             std::move(config_json));
+    // BS-1: a published project configuration ends the fallback.
+    renderer.render_pipeline_fallback_refusal.reset();
+    // PB-1: what is on disk composed. An authored candidate's ticket clears
+    // the list in the editor, which knows whether it was a reload or an edit
+    // (a recompile for graph ownership is neither).
+    if (!authored) {
+        try {
+            clearRenderPipelineProblems();
+        } catch (...) {
+        }
+    }
 
     try {
         if (auto *targets =
@@ -209,13 +235,28 @@ void RenderPipelinePublicationTransaction::rollback(
     if (finalized) return;
     if (failure.empty()) {
         failure = rollback_failure_message;
+        // RTL-1a: the frame's own words, when a frame ended it.
+        if (!staged_frame_failure_cause.empty())
+            failure += ": " + staged_frame_failure_cause;
     }
+    staged_frame_failure_cause.clear();
     if (renderer.render_pipeline_reload_state != nullptr) {
         auto &rolled_back =
             *renderer.render_pipeline_reload_state;
         rolled_back.staged_generation = 0;
         rolled_back.last_error = failure;
         ++rolled_back.failed;
+        // A reload or edit refused after staging keeps the previous generation.
+        {
+            try {
+                recordRenderPipelineProblem(
+                    authored ? problemSourceEditRpc : problemSourceHotReload,
+                    renderPipelineRefusalJson(std::runtime_error{failure}, {},
+                                              rolled_back.source_reference),
+                    rolled_back.source_reference);
+            } catch (...) {
+            }
+        }
     }
     outcome =
         RenderPipelineAuthoringApplyResult{
@@ -492,7 +533,7 @@ RenderFrameModules resolveRenderFrameModules() {
         GET_MODULE(FullscreenPassContainer),
         ui_enabled ? &GET_MODULE(UiRenderer) : nullptr,
         ui_enabled ? &GET_MODULE(UIContainer) : nullptr,
-        ui_enabled ? &GET_MODULE(ui::UiModule) : nullptr,
+        ui_enabled ? FastModuleContainer::tryGet<ui::UiModule>() : nullptr,
         debug_draw,
         gizmo,
         debug_text,
@@ -3195,12 +3236,73 @@ struct LogicalFrameSubmissionResources {
 } // namespace
 
 Renderer::Renderer() {
-    // G-4: snapshot `material_route_default` from the rendering document as it
-    // is at engine start, before any material is lowered. A later published
-    // edit does not change it; the editor reports restart_required instead.
-    GET_MODULE(ProjectBasicConfig).snapshotMaterialRouteDefault();
-    const auto variants =
-        loadRenderGraphVariantsFromConfigWithStartupFeatureOverlays();
+    auto &config = GET_MODULE(ProjectBasicConfig);
+    // BS-1: under --render-fallback a refusal of the project's rendering
+    // configuration (met here, or already by the startup preflight) starts
+    // the built-in fallback generation instead of stopping the engine.
+    const bool fallback_allowed =
+        GET_MODULE(EngineLaunchConfig).render_fallback;
+    std::optional<nlohmann::json> refusal;
+    if (fallback_allowed) {
+        if (const auto *startup = FastModuleContainer::tryGet<
+                RenderPipelineStartupRefusal>()) {
+            refusal = startup->refusal;
+        }
+    }
+    std::optional<RenderGraphVariantConfig> loaded;
+    if (!refusal) {
+        try {
+            // G-4: snapshot `material_route_default` from the rendering
+            // document as it is at engine start, before any material is
+            // lowered. A later published edit does not change it; the editor
+            // reports restart_required instead.
+            config.snapshotMaterialRouteDefault();
+            loaded.emplace(
+                loadRenderGraphVariantsFromConfigWithStartupFeatureOverlays());
+        } catch (const std::exception &error) {
+            if (!fallback_allowed && dynamic_cast<const UserDataError *>(&error) == nullptr) throw;
+            // The root itself may be what could not be read.
+            std::string root_json;
+            try {
+                root_json = config.renderingConfigJson();
+            } catch (const std::exception &) {
+            }
+            refusal = renderPipelineRefusalJson(
+                error, root_json, config.renderingConfigReference());
+        }
+    }
+    // PB-1: the list exists before the module graph is frozen, whether or
+    // not anything is wrong at start.
+    (void)GET_MODULE(ProblemList);
+    if (refusal) {
+        LOG_ERROR(logger,
+                  "render pipeline refused at start; running the engine's "
+                  "fallback generation until a fixed configuration is "
+                  "published: {}",
+                  refusal->dump());
+        // PB-1: the first problem, read against the root on disk.
+        recordRenderPipelineProblem(problemSourceStartup, *refusal,
+                                    config.renderingConfigReference());
+        // The fallback stands in for the project's root while it is the
+        // published configuration: re-lowering for a new output and the
+        // scene's ray plan read it from here, as they read a published
+        // edit. The documents on disk are untouched; reload and the editor
+        // read those.
+        config.publishRenderingConfigJson(
+            renderPipelineFallbackConfigJson(
+                config.defaultRenderingPass()));
+        // A no-op when the project's root was snapshotted before it failed.
+        config.snapshotMaterialRouteDefault();
+        // With the launch's feature overlays, as every generation of this
+        // run: Studio's editor overlay (gizmo, picking, gpu_timing) makes the
+        // modules those features need now, before the module graph is frozen,
+        // so the project's configuration that replaces the fallback can
+        // enable them.
+        loaded.emplace(
+            loadRenderGraphVariantsFromConfigWithStartupFeatureOverlays());
+        render_pipeline_fallback_refusal = std::move(refusal);
+    }
+    const auto &variants = *loaded;
     flat_rendering_pass_id = variants.flat;
     xr_rendering_pass_id = variants.xr;
     xr_excluded_features = variants.xr_excluded_features;
@@ -3208,6 +3310,58 @@ Renderer::Renderer() {
     current_rendering_pass_id = flat_rendering_pass_id;
     internal_render_extent = GET_MODULE(RenderTarget).getExtent();
     installRenderPipelineReloadParticipant();
+    // PB-1 (engine_backlog 23): the project's generation is live; a material
+    // this start registers without a pass for its route is written down
+    // instead of stopping the launch (enterStartupFallbackForUnservedMaterials).
+    if (fallback_allowed && !render_pipeline_fallback_refusal)
+        GET_MODULE(MaterialStartupUnserved).collecting = true;
+}
+
+void Renderer::enterStartupFallbackForUnservedMaterials() {
+    auto *startup = FastModuleContainer::tryGet<MaterialStartupUnserved>();
+    if (startup == nullptr) return;
+    startup->collecting = false;
+    if (startup->unserved.empty() || render_pipeline_fallback_refusal) return;
+    auto &config = GET_MODULE(ProjectBasicConfig);
+    const auto reference = config.renderingConfigReference();
+    std::string root_json;
+    try {
+        root_json = config.renderingConfigJson();
+    } catch (const std::exception &) {
+    }
+    auto refusal = renderPipelineRefusalJson(
+        std::runtime_error{
+            materialRouteUnservedMessage(startup->unserved, reference)},
+        root_json, reference);
+    startup->unserved.clear();
+    LOG_ERROR(logger,
+              "render pipeline refused at start; running the engine's "
+              "fallback generation until a fixed configuration is "
+              "published: {}",
+              refusal.dump());
+    recordRenderPipelineProblem(problemSourceStartup, refusal, reference);
+    // As Renderer() does for a configuration refused when it was composed:
+    // the fallback stands in for the project's root. The materials already
+    // registered keep what they were lowered to; the fallback draws none, so
+    // they are not judged against it.
+    config.publishRenderingConfigJson(
+        renderPipelineFallbackConfigJson(config.defaultRenderingPass()));
+    relowerRenderPipelineForCurrentOutput(/*validate_live_materials=*/false);
+    render_pipeline_fallback_refusal = std::move(refusal);
+}
+
+nlohmann::json Renderer::renderPipelineStatusJson() const {
+    nlohmann::json status{
+        {"state", render_pipeline_fallback_refusal ? "fallback" : "ready"},
+        {"root", render_pipeline_reload_state != nullptr
+                     ? nlohmann::json(
+                           render_pipeline_reload_state->source_reference)
+                     : nlohmann::json(nullptr)},
+    };
+    if (render_pipeline_fallback_refusal) {
+        status["refusal"] = *render_pipeline_fallback_refusal;
+    }
+    return status;
 }
 
 Renderer::Renderer(RendererFramePlanCpuSeam,
@@ -3493,9 +3647,14 @@ void Renderer::synchronizeGraphGpuOwnership() {
         LOG_WARNING(logger, "graph GPU ownership update failed: {}", result.error);
 }
 
-void Renderer::relowerRenderPipelineForCurrentOutput() {
+void Renderer::relowerRenderPipelineForCurrentOutput(
+    bool validate_live_materials) {
+    RenderGraphVariantLoadHooks hooks;
+    hooks.validate_live_materials = validate_live_materials;
     auto variants =
-        loadRenderGraphVariantsFromConfigWithStartupFeatureOverlays();
+        loadRenderGraphVariantsFromConfigDataWithStartupFeatureOverlays(
+            GET_MODULE(ProjectBasicConfig).renderingConfigJson(),
+            std::move(hooks));
     const auto generation =
         GET_MODULE(FrameGraphRuntimeContainer)
             .renderingSnapshot();
@@ -3571,12 +3730,15 @@ Renderer::reloadRenderPipelineFromDisk(
     }
     auto &state = *render_pipeline_reload_state;
     ++state.attempted;
+    // PB-1: the root as this reload read it, to name a refusal against.
+    std::string root_text;
     try {
         auto &config =
             GET_MODULE(ProjectBasicConfig);
         auto json =
             GET_MODULE(PathResolver).loadText(
                 state.source_reference);
+        root_text = json;
         const auto default_pass_name =
             config.defaultRenderingPass();
         auto transaction = std::make_shared<
@@ -3736,6 +3898,16 @@ Renderer::reloadRenderPipelineFromDisk(
     } catch (const std::exception &caught) {
         result = RenderPipelineAuthoringApplyResult{
             .error = caught.what()};
+        // PB-1: the hot reload's refusal stays listed (the live generation
+        // goes on) until what is on disk composes.
+        try {
+            recordRenderPipelineProblem(
+                problemSourceHotReload,
+                renderPipelineRefusalJson(caught, root_text,
+                                          state.source_reference),
+                state.source_reference);
+        } catch (...) {
+        }
     } catch (...) {
         result = RenderPipelineAuthoringApplyResult{
             .error =
@@ -3750,6 +3922,26 @@ Renderer::reloadRenderPipelineFromDisk(
             result.error);
     }
     return result;
+}
+
+void recordRenderPipelineAuthoringFailure(
+    const std::exception &error, std::string_view source_reference) noexcept {
+    try {
+        const auto refusal = renderPipelineRefusalJson(error, {}, source_reference);
+        // Validation also runs during GPU preparation (e.g. shader-record
+        // ABI checks). Such RPC refusals belong only to the answer, even
+        // when private resources have already been prepared. Resource
+        // allocation/device failures are CP-1 apply failures; staged rollback
+        // is recorded separately by the publication transaction.
+        const bool apply_failed =
+            dynamic_cast<const vk::SystemError *>(&error) != nullptr ||
+            dynamic_cast<const std::bad_alloc *>(&error) != nullptr ||
+            refusal.value("code", std::string{}).starts_with("compute.descriptor_");
+        if (apply_failed) {
+            recordRenderPipelineProblem(problemSourceEditRpc, refusal, source_reference);
+        }
+    } catch (...) {
+    }
 }
 
 RenderPipelineAuthoringApplyResult
@@ -3896,6 +4088,7 @@ Renderer::applyRenderPipelineAuthoringCandidate(
     } catch (const std::exception &caught) {
         result.error = caught.what();
         result.exception = std::current_exception();
+        recordRenderPipelineAuthoringFailure(caught, state.source_reference);
     } catch (...) {
         result.error =
             "unknown render pipeline authoring apply failure";
@@ -4584,16 +4777,13 @@ nlohmann::json Renderer::currentFramePlanJson() const {
         generation->material_draw_loops->rules() != nullptr &&
         FastModuleContainer::isInitialized<MaterialContainer>()) {
         const auto &materials = GET_MODULE(MaterialContainer);
-        std::vector<MaterialDrawSubject> subjects;
-        for (const auto material : materials.drawLoopMaterials()) {
-            subjects.push_back(materials.drawLoopSubject(material));
-        }
+        const auto subjects = materials.drawLoopSubjects();
         applyMaterialDrawLoopElementsToFramePlanJson(
             result, *generation->material_draw_loops->rules(), subjects);
     }
     result["ray_query_acceleration_structures"] =
         rayQueryAccelerationStructureDiagnosticsToJson(
-            rayQueryAccelerationStructureDiagnosticsForTesting());
+            rayQueryAccelerationStructureDiagnostics());
     // The physical target plan is the generation's; how large its
     // resolution sources are now is not.
     if (frame_graph->target_plan != nullptr &&
@@ -4967,13 +5157,13 @@ RenderTargetReadback Renderer::readRenderTargetForTesting(
     const auto metadata = targets.getMetadata(target_id);
     const auto texel_bytes = formatTexelBytes(metadata.format);
     if (metadata.samples != 1 || texel_bytes == 0 ||
-        snapshotAspect(metadata.format) !=
-            vk::ImageAspectFlagBits::eColor ||
+        (snapshotAspect(metadata.format) != vk::ImageAspectFlagBits::eColor &&
+         metadata.format != vk::Format::eD32Sfloat) ||
         (metadata.usage & vk::ImageUsageFlagBits::eTransferSrc) !=
             vk::ImageUsageFlagBits::eTransferSrc) {
         throw std::runtime_error(
             "render-target readback requires a supported single-sample "
-            "color transfer source: " +
+            "color or D32 transfer source: " +
             std::string{name});
     }
     const auto range = resolveImageSubresourceRange(
@@ -5027,7 +5217,7 @@ RenderTargetReadback Renderer::readRenderTargetForTesting(
                 vk::ImageLayout::eTransferSrcOptimal);
             vk::BufferImageCopy copy;
             copy.imageSubresource = {
-                vk::ImageAspectFlagBits::eColor,
+                snapshotAspect(metadata.format),
                 range.base_mip_level,
                 range.base_array_layer,
                 range.layer_count};
@@ -5152,7 +5342,7 @@ std::vector<std::string> Renderer::currentFramePlanOrderForTesting() const {
 }
 
 RayQueryAccelerationStructureDiagnostics
-Renderer::rayQueryAccelerationStructureDiagnosticsForTesting() const {
+Renderer::rayQueryAccelerationStructureDiagnostics() const {
     const auto *frame_graph_runtime =
         FastModuleContainer::tryGet<
             FrameGraphRuntimeContainer>();
@@ -5187,6 +5377,22 @@ Renderer::rayQueryAccelerationStructureDiagnosticsForTesting() const {
         }
     }
     return diagnostics;
+}
+
+std::vector<std::pair<std::string, std::uint32_t>>
+Renderer::sceneAccelerationStructureMasks() const {
+    std::vector<std::pair<std::string, std::uint32_t>> result;
+    const auto *frame_graph_runtime =
+        FastModuleContainer::tryGet<FrameGraphRuntimeContainer>();
+    const auto generation =
+        frame_graph_runtime != nullptr ? frame_graph_runtime->snapshot() : nullptr;
+    const auto *program =
+        generation != nullptr ? generation->find(current_rendering_pass_id) : nullptr;
+    if (program == nullptr || !program->frame_graph.render_pipeline) return result;
+    for (const auto &definition :
+         program->frame_graph.render_pipeline->scene_acceleration_structures)
+        result.emplace_back(definition.name, definition.instance_mask);
+    return result;
 }
 
 void Renderer::recreateRenderTargetsAndRebindForTesting(vk::Extent2D extent) {
@@ -6119,6 +6325,12 @@ void Renderer::LogicalFrameRecorder::observeHistoryInvalidations() {
 }
 
 void Renderer::LogicalFrameRecorder::publishFrameValueGraph() {
+    std::set<std::string> deformed_scopes;
+    for (const auto &attribute : frame_graph.deformed_attributes)
+        deformed_scopes.insert(userDataScope("renderer", "deformed/" + attribute.resource).key);
+    retainUserDataScopes("renderer/deformed/", deformed_scopes);
+    guardUserData(userDataScope("renderer", "value_graph", invalidGameObjectId,
+        std::to_string(runtime_generation->generation)), [&] {
     if (staged_runtime_generation != 0) {
         auto &scene = GET_MODULE(SceneLoader);
         const auto previous = GET_MODULE(RenderingPassContainer).snapshot();
@@ -6173,10 +6385,12 @@ void Renderer::LogicalFrameRecorder::publishFrameValueGraph() {
                                   .graph = frame_graph.value_graph,
                                   .node_values = std::move(published.node_values)});
     }
+    });
 }
 
 void Renderer::LogicalFrameRecorder::stagePoseAttributesAndLights() {
-    stageGraphPoseAttributes(frame_graph);
+    guardUserData(userDataScope("renderer", "graph_owner", invalidGameObjectId,
+        std::to_string(runtime_generation->generation)), [&] { stageGraphPoseAttributes(frame_graph); });
     modules.frame_graph_resources.uploadRuntimeValues();
     updateFrameLights(
         modules.light_container,
@@ -6862,10 +7076,19 @@ void Renderer::renderLogicalFrame(
     ILogicalFrameTarget &target,
     const RenderViewFamilies &view_families) {
     synchronizeGraphGpuOwnership();
+    staged_frame_failure_cause.clear();
     LogicalFrameRecorder recorder{*this, target};
+    try {
     recorder.requireUnchangedWindowOutput();
     recorder.collectPassPlan();
-    recorder.resolveViewFamilies(view_families);
+    // View-family validation precedes command recording and frame allocation.
+    // A rejected camera/shadow document keeps the last presented frame.
+    const auto camera_spec = GET_MODULE(Camera).getProjectionSpec();
+    const auto generation = GET_MODULE(RenderingPassContainer).snapshot();
+    if (!guardUserData(userDataScope("renderer", "view_families", invalidGameObjectId,
+        std::to_string(generation ? generation->generation : 0) + ":" +
+        std::to_string(camera_spec.znear) + ":" + std::to_string(camera_spec.zfar)),
+        [&] { recorder.resolveViewFamilies(view_families); })) return;
     recorder.configureGpuTimingRanges();
     recorder.synchronizeTemporalHistories();
     recorder.beginFrameResources();
@@ -6888,6 +7111,18 @@ void Renderer::renderLogicalFrame(
     recorder.retainPickingSnapshot();
     recorder.publishExecutionTrace();
     recorder.advanceFrameHistories();
+    } catch (const OutputTemporarilyUnavailable &) {
+        // A skipped frame keeps the staged generation (no rollback).
+        throw;
+    } catch (const std::exception &error) {
+        // RTL-1a: read by the staged generation's rollback, which the
+        // recorder's guard runs as this frame unwinds.
+        try {
+            staged_frame_failure_cause = error.what();
+        } catch (...) {
+        }
+        throw;
+    }
 }
 
 void Renderer::render(

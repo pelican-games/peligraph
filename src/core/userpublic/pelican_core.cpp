@@ -1,4 +1,7 @@
+#include "../watch/userdataguard.hpp"
+#include "../watch/problemlist.hpp"
 #include "pelican_core.hpp"
+#include "../playerdiagnostics.hpp"
 #include "../appflow/loop.hpp"
 #include "../appflow/playmode.hpp"
 #include "../appflow/teardown.hpp"
@@ -23,6 +26,7 @@
 #include "../watch/reloadgate.hpp"
 #include "../watch/reloadservice.hpp"
 #include "../vkcore/renderer.hpp"
+#include "../vkcore/renderer_config.hpp"
 #include "../communication/renderconfigtransaction.hpp"
 #include "../../project/graphcomposition.hpp"
 #include <components/spriteview.hpp>
@@ -100,6 +104,10 @@ bool PelicanCore::run() {
     FastModuleContainer container;
     RuntimeTeardownGuard teardown{RuntimeTeardownMode::terminal_shutdown};
     bool succeeded = true;
+    const auto report_fatal = [](const char *message) {
+        const auto &config = GET_MODULE(EngineLaunchConfig);
+        reportPlayerFatalError(message, config.rpc, config.embedded, config.headless);
+    };
     try {
         GET_MODULE(StartupMetrics).begin();
         auto &launch_config = GET_MODULE(EngineLaunchConfig);
@@ -131,7 +139,25 @@ bool PelicanCore::run() {
 #endif
         }
 
-        configureRayLayoutModeBeforeComponentRegistration();
+        try {
+            configureRayLayoutModeBeforeComponentRegistration();
+        } catch (const std::exception &error) {
+            // BS-1: under --render-fallback the root that does not even
+            // preflight starts the fallback generation (Renderer() reads the
+            // refusal), which has no ray layout.
+            if (!launch_config.render_fallback) throw;
+            auto &config = GET_MODULE(ProjectBasicConfig);
+            std::string root_json;
+            try {
+                root_json = config.renderingConfigJson();
+            } catch (const std::exception &) {
+            }
+            GET_MODULE(RenderPipelineStartupRefusal).refusal =
+                renderPipelineRefusalJson(
+                    error, root_json, config.renderingConfigReference());
+            GET_MODULE(RayLayoutRuntimeState)
+                .configure(RayLayoutSemanticMode::LegacyNoLayout);
+        }
         GET_MODULE(ECSPredefinedRegistration).reg();
         if (!initializeConfiguredGameLogic()) {
             const auto status = configuredGameLogicStatus();
@@ -153,7 +179,17 @@ bool PelicanCore::run() {
                 SceneLoadRoot::startup);
             const auto result =
                 GET_MODULE(SceneLoader).load(std::move(request));
-            (void)requireSceneLoadCommitted(result);
+            try { (void)requireSceneLoadCommitted(result); }
+            catch (const UserDataError &) {
+                if (!userCodeStopRequested()) throw;
+                // onInit already recorded the named behavior failure and the
+                // scene transaction rolled back. Reload the authored scene
+                // dormant, leaving a usable editor instead of ending startup.
+                finishUserCodeStop();
+                auto dormant = SceneLoadRequest::borrowed(
+                    config.defaultSceneId(), config.sceneProjectionState(), SceneLoadRoot::startup);
+                (void)requireSceneLoadCommitted(GET_MODULE(SceneLoader).load(std::move(dormant)));
+            }
             if (const auto *failure =
                     std::get_if<CommittedWithEffectFailure>(&result)) {
                 LOG_ERROR(logger,
@@ -181,14 +217,21 @@ bool PelicanCore::run() {
         // CT-2: a graph refusal raised anywhere in startup names the
         // rendering root its node was written in (kept when it already does).
         LOG_ERROR(logger, "Pelican fatal error : {}", startupGraphRefusal(e).what());
+        report_fatal(startupGraphRefusal(e).what());
         succeeded = false;
     } catch (std::exception &e) {
         LOG_ERROR(logger, "Pelican fatal error : {}", e.what());
+        report_fatal(e.what());
         succeeded = false;
     } catch (...) {
         LOG_ERROR(logger, "Pelican fatal error: non-standard exception");
+        report_fatal("Pelican fatal error: non-standard exception");
         succeeded = false;
     }
+    if (!succeeded)
+        if (const auto *problems = FastModuleContainer::tryGet<ProblemList>(); problems &&
+            !problems->problemsJson().at("problems").empty())
+            LOG_ERROR(logger, "Pelican last Problems : {}", problems->problemsJson().dump());
     internal::runTerminalShutdown(teardown);
     return succeeded;
 }

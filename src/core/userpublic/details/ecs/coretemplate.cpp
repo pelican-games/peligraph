@@ -1,3 +1,4 @@
+#include "../../../watch/userdataguard.hpp"
 #include "coretemplate.hpp"
 
 #include "../../../container.hpp"
@@ -662,6 +663,7 @@ void ECSCoreTemplatePublic::unregisterSystem(SystemId system_id) {
 
 void ECSCoreTemplatePublic::update() {
     ++global_tick;
+    (void)GET_MODULE(ProblemList);
 
     TimeProfilerStart("ECS_Update_Sort");
     const auto hazard_policy = [] {
@@ -736,14 +738,19 @@ void ECSCoreTemplatePublic::update() {
         for (const auto system_id : level) {
             auto &system = systems.at(system_id);
             if (system.prepare_func) {
-                system.prepare_func(*this, system.system_ref, system.matching_chunk_indices,
-                                    system.component_indices);
+                guardUserData(userDataScope("ecs", system.name), [&] {
+                    system.prepare_func(*this, system.system_ref, system.matching_chunk_indices,
+                                        system.component_indices);
+                });
             }
         }
         for (const auto system_id : level) {
-            JobSystem::Get().schedule([this, system_id] {
+            auto scope = userDataScope("ecs", systems.at(system_id).name);
+            JobSystem::Get().schedule([this, system_id, scope = std::move(scope)] {
                 auto &system = systems.at(system_id);
-                system.p_func(*this, system.system_ref, system.matching_chunk_indices, system.component_indices);
+                guardUserData(scope, [&] {
+                    system.p_func(*this, system.system_ref, system.matching_chunk_indices, system.component_indices);
+                });
             });
         }
         JobSystem::Get().wait();

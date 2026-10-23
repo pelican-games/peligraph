@@ -1,4 +1,8 @@
 {
+  "invariants": {
+    "undo": "known_red",
+    "undo_ticket": "QD1-R18"
+  },
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "gui_build_D",
@@ -91,7 +95,7 @@
     {"label": "and the box is not the floor either", "expect": "result", "command": {"cmd": "screenshot", "name": "pelican.viewportHost", "mode": "screen", "path": "{artifacts}/lit.png", "pixels": [[0.69, 0.7], [0.31, 0.7], [0.5, 0.5]]}, "path": "pixels[2]", "op": "ne", "value_of": "lit_floor"},
     {"label": "a picture of the window", "expect": "screenshot", "path": "gui_build_D_window.png"},
     {"label": "a picture of the Graph tab", "expect": "screenshot", "name": "pelican.graphCanvas", "path": "gui_build_D_graph.png"},
-    {"label": "UX-12c: what the frame plan says the material pass drew, for the record", "expect": "result", "command": {"cmd": "rpc", "method": "get_frame_plan", "params": {}}, "path": "result.nodes[1].drawn_materials"},
+    {"label": "UX-12c: what the frame plan says the material pass drew, for the record", "expect": "result", "record": true, "command": {"cmd": "rpc", "method": "get_frame_plan", "params": {}}, "path": "result.nodes[1].drawn_materials"},
     {"label": "two materials: the Cube's and the Floor's primitive defaults", "expect": "rpc_equals", "method": "get_frame_plan", "params": {}, "path": "nodes[1].drawn_materials[1].material", "value": "pelican.primitive.default"},
     {"label": "UX-12c: pick the material pass", "cmd": "click", "name": "pelican.graphCanvasView::graph_node#render_material_pass"},
     {"label": "its Materials drawn says what it drew in a frame the engine published", "cmd": "wait", "name": "pelican.graphCanvasMaterial.drawnHeading", "contains": "as of frame", "timeout_ms": 60000},

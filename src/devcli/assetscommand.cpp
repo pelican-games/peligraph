@@ -114,7 +114,9 @@ std::filesystem::path resolveProjectManifestPath(const std::filesystem::path &pr
     return path;
 }
 
-AssetsProjectConfig loadProjectConfig(const std::filesystem::path &project_arg) {
+// `require_stores`: a project.json without asset_stores is refused (the
+// assets commands); otherwise it has no stores (dist-config).
+AssetsProjectConfig loadProjectConfig(const std::filesystem::path &project_arg, bool require_stores = true) {
     auto path = weaklyCanonicalOrThrow(absolutePath(project_arg), "--project");
     std::filesystem::path project_file;
     std::filesystem::path project_root;
@@ -141,11 +143,12 @@ AssetsProjectConfig loadProjectConfig(const std::filesystem::path &project_arg) 
         throw std::runtime_error("project.json must be an object");
     }
     const auto declared_it = project.find("asset_stores");
+    AssetsProjectConfig result{project_root, project_root / ".pelican" / "assets-hash-cache.json", {}};
     if (declared_it == project.end() || !declared_it->is_object() || declared_it->empty()) {
+        if (!require_stores && (declared_it == project.end() || declared_it->is_object())) return result;
         throw std::runtime_error("project.json has no asset_stores declarations");
     }
 
-    AssetsProjectConfig result{project_root, project_root / ".pelican" / "assets-hash-cache.json", {}};
     std::set<std::string> manifest_paths;
     for (const auto &[name, store] : declared_it->items()) {
         if (name.empty() || !store.is_object() || !store.contains("mount") ||
@@ -359,6 +362,37 @@ int runStatusCommand(int argc, char *argv[]) {
 }
 
 } // namespace
+
+std::vector<DeclaredAssetStoreVerification> verifyDeclaredAssetStores(const std::filesystem::path &project_arg) {
+    const auto project = loadProjectConfig(project_arg, false);
+    std::vector<DeclaredAssetStoreVerification> result;
+    for (const auto &store : project.stores) {
+        if (!store.manifest) continue;
+        // As `assets verify --full` runs it: every file rehashed.
+        auto verified = verifyAssetsManifest(store.root, *store.manifest, project.cache, store.name,
+                                             {.include_content = true, .force_rehash = true, .strict = false});
+        result.push_back({store.name, store.root, *store.manifest, std::move(verified)});
+    }
+    return result;
+}
+
+std::string_view assetManifestIssueKindLabel(AssetManifestIssueKind kind) {
+    switch (kind) {
+    case AssetManifestIssueKind::content_mismatch:
+        return "content_mismatch";
+    case AssetManifestIssueKind::missing:
+        return "missing";
+    case AssetManifestIssueKind::extra:
+        return "extra";
+    case AssetManifestIssueKind::case_mismatch:
+        return "case_mismatch";
+    case AssetManifestIssueKind::unreadable:
+        return "unreadable";
+    case AssetManifestIssueKind::invalid_manifest:
+        return "invalid_manifest";
+    }
+    return "unknown";
+}
 
 int runAssetsCommand(int argc, char *argv[]) {
     try {

@@ -1,0 +1,23 @@
+{
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "cube_capture",
+  "render_targets": [
+    {
+      "name": "cube_capture_color",
+      "extent_scale": 1.0,
+      "width": 256,
+      "height": 256,
+      "dimension": "cube",
+      "layers": 6,
+      "mip_levels": 1,
+      "format": "R16G16B16A16_SFLOAT",
+      "format_class": "explicit(R16G16B16A16_SFLOAT)",
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "SAMPLED"
+      ]
+    }
+  ],
+  "passes": []
+}

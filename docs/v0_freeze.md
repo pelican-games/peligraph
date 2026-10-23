@@ -90,7 +90,7 @@ engine 付属の `engine://graphs/*.json`(分解版の雛形。`decomposes` を�
 method 名は後の版で足したり変えたりしうる。RPC は project の文書ではないので `project migrate` の対象でもない。
 
 stdio JSON-RPC の枠組み(`jsonrpc` / `id` / `method` / `params`、名前付き error)の v0 時点の形と method 名を記録する。
-**params と戻り値の表は [docs/manual/10_tools.md](manual/10_tools.md) が正本**(ここでは重複させない)。
+**params と戻り値の表の正本は、基盤・読取の method が [docs/manual/10_tools.md](manual/10_tools.md)、編集系の method が [docs/manual/13_editor.md](manual/13_editor.md) の編集 RPC リファレンス**(2026-10-06 に分けた。ここでは重複させない)。
 
 MG-1 で足した 2 本(`src/core/communication/projectmigrationrpc.cpp` の登録。engine では `rpcserver.cpp` の `configureEngineRpcHandlers` から登録し、開く前の入口で止まった `--rpc` player ではこの 2 本だけの endpoint になる): `plan_project_migration`, `apply_project_migration`
 
@@ -359,17 +359,17 @@ VRM 表情・light animation まで。**物理 query・音・save/load・UI 操�
 以下は日付付き台帳から引き継いだ確認対象であり、この一覧だけで現 HEAD の再現済み不具合とはしない。
 対象の操作・構成で確認し、再現時は blocker / v1 送りの判断を残す。全履歴の再試験は要求しない。
 
-| 対象 | 元の記録・確認する境界 |
-|---|---|
-| SceneLoader の二重 load / 放棄 transaction の teardown | `AG-1b` / `WP380e`。同 process の load と終了時の寿命 |
-| animation frame の公開 | `frameIndex() == 0` の `setTime` 呼び手、pose 側 snapshot、component_clip / component_graph の status。描画側の値だけで完了としない |
-| RPC OFF と mutation 判定 | `AG-1a` / `R-1` の `raytracing_rt3_1_production_test`、`WP386` の `looks_mutating` gate |
-| AS / shader の同一性 | `WP386` の signed-zero transform identity、shader source 改行と cache key |
-| graph root と preset の組合せ | `P-2a-4a` / `P-2a-3` の `region_replacements`、Frame Plan fixture と現在の生成結果 |
-| export / 一時ファイル | per-process temp root 修正後の並列 `renderconfigeditor`、GPU lease log の残留。古い `%TEMP%` 件数を現在の原因の証拠にしない |
-| Debug 専用 WSI 故障注入 | `wsi_fault_window_player` は Release で注入 hook がなく明示 skip。2026-09-24 に Debug build(`47cbf3cf`)で実行し、注入 6 回・surface 作り直し 5 回・公開 2 回で通過 |
-| Debug の production PDB 配線 | `crash_symbol_production_wiring` は実際の Debug Studio が残した symbol archive を読むため Debug 構成だけで登録する。2026-09-24 に Debug build で実行し、Studio の `47cbf3cf` の PDB が archive されていることを確認 |
-| オフライン時刻の上限 | `O-1` の `--start-time` / `llround` 境界。入力範囲の拒否と通常 replay の区別 |
+| 対象 | 元の記録・確認する境界 | 2026-10-09 の再検証(D = 2026-10-08 の Debug 全数 `33b761ecd`、R = §6.2 の Release gate) |
+|---|---|---|
+| SceneLoader の二重 load / 放棄 transaction の teardown | `AG-1b` / `WP380e`。同 process の load と終了時の寿命 | **一部**。近い test(WP380e の 5 件、AG-1b の 2 件、live renderer のまま load を重ねる WP380c / WP380 / WP386b の 5 件)は D / R とも緑。記録された hang(live renderer のまま `SceneLoader::load` を 2 回)を再現する test は無い。teardown の hang は assertion が落ちたときだけ出るので、緑の実行では見えない |
+| animation frame の公開 | `frameIndex() == 0` の `setTime` 呼び手、pose 側 snapshot、component_clip / component_graph の status。描画側の値だけで完了としない | **一部**。pose graph 経路の `get_status.animation` を見る test は D / R とも緑。`setTime` だけで進める呼び手(`frameIndex() == 0`)、engine 側の `component_clip` / `component_graph` の status、pose 側の snapshot を見る test は無い |
+| RPC OFF と mutation 判定 | `AG-1a` / `R-1` の `raytracing_rt3_1_production_test`、`WP386` の `looks_mutating` gate | **一部**。RT6 の RPC 区間を囲った 3 件と `pelican_public_api_inventory` は D / R とも緑。どちらの build も RPC ON なので、OFF 側は未確認。`looks_mutating` の穴(`Animation::Status` を返す `setParameter` / `forceState` を getter と分類し、fixture がそれを固定していた)は FX-6(`55a7c6717`)で直した。mutator を名前で判定し、runtime manifest に行を求める |
+| AS / shader の同一性 | `WP386` の signed-zero transform identity、shader source 改行と cache key | **一部**。符号付きゼロ(`raytracing_rt3_2a_test` と WP386a)は D / R とも緑。shader の改行と cache key を見る test は無い |
+| graph root と preset の組合せ | `P-2a-4a` / `P-2a-3` の `region_replacements`、Frame Plan fixture と現在の生成結果 | **一部**。P-2a-4a の section 編集・合成の test と Frame Plan の fixture を読む Studio の test は D / R とも緑。preset + graph root の `region_replacements` が合成に届くかを見る test と、Frame Plan の fixture を今の生成結果と突き合わせる test は無い |
+| export / 一時ファイル | per-process temp root 修正後の並列 `renderconfigeditor`、GPU lease log の残留。古い `%TEMP%` 件数を現在の原因の証拠にしない | **一部**。`renderconfigeditor_test` は R で全件(直列)、D で 143 件(`-j8`。D の後に足した 2 件を除く)が緑。受け入れの並列度(`-j16` × 3 回)では流していない。GPU lease log の残留は FX-6(`55a7c6717`)で直した。`pelican_gpu_lease_run` が起動時に、自分以外の 24 時間より古い log を消す(`gpu_lease_log_cleanup` は R で緑) |
+| Debug 専用 WSI 故障注入 | `wsi_fault_window_player` は Release で注入 hook がなく明示 skip。2026-09-24 に Debug build(`47cbf3cf`)で実行し、注入 6 回・surface 作り直し 5 回・公開 2 回で通過 | **確認済み**。D で Passed、R では allowlist の skip(Release に注入 hook が無い仕様どおり) |
+| Debug の production PDB 配線 | `crash_symbol_production_wiring` は実際の Debug Studio が残した symbol archive を読むため Debug 構成だけで登録する。2026-09-24 に Debug build で実行し、Studio の `47cbf3cf` の PDB が archive されていることを確認 | **確認済み**。D で Passed。R には登録されない(`CONFIGURATIONS Debug`)。`crash_symbol_archive_contract` は D / R とも緑 |
+| オフライン時刻の上限 | `O-1` の `--start-time` / `llround` 境界。入力範囲の拒否と通常 replay の区別 | **一部**。入力範囲の拒否と通常の replay の区別(`offline_start_time_headless_player`、`pm1b_start_state_args_player`)は D / R とも緑。上限の穴(`llround` の前に上限が無く、巨大な秒で warm-up が終わらない)は FX-6(`55a7c6717`)で直した。3600 秒を超える値を `offline.time_invalid@1` で断る(`offline_start_time_limits_player` は R で緑) |
 
 最終 revision の GPU / Studio gate と配布物の結果はrelease完了時に §6 へ記録する。部分確認や過去の全数成功で代用しない。
 
@@ -460,7 +460,109 @@ VRM 表情・light animation まで。**物理 query・音・save/load・UI 操�
 
 2026-09-17 の engine 全数 1947 / 1947（`450f2866`）は履歴である。
 その構成には現在の全 Studio scenario が含まれず、現行 release の gate 通過とは扱わない。
+2026-10-05 の全数(develop `31c390c7`、primary の Debug build、Studio ON。非 GPU 2,663 / 2,667、GPU 397 / 399、Studio scenario 80 / 82)は途中の基準であり、最終の gate ではない。赤 8 件と直した commit は [CI 運用](ci.md) の「全数の記録」に残し、直した後の全数は回していない。
 tag は利用者が v0 を閉じる判断をした時点で付ける。
+
+### 6.1 2026-10-10 の公開前の全数 gate(1 回目は赤 14 件、2 回目は赤 1 件 = AH-1 で対応)
+
+状態: **1 回目は実施済みで GPU gate に赤 14 件。赤を直した 5 本(RV-1b / RX-1b / SK-3b / LC-1b / RR-1b)の後の 2 回目(対象 `ba0bbfc1f`)は CPU / Studio / 配布 / DS-3 が緑、GPU は赤 1 件(間欠の競合、AH-1 で対応)**。
+発端は利用者が project 制作で見つけた skin 付き部品の material の崩れ(SK-1)で、行は [台帳](implementation_plan.md) の V0-ADD の WP 索引の GA-1〜CB-1 にある。
+2026-10-10 の時点で develop に着地したのは `734500efd`(GA-1)〜`c8aa21e14`(SK-3)の 26 本(NM-1 `bed1d4eb3`、SK-3 `c8aa21e14` を含む)。
+全部の着地の後に、§6.2 と同じ構成と手順に DS-3 を足して全数をやり直した。2 回目の結果は下の節に記す。
+依存の同梱(DS-1c)は公開の後に着地させるので、この gate の対象に入れない。
+
+#### 1 回目(`b58f71dd8`)
+
+対象 revision: `b58f71dd8`(26 本の着地の後の docs の commit)。gate の script が記録した HEAD は `c8aa21e14` で、`b58f71dd8` との差は docs と `README.md` だけ(コードは同じ)。
+根拠の log は作業ディレクトリ(repo の外)の `int_release_1010/run1/`(`build.log`・`cpu_gate.log`・`studio_gate.log`・`gpu_gate.log`・`install.log`・`dist.log`・`ds3.log`)、手順は同じ所の `run.sh`。
+構成は §6.2 と同じ(`build-v0` の Release、Studio ON、`PELICAN_PYTHON_TESTS=ON`、runtime shader compiler ON、SPIRV link ON、`PELICAN_TEST_PROJECTS_DIR` は repo の `projects`、Runtime install は `build-v0/stage`)。GPU gate は `PELICAN_STUDIO_SCREEN=1` で流した。
+
+| 確認範囲 | 結果と制約 |
+|---|---|
+| Release build / Runtime install | configure・build・install とも成功 |
+| CPU gate | 2,918 / 2,918 PASS、exact SKIP policy PASS。allowlisted skip は §6.2 と同じ 2 件(directory symlink 権限の 1 件と `crt_report_to_stderr`)。`wp380c_production_has_no_fault_setter_symbol` は 89.76 秒で PASS。`build-v0/test_artifacts/v0-cpu-1010/` |
+| Studio CPU gate | 空の allowlist で 934 / 934 PASS、skip 0、exact SKIP policy PASS。`build-v0/test_artifacts/v0-studio-1010/` |
+| 全 GPU gate | 525 件中 509 PASS、**赤 14 件**(下の一覧)、skip 2 件。skip は allowlisted の `wsi_fault_window_player`(Debug 専用)と CB-1 の組 08(`CB1 08 vertex displacement main shadow velocity picking`。known_red の skip)で、組 08 は gate の allowlist に無いので exact SKIP policy は FAIL(`unexpected skipped CTest names`)。Studio scenario は 89 件。下の間欠(`gui_rt_full_from_blank`・`gui_rt_hit_groups_from_blank`・`gui_build_optimize`・RO-1・WP375a の BlueSpot)はこの回はどれも PASS。`build-v0/test_artifacts/v0-gpu-1010/` |
+| 配布 stage | `test/ci/run_distribution_check.py` で 8 / 8(出荷 sample 7 本 + CLI init の新規 project)。`build-v0/test_artifacts/distribution/run-20261010-140625-64040/report.json` |
+| DS-3(install した player 単体) | 緑(player の exit 0、log に error 0 行)。install した `build-v0/stage/bin` を日本語の path(`配布テスト/実行`)に写し、日本語の path に写した `projects/example` を、別の cwd(`配布テスト/別の場所`)から `pelican_player.exe --headless --frames 60 --project <path>` で GPU lease 越しに起動した。手順は repo の外の `run.sh` にあり、repo の test ではない。install は Studio ON の build のもので、`SKIP_DEVSTUDIO` の install ではない |
+
+赤 14 件と、直した fix round(5 本とも develop に着地済み。行は [台帳](implementation_plan.md) の V0-ADD の WP 索引の RV-1b〜RR-1b):
+
+- 「a pose graph drives an object's skeletal sink」「a pose graph's root motion moves the individual」: attach のときの拒否(`pose.sink_conflict@1` / `pose.root_motion_unsupported@1`)を RX-1 の guard が吸収し、code と detail が消えていた → RX-1b(`2220c18d8`)
+- 「LP-2 an override step draws a range again with its own pipeline」: override の pipeline から material 自身の pipeline に切り替えるだけで descriptor set を bind し直していた(SK-1 が足した条件) → SK-3b(`29b2010dc`)
+- 「WP366 renderer A B recovers q r group miss and WP384 preserves frame publication」: 壊れた入力のつもりの GLB が NM-1 の後は正常な glTF で、reload を受けるのが正しかった(test の直し) → RR-1b(`ba0bbfc1f`)
+- 「MR1 stale model bindings survive startup reload and repair over RPC」: 期待が裸の名前 `MatB` のままで、NM-1 の参照の形に追従していなかった(test の直し) → RR-1b(`ba0bbfc1f`)
+- `studio_scenario_forward_loop_from_scratch`・`frameplan_edit_roundtrip`・`frameplan_layout_then_edit`・`graph_edit_roundtrip`・`graph_observe_roundtrip`・`graph_reroute_tie`・`gui_problems_window`・`render_pipeline_from_scratch`(8 件): rendering の文書を編集した後に project を離れるとき、RV-1 の未保存の確認に答えていなかった(scenario の直し) → RV-1b(`106af8d00`)
+- `studio_scenario_gui_build_C`: 保存の通知が文書の読み戻しより先に出て、step 79 がまだ canvas に無い `graph_zone_socket#loop/out:color` を引いていた → LC-1b(`7d9bb012c`)
+
+fix round の実装者の検査で緑を取れていないもの(2 回目で見る): RV-1b の `forward_loop_from_scratch` と `render_pipeline_from_scratch` は画面の取り込みの制約で画素の step を除いた診断だけが緑、LC-1b の `gui_build_C` は step 117 まで緑で、step 118(画素の比較)と step 119(Studio の終了)は同じ制約の下で赤(どれも各報告の記録)。
+
+#### 2 回目(`ba0bbfc1f`)
+
+状態: **実施済み**(log: `<作業ディレクトリ>/int_release_1010/`、HEAD `ba0bbfc1f`)。
+
+| 段 | 結果 |
+|---|---|
+| Release build | 緑 |
+| CPU gate | 2923 / 2923 |
+| Studio gate(allowlist 空) | 935 / 935 |
+| GPU gate | 525 件中 PASS 522、赤 1(`studio_scenario_gui_rt_hit_groups_from_blank` step 115)、skip 2(allowlist: CB-1 組 08、`wsi_fault_window_player`)。exact SKIP policy は PASS |
+| 配布 8 項目 | 8 / 8 |
+| DS-3 | 緑 |
+
+赤 1 件は Inspector の `Assign hit group...` が Material 行の読み戻し前に押せる競合(単独再走でも赤、1 回目は緑 = 間欠)。公開前に AH-1(`699746756`、Studio: 行の読み戻し後にだけ有効化、Mixed の行は ray layout に渡さない)で直し、gate の Release build で Studio を rebuild して再走: inspector / materialassign の CPU 12 / 12、`gui_rt_hit_groups_from_blank` / `gui_rt_full_from_blank` / `gui_rt_checks` / `gui_material_ray_query_from_blank` の 4 / 4 が緑(`<作業ディレクトリ>/int_release_1010/ah1_gpu.log`)。公開対象は `699746756`。
+
+
+既知の間欠と既知の赤(この gate で赤になったときの扱い。どれも統合側の記録で、2026-10-10 の時点で直していない):
+
+- `studio_scenario_gui_build_optimize` の「the frame's GPU time went up」の step(`test/studio_scenarios/gui_build_optimize.json` の `get_status` の `result.gpu_timing.logical_frame_averages[0].average_total_ms` を、Multisampling を変える前の `[count3]` の step で覚えた値 `ms_count3` と `gt` で比べる)は、GPU 時間の計測の揺れで落ちる。2026-10-10 に RX-1 の着地検査で 1 回赤。閾値に幅を持たせるか、比べる対象を変える(scenario 側)のが直し方の候補
+- `wp380c_production_has_no_fault_setter_symbol`(CPU。production の archive の symbol を `dumpbin` で全部調べる)は遅い。2026-10-10 の着地検査の記録では 75〜117 秒で通った回(上限を 300 秒にした再実行では 147 秒で通った回も。CP-1)と、120 秒の timeout、単独で 300 秒にしても timeout した回(SK-1・AN-2 の着地検査)がある。test の定義(`test/CMakeLists.txt`)は LABELS だけで TIMEOUT を持たない。assertion の失敗は出ていない
+- CB-1(`headless_combination_test`)の組 08 は製品の制限として known_red で skip する(VD-1: `vertex_displace_v1` の hook が shadow / velocity / picking の engine 固定の頂点 shader に無い。v1 へ送った)。組 02 は SK-3 の着地で通常の判定に戻した。組 08 は赤ではなく skip として数える
+- §6.2 の間欠(`studio_scenario_gui_rt_full_from_blank` の hit group の選択、RO-1 の終了時の SEGFAULT、Inspector の `Loading inspector properties...`)は引き続き起こりうる
+- `studio_scenario_gui_rt_full_from_blank` の step 132: 2026-10-10 の着地で、新しく作った worktree の統合 tree(develop + LC-1 + RX-1)でだけ 2/2 赤(Inspector の Material が `(differs per primitive)` のまま Assign hit group を押す)。develop の primary の build では 2/2 緑、LC-1 だけ・RX-1 だけを develop に載せた tree でも緑。原因は未特定(Studio の material の行の読みと Assign hit group の有効化の競合を疑っている)のまま着地した。この gate で再確認する
+- 「WP375a shipping BlueSpot validates behavior type before its missing runtime binding」(`test/raytracing_rt3_1_production_test.cpp`、GPU): 出荷 sample `projects/example` の `assets/models/DamagedHelmet.glb` は git の管理外なので、新しい worktree には無く赤になる(worktree の既知の穴)。primary の gate で見る
+
+### 6.2 2026-10-09 の Release gate(実施済みの最新。§6.1 が埋まるまでこの表が正)
+
+構成: Windows / MSVC(Visual Studio 17 2022 の generator = MSBuild)、Qt 6.10.3、Python 3.12、Vulkan SDK 1.4.309。
+`build-v0` の Release、Studio ON、`PELICAN_PYTHON_TESTS=ON`、runtime shader compiler ON、SPIRV link ON、
+`PELICAN_TEST_PROJECTS_DIR` は repo の `projects`。Runtime install は `build-v0/stage`。
+根拠の log は作業ディレクトリ(repo の外)の `int_release_1009e/`(`cpu_gate.log`・`studio_gate.log`・`gpu_gate.log`・`dist.log`)。
+
+最終 revision は `7f4ad61de`。その後の 2 commit はエンジン・Studio のコードを変えない:
+`3d636d23b`(license。CMake の変更は Runtime install の対象に `LICENSE` と `LICENSE-EXCEPTION` を並べただけ)と
+`607a1986f`(`THIRD_PARTY_NOTICES.md` と `third_party/licenses/` の本文、それを読む `tools/third_party_notices.py`)。
+この 2 commit と docs を含む `4a9d27db7` で build・Runtime install・配布確認をやり直し、
+install の最上位に `LICENSE`・`LICENSE-EXCEPTION`・`THIRD_PARTY_NOTICES.md` が並ぶこと、
+`run_distribution_check.py` が 8 / 8 であることを確かめた(`distribution/run-20261009-151755-46052/report.json`)。
+
+| 確認範囲 | 結果と制約 |
+|---|---|
+| Release build / Runtime install | configure・build・install とも成功(`7f4ad61de`) |
+| CPU gate | 2,827 / 2,827 PASS、exact SKIP policy PASS。allowlisted skip は 2 件: directory symlink 権限の 1 件と、Release では `CRT_PROBE_SKIPPED` になる `crt_report_to_stderr`(`92cffc4ec` で allowlist に足した。Debug では走らせて通す)。`build-v0/test_artifacts/v0-cpu-1009e/` |
+| Studio CPU gate | compiler ON なので空の allowlist で実行。905 / 905 PASS、skip 0、exact SKIP policy PASS。`build-v0/test_artifacts/v0-studio-1009e/` |
+| 全 GPU gate | 494 件中 493 PASS、allowlisted skip 1 件(Debug 専用の `wsi_fault_window_player`)、Studio scenario は 86 件すべて観測、exact SKIP policy PASS。赤 1 件は `studio_scenario_gui_rt_full_from_blank` の間欠で、単独の流し直しは 3 / 3 PASS(統合側の記録)。赤の回は、Ray layout の hit group の割り当てで、Inspector の Assign hit group... が material の行ではなく `(differs per primitive)` の仮の行を選び、Ray layout の節が `(differs per primitive) is not a material the engine lists for the ray layout.` で断った(report の step 132)。同じ形の赤は 2 回目の gate の `gui_rt_hit_groups_from_blank` にも 1 回(統合側の記録)。既知の制限として残す。`build-v0/test_artifacts/v0-gpu-1009e/` |
+| 配布 stage | `test/ci/run_distribution_check.py` で 8 / 8(出荷 sample 7 本 + CLI init の新規 project)。7 本とも終了時の player の surface lost 0 回。`build-v0/test_artifacts/distribution/run-20261009-150407-38972/report.json` |
+| Debug 専用の確認 | 2026-10-08 の Debug の全数(`33b761ecd`、`build`、MSBuild Debug)で `wsi_fault_window_player` と `crash_symbol_production_wiring` が PASS。その全数は CPU 2,790 / 2,790、GPU 407 / 408、Studio scenario 85 / 86 で、赤 2 件は FX-3 と UD-4〜UD-7 で直した |
+| §4.2 の再検証 | 9 項目のうち確認済み 2(Debug 専用 WSI、PDB 配線)、一部 7(近い test は D / R とも緑だが、記録された不具合そのものを見る test が無い)。見つけた小さい穴 3 つ(`--start-time` の上限、公開 API の mutator の分類、GPU lease の log の残留)は FX-6(`55a7c6717`)で直した。行ごとの結果は §4.2 の表の 3 列目 |
+
+経緯:
+
+- Release で全 Studio scenario を流したのは今回が初めてで、gate は 5 回流した(`25d37aa9e`・`55a7c6717`・`fa2b83d80`・`4b0d2ebfc`・`7f4ad61de`)。
+- 見つけて直した製品の欠陥:
+  - Inspector と Attached graphs を壊すとき、焦点のある欄の `editingFinished` が解放済みの binding へ届く(Release の SEGFAULT)。FX-4(`fbeafa327`)
+  - Render の Undo の知らせを、後から来た Frame Plan の応答が上書きする。FX-5(`7ba8e7dc7`)
+  - 素早く続けた Graph の編集が失われる 4 種(往復の間の canvas、遅れた報告で戻る Count、接続のドラッグ中の作り直し、選択直後の前の node の欄)と、Frame Plan の Pin の後の 0xC0000005。FX-8(`fa2b83d80`)
+  - Frame Plan のドラッグの途中に plan の応答が来ると接続が消える。FX-9(`7f4ad61de`)
+- scenario の待ちの不足と automation の正確さ: FX-5、FX-7(`448c47d69`)、FX-8、`c107a1a68`、`4b0d2ebfc`。
+- 間欠で残るもの: RO-1 の test の終了時の SEGFAULT(3 回目の gate で 1 回、単独 3 / 3 PASS)、Inspector が `Loading inspector properties...` で止まる(1 回)、上の `gui_rt_full_from_blank`(どれも統合側の記録)。
+- §4.2 で「一部」のまま残った項目(test の無い境界)は、§4.2 の表の 3 列目に書いたとおりで、v0 では直していない。
+
+tag(手順 5)はまだ付けていない。利用者の release 判断の後に付ける。
+
+### 6.3 履歴: 2026-09-24 の確認(`47cbf3cf`)
+
+以下は 2026-09-24 の記録で、現行 release の結果ではない(現行は §6.1 と §6.2)。
 
 2026-09-22 のローカル検証は Windows / MSVC、Qt 6.10.3、Python 3.12、Vulkan SDK 1.4.x の
 `build-v0` / Release で実施した。Studio、Python tests、runtime shader compiler は ON。
@@ -492,6 +594,8 @@ reload 結果だけから作るよう修正し、`f9b43662` で gate 判定を 1
 全 GPU gate の WP366/WP384 frame publication test が検出した。`e5995d88` でその部分だけ取り消した。
 
 v0 に足した 6 項目(`62245846`〜`053b1e0b`)の後、`50f1fbda` の確認で 2 件赤が出た。全 GPU gate の `devstudio_engine_failure_test` は player の log を player の横の `pelican.log` と固定しており、project ごとの log へ移した変更と食い違った(`777b4824` で修正。控えの run が同じファイルを切り詰めることも検査する)。CPU gate の `state_batched_v1` は `RenderCommand` の padding を比べていた(§4.1、`47cbf3cf`)。上の表はその後の `47cbf3cf` での最終確認である。
+
+### 6.4 手順
 
 1. 対象 revision と構成を固定する。Studio ON、Python 3.11 以上と `PELICAN_PYTHON_TESTS=ON`、runtime shader compiler ON を使う。必要な機能の基準値は [ビルド機能台帳](build_features.md)、実行コマンドは [CI 運用](ci.md) を参照する。
 2. 影響範囲の CPU 回帰と最終 GPU gate を通し、Studio CPU gate と実窓 scenario が未登録・skip になっていないことを確認する。`run_gpu_gate.py --engine-only` は限定検証用であり release 判定には使わない。古い件数を成功条件に固定しない。

@@ -72,6 +72,19 @@
       "value": 3.75
     },
     {
+      "label": "RV-1b File > Save Scene: keep the edited gain for reopening",
+      "cmd": "action",
+      "name": "pelican.file.saveScene"
+    },
+    {
+      "label": "RV-1b explicit Save establishes the document baseline",
+      "expect": "rpc_equals",
+      "method": "get_document_journal",
+      "path": "dirty",
+      "value": false,
+      "retry_ms": 30000
+    },
+    {
       "label": "open a second, untouched copy of the same fixture",
       "cmd": "open_project",
       "dir": "{other_project}"

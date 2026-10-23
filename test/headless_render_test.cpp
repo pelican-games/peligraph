@@ -1,3 +1,16 @@
+#include "vrm_xr_demo_fixture.hpp"
+#include "../src/core/animation/vrmapplication.hpp"
+#include "skeletal_fixture.hpp"
+#include "render_coverage_test_support.hpp"
+#include "vat_fixture.hpp"
+#include "polygoninstancecontainer_testaccess.hpp"
+#include "../src/core/material/materialdrawlooptable.hpp"
+#include "../src/core/communication/materialdocumentrpc.hpp"
+#include "../src/core/communication/rpcserver.hpp"
+#include "../src/core/renderer/materialrender.hpp"
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/packing.hpp>
+#include <sstream>
 #include "../src/core/appflow/enginetime.hpp"
 #include "render_graph_root_test_support.hpp"
 #include "../src/project/renderconfigsection.hpp"
@@ -71,6 +84,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <chrono>
 #include <cstring>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -89,6 +103,16 @@
 namespace Pelican {
 
 namespace {
+
+// Synthetic RT geometry still needs the registered material identity that
+// production AS rows and ray material tables share.
+GlobalMaterialId registerRayFixtureMaterial(std::string asset, std::uint32_t source_index) {
+    auto &standard = GET_MODULE(StandardMaterialResource);
+    auto info = standard.builtinMaterialInfo("ray_fixture", standard.transparentTexture());
+    info.source_asset = std::move(asset);
+    info.source_material_index = source_index;
+    return GET_MODULE(MaterialContainer).registerMaterial(std::move(info));
+}
 
 std::filesystem::path makeTempProjectDir() {
     const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -10044,9 +10068,9 @@ TEST_CASE(
 
         const auto skinned_material =
             materials.registerMaterial(MaterialInfo{
-                .vert_shader = standard.skinnedVertShader(),
+                .vert_shader = standard.standardVertShader(),
                 .frag_shader = standard.standardFragShader(),
-                .skinned = true,
+                .skinned_vert_shader = standard.skinnedVertShader(),
                 .base_color_texture =
                     standard.transparentTexture(),
                 .metallic_roughness_texture =
@@ -10344,11 +10368,9 @@ TEST_CASE(
             auto &materials = GET_MODULE(MaterialContainer);
             const auto make_material = [&](bool skinned) {
                 return materials.registerMaterial(MaterialInfo{
-                    .vert_shader =
-                        skinned ? standard.skinnedVertShader()
-                                : standard.standardVertShader(),
+                    .vert_shader = standard.standardVertShader(),
                     .frag_shader = standard.standardFragShader(),
-                    .skinned = skinned,
+                    .skinned_vert_shader = standard.skinnedVertShader(),
                     .base_color_texture = standard.whiteTexture(),
                     .metallic_roughness_texture =
                         standard.metallicRoughnessDefaultTexture(),
@@ -10584,9 +10606,9 @@ TEST_CASE(
         auto &materials = GET_MODULE(MaterialContainer);
         const auto skinned_material =
             materials.registerMaterial(MaterialInfo{
-                .vert_shader = standard.skinnedVertShader(),
+                .vert_shader = standard.standardVertShader(),
                 .frag_shader = standard.standardFragShader(),
-                .skinned = true,
+                .skinned_vert_shader = standard.skinnedVertShader(),
                 .base_color_texture = standard.whiteTexture(),
                 .metallic_roughness_texture =
                     standard.metallicRoughnessDefaultTexture(),
@@ -11649,16 +11671,20 @@ TEST_CASE(
         CHECK(material_assets.materialByName("ProjectLeaf") ==
               project_material);
 
-        TestGltfFragmentFixture::writeGlb(
-            model_path, false, false, true);
+        TestGltfFragmentFixture::writeUnreadableGlb(model_path);
         const auto stable_model_revision =
             model_assets.contentRevisionForTesting("tree");
+        const auto stable_model_resources =
+            model_assets.getModelTemplateByName("tree").gpu_resources.get();
         CHECK_FALSE(reload_service.applyRequestForTesting(
             watch::ReloadRequest{
                 watch::makeAssetKey("models/tree.glb"),
                 watch::ReloadKind::modified, {}, 4}));
         CHECK(model_assets.contentRevisionForTesting("tree") ==
               stable_model_revision);
+        CHECK(embedded_materials() == reused_embedded);
+        CHECK(model_assets.getModelTemplateByName("tree").gpu_resources.get() ==
+              stable_model_resources);
         TestGltfFragmentFixture::writeGlb(model_path);
         REQUIRE(reload_service.applyRequestForTesting(
             watch::ReloadRequest{
@@ -11693,15 +11719,12 @@ TEST_CASE(
         const auto primitive =
             GET_MODULE(VertBufContainer).addPrimitiveEntry(
                 std::move(geometry));
-        const auto material =
-            GET_MODULE(StandardMaterialResource)
-                .standardTransparentMaterial();
         ModelTemplate model_a;
         model_a.asset_id = ModelAssetId{3660};
         model_a.authored_asset_reference = "models/tree.glb";
         model_a.material_primitives = {
             ModelTemplate::MaterialPrimitives{
-                .material = material,
+                .material = registerRayFixtureMaterial("models/tree.glb", 2),
                 .primitives = {primitive},
                 .source_material_index = 2,
             }};
@@ -11710,7 +11733,7 @@ TEST_CASE(
         model_b.authored_asset_reference = "models/tree.glb";
         model_b.material_primitives = {
             ModelTemplate::MaterialPrimitives{
-                .material = material,
+                .material = registerRayFixtureMaterial("models/tree.glb", 3),
                 .primitives = {primitive},
                 .source_material_index = 3,
             }};
@@ -13940,9 +13963,6 @@ TEST_CASE(
         const auto primitive =
             GET_MODULE(VertBufContainer).addPrimitiveEntry(
                 std::move(geometry));
-        const auto material =
-            GET_MODULE(StandardMaterialResource)
-                .standardTransparentMaterial();
         auto &instances = GET_MODULE(PolygonInstanceContainer);
         const auto place = [&](std::uint64_t asset_id,
                                std::string authored_reference,
@@ -13953,7 +13973,7 @@ TEST_CASE(
                 std::move(authored_reference);
             model.material_primitives = {
                 ModelTemplate::MaterialPrimitives{
-                    .material = material,
+                    .material = registerRayFixtureMaterial(model.authored_asset_reference, 0),
                     .primitives = {primitive},
                     .source_material_index = 0,
                 }};
@@ -14531,8 +14551,7 @@ ModelTemplate wp374aModel(
     model.authored_asset_reference = std::move(authored_reference);
     model.material_primitives = {
         ModelTemplate::MaterialPrimitives{
-            .material = GET_MODULE(StandardMaterialResource)
-                            .standardTransparentMaterial(),
+            .material = registerRayFixtureMaterial(model.authored_asset_reference, source_material_index),
             .primitives = {primitive},
             .source_material_index = source_material_index,
         }};
@@ -15689,4 +15708,685 @@ void main() {
 #endif
 }
 
+} // namespace Pelican
+
+namespace Pelican {
+TEST_CASE("SK1 skinned material bindings depth coverage and reload", "[headless][gpu][material][sk1]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    const auto root = makeTempProjectDir();
+    struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ec; std::filesystem::remove_all(path, ec); } } cleanup{root};
+    FastModuleContainer modules;
+    RuntimeTeardownGuard teardown{RuntimeTeardownMode::terminal_shutdown};
+    TestSkeletalFixture::writeGlb(root / "character.glb");
+    TestVatFixture::writeTinyVatGlb(root / "vat.glb");
+    TestSkeletalFixture::writeGltf(root / "mixed.gltf", "mixed.bin");
+    auto mixed_source = nlohmann::json::parse(std::ifstream{root / "mixed.gltf"});
+    mixed_source["nodes"].push_back({{"name", "Static"}, {"mesh", 0}});
+    mixed_source["scenes"][0]["nodes"].push_back(3);
+    writeTextFile(root / "mixed.gltf", mixed_source.dump());
+    // Distinct mesh coordinates ensure slot selection must cover both modes.
+    auto slots_source = mixed_source;
+    slots_source["materials"][0]["name"] = "Body";
+    slots_source["meshes"].push_back(slots_source["meshes"][0]);
+    slots_source["nodes"][3]["mesh"] = 1;
+    writeTextFile(root / "slots.gltf", slots_source.dump());
+    const std::string surface_source = R"(//! pelican.surface v1
+//! language: glsl
+void pelican_surface_v1(in PelicanSurfaceInputV1 input_data, inout PelicanSurfaceV1 surface) {
+    surface.base_color = vec4(0.2, 0.6, 0.8, 1.0);
+}
+vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 input_data) {
+    return vec3(0.2, 0.6, 0.8);
+}
+)";
+    writeTextFile(root / "paint.surface", surface_source);
+    writeTextFile(root / "paint.material.json", R"({"schema":"pelican.material","version":1,"materials":[{"name":"Paint","surface":"project://paint.surface","routing":{"alpha_mode":"opaque","double_sided":false}}]})");
+    writeTextFile(root / "scene.json", R"({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})");
+    writeTextFile(root / "assets.json", R"({"schema":"pelican.asset_data","version":2,"models":[{"name":"character","path":"character.glb"},{"name":"vat","path":"vat.glb"},{"name":"slots","path":"slots.gltf"}],"materials":[{"path":"paint.material.json"}]})");
+    auto config = nlohmann::json::parse(R"({
+      "render_targets":[
+        {"name":"gbuffer_albedo","extent_scale":1.0,"format":"B8G8R8A8_UNORM","format_class":"scene","usage":["COLOR_ATTACHMENT","SAMPLED"]},
+        {"name":"gbuffer_normal","extent_scale":1.0,"format":"R16G16B16A16_SFLOAT","format_class":"data","usage":["COLOR_ATTACHMENT","SAMPLED"]},
+        {"name":"gbuffer_material","extent_scale":1.0,"format":"R8G8B8A8_UNORM","format_class":"data","usage":["COLOR_ATTACHMENT","SAMPLED"]},
+        {"name":"gbuffer_worldpos","extent_scale":1.0,"format":"R16G16B16A16_SFLOAT","format_class":"data","usage":["COLOR_ATTACHMENT","SAMPLED"]},
+        {"name":"g_emissive","extent_scale":1.0,"format":"B8G8R8A8_UNORM","format_class":"scene","usage":["COLOR_ATTACHMENT","SAMPLED"]},
+        {"name":"scene_depth","extent_scale":1.0,"format":"D32_SFLOAT","format_class":"data","usage":["DEPTH_STENCIL_ATTACHMENT","TRANSFER_SRC"]}],
+      "rendering_passes":[{"name":"main_render","passes":[
+        {"name":"deferred_geometry","type":"material","material_contract":"deferred_geometry_v1","output":{"color":["gbuffer_albedo","gbuffer_normal","gbuffer_material","gbuffer_worldpos","g_emissive"],"depth":"scene_depth"},"depth_store_op":"store"},
+        {"name":"present","type":"fullscreen","output":{"color":"swapchain","depth":null},"shader":{"vertex":"engine://fullscreen","fragment":"engine://shader_lab_hello"}}]}]})");
+    config["render_targets"].push_back({{"name", "lit_color"}, {"extent_scale", 1.0},
+        {"format", "R16G16B16A16_SFLOAT"}, {"format_class", "explicit(R16G16B16A16_SFLOAT)"},
+        {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}});
+    auto &passes = config["rendering_passes"][0]["passes"];
+    passes.insert(passes.begin()+1, nlohmann::json{{"name", "forward_opaque"}, {"type", "material"},
+        {"material_contract", "forward_opaque_v1"}, {"after", {"deferred_geometry"}},
+        {"output", {{"color", {"lit_color"}}, {"depth", "scene_depth"}}},
+        {"depth_load_op", "load"}, {"depth_store_op", "store"}});
+    writeTextFile(root / "hybrid.json", TestSupport::renderGraphRootWithTaskFeature(config, root).dump());
+    configureRayQueryTestRuntime(root);
+    GET_MODULE(EngineLaunchConfig).headless_extent = vk::Extent2D{128, 128};
+    TestSupport::requireVulkanDevice("SK1 requires Vulkan");
+    auto mode_rules = std::make_shared<MaterialDrawLoopRules>();
+    GraphLoopDrawCondition mode_condition; mode_condition.skinned = true;
+    mode_rules->passes["forward_opaque"].rule = [mode_condition](const MaterialDrawSubject &subject)
+        -> std::optional<MaterialDrawStepList> {
+        if (subject.name != "Paint" || !graphLoopDrawConditionMatches(mode_condition, subject)) return std::nullopt;
+        MaterialDrawRenderStateOverride state; state.cull = SurfaceCullMode::none;
+        return MaterialDrawStepList{MaterialDrawStep::overridden(state, {"SK1_OVERRIDE"})};
+    };
+    GET_MODULE(FrameGraphRuntimeContainer).setMaterialDrawLoopRuleSource(
+        [mode_rules](const RendererRuntimeGeneration &) { return mode_rules; });
+    std::vector<MaterialDrawRecord> draw_records;
+    GET_MODULE(MaterialRenderer).recordMaterialDrawsForTesting(&draw_records);
+    struct ResetRecords { ~ResetRecords() { GET_MODULE(MaterialRenderer).recordMaterialDrawsForTesting(nullptr); } } reset_records;
+    auto &renderer = GET_MODULE(Renderer);
+    auto &core = GET_MODULE(VulkanManageCore);
+    auto &models = GET_MODULE(ModelAssetContainer);
+    auto &materials = GET_MODULE(MaterialContainer);
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
+    auto &project = GET_MODULE(ProjectMaterialAssetContainer);
+    const auto paint = project.materialByName("Paint");
+    REQUIRE(materials.supportsVertexMode(paint, VertexMode::skinned));
+    auto authored_defines = lowerSurfaceDefaults(parseSurfaceFormat(surface_source, "project://paint.surface"), "project://paint.surface");
+    authored_defines.defines.push_back("PELICAN_SKINNED");
+    REQUIRE_THROWS_WITH(GET_MODULE(ShaderLibrary).loadFromSurfaceForMaterial(
+        parseSurfaceFormat(surface_source, "project://paint.surface"), "project://paint.surface", authored_defines),
+        Catch::Matchers::ContainsSubstring("compiler-owned"));
+    const auto original = models.getModelTemplateByName("character");
+    REQUIRE(original.named_materials.size() == 1);
+    const auto gltf_material = original.named_materials[0].material;
+    REQUIRE(original.material_primitives[0].material == gltf_material);
+    const auto before_mixed = materials.materialCountForTesting();
+    const auto mixed = GET_MODULE(GltfLoader).loadGltf((root / "mixed.gltf").string());
+    REQUIRE(materials.materialCountForTesting() == before_mixed + 1);
+    REQUIRE(mixed.named_materials.size() == 1);
+    REQUIRE(mixed.material_primitives.size() == 1);
+    REQUIRE(mixed.material_primitives[0].primitives.size() == 2);
+    REQUIRE(mixed.material_primitives[0].primitives[0].skinned != mixed.material_primitives[0].primitives[1].skinned);
+    for (const auto id : materials.drawLoopMaterials()) CHECK(materials.materialName(id) != "pelican.builtin.skinned_fallback");
+    auto &camera = GET_MODULE(Camera);
+    camera.setPos({0.0F, 1.0F, 4.0F});
+    camera.setDir({0.0F, 0.0F, -1.0F});
+    camera.setUp({0.0F, 1.0F, 0.0F});
+    const std::array palette{
+        glm::mat4{1.0F},
+        glm::translate(glm::mat4{1.0F}, glm::vec3{0.0F, 1.0F, 0.0F}) *
+        glm::rotate(glm::mat4{1.0F}, glm::radians(35.0F), glm::vec3{0,0,1}) *
+        glm::translate(glm::mat4{1.0F}, glm::vec3{0.0F, -1.0F, 0.0F})};
+    const auto check_items = [&](ModelInstanceId instance, GlobalMaterialId expected) {
+        bool found = false;
+        for (const auto &item : PolygonInstanceTestAccess::drawItems(instances)) {
+            if (item.stable_identity.instance != instance) continue;
+            found = true;
+            REQUIRE(item.pipeline_material_key.material == expected);
+            REQUIRE(item.pipeline_material_key.skinned);
+            REQUIRE(materials.supportsVertexMode(expected, VertexMode::skinned));
+        }
+        REQUIRE(found);
+    };
+    const auto capture = [&](const ModelTemplate &model, GlobalMaterialId expected,
+                             std::shared_ptr<const InstanceMaterialOverrides> overrides = nullptr) {
+        const auto id = instances.placeModelInstance(model, overrides);
+        check_items(id, expected);
+        instances.setSkinningPalette(id, palette);
+        renderer.render();
+        core.waitIdle();
+        const auto image = RendererTestAccess::readRenderTarget(renderer, "scene_depth", {});
+        REQUIRE(image.format == vk::Format::eD32Sfloat);
+        std::vector<float> depth(image.bytes.size() / sizeof(float));
+        std::memcpy(depth.data(), image.bytes.data(), image.bytes.size());
+        REQUIRE(instances.removeModelInstance(id));
+        return depth;
+    };
+    const auto baseline = capture(original, gltf_material);
+    const auto base_coverage = TestSupport::depthCoverage(baseline, 128, 128);
+    const auto base_box = base_coverage.bbox();
+    REQUIRE(base_box[2] - base_box[0] > 5);
+    REQUIRE(base_box[3] - base_box[1] > 10);
+    const auto equivalent = [&](const std::vector<float> &depth) {
+        const auto comparison = TestSupport::compareCoverage(
+            base_coverage, TestSupport::depthCoverage(depth, 128, 128));
+        CHECK(comparison.nonempty);
+        CHECK(comparison.within_tolerance);
+        CHECK(comparison.equal_bbox);
+        CHECK(comparison.within_one_pixel);
+    };
+    const auto bind = [&](ModelTemplate model, std::string name) {
+        auto document = parsePrimitiveMaterialBindingJson(nlohmann::json::parse(R"({"schema":"pelican.material_bindings","version":1,"model":"character.glb","bindings":[{"usd_path":"/Body","mesh":0,"primitive":0,"material":"Paint","routing":{"alpha_mode":"opaque","double_sided":false}}]})"));
+        document.bindings[0].material = std::move(name);
+        applyPrimitiveMaterialBindings(model, document, "character", std::nullopt, project.namedMaterials());
+        return model;
+    };
+    auto painted_mixed = bind(mixed, "Paint");
+    const auto mixed_instance = instances.placeModelInstance(painted_mixed);
+    instances.setSkinningPalette(mixed_instance, palette);
+    draw_records.clear();
+    renderer.render(); core.waitIdle();
+    std::size_t static_draws = 0, skin_draws = 0;
+    for (const auto &record : draw_records) {
+        if (record.effective_material != paint.value) continue;
+        const auto &desc = GET_MODULE(PipelineFactory).graphicsDesc(PipelineHandle{record.pipeline});
+        if (desc.use_skinned_vertex_layout) {
+            ++skin_draws;
+            CHECK(record.pipeline != materials.materialPipeline(paint, VertexMode::skinned).value);
+        } else {
+            ++static_draws;
+            CHECK(record.pipeline == materials.materialPipeline(paint, VertexMode::standard).value);
+        }
+    }
+    REQUIRE(static_draws == 1); REQUIRE(skin_draws == 1);
+    REQUIRE(instances.removeModelInstance(mixed_instance));
+    auto painted = bind(original, "Paint");
+    equivalent(capture(painted, paint));
+    equivalent(capture(bind(original, "Skin"), gltf_material));
+    auto overrides = std::make_shared<InstanceMaterialOverrides>();
+    overrides->push_back({std::nullopt, "Paint"});
+    equivalent(capture(original, paint, overrides));
+
+    // The same material has two independently classified subjects and override pipelines.
+    auto rules = std::make_shared<MaterialDrawLoopRules>();
+    GraphLoopDrawCondition skin_condition; skin_condition.skinned = true;
+    rules->passes["forward_opaque"].rule = [skin_condition](const MaterialDrawSubject &subject)
+        -> std::optional<MaterialDrawStepList> {
+        if (subject.name != "Paint" || !graphLoopDrawConditionMatches(skin_condition, subject)) return std::nullopt;
+        MaterialDrawRenderStateOverride state; state.cull = SurfaceCullMode::none;
+        return MaterialDrawStepList{MaterialDrawStep::overridden(state, {"SK1_OVERRIDE"})};
+    };
+    MaterialDrawLoopTable table{987654};
+    table.install(rules);
+    REQUIRE(table.find("forward_opaque", paint, VertexMode::standard) == nullptr);
+    const auto *steps = table.find("forward_opaque", paint, VertexMode::skinned);
+    REQUIRE(steps != nullptr); REQUIRE(steps->size() == 1); REQUIRE(steps->front().pipeline);
+    auto &factory = GET_MODULE(PipelineFactory);
+    const auto override_pipeline = *steps->front().pipeline;
+    REQUIRE(factory.graphicsDesc(override_pipeline).use_skinned_vertex_layout);
+    REQUIRE(factory.graphicsDesc(override_pipeline).vert != factory.graphicsDesc(materials.materialPipeline(paint, VertexMode::skinned)).vert);
+    const auto skin_pipeline = materials.materialPipeline(paint, VertexMode::skinned);
+    const auto standard_pipeline = materials.materialPipeline(paint, VertexMode::standard);
+    const auto before_skin = factory.pipeline(skin_pipeline);
+    const auto before_standard = factory.pipeline(standard_pipeline);
+    const auto before_override = factory.pipeline(override_pipeline);
+    writeTextFile(root / "paint.surface", surface_source + "\nvoid pelican_vertex_displace_v1(inout PelicanVertexV1 vertex) { vertex.position.z += 0.00001; }\n");
+    auto &reload = GET_MODULE(watch::ReloadService);
+    REQUIRE(reload.applyRequestForTesting({.key = watch::makeAssetKey("paint.surface")}));
+    CHECK(factory.pipeline(skin_pipeline) != before_skin);
+    CHECK(factory.pipeline(standard_pipeline) != before_standard);
+    CHECK(factory.pipeline(override_pipeline) != before_override);
+    equivalent(capture(painted, paint));
+
+    const auto &vat = models.getModelTemplateByName("vat");
+    REQUIRE(vat.material_primitives[0].primitives[0].vat_deformed);
+    REQUIRE_THROWS_WITH(bind(vat, "Paint"), Catch::Matchers::ContainsSubstring("VAT primitives keep their baked material"));
+    const auto vat_instance = instances.placeModelInstance(vat, overrides);
+    REQUIRE(instances.instancePrimitiveMaterials(vat_instance)[0].material == vat.material_primitives[0].material);
+    REQUIRE(instances.removeModelInstance(vat_instance));
+    auto unsupported = original;
+    unsupported.material_primitives[0].material = vat.material_primitives[0].material;
+    REQUIRE_THROWS_WITH(instances.placeModelInstance(unsupported), Catch::Matchers::ContainsSubstring("no skinned vertex pipeline"));
+
+    std::istringstream input; std::ostringstream output;
+    RpcServer rpc{input, output};
+    configureMaterialDocumentRpcHandlers(rpc, GET_MODULE(PathResolver), &reload);
+    const auto call = [&](std::string method, nlohmann::json params) {
+        auto response = nlohmann::json::parse(rpc.processLine(nlohmann::json{{"jsonrpc","2.0"},{"id",1},{"method",method},{"params",params}}.dump()));
+        INFO(response.dump());
+        return response;
+    };
+    const auto refused = call("bind_material", {{"model","vat"},{"material","Paint"}});
+    REQUIRE(refused.contains("error"));
+    CHECK(refused["error"]["data"]["error_code"] == "material.binding_invalid@1");
+    CHECK(refused["error"]["data"]["error_fields"]["reason"] == "VAT primitives keep their baked material");
+    const auto bound = call("bind_material", {{"model","character"},{"material","Paint"}});
+    REQUIRE(bound.contains("result"));
+    const auto bindings = call("get_material_bindings", {{"model","character"}});
+    REQUIRE(bindings.contains("result"));
+    CHECK(bindings["result"]["primitives"][0]["material"] == "Paint");
+    equivalent(capture(models.getModelTemplateByName("character"), paint));
+
+    // T9: one named glTF slot routes both skinned and static primitives.
+    const auto &slot_model = models.getModelTemplateByName("slots");
+    REQUIRE(slot_model.named_materials.size() == 1);
+    REQUIRE(slot_model.named_materials[0].name == "Body");
+    REQUIRE(slot_model.material_primitives.size() == 1);
+    const auto &slot_primitives = slot_model.material_primitives[0].primitives;
+    REQUIRE(slot_primitives.size() == 2);
+    REQUIRE(slot_primitives[0].skinned != slot_primitives[1].skinned);
+    REQUIRE(slot_primitives[0].mesh_index != slot_primitives[1].mesh_index);
+    const auto slots = models.materialSlots("slots");
+    REQUIRE(slots.size() == 2);
+    for (const auto &slot : slots) {
+        CAPTURE(slot.mesh, slot.primitive);
+        CHECK(slot.slot == "slots.gltf#material/Body@0");
+        REQUIRE(slot.routing.has_value());
+        CHECK(slot.routing == slot_model.named_materials[0].routing);
+    }
+    const auto slot_bindings = call("get_material_bindings", {{"model", "slots"}});
+    REQUIRE(slot_bindings.contains("result"));
+    REQUIRE(slot_bindings["result"]["primitives"].size() == 2);
+    for (const auto &primitive : slot_bindings["result"]["primitives"]) {
+        CHECK(primitive["slot"] == "slots.gltf#material/Body@0");
+        CHECK(primitive["material"] == "slots.gltf#material/Body@0");
+    }
+    const auto check_slot_items = [&](GlobalMaterialId expected) {
+        std::size_t skinned = 0, standard = 0;
+        for (const auto &item : PolygonInstanceTestAccess::drawItems(instances)) {
+            CHECK(item.pipeline_material_key.material == expected);
+            if (item.pipeline_material_key.skinned) ++skinned;
+            else ++standard;
+        }
+        REQUIRE(skinned == 1);
+        REQUIRE(standard == 1);
+    };
+    const auto slot_bound = call("bind_material", {{"model", "slots"}, {"slot", "slots.gltf#material/Body@0"}, {"material", "Paint"}});
+    REQUIRE(slot_bound.contains("result"));
+    CHECK(slot_bound["result"]["committed"] == true);
+    CHECK(slot_bound["result"]["applied"] == "live");
+    const auto slot_instance = instances.placeModelInstance(models.getModelTemplateByName("slots"));
+    check_slot_items(paint);
+    REQUIRE(instances.removeModelInstance(slot_instance));
+
+    // Reset the model first so object-slot coverage cannot pass on model bindings alone.
+    const auto slot_reset = call("bind_material", {{"model", "slots"}, {"slot", "slots.gltf#material/Body@0"}, {"material", "Body"}});
+    REQUIRE(slot_reset.contains("result"));
+    CHECK(slot_reset["result"]["committed"] == true);
+    REQUIRE(slot_reset["result"]["material_bindings"].is_null());
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    GET_MODULE(EngineLaunchConfig).rpc = true;
+    EngineRpcEndpoint endpoint{input, output};
+    const auto engine_result = [&](std::string method, nlohmann::json params = nlohmann::json::object()) {
+        const auto response = nlohmann::json::parse(endpoint.processLine(
+            nlohmann::json{{"jsonrpc", "2.0"}, {"id", 2}, {"method", method}, {"params", params}}.dump()));
+        INFO(method << " -> " << response.dump());
+        REQUIRE(response.contains("result"));
+        return response.at("result");
+    };
+    const auto commit_edit = [&](const nlohmann::json &accepted) {
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        (void)engine_result("step_frame");
+        const auto committed = engine_result("get_edit_result", {{"ticket", accepted.at("ticket")}});
+        INFO(committed.dump());
+        REQUIRE(committed.at("status") == "committed");
+    };
+    (void)engine_result("load_scene", {{"name", "default_scene"}});
+    (void)engine_result("step_frame");
+    const auto actor = engine_result("open_editor_session", {{"display_name", "SK1 slots"}}).at("actor_id");
+    const auto revision = engine_result("get_scene_revision").at("scene_revision");
+    commit_edit(engine_result("edit", {{"actor_id", actor}, {"base_revision", revision},
+        {"operations", nlohmann::json::array({{{"op", "spawn"}, {"scene_id", "default_scene"},
+            {"object", {{"name", "MixedSlots"}, {"components", nlohmann::json::array({
+                {{"name", "transform"}, {"pos", {0, 0, 0}}, {"rotation", {0, 0, 0, 1}}, {"scale", {1, 1, 1}}},
+                {{"name", "simplemodelview"}, {"model", "slots"}}})}}}}})}}));
+    const auto tree = engine_result("scene_tree");
+    REQUIRE(tree.at("objects").size() == 1);
+    const auto object = tree.at("objects")[0].at("authoring_object_id");
+    check_slot_items(models.getModelTemplateByName("slots").named_materials[0].material);
+    commit_edit(engine_result("set_object_material", {{"actor_id", actor}, {"object", object},
+        {"slot", "slots.gltf#material/Body@0"}, {"material", "Paint"}}));
+    const auto object_materials = engine_result("get_object_materials", {{"object", object}});
+    REQUIRE(object_materials.at("materials").size() == 2);
+    REQUIRE(object_materials.at("primitives").size() == 2);
+    for (const auto &primitive : object_materials.at("primitives")) {
+        CHECK(primitive.at("slot") == "slots.gltf#material/Body@0");
+        CHECK(primitive.at("source") == "object");
+        CHECK(primitive.at("model_material") == "slots.gltf#material/Body@0");
+        CHECK(primitive.at("drawn") == "Paint");
+    }
+    check_slot_items(paint);
+#else
+    SKIP("runtime shader compiler unavailable");
+#endif
+}
+} // namespace Pelican
+
+namespace Pelican {
+TEST_CASE("LC-1 serial loops render through both runs into the final image",
+          "[headless][gpu][lc1][graph-loop]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    std::filesystem::path temp_dir;
+    try {
+        FastModuleContainer modules;
+        temp_dir = makeTempProjectDir();
+        writeTextFile(temp_dir / "scene.json",
+            R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
+        writeTextFile(temp_dir / "assets.json",
+            R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
+        using Json = nlohmann::json;
+        const Json type{{"semantic", "pelican.render.color_signal@1"},
+            {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+        const Json color{{"kind", "image"}, {"type", type}, {"access", "write"},
+                         {"attachment", "color"}, {"location", 0}};
+        const Json source{{"kind", "image"}, {"type", type}, {"access", "read"},
+                          {"sampling", {{"filter", "nearest"}, {"address", "clamp_to_edge"}}}};
+        const auto image = [&](const std::string &id, const Json &extent_scale) {
+            return Json{{"id", id}, {"op", "render.image"},
+                        {"parameters", {{"type", type}, {"format", "R8G8B8A8_UNORM"}, {"extent_scale", extent_scale},
+                                        {"usage", {"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"}}}},
+                        {"outputs", {"resource"}}};
+        };
+        const Json step_body{{"nodes", Json::array({
+            {{"id", "source"}, {"op", "graph.input"}},
+            image("image", {{"$expr", "1 / pow2(element + 1)"}}),
+            {{"id", "step"}, {"op", "render.fullscreen"},
+             {"parameters", {{"pass_set", "main_render"},
+                             {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "shaders/lp1b_add"},
+                                         {"defines", Json::array({{{"$format", "STEP={element + 1}"}}})}}},
+                             {"ports", {{"source", source}, {"color", color}}}}},
+             {"inputs", {{"source", {{"node", "source"}, {"port", "value"}}},
+                         {"color", {{"node", "image"}, {"port", "resource"}}}}},
+             {"outputs", {"color"}}}})},
+            {"outputs", {{"out", {{"node", "step"}, {"port", "color"}}}}}};
+        Json document{{"schema", "pelican.graph"}, {"version", 1},
+            {"definitions", {{"step_body", step_body}}},
+            {"nodes", Json::array({
+                image("seed_image", 1.0),
+                {{"id", "seed"}, {"op", "render.fullscreen"},
+                 {"parameters", {{"pass_set", "main_render"},
+                                 {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "shaders/lp1b_zero"}}},
+                                 {"ports", {{"color", color}}}}},
+                 {"inputs", {{"color", {{"node", "seed_image"}, {"port", "resource"}}}}},
+                 {"outputs", {"color"}}},
+                {{"id", "chain"}, {"op", "graph.loop"},
+                 {"parameters", {{"over", {{"range", {{"count", 4}}}}},
+                                 {"branches", Json::array({{{"body", "step_body"}}})},
+                                 {"carry", Json::array({{{"from", "out"}, {"to", "source"}}})}}},
+                 {"inputs", {{"source", {{"node", "seed"}, {"port", "color"}}}}},
+                 {"outputs", Json::array({"out"})}}})},
+            {"outputs", Json::object()},
+            {"rendering", {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}}}};
+        auto &a = document["nodes"][2];
+        a["id"] = "a";
+        a["parameters"]["over"]["range"]["count"] = 2;
+        auto b = a;
+        b["id"] = "b";
+        b["inputs"]["source"] = {{"node", "a"}, {"port", "out"}};
+        document["nodes"].push_back(b);
+        // The Blank pipeline's present consumes the second loop's output.
+        document["rendering"] = {{"rendering_passes", Json::array({
+            {{"name", "main_render"}, {"passes", Json::array({
+                {{"name", "present"}, {"type", "fullscreen"}, {"input", {"b.out"}},
+                 {"output", {{"color", {"display"}}, {"depth", nullptr}}},
+                 {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}}}})}}})}};
+        writeTextFile(temp_dir / "hybrid.json", document.dump(2));
+        std::filesystem::create_directories(temp_dir / "shaders");
+        writeTextFile(temp_dir / "shaders" / "lp1b_add.frag", R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+void main() {
+    vec4 below = pelican_sample_source(inUV);
+    outColor = vec4(below.r + float(STEP) * 16.0 / 255.0, 0.0, 0.0, 1.0);
+}
+)glsl");
+        writeTextFile(temp_dir / "shaders" / "lp1b_zero.frag",
+            "#version 450\nlayout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\n"
+            "void main() {\n    outColor = vec4(0.0, 0.0, 0.0, 1.0);\n}\n");
+        configureRayQueryTestRuntime(temp_dir);
+
+        auto &renderer = GET_MODULE(Renderer);
+        renderer.render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+
+        const auto plan = renderer.currentFramePlanJson();
+        REQUIRE(plan.at("loops").size() == 2);
+        std::vector<std::string> order;
+        bool presented = false;
+        for (const auto &node : plan.at("nodes")) {
+            const auto name = node.at("name").get<std::string>();
+            if (name.starts_with("a/") || name.starts_with("b/")) order.push_back(name);
+            if (name == "present") {
+                CHECK(node.at("reads") == Json::array({"b/1/image"}));
+                presented = true;
+            }
+        }
+        CHECK(presented);
+        CHECK(order == std::vector<std::string>{"a/0/step", "a/1/step", "b/0/step", "b/1/step"});
+        // Each run adds 16 then 32. A disconnection, wrong last element,
+        // skipped run or resource collision changes this pixel oracle.
+        const auto read = RendererTestAccess::readRenderTarget(renderer, "b/1/image", ImageSubresourceRange{});
+        REQUIRE(read.format == vk::Format::eR8G8B8A8Unorm);
+        REQUIRE_FALSE(read.bytes.empty());
+        for (std::size_t offset = 0; offset + 4 <= read.bytes.size(); offset += 4) {
+            CHECK(static_cast<int>(read.bytes.at(offset)) == 96);
+            CHECK(read.bytes.at(offset + 1) == 0);
+            CHECK(read.bytes.at(offset + 2) == 0);
+        }
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        if (!temp_dir.empty()) std::filesystem::remove_all(temp_dir);
+        TestSupport::skipIfVulkanDeviceUnavailable(error, "Vulkan LC-1 serial loop fixture unavailable");
+        throw;
+    }
+#else
+    SUCCEED("LC-1 GPU acceptance is compiler-ON only");
+#endif
+}
+
+
+TEST_CASE("VR1 vrm effective material controls raster and RT absolute overrides",
+          "[headless][gpu][vrm][materialinstanceoverride][raytracing_rt3][mt2]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    const auto root = makeTempProjectDir();
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() { std::error_code ec; std::filesystem::remove_all(path, ec); }
+    } cleanup{root};
+    FastModuleContainer modules;
+    RuntimeTeardownGuard teardown{RuntimeTeardownMode::terminal_shutdown};
+    // Extend the deterministic VRM fixture with material B and a second primitive.
+    const auto glb = TestVrmXrDemoFixture::makeGlb();
+    std::uint32_t json_size = 0;
+    std::memcpy(&json_size, glb.data() + 12, sizeof(json_size));
+    auto document = nlohmann::json::parse(glb.begin() + 20, glb.begin() + 20 + json_size);
+    const auto binary_start = 20 + json_size + 8;
+    std::ofstream binary{root / "character.bin", std::ios::binary};
+    binary.write(reinterpret_cast<const char *>(glb.data() + binary_start),
+                 static_cast<std::streamsize>(glb.size() - binary_start));
+    binary.close();
+    document["buffers"][0]["uri"] = "character.bin";
+    document["materials"].push_back(document["materials"][0]);
+    document["materials"][1]["name"] = "MaterialB";
+    document["materials"][1]["pbrMetallicRoughness"]["baseColorFactor"] = {0.2, 0.8, 0.3, 1.0};
+    document["meshes"][0]["primitives"].push_back(document["meshes"][0]["primitives"][0]);
+    document["meshes"][0]["primitives"][1]["material"] = 1;
+    auto &happy = document["extensions"]["VRMC_vrm"]["expressions"]["preset"]["happy"];
+    happy["materialColorBinds"][0]["targetValue"] = {1.0, 0.22, 0.32, 0.4};
+    happy["textureTransformBinds"] = nlohmann::json::array({
+        {{"material", 0}, {"scale", {2.0, 3.0}}, {"offset", {0.25, 0.5}}}});
+    writeTextFile(root / "character.gltf", document.dump());
+    writeTextFile(root / "foreign.gltf", document.dump());
+    // White vertex colors and an untextured base factor make every covered
+    // fragment constant, while retaining the production source-factor lookup.
+    writeTextFile(root / "paint.surface", R"(//! pelican.surface v1
+//! language: glsl
+//! render_state: { blend: opaque, cull: none, depth: read_write }
+void pelican_surface_v1(in PelicanSurfaceInputV1 input_data, inout PelicanSurfaceV1 surface) {
+    surface.base_color = input_data.vertex_color;
+}
+vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 input_data) {
+    return surface.base_color.rgb;
+}
+)");
+    writeTextFile(root / "paint.material.json", R"({"schema":"pelican.material","version":1,"materials":[{"name":"Paint","surface":"project://paint.surface","base":{"baseColorFactor":[0.2,0.6,0.8,1.0]},"routing":{"alpha_mode":"opaque","double_sided":true}}]})");
+    writeTextFile(root / "scene.json", R"({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})");
+    writeTextFile(root / "assets.json", R"({"schema":"pelican.asset_data","version":2,"models":[{"name":"character","path":"character.gltf"},{"name":"foreign","path":"foreign.gltf"}],"materials":[{"path":"paint.material.json"}]})");
+    auto config = nlohmann::json::parse(R"({
+      "render_targets":[
+        {"name":"gbuffer_albedo","extent_scale":1.0,"format":"B8G8R8A8_UNORM","format_class":"scene","usage":["COLOR_ATTACHMENT","SAMPLED","TRANSFER_SRC"]},
+        {"name":"gbuffer_normal","extent_scale":1.0,"format":"R16G16B16A16_SFLOAT","format_class":"data","usage":["COLOR_ATTACHMENT","SAMPLED"]},
+        {"name":"gbuffer_material","extent_scale":1.0,"format":"R8G8B8A8_UNORM","format_class":"data","usage":["COLOR_ATTACHMENT","SAMPLED"]},
+        {"name":"gbuffer_worldpos","extent_scale":1.0,"format":"R16G16B16A16_SFLOAT","format_class":"data","usage":["COLOR_ATTACHMENT","SAMPLED"]},
+        {"name":"g_emissive","extent_scale":1.0,"format":"B8G8R8A8_UNORM","format_class":"scene","usage":["COLOR_ATTACHMENT","SAMPLED","TRANSFER_SRC"]},
+        {"name":"scene_depth","extent_scale":1.0,"format":"D32_SFLOAT","format_class":"data","usage":["DEPTH_STENCIL_ATTACHMENT","TRANSFER_SRC"]}],
+      "rendering_passes":[{"name":"main_render","passes":[
+        {"name":"deferred_geometry","type":"material","material_contract":"deferred_geometry_v1","output":{"color":["gbuffer_albedo","gbuffer_normal","gbuffer_material","gbuffer_worldpos","g_emissive"],"depth":"scene_depth"},"depth_store_op":"store"},
+        {"name":"present","type":"fullscreen","output":{"color":"swapchain","depth":null},"shader":{"vertex":"engine://fullscreen","fragment":"engine://shader_lab_hello"}}]}]})");
+    config["render_targets"].push_back({{"name", "lit_color"}, {"extent_scale", 1.0},
+        {"format", "R16G16B16A16_SFLOAT"}, {"format_class", "explicit(R16G16B16A16_SFLOAT)"},
+        {"usage", {"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"}}});
+    auto &passes = config["rendering_passes"][0]["passes"];
+    passes.insert(passes.begin()+1, nlohmann::json{{"name", "forward_opaque"}, {"type", "material"},
+        {"material_contract", "forward_opaque_v1"}, {"after", {"deferred_geometry"}},
+        {"output", {{"color", {"lit_color"}}, {"depth", "scene_depth"}}},
+        {"depth_load_op", "load"}, {"depth_store_op", "store"}});
+    writeTextFile(root / "hybrid.json", TestSupport::renderGraphRootWithTaskFeature(config, root).dump());
+    configureRayQueryTestRuntime(root);
+    GET_MODULE(EngineLaunchConfig).headless_extent = vk::Extent2D{128, 128};
+    TestSupport::requireVulkanDevice("VR1 requires Vulkan");
+    auto &renderer = GET_MODULE(Renderer);
+    auto &core = GET_MODULE(VulkanManageCore);
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
+    auto &materials = GET_MODULE(MaterialContainer);
+    auto &project = GET_MODULE(ProjectMaterialAssetContainer);
+    const auto original = GET_MODULE(ModelAssetContainer).getModelTemplateByName("character");
+    const auto foreign = GET_MODULE(ModelAssetContainer).getModelTemplateByName("foreign");
+    // The canonical occurrence name ("character") differs from the authored
+    // path; override matching must compare authored paths on both sides.
+    REQUIRE(original.authored_asset_reference == "character.gltf");
+    REQUIRE(original.vrm_semantic != nullptr);
+    REQUIRE(original.material_primitives.size() == 2);
+    REQUIRE(original.material_primitives[0].source_material_index == 0);
+    REQUIRE(original.material_primitives[1].source_material_index == 1);
+    const auto material_a = original.material_primitives[0].material;
+    const auto paint = project.materialByName("Paint");
+    REQUIRE(materials.supportsVertexMode(paint, VertexMode::skinned));
+    auto &camera = GET_MODULE(Camera);
+    camera.setPos({0.0F, 1.0F, 4.0F});
+    camera.setDir({0.0F, 0.0F, -1.0F});
+    camera.setUp({0.0F, 1.0F, 0.0F});
+    const auto bind = [&](ModelTemplate model, const std::string &name) {
+        auto bindings = parsePrimitiveMaterialBindingJson(nlohmann::json::parse(R"({"schema":"pelican.material_bindings","version":1,"model":"character.gltf","bindings":[{"usd_path":"/Body","mesh":0,"primitive":0,"material":"Paint","routing":{"alpha_mode":"opaque","double_sided":true}}]})"));
+        bindings.bindings[0].primitive_index = model.material_primitives[0].primitives[0].primitive_index;
+        bindings.bindings[0].material = name;
+        applyPrimitiveMaterialBindings(model, bindings, "character", std::nullopt, project.namedMaterials());
+        return model;
+    };
+    auto only_a = original;
+    only_a.material_primitives.erase(only_a.material_primitives.begin() + 1);
+    auto only_b = original;
+    only_b.material_primitives.erase(only_b.material_primitives.begin());
+    const auto publish = [&](ModelInstanceId id, float weight) {
+        Vrm::ExpressionInputSnapshot input;
+        input.instance = instances.animationInstance(id);
+        input.input_revision = 1;
+        input.frame_revision = 1;
+        input.expression_weights = {{"happy", weight}};
+        Vrm::ResolvedExpressionFrame resolved;
+        REQUIRE(Vrm::resolveExpressionFrame(*original.vrm_semantic, original.morph_targets.get(),
+            original.material_initial_values.get(), input, resolved) == Animation::Status::ok);
+        REQUIRE(resolved.material_overrides.size() == 1);
+        for (const auto &source : resolved.material_overrides) {
+            PublishMaterialInstanceAbsoluteOverrideDescV2 output;
+            output.instance = input.instance;
+            output.frame_revision = input.frame_revision;
+            output.source_material_index = source.source_material_index;
+            output.values.mask = source.mask;
+            output.values.base_color_factor = source.base_color_factor;
+            output.values.uv_offset = source.uv_offset;
+            output.values.uv_scale = source.uv_scale;
+            output.values.uv_rotation = source.uv_rotation;
+            REQUIRE(instances.publishMaterialInstanceAbsoluteOverride(id, output) == Animation::Status::ok);
+        }
+    };
+    const auto check = [&](const ModelTemplate &model, std::uint32_t expected_source,
+                           std::optional<std::array<int, 3>> pixel, float weight = 1.0F,
+                           std::shared_ptr<const InstanceMaterialOverrides> overrides = nullptr) {
+        INFO("expected source=" << expected_source << " weight=" << weight);
+        const auto id = instances.placeModelInstance(model, overrides);
+        const std::array palette{glm::mat4{1.0F}, glm::mat4{1.0F}};
+        instances.setSkinningPalette(id, palette);
+        publish(id, weight);
+        const auto items = PolygonInstanceTestAccess::drawItems(instances);
+        REQUIRE(items.size() == model.material_primitives[0].primitives.size());
+        REQUIRE_FALSE(items.empty());
+        for (const auto &item : items) {
+            CHECK(item.pipeline_material_key.source_material_index == expected_source);
+            CHECK(item.pipeline_material_key.skinned);
+        }
+        const auto rays = instances.rayQueryGeometryInstances();
+        REQUIRE(rays.size() == items.size());
+        for (const auto &ray : rays) {
+            const auto identity = materials.rayBindingIdentity(
+                GlobalMaterialId{ray.resolved_material_handle});
+            CHECK(ray.source_material_index == identity.source_material_index);
+            CHECK(ray.material_asset_reference == identity.asset);
+            CHECK(ray.material_document_reference == identity.document);
+            if (expected_source == 0) {
+                CHECK(ray.alpha_override_mask == (rayAlphaOverrideBaseFactor | rayAlphaOverrideUvTransform));
+                const float expected_alpha = weight == 1.0F ? 0.4F : 1.0F;
+                CHECK(std::abs(ray.alpha_override_base_color_factor[3] - expected_alpha) < 0.001F);
+                CHECK(ray.alpha_override_uv_offset_scale == (weight == 1.0F
+                    ? std::array<float, 4>{0.25F, 0.5F, 2.0F, 3.0F}
+                    : std::array<float, 4>{0.0F, 0.0F, 1.0F, 1.0F}));
+            } else {
+                CHECK(ray.alpha_override_mask == 0);
+            }
+        }
+        if (pixel) {
+            renderer.render();
+            core.waitIdle();
+            const auto image = RendererTestAccess::readRenderTarget(renderer,
+                expected_source == noSourceMaterialIndex ? "lit_color" : "gbuffer_albedo", {});
+            INFO("readback format=" << vk::to_string(image.format));
+            const bool bgra = image.format == vk::Format::eB8G8R8A8Unorm ||
+                              image.format == vk::Format::eB8G8R8A8Srgb;
+            const bool srgb = image.format == vk::Format::eR8G8B8A8Srgb ||
+                              image.format == vk::Format::eB8G8R8A8Srgb;
+            const bool hdr = image.format == vk::Format::eR16G16B16A16Sfloat;
+            REQUIRE((bgra || srgb || hdr || image.format == vk::Format::eR8G8B8A8Unorm));
+            // A central 5x5 patch lies inside the body, away from primitive edges.
+            for (int y = 62; y <= 66; ++y) for (int x = 62; x <= 66; ++x) {
+                const auto offset = (y * image.extent.width + x) * (hdr ? 8 : 4);
+                for (int channel = 0; channel < 3; ++channel) {
+                    int value = 0;
+                    if (hdr) {
+                        std::uint16_t bits = 0;
+                        std::memcpy(&bits, image.bytes.data() + offset + channel * 2, sizeof(bits));
+                        value = static_cast<int>(std::lround(glm::unpackHalf1x16(bits) * 255.0F));
+                    } else {
+                        const auto encoded = image.bytes[offset + (bgra ? 2 - channel : channel)];
+                        float linear = static_cast<float>(encoded) / 255.0F;
+                        if (srgb) linear = linear <= 0.04045F ? linear / 12.92F
+                            : std::pow((linear + 0.055F) / 1.055F, 2.4F);
+                        value = static_cast<int>(std::lround(linear * 255.0F));
+                    }
+                    CHECK(std::abs(value - (*pixel)[channel]) <= 2);
+                }
+            }
+        }
+        REQUIRE(instances.removeModelInstance(id));
+    };
+    // T1: both model bindings and scene overrides keep the project's color,
+    // including weight zero, when VRM still publishes an absolute record.
+    const auto painted = bind(only_a, "Paint");
+    check(painted, noSourceMaterialIndex, std::array{51, 153, 204});
+    check(painted, noSourceMaterialIndex, std::array{51, 153, 204}, 0.0F);
+    auto override = std::make_shared<InstanceMaterialOverrides>();
+    override->push_back({std::nullopt, "Paint"});
+    check(only_a, noSourceMaterialIndex, std::array{51, 153, 204}, 1.0F, override);
+    // T2: the original material still receives A's expression color.
+    check(only_a, 0, std::array{255, 56, 82});
+    // T3: B bound to A follows A's index, even though the group retains B's.
+    check(bind(only_b, materials.materialName(material_a)), 0, std::nullopt);
+    check(only_b, 1, std::nullopt);
+    // T4: a foreign asset with the same numeric material index is excluded.
+    auto foreign_material = only_a;
+    foreign_material.material_primitives[0].material = foreign.material_primitives[0].material;
+    REQUIRE(materials.rayBindingIdentity(foreign_material.material_primitives[0].material).source_material_index == 0);
+    check(foreign_material, noSourceMaterialIndex, std::nullopt);
+    // Missing provenance must not let two empty asset strings match.
+    auto no_provenance = GET_MODULE(GltfLoader).loadGltf((root / "character.gltf").string());
+    no_provenance.material_primitives.erase(no_provenance.material_primitives.begin() + 1);
+    REQUIRE(no_provenance.authored_asset_reference.empty());
+    REQUIRE(materials.rayBindingIdentity(no_provenance.material_primitives[0].material).asset.empty());
+    check(no_provenance, noSourceMaterialIndex, std::nullopt);
+#else
+    SKIP("runtime shader compiler unavailable");
+#endif
+}
 } // namespace Pelican

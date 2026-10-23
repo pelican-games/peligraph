@@ -29,6 +29,8 @@
 
 namespace Pelican {
 
+enum class RayLayoutSemanticMode : std::uint8_t;
+
 // RD-1: get_render_documents / restore_render_documents named a reference
 // that is not a render document the current composition writes. Fields:
 // {method, reference, reason}; reason is "engine_document",
@@ -85,6 +87,46 @@ struct RenderConfigPublishedAsset {
     std::string asset;
     std::filesystem::path file;
     std::string sha256;
+};
+
+// RTL-1a: one material a ray binding may select, spelled as the engine
+// matches a scene row (raygrouplayout.cpp selectorMatches): `document` (the
+// material's source document, compared as a string) or `asset` with
+// `source_material_index` (a glTF material of a model). `name` is the
+// registered material name.
+struct RaySelectableMaterial {
+    std::string name;
+    std::string document;
+    std::string asset;
+    std::optional<std::uint32_t> source_material_index;
+    // EB-2: the models that draw the material (registered names) and the
+    // scene objects (every scene of the document, as get_material_bindings
+    // counts `objects`) whose simplemodelview draws one of them: `key` tells
+    // two objects apart (scene and authoring id), `label` is the object's
+    // name, or "#<authoring_object_id>" for one without a name.
+    struct User {
+        std::string key;
+        std::string label;
+    };
+    std::vector<std::string> models;
+    std::vector<User> users;
+};
+
+// RTL-1a: the bindings of the last scene row resolution that matched no
+// scene row (get_ray_layout.unresolved_bindings), with the digest of the
+// bindings bytes they were resolved from.
+struct RayUnresolvedBindingsObservation {
+    std::string bindings_reference;
+    std::string bindings_digest;
+    std::vector<std::size_t> indices;
+};
+
+// RTL-1a: the project's asset_data document, whose procedural_geometry
+// records edit_ray_layout reads (selectable_procedural_assets) and rewrites
+// with the layout (procedural_records).
+struct RayAssetDataDocument {
+    std::string reference;
+    std::filesystem::path path;
 };
 
 struct RenderConfigEditorGateObservation {
@@ -208,6 +250,16 @@ struct RenderConfigEditorDependencies {
     // compared.
     std::function<std::vector<RenderConfigPublishedAsset>()>
         published_assets;
+    // BS-1: whether the live generation is the engine's fallback (the
+    // project's configuration was refused at start). reload_render_documents
+    // then composes what is on disk even when no document changed, since
+    // none of it is live. Unset: never.
+    std::function<bool()> runtime_fallback;
+    // RTL-1b: the ray layout mode this process runs in (production:
+    // currentRayLayoutMode). get_render_authoring_context reports it as
+    // ray_layout.mode ("none" | "layout"); unset or nullopt: not configured
+    // (null).
+    std::function<std::optional<RayLayoutSemanticMode>()> ray_layout_mode;
     // FG-2: draws a verify_fold job's three runs on a worker thread
     // (graphfoldverify.hpp; production: runFoldVerifyProcesses). Unset:
     // verify_fold is fold_verify_unavailable {reason: "no_runner"}.
@@ -218,6 +270,17 @@ struct RenderConfigEditorDependencies {
     // AB-1: the project's asset stores, which list_derived_assets walks for
     // `*.import.json`. Unset: the project root.
     std::function<std::vector<AssetStoreStatus>()> asset_stores;
+    // RTL-1a: the materials the running engine registered that a ray binding
+    // can select (get_ray_layout.selectable_materials), with or without a
+    // layout. Unset: none.
+    std::function<std::vector<RaySelectableMaterial>()> ray_selectable_materials;
+    // RTL-1a: the bindings the last resolved scene rows left unmatched.
+    // nullopt (or unset): no rows were resolved with bindings.
+    std::function<std::optional<RayUnresolvedBindingsObservation>()>
+        ray_unresolved_bindings;
+    // RTL-1a: where asset_data is. nullopt (or unset): no asset_data, and
+    // edit_ray_layout refuses procedural_records.
+    std::function<std::optional<RayAssetDataDocument>()> ray_asset_data;
 };
 
 // AB-1: what a bake_audio_analysis worker hands back to the engine's thread:
@@ -347,6 +410,23 @@ class RenderConfigEditorService {
     // editor last wrote or reloaded it, {normalized reference: sha256 hex}.
     // A document absent here is compared with published_documents.
     std::map<std::string, std::string> known_document_digests_;
+    // Legacy digest-only record restoration. Current clients retain the
+    // per-commit procedural_records_before inverse; equal output digests
+    // need not have equal predecessors, and this cache ends at restart.
+    std::map<std::string, nlohmann::ordered_json> procedural_record_versions_;
+    // RR-1: a reload refused the documents on disk, and the editor holds
+    // them (the root's bytes and digest, the managed fragments, the other
+    // documents' digests) as the base of the next restore or edit while the
+    // live generation stays the one before. Cleared when a ticket publishes
+    // a generation composed from what the editor holds.
+    bool holds_refused_documents_ = false;
+    // RR-1: while the held root is bytes that are not JSON (a reload refused
+    // with render_document_syntax@1), the newest root the editor held that
+    // reads, and whether it was the live one. The structural reads answer
+    // from it (readDocument); the managed baselines stay this root's. Empty
+    // otherwise, and on a fallback that started on such bytes.
+    std::optional<AuthoredRenderConfigDocument> readable_document_;
+    bool readable_document_live_ = false;
     std::uint64_t next_ticket_ = 1;
     EditorGateEpoch<RenderConfigEditorGateObservation> gate_tracker_;
     std::shared_ptr<const void> lifetime_ =
@@ -378,6 +458,17 @@ class RenderConfigEditorService {
         std::string base_digest;
     };
     HeldDocument heldDocument(const std::string &reference) const;
+    // RTL-1a: heldDocument for a document that may not be there: `present`
+    // false (bytes empty) when neither the batch nor the disk has it;
+    // `batch` when an earlier edit of the running edit_batch wrote it, whose
+    // `expected` is what the batch holds it to.
+    struct HeldOptionalDocument {
+        bool present = false;
+        bool batch = false;
+        std::string bytes;
+        RenderConfigDocumentExpectedState expected;
+    };
+    HeldOptionalDocument heldOptionalDocument(const std::string &reference) const;
     nlohmann::ordered_json materializeRenderFeature(const std::string &base_digest, const nlohmann::json &operation);
     // F-6: edit_preset_pass's third destination, a pass the direct root
     // declares itself. One root document, the ordinary root-edit ticket.
@@ -403,6 +494,52 @@ class RenderConfigEditorService {
         const GateSnapshot &gate, const std::string &base_digest,
         std::string_view method,
         std::string_view gate_closed_message) const;
+    // BS-1b: render_document_syntax@1 {method, document, line?, column?} when
+    // `bytes` (the document `reference`) is not JSON; nullopt otherwise.
+    std::optional<nlohmann::ordered_json> syntaxRejection(
+        std::string_view bytes, std::string_view reference,
+        std::string_view method) const;
+    // PB-1: what a finished ticket (or a reload refused at once) leaves in
+    // the engine's problem list. A reload's refusal of the documents is
+    // listed as source reload_rpc (a busy editor, a closed gate or a file
+    // that changed again is not a problem of the documents); a reload that
+    // committed, or an edit that committed a new generation, clears the
+    // render pipeline's problems. An edit's refusal is the answer's alone.
+    void noteProblems(bool reload, bool source_only,
+                      const nlohmann::ordered_json &result) const;
+    // RR-1: whether a reload's refusal is one of the documents (what
+    // noteProblems lists), not of the moment (a busy editor, a closed gate,
+    // a file that changed again, a stale digest).
+    static bool refusesDocuments(const nlohmann::ordered_json &result);
+    // RR-1: the documents a refused reload read become the editor's base
+    // (`root` the root as read; `digests` {normalized reference: sha256 hex}
+    // of every document it read), and holds_refused_documents_ is set.
+    // `unparsed`: the root is bytes that are not JSON; the root held before
+    // stays readable (readable_document_).
+    void holdRefusedDocuments(AuthoredRenderConfigDocument root,
+                              const std::map<std::string, std::string> &digests,
+                              bool unparsed = false);
+    // RR-1: the root the structural reads answer from -- the held one, or
+    // readable_document_ while the held one is not JSON -- with the managed
+    // fragments, whether it is live, and the fields that say which it is:
+    // {live} and, while the held root is not JSON, held_unparsed: true.
+    const AuthoredRenderConfigDocument &readDocument() const;
+    RenderConfigCandidateDocumentSet readDocumentSet() const;
+    bool readLive() const;
+    nlohmann::ordered_json markRead(nlohmann::ordered_json read) const;
+    // RR-1: what a finished ticket does to holds_refused_documents_: a
+    // reload refused for its documents holds them; a commit that cleared the
+    // render pipeline's problems (noteProblems) composed and published what
+    // the editor holds.
+    void noteHeldDocuments(const Ticket &ticket,
+                           const nlohmann::ordered_json &result);
+    // RR-1: whether the documents the editor holds are the ones the live
+    // generation was composed from: false on the engine's fallback (BS-1)
+    // and after a reload refused them, until a ticket publishes them.
+    // Reads that answer from the held root carry it as `live`.
+    bool documentsLive() const;
+    nlohmann::ordered_json reloadRenderDocumentsUnnoted(
+        const nlohmann::json &params, bool preview_open);
     // The authored-pass tail shared by addAuthoredPass and
     // removeAuthoredPass: candidate-set preflight -> ticket enqueue ->
     // accepted response.  The operation name is the only difference.
@@ -439,11 +576,14 @@ class RenderConfigEditorService {
     // G-4 / RS-2: the material_route_default a ticket may carry, read and
     // judged by one rule for every ticket that takes it
     // (add_authored_pass, set_material_route_default, edit_graph_document,
-    // edit_graph_instances). A value other than "auto" / "forward" throws
+    // edit_graph_instances). edit_graph_document also accepts null to remove
+    // the member (automatic). A value other than "auto" / "forward" throws
     // std::invalid_argument; "forward" on a build without the runtime shader
     // compiler is the returned refusal (material_route_default_unavailable@1).
     struct RequestedRouteDefault {
         std::optional<MaterialRouteDefault> value;
+        // UD-3: edit_graph_document null restores an absent root member.
+        bool remove = false;
         std::optional<nlohmann::ordered_json> refusal;
     };
     RequestedRouteDefault requestedRouteDefault(
@@ -453,7 +593,7 @@ class RenderConfigEditorService {
     // reads the key once at start, so a change is a restart. Throws
     // RenderConfigSectionUnlocated when the root has no rendering section.
     bool writeRouteDefault(AuthoredRenderConfigDocument &candidate,
-                           MaterialRouteDefault requested) const;
+                           MaterialRouteDefault requested, bool remove = false) const;
     // RS-2: queueRootEdit for a ticket that writes the graph document and may
     // carry material_route_default: the graph edit and the route default are
     // one candidate, judged with the routes the new default gives every
@@ -505,6 +645,22 @@ class RenderConfigEditorService {
     std::optional<nlohmann::ordered_json> physicalFragmentStaleRefusal(
         const std::exception_ptr &error, std::string_view root_bytes,
         nlohmann::ordered_json details) const;
+    // RTL-1b: a ray tracing task's refusal (RayTracingRefusal) by its own
+    // code, its fields beside `details`, and for a task the document that
+    // declares it (`document`: the feature, the preset or the root) and, for
+    // a task a graph node made, the node (`node`), both read from `documents`
+    // composed again. Nullopt for any other error.
+    // RTL-1b: get_render_authoring_context's ray_layout:
+    //   {mode: "none" | "layout" | null, reference: string | null,
+    //    ray_types: [name], groups: [{name, type}], misses: [name],
+    //    default_group: string | null[, error: {code, message}]}
+    // The names are the layout document's the root names; one that cannot be
+    // read or parsed lists none and says why in `error`.
+    nlohmann::ordered_json rayLayoutAuthoringNames() const;
+    std::optional<nlohmann::ordered_json> rayTracingTaskRefusal(
+        const std::exception_ptr &error,
+        const RenderConfigCandidateDocumentSet *documents,
+        nlohmann::ordered_json details) const;
     nlohmann::ordered_json rejection(
         std::string code, std::string message,
         nlohmann::ordered_json details = nlohmann::ordered_json::object()) const;
@@ -520,9 +676,15 @@ class RenderConfigEditorService {
     std::optional<nlohmann::ordered_json> preflightGraphVariants(
         const RenderConfigCandidateDocumentSet &candidate,
         nlohmann::ordered_json details) const;
+    // Startup's logical graph/resource checks before a restart commit.
+    std::optional<nlohmann::ordered_json> restartGraphRejection(
+        const RenderConfigCandidateDocumentSet &candidate) const;
     const RenderFeatureCatalogEntry *findCatalogReference(
         std::string_view reference) const noexcept;
     RenderConfigCandidateDocumentSet currentDocumentSet() const;
+    // RR-1: currentDocumentSet with `root` in the root's place.
+    RenderConfigCandidateDocumentSet documentSetOf(
+        const AuthoredRenderConfigDocument &root) const;
     // RD-1: every render document the current composition can write, root
     // first. Nothing outside the project root, nothing engine://, and nothing
     // that is not a render document of the kind the composition reads it as.
@@ -711,6 +873,22 @@ class RenderConfigEditorService {
     nlohmann::ordered_json editRayCallableRecords(const nlohmann::json &params);
     nlohmann::ordered_json getSceneAccelerationStructures(const nlohmann::json &params) const;
     nlohmann::ordered_json editSceneAccelerationStructures(const nlohmann::json &params);
+    // RTL-1a: get_ray_layout {} -> {source_digest, layout, bindings, names,
+    // selectable_materials, selectable_procedural_assets,
+    // unresolved_bindings}: the ray group layout and the ray bindings the
+    // root names (each {reference, digest, document}, document null with
+    // error and text when it is not JSON; null when the root names none),
+    // the names the parsed layout declares, and what a binding may select.
+    nlohmann::ordered_json getRayLayout(const nlohmann::json &params) const;
+    // RTL-1a: edit_ray_layout {base_source_digest, layout?,
+    // base_layout_digest?, bindings?, base_bindings_digest?,
+    // procedural_records?}: each document whole (null takes the root's key
+    // out and leaves the file), judged by the layout and bindings parsers at
+    // once, written with the root that names it in one ticket. A document
+    // that is there needs its base digest (inside edit_batch it may be left
+    // out). A new one goes beside the root, named
+    // project://<root dir>/ray_layout.json (ray_bindings.json).
+    nlohmann::ordered_json editRayLayout(const nlohmann::json &params);
     explicit RenderConfigEditorService(
         RenderConfigEditorDependencies dependencies);
     ~RenderConfigEditorService();
@@ -789,9 +967,15 @@ class RenderConfigEditorService {
     // the assets (published_assets: images' initial assets, IA-3 the
     // value.sample_table tables) whose bytes on disk differ from what the
     // live generation read; one is enough to publish
-    // a new generation with the same documents. A refusal leaves the live generation and the
-    // editor's documents as they were. A pending or in-flight ticket, or
-    // `preview_open`, is reload_busy.
+    // a new generation with the same documents. A refusal leaves the live
+    // generation as it was; RR-1: one of the documents (not reload_busy,
+    // gate_closed, external_modification or stale_source_digest) makes what
+    // it read the editor's base (holdRefusedDocuments), so a restore or an
+    // edit on the disk's digest fixes it, and the reads say `live: false`.
+    // While the editor holds such documents (or the engine runs its
+    // fallback) a reload composes them even when nothing changed. A root
+    // that is JSON but not a pelican.graph object is not held. A pending or
+    // in-flight ticket, or `preview_open`, is reload_busy.
     nlohmann::ordered_json reloadRenderDocuments(
         const nlohmann::json &params, bool preview_open = false);
     nlohmann::ordered_json getResult(

@@ -2,6 +2,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <limits>
+#include <memory>
 
 namespace {
 using Json = nlohmann::json;
@@ -361,4 +362,48 @@ TEST_CASE("Graph attachment polls only while an edit ticket is outstanding",
     h.reply(h.take("get_graph_instances"), context());
     // Committed: the clock has nothing left to chase and stops again.
     REQUIRE_FALSE(h.model.pollWanted());
+}
+
+TEST_CASE("Graph attachment unconfirmed retry is harmless after model destruction", "[studio][graph-attachment]") {
+    std::vector<std::function<void()>> timers;
+    auto model = std::make_unique<GraphAttachmentModel>();
+    model->scheduleEdit = [&](int ms, auto task) {
+        REQUIRE((ms == 0 || ms == 500));
+        timers.push_back(std::move(task));
+    };
+    model->setConnected(true);
+    model->selectOwner(GraphAttachmentOwner{"main", 41});
+    auto requests = model->takeRpcRequests();
+    REQUIRE(requests.size() == 1);
+    model->receiveRpcResult(requests.front().request_id, context().dump());
+    REQUIRE(model->detach("left"));
+    requests = model->takeRpcRequests();
+    model->receiveRpcResult(requests.front().request_id, Json{{"status", "accepted"}, {"ticket", "edit-1"}}.dump());
+    REQUIRE(timers.size() == 1);
+    timers.front()();
+    requests = model->takeRpcRequests();
+    REQUIRE(requests.size() == 1);
+    REQUIRE(requests.front().method == "get_edit_result");
+    model->receiveRpcResult(requests.front().request_id, "invalid JSON");
+    REQUIRE(timers.size() == 2);
+    // Make any late scheduler use observable, then release the model.
+    model->scheduleEdit = [](int, auto) { FAIL("destroyed model scheduled work"); };
+    model->publishDigest = [](const auto &) { FAIL("destroyed model published a digest"); };
+    model.reset();
+    for (auto &task : timers) task();
+}
+
+TEST_CASE("Graph attachment missing accepted ticket keeps the graph diagnostic", "[studio][graph-attachment]") {
+    Harness h;
+    h.open();
+    for (const auto &reply : {Json{{"status", "accepted"}},
+                             Json{{"status", "accepted"}, {"ticket", ""}},
+                             Json{{"status", "accepted"}, {"ticket", nullptr}}}) {
+        REQUIRE(h.model.detach("left"));
+        h.reply(h.take("edit_graph_instances"), reply);
+        CHECK(h.model.notice().message == "The engine returned no graph edit ticket.");
+        CHECK_FALSE(h.model.busy());
+        CHECK(h.model.canEdit());
+        CHECK(h.model.takeRpcRequests().empty());
+    }
 }

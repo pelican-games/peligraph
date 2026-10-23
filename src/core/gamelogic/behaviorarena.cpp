@@ -1,4 +1,6 @@
+#include "../watch/userdataguard.hpp"
 #include "behaviorarena.hpp"
+#include "gamelogicreload.hpp"
 #include "../registrationownerhost.hpp"
 #include "../loader/sceneload.hpp"
 #include "../loader/effecttransaction.hpp"
@@ -873,7 +875,27 @@ void BehaviorAttachmentArena::invokeInit(Attachment &attachment) {
                         attachment.info.attachment_seq, attachment.instance.params,
                         attachment.instance.params_type};
     BehaviorCallbackScope callback{*this, attachment.info.owner};
-    attachment.instance.behavior->onInit(ctx);
+    // Candidate activation and rollback belong to the reload transaction.
+    // Let it handle the original exception without leaving a runtime failure
+    // or a deferred Stop request behind for the restored runtime.
+    if (isGameLogicReloadInProgress()) {
+        attachment.instance.behavior->onInit(ctx);
+        return;
+    }
+    auto scope = userDataScope("behavior", attachment.info.stable_name, attachment.info.entity,
+        std::to_string(attachment.info.owner) + attachment.info.canonical_params);
+    scope.key += "/" + std::to_string(attachment.info.component_index);
+    scope.fields["behavior"] = "behavior " + attachment.info.stable_name;
+    if (!beginUserData(scope)) return;
+    try { attachment.instance.behavior->onInit(ctx); }
+    catch (const std::exception &error) {
+        const auto message = "behavior " + attachment.info.stable_name + ": " + error.what();
+        failUserData(scope, message.c_str());
+        requestUserCodeStop();
+        // Preserve the activation transaction's reverse destruction and
+        // deferred-mutation rollback. The scene boundary handles the tag.
+        throw UserDataError(error.what());
+    }
 }
 
 void BehaviorAttachmentArena::invokeUpdate(Attachment &attachment, GameContext &) {
@@ -881,7 +903,11 @@ void BehaviorAttachmentArena::invokeUpdate(Attachment &attachment, GameContext &
                         attachment.info.attachment_seq, attachment.instance.params,
                         attachment.instance.params_type};
     BehaviorCallbackScope callback{*this, attachment.info.owner};
-    attachment.instance.behavior->onUpdate(ctx);
+    auto scope = userDataScope("behavior", attachment.info.stable_name, attachment.info.entity,
+        std::to_string(attachment.info.owner) + attachment.info.canonical_params);
+    scope.key += "/" + std::to_string(attachment.info.component_index);
+    scope.fields["behavior"] = "behavior " + attachment.info.stable_name;
+    guardUserCode(scope, [&] { attachment.instance.behavior->onUpdate(ctx); });
 }
 
 void BehaviorAttachmentArena::invokeEvent(Attachment &attachment,
@@ -904,7 +930,11 @@ void BehaviorAttachmentArena::invokeEvent(Attachment &attachment,
                         attachment.info.attachment_seq, attachment.instance.params,
                         attachment.instance.params_type};
     BehaviorCallbackScope callback{*this, attachment.info.owner};
-    handler->dispatch(*attachment.instance.behavior, event.payload.get(), ctx);
+    auto scope = userDataScope("behavior", attachment.info.stable_name, attachment.info.entity,
+        std::to_string(attachment.info.owner) + attachment.info.canonical_params);
+    scope.key += "/" + std::to_string(attachment.info.component_index);
+    scope.fields["behavior"] = "behavior " + attachment.info.stable_name;
+    guardUserCode(scope, [&] { handler->dispatch(*attachment.instance.behavior, event.payload.get(), ctx); });
 }
 
 void BehaviorAttachmentArena::destroyInstance(Attachment &attachment,
@@ -1170,7 +1200,22 @@ void BehaviorAttachmentArena::activateReadyEditorAttachments() {
     }
 }
 
+void refreshBehaviorUserDataFailures() {
+    const auto *arena = FastModuleContainer::tryGet<BehaviorAttachmentArena>();
+    if (!arena) return;
+    std::set<std::string> live;
+    for (const auto &info : arena->snapshot()) {
+        auto scope = userDataScope("behavior", info.stable_name, info.entity,
+            std::to_string(info.owner) + info.canonical_params);
+        scope.key += "/" + std::to_string(info.component_index);
+        live.insert(scope.key);
+        (void)beginUserData(scope);
+    }
+    retainUserDataScopes("behavior/", live);
+}
+
 void BehaviorAttachmentArena::update(GameContext &ctx) {
+    refreshBehaviorUserDataFailures();
     // PM-1b: one of the two ways a dormant attachment could wake (the
     // activation below), shut in the edit state.
     if (dormant_) return;
@@ -1193,6 +1238,7 @@ void BehaviorAttachmentArena::update(GameContext &ctx) {
             continue;
         }
         invokeUpdate(*attachment, ctx);
+        if (userCodeStopRequested()) break;
     }
     for (auto &attachment : attachments) {
         if (!attachment.info.active &&
@@ -1224,6 +1270,7 @@ void BehaviorAttachmentArena::dispatchEvent(const internal::QueuedEvent &event,
             continue;
         }
         invokeEvent(*attachment, event, ctx);
+        if (userCodeStopRequested()) break;
     }
 }
 

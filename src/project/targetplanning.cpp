@@ -164,6 +164,7 @@ std::uint64_t stableRank(std::uint64_t seed, std::uint64_t salt,
     for (const auto character : value) {
         add_byte(static_cast<std::uint8_t>(character));
     }
+    // Finalized with the SplitMix64 mixer (S. Vigna, public domain).
     hash ^= hash >> 30U;
     hash *= 0xbf58476d1ce4e5b9ULL;
     hash ^= hash >> 27U;

@@ -740,11 +740,13 @@ TEST_CASE("AU-1 an asset decodes once however many voices play it", "[audio][au1
     REQUIRE_FALSE(rig.audio().soundState(first));
     (void)GameContext{}.audio().playSound("project://tone.wav");
     REQUIRE(rig.audio().decodeCountForTesting() == 1);
-    // An asset edited in place is decoded again.
+    // An asset edited in place is decoded again in a hot reload build. EB-7:
+    // a distribution build (PELICAN_WITH_HOT_RELOAD=OFF) looks at the file
+    // only when it first decodes it, and plays what it decoded.
     std::filesystem::last_write_time(rig.sandbox.root / "tone.wav",
         std::filesystem::last_write_time(rig.sandbox.root / "tone.wav") + std::chrono::seconds{2});
     (void)GameContext{}.audio().playSound("project://tone.wav");
-    REQUIRE(rig.audio().decodeCountForTesting() == 2);
+    REQUIRE(rig.audio().decodeCountForTesting() == (PELICAN_WITH_HOT_RELOAD ? 2u : 1u));
 }
 
 TEST_CASE("AU-1 a document that mixes the two forms or two clocks is refused by name",

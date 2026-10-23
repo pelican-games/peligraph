@@ -1,4 +1,5 @@
 #include "inspectormodel.hpp"
+#include "frameplanmodel.hpp"
 #include "playstatemodel.hpp"
 #include "renderdocumentreload.hpp"
 
@@ -261,6 +262,17 @@ std::string resultErrorMessage(const Json &result) {
     if (error == result.end() || !error->is_object()) {
         return "editor command did not report a committed result";
     }
+    // MI-1s, decision 5 (engine MI-1): a model the project has not registered.
+    if (auto unknown = modelUnknownEditDescription(*error); !unknown.empty()) return unknown;
+    if (error->value("code", std::string{}) == "animation.component_invalid@1") {
+        auto message = error->value("message", std::string{});
+        const auto payload = error->find("payload");
+        if (payload != error->end() && payload->is_object()) {
+            const auto hint = payload->value("hint", std::string{});
+            if (!hint.empty()) message += "\n" + hint;
+        }
+        return message;
+    }
     const auto message = error->find("message");
     return message != error->end() && message->is_string()
                ? message->get<std::string>()
@@ -270,6 +282,10 @@ std::string resultErrorMessage(const Json &result) {
 std::string describeFailure(const Json &result) {
     const auto code = resultErrorCode(result);
     const auto message = resultErrorMessage(result);
+    // MI-1s: said in words, without method_unavailable in front of it.
+    if (const auto error = result.find("error");
+        error != result.end() && !modelUnknownEditDescription(*error).empty())
+        return message;
     return code.empty() ? message : code + " - " + message;
 }
 
@@ -352,6 +368,10 @@ makeInspectorWidgetPlan(const Json &component,
     std::vector<InspectorWidgetDescriptor> result;
     result.reserve(fields.size());
     for (const Json &field : fields) {
+        // MT-2s: a list (simplemodelview.materials since engine MT-2) is no
+        // field of its own; its rows are drawn from the schema node
+        // (collectInspectorLists).
+        if (field.is_object() && field.value("type", std::string{}) == "list") continue;
         auto declaration =
             Pelican::parseSchemaFieldDeclaration(field, "schema field");
         const std::string field_name = declaration.name;
@@ -478,6 +498,20 @@ nlohmann::json addObjectDeclaration(AddObjectKind kind, const std::string &name)
     return Json{{"name", name}, {"components", std::move(components)}};
 }
 
+nlohmann::json modelObjectDeclaration(const std::string &name, const std::string &model) {
+    auto declaration = addObjectDeclaration(AddObjectKind::Cube, name);
+    declaration["components"][1]["model"] = model;
+    return declaration;
+}
+
+std::string modelObjectBaseName(std::string_view model) {
+    std::string name;
+    for (const char c : model)
+        name.push_back(std::isalnum(static_cast<unsigned char>(c)) || c == '_' ? c : '_');
+    if (name.find_first_not_of('_') == std::string::npos) return "Model";
+    return name;
+}
+
 namespace {
 
 constexpr double DegreesPerRadian = 57.295779513082320876798154814105;
@@ -589,6 +623,19 @@ double inspectorDisplayScale(const InspectorWidgetDescriptor &field) {
     return radians && scalar ? DegreesPerRadian : 1.0;
 }
 
+std::string inspectorAngleTip(const InspectorWidgetDescriptor &field) {
+    if (field.component_slot == "camera" && field.field_name == "controller.yaw")
+        return "Yaw: the turn about +Y from +Z towards -X, in degrees (a light's azimuth turns the same way)";
+    if (field.component_slot == "camera" && field.field_name == "controller.pitch")
+        return "Pitch: degrees from the horizon towards +Y (negative looks down)";
+    return {};
+}
+
+std::string inspectorDirectionAngleTip(std::size_t index) {
+    return index == 0 ? "Azimuth: the turn about +Y from +Z towards -X, in degrees (as a camera's yaw)"
+                      : "Elevation: degrees above the horizon (negative points down)";
+}
+
 bool isDirectionField(const InspectorWidgetDescriptor &descriptor) {
     return descriptor.field_name == "direction" && descriptor.columns == 3 &&
            descriptor.kind == InspectorWidgetKind::VectorDrag;
@@ -603,13 +650,15 @@ std::array<double, 2> directionAnglesDegrees(const std::array<double, 3> &direct
     const double z = direction[2] / length;
     const double elevation = std::asin(y) * DegreesPerRadian;
     if (std::abs(x) < 1.0e-12 && std::abs(z) < 1.0e-12) return {0.0, elevation};
-    return {wrapDegrees(std::atan2(x, z) * DegreesPerRadian), elevation};
+    // UX-14, decision 3: the azimuth turns as a camera.controller's yaw does
+    // (engine CC-1): 0 is +Z, and it grows towards -X.
+    return {wrapDegrees(std::atan2(-x, z) * DegreesPerRadian), elevation};
 }
 
 std::array<double, 3> directionFromAnglesDegrees(const std::array<double, 2> &angles) {
     const double azimuth = angles[0] / DegreesPerRadian;
     const double elevation = angles[1] / DegreesPerRadian;
-    std::array<double, 3> result{std::cos(elevation) * std::sin(azimuth), std::sin(elevation),
+    std::array<double, 3> result{-std::cos(elevation) * std::sin(azimuth), std::sin(elevation),
                                  std::cos(elevation) * std::cos(azimuth)};
     // Straight down is (0, -1, 0), not a rounding away from it.
     for (double &component : result)
@@ -702,8 +751,10 @@ constexpr std::array<UnavailableComponentText, 8> UnavailableComponentTexts{{
     {"seqplayer.module_unavailable@1", "This build has no sequence player module", NotInThisBuild},
     // MG-2a: ray group layouts are v3 only. The code keeps its old name; what
     // it means now is that the project declares no ray group layout at all.
-    {"pelican.ray_instance_requires_layout_v2@1", "This project has no ray group layout",
-     "needs a ray layout"},
+    // RTL-2s b, decision 5: the way to one is Enable hit groups.
+    {"pelican.ray_instance_requires_layout_v2@1",
+     "No ray group layout: enable hit groups first",
+     "needs hit groups"},
     // AU-2: a sound plays only when its extension and its first bytes both
     // say WAV, or both say Ogg Vorbis.
     {"audio.format_unsupported@1", "Sound extension and contents disagree (WAV or Ogg Vorbis)",
@@ -746,6 +797,326 @@ std::string componentUnavailableDescription(std::string_view code) {
     return sentence + " (" + std::string{code} + ")";
 }
 
+namespace {
+
+// CT-6s, decision 5. One sentence per code of the ray tracing task parser
+// (computetaskdefinitionjson.cpp); {task} is the task the message names
+// ("compute task '<name>'"), {name} what it quotes after `quoted`. A new code
+// reads as the engine's message until a row is added here.
+struct RayTracingRefusalText {
+    std::string_view code;
+    std::string_view sentence;
+    std::string_view quoted;
+};
+// RTL-2s, decision 3 (engine RTL-1a / RTL-1b): the rest of the task
+// parser's codes, and the layout's and the assignments' parsers'.
+constexpr RayTracingRefusalText RayLayoutRefusalTexts[] = {
+    {"pelican.ray_tracing.generation_rolled_back@1",
+     "The engine could not draw the first frame with the new ray tracing setup and kept the one before", ""},
+    {"pelican.ray_tracing.shader_record_abi_mismatch@1",
+     "Shader {name}'s shader record does not match the ray group layout's: every hit shader of a traced ray "
+     "type declares the engine's fields (engine_record), then the layout's record, in order",
+     "shader '"},
+    {"pelican.ray_tracing.payload_mismatch@1",
+     "A ray's payload is not the payload its miss or its hit group's shaders take (a ray type's shaders share "
+     "one payload type)",
+     ""},
+    {"pelican.ray_tracing.ray_hit_group_invalid@1",
+     "{task}'s hit shaders do not fit the hit group's type: a triangles group takes a closest hit and an any "
+     "hit, a procedural one an intersection too",
+     ""},
+    {"pelican.ray_group_type_declared_in_task@1",
+     "A hit group's type (triangles or procedural) is the ray group layout's: a task names only its shaders",
+     ""},
+    {"pelican.procedural_group_requires_intersection@1",
+     "A procedural hit group needs an intersection shader and a closest-hit shader", ""},
+    // RTL-3s: met by a hit shader without the intersection's hitAttributeEXT.
+    {"pelican.procedural_hit_attribute_mismatch@1",
+     "Shader {name}'s hit attribute is not its procedural hit group's intersection's: the group's hit shaders "
+     "declare one hitAttributeEXT of the intersection's type",
+     "shader '"},
+    {"pelican.ray_profile_authored_anyhit@1",
+     "The layout's material alpha profile makes the any-hit shader itself: {task} cannot name one", ""},
+    {"pelican.ray_group_name_unknown@1", "The ray group layout has no such name", ""},
+    {"pelican.ray_tracing.layout_shader_invalid@1", "{task}'s ray tracing places must each name a shader", ""},
+    {"pelican.ray_tracing.layout_source_only@1",
+     "With a ray group layout, {task}'s shaders are GLSL sources the engine compiles, not SPIR-V", ""},
+    {"pelican.ray_tracing.callable_records_invalid@1",
+     "{task} needs callable, callable_record and callable_records together, one record per callable", ""},
+    {"pelican.ray_tracing.invalid_pipeline_declaration@1",
+     "{task}'s ray_tracing is not a ray tracing pipeline the engine reads", ""},
+    {"pelican.ray_tracing.ambiguous_pipeline_declaration@1",
+     "{task} names a shader and a ray tracing pipeline both: it runs one of them", ""},
+    {"pelican.ray_tracing.layout_requires_runtime_compiler@1",
+     "A ray group layout needs the engine's runtime shader compiler, which this build does not have", ""},
+    {"pelican.ray_tracing.bindings_without_layout@1",
+     "Hit group assignments need a ray group layout: the root names assignments and no layout", ""},
+    {"pelican.ray_group_layout.version_unsupported@1",
+     "The ray group layout's version is not one this engine reads", ""},
+    {"pelican.ray_group_layout_invalid@1", "The ray group layout is not one the engine reads", ""},
+    {"pelican.ray_record_name_reserved@1", "A record field of the ray group layout has a name the engine keeps", ""},
+    {"pelican.ray_record_type_unsupported@1",
+     "A record field of the ray group layout has a type other than i32, u32, f32, vec2, vec3 or vec4", ""},
+    {"pelican.ray_engine_record_unknown@1",
+     "The layout's engine_record names a field the engine does not have (material_index, geometry_index, "
+     "geometry_kind, procedural_transform)",
+     ""},
+    {"pelican.ray_engine_record_duplicate@1", "The layout's engine_record names a field twice", ""},
+    {"pelican.ray_layout_destination_exists@1",
+     "A file is already where the ray layout's document would be written, and the root does not name it", ""},
+    {"pelican.ray_bindings.version_unsupported@1",
+     "The hit group assignments' version is not one this engine reads", ""},
+    {"pelican.ray_binding_record_invalid@1",
+     "A hit group assignment's record (or a procedural asset's) does not have exactly the layout's record fields",
+     ""},
+    {"pelican.ray_binding_selector_exactly_one@1",
+     "A hit group assignment selects a material or a procedural asset, exactly one", ""},
+    {"pelican.ray_binding_selector_duplicate@1", "Two hit group assignments select the same material", ""},
+    {"pelican.ray_row_binding_ambiguous@1",
+     "Objects of one material are assigned to different hit groups or records", ""},
+    {"pelican.procedural_selector_duplicate@1", "A procedural asset is assigned to a hit group twice", ""},
+    {"pelican.procedural_binding_record_forbidden@1",
+     "A procedural asset's record is the asset's own, not its assignment's", ""},
+    {"pelican.procedural_group_unresolved@1",
+     "A procedural object has no procedural hit group: assign its asset to one", ""},
+    {"pelican.procedural_group_kind_conflict@1",
+     "A procedural asset is assigned to a hit group that is not procedural", ""},
+    {"pelican.ray_bindings_invalid@1", "The hit group assignments are not ones the engine reads", ""},
+};
+
+constexpr std::array<RayTracingRefusalText, 16> RayTracingRefusalTexts{{
+    {"pelican.ray_layout_mode_change_requires_restart@1",
+     "Whether the project has a ray group layout changes only when the engine restarts: restart "
+     "it to apply this",
+     ""},
+    {"pelican.ray_tracing.legacy_syntax_with_layout@1",
+     "This project has a ray group layout: {task} names its shaders in traced_ray_types, misses "
+     "and hit_shaders, not miss and closesthit",
+     ""},
+    {"pelican.ray_tracing.unknown_shader_stage@1",
+     "{task}'s ray_tracing has {name}, which the engine does not read", "field '"},
+    {"pelican.ray_tracing.unsupported_shader_stage@1",
+     "{task} cannot name a {name} shader here: any-hit and intersection shaders belong to a hit "
+     "group of a ray group layout",
+     "stage '"},
+    {"pelican.ray_tracing.shader_stage_required@1",
+     "{task} needs a raygen, a miss and a closesthit shader", ""},
+    {"pelican.ray_tracing.invalid_shader_reference@1",
+     "{task}'s ray tracing stages must each name a shader", ""},
+    {"pelican.ray_tracing.traced_ray_types_invalid@1",
+     "{task}'s traced_ray_types must be ray types of the ray group layout, each once", ""},
+    {"pelican.ray_tracing.miss_shader_missing@1",
+     "{task} needs a miss shader for every miss of the ray group layout", ""},
+    {"pelican.ray_tracing.miss_shader_unknown@1", "The ray group layout has no miss {name}", "miss='"},
+    {"pelican.ray_tracing.hit_shader_missing@1",
+     "{task} needs a closest-hit shader for every ray type it traces and every hit group", ""},
+    {"pelican.ray_tracing.hit_shader_untraced@1",
+     "{task} gives hit shaders for {name}, a ray type it does not trace", "ray type '"},
+    {"pelican.ray_tracing.hit_shader_unknown_group@1",
+     "The ray group layout has no hit group {name}", "group='"},
+    {"pelican.ray_tracing.invalid_recursion@1",
+     "{task}'s max_recursion must be a whole number from 1", ""},
+    {"pelican.ray_tracing.invalid_trace_dispatch@1",
+     "A ray tracing task launches its rays with exactly one of rays [x, y, z], rays_from or "
+     "indirect",
+     ""},
+    {"pelican.ray_tracing.rays_from_requires_pipeline@1",
+     "Only a ray tracing task launches rays_from an image: a compute task counts groups", ""},
+    {"pelican.ray_tracing.trace_extent_required@1",
+     "{task} needs to say how many rays it launches: rays, rays_from or indirect", ""},
+}};
+
+// The text after `marker` in `message`, up to the next quote.
+std::string quotedAfter(std::string_view message, std::string_view marker) {
+    if (marker.empty()) return {};
+    const auto at = message.find(marker);
+    if (at == std::string_view::npos) return {};
+    const auto begin = at + marker.size();
+    const auto end = message.find('\'', begin);
+    return std::string{message.substr(begin, end == std::string_view::npos ? std::string_view::npos : end - begin)};
+}
+
+} // namespace
+
+namespace {
+std::string rayTracingRefusalSentence(const RayTracingRefusalText &found, std::string_view message,
+                                      const nlohmann::json &error);
+} // namespace
+
+std::string rayTracingRefusalDescription(std::string_view code, std::string_view message) {
+    return rayTracingRefusalDescription(nlohmann::json{{"code", std::string{code}}, {"message", std::string{message}}});
+}
+
+std::string rayTracingRefusalDescription(const nlohmann::json &relayed) {
+    // A relayed refusal may carry its fields as error_fields (an edit's
+    // reply); the engine's own puts them beside its code.
+    nlohmann::json error = relayed;
+    if (relayed.is_object())
+        if (const auto inner = relayed.find("error_fields"); inner != relayed.end() && inner->is_object())
+            for (const auto &[key, value] : inner->items())
+                if (!error.contains(key)) error[key] = value;
+    const auto code_text = error.is_object() ? error.value("code", std::string{}) : std::string{};
+    const auto message_text = error.is_object() ? error.value("message", std::string{}) : std::string{};
+    const std::string_view code = code_text;
+    const std::string_view message = message_text;
+    const RayTracingRefusalText *entry = nullptr;
+    // RTL-2s: the refusal's own code first (a rolled-back generation quotes
+    // the code that rolled it back), then a code its message carries.
+    const auto find = [&](auto matches) {
+        for (const auto &candidate : RayLayoutRefusalTexts)
+            if (matches(candidate)) return &candidate;
+        for (const auto &candidate : RayTracingRefusalTexts)
+            if (matches(candidate)) return &candidate;
+        return static_cast<const RayTracingRefusalText *>(nullptr);
+    };
+    entry = find([&](const RayTracingRefusalText &candidate) { return code == candidate.code; });
+    if (entry == nullptr)
+        entry = find([&](const RayTracingRefusalText &candidate) {
+            return message.find(candidate.code) != std::string_view::npos;
+        });
+    if (entry == nullptr) return {};
+    // RTL-2s, decision 3 (engine RTL-1b): where, from the refusal's fields
+    // (beside its code), else from what the parser's message quotes.
+    const auto field = [&](const char *key, std::string_view marker) {
+        auto value = error.is_object() && error.contains(key) && error.at(key).is_string()
+                         ? error.at(key).get<std::string>()
+                         : std::string{};
+        if (value.empty() && !marker.empty()) {
+            const auto own = message.substr(std::min(message.size(), message.find(entry->code)));
+            value = quotedAfter(own, marker);
+        }
+        return value == "<all>" ? std::string{} : value;
+    };
+    std::vector<std::string> where;
+    if (const auto ray_type = field("ray_type", "ray_type='"); !ray_type.empty())
+        where.push_back("ray type " + ray_type);
+    if (const auto group = field("group", "group='"); !group.empty()) where.push_back("hit group " + group);
+    if (const auto miss = field("miss", "miss='"); !miss.empty()) where.push_back("miss " + miss);
+    if (const auto stage = field("stage", {}); !stage.empty()) where.push_back("stage " + stage);
+    if (entry->code == "pelican.ray_group_name_unknown@1")
+        if (const auto name = field("name", {}); !name.empty()) {
+            const auto kind = field("kind", {});
+            where.push_back((kind == "ray_type" ? std::string{"ray type"} : kind == "group" ? "hit group" : kind) +
+                            " " + name);
+        }
+    auto described = rayTracingRefusalSentence(*entry, message, error);
+    std::string at;
+    for (const auto &part : where) {
+        // A name the sentence already says is not said again.
+        const auto value = part.substr(part.rfind(' ') + 1);
+        if (described.find(value) != std::string::npos) continue;
+        at += (at.empty() ? "" : ", ") + part;
+    }
+    if (!at.empty()) described += " (" + at + ")";
+    return described + " (" + std::string{entry->code} + ").";
+}
+
+namespace {
+
+// RTL-3s, decision 6 (engine EB-3): a shader's file as a sentence names it --
+// project://shaders/x.rchit is shaders/x.rchit.
+std::string refusalShaderName(const nlohmann::json &shader) {
+    if (!shader.is_string()) return {};
+    auto name = shader.get<std::string>();
+    if (name.starts_with("project://")) name.erase(0, std::string_view{"project://"}.size());
+    return name;
+}
+
+// The record fields a refusal's expected lists, "material_index u32, ...".
+std::string refusalRecordFields(const nlohmann::json &fields) {
+    std::string listed;
+    for (const auto &field : fields) {
+        if (!field.is_object()) continue;
+        const auto name = field.value("name", std::string{});
+        const auto type = field.value("type", std::string{});
+        listed += (listed.empty() ? "" : ", ") + (name.empty() ? "?" : name) + (type.empty() ? "" : " " + type);
+    }
+    return listed;
+}
+
+// shader_record_abi_mismatch and payload_mismatch from their fields
+// (shader, stage, expected, actual): what to do to which shader. Empty when
+// the refusal has no fields (an engine before EB-3): the table's sentence.
+std::string rayShaderContractSentence(std::string_view code, const nlohmann::json &error) {
+    if (!error.is_object() || !error.contains("expected")) return {};
+    const auto &expected = error.at("expected");
+    const auto shader = refusalShaderName(error.value("shader", nlohmann::json{}));
+    const auto stage = error.value("stage", std::string{});
+    if (code == "pelican.ray_tracing.shader_record_abi_mismatch@1") {
+        const auto named = shader.empty() ? std::string{"The shader"} : "Shader " + shader;
+        if (expected.is_array() && !expected.empty())
+            return named + " declares a shader record that is not the ray group layout's: declare its fields in "
+                           "order (" + refusalRecordFields(expected) + "), or take the shaderRecordEXT declaration out";
+        if (expected.is_array())
+            return named + " declares a shader record and the ray group layout has none: take its shaderRecordEXT "
+                           "declaration out";
+        return named + " declares a shader record where none is written (" +
+               (stage.empty() ? std::string{"a raygen, a miss or an untraced ray type"} : "its stage " + stage) +
+               "): take its shaderRecordEXT declaration out";
+    }
+    if (code == "pelican.ray_tracing.payload_mismatch@1") {
+        const auto wanted = expected.is_string() ? expected.get<std::string>() : std::string{"?"};
+        const auto &actual = error.contains("actual") ? error.at("actual") : nlohmann::json{};
+        if (shader.empty())
+            return "No " + (stage.empty() ? std::string{"hit"} : stage) + " shader takes the ray's payload (" +
+                   wanted + ") here: pick one";
+        if (stage == "anyhit" && error.contains("closesthit"))
+            return "Any hit " + shader + " takes the payload as " +
+                   (actual.is_string() ? actual.get<std::string>() : std::string{"nothing"}) +
+                   " and the closest hit beside it (" +
+                   refusalShaderName(error.at("closesthit")) + ") as " + wanted + ": make them one type";
+        std::string caller;
+        if (const auto found = error.find("caller"); found != error.end() && found->is_object())
+            caller = refusalShaderName(found->value("shader", nlohmann::json{}));
+        const auto by = caller.empty() ? std::string{} : " (traced by " + caller + ")";
+        if (!actual.is_string())
+            return "Shader " + shader + " declares no incoming payload, and the ray it answers carries " + wanted +
+                   by + ": declare rayPayloadInEXT " + wanted;
+        return "Shader " + shader + " takes the payload as " + actual.get<std::string>() +
+               ", and the ray it answers carries " + wanted + by + ": make them one type";
+    }
+    return {};
+}
+
+std::string rayTracingRefusalSentence(const RayTracingRefusalText &found, std::string_view message,
+                                      const nlohmann::json &error) {
+    const auto *entry = &found;
+    if (auto contract = rayShaderContractSentence(entry->code, error); !contract.empty()) return contract;
+    // The parser's own message, from its code on: the task and what it quotes
+    // (RTL-2s: the task the refusal's fields name, when it has them).
+    const auto own = message.substr(std::min(message.size(), message.find(entry->code)));
+    auto task = error.is_object() && error.contains("task") && error.at("task").is_string()
+                    ? error.at("task").get<std::string>()
+                    : std::string{};
+    if (task.empty()) task = quotedAfter(own, "task '");
+    const auto name = quotedAfter(own, entry->quoted);
+    std::string pattern{entry->sentence};
+    // A layout's fields where the project has none: the other form.
+    if (entry->code == "pelican.ray_tracing.unknown_shader_stage@1" &&
+        (name == "traced_ray_types" || name == "misses" || name == "hit_shaders"))
+        pattern = "This project has no ray group layout: {task} names its shaders in miss and "
+                  "closesthit, not {name}";
+    std::string sentence;
+    for (std::size_t at = 0; at < pattern.size();) {
+        const auto open = pattern.find('{', at);
+        if (open == std::string::npos) {
+            sentence += pattern.substr(at);
+            break;
+        }
+        const auto close = pattern.find('}', open);
+        sentence += pattern.substr(at, open - at);
+        const auto key = pattern.substr(open + 1, close - open - 1);
+        if (key == "task")
+            sentence += task.empty() ? (open == 0 ? "The task" : "the task") : "Task " + task;
+        else
+            sentence += name.empty() ? "?" : name;
+        at = close + 1;
+    }
+    return sentence;
+}
+
+} // namespace
+
 std::string knownRefusalDescription(std::string_view code, std::string_view message,
                                     bool name_document) {
     // RL-1s, decision 5: the render document on disk was rewritten and its
@@ -754,17 +1125,29 @@ std::string knownRefusalDescription(std::string_view code, std::string_view mess
     if (code == "external_modification" && renderDocumentsRefusedOnDisk())
         return std::string{renderDiskRefusalSentence} + "\n" + std::string{code} + ": " +
                std::string{message};
+    // BS-1s, decision 7 (engine BS-1b): a render document that is not JSON.
+    if (code == "render_document_syntax@1" ||
+        message.find("render_document_syntax@1") != std::string_view::npos)
+        if (auto syntax = renderDocumentSyntaxDescription(
+                nlohmann::json{{"code", "render_document_syntax@1"}, {"message", std::string{message}}});
+            !syntax.empty())
+            return syntax;
     if (findUnavailableComponentText(code) != nullptr)
         return componentUnavailableDescription(code);
     for (const auto &entry : UnavailableComponentTexts)
         if (message.find(entry.code) != std::string_view::npos)
             return componentUnavailableDescription(entry.code);
+    // CT-6s, decision 5: a render.compute's ray tracing.
+    if (auto ray = rayTracingRefusalDescription(code, message); !ray.empty()) return ray;
     // LP-4a: a view_select refusal carries its fields in the message.
     const nlohmann::json error{{"code", std::string{code}}, {"message", std::string{message}}};
     if (auto view_select = viewSelectRefusalDescription(error); !view_select.empty())
         return view_select;
     // PM-3a: the play refusals (set_play_state, advance_frames, step_frame).
     if (auto play = playRefusalDescription(error); !play.empty()) return play;
+    // MI-1s, decision 5: register_model / unregister_model (engine MI-1).
+    if (code.starts_with("model."))
+        if (auto model = modelRefusalDescription(error); !model.empty()) return model;
     // LP-4c: and so does a loop's or a definition's.
     return graphLoopRefusalDescription(error, name_document);
 }
@@ -962,7 +1345,7 @@ struct GraphLoopRefusalText {
     std::string_view code;
     std::string_view sentence;
 };
-constexpr std::array<GraphLoopRefusalText, 49> GraphLoopRefusalTexts{{
+constexpr std::array<GraphLoopRefusalText, 53> GraphLoopRefusalTexts{{
     {"graph.loop_branch_else_missing@1",
      "Loop {node} has no else: its last branch must have no condition"},
     {"graph.loop_branch_interface@1",
@@ -1086,6 +1469,19 @@ constexpr std::array<GraphLoopRefusalText, 49> GraphLoopRefusalTexts{{
     // table when the graph is built.
     {"value.sample_table_unreadable@1", "{node} cannot read the table {asset}: {reason}"},
     {"value.sample_table_row_unknown@1", "{asset} has no row {row}; its rows are {rows}"},
+    // UX-15b, decision 2 (engine EL-2): a frozen physical plan (a
+    // vulkan_physical_fragments package) whose fingerprint -- `fingerprint`
+    // is "logical_graph" or "automatic_plan" -- is not the plan's any more.
+    {"physical_fragment_stale",
+     "The frozen plan no longer matches the graph ({fingerprint}); Eject again"},
+    // FO-1s, decisions 1 and 4 (engine FO-1, EB-1). frame_node_order: the
+    // order put `first` before `second`, but `second` must run first; {why}
+    // is said from `reason` (frameNodeOrderWhy). An image's or a buffer's
+    // key the engine does not read: {hint} is the nearest key it does, or
+    // the keys it reads.
+    {"frame_node_order.conflicts_dependency@1", "{second} must stay before {first}: {why}"},
+    {"graph.image_key_unknown@1", "Image {image} has a key {key} the engine does not read{hint}"},
+    {"graph.buffer_key_unknown@1", "Buffer {buffer} has a key {key} the engine does not read{hint}"},
 }};
 
 // IA-1s, decision 2: graph.image_initial_mismatch@1, by `what`. extent reads
@@ -1210,6 +1606,80 @@ bool graphRefusalSentenceNamesDefinition(std::string_view code) {
         if (candidate.code == code)
             return candidate.sentence.find("{definition}") != std::string_view::npos;
     return false;
+}
+
+// FO-1s, decision 1 (engine FO-1): why `second` must run before `first`. The
+// engine names the reason of the first step from `second` on the shortest
+// path it found; `via` is the rest of that path, `first` at its end.
+std::string frameNodeOrderWhy(const nlohmann::json &fields) {
+    const auto first = graphRefusalFieldText(fields, "first");
+    const auto second = graphRefusalFieldText(fields, "second");
+    std::vector<std::string> via;
+    if (const auto found = fields.find("via"); found != fields.end() && found->is_array())
+        for (const auto &node : *found)
+            if (node.is_string()) via.push_back(node.get<std::string>());
+    const auto reason = graphRefusalFieldText(fields, "reason");
+    if (reason == "canonical_order") {
+        const auto anchor = fields.contains("anchor") ? graphRefusalFieldText(fields, "anchor") : std::string{};
+        return "the stages of a frame run in a fixed order" +
+               (anchor.empty() ? std::string{} : " (" + anchor + " stands between them)");
+    }
+    const auto &next = via.empty() ? first : via.front();
+    std::string why;
+    if (reason == "reads")
+        why = next + " reads " + graphRefusalFieldText(fields, "resource") + ", which " + second + " writes";
+    else if (reason == "after")
+        why = next + " is set to run after " + second;
+    else if (reason == "before")
+        why = second + " is set to run before " + next;
+    else
+        why = next + " waits on " + second;
+    if (!via.empty()) {
+        why += ", and " + first + " waits on " + next;
+        if (via.size() > 1) {
+            std::string rest;
+            for (std::size_t index = 1; index < via.size(); ++index) rest += (rest.empty() ? "" : ", ") + via[index];
+            why += " through " + rest;
+        }
+    }
+    return why;
+}
+
+// FO-1s, decision 4 (engines FO-1 / EB-1): an image's or a buffer's key the
+// engine does not read -- the nearest key it reads (a slip of two letters at
+// most), else the keys it reads.
+std::string unknownKeyHint(const nlohmann::json &fields) {
+    const auto key = graphRefusalFieldText(fields, "key");
+    std::vector<std::string> allowed;
+    if (const auto found = fields.find("allowed"); found != fields.end() && found->is_array())
+        for (const auto &name : *found)
+            if (name.is_string()) allowed.push_back(name.get<std::string>());
+    if (allowed.empty()) return {};
+    const auto distance = [](std::string_view from, std::string_view to) {
+        std::vector<std::size_t> row(to.size() + 1);
+        for (std::size_t j = 0; j <= to.size(); ++j) row[j] = j;
+        for (std::size_t i = 1; i <= from.size(); ++i) {
+            std::size_t diagonal = row[0];
+            row[0] = i;
+            for (std::size_t j = 1; j <= to.size(); ++j) {
+                const std::size_t above = row[j];
+                row[j] = std::min({row[j] + 1, row[j - 1] + 1, diagonal + (from[i - 1] == to[j - 1] ? 0u : 1u)});
+                diagonal = above;
+            }
+        }
+        return row[to.size()];
+    };
+    const std::string *nearest = nullptr;
+    std::size_t best = 3;
+    for (const auto &name : allowed)
+        if (const auto d = distance(key, name); d < best) {
+            best = d;
+            nearest = &name;
+        }
+    if (nearest != nullptr) return "; the nearest it reads is " + *nearest;
+    std::string keys;
+    for (const auto &name : allowed) keys += (keys.empty() ? "" : ", ") + name;
+    return "; it reads " + keys;
 }
 
 } // namespace
@@ -1392,6 +1862,10 @@ std::string graphLoopRefusalDescription(const nlohmann::json &error, bool name_d
         fields["actual"] = actual;
         fields["expected"] = expected;
     }
+    // FO-1s, decisions 1 and 4.
+    if (entry->code == "frame_node_order.conflicts_dependency@1") fields["why"] = frameNodeOrderWhy(fields);
+    if (entry->code == "graph.image_key_unknown@1" || entry->code == "graph.buffer_key_unknown@1")
+        fields["hint"] = unknownKeyHint(fields);
     for (std::size_t index = 0; index < pattern.size();) {
         const auto open = pattern.find('{', index);
         if (open == std::string_view::npos) {
@@ -1445,7 +1919,17 @@ constexpr std::array<GraphLoopRefusalText, 5> AudioAnalysisRefusalTexts{{
     {"audio.analysis_failed@1", "{asset} could not be baked into {out}: {message}"},
 }};
 
+// UX-14, decision 5 (engine AB-2): the table or its manifest was held open.
+constexpr std::string_view AudioAnalysisOutputLockedText =
+    "{asset} could not be baked into {out}: the table is in use \xE2\x80\x94 try Bake again";
+
 } // namespace
+
+bool audioAnalysisOutputLocked(const nlohmann::json &error) {
+    if (!error.is_object() || error.value("code", std::string{}) != "audio.analysis_failed@1") return false;
+    const auto fields = graphRefusalFields(error, "audio.analysis_failed@1");
+    return fields && fields->is_object() && fields->value("reason", std::string{}) == "output_locked";
+}
 
 std::string audioAnalysisRefusalDescription(const nlohmann::json &error) {
     if (!error.is_object()) return {};
@@ -1464,7 +1948,225 @@ std::string audioAnalysisRefusalDescription(const nlohmann::json &error) {
         fields[key] = graphRefusalSource(nlohmann::json{{"document", graphRefusalFieldText(fields, key)}},
                                          "document");
     std::string sentence;
-    const std::string_view pattern = entry->sentence;
+    const std::string_view pattern =
+        audioAnalysisOutputLocked(error) ? AudioAnalysisOutputLockedText : entry->sentence;
+    for (std::size_t index = 0; index < pattern.size();) {
+        const auto open = pattern.find('{', index);
+        if (open == std::string_view::npos) {
+            sentence += pattern.substr(index);
+            break;
+        }
+        const auto close = pattern.find('}', open);
+        sentence += pattern.substr(index, open - index);
+        sentence += graphRefusalFieldText(fields, pattern.substr(open + 1, close - open - 1));
+        index = close + 1;
+    }
+    return sentence + " (" + std::string{entry->code} + ").";
+}
+
+namespace {
+
+// HW-2s / AV-1s: the Assets dock's refusals (engine PJ-1 and AV-1).
+constexpr std::array<GraphLoopRefusalText, 10> ProjectSettingsRefusalTexts{{
+    {"project.settings_change_unsupported@1",
+     "{store} cannot change that way while the engine runs: {reason}"},
+    {"external_modification", "project.json changed outside Studio since it was read; try again"},
+    {"project.hot_reload_invalid@1", "Reload when saved outside cannot take that path: {reason}"},
+    {"project.settings_invalid@1", "{store} cannot be declared that way: {reason}"},
+    {"project.settings_transaction_busy@1",
+     "project.json is being written by another edit; try again"},
+    {"assets_store_unknown@1", "No asset store is named {store}"},
+    {"assets_manifest_undeclared@1", "Asset store {store} declares no manifest"},
+    {"assets_manifest_write_failed@1", "The manifest of {store} could not be written: {reason}"},
+    {"assets_verification_unavailable@1", "This engine does not check asset contents"},
+    // FO-1s, decision 4 (engine EB-1): Update manifest while a check runs.
+    {"assets_verification_running@1",
+     "The verification of {store} is running \xE2\x80\x94 try again once it is done"},
+}};
+
+// An Undo the engine turned back because the store was there when it started.
+constexpr std::string_view ProjectSettingsUndoNeedsRestartText =
+    "{store} was there when the engine started, so it stays declared \xE2\x80\x94 only stores added since then can be undone";
+
+// MT-1s, decision 7: the material editor's refusals (engine MT-1).
+constexpr std::array<GraphLoopRefusalText, 16> MaterialRefusalTexts{{
+    {"material.value_invalid@1", "{param} cannot take that value: {reason}"},
+    {"material.param_unknown@1", "The surface of {path} declares no {kind} {param}"},
+    {"material.document_unknown@1", "{path} is not a material document the project lists: {reason}"},
+    {"material.document_invalid@1", "{path} would not load: {reason}"},
+    {"material.name_unknown@1", "No material is named {name}: {reason}"},
+    {"material.name_invalid@1", "{name} cannot be a material name: {reason}"},
+    {"material.name_conflict@1", "A material named {name} exists already"},
+    {"material.path_invalid@1", "{path} cannot be a material document: {reason}"},
+    {"material.path_conflict@1", "{path} is there already"},
+    {"material.surface_unknown@1", "The surface {surface} cannot be read: {reason}"},
+    {"material.model_unknown@1", "{model} cannot take a material: {reason}"},
+    {"material.binding_invalid@1", "The materials of {model} cannot be bound that way: {reason}"},
+    {"material.object_unknown@1", "Object {object} cannot take a material of its own: {reason}"},
+    {"material.transaction_busy@1", "{path} is being written by another edit; try again"},
+    // MT-3s, decision 5 (engine MT-3): {path, material, routing, bound_by:
+    // [{model, routing}]}; {models} is bound_by's models, one after another.
+    {"material.routing_conflict@1",
+     "{material} keeps its routing: {models} draw it through their bindings; bind them to another "
+     "material first"},
+    {"external_modification", "{path} changed outside Studio since it was read; it was read again, try again"},
+}};
+
+std::string fillRefusalPattern(std::string_view pattern, const nlohmann::json &fields) {
+    std::string sentence;
+    for (std::size_t index = 0; index < pattern.size();) {
+        const auto open = pattern.find('{', index);
+        if (open == std::string_view::npos) {
+            sentence += pattern.substr(index);
+            break;
+        }
+        const auto close = pattern.find('}', open);
+        sentence += pattern.substr(index, open - index);
+        sentence += graphRefusalFieldText(fields, pattern.substr(open + 1, close - open - 1));
+        index = close + 1;
+    }
+    return sentence;
+}
+
+} // namespace
+
+std::string materialRefusalDescription(const nlohmann::json &error) {
+    if (!error.is_object()) return {};
+    const auto code = error.value("code", std::string{});
+    const auto entry = std::ranges::find(MaterialRefusalTexts, code, &GraphLoopRefusalText::code);
+    if (entry == MaterialRefusalTexts.end()) return {};
+    auto fields = graphRefusalFields(error, entry->code).value_or(nlohmann::json::object());
+    if (!fields.is_object()) fields = nlohmann::json::object();
+    // What the engine leaves out reads as a word, not a "?".
+    if (!fields.contains("path") || !fields["path"].is_string()) fields["path"] = "the material";
+    if (!fields.contains("kind") || !fields["kind"].is_string()) fields["kind"] = "value";
+    if (!fields.contains("reason")) fields["reason"] = error.value("message", std::string{});
+    // MT-3s, decision 5: the models whose bindings route through it.
+    if (code == "material.routing_conflict@1") {
+        std::string models;
+        if (const auto bound_by = fields.find("bound_by"); bound_by != fields.end() && bound_by->is_array())
+            for (const auto &entry : *bound_by) {
+                const auto model = entry.is_object() ? entry.value("model", std::string{}) : std::string{};
+                if (model.empty()) continue;
+                models += (models.empty() ? "" : ", ") + model;
+            }
+        fields["models"] = models.empty() ? std::string{"models"} : models;
+        if (!fields.contains("material") || !fields["material"].is_string()) fields["material"] = "The material";
+    }
+    // MT-2s-b: an object with a name is called by it (engine MT-2b).
+    std::string_view pattern = entry->sentence;
+    if (code == "material.object_unknown@1" && fields.contains("name") && fields["name"].is_string() &&
+        !fields["name"].get_ref<const std::string &>().empty())
+        pattern = "{name} cannot take a material of its own: {reason}";
+    return fillRefusalPattern(pattern, fields) + " (" + std::string{entry->code} + ").";
+}
+
+namespace {
+
+// MI-1s, decision 5: register_model's and unregister_model's refusals
+// (engine MI-1). {why} is said from `reason` (ModelRefusalReasonTexts);
+// {objects} is in_use's names, one after another.
+constexpr std::array<GraphLoopRefusalText, 11> ModelRefusalTexts{{
+    {"model.path_invalid@1", "{path} cannot name a model file: {why}"},
+    {"model.format_unsupported@1", "{path} is not a .glb, .gltf or .vrm file"},
+    {"model.file_missing@1", "{path} is not a file in the project"},
+    {"model.path_conflict@1", "{path} is registered already as model {name}"},
+    {"model.name_invalid@1", "{name} cannot be a model name: {why}"},
+    {"model.name_conflict@1", "A model named {name} exists already"},
+    {"model.load_failed@1", "{path} does not load: {message}"},
+    {"model.unknown@1", "No model is named {name} in this project"},
+    {"model.in_use@1", "{name} is used by {count} objects: {objects}"},
+    {"model.transaction_busy@1", "The project's asset list is being written by another edit; try again"},
+    {"external_modification", "{path} changed outside Studio since it was read; try again"},
+}};
+
+struct ModelRefusalReasonText {
+    std::string_view reason;
+    std::string_view words;
+};
+constexpr std::array<ModelRefusalReasonText, 6> ModelRefusalReasonTexts{{
+    {"fragment", "it names a part of a file (#)"},
+    {"dot_segment", "it holds a . or .. folder"},
+    {"backslash", "it uses \\ where / goes"},
+    {"absolute", "it is not inside the project"},
+    {"empty", "it is empty"},
+    {"engine_reference", "engine:// names the engine's own shapes"},
+}};
+
+} // namespace
+
+std::string modelRefusalDescription(const nlohmann::json &error) {
+    if (!error.is_object()) return {};
+    const auto code = error.value("code", std::string{});
+    const auto entry = std::ranges::find(ModelRefusalTexts, code, &GraphLoopRefusalText::code);
+    if (entry == ModelRefusalTexts.end()) return {};
+    auto fields = graphRefusalFields(error, entry->code).value_or(nlohmann::json::object());
+    if (!fields.is_object()) fields = nlohmann::json::object();
+    const auto reason = fields.value("reason", std::string{});
+    std::string_view pattern = entry->sentence;
+    // An engine shape is not taken off (unregister_model).
+    if (code == "model.name_invalid@1" && reason == "engine_primitive")
+        pattern = "{name} is one of the engine's own shapes, which stay";
+    const auto words = std::ranges::find(ModelRefusalReasonTexts, reason, &ModelRefusalReasonText::reason);
+    fields["why"] = words != ModelRefusalReasonTexts.end() ? std::string{words->words}
+                    : reason.empty()                       ? std::string{"the engine does not take it"}
+                                                           : reason;
+    if (!fields.contains("path") || !fields["path"].is_string()) fields["path"] = "The file";
+    if (!fields.contains("name") || !fields["name"].is_string()) fields["name"] = "The model";
+    // load_failed: the engine's own words, as it wrote them.
+    if (!fields.contains("message") || !fields["message"].is_string())
+        fields["message"] = error.value("message", std::string{});
+    if (code == "model.in_use@1") {
+        std::string objects;
+        std::size_t listed = 0;
+        if (const auto names = fields.find("objects"); names != fields.end() && names->is_array())
+            for (const auto &name : *names) {
+                if (!name.is_string()) continue;
+                objects += (objects.empty() ? "" : ", ") + name.get<std::string>();
+                ++listed;
+            }
+        const auto count = fields.value("count", static_cast<std::uint64_t>(listed));
+        // The engine names the first 8.
+        if (count > listed) objects += objects.empty() ? "\xE2\x80\xA6" : ", \xE2\x80\xA6";
+        fields["count"] = count;
+        fields["objects"] = objects;
+        if (count == 1) pattern = "{name} is used by 1 object: {objects}";
+    }
+    return fillRefusalPattern(pattern, fields) + " (" + std::string{entry->code} + ").";
+}
+
+std::string modelUnknownEditDescription(const nlohmann::json &error) {
+    if (!error.is_object()) return {};
+    const auto payload = error.find("payload");
+    if (payload == error.end() || !payload->is_object() ||
+        payload->value("reason", std::string{}) != "model_unknown")
+        return {};
+    auto model = payload->value("model", std::string{});
+    if (model.empty()) model = "?";
+    return "Model " + model +
+           " is not registered in this project. Choose its file with Import\xE2\x80\xA6 beside the "
+           "Inspector's model field, or Add Object > Model from file\xE2\x80\xA6";
+}
+
+bool inspectorListShown(std::string_view component, std::string_view list_path) {
+    return !(component == "simplemodelview" && list_path == "/materials");
+}
+
+std::string projectSettingsRefusalDescription(const nlohmann::json &error, bool undo) {
+    if (!error.is_object()) return {};
+    const auto code = error.value("code", std::string{});
+    const auto entry = std::ranges::find(ProjectSettingsRefusalTexts, code, &GraphLoopRefusalText::code);
+    if (entry == ProjectSettingsRefusalTexts.end()) return {};
+    auto fields = graphRefusalFields(error, entry->code).value_or(nlohmann::json::object());
+    if (!fields.is_object()) fields = nlohmann::json::object();
+    // A refusal about a key and not a store names the key instead.
+    if (!fields.contains("store") || !fields["store"].is_string())
+        fields["store"] = fields.value("key", std::string{"asset_stores"});
+    if (!fields.contains("reason")) fields["reason"] = error.value("message", std::string{});
+    const std::string_view pattern =
+        undo && code == "project.settings_change_unsupported@1" ? ProjectSettingsUndoNeedsRestartText
+                                                                : entry->sentence;
+    std::string sentence;
     for (std::size_t index = 0; index < pattern.size();) {
         const auto open = pattern.find('{', index);
         if (open == std::string_view::npos) {
@@ -1547,6 +2249,109 @@ std::string engineStoppedSentence(std::string_view fatal_line, std::string_view 
     if (!definition.empty()) file = "definition " + definition + " of " + file;
     return "The engine stopped: " + sentence + " in " + file +
            ". Fix the file (or Reload from disk) to start it again.";
+}
+
+RenderPipelineReading readRenderPipeline(const nlohmann::json &reply) {
+    RenderPipelineReading reading;
+    if (!reply.is_object()) return reading;
+    const auto pipeline = reply.find("render_pipeline");
+    if (pipeline == reply.end() || !pipeline->is_object()) return reading;
+    const auto state = pipeline->value("state", std::string{});
+    if (state == "fallback") reading.state = RenderPipelineReading::State::Fallback;
+    else if (state == "ready") reading.state = RenderPipelineReading::State::Ready;
+    else return reading;
+    if (const auto root = pipeline->find("root"); root != pipeline->end() && root->is_string())
+        reading.root = root->get<std::string>();
+    if (const auto refusal = pipeline->find("refusal"); refusal != pipeline->end() && refusal->is_object())
+        reading.refusal = *refusal;
+    else
+        reading.refusal = nlohmann::json::object();
+    return reading;
+}
+
+std::string renderFallbackDocument(const RenderPipelineReading &reading) {
+    if (reading.state != RenderPipelineReading::State::Fallback) return {};
+    if (auto document = graphRefusalSource(reading.refusal, "document"); !document.empty())
+        return document;
+    // The root as the engine names it: project-relative, maybe project://.
+    return graphRefusalSource(nlohmann::json{{"document", reading.root}}, "document");
+}
+
+std::string renderFallbackNode(const RenderPipelineReading &reading) {
+    if (reading.state != RenderPipelineReading::State::Fallback) return {};
+    return graphRefusalSource(reading.refusal, "node");
+}
+
+std::string renderFallbackSentence(const RenderPipelineReading &reading) {
+    if (reading.state != RenderPipelineReading::State::Fallback) return {};
+    const auto &refusal = reading.refusal;
+    const auto code = refusal.value("code", std::string{});
+    const auto message = refusal.value("message", std::string{});
+    // The fields beside the code first (the refusal is a rejection's
+    // `error`), then whatever table knows the code from its message. The
+    // document is said once, after the sentence.
+    // BS-1s, decision 7: a document that is not JSON names itself.
+    if (auto syntax = renderDocumentSyntaxDescription(refusal); !syntax.empty()) {
+        while (!syntax.empty() && (syntax.back() == '.' || syntax.back() == ' ')) syntax.pop_back();
+        return "Showing a placeholder: the rendering setup was refused \xE2\x80\x94 " + syntax +
+               ". Fix it, then Reload from disk.";
+    }
+    auto sentence = graphLoopRefusalDescription(refusal, false);
+    if (sentence.empty()) sentence = knownRefusalDescription(code, message, false);
+    // PB-1s (engine PB-1): a start whose materials find no pass for their
+    // route falls back too; the Frame Plan's notice for it says which.
+    if (sentence.empty() && code == "material_route_unserved@1")
+        if (auto route = materialRouteUnservedNotice(refusal); !route.empty()) {
+            while (!route.empty() && (route.back() == '.' || route.back() == ' ')) route.pop_back();
+            sentence = route + " (" + code + ")";
+        }
+    if (sentence.empty()) {
+        // A refusal Studio has no sentence for reads as the engine wrote it,
+        // with its code when the message does not start with it.
+        sentence = message.empty() ? code
+                   : code.empty() || message.starts_with(code) ? message
+                                                              : message + " (" + code + ")";
+        if (const auto newline = sentence.find('\n'); newline != std::string::npos)
+            sentence.erase(newline);
+    }
+    while (!sentence.empty() && (sentence.back() == '.' || sentence.back() == ' ')) sentence.pop_back();
+    auto file = renderFallbackDocument(reading);
+    if (file.empty()) file = "the project's render documents";
+    if (const auto definition = graphRefusalSource(refusal, "definition");
+        !definition.empty() && !graphRefusalSentenceNamesDefinition(code))
+        file = "definition " + definition + " of " + file;
+    return "Showing a placeholder: the rendering setup was refused \xE2\x80\x94 " + sentence + " in " +
+           file + ". Fix it, then Reload from disk.";
+}
+
+std::string renderDocumentSyntaxDescription(const nlohmann::json &error) {
+    if (!error.is_object()) return {};
+    constexpr std::string_view code = "render_document_syntax@1";
+    const auto fields = graphRefusalFields(error, code);
+    if (!fields || !fields->is_object() || (!fields->contains("document") && !fields->contains("reason")))
+        return {};
+    auto document = graphRefusalSource(*fields, "document");
+    if (document.empty()) document = "A render document";
+    std::string where;
+    const auto line = fields->find("line");
+    const auto column = fields->find("column");
+    if (line != fields->end() && line->is_number_integer() && column != fields->end() &&
+        column->is_number_integer())
+        where = " at line " + std::to_string(line->get<std::int64_t>()) + ", column " +
+                std::to_string(column->get<std::int64_t>());
+    auto reason = fields->value("reason", std::string{});
+    std::string sentence = document + " is not valid JSON" + where;
+    if (!reason.empty()) sentence += ": " + reason;
+    return sentence + " (" + std::string{code} + ").";
+}
+
+std::string renderRestartFeature(const nlohmann::json &error) {
+    // PB-1s, decision 6 (engine PB-1): the refusal has a code of its own and
+    // names the feature; its words are not read.
+    const auto fields = graphRefusalFields(error, RenderFeatureRequiresRestartCode);
+    if (!fields || !fields->is_object()) return {};
+    auto feature = graphRefusalSource(*fields, "feature");
+    return feature.empty() ? std::string{"the feature"} : feature;
 }
 
 std::string graphRefusalVariant(const nlohmann::json &error) {
@@ -1661,6 +2466,7 @@ std::vector<std::string> assetIdsOfKind(const Json &list_assets_result, std::str
 struct InspectorModel::Impl {
     enum class RequestPurpose : std::uint8_t {
         OpenSession,
+        HistoryLabels,
         SceneTree,
         Components,
         ComponentAddCandidates,
@@ -1807,6 +2613,10 @@ struct InspectorModel::Impl {
             } else {
                 outcome.code = resultErrorCode(*result);
                 outcome.message = resultErrorMessage(*result);
+                // MI-1s: an unregistered model is said in words alone.
+                if (const auto error = result->find("error");
+                    error != result->end() && !modelUnknownEditDescription(*error).empty())
+                    outcome.code.clear();
             }
         } else {
             outcome.message = std::move(failure);
@@ -1823,6 +2633,44 @@ struct InspectorModel::Impl {
     // (takeCommittedEdits), and the transaction the notice now reports.
     std::vector<CommittedEdit> committed_edits;
     std::string notice_transaction;
+    // Labels follow committed transactions only; refusals leave both tops alone.
+    std::vector<std::string> undo_labels;
+    std::vector<std::string> redo_labels;
+    std::map<std::string, std::string> transaction_labels;
+
+    void refreshHistoryLabels() {
+        undo_labels.clear();
+        redo_labels.clear();
+        if (connected && actor_id)
+            queue("query_journal", Json::object(), {.purpose = RequestPurpose::HistoryLabels});
+    }
+
+    void readHistoryLabels(const Json &result) {
+        // A newer local commit must not be replaced by an older journal read.
+        const auto revision = unsignedInteger(result.at("scene_revision"), "query_journal scene_revision");
+        if (revision < current_scene_revision.value_or(0)) {
+            refreshHistoryLabels();
+            return;
+        }
+        observeSceneRevision(revision);
+        std::vector<std::string> undo, redo;
+        for (const auto &record : result.at("records")) {
+            if (!actor_id || record.at("actor_id") != *actor_id) continue;
+            const auto operation = record.value("operation_kind", std::string{});
+            if (operation == "undo") {
+                if (!undo.empty()) { redo.push_back(undo.back()); undo.pop_back(); }
+            } else if (operation == "redo") {
+                if (!redo.empty()) { undo.push_back(redo.back()); redo.pop_back(); }
+            } else {
+                const auto label = transaction_labels.find(record.at("transaction_id").get<std::string>());
+                undo.push_back(label != transaction_labels.end() ? label->second :
+                               operation == "play_keep" ? "Keep game changes" : "Scene edit");
+                redo.clear();
+            }
+        }
+        undo_labels = std::move(undo);
+        redo_labels = std::move(redo);
+    }
 
     void noteCommitted(const Json &result, const std::string &description, bool keep) {
         const auto transaction = result.find("transaction_id");
@@ -1836,6 +2684,22 @@ struct InspectorModel::Impl {
         if (const auto source = result.find("source_transaction_id");
             source != result.end() && source->is_string())
             edit.source_transaction_id = source->get<std::string>();
+        if (edit.kind == CommittedEditKind::undo) {
+            if (!undo_labels.empty()) {
+                redo_labels.push_back(undo_labels.back());
+                undo_labels.pop_back();
+            }
+        } else if (edit.kind == CommittedEditKind::redo) {
+            if (!redo_labels.empty()) {
+                undo_labels.push_back(redo_labels.back());
+                redo_labels.pop_back();
+            }
+        } else {
+            undo_labels.push_back(description);
+            redo_labels.clear();
+        }
+        if (edit.kind == CommittedEditKind::edit)
+            transaction_labels[edit.transaction_id] = description;
         notice_transaction = edit.transaction_id;
         committed_edits.push_back(std::move(edit));
     }
@@ -2224,7 +3088,7 @@ struct InspectorModel::Impl {
     }
 
     void enqueueUndoRedo(bool redo) {
-        if (!connected || !actor_id || !snapshot || editPending() || preview ||
+        if (!connected || !actor_id || !current_scene_revision || editPending() || preview ||
             !editing_widgets.empty()) {
             setNotice(InspectorNoticeKind::Error,
                       "Undo and redo require an idle inspector session.");
@@ -2233,7 +3097,7 @@ struct InspectorModel::Impl {
         const std::string description = redo ? "Redo" : "Undo";
         queue(redo ? "redo" : "undo",
               Json{{"actor_id", *actor_id},
-                   {"base_revision", snapshot->scene_revision}},
+                   {"base_revision", *current_scene_revision}},
               {.purpose = RequestPurpose::EditSubmit,
                .selection_generation = selection_generation,
                .description = description,
@@ -2817,6 +3681,13 @@ struct InspectorModel::Impl {
                           " accepted; waiting for the player frame boundary.");
             return;
         }
+        // MT-2s: set_object_material answers changed: false, and no ticket,
+        // when the object already carries what was asked.
+        if (!result.contains("status") && result.value("changed", true) == false) {
+            setNotice(InspectorNoticeKind::Information,
+                      state.description + ": nothing to change.");
+            return;
+        }
         handleEditCompletion(result, pending);
     }
 
@@ -2881,6 +3752,7 @@ struct InspectorModel::Impl {
             state.purpose != RequestPurpose::EditSubmit &&
             state.purpose != RequestPurpose::EditPoll &&
             state.purpose != RequestPurpose::ModelAssets &&
+            state.purpose != RequestPurpose::HistoryLabels &&
             state.selection_generation != selection_generation) {
             return;
         }
@@ -2893,6 +3765,9 @@ struct InspectorModel::Impl {
                       selection ? "Loading inspector properties..."
                                 : "Engine editor session is ready.");
             requestRefresh(true);
+            break;
+        case RequestPurpose::HistoryLabels:
+            readHistoryLabels(result);
             break;
         case RequestPurpose::SceneTree:
             handleSceneTree(state, result);
@@ -3019,7 +3894,7 @@ struct InspectorModel::Impl {
     }
 
     void handleFailure(const RequestState &state, std::string message,
-                       bool unknown_method = false) {
+                       bool unknown_method = false, bool refused = false) {
         if (state.purpose == RequestPurpose::SceneTree && unknown_method &&
             state.scene_outline) {
             // UX-13c, decision 5: an engine from before scene_outline. Ask it
@@ -3035,6 +3910,7 @@ struct InspectorModel::Impl {
             state.purpose != RequestPurpose::EditSubmit &&
             state.purpose != RequestPurpose::EditPoll &&
             state.purpose != RequestPurpose::ModelAssets &&
+            state.purpose != RequestPurpose::HistoryLabels &&
             state.selection_generation != selection_generation) {
             return;
         }
@@ -3082,7 +3958,8 @@ struct InspectorModel::Impl {
             actor_id.reset();
             break;
         case RequestPurpose::EditSubmit:
-            scene_revision_uncertain = true;
+            // A refusal wrote nothing; a lost reply may have written.
+            if (!refused) scene_revision_uncertain = true;
             recordSceneEdit(state.scene_edit, state.scene_edit_subject, nullptr, message);
             requestRefresh(true);
             break;
@@ -3093,6 +3970,8 @@ struct InspectorModel::Impl {
         case RequestPurpose::ComponentAddCandidates:
             component_add_candidates.reset();
             break;
+        case RequestPurpose::HistoryLabels:
+            return;
         case RequestPurpose::ModelAssets:
             // The primitives are listed without it; nothing to report.
             return;
@@ -3114,6 +3993,9 @@ InspectorModel::~InspectorModel() = default;
 
 void InspectorModel::startSession() {
     impl_->abandonSessionOperations();
+    impl_->undo_labels.clear();
+    impl_->redo_labels.clear();
+    impl_->transaction_labels.clear();
     impl_->first_session_revision = true;
     impl_->connected = true;
     impl_->scene_outline_unknown = false;
@@ -3148,6 +4030,9 @@ void InspectorModel::startSession() {
 
 void InspectorModel::stopSession(std::string message) {
     impl_->abandonSessionOperations();
+    impl_->undo_labels.clear();
+    impl_->redo_labels.clear();
+    impl_->transaction_labels.clear();
     impl_->connected = false;
     impl_->actor_id.reset();
     impl_->requests.clear();
@@ -3222,7 +4107,7 @@ void InspectorModel::receiveRpcResult(std::uint64_t request_id,
 
 void InspectorModel::receiveRpcFailure(std::uint64_t request_id,
                                        std::string message,
-                                       bool unknown_method) {
+                                       bool unknown_method, bool refused) {
     const auto request = impl_->requests.find(request_id);
     if (request == impl_->requests.end()) {
         return;
@@ -3232,7 +4117,7 @@ void InspectorModel::receiveRpcFailure(std::uint64_t request_id,
     if (message.empty()) {
         message = "Inspector RPC failed without an error message.";
     }
-    impl_->handleFailure(state, std::move(message), unknown_method);
+    impl_->handleFailure(state, std::move(message), unknown_method, refused);
 }
 
 bool InspectorModel::pendingPollWanted() const noexcept {
@@ -3620,6 +4505,8 @@ const std::optional<std::vector<std::string>> &InspectorModel::textureAssets() c
     return impl_->texture_assets;
 }
 
+void InspectorModel::refreshModelAssets() { impl_->requestModelAssets(); }
+
 bool InspectorModel::addComponent(std::string_view key) {
     if (!impl_->component_add_candidates) return false;
     const auto &catalog = *impl_->component_add_candidates;
@@ -3710,6 +4597,28 @@ SpawnOutcome InspectorModel::submitSceneEdit(SceneEditKind kind, std::uint64_t s
                   .description = std::move(description),
                   .scene_edit = kind,
                   .scene_edit_subject = subject_id});
+    return SpawnOutcome::Sent;
+}
+
+SpawnOutcome InspectorModel::submitObjectMaterial(Json params, std::string description) {
+    if (!impl_->spawnReady() || !params.is_object()) {
+        impl_->setNotice(InspectorNoticeKind::Error,
+                         "The engine editor session is not ready.");
+        return SpawnOutcome::Refused;
+    }
+    impl_->flushQueuedSpawn();
+    if (busy() || refreshBlocked()) {
+        impl_->setNotice(InspectorNoticeKind::Error,
+                         "Finish the edit in progress first, then choose the material again.");
+        return SpawnOutcome::Refused;
+    }
+    params["actor_id"] = *impl_->actor_id;
+    params["base_scene_revision"] = *impl_->current_scene_revision;
+    // Its own undo step, as the Outliner's edits are.
+    impl_->queue("set_object_material", std::move(params),
+                 {.purpose = Impl::RequestPurpose::EditSubmit,
+                  .selection_generation = impl_->selection_generation,
+                  .description = std::move(description)});
     return SpawnOutcome::Sent;
 }
 
@@ -3834,7 +4743,18 @@ bool InspectorModel::canEdit() const noexcept {
 }
 
 bool InspectorModel::canUndoRedo() const noexcept {
-    return canEdit() && !busy() && !impl_->refresh_in_flight;
+    return impl_->connected && impl_->actor_id && impl_->current_scene_revision &&
+           !busy() && !impl_->refresh_in_flight;
+}
+
+void InspectorModel::refreshHistoryLabels() { impl_->refreshHistoryLabels(); }
+
+std::string InspectorModel::undoLabel() const {
+    return impl_->undo_labels.empty() ? std::string{} : impl_->undo_labels.back();
+}
+
+std::string InspectorModel::redoLabel() const {
+    return impl_->redo_labels.empty() ? std::string{} : impl_->redo_labels.back();
 }
 
 bool InspectorModel::canSave() const noexcept {

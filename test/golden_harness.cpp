@@ -122,6 +122,12 @@
 
 namespace Pelican {
 
+namespace internal {
+// cameracontrollersystem.cpp: keeps the built-in camera controllers in this
+// link (renderOrbitCameraControllerFrame).
+void linkBuiltinCameraControllerSystem() noexcept;
+} // namespace internal
+
 namespace {
 
 constexpr uint32_t goldenWidth = 16;
@@ -5003,10 +5009,12 @@ void renderSkeletalToonFrame(RenderTarget &render_target) {
     const auto authored = parseMaterialFormatJson(material_json, catalog).materials.front();
     const auto lowered = lowerMaterial(authored, surface);
     auto &standard = GET_MODULE(StandardMaterialResource);
+    const auto standard_bundles = GET_MODULE(ShaderLibrary).loadFromSurface(
+        surface, "project://shaders/toon.surface", SurfacePass::main);
     MaterialInfo info{
-        .vert_shader = bundles.vertex,
+        .vert_shader = standard_bundles.vertex,
         .frag_shader = bundles.fragment,
-        .skinned = true,
+        .skinned_vert_shader = bundles.vertex,
         .base_color_texture = standard.whiteTexture(),
         .metallic_roughness_texture = standard.metallicRoughnessDefaultTexture(),
         .normal_texture = standard.normalDefaultTexture(),
@@ -6631,6 +6639,10 @@ void renderOrthographicCameraFrame(RenderTarget &render_target) {
 }
 
 void renderOrbitCameraControllerFrame(RenderTarget &render_target) {
+    // EB-4: without this the harness's link drops the built-in controller's
+    // registration, the controller never ran, and the golden was the default
+    // camera's view.
+    internal::linkBuiltinCameraControllerSystem();
     auto &engine_time = GET_MODULE(EngineTime);
     engine_time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
     engine_time.setTime(2.0);

@@ -1,3 +1,4 @@
+#include "../userpublic/userdataerror.hpp"
 #include "graphmodelsource.hpp"
 #include "framegraphruntime.hpp"
 #include "computetask.hpp"
@@ -19,11 +20,11 @@ std::optional<GraphModelInstance> resolveGraphModelSource(
     const auto *view = GET_MODULE(ECSCore).getTemplatePublicModule()
         .tryComponent<SimpleModelViewComponent>(*object);
     if (!view || !view->model_instance_id)
-        throw std::runtime_error("graph attribute owner has no model: " + std::string{resource});
+        throw UserDataError("graph attribute owner has no model: " + std::string{resource});
     const auto &model = GET_MODULE(ModelAssetContainer).getModelTemplateByName(view->model_name);
     const auto &paths = GET_MODULE(PathResolver);
     if (paths.normalizedReference(model.authored_asset_reference) != paths.normalizedReference(asset))
-        throw std::runtime_error("graph attribute asset differs from its owner model: " + std::string{resource});
+        throw UserDataError("graph attribute asset differs from its owner model: " + std::string{resource});
     return GraphModelInstance{*view->model_instance_id, &model};
 }
 
@@ -33,7 +34,7 @@ void validateGraphPoseAttributes(const std::vector<GraphPoseAttribute> &attribut
         const auto source = resolveGraphModelSource(attribute.owner, attribute.asset, attribute.resource);
         if (!source) continue;
         if (!source->model->skeletal || attribute.node >= source->model->skeletal->nodes.size())
-            throw std::runtime_error("graph pose node is unavailable: " + attribute.resource);
+            throw UserDataError("graph pose node is unavailable: " + attribute.resource);
         if (!GET_MODULE(PolygonInstanceContainer).animationNodeMatrix(source->instance, attribute.node))
             throw std::runtime_error("graph pose has no published node matrix: " + attribute.resource);
     }

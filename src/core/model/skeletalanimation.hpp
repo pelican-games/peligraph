@@ -41,6 +41,7 @@ struct SkeletalAnimationClip {
     float start = 0.0f;
     float end = 0.0f;
     std::vector<SkeletalAnimationChannel> channels;
+    int source_index = -1;
 };
 
 struct SkeletalModelData {
@@ -62,6 +63,10 @@ std::vector<glm::mat4> evaluateSkinPalette(const SkeletalModelData &model,
                                            double engine_time, double speed,
                                            bool loop, double start_time,
                                            std::vector<glm::mat4> *node_matrices = nullptr);
+
+struct AssetFragmentRef;
+const SkeletalAnimationClip &findAnimationClip(const SkeletalModelData &model,
+                                               const AssetFragmentRef &reference);
 
 const SkeletalAnimationClip &findAnimationClip(const SkeletalModelData &model,
                                                const std::string &name);

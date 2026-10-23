@@ -158,6 +158,15 @@ class ILogicalFrameTarget {
     }
 };
 
+// BS-1: a rendering configuration refusal met before the renderer exists
+// (PelicanCore::run's ray-layout preflight reads the root first). Under
+// --render-fallback the run records it here instead of stopping, and
+// Renderer() starts on the fallback generation with it. Never set otherwise.
+DECLARE_MODULE(RenderPipelineStartupRefusal) {
+  public:
+    std::optional<nlohmann::json> refusal;
+};
+
 DECLARE_MODULE(Renderer) {
     // One publish()/rollback() pair serves both render pipeline reload paths.
     friend struct RenderPipelinePublicationTransaction;
@@ -193,6 +202,11 @@ DECLARE_MODULE(Renderer) {
     nlohmann::json graph_variant_transition_trace = nlohmann::json::array();
     std::optional<std::size_t> pending_graph_transition;
     PreviewGraphProgram preview_graph_program;
+    // BS-1: set while the published generation is the built-in fallback
+    // (--render-fallback met a refusal at start): the refusal, as
+    // renderPipelineRefusalJson shaped it. The first publication of a
+    // project configuration clears it.
+    std::optional<nlohmann::json> render_pipeline_fallback_refusal;
     std::unique_ptr<RenderPipelineReloadState>
         render_pipeline_reload_state;
     GlobalRenderTargetId last_picking_target = noRenderTargetId();
@@ -273,7 +287,10 @@ DECLARE_MODULE(Renderer) {
     TemporalViewFamilyHistory &activeTemporalHistory();
     const TemporalViewFamilyHistory &activeTemporalHistory() const;
     void installRenderPipelineReloadParticipant();
-    void relowerRenderPipelineForCurrentOutput();
+    // PB-1: `validate_live_materials` false for the switch to the fallback
+    // generation at start, which draws no material.
+    void relowerRenderPipelineForCurrentOutput(
+        bool validate_live_materials = true);
     void synchronizeGraphGpuOwnership();
     std::uint64_t graph_ownership_attempt_generation = 0;
     std::map<std::string, GameObjectId> graph_ownership_attempt_objects;
@@ -288,8 +305,11 @@ DECLARE_MODULE(Renderer) {
     R8RenderTargetReadback readR8RenderTargetForTesting(
         std::string_view name);
     std::vector<std::string> currentFramePlanOrderForTesting() const;
+    // The current generation's ray-query acceleration structures, as
+    // get_frame_plan's ray_query_acceleration_structures reports them
+    // (RTL-1b: production reads it, so it is not named for testing).
     RayQueryAccelerationStructureDiagnostics
-    rayQueryAccelerationStructureDiagnosticsForTesting() const;
+    rayQueryAccelerationStructureDiagnostics() const;
     void recreateRenderTargetsAndRebindForTesting(vk::Extent2D extent);
 
   public:
@@ -298,6 +318,10 @@ DECLARE_MODULE(Renderer) {
              RenderingPassId rendering_pass_id);
     ~Renderer();
     nlohmann::json currentFramePlanJson() const;
+    // EB-3: the current generation's named scene TLASes, {name, instance
+    // mask}, in declaration order (get_ray_table's tlas column).
+    std::vector<std::pair<std::string, std::uint32_t>>
+    sceneAccelerationStructureMasks() const;
     // PS-1: rerun_once. Asks the next frame to run the once nodes `node`
     // made (a pass or task's graph node; a graph.loop runs all its copies'),
     // or every once node when `node` is empty. Returns the names asked for,
@@ -333,9 +357,25 @@ DECLARE_MODULE(Renderer) {
         return preview_graph_program;
     }
     nlohmann::ordered_json previewIsolationStateJson() const;
+    // BS-1: whether the published generation is the built-in fallback.
+    bool renderPipelineFallback() const noexcept {
+        return render_pipeline_fallback_refusal.has_value();
+    }
+    // BS-1: get_status.render_pipeline.
+    //   {state: "ready", root}
+    //   {state: "fallback", root, refusal: {code, ...fields, message}}
+    // `root` is the rendering root's reference as project.json names it.
+    nlohmann::json renderPipelineStatusJson() const;
     // Resolves every renderer-owned runtime dependency while module creation is
     // still legal. Subsequent render calls only read the frozen module graph.
     void prepareRuntimeModules();
+    // PB-1 (engine_backlog 23): the end of a --render-fallback launch's start,
+    // once every module is built and before the graph is frozen. When a
+    // material registered at start found no material pass for its route
+    // (MaterialStartupUnserved), the run goes on on the fallback generation
+    // with material_route_unserved@1 as its refusal, as a configuration
+    // refused when it was composed does. Otherwise nothing changes.
+    void enterStartupFallbackForUnservedMaterials();
     void renderLogicalFrame(
         ILogicalFrameTarget &target,
         const RenderViewFamily &view_family);

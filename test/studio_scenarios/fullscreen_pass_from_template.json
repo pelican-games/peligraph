@@ -2,9 +2,17 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "fullscreen_pass_from_template",
-  "description": "F-3 / F-5: build a fullscreen pass shader and all from Studio, then change it the way a person does, in their own editor. Add fullscreen pass opens the Pass Editor after a node; New... writes the fragment shader for the chosen input into the project and puts its stem in the form; a syntax error written into that file is refused by the engine's preflight and shown whole under the form, which keeps what was typed; the repaired file saves and the pass, which writes the lit colour the viewport shows, appears on the canvas. Then the file is edited: Studio notices the write and asks the engine to reload its shaders (reload_shaders), and the viewport changes. A syntax error saved the same way marks the pass on the canvas and puts the log under the Pass Editor's form while the engine keeps drawing what it had; fixed, the mark and the log go.",
+  "description": "F-3 / F-5: build a fullscreen pass shader and all from Studio, then change it the way a person does, in their own editor. The Pass Editor's New pass on this graph root is the Graph's (GL-5f): a render.fullscreen is placed in the graph's nodes and picked, and no managed fragment is made. Two render.target_ref nodes from the palette give it the albedo the G-buffer holds as its input and the lit colour as what it writes, the colour the viewport shows. New... in its Pass fields writes the fragment shader for that input into the project, and the pass draws with it in the same edit. Then the file is edited: Studio notices the write and asks the engine to reload its shaders (reload_shaders), and the viewport changes. A syntax error saved the same way marks the pass on the Frame Plan's canvas and puts the log under the Pass Editor's form while the engine keeps drawing what it had; fixed, the mark and the log go. (Before GL-5f the Pass Editor saved the pass with add_authored_pass, whose preflight showed a typo under the form; on a graph root no pass is saved that way any more.) GL-5g: the refused shader is also said on the Graph tab's notice row (whose shader, the compiler's line) and is a row of the Problems window, and both go when the file is fixed.",
   "tab": "frame_plan",
   "probe_no_automation": false,
+  "invariants": {
+    "log_allow": [
+      {
+        "pattern": "LOG_WARNING.*render_fullscreen\\.frag:\\d+(?::\\d+)?: error: 'vaule0' : undeclared identifier",
+        "reason": "The scenario deliberately writes vaule0 into render_fullscreen.frag, verifies the compile-error notice and line, then repairs the shader."
+      }
+    ]
+  },
   "steps": [
     {
       "label": "the engine viewport answers editor RPC",
@@ -19,196 +27,315 @@
       "contains": "main_render"
     },
     {
-      "label": "look at the lit colour the lighting pass writes",
-      "cmd": "select",
-      "name": "pelican.framePlanTarget",
-      "text": "lit_color"
+      "label": "View > Pass Editor",
+      "cmd": "action",
+      "name": "pelican.view.passEditor"
     },
     {
-      "label": "and at everything that reaches it",
-      "cmd": "type",
-      "name": "pelican.framePlanDepth",
-      "text": "64"
-    },
-    {
-      "label": "the lighting pass is on the canvas",
+      "label": "the Pass Editor has the engine's authoring context: a root that selects no preset",
       "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node#lighting_pass",
-      "visible": true,
+      "name": "pelican.fullscreenPass.authoringStatus",
+      "contains": "direct",
       "timeout_ms": 60000
     },
     {
-      "label": "fit the graph so the node can be picked",
-      "cmd": "action",
-      "name": "pelican.framePlan.fitView"
-    },
-    {
-      "label": "pick the lighting pass",
+      "label": "New pass: on this graph root it is the Graph's (GL-5f, decision 1)",
       "cmd": "click",
-      "name": "pelican.framePlanLogicalView::node#lighting_pass"
+      "name": "pelican.fullscreenPass.new"
     },
     {
-      "label": "Add fullscreen pass after it",
-      "cmd": "action",
-      "name": "pelican.framePlan.addFullscreenPass"
-    },
-    {
-      "label": "the Pass Editor has the engine's authoring context",
+      "label": "the Graph places a fullscreen pass",
       "cmd": "wait",
-      "name": "pelican.fullscreenPass.authoringStatus",
-      "contains": "graph(s)",
-      "timeout_ms": 180000
+      "name": "pelican.graphCanvasView::graph_node#render_fullscreen",
+      "visible": true,
+      "timeout_ms": 120000
     },
     {
-      "label": "name the pass",
+      "label": "in the graph's nodes, after the image it writes",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[3].id",
+      "value": "render_fullscreen",
+      "retry_ms": 60000
+    },
+    {
+      "label": "not as a managed fragment",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "managed_fragments.$len",
+      "value": 0
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "Add: the palette opens",
+      "cmd": "click",
+      "name": "pelican.graphCanvasAddNode"
+    },
+    {
+      "label": "the palette is on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the filter narrows the list to the target reference",
       "cmd": "type",
-      "name": "pelican.fullscreenPass.name",
-      "text": "f3_tinted"
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "target_ref"
     },
     {
-      "label": "the engine's fullscreen triangle for the vertex stage",
-      "cmd": "type",
-      "name": "pelican.fullscreenPass.shader.vertex",
-      "text": "engine://fullscreen"
+      "label": "the target combo is offered",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPaletteTarget",
+      "visible": true,
+      "timeout_ms": 10000
     },
     {
-      "label": "read the albedo the G-buffer holds",
+      "label": "the albedo the G-buffer holds, from the declared targets",
       "cmd": "select",
-      "name": "pelican.fullscreenPass.inputTarget",
+      "name": "pelican.graphCanvasPaletteTarget",
       "text": "gbuffer_albedo"
     },
     {
-      "label": "as input 0",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.addInput"
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
     },
     {
-      "label": "write the lit colour, which is what the viewport shows, chosen from the declared targets",
+      "label": "the reference is placed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#gbuffer_albedo_ref",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "Add: the palette opens again",
+      "cmd": "click",
+      "name": "pelican.graphCanvasAddNode"
+    },
+    {
+      "label": "the palette is on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the filter narrows the list to the target reference",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "target_ref"
+    },
+    {
+      "label": "the target combo is offered",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPaletteTarget",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the lit colour, which is what the viewport shows",
       "cmd": "select",
-      "name": "pelican.fullscreenPass.colorTarget",
+      "name": "pelican.graphCanvasPaletteTarget",
       "text": "lit_color"
     },
     {
-      "label": "as colour output 0",
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
+    },
+    {
+      "label": "the reference is placed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#lit_color_ref",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "auto layout",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.autoLayout"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "the albedo onto the pass's + input: its input 0",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_socket#gbuffer_albedo_ref/out:resource"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_socket#render_fullscreen/in:variadic"
+      },
+      "steps": 8
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the document: the pass reads the albedo, on a numbered port beside the colour it writes",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[3].inputs.resource.node",
+      "value": "gbuffer_albedo_ref",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "the lit colour onto the pass's colour: the pass writes it",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_socket#lit_color_ref/out:resource"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_socket#render_fullscreen/in:color"
+      },
+      "steps": 8
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the document: the pass writes the lit colour",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[3].inputs.color.node",
+      "value": "lit_color_ref",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "pick the pass",
       "cmd": "click",
-      "name": "pelican.fullscreenPass.addColor"
+      "name": "pelican.graphCanvasView::graph_node#render_fullscreen"
+    },
+    {
+      "label": "its Pass fields offer New... beside the fragment",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPass.newFragmentShader",
+      "visible": true,
+      "enabled": true,
+      "timeout_ms": 120000
     },
     {
       "label": "New... beside the fragment stem",
       "cmd": "click",
-      "name": "pelican.fullscreenPass.newFragmentShader"
+      "name": "pelican.graphCanvasPass.newFragmentShader"
     },
     {
-      "label": "the shader is named after the pass",
+      "label": "the templates, once the graph takes edits",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPass.shaderTemplateKind",
+      "visible": true,
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the shader is named after the pass, nothing typed",
       "expect": "text_equals",
-      "name": "pelican.fullscreenPass.shaderTemplateName",
-      "value": "f3_tinted"
+      "name": "pelican.graphCanvasPass.shaderTemplateName",
+      "value": "render_fullscreen"
     },
     {
-      "label": "create it",
+      "label": "Create",
       "cmd": "click",
-      "name": "pelican.fullscreenPass.createFragmentShader"
+      "name": "pelican.graphCanvasPass.createFragmentShader"
     },
     {
-      "label": "the fragment field holds the new stem, with no extension",
-      "expect": "text_equals",
-      "name": "pelican.fullscreenPass.shader.fragment",
-      "value": "project://shaders/f3_tinted"
+      "label": "the shader is written for the one input and the pass takes it",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPass.shaderTemplateNotice",
+      "contains": "reading 1 input(s); the pass draws with project://shaders/render_fullscreen",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "saved, as one edit",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the pass draws with the new shader",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[3].parameters.shader.fragment",
+      "value": "project://shaders/render_fullscreen",
+      "retry_ms": 60000
     },
     {
       "label": "the shader is in the project's shaders folder",
       "file": "exists",
-      "path": "{project}/shaders/f3_tinted.frag"
+      "path": "{project}/shaders/render_fullscreen.frag"
     },
     {
       "label": "and reads the one input with the engine's macro",
       "file": "contains",
-      "path": "{project}/shaders/f3_tinted.frag",
-      "text": "PELICAN_DECLARE_INPUT_0(in_gbuffer_albedo);"
-    },
-    {
-      "label": "a typo, typed in the author's own editor",
-      "file": "replace",
-      "path": "{project}/shaders/f3_tinted.frag",
-      "old": "    outColor = value0;",
-      "new": "    outColor = vaule0;"
-    },
-    {
-      "label": "Save is ready",
-      "cmd": "wait",
-      "name": "pelican.fullscreenPass.save",
-      "enabled": true,
-      "timeout_ms": 60000
-    },
-    {
-      "label": "save the pass",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.save"
-    },
-    {
-      "label": "the engine's preflight refuses it and the compile log opens under the form",
-      "cmd": "wait",
-      "name": "pelican.fullscreenPass.compileLog",
-      "visible": true,
-      "timeout_ms": 180000
-    },
-    {
-      "label": "the log names the typo",
-      "cmd": "wait",
-      "name": "pelican.shaderCompileLog.text",
-      "contains": "vaule0",
-      "timeout_ms": 10000
-    },
-    {
-      "label": "the form still holds the pass name",
-      "expect": "text_equals",
-      "name": "pelican.fullscreenPass.name",
-      "value": "f3_tinted"
-    },
-    {
-      "label": "and the stem",
-      "expect": "text_equals",
-      "name": "pelican.fullscreenPass.shader.fragment",
-      "value": "project://shaders/f3_tinted"
-    },
-    {
-      "label": "a picture of the log under the form",
-      "expect": "screenshot",
-      "name": "pelican.fullscreenPass",
-      "path": "fullscreen_pass_from_template_log.png"
-    },
-    {
-      "label": "the typo, fixed",
-      "file": "replace",
-      "path": "{project}/shaders/f3_tinted.frag",
-      "old": "vaule0",
-      "new": "value0"
-    },
-    {
-      "label": "Save is ready again",
-      "cmd": "wait",
-      "name": "pelican.fullscreenPass.save",
-      "enabled": true,
-      "timeout_ms": 60000
-    },
-    {
-      "label": "save the pass again",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.save"
-    },
-    {
-      "label": "the engine commits it, which takes the log away",
-      "cmd": "wait",
-      "name": "pelican.fullscreenPass.compileLog",
-      "visible": false,
-      "timeout_ms": 180000
-    },
-    {
-      "label": "the new pass is drawn on the canvas, as a writer of the lit colour it is looking at (the Pass Editor is in front, so drawn is the question, not on screen)",
-      "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node#f3_tinted",
-      "missing": false,
-      "timeout_ms": 180000
+      "path": "{project}/shaders/render_fullscreen.frag",
+      "text": "PELICAN_DECLARE_INPUT_0("
     },
     {
       "label": "the viewport shows what the pass draws: the albedo of a scene with nothing in it",
@@ -227,7 +354,7 @@
     {
       "label": "a gradient instead, saved in the author's editor",
       "file": "replace",
-      "path": "{project}/shaders/f3_tinted.frag",
+      "path": "{project}/shaders/render_fullscreen.frag",
       "old": "    outColor = value0;",
       "new": "    outColor = vec4(inUV, 0.5, 1.0);"
     },
@@ -246,16 +373,45 @@
       "retry_ms": 30000
     },
     {
+      "label": "the Frame Plan tab is in front",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
+    },
+    {
+      "label": "look at the lit colour",
+      "cmd": "select",
+      "name": "pelican.framePlanTarget",
+      "text": "lit_color"
+    },
+    {
+      "label": "and at everything that reaches it",
+      "cmd": "type",
+      "name": "pelican.framePlanDepth",
+      "text": "64"
+    },
+    {
+      "label": "the Graph's pass is drawn, as a writer of the lit colour",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#render_fullscreen",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "View > Pass Editor, which takes a refused reload's log",
+      "cmd": "action",
+      "name": "pelican.view.passEditor"
+    },
+    {
       "label": "a typo in the gradient, saved in the author's editor",
       "file": "replace",
-      "path": "{project}/shaders/f3_tinted.frag",
+      "path": "{project}/shaders/render_fullscreen.frag",
       "old": "    outColor = vec4(inUV, 0.5, 1.0);",
       "new": "    outColor = vec4(inUV, 0.5, 1.0) + vaule0;"
     },
     {
-      "label": "the engine refused it, and the pass whose shader it is carries the mark",
+      "label": "the engine refused it, and the pass whose shader it is carries the mark (the Pass Editor is in front, so drawn is the question, not on screen)",
       "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node_shader_error#f3_tinted",
+      "name": "pelican.framePlanLogicalView::node_shader_error#render_fullscreen",
       "missing": false,
       "timeout_ms": 30000
     },
@@ -272,6 +428,12 @@
       "name": "pelican.shaderCompileLog.text",
       "contains": "vaule0",
       "timeout_ms": 10000
+    },
+    {
+      "label": "a picture of the log under the form",
+      "expect": "screenshot",
+      "name": "pelican.fullscreenPass",
+      "path": "fullscreen_pass_from_template_log.png"
     },
     {
       "label": "the engine keeps drawing the gradient it had",
@@ -294,16 +456,81 @@
       "path": "fullscreen_pass_from_template_canvas.png"
     },
     {
+      "label": "GL-5g: the Graph tab, where the shader was made (Pass fields' New...), says it on its notice row: whose shader",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "contains": "render_fullscreen's shader did not reload",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "and the compiler's line, the typo named",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "contains": "render_fullscreen.frag:18: error: 'vaule0'",
+      "timeout_ms": 10000
+    },
+    {
+      "label": "View > Problems",
+      "cmd": "action",
+      "name": "pelican.view.problems"
+    },
+    {
+      "label": "the list is on screen",
+      "cmd": "wait",
+      "name": "pelican.problems.list",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the engine's list has the refused shader",
+      "cmd": "wait",
+      "name": "pelican.problems.count",
+      "text": "1 error",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "a click on its row",
+      "cmd": "select",
+      "name": "pelican.problems.list",
+      "index": 0
+    },
+    {
+      "label": "the row names the file that does not compile",
+      "cmd": "wait",
+      "name": "pelican.problems.detail",
+      "contains": "render_fullscreen.frag does not compile",
+      "timeout_ms": 10000
+    },
+    {
+      "label": "and the typo",
+      "cmd": "wait",
+      "name": "pelican.problems.detail",
+      "contains": "vaule0",
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the Pass Editor in front again, so its log going is something to see",
+      "cmd": "action",
+      "name": "pelican.view.passEditor"
+    },
+    {
+      "label": "its log is still under the form",
+      "cmd": "wait",
+      "name": "pelican.fullscreenPass.compileLog",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
       "label": "the typo, fixed",
       "file": "replace",
-      "path": "{project}/shaders/f3_tinted.frag",
+      "path": "{project}/shaders/render_fullscreen.frag",
       "old": " + vaule0;",
       "new": ";"
     },
     {
       "label": "the mark goes",
       "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node_shader_error#f3_tinted",
+      "name": "pelican.framePlanLogicalView::node_shader_error#render_fullscreen",
       "missing": true,
       "timeout_ms": 30000
     },
@@ -313,6 +540,25 @@
       "name": "pelican.fullscreenPass.compileLog",
       "visible": false,
       "timeout_ms": 10000
+    },
+    {
+      "label": "GL-5g: the Problems list is empty again",
+      "cmd": "wait",
+      "name": "pelican.problems.count",
+      "text": "No problems",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "and the Graph tab's line about the shader is down",
+      "expect": "result",
+      "command": {
+        "cmd": "text",
+        "name": "pelican.graphCanvasNotice"
+      },
+      "path": "text",
+      "op": "excludes",
+      "value": "did not reload",
+      "retry_ms": 30000
     },
     {
       "label": "and the viewport draws the gradient",

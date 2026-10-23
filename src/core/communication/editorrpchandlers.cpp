@@ -89,6 +89,9 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setOrderedHandler("get_ray_occurrences", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getRayOccurrences(params); });
     }, embedsResolutionError);
+    server.setOrderedHandler("get_ray_table", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.getRayTable(params); });
+    }, embedsResolutionError);
     server.setOrderedHandler("resolve_ray_occurrence", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.resolveRayOccurrence(params); });
     }, embedsResolutionError);
@@ -174,6 +177,13 @@ void configureEditorRpcHandlers(RpcServer &server,
     });
     server.setHandler("redo", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.redo(params); });
+    });
+    // MT-2: a scene object's own materials (editorcommandservice.hpp).
+    server.setHandler("set_object_material", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.setObjectMaterial(params); });
+    });
+    server.setHandler("get_object_materials", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.getObjectMaterials(params); });
     });
     server.setHandler("open_preview", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.openPreview(params); });
@@ -332,6 +342,13 @@ void configureEditorRpcHandlers(RpcServer &server,
     });
     server.setHandler("edit_scene_acceleration_structures", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.editSceneAccelerationStructures(params); });
+    });
+    // RTL-1a: the ray group layout and ray bindings documents the root names.
+    server.setHandler("get_ray_layout", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.getRayLayout(params); });
+    });
+    server.setHandler("edit_ray_layout", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.editRayLayout(params); });
     });
     server.setHandler("add_authored_pass", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.addAuthoredPass(params); });

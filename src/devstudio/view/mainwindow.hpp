@@ -1,8 +1,10 @@
 #pragma once
 
 #include "layoutpreset.hpp"
+#include "renderdocumentwatcher.hpp"
 #include "toollayoutpreset.hpp"
 #include "../model/gizmomodel.hpp"
+#include "../model/modelimport.hpp"
 #include "../model/project.hpp"
 #include "../model/renderdocumentreload.hpp"
 #include "../model/renderedithistory.hpp"
@@ -19,9 +21,11 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -41,9 +45,12 @@ class QTreeWidgetItem;
 class QTimer;
 class QFrame;
 class QToolBar;
+class QPushButton;
 
 namespace PelicanStudio {
 
+class AssetsDock;
+class MaterialsDock;
 class EmbeddedViewport;
 class FramePlanWidget;
 class GraphCanvasWidget;
@@ -52,10 +59,14 @@ class FullscreenPassWidget;
 class InspectorWidget;
 class OutlinerTree;
 class PlayControls;
+class ProblemsDock;
+struct ProblemRow;
 class ProjectMigrationWidget;
 class RenderConfigDigest;
 class RenderFeaturesWidget;
+class RenderFallbackNotice;
 class RenderingSettingsWidget;
+class RayLayoutWidget;
 class RuntimeOutliner;
 enum class AddObjectKind : std::uint8_t;
 struct SceneEditOutcome;
@@ -96,6 +107,7 @@ class MainWindow : public QMainWindow {
 
   protected:
     void closeEvent(QCloseEvent *event) override;
+    bool nativeEvent(const QByteArray &event_type, void *message, qintptr *result) override;
 
   private:
     enum DockIndex {
@@ -106,6 +118,12 @@ class MainWindow : public QMainWindow {
         EngineLogDock,
         FramePlanDock,
         FullscreenPassDock,
+        // HW-2s: beside Project.
+        AssetsPanelDock,
+        // MT-1s: beside Assets.
+        MaterialsPanelDock,
+        // PB-1s: beside Output and the Engine Log.
+        ProblemsPanelDock,
         // SG-2: the canvas's Layers.
         LayersDock,
         DockCount,
@@ -116,6 +134,14 @@ class MainWindow : public QMainWindow {
     std::optional<ToolLayoutPresetManager> tool_layout_presets_;
     std::array<QDockWidget *, DockCount> docks_{};
     QListWidget *project_list_ = nullptr;
+    // HW-2s / AV-1s: the asset folders, their watch and the contents check.
+    AssetsDock *assets_dock_ = nullptr;
+    // MT-1s: the project's materials and their editor.
+    MaterialsDock *materials_dock_ = nullptr;
+    // PB-1s: what is wrong with the project now, and its count on the
+    // status bar (a click brings the dock forward).
+    ProblemsDock *problems_dock_ = nullptr;
+    QPushButton *problems_count_ = nullptr;
     OutlinerTree *outliner_ = nullptr;
     // Q-7: one line under the Outliner for what became of an Add object.
     QLabel *outliner_notice_ = nullptr;
@@ -128,6 +154,8 @@ class MainWindow : public QMainWindow {
     RenderFeaturesWidget *render_features_ = nullptr;
     // RSX: the rendering section's own keys (EL-3), beside Features.
     RenderingSettingsWidget *rendering_settings_ = nullptr;
+    // RTL-2s: the Ray layout section of the Rendering settings tab.
+    RayLayoutWidget *ray_layout_ = nullptr;
     GraphCanvasWidget *graph_canvas_ = nullptr;
     // UX-6b: the frame's GPU time, the plan's size and the last edit's
     // before and after, for the Frame Plan and the Graph tab.
@@ -166,6 +194,20 @@ class MainWindow : public QMainWindow {
     QString pending_project_path_;
     QString pending_restart_reason_;
     qint64 navigation_revision_request_ = 0;
+    enum class DocumentOperation { None, Open, Navigation, MarkOpen, MarkSave, RevertClose, RevertRecovery, KeepRecovery };
+    DocumentOperation document_operation_ = DocumentOperation::None;
+    qint64 document_request_ = 0;
+    std::uint64_t document_generation_ = 0;
+    std::uint64_t document_request_generation_ = 0;
+    QPointer<QMessageBox> document_prompt_;
+    void invalidateDocumentOperations(bool new_project = false);
+    bool document_session_ready_ = false;
+    bool document_dirty_ = false;
+    bool document_save_pending_ = false;
+    std::uint64_t document_save_completion_ = 0;
+    void requestDocumentOperation(DocumentOperation operation);
+    bool receiveDocumentResult(qint64 request, const QByteArray &bytes);
+    bool receiveDocumentFailure(qint64 request, const QString &message);
     bool navigation_waiting_for_save_ = false;
     std::uint64_t navigation_save_completion_ = 0;
     bool close_authorized_ = false;
@@ -198,6 +240,17 @@ class MainWindow : public QMainWindow {
     };
     std::optional<OutlinerEdit> pending_outliner_edit_;
     QMenu *outliner_menu_ = nullptr;
+    // MI-1s: register_model / unregister_model (engine MI-1), for Add Object
+    // > Model from file..., the Inspector's Import... and the Assets dock's
+    // Remove from project...; and the Outliner's Restart engine, shown when a
+    // registration waits for the next start.
+    std::unique_ptr<ModelRegistrationSession> model_registration_;
+    QPushButton *outliner_restart_ = nullptr;
+    QString outliner_restart_reason_;
+    // Decision 4: the project's registered models by file (list_assets),
+    // for the Assets dock's rows.
+    std::map<std::string, std::string> registered_model_files_;
+    qint64 pending_models_request_ = 0;
     // RU-1. The one history of render edits, shared by the Frame Plan, the
     // Pass Editor, the Task Editor and Render Features, and its two actions:
     // on the Frame Plan's toolbar, in the Edit menu, and Ctrl+Z / Ctrl+Y
@@ -210,7 +263,13 @@ class MainWindow : public QMainWindow {
     // RL-1s. The render documents rewritten on disk, taken in through
     // reload_render_documents; and the Graph menu's "Reload from disk".
     std::optional<RenderDocumentReload> render_reload_;
+    std::unique_ptr<RenderDocumentWatcher> render_document_watcher_;
     QAction *reload_from_disk_action_ = nullptr;
+    // BS-1s: the row above the viewport while the engine draws its
+    // placeholder, and how Open file opens a file (the desktop's editor;
+    // under automation, a line in the log).
+    RenderFallbackNotice *render_fallback_ = nullptr;
+    std::function<bool(const std::filesystem::path &)> file_open_action_;
     // PM-3a: Pause / Step on the gizmo band, the play line of the status bar,
     // and what a paused game turns the viewport's frame and that band.
     PlayControls *play_controls_ = nullptr;
@@ -236,7 +295,15 @@ class MainWindow : public QMainWindow {
     void renderDocumentsRestored(const nlohmann::json &commit, bool restart_required);
     void createRenderReload();
     void renderDocumentsReloaded(const nlohmann::json &commit);
+    // PB-1s, decision 3: a click on a row of Problems goes where it is fixed.
+    void openProblem(const ProblemRow &row);
+    // RTL-3s, decision 8: the Graph tab with a pass of the frame plan picked.
+    void openPlanPassOnGraph(const QString &pass);
+    void showProblems();
     void createMenus();
+    bool sceneFocusGroup() const;
+    void updateSceneShortcuts();
+    void showKeyboardShortcuts();
     void createPlayControls(QToolBar *band);
     void updatePlayPresentation();
     // PM-3b: a banner saying render edits stay after Stop, above `panel`.
@@ -276,6 +343,21 @@ class MainWindow : public QMainWindow {
     void populateOutliner();
     void createAddObjectMenu();
     void addObject(AddObjectKind kind);
+    // MI-1s, decision 1: Add Object > Model from file...
+    void addModelFromFile();
+    // The file dialog and register_model; `registered` with the name once it
+    // is drawn now (a registration that waits for a restart says so under
+    // the Outliner instead).
+    void chooseModelFile(std::function<void(const std::string &model)> registered);
+    // The spawn of an object whose simplemodelview draws `model`.
+    void addModelObject(const std::string &model);
+    // Add Object's one spawn: the first free name from `base`, its object.
+    void spawnNewObject(std::string_view base,
+                        const std::function<nlohmann::json(const std::string &name)> &declaration);
+    void showOutlinerRestart(const QString &line, const QString &reason);
+    // Decision 4: list_assets, for the registered models' files.
+    void requestRegisteredModels();
+    void modelsChanged();
     // Selects the pending created object once the Outliner holds it.
     void selectCreatedObject();
     // OL-1: Duplicate, Delete, and a row dropped on another.
@@ -341,6 +423,9 @@ class MainWindow : public QMainWindow {
     void saveLastToolLayout();
     QString restoreLastToolLayout();
     void applyDefaultLayout();
+    // Last member: disconnect focus/native callbacks and cancel queued updates
+    // before QWidget tears down children (which can itself emit focusChanged).
+    QObject scene_shortcut_context_;
 };
 
 } // namespace PelicanStudio

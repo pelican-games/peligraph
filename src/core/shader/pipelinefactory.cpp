@@ -1,7 +1,9 @@
 #include "pipelinefactory.hpp"
+#include "../executabledirectory.hpp"
 #include <set>
 #include "raygrouplayout.hpp"
 #include "raytracingvalidation.hpp"
+#include "passcontractrefusal.hpp"
 #include "../vkcore/buf.hpp"
 #include "pelican_sets.hpp"
 #include "../log.hpp"
@@ -66,6 +68,7 @@ void validateAuxiliaryDescriptorContract(
     }
 }
 
+// The mixing step of boost::hash_combine (Boost, Boost Software License 1.0).
 size_t hashCombine(size_t seed, size_t value) {
     return seed ^ (value + 0x9e3779b9u + (seed << 6) + (seed >> 2));
 }
@@ -82,24 +85,6 @@ size_t descriptorBindingHash(const vk::DescriptorSetLayoutBinding &binding) {
     seed = hashCombine(seed, std::hash<uint32_t>{}(binding.descriptorCount));
     seed = hashCombine(seed, std::hash<VkShaderStageFlags>{}(static_cast<VkShaderStageFlags>(binding.stageFlags)));
     return seed;
-}
-
-std::filesystem::path executableDirectory() {
-#ifdef _WIN32
-    std::wstring buffer(32768, L'\0');
-    const auto size = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
-    if (size > 0 && size < buffer.size()) {
-        buffer.resize(size);
-        return std::filesystem::path{buffer}.parent_path();
-    }
-#else
-    std::error_code ec;
-    const auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
-    if (!ec) {
-        return exe.parent_path();
-    }
-#endif
-    return std::filesystem::current_path();
 }
 
 std::vector<std::byte> readPipelineCacheData(const std::filesystem::path &path) {
@@ -1006,8 +991,11 @@ PipelineFactory::PipelineRecord PipelineFactory::buildGraphicsPipeline(const Gra
     const auto ray_query_frame_set =
         shaderReflectionUsesRayQueryFrameSet(
             merged_reflection);
+    // FO-2: typed, so a material's registration can tell the pass's missing
+    // declaration from a document it could not read.
     if (ray_query_frame_set && !desc.allow_ray_query)
-        throw std::runtime_error(
+        throw PassContractRefusal(
+            "ray_query", {}, {},
             "Raster pass uses the scene acceleration structure but does not declare ray_query: true");
     if (ray_query_frame_set &&
         !GET_MODULE(VulkanManageCore)

@@ -55,6 +55,7 @@
 #include <array>
 #include <concepts>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -361,7 +362,8 @@ class SimpleModelMigrationParticipant final
             auto *component = static_cast<SimpleModelViewComponent *>(
                 context.staged_component);
             auto &model = models_.getModelTemplateByName(component->model_name);
-            staged_.emplace(renderer_.stageModelInstance(model));
+            staged_.emplace(renderer_.stageModelInstance(
+                model, instanceMaterialOverrides(component->materials), component->authoring_object_id));
             renderer_.setStagedAuthoringObject(*staged_, component->authoring_object_id);
             glm::mat4 matrix{1.0F};
             if (const auto *transform =
@@ -974,7 +976,7 @@ EditorRuntimeObjectState queryEditorRuntime(const EditorRuntimeModules &modules,
 }
 
 std::vector<EditorAssetQueryResult> collectEditorAssets(const EditorRuntimeModules &modules) {
-    return collectEditorAssets(modules.project_config.assetDataJson(), modules.path_resolver);
+    return collectProjectEditorAssets(modules.project_config, modules.path_resolver);
 }
 
 struct EditorRuntimeState {
@@ -1204,6 +1206,49 @@ struct EditorRuntimeState {
         };
     }
 };
+
+// RTL-1a stage D: when a render config candidate rewrites asset_data
+// (edit_ray_layout's procedural_records), its procedural records are
+// published into the scene now -- their ray rows left to the next frame,
+// which resolves them with the candidate's layout -- and the returned
+// function publishes the records the engine had before again (for a
+// candidate that does not end committed). Empty: the candidate does not
+// change asset_data. The file is written by the candidate's source commit.
+template <typename RuntimePointer>
+std::function<void()> publishCandidateAssetData(
+    const RuntimePointer &runtime,
+    const RenderConfigCandidateDocumentSet &candidate) {
+    auto &modules = runtime->modules;
+    const auto reference = modules.project_config.assetDataReference();
+    const auto *document =
+        candidate.find(modules.path_resolver.normalizedReference(reference));
+    if (document == nullptr ||
+        document->operation == RenderConfigDocumentOperation::erase)
+        return {};
+    if (modules.project_config.prepareAssetDataJson(
+            document->bytes, modules.path_resolver) ==
+        modules.project_config.assetDataJson())
+        return {};
+    const auto publish = [](auto &modules, std::string_view bytes) {
+        auto prepared = PreparedProceduralAssetPublication::prepare(
+            modules.project_config, modules.path_resolver,
+            GET_MODULE(ProceduralGeometryContainer), modules.polygon_instances,
+            FastModuleContainer::tryGet<VulkanManageCore>(),
+            modules.scene_loader.currentScene(), bytes,
+            /*resolve_ray_rows=*/false);
+        prepared->commit([] {});
+    };
+    auto previous = modules.path_resolver.loadText(reference);
+    publish(modules, document->bytes);
+    return [runtime, publish, previous = std::move(previous)] {
+        try {
+            publish(runtime->modules, previous);
+        } catch (...) {
+            // The refusal of the candidate is the answer; the scene keeps
+            // what it has.
+        }
+    };
+}
 
 } // namespace
 
@@ -1970,6 +2015,12 @@ EditorProjectionResult materializeEditorProjection(
             binding_state.bindings = std::move(runtime_bindings);
         }
         return result;
+    } catch (const UnknownModelAssetError &error) {
+        // MI-1: as the transaction reports it (errorFromException).
+        return reject(EditorProjectionStatus::Failed,
+                      EditorProjectionErrorCode::AdapterPrepareFailed,
+                      error.what(), "/",
+                      {{"model", error.model()}, {"reason", "model_unknown"}});
     } catch (const std::exception &error) {
         return reject(EditorProjectionStatus::Failed,
                       EditorProjectionErrorCode::AdapterPrepareFailed,
@@ -2119,6 +2170,26 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                         "pelican.render_pipeline reload participant is unavailable",
                                 };
                             }
+                            // RTL-1a stage D: edit_ray_layout's
+                            // procedural_records rewrite asset_data in the
+                            // same candidate as the layout. Its records are
+                            // published into the scene before the layout's
+                            // generation is staged, so that generation's
+                            // first frame resolves the new records with the
+                            // new layout; the file itself is written by the
+                            // candidate's source commit. Whatever does not
+                            // end committed publishes the previous records
+                            // again (revert_assets).
+                            std::function<void()> revert_assets;
+                            try {
+                                revert_assets = publishCandidateAssetData(
+                                    runtime, candidate);
+                            } catch (const std::exception &error) {
+                                return RenderConfigRuntimeApplyResult{
+                                    .error = error.what(),
+                                    .exception = std::current_exception(),
+                                };
+                            }
                             const auto applied =
                                 runtime->modules.reload_service
                                     ->applyAuthoredCandidate(
@@ -2126,9 +2197,13 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                         std::move(candidate),
                                         std::move(source_commit),
                                         [completion =
-                                             std::move(completion)](
+                                             std::move(completion),
+                                         revert_assets](
                                             watch::AuthoredRuntimeReloadResult
                                                 completed) mutable {
+                                            if (!completed.committed &&
+                                                revert_assets)
+                                                revert_assets();
                                             if (!completion) return;
                                             completion(
                                                 RenderConfigRuntimeApplyResult{
@@ -2141,6 +2216,9 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                                     .exception = std::move(completed.exception),
                                                 });
                                         });
+                            if (!applied.committed && !applied.staged &&
+                                revert_assets)
+                                revert_assets();
                             return RenderConfigRuntimeApplyResult{
                                 .committed = applied.committed,
                                 .staged = applied.staged,
@@ -2315,12 +2393,7 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                         }
                         const auto &materials =
                             GET_MODULE(MaterialContainer);
-                        for (const auto material :
-                             materials.drawLoopMaterials()) {
-                            subjects.push_back(
-                                materials.drawLoopSubject(material));
-                        }
-                        return subjects;
+                        return materials.drawLoopSubjects();
                     },
                     .region_providers = [] {
                         std::vector<RenderAuthoringRegionProvider> result;
@@ -2391,6 +2464,12 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                         }
                         return result;
                     },
+                    // BS-1: the live generation is the engine's fallback.
+                    .runtime_fallback = [runtime] {
+                        return runtime->modules.renderer.renderPipelineFallback();
+                    },
+                    // RTL-1b: the mode startup fixed.
+                    .ray_layout_mode = [] { return currentRayLayoutMode(); },
                     // FG-2: verify_fold's runs are this executable, headless,
                     // in a copy of the project (graphfoldverify.hpp). What the
                     // children need of this launch is read once, here: the
@@ -2423,6 +2502,90 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                     .asset_stores = [runtime] {
                         return runtime->modules.path_resolver.stores();
                     },
+                    // RTL-1a: every registered material a ray binding can
+                    // select, as a scene row names it: its source document,
+                    // or a model's asset and glTF material index.
+                    .ray_selectable_materials = [] {
+                        std::vector<RaySelectableMaterial> result;
+                        if (!FastModuleContainer::isInitialized<
+                                MaterialContainer>())
+                            return result;
+                        const auto &materials = GET_MODULE(MaterialContainer);
+                        // EB-2: the scene objects drawing each model, as
+                        // get_material_bindings counts them (every scene of
+                        // the document, prefab-generated ones included).
+                        std::map<std::string, std::vector<RaySelectableMaterial::User>> objects_by_model;
+                        if (const auto *config = FastModuleContainer::tryGet<ProjectBasicConfig>()) {
+                            for (const auto &scene : config->resolvedScene().scenes()) {
+                                for (const auto &object : scene.objects) {
+                                    for (const auto &component : object.components) {
+                                        if (component.name != "simplemodelview" ||
+                                            !component.effective_json.is_object())
+                                            continue;
+                                        const auto model =
+                                            component.effective_json.value("model", std::string{});
+                                        if (model.empty()) break;
+                                        const auto id = std::to_string(object.authoring_object_id.value);
+                                        objects_by_model[model].push_back(
+                                            {.key = scene.scene_id + "/" + id,
+                                             .label = object.name.value_or("#" + id)});
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        const auto *models = FastModuleContainer::tryGet<ModelAssetContainer>();
+                        for (const auto material :
+                             materials.drawLoopMaterials()) {
+                            const auto identity =
+                                materials.rayBindingIdentity(material);
+                            RaySelectableMaterial selectable{
+                                .name = materials.materialName(material),
+                                .document = identity.document,
+                                .asset = identity.asset,
+                                .source_material_index =
+                                    identity.source_material_index,
+                            };
+                            if (models != nullptr) {
+                                selectable.models = models->modelsDrawingMaterials(
+                                    std::span<const GlobalMaterialId>{&material, 1});
+                                for (const auto &model : selectable.models)
+                                    if (const auto found = objects_by_model.find(model);
+                                        found != objects_by_model.end())
+                                        selectable.users.insert(selectable.users.end(),
+                                                                found->second.begin(), found->second.end());
+                            }
+                            result.push_back(std::move(selectable));
+                        }
+                        return result;
+                    },
+                    // RTL-1a: the bindings the published scene rows left
+                    // unmatched.
+                    .ray_unresolved_bindings =
+                        [runtime]() -> std::optional<RayUnresolvedBindingsObservation> {
+                        const auto plan =
+                            runtime->modules.polygon_instances.rayAsPlan();
+                        if (!plan || plan->bindings_reference.empty())
+                            return std::nullopt;
+                        return RayUnresolvedBindingsObservation{
+                            .bindings_reference = plan->bindings_reference,
+                            .bindings_digest = plan->bindings_digest_sha256,
+                            .indices = plan->unresolved_binding_indices,
+                        };
+                    },
+                    .ray_asset_data =
+                        [runtime]() -> std::optional<RayAssetDataDocument> {
+                        const auto reference =
+                            runtime->modules.project_config.assetDataReference();
+                        const auto resolved =
+                            runtime->modules.path_resolver
+                                .resolveExistingFileReference(reference);
+                        const auto *path =
+                            std::get_if<std::filesystem::path>(&resolved);
+                        if (path == nullptr) return std::nullopt;
+                        return RayAssetDataDocument{.reference = reference,
+                                                    .path = *path};
+                    },
                 });
         }
     }
@@ -2453,6 +2616,15 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                         GET_MODULE(ProceduralGeometryContainer), runtime->modules.polygon_instances,
                         FastModuleContainer::tryGet<VulkanManageCore>(), runtime->modules.scene_loader.currentScene(), bytes);
                     prepared->commit(source_commit);
+                },
+                .source_published = [runtime](std::string_view bytes) {
+                    try {
+                        return runtime->modules.project_config.prepareAssetDataJson(
+                                   bytes, runtime->modules.path_resolver) ==
+                               runtime->modules.project_config.assetDataJson();
+                    } catch (const std::exception &) {
+                        return false;
+                    }
                 }});
         }
     }
@@ -2745,6 +2917,31 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
         .resolve_ray_occurrence = [runtime](std::string_view occurrence_id) {
             return runtime->modules.polygon_instances
                 .resolveRayOccurrence(occurrence_id);
+        },
+        // EB-3: get_ray_table. The occurrences and rows get_ray_occurrences
+        // reads, for every object; the procedural rows' assets come from the
+        // inventory those rows were resolved from.
+        .ray_table = [runtime] {
+            const auto &instances = runtime->modules.polygon_instances;
+            EditorRayTableResult result{
+                .entries = instances.rayOccurrences(),
+                .plan = instances.rayAsPlan(),
+            };
+            if (const auto inventory = instances.rayAsInventory(); inventory && result.plan)
+                for (const auto &row : result.plan->rows)
+                    if (row.geometry_kind == RayGeometryKind::aabbs &&
+                        row.source_index < inventory->instances.size())
+                        result.procedural_assets.emplace(
+                            row.q, inventory->instances[row.source_index].procedural_asset);
+            if (const auto project = instances.rayAsProject())
+                for (const auto type : project->layout.group_types)
+                    result.group_types.emplace_back(
+                        type == RayGroupType::procedural ? "procedural" : "triangles");
+            if (const auto *renderer = FastModuleContainer::tryGet<Renderer>())
+                result.named_acceleration_structures = renderer->sceneAccelerationStructureMasks();
+            if (const auto mode = currentRayLayoutMode())
+                result.mode = std::string{rayLayoutModeName(*mode)};
+            return result;
         },
     });
 }

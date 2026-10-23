@@ -1,3 +1,4 @@
+#include "../watch/userdataguard.hpp"
 #define GLM_ENABLE_EXPERIMENTAL
 #include "rpcserver.hpp"
 #include "editorcommandservice.hpp"
@@ -8,6 +9,8 @@
 #include "engineauthoringlists.hpp"
 #include "playsession.hpp"
 #include "projectmigrationrpc.hpp"
+#include "projectsettingsrpc.hpp"
+#include "materialdocumentrpc.hpp"
 #include "../startup.hpp"
 
 #include "../appflow/framephase.hpp"
@@ -53,6 +56,7 @@
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
 #include "../shader/pipelinefactory.hpp"
+#include "../shader/raygrouplayout.hpp"
 #include "../renderdoc/renderdoccapture.hpp"
 #include "../renderer/spritescene.hpp"
 #include "../renderer/camera.hpp"
@@ -70,6 +74,7 @@
 #include "../vkcore/memorydiagnostics.hpp"
 #include "../watch/reloadgate.hpp"
 #include "../watch/reloadservice.hpp"
+#include "../watch/problemlist.hpp"
 
 #include <algorithm>
 #include <array>
@@ -370,6 +375,7 @@ struct EngineRpcModules {
     // AV-1: the player's startup verification; absent in a host that never
     // ran it.
     AssetsVerification *assets_verification;
+    ProblemList &problems;
 };
 
 EngineRpcModules resolveEngineRpcModules() {
@@ -405,6 +411,7 @@ EngineRpcModules resolveEngineRpcModules() {
         GET_MODULE(PipelineFactory),
         GET_MODULE(RuntimeSpawner),
         FastModuleContainer::tryGet<AssetsVerification>(),
+        GET_MODULE(ProblemList),
     };
 }
 
@@ -1206,7 +1213,7 @@ std::string RpcServer::handleLine(std::string_view line) const {
             response["jsonrpc"] = "2.0";
             response["id"] = request.id;
             response["error"] = std::move(error_object);
-            return response.dump();
+            return response.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
         }
         if (error.data()) {
             return serializeJsonRpcError(
@@ -1580,6 +1587,21 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             },
         });
     internal::configureAssetsVerificationRpcHandlers(server, modules.assets_verification);
+    // PJ-1: project.json's hot_reload / asset_stores, applied in place.
+    configureProjectSettingsRpcHandlers(server, modules.path_resolver, modules.reload_service,
+                                        modules.assets_verification);
+    // MT-1: material documents, surface schemas and material bindings, read
+    // and written through the project document transaction, applied live.
+    configureMaterialDocumentRpcHandlers(server, modules.path_resolver, modules.reload_service);
+
+    // PB-1: the problems that are true now, whole ({revision, problems});
+    // get_status.problems is its summary.
+    server.setHandler("get_problems", [](const nlohmann::json &params) {
+        if (!requireObjectParams(params, "get_problems").empty()) {
+            throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams, "get_problems takes no parameters");
+        }
+        return problemListJson(FastModuleContainer::tryGet<ProblemList>());
+    });
 
     server.setHandler("get_status", [instance_id, &modules, &editor_service,
                                      &play_session](const nlohmann::json &params) {
@@ -1625,7 +1647,15 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
         return nlohmann::json{
             {"instance_id", instance_id},
             {"ray_tracing", {{"procedural_oracle",
-                modules.pipelines.proceduralOracleStatus(active_pipelines)}}},
+                modules.pipelines.proceduralOracleStatus(active_pipelines)},
+                // RTL-1b: the ray layout mode this process started in
+                // ("none" | "layout"; null before it is configured). A
+                // committed edit that changes it says restart_required.
+                {"ray_layout_mode", [] {
+                    const auto mode = currentRayLayoutMode();
+                    return mode ? nlohmann::json(std::string{rayLayoutModeName(*mode)})
+                                : nlohmann::json(nullptr);
+                }()}}},
             {"project_root", projectRootString(modules.path_resolver)},
             {"scene", modules.scene_loader.currentScene()},
             {"scene_source", {{"hot_reload", false},
@@ -1648,6 +1678,14 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             // the published rendering configuration, with the reason when not.
             {"preview", previewGraphStatusJson(
                             modules.renderer.previewGraphProgram())},
+            // BS-1: whether the published generation is the project's
+            // ({state: "ready"}) or the engine's fallback after a refusal at
+            // start ({state: "fallback", refusal: {code, ...fields,
+            // message}}), with the rendering root's reference.
+            {"render_pipeline", modules.renderer.renderPipelineStatusJson()},
+            // PB-1: {revision, count, errors, warnings} of get_problems'
+            // list; a client reads the list again when revision moves.
+            {"problems", problemListStatusJson(FastModuleContainer::tryGet<ProblemList>())},
             {"seed", GameContext{}.seed()},
             {"xr", openXrStatusJson(modules.launch_config)},
             {"renderdoc", renderdoc.status},
@@ -2071,6 +2109,7 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
         updateFrameState();
         modules.renderer.render();
         auto result = frameResult(modules.engine_time);
+        result["problems"] = problemListJson(FastModuleContainer::tryGet<ProblemList>()).at("problems");
         result["edit_results"] = editor_rpc.takeCompletedEditResults();
         return result;
     });
@@ -2091,7 +2130,7 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
     // are applied again on top as one history entry. Without a session (an
     // engine launched playing) the edit runtime is made from the current
     // authoring and nothing is put back.
-    server.setHandler("set_play_state", [&pending_transforms, &modules, &editor_rpc,
+    auto change_play_state = [&pending_transforms, &modules, &editor_rpc,
                                          &editor_service, &play_session](
                                             const nlohmann::json &params) {
         constexpr auto method = "set_play_state";
@@ -2281,7 +2320,21 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             response["not_kept"] = std::move(not_kept);
         }
         return response;
+    };
+    server.setHandler("set_play_state", [change_play_state, &modules](const nlohmann::json &params) {
+        try { return change_play_state(params); }
+        catch (const UserDataError &) {
+            // A failed onInit rolled the play transition back to edit. Keep
+            // the behavior's recorded failure and complete its Stop request.
+            if (!userCodeStopRequested()) throw;
+            finishUserCodeStop();
+            return nlohmann::json{{"state", "edit"}, {"previous", "edit"},
+                {"problems", modules.problems.problemsJson().at("problems")}};
+        }
     });
+    modules.problems.user_code_stop_handler = [change_play_state] {
+        (void)change_play_state(nlohmann::json{{"state", "edit"}});
+    };
 
     // PM-1b. The camera the frame is drawn from, in edit or paused: the
     // editor camera, or the game's camera as the scene and game code chose
@@ -2378,6 +2431,7 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
         auto result = frameResult(time);
         result["scheduled"] = count;
         result["until_game_frame"] = time.frameIndex();
+        result["problems"] = problemListJson(FastModuleContainer::tryGet<ProblemList>()).at("problems");
         result["edit_results"] = editor_rpc.takeCompletedEditResults();
         return result;
     });
@@ -2432,6 +2486,11 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             throw JsonRpcHandlerError{JsonRpcErrorCodes::invalidParams, error.what()};
         }
         auto plan = modules.renderer.currentFramePlanJson();
+        // BS-1: the plan of the engine's fallback generation says so, and
+        // why; a project generation's plan is unchanged.
+        if (modules.renderer.renderPipelineFallback()) {
+            plan["render_pipeline"] = modules.renderer.renderPipelineStatusJson();
+        }
         if (!pageDrawLoopElements(plan, page)) {
             throw JsonRpcHandlerError{
                 JsonRpcErrorCodes::invalidParams,
@@ -2795,6 +2854,7 @@ struct EngineRpcEndpoint::Impl {
     // EL-4c: the worker leaves after the shader it is reflecting; EL-5:
     // get_shader_interface's after the stage it is reflecting.
     ~Impl() {
+        if (auto *problems = FastModuleContainer::tryGet<ProblemList>()) problems->user_code_stop_handler = {};
         stopEngineShadersReflection();
         stopShaderInterfaceReflection();
     }

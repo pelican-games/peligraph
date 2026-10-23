@@ -137,7 +137,7 @@
         "params": {}
       },
       "path": "result.nodes[2]",
-      "op": "excludes",
+      "op": "lacks_key",
       "value": "view_select",
       "retry_ms": 120000
     },

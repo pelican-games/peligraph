@@ -13,6 +13,7 @@ uv run tools/docs_site.py serve
 ```
 
 表示された `http://127.0.0.1:8000/peligraph/` をブラウザで開きます。終了は Ctrl+C です。
+各ページの h2 / h3 の節は閉じた状態で表示され、見出しをクリックすると開閉します。h3 の三角は親の h2 の内側に下げて置き、開いた節の左に引いた縦線で階層を示します。ページ上部の「すべて開く」「すべて閉じる」で全節をまとめて開閉でき、目次や検索から飛ぶと飛び先の節が開きます。
 HTML ファイルだけ生成する場合は次を使います。
 
 ```sh
@@ -24,7 +25,7 @@ uv run tools/docs_site.py build
 
 ## 収録する資料
 
-公開対象は [mkdocs.yml](../mkdocs.yml) の `nav` に明記したページ、表示用 CSS、テーマと検索に必要な資源だけです。
+公開対象は [mkdocs.yml](../mkdocs.yml) の `nav` に明記したページ、表示用 CSS、節を折りたたむスクリプト(`docs/site/sections.js`)、テーマと検索に必要な資源だけです。
 利用マニュアル、ソースコード読解ガイド、トップページ、本ページを収録します。
 `docs/` に新しいファイルを置くだけでは公開対象になりません。追加する場合は内容を確認して `nav` に登録します。
 
@@ -45,11 +46,11 @@ GitHub Pages は静的 HTML の公開機能です。独自のサーバーを運�
 
 公開する場合の設定は次の順です。
 
-1. 修正した資料と生成設定を `develop` に反映します。
+1. 修正した資料と生成設定を `main` に反映します(公開版の資料だけを出す)。
 2. リポジトリの **Settings → Pages → Build and deployment → Source** で **GitHub Actions** を選びます。
 3. **Settings → Secrets and variables → Actions → Variables** に、リポジトリ変数 `PUBLISH_DOCS` を値 `true` で作成します。
-4. **Actions → Documentation site → Run workflow** を `develop` で実行します。
-5. `deploy` ジョブの URL を開きます。その後は `develop` の資料更新に合わせて再公開します。
+4. **Actions → Documentation site → Run workflow** を `main` で実行します。
+5. `deploy` ジョブの URL を開きます。その後は `main` の更新(release)に合わせて再公開します。
 
 `PUBLISH_DOCS` を設定するまでは HTML のビルドと成果物の保存だけを行います。
 プルリクエストでもビルドを確認しますが、公開処理は実行しません。

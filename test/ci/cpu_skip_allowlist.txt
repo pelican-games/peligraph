@@ -1,3 +1,7 @@
 # Exact CTest names only. A listed test may pass when the runner can create
 # directory symlinks; every other Skipped/Not Run result fails the CPU gate.
 PathResolver rejects symlink escapes after canonicalization
+#
+# The Debug CRT reports only exist in Debug builds. In Release the probe reports
+# CRT_PROBE_SKIPPED; Debug must execute it and pass (TI-1).
+crt_report_to_stderr

@@ -101,6 +101,73 @@ function(run_rpc label project script_lines out_var)
     set(${out_var} "${stdout}" PARENT_SCOPE)
 endfunction()
 
+# The `result` of request `id` in a run_rpc transcript, as JSON text. The
+# checks below read fields by name: the catalog entry grows fields (FR-1's
+# `required_targets`, FR-2's `insertion`), and a pattern over the serialized
+# order breaks on each one.
+function(rpc_result label stdout id out_var)
+    string(REPLACE "\r\n" "\n" rest "${stdout}")
+    set(found "")
+    while(NOT rest STREQUAL "")
+        string(FIND "${rest}" "\n" newline_at)
+        if(newline_at EQUAL -1)
+            set(line "${rest}")
+            set(rest "")
+        else()
+            string(SUBSTRING "${rest}" 0 ${newline_at} line)
+            math(EXPR after_newline "${newline_at} + 1")
+            string(SUBSTRING "${rest}" ${after_newline} -1 rest)
+        endif()
+        string(JSON line_id ERROR_VARIABLE line_error GET "${line}" id)
+        if(line_error STREQUAL "NOTFOUND" AND "${line_id}" STREQUAL "${id}")
+            string(JSON found ERROR_VARIABLE result_error GET "${line}" result)
+            if(NOT result_error STREQUAL "NOTFOUND")
+                message(FATAL_ERROR "${label}: request ${id} returned no result\n${line}")
+            endif()
+        endif()
+    endwhile()
+    if(found STREQUAL "")
+        message(FATAL_ERROR "${label}: no response to request ${id}\n${stdout}")
+    endif()
+    set(${out_var} "${found}" PARENT_SCOPE)
+endfunction()
+
+# The entry of a `list_render_features` result whose `reference` is the given
+# one, as JSON text; fails when the catalog has no such entry.
+function(catalog_entry label result reference out_var)
+    string(JSON feature_count ERROR_VARIABLE count_error LENGTH "${result}" features)
+    if(NOT count_error STREQUAL "NOTFOUND")
+        message(FATAL_ERROR "${label}: the result has no features array\n${result}")
+    endif()
+    set(entry "")
+    if(feature_count GREATER 0)
+        math(EXPR last_feature "${feature_count} - 1")
+        foreach(feature_index RANGE 0 ${last_feature})
+            string(JSON entry_reference ERROR_VARIABLE reference_error
+                GET "${result}" features ${feature_index} reference)
+            if(reference_error STREQUAL "NOTFOUND" AND
+               "${entry_reference}" STREQUAL "${reference}")
+                string(JSON entry GET "${result}" features ${feature_index})
+            endif()
+        endforeach()
+    endif()
+    if(entry STREQUAL "")
+        message(FATAL_ERROR "${label}: the catalog has no entry for ${reference}\n${result}")
+    endif()
+    set(${out_var} "${entry}" PARENT_SCOPE)
+endfunction()
+
+# A JSON boolean reads back as ON / OFF.
+function(require_field label entry field expected)
+    string(JSON value ERROR_VARIABLE field_error GET "${entry}" ${field})
+    if(NOT field_error STREQUAL "NOTFOUND")
+        message(FATAL_ERROR "${label}: the entry has no '${field}'\n${entry}")
+    endif()
+    if(NOT "${value}" STREQUAL "${expected}")
+        message(FATAL_ERROR "${label}: '${field}' is '${value}', not '${expected}'\n${entry}")
+    endif()
+endfunction()
+
 # --------------------------------------------------------------------------
 # 1. `package inspect` reads a package without installing it, and every named
 #    rejection is observed on a deliberately broken copy.
@@ -172,9 +239,10 @@ if(NOT EXISTS "${baseline_png}")
     message(FATAL_ERROR "the baseline capture was not written")
 endif()
 
-string(REGEX MATCH "\"source_digest\":\\{\"algorithm\":\"sha256\",\"hex\":\"([0-9a-f]+)\"" digest_match "${before_stdout}")
-set(config_digest "${CMAKE_MATCH_1}")
-if(config_digest STREQUAL "")
+rpc_result("get_render_features before install" "${before_stdout}" 2 before_features)
+string(JSON config_digest ERROR_VARIABLE config_digest_error
+    GET "${before_features}" source_digest hex)
+if(NOT config_digest_error STREQUAL "NOTFOUND" OR config_digest STREQUAL "")
     message(FATAL_ERROR "could not read the rendering config digest\n${before_stdout}")
 endif()
 
@@ -262,9 +330,14 @@ require_text("${installed_stdout}" "\"source\":\"package\"" "catalog after insta
 require_text("${installed_stdout}" "project://packages/acme.glowkit/features/glow.json" "catalog after install")
 # The package half of the catalog is available in this build: the template
 # declares runtime_shader_compiler "optional" and uses engine shaders only.
-if(NOT installed_stdout MATCHES "\"available\":true,\"hot_add_supported\":true,\"name\":\"acme.glowkit.glow\",\"reference\":\"project://packages/acme.glowkit/features/glow.json\",\"requires_runtime_module\":false,\"source\":\"package\"")
-    message(FATAL_ERROR "the package feature was not reported as available\n${installed_stdout}")
-endif()
+rpc_result("catalog after install" "${installed_stdout}" 1 installed_catalog)
+catalog_entry("catalog after install" "${installed_catalog}"
+    "project://packages/acme.glowkit/features/glow.json" installed_entry)
+require_field("catalog after install" "${installed_entry}" name "acme.glowkit.glow")
+require_field("catalog after install" "${installed_entry}" source "package")
+require_field("catalog after install" "${installed_entry}" available ON)
+require_field("catalog after install" "${installed_entry}" hot_add_supported ON)
+require_field("catalog after install" "${installed_entry}" requires_runtime_module OFF)
 # Still referenced: the uninstall is refused by name and enumerates what holds
 # it.
 require_text("${installed_stdout}" "package_in_use" "uninstall while referenced")
@@ -368,9 +441,15 @@ run_rpc(broken "${broken_host}"
 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"list_render_features\",\"params\":{}}\n\
 {\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"get_render_features\",\"params\":{}}\n"
     broken_stdout)
-require_text("${broken_stdout}" "\"source\":\"package\",\"unavailable_reason\"" "damaged package entry")
-if(NOT broken_stdout MATCHES "\"available\":false,[^}]*\"source\":\"package\"")
-    message(FATAL_ERROR "the damaged package entry was not reported unavailable\n${broken_stdout}")
+rpc_result("damaged package entry" "${broken_stdout}" 1 broken_catalog)
+catalog_entry("damaged package entry" "${broken_catalog}"
+    "project://packages/acme.glowkit/features/glow.json" broken_entry)
+require_field("damaged package entry" "${broken_entry}" source "package")
+require_field("damaged package entry" "${broken_entry}" available OFF)
+string(JSON broken_reason ERROR_VARIABLE broken_reason_error
+    GET "${broken_entry}" unavailable_reason)
+if(NOT broken_reason_error STREQUAL "NOTFOUND" OR broken_reason STREQUAL "")
+    message(FATAL_ERROR "the damaged package entry gives no unavailable_reason\n${broken_entry}")
 endif()
 require_text("${broken_stdout}" "\"id\":2" "get_render_features still answers")
 require_text("${broken_stdout}" "\"source_digest\"" "get_render_features still answers")

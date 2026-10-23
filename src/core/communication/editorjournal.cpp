@@ -1,3 +1,11 @@
+#include "../renderingpass/renderingpasscontainer.hpp"
+#include "../renderingpass/framegraphruntime.hpp"
+#include "../renderer/shadowvalidation.hpp"
+#include "../loader/basicconfig.hpp"
+#include "../userpublic/userinput.hpp"
+#include "../loader/controllervalidation.hpp"
+#include "../userpublic/components/spriteview.hpp"
+#include "../asset/spritevalidation.hpp"
 #include "editorjournal.hpp"
 #include "editorgate.hpp"
 #include "editorjournalintegrity.hpp"
@@ -7,6 +15,9 @@
 #include "../loader/authoringsceneauthority.hpp"
 
 #include "../appflow/framephase.hpp"
+#include "../asset/model.hpp"
+#include "../model/animationcomponentvalidation.hpp"
+#include "../userpublic/components/animation.hpp"
 #include "../ecs/componentinfo.hpp"
 #include "../gamelogic/behaviorarena.hpp"
 #include "../loader/componentcodec.hpp"
@@ -1710,9 +1721,16 @@ EditFailure projectionFailure(const EditorProjectionResult &result,
             result.error ? result.error->data : OrderedJson::object(),
             message};
     case EditorProjectionErrorCode::AdapterPrepareFailed:
-    case EditorProjectionErrorCode::AdapterPublishFailed:
-        return EditFailure{EditorEditErrorCode::method_unavailable,
-                           OrderedJson{{"method", method}, {"adapter", path}}, message};
+    case EditorProjectionErrorCode::AdapterPublishFailed: {
+        OrderedJson fields{{"method", method}, {"adapter", path}};
+        // MI-1: a simplemodelview naming a model that is not registered.
+        if (result.error && result.error->data.is_object() &&
+            result.error->data.value("reason", std::string{}) == "model_unknown") {
+            fields["model"] = result.error->data.at("model");
+            fields["reason"] = "model_unknown";
+        }
+        return EditFailure{EditorEditErrorCode::method_unavailable, std::move(fields), message};
+    }
     case EditorProjectionErrorCode::CommandInvalid:
         if (message.starts_with("editor_preview_unsupported@1")) {
             return EditFailure{
@@ -2028,6 +2046,97 @@ void requireObjectFeatures(const ResolvedScene &resolved,
     }
 }
 
+// Validate the resolved prospective object, including prefab components, before
+// any document or runtime publication. Document-only hosts have no model assets.
+void requireObjectUserData(const ResolvedScene &resolved, AuthoringObjectId id) {
+    auto *config = FastModuleContainer::tryGet<ProjectBasicConfig>();
+    auto *resolver = FastModuleContainer::tryGet<PathResolver>();
+    if (!config || !resolver) return;
+    for (const auto &scene : resolved.scenes()) for (const auto &object : scene.objects) {
+        if (object.authoring_object_id != id) continue;
+        for (const auto &component : object.components) {
+            try {
+                if (component.name == "camera") {
+                    const auto &camera = std::any_cast<const CameraCodecData &>(component.requireRuntimeValue());
+                    if (camera.znear)
+                        if (const auto *passes = FastModuleContainer::tryGet<RenderingPassContainer>())
+                            if (const auto generation = passes->snapshot())
+                                for (const auto &[key, program] : generation->programs)
+                                    if (program.frame_graph.render_pipeline)
+                                        requireCameraShadowDistance(*camera.znear, *program.frame_graph.render_pipeline);
+                    if (camera.controller) {
+                        const auto &controller = *camera.controller;
+                        if (!controller.target.empty() || controller.type == CameraControllerCodecType::Follow) {
+                            bool found = false;
+                            for (const auto &target : scene.objects)
+                                if (target.name == controller.target)
+                                    for (const auto &part : target.components)
+                                        if (part.name == "transform") found = true;
+                            requireControllerTarget(object.name.value_or("<unnamed>"), controller.target, found);
+                        }
+                        requireControllerActions(internal::inputActionMap(),
+                            controller.type == CameraControllerCodecType::Orbit,
+                            controller.type == CameraControllerCodecType::Fly);
+                    }
+                }
+                if (component.name == "sprite_view") {
+                    const auto &view = std::any_cast<const SpriteViewComponent &>(component.requireRuntimeValue());
+                    const asset::SpriteAssetCatalog catalog{Json::parse(config->assetDataJson())};
+                    (void)requireSpriteTexture(catalog, view.texture, *resolver);
+                }
+            } catch (const UserDataError &error) {
+                editFailure(EditorEditErrorCode::user_data_invalid,
+                    {{"object", id.value}, {"slot", component.name}}, error.what());
+            }
+        }
+    }
+}
+
+void requireObjectAnimation(const ResolvedScene &resolved, AuthoringObjectId id,
+                            bool model_change) {
+    auto *models = FastModuleContainer::tryGet<ModelAssetContainer>();
+    auto *resolver = FastModuleContainer::tryGet<PathResolver>();
+    if (!models || !resolver) return;
+    for (const auto &scene : resolved.scenes()) {
+        for (const auto &object : scene.objects) {
+            if (object.authoring_object_id != id) continue;
+            const AnimationComponent *animation = nullptr;
+            const SimpleModelViewCodecData *view = nullptr;
+            for (const auto &component : object.components) {
+                if (component.name == "animation")
+                    animation = std::any_cast<AnimationComponent>(&component.requireRuntimeValue());
+                if (component.name == "simplemodelview")
+                    view = std::any_cast<SimpleModelViewCodecData>(&component.requireRuntimeValue());
+            }
+            if (!animation) return;
+#if PELICAN_WITH_ANIMATION
+            if (!animation->graph.empty()) {
+                try {
+                    const auto *model = view ? models->getModelTemplateByName(view->model).skeletal.get() : nullptr;
+                    (void)requireAnimationComponentGraph(model, *animation, *resolver);
+                } catch (const UserDataError &error) {
+                    editFailure(EditorEditErrorCode::user_data_invalid,
+                        {{"object", id.value}, {"slot", "animation"}}, error.what());
+                }
+                return;
+            }
+#endif
+            try {
+                const auto *model = view ? models->getModelTemplateByName(view->model).skeletal.get() : nullptr;
+                (void)requireAnimationComponentClip(model, animation->clip, *resolver);
+            } catch (const std::exception &error) {
+                editFailure(EditorEditErrorCode::animation_component_invalid,
+                            {{"object", id.value}, {"slot", "animation"},
+                             {"clip", animation->clip},
+                             {"hint", model_change ? "Remove animation first before changing the model." :
+                                                     "Choose an animation clip from the skinned model's file."}},
+                            error.what());
+            }
+            return;
+        }
+    }
+}
+
 PreparedBatch prepareBatch(const Json &raw_operations,
                            const AuthoringSceneDocument &source,
                            std::string_view current_scene,
@@ -2129,6 +2238,15 @@ PreparedBatch prepareBatch(const Json &raw_operations,
                 requireObjectFeatures(local->projectionResolvedScene(),
                                       AuthoringObjectId{id.get<std::uint64_t>()});
             }
+        }
+        if (op == "add_component" || op == "set_component_value") {
+            const auto component = prepared.forward.value("component_slot", std::string{});
+            requireObjectUserData(local->projectionResolvedScene(),
+                AuthoringObjectId{prepared.forward.at("object_id").get<std::uint64_t>()});
+            if (component == "animation" || component == "simplemodelview")
+                requireObjectAnimation(local->projectionResolvedScene(),
+                    AuthoringObjectId{prepared.forward.at("object_id").get<std::uint64_t>()},
+                    component == "simplemodelview");
         }
         batch.canonical_forward.push_back(
             freezeJournalOperation(prepared.forward,
@@ -3181,6 +3299,8 @@ std::string_view editorEditErrorCodeName(EditorEditErrorCode code) noexcept {
     case EditorEditErrorCode::trs_unrepresentable: return "trs_unrepresentable";
     case EditorEditErrorCode::preserve_missing: return "preserve_missing";
     case EditorEditErrorCode::method_unavailable: return "method_unavailable";
+    case EditorEditErrorCode::user_data_invalid: return "runtime.user_data@1";
+    case EditorEditErrorCode::animation_component_invalid: return "animation.component_invalid@1";
     case EditorEditErrorCode::module_unavailable: return "module_unavailable@1";
     }
     return "method_unavailable";

@@ -8,6 +8,8 @@
 
 namespace PelicanStudio {
 
+class RenderConfigDigest;
+
 class GraphAttachmentWidget final : public QWidget {
     Q_OBJECT
     struct Impl;
@@ -16,6 +18,7 @@ class GraphAttachmentWidget final : public QWidget {
   public:
     explicit GraphAttachmentWidget(QWidget *parent = nullptr);
     ~GraphAttachmentWidget() override;
+    void setRenderConfigDigest(std::shared_ptr<RenderConfigDigest> hub);
     void setConnected(bool connected);
     void setOwner(std::optional<GraphAttachmentOwner> owner);
     void receiveRpcResult(quint64 id, const QByteArray &result);

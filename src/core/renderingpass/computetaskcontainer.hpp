@@ -1,5 +1,6 @@
 #pragma once
 
+#include "computedescriptorbudget.hpp"
 #include "framegraphbuffercontainer.hpp"
 #include "framegraphbufferdefinition.hpp"
 #include "frameplanner.hpp"
@@ -31,6 +32,17 @@ class RenderTargetLayoutTracker;
 class ShaderLibrary;
 class VulkanUtils;
 struct RayTracingProjectConfig;
+
+// Fail an allocation after a chosen number of successful attempts. Scoped to
+// the render thread; tests exercise candidate rollback without exhausting VRAM.
+class ScopedComputeDescriptorAllocationFailureForTesting {
+    std::optional<std::uint64_t> previous_;
+  public:
+    explicit ScopedComputeDescriptorAllocationFailureForTesting(std::uint64_t successful_attempts = 0);
+    ~ScopedComputeDescriptorAllocationFailureForTesting();
+    ScopedComputeDescriptorAllocationFailureForTesting(const ScopedComputeDescriptorAllocationFailureForTesting &) = delete;
+    ScopedComputeDescriptorAllocationFailureForTesting &operator=(const ScopedComputeDescriptorAllocationFailureForTesting &) = delete;
+};
 
 // Test-only mutation seam proving that production ComputeTask preparation is
 // the component that injects the generated ray-layout include and cache salt.
@@ -131,17 +143,21 @@ DECLARE_MODULE(ComputeTaskContainer) {
     };
 
     struct TaskRecord {
+        // Shared only by tasks of the same prepared descriptor generation.
+        // Declared first so sets are freed before the last pool owner.
+        std::shared_ptr<vk::UniqueDescriptorPool> descriptor_pool;
+        std::uint32_t descriptor_variant_count = 1;
         ComputeTaskDefinition definition;
         std::vector<ResolvedComputeResourceBinding> resource_bindings;
         std::vector<ShaderResourceInterfaceBinding>
             resource_interface;
         PipelineHandle pipeline;
         std::vector<
-            std::array<vk::UniqueDescriptorSet, 2>>
+            std::array<vk::UniqueDescriptorSet, computeDescriptorParities>>
             descriptor_sets;
         std::vector<
             std::array<
-                std::vector<vk::ImageView>, 2>>
+                std::vector<vk::ImageView>, computeDescriptorParities>>
             bound_image_views;
         std::uint64_t binding_revision = 0;
         bool ray_tracing = false;
@@ -156,7 +172,6 @@ DECLARE_MODULE(ComputeTaskContainer) {
     };
 
     vk::Device device;
-    vk::UniqueDescriptorPool descriptor_pool;
     std::unordered_map<int, TaskRecord> tasks;
     std::unordered_map<std::string, ComputeTaskId> name_to_id;
     std::vector<ComputeTaskId> registration_order;
@@ -181,11 +196,11 @@ DECLARE_MODULE(ComputeTaskContainer) {
     // render-target rebinding build the same grid; only the pool differs.
     struct TaskDescriptorSets {
         std::vector<
-            std::array<vk::UniqueDescriptorSet, 2>>
+            std::array<vk::UniqueDescriptorSet, computeDescriptorParities>>
             descriptor_sets;
         std::vector<
             std::array<
-                std::vector<vk::ImageView>, 2>>
+                std::vector<vk::ImageView>, computeDescriptorParities>>
             bound_image_views;
     };
     TaskDescriptorSets createTaskDescriptorSets(
@@ -212,7 +227,9 @@ DECLARE_MODULE(ComputeTaskContainer) {
     ~ComputeTaskContainer();
 
     ComputeTaskId registerComputeTask(const ComputeTaskDefinition &definition,
-                                      const ComputeTaskRuntimeDependencies &dependencies);
+                                      const ComputeTaskRuntimeDependencies &dependencies,
+                                      bool defer_descriptors = false);
+    void prepareDescriptorGeneration(const std::vector<ComputeTaskId> &ids);
     void rebindRenderTargets(RenderTargetContainer &render_target_container);
     const ComputeTaskDefinition &definition(ComputeTaskId task_id) const;
     // LC-1: whether a stage of the task's pipeline declares the loop index

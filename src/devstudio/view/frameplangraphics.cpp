@@ -29,6 +29,7 @@
 #include <QPen>
 #include <QPolygonF>
 #include <QStringList>
+#include <QScopeGuard>
 #include <QVariant>
 
 #include <algorithm>
@@ -234,7 +235,7 @@ QGraphicsItem *findFramePlanSocket(QGraphicsScene &scene, const QString &graph,
                                    const QString &node,
                                    const QString &resource,
                                    const QString &direction) {
-    for (QGraphicsItem *item : scene.items()) {
+    for (QGraphicsItem *item : nodeGraphItems(scene)) {
         if (item->data(FramePlanItemKindRole).toString() !=
                 QLatin1String{FramePlanSocketItem} ||
             item->data(FramePlanGraphRole).toString() != graph ||
@@ -251,7 +252,7 @@ QGraphicsItem *findFramePlanSocket(QGraphicsScene &scene, const QString &graph,
 QGraphicsItem *findFramePlanInputSocket(QGraphicsScene &scene,
                                         const QString &graph,
                                         const QString &node, int input_index) {
-    for (QGraphicsItem *item : scene.items()) {
+    for (QGraphicsItem *item : nodeGraphItems(scene)) {
         if (item->data(FramePlanItemKindRole).toString() !=
                 QLatin1String{FramePlanSocketItem} ||
             item->data(FramePlanGraphRole).toString() != graph ||
@@ -270,7 +271,7 @@ QGraphicsItem *findFramePlanInputArrow(QGraphicsScene &scene,
                                        const QString &graph,
                                        const QString &from,
                                        const QString &to, int input_index) {
-    for (QGraphicsItem *item : scene.items()) {
+    for (QGraphicsItem *item : nodeGraphItems(scene)) {
         if (item->data(FramePlanItemKindRole).toString() !=
                 QLatin1String{FramePlanEdgeArrowItem} ||
             item->data(FramePlanGraphRole).toString() != graph ||
@@ -349,9 +350,10 @@ void routeFramePlanBundle(QGraphicsScene &scene, QGraphicsPathItem &edge) {
 
 void rerouteFramePlanBundles(QGraphicsScene &scene, const std::string &graph,
                              const std::string &node) {
+    const NodeGraphLookupScope lookup{scene};
     const QString expected_graph = qtext(graph);
     const QString expected_node = qtext(node);
-    for (QGraphicsItem *item : scene.items()) {
+    for (QGraphicsItem *item : nodeGraphItems(scene)) {
         if (item->data(FramePlanItemKindRole).toString() !=
                 QLatin1String{FramePlanEdgeItem} ||
             item->data(FramePlanGraphRole).toString() != expected_graph ||
@@ -2316,6 +2318,7 @@ FramePlanGraphicsScene::~FramePlanGraphicsScene() {
 }
 
 void FramePlanGraphicsScene::resetGraph() {
+    render_after_drag_ = false;
     clearConnectionGesture();
     closeInlineEditor();
     selected_edge_.reset();
@@ -2547,6 +2550,11 @@ void FramePlanGraphicsScene::pruneGroupState() {
 }
 
 void FramePlanGraphicsScene::renderCurrentGraph() {
+    if (dragging()) {
+        render_after_drag_ = true;
+        return;
+    }
+    render_after_drag_ = false;
     clearConnectionGesture();
     // Q-4. The editor is a widget in the scene; a redraw deletes every item,
     // so it has to go first or its proxy is deleted twice. What it was and
@@ -4496,6 +4504,9 @@ void FramePlanGraphicsScene::closeInlineEditor() {
     }
     removeItem(editor->proxy);
     editor->proxy->deleteLater();
+    QMetaObject::invokeMethod(this, [this] {
+        if (!editingInline() && !dragging() && gestureEnded) gestureEnded();
+    }, Qt::QueuedConnection);
 }
 
 void FramePlanGraphicsScene::cancelInlineEdit() { closeInlineEditor(); }
@@ -4613,6 +4624,8 @@ bool FramePlanGraphicsScene::cancelConnectionGesture() {
 }
 
 void FramePlanGraphicsScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
+    handling_mouse_ = true;
+    const auto pressed = qScopeGuard([this] { handling_mouse_ = false; });
     if (event->button() != Qt::LeftButton || !(event->modifiers() & Qt::ShiftModifier)) {
         // N-8. A plain press is still a press: it drags nodes, it rubber-bands,
         // it selects. What is new is that a press that lands on a socket, on a
@@ -4733,6 +4746,17 @@ void FramePlanGraphicsScene::mouseMoveEvent(QGraphicsSceneMouseEvent *event) {
 }
 
 void FramePlanGraphicsScene::mouseReleaseEvent(QGraphicsSceneMouseEvent *event) {
+    handling_mouse_ = true;
+    const auto released = qScopeGuard([this] {
+        handling_mouse_ = false;
+        // Let the view finish dispatching release before replacing its items
+        // or disabling it for the edit just sent by the gesture.
+        QMetaObject::invokeMethod(this, [this] {
+            if (dragging()) return;
+            if (gestureEnded) gestureEnded();
+            if (render_after_drag_) renderCurrentGraph();
+        }, Qt::QueuedConnection);
+    });
     if (!connection_gesture_) { QGraphicsScene::mouseReleaseEvent(event); return; }
     // Remove the preview before hit-testing the destination underneath it.
     delete connection_line_;
@@ -4968,7 +4992,17 @@ void FramePlanGraphicsScene::applyEdgeEmphasis() {
 
 void FramePlanGraphicsScene::applySceneRectNow() {
     scene_rect_update_queued_ = false;
-    setSceneRect(itemsBoundingRect().adjusted(-30.0, -30.0, 30.0, 30.0));
+    const QRectF rect = sceneRect().united(
+        itemsBoundingRect().adjusted(-30.0, -30.0, 30.0, 30.0));
+    if (rect == sceneRect()) return;
+    // Like the Graph canvas, keep the visible area in the view's bounds
+    // before growing the scene. Otherwise Qt centers the fitted axis again
+    // and the held node slides away from the pointer on every move.
+    for (QGraphicsView *view : views()) {
+        const QRectF visible = view->mapToScene(view->viewport()->rect()).boundingRect();
+        view->setSceneRect(rect.united(visible));
+    }
+    setSceneRect(rect);
 }
 
 void FramePlanGraphicsScene::scheduleSceneRectUpdate() {

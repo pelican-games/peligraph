@@ -34,12 +34,23 @@ add_library(pelican_studio_inspector_model STATIC
     graphcanvasimport.hpp
     renderedithistory.cpp
     renderedithistory.hpp
+    tabeditorder.cpp
+    tabeditorder.hpp
     # RSX: the one reading of a render config ticket's last answer.
     rendereditcompletion.cpp
     rendereditcompletion.hpp
+    # RT-A: one part follows a render edit's ticket for every panel that sends one.
+    rendereditticket.cpp
+    rendereditticket.hpp
+    # RT-C: the one reading of a synchronous write's applied / restart_required.
+    appliedstate.cpp
+    appliedstate.hpp
     # RL-1s: render documents rewritten on disk, taken in by reload_render_documents.
     renderdocumentreload.cpp
     renderdocumentreload.hpp
+    # BS-1s: the engine on its fallback generation, and the way back.
+    renderfallback.cpp
+    renderfallback.hpp
     playstatemodel.cpp
     playstatemodel.hpp
     # PM-3c: reads the play state through playstatemodel's parsePlayStatus.
@@ -51,6 +62,25 @@ add_library(pelican_studio_inspector_model STATIC
     # UX-12b: the refusals FR-1 names with what is missing, and their fixes.
     featurerefusalfix.cpp
     featurerefusalfix.hpp
+    # HW-2s / AV-1s: the Assets dock's watch switches and contents check.
+    assetsdockmodel.cpp
+    assetsdockmodel.hpp
+    # MT-1s: the material editor's reads, writes and Undo (engine MT-1).
+    materialsmodel.cpp
+    materialsmodel.hpp
+    # RTL-2s: the ray group layout, its bindings and the plans that change them.
+    raylayoutmodel.cpp
+    raylayoutmodel.hpp
+    # RTL-2s-c: the one set of shader templates of a project with a ray layout.
+    raylayouttemplate.cpp
+    raylayouttemplate.hpp
+    # PB-1s: the Problems window's list (engine PB-1's get_problems and the
+    # contents check).
+    problemsmodel.cpp
+    problemsmodel.hpp
+    # MI-1s: an outside model placed in the project and registered (engine MI-1).
+    modelimport.cpp
+    modelimport.hpp
 )
 
 set_target_properties(pelican_studio_inspector_model PROPERTIES CXX_STANDARD 20)

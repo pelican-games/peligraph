@@ -1,4 +1,6 @@
 {
+  "invariants": {
+  },
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "graph_palette_kinds",

@@ -8,6 +8,7 @@
 #include <QAction>
 #include <QGraphicsScene>
 #include <QPointF>
+#include <QStringList>
 #include <QWidget>
 
 #include <filesystem>
@@ -28,6 +29,9 @@ class QGraphicsSceneMouseEvent;
 class QKeyEvent;
 
 namespace PelicanStudio {
+
+class TabEditOrder;
+class RenderEditHistory;
 
 class RenderConfigDigest;
 
@@ -304,6 +308,10 @@ class GraphCanvasScene final : public QGraphicsScene {
     // the scene keeps (positions, folds, placements, the selection) is filed
     // under (scope, id). A folded zone is the loop's node, as LP-4c drew it.
     void repopulate();
+    void clear();
+    void rebuildRoutingIndex();
+    void invalidateRoutingIndex() { routing_index_.invalidate(); }
+    quint64 routingGeneration() const { return routing_index_.generation(); }
     // UX-6b, decision 2: each plan node's GPU time (get_status gpu_timing,
     // by plan node name). A root node's band says the sum of its passes';
     // the bands on screen change in place, nothing else is drawn again.
@@ -334,6 +342,9 @@ class GraphCanvasScene final : public QGraphicsScene {
     // The scene finished drawing a scope. The view needs this to know when a
     // scope it has never shown is on screen, so it can fit it.
     std::function<void()> repopulated;
+    std::function<void()> gestureEnded;
+    std::function<void()> geometryChanged;
+    bool drag_trace_active = false;
     // LP-4c, decision 6: "Per iteration..." on an input of a root loop. The
     // owner asks which loop's p[] it reads.
     std::function<void(const std::string &node, const std::string &port)>
@@ -518,7 +529,9 @@ class GraphCanvasScene final : public QGraphicsScene {
     // takes the thing out from under the hand holding it -- and the drag then
     // moves nothing at all. The owner waits, the same way it waits for an
     // in-place editor to close.
-    [[nodiscard]] bool dragging() const { return mouseGrabberItem() != nullptr; }
+    [[nodiscard]] bool dragging() const {
+        return handling_press_ || pending_connection_.has_value() || mouseGrabberItem() != nullptr;
+    }
     // What the open editor currently holds, and a way to set it without a
     // keyboard: the same text the user would have typed.
     [[nodiscard]] QString inlineEditText() const;
@@ -544,6 +557,13 @@ class GraphCanvasScene final : public QGraphicsScene {
     // The palette the canvas menu asked for is about the scope the menu was
     // opened over; the owner lets go of it when the palette closes.
     void clearPaletteScope() { palette_scope_.reset(); }
+    // GL-5c: the palette another panel asked for is about `scope` (the root's
+    // for the Frame Plan's Add).
+    void setPaletteScope(std::string scope) { palette_scope_ = std::move(scope); }
+    // The scope and id of the node the last palette addition placed.
+    [[nodiscard]] const std::optional<std::pair<std::string, std::string>> &lastAdded() const noexcept {
+        return last_added_;
+    }
     // LP-4c: a loop over `body`, or over a new definition of that name.
     bool addLoop(const std::string &body, const std::string &new_definition);
     // LP-4c: descend into an instance's definition or a loop's body, as a
@@ -592,15 +612,8 @@ class GraphCanvasScene final : public QGraphicsScene {
     void selectPassInput(const std::string &pass, std::size_t input_index);
     // Delete on the picked line (or its right-click Delete).
     bool deletePassInput();
-    // RU-1: the Graph's Undo and Redo also reach the render edit history,
-    // for the pass edits this tab sent (noteRenderEdit) while they are its
-    // newest edits; Redo gives back what that Undo took. Each hook returns
-    // false when the history had nothing to do.
-    std::function<bool()> renderUndo;
-    std::function<bool()> renderRedo;
-    std::function<bool()> renderUndoAvailable;
-    std::function<bool()> renderRedoAvailable;
-    void noteRenderEdit();
+    // RT-D: the widget owns the tab order; the scene only guards gestures.
+    void setEditOrder(TabEditOrder *order) { edit_order_ = order; }
     [[nodiscard]] bool canUndoAny() const;
     [[nodiscard]] bool canRedoAny() const;
     [[nodiscard]] const QPointF &lastContextPosition() const noexcept {
@@ -618,11 +631,42 @@ class GraphCanvasScene final : public QGraphicsScene {
     std::function<bool(QGraphicsItem &item, const QPoint &screen)> foldItemMenu;
     // The canvas menu's entries for the picked nodes (Fold into group…).
     std::function<void(QMenu &menu)> foldMenuEntries;
+    // GL-5d: the canvas menu over node `node` of `scope` (a folded node's id
+    // at the root), or -- `line` -- over a line into that pass: the owner
+    // picks it and adds the entries that act on it.
+    std::function<void(QMenu &menu, const std::string &scope, const std::string &node, bool line)>
+        nodeMenuEntries;
+    // GL-5e, decision 3: Delete (the key) with folded node `node` of the root
+    // picked: the owner removes it when it is a pass the project authored,
+    // and says true; false lets the key go on as before.
+    std::function<bool(const std::string &node)> foldedNodeDelete;
+    // GL-5e, decision 2: a click -- a press and a release on the same input
+    // socket, no line drawn -- on socket `key` (`in@<binding>`) of `node` in
+    // `scope` (a folded node's at the root when `folded`): when the pass
+    // draws with engine://passthrough, that input is the one shown -- the
+    // Frame Plan's framePlanPassthroughInputRequest for a pass of the
+    // rendering section, the same define (PELICAN_PASSTHROUGH_INPUT) in a
+    // graph node's shader.defines -- and true. False keeps what a click did.
+    bool clickInputSocket(const std::string &scope, const std::string &node, const std::string &key,
+                          bool folded);
+    // GL-5e, decision 4: a pass input edit for `pass` the builders refused
+    // before it was sent (the shader declares no input: `passthrough_inputs`
+    // set).
+    std::function<void(const std::string &pass, const FramePlanEditRequest &request)>
+        passInputRefused;
+    // GL-5e, decision 6: a line from an output let go over folded node
+    // `node` of the root (its body or one of its input rows, `row` the
+    // resource that row reads, else empty), carrying `resource`. The owner
+    // answers it -- the Frame Plan's Shift-drag dialog, or the notice's line
+    // and Expand to edit… on a read-only node -- and says true.
+    std::function<bool(const std::string &node, const std::string &row, const std::string &resource)>
+        foldedNodeDrop;
     // Let go of everything picked on the canvas (a group's heading was
     // picked instead).
     void clearPicks();
 
   protected:
+    bool handling_press_ = false;
     void mousePressEvent(QGraphicsSceneMouseEvent *event) override;
     void mouseMoveEvent(QGraphicsSceneMouseEvent *event) override;
     void mouseReleaseEvent(QGraphicsSceneMouseEvent *event) override;
@@ -741,13 +785,8 @@ class GraphCanvasScene final : public QGraphicsScene {
     std::vector<std::size_t> selected_ties_;
     std::optional<PendingConnection> pending_connection_;
     QGraphicsPathItem *pending_edge_ = nullptr;
-    // GL-1e: the picked line into a pass, and which history the tab's last
-    // edit went to (the render edits' after noteRenderEdit).
     std::optional<PassInputPick> selected_pass_input_;
-    // How many of the render history's newest edits are this tab's, and how
-    // many of those its Undo took back (what its Redo gives back).
-    std::size_t render_edits_ = 0;
-    std::size_t render_undone_ = 0;
+    TabEditOrder *edit_order_ = nullptr;
     // The builders' inputs, from the model: the authoring context parsed
     // once per revision, and the plan in the Frame Plan's terms.
     [[nodiscard]] FramePlanAuthoring passAuthoring() const;
@@ -759,7 +798,8 @@ class GraphCanvasScene final : public QGraphicsScene {
     void dropResourceOnPassInput(const std::string &pass, const QGraphicsItem &socket,
                                  const std::string &resource);
     void handPassInputEdit(const FramePlanEditRequest &request,
-                           std::function<FramePlanEditRequest()> rebuild);
+                           std::function<FramePlanEditRequest()> rebuild,
+                           const std::string &pass = {});
     std::unique_ptr<InlineEditor> editor_;
     QAction *auto_layout_action_ = nullptr;
     QAction *fit_view_action_ = nullptr;
@@ -777,6 +817,7 @@ class GraphCanvasScene final : public QGraphicsScene {
     // canvas rather than beside a selected node.
     bool rebuilding_ = false;
     bool scene_rect_update_queued_ = false;
+    bool scene_rect_finalize_ = false;
     // A breadcrumb click rebuilds the scene from inside the base class's event
     // dispatch. Anything that ran before it must not then read the new items
     // as if they were the ones the user pressed on.
@@ -806,6 +847,7 @@ class GraphCanvasScene final : public QGraphicsScene {
     // places they are drawn at now (a body node is being dragged in a root
     // the document does not place).
     void holdRootPlaces(const std::string &root);
+    NodeGraphIndex routing_index_{*this};
     void scheduleSceneRectUpdate();
     void applySceneRectNow(bool grow_only = false);
     void clearControlSelection();
@@ -936,6 +978,7 @@ class GraphCanvasWidget final : public QWidget {
     // A pass's input edit sent from this tab is taken back by the tab's own
     // Undo through them, as by the Frame Plan's.
     void setRenderHistoryActions(QAction *undo, QAction *redo);
+    void setRenderHistory(RenderEditHistory *history);
     // GL-1b, decision 2. An edit that committed with restart_required hands
     // the restart to this action -- the window's, the one the Frame Plan's
     // G-4 / G-5 calls -- with the line the tab's notice shows. When the
@@ -963,6 +1006,21 @@ class GraphCanvasWidget final : public QWidget {
     // reached through that instance. False, with nothing changed, when the
     // plan the tab last read has no such pass.
     bool revealPlanPass(const QString &pass);
+    // GL-5c, decision 3. Whether the pass of the plan is edited on this tab --
+    // a graph node made it (in the root, an instance's body or a loop's), or
+    // it is a pass of the rendering section, which the detail column edits
+    // (GL-5a) -- rather than read only here (a preset's or a feature's).
+    [[nodiscard]] bool editsPlanPass(const QString &pass) const;
+    // GL-5c, decisions 1 and 2. The Frame Plan's Add material pass... / Add
+    // fullscreen pass... / Add compute task... on a graph root: the palette
+    // opens in the root on `op` (render.material_pass, render.compute) -- at
+    // once, or as soon as the tab holds a document it can add to -- and what
+    // it places is picked, its detail column open, once the document holds
+    // it. The palette is the one Add node... opens; the node goes into the
+    // graph's `nodes` through the same addFromPalette. render.fullscreen has
+    // nothing to pick beside it and is placed at once, as the tab's own Add
+    // fullscreen pass places it.
+    void placeFromPalette(const QString &op);
     // GL-2b, decision 3: what a click on an L1 row of the Layers section does
     // -- the owner brings the Frame Plan forward with that plan node picked.
     void setFramePlanNodeAction(std::function<void(const QString &node)> action);
@@ -976,6 +1034,69 @@ class GraphCanvasWidget final : public QWidget {
     void setFoldedExpandActions(
         std::function<void(const QString &graph, const QString &pass)> decompose,
         std::function<void(const QString &feature)> replace);
+    // GL-5d, decisions 1 and 2. What only the Frame Plan offered, on the node
+    // picked here -- its right-click and a row of buttons in the detail
+    // column fire the named actions pelican.graphCanvas.orderPasses,
+    // .fixSockets, .makeSocketsVariadic (and .editTarget, .deleteTarget,
+    // .expandToEdit, which this tab carries out itself). `order` is the Frame
+    // Plan's Order... (offered on a pass of the rendering section);
+    // `fix_sockets` / `variadic_sockets` its Fix sockets / Make sockets
+    // variadic on the plan's pass (`graph` is the plan's): the rendering
+    // section's, or the one a root fullscreen or raster node made, for which
+    // `graph_fragment` moves the node onto a copied shader.
+    void setFramePlanPassActions(
+        std::function<void()> order,
+        std::function<void(const QString &graph, const QString &pass,
+                           std::function<bool(const QString &reference)> graph_fragment)>
+            fix_sockets,
+        std::function<void(const QString &graph, const QString &pass)> variadic_sockets);
+    // GL-5d: a line one of those left on the Frame Plan's status row, on
+    // this tab's notice.
+    void showFramePlanLine(const QString &line);
+    // GL-5e. The rest of what only the Frame Plan offered, on what is picked
+    // here: each hook is the Frame Plan's (or the Pass Editor's / Task
+    // Editor's) own function, and an entry whose hook is empty is not
+    // offered. Named actions, in the right-click and in the detail column's
+    // row (pelican.graphCanvasNodeActions.<name>):
+    //   decision 3, pelican.graphCanvas.deletePass (and the Delete key) on a
+    //     folded node standing for a pass the project authored (a managed
+    //     fragment, passes/authoring/pass-<id>.json): `remove_pass`;
+    //   decision 4, pelican.graphCanvas.usePassthrough / .openContractShader
+    //     after a pass's edit was refused because its shader does not read
+    //     its inputs, .disconnectRefused / .openRefusedShader on a pass whose
+    //     shader reload the engine refused: `shader_contract`, `reload_refusal`
+    //     (also as buttons under the notice, pelican.graphCanvasNoticeActions.*);
+    //   decision 5, the Layers section's right-click: Pin this candidate /
+    //     Unpin on a backend candidate's row, Freeze this physical plan, Eject
+    //     again and Remove the frozen plan, and Remove TRANSFER_SRC on a
+    //     resource row (this tab's removeImageTransferSource);
+    //   decision 6, a line dropped on a feature's authored compute task or an
+    //     editable preset pass: the Frame Plan's Shift-drag dialogs.
+    struct ShaderContract {
+        std::string graph;
+        std::string pass;
+        std::string fragment;
+        std::vector<std::string> inputs;
+        bool unsupplied = false;
+        std::optional<std::size_t> binding;
+        bool use_passthrough = false;
+    };
+    struct FramePlanEdits {
+        std::function<void(const QString &graph, const QString &pass)> remove_pass;
+        std::function<void(const ShaderContract &contract, bool use_passthrough)> shader_contract;
+        std::function<void(const QString &graph, const QString &pass, bool disconnect)> reload_refusal;
+        std::function<void(const QString &candidate)> pin;
+        std::function<void()> unpin;
+        std::function<void()> freeze;
+        std::function<void()> remove_frozen;
+        std::function<void(const QString &task, const QStringList &outputs)> task_connection;
+        std::function<void(const QString &graph, const QString &pass, const QStringList &outputs)>
+            preset_pass_connection;
+        // GL-5f: the Frame Plan's Edit task -- the Task Editor on an authored
+        // compute task (its dispatch, View, reads and writes).
+        std::function<void(const QString &task)> edit_task;
+    };
+    void setFramePlanEdits(FramePlanEdits edits);
     // The same ingestion boundary the production RPC callback uses.
     void receiveResult(qint64 request_id, const QByteArray &result_json);
     void receiveFailure(qint64 request_id, const QString &message);
@@ -983,6 +1104,13 @@ class GraphCanvasWidget final : public QWidget {
     // Q-8. The project whose UI document names the nodes a ui.* sink can
     // write. Read again whenever the list is about to be offered.
     void setProjectRoot(const std::filesystem::path &project_root);
+    // RTL-2s, decision 1: a ray tracing task's Enable hit groups… (a project
+    // without a ray group layout) opens the Ray layout.
+    void setOpenRayLayout(std::function<void()> open);
+    // RTL-2s-c: a ray tracing task's Callable records... opens the callable
+    // record initial values (get/edit_ray_callable_records, Render Features'
+    // Records).
+    void setOpenCallableRecords(std::function<void()> open);
     // UX-8, decision 9: File > Import Sound… and the Sound list's Import…:
     // the files picked (or dropped) are copied into the project's
     // assets/audio, `_2` beside a name already there, and the first is
@@ -1016,9 +1144,19 @@ class GraphCanvasWidget final : public QWidget {
     // own Undo history ends here (what it holds inverts a document that is
     // no longer the one on disk), and the document is read again.
     void documentsReloadedFromDisk();
+    // A committed Render Undo/Redo can leave the graph unchanged. Unlike an
+    // external reload, that exact revision may retain Graph Undo and Redo.
+    void renderHistoryRestored(const std::string &digest);
     // RL-1s. What the reload from disk said, on this tab's notice row
     // (kind None takes down only a line this call put up).
     void showDiskReloadNotice(const InspectorNotice &notice);
+    // GL-5g, decision 3: a shader reload the engine did not take (the log
+    // the Frame Plan hands the Pass Editor too), on this tab's notice row:
+    // which node's shader, the log's first error line, and that the engine
+    // keeps the previous version (the Problems window lists it). An empty
+    // log -- a reload that went through -- takes down only a line this call
+    // put up.
+    void showShaderReloadNotice(const QString &log);
     // RL-1s, decision 5: "Reload from disk" in the canvas menu (the window
     // owns the action, and what it does).
     void setReloadFromDiskAction(QAction *action);

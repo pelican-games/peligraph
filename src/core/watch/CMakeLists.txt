@@ -6,6 +6,7 @@ target_sources(pelican_core PRIVATE
   reloadtransaction.cpp
   filewatcher.cpp
   reloadservice.cpp
+  problemlist.cpp
 )
 target_link_libraries(pelican_core PRIVATE picosha2)
 

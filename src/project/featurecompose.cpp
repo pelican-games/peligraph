@@ -1,5 +1,6 @@
 #include "featurecompose.hpp"
 #include "rendergraphcomposition.hpp"
+#include "renderconfigdocument.hpp"
 #include "featurejitter.hpp"
 #include "materialscreeninput.hpp"
 #include "renderresourcename.hpp"
@@ -137,7 +138,8 @@ nlohmann::json loadFeatureJson(std::string_view ref,
     if (!dependencies.load_feature_json) {
         throw std::runtime_error("render feature loader is not configured: " + std::string{ref});
     }
-    return nlohmann::json::parse(dependencies.load_feature_json(ref));
+    // BS-1b: bytes that are not JSON are refused by name.
+    return parseRenderDocument(dependencies.load_feature_json(ref), ref);
 }
 
 struct FeatureInstance {
@@ -399,14 +401,61 @@ bool hasExplicitRelation(const nlohmann::json &lhs, const std::string &rhs_name)
            (lhs.contains("before") && stringListContains(lhs.at("before"), rhs_name));
 }
 
-void enforceCanonicalOrder(nlohmann::json &passes) {
+// FO-1: `listed` is the graph's frame_node_order list (or null). The passes of
+// one canonical bucket are chained in their declared order, except that the
+// passes the list names take the places those passes hold, in the list's
+// order; a pass it does not name keeps its place. Without a list the chain is
+// the declared order, as before. Data and explicit after / before stay as
+// written, so an order that contradicts them is still a cycle, which
+// applyFrameNodeOrder names (frame_node_order.conflicts_dependency@1).
+void enforceCanonicalOrder(nlohmann::json &passes, const nlohmann::json *listed) {
+    std::unordered_map<std::string, std::size_t> rank;
+    if (listed != nullptr && listed->is_array()) {
+        for (std::size_t index = 0; index < listed->size(); ++index) {
+            if (listed->at(index).is_string()) {
+                rank.emplace(listed->at(index).get<std::string>(), index);
+            }
+        }
+    }
     std::string active_anchor;
     std::vector<std::string> active_passes;
-    nlohmann::json *last_active_pass = nullptr;
+    // The bucket's passes, chained when the bucket ends.
+    std::vector<nlohmann::json *> bucket;
+    const auto chainBucket = [&] {
+        if (!rank.empty()) {
+            std::vector<std::size_t> places;
+            std::vector<nlohmann::json *> ordered;
+            for (std::size_t index = 0; index < bucket.size(); ++index) {
+                if (rank.contains(bucket[index]->at("name").get<std::string>())) {
+                    places.push_back(index);
+                    ordered.push_back(bucket[index]);
+                }
+            }
+            std::stable_sort(ordered.begin(), ordered.end(), [&](const auto *lhs, const auto *rhs) {
+                return rank.at(lhs->at("name").template get<std::string>()) <
+                       rank.at(rhs->at("name").template get<std::string>());
+            });
+            for (std::size_t index = 0; index < places.size(); ++index) {
+                bucket[places[index]] = ordered[index];
+            }
+        }
+        for (std::size_t index = 1; index < bucket.size(); ++index) {
+            auto &pass = *bucket[index];
+            const auto &previous = *bucket[index - 1];
+            const auto name = pass.at("name").get<std::string>();
+            const auto previous_name = previous.at("name").get<std::string>();
+            if (!hasExplicitRelation(pass, previous_name) &&
+                !hasExplicitRelation(previous, name)) {
+                appendAfter(pass, previous_name);
+            }
+        }
+        bucket.clear();
+    };
     for (auto &pass : passes) {
         const auto type = pass.value("type", std::string{});
         const auto name = requireStringField(pass, "name", "canonical frame node");
         if (type == "canonical_anchor") {
+            chainBucket();
             if (!active_anchor.empty()) {
                 appendAfter(pass, active_anchor);
             }
@@ -415,8 +464,8 @@ void enforceCanonicalOrder(nlohmann::json &passes) {
             }
             active_anchor = name;
             active_passes.clear();
-            last_active_pass = nullptr;
         } else if (type == "output_transform") {
+            // As before FO-1: the output transform does not end the chain.
             if (!active_anchor.empty()) {
                 appendAfter(pass, active_anchor);
             }
@@ -427,17 +476,11 @@ void enforceCanonicalOrder(nlohmann::json &passes) {
             if (!active_anchor.empty()) {
                 appendAfter(pass, active_anchor);
             }
-            if (last_active_pass != nullptr) {
-                const auto previous_name = last_active_pass->at("name").get<std::string>();
-                if (!hasExplicitRelation(pass, previous_name) &&
-                    !hasExplicitRelation(*last_active_pass, name)) {
-                    appendAfter(pass, previous_name);
-                }
-            }
             active_passes.push_back(name);
-            last_active_pass = &pass;
+            bucket.push_back(&pass);
         }
     }
+    chainBucket();
 }
 
 void canonicalizePasses(nlohmann::json &config, bool hdr_enabled) {
@@ -3708,7 +3751,11 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
             loaded.name, loaded.instance.ref,
             resource_provenance);
         requireFeatureTargets(feature, loaded.name, loaded.instance.ref, available_targets);
-        written_checks.emplace_back(loaded.name, loaded.instance.ref, renderFeatureRequiredTargets(feature, true));
+        // RG-3: from the document before binding, with the instance's
+        // bindings: a target bound to a depth parameter keeps the depth type
+        // (and depth writer candidates) the parameter declares.
+        written_checks.emplace_back(loaded.name, loaded.instance.ref,
+                                    renderFeatureRequiredTargets(loaded.feature, true, &resolved_parameters));
         applyRenderTargetOverrides(composed, feature);
         addFeaturePasses(
             composed, feature, pass_names,
@@ -4129,8 +4176,18 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         if (loop == active_graph.loops.end() || loop->shape.placement) return std::string{};
         return loop->positions.contains(family) ? std::string{"graph"} : "loop:" + copy->second;
     });
+    // FO-1: a graph's frame_node_order list chains its bucket's passes in the
+    // list's order instead of the declared one.
+    const auto frame_node_order = composed.value("frame_node_order", nlohmann::json::object());
     for (auto &pass_set : ensureArray(composed, "rendering_passes")) {
-        enforceCanonicalOrder(pass_set.at("passes"));
+        const nlohmann::json *listed = nullptr;
+        if (frame_node_order.is_object() && pass_set.contains("name") && pass_set.at("name").is_string()) {
+            if (const auto found = frame_node_order.find(pass_set.at("name").get<std::string>());
+                found != frame_node_order.end()) {
+                listed = &*found;
+            }
+        }
+        enforceCanonicalOrder(pass_set.at("passes"), listed);
     }
     enforceTerminalAfterComputeTasks(composed);
     // RS-6: a scene pass of the rendering section or the preset that reads an
@@ -4277,7 +4334,8 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
 }
 
 // FR-1: renderFeatureRequiredTargets (featurecompose.hpp).
-nlohmann::json renderFeatureRequiredTargets(const nlohmann::json &feature, bool with_needs_writer) {
+nlohmann::json renderFeatureRequiredTargets(const nlohmann::json &feature, bool with_needs_writer,
+                                            const nlohmann::json *bindings) {
     auto result = nlohmann::json::array();
     if (!feature.is_object()) return result;
     const auto stringOf = [](const nlohmann::json &value) {
@@ -4322,11 +4380,15 @@ nlohmann::json renderFeatureRequiredTargets(const nlohmann::json &feature, bool 
         if (name.starts_with("$")) {
             const auto parameter = parameters.find(name.substr(1));
             if (parameter == parameters.end()) return;
+            const nlohmann::json *bound = nullptr;
+            if (bindings != nullptr && bindings->is_object())
+                if (const auto found = bindings->find(parameter->first); found != bindings->end() && found->is_string())
+                    bound = &*found;
             const auto fallback = parameter->second->find("default");
-            if (fallback == parameter->second->end() || !fallback->is_string()) return;
+            if (bound == nullptr && (fallback == parameter->second->end() || !fallback->is_string())) return;
             if (const auto declared = parameter->second->find("usage"); declared != parameter->second->end())
                 parameter_usage = &*declared;
-            name = fallback->get<std::string>();
+            name = (bound != nullptr ? *bound : *fallback).get<std::string>();
         }
         if (name.empty() || name == "swapchain" || name == "display" || own.contains(name)) return;
         auto entry = std::find_if(entries.begin(), entries.end(), [&](const Entry &e) { return e.name == name; });

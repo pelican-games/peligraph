@@ -297,7 +297,7 @@ std::shared_ptr<PreparedGltf::Impl> prepareGltfImpl(std::string path,
     if (fragment && extension != required_extension) {
         throw std::runtime_error(std::string{binary ? "GLB" : "glTF"} +
                                  " fragment reference requires a " + required_extension + " file: " +
-                                 path + "#" + fragment->kind + "/" + fragment->path);
+                                 path + "#" + assetFragmentText(*fragment));
     }
 
     auto prepared = std::make_shared<PreparedGltf::Impl>();
@@ -534,9 +534,6 @@ class ValidationGltfResourceSink final : public GltfResourceSink {
         primitive.ray_attribute_presence = attribute_presence;
         std::vector<MorphTargetDeltaRange> ranges;
         if (!data.morph_targets.empty()) {
-            if (vertex_offset > maxMorphVerticesPerPool ||
-                vertex_count > maxMorphVerticesPerPool - vertex_offset)
-                throw std::runtime_error("glTF morph vertex metadata exceeds renderer capacity");
             const auto count64 = static_cast<std::uint64_t>(vertex_count) *
                                  data.morph_targets.size();
             if (count64 > maxMorphDeltaRecords ||
@@ -825,7 +822,7 @@ std::optional<VatPrimitiveInfo> parseVatPrimitive(const tinygltf::Model &,
 #endif
 
 // The importer's cross-method material state, named at the one place the
-// per-primitive path writes it. Generated (skinned / VAT) material ids are
+// per-primitive path writes it. Generated VAT material ids are
 // handed out from `next_generated_material` downwards, and every one of them
 // must land in both `resolved_materials` and `generated_material_sources`;
 // `finalizeOccurrenceIdentities` reads the pair back.
@@ -839,7 +836,6 @@ struct GeneratedMaterialRegistry {
     ModelLocalMaterialId &next_generated_material;
     std::unordered_map<ModelLocalMaterialId, GlobalMaterialId> &resolved_materials;
     std::unordered_map<ModelLocalMaterialId, std::uint32_t> &generated_material_sources;
-    std::unordered_map<ModelLocalMaterialId, ModelLocalMaterialId> &skinned_material_variants;
 
     MaterialInfo materialInfoForPrimitive(int local_material_id) const {
         if (local_material_id >= 0) {
@@ -879,6 +875,7 @@ struct GeneratedMaterialRegistry {
                             : std_mat.normalDefaultTexture();
 
         material_info.vert_shader = std_mat.vatVertShader();
+        material_info.skinned_vert_shader.reset();
         material_info.vat = MaterialInfo::VatPlaybackInfo{
             .position_texture = position_texture,
             .normal_texture = normal_texture,
@@ -897,24 +894,6 @@ struct GeneratedMaterialRegistry {
             local_material_id >= 0 ? static_cast<std::uint32_t>(local_material_id)
                                    : noSourceMaterialIndex;
         return generated_material;
-    }
-
-    ModelLocalMaterialId skinnedMaterial(int local_material_id) {
-        if (const auto found = skinned_material_variants.find(local_material_id);
-            found != skinned_material_variants.end()) return found->second;
-        auto info = local_material_id >= 0
-                        ? material_infos.at(local_material_id)
-                        : std_mat.builtinMaterialInfo("skinned_fallback",
-                                                      std_mat.whiteTexture());
-        info.vert_shader = std_mat.skinnedVertShader();
-        info.skinned = true;
-        const auto generated = next_generated_material--;
-        resolved_materials[generated] = resources.registerMaterial(std::move(info));
-        generated_material_sources[generated] =
-            local_material_id >= 0 ? static_cast<std::uint32_t>(local_material_id)
-                                   : noSourceMaterialIndex;
-        skinned_material_variants[local_material_id] = generated;
-        return generated;
     }
 };
 
@@ -1257,9 +1236,7 @@ PrimitiveBuildResult buildPrimitive(const tinygltf::Primitive &primitive,
         const auto material_id =
             vat_info ? materials.registerVatMaterial(primitive.material,
                                                      *vat_info, primitive_info)
-                     : (skin.skinned
-                            ? materials.skinnedMaterial(primitive.material)
-                            : primitive.material);
+                     : primitive.material;
         result.material_primitives.emplace_back(material_id,
                                                 std::move(primitive_info));
     }
@@ -1291,7 +1268,6 @@ struct InternalGltfLoader {
     std::vector<std::optional<GlobalTextureId>> texture_map;
     std::unordered_map<ModelLocalMaterialId, GlobalMaterialId> resolved_materials;
     std::unordered_map<ModelLocalMaterialId, std::uint32_t> generated_material_sources;
-    std::unordered_map<ModelLocalMaterialId, ModelLocalMaterialId> skinned_material_variants;
     std::unordered_map<ModelLocalMaterialId, std::vector<ModelTemplate::PrimitiveRefInfo>> tmp_material_primitives;
     std::vector<ModelCollisionMesh> collision_meshes;
     ModelLocalMaterialId next_generated_material = -2;
@@ -1568,6 +1544,7 @@ struct InternalGltfLoader {
                                         : animation.name;
         SkeletalAnimationClip result;
         result.name = animation.name;
+        result.source_index = animation_index;
         bool has_keys = false;
         for (const auto &channel : animation.channels) {
             if (channel.sampler < 0 || channel.sampler >= static_cast<int>(animation.samplers.size())) {
@@ -1679,7 +1656,7 @@ struct InternalGltfLoader {
         if (!fragment) {
             return source_path;
         }
-        return source_path + "#" + fragment->kind + "/" + fragment->path;
+        return source_path + "#" + assetFragmentText(*fragment);
     }
 
     void collectNodeOccurrence(int node_index, const glm::mat4 &parent_transform,
@@ -1813,77 +1790,39 @@ struct InternalGltfLoader {
         return candidates;
     }
 
-    [[noreturn]] void throwDuplicateFullPath(const std::string &kind,
-                                             const std::string &full_path,
-                                             const std::vector<const FragmentCandidate *> &matches) const {
-        std::ostringstream message;
-        message << "Duplicate GLB " << kind << " full path '" << full_path << "' in '"
-                << fragmentReference() << "' (indices: ";
-        for (size_t i = 0; i < matches.size(); ++i) {
-            if (i != 0) {
-                message << ", ";
-            }
-            message << matches[i]->object_index;
-        }
-        message << ")";
-        throw std::runtime_error(message.str());
-    }
-
+    bool fragment_name_mismatch = false;
     FragmentCandidate resolveFragmentCandidate(const AssetFragmentRef &requested) {
-        if (requested.kind != "mesh" && requested.kind != "material" &&
-            requested.kind != "node" && requested.kind != "animation") {
-            throw std::runtime_error("Unknown GLB fragment kind '" + requested.kind +
-                                     "' in '" + fragmentReference() +
-                                     "' (supported: mesh, material, node, animation)");
-        }
-
+        if (requested.kind != "mesh" && requested.kind != "node" &&
+            requested.kind != "material" && requested.kind != "animation")
+            throw std::runtime_error("Unknown GLB fragment kind '" + requested.kind + "'");
         auto candidates = candidatesForKind(requested.kind);
-        std::unordered_map<std::string, std::vector<const FragmentCandidate *>> by_full_path;
-        for (const auto &candidate : candidates) {
-            by_full_path[candidate.full_path].push_back(&candidate);
+        // Index addresses the source array even when an object has no name or occurrence.
+        const auto appendMissing = [&](const auto &objects) {
+            for (int i = 0; i < static_cast<int>(objects.size()); ++i)
+                if (std::none_of(candidates.begin(), candidates.end(), [&](const auto &c) { return c.object_index == i; }))
+                    candidates.push_back({i, requested.kind == "node" ? i : -1, objects[i].name,
+                                          {objects[i].name}, {objects[i].name}, {}, glm::mat4{1.0f}});
+        };
+        if (requested.index) {
+            if (requested.kind == "mesh") appendMissing(model.meshes);
+            else if (requested.kind == "node") appendMissing(model.nodes);
+            else if (requested.kind == "material") appendMissing(model.materials);
+            else appendMissing(model.animations);
         }
-        std::unordered_set<std::string> checked_paths;
-        for (const auto &candidate : candidates) {
-            if (!checked_paths.insert(candidate.full_path).second) {
-                continue;
-            }
-            const auto &matches = by_full_path.at(candidate.full_path);
-            if (matches.size() > 1) {
-                throwDuplicateFullPath(requested.kind, candidate.full_path, matches);
-            }
+        std::vector<AssetFragmentCandidate> addresses;
+        for (const auto &c : candidates) {
+            const auto &name = requested.kind == "mesh" ? model.meshes[c.object_index].name
+                : requested.kind == "node" ? model.nodes[c.object_index].name
+                : requested.kind == "material" ? model.materials[c.object_index].name
+                : model.animations[c.object_index].name;
+            addresses.push_back({c.object_index, name, c.full_path, c.aliases});
         }
-
-        std::vector<const FragmentCandidate *> matches;
-        if (requested.address_kind == AssetFragmentAddressKind::full_path) {
-            if (const auto found = by_full_path.find(requested.path); found != by_full_path.end()) {
-                matches = found->second;
-            }
-        } else {
-            for (const auto &candidate : candidates) {
-                if (std::find(candidate.aliases.begin(), candidate.aliases.end(), requested.path) !=
-                    candidate.aliases.end()) {
-                    matches.push_back(&candidate);
-                }
-            }
-        }
-
-        if (matches.empty()) {
-            throw std::runtime_error("Unknown GLB " + requested.kind + " fragment '" +
-                                     requested.path + "' in '" + fragmentReference() + "'");
-        }
-        if (matches.size() > 1) {
-            std::ostringstream message;
-            message << "Ambiguous GLB " << requested.kind << " fragment name '" << requested.path
-                    << "' in '" << fragmentReference() << "'; matches: ";
-            for (size_t i = 0; i < matches.size(); ++i) {
-                if (i != 0) {
-                    message << ", ";
-                }
-                message << matches[i]->full_path;
-            }
-            throw std::runtime_error(message.str());
-        }
-        return *matches.front();
+        const auto result = resolveAssetFragment(requested, addresses);
+        fragment_name_mismatch = result.name_mismatch;
+        if (result.name_mismatch && logger)
+            LOG_WARNING(logger, "stale fragment reference '{}': current name is '{}' (index wins)",
+                        fragmentReference(), addresses[result.candidate].name);
+        return candidates[result.candidate];
     }
 
     LoadSelection selectLoad() {
@@ -2098,6 +2037,7 @@ struct InternalGltfLoader {
         MaterialInfo material_info{
             .vert_shader = std_mat.standardVertShader(),
             .frag_shader = fragment_shader,
+            .skinned_vert_shader = std_mat.skinnedVertShader(),
             .base_color_texture = base_color_texture,
             .metallic_roughness_texture = metallic_roughness_texture,
             .normal_texture = normal_texture,
@@ -2127,6 +2067,18 @@ struct InternalGltfLoader {
             .normal_scale = static_cast<float>(material.normalTexture.scale),
             .occlusion_strength = static_cast<float>(material.occlusionTexture.strength),
         };
+        if (compile_surface_shaders && surface.hooks.vertex_displace_v1) {
+            auto &shaders = GET_MODULE(ShaderLibrary);
+            const auto bundles = shaders.loadFromSurfaceForMaterial(
+                surface, *definition.surface, lowered, material_shader_defines);
+            auto skin_defines = material_shader_defines;
+            skin_defines.emplace_back("PELICAN_SKINNED");
+            const auto skin_bundles = shaders.loadFromSurfaceForMaterial(
+                surface, *definition.surface, lowered, std::move(skin_defines));
+            material_info.vert_shader = bundles.vertex;
+            material_info.frag_shader = bundles.fragment;
+            material_info.skinned_vert_shader = skin_bundles.vertex;
+        }
         applyLoweredMaterialForRoute(
             material_info, lowered);
         material_info.name =
@@ -2251,7 +2203,6 @@ struct InternalGltfLoader {
             .next_generated_material = next_generated_material,
             .resolved_materials = resolved_materials,
             .generated_material_sources = generated_material_sources,
-            .skinned_material_variants = skinned_material_variants,
         };
     }
 
@@ -2485,6 +2436,7 @@ struct InternalGltfLoader {
         }
 
         ModelTemplate m;
+        m.fragment_name_mismatch = fragment_name_mismatch;
         if (!collision_meshes.empty())
             m.collision_meshes = std::make_shared<const std::vector<ModelCollisionMesh>>(std::move(collision_meshes));
         for (const auto &[local_material_id, primitive] : tmp_material_primitives) {
@@ -2510,6 +2462,8 @@ struct InternalGltfLoader {
                 .material = *material_map[material_index],
                 .routing =
                     material_routings[material_index],
+                .vat_playback = material_infos[material_index].vat.has_value(),
+                .index = static_cast<int>(material_index),
             });
         }
         if (selection.material_only) {

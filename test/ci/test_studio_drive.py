@@ -14,6 +14,266 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 import studio_drive  # noqa: E402
 
 
+class StudioDriveTimingTest(unittest.TestCase):
+    def test_short_command_keeps_submillisecond_timing_on_performance_clock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            run = studio_drive.Run({"name": "timing"}, Path(directory))
+            run.channel = mock.Mock(spec=studio_drive.Channel)
+            run.channel.send.return_value = {"ok": True, "result": {}}
+            with (
+                mock.patch.object(studio_drive.time, "perf_counter", side_effect=[10.0, 10.00025]),
+                mock.patch.object(studio_drive.time, "monotonic", return_value=100000.0),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.assertTrue(studio_drive.run_command_step(run, {"cmd": "text", "name": "x"}, "short"))
+            measured = run.steps[0]
+            self.assertEqual(measured["duration_ms"], 0)
+            self.assertAlmostEqual(measured["duration_precise_ms"], 0.25)
+            self.assertAlmostEqual(
+                (measured["finished_perf_s"] - measured["started_perf_s"]) * 1000, 0.25)
+
+
+class StudioDriveEnabledWaitTest(unittest.TestCase):
+    """FX-7: retry only refused operations, within one enabled-wait budget."""
+
+    @staticmethod
+    def refused(message: str, code: str = "automation.bad_request@1") -> dict:
+        return {"ok": False, "error": {"code": code, "message": message}}
+
+    def drive(self, step: dict, answers, *, oversleep: float = 0.0):
+        clock = 0.0
+
+        def sleep(seconds: float) -> None:
+            nonlocal clock
+            clock += seconds + oversleep
+
+        with tempfile.TemporaryDirectory() as directory:
+            run = studio_drive.Run({"name": "enabled_wait"}, Path(directory))
+            run.channel = mock.Mock(spec=studio_drive.Channel)
+            run.channel.send.side_effect = answers
+            run.capture = mock.Mock(return_value="failure.png")
+            with (
+                mock.patch.object(studio_drive.time, "monotonic", side_effect=lambda: clock),
+                mock.patch.object(studio_drive.time, "sleep", side_effect=sleep) as sleeper,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                succeeded = studio_drive.run_command_step(run, step, "operation")
+            return succeeded, run, sleeper
+
+    def test_disabled_operations_retry_until_success_and_record_wait(self) -> None:
+        cases = [
+            ({"cmd": "click", "name": "x"}, 'the widget named "x" is disabled'),
+            ({"cmd": "click", "name": "x"}, 'the action named "x" is disabled'),
+            ({"cmd": "click", "point": [2, 3]}, 'the window under the point is disabled'),
+            ({"cmd": "double_click", "name": "x"}, 'the widget named "x" is disabled'),
+            ({"cmd": "action", "text": "Add loop"}, 'the action "Add loop" is disabled'),
+            ({"cmd": "drag", "from": "x", "to": "y"}, 'the widget named "x" is disabled'),
+            ({"cmd": "type", "name": "x", "text": "4"}, 'the widget named "x" is disabled'),
+            ({"cmd": "key", "name": "x", "sequence": "Return"}, 'the widget named "x" is disabled'),
+            ({"cmd": "select", "name": "x", "text": "row"}, 'the widget named "x" is disabled'),
+            ({"cmd": "history", "kind": "graph", "step": "undo"}, 'the widget named "x" is disabled'),
+            ({"cmd": "history", "kind": "graph", "step": "redo"}, 'the action named "x" is disabled'),
+        ]
+        success = {"ok": True, "result": {"pressed": "x"}}
+        for request, message in cases:
+            with self.subTest(request=request, message=message):
+                succeeded, run, sleeper = self.drive(
+                    dict(request, label="operation", note="a note", wait_s=3),
+                    [self.refused(message), self.refused(message), success],
+                )
+                self.assertTrue(succeeded)
+                self.assertEqual(run.channel.send.call_args_list, [mock.call(request, 3.0)] * 3)
+                self.assertEqual(sleeper.call_args_list, [mock.call(0.1)] * 2)
+                self.assertEqual(len(run.steps), 1)
+                self.assertEqual(run.steps[0]["waited_for_enabled_ms"], 200)
+                self.assertEqual(run.steps[0]["request"], request)
+                self.assertIs(run.steps[0]["response"], success)
+                self.assertEqual(run.failures, [])
+                run.capture.assert_not_called()
+
+    def test_enabled_operation_is_sent_only_once(self) -> None:
+        succeeded, run, sleeper = self.drive(
+            {"cmd": "click", "name": "x"}, [{"ok": True, "result": {}}],
+        )
+        self.assertTrue(succeeded)
+        run.channel.send.assert_called_once_with({"cmd": "click", "name": "x"}, 180.0)
+        sleeper.assert_not_called()
+        self.assertNotIn("waited_for_enabled_ms", run.steps[0])
+
+    def test_wait_limit_fails_with_last_refusal_and_elapsed_time(self) -> None:
+        replies = []
+
+        def refuse(request: dict, timeout: float) -> dict:
+            reply = self.refused(f'the widget named "attempt-{len(replies) + 1}" is disabled')
+            replies.append(reply)
+            return reply
+
+        with mock.patch.object(studio_drive, "ENABLED_WAIT_TIMEOUT_S", 0.25):
+            succeeded, run, sleeper = self.drive({"cmd": "click", "name": "x"}, refuse)
+        self.assertFalse(succeeded)
+        self.assertEqual(run.channel.send.call_count, 3)
+        self.assertAlmostEqual(sum(call.args[0] for call in sleeper.call_args_list), 0.25)
+        timeouts = [call.args[1] for call in run.channel.send.call_args_list]
+        self.assertAlmostEqual(timeouts[1], 0.15)
+        self.assertAlmostEqual(timeouts[2], 0.05)
+        self.assertEqual(run.steps[0]["waited_for_enabled_ms"], 250)
+        self.assertIs(run.steps[0]["response"], replies[-1])
+        self.assertIs(run.failures[0]["response"], replies[-1])
+        self.assertIn('automation.bad_request@1: the widget named "attempt-3" is disabled',
+                      run.failures[0]["reason"])
+        self.assertIn("waited_for_enabled_ms=250", run.failures[0]["reason"])
+        self.assertIn("limit 250 ms", run.failures[0]["reason"])
+        run.capture.assert_called_once()
+
+    def test_sleep_past_deadline_does_not_resend(self) -> None:
+        with mock.patch.object(studio_drive, "ENABLED_WAIT_TIMEOUT_S", 0.25):
+            succeeded, run, sleeper = self.drive(
+                {"cmd": "click", "name": "x"},
+                [self.refused('the widget named "x" is disabled')], oversleep=0.3,
+            )
+        self.assertFalse(succeeded)
+        self.assertEqual(run.channel.send.call_count, 1)
+        sleeper.assert_called_once_with(0.1)
+        self.assertEqual(run.steps[0]["waited_for_enabled_ms"], 400)
+
+    def test_expect_error_never_waits_even_when_disabled_is_expected(self) -> None:
+        for expected in ("automation.bad_request@1", "automation.widget_missing@1", "", None):
+            with self.subTest(expected=expected):
+                succeeded, run, sleeper = self.drive(
+                    {"cmd": "click", "name": "x", "expect_error": expected},
+                    [self.refused('the widget named "x" is disabled')],
+                )
+                self.assertEqual(succeeded, expected == "automation.bad_request@1")
+                run.channel.send.assert_called_once_with({"cmd": "click", "name": "x"}, 180.0)
+                sleeper.assert_not_called()
+                self.assertNotIn("waited_for_enabled_ms", run.steps[0])
+
+    def test_other_refusals_never_wait(self) -> None:
+        replies = [
+            self.refused('the widget named "x" is disabled', "automation.widget_missing@1"),
+            self.refused('no widget or drawn item is named "x"', "automation.widget_missing@1"),
+            self.refused('button must be left, right or middle'),
+            self.refused('"is disabled" names 2 actions'),
+            self.refused('the widget named "is disabled" did not keep the selected entry'),
+            self.refused('the widget named "x" is disabled: another reason'),
+        ]
+        for reply in replies:
+            with self.subTest(reply=reply):
+                succeeded, run, sleeper = self.drive({"cmd": "select", "name": "x", "text": "row"}, [reply])
+                self.assertFalse(succeeded)
+                self.assertEqual(run.channel.send.call_count, 1)
+                sleeper.assert_not_called()
+                self.assertNotIn("waited_for_enabled_ms", run.steps[0])
+                self.assertIs(run.failures[0]["response"], reply)
+
+    def test_other_refusal_after_disabled_stops_immediately(self) -> None:
+        last_reply = self.refused('no widget or drawn item is named "x"', "automation.widget_missing@1")
+        succeeded, run, sleeper = self.drive(
+            {"cmd": "click", "name": "x"},
+            [self.refused('the widget named "x" is disabled'), last_reply, {"ok": True}],
+        )
+        self.assertFalse(succeeded)
+        self.assertEqual(run.channel.send.call_count, 2)
+        sleeper.assert_called_once_with(0.1)
+        self.assertEqual(run.steps[0]["waited_for_enabled_ms"], 100)
+        self.assertIs(run.failures[0]["response"], last_reply)
+
+    def test_commands_without_pre_operation_disabled_refusals_never_retry(self) -> None:
+        for cmd in ("text", "drag_paced", "wheel", "move", "press", "release", "rpc"):
+            with self.subTest(cmd=cmd):
+                succeeded, run, sleeper = self.drive(
+                    {"cmd": cmd, "name": "x"}, [self.refused('the widget named "x" is disabled')],
+                )
+                self.assertFalse(succeeded)
+                self.assertEqual(run.channel.send.call_count, 1)
+                sleeper.assert_not_called()
+
+    def test_unnamed_typing_never_retries_against_a_changed_focus(self) -> None:
+        for cmd in ("key", "type"):
+            with self.subTest(cmd=cmd):
+                succeeded, run, sleeper = self.drive(
+                    {"cmd": cmd}, [self.refused('the widget named "x" is disabled')],
+                )
+                self.assertFalse(succeeded)
+                self.assertEqual(run.channel.send.call_count, 1)
+                sleeper.assert_not_called()
+
+    def test_history_read_never_retries(self) -> None:
+        succeeded, run, sleeper = self.drive(
+            {"cmd": "history"}, [self.refused('the action named "x" is disabled')],
+        )
+        self.assertFalse(succeeded)
+        self.assertEqual(run.channel.send.call_count, 1)
+        sleeper.assert_not_called()
+
+    def test_transport_failure_after_disabled_is_not_resent(self) -> None:
+        last_reply = self.refused('the widget named "x" is disabled')
+        succeeded, run, sleeper = self.drive(
+            {"cmd": "click", "name": "x"}, [last_reply, studio_drive.AutomationError("pipe closed"), {"ok": True}],
+        )
+        self.assertFalse(succeeded)
+        self.assertEqual(run.channel.send.call_count, 2)
+        sleeper.assert_called_once_with(0.1)
+        self.assertEqual(run.steps[0]["waited_for_enabled_ms"], 100)
+        self.assertIs(run.failures[0]["response"], last_reply)
+        self.assertIn("pipe closed", run.failures[0]["reason"])
+        self.assertIn("waited_for_enabled_ms=100", run.failures[0]["reason"])
+        self.assertIn(str(last_reply), run.failures[0]["reason"])
+
+
+def answer_viewport_size(request: dict, timeout: float) -> dict:
+    """What a Studio answers: the size it was asked for, anything else ok."""
+
+    if request.get("cmd") == "viewport_size":
+        return {"ok": True, "result": {"width": request["width"], "height": request["height"]}}
+    return {"ok": True}
+
+
+class StudioDriveViewportTest(unittest.TestCase):
+    """PX-2: every run holds the viewport at one size before its first step."""
+
+    def fix(self, scenario: dict, answer=answer_viewport_size) -> tuple[bool, mock.Mock, list]:
+        with tempfile.TemporaryDirectory() as directory:
+            run = studio_drive.Run(scenario, Path(directory))
+            run.channel = mock.Mock(spec=studio_drive.Channel)
+            run.channel.send.side_effect = answer
+            with contextlib.redirect_stdout(io.StringIO()):
+                held = studio_drive.fix_viewport(run, scenario)
+            return held, run.channel, run.failures
+
+    def test_the_default_size_is_asked_for(self) -> None:
+        held, channel, failures = self.fix({"name": "default"})
+        self.assertTrue(held)
+        self.assertEqual(failures, [])
+        request = channel.send.call_args.args[0]
+        self.assertEqual(request["cmd"], "viewport_size")
+        self.assertEqual((request["width"], request["height"]), studio_drive.DEFAULT_VIEWPORT)
+
+    def test_a_scenario_names_its_own_size_or_none(self) -> None:
+        held, channel, _ = self.fix({"name": "own", "viewport": [640, 400]})
+        self.assertTrue(held)
+        self.assertEqual(channel.send.call_args.args[0]["width"], 640)
+        held, channel, _ = self.fix({"name": "free", "viewport": None})
+        self.assertTrue(held)
+        channel.send.assert_not_called()
+
+    def test_a_size_that_does_not_take_stops_the_run(self) -> None:
+        def short(request: dict, timeout: float) -> dict:
+            return {"ok": True, "result": {"width": request["width"], "height": request["height"] - 40}}
+
+        held, _, failures = self.fix({"name": "short"}, short)
+        self.assertFalse(held)
+        self.assertEqual(failures[0]["kind"], "viewport")
+        held, _, failures = self.fix({"name": "bad", "viewport": [720]})
+        self.assertFalse(held)
+        held, _, failures = self.fix(
+            {"name": "refused"},
+            lambda request, timeout: {"ok": False, "error": {"code": "automation.wait_timeout@1", "message": "no"}},
+        )
+        self.assertFalse(held)
+        self.assertIn("wait_timeout", failures[0]["reason"])
+
+
 class StudioDriveShutdownTest(unittest.TestCase):
     def run_scenario(
         self, exit_code: int | None, *, stopped_code: int = 0,
@@ -31,7 +291,7 @@ class StudioDriveShutdownTest(unittest.TestCase):
             studio.wait_for_exit.return_value = exit_code
             studio.stop.return_value = stopped_code
             channel = mock.Mock(spec=studio_drive.Channel)
-            channel.send.return_value = {"ok": True}
+            channel.send.side_effect = answer_viewport_size
             watchdog = mock.Mock(spec=studio_drive.Watchdog)
             watchdog.tripped = watchdog_trip
             argv = [
@@ -224,6 +484,1020 @@ class StudioDriveCompareTest(unittest.TestCase):
         self.assertTrue(studio_drive.compare("contains", log, "polling failed"))
         self.assertFalse(studio_drive.compare("excludes", log, "polling failed"))
         self.assertTrue(studio_drive.compare("excludes", "Opened x.\n", "polling failed"))
+
+
+import studio_invariants  # noqa: E402
+
+
+class ScriptedRun:
+    """A Run whose channel answers from a function of the request."""
+
+    def __init__(self, answer, scenario: dict | None = None) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.run = studio_drive.Run(scenario or {"name": "rules"}, Path(self.directory.name))
+        self.run.channel = mock.Mock(spec=studio_drive.Channel)
+        self.run.channel.send.side_effect = answer
+        self.run.capture = lambda stem: None
+
+    def expect(self, step: dict) -> bool:
+        with contextlib.redirect_stdout(io.StringIO()):
+            return studio_drive.run_expect_step(self.run, step, step.get("label", "x"))
+
+    def close(self) -> None:
+        self.directory.cleanup()
+
+
+def answering(value):
+    return lambda request, timeout: {"ok": True, "result": {"value": value}}
+
+
+class QD1CompareRulesTest(unittest.TestCase):
+    """QD-1, GL-5g's rules 1 and 3: the comparisons that could not fail now do."""
+
+    def test_contains_and_excludes_on_an_object_are_refused(self) -> None:
+        for op in ("contains", "excludes"):
+            with self.subTest(op=op), self.assertRaises(studio_drive.StepMisuse):
+                studio_drive.compare(op, {"fragment": "x"}, "PELICAN_PASSTHROUGH_INPUT")
+
+    def test_has_key_and_lacks_key_ask_about_a_key(self) -> None:
+        self.assertTrue(studio_drive.compare("has_key", {"defines": []}, "defines"))
+        self.assertTrue(studio_drive.compare("lacks_key", {"fragment": "x"}, "defines"))
+        self.assertFalse(studio_drive.compare("lacks_key", {"defines": []}, "defines"))
+        with self.assertRaises(studio_drive.StepMisuse):
+            studio_drive.compare("has_key", ["defines"], "defines")
+
+    def test_excludes_from_a_list_needs_a_value_of_its_kind(self) -> None:
+        with self.assertRaises(studio_drive.StepMisuse):
+            studio_drive.compare("excludes", [1, 2], "1")
+        self.assertTrue(studio_drive.compare("excludes", ["a", "b"], "c"))
+        self.assertFalse(studio_drive.compare("contains", [1, 2], True))
+        with self.assertRaises(studio_drive.StepMisuse):
+            studio_drive.compare("contains", "anything", "")
+
+    def test_a_bool_is_not_a_number(self) -> None:
+        self.assertFalse(studio_drive.equal(True, 1))
+        self.assertFalse(studio_drive.equal([True], [1]))
+        self.assertTrue(studio_drive.equal(1, 1.0))
+        self.assertTrue(studio_drive.equal({"a": [1]}, {"a": [1.0]}))
+
+    def test_ne_between_kinds_is_refused_but_null_is_a_value(self) -> None:
+        with self.assertRaises(studio_drive.StepMisuse):
+            studio_drive.compare("ne", "156", 156)
+        self.assertTrue(studio_drive.compare("ne", None, 156))
+        self.assertTrue(studio_drive.compare("ne", 156, 288.9))
+
+    def test_a_refused_comparison_fails_the_step_by_name(self) -> None:
+        scripted = ScriptedRun(answering({"fragment": "x"}))
+        try:
+            ok = scripted.expect({"expect": "result", "command": {"cmd": "text"},
+                                  "path": "value", "op": "excludes", "value": "y"})
+            self.assertFalse(ok)
+            self.assertIn("has_key", scripted.run.failures[0]["reason"])
+        finally:
+            scripted.close()
+
+
+class QD1ReadingRulesTest(unittest.TestCase):
+    """QD-1, GL-5g's rules 2, 4, 5, 7 and 8."""
+
+    def test_a_reading_that_neither_compares_nor_remembers_fails(self) -> None:
+        scripted = ScriptedRun(answering(3))
+        try:
+            self.assertFalse(scripted.expect({"expect": "result", "command": {"cmd": "text"}, "path": "value"}))
+            self.assertIn("record: true", scripted.run.failures[0]["reason"])
+            self.assertTrue(scripted.expect({"expect": "result", "command": {"cmd": "text"},
+                                             "path": "value", "record": True}))
+        finally:
+            scripted.close()
+
+    def test_a_name_remembered_and_never_compared_is_a_warning(self) -> None:
+        scripted = ScriptedRun(answering(3))
+        try:
+            run = scripted.run
+            self.assertTrue(scripted.expect({"expect": "result", "command": {"cmd": "text"},
+                                             "path": "value", "remember": "kept", "label": "keep"}))
+            self.assertTrue(scripted.expect({"expect": "result", "command": {"cmd": "text"},
+                                             "path": "value", "remember": "used"}))
+            self.assertTrue(scripted.expect({"expect": "result", "command": {"cmd": "text"},
+                                             "path": "value", "value_of": "used"}))
+            with contextlib.redirect_stdout(io.StringIO()):
+                studio_drive.finish_warnings(run)
+            self.assertEqual(len(run.warnings), 1)
+            self.assertIn("kept", run.warnings[0])
+        finally:
+            scripted.close()
+
+    def test_stable_for_frames_reads_again_after_the_frames(self) -> None:
+        readings = iter([188, 188, 188, 189])
+
+        def answer(request, timeout):
+            if request["cmd"] == "rpc":
+                return {"ok": True, "result": {"result": {"render": {"published_frames": 400}}}}
+            if request["cmd"] == "wait_engine":
+                self.assertEqual(request["frames"], 430)
+                return {"ok": True, "result": {}}
+            return {"ok": True, "result": {"value": next(readings)}}
+
+        scripted = ScriptedRun(answer)
+        try:
+            step = {"expect": "result", "command": {"cmd": "text"}, "path": "value",
+                    "value": 188, "stable_for_frames": 30}
+            self.assertTrue(scripted.expect(dict(step)))
+            self.assertFalse(scripted.expect(dict(step)))
+            self.assertIn("30 frames later", scripted.run.failures[0]["reason"])
+        finally:
+            scripted.close()
+
+    def test_visible_false_needs_a_name_that_resolves(self) -> None:
+        missing = ScriptedRun(lambda request, timeout: {
+            "ok": False, "error": {"code": "automation.widget_missing@1", "message": "no"}})
+        hidden = ScriptedRun(lambda request, timeout: {"ok": True, "result": {"visible": False}})
+        try:
+            self.assertFalse(missing.expect({"expect": "visible", "name": "pelican.typo", "value": False}))
+            self.assertIn("missing: true", missing.run.failures[0]["reason"])
+            self.assertTrue(hidden.expect({"expect": "visible", "name": "pelican.there", "value": False}))
+        finally:
+            missing.close()
+            hidden.close()
+
+    def test_a_count_of_zero_for_a_pattern_never_seen_is_a_warning(self) -> None:
+        scripted = ScriptedRun(lambda request, timeout: {"ok": True, "result": {"widgets": []}})
+        try:
+            self.assertTrue(scripted.expect({"expect": "list_count", "pattern": "pill#lop/", "value": 0}))
+            with contextlib.redirect_stdout(io.StringIO()):
+                studio_drive.finish_warnings(scripted.run)
+            self.assertIn("pill#lop/", scripted.run.warnings[0])
+        finally:
+            scripted.close()
+
+
+class QD1FileRulesTest(unittest.TestCase):
+    """QD-1, GL-5g's rule 6: `was` for an absence, `list` for a directory."""
+
+    def test_was_needs_the_presence_seen_first(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = studio_drive.Run({"name": "files"}, root)
+            run.capture = lambda stem: None
+            target = root / "shader.frag"
+            target.write_text("void main() {}", encoding="utf-8")
+            step = lambda **fields: dict({"file": "exists", "path": str(target)}, **fields)  # noqa: E731
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertFalse(studio_drive.run_file_step(
+                    run, step(path=str(root / "never.frag"), value=False, was=True), "never", [root]))
+                self.assertTrue(studio_drive.run_file_step(run, step(), "there", [root]))
+                target.unlink()
+                self.assertTrue(studio_drive.run_file_step(run, step(value=False, was=True), "gone", [root]))
+                self.assertTrue(studio_drive.run_file_step(
+                    run, step(path=str(root / "other.frag"), value=False), "absent", [root]))
+            self.assertIn("other.frag", run.warnings[0])
+
+    def test_list_names_what_a_directory_holds(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "shaders").mkdir()
+            (root / "shaders" / "a.frag").write_text("", encoding="utf-8")
+            run = studio_drive.Run({"name": "files"}, root)
+            run.capture = lambda stem: None
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertTrue(studio_drive.run_file_step(
+                    run, {"file": "list", "path": str(root / "shaders"), "value": ["a.frag"]}, "l", [root]))
+                self.assertFalse(studio_drive.run_file_step(
+                    run, {"file": "list", "path": str(root / "shaders"), "count": 0}, "l", [root]))
+
+
+def project_state(files: dict[str, str], render: dict[str, str], pid: int = 7,
+                  directory: str = "") -> studio_invariants.ProjectState:
+    return studio_invariants.ProjectState({
+        "dir": directory, "engine_ready": True, "engine_process_id": pid,
+        "files": [{"path": path, "size": 1, "sha256": sha} for path, sha in files.items()],
+        "rpc": {"get_render_documents": {"documents": [
+            {"reference": reference, "content": content} for reference, content in render.items()]}},
+    })
+
+
+class QD1InvariantTest(unittest.TestCase):
+    """QD-1, stage B: the checks after the last step."""
+
+    def test_missing_or_malformed_pixels_cannot_pass_reopen(self) -> None:
+        valid = [[10, 20, 30] for _ in studio_invariants.PIXEL_GRID]
+        self.assertTrue(studio_invariants.pixels_close(valid, valid))
+        for bad in (None, [], [[10, 20]], [[10, 20, 30]] * 8,
+                    [[10, 20, True]] * 9, [[10, 20, 300]] * 9):
+            with self.subTest(bad=bad):
+                self.assertFalse(studio_invariants.pixels_close(valid, bad))
+                self.assertFalse(studio_invariants.pixels_close(bad, bad))
+
+    def test_unsettled_documents_are_not_returned_as_saved(self) -> None:
+        epilogue = mock.Mock()
+        epilogue.state.side_effect = [project_state({"a": "1"}, {}),
+                                     project_state({"a": "2"}, {})]
+        with (mock.patch.object(studio_invariants.time, "monotonic", side_effect=[0, 0, 1, 3]),
+              mock.patch.object(studio_invariants.time, "sleep")):
+            self.assertIsNone(studio_invariants.settled_state(epilogue, within_s=2))
+
+    def test_save_failure_cannot_be_hidden_by_a_successful_reopen(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "other").mkdir()
+            epilogue = studio_invariants.Epilogue(mock.Mock(), {"name": "save"})
+            epilogue.variables = {"other_project": str(root / "other")}
+            epilogue.state = lambda: project_state({}, {}, directory=str(root))
+            epilogue.call = mock.Mock(return_value={"ok": False, "error": {"message": "save refused"}})
+            outcome = studio_invariants.check_reopen(epilogue)
+            self.assertEqual(outcome["status"], "red")
+            self.assertIn("save refused", outcome["reason"])
+            epilogue.call.assert_called_once()
+
+    def test_plain_error_lines_are_health_failures(self) -> None:
+        self.assertIsNotNone(studio_invariants.LOG_PATTERN.search("[ERROR] failed to save"))
+
+    def test_an_invariant_is_off_only_with_a_reason_and_known_red_only_with_a_ticket(self) -> None:
+        mode = studio_invariants.invariant_mode
+        self.assertEqual(mode({}, "undo"), ("on", ""))
+        self.assertEqual(mode({"invariants": {"undo": False, "undo_reason": "r"}}, "undo"), ("off", "r"))
+        self.assertEqual(mode({"invariants": {"undo": "known_red", "ticket": "QD1-1"}}, "undo"),
+                         ("known_red", "QD1-1"))
+        for bad in ({"undo": False}, {"undo": "known_red"}, {"undo": "maybe"}):
+            with self.subTest(bad=bad), self.assertRaises(studio_invariants.InvariantConfigError):
+                mode({"invariants": bad}, "undo")
+
+    def test_a_document_that_differs_is_named_with_its_diff(self) -> None:
+        start = project_state({"a.json": "1"}, {"passes/main.json": '{"nodes": []}'})
+        end = project_state({"a.json": "2", "b.frag": "3"}, {"passes/main.json": '{"nodes": [1]}'})
+        differing, skipped = studio_invariants.diff_states(start, end)
+        self.assertEqual([entry["key"] for entry in differing],
+                         ["file:a.json", "file:b.frag", "render:passes/main.json"])
+        self.assertEqual(differing[1]["change"], "added")
+        self.assertTrue(any("+" in line for line in differing[2]["diff"]))
+        self.assertEqual(skipped, [])
+
+    def test_a_subtree_left_out_by_design_is_said_not_compared(self) -> None:
+        start = project_state({}, {"passes/main.json": '{"nodes": [], "layout": {"frame_plan": {"x": 1}}}'})
+        moved = project_state({}, {"passes/main.json": '{"nodes": [], "layout": {"frame_plan": {"x": 2}}}'})
+        differing, skipped = studio_invariants.diff_states(
+            start, moved, subtrees=list(studio_invariants.DEFAULT_UNDO_EXEMPT))
+        self.assertEqual(differing, [])
+        self.assertIn("set_layout", skipped[0]["reason"])
+        edited = project_state({}, {"passes/main.json": '{"nodes": [1], "layout": {"frame_plan": {"x": 2}}}'})
+        differing, _ = studio_invariants.diff_states(
+            start, edited, subtrees=list(studio_invariants.DEFAULT_UNDO_EXEMPT))
+        self.assertEqual(len(differing), 1)
+
+    def test_exempt_placement_does_not_leave_an_empty_container_difference(self) -> None:
+        start = project_state({}, {"passes/main.json": '{"nodes": []}'})
+        for layout in ({"frame_plan": {"x": 1}}, {}):
+            moved = project_state({}, {"passes/main.json": json.dumps({"nodes": [], "layout": layout})})
+            differing, skipped = studio_invariants.diff_states(
+                start, moved, subtrees=list(studio_invariants.DEFAULT_UNDO_EXEMPT))
+            self.assertEqual(differing, [])
+            self.assertTrue(skipped)
+        for extra in ({"layout": {"nodes": {}}}, {"other": {}}):
+            moved = project_state({}, {"passes/main.json": json.dumps({"nodes": [], **extra})})
+            differing, _ = studio_invariants.diff_states(
+                start, moved, subtrees=list(studio_invariants.DEFAULT_UNDO_EXEMPT))
+            self.assertEqual(len(differing), 1)
+
+    def test_graph_drafts_are_cancelled_without_committing_or_hiding_documents(self) -> None:
+        epilogue = studio_invariants.Epilogue(mock.Mock(), {"name": "inline"})
+        name = "pelican.graphCanvasView::graph_inline_editor#trace"
+        epilogue.call = mock.Mock(side_effect=[
+            {"ok": True, "result": {"widgets": [{"name": name}, {"name": "unrelated"}]}},
+            {"ok": True}, {"ok": True}])
+        self.assertEqual(epilogue.close_graph_drafts(), [name])
+        self.assertEqual(epilogue.call.call_args_list[1].args[0],
+                         {"cmd": "key", "name": name, "sequence": "Escape"})
+        epilogue.call = mock.Mock(return_value={"ok": False})
+        with self.assertRaises(ValueError):
+            epilogue.close_graph_drafts()
+        epilogue.call = mock.Mock(side_effect=[
+            {"ok": True, "result": {"widgets": [{"name": name}]}}, {"ok": False}])
+        with self.assertRaises(ValueError):
+            epilogue.close_graph_drafts()
+
+    def test_the_journal_says_what_each_session_can_still_undo(self) -> None:
+        records = [
+            {"actor_id": 1, "actor_display_name": "Pelican Studio Inspector", "operation_kind": "edit"},
+            {"actor_id": 1, "actor_display_name": "Pelican Studio Inspector", "operation_kind": "edit"},
+            {"actor_id": 1, "actor_display_name": "Pelican Studio Inspector", "operation_kind": "undo"},
+        ]
+        depths = studio_invariants.journal_depths({"records": records})
+        self.assertEqual(depths, {"Pelican Studio Inspector (actor 1)": {"undo": 1, "redo": 1}})
+
+    def test_redo_goes_back_the_way_undo_came(self) -> None:
+        epilogue = studio_invariants.Epilogue(mock.Mock(), {"name": "x"})
+        pressed: list[tuple[str, str]] = []
+
+        def press_once(kind, step, log, notes):
+            pressed.append((kind, step))
+            return "moved" if len(pressed) <= 3 else "off"
+
+        epilogue.press_once = press_once
+        undone = {"sequence": ["graph", "graph", "render", "materials"]}
+        studio_invariants.time.monotonic()
+        result = epilogue.redo_in_reverse(undone, studio_invariants.time.monotonic() + 60)
+        self.assertEqual(pressed[:3], [("render", "redo"), ("graph", "redo"), ("graph", "redo")])
+        self.assertEqual(result["sequence"], ["render", "graph", "graph"])
+
+    def test_scene_redo_uses_the_journal_not_an_always_enabled_button(self) -> None:
+        kinds = {"scene": {"redo": {"found": True, "enabled": True}}}
+        self.assertEqual(studio_invariants.available_redo(kinds, {"records": []}), [])
+        records = [
+            {"actor_id": 1, "actor_display_name": "Pelican Studio Inspector",
+             "operation_kind": "edit"},
+            {"actor_id": 1, "actor_display_name": "Pelican Studio Inspector",
+             "operation_kind": "undo"},
+        ]
+        self.assertEqual(studio_invariants.available_redo(kinds, {"records": records}), ["scene"])
+        # When the journal could not be read, preserve potentially older Redo entries.
+        self.assertEqual(studio_invariants.available_redo(kinds, None), ["scene"])
+        kinds["graph"] = {"redo": {"found": True, "enabled": True}}
+        self.assertEqual(studio_invariants.available_redo(kinds, {"records": []}), ["graph"])
+
+    def test_hidden_parent_does_not_hide_an_enabled_material_undo(self) -> None:
+        epilogue = studio_invariants.Epilogue(mock.Mock(), {"name": "hidden-undo"})
+        control = {"found": True, "enabled": True, "visible": False,
+                   "tooltip": "Undo material on every Cube"}
+        epilogue.history = lambda: {"material_row": {"undo": control}}
+        epilogue.call = mock.Mock(return_value={"ok": True})
+        epilogue.settled = ("history", "before", 1)
+        epilogue.settle = mock.Mock(return_value=("history", "after", 1))
+        log = []
+        self.assertEqual(epilogue.press_once("material_row", "undo", log, []), "moved")
+        epilogue.call.assert_called_once_with(
+            {"cmd": "history", "kind": "material_row", "step": "undo"}, timeout=60.0)
+        self.assertTrue(log[0]["documents_moved"])
+        # Empty histories disable their control, regardless of the parent's visibility.
+        control["enabled"] = False
+        epilogue.call.reset_mock()
+        self.assertEqual(epilogue.press_once("material_row", "undo", [], []), "off")
+        epilogue.call.assert_not_called()
+
+    def test_a_refused_history_is_retried_after_another_changes_documents(self) -> None:
+        epilogue = studio_invariants.Epilogue(mock.Mock(), {"name": "dependency"})
+        state = {"reference_removed": False, "node_removed": False}
+
+        def press(kind, step, log, notes):
+            if kind == "graph" and not state["reference_removed"]:
+                log.append({"kind": kind, "moved": False, "documents_moved": False})
+                return "still"
+            key = {"render": "reference_removed", "graph": "node_removed"}.get(kind)
+            if key and not state[key]:
+                state[key] = True
+                log.append({"kind": kind, "moved": True, "documents_moved": True})
+                return "moved"
+            return "off"
+
+        epilogue.press_once = press
+        result = epilogue.press_all("undo", studio_invariants.time.monotonic() + 10)
+        self.assertTrue(state["node_removed"])
+        self.assertEqual(result["sequence"], ["render", "graph"])
+
+    def test_a_control_only_change_does_not_retry_a_refused_history(self) -> None:
+        epilogue = studio_invariants.Epilogue(mock.Mock(), {"name": "control-only"})
+        calls = {"graph": 0, "render": 0}
+
+        def press(kind, step, log, notes):
+            if kind == "graph":
+                calls[kind] += 1
+                log.append({"kind": kind, "moved": False, "documents_moved": False})
+                return "still"
+            if kind == "render" and calls[kind] == 0:
+                calls[kind] += 1
+                log.append({"kind": kind, "moved": True, "documents_moved": False})
+                return "moved"
+            return "off"
+
+        epilogue.press_once = press
+        epilogue.press_all("undo", studio_invariants.time.monotonic() + 10)
+        self.assertEqual(calls["graph"], 1)
+
+    def test_preexisting_redo_is_not_drained_past_the_scenario_endpoint(self) -> None:
+        epilogue = studio_invariants.Epilogue(mock.Mock(), {"name": "already-undone"})
+        epilogue.press_once = mock.Mock(return_value="moved")
+        epilogue.press_all = mock.Mock(side_effect=AssertionError("would consume old Redo"))
+        result = epilogue.redo_in_reverse(
+            {"sequence": ["graph", "graph"]}, studio_invariants.time.monotonic() + 10,
+            drain_remaining=False)
+        self.assertEqual(epilogue.press_once.call_count, 2)
+        epilogue.press_all.assert_not_called()
+        self.assertEqual(result["sequence"], ["graph", "graph"])
+        self.assertIn("already had Redo entries", result["notes"][0])
+
+    def test_incomplete_history_walk_cannot_pass_matching_snapshots(self) -> None:
+        for phase in ("undo", "redo"):
+            with self.subTest(phase=phase):
+                epilogue = studio_invariants.Epilogue(mock.Mock(), {"name": "incomplete"})
+                epilogue.start = project_state({}, {})
+                epilogue.state = mock.Mock(return_value=epilogue.start)
+                epilogue.history = lambda: {}
+                epilogue.close_graph_drafts = lambda: []
+                walks = {name: {"presses": {}, "sequence": [], "log": [], "notes": []}
+                         for name in ("undo", "redo")}
+                walks[phase]["notes"].append(f"{phase}: stopped at the time budget (240 s)")
+                epilogue.press_all = mock.Mock(return_value=walks["undo"])
+                epilogue.redo_in_reverse = mock.Mock(return_value=walks["redo"])
+                result = studio_invariants.check_undo(epilogue)
+                self.assertEqual(result["status"], "red")
+                self.assertTrue(result["check_error"])
+                self.assertIn("time budget", result["reason"])
+
+    def test_preexisting_redo_replay_reports_an_expired_budget(self) -> None:
+        epilogue = studio_invariants.Epilogue(mock.Mock(), {"name": "incomplete-redo"})
+        epilogue.press_once = mock.Mock()
+        result = epilogue.redo_in_reverse({"sequence": ["graph"]}, -1,
+                                         drain_remaining=False)
+        epilogue.press_once.assert_not_called()
+        self.assertTrue(any("stopped at the time budget" in n for n in result["notes"]))
+
+    def test_known_red_keeps_the_run_green_and_says_so(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            run = studio_drive.Run({"name": "k"}, Path(directory))
+            scenario = {"name": "k", "invariants": {"undo": "known_red", "undo_ticket": "QD1-1",
+                                                    "reopen": False, "reopen_reason": "r",
+                                                    "health": False, "health_reason": "r"}}
+            epilogue = studio_invariants.Epilogue(run, scenario)
+            epilogue.call = lambda request, timeout=0: {"ok": True, "result": {"result": {"problems": []}}}
+            red = {"invariant": "undo", "status": "red", "reason": "after Undo, not the start"}
+            with (mock.patch.object(studio_invariants, "check_undo", return_value=dict(red)),
+                  contextlib.redirect_stdout(io.StringIO())):
+                outcomes = studio_invariants.run_invariants(run, epilogue)
+            self.assertEqual(outcomes[0]["status"], "known_red")
+            self.assertEqual(outcomes[0]["ticket"], "QD1-1")
+            self.assertEqual(run.failures, [])
+            self.assertIn("KNOWN RED (QD1-1)", run.steps[0]["detail"])
+            self.assertEqual([outcome["status"] for outcome in outcomes[1:]], ["off", "off"])
+            # Unmarked, the same finding fails the run.
+            run = studio_drive.Run({"name": "k"}, Path(directory))
+            epilogue = studio_invariants.Epilogue(run, {"name": "k", "invariants": {
+                "reopen": False, "reopen_reason": "r", "health": False, "health_reason": "r"}})
+            epilogue.call = lambda request, timeout=0: {"ok": True, "result": {"result": {"problems": []}}}
+            with (mock.patch.object(studio_invariants, "check_undo", return_value=dict(red)),
+                  contextlib.redirect_stdout(io.StringIO())):
+                studio_invariants.run_invariants(run, epilogue)
+            self.assertEqual(len(run.failures), 1)
+
+    def test_known_red_cannot_hide_a_broken_checker(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            run = studio_drive.Run({"name": "broken-checker"}, Path(directory))
+            scenario = {"invariants": {"undo": "known_red", "undo_ticket": "QD1-R1",
+                                       "reopen": False, "health": False, "reason": "test isolation"}}
+            epilogue = studio_invariants.Epilogue(run, scenario)
+            epilogue.call = lambda request, timeout=0: {"ok": True, "result": {"result": {"problems": []}}}
+            with (mock.patch.object(studio_invariants, "check_undo", side_effect=ValueError("bad reply")),
+                  contextlib.redirect_stdout(io.StringIO())):
+                outcomes = studio_invariants.run_invariants(run, epilogue)
+            self.assertEqual(outcomes[0]["status"], "red")
+            self.assertTrue(outcomes[0]["check_error"])
+            self.assertEqual(len(run.failures), 1)
+
+
+
+
+class UD2RestartHistoryTest(unittest.TestCase):
+    """The controls may all be off while surviving histories read the engine again."""
+
+    def restarting_walk(self, step="undo", *, never_ready=False):
+        epilogue = studio_invariants.Epilogue(mock.Mock(), {"name": "restart"})
+        clock = {"now": 0.0}
+        state = {"pid": 7, "graph": 2, "render": 1, "materials": 1, "restarted": False}
+        requests = []
+
+        def histories():
+            kinds = {}
+            for kind, ready_at in (("graph", 3.0), ("render", 4.0), ("materials", 5.0)):
+                loaded = not state["restarted"] or (not never_ready and clock["now"] >= ready_at)
+                kinds[kind] = {
+                    step: {"found": True, "enabled": loaded and state[kind] > 0,
+                           "tooltip": f"{step} {kind} {state[kind]}"},
+                    ("redo" if step == "undo" else "undo"): {
+                        "found": True, "enabled": loaded and kind != "materials",
+                        "tooltip": "inverse"},
+                }
+            return kinds
+
+        def call(request, timeout=30.0):
+            requests.append((dict(request), timeout, clock["now"]))
+            if request["cmd"] == "text":
+                return {"ok": True, "result": {"text": ""}}
+            self.assertEqual(request["cmd"], "history")
+            if request.get("kind"):
+                kind = request["kind"]
+                self.assertTrue(histories()[kind][step]["enabled"])
+                state[kind] -= 1
+                if not state["restarted"]:
+                    state.update(pid=8, restarted=True)
+            return {"ok": True, "result": {"kinds": histories()}}
+
+        epilogue.call = call
+        epilogue.signature = lambda: (studio_invariants.canonical(histories()),
+                                      str([state[k] for k in ("graph", "render", "materials")]), state["pid"])
+        epilogue.settle = lambda before, **kwargs: epilogue.signature()
+
+        def sleep(seconds):
+            clock["now"] += seconds
+
+        return epilogue, state, clock, requests, sleep
+
+    def test_off_histories_after_restart_are_consumed_when_the_panels_finish_reading(self):
+        epilogue, state, clock, requests, sleep = self.restarting_walk()
+        with (mock.patch.object(studio_invariants.time, "monotonic", side_effect=lambda: clock["now"]),
+              mock.patch.object(studio_invariants.time, "sleep", side_effect=sleep)):
+            result = epilogue.press_all("undo", 40.0)
+        self.assertEqual(result["sequence"], ["graph", "graph", "render", "materials"])
+        self.assertEqual([state[k] for k in ("graph", "render", "materials")], [0, 0, 0])
+        self.assertEqual(result["notes"], [])
+        self.assertTrue(result["log"][0]["restart_history_ready"])
+        resumed = [now for req, _, now in requests if req.get("kind")][1]
+        self.assertGreaterEqual(resumed, 6.0)  # the last panel loaded at 5, then was stable
+
+    def test_reverse_redo_also_waits_after_a_restart(self):
+        epilogue, state, clock, _, sleep = self.restarting_walk("redo")
+        with (mock.patch.object(studio_invariants.time, "monotonic", side_effect=lambda: clock["now"]),
+              mock.patch.object(studio_invariants.time, "sleep", side_effect=sleep)):
+            result = epilogue.redo_in_reverse({"sequence": ["graph", "graph"]}, 40.0,
+                                             drain_remaining=False)
+        self.assertEqual(result["sequence"], ["graph", "graph"])
+        self.assertEqual(state["graph"], 0)
+        self.assertTrue(result["log"][0]["restart_history_ready"])
+
+    def test_restart_wait_timeout_is_named_and_never_extends_the_walk_budget(self):
+        for deadline, expected_elapsed in ((40.0, 2.0), (0.7, 0.7)):
+            with self.subTest(deadline=deadline):
+                epilogue, state, clock, requests, sleep = self.restarting_walk(never_ready=True)
+                with (mock.patch.object(studio_invariants, "RESTART_HISTORY_WAIT_S", 2.0),
+                      mock.patch.object(studio_invariants.time, "monotonic", side_effect=lambda: clock["now"]),
+                      mock.patch.object(studio_invariants.time, "sleep", side_effect=sleep)):
+                    result = epilogue.press_all("undo", deadline)
+                self.assertAlmostEqual(clock["now"], expected_elapsed)
+                self.assertEqual(result["sequence"], ["graph"])
+                self.assertEqual(state["graph"], 1)
+                self.assertFalse(result["log"][0]["restart_history_ready"])
+                self.assertIn("undo: restart_history_wait_timeout", result["notes"][0])
+                self.assertIn("pid 7 -> 8", result["notes"][0])
+                for request, timeout, now in requests:
+                    if request == {"cmd": "history"} and now > 0:
+                        self.assertLessEqual(timeout, expected_elapsed - now + 1e-9)
+
+    def test_readiness_arriving_after_the_deadline_is_a_timeout(self):
+        epilogue = studio_invariants.Epilogue(mock.Mock(), {"name": "late-reply"})
+        clock = {"now": 0.0}
+        def call(request, timeout):
+            clock["now"] += 2.0
+            return {"ok": True, "result": {"kinds": {
+                "graph": {"undo": {"found": True, "enabled": True}}}}}
+        epilogue.call = call
+        entry = {"engine_started_again": "pid 7 -> 8", "restart_histories": ["graph"]}
+        notes = []
+        with (mock.patch.object(studio_invariants.time, "monotonic", side_effect=lambda: clock["now"]),
+              mock.patch.object(studio_invariants.time, "sleep")):
+            self.assertFalse(epilogue.wait_after_restart(entry, "undo", 1.0, notes))
+        self.assertIn("restart_history_wait_timeout", notes[0])
+
+    def test_timeout_cannot_pass_even_when_the_documents_match(self):
+        epilogue = studio_invariants.Epilogue(mock.Mock(), {"name": "timeout"})
+        epilogue.start = project_state({}, {})
+        epilogue.state = mock.Mock(return_value=epilogue.start)
+        epilogue.history = lambda: {}
+        epilogue.close_graph_drafts = lambda: []
+        epilogue.press_all = mock.Mock(return_value={
+            "presses": {}, "sequence": [], "log": [],
+            "notes": ["undo: restart_history_wait_timeout after 30 s (pid 7 -> 8)"]})
+        epilogue.redo_in_reverse = mock.Mock(return_value={
+            "presses": {}, "sequence": [], "log": [], "notes": []})
+        result = studio_invariants.check_undo(epilogue)
+        self.assertEqual(result["status"], "red")
+        self.assertTrue(result["check_error"])
+        self.assertIn("restart_history_wait_timeout", result["reason"])
+
+    def scene_comparison(self, *, pressable=False, consumed=False, pending=1,
+                         render_diff=False, restarted_during_run=False):
+        def reading(pid, scene_value, render_value, journal=None):
+            return studio_invariants.ProjectState({
+                "engine_ready": True, "engine_process_id": pid,
+                "rpc": {"export_scene_snapshot": {
+                    "semantic_scene_bytes": '{"objects": [%d]}' % scene_value,
+                    "object_count": scene_value},
+                    "get_render_documents": {"documents": [
+                        {"reference": "main.json", "content": '{"nodes": [%d]}' % render_value}]},
+                    "query_journal": journal}})
+        records = [{"actor_id": 1, "actor_display_name": studio_invariants.INSPECTOR_ACTOR,
+                    "operation_kind": "edit"} for _ in range(pending)]
+        epilogue = studio_invariants.Epilogue(mock.Mock(), {"name": "scene"})
+        epilogue.start = reading(6 if restarted_during_run else 7, 0, 0)
+        end = reading(7, 1, 1, {"records": records})
+        after_scene = [reading(7, 0, 1, {"records": records[:-1]})] if consumed else []
+        epilogue.state = mock.Mock(side_effect=[end, *after_scene,
+            reading(8, 1, 1 if render_diff else 0), reading(8, 1, 1)])
+        epilogue.history = lambda: {
+            "graph": {"undo": {"found": True, "enabled": True}},
+            "scene": {"undo": {"found": True, "enabled": pressable}}}
+        epilogue.close_graph_drafts = lambda: []
+        epilogue.signature = lambda: ("before-history", "before-documents", 7)
+        epilogue.settle = mock.Mock(side_effect=(
+            [("history", "scene-undone", 7), ("history", "graph-undone", 8)] if consumed
+            else [("history", "graph-undone", 8)]))
+        epilogue.call = mock.Mock(return_value={"ok": True, "result": {"text": ""}})
+        def walk(step, deadline):
+            log, sequence, notes = [], [], []
+            if consumed:
+                self.assertEqual(epilogue.press_once("scene", step, log, notes), "moved")
+                sequence.append("scene")
+            self.assertEqual(epilogue.press_once("graph", step, log, notes), "moved")
+            sequence.append("graph")
+            return epilogue.pressed_summary(log, sequence, notes)
+        epilogue.press_all = walk
+        epilogue.redo_in_reverse = mock.Mock(return_value={
+            "presses": {}, "sequence": [], "log": [], "notes": []})
+        return studio_invariants.check_undo(epilogue)
+
+    def test_restart_inside_undo_exempts_only_scene_keys_and_names_the_walk(self):
+        result = self.scene_comparison(render_diff=True)
+        self.assertEqual(result["status"], "red")
+        self.assertEqual([entry["key"] for entry in result["undo_differs"]], ["render:main.json"])
+        self.assertEqual([entry["key"] for entry in result["undo_skipped"]],
+                         ["scene:(answer)", "scene:(semantic)"])
+        for entry in result["undo_skipped"]:
+            self.assertIn("during the Undo walk (pid 7 -> 8)", entry["reason"])
+            self.assertIn("scene journal lives in the engine", entry["reason"])
+        self.assertEqual(self.scene_comparison()["status"], "green")
+
+    def test_pressable_unconsumed_scene_undo_before_restart_stays_red(self):
+        for restarted in (False, True):
+            with self.subTest(restarted_during_run=restarted):
+                result = self.scene_comparison(pressable=True, restarted_during_run=restarted)
+                self.assertEqual(result["status"], "red")
+                self.assertEqual([entry["key"] for entry in result["undo_differs"]],
+                                 ["scene:(answer)", "scene:(semantic)"])
+                self.assertEqual(result["undo_skipped"], [])
+                self.assertTrue(result["undo"]["log"][0]["scene_undo_unpressed_before_restart"])
+
+    def test_one_scene_press_does_not_hide_another_unconsumed_transaction(self):
+        result = self.scene_comparison(pressable=True, consumed=True, pending=2)
+        self.assertEqual(result["status"], "red")
+        self.assertEqual(result["undo_skipped"], [])
+        self.assertTrue(result["undo"]["log"][-1]["scene_undo_unpressed_before_restart"])
+
+    def test_consumed_scene_undo_and_empty_journal_are_not_unpressed_history(self):
+        result = self.scene_comparison(pressable=True, consumed=True)
+        self.assertEqual(result["status"], "green")
+        self.assertNotIn("scene_undo_unpressed_before_restart", result["undo"]["log"][-1])
+        result = self.scene_comparison(pressable=True, pending=0)
+        self.assertEqual(result["status"], "green")
+        self.assertEqual(len(result["undo_skipped"]), 2)
+
+
+
+class UD7UnsavedScenePromptTest(unittest.TestCase):
+    """Only the Undo/Redo walk answers the restart prompt, using Save."""
+
+    def walk(self, *, step="undo", prompt="visible", delayed=False, root=None,
+             scene_pressable=False, scene_file_exists=True):
+        import hashlib
+
+        epilogue = studio_invariants.Epilogue(mock.Mock(), {"name": "unsaved-scene"})
+        clock = {"now": 0.0}
+        state = {"graph": int(step == "undo"), "pid": 7, "pending": False}
+        requests = []
+        scene_path = root / "scene.json" if root else None
+        if scene_path and scene_file_exists:
+            scene_path.write_text('{"schema":"pelican.scene","objects":[]}', encoding="utf-8")
+
+        def histories():
+            return {
+                "graph": {
+                    "undo": {"found": True, "enabled": state["graph"] == 1},
+                    "redo": {"found": True, "enabled": state["graph"] == 0}},
+                "scene": {"undo": {"found": scene_pressable,
+                    "enabled": scene_pressable and state["pid"] == 7}}}
+
+        def reading(*, graph=None, scene=1, journal=False, quick=False):
+            files = []
+            if scene_path and scene_path.exists():
+                data = scene_path.read_bytes()
+                files = [{"path": "scene.json", "size": len(data),
+                          "sha256": hashlib.sha256(data).hexdigest()}]
+            records = [{"actor_id": 1, "actor_display_name": studio_invariants.INSPECTOR_ACTOR,
+                        "operation_kind": "edit"}] if state["pid"] == 7 and prompt == "visible" else []
+            return studio_invariants.ProjectState({
+                "dir": str(root) if root else "", "files": files,
+                "engine_ready": not (delayed and state["pending"]),
+                "engine_process_id": state["pid"],
+                "rpc": {"export_scene_snapshot": {
+                    "semantic_scene_bytes": json.dumps({"objects": [scene]}), "object_count": scene},
+                    "get_render_documents": {"documents": [{"reference": "main.json",
+                        "content": {"nodes": [state["graph"] if graph is None else graph]}}]},
+                    "query_journal": {"records": records}}})
+
+        def call(request, timeout=30.0):
+            requests.append(dict(request))
+            cmd = request["cmd"]
+            if cmd == "history":
+                if request.get("kind"):
+                    self.assertEqual(request["kind"], "graph")
+                    state["graph"] = int(request["step"] == "redo")
+                    state["pending"] = prompt == "visible"
+                return {"ok": True, "result": {"kinds": histories()}}
+            if cmd == "text":
+                if request["name"] == "pelican.unsavedScenePrompt":
+                    if prompt == "missing":
+                        return {"ok": False, "error": {"code": "not_found"}}
+                    visible = state["pending"] and (not delayed or clock["now"] >= 0.6)
+                    return {"ok": True, "result": {"visible": visible}}
+                return {"ok": True, "result": {"text": ""}}
+            if cmd == "click":
+                self.assertEqual(request["name"], "pelican.unsavedScenePrompt.save")
+                self.assertTrue(state["pending"])
+                state.update(pending=False, pid=state["pid"] + 1)
+                if scene_path:
+                    scene_path.write_text('{"schema":"pelican.scene","objects":[1]}', encoding="utf-8")
+                return {"ok": True}
+            self.assertEqual(cmd, "wait_engine")
+            self.assertLessEqual(request["timeout_ms"], 1000)
+            clock["now"] += request["timeout_ms"] / 1000.0
+            return {"ok": not state["pending"]}
+
+        epilogue.call = call
+        epilogue.state = reading
+        epilogue.start = reading(graph=0, scene=0)
+        epilogue.close_graph_drafts = lambda: []
+
+        def sleep(seconds):
+            clock["now"] += seconds
+
+        return epilogue, state, clock, requests, sleep
+
+    def test_walk_saves_a_visible_prompt_and_records_it_for_undo_and_redo(self):
+        for step in ("undo", "redo"):
+            for delayed in (False, True):
+                with self.subTest(step=step, delayed=delayed):
+                    epilogue, state, clock, requests, sleep = self.walk(step=step, delayed=delayed)
+                    with (mock.patch.object(studio_invariants.time, "monotonic", side_effect=lambda: clock["now"]),
+                          mock.patch.object(studio_invariants.time, "sleep", side_effect=sleep)):
+                        result = (epilogue.press_all("undo", 60.0) if step == "undo" else
+                                  epilogue.redo_in_reverse({"sequence": ["graph"]}, 60.0,
+                                                           drain_remaining=False))
+                    self.assertEqual(result["sequence"], ["graph"])
+                    self.assertEqual(result["log"][0].get("answered_unsaved_scene_prompt"), "save")
+                    self.assertEqual(result["log"][0]["engine_started_again"], "pid 7 -> 8")
+                    self.assertTrue(result["log"][0]["restart_history_ready"])
+                    self.assertEqual([r for r in requests if r["cmd"] == "click"],
+                                     [{"cmd": "click", "name": "pelican.unsavedScenePrompt.save"}])
+                    self.assertFalse(state["pending"])
+
+    def test_walk_does_not_click_a_missing_or_hidden_prompt(self):
+        for step in ("undo", "redo"):
+            for prompt in ("missing", "hidden"):
+                with self.subTest(step=step, prompt=prompt):
+                    epilogue, _, clock, requests, sleep = self.walk(step=step, prompt=prompt)
+                    with (mock.patch.object(studio_invariants.time, "monotonic", side_effect=lambda: clock["now"]),
+                          mock.patch.object(studio_invariants.time, "sleep", side_effect=sleep)):
+                        result = epilogue.press_all(step, 60.0)
+                    self.assertEqual(result["sequence"], ["graph"])
+                    self.assertFalse(any(r["cmd"] == "click" for r in requests))
+                    self.assertNotIn("answered_unsaved_scene_prompt", result["log"][0])
+
+    def test_settle_outside_a_walk_leaves_a_visible_prompt_to_the_scenario(self):
+        epilogue, state, clock, requests, sleep = self.walk()
+        state["pending"] = True
+        with (mock.patch.object(studio_invariants.time, "monotonic", side_effect=lambda: clock["now"]),
+              mock.patch.object(studio_invariants.time, "sleep", side_effect=sleep)):
+            self.assertIsNotNone(epilogue.settle(None))
+        epilogue.start = None
+        epilogue.after_step({"cmd": "wait_engine"}, 0, True)
+        self.assertTrue(state["pending"])
+        self.assertFalse(any(r["cmd"] in ("text", "click") for r in requests))
+
+    def test_restart_history_wait_also_answers_and_records_a_visible_prompt(self):
+        epilogue, state, clock, requests, sleep = self.walk()
+        state["pending"] = True
+        entry = {"engine_started_again": "pid 6 -> 7", "restart_histories": ["graph"]}
+        notes = []
+        with (mock.patch.object(studio_invariants.time, "monotonic", side_effect=lambda: clock["now"]),
+              mock.patch.object(studio_invariants.time, "sleep", side_effect=sleep)):
+            self.assertTrue(epilogue.wait_after_restart(entry, "undo", 10.0, notes))
+        self.assertEqual(entry["answered_unsaved_scene_prompt"], "save")
+        self.assertEqual(notes, [])
+        self.assertEqual(sum(r["cmd"] == "click" for r in requests), 1)
+
+    def test_restart_wait_does_not_click_after_the_prompt_probe_uses_its_budget(self):
+        epilogue = studio_invariants.Epilogue(mock.Mock(), {})
+        clock = {"now": 0.0}
+        def call(request, timeout):
+            self.assertEqual(request["cmd"], "text")
+            self.assertLessEqual(timeout, 0.5)
+            clock["now"] += 0.5
+            return {"ok": True, "result": {"visible": True}}
+        epilogue.call = mock.Mock(side_effect=call)
+        entry = {"engine_started_again": "pid 7 -> 8"}
+        notes = []
+        with (mock.patch.object(studio_invariants.time, "monotonic", side_effect=lambda: clock["now"]),
+              mock.patch.object(studio_invariants.time, "sleep")):
+            self.assertFalse(epilogue.wait_after_restart(entry, "undo", 0.5, notes))
+        self.assertEqual(epilogue.call.call_count, 1)
+        self.assertNotIn("answered_unsaved_scene_prompt", entry)
+        self.assertIn("restart_history_wait_timeout", notes[0])
+
+    def test_failed_save_click_is_not_recorded_as_answered(self):
+        epilogue = studio_invariants.Epilogue(mock.Mock(), {})
+        epilogue.call = mock.Mock(side_effect=[
+            {"ok": True, "result": {"visible": True}}, {"ok": False}])
+        entry = {}
+        with self.assertRaisesRegex(ValueError, "could not answer"):
+            epilogue.answer_unsaved_scene_prompt(entry)
+        self.assertNotIn("answered_unsaved_scene_prompt", entry)
+
+    def test_save_uses_the_existing_scene_file_exemption_and_preserves_ud2(self):
+        for pressable, existing_file in ((False, False), (False, True), (True, False), (True, True)):
+            with (self.subTest(scene_undo_pressable=pressable, existing_file=existing_file),
+                  tempfile.TemporaryDirectory() as directory):
+                epilogue, _, clock, _, sleep = self.walk(root=Path(directory), scene_pressable=pressable,
+                                                       scene_file_exists=existing_file)
+                with (mock.patch.object(studio_invariants.time, "monotonic", side_effect=lambda: clock["now"]),
+                      mock.patch.object(studio_invariants.time, "sleep", side_effect=sleep)):
+                    result = studio_invariants.check_undo(epilogue)
+                reason = "a scene file on disk: Save is not undone; the scene in memory is compared"
+                for walk in ("undo", "redo"):
+                    saved_file = [e for e in result[walk + "_skipped"] if e["key"] == "file:scene.json"]
+                    self.assertEqual(saved_file, [{"key": "file:scene.json", "reason": reason}])
+                    self.assertFalse(any(e["key"] == "file:scene.json" for e in result[walk + "_differs"]))
+                self.assertEqual(result["undo"]["log"][0]["answered_unsaved_scene_prompt"], "save")
+                self.assertEqual(result["redo"]["log"][0]["answered_unsaved_scene_prompt"], "save")
+                if pressable:
+                    self.assertEqual(result["status"], "red")
+                    self.assertEqual([e["key"] for e in result["undo_differs"]],
+                                     ["scene:(answer)", "scene:(semantic)"])
+                    self.assertTrue(result["undo"]["log"][0]["scene_undo_unpressed_before_restart"])
+                else:
+                    self.assertEqual(result["status"], "green")
+
+
+class UD6ContentComparisonTest(unittest.TestCase):
+    """Formatting is reported; actual file and settings changes still fail."""
+
+    def state(self, root, files, settings=None):
+        import hashlib
+        entries = []
+        for name, content in files.items():
+            data = content.encode("utf-8")
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+            entries.append({"path": name, "size": len(data),
+                            "sha256": hashlib.sha256(data).hexdigest()})
+        rpc = {} if settings is None else {"get_project_settings": settings}
+        return studio_invariants.ProjectState({"dir": str(root), "engine_ready": True,
+            "engine_process_id": 7, "files": entries, "rpc": rpc})
+
+    def undo_result(self, before, after):
+        epilogue = studio_invariants.Epilogue(mock.Mock(), {"name": "content"})
+        epilogue.start = before
+        epilogue.state = mock.Mock(side_effect=[after, after, after])
+        epilogue.history = lambda: {}
+        epilogue.close_graph_drafts = lambda: []
+        walk = {"presses": {}, "sequence": [], "log": [], "notes": []}
+        epilogue.press_all = mock.Mock(return_value=walk)
+        epilogue.redo_in_reverse = mock.Mock(return_value=walk)
+        return studio_invariants.check_undo(epilogue)
+
+    def test_equal_json_content_is_green_and_reports_formatting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before = self.state(root, {"passes/main.json": '{"nodes":[],"version":1}'})
+            after = self.state(root, {"passes/main.json": '{\r\n "version": 1, "nodes": []\r\n}\r\n'})
+            result = self.undo_result(before, after)
+        self.assertEqual(result["status"], "green")
+        self.assertEqual(result["undo_differs"], [])
+        self.assertEqual(result["undo_skipped"][0]["key"], "file:passes/main.json")
+        self.assertIn("formatting difference", result["undo_skipped"][0]["reason"])
+
+    def test_changed_json_content_is_red_with_a_content_diff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before = self.state(root, {"passes/main.json": '{"nodes":[]}'})
+            after = self.state(root, {"passes/main.json": '{"nodes":[1]}'})
+            result = self.undo_result(before, after)
+        self.assertEqual(result["status"], "red")
+        self.assertEqual(result["undo_skipped"], [])
+        self.assertEqual(result["undo_differs"][0]["key"], "file:passes/main.json")
+        self.assertTrue(result["undo_differs"][0]["diff"])
+
+    def test_project_digest_is_exempt_only_for_matching_project_content(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before = self.state(root, {"project.json": '{"hot_reload":[]}'},
+                                {"project_digest": "old", "hot_reload": []})
+            after = self.state(root, {"project.json": '{ "hot_reload": [] }\n'},
+                               {"project_digest": "new", "hot_reload": []})
+            result = self.undo_result(before, after)
+        self.assertEqual(result["status"], "green")
+        reasons = {item["key"]: item["reason"] for item in result["undo_skipped"]}
+        self.assertIn("formatting difference", reasons["file:project.json"])
+        self.assertIn("JSON content matches", reasons["get_project_settings:project_digest"])
+
+    def test_changed_project_content_keeps_project_digest_compared_even_if_file_is_exempt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before = self.state(root, {"project.json": '{"hot_reload":[]}'},
+                                {"project_digest": "old", "hot_reload": []})
+            after = self.state(root, {"project.json": '{"hot_reload":["images"]}'},
+                               {"project_digest": "new", "hot_reload": ["images"]})
+            for skip in (lambda key, change: None,
+                         lambda key, change: "external write" if key == "file:project.json" else None):
+                differing, _ = studio_invariants.diff_states(before, after, skip=skip)
+                settings = next(item for item in differing if item["key"] == "get_project_settings:")
+                self.assertTrue(any("project_digest" in line for line in settings["diff"]))
+
+    def test_matching_project_does_not_hide_other_settings_or_other_digests(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before = self.state(root, {"project.json": '{}'},
+                                {"project_digest": "old", "hot_reload": [], "other_digest": "old"})
+            after = self.state(root, {"project.json": '{}'},
+                               {"project_digest": "new", "hot_reload": ["images"], "other_digest": "new"})
+            result = self.undo_result(before, after)
+        self.assertEqual(result["status"], "red")
+        diff = result["undo_differs"][0]["diff"]
+        self.assertTrue(any("other_digest" in line for line in diff))
+        self.assertTrue(any("images" in line for line in diff))
+
+    def test_missing_invalid_or_unreadable_project_never_exempts_digest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for files in ({}, {"project.json": "broken JSON"}):
+                before = self.state(root, files, {"project_digest": "old"})
+                after = self.state(root, files, {"project_digest": "new"})
+                differing, skipped = studio_invariants.diff_states(before, after)
+                self.assertEqual([item["key"] for item in differing], ["get_project_settings:"])
+                self.assertEqual(skipped, [])
+            before = self.state(root, {"project.json": '{}'}, {"project_digest": "old"})
+            after = self.state(root, {"project.json": '{}'}, {"project_digest": "new"})
+            after.texts.clear()
+            self.assertEqual(len(studio_invariants.diff_states(before, after)[0]), 1)
+
+    def test_non_json_and_invalid_json_still_compare_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name, old, new in (("shader.frag", "void main(){}", "void main(){}\n"),
+                                   ("broken.json", "{broken", "{broken\n")):
+                before = self.state(root, {name: old})
+                after = self.state(root, {name: new})
+                differing, skipped = studio_invariants.diff_states(before, after)
+                self.assertEqual([item["key"] for item in differing], ["file:" + name])
+                self.assertEqual(skipped, [])
+
+    def test_added_removed_json_and_array_order_changes_are_not_formatting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            empty = self.state(root, {})
+            present = self.state(root, {"a.json": '[1,2]'})
+            reordered = self.state(root, {"a.json": '[2,1]'})
+            for before, after in ((empty, present), (present, empty), (present, reordered)):
+                differing, skipped = studio_invariants.diff_states(before, after)
+                self.assertEqual(len(differing), 1)
+                self.assertEqual(skipped, [])
+
+    def test_json_content_is_recognized_without_a_json_extension(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before = self.state(root, {"model.gltf": '{"asset":{"version":"2.0"}}'})
+            after = self.state(root, {"model.gltf": '{ "asset": { "version": "2.0" } }\n'})
+            differing, skipped = studio_invariants.diff_states(before, after)
+            self.assertEqual(differing, [])
+            self.assertIn("formatting difference", skipped[0]["reason"])
+
+    def test_large_json_is_compared_by_content(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = {"value": "x" * studio_invariants.TEXT_LIMIT}
+            for name in ("large.json", "large.txt"):
+                before = self.state(root, {name: json.dumps(payload)})
+                after = self.state(root, {name: " " * 5000 + json.dumps(payload, indent=2) + "\n"})
+                differing, skipped = studio_invariants.diff_states(before, after)
+                self.assertEqual(differing, [])
+                self.assertIn("formatting difference", skipped[0]["reason"])
+
+    def test_other_project_cannot_exempt_a_project_digest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before = self.state(root / "a", {"project.json": '{}'}, {"project_digest": "old"})
+            after = self.state(root / "b", {"project.json": '{}'}, {"project_digest": "new"})
+            differing, skipped = studio_invariants.diff_states(before, after)
+            self.assertEqual([item["key"] for item in differing], ["get_project_settings:"])
+            self.assertEqual(skipped, [])
+
+    def test_concurrent_file_write_cannot_supply_text_for_a_different_captured_sha(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before = self.state(root, {"project.json": '{}'}, {"project_digest": "old"})
+            captured = dict(before.raw)
+            captured["rpc"] = {"get_project_settings": {"project_digest": "new"}}
+            (root / "project.json").write_text('{ "changed": true }', encoding="utf-8")
+            after = studio_invariants.ProjectState(captured)
+            self.assertNotIn("file:project.json", after.texts)
+            differing, skipped = studio_invariants.diff_states(before, after)
+            self.assertEqual([item["key"] for item in differing], ["get_project_settings:"])
+            self.assertEqual(skipped, [])
 
 
 if __name__ == "__main__":

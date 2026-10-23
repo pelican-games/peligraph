@@ -1,7 +1,7 @@
 FetchContent_Declare(
   Catch2
   GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-  GIT_TAG        v3.11.0
+  GIT_TAG        b3fb4b9feafcd8d91c5cb510a4775143fdbef02f # v3.11.0
 )
 FetchContent_MakeAvailable(Catch2)
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
@@ -46,7 +46,16 @@ function(pelican_gpu_test_properties test_name intrinsic_timeout)
   endif()
 endfunction()
 
-set(PELICAN_CATCH_ADD_TESTS_SCRIPT "${_CATCH_DISCOVER_TESTS_SCRIPT}")
+# Catch emits UTF-8, independently of CMake's process ACP. Explicit decoding
+# also covers CMake 3.15-3.30, whose execute_process default is AUTO.
+file(READ "${_CATCH_DISCOVER_TESTS_SCRIPT}" PELICAN_CATCH_ADD_TESTS_UTF8)
+string(REPLACE "execute_process(" "execute_process(ENCODING UTF-8"
+  PELICAN_CATCH_ADD_TESTS_UTF8 "${PELICAN_CATCH_ADD_TESTS_UTF8}")
+set(PELICAN_CATCH_ADD_TESTS_SCRIPT
+  "${CMAKE_CURRENT_BINARY_DIR}/CatchAddTestsUtf8.cmake")
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/catch_discovery_utf8.cmake.in
+  ${PELICAN_CATCH_ADD_TESTS_SCRIPT} @ONLY)
+set(_CATCH_DISCOVER_TESTS_SCRIPT "${PELICAN_CATCH_ADD_TESTS_SCRIPT}")
 set(PELICAN_CATCH_DISCOVERY_ALLOW_EMPTY_SCRIPT
   "${CMAKE_CURRENT_BINARY_DIR}/run_catch_discovery_allow_empty.cmake")
 configure_file(
@@ -386,11 +395,23 @@ if(TARGET pelican_studio_view)
 endif()
 
 if(TARGET pelican_studio_inspector_model)
+  pelican_define_test(devstudio_rendereditticket_test QT QT_OFFSCREEN
+    pelican_studio_view pelican_studio_viewport pelican_studio_inspector_model Qt6::Widgets)
+  target_compile_definitions(pelican_test_devstudio_rendereditticket_test PRIVATE
+    PELICAN_PROCESS_FIXTURE_PATH="$<TARGET_FILE:pelican_test_process_fixture_child>")
+  add_dependencies(pelican_test_devstudio_rendereditticket_test pelican_test_process_fixture_child)
   pelican_define_test(devstudio_graphattachment_test pelican_studio_inspector_model)
   pelican_define_test(devstudio_graphcanvas_test pelican_studio_inspector_model)
   # RU-1: the render edit history over a list of what was sent -- no Qt, no
   # engine; the test answers each request as the engine does.
   pelican_define_test(devstudio_render_history_test pelican_studio_inspector_model)
+  # RT-D: history movement notices and the Graph tab's edit order -- no Qt.
+  pelican_define_test(devstudio_render_history_moved_test pelican_studio_inspector_model)
+  pelican_define_test(devstudio_tab_edit_order_test pelican_studio_inspector_model)
+  # RT-C: applied / restart_required of a synchronous write, and a committed
+  # render edit's post_commit_error, said once per ticket -- no Qt.
+  pelican_define_test(devstudio_appliedstate_test pelican_studio_inspector_model)
+  pelican_define_test(devstudio_rendereditcompletion_test pelican_studio_inspector_model)
   # UX-6b: the frame's GPU time and the plan's size, per generation -- no Qt.
   pelican_define_test(devstudio_plan_perf_test pelican_studio_inspector_model)
   # RL-1s: a render document rewritten on disk is taken in by
@@ -502,7 +523,11 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplangraphics.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodegraphics.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodelayout.cpp
-    ${CMAKE_SOURCE_DIR}/src/devstudio/view/studiotheme.cpp)
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/studiotheme.cpp
+    # PB-1s: WP298's example falls back now; the row above the viewport and
+    # the Problems row say so.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/renderfallbacknotice.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/problemsdock.cpp)
   target_link_libraries(pelican_test_devstudio_engine_failure_test PRIVATE
     pelican_studio_resources)
   target_include_directories(pelican_test_devstudio_engine_failure_test PRIVATE
@@ -544,6 +569,7 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanwidget.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanedit.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenshadertemplate.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/model/raylayouttemplate.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/shaderinputcontract.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/rendertargetform.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/materialpassedit.cpp
@@ -599,11 +625,20 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasfoldgroups.cpp
     # SG-1: a canvas.stack's Layers panel.
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvaslayerspanel.cpp
+    # GL-5a: a folded pass of the rendering section, and the edit it shares with the Pass Editor.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasfoldedpassfields.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/presetpassedit.cpp
+    # GL-5b: New render target... from the Graph is the Frame Plan's form.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/rendertargetform.cpp
+    # GL-5c: and opens on the kind a material pass's colour output takes.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/materialpassedit.cpp
     # AB-1s: Bake analysis, Use in Graph / in a shader, Re-bake.
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasaudioanalysis.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/viewselectfield.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanedit.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenshadertemplate.cpp
+    # GL-5e: the Graph offers the Frame Plan's ways out of a refused shader.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/shaderinputcontract.cpp
     # UX-5b: the Pass fields hold the Pass Editor's Frame data row and its
     # UX-4a parts.
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenpasssettings.cpp
@@ -621,6 +656,7 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   set_target_properties(pelican_test_devstudio_graphcanvas_scene_test PROPERTIES AUTOMOC ON)
   # Several tests compile graphcanvaswidget.cpp, past the section limit (C1128).
   if(MSVC)
+    target_compile_options(pelican_test_devstudio_graphcanvas_scene_test PRIVATE /bigobj)
     set_source_files_properties(${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvaswidget.cpp
       PROPERTIES COMPILE_OPTIONS /bigobj)
   endif()
@@ -656,11 +692,20 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/featureparameterform.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasfoldgroups.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvaslayerspanel.cpp
+    # GL-5a: a folded pass of the rendering section, and the edit it shares with the Pass Editor.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasfoldedpassfields.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/presetpassedit.cpp
+    # GL-5b: New render target... from the Graph is the Frame Plan's form.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/rendertargetform.cpp
+    # GL-5c: and opens on the kind a material pass's colour output takes.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/materialpassedit.cpp
     # AB-1s: Bake analysis, Use in Graph / in a shader, Re-bake.
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasaudioanalysis.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/viewselectfield.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanedit.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenshadertemplate.cpp
+    # GL-5e: the Graph offers the Frame Plan's ways out of a refused shader.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/shaderinputcontract.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenpasssettings.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/passforms/passform.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/passforms/rasterstateform.cpp
@@ -683,12 +728,17 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   # what it got.
   if(TARGET pelican_studio_automation)
     pelican_define_test(devstudio_automation_input_test QT QT_OFFSCREEN
+      pelican_studio_view
       pelican_studio_automation
       pelican_studio_viewport
       Qt6::Core
       Qt6::Test
       Qt6::Widgets
     )
+    target_include_directories(pelican_test_devstudio_automation_input_test PRIVATE ${CMAKE_SOURCE_DIR}/src/devstudio)
+    target_compile_definitions(pelican_test_devstudio_automation_input_test PRIVATE
+      PELICAN_PROCESS_FIXTURE_PATH="$<TARGET_FILE:pelican_test_process_fixture_child>")
+    add_dependencies(pelican_test_devstudio_automation_input_test pelican_test_process_fixture_child)
   endif()
 
   pelican_define_test(devstudio_fullscreen_pass_test QT QT_OFFSCREEN
@@ -727,7 +777,8 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
       pelican_core
       pelican_shaderc)
     target_sources(pelican_test_devstudio_shadertemplate_compile_test PRIVATE
-      ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenshadertemplate.cpp)
+      ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenshadertemplate.cpp
+      ${CMAKE_SOURCE_DIR}/src/devstudio/model/raylayouttemplate.cpp)
     target_link_libraries(pelican_test_devstudio_shadertemplate_compile_test
       PRIVATE pelican_studio_resources)
     target_include_directories(
@@ -762,6 +813,23 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   target_compile_definitions(pelican_test_devstudio_paneltext_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     PELICAN_TEST_FRAME_PLAN_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/devstudio/example_frame_plan.json"
+  )
+
+  # RT-B: the window's production document watcher with real temporary files,
+  # independently of the Frame Plan; the two panels' manual links too.
+  pelican_define_test(devstudio_render_document_watcher_test QT QT_OFFSCREEN
+    pelican_studio_view
+    pelican_studio_viewport
+    pelican_studio_frame_plan
+    pelican_studio_layout
+    pelican_studio_outliner
+    pelican_studio_inspector_model
+    pelican_studio_gizmo_model
+    pelican_project
+    pelican_core
+    Qt6::Core
+    Qt6::Test
+    Qt6::Widgets
   )
 
   # Q-6: the Add component list on real Qt widgets -- a candidate this build
@@ -886,6 +954,99 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   add_dependencies(pelican_test_devstudio_play_controls_test
     pelican_test_process_fixture_child)
 
+  # HW-2s / AV-1s: the Assets dock on its real widgets, with the test
+  # answering for the engine through the dock's own hooks; and the Frame
+  # Plan's shader follower when the engine's own watch is open.
+  pelican_define_test(devstudio_assets_dock_test QT QT_OFFSCREEN
+    pelican_studio_view
+    pelican_studio_viewport
+    pelican_studio_frame_plan
+    pelican_studio_layout
+    pelican_studio_outliner
+    pelican_studio_inspector_model
+    pelican_studio_gizmo_model
+    pelican_project
+    pelican_core
+    Qt6::Core
+    Qt6::Test
+    Qt6::Widgets
+  )
+
+  # MT-1s: the Materials dock and the Inspector's Material rows on their
+  # real widgets, with the test answering for the engine (MT-1, MT-1b)
+  # through their own hooks.
+  pelican_define_test(devstudio_materials_test QT QT_OFFSCREEN
+    pelican_studio_view
+    pelican_studio_viewport
+    pelican_studio_frame_plan
+    pelican_studio_layout
+    pelican_studio_outliner
+    pelican_studio_inspector_model
+    pelican_studio_gizmo_model
+    pelican_project
+    pelican_core
+    Qt6::Core
+    Qt6::Test
+    Qt6::Widgets
+  )
+
+  # MI-1s: an outside model placed in the project and registered (engine
+  # MI-1), with the test answering for the engine through the session's
+  # transport; and the refusals' sentences.
+  pelican_define_test(devstudio_model_import_test QT QT_OFFSCREEN
+    pelican_studio_inspector_model
+    pelican_project
+    pelican_core
+    Qt6::Core
+    Qt6::Test
+  )
+
+  # RTL-2s (a): the Ray layout section's model -- get_ray_layout read, Enable
+  # hit groups' batch, the tables' plans and the Hit group assignments.
+  pelican_define_test(devstudio_raylayout_test QT QT_OFFSCREEN
+    pelican_studio_inspector_model
+    pelican_project
+    pelican_core
+    Qt6::Core
+    Qt6::Test
+  )
+
+  # BS-1s: the row above the viewport while the engine draws its placeholder
+  # (engine BS-1), on the real widget with the test answering through its
+  # hooks.
+  pelican_define_test(devstudio_render_fallback_test QT QT_OFFSCREEN
+    pelican_studio_view
+    pelican_studio_viewport
+    pelican_studio_frame_plan
+    pelican_studio_layout
+    pelican_studio_outliner
+    pelican_studio_inspector_model
+    pelican_studio_gizmo_model
+    pelican_project
+    pelican_core
+    Qt6::Core
+    Qt6::Test
+    Qt6::Widgets
+  )
+
+  # PB-1s: the Problems dock -- the engine's list (engine PB-1) and the
+  # contents check, its count, its filters and where a click on a row goes --
+  # on the real widget with the test answering through its hooks.
+  pelican_define_test(devstudio_problems_test QT QT_OFFSCREEN
+    pelican_studio_view
+    pelican_studio_viewport
+    pelican_studio_frame_plan
+    pelican_studio_layout
+    pelican_studio_outliner
+    pelican_studio_inspector_model
+    pelican_studio_gizmo_model
+    pelican_project
+    pelican_core
+    Qt6::Core
+    Qt6::Test
+    Qt6::Widgets
+  )
+
   # PM-3c: the Outliner's rows for what the running game spawned, and the
   # Inspector's read-only view of one, on the real window over the real RPC
   # transport, with the test answering as an RO-1 engine.
@@ -930,6 +1091,48 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     PELICAN_PROCESS_FIXTURE_PATH="$<TARGET_FILE:pelican_test_process_fixture_child>"
   )
   add_dependencies(pelican_test_devstudio_render_undo_keys_test
+    pelican_test_process_fixture_child)
+
+  # RT-C: actual status bar after committed replies, History and disconnect.
+  pelican_define_test(devstudio_render_post_commit_test QT QT_OFFSCREEN
+    pelican_studio_view
+    pelican_studio_viewport
+    pelican_studio_frame_plan
+    pelican_studio_layout
+    pelican_studio_outliner
+    pelican_studio_inspector_model
+    pelican_studio_gizmo_model
+    pelican_project
+    pelican_core
+    Qt6::Core
+    Qt6::Test
+    Qt6::Widgets
+  )
+  target_compile_definitions(pelican_test_devstudio_render_post_commit_test PRIVATE
+    PELICAN_PROCESS_FIXTURE_PATH="$<TARGET_FILE:pelican_test_process_fixture_child>"
+  )
+  add_dependencies(pelican_test_devstudio_render_post_commit_test
+    pelican_test_process_fixture_child)
+
+  # RT-D: production History injection and fold/verify capability wrappers.
+  pelican_define_test(devstudio_tab_render_history_test QT QT_OFFSCREEN
+    pelican_studio_view
+    pelican_studio_viewport
+    pelican_studio_frame_plan
+    pelican_studio_layout
+    pelican_studio_outliner
+    pelican_studio_inspector_model
+    pelican_studio_gizmo_model
+    pelican_project
+    pelican_core
+    Qt6::Core
+    Qt6::Test
+    Qt6::Widgets
+  )
+  target_compile_definitions(pelican_test_devstudio_tab_render_history_test PRIVATE
+    PELICAN_PROCESS_FIXTURE_PATH="$<TARGET_FILE:pelican_test_process_fixture_child>"
+  )
+  add_dependencies(pelican_test_devstudio_tab_render_history_test
     pelican_test_process_fixture_child)
 
   # F-2: File > New Project... -- the dialog writes the picked template
@@ -1126,6 +1329,17 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
   pelican_configure_game_logic_target(pelican_wp381_v2_constructor_control
     HOST_TARGET pelican_test_game_logic_abi_test
     ROLE v2-constructor-control NO_INVENTORY)
+
+  # Exercise the WP162 reload callbacks on the CPU test host as well.
+  foreach(rx1_variant IN ITEMS 1 7)
+    set(rx1_fixture pelican_rx1_reload_fixture_${rx1_variant})
+    add_library(${rx1_fixture} SHARED fixtures/behavior_reload_dll/behavior.cpp)
+    target_compile_definitions(${rx1_fixture} PRIVATE WP162_VARIANT=${rx1_variant})
+    pelican_configure_game_logic_target(${rx1_fixture}
+      HOST_TARGET pelican_test_game_logic_abi_test ROLE reload-rollback NO_INVENTORY)
+    target_compile_definitions(pelican_test_game_logic_abi_test PRIVATE
+      PELICAN_RX1_RELOAD_FIXTURE_${rx1_variant}="$<TARGET_FILE:${rx1_fixture}>")
+  endforeach()
 
   function(pelican_add_wp381_registration_fixture target_name order role)
     add_library(${target_name} SHARED
@@ -1350,6 +1564,9 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
     pelican_wp381_epoch_v999_import_stub)
   target_link_libraries(pelican_wp90_fixture_bad_abi PRIVATE
     "${wp381_epoch_v999_import_library}")
+
+  add_library(pelican_rx1_throw_fixture SHARED fixtures/rx1_throw/behavior.cpp)
+  pelican_configure_game_logic_target(pelican_rx1_throw_fixture)
 
   add_library(pelican_wp155_behavior_fixture SHARED
     fixtures/behavior_game_dll/behavior.cpp
@@ -1669,6 +1886,7 @@ pelican_define_test(scene_transaction_contract_test GROUP core_foundation pelica
 target_sources(pelican_test_scene_transaction_contract_test PRIVATE
     sceneloadfault_testing.cpp)
 pelican_define_test(enginetime_test GROUP core_foundation pelican_core)
+pelican_define_test(rx1_userdata_test GROUP core_foundation pelican_core glm)
 pelican_define_test(skeletalanimation_test GROUP core_foundation pelican_core glm)
 pelican_define_test(vrmsemantic_test GROUP core_foundation pelican_core tinygltf)
 target_compile_definitions(pelican_test_vrmsemantic_test PRIVATE
@@ -2097,10 +2315,17 @@ pelican_define_test(gltf_scene_extract_test GPU pelican_core VulkanMemoryAllocat
 target_sources(pelican_test_gltf_scene_extract_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devcli/gltfsceneextract.cpp
 )
+pelican_define_test(render_coverage_test)
+pelican_define_test(combination_fixture_test pelican_project glm)
+target_compile_definitions(pelican_test_combination_fixture_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
 pelican_define_test(headless_render_test GROUP headless_gpu GPU pelican_core
                     pelican_test_raytracing_oracle
                     VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_headless_render_test PRIVATE
+    PELICAN_CP1_PLAYER="$<TARGET_FILE:pelican_player>"
+    PELICAN_CP1_CMAKE="${CMAKE_COMMAND}"
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
@@ -2111,7 +2336,9 @@ if(MSVC)
     target_compile_options(pelican_test_headless_render_test PRIVATE /bigobj)
 endif()
 target_sources(pelican_test_headless_render_test PRIVATE
+    cp1_compute_descriptor_gpu.cpp
     headless_native_scope_test.cpp
+    headless_combination_test.cpp
     headless_material_draw_loop_test.cpp
 )
 if(PELICAN_RUNTIME_SHADER_COMPILER)
@@ -2182,6 +2409,32 @@ target_compile_definitions(pelican_test_engine_primitives_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 if(COMMAND pelican_copy_shaderc_runtime)
     pelican_copy_test_shaderc_runtime(pelican_test_engine_primitives_test)
+endif()
+# MT-1: material documents read and written over RPC; a Blank box recoloured
+# live (create_material -> bind_material -> edit_material).
+pelican_define_test(materialdocumentrpc_test MIXED_GPU RUNTIME_SHADER pelican_core pelican_project VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm)
+target_include_directories(pelican_test_materialdocumentrpc_test PRIVATE ${stb_SOURCE_DIR})
+target_link_libraries(pelican_test_materialdocumentrpc_test PRIVATE pelican_shaderc)
+if(COMMAND pelican_copy_shaderc_runtime)
+    pelican_copy_test_shaderc_runtime(pelican_test_materialdocumentrpc_test)
+endif()
+# MI-1: a glb in a Blank project registered over RPC (register_model), drawn
+# live and by the next start, and taken back (unregister_model).
+pelican_define_test(modelregistrationrpc_test GPU RUNTIME_SHADER pelican_core pelican_project VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm)
+target_include_directories(pelican_test_modelregistrationrpc_test PRIVATE ${stb_SOURCE_DIR})
+target_compile_definitions(pelican_test_modelregistrationrpc_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_link_libraries(pelican_test_modelregistrationrpc_test PRIVATE pelican_shaderc)
+if(COMMAND pelican_copy_shaderc_runtime)
+    pelican_copy_test_shaderc_runtime(pelican_test_modelregistrationrpc_test)
+endif()
+# MT-2: a scene object's own material over RPC; two Blank boxes, one recoloured
+# live (set_object_material), undone, saved and drawn by the next start.
+pelican_define_test(mt2_object_material_test GPU RUNTIME_SHADER pelican_core pelican_project VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm)
+target_include_directories(pelican_test_mt2_object_material_test PRIVATE ${stb_SOURCE_DIR})
+target_link_libraries(pelican_test_mt2_object_material_test PRIVATE pelican_shaderc)
+if(COMMAND pelican_copy_shaderc_runtime)
+    pelican_copy_test_shaderc_runtime(pelican_test_mt2_object_material_test)
 endif()
 # VI-1: variadic pass inputs, shader.defines and engine://passthrough. The
 # layout / define cases are CPU-only; the rest edit present over RPC.
@@ -2744,6 +2997,7 @@ pelican_define_test(shader_library_test GROUP shader_tools RUNTIME_SHADER pelica
 target_compile_definitions(pelican_test_shader_library_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    PELICAN_TEST_BUILT_RESOURCES="${CMAKE_BINARY_DIR}/src/core/resources"
 )
 if(PELICAN_RUNTIME_SHADER_COMPILER)
     target_link_libraries(pelican_test_shader_library_test PRIVATE pelican_shaderc)
@@ -2785,8 +3039,10 @@ if(TARGET pelican_studio_viewport)
     pelican_studio_viewport Qt6::Core)
   # Q-9: `wait_engine` is asked of a real (fixture) engine across a restart,
   # the way the automation pipe asks it.
+  # DL-1: automation drives the Graph canvas (dragPaced, trace_dump), so it
+  # needs the view library's NodeCanvasView beside it.
   pelican_define_test(devstudio_viewport_test QT pelican_studio_viewport
-    pelican_studio_automation Qt6::Core Qt6::Test Qt6::Widgets)
+    pelican_studio_view pelican_studio_automation Qt6::Core Qt6::Test Qt6::Widgets)
   target_compile_definitions(pelican_test_devstudio_viewport_test PRIVATE
     PELICAN_PROCESS_FIXTURE_PATH="$<TARGET_FILE:pelican_test_process_fixture_child>"
     PELICAN_ENGINE_OWNER_FIXTURE_PATH="$<TARGET_FILE:pelican_test_devstudio_engine_owner_fixture>"
@@ -3104,6 +3360,18 @@ add_test(
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_offline_start_time_headless.cmake
 )
 pelican_gpu_test_properties(offline_start_time_headless_player 300)
+# Parse-only acceptance reaches a later, named CLI error after an accepted
+# boundary. It never initializes Vulkan or waits through warm-up.
+add_test(
+    NAME offline_start_time_limits_player
+    COMMAND ${CMAKE_COMMAND}
+        -DPLAYER=$<TARGET_FILE:pelican_player>
+        -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/offline_start_time_limits
+        -DLIMITS_ONLY=ON
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_offline_start_time_headless.cmake)
+set_tests_properties(offline_start_time_limits_player PROPERTIES
+    TIMEOUT 60 LABELS "cpu;contract")
 
 # PM-1b: what --start-state edit cannot be combined with, refused by name
 # while the command line is read, so no run reaches the GPU.
@@ -3178,7 +3446,7 @@ endif()
 add_executable(pelican_test_project_library_boundary project_library_boundary.cpp)
 set_target_properties(pelican_test_project_library_boundary PROPERTIES
     CXX_STANDARD 20
-    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
 )
 target_compile_definitions(pelican_test_project_library_boundary PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
@@ -3198,6 +3466,8 @@ target_compile_definitions(pelican_test_materiallowering_test PRIVATE
 )
 
 pelican_define_test(materialbinding_test GROUP render_planning_core pelican_core)
+pelican_define_test(materialdrawlooptable_test GROUP render_planning_core pelican_core
+    VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 
 add_test(
     NAME devcli_dump_lowered_material
@@ -3575,6 +3845,12 @@ if(NOT SKIP_DEVSTUDIO AND TARGET pelican_studio)
                 set(pelican_studio_scenario_fixture
                     "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/studio_${pelican_studio_scenario_name}")
             endif()
+            # DL-1 measures copies of the shipped projects, not the tiny GUI fixture.
+            if(pelican_studio_scenario_name STREQUAL "dl1_drag_example")
+                set(pelican_studio_scenario_fixture "${CMAKE_SOURCE_DIR}/projects/example")
+            elseif(pelican_studio_scenario_name STREQUAL "dl1_drag_posegraph")
+                set(pelican_studio_scenario_fixture "${CMAKE_SOURCE_DIR}/projects/posegraph_demo")
+            endif()
             set(pelican_studio_scenario_game_logic)
             if(TARGET pelican_studio_${pelican_studio_scenario_name}_game_logic)
                 set(pelican_studio_scenario_game_logic
@@ -3761,6 +4037,22 @@ add_test(
 )
 pelican_gpu_test_properties(coordinate_mirror_headless ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
 
+# MV-1: a morph model loaded after a large static model starts and deforms;
+# the morph metadata covers the whole shared vertex buffer.
+add_executable(pelican_test_morph_capacity_check morph_capacity_check.cpp)
+set_target_properties(pelican_test_morph_capacity_check PROPERTIES CXX_STANDARD 20)
+target_link_libraries(pelican_test_morph_capacity_check PRIVATE stb nlohmann_json)
+add_test(
+    NAME morph_capacity_headless
+    COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
+        -DPLAYER=$<TARGET_FILE:pelican_player>
+        -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+        -DMORPH_CHECK=$<TARGET_FILE:pelican_test_morph_capacity_check>
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/morph_capacity
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_morph_capacity_headless.cmake
+)
+pelican_gpu_test_properties(morph_capacity_headless ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
+
 set(PELICAN_TEST_PROJECTS_DIR "" CACHE PATH
     "Project corpus scanned by project_catalog_headless_smoke; empty skips the test")
 
@@ -3841,12 +4133,44 @@ pelican_define_test(effecttransaction_test GROUP core_diagnostics pelican_core)
 endif()
 pelican_define_test(assetsmanifest_test pelican_project)
 pelican_define_test(assetsverification_test pelican_core)
+if(PELICAN_WITH_RPC AND WIN32)
+    # PJ-1: edit_project_settings through a headless --rpc player.
+    pelican_define_test(projectsettingsrpc_test GPU pelican_project)
+    target_compile_definitions(pelican_test_projectsettingsrpc_test PRIVATE
+        PELICAN_PJ1_PLAYER="$<TARGET_FILE:pelican_player>"
+        PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    add_dependencies(pelican_test_projectsettingsrpc_test pelican_player)
+    # BS-1: a refused rendering configuration under --render-fallback, through
+    # a headless --rpc player.
+    pelican_define_test(bs1_render_fallback_test GPU pelican_project stb)
+    target_include_directories(pelican_test_bs1_render_fallback_test PRIVATE ${stb_SOURCE_DIR})
+    target_compile_definitions(pelican_test_bs1_render_fallback_test PRIVATE
+        PELICAN_BS1_PLAYER="$<TARGET_FILE:pelican_player>"
+        PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    add_dependencies(pelican_test_bs1_render_fallback_test pelican_player)
+    # PB-1: the engine's problem list (get_status.problems, get_problems),
+    # through a headless --rpc --render-fallback player.
+    pelican_define_test(pb1_problems_test GPU pelican_project glm)
+    target_compile_definitions(pelican_test_pb1_problems_test PRIVATE
+        PELICAN_PB1_PLAYER="$<TARGET_FILE:pelican_player>"
+        PELICAN_RX1_FIXTURE="$<TARGET_FILE:pelican_rx1_throw_fixture>")
+    add_dependencies(pelican_test_pb1_problems_test pelican_player pelican_rx1_throw_fixture)
+    # RTL-1b: a reload that adds a ray group layout (restart_required after
+    # every other check) and a layout project refused at start (the fallback),
+    # through a headless --rpc --render-fallback player.
+    pelican_define_test(rtl1b_ray_layout_restart_test GPU pelican_project stb)
+    target_include_directories(pelican_test_rtl1b_ray_layout_restart_test PRIVATE ${stb_SOURCE_DIR})
+    target_compile_definitions(pelican_test_rtl1b_ray_layout_restart_test PRIVATE
+        PELICAN_RTL1B_PLAYER="$<TARGET_FILE:pelican_player>")
+    add_dependencies(pelican_test_rtl1b_ray_layout_restart_test pelican_player)
+endif()
 
 add_test(
     NAME devcli_assets_command
     COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
         -DCLI=$<TARGET_FILE:pelican_cli>
         -DPLAYER=$<TARGET_FILE:pelican_player>
+        -DHOT_RELOAD=$<BOOL:${PELICAN_WITH_HOT_RELOAD}>
         -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/devcli_assets
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_assets.cmake
 )
@@ -4012,6 +4336,23 @@ if(PELICAN_PYTHON_TESTS_AVAILABLE)
     set_property(TEST pelican_public_api_inventory APPEND PROPERTY
         LABELS "WP380b;cpu;contract")
 
+    pelican_define_python_test(
+        gpu_lease_log_cleanup
+        ${CMAKE_CURRENT_SOURCE_DIR}/ci/test_gpu_lease_log_cleanup.py
+        --launcher $<TARGET_FILE:pelican_gpu_lease_run>
+        --work-dir ${CMAKE_BINARY_DIR}/test_artifacts/gpu_lease_log_cleanup)
+    set_tests_properties(gpu_lease_log_cleanup PROPERTIES TIMEOUT 60 LABELS "python;cpu;contract")
+
+    # F-2: every FetchContent dependency has a row in the third-party notices
+    # generator, so THIRD_PARTY_NOTICES.md can be regenerated when one is added.
+    pelican_define_python_test(
+        third_party_notices_declarations
+        ${CMAKE_SOURCE_DIR}/tools/third_party_notices.py
+        --repo-root ${CMAKE_SOURCE_DIR}
+        --check-declarations)
+    set_property(TEST third_party_notices_declarations APPEND PROPERTY
+        LABELS "cpu;contract")
+
     # WP175 boundary contracts are source/fixture checks and require no GPU.
     foreach(contract_gate IN ITEMS openpbr projection engine-mvp)
         pelican_define_python_test(
@@ -4142,7 +4483,9 @@ if(MSVC)
   # stays green even if pelican_studio stops calling it. This one reads what
   # the real Debug studio build left behind. The archive module and its
   # dump-visible PDB name are Debug-only; other configurations do not archive.
-  if(TARGET pelican_studio)
+  # A single-config tree that is not Debug never archives, so the test is not
+  # registered there (ctest without -C would run it and find nothing).
+  if(TARGET pelican_studio AND (CMAKE_CONFIGURATION_TYPES OR CMAKE_BUILD_TYPE STREQUAL "Debug"))
     add_test(
       NAME crash_symbol_production_wiring
       CONFIGURATIONS Debug
@@ -4154,6 +4497,43 @@ if(MSVC)
     set_tests_properties(crash_symbol_production_wiring
                          PROPERTIES TIMEOUT 60)
   endif()
+endif()
+
+# DS-1 uses the production main and link setup with an empty project game DLL.
+if(WIN32 AND PELICAN_WITH_ANIMATION)
+    pelican_configure_player_target(pelican_test_ds1_path_player)
+    target_compile_definitions(pelican_test_ds1_path_player PRIVATE
+        PELICAN_GAME_LOGIC_DLL_NAME="pelican_ds1_game_logic${CMAKE_SHARED_LIBRARY_SUFFIX}")
+    add_library(pelican_ds1_game_logic SHARED)
+    pelican_configure_game_logic_target(pelican_ds1_game_logic
+        HOST_TARGET pelican_test_ds1_path_player)
+    add_test(NAME player_arguments_ds1_path COMMAND $<TARGET_FILE:pelican_gpu_lease_run> --
+        ${CMAKE_COMMAND}
+        -DPLAYER=$<TARGET_FILE:pelican_test_ds1_path_player>
+        -DGAME_DLL=$<TARGET_FILE:pelican_ds1_game_logic>
+        -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/animgraph_demo
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/ds1_path
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_ds1_path_player.cmake)
+    pelican_gpu_test_properties(player_arguments_ds1_path 90)
+endif()
+
+# JP-1: use the same executable manifest as production for the UTF-8 contract.
+if(PELICAN_WITH_RPC)
+pelican_define_test(jp1_utf8_test pelican_core)
+if(PELICAN_PYTHON_TESTS_AVAILABLE)
+  pelican_define_gpu_python_test(jp1_headless_utf8
+    ${CMAKE_CURRENT_SOURCE_DIR}/jp1_headless_utf8.py
+    --player $<TARGET_FILE:pelican_player>
+    --cli $<TARGET_FILE:pelican_cli>
+    --model ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/studio_material_pass_authoring/checker_box.glb)
+endif()
+endif()
+if(PELICAN_PYTHON_TESTS_AVAILABLE)
+  pelican_define_python_test(jp1_cli_assetsmanifest
+    ${CMAKE_CURRENT_SOURCE_DIR}/jp1_headless_utf8.py
+    --player $<TARGET_FILE:pelican_player> --cli $<TARGET_FILE:pelican_cli>
+    --model ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/studio_material_pass_authoring/checker_box.glb
+    --cli-only)
 endif()
 
 # WP385 decision 12: one generated timeout policy.  The CTest TIMEOUT of every
@@ -4190,6 +4570,28 @@ if(WIN32)
     SKIP_REGULAR_EXPRESSION "CRT_PROBE_SKIPPED")
 endif()
 
+# DS-1 distribution startup contracts do not initialize a GPU.
+if(WIN32)
+    pelican_define_test(player_diagnostics_test GROUP ds1)
+    add_test(NAME player_arguments_ds1f_startup
+        COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+            -File ${CMAKE_CURRENT_SOURCE_DIR}/run_ds1f_player_startup.ps1
+            -Player $<TARGET_FILE:pelican_player>
+            -Cli $<TARGET_FILE:pelican_cli>
+            -OutDir ${CMAKE_BINARY_DIR}/test_artifacts/ds1f_startup
+            -ExpectedGui $<BOOL:${PELICAN_PLAYER_GUI_SUBSYSTEM}>)
+    set_tests_properties(player_arguments_ds1f_startup PROPERTIES TIMEOUT 45)
+endif()
+add_test(NAME build_units_ds1_git_identity COMMAND ${CMAKE_COMMAND}
+    -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+    -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/ds1_identity
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_ds1_git_identity.cmake)
+add_test(NAME player_arguments_ds1_fatal_errors COMMAND ${CMAKE_COMMAND}
+    -DPLAYER=$<TARGET_FILE:pelican_player>
+    -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/ds1_errors
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_ds1_player_errors.cmake)
+set_tests_properties(build_units_ds1_git_identity player_arguments_ds1_fatal_errors
+    PROPERTIES TIMEOUT 90)
 # Keep this last: it links the CRT routing into every executable defined above.
 include(${CMAKE_CURRENT_SOURCE_DIR}/crt_report_to_stderr.cmake)
 pelican_route_test_crt_reports_to_stderr()

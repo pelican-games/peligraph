@@ -1,0 +1,72 @@
+{
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {},
+  "nodes": [
+    {
+      "id": "trace__color",
+      "op": "render.image",
+      "parameters": {
+        "type": {
+          "semantic": "pelican.render.color_signal@1",
+          "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}
+        },
+        "format": "R16G16B16A16_SFLOAT",
+        "extent_scale": 1.0,
+        "usage": ["STORAGE", "SAMPLED"]
+      },
+      "outputs": ["resource"]
+    },
+    {
+      "id": "trace",
+      "op": "render.compute",
+      "parameters": {
+        "ray_tracing": {
+          "raygen": "project://shaders/start",
+          "traced_ray_types": ["primary"],
+          "misses": {
+            "sky": "project://shaders/start",
+            "shadow": "project://shaders/start"
+          },
+          "hit_shaders": {
+            "primary": {
+              "mesh": {"closesthit": "project://shaders/start"}
+            }
+          }
+        },
+        "dispatch": {"rays_from": {"port": "color"}},
+        "ports": {
+          "color": {
+            "kind": "image",
+            "type": {
+              "semantic": "pelican.render.color_signal@1",
+              "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}
+            },
+            "access": "write",
+            "binding": "storage"
+          }
+        }
+      },
+      "inputs": {"color": {"node": "trace__color", "port": "resource"}},
+      "outputs": ["color"]
+    }
+  ],
+  "outputs": {},
+  "rendering": {
+    "ray_group_layout": "project://passes/ray_layout.json",
+    "rendering_passes": [
+      {
+        "name": "main_render",
+        "passes": [
+          {
+            "name": "present",
+            "type": "fullscreen",
+            "input": ["trace__color"],
+            "output": {"color": ["display"], "depth": null},
+            "shader": {"vertex": "engine://fullscreen", "fragment": "engine://passthrough"}
+          }
+        ]
+      }
+    ]
+  }
+}

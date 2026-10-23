@@ -99,6 +99,8 @@ enum class EditorEditErrorCode : std::uint8_t {
     // A component whose module this build left out. The wire code is the
     // module's own `<requirement>.module_unavailable@1`, not this enum's name.
     module_unavailable,
+    animation_component_invalid,
+    user_data_invalid,
 };
 
 std::string_view editorEditErrorCodeName(EditorEditErrorCode code) noexcept;

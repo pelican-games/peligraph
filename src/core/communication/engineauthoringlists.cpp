@@ -151,6 +151,9 @@ struct ShaderStageForms {
     ShaderStage stage = ShaderStage::vertex;
     std::optional<ShaderFormLocation> source;
     std::optional<ShaderFormLocation> spirv;
+    // RTL-1b: generated includes a project source compiles with (the ray
+    // group layout header).
+    std::vector<std::pair<std::string, std::string>> virtual_includes;
 };
 
 std::vector<std::uint32_t> spirvWords(std::string_view bytes) {
@@ -175,9 +178,12 @@ std::string readForm(const ShaderFormLocation &form) {
 // A source form compiled as the shader library compiles it: a built-in
 // source by its engine:// name, a file through compileFile (its directory
 // and the engine's includes resolve its #include, as for a pass).
-ShaderCompileResult compileForm(const ShaderFormLocation &form, ShaderCompiler &compiler) {
+ShaderCompileResult compileForm(const ShaderFormLocation &form, ShaderCompiler &compiler,
+                                const std::vector<std::pair<std::string, std::string>> &virtual_includes = {}) {
     if (form.file) {
-        auto compiled = compiler.compileFile(*form.file);
+        ShaderCompileOptions options;
+        options.virtual_includes = virtual_includes;
+        auto compiled = compiler.compileFile(*form.file, options);
         // The log names the file by its reference, not the machine's path.
         std::error_code ec;
         const auto physical = std::filesystem::weakly_canonical(*form.file, ec).string();
@@ -200,7 +206,7 @@ std::optional<ShaderReflection> reflectShaderForms(const ShaderStageForms &forms
                                                    std::string &from, std::string &error) {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     if (forms.source) {
-        const auto compiled = compileForm(*forms.source, compiler);
+        const auto compiled = compileForm(*forms.source, compiler, forms.virtual_includes);
         if (compiled.ok) {
             from = "source";
             return reflect(compiled.spirv);
@@ -606,7 +612,8 @@ std::size_t engineShadersRequestCount() {
     return engine_shaders_requests.load(std::memory_order_relaxed);
 }
 
-OrderedJson shaderInterfaceStatusJson(std::string_view reference, bool refresh, const ShaderReferenceResolver &resolve) {
+OrderedJson shaderInterfaceStatusJson(std::string_view reference, bool refresh, const ShaderReferenceResolver &resolve,
+                                      std::vector<std::pair<std::string, std::string>> virtual_includes) {
     // An engine stem is get_engine_shaders' own entries (one reflection per
     // process; refresh does not apply).
     if (reference.starts_with("engine://")) {
@@ -625,8 +632,11 @@ OrderedJson shaderInterfaceStatusJson(std::string_view reference, bool refresh, 
     // candidates and check; the hash of their bytes is the answer's key.
     std::vector<ShaderStageForms> stages;
     std::string hashed;
+    for (const auto &[name, text] : virtual_includes)
+        hashed += name + "\n" + picosha2::hash256_hex_string(text.begin(), text.end()) + "\n";
     for (const auto stage : shaderStages) {
-        ShaderStageForms forms{.reference = std::string{reference}, .stage = stage};
+        ShaderStageForms forms{.reference = std::string{reference}, .stage = stage,
+                               .virtual_includes = virtual_includes};
         for (const bool spirv : {false, true}) {
             const auto candidate = shaderStemCandidateReference(reference, stage, spirv);
             std::optional<ResolvedRef> resolved;

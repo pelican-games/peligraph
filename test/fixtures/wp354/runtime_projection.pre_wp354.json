@@ -518,6 +518,7 @@
     "resident_blas_keys": [],
     "blas_update_count": 0,
     "named_tlas_instance_counts": {},
+    "named_tlas_blas": {},
     "tlas_build_count": 0,
     "tlas_instance_count": 0
   },

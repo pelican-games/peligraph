@@ -25,8 +25,9 @@ file(WRITE "${OUT_DIR}/project/project.json" [=[
   }
 }
 ]=])
-file(WRITE "${OUT_DIR}/project/assets/asset_data.json"
-    "{\"schema\":\"pelican.asset_data\",\"version\":2,\"models\":[]}\n")
+string(ASCII 239 187 191 sv1_bom)
+file(CONFIGURE OUTPUT "${OUT_DIR}/project/assets/asset_data.json"
+    CONTENT "${sv1_bom}{\n  \"version\":2,\n  \"schema\":\"pelican.asset_data\",\n  \"models\":[]\n}\n" NEWLINE_STYLE CRLF)
 file(COPY "${FIXTURE_DIR}/valid/" DESTINATION "${OUT_DIR}/project/imports/houdini/delivery_a")
 
 execute_process(
@@ -50,6 +51,22 @@ if(NOT second_result EQUAL 0)
 endif()
 
 file(READ "${OUT_DIR}/project/assets/asset_data.json" asset_data)
+
+file(READ "${OUT_DIR}/project/assets/asset_data.json" sv1_hex HEX)
+if(NOT sv1_hex MATCHES "^efbbbf7b0d0a" OR NOT sv1_hex MATCHES "0d0a7d0d0a$")
+    message(FATAL_ERROR "SV1 import must retain BOM, CRLF and final newline: ${sv1_hex}")
+endif()
+string(REPLACE "0d0a" "" sv1_without_crlf "${sv1_hex}")
+if(sv1_without_crlf MATCHES "0a")
+    message(FATAL_ERROR "SV1 import emitted an LF without CR")
+endif()
+string(FIND "${asset_data}" "\"version\"" sv1_version)
+string(FIND "${asset_data}" "\"schema\"" sv1_schema)
+string(FIND "${asset_data}" "\"models\"" sv1_models)
+if(NOT sv1_version LESS sv1_schema OR NOT sv1_schema LESS sv1_models)
+    message(FATAL_ERROR "SV1 import changed original key order")
+endif()
+
 string(REGEX MATCHALL "\"name\"[ \r\n\t]*:[ \r\n\t]*\"debris\"" debris_name_matches "${asset_data}")
 list(LENGTH debris_name_matches debris_name_count)
 if(NOT debris_name_count EQUAL 1)

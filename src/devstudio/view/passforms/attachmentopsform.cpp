@@ -195,6 +195,22 @@ void AttachmentOpsForm::setColorTargets(const std::vector<std::string> &targets)
     rebuild();
 }
 
+void AttachmentOpsForm::retargetColor(std::size_t index, const std::string &target) {
+    if (index >= targets_.size() || target.empty() || targets_[index] == target) return;
+    const auto before = targets_[index];
+    auto &entry = entries_[index];
+    if (entry.is_object()) entry["target"] = target;
+    else entry = target;
+    targets_[index] = target;
+    if (const auto clear = clear_colors_.find(before); clear != clear_colors_.end()) {
+        auto value = clear->second;
+        clear_colors_.erase(clear);
+        clear_colors_[target] = std::move(value);
+    }
+    const Loading loading{*this};
+    rebuild();
+}
+
 void AttachmentOpsForm::setDepthTarget(const std::string &target) {
     depth_target_ = target;
     showDepth();

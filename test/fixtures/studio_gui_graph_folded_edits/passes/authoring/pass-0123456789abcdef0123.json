@@ -1,0 +1,32 @@
+{
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "authored_pass_0123456789abcdef0123",
+  "runtime_shader_compiler": "optional",
+  "pelican_editor_managed": {
+    "schema": "pelican.authored_render_fragment",
+    "version": 1,
+    "owner": "pelican.devstudio",
+    "id": "0123456789abcdef0123"
+  },
+  "passes": [
+    {
+      "insert": "before:present",
+      "pass": {
+        "name": "tint",
+        "type": "fullscreen",
+        "input": [],
+        "output": {
+          "color": [
+            "tint_color"
+          ],
+          "depth": null
+        },
+        "shader": {
+          "vertex": "engine://fullscreen",
+          "fragment": "engine://passthrough"
+        }
+      }
+    }
+  ]
+}

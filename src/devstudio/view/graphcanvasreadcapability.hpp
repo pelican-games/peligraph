@@ -6,6 +6,7 @@
 
 class QByteArray;
 class QJsonObject;
+class QJsonValue;
 class QObject;
 class QString;
 
@@ -27,7 +28,9 @@ class EmbeddedViewport;
 // the document edit: the canvas cannot attach an instance or fork a preset
 // from here. GL-1e adds one pass edit, and only one: edit_preset_pass on a
 // pass of the rendering section, changing its `input` the way the Frame
-// Plan's socket drop does. set_time and render_frame are the scrub, and they
+// Plan's socket drop does (GL-5a: and the rest of its declaration from the
+// detail column, with the params the Pass Editor's Save builds, and its
+// graph-wide planning decisions). set_time and render_frame are the scrub, and they
 // are named separately rather than folded into one "scrub" call so that what
 // leaves the Studio when a person drags the Timeline is two RPCs a reader can
 // count -- O-1's reading of going to a time, and nothing else.
@@ -69,13 +72,12 @@ struct GraphCanvasReadCapability {
     std::function<qint64(double time, QString *error)> requestSetTime;
     std::function<qint64(QString *error)> requestRenderFrame;
     // One gesture, one op list, one CAS. `ops_json` is the serialised array the
-    // model built; the digest is the document it was built against. GL-1d:
-    // `material_route_default` goes beside the ops when it is not empty (a
-    // Forward opaque material pass added where no pass draws deferred
-    // materials).
+    // model built; the digest is the document it was built against. UD-3:
+    // the route default preserves undefined (not requested), null (remove),
+    // and its authored string, so Undo can restore absence in the same call.
     std::function<qint64(const QString &base_source_digest,
                          const QByteArray &ops_json,
-                         const QString &material_route_default, QString *error)>
+                         const QJsonValue &material_route_default, QString *error)>
         requestEditGraphDocument;
     std::function<qint64(const QString &ticket, QString *error)>
         requestEditResult;
@@ -85,6 +87,10 @@ struct GraphCanvasReadCapability {
     // the shared builder made), answered with a ticket get_edit_result polls.
     // Either may be left empty: the pass then takes no lines here.
     std::function<qint64(QString *error)> requestRenderAuthoringContext;
+    // RTL-2s-c: get_ray_layout, the ray group layout as the Ray layout
+    // section reads it, for a ray tracing task's fields and templates. Left
+    // empty, a task shows the form without a layout.
+    std::function<qint64(QString *error)> requestRayLayout;
     std::function<qint64(const QJsonObject &params, QString *error)>
         requestEditPresetPass;
     // GL-3a: the root's fold groups. get_fold_groups reads their state, the
@@ -94,6 +100,17 @@ struct GraphCanvasReadCapability {
     std::function<qint64(QString *error)> requestFoldGroups;
     std::function<qint64(const QString &reference, QString *error)> requestRootDocument;
     std::function<qint64(const QJsonObject &params, QString *error)> requestFoldNodes;
+    // GL-5a, decision 5: edit_target_planning (EL-2), the Serial / Isolate /
+    // No alias of a rendering-section pass picked on the canvas -- the params
+    // graphTargetPlanningParams builds, as the Frame Plan's right-click sends
+    // them; a ticket get_edit_result polls. Left empty: the detail column
+    // offers no decisions.
+    std::function<qint64(const QJsonObject &params, QString *error)> requestEditTargetPlanning;
+    // GL-5b, decision 2: edit_render_targets, the Frame Plan's New render
+    // target... sent from the Graph (framePlanRenderTargetAddRequest's params);
+    // a ticket get_edit_result polls. Left empty: the Graph offers no New
+    // render target.
+    std::function<qint64(const QJsonObject &params, QString *error)> requestEditRenderTargets;
     // GL-4a: verify_fold, a ticket get_edit_result polls (running for as
     // long as the engine's child runs draw).
     std::function<qint64(const QJsonObject &params, QString *error)> requestVerifyFold;
