@@ -2252,7 +2252,7 @@
     "docs/manual/15_studio.md|../../src/devstudio/view/graphcanvaswidget.cpp|action を作る所": "QObject::tr(\"Pin this candidate\"), \"pelican.graphCanvas.layers.pin\",",
     "docs/manual/15_studio.md|../../src/devstudio/view/graphcanvaswidget.cpp|button を作る所": "fix_scalar_target = new QPushButton(&view);",
     "docs/manual/15_studio.md|../../src/devstudio/view/graphcanvaswidget.cpp|canvas のメニューに足す所": "// Q-19, decision 4: over the breadcrumb, the definition on screen; over a",
-    "docs/manual/15_studio.md|../../src/devstudio/view/graphcanvaswidget.cpp|canvas を止める所": "canvas->setEnabled(!model.busy());",
+    "docs/manual/15_studio.md|../../src/devstudio/view/graphcanvaswidget.cpp|canvas を止める所": "canvas->setEnabled(!model.busy() || scene->layerEditInFlight());",
     "docs/manual/15_studio.md|../../src/devstudio/view/graphcanvaswidget.cpp|commit を待つ所": "void followTargetDelete() {",
     "docs/manual/15_studio.md|../../src/devstudio/view/graphcanvaswidget.cpp|compute の shader の書き込みをまとめる所": "QObject::connect(compute_watch_settle, &QTimer::timeout, &view, [this] {",
     "docs/manual/15_studio.md|../../src/devstudio/view/graphcanvaswidget.cpp|definition に入った後で palette を開き直す所": "// UX-12e, decision 5: the palette again, inside, on the op it was for.",
