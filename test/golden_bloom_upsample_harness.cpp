@@ -1739,7 +1739,7 @@ void GoldenHarness::runLp1cBloomDecomposition() {
             INFO(one_plan.at("nodes").at(i).dump() << " / " << graph_plan.at("nodes").at(i).dump());
             CHECK(one_plan.at("nodes").at(i) == graph_plan.at("nodes").at(i));
         }
-        CHECK(one_plan.at("levels") == graph_plan.at("levels"));
+        CHECK(one_plan.at("order") == graph_plan.at("order"));
         CHECK(one_plan.at("barriers") == graph_plan.at("barriers"));
         std::cout << "LP1C_BLOOM targets=" << one_piece.targets.size()
                   << " planNodes=" << one_plan.at("nodes").size() << " differingBytes=0\n";

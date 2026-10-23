@@ -1,5 +1,7 @@
 #include "../src/project/surfaceformat.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -377,6 +379,78 @@ TEST_CASE("OpenPBR wrapper-B variants preserve one declaration ABI",
                                        std::to_string(variant.double_sided)) != std::string::npos);
         }
     }
+}
+
+// PSN-1: a surface's render_state takes the rest of the pipeline vocabulary,
+// and the raster_state parser reads it: the same keys give the same value.
+TEST_CASE("PSN-1 a surface render_state reads the pipeline vocabulary through the raster_state parser",
+          "[surface-format][psn1]") {
+    const auto surface = [](std::string_view render_state) {
+        return std::string{"//! pelican.surface v1\n//! language: glsl\n//! render_state: "} +
+               std::string{render_state} +
+               "\n\nvoid pelican_surface_v1(in PelicanSurfaceInputV1 i, inout PelicanSurfaceV1 s) {}\n";
+    };
+    const auto document = parseSurfaceFormat(
+        surface("{ cull: none, depth: read_only, polygon_mode: line, line_width: 2.5, "
+                "depth_bias: { constant: -4, slope: 1.5 }, depth_bounds: [0.1, 0.9], "
+                "stencil: { front: { pass: replace, compare: always, reference: 1 }, "
+                "back: { pass: \"replace\", reference: 1 } }, alpha_to_coverage: true, sample_mask: 3, "
+                "blend_constants: [1, 0.5, 0.25, 0], editor_hint: x }"),
+        "psn1.surface");
+    // The surface's own keys stay the surface's.
+    CHECK(document.render_state.cull == SurfaceCullMode::none);
+    CHECK(document.render_state.depth_test);
+    CHECK_FALSE(document.render_state.depth_write);
+    const auto expected = parseSurfacePipelineState(
+        nlohmann::json::parse(R"json({"polygon_mode": "line", "line_width": 2.5,
+          "depth_bias": {"constant": -4, "slope": 1.5}, "depth_bounds": [0.1, 0.9],
+          "stencil": {"front": {"pass": "replace", "compare": "always", "reference": 1},
+                      "back": {"pass": "replace", "reference": 1}},
+          "alpha_to_coverage": true, "sample_mask": 3, "blend_constants": [1, 0.5, 0.25, 0]})json"),
+        "expected");
+    CHECK(document.render_state.pipeline == expected);
+    // An unknown key still warns and is ignored, as before.
+    REQUIRE(document.warnings.size() == 1);
+    CHECK(contains(document.warnings.front(), "ignored unknown key 'editor_hint'"));
+
+    // The material pipeline's state: the surface's cull and depth over it.
+    const auto state = materialPipelineState(document.render_state);
+    CHECK(state.cull == RasterCullMode::none);
+    CHECK(state.front_face == RasterFrontFace::counter_clockwise);
+    CHECK(state.topology == RasterPrimitiveTopology::triangle_list);
+    CHECK(state.depth.test);
+    CHECK_FALSE(state.depth.write);
+    CHECK(state.depth.compare == RasterDepthCompare::less);
+    CHECK(state.depth.bounds == expected.depth.bounds);
+    CHECK(state.polygon_mode == RasterPolygonMode::line);
+    CHECK(state.stencil == expected.stencil);
+    CHECK(state.color_attachments.empty());
+    // A surface that writes none of it keeps the engine's defaults.
+    const auto plain = parseSurfaceFormat(surface("{ cull: back }"), "plain.surface");
+    CHECK(plain.render_state.pipeline == PipelineState{});
+
+    // The same refusals as raster_state, by name.
+    const auto refusal = [&](std::string_view render_state) {
+        try {
+            (void)parseSurfaceFormat(surface(render_state), "bad.surface");
+        } catch (const std::runtime_error &error) {
+            return std::string{error.what()};
+        }
+        return std::string{"<accepted>"};
+    };
+    using Catch::Matchers::ContainsSubstring;
+    CHECK_THAT(refusal("{ polygon_mode: wire }"),
+               ContainsSubstring("surface 'bad.surface' render_state field 'polygon_mode' has unknown value 'wire'"));
+    CHECK_THAT(refusal("{ stencil: { front: { pass: replace } } }"),
+               ContainsSubstring("render_state stencil requires both front and back"));
+    CHECK_THAT(refusal("{ sample_shading: 2 }"), ContainsSubstring("field 'sample_shading' must be in [0, 1]"));
+    CHECK_THAT(refusal("{ blend: additive, logic_op: xor }"),
+               ContainsSubstring("field 'logic_op' replaces blending, but blend is not opaque"));
+    // A material draws triangle lists and states its attachments in the
+    // pass: those keys are not the surface's (ignored with a warning).
+    const auto topology = parseSurfaceFormat(surface("{ topology: line_list }"), "topology.surface");
+    REQUIRE(topology.warnings.size() == 1);
+    CHECK(contains(topology.warnings.front(), "ignored unknown key 'topology'"));
 }
 
 } // namespace Pelican

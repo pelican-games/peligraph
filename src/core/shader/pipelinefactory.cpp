@@ -11,6 +11,7 @@
 #include "../model/vertbufcontainer.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
+#include "../vkcore/depthstencilformat.hpp"
 #include "../vkcore/devicefeaturepolicy.hpp"
 #include "../vkcore/accelerationstructure.hpp"
 #include <algorithm>
@@ -239,6 +240,14 @@ void validateGraphicsReflection(const GraphicsPipelineDesc &desc, const ShaderRe
         throw std::runtime_error(
             "GraphicsPipelineDesc color_attachment_states count "
             "must match color_formats");
+    }
+    // PSN-1: applyVulkanPipelineState refuses this by the pass's name first.
+    if (desc.stencil &&
+        (!desc.depth_format ||
+         !vulkanFormatHasStencil(*desc.depth_format))) {
+        throw std::runtime_error(
+            "GraphicsPipelineDesc stencil requires a depth format "
+            "with a stencil component");
     }
     if (desc.view.execution ==
         GraphicsPipelineViewExecution::single_view) {
@@ -565,37 +574,86 @@ vk::UniquePipeline PipelineFactory::createGraphicsPipeline(const GraphicsPipelin
         vertex_input_info.setVertexBindingDescriptions(desc.vertex_bindings);
     }
 
+    // PSN-1: every fixed-function value comes from the desc (its defaults
+    // are the values this used to hard-code).
     vk::PipelineInputAssemblyStateCreateInfo input_assembly;
     input_assembly.topology = desc.topology;
-    input_assembly.primitiveRestartEnable = false;
+    input_assembly.primitiveRestartEnable = desc.primitive_restart;
 
     vk::PipelineViewportStateCreateInfo viewport;
     viewport.viewportCount = 1;
     viewport.scissorCount = 1;
 
     vk::PipelineRasterizationStateCreateInfo rasterization;
-    rasterization.depthClampEnable = false;
-    rasterization.rasterizerDiscardEnable = false;
-    rasterization.polygonMode = vk::PolygonMode::eFill;
+    rasterization.depthClampEnable = desc.depth_clamp;
+    rasterization.rasterizerDiscardEnable = desc.rasterizer_discard;
+    rasterization.polygonMode = desc.polygon_mode;
     rasterization.cullMode = desc.cull_mode;
     rasterization.frontFace = desc.front_face;
-    rasterization.depthBiasEnable = false;
-    rasterization.lineWidth = 1.0f;
+    rasterization.depthBiasEnable = desc.depth_bias.has_value();
+    if (desc.depth_bias) {
+        rasterization.depthBiasConstantFactor =
+            desc.depth_bias->constant_factor;
+        rasterization.depthBiasClamp = desc.depth_bias->clamp;
+        rasterization.depthBiasSlopeFactor =
+            desc.depth_bias->slope_factor;
+    }
+    rasterization.lineWidth = desc.line_width;
+    vk::PipelineRasterizationConservativeStateCreateInfoEXT
+        conservative;
+    if (desc.conservative_rasterization !=
+        vk::ConservativeRasterizationModeEXT::eDisabled) {
+        conservative.conservativeRasterizationMode =
+            desc.conservative_rasterization;
+        conservative.extraPrimitiveOverestimationSize = 0.0f;
+        rasterization.pNext = &conservative;
+    }
 
     vk::PipelineMultisampleStateCreateInfo multisample;
     multisample.rasterizationSamples = desc.rasterization_samples;
-    multisample.sampleShadingEnable = false;
+    multisample.sampleShadingEnable =
+        desc.min_sample_shading.has_value();
+    multisample.minSampleShading =
+        desc.min_sample_shading.value_or(0.0f);
+    // One word per 32 samples; a 64-sample pass keeps its upper half.
+    const std::array<vk::SampleMask, 2> sample_mask{
+        desc.sample_mask, 0xffffffffu};
+    if (desc.sample_mask != 0xffffffffu) {
+        multisample.pSampleMask = sample_mask.data();
+    }
+    multisample.alphaToCoverageEnable = desc.alpha_to_coverage;
+    multisample.alphaToOneEnable = desc.alpha_to_one;
 
+    const auto stencil_face =
+        [](const GraphicsPipelineStencilFaceState &face) {
+            return vk::StencilOpState{
+                face.fail, face.pass, face.depth_fail,
+                face.compare, face.compare_mask,
+                face.write_mask, face.reference};
+        };
     vk::PipelineDepthStencilStateCreateInfo depth;
     depth.depthTestEnable = desc.depth_test;
     depth.depthWriteEnable = desc.depth_write;
     depth.depthCompareOp = desc.depth_compare;
-    depth.stencilTestEnable = false;
+    depth.depthBoundsTestEnable = desc.depth_bounds.has_value();
+    if (desc.depth_bounds) {
+        depth.minDepthBounds = (*desc.depth_bounds)[0];
+        depth.maxDepthBounds = (*desc.depth_bounds)[1];
+    }
+    depth.stencilTestEnable = desc.stencil.has_value();
+    if (desc.stencil) {
+        depth.front = stencil_face(desc.stencil->front);
+        depth.back = stencil_face(desc.stencil->back);
+    }
 
     auto blend_attachments = makeBlendAttachments(desc, desc.color_formats.size());
     vk::PipelineColorBlendStateCreateInfo blend;
-    blend.logicOpEnable = false;
+    blend.logicOpEnable = desc.logic_op.has_value();
+    if (desc.logic_op) {
+        blend.logicOp = *desc.logic_op;
+    }
     blend.setAttachments(blend_attachments);
+    blend.setBlendConstants(desc.blend_constants);
 
     std::vector<vk::DynamicState> dynamic_states{vk::DynamicState::eViewport,
                                                  vk::DynamicState::eScissor};
@@ -611,6 +669,12 @@ vk::UniquePipeline PipelineFactory::createGraphicsPipeline(const GraphicsPipelin
     rendering_info.viewMask = desc.view.view_mask;
     if (desc.depth_format) {
         rendering_info.depthAttachmentFormat = *desc.depth_format;
+        // PSN-1: the render pass binds such a depth attachment as its stencil
+        // attachment too (render_pass_executor.cpp); the formats must agree.
+        if (vulkanFormatHasStencil(*desc.depth_format)) {
+            rendering_info.stencilAttachmentFormat =
+                *desc.depth_format;
+        }
     }
 
     vk::RenderingAttachmentLocationInfoKHR

@@ -8,19 +8,10 @@
     }
   ],
   "graph": "history_accumulation",
-  "levels": [
-    [
-      "produce_current"
-    ],
-    [
-      "accumulate"
-    ]
-  ],
   "nodes": [
     {
       "declaration_index": 0,
       "kind": "render",
-      "level": 0,
       "name": "produce_current",
       "order": 0,
       "reads": [],
@@ -33,7 +24,6 @@
     {
       "declaration_index": 1,
       "kind": "render",
-      "level": 1,
       "name": "accumulate",
       "order": 1,
       "reads": [

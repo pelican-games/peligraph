@@ -3192,13 +3192,6 @@ Json gl2bPlan() {
           {"decisions", Json::array()},
           {"candidates", Json::array({{{"candidate", "vulkan_raster"}, {"endpoint", "vulkan"},
                                        {"feasible", true}, {"from_nodes", Json::array()}}})}}}};
-    const Json execution{
-        {"nodes", Json::array({{{"name", "lighting"}, {"selected_endpoint", "vulkan"},
-                                {"resource_uses", Json::array({{{"resource", "scene_color"},
-                                                                {"access", "write"}}})}},
-                               {{"name", "tint"}, {"selected_endpoint", "vulkan"},
-                                {"resource_uses", Json::array({{{"resource", "scene_color"},
-                                                                {"access", "read"}}})}}})}};
     return {{"schema", "pelican.frame_plan"},
             {"version", 1},
             {"graph", "main_render"},
@@ -3212,7 +3205,6 @@ Json gl2bPlan() {
                           {{"from", "lighting"}, {"to", "tint"},
                            {"resource", "scene_color"}, {"kind", "read_after_write"}}})},
             {"physical_target_plan", physical},
-            {"execution_plan", execution},
             {"diagnostics",
              Json::array({{{"kind", "pipeline_preset_resolved"},
                            {"subject", "engine://render_pipelines/hybrid_v1.json"},
@@ -3286,9 +3278,7 @@ TEST_CASE("GL-2b the plan's origin says which graph node made a pass; bands, Lay
               {"L2", "alias", "alias group alias_0: tint_image, canvas", ""},
               {"L2", "scope", "scope scope_0 (render_pass)", ""},
               {"L2", "barrier",
-               "lighting \xE2\x86\x92 tint \xC2\xB7 scene_color \xC2\xB7 read_after_write \xC2\xB7 "
-               "write \xE2\x86\x92 read",
-               ""},
+               "lighting \xE2\x86\x92 tint \xC2\xB7 scene_color \xC2\xB7 read_after_write", ""},
               {"L3", "decision", "pelican.plan.serial \xC2\xB7 tint \xE2\x86\x92 serial", ""}});
     const auto loop_rows = model.layerRows("cascades");
     REQUIRE(loop_rows.size() >= 2);

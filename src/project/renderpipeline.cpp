@@ -397,7 +397,7 @@ TargetPlanningPolicy compileTargetPlanningPolicy(
                 const auto node_context =
                     context + " node '" + node.key() + "'";
                 requireOnlyKeys(
-                    node.value(), {"serial", "isolate"},
+                    node.value(), {"serial", "isolate", "fuse"},
                     node_context);
                 compiled.nodes.push_back(
                     PlanningNodeConstraint{
@@ -406,6 +406,10 @@ TargetPlanningPolicy compileTargetPlanningPolicy(
                             node.value(), "serial", node_context),
                         .isolate = optionalBoolean(
                             node.value(), "isolate", node_context),
+                        // PF-1: unwritten means the node may be fused.
+                        .fuse = !node.value().contains("fuse") ||
+                                optionalBoolean(
+                                    node.value(), "fuse", node_context),
                     });
             }
         }
@@ -473,6 +477,9 @@ nlohmann::json targetPlanningPolicyToJson(
                         {"serial", node.serial},
                         {"isolate", node.isolate},
                     };
+                    // PF-1: only the non-default value is written, so a
+                    // policy without fuse serializes as before.
+                    if (!node.fuse) nodes[node.node]["fuse"] = false;
                 }
                 declaration["nodes"] = std::move(nodes);
             }

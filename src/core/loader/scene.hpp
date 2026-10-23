@@ -218,6 +218,13 @@ DECLARE_MODULE(SceneLoader) {
         std::string node;
         State state = State::idle;
         double position_seconds = 0.0;
+        // AT-1 decision 6: a master voice (audio.playback `master`), and
+        // where the mixer says it is heard now -- its cursor less the output
+        // latency -- with that position's distance from position_seconds.
+        // None where the backend has no cursor (null) or nothing plays.
+        bool master = false;
+        std::optional<double> heard_position_seconds;
+        std::optional<double> offset_seconds;
     };
     std::vector<GraphVoiceStatus> graphVoiceStatus() const;
     class PreparedGraphRuntimeTransfer;

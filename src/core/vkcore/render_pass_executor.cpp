@@ -1,6 +1,7 @@
 #include "render_pass_executor.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
 #include "core.hpp"
+#include "depthstencilformat.hpp"
 #include "render_pass_dispatch.hpp"
 #include "render_pass_frame_setup.hpp"
 
@@ -353,6 +354,13 @@ void RenderPassExecutor::execute(const FrameRenderContext &frame, const Compiled
             pass_def, rt_container, pass.view,
             invocation);
         render_info.pDepthAttachment = &depth_attachment;
+        // PSN-1: the same view and operations are the stencil attachment of
+        // a format that has one; every pipeline built for that depth format
+        // names it as its stencil attachment format (pipelinefactory.cpp).
+        if (vulkanFormatHasStencil(
+                rt_container.getImage(pass_def.output_depth).format)) {
+            render_info.pStencilAttachment = &depth_attachment;
+        }
     }
 
     cmd_buf.beginRendering(render_info);
@@ -420,6 +428,12 @@ void RenderPassExecutor::beginRenderingScope(
                 first.view, invocation);
         render_info.pDepthAttachment =
             &depth_attachment;
+        if (vulkanFormatHasStencil(
+                targets.getImage(first.rendering.depth_attachment)
+                    .format)) {
+            render_info.pStencilAttachment =
+                &depth_attachment;
+        }
     }
 
     frame.cmd_buf.beginRendering(render_info);

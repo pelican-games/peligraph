@@ -6263,7 +6263,6 @@ void GraphCanvasModel::readPlanLayers(const Json &plan) {
     plan_scopes_.clear();
     plan_decisions_.clear();
     plan_candidates_.clear();
-    plan_access_.clear();
     plan_diagnostics_.clear();
     deactivated_nodes_.clear();
     plan_fold_decisions_.clear();
@@ -6339,20 +6338,6 @@ void GraphCanvasModel::readPlanLayers(const Json &plan) {
                 }
         }
     }
-    if (const auto execution = plan.find("execution_plan");
-        execution != plan.end() && execution->is_object())
-        if (const auto *nodes = array(*execution, "nodes"))
-            for (const auto &node : *nodes) {
-                if (!node.is_object()) continue;
-                const auto name = text(node, "name");
-                if (const auto pass = std::ranges::find(plan_passes_, name, &GraphCanvasPlanPass::name);
-                    pass != plan_passes_.end())
-                    pass->backend = text(node, "selected_endpoint");
-                if (const auto *uses = array(node, "resource_uses"))
-                    for (const auto &use : *uses)
-                        if (use.is_object() && !text(use, "resource").empty())
-                            plan_access_[name][text(use, "resource")] = text(use, "access");
-            }
     if (const auto *diagnostics = array(plan, "diagnostics"))
         for (const auto &diagnostic : *diagnostics)
             if (diagnostic.is_object()) {
@@ -6399,25 +6384,6 @@ std::vector<std::string> GraphCanvasModel::foldDecisionParts(std::string_view ca
         if (!listed(parts, part)) parts.push_back(std::move(part));
     }
     return parts;
-}
-
-std::string GraphCanvasModel::graphBackend() const {
-    // The endpoint most passes run on is the graph's; a pass is marked only
-    // when it runs elsewhere. With no pass saying, the selected candidate's.
-    std::map<std::string, std::size_t, std::less<>> counts;
-    for (const auto &pass : plan_passes_)
-        if (!pass.backend.empty()) ++counts[pass.backend];
-    std::string best;
-    std::size_t most = 0;
-    for (const auto &[backend, count] : counts)
-        if (count > most) {
-            best = backend;
-            most = count;
-        }
-    if (!best.empty()) return best;
-    for (const auto &candidate : plan_candidates_)
-        if (candidate.selected) return candidate.endpoint;
-    return {};
 }
 
 GraphCanvasPlanTarget GraphCanvasModel::planNodeTarget(std::string_view name) const {
@@ -6551,13 +6517,6 @@ std::string GraphCanvasModel::layerBand(std::string_view canvas_node) const {
             return meets(group.from_nodes, nodes);
         }))
         parts.push_back("aliased");
-    // L3: a backend other than the graph's.
-    const auto graph = graphBackend();
-    for (const auto &name : nodes) {
-        const auto *pass = planPass(name);
-        if (!pass->backend.empty() && pass->backend != graph && !listed(parts, pass->backend))
-            parts.push_back(pass->backend);
-    }
     // GL-3a, decision 6: what a verified fold group decided for it.
     for (auto &part : foldDecisionParts(canvas_node)) parts.push_back(std::move(part));
     if (const auto *off = deactivatedNode(canvas_node))
@@ -6668,28 +6627,13 @@ std::vector<GraphCanvasLayerRow> GraphCanvasModel::layerRows(std::string_view ca
         if (!listed(nodes, barrier.from) && !listed(nodes, barrier.to)) continue;
         auto line = barrier.from + arrow + barrier.to + dot + barrier.resource;
         if (!barrier.kind.empty()) line += dot + barrier.kind;
-        const auto access = [&](const std::string &node) -> std::string {
-            const auto uses = plan_access_.find(node);
-            if (uses == plan_access_.end()) return {};
-            const auto use = uses->second.find(barrier.resource);
-            return use == uses->second.end() ? std::string{} : use->second;
-        };
-        if (const auto from = access(barrier.from), to = access(barrier.to);
-            !from.empty() && !to.empty())
-            line += dot + from + arrow + to;
         rows.push_back({"L2", "barrier", line, {}});
     }
-    // L3: the decisions about it, and a backend other than the graph's.
+    // L3: the decisions about it.
     for (const auto &decision : plan_decisions_)
         if (meets(decision.from_nodes, nodes))
             rows.push_back({"L3", "decision",
                             decision.id + dot + decision.subject + arrow + decision.selected, {}});
-    const auto graph = graphBackend();
-    for (const auto &name : nodes) {
-        const auto *pass = planPass(name);
-        if (!pass->backend.empty() && pass->backend != graph)
-            rows.push_back({"L3", "backend", "backend " + pass->backend + " (" + name + ")", name});
-    }
     // RTL-2s-c (RTL-2s decision 4): a ray tracing task's shader binding
     // table as its ray layout lays it out -- the hit groups (one record per
     // group and ray type), the ray types it traces, its misses -- and the

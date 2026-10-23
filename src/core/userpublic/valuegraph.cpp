@@ -84,7 +84,7 @@ constexpr std::string_view audioMappingKeys[] = {"wrap", "source_begin", "source
 
 Json lowerAudioPlayback(const Json &node, const Json &parameters, const Json &inputs,
                         const std::function<std::set<std::string>(const Json &)> &clockSources) {
-    keys(parameters, {"asset", "bus", "wrap", "source_begin", "source_end", "speed", "delay"});
+    keys(parameters, {"asset", "bus", "wrap", "source_begin", "source_end", "speed", "delay", "master"});
     const auto id = name(node.at("id"));
     const auto source = [](const Json &endpoint) {
         if (endpoint.at("port") != "value")
@@ -136,6 +136,12 @@ Json lowerAudioPlayback(const Json &node, const Json &parameters, const Json &in
         }
     }
     if (parameters.contains("wrap")) lowered["wrap"] = name(parameters.at("wrap"));
+    // AT-1 decision 4: the voice the game clock follows.
+    if (parameters.contains("master")) {
+        if (!parameters.at("master").is_boolean())
+            throw std::invalid_argument("audio.playback master is true or false: " + id);
+        if (parameters.at("master").get<bool>()) lowered["master"] = true;
+    }
     for (const auto key : audioMappingKeys) {
         const std::string field{key};
         if (field == "wrap") continue;
@@ -181,7 +187,8 @@ Json lowerScalarGraph(const Json &authored, const GraphModuleRegistry &modules,
     std::map<std::string, const Json *, std::less<>> rendering_nodes;
     for (const auto &node : partitions.rendering.nodes) rendering_nodes.emplace(name(node.at("id")), &node);
     // The engine clocks an edge reads, however far upstream: the names of the
-    // value.input nodes it reaches among time and scene_time.
+    // value.input nodes it reaches among time, scene_time and (AT-1 decision
+    // 3) audio_time.
     const auto clockSources = [&](const Json &endpoint) {
         std::set<std::string> clocks;
         std::set<std::string> seen;
@@ -195,7 +202,7 @@ Json lowerScalarGraph(const Json &authored, const GraphModuleRegistry &modules,
             const auto &upstream = *found->second;
             if (upstream.at("op") == "value.input") {
                 const auto input = upstream.value("parameters", Json::object()).value("name", std::string{});
-                if (input == "time" || input == "scene_time") clocks.insert(input);
+                if (input == "time" || input == "scene_time" || input == "audio_time") clocks.insert(input);
             }
             const auto upstream_inputs = upstream.value("inputs", Json::object());
             for (const auto &[port, edge] : upstream_inputs.items()) {
@@ -425,10 +432,16 @@ Graph::Graph(std::string_view document, const GraphModuleRegistry &modules) : mo
             node.dependencies = {resolve(authored.at("time")), resolve(authored.at("events"))};
         } else if (op == "audio_playback") {
             keys(authored, {"id", "op", "time", "events", "asset", "bus", "position",
-                            "wrap", "source_begin", "source_end", "speed", "delay"});
+                            "wrap", "source_begin", "source_end", "speed", "delay", "master"});
             audio_sources_.emplace(node.id, name(authored.at("asset")));
             audio_nodes_.push_back(i);
             node.op = Op::audio_playback;
+            if (const auto master = authored.find("master"); master != authored.end()) {
+                if (!master->is_boolean())
+                    throw std::invalid_argument("audio.playback master is true or false: " + node.id);
+                node.audio_master = master->get<bool>();
+                if (node.audio_master) audio_masters_.insert(node.id);
+            }
             node.audio_bus = authored.value("bus", std::string("se"));
             if (node.audio_bus != "se" && node.audio_bus != "bgm")
                 throw std::invalid_argument("unknown audio bus: " + node.audio_bus + " (a voice plays on se or bgm)");
@@ -480,6 +493,17 @@ Graph::Graph(std::string_view document, const GraphModuleRegistry &modules) : mo
             // changes while the voice plays and it never runs backwards.
             node.audio_native = !node.audio_position && literal && node.playback.speed > 0.0 &&
                                 node.playback.wrap != Animation::CurveWrap::ping_pong;
+            // AT-1 decision 4: a master is the clock the game clock follows,
+            // so it runs on its own clock -- the form above -- and is never a
+            // follower of a position the graph computes.
+            if (node.audio_master && !node.audio_native) {
+                const char *reason = node.audio_position ? "position"
+                    : !literal ? "driven_mapping"
+                    : node.playback.wrap == Animation::CurveWrap::ping_pong ? "ping_pong"
+                    : "negative_speed";
+                throw GraphRegistryError(std::string{audioMasterRequiresNativeCode},
+                    {{"node", node.id}, {"reason", reason}});
+            }
         } else if (op == "sample_table") {
             // AB-1: the table is read once, here; evaluating reads memory.
             keys(authored, {"id", "op", "asset", "row", "time"});
@@ -563,6 +587,41 @@ Graph::Graph(std::string_view document, const GraphModuleRegistry &modules) : mo
             // name instead of calling the operation unknown.
             throw GraphRegistryError("graph.operation_unexecutable@1",
                 {{"node", node.id}, {"op", op}, {"backend", "pelican.value_graph"}});
+        }
+    }
+    // AT-1 decision 4: one master voice at a time. A node runs only while
+    // every owner its scopes name is alive, and an owner is alive only in its
+    // own scene: a master with no owner runs in every scene, one owned in
+    // scene S only in S, one whose owners are in two scenes never. Masters
+    // that can run in the same scene -- two unowned, or an unowned one and an
+    // owned one, or two owned in one scene (one definition instanced twice
+    // there) -- are refused, in node order.
+    if (audio_masters_.size() > 1) {
+        std::vector<std::size_t> everywhere;
+        std::map<std::string, std::vector<std::size_t>> by_scene;
+        for (std::size_t i = 0; i < nodes_.size(); ++i) {
+            if (!nodes_[i].audio_master) continue;
+            std::set<std::string> scenes;
+            if (const auto scopes = node_scopes_.find(nodes_[i].id); scopes != node_scopes_.end())
+                for (const auto &scope : scopes->second)
+                    if (const auto owner = instance_owners_.find(scope); owner != instance_owners_.end())
+                        scenes.insert(owner->second.scene);
+            if (scenes.empty()) everywhere.push_back(i);
+            else if (scenes.size() == 1) by_scene[*scenes.begin()].push_back(i);
+        }
+        const auto refuse = [&](std::vector<std::size_t> together) {
+            std::sort(together.begin(), together.end());
+            auto names = Json::array();
+            for (const auto index : together) names.push_back(nodes_[index].id);
+            throw GraphRegistryError(std::string{audioMasterConflictCode}, {{"nodes", std::move(names)}});
+        };
+        if (everywhere.size() > 1) refuse(everywhere);
+        for (const auto &[scene, owned] : by_scene) {
+            (void)scene;
+            if (owned.size() + everywhere.size() < 2) continue;
+            auto together = everywhere;
+            together.insert(together.end(), owned.begin(), owned.end());
+            refuse(std::move(together));
         }
     }
     for (std::size_t i = 0; i < nodes_.size(); ++i) {
@@ -1041,6 +1100,7 @@ PublishResult Graph::publish(const GameContext &context, const Inputs &inputs,
         directive.phase = voice.phase;
         directive.epoch = voice.epoch;
         directive.bus = node.audio_bus;
+        directive.master = node.audio_master;
         const auto value = [&](std::size_t dependency) {
             const auto &found = result.node_values[node.dependencies[dependency]];
             if (!found) throw std::logic_error("audio playback input was not evaluated: " + node.id);

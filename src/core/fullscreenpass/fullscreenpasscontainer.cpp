@@ -2,6 +2,7 @@
 #include "fullscreeninputbindingmismatch.hpp"
 #include "passinputlayout.hpp"
 #include "../renderingpass/computetask.hpp"
+#include "../renderingpass/rasterpassvulkanadapter.hpp"
 #include "../renderingpass/rendertargetimageviewresolver.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
 #include "../shader/pelican_sets.hpp"
@@ -903,6 +904,10 @@ FullscreenPassContainer::registerFullscreenPass(
         std::move(local_read);
     desc.resource_interface =
         std::move(resource_interface);
+    // PSN-1: a pass without raster_state draws with the engine's defaults,
+    // through the same mapping (its attachments keep the pass-wide blend).
+    applyVulkanPipelineState(
+        PipelineState{}, desc, "fullscreen pipeline");
     return registerRasterPass(std::move(desc));
 }
 

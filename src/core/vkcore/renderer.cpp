@@ -4341,7 +4341,7 @@ namespace {
 // FP-1: what get_frame_plan answers that the published generation and its
 // program decide, and nothing that reads a frame, the scene, a file or a
 // runtime setting: the plan with its loops, diagnostics and fold
-// decisions, the execution plan, the program's owner scope, the window
+// decisions, the program's owner scope, the window
 // output, the GPU resource arena, the physical target plan with the nodes
 // each entry concerns, the native scope executors and the sample count
 // plan. Renderer::currentFramePlanJson builds it once per generation and
@@ -4356,9 +4356,6 @@ nlohmann::json framePlanGenerationPartJson(
     auto result = framePlanToJson(frame_graph->plan,
                                   frame_graph->render_pipeline.get(),
                                   graph_reference);
-    result["execution_plan"] =
-        frameExecutionPlanToJson(
-            frame_graph->execution_plan);
     result["runtime_generation"] = generation->generation;
     result["gpu_owner_scope"] = program->owner_scope;
     result["retained_resource_lease_count"] =

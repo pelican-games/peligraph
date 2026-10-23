@@ -193,10 +193,13 @@ bool SceneLoader::applyGraphVoice(const std::shared_ptr<const ValueGraph::Graph>
     const auto length = prepared ? Audio::lengthSeconds(*prepared) : audio.voiceLengthSeconds(existing->second);
     // The follow tolerance of decision 3: one frame, and 10 ms for the jitter
     // between the frame clock and the mixer.
+    const auto step = (std::max)(GET_MODULE(EngineTime).dt(), 0.0);
+    const auto follow_tolerance = step + 0.010;
     Audio::VoiceDrive drive;
-    drive.tolerance = (std::max)(GET_MODULE(EngineTime).dt(), 0.0) + 0.010;
+    drive.tolerance = follow_tolerance;
     Audio::VoiceStart start;
     start.bus = audioVoiceBusFromName(directive.bus);
+    start.master = directive.master;
     if (directive.follows_position) {
         drive.position = directive.position;
         drive.paused = directive.phase == Phase::paused || !directive.advancing;
@@ -229,6 +232,29 @@ bool SceneLoader::applyGraphVoice(const std::shared_ptr<const ValueGraph::Graph>
             start.loop_begin = settings.source_begin;
             start.loop_end = settings.source_end;
             if (!start.loop) start.end = settings.source_end;
+            // AT-1 decision 4. A master (always this form: the graph refuses
+            // any other) is the clock the game clock follows, not a follower:
+            // however far its cursor stands from the map's time, it is not
+            // sought for that. It is sought only when that time jumps -- a
+            // set_time, a Timeline scrub, a clock behind its `time` that
+            // restarts: a frame on which the map's time is not where the last
+            // frame's would have moved over this step, taken modulo the loop
+            // -- and, as any voice is, when it resumes from being held. On a
+            // jump the tolerance is the follow one, not the loop point's
+            // 0.25 s: a master has no later chance to close what is left.
+            if (directive.master && !restart) {
+                bool jumped = true;
+                if (const auto last = runtime.voice_status.find(node);
+                    last != runtime.voice_status.end() && !last->second.held) {
+                    const auto period = start.loop ? settings.source_end - settings.source_begin : length;
+                    auto gap = std::fmod(start.start - (last->second.position_seconds + step * drive.rate), period);
+                    if (gap > period / 2.0) gap -= period;
+                    else if (gap <= -period / 2.0) gap += period;
+                    jumped = std::abs(gap) > follow_tolerance;
+                }
+                drive.correct_drift = jumped;
+                if (jumped) drive.tolerance = follow_tolerance;
+            }
         } else {
             drive.position = time.source_time;
             drive.paused = directive.phase == Phase::paused || !time.active || !directive.advancing;
@@ -332,6 +358,7 @@ std::vector<SceneLoader::GraphVoiceStatus> SceneLoader::graphVoiceStatus() const
     for (const auto &[node, asset] : graph->audioSources()) {
         (void)asset;
         GraphVoiceStatus entry{node, GraphVoiceStatus::State::idle, 0.0};
+        entry.master = graph->audioMaster(node);
 #if PELICAN_WITH_AUDIO
         const auto *audio = FastModuleContainer::tryGet<Audio>();
         if (runtime != graph_runtime.end() && audio != nullptr) {
@@ -343,6 +370,11 @@ std::vector<SceneLoader::GraphVoiceStatus> SceneLoader::graphVoiceStatus() const
                 entry.state = status->second.held ? GraphVoiceStatus::State::paused
                                                   : GraphVoiceStatus::State::playing;
                 entry.position_seconds = status->second.position_seconds;
+                if (entry.master)
+                    if (const auto heard = audio->heardPosition(sound->second, entry.position_seconds)) {
+                        entry.heard_position_seconds = heard->heard_seconds;
+                        entry.offset_seconds = heard->offset_seconds;
+                    }
             }
         }
 #endif

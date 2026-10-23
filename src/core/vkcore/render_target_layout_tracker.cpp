@@ -24,7 +24,10 @@ VulkanUtils::ChangeImageLayoutInfo makeTransitionInfo(
         info.src_stage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
         info.src_access = vk::AccessFlagBits::eColorAttachmentRead |
                           vk::AccessFlagBits::eColorAttachmentWrite;
-    } else if (old_layout == vk::ImageLayout::eDepthAttachmentOptimal) {
+    } else if (old_layout == vk::ImageLayout::eDepthAttachmentOptimal ||
+               // PSN-1: a depth format with stencil (both aspects).
+               old_layout ==
+                   vk::ImageLayout::eDepthStencilAttachmentOptimal) {
         // Dynamic-rendering depth resolve completes in
         // COLOR_ATTACHMENT_OUTPUT even though both images use a depth
         // attachment layout. Cover both the depth test access and the
@@ -72,7 +75,9 @@ VulkanUtils::ChangeImageLayoutInfo makeTransitionInfo(
         info.dst_stage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
         info.dst_access = vk::AccessFlagBits::eColorAttachmentRead |
                           vk::AccessFlagBits::eColorAttachmentWrite;
-    } else if (new_layout == vk::ImageLayout::eDepthAttachmentOptimal) {
+    } else if (new_layout == vk::ImageLayout::eDepthAttachmentOptimal ||
+               new_layout ==
+                   vk::ImageLayout::eDepthStencilAttachmentOptimal) {
         info.dst_stage = vk::PipelineStageFlagBits::eEarlyFragmentTests |
                          vk::PipelineStageFlagBits::eLateFragmentTests |
                          vk::PipelineStageFlagBits::eColorAttachmentOutput;
