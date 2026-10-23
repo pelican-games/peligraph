@@ -315,7 +315,7 @@ feature の挿入先になる 8 つの標準ノード。ノード間への挿入
 
 ### FramePlan
 
-フレームグラフを解決した実行計画。ノード・level・barrier を RPC や plan viewer で調べられます。 定義: [第6章 §6.6][def-70]。
+フレームグラフを解決した実行計画。ノードの順(`order`)と barrier を RPC や plan viewer で調べられます。 定義: [第6章 §6.6][def-70]。
 
 ### logical plan / physical plan(論理プラン / 物理プラン)
 

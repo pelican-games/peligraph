@@ -36,7 +36,7 @@ flowchart LR
 | project.json封筒 | [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L311) | [`ProjectBasicConfig::ProjectBasicConfig()`](../../src/core/loader/basicconfig.cpp#L624) |
 | path参照 | [`ProjectPathResolver`](../../src/project/projectpathresolver.hpp#L130) | [`PathResolver`](../../src/core/loader/pathresolver.hpp#L9)（module寿命、ログ、engine resource注入） |
 | scene | [`normalizeSceneDataJson()`](../../src/project/sceneformat.cpp#L268) | [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L1652) |
-| render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L3465) | [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1730) |
+| render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L3465) | [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1717) |
 | JSON-RPC | [`parseJsonRpcRequest()`](../../src/project/jsonrpc.cpp#L148) | [`RpcServer`](../../src/core/communication/rpcserver.hpp#L56) |
 | asset manifest | [`parse/generate/verify`](../../src/project/assetsmanifest.hpp#L73) | [`verifyAssetsAtStartup()`](../../src/core/loader/assetsverification.cpp#L148)、結果を持つ module [`AssetsVerification`](../../src/core/loader/assetsverification.hpp#L86)(✅AV-1) |
 | material/surface | [`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L744)、[`parseSurfaceFormat()`](../../src/project/surfaceformat.cpp#L1239) | runtime接続済み（WP116〜117, 122）。`.surface`は [`surfacecompiler`](../../src/core/shader/surfacecompiler.cpp) でGLSL/SPIR-V化されpipelineへ。`.material.json`は [`lowerMaterial()`](../../src/project/materiallowering.hpp#L160) → [`registerReloadableMaterialValuesFile()`](../../src/core/material/materialcontainer.hpp#L374) |
@@ -330,7 +330,7 @@ sceneは実装を追う価値の高い、純粋層とruntime層の典型です�
 >
 > **何をする所か**: `parent` エッジをたどって親子関係の循環を検出し、循環に参加しているobject名を並べたメッセージでthrowします。
 >
-> **素朴に読むと**: `auto &&self` を引数に取って `self(self, i)` で再帰する書き方が回りくどく見えます。generic lambda(引数型が `auto` のラムダ)は本体を書いている時点で自分の型が確定していないので、キャプチャ経由で自分を呼べません。`std::function<void(size_t)>` にすれば書けますが、型消去とヒープ確保が入り、純粋パーサ層にわざわざ間接呼び出しを増やすことになります。自分を第1引数で受け取ればキャプチャは参照のままで、インライン化も効きます(これを不要にする C++23 の deducing this は使えません — `pelican_project` は C++20 ビルドです、[src/project/CMakeLists.txt](../../src/project/CMakeLists.txt#L35))。もっと本質的なのは `state` が `0/1/2` の3値である点です。「訪問済み」を1値でしか持たないと、複数の子が同じ親を指す形(親リンクは森なので普通に起きます)で2度目の到達を循環と誤報するか、区別を諦めて毎回スタックを線形探索する羽目になります。1=いま辿っているスタック上、2=走査済みで安全、を分けて初めて `state[parent] == 1` だけが循環になります。さらに `stack` を別に持つのは「循環がある」ではなく `NodeA -> NodeB -> NodeC -> NodeA` と**実際の名前の並び**をエラーに載せるためで、scene作者に対する診断の質がこの構造の目的です。エッジの向きが子→親である点も、`std::find` で循環の始点を拾える前提になっています。
+> **素朴に読むと**: `auto &&self` を引数に取って `self(self, i)` で再帰する書き方が回りくどく見えます。generic lambda(引数型が `auto` のラムダ)は本体を書いている時点で自分の型が確定していないので、キャプチャ経由で自分を呼べません。`std::function<void(size_t)>` にすれば書けますが、型消去とヒープ確保が入り、純粋パーサ層にわざわざ間接呼び出しを増やすことになります。自分を第1引数で受け取ればキャプチャは参照のままで、インライン化も効きます(これを不要にする C++23 の deducing this は使えません — `pelican_project` は C++20 ビルドです、[src/project/CMakeLists.txt](../../src/project/CMakeLists.txt#L33))。もっと本質的なのは `state` が `0/1/2` の3値である点です。「訪問済み」を1値でしか持たないと、複数の子が同じ親を指す形(親リンクは森なので普通に起きます)で2度目の到達を循環と誤報するか、区別を諦めて毎回スタックを線形探索する羽目になります。1=いま辿っているスタック上、2=走査済みで安全、を分けて初めて `state[parent] == 1` だけが循環になります。さらに `stack` を別に持つのは「循環がある」ではなく `NodeA -> NodeB -> NodeC -> NodeA` と**実際の名前の並び**をエラーに載せるためで、scene作者に対する診断の質がこの構造の目的です。エッジの向きが子→親である点も、`std::find` で循環の始点を拾える前提になっています。
 >
 > **骨子**:
 > ```text
@@ -990,7 +990,7 @@ instances.publishModelInstance(std::move(staged_instance));
 
 ### [`++geometry_address_generation`(index 側)](../../src/core/model/vertbufcontainer.cpp#L344) — 再確保で世代を上げる理由 {#reading-note-042}
 
-**バッファを作り直すとデバイスアドレスが変わり、旧アドレス上に構築された BLAS が無効になる**からです。値は [`geometryAddressGeneration()`](../../src/core/model/vertbufcontainer.hpp#L123) として [renderer 側へ渡され](../../src/core/vkcore/renderer.cpp#L5834)、ray-query のジオメトリ / BLAS キャッシュ無効化キーになります。頂点側とインデックス側で[2 か所](../../src/core/model/vertbufcontainer.cpp#L392)進みます。
+**バッファを作り直すとデバイスアドレスが変わり、旧アドレス上に構築された BLAS が無効になる**からです。値は [`geometryAddressGeneration()`](../../src/core/model/vertbufcontainer.hpp#L123) として [renderer 側へ渡され](../../src/core/vkcore/renderer.cpp#L5831)、ray-query のジオメトリ / BLAS キャッシュ無効化キーになります。頂点側とインデックス側で[2 か所](../../src/core/model/vertbufcontainer.cpp#L392)進みます。
 
 ### [`ReleaseReport`](../../src/core/model/modelresourcerelease.hpp#L36) — 固定容量 8 + overflow_count {#reading-note-043}
 
@@ -1018,7 +1018,7 @@ parse は IO / デコードのみ、[`validate`](../../src/core/asset/model.cpp#
 
 ### [`geometry_allocation_id`](../../src/core/model/modeltemplate.hpp#L99) — 何を識別し、どこで使うか {#reading-note-079}
 
-1 回のジオメトリ suballocation(index / vertex レンジの組)を識別する単調 ID で、[払い出しは vertbufcontainer 側](../../src/core/model/vertbufcontainer.cpp#L461)、[`modeltemplate.hpp` のコメント](../../src/core/model/modeltemplate.hpp#L94)どおり **ray-query の BLAS キャッシュキー**として [renderer](../../src/core/vkcore/renderer.cpp#L5834) 付近で使われます(→ [§9.23.5](09_black_magic_and_gotchas.md#9235-rtacceleration-structuresbtoracle) / [§9.23.8](09_black_magic_and_gotchas.md#9238-vertex--model))。
+1 回のジオメトリ suballocation(index / vertex レンジの組)を識別する単調 ID で、[払い出しは vertbufcontainer 側](../../src/core/model/vertbufcontainer.cpp#L461)、[`modeltemplate.hpp` のコメント](../../src/core/model/modeltemplate.hpp#L94)どおり **ray-query の BLAS キャッシュキー**として [renderer](../../src/core/vkcore/renderer.cpp#L5831) 付近で使われます(→ [§9.23.5](09_black_magic_and_gotchas.md#9235-rtacceleration-structuresbtoracle) / [§9.23.8](09_black_magic_and_gotchas.md#9238-vertex--model))。
 
 ### CRTP(奇妙に再帰したテンプレートパターン)による強い型付けの使用箇所 {#background-usage-03}
 
@@ -1051,7 +1051,7 @@ parse は IO / デコードのみ、[`validate`](../../src/core/asset/model.cpp#
 | `pelican.material` / `pelican.material_bindings` | 1 | [`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L744) / [`parsePrimitiveMaterialBindingJson()`](../../src/project/materialformat.cpp#L767) | 本節「material / surface」 |
 | `pelican.import` / `pelican.import_rules` | 1 | [`importmanifest.cpp`](../../src/project/importmanifest.cpp#L252) / [`parseImportRulesJson()`](../../src/project/importrules.cpp#L196) | 本節「import manifest / import rules」 |
 
-1つだけ性格の違うものがあります。**`pelican.value_graph` はプロジェクトが書く形式ではありません。** `pelican.graph` の values 分割を評価器向けに落とした**内部IR**で、[`ValueGraph::Graph`](../../src/core/userpublic/valuegraph.hpp#L97) のコンストラクタが受ける文字列がこの形です。直書きのIRを読む経路が残っているのはテストのためで（IR側はlowering結果の真上位集合なので、bindings decodeの名前付き拒否はこの形でしか到達できません）、production で `Graph` を作るのは [`renderingpassconfigregistration.cpp` の構築点](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1038) の1箇所、入力は `pelican.graph` だけです。プロジェクト側の文書としては扱わないでください（§3.15）。
+1つだけ性格の違うものがあります。**`pelican.value_graph` はプロジェクトが書く形式ではありません。** `pelican.graph` の values 分割を評価器向けに落とした**内部IR**で、[`ValueGraph::Graph`](../../src/core/userpublic/valuegraph.hpp#L97) のコンストラクタが受ける文字列がこの形です。直書きのIRを読む経路が残っているのはテストのためで（IR側はlowering結果の真上位集合なので、bindings decodeの名前付き拒否はこの形でしか到達できません）、production で `Graph` を作るのは [`renderingpassconfigregistration.cpp` の構築点](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1025) の1箇所、入力は `pelican.graph` だけです。プロジェクト側の文書としては扱わないでください（§3.15）。
 
 > 🧩 **難所 — 端数は先頭から配る**([`distribute()`](../../src/core/ui/layout.cpp#L93))
 >
@@ -1096,9 +1096,9 @@ parse は IO / デコードのみ、[`validate`](../../src/core/asset/model.cpp#
 
 [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L3465) はfeature JSONを順番に読み、render target、buffer、pass、compute taskを追加し、限定的なoverrideを適用します。名前衝突、曖昧anchor、未知override fieldは即時エラーです。shader defineも重複排除して集約します。
 
-runtime側の入口は [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1730) です。[`loadRenderGraphVariantsFromConfigData()`](../../src/core/vkcore/renderer_config.cpp#L628) が `ProjectBasicConfig::renderingConfigJson()` の文字列と起動ターゲットの実extentを渡し、flat（OpenXR有効時は `#xr` も）とpreviewを **1回の登録トランザクション** として受け取ります。
+runtime側の入口は [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1717) です。[`loadRenderGraphVariantsFromConfigData()`](../../src/core/vkcore/renderer_config.cpp#L628) が `ProjectBasicConfig::renderingConfigJson()` の文字列と起動ターゲットの実extentを渡し、flat（OpenXR有効時は `#xr` も）とpreviewを **1回の登録トランザクション** として受け取ります。
 
-✅PV-1(`a173e70c`)から、この登録の中で preview の変種だけが組めないときは、登録を失敗にせず、preview を「利用できない」として記録します。compiler program は preview の要求(`data_only` の artifact)の失敗を `RenderCompilerProgramVariantOutput::unavailable`(`std::exception_ptr`)に入れて返し(✅RG-3 から入れるのは preview の拒否と、runtime の変種が組めた後の失敗だけ。manual 第6章 §6.13 の PV-1 の段落)、`RegistrationStages::prepare()` の [PV-1 の preview の分岐](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1223) がそれを `unavailablePreviewGraphProgram(previewUnsupportedAuthoringReason(...))` にします。
+✅PV-1(`a173e70c`)から、この登録の中で preview の変種だけが組めないときは、登録を失敗にせず、preview を「利用できない」として記録します。compiler program は preview の要求(`data_only` の artifact)の失敗を `RenderCompilerProgramVariantOutput::unavailable`(`std::exception_ptr`)に入れて返し(✅RG-3 から入れるのは preview の拒否と、runtime の変種が組めた後の失敗だけ。manual 第6章 §6.13 の PV-1 の段落)、`RegistrationStages::prepare()` の [PV-1 の preview の分岐](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1210) がそれを `unavailablePreviewGraphProgram(previewUnsupportedAuthoringReason(...))` にします。
 
 runtime の変種(flat / `#xr`)は先に組むので、そちらが組めなければ今までどおりそこで投げます(コードの注記)。`loadRenderGraphVariantsFromConfigData()` は preview が利用できなければ warning を 1 行出します。reason の形と出る所は manual 第6章 §6.13 の PV-1 の段落です。
 
@@ -1130,7 +1130,7 @@ flowchart TB
 CLI が project 読み込みとは別に作る process-local module です。この型と名前付き入口の分離により、
 project 読み込みから overlay を発見・保存・再読込するデータ経路そのものが存在しません。
 
-sceneと違い、feature合成は「純粋層で済ませてからruntimeへ渡す」形ではありません。上の登録関数の内側でGPU非依存の [`runRenderCompilerProgram()`](../../src/core/renderingpass/rendercompilerprogram.cpp#L236) が走り、その中の [`resolveRenderPipeline()`](../../src/project/renderpipeline.cpp#L1271) が `composeRenderFeatureConfig()` を呼びます。二段であること自体は同じで、境界が呼び出し順ではなく「GPUに触る前／後」で引かれている、という違いです。詳細は[第6章](06_rendering_vulkan_shader.md)。
+sceneと違い、feature合成は「純粋層で済ませてからruntimeへ渡す」形ではありません。上の登録関数の内側でGPU非依存の [`runRenderCompilerProgram()`](../../src/core/renderingpass/rendercompilerprogram.cpp#L212) が走り、その中の [`resolveRenderPipeline()`](../../src/project/renderpipeline.cpp#L1271) が `composeRenderFeatureConfig()` を呼びます。二段であること自体は同じで、境界が呼び出し順ではなく「GPUに触る前／後」で引かれている、という違いです。詳細は[第6章](06_rendering_vulkan_shader.md)。
 
 #### feature の要る target・挿入先・snapshot の `after`(FR-1 / FR-2)✅実装済み
 
@@ -1176,7 +1176,7 @@ test: `renderconfigeditor_test` の [「FR-3 a feature's target that no pass wri
 
 FR-1 / FR-2 の `featurecompose_test` は、宣言だけでなく前の pass の `output.depth` を `scene_depth` にして通す形に書き換えました(FR-1 の test は、宣言と target_ref だけでは候補が空の `feature.required_target_unwritten@1` になることも見ます)。RPC の `edit_batch` は第7章の編集系の表です。
 
-test: `featurecompose_test` の [「FR-1 a feature names the targets it leaves to the pipeline and is refused by name without one」](../../test/featurecompose_test.cpp#L10073)・[「FR-1 a snapshot after a name the pipeline lacks is refused with the names it takes」](../../test/featurecompose_test.cpp#L10185)・[「FR-1 a target_ref whose type contradicts its target is told the type to write」](../../test/featurecompose_test.cpp#L10229)・[「FR-2 a feature inserted after a pass the pipeline lacks is refused with the names it takes」](../../test/featurecompose_test.cpp#L10271)。
+test: `featurecompose_test` の [「FR-1 a feature names the targets it leaves to the pipeline and is refused by name without one」](../../test/featurecompose_test.cpp#L10070)・[「FR-1 a snapshot after a name the pipeline lacks is refused with the names it takes」](../../test/featurecompose_test.cpp#L10182)・[「FR-1 a target_ref whose type contradicts its target is told the type to write」](../../test/featurecompose_test.cpp#L10226)・[「FR-2 a feature inserted after a pass the pipeline lacks is refused with the names it takes」](../../test/featurecompose_test.cpp#L10268)。
 
 RPC の道は `renderconfigeditor_test` の FR-1 / FR-2 の 2 本です。
 
@@ -1738,7 +1738,7 @@ flowchart TB
     GPU --> DR
     DR --> SNAP["値の snapshot を公開：RPC 読取は再評価しない"]
 ```
-根拠: [`graphcomposition.cpp:2496`](../../src/project/graphcomposition.cpp#L2507)、[`graphpartition.cpp:343`](../../src/project/graphpartition.cpp#L343)、[`featurecompose.cpp:3472`](../../src/project/featurecompose.cpp#L3472) / [`featurecompose.cpp:4104`](../../src/project/featurecompose.cpp#L4104)、[`renderingpassconfigregistration.cpp:1028`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1038)、[`animationsystem.cpp:363`](../../src/core/ecs/predefined/animationsystem.cpp#L395)、[`scenegraphruntime.cpp:350`](../../src/core/loader/scenegraphruntime.cpp#L354)、[`renderer.cpp:6328`](../../src/core/vkcore/renderer.cpp#L6354)。
+根拠: [`graphcomposition.cpp:2496`](../../src/project/graphcomposition.cpp#L2507)、[`graphpartition.cpp:343`](../../src/project/graphpartition.cpp#L343)、[`featurecompose.cpp:3472`](../../src/project/featurecompose.cpp#L3472) / [`featurecompose.cpp:4104`](../../src/project/featurecompose.cpp#L4104)、[`renderingpassconfigregistration.cpp:1028`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1025)、[`animationsystem.cpp:363`](../../src/core/ecs/predefined/animationsystem.cpp#L395)、[`scenegraphruntime.cpp:350`](../../src/core/loader/scenegraphruntime.cpp#L354)、[`renderer.cpp:6328`](../../src/core/vkcore/renderer.cpp#L6351)。
 
 **図の注**: 上半分はデータの依存、下半分は窓ありフレームの順序です。文書の展開・検証・分割は純粋層で行い、GPU や ECS を変更しません。分割は各 consumer の構築時に呼ばれ、1 回の中央 dispatcher ではありません。編集は最後に 1 回展開検証し、失敗時は正本を変更しません。展開 ID / origins は書き戻さず、instance 入力は edge → parameters → default の優先順です。loop は雛形の型検査と合成後の複写を分け、draw_loop は draw queue の実行になります（[ループの図](../manual/06_rendering.md#loop-expansion)）。
 
@@ -1857,7 +1857,7 @@ test: `curve_test` の [「CT-4 the catalog says where a value is chosen from, a
 - **形**: [`GraphParameterChoices`](../../src/project/graphparameterschema.hpp#L55) に `where`(`vector<pair<名前, 値の列>>`。RPC の一覧なら要素の member、`graph_ops` なら node の parameters の値が、列のどれかに合うものだけを残す)と `asset_parameter`(兄弟の parameter が名指す asset の `<asset>.import.json` の `key` を読む形)が加わりました。builder の `P` に [`choicesFromAssetManifest()`](../../src/project/graphparameterschema.cpp#L99) と [`where()`](../../src/project/graphparameterschema.cpp#L107) が加わり、`where()` は直前の `choicesFrom*()` が作った `choices_from` に条件を足します。
 - **JSON**: `graphParameterSchemaJson()` は `graph_ops` → `{graph_nodes}`、`asset_parameter` → `{asset_manifest: {parameter, manifest: "<asset>.import.json", key}}`、それ以外 → `{rpc, key, field?}` の順に形を選び、`where` があれば値が 1 つなら文字列、複数なら配列で足します([CT-5 で where を出す所](../../src/project/graphparameterschema.cpp#L773))。
 - **表**: `render.scalar` の `target` に `where("host_source", {"runtime_f32"})` と `where("element", render_scalar_target_elements)`、`imageType()` の `semantic` に catalog の `modules.types`(`where("constructor", {"image"})`)、新しい `regionTag()` / `accelerationStructure()` の共有の関数、`value.sample_table` の `row` の文字列の形に `choicesFromAssetManifest("asset", "source.metadata.layout.features")`、`render.fullscreen` の `push_constants` に enum が入りました。
-- **render.scalar の書き込み先の検査**: [`checkRenderScalarTargets()`](../../src/project/graphpartition.cpp#L276) は、partition の値の domain の `render.scalar` を、書き込み先の graph の `render.buffer` / `render.attribute` ごとにまとめ、sink の合計の byte 数(`value` が無ければ 4、2〜4 個の数の配列なら × 4、それ以外は「数えられない」)と比べます。`element` が float 系でない buffer は飛ばし(`graph.render_scalar_type_mismatch@1` に任せる)、`host_source` は書いた値か、`source.pose_node` を持つ attribute なら `runtime_f32` と見ます。合わなければ `graph.render_scalar_target_incompatible@1` を投げます。呼ぶのは `expandLoopValues()` の直後です([partition から CT-5 の検査を呼ぶ所](../../src/project/graphpartition.cpp#L448))。graph の外で宣言された buffer は、登録の段の [`attachProgramGraphState()` の CT-5 の拒否](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1393) が同じ code で断ります(`node` は無し)。
+- **render.scalar の書き込み先の検査**: [`checkRenderScalarTargets()`](../../src/project/graphpartition.cpp#L276) は、partition の値の domain の `render.scalar` を、書き込み先の graph の `render.buffer` / `render.attribute` ごとにまとめ、sink の合計の byte 数(`value` が無ければ 4、2〜4 個の数の配列なら × 4、それ以外は「数えられない」)と比べます。`element` が float 系でない buffer は飛ばし(`graph.render_scalar_type_mismatch@1` に任せる)、`host_source` は書いた値か、`source.pose_node` を持つ attribute なら `runtime_f32` と見ます。合わなければ `graph.render_scalar_target_incompatible@1` を投げます。呼ぶのは `expandLoopValues()` の直後です([partition から CT-5 の検査を呼ぶ所](../../src/project/graphpartition.cpp#L448))。graph の外で宣言された buffer は、登録の段の [`attachProgramGraphState()` の CT-5 の拒否](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1380) が同じ code で断ります(`node` は無し)。
 - **context と instance**: `getRenderAuthoringContext()` が `acceleration_structures` と `render_target_vocabulary.format_class_patterns` を、`getGraphInstances()` が [`graphDefinitionInstances()`](../../src/core/communication/renderconfigeditor.cpp#L135) の `definition_instances` を足します。`editGraphInstances()` は `GraphRegistryError` を `graphRefusalInDocument()` に通し、code と field を保って返します([CT-5 の edit_graph_instances の catch](../../src/core/communication/renderconfigeditor.cpp#L3850))。
 
 利用者から見た形は manual 第6章 §6.5・§6.17・§6.18 の CT-5 の項と第13章 §13.5 です。test: `curve_test` の [「CT-5 the catalog's remaining choices and a render.scalar writing an incompatible buffer」](../../test/curve_test.cpp#L1589) と、`renderconfigeditor_test` の CT-5 の 4 本([「CT-5 an edit writing a render.scalar into an incompatible buffer is refused by name」](../../test/renderconfigeditor_test.cpp#L1547) から)。

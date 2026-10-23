@@ -95,7 +95,7 @@ sequenceDiagram
 6. `Persistence`からsettingsを読み、audio設定を適用。
 7. ray mode を component 登録前に固定します([`configureRayLayoutModeBeforeComponentRegistration()`](../../src/core/userpublic/pelican_core.cpp#L44))。
    - **決定**: rendering config から ray project を parse し、layout の有無で `RayLayoutRuntimeState` を configure します。形式と旧版の拒否は[第6章の ray layout](../manual/06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v3-と-pelican_ray_instancert3-1--wp374374a377379383)を参照してください。
-   - **検証**: 候補の task parse・shader compile・世代検証後、staging 前に `RayLayoutRuntimeState::validate()` が固定 mode と比較します。fallback 世代は対象外です([登録時の検査](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1561))。
+   - **検証**: 候補の task parse・shader compile・世代検証後、staging 前に `RayLayoutRuntimeState::validate()` が固定 mode と比較します。fallback 世代は対象外です([登録時の検査](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1548))。
    - **登録と失敗**: 固定 mode は次段の `pelican_ray_instance` の登録可否に使います。通常は例外を上位へ送ります。`--render-fallback` の場合は拒否を `RenderPipelineStartupRefusal` に保持し、`LegacyNoLayout` で起動を続けます([catch](../../src/core/userpublic/pelican_core.cpp#L183))。編集時の再起動応答は[第13章の描画編集](../manual/13_editor.md#render-edit-sequence)を参照してください。
 8. [`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L22) で組み込みComponent/Systemを登録。
 9. **[`initializeConfiguredGameLogic()`](../../src/core/gamelogic/gamelogicreload.cpp#L917) でgame DLLをロード**（WP110系列。§2.11）。失敗しても`run()`は続行し、`error_code` と `error_fields` を添えて [`LOG_ERROR`](../../src/core/userpublic/pelican_core.cpp#L164) するだけです。保存された失敗はRPC `status` から読めます（§2.11）。
@@ -606,7 +606,7 @@ flowchart TB
 | 走る場所 | 誰が | 何のために | 使う state |
 |---|---|---|---|
 | `update_game`（animation） | [`AnimationSystem::updatePoseGraphs()`](../../src/core/ecs/predefined/animationsystem.cpp#L293) | animation 分割の node が今フレーム消費するスカラを集める | [`poseGraphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L154) |
-| `render()` | [`Renderer` の publish](../../src/core/vkcore/renderer.cpp#L6354) | rendering 分割の sink（バッファ、音声、RT値）へ実際に書く | [`graphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L150) |
+| `render()` | [`Renderer` の publish](../../src/core/vkcore/renderer.cpp#L6351) | rendering 分割の sink（バッファ、音声、RT値）へ実際に書く | [`graphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L150) |
 
 **2回評価するのに state を分けているのが要点**です。`value.trigger_clock` のような「前回の評価が何をしたか」に依存する op は state を進めるので、1つの state を共有させると1フレームで2回進んでしまいます。だから `SceneLoader` は同じ文書に対して2つの `EvaluationState` を持ち、グラフ世代の切り替えでも両方を一緒に移送します（片方だけ置いていくと、描画側は走り続けたまま姿勢側のクロックだけが巻き戻ります）。順序は固定で、animation 分割は values 分割の1段後ろに置かれます（[分割の順序](../../src/project/graphpartition.hpp#L10) / [段の定義](../../src/project/graphcomposition.hpp#L260)）。
 
@@ -719,7 +719,7 @@ ImGuiゲートが閉じたフレームでは、開始済みのImGuiフレーム�
 
 ## 2.8 描画フレーム
 
-状態更新後に [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L7128) が呼ばれます（windowedでは [`renderFlatFrameWithOptionalCapture()`](../../src/core/appflow/loop.cpp#L331) 経由）。WP128以降、`render()`は1-viewのアダプタで、実体は [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L5464) です。
+状態更新後に [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L7125) が呼ばれます（windowedでは [`renderFlatFrameWithOptionalCapture()`](../../src/core/appflow/loop.cpp#L331) 経由）。WP128以降、`render()`は1-viewのアダプタで、実体は [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L5461) です。
 
 1. `DeletionQueue.beginFrame()`で安全になった旧GPU資源を解放。
 2. view数変化・`set_time`・camera不連続を検知してtemporal historyをリセット。

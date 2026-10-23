@@ -920,6 +920,7 @@ behavior paramsをside-decodeします。不適合なら旧DLL/runtimeを一切�
   メニューバー「Pelican」の項目は **7 つ** —— Asset Browser / Object Tree / Inspector /
   Frame Plan Viewer / **Compiled Passes** / Frame Stats / Dear ImGui Demo。
 - **Frame Plan Viewer**: フレームプランのノードグラフ可視化(パス = ノード、RT = エッジ。ホイールでズーム、中/右ドラッグでパン、左クリックで選択詳細)。データ源は `get_frame_plan` と同一の公開 JSON のみ — **D0(エディタ特権の禁止)準拠の第 1 実例**です。
+  ノードの副題は種別と実行順(`<kind>  #<order>`)で、列は viewer が plan の `barriers` から決めます(待つ相手の列の 1 つ右。[列を決める所](../../src/core/imgui/planviewer.cpp#L709))。✅RC-2 の前は plan の `level` を列と副題(`L<level>`)に使っていました。
 - Asset Browserは読み取り専用です。Object Tree / Inspectorの編集は
   ECS/renderer/PhysWorldへ直接触れず、RPCと同じtyped
   `EditorCommandService`を通ります。schema-driven field、live/ticket
@@ -1030,7 +1031,13 @@ dock を増やすことは「見失う場所」を増やすことなので、同
 logical graph / passes / resources / physical plan / decisions / backends / barriers / materials / raw JSON。
 **タブは掴んで並べ替えでき、その順序は保存されます**(下記のツール配置)。
 
-Passes の先頭行を上から読むと実行順が分かり、同じ行に入力／出力 target、 種別(render / compute / anchor / snapshot copy / output transform)が出ます。行を開くと履歴入力、 color/depth attachment の load/store、前後 barrier、material filter、execution resource use が見えます。
+Passes の先頭行を上から読むと実行順が分かり、同じ行に入力／出力 target、 種別(render / compute / anchor / snapshot copy / output transform)が出ます。行を開くと履歴入力、 color/depth attachment の load/store、前後 barrier、material filter が見えます。
+✅RC-2 で plan の `execution_plan` と `levels` が無くなり、それを読んでいた表示も消えました: Passes の行の Plan facts の **Level**、
+行の **Execution** の節(dialect・implementation・endpoint・capability・resource use)、Physical plan のタブの
+**Physical target plan** の木の **Execution plan unavailable** / **Execution dependencies** の節、Logical graph の
+「Logical graph unavailable」の panel です。status 行の tooltip は依存の数ではなく
+`N barriers` を言い、status 行の色は physical plan だけで決まります([status 行を組む所](../../src/devstudio/view/frameplanwidget.cpp#L4285))。
+Logical graph の辺については [第13章](13_editor.md) の「Frame Plan のノード表示と順序」。
 Resources、Barriers、Materials では writer/reader、hazard edge、公開された material route を逆引きでき、 上部 filter は折りたたみ配下も検索します。
 
 **Physical plan は alias group と scope をそのまま出します。**Backends のタブで backend の候補を pin し、Physical plan のタブで物理の計画を凍結(Freeze / Remove / Eject again)でき、Physical plan には常駐 BLAS の節と compile の書き換え(subgraph の置き換え・graph transform・render strategy)の節も出ます([第13章](13_editor.md)の「下の層の決定を Frame Plan から書く」)。
@@ -1155,7 +1162,7 @@ HEAD が動くと configure が再実行される。
 - 結合テスト: `test/run_*.cmake` が player / cli を子プロセス起動して検証。例: `run_devcli_assets`/ `run_event_schema_compile`/ `run_dump_lowered_material`/ `run_devcli_gltf_extract`/ `run_spvlink_golden`/ `run_devcli_rules_import`/ `run_devcli_bake_camera` + `run_input_record_replay_headless`/ `run_ui_u2_rpc_replay`など。
 - 統合テスト: [`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake)(ctest 名 `devcli_graph_catalog`。`pelican_cli graph-catalog` の出力を検査し、**さらに `docs/v0_freeze.md` の操作表と突き合わせます** —— 表は `<!-- graph-op-table:begin -->` / `:end` のコメントで区切られていて、誰も比べない写しを 2 つ目の正にしないための仕掛けです)、`package_install_smoke`(X-1。install → カタログ → 描画 → uninstall を実 player で。`gpu` ラベル)、[`run_project_catalog_smoke.cmake`](../../test/run_project_catalog_smoke.cmake)(出荷 project の走査。`project.json` の `requires` が満たせない project は**名前を出して skip** し、player の中で落ちません)。
 - **Studio のシナリオ(Q-1)**: `test/studio_scenarios/*.json` は 1 本が 1 つの ctest `studio_scenario_<名前>` になり
-([登録](../../test/CMakeLists.txt#L3824))、`pelican_gpu_lease_run` 経由の **GPU lane** で走ります —— 実物の窓に
+([登録](../../test/CMakeLists.txt#L3823))、`pelican_gpu_lease_run` 経由の **GPU lane** で走ります —— 実物の窓に
 実物の player が埋まるので `QT_QPA_PLATFORM=offscreen` は掛けません。Studio target と Python 製テストを有効にし、
 Python 3.11 以上を用意します。`uv` は不要です。完全な GPU gate はシナリオの未登録・skip を失敗にするため、
 `SKIP_DEVSTUDIO=OFF` と `PELICAN_PYTHON_TESTS=ON` を指定します。[`run_studio_scenario.cmake`](../../test/run_studio_scenario.cmake#L30) が fixture
