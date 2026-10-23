@@ -2069,7 +2069,7 @@
     "docs/manual/15_studio.md|../../src/devstudio/view/graphcanvasdrawing.cpp|`Builder::addZone`": "QGraphicsItem *Builder::addZone(const Zone &zone, int column, const QPointF &position,",
     "docs/manual/15_studio.md|../../src/devstudio/view/graphcanvasdrawing.cpp|`layoutZone`": "void layoutZone(Zone &zone, const QFontMetricsF &heading_metrics,",
     "docs/manual/15_studio.md|../../src/devstudio/view/graphcanvasdrawing.cpp|ラベルを描く所": "for (std::size_t index = 0; index < zone.axis_labels.size(); ++index) {",
-    "docs/manual/15_studio.md|../../src/devstudio/view/graphcanvasdrawing.cpp|帯を切る所": "text = row_metrics_.elidedText(text, Qt::ElideRight, room);",
+    "docs/manual/15_studio.md|../../src/devstudio/view/graphcanvasdrawing.cpp|帯を切る所": "text = row_metrics.elidedText(text, Qt::ElideRight, room);",
     "docs/manual/15_studio.md|../../src/devstudio/view/graphcanvasdrawing.cpp|帯を描く所": "// Q-19: the variadic group's rows, drawn over one long band on the edge.",
     "docs/manual/15_studio.md|../../src/devstudio/view/graphcanvasdrawing.cpp|描く所": "void Builder::addLayerBand(QGraphicsItem &node, const QString &name, const QString &text) {",
     "docs/manual/15_studio.md|../../src/devstudio/view/graphcanvasdrawing.cpp|描く所|#1": "// GL-1e, decision 1: the pass's `input`, one socket each, and the empty",
