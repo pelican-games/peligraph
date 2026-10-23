@@ -114,6 +114,9 @@ struct Node {
     std::vector<LayerLine> layers;
     bool layers_read_only = false;
     QString picked_layer;
+    // NB-5: the rows are a shape the engine has not answered for yet (the
+    // small mark on the band).
+    bool layers_pending = false;
 
     // The heading alone: the old folded node.
     [[nodiscard]] bool minimal() const noexcept { return view == GraphCanvasNodeView::minimal; }
@@ -313,6 +316,9 @@ class Builder {
     // NB-2b: the layer row picked on the canvas (its stack's scope and id,
     // and the layer's input), drawn picked.
     void setPickedLayer(std::string scope, std::string stack, std::string input);
+    // NB-5: a stack drawn with the parameters a gesture left it, ahead of the
+    // document (the scene's shape in the air); its rows are read from them.
+    void setLayerShape(std::string scope, std::string stack, nlohmann::json parameters);
     // NB-2c: whether a stack's row is open (scope, stack, layer input); none
     // draws every row closed.
     using OpenRows = std::function<bool(const std::string &, const std::string &, const std::string &)>;
@@ -322,6 +328,10 @@ class Builder {
     // definition in GraphCanvasZoneScopeRole.
     void setContainer(QGraphicsItem *container);
     void addNode(const Node &entry, int column, const QPointF &position, Moved moved);
+    // NB-5: `item` (a node addNode drew) drawn again as `entry`, in place: its
+    // outline, heading band and body. The item -- its place, its data, its
+    // selection and what a drag of it does -- stays.
+    void redrawNode(QGraphicsPathItem &item, const Node &entry);
     // The frame, its heading, tabs, marks and edge sockets. Returns the item
     // the body is drawn in (positioned at the body's origin).
     QGraphicsItem *addZone(const Zone &zone, int column, const QPointF &position, Moved moved);
@@ -390,6 +400,8 @@ class Builder {
 
   private:
     void addNodeHeader(QGraphicsPathItem *item, const Node &entry);
+    // The node's ports, as the item's data says them.
+    void tagPorts(QGraphicsItem &item, const GraphCanvasNode &node) const;
     MovableNodeItem *addNodeItem(const Node &entry, int column, const QPainterPath &path,
                                  const QPointF &position, Moved moved);
     void place(QGraphicsItem *item);
@@ -413,6 +425,10 @@ class Builder {
     OpenRows open_rows_;
     // NB-3.
     GraphCanvasThumbnails *thumbnails_ = nullptr;
+    // NB-5.
+    std::string layer_shape_scope_;
+    std::string layer_shape_stack_;
+    nlohmann::json layer_shape_parameters_;
 };
 
 } // namespace GraphCanvasDrawing

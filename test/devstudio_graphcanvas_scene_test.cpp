@@ -17881,3 +17881,285 @@ TEST_CASE("NB-4 the time one row's picture takes", "[.][nb4-timing]") {
                           << (pixels.crop ? " (cut)" : " (whole)"));
     }
 }
+
+// --- NB-5: a stack's rows drawn the moment a gesture is made, the engine's
+// answer followed by drawing that stack alone.
+
+namespace {
+
+struct Nb5Answer {
+    Json ops;
+    // followDocument drew the stacks alone (no repopulate).
+    bool light = false;
+};
+
+// The engine's answer to the one edit in the air -- committed, the document
+// as the edit leaves it, or refused with `refusal` -- then the document read
+// again and followed as the tab follows it (followDocument).
+Nb5Answer nb5Answer(ZoneHarness &h, const std::string &refusal = {}) {
+    const auto edits = h.answerReads();
+    REQUIRE(edits.size() == 1);
+    const auto &submit = edits.front();
+    REQUIRE(submit.params.at("base_source_digest") == h.digest());
+    Nb5Answer answer;
+    answer.ops = submit.params.at("ops");
+    if (!refusal.empty()) {
+        h.model.receiveRpcResult(submit.request_id, Json{{"error", refusal}}.dump());
+    } else {
+        Json edited = Pelican::editGraphDocument(h.document, answer.ops);
+        h.model.receiveRpcResult(submit.request_id, Json{{"status", "accepted"}, {"ticket", "nb5-edit"}}.dump());
+        for (const auto &request : h.model.takeRpcRequests()) {
+            if (request.method != "get_edit_result") continue;
+            h.document = std::move(edited);
+            ++h.generation;
+            h.model.receiveRpcResult(request.request_id,
+                                     Json{{"status", "committed"}, {"committed", true},
+                                          {"source_digest", {{"hex", h.digest()}}}}
+                                         .dump());
+        }
+    }
+    h.answerReads();
+    answer.light = h.scene.followDocument();
+    return answer;
+}
+
+// The bottom row of `stack` let go on the top one's upper edge, or `from`
+// (top first) on the top one.
+void nb5DragToTop(QGraphicsScene &scene, const QString &stack, std::size_t from) {
+    const auto rows = nb2bRows(scene, stack);
+    REQUIRE(rows.size() > from);
+    const QPointF grab = centreOf(rows[from]);
+    drag(scene, grab, QPointF{grab.x(), rows.front()->sceneBoundingRect().top() + 4.0});
+}
+
+QGraphicsItem *nb5Mark(QGraphicsScene &scene, const QString &stack) {
+    return nb2bPart(scene, PelicanStudio::GraphCanvasStackPendingItem, stack);
+}
+
+} // namespace
+
+TEST_CASE("NB-5 a row let go is drawn in its new place before the engine answers, and marked until it has",
+          "[devstudio][graph-canvas][scene][nb5]") {
+    (void)application();
+    ZoneHarness h{nb2bDocument()};
+    nb2bOpen(h);
+    auto &scene = h.scene;
+    const QString hud = QStringLiteral("hud");
+    const QString bg = QStringLiteral("bg_fill");
+    const QString card = QStringLiteral("card_fill");
+    const QString dot = QStringLiteral("dot_fill");
+    REQUIRE(nb2bOrder(scene, hud) == QStringList({dot, card, bg}));
+    CHECK(nb5Mark(scene, hud) == nullptr);
+
+    // Background (the bottom row) onto the top: drawn on top at once. The
+    // edit is still in the outbox -- the engine has said nothing.
+    const auto expected = PelicanStudio::graphCanvasMoveLayerToOps(h.model.nodes(""), "", "hud", 0, 2);
+    QElapsedTimer drop;
+    drop.start();
+    nb5DragToTop(scene, hud, 2);
+    const auto drawn_ms = drop.elapsed();
+    CHECK(nb2bOrder(scene, hud) == QStringList({bg, dot, card}));
+    CHECK(nb2bLayers(h.document, "hud") == QStringList({bg, card, dot}));
+    CHECK(scene.layerShapePending("", "hud"));
+    CHECK(nb5Mark(scene, hud) != nullptr);
+    WARN("NB-5: from the drop to the rows drawn in their new order: " << drawn_ms << " ms (scene test)");
+    // The engine answers with the same order: the mark goes, nothing moves.
+    const auto moved = nb5Answer(h);
+    CHECK(moved.ops == expected);
+    CHECK(nb2bOrder(scene, hud) == QStringList({bg, dot, card}));
+    CHECK(nb2bLayers(h.document, "hud") == QStringList({card, dot, bg}));
+    CHECK_FALSE(scene.layerShapePending("", "hud"));
+    CHECK(nb5Mark(scene, hud) == nullptr);
+
+    // The eye: hidden at once.
+    nb2bClick(scene, centreOf(nb2bPart(scene, PelicanStudio::GraphCanvasStackEyeItem, hud, dot)));
+    CHECK_FALSE(nb2bPart(scene, PelicanStudio::GraphCanvasStackRowItem, hud, dot)
+                    ->data(PelicanStudio::GraphCanvasLayerVisibleRole)
+                    .toBool());
+    CHECK(nb5Mark(scene, hud) != nullptr);
+    (void)nb5Answer(h);
+    CHECK(nb5Mark(scene, hud) == nullptr);
+    CHECK_FALSE(nb2bPart(scene, PelicanStudio::GraphCanvasStackRowItem, hud, dot)
+                    ->data(PelicanStudio::GraphCanvasLayerVisibleRole)
+                    .toBool());
+
+    // A name, in place: the row says it the moment Enter is pressed.
+    click(scene, centreOf(nb2bPart(scene, PelicanStudio::GraphCanvasStackNameItem, hud, card)),
+          QEvent::GraphicsSceneMouseDoubleClick);
+    REQUIRE(scene.editingInline());
+    scene.setInlineEditText(QStringLiteral("Front card"));
+    REQUIRE(scene.commitInlineEdit());
+    CHECK(nb2bText(nb2bPart(scene, PelicanStudio::GraphCanvasStackNameItem, hud, card)) ==
+          QStringLiteral("Front card"));
+    CHECK(nb5Mark(scene, hud) != nullptr);
+    (void)nb5Answer(h);
+    CHECK(nb5Mark(scene, hud) == nullptr);
+
+    // The opacity mark dragged: its percent at once.
+    QGraphicsItem *opacity = nb2bPart(scene, PelicanStudio::GraphCanvasStackOpacityItem, hud, card);
+    REQUIRE(opacity != nullptr);
+    const QPointF grab = centreOf(opacity);
+    drag(scene, grab, grab - QPointF{30.0, 0.0});
+    CHECK(nb2bText(nb2bPart(scene, PelicanStudio::GraphCanvasStackOpacityItem, hud, card)) == QStringLiteral("60%"));
+    (void)nb5Answer(h);
+    CHECK(nb2bText(nb2bPart(scene, PelicanStudio::GraphCanvasStackOpacityItem, hud, card)) == QStringLiteral("60%"));
+}
+
+TEST_CASE("NB-5 an order the engine refuses goes back to the document's, and the notice says why",
+          "[devstudio][graph-canvas][scene][nb5]") {
+    (void)application();
+    ZoneHarness h{nb2bDocument()};
+    nb2bOpen(h);
+    auto &scene = h.scene;
+    const QString hud = QStringLiteral("hud");
+    const QStringList document_order{QStringLiteral("dot_fill"), QStringLiteral("card_fill"), QStringLiteral("bg_fill")};
+    REQUIRE(nb2bOrder(scene, hud) == document_order);
+    const std::string reason = "NB-5 test: the engine keeps this stack's order";
+
+    nb5DragToTop(scene, hud, 2);
+    REQUIRE(nb2bOrder(scene, hud) != document_order);
+    (void)nb5Answer(h, reason);
+    CHECK(nb2bOrder(scene, hud) == document_order);
+    CHECK_FALSE(scene.layerShapePending("", "hud"));
+    CHECK(nb5Mark(scene, hud) == nullptr);
+    CHECK(h.model.notice().message.find(reason) != std::string::npos);
+
+    // A second shape drawn while the first was in the air goes back with it.
+    nb5DragToTop(scene, hud, 2);
+    nb5DragToTop(scene, hud, 2);
+    REQUIRE(nb2bOrder(scene, hud) != document_order);
+    (void)nb5Answer(h, reason);
+    CHECK(nb2bOrder(scene, hud) == document_order);
+    QCoreApplication::processEvents();
+    requireNoEdit(h.model);
+    CHECK(nb2bLayers(h.document, "hud") ==
+          QStringList({QStringLiteral("bg_fill"), QStringLiteral("card_fill"), QStringLiteral("dot_fill")}));
+}
+
+TEST_CASE("NB-5 three quick moves end in the last order, on the canvas and in the document",
+          "[devstudio][graph-canvas][scene][nb5]") {
+    (void)application();
+    ZoneHarness h{nb2bDocument()};
+    nb2bOpen(h);
+    auto &scene = h.scene;
+    const QString hud = QStringLiteral("hud");
+    const QString bg = QStringLiteral("bg_fill");
+    const QString card = QStringLiteral("card_fill");
+    const QString dot = QStringLiteral("dot_fill");
+    // Three moves, the engine answering none of them in between.
+    nb5DragToTop(scene, hud, 2);
+    CHECK(nb2bOrder(scene, hud) == QStringList({bg, dot, card}));
+    nb5DragToTop(scene, hud, 2);
+    CHECK(nb2bOrder(scene, hud) == QStringList({card, bg, dot}));
+    nb5DragToTop(scene, hud, 1);
+    const QStringList last{bg, card, dot};
+    CHECK(nb2bOrder(scene, hud) == last);
+
+    // The first edit's answer: the canvas keeps the last order.
+    const auto first = nb5Answer(h);
+    CHECK(nb2bLayers(h.document, "hud") == QStringList({card, dot, bg}));
+    CHECK(nb2bOrder(scene, hud) == last);
+    CHECK(scene.layerShapePending("", "hud"));
+    CHECK(nb5Mark(scene, hud) != nullptr);
+    // The last order goes out next, as one edit, and is the document's.
+    QCoreApplication::processEvents();
+    const auto second = nb5Answer(h);
+    REQUIRE(second.ops.size() == 1);
+    CHECK(second.ops.at(0).value("op", std::string{}) == "set_node_parameters");
+    CHECK(nb2bLayers(h.document, "hud") == QStringList({dot, card, bg}));
+    CHECK(nb2bOrder(scene, hud) == last);
+    CHECK_FALSE(scene.layerShapePending("", "hud"));
+    CHECK(nb5Mark(scene, hud) == nullptr);
+    QCoreApplication::processEvents();
+    requireNoEdit(h.model);
+    (void)first;
+}
+
+TEST_CASE("NB-5 a stack's edit coming back draws that stack alone; the lines into its rows follow them",
+          "[devstudio][graph-canvas][scene][nb5]") {
+    (void)application();
+    ZoneHarness h{nb2bDocument()};
+    nb2bOpen(h);
+    auto &scene = h.scene;
+    const QString hud = QStringLiteral("hud");
+    QGraphicsItem *screen = nodeItem(scene, QStringLiteral("screen"));
+    QGraphicsItem *stack = nodeItem(scene, hud);
+    QGraphicsItem *pulse = nodeItem(scene, QStringLiteral("pulse"));
+    REQUIRE(screen != nullptr);
+    REQUIRE(stack != nullptr);
+    REQUIRE(pulse != nullptr);
+
+    nb5DragToTop(scene, hud, 2);
+    const auto answer = nb5Answer(h);
+    CHECK(answer.light);
+    // The other nodes, and the stack's own item, are the ones drawn before.
+    CHECK(nodeItem(scene, QStringLiteral("screen")) == screen);
+    CHECK(nodeItem(scene, QStringLiteral("pulse")) == pulse);
+    CHECK(nodeItem(scene, hud) == stack);
+    // The line into Background's row ends on its socket, now at the top.
+    auto *line = dynamic_cast<QGraphicsPathItem *>(
+        scopedEdge(scene, QString{}, QStringLiteral("bg_fill"), QStringLiteral("layer"), hud, QStringLiteral("bg_fill")));
+    QGraphicsItem *socket = socketItem(scene, hud, QStringLiteral("bg_fill"), QStringLiteral("input"));
+    REQUIRE(line != nullptr);
+    REQUIRE(socket != nullptr);
+    CHECK(QLineF(line->mapToScene(line->path().pointAtPercent(1.0)), centreOf(socket)).length() < 1.0);
+    CHECK(centreOf(socket).y() < centreOf(socketItem(scene, hud, QStringLiteral("dot_fill"), QStringLiteral("input"))).y());
+
+    // An edit of another node is the whole draw again.
+    REQUIRE(h.model.setNodeLabel("", "screen", "Out"));
+    const auto other = nb5Answer(h);
+    CHECK_FALSE(other.light);
+    CHECK(nodeItem(scene, QStringLiteral("screen")) != screen);
+}
+
+TEST_CASE("NB-5 a move makes no row picture again; the composite is made again, its last picture shown meanwhile",
+          "[devstudio][graph-canvas][scene][nb5]") {
+    (void)application();
+    Nb3Project project;
+    ZoneHarness h{nb2bDocument()};
+    nb3Open(h, project);
+    auto &scene = h.scene;
+    const QString hud = QStringLiteral("hud");
+    REQUIRE(scene.thumbnails().waitUntilIdle(60000));
+    auto *composite = nb3Frame(scene, PelicanStudio::GraphCanvasStackCompositeItem, hud);
+    REQUIRE(composite != nullptr);
+    REQUIRE(nb3State(composite) == QStringLiteral("ready"));
+    const QString drawn_digest = composite->data(PelicanStudio::GraphCanvasThumbnailDigestRole).toString();
+    const QImage drawn = composite->image();
+    REQUIRE_FALSE(drawn.isNull());
+
+    // The workers wait, so the new composite is still being made below.
+    std::atomic<bool> hold{true};
+    scene.thumbnails().setWorkerHook([&hold] {
+        while (hold.load()) QThread::msleep(5);
+    });
+    struct Release {
+        std::atomic<bool> &hold;
+        GraphCanvasScene &scene;
+        ~Release() {
+            hold = false;
+            (void)scene.thumbnails().waitUntilIdle(60000);
+        }
+    } release{hold, scene};
+    scene.thumbnails().resetCounts();
+    nb5DragToTop(scene, hud, 2);
+    (void)nb5Answer(h);
+    // Only the composite was asked for anew; every row's picture was in hand.
+    const auto &missed = scene.thumbnails().missed();
+    REQUIRE(missed.size() == 1);
+    CHECK(missed.front().kind == PelicanStudio::GraphCanvasThumbnailKind::composite);
+    CHECK(missed.front().node == "hud");
+    for (const auto &input : {QStringLiteral("bg_fill"), QStringLiteral("card_fill"), QStringLiteral("dot_fill")})
+        CHECK(nb3State(nb3Frame(scene, PelicanStudio::GraphCanvasStackThumbItem, hud, input)) ==
+              QStringLiteral("ready"));
+    // The composite is being made, and shows its last picture, not grey.
+    composite = nb3Frame(scene, PelicanStudio::GraphCanvasStackCompositeItem, hud);
+    REQUIRE(composite != nullptr);
+    CHECK(nb3State(composite) == QStringLiteral("pending"));
+    CHECK(composite->data(PelicanStudio::GraphCanvasThumbnailDigestRole).toString() != drawn_digest);
+    CHECK(composite->image() == drawn);
+    hold = false;
+    REQUIRE(scene.thumbnails().waitUntilIdle(60000));
+    composite = nb3Frame(scene, PelicanStudio::GraphCanvasStackCompositeItem, hud);
+    CHECK(nb3State(composite) == QStringLiteral("ready"));
+}

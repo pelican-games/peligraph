@@ -161,6 +161,12 @@ void Builder::setPickedLayer(std::string scope, std::string stack, std::string i
     picked_layer_input_ = std::move(input);
 }
 
+void Builder::setLayerShape(std::string scope, std::string stack, nlohmann::json parameters) {
+    layer_shape_scope_ = std::move(scope);
+    layer_shape_stack_ = std::move(stack);
+    layer_shape_parameters_ = std::move(parameters);
+}
+
 Node Builder::prepareNode(const GraphCanvasModel &model, const GraphCanvasNode &node,
                           GraphCanvasNodeView view,
                           const std::set<std::string, std::less<>> &linked_outputs,
@@ -170,7 +176,13 @@ Node Builder::prepareNode(const GraphCanvasModel &model, const GraphCanvasNode &
     // NB-2b: a stack's rows, as the Layers dock reads them.
     if (node.op == "canvas.stack") {
         const std::string node_scope = scope ? *scope : scope_text_.toStdString();
-        const auto nodes = model.nodes(node_scope);
+        auto nodes = model.nodes(node_scope);
+        // NB-5: a shape in the air is drawn for the rows, not the document's.
+        if (!layer_shape_stack_.empty() && node_scope == layer_shape_scope_ && node.id == layer_shape_stack_)
+            if (const auto found = std::ranges::find(nodes, node.id, &GraphCanvasNode::id); found != nodes.end()) {
+                found->parameters = layer_shape_parameters_;
+                entry.layers_pending = true;
+            }
         auto read_only = read_only_scopes_.find(node_scope);
         if (read_only == read_only_scopes_.end())
             read_only = read_only_scopes_.emplace(node_scope, layerScopeReadOnly(model, node_scope)).first;
@@ -629,6 +641,16 @@ void Builder::addNode(const Node &entry, int column, const QPointF &position,
     (entry.body != nullptr ? *entry.body : defaultNodeBody()).draw(*this, *item, entry);
 }
 
+void Builder::redrawNode(QGraphicsPathItem &item, const Node &entry) {
+    // Children first: deleting one deletes what it holds.
+    const auto children = item.childItems();
+    for (QGraphicsItem *child : children) delete child;
+    item.setPath(roundedEntityPath(entry.width, entry.height, GraphCanvasNodeCornerRadius));
+    tagPorts(item, *entry.node);
+    addNodeHeader(&item, entry);
+    (entry.body != nullptr ? *entry.body : defaultNodeBody()).draw(*this, item, entry);
+}
+
 void Builder::tagPart(QGraphicsItem &part, const Node &entry, const char *kind) const {
     part.setData(NodeGraphItemKindRole, QString::fromLatin1(kind));
     tag(&part);
@@ -721,6 +743,11 @@ MovableNodeItem *Builder::addNodeItem(const Node &entry, int column,
     // NB-1: a loop folded from its zone is the minimal one of its zone.
     item->setData(GraphCanvasNodeViewRole,
                   viewText(entry.zone_folded ? GraphCanvasNodeView::minimal : entry.view));
+    tagPorts(*item, node);
+    return item;
+}
+
+void Builder::tagPorts(QGraphicsItem &item, const GraphCanvasNode &node) const {
     QStringList input_ports;
     QStringList declared_ports;
     for (const auto &port : node.inputs) {
@@ -733,10 +760,9 @@ MovableNodeItem *Builder::addNodeItem(const Node &entry, int column,
     QStringList output_ports;
     for (const auto &output : node.outputs)
         output_ports.push_back(qtext(output.port));
-    item->setData(GraphCanvasInputPortsRole, input_ports);
-    item->setData(GraphCanvasDeclaredPortsRole, declared_ports);
-    item->setData(GraphCanvasOutputPortsRole, output_ports);
-    return item;
+    item.setData(GraphCanvasInputPortsRole, input_ports);
+    item.setData(GraphCanvasDeclaredPortsRole, declared_ports);
+    item.setData(GraphCanvasOutputPortsRole, output_ports);
 }
 
 void Builder::addNodeHeader(QGraphicsPathItem *item, const Node &entry) {

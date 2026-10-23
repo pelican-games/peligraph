@@ -104,6 +104,11 @@ class GraphCanvasThumbnails final : public QObject {
         std::optional<QRectF> range;
     };
     void finished(const std::string &digest, GraphCanvasThumbnailPixels pixels);
+    // NB-5: what a frame shows while its new picture is made -- the last
+    // picture drawn for the same target (a stack's composite after its
+    // layers moved), so it does not go grey for the wait.
+    void showPrevious(const GraphCanvasThumbnailTarget &target, const std::string &digest,
+                      GraphCanvasThumbnailState &state);
     [[nodiscard]] const Pelican::CanvasValues &liveValues(const std::string &scope);
 
     QGraphicsScene &scene_;
@@ -116,6 +121,10 @@ class GraphCanvasThumbnails final : public QObject {
     std::uint64_t values_content_ = ~std::uint64_t{0};
     std::uint64_t values_report_ = ~std::uint64_t{0};
     std::map<std::string, Pelican::CanvasValues, std::less<>> values_;
+    // NB-5: the last picture each target was given, and the targets each
+    // picture being made is for.
+    std::map<GraphCanvasThumbnailTarget, Entry> shown_;
+    std::map<std::string, std::vector<GraphCanvasThumbnailTarget>, std::less<>> waiting_;
     Counts counts_;
     std::vector<GraphCanvasThumbnailTarget> missed_;
     std::function<void()> worker_hook_;

@@ -8,6 +8,7 @@
 #include <QPainter>
 #include <QThread>
 
+#include <algorithm>
 #include <cstring>
 #include <utility>
 
@@ -138,6 +139,8 @@ GraphCanvasThumbnailState GraphCanvasThumbnails::request(const GraphCanvasThumbn
         state.image = found->second.image;
         state.error = found->second.error;
         state.range = found->second.range;
+        if (state.pending) showPrevious(target, job.digest, state);
+        else shown_.insert_or_assign(target, found->second);
         return state;
     }
     ++counts_.misses;
@@ -149,6 +152,7 @@ GraphCanvasThumbnailState GraphCanvasThumbnails::request(const GraphCanvasThumbn
     cache_.emplace(job.digest, Entry{});
     ++in_flight_;
     state.pending = true;
+    showPrevious(target, job.digest, state);
     pool_.start([this, job = std::move(job), root = root_, hook = worker_hook_]() mutable {
         if (hook) hook();
         auto pixels = renderGraphCanvasThumbnail(job, root, &decodeGraphCanvasImage);
@@ -179,6 +183,10 @@ void GraphCanvasThumbnails::finished(const std::string &digest, GraphCanvasThumb
     } else {
         entry.error = QString::fromStdString(pixels.error.empty() ? std::string{"Nothing was drawn"} : pixels.error);
     }
+    if (const auto targets = waiting_.find(digest); targets != waiting_.end()) {
+        for (const auto &target : targets->second) shown_.insert_or_assign(target, entry);
+        waiting_.erase(targets);
+    }
     GraphCanvasThumbnailState state;
     state.digest = QString::fromStdString(digest);
     state.image = entry.image;
@@ -188,6 +196,16 @@ void GraphCanvasThumbnails::finished(const std::string &digest, GraphCanvasThumb
         if (auto *frame = dynamic_cast<GraphCanvasThumbnailFrame *>(item);
             frame != nullptr && frame->data(GraphCanvasThumbnailDigestRole).toString() == state.digest)
             frame->show(state);
+}
+
+void GraphCanvasThumbnails::showPrevious(const GraphCanvasThumbnailTarget &target, const std::string &digest,
+                                         GraphCanvasThumbnailState &state) {
+    auto &targets = waiting_[digest];
+    if (std::ranges::find(targets, target) == targets.end()) targets.push_back(target);
+    const auto previous = shown_.find(target);
+    if (previous == shown_.end() || previous->second.image.isNull()) return;
+    state.image = previous->second.image;
+    state.range = previous->second.range;
 }
 
 bool GraphCanvasThumbnails::waitUntilIdle(int timeout_ms) {
