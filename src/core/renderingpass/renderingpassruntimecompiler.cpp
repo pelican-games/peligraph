@@ -2303,6 +2303,13 @@ PassId registerFullscreenPipeline(
             fullscreen_info.raster_state->color_attachments,
             pass_def.physical_color_numeric_classes,
             "Fullscreen pass '" + pass_def.name + "'");
+        // PSN-1: pipeline.state_unsupported@1, before any shader work.
+        requirePipelineStateSupported(
+            *fullscreen_info.raster_state,
+            pipelineStateDeviceFacts(
+                GET_MODULE(VulkanManageCore)
+                    .getRuntimeCapabilities()),
+            pass_def.name);
     }
     const auto color_formats =
         resolvePhysicalColorFormats(
@@ -2376,7 +2383,8 @@ PassId registerFullscreenPipeline(
         }
         applyVulkanRasterPassContract(
             *fullscreen_info.raster_state, desc,
-            rendering.color_attachment_locations);
+            rendering.color_attachment_locations,
+            "Fullscreen pass '" + pass_def.name + "'");
         const auto pipeline_id =
             dependencies.fullscreen_pass_container
                 .registerRasterPass(std::move(desc));
@@ -2409,6 +2417,13 @@ PassId registerGenericRasterPipeline(
             .contract.state.color_attachments,
         pass_def.physical_color_numeric_classes,
         "Raster pass '" + pass_def.name + "'");
+    // PSN-1: pipeline.state_unsupported@1, before any shader work.
+    requirePipelineStateSupported(
+        pass_def.genericRasterInfo().contract.state,
+        pipelineStateDeviceFacts(
+            GET_MODULE(VulkanManageCore)
+                .getRuntimeCapabilities()),
+        pass_def.name);
     auto color_formats =
         resolvePhysicalColorFormats(
             pass_def, rendering,
@@ -2482,7 +2497,8 @@ PassId registerGenericRasterPipeline(
     applyVulkanRasterPassContract(
         pass_def.genericRasterInfo().contract,
         desc,
-        rendering.color_attachment_locations);
+        rendering.color_attachment_locations,
+        "Raster pass '" + pass_def.name + "'");
     const auto pipeline_id =
         dependencies.fullscreen_pass_container
             .registerRasterPass(std::move(desc));

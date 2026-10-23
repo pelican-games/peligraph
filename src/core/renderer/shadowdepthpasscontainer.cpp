@@ -1,4 +1,5 @@
 #include "shadowdepthpasscontainer.hpp"
+#include "../renderingpass/rasterpassvulkanadapter.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "battery/embed.hpp"
 
@@ -39,13 +40,16 @@ PassId ShadowDepthPassContainer::registerShadowDepthPass(
     desc.depth_format = depth_format;
     desc.shader_defines = std::move(shader_defines);
     desc.use_engine_vertex_layout = true;
-    desc.depth_test = true;
-    desc.depth_write = true;
-    desc.depth_compare = vk::CompareOp::eLessOrEqual;
-    desc.cull_mode = vk::CullModeFlagBits::eBack;
+    // PSN-1: through the one mapping.
+    PipelineState state;
+    state.cull = RasterCullMode::back;
+    state.depth = {.test = true,
+                   .write = true,
+                   .compare = RasterDepthCompare::less_equal};
     // CC-1a: counter-clockwise is the front; set per view at record time
     // (point lights draw cube faces, which are mirrored: clockwise).
-    desc.front_face = vk::FrontFace::eCounterClockwise;
+    state.front_face = RasterFrontFace::counter_clockwise;
+    applyVulkanPipelineState(state, desc, "shadow depth pipeline");
     desc.dynamic_front_face = true;
     desc.rasterization_samples = samples;
 

@@ -9,6 +9,7 @@
 #include "../container.hpp"
 #include "../resourcecontainer.hpp"
 #include "../vkcore/raytracingpipelinedispatch.hpp"
+#include <array>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
@@ -86,6 +87,39 @@ enum class AuxiliaryDescriptorContract {
     text_atlas,
 };
 
+// PSN-1: the fixed-function state the factory used to hard-code, in Vulkan
+// terms. applyVulkanPipelineState (rasterpassvulkanadapter.hpp) is the one
+// place that fills it from a PipelineState.
+struct GraphicsPipelineDepthBias {
+    float constant_factor = 0.0f;
+    float clamp = 0.0f;
+    float slope_factor = 0.0f;
+
+    bool operator==(
+        const GraphicsPipelineDepthBias &) const = default;
+};
+
+struct GraphicsPipelineStencilFaceState {
+    vk::StencilOp fail = vk::StencilOp::eKeep;
+    vk::StencilOp pass = vk::StencilOp::eKeep;
+    vk::StencilOp depth_fail = vk::StencilOp::eKeep;
+    vk::CompareOp compare = vk::CompareOp::eAlways;
+    std::uint32_t compare_mask = 0xffu;
+    std::uint32_t write_mask = 0xffu;
+    std::uint32_t reference = 0;
+
+    bool operator==(
+        const GraphicsPipelineStencilFaceState &) const = default;
+};
+
+struct GraphicsPipelineStencilState {
+    GraphicsPipelineStencilFaceState front;
+    GraphicsPipelineStencilFaceState back;
+
+    bool operator==(
+        const GraphicsPipelineStencilState &) const = default;
+};
+
 struct GraphicsPipelineDesc {
     ShaderBundleId vert;
     std::optional<ShaderBundleId> frag;
@@ -118,6 +152,28 @@ struct GraphicsPipelineDesc {
     vk::PrimitiveTopology topology = vk::PrimitiveTopology::eTriangleList;
     vk::SampleCountFlagBits rasterization_samples =
         vk::SampleCountFlagBits::e1;
+    // PSN-1: the rest of the fixed-function state. Every default is the value
+    // the factory hard-coded before, so a desc that sets none draws as before.
+    // Part of operator==, so every compare of descs sees them.
+    bool primitive_restart = false;
+    vk::PolygonMode polygon_mode = vk::PolygonMode::eFill;
+    bool depth_clamp = false;
+    std::optional<GraphicsPipelineDepthBias> depth_bias;
+    float line_width = 1.0f;
+    bool rasterizer_discard = false;
+    vk::ConservativeRasterizationModeEXT conservative_rasterization =
+        vk::ConservativeRasterizationModeEXT::eDisabled;
+    // Engaged: sample shading with this minimum fraction.
+    std::optional<float> min_sample_shading;
+    std::uint32_t sample_mask = 0xffffffffu;
+    bool alpha_to_coverage = false;
+    bool alpha_to_one = false;
+    // Engaged: the depth bounds test with {min, max}.
+    std::optional<std::array<float, 2>> depth_bounds;
+    // Engaged: the stencil test. depth_format must have a stencil component.
+    std::optional<GraphicsPipelineStencilState> stencil;
+    std::optional<vk::LogicOp> logic_op;
+    std::array<float, 4> blend_constants{};
     GraphicsPipelineViewContract view;
     GraphicsPipelineRenderingLocalReadContract
         local_read;

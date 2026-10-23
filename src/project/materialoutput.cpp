@@ -546,9 +546,46 @@ std::string_view materialOutputBlendFactorName(
         return "one_minus_dst_alpha";
     case MaterialOutputBlendFactor::source_alpha_saturate:
         return "src_alpha_saturate";
+    case MaterialOutputBlendFactor::constant_color:
+        return "constant_color";
+    case MaterialOutputBlendFactor::one_minus_constant_color:
+        return "one_minus_constant_color";
+    case MaterialOutputBlendFactor::constant_alpha:
+        return "constant_alpha";
+    case MaterialOutputBlendFactor::one_minus_constant_alpha:
+        return "one_minus_constant_alpha";
+    case MaterialOutputBlendFactor::source1_color:
+        return "src1_color";
+    case MaterialOutputBlendFactor::one_minus_source1_color:
+        return "one_minus_src1_color";
+    case MaterialOutputBlendFactor::source1_alpha:
+        return "src1_alpha";
+    case MaterialOutputBlendFactor::one_minus_source1_alpha:
+        return "one_minus_src1_alpha";
     }
     throw std::runtime_error(
         "unknown material output blend factor");
+}
+
+bool materialOutputBlendFactorIsDualSource(
+    MaterialOutputBlendFactor factor) noexcept {
+    return factor == MaterialOutputBlendFactor::source1_color ||
+           factor == MaterialOutputBlendFactor::one_minus_source1_color ||
+           factor == MaterialOutputBlendFactor::source1_alpha ||
+           factor == MaterialOutputBlendFactor::one_minus_source1_alpha;
+}
+
+bool materialOutputBlendStateUsesDualSource(
+    const MaterialOutputBlendState &state) noexcept {
+    if (!state.enabled) return false;
+    for (const auto *equation : {&state.color, &state.alpha}) {
+        if (materialOutputBlendFactorIsDualSource(equation->source) ||
+            materialOutputBlendFactorIsDualSource(
+                equation->destination)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 std::optional<MaterialOutputBlendFactor>
@@ -580,6 +617,26 @@ materialOutputBlendFactorFromName(std::string_view name) {
     if (name == "src_alpha_saturate")
         return MaterialOutputBlendFactor::
             source_alpha_saturate;
+    if (name == "constant_color")
+        return MaterialOutputBlendFactor::constant_color;
+    if (name == "one_minus_constant_color")
+        return MaterialOutputBlendFactor::
+            one_minus_constant_color;
+    if (name == "constant_alpha")
+        return MaterialOutputBlendFactor::constant_alpha;
+    if (name == "one_minus_constant_alpha")
+        return MaterialOutputBlendFactor::
+            one_minus_constant_alpha;
+    if (name == "src1_color")
+        return MaterialOutputBlendFactor::source1_color;
+    if (name == "one_minus_src1_color")
+        return MaterialOutputBlendFactor::
+            one_minus_source1_color;
+    if (name == "src1_alpha")
+        return MaterialOutputBlendFactor::source1_alpha;
+    if (name == "one_minus_src1_alpha")
+        return MaterialOutputBlendFactor::
+            one_minus_source1_alpha;
     return std::nullopt;
 }
 

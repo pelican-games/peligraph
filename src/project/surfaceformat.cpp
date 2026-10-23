@@ -814,16 +814,70 @@ bool parseBoolToken(std::string_view token, std::string_view context) {
     }
 }
 
+// PSN-1: one inline value as the JSON the raster_state parser reads: an
+// inline mapping is an object, [..] an array, true / false and numbers are
+// themselves, a quoted or bare word is a string.
+nlohmann::json inlineValueToJson(std::string_view token, const std::string &context) {
+    const auto value = trim(token);
+    if (value.empty()) {
+        throw std::runtime_error(context + " must not be empty");
+    }
+    if (value.front() == '{') {
+        nlohmann::json object = nlohmann::json::object();
+        for (const auto &[key, field] : parseInlineFields(value, context)) {
+            object[key] = inlineValueToJson(field, context + " " + key);
+        }
+        return object;
+    }
+    if (value.front() == '[') {
+        if (value.back() != ']') {
+            throw std::runtime_error(context + " has unbalanced delimiters");
+        }
+        nlohmann::json array = nlohmann::json::array();
+        const auto body = std::string_view{value}.substr(1, value.size() - 2);
+        if (trim(body).empty()) return array;
+        for (const auto &part : splitTopLevel(body, ',', context)) {
+            array.push_back(inlineValueToJson(part, context));
+        }
+        return array;
+    }
+    if (value.front() == '"' || value.front() == '\'') {
+        return parseStringToken(value, context);
+    }
+    const auto parsed = nlohmann::json::parse(value, nullptr, false);
+    if (!parsed.is_discarded() && (parsed.is_boolean() || parsed.is_number())) {
+        return parsed;
+    }
+    return value;
+}
+
 SurfaceRenderState parseRenderState(std::string_view value, std::string_view source_name,
                                     std::vector<std::string> &warnings) {
     const auto context = surfaceContext(source_name) + " render_state";
     const auto fields = parseInlineFields(value, context);
-    appendUnknownFieldWarnings(fields,
-                               {"blend", "cull", "depth", "depth_test", "depth_write",
-                                "depth_compare"},
-                               context, warnings);
+    const auto pipeline_keys = surfacePipelineStateKeys();
+    const auto is_pipeline_key = [&](std::string_view key) {
+        return std::find(pipeline_keys.begin(), pipeline_keys.end(), key) !=
+               pipeline_keys.end();
+    };
+    for (const auto &[field, field_value] : fields) {
+        (void)field_value;
+        if (!isKnownField(field, {"blend", "cull", "depth", "depth_test", "depth_write",
+                                  "depth_compare"}) &&
+            !is_pipeline_key(field)) {
+            warnings.push_back(context + " ignored unknown key '" + field + "'");
+        }
+    }
 
     SurfaceRenderState state;
+    // PSN-1: the rest of the vocabulary goes through the raster_state parser.
+    nlohmann::json pipeline_fields = nlohmann::json::object();
+    for (const auto &[field, field_value] : fields) {
+        if (is_pipeline_key(field)) {
+            pipeline_fields[field] = inlineValueToJson(field_value, context + " " + field);
+        }
+    }
+    state.pipeline = parseSurfacePipelineState(pipeline_fields, context);
     if (const auto *field = findField(fields, "blend")) {
         const auto name = parseStringToken(*field, context + " blend");
         if (name == "opaque") {
@@ -885,6 +939,9 @@ SurfaceRenderState parseRenderState(std::string_view value, std::string_view sou
     if (!state.depth_test && state.depth_write) {
         throw std::runtime_error(context +
                                  " requests depth_write while depth_test is disabled");
+    }
+    if (state.pipeline.logic_op && state.blend != SurfaceBlendMode::opaque) {
+        throw std::runtime_error(context + " field 'logic_op' replaces blending, but blend is not opaque");
     }
     return state;
 }
@@ -1369,6 +1426,38 @@ SurfaceFormatDocument parseSurfaceFormat(std::string_view source, std::string_vi
     document.hooks = validateSurfaceHooks(document.code, source_name);
     validateResourcePortStageUses(document, source_name);
     return document;
+}
+
+PipelineState materialPipelineState(const SurfaceRenderState &state) {
+    auto result = state.pipeline;
+    result.topology = RasterPrimitiveTopology::triangle_list;
+    result.primitive_restart = false;
+    result.front_face = RasterFrontFace::counter_clockwise;
+    switch (state.cull) {
+    case SurfaceCullMode::none: result.cull = RasterCullMode::none; break;
+    case SurfaceCullMode::front: result.cull = RasterCullMode::front; break;
+    case SurfaceCullMode::back: result.cull = RasterCullMode::back; break;
+    }
+    result.depth.test = state.depth_test;
+    result.depth.write = state.depth_write;
+    switch (state.depth_compare) {
+    case SurfaceDepthCompare::never: result.depth.compare = RasterDepthCompare::never; break;
+    case SurfaceDepthCompare::less: result.depth.compare = RasterDepthCompare::less; break;
+    case SurfaceDepthCompare::equal: result.depth.compare = RasterDepthCompare::equal; break;
+    case SurfaceDepthCompare::less_equal:
+        result.depth.compare = RasterDepthCompare::less_equal;
+        break;
+    case SurfaceDepthCompare::greater: result.depth.compare = RasterDepthCompare::greater; break;
+    case SurfaceDepthCompare::not_equal:
+        result.depth.compare = RasterDepthCompare::not_equal;
+        break;
+    case SurfaceDepthCompare::greater_equal:
+        result.depth.compare = RasterDepthCompare::greater_equal;
+        break;
+    case SurfaceDepthCompare::always: result.depth.compare = RasterDepthCompare::always; break;
+    }
+    result.color_attachments.clear();
+    return result;
 }
 
 } // namespace Pelican
