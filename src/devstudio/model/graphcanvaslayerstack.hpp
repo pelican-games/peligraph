@@ -92,6 +92,37 @@ struct GraphCanvasStackRow {
 // "<shape> stroke".
 [[nodiscard]] std::string graphCanvasLayerKindText(const GraphCanvasStackRow &row);
 
+// NB-2a: what a row of the stack node (docs/design_node_bodies.md 2.3) needs
+// beside its GraphCanvasStackRow. The row's sockets are `row.input` (the
+// layer), graphCanvasLayerOpacityPort(row.input) when `row.opacity_driven`,
+// and `row.mask` when `row.mask_source` is set.
+//
+// The port a value line drives a layer's opacity on: `<input>.opacity`.
+[[nodiscard]] std::string graphCanvasLayerOpacityPort(std::string_view input);
+// Where a row's `>` goes: a group into its own stack, in the same scope and
+// as read only as the stack it is in; an import into its definition, read
+// only (the Layers dock's rule), its stack the root of `definition_nodes`
+// (the definition's nodes; empty `stack` when they are not given or hold no
+// stack). Nothing for any other row.
+struct GraphCanvasRowEntry {
+    std::string scope;
+    std::string stack;
+    bool read_only = false;
+
+    bool operator==(const GraphCanvasRowEntry &) const = default;
+};
+[[nodiscard]] std::optional<GraphCanvasRowEntry> graphCanvasRowEntry(
+    const GraphCanvasStackRow &row, std::string_view scope, bool read_only,
+    const std::vector<GraphCanvasNode> &definition_nodes = {});
+// The stack of a definition body no node of it reads: its root (an imported
+// PSD's), or empty.
+[[nodiscard]] std::string graphCanvasRootStack(const std::vector<GraphCanvasNode> &nodes);
+// Whether `definition` is an imported canvas: a layer of some stack of
+// `nodes` (the scope the Graph descended from) reads an instance of it. Its
+// stacks -- the groups in it too -- are read only: no add, delete or move.
+[[nodiscard]] bool graphCanvasImportedDefinition(const std::vector<GraphCanvasNode> &nodes,
+                                                 std::string_view definition);
+
 // The stack the Layers panel shows for a node picked in the Graph: the stack
 // itself, the stack a canvas.output or (SG-3) a canvas.place reads, or the
 // stack that holds a picked paint, shape, filter or backdrop (a nested one
@@ -117,16 +148,22 @@ struct GraphCanvasStackRow {
 [[nodiscard]] nlohmann::json graphCanvasPaletteOps(const std::vector<GraphCanvasNode> &nodes,
                                                    std::string_view scope, std::string_view op);
 
+// NB-2a: every + below takes `above`, the index of the picked row: the new
+// layer goes just above it (at `above + 1` in `layers`). Without one, or one
+// past the top, it goes on top -- as + Adjustment's `above`.
+//
 // + Rect / + Ellipse: the shape at the stack's middle, a quarter of its size,
 // its fill, and a layer on top reading it. `shape` is "rect" or "ellipse".
 [[nodiscard]] nlohmann::json graphCanvasAddShapeLayerOps(const std::vector<GraphCanvasNode> &nodes,
                                                          std::string_view scope,
                                                          std::string_view stack,
-                                                         std::string_view shape);
+                                                         std::string_view shape,
+                                                         std::optional<std::size_t> above = std::nullopt);
 // + Group: an empty stack of the parent's size, as a layer on top.
 [[nodiscard]] nlohmann::json graphCanvasAddGroupLayerOps(const std::vector<GraphCanvasNode> &nodes,
                                                          std::string_view scope,
-                                                         std::string_view stack);
+                                                         std::string_view stack,
+                                                         std::optional<std::size_t> above = std::nullopt);
 // + Stroke: a stroke of the row's shape, as a layer just above the row.
 [[nodiscard]] nlohmann::json graphCanvasAddStrokeLayerOps(const std::vector<GraphCanvasNode> &nodes,
                                                           std::string_view scope,
@@ -136,11 +173,22 @@ struct GraphCanvasStackRow {
 [[nodiscard]] nlohmann::json graphCanvasDeleteLayerOps(const std::vector<GraphCanvasNode> &nodes,
                                                        std::string_view scope,
                                                        std::string_view stack, std::size_t index);
-// Up / Down: the layer swapped with the one above (+1) or below (-1).
+// Up / Down: the layer swapped with the one above (+1) or below (-1) --
+// graphCanvasMoveLayerToOps to `index + delta`.
 [[nodiscard]] nlohmann::json graphCanvasMoveLayerOps(const std::vector<GraphCanvasNode> &nodes,
                                                      std::string_view scope,
                                                      std::string_view stack, std::size_t index,
                                                      int delta);
+// NB-2a, a row dragged: `layers[from]`, every member of it as it is, moved
+// so that it is `layers[to]` afterwards (the others keep their order). One
+// set_node_parameters; empty when `from == to` or either is past the end.
+// A drop between rows: the rows are top first, so the gap `g` under the
+// `g`-th row from the top (0 above the top one) of `n` is the insert place
+// `p = n - g`, and the layer at `from` lands at `to = p > from ? p - 1 : p`.
+[[nodiscard]] nlohmann::json graphCanvasMoveLayerToOps(const std::vector<GraphCanvasNode> &nodes,
+                                                       std::string_view scope,
+                                                       std::string_view stack, std::size_t from,
+                                                       std::size_t to);
 // One member of one element of `layers`: `visible`, `opacity` or `name`.
 // The default (visible, opacity 1) is written by leaving the member out.
 [[nodiscard]] nlohmann::json graphCanvasSetLayerOps(const std::vector<GraphCanvasNode> &nodes,
@@ -148,12 +196,23 @@ struct GraphCanvasStackRow {
                                                     std::string_view stack, std::size_t index,
                                                     std::string_view key,
                                                     const nlohmann::json &value);
-// A line dropped on `+ layer`: a layer on top reading it.
+// A line dropped on `+ layer`: a layer on top reading it --
+// graphCanvasInsertLayerOps at the top.
 [[nodiscard]] nlohmann::json graphCanvasConnectLayerOps(const std::vector<GraphCanvasNode> &nodes,
                                                         std::string_view scope,
                                                         std::string_view stack,
                                                         const std::string &source_node,
                                                         const std::string &source_port);
+// NB-2a, a line dropped between two rows: a layer reading `source_node`'s
+// `source_port` put in `layers` at `at` (0 is the bottom; the size or past
+// it, on top), and its line. Its input is named after the node (dots made
+// underscores, numbered when taken) and the layer after the node's heading,
+// as for `+ layer`. Empty for a source that is not there or is the stack.
+[[nodiscard]] nlohmann::json graphCanvasInsertLayerOps(const std::vector<GraphCanvasNode> &nodes,
+                                                       std::string_view scope,
+                                                       std::string_view stack, std::size_t at,
+                                                       const std::string &source_node,
+                                                       const std::string &source_port);
 // A stack's layer line taken away: the layer goes with it (a layer with no
 // line is refused, canvas.layer_input_missing@1). Empty for a port that is
 // no layer's.
@@ -194,7 +253,8 @@ struct GraphCanvasOutputStack {
                                                          std::string_view stack,
                                                          const std::string &asset,
                                                          const std::array<double, 2> &size,
-                                                         const std::string &name);
+                                                         const std::string &name,
+                                                         std::optional<std::size_t> above = std::nullopt);
 // Whether the layer at `index` may be a clip layer: some layer below it is
 // not one (what it is clipped to; canvas.clip_base_missing@1 otherwise), and
 // so has every clip layer above it once it is.
@@ -297,7 +357,8 @@ struct GraphCanvasBlendChoice {
 [[nodiscard]] nlohmann::json graphCanvasAddTextLayerOps(const std::vector<GraphCanvasNode> &nodes,
                                                         std::string_view scope, std::string_view stack,
                                                         const std::string &text, const std::string &font,
-                                                        double size);
+                                                        double size,
+                                                        std::optional<std::size_t> above = std::nullopt);
 // One parameter of a shape.text, the rest as they are; the engine's default
 // (align left, line_height 1.2, tracking 0, box_width 0) is written by leaving
 // the parameter out.
