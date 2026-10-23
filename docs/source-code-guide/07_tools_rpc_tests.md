@@ -402,7 +402,7 @@ session は
 - Graph の側は `graphcanvascomputefields.{hpp,cpp}` の `GraphCanvasRayTracingFields`(layout のある project の RT の task の節)で、layout は `GraphCanvasModel::rayLayoutRead()`(同じ `parseRayLayoutRead()`)から読みます。Frame Plan の Hit groups (SBT) は `frameplanwidget.cpp` が object ごとに `get_ray_occurrences` を問うて作ります。
 - 配線は `MainWindow` の 3 か所のまとまり(Ray layout の節を作る所、Inspector の `setAssignHitGroupAction` / `setEnableHitGroupsAction`、Graph の `setOpenRayLayout` / `setOpenCallableRecords`)です。見え方は [第13章](../manual/13_editor.md) §13.5 の「Studio で RT を組む(✅RTL-2s)」です。
 
-**Graph が Frame Plan の関数を呼ぶ口(✅GL-5d〜GL-5f)。**Graph タブは Frame Plan の編集の入口を自分で作り直さず、`FramePlanWidget` の公開の関数を `MainWindow` 経由で呼びます。GL-5d の `orderNodes()` / `fixSockets()` / `makeSocketsVariadic()` に、✅GL-5e が `removePass()` / `runShaderContract()` / `runReloadRefusal()` / `pinBackendCandidate()` / `unpinBackend()` / `freezePhysicalPlan()` / `removeFrozenPhysicalPlan()`(どれも Impl の既存の関数を呼ぶだけ)を足し、Graph の側は [`GraphCanvasWidget::setFramePlanEdits()`](../../src/devstudio/view/graphcanvaswidget.cpp#L11212) の struct `FramePlanEdits` で受けます。
+**Graph が Frame Plan の関数を呼ぶ口(✅GL-5d〜GL-5f)。**Graph タブは Frame Plan の編集の入口を自分で作り直さず、`FramePlanWidget` の公開の関数を `MainWindow` 経由で呼びます。GL-5d の `orderNodes()` / `fixSockets()` / `makeSocketsVariadic()` に、✅GL-5e が `removePass()` / `runShaderContract()` / `runReloadRefusal()` / `pinBackendCandidate()` / `unpinBackend()` / `freezePhysicalPlan()` / `removeFrozenPhysicalPlan()`(どれも Impl の既存の関数を呼ぶだけ)を足し、Graph の側は [`GraphCanvasWidget::setFramePlanEdits()`](../../src/devstudio/view/graphcanvaswidget.cpp#L11388) の struct `FramePlanEdits` で受けます。
 
 Frame Plan が隠れていても、[`FramePlanWidget::whenRead()`](../../src/devstudio/view/frameplanwidget.hpp#L222) が plan と authoring context(✅GL-5f から、引数 `tasks` が真なら compute task の catalog も)を読み直してから走らせます。
 
@@ -617,7 +617,7 @@ C++ は要りません。
 
 切り替えの通知は Qt signal ではなく**素の関数リスト**
 ([理由はヘッダのコメント](../../src/devstudio/view/studiotheme.hpp#L110)) —— scene test が view の `.cpp` を
-moc 無しで compile するためで、`GraphCanvasWidget` は [repopulate](../../src/devstudio/view/graphcanvaswidget.cpp#L1801)、
+moc 無しで compile するためで、`GraphCanvasWidget` は [repopulate](../../src/devstudio/view/graphcanvaswidget.cpp#L1862)、
 Frame Plan は [グラフの再描画](../../src/devstudio/view/frameplangraphics.cpp#L2206) で追随します
 (item は作られた時の色を抱えるので、描き直す以外に追随する道がありません)。**ソケットの型別の fill だけは
 テーマから引きません** —— 型の識別色は `graph_socket_styles.json` のままで、テーマが決めるのは縁と
@@ -625,7 +625,7 @@ Frame Plan は [グラフの再描画](../../src/devstudio/view/frameplangraphic
 
 [`GraphCanvasWidget`](../../src/devstudio/view/graphcanvaswidget.hpp) と `GraphCanvasScene` が view です。
 上段は `Scope:` の combo とパンくず、`Values from:` の combo、`Refresh`
-([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L6290))、本体は左がキャンバス、右が
+([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L6466))、本体は左がキャンバス、右が
 `Field` / `Value` の詳細表です。node は見出し帯 + 出力欄 + 入力欄の 3 段で、見出しの三角はソケット欄を
 折り畳みます(折り畳むと辺は見出し帯の左右中央 1 点へ集まります)。編集はすべて**即時**で Apply ボタンがなく、
 ソケット間ドラッグ = `set_input`、辺の `Delete` = `set_input{null}`、値の帯のその場編集 =
@@ -637,7 +637,7 @@ node の `Delete` = `remove_node` です。
 engine へ出せるのは [`GraphCanvasReadCapability`](../../src/devstudio/view/graphcanvasreadcapability.hpp#L37) が
 名前で持つ 5 つ(`get_graph_instances` / `get_graph_catalog` / `get_graph_values` / `edit_graph_document` /
 `get_edit_result`)だけで、それ以外は `The graph canvas cannot issue %1.` になります
-([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L8704))。
+([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L8880))。
 
 規範は struct の宣言そのもの
 ([メンバ 5 本](../../src/devstudio/view/graphcanvasreadcapability.hpp#L46))で、その上の宣言コメントは
@@ -651,7 +651,7 @@ engine へ出せるのは [`GraphCanvasReadCapability`](../../src/devstudio/view
 
 **ドラッグ中の作り直しと、往復の間の canvas(FX-8 / FX-9)。**2 つの canvas は、応答が来るたびに item を全部作り直します。手で掴んでいる item を消すと gesture が空振りするので、どちらの scene も `dragging()` で「今 gesture の最中か」を答え、owner はその間の作り直しを gesture の終わりへ延ばします。
 
-- Graph タブ: [`GraphCanvasScene::dragging()`](../../src/devstudio/view/graphcanvaswidget.hpp#L676) は press の処理中・接続の途中(`pending_connection_`)・mouse grabber のどれかで真です。接続の線は mouse grabber を持たないので、`pending_connection_` を数えないと plan の応答が線を消します。`synchronize()` は真の間 `synchronize_after_drag` を立てて戻り、scene の `gestureEnded`(release で呼ぶ)が次の event loop で作り直します([延ばす所](../../src/devstudio/view/graphcanvaswidget.cpp#L10864))。作り直すときに `canvas->setEnabled(!model.busy())` で、`GraphCanvasModel::busy()`(要求の slot か ticket が埋まっている間。文書の読み直しも要求の slot を使う)の間は canvas を止めます。詳細の欄は、選択が変わって欄の作り直しを延ばしている間、側の widget ごと止めます([`showDetails()`](../../src/devstudio/view/graphcanvaswidget.cpp#L10599))。
+- Graph タブ: [`GraphCanvasScene::dragging()`](../../src/devstudio/view/graphcanvaswidget.hpp#L711) は press の処理中・接続の途中(`pending_connection_`)・mouse grabber のどれかで真です。接続の線は mouse grabber を持たないので、`pending_connection_` を数えないと plan の応答が線を消します。`synchronize()` は真の間 `synchronize_after_drag` を立てて戻り、scene の `gestureEnded`(release で呼ぶ)が次の event loop で作り直します([延ばす所](../../src/devstudio/view/graphcanvaswidget.cpp#L11040))。作り直すときに `canvas->setEnabled(!model.busy())` で、`GraphCanvasModel::busy()`(要求の slot か ticket が埋まっている間。文書の読み直しも要求の slot を使う)の間は canvas を止めます。詳細の欄は、選択が変わって欄の作り直しを延ばしている間、側の widget ごと止めます([`showDetails()`](../../src/devstudio/view/graphcanvaswidget.cpp#L10775))。
 - Frame Plan: [`FramePlanGraphicsScene::dragging()`](../../src/devstudio/view/frameplangraphics.hpp#L245) は mouse event の処理中(`handling_mouse_`)・接続の gesture・mouse grabber で真です。`renderCurrentGraph()` は真なら `render_after_drag_` を立てて戻り、`FramePlanWidget` の `populate()` も `populate_after_drag` で同じく延ばします。release は qScopeGuard から queued で `gestureEnded` と延ばした作り直しを呼ぶので、落とし先の判定(と、それが送る編集)は作り直しより先に済みます([release の所](../../src/devstudio/view/frameplangraphics.cpp#L4555))。canvas を押せるかは [`updateCanvasEnabled()`](../../src/devstudio/view/frameplanwidget.cpp#L1900) が、編集・ticket・再試行・authoring・task・plan の要求がどれも出ていないことで決め、要求を出す関数と受ける関数の出口(qScopeGuard)で毎回呼び直します。commit の後に読みが既に出ていれば、その読みは commit より古いかもしれないので、`authoring_reread` / `task_reread` でもう 1 回読ませます。
 
 利用者から見た規則は manual 第15章 §15.6 の「Graph の即時編集とソケット接続」と §15.8 の「Frame Plan のノード編集とソケット」です。
