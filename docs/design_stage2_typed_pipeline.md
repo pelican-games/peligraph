@@ -1,79 +1,63 @@
-# 段階 2 の強化: typed な論理 graph を core の入力にし、JSON の二重 parse を解く
+# 段階 2 の強化: 計画用 graph を project で 1 回だけ作り、core はそれを受ける
 
 対象読者: エンジン担当(描画コンパイラ / renderer)。
-ステータス: 方針決定(2026-10-17。「段階 2 の強化と二重経路のリファクタは行う」)。WP 化・レビュー前。
+ステータス: 方針決定(2026-10-17。「段階 2 の強化と二重経路のリファクタは行う」)。**2026-10-24 に前提の誤りを直して書き直し**(利用者了承)。
+RC-3a / RC-3b / RC-4 として WP 化。
 前提: [design_plan_layer_inventory.md](design_plan_layer_inventory.md) 2-6、
 [design_render_preset_feature_recipe.md](design_render_preset_feature_recipe.md)(compose の出力を触る WP と同時期)、
-[design_heterogeneous_execution_graph.md](design_heterogeneous_execution_graph.md) §2(`CompiledRenderPipeline::logical_graph` が render dialect fragment)。
-行番号は `develop`(v0.1.0 + WR-1)時点。
+[design_pass_fusion.md](design_pass_fusion.md)(PF-3 が node の pass の形を要る)、
+[design_pipeline_state_nodes.md](design_pipeline_state_nodes.md)(PSN-1 の `PipelineState` を RC-4 が運ぶ)。
 
 ## 0. 要約
 
-- 段階 2(`compileRenderPipeline`、[`renderpipeline.cpp:2340`](../src/project/renderpipeline.cpp#L2340))の出力
-  [`CompiledRenderPipeline`](../src/project/renderpipeline.hpp#L600) には、policy のほかに **typed な論理 graph `logical_graph`**
-  ([`logicalrendergraph.hpp`](../src/project/logicalrendergraph.hpp) 280 行 + `.cpp` 929 行)が既にある。
-- ところが core は **同じ resolved JSON をもう一度読んで** `PassDefinition`、`FrameGraphNodeDefinition`、`RenderTargetDefinition` を作る。
-  node の構造が project と core の 2 系統の型で存在し、一致は「同じ JSON を読んだから」で担保されている。
-- 方針: core の `FrameGraphDefinition` を `logical_graph` から作り、pass 定義の backend 非依存部分を project の型にし、
-  core には「論理 → Vulkan 列挙の写像」と物理計画だけを残す。**実行時の経路は触らない**(registration / hot reload の CPU 段だけ)。
-- 効果: 写しの排除(棚卸しメモ 規則 2)、GPU 無しの test が `logical_graph` → `planFrameGraph` まで型で届く、
-  段階 2 の出力の canonical hash で hot reload の incremental prepare。性能低下は無い(毎フレームの経路は prepare 済みの handle を読むだけ)。
+- 2026-10-17 版は「段階 2 の出力 `CompiledRenderPipeline` に typed な論理 graph `logical_graph` が既にあり、core が同じ JSON を読み直している」と書いたが、**誤りだった**
+  (2026-10-23、RC-3a の橋の test を書いている途中で codex が発見、統合側が確認)。`CompiledRenderPipeline`([renderpipeline.hpp](../src/project/renderpipeline.hpp))は policy しか持たない。
+- 実際は **graph の構造を読むのは core だけ**で、しかも同じ composed config を何度も読み直している(§1)。論理 graph(`CompiledLogicalRenderGraph`、型は project の [logicalrendergraph.hpp](../src/project/logicalrendergraph.hpp))を作るのも core の `compileLogicalFrameGraphShadow` だけ。
+- 目指す姿は変わらない: **pass の JSON を 1 回だけ読み、typed な graph を project で作り、core は受け取って Vulkan に写すだけ**。変わるのは道筋で、「既にある論理 graph を広げる」ではなく「core にある計画用 graph の層(`FrameGraphDefinition` 一式)を project へ移す」。
+  `FrameGraphDefinition` は既に backend 非依存(attachment の load / store は自前の enum、material filter・view select・subresource は project の型)なので、型を新しく発明しない。
 
-## 1. 現状の二重経路
+## 1. 今の経路(develop_v1 = 60ea40dd8 で確認)
 
 ```text
-resolved JSON(段階 1 の出力)
-   ├─ 段階 2  compileRenderPipeline → CompiledRenderPipeline { policy…, logical_graph }   … project(純ロジック)
-   │                                        └─ 消費: targetplanning(project)、vulkanrendercompilerprogram.cpp:1213、renderingsamplecount.cpp:644
-   └─ core   parseRenderingPassDefinitionsFromConfigJson → PassDefinition[]             … renderingpassconfigregistration.cpp:478-620
-             parsePassDefinitionFromJson(passdefinitionjsonparser.cpp 289 行)
-             parseRenderTargetFromJson   (rendertargetjsonparser.cpp 338 行、vk::Format / usage)
-             parseRenderNodeFromJson / parseComputeNodeFromJson(frameplanner.cpp:669 / :858)
-             makeRenderNodeDefinition(PassDefinition)(frameplanner.cpp:1196)→ FrameGraphDefinition → planFrameGraph(:1858)
+resolved / composed config(JSON)
+  ├─ core: 実行用に parse → PassDefinition / RenderTargetDefinition(vk の型。registration)
+  ├─ core: 計画用に parse → parseFrameGraphDefinitionsFromConfigJson → FrameGraphDefinition
+  │        読み直しが 6 箇所: renderconfigeditor.cpp ×3、graphtransformregistry.cpp、subgraphreplacementregistry.cpp、
+  │        vulkanrendercompilerprogram.cpp ×2
+  │        ├→ planFrameGraph → FramePlan(順序・barrier。compiler が variant ごとに作る)
+  │        └→ compileLogicalFrameGraphShadow → CompiledLogicalRenderGraph → project の物理計画(compileVulkanTargetPlan)
+  └─ project: 段階 2 compileRenderPipeline → CompiledRenderPipeline(policy だけ。graph なし)
 ```
 
-- registration の注記([`renderingpassconfigregistration.cpp`](../src/core/renderingpass/renderingpassconfigregistration.cpp#L478) 付近):
-  「normalized JSON は CPU 段の後は要らない。compiled definitions から再構築する」。JSON を持ち続ける理由が二重 parse そのもの。
-- `frameplanner.cpp` 2,473 行のうち 669〜1,343 行が parse。planning(`planFrameGraph`)は後半で、本件では触らない。
+- `makeFrameGraphDefinition(RenderingPassDefinition)`(core の PassDefinition から作る道)は production から呼ばれていない(test だけ)。
+- 計画用の node の parse(`parseRenderNodeFromJson` / `parseComputeNodeFromJson`、frameplanner.cpp)は、実行用の parse と helper を共有している
+  (`renderingpassjsonhelpers`、`passattachmentoptionsjsonparser`、`materialpassinfojsonparser`、`passfieldownershipcapabilities`。どれも core の `renderingpass.hpp` を include する)。これが移すときの主な絡まり。
+- 結果: FramePlan と論理 graph は「同じ JSON をそれぞれ読んだ」ことで一致しているだけ。RC-2 の codex レビューは、差し替えた compiler が古い FramePlan と新しい計画を混ぜて返しても通ることを示した(RC-2b では閉じず、ここで閉じる)。
 
-## 2. 型の対応
+## 2. 段階
 
-| core が JSON から作るもの | 段階 2 に既にあるもの | 足りないもの / やること |
-|---|---|---|
-| [`FrameGraphNodeDefinition`](../src/core/renderingpass/frameplanner.hpp#L83): name / kind / declaration_index / reads / reads_history / read_footprints / local_read_shader_inputs / resource_accesses / writes / after / before / region_tags / attachments / snapshot_after / byte_size / raster_geometry / ray_query / resolution_domain / material_filter / material_variant / view_family / view_select / once | [`LogicalGraphNode`](../src/project/logicalrendergraph.hpp#L163): name / kind / declaration_index / ports / uses / after / before / region_tags / view_family / view_select | `LogicalGraphNode` に attachment の論理 op、snapshot_after、byte_size、material_filter / variant、once、ray_query、resolution_domain を足す(`uses` と `ports` で reads / writes / footprints は表せる)。`makeFrameGraphDefinition(const CompiledLogicalRenderGraph &)` を書き、`parseRenderNodeFromJson` / `parseComputeNodeFromJson` / `makeRenderNodeDefinition(PassDefinition)` を消す |
-| [`PassDefinition`](../src/core/renderingpass/renderingpass.hpp#L474): shader 参照、`pass_info`(material / fullscreen / generic raster / debug 系 / shadow / velocity の variant)、入力 target と設定、implementation selection、`vk::AttachmentLoadOp` / `StoreOp`、`vk::SampleCountFlagBits`、clear、once | 散在: `PassAttachmentOperations`、`SampleCountPolicy`、`DeclaredShaderReference`、`PassImplementationSelection` | project に `CompiledPassDefinition`(論理 op、論理 sample count、shader 参照、pass_info、入力)を置く。core は `toVk*` の写像関数だけ。renderer の使用箇所は `using PassDefinition = ...` + 変換で名前を保つ |
-| [`RenderTargetDefinition`](../src/core/renderingpass/rendertargetdefinition.hpp): `vk::Format`、`format_candidates`、`vk::ImageUsageFlags`、extent、history … | `LogicalResourceDesc`、format_class / format 文字列 | 論理側(format 文字列、extent 規則、history、usage の論理フラグ)は project。`vk::Format` の解決は device facts が要るので core に残す |
-| 残す | `planFrameGraph`、`VulkanTargetPlan`、pipeline state、shader module、descriptor | 触らない |
-
-## 3. 段階
-
-| 段 | 内容 | 振り分け | 検証 |
+| 段 | WP | 内容 | 受け入れ |
 |---|---|---|---|
-| 0 | **橋の test**: 既存の JSON から `logical_graph` と `FrameGraphDefinition` を両方作り、field ごとの同値を assert する(移行中の安全網)。fixture は `test/fixtures/devstudio/example_frame_plan.json` の元 config と各 feature の golden config | v1 | 純ロジック test(GPU 不要) |
-| 1 | `LogicalGraphNode` の拡張と `makeFrameGraphDefinition(logical_graph)`。core の `parseRenderNodeFromJson` / `parseComputeNodeFromJson` を削除。JSON → graph の parse は project の 1 箇所だけに(`frameplanner_test` が JSON fixture を使うので、project 側に JSON → `logical_graph` の入口は残す) | v1 | 段 0 の test、`example_frame_plan.json` の plan が byte 一致、golden 不変 |
-| 2 | `CompiledPassDefinition` と render target の論理定義を project へ。`passdefinitionjsonparser.cpp` / `rendertargetjsonparser.cpp` を project へ移し、core は vk 写像だけ。registration から normalized JSON の保持を外す | v1 | 同上 + renderer の全 pass 種類(material / fullscreen / generic raster / debug / shadow / velocity)の headless |
-| 3 | 段階 2 の出力に canonical hash(`logical_graph_fingerprint` を policy と pass 定義まで広げる)。registration が変わっていない rendering pass の prepare を省く | v1 | hot reload の時間計測(前後)、決定性 gate |
+| 1 | **RC-3a** | 計画用 graph の層を project へ移す: `FrameGraphDefinition` 一式の型、JSON → graph の parse、`planFrameGraph` と `FramePlan` の型、`validateFramePlanStructure`、`compileLogicalFrameGraphShadow`。共有 helper は「計画用に要る backend 非依存の部分」を project に切り出し、core の実行用 parse はそれを使う。core の呼び出し元は project の関数を呼ぶ | **挙動不変**: plan の fixture(`example_frame_plan.json` ほか)が byte 一致、golden 不変。`src/core` に計画用 graph の JSON parse が残らない。project の test だけで JSON → FramePlan まで届く |
+| 2 | **RC-3b** | 段階 2 が計画用 graph(と論理 graph)を **1 回だけ** 作って `CompiledRenderPipeline` に載せる。runtime の経路(compiler の `planFrameGraph`、物理計画の shadow)は載ったものを受ける。FramePlan と論理 graph を同じ定義から作り、compiler が返した FramePlan が定義と食い違えば名前付きで断る。node に pass の形(fullscreen / raster / material / compute …)を持たせる(PF-3)。編集中の候補を検証する経路(renderconfigeditor、graph transform、subgraph replacement)は候補の JSON を読む必要があるので、project の parse を呼ぶ形のまま | plan と golden 不変。compiler の出口で FramePlan と定義の混在が断られる test。PF-3 が pass の形を読める |
+| 3 | **RC-4** | 実行用 `PassDefinition` の backend 非依存部分(論理 op、sample count、shader 参照、pass_info、PSN-1 の `PipelineState`)を project の型へ。core は vk への写像だけ。pass の JSON を読むのが 1 回になる | 全 pass 種類の headless、golden 不変 |
+| 4 | (後) | 段階 2 の出力の canonical hash で、変わっていない rendering pass の prepare を省く(hot reload の incremental) | hot reload の時間の前後、決定性 gate |
 
-- 順番の前提: `develop` → `develop_v1` のマージ後。`vulkanrendercompilerprogram.cpp` / `framegraphruntime.cpp` に触るので、
-  `execution_plan` の削除(棚卸しメモ 2-1)と同じ人が続けてやる。preset レシピ化で compose の出力を触る WP と同時期に置くと、段階 1 → 2 → core の受け渡しを 1 回で直せる。
-- 段 0〜1 は Linux / mac のクラウド環境で進められる(pelican_project と frameplanner は GPU 不要)。段 2 の renderer 側確認は Windows。
+- RC-3a の前に v1feature(PF / PSN)へ一声: PF-1 の test は `parseFrameGraphDefinitionsFromConfigJson` → `compileLogicalFrameGraphShadow` を使うので include が変わる。RC-4 の前にも一声(PSN-1 の `PipelineState` と重なる)。
 
-## 4. 性能
+## 3. 性能
 
-- 触るのは registration / hot reload の CPU 段だけ。毎フレームの経路(`renderLogicalFrame` → `executePlannedFrameGraph`)は prepare 済みの
-  `CompiledFrameGraphExecution` と handle を読むだけで、`PassDefinition` の parse にも JSON にも触らない。
-- 減る側: JSON の 2 回読みが 1 回に、normalized JSON の保持が消える、段 3 で hot reload の再 prepare が減る。
-- 規律: project の型は名前を `std::string` で持つ。フレーム内でそれを引く経路を新しく作らない(今の renderer は prepare 時に handle に解決している)。
+- 触るのは registration / hot reload / 編集の検証の CPU 段だけ。毎フレームの経路(`renderLogicalFrame` → `executePlannedFrameGraph`)は prepare 済みの handle を読むだけで変わらない。
+- 減る側: 実行時の経路での graph の読み直し(RC-3b)、pass JSON の 2 回読み(RC-4)。
 
-## 5. やらないこと
+## 4. やらないこと
 
-- `planFrameGraph` のアルゴリズム変更、`get_frame_plan` の鍵の変更(本件では変えない)。
-- Metal 向けの抽象(第 2 backend は書かない)。`CompiledPassDefinition` は Vulkan 1 本の前提で、論理 op の語彙は今の JSON と同じ。
-- Studio の変更(Studio は `get_frame_plan` の JSON を読むので本件の影響を受けない)。
+- `planFrameGraph` のアルゴリズム変更、`get_frame_plan` の鍵の変更(RC-3a / 3b では変えない)。
+- Metal 向けの抽象(第 2 backend は書かない。[design_macos_moltenvk_proof.md](design_macos_moltenvk_proof.md))。
+- Studio の変更(Studio は `get_frame_plan` の JSON を読む)。
 
-## 6. 未決
+## 5. 未決
 
-- `LogicalGraphNode` を拡張するか、別の `CompiledPassDefinition` に node の付随情報(attachment op、snapshot、once)を置いて `logical_graph` は依存関係だけに保つか。
-  target planning が `logical_graph` を読むので、依存関係だけに保つ方が planner の入力が汚れない。別型を推す。
-- `frameplanner_test` など JSON fixture を使う test の入口を project の JSON → `logical_graph` に付け替える範囲(全部か、代表だけか)。
-- 段 3 の hash の粒度(rendering pass 単位か、pass 単位か)。
+- RC-3a で共有 helper をどこまで project に移すか(計画用に要る部分だけを切るか、実行用 parse ごと RC-4 で移すまで二重のままにするか)。RC-3a の実装者が依存を地図にして決め、報告する。
+- RC-3b で FramePlan を compiler に作らせ続けて照合するか、runtime が定義から作り直すか(後者なら照合は要らないが、差し替え compiler の自由度が減る)。
+- 段 4 の hash の粒度(rendering pass 単位か、pass 単位か)。
