@@ -3,16 +3,10 @@
   "deactivated_graph_nodes": [],
   "diagnostics": [],
   "graph": "wp354_non_null_planner",
-  "levels": [
-    [
-      "raw_pass"
-    ]
-  ],
   "nodes": [
     {
       "declaration_index": 0,
       "kind": "render",
-      "level": 0,
       "name": "raw_pass",
       "order": 0,
       "reads": [],

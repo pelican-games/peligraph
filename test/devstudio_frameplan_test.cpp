@@ -1,6 +1,5 @@
 #include "frameplanmodel.hpp"
 #include "../src/devstudio/view/taskresourceconnections.hpp"
-#include "executionplanwire.hpp"
 #include "frameresolutionwire.hpp"
 #include "physicaltargetplanwire.hpp"
 #include "../src/core/loader/engineresources.hpp"
@@ -643,8 +642,6 @@ TEST_CASE(
     const Json &physical = captured.at("physical_target_plan");
     const FramePlanModel model = buildFramePlanModel(captured.dump());
 
-    REQUIRE(model.execution_plan.available());
-    REQUIRE(model.execution_plan.unavailable_reason.empty());
     REQUIRE(model.physical_plan.available());
     REQUIRE(model.physical_plan.unavailable_reason.empty());
     REQUIRE(model.physical_plan.graph == model.graph);
@@ -663,8 +660,7 @@ TEST_CASE(
     }
     REQUIRE(model.physical_plan.lowering_nodes.size() ==
             physical.at("lowering_graph").at("nodes").size());
-    REQUIRE(model.dependencies.size() ==
-            captured.at("execution_plan").at("dependencies").size());
+    REQUIRE(model.barriers.size() == captured.at("barriers").size());
     REQUIRE(model.physical_plan.resolution_plan.has_value());
     REQUIRE(model.physical_plan.resolution_plan->scene_resources ==
             physical.at("resolution_plan")
@@ -753,40 +749,25 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "Devstudio distinguishes a missing execution plan from an available zero-dependency plan",
-    "[devstudio][frame-plan][wp317][negative-contrast]") {
+    "RC-2 Devstudio opens a frame plan that carries no execution plan and no levels",
+    "[devstudio][frame-plan][rc2]") {
     const Json captured = Json::parse(capturedResponse());
+    // The engine publishes neither: the captured reply is what it sends.
+    REQUIRE_FALSE(captured.contains("execution_plan"));
+    REQUIRE_FALSE(captured.contains("levels"));
+    for (const auto &node : captured.at("nodes")) {
+        REQUIRE_FALSE(node.contains("level"));
+    }
 
-    Json missing = captured;
-    missing.erase("execution_plan");
-    const FramePlanModel unavailable = buildFramePlanModel(missing.dump());
-    REQUIRE_FALSE(unavailable.execution_plan.available());
-    REQUIRE(unavailable.execution_plan.unavailable_reason_code ==
-            "execution_plan_missing");
-    REQUIRE_THAT(unavailable.execution_plan.unavailable_reason,
-                 ContainsSubstring("execution_plan was not published"));
-    REQUIRE(unavailable.dependencies.empty());
-
-    Json null_plan = captured;
-    null_plan["execution_plan"] = nullptr;
-    const FramePlanModel null_unavailable =
-        buildFramePlanModel(null_plan.dump());
-    REQUIRE_FALSE(null_unavailable.execution_plan.available());
-    REQUIRE(null_unavailable.execution_plan.unavailable_reason_code ==
-            unavailable.execution_plan.unavailable_reason_code);
-
-    Json zero_dependencies = captured;
-    zero_dependencies["execution_plan"]["dependencies"] = Json::array();
-    const FramePlanModel available =
-        buildFramePlanModel(zero_dependencies.dump());
-    REQUIRE(available.execution_plan.available());
-    REQUIRE(available.execution_plan.unavailable_reason.empty());
-    REQUIRE(available.dependencies.empty());
-
-    const auto shared_missing = Pelican::validateExecutionPlanWire(nullptr);
-    REQUIRE_FALSE(shared_missing.available());
-    REQUIRE(shared_missing.reason_code ==
-            unavailable.execution_plan.unavailable_reason_code);
+    const FramePlanModel model = buildFramePlanModel(captured.dump());
+    REQUIRE(model.graph == captured.at("graph").get<std::string>());
+    REQUIRE(model.nodes.size() == captured.at("nodes").size());
+    REQUIRE(model.barriers.size() == captured.at("barriers").size());
+    REQUIRE(model.physical_plan.available());
+    for (std::size_t index = 0; index < model.nodes.size(); ++index) {
+        REQUIRE(model.nodes[index].order ==
+                captured.at("nodes").at(index).at("order").get<std::size_t>());
+    }
 }
 
 TEST_CASE(
@@ -981,57 +962,6 @@ TEST_CASE(
         }
         REQUIRE(unavailable_code(std::move(input)) ==
                 "physical_plan_alias_membership_conflict");
-    }
-}
-
-TEST_CASE(
-    "Execution plan wire conformance reports named unavailable results",
-    "[devstudio][frame-plan][wp305][wp317][validation]") {
-    const Json captured = Json::parse(capturedResponse());
-
-    const auto unavailable_code = [&](Json input) {
-        const FramePlanModel model = buildFramePlanModel(input.dump());
-        REQUIRE_FALSE(model.execution_plan.available());
-        REQUIRE(model.dependencies.empty());
-        return model.execution_plan.unavailable_reason_code;
-    };
-
-    SECTION("unknown execution node") {
-        Json input = captured;
-        input["execution_plan"]["nodes"][0]["name"] = "missing_node";
-        REQUIRE(unavailable_code(std::move(input)) ==
-                "execution_plan_missing_reference");
-    }
-    SECTION("duplicate execution node") {
-        Json input = captured;
-        input["execution_plan"]["nodes"][1]["name"] =
-            input["execution_plan"]["nodes"][0]["name"];
-        REQUIRE(unavailable_code(std::move(input)) ==
-                "execution_plan_duplicate");
-    }
-    SECTION("unknown dependency node") {
-        Json input = captured;
-        input["execution_plan"]["dependencies"][0]["to"] = "missing_node";
-        REQUIRE(unavailable_code(std::move(input)) ==
-                "execution_plan_missing_reference");
-    }
-    SECTION("schema") {
-        Json input = captured;
-        input["execution_plan"]["schema"] = "pelican.wrong";
-        REQUIRE(unavailable_code(std::move(input)) ==
-                "execution_plan_schema_mismatch");
-    }
-    SECTION("version") {
-        Json input = captured;
-        input["execution_plan"]["schema_version"] = 2;
-        REQUIRE(unavailable_code(std::move(input)) ==
-                "execution_plan_version_mismatch");
-    }
-    SECTION("graph") {
-        Json input = captured;
-        input["execution_plan"]["graph"] = "another_graph";
-        REQUIRE(unavailable_code(std::move(input)) ==
-                "execution_plan_graph_mismatch");
     }
 }
 

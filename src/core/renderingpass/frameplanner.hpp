@@ -115,10 +115,6 @@ struct FrameGraphNodeDefinition {
     std::string view_family{
         mainRenderViewFamilyId};
     RenderViewSelect view_select;
-    // Optional dialect selection carried into FrameExecutionPlan. Empty
-    // preserves the legacy kind-based compatibility mapping.
-    std::string semantic_dialect;
-    std::string execution_implementation;
     // PS-1: `schedule: "once"` (a fullscreen / raster pass, a compute task).
     // Target planning isolates the node in its own physical scope; the
     // renderer records it only on a frame it is due.
@@ -143,7 +139,6 @@ struct FramePlanNode {
     FramePlanNodeKind kind = FramePlanNodeKind::render;
     size_t declaration_index = 0;
     size_t order = 0;
-    size_t level = 0;
     std::vector<std::string> reads;
     std::vector<std::string> reads_history;
     std::vector<std::string> writes;
@@ -168,7 +163,6 @@ struct FramePlanBarrier {
 struct FramePlan {
     std::string name;
     std::vector<FramePlanNode> nodes;
-    std::vector<std::vector<std::string>> levels;
     std::vector<FramePlanBarrier> barriers;
 };
 

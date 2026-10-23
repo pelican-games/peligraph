@@ -3,8 +3,6 @@ add_library(pelican_project
     audioanalysisformat.cpp
     assetsmanifest.cpp
     authoringlowering.cpp
-    executionplan.cpp
-    executionplanwire.cpp
     featurecompose.cpp
     featurejitter.cpp
     filereplace.cpp

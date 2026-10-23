@@ -119,16 +119,13 @@ FramePlan familyFramePlan() {
         {"ray_task", FramePlanNodeKind::compute},
     };
     plan.nodes.reserve(std::size(entries));
-    plan.levels.reserve(std::size(entries));
     for (std::size_t index = 0; index < std::size(entries); ++index) {
         plan.nodes.push_back(FramePlanNode{
             .name = entries[index].name,
             .kind = entries[index].kind,
             .declaration_index = index,
             .order = index,
-            .level = index,
         });
-        plan.levels.push_back({entries[index].name});
     }
     return plan;
 }
@@ -686,11 +683,15 @@ TEST_CASE("renderer-owned WP354 append covers every family and stripWp354 change
     const auto current = renderer.currentFramePlanJson();
 
     REQUIRE(current.at("profile") == "runtime");
+    // RC-2: get_frame_plan carries no execution plan and no levels.
+    REQUIRE_FALSE(current.contains("execution_plan"));
+    REQUIRE_FALSE(current.contains("levels"));
     REQUIRE(current.at("nodes").size() ==
             baseline.at("nodes").size());
     for (const auto &entry : current.at("nodes")) {
         CAPTURE(entry.at("name"));
         REQUIRE(entry.contains("shader_resolution"));
+        REQUIRE_FALSE(entry.contains("level"));
     }
     REQUIRE(node(current, "material").at("shader_resolution") ==
             Json{{"state", "material_owned"}});
@@ -789,7 +790,6 @@ TEST_CASE("non-null planner overload stays exact and shader-free before renderer
         .name = "raw_pass",
         .kind = FramePlanNodeKind::render,
     });
-    raw.levels = {{"raw_pass"}};
     CompiledRenderPipeline render_pipeline;
     auto wire = framePlanToJson(raw, &render_pipeline);
 
@@ -859,7 +859,6 @@ TEST_CASE("raw framePlanToJson remains profile-less and shader-free",
         .name = "raw_pass",
         .kind = FramePlanNodeKind::render,
     });
-    raw.levels = {{"raw_pass"}};
     const auto wire = framePlanToJson(raw);
     REQUIRE_FALSE(wire.contains("profile"));
     REQUIRE_FALSE(wire.at("nodes").at(0).contains("shader_resolution"));
