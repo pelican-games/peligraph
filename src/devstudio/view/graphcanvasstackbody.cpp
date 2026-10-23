@@ -9,6 +9,7 @@
 
 #include "graphcanvasdrawing.hpp"
 
+#include "graphcanvasthumbnails.hpp"
 #include "graphcanvaswidget.hpp"
 #include "studiotheme.hpp"
 
@@ -99,7 +100,6 @@ std::vector<Mark> marksOf(const LayerLine &line) {
         marks.push_back({GraphCanvasStackOpacityItem, text,
                          line.row.opacity_driven ? QObject::tr("Opacity %1: a value line drives it").arg(text)
                                                  : QObject::tr("Opacity %1: drag sideways to change it").arg(text)});
-    if (!line.filters.isEmpty()) marks.push_back({GraphCanvasStackFiltersItem, QStringLiteral("f"), line.filters});
     if (!line.row.mask.empty())
         marks.push_back({GraphCanvasStackMaskItem, QObject::tr("mask"),
                          QObject::tr("Masked by %1").arg(qtext(line.row.mask_source))});
@@ -214,13 +214,16 @@ void addEye(const Builder &builder, QGraphicsItem &item, const Node &entry, cons
     if (entry.layers_read_only) area->setOpacity(0.6);
 }
 
+// NB-3: the layer alone, drawn as its own stack would draw it (32 px).
 void addThumbFrame(const Builder &builder, QGraphicsItem &item, const Node &entry, const LayerLine &line,
                    const QRectF &frame) {
-    // NB-3 draws the layer here; until then the frame is empty.
-    auto *thumb = new QGraphicsRectItem(frame, &item);
-    thumb->setBrush(builder.theme().canvas.pill_bg);
-    thumb->setPen(QPen{builder.theme().canvas.node_border, 0.8});
-    thumb->setToolTip(qtext(graphCanvasLayerKindText(line.row)));
+    GraphCanvasThumbnailTarget target;
+    target.kind = GraphCanvasThumbnailKind::layer;
+    target.scope = builder.scope().toStdString();
+    target.node = entry.node->id;
+    target.input = line.row.input;
+    target.pixels = graphCanvasLayerThumbnailPixels;
+    auto *thumb = builder.addThumbnail(item, frame, target, qtext(graphCanvasLayerKindText(line.row)));
     tagRowPart(builder, *thumb, entry, line, GraphCanvasStackThumbItem);
 }
 
@@ -290,11 +293,15 @@ class LayerStackNodeBody final : public NodeBody {
         // The composite and the output it hands on.
         qreal top = GraphCanvasHeaderHeight;
         const qreal section = compositeHeight(entry);
-        auto *composite = new QGraphicsRectItem(
-            QRectF{14.0, top + (section - CompositeSize) / 2.0, CompositeSize, CompositeSize}, &item);
-        composite->setBrush(theme.canvas.pill_bg);
-        composite->setPen(QPen{theme.canvas.node_border, 0.8});
-        composite->setToolTip(QObject::tr("The stack's composite"));
+        // NB-3: the stack's output, as a canvas.output reading it draws it.
+        GraphCanvasThumbnailTarget target;
+        target.kind = GraphCanvasThumbnailKind::composite;
+        target.scope = builder.scope().toStdString();
+        target.node = entry.node->id;
+        target.pixels = graphCanvasThumbnailPixels;
+        auto *composite = builder.addThumbnail(
+            item, QRectF{14.0, top + (section - CompositeSize) / 2.0, CompositeSize, CompositeSize}, target,
+            QObject::tr("The stack's composite"));
         builder.tagPart(*composite, entry, GraphCanvasStackCompositeItem);
         for (std::size_t at = 0; at < entry.outputs.size(); ++at) {
             const Row &output = entry.outputs[at];
@@ -343,12 +350,6 @@ class LayerStackNodeBody final : public NodeBody {
                 QColor colour = theme.canvas.dim_text;
                 if (std::string_view{mark->kind} == GraphCanvasStackEnterItem) colour = theme.canvas.heading_text;
                 auto *text = addText(builder, item, mark->text, colour);
-                if (std::string_view{mark->kind} == GraphCanvasStackFiltersItem) {
-                    QFont font = builder.detailFont();
-                    font.setItalic(true);
-                    font.setBold(true);
-                    text->setFont(font);
-                }
                 text->setPos(right - advance, centre_y - metrics.height() / 2.0);
                 text->setToolTip(mark->tip);
                 tagRowPart(builder, *text, entry, line, mark->kind);

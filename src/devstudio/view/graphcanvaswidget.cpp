@@ -131,6 +131,9 @@ bool isNodeSurface(const QString &kind) {
            kind == QLatin1String{GraphCanvasZoneItem} ||
            kind == QLatin1String{GraphCanvasZoneLabelItem} ||
            kind == QLatin1String{GraphCanvasZoneSocketItem} ||
+           // NB-3: a card's picture and its filter's number.
+           kind == QLatin1String{GraphCanvasCardThumbItem} ||
+           kind == QLatin1String{GraphCanvasCardValueItem} ||
            // NB-2b: the parts of a canvas.stack's body.
            (kind.startsWith(QLatin1String{"graph_stack_"}) &&
             kind != QLatin1String{GraphCanvasStackDropLineItem});
@@ -641,7 +644,8 @@ SocketTypeFacts graphCanvasSocketFacts(const GraphCanvasModel &model,
     return facts;
 }
 
-GraphCanvasScene::GraphCanvasScene(QObject *parent) : QGraphicsScene{parent} {
+GraphCanvasScene::GraphCanvasScene(QObject *parent)
+    : QGraphicsScene{parent}, thumbnails_{std::make_unique<GraphCanvasThumbnails>(*this)} {
     // Every item holds the colour it was built with, so following a theme is
     // drawing the scope again -- not walking the items and guessing which of
     // their brushes came from the table.
@@ -658,6 +662,7 @@ GraphCanvasScene::GraphCanvasScene(QObject *parent) : QGraphicsScene{parent} {
 
 void GraphCanvasScene::setModel(GraphCanvasModel *model) {
     model_ = model;
+    thumbnails_->setModel(model);
     session_node_positions_.clear();
     folded_places_.clear();
     folded_view_views_.clear();
@@ -1997,6 +2002,7 @@ void GraphCanvasScene::repopulate() {
     const qreal top = crumb_top + (decomposable ? NodeGraphBreadcrumbHeight : 0.0);
     GraphCanvasDrawing::Builder drawing{*this, scope_text};
     if (picked_layer_) drawing.setPickedLayer(picked_layer_->scope, picked_layer_->stack, picked_layer_->input);
+    drawing.setThumbnails(thumbnails_.get());
 
     // LP-4d1: every root loop is drawn as a zone around the body its tab
     // shows. The zones are planned before the root is placed, because a
@@ -2646,6 +2652,7 @@ void GraphCanvasScene::repopulate() {
         const std::string &body = plan.body;
         GraphCanvasDrawing::Builder inside{*this, qtext(body)};
         inside.setContainer(content);
+        inside.setThumbnails(thumbnails_.get());
         std::set<std::string, std::less<>> ends;
         for (const auto &entry : plan.drawn) {
             const auto key = std::pair{body, entry.node->id};
@@ -3828,6 +3835,8 @@ void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
     const std::string scope = scopeAt(context_position_);
     const bool root = scope.empty();
     QMenu menu;
+    // NB-3: over a stack's row, Add filter ▸ first.
+    if (addLayerRowMenuEntries(menu, event->scenePos())) menu.addSeparator();
     // GL-5d: over a node, what only the Frame Plan offered for it (Order…,
     // Fix sockets, Edit target…, Expand to edit…), the node picked first.
     if (nodeMenuEntries)
@@ -4041,6 +4050,8 @@ struct GraphCanvasScene::InlineEditor {
 };
 
 GraphCanvasScene::~GraphCanvasScene() {
+    // NB-3: the pictures being made finish first; their answers go with it.
+    thumbnails_.reset();
     removeStudioThemeListener(theme_listener_);
     // The filter outlives nothing: an editor still open when the scene goes
     // must not be left watching a widget the base class is about to delete.
@@ -4844,6 +4855,56 @@ bool GraphCanvasScene::addLayer(const std::string &what) {
         return true;
     }
     return false;
+}
+
+bool GraphCanvasScene::addLayerFilter(const std::string &scope, const std::string &stack, const std::string &input,
+                                      const std::string &op) {
+    if (model_ == nullptr || !model_->canEdit() || GraphCanvasDrawing::layerScopeReadOnly(*model_, scope))
+        return false;
+    const auto row = layerRow(scope, stack, input);
+    if (!row) return false;
+    auto ops = graphCanvasAddFilterOps(model_->nodes(scope), scope, stack, row->index, op);
+    if (ops.empty()) return false;
+    return submitLayerOps(scope, stack, std::move(ops));
+}
+
+bool GraphCanvasScene::addLayerRowMenuEntries(QMenu &menu, const QPointF &at) {
+    if (model_ == nullptr || !model_->canEdit()) return false;
+    for (QGraphicsItem *item : items(at)) {
+        const QString kind = nodeGraphItemKind(*item);
+        if (!isStackPart(kind)) continue;
+        if (!item->data(GraphCanvasLayerIndexRole).isValid()) return false;
+        const std::string scope = itemScope(*item);
+        const std::string stack = item->data(NodeGraphNameRole).toString().toStdString();
+        const std::string input = item->data(GraphCanvasPortRole).toString().toStdString();
+        if (GraphCanvasDrawing::layerScopeReadOnly(*model_, scope)) return false;
+        const auto row = layerRow(scope, stack, input);
+        if (!row) return false;
+        QMenu *filters = menu.addMenu(QObject::tr("Add filter"));
+        filters->setObjectName(QStringLiteral("pelican.graphCanvas.layerFilterMenu"));
+        filters->setToolTip(QObject::tr("A filter node on the line into this layer, as the Layers dock's + Filter"));
+        for (const auto &choice : graphCanvasFilterChoices()) {
+            QAction *entry = filters->addAction(qtext(choice.label));
+            entry->setObjectName(QStringLiteral("pelican.graphCanvas.layerFilter.") +
+                                 qtext(choice.op.substr(choice.op.find('.') + 1)));
+            // A filter that cannot go on this row (no line into it) is off.
+            entry->setEnabled(!graphCanvasAddFilterOps(model_->nodes(scope), scope, stack, row->index, choice.op)
+                                   .empty());
+            QObject::connect(entry, &QAction::triggered, this, [this, scope, stack, input, op = choice.op] {
+                QMetaObject::invokeMethod(
+                    this, [this, scope, stack, input, op] { (void)addLayerFilter(scope, stack, input, op); },
+                    Qt::QueuedConnection);
+            });
+        }
+        return true;
+    }
+    return false;
+}
+
+void GraphCanvasScene::setProjectRoot(const std::filesystem::path &root) {
+    if (thumbnails_->projectRoot() == root) return;
+    thumbnails_->setProjectRoot(root);
+    repopulate();
 }
 
 bool GraphCanvasScene::deletePickedLayer() {
@@ -11428,6 +11489,8 @@ void GraphCanvasWidget::setProjectRoot(const std::filesystem::path &project_root
         impl_->model.followCanvasDomainOfDocument();
     }
     impl_->project_root = project_root;
+    // NB-3: where the canvas nodes' pictures read their images and fonts.
+    impl_->scene->setProjectRoot(project_root);
     impl_->pass_fields->setProjectRoot(project_root);
     impl_->value_fields->setProjectRoot(project_root);
     impl_->image_fields->setProjectRoot(project_root);

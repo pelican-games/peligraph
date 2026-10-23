@@ -1,5 +1,6 @@
 #include "graphcanvasdrawing.hpp"
 
+#include "graphcanvasthumbnails.hpp"
 #include "graphcanvaswidget.hpp"
 #include "studiotheme.hpp"
 
@@ -181,14 +182,6 @@ Node Builder::prepareNode(const GraphCanvasModel &model, const GraphCanvasNode &
                 const auto choice = std::ranges::find(blends, row.blend, &GraphCanvasBlendChoice::name);
                 line.blend = qtext(choice != blends.end() ? choice->label : row.blend);
             }
-            if (row.kind != "adjustment" && !row.filters.empty()) {
-                QStringList names;
-                for (const auto &filter : row.filters)
-                    if (const auto found = std::ranges::find(nodes, filter, &GraphCanvasNode::id);
-                        found != nodes.end())
-                        names.push_back(qtext(graphCanvasFilterLabel(found->op)));
-                line.filters = QObject::tr("Filtered: %1").arg(names.join(QStringLiteral(", ")));
-            }
             line.enters = (row.kind == "group" && !row.source.empty()) ||
                           (row.kind == "import" && !row.definition.empty());
             line.row = std::move(row);
@@ -264,6 +257,21 @@ GraphCanvasNodeView NodeBody::next(GraphCanvasNodeView view) const {
 
 namespace {
 
+void drawRows(Builder &builder, QGraphicsPathItem &item, const Node &entry, qreal rows_top);
+
+// The width the rows need: each label, and its value's pill.
+qreal rowsWidth(const Node &entry, const QFontMetricsF &metrics) {
+    qreal width = entry.width;
+    for (const auto *side : {&entry.outputs, &entry.inputs})
+        for (const auto &row : *side) {
+            qreal needed = metrics.horizontalAdvance(row.label) + 34.0;
+            if (row.value.shown())
+                needed += metrics.horizontalAdvance(pillText(row.value)) + 24.0;
+            width = std::max(width, needed);
+        }
+    return width;
+}
+
 // The rows every node had before NB-1, drawn exactly as they were: the
 // outputs (name on the right, the published value on the left), then the
 // inputs (name on the left, the stored or published value as a pill on the
@@ -271,23 +279,9 @@ namespace {
 class DefaultNodeBody final : public NodeBody {
   public:
     void measure(Node &entry, const Builder &builder) const override {
-        const QFontMetricsF &metrics = builder.rowMetrics();
-        qreal width = entry.width;
-        for (const auto &row : entry.outputs) {
-            qreal needed = metrics.horizontalAdvance(row.label) + 34.0;
-            if (row.value.shown())
-                needed += metrics.horizontalAdvance(pillText(row.value)) + 24.0;
-            width = std::max(width, needed);
-        }
-        for (const auto &row : entry.inputs) {
-            qreal needed = metrics.horizontalAdvance(row.label) + 34.0;
-            if (row.value.shown())
-                needed += metrics.horizontalAdvance(pillText(row.value)) + 24.0;
-            width = std::max(width, needed);
-        }
         // Every view keeps the open width: a node that folds stays in its
         // column, and its heading where it was.
-        entry.width = std::min(width, GraphCanvasNodeMaximumWidth);
+        entry.width = std::min(rowsWidth(entry, builder.rowMetrics()), GraphCanvasNodeMaximumWidth);
 
         // A minimal node is its heading band and nothing else: the rows are
         // not drawn small, they are not drawn. A compact one draws the rows
@@ -310,26 +304,31 @@ class DefaultNodeBody final : public NodeBody {
     }
 
     void draw(Builder &builder, QGraphicsPathItem &item, const Node &entry) const override {
+        const auto shown = [](const std::vector<Row> &rows) {
+            return std::ranges::any_of(rows, &Row::shown);
+        };
+        if (entry.view != GraphCanvasNodeView::open && !shown(entry.outputs) && !shown(entry.inputs)) {
+            // One point per side, at the middle of the band: every edge that
+            // entered a row now arrives here, and leaves from the other one.
+            const qreal centre_y = GraphCanvasHeaderHeight / 2.0;
+            if (!entry.inputs.empty()) builder.addAnchor(item, entry, QPointF{0.0, centre_y}, "input");
+            if (!entry.outputs.empty())
+                builder.addAnchor(item, entry, QPointF{entry.width, centre_y}, "output");
+            return;
+        }
+        drawRows(builder, item, entry, GraphCanvasHeaderHeight + GraphCanvasSectionPadding);
+    }
+};
+
+// NB-3: the default body's rows from `rows_top` down -- the outputs, then the
+// inputs -- the ones the view shows, as the default body has always drawn them.
+void drawRows(Builder &builder, QGraphicsPathItem &item, const Node &entry, qreal rows_top) {
         const auto &outputs = entry.outputs;
         const auto &inputs = entry.inputs;
         const qreal width = entry.width;
         const StudioTheme &theme = builder.theme();
         const QFont &detail_font = builder.detailFont();
         const QFontMetricsF &row_metrics = builder.rowMetrics();
-        const qreal rows_top = GraphCanvasHeaderHeight + GraphCanvasSectionPadding;
-
-        const auto shown = [](const std::vector<Row> &rows) {
-            return std::ranges::any_of(rows, &Row::shown);
-        };
-        if (entry.view != GraphCanvasNodeView::open && !shown(outputs) && !shown(inputs)) {
-            // One point per side, at the middle of the band: every edge that
-            // entered a row now arrives here, and leaves from the other one.
-            const qreal centre_y = GraphCanvasHeaderHeight / 2.0;
-            if (!inputs.empty()) builder.addAnchor(item, entry, QPointF{0.0, centre_y}, "input");
-            if (!outputs.empty())
-                builder.addAnchor(item, entry, QPointF{width, centre_y}, "output");
-            return;
-        }
 
         qreal cursor_y = rows_top;
         for (const auto &drawn : outputs) {
@@ -454,6 +453,92 @@ class DefaultNodeBody final : public NodeBody {
             builder.tagPart(*band, entry, GraphCanvasNodeLabelItem);
             band->setData(GraphCanvasPortRole, QStringLiteral("in:band"));
         }
+}
+
+// NB-3 (design_node_bodies 2.4): a canvas source's or filter's card.
+constexpr qreal CardSection = CardPictureSize + 2.0 * CardPictureMargin;
+
+// A filter's one number ("Blur 4 px"), from what the node holds; a number a
+// line drives says so.
+QString cardSummary(const Node &entry) {
+    const GraphCanvasNode &node = *entry.node;
+    if (!node.op.starts_with("filter.")) return {};
+    std::vector<std::string> driven;
+    for (const auto &port : node.inputs)
+        if (port.connected) driven.push_back(port.port);
+    return qtext(graphCanvasFilterSummary(node.op, node.parameters, driven));
+}
+
+class CardNodeBody final : public NodeBody {
+  public:
+    void measure(Node &entry, const Builder &builder) const override {
+        const QFontMetricsF &metrics = builder.rowMetrics();
+        qreal width = std::max(rowsWidth(entry, metrics), CardPictureSize + 28.0);
+        if (const QString summary = cardSummary(entry); !summary.isEmpty()) {
+            const GraphCanvasNode &node = *entry.node;
+            width = std::max(width, 18.0 + builder.headingMetrics().horizontalAdvance(qtext(node.heading())) +
+                                        8.0 + metrics.horizontalAdvance(summary) + 12.0 +
+                                        metrics.horizontalAdvance(qtext(node.badge.empty() ? node.op : node.badge)) +
+                                        14.0);
+        }
+        entry.width = std::min(width, GraphCanvasNodeMaximumWidth);
+        qreal rows = 0.0;
+        for (auto *side : {&entry.outputs, &entry.inputs})
+            for (Row &row : *side) {
+                row.height = GraphCanvasSocketRowHeight;
+                row.shown = entry.view == GraphCanvasNodeView::open;
+                if (row.shown) rows += row.height;
+            }
+        switch (entry.view) {
+        case GraphCanvasNodeView::open:
+            entry.height = GraphCanvasHeaderHeight + CardSection +
+                           (rows > 0.0 ? rows + 2.0 * GraphCanvasSectionPadding : 0.0);
+            break;
+        case GraphCanvasNodeView::compact: entry.height = GraphCanvasHeaderHeight + CardSection; break;
+        case GraphCanvasNodeView::minimal: entry.height = GraphCanvasHeaderHeight; break;
+        }
+    }
+
+    void draw(Builder &builder, QGraphicsPathItem &item, const Node &entry) const override {
+        const qreal width = entry.width;
+        const QFontMetricsF &metrics = builder.rowMetrics();
+        // The filter's number, beside the heading's name.
+        if (const QString summary = cardSummary(entry); !summary.isEmpty()) {
+            auto *said = new QGraphicsSimpleTextItem(summary, &item);
+            said->setFont(builder.detailFont());
+            QColor colour = builder.theme().canvas.heading_text;
+            colour.setAlphaF(0.8F);
+            said->setBrush(colour);
+            said->setPos(18.0 + builder.headingMetrics().horizontalAdvance(qtext(entry.node->heading())) + 8.0,
+                         (GraphCanvasHeaderHeight - metrics.height()) / 2.0);
+            said->setZValue(0.5);
+            builder.tagPart(*said, entry, GraphCanvasCardValueItem);
+            said->setData(GraphCanvasValueTextRole, summary);
+        }
+        if (entry.view == GraphCanvasNodeView::minimal) {
+            const qreal centre_y = GraphCanvasHeaderHeight / 2.0;
+            if (!entry.inputs.empty()) builder.addAnchor(item, entry, QPointF{0.0, centre_y}, "input");
+            if (!entry.outputs.empty()) builder.addAnchor(item, entry, QPointF{width, centre_y}, "output");
+            return;
+        }
+        const QRectF frame{(width - CardPictureSize) / 2.0, GraphCanvasHeaderHeight + CardPictureMargin,
+                           CardPictureSize, CardPictureSize};
+        GraphCanvasThumbnailTarget target;
+        target.kind = GraphCanvasThumbnailKind::card;
+        target.scope = builder.scope().toStdString();
+        target.node = entry.node->id;
+        target.pixels = graphCanvasThumbnailPixels;
+        auto *thumb = builder.addThumbnail(item, frame, target, QObject::tr("The layer %1 hands on").arg(qtext(entry.node->heading())));
+        builder.tagPart(*thumb, entry, GraphCanvasCardThumbItem);
+        if (entry.view == GraphCanvasNodeView::compact) {
+            // The heading and the picture: the lines gather on one point a
+            // side, at the picture's middle.
+            const qreal centre_y = GraphCanvasHeaderHeight + CardSection / 2.0;
+            if (!entry.inputs.empty()) builder.addAnchor(item, entry, QPointF{0.0, centre_y}, "input");
+            if (!entry.outputs.empty()) builder.addAnchor(item, entry, QPointF{width, centre_y}, "output");
+            return;
+        }
+        drawRows(builder, item, entry, GraphCanvasHeaderHeight + CardSection + GraphCanvasSectionPadding);
     }
 };
 
@@ -464,10 +549,26 @@ const NodeBody &defaultNodeBody() {
     return body;
 }
 
+const NodeBody &cardNodeBody() {
+    static const CardNodeBody body;
+    return body;
+}
+
 const NodeBody &nodeBodyFor(std::string_view op) {
-    // NB-3 (the canvas sources and filters) puts its body here, by op.
     if (op == "canvas.stack") return layerStackNodeBody();
+    // NB-3: the canvas sources and filters (not a shape: it is not painted yet).
+    if (graphCanvasCardOperation(op)) return cardNodeBody();
     return defaultNodeBody();
+}
+
+GraphCanvasThumbnailFrame *Builder::addThumbnail(QGraphicsItem &item, const QRectF &frame,
+                                                 const GraphCanvasThumbnailTarget &target,
+                                                 const QString &tooltip) const {
+    auto *thumb = new GraphCanvasThumbnailFrame(frame, &item, tooltip);
+    thumb->setBrush(theme_.canvas.pill_bg);
+    thumb->setPen(QPen{theme_.canvas.node_border, 0.8});
+    if (thumbnails_ != nullptr) thumb->show(thumbnails_->request(target));
+    return thumb;
 }
 
 NodeGraphLayout placeNodes(const std::vector<Node> &nodes,

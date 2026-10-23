@@ -1,4 +1,11 @@
 #include <QPointer>
+#include "graphcanvasthumbnails.hpp"
+#include "canvas/canvaslowering.hpp"
+#include "canvas/canvasreference.hpp"
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QTemporaryDir>
 #include "graphcanvasaudioanalysis.hpp"
 #include "frameplanedit.hpp"
 #include "fullscreenshadertemplate.hpp"
@@ -97,6 +104,8 @@
 #include <memory>
 #include <set>
 #include <tuple>
+#include <atomic>
+#include <cstdlib>
 #include <sstream>
 #include <string>
 #include <functional>
@@ -16782,4 +16791,489 @@ TEST_CASE("NB-2b a row picked on the node is the Layers dock's picked row, and t
                          QStringLiteral("card_fill"))
                     ->data(PelicanStudio::GraphCanvasLayerPickedRole)
                     .toBool());
+}
+
+// --- NB-3 (design_node_bodies 2.4, 2.5): the pictures on the canvas nodes,
+// drawn by the CPU reference off the UI thread, and the cards.
+
+namespace {
+
+using PelicanStudio::GraphCanvasThumbnailFrame;
+
+// A project of its own: assets/fonts/arial.ttf when the system has Arial (the
+// face CV-4's scenarios draw with; the repository holds no font).
+struct Nb3Project {
+    QTemporaryDir dir;
+    bool font = false;
+    Nb3Project() {
+        QDir{dir.path()}.mkpath(QStringLiteral("assets/fonts"));
+        QDir{dir.path()}.mkpath(QStringLiteral("assets/images"));
+        if (const char *windows = std::getenv("WINDIR"); windows != nullptr) {
+            const QString arial = QString::fromLocal8Bit(windows) + QStringLiteral("/Fonts/arial.ttf");
+            if (QFileInfo::exists(arial))
+                font = QFile::copy(arial, dir.path() + QStringLiteral("/assets/fonts/arial.ttf"));
+        }
+    }
+    [[nodiscard]] std::filesystem::path root() const { return std::filesystem::path{dir.path().toStdWString()}; }
+};
+
+Json nb3Node(const char *id, const char *op, Json parameters, Json inputs, const char *output) {
+    return Json{{"id", id}, {"op", op}, {"parameters", std::move(parameters)}, {"inputs", std::move(inputs)},
+                {"outputs", Json::array({output})}};
+}
+
+Json nb3Edge(const std::string &node, const char *port = "layer") { return Json{{"node", node}, {"port", port}}; }
+
+Json nb3Stack(const char *id, const Json &inputs_bottom_first) {
+    Json layers = Json::array();
+    Json inputs = Json::object();
+    for (const auto &input : inputs_bottom_first) {
+        const auto name = input.get<std::string>();
+        layers.push_back(Json{{"input", name}, {"name", name}});
+        inputs[name] = nb3Edge(name);
+    }
+    return nb3Node(id, "canvas.stack", Json{{"size", Json::array({128, 72})}, {"layers", layers}}, inputs, "layer");
+}
+
+Json nb3Document(Json nodes) {
+    return Json{{"schema", "pelican.graph"}, {"version", 1}, {"outputs", Json::object()},
+                {"definitions", Json::object()}, {"nodes", std::move(nodes)}};
+}
+
+Json nb3Output(const char *stack) {
+    return nb3Node("screen", "canvas.output", Json::object(), Json{{"layer", nb3Edge(stack)}}, "image");
+}
+
+// Three layers, bottom first: a colour, a rectangle, a text.
+Json nb3Paper() {
+    return nb3Node("paper", "canvas.color", {{"color", {0.1, 0.2, 0.6, 1.0}}}, Json::object(), "layer");
+}
+Json nb3Box() {
+    return nb3Node("box", "shape.rect", {{"size", {60, 30}}, {"center", {40, 30}}}, Json::object(), "geometry");
+}
+Json nb3BoxFill() {
+    return nb3Node("box_fill", "shape.fill", {{"color", {1.0, 0.5, 0.0, 1.0}}},
+                   Json{{"geometry", nb3Edge("box", "geometry")}}, "layer");
+}
+Json nb3Title(const char *font = "project://assets/fonts/arial.ttf") {
+    return nb3Node("title", "shape.text", {{"font", font}, {"text", "Hi"}, {"size", 40}, {"origin", {80, 52}}},
+                   Json::object(), "geometry");
+}
+Json nb3TitleFill() {
+    return nb3Node("title_fill", "shape.fill", {{"color", {1.0, 1.0, 1.0, 1.0}}},
+                   Json{{"geometry", nb3Edge("title", "geometry")}}, "layer");
+}
+Json nb3ThreeLayers(bool text) {
+    Json nodes = Json::array({nb3Paper(), nb3Box(), nb3BoxFill()});
+    Json inputs = Json::array({"paper", "box_fill"});
+    if (text) {
+        nodes.push_back(nb3Title());
+        nodes.push_back(nb3TitleFill());
+        inputs.push_back("title_fill");
+    }
+    nodes.push_back(nb3Stack("hud", inputs));
+    nodes.push_back(nb3Output("hud"));
+    return nb3Document(std::move(nodes));
+}
+
+// `document`'s canvas.output `output` drawn straight by the CPU reference.
+PelicanStudio::GraphCanvasThumbnailPixels nb3Reference(const Json &document, const std::string &output,
+                                                       std::uint32_t width, std::uint32_t height,
+                                                       const std::filesystem::path &root) {
+    const Pelican::CanvasAssetReader read =
+        [&](std::string_view reference) -> std::shared_ptr<const std::vector<std::byte>> {
+        const auto path = PelicanStudio::graphCanvasProjectFile(root, reference);
+        if (path.empty()) return nullptr;
+        QFile file{QString::fromStdWString(path.wstring())};
+        if (!file.open(QIODevice::ReadOnly)) return nullptr;
+        const QByteArray bytes = file.readAll();
+        const auto *begin = reinterpret_cast<const std::byte *>(bytes.constData());
+        return std::make_shared<const std::vector<std::byte>>(begin, begin + bytes.size());
+    };
+    const auto ir = Pelican::buildCanvasIr(document, read);
+    for (const auto &drawn : ir.outputs)
+        if (drawn.id == output)
+            return PelicanStudio::graphCanvasThumbnailBytes(Pelican::renderCanvasReference(drawn, width, height));
+    FAIL("no output " << output);
+    return {};
+}
+
+GraphCanvasThumbnailFrame *nb3Frame(QGraphicsScene &scene, const char *kind, const QString &node,
+                                    const QString &input = {}) {
+    return dynamic_cast<GraphCanvasThumbnailFrame *>(nb2bPart(scene, kind, node, input));
+}
+
+QString nb3State(const QGraphicsItem *frame) {
+    return frame == nullptr ? QString{} : frame->data(PelicanStudio::GraphCanvasThumbnailStateRole).toString();
+}
+
+// The largest difference of one byte between the picture and the pixels.
+int nb3Difference(const QImage &image, const PelicanStudio::GraphCanvasThumbnailPixels &pixels) {
+    if (image.width() != static_cast<int>(pixels.width) || image.height() != static_cast<int>(pixels.height) ||
+        image.format() != QImage::Format_RGBA8888)
+        return 256;
+    int worst = 0;
+    for (int y = 0; y < image.height(); ++y) {
+        const uchar *line = image.constScanLine(y);
+        for (int x = 0; x < image.width() * 4; ++x)
+            worst = std::max(worst, std::abs(int{line[x]} -
+                                             int{pixels.rgba[std::size_t(y) * pixels.width * 4 + std::size_t(x)]}));
+    }
+    return worst;
+}
+
+std::size_t nb3Covered(const QImage &image) {
+    std::size_t covered = 0;
+    for (int y = 0; y < image.height(); ++y)
+        for (int x = 0; x < image.width(); ++x) covered += qAlpha(image.pixel(x, y)) > 0 ? 1 : 0;
+    return covered;
+}
+
+void nb3Open(ZoneHarness &h, const Nb3Project &project) {
+    h.scene.setProjectRoot(project.root());
+    nb2bOpen(h);
+}
+
+} // namespace
+
+TEST_CASE("NB-3 each row's picture and the composite are the CPU reference's drawing of the same document",
+          "[devstudio][graph-canvas][scene][nb3]") {
+    (void)application();
+    Nb3Project project;
+    const bool text = project.font;
+    if (!text) WARN("No Arial in the system: the text layer is left out");
+    ZoneHarness h{nb3ThreeLayers(text)};
+    nb3Open(h, project);
+    auto &scene = h.scene;
+    REQUIRE(scene.thumbnails().waitUntilIdle(30000));
+
+    // Each row: the layer alone on a stack of the canvas's size.
+    struct Alone {
+        const char *input;
+        Json nodes;
+    };
+    std::vector<Alone> rows{{"paper", Json::array({nb3Paper()})},
+                            {"box_fill", Json::array({nb3Box(), nb3BoxFill()})}};
+    if (text) rows.push_back({"title_fill", Json::array({nb3Title(), nb3TitleFill()})});
+    for (auto &row : rows) {
+        INFO(row.input);
+        auto *frame = nb3Frame(scene, PelicanStudio::GraphCanvasStackThumbItem, QStringLiteral("hud"),
+                               QString::fromLatin1(row.input));
+        REQUIRE(frame != nullptr);
+        REQUIRE(nb3State(frame) == QStringLiteral("ready"));
+        // 32 px on the long side, the canvas's 16:9.
+        CHECK(frame->image().width() == 32);
+        CHECK(frame->image().height() == 18);
+        CHECK(nb3Covered(frame->image()) > 0);
+        Json nodes = row.nodes;
+        nodes.push_back(nb3Stack("alone", Json::array({row.input})));
+        nodes.push_back(
+            nb3Node("alone_out", "canvas.output", Json::object(), Json{{"layer", nb3Edge("alone")}}, "image"));
+        CHECK(nb3Difference(frame->image(), nb3Reference(nb3Document(nodes), "alone_out", 32, 18, project.root())) <=
+              1);
+        // Against: the same stack without the layer is another picture.
+        Json without = row.nodes;
+        without.push_back(nb3Node("alone", "canvas.stack", {{"size", {128, 72}}, {"layers", Json::array()}},
+                                  Json::object(), "layer"));
+        without.push_back(
+            nb3Node("alone_out", "canvas.output", Json::object(), Json{{"layer", nb3Edge("alone")}}, "image"));
+        CHECK(nb3Difference(frame->image(),
+                            nb3Reference(nb3Document(without), "alone_out", 32, 18, project.root())) > 1);
+    }
+    // The composite: the document's own canvas.output, 64 px.
+    auto *composite = nb3Frame(scene, PelicanStudio::GraphCanvasStackCompositeItem, QStringLiteral("hud"));
+    REQUIRE(composite != nullptr);
+    REQUIRE(nb3State(composite) == QStringLiteral("ready"));
+    CHECK(composite->image().width() == 64);
+    CHECK(composite->image().height() == 36);
+    CHECK(nb3Difference(composite->image(), nb3Reference(h.document, "screen", 64, 36, project.root())) <= 1);
+    // The cards: the colour and the rectangle's paint -- not the shape.
+    for (const char *card : {"paper", "box_fill"}) {
+        INFO(card);
+        auto *frame = nb3Frame(scene, PelicanStudio::GraphCanvasCardThumbItem, QString::fromLatin1(card));
+        REQUIRE(frame != nullptr);
+        CHECK(nb3State(frame) == QStringLiteral("ready"));
+        CHECK(frame->image().width() == 64);
+    }
+    CHECK(nb2bPart(scene, PelicanStudio::GraphCanvasCardThumbItem, QStringLiteral("box")) == nullptr);
+}
+
+TEST_CASE("NB-3 the pictures are made off the UI thread: grey frames first, the pictures when they are drawn",
+          "[devstudio][graph-canvas][scene][nb3]") {
+    (void)application();
+    Nb3Project project;
+    // A heavy one: a wide blur over the rectangle.
+    Json nodes = Json::array({nb3Paper(), nb3Box(), nb3BoxFill(),
+                              nb3Node("haze", "filter.blur", {{"radius", 40.0}},
+                                      Json{{"layer", nb3Edge("box_fill")}}, "layer")});
+    nodes.push_back(nb3Stack("hud", Json::array({"paper", "haze"})));
+    nodes.push_back(nb3Output("hud"));
+    ZoneHarness h{nb3Document(nodes)};
+    constexpr int delay_ms = 1500;
+    std::atomic<int> drawn_off_thread{0};
+    std::atomic<int> drawn_on_ui{0};
+    QThread *ui = QThread::currentThread();
+    h.scene.thumbnails().setWorkerHook([&] {
+        (QThread::currentThread() == ui ? drawn_on_ui : drawn_off_thread)++;
+        QThread::msleep(delay_ms);
+    });
+    QElapsedTimer drawing;
+    drawing.start();
+    nb3Open(h, project);
+    auto &scene = h.scene;
+    // The scene is drawn without waiting for a picture.
+    CHECK(drawing.elapsed() < delay_ms);
+    auto *composite = nb3Frame(scene, PelicanStudio::GraphCanvasStackCompositeItem, QStringLiteral("hud"));
+    REQUIRE(composite != nullptr);
+    CHECK(nb3State(composite) == QStringLiteral("pending"));
+    CHECK(composite->image().isNull());
+    auto *row =
+        nb3Frame(scene, PelicanStudio::GraphCanvasStackThumbItem, QStringLiteral("hud"), QStringLiteral("haze"));
+    REQUIRE(row != nullptr);
+    CHECK(nb3State(row) == QStringLiteral("pending"));
+    // The canvas answers meanwhile: a row is picked.
+    QElapsedTimer pick;
+    pick.start();
+    nb2bClick(scene, centreOf(nb2bPart(scene, PelicanStudio::GraphCanvasStackRowItem, QStringLiteral("hud"),
+                                       QStringLiteral("paper"))));
+    CHECK(pick.elapsed() < delay_ms);
+    REQUIRE(scene.pickedLayer().has_value());
+    CHECK(scene.pickedLayer()->input == "paper");
+    CHECK(scene.thumbnails().inFlight() > 0);
+    // Then the pictures arrive, in the frames already drawn.
+    REQUIRE(scene.thumbnails().waitUntilIdle(60000));
+    composite = nb3Frame(scene, PelicanStudio::GraphCanvasStackCompositeItem, QStringLiteral("hud"));
+    REQUIRE(composite != nullptr);
+    CHECK(nb3State(composite) == QStringLiteral("ready"));
+    CHECK_FALSE(composite->image().isNull());
+    CHECK(nb3State(nb3Frame(scene, PelicanStudio::GraphCanvasStackThumbItem, QStringLiteral("hud"),
+                            QStringLiteral("haze"))) == QStringLiteral("ready"));
+    CHECK(drawn_on_ui.load() == 0);
+    CHECK(drawn_off_thread.load() > 0);
+}
+
+TEST_CASE("NB-3 a layer's colour changed draws again that row, the composite and its own card, nothing else",
+          "[devstudio][graph-canvas][scene][nb3]") {
+    (void)application();
+    Nb3Project project;
+    ZoneHarness h{nb3ThreeLayers(project.font)};
+    nb3Open(h, project);
+    auto &scene = h.scene;
+    REQUIRE(scene.thumbnails().waitUntilIdle(30000));
+    scene.thumbnails().resetCounts();
+    // Drawn again with nothing changed: every picture from the cache.
+    scene.repopulate();
+    CHECK(scene.thumbnails().counts().misses == 0);
+    CHECK(scene.thumbnails().counts().hits > 0);
+
+    scene.thumbnails().resetCounts();
+    auto parameters = h.model.nodeParameters("", "box_fill");
+    parameters["color"] = Json::array({0.0, 1.0, 0.0, 1.0});
+    REQUIRE(h.model.submitEdit(Json::array({Json{{"op", "set_node_parameters"}, {"scope", "root"},
+                                                  {"node", "box_fill"}, {"parameters", parameters}}})));
+    (void)h.commit();
+    using Kind = PelicanStudio::GraphCanvasThumbnailKind;
+    using Missed = std::set<std::tuple<int, std::string, std::string>>;
+    Missed missed;
+    for (const auto &target : scene.thumbnails().missed())
+        missed.emplace(static_cast<int>(target.kind), target.node, target.input);
+    CHECK(missed == Missed{{static_cast<int>(Kind::layer), "hud", "box_fill"},
+                           {static_cast<int>(Kind::composite), "hud", ""},
+                           {static_cast<int>(Kind::card), "box_fill", ""}});
+    // The paper's row and card (and the text's) came from the cache.
+    CHECK(scene.thumbnails().counts().hits >= (project.font ? 4U : 2U));
+    REQUIRE(scene.thumbnails().waitUntilIdle(30000));
+    // The row drawn again is the green one.
+    auto *frame = nb3Frame(scene, PelicanStudio::GraphCanvasStackThumbItem, QStringLiteral("hud"),
+                           QStringLiteral("box_fill"));
+    REQUIRE(frame != nullptr);
+    const QColor middle =
+        frame->image().pixelColor(frame->image().width() * 40 / 128, frame->image().height() * 30 / 72);
+    CHECK(middle.green() > 200);
+    CHECK(middle.red() < 40);
+}
+
+TEST_CASE("NB-3 the canvas sources and filters are cards: the picture, the sockets, a filter's number; compact "
+          "keeps the picture",
+          "[devstudio][graph-canvas][scene][nb3]") {
+    (void)application();
+    Nb3Project project;
+    // A 4 x 4 green picture in the project.
+    QImage green{4, 4, QImage::Format_RGBA8888};
+    green.fill(QColor{0, 255, 0, 255});
+    REQUIRE(green.save(project.dir.path() + QStringLiteral("/assets/images/dot.png")));
+    auto shadow = PelicanStudio::graphCanvasFilterDefaults("filter.drop_shadow");
+    shadow["radius"] = 10.0;
+    Json nodes = Json::array({
+        nb3Node("tint", "canvas.color", {{"color", {0.9, 0.1, 0.1, 1.0}}}, Json::object(), "layer"),
+        nb3Node("img", "canvas.image",
+                {{"asset", "project://assets/images/dot.png"}, {"offset", {8, 8}}, {"size", {32, 32}}},
+                Json::object(), "layer"),
+        nb3Node("shade", "filter.drop_shadow", shadow, Json{{"layer", nb3Edge("img")}}, "layer"),
+        nb3Node("ring", "shape.ellipse", {{"size", {40, 40}}, {"center", {90, 36}}}, Json::object(), "geometry"),
+        nb3Node("ring_line", "shape.stroke", {{"color", {1.0, 1.0, 1.0, 1.0}}, {"width", 4.0}},
+                Json{{"geometry", nb3Edge("ring", "geometry")}}, "layer"),
+        nb3Node("soft", "filter.blur", {{"radius", 4.0}}, Json{{"layer", nb3Edge("ring_line")}}, "layer"),
+    });
+    nodes.push_back(nb3Stack("hud", Json::array({"tint", "shade", "soft"})));
+    nodes.push_back(nb3Output("hud"));
+    ZoneHarness h{nb3Document(nodes)};
+    nb3Open(h, project);
+    auto &scene = h.scene;
+    REQUIRE(scene.thumbnails().waitUntilIdle(60000));
+    for (const char *card : {"tint", "img", "shade", "ring_line", "soft"}) {
+        INFO(card);
+        auto *frame = nb3Frame(scene, PelicanStudio::GraphCanvasCardThumbItem, QString::fromLatin1(card));
+        REQUIRE(frame != nullptr);
+        CHECK(nb3State(frame) == QStringLiteral("ready"));
+        CHECK(std::abs(frame->sceneBoundingRect().width() - PelicanStudio::GraphCanvasDrawing::CardPictureSize) <
+              1.5);
+        CHECK(nb3Covered(frame->image()) > 0);
+        // Under the heading, and the sockets under the picture.
+        QGraphicsItem *node = nodeItem(scene, QString::fromLatin1(card));
+        REQUIRE(node != nullptr);
+        CHECK(frame->sceneBoundingRect().top() >=
+              node->sceneBoundingRect().top() + PelicanStudio::GraphCanvasHeaderHeight);
+        QGraphicsItem *out =
+            socketItem(scene, QString::fromLatin1(card), QStringLiteral("layer"), QStringLiteral("output"));
+        REQUIRE(out != nullptr);
+        CHECK(centreOf(out).y() > frame->sceneBoundingRect().bottom());
+    }
+    // The image card's picture is the picture: green where it lies.
+    auto *image = nb3Frame(scene, PelicanStudio::GraphCanvasCardThumbItem, QStringLiteral("img"));
+    REQUIRE(image != nullptr);
+    const QColor inside =
+        image->image().pixelColor(image->image().width() * 24 / 128, image->image().height() * 24 / 72);
+    CHECK(inside.green() > 200);
+    CHECK(inside.red() < 40);
+    // A filter's number beside its heading.
+    CHECK(nb2bText(nb2bPart(scene, PelicanStudio::GraphCanvasCardValueItem, QStringLiteral("soft"))) ==
+          QStringLiteral("Blur 4 px"));
+    CHECK(nb2bText(nb2bPart(scene, PelicanStudio::GraphCanvasCardValueItem, QStringLiteral("shade"))) ==
+          QStringLiteral("Shadow 10"));
+    CHECK(nb2bPart(scene, PelicanStudio::GraphCanvasCardValueItem, QStringLiteral("tint")) == nullptr);
+    // A shape is not a card: its body is the default one.
+    CHECK(nb2bPart(scene, PelicanStudio::GraphCanvasCardThumbItem, QStringLiteral("ring")) == nullptr);
+    CHECK(socketItem(scene, QStringLiteral("ring"), QStringLiteral("geometry"), QStringLiteral("output")) != nullptr);
+
+    // Compact: the heading and the picture; the lines on one point a side.
+    REQUIRE(scene.setNodeView({}, "soft", PelicanStudio::GraphCanvasNodeView::compact));
+    h.commit();
+    CHECK(nodeHeight(scene, QStringLiteral("soft")) ==
+          PelicanStudio::GraphCanvasHeaderHeight + PelicanStudio::GraphCanvasDrawing::CardPictureSize +
+              2.0 * PelicanStudio::GraphCanvasDrawing::CardPictureMargin);
+    REQUIRE(nb3Frame(scene, PelicanStudio::GraphCanvasCardThumbItem, QStringLiteral("soft")) != nullptr);
+    CHECK(nb2bText(nb2bPart(scene, PelicanStudio::GraphCanvasCardValueItem, QStringLiteral("soft"))) ==
+          QStringLiteral("Blur 4 px"));
+    CHECK(socketItem(scene, QStringLiteral("soft"), QStringLiteral("layer"), QStringLiteral("output")) == nullptr);
+    CHECK(socketItem(scene, QStringLiteral("soft"), QString{}, QStringLiteral("output")) != nullptr);
+    CHECK(socketItem(scene, QStringLiteral("soft"), QString{}, QStringLiteral("input")) != nullptr);
+    // Minimal: NB-1's heading.
+    REQUIRE(scene.setNodeView({}, "soft", PelicanStudio::GraphCanvasNodeView::minimal));
+    h.commit();
+    CHECK(nodeHeight(scene, QStringLiteral("soft")) == PelicanStudio::GraphCanvasHeaderHeight);
+    CHECK(nb2bPart(scene, PelicanStudio::GraphCanvasCardThumbItem, QStringLiteral("soft")) == nullptr);
+}
+
+TEST_CASE("NB-3 a text layer whose font is not in the project is a grey frame that says why",
+          "[devstudio][graph-canvas][scene][nb3]") {
+    (void)application();
+    Nb3Project project;
+    Json nodes = Json::array({nb3Paper(), nb3Title("project://assets/fonts/missing.ttf"), nb3TitleFill()});
+    nodes.push_back(nb3Stack("hud", Json::array({"paper", "title_fill"})));
+    nodes.push_back(nb3Output("hud"));
+    ZoneHarness h{nb3Document(nodes)};
+    nb3Open(h, project);
+    auto &scene = h.scene;
+    REQUIRE(scene.thumbnails().waitUntilIdle(30000));
+    auto *row = nb3Frame(scene, PelicanStudio::GraphCanvasStackThumbItem, QStringLiteral("hud"),
+                         QStringLiteral("title_fill"));
+    REQUIRE(row != nullptr);
+    CHECK(nb3State(row) == QStringLiteral("failed"));
+    CHECK(row->image().isNull());
+    CHECK(row->toolTip().contains(QStringLiteral("missing.ttf")));
+    CHECK(row->toolTip().contains(QStringLiteral("not in the project")));
+    // The paper's row is drawn all the same; the composite reads the text too.
+    CHECK(nb3State(nb3Frame(scene, PelicanStudio::GraphCanvasStackThumbItem, QStringLiteral("hud"),
+                            QStringLiteral("paper"))) == QStringLiteral("ready"));
+    CHECK(nb3State(nb3Frame(scene, PelicanStudio::GraphCanvasStackCompositeItem, QStringLiteral("hud"))) ==
+          QStringLiteral("failed"));
+}
+
+TEST_CASE("NB-3 Add filter on a row's menu puts the filter on the line into that layer, as the dock's + Filter",
+          "[devstudio][graph-canvas][scene][nb3]") {
+    (void)application();
+    ZoneHarness h{nb3ThreeLayers(false)};
+    nb2bOpen(h);
+    auto &scene = h.scene;
+    // No `f` on a row: a layer's filters are nodes on its line.
+    CHECK(nb2bPart(scene, "graph_stack_filters", QStringLiteral("hud")) == nullptr);
+    QGraphicsItem *row =
+        nb2bPart(scene, PelicanStudio::GraphCanvasStackRowItem, QStringLiteral("hud"), QStringLiteral("box_fill"));
+    REQUIRE(row != nullptr);
+    QMenu menu;
+    REQUIRE(scene.addLayerRowMenuEntries(menu, centreOf(row)));
+    auto *blur = menu.findChild<QAction *>(QStringLiteral("pelican.graphCanvas.layerFilter.blur"));
+    REQUIRE(blur != nullptr);
+    CHECK(blur->isEnabled());
+    const auto expected = PelicanStudio::graphCanvasAddFilterOps(h.model.nodes(""), "", "hud", 1, "filter.blur");
+    REQUIRE_FALSE(expected.empty());
+    blur->trigger();
+    QCoreApplication::processEvents();
+    CHECK(h.commit() == expected);
+    // On the line: box_fill, then the blur, then the stack's box_fill.
+    std::string filter;
+    for (const auto &node : h.document.at("nodes"))
+        if (node.value("op", std::string{}) == "filter.blur") {
+            filter = node.at("id").get<std::string>();
+            CHECK(node.at("inputs").at("layer") == nb3Edge("box_fill"));
+        }
+    REQUIRE_FALSE(filter.empty());
+    for (const auto &node : h.document.at("nodes"))
+        if (node.value("id", std::string{}) == "hud") CHECK(node.at("inputs").at("box_fill") == nb3Edge(filter));
+    // And it is a card, saying its number.
+    CHECK(nb2bText(nb2bPart(scene, PelicanStudio::GraphCanvasCardValueItem, QString::fromStdString(filter))) ==
+          QStringLiteral("Blur 1 px"));
+    // Over no row (the composite), no entry.
+    QMenu other;
+    CHECK_FALSE(scene.addLayerRowMenuEntries(
+        other, centreOf(nb2bPart(scene, PelicanStudio::GraphCanvasStackCompositeItem, QStringLiteral("hud")))));
+    CHECK(other.actions().isEmpty());
+}
+
+TEST_CASE("NB-3 an imported canvas's rows offer no Add filter", "[devstudio][graph-canvas][scene][nb3]") {
+    (void)application();
+    ZoneHarness h{nb2bImportDocument()};
+    nb2bOpen(h);
+    auto &scene = h.scene;
+    nb2bClick(scene, centreOf(nb2bPart(scene, PelicanStudio::GraphCanvasStackEnterItem, QStringLiteral("hud"),
+                                       QStringLiteral("logo_psd_1"))));
+    REQUIRE(h.model.currentScope() == "logo_psd");
+    h.answerReads();
+    QGraphicsItem *row =
+        nb2bPart(scene, PelicanStudio::GraphCanvasStackRowItem, QStringLiteral("psd_root"), QStringLiteral("a_fill"));
+    REQUIRE(row != nullptr);
+    QMenu menu;
+    CHECK_FALSE(scene.addLayerRowMenuEntries(menu, centreOf(row)));
+    CHECK(menu.actions().isEmpty());
+    CHECK_FALSE(scene.addLayerFilter("logo_psd", "psd_root", "a_fill", "filter.blur"));
+    requireNoEdit(h.model);
+}
+
+TEST_CASE("NB-3 a number a value line drives is drawn at its rest value while no value is published",
+          "[devstudio][graph-canvas][scene][nb3]") {
+    (void)application();
+    Nb3Project project;
+    // Dot's opacity is pulse's line; the engine published nothing.
+    ZoneHarness h{nb2bDocument()};
+    nb3Open(h, project);
+    auto &scene = h.scene;
+    REQUIRE(scene.thumbnails().waitUntilIdle(30000));
+    auto *dot = nb3Frame(scene, PelicanStudio::GraphCanvasStackThumbItem, QStringLiteral("hud"),
+                         QStringLiteral("dot_fill"));
+    REQUIRE(dot != nullptr);
+    CHECK(nb3State(dot) == QStringLiteral("ready"));
+    CHECK(nb3Covered(dot->image()) > 0);
+    CHECK(nb3State(nb3Frame(scene, PelicanStudio::GraphCanvasStackCompositeItem, QStringLiteral("hud"))) ==
+          QStringLiteral("ready"));
 }

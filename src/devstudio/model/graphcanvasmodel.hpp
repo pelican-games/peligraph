@@ -1610,6 +1610,10 @@ class GraphCanvasModel {
     bool canEnterInstance(std::string_view node_id) const;
     bool leaveScope();
 
+    // NB-3: the document as the engine published it -- the root's nodes and
+    // the definitions -- which a canvas node's picture is drawn from.
+    [[nodiscard]] const nlohmann::json &documentNodes() const noexcept { return nodes_; }
+    [[nodiscard]] const nlohmann::json &documentDefinitions() const noexcept { return definitions_; }
     std::vector<GraphCanvasNode> nodes() const { return nodes(currentScope()); }
     std::vector<GraphCanvasEdge> edges() const { return edges(currentScope()); }
     std::vector<GraphCanvasNode> nodes(std::string_view scope) const;

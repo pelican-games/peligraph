@@ -59,7 +59,9 @@
 
 - 行は `layers[]` の逆順(上の行ほど手前)。帯の右下に「↑ 手前に重なる」の小さな注記
 - 行の左端に その layer の入力の socket(port は今の `layers[].input`)。線が行に刺さるので、どの入力がどの順で重なるかが線の位置で分かる。`<input>.opacity` と mask の socket は、線が繋がっているときだけ行の中に小さく出す
-- 行の部品: 目(`visible`)/ thumbnail(32px)/ 名前(double-click で名前を変える)/ blend の略称(normal 以外)/ 不透明度(100 % 以外。drag で変えられる)/ `f`(filter あり)/ `›`(group や definition の中に入る = 今の scope の切り替え)
+- 行の部品: 目(`visible`)/ thumbnail(32px)/ 名前(double-click で名前を変える)/ blend の略称(normal 以外)/ 不透明度(100 % 以外。drag で変えられる)/ `›`(group や definition の中に入る = 今の scope の切り替え)
+- **行の展開**(2026-10-24 利用者、NB-2c): 行の左の小さな三角で その layer 1 枚を開くと、行の下に `Opacity` の段が出る。段の左端に `<input>.opacity` の入力 socket(線を繋げる)、線が無いときは 0〜100 % の slider 兼入力欄(drag で動かし、double-click で数を打つ。離した / 確定したときに 1 回の編集)、線があるときは欄の代わりに「← 線の名前」。mask があれば mask の socket も同じ段に。開いた行は文書の `layout.nodes.<stack の id>.open_rows`(input の名前の列)に保存する(段と同じく Studio だけが読み書き)。閉じた行では今どおり、線があるときだけ小さな socket を出す。**線は畳んでも消さない**(2026-10-24 利用者): 行を閉じても、node を compact に畳んでも、繋がった alpha / mask の線はその行の小さな socket に付いたまま。minimal では node の端の点に集まる(他の線と同じ)
+- filter は行の印にしない(2026-10-24 利用者)。filter は source と行の間の `filter.*` の node(§2.4 のカード)として線の上に見せる。行の右クリックの「Add filter ▸」で、その行へ入る線の途中に filter の node を挟む(dock の + Filter と同じ関数)
 - 足す: 帯の **＋** の menu(Rect / Ellipse / Text… / Image… / Group / Adjustment ▸)。選んだ行の上に入る。線を待つ「空の行」は作らない(canvas.stack は繋がっていない入力を `canvas.layer_input_missing@1` で断る。既にある出力は行の間へ線を落として入れる)
 - 消す: 帯の 🗑 か Delete(選んだ行)。行だけを消す(源の node は今の Layers dock と同じ規則)
 - 並べ替え: 行を drag して任意の位置へ(新しい関数 `graphCanvasMoveLayerToOps(from, to)`。今の ±1 の関数はそれの特別な場合)

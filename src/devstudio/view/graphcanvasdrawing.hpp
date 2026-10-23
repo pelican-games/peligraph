@@ -2,6 +2,7 @@
 
 #include "../model/graphcanvaslayerstack.hpp"
 #include "../model/graphcanvasmodel.hpp"
+#include "../model/graphcanvasthumbnail.hpp"
 #include "nodegraphics.hpp"
 #include "nodelayout.hpp"
 
@@ -24,6 +25,8 @@
 namespace PelicanStudio {
 
 struct StudioTheme;
+class GraphCanvasThumbnails;
+class GraphCanvasThumbnailFrame;
 struct GraphCanvasEdgeKey;
 struct GraphCanvasTie;
 
@@ -74,13 +77,12 @@ class NodeBody;
 
 // NB-2b (design_node_bodies 2.3): one row of a canvas.stack's body -- one
 // element of its `layers`, the rows top first -- and the words its marks say.
+// (NB-3: a layer's filters are no mark on its row; they are the filter.*
+// nodes on the line into it.)
 struct LayerLine {
     GraphCanvasStackRow row;
     // The blend's words when it is not normal ("Screen"), else empty.
     QString blend;
-    // "Filtered: Gaussian Blur, Invert" for a layer with filters (not an
-    // adjustment's own), else empty: the `f` and its tooltip.
-    QString filters;
     // A group or an import: `›` goes into it.
     bool enters = false;
 };
@@ -156,6 +158,15 @@ class NodeBody {
 // composite's frame and one slim row per layer, its sockets kept. Minimal:
 // the heading, as every body's.
 [[nodiscard]] const NodeBody &layerStackNodeBody();
+// NB-3 (design_node_bodies 2.4): the card of a canvas source or filter
+// (graphCanvasCardOperation). Open: the picture of the layer it hands on
+// (64 px) under the heading, then the default body's socket rows. Compact:
+// the heading and the picture, the lines on one point a side. A filter says
+// its one number beside its heading (graphCanvasFilterSummary).
+[[nodiscard]] const NodeBody &cardNodeBody();
+// The card's picture section: the 64 px frame and its margin above and below.
+inline constexpr qreal CardPictureSize = 64.0;
+inline constexpr qreal CardPictureMargin = 6.0;
 // NB-2b: whether `scope` is an imported canvas (a PSD's definition, which a
 // layer of some stack of the document reads): its stacks are read only.
 [[nodiscard]] bool layerScopeReadOnly(const GraphCanvasModel &model, std::string_view scope);
@@ -354,6 +365,14 @@ class Builder {
     // empty port, which stands for every port at once.
     QGraphicsPathItem *addAnchor(QGraphicsItem &item, const Node &entry, const QPointF &centre,
                                  const char *direction);
+    // NB-3: the scope the nodes are drawn in, and the pictures' maker (none:
+    // the frames stay empty, as before NB-3).
+    [[nodiscard]] const QString &scope() const noexcept { return scope_text_; }
+    void setThumbnails(GraphCanvasThumbnails *thumbnails) { thumbnails_ = thumbnails; }
+    // A picture's frame at `frame` on `item`: grey while the picture is made
+    // (and when it cannot be, the tooltip saying why), the picture once it is.
+    GraphCanvasThumbnailFrame *addThumbnail(QGraphicsItem &item, const QRectF &frame,
+                                            const GraphCanvasThumbnailTarget &target, const QString &tooltip) const;
 
   private:
     void addNodeHeader(QGraphicsPathItem *item, const Node &entry);
@@ -376,6 +395,8 @@ class Builder {
     std::string picked_layer_stack_;
     std::string picked_layer_input_;
     mutable std::map<std::string, bool, std::less<>> read_only_scopes_;
+    // NB-3.
+    GraphCanvasThumbnails *thumbnails_ = nullptr;
 };
 
 } // namespace GraphCanvasDrawing

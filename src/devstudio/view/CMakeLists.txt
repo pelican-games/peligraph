@@ -82,6 +82,9 @@ add_library(pelican_studio_view STATIC
     graphcanvasdrawing.hpp
     # NB-2b: a canvas.stack node's body (its layer rows).
     graphcanvasstackbody.cpp
+    # NB-3: the canvas nodes' pictures, made off the UI thread.
+    graphcanvasthumbnails.cpp
+    graphcanvasthumbnails.hpp
     graphcanvasloopfields.cpp
     graphcanvasloopfields.hpp
     # UX-11: the tag picker (the Loop's and the material pass's Tags) and a

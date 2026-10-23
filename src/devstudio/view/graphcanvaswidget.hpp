@@ -4,6 +4,7 @@
 #include "../model/graphcanvasmodel.hpp"
 #include "frameplanedit.hpp"
 #include "graphcanvasreadcapability.hpp"
+#include "graphcanvasthumbnails.hpp"
 #include "nodegraphics.hpp"
 
 #include <QAction>
@@ -210,8 +211,8 @@ inline constexpr auto GraphCanvasLayerBandItem = "graph_layer_band";
 // `graph_stack_row` the row (a press picks it, a drag moves it), its
 // `graph_stack_eye`, `graph_stack_thumb` (the empty 32 px frame NB-3 fills),
 // `graph_stack_name` (a double-click renames), `graph_stack_blend`,
-// `graph_stack_opacity` (a sideways drag sets it), `graph_stack_filters`
-// (`f`), `graph_stack_mask` and `graph_stack_enter` (`›`). Without a port:
+// `graph_stack_opacity` (a sideways drag sets it), `graph_stack_mask` and
+// `graph_stack_enter` (`›`). Without a port:
 // `graph_stack_composite#<stack>` (the 64 px frame), and on the band under
 // the rows `graph_stack_add#<stack>` (+ ▾), `graph_stack_delete#<stack>`
 // and `graph_stack_note#<stack>`. `graph_stack_drop_line` is the line a drag
@@ -222,7 +223,6 @@ inline constexpr auto GraphCanvasStackThumbItem = "graph_stack_thumb";
 inline constexpr auto GraphCanvasStackNameItem = "graph_stack_name";
 inline constexpr auto GraphCanvasStackBlendItem = "graph_stack_blend";
 inline constexpr auto GraphCanvasStackOpacityItem = "graph_stack_opacity";
-inline constexpr auto GraphCanvasStackFiltersItem = "graph_stack_filters";
 inline constexpr auto GraphCanvasStackMaskItem = "graph_stack_mask";
 inline constexpr auto GraphCanvasStackEnterItem = "graph_stack_enter";
 inline constexpr auto GraphCanvasStackCompositeItem = "graph_stack_composite";
@@ -230,6 +230,13 @@ inline constexpr auto GraphCanvasStackAddItem = "graph_stack_add";
 inline constexpr auto GraphCanvasStackDeleteItem = "graph_stack_delete";
 inline constexpr auto GraphCanvasStackNoteItem = "graph_stack_note";
 inline constexpr auto GraphCanvasStackDropLineItem = "graph_stack_drop_line";
+// NB-3 (design_node_bodies 2.4): a canvas source's or filter's card --
+// `graph_card_thumb#<node>` its 64 px picture, `graph_card_value#<node>` a
+// filter's one number beside the heading. The pictures' frames (the card's,
+// a stack's composite and rows') carry GraphCanvasThumbnailDigestRole and
+// GraphCanvasThumbnailStateRole (graphcanvasthumbnails.hpp).
+inline constexpr auto GraphCanvasCardThumbItem = "graph_card_thumb";
+inline constexpr auto GraphCanvasCardValueItem = "graph_card_value";
 
 // The node is a heading band over two socket sections, so its height follows
 // its port count rather than a constant. The numbers are here so the scene
@@ -635,6 +642,20 @@ class GraphCanvasScene final : public QGraphicsScene {
     // The name of a row edited in place (a double-click on it); Esc sends
     // nothing.
     bool beginLayerNameEdit(const std::string &scope, const std::string &stack, const std::string &input);
+    // NB-3: Add filter ▸ on a row's right-click menu -- `op` between the
+    // layer's source and the stack, as the dock's + Filter puts it
+    // (graphCanvasAddFilterOps). Nothing for a read only stack.
+    bool addLayerFilter(const std::string &scope, const std::string &stack, const std::string &input,
+                        const std::string &op);
+    // The entries a right-click at `at` over a stack's row puts on `menu`
+    // (Add filter ▸ and its filters, `pelican.graphCanvas.layerFilter.<kind>`);
+    // false when `at` is over no row that can take one.
+    bool addLayerRowMenuEntries(QMenu &menu, const QPointF &at);
+
+    // NB-3 (design_node_bodies 2.5): the pictures the bodies draw, made off
+    // the UI thread. `setProjectRoot` is where their images and fonts are read.
+    [[nodiscard]] GraphCanvasThumbnails &thumbnails() noexcept { return *thumbnails_; }
+    void setProjectRoot(const std::filesystem::path &root);
 
     // Delete: an edge clears the input it lands on, a node is removed.
     bool deleteSelection();
@@ -933,6 +954,7 @@ class GraphCanvasScene final : public QGraphicsScene {
     };
     std::optional<LayerDrag> layer_drag_;
     std::optional<LayerPick> picked_layer_;
+    std::unique_ptr<GraphCanvasThumbnails> thumbnails_;
     // The line a dragged row, or a line being drawn, says it will land on.
     QGraphicsLineItem *layer_drop_line_ = nullptr;
     // Where a row dragged to `at` goes: the insert place in `layers` (0 the
