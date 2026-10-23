@@ -159,6 +159,8 @@ void validateVariantOutput(
                 "Render compiler program produced a "
                 "mismatched or unnamed frame plan");
         }
+        // RC-2b: the compiler output boundary.
+        validateFramePlanStructure(frame_plan);
         frame_graph_names.push_back(name);
     }
     std::sort(

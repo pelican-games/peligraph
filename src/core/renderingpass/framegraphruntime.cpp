@@ -97,6 +97,10 @@ CompiledFrameGraphExecution compileExecution(
         throw std::runtime_error(
             "Frame graph execution requires a compiled render pipeline");
     }
+    // RC-2b: the registration boundary. A plan that reaches the runtime
+    // without a target plan (the renderer's fallback schedule) would run a
+    // repeated node twice, or in an order Studio does not show.
+    validateFramePlanStructure(plan);
     auto pass_indices = renderPassIndices(compiled_pass);
     auto task_indices = computeTaskIndices(compiled_pass);
     auto material_routes =

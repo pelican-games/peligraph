@@ -417,6 +417,7 @@ enum class NativeProgramFault {
     wrong_backend,
     missing_target_index,
     data_only_physical_package,
+    duplicate_frame_plan_node,
 };
 
 class NativeVulkanProgram final
@@ -503,6 +504,19 @@ class NativeVulkanProgram final
 
             auto frame_plan = FramePlan{
                 .name = "native_graph"};
+            if (fault_ ==
+                NativeProgramFault::
+                    duplicate_frame_plan_node) {
+                // RC-2b: two nodes under one name, orders 0 and 1.
+                frame_plan.nodes.push_back(FramePlanNode{
+                    .name = "twice",
+                    .kind = FramePlanNodeKind::anchor,
+                    .order = 0});
+                frame_plan.nodes.push_back(FramePlanNode{
+                    .name = "twice",
+                    .kind = FramePlanNodeKind::anchor,
+                    .order = 1});
+            }
             variant.frame_plans.emplace(
                 "native_graph",
                 std::move(frame_plan));
@@ -1062,6 +1076,19 @@ TEST_CASE(
             Catch::Matchers::ContainsSubstring(
                 "data-only artifact returned a "
                 "physical package"));
+    }
+
+    // RC-2b: the compiler output boundary checks the frame plan's own
+    // structure (the runtime registration boundary checks it again).
+    SECTION("frame plan with a repeated node") {
+        NativeVulkanProgram program{
+            NativeProgramFault::
+                duplicate_frame_plan_node};
+        CHECK_THROWS_WITH(
+            runRenderCompilerProgram(
+                program, fixture.input()),
+            "frame_plan.duplicate_node@1: "
+            R"({"graph":"native_graph","node":"twice"})");
     }
 }
 

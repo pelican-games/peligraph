@@ -248,6 +248,49 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "RC-2b a frame plan with a repeated node or orders out of array order is refused before publication",
+    "[rc2b][render-pipeline][transaction][frame-plan-structure]") {
+    FrameGraphRuntimeContainer runtime;
+    auto initial = runtime.prepareGeneration({programFor(1)});
+    runtime.publishPreparedGeneration(std::move(initial));
+    const auto before = runtime.snapshot();
+    REQUIRE(runtime.activeGeneration() == 1);
+
+    // No target plan: the renderer's fallback schedule would run every
+    // execution node, so the repeated `draw` would draw twice.
+    auto duplicate = programFor(2);
+    duplicate.target_plan.reset();
+    auto repeated = duplicate.frame_plan.nodes.front();
+    repeated.order = 1;
+    duplicate.frame_plan.nodes.push_back(repeated);
+    REQUIRE_THROWS_WITH(
+        runtime.prepareGeneration({std::move(duplicate)}),
+        "frame_plan.duplicate_node@1: "
+        R"({"graph":"main","node":"draw"})");
+    REQUIRE(runtime.snapshot() == before);
+    REQUIRE(runtime.activeGeneration() == 1);
+
+    // Two distinct nodes whose array order (what the runtime runs) is not
+    // their `order` (what Studio shows): [draw(order=1), marker(order=0)].
+    auto swapped = programFor(3);
+    swapped.target_plan.reset();
+    swapped.frame_plan.nodes.front().order = 1;
+    swapped.frame_plan.nodes.push_back(FramePlanNode{
+        .name = "marker",
+        .kind = FramePlanNodeKind::anchor,
+        .order = 0,
+    });
+    REQUIRE_THROWS_WITH(
+        runtime.prepareGeneration({std::move(swapped)}),
+        "frame_plan.order_mismatch@1: "
+        R"({"graph":"main","index":0,"node":"draw","order":1})");
+    REQUIRE(runtime.snapshot() == before);
+    REQUIRE(runtime.activeGeneration() == 1);
+    REQUIRE(revisionOf(*runtime.snapshot(),
+                       RenderingPassId{0}) == 1);
+}
+
+TEST_CASE(
     "WP193 stale candidates cannot overwrite a newer publication",
     "[wp193][render-pipeline][transaction][stale]") {
     FrameGraphRuntimeContainer runtime;

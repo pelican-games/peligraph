@@ -199,6 +199,26 @@ void validateFramePlanPassInputsProduced(
     const FramePlan &plan, const nlohmann::json &pass_set_json,
     const std::unordered_set<std::string> &buffer_names = {});
 std::vector<std::string> framePlanOrder(const FramePlan &plan);
+
+// RC-2b: the structure every published FramePlan keeps, whoever made it
+// (planFrameGraph, a render compiler program, a hand-built preparation).
+// The runtime runs the nodes in array order and Studio shows them by
+// `order`, so the two must be the same sequence. Named refusals, thrown as
+// "<code>: <JSON fields>" (the view_select refusals' form):
+//   {graph, node}           two nodes share a name
+//   {graph, node, order, node_count}
+//                           the orders are not exactly 0..node_count-1
+//                           (a value repeats or reaches past the end)
+//   {graph, node, order, index}
+//                           the orders are 0..n-1 but the node at array
+//                           position `index` carries another `order`
+inline constexpr std::string_view framePlanDuplicateNodeCode =
+    "frame_plan.duplicate_node@1";
+inline constexpr std::string_view framePlanOrderGapCode =
+    "frame_plan.order_gap@1";
+inline constexpr std::string_view framePlanOrderMismatchCode =
+    "frame_plan.order_mismatch@1";
+void validateFramePlanStructure(const FramePlan &plan);
 // GL-2a: a node a graph node made carries
 //   "origin": {"graph", "node", "definition"?, "instance_path"?, "loop"?,
 //              "loop_branch"?, "element"?}

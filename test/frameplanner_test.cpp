@@ -1615,6 +1615,47 @@ TEST_CASE("frame planner explicit after and before edges change the order", "[fr
     }
 }
 
+// RC-2b: `before` on its own. The test above also carries an `after`
+// that alone keeps its order, so a planner ignoring `before` still passed it.
+// Here clear_c is declared first and nothing else orders the two clears, so
+// only `clear_b.before = [clear_c]` can put clear_b ahead.
+TEST_CASE("frame planner explicit before alone reverses the declared order", "[frameplanner][rc2b]") {
+    const auto graph_with = [](bool with_before) {
+        auto clear_b = nlohmann::json{
+            {"name", "clear_b"},
+            {"type", "fullscreen"},
+            {"output", {{"color", "rt_b"}, {"depth", nullptr}}},
+        };
+        if (with_before) {
+            clear_b["before"] = nlohmann::json::array({"clear_c"});
+        }
+        return parseFrameGraphDefinitionFromJson(nlohmann::json{
+            {"name", "explicit_before_only"},
+            {"render_targets",
+             nlohmann::json::array({{{"name", "rt_b"}}, {{"name", "rt_c"}}})},
+            {"passes",
+             nlohmann::json::array({
+                 {{"name", "clear_c"},
+                  {"type", "fullscreen"},
+                  {"output", {{"color", "rt_c"}, {"depth", nullptr}}}},
+                 clear_b,
+                 {{"name", "present"},
+                  {"type", "fullscreen"},
+                  {"input", nlohmann::json::array({"rt_b", "rt_c"})},
+                  {"output", {{"color", "swapchain"}, {"depth", nullptr}}}},
+             })},
+        });
+    };
+
+    const auto declared = framePlanToJson(planFrameGraph(graph_with(false)));
+    const auto before = framePlanToJson(planFrameGraph(graph_with(true)));
+    REQUIRE(planOrder(declared) ==
+            std::vector<std::string>{"clear_c", "clear_b", "present"});
+    REQUIRE(planOrder(before) ==
+            std::vector<std::string>{"clear_b", "clear_c", "present"});
+    REQUIRE(declared.at("barriers") == before.at("barriers"));
+}
+
 TEST_CASE("frame planner feature-composed config plan matches fixture", "[frameplanner]") {
     const auto config = nlohmann::json::parse(R"json({
   "features": ["engine://features/debug_draw.json"],

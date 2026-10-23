@@ -1909,6 +1909,42 @@ std::vector<std::string> framePlanOrder(const FramePlan &plan) {
     return order;
 }
 
+void validateFramePlanStructure(const FramePlan &plan) {
+    const auto refuse = [](std::string_view code,
+                           const nlohmann::json &fields) {
+        throw std::runtime_error(std::string{code} + ": " +
+                                 fields.dump());
+    };
+    const auto node_count = plan.nodes.size();
+    std::unordered_set<std::string_view> names;
+    std::vector<bool> order_seen(node_count, false);
+    names.reserve(node_count);
+    for (const auto &node : plan.nodes) {
+        if (!names.insert(node.name).second) {
+            refuse(framePlanDuplicateNodeCode,
+                   {{"graph", plan.name}, {"node", node.name}});
+        }
+        if (node.order >= node_count || order_seen[node.order]) {
+            refuse(framePlanOrderGapCode,
+                   {{"graph", plan.name},
+                    {"node", node.name},
+                    {"order", node.order},
+                    {"node_count", node_count}});
+        }
+        order_seen[node.order] = true;
+    }
+    for (std::size_t index = 0; index < node_count; ++index) {
+        const auto &node = plan.nodes[index];
+        if (node.order != index) {
+            refuse(framePlanOrderMismatchCode,
+                   {{"graph", plan.name},
+                    {"node", node.name},
+                    {"order", node.order},
+                    {"index", index}});
+        }
+    }
+}
+
 nlohmann::json framePlanToJson(
     const FramePlan &plan,
     const CompiledRenderPipeline *render_pipeline,
