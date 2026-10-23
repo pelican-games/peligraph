@@ -34,7 +34,7 @@
 | 計画(2系統が並行) | 論理グラフ+物理ターゲットプラン / FramePlan | [`compileDefaultVulkanVariant()`](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L753) |
 | GPU 登録と世代 publish | 画像実体・buffer・shader・pipeline・descriptor を作り、不変な publication root を差し替える | [`registerPreparedRenderingPassConfigVariant()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L497) / [`prepareGeneration()`](../../src/core/renderingpass/framegraphruntime.cpp#L315) |
 | pass dispatch | pass 種別を Material、Fullscreen、UI などの renderer へ振り分ける | [`renderDynamicPassDrawCalls()`](../../src/core/vkcore/render_pass_dispatch.cpp#L193) |
-| Vulkan backend | device、frame target、image layout、pipeline、GPU resource を扱う | [`VulkanManageCore::VulkanManageCore()`](../../src/core/vkcore/core.cpp#L931) |
+| Vulkan backend | device、frame target、image layout、pipeline、GPU resource を扱う | [`VulkanManageCore::VulkanManageCore()`](../../src/core/vkcore/core.cpp#L1027) |
 
 **ただし、この 5 層は一本道ではありません。**「JSON → 論理グラフ → 変換 → 物理プラン → Vulkan」という直線で読むと必ず外します。実際は [`FrameGraphDefinition`](../../src/core/renderingpass/frameplanner.hpp#L124) が **ハブ** で、そこから 2 本が **並行に** 枝分かれします。
 以前は 3 本目に `FrameExecutionPlan`(WP238a。FramePlan から導いた backend 非依存の写しで、FramePlan との一致検証と診断 JSON への出力だけをし、コマンド記録は駆動しませんでした)がありましたが、✅RC-2(`e15e31bb5`)で型・生成・一致検証・dump の `execution_plan` ごと削除しました(経緯は [design_plan_layer_inventory.md](../design_plan_layer_inventory.md) §2-1)。
@@ -710,9 +710,9 @@ planner は名前しか知りません。[`FrameGraphRuntimeContainer::registerE
 
 - ordered edge の同 resource write→read を barrier record にする。
 - 実行側 [`bufferReadAfterWriteBarrier()`](../../src/core/renderingpass/computetaskcontainer.cpp#L2023) は storage buffer に `vk::BufferMemoryBarrier` を出す。compute consumerの`command_layout: "compute_dispatch"`とrender consumerの`indexed_draw` / `draw_count`では、通常のshader readに加えて`DrawIndirect` / `IndirectCommandRead`をdestinationへ含める。
-- image は layout tracker に依存。tracker のキーは `(rt_id, surface_index)` になり、history 付き target の現/旧 surface を別々に追跡します([`render_target_layout_tracker.cpp` 内](../../src/core/vkcore/render_target_layout_tracker.cpp#L51))。
+- image は layout tracker に依存。tracker のキーは `(rt_id, surface_index)` になり、history 付き target の現/旧 surface を別々に追跡します([`render_target_layout_tracker.cpp` 内](../../src/core/vkcore/render_target_layout_tracker.cpp#L54))。
 - layout が変われば layout transition が memory dependency を含む。
-- storage image が `GENERAL`→`GENERAL` のままなら tracker は早期 return するため、compute→compute の image RAW 専用 barrier は現在も出ない([同](../../src/core/vkcore/render_target_layout_tracker.cpp#L72))。
+- storage image が `GENERAL`→`GENERAL` のままなら tracker は早期 return するため、compute→compute の image RAW 専用 barrier は現在も出ない([同](../../src/core/vkcore/render_target_layout_tracker.cpp#L75))。
 
 graph の node 順が正しいことと、Vulkan memory visibility が正しいことは別問題です。新 resource type を足すときは planner edge、runtime resource binding、stage/access mask、queue ownership の4点を一緒に設計します。
 
@@ -1056,7 +1056,7 @@ model 登録(391 行)も hot-reload の rebuild(873 行)も同じ helper を通�
 
 ## 6.5 Dynamic Rendering と pass 実行
 
-[`RenderPassExecutor::execute()`](../../src/core/vkcore/render_pass_executor.cpp#L314) は次の順で動きます。
+[`RenderPassExecutor::execute()`](../../src/core/vkcore/render_pass_executor.cpp#L315) は次の順で動きます。
 
 1. pass の入力 target を shader-read layout へ遷移する。
 2. 出力 target を color/depth attachment layout へ遷移する。
@@ -1066,9 +1066,9 @@ model 登録(391 行)も hot-reload の rebuild(873 行)も同じ helper を通�
 6. variant に応じた draw call を記録する。
 7. `endRendering()` を呼ぶ。
 
-つまり旧来の `VkRenderPass` / `VkFramebuffer` object を組み立てる方式ではなく、Vulkan Dynamic Rendering を使います。logical device 生成時にも [`vk::PhysicalDeviceDynamicRenderingFeatures` を有効化](../../src/core/vkcore/core.cpp#L708) しています。
+つまり旧来の `VkRenderPass` / `VkFramebuffer` object を組み立てる方式ではなく、Vulkan Dynamic Rendering を使います。logical device 生成時にも [`vk::PhysicalDeviceDynamicRenderingFeatures` を有効化](../../src/core/vkcore/core.cpp#L787) しています。
 
-UI pass だけは [`RenderPassExecutor` の特別分岐](../../src/core/vkcore/render_pass_executor.cpp#L329) で早期 return します。UI renderer 自身が rendering scope を管理するため、通常 pass と同じ `beginRendering()` を二重に呼ばないためです。同様に ImGui pass も [専用分岐](../../src/core/vkcore/render_pass_executor.cpp#L25) で処理されます。
+UI pass だけは [`RenderPassExecutor` の特別分岐](../../src/core/vkcore/render_pass_executor.cpp#L330) で早期 return します。UI renderer 自身が rendering scope を管理するため、通常 pass と同じ `beginRendering()` を二重に呼ばないためです。同様に ImGui pass も [専用分岐](../../src/core/vkcore/render_pass_executor.cpp#L26) で処理されます。
 
 > 🧩 **難所 — uint16 の天井が 16384**([`buildDrawBatch()`](../../src/core/ui/drawcommands.cpp#L10))
 >
@@ -1113,21 +1113,21 @@ flowchart LR
 
 [`MaterialRenderer`](../../src/core/renderer/materialrender.cpp#L537) は material ごとに pipeline と descriptor を bind し、[`drawIndexedIndirect`](../../src/core/renderer/materialrender.cpp#L407) を発行します。GPU へ渡す geometry、material、instance transform を別 container に分けているため、「モデル1個 = Vulkan buffer 一式」にはなっていません。共通 vertex/index pool と material 単位の draw range を使う構成です。
 
-**面の表は view ごとに決まります(✅CC-1、`c8367b87`)。** material・velocity・shadow depth の pipeline は `GraphicsPipelineDesc::dynamic_front_face = true` で作られ(既定の値は反時計回り)、front face を dynamic state(`VK_DYNAMIC_STATE_FRONT_FACE`。Vulkan 1.3 の core)で持ちます([material の desc](../../src/core/material/materialcontainer.cpp#L447))。
+**面の表は view ごとに決まります(✅CC-1、`c8367b87`)。** material・velocity・shadow depth の pipeline は `GraphicsPipelineDesc::dynamic_front_face = true` で作られ(既定の値は反時計回り)、front face を dynamic state(`VK_DYNAMIC_STATE_FRONT_FACE`。Vulkan 1.3 の core)で持ちます([material の desc](../../src/core/material/materialcontainer.cpp#L428))。
 
 renderer は view ごとに [`viewIsMirrored()`](../../src/core/renderer/clipspace.hpp#L110) で鏡像かを判定して `MaterialRendererDependencies::mirrored_view` に入れ([main の view](../../src/core/vkcore/renderer.cpp#L2641) と secondary family の各 view)、`setViewFrontFace()` が pipeline を bind した直後に `setFrontFace` を記録します(鏡像なら時計回り、でなければ反時計回り。[記録する所](../../src/core/renderer/materialrender.cpp#L34))。bind の直後なのは、間に dynamic state を持たない pipeline(fullscreen や UI)が bind されるとその値が未定義になるからです(コードの注記)。
 
 鏡像になるのは cube の面への描画(cube capture と点光源の影)だけで、[cube の view](../../src/core/render_algorithms/cube_capture/cubecaptureview.cpp#L83) は共通の射影を通さず、Vulkan の cube の面の規約の行列のまま描きます。pipeline を 2 種類持つ案ではなく dynamic state を採ったので、pipeline の数は増えていません。CC-1 より前はこの 3 つの pipeline が `vk::FrontFace::eClockwise` 固定でした(画面が world の鏡像だったことの辻褄合わせ。[第9章 §9.8](09_black_magic_and_gotchas.md))。`raster` pass は作者の `front_face` を pipeline に固定で入れ、切り替えません。
 
-✅CC-2(`1501685a`)の `clip_y: "up"` も pipeline には触らず、`renderFullscreenPass()` が描く直前に [`setClipYViewport()`](../../src/core/vkcore/render_pass_dispatch.cpp#L44) で負の height の viewport(`{0, height, width, -height}`)を設定し、描いた後に正の viewport へ戻すだけです(fused の rendering scope は viewport を scope に 1 回しか設定しないため、戻さないと後の pass に漏れる。コードの注記)。Vulkan は viewport を通した後の framebuffer の座標で面を判定するので、`front_face` / `cull` は `clip_y` がどちらでも出来上がった画像の上で見た巻き方を指します。`clip_y` は `RasterPassContract` の pass 直下の field で(`raster_state` は fullscreen と共有するので入れない)、fingerprint にも入ります([`RasterClipY`](../../src/project/rasterpass.hpp#L53))。
+✅CC-2(`1501685a`)の `clip_y: "up"` も pipeline には触らず、`renderFullscreenPass()` が描く直前に [`setClipYViewport()`](../../src/core/vkcore/render_pass_dispatch.cpp#L44) で負の height の viewport(`{0, height, width, -height}`)を設定し、描いた後に正の viewport へ戻すだけです(fused の rendering scope は viewport を scope に 1 回しか設定しないため、戻さないと後の pass に漏れる。コードの注記)。Vulkan は viewport を通した後の framebuffer の座標で面を判定するので、`front_face` / `cull` は `clip_y` がどちらでも出来上がった画像の上で見た巻き方を指します。`clip_y` は `RasterPassContract` の pass 直下の field で(`raster_state` は fullscreen と共有するので入れない)、fingerprint にも入ります([`RasterClipY`](../../src/project/rasterpass.hpp#L55))。
 
 skinning palette(スキニング行列パレット — ボーンごとの変換行列を 1 本の配列に並べたもの。頂点側は行列そのものではなく配列の添字と重みだけを持ち、シェーダで合成します)、morph weight、per-instance material override の GPU バッファも [`PolygonInstanceContainer`](../../src/core/renderer/polygoninstancecontainer.hpp#L382) が所有します。skin palette / morph weight には前フレーム分(previous バッファ)があり TAA velocity の入力になります。material override は per-frame history を持ちます(WP122/122b。golden: material_instance_override / material_absolute_override)。
 
 **頂点の mode は部品が決め、material は 1 つのまま(✅SK-1、`e265e5658`)。** 「skin 付きか」の真実が material と部品の 2 か所にあり、skin 付きの部品に project material を当てると skin 用の頂点 buffer を skin 無しの layout で読んでいました。SK-1 はそれを部品の側だけに寄せました。
 
 - **型**: [`VertexMode`](../../src/core/material/materialcontainer.hpp#L40) は `standard` / `skinned` の 2 値で、`vertexMode(bool)` が部品の `skinned` から引きます(同じヘッダの 2 行後。間の行は 2 つの mode を回す配列 `vertexModes`)。`MaterialInfo` の bool の `skinned` は無くなり、skin 用の頂点 shader を [`MaterialInfo::skinned_vert_shader`](../../src/core/material/material.hpp#L41)(`std::optional<ShaderBundleId>`)で持ちます。値の無い material は skinned の mode を持ちません(VAT の派生だけがそう。[`registerVatMaterial()`](../../src/core/model/gltf.cpp#L866) が `reset()` する)。
-- **pipeline は mode ごとに、登録のときに全部作る**: [`MaterialContainer::registerMaterial()`](../../src/core/material/materialcontainer.cpp#L807) は [`vertexModes` を回して](../../src/core/material/materialcontainer.cpp#L900)、`skinned_vert_shader` があれば skinned の pipeline も作り、`InternalMaterialInfo::pipeline`([`std::array<std::optional<PipelineHandle>, 2>` の宣言](../../src/core/material/materialcontainer.hpp#L147))に入れます。描くときに遅れて作ることはしません。pipeline の鍵([`makePipelineKey()`](../../src/core/material/materialcontainer.cpp#L110))と desc([`makeMaterialPipelineDesc()`](../../src/core/material/materialcontainer.cpp#L427))は mode を受け、skinned は `use_skinned_vertex_layout`(JOINTS_0 / WEIGHTS_0 付きの専用の頂点 buffer。[シェーダ契約](../shader_contract.md) の Vertex input)で作ります。
-- **mode が変えるのは頂点 shader と頂点 layout だけ**: descriptor set・値の SSBO・GPU の material index は 1 組です。2 つの pipeline の set 2(material)と set 1(pass input)の descriptor set layout が反映で一致しなければ、登録を [`incompatible standard/skinned descriptor set` で断ります](../../src/core/material/materialcontainer.cpp#L938)。共有の descriptor を作る側(`stageTextureRebind` などの読み手)は standard の pipeline を、描く側(`bindMaterialDraw()` / `materialPipeline()` / `pipelineLayout()` / `drawOverridePipelineDesc()`)は渡された mode の pipeline を使います(SK-1 の実装者の報告の一覧。`bindMaterialDraw()` などの宣言は [`MaterialContainer` の mode を受ける関数群](../../src/core/material/materialcontainer.hpp#L513))。
+- **pipeline は mode ごとに、登録のときに全部作る**: [`MaterialContainer::registerMaterial()`](../../src/core/material/materialcontainer.cpp#L787) は [`vertexModes` を回して](../../src/core/material/materialcontainer.cpp#L911)、`skinned_vert_shader` があれば skinned の pipeline も作り、`InternalMaterialInfo::pipeline`([`std::array<std::optional<PipelineHandle>, 2>` の宣言](../../src/core/material/materialcontainer.hpp#L147))に入れます。描くときに遅れて作ることはしません。pipeline の鍵([`makePipelineKey()`](../../src/core/material/materialcontainer.cpp#L111))と desc([`makeMaterialPipelineDesc()`](../../src/core/material/materialcontainer.cpp#L408))は mode を受け、skinned は `use_skinned_vertex_layout`(JOINTS_0 / WEIGHTS_0 付きの専用の頂点 buffer。[シェーダ契約](../shader_contract.md) の Vertex input)で作ります。
+- **mode が変えるのは頂点 shader と頂点 layout だけ**: descriptor set・値の SSBO・GPU の material index は 1 組です。2 つの pipeline の set 2(material)と set 1(pass input)の descriptor set layout が反映で一致しなければ、登録を [`incompatible standard/skinned descriptor set` で断ります](../../src/core/material/materialcontainer.cpp#L949)。共有の descriptor を作る側(`stageTextureRebind` などの読み手)は standard の pipeline を、描く側(`bindMaterialDraw()` / `materialPipeline()` / `pipelineLayout()` / `drawOverridePipelineDesc()`)は渡された mode の pipeline を使います(SK-1 の実装者の報告の一覧。`bindMaterialDraw()` などの宣言は [`MaterialContainer` の mode を受ける関数群](../../src/core/material/materialcontainer.hpp#L513))。
 - **頂点 shader の出どころ**: project material は [`makeMaterialInfo()`](../../src/core/material/projectmaterialasset.cpp#L130) が同じ surface を 2 回 compile し、2 回目に `PELICAN_SKINNED` を足します([足す行](../../src/core/material/projectmaterialasset.cpp#L145))。glTF の material は組み込みの `standardVertShader()` / `skinnedVertShader()` を持ち([`loadMaterial()` の中](../../src/core/model/gltf.cpp#L2077))、surface が `vertex_displace_v1` の hook を持つときだけ両方の mode を surface から compile します([その分岐](../../src/core/model/gltf.cpp#L2107))。組み込みの material も `skinnedVertShader()` を持ちます([`StandardMaterialResource::builtinMaterialInfo()`](../../src/core/material/standardmaterialresource.cpp#L213))。`PELICAN_SKINNED` は compiler の持ち物で、material 文書の `defines` に書くと [`isCompilerOwnedSurfaceDefine()`](../../src/core/shader/shaderlibrary.cpp#L167) に当たって断られます。
 - **消えたもの**: glTF の loader が skin 付きの部品のために作っていた material の双子(`skinnedMaterial()` と `skinned_material_variants`。頂点 shader だけを差し替えた写しを負の ID で登録していた)と、組み込みの `pelican.builtin.skinned_fallback`(material の無い skinned primitive 用)です。skin 付きの部品も元の material の ID をそのまま使うので、`ModelTemplate::MaterialPrimitives` の 1 つの group に skin 付きと skin 無しの部品が同居します(部品ごとに `skinned` を持つので描画は困りません)。負の ID の派生は VAT だけに残ります([第3章 §3.8](03_project_and_loading.md#38-asset-modelから描画instanceまで) の難所「-1を空けて負へ伸ばす」)。
 - **draw item を作るときに mode を確かめる**: [`makeDrawItemSnapshot()`](../../src/core/renderer/polygoninstancecontainer.cpp#L370) は、実効の material が部品の mode の pipeline を持たなければ material・mesh・primitive を名指しで throw します([検査の行](../../src/core/renderer/polygoninstancecontainer.cpp#L382))。描画の記録の途中では投げません。全部の非 VAT の material が skinned を持つので、ここに届くのは skinned を持たない VAT の material を skin 付きの部品が使う場合だけです(コードの読み)。
@@ -1135,11 +1135,11 @@ skinning palette(スキニング行列パレット — ボーンごとの変換�
 - **描くときの mode**: draw item の `DrawPipelineMaterialKey::skinned` は部品の `skinned` のままで、`renderMaterialDraws()` の `draw_step` が [`bindMaterialDraw(..., vertexMode(draw_call.skinned))`](../../src/core/renderer/materialrender.cpp#L305) で mode を渡します。draw queue の range は前から material・`source_material_index`・`skinned` の変化で閉じる(下の難所「draw queue は provider に鍵だけ作らせる」)ので、1 つの range の中で mode は変わりません。
 - test: `headless_render_test` の「SK1 skinned material bindings depth coverage and reload」(GPU。姿勢を付けた skin の depth の覆い・3 つの割り当ての経路・VAT の 3 経路・reload の前後の `VkPipeline`)、`materialbinding_test` の「SK1 material bindings retain primitive skin mode and refuse unbaked VAT」、`materiallowering_test` の「SK1 draw-loop subjects distinguish geometry mode for one material」。
 
-**受け皿の無い material はマゼンタで描く(✅MU-1、`4b4fbfda0`)。** material の route・shader contract・`exact_pass` を受ける material pass が今の構成に無いとき、[`registerMaterial()` の MU-1 の分岐](../../src/core/material/materialcontainer.cpp#L835)は登録を断らず、代役の pass で描きます。
+**受け皿の無い material はマゼンタで描く(✅MU-1、`4b4fbfda0`)。** material の route・shader contract・`exact_pass` を受ける material pass が今の構成に無いとき、[`registerMaterial()` の MU-1 の分岐](../../src/core/material/materialcontainer.cpp#L815)は登録を断らず、代役の pass で描きます。
 
 - **代役の選び方**: [`RenderingPassContainer::substituteMaterialPass()`](../../src/core/renderingpass/renderingpasscontainer.cpp#L208) が、同じ shader contract を受ける material pass を frame の順で探し、無ければ最初の material pass を返します。material pass が 1 つも無ければ代役は無く、material は受け皿の無いまま登録されます(pass がゼロの構成は通常の世代として起動する UD-1 の契約のまま)。
-- **描き方**: fragment は [`StandardMaterialResource::errorFragmentShader()`](../../src/core/material/standardmaterialresource.cpp#L26) が作る `generated://material_route_error.surface`(base color と emissive が `(1,0,1)`、lighting の hook も一定のマゼンタ)で、代役の pass の output schema で compile し、route・schema・頂点の ABI ごとに module の寿命の cache に置きます([差し替える行](../../src/core/material/materialcontainer.cpp#L853))。頂点 shader は書いた material のもの(standard / skinned の両方)のままで、blend を切り、depth test / write を入れ、fragment だけが使う screen input と resource port を外します。
-- **記録**: `InternalMaterialInfo::unserved`([`UnservedMaterial` の宣言](../../src/core/material/materialcontainer.hpp#L121))に書いた route・contract・`exact_pass` と代役の route・pass・理由の文を残し、draw queue と draw loop の subject は代役の route を使います。`list_materials` / `get_material` は書いた route と `unserved` を返し([`MaterialContainer::materialRouteStatus()`](../../src/core/material/materialcontainer.cpp#L1960))、[`MaterialContainer::publishUnservedProblems()`](../../src/core/material/materialcontainer.cpp#L1976) が Problems の domain `material_routes` に `material.route_unserved@1`(severity error)を material ごとに 1 行出します。登録・variant の登録・解放のたびに出し直します。受ける pass を足しただけでは、登録済みの material は代役のままです(世代の planner の [`candidateRoute()`](../../src/core/material/materialgenerationplanner.cpp#L784) は、authored の route default が変わらない限り代役の route を使い続ける)。material が登録し直されたとき(material の編集、engine の起動し直し)に通常の pass へ載り、行が消えます。
+- **描き方**: fragment は [`StandardMaterialResource::errorFragmentShader()`](../../src/core/material/standardmaterialresource.cpp#L26) が作る `generated://material_route_error.surface`(base color と emissive が `(1,0,1)`、lighting の hook も一定のマゼンタ)で、代役の pass の output schema で compile し、route・schema・頂点の ABI ごとに module の寿命の cache に置きます([差し替える行](../../src/core/material/materialcontainer.cpp#L833))。頂点 shader は書いた material のもの(standard / skinned の両方)のままで、blend を切り、depth test / write を入れ、fragment だけが使う screen input と resource port を外します。
+- **記録**: `InternalMaterialInfo::unserved`([`UnservedMaterial` の宣言](../../src/core/material/materialcontainer.hpp#L121))に書いた route・contract・`exact_pass` と代役の route・pass・理由の文を残し、draw queue と draw loop の subject は代役の route を使います。`list_materials` / `get_material` は書いた route と `unserved` を返し([`MaterialContainer::materialRouteStatus()`](../../src/core/material/materialcontainer.cpp#L1971))、[`MaterialContainer::publishUnservedProblems()`](../../src/core/material/materialcontainer.cpp#L1987) が Problems の domain `material_routes` に `material.route_unserved@1`(severity error)を material ごとに 1 行出します。登録・variant の登録・解放のたびに出し直します。受ける pass を足しただけでは、登録済みの material は代役のままです(世代の planner の [`candidateRoute()`](../../src/core/material/materialgenerationplanner.cpp#L754) は、authored の route default が変わらない限り代役の route を使い続ける)。material が登録し直されたとき(material の編集、engine の起動し直し)に通常の pass へ載り、行が消えます。
 - test: `materialdocumentrpc_test` の「MU-1 materialdocumentrpc unserved materials stay live and draw magenta until served」(GPU。Blank 相当の構成に blend の material を当ててマゼンタの画素・Problems の 1 行・両 mode の pipeline、`forward_transparent` の pass をディスクに足して engine を起動し直すと青に戻る)、`renderingpass_helpers_test` の「MU-1 material substitute prefers a compatible contract then frame order and preserves no-pass」。
 
 **morph の頂点の記録が差し替わったら descriptor を書き直します(✅MV-1、`f84a7d14`)。** morph の頂点ごとの記録(metadata)と delta の buffer は `VertBufContainer` が持ち、`PolygonInstanceContainer` の 4 つの descriptor set(static / skinned × 変形用 / material 用。set 3 の `PELICAN_SET_FREE`)がそれを bind します。
@@ -1174,7 +1174,7 @@ MV-1 から metadata は頂点 buffer と一緒に伸びて buffer ごと差し�
 >   clip.xy  += deltaNDC * clip.w                            # 4 頂点に同じ量
 > ```
 >
-> **手がかり**: `resolution` は `(w, h, 1/w, 1/h)` で、`.zw` が逆数だと知らないと `deltaNdc` の式が読めません。アンカーは `gpu.snap_anchor = {-pivot.x, pivot.y}`、つまり画像の左上の角(画像の空間の (0,0))を、pivot を原点・+y を上にした sprite のローカルで表した点であって、中心でも pivot でもありません(✅CC-1 `c8367b87` で quad の y を反転し、画像の上の行が local +y 側に出るようになったので、y の符号が `-pivot.y` から `pivot.y` に変わった。[quad を作る所](../../src/core/renderer/spriterenderer.cpp#L79))。GPU に渡るのは `pixel_snap` の 0/1 だけで、判定ロジックは全部 CPU 側です。FrameUBO の `projection` はジッタ済みなので、TAA 有効時のスナップはジッタ込みの NDC で行われます。テストは [`sprite_foundation_test.cpp`](../../test/sprite_foundation_test.cpp)(`quantizePixelBoundary(3.49)==3` / `(3.50)==4` が丸め境界を固定)。
+> **手がかり**: `resolution` は `(w, h, 1/w, 1/h)` で、`.zw` が逆数だと知らないと `deltaNdc` の式が読めません。アンカーは `gpu.snap_anchor = {-pivot.x, pivot.y}`、つまり画像の左上の角(画像の空間の (0,0))を、pivot を原点・+y を上にした sprite のローカルで表した点であって、中心でも pivot でもありません(✅CC-1 `c8367b87` で quad の y を反転し、画像の上の行が local +y 側に出るようになったので、y の符号が `-pivot.y` から `pivot.y` に変わった。[quad を作る所](../../src/core/renderer/spriterenderer.cpp#L83))。GPU に渡るのは `pixel_snap` の 0/1 だけで、判定ロジックは全部 CPU 側です。FrameUBO の `projection` はジッタ済みなので、TAA 有効時のスナップはジッタ込みの NDC で行われます。テストは [`sprite_foundation_test.cpp`](../../test/sprite_foundation_test.cpp)(`quantizePixelBoundary(3.49)==3` / `(3.50)==4` が丸め境界を固定)。
 >
 > **不変条件**: 丸めは `floor(x+0.5)`(`std::round` に替えない)。スナップ量はスプライト内で一定に保つ。条件を緩めるときは対応する `PixelSnapReason` を残したまま緩めること — 黙って eligible にしないのがこの API の設計です。
 
@@ -1240,7 +1240,7 @@ override の pipeline は base の pipeline の記述を複写して render stat
 
 **規則に問う主語は material × 頂点の mode(✅SK-1)。**規則が見る [`MaterialDrawSubject`](../../src/project/materialdrawloop.hpp#L129) は、1 つの material につき mode ごとに 1 つ作られます。
 
-- **列挙**: [`MaterialContainer::drawLoopSubjects()`](../../src/core/material/materialcontainer.cpp#L2625) は material ごとに、[`supportsVertexMode()`](../../src/core/material/materialcontainer.cpp#L2621)(その mode の pipeline があるか)が真の mode だけ [`drawLoopSubject(material, mode)`](../../src/core/material/materialcontainer.cpp#L2597) を作ります。表の [`MaterialDrawLoopTable::evaluateInto()`](../../src/core/material/materialdrawlooptable.cpp#L220)、世代の planner の受け皿の検査([`vertexModes` を回す所](../../src/core/material/materialgenerationplanner.cpp#L887))も同じく mode ごとに回ります。step の override の pipeline は、その mode の base の pipeline から派生させます([派生元を引く行](../../src/core/material/materialdrawlooptable.cpp#L267))。
+- **列挙**: [`MaterialContainer::drawLoopSubjects()`](../../src/core/material/materialcontainer.cpp#L2636) は material ごとに、[`supportsVertexMode()`](../../src/core/material/materialcontainer.cpp#L2632)(その mode の pipeline があるか)が真の mode だけ [`drawLoopSubject(material, mode)`](../../src/core/material/materialcontainer.cpp#L2608) を作ります。表の [`MaterialDrawLoopTable::evaluateInto()`](../../src/core/material/materialdrawlooptable.cpp#L220)、世代の planner の受け皿の検査([`vertexModes` を回す所](../../src/core/material/materialgenerationplanner.cpp#L857))も同じく mode ごとに回ります。step の override の pipeline は、その mode の base の pipeline から派生させます([派生元を引く行](../../src/core/material/materialdrawlooptable.cpp#L267))。
 - **2 つの鍵**: `subject.key` は mode 付きの内部の鍵で、[`materialDrawSubjectKey()`](../../src/project/materialdrawloop.cpp#L18) の末尾に `#vertex/standard` / `#vertex/skinned` が付きます。`subject.material_key` は mode の無い公開の id(project material は `<文書>#<名前>`、glTF の material は `<asset>#material[<index>]`)で、`materialKey()` が返します。`when.material` は公開の id で照合するので、1 つの id が standard / skinned の両方の主語に当たります([`graphLoopDrawConditionMatches()`](../../src/project/materialdrawloop.cpp#L106) は `subject.key` と `subject.material_key` のどちらかに一致すれば当てるので、mode 付きの内部の鍵を書いた `when.material` はその mode の主語にだけ当たる)。`when.skinned` は主語ごとの `skinned` を見ます。拒否の文の `material` にも内部の鍵は出しません。
 - **公開の形**: `get_frame_plan` の `loops[].elements` は (公開の id, branch) ごとに 1 行で、その branch を取る mode を `vertex_modes` に並べます([`applyMaterialDrawLoopElementsToFramePlanJson()`](../../src/project/materialdrawloop.cpp#L194))。両 mode が同じ branch を取れば 1 行、`when.skinned` で分かれれば同じ id の 2 行です。`get_render_authoring_context.materials` も公開の id ごとに 1 行で `vertex_modes` を持ちます([集める所](../../src/core/communication/renderconfigeditor.cpp#L3612))。Studio の Frame Plan は Material の行の下に読み取り専用の「Vertex modes」を出します。
 - **描くとき**: `renderMaterialDraws()` の range は material と `skinned` の両方が同じ間だけ伸び([range を切る行](../../src/core/renderer/materialrender.cpp#L426))、列は [`find(pass, material, mode)`](../../src/core/renderer/materialrender.cpp#L431) で引きます。
@@ -1248,7 +1248,7 @@ override の pipeline は base の pipeline の記述を複写して render stat
 **variant は mode に依らない(SK-3、着地待ち。`agent/sk3`)。**`drawLoopSubject()` は material の variant の名前を、mode を見ずに主語の `variants` へ写します(上の `drawLoopSubject(material, mode)` の末尾)。それでも skin 付きの部品の主語で `material_variant` の step が `graph.loop_variant_missing@1` になっていたのは、project material の base を登録した時点で、variant を付ける前に生きている表へ通知していたからです(SK-3 の実装者の報告)。SK-3 は base と variant を 1 つの組として登録します。
 
 - [`registerMaterialFamily()`](../../src/core/material/materialregistration.hpp#L29)(`materialregistration.hpp`、Vulkan の確保から切り離した登録の transaction)は、[`ScopedMaterialPublicationDeferral`](../../src/core/material/materialregistration.hpp#L9) で通知を止めたまま base を作って variant を付け、両 mode の pipeline・variant・pass の descriptor が揃ってから生きている表へ通知します。途中で失敗したら base と variant を解放し、既に受け付けた表からも消します。止める印は入れ子でも呼び手の状態に戻ります。
-- 呼ぶのは base と variant を受ける [`MaterialContainer::registerMaterial(info, variants)`](../../src/core/material/materialcontainer.cpp#L1273) の overload で、[`ProjectMaterialAssetContainer` がここを呼びます](../../src/core/material/projectmaterialasset.cpp#L727)。単独の `registerMaterial(info)` と後付けの `registerMaterialVariants()` の契約は変わりません。
+- 呼ぶのは base と variant を受ける [`MaterialContainer::registerMaterial(info, variants)`](../../src/core/material/materialcontainer.cpp#L1284) の overload で、[`ProjectMaterialAssetContainer` がここを呼びます](../../src/core/material/projectmaterialasset.cpp#L727)。単独の `registerMaterial(info)` と後付けの `registerMaterialVariants()` の契約は変わりません。
 - test: `materialdrawlooptable_test` の「SK3 materialdrawlooptable resolves outline in both modes after family publication」ほか 2 本(CPU)と、CB-1 の組 02「CB1 02 skin outline variant and when skinned draw loop」(GPU)。
 
 **pass ごとに描いた material の数え方(✅MP-1)。**`get_frame_plan` の material pass の node の `drawn_materials` は、描くときに数えたものです。
@@ -1380,7 +1380,7 @@ frame target の color/depth と、frame graph 設定で宣言する offscreen t
 
 後者の「1 layer でも layered」が WP239b の変更点です。それまでは layer 数 1 の family array に対してだけ `layer_count = 1` の `e2DArray` subresource view を別途生成していました。descriptor の shape(`e2DArray`)は変わらないので、これは束縛の意味を変える修正ではなく、同じ範囲の view を二重に作るのをやめる整理です。実際に落ちていたのは期待値の側でした — `hybrid_v1` の GPU テストが producer view-family array 導入前の scalar 契約のまま `getImageView()`(array target でも layer 0 の `e2D`)と比較しており、shader ABI が要求する layered view と一致しませんでした。WP239b はこの期待値を `getLayeredImageView()` へ直しています。現在は 1 layer でも canonical layered view へ統一され、同じ範囲の subresource view を重複生成しません。
 
-> 🧩 **難所 — `family_array` は物理 layout をまたいで 1 つの descriptor に正規化する**([`ensureScreenInputDescriptor()`](../../src/core/material/materialcontainer.cpp#L2059) / [`MaterialDescriptorBuilder::build()`](../../src/core/material/materialdescriptorbuilder.cpp#L442))
+> 🧩 **難所 — `family_array` は物理 layout をまたいで 1 つの descriptor に正規化する**([`ensureScreenInputDescriptor()`](../../src/core/material/materialcontainer.cpp#L2070) / [`MaterialDescriptorBuilder::build()`](../../src/core/material/materialdescriptorbuilder.cpp#L442))
 >
 > **何をする所か**: `materialcontainer.cpp` はテクスチャ台帳・descriptor 組み立て・世代リロード計画の 3 つに分かれ、descriptor set を実際に作るのは [`MaterialDescriptorBuilder`](../../src/core/material/materialdescriptorbuilder.hpp#L116)、束縛する image view を選ぶ規則は material 側と fullscreen 側が共有する [`resolvePassInputImageView()`](../../src/core/renderingpass/passinputdescriptorvariant.cpp#L21) です。material が読む pass input(screen input)について、`.surface` の resource port が宣言した view 種別([`ShaderResourcePortView`](../../src/project/shaderresourceport.hpp#L24))と、pass 側の物理 view 種別([`PassInputViewDimension`](../../src/core/renderingpass/renderingpass.hpp#L353))を突き合わせ、実際に束縛する `vk::ImageView` と descriptor の次元を決めます。
 >
@@ -1430,7 +1430,7 @@ extent が変わったフレームでは [`handleFrameTargetResize()`](../../src
 
 戻り値 `true` は「in-place の resize を実際に行った」の意味で、受けた呼び出し元が temporal history を落として `internal_render_extent` を更新します。この 2 段構え(候補作成と publish を分ける / stale なら例外)は [`headless_render_test.cpp`](../../test/headless_render_test.cpp) の "typed image subresources execute a two-stage depth pyramid and rebind after resize" が固定しています。
 
-画像 layout の現在値は [`RenderTargetLayoutTracker`](../../src/core/vkcore/render_target_layout_tracker.cpp#L126) が追います。キーは target ID 単体ではなく `(rt_id, surface_index)` の組で(#L72-L74)、**history 付き(double-buffered)target** の現/旧 surface を別々に追跡します。初見の surface は target の initial layout、同じ layout への遷移は何もしません。`-2` の swapchain target は特殊 ID なので tracker が無視し、`SwapchainFrameTarget` 側に管理を任せます。
+画像 layout の現在値は [`RenderTargetLayoutTracker`](../../src/core/vkcore/render_target_layout_tracker.cpp#L131) が追います。キーは target ID 単体ではなく `(rt_id, surface_index)` の組で(#L72-L74)、**history 付き(double-buffered)target** の現/旧 surface を別々に追跡します。初見の surface は target の initial layout、同じ layout への遷移は何もしません。`-2` の swapchain target は特殊 ID なので tracker が無視し、`SwapchainFrameTarget` 側に管理を任せます。
 
 layout transition は単なる状態ラベルではありません。[`makeTransitionInfo()`](../../src/core/vkcore/render_target_layout_tracker.cpp#L9) が old/new layout から pipeline stage と access mask を作ります。
 
@@ -1447,12 +1447,12 @@ layout transition は単なる状態ラベルではありません。[`makeTrans
 ✅PS-1 の `lifetime: "persistent"` は [`RenderTargetDefinition::persistent`](../../src/core/renderingpass/rendertargetdefinition.hpp#L76) になり([読む所](../../src/core/renderingpass/rendertargetjsonparser.cpp#L320))、container の record にも写ります。同じ名前の登録が繰り返されたときは、どれか 1 つが persistent なら以後ずっと persistent です(lifetime は image の契約に入れず、印は立つだけ。候補の取り消しをまたいでも害が無いため。[その所](../../src/core/renderingpass/rendertargetcontainer.cpp#L756))。
 
 - **alias**: [`isRuntimeAliasCandidate()`](../../src/core/renderingpass/renderingsamplecount.cpp#L94)、transient attachment と tile-local の候補の判定が persistent を外し、[`runtimeAliasExclusion()`](../../src/core/renderingpass/renderingsamplecount.cpp#L116) が原因に `persistent lifetime` を足します。
-- **layout**: `RenderTargetLayoutTracker` は persistent の target の key ごとに、追っていた `VkImage` を `persistent_images` に覚えます(`transition()` / `memoryDependency()` / `assumeLayout()` が [`notePersistentImage()`](../../src/core/vkcore/render_target_layout_tracker.cpp#L381) を呼ぶ)。[`reset()`](../../src/core/vkcore/render_target_layout_tracker.cpp#L337) は、ほかの key の layout と shader の stage を捨てても、persistent の key の分は残します。PS-1 の前は reset で全部を捨てていたので、次の使用は [`initialLayout()`](../../src/core/renderingpass/rendertargetcontainer.cpp#L1556) からの遷移になっていました(UNDEFINED からの遷移は中身を保証しません)。
-- **作り直し**: 使うたびに [`forgetRecreatedPersistentImage()`](../../src/core/vkcore/render_target_layout_tracker.cpp#L363) が今の `VkImage` と覚えた handle を比べ、違えば(extent・format の変更や組み直しで作り直された)その key の layout を捨てて initial layout から始めます。`currentLayout()` も同じ比較をします。ping-pong の 2 面は作りません。
+- **layout**: `RenderTargetLayoutTracker` は persistent の target の key ごとに、追っていた `VkImage` を `persistent_images` に覚えます(`transition()` / `memoryDependency()` / `assumeLayout()` が [`notePersistentImage()`](../../src/core/vkcore/render_target_layout_tracker.cpp#L386) を呼ぶ)。[`reset()`](../../src/core/vkcore/render_target_layout_tracker.cpp#L342) は、ほかの key の layout と shader の stage を捨てても、persistent の key の分は残します。PS-1 の前は reset で全部を捨てていたので、次の使用は [`initialLayout()`](../../src/core/renderingpass/rendertargetcontainer.cpp#L1556) からの遷移になっていました(UNDEFINED からの遷移は中身を保証しません)。
+- **作り直し**: 使うたびに [`forgetRecreatedPersistentImage()`](../../src/core/vkcore/render_target_layout_tracker.cpp#L368) が今の `VkImage` と覚えた handle を比べ、違えば(extent・format の変更や組み直しで作り直された)その key の layout を捨てて initial layout から始めます。`currentLayout()` も同じ比較をします。ping-pong の 2 面は作りません。
 
 ### 現在の image barrier の注意点
 
-compute の image resource は [`transitionResourcesForDispatch()`](../../src/core/renderingpass/computetaskcontainer.cpp#L1854) で、sampled のみなら `eShaderReadOnlyOptimal`、storage を含むなら `eGeneral` を選びます。現在の layout が同じなら [`RenderTargetLayoutTracker::memoryDependency()`](../../src/core/vkcore/render_target_layout_tracker.cpp#L206)、異なれば `transition()` を呼びます。同じ `GENERAL` のまま使う image にも、layout を保ったまま stage / access の memory dependency を発行します。
+compute の image resource は [`transitionResourcesForDispatch()`](../../src/core/renderingpass/computetaskcontainer.cpp#L1854) で、sampled のみなら `eShaderReadOnlyOptimal`、storage を含むなら `eGeneral` を選びます。現在の layout が同じなら [`RenderTargetLayoutTracker::memoryDependency()`](../../src/core/vkcore/render_target_layout_tracker.cpp#L211)、異なれば `transition()` を呼びます。同じ `GENERAL` のまま使う image にも、layout を保ったまま stage / access の memory dependency を発行します。
 
 `transition()` 自体が同じ layout で早期 return することと、compute dispatch 前の同期が省略されることは同義ではありません。buffer の RAW barrier は別経路の [`bufferReadAfterWriteBarrier()`](../../src/core/renderingpass/computetaskcontainer.cpp#L2023) が担当します。
 
@@ -1460,7 +1460,7 @@ compute の image resource は [`transitionResourcesForDispatch()`](../../src/co
 >
 > **何をする所か**: frame target 側(headless)の color attachment のフォーマットを決め、選んだ結果を [`OutputCompileFacts::encoding_path`](../../src/core/vkcore/outputcompilefacts.hpp#L26)(`srgb_hardware` / `srgb_shader_unorm`)として外へ申告します。
 >
-> **素朴に読むと**: 第一候補は `R8G8B8A8Srgb` ですが、`COLOR_ATTACHMENT` と `TRANSFER_SRC` を optimalTiling で両方満たさない実装があるため `R8G8B8A8Unorm` へ落ちます(UNORM でも満たさなければ throw して黙って進みません、[format 選択の分岐](../../src/core/vkcore/offscreenframetarget.cpp#L113))。読みにくいのは、その判定式に**テスト専用フラグが `||` で混ざっている**ことです([`force_unorm_color_path_for_testing`](../../src/core/launchconfig.hpp#L108) / [その判定式](../../src/core/vkcore/offscreenframetarget.cpp#L113))。この分岐は大抵の開発機では絶対に通らないので、放っておくとテストが一度も踏まない到達不能経路になります。フラグはそれを CI で踏むための唯一の入口で、[`rpc_color_contract_test.cpp` 内](../../test/rpc_color_contract_test.cpp#L161) が `GENERATE(false, true)` で両方を回します。そして肝心なのは、**フォールバックしても出力バイトの意味は変わらない**ことです。選んだ format は終端 pass のフォーマットになり、UNORM なら [`renderingpassruntimecompiler.cpp` 内](../../src/core/renderingpass/renderingpassruntimecompiler.cpp#L2320) が `PELICAN_OUTPUT_UNORM_FALLBACK` を define して [`output_transform.frag`](../../src/core/resources/output_transform.frag) が `linearToSrgb()` を自分で掛けるからです(§6.1 の「HW が OETF」の代替)。違うのは**手段と丸め誤差**だけで、同じテストが許容差を `fallback ? 1 : 0` に切り替えているのがその現れです。
+> **素朴に読むと**: 第一候補は `R8G8B8A8Srgb` ですが、`COLOR_ATTACHMENT` と `TRANSFER_SRC` を optimalTiling で両方満たさない実装があるため `R8G8B8A8Unorm` へ落ちます(UNORM でも満たさなければ throw して黙って進みません、[format 選択の分岐](../../src/core/vkcore/offscreenframetarget.cpp#L113))。読みにくいのは、その判定式に**テスト専用フラグが `||` で混ざっている**ことです([`force_unorm_color_path_for_testing`](../../src/core/launchconfig.hpp#L108) / [その判定式](../../src/core/vkcore/offscreenframetarget.cpp#L113))。この分岐は大抵の開発機では絶対に通らないので、放っておくとテストが一度も踏まない到達不能経路になります。フラグはそれを CI で踏むための唯一の入口で、[`rpc_color_contract_test.cpp` 内](../../test/rpc_color_contract_test.cpp#L161) が `GENERATE(false, true)` で両方を回します。そして肝心なのは、**フォールバックしても出力バイトの意味は変わらない**ことです。選んだ format は終端 pass のフォーマットになり、UNORM なら [`renderingpassruntimecompiler.cpp` 内](../../src/core/renderingpass/renderingpassruntimecompiler.cpp#L2327) が `PELICAN_OUTPUT_UNORM_FALLBACK` を define して [`output_transform.frag`](../../src/core/resources/output_transform.frag) が `linearToSrgb()` を自分で掛けるからです(§6.1 の「HW が OETF」の代替)。違うのは**手段と丸め誤差**だけで、同じテストが許容差を `fallback ? 1 : 0` に切り替えているのがその現れです。
 >
 > **骨子**:
 > ```mermaid
@@ -1506,7 +1506,7 @@ descriptor は shader reflection の set 1、すなわち `PELICAN_SET_PASS_INPU
 
 port の binding は [`makeComputeResourceInterface()`](../../src/core/renderingpass/computetaskcontainer.cpp#L143) が resource の並びの位置(同じ resource の 2 本目以降の port は resource の数より後ろ)で仮に振り、RS-5 からは shader を読み込んだ後に [`bindShaderResourceInterfaceByReflectedName()`](../../src/core/shader/shaderresourceinterface.cpp#L941) が、反映の set 1 で `pelican_resource_<port>` の名前を持つ binding に付け替えます(RT task は全 stage の反映を `merge()` してから。[呼ぶ所](../../src/core/renderingpass/computetaskcontainer.cpp#L1400))。pipeline の layout はその反映から作られるので、layout と書き込みが同じ「名前 → binding」で一致し、port を書く順は効きません。
 
-生成 include で compile した shader では include が振った番号がそのまま反映に出るので、付け替えは何も変えません。名前が反映に無い port は番号を変えず、pipeline の作成の [`validateShaderResourceInterfaceReflection()`](../../src/core/shader/shaderresourceinterface.cpp#L849) が absent として断ります(RT では `validateRayTracingPipelineInterfaces()` の後)。1 つの名前が 2 つの binding にあれば付け替えの関数自身が断ります。付け替えるのは登録のときだけで、hot reload の組み直し([`rebuildDirty()`](../../src/core/shader/pipelinefactory.cpp#L2086) など)は保存した desc の binding のまま組みます。fullscreen / raster pass はこの関数を通りません(binding は pass の入力の位置)。
+生成 include で compile した shader では include が振った番号がそのまま反映に出るので、付け替えは何も変えません。名前が反映に無い port は番号を変えず、pipeline の作成の [`validateShaderResourceInterfaceReflection()`](../../src/core/shader/shaderresourceinterface.cpp#L849) が absent として断ります(RT では `validateRayTracingPipelineInterfaces()` の後)。1 つの名前が 2 つの binding にあれば付け替えの関数自身が断ります。付け替えるのは登録のときだけで、hot reload の組み直し([`rebuildDirty()`](../../src/core/shader/pipelinefactory.cpp#L2150) など)は保存した desc の binding のまま組みます。fullscreen / raster pass はこの関数を通りません(binding は pass の入力の位置)。
 
 生成 include は ✅RS-11 から、port ごとに `#define PELICAN_RESOURCE_PORT_<port> 1` を書きます([`generateShaderResourcePortInclude()`](../../src/core/shader/shaderresourceinterface.cpp#L647) の [その所](../../src/core/shader/shaderresourceinterface.cpp#L667))。
 
@@ -1707,13 +1707,13 @@ raster の vertex が入力 0 を固定の宣言で読み、fragment の `engine
 
 binding 定数は各 set の用途に応じて定義されています([`pelican_sets.hpp` 内](../../src/core/shader/pelican_sets.hpp#L26)): `FRAME_UBO=0` / `OBJECT_BUFFER=1` / `LIGHT_UBO=2` / `PREVIOUS_OBJECT_BUFFER=3`(TAA velocity 用)/ `MATERIAL_BUFFER=6` のほか、skin palette、morph 系、material instance override 系の binding があります。
 
-push constant は engine 64 bytes + shader 64 bytes、合計128 bytesを契約値としています。実際の pipeline layout は reflection された range から [`createPipelineLayout()`](../../src/core/shader/pipelinefactory.cpp#L540) が作ります。
+push constant は engine 64 bytes + shader 64 bytes、合計128 bytesを契約値としています。実際の pipeline layout は reflection された range から [`createPipelineLayout()`](../../src/core/shader/pipelinefactory.cpp#L549) が作ります。
 
 ✅LC-1 から、shader 側の半分の `[112, 120)` を graph のループの回の番号に使います([`PELICAN_PUSH_LOOP_OFFSET = 112` / `PELICAN_PUSH_LOOP_BYTES = 8`](../../src/core/shader/pelican_sets.hpp#L78)、GLSL 側は `pelican_sets.glsl` と include の `pelican_loop.glsl`。書き方は manual 第6章 §6.18「回の番号を shader に渡す」)。流れは次のとおりです。
 
 - **値を決める**: 合成の後、[`loopIndicesOf()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L479) が compiled pipeline の `pass_provenance` の `loop_origin.element` と `graph_loops` の回数から、展開された pass と compute task の名前ごとに [`PassLoopIndex`](../../src/core/renderingpass/renderingpass.hpp#L467) `{element, count}` を作り、`PassDefinition::loop_index` / `ComputeTaskDefinition::loop_index` に入れます(JSON からは読まない runtime だけの field。ループの外は `{0, 1}`)。compute task は名前で既に登録されていれば再利用されるので、組み直しで回数が変わったときのために `registerComputeTask()` が `loop_index` だけを書き直します。
-- **送る**: fullscreen / raster は `FullscreenPassRenderer::render()` が descriptor を bind した後に、compute task は `ComputeTaskContainer::dispatch()` が(ray tracing の task かどうかを分ける前に)、[`PipelineFactory::pushLoopIndex()`](../../src/core/shader/pipelinefactory.cpp#L1869) を呼びます。これは pipeline の merge 済み reflection から、range が `[112, 120)` を丸ごと含む stage を [`loopIndexPushStages()`](../../src/core/shader/shaderreflection.cpp#L549) で集め、その OR の stage flags で `pushConstants` を 1 回呼びます(どの stage も含まなければ何もしない)。layout の range は今までどおり `makePushConstantRanges()` が stage ごとに 1 本へ潰したものなので、include の block と自前の block(`PELICAN_LOOP_CUSTOM_PUSH`)のどちらでもこの判定に乗ります。
-- **断る**: [`validateLoopIndexPushRange()`](../../src/core/shader/shaderreflection.cpp#L560) が、range が `[112, 120)` に一部だけ重なる stage を `shader.loop_push_overlap@1: {shader, stage, range}` の `std::runtime_error` で断ります。呼ぶのは `buildGraphicsPipeline()`(vertex と fragment を別々に)と `buildComputePipeline()` で([graphics](../../src/core/shader/pipelinefactory.cpp#L980)、[compute](../../src/core/shader/pipelinefactory.cpp#L1024))、ray tracing の pipeline は検査しません。render config editor は code を carried refusal として扱います([`isCarriedRefusalCode()`](../../src/core/communication/renderconfigeditor.cpp#L82))。
+- **送る**: fullscreen / raster は `FullscreenPassRenderer::render()` が descriptor を bind した後に、compute task は `ComputeTaskContainer::dispatch()` が(ray tracing の task かどうかを分ける前に)、[`PipelineFactory::pushLoopIndex()`](../../src/core/shader/pipelinefactory.cpp#L1933) を呼びます。これは pipeline の merge 済み reflection から、range が `[112, 120)` を丸ごと含む stage を [`loopIndexPushStages()`](../../src/core/shader/shaderreflection.cpp#L549) で集め、その OR の stage flags で `pushConstants` を 1 回呼びます(どの stage も含まなければ何もしない)。layout の range は今までどおり `makePushConstantRanges()` が stage ごとに 1 本へ潰したものなので、include の block と自前の block(`PELICAN_LOOP_CUSTOM_PUSH`)のどちらでもこの判定に乗ります。
+- **断る**: [`validateLoopIndexPushRange()`](../../src/core/shader/shaderreflection.cpp#L560) が、range が `[112, 120)` に一部だけ重なる stage を `shader.loop_push_overlap@1: {shader, stage, range}` の `std::runtime_error` で断ります。呼ぶのは `buildGraphicsPipeline()`(vertex と fragment を別々に)と `buildComputePipeline()` で([graphics](../../src/core/shader/pipelinefactory.cpp#L1044)、[compute](../../src/core/shader/pipelinefactory.cpp#L1088))、ray tracing の pipeline は検査しません。render config editor は code を carried refusal として扱います([`isCarriedRefusalCode()`](../../src/core/communication/renderconfigeditor.cpp#L82))。
 - **見せる**: [`readsLoopIndex()`](../../src/core/shader/shaderreflection.cpp#L556) が `get_frame_plan` の node([fullscreen / raster](../../src/core/vkcore/renderer.cpp#L4714)、[compute](../../src/core/vkcore/renderer.cpp#L4730))と `get_engine_shaders` の項目([付ける所](../../src/core/communication/engineauthoringlists.cpp#L272))の `reads_loop_index: true` になります。
 - material の renderer は自分の push(0〜72 byte)を送るだけで `pushLoopIndex()` を呼ばないので、material pass と draw_loop は対象外です。fullscreen pass の `push_constants`(`camera_position` / `projection_view`)は pass の契約の flag になるだけで([`PassImplementationRegistry` の分岐](../../src/core/renderingpass/passimplementationregistry.cpp#L246))、fullscreen の描画が `pushConstants` を呼ぶのは LC-1 の回の番号だけです。
 
@@ -1748,7 +1748,7 @@ compile define は source compile 時にしか適用できません。engine res
 
 ## 6.10 PipelineFactory と hot reload
 
-[`PipelineFactory`](../../src/core/shader/pipelinefactory.hpp#L254) は graphics/compute pipeline を作り、handle で保持します。
+[`PipelineFactory`](../../src/core/shader/pipelinefactory.hpp#L310) は graphics/compute pipeline を作り、handle で保持します。
 
 graphics pipeline 作成は次の順です。
 
@@ -1758,7 +1758,7 @@ graphics pipeline 作成は次の順です。
 4. reflection から pipeline layout を作る。
 5. target format を `vk::PipelineRenderingCreateInfo` に入れ、Dynamic Rendering pipeline を作る。
 
-実装は [`buildGraphicsPipeline()`](../../src/core/shader/pipelinefactory.cpp#L934) と [`createGraphicsPipeline()`](../../src/core/shader/pipelinefactory.cpp#L547) です。dynamic state は viewport と scissor が常にあり、`GraphicsPipelineDesc::dynamic_front_face` が立っている pipeline だけ front face が加わります(✅CC-1。立てるのは material・velocity・shadow depth。[足す所](../../src/core/shader/pipelinefactory.cpp#L603)。§6.5 の「面の表は view ごとに決まります」)。また driver pipeline cache を executable 隣の `pipeline_cache.bin` から読み書きします。保存は [`PipelineFactory::~PipelineFactory()`](../../src/core/shader/pipelinefactory.cpp#L476) から呼ばれます。
+実装は [`buildGraphicsPipeline()`](../../src/core/shader/pipelinefactory.cpp#L998) と [`createGraphicsPipeline()`](../../src/core/shader/pipelinefactory.cpp#L556) です。dynamic state は viewport と scissor が常にあり、`GraphicsPipelineDesc::dynamic_front_face` が立っている pipeline だけ front face が加わります(✅CC-1。立てるのは material・velocity・shadow depth。[足す所](../../src/core/shader/pipelinefactory.cpp#L661)。§6.5 の「面の表は view ごとに決まります」)。また driver pipeline cache を executable 隣の `pipeline_cache.bin` から読み書きします。保存は [`PipelineFactory::~PipelineFactory()`](../../src/core/shader/pipelinefactory.cpp#L485) から呼ばれます。
 
 hot reload の流れは次です。
 
@@ -1791,13 +1791,13 @@ flowchart TB
 7. 成功して一括 publish した後、`Renderer::render()` の render start で publish 通知を consume。
 8. fullscreen input descriptor を rebind。
 
-shader candidate は [`ShaderLibrary::prepareReload()`](../../src/core/shader/shaderlibrary.cpp#L1179)、group-wide な pipeline publish は [`PipelineFactory::rebuildPrepared()`](../../src/core/shader/pipelinefactory.cpp#L1894) が担当します。material peer の準備は [`MaterialContainer::prepareSurfaceMaterialReload()`](../../src/core/material/materialcontainer.hpp#L407) が担います。compile error、pipeline 作成失敗、material peer の検証失敗のいずれでも、最後に成功した世代を残します。cache hit/miss と追跡中の unit/bundle/dependency 数は `get_status.reload.runtime.pelican.shaders.details` から確認できます。
+shader candidate は [`ShaderLibrary::prepareReload()`](../../src/core/shader/shaderlibrary.cpp#L1179)、group-wide な pipeline publish は [`PipelineFactory::rebuildPrepared()`](../../src/core/shader/pipelinefactory.cpp#L1958) が担当します。material peer の準備は [`MaterialContainer::prepareSurfaceMaterialReload()`](../../src/core/material/materialcontainer.hpp#L407) が担います。compile error、pipeline 作成失敗、material peer の検証失敗のいずれでも、最後に成功した世代を残します。cache hit/miss と追跡中の unit/bundle/dependency 数は `get_status.reload.runtime.pelican.shaders.details` から確認できます。
 
-> 🧩 **難所 — reload の swap は 3 回**([`rebuildPrepared()`](../../src/core/shader/pipelinefactory.cpp#L1894) / [`ShaderLibrary::activatePrepared()`](../../src/core/shader/shaderlibrary.cpp#L1284))
+> 🧩 **難所 — reload の swap は 3 回**([`rebuildPrepared()`](../../src/core/shader/pipelinefactory.cpp#L1958) / [`ShaderLibrary::activatePrepared()`](../../src/core/shader/shaderlibrary.cpp#L1284))
 >
 > **何をする所か**: 上の疑似コードの「全成功時だけ一括 publish」を、shader bundle・pipeline・cross-domain な material candidate をまたいだ 1 トランザクションとして実現します。
 >
-> **素朴に読むと**: `activatePrepared()` が **idempotent な「有効化」ではなく `std::swap` の反復適用(= 対合)**(idempotent は「何回呼んでも 1 回呼んだのと同じ」、対合(involution)は「2 回呼ぶと元に戻る」で、ここでは対照的な性質です)だと気づかないと、この関数は読めません。実装は `swap(bundles.get(candidate.id), candidate.replacement)` の 1 行だけで、呼ぶたびに live 側と candidate 側が入れ替わります。したがって意味は「呼んだ回数の偶奇」で決まり、成功経路では **3 回**呼ばれます([1 回目は候補構築の直前](../../src/core/shader/pipelinefactory.cpp#L1943) / [2 回目はその復帰コメントの直後](../../src/core/shader/pipelinefactory.cpp#L2053) / [3 回目は finalize の直前](../../src/core/shader/pipelinefactory.cpp#L2076))。1 回足したり消したりすると、旧 SPIR-V を指したまま publish する / 新世代を捨てたつもりが live に残る、という**例外も log も出ない静かな**破壊になります。
+> **素朴に読むと**: `activatePrepared()` が **idempotent な「有効化」ではなく `std::swap` の反復適用(= 対合)**(idempotent は「何回呼んでも 1 回呼んだのと同じ」、対合(involution)は「2 回呼ぶと元に戻る」で、ここでは対照的な性質です)だと気づかないと、この関数は読めません。実装は `swap(bundles.get(candidate.id), candidate.replacement)` の 1 行だけで、呼ぶたびに live 側と candidate 側が入れ替わります。したがって意味は「呼んだ回数の偶奇」で決まり、成功経路では **3 回**呼ばれます([1 回目は候補構築の直前](../../src/core/shader/pipelinefactory.cpp#L2007) / [2 回目はその復帰コメントの直後](../../src/core/shader/pipelinefactory.cpp#L2117) / [3 回目は finalize の直前](../../src/core/shader/pipelinefactory.cpp#L2140))。1 回足したり消したりすると、旧 SPIR-V を指したまま publish する / 新世代を捨てたつもりが live に残る、という**例外も log も出ない静かな**破壊になります。
 >
 > **骨子**:
 > ```mermaid
@@ -1818,7 +1818,7 @@ shader candidate は [`ShaderLibrary::prepareReload()`](../../src/core/shader/sh
 > - **(a) 候補構築の失敗**: catch 内で swap して旧世代へ戻し、discard_new_layouts()。
 > - **(b) before_publish の失敗**: swap#2 済みなので live はすでに旧世代。swap を呼ばないで、discard_new_layouts() だけして return。
 >
-> **手がかり**: 「Restore the live shader table while the cross-domain material candidate commits.」というコメント([該当行](../../src/core/shader/pipelinefactory.cpp#L2053))が swap#2 の理由そのものです。読み飛ばさないでください。上の (a) と (b) の**非対称**も同じくらい重要で、(b) の経路([`before_publish` の失敗処理](../../src/core/shader/pipelinefactory.cpp#L2058))は `activatePrepared()` を**呼びません** — 呼ぶと偶奇が狂って新世代が live に残ります。対になる非トランザクション版が `rebuildDirty()` で、こちらは pipeline ごとに try/catch していて「一部だけ更新される」— 両者の差を意識して読みます。現在は `graphics_overrides`([`GraphicsPipelineReloadOverride`](../../src/core/shader/pipelinefactory.hpp#L213))と `before_publish` コールバックが引数に加わり、graph 再コンパイルと shader reload が同じトランザクションに束ねられています。公開後の旧 pipeline/layout は即破棄せず [`replacePipeline()`](../../src/core/shader/pipelinefactory.cpp#L1367) が DeletionQueue へ回します(§6.11)。境界の全体像は [第9章](09_black_magic_and_gotchas.md)。
+> **手がかり**: 「Restore the live shader table while the cross-domain material candidate commits.」というコメント([該当行](../../src/core/shader/pipelinefactory.cpp#L2117))が swap#2 の理由そのものです。読み飛ばさないでください。上の (a) と (b) の**非対称**も同じくらい重要で、(b) の経路([`before_publish` の失敗処理](../../src/core/shader/pipelinefactory.cpp#L2122))は `activatePrepared()` を**呼びません** — 呼ぶと偶奇が狂って新世代が live に残ります。対になる非トランザクション版が `rebuildDirty()` で、こちらは pipeline ごとに try/catch していて「一部だけ更新される」— 両者の差を意識して読みます。現在は `graphics_overrides`([`GraphicsPipelineReloadOverride`](../../src/core/shader/pipelinefactory.hpp#L269))と `before_publish` コールバックが引数に加わり、graph 再コンパイルと shader reload が同じトランザクションに束ねられています。公開後の旧 pipeline/layout は即破棄せず [`replacePipeline()`](../../src/core/shader/pipelinefactory.cpp#L1431) が DeletionQueue へ回します(§6.11)。境界の全体像は [第9章](09_black_magic_and_gotchas.md)。
 >
 > **不変条件**: 成功経路の `activatePrepared()` 呼び出しは奇数回で終わること。publish フェーズは **絶対に throw しない**(throw しうる処理はすべて `before_publish` までに済ませる)。失敗経路は必ず `discard_new_layouts()` を通すこと — 通らないと live でない descriptor set layout が cache に居座ります。
 
@@ -1850,15 +1850,15 @@ hot reload は shader compile と pipeline rebuild を transactional にしま�
 
 したがって hot reload の安全な基本範囲は、既存 set/binding/type と push constant layout を保った shader body の変更です。layout-changing reload を正式対応するなら、pipeline 使用者ごとの descriptor rebuild notification が必要です。
 
-### [`descriptor_abi_changed`](../../src/core/material/materialgenerationplanner.cpp#L1580) — 全 descriptor 破棄と revision {#reading-note-039}
+### [`descriptor_abi_changed`](../../src/core/material/materialgenerationplanner.cpp#L1550) — 全 descriptor 破棄と revision {#reading-note-039}
 
-`pass_inputs` / `resource_interface` が変わると既存の descriptor set はレイアウト・束縛内容と ABI 不一致になります。[commit 側](../../src/core/material/materialgenerationplanner.cpp#L1580)ではまず **`waitIdle()` して in-flight フレームが古い set を参照し終えるのを待ち**、その後 clear して `++descriptor_revision` します。revision は消費側キャッシュの世代無効化用です。同じ理由の待機が [live な `MaterialBuffer` への in-place 書き込み](../../src/core/material/materialcontainer.cpp#L1605)にもあります(こちらはバッファの差し替えではなく、コメントどおり「in-flight フレームが共有する live SSBO の読み手を守る」ための `waitIdle()`)。
+`pass_inputs` / `resource_interface` が変わると既存の descriptor set はレイアウト・束縛内容と ABI 不一致になります。[commit 側](../../src/core/material/materialgenerationplanner.cpp#L1550)ではまず **`waitIdle()` して in-flight フレームが古い set を参照し終えるのを待ち**、その後 clear して `++descriptor_revision` します。revision は消費側キャッシュの世代無効化用です。同じ理由の待機が [live な `MaterialBuffer` への in-place 書き込み](../../src/core/material/materialcontainer.cpp#L1616)にもあります(こちらはバッファの差し替えではなく、コメントどおり「in-flight フレームが共有する live SSBO の読み手を守る」ための `waitIdle()`)。
 
 ### [variant 次元と parity 次元](../../src/core/material/materialdescriptorbuilder.cpp#L441) — 2 軸が直交する {#reading-note-040}
 
 **variant は sequential なスクリーン入力の array layer**(view ごとの層。[全リソースの layer 数一致を要求](../../src/core/material/materialdescriptorbuilder.cpp#L599))、**parity はダブルバッファされた render target のどちらの実体を読むか**です。2 軸は直交するので (variant, parity) の全組み合わせ分の descriptor set を事前確保し、フレーム中は選ぶだけにします。
 
-### [`rayMaterialTableSource()` の canonical key 検証](../../src/core/material/materialcontainer.cpp#L1810) — `document:` / `asset:` プレフィックス {#reading-note-041}
+### [`rayMaterialTableSource()` の canonical key 検証](../../src/core/material/materialcontainer.cpp#L1821) — `document:` / `asset:` プレフィックス {#reading-note-041}
 
 [§9.23.5](09_black_magic_and_gotchas.md#9235-rtacceleration-structuresbtoracle) の `source_by_handle` / `source_by_key` の照合先で、プレフィックスは [`MaterialRowIdentity`](../../src/core/shader/raygrouplayout.hpp#L335) の 3 択(`MaterialRowDocumentIdentity` / `MaterialRowAssetIdentity` / `MaterialRowIdentityUnavailable`)に対応します(`MaterialRowDocumentIdentity` 自体は document 側の 1 状態にすぎません)。ゲートと lookup が同じ値を見る理由は[第11章](11_ray_query_acceleration_structures.md)が本体です。**プレフィックス文字列そのものの版管理規約は未執筆。**
 
@@ -1960,7 +1960,7 @@ teardown の最終段は phase で分岐します。
 
 つまり「何 frame 後に消えるか」を数えるコードは deletion queue からは消えました([`DeletionQueueCore`](../../src/core/vkcore/deletionqueue.hpp#L17) は `in_flight_frames_num` を一度も参照しません)。
 
-ただし定数そのものは健在で、[`in_flight_frames_num`](../../src/core/vkcore/rendertarget.hpp#L16) は frame target の command buffer 配列や [`GpuSubmissionLeaseSlots`](../../src/core/vkcore/offscreenframetarget.hpp#L17)、[`FrameResources::configureViewCount()`](../../src/core/renderer/frameresources.cpp#L110) の descriptor slot 数、swapchain / OpenXR / ImGui の image count など `src/` 全体で 27 か所に残っています — lease slot 専用の定数ではありません。hot reload の [`replacePipeline()`](../../src/core/shader/pipelinefactory.cpp#L1367) が代表的な defer 元です。
+ただし定数そのものは健在で、[`in_flight_frames_num`](../../src/core/vkcore/rendertarget.hpp#L16) は frame target の command buffer 配列や [`GpuSubmissionLeaseSlots`](../../src/core/vkcore/offscreenframetarget.hpp#L17)、[`FrameResources::configureViewCount()`](../../src/core/renderer/frameresources.cpp#L110) の descriptor slot 数、swapchain / OpenXR / ImGui の image count など `src/` 全体で 27 か所に残っています — lease slot 専用の定数ではありません。hot reload の [`replacePipeline()`](../../src/core/shader/pipelinefactory.cpp#L1431) が代表的な defer 元です。
 
 ### [`GpuSubmissionLease`](../../src/core/vkcore/frametarget.hpp#L53) — 型消去リースが 2 種類ある {#reading-note-019}
 
@@ -1980,24 +1980,24 @@ teardown の最終段は phase で分岐します。
 
 ## 6.12 Vulkan 初期化と resource wrapper
 
-[`VulkanManageCore`](../../src/core/vkcore/core.hpp#L36) が instance、physical device、logical device、queues、command pools、VMA allocator(VMA = Vulkan Memory Allocator — GPU メモリを大きくまとめて確保し、buffer/image へ小分けに配る定番ライブラリ。`vk::DeviceMemory` を自前で管理せずに済みます)を所有します。constructor は [`core.cpp` 内](../../src/core/vkcore/core.cpp#L931) です。
+[`VulkanManageCore`](../../src/core/vkcore/core.hpp#L36) が instance、physical device、logical device、queues、command pools、VMA allocator(VMA = Vulkan Memory Allocator — GPU メモリを大きくまとめて確保し、buffer/image へ小分けに配る定番ライブラリ。`vk::DeviceMemory` を自前で管理せずに済みます)を所有します。constructor は [`core.cpp` 内](../../src/core/vkcore/core.cpp#L1027) です。
 
 - Vulkan API version は [`1.3.283`](../../cmake/pelican_target_environment.cmake)。
 - [`selectVulkanValidation()`](../../src/core/vkcore/vulkanvalidation.hpp) が validation layer と synchronization validation を一体で選択します。未指定は従来どおり `_DEBUG` だけ ON、`--vulkan-validation=on|off` は構成を問わず上書きします。生成に成功した instance の結果は [`getVulkanValidationStatus()`](../../src/core/vkcore/core.hpp) から `get_status.vulkan_validation` へ公開されます。要求時に `VK_LAYER_KHRONOS_validation` が無ければ `pelican.vulkan.validation_layer_unavailable@1` で停止します。
 - window mode のみ surface と swapchain extension を要求します。
-- 起動時に [`selectDebugUtilsExtension(launch_config.gpu_labels, supportedInstanceExtensions())`](../../src/core/vkcore/core.cpp#L612) を評価し、有効なときだけ `VK_EXT_debug_utils` を instance extension へ足します(flat: [`core.cpp` 内](../../src/core/vkcore/core.cpp#L61)、XR: [もう 1 箇所](../../src/core/vkcore/core.cpp#L110))。詳細は §6.16。
+- 起動時に [`selectDebugUtilsExtension(launch_config.gpu_labels, supportedInstanceExtensions())`](../../src/core/vkcore/core.cpp#L668) を評価し、有効なときだけ `VK_EXT_debug_utils` を instance extension へ足します(flat: [`core.cpp` 内](../../src/core/vkcore/core.cpp#L61)、XR: [もう 1 箇所](../../src/core/vkcore/core.cpp#L110))。詳細は §6.16。
 - physical device は window mode の swapchain extension と、`multiDrawIndirect`、`drawIndirectFirstInstance`、`shaderDrawParameters`、`dynamicRendering` の全 feature を満たす候補だけを選びます。OpenXR runtime が device を選ぶ経路でも同じ検査を行います。
 - logical device では上記 4 feature を明示的に有効化します。
 - graphics、presentation、compute queue family を [`pickQueues()`](../../src/core/vkcore/core.cpp#L228) で選び、それぞれの queue を取得します。
 - graphics と compute command pool を別に作ります。
-- device 生成後に [`debug_utils = DebugUtilsDispatch::resolve(instance, device, selection)`](../../src/core/vkcore/core.cpp#L640)。取得は [`getDebugUtils()`](../../src/core/vkcore/core.hpp#L104) です。
+- device 生成後に [`debug_utils = DebugUtilsDispatch::resolve(instance, device, selection)`](../../src/core/vkcore/core.cpp#L696)。取得は [`getDebugUtils()`](../../src/core/vkcore/core.hpp#L104) です。
 - XR active 時は [`bootstrap.hpp`](../../src/core/vkcore/bootstrap.hpp) 経由で、OpenXR runtime の graphics requirements に従って instance/device を生成する経路が加わりました(core.cpp には flat/XR 用の 2 つの app_info があります)。
 
 [`VulkanManageCore::setCurrentFrameIndex(logical_frame)`](../../src/core/vkcore/core.hpp#L135) は毎フレーム `engine_time.advance()` の直後に呼ばれ(第2章 §2.4)、**debug-utils ラベルと GPU timing に共通の論理フレーム軸**を与えます。
 
 buffer/image memory は VMA を使います。[`BufferWrapper`](../../src/core/vkcore/buf.hpp#L7) と [`ImageWrapper`](../../src/core/vkcore/image.hpp#L8) が Vulkan resource と VMA allocation を同じ struct に持ち、RAII で一緒に解放します。
 
-compute task は独立 compute submission ではなく、[`FrameRenderContext::cmd_buf`](../../src/core/vkcore/frametarget.hpp#L23) へ dispatch を記録します。この command buffer は [`allocCmdBufs()`](../../src/core/vkcore/core.cpp#L1305) が graphics pool/queue 用に作るものです。したがって frame graph compute は async compute pipeline ではなく、graphics queue 上の直列 compute と理解するのが正確です。
+compute task は独立 compute submission ではなく、[`FrameRenderContext::cmd_buf`](../../src/core/vkcore/frametarget.hpp#L23) へ dispatch を記録します。この command buffer は [`allocCmdBufs()`](../../src/core/vkcore/core.cpp#L1423) が graphics pool/queue 用に作るものです。したがって frame graph compute は async compute pipeline ではなく、graphics queue 上の直列 compute と理解するのが正確です。
 
 ### multiDrawIndirect、drawIndirectFirstInstance、shaderDrawParameters(gl_BaseInstance)の使用箇所 {#background-usage-02}
 
@@ -2025,7 +2025,7 @@ compute task は独立 compute submission ではなく、[`FrameRenderContext::c
 ### 画面が真っ黒なときの読む順
 
 1. [`currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L4588) で node 順と reads/writes を確認。
-2. [`RenderPassExecutor::execute()`](../../src/core/vkcore/render_pass_executor.cpp#L314) で target layout と attachment を確認。
+2. [`RenderPassExecutor::execute()`](../../src/core/vkcore/render_pass_executor.cpp#L315) で target layout と attachment を確認。
 3. [`renderDynamicPassDrawCalls()`](../../src/core/vkcore/render_pass_dispatch.cpp#L193) で意図した variant に入ったか確認。
 4. shader bundle の `log` と reflection を確認。
 5. `--vulkan-validation` で synchronization validation を有効にして barrier/layout error を確認(未指定でも `_DEBUG` は ON)。
@@ -2445,13 +2445,13 @@ profile では alpha override が **scene row ごとに異なり得る**(base_fa
 
 BLAS の build 入力は geometry_allocation_id が決める頂点 / インデックス範囲と `VkGeometryFlagsKHR` の 2 つだけで完全に決まるからです(transform は TLAS 側)。[`can_reuse`](../../src/core/renderer/accelerationstructure.cpp#L1305) は `active_state_ != nullptr && !pool_invalidated && !model_invalidated` で、この 2 つの世代は[別カウンタ](../../src/core/renderer/accelerationstructure.cpp#L1263)として診断に出ます。
 
-### [`descriptorSetLayoutKeysFor()` の set 数決定](../../src/core/shader/pipelinefactory.cpp#L487) — reflection と ray_layout の階層 {#reading-note-031}
+### [`descriptorSetLayoutKeysFor()` の set 数決定](../../src/core/shader/pipelinefactory.cpp#L496) — reflection と ray_layout の階層 {#reading-note-031}
 
 set 0 は frame として常に固定、それ以外は reflection の最大 set 番号から決まり、ray_layout が ray table を使う場合**のみ** set 3 をエンジン定義の bindless material / texture / geometry レイアウトで上書きします。つまり **reflection が基底、ray layout が特定 set の権威**という階層です。set 0 の契約は[第11章](11_ray_query_acceleration_structures.md)にも書かれています。
 
-### [shader group の stage index と SBT](../../src/core/shader/pipelinefactory.cpp#L707) — regions への対応 {#reading-note-032}
+### [shader group の stage index と SBT](../../src/core/shader/pipelinefactory.cpp#L771) — regions への対応 {#reading-note-032}
 
-stage は raygen = 0、miss = 1..M、closest_hit = 1+M..、any_hit はその後ろ。group はその順で general(raygen)→ general(miss)×M → triangles hit group×N と並びます(**any_hit は独立した group にならず、対応する hit group の `anyHitShader` に畳み込まれる**ので、group 数は stage 数より any_hit の分だけ少ない)。[SBT 構築](../../src/core/shader/pipelinefactory.cpp#L816)はこの group 順に handle を取り、handle_alignment で stride を、base_alignment で各領域 offset とバッファ先頭を揃えるので、raygen / miss / hit の `VkStridedDeviceAddressRegionKHR{address+offset, stride, size}` がそのまま regions になります。
+stage は raygen = 0、miss = 1..M、closest_hit = 1+M..、any_hit はその後ろ。group はその順で general(raygen)→ general(miss)×M → triangles hit group×N と並びます(**any_hit は独立した group にならず、対応する hit group の `anyHitShader` に畳み込まれる**ので、group 数は stage 数より any_hit の分だけ少ない)。[SBT 構築](../../src/core/shader/pipelinefactory.cpp#L880)はこの group 順に handle を取り、handle_alignment で stride を、base_alignment で各領域 offset とバッファ先頭を揃えるので、raygen / miss / hit の `VkStridedDeviceAddressRegionKHR{address+offset, stride, size}` がそのまま regions になります。
 
 ### [`RayTracingOracleContract`](../../src/core/shader/raytracingoracle.hpp#L14) — 定数群の根拠 {#reading-note-033}
 

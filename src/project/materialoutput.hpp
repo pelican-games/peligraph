@@ -89,6 +89,17 @@ enum class MaterialOutputBlendFactor {
     destination_alpha,
     one_minus_destination_alpha,
     source_alpha_saturate,
+    // PSN-1: the factors that read the pass's blend_constants.
+    constant_color,
+    one_minus_constant_color,
+    constant_alpha,
+    one_minus_constant_alpha,
+    // PSN-1: dual-source blending reads the fragment shader's second output
+    // of location 0 (index 1); the device needs dualSrcBlend.
+    source1_color,
+    one_minus_source1_color,
+    source1_alpha,
+    one_minus_source1_alpha,
 };
 
 enum class MaterialOutputBlendOperation {
@@ -119,6 +130,13 @@ struct MaterialOutputBlendState {
     bool operator==(
         const MaterialOutputBlendState &) const = default;
 };
+
+// PSN-1: whether a factor, or an enabled blend state, reads the second
+// (index 1) fragment output.
+bool materialOutputBlendFactorIsDualSource(
+    MaterialOutputBlendFactor factor) noexcept;
+bool materialOutputBlendStateUsesDualSource(
+    const MaterialOutputBlendState &state) noexcept;
 
 inline constexpr std::uint8_t materialOutputWriteRed = 1u << 0;
 inline constexpr std::uint8_t materialOutputWriteGreen = 1u << 1;

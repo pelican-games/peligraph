@@ -56,6 +56,24 @@ struct VulkanRuntimeCapabilities {
     bool independent_blend = false;
     bool swapchain_maintenance1 = false;
     bool draw_indirect_count = false;
+    // PSN-1: the optional pipeline-state features, enabled whenever the
+    // device has them (none is required). pipelineStateDeviceFacts reads
+    // them; a document that needs a missing one is refused at registration
+    // (pipeline.state_unsupported@1).
+    bool fill_mode_non_solid = false;
+    bool wide_lines = false;
+    bool depth_clamp = false;
+    bool depth_bias_clamp = false;
+    bool depth_bounds = false;
+    bool sample_rate_shading = false;
+    bool alpha_to_one = false;
+    bool logic_op = false;
+    bool dual_src_blend = false;
+    std::uint32_t max_fragment_dual_src_attachments = 0;
+    // VK_EXT_conservative_rasterization enabled, and two of its properties.
+    bool conservative_rasterization = false;
+    bool primitive_underestimation = false;
+    bool conservative_point_and_line_rasterization = false;
 };
 
 } // namespace Pelican

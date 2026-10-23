@@ -313,8 +313,10 @@ inline constexpr double graphCanvasDefaultTextSize = 48.0;
 [[nodiscard]] std::optional<std::size_t> graphCanvasStrokeRowOf(const std::vector<GraphCanvasNode> &nodes,
                                                                 std::string_view stack, std::size_t index);
 
-// One colour filter the + Adjustment and + Filter menus offer: its op
-// (Pelican::canvasColorFilterOperations(), in that order) and its words.
+// One filter the + Filter menu offers: its op (Pelican::canvasFilterOperations(),
+// in that order -- the colour filters, then CV-3a's Gaussian Blur, Drop
+// Shadow and Outer Glow) and its words. + Adjustment offers the colour
+// filters alone (Pelican::canvasColorFilterOperations()).
 struct GraphCanvasFilterChoice {
     std::string op;
     std::string label;
@@ -322,15 +324,16 @@ struct GraphCanvasFilterChoice {
     bool operator==(const GraphCanvasFilterChoice &) const = default;
 };
 [[nodiscard]] const std::vector<GraphCanvasFilterChoice> &graphCanvasFilterChoices();
+[[nodiscard]] const std::vector<GraphCanvasFilterChoice> &graphCanvasAdjustmentChoices();
 // The words for a filter op ("Invert"), the op itself for one not offered.
 [[nodiscard]] std::string graphCanvasFilterLabel(std::string_view op);
 // What a new filter.<kind> starts with: nothing changed where it can (an
-// overlay and a map bring colours of their own). Null for an op no menu
-// offers.
+// overlay and a map bring colours of their own; CV-3a: a blur, a shadow and
+// a glow Photoshop's defaults). Null for an op no menu offers.
 [[nodiscard]] nlohmann::json graphCanvasFilterDefaults(std::string_view op);
 // + Adjustment: a canvas.backdrop, `op` reading it and a layer reading that,
 // just above the layer at `above` (on top without one), named `<Filter> <n>`.
-// One list.
+// One list; empty for an op that is not a colour filter.
 [[nodiscard]] nlohmann::json graphCanvasAddAdjustmentLayerOps(const std::vector<GraphCanvasNode> &nodes,
                                                               std::string_view scope, std::string_view stack,
                                                               std::optional<std::size_t> above,

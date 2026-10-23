@@ -1,4 +1,5 @@
 #include "render_pass_frame_setup.hpp"
+#include "depthstencilformat.hpp"
 
 #include <algorithm>
 #include <optional>
@@ -226,13 +227,16 @@ void transitionPassOutputsToAttachmentLayouts(vk::CommandBuffer cmd_buf, const P
             "multisampled depth attachment Load requires a preceding raster "
             "access to the multisample surface");
     }
+    if (!isConcreteRenderTarget(pass_def.output_depth)) return;
+    // PSN-1: a depth format with stencil takes the layout of both aspects.
+    const auto depth_layout = vulkanDepthAttachmentLayout(
+        rt_container.getImage(pass_def.output_depth).format);
     layout_tracker.transition(cmd_buf, rt_container, vk_utils, pass_def.output_depth,
-                              vk::ImageLayout::eDepthAttachmentOptimal);
-    if (isConcreteRenderTarget(pass_def.output_depth) &&
-        rt_container.hasSeparateAttachment(pass_def.output_depth)) {
+                              depth_layout);
+    if (rt_container.hasSeparateAttachment(pass_def.output_depth)) {
         layout_tracker.transition(
             cmd_buf, rt_container, vk_utils, pass_def.output_depth,
-            vk::ImageLayout::eDepthAttachmentOptimal, false,
+            depth_layout, false,
             RenderTargetImageKind::attachment);
     }
 }
@@ -318,7 +322,9 @@ vk::RenderingAttachmentInfo createDepthAttachment(const PassDefinition &pass_def
         colorAttachmentView(
             pass_def.output_depth, rt_container, view,
             invocation, false);
-    depth_attachment.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+    const auto depth_layout = vulkanDepthAttachmentLayout(
+        rt_container.getImage(pass_def.output_depth).format);
+    depth_attachment.imageLayout = depth_layout;
     if (rt_container.hasSeparateAttachment(pass_def.output_depth)) {
         depth_attachment.resolveMode =
             rt_container.resolveMode(pass_def.output_depth);
@@ -326,8 +332,7 @@ vk::RenderingAttachmentInfo createDepthAttachment(const PassDefinition &pass_def
             colorAttachmentView(
                 pass_def.output_depth, rt_container,
                 view, invocation, true);
-        depth_attachment.resolveImageLayout =
-            vk::ImageLayout::eDepthAttachmentOptimal;
+        depth_attachment.resolveImageLayout = depth_layout;
     }
     const auto operations =
         pass_def.depthAttachmentOperations();
@@ -620,8 +625,8 @@ void transitionLocalReadScopeAttachments(
         local_read_depth_attachment
             ? vk::ImageLayout::
                   eRenderingLocalReadKHR
-            : vk::ImageLayout::
-                  eDepthAttachmentOptimal);
+            : vulkanDepthAttachmentLayout(
+                  rt_container.getImage(depth).format));
 }
 
 std::vector<vk::RenderingAttachmentInfo>
@@ -716,8 +721,10 @@ createLocalReadScopeDepthAttachment(
         local_read_depth_attachment
             ? vk::ImageLayout::
                   eRenderingLocalReadKHR
-            : vk::ImageLayout::
-                  eDepthAttachmentOptimal;
+            : vulkanDepthAttachmentLayout(
+                  rt_container
+                      .getImage(rendering.depth_attachment)
+                      .format);
     result.loadOp =
         rendering
             .scope_depth_attachment_operations

@@ -5,9 +5,11 @@
 #include "spritedrawdata.hpp"
 #include "spritegpuabi.hpp"
 #include "spritescene.hpp"
+#include "../renderingpass/rasterpassvulkanadapter.hpp"
 #include "../shader/pelican_sets.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "../vkcore/core.hpp"
+#include "../vkcore/depthstencilformat.hpp"
 
 #include "battery/embed.hpp"
 #include <algorithm>
@@ -26,9 +28,11 @@ GraphicsPipelineDesc makeSpritePipelineDesc(ShaderBundleId vert, ShaderBundleId 
     desc.frag = frag;
     desc.color_formats = {color};
     desc.depth_format = depth;
-    desc.depth_test = true;
-    desc.depth_write = false;
-    desc.cull_mode = vk::CullModeFlagBits::eNone;
+    // PSN-1: through the one mapping. Depth test, no write, cull none.
+    PipelineState state;
+    state.depth.test = true;
+    state.depth.write = false;
+    applyVulkanPipelineState(state, desc, "sprite pipeline");
     desc.blend = true;
     desc.src_color_blend_factor = vk::BlendFactor::eSrcAlpha;
     desc.dst_color_blend_factor = vk::BlendFactor::eOneMinusSrcAlpha;
@@ -164,22 +168,28 @@ void SpriteRenderer::render(vk::CommandBuffer cmd_buf, const SpriteDrawRequest &
         color.resolveImageLayout =
             vk::ImageLayout::eColorAttachmentOptimal;
     }
+    // PSN-1: the layout the anchor left the scene depth in
+    // (transitionPassOutputsToAttachmentLayouts), and its stencil too.
+    const auto depth_layout =
+        vulkanDepthAttachmentLayout(request.depth_format);
     vk::RenderingAttachmentInfo depth;
     depth.imageView = request.depth_view;
-    depth.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+    depth.imageLayout = depth_layout;
     depth.loadOp = vk::AttachmentLoadOp::eLoad;
     depth.storeOp = vk::AttachmentStoreOp::eStore;
     if (request.depth_resolve_view) {
         depth.resolveMode = request.depth_resolve_mode;
         depth.resolveImageView = request.depth_resolve_view;
-        depth.resolveImageLayout =
-            vk::ImageLayout::eDepthAttachmentOptimal;
+        depth.resolveImageLayout = depth_layout;
     }
     vk::RenderingInfo rendering;
     rendering.renderArea = vk::Rect2D{{0, 0}, request.extent};
     rendering.layerCount = 1;
     rendering.setColorAttachments(color);
     rendering.pDepthAttachment = &depth;
+    if (vulkanFormatHasStencil(request.depth_format)) {
+        rendering.pStencilAttachment = &depth;
+    }
     cmd_buf.beginRendering(rendering);
 
     auto &factory = GET_MODULE(PipelineFactory);

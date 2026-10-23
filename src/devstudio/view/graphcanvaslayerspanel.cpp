@@ -280,7 +280,7 @@ GraphCanvasLayersPanel::GraphCanvasLayersPanel(GraphCanvasModel &model, std::fun
     add_adjustment_->setToolTip(tr("A colour filter over everything under it (a canvas.backdrop and the filter), "
                                    "just above the picked layer"));
     add_adjustment_->setPopupMode(QToolButton::InstantPopup);
-    add_adjustment_->setMenu(filterMenu("addAdjustment", [this](const std::string &op) {
+    add_adjustment_->setMenu(filterMenu("addAdjustment", graphCanvasAdjustmentChoices(), [this](const std::string &op) {
         const auto row = pickedRow();
         commit(graphCanvasAddAdjustmentLayerOps(model_.nodes(scope_), scope_, stack_,
                                                 row ? std::optional<std::size_t>{row->index} : std::nullopt, op));
@@ -1114,7 +1114,11 @@ void GraphCanvasLayersPanel::followEditable() {
              text_, font_, import_font_, text_size_, text_align_, line_height_, tracking_, box_width_, text_stroke_,
              filter_, add_filter_, brightness_, contrast_, input_floor_, input_ceiling_, gamma_, output_floor_,
              output_ceiling_, channels_, hue_, saturation_, lightness_, colorize_, stops_, reversed_, overlay_pick_,
-             place_target_, place_scale_, pixels_per_unit_, depth_test_, depth_write_, double_sided_})
+             place_target_, place_scale_, pixels_per_unit_, depth_test_, depth_write_, double_sided_,
+             // CV-3a.
+             blur_radius_, blur_max_radius_, shadow_offset_[0], shadow_offset_[1], shadow_radius_, shadow_max_radius_,
+             shadow_spread_, shadow_opacity_, shadow_color_, glow_radius_, glow_max_radius_, glow_spread_,
+             glow_opacity_, glow_color_})
         field->setEnabled(editable);
     for (auto *spin : {position_[0], position_[1], position_[2], place_rotation_[0], place_rotation_[1],
                        place_rotation_[2], anchor_[0], anchor_[1]})
@@ -1422,10 +1426,11 @@ QDoubleSpinBox *placeSpin(QWidget *parent, const QString &name, double low, doub
 
 } // namespace
 
-QMenu *GraphCanvasLayersPanel::filterMenu(const char *prefix, std::function<void(const std::string &op)> chosen) {
+QMenu *GraphCanvasLayersPanel::filterMenu(const char *prefix, const std::vector<GraphCanvasFilterChoice> &choices,
+                                          std::function<void(const std::string &op)> chosen) {
     auto *menu = new QMenu(this);
     menu->setObjectName(named(prefix) + QStringLiteral(".menu"));
-    for (const auto &choice : graphCanvasFilterChoices()) {
+    for (const auto &choice : choices) {
         auto *action = menu->addAction(qtext(choice.label));
         action->setObjectName(named(prefix) + QLatin1Char('.') + qtext(choice.op.substr(choice.op.find('.') + 1)));
         connect(action, &QAction::triggered, this, [chosen, op = choice.op] { chosen(op); });
@@ -1536,9 +1541,9 @@ void GraphCanvasLayersPanel::buildSg3Fields(QVBoxLayout *body) {
     add_filter_ = new QToolButton(filter_row);
     add_filter_->setObjectName(named("field.addFilter"));
     add_filter_->setText(tr("+ Filter"));
-    add_filter_->setToolTip(tr("A colour filter on this layer alone, over the ones it has"));
+    add_filter_->setToolTip(tr("A filter on this layer alone, over the ones it has"));
     add_filter_->setPopupMode(QToolButton::InstantPopup);
-    add_filter_->setMenu(filterMenu("addFilter", [this](const std::string &op) {
+    add_filter_->setMenu(filterMenu("addFilter", graphCanvasFilterChoices(), [this](const std::string &op) {
         const auto row = pickedRow();
         if (!row) return;
         auto ops = graphCanvasAddFilterOps(model_.nodes(scope_), scope_, stack_, row->index, op);
@@ -1612,6 +1617,71 @@ void GraphCanvasLayersPanel::buildSg3Fields(QVBoxLayout *body) {
     overlay_pick_->setObjectName(named("field.filter.colorPick"));
     overlay_pick_->setToolTip(tr("The colour laid over the layer; its alpha is how much"));
     form->addRow(caption(tr("Color"), overlay), overlay_pick_);
+    // CV-3a: Gaussian Blur, Drop Shadow and Outer Glow, in + Filter's order.
+    const auto kindSpin = [](QWidget *parent, const char *kind, const char *key, double low, double high, int decimals,
+                             double step) {
+        return placeSpin(parent, named("field.filter.") + QLatin1String{kind} + QLatin1Char('.') + QLatin1String{key},
+                         low, high, decimals, step);
+    };
+    const auto maxSpin = [&](QWidget *parent, const char *kind) {
+        auto *spin = kindSpin(parent, kind, "maxRadius", 0.0, 250.0, 1, 1.0);
+        spin->setSpecialValueText(tr("None"));
+        spin->setToolTip(tr("The largest radius a line into Radius gives; a radius a line drives needs one"));
+        return spin;
+    };
+    const auto percentSpin = [&](QWidget *parent, const char *kind, const char *key) {
+        auto *spin = kindSpin(parent, kind, key, 0.0, 100.0, 0, 1.0);
+        spin->setSuffix(QStringLiteral(" %"));
+        return spin;
+    };
+    const auto colorButton = [](QWidget *parent, const char *kind, const QString &tip) {
+        auto *button = new QPushButton(tr("Pick\xE2\x80\xA6"), parent);
+        button->setObjectName(named("field.filter.") + QLatin1String{kind} + QStringLiteral(".colorPick"));
+        button->setToolTip(tip);
+        return button;
+    };
+    auto *blur = page(form);
+    blur_radius_ = kindSpin(blur, "blur", "radius", 0.0, 250.0, 1, 0.5);
+    blur_radius_->setToolTip(tr("Photoshop's Gaussian Blur radius, in the stack's pixels"));
+    blur_max_radius_ = maxSpin(blur, "blur");
+    form->addRow(caption(tr("Radius"), blur), blur_radius_);
+    form->addRow(caption(tr("Max radius"), blur), blur_max_radius_);
+    auto *shadow = page(form);
+    auto *offset_row = new QWidget(shadow);
+    auto *offset_layout = new QHBoxLayout(offset_row);
+    offset_layout->setContentsMargins(0, 0, 0, 0);
+    for (int axis = 0; axis < 2; ++axis) {
+        shadow_offset_[axis] = kindSpin(offset_row, "drop_shadow", axis == 0 ? "offset.x" : "offset.y", -1000.0, 1000.0,
+                                        1, 1.0);
+        offset_layout->addWidget(shadow_offset_[axis]);
+    }
+    offset_row->setToolTip(tr("Where the shadow falls, in the stack's pixels (+y down)"));
+    form->addRow(caption(tr("Offset"), shadow), offset_row);
+    shadow_radius_ = kindSpin(shadow, "drop_shadow", "radius", 0.0, 250.0, 1, 1.0);
+    shadow_radius_->setToolTip(tr("Photoshop's Size: how far the shadow reaches, in the stack's pixels"));
+    shadow_max_radius_ = maxSpin(shadow, "drop_shadow");
+    shadow_spread_ = percentSpin(shadow, "drop_shadow", "spread");
+    shadow_spread_->setToolTip(tr("Photoshop's Spread: how much of the size is solid before it fades"));
+    shadow_opacity_ = percentSpin(shadow, "drop_shadow", "opacity");
+    shadow_color_ = colorButton(shadow, "drop_shadow", tr("The shadow's colour"));
+    form->addRow(caption(tr("Size"), shadow), shadow_radius_);
+    form->addRow(caption(tr("Max size"), shadow), shadow_max_radius_);
+    form->addRow(caption(tr("Spread"), shadow), shadow_spread_);
+    form->addRow(caption(tr("Opacity"), shadow), shadow_opacity_);
+    form->addRow(caption(tr("Color"), shadow), shadow_color_);
+    auto *glow = page(form);
+    glow_radius_ = kindSpin(glow, "outer_glow", "radius", 0.0, 250.0, 1, 1.0);
+    glow_radius_->setToolTip(tr("Photoshop's Size: how far the glow reaches, in the stack's pixels"));
+    glow_max_radius_ = maxSpin(glow, "outer_glow");
+    glow_spread_ = percentSpin(glow, "outer_glow", "spread");
+    glow_spread_->setToolTip(tr("Photoshop's Spread: how much of the size is solid before it fades"));
+    glow_opacity_ = percentSpin(glow, "outer_glow", "opacity");
+    glow_color_ = colorButton(glow, "outer_glow", tr("The glow's colour"));
+    form->addRow(caption(tr("Size"), glow), glow_radius_);
+    form->addRow(caption(tr("Max size"), glow), glow_max_radius_);
+    form->addRow(caption(tr("Spread"), glow), glow_spread_);
+    form->addRow(caption(tr("Opacity"), glow), glow_opacity_);
+    form->addRow(caption(tr("Color"), glow), glow_color_);
     filter_form->addRow(filter_pages_);
     body->insertWidget(body->indexOf(layer_fields_) + 1, filter_fields_);
 
@@ -1662,6 +1732,25 @@ void GraphCanvasLayersPanel::buildSg3Fields(QVBoxLayout *body) {
         commit(graphCanvasSetParameterOps(nodes, scope_, filter->id, "color",
                                           Json::array({chosen.redF(), chosen.greenF(), chosen.blueF(), chosen.alphaF()})));
     });
+    // CV-3a.
+    for (auto *field : {blur_radius_, shadow_radius_, glow_radius_})
+        connect(field, &QDoubleSpinBox::valueChanged, this, [this](double value) { commitFilterNumber("radius", value); });
+    for (auto *field : {blur_max_radius_, shadow_max_radius_, glow_max_radius_})
+        connect(field, &QDoubleSpinBox::valueChanged, this, [this](double value) { commitFilterLimit(value); });
+    for (auto [field, key] : {std::pair{shadow_spread_, "spread"}, std::pair{shadow_opacity_, "opacity"},
+                              std::pair{glow_spread_, "spread"}, std::pair{glow_opacity_, "opacity"}})
+        connect(field, &QDoubleSpinBox::valueChanged, this,
+                [this, key](double value) { commitFilterNumber(key, value / 100.0); });
+    for (auto *field : shadow_offset_)
+        connect(field, &QDoubleSpinBox::valueChanged, this, [this] {
+            if (loading_) return;
+            const auto filter = pickedFilter();
+            if (filter.empty()) return;
+            commit(graphCanvasSetParameterOps(model_.nodes(scope_), scope_, filter, "offset",
+                                              Json::array({shadow_offset_[0]->value(), shadow_offset_[1]->value()})));
+        });
+    connect(shadow_color_, &QPushButton::clicked, this, [this] { pickFilterColor("Shadow colour"); });
+    connect(glow_color_, &QPushButton::clicked, this, [this] { pickFilterColor("Glow colour"); });
 
     // No row picked: the stack in the 3D scene.
     auto *stack_form = qobject_cast<QFormLayout *>(stack_fields_->layout());
@@ -1854,6 +1943,33 @@ void GraphCanvasLayersPanel::loadSg3Fields(const std::optional<GraphCanvasStackR
                 const auto found = parameters.find(key);
                 field->setText(found == parameters.end() ? QString{} : qtext(found->dump()));
             }
+            // CV-3a: a blur's, a shadow's and a glow's (their defaults the engine's).
+            const auto defaults = graphCanvasFilterDefaults(filter->op);
+            const auto fallback = defaults.is_object() ? defaults : Json::object();
+            const auto known = [&](const char *key, std::size_t index, double otherwise) {
+                return number(parameters, key, index, number(fallback, key, index, otherwise));
+            };
+            for (auto *spin : {blur_radius_, shadow_radius_, glow_radius_}) {
+                const QSignalBlocker block{spin};
+                if (!spin->hasFocus()) spin->setValue(known("radius", 0, 0.0));
+            }
+            for (auto *spin : {blur_max_radius_, shadow_max_radius_, glow_max_radius_}) {
+                const QSignalBlocker block{spin};
+                if (!spin->hasFocus()) spin->setValue(number(parameters, "max_radius", 0, 0.0));
+            }
+            for (auto [spin, key] : {std::pair{shadow_spread_, "spread"}, std::pair{shadow_opacity_, "opacity"},
+                                     std::pair{glow_spread_, "spread"}, std::pair{glow_opacity_, "opacity"}}) {
+                const QSignalBlocker block{spin};
+                if (!spin->hasFocus()) spin->setValue(100.0 * known(key, 0, 0.0));
+            }
+            for (std::size_t axis = 0; axis < 2; ++axis) {
+                const QSignalBlocker block{shadow_offset_[axis]};
+                if (!shadow_offset_[axis]->hasFocus()) shadow_offset_[axis]->setValue(known("offset", axis, 0.0));
+            }
+            const QIcon effect_color{swatchIcon({known("color", 0, 0.0), known("color", 1, 0.0), known("color", 2, 0.0),
+                                                 1.0})};
+            shadow_color_->setIcon(effect_color);
+            glow_color_->setIcon(effect_color);
             const QSignalBlocker block{reversed_};
             reversed_->setChecked(parameters.value("reversed", false) == true);
             overlay_pick_->setIcon(QIcon{swatchIcon({number(parameters, "color", 0, 1.0), number(parameters, "color", 1, 1.0),
@@ -1910,6 +2026,36 @@ void GraphCanvasLayersPanel::commitFilterNumber(const char *key, double value) {
     if (loading_) return;
     const auto filter = pickedFilter();
     if (!filter.empty()) commit(graphCanvasSetParameterOps(model_.nodes(scope_), scope_, filter, key, value));
+}
+
+void GraphCanvasLayersPanel::commitFilterLimit(double value) {
+    if (loading_) return;
+    const auto nodes = model_.nodes(scope_);
+    const auto *filter = findNode(nodes, pickedFilter());
+    if (filter == nullptr) return;
+    auto parameters = filter->parameters;
+    if (value > 0.0) parameters["max_radius"] = value;
+    else parameters.erase("max_radius");
+    if (parameters == filter->parameters) return;
+    commit(Json::array({Json{{"op", "set_node_parameters"}, {"scope", scopeToken(scope_)}, {"node", filter->id},
+                             {"parameters", std::move(parameters)}}}));
+}
+
+void GraphCanvasLayersPanel::pickFilterColor(const char *title) {
+    const auto nodes = model_.nodes(scope_);
+    const auto *filter = findNode(nodes, pickedFilter());
+    if (filter == nullptr) return;
+    const auto defaults = graphCanvasFilterDefaults(filter->op);
+    const auto fallback = defaults.is_object() ? defaults : Json::object();
+    const auto component = [&](std::size_t index) {
+        return number(filter->parameters, "color", index, number(fallback, "color", index, index == 3 ? 1.0 : 0.0));
+    };
+    const QColor current = QColor::fromRgbF(static_cast<float>(component(0)), static_cast<float>(component(1)),
+                                            static_cast<float>(component(2)), static_cast<float>(component(3)));
+    const QColor chosen = QColorDialog::getColor(current, this, tr(title), QColorDialog::ShowAlphaChannel);
+    if (!chosen.isValid()) return;
+    commit(graphCanvasSetParameterOps(nodes, scope_, filter->id, "color",
+                                      Json::array({chosen.redF(), chosen.greenF(), chosen.blueF(), chosen.alphaF()})));
 }
 
 void GraphCanvasLayersPanel::commitFilterJson(const char *key, QLineEdit *field) {

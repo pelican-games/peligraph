@@ -927,7 +927,14 @@ std::string graphCanvasRefusalSentence(std::string_view notice) {
         // outside it.
         {"canvas.blend_unsupported@1", "asks for a blend the engine does not know: pick one from the list."},
         {"canvas.op_unsupported@1",
-         "The canvas reads an op the engine does not draw: only the colour filters of + Filter are drawn."},
+         "The canvas reads an op the engine does not draw: only the filters of + Filter are drawn."},
+        // CV-3a.
+        {"canvas.filter_edge_unsupported@1",
+         "A line drives a filter number the engine bakes (Brightness/Contrast): take the line off."},
+        {"canvas.filter_backdrop_unsupported@1",
+         "A blur, a shadow or a glow cannot read the layers under it (an adjustment): put it on a layer."},
+        {"canvas.filter_size_exceeded@1",
+         "A blur, a shadow or a glow would need an image over 16384 pixels a side: make its layer or radius smaller."},
         {"canvas.instance_inputs_unsupported@1",
          "An imported group takes no inputs: its definition must have no graph.input."},
         // SG-3 (CV-6a, CV-2b).
@@ -1116,6 +1123,15 @@ std::optional<std::size_t> graphCanvasStrokeRowOf(const std::vector<GraphCanvasN
 const std::vector<GraphCanvasFilterChoice> &graphCanvasFilterChoices() {
     static const std::vector<GraphCanvasFilterChoice> choices = [] {
         std::vector<GraphCanvasFilterChoice> made;
+        for (const auto &op : Pelican::canvasFilterOperations()) made.push_back({op, graphCanvasFilterLabel(op)});
+        return made;
+    }();
+    return choices;
+}
+
+const std::vector<GraphCanvasFilterChoice> &graphCanvasAdjustmentChoices() {
+    static const std::vector<GraphCanvasFilterChoice> choices = [] {
+        std::vector<GraphCanvasFilterChoice> made;
         for (const auto &op : Pelican::canvasColorFilterOperations()) made.push_back({op, graphCanvasFilterLabel(op)});
         return made;
     }();
@@ -1130,6 +1146,10 @@ std::string graphCanvasFilterLabel(std::string_view op) {
         {"filter.hue_saturation", "Hue/Saturation"},
         {"filter.gradient_map", "Gradient Map"},
         {"filter.color_overlay", "Color Overlay"},
+        // CV-3a: Photoshop's words.
+        {"filter.blur", "Gaussian Blur"},
+        {"filter.drop_shadow", "Drop Shadow"},
+        {"filter.outer_glow", "Outer Glow"},
     };
     for (const auto &[known, label] : labels)
         if (known == op) return std::string{label};
@@ -1137,6 +1157,16 @@ std::string graphCanvasFilterLabel(std::string_view op) {
 }
 
 Json graphCanvasFilterDefaults(std::string_view op) {
+    // CV-3a: the engine's defaults, which are Photoshop's (a drop shadow 5 px
+    // away at 120 degrees, size 5, black at 75 %; an outer glow size 5,
+    // (255, 255, 190) at 75 %; a Gaussian Blur of 1 px).
+    if (op == "filter.blur") return Json{{"radius", 1.0}};
+    if (op == "filter.drop_shadow")
+        return Json{{"offset", Json::array({2.5, 4.330127018922193})}, {"radius", 5.0}, {"spread", 0.0},
+                    {"color", Json::array({0.0, 0.0, 0.0, 1.0})}, {"opacity", 0.75}};
+    if (op == "filter.outer_glow")
+        return Json{{"radius", 5.0}, {"spread", 0.0}, {"color", Json::array({1.0, 1.0, 190.0 / 255.0, 1.0})},
+                    {"opacity", 0.75}};
     if (!Pelican::isCanvasColorFilter(op)) return nullptr;
     if (op == "filter.brightness_contrast") return Json{{"brightness", 0.0}, {"contrast", 0.0}};
     if (op == "filter.levels")
@@ -1161,7 +1191,8 @@ Json graphCanvasAddAdjustmentLayerOps(const std::vector<GraphCanvasNode> &nodes,
                                       std::string_view stack, std::optional<std::size_t> above, std::string_view op) {
     const auto *target = stackNode(nodes, stack);
     const auto parameters = graphCanvasFilterDefaults(op);
-    if (target == nullptr || parameters.is_null()) return Json::array();
+    // CV-3a: an adjustment is a colour filter (a blur of the backdrop is refused).
+    if (target == nullptr || parameters.is_null() || !Pelican::isCanvasColorFilter(op)) return Json::array();
     const auto numbered = numberedId(nodes, target, filterBase(op), {"_backdrop"});
     if (numbered.number == 0) return Json::array();
     const auto backdrop = numbered.id + "_backdrop";

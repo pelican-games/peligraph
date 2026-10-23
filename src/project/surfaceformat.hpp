@@ -1,5 +1,6 @@
 #pragma once
 
+#include "rasterpass.hpp"
 #include "shaderresourceport.hpp"
 
 #include <array>
@@ -188,7 +189,19 @@ struct SurfaceRenderState {
     bool depth_test = true;
     bool depth_write = true;
     SurfaceDepthCompare depth_compare = SurfaceDepthCompare::less;
+    // PSN-1: the rest of the raster_state vocabulary a surface may write
+    // (surfacePipelineStateKeys(): polygon_mode, depth_bias, stencil, ...),
+    // read by the same parser. Its topology, cull, front face, depth test /
+    // write / compare and color attachments are not the surface's: the
+    // fields above are, and materialPipelineState() puts the two together.
+    PipelineState pipeline;
 };
+
+// PSN-1: the material pipeline's fixed-function state: the surface's own
+// cull and depth fields over its pipeline vocabulary, counter-clockwise front
+// faces (glTF; a mirrored view flips them at record time), triangle lists.
+// Blend stays per attachment (the blend mode and material_output_states).
+PipelineState materialPipelineState(const SurfaceRenderState &state);
 
 struct SurfaceFormatDocument {
     SurfaceLanguage language = SurfaceLanguage::glsl;

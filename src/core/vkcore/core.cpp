@@ -298,6 +298,24 @@ static std::optional<QueueSet> pickQueues(const vk::PhysicalDevice &phys_device,
     return std::nullopt;
 }
 
+// PSN-1: the optional features the pipeline-state vocabulary needs. Each is
+// enabled when the device has it; none is required.
+struct PipelineStateFeatureSupport {
+    bool fill_mode_non_solid = false;
+    bool wide_lines = false;
+    bool depth_clamp = false;
+    bool depth_bias_clamp = false;
+    bool depth_bounds = false;
+    bool sample_rate_shading = false;
+    bool alpha_to_one = false;
+    bool logic_op = false;
+    bool dual_src_blend = false;
+    std::uint32_t max_fragment_dual_src_attachments = 0;
+    bool conservative_rasterization = false;
+    bool primitive_underestimation = false;
+    bool conservative_point_and_line_rasterization = false;
+};
+
 struct DeviceFeatureSupport {
     RequiredVulkanFeatureSupport required;
     bool timeline_semaphore = false;
@@ -307,6 +325,7 @@ struct DeviceFeatureSupport {
     bool independent_blend = false;
     bool swapchain_maintenance1 = false;
     bool draw_indirect_count = false;
+    PipelineStateFeatureSupport pipeline_state;
     RayQueryDeviceSupport ray_query;
 };
 
@@ -423,6 +442,21 @@ static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physica
         .draw_indirect_count =
             draw_indirect_count_core &&
             vk12.drawIndirectCount == VK_TRUE,
+        .pipeline_state = {
+            .fill_mode_non_solid = core.fillModeNonSolid == VK_TRUE,
+            .wide_lines = core.wideLines == VK_TRUE,
+            .depth_clamp = core.depthClamp == VK_TRUE,
+            .depth_bias_clamp = core.depthBiasClamp == VK_TRUE,
+            .depth_bounds = core.depthBounds == VK_TRUE,
+            .sample_rate_shading = core.sampleRateShading == VK_TRUE,
+            .alpha_to_one = core.alphaToOne == VK_TRUE,
+            .logic_op = core.logicOp == VK_TRUE,
+            .dual_src_blend = core.dualSrcBlend == VK_TRUE,
+            .max_fragment_dual_src_attachments =
+                core.dualSrcBlend == VK_TRUE
+                    ? core_properties.limits.maxFragmentDualSrcAttachments
+                    : 0u,
+        },
         .ray_query = {
             .acceleration_structure_feature =
                 acceleration_structure.accelerationStructure ==
@@ -502,6 +536,23 @@ static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physica
             maintenance_chain
                 .get<vk::PhysicalDeviceSwapchainMaintenance1FeaturesEXT>()
                 .swapchainMaintenance1 == VK_TRUE;
+    }
+    // PSN-1: conservative rasterization is an extension with no feature
+    // struct; two of its properties decide what a pass may ask of it.
+    if (has_extension(
+            VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME)) {
+        const auto properties =
+            physical_device.getProperties2<
+                vk::PhysicalDeviceProperties2,
+                vk::PhysicalDeviceConservativeRasterizationPropertiesEXT>();
+        const auto &conservative =
+            properties.get<
+                vk::PhysicalDeviceConservativeRasterizationPropertiesEXT>();
+        result.pipeline_state.conservative_rasterization = true;
+        result.pipeline_state.primitive_underestimation =
+            conservative.primitiveUnderestimation == VK_TRUE;
+        result.pipeline_state.conservative_point_and_line_rasterization =
+            conservative.conservativePointAndLineRasterization == VK_TRUE;
     }
     return result;
 }
@@ -606,6 +657,11 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
         enabled_extensions.emplace_back(
             VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
     }
+    const auto &pipeline_state = feature_support.pipeline_state;
+    if (pipeline_state.conservative_rasterization) {
+        enabled_extensions.emplace_back(
+            VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME);
+    }
     enabled_device_extensions = enabled_extensions;
     const auto exts = vulkanExtensionNamePointers(enabled_extensions);
 
@@ -640,6 +696,29 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
     features.features.independentBlend =
         feature_support.independent_blend ? VK_TRUE
                                           : VK_FALSE;
+    // PSN-1: opportunistic, like the two above; a document that needs one
+    // the device lacks is refused by name (pipeline.state_unsupported@1).
+    const auto vk_bool = [](bool value) {
+        return value ? VK_TRUE : VK_FALSE;
+    };
+    features.features.fillModeNonSolid =
+        vk_bool(pipeline_state.fill_mode_non_solid);
+    features.features.wideLines =
+        vk_bool(pipeline_state.wide_lines);
+    features.features.depthClamp =
+        vk_bool(pipeline_state.depth_clamp);
+    features.features.depthBiasClamp =
+        vk_bool(pipeline_state.depth_bias_clamp);
+    features.features.depthBounds =
+        vk_bool(pipeline_state.depth_bounds);
+    features.features.sampleRateShading =
+        vk_bool(pipeline_state.sample_rate_shading);
+    features.features.alphaToOne =
+        vk_bool(pipeline_state.alpha_to_one);
+    features.features.logicOp =
+        vk_bool(pipeline_state.logic_op);
+    features.features.dualSrcBlend =
+        vk_bool(pipeline_state.dual_src_blend);
     vk::PhysicalDeviceVulkan11Features vk11features;
     vk11features.shaderDrawParameters = true; // necessary for using gl_BaseInstance in shaders
     // Enable opportunistically when available. Target planning still
@@ -787,6 +866,23 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
             swapchain_maintenance1,
         .draw_indirect_count =
             feature_support.draw_indirect_count,
+        .fill_mode_non_solid = pipeline_state.fill_mode_non_solid,
+        .wide_lines = pipeline_state.wide_lines,
+        .depth_clamp = pipeline_state.depth_clamp,
+        .depth_bias_clamp = pipeline_state.depth_bias_clamp,
+        .depth_bounds = pipeline_state.depth_bounds,
+        .sample_rate_shading = pipeline_state.sample_rate_shading,
+        .alpha_to_one = pipeline_state.alpha_to_one,
+        .logic_op = pipeline_state.logic_op,
+        .dual_src_blend = pipeline_state.dual_src_blend,
+        .max_fragment_dual_src_attachments =
+            pipeline_state.max_fragment_dual_src_attachments,
+        .conservative_rasterization =
+            pipeline_state.conservative_rasterization,
+        .primitive_underestimation =
+            pipeline_state.primitive_underestimation,
+        .conservative_point_and_line_rasterization =
+            pipeline_state.conservative_point_and_line_rasterization,
     };
 
 #if PELICAN_WITH_OPENXR
@@ -1157,6 +1253,28 @@ VulkanManageCore::VulkanManageCore() {
              runtime_capabilities.independent_blend,
              runtime_capabilities.swapchain_maintenance1,
              runtime_capabilities.draw_indirect_count);
+    LOG_INFO(logger,
+             "Vulkan pipeline-state features: fillModeNonSolid={}, "
+             "wideLines={}, depthClamp={}, depthBiasClamp={}, "
+             "depthBounds={}, sampleRateShading={}, alphaToOne={}, "
+             "logicOp={}, dualSrcBlend={} (maxFragmentDualSrcAttachments={}), "
+             "VK_EXT_conservative_rasterization={} "
+             "(primitiveUnderestimation={}, "
+             "conservativePointAndLineRasterization={})",
+             runtime_capabilities.fill_mode_non_solid,
+             runtime_capabilities.wide_lines,
+             runtime_capabilities.depth_clamp,
+             runtime_capabilities.depth_bias_clamp,
+             runtime_capabilities.depth_bounds,
+             runtime_capabilities.sample_rate_shading,
+             runtime_capabilities.alpha_to_one,
+             runtime_capabilities.logic_op,
+             runtime_capabilities.dual_src_blend,
+             runtime_capabilities.max_fragment_dual_src_attachments,
+             runtime_capabilities.conservative_rasterization,
+             runtime_capabilities.primitive_underestimation,
+             runtime_capabilities
+                 .conservative_point_and_line_rasterization);
     LOG_INFO(logger, "vulkan core initialized");
 }
 VulkanManageCore::~VulkanManageCore() {}

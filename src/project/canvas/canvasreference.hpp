@@ -42,7 +42,9 @@ using CanvasReferenceImages = std::map<std::string, CanvasReferenceImage>;
 
 // Groups are composited first, each into an image of the output's size, and
 // read back as the shader reads them; masks, clips and transforms as the
-// generated shader computes them.
+// generated shader computes them. CV-3a: a blur (CanvasBlur) as its passes
+// compute it -- the source painted at its pixels, halved, blurred across and
+// down -- and a shadow or glow from its distance or from that image.
 CanvasImage renderCanvasReference(const CanvasOutput &output, std::uint32_t width, std::uint32_t height,
                                   const CanvasValues &values = {}, const CanvasReferenceImages &images = {});
 

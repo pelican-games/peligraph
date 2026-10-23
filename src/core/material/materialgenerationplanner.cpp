@@ -7,9 +7,11 @@
 #include "../loader/basicconfig.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
 #include "../renderingpass/materialpassattachments.hpp"
+#include "../renderingpass/rasterpassvulkanadapter.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
 #include "../shader/surfacecompiler.hpp"
 #include "../vkcore/core.hpp"
+#include "../vkcore/depthstencilformat.hpp"
 #include "../vkcore/rendertarget.hpp"
 #include <algorithm>
 #include <stdexcept>
@@ -44,68 +46,21 @@ vk::Format resolveMaterialColorFormat(
         "color target");
 }
 
+// PSN-1: the one Vulkan lowering of the portable blend vocabulary
+// (rasterpassvulkanadapter.cpp), which raster and fullscreen passes use too.
 vk::BlendFactor toVkBlendFactor(
     MaterialOutputBlendFactor factor) {
-    switch (factor) {
-    case MaterialOutputBlendFactor::zero:
-        return vk::BlendFactor::eZero;
-    case MaterialOutputBlendFactor::one:
-        return vk::BlendFactor::eOne;
-    case MaterialOutputBlendFactor::source_color:
-        return vk::BlendFactor::eSrcColor;
-    case MaterialOutputBlendFactor::one_minus_source_color:
-        return vk::BlendFactor::eOneMinusSrcColor;
-    case MaterialOutputBlendFactor::destination_color:
-        return vk::BlendFactor::eDstColor;
-    case MaterialOutputBlendFactor::
-        one_minus_destination_color:
-        return vk::BlendFactor::eOneMinusDstColor;
-    case MaterialOutputBlendFactor::source_alpha:
-        return vk::BlendFactor::eSrcAlpha;
-    case MaterialOutputBlendFactor::one_minus_source_alpha:
-        return vk::BlendFactor::eOneMinusSrcAlpha;
-    case MaterialOutputBlendFactor::destination_alpha:
-        return vk::BlendFactor::eDstAlpha;
-    case MaterialOutputBlendFactor::
-        one_minus_destination_alpha:
-        return vk::BlendFactor::eOneMinusDstAlpha;
-    case MaterialOutputBlendFactor::source_alpha_saturate:
-        return vk::BlendFactor::eSrcAlphaSaturate;
-    }
-    throw std::runtime_error(
-        "unknown material output blend factor");
+    return lowerVulkanBlendFactor(factor);
 }
 
 vk::BlendOp toVkBlendOperation(
     MaterialOutputBlendOperation operation) {
-    switch (operation) {
-    case MaterialOutputBlendOperation::add:
-        return vk::BlendOp::eAdd;
-    case MaterialOutputBlendOperation::subtract:
-        return vk::BlendOp::eSubtract;
-    case MaterialOutputBlendOperation::reverse_subtract:
-        return vk::BlendOp::eReverseSubtract;
-    case MaterialOutputBlendOperation::minimum:
-        return vk::BlendOp::eMin;
-    case MaterialOutputBlendOperation::maximum:
-        return vk::BlendOp::eMax;
-    }
-    throw std::runtime_error(
-        "unknown material output blend operation");
+    return lowerVulkanBlendOperation(operation);
 }
 
 vk::ColorComponentFlags toVkWriteMask(
     std::uint8_t mask) {
-    vk::ColorComponentFlags result;
-    if ((mask & materialOutputWriteRed) != 0)
-        result |= vk::ColorComponentFlagBits::eR;
-    if ((mask & materialOutputWriteGreen) != 0)
-        result |= vk::ColorComponentFlagBits::eG;
-    if ((mask & materialOutputWriteBlue) != 0)
-        result |= vk::ColorComponentFlagBits::eB;
-    if ((mask & materialOutputWriteAlpha) != 0)
-        result |= vk::ColorComponentFlagBits::eA;
-    return result;
+    return lowerVulkanColorWriteMask(mask);
 }
 
 GraphicsPipelineColorAttachmentState
@@ -432,6 +387,21 @@ void validateMaterialCapabilities(
     if (!info.render_state.depth_test && info.render_state.depth_write) {
         throw std::runtime_error(
             "material render_state requests depth_write while depth_test is disabled");
+    }
+    // PSN-1: what the surface's pipeline vocabulary needs of the pass's
+    // attachments (depth bias, depth bounds and stencil need a depth
+    // attachment; stencil, its stencil component).
+    const auto pipeline_state =
+        materialPipelineState(info.render_state);
+    validatePipelineState(
+        pipeline_state, rendering.depth_format.has_value(),
+        "material render_state");
+    if (rendering.depth_format) {
+        validatePipelineStateStencilFormat(
+            pipeline_state,
+            vulkanFormatHasStencil(*rendering.depth_format),
+            vk::to_string(*rendering.depth_format),
+            "material render_state");
     }
     const auto attachment_states =
         resolveMaterialColorAttachmentStates(

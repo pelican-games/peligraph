@@ -985,6 +985,133 @@ TEST_CASE(
     }
 }
 
+// PSN-1: the one Vulkan mapping fills every fixed-function field the factory
+// used to hard-code, and refuses what the desc's attachments cannot carry.
+TEST_CASE(
+    "PSN-1 the Vulkan mapping fills every fixed-function desc field from the pipeline state",
+    "[renderingpass][raster-state][vulkan][psn1]") {
+    // Nothing authored: the desc is the factory's old fixed values.
+    {
+        GraphicsPipelineDesc desc;
+        desc.color_formats = {vk::Format::eR8G8B8A8Unorm};
+        desc.depth_format = vk::Format::eD32Sfloat;
+        const auto plain = parseRasterFixedFunctionState(nlohmann::json::object(), 1, "plain");
+        applyVulkanRasterPassContract(plain, desc);
+        GraphicsPipelineDesc expected;
+        expected.color_formats = desc.color_formats;
+        expected.depth_format = desc.depth_format;
+        expected.color_attachment_states = desc.color_attachment_states;
+        CHECK(desc == expected);
+        CHECK(desc.polygon_mode == vk::PolygonMode::eFill);
+        CHECK(desc.line_width == 1.0f);
+        CHECK_FALSE(desc.depth_bias.has_value());
+        CHECK_FALSE(desc.stencil.has_value());
+        CHECK_FALSE(desc.logic_op.has_value());
+        CHECK_FALSE(desc.min_sample_shading.has_value());
+        CHECK(desc.sample_mask == 0xffffffffu);
+        CHECK_FALSE(desc.primitive_restart);
+    }
+
+    const auto contract = parseRasterPassContract(
+        nlohmann::json::parse(R"json({
+          "draw": {"vertex_count": 4},
+          "raster_state": {
+            "topology": "triangle_strip", "primitive_restart": true,
+            "polygon_mode": "line", "depth_clamp": true,
+            "depth_bias": {"constant": -8, "slope": 2, "clamp": 0.5},
+            "line_width": 3, "rasterizer_discard": true, "conservative": "underestimate",
+            "sample_shading": 0.25, "sample_mask": 5, "alpha_to_coverage": true, "alpha_to_one": true,
+            "depth_test": true, "depth_compare": "greater", "depth_bounds": [0.125, 0.875],
+            "stencil": {
+              "front": {"fail": "zero", "pass": "replace", "depth_fail": "decrement_and_clamp",
+                        "compare": "not_equal", "compare_mask": 7, "write_mask": 3, "reference": 9},
+              "back": {"pass": "increment_and_clamp", "compare": "less"}
+            },
+            "blend_constants": [0.5, 0.25, 0.125, 1],
+            "color_attachments": [{"blend": {
+              "color": {"src": "constant_color", "dst": "one_minus_src1_alpha", "op": "add"},
+              "alpha": {"src": "src1_color", "dst": "one_minus_constant_alpha", "op": "add"}}}]
+          }
+        })json"),
+        1, true);
+    // logic_op replaces blending: the same state with a logic op instead.
+    auto logic = contract;
+    logic.state.color_attachments.front().blend.enabled = false;
+    logic.state.logic_op = RasterLogicOperation::nand;
+    GraphicsPipelineDesc desc;
+    desc.color_formats = {vk::Format::eR8G8B8A8Unorm};
+    desc.depth_format = vk::Format::eD24UnormS8Uint;
+    applyVulkanRasterPassContract(logic, desc);
+    CHECK(desc.topology == vk::PrimitiveTopology::eTriangleStrip);
+    CHECK(desc.primitive_restart);
+    CHECK(desc.polygon_mode == vk::PolygonMode::eLine);
+    CHECK(desc.depth_clamp);
+    CHECK(desc.depth_bias ==
+          std::optional{GraphicsPipelineDepthBias{.constant_factor = -8.0f, .clamp = 0.5f, .slope_factor = 2.0f}});
+    CHECK(desc.line_width == 3.0f);
+    CHECK(desc.rasterizer_discard);
+    CHECK(desc.conservative_rasterization == vk::ConservativeRasterizationModeEXT::eUnderestimate);
+    CHECK(desc.min_sample_shading == std::optional{0.25f});
+    CHECK(desc.sample_mask == 5u);
+    CHECK(desc.alpha_to_coverage);
+    CHECK(desc.alpha_to_one);
+    CHECK(desc.depth_test);
+    CHECK_FALSE(desc.depth_write);
+    CHECK(desc.depth_compare == vk::CompareOp::eGreater);
+    CHECK(desc.depth_bounds == std::optional{std::array{0.125f, 0.875f}});
+    REQUIRE(desc.stencil.has_value());
+    CHECK(desc.stencil->front == GraphicsPipelineStencilFaceState{
+        .fail = vk::StencilOp::eZero, .pass = vk::StencilOp::eReplace,
+        .depth_fail = vk::StencilOp::eDecrementAndClamp, .compare = vk::CompareOp::eNotEqual,
+        .compare_mask = 7, .write_mask = 3, .reference = 9});
+    CHECK(desc.stencil->back == GraphicsPipelineStencilFaceState{
+        .pass = vk::StencilOp::eIncrementAndClamp, .compare = vk::CompareOp::eLess});
+    CHECK(desc.logic_op == std::optional{vk::LogicOp::eNand});
+    CHECK(desc.blend_constants == std::array{0.5f, 0.25f, 0.125f, 1.0f});
+
+    // The new blend factors lower through the same table.
+    const auto &blended = contract;
+    GraphicsPipelineDesc blend_desc;
+    blend_desc.color_formats = {vk::Format::eR8G8B8A8Unorm};
+    blend_desc.depth_format = vk::Format::eD24UnormS8Uint;
+    applyVulkanRasterPassContract(blended, blend_desc);
+    REQUIRE(blend_desc.color_attachment_states.size() == 1);
+    const auto &attachment = blend_desc.color_attachment_states.front();
+    CHECK(attachment.source_color == vk::BlendFactor::eConstantColor);
+    CHECK(attachment.destination_color == vk::BlendFactor::eOneMinusSrc1Alpha);
+    CHECK(attachment.source_alpha == vk::BlendFactor::eSrc1Color);
+    CHECK(attachment.destination_alpha == vk::BlendFactor::eOneMinusConstantAlpha);
+    // A state change is a desc change: no cache keyed by desc reuses the old.
+    CHECK(blend_desc != desc);
+
+    // Stencil on a depth format without a stencil component is refused with
+    // the pass and the format named; without a depth attachment, earlier.
+    GraphicsPipelineDesc depth_only;
+    depth_only.color_formats = {vk::Format::eR8G8B8A8Unorm};
+    depth_only.depth_format = vk::Format::eD32Sfloat;
+    CHECK_THROWS_WITH(
+        applyVulkanRasterPassContract(logic, depth_only, {}, "Raster pass 'mask'"),
+        "Raster pass 'mask' enables stencil, but its depth attachment format 'D32_SFLOAT' has no "
+        "stencil component (use D24_UNORM_S8_UINT)");
+    PipelineState stencil_only;
+    stencil_only.stencil = RasterStencilState{};
+    GraphicsPipelineDesc no_depth;
+    CHECK_THROWS_WITH(
+        applyVulkanPipelineState(stencil_only, no_depth, "shadow"),
+        Catch::Matchers::ContainsSubstring("shadow enables stencil without a depth attachment"));
+
+    // The device facts come from the runtime capability set.
+    VulkanRuntimeCapabilities capabilities;
+    capabilities.fill_mode_non_solid = true;
+    capabilities.max_fragment_dual_src_attachments = 1;
+    capabilities.conservative_point_and_line_rasterization = true;
+    const auto facts = pipelineStateDeviceFacts(capabilities);
+    CHECK(facts.fill_mode_non_solid);
+    CHECK_FALSE(facts.wide_lines);
+    CHECK(facts.max_fragment_dual_src_attachments == 1u);
+    CHECK(facts.conservative_point_and_line_rasterization);
+}
+
 TEST_CASE(
     "shader resource port JSON accepts sampled cube views",
     "[renderingpass][resource-port][cube][wp236]") {

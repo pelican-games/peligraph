@@ -217,8 +217,10 @@ bool materialBindingContractMatches(const SurfaceFormatDocument &left,
     }
     const auto &a = left.render_state;
     const auto &b = right.render_state;
+    // PSN-1: the rest of the pipeline vocabulary changes the pipeline too.
     return a.blend == b.blend && a.cull == b.cull && a.depth_test == b.depth_test &&
-           a.depth_write == b.depth_write && a.depth_compare == b.depth_compare;
+           a.depth_write == b.depth_write && a.depth_compare == b.depth_compare &&
+           a.pipeline == b.pipeline;
 }
 
 } // namespace

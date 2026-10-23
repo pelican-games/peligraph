@@ -4,6 +4,7 @@
 #include "../renderingpass/computetask.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
 #include "../renderingpass/materialpassattachments.hpp"
+#include "../renderingpass/rasterpassvulkanadapter.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
 #include "../renderingpass/rendertargetimageviewresolver.hpp"
@@ -120,6 +121,9 @@ static std::string makePipelineKey(
         << static_cast<int>(info.render_state.cull) << ':'
         << info.render_state.depth_test << ':' << info.render_state.depth_write << ':'
         << static_cast<int>(info.render_state.depth_compare)
+        // PSN-1: the rest of the vocabulary is part of the pipeline's key.
+        << ":pipeline_state="
+        << pipelineStateToJson(info.render_state.pipeline).dump()
         << ":samples="
         << static_cast<std::uint32_t>(
                rendering.rasterization_samples)
@@ -174,29 +178,6 @@ static std::string makePipelineKey(
         key << "inherit";
     }
     return key.str();
-}
-
-static vk::CompareOp toVkCompare(SurfaceDepthCompare compare) {
-    switch (compare) {
-    case SurfaceDepthCompare::never: return vk::CompareOp::eNever;
-    case SurfaceDepthCompare::less: return vk::CompareOp::eLess;
-    case SurfaceDepthCompare::equal: return vk::CompareOp::eEqual;
-    case SurfaceDepthCompare::less_equal: return vk::CompareOp::eLessOrEqual;
-    case SurfaceDepthCompare::greater: return vk::CompareOp::eGreater;
-    case SurfaceDepthCompare::not_equal: return vk::CompareOp::eNotEqual;
-    case SurfaceDepthCompare::greater_equal: return vk::CompareOp::eGreaterOrEqual;
-    case SurfaceDepthCompare::always: return vk::CompareOp::eAlways;
-    }
-    throw std::runtime_error("unknown material depth compare state");
-}
-
-static vk::CullModeFlags toVkCull(SurfaceCullMode cull) {
-    switch (cull) {
-    case SurfaceCullMode::none: return vk::CullModeFlagBits::eNone;
-    case SurfaceCullMode::front: return vk::CullModeFlagBits::eFront;
-    case SurfaceCullMode::back: return vk::CullModeFlagBits::eBack;
-    }
-    throw std::runtime_error("unknown material cull state");
 }
 
 static vk::ShaderStageFlags materialResourceStages(
@@ -438,13 +419,12 @@ static GraphicsPipelineDesc makeMaterialPipelineDesc(
     desc.depth_format = rendering.depth_format;
     desc.use_engine_vertex_layout = mode == VertexMode::standard;
     desc.use_skinned_vertex_layout = mode == VertexMode::skinned;
-    desc.depth_test = info.render_state.depth_test;
-    desc.depth_write = info.render_state.depth_write;
-    desc.depth_compare = toVkCompare(info.render_state.depth_compare);
-    desc.cull_mode = toVkCull(info.render_state.cull);
-    // CC-1a: counter-clockwise is the front (glTF), and a mirrored view (a
-    // cube face) flips it at record time (materialrender.cpp).
-    desc.front_face = vk::FrontFace::eCounterClockwise;
+    // PSN-1: the surface's state through the one mapping. CC-1a:
+    // counter-clockwise is the front (glTF), and a mirrored view (a cube
+    // face) flips it at record time (materialrender.cpp).
+    applyVulkanPipelineState(
+        materialPipelineState(info.render_state), desc,
+        "material '" + info.name + "' pipeline");
     desc.dynamic_front_face = true;
     desc.rasterization_samples =
         rendering.rasterization_samples;
@@ -855,6 +835,9 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
             info.render_state.blend = SurfaceBlendMode::opaque;
             info.render_state.depth_test = true;
             info.render_state.depth_write = true;
+            // PSN-1: the error surface draws plainly (no authored stencil,
+            // wireframe, bias, ...).
+            info.render_state.pipeline = PipelineState{};
             info.alpha_mode = MaterialAlphaMode::opaque;
             // Fragment-only inputs have no meaning in the error surface.
             // Keep vertex resources and all material values/textures for its authored vertex.
@@ -895,6 +878,34 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         resolveMaterialResourceInterface(info);
     const auto pass_bindings = GET_MODULE(RenderingPassContainer).materialPassRenderingBindings(
         info.route, info.shader_contract, info.exact_pass);
+    // PSN-1: pipeline.state_unsupported@1 for what the surface's render_state
+    // or the pass's material_output_states ask of the device, named by the
+    // first pass that draws the material and by the material.
+    {
+        const auto facts = pipelineStateDeviceFacts(
+            GET_MODULE(VulkanManageCore).getRuntimeCapabilities());
+        auto missing = firstUnsupportedPipelineState(
+            materialPipelineState(info.render_state), facts);
+        if (!missing) {
+            const bool dual_source = std::any_of(
+                rendering.output_states.begin(), rendering.output_states.end(),
+                [](const auto &state) {
+                    return state.blend && materialOutputBlendStateUsesDualSource(*state.blend);
+                });
+            if (dual_source && !facts.dual_src_blend) {
+                missing = PipelineStateRequirement{"material_output_states", "dualSrcBlend"};
+            } else if (dual_source &&
+                       rendering.color_formats.size() > facts.max_fragment_dual_src_attachments) {
+                missing = PipelineStateRequirement{"material_output_states",
+                                                   "maxFragmentDualSrcAttachments"};
+            }
+        }
+        if (missing) {
+            throw std::runtime_error(pipelineStateUnsupportedMessage(
+                pass_bindings.empty() ? std::string{} : pass_bindings.front().pass_name, *missing,
+                info.name));
+        }
+    }
     const bool allow_ray_query = !pass_bindings.empty() && std::all_of(
         pass_bindings.begin(), pass_bindings.end(), [](const auto &binding) { return binding.ray_query; });
     std::array<std::optional<PipelineHandle>, 2> mode_pipelines;
@@ -2646,11 +2657,12 @@ GraphicsPipelineDesc materialDrawOverridePipelineDesc(
         material.render_state, render_state);
     state.output_schema = material.output_schema;
     state.vat = material.vat;
-    desc.depth_test = state.render_state.depth_test;
-    desc.depth_write = state.render_state.depth_write;
-    desc.depth_compare =
-        toVkCompare(state.render_state.depth_compare);
-    desc.cull_mode = toVkCull(state.render_state.cull);
+    // PSN-1: the whole fixed-function state again, through the one mapping,
+    // from the overridden render state (the override changes cull and depth;
+    // the rest is the material's).
+    applyVulkanPipelineState(
+        materialPipelineState(state.render_state), desc,
+        "material draw override pipeline");
     if (!render_state.blend) return desc;
 
     const GraphicsPipelineDesc defaults{};
