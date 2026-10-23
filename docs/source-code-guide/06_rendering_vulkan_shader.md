@@ -142,7 +142,7 @@ feature decision、swapchain→request-local capture の変換、設定検証は
 
 preset の schema・合成・fork の公開契約は[第6章](../manual/06_rendering.md#render-preset)を参照してください。
 
-[`resolveRenderPipelinePreset()`](../../src/project/renderpipeline.cpp#L890) は [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L3465) の冒頭で呼ばれ、feature 解析より前に展開します。`defaultGraphPassFamily()` も既定 family を取得するため展開しますが、その結果は family 名だけに使い、文書を書き換えません。
+[`resolveRenderPipelinePreset()`](../../src/project/renderpipeline.cpp#L897) は [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L3465) の冒頭で呼ばれ、feature 解析より前に展開します。`defaultGraphPassFamily()` も既定 family を取得するため展開しますが、その結果は family 名だけに使い、文書を書き換えません。
 
 hybrid の描画経路では deferred と forward が同じ target へ重ねて描き、半透明は snapshot_copy が退避した画像を screen input として読みます。
 
@@ -240,7 +240,7 @@ hybrid の描画経路では deferred と forward が同じ target へ重ねて�
 - `listed == nullptr` のときの鎖は FO-1 の前と同じ順・同じ辺・同じ `after` の並びです。output transform で区切りが切れない所も前のままです(コードのコメント)。
 - FO-1 の前は、並びが名指した pass も宣言順でつなぎ、その上に `applyFrameNodeOrder()` が隣どうしの `after` を足していたので、依存の無い 2 つの入れ替えでも 2 本の `after` が輪になりました。
 
-**合成の出口で見る image の鍵(✅FO-1)。**`synchronizeRenderPipelineProvenance()` の `render_targets[]` の走査が、EB-1 の buffer の鍵の検査の隣で [`requireKnownFrameGraphImageKeys()`](../../src/project/renderpipeline.cpp#L106) を呼びます([image の鍵の検査を呼ぶ所(FO-1)](../../src/project/renderpipeline.cpp#L2273))。知らない鍵は `graph.image_key_unknown@1 {image, key, allowed}` の `GraphRegistryError` です。許す 18 個は `frame_graph_image_keys` の配列で、render target の parser と format の解決器が読む鍵に、IA-1 の `initial` と、feature の binding の制約(`validateTargetBinding`)が読む `sample_count` と、EN-2 の `source`(`render.image` が読む project の画像ファイル)を足したものです(コードのコメント)。
+**合成の出口で見る image の鍵(✅FO-1)。**`synchronizeRenderPipelineProvenance()` の `render_targets[]` の走査が、EB-1 の buffer の鍵の検査の隣で [`requireKnownFrameGraphImageKeys()`](../../src/project/renderpipeline.cpp#L106) を呼びます([image の鍵の検査を呼ぶ所(FO-1)](../../src/project/renderpipeline.cpp#L2280))。知らない鍵は `graph.image_key_unknown@1 {image, key, allowed}` の `GraphRegistryError` です。許す 18 個は `frame_graph_image_keys` の配列で、render target の parser と format の解決器が読む鍵に、IA-1 の `initial` と、feature の binding の制約(`validateTargetBinding`)が読む `sample_count` と、EN-2 の `source`(`render.image` が読む project の画像ファイル)を足したものです(コードのコメント)。
 
 > 🧩 **難所 — format_class が format を上書き**([`resolveRenderTargetFormatClassesV2()`](../../src/core/renderingpass/rendertargetjsonparser.cpp#L241))
 >

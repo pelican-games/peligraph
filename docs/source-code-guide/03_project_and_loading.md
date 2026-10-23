@@ -1044,7 +1044,7 @@ parse は IO / デコードのみ、[`validate`](../../src/core/asset/model.cpp#
 | `pelican.scene` | 1〜2 | [`sceneformat.cpp`](../../src/project/sceneformat.cpp#L268) | 保存は元の版を維持。prefabはv2が前提。永続IDは両版で受理 |
 | `pelican.graph` | 1 | [`graphcomposition.cpp`](../../src/project/graphcomposition.cpp#L1149) | 共通グラフ。`definitions` / `nodes` / `outputs`（§3.15） |
 | `pelican.render_feature` | 1 | [`featurecompose.cpp`](../../src/project/featurecompose.cpp#L3465) | 本節「render feature」 |
-| `pelican.render_pipeline` | 1 | [`renderpipeline.cpp`](../../src/project/renderpipeline.cpp#L890) | preset（`hybrid_v1` など） |
+| `pelican.render_pipeline` | 1 | [`renderpipeline.cpp`](../../src/project/renderpipeline.cpp#L897) | preset（`hybrid_v1` など） |
 | `pelican.render_component` | 1 | [`rendercomponent.hpp`](../../src/project/rendercomponent.hpp#L16) | export / import される描画部品（§3.16） |
 | `pelican.package` | 1 | [`packagemanifest.hpp`](../../src/project/packagemanifest.hpp#L19) | vendoringされるディレクトリの封筒（§3.16） |
 | `pelican.graph_catalog` | 1 | [`graphmodule.cpp`](../../src/project/graphmodule.cpp#L778) | `pelican_cli graph-catalog` の出力（module / op / 型の一覧） |
@@ -1130,7 +1130,7 @@ flowchart TB
 CLI が project 読み込みとは別に作る process-local module です。この型と名前付き入口の分離により、
 project 読み込みから overlay を発見・保存・再読込するデータ経路そのものが存在しません。
 
-sceneと違い、feature合成は「純粋層で済ませてからruntimeへ渡す」形ではありません。上の登録関数の内側でGPU非依存の [`runRenderCompilerProgram()`](../../src/core/renderingpass/rendercompilerprogram.cpp#L212) が走り、その中の [`resolveRenderPipeline()`](../../src/project/renderpipeline.cpp#L1271) が `composeRenderFeatureConfig()` を呼びます。二段であること自体は同じで、境界が呼び出し順ではなく「GPUに触る前／後」で引かれている、という違いです。詳細は[第6章](06_rendering_vulkan_shader.md)。
+sceneと違い、feature合成は「純粋層で済ませてからruntimeへ渡す」形ではありません。上の登録関数の内側でGPU非依存の [`runRenderCompilerProgram()`](../../src/core/renderingpass/rendercompilerprogram.cpp#L212) が走り、その中の [`resolveRenderPipeline()`](../../src/project/renderpipeline.cpp#L1278) が `composeRenderFeatureConfig()` を呼びます。二段であること自体は同じで、境界が呼び出し順ではなく「GPUに触る前／後」で引かれている、という違いです。詳細は[第6章](06_rendering_vulkan_shader.md)。
 
 #### feature の要る target・挿入先・snapshot の `after`(FR-1 / FR-2)✅実装済み
 
@@ -1809,7 +1809,7 @@ run を consumer の選択より前に置くのは graph で書いた material p
 
 合成は上の `graph_origin` を provenance に載せた直後に [`applyGraphFoldGroups()`](../../src/project/graphfold.cpp#L269) を呼び([FG-1 の段を呼ぶ所](../../src/project/featurecompose.cpp#L4293))、`verified` の group の主語を展開名へ写して、合成した config の `target_planning` に `true` で書き込みます。pass と task は provenance の `loop_origin`(ループの回。`<loop>` の先頭の区切りが root の node)か `graph_origin`(instance の中なら `instance_path` の先頭)から root の node を引き、target と buffer は `loop_origin` か展開名の先頭の区切りで引きます。feature の provenance は飛ばします。合成した config が同じ entry を `false` にしていれば `graph.fold_decision_conflict@1` を投げます([投げる所](../../src/project/graphfold.cpp#L416))。
 
-結果は [`RenderFeatureComposeResult::fold_groups` / `fold_planning`](../../src/project/featurecompose.hpp#L73) に残り、`resolveRenderPipeline()` が印の無い・古い group を `fold_unverified` / `fold_stale` の診断にし([診断にする所](../../src/project/renderpipeline.cpp#L1459))、`fold_planning` の graph 名に変種の接尾辞を付けて([付ける所](../../src/project/renderpipeline.cpp#L1417))compiled pipeline へ渡します。
+結果は [`RenderFeatureComposeResult::fold_groups` / `fold_planning`](../../src/project/featurecompose.hpp#L73) に残り、`resolveRenderPipeline()` が印の無い・古い group を `fold_unverified` / `fold_stale` の診断にし([診断にする所](../../src/project/renderpipeline.cpp#L1466))、`fold_planning` の graph 名に変種の接尾辞を付けて([付ける所](../../src/project/renderpipeline.cpp#L1424))compiled pipeline へ渡します。
 
 `framePlanToJson()` はそれを `fold_decisions` として出し、`appendFramePlanPhysicalNodeReferences()` が `pelican.plan.fold_decision_applied@1` の要素にします(第7章)。editor は同じ `fold_planning` を authoring context に受け([渡す所](../../src/core/communication/editorruntimefactory.cpp#L2293))、EL-2 の `edit_target_planning` の `false` と [`graphFoldDecisionConflict()`](../../src/project/graphfold.hpp#L147) で突き合わせます。文書には展開名を書かないので、写しは組み立てのたびに作り直され、文書には残りません。
 
