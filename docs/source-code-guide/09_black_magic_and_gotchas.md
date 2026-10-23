@@ -1447,7 +1447,7 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 **実際は**: v0 を閉じる段で、製品を変えずに揺れる test が 2 つ残っています。
 
 - **`studio_scenario_gui_build_optimize`**: step「the frame's GPU time went up」(scenario の最後ではなく、この後に Features tab の step が続く)は、Multisampling を 4 にした後の `get_status` の `gpu_timing.logical_frame_averages[0].average_total_ms` が、Multisampling を変える前の `[count3]` の step で覚えた値(`ms_count3`)より大きいことを `op: gt` で見ます([その step](../../test/studio_scenarios/gui_build_optimize.json#L500)、[覚える step](../../test/studio_scenarios/gui_build_optimize.json#L459))。平均は engine の履歴の窓([`gpu_timing_history_capacity` = 120](../../src/core/vkcore/rendertiming.hpp#L18))の上で取るので、差が小さいと測り方の揺れで逆になります(RX-1 の W1 で 0.218 ms と 0.226 ms の比較が赤。統合側の記録)。NVIDIA の driver が起動の直後の shader を数秒から十数秒後に最適化した code へ差し替える、という統合側の観察がありますが、この step の揺れの原因かは未確認です(コードからは確かめられない)。scenario の側で幅を持たせるか比べ方を変えるのが残りの仕事です。
-- **`wp380c_production_has_no_fault_setter_symbol`**: production の archive(`pelican_core` / `pelican_project`)の全部の symbol を `dumpbin` で調べる test で([定義](../../test/CMakeLists.txt#L2718))、通った回で 75〜150 秒ほどかかり(上限を 300 秒にした再実行で 203 秒の回もある)、`-j16` の全数の中では 120 秒の上限を越えることがあります(単独で 300 秒でも越えた回あり。どれも各 WP の報告の数字)。test の定義は LABELS だけで TIMEOUT を持たないので、上限は gate の `ctest --timeout` です。assertion の失敗は出ていません。
+- **`wp380c_production_has_no_fault_setter_symbol`**: production の archive(`pelican_core` / `pelican_project`)の全部の symbol を `dumpbin` で調べる test で([定義](../../test/CMakeLists.txt#L2721))、通った回で 75〜150 秒ほどかかり(上限を 300 秒にした再実行で 203 秒の回もある)、`-j16` の全数の中では 120 秒の上限を越えることがあります(単独で 300 秒でも越えた回あり。どれも各 WP の報告の数字)。test の定義は LABELS だけで TIMEOUT を持たないので、上限は gate の `ctest --timeout` です。assertion の失敗は出ていません。
 
 **不変条件**: この 2 つが赤のときは、単独で流し直してから製品を疑う。揺れを「既知」とするのは記録のある間だけで、記録は `docs/v0_freeze.md` §6.1 にあります。
 
