@@ -14,6 +14,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -71,15 +72,34 @@ ResolvedRenderPipeline compose(const Json &authored, std::string source) {
         });
 }
 
+using PassKey = std::pair<std::string, std::string>; // graph, pass
+
+// The composed config's generic raster passes (`"type": "raster"`). Since
+// RC-2 the vk-free FrameGraphDefinition no longer marks them (the marker
+// only fed the deleted execution plan), so the pass's authored type is read.
+std::set<PassKey> genericRasterPasses(const Json &composed) {
+    std::set<PassKey> passes;
+    for (const auto &pass_set : composed.at("rendering_passes")) {
+        for (const auto &pass : pass_set.at("passes")) {
+            if (pass.value("type", std::string{}) == "raster") {
+                passes.insert({pass_set.at("name").get<std::string>(),
+                               pass.at("name").get<std::string>()});
+            }
+        }
+    }
+    return passes;
+}
+
 // Fullscreen, read from the vk-free FrameGraphDefinition: a render node
-// without geometry and without the generic raster dialect whose shader
-// samples an authored input. debug_draw / debug_text / gizmo / ui / imgui
-// passes sample none. A fullscreen pass without any input is not seen as
-// one (requireFullscreenMatchesPassType pins that no composed pass here is
-// such a pass).
-bool isFullscreenNode(const FrameGraphNodeDefinition &node) {
+// without geometry, not a generic raster pass, whose shader samples an
+// authored input. debug_draw / debug_text / gizmo / ui / imgui passes sample
+// none. A fullscreen pass without any input is not seen as one
+// (requireFullscreenMatchesPassType pins that no composed pass here is such
+// a pass).
+bool isFullscreenNode(const FrameGraphNodeDefinition &node,
+                      bool generic_raster) {
     return node.kind == FramePlanNodeKind::render &&
-           !node.raster_geometry && node.semantic_dialect.empty() &&
+           !node.raster_geometry && !generic_raster &&
            !node.local_read_shader_inputs.empty();
 }
 
@@ -120,12 +140,16 @@ FusionInput fusionInput(const Json &composed) {
     for (const auto &target : input.targets) {
         targets.emplace(target.name, &target);
     }
+    const auto raster = genericRasterPasses(composed);
     for (std::size_t index = 0; index < input.definitions.size(); ++index) {
         const auto &definition = input.definitions[index];
         PassFusionGraphFacts facts{.graph = definition.name};
         for (const auto &node : definition.nodes) {
-            facts.nodes.push_back({node.name, isFullscreenNode(node),
-                                   node.once});
+            facts.nodes.push_back(
+                {node.name,
+                 isFullscreenNode(node,
+                                  raster.contains({definition.name, node.name})),
+                 node.once});
         }
         for (const auto &resource : input.graphs[index].resources) {
             if (resource.name == "swapchain") {
@@ -160,7 +184,8 @@ void requireFullscreenMatchesPassType(const Json &composed,
             if (found == types.end()) continue; // a compute task
             INFO(definition.name << "." << node.name << " is "
                                  << found->second);
-            CHECK((found->second == "fullscreen") == isFullscreenNode(node));
+            CHECK((found->second == "fullscreen") ==
+                  isFullscreenNode(node, found->second == "raster"));
         }
     }
 }
