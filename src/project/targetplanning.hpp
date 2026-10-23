@@ -270,6 +270,10 @@ struct PlanningNodeConstraint {
     std::string node;
     bool serial = false;
     bool isolate = false;
+    // PF-1: false keeps the node out of pass fusion (passfusion.hpp,
+    // docs/design_pass_fusion.md §1-5). Unwritten, the node may be fused;
+    // only false is written back.
+    bool fuse = true;
 
     bool operator==(const PlanningNodeConstraint &) const = default;
 };
