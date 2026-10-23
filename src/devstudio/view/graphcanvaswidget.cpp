@@ -520,6 +520,16 @@ GraphCanvasLayout graphCanvasLayoutFromJson(const nlohmann::json &layout) {
                     if (view && *view != GraphCanvasNodeView::open) result.views.emplace(id, *view);
                     if (view) continue;
                 }
+                // NB-2c: the rows a canvas.stack draws opened, by input.
+                if (key == "open_rows" && value.is_array() &&
+                    std::ranges::all_of(value, [](const nlohmann::json &each) { return each.is_string(); })) {
+                    std::vector<std::string> rows;
+                    for (const auto &each : value)
+                        if (std::ranges::find(rows, each.get<std::string>()) == rows.end())
+                            rows.push_back(each.get<std::string>());
+                    if (!rows.empty()) result.open_rows.emplace(id, std::move(rows));
+                    continue;
+                }
                 result.node_members[id][key] = value;
             }
             const auto x = place.find("x");
@@ -584,6 +594,8 @@ nlohmann::json graphCanvasLayoutToJson(const GraphCanvasLayout &layout) {
         if (const auto view = layout.views.find(id);
             view != layout.views.end() && view->second != GraphCanvasNodeView::open)
             place["view"] = std::string{graphCanvasNodeViewName(view->second)};
+        if (const auto rows = layout.open_rows.find(id); rows != layout.open_rows.end() && !rows->second.empty())
+            place["open_rows"] = rows->second;
         nodes[id] = std::move(place);
     }
     result["nodes"] = std::move(nodes);
@@ -666,6 +678,7 @@ void GraphCanvasScene::setModel(GraphCanvasModel *model) {
     session_node_positions_.clear();
     folded_places_.clear();
     folded_view_views_.clear();
+    folded_view_open_rows_.clear();
     pruned_revision_.reset();
     selected_node_.reset();
     selected_edge_.reset();
@@ -756,13 +769,27 @@ bool GraphCanvasScene::setNodeViews(const std::string &scope, const std::vector<
             std::ranges::find(changing, id) == changing.end())
             changing.push_back(id);
     if (changing.empty()) return false;
+    placeForLayoutMember(scope, changing);
+    auto &views = placement(scope).layout.views;
+    for (const auto &id : changing) {
+        if (view == GraphCanvasNodeView::open) views.erase(id);
+        else views[id] = view;
+    }
+    noteLayoutChange(scope);
+    repopulate();
+    // One deliberate act, sent at once as Auto layout is.
+    flushLayout();
+    return true;
+}
+
+void GraphCanvasScene::placeForLayoutMember(const std::string &scope, const std::vector<std::string> &ids) {
     // The engine keeps a node's view only beside its place: a node the scope
     // has not placed is placed where it is drawn. A node changes size with
     // its view, so what the document does not place yet is held where it is
     // drawn for the session, as a drag holds it (N-6, GL-1b, UX-1 decision 3)
     // -- else the automatic placement would move it.
     bool held = false;
-    for (const auto &id : changing) {
+    for (const auto &id : ids) {
         if (layout(scope).nodes.contains(id)) continue;
         QGraphicsItem *item = findNodeItem(*this, graphCanvasKinds(), qtext(scope), qtext(id));
         if (item == nullptr) continue;
@@ -785,14 +812,42 @@ bool GraphCanvasScene::setNodeViews(const std::string &scope, const std::vector<
         }
         placement(scope).layout.nodes[id] = item->pos();
     }
-    auto &views = placement(scope).layout.views;
-    for (const auto &id : changing) {
-        if (view == GraphCanvasNodeView::open) views.erase(id);
-        else views[id] = view;
+}
+
+bool GraphCanvasScene::layerRowOpen(const std::string &scope, const std::string &stack,
+                                    const std::string &input) const {
+    if (model_ == nullptr) return false;
+    if (model_->foldedView()) {
+        const auto found = folded_view_open_rows_.find({model_->viewKey() + "|" + scope, stack});
+        return found != folded_view_open_rows_.end() && std::ranges::find(found->second, input) != found->second.end();
     }
+    return layout(scope).rowOpen(stack, input);
+}
+
+bool GraphCanvasScene::setLayerRowOpen(const std::string &scope, const std::string &stack, const std::string &input,
+                                       bool open) {
+    if (model_ == nullptr || stack.empty() || input.empty() || layerRowOpen(scope, stack, input) == open)
+        return false;
+    const auto toggle = [&](std::vector<std::string> &rows) {
+        if (open) rows.push_back(input);
+        else std::erase(rows, input);
+    };
+    // A folded view is Studio's drawing: its rows open for the session.
+    if (model_->foldedView()) {
+        const std::pair key{model_->viewKey() + "|" + scope, stack};
+        toggle(folded_view_open_rows_[key]);
+        if (folded_view_open_rows_[key].empty()) folded_view_open_rows_.erase(key);
+        repopulate();
+        return true;
+    }
+    if (!placement(scope).loaded) loadLayout(scope);
+    placeForLayoutMember(scope, {stack});
+    auto &rows = placement(scope).layout.open_rows;
+    toggle(rows[stack]);
+    if (rows[stack].empty()) rows.erase(stack);
     noteLayoutChange(scope);
     repopulate();
-    // One deliberate act, sent at once as Auto layout is.
+    // One deliberate act, as a view is.
     flushLayout();
     return true;
 }
@@ -854,11 +909,13 @@ void GraphCanvasScene::autoLayout() {
     // NB-1: but how each node is folded is not a place; it stays, and the
     // placement is made at the sizes the nodes are drawn at.
     auto kept_views = placement(scope).layout.views;
+    auto kept_open_rows = placement(scope).layout.open_rows;
     auto kept_members = placement(scope).layout.node_members;
     {
         auto &placed = placement(scope);
         placed.layout = GraphCanvasLayout{};
         placed.layout.views = kept_views;
+        placed.layout.open_rows = kept_open_rows;
         placed.layout.node_members = kept_members;
         placed.dirty = false;
     }
@@ -871,6 +928,7 @@ void GraphCanvasScene::autoLayout() {
     GraphCanvasLayout placed;
     placed.nodes = placement_boxes_;
     placed.views = std::move(kept_views);
+    placed.open_rows = std::move(kept_open_rows);
     placed.node_members = std::move(kept_members);
     // Every lane the placement kept, as (column, edge, y). A lane is two
     // points: the edge runs level across the column it flies over, and only
@@ -1064,6 +1122,9 @@ void GraphCanvasScene::pruneLayout(const std::string &scope) {
         return !present.contains(entry.first);
     });
     std::erase_if(layout.views, [&](const auto &entry) {
+        return !present.contains(entry.first);
+    });
+    std::erase_if(layout.open_rows, [&](const auto &entry) {
         return !present.contains(entry.first);
     });
     std::erase_if(layout.node_members, [&](const auto &entry) {
@@ -2003,6 +2064,9 @@ void GraphCanvasScene::repopulate() {
     GraphCanvasDrawing::Builder drawing{*this, scope_text};
     if (picked_layer_) drawing.setPickedLayer(picked_layer_->scope, picked_layer_->stack, picked_layer_->input);
     drawing.setThumbnails(thumbnails_.get());
+    drawing.setOpenRows([this](const std::string &row_scope, const std::string &stack, const std::string &input) {
+        return layerRowOpen(row_scope, stack, input);
+    });
 
     // LP-4d1: every root loop is drawn as a zone around the body its tab
     // shows. The zones are planned before the root is placed, because a
@@ -4031,8 +4095,8 @@ void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
 // owns: the proxy is an item like any other, and clearing the scene ends it.
 struct GraphCanvasScene::InlineEditor {
     // NB-2b: `layer_name` is a layer row's name (`node` the stack, `port`
-    // the layer's input).
-    enum class Kind { label, value, layer_name };
+    // the layer's input). NB-2c: `layer_opacity` its opacity, in percent.
+    enum class Kind { label, value, layer_name, layer_opacity };
 
     Kind kind = Kind::label;
     std::string scope;
@@ -4070,13 +4134,15 @@ GraphCanvasScene::carryInlineEdit() const {
                               editor_->kind == InlineEditor::Kind::layer_name,
                               editor_->scope, editor_->node, editor_->port,
                               editorText(editor_->widget)};
+    carried.layer_opacity = editor_->kind == InlineEditor::Kind::layer_opacity;
     return carried;
 }
 
 void GraphCanvasScene::restoreInlineEdit(const CarriedInlineEdit &carried) {
-    const bool opened = carried.layer   ? beginLayerNameEdit(carried.scope, carried.node, carried.port)
-                        : carried.label ? beginLabelEdit(carried.scope, carried.node)
-                                        : beginValueEdit(carried.scope, carried.node, carried.port);
+    const bool opened = carried.layer_opacity ? beginLayerOpacityEdit(carried.scope, carried.node, carried.port)
+                        : carried.layer       ? beginLayerNameEdit(carried.scope, carried.node, carried.port)
+                        : carried.label       ? beginLabelEdit(carried.scope, carried.node)
+                                              : beginValueEdit(carried.scope, carried.node, carried.port);
     if (!opened) return;
     setInlineEditText(carried.text);
     if (editor_ && editor_->widget != nullptr)
@@ -4429,6 +4495,22 @@ bool GraphCanvasScene::commitInlineEdit() {
         if (!row || name == row->name) return false;
         return submitLayerOps(scope, node,
                               graphCanvasSetLayerOps(model_->nodes(scope), scope, node, row->index, "name", name));
+    }
+    // NB-2c: a percent (a `%` after it is allowed), whole, 0..100; the same
+    // op the slider and the dock's spin send. What the layer holds sends
+    // nothing, and neither does what is no number.
+    if (kind == InlineEditor::Kind::layer_opacity) {
+        const auto row = layerRow(scope, node, port);
+        QString typed = text.trimmed();
+        if (typed.endsWith(QLatin1Char{'%'})) typed.chop(1);
+        bool numeric = false;
+        const double percent = typed.trimmed().toDouble(&numeric);
+        if (!row || row->opacity_driven || !numeric || !std::isfinite(percent)) return false;
+        const long whole = std::lround(std::clamp(percent, 0.0, 100.0));
+        if (whole == std::lround(row->opacity * 100.0)) return false;
+        return submitLayerOps(scope, node,
+                              graphCanvasSetLayerOps(model_->nodes(scope), scope, node, row->index, "opacity",
+                                                     static_cast<double>(whole) / 100.0));
     }
     nlohmann::json value;
     switch (value_kind) {
@@ -4971,6 +5053,62 @@ bool GraphCanvasScene::beginLayerNameEdit(const std::string &scope, const std::s
     return true;
 }
 
+bool GraphCanvasScene::beginLayerOpacityEdit(const std::string &scope, const std::string &stack,
+                                             const std::string &input) {
+    if (model_ == nullptr || !model_->canEdit() || GraphCanvasDrawing::layerScopeReadOnly(*model_, scope))
+        return false;
+    const auto row = layerRow(scope, stack, input);
+    if (!row || row->opacity_driven) return false;
+    // The slider's track: the part with no part of its own kind above it.
+    QGraphicsItem *anchor = nullptr;
+    for (QGraphicsItem *item : items())
+        if (nodeGraphItemKind(*item) == QLatin1String{GraphCanvasStackOpacityFieldItem} &&
+            (item->parentItem() == nullptr ||
+             nodeGraphItemKind(*item->parentItem()) != QLatin1String{GraphCanvasStackOpacityFieldItem}) &&
+            itemScope(*item) == scope && item->data(NodeGraphNameRole).toString() == qtext(stack) &&
+            item->data(GraphCanvasPortRole).toString() == qtext(input)) {
+            anchor = item;
+            break;
+        }
+    if (anchor == nullptr) return false;
+    closeEditor();
+    auto editor = std::make_unique<InlineEditor>();
+    editor->kind = InlineEditor::Kind::layer_opacity;
+    editor->scope = scope;
+    editor->node = stack;
+    editor->port = input;
+    auto *line = new QLineEdit;
+    line->setObjectName(QStringLiteral("pelican.graphCanvasLayerOpacity"));
+    line->setText(QString::number(std::lround(row->opacity * 100.0)));
+    line->setPlaceholderText(QObject::tr("0 to 100"));
+    line->setToolTip(QObject::tr("Opacity in percent: Enter sets it, Esc leaves it"));
+    line->selectAll();
+    editor->widget = line;
+    auto *proxy = addWidget(line);
+    proxy->setZValue(6.0);
+    const QRectF area = anchor->sceneBoundingRect();
+    line->resize(std::max<int>(64, static_cast<int>(area.width())),
+                 static_cast<int>(GraphCanvasDrawing::LayerSlimRowHeight + 2.0));
+    proxy->setPos(area.left(), area.center().y() - line->height() / 2.0);
+    proxy->setData(NodeGraphItemKindRole, QString::fromLatin1(GraphCanvasEditorItem));
+    proxy->setData(NodeGraphNameRole, qtext(stack));
+    proxy->setData(GraphCanvasPortRole, qtext(input));
+    proxy->setData(GraphCanvasZoneScopeRole, anchor->data(GraphCanvasZoneScopeRole));
+    editor->proxy = proxy;
+    editor->filter = std::make_unique<InlineEditFilter>([this](bool commit) {
+        QMetaObject::invokeMethod(
+            this, [this, commit] {
+                if (commit) commitInlineEdit();
+                else cancelInlineEdit();
+            },
+            Qt::QueuedConnection);
+    });
+    line->installEventFilter(editor->filter.get());
+    editor_ = std::move(editor);
+    line->setFocus();
+    return true;
+}
+
 void GraphCanvasScene::enterLayer(const std::string &scope, const std::string &stack, const std::string &input) {
     const auto row = layerRow(scope, stack, input);
     if (!row || model_ == nullptr) return;
@@ -5030,6 +5168,16 @@ bool GraphCanvasScene::pressStackPart(QGraphicsItem &item, const QGraphicsSceneM
     }
     const auto row = layerRow(scope, stack, input);
     if (!row) return true;
+    // NB-2c: the triangle opens or closes the row -- the placement's, so a
+    // read only stack's rows open too. Opening draws the node again, which
+    // deletes the item this press stands on: from the event loop.
+    if (kind == QLatin1String{GraphCanvasStackExpandItem}) {
+        const bool open = !layerRowOpen(scope, stack, input);
+        QMetaObject::invokeMethod(
+            this, [this, scope, stack, input, open] { (void)setLayerRowOpen(scope, stack, input, open); },
+            Qt::QueuedConnection);
+        return true;
+    }
     if (kind == QLatin1String{GraphCanvasStackEyeItem}) {
         // The dock's eye: one member of one element (graphCanvasSetLayerOps).
         if (editable)
@@ -5057,6 +5205,19 @@ bool GraphCanvasScene::pressStackPart(QGraphicsItem &item, const QGraphicsSceneM
         if (row->opacity_driven) return true;
         drag.opacity = true;
         drag.text = dynamic_cast<QGraphicsSimpleTextItem *>(&item);
+    } else if (kind == QLatin1String{GraphCanvasStackOpacityFieldItem}) {
+        // NB-2c: the stage's slider. Its width is a hundred percent.
+        if (row->opacity_driven) return true;
+        QGraphicsItem *track = &item;
+        while (track->parentItem() != nullptr &&
+               nodeGraphItemKind(*track->parentItem()) == QLatin1String{GraphCanvasStackOpacityFieldItem})
+            track = track->parentItem();
+        drag.opacity = true;
+        drag.span = std::max<qreal>(track->boundingRect().width() - 2.0, 1.0);
+        for (QGraphicsItem *child : track->childItems()) {
+            if (auto *text = dynamic_cast<QGraphicsSimpleTextItem *>(child)) drag.text = text;
+            else if (auto *bar = dynamic_cast<QGraphicsRectItem *>(child)) drag.bar = bar;
+        }
     } else {
         for (QGraphicsItem *each : items())
             if (nodeGraphItemKind(*each) == QLatin1String{GraphCanvasStackRowItem} && itemScope(*each) == scope &&
@@ -5136,12 +5297,19 @@ void GraphCanvasScene::followLayerDrag(const QPointF &at) {
     if (!drag.moved && QLineF{drag.press, at}.length() < 4.0) return;
     drag.moved = true;
     if (drag.opacity) {
-        // A hundred percent is 150 units of the hand, sideways; whole percents.
-        const double percent = std::clamp(std::round((drag.start + (at.x() - drag.press.x()) / 150.0) * 100.0), 0.0,
-                                          100.0);
+        // A hundred percent is 150 units of the hand, sideways (NB-2c: the
+        // stage slider's width); whole percents.
+        const double percent = std::clamp(
+            std::round((drag.start + (at.x() - drag.press.x()) / drag.span) * 100.0), 0.0, 100.0);
         drag.value = percent / 100.0;
+        if (drag.bar != nullptr) {
+            QRectF filled = drag.bar->rect();
+            filled.setWidth(drag.value * drag.span);
+            drag.bar->setRect(filled);
+        }
         if (drag.text != nullptr) {
-            drag.text->setText(QStringLiteral("%1%").arg(static_cast<int>(percent)));
+            drag.text->setText(drag.bar != nullptr ? QStringLiteral("%1 %").arg(static_cast<int>(percent))
+                                                   : QStringLiteral("%1%").arg(static_cast<int>(percent)));
             drag.text->setData(GraphCanvasValueTextRole, drag.text->text());
         }
         return;
@@ -5485,6 +5653,14 @@ void GraphCanvasScene::mouseDoubleClickEvent(QGraphicsSceneMouseEvent *event) {
                 layer_drag_.reset();
                 beginLayerNameEdit(itemScope(*item), item->data(NodeGraphNameRole).toString().toStdString(),
                                    item->data(GraphCanvasPortRole).toString().toStdString());
+                return;
+            }
+            // NB-2c: the stage's slider takes a typed percent.
+            if (kind == QLatin1String{GraphCanvasStackOpacityFieldItem}) {
+                event->accept();
+                layer_drag_.reset();
+                beginLayerOpacityEdit(itemScope(*item), item->data(NodeGraphNameRole).toString().toStdString(),
+                                      item->data(GraphCanvasPortRole).toString().toStdString());
                 return;
             }
             if (isNodeSurface(kind)) break;

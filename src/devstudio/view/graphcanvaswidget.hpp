@@ -14,12 +14,14 @@
 #include <QStringList>
 #include <QWidget>
 
+#include <algorithm>
 #include <filesystem>
 #include <functional>
 #include <map>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -126,6 +128,8 @@ inline constexpr int GraphCanvasLayerIndexRole = Qt::UserRole + 3155;
 inline constexpr int GraphCanvasLayerVisibleRole = Qt::UserRole + 3156;
 inline constexpr int GraphCanvasLayerPickedRole = Qt::UserRole + 3157;
 inline constexpr int GraphCanvasLayerReadOnlyRole = Qt::UserRole + 3158;
+// NB-2c: on a row's triangle (graph_stack_expand), whether the row is open.
+inline constexpr int GraphCanvasLayerOpenRole = Qt::UserRole + 3161;
 enum class GraphCanvasZoneAnchor : int {
     none = 0,
     left = 1,
@@ -230,6 +234,17 @@ inline constexpr auto GraphCanvasStackAddItem = "graph_stack_add";
 inline constexpr auto GraphCanvasStackDeleteItem = "graph_stack_delete";
 inline constexpr auto GraphCanvasStackNoteItem = "graph_stack_note";
 inline constexpr auto GraphCanvasStackDropLineItem = "graph_stack_drop_line";
+// NB-2c (design_node_bodies 2.3, a row opened): `graph_stack_expand` the
+// small triangle at a row's left (a press opens or closes the row); on an
+// open row's stage, `graph_stack_stage` its area, `graph_stack_opacity_field`
+// the 0..100 % slider (a sideways drag sets it, a double-click types it) --
+// or, while a line drives the opacity, `graph_stack_opacity_source`
+// ("<- <the line's node>") -- and `graph_stack_mask_source` the mask's.
+inline constexpr auto GraphCanvasStackExpandItem = "graph_stack_expand";
+inline constexpr auto GraphCanvasStackStageItem = "graph_stack_stage";
+inline constexpr auto GraphCanvasStackOpacityFieldItem = "graph_stack_opacity_field";
+inline constexpr auto GraphCanvasStackOpacitySourceItem = "graph_stack_opacity_source";
+inline constexpr auto GraphCanvasStackMaskSourceItem = "graph_stack_mask_source";
 // NB-3 (design_node_bodies 2.4): a canvas source's or filter's card --
 // `graph_card_thumb#<node>` its 64 px picture, `graph_card_value#<node>` a
 // filter's one number beside the heading. The pictures' frames (the card's,
@@ -316,17 +331,25 @@ struct GraphCanvasLayout {
     // node is drawn at. Open is never held (nor written). The engine wants
     // a place beside it, so a node is given one when its view is set.
     std::map<std::string, GraphCanvasNodeView> views;
+    // NB-2c (design_node_bodies 2.3): `layout.nodes.<id>.open_rows`, the
+    // layers (by input) whose row a canvas.stack draws opened, with its
+    // Opacity stage. Studio's alone, as the view is; none is never written.
+    std::map<std::string, std::vector<std::string>> open_rows;
     // Every other key of a node's object, which this canvas has no opinion
     // about and writes back as it read it.
     std::map<std::string, nlohmann::json> node_members;
 
     [[nodiscard]] bool empty() const noexcept {
         return nodes.empty() && reroutes.empty() && ties.empty() && views.empty() &&
-               node_members.empty();
+               open_rows.empty() && node_members.empty();
     }
     [[nodiscard]] GraphCanvasNodeView view(const std::string &id) const {
         const auto found = views.find(id);
         return found == views.end() ? GraphCanvasNodeView::open : found->second;
+    }
+    [[nodiscard]] bool rowOpen(const std::string &id, std::string_view input) const {
+        const auto found = open_rows.find(id);
+        return found != open_rows.end() && std::ranges::find(found->second, input) != found->second.end();
     }
 };
 
@@ -642,6 +665,18 @@ class GraphCanvasScene final : public QGraphicsScene {
     // The name of a row edited in place (a double-click on it); Esc sends
     // nothing.
     bool beginLayerNameEdit(const std::string &scope, const std::string &stack, const std::string &input);
+    // NB-2c (design_node_bodies 2.3): a row opened shows its Opacity stage.
+    // Which rows are open is the document's, `layout.nodes.<stack>.open_rows`,
+    // filed and sent as a view is (one `set_layout`, undone with it); a
+    // folded view keeps it for the session. False when nothing changed.
+    [[nodiscard]] bool layerRowOpen(const std::string &scope, const std::string &stack,
+                                    const std::string &input) const;
+    bool setLayerRowOpen(const std::string &scope, const std::string &stack, const std::string &input,
+                         bool open);
+    // The opacity typed in place on an open row's slider (a double-click on
+    // it): a percent, Enter sends it (graphCanvasSetLayerOps), Esc nothing.
+    // Not for a driven opacity or a read only stack.
+    bool beginLayerOpacityEdit(const std::string &scope, const std::string &stack, const std::string &input);
     // NB-3: Add filter ▸ on a row's right-click menu -- `op` between the
     // layer's source and the stack, as the dock's + Filter puts it
     // (graphCanvasAddFilterOps). Nothing for a read only stack.
@@ -861,6 +896,8 @@ class GraphCanvasScene final : public QGraphicsScene {
         std::string node;
         std::string port;
         QString text;
+        // NB-2c: a layer row's opacity, typed on its stage.
+        bool layer_opacity = false;
     };
     // N-6: the document's placement for one scope, and the bookkeeping that
     // keeps one gesture from becoming fifty edits. `sent` is the last payload
@@ -902,6 +939,12 @@ class GraphCanvasScene final : public QGraphicsScene {
     // NB-1: a folded view's (GL-1) node views, which no document keeps;
     // under foldedPositionKey's view key and the scope.
     std::map<std::pair<std::string, std::string>, GraphCanvasNodeView> folded_view_views_;
+    // NB-2c: a folded view's open rows, (view key | scope, stack) -> inputs.
+    std::map<std::pair<std::string, std::string>, std::vector<std::string>> folded_view_open_rows_;
+    // NB-2c: give the nodes of `ids` the scope has not placed a place where
+    // they are drawn (setNodeViews' rule), since the engine keeps a node's
+    // view and open rows only beside its place.
+    void placeForLayoutMember(const std::string &scope, const std::vector<std::string> &ids);
     std::map<std::string, ScopePlacement> placements_;
     QTimer *layout_timer_ = nullptr;
     // LP-4d1: the scopes the last draw drew (the one on screen first, then
@@ -948,6 +991,10 @@ class GraphCanvasScene final : public QGraphicsScene {
         double start = 1.0;
         double value = 1.0;
         QGraphicsSimpleTextItem *text = nullptr;
+        // NB-2c: the units of the hand a hundred percent is (the mark's 150,
+        // the stage slider's width), and the slider's filled part.
+        qreal span = 150.0;
+        QGraphicsRectItem *bar = nullptr;
         // The stack's rows where they stood at the press: their element of
         // `layers` and their box, top first.
         std::vector<std::pair<std::size_t, QRectF>> rows;

@@ -6,6 +6,12 @@
 // the layer's input (port role) and its element of `layers` (index role), and
 // the scene answers a press on it with the op list a model function builds
 // (graphcanvaslayerstack), as the Layers dock does.
+//
+// NB-2c: a row opened by the small triangle at its left draws its stage under
+// it -- the Opacity line (the `<input>.opacity` socket, and a slider or the
+// name of the node whose line drives it) and, for a masked layer, the Mask
+// line (its socket and the node it reads). A closed row, and every row of a
+// compact node, keeps the small socket of a line that ends there.
 
 #include "graphcanvasdrawing.hpp"
 
@@ -36,10 +42,19 @@ constexpr qreal BandHeight = 28.0;
 constexpr qreal BottomPadding = 4.0;
 constexpr qreal StackMinimumWidth = 228.0;
 // Where the parts of an open row stand, from the node's left edge.
-constexpr qreal EyeLeft = 13.0;
+constexpr qreal ExpandCentre = 11.5;
+constexpr qreal ExpandSize = 11.0;
+constexpr qreal EyeLeft = 19.0;
 constexpr qreal EyeSize = 18.0;
-constexpr qreal ThumbLeft = 36.0;
-constexpr qreal NameLeft = 76.0;
+constexpr qreal ThumbLeft = 38.0;
+constexpr qreal NameLeft = 78.0;
+// NB-2c: the stage of an open row -- its words at the left, the slider (or
+// the line's name) from FieldLeft to the right edge less FieldRight.
+constexpr qreal StageLabelLeft = 18.0;
+constexpr qreal FieldLeft = 78.0;
+constexpr qreal FieldRight = 12.0;
+constexpr qreal FieldHeight = 15.0;
+constexpr qreal StagePadding = 3.0;
 // A row's second and third sockets (`<input>.opacity`, the mask) stand this
 // far apart, a size down from the layer's.
 constexpr qreal ExtraSocketStep = 9.0;
@@ -51,15 +66,21 @@ const Row *rowFor(const std::vector<Row> &rows, const QString &port) {
 }
 
 // The sockets one row draws: its layer's, and `<input>.opacity` and the mask
-// only while a line ends on them (design 2.3).
+// only while a line ends on them (design 2.3). NB-2c: an open row of an open
+// node draws those two on its stage instead, line or none.
 struct RowSockets {
     const Row *layer = nullptr;
     std::vector<const Row *> extras;
 };
 
+bool stageShown(const Node &entry, const LayerLine &line) {
+    return line.open && entry.view == GraphCanvasNodeView::open;
+}
+
 RowSockets socketsOf(const Node &entry, const LayerLine &line) {
     RowSockets sockets;
     sockets.layer = rowFor(entry.inputs, qtext(line.row.input));
+    if (stageShown(entry, line)) return sockets;
     if (line.row.opacity_driven)
         if (const Row *opacity = rowFor(entry.inputs, qtext(graphCanvasLayerOpacityPort(line.row.input)));
             opacity != nullptr && opacity->connected)
@@ -79,6 +100,18 @@ qreal compositeHeight(const Node &entry) {
 qreal slimRowHeight(const Node &entry, const LayerLine &line) {
     return LayerSlimRowHeight + ExtraSocketStep * static_cast<qreal>(socketsOf(entry, line).extras.size());
 }
+
+// NB-2c: the stage's lines -- Opacity, and Mask when the layer has one.
+std::size_t stageLines(const LayerLine &line) { return line.row.mask.empty() ? 1 : 2; }
+
+qreal stageHeight(const Node &entry, const LayerLine &line) {
+    if (!stageShown(entry, line)) return 0.0;
+    return LayerStageLineHeight * static_cast<qreal>(stageLines(line)) + 2.0 * StagePadding;
+}
+
+qreal openRowHeight(const Node &entry, const LayerLine &line) { return LayerRowHeight + stageHeight(entry, line); }
+
+QString percentText(double opacity) { return QStringLiteral("%1 %").arg(std::lround(opacity * 100.0)); }
 
 QString opacityText(double opacity) {
     const long percent = std::lround(opacity * 100.0);
@@ -243,6 +276,128 @@ void addName(const Builder &builder, QGraphicsItem &item, const Node &entry, con
     name->setData(GraphCanvasLabelRole, full);
 }
 
+// NB-2c: the small triangle at an open node's row's left: closed or open.
+void addExpand(const Builder &builder, QGraphicsItem &item, const Node &entry, const LayerLine &line,
+               qreal centre_y) {
+    auto *area = new QGraphicsRectItem(QRectF{-ExpandSize / 2.0, -ExpandSize / 2.0, ExpandSize, ExpandSize}, &item);
+    area->setPos(ExpandCentre, centre_y);
+    area->setPen(Qt::NoPen);
+    area->setBrush(QColor{0, 0, 0, 0});
+    area->setToolTip(line.open ? QObject::tr("Close the row") : QObject::tr("Open the row: its opacity and mask"));
+    tagRowPart(builder, *area, entry, line, GraphCanvasStackExpandItem);
+    area->setData(GraphCanvasLayerOpenRole, line.open);
+    QPainterPath arrow;
+    if (line.open) {
+        arrow.moveTo(-3.5, -2.0);
+        arrow.lineTo(3.5, -2.0);
+        arrow.lineTo(0.0, 2.5);
+    } else {
+        arrow.moveTo(-2.0, -3.5);
+        arrow.lineTo(2.5, 0.0);
+        arrow.lineTo(-2.0, 3.5);
+    }
+    arrow.closeSubpath();
+    auto *drawn = new QGraphicsPathItem(arrow, area);
+    drawn->setPen(Qt::NoPen);
+    drawn->setBrush(builder.theme().canvas.dim_text);
+    tagRowPart(builder, *drawn, entry, line, GraphCanvasStackExpandItem);
+    drawn->setData(GraphCanvasLayerOpenRole, line.open);
+}
+
+// NB-2c: `text`, cut to `room` at the right.
+QString elided(const QFontMetricsF &metrics, const QString &text, qreal room) {
+    return metrics.horizontalAdvance(text) > room
+               ? metrics.elidedText(text, Qt::ElideRight, std::max<qreal>(room, 12.0))
+               : text;
+}
+
+// NB-2c: "<- <node>", where the line into the stage's socket comes from.
+void addLineSource(const Builder &builder, QGraphicsItem &item, const Node &entry, const LayerLine &line,
+                   const char *kind, const QString &from, const QString &tip, qreal right, qreal centre_y) {
+    const QFontMetricsF &metrics = builder.rowMetrics();
+    const QString full = QString::fromUtf8("\xE2\x86\x90 ") + from;
+    auto *text = addText(builder, item, elided(metrics, full, right - FieldLeft), builder.theme().canvas.heading_text);
+    text->setPos(FieldLeft, centre_y - metrics.height() / 2.0);
+    text->setToolTip(tip);
+    tagRowPart(builder, *text, entry, line, kind);
+    text->setData(GraphCanvasValueTextRole, full);
+}
+
+// NB-2c: an open row's stage, from `top` down: the Opacity line (its socket,
+// and the slider or the driving line's node) and the mask's.
+void addStage(Builder &builder, QGraphicsItem &item, const Node &entry, const LayerLine &line, qreal top) {
+    const StudioTheme &theme = builder.theme();
+    const QFontMetricsF &metrics = builder.rowMetrics();
+    const qreal width = entry.width;
+    auto *stage = new QGraphicsRectItem(QRectF{0.0, top, width, stageHeight(entry, line)}, &item);
+    stage->setPen(Qt::NoPen);
+    QColor tint = theme.canvas.pill_bg;
+    tint.setAlphaF(0.35F);
+    stage->setBrush(tint);
+    stage->setToolTip(QObject::tr("%1: its opacity and mask").arg(qtext(line.row.name)));
+    tagRowPart(builder, *stage, entry, line, GraphCanvasStackStageItem);
+
+    const qreal right = width - FieldRight;
+    const auto label = [&](const QString &words, qreal centre_y) {
+        auto *said = addText(builder, item, words, theme.canvas.dim_text);
+        said->setPos(StageLabelLeft, centre_y - metrics.height() / 2.0);
+        tagRowPart(builder, *said, entry, line, GraphCanvasStackStageItem);
+    };
+
+    // Opacity: `<input>.opacity`'s socket takes a value line.
+    qreal centre_y = top + StagePadding + LayerStageLineHeight / 2.0;
+    if (const Row *opacity = rowFor(entry.inputs, qtext(graphCanvasLayerOpacityPort(line.row.input))))
+        builder.addSocket(item, entry, *opacity, QPointF{0.0, centre_y}, "input");
+    label(QObject::tr("Opacity"), centre_y);
+    if (line.row.opacity_driven) {
+        addLineSource(builder, item, entry, line, GraphCanvasStackOpacitySourceItem,
+                      line.opacity_from.isEmpty() ? QObject::tr("a line") : line.opacity_from,
+                      QObject::tr("A value line from %1 drives the opacity (%2 stored)")
+                          .arg(line.opacity_from, percentText(line.row.opacity)),
+                      right, centre_y);
+    } else {
+        // The slider: the track, its filled part and the percent on it.
+        const qreal field_width = std::max<qreal>(right - FieldLeft, 40.0);
+        auto *track = new QGraphicsPathItem(roundedEntityPath(field_width, FieldHeight, 4.0), &item);
+        track->setPos(FieldLeft, centre_y - FieldHeight / 2.0);
+        track->setBrush(theme.canvas.pill_bg);
+        track->setPen(QPen{theme.canvas.node_border, 0.8});
+        track->setToolTip(entry.layers_read_only
+                              ? QObject::tr("Opacity %1 (an imported canvas: read only)")
+                                    .arg(percentText(line.row.opacity))
+                              : QObject::tr("Opacity %1: drag sideways to change it, double-click to type it")
+                                    .arg(percentText(line.row.opacity)));
+        tagRowPart(builder, *track, entry, line, GraphCanvasStackOpacityFieldItem);
+        track->setData(GraphCanvasValueTextRole, percentText(line.row.opacity));
+        QColor fill = theme.canvas.edge_selected;
+        fill.setAlphaF(0.45F);
+        auto *bar = new QGraphicsRectItem(
+            QRectF{1.0, 1.0, std::clamp(line.row.opacity, 0.0, 1.0) * (field_width - 2.0), FieldHeight - 2.0}, track);
+        bar->setPen(Qt::NoPen);
+        bar->setBrush(fill);
+        tagRowPart(builder, *bar, entry, line, GraphCanvasStackOpacityFieldItem);
+        auto *text = addText(builder, *track, percentText(line.row.opacity), theme.canvas.heading_text);
+        text->setPos((field_width - metrics.horizontalAdvance(text->text())) / 2.0,
+                     (FieldHeight - metrics.height()) / 2.0);
+        tagRowPart(builder, *text, entry, line, GraphCanvasStackOpacityFieldItem);
+        text->setData(GraphCanvasValueTextRole, text->text());
+        if (entry.layers_read_only) track->setOpacity(0.6);
+    }
+
+    // Mask: the layer's mask input, the line into it or none.
+    if (line.row.mask.empty()) return;
+    centre_y += LayerStageLineHeight;
+    if (const Row *mask = rowFor(entry.inputs, qtext(line.row.mask)))
+        builder.addSocket(item, entry, *mask, QPointF{0.0, centre_y}, "input");
+    label(QObject::tr("Mask"), centre_y);
+    addLineSource(builder, item, entry, line, GraphCanvasStackMaskSourceItem,
+                  line.mask_from.isEmpty() ? QObject::tr("no line") : line.mask_from,
+                  line.mask_from.isEmpty() ? QObject::tr("The mask (%1) has no line").arg(qtext(line.row.mask))
+                                           : QObject::tr("Masked by %1 (input %2)")
+                                                 .arg(line.mask_from, qtext(line.row.mask)),
+                  right, centre_y);
+}
+
 class LayerStackNodeBody final : public NodeBody {
   public:
     void measure(Node &entry, const Builder &builder) const override {
@@ -263,10 +418,12 @@ class LayerStackNodeBody final : public NodeBody {
                 row.shown = entry.view != GraphCanvasNodeView::minimal;
             }
         switch (entry.view) {
-        case GraphCanvasNodeView::open:
-            entry.height = GraphCanvasHeaderHeight + compositeHeight(entry) +
-                           LayerRowHeight * static_cast<qreal>(entry.layers.size()) + BandHeight + BottomPadding;
+        case GraphCanvasNodeView::open: {
+            qreal rows = 0.0;
+            for (const auto &line : entry.layers) rows += openRowHeight(entry, line);
+            entry.height = GraphCanvasHeaderHeight + compositeHeight(entry) + rows + BandHeight + BottomPadding;
             break;
+        }
         case GraphCanvasNodeView::compact: {
             qreal rows = 0.0;
             for (const auto &line : entry.layers) rows += slimRowHeight(entry, line);
@@ -335,10 +492,12 @@ class LayerStackNodeBody final : public NodeBody {
         // Open: the rows, top first.
         rule.setAlphaF(0.45F);
         for (const auto &line : entry.layers) {
-            addRowArea(builder, item, entry, line, QRectF{0.0, top, width, LayerRowHeight});
+            const qreal row_height = openRowHeight(entry, line);
+            addRowArea(builder, item, entry, line, QRectF{0.0, top, width, row_height});
             const auto sockets = socketsOf(entry, line);
             const qreal centre_y = top + LayerRowHeight / 2.0;
             addRowSockets(builder, item, entry, line, sockets.extras.empty() ? centre_y : top + 11.0);
+            addExpand(builder, item, entry, line, centre_y);
             addEye(builder, item, entry, line, QPointF{EyeLeft + EyeSize / 2.0 - 3.0, centre_y});
             addThumbFrame(builder, item, entry, line,
                           QRectF{ThumbLeft, top + (LayerRowHeight - ThumbSize) / 2.0, ThumbSize, ThumbSize});
@@ -357,10 +516,11 @@ class LayerStackNodeBody final : public NodeBody {
                 right -= advance + MarkGap;
             }
             addName(builder, item, entry, line, NameLeft, right - NameLeft - 4.0, centre_y);
-            auto *between = new QGraphicsLineItem(QLineF{8.0, top + LayerRowHeight, width - 8.0, top + LayerRowHeight},
-                                                  &item);
+            if (stageShown(entry, line)) addStage(builder, item, entry, line, top + LayerRowHeight);
+            auto *between =
+                new QGraphicsLineItem(QLineF{8.0, top + row_height, width - 8.0, top + row_height}, &item);
             between->setPen(QPen{rule, 0.6});
-            top += LayerRowHeight;
+            top += row_height;
         }
 
         // The band: + ▾, the bin, `+ layer` (a line dropped on it is a layer

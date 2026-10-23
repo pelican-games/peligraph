@@ -184,6 +184,17 @@ Node Builder::prepareNode(const GraphCanvasModel &model, const GraphCanvasNode &
             }
             line.enters = (row.kind == "group" && !row.source.empty()) ||
                           (row.kind == "import" && !row.definition.empty());
+            // NB-2c: the open rows, and the nodes the stage names.
+            line.open = open_rows_ && open_rows_(node_scope, node.id, row.input);
+            const auto heading_of = [&](const std::string &id) {
+                const auto found = std::ranges::find(nodes, id, &GraphCanvasNode::id);
+                return found == nodes.end() ? qtext(id) : qtext(found->heading());
+            };
+            const auto opacity_port = graphCanvasLayerOpacityPort(row.input);
+            if (const auto port = std::ranges::find(node.inputs, opacity_port, &GraphCanvasPort::port);
+                port != node.inputs.end() && port->connected)
+                line.opacity_from = heading_of(port->source_node);
+            if (!row.mask_source.empty()) line.mask_from = heading_of(row.mask_source);
             line.row = std::move(row);
             entry.layers.push_back(std::move(line));
         }

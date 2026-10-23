@@ -85,6 +85,13 @@ struct LayerLine {
     QString blend;
     // A group or an import: `›` goes into it.
     bool enters = false;
+    // NB-2c: the row is open (`layout.nodes.<stack>.open_rows`): its Opacity
+    // stage is drawn under it. The heading of the node whose line drives
+    // `<input>.opacity`, and of the one the mask is read from (empty when
+    // no line ends there).
+    bool open = false;
+    QString opacity_from;
+    QString mask_from;
 };
 
 // Borrowed from the model's node snapshot for the duration of one rebuild.
@@ -174,6 +181,9 @@ inline constexpr qreal CardPictureMargin = 6.0;
 // (a 32 px thumbnail and its margin), compact ones a socket row's height.
 inline constexpr qreal LayerRowHeight = 40.0;
 inline constexpr qreal LayerSlimRowHeight = 21.0;
+// NB-2c: an open row's stage -- its Opacity line, and its Mask line when the
+// layer has a mask -- is this tall a line, under the row.
+inline constexpr qreal LayerStageLineHeight = 24.0;
 
 // GL-1b: `extra_nodes` and `extra_edges` go into the same one placement after
 // the graph's own -- the root's folded nodes and the lines the plan implies --
@@ -303,6 +313,10 @@ class Builder {
     // NB-2b: the layer row picked on the canvas (its stack's scope and id,
     // and the layer's input), drawn picked.
     void setPickedLayer(std::string scope, std::string stack, std::string input);
+    // NB-2c: whether a stack's row is open (scope, stack, layer input); none
+    // draws every row closed.
+    using OpenRows = std::function<bool(const std::string &, const std::string &, const std::string &)>;
+    void setOpenRows(OpenRows open_rows) { open_rows_ = std::move(open_rows); }
     // LP-4d1: draw inside a zone's body item instead of at the top of the
     // scene. Positions are then the body's own, and every item carries the
     // definition in GraphCanvasZoneScopeRole.
@@ -395,6 +409,8 @@ class Builder {
     std::string picked_layer_stack_;
     std::string picked_layer_input_;
     mutable std::map<std::string, bool, std::less<>> read_only_scopes_;
+    // NB-2c.
+    OpenRows open_rows_;
     // NB-3.
     GraphCanvasThumbnails *thumbnails_ = nullptr;
 };

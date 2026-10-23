@@ -17277,3 +17277,371 @@ TEST_CASE("NB-3 a number a value line drives is drawn at its rest value while no
     CHECK(nb3State(nb3Frame(scene, PelicanStudio::GraphCanvasStackCompositeItem, QStringLiteral("hud"))) ==
           QStringLiteral("ready"));
 }
+
+// --- NB-2c (design_node_bodies 2.3, a row opened): a stack's row opened by
+// its triangle shows the Opacity stage -- the `<input>.opacity` socket, the
+// slider, the line's node -- and the mask's; which rows are open is the
+// document's placement.
+
+namespace {
+
+// nb2bDocument, with `fade` (a value no line reads yet) and Card masked by
+// `mask_fill`.
+Json nb2cDocument() {
+    Json document = nb2bDocument();
+    for (auto &node : document.at("nodes"))
+        if (node.at("id") == "hud") {
+            node["parameters"]["layers"][1]["mask"] = "card_mask";
+            node["inputs"]["card_mask"] = {{"node", "mask_fill"}, {"port", "layer"}};
+        }
+    document["nodes"].push_back(nb2bShape("mask_shape", "shape.rect"));
+    document["nodes"].push_back(nb2bFill("mask_fill", "mask_shape"));
+    document["nodes"].push_back(Json{{"id", "fade"}, {"op", "value.constant"}, {"parameters", {{"value", 0.3}}},
+                                     {"outputs", Json::array({"value"})}});
+    return document;
+}
+
+// The slider's track on `input`'s stage (the field's part with no field
+// above it).
+QGraphicsItem *nb2cTrack(QGraphicsScene &scene, const QString &stack, const QString &input) {
+    for (QGraphicsItem *item : scene.items())
+        if (item->data(PelicanStudio::NodeGraphItemKindRole).toString() ==
+                QLatin1String{PelicanStudio::GraphCanvasStackOpacityFieldItem} &&
+            item->data(PelicanStudio::NodeGraphNameRole).toString() == stack &&
+            item->data(PelicanStudio::GraphCanvasPortRole).toString() == input &&
+            (item->parentItem() == nullptr ||
+             item->parentItem()->data(PelicanStudio::NodeGraphItemKindRole).toString() !=
+                 QLatin1String{PelicanStudio::GraphCanvasStackOpacityFieldItem}))
+            return item;
+    return nullptr;
+}
+
+// The triangle of `input`'s row, pressed; the one set_layout it sent,
+// committed. Returns the layout it wrote.
+Json nb2cPressTriangle(ZoneHarness &h, const QString &stack, const QString &input) {
+    QGraphicsItem *triangle = nb2bPart(h.scene, PelicanStudio::GraphCanvasStackExpandItem, stack, input);
+    REQUIRE(triangle != nullptr);
+    nb2bClick(h.scene, centreOf(triangle));
+    const Json ops = h.commit();
+    REQUIRE(ops.size() == 1);
+    REQUIRE(ops.at(0).at("op") == "set_layout");
+    return ops.at(0).at("layout");
+}
+
+Json nb2cNode(const Json &document, const std::string &id) {
+    for (const auto &node : document.at("nodes"))
+        if (node.value("id", std::string{}) == id) return node;
+    return Json{};
+}
+
+QString nb2cHeading(const GraphCanvasModel &model, const std::string &id) {
+    const auto nodes = model.nodes("");
+    const auto found = std::ranges::find(nodes, id, &PelicanStudio::GraphCanvasNode::id);
+    REQUIRE(found != nodes.end());
+    return QString::fromStdString(found->heading());
+}
+
+QString nb2cFrom(const QString &name) { return QString::fromUtf8("\xE2\x86\x90 ") + name; }
+
+// The stage's own area under `input`'s row (not the words on it).
+QGraphicsItem *nb2cStage(QGraphicsScene &scene, const QString &stack, const QString &input) {
+    for (QGraphicsItem *item : scene.items())
+        if (item->data(PelicanStudio::NodeGraphItemKindRole).toString() ==
+                QLatin1String{PelicanStudio::GraphCanvasStackStageItem} &&
+            item->data(PelicanStudio::NodeGraphNameRole).toString() == stack &&
+            item->data(PelicanStudio::GraphCanvasPortRole).toString() == input &&
+            dynamic_cast<QGraphicsRectItem *>(item) != nullptr)
+            return item;
+    return nullptr;
+}
+
+} // namespace
+
+TEST_CASE("NB-2c a row opened shows its Opacity stage; a value line dropped on its socket drives that layer's opacity",
+          "[devstudio][graph-canvas][scene][nb2c]") {
+    (void)application();
+    ZoneHarness h{nb2cDocument()};
+    nb2bOpen(h);
+    auto &scene = h.scene;
+    const QString hud = QStringLiteral("hud");
+    const QString card = QStringLiteral("card_fill");
+    // Closed: no stage, and no socket for Card's opacity (no line ends there).
+    CHECK(nb2cStage(scene, hud, card) == nullptr);
+    CHECK(socketItem(scene, hud, QStringLiteral("card_fill.opacity"), QStringLiteral("input")) == nullptr);
+    const qreal closed_height = nodeHeight(scene, hud);
+
+    // The triangle opens Card's row: the stage under it, a line taller with
+    // the mask's.
+    (void)nb2cPressTriangle(h, hud, card);
+    REQUIRE(scene.layerRowOpen("", "hud", "card_fill"));
+    QGraphicsItem *stage = nb2cStage(scene, hud, card);
+    REQUIRE(stage != nullptr);
+    CHECK(nodeHeight(scene, hud) > closed_height + PelicanStudio::GraphCanvasDrawing::LayerStageLineHeight);
+    QGraphicsItem *row = nb2bPart(scene, PelicanStudio::GraphCanvasStackRowItem, hud, card);
+    REQUIRE(row != nullptr);
+    CHECK(row->sceneBoundingRect().height() > PelicanStudio::GraphCanvasDrawing::LayerRowHeight);
+    CHECK(nb2bPart(scene, PelicanStudio::GraphCanvasStackExpandItem, hud, card)
+              ->data(PelicanStudio::GraphCanvasLayerOpenRole)
+              .toBool());
+    // The stage's left edge: its first socket is `card_fill.opacity`, the
+    // second the mask's. (Found by where it is drawn, not by its port.)
+    const QRectF stage_box = stage->sceneBoundingRect();
+    QGraphicsItem *opacity = nullptr;
+    for (QGraphicsItem *item : scene.items())
+        if (item->data(PelicanStudio::NodeGraphItemKindRole).toString() ==
+                QLatin1String{PelicanStudio::GraphCanvasSocketItem} &&
+            item->data(PelicanStudio::NodeGraphNameRole).toString() == hud &&
+            stage_box.contains(centreOf(item)) && (opacity == nullptr || centreOf(item).y() < centreOf(opacity).y()))
+            opacity = item;
+    REQUIRE(opacity != nullptr);
+    CHECK(opacity->data(PelicanStudio::GraphCanvasPortRole).toString() == QStringLiteral("card_fill.opacity"));
+    CHECK(centreOf(opacity).y() > stage_box.top());
+    CHECK(centreOf(opacity).y() < stage_box.bottom());
+    CHECK(std::abs(centreOf(opacity).x() - stage_box.left()) < 0.01);
+    QGraphicsItem *mask = socketItem(scene, hud, QStringLiteral("card_mask"), QStringLiteral("input"));
+    REQUIRE(mask != nullptr);
+    CHECK(centreOf(mask).y() > centreOf(opacity).y());
+    CHECK(centreOf(mask).y() < stage_box.bottom());
+    CHECK(nb2bPart(scene, PelicanStudio::GraphCanvasStackMaskSourceItem, hud, card)
+              ->data(PelicanStudio::GraphCanvasValueTextRole)
+              .toString() == nb2cFrom(nb2cHeading(h.model, "mask_fill")));
+    QGraphicsPathItem *mask_line =
+        edgeItem(scene, QStringLiteral("mask_fill"), QStringLiteral("layer"), hud, QStringLiteral("card_mask"));
+    REQUIRE(mask_line != nullptr);
+    CHECK(QLineF{nb1PathEnd(*mask_line, true), centreOf(mask)}.length() < 0.01);
+    // No line yet: the slider, at Card's 80 %.
+    QGraphicsItem *track = nb2cTrack(scene, hud, card);
+    REQUIRE(track != nullptr);
+    CHECK(track->data(PelicanStudio::GraphCanvasValueTextRole).toString() == QStringLiteral("80 %"));
+    CHECK(nb2bPart(scene, PelicanStudio::GraphCanvasStackOpacitySourceItem, hud, card) == nullptr);
+    // Another layer's row stays closed.
+    CHECK(nb2cStage(scene, hud, QStringLiteral("bg_fill")) == nullptr);
+
+    // fade's line let go on the socket: Card's opacity, nobody else's.
+    QGraphicsItem *fade = socketItem(scene, QStringLiteral("fade"), QStringLiteral("value"), QStringLiteral("output"));
+    REQUIRE(fade != nullptr);
+    drag(scene, centreOf(fade), centreOf(opacity));
+    (void)h.commit();
+    const Json inputs = nb2cNode(h.document, "hud").at("inputs");
+    REQUIRE(inputs.contains("card_fill.opacity"));
+    CHECK(inputs.at("card_fill.opacity") == Json{{"node", "fade"}, {"port", "value"}});
+    CHECK_FALSE(inputs.contains("bg_fill.opacity"));
+    CHECK(inputs.at("dot_fill.opacity") == Json{{"node", "pulse"}, {"port", "value"}});
+    // The slider gives way to the line's node; the line ends on the socket.
+    CHECK(nb2cTrack(scene, hud, card) == nullptr);
+    QGraphicsItem *source = nb2bPart(scene, PelicanStudio::GraphCanvasStackOpacitySourceItem, hud, card);
+    REQUIRE(source != nullptr);
+    CHECK(source->data(PelicanStudio::GraphCanvasValueTextRole).toString() ==
+          nb2cFrom(nb2cHeading(h.model, "fade")));
+    opacity = socketItem(scene, hud, QStringLiteral("card_fill.opacity"), QStringLiteral("input"));
+    REQUIRE(opacity != nullptr);
+    QGraphicsPathItem *line =
+        edgeItem(scene, QStringLiteral("fade"), QStringLiteral("value"), hud, QStringLiteral("card_fill.opacity"));
+    REQUIRE(line != nullptr);
+    CHECK(QLineF{nb1PathEnd(*line, true), centreOf(opacity)}.length() < 0.01);
+    // A driven opacity is not typed: a double-click opens nothing.
+    click(scene, centreOf(source), QEvent::GraphicsSceneMouseDoubleClick);
+    CHECK_FALSE(scene.editingInline());
+    requireNoEdit(h.model);
+}
+
+TEST_CASE("NB-2c the stage's slider: a drag from 100 % is one edit when let go; a typed percent is Enter's, not Esc's",
+          "[devstudio][graph-canvas][scene][nb2c]") {
+    (void)application();
+    ZoneHarness h{nb2cDocument()};
+    nb2bOpen(h);
+    auto &scene = h.scene;
+    const QString hud = QStringLiteral("hud");
+    const QString bg = QStringLiteral("bg_fill");
+    // Background is at 100 %: no mark on its row (NB-2b), so the stage is
+    // where it is dragged.
+    CHECK(nb2bPart(scene, PelicanStudio::GraphCanvasStackOpacityItem, hud, bg) == nullptr);
+    REQUIRE(scene.setLayerRowOpen("", "hud", "bg_fill", true));
+    (void)h.commit();
+    QGraphicsItem *track = nb2cTrack(scene, hud, bg);
+    REQUIRE(track != nullptr);
+    CHECK(track->data(PelicanStudio::GraphCanvasValueTextRole).toString() == QStringLiteral("100 %"));
+
+    // 100 % to 40 %: six tenths of the slider to the left. Nothing goes while
+    // the hand is down; one edit when it lets go.
+    const qreal span = track->sceneBoundingRect().width() - 2.0;
+    const QPointF grab = centreOf(track);
+    const QPointF to = grab - QPointF{0.6 * span, 0.0};
+    QGraphicsSceneMouseEvent press{QEvent::GraphicsSceneMousePress};
+    press.setScenePos(grab);
+    press.setButton(Qt::LeftButton);
+    press.setButtons(Qt::LeftButton);
+    QApplication::sendEvent(&scene, &press);
+    for (int step = 1; step <= 4; ++step) {
+        QGraphicsSceneMouseEvent move{QEvent::GraphicsSceneMouseMove};
+        move.setScenePos(grab + (to - grab) * (step / 4.0));
+        move.setButtons(Qt::LeftButton);
+        QApplication::sendEvent(&scene, &move);
+    }
+    QCoreApplication::processEvents();
+    requireNoEdit(h.model);
+    QGraphicsSceneMouseEvent release{QEvent::GraphicsSceneMouseRelease};
+    release.setScenePos(to);
+    release.setButton(Qt::LeftButton);
+    QApplication::sendEvent(&scene, &release);
+    QCoreApplication::processEvents();
+    auto expected = PelicanStudio::graphCanvasSetLayerOps(h.model.nodes(""), "", "hud", 0, "opacity", 0.4);
+    CHECK(h.commit() == expected);
+    CHECK(nb2cNode(h.document, "hud").at("parameters").at("layers").at(0).at("opacity") == 0.4);
+    track = nb2cTrack(scene, hud, bg);
+    REQUIRE(track != nullptr);
+    CHECK(track->data(PelicanStudio::GraphCanvasValueTextRole).toString() == QStringLiteral("40 %"));
+    // A press and a release in place sends nothing.
+    nb2bClick(scene, centreOf(track));
+    requireNoEdit(h.model);
+
+    // A double-click types it: 25 and Enter is 0.25.
+    click(scene, centreOf(track), QEvent::GraphicsSceneMouseDoubleClick);
+    REQUIRE(scene.editingInline());
+    CHECK(scene.inlineEditText() == QStringLiteral("40"));
+    scene.setInlineEditText(QStringLiteral("25"));
+    expected = PelicanStudio::graphCanvasSetLayerOps(h.model.nodes(""), "", "hud", 0, "opacity", 0.25);
+    typeKey(editorWidget(scene), Qt::Key_Return);
+    REQUIRE_FALSE(scene.editingInline());
+    CHECK(h.commit() == expected);
+    CHECK(nb2cNode(h.document, "hud").at("parameters").at("layers").at(0).at("opacity") == 0.25);
+    // Esc leaves it as it is.
+    track = nb2cTrack(scene, hud, bg);
+    REQUIRE(track != nullptr);
+    click(scene, centreOf(track), QEvent::GraphicsSceneMouseDoubleClick);
+    REQUIRE(scene.editingInline());
+    scene.setInlineEditText(QStringLiteral("60"));
+    typeKey(editorWidget(scene), Qt::Key_Escape);
+    REQUIRE_FALSE(scene.editingInline());
+    requireNoEdit(h.model);
+    CHECK(nb2cNode(h.document, "hud").at("parameters").at("layers").at(0).at("opacity") == 0.25);
+}
+
+TEST_CASE("NB-2c the open rows are the placement's open_rows: undone with it, kept by a saved and reopened document",
+          "[devstudio][graph-canvas][scene][nb2c][layout-persistence]") {
+    (void)application();
+    ZoneHarness h{nb2cDocument()};
+    nb2bOpen(h);
+    auto &scene = h.scene;
+    const QString hud = QStringLiteral("hud");
+    auto layout = nb2cPressTriangle(h, hud, QStringLiteral("card_fill"));
+    CHECK(layout.at("nodes").at("hud").at("open_rows") == Json::array({"card_fill"}));
+    CHECK(layout.at("nodes").at("hud").contains("x"));
+    layout = nb2cPressTriangle(h, hud, QStringLiteral("dot_fill"));
+    CHECK(layout.at("nodes").at("hud").at("open_rows") == Json::array({"card_fill", "dot_fill"}));
+    REQUIRE(h.document.contains("layout"));
+    CHECK(h.document.at("layout").at("nodes").at("hud").at("open_rows") == Json::array({"card_fill", "dot_fill"}));
+
+    // Opened again, from what the engine holds: the same rows open.
+    {
+        ZoneHarness reopened{h.document};
+        nb2bOpen(reopened);
+        CHECK(reopened.scene.layerRowOpen("", "hud", "card_fill"));
+        CHECK(reopened.scene.layerRowOpen("", "hud", "dot_fill"));
+        CHECK_FALSE(reopened.scene.layerRowOpen("", "hud", "bg_fill"));
+        CHECK(nb2cStage(reopened.scene, hud, QStringLiteral("card_fill")) !=
+              nullptr);
+        CHECK(nb2cStage(reopened.scene, hud, QStringLiteral("bg_fill")) ==
+              nullptr);
+    }
+
+    // Undo is the placement edit back: Dot's row closes, Card's stays.
+    REQUIRE(h.model.canUndo());
+    scene.undoEdit();
+    h.commit();
+    CHECK_FALSE(scene.layerRowOpen("", "hud", "dot_fill"));
+    CHECK(scene.layerRowOpen("", "hud", "card_fill"));
+    CHECK(nb2cStage(scene, hud, QStringLiteral("dot_fill")) == nullptr);
+    // The triangle closes the last one: no open_rows written at all.
+    layout = nb2cPressTriangle(h, hud, QStringLiteral("card_fill"));
+    CHECK_FALSE(layout.at("nodes").at("hud").contains("open_rows"));
+    CHECK(nb2cStage(scene, hud, QStringLiteral("card_fill")) == nullptr);
+}
+
+TEST_CASE("NB-2c a line into a layer's opacity stays on its row however the row or the node is folded",
+          "[devstudio][graph-canvas][scene][nb2c]") {
+    (void)application();
+    ZoneHarness h{nb2cDocument()};
+    nb2bOpen(h);
+    auto &scene = h.scene;
+    const QString hud = QStringLiteral("hud");
+    const QString dot = QStringLiteral("dot_fill");
+    const QString port = QStringLiteral("dot_fill.opacity");
+    const auto line_end = [&] {
+        QGraphicsPathItem *line = edgeItem(scene, QStringLiteral("pulse"), QStringLiteral("value"), hud, port);
+        REQUIRE(line != nullptr);
+        return nb1PathEnd(*line, true);
+    };
+    const auto on_row = [&](const QPointF &end) {
+        QGraphicsItem *row = nb2bPart(scene, PelicanStudio::GraphCanvasStackRowItem, hud, dot);
+        REQUIRE(row != nullptr);
+        const QRectF box = row->sceneBoundingRect();
+        CHECK(end.y() > box.top());
+        CHECK(end.y() < box.bottom());
+        CHECK(std::abs(end.x() - box.left()) < 0.01);
+    };
+
+    // Open row: on the stage's socket.
+    REQUIRE(scene.setLayerRowOpen("", "hud", "dot_fill", true));
+    (void)h.commit();
+    QGraphicsItem *socket = socketItem(scene, hud, port, QStringLiteral("input"));
+    REQUIRE(socket != nullptr);
+    CHECK(QLineF{line_end(), centreOf(socket)}.length() < 0.01);
+    QGraphicsItem *stage = nb2cStage(scene, hud, dot);
+    REQUIRE(stage != nullptr);
+    CHECK(centreOf(socket).y() > stage->sceneBoundingRect().top());
+
+    // Closed again: the line still ends on the row, on its small socket.
+    (void)nb2cPressTriangle(h, hud, dot);
+    REQUIRE_FALSE(scene.layerRowOpen("", "hud", "dot_fill"));
+    on_row(line_end());
+    socket = socketItem(scene, hud, port, QStringLiteral("input"));
+    REQUIRE(socket != nullptr);
+    CHECK(QLineF{line_end(), centreOf(socket)}.length() < 0.01);
+
+    // Compact, with the row open in the document: the slim row's small socket.
+    REQUIRE(scene.setLayerRowOpen("", "hud", "dot_fill", true));
+    (void)h.commit();
+    REQUIRE(scene.setNodeView({}, "hud", PelicanStudio::GraphCanvasNodeView::compact));
+    (void)h.commit();
+    CHECK(nb2cStage(scene, hud, dot) == nullptr);
+    on_row(line_end());
+    socket = socketItem(scene, hud, port, QStringLiteral("input"));
+    REQUIRE(socket != nullptr);
+    CHECK(QLineF{line_end(), centreOf(socket)}.length() < 0.01);
+
+    // Minimal: the node's one point, with every other line.
+    REQUIRE(scene.setNodeView({}, "hud", PelicanStudio::GraphCanvasNodeView::minimal));
+    (void)h.commit();
+    QGraphicsItem *anchor = socketItem(scene, hud, QString{}, QStringLiteral("input"));
+    REQUIRE(anchor != nullptr);
+    CHECK(socketItem(scene, hud, port, QStringLiteral("input")) == nullptr);
+    CHECK(QLineF{line_end(), centreOf(anchor)}.length() < 0.01);
+}
+
+TEST_CASE("NB-2c an imported canvas's rows open, and their slider only reads",
+          "[devstudio][graph-canvas][scene][nb2c]") {
+    (void)application();
+    ZoneHarness h{nb2bImportDocument()};
+    nb2bOpen(h);
+    auto &scene = h.scene;
+    nb2bClick(scene, centreOf(nb2bPart(scene, PelicanStudio::GraphCanvasStackEnterItem, QStringLiteral("hud"),
+                                       QStringLiteral("logo_psd_1"))));
+    REQUIRE(h.model.currentScope() == "logo_psd");
+    h.answerReads();
+    const QString root = QStringLiteral("psd_root");
+    const QString a = QStringLiteral("a_fill");
+    REQUIRE(scene.setLayerRowOpen("logo_psd", "psd_root", "a_fill", true));
+    (void)h.commit();
+    QGraphicsItem *track = nb2cTrack(scene, root, a);
+    REQUIRE(track != nullptr);
+    CHECK(track->data(PelicanStudio::GraphCanvasValueTextRole).toString() == QStringLiteral("100 %"));
+    // The socket is there, as the row's own; the slider moves nothing.
+    CHECK(socketItem(scene, root, QStringLiteral("a_fill.opacity"), QStringLiteral("input")) != nullptr);
+    drag(scene, centreOf(track), centreOf(track) - QPointF{60.0, 0.0});
+    requireNoEdit(h.model);
+    click(scene, centreOf(track), QEvent::GraphicsSceneMouseDoubleClick);
+    CHECK_FALSE(scene.editingInline());
+    CHECK_FALSE(scene.beginLayerOpacityEdit("logo_psd", "psd_root", "a_fill"));
+    requireNoEdit(h.model);
+}
