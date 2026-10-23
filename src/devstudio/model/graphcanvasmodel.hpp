@@ -162,6 +162,31 @@ struct GraphCanvasNode {
     }
 };
 
+// NB-1 (design_node_bodies 2.2): how much of a node the canvas draws -- every
+// row (open), only the rows a line ends on (compact), or the heading alone
+// (minimal). The document keeps it as `layout.nodes.<id>.view`; open is the
+// absence of the key.
+enum class GraphCanvasNodeView : std::uint8_t { open, compact, minimal };
+
+[[nodiscard]] constexpr std::string_view graphCanvasNodeViewName(GraphCanvasNodeView view) noexcept {
+    switch (view) {
+    case GraphCanvasNodeView::compact: return "compact";
+    case GraphCanvasNodeView::minimal: return "minimal";
+    case GraphCanvasNodeView::open: break;
+    }
+    return "open";
+}
+
+// What `layout.nodes.<id>.view` names; nothing for a value the canvas does not
+// know (read as open).
+[[nodiscard]] constexpr std::optional<GraphCanvasNodeView>
+graphCanvasNodeViewFromName(std::string_view name) noexcept {
+    if (name == "open") return GraphCanvasNodeView::open;
+    if (name == "compact") return GraphCanvasNodeView::compact;
+    if (name == "minimal") return GraphCanvasNodeView::minimal;
+    return std::nullopt;
+}
+
 struct GraphCanvasEdge {
     std::string from_node;
     std::string from_port;
@@ -1387,6 +1412,9 @@ class GraphCanvasModel {
     // Decision 5: the domains the root canvas shows (session state).
     std::set<std::string, std::less<>> domains_shown_{"render", "pose", "value", "audio", "ui",
                                                       "canvas"};
+    // NB-1: the next document read decides whether Canvas is shown.
+    bool canvas_domain_follows_document_ = false;
+    bool takeCanvasDomainOfDocument();
     // Decision 3. A folded view is a document Studio builds and draws in
     // place of the real one, read only: the real one waits in the stash,
     // and every reply is read against it (FoldedSuspend) before the view
@@ -2755,6 +2783,12 @@ class GraphCanvasModel {
     [[nodiscard]] bool domainShown(std::string_view domain) const;
     // False when nothing changed.
     bool setDomainShown(const std::string &domain, bool shown);
+    // NB-1 (design_node_bodies 2.6): Canvas is shown by default for a document
+    // whose root holds canvas nodes. This lets the next document read (the
+    // Graph tab's first, a project's first) decide it, once.
+    // Any setDomainShown of Canvas after it is a choice the default no longer
+    // overrides; canvas nodes added later in the session do not show Canvas.
+    void followCanvasDomainOfDocument();
     // Whether the canvas draws this node of `scope`: a root node of a hidden
     // domain is not drawn; a graph.instance and a graph.loop always are, and
     // so is every node of a definition or a folded view.

@@ -54,7 +54,18 @@ struct Row {
     QString bound_port;
     bool band = false;
     bool drop = false;
+    // NB-1 (design_node_bodies 2.2): a line ends on this row -- an authored
+    // edge into the input, or anything drawn from the output (an edge, a
+    // rendering-section pass's input, a zone's body output, a cut end). What
+    // the compact view keeps.
+    bool linked = false;
+    // NB-1, set by the node's body when it measures the node: the row's
+    // height, and whether the node's view draws it at all.
+    qreal height = 0.0;
+    bool shown = true;
 };
+
+class NodeBody;
 
 // Borrowed from the model's node snapshot for the duration of one rebuild.
 // No graphics item or callback retains this drawing data.
@@ -64,11 +75,57 @@ struct Node {
     std::vector<Row> inputs;
     qreal width = 0.0;
     qreal height = 0.0;
-    bool folded = false;
+    // NB-1: how much of the node is drawn, and the body that draws it (by
+    // the node's op, nodeBodyFor).
+    GraphCanvasNodeView view = GraphCanvasNodeView::open;
+    const NodeBody *body = nullptr;
     // LP-4d1: a root loop whose zone is folded: drawn as its node, sockets
     // and all, with the triangle that opens the zone again.
     bool zone_folded = false;
+
+    // The heading alone: the old folded node.
+    [[nodiscard]] bool minimal() const noexcept { return view == GraphCanvasNodeView::minimal; }
 };
+
+class Builder;
+
+// NB-1 (design_node_bodies 2.1). How one kind of node draws what is under its
+// heading band: the rows and their order, each row's height and parts, where
+// the sockets stand, and what each view of the fold leaves of them. Chosen by
+// op (nodeBodyFor); a body draws, it never edits -- an edit goes out as the
+// op list a model function builds, as before. The heading band, the node's
+// outline and its item data are the Builder's, the same for every body.
+//
+// A body puts each socket through Builder::addSocket (a row's) or
+// Builder::addAnchor (the one point a hidden row's lines gather on): they
+// carry the data the lines find their ends by -- the socket kind,
+// NodeGraphNameRole, GraphCanvasPortRole and the direction -- so edge routing
+// does not know which body drew a node.
+//
+// NB-2's layer stack (`canvas.stack`) and NB-3's card (the canvas sources and
+// filters) are bodies of their own, added to nodeBodyFor's table.
+class NodeBody {
+  public:
+    NodeBody() = default;
+    NodeBody(const NodeBody &) = delete;
+    NodeBody &operator=(const NodeBody &) = delete;
+    virtual ~NodeBody() = default;
+    // Given the width the heading needs (entry.width, at least the minimum),
+    // sets the node's width and height for entry.view, and each row's
+    // `height` and `shown`.
+    virtual void measure(Node &entry, const Builder &builder) const = 0;
+    // Draws everything under the heading band onto the node's item.
+    virtual void draw(Builder &builder, QGraphicsPathItem &item, const Node &entry) const = 0;
+    // The view a press on the heading's triangle goes to from `view`.
+    [[nodiscard]] virtual GraphCanvasNodeView next(GraphCanvasNodeView view) const;
+};
+
+// The body that draws `op`'s nodes: the default rows unless the table names
+// another.
+[[nodiscard]] const NodeBody &nodeBodyFor(std::string_view op);
+// The default body: a band of output rows, then the input rows, 21 high.
+// Compact keeps the linked rows, minimal the heading with one point a side.
+[[nodiscard]] const NodeBody &defaultNodeBody();
 
 // GL-1b: `extra_nodes` and `extra_edges` go into the same one placement after
 // the graph's own -- the root's folded nodes and the lines the plan implies --
@@ -187,8 +244,11 @@ class Builder {
     using Moved = std::function<void(const QPointF &)>;
 
     Builder(QGraphicsScene &scene, QString scope);
+    // NB-1: `linked_outputs` names the node's outputs a line is drawn from
+    // (the compact view keeps their rows); the inputs say so themselves.
     Node prepareNode(const GraphCanvasModel &model, const GraphCanvasNode &node,
-                     bool folded) const;
+                     GraphCanvasNodeView view,
+                     const std::set<std::string, std::less<>> &linked_outputs = {}) const;
     // LP-4d1: draw inside a zone's body item instead of at the top of the
     // scene. Positions are then the body's own, and every item carries the
     // definition in GraphCanvasZoneScopeRole.
@@ -237,9 +297,23 @@ class Builder {
     [[nodiscard]] const QFontMetricsF &headingMetrics() const noexcept { return heading_metrics_; }
     [[nodiscard]] const QFontMetricsF &rowMetrics() const noexcept { return row_metrics_; }
 
+    // --- NB-1: what a NodeBody draws with.
+    [[nodiscard]] const StudioTheme &theme() const noexcept { return theme_; }
+    [[nodiscard]] const QFont &detailFont() const noexcept { return detail_font_; }
+    [[nodiscard]] const QFont &labelFont() const noexcept { return label_font_; }
+    // Kind, scope and node name on a part of `entry`'s node.
+    void tagPart(QGraphicsItem &part, const Node &entry, const char *kind) const;
+    // One row's socket at `centre` (the item's coordinates), `direction`
+    // "input" or "output": what an edge into or out of `row.port` ends on.
+    QGraphicsPathItem *addSocket(QGraphicsItem &item, const Node &entry, const Row &row,
+                                 const QPointF &centre, const char *direction);
+    // The one point a side every line of the rows not drawn gathers on: the
+    // empty port, which stands for every port at once.
+    QGraphicsPathItem *addAnchor(QGraphicsItem &item, const Node &entry, const QPointF &centre,
+                                 const char *direction);
+
   private:
     void addNodeHeader(QGraphicsPathItem *item, const Node &entry);
-    void addNodeRows(QGraphicsPathItem *item, const Node &entry);
     MovableNodeItem *addNodeItem(const Node &entry, int column, const QPainterPath &path,
                                  const QPointF &position, Moved moved);
     void place(QGraphicsItem *item);

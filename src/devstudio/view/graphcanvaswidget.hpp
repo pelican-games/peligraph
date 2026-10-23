@@ -107,6 +107,11 @@ inline constexpr int GraphCanvasStubDomainRole = Qt::UserRole + 3151;
 // on the line drawn to one: the index in the pass's `input` it stands for, or
 // -1 for the empty `+ input` slot (whose port is "in:+").
 inline constexpr int GraphCanvasPassInputRole = Qt::UserRole + 3152;
+// NB-1 (design_node_bodies 2.2): on a node and its heading's triangle, the
+// view it is drawn at ("open", "compact", "minimal"); on the triangle also
+// the view a press on it goes to.
+inline constexpr int GraphCanvasNodeViewRole = Qt::UserRole + 3153;
+inline constexpr int GraphCanvasNextViewRole = Qt::UserRole + 3154;
 enum class GraphCanvasZoneAnchor : int {
     none = 0,
     left = 1,
@@ -262,9 +267,21 @@ struct GraphCanvasLayout {
     std::map<std::string, QPointF> nodes;
     std::vector<GraphCanvasReroute> reroutes;
     std::vector<GraphCanvasTie> ties;
+    // NB-1 (design_node_bodies 2.2): `layout.nodes.<id>.view`, the fold a
+    // node is drawn at. Open is never held (nor written). The engine wants
+    // a place beside it, so a node is given one when its view is set.
+    std::map<std::string, GraphCanvasNodeView> views;
+    // Every other key of a node's object, which this canvas has no opinion
+    // about and writes back as it read it.
+    std::map<std::string, nlohmann::json> node_members;
 
     [[nodiscard]] bool empty() const noexcept {
-        return nodes.empty() && reroutes.empty() && ties.empty();
+        return nodes.empty() && reroutes.empty() && ties.empty() && views.empty() &&
+               node_members.empty();
+    }
+    [[nodiscard]] GraphCanvasNodeView view(const std::string &id) const {
+        const auto found = views.find(id);
+        return found == views.end() ? GraphCanvasNodeView::open : found->second;
     }
 };
 
@@ -475,9 +492,30 @@ class GraphCanvasScene final : public QGraphicsScene {
                        std::size_t index, bool additive);
     void selectTie(const std::string &scope, std::size_t index, bool additive);
 
-    // Folding is session state, filed exactly like a moved position: the
-    // document says nothing about how a node is being looked at. LP-4d1: a
-    // root loop folds from its zone into its node.
+    // NB-1 (design_node_bodies 2.2): how much of each node is drawn -- open,
+    // compact (the rows a line ends on) or minimal (the heading) -- is the
+    // document's, `layout.nodes.<id>.view`, filed and sent like a moved
+    // position: one `set_layout`, undone with it. A node the scope has not
+    // placed is placed where it is drawn, since the engine keeps no view
+    // without a place. A folded view (GL-1) keeps it for the session only.
+    // LP-4d1: a root loop drawn as a zone folds from its zone into its node
+    // (any view but open), and its triangle goes between open and minimal.
+    [[nodiscard]] GraphCanvasNodeView nodeView(const std::string &scope,
+                                               const std::string &id) const;
+    // One edit for every node of `ids` (all in `scope`); false when nothing
+    // changed.
+    bool setNodeViews(const std::string &scope, const std::vector<std::string> &ids,
+                      GraphCanvasNodeView view);
+    bool setNodeView(const std::string &scope, const std::string &id, GraphCanvasNodeView view) {
+        return setNodeViews(scope, {id}, view);
+    }
+    // The picked nodes (all of one scope: the first picked one's), or none.
+    [[nodiscard]] std::pair<std::string, std::vector<std::string>> pickedNodesForView() const;
+    // The view every picked node is set to by the right-click entries and the
+    // tab's named actions; false when nothing was picked or nothing changed.
+    bool setPickedNodeViews(GraphCanvasNodeView view);
+    // The old two-state names: collapsed is any view but open, and folding
+    // is the minimal view.
     [[nodiscard]] bool collapsed(const std::string &id) const;
     void setCollapsed(const std::string &id, bool collapsed);
     void toggleCollapsed(const std::string &id);
@@ -752,7 +790,9 @@ class GraphCanvasScene final : public QGraphicsScene {
     // document placed any (the one placement would move them onto it). Held
     // while they stay clear of the graph; Auto layout lets go of them.
     std::map<std::pair<std::string, std::string>, QPointF> added_folded_places_;
-    std::map<std::pair<std::string, std::string>, bool> session_collapsed_;
+    // NB-1: a folded view's (GL-1) node views, which no document keeps;
+    // under foldedPositionKey's view key and the scope.
+    std::map<std::pair<std::string, std::string>, GraphCanvasNodeView> folded_view_views_;
     std::map<std::string, ScopePlacement> placements_;
     QTimer *layout_timer_ = nullptr;
     // LP-4d1: the scopes the last draw drew (the one on screen first, then

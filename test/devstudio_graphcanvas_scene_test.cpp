@@ -1031,8 +1031,22 @@ TEST_CASE("The heading triangle folds the socket rows and the edges follow",
         scene, PelicanStudio::GraphCanvasCollapseItem, QStringLiteral("sum"));
     REQUIRE(arrow != nullptr);
     click(scene, arrow->sceneBoundingRect().center());
+    // NB-1: the first press is the compact view, which keeps every row a line
+    // ends on -- all three of sum's -- and is the definition's placement.
+    CHECK(scene.nodeView("gain_curve", "sum") == PelicanStudio::GraphCanvasNodeView::compact);
+    CHECK(nodeHeight(scene, QStringLiteral("sum")) == open_height);
+    const auto first = takeEdit(model);
+    REQUIRE(first.at("ops").size() == 1);
+    CHECK(first.at("ops").at(0).at("op") == "set_layout");
+    CHECK(first.at("ops").at(0).at("scope") == "gain_curve");
+    CHECK(first.at("ops").at(0).at("layout").at("nodes").at("sum").at("view") == "compact");
+    // The second is the heading alone, the fold this case is about.
+    click(scene, kindItem(scene, PelicanStudio::GraphCanvasCollapseItem, QStringLiteral("sum"))
+                     ->sceneBoundingRect()
+                     .center());
 
     REQUIRE(scene.collapsed("sum"));
+    CHECK(scene.nodeView("gain_curve", "sum") == PelicanStudio::GraphCanvasNodeView::minimal);
     // The node is its heading band and nothing else.
     REQUIRE(std::abs(nodeHeight(scene, QStringLiteral("sum")) -
                      PelicanStudio::GraphCanvasHeaderHeight) < 0.01);
@@ -1077,8 +1091,10 @@ TEST_CASE("The heading triangle folds the socket rows and the edges follow",
     REQUIRE(nodeHeight(scene, QStringLiteral("sum")) == open_height);
     REQUIRE(socketItem(scene, QStringLiteral("sum"), QStringLiteral("a"),
                        QStringLiteral("input")) != nullptr);
-    // Nothing about folding is an edit: the document was never asked to change.
-    requireNoEdit(model);
+    // NB-1: folding is placement, never a graph edit.
+    for (const auto &request : model.takeRpcRequests())
+        if (request.method == "edit_graph_document")
+            for (const auto &op : request.params.at("ops")) CHECK(op.at("op") == "set_layout");
 }
 
 TEST_CASE("A socket drag sends one set_input, and a mismatched type sends none",
@@ -16046,5 +16062,285 @@ TEST_CASE("LC-1b graphcanvas saved notice waits for the loop boundary socket rea
         tab.read(document, "lc1b-after");
         REQUIRE(output() != nullptr);
         CHECK(notice->text() == QStringLiteral("Graph change saved."));
+    }
+}
+
+// --- NB-1 (design_node_bodies 2.1, 2.2, 2.6): the three views of a node, kept
+// in the document's placement, and Canvas shown for a document that has it.
+
+namespace {
+
+// clock -> sum.a, sum.value -> twice.a; sum.b and twice.b take no line.
+Json nb1Document() {
+    return Json{{"schema", "pelican.graph"}, {"version", 1}, {"outputs", Json::object()},
+                {"definitions", Json::object()},
+                {"nodes", Json::array({
+                    {{"id", "clock"}, {"op", "value.input"},
+                     {"parameters", {{"name", "scene_time"}}}, {"outputs", Json::array({"value"})}},
+                    {{"id", "sum"}, {"op", "value.add"},
+                     {"inputs", {{"a", {{"node", "clock"}, {"port", "value"}}}}},
+                     {"outputs", Json::array({"value"})}},
+                    {{"id", "twice"}, {"op", "value.multiply"},
+                     {"inputs", {{"a", {{"node", "sum"}, {"port", "value"}}}}},
+                     {"outputs", Json::array({"value"})}}})}};
+}
+
+QPointF nb1PathEnd(const QGraphicsPathItem &edge, bool tip) {
+    const QPainterPath path = edge.mapToScene(edge.path());
+    const auto element = path.elementAt(tip ? path.elementCount() - 1 : 0);
+    return QPointF{element.x, element.y};
+}
+
+QString nb1ViewOf(QGraphicsScene &scene, const QString &node) {
+    QGraphicsItem *item = nodeItem(scene, node);
+    REQUIRE(item != nullptr);
+    return item->data(PelicanStudio::GraphCanvasNodeViewRole).toString();
+}
+
+// The triangle of `node`, pressed; the one set_layout it sent, committed.
+Json nb1PressTriangle(ZoneHarness &h, const QString &node) {
+    QGraphicsItem *arrow = kindItem(h.scene, PelicanStudio::GraphCanvasCollapseItem, node);
+    REQUIRE(arrow != nullptr);
+    click(h.scene, centreOf(arrow));
+    const Json ops = h.commit();
+    REQUIRE(ops.size() == 1);
+    REQUIRE(ops.at(0).at("op") == "set_layout");
+    return ops.at(0).at("layout");
+}
+
+} // namespace
+
+TEST_CASE("NB-1 the triangle goes open, compact, minimal, open; compact keeps the rows a line "
+          "ends on, with the lines on them",
+          "[devstudio][graph-canvas][scene][nb1]") {
+    (void)application();
+    PelicanStudio::resetSocketStyleDefaults();
+    ZoneHarness h{nb1Document()};
+    h.open();
+    auto &scene = h.scene;
+    using PelicanStudio::GraphCanvasHeaderHeight;
+    using PelicanStudio::GraphCanvasSectionPadding;
+    using PelicanStudio::GraphCanvasSocketRowHeight;
+
+    const qreal open_height = nodeHeight(scene, QStringLiteral("sum"));
+    CHECK(open_height == GraphCanvasHeaderHeight + 2.0 * GraphCanvasSectionPadding +
+                             3.0 * GraphCanvasSocketRowHeight);
+    CHECK(nb1ViewOf(scene, QStringLiteral("sum")) == QStringLiteral("open"));
+    REQUIRE(socketItem(scene, QStringLiteral("sum"), QStringLiteral("b"),
+                       QStringLiteral("input")) != nullptr);
+
+    // Compact: the output a line leaves and the input one enters, nothing else.
+    auto layout = nb1PressTriangle(h, QStringLiteral("sum"));
+    CHECK(layout.at("nodes").at("sum").at("view") == "compact");
+    CHECK(scene.nodeView({}, "sum") == PelicanStudio::GraphCanvasNodeView::compact);
+    CHECK(nb1ViewOf(scene, QStringLiteral("sum")) == QStringLiteral("compact"));
+    CHECK(nodeHeight(scene, QStringLiteral("sum")) ==
+          GraphCanvasHeaderHeight + 2.0 * GraphCanvasSectionPadding +
+              2.0 * GraphCanvasSocketRowHeight);
+    CHECK(socketItem(scene, QStringLiteral("sum"), QStringLiteral("b"),
+                     QStringLiteral("input")) == nullptr);
+    QGraphicsItem *a = socketItem(scene, QStringLiteral("sum"), QStringLiteral("a"),
+                                  QStringLiteral("input"));
+    QGraphicsItem *value = socketItem(scene, QStringLiteral("sum"), QStringLiteral("value"),
+                                      QStringLiteral("output"));
+    REQUIRE(a != nullptr);
+    REQUIRE(value != nullptr);
+    // No anchor: the lines end on their own rows.
+    CHECK(socketItem(scene, QStringLiteral("sum"), QString{}, QStringLiteral("input")) == nullptr);
+    QGraphicsPathItem *in = edgeItem(scene, QStringLiteral("clock"), QStringLiteral("value"),
+                                     QStringLiteral("sum"), QStringLiteral("a"));
+    QGraphicsPathItem *out = edgeItem(scene, QStringLiteral("sum"), QStringLiteral("value"),
+                                      QStringLiteral("twice"), QStringLiteral("a"));
+    REQUIRE(in != nullptr);
+    REQUIRE(out != nullptr);
+    CHECK(QLineF{nb1PathEnd(*in, true), centreOf(a)}.length() < 0.01);
+    CHECK(QLineF{nb1PathEnd(*out, false), centreOf(value)}.length() < 0.01);
+    // A node nobody folded is drawn as it was.
+    CHECK(nb1ViewOf(scene, QStringLiteral("twice")) == QStringLiteral("open"));
+    CHECK(socketItem(scene, QStringLiteral("twice"), QStringLiteral("b"),
+                     QStringLiteral("input")) != nullptr);
+
+    // Minimal: the heading, and one point a side the lines gather on.
+    layout = nb1PressTriangle(h, QStringLiteral("sum"));
+    CHECK(layout.at("nodes").at("sum").at("view") == "minimal");
+    CHECK(nodeHeight(scene, QStringLiteral("sum")) == GraphCanvasHeaderHeight);
+    CHECK(socketItem(scene, QStringLiteral("sum"), QStringLiteral("a"),
+                     QStringLiteral("input")) == nullptr);
+    QGraphicsItem *anchor = socketItem(scene, QStringLiteral("sum"), QString{},
+                                       QStringLiteral("input"));
+    REQUIRE(anchor != nullptr);
+    in = edgeItem(scene, QStringLiteral("clock"), QStringLiteral("value"), QStringLiteral("sum"),
+                  QStringLiteral("a"));
+    REQUIRE(in != nullptr);
+    CHECK(QLineF{nb1PathEnd(*in, true), centreOf(anchor)}.length() < 0.01);
+
+    // Open again: every row, and no `view` in the document.
+    layout = nb1PressTriangle(h, QStringLiteral("sum"));
+    CHECK_FALSE(layout.at("nodes").at("sum").contains("view"));
+    CHECK(nodeHeight(scene, QStringLiteral("sum")) == open_height);
+    CHECK(socketItem(scene, QStringLiteral("sum"), QStringLiteral("b"),
+                     QStringLiteral("input")) != nullptr);
+    CHECK(nb1ViewOf(scene, QStringLiteral("sum")) == QStringLiteral("open"));
+    // The place the node was given with its first view stays with it.
+    CHECK(layout.at("nodes").at("sum").contains("x"));
+}
+
+TEST_CASE("NB-1 a view is one set_layout: undone with it, and kept by a saved and reopened "
+          "document beside the members it does not know",
+          "[devstudio][graph-canvas][scene][nb1][layout-persistence]") {
+    (void)application();
+    auto document = nb1Document();
+    // Another key of a node's object, which the canvas must write back.
+    document["layout"] = {{"nodes", {{"clock", {{"x", 0.0}, {"y", 40.0}, {"note", "kept"}}}}}};
+    ZoneHarness h{document};
+    h.open();
+    auto &scene = h.scene;
+    const QPointF clock_at = nodeItem(scene, QStringLiteral("clock"))->pos();
+    CHECK(clock_at == QPointF{0.0, 40.0});
+
+    REQUIRE(scene.setNodeView({}, "twice", PelicanStudio::GraphCanvasNodeView::compact));
+    const auto ops = h.commit();
+    REQUIRE(ops.size() == 1);
+    CHECK(ops.at(0).at("op") == "set_layout");
+    const auto &saved = h.document.at("layout").at("nodes");
+    CHECK(saved.at("twice").at("view") == "compact");
+    CHECK(saved.at("twice").contains("x"));
+    CHECK(saved.at("clock").at("note") == "kept");
+    CHECK_FALSE(saved.at("clock").contains("view"));
+
+    // Opened again, from what the engine holds: still compact.
+    {
+        ZoneHarness reopened{h.document};
+        reopened.open();
+        CHECK(reopened.scene.nodeView({}, "twice") == PelicanStudio::GraphCanvasNodeView::compact);
+        CHECK(nb1ViewOf(reopened.scene, QStringLiteral("twice")) == QStringLiteral("compact"));
+        CHECK(socketItem(reopened.scene, QStringLiteral("twice"), QStringLiteral("b"),
+                         QStringLiteral("input")) == nullptr);
+        CHECK(nodeItem(reopened.scene, QStringLiteral("clock"))->pos() == clock_at);
+    }
+
+    // Undo is the same placement edit, the other way.
+    REQUIRE(h.model.canUndo());
+    scene.undoEdit();
+    h.commit();
+    CHECK(scene.nodeView({}, "twice") == PelicanStudio::GraphCanvasNodeView::open);
+    CHECK(nb1ViewOf(scene, QStringLiteral("twice")) == QStringLiteral("open"));
+    CHECK(socketItem(scene, QStringLiteral("twice"), QStringLiteral("b"),
+                     QStringLiteral("input")) != nullptr);
+    CHECK(h.document.at("layout").at("nodes").at("clock").at("note") == "kept");
+    CHECK_FALSE(h.document.at("layout").at("nodes").contains("twice"));
+}
+
+TEST_CASE("NB-1 the picked nodes take one view in one edit",
+          "[devstudio][graph-canvas][scene][nb1]") {
+    (void)application();
+    ZoneHarness h{nb1Document()};
+    h.open();
+    auto &scene = h.scene;
+    nodeItem(scene, QStringLiteral("sum"))->setSelected(true);
+    nodeItem(scene, QStringLiteral("twice"))->setSelected(true);
+    const auto [scope, picked] = scene.pickedNodesForView();
+    CHECK(scope.empty());
+    CHECK(picked.size() == 2);
+    REQUIRE(scene.setPickedNodeViews(PelicanStudio::GraphCanvasNodeView::minimal));
+    const auto ops = h.commit();
+    REQUIRE(ops.size() == 1);
+    const auto &nodes = ops.at(0).at("layout").at("nodes");
+    CHECK(nodes.at("sum").at("view") == "minimal");
+    CHECK(nodes.at("twice").at("view") == "minimal");
+    CHECK(nodeHeight(scene, QStringLiteral("sum")) == PelicanStudio::GraphCanvasHeaderHeight);
+    CHECK(nodeHeight(scene, QStringLiteral("twice")) == PelicanStudio::GraphCanvasHeaderHeight);
+    // Nothing to change: no edit.
+    CHECK_FALSE(scene.setNodeViews({}, {"sum", "twice"}, PelicanStudio::GraphCanvasNodeView::minimal));
+}
+
+TEST_CASE("NB-1 a root loop's zone folds to the loop's node as its minimal view, in the document",
+          "[devstudio][graph-canvas][scene][nb1][lp4d1]") {
+    (void)application();
+    ZoneHarness h;
+    h.open();
+    auto &scene = h.scene;
+    REQUIRE(scene.zones() == std::map<std::string, std::string>{{"steps", "first"}});
+    // The zone's own triangle.
+    QGraphicsItem *arrow = kindItem(scene, PelicanStudio::GraphCanvasCollapseItem,
+                                    QStringLiteral("steps"));
+    REQUIRE(arrow != nullptr);
+    CHECK(arrow->data(PelicanStudio::GraphCanvasNextViewRole).toString() == QStringLiteral("minimal"));
+    click(scene, centreOf(arrow));
+    auto ops = h.commit();
+    REQUIRE(ops.size() == 1);
+    CHECK(ops.at(0).at("layout").at("nodes").at("steps").at("view") == "minimal");
+    CHECK(scene.zones().empty());
+    // The loop's node, with its sockets (LP-4c), and a triangle back to the zone.
+    CHECK(socketItem(scene, QStringLiteral("steps"), QStringLiteral("target"),
+                     QStringLiteral("input")) != nullptr);
+    arrow = kindItem(scene, PelicanStudio::GraphCanvasCollapseItem, QStringLiteral("steps"));
+    REQUIRE(arrow != nullptr);
+    CHECK(arrow->data(PelicanStudio::GraphCanvasNextViewRole).toString() == QStringLiteral("open"));
+    click(scene, centreOf(arrow));
+    ops = h.commit();
+    REQUIRE(ops.size() == 1);
+    CHECK_FALSE(ops.at(0).at("layout").at("nodes").at("steps").contains("view"));
+    CHECK(scene.zones() == std::map<std::string, std::string>{{"steps", "first"}});
+}
+
+namespace {
+
+// A canvas stack the output reads.
+Json nb1CanvasDocument() {
+    return Json{{"schema", "pelican.graph"}, {"version", 1}, {"outputs", Json::object()},
+                {"definitions", Json::object()},
+                {"nodes", Json::array({
+                    {{"id", "canvas_stack"}, {"op", "canvas.stack"},
+                     {"parameters", {{"size", Json::array({1280, 720})}, {"layers", Json::array()}}},
+                     {"outputs", Json::array({"layer"})}},
+                    {{"id", "canvas"}, {"op", "canvas.output"},
+                     {"inputs", {{"layer", {{"node", "canvas_stack"}, {"port", "layer"}}}}},
+                     {"outputs", Json::array({"image"})}}})}};
+}
+
+std::size_t nb1Stubs(QGraphicsScene &scene) {
+    std::size_t count = 0;
+    for (QGraphicsItem *item : scene.items())
+        if (item->data(PelicanStudio::NodeGraphItemKindRole).toString() ==
+            QLatin1String{PelicanStudio::GraphCanvasDomainStubItem})
+            ++count;
+    return count;
+}
+
+} // namespace
+
+TEST_CASE("NB-1 a document opened with canvas nodes shows Canvas; one without keeps Render alone",
+          "[devstudio][graph-canvas][scene][nb1]") {
+    (void)application();
+    SECTION("canvas nodes: Canvas is shown and nothing is cut") {
+        Ux2Tab tab{false};
+        tab.read(nb1CanvasDocument(), "nb1-canvas");
+        auto *box = tab.field<QCheckBox>("pelican.graphCanvasShow.canvas");
+        CHECK(box->isChecked());
+        CHECK(tab.field<QCheckBox>("pelican.graphCanvasShow.render")->isChecked());
+        auto &scene = tab.widget->scene();
+        CHECK(nodeItem(scene, QStringLiteral("canvas_stack")) != nullptr);
+        CHECK(nb1Stubs(scene) == 0);
+        // Taken out by hand, it is the cut end it was.
+        box->setChecked(false);
+        QCoreApplication::processEvents();
+        CHECK(nodeItem(scene, QStringLiteral("canvas_stack")) == nullptr);
+        CHECK(nb1Stubs(scene) > 0);
+        // And a later read of the same document leaves the choice alone.
+        tab.widget->refresh();
+        tab.read(nb1CanvasDocument(), "nb1-canvas-2");
+        CHECK_FALSE(box->isChecked());
+    }
+    SECTION("no canvas node: Render alone, as before") {
+        Ux2Tab tab{false};
+        tab.read(nb1Document(), "nb1-values");
+        CHECK_FALSE(tab.field<QCheckBox>("pelican.graphCanvasShow.canvas")->isChecked());
+        CHECK_FALSE(tab.field<QCheckBox>("pelican.graphCanvasShow.value")->isChecked());
+        CHECK(tab.field<QCheckBox>("pelican.graphCanvasShow.render")->isChecked());
+        // Canvas nodes that arrive later in the session do not turn it on.
+        tab.widget->refresh();
+        tab.read(nb1CanvasDocument(), "nb1-values-2");
+        CHECK_FALSE(tab.field<QCheckBox>("pelican.graphCanvasShow.canvas")->isChecked());
     }
 }

@@ -1498,6 +1498,9 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             undo_.back().after_graph = history_graph_;
         context_received_ = true;
         failure_ = {};
+        // NB-1, design_node_bodies 2.6: a document opened with canvas nodes
+        // shows them.
+        (void)takeCanvasDomainOfDocument();
         // Q-13: the placement a moved document refused, against this one.
         if (auto retry = std::exchange(layout_retry_, std::nullopt))
             layout_retrying_ = submitOps(std::move(*retry));
@@ -6973,9 +6976,26 @@ bool GraphCanvasModel::domainShown(std::string_view domain) const {
 }
 
 bool GraphCanvasModel::setDomainShown(const std::string &domain, bool shown) {
+    if (domain == "canvas") canvas_domain_follows_document_ = false;
     if (!listed(domainNames(), domain) || domains_shown_.contains(domain) == shown) return false;
     if (shown) domains_shown_.insert(domain);
     else domains_shown_.erase(domain);
+    ++report_revision_;
+    return true;
+}
+
+void GraphCanvasModel::followCanvasDomainOfDocument() {
+    canvas_domain_follows_document_ = true;
+}
+
+bool GraphCanvasModel::takeCanvasDomainOfDocument() {
+    if (!std::exchange(canvas_domain_follows_document_, false)) return false;
+    const bool holds = nodes_.is_array() && std::ranges::any_of(nodes_, [](const Json &node) {
+        return node.is_object() && opDomain(text(node, "op")) == "canvas";
+    });
+    if (domains_shown_.contains("canvas") == holds) return false;
+    if (holds) domains_shown_.insert("canvas");
+    else domains_shown_.erase("canvas");
     ++report_revision_;
     return true;
 }

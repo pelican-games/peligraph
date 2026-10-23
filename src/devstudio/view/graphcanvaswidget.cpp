@@ -490,6 +490,17 @@ GraphCanvasLayout graphCanvasLayoutFromJson(const nlohmann::json &layout) {
         nodes != layout.end() && nodes->is_object())
         for (const auto &[id, place] : nodes->items()) {
             if (!place.is_object()) continue;
+            // NB-1: the view, and whatever else the object holds, are kept
+            // apart from the place.
+            for (const auto &[key, value] : place.items()) {
+                if (key == "x" || key == "y") continue;
+                if (key == "view" && value.is_string()) {
+                    const auto view = graphCanvasNodeViewFromName(value.get<std::string>());
+                    if (view && *view != GraphCanvasNodeView::open) result.views.emplace(id, *view);
+                    if (view) continue;
+                }
+                result.node_members[id][key] = value;
+            }
             const auto x = place.find("x");
             const auto y = place.find("y");
             if (x == place.end() || y == place.end() || !x->is_number() ||
@@ -541,8 +552,19 @@ GraphCanvasLayout graphCanvasLayoutFromJson(const nlohmann::json &layout) {
 nlohmann::json graphCanvasLayoutToJson(const GraphCanvasLayout &layout) {
     nlohmann::json result = nlohmann::json::object();
     auto nodes = nlohmann::json::object();
-    for (const auto &[id, position] : layout.nodes)
-        nodes[id] = {{"x", position.x()}, {"y", position.y()}};
+    for (const auto &[id, position] : layout.nodes) {
+        // The engine holds a node's object only with its place in it; a view
+        // or a member without one is not written.
+        nlohmann::json place = nlohmann::json::object();
+        if (const auto members = layout.node_members.find(id); members != layout.node_members.end())
+            place = members->second;
+        place["x"] = position.x();
+        place["y"] = position.y();
+        if (const auto view = layout.views.find(id);
+            view != layout.views.end() && view->second != GraphCanvasNodeView::open)
+            place["view"] = std::string{graphCanvasNodeViewName(view->second)};
+        nodes[id] = std::move(place);
+    }
     result["nodes"] = std::move(nodes);
     auto reroutes = nlohmann::json::array();
     for (const GraphCanvasReroute &reroute : layout.reroutes) {
@@ -620,7 +642,7 @@ void GraphCanvasScene::setModel(GraphCanvasModel *model) {
     model_ = model;
     session_node_positions_.clear();
     folded_places_.clear();
-    session_collapsed_.clear();
+    folded_view_views_.clear();
     pruned_revision_.reset();
     selected_node_.reset();
     selected_edge_.reset();
@@ -646,9 +668,6 @@ void GraphCanvasScene::pruneSessionPositions() {
     std::erase_if(session_node_positions_, [&](const auto &entry) {
         return entry.first.first != folded_prefix && !present.contains(entry.first);
     });
-    std::erase_if(session_collapsed_, [&](const auto &entry) {
-        return !present.contains(entry.first);
-    });
 }
 
 bool GraphCanvasScene::collapsed(const std::string &id) const {
@@ -657,8 +676,7 @@ bool GraphCanvasScene::collapsed(const std::string &id) const {
 }
 
 bool GraphCanvasScene::collapsed(const std::string &scope, const std::string &id) const {
-    const auto found = session_collapsed_.find({scope, id});
-    return found != session_collapsed_.end() && found->second;
+    return nodeView(scope, id) != GraphCanvasNodeView::open;
 }
 
 void GraphCanvasScene::setCollapsed(const std::string &id, bool folded) {
@@ -669,12 +687,121 @@ void GraphCanvasScene::setCollapsed(const std::string &id, bool folded) {
 void GraphCanvasScene::setCollapsed(const std::string &scope, const std::string &id,
                                     bool folded) {
     if (model_ == nullptr) return;
-    session_collapsed_[{scope, id}] = folded;
-    repopulate();
+    setNodeView(scope, id, folded ? GraphCanvasNodeView::minimal : GraphCanvasNodeView::open);
 }
 
 void GraphCanvasScene::toggleCollapsed(const std::string &id) {
     setCollapsed(id, !collapsed(id));
+}
+
+GraphCanvasNodeView GraphCanvasScene::nodeView(const std::string &scope,
+                                               const std::string &id) const {
+    if (model_ == nullptr) return GraphCanvasNodeView::open;
+    if (model_->foldedView()) {
+        const auto found = folded_view_views_.find({model_->viewKey() + "|" + scope, id});
+        return found == folded_view_views_.end() ? GraphCanvasNodeView::open : found->second;
+    }
+    return layout(scope).view(id);
+}
+
+bool GraphCanvasScene::setNodeViews(const std::string &scope, const std::vector<std::string> &ids,
+                                    GraphCanvasNodeView view) {
+    if (model_ == nullptr || ids.empty()) return false;
+    // GL-1: a folded view is Studio's drawing, kept nowhere; its folds last
+    // the session.
+    if (model_->foldedView()) {
+        bool changed = false;
+        for (const auto &id : ids) {
+            const std::pair key{model_->viewKey() + "|" + scope, id};
+            const auto found = folded_view_views_.find(key);
+            const auto was = found == folded_view_views_.end() ? GraphCanvasNodeView::open
+                                                               : found->second;
+            if (was == view) continue;
+            changed = true;
+            if (view == GraphCanvasNodeView::open) folded_view_views_.erase(key);
+            else folded_view_views_[key] = view;
+        }
+        if (changed) repopulate();
+        return changed;
+    }
+    // A scope this canvas has not read the placement of yet: one `set_layout`
+    // replaces the whole of it, so it is read first.
+    if (!placement(scope).loaded) loadLayout(scope);
+    std::vector<std::string> changing;
+    for (const auto &id : ids)
+        if (layout(scope).view(id) != view &&
+            std::ranges::find(changing, id) == changing.end())
+            changing.push_back(id);
+    if (changing.empty()) return false;
+    // The engine keeps a node's view only beside its place: a node the scope
+    // has not placed is placed where it is drawn. A node changes size with
+    // its view, so what the document does not place yet is held where it is
+    // drawn for the session, as a drag holds it (N-6, GL-1b, UX-1 decision 3)
+    // -- else the automatic placement would move it.
+    bool held = false;
+    for (const auto &id : changing) {
+        if (layout(scope).nodes.contains(id)) continue;
+        QGraphicsItem *item = findNodeItem(*this, graphCanvasKinds(), qtext(scope), qtext(id));
+        if (item == nullptr) continue;
+        if (!held) {
+            held = true;
+            if (layout({}).nodes.empty()) {
+                keepFoldedPlaces();
+                holdRootPlaces({});
+            }
+            if (!scope.empty())
+                for (QGraphicsItem *drawn : items()) {
+                    if (nodeGraphItemKind(*drawn) != QLatin1String{GraphCanvasNodeItem} ||
+                        drawn->data(GraphCanvasDerivedRole).toBool() ||
+                        drawn->data(GraphCanvasScopeRole).toString() != qtext(scope))
+                        continue;
+                    session_node_positions_.try_emplace(
+                        {scope, drawn->data(NodeGraphNameRole).toString().toStdString()},
+                        drawn->pos());
+                }
+        }
+        placement(scope).layout.nodes[id] = item->pos();
+    }
+    auto &views = placement(scope).layout.views;
+    for (const auto &id : changing) {
+        if (view == GraphCanvasNodeView::open) views.erase(id);
+        else views[id] = view;
+    }
+    noteLayoutChange(scope);
+    repopulate();
+    // One deliberate act, sent at once as Auto layout is.
+    flushLayout();
+    return true;
+}
+
+std::pair<std::string, std::vector<std::string>> GraphCanvasScene::pickedNodesForView() const {
+    std::pair<std::string, std::vector<std::string>> picked;
+    bool first = true;
+    for (QGraphicsItem *item : selectedItems()) {
+        if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasNodeItem} ||
+            item->data(GraphCanvasDerivedRole).toBool() ||
+            item->data(GraphCanvasFoldGroupRole).isValid())
+            continue;
+        const auto scope = itemScope(*item);
+        if (first) {
+            picked.first = scope;
+            first = false;
+        }
+        if (scope != picked.first) continue;
+        auto id = item->data(NodeGraphNameRole).toString().toStdString();
+        if (std::ranges::find(picked.second, id) == picked.second.end())
+            picked.second.push_back(std::move(id));
+    }
+    if (picked.second.empty() && selected_node_) {
+        picked.first = selection_scope_;
+        picked.second.push_back(*selected_node_);
+    }
+    return picked;
+}
+
+bool GraphCanvasScene::setPickedNodeViews(GraphCanvasNodeView view) {
+    const auto [scope, ids] = pickedNodesForView();
+    return setNodeViews(scope, ids, view);
 }
 
 bool GraphCanvasScene::showLoopBranch(const std::string &loop, std::size_t branch) {
@@ -701,9 +828,15 @@ void GraphCanvasScene::autoLayout() {
     });
     // Start from nothing: the placement is the whole answer, so a leftover
     // control point from the last one would be a bend nobody asked for.
+    // NB-1: but how each node is folded is not a place; it stays, and the
+    // placement is made at the sizes the nodes are drawn at.
+    auto kept_views = placement(scope).layout.views;
+    auto kept_members = placement(scope).layout.node_members;
     {
         auto &placed = placement(scope);
         placed.layout = GraphCanvasLayout{};
+        placed.layout.views = kept_views;
+        placed.layout.node_members = kept_members;
         placed.dirty = false;
     }
     clearControlSelection();
@@ -714,6 +847,8 @@ void GraphCanvasScene::autoLayout() {
 
     GraphCanvasLayout placed;
     placed.nodes = placement_boxes_;
+    placed.views = std::move(kept_views);
+    placed.node_members = std::move(kept_members);
     // Every lane the placement kept, as (column, edge, y). A lane is two
     // points: the edge runs level across the column it flies over, and only
     // the gaps between columns slope.
@@ -903,6 +1038,12 @@ void GraphCanvasScene::pruneLayout(const std::string &scope) {
     for (const auto &edge : model_->edges(scope))
         drawn.insert(GraphCanvasEdgeKey{edge.to_node, edge.to_port});
     std::erase_if(layout.nodes, [&](const auto &entry) {
+        return !present.contains(entry.first);
+    });
+    std::erase_if(layout.views, [&](const auto &entry) {
+        return !present.contains(entry.first);
+    });
+    std::erase_if(layout.node_members, [&](const auto &entry) {
         return !present.contains(entry.first);
     });
     std::erase_if(layout.reroutes, [&](const GraphCanvasReroute &entry) {
@@ -1851,6 +1992,24 @@ void GraphCanvasScene::repopulate() {
     };
     std::map<std::string, ZonePlan> plans;
     std::set<std::string> folded_zones;
+    // NB-1, design_node_bodies 2.2: the outputs something is drawn from --
+    // an edge (one to a hidden domain ends on a stub there), a rendering-
+    // section pass's input, a zone's body output. A compact node keeps their
+    // rows, as it keeps the inputs an edge ends on.
+    using LinkedOutputs = std::map<std::string, std::set<std::string, std::less<>>, std::less<>>;
+    const auto linkedOutputs = [](const std::vector<GraphCanvasEdge> &all) {
+        LinkedOutputs linked;
+        for (const auto &edge : all) linked[edge.from_node].insert(edge.from_port);
+        return linked;
+    };
+    const auto linkedOf = [](const LinkedOutputs &linked,
+                             const std::string &id) -> const std::set<std::string, std::less<>> & {
+        static const std::set<std::string, std::less<>> none;
+        const auto found = linked.find(id);
+        return found == linked.end() ? none : found->second;
+    };
+    auto scope_linked = linkedOutputs(model_->edges(scope));
+    for (const auto &line : pass_lines) scope_linked[line.from].insert(line.from_port);
     if (scope.empty()) {
         std::set<std::string> claimed;
         for (const auto &node : nodes) {
@@ -1875,8 +2034,11 @@ void GraphCanvasScene::repopulate() {
             plan.edges = model_->edges(body);
             plan.outputs = model_->bodyOutputs(body);
             plan.drawn.reserve(plan.nodes.size());
+            auto body_linked = linkedOutputs(plan.edges);
+            for (const auto &output : plan.outputs) body_linked[output.node].insert(output.port);
             for (const auto &inside : plan.nodes)
-                plan.drawn.push_back(drawing.prepareNode(*model_, inside, collapsed(body, inside.id)));
+                plan.drawn.push_back(drawing.prepareNode(*model_, inside, nodeView(body, inside.id),
+                                                         linkedOf(body_linked, inside.id)));
             // Decision 6: a body node the document never placed is placed
             // inside the frame, as the root places its own.
             std::vector<GraphCanvasEdge> inner;
@@ -1918,8 +2080,10 @@ void GraphCanvasScene::repopulate() {
     std::map<std::string, GraphCanvasDrawing::Zone> zones;
     for (const auto &node : nodes) {
         const bool zone_folded = folded_zones.contains(node.id);
-        auto entry = drawing.prepareNode(*model_, node,
-                                         !zone_folded && collapsed(scope, node.id));
+        // LP-4d1: a loop folded from its zone is drawn with all its rows.
+        auto entry = drawing.prepareNode(
+            *model_, node, zone_folded ? GraphCanvasNodeView::open : nodeView(scope, node.id),
+            linkedOf(scope_linked, node.id));
         entry.zone_folded = zone_folded;
         if (const auto plan = plans.find(node.id); plan != plans.end()) {
             const auto loop = model_->loop(node.id);
@@ -3424,9 +3588,17 @@ void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
                 // Folding rebuilds the scene, which deletes the item this
                 // press is standing on. Same reason as the breadcrumb: do it
                 // from the event loop, not from inside the dispatch.
+                // NB-1: the triangle says which view a press goes to (the
+                // node's body decides the round: open, compact, minimal).
                 const auto id = item->data(NodeGraphNameRole).toString().toStdString();
+                const auto next = graphCanvasNodeViewFromName(
+                    item->data(GraphCanvasNextViewRole).toString().toStdString());
                 QMetaObject::invokeMethod(
-                    this, [this, scope, id] { setCollapsed(scope, id, !collapsed(scope, id)); },
+                    this,
+                    [this, scope, id, next] {
+                        if (next) setNodeView(scope, id, *next);
+                        else setCollapsed(scope, id, !collapsed(scope, id));
+                    },
                     Qt::QueuedConnection);
                 return;
             }
@@ -3716,6 +3888,48 @@ void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
         menu.addAction(rename_definition_action_);
         menu.addAction(delete_definition_action_);
     }
+    // NB-1 (design_node_bodies 2.2): over a node, its three views by name --
+    // for every picked node when it is one of them.
+    if (model_ != nullptr)
+        for (QGraphicsItem *item : items(event->scenePos())) {
+            if (!isNodeSurface(nodeGraphItemKind(*item))) continue;
+            // Not a folded node, a fold group, or the inside of a zone.
+            if (item->data(GraphCanvasDerivedRole).toBool() ||
+                item->data(GraphCanvasFoldGroupRole).isValid() ||
+                nodeGraphItemKind(*item) == QLatin1String{GraphCanvasZoneItem})
+                break;
+            const auto node_scope = itemScope(*item);
+            const auto node = item->data(NodeGraphNameRole).toString().toStdString();
+            if (node.empty() ||
+                findNodeItem(*this, graphCanvasKinds(), qtext(node_scope), qtext(node)) == nullptr)
+                break;
+            auto [picked_scope, targets] = pickedNodesForView();
+            if (picked_scope != node_scope || std::ranges::find(targets, node) == targets.end())
+                targets = {node};
+            const auto current = nodeView(node_scope, node);
+            menu.addSeparator();
+            for (const auto view : {GraphCanvasNodeView::open, GraphCanvasNodeView::compact,
+                                    GraphCanvasNodeView::minimal}) {
+                QAction *entry = menu.addAction(view == GraphCanvasNodeView::open ? QObject::tr("Open")
+                                                : view == GraphCanvasNodeView::compact
+                                                    ? QObject::tr("Compact")
+                                                    : QObject::tr("Minimal"));
+                entry->setObjectName(QStringLiteral("pelican.graphCanvas.nodeView.") +
+                                     qtext(std::string{graphCanvasNodeViewName(view)}));
+                entry->setCheckable(true);
+                entry->setChecked(view == current);
+                entry->setToolTip(view == GraphCanvasNodeView::open ? QObject::tr("Every socket row")
+                                  : view == GraphCanvasNodeView::compact
+                                      ? QObject::tr("Only the socket rows a line ends on")
+                                      : QObject::tr("The heading alone"));
+                QObject::connect(entry, &QAction::triggered, this, [this, node_scope, targets, view] {
+                    QMetaObject::invokeMethod(
+                        this, [this, node_scope, targets, view] { setNodeViews(node_scope, targets, view); },
+                        Qt::QueuedConnection);
+                });
+            }
+            break;
+        }
     // GL-3a, decision 1: the picked root nodes into one fold group.
     if (foldMenuEntries && root) foldMenuEntries(menu);
     if (menu.actions().isEmpty()) {
@@ -5528,6 +5742,9 @@ struct GraphCanvasWidget::Impl {
         // to begin with; session state, never written to the document.
         for (const auto &domain : GraphCanvasModel::domainNames())
             if (domain != "render") model.setDomainShown(domain, false);
+        // NB-1 (design_node_bodies 2.6): a document opened with canvas nodes
+        // shows Canvas too, rather than cutting them to `← canvas (N)`.
+        model.followCanvasDomainOfDocument();
         controls->addWidget(new QLabel(QObject::tr("Show:"), &view));
         for (const auto &domain : GraphCanvasModel::domainNames()) {
             const QString label = domain == "ui" ? QStringLiteral("UI")
@@ -5932,6 +6149,17 @@ struct GraphCanvasWidget::Impl {
                          [this] { scene->untieSelection(); });
         scene->setMenuActions(auto_layout_action, fit_view_action, tie_action,
                               untie_action);
+        // NB-1: the three views of the picked nodes, named for automation
+        // (the right-click menu offers the same for the node under it).
+        for (const auto node_view : {GraphCanvasNodeView::open, GraphCanvasNodeView::compact,
+                                     GraphCanvasNodeView::minimal}) {
+            const auto name = qtext(std::string{graphCanvasNodeViewName(node_view)});
+            auto *action = new QAction(name, &view);
+            action->setObjectName(QStringLiteral("pelican.graphCanvas.view.") + name);
+            view.addAction(action);
+            QObject::connect(action, &QAction::triggered, &view,
+                             [this, node_view] { (void)scene->setPickedNodeViews(node_view); });
+        }
         // LP-4c. "Add loop" puts a loop in the root over a new, empty body
         // named by a proposal -- no dialog, no name to type -- and "Add
         // fullscreen pass" the engine's passthrough into an image of its own,
@@ -10636,6 +10864,8 @@ void GraphCanvasWidget::setProjectRoot(const std::filesystem::path &project_root
     if (impl_->project_root != project_root) {
         impl_->model.forgetHistory();
         impl_->edit_order.clear();
+        // NB-1: another project's document decides Canvas again.
+        impl_->model.followCanvasDomainOfDocument();
     }
     impl_->project_root = project_root;
     impl_->pass_fields->setProjectRoot(project_root);
