@@ -434,9 +434,10 @@ TEST_CASE("CV-2a canvas lowering refuses by name", "[canvas][cv2a]") {
     };
     REQUIRE(refusal([&] {
                 auto authored = base();
-                authored.at("nodes").push_back({{"id", "bd"}, {"op", "filter.blur"}, {"outputs", Json::array({"layer"})}});
+                // CV-3a draws filter.blur; a filter it does not know stays refused.
+                authored.at("nodes").push_back({{"id", "bd"}, {"op", "filter.radial_blur"}, {"outputs", Json::array({"layer"})}});
                 (void)Pelican::lowerCanvasNodes(authored);
-            }) == R"(canvas.op_unsupported@1 {"node":"bd","op":"filter.blur"})");
+            }) == R"(canvas.op_unsupported@1 {"node":"bd","op":"filter.radial_blur"})");
     REQUIRE(refusal([&] {
                 auto authored = base();
                 authored.at("nodes").push_back({{"id", "inv"}, {"op", "filter.unsharp_mask"}, {"outputs", Json::array({"layer"})}});

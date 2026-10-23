@@ -3535,7 +3535,15 @@ add_test(
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_rules_import.cmake
 )
 
-pelican_define_test(frameplanner_test GROUP render_planning_core pelican_core)
+# RC-1b: the frame plan test reads get_frame_plan through the renderer's CPU
+# seam (renderer.hpp needs VMA's headers).
+pelican_define_test(frameplanner_test GROUP render_planning_core pelican_core
+    VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+if(MSVC)
+  # The renderer's headers take it past the object format's section limit
+  # (C1128).
+  target_compile_options(pelican_test_frameplanner_test PRIVATE /bigobj)
+endif()
 target_compile_definitions(pelican_test_frameplanner_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
@@ -3911,6 +3919,8 @@ if(PELICAN_WITH_CANVAS)
     pelican_define_test(canvas_blend_test pelican_project)
     # CV-5: the ship policy -- static runs folded into images, constants into the shader.
     pelican_define_test(canvas_ship_test pelican_project)
+    # CV-3a: the neighbourhood filters, value edges into the colour filters, a fixed-size output.
+    pelican_define_test(canvas_filter_test pelican_project)
     add_executable(pelican_test_canvas_png_compare canvas_png_compare.cpp)
     set_target_properties(pelican_test_canvas_png_compare PROPERTIES CXX_STANDARD 20)
     target_link_libraries(pelican_test_canvas_png_compare PRIVATE stb pelican_project nlohmann_json)
@@ -3980,6 +3990,23 @@ if(PELICAN_WITH_CANVAS)
     )
     pelican_gpu_test_properties(canvas_text_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
     set_tests_properties(canvas_text_headless_player PROPERTIES
+        SKIP_REGULAR_EXPRESSION PELICAN_CANVAS_TEXT_SKIP_NO_FONT)
+    # CV-3a: an image and a text under filter.blur / drop_shadow / outer_glow
+    # (a radius a curve drives), in a canvas.output of a fixed size, against
+    # the CPU reference at two times (skipped where Arial is not installed).
+    add_test(
+        NAME canvas_filter_headless_player
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
+            -DPLAYER=$<TARGET_FILE:pelican_player>
+            -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+            -DCLI=$<TARGET_FILE:pelican_cli>
+            -DCOMPARE=$<TARGET_FILE:pelican_test_canvas_png_compare>
+            -DFIXTURE=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/canvas_psd
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/canvas_filter_headless
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_canvas_filter_headless.cmake
+    )
+    pelican_gpu_test_properties(canvas_filter_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
+    set_tests_properties(canvas_filter_headless_player PROPERTIES
         SKIP_REGULAR_EXPRESSION PELICAN_CANVAS_TEXT_SKIP_NO_FONT)
     # CV-6a: canvas.place and layer depths -- the lowering and the placement's
     # arithmetic, then a stack placed in a 3D scene, its frames held against

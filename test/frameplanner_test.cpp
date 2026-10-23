@@ -8,9 +8,17 @@
 #include "../src/project/renderconfigsection.hpp"
 #include "../src/core/renderingpass/renderingpassconfigjsonparser.hpp"
 #include "../src/core/renderingpass/renderingpassjsonhelpers.hpp"
+#include "../src/core/renderingpass/renderingsamplecount.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
+#include "../src/project/targetrendermemory.hpp"
+#include "../src/core/renderingpass/rendertargetmetadata.hpp"
 #include "../src/core/renderingpass/rendertargetmetadataresolver.hpp"
 #include "../src/core/renderingpass/rendertargetnameresolver.hpp"
+#include "../src/core/renderingpass/renderpipelinegpuarena.hpp"
+#include "../src/core/container.hpp"
+#include "../src/core/loader/pathresolver.hpp"
+#include "../src/core/vkcore/renderer.hpp"
+#include "registered_render_targets_test_support.hpp"
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <algorithm>
@@ -19,6 +27,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -2732,6 +2741,376 @@ TEST_CASE("PS-1 a once node runs on a new generation, a request, a recreated out
     CHECK(step(2) == Ran{{"h0", "generation"}, {"twiddle", "generation"}, {"apart", "generation"}});
     CHECK(step(2).empty());
     CHECK(last.at("apart").generation == 2);
+}
+
+namespace {
+
+// RC-1: the shipping example's physical plan as the engine makes it for a
+// B8G8R8A8_SRGB output of `width` x `height`, with the definitions it was
+// planned from. The format classes are resolved as the runtime package
+// resolves them (vulkanrendercompilerprogram's normalize_config): a scene
+// target takes the output's colour format (HDR off) and the display target
+// the output's extent; every other target follows its extent_scale.
+// RC-1b: and the definitions as the runtime registers them -- all of them,
+// with the alias groups the runtime keeps (applyRenderingTargetPlan).
+struct Rc1ExamplePlan {
+    std::shared_ptr<const VulkanTargetPlan> plan;
+    std::vector<RenderTargetDefinition> targets;
+    std::vector<RenderTargetDefinition> registered_targets;
+};
+
+Rc1ExamplePlan rc1ExamplePlan(std::uint32_t width, std::uint32_t height) {
+    auto resolved = resolveRenderPipeline(
+        RenderPipelineRequest{
+            .authored_config = readJson(sourceRoot() / "projects" / "example" /
+                                        "passes" / "main_rendering_config.json"),
+            .source_name = "projects/example/passes/main_rendering_config.json",
+        },
+        // Planning compiles no shader; the engine the example ships for has
+        // the runtime compiler its features ask for.
+        RenderEnvironmentCapabilities{
+            .runtime_shader_compiler_enabled = true,
+            .graph_variant = RenderPipelineGraphVariant::flat,
+        },
+        RenderPipelineResolveDependencies{
+            .load_feature_json = loadEngineJsonForWp352,
+            .load_pipeline_json = loadEngineJsonForWp352,
+            .normalize_config =
+                [width, height](const nlohmann::json &config,
+                                const std::vector<std::string> &features) {
+                    return resolveRenderTargetFormatClassesV2(
+                        config, vk::Format::eB8G8R8A8Srgb,
+                        vk::Extent2D{width, height},
+                        std::find(features.begin(), features.end(), "hdr") !=
+                            features.end());
+                },
+        });
+    const auto compiled = compileRenderPipeline(resolved);
+    const auto graphs =
+        parseFrameGraphDefinitionsFromConfigJson(resolved.normalized_config);
+    REQUIRE(graphs.size() == 1);
+    auto targets =
+        parseRenderTargetDefinitionsFromJson(resolved.normalized_config);
+    const auto compilation = compileRenderingTargetPlans(
+        graphs, targets, compiled.sample_count_policy,
+        vk::Format::eB8G8R8A8Srgb,
+        RenderingTargetPlanDeviceFacts{
+            .multiview = true,
+            .max_multiview_view_count = 8,
+            .query_attachment_samples =
+                [](const RenderTargetDefinition &) {
+                    return std::vector<std::uint32_t>{1};
+                },
+            .query_image_format_capability =
+                [](const RenderTargetDefinition &) {
+                    return RenderingImageFormatCapability{
+                        .image_usage_supported = true,
+                        .supported_samples = {1},
+                        .max_mip_levels = 16,
+                        .max_array_layers = 8,
+                        .transient_attachment_supported = true,
+                        .local_read_attachment_supported = true,
+                    };
+                },
+            .transient_attachments = true,
+            .dynamic_rendering_local_read = true,
+        },
+        std::nullopt, std::nullopt, compiled.target_planning,
+        compiled.vulkan_plan_pins, compiled.vulkan_physical_fragments);
+    REQUIRE(compilation.plans.size() == 1);
+    auto registered_targets = targets;
+    applyRenderingTargetPlan(registered_targets, compilation);
+    return {compilation.plans.front(), std::move(targets),
+            std::move(registered_targets)};
+}
+
+} // namespace
+
+TEST_CASE("RC-1 every format a render target can be authored with has a texel size",
+          "[frameplanner][rc1][memory]") {
+    // RC-1b: imageFormats() is the render target parser's own list (every
+    // format_class resolves to one of its names), so a format the texel
+    // table misses fails here, not as a silent 0 in a frame's total.
+    for (const auto &[name, format] : imageFormats()) {
+        INFO(name);
+        CHECK(stringToFormat(name) == format);
+        CHECK(imageFormatTexelBytes(vk::to_string(format)) > 0);
+    }
+    CHECK(imageFormatTexelBytes(vk::to_string(vk::Format::eR8Unorm)) == 1);
+    CHECK(imageFormatTexelBytes(vk::to_string(vk::Format::eD24UnormS8Uint)) == 4);
+    CHECK(imageFormatTexelBytes(vk::to_string(vk::Format::eB10G11R11UfloatPack32)) == 4);
+    CHECK(imageFormatTexelBytes(vk::to_string(vk::Format::eR16G16B16A16Sfloat)) == 8);
+    CHECK(imageFormatTexelBytes(vk::to_string(vk::Format::eR32G32B32A32Uint)) == 16);
+}
+
+TEST_CASE("RC-1 a registered target declares the bytes of the images registration made",
+          "[frameplanner][rc1][memory]") {
+    // What the GPU arena declares for a render target. A 4x MSAA history
+    // target at 32x32: per surface, the resolved R16G16B16A16 image
+    // (8 x 1024 bytes) and the 4x image it renders into (4 x 8 x 1024).
+    CHECK(renderTargetBytes(RenderTargetMetadata{
+              .name = "lit_color",
+              .format = vk::Format::eR16G16B16A16Sfloat,
+              .extent = {32, 32},
+              .history = true,
+              .samples = 4,
+          }) == 2 * (8 * 1024 + 4 * 8 * 1024));
+    // A cube with its full chain at 16x16: six faces of 256 + 64 + 16 + 4 + 1
+    // texels.
+    CHECK(renderTargetBytes(RenderTargetMetadata{
+              .format = vk::Format::eR8G8B8A8Unorm,
+              .extent = {16, 16},
+              .mip_levels = 5,
+              .array_layers = 6,
+          }) == 4 * 6 * (256 + 64 + 16 + 4 + 1));
+}
+
+TEST_CASE("RC-1 the example's render targets at 1920x1080 take 125,776,320 bytes, "
+          "85,017,600 of them alive at lighting_pass",
+          "[frameplanner][rc1][memory]") {
+    const auto example = rc1ExamplePlan(1920, 1080);
+    const auto &plan = *example.plan;
+    const auto surfaces = [&](std::string_view name) {
+        const auto target = std::find_if(
+            example.targets.begin(), example.targets.end(),
+            [&](const RenderTargetDefinition &definition) {
+                return definition.name == name;
+            });
+        REQUIRE(target != example.targets.end());
+        return target->history ? 2u : 1u;
+    };
+    const auto summary = summarizeVulkanTargetPlanMemory(
+        plan, [&](const VulkanPhysicalResourcePlan &resource) {
+            REQUIRE(resource.extent.has_value());
+            return vulkanPhysicalResourceBytes(
+                resource,
+                {resolveResourceExtent(*resource.extent, {1920, 1080}),
+                 surfaces(resource.logical_resource)});
+        });
+
+    // Counted by hand: texel bytes x extent, one mip, one layer, one sample,
+    // no history. The bloom chain halves 1920x1080 down to 120x67 (the
+    // extent rule truncates 67.5).
+    constexpr std::uint64_t full = 1920 * 1080;
+    const std::map<std::string, std::uint64_t, std::less<>> expected{
+        {"gbuffer_albedo", 4 * full},
+        {"g_emissive", 4 * full},
+        {"gbuffer_material", 4 * full},
+        {"gbuffer_normal", 8 * full},
+        {"gbuffer_worldpos", 8 * full},
+        {"offscreen_depth", 4 * full},
+        {"ssao_output", 1 * full},
+        {"ssao_blur", 1 * full},
+        {"lit_color", 8 * full},
+        {"opaque_color", 8 * full},
+        {"opaque_depth", 4 * full},
+        {"Bloom_Threshold_RT", 4 * full},
+        {"Bloom_Downsample_H_0_RT", 4 * 960 * 540},
+        {"Bloom_Upsample_V_0_RT", 4 * 960 * 540},
+        {"Bloom_Downsample_H_1_RT", 4 * 480 * 270},
+        {"Bloom_Upsample_V_1_RT", 4 * 480 * 270},
+        {"Bloom_Downsample_H_2_RT", 4 * 240 * 135},
+        {"Bloom_Upsample_V_2_RT", 4 * 240 * 135},
+        {"Bloom_Downsample_H_3_RT", 4 * 120 * 67},
+        {"Bloom_Upsample_V_3_RT", 4 * 120 * 67},
+        {"display", 4 * full},
+    };
+    std::size_t counted = 0;
+    for (std::size_t index = 0; index < plan.resources.size(); ++index) {
+        const auto &name = plan.resources[index].logical_resource;
+        INFO(name);
+        if (name == "swapchain") {
+            CHECK_FALSE(summary.resource_bytes[index].has_value());
+            continue;
+        }
+        REQUIRE(expected.contains(name));
+        CHECK(summary.resource_bytes[index] == expected.at(name));
+        ++counted;
+    }
+    CHECK(counted == expected.size());
+
+    // RC-1b: the total is what registration makes of the definitions: every
+    // one of them, with the alias groups the runtime keeps. The example
+    // declares no target its graph leaves unused, and its one graph keeps
+    // its one alias group: g_emissive's allocation, shared with the bloom
+    // threshold, so the 21 images take 20 allocations.
+    REQUIRE(plan.alias_groups.size() == 1);
+    CHECK(plan.alias_groups.front().resources ==
+          std::vector<std::string>{"Bloom_Threshold_RT", "g_emissive"});
+    const auto registered = test_support::registerRenderTargetsWithoutDevice(
+        example.registered_targets, {1920, 1080});
+    CHECK(registered.size() == expected.size());
+    const auto memory = test_support::registeredTargetMemoryOf(
+        registered, [&](std::string_view name) {
+            return std::any_of(plan.resources.begin(), plan.resources.end(),
+                               [&](const VulkanPhysicalResourcePlan &resource) {
+                                   return resource.logical_resource == name;
+                               });
+        });
+    for (const auto &target : memory) {
+        INFO(target.name);
+        REQUIRE(expected.contains(target.name));
+        // Registration makes what the plan counted.
+        CHECK(target.bytes == expected.at(target.name));
+        CHECK(target.alias_group.has_value() ==
+              (target.name == "g_emissive" ||
+               target.name == "Bloom_Threshold_RT"));
+    }
+    const auto total = totalRegisteredTargetMemory(memory);
+    CHECK(total.total_bytes == 125'776'320); // 119.95 MiB
+    CHECK(total.unused_bytes == 0);
+    CHECK(total.unused_resources.empty());
+    // lighting_pass (order 3) reads the five G-buffer targets, the depth and
+    // the blurred SSAO while it writes lit_color.
+    CHECK(summary.peak_live_bytes == 85'017'600); // 81.08 MiB
+    CHECK(summary.peak_order == 3);
+    CHECK(summary.peak_node == "lighting_pass");
+}
+
+TEST_CASE("RC-1 get_frame_plan reports what the published generation registered, as it is "
+          "now, through the renderer's frame plan",
+          "[frameplanner][rc1][memory][production-seam]") {
+    // The example's plan at 1920x1080, published the way registration
+    // publishes it: its definitions registered (plus one no graph uses), the
+    // generation's GPU arena listing them with the bytes registration
+    // declared, and the program bound to them by name. The CPU seam stands in
+    // for the RenderTargetContainer (it needs a device); everything from the
+    // published generation to the JSON is the renderer's own.
+    const auto example = rc1ExamplePlan(1920, 1080);
+    auto definitions = example.registered_targets;
+    definitions.push_back(RenderTargetDefinition{
+        .name = "rc1b_unused",
+        .format_class = "data",
+        .fixed_extent = vk::Extent2D{64, 64},
+        .format = vk::Format::eR8Unorm,
+        .usage = vk::ImageUsageFlagBits::eColorAttachment |
+                 vk::ImageUsageFlagBits::eSampled,
+    });
+    const auto registered = test_support::registerRenderTargetsWithoutDevice(
+        definitions, {1920, 1080});
+
+    std::map<int, RegisteredRenderTargetFacts> facts;
+    std::unordered_map<std::string, GlobalRenderTargetId> bindings;
+    RenderPipelineGpuScopePreparation scope;
+    scope.owner_scope = "rc1b";
+    for (std::size_t index = 0; index < registered.size(); ++index) {
+        const GlobalRenderTargetId id{static_cast<int>(100 + index)};
+        const auto &target = registered[index];
+        facts.emplace(id.value, RegisteredRenderTargetFacts{
+                                    target.metadata, target.alias_group});
+        bindings.emplace(target.metadata.name, id);
+        scope.resources.push_back(RenderPipelineGpuResourceRegistration{
+            .kind = RenderPipelineGpuResourceKind::render_target,
+            .handle = id.value,
+            .name = target.metadata.name,
+            .declared_bytes = renderTargetBytes(target.metadata),
+        });
+    }
+    // The physical plan without its runtime resolution: the extents of its
+    // resolution sources are the RenderTargetContainer's to say.
+    auto target_plan = std::make_shared<VulkanTargetPlan>(*example.plan);
+    target_plan->resolution_plan.reset();
+    const auto graph_name = target_plan->graph;
+    REQUIRE_FALSE(graph_name.empty());
+
+    constexpr RenderingPassId pass_id{57};
+    FastModuleContainer modules;
+    GET_MODULE(PathResolver).setup(sourceRoot() / "projects" / "example",
+                                   false);
+    auto &runtime = GET_MODULE(FrameGraphRuntimeContainer);
+    CompiledRenderingPass rendering_pass;
+    rendering_pass.name = "rc1b_example";
+    FramePlan frame_plan;
+    frame_plan.name = graph_name;
+    std::vector<RenderPipelineProgramPreparation> programs;
+    programs.push_back(RenderPipelineProgramPreparation{
+        .rendering_pass = std::move(rendering_pass),
+        .frame_plan = std::move(frame_plan),
+        .render_pipeline = std::make_shared<CompiledRenderPipeline>(),
+        .target_plan = target_plan,
+        .render_target_bindings = bindings,
+        .rendering_pass_id = pass_id,
+    });
+    runtime.publishPreparedGeneration(
+        runtime.prepareGeneration(std::move(programs), std::nullopt,
+                                  std::move(scope)));
+
+    const auto lookup =
+        [&facts](GlobalRenderTargetId id)
+        -> std::optional<RegisteredRenderTargetFacts> {
+        const auto found = facts.find(id.value);
+        if (found == facts.end()) return std::nullopt;
+        return found->second;
+    };
+    Renderer renderer{RendererFramePlanCpuSeam{.render_targets = lookup},
+                      pass_id};
+    const auto declared = [](const nlohmann::json &frame_plan) {
+        std::map<std::string, std::uint64_t> bytes;
+        for (const auto &arena_scope :
+             frame_plan.at("gpu_resource_arena").at("scopes")) {
+            for (const auto &resource : arena_scope.at("resources")) {
+                if (resource.at("kind") != "render_target") continue;
+                bytes.emplace(resource.at("name").get<std::string>(),
+                              resource.at("declared_bytes")
+                                  .get<std::uint64_t>());
+            }
+        }
+        return bytes;
+    };
+    const auto physical_bytes = [](const nlohmann::json &frame_plan,
+                                   std::string_view name) {
+        for (const auto &resource :
+             frame_plan.at("physical_target_plan").at("resources")) {
+            if (resource.at("logical_resource").get<std::string>() == name) {
+                return resource.at("bytes").get<std::uint64_t>();
+            }
+        }
+        FAIL("no physical resource " << name);
+        return std::uint64_t{0};
+    };
+
+    const auto before = renderer.currentFramePlanJson();
+    REQUIRE(before.contains("memory_summary"));
+    // The example's 125,776,320 bytes and the 64x64 R8 target no graph uses,
+    // which registration allocated all the same.
+    CHECK(before.at("memory_summary") ==
+          nlohmann::json{{"total_bytes", 125'776'320 + 4'096},
+                         {"unused_bytes", 4'096},
+                         {"unused_resources", nlohmann::json::array({"rc1b_unused"})},
+                         {"peak_live_bytes", 85'017'600},
+                         {"peak_node", "lighting_pass"},
+                         {"peak_graph", graph_name}});
+    const auto declared_before = declared(before);
+    CHECK(declared_before.size() == registered.size());
+    CHECK(declared_before.at("lit_color") == 16'588'800);
+    CHECK(declared_before.at("rc1b_unused") == 4'096);
+    CHECK(physical_bytes(before, "lit_color") == 16'588'800);
+
+    // The image is made anew under the same id with three layers
+    // (setRuntimeArrayLayers): the arena still holds the bytes registration
+    // declared, the frame plan says what the image takes now.
+    facts.at(bindings.at("rc1b_unused").value).metadata.array_layers = 3;
+    facts.at(bindings.at("lit_color").value).metadata.array_layers = 2;
+    const auto after = renderer.currentFramePlanJson();
+    const auto declared_after = declared(after);
+    CHECK(declared_after.at("rc1b_unused") == 3 * 4'096);
+    CHECK(declared_after.at("lit_color") == 2 * 16'588'800);
+    CHECK(physical_bytes(after, "lit_color") == 2 * 16'588'800);
+    CHECK(after.at("memory_summary").at("total_bytes") ==
+          125'776'320 + 16'588'800 + 3 * 4'096);
+    CHECK(after.at("memory_summary").at("unused_bytes") == 3 * 4'096);
+    CHECK(after.at("memory_summary").at("peak_live_bytes") ==
+          85'017'600 + 16'588'800);
+
+    // A target the arena lists that no live registration holds is a broken
+    // invariant, named, never a smaller total.
+    facts.erase(bindings.at("ssao_blur").value);
+    CHECK_THROWS_WITH(
+        renderer.currentFramePlanJson(),
+        Catch::Matchers::ContainsSubstring(
+            "frame_plan.memory_unmeasured@1") &&
+            Catch::Matchers::ContainsSubstring("ssao_blur") &&
+            Catch::Matchers::ContainsSubstring("not_registered"));
 }
 
 } // namespace Pelican

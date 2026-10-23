@@ -53,6 +53,7 @@
 #include "../renderingpass/renderingpassjsonhelpers.hpp"
 #include "../renderingpass/rendertargetimageviewresolver.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
+#include "../renderingpass/rendertargetmemory.hpp"
 #include "../renderingpass/vulkannativescopeexecutor.hpp"
 #include "../loader/scene.hpp"
 #include "../ecs/core.hpp"
@@ -63,6 +64,7 @@
 #include "../appflow/enginetime.hpp"
 #include "../../project/audioanalysisformat.hpp"
 #include "../../project/frameresolutionwire.hpp"
+#include "../../project/targetrendermemory.hpp"
 #include "../../project/vulkanviewplanning.hpp"
 #include "deletionqueue.hpp"
 #include "core.hpp"
@@ -94,6 +96,8 @@
 #include <stdexcept>
 #include <string_view>
 #include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
 #include <variant>
 
 namespace Pelican {
@@ -1112,61 +1116,10 @@ nlohmann::json anchorNodeTrace(const std::string &name, size_t order) {
     return nlohmann::json{{"name", name}, {"kind", "anchor"}, {"order", order}};
 }
 
+// RC-1: the planner's texel table is the engine's one table (the physical
+// plan names formats as vk::to_string does).
 std::size_t formatTexelBytes(vk::Format format) {
-    switch (format) {
-    case vk::Format::eR8Unorm:
-    case vk::Format::eR8Snorm:
-    case vk::Format::eR8Uint:
-    case vk::Format::eR8Sint:
-        return 1;
-    case vk::Format::eR8G8Unorm:
-    case vk::Format::eR8G8Snorm:
-    case vk::Format::eR8G8Uint:
-    case vk::Format::eR8G8Sint:
-    case vk::Format::eR16Sfloat:
-    case vk::Format::eR16Unorm:
-    case vk::Format::eR16Snorm:
-    case vk::Format::eR16Uint:
-    case vk::Format::eR16Sint:
-    case vk::Format::eD16Unorm:
-        return 2;
-    case vk::Format::eR8G8B8A8Unorm:
-    case vk::Format::eR8G8B8A8Snorm:
-    case vk::Format::eR8G8B8A8Uint:
-    case vk::Format::eR8G8B8A8Sint:
-    case vk::Format::eR8G8B8A8Srgb:
-    case vk::Format::eB8G8R8A8Unorm:
-    case vk::Format::eB8G8R8A8Srgb:
-    case vk::Format::eA2B10G10R10UnormPack32:
-    case vk::Format::eA2R10G10B10UnormPack32:
-    case vk::Format::eB10G11R11UfloatPack32:
-    case vk::Format::eR16G16Unorm:
-    case vk::Format::eR16G16Snorm:
-    case vk::Format::eR16G16Uint:
-    case vk::Format::eR16G16Sint:
-    case vk::Format::eR16G16Sfloat:
-    case vk::Format::eR32Uint:
-    case vk::Format::eR32Sint:
-    case vk::Format::eR32Sfloat:
-    case vk::Format::eD24UnormS8Uint:
-    case vk::Format::eD32Sfloat:
-        return 4;
-    case vk::Format::eR16G16B16A16Unorm:
-    case vk::Format::eR16G16B16A16Snorm:
-    case vk::Format::eR16G16B16A16Uint:
-    case vk::Format::eR16G16B16A16Sint:
-    case vk::Format::eR16G16B16A16Sfloat:
-    case vk::Format::eR32G32Uint:
-    case vk::Format::eR32G32Sint:
-    case vk::Format::eR32G32Sfloat:
-    case vk::Format::eD32SfloatS8Uint:
-        return 8;
-    case vk::Format::eR32G32B32A32Uint:
-    case vk::Format::eR32G32B32A32Sint:
-    case vk::Format::eR32G32B32A32Sfloat:
-        return 16;
-    default: return 0;
-    }
+    return imageFormatTexelBytes(vk::to_string(format));
 }
 
 vk::ImageAspectFlags snapshotAspect(vk::Format format) {
@@ -3364,9 +3317,10 @@ nlohmann::json Renderer::renderPipelineStatusJson() const {
     return status;
 }
 
-Renderer::Renderer(RendererFramePlanCpuSeam,
+Renderer::Renderer(RendererFramePlanCpuSeam seam,
                    RenderingPassId rendering_pass_id)
     : current_rendering_pass_id{rendering_pass_id},
+      cpu_seam_render_targets{std::move(seam.render_targets)},
       flat_rendering_pass_id{rendering_pass_id} {}
 
 Renderer::~Renderer() {
@@ -4513,6 +4467,122 @@ nlohmann::json framePlanGenerationPartJson(
     return result;
 }
 
+// RC-1b: get_frame_plan's refusal when it cannot count an image it must,
+// "frame_plan.memory_unmeasured@1: {resource, reason}" -- reason "unbound"
+// (a planned image without a render target binding) or "not_registered" (an
+// id no live registration holds). A registered generation binds every image
+// its plans hold (the planner refuses an image without a definition, and
+// registration registers every definition) and keeps its arena's targets
+// alive, so either one is a broken invariant, never a partial summary.
+constexpr std::string_view framePlanMemoryUnmeasuredCode =
+    "frame_plan.memory_unmeasured@1";
+
+[[noreturn]] void throwFramePlanMemoryUnmeasured(std::string_view resource,
+                                                 std::string_view reason) {
+    throw std::runtime_error(
+        std::string{framePlanMemoryUnmeasuredCode} + ": " +
+        nlohmann::json{{"resource", resource}, {"reason", reason}}.dump());
+}
+
+// RC-1 / RC-1b: what the generation's render targets occupy now, on the
+// frame plan of `program`:
+// - the arena's render targets declare their bytes now: the copy taken at
+//   registration goes stale when an image is made anew under the same id
+//   (runtime array layers, an extent recreated without a relower);
+// - memory_summary counts every render target the generation's arena
+//   registered, an alias group's shared images once (the registry's token),
+//   whether a graph uses it or not, and names the ones none uses;
+// - each physical image's bytes and the peak are this graph's plan's.
+void appendFramePlanMemoryJson(
+    nlohmann::json &result,
+    const RendererRuntimeGeneration &generation,
+    const CompiledRenderProgram &program,
+    const RegisteredRenderTargetLookup &registered) {
+    const auto facts_of = [&](GlobalRenderTargetId id,
+                              std::string_view name) {
+        auto facts = registered(id);
+        if (!facts) throwFramePlanMemoryUnmeasured(name, "not_registered");
+        return std::move(*facts);
+    };
+    // The targets some graph of the generation uses: its plans' images (and,
+    // under OpenXR, the mirror's intermediate the engine copies into outside
+    // any graph).
+    std::unordered_set<int> used;
+    for (const auto &[id, other] : generation.programs) {
+        (void)id;
+        const auto &graph = other.frame_graph;
+        const auto bound = [&](const std::string &name) {
+            const auto binding = graph.render_target_bindings.find(name);
+            if (binding != graph.render_target_bindings.end() &&
+                isConcreteRenderTarget(binding->second)) {
+                used.insert(binding->second.value);
+            }
+        };
+        if (graph.target_plan != nullptr) {
+            for (const auto &resource : graph.target_plan->resources) {
+                if (vulkanPhysicalResourceIsPlannedImage(resource)) {
+                    bound(resource.logical_resource);
+                }
+            }
+        }
+#if PELICAN_WITH_OPENXR
+        bound(std::string{OpenXr::xr_mirror_intermediate_name});
+#endif
+    }
+    // Every render target the generation registered, once, as it is now.
+    std::vector<RegisteredTargetMemory> allocated;
+    std::unordered_map<std::int64_t, std::uint64_t> bytes_by_handle;
+    if (generation.gpu_arena != nullptr) {
+        for (const auto &scope : generation.gpu_arena->scopes) {
+            for (const auto &resource : scope.resources) {
+                if (resource.kind !=
+                        RenderPipelineGpuResourceKind::render_target ||
+                    bytes_by_handle.contains(resource.handle)) {
+                    continue;
+                }
+                const GlobalRenderTargetId id{
+                    static_cast<int>(resource.handle)};
+                const auto facts = facts_of(id, resource.name);
+                auto memory = registeredRenderTargetMemory(
+                    facts.metadata, facts.alias_group,
+                    used.contains(id.value));
+                bytes_by_handle.emplace(resource.handle, memory.bytes);
+                allocated.push_back(std::move(memory));
+            }
+        }
+    }
+    if (const auto arena = result.find("gpu_resource_arena");
+        arena != result.end() && arena->is_object()) {
+        for (auto &scope : arena->at("scopes")) {
+            for (auto &resource : scope.at("resources")) {
+                if (resource.at("kind") != "render_target") continue;
+                resource["declared_bytes"] = bytes_by_handle.at(
+                    resource.at("handle").get<std::int64_t>());
+            }
+        }
+    }
+
+    const auto &frame_graph = program.frame_graph;
+    if (frame_graph.target_plan == nullptr) return;
+    const auto summary = summarizeVulkanTargetPlanMemory(
+        *frame_graph.target_plan,
+        [&](const VulkanPhysicalResourcePlan &resource) -> std::uint64_t {
+            const auto binding = frame_graph.render_target_bindings.find(
+                resource.logical_resource);
+            if (binding == frame_graph.render_target_bindings.end() ||
+                !isConcreteRenderTarget(binding->second)) {
+                throwFramePlanMemoryUnmeasured(resource.logical_resource,
+                                               "unbound");
+            }
+            return renderTargetBytes(
+                facts_of(binding->second, resource.logical_resource)
+                    .metadata);
+        });
+    appendVulkanTargetPlanMemoryJson(
+        result, *frame_graph.target_plan, summary,
+        totalRegisteredTargetMemory(allocated));
+}
+
 } // namespace
 
 nlohmann::json Renderer::currentFramePlanJson() const {
@@ -4822,6 +4892,33 @@ nlohmann::json Renderer::currentFramePlanJson() const {
                             .height = extent.height,
                         };
                     }));
+    }
+    // RC-1: the bytes each physical image occupies now -- the image
+    // registration made, at its current extent -- and the most of them
+    // alive at one node (memory_summary). RC-1b: the total is what the
+    // generation registered, and the arena's render targets declare their
+    // bytes now. The CPU seam stands in for the registry.
+    if (const auto *render_targets =
+            FastModuleContainer::tryGet<RenderTargetContainer>()) {
+        std::unordered_set<int> live;
+        for (const auto &[name, id] :
+             render_targets->registrationsSince({})) {
+            (void)name;
+            live.insert(id.value);
+        }
+        appendFramePlanMemoryJson(
+            result, *generation, *program,
+            [render_targets, &live](GlobalRenderTargetId id)
+                -> std::optional<RegisteredRenderTargetFacts> {
+                if (!live.contains(id.value)) return std::nullopt;
+                return RegisteredRenderTargetFacts{
+                    render_targets->getMetadata(id),
+                    render_targets->aliasGroup(id),
+                };
+            });
+    } else if (cpu_seam_render_targets) {
+        appendFramePlanMemoryJson(result, *generation, *program,
+                                  cpu_seam_render_targets);
     }
     if (frame_graph->render_pipeline != nullptr &&
         frame_graph->render_pipeline

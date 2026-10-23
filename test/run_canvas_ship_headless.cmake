@@ -227,3 +227,99 @@ foreach(file IN LISTS shipped_files)
         message(FATAL_ERROR "the second ship lowering wrote ${file} differently")
     endif()
 endforeach()
+
+# CV-3a: a static run that holds a neighbourhood filter is folded the same
+# way -- the fixture's background blurred (radius 2) under a moving disc. The
+# run (the blurred background) becomes one image drawn by the player, blur
+# and all, and no filter is shipped; the shipped frames are held against the
+# edit-lowered ones at two times, within 1/255 on every pixel.
+set(authored "${OUT_DIR}/blur_authored")
+execute_process(
+    COMMAND "${CLI}" project init "${authored}" --template blank
+    RESULT_VARIABLE init_result
+    OUTPUT_VARIABLE init_stdout
+    ERROR_VARIABLE init_stderr)
+if(NOT init_result EQUAL 0)
+    message(FATAL_ERROR "project init failed (${init_result})\n${init_stdout}\n${init_stderr}")
+endif()
+file(READ "${authored}/project.json" project)
+string(JSON project SET "${project}" requires "[\"canvas\"]")
+file(WRITE "${authored}/project.json" "${project}")
+file(COPY "${FIXTURE}/layers" DESTINATION "${authored}/imports/psd_fixture")
+file(WRITE "${authored}/passes/main_rendering_config.json" [=[
+{
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {},
+  "nodes": [
+    {"id": "clock", "op": "value.input", "parameters": {"name": "time"}, "inputs": {}, "outputs": ["value"]},
+    {"id": "circle_x", "op": "value.curve",
+     "parameters": {"keys": [{"time": 0, "value": 8}, {"time": 1, "value": 56}]},
+     "inputs": {"time": {"node": "clock", "port": "value"}}, "outputs": ["value"]},
+    {"id": "background", "op": "canvas.image",
+     "parameters": {"asset": "project://imports/psd_fixture/layers/0000_Background.png", "offset": [0, 0], "size": [64, 32]},
+     "inputs": {}, "outputs": ["layer"]},
+    {"id": "background_blur", "op": "filter.blur", "parameters": {"radius": 2},
+     "inputs": {"layer": {"node": "background", "port": "layer"}}, "outputs": ["layer"]},
+    {"id": "circle", "op": "shape.ellipse", "parameters": {"size": [12, 12], "center": [8, 16]},
+     "inputs": {"center.x": {"node": "circle_x", "port": "value"}}, "outputs": ["geometry"]},
+    {"id": "circle_fill", "op": "shape.fill", "parameters": {"color": [1.0, 0.35, 0.1, 0.85]},
+     "inputs": {"geometry": {"node": "circle", "port": "geometry"}}, "outputs": ["layer"]},
+    {"id": "root", "op": "canvas.stack",
+     "parameters": {"size": [64, 32], "layers": [{"input": "blurred", "name": "Blurred"}, {"input": "disc", "name": "Disc"}]},
+     "inputs": {"blurred": {"node": "background_blur", "port": "layer"}, "disc": {"node": "circle_fill", "port": "layer"}},
+     "outputs": ["layer"]},
+    {"id": "out", "op": "canvas.output", "parameters": {"fit": "stretch"},
+     "inputs": {"layer": {"node": "root", "port": "layer"}}, "outputs": ["image"]}
+  ],
+  "outputs": {},
+  "rendering": {
+    "rendering_passes": [
+      {
+        "name": "main_render",
+        "passes": [
+          {
+            "name": "present",
+            "type": "fullscreen",
+            "input": ["out$canvas_image"],
+            "output": {"color": ["display"], "depth": null},
+            "shader": {"vertex": "engine://fullscreen", "fragment": "engine://passthrough"}
+          }
+        ]
+      }
+    ]
+  }
+}
+]=])
+lower("${OUT_DIR}/blur_edit")
+lower("${OUT_DIR}/blur_ship" --policy ship --player "${PLAYER}")
+set(blur_report "${report}")
+message(STATUS "canvas-lower --policy ship (blur): ${blur_report}")
+string(JSON flattened LENGTH "${blur_report}" flattened)
+if(NOT flattened EQUAL 1)
+    message(FATAL_ERROR "expected the blurred background folded into one image\n${blur_report}")
+endif()
+string(JSON layers GET "${blur_report}" flattened 0 layers)
+string(JSON reason GET "${blur_report}" flattened 0 reason)
+string(REGEX REPLACE "[ \n]" "" layers "${layers}")
+if(NOT layers STREQUAL "[\"Blurred\"]" OR NOT reason STREQUAL "static_from_bottom")
+    message(FATAL_ERROR "the folded run is ${layers} (${reason}), not [\"Blurred\"] (static_from_bottom)")
+endif()
+file(READ "${OUT_DIR}/blur_ship/passes/main_rendering_config.json" shipped)
+if(shipped MATCHES "\"op\": \"(canvas|shape|filter)\." OR shipped MATCHES "canvas_blur")
+    message(FATAL_ERROR "the shipped document still draws the blur: ${CMAKE_MATCH_0}")
+endif()
+draw("${OUT_DIR}/blur_edit" "${OUT_DIR}/blur_edit_frames")
+draw("${OUT_DIR}/blur_ship" "${OUT_DIR}/blur_ship_frames")
+foreach(frame IN ITEMS 0001 0031)
+    execute_process(
+        COMMAND "${COMPARE}" none out "${OUT_DIR}/blur_ship_frames/${frame}.png" --tolerance 1 --min-fraction 1
+                --against "${OUT_DIR}/blur_edit_frames/${frame}.png"
+        RESULT_VARIABLE compare_result
+        OUTPUT_VARIABLE compare_stdout
+        ERROR_VARIABLE compare_stderr)
+    message(STATUS "blur frame ${frame}, ship against edit: ${compare_stdout}")
+    if(NOT compare_result EQUAL 0)
+        message(FATAL_ERROR "blur frame ${frame} differs (${compare_result})\n${compare_stdout}${compare_stderr}")
+    endif()
+endforeach()

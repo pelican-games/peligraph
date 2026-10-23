@@ -579,12 +579,19 @@ RenderPipelineGpuRegistrationArena::preparedScope(
                 declared_bytes});
     };
 
+    // RC-1: a render target declares the bytes of the images registration
+    // made (the planner's arithmetic over its format, extent, mips, layers,
+    // samples and history). Shader bundles, pipelines and passes hold no
+    // VRAM of their own and declare 0.
     for (const auto &[name, id] :
          impl_->dependencies.render_targets
              .registrationsSince(
                  impl_->render_target_checkpoint)) {
         append(RenderPipelineGpuResourceKind::render_target,
-               id.value, name);
+               id.value, name,
+               renderTargetBytes(
+                   impl_->dependencies.render_targets.getMetadata(
+                       id)));
     }
     for (const auto &[name, id, bytes] :
          impl_->dependencies.frame_graph_buffers

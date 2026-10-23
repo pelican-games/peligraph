@@ -77,7 +77,12 @@ class GraphCanvasModel;
 // `.field.boxWidth` and `.field.textStroke`; every picked row has its filters
 // (`.field.filter`, `.field.addFilter` with `.addFilter.<kind>`,
 // `.field.removeFilter`) and the picked filter's parameters
-// (`.field.filter.<parameter>`, `.field.filter.colorPick`). With no row
+// (`.field.filter.<parameter>`, `.field.filter.colorPick`; CV-3a: + Filter
+// also offers Gaussian Blur, Drop Shadow and Outer Glow, whose fields are
+// `.field.filter.<kind>.<parameter>` -- `blur.radius`, `blur.maxRadius`,
+// `drop_shadow.offset.x`, `drop_shadow.radius`, `drop_shadow.maxRadius`,
+// `drop_shadow.spread`, `drop_shadow.opacity`, `drop_shadow.colorPick`, and
+// outer_glow's the same less the offset). With no row
 // picked: `.placeTarget` and `.placeInScene` (enabled only when the document
 // has a material pass), and for a stack placed in 3D its canvas.place's
 // fields (`.field.place.<parameter>[.<component>]`).
@@ -159,7 +164,11 @@ class GraphCanvasLayersPanel final : public QWidget {
     void commitFilterJson(const char *key, QLineEdit *field);
     void commitPlace(const char *key, const nlohmann::json &value);
     [[nodiscard]] std::string shownPlace() const;
-    QMenu *filterMenu(const char *prefix, std::function<void(const std::string &op)> chosen);
+    QMenu *filterMenu(const char *prefix, const std::vector<GraphCanvasFilterChoice> &choices,
+                      std::function<void(const std::string &op)> chosen);
+    // CV-3a: a filter's colour from the colour dialog, and its max_radius (0: none).
+    void pickFilterColor(const char *title);
+    void commitFilterLimit(double value);
 
     GraphCanvasModel &model_;
     std::function<void()> submitted_;
@@ -278,6 +287,21 @@ class GraphCanvasLayersPanel final : public QWidget {
     QLineEdit *stops_ = nullptr;
     QCheckBox *reversed_ = nullptr;
     QPushButton *overlay_pick_ = nullptr;
+    // CV-3a: Gaussian Blur, Drop Shadow and Outer Glow; a max radius of 0 is
+    // none (written by leaving it out).
+    QDoubleSpinBox *blur_radius_ = nullptr;
+    QDoubleSpinBox *blur_max_radius_ = nullptr;
+    QDoubleSpinBox *shadow_offset_[2] = {};
+    QDoubleSpinBox *shadow_radius_ = nullptr;
+    QDoubleSpinBox *shadow_max_radius_ = nullptr;
+    QDoubleSpinBox *shadow_spread_ = nullptr;
+    QDoubleSpinBox *shadow_opacity_ = nullptr;
+    QPushButton *shadow_color_ = nullptr;
+    QDoubleSpinBox *glow_radius_ = nullptr;
+    QDoubleSpinBox *glow_max_radius_ = nullptr;
+    QDoubleSpinBox *glow_spread_ = nullptr;
+    QDoubleSpinBox *glow_opacity_ = nullptr;
+    QPushButton *glow_color_ = nullptr;
     QWidget *place_row_ = nullptr;
     QComboBox *place_target_ = nullptr;
     QPushButton *place_in_scene_ = nullptr;

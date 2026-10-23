@@ -990,7 +990,7 @@ instances.publishModelInstance(std::move(staged_instance));
 
 ### [`++geometry_address_generation`(index 側)](../../src/core/model/vertbufcontainer.cpp#L344) — 再確保で世代を上げる理由 {#reading-note-042}
 
-**バッファを作り直すとデバイスアドレスが変わり、旧アドレス上に構築された BLAS が無効になる**からです。値は [`geometryAddressGeneration()`](../../src/core/model/vertbufcontainer.hpp#L123) として [renderer 側へ渡され](../../src/core/vkcore/renderer.cpp#L5831)、ray-query のジオメトリ / BLAS キャッシュ無効化キーになります。頂点側とインデックス側で[2 か所](../../src/core/model/vertbufcontainer.cpp#L392)進みます。
+**バッファを作り直すとデバイスアドレスが変わり、旧アドレス上に構築された BLAS が無効になる**からです。値は [`geometryAddressGeneration()`](../../src/core/model/vertbufcontainer.hpp#L123) として [renderer 側へ渡され](../../src/core/vkcore/renderer.cpp#L5928)、ray-query のジオメトリ / BLAS キャッシュ無効化キーになります。頂点側とインデックス側で[2 か所](../../src/core/model/vertbufcontainer.cpp#L392)進みます。
 
 ### [`ReleaseReport`](../../src/core/model/modelresourcerelease.hpp#L36) — 固定容量 8 + overflow_count {#reading-note-043}
 
@@ -1018,7 +1018,7 @@ parse は IO / デコードのみ、[`validate`](../../src/core/asset/model.cpp#
 
 ### [`geometry_allocation_id`](../../src/core/model/modeltemplate.hpp#L99) — 何を識別し、どこで使うか {#reading-note-079}
 
-1 回のジオメトリ suballocation(index / vertex レンジの組)を識別する単調 ID で、[払い出しは vertbufcontainer 側](../../src/core/model/vertbufcontainer.cpp#L461)、[`modeltemplate.hpp` のコメント](../../src/core/model/modeltemplate.hpp#L94)どおり **ray-query の BLAS キャッシュキー**として [renderer](../../src/core/vkcore/renderer.cpp#L5831) 付近で使われます(→ [§9.23.5](09_black_magic_and_gotchas.md#9235-rtacceleration-structuresbtoracle) / [§9.23.8](09_black_magic_and_gotchas.md#9238-vertex--model))。
+1 回のジオメトリ suballocation(index / vertex レンジの組)を識別する単調 ID で、[払い出しは vertbufcontainer 側](../../src/core/model/vertbufcontainer.cpp#L461)、[`modeltemplate.hpp` のコメント](../../src/core/model/modeltemplate.hpp#L94)どおり **ray-query の BLAS キャッシュキー**として [renderer](../../src/core/vkcore/renderer.cpp#L5928) 付近で使われます(→ [§9.23.5](09_black_magic_and_gotchas.md#9235-rtacceleration-structuresbtoracle) / [§9.23.8](09_black_magic_and_gotchas.md#9238-vertex--model))。
 
 ### CRTP(奇妙に再帰したテンプレートパターン)による強い型付けの使用箇所 {#background-usage-03}
 
@@ -1738,7 +1738,7 @@ flowchart TB
     GPU --> DR
     DR --> SNAP["値の snapshot を公開：RPC 読取は再評価しない"]
 ```
-根拠: [`graphcomposition.cpp:2496`](../../src/project/graphcomposition.cpp#L2507)、[`graphpartition.cpp:343`](../../src/project/graphpartition.cpp#L343)、[`featurecompose.cpp:3472`](../../src/project/featurecompose.cpp#L3472) / [`featurecompose.cpp:4104`](../../src/project/featurecompose.cpp#L4104)、[`renderingpassconfigregistration.cpp:1028`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1025)、[`animationsystem.cpp:363`](../../src/core/ecs/predefined/animationsystem.cpp#L395)、[`scenegraphruntime.cpp:350`](../../src/core/loader/scenegraphruntime.cpp#L386)、[`renderer.cpp:6328`](../../src/core/vkcore/renderer.cpp#L6351)。
+根拠: [`graphcomposition.cpp:2496`](../../src/project/graphcomposition.cpp#L2507)、[`graphpartition.cpp:343`](../../src/project/graphpartition.cpp#L343)、[`featurecompose.cpp:3472`](../../src/project/featurecompose.cpp#L3472) / [`featurecompose.cpp:4104`](../../src/project/featurecompose.cpp#L4104)、[`renderingpassconfigregistration.cpp:1028`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1025)、[`animationsystem.cpp:363`](../../src/core/ecs/predefined/animationsystem.cpp#L395)、[`scenegraphruntime.cpp:350`](../../src/core/loader/scenegraphruntime.cpp#L386)、[`renderer.cpp:6328`](../../src/core/vkcore/renderer.cpp#L6448)。
 
 **図の注**: 上半分はデータの依存、下半分は窓ありフレームの順序です。文書の展開・検証・分割は純粋層で行い、GPU や ECS を変更しません。分割は各 consumer の構築時に呼ばれ、1 回の中央 dispatcher ではありません。編集は最後に 1 回展開検証し、失敗時は正本を変更しません。展開 ID / origins は書き戻さず、instance 入力は edge → parameters → default の優先順です。loop は雛形の型検査と合成後の複写を分け、draw_loop は draw queue の実行になります（[ループの図](../manual/06_rendering.md#loop-expansion)）。
 

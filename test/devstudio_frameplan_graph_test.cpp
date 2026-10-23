@@ -49,6 +49,8 @@
 #include "../src/core/vkcore/shaderresolution.hpp"
 #include "../src/project/frameresolutionwire.hpp"
 #include "../src/project/renderpipeline.hpp"
+#include "../src/project/targetrendermemory.hpp"
+#include "registered_render_targets_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -250,6 +252,48 @@ void publishRuntimeResolution(
                 }));
 }
 
+// RC-1: what get_frame_plan adds beside the runtime resolution -- each
+// image's bytes at its extent and the memory summary -- counted by the
+// planner's arithmetic, as the engine counts the images it made. RC-1b: the
+// total is what registration makes of every definition, with the alias
+// groups the runtime keeps.
+void publishMemorySummary(
+    Json &wire, const Pelican::RenderingTargetPlanCompilation &physical,
+    const std::vector<Pelican::RenderTargetDefinition> &targets,
+    Pelican::ResolvedResourceExtent output_extent) {
+    const auto &plan = *physical.plans.front();
+    const auto summary = Pelican::summarizeVulkanTargetPlanMemory(
+        plan, [&](const Pelican::VulkanPhysicalResourcePlan &resource) {
+            if (!resource.extent) {
+                throw std::runtime_error(
+                    "runtime test resolver has no extent contract for " +
+                    resource.logical_resource);
+            }
+            const auto target = std::ranges::find(
+                targets, resource.logical_resource,
+                &Pelican::RenderTargetDefinition::name);
+            return Pelican::vulkanPhysicalResourceBytes(
+                resource,
+                {resolveRuntimeExtent(plan, output_extent,
+                                      resource.logical_resource),
+                 target != targets.end() && target->history ? 2u : 1u});
+        });
+    auto registered_targets = targets;
+    Pelican::applyRenderingTargetPlan(registered_targets, physical);
+    const auto registered =
+        Pelican::test_support::registerRenderTargetsWithoutDevice(
+            registered_targets, {output_extent.width, output_extent.height});
+    const auto memory = Pelican::test_support::registeredTargetMemoryOf(
+        registered, [&](std::string_view name) {
+            return std::ranges::find(
+                       plan.resources, name,
+                       &Pelican::VulkanPhysicalResourcePlan::logical_resource) !=
+                   plan.resources.end();
+        });
+    Pelican::appendVulkanTargetPlanMemoryJson(
+        wire, plan, summary, Pelican::totalRegisteredTargetMemory(memory));
+}
+
 Json resolvedFramePlan(Pelican::ResolvedRenderPipeline resolved,
                        std::string_view label,
                        bool publish_physical_plan = true) {
@@ -293,6 +337,8 @@ Json resolvedFramePlan(Pelican::ResolvedRenderPipeline resolved,
     publishRuntimeResolution(
         wire, *physical.plans.front(),
         Pelican::ResolvedResourceExtent{160, 90});
+    publishMemorySummary(wire, physical, targets,
+                         Pelican::ResolvedResourceExtent{160, 90});
     return wire;
 }
 
@@ -12869,5 +12915,64 @@ TEST_CASE("FX-9 Escape during a deferred socket drag cancels without sending",
     CHECK(f.recorder.submits == 0);
     CHECK(nodeItem(f.logical(), "late_plan") != nullptr);
     CHECK(view.isEnabled());
+}
+
+TEST_CASE("RC-1 the Frame Plan says on its status line what the physical plan's images "
+          "take and where most of them are alive, and each image's bytes",
+          "[devstudio][frame-plan][rc1][memory]") {
+    application();
+    const Json wire = exampleFramePlan(true);
+    REQUIRE(wire.contains("memory_summary"));
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    // The CPU plan's 160x90: the 21 images with g_emissive's allocation,
+    // shared with the bloom threshold, once; lighting_pass holds the five
+    // G-buffer targets, the depth, the blurred SSAO and lit_color.
+    CHECK(wire.at("memory_summary") == Json{{"total_bytes", 873200},
+                                            {"unused_bytes", 0},
+                                            {"unused_resources", Json::array()},
+                                            {"peak_live_bytes", 590400},
+                                            {"peak_node", "lighting_pass"},
+                                            {"peak_graph", "main_render"}});
+#endif
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    widget.receiveResult(QByteArray::fromStdString(wire.dump()));
+    QApplication::processEvents();
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    CHECK(framePlanStatus(widget).text().endsWith(
+        QStringLiteral(" · RT 852.7 KiB / peak 576.6 KiB at lighting_pass")));
+#else
+    CHECK(framePlanStatus(widget).text().contains(QStringLiteral(" · RT ")));
+#endif
+
+    auto *resources = widget.findChild<QTreeWidget *>(
+        QStringLiteral("pelican.framePlanResources"));
+    REQUIRE(resources != nullptr);
+    const auto fact = [&](const QString &resource, const QString &name) {
+        for (int row = 0; row < resources->topLevelItemCount(); ++row) {
+            auto *item = resources->topLevelItem(row);
+            if (item->text(0) != resource) continue;
+            for (int group = 0; group < item->childCount(); ++group) {
+                auto *facts = item->child(group);
+                for (int index = 0; index < facts->childCount(); ++index) {
+                    if (facts->child(index)->text(1) == name)
+                        return facts->child(index)->text(2);
+                }
+            }
+        }
+        return QString{};
+    };
+    // R16G16B16A16_SFLOAT at 160x90.
+    CHECK(fact(QStringLiteral("lit_color"), QStringLiteral("Bytes")) ==
+          QStringLiteral("112.5 KiB"));
+    // The swapchain is the presentation engine's: no bytes of the plan.
+    CHECK(fact(QStringLiteral("swapchain"), QStringLiteral("Bytes")).isEmpty());
+
+    // A plan from before RC-1 says nothing of memory.
+    Json before = wire;
+    before.erase("memory_summary");
+    widget.receiveResult(QByteArray::fromStdString(before.dump()));
+    QApplication::processEvents();
+    CHECK_FALSE(framePlanStatus(widget).text().contains(QStringLiteral(" · RT ")));
 }
 } // namespace PelicanStudio

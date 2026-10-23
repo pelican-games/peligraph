@@ -344,15 +344,22 @@ void appendText(const Scope &scope, const Json &paint, const Json &text, bool st
     const auto font_index = fonts.open(font->get<std::string>(), face, id);
     auto &opened = fonts.face(font_index);
     const auto codepoints = decodeCanvasUtf8(string->get_ref<const std::string &>(), what("text"));
+    const double units_per_em = opened.file->unitsPerEm();
     for (const auto &placed : layoutCanvasText(*opened.file, codepoints, style, id)) {
-        if (opened.glyph(placed.glyph).outline.contours.empty()) continue;
+        const auto &outline = opened.glyph(placed.glyph);
+        if (outline.outline.contours.empty()) continue;
         CanvasItem item;
         item.source = CanvasItemSource::glyph;
         item.paint = stroke ? CanvasPaint::stroke : CanvasPaint::fill;
         item.parameters = shared;
         item.parameters.resize(canvas_glyph_parameter_count);
         item.parameters.insert(item.parameters.end(), paint_parameters.begin(), paint_parameters.end());
-        item.glyph = CanvasGlyph{font_index, placed.glyph, placed.codepoint, {placed.x, placed.y}, cell};
+        // CV-3a: its box in em, +y down (font units are y up).
+        const std::array<double, 4> bounds{placed.x + outline.bounds[0] / units_per_em,
+                                           placed.y - outline.bounds[3] / units_per_em,
+                                           placed.x + outline.bounds[2] / units_per_em,
+                                           placed.y - outline.bounds[1] / units_per_em};
+        item.glyph = CanvasGlyph{font_index, placed.glyph, placed.codepoint, {placed.x, placed.y}, cell, bounds};
         placePaintItem(item, nodeId(paint), id, flattening);
         items.push_back(std::move(item));
     }
@@ -571,10 +578,17 @@ void appendBackdrop(const Json &node, const Flattening &flattening, std::vector<
 
 // A filter works on one item's colour: its layer drawn as one (a group when
 // it draws several items), the filter added after the ones it already has.
+// CV-3a: its numbers may be driven by value edges (the frame table).
 void appendFilter(const Scope &scope, const Json &node, const Flattening &flattening,
                   std::vector<std::string> &active, CanvasIr &ir, std::vector<CanvasItem> &items) {
     auto filter = parseCanvasFilter(node);
     const auto &inputs = objectMember(node, "inputs");
+    filter.edges.assign(filter.constants.size(), std::nullopt);
+    for (std::size_t k = 0; k < filter.ports.size() && k < filter.edges.size(); ++k) {
+        if (filter.ports[k].empty()) continue;
+        if (const auto edge = inputs.find(filter.ports[k]); edge != inputs.end())
+            filter.edges[k] = valueSource(scope, node, filter.ports[k], *edge);
+    }
     const auto layer = inputs.find("layer");
     if (layer == inputs.end()) throw std::invalid_argument(nodeOp(node) + " requires a layer edge: " + nodeId(node));
     auto inner = flattening;
@@ -583,6 +597,445 @@ void appendFilter(const Scope &scope, const Json &node, const Flattening &flatte
     if (!item) return;
     item->filters.push_back(std::move(filter));
     items.push_back(std::move(*item));
+}
+
+// --- CV-3a: the neighbourhood filters -----------------------------------------
+
+// A neighbourhood filter's numbers, each of which a value edge may drive.
+struct Neighbourhood {
+    std::string node;
+    std::string op;
+    bool blur = false;
+    bool shadow = false;
+    std::array<CanvasParameter, 2> offset{};
+    CanvasParameter radius;
+    // max_radius when an edge drives the radius, else the radius.
+    double radius_limit = 0.0;
+    CanvasParameter spread;
+    std::array<CanvasParameter, 4> color{};
+    CanvasParameter opacity{1.0, std::nullopt};
+};
+
+// Photoshop's defaults (the layer styles of CS and before): a drop shadow
+// black at 75 %, 5 px away at 120 degrees (the light from the upper left,
+// the shadow down to the right), size 5 and no spread; an outer glow
+// (255, 255, 190) at 75 %, size 5, no spread. A Gaussian Blur of 1 px.
+constexpr double drop_shadow_offset[2] = {2.5, 4.330127018922193};
+constexpr double outer_glow_color[3] = {1.0, 1.0, 190.0 / 255.0};
+
+Neighbourhood parseNeighbourhood(const Scope &scope, const Json &node, Json &diagnostics) {
+    Neighbourhood filter;
+    filter.node = nodeId(node);
+    filter.op = nodeOp(node);
+    filter.blur = filter.op == "filter.blur";
+    filter.shadow = filter.op == "filter.drop_shadow";
+    if (filter.blur) onlyKeys(node, {"radius", "max_radius"});
+    else if (filter.shadow) onlyKeys(node, {"offset", "radius", "max_radius", "spread", "color", "opacity"});
+    else onlyKeys(node, {"radius", "max_radius", "spread", "color", "opacity"});
+    const auto &parameters = objectMember(node, "parameters");
+    const auto &inputs = objectMember(node, "inputs");
+    const auto what = [&](const char *key) { return filter.op + " " + key + ": " + filter.node; };
+    const auto within = [&](const CanvasParameter &value, double low, double high, const char *key) {
+        if (value.edge) return;
+        if (!(value.value >= low && value.value <= high))
+            throw std::invalid_argument(filter.op + " " + key + " must lie in " + std::to_string(static_cast<int>(low)) +
+                                        ".." + std::to_string(static_cast<int>(high)) + ": " + filter.node);
+    };
+    filter.radius = parameter(scope, node, "radius", std::nullopt, 0, "radius", filter.blur ? 1.0 : 5.0);
+    within(filter.radius, 0.0, canvas_filter_radius_limit, "radius");
+    std::optional<double> max_radius;
+    if (const auto found = parameters.find("max_radius"); found != parameters.end()) {
+        max_radius = number(*found, what("max_radius"));
+        if (!(*max_radius > 0.0 && *max_radius <= canvas_filter_radius_limit))
+            throw std::invalid_argument(filter.op + " max_radius must lie in 0..250 (and not be 0): " + filter.node);
+    }
+    // The passes are made for the largest radius: an edge needs one.
+    if (filter.radius.edge && !max_radius)
+        throw GraphRegistryError("canvas.range_unbounded@1", {{"node", filter.node}, {"parameter", "radius"}});
+    filter.radius_limit = max_radius.value_or(filter.radius.value);
+    if (parameters.contains("radius") && filter.radius.value > filter.radius_limit)
+        diagnostics.push_back({{"code", "canvas.radius_clamped"},
+                               {"node", filter.node},
+                               {"radius", filter.radius.value},
+                               {"max_radius", filter.radius_limit}});
+    if (filter.blur) return filter;
+    filter.spread = parameter(scope, node, "spread", std::nullopt, 0, "spread", 0.0);
+    within(filter.spread, 0.0, 1.0, "spread");
+    filter.opacity = parameter(scope, node, "opacity", std::nullopt, 0, "opacity", 0.75);
+    within(filter.opacity, 0.0, 1.0, "opacity");
+    const std::array<double, 4> fallback =
+        filter.shadow ? std::array<double, 4>{0.0, 0.0, 0.0, 1.0}
+                      : std::array<double, 4>{outer_glow_color[0], outer_glow_color[1], outer_glow_color[2], 1.0};
+    const auto color = parameters.find("color");
+    std::size_t arity = 4;
+    if (color != parameters.end()) {
+        if (!color->is_array() || (color->size() != 3 && color->size() != 4))
+            throw std::invalid_argument(filter.op + " color must be [r, g, b] or [r, g, b, a]: " + filter.node);
+        arity = color->size();
+    }
+    const char *const color_ports[4] = {"color.r", "color.g", "color.b", "color.a"};
+    for (std::size_t k = 0; k < 4; ++k) {
+        if (k < arity) {
+            filter.color[k] = parameter(scope, node, "color", arity, k, color_ports[k], fallback[k]);
+            continue;
+        }
+        // [r, g, b]: the alpha is 1 unless an edge drives it.
+        filter.color[k] = CanvasParameter{1.0, std::nullopt};
+        if (const auto edge = inputs.find(color_ports[k]); edge != inputs.end())
+            filter.color[k].edge = valueSource(scope, node, color_ports[k], *edge);
+    }
+    if (filter.shadow)
+        for (std::size_t k = 0; k < 2; ++k)
+            filter.offset[k] = parameter(scope, node, "offset", 2, k, k == 0 ? "offset.x" : "offset.y",
+                                         drop_shadow_offset[k]);
+    return filter;
+}
+
+using Extent = std::array<double, 4>; // x0 y0 x1 y1
+
+Extent mapExtent(const Affine &m, const Extent &e) {
+    Extent result{std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity(),
+                  -std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity()};
+    for (const auto x : {e[0], e[2]})
+        for (const auto y : {e[1], e[3]}) {
+            const auto px = m[0] * x + m[2] * y + m[4], py = m[1] * x + m[3] * y + m[5];
+            result = {std::min(result[0], px), std::min(result[1], py), std::max(result[2], px), std::max(result[3], py)};
+        }
+    return result;
+}
+
+std::optional<Extent> unite(const std::optional<Extent> &a, const std::optional<Extent> &b) {
+    if (!a || !b) return std::nullopt;
+    return Extent{std::min((*a)[0], (*b)[0]), std::min((*a)[1], (*b)[1]), std::max((*a)[2], (*b)[2]),
+                  std::max((*a)[3], (*b)[3])};
+}
+
+double strokeOutset(double width, double align) {
+    return align > 1.5 ? std::abs(width) : (align > 0.5 ? 0.0 : 0.5 * std::abs(width));
+}
+
+// How far past its source a shadow or glow item's quad goes: at 4/3 of the
+// radius the coverage is below 1e-4 at any spread.
+constexpr double effect_reach = 4.0 / 3.0;
+
+std::size_t kindParameterCount(std::uint32_t kind);
+
+// Where an item draws, in the coordinates of the list it is in; nothing when
+// an edge moves it (or it is a group of such).
+std::optional<Extent> itemExtent(const CanvasItem &item, const CanvasOutput &output, std::size_t depth = 0) {
+    if (depth > 64) return std::nullopt;
+    const auto fixed = [&](std::size_t index) -> std::optional<double> {
+        const auto &parameter = item.parameters.at(index);
+        if (parameter.edge) return std::nullopt;
+        return parameter.value;
+    };
+    const auto kind = canvasItemKind(item);
+    const auto own = kind >= canvas_kind_effect_offset ? kind - canvas_kind_effect_offset : kind;
+    std::optional<Extent> local;
+    switch (item.source) {
+    case CanvasItemSource::shape: {
+        const auto rect = item.shape == CanvasShape::rect;
+        const auto rotation = fixed(rect ? 5 : 4);
+        const auto sx = fixed(0), sy = fixed(1), cx = fixed(2), cy = fixed(3);
+        if (!rotation || !sx || !sy || !cx || !cy) return std::nullopt;
+        const auto hx = 0.5 * std::abs(*sx), hy = 0.5 * std::abs(*sy);
+        const auto radians = *rotation * 3.14159265358979323846 / 180.0;
+        const auto c = std::abs(std::cos(radians)), s = std::abs(std::sin(radians));
+        double bx = rect ? c * hx + s * hy : std::hypot(hx * c, hy * s);
+        double by = rect ? s * hx + c * hy : std::hypot(hx * s, hy * c);
+        if (item.paint == CanvasPaint::stroke) {
+            const auto base = canvasShapeParameterCount(item.shape);
+            const auto width = fixed(base + 4);
+            if (!width) return std::nullopt;
+            bx += strokeOutset(*width, item.parameters.at(base + 5).value);
+            by += strokeOutset(*width, item.parameters.at(base + 5).value);
+        }
+        local = Extent{*cx - bx, *cy - by, *cx + bx, *cy + by};
+        break;
+    }
+    case CanvasItemSource::glyph: {
+        const auto ox = fixed(0), oy = fixed(1), size = fixed(2);
+        if (!ox || !oy || !size || !item.glyph) return std::nullopt;
+        const auto &b = item.glyph->bounds;
+        const auto s = std::abs(*size);
+        // A quarter of an em of room: the antialiased edge and a thin stroke.
+        double pad = 0.25 * s;
+        if (item.paint == CanvasPaint::stroke) {
+            const auto width = fixed(canvas_glyph_parameter_count + 4);
+            if (!width) return std::nullopt;
+            pad += strokeOutset(*width, item.parameters.at(canvas_glyph_parameter_count + 5).value);
+        }
+        local = Extent{*ox + s * b[0] - pad, *oy + s * b[1] - pad, *ox + s * b[2] + pad, *oy + s * b[3] + pad};
+        break;
+    }
+    case CanvasItemSource::image: {
+        const auto ox = fixed(0), oy = fixed(1), w = fixed(2), h = fixed(3);
+        if (!ox || !oy || !w || !h) return std::nullopt;
+        local = Extent{std::min(*ox, *ox + *w), std::min(*oy, *oy + *h), std::max(*ox, *ox + *w),
+                       std::max(*oy, *oy + *h)};
+        break;
+    }
+    case CanvasItemSource::color:
+    case CanvasItemSource::backdrop: local = Extent{0.0, 0.0, output.size[0], output.size[1]}; break;
+    case CanvasItemSource::group: {
+        const auto &group = output.groups.at(item.texture.group);
+        if (group.items.empty()) return std::nullopt;
+        for (const auto &inner : group.items) {
+            const auto extent = itemExtent(inner, output, depth + 1);
+            local = local ? unite(local, extent) : extent;
+            if (!local) return std::nullopt;
+        }
+        break;
+    }
+    }
+    if (!local) return std::nullopt;
+    // A distance item's shadow or glow: moved by its offset, past it by its reach.
+    if (kind >= canvas_kind_effect_offset) {
+        const auto base = kindParameterCount(own);
+        const auto ox = fixed(base), oy = fixed(base + 1);
+        if (!ox || !oy) return std::nullopt;
+        const auto reach = effect_reach * item.parameters.at(base + 3).value;
+        local = Extent{(*local)[0] + *ox - reach, (*local)[1] + *oy - reach, (*local)[2] + *ox + reach,
+                       (*local)[3] + *oy + reach};
+    }
+    return mapExtent(item.affine, *local);
+}
+
+// Where items draw together; nothing when one of them is moved by an edge.
+std::optional<Extent> listExtent(const std::vector<CanvasItem> &items, const CanvasOutput &output) {
+    std::optional<Extent> extent;
+    for (std::size_t k = 0; k < items.size(); ++k) {
+        const auto one = itemExtent(items[k], output);
+        if (!one) return std::nullopt;
+        extent = k == 0 ? one : unite(extent, one);
+    }
+    return extent;
+}
+
+// The images a neighbourhood filter is drawn through (CanvasBlur, its source
+// to come): the source's `extent` in the filter's space plus 3 sigma, clipped
+// to what the canvas shows. Nothing when no part of it can show.
+std::optional<CanvasBlur> blurShape(const std::optional<Extent> &extent, const Neighbourhood &filter,
+                                    const Flattening &flattening) {
+    const auto &output = *flattening.output;
+    CanvasBlur blur;
+    blur.sigma_scale = filter.blur ? 1.0 : 1.0 / 3.0;
+    const auto sigma = blur.sigma_scale * filter.radius_limit;
+    // Halved while the kernel would reach past 32 pixels.
+    while (blur.levels < 8 && 3.0 * sigma / std::ldexp(1.0, static_cast<int>(blur.levels)) > 32.0) ++blur.levels;
+    blur.taps = static_cast<std::uint32_t>(std::ceil(3.0 * canvasBlurLevelSigma(sigma, blur.levels) - 1e-9));
+    const auto margin = std::ceil(3.0 * sigma) + 1.0;
+    const auto grow = [&](Extent e) { return Extent{e[0] - margin, e[1] - margin, e[2] + margin, e[3] + margin}; };
+    // What the canvas shows, in the filter's space (a shadow's source moved
+    // back by its offset).
+    std::optional<Extent> visible;
+    const auto &m = flattening.affine;
+    if (const auto det = m[0] * m[3] - m[2] * m[1]; std::abs(det) > 1e-12) {
+        const Affine inverse{m[3] / det, -m[1] / det, -m[2] / det, m[0] / det,
+                             (m[2] * m[5] - m[3] * m[4]) / det, (m[1] * m[4] - m[0] * m[5]) / det};
+        visible = mapExtent(inverse, Extent{0.0, 0.0, output.size[0], output.size[1]});
+        if (filter.shadow) {
+            if (filter.offset[0].edge || filter.offset[1].edge) visible.reset();
+            else
+                visible = Extent{(*visible)[0] - filter.offset[0].value, (*visible)[1] - filter.offset[1].value,
+                                 (*visible)[2] - filter.offset[0].value, (*visible)[3] - filter.offset[1].value};
+        }
+    }
+    auto region = extent;
+    if (region) region = grow(*region);
+    if (visible) {
+        const auto shown = grow(*visible);
+        region = region ? Extent{std::max((*region)[0], shown[0]), std::max((*region)[1], shown[1]),
+                                 std::min((*region)[2], shown[2]), std::min((*region)[3], shown[3])}
+                        : shown;
+    }
+    if (!region) region = grow(Extent{0.0, 0.0, output.size[0], output.size[1]});
+    if (!((*region)[2] > (*region)[0]) || !((*region)[3] > (*region)[1])) return std::nullopt;
+    const auto step = std::ldexp(1.0, static_cast<int>(blur.levels));
+    const auto x0 = std::floor((*region)[0]), y0 = std::floor((*region)[1]);
+    const auto w = std::ceil((std::ceil((*region)[2]) - x0) / step) * step;
+    const auto h = std::ceil((std::ceil((*region)[3]) - y0) / step) * step;
+    if (w > canvas_filter_pixel_limit || h > canvas_filter_pixel_limit)
+        throw GraphRegistryError("canvas.filter_size_exceeded@1",
+                                 {{"node", filter.node}, {"pixels", {w, h}}, {"limit", canvas_filter_pixel_limit}});
+    blur.rect = {x0, y0, w, h};
+    blur.radius = filter.radius;
+    blur.radius_limit = filter.radius_limit;
+    blur.srgb = flattening.srgb;
+    blur.node = filter.node;
+    blur.op = filter.op;
+    return blur;
+}
+
+// Blur `blur` of `source` into the output, its passes said in the diagnostics.
+std::size_t addBlur(CanvasBlur blur, CanvasItem source, CanvasOutput &output, Json &diagnostics,
+                    const std::string &why) {
+    blur.source = std::move(source);
+    diagnostics.push_back({{"code", "canvas.draw_split"},
+                           {"output", output.id},
+                           {"reason", "neighbourhood_filter"},
+                           {"node", blur.node},
+                           {"op", blur.op},
+                           {"why", why},
+                           {"passes", 2 + blur.levels},
+                           {"levels", blur.levels}});
+    output.blurs.push_back(std::move(blur));
+    return output.blurs.size() - 1;
+}
+
+// The image of blur `index`, premultiplied, over its rect.
+CanvasItem blurImageItem(const CanvasOutput &output, std::size_t index, std::vector<std::string> nodes) {
+    const auto &blur = output.blurs.at(index);
+    CanvasItem item;
+    item.source = CanvasItemSource::image;
+    item.texture = {CanvasTexture::Origin::blur, {}, false, std::nullopt, {}, index, false};
+    for (const auto value : {0.0, 0.0, blur.rect[2], blur.rect[3], static_cast<double>(CanvasAlpha::premultiplied),
+                             static_cast<double>(CanvasEncode::none)})
+        item.parameters.push_back(constantParameter(value));
+    item.affine = {1.0, 0.0, 0.0, 1.0, blur.rect[0], blur.rect[1]};
+    item.nodes = std::move(nodes);
+    return item;
+}
+
+// The filter's share of an effect item: its offset, radius, spread and colour
+// as parameters, its opacity the item's.
+void addEffect(CanvasItem &item, const Neighbourhood &filter) {
+    item.effect = CanvasEffectOrigin{filter.node, filter.op};
+    item.parameters.push_back(filter.shadow ? filter.offset[0] : constantParameter(0.0));
+    item.parameters.push_back(filter.shadow ? filter.offset[1] : constantParameter(0.0));
+    item.parameters.push_back(filter.radius);
+    item.parameters.push_back(constantParameter(filter.radius_limit));
+    item.parameters.push_back(filter.spread);
+    for (const auto &component : filter.color) item.parameters.push_back(component);
+    if (filter.opacity.edge) item.opacity_edges.push_back(*filter.opacity.edge);
+    else item.opacity *= filter.opacity.value;
+}
+
+// The shadow or glow of blur `index`: its alpha, spread, in the colour.
+CanvasItem effectImageItem(const CanvasOutput &output, std::size_t index, const Neighbourhood &filter,
+                           std::vector<std::string> nodes) {
+    const auto &blur = output.blurs.at(index);
+    CanvasItem item;
+    item.source = CanvasItemSource::image;
+    item.texture = {CanvasTexture::Origin::blur, {}, false, std::nullopt, {}, index, false};
+    item.effect = CanvasEffectOrigin{filter.node, filter.op};
+    item.parameters.push_back(filter.shadow ? filter.offset[0] : constantParameter(0.0));
+    item.parameters.push_back(filter.shadow ? filter.offset[1] : constantParameter(0.0));
+    item.parameters.push_back(constantParameter(blur.rect[2]));
+    item.parameters.push_back(constantParameter(blur.rect[3]));
+    item.parameters.push_back(filter.radius);
+    item.parameters.push_back(constantParameter(filter.radius_limit));
+    item.parameters.push_back(filter.spread);
+    for (const auto &component : filter.color) item.parameters.push_back(component);
+    if (filter.opacity.edge) item.opacity_edges.push_back(*filter.opacity.edge);
+    else item.opacity *= filter.opacity.value;
+    item.affine = {1.0, 0.0, 0.0, 1.0, blur.rect[0], blur.rect[1]};
+    item.nodes = std::move(nodes);
+    return item;
+}
+
+// How far a text's atlas holds distances, in stack units, at the cell its
+// characters ask for (a larger cell another text of the output asks for
+// shortens it: bakeGlyphAtlases cuts the effect to that).
+double glyphReach(const CanvasItem &item) {
+    const auto cell = item.glyph->cell != 0                              ? item.glyph->cell
+                      : item.glyph->codepoint >= canvas_glyph_cjk_first ? canvas_glyph_cell_cjk
+                                                                        : canvas_glyph_cell_latin;
+    return canvas_glyph_range * std::abs(item.parameters.at(2).value) / (static_cast<double>(cell) - 2.0 * canvas_glyph_range);
+}
+
+// The reason a shadow or glow of these paint items is not drawn from their
+// distances, or "" when it is.
+std::string distanceRefusal(const std::vector<CanvasItem> &bodies, const Neighbourhood &filter) {
+    for (const auto &body : bodies) {
+        if (body.source != CanvasItemSource::glyph) continue;
+        const auto base = canvas_glyph_parameter_count;
+        const bool stroke = body.paint == CanvasPaint::stroke;
+        if (body.parameters.at(2).edge || (stroke && body.parameters.at(base + 4).edge)) return "glyph_size_edge";
+        const auto outset = stroke ? strokeOutset(body.parameters.at(base + 4).value, body.parameters.at(base + 5).value)
+                                   : 0.0;
+        if (filter.radius_limit + outset > glyphReach(body) + 1e-9) return "glyph_range";
+    }
+    return {};
+}
+
+// filter.blur, filter.drop_shadow, filter.outer_glow (design 4.4). A shadow
+// or glow straight on a paint of a shape or a text is drawn from the paint's
+// distances in the same draw: an effect item per item it draws, all below
+// them. Otherwise -- and a blur always -- the layer is one item (a group when
+// it draws several), blurred through images (addBlur); a shadow or glow then
+// draws that image's alpha below the layer. What the stack's layer applies to
+// its layer as a whole (an opacity, a mask) makes the result one group.
+void appendNeighbourhoodFilter(const Scope &scope, const Json &node, const Flattening &flattening,
+                               std::vector<std::string> &active, CanvasIr &ir, std::vector<CanvasItem> &items) {
+    const auto id = nodeId(node);
+    const auto filter = parseNeighbourhood(scope, node, ir.diagnostics);
+    const auto &inputs = objectMember(node, "inputs");
+    const auto layer = inputs.find("layer");
+    if (layer == inputs.end()) throw std::invalid_argument(filter.op + " requires a layer edge: " + id);
+    const auto *from = producer(scope, *layer);
+    if (from == nullptr) throw std::invalid_argument("canvas layer edge names no node of its scope");
+    // A blur of nothing is its layer.
+    if (filter.blur && !filter.radius.edge && filter.radius.value <= 0.0) {
+        auto inner = flattening;
+        inner.stacks.insert(inner.stacks.begin(), id);
+        return appendLayer(scope, *layer, inner, active, ir, items);
+    }
+    // The filter's own space: its layer before the stack's layer applies.
+    auto inner = freshFlattening(flattening);
+    inner.stacks.insert(inner.stacks.begin(), id);
+    std::vector<CanvasItem> layer_items;
+    std::vector<CanvasItem> result;
+    std::string why = filter.blur ? "blur" : "no_distance";
+    const auto op = nodeOp(*from);
+    if (!filter.blur && (op == "shape.fill" || op == "shape.stroke")) {
+        appendPaint(scope, *from, inner, layer_items);
+        why = distanceRefusal(layer_items, filter);
+        if (why.empty()) {
+            for (const auto &body : layer_items) {
+                auto effect = body;
+                addEffect(effect, filter);
+                result.push_back(std::move(effect));
+            }
+            for (auto &body : layer_items) result.push_back(std::move(body));
+        }
+    } else {
+        appendLayer(scope, *layer, inner, active, ir, layer_items);
+    }
+    if (result.empty()) {
+        if (layer_items.empty()) return;
+        if (layer_items.size() == 1 && layer_items.front().source == CanvasItemSource::backdrop)
+            throw GraphRegistryError("canvas.filter_backdrop_unsupported@1", {{"node", id}, {"op", filter.op}});
+        // The stack's layer's map says what of the filter's space shows.
+        auto shape = blurShape(listExtent(layer_items, *flattening.output), filter, flattening);
+        if (!shape) {
+            // None of it can show: a blur draws nothing, a shadow or glow its layer alone.
+            if (filter.blur) return;
+            result = std::move(layer_items);
+        } else {
+            auto source = layer_items.size() == 1
+                              ? std::move(layer_items.front())
+                              : groupItem(std::move(layer_items), inner.srgb, nodeId(*from), inner);
+            auto nodes = std::vector<std::string>{id};
+            nodes.insert(nodes.end(), flattening.stacks.begin(), flattening.stacks.end());
+            const auto blur = addBlur(std::move(*shape), source, *flattening.output, ir.diagnostics, why);
+            if (filter.blur) {
+                result.push_back(blurImageItem(*flattening.output, blur, nodes));
+            } else {
+                result.push_back(effectImageItem(*flattening.output, blur, filter, nodes));
+                result.push_back(std::move(source));
+            }
+        }
+    }
+    const bool plain = flattening.opacity == 1.0 && flattening.opacity_edges.empty() && flattening.masks.empty();
+    if (result.size() == 1 || plain) {
+        for (auto &item : result) {
+            applyFlattening(item, flattening);
+            items.push_back(std::move(item));
+        }
+        return;
+    }
+    items.push_back(groupItem(std::move(result), flattening.srgb, id, flattening));
 }
 
 CanvasMask parseMask(const Json &image, const Flattening &flattening) {
@@ -878,7 +1331,7 @@ void appendLayer(const Scope &scope, const Json &endpoint, const Flattening &fla
     const auto *from = producer(scope, endpoint);
     if (from == nullptr) throw std::invalid_argument("canvas layer edge names no node of its scope");
     const auto op = nodeOp(*from);
-    if (op.starts_with("filter.") && !isCanvasColorFilter(op))
+    if (op.starts_with("filter.") && !isCanvasFilter(op))
         throw GraphRegistryError("canvas.op_unsupported@1", {{"node", nodeId(*from)}, {"op", op}});
     if (op == "canvas.stack") return appendStack(scope, *from, flattening, active, ir, items);
     if (op == "canvas.transform") return appendTransform(scope, *from, flattening, active, ir, items);
@@ -890,6 +1343,7 @@ void appendLayer(const Scope &scope, const Json &endpoint, const Flattening &fla
     if (op == "canvas.color") return appendColor(scope, *from, flattening, items);
     if (op == "canvas.backdrop") return appendBackdrop(*from, flattening, items);
     if (isCanvasColorFilter(op)) return appendFilter(scope, *from, flattening, active, ir, items);
+    if (isCanvasNeighbourhoodFilter(op)) return appendNeighbourhoodFilter(scope, *from, flattening, active, ir, items);
     throw std::invalid_argument("a canvas layer comes from shape.fill, shape.stroke, canvas.image, "
                                 "canvas.from_image, canvas.color, canvas.backdrop, filter.*, canvas.transform "
                                 "or canvas.stack, not " +
@@ -1099,8 +1553,8 @@ void checkScope(const std::string &name, const Json &holder, const std::set<std:
     if (nodes == holder.end() || !nodes->is_array()) return;
     std::vector<std::string> outputs;
     for (const auto &node : *nodes) {
-        // The neighbourhood filters (blur, ...) are not lowered yet.
-        if (nodeOp(node).starts_with("filter.") && !isCanvasColorFilter(nodeOp(node)))
+        // A filter the lowering does not implement.
+        if (nodeOp(node).starts_with("filter.") && !isCanvasFilter(nodeOp(node)))
             throw GraphRegistryError("canvas.op_unsupported@1", {{"node", nodeId(node)}, {"op", nodeOp(node)}});
         if (!isCanvasGraphOperation(nodeOp(node))) continue;
         if (bodies.contains(name)) throw GraphRegistryError("canvas.in_loop_body@1", {{"node", nodeId(node)}});
@@ -1236,11 +1690,12 @@ std::size_t parameterIndex(CanvasShape shape, std::size_t paint_parameter) {
 
 // --- CV-4: the glyph atlases ----------------------------------------------
 
-// Each item of an output's lists, its groups' too.
+// Each item of an output's lists, its groups' too (CV-3a: and its blurs' sources).
 template <typename Visit> void eachOutputItem(CanvasOutput &output, Visit visit) {
     for (auto &item : output.items) visit(item);
     for (auto &group : output.groups)
         for (auto &item : group.items) visit(item);
+    for (auto &blur : output.blurs) visit(blur.source);
 }
 
 // Bakes one atlas per font face the output's glyph items read (in first-use
@@ -1280,6 +1735,7 @@ void bakeGlyphAtlases(CanvasOutput &output, CanvasFontLibrary &fonts, const Canv
     // distances stop `range` texels out, and the last texel is the edge's
     // antialiasing.
     std::map<std::string, std::pair<double, double>> stroke_limits; // node -> (limit, range)
+    std::set<std::string> effects_cut;
     eachOutputItem(output, [&](CanvasItem &item) {
         if (!item.glyph) return;
         auto &face = fonts.face(item.glyph->font);
@@ -1301,6 +1757,24 @@ void bakeGlyphAtlases(CanvasOutput &output, CanvasFontLibrary &fonts, const Canv
                                   cell};
         for (std::size_t k = 0; k < 9; ++k) item.parameters.at(3 + k) = CanvasParameter{values[k], std::nullopt};
         item.texture = {CanvasTexture::Origin::file, entry.asset, true, std::nullopt, {}, 0, false};
+        // CV-3a: a shadow or glow reaches no further than the atlas's
+        // distances (past them they would stop growing): cut to that.
+        if (item.effect) {
+            const auto own = canvasItemKind(item) - canvas_kind_effect_offset;
+            auto &limit = item.parameters.at(kindParameterCount(own) + 3).value;
+            const auto range = canvas_glyph_range * std::abs(item.parameters.at(2).value) / em;
+            const bool stroke = item.paint == CanvasPaint::stroke;
+            const auto base = canvas_glyph_parameter_count;
+            const auto outset =
+                stroke ? strokeOutset(item.parameters.at(base + 4).value, item.parameters.at(base + 5).value) : 0.0;
+            const auto reach = std::max(range - outset, 0.0);
+            if (limit > reach + 1e-9) {
+                if (effects_cut.insert(item.effect->node).second)
+                    diagnostics.push_back({{"code", "canvas.glyph_range_exceeded"}, {"node", item.effect->node},
+                                           {"radius", limit}, {"range", range}, {"limit", reach}});
+                limit = reach;
+            }
+        }
         if (item.paint != CanvasPaint::stroke) return;
         const auto size = std::abs(item.parameters.at(2).value);
         if (item.parameters.at(canvas_glyph_parameter_count + 4).edge || !(size > 0.0)) return;
@@ -1434,7 +1908,10 @@ std::size_t keptParameterCount(const DrawShape &draw, std::uint32_t kind, std::s
 }
 
 // CV-2b: the kind's parameter count, where an item's filter numbers start.
+// CV-3a: an effect kind's, the kind it is the effect of and then its own.
 std::size_t kindParameterCount(std::uint32_t kind) {
+    if (kind >= canvas_kind_effect_offset)
+        return kindParameterCount(kind - canvas_kind_effect_offset) + canvas_effect_parameter_count;
     switch (kind) {
     case canvas_kind_image: return 6;
     case canvas_kind_color: return 4;
@@ -1442,10 +1919,22 @@ std::size_t kindParameterCount(std::uint32_t kind) {
     case canvas_kind_glyph_fill: return canvas_glyph_parameter_count + canvasPaintParameterCount(CanvasPaint::fill);
     case canvas_kind_glyph_stroke: return canvas_glyph_parameter_count + canvasPaintParameterCount(CanvasPaint::stroke);
     case canvas_kind_backdrop: return 0;
+    case canvas_kind_effect_image: return canvas_effect_image_parameter_count;
     default: break;
     }
     return canvasShapeParameterCount(kind < 2 ? CanvasShape::rect : CanvasShape::ellipse) +
            canvasPaintParameterCount(kind % 2 == 1 ? CanvasPaint::stroke : CanvasPaint::fill);
+}
+
+// CV-3a: the kind an effect kind is the effect of (itself for any other).
+std::uint32_t effectSourceKind(std::uint32_t kind) {
+    return kind >= canvas_kind_effect_offset ? kind - canvas_kind_effect_offset : kind;
+}
+
+bool hasEffectKinds(const DrawShape &draw) {
+    return std::any_of(draw.kinds.begin(), draw.kinds.end(), [](std::uint32_t kind) {
+        return kind == canvas_kind_effect_image || kind >= canvas_kind_effect_offset;
+    });
 }
 
 // The line that reads an item's kind: past 256 it carries a style.
@@ -1489,7 +1978,9 @@ vec4 canvasBackdrop() {
     text += "    default: return 0u;\n    }\n}\n\n";
     text += "vec4 canvasStyle(mat4 it, vec4 color) {\n";
     text += "    uint kind = uint(it[0].x + 0.5);\n";
-    text += "    uint r = uint(it[0].y + 0.5) + canvasParamCount(kind % 256u);\n";
+    // CV-3a: the filters' numbers are the item's parameters past its kind's
+    // (canvasParam reads a driven one from the frame table).
+    text += "    uint r = canvasParamCount(kind % 256u);\n";
     text += "    vec3 c = canvasStraight(color);\n";
     text += "    switch (kind / 256u) {\n";
     for (std::size_t style = 0; style < draw.styles.size(); ++style) {
@@ -1498,7 +1989,7 @@ vec4 canvasBackdrop() {
         for (const auto kind : list) text += ", " + std::string{canvasFilterOperation(kind)};
         text += "\n";
         for (const auto kind : list) {
-            text += "        c = canvasFilter" + std::to_string(static_cast<int>(kind)) + "(c, r);\n";
+            text += "        c = canvasFilter" + std::to_string(static_cast<int>(kind)) + "(c, it, r);\n";
             if (canvasFilterConstantCount(kind) > 0)
                 text += "        r += " + std::to_string(canvasFilterConstantCount(kind)) + "u;\n";
         }
@@ -1554,31 +2045,41 @@ std::string itemBoundsCases(const DrawShape &draw) {
     std::string text;
     for (const auto kind : draw.kinds) {
         const auto p = [&](std::size_t index) { return parameterRead(draw, kind, index); };
+        // CV-3a: an effect kind is its source's quad, moved by the offset and
+        // grown by its reach.
+        const auto own = effectSourceKind(kind);
+        const auto effect = [&] {
+            if (own == kind) return std::string{};
+            const auto e = [&](std::size_t index) { return p(kindParameterCount(own) + index); };
+            return "        center += vec2(" + e(0) + ", " + e(1) + ");\n        bound += vec2(" +
+                   glslNumber(effect_reach) + " * clamp(" + e(2) + ", 0.0, " + e(3) + "));\n";
+        };
         text += "    case " + std::to_string(kind) + "u: { // " + std::string{canvasItemKindName(kind)} + "\n";
-        if (kind == canvas_kind_image) {
+        if (own == canvas_kind_image || own == canvas_kind_effect_image) {
             text += "        vec2 size = vec2(" + p(2) + ", " + p(3) + ");\n";
             text += "        center = vec2(" + p(0) + ", " + p(1) + ") + 0.5 * size;\n";
             text += "        bound = 0.5 * abs(size);\n";
             text += "        break;\n    }\n";
             continue;
         }
-        if (kind == canvas_kind_glyph_fill || kind == canvas_kind_glyph_stroke) {
+        if (own == canvas_kind_glyph_fill || own == canvas_kind_glyph_stroke) {
             text += "        float s = " + p(2) + ";\n";
             text += "        vec2 cell_size = s * vec2(" + p(5) + ", " + p(6) + ");\n";
             text += "        center = vec2(" + p(0) + ", " + p(1) + ") +\n";
             text += "                 s * vec2(" + p(3) + ", " + p(4) + ") + 0.5 * cell_size;\n";
             text += "        bound = 0.5 * abs(cell_size);\n";
+            text += effect();
             text += "        break;\n    }\n";
             continue;
         }
-        if (kind == canvas_kind_color || kind == canvas_kind_group || kind == canvas_kind_backdrop) {
+        if (own == canvas_kind_color || own == canvas_kind_group || own == canvas_kind_backdrop) {
             text += "        center = 0.5 * CANVAS_SIZE;\n";
             text += "        bound = 0.5 * CANVAS_SIZE;\n";
             text += "        break;\n    }\n";
             continue;
         }
-        const auto shape = kind < 2 ? CanvasShape::rect : CanvasShape::ellipse;
-        const bool stroke = kind % 2 == 1;
+        const auto shape = own < 2 ? CanvasShape::rect : CanvasShape::ellipse;
+        const bool stroke = own % 2 == 1;
         const auto rotation = shape == CanvasShape::rect ? 5 : 4;
         text += "        vec2 half_size = 0.5 * abs(vec2(" + p(0) + ", " + p(1) + "));\n";
         text += "        center = vec2(" + p(2) + ", " + p(3) + ");\n";
@@ -1592,6 +2093,7 @@ std::string itemBoundsCases(const DrawShape &draw) {
         if (stroke)
             text += "        bound += canvasStrokeOutset(" + p(parameterIndex(shape, 4)) + ", " +
                     p(parameterIndex(shape, 5)) + ");\n";
+        text += effect();
         text += "        break;\n    }\n";
     }
     return text;
@@ -1645,6 +2147,8 @@ void main() {
     return text;
 }
 
+std::string paintLibrary(const DrawShape &draw);
+
 std::string fragmentShader(const CanvasOutput &output, const std::string &raster, const DrawShape &draw) {
     std::string text = shader_header;
     text += generatedBanner(output, raster);
@@ -1662,7 +2166,24 @@ layout(location = 0) out vec4 outColor;
 )glsl";
     text += fitFunctions(output);
     text += "\n";
-    text += parameterFunctions(draw.frame);
+    text += paintLibrary(draw);
+    text += "void main() {\n";
+    text += "    mat4 it = pelican_load_items(vItem);\n";
+    text += "    vec4 color = canvasPaint(it, vCanvas);\n";
+    text += "    color *= canvasOpacity(it);\n";
+    if (!draw.styles.empty()) text += "    color = canvasStyle(it, color);\n";
+    text += R"glsl(    if (color.a <= 0.0) discard;
+    outColor = color;
+}
+)glsl";
+    return text;
+}
+
+// What paints an item at a point: the tables' reads, the distances, the
+// images, the styles and canvasPaint (the draw's fragment shader and, CV-3a,
+// a blur's passes that read its layer).
+std::string paintLibrary(const DrawShape &draw) {
+    std::string text = parameterFunctions(draw.frame);
     text += R"glsl(
 vec2 canvasRotate(vec2 p, float angle) {
     float c = cos(angle), s = sin(angle);
@@ -1752,6 +2273,8 @@ float canvasGlyphStroke(float d, float width, float align) {
 
 )glsl";
     }
+    // CV-3a: the shadows' and glows' arithmetic.
+    if (hasEffectKinds(draw)) text += canvasEffectGlsl();
     text += styleFunctions(draw);
     if (draw.masks)
         text += R"glsl(float canvasMask(mat4 it, vec2 p) {
@@ -1786,6 +2309,20 @@ float canvasGlyphStroke(float d, float width, float align) {
 )glsl";
     for (const auto kind : draw.kinds) {
         const auto param = [&](std::size_t index) { return parameterRead(draw, kind, index); };
+        // CV-3a: an effect kind paints its source's distance, moved by the
+        // offset, as the effect's coverage in the effect's colour.
+        const auto own = effectSourceKind(kind);
+        const bool effect = own != kind;
+        const auto e = [&](std::size_t index) { return param(kindParameterCount(own) + index); };
+        const std::string point = effect ? "at" : "q";
+        const auto moved = [&] {
+            return effect ? "        vec2 at = q - vec2(" + e(0) + ", " + e(1) + ");\n" : std::string{};
+        };
+        const auto effectColor = [&](const std::string &d, const std::string &aa) {
+            return "        float a = canvasEffectCoverage(" + d + ", " + aa + ", clamp(" + e(2) + ", 0.0, " + e(3) +
+                   "), " + e(4) + ") * clamp(" + e(8) + ", 0.0, 1.0);\n" +
+                   "        color = vec4(canvasShapeColor(vec3(" + e(5) + ", " + e(6) + ", " + e(7) + ")) * a, a);\n";
+        };
         text += "    case " + std::to_string(kind) + "u: { // " + std::string{canvasItemKindName(kind)} + "\n";
         if (kind == canvas_kind_image) {
             text += "        vec2 uv = (q - vec2(" + param(0) + ", " + param(1) + ")) / vec2(" + param(2) + ", " +
@@ -1796,22 +2333,44 @@ float canvasGlyphStroke(float d, float width, float align) {
             text += "        break;\n    }\n";
             continue;
         }
-        if (kind == canvas_kind_glyph_fill || kind == canvas_kind_glyph_stroke) {
+        if (kind == canvas_kind_effect_image) {
+            // The blurred layer's alpha, spread, in the effect's colour.
+            text += "        vec2 uv = (q - vec2(" + param(0) + ", " + param(1) + ")) / vec2(" + param(2) + ", " +
+                    param(3) + ");\n";
+            text += "        if (canvasInside(uv)) {\n";
+            text += "            float a = canvasSpreadAlpha(canvasSample(uint(it[3].z + 0.5), uv).a, clamp(" + param(4) +
+                    ", 0.0, " + param(5) + "), " + param(6) + ") * clamp(" + param(10) + ", 0.0, 1.0);\n";
+            text += "            color = vec4(canvasShapeColor(vec3(" + param(7) + ", " + param(8) + ", " + param(9) +
+                    ")) * a, a);\n";
+            text += "        }\n        break;\n    }\n";
+            continue;
+        }
+        if (own == canvas_kind_glyph_fill || own == canvas_kind_glyph_stroke) {
             // The texel the point falls on in the glyph's cell, kept a half
             // texel inside it so the filter never reads the next cell.
             text += "        float s = " + param(2) + ";\n";
             text += "        vec2 cell_size = s * vec2(" + param(5) + ", " + param(6) + ");\n";
             text += "        float n = " + param(11) + ";\n";
-            text += "        vec2 tex = (q - vec2(" + param(0) + ", " + param(1) + ") - s * vec2(" + param(3) + ", " +
-                    param(4) + ")) / cell_size * n;\n";
+            text += moved();
+            text += "        vec2 tex = (" + point + " - vec2(" + param(0) + ", " + param(1) + ") - s * vec2(" +
+                    param(3) + ", " + param(4) + ")) / cell_size * n;\n";
             text += "        vec2 uv = vec2(" + param(7) + ", " + param(8) + ") + clamp(tex, vec2(0.5), vec2(n - 0.5)) / n * vec2(" +
                     param(9) + ", " + param(10) + ");\n";
             text += "        float d = canvasGlyphDistance(canvasSample(uint(it[3].z + 0.5), uv));\n";
-            if (kind == canvas_kind_glyph_stroke)
+            if (own == canvas_kind_glyph_stroke)
                 text += "        d = canvasGlyphStroke(d, " + param(canvas_glyph_parameter_count + 4) + " * n / abs(cell_size.x), " +
                         param(canvas_glyph_parameter_count + 5) + ");\n";
             // Texels per pixel, from the screen-space change of the texel.
             text += "        float aa = max(length(vec2(length(dFdx(tex)), length(dFdy(tex)))) * 0.70710678, 1e-6);\n";
+            if (effect) {
+                // Past its cell the atlas holds nothing: the way out to the
+                // cell adds to the distance there. In stack units.
+                text += "        d += length(tex - clamp(tex, vec2(0.5), vec2(n - 0.5)));\n";
+                text += "        float unit = abs(cell_size.x) / n;\n";
+                text += effectColor("d * unit", "aa * unit");
+                text += "        break;\n    }\n";
+                continue;
+            }
             text += "        float a = clamp(" + param(canvas_glyph_parameter_count + 3) +
                     ", 0.0, 1.0) * clamp(0.5 - d / aa, 0.0, 1.0);\n";
             text += "        color = vec4(canvasShapeColor(vec3(" + param(canvas_glyph_parameter_count) + ", " +
@@ -1842,11 +2401,12 @@ float canvasGlyphStroke(float d, float width, float align) {
             text += "        break;\n    }\n";
             continue;
         }
-        const auto shape = kind < 2 ? CanvasShape::rect : CanvasShape::ellipse;
-        const bool stroke = kind % 2 == 1;
+        const auto shape = own < 2 ? CanvasShape::rect : CanvasShape::ellipse;
+        const bool stroke = own % 2 == 1;
         const auto rotation = shape == CanvasShape::rect ? 5 : 4;
         text += "        vec2 half_size = 0.5 * abs(vec2(" + param(0) + ", " + param(1) + "));\n";
-        text += "        vec2 local = canvasRotate(q - vec2(" + param(2) + ", " + param(3) + "), -radians(" +
+        text += moved();
+        text += "        vec2 local = canvasRotate(" + point + " - vec2(" + param(2) + ", " + param(3) + "), -radians(" +
                 param(rotation) + "));\n";
         if (shape == CanvasShape::rect)
             text += "        float d = canvasRoundRect(local, half_size, clamp(" + param(4) +
@@ -1857,6 +2417,11 @@ float canvasGlyphStroke(float d, float width, float align) {
             text += "        d = canvasStroke(d, " + param(parameterIndex(shape, 4)) + ", " +
                     param(parameterIndex(shape, 5)) + ");\n";
         text += "        float aa = max(length(vec2(dFdx(d), dFdy(d))), 1e-6);\n";
+        if (effect) {
+            text += effectColor("d", "aa");
+            text += "        break;\n    }\n";
+            continue;
+        }
         text += "        float a = clamp(" + param(parameterIndex(shape, 3)) + ", 0.0, 1.0) * clamp(0.5 - d / aa, 0.0, 1.0);\n";
         text += "        color = vec4(canvasShapeColor(vec3(" + param(parameterIndex(shape, 0)) + ", " +
                 param(parameterIndex(shape, 1)) + ", " + param(parameterIndex(shape, 2)) + ")) * a, a);\n";
@@ -1864,15 +2429,7 @@ float canvasGlyphStroke(float d, float width, float align) {
     }
     text += "    default:\n        break;\n    }\n";
     if (draw.masks) text += "    color *= canvasMask(it, p);\n";
-    text += "    return color;\n}\n\nvoid main() {\n";
-    text += "    mat4 it = pelican_load_items(vItem);\n";
-    text += "    vec4 color = canvasPaint(it, vCanvas);\n";
-    text += "    color *= canvasOpacity(it);\n";
-    if (!draw.styles.empty()) text += "    color = canvasStyle(it, color);\n";
-    text += R"glsl(    if (color.a <= 0.0) discard;
-    outColor = color;
-}
-)glsl";
+    text += "    return color;\n}\n\n";
     return text;
 }
 
@@ -1958,16 +2515,115 @@ std::vector<CanvasDraw> planDraws(const std::vector<CanvasItem> &items, const st
     return draws;
 }
 
+// An image of a fixed size. CV-3a: with `extent_scale` 1 beside the width
+// and height -- the engine's render target requires one, and draws at the
+// fixed size when it has both.
+Json fixedImageParameters(const std::string &format, std::uint32_t width, std::uint32_t height) {
+    return {{"type", colorType()},
+            {"format", format},
+            {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})},
+            {"width", width},
+            {"height", height},
+            {"extent_scale", 1.0}};
+}
+
 Json canvasImageParameters(const CanvasOutput &output) {
-    Json parameters{{"type", colorType()}, {"format", output.format},
-                    {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}};
-    if (output.image_size) {
-        parameters["width"] = (*output.image_size)[0];
-        parameters["height"] = (*output.image_size)[1];
-    } else {
-        parameters["extent_scale"] = output.extent_scale;
+    if (output.image_size) return fixedImageParameters(output.format, (*output.image_size)[0], (*output.image_size)[1]);
+    return {{"type", colorType()},
+            {"format", output.format},
+            {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})},
+            {"extent_scale", output.extent_scale}};
+}
+
+// One item's share of a draw's tables. The bake table gets the parameters
+// `kept` keeps (all of them but under ship) and then its filters' numbers;
+// when an edge drives any, the sources follow, one per number in the same
+// order (0: the bake table, k: frame table entry k - 1); then the frame
+// entries of the opacity edges, then 13 numbers per mask. Returns the item's
+// row of the item table (kind, offsets, the map, the image slot, `clip`).
+template <typename FrameEntry, typename SlotOf, typename Kept>
+std::array<double, 16> itemRecord(const CanvasItem &item, std::uint32_t kind, std::vector<double> &bake,
+                                  FrameEntry frame_entry, SlotOf slot_of, Kept kept, double clip, bool &masks) {
+    const auto bake_offset = static_cast<double>(bake.size());
+    for (std::size_t at = 0; at < item.parameters.size(); ++at)
+        if (kept(at)) bake.push_back(item.parameters[at].value);
+    for (const auto &filter : item.filters) bake.insert(bake.end(), filter.constants.begin(), filter.constants.end());
+    const auto filter_edge = [](const CanvasFilter &filter) {
+        return std::any_of(filter.edges.begin(), filter.edges.end(),
+                           [](const std::optional<CanvasValueSource> &edge) { return edge.has_value(); });
+    };
+    double source_offset = -1.0;
+    if (std::any_of(item.parameters.begin(), item.parameters.end(),
+                    [](const CanvasParameter &parameter) { return parameter.edge.has_value(); }) ||
+        std::any_of(item.filters.begin(), item.filters.end(), filter_edge)) {
+        source_offset = static_cast<double>(bake.size());
+        for (std::size_t at = 0; at < item.parameters.size(); ++at) {
+            if (!kept(at)) continue;
+            const auto &parameter = item.parameters[at];
+            bake.push_back(parameter.edge ? static_cast<double>(frame_entry(*parameter.edge, parameter.value) + 1) : 0.0);
+        }
+        // CV-3a: a filter's numbers a value edge drives.
+        for (const auto &filter : item.filters)
+            for (std::size_t at = 0; at < filter.constants.size(); ++at) {
+                const bool driven = at < filter.edges.size() && filter.edges[at].has_value();
+                bake.push_back(driven ? static_cast<double>(frame_entry(*filter.edges[at], filter.constants[at]) + 1)
+                                      : 0.0);
+            }
     }
-    return parameters;
+    double opacity_offset = -1.0;
+    if (!item.opacity_edges.empty()) {
+        opacity_offset = static_cast<double>(bake.size());
+        for (const auto &edge : item.opacity_edges) bake.push_back(static_cast<double>(frame_entry(edge, 1.0)));
+    }
+    double mask_offset = -1.0;
+    if (!item.masks.empty()) {
+        masks = true;
+        mask_offset = static_cast<double>(bake.size());
+        for (const auto &mask : item.masks) {
+            bake.push_back(slot_of(mask.texture));
+            bake.push_back(mask.luminance ? 1.0 : 0.0);
+            bake.push_back(mask.outside);
+            bake.insert(bake.end(), mask.rect.begin(), mask.rect.end());
+            bake.insert(bake.end(), mask.affine.begin(), mask.affine.end());
+        }
+    }
+    const bool sampled = item.source == CanvasItemSource::image || item.source == CanvasItemSource::group ||
+                         item.source == CanvasItemSource::glyph;
+    return {static_cast<double>(kind), bake_offset, source_offset, item.opacity,
+            opacity_offset, static_cast<double>(item.opacity_edges.size()), mask_offset,
+            static_cast<double>(item.masks.size()),
+            item.affine[0], item.affine[1], item.affine[2], item.affine[3],
+            item.affine[4], item.affine[5], sampled ? slot_of(item.texture) : -1.0, clip};
+}
+
+// CV-2b: the item's style -- its blend and its filters -- numbered by first
+// use among the draw's, on its kind (kind + 256 * style); the kind as it is
+// for neither.
+std::uint32_t styledKind(const CanvasItem &item, DrawShape &shape) {
+    auto kind = canvasItemKind(item);
+    if (item.blend == CanvasBlend::normal && item.filters.empty()) return kind;
+    std::pair<CanvasBlend, std::vector<CanvasFilterKind>> style{item.blend, {}};
+    for (const auto &filter : item.filters) style.second.push_back(filter.kind);
+    auto found = std::find(shape.styles.begin(), shape.styles.end(), style);
+    if (found == shape.styles.end()) found = shape.styles.insert(shape.styles.end(), std::move(style));
+    return kind + canvas_kind_style_stride * static_cast<std::uint32_t>(found - shape.styles.begin() + 1);
+}
+
+// The trace of one instance: which authored nodes drew it, and how.
+Json itemTrace(const CanvasItem &item, const std::string &output, std::size_t instance, std::uint32_t kind) {
+    auto nodes = Json::array();
+    for (const auto &node : item.nodes) nodes.push_back(node);
+    Json entry{{"output", output}, {"instance", instance},
+               {"kind", std::string{canvasItemKindName(kind % canvas_kind_style_stride)}}, {"nodes", std::move(nodes)}};
+    if (item.blend != CanvasBlend::normal) entry["blend"] = std::string{canvasBlendName(item.blend)};
+    if (!item.filters.empty()) {
+        entry["filters"] = Json::array();
+        for (const auto &filter : item.filters)
+            entry["filters"].push_back({{"node", filter.node}, {"op", std::string{canvasFilterOperation(filter.kind)}}});
+    }
+    // CV-3a: a shadow's or a glow's filter.
+    if (item.effect) entry["effect"] = {{"node", item.effect->node}, {"op", item.effect->op}};
+    return entry;
 }
 
 // CV-2b: `<copy>` writes what the draw `previous` left in its image into
@@ -2144,77 +2800,21 @@ void lowerComposite(const CanvasOutput &output, const std::vector<CanvasItem> &a
             const auto instance = local.size();
             local.emplace(index, instance);
             const auto &item = items[index];
-            auto kind = canvasItemKind(item);
-            shape.kinds.insert(kind);
+            const auto own = canvasItemKind(item);
+            shape.kinds.insert(own);
             // CV-5: the parameters the tables keep (all of them but under ship).
-            const auto folded = shape.constants.find(kind);
+            const auto folded = shape.constants.find(own);
             const auto kept = [&](std::size_t at) {
                 return folded == shape.constants.end() || !folded->second[at].has_value();
             };
-            // CV-2b: the item's style, numbered by first use in the draw.
-            if (item.blend != CanvasBlend::normal || !item.filters.empty()) {
-                std::pair<CanvasBlend, std::vector<CanvasFilterKind>> style{item.blend, {}};
-                for (const auto &filter : item.filters) style.second.push_back(filter.kind);
-                auto found = std::find(shape.styles.begin(), shape.styles.end(), style);
-                if (found == shape.styles.end()) found = shape.styles.insert(shape.styles.end(), std::move(style));
-                kind += canvas_kind_style_stride * static_cast<std::uint32_t>(found - shape.styles.begin() + 1);
-            }
-            const auto bake_offset = static_cast<double>(bake.size());
-            for (std::size_t at = 0; at < item.parameters.size(); ++at)
-                if (kept(at)) bake.push_back(item.parameters[at].value);
-            for (const auto &filter : item.filters) bake.insert(bake.end(), filter.constants.begin(), filter.constants.end());
-            double source_offset = -1.0;
-            if (std::any_of(item.parameters.begin(), item.parameters.end(),
-                            [](const CanvasParameter &parameter) { return parameter.edge.has_value(); })) {
-                source_offset = static_cast<double>(bake.size());
-                for (std::size_t at = 0; at < item.parameters.size(); ++at) {
-                    if (!kept(at)) continue;
-                    const auto &parameter = item.parameters[at];
-                    bake.push_back(parameter.edge ? static_cast<double>(frameEntry(*parameter.edge, parameter.value) + 1)
-                                                  : 0.0);
-                }
-            }
-            double opacity_offset = -1.0;
-            if (!item.opacity_edges.empty()) {
-                opacity_offset = static_cast<double>(bake.size());
-                for (const auto &edge : item.opacity_edges) bake.push_back(static_cast<double>(frameEntry(edge, 1.0)));
-            }
-            double mask_offset = -1.0;
-            if (!item.masks.empty()) {
-                shape.masks = true;
-                mask_offset = static_cast<double>(bake.size());
-                for (const auto &mask : item.masks) {
-                    bake.push_back(slotOf(mask.texture));
-                    bake.push_back(mask.luminance ? 1.0 : 0.0);
-                    bake.push_back(mask.outside);
-                    bake.insert(bake.end(), mask.rect.begin(), mask.rect.end());
-                    bake.insert(bake.end(), mask.affine.begin(), mask.affine.end());
-                }
-            }
+            const auto kind = styledKind(item, shape);
             const double clip = item.clip_base ? static_cast<double>(*item.clip_base) : -1.0;
-            const bool sampled = item.source == CanvasItemSource::image || item.source == CanvasItemSource::group ||
-                                 item.source == CanvasItemSource::glyph;
-            const double row[16] = {static_cast<double>(kind), bake_offset, source_offset, item.opacity,
-                                    opacity_offset, static_cast<double>(item.opacity_edges.size()), mask_offset,
-                                    static_cast<double>(item.masks.size()),
-                                    item.affine[0], item.affine[1], item.affine[2], item.affine[3],
-                                    item.affine[4], item.affine[5], sampled ? slotOf(item.texture) : -1.0, clip};
-            item_table.insert(item_table.end(), std::begin(row), std::end(row));
+            const auto row = itemRecord(item, kind, bake, frameEntry, slotOf, kept, clip, shape.masks);
+            item_table.insert(item_table.end(), row.begin(), row.end());
             if (!empty) {
-                auto nodes = Json::array();
-                for (const auto &node : item.nodes) nodes.push_back(node);
-                Json entry{{"output", id}, {"instance", instance},
-                           {"kind", std::string{canvasItemKindName(kind % canvas_kind_style_stride)}},
-                           {"nodes", std::move(nodes)}};
+                auto entry = itemTrace(item, id, instance, kind);
                 if (group) entry["group"] = *group;
                 if (draws.size() > 1) entry["draw"] = draw_index;
-                if (item.blend != CanvasBlend::normal) entry["blend"] = std::string{canvasBlendName(item.blend)};
-                if (!item.filters.empty()) {
-                    entry["filters"] = Json::array();
-                    for (const auto &filter : item.filters)
-                        entry["filters"].push_back({{"node", filter.node},
-                                                    {"op", std::string{canvasFilterOperation(filter.kind)}}});
-                }
                 lowered.items.push_back(std::move(entry));
             }
         }
@@ -2487,68 +3087,18 @@ void lowerPlace(const CanvasOutput &output, const std::function<Json(const Canva
         table.shape.extra_parameters = 2;
         for (std::size_t instance = 0; instance < draw.items.size(); ++instance) {
             const auto &item = items[draw.items[instance]];
-            auto kind = canvasItemKind(item);
-            table.shape.kinds.insert(kind);
-            table.place.depth_index.emplace(kind, depth_index.at(kind));
+            const auto own = canvasItemKind(item);
+            table.shape.kinds.insert(own);
+            table.place.depth_index.emplace(own, depth_index.at(own));
             // CV-2b: the item's filters, numbered by first use in the draw
             // (buildPlace refused a blend that reads the backdrop).
-            if (item.blend != CanvasBlend::normal || !item.filters.empty()) {
-                std::pair<CanvasBlend, std::vector<CanvasFilterKind>> style{item.blend, {}};
-                for (const auto &filter : item.filters) style.second.push_back(filter.kind);
-                auto found = std::find(table.shape.styles.begin(), table.shape.styles.end(), style);
-                if (found == table.shape.styles.end())
-                    found = table.shape.styles.insert(table.shape.styles.end(), std::move(style));
-                kind += canvas_kind_style_stride * static_cast<std::uint32_t>(found - table.shape.styles.begin() + 1);
-            }
-            const auto bake_offset = static_cast<double>(bake.size());
-            for (const auto &parameter : item.parameters) bake.push_back(parameter.value);
-            for (const auto &filter : item.filters) bake.insert(bake.end(), filter.constants.begin(), filter.constants.end());
-            double source_offset = -1.0;
-            if (std::any_of(item.parameters.begin(), item.parameters.end(),
-                            [](const CanvasParameter &parameter) { return parameter.edge.has_value(); })) {
-                source_offset = static_cast<double>(bake.size());
-                for (const auto &parameter : item.parameters)
-                    bake.push_back(parameter.edge ? static_cast<double>(frameEntry(*parameter.edge, parameter.value) + 1)
-                                                  : 0.0);
-            }
-            double opacity_offset = -1.0;
-            if (!item.opacity_edges.empty()) {
-                opacity_offset = static_cast<double>(bake.size());
-                for (const auto &edge : item.opacity_edges) bake.push_back(static_cast<double>(frameEntry(edge, 1.0)));
-            }
-            double mask_offset = -1.0;
-            if (!item.masks.empty()) {
-                table.shape.masks = true;
-                mask_offset = static_cast<double>(bake.size());
-                for (const auto &mask : item.masks) {
-                    bake.push_back(slotOf(mask.texture));
-                    bake.push_back(mask.luminance ? 1.0 : 0.0);
-                    bake.push_back(mask.outside);
-                    bake.insert(bake.end(), mask.rect.begin(), mask.rect.end());
-                    bake.insert(bake.end(), mask.affine.begin(), mask.affine.end());
-                }
-            }
-            const bool sampled = item.source == CanvasItemSource::image || item.source == CanvasItemSource::group ||
-                                 item.source == CanvasItemSource::glyph;
-            const double row[16] = {static_cast<double>(kind), bake_offset, source_offset, item.opacity,
-                                    opacity_offset, static_cast<double>(item.opacity_edges.size()), mask_offset,
-                                    static_cast<double>(item.masks.size()),
-                                    item.affine[0], item.affine[1], item.affine[2], item.affine[3],
-                                    item.affine[4], item.affine[5], sampled ? slotOf(item.texture) : -1.0, -1.0};
-            item_table.insert(item_table.end(), std::begin(row), std::end(row));
+            const auto kind = styledKind(item, table.shape);
+            const auto row = itemRecord(item, kind, bake, frameEntry, slotOf, [](std::size_t) { return true; }, -1.0,
+                                        table.shape.masks);
+            item_table.insert(item_table.end(), row.begin(), row.end());
             if (!empty) {
-                auto nodes = Json::array();
-                for (const auto &node : item.nodes) nodes.push_back(node);
-                Json entry{{"output", id}, {"instance", instance},
-                           {"kind", std::string{canvasItemKindName(kind % canvas_kind_style_stride)}},
-                           {"nodes", std::move(nodes)}};
+                auto entry = itemTrace(item, id, instance, kind);
                 if (draws.size() > 1) entry["draw"] = draw_index;
-                if (!item.filters.empty()) {
-                    entry["filters"] = Json::array();
-                    for (const auto &filter : item.filters)
-                        entry["filters"].push_back({{"node", filter.node},
-                                                    {"op", std::string{canvasFilterOperation(filter.kind)}}});
-                }
                 lowered.items.push_back(std::move(entry));
             }
         }
@@ -2665,6 +3215,250 @@ void lowerPlace(const CanvasOutput &output, const std::function<Json(const Canva
     }
 }
 
+// --- CV-3a: a neighbourhood filter's passes ---------------------------------
+
+const char *const fullscreen_vertex = R"glsl(
+void main() {
+    vec2 p = vec2(float((gl_VertexIndex << 1) & 2), float(gl_VertexIndex & 2));
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}
+)glsl";
+
+const char *const blur_weight_glsl = R"glsl(// A Gaussian tap's weight, before the taps are normalized.
+float canvasBlurWeight(int t, float sigma) {
+    return sigma > 1e-4 ? exp(-0.5 * float(t * t) / (sigma * sigma)) : (t == 0 ? 1.0 : 0.0);
+}
+
+)glsl";
+
+const char *const blur_texel_glsl = R"glsl(// A texel of the image before this pass; nothing past its edges.
+vec4 canvasTexelAt(vec2 pixel) {
+    vec2 size = vec2(pelican_size_t0());
+    if (any(lessThan(pixel, vec2(0.0))) || any(greaterThanEqual(pixel, size))) return vec4(0.0);
+    return pelican_sample_lod_t0((pixel + 0.5) / size, 0.0);
+}
+
+)glsl";
+
+// Blur `index` (CanvasBlur) as passes, each a triangle over an image of its
+// own: with levels, `_down1` paints the source at the four pixel centres of
+// each of its pixels and averages them and `_down<l>` halves the one before;
+// `_across` blurs across (painting the source at each tap without levels),
+// and the blur's own raster blurs down. The source is painted with the
+// draw's code (paintLibrary): its tables are the blur's bake table, its row
+// first.
+void lowerBlur(const CanvasOutput &output, std::size_t index,
+               const std::function<Json(const CanvasTexture &)> &texture_source, const CanvasLoweringOptions &options,
+               LoweredOutput &lowered) {
+    const auto &blur = output.blurs.at(index);
+    const auto &id = output.id;
+    const auto name = canvasBlurNodeId(id, index);
+    std::vector<double> bake(16, 0.0);
+    std::vector<double> frame_initial;
+    std::vector<CanvasValueSource> frame_sources;
+    std::map<CanvasValueSource, std::size_t> frame_index;
+    const auto frameEntry = [&](const CanvasValueSource &source, double initial) {
+        const auto [found, inserted] = frame_index.emplace(source, frame_sources.size());
+        if (inserted) {
+            frame_sources.push_back(source);
+            frame_initial.push_back(initial);
+        }
+        return found->second;
+    };
+    std::vector<CanvasTexture> slots;
+    itemTextures(blur.source, slots);
+    if (slots.size() > canvas_draw_image_limit)
+        throw GraphRegistryError("canvas.draw_images_exceeded@1",
+                                 {{"output", id}, {"count", slots.size()}, {"limit", canvas_draw_image_limit}});
+    const auto slotOf = [&](const CanvasTexture &texture) {
+        return static_cast<double>(std::find(slots.begin(), slots.end(), texture) - slots.begin());
+    };
+    DrawShape shape;
+    shape.srgb = blur.srgb;
+    shape.slots = slots.size();
+    shape.kinds.insert(canvasItemKind(blur.source));
+    const auto kind = styledKind(blur.source, shape);
+    const auto row = itemRecord(blur.source, kind, bake, frameEntry, slotOf, [](std::size_t) { return true; }, -1.0,
+                                shape.masks);
+    std::copy(row.begin(), row.end(), bake.begin());
+    const bool source_frame = !frame_sources.empty();
+    shape.frame = source_frame;
+    // The radius: a frame entry when an edge drives it, else a bake entry.
+    std::string radius;
+    if (blur.radius.edge) {
+        radius = "pelican_load_frame(" + std::to_string(frameEntry(*blur.radius.edge, blur.radius.value)) + "u)";
+    } else {
+        radius = "pelican_load_bake(" + std::to_string(bake.size()) + "u)";
+        bake.push_back(blur.radius.value);
+    }
+    const bool radius_frame = blur.radius.edge.has_value();
+    const auto scale = std::ldexp(1.0, static_cast<int>(blur.levels));
+    const auto taken = blur.levels == 0 ? 0.0 : (scale * scale - 1.0) / 12.0 + scale * scale / 6.0;
+    const auto sigma_function =
+        "// The Gaussian's sigma in this level's pixels (canvasBlurLevelSigma): the\n"
+        "// radius clamped to its limit, less what halving and the read back blur.\n"
+        "float canvasBlurSigma() {\n    float sigma = clamp(" + radius + ", 0.0, " + glslNumber(blur.radius_limit) +
+        ") * " + glslNumber(blur.sigma_scale) + ";\n    return sqrt(max(sigma * sigma - " + glslNumber(taken) +
+        ", 0.0)) / " + glslNumber(scale) + ";\n}\n\n";
+    const auto taps = "const int BLUR_TAPS = " + std::to_string(blur.taps) + ";\n\n";
+    const auto origin = "const vec2 BLUR_ORIGIN = vec2(" + glslNumber(blur.rect[0]) + ", " + glslNumber(blur.rect[1]) +
+                        ");\n\n";
+    std::string source_functions = "mat4 canvasSourceItem() {\n    return mat4(";
+    for (std::size_t k = 0; k < 16; ++k)
+        source_functions += (k == 0 ? "" : k % 4 == 0 ? ",\n                " : ", ") +
+                            ("pelican_load_bake(" + std::to_string(k) + "u)");
+    source_functions += ");\n}\n\n";
+    source_functions += "// The layer at a point of the filter's space, as the draw would paint it.\n";
+    source_functions += "vec4 canvasSource(mat4 it, vec2 p) {\n    vec4 color = canvasPaint(it, p) * canvasOpacity(it);\n";
+    if (!shape.styles.empty()) source_functions += "    color = canvasStyle(it, color);\n";
+    source_functions += "    return color;\n}\n\n";
+    const auto tap_loop = [](const std::string &sample) {
+        return "    float sigma = canvasBlurSigma();\n    vec4 sum = vec4(0.0);\n    float total = 0.0;\n"
+               "    for (int t = -BLUR_TAPS; t <= BLUR_TAPS; ++t) {\n"
+               "        float w = canvasBlurWeight(t, sigma);\n        sum += w * " +
+               sample + ";\n        total += w;\n    }\n    outColor = sum / total;\n";
+    };
+
+    const auto bake_id = name + "_bake";
+    const auto frame_id = name + "_frame";
+    lowered.nodes.push_back({{"id", bake_id}, {"op", "render.buffer"},
+                             {"parameters", {{"element", "float"}, {"size", bake.size() * sizeof(float)},
+                                             {"host_source", "runtime_f32"}, {"initial_f32", floatArray(bake)}}},
+                             {"inputs", Json::object()}, {"outputs", Json::array({"resource"})}});
+    if (!frame_sources.empty()) {
+        lowered.nodes.push_back({{"id", frame_id}, {"op", "render.buffer"},
+                                 {"parameters", {{"element", "float"}, {"size", frame_initial.size() * sizeof(float)},
+                                                 {"host_source", "runtime_f32"},
+                                                 {"initial_f32", floatArray(frame_initial)}}},
+                                 {"inputs", Json::object()}, {"outputs", Json::array({"resource"})}});
+        for (std::size_t entry = 0; entry < frame_sources.size(); ++entry)
+            lowered.nodes.push_back({{"id", name + "_set_" + std::to_string(entry)}, {"op", "render.scalar"},
+                                     {"parameters", {{"target", frame_id}, {"offset", entry * sizeof(float)}}},
+                                     {"inputs", {{"value", endpoint(frame_sources[entry].node,
+                                                                    frame_sources[entry].port)}}},
+                                     {"outputs", Json::array()}});
+    }
+
+    struct Pass {
+        std::string name;
+        bool source = false;     // paints the source
+        bool sigma = false;      // computes the blur's sigma
+        std::string body;        // main()
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+    };
+    const auto w0 = static_cast<std::uint32_t>(blur.rect[2]), h0 = static_cast<std::uint32_t>(blur.rect[3]);
+    std::vector<Pass> passes;
+    for (std::uint32_t level = 1; level <= blur.levels; ++level) {
+        Pass pass{name + "_down" + std::to_string(level), level == 1, false, {}, w0 >> level, h0 >> level};
+        pass.body = level == 1
+                        ? "    mat4 it = canvasSourceItem();\n"
+                          "    vec2 p = BLUR_ORIGIN + floor(gl_FragCoord.xy) * 2.0;\n"
+                          "    outColor = 0.25 * (canvasSource(it, p + vec2(0.5, 0.5)) + canvasSource(it, p + vec2(1.5, 0.5)) +\n"
+                          "                       canvasSource(it, p + vec2(0.5, 1.5)) + canvasSource(it, p + vec2(1.5, 1.5)));\n"
+                        : "    vec2 p = floor(gl_FragCoord.xy) * 2.0;\n"
+                          "    outColor = 0.25 * (canvasTexelAt(p) + canvasTexelAt(p + vec2(1.0, 0.0)) +\n"
+                          "                       canvasTexelAt(p + vec2(0.0, 1.0)) + canvasTexelAt(p + vec2(1.0, 1.0)));\n";
+        passes.push_back(std::move(pass));
+    }
+    const auto wl = w0 >> blur.levels, hl = h0 >> blur.levels;
+    {
+        Pass across{name + "_across", blur.levels == 0, true, {}, wl, hl};
+        across.body = blur.levels == 0
+                          ? "    mat4 it = canvasSourceItem();\n    vec2 p = BLUR_ORIGIN + gl_FragCoord.xy;\n" +
+                                tap_loop("canvasSource(it, p + vec2(float(t), 0.0))")
+                          : "    vec2 p = floor(gl_FragCoord.xy);\n" + tap_loop("canvasTexelAt(p + vec2(float(t), 0.0))");
+        passes.push_back(std::move(across));
+        Pass down{name, false, true, {}, wl, hl};
+        down.body = "    vec2 p = floor(gl_FragCoord.xy);\n" + tap_loop("canvasTexelAt(p + vec2(0.0, float(t)))");
+        passes.push_back(std::move(down));
+    }
+
+    std::string previous;
+    for (const auto &pass : passes) {
+        std::string vertex = shader_header;
+        vertex += generatedBanner(output, pass.name);
+        vertex += "// One of a neighbourhood filter's passes: one triangle over its image.\n";
+        vertex += shader_includes;
+        vertex += fullscreen_vertex;
+        std::string fragment = shader_header;
+        fragment += generatedBanner(output, pass.name);
+        fragment += "// A pass of " + blur.op + " \"" + blur.node + "\": " +
+                    (pass.source ? std::string{"the layer painted at its pixels"} : std::string{"the image before"}) +
+                    (pass.sigma ? ", blurred with " + std::to_string(2 * blur.taps + 1) + " taps" : std::string{}) +
+                    ".\n";
+        if (pass.source) fragment += parameter_layout_comment;
+        fragment += shader_includes;
+        fragment += "\nlayout(location = 0) out vec4 outColor;\n\n";
+        if (pass.source) {
+            fragment += fitFunctions(output);
+            fragment += "\n";
+            fragment += paintLibrary(shape);
+            fragment += origin;
+            fragment += source_functions;
+        } else {
+            fragment += blur_texel_glsl;
+        }
+        if (pass.sigma) {
+            fragment += blur_weight_glsl;
+            fragment += sigma_function;
+            fragment += taps;
+        }
+        fragment += "void main() {\n" + pass.body + "}\n";
+        const auto digest = picosha2::hash256_hex_string(vertex + std::string(1, '\0') + fragment);
+        const auto stem = "canvas_" + fileStem(pass.name) + "_" + digest.substr(0, 8);
+        const auto directory = options.shader_directory + (options.directory_per_stem ? "/" + stem : std::string{});
+        lowered.sources.push_back({stem, "vert", vertex, {}, id, directory + "/" + stem + ".vert"});
+        lowered.sources.push_back({stem, "frag", fragment, {}, id, directory + "/" + stem + ".frag"});
+
+        const auto image = pass.name + "_image";
+        lowered.nodes.push_back({{"id", image}, {"op", "render.image"},
+                                 {"parameters", fixedImageParameters(default_canvas_format, pass.width, pass.height)},
+                                 {"inputs", Json::object()}, {"outputs", Json::array({"resource"})}});
+        // Each pass declares only what its shaders read.
+        Json ports{{"image", {{"kind", "image"}, {"type", colorType()}, {"access", "write"}, {"attachment", "color"},
+                              {"location", 0}}}};
+        Json inputs{{"image", endpoint(image, "resource")}};
+        const bool reads_bake = pass.source || (pass.sigma && !radius_frame);
+        const bool reads_frame = (pass.source && source_frame) || (pass.sigma && radius_frame);
+        if (reads_bake) {
+            ports["bake"] = {{"kind", "buffer"}, {"element", "float"}, {"access", "read"}};
+            inputs["bake"] = endpoint(bake_id, "resource");
+        }
+        if (reads_frame) {
+            ports["frame"] = {{"kind", "buffer"}, {"element", "float"}, {"access", "read"}};
+            inputs["frame"] = endpoint(frame_id, "resource");
+        }
+        if (pass.source) {
+            for (std::size_t slot = 0; slot < slots.size(); ++slot) {
+                const auto port = "t" + std::to_string(slot);
+                ports[port] = {{"kind", "image"}, {"type", colorType()}, {"access", "read"},
+                               {"sampling", {{"filter", slots[slot].nearest ? "nearest" : "linear"},
+                                             {"address", "clamp_to_edge"}}}};
+                inputs[port] = texture_source(slots[slot]);
+            }
+        } else {
+            ports["t0"] = {{"kind", "image"}, {"type", colorType()}, {"access", "read"},
+                           {"sampling", {{"filter", "nearest"}, {"address", "clamp_to_edge"}}}};
+            inputs["t0"] = endpoint(previous, "image");
+        }
+        const auto shader = "project://" + directory + "/" + stem;
+        Json parameters{{"shader", {{"vertex", shader}, {"fragment", shader}}},
+                        {"draw", {{"vertex_count", 3}}},
+                        {"raster_state",
+                         {{"topology", "triangle_list"}, {"cull", "none"}, {"depth_test", false},
+                          {"depth_write", false}, {"color_attachments", Json::array({{{"write_mask", "rgba"}}})}}},
+                        {"ports", std::move(ports)},
+                        {"clear_color", Json::array({0.0, 0.0, 0.0, 0.0})}};
+        lowered.nodes.push_back({{"id", pass.name},
+                                 {"op", "render.raster"},
+                                 {"parameters", std::move(parameters)},
+                                 {"inputs", std::move(inputs)},
+                                 {"outputs", Json::array({"image"})}});
+        previous = pass.name;
+    }
+}
+
 LoweredOutput lowerOutput(const CanvasOutput &output, const CanvasLoweringOptions &options) {
     LoweredOutput lowered;
     const auto &id = output.id;
@@ -2674,6 +3468,7 @@ LoweredOutput lowerOutput(const CanvasOutput &output, const CanvasLoweringOption
         switch (texture.origin) {
         case CanvasTexture::Origin::graph: return endpoint(*texture.node, texture.port);
         case CanvasTexture::Origin::group: return endpoint(canvasGroupRasterNodeId(id, texture.group), "image");
+        case CanvasTexture::Origin::blur: return endpoint(canvasBlurNodeId(id, texture.group), "image");
         case CanvasTexture::Origin::file: break;
         }
         const auto key = std::pair{texture.asset, texture.linear};
@@ -2697,6 +3492,9 @@ LoweredOutput lowerOutput(const CanvasOutput &output, const CanvasLoweringOption
     for (std::size_t group = 0; group < output.groups.size(); ++group)
         lowerComposite(output, output.groups[group].items, output.groups[group].srgb, group, texture_source, options,
                        lowered);
+    // CV-3a: the neighbourhood filters drawn through images.
+    for (std::size_t blur = 0; blur < output.blurs.size(); ++blur)
+        lowerBlur(output, blur, texture_source, options, lowered);
     if (output.placement) lowerPlace(output, texture_source, options, lowered);
     else lowerComposite(output, output.items, false, std::nullopt, texture_source, options, lowered);
     return lowered;
@@ -2787,6 +3585,14 @@ std::string_view canvasItemKindName(std::uint32_t kind) {
     case canvas_kind_glyph_fill: return "glyph_fill";
     case canvas_kind_glyph_stroke: return "glyph_stroke";
     case canvas_kind_backdrop: return "backdrop";
+    // CV-3a.
+    case canvas_kind_effect_image: return "image_effect";
+    case canvas_kind_effect_offset + 0: return "rect_fill_effect";
+    case canvas_kind_effect_offset + 1: return "rect_stroke_effect";
+    case canvas_kind_effect_offset + 2: return "ellipse_fill_effect";
+    case canvas_kind_effect_offset + 3: return "ellipse_stroke_effect";
+    case canvas_kind_effect_offset + canvas_kind_glyph_fill: return "glyph_fill_effect";
+    case canvas_kind_effect_offset + canvas_kind_glyph_stroke: return "glyph_stroke_effect";
     default: throw std::invalid_argument("unknown canvas item kind: " + std::to_string(kind));
     }
 }
@@ -2796,13 +3602,15 @@ bool canvasItemReadsBackdrop(const CanvasItem &item) {
 }
 
 std::uint32_t canvasItemKind(const CanvasItem &item) {
+    // CV-3a: a shadow's or a glow's.
+    const auto effect = item.effect ? canvas_kind_effect_offset : 0u;
     switch (item.source) {
-    case CanvasItemSource::shape: return canvasItemKind(item.shape, item.paint);
-    case CanvasItemSource::image: return canvas_kind_image;
+    case CanvasItemSource::shape: return canvasItemKind(item.shape, item.paint) + effect;
+    case CanvasItemSource::image: return item.effect ? canvas_kind_effect_image : canvas_kind_image;
     case CanvasItemSource::color: return canvas_kind_color;
     case CanvasItemSource::group: return canvas_kind_group;
     case CanvasItemSource::glyph:
-        return item.paint == CanvasPaint::fill ? canvas_kind_glyph_fill : canvas_kind_glyph_stroke;
+        return (item.paint == CanvasPaint::fill ? canvas_kind_glyph_fill : canvas_kind_glyph_stroke) + effect;
     case CanvasItemSource::backdrop: return canvas_kind_backdrop;
     }
     throw std::invalid_argument("unknown canvas item source");
@@ -2826,6 +3634,9 @@ std::string canvasGroupRasterNodeId(const std::string &output, std::size_t group
 }
 std::string canvasAssetNodeId(const std::string &output, std::size_t index) {
     return reservedPrefix(output) + "asset" + std::to_string(index);
+}
+std::string canvasBlurNodeId(const std::string &output, std::size_t index) {
+    return reservedPrefix(output) + "blur" + std::to_string(index);
 }
 
 nlohmann::json expandCanvasInstances(const nlohmann::json &document) {

@@ -179,6 +179,8 @@ TEST_CASE("CV-6a canvas.place lowers to a raster onto the colour image, tested a
     const auto &group_image = nodeById(document, "sign$canvas_g0_image").at("parameters");
     REQUIRE(group_image.at("width") == 400);
     REQUIRE(group_image.at("height") == 200);
+    // CV-3a: with the extent scale the engine's render target needs beside a fixed size.
+    REQUIRE(group_image.at("extent_scale") == 1.0);
     // position.y reads the curve through the frame table.
     REQUIRE(nodeById(document, "sign$canvas_set_0").at("inputs").at("value") == Json{{"node", "lift"}, {"port", "value"}});
 

@@ -28,9 +28,9 @@ std::vector<SemanticTypeSchema> builtinCanvasTypeSchemas() {
 const std::vector<std::string> &canvasGraphOperations() {
     static const std::vector<std::string> operations{
         "canvas.backdrop", "canvas.color", "canvas.from_image", "canvas.image", "canvas.output", "canvas.place",
-        "canvas.stack", "canvas.transform", "filter.brightness_contrast", "filter.color_overlay",
-        "filter.gradient_map", "filter.hue_saturation", "filter.invert", "filter.levels", "shape.ellipse",
-        "shape.fill", "shape.rect", "shape.stroke", "shape.text"};
+        "canvas.stack", "canvas.transform", "filter.blur", "filter.brightness_contrast", "filter.color_overlay",
+        "filter.drop_shadow", "filter.gradient_map", "filter.hue_saturation", "filter.invert", "filter.levels",
+        "filter.outer_glow", "shape.ellipse", "shape.fill", "shape.rect", "shape.stroke", "shape.text"};
     return operations;
 }
 
@@ -182,12 +182,13 @@ void registerCanvasGraphModule(GraphModuleRegistry &registry) {
                                         {"double_sided", GraphParameterChange::rebuild}};
 
     // CV-2b: the backdrop and the colour filters. A filter's numbers are
-    // declared as values; the lowering takes them as authored and refuses an
-    // edge into one by name (canvas.filter_edge_unsupported@1).
+    // declared as values. CV-3a: the lowering takes an edge into any of them
+    // but brightness_contrast's (baked into a curve on the CPU), which it
+    // refuses by name (canvas.filter_edge_unsupported@1).
     auto backdrop = declared({}, {{"layer", layer}}, GraphParameterChange::rebuild);
-    const auto filter = [&](std::initializer_list<const char *> numbers,
-                            std::map<std::string, GraphParameterChange> rebuilds) {
-        auto inputs = ports(numbers);
+    const auto filter = [&](std::vector<std::string> numbers, std::map<std::string, GraphParameterChange> rebuilds) {
+        std::map<std::string, GraphInputContract> inputs;
+        for (const auto &name : numbers) inputs.emplace(name, value);
         inputs.emplace("layer", layer_input);
         auto registration = declared(inputs, {{"layer", layer}}, GraphParameterChange::value);
         registration.contract.parameter_changes = std::move(rebuilds);
@@ -195,15 +196,41 @@ void registerCanvasGraphModule(GraphModuleRegistry &registry) {
     };
     auto invert = filter({}, {});
     auto brightness_contrast = filter({"brightness", "contrast"}, {{"legacy", GraphParameterChange::rebuild}});
-    auto levels = filter({"input_floor", "input_ceiling", "gamma", "output_floor", "output_ceiling"},
-                         {{"channels", GraphParameterChange::rebuild}});
-    auto hue_saturation = filter({"hue", "saturation", "lightness"}, {{"colorize", GraphParameterChange::rebuild},
-                                                                      {"ranges", GraphParameterChange::rebuild}});
+    std::vector<std::string> level_numbers;
+    for (const auto *channel : {"", "channels.red.", "channels.green.", "channels.blue."})
+        for (const auto *field : {"input_floor", "input_ceiling", "gamma", "output_floor", "output_ceiling"})
+            level_numbers.push_back(std::string{channel} + field);
+    auto levels = filter(level_numbers, {{"channels", GraphParameterChange::rebuild}});
+    auto hue_saturation = filter({"hue", "saturation", "lightness", "colorize.hue", "colorize.saturation",
+                                  "colorize.lightness"},
+                                 {{"colorize", GraphParameterChange::rebuild}, {"ranges", GraphParameterChange::rebuild}});
+    // CV-3a: a stop's position and colour (`stops.<k>.position`,
+    // `stops.<k>.color.r` ..), for the stops the parameters hold.
     auto gradient_map = filter({}, {{"stops", GraphParameterChange::rebuild},
                                     {"opacity_stops", GraphParameterChange::rebuild},
                                     {"reversed", GraphParameterChange::rebuild},
                                     {"dithered", GraphParameterChange::rebuild}});
+    gradient_map.factory = [layer_input, value, layer](const Json &node) {
+        GraphOperationContract contract;
+        contract.inputs.emplace("layer", layer_input);
+        std::size_t count = 0;
+        if (const auto parameters = node.find("parameters"); parameters != node.end() && parameters->is_object())
+            if (const auto stops = parameters->find("stops"); stops != parameters->end() && stops->is_array())
+                count = stops->size();
+        for (std::size_t k = 0; k < count; ++k)
+            for (const auto *component : {"position", "color.r", "color.g", "color.b"})
+                contract.inputs.emplace("stops." + std::to_string(k) + "." + component, value);
+        contract.outputs.emplace("layer", layer);
+        return contract;
+    };
     auto color_overlay = filter({"color.r", "color.g", "color.b", "color.a"}, {});
+    // CV-3a: the neighbourhood filters; max_radius shapes the passes.
+    auto blur = filter({"radius"}, {{"max_radius", GraphParameterChange::rebuild}});
+    auto drop_shadow = filter({"offset.x", "offset.y", "radius", "spread", "color.r", "color.g", "color.b", "color.a",
+                               "opacity"},
+                              {{"max_radius", GraphParameterChange::rebuild}});
+    auto outer_glow = filter({"radius", "spread", "color.r", "color.g", "color.b", "color.a", "opacity"},
+                             {{"max_radius", GraphParameterChange::rebuild}});
 
     registry.registerModule(GraphModuleManifest{
         "pelican.canvas", 1,
@@ -229,6 +256,9 @@ void registerCanvasGraphModule(GraphModuleRegistry &registry) {
             {"filter.hue_saturation", std::move(hue_saturation)},
             {"filter.gradient_map", std::move(gradient_map)},
             {"filter.color_overlay", std::move(color_overlay)},
+            {"filter.blur", std::move(blur)},
+            {"filter.drop_shadow", std::move(drop_shadow)},
+            {"filter.outer_glow", std::move(outer_glow)},
         },
         {}});
 }

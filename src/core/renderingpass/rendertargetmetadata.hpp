@@ -26,4 +26,11 @@ struct RenderTargetMetadata {
     std::optional<std::string> alias_group;
 };
 
+// RC-1: the bytes a registered target's images occupy -- every surface
+// (two for history), mip and layer, and the multisampled image it renders
+// into -- by the planner's arithmetic (imageResourceBytes) over what
+// registration made: the image's extent and resolved mip count.
+// (Defined with RenderTargetContainer, which makes the images.)
+std::uint64_t renderTargetBytes(const RenderTargetMetadata &metadata);
+
 } // namespace Pelican

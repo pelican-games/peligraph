@@ -543,10 +543,13 @@ TEST_CASE("SG-3: + Adjustment is a backdrop under a filter as a layer above the 
           "between a layer and the stack, over its transform and its filters, and comes off again",
           "[studio][canvas][sg3]") {
     auto nodes = document();
+    // CV-3a: + Filter offers the colour filters and then Gaussian Blur, Drop
+    // Shadow and Outer Glow; + Adjustment the colour filters alone.
     const auto &filters = graphCanvasFilterChoices();
-    REQUIRE(filters.size() == 6);
+    REQUIRE(filters.size() == 9);
     CHECK(filters.front() == GraphCanvasFilterChoice{"filter.invert", "Invert"});
-    CHECK(graphCanvasFilterDefaults("filter.blur").is_null());
+    CHECK(graphCanvasAdjustmentChoices().size() == 6);
+    CHECK(graphCanvasFilterDefaults("filter.radial_blur").is_null());
 
     // Above the card (index 0): at index 1.
     const auto adjustment = graphCanvasAddAdjustmentLayerOps(nodes, "", "hud", 0, "filter.invert");
@@ -669,4 +672,50 @@ TEST_CASE("SG-3: Place in 3D scene is a canvas.place of the stack on a material 
     CHECK(graphCanvasSetPlaceParameterOps(nodes, "", "hud_place", "pixels_per_unit", 0.0).empty());
     CHECK(graphCanvasSetPlaceParameterOps(nodes, "", "hud_place", "position", Json::array({1, 2, 3}))[0]["parameters"]
               ["position"] == Json::array({1, 2, 3}));
+}
+
+TEST_CASE("CV-3a: + Filter offers Gaussian Blur, Drop Shadow and Outer Glow with Photoshop's defaults; "
+          "+ Adjustment the colour filters alone",
+          "[studio][canvas][cv3a]") {
+    auto nodes = document();
+    const auto &filters = graphCanvasFilterChoices();
+    REQUIRE(filters.size() == 9);
+    CHECK(filters[6] == GraphCanvasFilterChoice{"filter.blur", "Gaussian Blur"});
+    CHECK(filters[7] == GraphCanvasFilterChoice{"filter.drop_shadow", "Drop Shadow"});
+    CHECK(filters[8] == GraphCanvasFilterChoice{"filter.outer_glow", "Outer Glow"});
+    const auto &adjustments = graphCanvasAdjustmentChoices();
+    CHECK(std::ranges::none_of(adjustments, [](const GraphCanvasFilterChoice &choice) {
+        return choice.op == "filter.blur" || choice.op == "filter.drop_shadow" || choice.op == "filter.outer_glow";
+    }));
+    // The fields start where Photoshop's do: a 1 px blur; a shadow 5 px away
+    // at 120 degrees, size 5, black at 75 %; a glow size 5, (255, 255, 190) at 75 %.
+    CHECK(graphCanvasFilterDefaults("filter.blur") == Json{{"radius", 1.0}});
+    const auto shadow = graphCanvasFilterDefaults("filter.drop_shadow");
+    CHECK(shadow == Json{{"offset", {2.5, 4.330127018922193}}, {"radius", 5.0}, {"spread", 0.0},
+                         {"color", {0.0, 0.0, 0.0, 1.0}}, {"opacity", 0.75}});
+    const auto glow = graphCanvasFilterDefaults("filter.outer_glow");
+    CHECK(glow == Json{{"radius", 5.0}, {"spread", 0.0}, {"color", {1.0, 1.0, 190.0 / 255.0, 1.0}}, {"opacity", 0.75}});
+
+    // + Filter puts one between the layer and the stack, as a colour filter.
+    const auto ops = graphCanvasAddFilterOps(nodes, "", "hud", 2, "filter.drop_shadow");
+    REQUIRE(ops.size() == 2);
+    CHECK(ops[0]["node"]["id"] == "ellipse_1_drop_shadow");
+    CHECK(ops[0]["node"]["op"] == "filter.drop_shadow");
+    CHECK(ops[0]["node"]["parameters"] == shadow);
+    CHECK(ops[0]["node"]["inputs"]["layer"] == Json{{"node", "ellipse_1_fill"}, {"port", "layer"}});
+    CHECK(ops[1] == Json{{"op", "set_input"}, {"scope", "root"}, {"node", "hud"}, {"port", "ellipse_1"},
+                         {"source", {{"node", "ellipse_1_drop_shadow"}, {"port", "layer"}}}});
+    applyOps(nodes, ops);
+    const auto rows = graphCanvasLayerRows(nodes, "hud");
+    const auto ellipse = std::ranges::find(rows, std::string{"ellipse_1"}, &GraphCanvasStackRow::input);
+    REQUIRE(ellipse != rows.end());
+    CHECK(ellipse->filters == std::vector<std::string>{"ellipse_1_drop_shadow"});
+    CHECK(graphCanvasFilterLabel("filter.drop_shadow") == "Drop Shadow");
+    // A blur of the layers below (an adjustment) is no adjustment.
+    CHECK(graphCanvasAddAdjustmentLayerOps(nodes, "", "hud", 0, "filter.blur").empty());
+    CHECK_FALSE(graphCanvasAddAdjustmentLayerOps(nodes, "", "hud", 0, "filter.invert").empty());
+    // The engine's refusals, in words.
+    CHECK(graphCanvasRefusalSentence("graph refused (canvas.filter_backdrop_unsupported@1)").starts_with("A blur"));
+    CHECK(graphCanvasRefusalSentence("graph refused (canvas.filter_size_exceeded@1)").starts_with("A blur"));
+    CHECK(graphCanvasRefusalSentence("graph refused (canvas.range_unbounded@1)").starts_with("An effect's reach"));
 }
