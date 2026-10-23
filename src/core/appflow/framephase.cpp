@@ -162,6 +162,12 @@ void updateFrameState() {
         // including an engine that started in edit, before any RPC.
         modules.audio->setAllPaused(play_state != EngineTime::PlayState::playing);
         modules.audio->update();
+        // AT-1 decision 2: a game step mixes the device-less engine up to
+        // the game clock, so a headless run's voices go on with it (its PCM
+        // is not written anywhere yet); the frame's audio clock is read.
+        const auto &time = modules.engine_time;
+        modules.audio->beginFrame(Audio::FrameClock{time.gameStepping(), time.now(), time.dt(),
+                                                    time.timeSetRevision()});
     }
 #endif
     // Reload publication is a frame-boundary operation and happens before any

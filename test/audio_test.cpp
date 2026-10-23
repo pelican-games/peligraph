@@ -1,4 +1,6 @@
 #include "../src/core/audio/audio.hpp"
+#include "../src/core/audio/audioclock.hpp"
+#include "../src/core/appflow/framephase.hpp"
 #include "../src/core/container.hpp"
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/pathresolver.hpp"
@@ -13,6 +15,7 @@
 #include "../src/core/loader/scene.hpp"
 #include "../src/core/renderingpass/graphinputs.hpp"
 #include "../src/project/graphcomposition.hpp"
+#include "../src/project/graphmodule.hpp"
 #include "scene_load_test_support.hpp"
 
 #include <catch2/catch_approx.hpp>
@@ -29,8 +32,11 @@
 #include <limits>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <utility>
 #include <vector>
 
 namespace Pelican {
@@ -965,6 +971,18 @@ TEST_CASE("CT-1 get_status lists each graph voice's state and position, the same
     }
     const auto played_to = voices().at("position_seconds").get<double>();
     REQUIRE(played_to > 0.1);
+    // AT-1 decision 6: the same status carries the clock and the master. The
+    // null backend has no clock of its own: the game clock stands in for it,
+    // and this voice is not a master.
+    {
+        const auto status = internal::audioStatusJson();
+        INFO(status.dump());
+        CHECK(status.at("clock") == nlohmann::json{{"source", "game_clock"}, {"sample_rate", 0},
+                                                   {"audio_time", rig.time().now()}, {"played_frames", 0},
+                                                   {"output_latency_seconds", 0.0}, {"latency_source", "none"},
+                                                   {"drift_seconds", 0.0}});
+        CHECK(status.at("master").is_null());
+    }
 
     // Pause: paused, standing where it was.
     REQUIRE(internal::changePlayState(State::paused, {}).previous == State::playing);
@@ -1534,6 +1552,731 @@ TEST_CASE("PM-2 stopAll stops every voice and forgets its handle", "[audio][pm2]
     // The engine plays again afterwards.
     (void)audio.playSound("project://level.wav");
     REQUIRE(peak(rig.mix()) > 0.1);
+}
+
+// ---------------------------------------------------------------------------
+// AT-1: the audio clock (decision 1), the device-less engine mixed with the
+// game steps (decision 2), audio_time (decision 3), the master voice
+// (decisions 4 and 5) and what get_status.audio says of them (decision 6).
+
+namespace {
+
+// A headless project with one scene, loaded, so the production frame --
+// EngineTime::advance and updateFrameState -- runs as a headless player's.
+void loadHeadlessStage(VoiceRig &rig) {
+    writeText(rig.sandbox.root / "passes/main_rendering_config.json",
+              R"({"schema":"pelican.graph","version":1,"definitions":{},"nodes":[],"outputs":{},"rendering":{}})");
+    std::ofstream{rig.sandbox.root / "scene.json", std::ios::binary} << R"({"schema":"pelican.scene","version":2,"scenes":{
+      "first":{"objects":[{"name":"Stage","components":[{"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]}]}]}}})";
+    GET_MODULE(ProjectSource).setProjectData(nlohmann::json{{"schema", "pelican.project"}, {"version", 1},
+        {"name", "at1-headless"}, {"engine_min_version", "0.1.0"},
+        {"basic_config", {{"window_size", {{"width", 64}, {"height", 64}}},
+            {"camera", {{"yfov", 0.5}, {"znear", 0.1}, {"zfar", 100.0}}},
+            {"default_scene_id", "first"}, {"scene_data_json", "scene.json"}}}}.dump());
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    test_support::loadScene(rig.scene(), SceneId{"first"});
+}
+
+nlohmann::json masterVoice(std::string id, std::string clock, nlohmann::json parameters = nlohmann::json::object()) {
+    parameters["asset"] = "project://tone.wav";
+    parameters["master"] = true;
+    return {{"id", std::move(id)}, {"op", "audio.playback"}, {"parameters", std::move(parameters)},
+            {"inputs", {{"time", edge(std::move(clock))}}}, {"outputs", {"voice"}}};
+}
+
+} // namespace
+
+// A1. Decision 2: a headless run's device-less engine is mixed with every game
+// step, so a voice goes on with the steps -- before AT-1 nothing turned its
+// crank and the voice stood at 0. Fixed step 1/60: 120 steps are 96000
+// frames and two seconds of the audio clock, exactly. A5 rides on the same
+// run: a value.curve reading audio_time gets the frame's audio clock.
+TEST_CASE("AT-1 a headless run mixes the device-less engine with every game step: 120 steps are 96000 frames",
+          "[audio][at1][at1-offline]") {
+    VoiceRig rig;
+    loadHeadlessStage(rig);
+    writeSineWav(rig.sandbox.root / "tone.wav", 4.0);
+    REQUIRE(rig.audio().backendKind() == AudioBackendKind::offline);
+    // A graph voice on scene time (started by its owner's first frame) and a
+    // curve on the audio clock, published the way the renderer publishes.
+    rig.load(graphDocument({inputNode("scene", "scene_time"), inputNode("heard", "audio_time"),
+        {{"id", "voice"}, {"op", "audio.playback"},
+         {"parameters", {{"asset", "project://tone.wav"}, {"wrap", "repeat"}}},
+         {"inputs", {{"time", edge("scene")}}}, {"outputs", {"voice"}}},
+        {{"id", "beat"}, {"op", "value.curve"},
+         {"parameters", {{"keys", {{{"time", 0.0}, {"value", 0.0}}, {{"time", 4.0}, {"value", 8.0}}}}}},
+         {"inputs", {{"time", edge("heard")}}}, {"outputs", {"value"}}}}));
+    // And a voice game code started before the first step.
+    const auto sound = GameContext{}.audio().playSound("project://tone.wav");
+    ValueGraph::PublishResult published;
+    for (int step = 1; step <= 120; ++step) {
+        rig.time().advance();
+        updateFrameState();
+        published = rig.publish();
+        REQUIRE(rig.audio().mixedFramesForTesting() == static_cast<std::uint64_t>(step) * frameSamples);
+    }
+    REQUIRE(rig.audio().mixedFramesForTesting() == 96000u);
+    const auto clock = rig.audio().clock(rig.time().now());
+    REQUIRE(clock.source == Audio::ClockSource::offline);
+    REQUIRE(clock.audio_time == 2.0);
+    REQUIRE(clock.played_frames == 96000u);
+    // The voice game code started went on two seconds into its source. (A
+    // cursor stands up to one 512-frame block past what was mixed: a sound
+    // reads its source a block at a time.)
+    constexpr double block = 512.0 / voiceRate;
+    const auto state = rig.audio().soundState(sound);
+    REQUIRE(state);
+    REQUIRE(state->position_seconds);
+    CAPTURE(*state->position_seconds);
+    REQUIRE(*state->position_seconds >= 2.0 - 1e-9);
+    REQUIRE(*state->position_seconds < 2.0 + block);
+    // The graph's voice played on with its own time, never sought.
+    const auto voice = rig.voice("voice");
+    CAPTURE(rig.cursor("voice"));
+    REQUIRE(rig.cursor("voice") >= 119.0 * frameSeconds - 1e-9);
+    REQUIRE(rig.cursor("voice") < 119.0 * frameSeconds + block);
+    REQUIRE(rig.audio().seekCountForTesting(voice) == 0);
+    // A5: the curve read the frame's audio clock, 2.0, not the game clock's
+    // sum of 120 steps (a hair under 2.0).
+    REQUIRE(rig.value(published, "heard") == 2.0);
+    REQUIRE(rig.value(published, "beat") == Catch::Approx(4.0).margin(1e-12));
+    // A6: get_status.audio says where the clock came from.
+    const auto status = internal::audioStatusJson();
+    INFO(status.dump());
+    REQUIRE(status.at("backend") == "offline");
+    REQUIRE(status.at("clock") == nlohmann::json{{"source", "offline"}, {"sample_rate", 48000},
+                                                 {"audio_time", 2.0}, {"played_frames", 96000},
+                                                 {"output_latency_seconds", 0.0}, {"latency_source", "none"},
+                                                 {"drift_seconds", 0.0}});
+    REQUIRE(status.at("master").is_null());
+
+    // Held (PM-1a): a paused game's steps mix nothing and move no voice; the
+    // clock stands and goes on from there once the game plays again.
+    rig.time().setPlayState(EngineTime::PlayState::paused);
+    rig.time().requestSteps(3);
+    for (int step = 0; step < 3; ++step) {
+        rig.time().advance();
+        updateFrameState();
+    }
+    REQUIRE(rig.audio().mixedFramesForTesting() == 96000u);
+    REQUIRE(*rig.audio().soundState(sound)->position_seconds == *state->position_seconds);
+    rig.time().setPlayState(EngineTime::PlayState::playing);
+    rig.time().advance();
+    updateFrameState();
+    REQUIRE(rig.audio().mixedFramesForTesting() == 96000u + frameSamples);
+    // A set_time moves the game clock, not the audio clock: the mix carries
+    // on from what it mixed, one step's worth.
+    rig.time().setTime(rig.time().now() + 10.0);
+    rig.time().advance();
+    updateFrameState();
+    REQUIRE(rig.audio().mixedFramesForTesting() == 96000u + 2 * frameSamples);
+    GameContext{}.audio().stopSound(sound);
+}
+
+// A2. Decision 1: the device clock's line through what a device's audio
+// thread would stamp. The device runs 0.01 % fast and mixes 480-frame (10 ms)
+// chunks; each stamp is up to 1.5 ms early or late, and now and then a
+// callback runs 6 ms late. The game thread reads the clock at 60 frame heads a
+// second, off the chunk boundaries. The raw count steps by a chunk at a time;
+// read as it is, the clock would be up to 10 ms off.
+TEST_CASE("AT-1 the device clock's line takes out the chunk steps: monotonic and within 1 ms of the device",
+          "[audio][at1][at1-fit]") {
+    constexpr double nominal = 48000.0;
+    constexpr double true_rate = nominal * 1.0001;
+    constexpr double chunk = 480.0;
+    constexpr double latency = 1440.0;
+    constexpr double origin = 1000.0; // steady seconds at which the device stood at frame 0
+    AudioDeviceClock clock{nominal, latency};
+    std::uint64_t state = 0x9E3779B97F4A7C15ull;
+    const auto uniform = [&] {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        return static_cast<double>(state >> 11) / 9007199254740992.0;
+    };
+    // Chunk k is stamped when the device has taken in its frames, give or
+    // take the callback's jitter.
+    std::vector<std::pair<double, std::uint64_t>> stamps;
+    for (std::uint64_t k = 0; k < 1100; ++k) {
+        const auto frames = static_cast<std::uint64_t>(chunk) * (k + 1);
+        auto at = origin + static_cast<double>(frames) / true_rate + (uniform() - 0.5) * 3e-3;
+        if (k % 97 == 50) at += 6e-3;
+        stamps.emplace_back(at, frames);
+    }
+    const auto truth = [&](double seconds) { return ((seconds - origin) * true_rate - latency) / nominal; };
+    std::size_t next = 0;
+    double last = 0.0;
+    double worst = 0.0;
+    std::size_t checked = 0;
+    for (int frame = 1; frame <= 600; ++frame) {
+        const double head = origin + frame / 60.0 + 0.0037;
+        while (next < stamps.size() && stamps[next].first <= head) {
+            clock.add(stamps[next].first, stamps[next].second);
+            ++next;
+        }
+        const auto reading = clock.at(head);
+        CAPTURE(frame, reading.audio_time, truth(head));
+        REQUIRE(reading.running);
+        REQUIRE(reading.audio_time >= last);
+        last = reading.audio_time;
+        // The first tenth of a second: a few chunks to stand the line on.
+        if (head - origin < 0.1) continue;
+        worst = (std::max)(worst, std::abs(reading.audio_time - truth(head)));
+        ++checked;
+    }
+    CAPTURE(worst);
+    REQUIRE(checked > 500);
+    REQUIRE(worst < 1e-3);
+    // The drift is the device's 100 ppm since the line was long enough to
+    // measure from (a second in), to within what the jitter leaves of two
+    // readings.
+    const auto end = origin + 600 / 60.0 + 0.0037;
+    const auto reading = clock.at(end);
+    CAPTURE(reading.drift_seconds);
+    CHECK(std::abs(reading.drift_seconds - 1e-4 * (end - origin - 1.0)) < 5e-4);
+    // Held (the device stopped), the clock stands; started again, the next
+    // stamps carry it on from there without going back.
+    clock.hold(true);
+    CHECK(clock.at(end + 1.0).audio_time == reading.audio_time);
+    clock.hold(false);
+    // The device starts again two seconds later from the frames it stopped at.
+    const auto resumed = end + 2.0;
+    const auto stopped_at = stamps[next - 1].second;
+    for (int k = 1; k <= 30; ++k)
+        clock.add(resumed + k * chunk / true_rate, stopped_at + static_cast<std::uint64_t>(chunk) * k);
+    const auto after = clock.at(resumed + 30 * chunk / true_rate + 0.004);
+    CAPTURE(after.audio_time, reading.audio_time);
+    // On from where it stood -- the 30 chunks and the 4 ms since -- not from
+    // where the two seconds of standing would have taken it. (The reading it
+    // stood at ran up to a chunk past the device's last stamp.)
+    CHECK(after.audio_time >= reading.audio_time);
+    CHECK(after.audio_time - reading.audio_time ==
+          Catch::Approx((30 * chunk + 0.004 * true_rate) / nominal).margin(0.012));
+    // Nor does the stand count as drift.
+    CHECK(after.drift_seconds == reading.drift_seconds);
+}
+
+// A3. Decision 5, against an audio clock the test moves and ticks the test
+// hands EngineTime: while a master voice plays, a realtime step is the audio
+// clock's move since the last tick; with no master, before the frame after
+// it starts, and once it stops, the steady clock's (the ticks).
+TEST_CASE("AT-1 a realtime step follows the audio clock while a master voice plays, the steady clock otherwise",
+          "[audio][at1][at1-follow]") {
+    ensureLogger();
+    FastModuleContainer modules;
+    auto &time = GET_MODULE(EngineTime);
+    time.setup(EngineTime::Mode::realtime, frameSeconds);
+    struct FakeAudio {
+        double audio_time = 0.0;
+        bool master = false;
+        bool has_clock = true;
+    } fake;
+    const EngineTime::AudioClockHook hook = [](void *context, std::chrono::steady_clock::time_point)
+        -> std::optional<EngineTime::AudioClockSample> {
+        const auto &self = *static_cast<const FakeAudio *>(context);
+        if (!self.has_clock) return std::nullopt;
+        return EngineTime::AudioClockSample{self.audio_time, self.master};
+    };
+    REQUIRE(time.installAudioClock(&fake, hook));
+    FakeAudio other;
+    REQUIRE_FALSE(time.installAudioClock(&other, hook)); // one clock at a time
+    using namespace std::chrono;
+    const auto base = steady_clock::now();
+    const auto tick = [&](int k) { return base + duration_cast<steady_clock::duration>(duration<double>(k / 60.0)); };
+    const auto steady = [&](int k) { return duration<double>(tick(k) - tick(k - 1)).count(); };
+    // The audio clock runs 2 % fast against the ticks.
+    constexpr double audio_step = 1.02 / 60.0;
+    time.advanceAt(tick(0));
+    double game_time = time.now();
+    for (int k = 1; k <= 12; ++k) {
+        const auto before = fake.audio_time;
+        fake.audio_time += audio_step;
+        // The graph starts the master in frame 3; it plays through 8.
+        fake.master = k >= 4 && k <= 8;
+        time.advanceAt(tick(k));
+        CAPTURE(k, time.dt(), steady(k));
+        if (fake.master) {
+            CHECK(time.followingAudioClock());
+            CHECK(time.dt() == fake.audio_time - before);
+        } else {
+            CHECK_FALSE(time.followingAudioClock());
+            CHECK(time.dt() == Catch::Approx(steady(k)).margin(1e-12));
+        }
+        // The editor clock is the steady clock's all along.
+        CHECK(time.editorDt() == Catch::Approx(steady(k)).margin(1e-12));
+        game_time += time.dt();
+    }
+    CHECK(time.now() == Catch::Approx(game_time).margin(1e-12));
+    // Bounded as a steady step is.
+    fake.master = true;
+    fake.audio_time += 5.0;
+    time.advanceAt(tick(13));
+    CHECK(time.followingAudioClock());
+    CHECK(time.dt() == Catch::Approx(0.1));
+    // A clock that answers nothing (offline, null) is not followed.
+    fake.has_clock = false;
+    time.advanceAt(tick(14));
+    CHECK_FALSE(time.followingAudioClock());
+    CHECK(time.dt() == Catch::Approx(steady(14)).margin(1e-12));
+    fake.has_clock = true;
+    // Paused, the game clock stands whatever the audio clock does.
+    time.setPlayState(EngineTime::PlayState::paused);
+    fake.audio_time += audio_step;
+    time.advance();
+    CHECK(time.dt() == 0.0);
+    CHECK_FALSE(time.followingAudioClock());
+    // The fixed-step mode never follows: there the audio follows the game.
+    time.setPlayState(EngineTime::PlayState::playing);
+    time.setup(EngineTime::Mode::fixed_step, frameSeconds);
+    for (int k = 0; k < 3; ++k) {
+        fake.audio_time += audio_step;
+        time.advance();
+        CHECK(time.dt() == frameSeconds);
+        CHECK_FALSE(time.followingAudioClock());
+    }
+    time.removeAudioClock(&fake);
+    REQUIRE(time.installAudioClock(&other, hook));
+    time.removeAudioClock(&other);
+}
+
+// A4. Decision 4: one master at a time, counted the way the frames run the
+// graph -- an owner lives only in its own scene, so masters owned in two
+// scenes never play together; an unowned one plays in every scene.
+TEST_CASE("AT-1 master voices that could play at once are refused by name, counted per scene",
+          "[audio][at1][at1-master-conflict]") {
+    const auto refused = [](const nlohmann::json &document) {
+        try {
+            const ValueGraph::Graph graph{document.dump()};
+            FAIL("accepted: " << document.dump());
+        } catch (const GraphRegistryError &error) {
+            REQUIRE(error.code() == "audio.master_conflict@1");
+            return error.detail().at("nodes");
+        }
+        return nlohmann::json{};
+    };
+    const auto voice = [](std::string id) {
+        return nlohmann::json{{"id", std::move(id)}, {"op", "audio.playback"},
+                              {"parameters", {{"asset", "project://tone.wav"}}},
+                              {"inputs", {{"time", edge("now")}}}, {"outputs", {"voice"}}};
+    };
+    // Two in one document, neither owned.
+    REQUIRE(refused(graphDocument({inputNode("now", "time"), masterVoice("music", "now"),
+                                   masterVoice("stinger", "now")})) == nlohmann::json::array({"music", "stinger"}));
+    // One master beside any number of voices that are not.
+    REQUIRE_NOTHROW(ValueGraph::Graph{graphDocument({inputNode("now", "time"), masterVoice("music", "now"),
+                                                     voice("hit"), voice("step")}).dump()});
+    // One definition with a master, one instance per scene: the per-scene BGM.
+    const auto instances = [](nlohmann::json nodes, nlohmann::json top = nlohmann::json::array()) {
+        nlohmann::json document{{"schema", "pelican.graph"}, {"version", 1},
+            {"definitions", {{"bgm", {{"nodes", {inputNode("now", "time"), masterVoice("voice", "now")}},
+                                      {"outputs", nlohmann::json::object()}}}}},
+            {"nodes", std::move(top)}, {"outputs", nlohmann::json::object()}};
+        for (auto &node : nodes) document["nodes"].push_back(std::move(node));
+        return document;
+    };
+    const auto instance = [](std::string id, std::string scene, std::uint64_t object) {
+        return nlohmann::json{{"id", std::move(id)}, {"op", "graph.instance"}, {"definition", "bgm"},
+                              {"owner", {{"scene", std::move(scene)}, {"object", object}}}};
+    };
+    REQUIRE_NOTHROW(ValueGraph::Graph{instances({instance("title_bgm", "title", 1),
+                                                 instance("stage_bgm", "stage", 3)}).dump()});
+    // The same definition owned twice in one scene: both would play there.
+    REQUIRE(refused(instances({instance("left", "stage", 1), instance("right", "stage", 2),
+                               instance("title_bgm", "title", 4)})) ==
+            nlohmann::json::array({"left/voice", "right/voice"}));
+    // An unowned master plays in every scene, beside the one a scene owns.
+    REQUIRE(refused(instances(nlohmann::json::array({instance("title_bgm", "title", 1)}),
+                              nlohmann::json::array({inputNode("app", "time"), masterVoice("jingle", "app")}))) ==
+            nlohmann::json::array({"jingle", "title_bgm/voice"}));
+    // `master` is true or false.
+    auto numbered = masterVoice("music", "now");
+    numbered["parameters"]["master"] = 1;
+    REQUIRE_THROWS(ValueGraph::Graph{graphDocument({inputNode("now", "time"), numbered}).dump()});
+    // The catalog lists it: a bool, false unless set, and changing it rebuilds
+    // the voice (which voice the game clock follows is fixed when it starts).
+    const auto catalog = nlohmann::json(builtinGraphModuleRegistry().catalog());
+    nlohmann::json playback;
+    for (const auto &module : catalog.at("modules"))
+        for (const auto &entry : module.at("operations"))
+            if (entry.at("op") == "audio.playback") playback = entry;
+    REQUIRE(playback.is_object());
+    CHECK(playback.at("change").at("parameters").at("master") == "rebuild");
+    nlohmann::json listed;
+    for (const auto &parameter : playback.at("parameters"))
+        if (parameter.at("name") == "master") listed = parameter;
+    INFO(listed.dump());
+    REQUIRE(listed.is_object());
+    CHECK(listed.at("kind") == "bool");
+    CHECK(listed.at("default") == false);
+}
+
+// A4. Decision 4 on the device-less engine: a master voice -- the integrated
+// form on its own loop point, the only form a master takes -- is not sought
+// for a gap between its cursor and the graph's time however wide (here the
+// mixer runs a whole second ahead), and an explicit jump (set_time) still
+// seeks it. The control: the same voice without `master` is sought for the
+// same gap.
+TEST_CASE("AT-1 a master voice is not sought for a second's gap in the clock, and a set_time still seeks it",
+          "[audio][at1][at1-master]") {
+    using Command = Animation::CurvePlaybackCommand;
+    const bool master = GENERATE(true, false);
+    CAPTURE(master);
+    VoiceRig rig;
+    writeSineWav(rig.sandbox.root / "tone.wav", 4.0);
+    rig.load(graphDocument({inputNode("now", "scene_time"), eventsNode("cue"),
+        {{"id", "voice"}, {"op", "audio.playback"},
+         {"parameters", {{"asset", "project://tone.wav"}, {"wrap", "repeat"}, {"master", master}}},
+         {"inputs", {{"time", edge("now")}, {"events", edge("cue", "events")}}}, {"outputs", {"voice"}}}}));
+    rig.emit("cue", Command::start);
+    for (int i = 0; i < 10; ++i) (void)rig.frame();
+    const auto sound = rig.voice("voice");
+    REQUIRE(rig.audio().seekCountForTesting(sound) == 0);
+    REQUIRE(rig.audio().masterPlaying() == master);
+    const auto masterOffset = [&] {
+        const auto status = internal::audioStatusJson();
+        INFO(status.dump());
+        if (!master) {
+            REQUIRE(status.at("master").is_null());
+            return 0.0;
+        }
+        const auto &entry = status.at("master");
+        REQUIRE(entry.at("node") == "voice");
+        // Heard where it was mixed: the cursor less what the sound read
+        // ahead of its mix (at most a block).
+        const auto heard = entry.at("heard_position_seconds").get<double>();
+        REQUIRE(heard <= rig.cursor("voice") + 1e-12);
+        REQUIRE(rig.cursor("voice") - heard < 512.0 / voiceRate);
+        return entry.at("offset_seconds").get<double>();
+    };
+    // In step: the master is heard where the graph puts it, frame after frame.
+    (void)rig.publish();
+    const auto in_step = masterOffset();
+    CHECK(std::abs(in_step) <= 1e-9);
+    (void)rig.mix();
+    rig.time().advance();
+
+    // The mixer runs a second ahead of the graph's clock.
+    (void)rig.audio().mixOffline(voiceRate);
+    for (int i = 0; i < 10; ++i) {
+        (void)rig.publish();
+        if (master) CHECK(masterOffset() == Catch::Approx(-1.0).margin(1e-9));
+        (void)rig.mix();
+        rig.time().advance();
+    }
+    REQUIRE(rig.voice("voice") == sound);
+    if (!master) {
+        // The control: a voice that follows the graph was brought back.
+        REQUIRE(rig.audio().seekCountForTesting(sound) >= 1);
+        return;
+    }
+    REQUIRE(rig.audio().seekCountForTesting(sound) == 0);
+    // An explicit jump: set_time half a second on. The voice is sought there
+    // once, and plays on from it unsought.
+    rig.time().setTime(rig.time().now() + 0.5);
+    (void)rig.publish();
+    REQUIRE(rig.audio().seekCountForTesting(sound) == 1);
+    CHECK(std::abs(masterOffset()) <= followTolerance);
+    (void)rig.mix();
+    rig.time().advance();
+    for (int i = 0; i < 10; ++i) (void)rig.frame();
+    REQUIRE(rig.audio().seekCountForTesting(sound) == 1);
+    // Held by its own pause, a master is not playing (the game clock goes
+    // back to the steady clock); resumed, it is again.
+    rig.emit("cue", Command::pause);
+    (void)rig.frame();
+    CHECK_FALSE(rig.audio().masterPlaying());
+    rig.emit("cue", Command::resume);
+    (void)rig.frame();
+    CHECK(rig.audio().masterPlaying());
+    REQUIRE(rig.audio().seekCountForTesting(sound) == 1);
+}
+
+// AT-1 decision 4: a master runs on its own clock -- the integrated form on
+// its own loop point, the voice AU-1 holds natively (wrap once or repeat, a
+// literal map, speed > 0, no position) -- and any other voice asked to be one
+// is refused by name when the graph is built, saying why.
+TEST_CASE("AT-1 a master that would not run on its own loop point is refused by name, with the reason",
+          "[audio][at1][at1-master-native]") {
+    const auto voice = [](nlohmann::json parameters, nlohmann::json inputs) {
+        parameters["asset"] = "project://tone.wav";
+        parameters["master"] = true;
+        return nlohmann::json{{"id", "voice"}, {"op", "audio.playback"}, {"parameters", std::move(parameters)},
+                              {"inputs", std::move(inputs)}, {"outputs", {"voice"}}};
+    };
+    const auto map = nlohmann::json{{"id", "map"}, {"op", "value.playback"},
+        {"parameters", {{"wrap", "repeat"}, {"duration", 1}}}, {"inputs", {{"elapsed", edge("now")}}},
+        {"outputs", {"value"}}};
+    const auto reason = [](const nlohmann::json &document) {
+        try {
+            const ValueGraph::Graph graph{document.dump()};
+            FAIL("accepted: " << document.dump());
+        } catch (const GraphRegistryError &error) {
+            REQUIRE(error.code() == "audio.master_requires_native@1");
+            REQUIRE(error.detail().at("node") == "voice");
+            return error.detail().at("reason").get<std::string>();
+        }
+        return std::string{};
+    };
+    // The decomposed form follows a position the graph computes.
+    CHECK(reason(graphDocument({inputNode("now", "time"), map,
+        voice({}, {{"time", edge("now")}, {"position", edge("map")}})})) == "position");
+    // A map an edge drives changes while the voice plays.
+    CHECK(reason(graphDocument({inputNode("now", "time"),
+        voice({{"wrap", "repeat"}}, {{"time", edge("now")}, {"speed", edge("now")}})})) == "driven_mapping");
+    // Back and forth, or backwards, it cannot hold its own loop point.
+    CHECK(reason(graphDocument({inputNode("now", "time"),
+        voice({{"wrap", "ping_pong"}}, {{"time", edge("now")}})})) == "ping_pong");
+    CHECK(reason(graphDocument({inputNode("now", "time"),
+        voice({{"wrap", "repeat"}, {"speed", -1.0}}, {{"time", edge("now")}})})) == "negative_speed");
+    // The controls: once or repeat, a literal range, delay and speed.
+    REQUIRE_NOTHROW(ValueGraph::Graph{graphDocument({inputNode("now", "time"),
+        voice({}, {{"time", edge("now")}})}).dump()});
+    REQUIRE_NOTHROW(ValueGraph::Graph{graphDocument({inputNode("now", "time"),
+        voice({{"wrap", "repeat"}, {"source_begin", 0.5}, {"source_end", 1.5}, {"speed", 2.0}, {"delay", 0.25}},
+              {{"time", edge("now")}})}).dump()});
+    // The same voices without `master` play as they did.
+    auto follower = voice({}, {{"time", edge("now")}, {"position", edge("map")}});
+    follower["parameters"].erase("master");
+    REQUIRE_NOTHROW(ValueGraph::Graph{graphDocument({inputNode("now", "time"), map, follower}).dump()});
+}
+
+// AT-1 decision 5 after a hitch: a frame that takes 0.3 s moves the audio
+// clock 0.3 s, and the step is bounded at 0.1 s. What the bound held back is
+// carried into the next steps (each bounded again), so within a few frames
+// the scene time a master has played through -- the game clock's progress
+// since the master started, which scene_time takes as it is -- is the audio
+// clock's progress again, not 0.2 s behind it for good. A frame with no
+// master drops what is owed.
+TEST_CASE("AT-1 after a hitch a master's steps carry what the bound held back until the game clock is the sound's again",
+          "[audio][at1][at1-follow]") {
+    ensureLogger();
+    FastModuleContainer modules;
+    auto &time = GET_MODULE(EngineTime);
+    time.setup(EngineTime::Mode::realtime, frameSeconds);
+    struct FakeAudio {
+        double audio_time = 0.0;
+        bool master = false;
+    } fake;
+    REQUIRE(time.installAudioClock(&fake, [](void *context, std::chrono::steady_clock::time_point)
+        -> std::optional<EngineTime::AudioClockSample> {
+        const auto &self = *static_cast<const FakeAudio *>(context);
+        return EngineTime::AudioClockSample{self.audio_time, self.master};
+    }));
+    using namespace std::chrono;
+    auto at = steady_clock::now();
+    const auto frame = [&](double seconds) {
+        at += duration_cast<steady_clock::duration>(duration<double>(seconds));
+        fake.audio_time += seconds;
+        time.advanceAt(at);
+    };
+    frame(frameSeconds);
+    frame(frameSeconds);
+    // The master starts here: the scene and the sound are measured from this tick.
+    fake.master = true;
+    const auto scene_from = time.now();
+    const auto audio_from = fake.audio_time;
+    const auto apart = [&] { return (fake.audio_time - audio_from) - (time.now() - scene_from); };
+    for (int k = 0; k < 5; ++k) {
+        frame(frameSeconds);
+        CHECK(std::abs(apart()) < 1e-12);
+    }
+    // The hitch: one frame of 0.3 s. Its step is bounded; the game clock is
+    // behind the sound by what the bound held back.
+    frame(0.3);
+    CHECK(time.followingAudioClock());
+    CHECK(time.dt() == Catch::Approx(0.1));
+    CHECK(apart() == Catch::Approx(0.2).margin(1e-9));
+    // It catches up within a few frames, each step bounded, and then runs with
+    // the sound again.
+    int caught_up = 0;
+    for (int k = 1; k <= 10; ++k) {
+        frame(frameSeconds);
+        CAPTURE(k, time.dt(), apart());
+        CHECK(time.dt() <= 0.1 + 1e-12);
+        if (caught_up == 0 && std::abs(apart()) < 1e-9) caught_up = k;
+    }
+    CAPTURE(caught_up);
+    CHECK(caught_up >= 1);
+    CHECK(caught_up <= 4);
+    CHECK(std::abs(apart()) < 1e-9);
+    // A frame with no master owes the sound nothing: a hitch held back and then
+    // the master stopping leaves no carry for the next master to pay.
+    frame(0.3);
+    CHECK(apart() == Catch::Approx(0.2).margin(1e-9));
+    fake.master = false;
+    frame(frameSeconds);
+    CHECK_FALSE(time.followingAudioClock());
+    fake.master = true;
+    frame(frameSeconds);
+    CHECK(time.followingAudioClock());
+    CHECK(time.dt() == Catch::Approx(frameSeconds).margin(1e-12));
+    time.removeAudioClock(&fake);
+}
+
+// A5. Decision 3: audio_time is a frame input the catalog lists, and the
+// clock check treats it as a clock: events still read scene_time alone.
+TEST_CASE("AT-1 audio_time is a frame input, and events read on it are refused as on any clock but scene_time",
+          "[audio][at1][at1-clock]") {
+    const auto catalog = nlohmann::json(builtinGraphModuleRegistry().catalog());
+    nlohmann::json listed;
+    for (const auto &module : catalog.at("modules"))
+        for (const auto &entry : module.at("operations"))
+            if (entry.at("op") == "value.input")
+                for (const auto &name : entry.at("input_names"))
+                    if (name.at("name") == "audio_time") listed = name;
+    INFO(listed.dump());
+    REQUIRE(listed.is_object());
+    CHECK(listed.at("type").at("semantic") == "pelican.value.scalar@1");
+    CHECK_FALSE(listed.at("description").get<std::string>().empty());
+    const ValueGraph::Graph reads{graphDocument(nlohmann::json::array({inputNode("heard", "audio_time")})).dump()};
+    REQUIRE_NOTHROW(validateGraphInputs(reads));
+
+    const auto voice = [](nlohmann::json inputs) {
+        return nlohmann::json{{"id", "voice"}, {"op", "audio.playback"},
+                              {"parameters", {{"asset", "project://tone.wav"}, {"wrap", "repeat"}}},
+                              {"inputs", std::move(inputs)}, {"outputs", {"voice"}}};
+    };
+    const auto map = [](std::string clock) {
+        return nlohmann::json{{"id", "map"}, {"op", "value.playback"}, {"parameters", {{"duration", 1}}},
+                              {"inputs", {{"elapsed", edge(std::move(clock))}}}, {"outputs", {"value"}}};
+    };
+    const auto mismatch = [](const nlohmann::json &document) {
+        try {
+            const ValueGraph::Graph graph{document.dump()};
+            FAIL("accepted: " << document.dump());
+        } catch (const GraphRegistryError &error) {
+            REQUIRE(error.code() == "audio.clock_mismatch@1");
+            REQUIRE(error.detail().at("node") == "voice");
+            return error.detail();
+        }
+        return nlohmann::json{};
+    };
+    // Events read on the audio clock.
+    CHECK(mismatch(graphDocument({inputNode("heard", "audio_time"), eventsNode("cue"),
+              voice({{"time", edge("heard")}, {"events", edge("cue", "events")}})}))
+              .at("time_clock") == nlohmann::json::array({"audio_time"}));
+    // Events on scene_time, the position on the audio clock.
+    const auto split = mismatch(graphDocument({inputNode("scene", "scene_time"), inputNode("heard", "audio_time"),
+        eventsNode("cue"), map("heard"),
+        nlohmann::json{{"id", "voice"}, {"op", "audio.playback"}, {"parameters", {{"asset", "project://tone.wav"}}},
+                       {"inputs", {{"time", edge("scene")}, {"events", edge("cue", "events")},
+                                   {"position", edge("map")}}},
+                       {"outputs", {"voice"}}}}));
+    CHECK(split.at("position_clock") == nlohmann::json::array({"audio_time"}));
+    // Without events a voice's time or position may read it.
+    REQUIRE_NOTHROW(ValueGraph::Graph{graphDocument({inputNode("heard", "audio_time"),
+        voice({{"time", edge("heard")}})}).dump()});
+    REQUIRE_NOTHROW(ValueGraph::Graph{graphDocument({inputNode("heard", "audio_time"), map("heard"),
+        nlohmann::json{{"id", "voice"}, {"op", "audio.playback"}, {"parameters", {{"asset", "project://tone.wav"}}},
+                       {"inputs", {{"time", edge("heard")}, {"position", edge("map")}}},
+                       {"outputs", {"voice"}}}}).dump()});
+}
+
+// A6. Decision 6 on the null backend: the same keys, the values from the game
+// clock -- audio_time is the game clock, and a master is heard where the graph
+// put it.
+TEST_CASE("AT-1 get_status.audio carries the clock and the master on the null backend, from the game clock",
+          "[audio][at1][at1-status]") {
+    VoiceRig rig;
+    GET_MODULE(EngineLaunchConfig).audio_backend = AudioBackendKind::null;
+    writeSineWav(rig.sandbox.root / "tone.wav", 2.0);
+    rig.load(graphDocument({inputNode("now", "scene_time"), masterVoice("voice", "now")}));
+    REQUIRE(rig.audio().backendKind() == AudioBackendKind::null);
+    for (int i = 0; i < 10; ++i) {
+        (void)rig.publish();
+        rig.time().advance();
+    }
+    (void)rig.publish();
+    const auto status = internal::audioStatusJson();
+    INFO(status.dump());
+    CHECK(status.at("clock") == nlohmann::json{{"source", "game_clock"}, {"sample_rate", 0},
+                                               {"audio_time", rig.time().now()}, {"played_frames", 0},
+                                               {"output_latency_seconds", 0.0}, {"latency_source", "none"},
+                                               {"drift_seconds", 0.0}});
+    const auto position = status.at("voices").at(0).at("position_seconds").get<double>();
+    CHECK(position == Catch::Approx(10 * frameSeconds).margin(1e-9));
+    CHECK(status.at("master") == nlohmann::json{{"node", "voice"}, {"position_seconds", position},
+                                                {"heard_position_seconds", position}, {"offset_seconds", 0.0}});
+    CHECK(rig.audio().masterPlaying());
+}
+
+// A7. Decision 1 on this machine's device, opened from the test with no
+// window and no player: silence for about a second, read the way a frame's
+// head reads it. The clock runs with real time (1 s in 1 +- 0.01 s), never
+// goes back, and the latency estimate is above 0. With a silent master voice,
+// EngineTime follows it. Skipped, with the reason, where no device opens.
+TEST_CASE("AT-1 the device's own clock runs with real time, never back, behind an estimated latency",
+          "[audio][at1][at1-device]") {
+    using SteadyClock = std::chrono::steady_clock;
+    using namespace std::chrono_literals;
+    ensureLogger();
+    Sandbox sandbox;
+    writeConstantWav(sandbox.root / "silence.wav", 3.0, 0.0);
+    FastModuleContainer modules;
+    GET_MODULE(EngineLaunchConfig).headless = false;
+    GET_MODULE(EngineLaunchConfig).rpc = true;
+    GET_MODULE(PathResolver).setup(sandbox.root, false);
+    auto &audio = GET_MODULE(Audio);
+    if (audio.backendKind() == AudioBackendKind::null && !audio.backendFallbackReason().empty())
+        SKIP("no audio device here: " + audio.backendFallbackReason());
+    REQUIRE(audio.backendKind() == AudioBackendKind::device);
+    const auto latency = audio.deviceLatency();
+    REQUIRE(latency);
+    REQUIRE(latency->seconds > 0.0);
+    const auto read = [&](SteadyClock::time_point at) {
+        const auto followed = audio.followedClockAt(at);
+        REQUIRE(followed);
+        return followed->audio_time;
+    };
+    // The device's first chunks.
+    const auto opened = SteadyClock::now();
+    while (read(SteadyClock::now()) == 0.0 && SteadyClock::now() - opened < 3s) std::this_thread::sleep_for(5ms);
+    REQUIRE(read(SteadyClock::now()) > 0.0);
+    std::this_thread::sleep_for(200ms);
+    const auto first_tick = SteadyClock::now();
+    const auto first = read(first_tick);
+    double last = first;
+    std::size_t readings = 0;
+    while (SteadyClock::now() - first_tick < 1s) {
+        std::this_thread::sleep_for(5ms);
+        const auto now = read(SteadyClock::now());
+        REQUIRE(now >= last);
+        last = now;
+        ++readings;
+    }
+    const auto end_tick = SteadyClock::now();
+    const auto end = read(end_tick);
+    const auto elapsed = std::chrono::duration<double>(end_tick - first_tick).count();
+    const auto reading = audio.clock(0.0);
+    WARN("AT-1 device clock: audio " << end - first << " s in " << elapsed << " s (" << readings
+         << " readings), rate " << reading.sample_rate << " Hz, latency " << latency->seconds << " s (period "
+         << latency->period_frames << " x " << latency->periods << ", buffer " << latency->buffer_frames
+         << " at " << latency->device_rate << " Hz, from " << (latency->from_buffer ? "buffer" : "periods")
+         << "), drift " << reading.drift_seconds << " s, audio_time " << reading.audio_time << " s");
+    CHECK(reading.source == Audio::ClockSource::device);
+    CHECK(reading.latency_estimated);
+    CHECK(reading.output_latency_seconds == latency->seconds);
+    CHECK(std::abs((end - first) - elapsed) <= 0.01 * elapsed);
+
+    // A silent master voice: a realtime step is the audio clock's move.
+    auto &time = GET_MODULE(EngineTime);
+    time.setup(EngineTime::Mode::realtime, frameSeconds);
+    Audio::VoiceStart start;
+    start.master = true;
+    const auto voice = audio.playVoice(audio.prepareSound("project://silence.wav"), start);
+    REQUIRE(audio.masterPlaying());
+    time.advance();
+    const auto before = audio.clock(0.0).audio_time;
+    std::this_thread::sleep_for(20ms);
+    time.advance();
+    const auto after = audio.clock(0.0).audio_time;
+    CHECK(time.followingAudioClock());
+    CHECK(time.dt() == Catch::Approx(after - before).margin(1e-12));
+    CHECK(time.dt() > 0.0);
+    audio.stopSound(voice);
+    CHECK_FALSE(audio.masterPlaying());
+    time.advance();
+    CHECK_FALSE(time.followingAudioClock());
 }
 
 } // namespace Pelican

@@ -1186,7 +1186,8 @@ TEST_CASE("CT-1 the catalog lists each op's required parameters and the names va
         CHECK(entry.at("type").at("semantic") == "pelican.value.scalar@1");
         CHECK_FALSE(entry.at("description").get<std::string>().empty());
     }
-    CHECK(names == std::vector<std::string>{"time", "delta_time", "scene_time"});
+    // AT-1 decision 3 added the audio clock beside the game's.
+    CHECK(names == std::vector<std::string>{"time", "delta_time", "scene_time", "audio_time"});
     // Each listed name is one the frame binds; any other is refused as before.
     const auto graph = [](const std::string &name) {
         return ValueGraph::Graph{Json{{"schema", "pelican.graph"}, {"version", 1},

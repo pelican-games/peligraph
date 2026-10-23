@@ -6,6 +6,7 @@
 #include "./audiobackendkind.hpp"
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -55,6 +56,9 @@ DECLARE_MODULE(Audio) {
         std::optional<double> end;
         float rate = 1.0f;               // multiplied into the voice's pitch
         bool paused = false;
+        // AT-1 decision 4: the voice the game clock follows (an audio.playback
+        // with `master`). One plays at a time; the graph refuses a second.
+        bool master = false;
     };
     // What a graph voice does this frame (AU-1 decision 3). With a position
     // the voice follows it: its cursor is compared with the position modulo
@@ -70,6 +74,58 @@ DECLARE_MODULE(Audio) {
         // A voice on its own loop point that ended is left ended unless the
         // position is further than `tolerance` from it.
         bool restart_ended = true;
+        // AT-1 decision 4: false for a master voice that plays on from the
+        // frame before: its cursor is not brought to the position however
+        // far apart the two stand (the game clock follows the voice, not the
+        // voice the game clock). A voice that resumes from being held, or
+        // ran to its end and restarts, is still sought.
+        bool correct_drift = true;
+    };
+    // AT-1 decision 1: where the audio clock comes from. The device's own
+    // (the frames the device took, fitted against the steady clock), the
+    // device-less engine's (the frames it mixed), or none -- the null backend
+    // -- when the game clock stands in for it.
+    enum class ClockSource : std::uint8_t { device, offline, game_clock };
+    // The audio clock: the second of the sound being heard.
+    struct ClockReading {
+        ClockSource source = ClockSource::game_clock;
+        std::uint32_t sample_rate = 0;
+        double audio_time = 0.0;
+        // The frames heard by then (audio_time at the sample rate).
+        std::uint64_t played_frames = 0;
+        // What the device holds before it is heard: an estimate (the device's
+        // buffer), 0 where there is no device.
+        double output_latency_seconds = 0.0;
+        bool latency_estimated = false;
+        // Since the engine started: the audio clock's progress less the
+        // steady clock's (the device's crystal against the CPU's). 0 where
+        // the audio follows the game clock.
+        double drift_seconds = 0.0;
+    };
+    // What the latency estimate of a device was read from (AT-1 decision 1).
+    struct DeviceLatency {
+        double seconds = 0.0;
+        std::uint32_t period_frames = 0;    // internalPeriodSizeInFrames
+        std::uint32_t periods = 0;          // internalPeriods
+        std::uint32_t buffer_frames = 0;    // WASAPI's actualBufferSizeInFramesPlayback; 0 elsewhere
+        std::uint32_t device_rate = 0;      // the device's own rate, the frames above are at it
+        bool from_buffer = false;           // buffer_frames was used rather than period_frames * periods
+    };
+    // The frame's head, as updateFrameState hands it over (AT-1 decision 2).
+    struct FrameClock {
+        bool game_step = false;
+        double now = 0.0;                   // the game clock after the step
+        double dt = 0.0;                    // the step's length
+        std::uint64_t time_set_revision = 0;
+    };
+    // AT-1 decision 6: where a graph voice is heard now -- its cursor less
+    // the output latency, at the voice's rate (and, on the device-less
+    // engine, less what the voice read ahead of its mix) -- and how far that
+    // stands from the source second the graph asks for, taken modulo the
+    // loop (or the source).
+    struct HeardPosition {
+        double heard_seconds = 0.0;
+        double offset_seconds = 0.0;
     };
 
   private:
@@ -87,7 +143,9 @@ DECLARE_MODULE(Audio) {
         std::size_t seeks = 0;
         std::uint64_t length_frames = 0;
         std::uint64_t loop_frames = 0; // the loop's length when the source loops on its own
+        std::uint64_t loop_begin_frames = 0;
         std::uint32_t source_rate = 0;
+        bool master = false;
     };
     struct DecodedEntry {
         std::optional<std::pair<std::int64_t, std::uintmax_t>> stamp;
@@ -116,9 +174,25 @@ DECLARE_MODULE(Audio) {
     // AU-2 decision 3: longer sounds than this stream, a decoder per voice.
     double streaming_threshold_seconds;
     std::size_t streamed_voice_count = 0;
+    // AT-1 decision 2: the device-less engine's clock is the frames it mixed.
+    // A game step mixes it up to the game clock from where the clock stood
+    // when the mix last took it up (the base); a jump of the game clock
+    // (set_time, a play session's start) or a stretch of held frames moves
+    // the base rather than the mix.
+    std::uint64_t offline_mixed_frames = 0;
+    struct OfflineBase {
+        std::uint64_t time_set_revision = 0;
+        double time = 0.0;
+        std::uint64_t frames = 0;
+    };
+    std::optional<OfflineBase> offline_base;
+    // AT-1 decision 1: the device's clock as the frame's head read it.
+    std::optional<ClockReading> device_reading;
+    bool device_read_this_frame = false;
 
     float effectiveVolume(AudioBus bus) const;
     void updateVoiceVolumes();
+    void followGameClock(const FrameClock &frame);
 
   public:
     Audio();
@@ -177,6 +251,30 @@ DECLARE_MODULE(Audio) {
     // are destroyed here rather than accumulating until Audio teardown.
     void update();
 
+    // AT-1. The frame's head, after update(): a game step mixes the
+    // device-less engine up to the game clock (decision 2: the frames up to
+    // floor(now * rate), nothing while the whole mix is held), and a device
+    // whose clock EngineTime::advance did not read this frame reads it now.
+    void beginFrame(const FrameClock &frame);
+    // AT-1 decision 1. The audio clock: the device's as this frame's head
+    // read it; the device-less engine's, exact; on the null backend the game
+    // clock, `game_time`, stands in for it.
+    ClockReading clock(double game_time) const;
+    // AT-1 decision 5, asked by EngineTime::advance at its tick: the device's
+    // clock there (read once, kept as the frame's) and whether a master
+    // voice plays. None where the audio follows the game clock instead
+    // (offline, null): there is nothing to follow.
+    struct FollowedClock {
+        double audio_time = 0.0;
+        bool master_playing = false;
+    };
+    std::optional<FollowedClock> followedClockAt(std::chrono::steady_clock::time_point tick);
+    // A master voice is playing: started, not held, not at its end, and the
+    // whole mix not held.
+    bool masterPlaying() const;
+    std::optional<HeardPosition> heardPosition(SoundHandle handle, double position_seconds) const;
+    std::optional<DeviceLatency> deviceLatency() const;
+
     AudioBackendKind backendKind() const noexcept;
     const std::string &backendFallbackReason() const noexcept { return fallback_reason; }
     // The device-less engine only: mixes `frames` frames and returns them
@@ -196,6 +294,8 @@ DECLARE_MODULE(Audio) {
     void setStreamingThresholdForTesting(double seconds);
     std::size_t seekCountForTesting() const noexcept { return seek_count; }
     std::size_t seekCountForTesting(SoundHandle handle) const noexcept;
+    // Every frame the device-less engine mixed, whoever asked for it.
+    std::uint64_t mixedFramesForTesting() const noexcept { return offline_mixed_frames; }
 };
 
 } // namespace Pelican

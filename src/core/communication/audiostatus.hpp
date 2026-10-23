@@ -23,6 +23,14 @@ namespace Pelican::internal {
 // state) nothing plays: every voice is idle at 0. A paused game holds the
 // whole mix, so a voice that would play is paused.
 //
+// AT-1 decision 6: `clock`, the audio clock the frame read --
+// {source: "device" | "offline" | "game_clock", sample_rate, audio_time,
+// played_frames, output_latency_seconds, latency_source: "estimated" |
+// "none", drift_seconds} -- and `master`, the master voice with a voice --
+// {node, position_seconds, heard_position_seconds, offset_seconds} -- or
+// null. The null backend has no clock of its own: the game clock stands in
+// for it, and a master is heard where the graph put it.
+//
 // A build without audio answers {"available": false} and nothing else.
 nlohmann::json audioStatusJson();
 

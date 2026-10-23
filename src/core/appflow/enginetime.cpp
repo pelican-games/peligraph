@@ -31,24 +31,45 @@ void EngineTime::setup(Mode mode, double fixed_dt) {
     session_started = false;
     time_before_session = 0.0;
     last_tick = Clock::now();
+    last_audio_time.reset();
+    following_audio_clock = false;
+    audio_carry = 0.0;
 }
 
-void EngineTime::advance() {
+void EngineTime::advance() { advanceAt(Clock::now()); }
+
+void EngineTime::advanceAt(Clock::time_point tick) {
     // The frame's own delta: what the game clock takes while playing, and
     // what the editor clock takes on every frame.
     if (current_mode == Mode::fixed_step) {
         editor_delta_time = fixed_delta_time;
     } else {
-        const auto current_tick = Clock::now();
-        const auto elapsed = std::chrono::duration<double>(current_tick - last_tick).count();
+        const auto elapsed = std::chrono::duration<double>(tick - last_tick).count();
         editor_delta_time = std::clamp(elapsed, 0.0, maxRealtimeDelta);
-        last_tick = current_tick;
+        last_tick = tick;
     }
     ++evaluation_index;
+    // AT-1 decision 5: the audio clock at this tick, read every frame so the
+    // step after a master starts has the reading before it.
+    const auto audio = audio_clock_hook ? audio_clock_hook(audio_clock_context, tick) : std::nullopt;
+    const auto previous_audio_time = last_audio_time;
+    last_audio_time = audio ? std::optional{audio->audio_time} : std::nullopt;
 
     step_frame = false;
+    following_audio_clock = false;
     if (play_state == PlayState::playing) {
         delta_time = editor_delta_time;
+        // A master plays: this step is the audio clock's move since the last
+        // tick, under the same bound as the steady clock's. What the bound
+        // holds back after a hitch is carried into the next steps, each under
+        // the bound again, so the game clock catches up with the sound within
+        // a few frames instead of staying behind it.
+        if (current_mode == Mode::realtime && audio && audio->master_playing && previous_audio_time) {
+            const auto owed = audio->audio_time - *previous_audio_time + audio_carry;
+            delta_time = std::clamp(owed, 0.0, maxRealtimeDelta);
+            audio_carry = (std::max)(owed - delta_time, 0.0);
+            following_audio_clock = true;
+        }
     } else if (pending_steps > 0) {
         --pending_steps;
         step_frame = true;
@@ -56,6 +77,8 @@ void EngineTime::advance() {
     } else {
         delta_time = 0.0;
     }
+    // A frame no master plays in owes the sound nothing.
+    if (!following_audio_clock) audio_carry = 0.0;
     if (gameStepping()) {
         current_time += delta_time;
         ++frame_index;
@@ -67,6 +90,27 @@ void EngineTime::setTime(double t) {
     delta_time = 0.0;
     last_tick = Clock::now();
     ++time_set_revision;
+    // An explicit time is where the timeline stands; the master is sought to
+    // it (a jump), so nothing is owed from before.
+    audio_carry = 0.0;
+}
+
+bool EngineTime::installAudioClock(void *context, AudioClockHook hook) noexcept {
+    if (context == nullptr || hook == nullptr || audio_clock_hook != nullptr) return false;
+    audio_clock_context = context;
+    audio_clock_hook = hook;
+    last_audio_time.reset();
+    audio_carry = 0.0;
+    return true;
+}
+
+void EngineTime::removeAudioClock(void *context) noexcept {
+    if (context != audio_clock_context) return;
+    audio_clock_context = nullptr;
+    audio_clock_hook = nullptr;
+    last_audio_time.reset();
+    following_audio_clock = false;
+    audio_carry = 0.0;
 }
 
 double EngineTime::now() const { return current_time; }
