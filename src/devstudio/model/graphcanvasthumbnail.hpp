@@ -140,6 +140,10 @@ struct GraphCanvasThumbnailPixels {
     std::uint32_t height = 0;
     std::vector<std::uint8_t> rgba;
     std::string error;
+    // NB-4: the part of the canvas a layer's or a card's picture shows
+    // (x, y, width, height in canvas units), when it is cut to where the
+    // layer draws; none for the whole canvas.
+    std::optional<std::array<double, 4>> crop;
 
     [[nodiscard]] bool ok() const noexcept { return error.empty() && width != 0 && height != 0; }
 };
@@ -159,13 +163,38 @@ using GraphCanvasImageDecoder =
 [[nodiscard]] Pelican::CanvasValues graphCanvasThumbnailValues(const Pelican::CanvasOutput &output,
                                                                const Pelican::CanvasValues &live);
 
+// NB-4: where a lowered output draws, in canvas units (x, y, width,
+// height): the union of its items' quads as the reference draws them (a
+// shape's turned box and stroke, an image's or a glyph's cell, a shadow's or
+// a glow's reach, a nested stack's own items, a colour over the canvas), each
+// under its stack's transform and cut to its masks' rectangles when they
+// show nothing outside. An item at no opacity draws nothing. None when
+// nothing is drawn.
+[[nodiscard]] std::optional<std::array<double, 4>> graphCanvasDrawnBounds(const Pelican::CanvasOutput &output,
+                                                                        const Pelican::CanvasValues &values);
+
+// NB-4: the part of a canvas of `size` a picture of `drawn` shows: `drawn`
+// with a margin all round (4 % of its long side), inside
+// the canvas. None when that is the whole canvas, or `drawn` is off it.
+[[nodiscard]] std::optional<std::array<double, 4>> graphCanvasThumbnailCrop(const std::array<double, 4> &drawn,
+                                                                          std::array<double, 2> size);
+
+// NB-4: `document` with its canvas.output `output` reading `crop` of what it
+// read: a canvas.transform moving the stack it read by -crop's corner, as
+// the one layer of a stack of crop's size (in the read stack's blend space).
+[[nodiscard]] nlohmann::json graphCanvasCroppedDocument(const nlohmann::json &document, const std::string &output,
+                                                        const std::array<double, 4> &crop);
+
 // The reference's image (linear, premultiplied) as the picture's bytes.
 [[nodiscard]] GraphCanvasThumbnailPixels graphCanvasThumbnailBytes(const Pelican::CanvasImage &image);
 
 // Lowers the job's document to its items (fonts read under `project_root`),
 // decodes the pictures it samples and draws it with the CPU reference. Runs
 // on any thread. A refusal (a missing font, a picture that cannot be read, a
-// rendered image the canvas cannot see) is the result's `error`.
+// rendered image the canvas cannot see) is the result's `error`. NB-4: a
+// layer's and a card's picture shows graphCanvasThumbnailCrop of where it
+// draws (graphCanvasDrawnBounds), drawn by graphCanvasCroppedDocument at the
+// picture's size; a composite's shows the whole canvas.
 [[nodiscard]] GraphCanvasThumbnailPixels renderGraphCanvasThumbnail(const GraphCanvasThumbnailJob &job,
                                                                   const std::filesystem::path &project_root,
                                                                   const GraphCanvasImageDecoder &decode);

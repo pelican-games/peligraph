@@ -20,6 +20,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -34,12 +35,17 @@ class GraphCanvasModel;
 // why), "none" without a model to draw from.
 inline constexpr int GraphCanvasThumbnailDigestRole = Qt::UserRole + 3159;
 inline constexpr int GraphCanvasThumbnailStateRole = Qt::UserRole + 3160;
+// NB-4: the part of the canvas a cut picture shows (a QRectF in canvas units);
+// empty for one of the whole canvas.
+inline constexpr int GraphCanvasThumbnailRangeRole = Qt::UserRole + 3162;
 
 struct GraphCanvasThumbnailState {
     QString digest;
     QImage image;
     QString error;
     bool pending = false;
+    // NB-4: the part shown, when the picture is cut to where the layer draws.
+    std::optional<QRectF> range;
 };
 
 // A picture's frame: the frame's own grey, and the picture over it once
@@ -95,6 +101,7 @@ class GraphCanvasThumbnails final : public QObject {
         bool done = false;
         QImage image;
         QString error;
+        std::optional<QRectF> range;
     };
     void finished(const std::string &digest, GraphCanvasThumbnailPixels pixels);
     [[nodiscard]] const Pelican::CanvasValues &liveValues(const std::string &scope);

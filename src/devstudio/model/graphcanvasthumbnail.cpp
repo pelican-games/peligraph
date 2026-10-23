@@ -225,6 +225,145 @@ void eachItem(const Pelican::CanvasOutput &output, const std::function<void(cons
     for (const auto &blur : output.blurs) visit(blur.source);
 }
 
+// NB-4: a box in canvas units, x0 y0 x1 y1.
+struct Box {
+    double x0 = 0.0, y0 = 0.0, x1 = 0.0, y1 = 0.0;
+    [[nodiscard]] bool empty() const { return !(x1 > x0) || !(y1 > y0); }
+    [[nodiscard]] Box meet(const Box &other) const {
+        return {std::max(x0, other.x0), std::max(y0, other.y0), std::min(x1, other.x1), std::min(y1, other.y1)};
+    }
+};
+
+// The canvas box of `affine` applied to the quad of `centre` and `half`.
+Box quadBox(const std::array<double, 6> &m, double cx, double cy, double hx, double hy) {
+    Box box{1e300, 1e300, -1e300, -1e300};
+    for (const auto [sx, sy] : {std::pair{-1.0, -1.0}, std::pair{1.0, -1.0}, std::pair{1.0, 1.0}, std::pair{-1.0, 1.0}}) {
+        const double x = cx + sx * hx, y = cy + sy * hy;
+        const double px = m[0] * x + m[2] * y + m[4], py = m[1] * x + m[3] * y + m[5];
+        box = {std::min(box.x0, px), std::min(box.y0, py), std::max(box.x1, px), std::max(box.y1, py)};
+    }
+    return box;
+}
+
+constexpr double effectReach = 1.33333333; // the reference's effect_reach
+
+// One item's box as the reference's `bounds` makes its quad, or nothing when
+// it draws nothing.
+std::optional<Box> itemBox(const Pelican::CanvasOutput &output, const Pelican::CanvasItem &item,
+                           const Pelican::CanvasValues &values, int depth);
+
+std::optional<Box> itemsBox(const Pelican::CanvasOutput &output, const std::vector<Pelican::CanvasItem> &items,
+                            const Pelican::CanvasValues &values, int depth) {
+    std::optional<Box> all;
+    for (const auto &item : items) {
+        const auto box = itemBox(output, item, values, depth);
+        if (!box) continue;
+        all = all ? Box{std::min(all->x0, box->x0), std::min(all->y0, box->y0), std::max(all->x1, box->x1),
+                        std::max(all->y1, box->y1)}
+                  : *box;
+    }
+    return all;
+}
+
+std::optional<Box> itemBox(const Pelican::CanvasOutput &output, const Pelican::CanvasItem &item,
+                           const Pelican::CanvasValues &values, int depth) {
+    using Source = Pelican::CanvasItemSource;
+    const auto value = [&](const Pelican::CanvasParameter &parameter) {
+        if (!parameter.edge) return parameter.value;
+        const auto found = values.find(*parameter.edge);
+        return found != values.end() ? found->second : parameter.value;
+    };
+    const auto p = [&](std::size_t index) {
+        return index < item.parameters.size() ? value(item.parameters[index]) : 0.0;
+    };
+    double opacity = item.opacity;
+    for (const auto &edge : item.opacity_edges) {
+        const auto found = values.find(edge);
+        opacity *= found != values.end() ? found->second : 1.0;
+    }
+    if (!(opacity > 0.0)) return std::nullopt;
+    const auto kind = Pelican::canvasItemKind(item);
+    const auto own = kind >= Pelican::canvas_kind_effect_offset ? kind - Pelican::canvas_kind_effect_offset : kind;
+    const bool effect = own != kind && kind != Pelican::canvas_kind_effect_image;
+    double cx = 0.0, cy = 0.0, hx = 0.0, hy = 0.0;
+    std::optional<Box> box;
+    switch (item.source) {
+    case Source::shape: {
+        const auto base = Pelican::canvasShapeParameterCount(item.shape);
+        const double half_x = 0.5 * std::abs(p(0)), half_y = 0.5 * std::abs(p(1));
+        const double angle = p(base - 1) * 3.14159265358979323846 / 180.0;
+        const double c = std::abs(std::cos(angle)), s = std::abs(std::sin(angle));
+        cx = p(2);
+        cy = p(3);
+        // The turned box (an ellipse's bound is inside it).
+        hx = c * half_x + s * half_y;
+        hy = s * half_x + c * half_y;
+        if (item.paint == Pelican::CanvasPaint::stroke) {
+            const double outset = std::abs(p(base + 4));
+            hx += outset;
+            hy += outset;
+        }
+        break;
+    }
+    case Source::image:
+        cx = p(0) + 0.5 * p(2);
+        cy = p(1) + 0.5 * p(3);
+        hx = 0.5 * std::abs(p(2));
+        hy = 0.5 * std::abs(p(3));
+        break;
+    case Source::glyph: {
+        const double s = p(2);
+        cx = p(0) + s * p(3) + 0.5 * s * p(5);
+        cy = p(1) + s * p(4) + 0.5 * s * p(6);
+        hx = 0.5 * std::abs(s * p(5));
+        hy = 0.5 * std::abs(s * p(6));
+        break;
+    }
+    case Source::group: {
+        // What the nested stack's own items draw (a group reads only earlier
+        // ones), over no more than the canvas.
+        if (item.texture.group < output.groups.size() && depth < 64)
+            box = itemsBox(output, output.groups[item.texture.group].items, values, depth + 1);
+        if (!box) return std::nullopt;
+        box = box->meet(quadBox(item.affine, 0.5 * output.size[0], 0.5 * output.size[1], 0.5 * output.size[0],
+                                0.5 * output.size[1]));
+        break;
+    }
+    case Source::color:
+    case Source::backdrop:
+        cx = hx = 0.5 * output.size[0];
+        cy = hy = 0.5 * output.size[1];
+        break;
+    }
+    if (effect && item.source != Source::group) {
+        // The effect's numbers follow its source's paint (the reference's
+        // paintParameterCount): moved by its offset, grown by its reach.
+        const bool glyph = own == Pelican::canvas_kind_glyph_fill || own == Pelican::canvas_kind_glyph_stroke;
+        const bool stroke = glyph ? own == Pelican::canvas_kind_glyph_stroke : own % 2 == 1;
+        const auto e = (glyph ? Pelican::canvas_glyph_parameter_count
+                              : Pelican::canvasShapeParameterCount(own < 2 ? Pelican::CanvasShape::rect
+                                                                           : Pelican::CanvasShape::ellipse)) +
+                       Pelican::canvasPaintParameterCount(stroke ? Pelican::CanvasPaint::stroke
+                                                                 : Pelican::CanvasPaint::fill);
+        const double reach = effectReach * std::clamp(p(e + 2), 0.0, std::max(p(e + 3), 0.0));
+        cx += p(e);
+        cy += p(e + 1);
+        hx += reach;
+        hy += reach;
+    }
+    if (!box) box = quadBox(item.affine, cx, cy, hx, hy);
+    // A number that says nothing about where: the whole canvas (no cut).
+    if (!std::isfinite(box->x0) || !std::isfinite(box->y0) || !std::isfinite(box->x1) || !std::isfinite(box->y1))
+        return Box{-1e300, -1e300, 1e300, 1e300};
+    // A mask that shows nothing past its rectangle cuts the item to it.
+    for (const auto &mask : item.masks)
+        if (mask.outside == 0.0)
+            box = box->meet(quadBox(mask.affine, mask.rect[0] + 0.5 * mask.rect[2], mask.rect[1] + 0.5 * mask.rect[3],
+                                    0.5 * std::abs(mask.rect[2]), 0.5 * std::abs(mask.rect[3])));
+    if (box->empty()) return std::nullopt;
+    return box;
+}
+
 std::string refusalText(const Pelican::GraphRegistryError &error) {
     const auto &detail = error.detail();
     const auto field = [&](const char *key) {
@@ -489,6 +628,57 @@ Pelican::CanvasValues graphCanvasThumbnailValues(const Pelican::CanvasOutput &ou
     return values;
 }
 
+std::optional<std::array<double, 4>> graphCanvasDrawnBounds(const Pelican::CanvasOutput &output,
+                                                            const Pelican::CanvasValues &values) {
+    const auto box = itemsBox(output, output.items, values, 0);
+    if (!box) return std::nullopt;
+    return std::array<double, 4>{box->x0, box->y0, box->x1 - box->x0, box->y1 - box->y0};
+}
+
+std::optional<std::array<double, 4>> graphCanvasThumbnailCrop(const std::array<double, 4> &drawn,
+                                                             std::array<double, 2> size) {
+    const Box canvas{0.0, 0.0, size[0], size[1]};
+    if (canvas.empty()) return std::nullopt;
+    const Box seen = Box{drawn[0], drawn[1], drawn[0] + drawn[2], drawn[1] + drawn[3]}.meet(canvas);
+    if (seen.empty()) return std::nullopt;
+    // A margin of 4 % of the long side all round (at the picture's size, more
+    // than the antialiasing's pixel past an edge).
+    const double margin = 0.04 * std::max(seen.x1 - seen.x0, seen.y1 - seen.y0);
+    const Box cut = Box{seen.x0 - margin, seen.y0 - margin, seen.x1 + margin, seen.y1 + margin}.meet(canvas);
+    if (cut.empty() || (cut.x0 <= 0.0 && cut.y0 <= 0.0 && cut.x1 >= size[0] && cut.y1 >= size[1]))
+        return std::nullopt;
+    return std::array<double, 4>{cut.x0, cut.y0, cut.x1 - cut.x0, cut.y1 - cut.y0};
+}
+
+Json graphCanvasCroppedDocument(const Json &document, const std::string &output, const std::array<double, 4> &crop) {
+    Json cropped = document;
+    auto &nodes = cropped.at("nodes");
+    Json *out = nullptr;
+    for (auto &node : nodes)
+        if (text(node, "id") == output) out = &node;
+    if (out == nullptr || !out->contains("inputs") || !out->at("inputs").contains("layer")) return cropped;
+    const Json read = out->at("inputs").at("layer");
+    std::string space;
+    if (const Json *stack = findNode(nodes, read.value("node", std::string{})); stack != nullptr)
+        space = text(stack->value("parameters", Json::object()), "blend_space");
+    const auto move = unusedId(nodes, "pelican_thumbnail_crop_move");
+    const auto cut = unusedId(nodes, "pelican_thumbnail_crop");
+    Json parameters{{"size", Json::array({crop[2], crop[3]})}, {"layers", Json::array({Json{{"input", "thumbnail"}}})}};
+    if (!space.empty()) parameters["blend_space"] = space;
+    (*out)["inputs"]["layer"] = edgeTo(cut, "layer");
+    nodes.push_back(Json{{"id", move},
+                         {"op", "canvas.transform"},
+                         {"parameters", {{"translate", Json::array({-crop[0], -crop[1]})}}},
+                         {"inputs", {{"layer", read}}},
+                         {"outputs", Json::array({"layer"})}});
+    nodes.push_back(Json{{"id", cut},
+                         {"op", "canvas.stack"},
+                         {"parameters", std::move(parameters)},
+                         {"inputs", {{"thumbnail", edgeTo(move, "layer")}}},
+                         {"outputs", Json::array({"layer"})}});
+    return cropped;
+}
+
 GraphCanvasThumbnailPixels graphCanvasThumbnailBytes(const Pelican::CanvasImage &image) {
     GraphCanvasThumbnailPixels pixels;
     pixels.width = image.width;
@@ -531,46 +721,73 @@ GraphCanvasThumbnailPixels renderGraphCanvasThumbnail(const GraphCanvasThumbnail
             const auto *begin = reinterpret_cast<const std::byte *>(bytes.data());
             return std::make_shared<const std::vector<std::byte>>(begin, begin + bytes.size());
         };
-        const auto ir = Pelican::buildCanvasIr(job.made.document, read);
-        const auto found = std::ranges::find_if(ir.outputs, [&](const Pelican::CanvasOutput &output) {
-            return output.scope.empty() && output.id == job.made.output;
-        });
-        if (found == ir.outputs.end()) {
-            failed.error = "The canvas lowering drew nothing for it";
-            return failed;
-        }
-        const auto &output = *found;
         Pelican::CanvasReferenceImages images;
-        std::string refusal;
-        eachItem(output, [&](const Pelican::CanvasItem &item) {
-            eachTexture(item, [&](const Pelican::CanvasTexture &texture) {
-                if (!refusal.empty()) return;
-                using Origin = Pelican::CanvasTexture::Origin;
-                if (texture.origin == Origin::graph) {
-                    refusal = "It draws a rendered image (" + texture.node.value_or(std::string{}) + "." +
-                              texture.port + "), which is only seen while the engine draws";
-                    return;
-                }
-                if (texture.origin != Origin::file || images.contains(texture.asset)) return;
-                const auto path = graphCanvasProjectFile(project_root, texture.asset);
-                std::optional<Pelican::CanvasReferenceImage> image;
-                if (!path.empty() && decode) image = decode(path);
-                if (!image || image->width == 0 || image->height == 0 ||
-                    image->rgba.size() != std::size_t{image->width} * image->height * 4) {
-                    refusal = "The picture " + texture.asset + " cannot be read";
-                    return;
-                }
-                images.emplace(texture.asset, std::move(*image));
+        // The document's output lowered, with the pictures its items sample
+        // decoded (once for both drawings), or why it cannot be drawn.
+        const auto lower = [&](const Json &document, Pelican::CanvasIr &ir) -> std::string {
+            ir = Pelican::buildCanvasIr(document, read);
+            const auto found = std::ranges::find_if(ir.outputs, [&](const Pelican::CanvasOutput &output) {
+                return output.scope.empty() && output.id == job.made.output;
             });
-        });
-        if (!refusal.empty()) {
-            failed.error = refusal;
+            if (found == ir.outputs.end()) return "The canvas lowering drew nothing for it";
+            std::string refusal;
+            eachItem(*found, [&](const Pelican::CanvasItem &item) {
+                eachTexture(item, [&](const Pelican::CanvasTexture &texture) {
+                    if (!refusal.empty()) return;
+                    using Origin = Pelican::CanvasTexture::Origin;
+                    if (texture.origin == Origin::graph) {
+                        refusal = "It draws a rendered image (" + texture.node.value_or(std::string{}) + "." +
+                                  texture.port + "), which is only seen while the engine draws";
+                        return;
+                    }
+                    if (texture.origin != Origin::file || images.contains(texture.asset)) return;
+                    const auto path = graphCanvasProjectFile(project_root, texture.asset);
+                    std::optional<Pelican::CanvasReferenceImage> image;
+                    if (!path.empty() && decode) image = decode(path);
+                    if (!image || image->width == 0 || image->height == 0 ||
+                        image->rgba.size() != std::size_t{image->width} * image->height * 4) {
+                        refusal = "The picture " + texture.asset + " cannot be read";
+                        return;
+                    }
+                    images.emplace(texture.asset, std::move(*image));
+                });
+            });
+            if (!refusal.empty()) return refusal;
+            // Kept first in the list, so the caller finds it there.
+            if (found != ir.outputs.begin()) std::iter_swap(found, ir.outputs.begin());
+            return {};
+        };
+        Pelican::CanvasIr ir;
+        if (auto refusal = lower(job.made.document, ir); !refusal.empty()) {
+            failed.error = std::move(refusal);
             return failed;
         }
-        const auto extent = graphCanvasThumbnailExtent(job.made.size, job.target.pixels);
+        // NB-4: a layer's or a card's picture is cut to where it draws, and
+        // that part alone is drawn at the picture's size.
+        std::optional<std::array<double, 4>> crop;
+        if (job.target.kind != GraphCanvasThumbnailKind::composite) {
+            const auto &output = ir.outputs.front();
+            if (const auto drawn = graphCanvasDrawnBounds(output, graphCanvasThumbnailValues(output, job.live)))
+                crop = graphCanvasThumbnailCrop(*drawn, job.made.size);
+        }
+        if (crop) {
+            Pelican::CanvasIr cropped;
+            if (auto refusal = lower(graphCanvasCroppedDocument(job.made.document, job.made.output, *crop), cropped);
+                !refusal.empty()) {
+                failed.error = std::move(refusal);
+                return failed;
+            }
+            ir = std::move(cropped);
+        }
+        const auto &output = ir.outputs.front();
+        const auto extent =
+            graphCanvasThumbnailExtent(crop ? std::array<double, 2>{(*crop)[2], (*crop)[3]} : job.made.size,
+                                       job.target.pixels);
         const auto image = Pelican::renderCanvasReference(output, extent[0], extent[1],
                                                           graphCanvasThumbnailValues(output, job.live), images);
-        return graphCanvasThumbnailBytes(image);
+        auto pixels = graphCanvasThumbnailBytes(image);
+        pixels.crop = crop;
+        return pixels;
     } catch (const Pelican::GraphRegistryError &error) {
         failed.error = refusalText(error);
     } catch (const std::exception &error) {
