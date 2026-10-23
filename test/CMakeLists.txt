@@ -3534,7 +3534,15 @@ add_test(
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_rules_import.cmake
 )
 
-pelican_define_test(frameplanner_test GROUP render_planning_core pelican_core)
+# RC-1b: the frame plan test reads get_frame_plan through the renderer's CPU
+# seam (renderer.hpp needs VMA's headers).
+pelican_define_test(frameplanner_test GROUP render_planning_core pelican_core
+    VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+if(MSVC)
+  # The renderer's headers take it past the object format's section limit
+  # (C1128).
+  target_compile_options(pelican_test_frameplanner_test PRIVATE /bigobj)
+endif()
 target_compile_definitions(pelican_test_frameplanner_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )

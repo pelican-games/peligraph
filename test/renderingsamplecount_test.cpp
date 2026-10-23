@@ -1,5 +1,6 @@
 #include "../src/core/renderingpass/renderingsamplecount.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
+#include "registered_render_targets_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -1798,6 +1799,65 @@ TEST_CASE(
             ->alias_groups.size() == 1);
     REQUIRE(
         compilation.alias_group_assignments.empty());
+}
+
+TEST_CASE(
+    "RC-1 when graph variants do not share an alias group, the memory total counts its "
+    "targets as two allocations",
+    "[target-planning][alias][runtime][variant][rc1][memory]") {
+    // The input above: the first graph alone could let temporary_a and
+    // temporary_b take turns in one allocation; the second reads
+    // temporary_a without temporary_b.
+    auto display =
+        target("display",
+               vk::Format::eR8G8B8A8Unorm);
+    display.format_class = "display";
+    std::vector targets{
+        target("temporary_a",
+               vk::Format::eR8G8B8A8Unorm),
+        target("temporary_b",
+               vk::Format::eR8G8B8A8Unorm),
+        display,
+    };
+    auto graphs =
+        parseFrameGraphDefinitionsFromConfigJson(
+            aliasLifetimeConfig());
+    const auto single_graphs =
+        parseFrameGraphDefinitionsFromConfigJson(
+            aliasLifetimeConfig(false));
+    graphs.insert(graphs.end(), single_graphs.begin(),
+                  single_graphs.end());
+    const auto compilation =
+        compileRenderingTargetPlans(
+            graphs, targets, SampleCountPolicy{},
+            vk::Format::eB8G8R8A8Unorm,
+            RenderingTargetPlanDeviceFacts{
+                .query_attachment_samples =
+                    [](const auto &) {
+                        return std::vector<
+                            std::uint32_t>{1};
+                    },
+            });
+    REQUIRE(compilation.plans.size() == 2);
+    REQUIRE(compilation.plans.front()->alias_groups.size() == 1);
+    REQUIRE(compilation.alias_group_assignments.empty());
+
+    // Registration allocates what the runtime kept: three images of their
+    // own (64x64 R8G8B8A8, 16,384 bytes each), not two.
+    applyRenderingTargetPlan(targets, compilation);
+    const auto registered =
+        test_support::registerRenderTargetsWithoutDevice(
+            targets, {64, 64});
+    const auto memory = test_support::registeredTargetMemoryOf(
+        registered, [](std::string_view) { return true; });
+    for (const auto &entry : memory) {
+        INFO(entry.name);
+        CHECK(entry.bytes == 16'384);
+        CHECK_FALSE(entry.alias_group.has_value());
+    }
+    const auto total = totalRegisteredTargetMemory(memory);
+    CHECK(total.total_bytes == 3 * 16'384);
+    CHECK(total.unused_bytes == 0);
 }
 
 TEST_CASE(

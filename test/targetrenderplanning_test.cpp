@@ -3,6 +3,7 @@
 #include "../src/project/vulkancompletephysicalplan.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -3868,15 +3869,12 @@ TEST_CASE("RC-1 memory summary counts an alias group once and finds the node mos
     plan.resources[4].representation =
         VulkanResourceRepresentation::external;
     plan.alias_groups = {{"alias:0", {"first", "second"}}};
+    plan.graph = "main";
 
     std::vector<std::string> asked;
     const auto summary = summarizeVulkanTargetPlanMemory(
-        plan,
-        [&](const VulkanPhysicalResourcePlan &resource)
-            -> std::optional<std::uint64_t> {
+        plan, [&](const VulkanPhysicalResourcePlan &resource) {
             asked.push_back(resource.logical_resource);
-            // The caller cannot say for this one.
-            if (resource.logical_resource == "unknown") return std::nullopt;
             return vulkanPhysicalResourceBytes(resource, {{10, 10}, 1});
         });
     // Never asked for the swapchain: the plan does not allocate it.
@@ -3888,14 +3886,43 @@ TEST_CASE("RC-1 memory summary counts an alias group once and finds the node mos
     CHECK(summary.resource_bytes[2] == 400);
     CHECK(summary.resource_bytes[3] == 100);
     CHECK_FALSE(summary.resource_bytes[4].has_value());
-    CHECK_FALSE(summary.resource_bytes[5].has_value());
-    // depth + one allocation for first/second + small.
-    CHECK(summary.total_bytes == 400 + 400 + 100);
-    // geometry 800, blur 900, composite 900, present 800: the first 900.
-    CHECK(summary.peak_live_bytes == 900);
+    CHECK(summary.resource_bytes[5] == 400);
+    // geometry 1200, blur 1300, composite 1300, present 1200: the first 1300.
+    CHECK(summary.peak_live_bytes == 1300);
     CHECK(summary.peak_order == 1);
     CHECK(summary.peak_node == "blur");
 
+    // RC-1b: a caller that cannot say how large an image is says so by
+    // name; the summary does not leave the image out.
+    CHECK_THROWS_WITH(
+        summarizeVulkanTargetPlanMemory(
+            plan,
+            [](const VulkanPhysicalResourcePlan &resource) -> std::uint64_t {
+                if (resource.logical_resource == "unknown") {
+                    throw std::runtime_error("cannot count unknown");
+                }
+                return 1;
+            }),
+        "cannot count unknown");
+
+    // What registration made of the plan's targets: first and second share
+    // one allocation, as the plan's alias group says.
+    const auto registered = [](std::string name, std::uint64_t bytes,
+                               std::optional<std::uint64_t> alias_group) {
+        return RegisteredTargetMemory{
+            .name = std::move(name),
+            .bytes = bytes,
+            .alias_shared_bytes = bytes,
+            .alias_group = alias_group,
+        };
+    };
+    const std::vector<RegisteredTargetMemory> allocation{
+        registered("depth", 400, std::nullopt),
+        registered("first", 400, 1),
+        registered("second", 400, 1),
+        registered("small", 100, std::nullopt),
+        registered("unknown", 400, std::nullopt),
+    };
     nlohmann::json frame_plan{
         {"physical_target_plan",
          {{"resources",
@@ -3908,30 +3935,91 @@ TEST_CASE("RC-1 memory summary counts an alias group once and finds the node mos
                {{"logical_resource", "unknown"}},
            })}}},
     };
-    appendVulkanTargetPlanMemoryJson(frame_plan, plan, summary);
+    appendVulkanTargetPlanMemoryJson(
+        frame_plan, plan, summary, totalRegisteredTargetMemory(allocation));
+    // depth + one allocation for first/second + small + unknown.
     CHECK(frame_plan.at("memory_summary") ==
-          nlohmann::json{{"total_bytes", 900},
-                         {"peak_live_bytes", 900},
-                         {"peak_node", "blur"}});
+          nlohmann::json{{"total_bytes", 1300},
+                         {"unused_bytes", 0},
+                         {"unused_resources", nlohmann::json::array()},
+                         {"peak_live_bytes", 1300},
+                         {"peak_node", "blur"},
+                         {"peak_graph", "main"}});
     const auto &resources =
         frame_plan.at("physical_target_plan").at("resources");
     CHECK(resources[0].at("bytes") == 400);
     CHECK(resources[2].at("bytes") == 400);
     CHECK(resources[3].at("bytes") == 100);
     CHECK_FALSE(resources[4].contains("bytes"));
-    CHECK_FALSE(resources[5].contains("bytes"));
+    CHECK(resources[5].at("bytes") == 400);
 
-    // Nothing counted: no peak, and no node named.
+    // Nothing counted: no peak, and no node named; still the graph's.
     const auto empty = summarizeVulkanTargetPlanMemory(
         plan, [](const VulkanPhysicalResourcePlan &) {
-            return std::optional<std::uint64_t>{};
+            return std::uint64_t{0};
         });
-    CHECK(empty.total_bytes == 0);
     CHECK(empty.peak_live_bytes == 0);
     CHECK_FALSE(empty.peak_order.has_value());
     nlohmann::json empty_plan = nlohmann::json::object();
-    appendVulkanTargetPlanMemoryJson(empty_plan, plan, empty);
+    appendVulkanTargetPlanMemoryJson(empty_plan, plan, empty, {});
     CHECK(empty_plan.at("memory_summary").at("peak_node").is_null());
+    CHECK(empty_plan.at("memory_summary").at("peak_graph") == "main");
+    CHECK(empty_plan.at("memory_summary").at("total_bytes") == 0);
+}
+
+TEST_CASE("RC-1 the memory total counts each allocation registration made once and names "
+          "the targets no graph uses",
+          "[target-render-planning][rc1][memory]") {
+    const auto target = [](std::string name, std::uint64_t bytes,
+                           std::uint64_t shared,
+                           std::optional<std::uint64_t> alias_group,
+                           bool used = true) {
+        return RegisteredTargetMemory{
+            .name = std::move(name),
+            .bytes = bytes,
+            .alias_shared_bytes = shared,
+            .alias_group = alias_group,
+            .used = used,
+        };
+    };
+    // Two targets the runtime kept apart are two allocations, whatever a
+    // plan's own alias group said.
+    CHECK(totalRegisteredTargetMemory(std::vector{
+                                          target("a", 16'384, 16'384, std::nullopt),
+                                          target("b", 16'384, 16'384, std::nullopt),
+                                      })
+              .total_bytes == 32'768);
+    // Members of one alias group share their single-sample images, once at
+    // the largest; each keeps the multisampled image it renders into
+    // (4x: 4 x 1000 of its own besides the 1000 it shares).
+    const auto aliased = totalRegisteredTargetMemory(std::vector{
+        target("owner", 5'000, 1'000, 7),
+        target("member", 5'000, 1'000, 7),
+        target("other", 300, 300, std::nullopt),
+    });
+    CHECK(aliased.total_bytes == 1'000 + 2 * 4'000 + 300);
+    CHECK(aliased.unused_bytes == 0);
+    CHECK(aliased.unused_resources.empty());
+
+    // A target no graph uses is still allocated: it counts, and it is named.
+    // An alias group's shared images are unused only when no member is used.
+    const auto unused = totalRegisteredTargetMemory(std::vector{
+        target("zeta", 4'096, 4'096, std::nullopt, false),
+        target("used_member", 600, 600, 3),
+        target("unused_member", 600, 600, 3, false),
+        target("alpha", 100, 100, std::nullopt, false),
+        target("lonely_a", 200, 200, 4, false),
+        target("lonely_b", 200, 200, 4, false),
+    });
+    CHECK(unused.total_bytes == 4'096 + 600 + 100 + 200);
+    CHECK(unused.unused_bytes == 4'096 + 100 + 200);
+    CHECK(unused.unused_resources ==
+          std::vector<std::string>{"alpha", "lonely_a", "lonely_b",
+                                   "unused_member", "zeta"});
+
+    CHECK_THROWS_AS(totalRegisteredTargetMemory(std::vector{
+                        target("broken", 10, 20, 1)}),
+                    std::invalid_argument);
 }
 
 } // namespace Pelican

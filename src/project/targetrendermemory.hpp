@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -17,6 +18,10 @@ namespace Pelican {
 // RC-1: how many bytes a physical target plan's images occupy, and the most
 // of them alive at one node. The planner owns the arithmetic; the runtime
 // arena and get_frame_plan copy its answers.
+// RC-1b: what the images take together is the runtime's to say, not the
+// plan's: the runtime registers every render target definition (a target no
+// pass uses too) and keeps an alias group only when every graph agrees on it.
+// totalRegisteredTargetMemory counts what registration made.
 
 // The one table of texel sizes. `format` is spelled as the physical plan
 // spells it: Vulkan's enumerant without its leading `e` (vk::to_string's
@@ -66,14 +71,13 @@ std::uint64_t vulkanPhysicalResourceBytes(
     const VulkanPhysicalResourcePlan &resource,
     const VulkanPhysicalImageAllocation &allocation);
 
+// One graph's plan: each planned image's bytes and the most of them alive at
+// one node. (What they take together: totalRegisteredTargetMemory.)
 struct VulkanTargetPlanMemorySummary {
     // Parallel to plan.resources: the bytes of each planned image; nullopt
-    // for a resource the plan does not allocate as an image, or one whose
-    // bytes the caller could not say.
+    // for a resource the plan does not allocate as an image (an external
+    // image or a buffer).
     std::vector<std::optional<std::uint64_t>> resource_bytes;
-    // Every planned image once. The members of an alias group share one
-    // allocation, so a group counts once, at its largest member.
-    std::uint64_t total_bytes = 0;
     // The most bytes alive at one node: the images whose lifetime
     // [first_use, last_use] holds that node's order, each at its own bytes.
     std::uint64_t peak_live_bytes = 0;
@@ -85,23 +89,61 @@ struct VulkanTargetPlanMemorySummary {
 
 // The bytes of one planned image, as the caller knows them: from the plan
 // and an extent (vulkanPhysicalResourceBytes), or from the image the
-// runtime made. nullopt when the caller cannot say.
+// runtime made. A caller that cannot say throws, naming the resource: a
+// summary never covers part of a plan.
 using VulkanPhysicalResourceByteCounter =
-    std::function<std::optional<std::uint64_t>(
-        const VulkanPhysicalResourcePlan &)>;
+    std::function<std::uint64_t(const VulkanPhysicalResourcePlan &)>;
 
 // Asks `bytes_of` only for the resources vulkanPhysicalResourceIsPlannedImage
-// accepts.
+// accepts, and passes on what it throws.
 VulkanTargetPlanMemorySummary summarizeVulkanTargetPlanMemory(
     const VulkanTargetPlan &plan,
     const VulkanPhysicalResourceByteCounter &bytes_of);
 
-// get_frame_plan's part: `memory_summary` {total_bytes, peak_live_bytes,
-// peak_node} on `frame_plan` (peak_node null without a peak), and `bytes`
-// on each physical_target_plan.resources[] entry the summary has bytes for.
-// An external image or a buffer gets no `bytes`.
+// RC-1b: one render target a runtime generation registered, as it is now.
+struct RegisteredTargetMemory {
+    std::string name;
+    // What its images occupy: every surface, mip and layer of the image
+    // passes sample, and the multisampled image it renders into.
+    std::uint64_t bytes = 0;
+    // Of `bytes`, what the members of its alias group share: the
+    // single-sample images. Each member renders into a multisampled image
+    // of its own. Read only with alias_group.
+    std::uint64_t alias_shared_bytes = 0;
+    // The allocation it shares with the rest of its alias group (the
+    // registry's alias token); nullopt for allocations of its own.
+    std::optional<std::uint64_t> alias_group;
+    // Whether a graph's physical plan uses it (or the engine, outside any
+    // graph). A target no graph uses is still allocated.
+    bool used = true;
+};
+
+struct RegisteredTargetMemoryTotal {
+    // Every registered target's images, an alias group's shared images once
+    // (at its largest member's).
+    std::uint64_t total_bytes = 0;
+    // Of total_bytes, what no graph uses: an unused target's images of its
+    // own, and an alias group's shared images when none of its members is
+    // used.
+    std::uint64_t unused_bytes = 0;
+    // The unused targets' names, sorted.
+    std::vector<std::string> unused_resources;
+};
+
+// std::invalid_argument for alias_shared_bytes past bytes.
+RegisteredTargetMemoryTotal totalRegisteredTargetMemory(
+    std::span<const RegisteredTargetMemory> targets);
+
+// get_frame_plan's part: on `frame_plan`, `memory_summary`
+//   {total_bytes, unused_bytes, unused_resources: what `allocation` counted
+//    of the generation's registered targets;
+//    peak_live_bytes, peak_node (null without a peak), peak_graph
+//    (plan.graph): `summary` of this graph's plan}
+// and `bytes` on each physical_target_plan.resources[] entry the summary has
+// bytes for. An external image or a buffer gets no `bytes`.
 void appendVulkanTargetPlanMemoryJson(
     nlohmann::json &frame_plan, const VulkanTargetPlan &plan,
-    const VulkanTargetPlanMemorySummary &summary);
+    const VulkanTargetPlanMemorySummary &summary,
+    const RegisteredTargetMemoryTotal &allocation);
 
 } // namespace Pelican

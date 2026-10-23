@@ -138,37 +138,18 @@ std::uint64_t vulkanPhysicalResourceBytes(
 VulkanTargetPlanMemorySummary summarizeVulkanTargetPlanMemory(
     const VulkanTargetPlan &plan,
     const VulkanPhysicalResourceByteCounter &bytes_of) {
+    if (!bytes_of) {
+        throw std::invalid_argument(
+            "memory summary requires a byte counter");
+    }
     VulkanTargetPlanMemorySummary summary;
     summary.resource_bytes.resize(plan.resources.size());
     for (std::size_t index = 0; index < plan.resources.size(); ++index) {
         const auto &resource = plan.resources[index];
-        if (bytes_of && vulkanPhysicalResourceIsPlannedImage(resource)) {
+        if (vulkanPhysicalResourceIsPlannedImage(resource)) {
             summary.resource_bytes[index] = bytes_of(resource);
         }
     }
-
-    // An alias group is one allocation its members take turns in.
-    std::map<std::string_view, std::size_t, std::less<>> group_of;
-    for (std::size_t group = 0; group < plan.alias_groups.size();
-         ++group) {
-        for (const auto &member : plan.alias_groups[group].resources) {
-            group_of.emplace(member, group);
-        }
-    }
-    std::vector<std::uint64_t> group_bytes(plan.alias_groups.size(), 0);
-    for (std::size_t index = 0; index < plan.resources.size(); ++index) {
-        const auto &bytes = summary.resource_bytes[index];
-        if (!bytes) continue;
-        const auto group =
-            group_of.find(plan.resources[index].logical_resource);
-        if (group == group_of.end()) {
-            summary.total_bytes += *bytes;
-        } else {
-            group_bytes[group->second] =
-                std::max(group_bytes[group->second], *bytes);
-        }
-    }
-    for (const auto bytes : group_bytes) summary.total_bytes += bytes;
 
     std::size_t orders = 0;
     for (std::size_t index = 0; index < plan.resources.size(); ++index) {
@@ -201,19 +182,63 @@ VulkanTargetPlanMemorySummary summarizeVulkanTargetPlanMemory(
     return summary;
 }
 
+RegisteredTargetMemoryTotal totalRegisteredTargetMemory(
+    std::span<const RegisteredTargetMemory> targets) {
+    RegisteredTargetMemoryTotal total;
+    // An alias group is one allocation of single-sample images its members
+    // take turns in; the multisampled images stay each member's own.
+    struct SharedAllocation {
+        std::uint64_t bytes = 0;
+        bool used = false;
+    };
+    std::map<std::uint64_t, SharedAllocation> shared;
+    for (const auto &target : targets) {
+        std::uint64_t own = target.bytes;
+        if (target.alias_group) {
+            if (target.alias_shared_bytes > target.bytes) {
+                throw std::invalid_argument(
+                    "registered target shares more bytes than it holds: " +
+                    target.name);
+            }
+            auto &allocation = shared[*target.alias_group];
+            allocation.bytes =
+                std::max(allocation.bytes, target.alias_shared_bytes);
+            allocation.used = allocation.used || target.used;
+            own -= target.alias_shared_bytes;
+        }
+        total.total_bytes += own;
+        if (!target.used) {
+            total.unused_bytes += own;
+            total.unused_resources.push_back(target.name);
+        }
+    }
+    for (const auto &[group, allocation] : shared) {
+        (void)group;
+        total.total_bytes += allocation.bytes;
+        if (!allocation.used) total.unused_bytes += allocation.bytes;
+    }
+    std::sort(total.unused_resources.begin(),
+              total.unused_resources.end());
+    return total;
+}
+
 void appendVulkanTargetPlanMemoryJson(
     nlohmann::json &frame_plan, const VulkanTargetPlan &plan,
-    const VulkanTargetPlanMemorySummary &summary) {
+    const VulkanTargetPlanMemorySummary &summary,
+    const RegisteredTargetMemoryTotal &allocation) {
     if (summary.resource_bytes.size() != plan.resources.size()) {
         throw std::invalid_argument(
             "memory summary does not describe the plan's resources");
     }
     frame_plan["memory_summary"] = {
-        {"total_bytes", summary.total_bytes},
+        {"total_bytes", allocation.total_bytes},
+        {"unused_bytes", allocation.unused_bytes},
+        {"unused_resources", allocation.unused_resources},
         {"peak_live_bytes", summary.peak_live_bytes},
         {"peak_node", summary.peak_node.empty()
                           ? nlohmann::json(nullptr)
                           : nlohmann::json(summary.peak_node)},
+        {"peak_graph", plan.graph},
     };
     const auto physical = frame_plan.find("physical_target_plan");
     if (physical == frame_plan.end() || !physical->is_object()) return;

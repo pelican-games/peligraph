@@ -52,6 +52,7 @@
 #include "../src/project/frameresolutionwire.hpp"
 #include "../src/project/renderpipeline.hpp"
 #include "../src/project/targetrendermemory.hpp"
+#include "registered_render_targets_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -255,16 +256,21 @@ void publishRuntimeResolution(
 
 // RC-1: what get_frame_plan adds beside the runtime resolution -- each
 // image's bytes at its extent and the memory summary -- counted by the
-// planner's arithmetic, as the engine counts the images it made.
+// planner's arithmetic, as the engine counts the images it made. RC-1b: the
+// total is what registration makes of every definition, with the alias
+// groups the runtime keeps.
 void publishMemorySummary(
-    Json &wire, const Pelican::VulkanTargetPlan &plan,
+    Json &wire, const Pelican::RenderingTargetPlanCompilation &physical,
     const std::vector<Pelican::RenderTargetDefinition> &targets,
     Pelican::ResolvedResourceExtent output_extent) {
+    const auto &plan = *physical.plans.front();
     const auto summary = Pelican::summarizeVulkanTargetPlanMemory(
-        plan,
-        [&](const Pelican::VulkanPhysicalResourcePlan &resource)
-            -> std::optional<std::uint64_t> {
-            if (!resource.extent) return std::nullopt;
+        plan, [&](const Pelican::VulkanPhysicalResourcePlan &resource) {
+            if (!resource.extent) {
+                throw std::runtime_error(
+                    "runtime test resolver has no extent contract for " +
+                    resource.logical_resource);
+            }
             const auto target = std::ranges::find(
                 targets, resource.logical_resource,
                 &Pelican::RenderTargetDefinition::name);
@@ -274,7 +280,20 @@ void publishMemorySummary(
                                       resource.logical_resource),
                  target != targets.end() && target->history ? 2u : 1u});
         });
-    Pelican::appendVulkanTargetPlanMemoryJson(wire, plan, summary);
+    auto registered_targets = targets;
+    Pelican::applyRenderingTargetPlan(registered_targets, physical);
+    const auto registered =
+        Pelican::test_support::registerRenderTargetsWithoutDevice(
+            registered_targets, {output_extent.width, output_extent.height});
+    const auto memory = Pelican::test_support::registeredTargetMemoryOf(
+        registered, [&](std::string_view name) {
+            return std::ranges::find(
+                       plan.resources, name,
+                       &Pelican::VulkanPhysicalResourcePlan::logical_resource) !=
+                   plan.resources.end();
+        });
+    Pelican::appendVulkanTargetPlanMemoryJson(
+        wire, plan, summary, Pelican::totalRegisteredTargetMemory(memory));
 }
 
 Json resolvedFramePlan(Pelican::ResolvedRenderPipeline resolved,
@@ -329,7 +348,7 @@ Json resolvedFramePlan(Pelican::ResolvedRenderPipeline resolved,
     publishRuntimeResolution(
         wire, *physical.plans.front(),
         Pelican::ResolvedResourceExtent{160, 90});
-    publishMemorySummary(wire, *physical.plans.front(), targets,
+    publishMemorySummary(wire, physical, targets,
                          Pelican::ResolvedResourceExtent{160, 90});
     return wire;
 }
@@ -13529,8 +13548,11 @@ TEST_CASE("RC-1 the Frame Plan says on its status line what the physical plan's 
     // shared with the bloom threshold, once; lighting_pass holds the five
     // G-buffer targets, the depth, the blurred SSAO and lit_color.
     CHECK(wire.at("memory_summary") == Json{{"total_bytes", 873200},
+                                            {"unused_bytes", 0},
+                                            {"unused_resources", Json::array()},
                                             {"peak_live_bytes", 590400},
-                                            {"peak_node", "lighting_pass"}});
+                                            {"peak_node", "lighting_pass"},
+                                            {"peak_graph", "main_render"}});
 #endif
     EmbeddedViewport viewport;
     FramePlanWidget widget{&viewport};

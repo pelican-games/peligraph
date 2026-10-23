@@ -2,6 +2,7 @@
 #include "renderingsamplecount.hpp"
 #include "../../project/targetrenderplanning.hpp"
 #include "../../project/targetrendermemory.hpp"
+#include "rendertargetmemory.hpp"
 #include "../vkcore/deletionqueue.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/util.hpp"
@@ -1696,6 +1697,22 @@ std::uint64_t renderTargetBytes(const RenderTargetMetadata &metadata) {
         .samples = metadata.samples,
         .surfaces = metadata.history ? 2u : 1u,
     });
+}
+
+RegisteredTargetMemory registeredRenderTargetMemory(
+    const RenderTargetMetadata &metadata,
+    std::optional<std::uint64_t> alias_group, bool used) {
+    // An alias member's images[] are bound to the owner's allocation
+    // (allocAliasingImage); its multisampled attachment image is not.
+    auto single_sample = metadata;
+    single_sample.samples = 1;
+    return RegisteredTargetMemory{
+        .name = metadata.name,
+        .bytes = renderTargetBytes(metadata),
+        .alias_shared_bytes = renderTargetBytes(single_sample),
+        .alias_group = alias_group,
+        .used = used,
+    };
 }
 
 } // namespace Pelican

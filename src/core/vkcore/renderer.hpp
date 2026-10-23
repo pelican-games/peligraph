@@ -4,6 +4,7 @@
 #include "../renderingpass/renderingpass.hpp"
 #include "../renderingpass/oncescheduler.hpp"
 #include "../renderingpass/previewgraph.hpp"
+#include "../renderingpass/rendertargetmetadata.hpp"
 #include "../renderer/viewfamily.hpp"
 #include "render_target_layout_tracker.hpp"
 #include "rendertarget.hpp"
@@ -63,10 +64,28 @@ enum class RenderGraphVariant {
 // the first ones are kept and drawn_materials_truncated is true.
 inline constexpr std::size_t drawnMaterialsListLimit = 256;
 
+// RC-1b: a registered render target as the RenderTargetContainer answers for
+// it (getMetadata, aliasGroup): what get_frame_plan's memory part reads.
+struct RegisteredRenderTargetFacts {
+    RenderTargetMetadata metadata;
+    // The allocation it shares with its alias group (the registry's token).
+    std::optional<std::uint64_t> alias_group;
+};
+// nullopt for an id that names no live registration.
+using RegisteredRenderTargetLookup =
+    std::function<std::optional<RegisteredRenderTargetFacts>(
+        GlobalRenderTargetId)>;
+
 // CPU-only construction seam for exercising the production
 // currentFramePlanJson() path against an already-published runtime program.
 // It deliberately bypasses startup compilation and creates no GPU objects.
-struct RendererFramePlanCpuSeam final {};
+struct RendererFramePlanCpuSeam final {
+    // RC-1b: stands in for the RenderTargetContainer, which a CPU-only
+    // process cannot create (it needs a Vulkan device). Empty: the frame
+    // plan has no memory part and the arena's render targets keep the bytes
+    // they declared.
+    RegisteredRenderTargetLookup render_targets;
+};
 
 struct PickingModelInstanceToken {
     std::uint32_t index = 0;
@@ -181,6 +200,8 @@ DECLARE_MODULE(Renderer) {
     // a frame mutates.
     class LogicalFrameRecorder;
     RenderingPassId current_rendering_pass_id;
+    // RC-1b: RendererFramePlanCpuSeam::render_targets; empty otherwise.
+    RegisteredRenderTargetLookup cpu_seam_render_targets;
     RenderTargetLayoutTracker render_target_layout_tracker;
     bool execution_tracing_for_testing = false;
     nlohmann::json last_execution_trace;
