@@ -95,7 +95,7 @@ GPU 資源の寿命は frame 数ではなく実 submission の lease が決め�
 | pose action | **実装済み**(WP130/132)。pose は `poses` map から返り、未サンプルなら default `ActionPose`。flat 環境では pose サンプルが来ないので default が返る点に注意 | [`actionmap.cpp`](../../src/core/os/actionmap.cpp#L873) |
 | `.surface` / material format | **runtime 接続済み**(WP116/117/122)。`.surface` は surfacecompiler で pipeline に、`.material.json` は lowering を経て `MaterialContainer` へ | [`surfacecompiler.hpp`](../../src/core/shader/surfacecompiler.hpp) / [`materiallowering.hpp`](../../src/project/materiallowering.hpp) |
 | Studio project editor | D2、WP264 の viewport / Outliner 選択同期、WP266 の schema-driven property Inspector、WP275 の gizmo 操作まで実装済み。project は同じ child へ `--rpc --project` で渡り、identity は名前でなく `(scene_id, declaration_index)`。property edit / gizmo / live preview / undo / redo / save は公開 RPC を使い、terminal result まで成功扱いしない。picking / gizmo feature 無効は理由を警告し、自動有効化しない | [`SelectionModel`](../../src/devstudio/model/selection.hpp) / [`GizmoModel`](../../src/devstudio/model/gizmomodel.hpp) / [`InspectorModel`](../../src/devstudio/model/inspectormodel.hpp) / [`InspectorWidget`](../../src/devstudio/view/inspectorwidget.hpp) / [`EmbeddedViewport`](../../src/devstudio/viewport/embeddedviewport.hpp#L36) |
-| swapchain capture | surface が TRANSFER_SRC を持てば windowed でも readback 実装済み。不可時のみ `capture unavailable_windowed` 例外 | [`swapchainframetarget.cpp`](../../src/core/vkcore/swapchainframetarget.cpp#L436) |
+| swapchain capture | surface が TRANSFER_SRC を持てば windowed でも readback 実装済み。不可時のみ `capture unavailable_windowed` 例外 | [`swapchainframetarget.cpp`](../../src/core/vkcore/swapchainframetarget.cpp#L437) |
 | frame graph levels | 計算/JSON 出力のみ。runtime は直列 node loop | [`executePlannedFrameGraph()`](../../src/core/vkcore/renderer.cpp#L1648) |
 | custom Component public registration | ID macro はあるが安定 public boot hook なし。ただし登録解除 API と重複拒否は入った。解除と engine owner 登録は WP379a で host 専用へ | [`component/registerer.hpp`](../../src/core/userpublic/details/component/registerer.hpp#L78) / [`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13) |
 | behavior attachment | ✅実装済み(WP155 / 162 / 167) | [`behaviorarena.hpp`](../../src/core/gamelogic/behaviorarena.hpp#L213) |
@@ -900,7 +900,7 @@ game DLL 境界の v2 record は「凍結」と書かれていますが、実際
 
 **答え**: 受け側 project の入力不足を dependency failure とし、payload の意味違反とは分けます。 → [第7章 §7.7 の本文](07_tools_rpc_tests.md#reading-note-052)。
 
-#### [`trackPreviewTransition()`](../../src/core/communication/editorcommandservice.cpp#L1743) — PreviewWatch の erase 条件
+#### [`trackPreviewTransition()`](../../src/core/communication/editorcommandservice.cpp#L1749) — PreviewWatch の erase 条件
 
 **分からなくなること**: watch がいつ消えるのか(成功時なのか失敗時なのか)。
 
@@ -921,7 +921,7 @@ game DLL 境界の v2 record は「凍結」と書かれていますが、実際
 | [`ResolvedSceneResolver::resolve()` の 5 引数](../../src/core/communication/editorcommandservice.cpp#L1077) | defaults / registry / provider を別に渡す | 分ける理由 | **未執筆**(§9.23.2 の resolver 入力 fingerprint と対) |
 | [runtime state と authored state の融合](../../src/core/communication/editorcommandservice.cpp#L686) | 2 つの状態の突き合わせ | size mismatch が `logic_error` な理由 | **未執筆**(runtime と authored の component 数は一致するのが不変式、という以上の根拠がコードにない) |
 | [`closureMismatchDetail()`](../../src/core/communication/editorcommandservice.cpp#L404) | 最初のズレで停止 | なぜ全部見ないか | **未執筆**(エラー detail の決定性を狙ったものと読めるが、根拠となる記述がない) |
-| [`render-config-edit-` プレフィックスの判定](../../src/core/communication/editorcommandservice.cpp#L1670) | ticket ルーティング | render config編集の共通ticketを既存結果照会へ送る | featureと名前付きASの編集が共用 |
+| [`render-config-edit-` プレフィックスの判定](../../src/core/communication/editorcommandservice.cpp#L1676) | ticket ルーティング | render config編集の共通ticketを既存結果照会へ送る | featureと名前付きASの編集が共用 |
 | [revision token が `edit_` の preview_epoch を吸収する行](../../src/core/communication/editorcommandservice.cpp#L856) | `edit_` の未確定分 | なぜ吸収するのか | **未執筆**(根拠がコードにない) |
 | [error detail のパス手組み(`root + "/scenes/" + index`)](../../src/core/communication/editorcommandservice.cpp#L323) | index 入り JSON pointer 風 | 手で組む理由 | **未執筆**(根拠がコードにない) |
 | [`findScene()` の直後](../../src/core/communication/editorcommandservice.cpp#L1043) | scene 存在検査 | `selectScene()` も呼ぶのか | **呼びません**。ここは `findScene(current_scene) == nullptr` で `SceneNotFound` を投げるだけの存在検査で、選択の副作用はありません |
@@ -1001,25 +1001,25 @@ game DLL 境界の v2 record は「凍結」と書かれていますが、実際
 
 ### 9.23.14 swapchain / OpenXR
 
-#### [`replacement_anchor` の保存](../../src/core/vkcore/swapchainframetarget.cpp#L1146) — 成功時に退避する理由
+#### [`replacement_anchor` の保存](../../src/core/vkcore/swapchainframetarget.cpp#L1150) — 成功時に退避する理由
 
 **分からなくなること**: 作成に成功したのに、なぜ古いハンドルを持ち続けるのか。
 
 **答え**: swapchain 作成成功後は旧 swapchain が退役するので、新 handle を先に retry anchor として保持します。 → [第6章 §6.6 の本文](06_rendering_vulkan_shader.md#reading-note-060)。
 
-#### [`releaseAbandonedImage()`](../../src/core/vkcore/swapchainframetarget.cpp#L1293) — `vkReleaseSwapchainImagesEXT` をいつ呼ぶか
+#### [`releaseAbandonedImage()`](../../src/core/vkcore/swapchainframetarget.cpp#L1297) — `vkReleaseSwapchainImagesEXT` をいつ呼ぶか
 
 **分からなくなること**: 呼ぶ条件と対象がいずれも狭いこと。
 
 **答え**: maintenance1 が有効で放棄済み acquire image がある場合だけ、cutover 前にその image を解放します。 → [第6章 §6.6 の本文](06_rendering_vulkan_shader.md#reading-note-061)。
 
-#### [present 完了追跡の 2 系統](../../src/core/vkcore/swapchainframetarget.cpp#L556) — 証明と推論
+#### [present 完了追跡の 2 系統](../../src/core/vkcore/swapchainframetarget.cpp#L557) — 証明と推論
 
 **分からなくなること**: maintenance1 の有無で「完了した」の意味が変わること。
 
 **答え**: present 完了は maintenance1 の fence で証明し、無い場合は後続 epoch の reacquire から推論します。 → [第6章 §6.6 の本文](06_rendering_vulkan_shader.md#reading-note-062)。
 
-#### [`surfaceLossRequiresDeviceRebuild()`](../../src/core/vkcore/swapchainframetarget.cpp#L1540) — "unproven presentation"
+#### [`surfaceLossRequiresDeviceRebuild()`](../../src/core/vkcore/swapchainframetarget.cpp#L1544) — "unproven presentation"
 
 **分からなくなること**: surface lost で device ごと作り直す条件。
 
@@ -1051,15 +1051,15 @@ game DLL 境界の v2 record は「凍結」と書かれていますが、実際
 
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
-| [`pollRetiredEpochs()`](../../src/core/vkcore/swapchainframetarget.cpp#L1641) | quarantine と retire の分岐 | 隔離される条件 | GPU 完了済みだが present 未証明で surface が lost の場合、maintenance1 ありなら present fence が lost 後も完了を証明できるのでポーリング続行。無い場合は**「後続 reacquire は同一 surface 内でしか意味を持たない」ため証明が永久に得られず**、隔離して device teardown まで保持しつつリストからは外す |
-| [`SwapchainEpoch` のメンバー宣言順](../../src/core/vkcore/swapchainframetarget.cpp#L490) | 逆順破棄の設計 | 宣言順が仕様である理由 | (a) `surface_epoch` リースを先頭に置いて全 swapchain 子オブジェクトが `VkSurfaceKHR` より先に壊れるようにし、(b) command_pool を command_buffers より前、(c) swapchain を image view / semaphore / fence より前に置く。**Vulkan の親子生存期間規則を宣言順だけで自動的に守る** |
-| [present 後の注入](../../src/core/vkcore/swapchainframetarget.cpp#L2606) | 戻り値だけ差し替える | 本物を呼ぶ理由 | present は**エラーを返してもセマフォ待ちを実際にキューへ積み**、maintenance1 の present fence も既にシグナル対象になっている。本番と同じリソース lifetime 契約を保ったまま故障を注入するため。→ §9.22「fault injection seam」 |
-| [`recovery_anchor` へ candidate を移す行](../../src/core/vkcore/swapchainframetarget.cpp#L1767) / [anchor 選択](../../src/core/vkcore/swapchainframetarget.cpp#L1797) | framebuffer.revision 不一致 | 捨てずに回す理由 | candidate は完成しているが framebuffer が変わって陳腐化した場合、破棄すると**「非退役 swapchain が 2 つ」になる / ウィンドウが掴まれたままになる**。candidate を `recovery_anchor` に移し、次の再構築の oldSwapchain として再利用しつつリトライを予約する |
-| [format スコアリング](../../src/core/vkcore/swapchainframetarget.cpp#L264) | 20 / 10 / 0 の重み | 数値の根拠 | **未執筆**(スコア値の根拠コメントが無い)。実装は sRGB nonlinear の SRGB を 20、同 colorSpace の UNORM を 10、他 0 で `stable_sort` し、present mode も mailbox を先頭に安定ソートするだけ |
-| [`chooseSwapchainImageCount()`](../../src/core/vkcore/swapchainframetarget.cpp#L176) / [composite alpha](../../src/core/vkcore/swapchainframetarget.cpp#L205) / [preTransform 固定](../../src/core/vkcore/swapchainframetarget.cpp#L339) | swapchain 作成パラメータ | ヒューリスティックの根拠 | image count は Vulkan の一般則(→ [第10章](10_background_knowledge.md))。**composite alpha の優先順と preTransform=current + clipped=VK_TRUE の固定化の根拠は未執筆** |
-| [present fence の pNext](../../src/core/vkcore/swapchainframetarget.cpp#L2568) / [`present_wait_pending`](../../src/core/vkcore/swapchainframetarget.cpp#L2634) | 完了追跡の部品 | 個々の役割 | 上記「present 完了追跡の 2 系統」の一部。詳細は**未執筆** |
-| [acquire の lock](../../src/core/vkcore/swapchainframetarget.cpp#L2170) / [`markSurfaceLost()`](../../src/core/vkcore/swapchainframetarget.cpp#L1498) / [`abandonFrameSerial()`](../../src/core/vkcore/swapchainframetarget.cpp#L2757) | surface_epoch まわり | 一体で何を守るか | 上記 2 項目と一体。詳細は**未執筆** |
-| [bootstrap epoch](../../src/core/vkcore/swapchainframetarget.cpp#L884) / [BuildRequest](../../src/core/vkcore/swapchainframetarget.cpp#L660) / [nonblocking](../../src/core/vkcore/swapchainframetarget.cpp#L2135) | 初期化と要求の粒度 | 別枠にする理由 | **未執筆**(根拠がコードにない) |
+| [`pollRetiredEpochs()`](../../src/core/vkcore/swapchainframetarget.cpp#L1660) | quarantine と retire の分岐 | 隔離される条件 | GPU 完了済みだが present 未証明で surface が lost の場合、maintenance1 ありなら present fence が lost 後も完了を証明できるのでポーリング続行。無い場合は**「後続 reacquire は同一 surface 内でしか意味を持たない」ため証明が永久に得られず**、隔離して device teardown まで保持しつつリストからは外す |
+| [`SwapchainEpoch` のメンバー宣言順](../../src/core/vkcore/swapchainframetarget.cpp#L491) | 逆順破棄の設計 | 宣言順が仕様である理由 | (a) `surface_epoch` リースを先頭に置いて全 swapchain 子オブジェクトが `VkSurfaceKHR` より先に壊れるようにし、(b) command_pool を command_buffers より前、(c) swapchain を image view / semaphore / fence より前に置く。**Vulkan の親子生存期間規則を宣言順だけで自動的に守る** |
+| [present 後の注入](../../src/core/vkcore/swapchainframetarget.cpp#L2638) | 戻り値だけ差し替える | 本物を呼ぶ理由 | present は**エラーを返してもセマフォ待ちを実際にキューへ積み**、maintenance1 の present fence も既にシグナル対象になっている。本番と同じリソース lifetime 契約を保ったまま故障を注入するため。→ §9.22「fault injection seam」 |
+| [`recovery_anchor` へ candidate を移す行](../../src/core/vkcore/swapchainframetarget.cpp#L1786) / [anchor 選択](../../src/core/vkcore/swapchainframetarget.cpp#L1816) | framebuffer.revision 不一致 | 捨てずに回す理由 | candidate は完成しているが framebuffer が変わって陳腐化した場合、破棄すると**「非退役 swapchain が 2 つ」になる / ウィンドウが掴まれたままになる**。candidate を `recovery_anchor` に移し、次の再構築の oldSwapchain として再利用しつつリトライを予約する |
+| [format スコアリング](../../src/core/vkcore/swapchainframetarget.cpp#L265) | 20 / 10 / 0 の重み | 数値の根拠 | **未執筆**(スコア値の根拠コメントが無い)。実装は sRGB nonlinear の SRGB を 20、同 colorSpace の UNORM を 10、他 0 で `stable_sort` し、present mode も mailbox を先頭に安定ソートするだけ |
+| [`chooseSwapchainImageCount()`](../../src/core/vkcore/swapchainframetarget.cpp#L177) / [composite alpha](../../src/core/vkcore/swapchainframetarget.cpp#L206) / [preTransform 固定](../../src/core/vkcore/swapchainframetarget.cpp#L340) | swapchain 作成パラメータ | ヒューリスティックの根拠 | image count は Vulkan の一般則(→ [第10章](10_background_knowledge.md))。**composite alpha の優先順と preTransform=current + clipped=VK_TRUE の固定化の根拠は未執筆** |
+| [present fence の pNext](../../src/core/vkcore/swapchainframetarget.cpp#L2600) / [`present_wait_pending`](../../src/core/vkcore/swapchainframetarget.cpp#L2666) | 完了追跡の部品 | 個々の役割 | 上記「present 完了追跡の 2 系統」の一部。詳細は**未執筆** |
+| [acquire の lock](../../src/core/vkcore/swapchainframetarget.cpp#L2202) / [`markSurfaceLost()`](../../src/core/vkcore/swapchainframetarget.cpp#L1502) / [`abandonFrameSerial()`](../../src/core/vkcore/swapchainframetarget.cpp#L2789) | surface_epoch まわり | 一体で何を守るか | 上記 2 項目と一体。詳細は**未執筆** |
+| [bootstrap epoch](../../src/core/vkcore/swapchainframetarget.cpp#L886) / [BuildRequest](../../src/core/vkcore/swapchainframetarget.cpp#L661) / [nonblocking](../../src/core/vkcore/swapchainframetarget.cpp#L2167) | 初期化と要求の粒度 | 別枠にする理由 | **未執筆**(根拠がコードにない) |
 | [XR swapchain の状態機械](../../src/core/openxr/openxrcompositiontarget.cpp#L399) / [reusable 判定](../../src/core/openxr/openxrcompositiontarget.cpp#L676) | idle → acquired → waited → submitted → released | 再利用できる状態 | `beginLogicalFrame` は idle / released のみ再利用可。[「wait 成功前の release は不正」](../../src/core/openxr/openxrcompositiontarget.cpp#L484)なので、acquired 止まりの image は release せず `teardown_required` を立てて世代ごと破棄する |
 | [`beginView()`](../../src/core/openxr/openxrcompositiontarget.cpp#L711) / [endView の分岐](../../src/core/openxr/openxrcompositiontarget.cpp#L820) / [view_family の終端](../../src/core/openxr/openxrcompositiontarget.cpp#L818) | 順序強制と 2 経路 | sequential と multiview の同期差 | 上記 2 経路の排他性から従う。詳細は**未執筆** |
 | [`FrameStage`](../../src/core/openxr/openxrcompositiontarget.cpp#L56) / [`ViewState` と `SwapchainFrameState`](../../src/core/openxr/openxrcompositiontarget.cpp#L123) | フレームの段と、それに直交する状態 | 有効な組み合わせ | フレームの段は bool の集合ではなく 7 値の enum です。遷移の合法表は [`frameStageMoveIsLegal()`](../../src/core/openxr/openxrcompositiontarget.cpp#L86) が持ち、違反は [`requireFrameStageMove()`](../../src/core/openxr/openxrcompositiontarget.cpp#L112) が投げます。bool として残るのは眼ごとの `ViewState` と、段に直交する `depth_submission_active` / `teardown_required` だけです |
@@ -1204,13 +1204,13 @@ game DLL 境界の v2 record は「凍結」と書かれていますが、実際
 
 この性質があるので、節を編集しても CAS の単位([`renderConfigSourceDigest()`](../../src/project/renderconfigdocument.cpp#L431))は文書全体のままで変わりません。書き手は [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L755) 1 本で、graph root 自身のキー(と editor の `layout`)は [`withRootValue()`](../../src/project/renderconfigdocument.cpp#L714) へ落ちます(MG-2b で legacy root は読み手ごと無くなりました)。
 
-読み手と書き手の非対称も意図です。[`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L36) は節が無ければ `RenderConfigSectionUnlocated` を投げ、[`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L49) は空 object を返します。**読みは節が無くても失敗せず、編集だけが `render_config_section_unlocated` という名前で拒否されます**([拒否の実例](../../src/core/communication/renderconfigeditor.cpp#L1718))。
+読み手と書き手の非対称も意図です。[`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L36) は節が無ければ `RenderConfigSectionUnlocated` を投げ、[`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L49) は空 object を返します。**読みは節が無くても失敗せず、編集だけが `render_config_section_unlocated` という名前で拒否されます**([拒否の実例](../../src/core/communication/renderconfigeditor.cpp#L1743))。
 
 **不変条件**: 節の中の offset を「節の先頭からの相対」に変えないこと(digest が節だけを覆う別物になり、CAS の意味が変わります)。読みの経路に `renderingSectionOf()` を使わないこと — 節を持たない graph root を読んだだけで例外になります。authored key の住所判定を各 caller が `if (graph)` で持たないこと。
 
 **読む場所**: [`renderconfigsection.hpp`](../../src/project/renderconfigsection.hpp#L12) → [`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L309) → [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L755)。
 
-> **N-6 の例外**: `edit_graph_document` の op 列が `set_layout` だけのとき、editor は候補文書を `apply_candidate` に通さず(`Ticket::source_only`)、文書を書くだけで commit を終えます。「すべての commit は候補経路を通る」の唯一の例外で、置き場所は engine の挙動に触れないためです([経路](../../src/core/communication/renderconfigeditor.cpp#L3842))。
+> **N-6 の例外**: `edit_graph_document` の op 列が `set_layout` だけのとき、editor は候補文書を `apply_candidate` に通さず(`Ticket::source_only`)、文書を書くだけで commit を終えます。「すべての commit は候補経路を通る」の唯一の例外で、置き場所は engine の挙動に触れないためです([経路](../../src/core/communication/renderconfigeditor.cpp#L3868))。
 
 ### 難所 — 排他 create の committed marker
 
@@ -1248,15 +1248,15 @@ marker は自分が属する manifest に digest で縛られます。[`transact
 
 **素朴に読むと**: 「この op の評価分類」はモジュールが登録時に宣言した 1 値で、node ごとには変わらない、と読めます。
 
-**実際は**: ports を authored parameters から作る factory は、**分類を引き上げることだけ**ができます。[`resolveOperation()`](../../src/project/graphmodule.cpp#L676) は factory の結果に対して `contract.evaluation = std::max(...)` を取り([該当行](../../src/project/graphmodule.cpp#L700))、`direct < replay < baked < recorded` の順で強い方を採ります。
+**実際は**: ports を authored parameters から作る factory は、**分類を引き上げることだけ**ができます。[`resolveOperation()`](../../src/project/graphmodule.cpp#L740) は factory の結果に対して `contract.evaluation = std::max(...)` を取り([該当行](../../src/project/graphmodule.cpp#L764))、`direct < replay < baked < recorded` の順で強い方を採ります。
 
-理由は AG-2 で現物が出ました — root motion を抽出する `pose.clip_sample` は前フレームの変位を保持するので `replay` で、抽出しない同じ op は `direct` です。`max` なので**カタログの宣言より弱くはなれず**、catalog と実際の node が食い違いません。[`domain`](../../src/project/graphmodule.cpp#L691) / [`parameter_change`](../../src/project/graphmodule.cpp#L701) / [`parameter_changes`](../../src/project/graphmodule.cpp#L702) の 3 つは、factory の値を捨てて登録側の値へ戻します。
+理由は AG-2 で現物が出ました — root motion を抽出する `pose.clip_sample` は前フレームの変位を保持するので `replay` で、抽出しない同じ op は `direct` です。`max` なので**カタログの宣言より弱くはなれず**、catalog と実際の node が食い違いません。[`domain`](../../src/project/graphmodule.cpp#L755) / [`parameter_change`](../../src/project/graphmodule.cpp#L765) / [`parameter_changes`](../../src/project/graphmodule.cpp#L766) の 3 つは、factory の値を捨てて登録側の値へ戻します。
 
 評価分類を実際に強制するのは値バックエンドで、状態を渡されずに replay 系の op を評価しようとすると [`graph.evaluation_requires_state@1` の送出](../../src/core/userpublic/valuegraph.cpp#L62) で拒否します。対象は `audio.playback` / `value.event_clock` / `value.trigger_clock` の 3 つ([拒否点](../../src/core/userpublic/valuegraph.cpp#L871))で、**op 名は authored 文書の綴り**で返ります(lowering がモジュール名前空間を落とすので、拒否を読む側がその事情を知らなくて済むように、という取り決めです)。
 
 **不変条件**: factory で `evaluation` を下げないこと。分類の順序(`direct < replay < baked < recorded`)を [`graphcomposition.hpp`](../../src/project/graphcomposition.hpp#L267) の enum 順と別に持たないこと。拒否に lowering 後の綴りを載せないこと。
 
-**読む場所**: [`GraphOperationRegistration`](../../src/project/graphmodule.hpp#L25) → [`resolveOperation()`](../../src/project/graphmodule.cpp#L676) → [`statelessEvaluationRejected()`](../../src/core/userpublic/valuegraph.cpp#L61)。
+**読む場所**: [`GraphOperationRegistration`](../../src/project/graphmodule.hpp#L25) → [`resolveOperation()`](../../src/project/graphmodule.cpp#L740) → [`statelessEvaluationRejected()`](../../src/core/userpublic/valuegraph.cpp#L61)。
 
 ### 難所 — package の SDK は「転送ヘッダのディレクトリ」そのもの
 
@@ -1356,17 +1356,17 @@ seek が無い代わりに置かれているのが **replay prologue** です。
 
 型は [`MaterialPhysicalContractChanged`](../../src/core/material/materialphysicalcontractchanged.hpp#L46)(`std::runtime_error` の派生。`info()` が `{material_id, material, pass, detail[]}`)で、code は [`materialPhysicalContractChangedCode`](../../src/core/material/materialphysicalcontractchanged.hpp#L13) です。**この順があるので、editor はこの型を見たら「これが唯一の拒否だった」と読めます。**
 
-editor の側では、runtime の完了が [`completeCommitTransaction()`](../../src/core/communication/renderconfigeditor.cpp#L7924) に戻ったとき、staged でも committed でもなく source commit も呼ばれていない結果の例外を、[`physicalContractRestartReason()`](../../src/core/communication/renderconfigeditor.cpp#L217) が rethrow して型を見ます。
+editor の側では、runtime の完了が [`completeCommitTransaction()`](../../src/core/communication/renderconfigeditor.cpp#L7968) に戻ったとき、staged でも committed でもなく source commit も呼ばれていない結果の例外を、[`physicalContractRestartReason()`](../../src/core/communication/renderconfigeditor.cpp#L218) が rethrow して型を見ます。
 
-この型のときだけ、editor 自身が ticket の preset の CAS(`CommitTransaction::verify_preset`。[`commitPending()` で取っておく所](../../src/core/communication/renderconfigeditor.cpp#L8388))と複数ファイルの commit(`commitRenderConfigCandidateDocuments`)を行い、`applied.committed = true`、`published_generation` を runtime の今の世代にして、成功の経路へ合流します([合流する所](../../src/core/communication/renderconfigeditor.cpp#L7973))。
+この型のときだけ、editor 自身が ticket の preset の CAS(`CommitTransaction::verify_preset`。[`commitPending()` で取っておく所](../../src/core/communication/renderconfigeditor.cpp#L8432))と複数ファイルの commit(`commitRenderConfigCandidateDocuments`)を行い、`applied.committed = true`、`published_generation` を runtime の今の世代にして、成功の経路へ合流します([合流する所](../../src/core/communication/renderconfigeditor.cpp#L8017))。
 
-結果に `restart_required` と `restart_reason` を付けるのは最後の 1 か所で、G-4 の `material_route_default_changed` より先に見ます([結果に載せる所](../../src/core/communication/renderconfigeditor.cpp#L8193))。runtime に行く ticket はすべて [`commitPending()`](../../src/core/communication/renderconfigeditor.cpp#L8224) → `apply_candidate` → `completeCommitTransaction()` を通るので、この 1 か所が graph の編集・`add_authored_pass`・restore などのすべてに効きます。`set_layout` だけの ticket(`source_only`)はここを通りません。
+結果に `restart_required` と `restart_reason` を付けるのは最後の 1 か所で、G-4 の `material_route_default_changed` より先に見ます([結果に載せる所](../../src/core/communication/renderconfigeditor.cpp#L8237))。runtime に行く ticket はすべて [`commitPending()`](../../src/core/communication/renderconfigeditor.cpp#L8268) → `apply_candidate` → `completeCommitTransaction()` を通るので、この 1 か所が graph の編集・`add_authored_pass`・restore などのすべてに効きます。`set_layout` だけの ticket(`source_only`)はここを通りません。
 
 live の material を見るのは authored の経路だけです。[`Renderer::applyRenderPipelineAuthoringCandidate()`](../../src/core/vkcore/renderer.cpp#L3948) は `validate_live_materials = true`、ディスクからの [`reloadRenderPipelineFromDisk()`](../../src/core/vkcore/renderer.cpp#L3722) は reload service がいるとき `false` で、material の組み直しは reload service の companion reload(`MaterialContainer::prepareRuntimeGenerationReload()`)に任せます。
 
-検査は flat の variant の `validate_prepared_generation` の中にあり、XR の variant の検査と `before_publish`(publish の直前の準備と source commit)はその後です([variant ごとに検査を呼ぶ所](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1527))。だから RS-1 の経路ではそれらは走りません。
+検査は flat の variant の `validate_prepared_generation` の中にあり、XR の variant の検査と `before_publish`(publish の直前の準備と source commit)はその後です([variant ごとに検査を呼ぶ所](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1551))。だから RS-1 の経路ではそれらは走りません。
 
-**同じ枝に乗る 2 つ目の型(UD-1)**: [`MaterialPassesRemoved`](../../src/core/material/materialpassesremoved.hpp#L12)(`std::runtime_error` の派生、code は [`materialPassesRemovedCode`](../../src/core/material/materialpassesremoved.hpp#L7))は、material pass を 1 つも持たない候補が公開中の世代の描いていた route を落とすときに、[`requireEveryMaterialServed()` の最後](../../src/core/material/materialgenerationplanner.cpp#L915)で投げます。`physicalContractRestartReason()` がこれも `{code: "material_passes_removed", message}` に変える([その catch](../../src/core/communication/renderconfigeditor.cpp#L229))ので、editor は RS-1 と同じく commit して `restart_required` を返します。
+**同じ枝に乗る 2 つ目の型(UD-1)**: [`MaterialPassesRemoved`](../../src/core/material/materialpassesremoved.hpp#L12)(`std::runtime_error` の派生、code は [`materialPassesRemovedCode`](../../src/core/material/materialpassesremoved.hpp#L7))は、material pass を 1 つも持たない候補が公開中の世代の描いていた route を落とすときに、[`requireEveryMaterialServed()` の最後](../../src/core/material/materialgenerationplanner.cpp#L915)で投げます。`physicalContractRestartReason()` がこれも `{code: "material_passes_removed", message}` に変える([その catch](../../src/core/communication/renderconfigeditor.cpp#L230))ので、editor は RS-1 と同じく commit して `restart_required` を返します。
 
 - 投げるのは `validateCompatibility()` の**最初**の `requireEveryMaterialServed()` の中で、物理の契約のように「最後」ではありません。それでも隠れる拒否が無いのは、material pass の無い候補では後ろの material ごとの検査(output schema・`ray_query`・物理の契約)が見る binding を `resolveLiveMaterialBindings()` が返さないからです(コードの読み)。material pass の無い候補に material ごとの検査を足すなら、この順を見直します。
 - `requireEveryMaterialServed()` は [`prepareReload()`](../../src/core/material/materialgenerationplanner.cpp#L1326) でも呼ばれるので、ディスクからの読み直し(companion reload)でもこの型が投げられ、候補世代を捨てて旧世代を保ちます。そちらには restart を返す相手がいません。
@@ -1375,7 +1375,7 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 
 **不変条件**: 物理の契約の拒否より後ろで新しい検査を走らせないこと —— RS-1 の経路はそこで止まるので、その検査が見るはずの誤りを抱えた候補が commit されます。足すなら `validateCompatibility()` の中で、`physical_change` を投げる前に。editor で型付きの拒否以外を commit に回さないこと。
 
-**読む場所**: [`materialphysicalcontractchanged.hpp`](../../src/core/material/materialphysicalcontractchanged.hpp#L39) → [`validateCompatibility()`](../../src/core/material/materialgenerationplanner.cpp#L1232) → [`physicalContractRestartReason()`](../../src/core/communication/renderconfigeditor.cpp#L217) → [`completeCommitTransaction()` の RS-1 の枝](../../src/core/communication/renderconfigeditor.cpp#L7973)。利用者から見た結果の形は manual の第13章 §13.5。
+**読む場所**: [`materialphysicalcontractchanged.hpp`](../../src/core/material/materialphysicalcontractchanged.hpp#L39) → [`validateCompatibility()`](../../src/core/material/materialgenerationplanner.cpp#L1232) → [`physicalContractRestartReason()`](../../src/core/communication/renderconfigeditor.cpp#L218) → [`completeCommitTransaction()` の RS-1 の枝](../../src/core/communication/renderconfigeditor.cpp#L8017)。利用者から見た結果の形は manual の第13章 §13.5。
 
 ### 難所 — Studio の widget の破棄では、Impl が QWidget の基底より先に消える(FX-4)
 
@@ -1447,7 +1447,7 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 **実際は**: v0 を閉じる段で、製品を変えずに揺れる test が 2 つ残っています。
 
 - **`studio_scenario_gui_build_optimize`**: step「the frame's GPU time went up」(scenario の最後ではなく、この後に Features tab の step が続く)は、Multisampling を 4 にした後の `get_status` の `gpu_timing.logical_frame_averages[0].average_total_ms` が、Multisampling を変える前の `[count3]` の step で覚えた値(`ms_count3`)より大きいことを `op: gt` で見ます([その step](../../test/studio_scenarios/gui_build_optimize.json#L500)、[覚える step](../../test/studio_scenarios/gui_build_optimize.json#L459))。平均は engine の履歴の窓([`gpu_timing_history_capacity` = 120](../../src/core/vkcore/rendertiming.hpp#L18))の上で取るので、差が小さいと測り方の揺れで逆になります(RX-1 の W1 で 0.218 ms と 0.226 ms の比較が赤。統合側の記録)。NVIDIA の driver が起動の直後の shader を数秒から十数秒後に最適化した code へ差し替える、という統合側の観察がありますが、この step の揺れの原因かは未確認です(コードからは確かめられない)。scenario の側で幅を持たせるか比べ方を変えるのが残りの仕事です。
-- **`wp380c_production_has_no_fault_setter_symbol`**: production の archive(`pelican_core` / `pelican_project`)の全部の symbol を `dumpbin` で調べる test で([定義](../../test/CMakeLists.txt#L2697))、通った回で 75〜150 秒ほどかかり(上限を 300 秒にした再実行で 203 秒の回もある)、`-j16` の全数の中では 120 秒の上限を越えることがあります(単独で 300 秒でも越えた回あり。どれも各 WP の報告の数字)。test の定義は LABELS だけで TIMEOUT を持たないので、上限は gate の `ctest --timeout` です。assertion の失敗は出ていません。
+- **`wp380c_production_has_no_fault_setter_symbol`**: production の archive(`pelican_core` / `pelican_project`)の全部の symbol を `dumpbin` で調べる test で([定義](../../test/CMakeLists.txt#L2714))、通った回で 75〜150 秒ほどかかり(上限を 300 秒にした再実行で 203 秒の回もある)、`-j16` の全数の中では 120 秒の上限を越えることがあります(単独で 300 秒でも越えた回あり。どれも各 WP の報告の数字)。test の定義は LABELS だけで TIMEOUT を持たないので、上限は gate の `ctest --timeout` です。assertion の失敗は出ていません。
 
 **不変条件**: この 2 つが赤のときは、単独で流し直してから製品を疑う。揺れを「既知」とするのは記録のある間だけで、記録は `docs/v0_freeze.md` §6.1 にあります。
 
@@ -1457,7 +1457,7 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 
 **素朴に読むと**: 出荷する player を窓だけのアプリ(Windows の GUI subsystem)にしても、test は今までどおり `& pelican_player …; $LASTEXITCODE` で終了コードを読める、と読めます。
 
-**実際は**: PowerShell は GUI subsystem の exe を `&` で起動しても終わりを待たずに戻るので、終了コードが取れません(DS-1 で player を GUI にした直後、`run_physics_trigger_behavior.ps1` などの test が赤になった。DS-1f の仕様)。そこで subsystem は [`PELICAN_PLAYER_GUI_SUBSYSTEM`](../../src/player/CMakeLists.txt#L1)(既定 OFF = console)の option になり、ON のときだけ `WIN32_EXECUTABLE` と MSVC の `/ENTRY:mainCRTStartup` を付けます。開発と test の build は console のままで、`pelican_cli dist-config` が出す設定だけが ON にします([設定に書く行](../../src/devcli/distconfig.cpp#L932))。ON の build で終了コードを読むには `System.Diagnostics.Process` の `WaitForExit()` + `ExitCode` か `Start-Process -Wait -PassThru` を使います(`run_ds1f_player_startup.ps1` がこの形で、PE の header の subsystem も読んで確かめる)。
+**実際は**: PowerShell は GUI subsystem の exe を `&` で起動しても終わりを待たずに戻るので、終了コードが取れません(DS-1 で player を GUI にした直後、`run_physics_trigger_behavior.ps1` などの test が赤になった。DS-1f の仕様)。そこで subsystem は [`PELICAN_PLAYER_GUI_SUBSYSTEM`](../../src/player/CMakeLists.txt#L1)(既定 OFF = console)の option になり、ON のときだけ `WIN32_EXECUTABLE` と MSVC の `/ENTRY:mainCRTStartup` を付けます。開発と test の build は console のままで、`pelican_cli dist-config` が出す設定だけが ON にします([設定に書く行](../../src/devcli/distconfig.cpp#L933))。ON の build で終了コードを読むには `System.Diagnostics.Process` の `WaitForExit()` + `ExitCode` か `Start-Process -Wait -PassThru` を使います(`run_ds1f_player_startup.ps1` がこの形で、PE の header の subsystem も読んで確かめる)。
 
 MessageBox も同じ理由で絞ってあります。[`shouldShowPlayerFatalDialog()`](../../src/core/playerdiagnostics.hpp#L16) は、`--headless` / `--rpc` / `--embedded`、`PELICAN_NO_MESSAGEBOX=1`、console がある、stdout か stderr が pipe・file・文字 device のどれかに繋がっている、のどれか 1 つでも当てはまれば出しません。出すのは何にも繋がっていない手起動の player だけで、headless の test が MessageBox で止まることはありません。
 

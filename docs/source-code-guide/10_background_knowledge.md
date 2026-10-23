@@ -622,7 +622,7 @@ C++20 の `std::bit_cast<To>(from)` は、同じサイズの型の間でビッ�
 
 `std::jthread` は、デストラクタで自動的に `request_stop()` と `join()` を行うスレッドです。停止要求は `std::stop_token` としてスレッド関数の第 1 引数に渡され、ワーカー側は自分の都合のよい場所で `stop_requested()` を見て抜けます(強制終了ではなく協調的な停止です)。待機中のスレッドを起こすには `std::condition_variable_any` の `wait(lock, stop_token, pred)` を使い、停止要求が来た時点で待機が解けるようにします。素の `std::condition_variable` には stop_token を取るオーバーロードが無いため、この組み合わせでは `_any` の方が要ります。
 
-**使用場所**: [SwapchainBuildWorker::run()](../../src/core/vkcore/swapchainframetarget.cpp#L759)
+**使用場所**: [SwapchainBuildWorker::run()](../../src/core/vkcore/swapchainframetarget.cpp#L760)
 
 ### 固定長バッファ(例外も動的確保もしない経路のため)
 
@@ -842,7 +842,7 @@ C++ の `std::regex` は既定で ECMAScript 文法です。この文法では `
 
 複数のハッシュ値を 1 つに混ぜるときの定型が `h ^= v + 0x9e3779b9 + (h << 6) + (h >> 2)` で、Boost の `hash_combine` がこの形です。`0x9e3779b9` は黄金比の逆数を 32bit 固定小数で表した値(2^32 / φ)で、ビットが偏りなく散っている定数として選ばれています(64bit 版は `0x9e3779b97f4a7c15`)。単に XOR や加算で混ぜると、同じ値の組み合わせが打ち消し合って衝突します。
 
-**使用場所**: [hashWord()](../../src/core/vkcore/swapchainframetarget.cpp#L120)(64bit FNV-1a を 8 バイトぶん回す) / [surfaceSupportFingerprint()](../../src/core/vkcore/swapchainframetarget.cpp#L130)(offset basis 14695981039346656037 から始める) / [hashCombine()](../../src/core/shader/pipelinefactory.cpp#L72)
+**使用場所**: [hashWord()](../../src/core/vkcore/swapchainframetarget.cpp#L121)(64bit FNV-1a を 8 バイトぶん回す) / [surfaceSupportFingerprint()](../../src/core/vkcore/swapchainframetarget.cpp#L131)(offset basis 14695981039346656037 から始める) / [hashCombine()](../../src/core/shader/pipelinefactory.cpp#L72)
 
 ### ソート済み列に対する隣接検査(adjacent_find)
 
@@ -872,7 +872,7 @@ SPIR-V モジュールは 32bit ワードの列です。先頭 5 ワードがヘ
 
 nlohmann::json は数値を「符号なし整数 / 符号付き整数 / 浮動小数」の 3 つに区別して保持し、`is_number_unsigned()` / `is_number_integer()` / `is_number_float()` で見分けられます(`is_number_integer()` は符号なしにも true を返すので、負値を拒否したいときは順序に注意が要ります)。`nlohmann::ordered_json` は `std::map` ではなく挿入順を保つ連想コンテナを使う別名で、出力の安定性が要るとき(差分を取る、ダイジェストを取る)に選びます。もう 1 つの落とし穴が `std::optional` の出力で、**値が無いときにキーへ代入しないとキー自体が消えます**。「キーはあるが null」を出したいなら明示的に `nullptr` を代入する必要があり、この 2 つは受け手にとって別物です。
 
-**使用場所**: [exactUnsigned()](../../src/core/communication/editorjournal.cpp#L80)(`is_number_unsigned()` を先に見て、次に `is_number_integer()` — この順でないと符号なしが符号付き枝へ落ちる) / [validateStructSigned()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L202)(同じ 2 段の順序) / [editorComponentQueryJson()](../../src/core/communication/editorcommandservice.cpp#L1802)(値が無ければ `OrderedJson(nullptr)` を明示的に置く)
+**使用場所**: [exactUnsigned()](../../src/core/communication/editorjournal.cpp#L80)(`is_number_unsigned()` を先に見て、次に `is_number_integer()` — この順でないと符号なしが符号付き枝へ落ちる) / [validateStructSigned()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L202)(同じ 2 段の順序) / [editorComponentQueryJson()](../../src/core/communication/editorcommandservice.cpp#L1808)(値が無ければ `OrderedJson(nullptr)` を明示的に置く)
 
 ### IEEE 754 の倍精度と JSON の「安全な整数」2^53−1
 
@@ -1087,7 +1087,7 @@ OpenXR の swapchain は Vulkan の WSI とは別の API で、1 枚のイメー
 
 **このコードベースでの注意**: 登録されている semantic は 11 種です。
 
-値・音・イベントの 3 つ(`pelican.value.scalar@1` / `pelican.audio.voice@1` / `pelican.event.playback_control@1`)に加えて、`pelican.render` module が 6 つ(`storage_buffer@1` / `attribute@1` / `color_signal@1` / `depth@1` / `legacy_opaque_image@1` / `legacy_opaque_resource@1`、[`logicalrendertype.cpp`](../../src/project/logicalrendertype.cpp#L583) を [`graphmodule.cpp`](../../src/project/graphmodule.cpp#L883) が登録し、[`renderPorts()`](../../src/project/graphmodule.cpp#L328) 経由でポートに現れます)、pose module が 2 つ(`pelican.pose@1` / `pelican.rig@1`、[`posegraphmodule.cpp`](../../src/project/posegraphmodule.cpp#L74))です。
+値・音・イベントの 3 つ(`pelican.value.scalar@1` / `pelican.audio.voice@1` / `pelican.event.playback_control@1`)に加えて、`pelican.render` module が 6 つ(`storage_buffer@1` / `attribute@1` / `color_signal@1` / `depth@1` / `legacy_opaque_image@1` / `legacy_opaque_resource@1`、[`logicalrendertype.cpp`](../../src/project/logicalrendertype.cpp#L583) を [`graphmodule.cpp`](../../src/project/graphmodule.cpp#L947) が登録し、[`renderPorts()`](../../src/project/graphmodule.cpp#L391) 経由でポートに現れます)、pose module が 2 つ(`pelican.pose@1` / `pelican.rig@1`、[`posegraphmodule.cpp`](../../src/project/posegraphmodule.cpp#L74))です。
 
 `opaque` を持つのは姿勢とリグの 2 つで、ただし `pelican.rig@1` はポートには現れません(ノードの parameter として名前で指定します)。Studio 側は**型名にソケットの形を割り当てる表**を JSON で持っており、新しい型は C++ を書かずに [`graph_socket_styles.json`](../../src/devstudio/resources/graph_socket_styles.json) へ名前を足すだけで絵が付きます。
 
