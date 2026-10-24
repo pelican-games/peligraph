@@ -167,19 +167,6 @@ std::vector<PlanningNodeConstraint> onceIsolatedNodeConstraints(
     return constraints;
 }
 
-ImageUsage tileLocalImageUsage(
-    const RenderTargetDefinition &definition) {
-    const auto attachment_usage =
-        definition.usage &
-        (ImageUsageBit::color_attachment |
-         ImageUsageBit::
-             depth_stencil_attachment);
-    return attachment_usage |
-           ImageUsageBit::input_attachment |
-           ImageUsageBit::
-               transient_attachment;
-}
-
 std::vector<std::uint32_t> sampleCounts(
     vk::SampleCountFlags flags) {
     constexpr std::array candidates{
@@ -233,13 +220,14 @@ bool supportsDynamicRenderingLocalRead(
            VK_TRUE;
 }
 
-ImageUsage requiredImageUsage(
-    const RenderTargetDefinition &definition) {
-    auto usage = definition.usage;
-    if (definition.history) {
-        usage |= ImageUsageBit::transfer_dst;
-    }
-    return usage;
+// RC-3c2a: what the device is asked of a candidate is the engine's usage
+// rule (engineImageUsage) for the storage, local read or export asked about.
+ImageUsage queriedImageUsage(
+    const RenderTargetDefinition &definition,
+    ImageUsageFacts facts = {}) {
+    facts.declared = definition.usage;
+    facts.history = definition.history;
+    return engineImageUsage(facts);
 }
 
 vk::ImageCreateFlags requiredImageCreateFlags(
@@ -264,7 +252,7 @@ queryImageFormatCapability(
                 vk::ImageType::e2D,
                 vk::ImageTiling::eOptimal,
                 toVulkanImageUsage(
-                    requiredImageUsage(definition)),
+                    queriedImageUsage(definition)),
                 requiredImageCreateFlags(
                     definition));
         result.image_usage_supported = true;
@@ -297,9 +285,9 @@ queryImageFormatCapability(
                 vk::ImageType::e2D,
                 vk::ImageTiling::eOptimal,
                 toVulkanImageUsage(
-                    requiredImageUsage(definition) |
-                    ImageUsageBit::
-                        transfer_src),
+                    queriedImageUsage(
+                        definition,
+                        {.external_depth_source = true})),
                 requiredImageCreateFlags(
                     definition));
         result.external_depth_export_supported =
@@ -317,9 +305,10 @@ queryImageFormatCapability(
                     vk::ImageType::e2D,
                     vk::ImageTiling::eOptimal,
                     toVulkanImageUsage(
-                    requiredImageUsage(definition) |
-                        ImageUsageBit::
-                            transient_attachment),
+                    queriedImageUsage(
+                        definition,
+                        {.storage = RenderTargetStorageMode::
+                             transient_attachment})),
                     requiredImageCreateFlags(
                         definition));
             result.transient_attachment_supported =
@@ -338,8 +327,10 @@ queryImageFormatCapability(
                     vk::ImageType::e2D,
                     vk::ImageTiling::eOptimal,
                     toVulkanImageUsage(
-                    tileLocalImageUsage(
-                        definition)),
+                    queriedImageUsage(
+                        definition,
+                        {.storage = RenderTargetStorageMode::
+                             tile_local_attachment})),
                     requiredImageCreateFlags(
                         definition));
             (void)physical_device
@@ -348,10 +339,9 @@ queryImageFormatCapability(
                     vk::ImageType::e2D,
                     vk::ImageTiling::eOptimal,
                     toVulkanImageUsage(
-                    requiredImageUsage(
-                        definition) |
-                        ImageUsageBit::
-                            input_attachment),
+                    queriedImageUsage(
+                        definition,
+                        {.local_read = true})),
                     requiredImageCreateFlags(
                         definition));
             result.local_read_attachment_supported =
@@ -2069,8 +2059,8 @@ compileRenderingTargetPlansForVulkanDevice(
         physical_fragments);
 }
 
-void applyRenderingTargetPlan(
-    std::span<RenderTargetDefinition> render_targets,
+std::vector<ImagePlacement> imagePlacementsOf(
+    std::span<const RenderTargetDefinition> render_targets,
     const RenderingTargetPlanCompilation &compilation) {
     std::map<std::string, std::uint32_t, std::less<>>
         assignments;
@@ -2177,15 +2167,17 @@ void applyRenderingTargetPlan(
             }
         }
     }
-    for (auto &target : render_targets) {
-        target.alias_group.reset();
+    std::vector<ImagePlacement> placements;
+    placements.reserve(render_targets.size());
+    for (const auto &target : render_targets) {
+        ImagePlacement placement{.resource = target.name};
         const auto found = assignments.find(target.name);
         if (found == assignments.end()) {
             throw std::runtime_error(
                 "missing physical sample-count assignment: " +
                 target.name);
         }
-        target.samples = found->second;
+        placement.samples = found->second;
         const auto layers =
             array_layer_assignments.find(target.name);
         if (layers ==
@@ -2194,7 +2186,7 @@ void applyRenderingTargetPlan(
                 "missing physical array-layer assignment: " +
                 target.name);
         }
-        target.array_layers = layers->second;
+        placement.array_layers = layers->second;
         const auto format =
             format_assignments.find(target.name);
         if (format ==
@@ -2214,7 +2206,7 @@ void applyRenderingTargetPlan(
                 "candidate: " +
                 target.name);
         }
-        target.format = format->second;
+        placement.format = format->second;
         const auto representation =
             representation_assignments.find(
                 target.name);
@@ -2227,19 +2219,19 @@ void applyRenderingTargetPlan(
         switch (representation->second) {
         case VulkanResourceRepresentation::
             materialized_image:
-            target.storage_mode =
+            placement.storage =
                 RenderTargetStorageMode::materialized;
             break;
         case VulkanResourceRepresentation::
             transient_attachment:
             if (!isTransientAttachmentCandidate(target) ||
-                target.samples != 1) {
+                placement.samples != 1) {
                 throw std::runtime_error(
                     "physical transient attachment assignment is "
                     "incompatible with RenderTargetDefinition: " +
                     target.name);
             }
-            target.storage_mode =
+            placement.storage =
                 RenderTargetStorageMode::
                     transient_attachment;
             break;
@@ -2247,13 +2239,13 @@ void applyRenderingTargetPlan(
             tile_local_attachment:
             if (!isTileLocalAttachmentCandidate(
                     target) ||
-                target.samples != 1) {
+                placement.samples != 1) {
                 throw std::runtime_error(
                     "physical tile-local attachment assignment is "
                     "incompatible with RenderTargetDefinition: " +
                     target.name);
             }
-            target.storage_mode =
+            placement.storage =
                 RenderTargetStorageMode::
                     tile_local_attachment;
             break;
@@ -2263,12 +2255,8 @@ void applyRenderingTargetPlan(
                 "implemented by the render-target runtime: " +
                 target.name);
         }
-        if (local_read_resources.contains(
-                target.name)) {
-            target.usage |=
-                ImageUsageBit::
-                    input_attachment;
-        }
+        placement.local_read =
+            local_read_resources.contains(target.name);
         if (external_depth_sources.contains(
                 target.name)) {
             if (!(target.usage &
@@ -2279,63 +2267,67 @@ void applyRenderingTargetPlan(
                     "attachment RenderTargetDefinition: " +
                     target.name);
             }
-            target.usage |=
-                ImageUsageBit::transfer_src;
+            placement.external_depth_source = true;
         }
+        placements.push_back(std::move(placement));
     }
 
-    std::map<std::string, RenderTargetDefinition *,
-             std::less<>>
-        target_by_name;
-    for (auto &target : render_targets) {
-        target_by_name.emplace(target.name, &target);
+    std::map<std::string, std::size_t, std::less<>>
+        index_by_name;
+    for (std::size_t index = 0; index < render_targets.size(); ++index) {
+        index_by_name.emplace(render_targets[index].name, index);
     }
     std::map<std::string,
-             std::vector<RenderTargetDefinition *>,
+             std::vector<std::size_t>,
              std::less<>>
         alias_groups;
     for (const auto &[resource, group] :
          alias_group_by_resource) {
         const auto target =
-            target_by_name.find(resource);
-        if (target == target_by_name.end()) {
+            index_by_name.find(resource);
+        if (target == index_by_name.end()) {
             throw std::runtime_error(
                 "physical alias group references an unknown render target: " +
                 resource);
         }
         alias_groups[group].push_back(target->second);
     }
-    for (auto &[group, targets] : alias_groups) {
-        if (targets.size() < 2) {
+    for (auto &[group, members] : alias_groups) {
+        if (members.size() < 2) {
             throw std::runtime_error(
                 "physical alias group requires at least two render targets: " +
                 group);
         }
-        const auto &contract = *targets.front();
-        for (auto *target : targets) {
-            if (!isRuntimeAliasCandidate(*target) ||
-                target->format != contract.format ||
-                target->usage != contract.usage ||
-                target->extent_scale !=
+        // An alias candidate keeps its declared usage (the alias-safe set):
+        // no local read and no export adds a bit to it.
+        const auto &contract = render_targets[members.front()];
+        const auto &contract_placement = placements[members.front()];
+        for (const auto index : members) {
+            const auto &target = render_targets[index];
+            const auto &placement = placements[index];
+            if (!isRuntimeAliasEligible(declarationFactsOf(target)) ||
+                placement.storage != RenderTargetStorageMode::materialized ||
+                placement.local_read || placement.external_depth_source ||
+                placement.format != contract_placement.format ||
+                target.usage != contract.usage ||
+                target.extent_scale !=
                     contract.extent_scale ||
-                target->fixed_extent !=
+                target.fixed_extent !=
                     contract.fixed_extent ||
-                target->samples != contract.samples ||
-                target->mip_levels !=
+                placement.samples != contract_placement.samples ||
+                target.mip_levels !=
                     contract.mip_levels ||
-                target->array_layers !=
-                    contract.array_layers ||
-                target->dimension !=
-                    contract.dimension ||
-                target->storage_mode !=
-                    contract.storage_mode) {
+                placement.array_layers != contract_placement.array_layers ||
+                target.dimension !=
+                    contract.dimension) {
                 throw std::runtime_error(
                     "physical alias group members have incompatible runtime image contracts: " +
                     group);
             }
-            target->alias_group = group;
+            placements[index].alias_group = group;
         }
     }
+    return placements;
 }
 
 vk::ResolveModeFlagBits colorAttachmentResolveMode(

@@ -7593,12 +7593,14 @@ TEST_CASE("F-1 edit_render_targets refuses by name and leaves the documents alon
         CHECK(readBytes(harness.fragmentPath()) == fragment_before);
     }
 
-    SECTION("a malformed declaration fails preflight in the parser's words") {
+    SECTION("a malformed declaration fails preflight by name") {
+        // RC-3c2a: the IR's read of the declaration (parseRenderGraph).
         const auto rejected =
             harness.edit(addOp(sceneTarget("f1_negative", -1.0)));
-        CHECK(code(rejected) == "render_pipeline_preflight_failed");
-        CHECK(rejected.at("error").at("message").get<std::string>().find(
-                  "extent_scale must be positive") != std::string::npos);
+        CHECK(code(rejected) == "render_graph.image_invalid@1");
+        CHECK(rejected.at("error").at("resource") == "f1_negative");
+        CHECK(rejected.at("error").at("field") == "extent_scale");
+        CHECK(rejected.at("error").at("reason") == "not_positive");
         unchanged();
     }
 

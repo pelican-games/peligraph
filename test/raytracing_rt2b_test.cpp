@@ -764,7 +764,7 @@ TEST_CASE(
         CAPTURE(index);
         CHECK(wp368BindlessCapabilityCount(
                   *variant.compiled_pipeline) == 0);
-        CHECK(variant.buffer_definitions.empty());
+        CHECK(variant.buffer_names.empty());
         REQUIRE(variant.normalized_config.contains("render_targets"));
         CHECK(variant.physical_package == nullptr);
         absent_targets[index] =
@@ -779,7 +779,7 @@ TEST_CASE(
         CAPTURE(index);
         CHECK(wp368BindlessCapabilityCount(
                   *variant.compiled_pipeline) == 0);
-        CHECK(variant.buffer_definitions.empty());
+        CHECK(variant.buffer_names.empty());
         CHECK(variant.physical_package == nullptr);
         CHECK(variant.normalized_config.at("render_targets") ==
               absent_targets[index]);
@@ -797,7 +797,7 @@ TEST_CASE(
         CAPTURE(index);
         CHECK(wp368BindlessCapabilityCount(
                   *variant.compiled_pipeline) == 1);
-        CHECK(variant.buffer_definitions.empty());
+        CHECK(variant.buffer_names.empty());
         CHECK(variant.physical_package == nullptr);
         CHECK(variant.normalized_config.at("render_targets") ==
               absent_targets[index]);

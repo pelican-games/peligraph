@@ -109,8 +109,8 @@ struct RenderCompilerProgramVariantOutput {
     std::shared_ptr<const RayTracingProjectConfig>
         ray_tracing_project;
     nlohmann::json normalized_config;
-    std::vector<FrameGraphBufferDefinition>
-        buffer_definitions;
+    // The names of the IR's buffers (RC-3c2a: the declarations are the
+    // IR's, render_graph->buffers; the registration sizes them).
     std::unordered_set<std::string> buffer_names;
     std::vector<ComputeTaskDefinition>
         compute_task_definitions;

@@ -357,7 +357,7 @@ struct ParsedRenderTargetResolvers {
         const auto composed = composeRenderFeatureConfig(base);
         const auto resolved = resolveRenderTargetFormatClassesV2(
             composed.config, vk::Format::eB8G8R8A8Srgb, vk::Extent2D{100, 100}, false);
-        const auto definitions = parseRenderTargetDefinitionsFromJson(resolved);
+        const auto definitions = Pelican::test_support::renderTargetDefinitionsOf(resolved);
         metadata.reserve(definitions.size());
         for (size_t i = 0; i < definitions.size(); ++i) {
             const auto id = GlobalRenderTargetId{static_cast<int>(i)};
@@ -580,7 +580,7 @@ TEST_CASE("hybrid preset resolves ordered deferred and forward writes",
     const auto resolved = resolveRenderTargetFormatClassesV2(
         composed.config, vk::Format::eB8G8R8A8Srgb, vk::Extent2D{1280, 720}, false);
 
-    const auto target_definitions = parseRenderTargetDefinitionsFromJson(resolved);
+    const auto target_definitions = Pelican::test_support::renderTargetDefinitionsOf(resolved);
     std::unordered_map<std::string, GlobalRenderTargetId> ids;
     std::vector<RenderTargetMetadata> metadata;
     for (std::size_t index = 0; index < target_definitions.size(); ++index) {
@@ -719,7 +719,7 @@ TEST_CASE("PO-1 a write nothing consumes is an unread_output diagnostic of the f
     const auto resolved = resolveRenderTargetFormatClassesV2(
         composed.config, vk::Format::eB8G8R8A8Srgb, vk::Extent2D{1280, 720}, false);
     std::unordered_map<std::string, std::vector<std::string>> hybrid_usage;
-    for (const auto &target : parseRenderTargetDefinitionsFromJson(resolved)) {
+    for (const auto &target : Pelican::test_support::renderTargetDefinitionsOf(resolved)) {
         hybrid_usage.emplace(target.name, imageUsageNames(target.usage));
     }
     REQUIRE(hybrid_usage.contains("gbuffer_albedo"));
@@ -941,6 +941,9 @@ TEST_CASE("frame plan validates pass image producers including ray tasks",
     SECTION("snapshot sources also accept task outputs") {
         authored["passes"][0] = {{"name", "present"}, {"type", "snapshot_copy"},
             {"source", "ray_color"}, {"destination", "copied_color"}, {"snapshot_after", "trace"}};
+        // RC-3c2a: the copy's destination is declared (a snapshot is sized
+        // from the config's images).
+        authored["render_targets"].push_back({{"name", "copied_color"}});
         REQUIRE_NOTHROW(validate());
         authored.erase("compute_tasks");
         REQUIRE(refused("present"));
@@ -2720,7 +2723,8 @@ namespace {
 // target takes the output's colour format (HDR off) and the display target
 // the output's extent; every other target follows its extent_scale.
 // RC-1b: and the definitions as the runtime registers them -- all of them,
-// with the alias groups the runtime keeps (applyRenderingTargetPlan).
+// with the alias groups the runtime keeps (the generation's resource
+// description).
 struct Rc1ExamplePlan {
     std::shared_ptr<const VulkanTargetPlan> plan;
     std::vector<RenderTargetDefinition> targets;
@@ -2758,7 +2762,7 @@ Rc1ExamplePlan rc1ExamplePlan(std::uint32_t width, std::uint32_t height) {
         TestSupport::renderGraphOf(resolved.normalized_config);
     REQUIRE(render_graph.graphs.size() == 1);
     auto targets =
-        parseRenderTargetDefinitionsFromJson(resolved.normalized_config);
+        Pelican::test_support::renderTargetDefinitionsOf(resolved.normalized_config);
     const auto compilation = compileRenderingTargetPlans(
         render_graph, targets, compiled.sample_count_policy,
         vk::Format::eB8G8R8A8Srgb,
@@ -2786,8 +2790,8 @@ Rc1ExamplePlan rc1ExamplePlan(std::uint32_t width, std::uint32_t height) {
         std::nullopt, std::nullopt, compiled.target_planning,
         compiled.vulkan_plan_pins, compiled.vulkan_physical_fragments);
     REQUIRE(compilation.plans.size() == 1);
-    auto registered_targets = targets;
-    applyRenderingTargetPlan(registered_targets, compilation);
+    auto registered_targets =
+        test_support::plannedRenderTargets(render_graph, compilation, {width, height});
     return {compilation.plans.front(), std::move(targets),
             std::move(registered_targets)};
 }

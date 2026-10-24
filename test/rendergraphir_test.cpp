@@ -3,6 +3,8 @@
 // planRenderGraph / toLogicalGraph). RC-3c1b removed the bridge test that
 // compared this path with core's planning parse; the direct checks it held
 // are here, each against an expectation written for it.
+#include "registered_render_targets_test_support.hpp"
+#include "render_graph_ir_test_support.hpp"
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/core/renderingpass/computetaskdefinitionjson.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
@@ -397,31 +399,72 @@ TEST_CASE("RC-3c1b IR: the shipping projects and the engine features plan on the
     REQUIRE(seen == expected);
 }
 
-TEST_CASE("RC-3c1b IR: graph-local declarations stay the graph's own", "[rendergraphir][rc3c1b]") {
+TEST_CASE("RC-3c2a a render target definition is made from the IR, and needs a resolved format",
+          "[rendergraphir][rc3c2a][refusal]") {
+    // The one way a definition is made (renderTargetDefinitionOf): the IR's
+    // declaration, single-sample, materialized, unaliased; a fixed image's
+    // extent_scale is 1. An image with a format_class and no format yet (the
+    // editor's composition, the preview) is refused by name where a format is
+    // needed.
+    const auto config = Json::parse(R"json({"render_targets": [
+      {"name": "fixed", "width": 32, "height": 16, "extent_scale": 1.0, "format": "R16G16B16A16_SFLOAT",
+       "format_candidates": ["R8G8B8A8_UNORM"], "usage": ["COLOR_ATTACHMENT", "SAMPLED"], "history": true,
+       "clear_color": [0.25, 0.5, 0.75, 1.0], "lifetime": "persistent"},
+      {"name": "half", "extent_scale": 0.5, "format": "D32_SFLOAT", "usage": ["DEPTH_STENCIL_ATTACHMENT"],
+       "layers": 3, "mip_levels": 2},
+      {"name": "unresolved", "extent_scale": 1.0, "format_class": "scene", "usage": ["COLOR_ATTACHMENT"]}]})json");
+    const auto ir = parseRenderGraph(config, buildPassFieldOwnershipCapabilities());
+    const auto fixed = renderTargetDefinitionOf(ir.images.at(0));
+    CHECK(fixed.fixed_extent == std::optional{ResolvedResourceExtent{32, 16}});
+    CHECK(fixed.extent_scale == 1.0f);
+    CHECK(fixed.format == ImageFormat::r16g16b16a16_sfloat);
+    CHECK(fixed.format_candidates ==
+          std::vector<ImageFormat>{ImageFormat::r16g16b16a16_sfloat, ImageFormat::r8g8b8a8_unorm});
+    CHECK(fixed.history);
+    CHECK(fixed.persistent);
+    CHECK(fixed.history_clear_color == std::array<double, 4>{0.25, 0.5, 0.75, 1.0});
+    CHECK(fixed.samples == 1);
+    CHECK(fixed.storage_mode == RenderTargetStorageMode::materialized);
+    CHECK_FALSE(fixed.alias_group);
+    const auto half = renderTargetDefinitionOf(ir.images.at(1));
+    CHECK_FALSE(half.fixed_extent);
+    CHECK(half.extent_scale == 0.5f);
+    CHECK(half.array_layers == 3);
+    CHECK(half.mip_levels == ImageMipLevelCount{ImageMipLevelMode::fixed, 2});
+    CHECK(half.usage == ImageUsage{ImageUsageBit::depth_stencil_attachment});
+    TestSupport::requireNamedRefusal([&] { (void)renderTargetDefinitionsOf(ir); },
+                                     "render_graph.image_format_unresolved@1", {{"resource", "unresolved"}});
+}
+
+TEST_CASE("RC-3c2a IR: a graph declares no images or buffers of its own", "[rendergraphir][rc3c2a]") {
+    // Nothing composes a graph's own render_targets or buffers (a graph
+    // document's images and a loop's copies are the config's) and nothing
+    // would register them: the parse refuses them by name, each key in turn.
     const auto local = Json::parse(R"json({
       "render_targets": [{"name": "color", "extent_scale": 1.0, "format": "R8G8B8A8_UNORM",
                           "usage": ["COLOR_ATTACHMENT", "SAMPLED"]}],
       "compute_tasks": [{"name": "shared_task", "reads": ["x"], "writes": ["y"]}],
       "rendering_passes": [
-        {"name": "a", "buffers": [{"name": "x"}, {"name": "unused_a"}],
+        {"name": "a",
          "compute_tasks": [{"name": "own_task", "writes": ["x"]}],
          "passes": [{"name": "draw", "type": "fullscreen",
                      "output": {"color": [{"target": "color"}], "depth": null}}]},
         {"name": "b",
          "passes": [{"name": "present", "type": "fullscreen", "input": ["x"],
                      "output": {"color": [{"target": "swapchain"}], "depth": null}}]}]})json");
-    SECTION("a buffer only graph a declares is unknown to graph b") {
+    for (const auto *key : {"buffers", "render_targets"}) {
+        INFO(key);
         auto config = local;
-        config["buffers"] = Json::array({Json{{"name", "y"}}});
+        config["buffers"] = Json::array({Json{{"name", "x"}}, Json{{"name", "y"}}});
+        config["rendering_passes"][1][key] = Json::array({Json{{"name", "unused_b"}}});
         const auto outcome = run(config);
-        REQUIRE(outcome.stage == "plan");
-        REQUIRE(outcome.code == "render_graph.unknown_resource@1");
-        REQUIRE(outcome.refusal.find("\"graph\":\"b\"") != std::string::npos);
-        REQUIRE(outcome.refusal.find("\"resource\":\"x\"") != std::string::npos);
+        REQUIRE(outcome.stage == "parse");
+        CHECK(outcome.refusal ==
+              std::string{R"(render_graph.graph_declaration_unsupported@1 {"field":")"} + key +
+                  R"(","graph":"b"})");
     }
     SECTION("the same declaration in the config is everyone's") {
         auto config = local;
-        config["rendering_passes"][0].erase("buffers");
         config["buffers"] = Json::array({Json{{"name", "x"}}, Json{{"name", "y"}},
                                          Json{{"name", "unused_top"}}});
         const auto outcome = run(config);
@@ -438,14 +481,8 @@ TEST_CASE("RC-3c1b IR: graph-local declarations stay the graph's own", "[renderg
         CHECK(std::any_of(resources.begin(), resources.end(), [](const Json &resource) {
             return resource.at("name") == "unused_top";
         }));
-    }
-    SECTION("graph-local declarations are looked up before the config's") {
-        auto config = local;
-        config["buffers"] = Json::array({Json{{"name", "x"}}, Json{{"name", "y"}}});
-        const auto outcome = run(config);
-        REQUIRE(outcome.stage.empty());
         CHECK(outcome.definitions.at(0).declared_resources ==
-              std::vector<std::string>{"x", "unused_a", "color", "y"});
+              std::vector<std::string>{"color", "x", "y", "unused_top"});
     }
 }
 
@@ -816,10 +853,19 @@ TEST_CASE("RC-3c1b IR: every way a history read enters is a temporal use", "[ren
     expect("measure", ResourceUseRole::input, 2);
 }
 
-TEST_CASE("RC-3c1b refusals: a graph image's format_class is a string where the planner read it",
-          "[rendergraphir][rc3c1b][refusal]") {
+TEST_CASE("RC-3c2a refusals: an image's format_class is a string, sized or not",
+          "[rendergraphir][rc3c2a][refusal]") {
+    // RC-3c1b read a graph's own image's format_class only where the planner
+    // read it (an image with a width and a height, up to the first display
+    // one). A graph declares no images now (render_graph.graph_declaration_
+    // unsupported@1); the config's image is the render target parser's
+    // contract, whatever its extent.
     const auto config = [](Json format_class, bool sized) {
-        Json image{{"name", "t"}, {"format", "R8G8B8A8_UNORM"}, {"format_class", std::move(format_class)}};
+        Json image{{"name", "t"},
+                   {"extent_scale", 1.0},
+                   {"format", "R8G8B8A8_UNORM"},
+                   {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})},
+                   {"format_class", std::move(format_class)}};
         if (sized) {
             image["width"] = 1;
             image["height"] = 1;
@@ -827,39 +873,19 @@ TEST_CASE("RC-3c1b refusals: a graph image's format_class is a string where the 
         Json pass{{"name", "p"},
                   {"type", "fullscreen"},
                   {"output", {{"color", Json::array({Json{{"target", "swapchain"}}})}, {"depth", nullptr}}}};
-        Json graph{{"name", "g"}, {"render_targets", Json::array({image})}, {"passes", Json::array({pass})}};
-        return Json{{"rendering_passes", Json::array({graph})}};
+        Json graph{{"name", "g"}, {"passes", Json::array({pass})}};
+        return Json{{"render_targets", Json::array({image})}, {"rendering_passes", Json::array({graph})}};
     };
-    const auto refused = run(config(42, true));
-    INFO(refused.refusal);
-    CHECK(refused.code == "render_graph.image_invalid@1");
-    const auto detail = Json::parse(refused.refusal.substr(refused.refusal.find('{')));
-    CHECK(detail.at("graph") == "g");
-    CHECK(detail.at("resource") == "t");
-    CHECK(detail.at("field") == "format_class");
-    // Only an image with a width and a height is read; a string is accepted.
-    CHECK(run(config(42, false)).stage.empty());
+    for (const bool sized : {true, false}) {
+        const auto refused = run(config(42, sized));
+        INFO(refused.refusal);
+        CHECK(refused.code == "render_graph.image_invalid@1");
+        const auto detail = Json::parse(refused.refusal.substr(refused.refusal.find('{')));
+        CHECK(detail.at("resource") == "t");
+        CHECK(detail.at("field") == "format_class");
+        CHECK(detail.at("reason") == "requires_string");
+    }
     CHECK(run(config("data", true)).stage.empty());
-    // The search stops at the first display image: a numeric format_class
-    // after it is never read, before it is.
-    const auto pair = [](bool display_first) {
-        Json display{{"name", "d"}, {"width", 1}, {"height", 1}, {"format", "R8G8B8A8_UNORM"},
-                     {"format_class", "display"}};
-        Json numeric{{"name", "t"}, {"width", 1}, {"height", 1}, {"format", "R8G8B8A8_UNORM"},
-                     {"format_class", 42}};
-        Json pass{{"name", "p"},
-                  {"type", "fullscreen"},
-                  {"output", {{"color", Json::array({Json{{"target", "swapchain"}}})}, {"depth", nullptr}}}};
-        Json graph{{"name", "g"},
-                   {"render_targets", display_first ? Json::array({display, numeric})
-                                                    : Json::array({numeric, display})},
-                   {"passes", Json::array({pass})}};
-        return Json{{"rendering_passes", Json::array({graph})}};
-    };
-    CHECK(run(pair(true)).stage.empty());
-    const auto swapped = run(pair(false));
-    CHECK(swapped.code == "render_graph.image_invalid@1");
-    CHECK(swapped.refusal.find("\"resource\":\"t\"") != std::string::npos);
 }
 
 namespace {
@@ -961,12 +987,15 @@ TEST_CASE("RC-3c1b refusals: what a revision must pass, parseRenderGraph refuses
         {"a render target named swapchain", [](Json &c) { c["render_targets"][0]["name"] = "swapchain"; }, "render_graph.image_invalid@1", "reason", "reserved"},
         {"a render target without extent_scale", [](Json &c) { c["render_targets"][0].erase("extent_scale"); }, "render_graph.image_invalid@1", "resource", "color"},
         {"two render targets share a name", [](Json &c) { c["render_targets"][1]["name"] = "color"; }, "render_graph.image_invalid@1", "reason", "duplicate"},
-        {"a graph image whose format_class is not a string",
+        {"a graph's own render_targets",
          [](Json &c) {
              c["rendering_passes"][0]["render_targets"] = Json::array(
                  {{{"name", "t"}, {"width", 1}, {"height", 1}, {"format", "R8G8B8A8_UNORM"}, {"format_class", 42}}});
          },
-         "render_graph.image_invalid@1", "resource", "t"},
+         "render_graph.graph_declaration_unsupported@1", "graph", "main"},
+        {"a graph's own buffers",
+         [](Json &c) { c["rendering_passes"][0]["buffers"] = Json::array({{{"name", "local"}}}); },
+         "render_graph.graph_declaration_unsupported@1", "field", "buffers"},
         {"a buffer named swapchain", [](Json &c) { c["buffers"][0]["name"] = "swapchain"; }, "render_graph.buffer_invalid@1", "resource", "swapchain"},
         {"a snapshot copy of a format outside the copy contract",
          [](Json &c) {
@@ -1209,7 +1238,8 @@ namespace {
 // the compute task parser.
 std::string executionRefusal(const Json &config) {
     try {
-        const auto definitions = parseRenderTargetDefinitionsFromJson(config);
+        const auto definitions = Pelican::test_support::renderTargetDefinitionsOf(
+            Json{{"render_targets", config.value("render_targets", Json::array())}});
         std::unordered_map<std::string, GlobalRenderTargetId> ids;
         for (std::size_t index = 0; index < definitions.size(); ++index) {
             ids.emplace(definitions[index].name, GlobalRenderTargetId{static_cast<int>(index)});

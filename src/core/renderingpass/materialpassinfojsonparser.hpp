@@ -10,6 +10,7 @@
 namespace Pelican {
 
 struct FrameGraphBufferDefinition;
+struct RenderGraphIR;
 class RenderTargetMetadataResolver;
 class RenderTargetNameResolver;
 
@@ -22,8 +23,12 @@ std::optional<GpuDrawSourceDeclaration>
 parseGpuDrawSourceFromJson(
     const nlohmann::json &pass_json,
     std::string_view context);
+// RC-3c2a: every material pass's gpu_draw_source of the IR held to the
+// buffers it names (as the generation's resource description sized them):
+// the command and count layouts, the ranges inside the buffers, the
+// segments' host source.
 void validateGpuDrawSourceBufferContracts(
-    const nlohmann::json &config_json,
+    const RenderGraphIR &render_graph,
     std::span<const FrameGraphBufferDefinition>
         buffer_definitions);
 

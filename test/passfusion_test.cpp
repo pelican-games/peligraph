@@ -1,3 +1,4 @@
+#include "registered_render_targets_test_support.hpp"
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
 #include "../src/core/renderingpass/renderingsamplecount.hpp"
@@ -131,7 +132,7 @@ struct FusionInput {
 // a resource's materialization, not the graph).
 FusionInput fusionInput(const Json &composed) {
     FusionInput input;
-    input.targets = parseRenderTargetDefinitionsFromJson(composed);
+    input.targets = Pelican::test_support::renderTargetDefinitionsOf(composed);
     input.definitions = TestSupport::frameGraphsOf(composed);
     input.graphs = TestSupport::logicalGraphsOf(composed);
     REQUIRE(input.graphs.size() == input.definitions.size());

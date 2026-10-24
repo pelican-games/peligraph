@@ -12,6 +12,7 @@
 #include "../src/project/imageusage.hpp"
 #include "../src/project/targetrenderplanning.hpp"
 #include "../src/project/vulkancompletephysicalplan.hpp"
+#include "registered_render_targets_test_support.hpp"
 #include "render_graph_ir_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -118,10 +119,10 @@ TEST_CASE("RC-3a1 a render target declaration accepts and refuses the formats an
                                                        {"extent_scale", 1.0},
                                                        {"usage", {"COLOR_ATTACHMENT"}}}})}};
     };
-    CHECK(parseRenderTargetDefinitionsFromJson(declared("B10G11R11_UFLOAT_PACK32")).front().format ==
+    CHECK(Pelican::test_support::renderTargetDefinitionsOf(declared("B10G11R11_UFLOAT_PACK32")).front().format ==
           ImageFormat::b10g11r11_ufloat_pack32);
-    CHECK_THROWS_WITH(parseRenderTargetDefinitionsFromJson(declared("D32_SFLOAT_S8_UINT")),
-                      "Unknown format: D32_SFLOAT_S8_UINT");
+    CHECK_THROWS_WITH(Pelican::test_support::renderTargetDefinitionsOf(declared("D32_SFLOAT_S8_UINT")),
+                      R"(render_graph.image_invalid@1 {"field":"format","reason":"unknown","resource":"t"})");
 
     // v0 wrote ejected physical plans in Vulkan's spelling; one reader moves
     // them to the author's.
@@ -194,7 +195,7 @@ ConsumedImage consumed(const RenderTargetDefinition &definition) {
         ResolvedResourceExtent{1920, 1080});
     return ConsumedImage{
         .format = toVulkanFormat(definition.format),
-        .usage = toVulkanImageUsage(registeredRenderTargetUsage(definition)),
+        .usage = toVulkanImageUsage(definition.usage),
         .extent = toVulkanExtent(extent),
         .numeric = materialPassFormatNumericClass(definition.format),
         .resolve = colorAttachmentResolveMode(definition.format),
@@ -221,7 +222,7 @@ const VulkanPhysicalResourcePlan &planned(const VulkanTargetPlan &plan, std::str
 TEST_CASE("RC-3a1 the loader, the planner and registration consume the declared image vocabulary",
           "[rc3a1][image-vocabulary][target-planning]") {
     const auto config = vocabularyConfig();
-    const auto targets = parseRenderTargetDefinitionsFromJson(config);
+    const auto targets = Pelican::test_support::renderTargetDefinitionsOf(config);
     const auto graphs = TestSupport::renderGraphOf(config);
     const auto facts = RenderingTargetPlanDeviceFacts{
         .query_image_format_capability =
@@ -254,8 +255,7 @@ TEST_CASE("RC-3a1 the loader, the planner and registration consume the declared 
     CHECK(dumped("trail") == "R16G16_SFLOAT");
 
     SECTION("without a format selection") {
-        auto applied = targets;
-        applyRenderingTargetPlan(applied, automatic);
+        const auto applied = test_support::plannedRenderTargets(graphs, automatic);
         const auto ids = consumed(named(applied, "ids"));
         CHECK(ids.format == vk::Format::eR8Uint);
         CHECK(ids.usage == (vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled));
@@ -298,8 +298,7 @@ TEST_CASE("RC-3a1 the loader, the planner and registration consume the declared 
             graphs, targets, compileSampleCountPolicy(config), vk::Format::eB8G8R8A8Srgb, facts,
             std::nullopt, std::nullopt, {}, {}, fragments);
         CHECK(planned(*linked.plans.front(), "lit").format == ImageFormat::r8g8b8a8_unorm);
-        auto applied = targets;
-        applyRenderingTargetPlan(applied, linked);
+        const auto applied = test_support::plannedRenderTargets(graphs, linked);
         const auto lit = consumed(named(applied, "lit"));
         CHECK(lit.format == vk::Format::eR8G8B8A8Unorm);
         CHECK(lit.usage == (vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled));

@@ -1,3 +1,4 @@
+#include "registered_render_targets_test_support.hpp"
 #include "../src/core/appflow/enginetime.hpp"
 #include "../src/core/animation/animationservice.hpp"
 #include "../src/core/ecs/predefined/animationsystem.hpp"
@@ -1185,7 +1186,7 @@ TEST_CASE("curve samples publish to a runtime float render buffer", "[runtime-re
     auto &vkcore = GET_MODULE(VulkanManageCore);
     const auto declaration = nlohmann::json::parse(R"({"buffers":[
         {"name":"curve_values","size":8,"host_source":"runtime_f32"}]})");
-    resources.registerBuffers(parseFrameGraphBufferDefinitionsFromJson(declaration));
+    resources.registerBuffers(Pelican::test_support::bufferDefinitionsOf(declaration));
     resources.uploadRuntimeValues();
     const auto read = [&] {
         const auto bytes = vkcore.readBuf(resources.buffer("curve_values"), 8);
@@ -1221,7 +1222,7 @@ TEST_CASE("curve samples publish to a runtime float render buffer", "[runtime-re
     REQUIRE(read() == values);
     auto invalid = declaration;
     invalid["buffers"][0]["size"] = 6;
-    REQUIRE_THROWS(parseFrameGraphBufferDefinitionsFromJson(invalid));
+    REQUIRE_THROWS(Pelican::test_support::bufferDefinitionsOf(invalid));
     vkcore.waitIdle();
 }
 
@@ -1232,7 +1233,7 @@ TEST_CASE("common graph public ports reach a render buffer", "[skeletal][graph-c
     TestSupport::requireVulkanDevice("Vulkan unavailable");
     auto &resources = GET_MODULE(FrameGraphResourceContainer);
     auto &vkcore = GET_MODULE(VulkanManageCore);
-    resources.registerBuffers(parseFrameGraphBufferDefinitionsFromJson(nlohmann::json::parse(
+    resources.registerBuffers(Pelican::test_support::bufferDefinitionsOf(nlohmann::json::parse(
         R"({"buffers":[{"name":"scoped_value","size":4,"host_source":"runtime_f32"}]})")));
     const ValueGraph::Graph graph{graphCompositionFixture};
     const ValueGraph::Graph restored{graph.serialize()};
@@ -1266,7 +1267,7 @@ void main() { pelican_store_destination(0, pelican_load_source(0) * 3.0 + 1.0); 
     const ValueGraph::Graph graph{authored.serialize()};
     const auto config = composeRenderFeatureConfig(nlohmann::json::parse(graph.serialize())).config;
     auto &resources = GET_MODULE(FrameGraphResourceContainer);
-    resources.registerBuffers(parseFrameGraphBufferDefinitionsFromJson(config));
+    resources.registerBuffers(Pelican::test_support::bufferDefinitionsOf(config));
     auto &tasks = GET_MODULE(ComputeTaskContainer);
     const auto definitions = parseComputeTaskDefinitionsFromConfigJson(config);
     REQUIRE(definitions.size() == 1);

@@ -840,11 +840,11 @@ TEST_CASE(
                        FrameGraphBufferId::Hash>
         definition_indices;
     for (std::size_t index = 0;
-         index < variant.buffer_definitions.size(); ++index) {
+         index < variant.render_graph->buffers.size(); ++index) {
         const auto id =
             FrameGraphBufferId{static_cast<int>(index + 10)};
         execution.buffer_bindings.emplace(
-            variant.buffer_definitions[index].name, id);
+            variant.render_graph->buffers[index].name, id);
         definition_indices.emplace(id, index);
     }
 
@@ -915,7 +915,7 @@ TEST_CASE(
         },
         [&](FrameGraphBufferId id)
             -> const FrameGraphBufferDefinition & {
-            return variant.buffer_definitions.at(
+            return variant.render_graph->buffers.at(
                 definition_indices.at(id));
         });
     REQUIRE(material_pass.materialInfo().gpu_draw_source);

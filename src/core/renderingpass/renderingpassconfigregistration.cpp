@@ -14,7 +14,9 @@
 #endif
 #include "../shader/raygrouplayout.hpp"
 #include "computetask.hpp"
+#include "computetaskdefinitionjson.hpp"
 #include "../../project/framegraphbufferdefinition.hpp"
+#include "../../project/generationresources.hpp"
 #include "../../project/renderpipeline.hpp"
 #include "../../project/vulkanviewplanning.hpp"
 #include "framegraphruntime.hpp"
@@ -353,126 +355,6 @@ std::vector<CompiledComputeTask> compileComputeTasks(
     return compiled;
 }
 
-void mergeVariantRenderTargetPhysicalRequirements(
-    std::span<RenderCompilerProgramVariantOutput>
-        variants) {
-    struct Requirements {
-        std::uint32_t maximum_layers = 1;
-        ImageUsage usage;
-        std::optional<ImageFormat> format;
-        std::optional<ImageMipLevelCount>
-            mip_levels;
-        std::optional<ImageResourceDimension>
-            dimension;
-        std::optional<RenderTargetStorageMode>
-            storage_mode;
-        std::optional<std::string> alias_group;
-        bool alias_group_initialized = false;
-        bool alias_group_compatible = true;
-    };
-    std::unordered_map<std::string, Requirements>
-        requirements;
-    for (const auto &variant : variants) {
-        const auto &physical =
-            requireVulkanRenderCompilerPhysicalPackage(
-                *variant.physical_package);
-        for (const auto &target :
-             physical.render_target_definitions) {
-            auto &merged =
-                requirements[target.name];
-            merged.maximum_layers = std::max(
-                merged.maximum_layers,
-                target.array_layers);
-            merged.usage |= target.usage;
-            if (!merged.mip_levels) {
-                merged.mip_levels =
-                    target.mip_levels;
-            } else if (*merged.mip_levels !=
-                       target.mip_levels) {
-                throw std::runtime_error(
-                    "render graph variants require conflicting "
-                    "mip-level contracts for target '" +
-                    target.name + "'");
-            }
-            if (!merged.dimension) {
-                merged.dimension =
-                    target.dimension;
-            } else if (*merged.dimension !=
-                       target.dimension) {
-                throw std::runtime_error(
-                    "render graph variants require conflicting "
-                    "image dimensions for target '" +
-                    target.name + "'");
-            }
-            if (!merged.format) {
-                merged.format = target.format;
-            } else if (*merged.format !=
-                       target.format) {
-                throw std::runtime_error(
-                    "render graph variants require conflicting "
-                    "physical formats for target '" +
-                    target.name + "'");
-            }
-            if (!merged.storage_mode) {
-                merged.storage_mode =
-                    target.storage_mode;
-            } else if (
-                *merged.storage_mode !=
-                target.storage_mode) {
-                // Variant images share one allocation. Materialized storage
-                // is the safe superset when (for example) flat rendering
-                // chooses a transient depth attachment while XR requires the
-                // same depth image as an external transfer source.
-                merged.storage_mode =
-                    RenderTargetStorageMode::
-                        materialized;
-            }
-            if (!merged.alias_group_initialized) {
-                merged.alias_group =
-                    target.alias_group;
-                merged.alias_group_initialized =
-                    true;
-            } else if (
-                merged.alias_group !=
-                target.alias_group) {
-                // An alias relationship is valid only when every variant
-                // publishes the same relationship. Falling back to distinct
-                // materialized allocations is always safe.
-                merged.alias_group_compatible =
-                    false;
-                merged.alias_group.reset();
-                merged.storage_mode =
-                    RenderTargetStorageMode::
-                        materialized;
-            }
-        }
-    }
-    for (auto &variant : variants) {
-        auto &physical =
-            requireVulkanRenderCompilerPhysicalPackage(
-                *variant.physical_package);
-        for (auto &target :
-             physical.render_target_definitions) {
-            const auto &merged =
-                requirements.at(target.name);
-            target.array_layers =
-                merged.maximum_layers;
-            target.usage = merged.usage;
-            target.mip_levels =
-                *merged.mip_levels;
-            target.dimension =
-                *merged.dimension;
-            target.format = *merged.format;
-            target.storage_mode =
-                *merged.storage_mode;
-            target.alias_group =
-                merged.alias_group_compatible
-                    ? merged.alias_group
-                    : std::nullopt;
-        }
-    }
-}
-
 // LC-1: the element and count of every pass and compute task a graph.loop
 // expanded, by name: its loop_origin's element, and the number of elements
 // the loop expanded (get_frame_plan's loops[].count).
@@ -496,6 +378,9 @@ std::unordered_map<std::string, PassLoopIndex> loopIndicesOf(
 std::vector<RenderPipelineProgramPreparation>
 registerPreparedRenderingPassConfigVariant(
     RenderCompilerProgramVariantOutput &prepared,
+    const GenerationResources &resources,
+    const std::vector<RenderTargetDefinition> &render_targets,
+    const std::vector<FrameGraphBufferDefinition> &buffers,
     vk::Extent2D base_extent,
     RenderingPassConfigRegistrationDependencies &dependencies,
     RenderPipelineGpuRegistrationArena &gpu_arena,
@@ -512,8 +397,10 @@ registerPreparedRenderingPassConfigVariant(
         dependencies.options
             .prepare_additional_gpu_resources();
     }
+    // RC-3c2a: the GPU registration takes the generation's resource
+    // description (renderTargetDefinitionOf, the buffers as it sized them).
     registerRenderTargetDefinitions(
-        physical.render_target_definitions,
+        render_targets,
         base_extent,
         dependencies.render_targets.render_target_container);
     injectGpuRegistrationFault(
@@ -521,7 +408,7 @@ registerPreparedRenderingPassConfigVariant(
         RenderPipelineGpuRegistrationFaultPoint::
             after_render_targets);
     dependencies.frame_graph_resources.registerBuffers(
-        prepared.buffer_definitions);
+        buffers);
     injectGpuRegistrationFault(
         dependencies.options,
         RenderPipelineGpuRegistrationFaultPoint::
@@ -533,14 +420,26 @@ registerPreparedRenderingPassConfigVariant(
         dependencies.render_targets.render_target_container};
     const RenderTargetImageViewResolver rt_views{
         dependencies.render_targets.render_target_container};
+    // RC-3c2a: the pass's resource checks (usage, extent, samples, the
+    // material attachments, a snapshot's ends, a screen input's type) read
+    // the generation's resource description; a target the engine registered
+    // beside it (the XR mirror) is read from the registry.
+    const RenderTargetMetadataResolver resource_metadata{
+        [&resources, &dependencies](GlobalRenderTargetId id) {
+            const auto &container =
+                dependencies.render_targets.render_target_container;
+            if (const auto *image = resources.findImage(
+                    container.getRenderTargetName(id))) {
+                return renderTargetMetadataOf(*image);
+            }
+            return container.getMetadata(id);
+        }};
     auto pass_definitions =
         parseRenderingPassDefinitionsFromConfigJson(
-            // The normalized JSON is no longer needed after the CPU phase,
-            // but pass parsing depends on the concrete target metadata
-            // registered above. Reconstruct it from the compiled definitions
-            // is intentionally avoided; retain it in the prepared variant.
+            // The pass parse (RC-3c2b moves it to the IR) still reads the
+            // normalized JSON; the target IDs are the registry's.
             prepared.normalized_config,
-            rt_resolver, rt_metadata, prepared.buffer_names);
+            rt_resolver, resource_metadata, prepared.buffer_names);
     for (auto &definition : pass_definitions) {
         const auto target_plan =
             physical.target_plans.find(definition.name);
@@ -854,6 +753,13 @@ class RegistrationStages {
     std::vector<RenderCompilerProgramVariantOutput>
         prepared_variants;
     std::optional<PreviewGraphProgram> prepared_preview;
+    // RC-3c2a: the generation's resource description, and each variant's
+    // images and buffers as its GPU registration takes them.
+    GenerationResources generation_resources;
+    std::vector<std::vector<RenderTargetDefinition>>
+        variant_render_targets;
+    std::vector<std::vector<FrameGraphBufferDefinition>>
+        variant_buffers;
 
     // allocate
     std::optional<std::scoped_lock<std::mutex>>
@@ -1173,24 +1079,70 @@ void RegistrationStages::prepare() {
             if (dependencies[index].options.publish_enabled_features) feature_publisher = index;
         validateUiSinks(*value_graph, prepared_variants[feature_publisher].compiled_pipeline->feature_names);
     }
-    // Flat and XR variants may share logical target names. Allocate the union
-    // of image usage plus the maximum layer count before the first mutable
-    // registration so later variants reuse a safe physical superset without
-    // expanding live resources inside the transaction.
-    mergeVariantRenderTargetPhysicalRequirements(
-        prepared_variants);
-    // EN-2: every variant's declaration of a file image shares its pixels.
-    for (auto &variant : prepared_variants) {
-        auto &physical =
-            requireVulkanRenderCompilerPhysicalPackage(
-                *variant.physical_package);
-        for (auto &target :
-             physical.render_target_definitions) {
+    // RC-3c2a: flat and XR share logical target names and one allocation
+    // per name. The generation's resource description merges the variants
+    // (usage union, the largest layer count, alias groups that stand in
+    // every variant, one declaration per buffer) and sizes the buffers,
+    // before the first mutable registration, so the later variants reuse a
+    // safe physical superset without expanding live resources inside the
+    // transaction. The preview (no physical package) is not part of it.
+    {
+        std::vector<GenerationResourceVariant> resource_variants;
+        resource_variants.reserve(prepared_variants.size());
+        for (const auto &variant : prepared_variants) {
+            if (variant.render_graph == nullptr) {
+                throw std::runtime_error(
+                    "Render compiler runtime variant has no render graph");
+            }
+            resource_variants.push_back(GenerationResourceVariant{
+                .name = std::string{renderPipelineGraphVariantName(
+                    variant.graph_variant)},
+                .render_graph = variant.render_graph.get(),
+                .placements =
+                    requireVulkanRenderCompilerPhysicalPackage(
+                        *variant.physical_package)
+                        .image_placements,
+                .runtime_layered_images = runtimeLayeredImagesOf(
+                    *variant.compiled_pipeline),
+            });
+        }
+        generation_resources = resolveGenerationResources(
+            resource_variants,
+            ResolvedResourceExtent{base_extent.width,
+                                   base_extent.height});
+        if (dependencies.front().options.observe_generation_resources) {
+            dependencies.front().options.observe_generation_resources(
+                generation_resources);
+        }
+    }
+    // The resource checks of the compute tasks and the GPU draws, on the
+    // buffers as the description sized them; then each variant's images and
+    // buffers for its GPU registration. EN-2: every variant's declaration of
+    // a file image shares its pixels.
+    for (std::size_t index = 0; index < prepared_variants.size(); ++index) {
+        const auto &variant = prepared_variants[index];
+        const auto &resources = generation_resources.variants[index];
+        std::vector<FrameGraphBufferDefinition> buffers;
+        buffers.reserve(resources.buffers.size());
+        for (const auto buffer : resources.buffers)
+            buffers.push_back(generation_resources.buffers[buffer]);
+        validateComputeTaskBufferContracts(
+            buffers, variant.compute_task_definitions);
+        validateGpuDrawSourceBufferContracts(
+            *variant.render_graph, buffers);
+        std::vector<RenderTargetDefinition> targets;
+        targets.reserve(resources.images.size());
+        for (const auto image : resources.images) {
+            auto target = renderTargetDefinitionOf(
+                generation_resources.images[image]);
             if (target.source) {
                 target.source_pixels =
                     image_sources->pixels(*target.source);
             }
+            targets.push_back(std::move(target));
         }
+        variant_render_targets.push_back(std::move(targets));
+        variant_buffers.push_back(std::move(buffers));
     }
 }
 
@@ -1318,7 +1270,9 @@ void RegistrationStages::registerVariants() {
          index < dependencies.size(); ++index) {
         auto variant_programs =
             registerPreparedRenderingPassConfigVariant(
-                prepared_variants[index], base_extent,
+                prepared_variants[index], generation_resources,
+                variant_render_targets[index], variant_buffers[index],
+                base_extent,
                 dependencies[index], *gpu_arena,
                 pass_implementation_providers,
                 native_scope_providers,

@@ -192,12 +192,6 @@ FrameGraphNodeDefinition nodeDefinitionOf(const NodeIR &node) {
     return result;
 }
 
-const ImageResource *findConfigImage(const RenderGraphIR &ir, std::string_view name) {
-    const auto found = std::find_if(ir.images.begin(), ir.images.end(),
-                                    [&](const auto &image) { return image.name == name; });
-    return found == ir.images.end() ? nullptr : &*found;
-}
-
 bool nodeAttachmentsMatchExtent(const FrameGraphNodeDefinition &node, const ImageResource &local,
                                 const RenderGraphIR &ir) {
     if (node.attachments.empty()) return false;
@@ -331,12 +325,16 @@ const GraphIR *findGraph(const RenderGraphIR &ir, std::string_view name) {
     return found == ir.graphs.end() ? nullptr : &*found;
 }
 
-const ImageResource *findImage(const RenderGraphIR &ir, const GraphIR &graph,
-                               std::string_view name) {
-    const auto local = std::find_if(graph.images.begin(), graph.images.end(),
+const ImageResource *findConfigImage(const RenderGraphIR &ir, std::string_view name) {
+    const auto found = std::find_if(ir.images.begin(), ir.images.end(),
                                     [&](const auto &image) { return image.name == name; });
-    if (local != graph.images.end()) return &*local;
-    return findConfigImage(ir, name);
+    return found == ir.images.end() ? nullptr : &*found;
+}
+
+const BufferResource *findConfigBuffer(const RenderGraphIR &ir, std::string_view name) {
+    const auto found = std::find_if(ir.buffers.begin(), ir.buffers.end(),
+                                    [&](const auto &buffer) { return buffer.name == name; });
+    return found == ir.buffers.end() ? nullptr : &*found;
 }
 
 bool isLocalReadShaderInput(const NodeIR &node, const ResourceUse &use) {
@@ -357,11 +355,6 @@ bool isLocalReadShaderInput(const NodeIR &node, const ResourceUse &use) {
 FrameGraphDefinition frameGraphDefinitionOf(const RenderGraphIR &ir, const GraphIR &graph) {
     FrameGraphDefinition result;
     result.name = graph.name;
-    for (const auto &image : graph.images) appendUnique(result.declared_resources, image.name);
-    for (const auto &image : graph.images) {
-        if (image.history) appendUnique(result.history_resources, image.name);
-    }
-    for (const auto &buffer : graph.buffers) appendUnique(result.declared_resources, buffer.name);
     for (const auto &image : ir.images) appendUnique(result.declared_resources, image.name);
     for (const auto &image : ir.images) {
         if (image.history) appendUnique(result.history_resources, image.name);

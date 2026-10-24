@@ -5,6 +5,7 @@
 #include "renderingpassvalidation.hpp"
 #include "rendertargetmetadataresolver.hpp"
 #include "rendertargetnameresolver.hpp"
+#include "../../project/generationresources.hpp"
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
@@ -50,9 +51,11 @@ std::vector<PassDefinition> parsePassSequenceFromJson(const nlohmann::json &pass
             }
             const auto source_meta = rt_metadata.get(source);
             const auto destination_meta = rt_metadata.get(destination);
-            if (!(source_meta.usage & ImageUsageBit::transfer_src) ||
-                !(destination_meta.usage & ImageUsageBit::transfer_dst) ||
-                !(destination_meta.usage & ImageUsageBit::sampled)) {
+            // RC-3c2a: the use's usage (requiredImageUsage), as the graph
+            // lowering completes a graph image's declaration with it.
+            if (!source_meta.usage.contains(requiredImageUsage(ImageUseRequirement::copy_source)) ||
+                !destination_meta.usage.contains(
+                    requiredImageUsage(ImageUseRequirement::copy_destination))) {
                 throw std::runtime_error("Snapshot copy usage mismatch: " + pass_name);
             }
             if (source_meta.format != destination_meta.format ||

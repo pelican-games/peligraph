@@ -1,3 +1,4 @@
+#include "registered_render_targets_test_support.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 #include "../src/core/registrationownerhost.hpp"
 #include "../src/core/renderingpass/renderingsamplecount.hpp"
@@ -344,7 +345,7 @@ TEST_CASE(
 
     const auto target =
         compileRenderingTargetPlans(
-            ir, parseRenderTargetDefinitionsFromJson(resolved.config),
+            ir, Pelican::test_support::renderTargetDefinitionsOf(resolved.config),
             SampleCountPolicy{}, vk::Format::eB8G8R8A8Srgb,
             RenderingTargetPlanDeviceFacts{
                 .query_attachment_samples =

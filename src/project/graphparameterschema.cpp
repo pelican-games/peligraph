@@ -480,7 +480,7 @@ Table makeTable() {
                                                               "multiple of 4).")});
 
     // Buffers and attributes: the graph's own keys (renderPorts, the
-    // partition) and the buffer JSON's (parseFrameGraphBufferDefinitionsFromJson).
+    // partition) and the buffer declaration's (parseRenderGraph's buffers).
     add(table, "render.buffer", true,
         {bufferElement(),
          integer("size").range(0.0, std::nullopt).describe("The size in bytes."),
@@ -510,7 +510,7 @@ Table makeTable() {
              .describe("A model's data the engine fills the attribute with (excludes count and host_source)."),
          indexBuffer(), hostSource(), commandLayout(), initialF32(), bufferViewFamily(), bufferLifetime()});
 
-    // Images (renderPorts, IA-1, PS-1 and parseRenderTargetDefinitionsFromJson).
+    // Images (renderPorts, IA-1, PS-1 and parseRenderGraph's render_targets).
     // Incomplete: other readers of a render target are not traced here.
     add(table, "render.image", false,
         {imageType().required(),

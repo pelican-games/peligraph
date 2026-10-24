@@ -54,6 +54,14 @@ RenderGraphIR withImagesOf(RenderGraphIR ir, std::span<const RenderTargetDefinit
     return ir;
 }
 
+// RC-3c2a: `targets` as one variant's GPU registration takes them from
+// `compilation` (imagePlacementsOf, then the generation's resource
+// description over the IR of these declarations).
+void applyPlan(std::vector<RenderTargetDefinition> &targets,
+               const RenderingTargetPlanCompilation &compilation) {
+    targets = test_support::plannedRenderTargets(withImagesOf(RenderGraphIR{}, targets), compilation);
+}
+
 RenderTargetDefinition target(
     std::string name, ImageFormat format,
     ImageUsage usage =
@@ -681,7 +689,7 @@ TEST_CASE(
         TestSupport::renderGraphOf(
             config);
     const auto targets =
-        parseRenderTargetDefinitionsFromJson(
+        Pelican::test_support::renderTargetDefinitionsOf(
             config);
     bool queried_cube = false;
     const auto compilation =
@@ -722,7 +730,7 @@ TEST_CASE(
         ImageMipLevelMode::full_chain);
 
     auto applied = targets;
-    applyRenderingTargetPlan(
+    applyPlan(
         applied, compilation);
     REQUIRE(applied.size() == 1);
     REQUIRE(
@@ -793,7 +801,7 @@ TEST_CASE(
             transient_attachment);
 
     auto applied_targets = targets;
-    applyRenderingTargetPlan(
+    applyPlan(
         applied_targets, transient);
     REQUIRE(
         applied_targets.front().storage_mode ==
@@ -911,7 +919,7 @@ TEST_CASE(
         TestSupport::renderGraphOf(
             config);
     const auto targets =
-        parseRenderTargetDefinitionsFromJson(
+        Pelican::test_support::renderTargetDefinitionsOf(
             config);
 
     const auto local =
@@ -953,7 +961,7 @@ TEST_CASE(
             dont_care);
 
     auto applied = targets;
-    applyRenderingTargetPlan(applied, local);
+    applyPlan(applied, local);
     const auto gbuffer = std::find_if(
         applied.begin(), applied.end(),
         [](const auto &target) {
@@ -1004,7 +1012,7 @@ TEST_CASE(
                 TestSupport::renderGraphOf(
                     config);
             const auto targets =
-                parseRenderTargetDefinitionsFromJson(
+                Pelican::test_support::renderTargetDefinitionsOf(
                     config);
             return compileRenderingTargetPlans(
                 withImagesOf(graphs, targets), targets, samples,
@@ -1089,7 +1097,7 @@ TEST_CASE(
         TestSupport::renderGraphOf(
             config);
     const auto targets =
-        parseRenderTargetDefinitionsFromJson(
+        Pelican::test_support::renderTargetDefinitionsOf(
             config);
     auto device_facts = localReadDeviceFacts();
     device_facts.multiview = true;
@@ -1155,7 +1163,7 @@ TEST_CASE(
             .array_layers == 2);
 
     auto applied = targets;
-    applyRenderingTargetPlan(applied, compilation);
+    applyPlan(applied, compilation);
     const auto target = std::find_if(
         applied.begin(), applied.end(),
         [](const auto &candidate) {
@@ -1194,7 +1202,7 @@ TEST_CASE(
         TestSupport::renderGraphOf(
             config);
     const auto targets =
-        parseRenderTargetDefinitionsFromJson(
+        Pelican::test_support::renderTargetDefinitionsOf(
             config);
     const auto compilation =
         compileRenderingTargetPlans(
@@ -1221,7 +1229,7 @@ TEST_CASE(
             materialized_image);
 
     auto applied = targets;
-    applyRenderingTargetPlan(
+    applyPlan(
         applied, compilation);
     const auto gbuffer = std::find_if(
         applied.begin(), applied.end(),
@@ -1332,7 +1340,7 @@ TEST_CASE("rendering target bridge applies a verified alternate physical format"
             }));
 
     auto applied_targets = targets;
-    applyRenderingTargetPlan(
+    applyPlan(
         applied_targets, linked);
     const auto applied_lit = std::find_if(
         applied_targets.begin(),
@@ -1693,12 +1701,12 @@ TEST_CASE(
         duplicate_group.alias_group_assignments.front());
     auto duplicate_targets = targets;
     REQUIRE_THROWS_WITH(
-        applyRenderingTargetPlan(
+        applyPlan(
             duplicate_targets, duplicate_group),
         Catch::Matchers::ContainsSubstring(
             "duplicate physical alias group assignment id"));
 
-    applyRenderingTargetPlan(targets, compilation);
+    applyPlan(targets, compilation);
     REQUIRE(targets[0].alias_group.has_value());
     REQUIRE(targets[1].alias_group ==
             targets[0].alias_group);
@@ -1879,7 +1887,7 @@ TEST_CASE(
 
     // Registration allocates what the runtime kept: three images of their
     // own (64x64 R8G8B8A8, 16,384 bytes each), not two.
-    applyRenderingTargetPlan(targets, compilation);
+    applyPlan(targets, compilation);
     const auto registered =
         test_support::registerRenderTargetsWithoutDevice(
             targets, {64, 64});
@@ -2108,7 +2116,7 @@ TEST_CASE("runtime target adapter carries multiview device facts and typed view 
     REQUIRE(plan.external_depth_export->array_layers == 2);
 
     auto materialized_targets = targets;
-    applyRenderingTargetPlan(materialized_targets, compilation);
+    applyPlan(materialized_targets, compilation);
     const auto lit = std::find_if(
         materialized_targets.begin(), materialized_targets.end(),
         [](const auto &candidate) {
@@ -2163,7 +2171,7 @@ TEST_CASE("runtime depth export stays disabled when the device format cannot be 
         compilation.plans.front()
             ->external_depth_export);
     auto materialized_targets = targets;
-    applyRenderingTargetPlan(
+    applyPlan(
         materialized_targets, compilation);
     const auto depth = std::find_if(
         materialized_targets.begin(),
@@ -2226,7 +2234,7 @@ TEST_CASE(
           "arbitrary read requires a materialized resource");
 
     // The JSON form: lifetime is persistent or transient, nothing else.
-    const auto parsed = parseRenderTargetDefinitionsFromJson(nlohmann::json{
+    const auto parsed = Pelican::test_support::renderTargetDefinitionsOf(nlohmann::json{
         {"render_targets",
          nlohmann::json::array(
              {{{"name", "kept"}, {"format", "R8G8B8A8_UNORM"}, {"extent_scale", 1.0},
@@ -2240,12 +2248,12 @@ TEST_CASE(
     CHECK_FALSE(parsed[1].persistent);
     CHECK_FALSE(parsed[2].persistent);
     CHECK_THROWS_WITH(
-        parseRenderTargetDefinitionsFromJson(nlohmann::json{
+        Pelican::test_support::renderTargetDefinitionsOf(nlohmann::json{
             {"render_targets",
              nlohmann::json::array(
                  {{{"name", "kept"}, {"format", "R8G8B8A8_UNORM"}, {"extent_scale", 1.0},
                    {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}, {"lifetime", "forever"}}})}}),
-        Catch::Matchers::ContainsSubstring("lifetime must be persistent or transient"));
+        Catch::Matchers::ContainsSubstring(R"(render_graph.image_invalid@1 {"field":"lifetime","reason":"not_persistent_or_transient","resource":"kept"})"));
 }
 
 // PS-1: a frame that skips a once node records nothing for it, so target
@@ -2266,7 +2274,7 @@ TEST_CASE(
         for (const auto &node : graphs.front().nodes)
             CHECK(node.once == (once && node.name == "lighting"));
         return compileRenderingTargetPlans(
-            render_graph, parseRenderTargetDefinitionsFromJson(config),
+            render_graph, Pelican::test_support::renderTargetDefinitionsOf(config),
             SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             localReadDeviceFacts());

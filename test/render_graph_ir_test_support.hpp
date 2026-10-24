@@ -24,15 +24,36 @@
 namespace Pelican::TestSupport {
 
 // The single-graph form as the normal form: the config becomes the one graph
-// of rendering_passes (its declarations the graph's own, as the planner read
-// them). A config with rendering_passes, or neither passes nor compute
-// tasks, is returned as it is.
+// of rendering_passes, its render_targets and buffers the config's (RC-3c2a:
+// a graph declares none of its own). A planning fixture's image that only
+// names itself (what the planner read of a graph's own image: the name and
+// `history`) is completed as a sampled color image: extent_scale 1,
+// R8G8B8A8_UNORM, COLOR_ATTACHMENT + SAMPLED. A config with
+// rendering_passes, or neither passes nor compute tasks, is returned as it
+// is.
 inline nlohmann::json wrapSingleGraph(const nlohmann::json &config) {
     if (config.contains("rendering_passes") ||
         !(config.contains("passes") || config.contains("compute_tasks"))) {
         return config;
     }
-    return nlohmann::json{{"rendering_passes", nlohmann::json::array({config})}};
+    auto graph = config;
+    nlohmann::json result = nlohmann::json::object();
+    for (const auto *key : {"render_targets", "buffers"}) {
+        if (const auto found = graph.find(key); found != graph.end()) {
+            result[key] = std::move(*found);
+            graph.erase(key);
+        }
+    }
+    if (result.contains("render_targets") && result.at("render_targets").is_array()) {
+        for (auto &image : result.at("render_targets")) {
+            if (!image.is_object()) continue;
+            if (!image.contains("extent_scale")) image["extent_scale"] = 1.0;
+            if (!image.contains("format") && !image.contains("format_class")) image["format"] = "R8G8B8A8_UNORM";
+            if (!image.contains("usage")) image["usage"] = nlohmann::json::array({"COLOR_ATTACHMENT", "SAMPLED"});
+        }
+    }
+    result["rendering_passes"] = nlohmann::json::array({std::move(graph)});
+    return result;
 }
 
 inline RenderGraphIR renderGraphOf(const nlohmann::json &config) {

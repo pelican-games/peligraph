@@ -66,8 +66,10 @@ class VulkanRenderCompilerBackendContext final
 class VulkanRenderCompilerPhysicalPackage final
     : public RenderCompilerBackendPhysicalPackage {
   public:
-    std::vector<RenderTargetDefinition>
-        render_target_definitions;
+    // RC-3c2a: what the plan placed of each config image of the variant's
+    // IR, in its declaration order (the registration merges the variants'
+    // into the generation's resource description).
+    std::vector<ImagePlacement> image_placements;
     RenderingTargetPlanCompilation
         target_plan_compilation;
     std::unordered_map<

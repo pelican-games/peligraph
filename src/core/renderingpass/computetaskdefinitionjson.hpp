@@ -12,8 +12,6 @@ namespace Pelican {
 
 struct RayTracingProjectConfig;
 
-std::vector<FrameGraphBufferDefinition> parseFrameGraphBufferDefinitionsFromJson(const nlohmann::json &config_json);
-std::unordered_set<std::string> frameGraphBufferNameSet(const std::vector<FrameGraphBufferDefinition> &definitions);
 std::vector<ComputeTaskDefinition> parseComputeTaskDefinitionsFromConfigJson(
     const nlohmann::json &config_json,
     const RayTracingProjectConfig *ray_tracing_project = nullptr);

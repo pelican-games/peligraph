@@ -259,7 +259,8 @@ void publishRuntimeResolution(
 // total is what registration makes of every definition, with the alias
 // groups the runtime keeps.
 void publishMemorySummary(
-    Json &wire, const Pelican::RenderingTargetPlanCompilation &physical,
+    Json &wire, const Pelican::RenderGraphIR &render_graph,
+    const Pelican::RenderingTargetPlanCompilation &physical,
     const std::vector<Pelican::RenderTargetDefinition> &targets,
     Pelican::ResolvedResourceExtent output_extent) {
     const auto &plan = *physical.plans.front();
@@ -279,8 +280,7 @@ void publishMemorySummary(
                                       resource.logical_resource),
                  target != targets.end() && target->history ? 2u : 1u});
         });
-    auto registered_targets = targets;
-    Pelican::applyRenderingTargetPlan(registered_targets, physical);
+    const auto registered_targets = Pelican::test_support::plannedRenderTargets(render_graph, physical, output_extent);
     const auto registered =
         Pelican::test_support::registerRenderTargetsWithoutDevice(
             registered_targets, {output_extent.width, output_extent.height});
@@ -322,7 +322,7 @@ Json resolvedFramePlan(Pelican::ResolvedRenderPipeline resolved,
     if (!publish_physical_plan) {
         return wire;
     }
-    const auto targets = Pelican::parseRenderTargetDefinitionsFromJson(
+    const auto targets = Pelican::test_support::renderTargetDefinitionsOf(
         resolved.normalized_config);
     const auto physical = Pelican::compileRenderingTargetPlans(
         render_graph, targets, compiled.sample_count_policy,
@@ -339,7 +339,7 @@ Json resolvedFramePlan(Pelican::ResolvedRenderPipeline resolved,
     publishRuntimeResolution(
         wire, *physical.plans.front(),
         Pelican::ResolvedResourceExtent{160, 90});
-    publishMemorySummary(wire, physical, targets,
+    publishMemorySummary(wire, render_graph, physical, targets,
                          Pelican::ResolvedResourceExtent{160, 90});
     return wire;
 }
@@ -584,7 +584,7 @@ const Wp348CubeCaptureMeasurement &wp348CubeCaptureMeasurement() {
         addRuntimeShaderContract(wire);
 
         const auto targets =
-            Pelican::parseRenderTargetDefinitionsFromJson(
+            Pelican::test_support::renderTargetDefinitionsOf(
                 resolved.normalized_config);
         const auto physical = Pelican::compileRenderingTargetPlans(
             render_graph, targets, compiled.sample_count_policy,
@@ -1291,7 +1291,7 @@ Json independentOpportunityFramePlan(
         Pelican::TestSupport::renderGraphOf(config);
     const auto graphs = Pelican::TestSupport::frameGraphsOf(render_graph);
     const auto targets =
-        Pelican::parseRenderTargetDefinitionsFromJson(config);
+        Pelican::test_support::renderTargetDefinitionsOf(config);
     const auto compilation = Pelican::compileRenderingTargetPlans(
         render_graph, targets, Pelican::compileSampleCountPolicy(config),
         vk::Format::eB8G8R8A8Unorm,
@@ -1353,7 +1353,7 @@ Json fractionalScaleFramePlan() {
         Pelican::TestSupport::renderGraphOf(config);
     const auto graphs = Pelican::TestSupport::frameGraphsOf(render_graph);
     const auto targets =
-        Pelican::parseRenderTargetDefinitionsFromJson(config);
+        Pelican::test_support::renderTargetDefinitionsOf(config);
     const auto compilation = Pelican::compileRenderingTargetPlans(
         render_graph, targets, Pelican::compileSampleCountPolicy(config),
         vk::Format::eB8G8R8A8Unorm, planningDeviceFacts());

@@ -1,3 +1,4 @@
+#include "registered_render_targets_test_support.hpp"
 #include "../src/project/featurecompose.hpp"
 #include "../src/project/graphpartition.hpp"
 #include "../src/project/rendergraphcomposition.hpp"
@@ -4594,15 +4595,16 @@ TEST_CASE("binding buffer scalars seed the feature's runtime_f32 buffer and refu
     requireError(makeFeature(scalar, authored_initial),
                  "initial_f32 is derived from the scalar, not authored");
 
-    // The frame-graph parser is the second gate: an initial_f32 that does not
-    // fill the declared buffer is refused there, by name.
+    // The IR's buffer parse is the second gate: an initial_f32 that does not
+    // fill the declared buffer is refused there, by name (RC-3c2a: by code).
     auto mismatched = defaults.config;
     for (auto &entry : mismatched.at("buffers")) {
         if (entry.value("name", std::string{}) != "scalar_buffer.level") continue;
         entry["initial_f32"] = nlohmann::json::array({1.0, 2.0});
     }
-    REQUIRE_THROWS_WITH(parseFrameGraphBufferDefinitionsFromJson(mismatched),
-        Catch::Matchers::ContainsSubstring("one float per declared byte quad"));
+    REQUIRE_THROWS_WITH(Pelican::test_support::bufferDefinitionsOf(mismatched),
+        Catch::Matchers::ContainsSubstring(
+            R"(render_graph.buffer_invalid@1 {"field":"initial_f32","reason":"count_mismatch","resource":"scalar_buffer.level"})"));
 }
 
 // EB-1: a frame graph buffer entry names only the keys the buffer parser
@@ -4777,7 +4779,7 @@ TEST_CASE("common graph buffer ports lower into native compute declarations", "[
     const auto resolved = resolveRenderPipeline(RenderPipelineRequest{document}, {});
     REQUIRE(document == original);
     const auto &config = resolved.normalized_config;
-    const auto buffers = parseFrameGraphBufferDefinitionsFromJson(config);
+    const auto buffers = Pelican::test_support::bufferDefinitionsOf(config);
     const auto tasks = parseComputeTaskDefinitionsFromConfigJson(config);
     REQUIRE(buffers.size() == 2);
     REQUIRE(tasks.size() == 3);

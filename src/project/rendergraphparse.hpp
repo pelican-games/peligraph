@@ -12,9 +12,10 @@ namespace Pelican {
 // (normalizeRenderingJson, RC-3b): a config with `rendering_passes[]` -- the
 // composed config the compiler plans, or a `pelican.graph` root, whose
 // `rendering` section is read. It reads the keys the planning parse it
-// replaced (RC-3c1b removed it from core) and the render target parser
-// (parseRenderTargetDefinitionsFromJson) read, accepts what they accepted and
-// refuses what they refused. It also refuses, ahead of the execution parsers
+// replaced (RC-3c1b removed it from core) and the render target and buffer
+// parsers (RC-3c2a removed them from core: it is the one read of the image
+// and buffer declarations) read, accepts what they accepted and refuses what
+// they refused. It also refuses, ahead of the execution parsers
 // that refused them before (§2.3 and what the IR's info carries): a material
 // resource reading a cube view or an explicit subresource same_pixel, an
 // unknown compute schedule, a malformed compute ray_query /
@@ -38,8 +39,19 @@ namespace Pelican {
 //   render_graph.attachment_invalid@1     {graph, node, field, reason, target?, value?}
 //   render_graph.resource_reference_invalid@1 {graph, node, field, resource}
 //   render_graph.footprint_invalid@1      {graph, node, field, resource, reason}
-//   render_graph.image_invalid@1          {graph?, resource?, field, reason}
-//   render_graph.buffer_invalid@1         {graph?, resource?, reason}
+//   render_graph.image_invalid@1          {resource?, field, reason}
+//   render_graph.buffer_invalid@1         {resource?, field?, reason}  RC-3c2a:
+//                                                  the whole declaration
+//                                                  (size, size_from_extent of
+//                                                  a config image, host
+//                                                  source, command layout,
+//                                                  initial_f32, view family,
+//                                                  lifetime) and a declared
+//                                                  size's contract
+//                                                  (requireBufferSizeContract)
+//   render_graph.graph_declaration_unsupported@1 {graph, field}  a graph's
+//                                                  own render_targets or
+//                                                  buffers
 //   render_graph.snapshot_size_unavailable@1 {graph, node, resource}
 //   render_graph.frame_node_order_invalid@1 {graph?, node?, reason}
 //   render_graph.compute_task_invalid@1   {node, field, reason}

@@ -471,9 +471,10 @@ compileDefaultVulkanVariant(
     }
 
     auto render_graph = std::move(logical.render_graph);
+    // RC-3c2a: the config's images as the IR read them (an image whose format
+    // class is unresolved is refused by name).
     auto render_target_definitions =
-        parseRenderTargetDefinitionsFromJson(
-            logical.composed_config);
+        renderTargetDefinitionsOf(render_graph);
     {
         // The authored names, before the compute tasks are namespaced, so
         // a refusal names the authored pass or task.
@@ -525,23 +526,15 @@ compileDefaultVulkanVariant(
         },
         logical.compiled_pipeline.target_planning);
 
-    auto buffer_definitions =
-        parseFrameGraphBufferDefinitionsFromJson(
-            logical.composed_config);
-    auto buffer_names =
-        frameGraphBufferNameSet(buffer_definitions);
+    // RC-3c2a: the buffers are the IR's; their capacity is checked once the
+    // generation's resource description has sized them (the registration).
+    std::unordered_set<std::string> buffer_names;
+    for (const auto &buffer : render_graph.buffers)
+        buffer_names.insert(buffer.name);
     auto compute_task_definitions =
         parseComputeTaskDefinitionsFromConfigJson(
             logical.composed_config,
             input.ray_tracing_project.get());
-    validateComputeTaskBufferContracts(
-        buffer_definitions,
-        compute_task_definitions);
-    // RC-3c2: the buffer declarations are not in the IR yet, so the GPU draw
-    // sources are held to them from the JSON.
-    validateGpuDrawSourceBufferContracts(
-        logical.composed_config,
-        buffer_definitions);
     detail::namespaceComputeTaskDefinitions(
         compute_task_definitions,
         logical.composed_config,
@@ -612,14 +605,12 @@ compileDefaultVulkanVariant(
         verification.enabled_device_extensions =
             backend.enabled_device_extensions;
     }
-    applyRenderingTargetPlan(
+    physical->image_placements = imagePlacementsOf(
         render_target_definitions,
         physical->target_plan_compilation);
     physical->target_plans =
         targetPlansByName(
             physical->target_plan_compilation);
-    physical->render_target_definitions =
-        std::move(render_target_definitions);
 
     return RenderCompilerProgramVariantOutput{
         .graph_variant = request.graph_variant,
@@ -628,8 +619,6 @@ compileDefaultVulkanVariant(
         .ray_tracing_project = input.ray_tracing_project,
         .normalized_config =
             std::move(logical.composed_config),
-        .buffer_definitions =
-            std::move(buffer_definitions),
         .buffer_names =
             std::move(buffer_names),
         .compute_task_definitions =
@@ -886,10 +875,10 @@ void validateVulkanPhysicalPackage(
         }
     }
     std::unordered_set<std::string> target_names;
-    for (const auto &definition :
-         physical.render_target_definitions) {
-        if (definition.name.empty() ||
-            !target_names.insert(definition.name).second) {
+    for (const auto &placement :
+         physical.image_placements) {
+        if (placement.resource.empty() ||
+            !target_names.insert(placement.resource).second) {
             throw std::runtime_error(
                 "Render compiler program produced a "
                 "duplicate or unnamed Vulkan render "

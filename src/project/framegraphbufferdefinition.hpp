@@ -1,5 +1,7 @@
 #pragma once
 
+#include "resourceextent.hpp"
+
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -50,6 +52,11 @@ inline constexpr std::uint64_t
         sizeof(std::uint32_t) * 8;
 inline constexpr std::uint64_t
     frameGraphIndirectCommandAlignment = 4;
+// A compute or ray dispatch command: three 32-bit words (core checks
+// VkDispatchIndirectCommand and VkTraceRaysIndirectCommandKHR).
+inline constexpr std::uint64_t
+    frameGraphDispatchCommandBytes =
+        sizeof(std::uint32_t) * 3;
 
 struct FrameGraphBufferExtentSizeDefinition {
     std::string resource;
@@ -67,6 +74,11 @@ struct FrameGraphBufferExtentSizeDefinition {
         default;
 };
 
+// RC-3c2a: a buffer declaration as parseRenderGraph reads it (the IR's
+// BufferResource is this type) and, with its size resolved, as the
+// generation's resource description and the GPU registration take it. A
+// `size_from_extent` buffer (extent_size) has size 0 until
+// resolveGenerationResources sizes it from its image's resolved extent.
 struct FrameGraphBufferDefinition {
     std::string name;
     std::uint64_t size = 0;
@@ -84,7 +96,26 @@ struct FrameGraphBufferDefinition {
     // the behavior every buffer had before feature parameters could seed one.
     // A `render.scalar` write replaces it from the next frame onwards.
     std::vector<float> initial_f32;
+
+    bool operator==(const FrameGraphBufferDefinition &) const = default;
 };
+
+// RC-3c2a: the bytes of a size_from_extent buffer for its image's resolved
+// extent: the header plus one payload per tile, `copies` times. Refuses
+// render_graph.buffer_invalid@1 {resource, field: size_from_extent, reason:
+// overflow} past uint64.
+std::uint64_t extentDerivedBufferBytes(
+    const FrameGraphBufferDefinition &buffer,
+    ResolvedResourceExtent image_extent);
+
+// RC-3c2a: what a buffer's size must satisfy for its declaration (an index
+// buffer of whole uint32s, runtime_f32 of whole floats and its initial_f32 of
+// one float each, view-family matrices of whole uvec4s, a host source of a
+// non-zero size, each command layout's command, the scene host sources'
+// records). parseRenderGraph checks a declared size; resolveGenerationResources
+// a size from an extent. Refuses render_graph.buffer_invalid@1 {resource,
+// field: size, reason}.
+void requireBufferSizeContract(const FrameGraphBufferDefinition &buffer);
 
 // A compute task's indirect dispatch: the buffer holding the command and the
 // command's byte offset in it.

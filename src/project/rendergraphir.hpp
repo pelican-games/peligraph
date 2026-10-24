@@ -1,6 +1,7 @@
 #pragma once
 
 #include "attachmentoperations.hpp"
+#include "framegraphbufferdefinition.hpp"
 #include "frameplan.hpp"
 #include "gpudrawsource.hpp"
 #include "imageformat.hpp"
@@ -238,11 +239,12 @@ struct NodeIR {
     bool operator==(const NodeIR &) const = default;
 };
 
-// A render target. RenderGraphIR::images (the config's render_targets, the
-// images registration makes) carry the whole declaration, read as the render
-// target parser reads it. GraphIR::images (a graph's own render_targets) are
-// planning declarations, as the planner always read them: the name,
-// `history`, and what a snapshot copy sizes; nothing registers them.
+// A render target: the config's render_targets, the images registration
+// makes, with their whole declaration. RC-3c2a: the one read of a render
+// target declaration (core makes its RenderTargetDefinition from this,
+// renderTargetDefinitionOf; the GPU registration from the generation's
+// resource description, generationresources.hpp). A fixed extent keeps no
+// extent_scale (it sizes nothing).
 struct ImageResource {
     std::string name;
     std::string format_class;
@@ -277,25 +279,20 @@ struct ImageResource {
     bool operator==(const ImageResource &) const = default;
 };
 
-// A buffer declaration. RC-3c1a reads the name (all planning uses); the size,
-// layout, host source and view family arrive with RC-3c2.
-struct BufferResource {
-    std::string name;
+// A buffer declaration: the config's buffers, with their whole declaration
+// (RC-3c2a: the one read of it; the execution's FrameGraphBufferDefinition is
+// this type). A size_from_extent buffer has size 0 here: the generation's
+// resource description sizes it (resolveGenerationResources).
+using BufferResource = FrameGraphBufferDefinition;
 
-    bool operator==(const BufferResource &) const = default;
-};
-
+// RC-3c2a: a graph declares no render_targets or buffers of its own (nothing
+// composes them; parseRenderGraph refuses them,
+// render_graph.graph_declaration_unsupported@1). Every resource is the
+// config's.
 struct GraphIR {
     std::string name;
-    // The graph's own declarations; a name is looked up here first, then in
-    // RenderGraphIR (the order the planner always used).
-    std::vector<ImageResource> images;
-    std::vector<BufferResource> buffers;
     // Its passes, its own compute tasks, then the config's compute tasks.
     std::vector<NodeIR> nodes;
-    // Some own image declares width, height or extent_scale (a snapshot copy
-    // is then sized from these images).
-    bool images_declare_extent = false;
     // Provenance: what made this graph (the render strategy, the graph
     // transforms, this graph's tagged subgraph replacements). The compiler
     // writes it after the provider chain; a parse leaves it empty, so the
@@ -328,15 +325,14 @@ struct RenderGraphIR {
     // it names may arrive later from a provider, so finalizeRenderGraph
     // resolves it.
     std::vector<std::pair<std::string, std::string>> ray_task_acceleration_structures;
-    bool images_declare_extent = false;
 
     bool operator==(const RenderGraphIR &) const = default;
 };
 
 const GraphIR *findGraph(const RenderGraphIR &ir, std::string_view name);
-// The graph's own declaration of `name`, then the config's; nullptr for none.
-const ImageResource *findImage(const RenderGraphIR &ir, const GraphIR &graph,
-                               std::string_view name);
+// The config's declaration of `name`; nullptr for none.
+const ImageResource *findConfigImage(const RenderGraphIR &ir, std::string_view name);
+const BufferResource *findConfigBuffer(const RenderGraphIR &ir, std::string_view name);
 
 // §2.3: a read the shader ABI takes as a local read candidate (sampled
 // descriptor or input attachment): a fullscreen or raster pass's current

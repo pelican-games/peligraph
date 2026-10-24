@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rendertargetstoragemode.hpp"
+#include "../../project/generationresources.hpp"
 #include "../../project/imageformat.hpp"
 #include "../../project/imagesource.hpp"
 #include "../../project/imagesubresource.hpp"
@@ -75,12 +76,18 @@ struct RenderTargetDefinition {
 vk::ClearColorValue physicalRenderTargetHistoryClearColor(
     const RenderTargetDefinition &definition);
 
-// RC-3a1: the usage registration creates a target's images with: the
-// declared bits, a scope-local attachment's transient (and tile-local input)
-// bits in place of the rest, and the transfer destination a history image is
-// cleared through. registerRenderTarget refuses a definition first.
-ImageUsage registeredRenderTargetUsage(
-    const RenderTargetDefinition &definition);
-// (Defined with RenderTargetContainer, which makes the images.)
+// RC-3c2a: the one way a definition is made, from the IR's declaration of a
+// config image (the physical plan's input: single-sample, materialized,
+// unaliased, the declared usage and layers). A fixed image's extent_scale is
+// 1. Refuses render_graph.image_format_unresolved@1 {resource} for an image
+// whose format_class the runtime package has not resolved.
+RenderTargetDefinition renderTargetDefinitionOf(const ImageResource &image);
+// The config's images, in declaration order.
+std::vector<RenderTargetDefinition> renderTargetDefinitionsOf(const RenderGraphIR &render_graph);
+// ... and of the generation's resource description, as the GPU registration
+// takes it: the merged plan's format, samples, layers, storage and alias
+// group, and the final usage (the engine's bits included: the registration
+// adds none). The file source's pixels are attached by the registration.
+RenderTargetDefinition renderTargetDefinitionOf(const GenerationImage &image);
 
 } // namespace Pelican

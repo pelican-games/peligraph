@@ -35,6 +35,8 @@
 #include "../../project/imageformat.hpp"
 #include "../../project/imageusage.hpp"
 #include "../renderingpass/rendertargetjsonparser.hpp"
+#include "../renderingpass/rendertargetmetadata.hpp"
+#include "../../project/generationresources.hpp"
 #include "../renderingpass/rendertargetmetadataresolver.hpp"
 #include "../renderingpass/rendertargetnameresolver.hpp"
 #include "../shader/raytracingrefusal.hpp"
@@ -684,7 +686,10 @@ std::string managedFragmentBytes(std::string_view id,
 // targets of the composed candidate, so a shape the load would refuse is
 // refused before anything is written, in the parser's own words. Composition
 // alone does not look at attachment formats. The screen extent is nominal:
-// only the ratios between one pass's outputs matter to the parser.
+// only the ratios between one pass's outputs matter to the parser. RC-3c2a:
+// the targets are the candidate's IR, described as a one-variant generation
+// at that extent (resolveGenerationResources: each image as declared, the
+// one extent rule), as the registration describes them.
 void validateAuthoredMaterialPass(const Json &config, const std::string &graph,
                                   const std::string &pass_name, bool hdr) {
     std::optional<Json> pass;
@@ -698,46 +703,30 @@ void validateAuthoredMaterialPass(const Json &config, const std::string &graph,
     if (!pass)
         throw std::runtime_error("the composed candidate has no pass " + pass_name +
                                  " in " + graph);
-    constexpr vk::Extent2D screen{1920, 1080};
-    const auto definitions = parseRenderTargetDefinitionsFromJson(
-        resolveRenderTargetFormatClassesV2(
-            Json{{"resolver_version", 2},
-                 {"render_targets", config.value("render_targets", Json::array())}},
-            vk::Format::eB8G8R8A8Srgb, screen, hdr));
+    constexpr ResolvedResourceExtent screen{1920, 1080};
+    auto resolved = config;
+    if (config.contains("render_targets")) {
+        resolved["render_targets"] =
+            resolveRenderTargetFormatClassesV2(
+                Json{{"resolver_version", 2}, {"render_targets", config.at("render_targets")}},
+                vk::Format::eB8G8R8A8Srgb, vk::Extent2D{screen.width, screen.height}, hdr)
+                .at("render_targets");
+    }
+    const auto render_graph = parseRenderGraph(resolved, buildPassFieldOwnershipCapabilities());
+    const std::array variant{GenerationResourceVariant{.name = "editor", .render_graph = &render_graph}};
+    const auto resources = resolveGenerationResources(variant, screen);
     std::unordered_set<std::string> buffers;
-    for (const auto &buffer : config.value("buffers", Json::array()))
-        if (buffer.is_object() && buffer.contains("name") && buffer.at("name").is_string())
-            buffers.insert(buffer.at("name").get<std::string>());
+    for (const auto &buffer : render_graph.buffers) buffers.insert(buffer.name);
     const RenderTargetNameResolver names{[&](const std::string &name) {
-        for (std::size_t index = 0; index < definitions.size(); ++index)
-            if (definitions[index].name == name)
+        for (std::size_t index = 0; index < resources.images.size(); ++index)
+            if (resources.images[index].declaration.name == name)
                 return GlobalRenderTargetId{static_cast<int>(index)};
         return noRenderTargetId();
     }};
     const RenderTargetMetadataResolver metadata{[&](GlobalRenderTargetId id) {
-        if (id.value < 0 || static_cast<std::size_t>(id.value) >= definitions.size())
+        if (id.value < 0 || static_cast<std::size_t>(id.value) >= resources.images.size())
             throw std::runtime_error("render target metadata requested for an unknown target");
-        const auto &definition = definitions[static_cast<std::size_t>(id.value)];
-        const auto scaled = [&](std::uint32_t size) {
-            return std::max<std::uint32_t>(
-                1, static_cast<std::uint32_t>(size * definition.extent_scale + 0.5f));
-        };
-        const auto extent = definition.fixed_extent.value_or(
-            ResolvedResourceExtent{scaled(screen.width), scaled(screen.height)});
-        return RenderTargetMetadata{
-            .name = definition.name,
-            .usage = definition.usage,
-            .format = definition.format,
-            .extent = extent,
-            .history = definition.history,
-            .samples = definition.samples,
-            .mip_levels = definition.mip_levels.mode == ImageMipLevelMode::full_chain
-                              ? maximumImageMipLevels(extent.width, extent.height)
-                              : definition.mip_levels.count,
-            .array_layers = definition.array_layers,
-            .dimension = definition.dimension,
-            .storage_mode = definition.storage_mode,
-        };
+        return renderTargetMetadataOf(resources.images[static_cast<std::size_t>(id.value)]);
     }};
     (void)parsePassDefinitionFromJson(*pass, names, metadata, buffers);
 }
@@ -5060,9 +5049,7 @@ std::optional<PlanningNames> planningNamesOf(const Json &composed, std::string_v
     const auto *found = findGraph(render_graph, graph);
     if (found == nullptr) return std::nullopt;
     PlanningNames names;
-    // Declared: the graph's own images and buffers, then the config's.
-    for (const auto &image : found->images) names.resources.insert(image.name);
-    for (const auto &buffer : found->buffers) names.resources.insert(buffer.name);
+    // Declared: the config's images and buffers.
     for (const auto &image : render_graph.images) names.resources.insert(image.name);
     for (const auto &buffer : render_graph.buffers) names.resources.insert(buffer.name);
     for (const auto &node : found->nodes) {
@@ -6448,10 +6435,11 @@ OrderedJson RenderConfigEditorService::editRenderTargets(const Json &params) {
         }
     }
 
-    // The declaration's own shape is the parser's to judge, in its words.
+    // The declaration's own shape is the IR's to judge (parseRenderGraph and
+    // the definition it makes, which needs the format), by name.
     try {
-        (void)parseRenderTargetDefinitionsFromJson(
-            Json{{"render_targets", Json(targets)}});
+        (void)renderTargetDefinitionsOf(parseRenderGraph(
+            Json{{"render_targets", Json(targets)}}, buildPassFieldOwnershipCapabilities()));
     } catch (const std::exception &error) {
         return preflightRejection(error,
                                   {{"participant", "pelican.render_targets"},

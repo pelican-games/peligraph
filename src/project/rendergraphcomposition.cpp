@@ -1,5 +1,6 @@
 #include "rendergraphcomposition.hpp"
 #include "featurecompose.hpp"
+#include "generationresources.hpp"
 #include "graphpartition.hpp"
 #include "graphloopexpression.hpp"
 #include "imageformat.hpp"
@@ -742,15 +743,18 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
             // which is then sampled: a render.image either end names gets
             // those usages from the copy, whatever it declared (a pass's own
             // image declares no TRANSFER_SRC; that flag keeps an image out of
-            // aliasing, so only an image that is copied carries it).
+            // aliasing, so only an image that is copied carries it). RC-3c2a:
+            // the bits are the use's (requiredImageUsage), written into the
+            // declaration so the planner and the checks read them as declared.
             if (op == "render.snapshot_copy")
-                for (const auto &[port, usages] :
-                     {std::pair{"source", std::vector<const char *>{"TRANSFER_SRC"}},
-                      std::pair{"destination", std::vector<const char *>{"TRANSFER_DST", "SAMPLED"}}}) {
+                for (const auto &[port, use] :
+                     {std::pair{"source", ImageUseRequirement::copy_source},
+                      std::pair{"destination", ImageUseRequirement::copy_destination}}) {
                     const auto endpoint = node.at("inputs").find(port);
                     if (endpoint == node.at("inputs").end()) continue;
                     if (const auto image = writtenImage(*endpoint))
-                        snapshot_image_usages[*image].insert(usages.begin(), usages.end());
+                        for (auto &name : imageUsageNames(requiredImageUsage(use)))
+                            snapshot_image_usages[*image].insert(std::move(name));
                 }
             landGraphicsPass(id, lowerRenderPassKindNode(node, std::move(parameters), attach, graph_pass), pass_body);
             continue;
@@ -869,11 +873,10 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
                 parameters["extent_scale"] = 1.0;
                 parameters["format"] = lowered_source.at("color_space") == "linear" ? "R8G8B8A8_UNORM"
                                                                                     : "R8G8B8A8_SRGB";
-                parameters["usage"] = Json::array({"SAMPLED", "TRANSFER_DST"});
-                if (lowered_source.at("mips") == "full") {
-                    parameters["mip_levels"] = "full";
-                    parameters["usage"].push_back("TRANSFER_SRC");
-                }
+                const bool mips = lowered_source.at("mips") == "full";
+                parameters["usage"] = imageUsageNames(requiredImageUsage(
+                    mips ? ImageUseRequirement::file_source_mips : ImageUseRequirement::file_source));
+                if (mips) parameters["mip_levels"] = "full";
                 parameters["source"] = lowered_source;
             }
             // IA-1: an image with initial contents is copied into, and its
@@ -885,8 +888,8 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
                 checkRenderImageInitial(id, parameters);
                 auto &usage = parameters["usage"];
                 if (!usage.is_array()) usage = Json::array();
-                if (std::find(usage.begin(), usage.end(), "TRANSFER_DST") == usage.end())
-                    usage.push_back("TRANSFER_DST");
+                for (auto &name : imageUsageNames(requiredImageUsage(ImageUseRequirement::initial_contents)))
+                    if (std::find(usage.begin(), usage.end(), name) == usage.end()) usage.push_back(std::move(name));
                 if (!parameters.contains("extent_scale")) parameters["extent_scale"] = 1.0;
             }
             parameters["name"] = id;
@@ -3213,15 +3216,22 @@ std::vector<GraphTaskReaderWait> waitOnGraphTasksInScenePasses(Json &composed,
                 appendOrder(pass, "after", task_name);
                 added.push_back({family.value("name", std::string{}), pass.at("name").get<std::string>(), task_name});
                 // The pass samples what the task stored: a graph image it
-                // reads as an input needs SAMPLED.
+                // reads as an input needs SAMPLED (requiredImageUsage; the
+                // declaration carries it, so the planner's alias choice and
+                // the pass's usage check read it as declared).
                 if (!graph_images.contains(image) || !RenderJson::namesContain(pass, "input", image)) continue;
+                const auto sampled = imageUsageNames(requiredImageUsage(ImageUseRequirement::shader_input));
                 for (auto &target : composed.at("render_targets"))
                     if (target.is_object() && target.value("name", std::string{}) == image &&
-                        target.contains("usage") && target.at("usage").is_array() &&
-                        std::find(target.at("usage").begin(), target.at("usage").end(), "SAMPLED") ==
-                            target.at("usage").end()) {
-                        target.at("usage").push_back("SAMPLED");
-                        added.back().sampled = image;
+                        target.contains("usage") && target.at("usage").is_array()) {
+                        bool added_bit = false;
+                        for (const auto &name : sampled)
+                            if (std::find(target.at("usage").begin(), target.at("usage").end(), name) ==
+                                target.at("usage").end()) {
+                                target.at("usage").push_back(name);
+                                added_bit = true;
+                            }
+                        if (added_bit) added.back().sampled = image;
                     }
             }
         }

@@ -129,17 +129,22 @@ void validateVariantOutput(
             "must be an object");
     }
 
+    // A runtime artifact names its IR's buffers (a data-only one, none).
     std::unordered_set<std::string>
         expected_buffer_names;
-    for (const auto &definition :
-         variant.buffer_definitions) {
-        if (definition.name.empty() ||
-            !expected_buffer_names
-                 .insert(definition.name)
-                 .second) {
-            throw std::runtime_error(
-                "Render compiler program produced a "
-                "duplicate or unnamed buffer definition");
+    if (request.artifact ==
+            RenderCompilerProgramArtifact::runtime_package &&
+        variant.render_graph != nullptr) {
+        for (const auto &definition :
+             variant.render_graph->buffers) {
+            if (definition.name.empty() ||
+                !expected_buffer_names
+                     .insert(definition.name)
+                     .second) {
+                throw std::runtime_error(
+                    "Render compiler program produced a "
+                    "duplicate or unnamed buffer definition");
+            }
         }
     }
     if (expected_buffer_names !=

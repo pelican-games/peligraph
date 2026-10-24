@@ -3587,6 +3587,8 @@ pelican_define_test(targetplanning_test GROUP project_planning pelican_project)
 pelican_define_test(targetrenderplanning_test GROUP project_planning pelican_project)
 pelican_define_test(samplecountplanning_test GROUP project_planning pelican_project)
 pelican_define_test(graphvariantpolicy_test GROUP project_planning pelican_project)
+# RC-3c2a: the generation's resource description (merge, alias groups, buffers, refusals).
+pelican_define_test(generationresources_test GROUP project_planning pelican_project)
 pelican_define_test(passfieldownership_test GROUP project_planning
   pelican_project pelican_core
   VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
@@ -3636,6 +3638,8 @@ pelican_define_test(rendercompilerprogram_test GROUP render_pipeline pelican_cor
 pelican_define_test(rendercompilerprogram_ir_test GROUP render_pipeline pelican_core)
 # RC-3c1b: the production compiler program and the registration on a device.
 pelican_define_test(rendercompilerprogram_device_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+# RC-3c2a: the generation's resource description through the production registration.
+pelican_define_test(generationresources_device_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_rendercompilerprogram_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )

@@ -5,6 +5,7 @@
 #include "rendertargetmetadataresolver.hpp"
 #include "rendertargetnameresolver.hpp"
 #include "../../project/materialformat.hpp"
+#include "../../project/rendergraphir.hpp"
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
@@ -389,37 +390,20 @@ parseGpuDrawSourceFromJson(
 }
 
 void validateGpuDrawSourceBufferContracts(
-    const nlohmann::json &config_json,
+    const RenderGraphIR &render_graph,
     std::span<const FrameGraphBufferDefinition>
         buffer_definitions) {
-    const auto pass_sets =
-        config_json.find("rendering_passes");
-    if (pass_sets == config_json.end()) return;
-    if (!pass_sets->is_array()) {
-        throw std::runtime_error(
-            "rendering_passes must be an array");
-    }
-    for (const auto &pass_set : *pass_sets) {
-        const auto passes = pass_set.find("passes");
-        if (passes == pass_set.end() ||
-            !passes->is_array()) {
-            continue;
-        }
-        for (const auto &pass : *passes) {
-            if (!pass.is_object() ||
-                !pass.contains("gpu_draw_source")) {
+    for (const auto &graph : render_graph.graphs) {
+        for (const auto &node : graph.nodes) {
+            const auto *material =
+                std::get_if<MaterialNodeInfo>(&node.info);
+            if (material == nullptr ||
+                !material->gpu_draw_source) {
                 continue;
             }
-            validatePassFieldOwnership(
-                pass, buildPassFieldOwnershipCapabilities());
-            const auto name = parseStringField(
-                pass, "name", "material pass");
-            const auto source =
-                parseGpuDrawSourceFromJson(
-                    pass,
-                    "Material pass '" + name + "'");
             validateGpuDrawSourceBufferContract(
-                *source, buffer_definitions, name);
+                *material->gpu_draw_source,
+                buffer_definitions, node.name);
         }
     }
 }

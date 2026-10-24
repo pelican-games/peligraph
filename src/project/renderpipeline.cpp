@@ -65,7 +65,7 @@ void requireOnlyKeys(const nlohmann::json &object,
     }
 }
 
-// EB-1: every key parseFrameGraphBufferDefinitionsFromJson reads. A buffer
+// EB-1: every key parseRenderGraph reads of a buffer. A buffer
 // entry of the composed config -- a rendering section's, a preset's or a
 // feature's buffers[], or a graph's render.buffer / render.attribute node
 // lowered into one -- names no other: graph.buffer_key_unknown@1 {buffer,
@@ -92,7 +92,7 @@ void requireKnownFrameGraphBufferKeys(const nlohmann::json &buffer,
 }
 
 // FO-1: the same for an image: every key a render target entry is read by
-// (parseRenderTargetDefinitionsFromJson and the format resolver, IA-1's
+// (parseRenderGraph and the format resolver, IA-1's
 // `initial`, a feature parameter's binding constraints' `sample_count`). An
 // entry of the composed config's render_targets[] -- a rendering section's, a
 // preset's or a feature's, or a graph's render.image node lowered into one --

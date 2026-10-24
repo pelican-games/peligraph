@@ -1031,22 +1031,12 @@ NodeIR parseComputeTask(const Json &task, std::size_t index, const GraphScope &s
 
 // ---- resources
 
-std::uint64_t sizeValue(const Json &target, const char *key, const Subject &subject,
-                        const std::string &name) {
-    const auto &value = target.at(key);
-    if (!value.is_number()) {
-        refuse("render_graph.image_invalid@1",
-               subject.detail({{"resource", name}, {"field", key}, {"reason", "not_a_number"}}));
-    }
-    return value.get<std::size_t>();
-}
-
-// A snapshot copy's size of each image of one declaration list, as the
-// planner sized it: a fixed extent, or extent_scale of the first display
-// image with a fixed extent; pending (the output's extent) when there is no
-// such image; the 12 formats of the copy contract only.
-void assignSnapshotSizing(const Json &targets, std::vector<ImageResource> &images,
-                          bool &declares_extent, const Subject &subject) {
+// A snapshot copy's size of each config image: a fixed extent, or the first
+// display image with a fixed extent as the base of an output-relative one
+// (by resolveResourceExtent, the one extent rule); pending (the output's
+// extent) when there is no such image; the 12 formats of the copy contract
+// only.
+void assignSnapshotSizing(std::vector<ImageResource> &images) {
     static constexpr std::array copy_formats{
         ImageFormat::r8_unorm,          ImageFormat::r16_sfloat,
         ImageFormat::d16_unorm,         ImageFormat::r8g8b8a8_unorm,
@@ -1055,46 +1045,20 @@ void assignSnapshotSizing(const Json &targets, std::vector<ImageResource> &image
         ImageFormat::r32_sfloat,        ImageFormat::r16g16_sfloat,
         ImageFormat::r16g16b16a16_sfloat, ImageFormat::r32g32b32a32_sfloat,
     };
-    std::optional<std::pair<std::size_t, std::size_t>> base;
-    // The planner's search: the images with a width and a height, in order,
-    // up to the first display one; it read their format_class as a string
-    // and no other image's.
-    for (const auto &target : targets) {
-        if (!target.contains("width") || !target.contains("height")) continue;
-        const auto format_class = target.find("format_class");
-        if (format_class != target.end() && !format_class->is_string()) {
-            refuse("render_graph.image_invalid@1",
-                   subject.detail({{"resource", target.value("name", std::string{})},
-                                   {"field", "format_class"},
-                                   {"reason", "requires_string"}}));
-        }
-        if (format_class != target.end() && *format_class == "display") {
-            const auto name = target.value("name", std::string{});
-            base = {sizeValue(target, "width", subject, name),
-                    sizeValue(target, "height", subject, name)};
+    std::optional<ResolvedResourceExtent> base;
+    for (const auto &image : images) {
+        if (image.extent.kind == ResourceExtentKind::fixed && image.format_class == "display") {
+            base = ResolvedResourceExtent{image.extent.width, image.extent.height};
             break;
         }
     }
-    for (std::size_t index = 0; index < images.size(); ++index) {
-        const auto &target = targets.at(index);
-        auto &image = images[index];
-        declares_extent |= target.contains("width") || target.contains("height") ||
-                           target.contains("extent_scale");
-        std::size_t width = 0;
-        std::size_t height = 0;
-        const auto scale = target.find("extent_scale");
-        const bool numeric_scale = scale != target.end() && scale->is_number();
-        if (target.contains("width") && target.contains("height")) {
-            width = sizeValue(target, "width", subject, image.name);
-            height = sizeValue(target, "height", subject, image.name);
-        } else if (base && numeric_scale) {
-            width = static_cast<std::size_t>(base->first * scale->get<double>());
-            height = static_cast<std::size_t>(base->second * scale->get<double>());
-        } else if (!base && numeric_scale && scale->get<double>() > 0.0) {
+    for (auto &image : images) {
+        if (image.extent.kind != ResourceExtentKind::fixed && !base) {
             image.snapshot_extent_pending = true;
             continue;
         }
-        if (width == 0 || height == 0) continue;
+        const auto extent = resolveResourceExtent(image.extent, base.value_or(ResolvedResourceExtent{}));
+        if (extent.width == 0 || extent.height == 0) continue;
         // A class without its format yet: the copy's bytes wait on the
         // format as they wait on the output's extent (a copy into it is
         // sized, and its format required by name, in the final revision).
@@ -1102,67 +1066,14 @@ void assignSnapshotSizing(const Json &targets, std::vector<ImageResource> &image
             image.snapshot_extent_pending = true;
             continue;
         }
-        const auto format = target.find("format");
-        if (format == target.end() || !format->is_string()) {
-            refuse("render_graph.image_invalid@1",
-                   subject.detail({{"resource", image.name}, {"field", "format"},
-                                   {"reason", "requires_string"}}));
-        }
-        const auto known = findImageFormat(format->get<std::string>());
-        if (!known || std::find(copy_formats.begin(), copy_formats.end(), *known) ==
-                          copy_formats.end()) {
-            continue;
-        }
-        image.snapshot_copy_bytes =
-            width * height * imageFormatEstimatedTexelBytes(*known);
+        if (std::find(copy_formats.begin(), copy_formats.end(), image.format) == copy_formats.end()) continue;
+        image.snapshot_copy_bytes = std::size_t{extent.width} * extent.height *
+                                    imageFormatEstimatedTexelBytes(image.format);
     }
-}
-
-// A graph's own render_targets: what the planner read of them.
-std::vector<ImageResource> parseGraphImages(const Json &graph, bool &declares_extent,
-                                            const Subject &subject) {
-    std::vector<ImageResource> images;
-    const auto found = graph.find("render_targets");
-    if (found == graph.end()) return images;
-    if (!found->is_array()) {
-        refuse("render_graph.section_invalid@1",
-               subject.detail({{"field", "render_targets"}}));
-    }
-    for (const auto &target : *found) {
-        const auto invalid = [&](std::string_view field, std::string_view reason,
-                                 const std::string &name = {}) {
-            Json detail{{"field", std::string{field}}, {"reason", std::string{reason}}};
-            if (!name.empty()) detail["resource"] = name;
-            refuse("render_graph.image_invalid@1", subject.detail(std::move(detail)));
-        };
-        if (!target.is_object()) invalid("render_targets", "not_an_object");
-        const auto name = target.find("name");
-        if (name == target.end() || !name->is_string()) invalid("name", "requires_string");
-        ImageResource image;
-        image.name = name->get<std::string>();
-        try {
-            validateAuthoredRenderResourceName(image.name, "render target");
-        } catch (const std::exception &) {
-            invalid("name", "reserved", image.name);
-        }
-        if (target.contains("history") && !target.at("history").is_boolean()) {
-            invalid("history", "requires_boolean", image.name);
-        }
-        image.history = target.value("history", false);
-        // A format_class of another type is refused where the planner read it
-        // (assignSnapshotSizing's search for the display image).
-        if (const auto format_class = target.find("format_class");
-            format_class != target.end() && format_class->is_string()) {
-            image.format_class = format_class->get<std::string>();
-        }
-        images.push_back(std::move(image));
-    }
-    assignSnapshotSizing(*found, images, declares_extent, subject);
-    return images;
 }
 
 // The config's render_targets: the render target parser's contract.
-std::vector<ImageResource> parseConfigImages(const Json &config, bool &declares_extent) {
+std::vector<ImageResource> parseConfigImages(const Json &config) {
     std::vector<ImageResource> images;
     const auto found = config.find("render_targets");
     if (found == config.end()) return images;
@@ -1346,36 +1257,159 @@ std::vector<ImageResource> parseConfigImages(const Json &config, bool &declares_
         image.initial = target.contains("initial");
         images.push_back(std::move(image));
     }
-    assignSnapshotSizing(*found, images, declares_extent, Subject{});
+    assignSnapshotSizing(images);
     return images;
 }
 
-std::vector<BufferResource> parseBuffers(const Json &holder, const Subject &subject) {
+// The config's buffers: the whole declaration (RC-3c2a; the core buffer
+// parser it replaces read the same keys and refused the same forms). A
+// declared size is held to its contract here; a size from an extent is sized
+// and held to it by the generation's resource description.
+std::vector<BufferResource> parseBuffers(const Json &config, const std::vector<ImageResource> &images) {
     std::vector<BufferResource> buffers;
-    const auto found = holder.find("buffers");
-    if (found == holder.end()) return buffers;
-    if (!found->is_array()) refuse("render_graph.section_invalid@1", subject.detail({{"field", "buffers"}}));
+    const auto found = config.find("buffers");
+    if (found == config.end()) return buffers;
+    if (!found->is_array()) refuse("render_graph.section_invalid@1", {{"field", "buffers"}});
+    std::unordered_set<std::string> names;
     for (std::size_t index = 0; index < found->size(); ++index) {
         const auto &buffer = found->at(index);
         if (buffer.is_string()) {
-            refuse(renderJsonNotNormalizedCode,
-                   {{"path", (subject.graph.empty() ? std::string{} : subject.graph + "/") +
-                                 "buffers/" + std::to_string(index)}});
+            refuse(renderJsonNotNormalizedCode, {{"path", "buffers/" + std::to_string(index)}});
         }
-        if (!buffer.is_object()) {
-            refuse("render_graph.buffer_invalid@1", subject.detail({{"reason", "not_an_object"}}));
-        }
+        if (!buffer.is_object()) refuse("render_graph.buffer_invalid@1", {{"reason", "not_an_object"}});
         const auto name = buffer.find("name");
         if (name == buffer.end() || !name->is_string()) {
-            refuse("render_graph.buffer_invalid@1", subject.detail({{"reason", "requires_name"}}));
+            refuse("render_graph.buffer_invalid@1", {{"reason", "requires_name"}});
         }
-        BufferResource resource{name->get<std::string>()};
+        BufferResource resource{.name = name->get<std::string>()};
+        const auto invalid = [&](std::string_view field, std::string_view reason) {
+            refuse("render_graph.buffer_invalid@1", {{"resource", resource.name},
+                                                     {"field", std::string{field}},
+                                                     {"reason", std::string{reason}}});
+        };
         try {
             validateAuthoredRenderResourceName(resource.name, "buffer");
         } catch (const std::exception &) {
-            refuse("render_graph.buffer_invalid@1",
-                   subject.detail({{"resource", resource.name}, {"reason", "reserved"}}));
+            invalid("name", "reserved");
         }
+        if (!names.insert(resource.name).second) invalid("name", "duplicate");
+        const auto unsigned_value = [&](const Json &holder, const char *key, std::string_view field,
+                                        std::uint64_t maximum) {
+            const auto value = holder.find(key);
+            if (value == holder.end() || !value->is_number_integer() ||
+                (!value->is_number_unsigned() && value->get<std::int64_t>() < 0)) {
+                invalid(field, "requires_unsigned_integer");
+            }
+            const auto wide = value->get<std::uint64_t>();
+            if (wide > maximum) invalid(field, "too_large");
+            return wide;
+        };
+        constexpr auto uint32_max = std::uint64_t{std::numeric_limits<std::uint32_t>::max()};
+        constexpr auto uint64_max = std::numeric_limits<std::uint64_t>::max();
+        const auto string_value = [&](const char *key) {
+            const auto value = buffer.find(key);
+            if (!value->is_string()) invalid(key, "requires_string");
+            return value->get<std::string>();
+        };
+        if (buffer.contains("size") && buffer.contains("size_from_extent")) {
+            invalid("size", "with_size_from_extent");
+        }
+        if (buffer.contains("size")) resource.size = unsigned_value(buffer, "size", "size", uint64_max);
+        if (const auto extent = buffer.find("size_from_extent"); extent != buffer.end()) {
+            if (!extent->is_object()) invalid("size_from_extent", "not_an_object");
+            for (const auto &[key, value] : extent->items()) {
+                (void)value;
+                static constexpr std::array<std::string_view, 6> known{
+                    "resource", "tile_width", "tile_height", "header_bytes", "bytes_per_tile", "copies"};
+                if (std::find(known.begin(), known.end(), key) == known.end()) {
+                    invalid("size_from_extent", "unknown_field");
+                }
+            }
+            const auto image = extent->find("resource");
+            if (image == extent->end() || !image->is_string()) invalid("size_from_extent", "requires_resource");
+            FrameGraphBufferExtentSizeDefinition size{
+                .resource = image->get<std::string>(),
+                .tile_width = static_cast<std::uint32_t>(
+                    unsigned_value(*extent, "tile_width", "size_from_extent", uint32_max)),
+                .tile_height = static_cast<std::uint32_t>(
+                    unsigned_value(*extent, "tile_height", "size_from_extent", uint32_max)),
+                .header_bytes = unsigned_value(*extent, "header_bytes", "size_from_extent", uint64_max),
+                .bytes_per_tile = unsigned_value(*extent, "bytes_per_tile", "size_from_extent", uint64_max),
+                .copies = extent->contains("copies")
+                              ? static_cast<std::uint32_t>(
+                                    unsigned_value(*extent, "copies", "size_from_extent", uint32_max))
+                              : 1u,
+            };
+            if (size.tile_width == 0 || size.tile_height == 0 || size.bytes_per_tile == 0 || size.copies == 0) {
+                invalid("size_from_extent", "not_positive");
+            }
+            // Sized from a config image's resolved extent.
+            if (std::none_of(images.begin(), images.end(),
+                             [&](const ImageResource &candidate) { return candidate.name == size.resource; })) {
+                invalid("size_from_extent", "unknown_image");
+            }
+            resource.extent_size = std::move(size);
+        }
+        if (const auto index_buffer = buffer.find("index_buffer"); index_buffer != buffer.end()) {
+            if (!index_buffer->is_boolean()) invalid("index_buffer", "requires_boolean");
+            resource.index_buffer = index_buffer->get<bool>();
+        }
+        if (buffer.contains("host_source")) {
+            const auto value = string_value("host_source");
+            static constexpr std::array sources{
+                FrameGraphHostBufferSource::scene_lights_v2, FrameGraphHostBufferSource::view_family_matrices_v1,
+                FrameGraphHostBufferSource::scene_draw_commands_v1, FrameGraphHostBufferSource::scene_draw_bounds_v1,
+                FrameGraphHostBufferSource::scene_draw_segments_v1, FrameGraphHostBufferSource::runtime_f32};
+            for (const auto source : sources)
+                if (frameGraphHostBufferSourceName(source) == value) resource.host_source = source;
+            if (!resource.host_source) invalid("host_source", "unknown");
+        }
+        if (buffer.contains("command_layout")) {
+            const auto value = string_value("command_layout");
+            static constexpr std::array layouts{
+                FrameGraphBufferCommandLayout::compute_dispatch, FrameGraphBufferCommandLayout::ray_dispatch,
+                FrameGraphBufferCommandLayout::indexed_draw, FrameGraphBufferCommandLayout::draw_count};
+            for (const auto layout : layouts)
+                if (frameGraphBufferCommandLayoutName(layout) == value) resource.command_layout = layout;
+            if (!resource.command_layout) invalid("command_layout", "unknown");
+        }
+        const auto host = resource.host_source;
+        if (host == FrameGraphHostBufferSource::runtime_f32 && resource.command_layout) {
+            invalid("command_layout", "runtime_f32_is_data");
+        }
+        if (const auto initial = buffer.find("initial_f32"); initial != buffer.end()) {
+            if (!initial->is_array()) invalid("initial_f32", "requires_number_array");
+            for (const auto &value : *initial) {
+                if (!value.is_number()) invalid("initial_f32", "requires_number_array");
+                resource.initial_f32.push_back(value.get<float>());
+            }
+            if (host != FrameGraphHostBufferSource::runtime_f32) invalid("initial_f32", "requires_runtime_f32");
+        }
+        if (host == FrameGraphHostBufferSource::view_family_matrices_v1) {
+            if (!buffer.contains("view_family")) invalid("view_family", "requires_string");
+            resource.host_view_family = string_value("view_family");
+            if (resource.host_view_family.empty()) invalid("view_family", "empty");
+            if (resource.command_layout) invalid("command_layout", "view_family_matrices_is_data");
+        } else if (buffer.contains("view_family")) {
+            invalid("view_family", "requires_view_family_matrices");
+        }
+        if (host == FrameGraphHostBufferSource::scene_draw_commands_v1 &&
+            resource.command_layout != FrameGraphBufferCommandLayout::indexed_draw) {
+            invalid("command_layout", "scene_draw_commands_requires_indexed_draw");
+        }
+        if ((host == FrameGraphHostBufferSource::scene_draw_bounds_v1 ||
+             host == FrameGraphHostBufferSource::scene_draw_segments_v1) &&
+            resource.command_layout) {
+            invalid("command_layout", "scene_draw_records_are_data");
+        }
+        if (buffer.contains("lifetime")) {
+            const auto lifetime = string_value("lifetime");
+            if (lifetime != "persistent" && lifetime != "transient") {
+                invalid("lifetime", "not_persistent_or_transient");
+            }
+            resource.persistent = lifetime == "persistent";
+        }
+        if (!resource.extent_size) requireBufferSizeContract(resource);
         buffers.push_back(std::move(resource));
     }
     return buffers;
@@ -1440,11 +1474,10 @@ const Json &arrayField(const Json &holder, const char *key, const Subject &subje
     return value;
 }
 
-// The planner's snapshot sizes: a graph's own images first (when they declare
-// an extent), then the config's (when they do).
-void assignSnapshotBytes(GraphIR &graph, const std::vector<ImageResource> &images,
-                         bool declares_extent) {
-    if (!declares_extent) return;
+// The planner's snapshot sizes, from the config's images (when there are
+// any).
+void assignSnapshotBytes(GraphIR &graph, const std::vector<ImageResource> &images) {
+    if (images.empty()) return;
     std::unordered_map<std::string, std::size_t> resolved;
     std::unordered_set<std::string> pending;
     for (const auto &image : images) {
@@ -1481,8 +1514,8 @@ RenderGraphIR parseRenderGraph(const nlohmann::json &document,
 
     const auto types = makeBuiltinLogicalTypeRegistry();
     RenderGraphIR ir;
-    ir.images = parseConfigImages(config, ir.images_declare_extent);
-    ir.buffers = parseBuffers(config, Subject{});
+    ir.images = parseConfigImages(config);
+    ir.buffers = parseBuffers(config, ir.images);
     ir.frame_node_order = parseFrameNodeOrder(config);
     ir.ray_task_acceleration_structures = parseRayTaskAccelerationStructures(config);
 
@@ -1540,8 +1573,14 @@ RenderGraphIR parseRenderGraph(const nlohmann::json &document,
         }
         const Subject subject{graph.name, {}};
         const GraphScope scope{graph.name, capabilities, &types};
-        graph.images = parseGraphImages(graph_json, graph.images_declare_extent, subject);
-        graph.buffers = parseBuffers(graph_json, subject);
+        // RC-3c2a: nothing composes a graph's own declarations (a graph
+        // document's images and a loop's copies are the config's), and
+        // nothing would register them.
+        for (const auto *key : {"render_targets", "buffers"}) {
+            if (graph_json.contains(key)) {
+                refuse("render_graph.graph_declaration_unsupported@1", {{"graph", graph.name}, {"field", key}});
+            }
+        }
         std::size_t index = 0;
         if (graph_json.contains("passes")) {
             for (const auto &pass : arrayField(graph_json, "passes", subject)) {
@@ -1554,9 +1593,8 @@ RenderGraphIR parseRenderGraph(const nlohmann::json &document,
                     parseComputeTask(task, index++, scope, NodeDeclarationScope::graph));
             }
         }
-        assignSnapshotBytes(graph, graph.images, graph.images_declare_extent);
         append_shared(graph);
-        assignSnapshotBytes(graph, ir.images, ir.images_declare_extent);
+        assignSnapshotBytes(graph, ir.images);
         ir.graphs.push_back(std::move(graph));
     }
     // A config of compute tasks only plans them as one graph.

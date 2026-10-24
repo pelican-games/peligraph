@@ -43,6 +43,7 @@ target_sources(pelican_core PRIVATE
     renderingpassvalidation.cpp
     subgraphreplacementregistry.cpp
     rendertargetconfigregistration.cpp
+    rendertargetdefinition.cpp
     rendertargetimageviewresolver.cpp
     rendertargetjsonparser.cpp
     rendertargetmetadataresolver.cpp

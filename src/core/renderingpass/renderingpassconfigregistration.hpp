@@ -25,6 +25,7 @@ class ComputeTaskContainer;
 class FullscreenPassContainer;
 class FrameGraphResourceContainer;
 class FrameGraphRuntimeContainer;
+struct GenerationResources;
 struct RendererRuntimeGeneration;
 class PathResolver;
 class PipelineFactory;
@@ -95,6 +96,12 @@ struct RenderingPassConfigRegistrationDependencies {
         // this on the same loaded document used by the catalog decision.
         std::function<void(std::string_view, const nlohmann::json &)>
             validate_render_feature;
+        // RC-3c2a: sees the generation's resource description the resource
+        // checks and the GPU registration of the transaction take, once it
+        // is made (before anything is registered). The transaction calls the
+        // first variant's.
+        std::function<void(const GenerationResources &)>
+            observe_generation_resources;
         // Runs after every program and GPU scope in the transaction has been
         // prepared, but before the single publication CAS.
         std::function<void(const RendererRuntimeGeneration &)>

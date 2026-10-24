@@ -541,28 +541,6 @@ vk::ClearColorValue physicalRenderTargetHistoryClearColor(
     return vk::ClearColorValue{floating};
 }
 
-ImageUsage registeredRenderTargetUsage(
-    const RenderTargetDefinition &definition) {
-    const auto attachment_usage =
-        ImageUsageBit::color_attachment |
-        ImageUsageBit::depth_stencil_attachment;
-    auto usage = definition.usage;
-    switch (definition.storage_mode) {
-    case RenderTargetStorageMode::materialized:
-        break;
-    case RenderTargetStorageMode::transient_attachment:
-        usage |= ImageUsageBit::transient_attachment;
-        break;
-    case RenderTargetStorageMode::tile_local_attachment:
-        usage = (usage & attachment_usage) |
-                ImageUsageBit::input_attachment |
-                ImageUsageBit::transient_attachment;
-        break;
-    }
-    if (definition.history) usage |= ImageUsageBit::transfer_dst;
-    return usage;
-}
-
 GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
     const RenderTargetDefinition &definition,
     vk::Extent2D base_extent,
@@ -579,6 +557,11 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
     const auto extent_scale = definition.extent_scale;
     const auto &fixed_extent = definition.fixed_extent;
     const auto format = definition.format;
+    // RC-3c2a: a definition of the generation's resource description carries
+    // the final usage (engineImageUsage applied); one made directly (the XR
+    // mirror, a test) may carry the declared bits only. The checks below take
+    // either; the registered usage is the engine's rule over it (the same
+    // definition, idempotent on a final usage).
     auto usage = definition.usage;
     const auto history = definition.history;
     const auto samples = definition.samples;
@@ -644,8 +627,8 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
         RenderTargetStorageMode::
             transient_attachment) {
         if (!(usage & attachment_usage) ||
-            bool(usage & ~ImageUsage{
-                              attachment_usage})) {
+            bool(usage & ~(attachment_usage |
+                           ImageUsageBit::transient_attachment))) {
             throw std::runtime_error(
                 "Transient render target may only use color/depth "
                 "attachment usage: " +
@@ -665,7 +648,8 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
             attachment_usage |
             ImageUsageBit::sampled |
             ImageUsageBit::
-                input_attachment;
+                input_attachment |
+            ImageUsageBit::transient_attachment;
         if (!(usage & attachment_usage) ||
             bool(usage & ~ImageUsage{
                               allowed_usage})) {
@@ -696,8 +680,9 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
     if (history && !(usage & ImageUsageBit::color_attachment)) {
         throw std::runtime_error("History render target requires COLOR_ATTACHMENT usage: " + name);
     }
-    // What the checks above allowed, with the engine's own bits added.
-    usage = registeredRenderTargetUsage(definition);
+    usage = engineImageUsage({.declared = usage,
+                              .history = history,
+                              .storage = storage_mode});
     if (alias_group &&
         (history || samples != 1 ||
          storage_mode !=

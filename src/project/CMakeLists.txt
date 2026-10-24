@@ -20,6 +20,7 @@ add_library(pelican_project
     gltfmateriallowering.cpp
     attachmentoperations.cpp
     framegraphbufferdefinition.cpp
+    generationresources.cpp
     imageformat.cpp
     renderresolutiondomain.cpp
     imageusage.cpp

@@ -14,6 +14,7 @@
 #include "../src/project/renderingjsonnormalize.hpp"
 #include "../src/project/targetrenderplanning.hpp"
 #include "../src/project/vulkancompletephysicalplan.hpp"
+#include "registered_render_targets_test_support.hpp"
 #include "render_graph_ir_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -147,17 +148,16 @@ struct Registered {
     std::map<std::string, GlobalRenderTargetId, std::less<>> ids;
 };
 
-Registered registered(const std::vector<RenderTargetDefinition> &declared,
+Registered registered(const RenderGraphIR &render_graph,
                       const RenderingTargetPlanCompilation &compilation) {
     Registered result;
-    result.targets = declared;
-    applyRenderingTargetPlan(result.targets, compilation);
+    result.targets = test_support::plannedRenderTargets(render_graph, compilation);
     for (std::size_t index = 0; index < result.targets.size(); ++index) {
         const auto &definition = result.targets[index];
         result.ids.emplace(definition.name, GlobalRenderTargetId{static_cast<int>(index)});
         result.metadata.push_back(RenderTargetMetadata{
             .name = definition.name,
-            .usage = registeredRenderTargetUsage(definition),
+            .usage = definition.usage,
             .format = definition.format,
             .extent = *definition.fixed_extent,
             .samples = definition.samples,
@@ -231,7 +231,7 @@ TEST_CASE("RC-3a2 the loader, the planner and registration hand the recording th
     const auto config = operationsConfig();
     // The parsers receive the normal form (RC-3b).
     REQUIRE_NOTHROW(requireNormalizedRenderingJson(config));
-    const auto declared = parseRenderTargetDefinitionsFromJson(config);
+    const auto declared = test_support::renderTargetDefinitionsOf(config);
     const auto render_graph = TestSupport::renderGraphOf(config);
     const auto graphs = TestSupport::frameGraphsOf(render_graph);
     const auto facts = deviceFacts();
@@ -247,7 +247,7 @@ TEST_CASE("RC-3a2 the loader, the planner and registration hand the recording th
         auto expected = byPriority();
         // The plan's own change: nothing reads the transient scratch target.
         expected.at("scratch_pass").color.at(0) = ops(VkLoad::eClear, VkStore::eDontCare);
-        CHECK(recorded(config, registered(declared, automatic), &plan) == expected);
+        CHECK(recorded(config, registered(render_graph, automatic), &plan) == expected);
         // The plan's dump spells dont_care as the physical plan does.
         const auto dump = vulkanTargetPlanToJson(plan);
         bool found = false;
@@ -260,7 +260,7 @@ TEST_CASE("RC-3a2 the loader, the planner and registration hand the recording th
     }
 
     SECTION("no physical contract: the pass's own resolution (the execution side's fallback)") {
-        CHECK(recorded(config, registered(declared, automatic), nullptr) == byPriority());
+        CHECK(recorded(config, registered(render_graph, automatic), nullptr) == byPriority());
     }
 
     SECTION("a physical fragment's edit reaches the recording") {
@@ -282,7 +282,7 @@ TEST_CASE("RC-3a2 the loader, the planner and registration hand the recording th
         auto expected = byPriority();
         expected.at("scratch_pass").color.at(0) = ops(VkLoad::eClear, VkStore::eDontCare);
         expected.at("defaults").color.at(0) = ops(VkLoad::eDontCare, VkStore::eStore);
-        CHECK(recorded(config, registered(declared, linked), linked.plans.front().get()) == expected);
+        CHECK(recorded(config, registered(render_graph, linked), linked.plans.front().get()) == expected);
 
         // The wire's spellings are its own: "dont_care" is not one.
         for (auto &entry : document.at("attachments"))

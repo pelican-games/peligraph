@@ -188,8 +188,16 @@ RenderingTargetPlanCompilation compileRenderingTargetPlansForVulkanDevice(
     std::span<const VulkanPhysicalFragmentPackage>
         physical_fragments = {});
 
-void applyRenderingTargetPlan(
-    std::span<RenderTargetDefinition> render_targets,
+// RC-3c2a: what the physical plan placed of each render target (one variant,
+// in `render_targets`' order): its sample count, layers, format, storage and
+// alias group, and whether the plan reads it as a local-read input attachment
+// or exports it as the external depth. Checks each assignment against the
+// definition (an authored format candidate, a transient / tile-local
+// candidate, an alias group of eligible members of one contract). The
+// generation's resource description merges the variants' placements and
+// applies the engine's usage (resolveGenerationResources).
+std::vector<ImagePlacement> imagePlacementsOf(
+    std::span<const RenderTargetDefinition> render_targets,
     const RenderingTargetPlanCompilation &compilation);
 
 // RC-3a1: by the format table's numeric type.

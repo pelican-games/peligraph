@@ -1,3 +1,4 @@
+#include "registered_render_targets_test_support.hpp"
 #include <catch2/generators/catch_generators.hpp>
 #include "../src/core/renderingpass/fullscreenpassinfojsonparser.hpp"
 #include "../src/core/renderingpass/genericrasterpassinfojsonparser.hpp"
@@ -159,7 +160,7 @@ TEST_CASE("render target JSON parser returns target definitions", "[renderingpas
          }})},
     };
 
-    const auto definitions = parseRenderTargetDefinitionsFromJson(config);
+    const auto definitions = Pelican::test_support::renderTargetDefinitionsOf(config);
 
     REQUIRE(definitions.size() == 1);
     REQUIRE(definitions[0].name == "half_color");
@@ -190,10 +191,10 @@ TEST_CASE("render target JSON parser rejects malformed format candidates",
          }})},
     };
     REQUIRE_THROWS_WITH(
-        parseRenderTargetDefinitionsFromJson(
+        Pelican::test_support::renderTargetDefinitionsOf(
             config),
         Catch::Matchers::ContainsSubstring(
-            "format_candidates must be a string array"));
+            R"(render_graph.image_invalid@1 {"field":"format_candidates","reason":"requires_string_array")"));
 }
 
 TEST_CASE("render target JSON parser accepts fixed extents", "[renderingpass]") {
@@ -209,7 +210,7 @@ TEST_CASE("render target JSON parser accepts fixed extents", "[renderingpass]") 
          }})},
     };
 
-    const auto definitions = parseRenderTargetDefinitionsFromJson(config);
+    const auto definitions = Pelican::test_support::renderTargetDefinitionsOf(config);
 
     REQUIRE(definitions.size() == 1);
     REQUIRE(definitions[0].fixed_extent.has_value());
@@ -219,7 +220,7 @@ TEST_CASE("render target JSON parser accepts fixed extents", "[renderingpass]") 
 
 TEST_CASE("render target JSON parser accepts history and its declarative clear",
           "[renderingpass][temporal]") {
-    const auto definitions = parseRenderTargetDefinitionsFromJson(nlohmann::json{
+    const auto definitions = Pelican::test_support::renderTargetDefinitionsOf(nlohmann::json{
         {"render_targets", nlohmann::json::array({{
             {"name", "temporal_accum"}, {"extent_scale", 1.0},
             {"format", "R16G16B16A16_SFLOAT"},
@@ -237,7 +238,7 @@ TEST_CASE(
     "history clear is encoded after integer target format selection",
     "[renderingpass][temporal][typed-clear][wp218]") {
     const auto definitions =
-        parseRenderTargetDefinitionsFromJson(
+        Pelican::test_support::renderTargetDefinitionsOf(
             nlohmann::json{
                 {"render_targets",
                  nlohmann::json::array(
@@ -296,7 +297,7 @@ TEST_CASE("resolver v2 selects B8 SRGB scene/display and float HDR", "[rendering
             "B8G8R8A8_SRGB");
     REQUIRE(resolved.at("render_targets").at(1).at("width").get<uint32_t>() == 64);
     REQUIRE(resolved.at("render_targets").at(1).at("height").get<uint32_t>() == 32);
-    REQUIRE(parseRenderTargetDefinitionsFromJson(resolved).at(0).format ==
+    REQUIRE(Pelican::test_support::renderTargetDefinitionsOf(resolved).at(0).format ==
             ImageFormat::b8g8r8a8_srgb);
     const auto hdr = resolveRenderTargetFormatClassesV2(
         config, vk::Format::eR8G8B8A8Srgb, vk::Extent2D{64, 32}, true);
@@ -425,7 +426,7 @@ TEST_CASE(
     "render target JSON parser keeps mip and array-layer contracts",
     "[renderingpass][subresource][wp209b]") {
     const auto definitions =
-        parseRenderTargetDefinitionsFromJson(
+        Pelican::test_support::renderTargetDefinitionsOf(
             nlohmann::json::parse(R"json({
               "render_targets": [
                 {
@@ -472,24 +473,24 @@ TEST_CASE(
       }]
     })json");
     REQUIRE_THROWS_WITH(
-        parseRenderTargetDefinitionsFromJson(
+        Pelican::test_support::renderTargetDefinitionsOf(
             invalid),
         Catch::Matchers::ContainsSubstring(
-            "mip_levels must be positive"));
+            R"(render_graph.image_invalid@1 {"field":"mip_levels","reason":"not_positive")"));
     invalid["render_targets"][0]["mip_levels"] =
         "automatic";
     REQUIRE_THROWS_WITH(
-        parseRenderTargetDefinitionsFromJson(
+        Pelican::test_support::renderTargetDefinitionsOf(
             invalid),
         Catch::Matchers::ContainsSubstring(
-            "must be 'full'"));
+            R"("field":"mip_levels","reason":"not_full")"));
     invalid["render_targets"][0]["mip_levels"] = 1;
     invalid["render_targets"][0]["layers"] = 0;
     REQUIRE_THROWS_WITH(
-        parseRenderTargetDefinitionsFromJson(
+        Pelican::test_support::renderTargetDefinitionsOf(
             invalid),
         Catch::Matchers::ContainsSubstring(
-            "layers must be positive"));
+            R"("field":"layers","reason":"not_positive")"));
 }
 
 TEST_CASE(
@@ -509,7 +510,7 @@ TEST_CASE(
       }]
     })json");
     const auto definitions =
-        parseRenderTargetDefinitionsFromJson(
+        Pelican::test_support::renderTargetDefinitionsOf(
             document);
     REQUIRE(definitions.size() == 1);
     REQUIRE(
@@ -524,35 +525,35 @@ TEST_CASE(
     invalid["render_targets"][0].erase("width");
     invalid["render_targets"][0].erase("height");
     REQUIRE_THROWS_WITH(
-        parseRenderTargetDefinitionsFromJson(
+        Pelican::test_support::renderTargetDefinitionsOf(
             invalid),
         Catch::Matchers::ContainsSubstring(
-            "fixed square"));
+            R"("field":"dimension","reason":"cube_requires_fixed_extent")"));
 
     invalid = document;
     invalid["render_targets"][0]["height"] = 128;
     REQUIRE_THROWS_WITH(
-        parseRenderTargetDefinitionsFromJson(
+        Pelican::test_support::renderTargetDefinitionsOf(
             invalid),
         Catch::Matchers::ContainsSubstring(
-            "width and height must match"));
+            R"("field":"dimension","reason":"cube_requires_square")"));
 
     invalid = document;
     invalid["render_targets"][0]["layers"] = 5;
     REQUIRE_THROWS_WITH(
-        parseRenderTargetDefinitionsFromJson(
+        Pelican::test_support::renderTargetDefinitionsOf(
             invalid),
         Catch::Matchers::ContainsSubstring(
-            "exactly six layers"));
+            R"("field":"layers","reason":"cube_requires_six")"));
 
     invalid = document;
     invalid["render_targets"][0]["dimension"] =
         "3d";
     REQUIRE_THROWS_WITH(
-        parseRenderTargetDefinitionsFromJson(
+        Pelican::test_support::renderTargetDefinitionsOf(
             invalid),
         Catch::Matchers::ContainsSubstring(
-            "'2d' or 'cube'"));
+            R"("field":"dimension","reason":"not_2d_or_cube")"));
 }
 
 TEST_CASE(
@@ -1517,11 +1518,16 @@ TEST_CASE(
             {
               "name": "display",
               "width": 1280,
-              "height": 720
+              "height": 720,
+              "extent_scale": 1.0,
+              "format": "B8G8R8A8_SRGB",
+              "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
             },
             {
               "name": "lit_color",
-              "extent_scale": 0.5
+              "extent_scale": 0.5,
+              "format": "R16G16B16A16_SFLOAT",
+              "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
             }
           ],
           "buffers": [
@@ -1570,16 +1576,18 @@ TEST_CASE(
         "name":"capture_matrices", "size":400,
         "host_source":"view_family_matrices_v1", "view_family":"$project/capture"
     }]})");
-    const auto matrix_buffers = parseFrameGraphBufferDefinitionsFromJson(matrix_config);
+    const auto matrix_buffers = Pelican::test_support::bufferDefinitionsOf(matrix_config);
     REQUIRE(matrix_buffers.size() == 1);
     CHECK(matrix_buffers[0].host_view_family == "$project/capture");
     CHECK(matrix_buffers[0].host_source == FrameGraphHostBufferSource::view_family_matrices_v1);
     matrix_config["buffers"][0].erase("view_family");
-    CHECK_THROWS(parseFrameGraphBufferDefinitionsFromJson(matrix_config));
+    CHECK_THROWS(Pelican::test_support::bufferDefinitionsOf(matrix_config));
 
+    // RC-3c2a: the selection is sized from lit_color as the generation
+    // resolves it: half of a 1280x720 output.
     const auto buffers =
-        parseFrameGraphBufferDefinitionsFromJson(
-            config);
+        Pelican::test_support::bufferDefinitionsOf(
+            config, {1280, 720});
     REQUIRE(buffers.size() == 2);
     REQUIRE(
         buffers[0].host_source ==
@@ -1618,20 +1626,20 @@ TEST_CASE(
     auto invalid = config;
     invalid["buffers"][1]["size"] = 16;
     REQUIRE_THROWS_WITH(
-        parseFrameGraphBufferDefinitionsFromJson(
+        Pelican::test_support::bufferDefinitionsOf(
             invalid),
         Catch::Matchers::ContainsSubstring(
-            "cannot declare both size and size_from_extent"));
+            R"(render_graph.buffer_invalid@1 {"field":"size","reason":"with_size_from_extent")"));
 
     invalid = config;
     invalid["buffers"][1]
            ["size_from_extent"]["copies"] =
         0;
     REQUIRE_THROWS_WITH(
-        parseFrameGraphBufferDefinitionsFromJson(
+        Pelican::test_support::bufferDefinitionsOf(
             invalid),
         Catch::Matchers::ContainsSubstring(
-            "positive tile dimensions bytes_per_tile, and copies"));
+            R"(render_graph.buffer_invalid@1 {"field":"size_from_extent","reason":"not_positive")"));
 }
 
 TEST_CASE(
@@ -1680,7 +1688,7 @@ TEST_CASE(
             {"closesthit", "shaders/hit"}};
     }
     const auto buffers =
-        parseFrameGraphBufferDefinitionsFromJson(
+        Pelican::test_support::bufferDefinitionsOf(
             config);
     const auto tasks =
         parseComputeTaskDefinitionsFromConfigJson(
@@ -1763,7 +1771,7 @@ TEST_CASE(
     wrong_layout["buffers"][0].erase(
         "command_layout");
     const auto untyped_buffers =
-        parseFrameGraphBufferDefinitionsFromJson(
+        Pelican::test_support::bufferDefinitionsOf(
             wrong_layout);
     REQUIRE_THROWS_WITH(
         validateComputeTaskBufferContracts(
@@ -1866,7 +1874,7 @@ TEST_CASE(
         })json");
 
     const auto buffers =
-        parseFrameGraphBufferDefinitionsFromJson(
+        Pelican::test_support::bufferDefinitionsOf(
             config);
     REQUIRE(
         buffers.at(0).host_source ==
@@ -1891,8 +1899,7 @@ TEST_CASE(
                 *buffers.at(3).command_layout)} ==
         "draw_count");
     REQUIRE_NOTHROW(
-        validateGpuDrawSourceBufferContracts(
-            config, buffers));
+        validateGpuDrawSourceBufferContracts(TestSupport::renderGraphOf(config), buffers));
 
     const auto source =
         parseGpuDrawSourceFromJson(
@@ -1939,11 +1946,10 @@ TEST_CASE(
                 ["command_layout"] =
         "draw_count";
     const auto wrong_layout_buffers =
-        parseFrameGraphBufferDefinitionsFromJson(
+        Pelican::test_support::bufferDefinitionsOf(
             wrong_layout);
     REQUIRE_THROWS_WITH(
-        validateGpuDrawSourceBufferContracts(
-            wrong_layout,
+        validateGpuDrawSourceBufferContracts(TestSupport::renderGraphOf(wrong_layout),
             wrong_layout_buffers),
         Catch::Matchers::ContainsSubstring(
             "requires command_layout 'indexed_draw'"));
@@ -1951,11 +1957,10 @@ TEST_CASE(
     auto too_small = config;
     too_small["buffers"][2]["size"] = 20;
     const auto too_small_buffers =
-        parseFrameGraphBufferDefinitionsFromJson(
+        Pelican::test_support::bufferDefinitionsOf(
             too_small);
     REQUIRE_THROWS_WITH(
-        validateGpuDrawSourceBufferContracts(
-            too_small, too_small_buffers),
+        validateGpuDrawSourceBufferContracts(TestSupport::renderGraphOf(too_small), too_small_buffers),
         Catch::Matchers::ContainsSubstring(
             "command range exceeds"));
 
@@ -1963,29 +1968,28 @@ TEST_CASE(
     unaligned["rendering_passes"][0]["passes"][0]
              ["gpu_draw_source"]["count_offset"] =
         2;
+    // RC-3c2a: the IR's read of the declaration refuses it, before any
+    // buffer is looked at.
     REQUIRE_THROWS_WITH(
-        validateGpuDrawSourceBufferContracts(
-            unaligned, buffers),
+        validateGpuDrawSourceBufferContracts(TestSupport::renderGraphOf(unaligned), buffers),
         Catch::Matchers::ContainsSubstring(
-            "4-byte aligned"));
+            R"("field":"gpu_draw_source","graph":"main","node":"geometry","reason":"offset_unaligned")"));
 
     auto multiple_ranges = config;
     multiple_ranges["rendering_passes"][0]["passes"][0]
                    ["material_range"]["count"] =
         2;
     REQUIRE_THROWS_WITH(
-        validateGpuDrawSourceBufferContracts(
-            multiple_ranges, buffers),
+        validateGpuDrawSourceBufferContracts(TestSupport::renderGraphOf(multiple_ranges), buffers),
         Catch::Matchers::ContainsSubstring(
-            "material_range.count = 1"));
+            "fixed_state_requires_one_material"));
 
     auto wrong_pass = config;
     wrong_pass["rendering_passes"][0]["passes"][0]
               ["type"] =
         "fullscreen";
     REQUIRE_THROWS_WITH(
-        validateGpuDrawSourceBufferContracts(
-            wrong_pass, buffers),
+        validateGpuDrawSourceBufferContracts(TestSupport::renderGraphOf(wrong_pass), buffers),
         Catch::Matchers::ContainsSubstring(
             "does not own field 'material_range'"));
 
@@ -1994,29 +1998,29 @@ TEST_CASE(
                        ["command_layout"] =
         "draw_count";
     REQUIRE_THROWS_WITH(
-        parseFrameGraphBufferDefinitionsFromJson(
+        Pelican::test_support::bufferDefinitionsOf(
             invalid_host_source),
         Catch::Matchers::ContainsSubstring(
-            "scene_draw_commands_v1"));
+            "scene_draw_commands_requires_indexed_draw"));
 
     auto invalid_bounds_size = config;
     invalid_bounds_size["buffers"][1]["size"] =
         40;
     REQUIRE_THROWS_WITH(
-        parseFrameGraphBufferDefinitionsFromJson(
+        Pelican::test_support::bufferDefinitionsOf(
             invalid_bounds_size),
         Catch::Matchers::ContainsSubstring(
-            "scene_draw_bounds_v1"));
+            "scene_draw_bounds_not_whole_records"));
 
     auto invalid_bounds_layout = config;
     invalid_bounds_layout["buffers"][1]
                          ["command_layout"] =
         "indexed_draw";
     REQUIRE_THROWS_WITH(
-        parseFrameGraphBufferDefinitionsFromJson(
+        Pelican::test_support::bufferDefinitionsOf(
             invalid_bounds_layout),
         Catch::Matchers::ContainsSubstring(
-            "must not declare"));
+            "scene_draw_records_are_data"));
 
     auto segmented = config;
     segmented["buffers"].push_back({
@@ -2036,11 +2040,10 @@ TEST_CASE(
     segmented_source["segments"] =
         "draw_segments";
     const auto segmented_buffers =
-        parseFrameGraphBufferDefinitionsFromJson(
+        Pelican::test_support::bufferDefinitionsOf(
             segmented);
     REQUIRE_NOTHROW(
-        validateGpuDrawSourceBufferContracts(
-            segmented,
+        validateGpuDrawSourceBufferContracts(TestSupport::renderGraphOf(segmented),
             segmented_buffers));
     const auto parsed_segmented =
         parseGpuDrawSourceFromJson(
@@ -2063,11 +2066,10 @@ TEST_CASE(
     wrong_segment_source["buffers"].back()
                         .erase("host_source");
     const auto wrong_segment_buffers =
-        parseFrameGraphBufferDefinitionsFromJson(
+        Pelican::test_support::bufferDefinitionsOf(
             wrong_segment_source);
     REQUIRE_THROWS_WITH(
-        validateGpuDrawSourceBufferContracts(
-            wrong_segment_source,
+        validateGpuDrawSourceBufferContracts(TestSupport::renderGraphOf(wrong_segment_source),
             wrong_segment_buffers),
         Catch::Matchers::ContainsSubstring(
             "scene_draw_segments_v1"));
@@ -2076,20 +2078,20 @@ TEST_CASE(
     invalid_segment_size["buffers"].back()
                         ["size"] = 40;
     REQUIRE_THROWS_WITH(
-        parseFrameGraphBufferDefinitionsFromJson(
+        Pelican::test_support::bufferDefinitionsOf(
             invalid_segment_size),
         Catch::Matchers::ContainsSubstring(
-            "scene_draw_segments_v1"));
+            "scene_draw_segments_not_whole_records"));
 
     auto invalid_segment_layout = segmented;
     invalid_segment_layout["buffers"].back()
                           ["command_layout"] =
         "indexed_draw";
     REQUIRE_THROWS_WITH(
-        parseFrameGraphBufferDefinitionsFromJson(
+        Pelican::test_support::bufferDefinitionsOf(
             invalid_segment_layout),
         Catch::Matchers::ContainsSubstring(
-            "must not declare"));
+            "scene_draw_records_are_data"));
 
     auto missing_segments = segmented;
     missing_segments["rendering_passes"][0]
@@ -2804,19 +2806,18 @@ TEST_CASE(
           }]
         })json");
         const auto declaration_rejected = rejectionMessage([&] {
-            (void)parseFrameGraphBufferDefinitionsFromJson(
+            (void)Pelican::test_support::bufferDefinitionsOf(
                 formerly_accepted);
         });
         REQUIRE_FALSE(declaration_rejected.empty());
         REQUIRE_THAT(
             declaration_rejected,
             Catch::Matchers::ContainsSubstring(
-                "Render resource name violation 'reserved_swapchain'") &&
-                Catch::Matchers::ContainsSubstring("buffer"));
+                R"(render_graph.buffer_invalid@1 {"field":"name","reason":"reserved","resource":"swapchain"})"));
 
         const auto render_target_rejected =
             rejectionMessage([&] {
-                (void)parseRenderTargetDefinitionsFromJson(
+                (void)Pelican::test_support::renderTargetDefinitionsOf(
                     nlohmann::json::parse(R"json({
                       "render_targets": [{"name": "swapchain"}]
                     })json"));
@@ -2825,8 +2826,7 @@ TEST_CASE(
         REQUIRE_THAT(
             render_target_rejected,
             Catch::Matchers::ContainsSubstring(
-                "Render resource name violation 'reserved_swapchain'") &&
-                Catch::Matchers::ContainsSubstring("render target"));
+                R"(render_graph.image_invalid@1 {"field":"name","reason":"reserved","resource":"swapchain"})"));
 
         const auto &invalid_pass =
             formerly_accepted.at("rendering_passes")
@@ -2859,14 +2859,14 @@ TEST_CASE(
           }]
         })json");
         const auto buffers =
-            parseFrameGraphBufferDefinitionsFromJson(valid_neighbor);
+            Pelican::test_support::bufferDefinitionsOf(valid_neighbor);
         REQUIRE(buffers.size() == 1);
         REQUIRE(buffers.front().name == "light_buffer");
         const auto resolved = parsePassDefinitionFromJson(
             valid_neighbor.at("rendering_passes")
                 .at(0).at("passes").at(0),
             names, metadata,
-            frameGraphBufferNameSet(buffers));
+            std::unordered_set<std::string>{buffers.front().name});
         REQUIRE(
             resolved.input_buffers ==
             std::vector<std::string>{"light_buffer"});
@@ -4495,7 +4495,7 @@ TEST_CASE("rendering pass JSON helpers reject malformed values", "[renderingpass
                       std::runtime_error);
     REQUIRE_THROWS_AS(parseUint32Field(nlohmann::json{{"count", -1}}, "count", "test"), std::runtime_error);
     REQUIRE_THROWS_AS(jsonToClearColor(nlohmann::json::array({1.0f, 0.0f, 0.0f})), std::runtime_error);
-    REQUIRE_THROWS_AS(parseRenderTargetDefinitionsFromJson(nlohmann::json{{"render_targets", 1}}),
+    REQUIRE_THROWS_AS(Pelican::test_support::renderTargetDefinitionsOf(nlohmann::json{{"render_targets", 1}}),
                       std::runtime_error);
 }
 

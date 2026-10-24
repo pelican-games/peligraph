@@ -1,3 +1,4 @@
+#include "registered_render_targets_test_support.hpp"
 #include "imgui/compiledplanviewer.hpp"
 
 #include "../src/core/renderingpass/frameplanner.hpp"
@@ -92,7 +93,7 @@ nlohmann::json compileIndependentOpportunityPlan(
                         {"depth", nullptr}}}}})}}})},
     };
     const auto graphs = TestSupport::renderGraphOf(config);
-    const auto targets = parseRenderTargetDefinitionsFromJson(config);
+    const auto targets = Pelican::test_support::renderTargetDefinitionsOf(config);
     const auto compilation = compileRenderingTargetPlans(
         graphs, targets, compileSampleCountPolicy(config),
         vk::Format::eB8G8R8A8Unorm, planningDeviceFacts(), std::nullopt,
