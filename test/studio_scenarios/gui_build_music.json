@@ -122,7 +122,7 @@
     {"label": "edit again", "cmd": "wait", "name": "pelican.playStatus", "timeout_ms": 30000, "text": "Edit"},
     {"label": "stopped: the voice is back at 0", "expect": "rpc_equals", "method": "get_graph_node_values", "params": {}, "path": "nodes[0].outputs.voice", "value": 0, "retry_ms": 30000},
     {"label": "UX-9 decision 4: edit -- get_status says the voice is idle", "expect": "rpc_equals", "method": "get_status", "params": {}, "path": "audio.voices[0].state", "value": "idle", "retry_ms": 30000},
-    {"label": "and its band says nothing of it (idle is not shown in edit)", "expect": "result", "command": {"cmd": "text", "name": "pelican.graphCanvasView::graph_layer_band#audio_playback"}, "path": "text", "op": "excludes", "value": "idle", "retry_ms": 10000},
+    {"label": "and its band is gone (idle is not shown in edit; ASF-1 removes a band whose text went empty)", "cmd": "wait", "name": "pelican.graphCanvasView::graph_layer_band#audio_playback", "timeout_ms": 10000, "missing": true},
     {"label": "Play again", "cmd": "click", "name": "pelican.play.play"},
     {"label": "playing", "cmd": "wait", "name": "pelican.playStatus", "timeout_ms": 30000, "contains": "Playing"},
     {"label": "get_status: the voice plays", "expect": "rpc_equals", "method": "get_status", "params": {}, "path": "audio.voices[0].state", "value": "playing", "retry_ms": 30000},
