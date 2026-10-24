@@ -2285,7 +2285,7 @@
     "docs/manual/15_studio.md|../../src/devstudio/view/graphcanvaswidget.cpp|`GraphCanvasScene::lightDropTargets`": "void GraphCanvasScene::lightDropTargets(const QGraphicsItem *origin) {",
     "docs/manual/15_studio.md|../../src/devstudio/view/graphcanvaswidget.cpp|`GraphCanvasScene::mouseDoubleClickEvent`": "void GraphCanvasScene::mouseDoubleClickEvent(QGraphicsSceneMouseEvent *event) {",
     "docs/manual/15_studio.md|../../src/devstudio/view/graphcanvaswidget.cpp|`GraphCanvasScene::passInputSockets`": "std::optional<FramePlanInputSockets> GraphCanvasScene::passInputSockets(",
-    "docs/manual/15_studio.md|../../src/devstudio/view/graphcanvaswidget.cpp|`GraphCanvasScene::placeCompanions`": "void GraphCanvasScene::placeCompanions(const std::string &scope, const std::string &main,",
+    "docs/manual/15_studio.md|../../src/devstudio/view/graphcanvaswidget.cpp|`GraphCanvasScene::placeCompanions`": "placeCompanions(added_scope, added, companions);",
     "docs/manual/15_studio.md|../../src/devstudio/view/graphcanvaswidget.cpp|`GraphCanvasScene::placeNewNode`": "void GraphCanvasScene::placeNewNode(const std::string &scope, const std::string &id,",
     "docs/manual/15_studio.md|../../src/devstudio/view/graphcanvaswidget.cpp|`GraphCanvasScene::refitZoneLive`": "void GraphCanvasScene::refitZoneLive(const std::string &body) {",
     "docs/manual/15_studio.md|../../src/devstudio/view/graphcanvaswidget.cpp|`GraphCanvasScene::scheduleSceneRectUpdate`": "void GraphCanvasScene::scheduleSceneRectUpdate() {",
