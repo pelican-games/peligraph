@@ -7088,19 +7088,34 @@ TEST_CASE("GL-1e the Graph tab sends a pass's input edit, its Undo reaches the r
     };
 
     // Decision 3: an engine before RS-3 runs the graph's pass after present.
+    // RC-3c1b: the refusal as the apply / commit path answers it -- the
+    // planner's code and its fields beside the message.
     drop();
-    const std::string refusal =
-        "Pass input target is not produced as an earlier output: present reads shade__color";
-    answer("get_edit_result", Json{{"status", "rejected"},
-                                   {"committed", false},
-                                   {"error", {{"code", "render_pipeline_preflight_failed"},
-                                              {"message", refusal}}}});
-    CHECK(notice->toolTip() ==
-          QString::fromStdString("render_pipeline_preflight_failed: " + refusal) +
-              QString::fromUtf8(" \xE2\x80\x94 the graph pass that draws it runs after this pass"));
+    const auto refused = [](const std::string &resource) {
+        const Json detail{{"graph", "main_render"}, {"node", "present"}, {"resource", resource}};
+        return Json{{"status", "rejected"},
+                    {"committed", false},
+                    {"error", {{"ticket", "gl1e"},
+                               {"participant", "pelican.render_pipeline"},
+                               {"graph", "main_render"},
+                               {"node", "present"},
+                               {"resource", resource},
+                               {"code", "render_graph.input_not_produced@1"},
+                               {"message", "render_graph.input_not_produced@1 " + detail.dump()}}},
+                    {"ticket", "gl1e"}};
+    };
+    answer("get_edit_result", refused("shade__color"));
+    CHECK(notice->toolTip().startsWith(QStringLiteral("render_graph.input_not_produced@1")));
+    CHECK(notice->toolTip().contains(
+        QString::fromUtf8(" \xE2\x80\x94 the graph pass that draws it runs after this pass")));
     // The sentence is cut to one line; the phrase is not.
     CHECK(notice->text().endsWith(
         QString::fromUtf8(" \xE2\x80\x94 the graph pass that draws it runs after this pass")));
+    // A resource no graph pass writes: no phrase about the graph pass.
+    drop();
+    answer("get_edit_result", refused("nothing"));
+    CHECK(notice->toolTip().startsWith(QStringLiteral("render_graph.input_not_produced@1")));
+    CHECK_FALSE(notice->toolTip().contains(QStringLiteral("runs after this pass")));
 
     // UX-12d, decision 5 (engine FR-3): a feature's target nobody writes is
     // read by its code -- the outputs that could write it, not the phrase
@@ -10648,11 +10663,10 @@ TEST_CASE("UX-5d a refusal names a graph pass's image only when a graph pass wri
     GraphCanvasModel model;
     GraphCanvasScene scene;
     openGl1e(model, scene, {});
-    // gl1ePlan: the graph's `shade` writes shade__color.
-    CHECK(model.graphWritesResourceNamedIn(
-        "Pass input target is not produced as an earlier output: shade__color in pass: present"));
-    CHECK(model.graphWritesResourceNamedIn(
-        "Pass input target is not produced as an earlier output: present reads shade__color."));
+    // gl1ePlan: the graph's `shade` writes shade__color. RC-3c1b: the
+    // refusal's `resource`, not a word of its message.
+    CHECK(model.graphWritesResource("shade__color"));
+    CHECK_FALSE(model.graphWritesResource(""));
     // A feature's task writes the mask; the plan knows no writer of `nothing`.
     auto plan = gl1ePlan({});
     auto task = gl1bPass("rt_mask", 2, "feature:rt_mask", Json::array(), Json::array({"rt_mask"}));
@@ -10671,12 +10685,11 @@ TEST_CASE("UX-5d a refusal names a graph pass's image only when a graph pass wri
                 model.receiveRpcResult(request.request_id, gl1eAuthoring({}).dump());
         }
     REQUIRE(model.planPasses().size() == 3);
-    CHECK_FALSE(model.graphWritesResourceNamedIn(
-        "Pass input target is not produced as an earlier output: rt_mask in pass: present"));
-    CHECK_FALSE(model.graphWritesResourceNamedIn(
-        "Pass input target is not produced as an earlier output: nothing in pass: present"));
+    CHECK_FALSE(model.graphWritesResource("rt_mask"));
+    CHECK_FALSE(model.graphWritesResource("nothing"));
     // present (the rendering section's) writes display: no graph pass either.
-    CHECK_FALSE(model.graphWritesResourceNamedIn("display in pass: output_transform"));
+    CHECK_FALSE(model.graphWritesResource("display"));
+    CHECK(model.graphWritesResource("shade__color"));
 }
 
 // --- UX-7: what GB-3 typed or could not write.

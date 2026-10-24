@@ -6,6 +6,7 @@
 #include "../src/core/shader/shaderlibrary.hpp"
 #include "../src/core/vkcore/runtimecapabilities.hpp"
 #include "../src/project/featurecompose.hpp"
+#include "render_graph_ir_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -448,7 +449,7 @@ nlohmann::json currentRtFramePlanProjection() {
         },
         RenderFeatureComposeDependencies{
             load_engine, false, {}, load_engine});
-    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(
+    const auto graphs = TestSupport::frameGraphsOf(
         composition.config);
     if (graphs.size() != 1) {
         throw std::runtime_error(

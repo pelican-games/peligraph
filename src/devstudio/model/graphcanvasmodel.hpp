@@ -2261,11 +2261,10 @@ class GraphCanvasModel {
     // the graph node that made it, or the folded node it is in. Empty when
     // the plan does not list it (or it is an anchor).
     [[nodiscard]] std::string canvasNodeOfPass(std::string_view pass) const;
-    // UX-5d, decision 3: whether a resource a refusal's message names is
-    // written, in the plan, by a pass or task a graph node made -- not by a
-    // feature's task or a pass of the rendering section. The message's words
-    // are matched against what the plan's passes write.
-    [[nodiscard]] bool graphWritesResourceNamedIn(std::string_view message) const;
+    // UX-5d, decision 3: whether a refusal's resource is written, in the
+    // plan, by a pass or task a graph node made -- not by a feature's task or
+    // a pass of the rendering section.
+    [[nodiscard]] bool graphWritesResource(std::string_view resource) const;
 
     // --- GL-1e: a rendering-section pass's inputs, edited from the Graph.
 

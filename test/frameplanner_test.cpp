@@ -20,6 +20,7 @@
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/vkcore/renderer.hpp"
 #include "registered_render_targets_test_support.hpp"
+#include "render_graph_ir_test_support.hpp"
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <algorithm>
@@ -428,30 +429,15 @@ std::vector<FrameGraphNodeDefinition> wp352NodesFromBothPlannerInputs(
     std::vector<FrameGraphNodeDefinition> result;
 
     const auto raw_graphs =
-        parseFrameGraphDefinitionsFromConfigJson(config);
+        TestSupport::frameGraphsOf(config);
     if (raw_graphs.size() != 1 ||
         raw_graphs.front().nodes.size() != 1) {
         throw std::runtime_error(
             "WP352 raw planner fixture must contain one node");
     }
     result.push_back(raw_graphs.front().nodes.front());
-
-    const ParsedRenderTargetResolvers resolvers{config};
-    const auto definitions =
-        parseRenderingPassDefinitionsFromConfigJson(
-            config, resolvers.nameResolver(),
-            resolvers.metadataResolver());
-    if (definitions.size() != 1) {
-        throw std::runtime_error(
-            "WP352 typed planner fixture must contain one pass set");
-    }
-    const auto typed_graph =
-        makeFrameGraphDefinition(definitions.front());
-    if (typed_graph.nodes.size() != 1) {
-        throw std::runtime_error(
-            "WP352 typed planner fixture must contain one node");
-    }
-    result.push_back(typed_graph.nodes.front());
+    // RC-3c1b: the typed PassDefinition builder is gone; the IR is the one
+    // planner input.
     return result;
 }
 
@@ -544,29 +530,11 @@ TEST_CASE("frame planner preserves existing rendering config order", "[frameplan
 
     for (const auto &config_case : cases) {
         DYNAMIC_SECTION(config_case.name) {
-            const auto raw_graphs = parseFrameGraphDefinitionsFromConfigJson(config_case.config);
+            const auto raw_graphs = TestSupport::frameGraphsOf(config_case.config);
             REQUIRE_FALSE(raw_graphs.empty());
             for (const auto &graph : raw_graphs) {
                 const auto plan = planFrameGraph(graph);
                 REQUIRE(framePlanOrder(plan) == graphNodeNames(graph));
-            }
-
-            const ParsedRenderTargetResolvers resolvers{config_case.config};
-            const auto parsed_definitions = parseRenderingPassDefinitionsFromConfigJson(
-                config_case.config, resolvers.nameResolver(), resolvers.metadataResolver());
-            REQUIRE(parsed_definitions.size() == raw_graphs.size());
-            for (const auto &definition : parsed_definitions) {
-                auto graph = makeFrameGraphDefinition(definition);
-                // The legacy PassDefinition adapter has no snapshot-copy
-                // node. Its screen-input targets therefore enter this shadow
-                // graph as declared resources instead of snapshot writes.
-                for (std::size_t index = 0;
-                     index < resolvers.metadata.size(); ++index) {
-                    graph.declared_resources.push_back(
-                        "rt:" + std::to_string(index));
-                }
-                const auto plan = planFrameGraph(graph);
-                REQUIRE(framePlanOrder(plan) == passNames(definition));
             }
         }
     }
@@ -581,7 +549,7 @@ TEST_CASE("logical shadow compilation preserves every existing frame plan",
     for (const auto &config_case : cases) {
         DYNAMIC_SECTION(config_case.name) {
             const auto graphs =
-                parseFrameGraphDefinitionsFromConfigJson(config_case.config);
+                TestSupport::frameGraphsOf(config_case.config);
             REQUIRE_FALSE(graphs.empty());
             for (const auto &graph : graphs) {
                 const auto before = framePlanToJson(planFrameGraph(graph));
@@ -635,7 +603,7 @@ TEST_CASE("hybrid preset resolves ordered deferred and forward writes",
     REQUIRE(passes.front().passes.at(0).materialInfo().contract ==
             MaterialPassContract::deferred_geometry_v1);
 
-    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(resolved);
+    const auto graphs = TestSupport::frameGraphsOf(resolved);
     REQUIRE(graphs.size() == 1);
     const auto plan = planFrameGraph(graphs.front());
     const auto order = framePlanOrder(plan);
@@ -755,7 +723,7 @@ TEST_CASE("PO-1 a write nothing consumes is an unread_output diagnostic of the f
         hybrid_usage.emplace(target.name, imageUsageNames(target.usage));
     }
     REQUIRE(hybrid_usage.contains("gbuffer_albedo"));
-    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(resolved);
+    const auto graphs = TestSupport::frameGraphsOf(resolved);
     REQUIRE(graphs.size() == 1);
     const auto hybrid = findFramePlanUnreadOutputs(
         planFrameGraph(graphs.front()), hybrid_usage);
@@ -768,7 +736,7 @@ TEST_CASE("PO-1 a write nothing consumes is an unread_output diagnostic of the f
 }
 
 TEST_CASE("frame planner accepts compute tasks and serializes node kinds", "[frameplanner]") {
-    const auto graph = parseFrameGraphDefinitionFromJson(nlohmann::json::parse(R"json({
+    const auto graph = TestSupport::frameGraphOf(nlohmann::json::parse(R"json({
   "name": "mixed",
   "buffers": ["particles", {"name": "visible_particles"}],
   "passes": [
@@ -796,7 +764,7 @@ TEST_CASE("frame planner accepts compute tasks and serializes node kinds", "[fra
 
 TEST_CASE("history reads are serialized without an intra-frame dependency",
           "[frameplanner][temporal]") {
-    const auto graph = parseFrameGraphDefinitionFromJson(nlohmann::json::parse(R"json({
+    const auto graph = TestSupport::frameGraphOf(nlohmann::json::parse(R"json({
       "name":"history_accumulation",
       "render_targets":[
         {"name":"current_color"},
@@ -825,7 +793,7 @@ TEST_CASE("history reads are serialized without an intra-frame dependency",
 TEST_CASE("frame graph parses typed current-read footprints",
           "[frameplanner][logical]") {
     const auto graph =
-        parseFrameGraphDefinitionFromJson(
+        TestSupport::frameGraphOf(
             nlohmann::json::parse(R"json({
               "name": "typed_reads",
               "render_targets": [
@@ -893,18 +861,18 @@ TEST_CASE("frame graph parses typed current-read footprints",
       }]
     })json");
     REQUIRE_THROWS_AS(
-        parseFrameGraphDefinitionFromJson(invalid),
+        TestSupport::frameGraphOf(invalid),
         std::runtime_error);
 
     invalid["passes"][0]["input_footprints"] = {
         {"source", "temporal"}};
     REQUIRE_THROWS_AS(
-        parseFrameGraphDefinitionFromJson(invalid),
+        TestSupport::frameGraphOf(invalid),
         std::runtime_error);
 }
 
 TEST_CASE("frame planner emits barriers for explicit compute to render resource edges", "[frameplanner]") {
-    const auto graph = parseFrameGraphDefinitionFromJson(nlohmann::json::parse(R"json({
+    const auto graph = TestSupport::frameGraphOf(nlohmann::json::parse(R"json({
   "name": "compute_to_present",
   "buffers": [{"name": "compute_color"}],
   "passes": [
@@ -942,37 +910,47 @@ TEST_CASE("frame plan validates pass image producers including ray tasks",
       "compute_tasks": [{"name": "trace", "writes": ["ray_color"], "before": ["present"]}]
     })json");
     const auto validate = [&] {
-        const auto plan = planFrameGraph(parseFrameGraphDefinitionFromJson(authored));
-        validateFramePlanPassInputsProduced(plan, authored);
+        const auto ir = TestSupport::renderGraphOf(authored);
+        const auto &graph = ir.graphs.at(0);
+        requireRenderGraphInputsProduced(ir, graph, planRenderGraph(ir, graph));
+    };
+    // RC-3c1b: refused by name, the pass and the resource it reads.
+    const auto refused = [&](const std::string &node) {
+        try {
+            validate();
+        } catch (const GraphRegistryError &error) {
+            CHECK(error.code() == "render_graph.input_not_produced@1");
+            CHECK(error.detail().at("node") == node);
+            CHECK(error.detail().at("resource") == "ray_color");
+            return true;
+        }
+        return false;
     };
     SECTION("scheduled task output feeds the first raster pass") {
         REQUIRE_NOTHROW(validate());
     }
     SECTION("declaring an image does not initialize it") {
         authored.erase("compute_tasks");
-        REQUIRE_THROWS_WITH(validate(), Catch::Matchers::ContainsSubstring(
-            "not produced as an earlier output: ray_color"));
+        REQUIRE(refused("present"));
     }
     SECTION("a producer scheduled after its reader is rejected") {
         authored["compute_tasks"][0].erase("before");
         authored["compute_tasks"][0]["after"] = {"present"};
-        REQUIRE_THROWS_WITH(validate(), Catch::Matchers::ContainsSubstring(
-            "not produced as an earlier output: ray_color"));
+        REQUIRE(refused("present"));
     }
     SECTION("snapshot sources also accept task outputs") {
         authored["passes"][0] = {{"name", "present"}, {"type", "snapshot_copy"},
             {"source", "ray_color"}, {"destination", "copied_color"}, {"snapshot_after", "trace"}};
         REQUIRE_NOTHROW(validate());
         authored.erase("compute_tasks");
-        REQUIRE_THROWS_WITH(validate(), Catch::Matchers::ContainsSubstring(
-            "not produced as an earlier output: ray_color"));
+        REQUIRE(refused("present"));
     }
 }
 
 TEST_CASE("frame planner emits a barrier for ordered write-after-write",
           "[frameplanner][synchronization]") {
     const auto graph =
-        parseFrameGraphDefinitionFromJson(
+        TestSupport::frameGraphOf(
             nlohmann::json::parse(R"json({
               "name": "ordered_waw",
               "buffers": [{"name": "shared"}],
@@ -1004,7 +982,7 @@ TEST_CASE(
     "material resource ports create typed compute to geometry reads",
     "[frameplanner][material-resource][wp207b]") {
     const auto graph =
-        parseFrameGraphDefinitionFromJson(
+        TestSupport::frameGraphOf(
             nlohmann::json::parse(R"json({
               "name": "compute_vertex_displacement",
               "buffers": [
@@ -1107,7 +1085,7 @@ TEST_CASE(
     "creating graph edges",
     "[frameplanner][logical][resource-port][wp207a]") {
     const auto graph =
-        parseFrameGraphDefinitionFromJson(
+        TestSupport::frameGraphOf(
             nlohmann::json::parse(R"json({
               "name": "typed_resource_access",
               "render_targets": [
@@ -1179,7 +1157,7 @@ TEST_CASE(
     "generic raster nodes participate in one logical planner with typed inputs",
     "[frameplanner][raster][resource-port][wp238b]") {
     const auto graph =
-        parseFrameGraphDefinitionFromJson(
+        TestSupport::frameGraphOf(
             nlohmann::json::parse(R"json({
               "name": "custom_raster",
               "render_targets": [
@@ -1243,7 +1221,7 @@ TEST_CASE("frame planner reports invalid graph fixtures", "[frameplanner]") {
         DYNAMIC_SECTION(entry.at("file").get<std::string>()) {
             std::string message;
             try {
-                const auto graph = parseFrameGraphDefinitionFromJson(
+                const auto graph = TestSupport::frameGraphOf(
                     readJson(fixtureRoot() / "errors" / entry.at("file").get<std::string>()));
                 (void)planFrameGraph(graph);
             } catch (const std::exception &ex) {
@@ -1258,7 +1236,7 @@ TEST_CASE("frame planner reports invalid graph fixtures", "[frameplanner]") {
 
 TEST_CASE("frame planner example plan JSON matches fixture", "[frameplanner]") {
     const auto config = readJson(sourceRoot() / "projects" / "example" / "passes" / "main_rendering_config.json");
-    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(config);
+    const auto graphs = TestSupport::frameGraphsOf(config);
     REQUIRE(graphs.size() == 1);
 
     const auto plan_json = framePlanToJson(planFrameGraph(graphs.front()));
@@ -1300,7 +1278,7 @@ TEST_CASE(
     };
 
     const auto canonical_graphs =
-        parseFrameGraphDefinitionsFromConfigJson(shipping);
+        TestSupport::frameGraphsOf(shipping);
     REQUIRE(canonical_graphs.size() == 1);
     const auto canonical = planFrameGraph(canonical_graphs.front());
     for (const auto &stage : stages) {
@@ -1327,7 +1305,7 @@ TEST_CASE(
         REQUIRE(pass != passes.end());
         REQUIRE(pass->at("output").at("color").at(0).erase("load_op") == 1);
 
-        const auto graphs = parseFrameGraphDefinitionsFromConfigJson(mutant);
+        const auto graphs = TestSupport::frameGraphsOf(mutant);
         REQUIRE(graphs.size() == 1);
         const auto plan = planFrameGraph(graphs.front());
         const auto node = find_node(plan, peeled[0]);
@@ -1402,8 +1380,8 @@ TEST_CASE(
         "Clear";
     REQUIRE(normalized_load == clear_json);
 
-    const auto load = planFrameGraph(parseFrameGraphDefinitionFromJson(load_json));
-    const auto clear = planFrameGraph(parseFrameGraphDefinitionFromJson(clear_json));
+    const auto load = planFrameGraph(TestSupport::frameGraphOf(load_json));
+    const auto clear = planFrameGraph(TestSupport::frameGraphOf(clear_json));
     REQUIRE(framePlanOrder(load) == std::vector<std::string>{"A", "B"});
     REQUIRE(framePlanOrder(clear) == std::vector<std::string>{"A", "B"});
     REQUIRE(load.nodes.back().reads == std::vector<std::string>{"accum"});
@@ -1442,7 +1420,7 @@ TEST_CASE("snapshot plan node reports copy bytes and screen input read dependenc
     const auto composed = composeRenderFeatureConfig(config);
     const auto resolved = resolveRenderTargetFormatClassesV2(
         composed.config, vk::Format::eB8G8R8A8Srgb, vk::Extent2D{64, 32}, false);
-    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(resolved);
+    const auto graphs = TestSupport::frameGraphsOf(resolved);
     REQUIRE(graphs.size() == 1);
     const auto plan = planFrameGraph(graphs.front());
     const auto copy = std::find_if(plan.nodes.begin(), plan.nodes.end(), [](const auto &node) {
@@ -1472,9 +1450,9 @@ TEST_CASE("snapshot plan node reports copy bytes and screen input read dependenc
         mixed["render_targets"].push_back({
             {"name", "debug_result"}, {"format_class", "data"},
             {"format", "R8G8B8A8_UNORM"}, {"width", 16}, {"height", 8},
-            {"extent_scale", 1.0},
+            {"extent_scale", 1.0}, {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}},
         });
-        const auto raw_graphs = parseFrameGraphDefinitionsFromConfigJson(mixed);
+        const auto raw_graphs = TestSupport::frameGraphsOf(mixed);
         REQUIRE(raw_graphs.size() == 1);
         const auto raw_copy = std::find_if(raw_graphs.front().nodes.begin(),
             raw_graphs.front().nodes.end(), [](const auto &node) {
@@ -1485,7 +1463,7 @@ TEST_CASE("snapshot plan node reports copy bytes and screen input read dependenc
 
         auto mixed_resolved = resolveRenderTargetFormatClassesV2(
             mixed, vk::Format::eB8G8R8A8Srgb, vk::Extent2D{64, 32}, false);
-        const auto resolved_graphs = parseFrameGraphDefinitionsFromConfigJson(mixed_resolved);
+        const auto resolved_graphs = TestSupport::frameGraphsOf(mixed_resolved);
         REQUIRE(resolved_graphs.size() == 1);
         const auto resolved_copy = std::find_if(resolved_graphs.front().nodes.begin(),
             resolved_graphs.front().nodes.end(), [](const auto &node) {
@@ -1498,16 +1476,22 @@ TEST_CASE("snapshot plan node reports copy bytes and screen input read dependenc
         const auto snapshot_target = std::find_if(targets.begin(), targets.end(),
             [](const auto &target) { return target.at("name") == "opaque_color"; });
         REQUIRE(snapshot_target != targets.end());
+        // RC-3c1b: the destination is a registered image, so its own
+        // declaration is refused first, by name.
         SECTION("unsupported resolved format remains an error") {
             (*snapshot_target)["format"] = "unsupported";
-            REQUIRE_THROWS_WITH(parseFrameGraphDefinitionsFromConfigJson(mixed_resolved),
-                Catch::Matchers::ContainsSubstring("snapshot copy byte size is unavailable"));
+            TestSupport::requireNamedRefusal(
+                [&] { (void)TestSupport::frameGraphsOf(mixed_resolved); },
+                "render_graph.image_invalid@1",
+                {{"resource", "opaque_color"}, {"field", "format"}, {"reason", "unknown"}});
         }
         SECTION("zero resolved extent remains an error") {
             (*snapshot_target)["width"] = 0;
             (*snapshot_target)["height"] = 32;
-            REQUIRE_THROWS_WITH(parseFrameGraphDefinitionsFromConfigJson(mixed_resolved),
-                Catch::Matchers::ContainsSubstring("snapshot copy byte size is unavailable"));
+            TestSupport::requireNamedRefusal(
+                [&] { (void)TestSupport::frameGraphsOf(mixed_resolved); },
+                "render_graph.image_invalid@1",
+                {{"resource", "opaque_color"}, {"field", "width"}, {"reason", "not_positive"}});
         }
     }
 }
@@ -1520,13 +1504,13 @@ TEST_CASE("canonical C1b frame-plan diff preserves every legacy pass and target 
     // P-2a-4b: the edit lands in the section of the graph root, and both the
     // planner and the composer read it there.
     renderingSectionOf(legacy).erase("features");
-    const auto old_graphs = parseFrameGraphDefinitionsFromConfigJson(legacy);
+    const auto old_graphs = TestSupport::frameGraphsOf(legacy);
     REQUIRE(old_graphs.size() == 1);
     const auto old_plan = planFrameGraph(old_graphs.front());
 
     const auto composed = composeRenderFeatureConfig(legacy);
     REQUIRE(composed.config.at("resolver_version").get<int>() == 2);
-    const auto new_graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+    const auto new_graphs = TestSupport::frameGraphsOf(composed.config);
     REQUIRE(new_graphs.size() == 1);
     const auto new_plan = planFrameGraph(new_graphs.front());
 
@@ -1558,7 +1542,7 @@ TEST_CASE("canonical C1b frame-plan diff preserves every legacy pass and target 
 }
 
 TEST_CASE("frame planner explicit after and before edges change the order", "[frameplanner]") {
-    const auto base_graph = parseFrameGraphDefinitionFromJson(nlohmann::json::parse(R"json({
+    const auto base_graph = TestSupport::frameGraphOf(nlohmann::json::parse(R"json({
   "name": "explicit_edges_base",
   "render_targets": [
     {"name": "rt_a"},
@@ -1577,7 +1561,7 @@ TEST_CASE("frame planner explicit after and before edges change the order", "[fr
     }
   ]
 })json"));
-    const auto edged_graph = parseFrameGraphDefinitionFromJson(nlohmann::json::parse(R"json({
+    const auto edged_graph = TestSupport::frameGraphOf(nlohmann::json::parse(R"json({
   "name": "explicit_edges_after_before",
   "render_targets": [
     {"name": "rt_a"},
@@ -1640,7 +1624,7 @@ TEST_CASE("frame planner explicit before alone reverses the declared order", "[f
         if (with_before) {
             clear_b["before"] = nlohmann::json::array({"clear_c"});
         }
-        return parseFrameGraphDefinitionFromJson(nlohmann::json{
+        return TestSupport::frameGraphOf(nlohmann::json{
             {"name", "explicit_before_only"},
             {"render_targets",
              nlohmann::json::array({{{"name", "rt_b"}}, {{"name", "rt_c"}}})},
@@ -1697,7 +1681,7 @@ TEST_CASE("frame planner feature-composed config plan matches fixture", "[framep
             },
             true,
         });
-    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+    const auto graphs = TestSupport::frameGraphsOf(composed.config);
     REQUIRE(graphs.size() == 1);
 
     const auto plan_json = framePlanToJson(planFrameGraph(graphs.front()));
@@ -1734,7 +1718,7 @@ TEST_CASE("frame planner debug text feature plan matches fixture", "[frameplanne
             },
             true,
         });
-    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+    const auto graphs = TestSupport::frameGraphsOf(composed.config);
     REQUIRE(graphs.size() == 1);
 
     const auto plan_json = framePlanToJson(planFrameGraph(graphs.front()));
@@ -1761,7 +1745,7 @@ TEST_CASE("UI feature occupies the canonical pelican_ui anchor and has no base-p
             .runtime_shader_compiler_enabled = true,
         });
     REQUIRE(composed.feature_names == std::vector<std::string>{"ui"});
-    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+    const auto graphs = TestSupport::frameGraphsOf(composed.config);
     const auto order = framePlanOrder(planFrameGraph(graphs.front()));
     const auto anchor = std::find(order.begin(), order.end(), "__anchor_pelican_ui");
     const auto pass = std::find(order.begin(), order.end(), "pelican_ui");
@@ -1821,7 +1805,7 @@ TEST_CASE("frame planner shadow feature plan matches fixture", "[frameplanner]")
             },
             true,
         });
-    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+    const auto graphs = TestSupport::frameGraphsOf(composed.config);
     REQUIRE(graphs.size() == 1);
 
     const auto plan_json = framePlanToJson(planFrameGraph(graphs.front()));
@@ -1843,7 +1827,7 @@ TEST_CASE(
     "frame graph labels default and overridden resolution domains",
     "[frameplanner][upscale][resolution-domain]") {
     const auto graph =
-        parseFrameGraphDefinitionFromJson(
+        TestSupport::frameGraphOf(
             nlohmann::json::parse(R"json({
       "name":"resolution_domains",
       "passes":[
@@ -1877,7 +1861,7 @@ TEST_CASE(
     "frame plan preserves authored material tag filters with compile provenance",
     "[frameplanner][draw-tag][wp206a]") {
     const auto graph =
-        parseFrameGraphDefinitionFromJson(
+        TestSupport::frameGraphOf(
             nlohmann::json::parse(R"json({
       "name":"tagged_material",
       "passes":[
@@ -1954,7 +1938,7 @@ TEST_CASE(
       ]
     })json");
     REQUIRE_THROWS_WITH(
-        parseFrameGraphDefinitionFromJson(invalid),
+        TestSupport::frameGraphOf(invalid),
         Catch::Matchers::ContainsSubstring(
             "Pass 'present' type 'fullscreen' does not own field "
             "'material_filter'"));
@@ -1976,7 +1960,7 @@ TEST_CASE(
             {"passes", nlohmann::json::array({std::move(pass)})},
         };
         REQUIRE_THROWS_WITH(
-            parseFrameGraphDefinitionFromJson(graph),
+            TestSupport::frameGraphOf(graph),
             Catch::Matchers::ContainsSubstring(
                 "Pass '" + name + "'") &&
                 Catch::Matchers::ContainsSubstring(
@@ -2017,7 +2001,7 @@ TEST_CASE(
       ]
     })json");
     const auto graph =
-        parseFrameGraphDefinitionFromJson(authored);
+        TestSupport::frameGraphOf(authored);
     REQUIRE(graph.nodes.front().material_variant ==
             "silhouette");
     const auto plan_json =
@@ -2028,10 +2012,12 @@ TEST_CASE(
 
     authored["passes"][0].erase(
         "material_contract");
-    REQUIRE_THROWS_WITH(
-        parseFrameGraphDefinitionFromJson(authored),
-        Catch::Matchers::ContainsSubstring(
-            "requires explicit material_contract"));
+    TestSupport::requireNamedRefusal(
+        [&] { (void)TestSupport::frameGraphOf(authored); },
+        "render_graph.node_field_invalid@1",
+        {{"node", "silhouette_overlay"},
+         {"field", "material_variant"},
+         {"reason", "requires_material_contract"}});
 }
 
 TEST_CASE(
@@ -2058,7 +2044,7 @@ TEST_CASE(
     });
 #endif
     const auto graph =
-        parseFrameGraphDefinitionFromJson(authored);
+        TestSupport::frameGraphOf(authored);
 
     REQUIRE(graph.nodes.at(0).attachments.size() == 3);
     REQUIRE((
@@ -2113,7 +2099,7 @@ TEST_CASE(
       ]
     })json");
     REQUIRE_THROWS(
-        parseFrameGraphDefinitionFromJson(
+        TestSupport::frameGraphOf(
             malformed));
 }
 
@@ -2177,7 +2163,7 @@ TEST_CASE(
     const auto defaults = wp352FiveColorConfig();
     const auto default_nodes =
         wp352NodesFromBothPlannerInputs(defaults);
-    REQUIRE(default_nodes.size() == 2);
+    REQUIRE(default_nodes.size() == 1);
     for (const auto &node : default_nodes) {
         require_color_state(node, {});
     }
@@ -2191,7 +2177,7 @@ TEST_CASE(
     pass_wide_pass["color_store_op"] = "DontCare";
     const auto pass_wide_nodes =
         wp352NodesFromBothPlannerInputs(pass_wide);
-    REQUIRE(pass_wide_nodes.size() == 2);
+    REQUIRE(pass_wide_nodes.size() == 1);
     for (const auto &node : pass_wide_nodes) {
         require_color_state(node, {0, 1, 2, 3, 4});
     }
@@ -2210,7 +2196,7 @@ TEST_CASE(
     };
     const auto attachment_nodes =
         wp352NodesFromBothPlannerInputs(per_attachment);
-    REQUIRE(attachment_nodes.size() == 2);
+    REQUIRE(attachment_nodes.size() == 1);
     for (const auto &node : attachment_nodes) {
         require_color_state(node, {0});
     }
@@ -2346,11 +2332,10 @@ TEST_CASE(
         {"target", "gbuffer_albedo"},
         {"clear", nlohmann::json::array({0, 0, 0, 1})},
     };
-    REQUIRE_THROWS_WITH(
-        parseFrameGraphDefinitionsFromConfigJson(
-            unknown_attachment_field),
-        Catch::Matchers::ContainsSubstring(
-            "unknown field 'clear'"));
+    TestSupport::requireNamedRefusal(
+        [&] { (void)TestSupport::frameGraphsOf(unknown_attachment_field); },
+        "render_graph.attachment_invalid@1",
+        {{"node", "gbuffer_pass"}, {"reason", "unknown_field"}, {"key", "clear"}});
 }
 
 TEST_CASE(
@@ -2366,8 +2351,10 @@ TEST_CASE(
         pass["output"]["depth"] = missing_depth;
         pass["depth_load_op"] = "Load";
 
-        REQUIRE_THROWS_WITH(
-            parseFrameGraphDefinitionsFromConfigJson(invalid), expected);
+        TestSupport::requireNamedRefusal(
+            [&] { (void)TestSupport::frameGraphsOf(invalid); },
+            "render_graph.attachment_option_without_output@1",
+            {{"node", "gbuffer_pass"}, {"field", "depth_load_op"}});
         const ParsedRenderTargetResolvers resolvers{invalid};
         REQUIRE_THROWS_WITH(
             parseRenderingPassDefinitionsFromConfigJson(
@@ -2380,7 +2367,7 @@ TEST_CASE(
     valid["rendering_passes"][0]["passes"][0]
          ["depth_load_op"] = "Load";
     const auto nodes = wp352NodesFromBothPlannerInputs(valid);
-    REQUIRE(nodes.size() == 2);
+    REQUIRE(nodes.size() == 1);
     for (const auto &node : nodes) {
         REQUIRE(node.attachments.back().operations.load_op ==
                 AttachmentLoadOp::load);
@@ -2410,9 +2397,10 @@ TEST_CASE(
                 "Pass 'shadow_pass' field '" + field +
                 "' requires a non-empty output.color attachment";
 
-            REQUIRE_THROWS_WITH(
-                parseFrameGraphDefinitionsFromConfigJson(invalid),
-                expected);
+            TestSupport::requireNamedRefusal(
+                [&] { (void)TestSupport::frameGraphsOf(invalid); },
+                "render_graph.attachment_option_without_output@1",
+                {{"node", "shadow_pass"}, {"field", field}});
             const ParsedRenderTargetResolvers resolvers{invalid};
             REQUIRE_THROWS_WITH(
                 parseRenderingPassDefinitionsFromConfigJson(
@@ -2421,27 +2409,6 @@ TEST_CASE(
                 expected);
         }
     }
-}
-
-TEST_CASE(
-    "WP355a typed planner rejects pass type and info variant drift",
-    "[frameplanner][typed][wp355a][pass-info][fail-fast]") {
-    PassDefinition mismatch;
-    mismatch.name = "typed_mismatch";
-    mismatch.pass_type = RenderPassType::fullscreen;
-    mismatch.pass_info = MaterialPassInfo{};
-    const RenderingPassDefinition definition{
-        "typed_mismatch_graph", {mismatch}};
-
-    REQUIRE_THROWS_WITH(
-        makeFrameGraphDefinition(definition),
-        "Frame planner pass 'typed_mismatch' has pass_type 'fullscreen' "
-        "but pass_info holds 'MaterialPassInfo'");
-
-    mismatch.pass_info = FullscreenPassInfo{};
-    REQUIRE_NOTHROW(makeFrameGraphDefinition(
-        RenderingPassDefinition{
-            "typed_match_graph", {std::move(mismatch)}}));
 }
 
 TEST_CASE(
@@ -2473,10 +2440,10 @@ TEST_CASE(
                 vk::Format::eB8G8R8A8Srgb,
                 vk::Extent2D{160, 90}, false);
         const auto before_graphs =
-            parseFrameGraphDefinitionsFromConfigJson(
+            TestSupport::frameGraphsOf(
                 resolved);
         const auto after_graphs =
-            parseFrameGraphDefinitionsFromConfigJson(
+            TestSupport::frameGraphsOf(
                 materializeShippingAttachmentOperations(
                     resolved));
         REQUIRE_FALSE(before_graphs.empty());
@@ -2509,7 +2476,7 @@ TEST_CASE(
     "frame graph preserves raster attachment subresources for physical lowering",
     "[frameplanner][attachment-subresource][wp235]") {
     const auto graph =
-        parseFrameGraphDefinitionFromJson(
+        TestSupport::frameGraphOf(
             nlohmann::json::parse(R"json({
       "name":"attachment_views",
       "passes":[
@@ -2562,11 +2529,10 @@ TEST_CASE(
          }}
       ]
     })json");
-    REQUIRE_THROWS_WITH(
-        parseFrameGraphDefinitionFromJson(
-            malformed),
-        Catch::Matchers::ContainsSubstring(
-            "must select exactly one mip"));
+    TestSupport::requireNamedRefusal(
+        [&] { (void)TestSupport::frameGraphOf(malformed); },
+        "render_graph.attachment_invalid@1",
+        {{"node", "probe"}, {"reason", "subresource_not_one_mip"}});
 }
 
 TEST_CASE("WP181 frame graph runtime retains one immutable typed pipeline",
@@ -2788,13 +2754,13 @@ Rc1ExamplePlan rc1ExamplePlan(std::uint32_t width, std::uint32_t height) {
                 },
         });
     const auto compiled = compileRenderPipeline(resolved);
-    const auto graphs =
-        parseFrameGraphDefinitionsFromConfigJson(resolved.normalized_config);
-    REQUIRE(graphs.size() == 1);
+    const auto render_graph =
+        TestSupport::renderGraphOf(resolved.normalized_config);
+    REQUIRE(render_graph.graphs.size() == 1);
     auto targets =
         parseRenderTargetDefinitionsFromJson(resolved.normalized_config);
     const auto compilation = compileRenderingTargetPlans(
-        graphs, targets, compiled.sample_count_policy,
+        render_graph, targets, compiled.sample_count_policy,
         vk::Format::eB8G8R8A8Srgb,
         RenderingTargetPlanDeviceFacts{
             .multiview = true,

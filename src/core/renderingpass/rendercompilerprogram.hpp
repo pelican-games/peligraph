@@ -2,6 +2,7 @@
 
 #include "../../project/framegraphbufferdefinition.hpp"
 #include "frameplanner.hpp"
+#include "../../project/rendergraphir.hpp"
 #include "../../project/renderpipeline.hpp"
 
 #include <cstdint>
@@ -123,6 +124,10 @@ struct RenderCompilerProgramVariantOutput {
     // same invocation accepted; this is why. Everything else is left empty
     // (compiled_pipeline null). The runtime artifacts stand and publish.
     std::exception_ptr unavailable;
+    // RC-3c1b: the variant's final IR (a runtime artifact's finalized one,
+    // the frame plans and the physical plan were made from; the preview's as
+    // parsed). Null when unavailable.
+    std::shared_ptr<const RenderGraphIR> render_graph;
 };
 
 struct RenderCompilerProgramOutput {

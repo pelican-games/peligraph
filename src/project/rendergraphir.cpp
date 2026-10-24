@@ -192,41 +192,10 @@ FrameGraphNodeDefinition nodeDefinitionOf(const NodeIR &node) {
     return result;
 }
 
-bool isTileLocalAttachmentCandidate(const ImageResource &image) {
-    const auto attachment_usage =
-        ImageUsageBit::color_attachment | ImageUsageBit::depth_stencil_attachment;
-    const auto allowed_usage =
-        attachment_usage | ImageUsageBit::sampled | ImageUsageBit::input_attachment;
-    return !image.history && !image.persistent && bool(image.usage & attachment_usage) &&
-           !bool(image.usage & ~ImageUsage{allowed_usage});
-}
-
-bool isTransientAttachmentCandidate(const ImageResource &image) {
-    const auto attachment_usage =
-        ImageUsageBit::color_attachment | ImageUsageBit::depth_stencil_attachment;
-    return !image.history && !image.persistent && bool(image.usage & attachment_usage) &&
-           !bool(image.usage & ~ImageUsage{attachment_usage});
-}
-
-// Before physical planning every image is materialized (no storage mode yet).
-bool isRuntimeAliasCandidate(const ImageResource &image) {
-    return !image.history && !image.source && !image.persistent &&
-           image.format_class != "display" &&
-           image.usage == (ImageUsageBit::color_attachment | ImageUsageBit::sampled);
-}
-
 const ImageResource *findConfigImage(const RenderGraphIR &ir, std::string_view name) {
     const auto found = std::find_if(ir.images.begin(), ir.images.end(),
                                     [&](const auto &image) { return image.name == name; });
     return found == ir.images.end() ? nullptr : &*found;
-}
-
-bool nodeHasSamePixelRead(const FrameGraphNodeDefinition &node, std::string_view resource) {
-    const auto footprint =
-        std::find_if(node.read_footprints.begin(), node.read_footprints.end(),
-                     [&](const auto &candidate) { return candidate.resource == resource; });
-    return footprint != node.read_footprints.end() &&
-           footprint->footprint.kind == LogicalReadFootprintKind::same_pixel;
 }
 
 bool nodeAttachmentsMatchExtent(const FrameGraphNodeDefinition &node, const ImageResource &local,
@@ -245,6 +214,46 @@ bool contains(const std::vector<std::string> &names, std::string_view name) {
 }
 
 } // namespace
+
+ImageDeclarationFacts imageDeclarationFactsOf(const ImageResource &image) {
+    return ImageDeclarationFacts{
+        .history = image.history,
+        .persistent = image.persistent,
+        .has_source = image.source.has_value(),
+        .usage = image.usage,
+        .format_class = image.format_class,
+    };
+}
+
+bool isTransientAttachmentCandidate(const ImageDeclarationFacts &image) {
+    const auto attachment_usage =
+        ImageUsageBit::color_attachment | ImageUsageBit::depth_stencil_attachment;
+    return !image.history && !image.persistent && bool(image.usage & attachment_usage) &&
+           !bool(image.usage & ~ImageUsage{attachment_usage});
+}
+
+bool isTileLocalAttachmentCandidate(const ImageDeclarationFacts &image) {
+    const auto attachment_usage =
+        ImageUsageBit::color_attachment | ImageUsageBit::depth_stencil_attachment;
+    const auto allowed_usage =
+        attachment_usage | ImageUsageBit::sampled | ImageUsageBit::input_attachment;
+    return !image.history && !image.persistent && bool(image.usage & attachment_usage) &&
+           !bool(image.usage & ~ImageUsage{allowed_usage});
+}
+
+bool isRuntimeAliasEligible(const ImageDeclarationFacts &image) {
+    return !image.history && !image.has_source && !image.persistent &&
+           image.format_class != "display" &&
+           image.usage == (ImageUsageBit::color_attachment | ImageUsageBit::sampled);
+}
+
+bool nodeHasSamePixelRead(const FrameGraphNodeDefinition &node, std::string_view resource) {
+    const auto footprint =
+        std::find_if(node.read_footprints.begin(), node.read_footprints.end(),
+                     [&](const auto &candidate) { return candidate.resource == resource; });
+    return footprint != node.read_footprints.end() &&
+           footprint->footprint.kind == LogicalReadFootprintKind::same_pixel;
+}
 
 std::string_view renderNodeShapeName(RenderNodeShape shape) {
     switch (shape) {
@@ -360,11 +369,51 @@ FrameGraphDefinition frameGraphDefinitionOf(const RenderGraphIR &ir, const Graph
     for (const auto &buffer : ir.buffers) appendUnique(result.declared_resources, buffer.name);
     result.nodes.reserve(graph.nodes.size());
     for (const auto &node : graph.nodes) result.nodes.push_back(nodeDefinitionOf(node));
+    result.graph_transforms = graph.graph_transforms;
+    result.subgraph_replacements = graph.subgraph_replacements;
+    result.render_strategy = graph.render_strategy;
     return result;
 }
 
 FramePlan planRenderGraph(const RenderGraphIR &ir, const GraphIR &graph) {
-    return planFrameGraphWithNamedRefusals(frameGraphDefinitionOf(ir, graph));
+    return planFrameGraph(frameGraphDefinitionOf(ir, graph));
+}
+
+void requireRenderGraphInputsProduced(const RenderGraphIR &ir, const GraphIR &graph,
+                                      const FramePlan &plan) {
+    // A config buffer, and a config image holding an asset (IA-1 `initial`)
+    // or a file's pixels (EN-2 `source`), hold their contents before any pass
+    // of the frame runs.
+    std::unordered_set<std::string> held;
+    for (const auto &buffer : ir.buffers) held.insert(buffer.name);
+    for (const auto &image : ir.images) {
+        if (image.initial || image.source) held.insert(image.name);
+    }
+    // Only a pass's current `input` and a snapshot copy's `source`.
+    std::unordered_map<std::string, std::vector<std::string>> required;
+    for (const auto &node : graph.nodes) {
+        if (node.scope != NodeDeclarationScope::graph || node.shape == RenderNodeShape::compute) {
+            continue;
+        }
+        auto &inputs = required[node.name];
+        for (const auto &use : node.uses) {
+            const bool input = node.shape == RenderNodeShape::snapshot_copy
+                                   ? use.role == ResourceUseRole::copy_source
+                                   : use.role == ResourceUseRole::input && !use.history;
+            if (input) inputs.push_back(use.resource);
+        }
+    }
+    std::unordered_set<std::string> produced;
+    for (const auto &node : plan.nodes) {
+        if (const auto inputs = required.find(node.name); inputs != required.end()) {
+            for (const auto &resource : inputs->second) {
+                if (held.contains(resource) || produced.contains(resource)) continue;
+                refuse("render_graph.input_not_produced@1",
+                       {{"graph", graph.name}, {"node", node.name}, {"resource", resource}});
+            }
+        }
+        produced.insert(node.writes.begin(), node.writes.end());
+    }
 }
 
 RenderGraphTileLocalFormats renderGraphDeviceTileLocalFormats(
@@ -372,7 +421,11 @@ RenderGraphTileLocalFormats renderGraphDeviceTileLocalFormats(
     RenderGraphTileLocalFormats result;
     if (!device.tile_local_attachments) return result;
     for (const auto &image : ir.images) {
-        if (!isTileLocalAttachmentCandidate(image)) continue;
+        if (!isTileLocalAttachmentCandidate(imageDeclarationFactsOf(image))) continue;
+        // The device is asked about the image's format.
+        if (image.format_unresolved) {
+            refuse("render_graph.image_format_unresolved@1", {{"resource", image.name}});
+        }
         std::vector<ImageFormat> formats{image.format};
         for (const auto format : image.format_candidates) {
             if (std::find(formats.begin(), formats.end(), format) == formats.end()) {
@@ -469,8 +522,9 @@ LogicalFrameGraphShadowOptions renderGraphShadowOptions(
             .type = bool(image->usage & ImageUsageBit::depth_stencil_attachment)
                         ? deviceDepthV1(types)
                         : legacyOpaqueImageV1(types),
-            .materialization = isTransientAttachmentCandidate(*image) || tile_local ||
-                                       isRuntimeAliasCandidate(*image)
+            .materialization = isTransientAttachmentCandidate(imageDeclarationFactsOf(*image)) ||
+                                       tile_local ||
+                                       isRuntimeAliasEligible(imageDeclarationFactsOf(*image))
                                    ? LogicalMaterializationRequirement::virtual_resource
                                    : LogicalMaterializationRequirement::required,
         });
@@ -482,6 +536,8 @@ CompiledLogicalRenderGraph toLogicalGraph(const RenderGraphIR &ir, const GraphIR
                                           const ToLogicalGraphOptions &options) {
     const auto types = makeBuiltinLogicalTypeRegistry();
     const auto definition = frameGraphDefinitionOf(ir, graph);
+    // The planner's refusals (by name) come before the logical graph's own.
+    (void)planFrameGraph(definition);
     const auto tile_local = renderGraphTileLocalFormats(
         ir, graph, renderGraphDeviceTileLocalFormats(ir, options.device));
     return compileLogicalFrameGraphShadow(
@@ -696,6 +752,58 @@ RenderGraphIR applyFrameNodeOrder(RenderGraphIR ir, bool require_all_graphs) {
         }
     }
     return ir;
+}
+
+namespace {
+
+// `ray_task_acceleration_structures` against the config's compute tasks:
+// each named task exists and traces or queries, and takes the named
+// structure (every graph's copy of it).
+RenderGraphIR resolveRayTaskAccelerationStructures(RenderGraphIR ir) {
+    for (const auto &[task, selected] : ir.ray_task_acceleration_structures) {
+        const auto invalid = [&](std::string_view reason) {
+            refuse("render_graph.compute_task_invalid@1",
+                   {{"node", task},
+                    {"field", "ray_task_acceleration_structures"},
+                    {"reason", std::string{reason}}});
+        };
+        if (!contains(ir.shared_compute_tasks, task)) invalid("unknown_task");
+        for (auto &graph : ir.graphs) {
+            for (auto &node : graph.nodes) {
+                if (node.scope != NodeDeclarationScope::shared || node.name != task) continue;
+                auto &info = std::get<ComputeNodeInfo>(node.info);
+                if (info.ray_tracing) {
+                    info.ray_tracing_acceleration_structure = selected;
+                } else if (info.ray_query_acceleration_structure) {
+                    info.ray_query_acceleration_structure = selected;
+                } else {
+                    invalid("task_declares_no_ray_work");
+                }
+            }
+        }
+    }
+    return ir;
+}
+
+} // namespace
+
+RenderGraphIR finalizeRenderGraph(RenderGraphIR ir, const FinalizeRenderGraphRequest &request,
+                                  TargetPlanningPolicy &target_planning) {
+    for (const auto &image : ir.images) {
+        if (image.format_unresolved) {
+            refuse("render_graph.image_format_unresolved@1", {{"resource", image.name}});
+        }
+    }
+    ir = resolveRayTaskAccelerationStructures(std::move(ir));
+    requireRenderGraphRayQueryCapability(ir, request.named, target_planning);
+    ir = namespaceSharedComputeTasks(std::move(ir), request.compute_task_suffix);
+    ir = insertAccelerationStructureNodes(
+        std::move(ir), AccelerationStructureNodeRequest{
+                           .planning_graphs = target_planning.graphs,
+                           .ray_tracing_project = request.ray_tracing_project,
+                           .named = request.named,
+                       });
+    return applyFrameNodeOrder(std::move(ir), request.require_all_graphs);
 }
 
 std::set<std::string, std::less<>> renderGraphMultiviewCapableNodes(

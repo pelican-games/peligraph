@@ -51,6 +51,7 @@
 #include "../src/project/renderpipeline.hpp"
 #include "../src/project/targetrendermemory.hpp"
 #include "registered_render_targets_test_support.hpp"
+#include "render_graph_ir_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -308,8 +309,9 @@ Json resolvedFramePlan(Pelican::ResolvedRenderPipeline resolved,
     }
     const Pelican::CompiledRenderPipeline compiled =
         Pelican::compileRenderPipeline(resolved);
-    const auto graphs = Pelican::parseFrameGraphDefinitionsFromConfigJson(
+    const auto render_graph = Pelican::TestSupport::renderGraphOf(
         resolved.normalized_config);
+    const auto graphs = Pelican::TestSupport::frameGraphsOf(render_graph);
     if (graphs.size() != 1) {
         throw std::runtime_error(std::string{label} +
                                  " must resolve to exactly one frame graph");
@@ -323,7 +325,7 @@ Json resolvedFramePlan(Pelican::ResolvedRenderPipeline resolved,
     const auto targets = Pelican::parseRenderTargetDefinitionsFromJson(
         resolved.normalized_config);
     const auto physical = Pelican::compileRenderingTargetPlans(
-        graphs, targets, compiled.sample_count_policy,
+        render_graph, targets, compiled.sample_count_policy,
         vk::Format::eB8G8R8A8Srgb, planningDeviceFacts(), std::nullopt,
         std::nullopt, compiled.target_planning, compiled.vulkan_plan_pins,
         compiled.vulkan_physical_fragments);
@@ -568,9 +570,10 @@ const Wp348CubeCaptureMeasurement &wp348CubeCaptureMeasurement() {
         }
         const Pelican::CompiledRenderPipeline compiled =
             Pelican::compileRenderPipeline(resolved);
-        const auto graphs =
-            Pelican::parseFrameGraphDefinitionsFromConfigJson(
+        const auto render_graph =
+            Pelican::TestSupport::renderGraphOf(
                 resolved.normalized_config);
+        const auto graphs = Pelican::TestSupport::frameGraphsOf(render_graph);
         if (graphs.size() != 1) {
             throw std::runtime_error(
                 "WP348 fixture must resolve exactly one frame graph");
@@ -584,7 +587,7 @@ const Wp348CubeCaptureMeasurement &wp348CubeCaptureMeasurement() {
             Pelican::parseRenderTargetDefinitionsFromJson(
                 resolved.normalized_config);
         const auto physical = Pelican::compileRenderingTargetPlans(
-            graphs, targets, compiled.sample_count_policy,
+            render_graph, targets, compiled.sample_count_policy,
             vk::Format::eB8G8R8A8Srgb, planningDeviceFacts(),
             std::nullopt, std::nullopt, compiled.target_planning,
             compiled.vulkan_plan_pins,
@@ -1284,12 +1287,13 @@ Json independentOpportunityFramePlan(
                        {{"color", "beta_output"},
                         {"depth", nullptr}}}}})}}})},
     };
-    const auto graphs =
-        Pelican::parseFrameGraphDefinitionsFromConfigJson(config);
+    const auto render_graph =
+        Pelican::TestSupport::renderGraphOf(config);
+    const auto graphs = Pelican::TestSupport::frameGraphsOf(render_graph);
     const auto targets =
         Pelican::parseRenderTargetDefinitionsFromJson(config);
     const auto compilation = Pelican::compileRenderingTargetPlans(
-        graphs, targets, Pelican::compileSampleCountPolicy(config),
+        render_graph, targets, Pelican::compileSampleCountPolicy(config),
         vk::Format::eB8G8R8A8Unorm,
         planningDeviceFacts(),
         std::nullopt, std::nullopt,
@@ -1345,12 +1349,13 @@ Json fractionalScaleFramePlan() {
                        {{"color", "custom_output"},
                         {"depth", nullptr}}}}})}}})},
     };
-    const auto graphs =
-        Pelican::parseFrameGraphDefinitionsFromConfigJson(config);
+    const auto render_graph =
+        Pelican::TestSupport::renderGraphOf(config);
+    const auto graphs = Pelican::TestSupport::frameGraphsOf(render_graph);
     const auto targets =
         Pelican::parseRenderTargetDefinitionsFromJson(config);
     const auto compilation = Pelican::compileRenderingTargetPlans(
-        graphs, targets, Pelican::compileSampleCountPolicy(config),
+        render_graph, targets, Pelican::compileSampleCountPolicy(config),
         vk::Format::eB8G8R8A8Unorm, planningDeviceFacts());
     if (graphs.size() != 1 || compilation.plans.size() != 1) {
         throw std::runtime_error(

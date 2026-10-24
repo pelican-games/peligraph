@@ -3,6 +3,7 @@
 #include "frameplanner.hpp"
 #include "rendertargetdefinition.hpp"
 #include "../vkcore/runtimecapabilities.hpp"
+#include "../../project/rendergraphir.hpp"
 #include "../../project/targetrenderplanning.hpp"
 
 #include <cstdint>
@@ -149,26 +150,14 @@ struct RenderingTargetPlanCompilation {
         alias_group_assignments;
 };
 
-std::vector<CompiledLogicalRenderGraph>
-compileRenderingLogicalGraphs(
-    std::span<const FrameGraphDefinition> frame_graphs,
-    std::span<const RenderTargetDefinition> render_targets);
-// RC-3c1a: the same graphs with the materialization target-plan compilation
-// gives them on a device (its tile-local formats, each graph's eligible
-// ones). Only the bridge test calls it; RC-3c1b removes it with the core
-// planning parse (project's toLogicalGraph is the one path then).
-std::vector<CompiledLogicalRenderGraph>
-compileRenderingLogicalGraphs(
-    std::span<const FrameGraphDefinition> frame_graphs,
-    std::span<const RenderTargetDefinition> render_targets,
-    const RenderingTargetPlanDeviceFacts &device_facts);
-
-// Adapts the existing FrameGraphDefinition into the canonical logical/target
-// planner. The returned VulkanTargetPlan is authoritative for the concrete
-// image format, representation, and rasterization sample count consumed by
-// the adaptive render-target runtime.
+// Plans every graph of the finalized render graph (finalizeRenderGraph) on
+// the target: each graph's logical graph is project's toLogicalGraph with
+// this device's tile-local facts. The returned VulkanTargetPlan is
+// authoritative for the concrete image format, representation, and
+// rasterization sample count consumed by the adaptive render-target runtime.
+// `render_targets` are the execution declarations of the IR's config images.
 RenderingTargetPlanCompilation compileRenderingTargetPlans(
-    std::span<const FrameGraphDefinition> frame_graphs,
+    const RenderGraphIR &render_graph,
     std::span<const RenderTargetDefinition> render_targets,
     const SampleCountPolicy &policy,
     vk::Format swapchain_format,
@@ -183,7 +172,7 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
     std::span<const VulkanPhysicalFragmentPackage>
         physical_fragments = {});
 RenderingTargetPlanCompilation compileRenderingTargetPlansForVulkanDevice(
-    std::span<const FrameGraphDefinition> frame_graphs,
+    const RenderGraphIR &render_graph,
     std::span<const RenderTargetDefinition> render_targets,
     const SampleCountPolicy &policy,
     vk::Format swapchain_format,

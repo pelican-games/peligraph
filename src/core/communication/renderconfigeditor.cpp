@@ -15,6 +15,7 @@
 #include "../../project/materialdrawloop.hpp"
 #include "../../project/materialpassdecompose.hpp"
 #include "../../project/renderconfigsection.hpp"
+#include "../../project/rendergraphparse.hpp"
 #include "../../project/renderingjsonnormalize.hpp"
 #include "renderconfigtransaction.hpp"
 #include "engineauthoringlists.hpp"
@@ -29,6 +30,7 @@
 #include "../renderingpass/renderingsamplecount.hpp"
 #include "../renderer/viewfamilyproviderregistry.hpp"
 #include "../renderingpass/passdefinitionjsonparser.hpp"
+#include "../renderingpass/passfieldownershipcapabilities.hpp"
 #include "../renderingpass/renderingpassjsonhelpers.hpp"
 #include "../../project/imageformat.hpp"
 #include "../../project/imageusage.hpp"
@@ -114,6 +116,15 @@ std::optional<std::pair<std::string, Json>> graphRefusalOf(
     } catch (...) {
     }
     return std::nullopt;
+}
+
+// A named refusal's detail fields beside the call site's (the call site's
+// win): the one merge of the preflight and the apply / commit paths.
+OrderedJson withRefusalDetail(OrderedJson details, const Json &detail) {
+    if (details.is_null()) details = OrderedJson::object();
+    for (const auto &[key, value] : detail.items())
+        if (!details.contains(key)) details[key] = value;
+    return details;
 }
 
 // CT-2: a graph.* refusal's details with the root's reference as `document`
@@ -901,25 +912,21 @@ RenderTargetOrigins renderTargetOrigins(
     return origins;
 }
 
-// Who still reads or writes each render target: the planner's own reading of
-// the composed passes and tasks, not a second scanner of pass fields.
+// Who still reads or writes each render target: the uses of the composed
+// graph's IR (parseRenderGraph, the one reading of the passes and tasks), not
+// a second scanner of pass fields.
 std::map<std::string, std::vector<std::string>, std::less<>>
 renderTargetUsers(const Json &composed) {
     std::map<std::string, std::vector<std::string>, std::less<>> users;
-    const auto add = [&users](std::string resource, const std::string &node) {
-        if (const auto at = resource.find('@'); at != std::string::npos)
-            resource.erase(at);
-        auto &names = users[resource];
-        if (std::find(names.begin(), names.end(), node) == names.end())
-            names.push_back(node);
-    };
-    for (const auto &graph : parseFrameGraphDefinitionsFromConfigJson(composed)) {
+    const auto render_graph =
+        parseRenderGraph(composed, buildPassFieldOwnershipCapabilities());
+    for (const auto &graph : render_graph.graphs) {
         for (const auto &node : graph.nodes) {
-            for (const auto &resource : node.reads) add(resource, node.name);
-            for (const auto &resource : node.reads_history) add(resource, node.name);
-            for (const auto &resource : node.writes) add(resource, node.name);
-            for (const auto &access : node.resource_accesses)
-                add(access.resource, node.name);
+            for (const auto &use : node.uses) {
+                auto &names = users[use.resource];
+                if (std::find(names.begin(), names.end(), node.name) == names.end())
+                    names.push_back(node.name);
+            }
         }
     }
     return users;
@@ -1396,6 +1403,18 @@ OrderedJson RenderConfigEditorService::preflightRejection(
                      withPreflightRefusalFields(std::move(details), error));
 }
 
+OrderedJson RenderConfigEditorService::namedPreflightRejection(
+    const std::exception &error, OrderedJson details,
+    std::string_view root_bytes) const {
+    if (const auto *named = dynamic_cast<const GraphRegistryError *>(&error)) {
+        details = withGraphRefusalDocument(
+            withRefusalDetail(std::move(details), named->detail()), named->code(),
+            root_bytes, dependencies_.source_reference);
+        return rejection(named->code(), error.what(), std::move(details));
+    }
+    return preflightRejection(error, std::move(details));
+}
+
 std::optional<OrderedJson> RenderConfigEditorService::preflightGraphVariants(
     const RenderConfigCandidateDocumentSet &candidate,
     OrderedJson details) const {
@@ -1442,11 +1461,12 @@ std::optional<OrderedJson> RenderConfigEditorService::restartGraphRejection(
                          "The restart candidate requires the project document resolver", details);
     try {
         const auto composed = dependencies_.resolve_authoring_context(candidate);
-        const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
-        const auto targets = parseRenderTargetDefinitionsFromJson(composed.config);
-        (void)compileRenderingLogicalGraphs(graphs, targets);
+        const auto render_graph =
+            parseRenderGraph(composed.config, buildPassFieldOwnershipCapabilities());
+        for (const auto &graph : render_graph.graphs)
+            (void)toLogicalGraph(render_graph, graph);
     } catch (const std::exception &error) {
-        return preflightRejection(error, details);
+        return namedPreflightRejection(error, details, candidate.rootDocument().bytes);
     }
     return std::nullopt;
 }
@@ -5045,22 +5065,32 @@ struct PlanningNames {
 };
 
 std::optional<PlanningNames> planningNamesOf(const Json &composed, std::string_view graph) {
-    for (const auto &definition : parseFrameGraphDefinitionsFromConfigJson(composed)) {
-        if (definition.name != graph) continue;
-        PlanningNames names;
-        names.resources.insert(definition.declared_resources.begin(),
-                               definition.declared_resources.end());
-        names.resources.insert(definition.history_resources.begin(),
-                               definition.history_resources.end());
-        for (const auto &node : definition.nodes) {
-            names.nodes.insert(node.name);
-            names.resources.insert(node.writes.begin(), node.writes.end());
-            if (std::ranges::find(node.reads, std::string{"swapchain"}) != node.reads.end())
-                names.resources.insert("swapchain");
+    const auto render_graph =
+        parseRenderGraph(composed, buildPassFieldOwnershipCapabilities());
+    const auto *found = findGraph(render_graph, graph);
+    if (found == nullptr) return std::nullopt;
+    PlanningNames names;
+    // Declared: the graph's own images and buffers, then the config's.
+    for (const auto &image : found->images) names.resources.insert(image.name);
+    for (const auto &buffer : found->buffers) names.resources.insert(buffer.name);
+    for (const auto &image : render_graph.images) names.resources.insert(image.name);
+    for (const auto &buffer : render_graph.buffers) names.resources.insert(buffer.name);
+    for (const auto &node : found->nodes) {
+        names.nodes.insert(node.name);
+        for (const auto &use : node.uses) {
+            const bool attachment = use.role == ResourceUseRole::color_attachment ||
+                                    use.role == ResourceUseRole::depth_attachment;
+            const bool writes = attachment || use.role == ResourceUseRole::output ||
+                                use.role == ResourceUseRole::copy_destination;
+            if (writes) names.resources.insert(use.resource);
+            // swapchain when a node reads it (a loading attachment reads too).
+            const bool reads =
+                attachment ? use.operations && use.operations->load_op == AttachmentLoadOp::load
+                           : !writes && !use.history && use.role != ResourceUseRole::resource_port;
+            if (reads && use.resource == "swapchain") names.resources.insert("swapchain");
         }
-        return names;
     }
-    return std::nullopt;
+    return names;
 }
 
 // {name: object | null} applied to `entries`: null erases the name; an
@@ -5383,7 +5413,17 @@ OrderedJson RenderConfigEditorService::editTargetPlanning(const Json &params) {
             };
             // The names are the expanded ones get_frame_plan shows. FG-1 maps a
             // fold group's local names onto them before this point.
-            const auto names = planningNamesOf(context.config, graph);
+            std::optional<PlanningNames> names;
+            try {
+                names = planningNamesOf(context.config, graph);
+            } catch (const std::exception &error) {
+                return {.value = std::nullopt,
+                        .refusal = namedPreflightRejection(
+                            error,
+                            {{"participant", "pelican.render_pipeline"},
+                             {"method", "edit_target_planning"}},
+                            currentDocumentSet().rootDocument().bytes)};
+            }
             if (!names) return {.value = std::nullopt, .refusal = unknown("graph", graph)};
             auto planning =
                 current && current->is_object() ? std::move(*current) : OrderedJson::object();
@@ -6398,9 +6438,10 @@ OrderedJson RenderConfigEditorService::editRenderTargets(const Json &params) {
         try {
             users = renderTargetUsers(current.config);
         } catch (const std::exception &error) {
-            return preflightRejection(error,
-                                      {{"participant", "pelican.render_pipeline"},
-                                       {"fragment_reference", reference}});
+            return namedPreflightRejection(error,
+                                           {{"participant", "pelican.render_pipeline"},
+                                            {"fragment_reference", reference}},
+                                           currentDocumentSet().rootDocument().bytes);
         }
         for (const auto &name : dropped) {
             const auto found = users.find(name);
@@ -8095,13 +8136,10 @@ void RenderConfigEditorService::completeCommitTransaction(
                     return;
                 }
                 if (auto refusal = graphRefusalOf(applied.exception)) {
-                    for (const auto &[key, value] :
-                         refusal->second.items()) {
-                        if (!details.contains(key)) details[key] = value;
-                    }
                     // CT-2: judged against the root this ticket carried.
                     details = withGraphRefusalDocument(
-                        std::move(details), refusal->first,
+                        withRefusalDetail(std::move(details), refusal->second),
+                        refusal->first,
                         transaction->ticket.candidate.bytes(),
                         dependencies_.source_reference);
                     finish(rejection(refusal->first, applied.error,

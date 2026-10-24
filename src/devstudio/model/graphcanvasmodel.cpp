@@ -6091,27 +6091,14 @@ std::string GraphCanvasModel::canvasNodeOfPass(std::string_view name) const {
     return foldedOwnerOf(*pass);
 }
 
-bool GraphCanvasModel::graphWritesResourceNamedIn(std::string_view message) const {
-    std::set<std::string, std::less<>> words;
-    std::size_t at = 0;
-    while (at < message.size()) {
-        const auto start = message.find_first_not_of(" \t\r\n", at);
-        if (start == std::string_view::npos) break;
-        auto end = message.find_first_of(" \t\r\n", start);
-        if (end == std::string_view::npos) end = message.size();
-        auto word = message.substr(start, end - start);
-        while (!word.empty() && (word.back() == ':' || word.back() == ',' ||
-                                 word.back() == ';' || word.back() == '.'))
-            word.remove_suffix(1);
-        if (!word.empty()) words.emplace(word);
-        at = end;
-    }
-    return std::ranges::any_of(plan_passes_, [&](const GraphCanvasPlanPass &pass) {
-        return pass.kind != "anchor" && !graphOwnerOf(pass).empty() &&
-               std::ranges::any_of(pass.writes, [&](const std::string &written) {
-                   return words.contains(written);
-               });
-    });
+bool GraphCanvasModel::graphWritesResource(std::string_view resource) const {
+    return !resource.empty() &&
+           std::ranges::any_of(plan_passes_, [&](const GraphCanvasPlanPass &pass) {
+               return pass.kind != "anchor" && !graphOwnerOf(pass).empty() &&
+                      std::ranges::any_of(pass.writes, [&](const std::string &written) {
+                          return written == resource;
+                      });
+           });
 }
 
 // --- GL-1e: a rendering-section pass's inputs.

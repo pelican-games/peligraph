@@ -24,6 +24,7 @@
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
 #include "../src/core/renderingpass/vulkanrendercompilerpackage.hpp"
 #include "../src/core/renderingpass/vulkanrendercompilerprogramdetail.hpp"
+#include "render_graph_ir_test_support.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -521,7 +522,7 @@ TEST_CASE(
     };
     const auto response = [](const ResolvedRenderPipeline &resolved) {
         const auto graphs =
-            parseFrameGraphDefinitionsFromConfigJson(
+            TestSupport::frameGraphsOf(
                 resolved.normalized_config);
         REQUIRE(graphs.size() == 1);
         const auto compiled = compileRenderPipeline(resolved);
@@ -679,16 +680,17 @@ TEST_CASE(
                         .get<std::string>(),
             },
         };
-        auto graphs =
-            parseFrameGraphDefinitionsFromConfigJson(
-                resolved.normalized_config);
+        // RC-3c1b: the IR's names (namespaceSharedComputeTasks) and core's
+        // remainder: the execution declarations and the provenance.
+        const auto ir = namespaceSharedComputeTasks(
+            TestSupport::renderGraphOf(resolved.normalized_config),
+            compiled.graph_variant_policy.rendering_pass_name_suffix);
         REQUIRE(tasks.size() == 1);
-        REQUIRE(graphs.size() == 1);
+        REQUIRE(ir.graphs.size() == 1);
 
-        detail::namespaceComputeTasks(
-            tasks, graphs, resolved.normalized_config,
-            compiled);
-        const auto plan = planFrameGraph(graphs.front());
+        detail::namespaceComputeTaskDefinitions(
+            tasks, resolved.normalized_config, compiled);
+        const auto plan = planRenderGraph(ir, ir.graphs.front());
         return VariantPlans{
             .stale_provenance =
                 framePlanToJson(plan, &stale_compiled),
@@ -1088,13 +1090,16 @@ TEST_CASE(
     REQUIRE_FALSE(has_node(
         xr_plan, "probe", "compute"));
 
-    REQUIRE_THROWS_WITH(
-        compile(
-            wp309CompilerConfig(false),
-            RenderPipelineGraphVariant::xr,
-            compiler_only_backend),
-        "compute task variant name collision in graph "
-        "'main#xr': probe#xr");
+    // RC-3c1b: refused by name (the IR's namespaceSharedComputeTasks).
+    TestSupport::requireNamedRefusal(
+        [&] {
+            (void)compile(
+                wp309CompilerConfig(false),
+                RenderPipelineGraphVariant::xr,
+                compiler_only_backend);
+        },
+        "render_graph.compute_task_name_collision@1",
+        {{"graph", "main#xr"}, {"node", "probe#xr"}});
 #else
     REQUIRE_THROWS_WITH(
         compile(
@@ -1773,7 +1778,7 @@ TEST_CASE(
         target["height"] = 16;
     }
     const auto graphs =
-        parseFrameGraphDefinitionsFromConfigJson(
+        TestSupport::frameGraphsOf(
             runtime_config);
     REQUIRE(graphs.size() == 1);
     const auto plan =
@@ -3183,7 +3188,7 @@ TEST_CASE("startup feature overlay is explicit, additive, and purgeable",
             config,
             RenderFeatureComposeDependencies{loadEngineFeature, true});
         const auto graphs =
-            parseFrameGraphDefinitionsFromConfigJson(composition.config);
+            TestSupport::frameGraphsOf(composition.config);
         REQUIRE(graphs.size() == 1);
         const auto plan = planFrameGraph(graphs.front());
         FramePlanTopology result;
@@ -3287,7 +3292,7 @@ TEST_CASE("P-2a-4a a pelican.graph root composes like its legacy twin and takes 
     };
     const auto topology = [](const RenderFeatureComposeResult &composition) {
         const auto graphs =
-            parseFrameGraphDefinitionsFromConfigJson(composition.config);
+            TestSupport::frameGraphsOf(composition.config);
         REQUIRE(graphs.size() == 1);
         const auto plan = planFrameGraph(graphs.front());
         Topology result;
@@ -3635,7 +3640,7 @@ TEST_CASE("bundled TAA composes into the example pipeline as a two-pass history 
         "PELICAN_FEATURE_TAA_DEPTH_EPSILON=9.99999975e-06",
     });
 
-    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(result.config);
+    const auto graphs = TestSupport::frameGraphsOf(result.config);
     REQUIRE(graphs.size() == 1);
     auto plan = planFrameGraph(graphs.front());
     const auto compiled_pipeline = compileComposition(result);
@@ -3927,7 +3932,7 @@ TEST_CASE("projection jitter table schema derives phases and rejects invalid tab
             };
             REQUIRE(result.projection_jitter == expected);
 
-            const auto graphs = parseFrameGraphDefinitionsFromConfigJson(result.config);
+            const auto graphs = TestSupport::frameGraphsOf(result.config);
             REQUIRE(graphs.size() == 1);
             auto plan = planFrameGraph(graphs.front());
             const auto compiled_pipeline = compileComposition(result);
@@ -4055,7 +4060,7 @@ TEST_CASE("named render-target binding resolves pass IO history and override key
             nlohmann::json::array(
                 {"R16G16B16A16_SFLOAT"}));
 
-        const auto graphs = parseFrameGraphDefinitionsFromConfigJson(result.config);
+        const auto graphs = TestSupport::frameGraphsOf(result.config);
         REQUIRE(graphs.size() == 1);
         auto plan = planFrameGraph(graphs.front());
         const auto compiled_pipeline = compileComposition(result);
@@ -4203,7 +4208,7 @@ TEST_CASE("scalar feature parameters resolve defaults and lower to deterministic
     REQUIRE(first_target.at("layers") == 7);
     REQUIRE(first_target.at("history") == false);
 
-    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(first.config);
+    const auto graphs = TestSupport::frameGraphsOf(first.config);
     REQUIRE(graphs.size() == 1);
     auto plan = planFrameGraph(graphs.front());
     const auto compiled_pipeline = compileComposition(first);
@@ -4786,7 +4791,7 @@ TEST_CASE("common graph buffer ports lower into native compute declarations", "[
     planning["compute_tasks"] = nlohmann::json::array({
         computeTaskByName(config, "consume"), computeTaskByName(config, "right/run"),
         computeTaskByName(config, "left/run")});
-    const auto order = framePlanOrder(planFrameGraph(parseFrameGraphDefinitionFromJson(planning)));
+    const auto order = framePlanOrder(planFrameGraph(TestSupport::frameGraphOf(planning)));
     REQUIRE(order.size() == 3);
     REQUIRE(std::find(order.begin(), order.end(), "left/run") <
             std::find(order.begin(), order.end(), "consume"));
@@ -4883,9 +4888,13 @@ TEST_CASE("common graphics ports retain shaders and order attachment consumers",
         REQUIRE(pass.at("output").at("color") == rc3bColors({"image"}));
         REQUIRE(pass.at("resource_ports").at("source").at("resource") == "data");
         REQUIRE(computeTaskByName(config, "consume").at("after") == Json::array({"draw"}));
+        // RC-3c1b: the planner reads the IR, whose images are declarations
+        // the render target parser accepts; the lowered image is given the
+        // usage registration requires of a declaration.
         auto planning = config;
-        planning["passes"] = config.at("rendering_passes").at(0).at("passes");
-        const auto order = framePlanOrder(planFrameGraph(parseFrameGraphDefinitionFromJson(planning)));
+        for (auto &target : planning["render_targets"])
+            if (!target.contains("usage")) target["usage"] = Json::array({"COLOR_ATTACHMENT", "SAMPLED"});
+        const auto order = framePlanOrder(TestSupport::framePlansOf(planning).at(0));
         REQUIRE(std::find(order.begin(), order.end(), "draw") < std::find(order.begin(), order.end(), "consume"));
         REQUIRE_NOTHROW(compileRenderPipeline(resolved));
         auto invalid = document;
@@ -4981,7 +4990,7 @@ TEST_CASE("graph render nodes lower view_select onto their pass",
     const auto tasks = parseComputeTaskDefinitionsFromConfigJson(config);
     REQUIRE(tasks.size() == 1);
     CHECK(tasks.front().view_select == RenderViewSelect{{"face", 2}});
-    const auto graph = parseFrameGraphDefinitionFromJson(config);
+    const auto graph = TestSupport::frameGraphOf(config);
     REQUIRE(graph.nodes.size() == 1);
     CHECK(graph.nodes.front().view_select == RenderViewSelect{{"face", 2}});
 }
@@ -5074,7 +5083,7 @@ TEST_CASE("LP-0a render.target_ref reads and writes targets declared outside the
         CHECK(lit_targets == 1);
         // The Frame Plan keeps whoever declared a referenced target as its source.
         const auto compiled = compileComposition(composed);
-        const auto graphs = parseFrameGraphDefinitionsFromConfigJson(config);
+        const auto graphs = TestSupport::frameGraphsOf(config);
         const auto graph = std::find_if(graphs.begin(), graphs.end(),
             [](const auto &candidate) { return candidate.name == "main_render"; });
         REQUIRE(graph != graphs.end());
@@ -5291,7 +5300,7 @@ std::ptrdiff_t lp0bIndex(const std::vector<std::string> &names, std::string_view
 }
 
 std::vector<std::string> lp0bPlanOrder(const RenderFeatureComposeResult &composed) {
-    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+    const auto graphs = TestSupport::frameGraphsOf(composed.config);
     const auto graph = std::find_if(graphs.begin(), graphs.end(),
         [](const auto &candidate) { return candidate.name == "main_render"; });
     REQUIRE(graph != graphs.end());
@@ -5553,7 +5562,7 @@ nlohmann::json lp1aGraph(nlohmann::json nodes, nlohmann::json definitions = null
 // The main_render frame plan of a composition, as get_frame_plan serializes it.
 nlohmann::json lp1aPlanJson(const RenderFeatureComposeResult &composed) {
     const auto compiled = compileComposition(composed);
-    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+    const auto graphs = TestSupport::frameGraphsOf(composed.config);
     const auto graph = std::find_if(graphs.begin(), graphs.end(),
         [](const auto &candidate) { return candidate.name == "main_render"; });
     REQUIRE(graph != graphs.end());
@@ -5987,7 +5996,7 @@ TEST_CASE("LP-1a recompile time up to the expansion limit", "[.][lp1a-timing]") 
             const auto composed = lp0aCompose(document);
             const auto compiled = compileComposition(composed);
             const auto composed_at = Clock::now();
-            for (const auto &graph : parseFrameGraphDefinitionsFromConfigJson(composed.config))
+            for (const auto &graph : TestSupport::frameGraphsOf(composed.config))
                 (void)framePlanToJson(planFrameGraph(graph), &compiled);
             const auto planned_at = Clock::now();
             compose_ms += std::chrono::duration<double, std::milli>(composed_at - start).count();
@@ -6382,7 +6391,7 @@ namespace {
 // LP-6: what the runtime refuses when the graph recompiles: a pass input no
 // earlier pass of main_render produced.
 void lp6RequireInputsProduced(const RenderFeatureComposeResult &composed) {
-    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+    const auto graphs = TestSupport::frameGraphsOf(composed.config);
     const auto graph = std::find_if(graphs.begin(), graphs.end(),
         [](const auto &candidate) { return candidate.name == "main_render"; });
     REQUIRE(graph != graphs.end());
@@ -6393,7 +6402,7 @@ void lp6RequireInputsProduced(const RenderFeatureComposeResult &composed) {
     std::unordered_set<std::string> buffers;
     for (const auto &buffer : composed.config.value("buffers", nlohmann::json::array()))
         buffers.insert(buffer.at("name").get<std::string>());
-    REQUIRE_NOTHROW(validateFramePlanPassInputsProduced(planFrameGraph(*graph), *family, buffers));
+    REQUIRE_NOTHROW(TestSupport::requireInputsProducedOf(composed.config, "main_render"));
 }
 
 // `shared` is an image `z_write` draws; `a_read` reads it from the image node
@@ -8531,7 +8540,7 @@ TEST_CASE("LP-Vb region_tags reach the pass as its regions, and input_index orde
         CHECK(passByName(copy.config, "opaque_color_copy").at("regions") == Json::array({"capture", "copy"}));
         CHECK_FALSE(passByName(copy.config, "opaque_color_copy").contains("region_tags"));
         // The frame graph reads them: the planner's node carries the tags.
-        const auto graphs = parseFrameGraphDefinitionsFromConfigJson(copy.config);
+        const auto graphs = TestSupport::frameGraphsOf(copy.config);
         const auto frame_graph = std::find_if(graphs.begin(), graphs.end(),
                                               [](const auto &candidate) { return candidate.name == "main_render"; });
         REQUIRE(frame_graph != graphs.end());
@@ -8841,13 +8850,13 @@ TEST_CASE("RS-3 an unplaced graph pass whose output a scene pass reads stands be
     // What the engine refuses a pass for at compile time, checked here for
     // every family of the composed config.
     const auto inputs_produced = [](const RenderFeatureComposeResult &composed) {
-        const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+        const auto graphs = TestSupport::frameGraphsOf(composed.config);
         for (const auto &family : composed.config.at("rendering_passes")) {
             const auto name = family.at("name").get<std::string>();
             const auto graph = std::find_if(graphs.begin(), graphs.end(),
                 [&](const auto &candidate) { return candidate.name == name; });
             REQUIRE(graph != graphs.end());
-            validateFramePlanPassInputsProduced(planFrameGraph(*graph), family, {});
+            TestSupport::requireInputsProducedOf(composed.config, name);
         }
     };
     SECTION("a fullscreen pass, and the loop that stands by it, move ahead of present") {
@@ -9120,14 +9129,15 @@ TEST_CASE("RS-6 a scene pass that reads what a graph compute task wrote waits on
     REQUIRE(present.at("name") == "present");
     present["input"] = Json::array({"mask"});
     const auto plan = [](const RenderFeatureComposeResult &composed) {
-        const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+        const auto graphs = TestSupport::frameGraphsOf(composed.config);
         const auto graph = std::find_if(graphs.begin(), graphs.end(),
             [](const auto &candidate) { return candidate.name == "main_render"; });
         REQUIRE(graph != graphs.end());
         return planFrameGraph(*graph);
     };
     const auto inputs_produced = [&](const RenderFeatureComposeResult &composed) {
-        validateFramePlanPassInputsProduced(plan(composed), composed.config.at("rendering_passes").at(0), {});
+        TestSupport::requireInputsProducedOf(
+            composed.config, composed.config.at("rendering_passes").at(0).at("name").get<std::string>());
     };
     SECTION("present waits on the task that writes its input") {
         // The image is declared for the task only; present samples it.
@@ -9188,9 +9198,9 @@ TEST_CASE("RS-6 a scene pass that reads what a graph compute task wrote waits on
         const auto declared = lp0bDeclared(composed.config);
         CHECK(lp0bIndex(declared, "present") < lp0bIndex(declared, "blit"));
         CHECK_FALSE(lp0bListed(passByName(composed.config, "present").value("after", Json::array()), "trace"));
-        CHECK_THROWS_WITH(inputs_produced(composed),
-                          Catch::Matchers::ContainsSubstring(
-                              "Pass input target is not produced as an earlier output: mask in pass: present"));
+        TestSupport::requireNamedRefusal([&] { inputs_produced(composed); },
+                                         "render_graph.input_not_produced@1",
+                                         {{"node", "present"}, {"resource", "mask"}});
     }
 }
 
@@ -9229,12 +9239,13 @@ TEST_CASE("RS-6b a scene pass that reads what a feature's compute task wrote wai
         const auto order = lp0bPlanOrder(composed);
         CHECK(lp0bIndex(order, "gbuffer") < lp0bIndex(order, "rt_shadow_mask_pipeline"));
         CHECK(lp0bIndex(order, "rt_shadow_mask_pipeline") < lp0bIndex(order, "present"));
-        const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+        const auto graphs = TestSupport::frameGraphsOf(composed.config);
         const auto graph = std::find_if(graphs.begin(), graphs.end(),
             [](const auto &candidate) { return candidate.name == "main_render"; });
         REQUIRE(graph != graphs.end());
         const auto plan = planFrameGraph(*graph);
-        REQUIRE_NOTHROW(validateFramePlanPassInputsProduced(plan, composed.config.at("rendering_passes").at(0), {}));
+        REQUIRE_NOTHROW(TestSupport::requireInputsProducedOf(
+            composed.config, composed.config.at("rendering_passes").at(0).at("name").get<std::string>()));
         // present samples the mask: the composed target gains SAMPLED (the
         // feature's document keeps its own usage).
         const auto &mask = renderTargetByName(composed.config, "rt_shadow_mask_pipeline");
@@ -9561,11 +9572,13 @@ TEST_CASE("RS-7 a scene pass that reads a scene pass reading the graph's output 
         const auto composed = authored("after:present");
         const auto declared = lp0bDeclared(composed.config);
         CHECK(lp0bIndex(declared, "present") < lp0bIndex(declared, "deferred_lighting"));
-        CHECK_THROWS_WITH(validateFramePlanPassInputsProduced(
-                              planFrameGraph(parseFrameGraphDefinitionsFromConfigJson(composed.config).at(0)),
-                              composed.config.at("rendering_passes").at(0), {}),
-                          Catch::Matchers::ContainsSubstring(
-                              "Pass input target is not produced as an earlier output: deferred_lighting_color"));
+        TestSupport::requireNamedRefusal(
+            [&] {
+                TestSupport::requireInputsProducedOf(
+                    composed.config,
+                    composed.config.at("rendering_passes").at(0).at("name").get<std::string>());
+            },
+            "render_graph.input_not_produced@1", {{"resource", "deferred_lighting_color"}});
     }
 }
 
@@ -9599,7 +9612,7 @@ TEST_CASE("RS-13 the rendering section reads a loop's output as <loop>.<output>"
         REQUIRE_NOTHROW(compileComposition(three));
         // The frame plan says what present named.
         const auto compiled = compileComposition(three);
-        const auto graphs = parseFrameGraphDefinitionsFromConfigJson(three.config);
+        const auto graphs = TestSupport::frameGraphsOf(three.config);
         const auto json = framePlanToJson(planFrameGraph(graphs.at(0)), &compiled);
         const auto node = std::find_if(json.at("nodes").begin(), json.at("nodes").end(),
             [](const Json &candidate) { return candidate.at("name") == "present"; });
@@ -9735,7 +9748,7 @@ TEST_CASE("PS-1 schedule and lifetime reach the passes, the targets and the fram
     CHECK_FALSE(ps1Target(composed.config, "show_image").contains("lifetime"));
     REQUIRE_NOTHROW(compileComposition(composed));
 
-    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+    const auto graphs = TestSupport::frameGraphsOf(composed.config);
     const auto graph = std::find_if(graphs.begin(), graphs.end(),
         [](const auto &candidate) { return candidate.name == "main_render"; });
     REQUIRE(graph != graphs.end());
@@ -10223,7 +10236,7 @@ TEST_CASE("FR-1 a snapshot after a name the pipeline lacks is refused with the n
             target["width"] = 1280;
             target["height"] = 720;
         }
-        const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+        const auto graphs = TestSupport::frameGraphsOf(composed.config);
         REQUIRE(graphs.size() == 1);
         const auto plan = planFrameGraph(graphs.front());
         const auto anchor = std::ranges::find(plan.nodes, std::string{"__anchor_post_ldr"}, &FramePlanNode::name);

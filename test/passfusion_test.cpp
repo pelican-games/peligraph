@@ -7,6 +7,7 @@
 #include "../src/project/rendergraphparse.hpp"
 #include "../src/project/renderpipeline.hpp"
 #include "render_graph_root_test_support.hpp"
+#include "render_graph_ir_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -125,17 +126,14 @@ struct FusionInput {
 };
 
 // The production path from a composed config to the planner's input:
-// parseFrameGraphDefinitionsFromConfigJson, then compileLogicalFrameGraphShadow
-// with the builtin registry and renderingsamplecount.cpp's shadowOptions
-// (compileRenderingLogicalGraphs is that call's public form; the target-plan
-// compile adds only the device's tile-local formats, which change a
-// resource's materialization, not the graph).
+// parseRenderGraph, then toLogicalGraph without a device (RC-3c1b: the
+// target-plan compile adds only the device's tile-local formats, which change
+// a resource's materialization, not the graph).
 FusionInput fusionInput(const Json &composed) {
     FusionInput input;
     input.targets = parseRenderTargetDefinitionsFromJson(composed);
-    input.definitions = parseFrameGraphDefinitionsFromConfigJson(composed);
-    input.graphs =
-        compileRenderingLogicalGraphs(input.definitions, input.targets);
+    input.definitions = TestSupport::frameGraphsOf(composed);
+    input.graphs = TestSupport::logicalGraphsOf(composed);
     REQUIRE(input.graphs.size() == input.definitions.size());
     std::map<std::string, const RenderTargetDefinition *, std::less<>>
         targets;

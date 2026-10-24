@@ -3,6 +3,7 @@
 #include "frameplanner.hpp"
 #include "providerlisting.hpp"
 #include "../../project/logicalrendergraph.hpp"
+#include "../../project/rendergraphir.hpp"
 #include "../userpublic/details/reload/registrationowner.hpp"
 #include "../userpublic/render/graph_transform_abi_v1.hpp"
 
@@ -129,19 +130,26 @@ class GraphTransformRegistry {
         internal::RegistrationOwner owner) noexcept;
 };
 
+// RC-3c1b: the config after the chain and the IR of its last revision. Each
+// response is parsed once (parseRenderGraph); that IR is both the request's
+// "after" and the next request's "before".
 struct ResolvedLogicalGraphTransformConfig {
     nlohmann::json config;
+    RenderGraphIR render_graph;
     std::vector<LogicalGraphTransformSelection>
         selections;
 };
 
+// `render_graph` is the IR of `config` (its parse; the normal form).
 ResolvedLogicalGraphTransformConfig
 resolveLogicalGraphTransforms(
     const nlohmann::json &config,
+    RenderGraphIR render_graph,
     const GraphTransformRegistrySnapshot &providers);
 
+// The chain's provenance, on every graph of the IR.
 void applyResolvedLogicalGraphTransformSelections(
-    std::span<FrameGraphDefinition> frame_graphs,
+    RenderGraphIR &render_graph,
     std::span<const LogicalGraphTransformSelection>
         selections);
 

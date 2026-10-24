@@ -3,6 +3,7 @@
 #include "frameplanner.hpp"
 #include "providerlisting.hpp"
 #include "../../project/logicalrendergraph.hpp"
+#include "../../project/rendergraphir.hpp"
 #include "../userpublic/details/reload/registrationowner.hpp"
 #include "../userpublic/render/subgraph_replacement_abi_v1.hpp"
 
@@ -130,18 +131,24 @@ struct ResolvedTaggedSubgraphGraph {
         selections;
 };
 
+// RC-3c1b: the config after every replacement and the IR of its last
+// revision (each spliced config parsed once).
 struct ResolvedTaggedSubgraphConfig {
     nlohmann::json config;
+    RenderGraphIR render_graph;
     std::vector<ResolvedTaggedSubgraphGraph> graphs;
 };
 
+// `render_graph` is the IR of `config` (its parse; the normal form).
 ResolvedTaggedSubgraphConfig
 resolveTaggedSubgraphReplacements(
     const nlohmann::json &config,
+    RenderGraphIR render_graph,
     const SubgraphReplacementRegistrySnapshot &providers);
 
+// The replacements' provenance, on the graphs of the IR they replaced in.
 void applyResolvedTaggedSubgraphSelections(
-    std::span<FrameGraphDefinition> frame_graphs,
+    RenderGraphIR &render_graph,
     std::span<const ResolvedTaggedSubgraphGraph>
         resolved_graphs);
 

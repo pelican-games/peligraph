@@ -22,6 +22,7 @@
 #include "../src/project/renderpipeline.hpp"
 #include "../src/core/renderer/fullscreenpassrenderer.hpp"
 #include "../src/core/userpublic/render/pass_implementation_abi_v1.hpp"
+#include "render_graph_ir_test_support.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -1704,7 +1705,7 @@ TEST_CASE(
             buffers, tasks));
 
     const auto graphs =
-        parseFrameGraphDefinitionsFromConfigJson(
+        TestSupport::frameGraphsOf(
             config);
     REQUIRE(graphs.size() == 1);
     const auto consumer = std::find_if(
@@ -1906,7 +1907,7 @@ TEST_CASE(
     REQUIRE(source->count_offset == 0);
 
     const auto graphs =
-        parseFrameGraphDefinitionsFromConfigJson(
+        TestSupport::frameGraphsOf(
             config);
     REQUIRE(graphs.size() == 1);
     const auto plan =
@@ -2899,7 +2900,7 @@ TEST_CASE(
           }]
         })json");
         const auto frameplanner_rejected = rejectionMessage([&] {
-            (void)parseFrameGraphDefinitionFromJson(
+            (void)TestSupport::frameGraphOf(
                 formerly_accepted);
         });
         const auto parser_rejected = rejectionMessage([&] {
@@ -2909,9 +2910,15 @@ TEST_CASE(
         });
         REQUIRE_FALSE(frameplanner_rejected.empty());
         REQUIRE_FALSE(parser_rejected.empty());
-        REQUIRE(frameplanner_rejected == parser_rejected);
+        // RC-3c1b: one shape rule; the IR names it, the execution parser
+        // says it in its words.
         REQUIRE_THAT(
             frameplanner_rejected,
+            Catch::Matchers::ContainsSubstring("render_graph.pass_shape@1") &&
+                Catch::Matchers::ContainsSubstring(R"("violation":"color_output_count")") &&
+                Catch::Matchers::ContainsSubstring(R"("node":"bad_fullscreen")"));
+        REQUIRE_THAT(
+            parser_rejected,
             Catch::Matchers::ContainsSubstring(
                 "Pass shape violation 'color_output_count'") &&
                 Catch::Matchers::ContainsSubstring("bad_fullscreen"));
@@ -2934,7 +2941,7 @@ TEST_CASE(
           }]
         })json");
         const auto graph =
-            parseFrameGraphDefinitionFromJson(valid_neighbor);
+            TestSupport::frameGraphOf(valid_neighbor);
         REQUIRE(graph.nodes.size() == 1);
         REQUIRE(
             graph.nodes.front().reads ==

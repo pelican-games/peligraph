@@ -8,6 +8,7 @@
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
 #include "../src/core/renderer/drawqueuebuilder.hpp"
 #include "../src/core/renderer/renderpolicyregistry.hpp"
+#include "render_graph_ir_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -299,9 +300,11 @@ resolveSubgraphImplementation() {
     };
     const auto providers =
         subgraphReplacementRegistry().snapshot();
+    // RC-3c1b: the replacements take the config's IR beside it.
+    const auto normal = normalizeRenderingJson(config);
     const auto resolved =
         resolveTaggedSubgraphReplacements(
-            config, providers);
+            normal, TestSupport::renderGraphOf(normal), providers);
     const auto &selection =
         resolved.graphs.front().selections.front();
     const auto replacement_name =
@@ -355,9 +358,11 @@ std::string resolveGraphTransformImplementation() {
     };
     const auto providers =
         graphTransformRegistry().snapshot();
+    // RC-3c1b: the chain takes the config's IR beside it.
+    const auto normal = normalizeRenderingJson(config);
     const auto resolved =
         resolveLogicalGraphTransforms(
-            config, providers);
+            normal, TestSupport::renderGraphOf(normal), providers);
     return resolved.selections.front()
         .implementation;
 }

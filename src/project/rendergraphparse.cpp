@@ -1207,13 +1207,20 @@ std::vector<ImageResource> parseConfigImages(const Json &config, bool &declares_
             if (fixed->width == 0 || fixed->height == 0) invalid("width", "not_positive");
         }
         const auto format_name = target.find("format");
-        if (format_name == target.end() || !format_name->is_string()) {
-            invalid("format", "requires_string");
-        }
-        const auto format_text = format_name->get<std::string>();
+        const auto format_class = target.find("format_class");
         ImageResource image;
         image.name = name;
-        if (const auto format_class = target.find("format_class"); format_class != target.end()) {
+        // A class without a format yet: the format is resolved later (the
+        // runtime package's class resolution); until then the image is
+        // planned without one.
+        image.format_unresolved = format_name == target.end() && format_class != target.end() &&
+                                  format_class->is_string();
+        if (!image.format_unresolved && (format_name == target.end() || !format_name->is_string())) {
+            invalid("format", "requires_string");
+        }
+        const auto format_text =
+            image.format_unresolved ? std::string{} : format_name->get<std::string>();
+        if (format_class != target.end()) {
             if (!format_class->is_string()) invalid("format_class", "requires_string");
             image.format_class = format_class->get<std::string>();
         } else {
@@ -1253,12 +1260,14 @@ std::vector<ImageResource> parseConfigImages(const Json &config, bool &declares_
                 if (!std::isfinite(image.clear_color[i])) invalid("clear_color", "not_finite");
             }
         }
-        try {
-            image.format = parseAuthoredImageFormat(format_text);
-        } catch (const std::exception &) {
-            invalid("format", "unknown");
+        if (!image.format_unresolved) {
+            try {
+                image.format = parseAuthoredImageFormat(format_text);
+            } catch (const std::exception &) {
+                invalid("format", "unknown");
+            }
+            image.format_candidates = {image.format};
         }
-        image.format_candidates = {image.format};
         if (const auto candidates = target.find("format_candidates"); candidates != target.end()) {
             if (!candidates->is_array()) invalid("format_candidates", "requires_string_array");
             for (const auto &entry : *candidates) {
@@ -1392,9 +1401,13 @@ std::vector<FrameNodeOrderIR> parseFrameNodeOrder(const Json &config) {
     return result;
 }
 
-void applyRayTaskAccelerationStructures(const Json &config, std::vector<NodeIR> &tasks) {
+// The table's form only: the tasks it names may be a provider's, so the
+// final revision resolves it (finalizeRenderGraph).
+std::vector<std::pair<std::string, std::string>> parseRayTaskAccelerationStructures(
+    const Json &config) {
+    std::vector<std::pair<std::string, std::string>> result;
     const auto found = config.find("ray_task_acceleration_structures");
-    if (found == config.end()) return;
+    if (found == config.end()) return result;
     const auto invalid = [](const std::string &task, std::string_view reason) {
         refuse("render_graph.compute_task_invalid@1",
                {{"node", task},
@@ -1407,18 +1420,9 @@ void applyRayTaskAccelerationStructures(const Json &config, std::vector<NodeIR> 
             selected.get_ref<const std::string &>().empty()) {
             invalid(name, "requires_task_and_acceleration_structure");
         }
-        const auto task = std::find_if(tasks.begin(), tasks.end(),
-                                       [&](const auto &entry) { return entry.name == name; });
-        if (task == tasks.end()) invalid(name, "unknown_task");
-        auto &info = std::get<ComputeNodeInfo>(task->info);
-        if (info.ray_tracing) {
-            info.ray_tracing_acceleration_structure = selected.get<std::string>();
-        } else if (info.ray_query_acceleration_structure) {
-            info.ray_query_acceleration_structure = selected.get<std::string>();
-        } else {
-            invalid(name, "task_declares_no_ray_work");
-        }
+        result.emplace_back(name, selected.get<std::string>());
     }
+    return result;
 }
 
 const Json &arrayField(const Json &holder, const char *key, const Subject &subject) {
@@ -1455,8 +1459,15 @@ void assignSnapshotBytes(GraphIR &graph, const std::vector<ImageResource> &image
 
 } // namespace
 
+namespace {
+thread_local std::size_t parse_count = 0;
+} // namespace
+
+std::size_t renderGraphParseCount() noexcept { return parse_count; }
+
 RenderGraphIR parseRenderGraph(const nlohmann::json &document,
                                PassFieldOwnershipCapabilities capabilities) {
+    ++parse_count;
     if (!document.is_object()) refuse("render_graph.not_object@1", {{"field", "document"}});
     const Json &config = isRenderGraphRoot(document) ? renderingSectionOf(document) : document;
     if (!config.is_object()) refuse("render_graph.not_object@1", {{"field", "rendering"}});
@@ -1466,6 +1477,7 @@ RenderGraphIR parseRenderGraph(const nlohmann::json &document,
     ir.images = parseConfigImages(config, ir.images_declare_extent);
     ir.buffers = parseBuffers(config, Subject{});
     ir.frame_node_order = parseFrameNodeOrder(config);
+    ir.ray_task_acceleration_structures = parseRayTaskAccelerationStructures(config);
 
     if (!config.contains("rendering_passes")) {
         // The single-graph form (top-level passes / compute_tasks) is not the
@@ -1488,10 +1500,7 @@ RenderGraphIR parseRenderGraph(const nlohmann::json &document,
             shared_tasks.push_back(
                 parseComputeTask(tasks.at(index), index, scope, NodeDeclarationScope::shared));
         }
-        applyRayTaskAccelerationStructures(config, shared_tasks);
         for (const auto &task : shared_tasks) ir.shared_compute_tasks.push_back(task.name);
-    } else if (config.contains("ray_task_acceleration_structures")) {
-        applyRayTaskAccelerationStructures(config, shared_tasks);
     }
 
     const auto append_shared = [&](GraphIR &graph) {
@@ -1507,10 +1516,20 @@ RenderGraphIR parseRenderGraph(const nlohmann::json &document,
         }
         GraphIR graph;
         if (const auto name = graph_json.find("name"); name != graph_json.end()) {
-            if (!name->is_string()) refuse("render_graph.graph_name_invalid@1", {{"index", graph_index}});
+            if (!name->is_string()) {
+                refuse("render_graph.graph_name_invalid@1",
+                       {{"index", graph_index}, {"reason", "requires_string"}});
+            }
             graph.name = name->get<std::string>();
         } else {
             graph.name = "frame_graph";
+        }
+        if (graph.name.empty()) {
+            refuse("render_graph.graph_name_invalid@1", {{"index", graph_index}, {"reason", "empty"}});
+        }
+        if (findGraph(ir, graph.name) != nullptr) {
+            refuse("render_graph.graph_name_invalid@1",
+                   {{"index", graph_index}, {"graph", graph.name}, {"reason", "duplicate"}});
         }
         const Subject subject{graph.name, {}};
         const GraphScope scope{graph.name, capabilities, &types};

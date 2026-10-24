@@ -3,6 +3,7 @@
 #include "../src/core/imgui/imguiruntime.hpp"
 #include "../src/core/imgui/imguisystem.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
+#include "render_graph_ir_test_support.hpp"
 
 #include <algorithm>
 #include <nlohmann/json.hpp>
@@ -14,7 +15,12 @@ namespace {
 nlohmann::json canonicalGraph() {
     return {
         {"render_targets", nlohmann::json::array({
-             {{"name", "display"}},
+             // RC-3c1b: a config image is a whole declaration (the IR reads
+             // it as the render target parser does).
+             {{"name", "display"},
+              {"extent_scale", 1.0},
+              {"format", "B8G8R8A8_SRGB"},
+              {"usage", nlohmann::json::array({"COLOR_ATTACHMENT", "SAMPLED"})}},
          })},
         {"rendering_passes", nlohmann::json::array({
              {{"name", "main"},
@@ -37,7 +43,7 @@ nlohmann::json canonicalGraph() {
 }
 
 std::vector<std::string> planOrder(const nlohmann::json &config) {
-    auto definitions = parseFrameGraphDefinitionsFromConfigJson(config);
+    auto definitions = TestSupport::frameGraphsOf(config);
     REQUIRE(definitions.size() == 1);
     return framePlanOrder(planFrameGraph(definitions.front()));
 }

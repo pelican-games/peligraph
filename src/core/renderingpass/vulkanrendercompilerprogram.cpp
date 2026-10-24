@@ -13,6 +13,7 @@
 #include "../../project/graphcomposition.hpp"
 #include "../../project/graphvariantpolicy.hpp"
 #include "../../project/renderconfigsection.hpp"
+#include "../../project/rendergraphparse.hpp"
 
 #include <algorithm>
 #include <array>
@@ -29,12 +30,12 @@
 namespace Pelican {
 namespace {
 
+// RC-3c1b: read from the finalized IR (renderGraphMultiviewCapableNodes and
+// the nodes' schedule, family and shape).
 std::optional<VulkanViewExecutionPlanRequest>
 targetViewExecutionRequest(
     const CompiledRenderPipeline &pipeline,
-    const nlohmann::json &config,
-    std::span<const FrameGraphDefinition> graphs,
-    std::span<const ComputeTaskDefinition> compute_tasks,
+    const RenderGraphIR &render_graph,
     bool enable_multiview_runtime) {
     if (pipeline.graph_variant_policy.variant !=
         RenderPipelineGraphVariant::xr) {
@@ -55,33 +56,32 @@ targetViewExecutionRequest(
             pipeline.xr_target_policy.multiview_auto,
     };
     const auto capable_candidates =
-        detail::multiviewCapableFullscreenPasses(
-            config, enable_multiview_runtime);
+        renderGraphMultiviewCapableNodes(
+            render_graph, enable_multiview_runtime);
     std::set<std::string, std::less<>>
         independent_candidates;
-    for (const auto &task : compute_tasks) {
-        // PS-1: a once task, when it runs, runs as a per_frame one.
-        if (task.schedule ==
-                ComputeTaskSchedule::per_frame ||
-            task.schedule == ComputeTaskSchedule::once) {
-            independent_candidates.insert(task.name);
-        }
-    }
     const bool sprite_enabled =
         std::find(
             pipeline.feature_names.begin(),
             pipeline.feature_names.end(),
             "sprite") != pipeline.feature_names.end();
-    for (const auto &graph : graphs) {
+    for (const auto &graph : render_graph.graphs) {
         for (const auto &node : graph.nodes) {
+            // A config compute task; PS-1: a once task, when it runs, runs
+            // as a per_frame one.
+            if (node.shape == RenderNodeShape::compute &&
+                node.scope == NodeDeclarationScope::shared &&
+                node.schedule != NodeSchedule::per_view) {
+                independent_candidates.insert(node.name);
+            }
             if (node.view_family !=
                 mainRenderViewFamilyId) {
                 independent_candidates.insert(
                     node.name);
             }
-            if (node.kind == FramePlanNodeKind::acceleration_structure)
+            if (node.shape == RenderNodeShape::acceleration_structure)
                 independent_candidates.insert(node.name);
-            if (node.kind == FramePlanNodeKind::anchor &&
+            if (node.shape == RenderNodeShape::anchor &&
                 (!sprite_enabled ||
                  node.name != "__anchor_sprite")) {
                 independent_candidates.insert(node.name);
@@ -93,10 +93,10 @@ targetViewExecutionRequest(
     // present in every graph so graph-specific work remains sequential.
     const auto present_in_every_graph =
         [&](const std::string &name) {
-            return !graphs.empty() &&
+            return !render_graph.graphs.empty() &&
                    std::all_of(
-                       graphs.begin(), graphs.end(),
-                       [&](const FrameGraphDefinition &graph) {
+                       render_graph.graphs.begin(), render_graph.graphs.end(),
+                       [&](const GraphIR &graph) {
                            return std::find_if(
                                       graph.nodes.begin(),
                                       graph.nodes.end(),
@@ -122,23 +122,6 @@ targetViewExecutionRequest(
     return request;
 }
 
-std::unordered_map<std::string, FramePlan>
-framePlansByName(
-    const std::vector<FrameGraphDefinition>
-        &definitions) {
-    std::unordered_map<std::string, FramePlan> by_name;
-    for (const auto &definition : definitions) {
-        auto plan = planFrameGraph(definition);
-        const auto name = plan.name;
-        if (!by_name.emplace(name, std::move(plan)).second) {
-            throw std::runtime_error(
-                "Duplicate frame graph definition: " +
-                name);
-        }
-    }
-    return by_name;
-}
-
 std::unordered_map<
     std::string,
     std::shared_ptr<const VulkanTargetPlan>>
@@ -161,227 +144,8 @@ targetPlansByName(
 
 } // namespace
 
-std::set<std::string, std::less<>>
-detail::multiviewCapableFullscreenPasses(
-    const nlohmann::json &config,
-    bool enable_multiview_runtime) {
-    std::set<std::string, std::less<>>
-        capable_candidates;
-    const auto builtin_fragment =
-        [](std::string_view reference) {
-            static constexpr std::array known{
-                std::string_view{"engine://fullscreen"},
-                std::string_view{"engine://ssao"},
-                std::string_view{"engine://ssao_blur"},
-                std::string_view{"engine://scene_present"},
-                std::string_view{"engine://output_transform"},
-            };
-            return std::find(
-                       known.begin(), known.end(),
-                       reference) != known.end();
-        };
-    if (config.contains("rendering_passes") &&
-        config.at("rendering_passes").is_array()) {
-        for (const auto &rendering_pass :
-             config.at("rendering_passes")) {
-            if (!rendering_pass.is_object() ||
-                !rendering_pass.contains("passes") ||
-                !rendering_pass.at("passes").is_array()) {
-                continue;
-            }
-            for (const auto &pass :
-                 rendering_pass.at("passes")) {
-                if (!pass.is_object() ||
-                    !pass.contains("name") ||
-                    !pass.at("name").is_string() ||
-                    !pass.contains("type") ||
-                    !pass.at("type").is_string()) {
-                    continue;
-                }
-                const auto name =
-                    pass.at("name").get<std::string>();
-                const auto type =
-                    pass.at("type").get<std::string>();
-                if (type != "fullscreen" ||
-                    pass.contains("implementation") ||
-                    !pass.contains("shader") ||
-                    !pass.at("shader").is_object()) {
-                    continue;
-                }
-                const auto &shader = pass.at("shader");
-                if (!shader.contains("vertex") ||
-                    !shader.at("vertex").is_string() ||
-                    !shader.contains("fragment") ||
-                    !shader.at("fragment").is_string()) {
-                    continue;
-                }
-                const auto vertex =
-                    shader.at("vertex").get<std::string>();
-                const auto fragment =
-                    shader.at("fragment").get<std::string>();
-                if (enable_multiview_runtime &&
-                    vertex == "engine://fullscreen" &&
-                    builtin_fragment(fragment)) {
-                    capable_candidates.insert(name);
-                }
-            }
-        }
-    }
-    return capable_candidates;
-}
-
-void detail::requireRayQueryPlanningCapability(
-    const std::vector<FrameGraphDefinition> &graphs,
-    const std::vector<ComputeTaskDefinition> &tasks,
-    CompiledRenderPipeline &pipeline) {
-    const bool raster_query = std::any_of(graphs.begin(), graphs.end(), [](const auto &graph) {
-        return std::any_of(graph.nodes.begin(), graph.nodes.end(), [](const auto &node) { return node.ray_query == true; });
-    });
-    if (raster_query || !pipeline.scene_acceleration_structures.empty() || std::any_of(tasks.begin(),
-            tasks.end(), [](const auto &task) {
-                return task.ray_query_acceleration_structure.has_value();
-            })) {
-        for (const auto &graph : graphs) {
-            auto &constraints = pipeline.target_planning.graphs;
-            auto found = std::find_if(constraints.begin(), constraints.end(), [&](const auto &entry) {
-                return entry.graph == graph.name;
-            });
-            if (found == constraints.end()) {
-                constraints.push_back(PlanningGraphConstraints{.graph = graph.name});
-                found = std::prev(constraints.end());
-            }
-            const std::string capability = "pelican.vulkan.ray_query@1";
-            auto &required = found->required_capabilities;
-            if (std::find(required.begin(), required.end(), capability) == required.end()) {
-                required.push_back(capability);
-                std::sort(required.begin(), required.end());
-            }
-        }
-    }
-}
-
-void detail::insertSceneAccelerationStructureNodes(
-    std::vector<FrameGraphDefinition> &graphs,
-    const TargetPlanningPolicy &target_planning,
-    const std::vector<ComputeTaskDefinition> &tasks,
-    bool has_ray_project,
-    std::span<const SceneAccelerationStructureDefinition> named_definitions) {
-    const std::string node_name = "__scene_acceleration_structure";
-    const bool requires_as = has_ray_project || std::any_of(graphs.begin(), graphs.end(), [&](const auto &graph) {
-        const bool required_capability = std::any_of(
-            target_planning.graphs.begin(), target_planning.graphs.end(),
-            [&](const auto &constraints) {
-                return constraints.graph == graph.name && std::any_of(
-                    constraints.required_capabilities.begin(), constraints.required_capabilities.end(),
-                    [](const auto &capability) {
-                        return capability == "pelican.vulkan.ray_query@1" ||
-                               capability == "pelican.vulkan.ray_tracing_pipeline@1";
-                    });
-            });
-        const bool has_ray_task = std::any_of(graph.nodes.begin(), graph.nodes.end(),
-            [&](const auto &node) {
-                return node.kind == FramePlanNodeKind::compute && std::any_of(
-                    tasks.begin(), tasks.end(), [&](const auto &task) {
-                        return task.name == node.name && task.ray_tracing.has_value();
-                    });
-            });
-        return required_capability || has_ray_task || std::any_of(graph.nodes.begin(), graph.nodes.end(),
-            [](const auto &node) { return node.ray_query == true; });
-    });
-    if (!requires_as) return;
-    std::vector<std::string> as_nodes{node_name};
-    for (const auto &definition : named_definitions)
-        as_nodes.push_back(node_name + ":" + definition.name);
-    for (auto &graph : graphs) {
-        if (std::any_of(graph.nodes.begin(), graph.nodes.end(), [&](const auto &node) {
-                return std::find(as_nodes.begin(), as_nodes.end(), node.name) != as_nodes.end();
-            }))
-            throw std::runtime_error("Reserved scene acceleration-structure node name: " + node_name);
-        // Raster passes can use scene queries through material shaders. Compute
-        // tasks declare their AS dependency; pipeline reflection enforces it.
-        for (auto &node : graph.nodes) {
-            if ((node.kind == FramePlanNodeKind::render || node.kind == FramePlanNodeKind::output_transform) &&
-                node.ray_query.value_or(true))
-                node.after.push_back(node_name);
-            if (node.ray_query == true && node.ray_query_acceleration_structure != "scene") {
-                const auto &selected = node.ray_query_acceleration_structure;
-                if (std::none_of(named_definitions.begin(), named_definitions.end(),
-                    [&](const auto &definition) { return definition.name == selected; }))
-                    throw std::runtime_error("Raster pass '" + node.name +
-                        "' selects unknown scene acceleration structure '" + selected + "'");
-                node.after.push_back(node_name + ":" + selected);
-            }
-            if (node.kind != FramePlanNodeKind::compute) continue;
-            const auto task = std::find_if(tasks.begin(), tasks.end(), [&](const auto &entry) {
-                return entry.name == node.name;
-            });
-            if (task == tasks.end() || (!task->ray_tracing && !task->ray_query_acceleration_structure)) continue;
-            node.after.push_back(node_name);
-            const auto selected = task->ray_tracing
-                ? task->ray_tracing->acceleration_structure
-                : task->ray_query_acceleration_structure.value_or("scene");
-            if (selected != "scene") node.after.push_back(node_name + ":" + selected);
-        }
-        std::vector<FrameGraphNodeDefinition> operations;
-        for (const auto &name : as_nodes) {
-            operations.push_back(FrameGraphNodeDefinition{
-                .name = name, .kind = FramePlanNodeKind::acceleration_structure});
-            if (name != node_name) operations.back().after.push_back(node_name);
-        }
-        graph.nodes.insert(graph.nodes.begin(), operations.begin(), operations.end());
-        for (std::size_t i = 0; i < graph.nodes.size(); ++i)
-            graph.nodes[i].declaration_index = i;
-    }
-}
-
-void detail::applyFrameNodeOrder(
-    std::vector<FrameGraphDefinition> &graphs,
-    const nlohmann::json &order,
-    bool require_all_graphs) {
-    if (!order.is_object())
-        throw std::runtime_error("frame_node_order must be an object");
-    for (const auto &[graph_name, names] : order.items()) {
-        const auto graph = std::find_if(graphs.begin(), graphs.end(), [&](const auto &entry) {
-            return entry.name == graph_name;
-        });
-        if (graph == graphs.end()) {
-            if (require_all_graphs)
-                throw std::runtime_error("frame_node_order unknown graph: " + graph_name);
-        }
-        if (!names.is_array())
-            throw std::runtime_error("frame_node_order graph must contain an array: " + graph_name);
-        std::unordered_set<std::string> seen;
-        std::vector<std::size_t> indices;
-        for (const auto &value : names) {
-            if (!value.is_string() || value.get_ref<const std::string &>().empty())
-                throw std::runtime_error("frame_node_order node must be a nonempty string: " + graph_name);
-            const auto &name = value.get_ref<const std::string &>();
-            if (!seen.insert(name).second)
-                throw std::runtime_error("frame_node_order duplicate node: " + graph_name + "/" + name);
-            if (graph == graphs.end()) continue;
-            const auto node = std::find_if(graph->nodes.begin(), graph->nodes.end(), [&](const auto &entry) {
-                return entry.name == name;
-            });
-            if (node == graph->nodes.end())
-                throw std::runtime_error("frame_node_order unknown node: " + graph_name + "/" + name);
-            indices.push_back(static_cast<std::size_t>(node - graph->nodes.begin()));
-        }
-        if (graph == graphs.end()) continue;
-        // FO-1: a list that contradicts a dependency is refused by name
-        // instead of as the cycle its edges would make.
-        requireFrameNodeOrderAgreesWithDependencies(*graph, indices);
-        for (std::size_t index = 1; index < indices.size(); ++index) {
-            auto &node = graph->nodes[indices[index]];
-            const auto &previous = graph->nodes[indices[index - 1]].name;
-            if (std::find(node.after.begin(), node.after.end(), previous) == node.after.end())
-                node.after.push_back(previous);
-        }
-    }
-}
-
-void detail::namespaceComputeTasks(
+void detail::namespaceComputeTaskDefinitions(
     std::vector<ComputeTaskDefinition> &tasks,
-    std::vector<FrameGraphDefinition> &graphs,
     const nlohmann::json &composed_config,
     CompiledRenderPipeline &compiled_pipeline) {
     synchronizeRenderPipelineProvenance(
@@ -394,41 +158,13 @@ void detail::namespaceComputeTasks(
     if (suffix.empty() || tasks.empty()) {
         return;
     }
+    // The names are unique and collide with no node of a graph (the IR's
+    // namespaceSharedComputeTasks refused otherwise, by name).
     std::unordered_map<std::string, std::string>
         renamed;
     for (const auto &task : tasks) {
-        auto next =
-            task.name + std::string{suffix};
-        if (!renamed.emplace(task.name, std::move(next))
-                 .second) {
-            throw std::runtime_error(
-                "duplicate compute task before variant "
-                "namespacing: " +
-                task.name);
-        }
-    }
-    for (const auto &graph : graphs) {
-        std::unordered_set<std::string> final_names;
-        final_names.reserve(graph.nodes.size());
-        for (const auto &node : graph.nodes) {
-            auto final_name = node.name;
-            if (node.kind ==
-                FramePlanNodeKind::compute) {
-                if (const auto found =
-                        renamed.find(node.name);
-                    found != renamed.end()) {
-                    final_name = found->second;
-                }
-            }
-            if (!final_names
-                     .insert(final_name)
-                     .second) {
-                throw std::runtime_error(
-                    "compute task variant name collision in "
-                    "graph '" +
-                    graph.name + "': " + final_name);
-            }
-        }
+        renamed.emplace(task.name,
+                        task.name + std::string{suffix});
     }
     for (auto &task : tasks) {
         task.name = renamed.at(task.name);
@@ -440,20 +176,6 @@ void detail::namespaceComputeTasks(
                 name = found->second;
             }
         };
-    for (auto &graph : graphs) {
-        for (auto &node : graph.nodes) {
-            if (node.kind ==
-                FramePlanNodeKind::compute) {
-                rename(node.name);
-            }
-            for (auto &after : node.after) {
-                rename(after);
-            }
-            for (auto &before : node.before) {
-                rename(before);
-            }
-        }
-    }
 
     auto provenance_config = composed_config;
     for (auto &task :
@@ -475,15 +197,13 @@ void detail::namespaceComputeTasks(
 
 namespace {
 
+// RC-3c1b: the variant's composed config (the JSON the provider ABI and the
+// execution parsers read) and the IR of its final revision, with the
+// provenance on its graphs.
 struct DefaultLogicalVariantCompilation {
     CompiledRenderPipeline compiled_pipeline;
     nlohmann::json composed_config;
-    std::vector<LogicalGraphTransformSelection>
-        graph_transforms;
-    std::optional<RenderStrategySelection>
-        render_strategy;
-    std::vector<ResolvedTaggedSubgraphGraph>
-        subgraphs;
+    RenderGraphIR render_graph;
 };
 
 void validateVulkanDevicePlanningContext(
@@ -641,21 +361,32 @@ compileDefaultLogicalVariant(
         // target storage.
         compiled_pipeline_value.render_strategy =
             std::move(resolved_render_strategy);
+        // The preview's IR too (its graphs' names; it plans no further).
+        auto render_graph = parseRenderGraph(
+            composed_config,
+            buildPassFieldOwnershipCapabilities());
         return {
             .compiled_pipeline =
                 std::move(
                     compiled_pipeline_value),
             .composed_config =
                 std::move(composed_config),
+            .render_graph = std::move(render_graph),
         };
     }
     if (request.compose_runtime_config) {
         request.compose_runtime_config(
             composed_config);
     }
+    // RC-3c1b: the completed graph, revision 0 (after the host's additions),
+    // parsed once; every provider response is the next revision, parsed once
+    // by the provider chain, which hands its IR on.
     auto resolved_transforms =
         resolveLogicalGraphTransforms(
             composed_config,
+            parseRenderGraph(
+                composed_config,
+                buildPassFieldOwnershipCapabilities()),
             input.graph_transforms);
     composed_config =
         std::move(resolved_transforms.config);
@@ -665,25 +396,31 @@ compileDefaultLogicalVariant(
     auto resolved_subgraphs =
         resolveTaggedSubgraphReplacements(
             composed_config,
+            std::move(resolved_transforms.render_graph),
             input.subgraph_replacements);
     composed_config =
         std::move(resolved_subgraphs.config);
+    // The provenance of the final revision's graphs (the logical graph and
+    // the physical plan's fingerprint carry it; the provider ABI did not).
+    auto render_graph =
+        std::move(resolved_subgraphs.render_graph);
+    applyResolvedLogicalGraphTransformSelections(
+        render_graph, resolved_transforms.selections);
+    applyResolvedRenderStrategySelection(
+        render_graph, resolved_render_strategy);
+    applyResolvedTaggedSubgraphSelections(
+        render_graph, resolved_subgraphs.graphs);
     compiled_pipeline_value.graph_transforms =
-        resolved_transforms.selections;
+        std::move(resolved_transforms.selections);
     compiled_pipeline_value.render_strategy =
-        resolved_render_strategy;
+        std::move(resolved_render_strategy);
 
     return {
         .compiled_pipeline =
             std::move(compiled_pipeline_value),
         .composed_config =
             std::move(composed_config),
-        .graph_transforms =
-            std::move(resolved_transforms.selections),
-        .render_strategy =
-            std::move(resolved_render_strategy),
-        .subgraphs =
-            std::move(resolved_subgraphs.graphs),
+        .render_graph = std::move(render_graph),
     };
 }
 
@@ -696,23 +433,21 @@ compileDefaultVulkanVariant(
         &request) {
     auto logical = compileDefaultLogicalVariant(
         input, backend, request);
+    const auto graph_names_of =
+        [](const RenderGraphIR &render_graph) {
+            std::vector<std::string> names;
+            names.reserve(render_graph.graphs.size());
+            for (const auto &graph : render_graph.graphs)
+                names.push_back(graph.name);
+            return names;
+        };
     if (request.artifact ==
         RenderCompilerProgramArtifact::data_only) {
         if (input.ray_tracing_project &&
             input.ray_tracing_project->layout.usesRayTables()) {
-            std::vector<std::string> graph_names;
-            const auto rendering_passes =
-                logical.composed_config.find("rendering_passes");
-            if (rendering_passes != logical.composed_config.end() &&
-                rendering_passes->is_array()) {
-                graph_names.reserve(rendering_passes->size());
-                for (const auto &graph : *rendering_passes) {
-                    graph_names.push_back(
-                        graph.at("name").get<std::string>());
-                }
-            }
             requireRayMaterialBindlessForGraphs(
-                logical.compiled_pipeline, graph_names);
+                logical.compiled_pipeline,
+                graph_names_of(logical.render_graph));
         }
         return {
             .graph_variant = request.graph_variant,
@@ -725,12 +460,67 @@ compileDefaultVulkanVariant(
             .normalized_config =
                 std::move(
                     logical.composed_config),
+            .render_graph =
+                std::make_shared<const RenderGraphIR>(
+                    std::move(logical.render_graph)),
         };
     }
 
+    auto render_graph = std::move(logical.render_graph);
     auto render_target_definitions =
         parseRenderTargetDefinitionsFromJson(
             logical.composed_config);
+    {
+        // The authored names, before the compute tasks are namespaced, so
+        // a refusal names the authored pass or task.
+        std::vector<FrameGraphDefinition> graph_definitions;
+        graph_definitions.reserve(render_graph.graphs.size());
+        for (const auto &graph : render_graph.graphs)
+            graph_definitions.push_back(
+                frameGraphDefinitionOf(render_graph, graph));
+        // LP-Va: every view_select names an axis the family's provider
+        // declares, with a value inside its compile-time length.
+        validateRenderViewSelects(
+            graph_definitions,
+            logical.compiled_pipeline);
+        // VF-1: the raster passes of one secondary view family write
+        // targets of one extent, which the renderer sizes the family's
+        // views from; a pass that does not is refused here by name rather
+        // than by the renderer's per-frame check
+        // (resolveViewFamilyRasterExtent).
+        validateRenderViewFamilyExtents(
+            graph_definitions,
+            render_target_definitions,
+            logical.compiled_pipeline);
+        // VF-2: the extent VF-1 compared each family against, for
+        // get_frame_plan (Studio sizes a family's images from it).
+        logical.compiled_pipeline.view_family_extents =
+            renderViewFamilyExtentReferences(
+                graph_definitions, render_target_definitions);
+    }
+    if (input.ray_tracing_project &&
+        input.ray_tracing_project->layout.usesRayTables()) {
+        requireRayMaterialBindlessForGraphs(
+            logical.compiled_pipeline,
+            graph_names_of(render_graph));
+    }
+    // RC-3c1b: once, after the provider chain, on the final revision: the
+    // checks only it must pass, the variant's names, the scene's
+    // acceleration-structure builds and frame_node_order (other variants own
+    // their graph keys; the complete set is checked across the program).
+    render_graph = finalizeRenderGraph(
+        std::move(render_graph),
+        FinalizeRenderGraphRequest{
+            .named = logical.compiled_pipeline
+                         .scene_acceleration_structures,
+            .ray_tracing_project =
+                input.ray_tracing_project != nullptr,
+            .compute_task_suffix =
+                logical.compiled_pipeline.graph_variant_policy
+                    .rendering_pass_name_suffix,
+        },
+        logical.compiled_pipeline.target_planning);
+
     auto buffer_definitions =
         parseFrameGraphBufferDefinitionsFromJson(
             logical.composed_config);
@@ -743,79 +533,27 @@ compileDefaultVulkanVariant(
     validateComputeTaskBufferContracts(
         buffer_definitions,
         compute_task_definitions);
+    // RC-3c2: the buffer declarations are not in the IR yet, so the GPU draw
+    // sources are held to them from the JSON.
     validateGpuDrawSourceBufferContracts(
         logical.composed_config,
         buffer_definitions);
-    auto graph_definitions =
-        parseFrameGraphDefinitionsFromConfigJson(
-            logical.composed_config);
-    applyResolvedLogicalGraphTransformSelections(
-        graph_definitions,
-        logical.graph_transforms);
-    applyResolvedRenderStrategySelection(
-        graph_definitions,
-        logical.render_strategy);
-    applyResolvedTaggedSubgraphSelections(
-        graph_definitions,
-        logical.subgraphs);
-    // LP-Va: every view_select names an axis the family's provider declares,
-    // with a value inside its compile-time length. Before compute tasks are
-    // namespaced so the refusal names the authored pass or task.
-    validateRenderViewSelects(
-        graph_definitions,
-        logical.compiled_pipeline);
-    // VF-1: the raster passes of one secondary view family write targets of
-    // one extent, which the renderer sizes the family's views from; a pass
-    // that does not is refused here by name rather than by the renderer's
-    // per-frame check (resolveViewFamilyRasterExtent).
-    validateRenderViewFamilyExtents(
-        graph_definitions,
-        render_target_definitions,
-        logical.compiled_pipeline);
-    // VF-2: the extent VF-1 compared each family against, for
-    // get_frame_plan (Studio sizes a family's images from it).
-    logical.compiled_pipeline.view_family_extents =
-        renderViewFamilyExtentReferences(
-            graph_definitions, render_target_definitions);
-    if (input.ray_tracing_project &&
-        input.ray_tracing_project->layout.usesRayTables()) {
-        std::vector<std::string> graph_names;
-        graph_names.reserve(graph_definitions.size());
-        std::ranges::transform(
-            graph_definitions, std::back_inserter(graph_names),
-            &FrameGraphDefinition::name);
-        requireRayMaterialBindlessForGraphs(
-            logical.compiled_pipeline, graph_names);
-    }
-    const auto &scene_as = logical.compiled_pipeline.scene_acceleration_structures;
-    for (const auto &task : compute_task_definitions) {
-        const auto selected = task.ray_tracing
-            ? task.ray_tracing->acceleration_structure
-            : task.ray_query_acceleration_structure.value_or("scene");
-        if (selected == "scene") continue;
-        if (std::none_of(scene_as.begin(), scene_as.end(), [&](const auto &definition) {
-                return definition.name == selected;
-            }))
-            throw std::runtime_error("Compute task '" + task.name +
-                "' selects unknown scene acceleration structure '" + selected + "'");
-    }
-    detail::requireRayQueryPlanningCapability(
-        graph_definitions, compute_task_definitions,
-        logical.compiled_pipeline);
-    detail::namespaceComputeTasks(
+    detail::namespaceComputeTaskDefinitions(
         compute_task_definitions,
-        graph_definitions,
         logical.composed_config,
         logical.compiled_pipeline);
-    detail::insertSceneAccelerationStructureNodes(
-        graph_definitions, logical.compiled_pipeline.target_planning,
-        compute_task_definitions, input.ray_tracing_project != nullptr,
-        logical.compiled_pipeline.scene_acceleration_structures);
-    if (const auto order = logical.composed_config.find("frame_node_order");
-        order != logical.composed_config.end()) {
-        // Other variants own their graph keys; validate the complete set below.
-        detail::applyFrameNodeOrder(graph_definitions, *order, false);
+
+    // The frame plans, before the physical plan: the planner refuses an
+    // invalid graph by name first. IA-1 / EN-2: an image holding an asset or
+    // a file's pixels may be read without an earlier writer, as a buffer is.
+    std::unordered_map<std::string, FramePlan> frame_plans;
+    for (const auto &graph : render_graph.graphs) {
+        auto plan = planRenderGraph(render_graph, graph);
+        requireRenderGraphInputsProduced(
+            render_graph, graph, plan);
+        frame_plans.emplace(graph.name, std::move(plan));
     }
+
     auto compiled_pipeline =
         std::make_shared<const CompiledRenderPipeline>(
             std::move(logical.compiled_pipeline));
@@ -825,9 +563,7 @@ compileDefaultVulkanVariant(
             VulkanRenderCompilerPhysicalPackage>();
     auto view_execution = targetViewExecutionRequest(
         *compiled_pipeline,
-        logical.composed_config,
-        graph_definitions,
-        compute_task_definitions,
+        render_graph,
         request.enable_multiview_runtime);
     auto external_depth_export =
         request.enable_external_depth_export
@@ -839,7 +575,7 @@ compileDefaultVulkanVariant(
             device_required) {
         physical->target_plan_compilation =
             compileRenderingTargetPlansForVulkanDevice(
-                graph_definitions,
+                render_graph,
                 render_target_definitions,
                 compiled_pipeline->sample_count_policy,
                 backend.output_format,
@@ -854,7 +590,7 @@ compileDefaultVulkanVariant(
     } else {
         physical->target_plan_compilation =
             compileRenderingTargetPlans(
-                graph_definitions,
+                render_graph,
                 render_target_definitions,
                 compiled_pipeline->sample_count_policy,
                 backend.output_format,
@@ -880,28 +616,6 @@ compileDefaultVulkanVariant(
             physical->target_plan_compilation);
     physical->render_target_definitions =
         std::move(render_target_definitions);
-    auto frame_plans =
-        framePlansByName(graph_definitions);
-    if (logical.composed_config.contains("rendering_passes")) {
-        // IA-1: an image with an initial asset holds it before any pass of
-        // the frame runs, so a pass may read it without an earlier writer,
-        // as it reads a buffer.
-        auto produced_before_passes = buffer_names;
-        if (const auto targets = logical.composed_config.find("render_targets");
-            targets != logical.composed_config.end() && targets->is_array())
-            for (const auto &target : *targets)
-                if (target.is_object() && target.contains("initial") && target.contains("name") &&
-                    target.at("name").is_string())
-                    produced_before_passes.insert(target.at("name").get<std::string>());
-        // EN-2: a file image holds its pixels before the frame too.
-        for (const auto &target : physical->render_target_definitions)
-            if (target.source) produced_before_passes.insert(target.name);
-        for (const auto &pass_set : logical.composed_config.at("rendering_passes")) {
-            validateFramePlanPassInputsProduced(
-                frame_plans.at(pass_set.at("name").get<std::string>()),
-                pass_set, produced_before_passes);
-        }
-    }
 
     return RenderCompilerProgramVariantOutput{
         .graph_variant = request.graph_variant,
@@ -919,6 +633,9 @@ compileDefaultVulkanVariant(
         .frame_plans =
             std::move(frame_plans),
         .physical_package = std::move(physical),
+        .render_graph =
+            std::make_shared<const RenderGraphIR>(
+                std::move(render_graph)),
     };
 }
 
@@ -1005,24 +722,25 @@ class DefaultVulkanRenderCompilerProgram final
         // rejection vacuous for every graph-root project.
         const auto &authored_section =
             renderingSectionOrEmpty(input.rendering_config);
+        // Each variant's parse held its frame_node_order to the form and its
+        // finalize applied it to the variant's own graphs; every graph key
+        // names a graph of some variant (require_all_graphs across the
+        // program).
         if (const auto order = authored_section.find("frame_node_order");
             order != authored_section.end()) {
             if (!order->is_object())
-                throw std::runtime_error("frame_node_order must be an object");
+                throw GraphRegistryError("render_graph.frame_node_order_invalid@1",
+                                         {{"reason", "not_an_object"}});
             std::unordered_set<std::string> graph_names;
-            std::vector<FrameGraphDefinition> no_graphs;
-            detail::applyFrameNodeOrder(no_graphs, *order, false);
             for (const auto &variant : output.variants) {
-                if (variant.unavailable) continue;
-                for (const auto &[name, plan] : variant.frame_plans)
-                    graph_names.insert(name);
-                if (variant.frame_plans.empty())
-                    for (const auto &graph : parseFrameGraphDefinitionsFromConfigJson(variant.normalized_config))
-                        graph_names.insert(graph.name);
+                if (variant.unavailable || !variant.render_graph) continue;
+                for (const auto &graph : variant.render_graph->graphs)
+                    graph_names.insert(graph.name);
             }
             for (const auto &[name, nodes] : order->items()) {
                 if (!graph_names.contains(name))
-                    throw std::runtime_error("frame_node_order unknown graph: " + name);
+                    throw GraphRegistryError("render_graph.frame_node_order_unknown@1",
+                                             {{"graph", name}});
             }
         }
         return output;

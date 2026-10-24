@@ -1,6 +1,7 @@
 #include "../src/core/renderingpass/renderingsamplecount.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 #include "registered_render_targets_test_support.hpp"
+#include "render_graph_ir_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -16,6 +17,42 @@
 
 namespace Pelican {
 namespace {
+
+// RC-3c1b: the physical plan reads each graph's images from the IR (the
+// logical graph's types and materialization) beside the execution
+// declarations. A test that builds its RenderTargetDefinitions by hand gives
+// the IR the same images (a copy of each definition as the IR's image).
+RenderGraphIR withImagesOf(RenderGraphIR ir, std::span<const RenderTargetDefinition> targets) {
+    ir.images.clear();
+    for (const auto &target : targets) {
+        ImageResource image;
+        image.name = target.name;
+        image.format_class = target.format_class;
+        image.role = target.role;
+        image.format = target.format;
+        image.format_candidates = {target.format};
+        for (const auto format : target.format_candidates)
+            if (std::find(image.format_candidates.begin(), image.format_candidates.end(), format) ==
+                image.format_candidates.end())
+                image.format_candidates.push_back(format);
+        image.usage = target.usage;
+        image.extent = target.fixed_extent
+                           ? ResourceExtentPlan{.kind = ResourceExtentKind::fixed,
+                                                .width = target.fixed_extent->width,
+                                                .height = target.fixed_extent->height}
+                           : ResourceExtentPlan{.kind = ResourceExtentKind::output_relative,
+                                                .scale_x = target.extent_scale,
+                                                .scale_y = target.extent_scale};
+        image.mip_levels = target.mip_levels;
+        image.array_layers = target.array_layers;
+        image.dimension = target.dimension;
+        image.history = target.history;
+        image.persistent = target.persistent;
+        image.source = target.source;
+        ir.images.push_back(std::move(image));
+    }
+    return ir;
+}
 
 RenderTargetDefinition target(
     std::string name, ImageFormat format,
@@ -145,13 +182,17 @@ nlohmann::json hybridConfig() {
                          nlohmann::json::array(
                              {"albedo", "normal", "custom_id"})},
                         {"depth", "depth"}}}},
+                     // RC-3c1b: the planner orders the writers of lit
+                     // and depth (the physical plan plans the graph first).
                      {{"name", "lighting"},
                       {"type", "fullscreen"},
+                      {"after", nlohmann::json::array({"geometry"})},
                       {"output",
                        {{"color", nlohmann::json::array({"lit"})},
                         {"depth", nullptr}}}},
                      {{"name", "forward"},
                       {"type", "material"},
+                      {"after", nlohmann::json::array({"lighting"})},
                       {"output",
                        {{"color", nlohmann::json::array({"lit"})},
                         {"depth", "depth"}}}},
@@ -354,9 +395,9 @@ TEST_CASE("rendering sample planning discovers a hybrid attachment component",
 
     const auto config = hybridConfig();
     const auto graphs =
-        parseFrameGraphDefinitionsFromConfigJson(config);
+        TestSupport::renderGraphOf(config);
     const auto compilation = compileRenderingTargetPlans(
-        graphs, targets, compileSampleCountPolicy(config),
+        withImagesOf(graphs, targets), targets, compileSampleCountPolicy(config),
         vk::Format::eB8G8R8A8Unorm,
         RenderingTargetPlanDeviceFacts{
             .query_attachment_samples = query,
@@ -410,7 +451,7 @@ TEST_CASE("ray query target requirement is hard and uses the enabled runtime cap
     };
     const auto config = hybridConfig();
     const auto graphs =
-        parseFrameGraphDefinitionsFromConfigJson(config);
+        TestSupport::renderGraphOf(config);
     const auto query = [](const RenderTargetDefinition &) {
         return std::vector<std::uint32_t>{1, 2, 4};
     };
@@ -426,7 +467,7 @@ TEST_CASE("ray query target requirement is hard and uses the enabled runtime cap
     };
     const auto compile = [&](bool ray_query) {
         return compileRenderingTargetPlans(
-            graphs, targets, compileSampleCountPolicy(config),
+            withImagesOf(graphs, targets), targets, compileSampleCountPolicy(config),
             vk::Format::eB8G8R8A8Unorm,
             RenderingTargetPlanDeviceFacts{
                 .ray_query = ray_query,
@@ -466,7 +507,7 @@ TEST_CASE(
     };
     const auto config = hybridConfig();
     const auto graphs =
-        parseFrameGraphDefinitionsFromConfigJson(config);
+        TestSupport::renderGraphOf(config);
     const auto query = [](const RenderTargetDefinition &) {
         return std::vector<std::uint32_t>{1, 2, 4};
     };
@@ -483,7 +524,7 @@ TEST_CASE(
     };
     const auto compile = [&](bool ray_tracing_pipeline) {
         return compileRenderingTargetPlans(
-            graphs, targets, compileSampleCountPolicy(config),
+            withImagesOf(graphs, targets), targets, compileSampleCountPolicy(config),
             vk::Format::eB8G8R8A8Unorm,
             RenderingTargetPlanDeviceFacts{
                 .ray_tracing_pipeline = ray_tracing_pipeline,
@@ -522,7 +563,7 @@ TEST_CASE("rendering target bridge links attachment operations into the physical
     };
     const auto config = hybridConfig();
     const auto graphs =
-        parseFrameGraphDefinitionsFromConfigJson(
+        TestSupport::renderGraphOf(
             config);
     const auto facts =
         RenderingTargetPlanDeviceFacts{
@@ -534,7 +575,7 @@ TEST_CASE("rendering target bridge links attachment operations into the physical
         };
     const auto automatic =
         compileRenderingTargetPlans(
-            graphs, targets,
+            withImagesOf(graphs, targets), targets,
             compileSampleCountPolicy(config),
             vk::Format::eB8G8R8A8Unorm,
             facts);
@@ -559,7 +600,7 @@ TEST_CASE("rendering target bridge links attachment operations into the physical
     const std::array fragments{fragment};
     const auto linked =
         compileRenderingTargetPlans(
-            graphs, targets,
+            withImagesOf(graphs, targets), targets,
             compileSampleCountPolicy(config),
             vk::Format::eB8G8R8A8Unorm,
             facts,
@@ -637,7 +678,7 @@ TEST_CASE(
           }]
         })json");
     const auto graphs =
-        parseFrameGraphDefinitionsFromConfigJson(
+        TestSupport::renderGraphOf(
             config);
     const auto targets =
         parseRenderTargetDefinitionsFromJson(
@@ -645,7 +686,7 @@ TEST_CASE(
     bool queried_cube = false;
     const auto compilation =
         compileRenderingTargetPlans(
-            graphs, targets,
+            withImagesOf(graphs, targets), targets,
             SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             RenderingTargetPlanDeviceFacts{
@@ -696,7 +737,7 @@ TEST_CASE(
     const auto config =
         writeOnlyAttachmentConfig();
     const auto graphs =
-        parseFrameGraphDefinitionsFromConfigJson(
+        TestSupport::renderGraphOf(
             config);
     auto scratch =
         target(
@@ -724,7 +765,7 @@ TEST_CASE(
 
     const auto transient =
         compileRenderingTargetPlans(
-            graphs, targets,
+            withImagesOf(graphs, targets), targets,
             compileSampleCountPolicy(config),
             vk::Format::eB8G8R8A8Unorm,
             supported_facts);
@@ -774,7 +815,7 @@ TEST_CASE(
         };
     const auto unsupported =
         compileRenderingTargetPlans(
-            graphs, targets,
+            withImagesOf(graphs, targets), targets,
             compileSampleCountPolicy(config),
             vk::Format::eB8G8R8A8Unorm,
             unsupported_facts);
@@ -792,7 +833,7 @@ TEST_CASE(
 
     const auto conservative =
         compileRenderingTargetPlans(
-            graphs, targets,
+            withImagesOf(graphs, targets), targets,
             compileSampleCountPolicy(config),
             vk::Format::eB8G8R8A8Unorm,
             supported_facts,
@@ -851,7 +892,7 @@ TEST_CASE(
     requireThrowsContaining(
         [&] {
             (void)compileRenderingTargetPlans(
-                graphs, targets,
+                withImagesOf(graphs, targets), targets,
                 compileSampleCountPolicy(config),
                 vk::Format::eB8G8R8A8Unorm,
                 format_sensitive_facts,
@@ -867,7 +908,7 @@ TEST_CASE(
     const auto config =
         localReadAttachmentConfig();
     const auto graphs =
-        parseFrameGraphDefinitionsFromConfigJson(
+        TestSupport::renderGraphOf(
             config);
     const auto targets =
         parseRenderTargetDefinitionsFromJson(
@@ -875,7 +916,7 @@ TEST_CASE(
 
     const auto local =
         compileRenderingTargetPlans(
-            graphs, targets, SampleCountPolicy{},
+            withImagesOf(graphs, targets), targets, SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             localReadDeviceFacts());
     REQUIRE(local.plans.size() == 1);
@@ -930,7 +971,7 @@ TEST_CASE(
 
     const auto missing_feature =
         compileRenderingTargetPlans(
-            graphs, targets, SampleCountPolicy{},
+            withImagesOf(graphs, targets), targets, SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             localReadDeviceFacts(false, true));
     REQUIRE(
@@ -942,7 +983,7 @@ TEST_CASE(
 
     const auto missing_format =
         compileRenderingTargetPlans(
-            graphs, targets, SampleCountPolicy{},
+            withImagesOf(graphs, targets), targets, SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             localReadDeviceFacts(true, false));
     REQUIRE(
@@ -960,13 +1001,13 @@ TEST_CASE(
         [](const nlohmann::json &config,
            SampleCountPolicy samples = {}) {
             const auto graphs =
-                parseFrameGraphDefinitionsFromConfigJson(
+                TestSupport::renderGraphOf(
                     config);
             const auto targets =
                 parseRenderTargetDefinitionsFromJson(
                     config);
             return compileRenderingTargetPlans(
-                graphs, targets, samples,
+                withImagesOf(graphs, targets), targets, samples,
                 vk::Format::eB8G8R8A8Unorm,
                 localReadDeviceFacts());
         };
@@ -1045,7 +1086,7 @@ TEST_CASE(
     const auto config =
         localReadAttachmentConfig();
     const auto graphs =
-        parseFrameGraphDefinitionsFromConfigJson(
+        TestSupport::renderGraphOf(
             config);
     const auto targets =
         parseRenderTargetDefinitionsFromJson(
@@ -1056,7 +1097,7 @@ TEST_CASE(
 
     const auto compilation =
         compileRenderingTargetPlans(
-            graphs, targets, SampleCountPolicy{},
+            withImagesOf(graphs, targets), targets, SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             std::move(device_facts),
             VulkanViewExecutionPlanRequest{
@@ -1150,14 +1191,14 @@ TEST_CASE(
         std::move(material_graph));
 
     const auto graphs =
-        parseFrameGraphDefinitionsFromConfigJson(
+        TestSupport::renderGraphOf(
             config);
     const auto targets =
         parseRenderTargetDefinitionsFromJson(
             config);
     const auto compilation =
         compileRenderingTargetPlans(
-            graphs, targets, SampleCountPolicy{},
+            withImagesOf(graphs, targets), targets, SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             localReadDeviceFacts());
 
@@ -1225,7 +1266,7 @@ TEST_CASE("rendering target bridge applies a verified alternate physical format"
 
     const auto config = hybridConfig();
     const auto graphs =
-        parseFrameGraphDefinitionsFromConfigJson(
+        TestSupport::renderGraphOf(
             config);
     const auto facts =
         RenderingTargetPlanDeviceFacts{
@@ -1240,7 +1281,7 @@ TEST_CASE("rendering target bridge applies a verified alternate physical format"
         };
     const auto automatic =
         compileRenderingTargetPlans(
-            graphs, targets,
+            withImagesOf(graphs, targets), targets,
             compileSampleCountPolicy(config),
             vk::Format::eB8G8R8A8Unorm,
             facts);
@@ -1264,7 +1305,7 @@ TEST_CASE("rendering target bridge applies a verified alternate physical format"
     const std::array fragments{fragment};
     const auto linked =
         compileRenderingTargetPlans(
-            graphs, targets,
+            withImagesOf(graphs, targets), targets,
             compileSampleCountPolicy(config),
             vk::Format::eB8G8R8A8Unorm,
             facts,
@@ -1319,7 +1360,7 @@ TEST_CASE("rendering target bridge applies a verified alternate physical format"
     requireThrowsContaining(
         [&] {
             (void)compileRenderingTargetPlans(
-                graphs, targets,
+                withImagesOf(graphs, targets), targets,
                 compileSampleCountPolicy(config),
                 vk::Format::eB8G8R8A8Unorm,
                 unsupported_facts,
@@ -1343,7 +1384,7 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
     };
     const auto config = hybridConfig();
     const auto graphs =
-        parseFrameGraphDefinitionsFromConfigJson(config);
+        TestSupport::renderGraphOf(config);
     const auto query = [](const RenderTargetDefinition &) {
         return std::vector<std::uint32_t>{1, 2, 4};
     };
@@ -1371,7 +1412,7 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
     };
 
     const auto compilation = compileRenderingTargetPlans(
-        graphs, targets, compileSampleCountPolicy(config),
+        withImagesOf(graphs, targets), targets, compileSampleCountPolicy(config),
         vk::Format::eB8G8R8A8Unorm,
         RenderingTargetPlanDeviceFacts{
             .query_attachment_samples = query,
@@ -1402,7 +1443,7 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
         ejectVulkanTargetPlanPinPackage(plan)};
     const auto pinned_compilation =
         compileRenderingTargetPlans(
-            graphs, targets,
+            withImagesOf(graphs, targets), targets,
             compileSampleCountPolicy(config),
             vk::Format::eB8G8R8A8Unorm,
             RenderingTargetPlanDeviceFacts{
@@ -1420,7 +1461,7 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
         ejectVulkanPhysicalFragmentPackage(plan)};
     const auto fragment_compilation =
         compileRenderingTargetPlans(
-            graphs, targets,
+            withImagesOf(graphs, targets), targets,
             compileSampleCountPolicy(config),
             vk::Format::eB8G8R8A8Unorm,
             RenderingTargetPlanDeviceFacts{
@@ -1446,7 +1487,7 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
     requireThrowsContaining(
         [&] {
             (void)compileRenderingTargetPlans(
-                graphs, targets,
+                withImagesOf(graphs, targets), targets,
                 compileSampleCountPolicy(config),
                 vk::Format::eB8G8R8A8Unorm,
                 RenderingTargetPlanDeviceFacts{
@@ -1462,7 +1503,7 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
     requireThrowsContaining(
         [&] {
             (void)compileRenderingTargetPlans(
-                graphs, targets,
+                withImagesOf(graphs, targets), targets,
                 compileSampleCountPolicy(config),
                 vk::Format::eB8G8R8A8Unorm,
                 RenderingTargetPlanDeviceFacts{
@@ -1478,7 +1519,7 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
     requireThrowsContaining(
         [&] {
             (void)compileRenderingTargetPlans(
-                graphs, targets,
+                withImagesOf(graphs, targets), targets,
                 compileSampleCountPolicy(config),
                 vk::Format::eB8G8R8A8Unorm,
                 RenderingTargetPlanDeviceFacts{
@@ -1494,7 +1535,7 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
     requireThrowsContaining(
         [&] {
             (void)compileRenderingTargetPlans(
-                graphs, targets, compileSampleCountPolicy(config),
+                withImagesOf(graphs, targets), targets, compileSampleCountPolicy(config),
                 vk::Format::eB8G8R8A8Unorm,
                 RenderingTargetPlanDeviceFacts{
                     .query_attachment_samples = query,
@@ -1510,7 +1551,7 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
     requireThrowsContaining(
         [&] {
             (void)compileRenderingTargetPlans(
-                graphs, targets, compileSampleCountPolicy(config),
+                withImagesOf(graphs, targets), targets, compileSampleCountPolicy(config),
                 vk::Format::eB8G8R8A8Unorm,
                 RenderingTargetPlanDeviceFacts{
                     .query_attachment_samples = query,
@@ -1537,9 +1578,9 @@ TEST_CASE("exact rendering sample planning reports an added G-buffer target",
     requireThrowsContaining(
         [&] {
             const auto graphs =
-                parseFrameGraphDefinitionsFromConfigJson(config);
+                TestSupport::renderGraphOf(config);
             (void)compileRenderingTargetPlans(
-                graphs, targets,
+                withImagesOf(graphs, targets), targets,
                 compileSampleCountPolicy(config),
                 vk::Format::eB8G8R8A8Unorm,
                 RenderingTargetPlanDeviceFacts{
@@ -1570,9 +1611,9 @@ TEST_CASE("explicit target selects its whole attachment component",
         target("display", ImageFormat::b8g8r8a8_srgb),
     };
     const auto graphs =
-        parseFrameGraphDefinitionsFromConfigJson(config);
+        TestSupport::renderGraphOf(config);
     const auto compilation = compileRenderingTargetPlans(
-        graphs, targets, compileSampleCountPolicy(config),
+        withImagesOf(graphs, targets), targets, compileSampleCountPolicy(config),
         vk::Format::eB8G8R8A8Unorm,
         RenderingTargetPlanDeviceFacts{
             .query_attachment_samples =
@@ -1614,11 +1655,11 @@ TEST_CASE(
         display,
     };
     const auto graphs =
-        parseFrameGraphDefinitionsFromConfigJson(
+        TestSupport::renderGraphOf(
             aliasLifetimeConfig());
     const auto compilation =
         compileRenderingTargetPlans(
-            graphs, targets, SampleCountPolicy{},
+            withImagesOf(graphs, targets), targets, SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             RenderingTargetPlanDeviceFacts{
                 .query_attachment_samples =
@@ -1681,8 +1722,9 @@ TEST_CASE(
             display,
         };
         return compileRenderingTargetPlans(
-            parseFrameGraphDefinitionsFromConfigJson(
-                aliasLifetimeConfig()),
+            withImagesOf(TestSupport::renderGraphOf(
+                             aliasLifetimeConfig()),
+                         targets),
             targets, SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             RenderingTargetPlanDeviceFacts{
@@ -1764,19 +1806,20 @@ TEST_CASE(
         display,
     };
     auto alias_graphs =
-        parseFrameGraphDefinitionsFromConfigJson(
+        TestSupport::renderGraphOf(
             aliasLifetimeConfig());
     auto single_graphs =
-        parseFrameGraphDefinitionsFromConfigJson(
+        TestSupport::renderGraphOf(
             aliasLifetimeConfig(false));
-    alias_graphs.insert(
-        alias_graphs.end(),
-        single_graphs.begin(),
-        single_graphs.end());
+    // RC-3c1b: the two variants' graphs in one IR.
+    alias_graphs.graphs.insert(
+        alias_graphs.graphs.end(),
+        single_graphs.graphs.begin(),
+        single_graphs.graphs.end());
 
     const auto compilation =
         compileRenderingTargetPlans(
-            alias_graphs, targets,
+            withImagesOf(alias_graphs, targets), targets,
             SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             RenderingTargetPlanDeviceFacts{
@@ -1812,16 +1855,16 @@ TEST_CASE(
         display,
     };
     auto graphs =
-        parseFrameGraphDefinitionsFromConfigJson(
+        TestSupport::renderGraphOf(
             aliasLifetimeConfig());
     const auto single_graphs =
-        parseFrameGraphDefinitionsFromConfigJson(
+        TestSupport::renderGraphOf(
             aliasLifetimeConfig(false));
-    graphs.insert(graphs.end(), single_graphs.begin(),
-                  single_graphs.end());
+    graphs.graphs.insert(graphs.graphs.end(), single_graphs.graphs.begin(),
+                         single_graphs.graphs.end());
     const auto compilation =
         compileRenderingTargetPlans(
-            graphs, targets, SampleCountPolicy{},
+            withImagesOf(graphs, targets), targets, SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             RenderingTargetPlanDeviceFacts{
                 .query_attachment_samples =
@@ -1885,10 +1928,10 @@ TEST_CASE(
                ImageFormat::b8g8r8a8_srgb);
     const std::vector targets{low, display};
     const auto graphs =
-        parseFrameGraphDefinitionsFromConfigJson(config);
+        TestSupport::renderGraphOf(config);
     const auto compilation =
         compileRenderingTargetPlans(
-            graphs, targets, SampleCountPolicy{},
+            withImagesOf(graphs, targets), targets, SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             RenderingTargetPlanDeviceFacts{
                 .query_attachment_samples =
@@ -1968,10 +2011,10 @@ TEST_CASE(
     requireThrowsContaining(
         [&] {
             const auto graphs =
-                parseFrameGraphDefinitionsFromConfigJson(
+                TestSupport::renderGraphOf(
                     config);
             (void)compileRenderingTargetPlans(
-                graphs, targets,
+                withImagesOf(graphs, targets), targets,
                 SampleCountPolicy{},
                 vk::Format::eB8G8R8A8Unorm,
                 RenderingTargetPlanDeviceFacts{
@@ -1989,7 +2032,7 @@ TEST_CASE("runtime target adapter carries multiview device facts and typed view 
           "[wp203][target-planning][multiview][runtime-adapter]") {
     const auto config = hybridConfig();
     const auto graphs =
-        parseFrameGraphDefinitionsFromConfigJson(config);
+        TestSupport::renderGraphOf(config);
     const std::vector targets{
         target("albedo", ImageFormat::b8g8r8a8_unorm),
         target("normal", ImageFormat::r16g16b16a16_sfloat),
@@ -2000,7 +2043,7 @@ TEST_CASE("runtime target adapter carries multiview device facts and typed view 
         target("display", ImageFormat::b8g8r8a8_srgb),
     };
     const auto compilation = compileRenderingTargetPlans(
-        graphs, targets, SampleCountPolicy{},
+        withImagesOf(graphs, targets), targets, SampleCountPolicy{},
         vk::Format::eB8G8R8A8Unorm,
         RenderingTargetPlanDeviceFacts{
             .multiview = true,
@@ -2088,7 +2131,7 @@ TEST_CASE("runtime depth export stays disabled when the device format cannot be 
           "[target-planning][external-depth][fallback]") {
     const auto config = hybridConfig();
     const auto graphs =
-        parseFrameGraphDefinitionsFromConfigJson(config);
+        TestSupport::renderGraphOf(config);
     const std::vector targets{
         target("albedo", ImageFormat::b8g8r8a8_unorm),
         target("normal", ImageFormat::r16g16b16a16_sfloat),
@@ -2100,7 +2143,7 @@ TEST_CASE("runtime depth export stays disabled when the device format cannot be 
     };
     const auto compilation =
         compileRenderingTargetPlans(
-            graphs, targets, SampleCountPolicy{},
+            withImagesOf(graphs, targets), targets, SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             RenderingTargetPlanDeviceFacts{
                 .query_attachment_samples =
@@ -2156,8 +2199,9 @@ TEST_CASE(
             display,
         };
         return compileRenderingTargetPlans(
-            parseFrameGraphDefinitionsFromConfigJson(
-                aliasLifetimeConfig()),
+            withImagesOf(TestSupport::renderGraphOf(
+                             aliasLifetimeConfig()),
+                         targets),
             targets, SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             RenderingTargetPlanDeviceFacts{
@@ -2215,13 +2259,14 @@ TEST_CASE(
         if (once) {
             config["rendering_passes"][0]["passes"][1]["schedule"] = "once";
         }
-        const auto graphs =
-            parseFrameGraphDefinitionsFromConfigJson(config);
+        const auto render_graph =
+            TestSupport::renderGraphOf(config);
+        const auto graphs = TestSupport::frameGraphsOf(render_graph);
         REQUIRE(graphs.size() == 1);
         for (const auto &node : graphs.front().nodes)
             CHECK(node.once == (once && node.name == "lighting"));
         return compileRenderingTargetPlans(
-            graphs, parseRenderTargetDefinitionsFromJson(config),
+            render_graph, parseRenderTargetDefinitionsFromJson(config),
             SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             localReadDeviceFacts());

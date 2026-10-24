@@ -14,6 +14,7 @@
 #include "../src/project/renderingjsonnormalize.hpp"
 #include "../src/project/targetrenderplanning.hpp"
 #include "../src/project/vulkancompletephysicalplan.hpp"
+#include "render_graph_ir_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -231,10 +232,11 @@ TEST_CASE("RC-3a2 the loader, the planner and registration hand the recording th
     // The parsers receive the normal form (RC-3b).
     REQUIRE_NOTHROW(requireNormalizedRenderingJson(config));
     const auto declared = parseRenderTargetDefinitionsFromJson(config);
-    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(config);
+    const auto render_graph = TestSupport::renderGraphOf(config);
+    const auto graphs = TestSupport::frameGraphsOf(render_graph);
     const auto facts = deviceFacts();
     const auto automatic =
-        compileRenderingTargetPlans(graphs, declared, compileSampleCountPolicy(config), vk::Format::eB8G8R8A8Srgb, facts);
+        compileRenderingTargetPlans(render_graph, declared, compileSampleCountPolicy(config), vk::Format::eB8G8R8A8Srgb, facts);
     REQUIRE(automatic.plans.size() == 1);
     const auto &plan = *automatic.plans.front();
     CHECK(planned(plan, "a").representation == VulkanResourceRepresentation::materialized_image);
@@ -273,7 +275,7 @@ TEST_CASE("RC-3a2 the loader, the planner and registration hand the recording th
         }
         REQUIRE(edited);
         const std::array fragments{vulkanPhysicalFragmentPackageFromJson(document)};
-        const auto linked = compileRenderingTargetPlans(graphs, declared, compileSampleCountPolicy(config),
+        const auto linked = compileRenderingTargetPlans(render_graph, declared, compileSampleCountPolicy(config),
                                                         vk::Format::eB8G8R8A8Srgb, facts, std::nullopt,
                                                         std::nullopt, {}, {}, fragments);
         REQUIRE(linked.plans.size() == 1);
@@ -320,7 +322,8 @@ TEST_CASE("RC-3a2 the pass parsers admit the authored op spellings and refuse th
     // The planner's and registration's parsers read a pass's ops through
     // one conversion: every authored spelling, and nothing else.
     const auto planned_op = [](const Json &config) {
-        const auto graphs = parseFrameGraphDefinitionsFromConfigJson(config);
+        const auto render_graph = TestSupport::renderGraphOf(config);
+        const auto graphs = TestSupport::frameGraphsOf(render_graph);
         return graphs.front().nodes.front().attachments.front().operations;
     };
     for (const auto &[spelling, op] : std::vector<std::pair<std::string, AttachmentLoadOp>>{
@@ -335,10 +338,15 @@ TEST_CASE("RC-3a2 the pass parsers admit the authored op spellings and refuse th
     }
     auto config = operationsConfig();
     config["rendering_passes"][0]["passes"][0]["color_load_op"] = "discard";
-    CHECK_THROWS_WITH(parseFrameGraphDefinitionsFromConfigJson(config), "Unknown attachment load op: discard");
+    // RC-3c1b: refused by name (parseRenderGraph).
+    TestSupport::requireNamedRefusal([&] { (void)TestSupport::frameGraphsOf(config); },
+                                     "render_graph.node_field_invalid@1",
+                                     {{"field", "color_load_op"}, {"value", "discard"}});
     config = operationsConfig();
     config["rendering_passes"][0]["passes"][0]["output"]["color"][0]["store_op"] = "discard";
-    CHECK_THROWS_WITH(parseFrameGraphDefinitionsFromConfigJson(config), "Unknown attachment store op: discard");
+    TestSupport::requireNamedRefusal([&] { (void)TestSupport::frameGraphsOf(config); },
+                                     "render_graph.attachment_invalid@1",
+                                     {{"reason", "unknown_op"}, {"value", "discard"}});
 }
 
 } // namespace Pelican

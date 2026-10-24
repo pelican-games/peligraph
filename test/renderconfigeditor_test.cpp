@@ -2,6 +2,7 @@
 #include "../src/core/communication/editorcommandservice.hpp"
 #include "../src/core/communication/engineauthoringlists.hpp"
 #include "render_graph_root_test_support.hpp"
+#include "render_graph_ir_test_support.hpp"
 #include "lp3a_decompose_support.hpp"
 #include "lp1c_decompose_support.hpp"
 #include "../src/core/communication/editorrpchandlers.hpp"
@@ -352,18 +353,17 @@ struct ActualCpuRenderRuntime {
                 target["height"] = 720;
             }
         }
+        // RC-3c1b: as the compiler reads it: the IR (one parse), the
+        // replacements' revisions, frame_node_order, the plan.
         SubgraphReplacementRegistry replacements;
-        composition.config = resolveTaggedSubgraphReplacements(
-            composition.config, replacements.snapshot()).config;
-        auto graphs = parseFrameGraphDefinitionsFromConfigJson(
-            composition.config);
-        if (const auto order = composition.config.find("frame_node_order"); order != composition.config.end())
-            detail::applyFrameNodeOrder(graphs, *order);
-        const auto graph = std::find_if(
-            graphs.begin(), graphs.end(), [](const auto &candidate) {
-                return candidate.name == "main_render";
-            });
-        if (graph == graphs.end()) {
+        composition.config = normalizeRenderingJson(composition.config);
+        auto resolved = resolveTaggedSubgraphReplacements(
+            composition.config, TestSupport::renderGraphOf(composition.config),
+            replacements.snapshot());
+        composition.config = std::move(resolved.config);
+        const auto ir = applyFrameNodeOrder(std::move(resolved.render_graph), true);
+        const auto *graph = findGraph(ir, "main_render");
+        if (graph == nullptr) {
             throw std::runtime_error(
                 "hybrid_v1 did not produce main_render");
         }
@@ -371,7 +371,7 @@ struct ActualCpuRenderRuntime {
         return Prepared{
             .enabled_feature_names = composition.feature_names,
             .frame_plan = framePlanToJson(
-                planFrameGraph(*graph), &compiled),
+                planRenderGraph(ir, *graph), &compiled),
         };
     }
 
@@ -7428,6 +7428,58 @@ TEST_CASE("F-1 edit_render_targets adds, replaces and removes a target in its ma
                              Json(renderTargetFragment)) == 1);
 }
 
+// RC-3c1b: a candidate the planner refuses is answered with the planner's
+// code and the subject's fields (the apply / commit path's rule), not as a
+// sentence under render_pipeline_preflight_failed.
+TEST_CASE("RC-3c1b the editor answers a planner refusal with its code and subject",
+          "[render-config-editor][rc3c1b][refusal]") {
+    RenderTargetHarness harness{true};
+    harness.commit(addOp(sceneTarget("f1_owned")));
+    const auto add = [&](const Json &edit) {
+        Json pass{{"name", "rc3c1b_pass"},
+                  {"type", "fullscreen"},
+                  {"input", Json::array({"gbuffer_normal"})},
+                  {"output", {{"color", Json::array({"f1_owned"})}, {"depth", nullptr}}},
+                  {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://fullscreen"}}}};
+        for (const auto &[key, value] : edit.items()) pass[key] = value;
+        const auto accepted = harness.service->addAuthoredPass(
+            {{"base_source_digest", harness.digest()},
+             {"graph", "main_render"},
+             {"insert", "after:ssao_pass"},
+             {"pass", pass}});
+        if (accepted.at("status") != "accepted") return Json(accepted);
+        harness.service->commitPending();
+        return Json(harness.service->getResult({{"ticket", accepted.at("ticket")}}));
+    };
+    const auto root_before = readBytes(harness.project.render_config);
+    struct Case {
+        Json edit;
+        std::string code;
+        Json subject;
+    };
+    for (const auto &refusal : std::vector<Case>{
+             {{{"after", Json::array({"nowhere"})}}, "render_graph.order_reference_unknown@1",
+              {{"node", "rc3c1b_pass"}, {"reference", "nowhere"}}},
+             {{{"after", Json::array({"rc3c1b_pass"})}}, "render_graph.self_dependency@1",
+              {{"node", "rc3c1b_pass"}}},
+             // (An undeclared input is refused by the composition first:
+             // feature.required_target_missing@1.)
+         }) {
+        DYNAMIC_SECTION(refusal.code) {
+            const auto result = add(refusal.edit);
+            INFO(result.dump());
+            CHECK(result.value("committed", false) == false);
+            REQUIRE(result.contains("error"));
+            CHECK(result.at("error").at("code") == refusal.code);
+            for (const auto &[key, value] : refusal.subject.items()) {
+                INFO(key);
+                CHECK(result.at("error").value(key, Json()) == value);
+            }
+            CHECK(readBytes(harness.project.render_config) == root_before);
+        }
+    }
+}
+
 TEST_CASE("F-1 edit_render_targets refuses by name and leaves the documents alone",
           "[render-config-editor][f1][render-targets][rejection]") {
     RenderTargetHarness harness{true};
@@ -13593,7 +13645,10 @@ TEST_CASE("UD-4 input_needs_shader Undo refuses the connected removal then resta
     INFO(rejected.dump());
     REQUIRE(rejected.at("status") == "rejected");
     CHECK(rejected.at("committed") == false);
-    CHECK(rejected.at("error").at("code") == "render_pipeline_preflight_failed");
+    // RC-3c1b: the planner names the read nobody declares.
+    CHECK(rejected.at("error").at("code") == "render_graph.unknown_resource@1");
+    CHECK(rejected.at("error").at("node") == "present");
+    CHECK(rejected.at("error").at("resource") == "render_material_pass__albedo");
     CHECK(rejected.at("error").at("message").get<std::string>().find("render_material_pass__albedo") != std::string::npos);
     CHECK(readBytes(h.project.render_config) == connected);
     CHECK(h.runtime.snapshot.published_generation == generation);
@@ -13663,7 +13718,11 @@ TEST_CASE("UD-4 restart boundary rejects an unreadable candidate even if the run
     INFO(rejected.dump());
     REQUIRE(rejected.at("status") == "rejected");
     CHECK(rejected.at("committed") == false);
-    CHECK(rejected.at("error").at("code") == "render_pipeline_preflight_failed");
+    // RC-3c1b: the restart boundary (startup's logical graph check) keeps the
+    // planner's code and fields, as the apply / commit path does.
+    CHECK(rejected.at("error").at("code") == "render_graph.unknown_resource@1");
+    CHECK(rejected.at("error").at("node") == "present");
+    CHECK(rejected.at("error").at("graph") == "main_render");
     CHECK(rejected.at("error").at("message").get<std::string>().find("render_material_pass__albedo") != std::string::npos);
     CHECK_FALSE(rejected.contains("restart_required"));
     CHECK(source_commits == 0);

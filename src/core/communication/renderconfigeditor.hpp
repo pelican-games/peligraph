@@ -670,6 +670,13 @@ class RenderConfigEditorService {
     nlohmann::ordered_json preflightRejection(
         const std::exception &error,
         nlohmann::ordered_json details = nlohmann::ordered_json::object()) const;
+    // RC-3c1b: the rule the apply / commit path follows: a named refusal
+    // (GraphRegistryError) keeps its code and its detail's fields beside
+    // `details` (with the definition of a graph.* refusal's node, judged
+    // against `root_bytes`); any other is preflightRejection.
+    nlohmann::ordered_json namedPreflightRejection(
+        const std::exception &error, nlohmann::ordered_json details,
+        std::string_view root_bytes) const;
     // G-6: the candidate through preflight_graph_variants. Returns the
     // refusal naming the variant that could not compose it, or nullopt.
     // `details` are the fields the caller's own preflight refusals carry.

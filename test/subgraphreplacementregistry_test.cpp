@@ -2,6 +2,7 @@
 #include "../src/core/registrationownerhost.hpp"
 #include "../src/core/renderingpass/renderingsamplecount.hpp"
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
+#include "render_graph_ir_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -15,6 +16,16 @@
 
 namespace Pelican {
 namespace {
+
+// RC-3c1b: the replacements take the config's IR (its one parse) beside it; a
+// test that wrote short forms reads them in the normal form first.
+ResolvedTaggedSubgraphConfig resolveTaggedSubgraphReplacements(
+    const nlohmann::json &config,
+    const SubgraphReplacementRegistrySnapshot &providers) {
+    const auto normal = normalizeRenderingJson(config);
+    return Pelican::resolveTaggedSubgraphReplacements(
+        normal, TestSupport::renderGraphOf(normal), providers);
+}
 
 nlohmann::json taggedRegionConfig(
     std::optional<std::string_view> provider =
@@ -283,10 +294,10 @@ TEST_CASE(
     }
 
     const auto authored_graphs =
-        parseFrameGraphDefinitionsFromConfigJson(
+        TestSupport::frameGraphsOf(
             authored);
     const auto resolved_identity_graphs =
-        parseFrameGraphDefinitionsFromConfigJson(
+        TestSupport::frameGraphsOf(
             resolved.config);
     REQUIRE(
         framePlanToJson(
@@ -320,24 +331,20 @@ TEST_CASE(
         std::vector<std::string>{"tone"});
     REQUIRE_FALSE(selection.explicitly_selected);
 
-    auto frame_graphs =
-        parseFrameGraphDefinitionsFromConfigJson(
+    auto ir =
+        TestSupport::renderGraphOf(
             resolved.config);
     applyResolvedTaggedSubgraphSelections(
-        frame_graphs, resolved.graphs);
-    const auto render_targets =
-        parseRenderTargetDefinitionsFromJson(
-            resolved.config);
+        ir, resolved.graphs);
     const auto logical =
-        compileRenderingLogicalGraphs(
-            frame_graphs, render_targets);
+        TestSupport::logicalGraphsOf(ir);
     REQUIRE(
         logical.front().subgraph_replacements ==
         resolved.graphs.front().selections);
 
     const auto target =
         compileRenderingTargetPlans(
-            frame_graphs, render_targets,
+            ir, parseRenderTargetDefinitionsFromJson(resolved.config),
             SampleCountPolicy{}, vk::Format::eB8G8R8A8Srgb,
             RenderingTargetPlanDeviceFacts{
                 .query_attachment_samples =
@@ -436,13 +443,8 @@ TEST_CASE(
         nlohmann::json::array(
             {"region.post.fixture"});
 
-    const auto frame_graphs =
-        parseFrameGraphDefinitionsFromConfigJson(config);
-    const auto render_targets =
-        parseRenderTargetDefinitionsFromJson(config);
     const auto logical_graphs =
-        compileRenderingLogicalGraphs(
-            frame_graphs, render_targets);
+        TestSupport::logicalGraphsOf(config);
     REQUIRE(logical_graphs.size() == 1);
 
     const auto contract =

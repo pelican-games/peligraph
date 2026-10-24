@@ -5,6 +5,7 @@
 #include "../src/core/renderingpass/renderingsamplecount.hpp"
 #include "../src/project/renderpipeline.hpp"
 #include "../src/project/renderingjsonnormalize.hpp"
+#include "render_graph_ir_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -385,17 +386,13 @@ TEST_CASE(
         resolved.selection->output_config_fingerprint);
     const auto logical_fingerprint =
         [](const ResolvedRenderStrategyConfig &strategy) {
-            auto graphs =
-                parseFrameGraphDefinitionsFromConfigJson(
+            auto ir =
+                TestSupport::renderGraphOf(
                     strategy.config);
             applyResolvedRenderStrategySelection(
-                graphs, strategy.selection);
-            const auto targets =
-                parseRenderTargetDefinitionsFromJson(
-                    strategy.config);
+                ir, strategy.selection);
             const auto logical =
-                compileRenderingLogicalGraphs(
-                    graphs, targets);
+                TestSupport::logicalGraphsOf(ir);
             REQUIRE(logical.size() == 1);
             return vulkanTargetPlanLogicalGraphFingerprint(
                 logical.front());
@@ -499,16 +496,13 @@ TEST_CASE(
         resolved.selection->output_config_fingerprint);
     REQUIRE(resolved.selection->explicitly_selected);
 
-    auto graphs =
-        parseFrameGraphDefinitionsFromConfigJson(
+    auto ir =
+        TestSupport::renderGraphOf(
             resolved.config);
     applyResolvedRenderStrategySelection(
-        graphs, resolved.selection);
-    const auto targets =
-        parseRenderTargetDefinitionsFromJson(
-            resolved.config);
+        ir, resolved.selection);
     const auto logical =
-        compileRenderingLogicalGraphs(graphs, targets);
+        TestSupport::logicalGraphsOf(ir);
     REQUIRE(logical.size() == 1);
     REQUIRE(
         logical.front().render_strategy ==

@@ -11,10 +11,10 @@ namespace Pelican {
 // (docs/design_render_graph_ir.md §2.2). It reads the normal form
 // (normalizeRenderingJson, RC-3b): a config with `rendering_passes[]` -- the
 // composed config the compiler plans, or a `pelican.graph` root, whose
-// `rendering` section is read. It reads the keys the core planning parse
-// (parseFrameGraphDefinitionsFromConfigJson) and the render target parser
-// (parseRenderTargetDefinitionsFromJson) read, accepts what they accept and
-// refuses what they refuse. It also refuses, ahead of the execution parsers
+// `rendering` section is read. It reads the keys the planning parse it
+// replaced (RC-3c1b removed it from core) and the render target parser
+// (parseRenderTargetDefinitionsFromJson) read, accepts what they accepted and
+// refuses what they refused. It also refuses, ahead of the execution parsers
 // that refused them before (§2.3 and what the IR's info carries): a material
 // resource reading a cube view or an explicit subresource same_pixel, an
 // unknown compute schedule, a malformed compute ray_query /
@@ -27,7 +27,9 @@ namespace Pelican {
 //                                                  input, top-level passes)
 //   render_graph.not_object@1             {graph?, field, index?}
 //   render_graph.section_invalid@1        {graph?, field}
-//   render_graph.graph_name_invalid@1     {index}
+//   render_graph.graph_name_invalid@1     {index, graph?, reason}  not a
+//                                                  string, empty, or a name
+//                                                  another graph has
 //   render_graph.node_name_invalid@1      {graph, field, index}
 //   render_graph.node_field_invalid@1     {graph, node, field, reason, detail?}
 //   render_graph.pass_field_ownership@1   {graph, node, detail}
@@ -41,9 +43,17 @@ namespace Pelican {
 //   render_graph.snapshot_size_unavailable@1 {graph, node, resource}
 //   render_graph.frame_node_order_invalid@1 {graph?, node?, reason}
 //   render_graph.compute_task_invalid@1   {node, field, reason}
+// (ray_task_acceleration_structures: only its form here; the tasks it names
+// are resolved in the final revision, finalizeRenderGraph.)
+// An image with a format_class and no format is read with its format
+// unresolved (ImageResource::format_unresolved).
 // `reason` is a fixed word per check; `detail` the refusing helper's sentence
 // where a shared project helper refuses.
 RenderGraphIR parseRenderGraph(const nlohmann::json &document,
                                PassFieldOwnershipCapabilities capabilities);
+
+// RC-3c1b: how many times parseRenderGraph has run on this thread (one
+// parse per completed revision; tests count the production path with it).
+std::size_t renderGraphParseCount() noexcept;
 
 } // namespace Pelican

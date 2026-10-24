@@ -24,38 +24,23 @@ struct PlannerEdges {
     std::vector<FramePlanBarrier> barriers;
 };
 
-// One planner, two spellings of its refusals: planFrameGraph keeps the
-// sentences its callers and tests know, planFrameGraphWithNamedRefusals
-// (RenderGraphIR's planRenderGraph) names them. The rules are the same.
-struct PlanRefusals {
-    bool named = false;
+// The planner's refusals, by name (GraphRegistryError: a code and the
+// subject's names).
+[[noreturn]] void refuse(std::string_view code, nlohmann::json detail) {
+    throw GraphRegistryError(std::string{code}, std::move(detail));
+}
 
-    [[noreturn]] void refuse(std::string_view code,
-                             nlohmann::json detail,
-                             std::string sentence) const {
-        if (named) {
-            throw GraphRegistryError(std::string{code},
-                                     std::move(detail));
-        }
-        throw std::runtime_error(std::move(sentence));
-    }
-};
-
-void validateUniqueNames(const FrameGraphDefinition &definition,
-                         const PlanRefusals &refusals) {
+void validateUniqueNames(const FrameGraphDefinition &definition) {
     std::unordered_set<std::string> names;
     for (const auto &node : definition.nodes) {
         if (node.name.empty()) {
-            refusals.refuse("render_graph.node_name_empty@1",
-                            {{"graph", definition.name}},
-                            "Frame graph node name must not be empty");
+            refuse("render_graph.node_name_empty@1",
+                {{"graph", definition.name}});
         }
         if (!names.insert(node.name).second) {
-            refusals.refuse("render_graph.duplicate_node@1",
-                            {{"graph", definition.name},
-                             {"node", node.name}},
-                            "Duplicate frame graph node name: " +
-                                node.name);
+            refuse("render_graph.duplicate_node@1",
+                {{"graph", definition.name},
+                             {"node", node.name}});
         }
     }
 }
@@ -86,8 +71,7 @@ std::unordered_set<std::string> buildKnownResources(const FrameGraphDefinition &
     return resources;
 }
 
-void validateKnownResources(const FrameGraphDefinition &definition,
-                            const PlanRefusals &refusals) {
+void validateKnownResources(const FrameGraphDefinition &definition) {
     const auto resources = buildKnownResources(definition);
     for (const auto &node : definition.nodes) {
         for (const auto &resource : node.reads) {
@@ -95,38 +79,30 @@ void validateKnownResources(const FrameGraphDefinition &definition,
                 continue;
             }
             if (resources.find(resource) == resources.end()) {
-                refusals.refuse(
-                    "render_graph.unknown_resource@1",
-                    {{"graph", definition.name},
+                refuse("render_graph.unknown_resource@1",
+                {{"graph", definition.name},
                      {"node", node.name},
-                     {"resource", resource}},
-                    "Unknown resource reference in frame graph node " +
-                        node.name + ": " + resource);
+                     {"resource", resource}});
             }
         }
         for (const auto &resource : node.reads_history) {
             if (std::find(definition.history_resources.begin(), definition.history_resources.end(),
                           resource) == definition.history_resources.end()) {
-                refusals.refuse(
-                    "render_graph.unknown_history_resource@1",
-                    {{"graph", definition.name},
+                refuse("render_graph.unknown_history_resource@1",
+                {{"graph", definition.name},
                      {"node", node.name},
-                     {"resource", resource}},
-                    "Unknown or non-history resource reference in frame graph node " +
-                        node.name + ": " + resource + "@history");
+                     {"resource", resource}});
             }
         }
     }
 }
 
 void addEdge(PlannerEdges &planner_edges, size_t from, size_t to,
-             const FrameGraphDefinition &definition,
-             const PlanRefusals &refusals) {
+             const FrameGraphDefinition &definition) {
     if (from == to) {
-        refusals.refuse("render_graph.self_dependency@1",
-                        {{"graph", definition.name},
-                         {"node", definition.nodes[from].name}},
-                        "Frame graph contains a self dependency");
+        refuse("render_graph.self_dependency@1",
+                {{"graph", definition.name},
+                         {"node", definition.nodes[from].name}});
     }
     if (!planner_edges.exists[from][to]) {
         planner_edges.exists[from][to] = true;
@@ -156,15 +132,13 @@ void addBarrier(PlannerEdges &planner_edges, std::string kind,
 }
 
 void addDataEdge(PlannerEdges &planner_edges, size_t from, size_t to, const std::string &resource,
-                 const FrameGraphDefinition &definition,
-                 const PlanRefusals &refusals) {
-    addEdge(planner_edges, from, to, definition, refusals);
+                 const FrameGraphDefinition &definition) {
+    addEdge(planner_edges, from, to, definition);
     addBarrier(planner_edges, "read_after_write", from, to, resource,
                definition);
 }
 
-void addBarriersForOrderedResourceEdges(PlannerEdges &planner_edges, const FrameGraphDefinition &definition,
-                                        const PlanRefusals &refusals) {
+void addBarriersForOrderedResourceEdges(PlannerEdges &planner_edges, const FrameGraphDefinition &definition) {
     for (const auto &edge : planner_edges.edges) {
         const auto &from = definition.nodes[edge.from];
         const auto &to = definition.nodes[edge.to];
@@ -172,14 +146,13 @@ void addBarriersForOrderedResourceEdges(PlannerEdges &planner_edges, const Frame
             if (written.empty() || std::find(to.reads.begin(), to.reads.end(), written) == to.reads.end()) {
                 continue;
             }
-            addDataEdge(planner_edges, edge.from, edge.to, written, definition, refusals);
+            addDataEdge(planner_edges, edge.from, edge.to, written, definition);
         }
     }
 }
 
 PlannerEdges buildEdges(const FrameGraphDefinition &definition,
-                        const std::unordered_map<std::string, size_t> &node_index,
-                        const PlanRefusals &refusals) {
+                        const std::unordered_map<std::string, size_t> &node_index) {
     PlannerEdges planner_edges;
     planner_edges.exists.assign(definition.nodes.size(), std::vector<bool>(definition.nodes.size(), false));
 
@@ -189,7 +162,7 @@ PlannerEdges buildEdges(const FrameGraphDefinition &definition,
         for (const auto &resource : node.reads) {
             auto found = last_writer.find(resource);
             if (found != last_writer.end()) {
-                addDataEdge(planner_edges, found->second, i, resource, definition, refusals);
+                addDataEdge(planner_edges, found->second, i, resource, definition);
             }
         }
         for (const auto &resource : node.writes) {
@@ -204,30 +177,28 @@ PlannerEdges buildEdges(const FrameGraphDefinition &definition,
         for (const auto &after : node.after) {
             const auto found = node_index.find(after);
             if (found == node_index.end()) {
-                refusals.refuse("render_graph.order_reference_unknown@1",
-                                {{"graph", definition.name},
+                refuse("render_graph.order_reference_unknown@1",
+                {{"graph", definition.name},
                                  {"node", node.name},
                                  {"field", "after"},
-                                 {"reference", after}},
-                                "Frame graph after reference not found: " + after);
+                                 {"reference", after}});
             }
-            addEdge(planner_edges, found->second, i, definition, refusals);
+            addEdge(planner_edges, found->second, i, definition);
         }
         for (const auto &before : node.before) {
             const auto found = node_index.find(before);
             if (found == node_index.end()) {
-                refusals.refuse("render_graph.order_reference_unknown@1",
-                                {{"graph", definition.name},
+                refuse("render_graph.order_reference_unknown@1",
+                {{"graph", definition.name},
                                  {"node", node.name},
                                  {"field", "before"},
-                                 {"reference", before}},
-                                "Frame graph before reference not found: " + before);
+                                 {"reference", before}});
             }
-            addEdge(planner_edges, i, found->second, definition, refusals);
+            addEdge(planner_edges, i, found->second, definition);
         }
     }
 
-    addBarriersForOrderedResourceEdges(planner_edges, definition, refusals);
+    addBarriersForOrderedResourceEdges(planner_edges, definition);
     return planner_edges;
 }
 
@@ -247,8 +218,7 @@ std::vector<std::vector<bool>> transitiveClosure(std::vector<std::vector<bool>> 
 }
 
 void validateWritesAreOrdered(const FrameGraphDefinition &definition,
-                              const std::vector<std::vector<bool>> &reachability,
-                              const PlanRefusals &refusals) {
+                              const std::vector<std::vector<bool>> &reachability) {
     std::unordered_map<std::string, std::vector<size_t>> writers_by_resource;
     for (size_t i = 0; i < definition.nodes.size(); ++i) {
         for (const auto &resource : definition.nodes[i].writes) {
@@ -264,15 +234,11 @@ void validateWritesAreOrdered(const FrameGraphDefinition &definition,
                 const auto lhs = writers[i];
                 const auto rhs = writers[j];
                 if (!reachability[lhs][rhs] && !reachability[rhs][lhs]) {
-                    refusals.refuse(
-                        "render_graph.ambiguous_writes@1",
-                        {{"graph", definition.name},
+                    refuse("render_graph.ambiguous_writes@1",
+                {{"graph", definition.name},
                          {"resource", resource},
                          {"first", definition.nodes[lhs].name},
-                         {"second", definition.nodes[rhs].name}},
-                        "Ambiguous writes-writes dependency for resource " + resource +
-                            " between " + definition.nodes[lhs].name + " and " +
-                            definition.nodes[rhs].name);
+                         {"second", definition.nodes[rhs].name}});
                 }
             }
         }
@@ -302,8 +268,7 @@ void addWriteAfterWriteBarriers(
     }
 }
 
-std::vector<size_t> topologicalOrder(const FrameGraphDefinition &definition, const PlannerEdges &planner_edges,
-                                     const PlanRefusals &refusals) {
+std::vector<size_t> topologicalOrder(const FrameGraphDefinition &definition, const PlannerEdges &planner_edges) {
     const auto count = definition.nodes.size();
     std::vector<size_t> indegree(count, 0);
     std::vector<std::vector<size_t>> adjacency(count);
@@ -335,22 +300,20 @@ std::vector<size_t> topologicalOrder(const FrameGraphDefinition &definition, con
     }
 
     if (order.size() != count) {
-        refusals.refuse("render_graph.cycle@1",
-                        {{"graph", definition.name}},
-                        "Cycle detected in frame graph: " + definition.name);
+        refuse("render_graph.cycle@1",
+                {{"graph", definition.name}});
     }
     return order;
 }
 
-FramePlan planWith(const FrameGraphDefinition &definition,
-                   const PlanRefusals &refusals) {
-    validateUniqueNames(definition, refusals);
-    validateKnownResources(definition, refusals);
+FramePlan planWith(const FrameGraphDefinition &definition) {
+    validateUniqueNames(definition);
+    validateKnownResources(definition);
     const auto node_index = buildNodeIndex(definition);
-    auto planner_edges = buildEdges(definition, node_index, refusals);
+    auto planner_edges = buildEdges(definition, node_index);
     const auto reachability = transitiveClosure(planner_edges.exists);
-    validateWritesAreOrdered(definition, reachability, refusals);
-    const auto order = topologicalOrder(definition, planner_edges, refusals);
+    validateWritesAreOrdered(definition, reachability);
+    const auto order = topologicalOrder(definition, planner_edges);
     addWriteAfterWriteBarriers(planner_edges, definition, order);
 
     FramePlan plan;
@@ -493,12 +456,7 @@ std::string framePlanNodeKindName(FramePlanNodeKind kind) {
 }
 
 FramePlan planFrameGraph(const FrameGraphDefinition &definition) {
-    return planWith(definition, PlanRefusals{.named = false});
-}
-
-FramePlan planFrameGraphWithNamedRefusals(
-    const FrameGraphDefinition &definition) {
-    return planWith(definition, PlanRefusals{.named = true});
+    return planWith(definition);
 }
 
 std::vector<std::string> framePlanOrder(const FramePlan &plan) {

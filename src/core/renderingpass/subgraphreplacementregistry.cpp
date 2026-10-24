@@ -1,11 +1,11 @@
 #include "subgraphreplacementregistry.hpp"
 #include "../registrationownerhost.hpp"
 
+#include "passfieldownershipcapabilities.hpp"
 #include "providerregistrycommon.hpp"
 #include "renderingpassjsonhelpers.hpp"
-#include "renderingsamplecount.hpp"
-#include "rendertargetjsonparser.hpp"
 #include "../../project/logicalrendertype.hpp"
+#include "../../project/rendergraphparse.hpp"
 #include "../../project/renderingjsonnormalize.hpp"
 #include "../../project/stablefingerprint.hpp"
 
@@ -169,11 +169,9 @@ struct RegionRequest {
     std::optional<std::string> provider;
 };
 
-struct CompiledConfigState {
-    std::vector<FrameGraphDefinition> frame_graphs;
-    std::vector<CompiledLogicalRenderGraph>
-        logical_graphs;
-};
+// RC-3c1b: the logical graphs of one revision (its IR, parsed once).
+using CompiledConfigState =
+    std::vector<CompiledLogicalRenderGraph>;
 
 std::string graphName(
     const nlohmann::json &graph) {
@@ -226,7 +224,7 @@ const CompiledLogicalRenderGraph &findLogicalGraph(
     const CompiledConfigState &state,
     std::string_view name) {
     const CompiledLogicalRenderGraph *result = nullptr;
-    for (const auto &graph : state.logical_graphs) {
+    for (const auto &graph : state) {
         if (graph.name != name) continue;
         if (result != nullptr) {
             throw std::runtime_error(
@@ -244,19 +242,14 @@ const CompiledLogicalRenderGraph &findLogicalGraph(
     return *result;
 }
 
-CompiledConfigState compileConfigState(
-    const nlohmann::json &config) {
-    auto render_targets =
-        parseRenderTargetDefinitionsFromJson(config);
-    auto frame_graphs =
-        parseFrameGraphDefinitionsFromConfigJson(config);
-    auto logical_graphs =
-        compileRenderingLogicalGraphs(
-            frame_graphs, render_targets);
-    return {
-        std::move(frame_graphs),
-        std::move(logical_graphs),
-    };
+CompiledConfigState logicalGraphsOf(
+    const RenderGraphIR &render_graph) {
+    CompiledConfigState logical_graphs;
+    logical_graphs.reserve(render_graph.graphs.size());
+    for (const auto &graph : render_graph.graphs)
+        logical_graphs.push_back(
+            toLogicalGraph(render_graph, graph));
+    return logical_graphs;
 }
 
 std::vector<std::string> graphNames(
@@ -1209,10 +1202,12 @@ void SubgraphReplacementRegistry::releaseOwner(
 ResolvedTaggedSubgraphConfig
 resolveTaggedSubgraphReplacements(
     const nlohmann::json &config,
+    RenderGraphIR render_graph,
     const SubgraphReplacementRegistrySnapshot
         &providers) {
     ResolvedTaggedSubgraphConfig result{
         .config = config,
+        .render_graph = std::move(render_graph),
     };
     const auto names = graphNames(result.config);
     for (const auto &name : names) {
@@ -1220,17 +1215,17 @@ resolveTaggedSubgraphReplacements(
             findGraphObject(result.config, name));
         if (requests.empty()) continue;
         // RC-3b: the provider reads, and its passes are spliced into, the
-        // normal form (the composition hands it that already).
-        result.config = normalizeRenderingJson(
-            std::move(result.config));
+        // normal form (parseRenderGraph refused any other form already).
 
         ResolvedTaggedSubgraphGraph
             resolved_graph{
                 .graph = name,
             };
         for (const auto &request : requests) {
+            // RC-3c1b: the revision's IR, parsed once (by the previous
+            // response or the caller).
             const auto before_state =
-                compileConfigState(result.config);
+                logicalGraphsOf(result.render_graph);
             const auto &before_graph =
                 findLogicalGraph(
                     before_state, name);
@@ -1350,8 +1345,11 @@ resolveTaggedSubgraphReplacements(
             // RC-3b: and the spliced config is in the normal form before
             // the core reads it.
             requireNormalizedRenderingJson(candidate);
+            // The spliced config is the next revision: parsed once.
+            auto after_render_graph = parseRenderGraph(
+                candidate, buildPassFieldOwnershipCapabilities());
             const auto after_state =
-                compileConfigState(candidate);
+                logicalGraphsOf(after_render_graph);
             const auto &after_graph =
                 findLogicalGraph(
                     after_state, name);
@@ -1384,6 +1382,8 @@ resolveTaggedSubgraphReplacements(
             resolved_graph.selections.push_back(
                 std::move(resolved.selection));
             result.config = std::move(candidate);
+            result.render_graph =
+                std::move(after_render_graph);
         }
         result.graphs.push_back(
             std::move(resolved_graph));
@@ -1392,12 +1392,12 @@ resolveTaggedSubgraphReplacements(
 }
 
 void applyResolvedTaggedSubgraphSelections(
-    std::span<FrameGraphDefinition> frame_graphs,
+    RenderGraphIR &render_graph,
     std::span<const ResolvedTaggedSubgraphGraph>
         resolved_graphs) {
     std::set<std::string, std::less<>>
         applied;
-    for (auto &frame_graph : frame_graphs) {
+    for (auto &frame_graph : render_graph.graphs) {
         const auto found = std::find_if(
             resolved_graphs.begin(),
             resolved_graphs.end(),

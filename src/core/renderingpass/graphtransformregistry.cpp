@@ -1,10 +1,10 @@
 #include "graphtransformregistry.hpp"
 #include "../registrationownerhost.hpp"
 
+#include "passfieldownershipcapabilities.hpp"
 #include "providerregistrycommon.hpp"
-#include "renderingsamplecount.hpp"
-#include "rendertargetjsonparser.hpp"
 #include "../../project/logicalrendertype.hpp"
+#include "../../project/rendergraphparse.hpp"
 #include "../../project/renderpipeline.hpp"
 #include "../../project/renderingjsonnormalize.hpp"
 #include "../../project/stablefingerprint.hpp"
@@ -232,30 +232,21 @@ std::string logicalGraphsJson(
     return encoded.dump();
 }
 
-struct CompiledConfigState {
-    std::vector<FrameGraphDefinition> frame_graphs;
-    std::vector<CompiledLogicalRenderGraph>
-        logical_graphs;
-};
-
-CompiledConfigState compileConfigState(
-    const nlohmann::json &config) {
-    auto render_targets =
-        parseRenderTargetDefinitionsFromJson(config);
-    auto frame_graphs =
-        parseFrameGraphDefinitionsFromConfigJson(config);
-    auto logical_graphs =
-        compileRenderingLogicalGraphs(
-            frame_graphs, render_targets);
+// RC-3c1b: the logical graphs of one revision (its IR, parsed once), as the
+// provider reads them: without provenance, the fingerprint the graph's own.
+std::vector<CompiledLogicalRenderGraph> logicalGraphsOf(
+    const RenderGraphIR &render_graph) {
+    std::vector<CompiledLogicalRenderGraph> logical_graphs;
+    logical_graphs.reserve(render_graph.graphs.size());
+    for (const auto &graph : render_graph.graphs)
+        logical_graphs.push_back(
+            toLogicalGraph(render_graph, graph));
     if (logical_graphs.empty()) {
         throw std::runtime_error(
             "logical graph transform requires at least one "
             "render graph");
     }
-    return {
-        std::move(frame_graphs),
-        std::move(logical_graphs),
-    };
+    return logical_graphs;
 }
 
 struct TransformRequest {
@@ -1200,6 +1191,7 @@ void GraphTransformRegistry::releaseOwner(
 ResolvedLogicalGraphTransformConfig
 resolveLogicalGraphTransforms(
     const nlohmann::json &config,
+    RenderGraphIR render_graph,
     const GraphTransformRegistrySnapshot &providers) {
     if (!config.is_object()) {
         throw std::runtime_error(
@@ -1210,33 +1202,28 @@ resolveLogicalGraphTransforms(
         parseTransformRequests(config);
     ResolvedLogicalGraphTransformConfig result{
         .config = config,
+        .render_graph = std::move(render_graph),
     };
     result.config.erase("graph_transforms");
     for (std::size_t index = 0;
          index < requests.size(); ++index) {
         const auto &request = requests[index];
         // RC-3b: the provider reads, and its response is compared with, the
-        // normal form (the composition hands it that already; a direct
-        // caller's short forms are normalized here once).
-        if (index == 0) {
-            result.config = normalizeRenderingJson(
-                std::move(result.config));
-        }
+        // normal form (parseRenderGraph refused any other form already).
+        // RC-3c1b: the revision's IR is the one the previous response (or
+        // the caller) parsed; nothing is parsed again for "before".
         const auto before =
-            compileConfigState(result.config);
+            logicalGraphsOf(result.render_graph);
         const auto contract =
-            makeLogicalGraphSetContract(
-                before.logical_graphs);
+            makeLogicalGraphSetContract(before);
         const auto input_fingerprint =
-            logicalGraphSetFingerprint(
-                before.logical_graphs);
+            logicalGraphSetFingerprint(before);
         const auto parameters_json =
             canonicalJson(request.parameters);
         const auto config_json =
             canonicalJson(result.config);
         const auto graphs_json =
-            logicalGraphsJson(
-                before.logical_graphs);
+            logicalGraphsJson(before);
         auto resolved = providers.resolveTransform(
             contract, request.name,
             static_cast<std::uint32_t>(index),
@@ -1278,29 +1265,31 @@ resolveLogicalGraphTransforms(
             result.config, candidate,
             request.name);
 
-        const auto after =
-            compileConfigState(candidate);
+        // The response is the next revision: parsed once, its IR the
+        // "after" here and the "before" of the next request.
+        auto after_graph = parseRenderGraph(
+            candidate, buildPassFieldOwnershipCapabilities());
+        const auto after = logicalGraphsOf(after_graph);
         const auto after_contract =
-            makeLogicalGraphSetContract(
-                after.logical_graphs);
+            makeLogicalGraphSetContract(after);
         requirePreservedBoundary(
             contract, after_contract,
             request.name);
         resolved.selection.output_graph_fingerprint =
-            logicalGraphSetFingerprint(
-                after.logical_graphs);
+            logicalGraphSetFingerprint(after);
         result.selections.push_back(
             std::move(resolved.selection));
         result.config = std::move(candidate);
+        result.render_graph = std::move(after_graph);
     }
     return result;
 }
 
 void applyResolvedLogicalGraphTransformSelections(
-    std::span<FrameGraphDefinition> frame_graphs,
+    RenderGraphIR &render_graph,
     std::span<const LogicalGraphTransformSelection>
         selections) {
-    for (auto &frame_graph : frame_graphs) {
+    for (auto &frame_graph : render_graph.graphs) {
         if (!frame_graph.graph_transforms.empty()) {
             throw std::runtime_error(
                 "resolved logical graph transform "

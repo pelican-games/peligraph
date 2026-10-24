@@ -3235,7 +3235,7 @@ bool intersects(const std::set<std::string> &lhs, const std::set<std::string> &r
 }
 
 // RS-7: what the frame planner requires an earlier pass of the family to have
-// written (validateFramePlanPassInputsProduced): the `input` names, or a
+// written (requireRenderGraphInputsProduced): the `input` names, or a
 // snapshot copy's source.
 std::vector<std::string> requiredInputs(const Json &pass) {
     std::vector<std::string> names;

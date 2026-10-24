@@ -3576,12 +3576,12 @@ target_compile_definitions(pelican_test_passfusion_test PRIVATE
 # RC-3c1a: the core planning path and RenderGraphIR's, compared field by
 # field on the bundled projects, the fixtures and the refusals. RC-3c1b
 # removes it with the core planning parse.
-pelican_define_test(rendergraphir_bridge_test GROUP render_planning_core pelican_core)
-target_compile_definitions(pelican_test_rendergraphir_bridge_test PRIVATE
+pelican_define_test(rendergraphir_test GROUP render_planning_core pelican_core)
+target_compile_definitions(pelican_test_rendergraphir_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 if(MSVC)
-  target_compile_options(pelican_test_rendergraphir_bridge_test PRIVATE /bigobj)
+  target_compile_options(pelican_test_rendergraphir_test PRIVATE /bigobj)
 endif()
 pelican_define_test(targetplanning_test GROUP project_planning pelican_project)
 pelican_define_test(targetrenderplanning_test GROUP project_planning pelican_project)
@@ -3633,6 +3633,7 @@ target_compile_definitions(pelican_test_renderingjsonnormalize_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 pelican_define_test(rendercompilerprogram_test GROUP render_pipeline pelican_core)
+pelican_define_test(rendercompilerprogram_ir_test GROUP render_pipeline pelican_core)
 target_compile_definitions(pelican_test_rendercompilerprogram_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )

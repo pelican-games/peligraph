@@ -12,6 +12,7 @@
 #include "../src/project/imageusage.hpp"
 #include "../src/project/targetrenderplanning.hpp"
 #include "../src/project/vulkancompletephysicalplan.hpp"
+#include "render_graph_ir_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -221,7 +222,7 @@ TEST_CASE("RC-3a1 the loader, the planner and registration consume the declared 
           "[rc3a1][image-vocabulary][target-planning]") {
     const auto config = vocabularyConfig();
     const auto targets = parseRenderTargetDefinitionsFromJson(config);
-    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(config);
+    const auto graphs = TestSupport::renderGraphOf(config);
     const auto facts = RenderingTargetPlanDeviceFacts{
         .query_image_format_capability =
             [](const RenderTargetDefinition &) {

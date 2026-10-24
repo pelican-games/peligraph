@@ -182,13 +182,7 @@ std::vector<FramePlanUnreadOutput> findFramePlanUnreadOutputs(
 
 // Orders the nodes (reads after the last earlier writer, after / before,
 // declaration order among the ready ones) and states the barriers. Refuses
-// with the planner's sentences ("Duplicate frame graph node name: ...",
-// "Cycle detected in frame graph: ...").
-FramePlan planFrameGraph(const FrameGraphDefinition &definition);
-std::vector<std::string> framePlanOrder(const FramePlan &plan);
-
-// RC-3c1a: the planner's refusals by name, as planRenderGraph throws them
-// (GraphRegistryError, "<code> <detail>"):
+// by name (GraphRegistryError, "<code> <detail>"):
 //   render_graph.node_name_empty@1        {graph}
 //   render_graph.duplicate_node@1         {graph, node}
 //   render_graph.unknown_resource@1       {graph, node, resource}
@@ -197,8 +191,8 @@ std::vector<std::string> framePlanOrder(const FramePlan &plan);
 //   render_graph.self_dependency@1        {graph, node}
 //   render_graph.ambiguous_writes@1       {graph, resource, first, second}
 //   render_graph.cycle@1                  {graph}
-FramePlan planFrameGraphWithNamedRefusals(
-    const FrameGraphDefinition &definition);
+FramePlan planFrameGraph(const FrameGraphDefinition &definition);
+std::vector<std::string> framePlanOrder(const FramePlan &plan);
 
 // RC-2b: the structure every published FramePlan keeps, whoever made it
 // (planFrameGraph, a render compiler program, a hand-built preparation).

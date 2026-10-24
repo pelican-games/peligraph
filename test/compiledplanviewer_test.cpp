@@ -4,6 +4,7 @@
 #include "../src/core/renderingpass/renderingsamplecount.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 #include "../src/project/samplecountplanning.hpp"
+#include "render_graph_ir_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -90,7 +91,7 @@ nlohmann::json compileIndependentOpportunityPlan(
                        {{"color", "beta_output"},
                         {"depth", nullptr}}}}})}}})},
     };
-    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(config);
+    const auto graphs = TestSupport::renderGraphOf(config);
     const auto targets = parseRenderTargetDefinitionsFromJson(config);
     const auto compilation = compileRenderingTargetPlans(
         graphs, targets, compileSampleCountPolicy(config),
@@ -99,7 +100,7 @@ nlohmann::json compileIndependentOpportunityPlan(
         TargetPlanningPolicy{
             .profile = PlanningProfile{.kind = profile_kind},
         });
-    if (graphs.size() != 1 || compilation.plans.size() != 1) {
+    if (graphs.graphs.size() != 1 || compilation.plans.size() != 1) {
         throw std::runtime_error(
             "independent opportunity producer must compile one graph and one "
             "physical plan");

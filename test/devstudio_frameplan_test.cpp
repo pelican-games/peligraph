@@ -6,6 +6,7 @@
 #include "../src/core/renderingpass/frameplanner.hpp"
 #include "../src/project/renderconfigsection.hpp"
 #include "../src/project/renderpipeline.hpp"
+#include "render_graph_ir_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -292,7 +293,7 @@ Json exampleFramePlanFromProducer() {
             },
         });
     const auto graphs =
-        Pelican::parseFrameGraphDefinitionsFromConfigJson(
+        Pelican::TestSupport::frameGraphsOf(
             resolved.normalized_config);
     if (graphs.size() != 1) {
         throw std::runtime_error(

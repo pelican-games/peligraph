@@ -14,13 +14,10 @@
 
 namespace Pelican {
 
-FrameGraphDefinition makeFrameGraphDefinition(const RenderingPassDefinition &definition);
-FrameGraphDefinition parseFrameGraphDefinitionFromJson(const nlohmann::json &graph_json);
-std::vector<FrameGraphDefinition> parseFrameGraphDefinitionsFromConfigJson(const nlohmann::json &config_json);
+// RC-3c1b: a completed graph's JSON is read by project's parseRenderGraph
+// only (rendergraphparse.hpp); the frame plan, the logical graph and the
+// physical plan are made from its IR. The serializer stays here.
 
-void validateFramePlanPassInputsProduced(
-    const FramePlan &plan, const nlohmann::json &pass_set_json,
-    const std::unordered_set<std::string> &buffer_names = {});
 // GL-2a: a node a graph node made carries
 //   "origin": {"graph", "node", "definition"?, "instance_path"?, "loop"?,
 //              "loop_branch"?, "element"?}

@@ -8164,11 +8164,10 @@ struct GraphCanvasWidget::Impl {
             line = code + ": " + requiredTargetUnwrittenLine(*unwritten);
         // UX-5d, decision 3: only when a graph node's pass writes the image
         // (the frame plan says who does): not for a feature's task or a pass
-        // of the rendering section, which the phrase would misname. The
-        // frame planner still says it of a graph pass's own input.
-        else if (message.find("Pass input target is not produced as an earlier output") !=
-                     std::string::npos &&
-                 model.graphWritesResourceNamedIn(message))
+        // of the rendering section, which the phrase would misname. RC-3c1b:
+        // the engine names the refusal and its resource.
+        else if (code == "render_graph.input_not_produced@1" &&
+                 model.graphWritesResource(reason.value("resource", std::string{})))
             line += passRunsAfterHint;
         const auto whole = code.empty() ? message : code + ": " + message;
         if (!message.empty() && line.find(whole) == std::string::npos) line += "\n" + whole;

@@ -865,11 +865,11 @@ ResolvedRenderStrategyConfig resolveRenderStrategy(
 }
 
 void applyResolvedRenderStrategySelection(
-    std::span<FrameGraphDefinition> frame_graphs,
+    RenderGraphIR &render_graph,
     const std::optional<RenderStrategySelection>
         &selection) {
     if (!selection) return;
-    for (auto &frame_graph : frame_graphs) {
+    for (auto &frame_graph : render_graph.graphs) {
         if (frame_graph.render_strategy) {
             throw std::runtime_error(
                 "resolved render strategy provenance is "

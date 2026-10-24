@@ -3,6 +3,7 @@
 #include "frameplanner.hpp"
 #include "providerlisting.hpp"
 #include "../../project/graphvariantpolicy.hpp"
+#include "../../project/rendergraphir.hpp"
 #include "../userpublic/details/reload/registrationowner.hpp"
 #include "../userpublic/render/render_strategy_abi_v1.hpp"
 
@@ -108,8 +109,9 @@ ResolvedRenderStrategyConfig resolveRenderStrategy(
     bool runtime_shader_compiler_enabled,
     const RenderStrategyRegistrySnapshot &providers);
 
+// The strategy's provenance, on every graph of the IR.
 void applyResolvedRenderStrategySelection(
-    std::span<FrameGraphDefinition> frame_graphs,
+    RenderGraphIR &render_graph,
     const std::optional<RenderStrategySelection>
         &selection);
 

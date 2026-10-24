@@ -47,40 +47,29 @@ bool isDepthTarget(const RenderTargetDefinition &definition) {
                 ImageUsageBit::depth_stencil_attachment);
 }
 
+// RC-3c1b: the eligibility rules are project's (rendergraphir.hpp), over
+// the declaration facts; this is core's one copy of a render target's.
+ImageDeclarationFacts declarationFactsOf(
+    const RenderTargetDefinition &definition) {
+    return ImageDeclarationFacts{
+        .history = definition.history,
+        .persistent = definition.persistent,
+        .has_source = definition.source.has_value(),
+        .usage = definition.usage,
+        .format_class = definition.format_class,
+    };
+}
+
 bool isTransientAttachmentCandidate(
     const RenderTargetDefinition &definition) {
-    const auto attachment_usage =
-        ImageUsageBit::color_attachment |
-        ImageUsageBit::
-            depth_stencil_attachment;
-    return !definition.history &&
-           !definition.persistent &&
-           bool(definition.usage &
-                attachment_usage) &&
-           !bool(
-               definition.usage &
-               ~ImageUsage{
-                   attachment_usage});
+    return Pelican::isTransientAttachmentCandidate(
+        declarationFactsOf(definition));
 }
 
 bool isTileLocalAttachmentCandidate(
     const RenderTargetDefinition &definition) {
-    const auto attachment_usage =
-        ImageUsageBit::color_attachment |
-        ImageUsageBit::
-            depth_stencil_attachment;
-    const auto allowed_usage =
-        attachment_usage |
-        ImageUsageBit::sampled |
-        ImageUsageBit::input_attachment;
-    return !definition.history &&
-           !definition.persistent &&
-           bool(definition.usage &
-                attachment_usage) &&
-           !bool(
-               definition.usage &
-               ~ImageUsage{
-                   allowed_usage});
+    return Pelican::isTileLocalAttachmentCandidate(
+        declarationFactsOf(definition));
 }
 
 ImageUsage runtimeAliasSafeUsage() {
@@ -88,14 +77,14 @@ ImageUsage runtimeAliasSafeUsage() {
            ImageUsageBit::sampled;
 }
 
+// The declaration's eligibility, and after physical planning the target is
+// still materialized.
 bool isRuntimeAliasCandidate(
     const RenderTargetDefinition &definition) {
-    return !definition.history && !definition.source &&
-           !definition.persistent &&
-           definition.format_class != "display" &&
+    return isRuntimeAliasEligible(
+               declarationFactsOf(definition)) &&
            definition.storage_mode ==
-               RenderTargetStorageMode::materialized &&
-           definition.usage == runtimeAliasSafeUsage();
+               RenderTargetStorageMode::materialized;
 }
 
 std::string joinNames(const std::vector<std::string> &names) {
@@ -490,23 +479,6 @@ TargetTopologySnapshot runtimeTopology(
     };
 }
 
-std::set<std::string, std::less<>> knownResources(
-    const FrameGraphDefinition &definition) {
-    std::set<std::string, std::less<>> result(
-        definition.declared_resources.begin(),
-        definition.declared_resources.end());
-    result.insert(definition.history_resources.begin(),
-                  definition.history_resources.end());
-    for (const auto &node : definition.nodes) {
-        result.insert(node.reads.begin(), node.reads.end());
-        result.insert(node.reads_history.begin(),
-                      node.reads_history.end());
-        result.insert(node.writes.begin(), node.writes.end());
-    }
-    result.erase(std::string{});
-    return result;
-}
-
 std::map<std::string, const RenderTargetDefinition *, std::less<>>
 renderTargetsByName(
     std::span<const RenderTargetDefinition> render_targets) {
@@ -521,51 +493,6 @@ renderTargetsByName(
                 "render-target names: " +
                 target.name);
         }
-    }
-    return result;
-}
-
-LogicalFrameGraphShadowOptions shadowOptions(
-    const FrameGraphDefinition &definition,
-    const LogicalTypeRegistry &types,
-    const std::map<std::string,
-                   const RenderTargetDefinition *,
-                   std::less<>> &render_targets,
-    const TileLocalAttachmentFormatSet
-        &tile_local_formats = {}) {
-    LogicalFrameGraphShadowOptions result;
-    for (const auto &resource : knownResources(definition)) {
-        if (resource == "swapchain") {
-            result.resource_types.push_back({
-                .resource = resource,
-                .type = displayEncodedV1(types),
-                .materialization =
-                    LogicalMaterializationRequirement::external,
-            });
-            continue;
-        }
-        const auto target = render_targets.find(resource);
-        if (target == render_targets.end()) continue;
-        const auto tile_local =
-            tile_local_formats.contains({
-                resource,
-                target->second->format});
-        result.resource_types.push_back({
-            .resource = resource,
-            .type = isDepthTarget(*target->second)
-                        ? deviceDepthV1(types)
-                        : legacyOpaqueImageV1(types),
-            .materialization =
-                isTransientAttachmentCandidate(
-                    *target->second) ||
-                        tile_local ||
-                        isRuntimeAliasCandidate(
-                            *target->second)
-                    ? LogicalMaterializationRequirement::
-                          virtual_resource
-                    : LogicalMaterializationRequirement::
-                          required,
-        });
     }
     return result;
 }
@@ -869,167 +796,31 @@ transientAttachmentFormats(
     return result;
 }
 
-TileLocalAttachmentFormatSet
-tileLocalAttachmentFormats(
-    std::span<const RenderTargetDefinition> render_targets,
+// RC-3c1b: the device facts project's tile-local rule asks: an image of a
+// format, usage and kind is supported as a local-read attachment when the
+// device keeps attachments tile-local and supports both the image and the
+// local read (the query this compilation was given).
+RenderGraphDeviceFacts renderGraphDeviceFactsOf(
     const RenderingTargetPlanDeviceFacts &facts) {
-    TileLocalAttachmentFormatSet result;
-    if (!facts.transient_attachments ||
-        !facts.dynamic_rendering_local_read) {
-        return result;
-    }
-    for (const auto &target : render_targets) {
-        if (!isTileLocalAttachmentCandidate(
-                target)) {
-            continue;
-        }
-        for (const auto format :
-             declaredFormats(target)) {
-            const auto capability =
-                queryFormatCapability(
-                    facts, target, format);
-            if (capability.image_usage_supported &&
-                capability
-                    .local_read_attachment_supported) {
-                result.emplace(
-                    target.name,
-                    format);
-            }
-        }
-    }
-    return result;
-}
-
-bool nodeHasSamePixelRead(
-    const FrameGraphNodeDefinition &node,
-    std::string_view resource) {
-    const auto footprint = std::find_if(
-        node.read_footprints.begin(),
-        node.read_footprints.end(),
-        [&](const auto &candidate) {
-            return candidate.resource == resource;
-        });
-    return footprint !=
-               node.read_footprints.end() &&
-           footprint->footprint.kind ==
-               LogicalReadFootprintKind::
-                   same_pixel;
-}
-
-bool nodeAttachmentsMatchLocalReadExtent(
-    const FrameGraphNodeDefinition &node,
-    const RenderTargetDefinition &local_target,
-    const std::map<std::string,
-                   const RenderTargetDefinition *,
-                   std::less<>> &render_targets) {
-    if (node.attachments.empty()) {
-        return false;
-    }
-    const auto local_extent =
-        runtimeExtentPlan(local_target);
-    for (const auto &attachment :
-         node.attachments) {
-        if (attachment.resource == "swapchain") {
-            return false;
-        }
-        const auto target =
-            render_targets.find(
-                attachment.resource);
-        if (target == render_targets.end() ||
-            runtimeExtentPlan(*target->second) !=
-                local_extent) {
-            return false;
-        }
-    }
-    return true;
-}
-
-TileLocalAttachmentFormatSet
-graphTileLocalAttachmentFormats(
-    const FrameGraphDefinition &definition,
-    const std::map<std::string,
-                   const RenderTargetDefinition *,
-                   std::less<>> &render_targets,
-    const TileLocalAttachmentFormatSet
-        &device_formats) {
-    TileLocalAttachmentFormatSet result;
-    for (const auto &[name, target] :
-         render_targets) {
-        const auto format = target->format;
-        if (!device_formats.contains(
-                {name, format})) {
-            continue;
-        }
-        bool read = false;
-        bool written = false;
-        bool compatible = true;
-        for (const auto &node : definition.nodes) {
-            if (std::find(
-                    node.reads_history.begin(),
-                    node.reads_history.end(),
-                    name) !=
-                node.reads_history.end()) {
-                compatible = false;
-                break;
-            }
-            const auto reads =
-                std::find(
-                    node.reads.begin(),
-                    node.reads.end(),
-                    name) != node.reads.end();
-            if (reads) {
-                read = true;
-                if (node.kind !=
-                        FramePlanNodeKind::render ||
-                    std::find(
-                        node.local_read_shader_inputs
-                            .begin(),
-                        node.local_read_shader_inputs
-                            .end(),
-                        name) ==
-                        node.local_read_shader_inputs
-                            .end() ||
-                    !nodeHasSamePixelRead(
-                        node, name) ||
-                    !nodeAttachmentsMatchLocalReadExtent(
-                        node, *target,
-                        render_targets)) {
-                    compatible = false;
-                    break;
-                }
-            }
-            const auto writes =
-                std::find(
-                    node.writes.begin(),
-                    node.writes.end(),
-                    name) != node.writes.end();
-            if (writes) {
-                written = true;
-                const auto attachment =
-                    std::find_if(
-                        node.attachments.begin(),
-                        node.attachments.end(),
-                        [&](const auto &attachment) {
-                            return attachment.resource ==
-                                   name;
-                        });
-                // Logical local-read ports currently identify an image
-                // resource, not one of its raster subresources. Keep an
-                // explicit attachment view materialized until that port
-                // contract can name the same range unambiguously.
-                if (attachment ==
-                        node.attachments.end() ||
-                    attachment->subresource) {
-                    compatible = false;
-                    break;
-                }
-            }
-        }
-        if (compatible && read && written) {
-            result.emplace(name, format);
-        }
-    }
-    return result;
+    return RenderGraphDeviceFacts{
+        .tile_local_attachments =
+            facts.transient_attachments &&
+            facts.dynamic_rendering_local_read,
+        .supports_local_read_attachment =
+            [&facts](const RenderGraphImageCapabilityQuery &query) {
+                RenderTargetDefinition candidate;
+                candidate.format = query.format;
+                candidate.usage = query.usage;
+                candidate.dimension =
+                    query.cube_compatible
+                        ? ImageResourceDimension::cube
+                        : ImageResourceDimension::two_d;
+                const auto capability = queryFormatCapability(
+                    facts, candidate, query.format);
+                return capability.image_usage_supported &&
+                       capability.local_read_attachment_supported;
+            },
+    };
 }
 
 std::vector<VulkanPhysicalResourceFormatCapability>
@@ -1676,63 +1467,8 @@ TargetEndpoint renderingTargetRuntimeEndpoint(
     return makeRuntimeEndpoint(facts, enable_tile_local);
 }
 
-std::vector<CompiledLogicalRenderGraph>
-compileRenderingLogicalGraphs(
-    std::span<const FrameGraphDefinition> frame_graphs,
-    std::span<const RenderTargetDefinition> render_targets) {
-    const auto target_by_name =
-        renderTargetsByName(render_targets);
-    const auto types = makeBuiltinLogicalTypeRegistry();
-    std::vector<CompiledLogicalRenderGraph> result;
-    result.reserve(frame_graphs.size());
-    std::set<std::string, std::less<>>
-        graph_names;
-    for (const auto &definition : frame_graphs) {
-        if (definition.name.empty() ||
-            !graph_names.insert(definition.name).second) {
-            throw std::runtime_error(
-                "logical rendering graph names must be unique and "
-                "non-empty: " +
-                definition.name);
-        }
-        result.push_back(
-            compileLogicalFrameGraphShadow(
-                definition, types,
-                shadowOptions(
-                    definition, types,
-                    target_by_name)));
-    }
-    return result;
-}
-
-std::vector<CompiledLogicalRenderGraph>
-compileRenderingLogicalGraphs(
-    std::span<const FrameGraphDefinition> frame_graphs,
-    std::span<const RenderTargetDefinition> render_targets,
-    const RenderingTargetPlanDeviceFacts &device_facts) {
-    const auto target_by_name =
-        renderTargetsByName(render_targets);
-    const auto types = makeBuiltinLogicalTypeRegistry();
-    const auto device_tile_local_formats =
-        tileLocalAttachmentFormats(
-            render_targets, device_facts);
-    std::vector<CompiledLogicalRenderGraph> result;
-    result.reserve(frame_graphs.size());
-    for (const auto &definition : frame_graphs) {
-        result.push_back(
-            compileLogicalFrameGraphShadow(
-                definition, types,
-                shadowOptions(
-                    definition, types, target_by_name,
-                    graphTileLocalAttachmentFormats(
-                        definition, target_by_name,
-                        device_tile_local_formats))));
-    }
-    return result;
-}
-
 RenderingTargetPlanCompilation compileRenderingTargetPlans(
-    std::span<const FrameGraphDefinition> frame_graphs,
+    const RenderGraphIR &render_graph,
     std::span<const RenderTargetDefinition> render_targets,
     const SampleCountPolicy &policy,
     vk::Format swapchain_format,
@@ -1749,12 +1485,19 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
     const auto target_by_name =
         renderTargetsByName(render_targets);
     const auto types = makeBuiltinLogicalTypeRegistry();
+    // The planner's view of each graph (RC-3c1b: derived from the IR; the
+    // parts below that read it move to the IR with the physical plan).
+    std::vector<FrameGraphDefinition> frame_graphs;
+    frame_graphs.reserve(render_graph.graphs.size());
+    for (const auto &graph : render_graph.graphs)
+        frame_graphs.push_back(
+            frameGraphDefinitionOf(render_graph, graph));
     const auto transient_formats =
         transientAttachmentFormats(
             render_targets, device_facts);
+    const auto device = renderGraphDeviceFactsOf(device_facts);
     const auto device_tile_local_formats =
-        tileLocalAttachmentFormats(
-            render_targets, device_facts);
+        renderGraphDeviceTileLocalFormats(render_graph, device);
     if (external_depth_export &&
         (device_facts
              .query_image_format_capability ||
@@ -1887,8 +1630,8 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
             local_policy.targets.end());
 
         const auto tile_local_formats =
-            graphTileLocalAttachmentFormats(
-                definition, target_by_name,
+            renderGraphTileLocalFormats(
+                render_graph, render_graph.graphs[index],
                 device_tile_local_formats);
         // Keep the tile backend out of candidate selection when this graph
         // has no resource that the current runtime can actually execute as a
@@ -1898,11 +1641,9 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
             runtimeTopology(
                 device_facts,
                 !tile_local_formats.empty());
-        auto logical_graph = compileLogicalFrameGraphShadow(
-            definition, types,
-            shadowOptions(
-                definition, types, target_by_name,
-                tile_local_formats));
+        auto logical_graph = toLogicalGraph(
+            render_graph, render_graph.graphs[index],
+            ToLogicalGraphOptions{.device = device});
         auto format_capabilities =
             physicalFormatCapabilities(
                 logical_graph, target_by_name,
@@ -2230,7 +1971,7 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
 
 RenderingTargetPlanCompilation
 compileRenderingTargetPlansForVulkanDevice(
-    std::span<const FrameGraphDefinition> frame_graphs,
+    const RenderGraphIR &render_graph,
     std::span<const RenderTargetDefinition> render_targets,
     const SampleCountPolicy &policy,
     vk::Format swapchain_format,
@@ -2263,7 +2004,7 @@ compileRenderingTargetPlansForVulkanDevice(
         supportsDynamicRenderingLocalRead(
             physical_device);
     return compileRenderingTargetPlans(
-        frame_graphs, render_targets, policy, swapchain_format,
+        render_graph, render_targets, policy, swapchain_format,
         RenderingTargetPlanDeviceFacts{
             .max_color_attachments =
                 device_properties

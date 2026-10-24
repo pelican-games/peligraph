@@ -26,6 +26,7 @@
 #include "renderingpass/passdefinitionjsonparser.hpp"
 #include "renderingpass/rendertargetmetadataresolver.hpp"
 #include "renderingpass/rendertargetnameresolver.hpp"
+#include "render_graph_ir_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -701,7 +702,7 @@ Json resolvedFramePlanFromAuthoredConfig(const Json &authored,
         },
         Pelican::RenderEnvironmentCapabilities{});
     const auto compiled = Pelican::compileRenderPipeline(resolved);
-    const auto graphs = Pelican::parseFrameGraphDefinitionsFromConfigJson(
+    const auto graphs = Pelican::TestSupport::frameGraphsOf(
         resolved.normalized_config);
     if (graphs.size() != 1) {
         throw std::runtime_error(

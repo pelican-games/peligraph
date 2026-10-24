@@ -10,12 +10,12 @@
 #include "../src/core/renderingpass/rendertargetnameresolver.hpp"
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
 #include "../src/core/renderingpass/vulkanrendercompilerpackage.hpp"
-#include "../src/core/renderingpass/vulkanrendercompilerprogramdetail.hpp"
 #include "../src/core/renderer/viewfamilyproviderregistry.hpp"
 #include "../src/project/renderconfigdocument.hpp"
 #include "../src/project/renderconfigsection.hpp"
 #include "render_graph_root_test_support.hpp"
 #include "../src/project/rasterrayquery.hpp"
+#include "render_graph_ir_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -55,258 +55,245 @@ TEST_CASE("named scene AS definitions validate mask and preserve metadata", "[re
     CHECK_THROWS(compileRenderPipeline(resolved));
 }
 
+// RC-3c1b: the acceleration-structure builds and frame_node_order are the
+// IR's (insertAccelerationStructureNodes, applyFrameNodeOrder; core's
+// FrameGraphDefinition versions are gone). The graphs are written as JSON and
+// parsed, as the compiler reads them.
+namespace {
+
+using IrJson = nlohmann::json;
+
+IrJson swapchainOutput() {
+    return IrJson{{"color", IrJson::array({IrJson{{"target", "swapchain"}}})}, {"depth", nullptr}};
+}
+
+IrJson fullscreenPass(const std::string &name, IrJson ray_query = nullptr) {
+    IrJson pass{{"name", name}, {"type", "fullscreen"}, {"output", swapchainOutput()}};
+    if (!ray_query.is_null()) pass["ray_query"] = std::move(ray_query);
+    return pass;
+}
+
+IrJson anchorPass(const std::string &anchor) {
+    return IrJson{{"name", "__anchor_" + anchor}, {"type", "canonical_anchor"}, {"anchor", anchor}};
+}
+
+RenderGraphIR irOf(IrJson config) { return TestSupport::renderGraphOf(config); }
+
+RenderGraphIR insertAs(RenderGraphIR ir, const TargetPlanningPolicy &policy, bool ray_project,
+                       std::span<const SceneAccelerationStructureDefinition> named = {}) {
+    return insertAccelerationStructureNodes(
+        std::move(ir), AccelerationStructureNodeRequest{
+                           .planning_graphs = policy.graphs, .ray_tracing_project = ray_project, .named = named});
+}
+
+RenderGraphIR ordered(RenderGraphIR ir, std::vector<std::string> nodes, bool require_all_graphs = true) {
+    ir.frame_node_order = {FrameNodeOrderIR{"main", std::move(nodes)}};
+    return applyFrameNodeOrder(std::move(ir), require_all_graphs);
+}
+
+std::vector<std::string> planOrder(const RenderGraphIR &ir) {
+    return framePlanOrder(planRenderGraph(ir, ir.graphs.at(0)));
+}
+
+void requireOrderConflict(RenderGraphIR ir, std::vector<std::string> nodes) {
+    // FO-1: the order is refused by name before it becomes a cycle.
+    TestSupport::requireNamedRefusal([&] { (void)ordered(std::move(ir), std::move(nodes)); },
+                                     "frame_node_order.conflicts_dependency@1");
+}
+
+} // namespace
+
 TEST_CASE("scene AS operation follows variant-wide ray requirements", "[rendercompiler][rt6][as-node]") {
-    std::vector<FrameGraphDefinition> graphs{
-        {.name = "main", .nodes = {{.name = "draw", .kind = FramePlanNodeKind::render}}},
-        {.name = "aux", .nodes = {{.name = "copy", .kind = FramePlanNodeKind::anchor}}}};
+    // main draws (no query); aux holds an anchor only.
+    auto config = IrJson{{"rendering_passes",
+                          IrJson::array({IrJson{{"name", "main"}, {"passes", IrJson::array({fullscreenPass("draw")})}},
+                                         IrJson{{"name", "aux"}, {"passes", IrJson::array({anchorPass("copy")})}}})}};
     TargetPlanningPolicy policy;
-    std::vector<ComputeTaskDefinition> tasks;
-    const auto require_as_nodes = [&] {
-        for (const auto &graph : graphs) {
+    const auto require_as_nodes = [](const RenderGraphIR &ir) {
+        for (const auto &graph : ir.graphs) {
             REQUIRE(graph.nodes.size() == 2);
-            CHECK(graph.nodes[0].kind == FramePlanNodeKind::acceleration_structure);
+            CHECK(graph.nodes[0].shape == RenderNodeShape::acceleration_structure);
             CHECK(graph.nodes[0].name == "__scene_acceleration_structure");
             CHECK(graph.nodes[0].declaration_index == 0);
             CHECK(graph.nodes[1].declaration_index == 1);
-            if (graph.nodes[1].kind == FramePlanNodeKind::anchor)
-                CHECK(graph.nodes[1].after.empty());
-            else
-                CHECK(graph.nodes[1].after == std::vector<std::string>{"__scene_acceleration_structure"});
+            // Neither queries: neither waits.
+            CHECK(graph.nodes[1].after.empty());
         }
     };
     SECTION("non-ray variant is unchanged") {
-        detail::insertSceneAccelerationStructureNodes(graphs, policy, tasks, false);
-        REQUIRE(graphs[0].nodes.size() == 1);
-        CHECK(graphs[0].nodes[0].name == "draw");
-        CHECK(graphs[1].nodes.size() == 1);
+        const auto ir = insertAs(irOf(config), policy, false);
+        REQUIRE(ir.graphs[0].nodes.size() == 1);
+        CHECK(ir.graphs[0].nodes[0].name == "draw");
+        CHECK(ir.graphs[1].nodes.size() == 1);
     }
     SECTION("one ray graph creates operations for the whole owner") {
-        policy.graphs.push_back({.graph = "main",
-            .required_capabilities = {"pelican.vulkan.ray_query@1"}});
-        detail::insertSceneAccelerationStructureNodes(graphs, policy, tasks, false);
-        require_as_nodes();
+        policy.graphs.push_back({.graph = "main", .required_capabilities = {"pelican.vulkan.ray_query@1"}});
+        require_as_nodes(insertAs(irOf(config), policy, false));
     }
     SECTION("ray project creates operations") {
-        detail::insertSceneAccelerationStructureNodes(graphs, policy, tasks, true);
-        require_as_nodes();
+        require_as_nodes(insertAs(irOf(config), policy, true));
     }
     SECTION("declared raster query creates an AS and independent raster can precede it") {
-        graphs[0].nodes[0].ray_query = true;
-        graphs[0].nodes.push_back({.name = "independent", .kind = FramePlanNodeKind::render, .ray_query = false});
-        detail::insertSceneAccelerationStructureNodes(graphs, {}, {}, false);
-        CHECK(graphs[0].nodes[1].after == std::vector<std::string>{"__scene_acceleration_structure"});
-        CHECK(graphs[0].nodes[2].after.empty());
-        detail::applyFrameNodeOrder(graphs, {{"main", {"independent", "__scene_acceleration_structure", "draw"}}});
-        const auto plan = planFrameGraph(graphs[0]);
-        CHECK(plan.nodes[0].name == "independent");
-        CHECK(plan.nodes[1].name == "__scene_acceleration_structure");
-        CHECK(plan.nodes[2].name == "draw");
-        // FO-1: the order is refused by name before it becomes a cycle.
-        CHECK_THROWS_WITH(detail::applyFrameNodeOrder(graphs, {{"main", {"draw", "__scene_acceleration_structure"}}}),
-                          Catch::Matchers::ContainsSubstring("frame_node_order.conflicts_dependency@1"));
+        config["rendering_passes"][0]["passes"] =
+            IrJson::array({fullscreenPass("draw", true), fullscreenPass("independent", false)});
+        auto ir = insertAs(irOf(config), {}, false);
+        CHECK(ir.graphs[0].nodes[1].after == std::vector<std::string>{"__scene_acceleration_structure"});
+        CHECK(ir.graphs[0].nodes[2].after.empty());
+        const auto applied = ordered(ir, {"independent", "__scene_acceleration_structure", "draw"});
+        CHECK(planOrder(applied) ==
+              std::vector<std::string>{"independent", "__scene_acceleration_structure", "draw"});
+        requireOrderConflict(ir, {"draw", "__scene_acceleration_structure"});
     }
     SECTION("ray task creates operations") {
-        ComputeTaskDefinition task;
-        task.name = "trace";
-        task.ray_tracing.emplace();
-        tasks.push_back(std::move(task));
-        graphs[0].nodes[0].name = "trace";
-        graphs[0].nodes[0].kind = FramePlanNodeKind::compute;
-        detail::insertSceneAccelerationStructureNodes(graphs, policy, tasks, false);
-        require_as_nodes();
+        config["compute_tasks"] = IrJson::array({IrJson{{"name", "trace"}, {"ray_tracing", IrJson::object()}}});
+        config["rendering_passes"][0]["passes"] = IrJson::array();
+        config["rendering_passes"][1]["passes"] = IrJson::array({anchorPass("copy")});
+        const auto ir = insertAs(irOf(config), policy, false);
+        // The task waits on the build it traces.
+        REQUIRE(ir.graphs[0].nodes.size() == 2);
+        CHECK(ir.graphs[0].nodes[0].name == "__scene_acceleration_structure");
+        CHECK(ir.graphs[0].nodes[1].name == "trace");
+        CHECK(ir.graphs[0].nodes[1].after == std::vector<std::string>{"__scene_acceleration_structure"});
     }
     SECTION("fixed sprite shaders can run before AS construction") {
-        graphs[0].nodes.push_back({.name = "__anchor_sprite", .kind = FramePlanNodeKind::anchor});
-        detail::insertSceneAccelerationStructureNodes(graphs, {}, {}, true);
-        CHECK(graphs[0].nodes.back().after.empty());
-        detail::applyFrameNodeOrder(graphs, {{"main", {"__anchor_sprite", "__scene_acceleration_structure", "draw"}}});
-        CHECK(planFrameGraph(graphs[0]).nodes[0].name == "__anchor_sprite");
+        config["rendering_passes"][0]["passes"] =
+            IrJson::array({fullscreenPass("draw", true), anchorPass("sprite")});
+        const auto ir = insertAs(irOf(config), {}, true);
+        CHECK(ir.graphs[0].nodes.back().after.empty());
+        CHECK(planOrder(ordered(ir, {"__anchor_sprite", "__scene_acceleration_structure", "draw"})).front() ==
+              "__anchor_sprite");
     }
-    SECTION("fixed UI shaders can run before AS construction in both graph lowering paths") {
-      for (const auto type : {RenderPassType::ui
+    SECTION("fixed UI shaders can run before AS construction") {
+      for (const std::string type_name : {"ui"
 #if PELICAN_WITH_IMGUI
-                             , RenderPassType::imgui
+                                          , "imgui"
 #endif
-                             }) {
-        const auto type_name = type == RenderPassType::ui ? "ui" : "imgui";
+                                          }) {
         INFO(type_name);
-        const auto json_graph = parseFrameGraphDefinitionFromJson({{"name", "main"},
-            {"passes", nlohmann::json::array({{{"name", "pelican_ui"}, {"type", type_name},
-                {"output", {{"color", "swapchain"}, {"depth", nullptr}}}}})}});
-        RenderingPassDefinition typed;
-        typed.name = "main";
-        PassDefinition ui;
-        ui.name = "pelican_ui";
-        ui.pass_type = type;
-        ui.pass_info = UiPassInfo{};
-#if PELICAN_WITH_IMGUI
-        if (type == RenderPassType::imgui) ui.pass_info = ImGuiPassInfo{};
-#endif
-        ui.output_color.emplace_back(swapchainRenderTargetId());
-        ui.applyDefaultAttachmentOperations(type);
-        typed.passes.push_back(std::move(ui));
-        for (const auto &lowered : {json_graph, makeFrameGraphDefinition(typed)}) {
-            REQUIRE(lowered.nodes.size() == 1);
-            CHECK(lowered.nodes[0].ray_query == false);
-            graphs = {lowered};
-            detail::insertSceneAccelerationStructureNodes(graphs, {}, {}, true);
-            CHECK(graphs[0].nodes.back().after.empty());
-            detail::applyFrameNodeOrder(graphs, {{"main", {"pelican_ui", "__scene_acceleration_structure"}}});
-            const auto plan = planFrameGraph(graphs[0]);
-            REQUIRE(plan.nodes.size() == 2);
-            CHECK(plan.nodes[0].name == "pelican_ui");
-            CHECK(plan.nodes[1].name == "__scene_acceleration_structure");
-        }
+        const auto ir = insertAs(
+            irOf(IrJson{{"name", "main"},
+                        {"passes", IrJson::array({{{"name", "pelican_ui"}, {"type", type_name},
+                                                   {"output", {{"color", "swapchain"}, {"depth", nullptr}}}}})}}),
+            {}, true);
+        REQUIRE(ir.graphs[0].nodes.size() == 2);
+        CHECK(ir.graphs[0].nodes.back().after.empty());
+        CHECK(planOrder(ordered(ir, {"pelican_ui", "__scene_acceleration_structure"})) ==
+              std::vector<std::string>{"pelican_ui", "__scene_acceleration_structure"});
       }
     }
     SECTION("reserved name collision is rejected") {
-        graphs[0].nodes[0].name = "__scene_acceleration_structure";
-        REQUIRE_THROWS_WITH(detail::insertSceneAccelerationStructureNodes(graphs, policy, tasks, true),
-            Catch::Matchers::ContainsSubstring("Reserved scene acceleration-structure node name"));
+        config["rendering_passes"][0]["passes"][0]["name"] = "__scene_acceleration_structure";
+        TestSupport::requireNamedRefusal([&] { (void)insertAs(irOf(config), policy, true); },
+                                         "render_graph.acceleration_structure_reserved@1",
+                                         {{"graph", "main"}, {"node", "__scene_acceleration_structure"}});
     }
 }
 
 TEST_CASE("named AS operations depend on shared construction and precede consumers", "[rendercompiler][rt7][named-as-node]") {
-    std::vector<FrameGraphDefinition> graphs{
-        {.name = "main", .nodes = {{.name = "trace", .kind = FramePlanNodeKind::compute}}}};
     const std::vector<SceneAccelerationStructureDefinition> definitions{
         {.name = "actors", .instance_mask = 1}, {.name = "world", .instance_mask = 2}};
+    const auto task_config = [](IrJson task) {
+        return IrJson{{"buffers", IrJson::array({IrJson{{"name", "hits"}}})},
+                      {"compute_tasks", IrJson::array({std::move(task)})},
+                      {"rendering_passes", IrJson::array({IrJson{{"name", "main"}, {"passes", IrJson::array()}}})}};
+    };
     SECTION("material declaration controls AS placement and selection") {
-        graphs[0] = parseFrameGraphDefinitionFromJson({{"name", "main"}, {"passes", nlohmann::json::array({
+        auto ir = irOf({{"name", "main"}, {"passes", IrJson::array({
             {{"name", "independent"}, {"type", "material"}, {"material_contract", "deferred_geometry_v1"},
              {"output", {{"color", {"a", "b", "c", "d", "e"}}, {"depth", "depth"}}}},
             {{"name", "query"}, {"type", "material"}, {"material_contract", "deferred_geometry_v1"},
              {"ray_query", {{"acceleration_structure", "actors"}}},
              {"output", {{"color", {"f", "g", "h", "i", "j"}}, {"depth", "depth2"}}}}
         })}});
-        REQUIRE(graphs[0].nodes.size() == 2);
-        CHECK(graphs[0].nodes[0].ray_query == false);
-        CHECK(graphs[0].nodes[1].ray_query == true);
-        CHECK(graphs[0].nodes[1].ray_query_acceleration_structure == "actors");
-        detail::insertSceneAccelerationStructureNodes(graphs, {}, {}, false, definitions);
-        detail::applyFrameNodeOrder(graphs, {{"main", {"independent", "__scene_acceleration_structure", "__scene_acceleration_structure:actors", "query"}}});
-        CHECK(planFrameGraph(graphs[0]).nodes[0].name == "independent");
-        // FO-1: the order is refused by name before it becomes a cycle.
-        CHECK_THROWS_WITH(detail::applyFrameNodeOrder(graphs, {{"main", {"query", "__scene_acceleration_structure:actors"}}}),
-                          Catch::Matchers::ContainsSubstring("frame_node_order.conflicts_dependency@1"));
+        REQUIRE(ir.graphs[0].nodes.size() == 2);
+        CHECK_FALSE(ir.graphs[0].nodes[0].ray_query);
+        CHECK(ir.graphs[0].nodes[1].ray_query == "actors");
+        ir = insertAs(std::move(ir), {}, false, definitions);
+        CHECK(planOrder(ordered(ir, {"independent", "__scene_acceleration_structure",
+                                     "__scene_acceleration_structure:actors", "query"}))
+                  .front() == "independent");
+        requireOrderConflict(ir, {"query", "__scene_acceleration_structure:actors"});
     }
-    SECTION("auxiliary drawing declares its query dependency in JSON and typed graphs") {
-      for (const auto type : {RenderPassType::debug_draw, RenderPassType::debug_text, RenderPassType::gizmo,
-                              RenderPassType::shadow_depth, RenderPassType::velocity, RenderPassType::picking}) {
-        const auto type_name = type == RenderPassType::debug_draw ? "debug_draw" :
-                               type == RenderPassType::debug_text ? "debug_text" :
-                               type == RenderPassType::gizmo ? "gizmo" :
-                               type == RenderPassType::shadow_depth ? "shadow_depth" :
-                               type == RenderPassType::velocity ? "velocity" : "picking";
+    SECTION("auxiliary drawing declares its query dependency") {
+      for (const std::string type_name : {"debug_draw", "debug_text", "gizmo", "shadow_depth", "velocity", "picking"}) {
         INFO(type_name);
         nlohmann::json output_a = {{"color", "a"}, {"depth", nullptr}};
         nlohmann::json output_b = {{"color", "b"}, {"depth", nullptr}};
-        const bool geometry = type == RenderPassType::shadow_depth || type == RenderPassType::velocity ||
-                              type == RenderPassType::picking;
+        const bool geometry = type_name == "shadow_depth" || type_name == "velocity" || type_name == "picking";
         if (geometry) {
             output_a["depth"] = "depth_a";
             output_b["depth"] = "depth_b";
         }
-        if (type == RenderPassType::shadow_depth) {
+        if (type_name == "shadow_depth") {
             output_a["color"] = nullptr;
             output_b["color"] = nullptr;
         }
-        graphs[0] = parseFrameGraphDefinitionFromJson({{"name", "main"}, {"passes", nlohmann::json::array({
+        auto ir = irOf({{"name", "main"}, {"passes", nlohmann::json::array({
             {{"name", "independent"}, {"type", type_name}, {"output", output_a}},
             {{"name", "query"}, {"type", type_name}, {"ray_query", {{"acceleration_structure", "actors"}}},
              {"output", output_b}}
         })}});
-        REQUIRE(graphs[0].nodes.size() == 2);
-        CHECK(graphs[0].nodes[0].ray_query == false);
-        CHECK(graphs[0].nodes[1].ray_query == true);
-        CHECK(graphs[0].nodes[1].ray_query_acceleration_structure == "actors");
-        RenderingPassDefinition typed;
-        typed.name = "main";
-        PassDefinition draw;
-        draw.name = "independent";
-        draw.pass_type = type;
-        if (type == RenderPassType::debug_draw) draw.pass_info = DebugDrawPassInfo{};
-        else if (type == RenderPassType::debug_text) draw.pass_info = DebugTextPassInfo{};
-        else if (type == RenderPassType::gizmo) draw.pass_info = GizmoPassInfo{};
-        else if (type == RenderPassType::shadow_depth) draw.pass_info = ShadowDepthPassInfo{};
-        else if (type == RenderPassType::velocity) draw.pass_info = VelocityPassInfo{};
-        else draw.pass_info = PickingPassInfo{};
-        if (type != RenderPassType::shadow_depth) draw.output_color.emplace_back(GlobalRenderTargetId{0});
-        if (geometry) draw.output_depth = GlobalRenderTargetId{2};
-        draw.applyDefaultAttachmentOperations(type);
-        typed.passes.push_back(draw);
-        draw.name = "query";
-        draw.ray_query = true;
-        draw.ray_query_acceleration_structure = "actors";
-        if (type != RenderPassType::shadow_depth) draw.output_color = {GlobalRenderTargetId{1}};
-        if (geometry) draw.output_depth = GlobalRenderTargetId{3};
-        typed.passes.push_back(draw);
-        const auto typed_graph = makeFrameGraphDefinition(typed);
-        for (const auto &lowered : {graphs[0], typed_graph}) {
-            graphs = {lowered};
-            CHECK(graphs[0].nodes[0].ray_query == false);
-            CHECK(graphs[0].nodes[1].ray_query_acceleration_structure == "actors");
-            detail::insertSceneAccelerationStructureNodes(graphs, {}, {}, true, definitions);
-            detail::applyFrameNodeOrder(graphs, {{"main", {"independent", "__scene_acceleration_structure", "__scene_acceleration_structure:actors", "query"}}});
-            const auto plan = planFrameGraph(graphs[0]);
-            CHECK(plan.nodes.front().name == "independent");
-            CHECK(plan.nodes.back().name == "query");
-            // FO-1: the order is refused by name before it becomes a cycle.
-            CHECK_THROWS_WITH(detail::applyFrameNodeOrder(graphs, {{"main", {"query", "__scene_acceleration_structure:actors"}}}),
-                              Catch::Matchers::ContainsSubstring("frame_node_order.conflicts_dependency@1"));
-        }
+        REQUIRE(ir.graphs[0].nodes.size() == 2);
+        CHECK_FALSE(ir.graphs[0].nodes[0].ray_query);
+        CHECK(ir.graphs[0].nodes[1].ray_query == "actors");
+        ir = insertAs(std::move(ir), {}, true, definitions);
+        const auto plan = planOrder(ordered(ir, {"independent", "__scene_acceleration_structure",
+                                                 "__scene_acceleration_structure:actors", "query"}));
+        CHECK(plan.front() == "independent");
+        CHECK(plan.back() == "query");
+        requireOrderConflict(ir, {"query", "__scene_acceleration_structure:actors"});
       }
     }
     SECTION("one executable operation per named AS") {
-        detail::insertSceneAccelerationStructureNodes(graphs, {}, {}, true, definitions);
-        REQUIRE(graphs[0].nodes.size() == 4);
-        const auto &nodes = graphs[0].nodes;
+        const auto ir = insertAs(irOf(task_config({{"name", "trace"}, {"writes", {"hits"}}})), {}, true, definitions);
+        const auto &nodes = ir.graphs[0].nodes;
+        REQUIRE(nodes.size() == 4);
         CHECK(nodes[0].name == "__scene_acceleration_structure");
         for (std::size_t i = 1; i < 3; ++i) {
             CHECK(nodes[i].name == "__scene_acceleration_structure:" + definitions[i - 1].name);
-            CHECK(nodes[i].kind == FramePlanNodeKind::acceleration_structure);
+            CHECK(nodes[i].shape == RenderNodeShape::acceleration_structure);
             CHECK(nodes[i].after == std::vector<std::string>{nodes[0].name});
             CHECK(nodes[i].declaration_index == i);
         }
         CHECK(nodes[3].after.empty());
     }
     SECTION("named consumers can execute before an unrelated TLAS") {
-        ComputeTaskDefinition task;
-        task.name = "trace";
-        task.ray_tracing.emplace();
-        task.ray_tracing->acceleration_structure = "actors";
-        detail::insertSceneAccelerationStructureNodes(graphs, {}, {task}, true, definitions);
-        CHECK(graphs[0].nodes.back().after == std::vector<std::string>{"__scene_acceleration_structure", "__scene_acceleration_structure:actors"});
-        detail::applyFrameNodeOrder(graphs, {{"main", {"__scene_acceleration_structure:actors", "trace", "__scene_acceleration_structure:world"}}});
-        const auto plan = planFrameGraph(graphs[0]);
-        REQUIRE(plan.nodes.size() == 4);
-        CHECK(plan.nodes[2].name == "trace");
-        CHECK(plan.nodes[3].name == "__scene_acceleration_structure:world");
+        const auto ir = insertAs(
+            irOf(task_config({{"name", "trace"}, {"writes", {"hits"}},
+                              {"ray_tracing", {{"acceleration_structure", "actors"}}}})),
+            {}, true, definitions);
+        CHECK(ir.graphs[0].nodes.back().after ==
+              std::vector<std::string>{"__scene_acceleration_structure", "__scene_acceleration_structure:actors"});
+        const auto plan = planOrder(ordered(
+            ir, {"__scene_acceleration_structure:actors", "trace", "__scene_acceleration_structure:world"}));
+        REQUIRE(plan.size() == 4);
+        CHECK(plan[2] == "trace");
+        CHECK(plan[3] == "__scene_acceleration_structure:world");
     }
     SECTION("query consumers cannot precede their selected TLAS") {
-        ComputeTaskDefinition task;
-        task.name = "trace";
-        task.ray_query_acceleration_structure = "actors";
-        detail::insertSceneAccelerationStructureNodes(graphs, {}, {task}, true, definitions);
-        // FO-1: the order is refused by name before it becomes a cycle.
-        CHECK_THROWS_WITH(detail::applyFrameNodeOrder(graphs, {{"main", {"trace", "__scene_acceleration_structure:actors"}}}),
-                          Catch::Matchers::ContainsSubstring("frame_node_order.conflicts_dependency@1"));
+        const auto ir = insertAs(irOf(task_config({{"name", "trace"}, {"writes", {"hits"}},
+                                                   {"ray_query", {{"acceleration_structure", "actors"}}}})),
+                                 {}, true, definitions);
+        requireOrderConflict(ir, {"trace", "__scene_acceleration_structure:actors"});
     }
     SECTION("generated named operation cannot collide with an authored node") {
-        graphs[0].nodes[0].name = "__scene_acceleration_structure:actors";
-        CHECK_THROWS_WITH(detail::insertSceneAccelerationStructureNodes(graphs, {}, {}, true, definitions),
-            Catch::Matchers::ContainsSubstring("Reserved scene acceleration-structure node name"));
+        TestSupport::requireNamedRefusal(
+            [&] {
+                (void)insertAs(irOf(task_config({{"name", "__scene_acceleration_structure:actors"},
+                                                 {"writes", {"hits"}}})),
+                               {}, true, definitions);
+            },
+            "render_graph.acceleration_structure_reserved@1");
     }
     SECTION("raster queries select and wait for their named TLAS") {
-        auto &node = graphs[0].nodes[0];
-        node.kind = FramePlanNodeKind::render;
-        node.ray_query = true;
-        node.ray_query_acceleration_structure = *parseRasterRayQuery({{"ray_query", {{"acceleration_structure", "actors"}}}});
-        detail::insertSceneAccelerationStructureNodes(graphs, {}, {}, false, definitions);
-        CHECK(graphs[0].nodes.back().after == std::vector<std::string>{"__scene_acceleration_structure", "__scene_acceleration_structure:actors"});
-        // FO-1: the order is refused by name before it becomes a cycle.
-        CHECK_THROWS_WITH(detail::applyFrameNodeOrder(graphs, {{"main", {"trace", "__scene_acceleration_structure:actors"}}}),
-                          Catch::Matchers::ContainsSubstring("frame_node_order.conflicts_dependency@1"));
+        auto config = task_config({{"name", "other"}, {"writes", {"hits"}}});
+        config["rendering_passes"][0]["passes"] =
+            IrJson::array({fullscreenPass("trace", {{"acceleration_structure", "actors"}})});
+        const auto ir = insertAs(irOf(config), {}, false, definitions);
+        CHECK(ir.graphs[0].nodes.at(3).name == "trace");
+        CHECK(ir.graphs[0].nodes.at(3).after ==
+              std::vector<std::string>{"__scene_acceleration_structure", "__scene_acceleration_structure:actors"});
+        requireOrderConflict(ir, {"trace", "__scene_acceleration_structure:actors"});
         CHECK(parseRasterRayQuery({{"ray_query", true}}) == "scene");
         CHECK_FALSE(parseRasterRayQuery({{"ray_query", false}}));
         for (const auto &bad : nlohmann::json::array({42, "actors", nlohmann::json::object(),
@@ -314,76 +301,77 @@ TEST_CASE("named AS operations depend on shared construction and precede consume
             CHECK_THROWS(parseRasterRayQuery({{"ray_query", bad}}));
     }
     SECTION("unknown raster TLAS is rejected before physical planning") {
-        graphs[0].nodes[0].kind = FramePlanNodeKind::render;
-        graphs[0].nodes[0].ray_query = true;
-        graphs[0].nodes[0].ray_query_acceleration_structure = "missing";
-        CHECK_THROWS_WITH(detail::insertSceneAccelerationStructureNodes(graphs, {}, {}, false, definitions),
-            Catch::Matchers::ContainsSubstring("unknown scene acceleration structure"));
+        auto config = task_config({{"name", "other"}, {"writes", {"hits"}}});
+        config["rendering_passes"][0]["passes"] =
+            IrJson::array({fullscreenPass("trace", {{"acceleration_structure", "missing"}})});
+        TestSupport::requireNamedRefusal([&] { (void)insertAs(irOf(config), {}, false, definitions); },
+                                         "render_graph.acceleration_structure_unknown@1",
+                                         {{"node", "trace"}, {"acceleration_structure", "missing"}});
     }
 }
 
 TEST_CASE("frame node ordering adds constraints without rewriting resource dependencies",
           "[rendercompiler][rt7][node-order]") {
     using Json = nlohmann::json;
-    std::vector<FrameGraphDefinition> graphs{{.name = "main", .nodes = {
-        {.name = "first", .kind = FramePlanNodeKind::compute, .declaration_index = 0},
-        {.name = "second", .kind = FramePlanNodeKind::compute, .declaration_index = 1}}}};
+    // Two independent compute tasks of the graph.
+    auto config = Json{{"buffers", Json::array({Json{{"name", "result"}}})},
+                       {"rendering_passes",
+                        Json::array({Json{{"name", "main"},
+                                          {"compute_tasks", Json::array({Json{{"name", "first"}},
+                                                                         Json{{"name", "second"}}})}}})}};
     SECTION("independent nodes execute in the requested order") {
-        detail::applyFrameNodeOrder(graphs, {{"main", {"second", "first"}}});
-        CHECK(graphs[0].nodes[0].name == "first");
-        CHECK(graphs[0].nodes[0].declaration_index == 0);
-        const auto plan = planFrameGraph(graphs[0]);
-        REQUIRE(plan.nodes.size() == 2);
-        CHECK(plan.nodes[0].name == "second");
-        CHECK(plan.nodes[1].name == "first");
+        const auto ir = ordered(irOf(config), {"second", "first"});
+        CHECK(ir.graphs[0].nodes[0].name == "first");
+        CHECK(ir.graphs[0].nodes[0].declaration_index == 0);
+        CHECK(planOrder(ir) == std::vector<std::string>{"second", "first"});
     }
     SECTION("reversing producer and consumer is rejected") {
-        graphs[0].declared_resources = {"result"};
-        graphs[0].nodes[0].writes = {"result"};
-        graphs[0].nodes[1].reads = {"result"};
-        // FO-1: the order is refused by name before it becomes a cycle.
-        CHECK_THROWS_WITH(detail::applyFrameNodeOrder(graphs, {{"main", {"second", "first"}}}),
-                          Catch::Matchers::ContainsSubstring("frame_node_order.conflicts_dependency@1"));
+        config["rendering_passes"][0]["compute_tasks"][0]["writes"] = {"result"};
+        config["rendering_passes"][0]["compute_tasks"][1]["reads"] = {"result"};
+        requireOrderConflict(irOf(config), {"second", "first"});
     }
     SECTION("named AS order changes within the shared publication boundary") {
         const std::vector<SceneAccelerationStructureDefinition> definitions{{.name = "left"}, {.name = "right"}};
-        detail::insertSceneAccelerationStructureNodes(graphs, {}, {}, true, definitions);
-        detail::applyFrameNodeOrder(graphs, {{"main", {"__scene_acceleration_structure:right", "__scene_acceleration_structure:left"}}});
-        const auto plan = planFrameGraph(graphs[0]);
-        REQUIRE(plan.nodes.size() == 5);
-        CHECK(plan.nodes[0].name == "__scene_acceleration_structure");
-        CHECK(plan.nodes[1].name == "__scene_acceleration_structure:right");
-        CHECK(plan.nodes[2].name == "__scene_acceleration_structure:left");
+        const auto ir = ordered(insertAs(irOf(config), {}, true, definitions),
+                                {"__scene_acceleration_structure:right", "__scene_acceleration_structure:left"});
+        const auto plan = planOrder(ir);
+        REQUIRE(plan.size() == 5);
+        CHECK(plan[0] == "__scene_acceleration_structure");
+        CHECK(plan[1] == "__scene_acceleration_structure:right");
+        CHECK(plan[2] == "__scene_acceleration_structure:left");
     }
     SECTION("consumer cannot precede AS publication") {
-        ComputeTaskDefinition task;
-        task.name = "first";
-        task.ray_query_acceleration_structure = "scene";
-        detail::insertSceneAccelerationStructureNodes(graphs, {}, {task}, true);
-        // FO-1: the order is refused by name before it becomes a cycle.
-        CHECK_THROWS_WITH(detail::applyFrameNodeOrder(graphs, {{"main", {"first", "__scene_acceleration_structure"}}}),
-                          Catch::Matchers::ContainsSubstring("frame_node_order.conflicts_dependency@1"));
+        auto shared = Json{{"compute_tasks", Json::array({Json{{"name", "first"},
+                                                               {"ray_query", {{"acceleration_structure", "scene"}}}}})},
+                           {"rendering_passes", Json::array({Json{{"name", "main"}, {"passes", Json::array()}}})}};
+        requireOrderConflict(insertAs(irOf(shared), {}, true), {"first", "__scene_acceleration_structure"});
     }
     SECTION("independent compute can precede shared AS construction") {
-        ComputeTaskDefinition task;
-        task.name = "first";
-        detail::insertSceneAccelerationStructureNodes(graphs, {}, {task}, true);
-        detail::applyFrameNodeOrder(graphs, {{"main", {"first", "__scene_acceleration_structure"}}});
-        const auto plan = planFrameGraph(graphs[0]);
-        CHECK(plan.nodes[0].name == "first");
-        CHECK(plan.nodes[1].name == "__scene_acceleration_structure");
+        const auto ir = ordered(insertAs(irOf(config), {}, true), {"first", "__scene_acceleration_structure"});
+        const auto plan = planOrder(ir);
+        CHECK(plan[0] == "first");
+        CHECK(plan[1] == "__scene_acceleration_structure");
     }
     SECTION("partial and empty orders retain unspecified nodes") {
-        detail::applyFrameNodeOrder(graphs, {{"main", Json::array()}});
-        detail::applyFrameNodeOrder(graphs, {{"main", {"second"}}});
-        CHECK(planFrameGraph(graphs[0]).nodes[0].name == "first");
+        CHECK(planOrder(ordered(ordered(irOf(config), {}), {"second"})).front() == "first");
     }
     SECTION("malformed or stale runtime names are rejected") {
+        // The form at the parse, the names when the order is applied.
         for (const auto &order : std::vector<Json>{
-                 Json::array(), {{"missing", Json::array()}}, {{"main", "first"}},
-                 {{"main", {1}}}, {{"main", {""}}}, {{"main", {"missing"}}},
+                 Json::array(), {{"main", "first"}}, {{"main", {1}}}, {{"main", {""}}},
                  {{"main", {"first", "first"}}}}) {
-            CHECK_THROWS(detail::applyFrameNodeOrder(graphs, order));
+            INFO(order.dump());
+            auto malformed = config;
+            malformed["frame_node_order"] = order;
+            TestSupport::requireNamedRefusal([&] { (void)irOf(malformed); },
+                                             "render_graph.frame_node_order_invalid@1");
+        }
+        for (const auto &order : std::vector<Json>{{{"missing", Json::array()}}, {{"main", {"missing"}}}}) {
+            INFO(order.dump());
+            auto stale = config;
+            stale["frame_node_order"] = order;
+            TestSupport::requireNamedRefusal([&] { (void)applyFrameNodeOrder(irOf(stale), true); },
+                                             "render_graph.frame_node_order_unknown@1");
         }
     }
 }
@@ -759,13 +747,14 @@ TEST_CASE("Frame node orders are scoped to their compiled graph variants",
     SECTION("unknown graph is still rejected across the program") {
         authored["frame_node_order"]["unknown"] = nlohmann::json::array();
         REQUIRE_THROWS_WITH(runRenderCompilerProgram(defaultVulkanRenderCompilerProgram(), fixture.input()),
-                            Catch::Matchers::ContainsSubstring("frame_node_order unknown graph: unknown"));
+                            Catch::Matchers::ContainsSubstring(R"(render_graph.frame_node_order_unknown@1 {"graph":"unknown"})"));
     }
     SECTION("data-only compilation still rejects duplicate names") {
         fixture.variants.front().artifact = RenderCompilerProgramArtifact::data_only;
         authored["frame_node_order"]["main"] = {"gpu_geometry", "gpu_geometry"};
         REQUIRE_THROWS_WITH(runRenderCompilerProgram(defaultVulkanRenderCompilerProgram(), fixture.input()),
-                            Catch::Matchers::ContainsSubstring("frame_node_order duplicate node"));
+                            Catch::Matchers::ContainsSubstring("render_graph.frame_node_order_invalid@1") &&
+                                Catch::Matchers::ContainsSubstring(R"("reason":"duplicate")"));
     }
 }
 
@@ -806,7 +795,7 @@ TEST_CASE("P-2a-4b frame_node_order is read in a pelican.graph root's rendering 
             nlohmann::json::array();
         REQUIRE_THROWS_WITH(
             runRenderCompilerProgram(defaultVulkanRenderCompilerProgram(), fixture.input()),
-            Catch::Matchers::ContainsSubstring("frame_node_order unknown graph: unknown"));
+            Catch::Matchers::ContainsSubstring(R"(render_graph.frame_node_order_unknown@1 {"graph":"unknown"})"));
     }
 }
 

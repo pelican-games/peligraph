@@ -19,6 +19,7 @@
 #include "../src/project/renderingjsonnormalize.hpp"
 #include "../src/project/renderpipeline.hpp"
 #include "render_graph_root_test_support.hpp"
+#include "render_graph_ir_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -305,7 +306,7 @@ void requireB1Resolution(const RenderCompilerProgramVariantOutput &variant) {
     CHECK_FALSE(lists(planNode(plan, "present").writes, "swapchain"));
     CHECK(lists(planNode(plan, "output_transform").reads, "display"));
     // The composed declarations: after / input as lists, the attachments.
-    const auto graphs = parseFrameGraphDefinitionsFromConfigJson(variant.normalized_config);
+    const auto graphs = TestSupport::frameGraphsOf(variant.normalized_config);
     REQUIRE(graphs.size() == 1);
     const auto node = [&](const std::string &name) -> const FrameGraphNodeDefinition & {
         const auto found = std::find_if(graphs.front().nodes.begin(), graphs.front().nodes.end(),
@@ -708,7 +709,7 @@ TEST_CASE("RC-3b B2 the bundled documents normalize idempotently and plan the sa
         if (!section.contains("rendering_passes")) continue;
         auto plans = [](const Json &config) {
             auto encoded = Json::array();
-            for (const auto &graph : parseFrameGraphDefinitionsFromConfigJson(config))
+            for (const auto &graph : TestSupport::frameGraphsOf(config))
                 encoded.push_back(framePlanToJson(planFrameGraph(graph), nullptr));
             return encoded;
         };

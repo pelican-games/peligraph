@@ -1,14 +1,14 @@
 [
   {
     "file": "ambiguous_writes.json",
-    "contains": "Ambiguous writes-writes dependency"
+    "contains": "render_graph.ambiguous_writes@1"
   },
   {
     "file": "cycle_after.json",
-    "contains": "Cycle detected"
+    "contains": "render_graph.cycle@1"
   },
   {
     "file": "unknown_resource.json",
-    "contains": "Unknown resource reference"
+    "contains": "render_graph.unknown_resource@1"
   }
 ]

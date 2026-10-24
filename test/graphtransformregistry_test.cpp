@@ -3,6 +3,7 @@
 #include "../src/core/registrationownerhost.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 #include "../src/core/renderingpass/renderingsamplecount.hpp"
+#include "render_graph_ir_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -16,6 +17,16 @@
 
 namespace Pelican {
 namespace {
+
+// RC-3c1b: the chain takes the config's IR (its one parse) beside it; a test
+// that wrote short forms reads them in the normal form first.
+ResolvedLogicalGraphTransformConfig resolveLogicalGraphTransforms(
+    const nlohmann::json &config,
+    const GraphTransformRegistrySnapshot &providers) {
+    const auto normal = normalizeRenderingJson(config);
+    return Pelican::resolveLogicalGraphTransforms(
+        normal, TestSupport::renderGraphOf(normal), providers);
+}
 
 nlohmann::json graphTransformConfig(
     std::optional<std::string_view> provider =
@@ -385,17 +396,13 @@ TEST_CASE(
         selection.output_graph_fingerprint);
     REQUIRE(selection.boundary_fingerprint != 0);
 
-    auto frame_graphs =
-        parseFrameGraphDefinitionsFromConfigJson(
+    auto ir =
+        TestSupport::renderGraphOf(
             resolved.config);
     applyResolvedLogicalGraphTransformSelections(
-        frame_graphs, resolved.selections);
-    const auto render_targets =
-        parseRenderTargetDefinitionsFromJson(
-            resolved.config);
+        ir, resolved.selections);
     const auto logical_graphs =
-        compileRenderingLogicalGraphs(
-            frame_graphs, render_targets);
+        TestSupport::logicalGraphsOf(ir);
     REQUIRE(logical_graphs.size() == 1);
     REQUIRE(
         logical_graphs.front().graph_transforms ==

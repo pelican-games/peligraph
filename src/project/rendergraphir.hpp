@@ -262,6 +262,12 @@ struct ImageResource {
     // `initial` is declared: the image holds an asset before any pass runs.
     bool initial = false;
     std::optional<ImageSourceDeclaration> source;
+    // A config image with a `format_class` and no `format` yet (before the
+    // runtime package resolves the class: the editor's composition, the
+    // preview). `format` is then not the image's; what needs it
+    // (finalizeRenderGraph, the device's formats) refuses
+    // render_graph.image_format_unresolved@1 {resource}.
+    bool format_unresolved = false;
     // A snapshot copy's size of the image (the copy contract): its bytes,
     // or that the extent waits on the output's.
     std::optional<std::size_t> snapshot_copy_bytes;
@@ -289,6 +295,14 @@ struct GraphIR {
     // Some own image declares width, height or extent_scale (a snapshot copy
     // is then sized from these images).
     bool images_declare_extent = false;
+    // Provenance: what made this graph (the render strategy, the graph
+    // transforms, this graph's tagged subgraph replacements). The compiler
+    // writes it after the provider chain; a parse leaves it empty, so the
+    // logical graph a provider receives carries none. The physical plan's
+    // logical-graph fingerprint includes it.
+    std::optional<RenderStrategySelection> render_strategy;
+    std::vector<LogicalGraphTransformSelection> graph_transforms;
+    std::vector<LogicalSubgraphReplacementSelection> subgraph_replacements;
 
     bool operator==(const GraphIR &) const = default;
 };
@@ -308,6 +322,11 @@ struct RenderGraphIR {
     std::vector<GraphIR> graphs;
     // `frame_node_order`, in its graphs' (sorted) order.
     std::vector<FrameNodeOrderIR> frame_node_order;
+    // `ray_task_acceleration_structures` as written (task -> acceleration
+    // structure, in the table's order). The parse holds its form; the tasks
+    // it names may arrive later from a provider, so finalizeRenderGraph
+    // resolves it.
+    std::vector<std::pair<std::string, std::string>> ray_task_acceleration_structures;
     bool images_declare_extent = false;
 
     bool operator==(const RenderGraphIR &) const = default;
@@ -326,15 +345,48 @@ const ImageResource *findImage(const RenderGraphIR &ir, const GraphIR &graph,
 bool isLocalReadShaderInput(const NodeIR &node, const ResourceUse &use);
 
 // The planner's view of one graph, derived from its uses: what the frame
-// planner, the logical shadow graph and target planning read. Node by node it
-// is the FrameGraphNodeDefinition core's JSON parse makes (RC-3c1a's bridge
-// test compares every field).
+// planner, the logical shadow graph and target planning read (RC-3c1b: the
+// physical plan's parts that still read a FrameGraphDefinition read this),
+// with the graph's provenance.
 FrameGraphDefinition frameGraphDefinitionOf(const RenderGraphIR &ir,
                                             const GraphIR &graph);
 
-// The frame plan (planFrameGraph's rules, refusals by name: see
-// planFrameGraphWithNamedRefusals).
+// The frame plan (planFrameGraph's rules and named refusals).
 FramePlan planRenderGraph(const RenderGraphIR &ir, const GraphIR &graph);
+
+// What a pass's authored inputs need: every current `input` of a pass of the
+// graph (and a snapshot copy's `source`) is written by a node the plan runs
+// before it, unless the resource is a config buffer or a config image that
+// holds its contents before the frame (`initial`, a file `source`). A
+// compute task's reads, a history read and every other use keep their import
+// semantics. Refuses render_graph.input_not_produced@1 {graph, node,
+// resource}.
+void requireRenderGraphInputsProduced(const RenderGraphIR &ir, const GraphIR &graph,
+                                      const FramePlan &plan);
+
+// The facts of an image declaration the physical plan's eligibility rules
+// read. The one definition of each rule is here, over these facts; core
+// describes its render targets with the same facts (one copy).
+struct ImageDeclarationFacts {
+    bool history = false;
+    bool persistent = false;
+    bool has_source = false;
+    ImageUsage usage;
+    std::string_view format_class;
+};
+ImageDeclarationFacts imageDeclarationFactsOf(const ImageResource &image);
+// An attachment used for nothing else, neither history nor persistent: it
+// may be a transient attachment.
+bool isTransientAttachmentCandidate(const ImageDeclarationFacts &image);
+// An attachment used for nothing but attachments, sampling and input
+// attachments, neither history nor persistent: it may stay tile-local.
+bool isTileLocalAttachmentCandidate(const ImageDeclarationFacts &image);
+// A color attachment that is only sampled, not display, history, persistent
+// or a file: it may share memory with another (before physical planning;
+// after it, an aliased image must also still be materialized).
+bool isRuntimeAliasEligible(const ImageDeclarationFacts &image);
+// The node's read of `resource` is same_pixel.
+bool nodeHasSamePixelRead(const FrameGraphNodeDefinition &node, std::string_view resource);
 
 // What the device is asked about an image in one of its formats: the image's
 // usage and whether it is a cube (cube-compatible images), as core asks
@@ -386,12 +438,38 @@ LogicalFrameGraphShadowOptions renderGraphShadowOptions(
 struct ToLogicalGraphOptions {
     RenderGraphDeviceFacts device;
 };
+// The graph is planned first (planRenderGraph), so a graph the planner
+// refuses (a cycle, an unknown node or resource, ...) is refused by name
+// before the logical graph is built. The graph's provenance is the logical
+// graph's.
 CompiledLogicalRenderGraph toLogicalGraph(
     const RenderGraphIR &ir, const GraphIR &graph,
     const ToLogicalGraphOptions &options = {});
 
-// What the engine adds to a parsed graph before planning (RC-3c1b's
-// finalizeRenderGraph runs them in this order). IR in, IR out; no JSON.
+// What the engine adds to the final revision before planning, once after the
+// provider chain (docs/design_render_graph_ir.md §2.2), in this order:
+//   every config image's format is resolved
+//     (render_graph.image_format_unresolved@1 {resource});
+//   ray_task_acceleration_structures is resolved against the config's
+//     compute tasks (render_graph.compute_task_invalid@1 {node, field,
+//     reason: unknown_task | task_declares_no_ray_work});
+//   requireRenderGraphRayQueryCapability; namespaceSharedComputeTasks;
+//   insertAccelerationStructureNodes; applyFrameNodeOrder.
+// The checks a revision needs in itself stay in parseRenderGraph; these are
+// the ones only the final revision must pass.
+struct FinalizeRenderGraphRequest {
+    std::span<const SceneAccelerationStructureDefinition> named;
+    bool ray_tracing_project = false;
+    // The variant's suffix on the config's compute tasks ("#xr").
+    std::string_view compute_task_suffix;
+    // frame_node_order names only this variant's graphs when false (the
+    // other variants' keys are checked across the program).
+    bool require_all_graphs = false;
+};
+RenderGraphIR finalizeRenderGraph(RenderGraphIR ir, const FinalizeRenderGraphRequest &request,
+                                  TargetPlanningPolicy &target_planning);
+
+// The steps of finalizeRenderGraph. IR in, IR out; no JSON.
 //
 // A variant's suffix on the config's compute tasks (and on every after /
 // before naming one). Refuses render_graph.compute_task_duplicate@1 {task}
