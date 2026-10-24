@@ -16,7 +16,7 @@ namespace Pelican {
 // catalog; the engine shaders are get_engine_shaders' own (EL-4b).
 
 // The formats each socket of a material pass without material_outputs takes,
-// per contract (validateMaterialPassAttachments' tables), and the formats a
+// per contract (the project table, materialattachmentformats.hpp), and the formats a
 // material_outputs pass takes per output type and for its depth.
 //   [{contract, material_outputs, sockets: [{socket, aspect, formats}],
 //     combinations: [{<socket>: <format>, ...}]}]

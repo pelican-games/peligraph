@@ -243,11 +243,8 @@ PassDefinition parsePassDefinitionFromJson(const nlohmann::json &pass_json,
         passShapeObservationFromDefinition(
             pass_type, pass_def, rt_metadata),
         pass_def.name);
-    validatePassTargetUsage(pass_def, rt_metadata);
-    validatePassOutputExtents(pass_def, rt_metadata);
     pass_def.rasterization_samples =
-        resolvePassOutputSamples(pass_def, rt_metadata);
-    validateMaterialPassAttachments(pass_def, rt_metadata);
+        passOutputSamples(pass_def, rt_metadata);
 
     parsePassAttachmentOptionsFromJson(pass_def, pass_json);
     const auto ray_query = parseRasterRayQuery(pass_json);

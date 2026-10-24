@@ -1,5 +1,6 @@
 #pragma once
 
+#include "imageformat.hpp"
 #include "logicalrendergraph.hpp"
 
 #include <array>
@@ -154,5 +155,13 @@ resolveMaterialPassInputInterfaceReflection(
     std::span<const MaterialScreenInputContract> declared_screen_inputs,
     std::span<const MaterialScreenInputReflectionBinding> reflection,
     std::uint32_t expected_set = 1);
+
+// RC-3c2a: the logical type a material pass's screen input or surface
+// resource reads from an image of `format` (a depth format: device depth;
+// R16G16B16A16_SFLOAT: scene-linear HDR). Throws for any other format,
+// naming `resource`. The resource check and the pass parse read this one
+// rule.
+LogicalType materialInputSourceType(const LogicalTypeRegistry &types, ImageFormat format,
+                                    std::string_view resource);
 
 } // namespace Pelican

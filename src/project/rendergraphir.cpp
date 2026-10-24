@@ -799,11 +799,46 @@ RenderGraphIR applyFrameNodeOrder(RenderGraphIR ir, bool require_all_graphs) {
 }
 
 
+bool snapshotCopiesFormatOf(const ImageResource &destination) {
+    static constexpr std::array copy_formats{
+        ImageFormat::r8_unorm,          ImageFormat::r16_sfloat,
+        ImageFormat::d16_unorm,         ImageFormat::r8g8b8a8_unorm,
+        ImageFormat::r8g8b8a8_srgb,     ImageFormat::b8g8r8a8_unorm,
+        ImageFormat::b8g8r8a8_srgb,     ImageFormat::d32_sfloat,
+        ImageFormat::r32_sfloat,        ImageFormat::r16g16_sfloat,
+        ImageFormat::r16g16b16a16_sfloat, ImageFormat::r32g32b32a32_sfloat,
+    };
+    return !destination.format_unresolved &&
+           std::find(copy_formats.begin(), copy_formats.end(), destination.format) != copy_formats.end();
+}
+
+std::size_t snapshotCopyBytes(const ImageResource &destination, ResolvedResourceExtent output_extent) {
+    if (!snapshotCopiesFormatOf(destination)) return 0;
+    const auto extent = resolveResourceExtent(destination.extent, output_extent);
+    return std::size_t{extent.width} * extent.height * imageFormatEstimatedTexelBytes(destination.format);
+}
+
 RenderGraphIR finalizeRenderGraph(RenderGraphIR ir, const FinalizeRenderGraphRequest &request,
                                   TargetPlanningPolicy &target_planning) {
     for (const auto &image : ir.images) {
         if (image.format_unresolved) {
             refuse("render_graph.image_format_unresolved@1", {{"resource", image.name}});
+        }
+    }
+    // RC-3c2a: each snapshot copy sized from its destination as the
+    // generation resolves the image (one extent rule, one base: the output).
+    for (auto &graph : ir.graphs) {
+        for (auto &node : graph.nodes) {
+            auto *snapshot = std::get_if<SnapshotNodeInfo>(&node.info);
+            if (snapshot == nullptr) continue;
+            const auto *destination = findConfigImage(ir, snapshot->destination);
+            // A format outside the copy contract is refused; an output not
+            // yet known (a compile without an extent) sizes it 0.
+            if (destination == nullptr || !snapshotCopiesFormatOf(*destination)) {
+                refuse("render_graph.snapshot_size_unavailable@1",
+                       {{"graph", graph.name}, {"node", node.name}, {"resource", snapshot->destination}});
+            }
+            snapshot->byte_size = snapshotCopyBytes(*destination, request.output_extent);
         }
     }
     // The references by the authored names, before the variant's suffix.

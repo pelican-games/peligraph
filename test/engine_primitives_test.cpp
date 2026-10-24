@@ -2068,13 +2068,13 @@ TEST_CASE("EL-4 the material pass formats and engine shaders get_graph_catalog l
         // color format the normal socket does not take.
         auto formats = combinations.at(0);
         formats["depth"] = off_list(aspects, Json::array({formats.at("depth")}), "depth");
-        refused_for(edit(rpc, material_pass_ops("deferred_geometry_v1", formats)), "depth output format mismatch");
+        refused_for(edit(rpc, material_pass_ops("deferred_geometry_v1", formats)), "\"reason\":\"depth_format\"");
         formats = combinations.at(0);
         Json normal_formats;
         for (const auto &socket : deferred.at("sockets"))
             if (socket.at("socket") == "normal") normal_formats = socket.at("formats");
         formats["normal"] = off_list(aspects, normal_formats, "color");
-        refused_for(edit(rpc, material_pass_ops("deferred_geometry_v1", formats)), "color output format mismatch");
+        refused_for(edit(rpc, material_pass_ops("deferred_geometry_v1", formats)), "\"reason\":\"color_format\"");
         CHECK(readFile(rendering_path) == root_before);
 
         // Each listed combination is committed; the second rewrites the
@@ -2175,7 +2175,7 @@ TEST_CASE("EL-4 the material pass formats and engine shaders get_graph_catalog l
     REQUIRE(formats.size() == 2);
     formats["color"] = off_list(aspects, Json::array({formats.at("color")}), "color");
     refused_for(edit(rpc, material_pass_ops("forward_opaque_v1", formats), "forward"),
-                "color output format mismatch");
+                "\"reason\":\"color_format\"");
     const auto committed =
         edit(rpc, material_pass_ops("forward_opaque_v1", forward.at("combinations").at(0)), "forward");
     INFO(committed.dump(2));

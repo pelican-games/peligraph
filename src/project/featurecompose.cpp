@@ -2,6 +2,7 @@
 #include "rendergraphcomposition.hpp"
 #include "renderconfigdocument.hpp"
 #include "featurejitter.hpp"
+#include "generationresources.hpp"
 #include "imageformat.hpp"
 #include "materialscreeninput.hpp"
 #include "renderresourcename.hpp"
@@ -560,6 +561,12 @@ std::vector<std::string> snapshotAfterCandidatesOf(const nlohmann::json &config)
     return result;
 }
 
+std::vector<std::string> snapshotDestinationUsageNames() {
+    auto names = imageUsageNames(requiredImageUsage(ImageUseRequirement::copy_destination));
+    std::stable_partition(names.begin(), names.end(), [](const std::string &name) { return name == "TRANSFER_DST"; });
+    return names;
+}
+
 void materializeSnapshots(nlohmann::json &config) {
     if (!config.contains("snapshots")) {
         return;
@@ -652,7 +659,11 @@ void materializeSnapshots(nlohmann::json &config) {
         {"format", "B8G8R8A8_SRGB"},
         {"format_class", "display"},
         {"role", "color"},
-        {"usage", nlohmann::json::array({"TRANSFER_DST", "SAMPLED"})},
+        // RC-3c2a: what a snapshot copy's destination needs (the one rule),
+        // spelled in the document's established order (the copy's bit first:
+        // the composed JSON, its fingerprints and Studio's provenance read
+        // the spelling).
+        {"usage", snapshotDestinationUsageNames()},
     });
 }
 

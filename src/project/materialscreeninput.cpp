@@ -321,4 +321,18 @@ resolveMaterialPassInputInterfaceReflection(
     return resolved;
 }
 
+LogicalType materialInputSourceType(const LogicalTypeRegistry &types, ImageFormat format,
+                                    std::string_view resource) {
+    if (imageFormatHasDepth(format)) {
+        return deviceDepthV1(types);
+    }
+    if (format == ImageFormat::r16g16b16a16_sfloat) {
+        return sceneLinearHdrV1(types);
+    }
+    throw std::runtime_error(
+        "render target '" + std::string{resource} + "' format " +
+        std::string{imageFormatName(format)} +
+        " has no hybrid material screen-input logical type");
+}
+
 } // namespace Pelican

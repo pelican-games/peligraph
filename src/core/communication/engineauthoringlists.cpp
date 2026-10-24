@@ -86,7 +86,7 @@ OrderedJson materialPassContractsJson() {
         const auto attachmentFormat = [](vk::Format format) {
             return requireImageFormatFromVulkan(format, "material pass attachment");
         };
-        const auto depth_format = attachmentFormat(materialPassDepthAttachmentFormat);
+        const auto depth_format = attachmentFormat(materialPassDepthAttachmentFormat());
         auto socket_entries = OrderedJson::array();
         for (std::size_t location = 0; location < sockets.size(); ++location) {
             auto formats = OrderedJson::array();

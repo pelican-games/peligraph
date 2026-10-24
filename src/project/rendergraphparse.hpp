@@ -52,7 +52,6 @@ namespace Pelican {
 //   render_graph.graph_declaration_unsupported@1 {graph, field}  a graph's
 //                                                  own render_targets or
 //                                                  buffers
-//   render_graph.snapshot_size_unavailable@1 {graph, node, resource}
 //   render_graph.frame_node_order_invalid@1 {graph?, node?, reason}
 //   render_graph.compute_task_invalid@1   {node, field, reason}
 // (ray_task_acceleration_structures: only its form here; the tasks it names

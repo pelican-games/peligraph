@@ -2,9 +2,11 @@
 // registration on a device. C1: a flat and an XR variant (the XR one exports
 // its depth) with three alias groups -- one both variants place, one the XR
 // variant has half of, one the XR variant has none of -- registered and
-// published; what the resource checks read (the description) and what the
-// GPU registration made (the registry) carry the merged usage, layers and
-// alias groups, and the allocations they imply. C2: a directional shadow
+// published, and the same document registered by flat alone (the merge's
+// other input absent) in the same test: what the resource checks read (the
+// description) and what the GPU registration made (the registry) carry the
+// merged usage, layers and alias groups, and the allocations they imply; flat
+// alone carries none of what the XR variant adds. C2: a directional shadow
 // target's layer count follows the light count at runtime, inside the static
 // constraint the description gives it, and the runtime check refuses a view
 // count past it.
@@ -141,12 +143,13 @@ struct Registered {
     std::uint64_t allocated_bytes = 0;
 };
 
-} // namespace
-
-TEST_CASE("RC-3c2a C1: the registration merges the variants' images once, for the checks and the GPU",
-          "[rc3c2a][registration][generation-resources][gpu]") {
-#if PELICAN_WITH_OPENXR
-    setupLogger();
+// One production registration of the C1 document: flat (and the XR variant
+// as an XR launch registers it, when `with_xr`), in an engine of its own.
+// What the checks and the GPU registration received: the description the
+// compiler program's completion made and checked (the registration hands it
+// on unchanged: observe_generation_resources), and the registry before
+// publication.
+Registered registerC1(bool with_xr) {
     FastModuleContainer modules;
     Project project;
     startHeadless(project, {64, 64});
@@ -201,60 +204,75 @@ TEST_CASE("RC-3c2a C1: the registration merges the variants' images once, for th
                                            {"source", "RenderTiming/gpu_timestamp"}}}}})}}}};
 
     Registered result;
-    {
-        RenderingPassConfigRegistrationDependencies::Options flat;
-        flat.gpu_owner_scope = renderPipelineVariantGpuOwnerScope(true, RenderPipelineGraphVariant::flat);
-        flat.observe_generation_resources = [&](const GenerationResources &resources) {
-            result.resources = resources;
-        };
-        // What the GPU registration made: the registry, before publication.
-        flat.validate_prepared_generation = [&](const RendererRuntimeGeneration &) {
-            auto &container = GET_MODULE(RenderTargetContainer);
-            for (const auto &image : result.resources.images) {
-                const auto id = container.getRenderTargetIdByName(image.declaration.name);
-                REQUIRE(isConcreteRenderTarget(id));
-                result.targets.emplace(image.declaration.name,
-                                       Registered::Target{container.getMetadata(id), id});
+    RenderingPassConfigRegistrationDependencies::Options flat;
+    flat.gpu_owner_scope = renderPipelineVariantGpuOwnerScope(with_xr, RenderPipelineGraphVariant::flat);
+    flat.observe_generation_resources = [&](const GenerationResources &resources) {
+        result.resources = resources;
+    };
+    flat.validate_prepared_generation = [&](const RendererRuntimeGeneration &) {
+        auto &container = GET_MODULE(RenderTargetContainer);
+        for (const auto &image : result.resources.images) {
+            const auto id = container.getRenderTargetIdByName(image.declaration.name);
+            REQUIRE(isConcreteRenderTarget(id));
+            result.targets.emplace(image.declaration.name, Registered::Target{container.getMetadata(id), id});
+        }
+        std::set<std::string> counted;
+        for (const auto &[name, entry] : result.targets) {
+            if (counted.contains(name)) continue;
+            std::set<std::string> members{name};
+            auto bytes = renderTargetBytes(entry.metadata);
+            for (const auto &[other, other_entry] : result.targets) {
+                if (other == name || !container.sharesAllocation(entry.id, other_entry.id)) continue;
+                members.insert(other);
+                bytes = std::max(bytes, renderTargetBytes(other_entry.metadata));
             }
-            std::set<std::string> counted;
-            for (const auto &[name, entry] : result.targets) {
-                if (counted.contains(name)) continue;
-                std::set<std::string> members{name};
-                auto bytes = renderTargetBytes(entry.metadata);
-                for (const auto &[other, other_entry] : result.targets) {
-                    if (other == name || !container.sharesAllocation(entry.id, other_entry.id)) continue;
-                    members.insert(other);
-                    bytes = std::max(bytes, renderTargetBytes(other_entry.metadata));
-                }
-                counted.insert(members.begin(), members.end());
-                ++result.allocations;
-                result.allocated_bytes += bytes;
-                if (members.size() > 1) result.shared.push_back(members);
-            }
-        };
+            counted.insert(members.begin(), members.end());
+            ++result.allocations;
+            result.allocated_bytes += bytes;
+            if (members.size() > 1) result.shared.push_back(members);
+        }
+    };
+    std::vector<RenderingPassConfigRegistrationDependencies> runtime;
+    runtime.push_back(registrationDependencies(std::move(flat)));
+#if PELICAN_WITH_OPENXR
+    if (with_xr) {
         RenderingPassConfigRegistrationDependencies::Options xr;
         xr.graph_variant = RenderPipelineGraphVariant::xr;
         xr.enable_multiview_runtime = true;
         xr.enable_external_depth_export = true;
         xr.publish_enabled_features = false;
         xr.gpu_owner_scope = renderPipelineVariantGpuOwnerScope(true, RenderPipelineGraphVariant::xr);
-        std::vector<RenderingPassConfigRegistrationDependencies> runtime;
-        runtime.push_back(registrationDependencies(std::move(flat)));
         runtime.push_back(registrationDependencies(std::move(xr)));
-        try {
-            (void)registerRenderGraphVariantFamilyFromJsonData(project.rootOf(section).dump(), {64, 64},
-                                                               std::move(runtime));
-        } catch (const std::exception &error) {
-            result.refusal = error.what();
-        }
     }
-    INFO(result.refusal);
-    REQUIRE(result.refusal.empty());
-    REQUIRE(result.resources.variants.size() == 2);
-    const auto &resources = result.resources;
+#endif
+    try {
+        (void)registerRenderGraphVariantFamilyFromJsonData(project.rootOf(section).dump(), {64, 64},
+                                                           std::move(runtime));
+    } catch (const std::exception &error) {
+        result.refusal = error.what();
+    }
+    return result;
+}
+
+} // namespace
+
+TEST_CASE("RC-3c2a C1: the registration merges the variants' images once, for the checks and the GPU",
+          "[rc3c2a][registration][generation-resources][gpu]") {
+#if PELICAN_WITH_OPENXR
+    setupLogger();
+    // The same document twice: with the XR variant (its export, its two
+    // views, its half of the group b merged in) and without it (the merge's
+    // other input absent: what flat alone makes).
+    const auto merged = registerC1(true);
+    const auto alone = registerC1(false);
+    INFO(merged.refusal << " / " << alone.refusal);
+    REQUIRE(merged.refusal.empty());
+    REQUIRE(alone.refusal.empty());
+    REQUIRE(merged.resources.variants.size() == 2);
+    REQUIRE(alone.resources.variants.size() == 1);
     const auto in_variant = [&](std::size_t variant, std::string_view name) {
-        for (const auto index : resources.variants[variant].images)
-            if (resources.images[index].declaration.name == name) return true;
+        for (const auto index : merged.resources.variants[variant].images)
+            if (merged.resources.images[index].declaration.name == name) return true;
         return false;
     };
     // The XR variant left the feature out: b2 and the chain c are flat's.
@@ -264,75 +282,78 @@ TEST_CASE("RC-3c2a C1: the registration merges the variants' images once, for th
     CHECK_FALSE(in_variant(1, "c1"));
     CHECK_FALSE(in_variant(1, "c2"));
 
-    // What the checks read (the description) and what the GPU registration
-    // made (the registry), image by image.
-    const auto described = [&](std::string_view name) -> const GenerationImage & {
-        const auto *image = resources.findImage(name);
+    const auto described = [](const Registered &run, std::string_view name) -> const GenerationImage & {
+        const auto *image = run.resources.findImage(name);
         REQUIRE(image != nullptr);
         return *image;
     };
-    const auto registered = [&](const std::string &name) -> const RenderTargetMetadata & {
-        REQUIRE(result.targets.contains(name));
-        return result.targets.at(name).metadata;
+    const auto registered = [](const Registered &run, const std::string &name) -> const RenderTargetMetadata & {
+        REQUIRE(run.targets.contains(name));
+        return run.targets.at(name).metadata;
     };
+    // What the GPU registration made is what the checks read: every image of
+    // both runs, field by field.
+    for (const auto *run : {&merged, &alone}) {
+        for (const auto &[name, entry] : run->targets) {
+            INFO(name);
+            const auto metadata = renderTargetMetadataOf(described(*run, name));
+            CHECK(metadata.usage == entry.metadata.usage);
+            CHECK(metadata.format == entry.metadata.format);
+            CHECK(metadata.extent == entry.metadata.extent);
+            CHECK(metadata.samples == entry.metadata.samples);
+            CHECK(metadata.array_layers == entry.metadata.array_layers);
+            CHECK(metadata.alias_group == entry.metadata.alias_group);
+            CHECK(metadata.storage_mode == entry.metadata.storage_mode);
+        }
+    }
+
     // The usage union: the XR export's TRANSFER_SRC on the depth flat
-    // registers first; the storage merged first (materialized), so no
-    // transient bit.
+    // registers first, materialized (no transient bit). Flat alone: no
+    // TRANSFER_SRC.
     const ImageUsage depth_usage = ImageUsageBit::depth_stencil_attachment | ImageUsageBit::transfer_src;
-    CHECK(described("depth").usage == depth_usage);
-    CHECK(described("depth").storage == RenderTargetStorageMode::materialized);
-    CHECK(registered("depth").usage == depth_usage);
-    CHECK(registered("depth").storage_mode == RenderTargetStorageMode::materialized);
-    CHECK(registered("depth").format == ImageFormat::d32_sfloat);
-    CHECK(registered("depth").extent == ResolvedResourceExtent{64, 64});
-    CHECK(registered("depth").samples == 1);
-    // The layers' maximum: the XR variant's two views.
+    CHECK(described(merged, "depth").usage == depth_usage);
+    CHECK(described(merged, "depth").storage == RenderTargetStorageMode::materialized);
+    CHECK(registered(merged, "depth").usage == depth_usage);
+    CHECK(registered(merged, "depth").format == ImageFormat::d32_sfloat);
+    CHECK(registered(merged, "depth").extent == ResolvedResourceExtent{64, 64});
+    CHECK(registered(merged, "depth").samples == 1);
+    CHECK_FALSE(registered(alone, "depth").usage & ImageUsageBit::transfer_src);
+    // The layers' maximum: the XR variant's two views; flat alone: one.
     for (const auto *name : {"scene", "depth", "a1", "b1"}) {
         INFO(name);
-        CHECK(described(name).array_layers == 2);
-        CHECK(registered(name).array_layers == 2);
+        CHECK(registered(merged, name).array_layers == 2);
+        CHECK(registered(alone, name).array_layers == 1);
     }
-    // flat only: its own layer count.
-    CHECK(registered("c1").array_layers == 1);
+    CHECK(registered(merged, "c1").array_layers == 1);
     // The groups: a stands, b leaves (XR has b1 without b2), c stands (XR has
-    // neither); the registry shares exactly the standing ones.
-    const auto group = [&](const std::string &name) { return registered(name).alias_group; };
-    CHECK(group("a1").has_value());
-    CHECK(group("a1") == group("a2"));
-    CHECK(described("a1").alias_group == group("a1"));
-    CHECK_FALSE(group("b1").has_value());
-    CHECK_FALSE(group("b2").has_value());
-    CHECK_FALSE(described("b1").alias_group.has_value());
-    CHECK(group("c1").has_value());
-    CHECK(group("c1") == group("c2"));
-    CHECK(result.shared ==
-          std::vector<std::set<std::string>>{std::set<std::string>{"a1", "a2"}, std::set<std::string>{"c1", "c2"}});
-    // 15 images (the output's display image with them), two pairs sharing:
-    // 13 allocations. Each image's bytes at
-    // 64x64: the members' and the mid / end images' over their layers.
+    // neither). Flat alone keeps all three.
+    const auto group = [&](const Registered &run, const std::string &name) {
+        return registered(run, name).alias_group;
+    };
+    CHECK(group(merged, "a1").has_value());
+    CHECK(group(merged, "a1") == group(merged, "a2"));
+    CHECK_FALSE(group(merged, "b1").has_value());
+    CHECK_FALSE(group(merged, "b2").has_value());
+    CHECK(group(merged, "c1") == group(merged, "c2"));
+    CHECK(group(alone, "b1").has_value());
+    CHECK(group(alone, "b1") == group(alone, "b2"));
+    using Shared = std::vector<std::set<std::string>>;
+    CHECK(merged.shared == Shared{{"a1", "a2"}, {"c1", "c2"}});
+    CHECK(alone.shared == Shared{{"a1", "a2"}, {"b1", "b2"}, {"c1", "c2"}});
+    // 15 images (the output's display image with them): two pairs sharing,
+    // 13 allocations; flat alone, three pairs, 12.
     std::set<std::string> names;
-    for (const auto &[name, entry] : result.targets) names.insert(name);
+    for (const auto &[name, entry] : merged.targets) names.insert(name);
     CHECK(names == std::set<std::string>{"a1", "a2", "a_end", "a_mid", "b1", "b2", "b_end", "b_mid", "c1",
                                          "c2", "c_end", "c_mid", "depth", "display", "scene"});
-    CHECK(result.allocations == 13);
+    CHECK(merged.allocations == 13);
+    CHECK(alone.allocations == 12);
     std::uint64_t expected_bytes = 0;
-    for (const auto &[name, entry] : result.targets)
+    for (const auto &[name, entry] : merged.targets)
         if (name != "a2" && name != "c2") expected_bytes += renderTargetBytes(entry.metadata);
-    CHECK(result.allocated_bytes == expected_bytes);
-    CHECK(renderTargetBytes(registered("a1")) == 64u * 64u * 1u * 2u);
-    CHECK(renderTargetBytes(registered("c1")) == 64u * 64u * 4u);
-    // The checks read the same values the registry holds.
-    for (const auto &[name, entry] : result.targets) {
-        INFO(name);
-        const auto metadata = renderTargetMetadataOf(described(name));
-        CHECK(metadata.usage == entry.metadata.usage);
-        CHECK(metadata.format == entry.metadata.format);
-        CHECK(metadata.extent == entry.metadata.extent);
-        CHECK(metadata.samples == entry.metadata.samples);
-        CHECK(metadata.array_layers == entry.metadata.array_layers);
-        CHECK(metadata.alias_group == entry.metadata.alias_group);
-        CHECK(metadata.storage_mode == entry.metadata.storage_mode);
-    }
+    CHECK(merged.allocated_bytes == expected_bytes);
+    CHECK(renderTargetBytes(registered(merged, "a1")) == 64u * 64u * 1u * 2u);
+    CHECK(renderTargetBytes(registered(merged, "c1")) == 64u * 64u * 4u);
 #else
     SKIP("an XR variant needs PELICAN_WITH_OPENXR");
 #endif

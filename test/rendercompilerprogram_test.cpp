@@ -17,6 +17,7 @@
 #include "../src/project/rasterrayquery.hpp"
 #include "render_graph_ir_test_support.hpp"
 
+#include <functional>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
@@ -512,6 +513,10 @@ class NativeVulkanProgram final
                 std::move(frame_plan));
             variant.physical_package =
                 std::move(physical);
+            // RC-3c2a: a runtime variant carries its IR (the generation's
+            // resources are completed from it); this one declares none.
+            variant.render_graph =
+                std::make_shared<const RenderGraphIR>();
             output.variants.push_back(
                 std::move(variant));
         }
@@ -799,6 +804,49 @@ TEST_CASE("P-2a-4b frame_node_order is read in a pelican.graph root's rendering 
             runRenderCompilerProgram(defaultVulkanRenderCompilerProgram(), fixture.input()),
             Catch::Matchers::ContainsSubstring(R"(render_graph.frame_node_order_unknown@1 {"graph":"unknown"})"));
     }
+}
+
+TEST_CASE(
+    "RC-3c2a the compiler program completes and checks the generation's resources before any registration",
+    "[rc3c2a][render-compiler][generation-resources][gpu-draw]") {
+    // runRenderCompilerProgram, every program's entry, makes the generation's
+    // resource description of its runtime variants and runs their resource
+    // checks on it: the same refusals with no registration behind it.
+    const auto compiled = [](const std::function<void(nlohmann::json &)> &edit) {
+        auto flat = readJsonFixture(std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+                                    "test/production_fixtures/pass_field_ownership/gpu_draw_material.json");
+        edit(flat);
+        ProgramInputFixture fixture;
+        fixture.useAuthoredConfig(std::move(flat), "rc3c2a-complete");
+        fixture.backend_context = VulkanRenderCompilerBackendContext{
+            vk::Format::eB8G8R8A8Srgb, vk::Extent2D{64, 64}, {}, {}, {},
+            VulkanRenderCompilerDevicePlanningMode::compiler_only};
+        fixture.variants = {{.graph_variant = RenderPipelineGraphVariant::flat},
+                            {.graph_variant = RenderPipelineGraphVariant::preview,
+                             .artifact = RenderCompilerProgramArtifact::data_only}};
+        return runRenderCompilerProgram(defaultVulkanRenderCompilerProgram(), fixture.input());
+    };
+    const auto output = compiled([](nlohmann::json &) {});
+    // One runtime variant (the preview has no physical package), its images
+    // at the backend's 64x64 and its buffers.
+    REQUIRE(output.generation_resources.variants.size() == 1);
+    const auto *lit = output.generation_resources.findImage("lit_color");
+    REQUIRE(lit != nullptr);
+    CHECK(lit->extent == ResolvedResourceExtent{64, 64});
+    REQUIRE(output.generation_resources.findBuffer("visible_draws") != nullptr);
+    CHECK(output.generation_resources.findBuffer("visible_draws")->size == 40);
+    // Two indexed draws of 20 bytes do not fit 20 bytes (the declaration
+    // alone fits one command): the GPU draw's capacity check.
+    CHECK_THROWS_WITH(compiled([](nlohmann::json &flat) { flat["buffers"][1]["size"] = 20; }),
+                      Catch::Matchers::ContainsSubstring(
+                          "gpu_draw_source command range exceeds buffer 'visible_draws'"));
+    // A pass sampling an image without SAMPLED: the pass's resource check.
+    CHECK_THROWS_WITH(
+        compiled([](nlohmann::json &flat) {
+            flat["render_targets"][0]["usage"] = nlohmann::json::array({"COLOR_ATTACHMENT"});
+        }),
+        Catch::Matchers::ContainsSubstring(
+            R"(render_graph.image_usage_missing@1 {"graph":"main","node":"present","resource":"lit_color","usage":"SAMPLED"})"));
 }
 
 TEST_CASE(

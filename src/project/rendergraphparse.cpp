@@ -753,6 +753,18 @@ NodeIR parsePass(const Json &pass, std::size_t index, const GraphScope &scope) {
     MaterialNodeInfo material;
     if (type == RenderPassType::material) {
         material.filter = materialFilter(pass, subject);
+        if (const auto contract = pass.find("material_contract"); contract != pass.end()) {
+            if (!contract->is_string()) subject.field("material_contract", "requires_string");
+            const auto parsed = materialPassContractFromName(contract->get<std::string>());
+            if (!parsed) subject.field("material_contract", "unknown");
+            material.contract = *parsed;
+        }
+        if (const auto outputs = pass.find("material_outputs"); outputs != pass.end()) {
+            material.output_schema = guarded(subject, "material_outputs", "invalid", [&] {
+                return parseMaterialOutputSchema(*outputs,
+                                                 "render graph material pass '" + node.name + "' material_outputs");
+            });
+        }
         if (const auto variant = pass.find("material_variant"); variant != pass.end()) {
             if (!variant->is_string()) subject.field("material_variant", "requires_string");
             material.variant = variant->get<std::string>();
@@ -1031,47 +1043,6 @@ NodeIR parseComputeTask(const Json &task, std::size_t index, const GraphScope &s
 
 // ---- resources
 
-// A snapshot copy's size of each config image: a fixed extent, or the first
-// display image with a fixed extent as the base of an output-relative one
-// (by resolveResourceExtent, the one extent rule); pending (the output's
-// extent) when there is no such image; the 12 formats of the copy contract
-// only.
-void assignSnapshotSizing(std::vector<ImageResource> &images) {
-    static constexpr std::array copy_formats{
-        ImageFormat::r8_unorm,          ImageFormat::r16_sfloat,
-        ImageFormat::d16_unorm,         ImageFormat::r8g8b8a8_unorm,
-        ImageFormat::r8g8b8a8_srgb,     ImageFormat::b8g8r8a8_unorm,
-        ImageFormat::b8g8r8a8_srgb,     ImageFormat::d32_sfloat,
-        ImageFormat::r32_sfloat,        ImageFormat::r16g16_sfloat,
-        ImageFormat::r16g16b16a16_sfloat, ImageFormat::r32g32b32a32_sfloat,
-    };
-    std::optional<ResolvedResourceExtent> base;
-    for (const auto &image : images) {
-        if (image.extent.kind == ResourceExtentKind::fixed && image.format_class == "display") {
-            base = ResolvedResourceExtent{image.extent.width, image.extent.height};
-            break;
-        }
-    }
-    for (auto &image : images) {
-        if (image.extent.kind != ResourceExtentKind::fixed && !base) {
-            image.snapshot_extent_pending = true;
-            continue;
-        }
-        const auto extent = resolveResourceExtent(image.extent, base.value_or(ResolvedResourceExtent{}));
-        if (extent.width == 0 || extent.height == 0) continue;
-        // A class without its format yet: the copy's bytes wait on the
-        // format as they wait on the output's extent (a copy into it is
-        // sized, and its format required by name, in the final revision).
-        if (image.format_unresolved) {
-            image.snapshot_extent_pending = true;
-            continue;
-        }
-        if (std::find(copy_formats.begin(), copy_formats.end(), image.format) == copy_formats.end()) continue;
-        image.snapshot_copy_bytes = std::size_t{extent.width} * extent.height *
-                                    imageFormatEstimatedTexelBytes(image.format);
-    }
-}
-
 // The config's render_targets: the render target parser's contract.
 std::vector<ImageResource> parseConfigImages(const Json &config) {
     std::vector<ImageResource> images;
@@ -1257,7 +1228,6 @@ std::vector<ImageResource> parseConfigImages(const Json &config) {
         image.initial = target.contains("initial");
         images.push_back(std::move(image));
     }
-    assignSnapshotSizing(images);
     return images;
 }
 
@@ -1379,6 +1349,8 @@ std::vector<BufferResource> parseBuffers(const Json &config, const std::vector<I
         }
         if (const auto initial = buffer.find("initial_f32"); initial != buffer.end()) {
             if (!initial->is_array()) invalid("initial_f32", "requires_number_array");
+            // An explicit empty list is not the omitted one (zero contents).
+            if (initial->empty()) invalid("initial_f32", "empty");
             for (const auto &value : *initial) {
                 if (!value.is_number()) invalid("initial_f32", "requires_number_array");
                 resource.initial_f32.push_back(value.get<float>());
@@ -1472,29 +1444,6 @@ const Json &arrayField(const Json &holder, const char *key, const Subject &subje
         refuse("render_graph.section_invalid@1", subject.detail({{"field", key}}));
     }
     return value;
-}
-
-// The planner's snapshot sizes, from the config's images (when there are
-// any).
-void assignSnapshotBytes(GraphIR &graph, const std::vector<ImageResource> &images) {
-    if (images.empty()) return;
-    std::unordered_map<std::string, std::size_t> resolved;
-    std::unordered_set<std::string> pending;
-    for (const auto &image : images) {
-        if (image.snapshot_copy_bytes) resolved.emplace(image.name, *image.snapshot_copy_bytes);
-        if (image.snapshot_extent_pending) pending.insert(image.name);
-    }
-    for (auto &node : graph.nodes) {
-        auto *snapshot = std::get_if<SnapshotNodeInfo>(&node.info);
-        if (snapshot == nullptr) continue;
-        if (pending.contains(snapshot->destination)) continue;
-        const auto found = resolved.find(snapshot->destination);
-        if (found == resolved.end() || found->second == 0) {
-            refuse("render_graph.snapshot_size_unavailable@1",
-                   {{"graph", graph.name}, {"node", node.name}, {"resource", snapshot->destination}});
-        }
-        snapshot->byte_size = found->second;
-    }
 }
 
 } // namespace
@@ -1594,7 +1543,6 @@ RenderGraphIR parseRenderGraph(const nlohmann::json &document,
             }
         }
         append_shared(graph);
-        assignSnapshotBytes(graph, ir.images);
         ir.graphs.push_back(std::move(graph));
     }
     // A config of compute tasks only plans them as one graph.

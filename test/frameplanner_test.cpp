@@ -1423,7 +1423,14 @@ TEST_CASE("snapshot plan node reports copy bytes and screen input read dependenc
     const auto composed = composeRenderFeatureConfig(config);
     const auto resolved = resolveRenderTargetFormatClassesV2(
         composed.config, vk::Format::eB8G8R8A8Srgb, vk::Extent2D{64, 32}, false);
-    const auto graphs = TestSupport::frameGraphsOf(resolved);
+    // RC-3c2a: a snapshot copy is sized in the final revision, from its
+    // destination as the generation resolves it at the output's extent.
+    const auto finalizedGraphsOf = [](const nlohmann::json &document, ResolvedResourceExtent output) {
+        TargetPlanningPolicy planning;
+        return TestSupport::frameGraphsOf(finalizeRenderGraph(
+            TestSupport::renderGraphOf(document), FinalizeRenderGraphRequest{.output_extent = output}, planning));
+    };
+    const auto graphs = finalizedGraphsOf(resolved, {64, 32});
     REQUIRE(graphs.size() == 1);
     const auto plan = planFrameGraph(graphs.front());
     const auto copy = std::find_if(plan.nodes.begin(), plan.nodes.end(), [](const auto &node) {
@@ -1448,13 +1455,15 @@ TEST_CASE("snapshot plan node reports copy bytes and screen input read dependenc
     REQUIRE_FALSE(plan_json.contains("anchors"));
     requirePlanFixture(plan_json, fixtureRoot() / "plans" / "snapshot_screen_input.json");
 
-    SECTION("fixed targets do not resolve a scaled snapshot extent") {
+    SECTION("the output's extent sizes a scaled snapshot, whatever fixed targets there are") {
         auto mixed = composed.config;
         mixed["render_targets"].push_back({
             {"name", "debug_result"}, {"format_class", "data"},
             {"format", "R8G8B8A8_UNORM"}, {"width", 16}, {"height", 8},
             {"extent_scale", 1.0}, {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}},
         });
+        // A revision before finalize holds no size; the final one the
+        // output's (RC-3c2a: one base, not the first fixed display image).
         const auto raw_graphs = TestSupport::frameGraphsOf(mixed);
         REQUIRE(raw_graphs.size() == 1);
         const auto raw_copy = std::find_if(raw_graphs.front().nodes.begin(),
@@ -1463,10 +1472,15 @@ TEST_CASE("snapshot plan node reports copy bytes and screen input read dependenc
             });
         REQUIRE(raw_copy != raw_graphs.front().nodes.end());
         REQUIRE(raw_copy->byte_size == 0);
+        const auto raw_final = finalizedGraphsOf(mixed, {64, 32});
+        const auto raw_final_copy = std::find_if(raw_final.front().nodes.begin(), raw_final.front().nodes.end(),
+            [](const auto &node) { return node.kind == FramePlanNodeKind::snapshot_copy; });
+        REQUIRE(raw_final_copy != raw_final.front().nodes.end());
+        REQUIRE(raw_final_copy->byte_size == 64 * 32 * 4);
 
         auto mixed_resolved = resolveRenderTargetFormatClassesV2(
             mixed, vk::Format::eB8G8R8A8Srgb, vk::Extent2D{64, 32}, false);
-        const auto resolved_graphs = TestSupport::frameGraphsOf(mixed_resolved);
+        const auto resolved_graphs = finalizedGraphsOf(mixed_resolved, {64, 32});
         REQUIRE(resolved_graphs.size() == 1);
         const auto resolved_copy = std::find_if(resolved_graphs.front().nodes.begin(),
             resolved_graphs.front().nodes.end(), [](const auto &node) {

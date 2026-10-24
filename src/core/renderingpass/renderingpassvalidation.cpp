@@ -48,151 +48,25 @@ void validatePassInputs(const PassDefinition &pass_def) {
     }
 }
 
-void validatePassTargetUsage(const PassDefinition &pass_def, const RenderTargetMetadataResolver &rt_metadata) {
-    for (const auto &rt_id : pass_def.output_color) {
-        if (isSpecialRenderTarget(rt_id.target)) {
-            continue;
-        }
-
-        const auto rt =
-            rt_metadata.get(rt_id.target);
-        if (!(rt.usage & ImageUsageBit::color_attachment)) {
-            throw std::runtime_error("Color output target missing COLOR_ATTACHMENT usage: " + rt.name +
-                                     " in pass: " + pass_def.name);
-        }
-    }
-
-    if (isConcreteRenderTarget(pass_def.output_depth)) {
-        const auto rt = rt_metadata.get(pass_def.output_depth);
-        if (!(rt.usage & ImageUsageBit::depth_stencil_attachment)) {
-            throw std::runtime_error("Depth output target missing DEPTH_STENCIL_ATTACHMENT usage: " + rt.name +
-                                     " in pass: " + pass_def.name);
-        }
-    }
-
-    for (size_t i = 0; i < pass_def.input_targets.size(); ++i) {
-        const auto rt_id = pass_def.input_targets[i];
-        if (isSpecialRenderTarget(rt_id)) {
-            continue;
-        }
-        const auto rt = rt_metadata.get(rt_id);
-        const auto local_read =
-            rt.storage_mode ==
-                RenderTargetStorageMode::
-                    tile_local_attachment &&
-            bool(
-                rt.usage &
-                ImageUsageBit::
-                    input_attachment);
-        if (!(rt.usage &
-              ImageUsageBit::sampled) &&
-            !local_read) {
-            throw std::runtime_error(
-                "Input target missing SAMPLED or tile-local "
-                "INPUT_ATTACHMENT usage: " +
-                rt.name + " in pass: " +
-                pass_def.name);
-        }
-        if (pass_def.input_target_history.at(i) && !rt.history) {
-            throw std::runtime_error("@history input requires a history render target: " + rt.name +
-                                     " in pass: " + pass_def.name);
-        }
-    }
-}
-
-void validatePassOutputExtents(const PassDefinition &pass_def, const RenderTargetMetadataResolver &rt_metadata) {
-    std::optional<vk::Extent2D> expected_extent;
-
-    const auto check_extent =
-        [&](const RenderTargetMetadata &rt,
-            const std::optional<
-                ImageSubresourceRange>
-                &subresource) {
-        if (subresource &&
-            (subresource->mip_count_mode !=
-                 ImageSubresourceMipCountMode::fixed ||
-             subresource->level_count != 1 ||
-             !validImageSubresourceRange(
-                 *subresource, rt.mip_levels,
-                 rt.array_layers) ||
-             (rt.samples > 1 &&
-              subresource->base_mip_level != 0))) {
-            throw std::runtime_error(
-                "Pass output target has an invalid raster "
-                "subresource: " +
-                rt.name + " in pass: " +
-                pass_def.name);
-        }
-        const auto mip =
-            subresource
-                ? subresource->base_mip_level
-                : 0u;
-        const vk::Extent2D extent{
-            std::max(1u, rt.extent.width >> mip),
-            std::max(1u, rt.extent.height >> mip),
-        };
-        if (!expected_extent.has_value()) {
-            expected_extent = extent;
-            return;
-        }
-        if (extent != *expected_extent) {
-            throw std::runtime_error("Pass output target extent mismatch: " + rt.name +
-                                     " in pass: " + pass_def.name);
-        }
-    };
-
-    for (const auto &attachment :
-         pass_def.output_color) {
-        if (isConcreteRenderTarget(
-                attachment.target)) {
-            check_extent(
-                rt_metadata.get(
-                    attachment.target),
-                attachment.subresource);
-        }
-    }
-    if (isConcreteRenderTarget(pass_def.output_depth)) {
-        check_extent(
-            rt_metadata.get(
-                pass_def.output_depth.target),
-            pass_def.output_depth.subresource);
-    }
-}
-
-vk::SampleCountFlagBits resolvePassOutputSamples(
+// RC-3c2a: the pass's rasterization sample count, from its attachments
+// (the swapchain's is 1). That the attachments agree is the resource check's
+// (validateRenderNodeResources), before anything is registered.
+vk::SampleCountFlagBits passOutputSamples(
     const PassDefinition &pass_def,
     const RenderTargetMetadataResolver &rt_metadata) {
-    std::optional<std::uint32_t> expected;
-    const auto check = [&](std::uint32_t samples,
-                           const std::string &target) {
-        if (!expected) {
-            expected = samples;
-            return;
-        }
-        if (*expected != samples) {
-            throw std::runtime_error(
-                "Pass output target sample-count mismatch at " + target +
-                " in pass: " + pass_def.name);
-        }
-    };
-    for (const auto &attachment :
-         pass_def.output_color) {
-        if (isSwapchainRenderTarget(
-                attachment.target)) {
-            check(1, "swapchain");
-        } else if (isConcreteRenderTarget(
-                       attachment.target)) {
-            const auto metadata =
-                rt_metadata.get(
-                    attachment.target);
-            check(metadata.samples, metadata.name);
+    std::optional<std::uint32_t> samples;
+    for (const auto &attachment : pass_def.output_color) {
+        if (samples) break;
+        if (isSwapchainRenderTarget(attachment.target)) {
+            samples = 1;
+        } else if (isConcreteRenderTarget(attachment.target)) {
+            samples = rt_metadata.get(attachment.target).samples;
         }
     }
-    if (isConcreteRenderTarget(pass_def.output_depth)) {
-        const auto metadata = rt_metadata.get(pass_def.output_depth);
-        check(metadata.samples, metadata.name);
+    if (!samples && isConcreteRenderTarget(pass_def.output_depth)) {
+        samples = rt_metadata.get(pass_def.output_depth).samples;
     }
-    switch (expected.value_or(1)) {
+    switch (samples.value_or(1)) {
     case 1: return vk::SampleCountFlagBits::e1;
     case 2: return vk::SampleCountFlagBits::e2;
     case 4: return vk::SampleCountFlagBits::e4;
@@ -204,138 +78,6 @@ vk::SampleCountFlagBits resolvePassOutputSamples(
         throw std::runtime_error(
             "Pass output target has invalid sample count in pass: " +
             pass_def.name);
-    }
-}
-
-void validateMaterialPassAttachments(const PassDefinition &pass_def, const RenderTargetMetadataResolver &rt_metadata) {
-    if (!pass_def.isMaterial()) {
-        return;
-    }
-
-    const auto contract = pass_def.materialInfo().contract;
-    const auto &output_schema =
-        pass_def.materialInfo().output_schema;
-    const auto &output_states =
-        pass_def.materialInfo().output_states;
-    if (!output_states.empty() && !output_schema) {
-        throw std::runtime_error(
-            "Material pass material_output_states requires "
-            "material_outputs: " +
-            pass_def.name);
-    }
-    if (output_schema) {
-        validateMaterialOutputAttachmentStates(
-            output_states, *output_schema,
-            "Material pass '" + pass_def.name +
-                "' material_output_states");
-        if (!materialPassContractAcceptsMaterialOutputs(contract)) {
-            throw std::runtime_error(
-                "Material pass material_outputs requires an "
-                "explicit non-legacy material_contract: " +
-                pass_def.name);
-        }
-        if (contract ==
-                MaterialPassContract::
-                    deferred_geometry_v1 &&
-            std::any_of(
-                output_schema->outputs.begin(),
-                output_schema->outputs.end(),
-                [](const auto &output) {
-                    return output.source ==
-                           MaterialOutputSource::
-                               lighting_scene_color;
-                })) {
-            throw std::runtime_error(
-                "Deferred material pass material_outputs cannot "
-                "use lighting.scene_color: " +
-                pass_def.name);
-        }
-        if (pass_def.output_color.size() !=
-            output_schema->outputs.size()) {
-            throw std::runtime_error(
-                "Material pass output.color count must match "
-                "material_outputs.outputs count (" +
-                std::to_string(
-                    output_schema->outputs.size()) +
-                "): " + pass_def.name);
-        }
-        if (!isConcreteRenderTarget(pass_def.output_depth)) {
-            throw std::runtime_error(
-                "Material pass requires depth output: " +
-                pass_def.name);
-        }
-        for (std::size_t location = 0;
-             location < pass_def.output_color.size();
-             ++location) {
-            const auto target =
-                pass_def.output_color[location];
-            if (isSpecialRenderTarget(
-                    target.target)) {
-                throw std::runtime_error(
-                    "Material pass does not support swapchain "
-                    "color output: " +
-                    pass_def.name);
-            }
-            const auto metadata =
-                rt_metadata.get(target.target);
-            const auto format_name =
-                std::string{imageFormatName(metadata.format)};
-            const auto format_class =
-                materialPassFormatNumericClass(metadata.format);
-            const auto output_class =
-                materialOutputNumericClass(
-                    output_schema->outputs[location].type);
-            if (format_class != output_class) {
-                throw std::runtime_error(
-                    "Material pass output '" +
-                    output_schema->outputs[location].name +
-                    "' numeric class is incompatible with render "
-                    "target format " +
-                    format_name + ": " + metadata.name +
-                    " in pass: " + pass_def.name);
-            }
-        }
-        return;
-    }
-    const auto shader_contract = materialPassShaderContract(contract);
-    const auto expected_color_count =
-        materialPassColorAttachmentFormatsFor(shader_contract, false).size();
-    if (pass_def.output_color.size() != expected_color_count) {
-        throw std::runtime_error("Material pass contract '" +
-                                 std::string{materialPassContractName(contract)} +
-                                 "' requires exactly " + std::to_string(expected_color_count) +
-                                 " color output" + (expected_color_count == 1 ? "" : "s") +
-                                 ": " + pass_def.name);
-    }
-    if (!isConcreteRenderTarget(pass_def.output_depth)) {
-        throw std::runtime_error("Material pass requires depth output: " + pass_def.name);
-    }
-
-    const auto first_format =
-        toVulkanFormat(
-            rt_metadata
-                .get(pass_def.output_color.front().target)
-                .format);
-    const auto expected_formats = materialPassColorAttachmentFormatsFor(
-        shader_contract, materialPassUsesHdrColorFormats(first_format));
-    for (size_t i = 0; i < pass_def.output_color.size(); ++i) {
-        const auto rt_id = pass_def.output_color[i];
-        if (isSpecialRenderTarget(rt_id.target)) {
-            throw std::runtime_error("Material pass does not support swapchain color output: " + pass_def.name);
-        }
-
-        const auto rt =
-            rt_metadata.get(rt_id.target);
-        if (toVulkanFormat(rt.format) != expected_formats[i]) {
-            throw std::runtime_error("Material pass color output format mismatch: " + rt.name + " in pass: " +
-                                     pass_def.name);
-        }
-    }
-
-    const auto depth_rt = rt_metadata.get(pass_def.output_depth);
-    if (toVulkanFormat(depth_rt.format) != materialPassDepthAttachmentFormat) {
-        throw std::runtime_error("Material pass depth output format mismatch: " + depth_rt.name +
-                                 " in pass: " + pass_def.name);
     }
 }
 

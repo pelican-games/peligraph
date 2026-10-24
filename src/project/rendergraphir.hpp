@@ -12,7 +12,9 @@
 #include "logicalframegraphshadow.hpp"
 #include "logicalrendergraph.hpp"
 #include "materialdrawtag.hpp"
+#include "materialoutput.hpp"
 #include "passfieldownership.hpp"
+#include "renderpipeline.hpp"
 #include "renderresolutiondomain.hpp"
 #include "resourceextent.hpp"
 #include "sceneaccelerationstructure.hpp"
@@ -176,6 +178,10 @@ struct MaterialNodeInfo {
     std::optional<MaterialDrawTagFilter> filter;
     std::optional<std::string> variant;
     std::optional<GpuDrawSourceDeclaration> gpu_draw_source;
+    // RC-3c2a: what the material pass's attachment check reads
+    // (`material_contract`, legacy when absent; `material_outputs`).
+    MaterialPassContract contract = MaterialPassContract::legacy_gbuffer_v1;
+    std::optional<MaterialOutputSchema> output_schema;
 
     bool operator==(const MaterialNodeInfo &) const = default;
 };
@@ -196,9 +202,10 @@ struct SnapshotNodeInfo {
     std::string source;
     std::string destination;
     std::string snapshot_after;
-    // The copy's bytes: the destination's extent times its format's texel
-    // bytes, for the copy contract's 12 formats. 0 while the destination
-    // waits on the output extent.
+    // The copy's bytes: the destination's extent as the generation resolves
+    // it (resolveResourceExtent at the output extent) times its format's
+    // texel bytes, for the copy contract's 12 formats. RC-3c2a: set by
+    // finalizeRenderGraph (0 in a revision before it).
     std::size_t byte_size = 0;
 
     bool operator==(const SnapshotNodeInfo &) const = default;
@@ -270,11 +277,6 @@ struct ImageResource {
     // (finalizeRenderGraph, the device's formats) refuses
     // render_graph.image_format_unresolved@1 {resource}.
     bool format_unresolved = false;
-    // A snapshot copy's size of the image (the copy contract): its bytes,
-    // or that they wait (on the output's extent, or on the unresolved
-    // format).
-    std::optional<std::size_t> snapshot_copy_bytes;
-    bool snapshot_extent_pending = false;
 
     bool operator==(const ImageResource &) const = default;
 };
@@ -448,6 +450,9 @@ CompiledLogicalRenderGraph toLogicalGraph(
 // provider chain (docs/design_render_graph_ir.md §2.2), in this order:
 //   every config image's format is resolved
 //     (render_graph.image_format_unresolved@1 {resource});
+//   every snapshot copy is sized at the output extent (snapshotCopyBytes;
+//     render_graph.snapshot_size_unavailable@1 {graph, node, resource} for
+//     a destination outside the copy contract);
 //   resolveRenderGraphReferences (by the authored names);
 //   requireRenderGraphRayQueryCapability; namespaceSharedComputeTasks;
 //   insertAccelerationStructureNodes; applyFrameNodeOrder.
@@ -461,9 +466,18 @@ struct FinalizeRenderGraphRequest {
     // frame_node_order names only this variant's graphs when false (the
     // other variants' keys are checked across the program).
     bool require_all_graphs = false;
+    // RC-3c2a: the output's extent a snapshot copy's destination is resolved
+    // at (the generation's resource description resolves every image at it).
+    ResolvedResourceExtent output_extent;
 };
 RenderGraphIR finalizeRenderGraph(RenderGraphIR ir, const FinalizeRenderGraphRequest &request,
                                   TargetPlanningPolicy &target_planning);
+// RC-3c2a: a snapshot copy's bytes into `destination` at `output_extent`
+// (resolveResourceExtent); 0 for a format outside the copy contract or an
+// unresolved one.
+std::size_t snapshotCopyBytes(const ImageResource &destination, ResolvedResourceExtent output_extent);
+// RC-3c2a: whether a snapshot copy can copy into `destination`'s format.
+bool snapshotCopiesFormatOf(const ImageResource &destination);
 
 // The final revision's references, which every variant resolves (the
 // preview too, which goes no further): ray_task_acceleration_structures

@@ -523,6 +523,10 @@ compileDefaultVulkanVariant(
             .compute_task_suffix =
                 logical.compiled_pipeline.graph_variant_policy
                     .rendering_pass_name_suffix,
+            .output_extent =
+                ResolvedResourceExtent{
+                    backend.output_extent.width,
+                    backend.output_extent.height},
         },
         logical.compiled_pipeline.target_planning);
 

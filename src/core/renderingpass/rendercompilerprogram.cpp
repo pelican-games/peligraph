@@ -1,4 +1,6 @@
 #include "rendercompilerprogram.hpp"
+#include "computetaskdefinitionjson.hpp"
+#include "materialpassinfojsonparser.hpp"
 
 #include <algorithm>
 #include <set>
@@ -216,6 +218,46 @@ void validateVariantOutput(
 
 } // namespace
 
+GenerationResources completeGenerationResources(
+    std::span<const RenderCompilerProgramVariantOutput> variants,
+    ResolvedResourceExtent output_extent) {
+    std::vector<GenerationResourceVariant> inputs;
+    std::vector<const RenderCompilerProgramVariantOutput *> runtime;
+    for (const auto &variant : variants) {
+        if (variant.physical_package == nullptr) continue;
+        if (variant.render_graph == nullptr) {
+            throw std::runtime_error(
+                "Render compiler runtime variant has no render graph");
+        }
+        const auto placements =
+            variant.physical_package->imagePlacements();
+        inputs.push_back(GenerationResourceVariant{
+            .name = std::string{renderPipelineGraphVariantName(
+                variant.graph_variant)},
+            .render_graph = variant.render_graph.get(),
+            .placements = {placements.begin(), placements.end()},
+            .runtime_layered_images =
+                runtimeLayeredImagesOf(*variant.compiled_pipeline),
+        });
+        runtime.push_back(&variant);
+    }
+    if (inputs.empty()) return {};
+    auto resources =
+        resolveGenerationResources(inputs, output_extent);
+    for (std::size_t index = 0; index < runtime.size(); ++index) {
+        const auto &variant = *runtime[index];
+        std::vector<FrameGraphBufferDefinition> buffers;
+        for (const auto buffer : resources.variants[index].buffers)
+            buffers.push_back(resources.buffers[buffer]);
+        validateComputeTaskBufferContracts(
+            buffers, variant.compute_task_definitions);
+        validateGpuDrawSourceBufferContracts(
+            *variant.render_graph, buffers);
+        validateRenderGraphResources(*variant.render_graph, resources);
+    }
+    return resources;
+}
+
 RenderCompilerProgramOutput runRenderCompilerProgram(
     const RenderCompilerProgram &program,
     const RenderCompilerProgramInput &input) {
@@ -238,6 +280,8 @@ RenderCompilerProgramOutput runRenderCompilerProgram(
             input.variants[index],
             selection);
     }
+    output.generation_resources = completeGenerationResources(
+        output.variants, input.backend_context.outputExtent());
     return output;
 }
 

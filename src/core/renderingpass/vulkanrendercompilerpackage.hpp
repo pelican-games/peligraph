@@ -61,6 +61,9 @@ class VulkanRenderCompilerBackendContext final
     std::string_view backend() const noexcept override {
         return vulkanRenderCompilerBackend;
     }
+    ResolvedResourceExtent outputExtent() const noexcept override {
+        return {output_extent.width, output_extent.height};
+    }
 };
 
 class VulkanRenderCompilerPhysicalPackage final
@@ -92,6 +95,9 @@ class VulkanRenderCompilerPhysicalPackage final
     void validate(
         std::span<const std::string>
             frame_graph_names) const override;
+    std::span<const ImagePlacement> imagePlacements() const noexcept override {
+        return image_placements;
+    }
 };
 
 const VulkanRenderCompilerBackendContext &

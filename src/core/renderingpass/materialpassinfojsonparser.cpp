@@ -507,18 +507,10 @@ void parseMaterialPassInfoFromJson(PassDefinition &pass_def, const nlohmann::jso
 
 namespace {
 
+// RC-3c2a: project's rule (the resource check reads the same).
 LogicalType logicalSourceTypeForTarget(
     const LogicalTypeRegistry &types, const RenderTargetMetadata &metadata) {
-    if (imageFormatHasDepth(metadata.format)) {
-        return deviceDepthV1(types);
-    }
-    if (metadata.format == ImageFormat::r16g16b16a16_sfloat) {
-        return sceneLinearHdrV1(types);
-    }
-    throw std::runtime_error(
-        "render target '" + metadata.name + "' format " +
-        std::string{imageFormatName(metadata.format)} +
-        " has no hybrid material screen-input logical type");
+    return materialInputSourceType(types, metadata.format, metadata.name);
 }
 
 using MaterialInputContractFactory =

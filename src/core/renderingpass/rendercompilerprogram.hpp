@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../project/framegraphbufferdefinition.hpp"
+#include "../../project/generationresources.hpp"
 #include "frameplanner.hpp"
 #include "../../project/rendergraphir.hpp"
 #include "../../project/renderpipeline.hpp"
@@ -33,6 +34,8 @@ class RenderCompilerBackendContext {
   public:
     virtual ~RenderCompilerBackendContext() = default;
     virtual std::string_view backend() const noexcept = 0;
+    // RC-3c2a: the output's extent the generation's images resolve at.
+    virtual ResolvedResourceExtent outputExtent() const noexcept = 0;
 };
 
 // Physical packages are an open backend boundary. A future Metal package can
@@ -48,6 +51,9 @@ class RenderCompilerBackendPhysicalPackage {
     virtual void validate(
         std::span<const std::string>
             frame_graph_names) const = 0;
+    // RC-3c2a: what the physical plan placed of each config image of the
+    // variant's IR (the generation's resource description merges them).
+    virtual std::span<const ImagePlacement> imagePlacements() const noexcept = 0;
 };
 
 enum class RenderCompilerProgramArtifact : std::uint8_t {
@@ -133,6 +139,10 @@ struct RenderCompilerProgramVariantOutput {
 struct RenderCompilerProgramOutput {
     std::vector<RenderCompilerProgramVariantOutput>
         variants;
+    // RC-3c2a: the generation's resource description of the runtime
+    // variants (variants[i] is the i-th runtime_package variant, in order),
+    // made and checked by runRenderCompilerProgram (completeGenerationResources).
+    GenerationResources generation_resources;
 };
 
 // One program owns compilation of the complete requested variant family.
@@ -149,8 +159,22 @@ class RenderCompilerProgram {
         const RenderCompilerProgramInput &input) const = 0;
 };
 
+// RC-3c2a: the CPU completion every runtime variant of a program's output
+// goes through, once, before anything is registered: the generation's
+// resource description (resolveGenerationResources over every runtime
+// variant's final IR and placements, at `output_extent`), then each
+// variant's resource checks on it -- its compute tasks' and GPU draws'
+// buffers (validateComputeTaskBufferContracts,
+// validateGpuDrawSourceBufferContracts) and its passes' images
+// (validateRenderGraphResources). Refuses a runtime variant without its IR.
+GenerationResources completeGenerationResources(
+    std::span<const RenderCompilerProgramVariantOutput> variants,
+    ResolvedResourceExtent output_extent);
+
 // Runs one program, verifies the backend package as a complete immutable CPU
-// candidate, and stamps trusted program provenance before any GPU mutation.
+// candidate, completes its generation's resources
+// (completeGenerationResources), and stamps trusted program provenance before
+// any GPU mutation.
 RenderCompilerProgramOutput runRenderCompilerProgram(
     const RenderCompilerProgram &program,
     const RenderCompilerProgramInput &input);

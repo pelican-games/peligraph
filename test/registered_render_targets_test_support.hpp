@@ -69,8 +69,7 @@ inline std::vector<RenderTargetDefinition> plannedRenderTargets(
 inline std::vector<FrameGraphBufferDefinition> bufferDefinitionsOf(
     const nlohmann::json &config, ResolvedResourceExtent output_extent = {1920, 1080}) {
     const auto render_graph = TestSupport::renderGraphOf(resourceDeclarationsOf(config));
-    const auto variant = GenerationResourceVariant{.name = "test", .render_graph = &render_graph};
-    return resolveGenerationResources(std::span{&variant, 1}, output_extent).buffers;
+    return resolveDeclaredGenerationResources(render_graph, output_extent).buffers;
 }
 
 // `targets` as the generation's resource description leaves them, registered at

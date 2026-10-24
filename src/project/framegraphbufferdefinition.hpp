@@ -97,7 +97,9 @@ struct FrameGraphBufferDefinition {
     // A `render.scalar` write replaces it from the next frame onwards.
     std::vector<float> initial_f32;
 
-    bool operator==(const FrameGraphBufferDefinition &) const = default;
+    // Every field; initial_f32 by its bits, as the GPU receives it (+0.0 and
+    // -0.0 differ).
+    bool operator==(const FrameGraphBufferDefinition &) const;
 };
 
 // RC-3c2a: the bytes of a size_from_extent buffer for its image's resolved

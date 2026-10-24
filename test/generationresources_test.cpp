@@ -12,6 +12,7 @@
 #include <nlohmann/json.hpp>
 
 #include <array>
+#include <bit>
 #include <string>
 #include <vector>
 
@@ -191,6 +192,13 @@ TEST_CASE("RC-3c2a the generation refuses by name what its variants disagree on"
     multisampled.samples = 4;
     CHECK(two(image("t"), image("t"), placed("t"), multisampled) == conflict("samples"));
     CHECK(two(image("t"), image("t")) == "accepted");
+    // A file image read from another file in one variant.
+    const auto file = [](const std::string &asset) {
+        return image("t", {{"width", 4}, {"height", 4}, {"usage", Json::array({"SAMPLED", "TRANSFER_DST"})},
+                           {"source", {{"asset", asset}}}});
+    };
+    CHECK(two(file("project://a.png"), file("project://b.png")) == conflict("source"));
+    CHECK(two(file("project://a.png"), file("project://a.png")) == "accepted");
 
     // Placements: of no config image, twice, or missing.
     const auto ir = irOf(Json::array({image("t"), image("u")}));
@@ -205,6 +213,10 @@ TEST_CASE("RC-3c2a the generation refuses by name what its variants disagree on"
           R"(render_graph.image_placement_invalid@1 {"reason":"duplicate","resource":"t","variant":"flat"})");
     CHECK(placing({placed("t")}) ==
           R"(render_graph.image_placement_invalid@1 {"reason":"missing","resource":"u","variant":"flat"})");
+    // None at all is missing too (an image as declared is the editor's own
+    // entry, resolveDeclaredGenerationResources).
+    CHECK(placing({}) ==
+          R"(render_graph.image_placement_invalid@1 {"reason":"missing","resource":"t","variant":"flat"})");
 
     // A group left with one member, or of two contracts.
     const auto group = std::optional<std::string>{"g"};
@@ -252,111 +264,178 @@ TEST_CASE("RC-3c2a buffers: one declaration per name, sized from their image's r
                           {{"resource", "lit_color"}, {"tile_width", 32}, {"tile_height", 32},
                            {"header_bytes", 48}, {"bytes_per_tile", 260}, {"copies", 2}}}};
     const auto ir = irOf(images, Json::array({selection}));
-    const std::array one{GenerationResourceVariant{.name = "flat", .render_graph = &ir}};
     // (ii) lit_color at 1280x720 (40x23 tiles), not the first fixed image
     // (tiny, 2x2 tiles: the old rule's 2,176 bytes).
-    const auto sized = resolveGenerationResources(one, {1280, 720});
+    const auto sized = resolveDeclaredGenerationResources(ir, {1280, 720});
     REQUIRE(sized.buffers.size() == 1);
     CHECK(sized.buffers.front().size == 478'496);
     CHECK(ir.buffers.front().size == 0);
     // The extent rule is the images' (float scale, truncated): a third of
-    // 1920x1080 is 640x360.
-    CHECK(imageOf(resolveGenerationResources(one, {1920, 1080}), "third").extent ==
-          ResolvedResourceExtent{640, 360});
+    // 1920x1080 is 640x360, and (iii) a 1x1-tile buffer of 4 bytes per
+    // texel sized from it holds 640x360x4 = 921,600 bytes (the old double
+    // rule's 639x359 made 917,604).
+    const Json texels{{"name", "texels"},
+                      {"size_from_extent",
+                       {{"resource", "third"}, {"tile_width", 1}, {"tile_height", 1},
+                        {"header_bytes", 0}, {"bytes_per_tile", 4}}}};
+    const auto texel_ir = irOf(images, Json::array({texels}));
+    const auto at_1080 = resolveDeclaredGenerationResources(texel_ir, {1920, 1080});
+    CHECK(imageOf(at_1080, "third").extent == ResolvedResourceExtent{640, 360});
+    CHECK(at_1080.buffers.front().size == 921'600);
     // A size from an extent is held to the buffer's contract once sized.
     auto odd = selection;
     odd["index_buffer"] = true;
     odd["size_from_extent"]["header_bytes"] = 1;
     const auto odd_ir = irOf(images, Json::array({odd}));
-    const std::array odd_variant{GenerationResourceVariant{.name = "flat", .render_graph = &odd_ir}};
-    CHECK(refusal([&] { return resolveGenerationResources(odd_variant, {1280, 720}); }) ==
+    CHECK(refusal([&] { return resolveDeclaredGenerationResources(odd_ir, {1280, 720}); }) ==
           R"(render_graph.buffer_invalid@1 {"field":"size","reason":"index_buffer_not_uint32_aligned","resource":"selection"})");
     // The image a size comes from is a config image.
     auto unknown = selection;
     unknown["size_from_extent"]["resource"] = "nowhere";
     CHECK(refusal([&] { return irOf(images, Json::array({unknown})); }) ==
           R"(render_graph.buffer_invalid@1 {"field":"size_from_extent","reason":"unknown_image","resource":"selection"})");
+}
 
-    // Every field of one name agrees across the variants, whichever comes
-    // first; otherwise the first field that differs is named.
-    const Json data{{"name", "data"}, {"size", 16}, {"host_source", "runtime_f32"},
-                    {"initial_f32", Json::array({1.0, 2.0, 3.0, 4.0})}};
-    const auto variants_of = [&](Json flat_buffer, Json xr_buffer, bool reversed) {
-        auto flat_ir = irOf(images, Json::array({std::move(flat_buffer)}));
-        auto xr_ir = irOf(images, Json::array({std::move(xr_buffer)}));
-        std::vector<GenerationResourceVariant> variants{{.name = "flat", .render_graph = nullptr},
-                                                        {.name = "xr", .render_graph = nullptr}};
-        auto irs = std::make_shared<std::array<RenderGraphIR, 2>>(std::array{std::move(flat_ir), std::move(xr_ir)});
-        variants[0].render_graph = &(*irs)[0];
-        variants[1].render_graph = &(*irs)[1];
+TEST_CASE("RC-3c2a initial contents: omitted is zero, an explicit empty list is refused",
+          "[generation-resources][rc3c2a][buffers]") {
+    const auto with = [](Json extra) {
+        Json buffer{{"name", "b"}, {"size", 4}, {"host_source", "runtime_f32"}};
+        buffer.update(extra);
+        return refusal([&] {
+            const auto ir = irOf(Json::array(), Json::array({buffer}));
+            return resolveDeclaredGenerationResources(ir, {64, 64}).buffers.at(0).initial_f32;
+        });
+    };
+    CHECK(with(Json::object()) == "accepted");
+    CHECK(with({{"initial_f32", Json::array({0.5})}}) == "accepted");
+    CHECK(with({{"initial_f32", Json::array()}}) ==
+          R"(render_graph.buffer_invalid@1 {"field":"initial_f32","reason":"empty","resource":"b"})");
+    const auto ir = irOf(Json::array(), Json::array({Json{{"name", "b"}, {"size", 4}, {"host_source", "runtime_f32"}}}));
+    CHECK(resolveDeclaredGenerationResources(ir, {64, 64}).buffers.at(0).initial_f32.empty());
+}
+
+namespace {
+
+// The bits of a buffer's initial contents, as the GPU receives them.
+std::vector<std::uint32_t> bitsOf(const std::vector<float> &values) {
+    std::vector<std::uint32_t> bits;
+    for (const auto value : values) bits.push_back(std::bit_cast<std::uint32_t>(value));
+    return bits;
+}
+
+} // namespace
+
+TEST_CASE("RC-3c2a buffers of one name agree in every field, whichever variant comes first",
+          "[generation-resources][rc3c2a][buffers]") {
+    const auto images = Json::array({image("lit_color")});
+    // Two variants declaring `left` and `right` as the buffer "data".
+    const auto resolve = [&](Json left, Json right, bool reversed) {
+        left["name"] = "data";
+        right["name"] = "data";
+        const auto left_ir = irOf(images, Json::array({std::move(left)}));
+        const auto right_ir = irOf(images, Json::array({std::move(right)}));
+        std::vector<GenerationResourceVariant> variants{
+            {.name = "flat", .render_graph = &left_ir, .placements = {placed("lit_color")}},
+            {.name = "xr", .render_graph = &right_ir, .placements = {placed("lit_color")}}};
         if (reversed) std::swap(variants[0], variants[1]);
-        return std::pair{irs, variants};
+        return resolveGenerationResources(variants, {64, 64});
     };
     for (const bool reversed : {false, true}) {
         INFO("reversed " << reversed);
-        const auto [same_irs, same] = variants_of(data, data, reversed);
-        const auto agreed = resolveGenerationResources(same, {64, 64});
-        REQUIRE(agreed.buffers.size() == 1);
-        CHECK(agreed.buffers.front().initial_f32 == std::vector<float>{1.0f, 2.0f, 3.0f, 4.0f});
-        CHECK(agreed.buffers.front().host_source == FrameGraphHostBufferSource::runtime_f32);
-        CHECK(agreed.variants[0].buffers == std::vector<std::size_t>{0});
-        CHECK(agreed.variants[1].buffers == std::vector<std::size_t>{0});
         const std::string first = reversed ? "xr" : "flat";
         const std::string second = reversed ? "flat" : "xr";
-        const auto refused = [&](Json changed, std::string_view field) {
-            const auto [irs, variants] = variants_of(data, std::move(changed), reversed);
-            CHECK(refusal([&] { return resolveGenerationResources(variants, {64, 64}); }) ==
+        // Each pair differs in exactly the named field.
+        const auto refused = [&](Json left, Json right, std::string_view field) {
+            INFO(field);
+            CHECK(refusal([&] { return resolve(left, right, reversed); }) ==
                   std::string{R"(render_graph.buffer_variant_conflict@1 {"field":")"} + std::string{field} +
                       R"(","resource":"data","variants":[")" + first + R"(",")" + second + R"("]})");
         };
-        auto changed = data;
-        changed["initial_f32"] = Json::array({1.0, 2.0, 3.0, 5.0});
-        refused(changed, "initial_f32");
-        changed = data;
-        changed["size"] = 32;
-        changed.erase("initial_f32");
-        refused(changed, "size");
-        changed = data;
-        changed["lifetime"] = "transient";
-        refused(changed, "lifetime");
-        changed = Json{{"name", "data"}, {"size", 16}, {"host_source", "scene_lights_v2"}};
-        refused(changed, "host_source");
-        changed = Json{{"name", "data"}, {"size", 16}, {"host_source", "runtime_f32"}, {"index_buffer", true},
-                       {"initial_f32", Json::array({1.0, 2.0, 3.0, 4.0})}};
-        refused(changed, "index_buffer");
-        changed = Json{{"name", "data"}, {"size", 16}, {"command_layout", "compute_dispatch"}};
-        refused(changed, "host_source");
-        changed = Json{{"name", "data"}, {"size", 16}, {"host_source", "view_family_matrices_v1"},
-                       {"view_family", "$project/capture"}};
-        refused(changed, "host_source");
-        changed = selection;
-        changed["name"] = "data";
-        refused(changed, "size");
+        const Json data{{"size", 16}};
+        refused(data, {{"size", 32}}, "size");
+        refused(data, {{"size", 16}, {"lifetime", "transient"}}, "lifetime");
+        refused(data, {{"size", 16}, {"index_buffer", true}}, "index_buffer");
+        refused(data, {{"size", 16}, {"command_layout", "compute_dispatch"}}, "command_layout");
+        refused({{"size", 16}, {"host_source", "scene_lights_v2"}}, {{"size", 16}, {"host_source", "runtime_f32"}},
+                "host_source");
+        refused({{"size", 64}, {"host_source", "view_family_matrices_v1"}, {"view_family", "$project/a"}},
+                {{"size", 64}, {"host_source", "view_family_matrices_v1"}, {"view_family", "$project/b"}},
+                "view_family");
+        const auto tiled = [](std::uint32_t tile) {
+            return Json{{"size_from_extent",
+                         {{"resource", "lit_color"}, {"tile_width", tile}, {"tile_height", 8},
+                          {"header_bytes", 0}, {"bytes_per_tile", 4}}}};
+        };
+        refused(tiled(8), tiled(16), "size_from_extent");
+        const auto contents = [](float value) {
+            return Json{{"size", 4}, {"host_source", "runtime_f32"}, {"initial_f32", Json::array({value})}};
+        };
+        refused(contents(0.5f), contents(0.25f), "initial_f32");
+        // +0.0 and -0.0 are equal floats and different contents.
+        refused(contents(0.0f), contents(-0.0f), "initial_f32");
+        // Agreeing, the resolved contents' bits are the same either way.
+        const auto agreed = resolve(contents(-0.0f), contents(-0.0f), reversed);
+        REQUIRE(agreed.buffers.size() == 1);
+        CHECK(bitsOf(agreed.buffers.front().initial_f32) == std::vector<std::uint32_t>{0x80000000u});
+        CHECK(agreed.buffers.front().host_source == FrameGraphHostBufferSource::runtime_f32);
+        CHECK(agreed.variants[0].buffers == std::vector<std::size_t>{0});
+        CHECK(agreed.variants[1].buffers == std::vector<std::size_t>{0});
     }
 }
 
-TEST_CASE("RC-3c2a a snapshot copy is sized by the images' extent rule",
+TEST_CASE("RC-3c2a a snapshot copy is sized from its destination as the generation resolves it",
           "[generation-resources][rc3c2a][snapshot]") {
-    // (i) A third of the display's 1920x1080 is 640x360 by the float rule the
-    // image is made with (the parse's own double arithmetic made 639x359).
-    const auto config = Json::parse(R"json({
-      "render_targets": [
-        {"name": "display", "format_class": "display", "width": 1920, "height": 1080,
-         "extent_scale": 1.0, "format": "B8G8R8A8_SRGB", "usage": ["COLOR_ATTACHMENT", "SAMPLED"]},
-        {"name": "src", "extent_scale": 0.3333333333, "format": "R8G8B8A8_UNORM",
-         "usage": ["COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"]},
-        {"name": "copy", "extent_scale": 0.3333333333, "format": "R8G8B8A8_UNORM",
-         "usage": ["COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_DST"]}],
-      "rendering_passes": [{"name": "main", "passes": [
-        {"name": "fill", "type": "fullscreen", "output": {"color": [{"target": "src"}], "depth": null}},
-        {"name": "snap", "type": "snapshot_copy", "source": "src", "destination": "copy",
-         "snapshot_after": "fill"}]}]})json");
-    const auto ir = parseRenderGraph(config, PassFieldOwnershipCapabilities{});
-    const auto &snapshot = std::get<SnapshotNodeInfo>(ir.graphs.at(0).nodes.at(1).info);
-    CHECK(snapshot.byte_size == std::size_t{640} * 360 * 4);
-    const std::array one{GenerationResourceVariant{.name = "flat", .render_graph = &ir}};
-    CHECK(imageOf(resolveGenerationResources(one, {1920, 1080}), "copy").extent ==
+    // One base, the output's: (i) a third of 1920x1080 is 640x360 by the
+    // float rule the image is made with (the parse's own double arithmetic
+    // made 639x359); and a copy sized from a small fixed display image
+    // before is now the image's own size at the output (16,384 -> 3,686,400
+    // bytes at 1280x720).
+    const auto config = [](Json display_size) {
+        Json display{{"name", "display"}, {"format_class", "display"}, {"extent_scale", 1.0},
+                     {"format", "B8G8R8A8_SRGB"}, {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}};
+        display.update(display_size);
+        return Json{
+            {"render_targets",
+             Json::array({display,
+                          image("src", {{"extent_scale", 0.3333333333},
+                                        {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"})}}),
+                          image("copy", {{"extent_scale", 0.3333333333},
+                                         {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_DST"})}}),
+                          image("full_src", {{"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"})}}),
+                          image("full", {{"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_DST"})}})})},
+            {"rendering_passes",
+             Json::array({Json{{"name", "main"},
+                               {"passes",
+                                Json::array({Json{{"name", "fill"}, {"type", "fullscreen"},
+                                                  {"output", {{"color", Json::array({Json{{"target", "src"}}})},
+                                                              {"depth", nullptr}}}},
+                                             Json{{"name", "snap"}, {"type", "snapshot_copy"}, {"source", "src"},
+                                                  {"destination", "copy"}, {"snapshot_after", "fill"}},
+                                             Json{{"name", "fill_full"}, {"type", "fullscreen"},
+                                                  {"output", {{"color", Json::array({Json{{"target", "full_src"}}})},
+                                                              {"depth", nullptr}}}},
+                                             Json{{"name", "snap_full"}, {"type", "snapshot_copy"},
+                                                  {"source", "full_src"}, {"destination", "full"},
+                                                  {"snapshot_after", "fill_full"}}})}}})}};
+    };
+    const auto finalized = [](const Json &document, ResolvedResourceExtent output) {
+        TargetPlanningPolicy planning;
+        return finalizeRenderGraph(parseRenderGraph(document, PassFieldOwnershipCapabilities{}),
+                                   FinalizeRenderGraphRequest{.output_extent = output}, planning);
+    };
+    const auto bytes = [](const RenderGraphIR &ir, std::size_t node) {
+        return std::get<SnapshotNodeInfo>(ir.graphs.at(0).nodes.at(node).info).byte_size;
+    };
+    const auto at_1080 = finalized(config({{"width", 1920}, {"height", 1080}}), {1920, 1080});
+    CHECK(bytes(at_1080, 1) == std::size_t{640} * 360 * 4);
+    CHECK(imageOf(resolveDeclaredGenerationResources(at_1080, {1920, 1080}), "copy").extent ==
           ResolvedResourceExtent{640, 360});
+    const auto small_display = finalized(config({{"width", 64}, {"height", 64}}), {1280, 720});
+    CHECK(bytes(small_display, 3) == std::size_t{1280} * 720 * 4);
+    CHECK(imageOf(resolveDeclaredGenerationResources(small_display, {1280, 720}), "full").extent ==
+          ResolvedResourceExtent{1280, 720});
+    // A revision before finalize holds no size.
+    CHECK(bytes(parseRenderGraph(config({{"width", 64}, {"height", 64}}), PassFieldOwnershipCapabilities{}), 3) == 0);
 }
 
 } // namespace Pelican

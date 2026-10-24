@@ -1117,6 +1117,26 @@ TEST_CASE("WP180 preview precompile resolves presets through the shared boundary
         {"include", {"preview_selected"}},
         {"exclude", {"preview_hidden"}},
     };
+    // RC-3c2a: the flat variant the registration compiles beside the preview
+    // passes its resource checks in the compiler program: a material pass
+    // draws its declared outputs over a depth target, at the output's
+    // resolution (the display it draws to is the output).
+    auto &scene = preview_config["rendering_passes"][0]["passes"][0];
+    scene["resolution_domain"] = "output";
+    scene["material_contract"] = "forward_opaque_v1";
+    scene["material_outputs"] = {
+        {"schema", "pelican.material_outputs"},
+        {"version", 1},
+        {"name", "wp180.outputs"},
+        {"outputs", Json::array({{{"name", "color"}, {"type", "vec4"}, {"source", "custom"}}})},
+    };
+    scene["output"]["depth"] = "preview_depth";
+    preview_config["render_targets"] = Json::array({{
+        {"name", "preview_depth"},
+        {"extent_scale", 1.0},
+        {"format", "D32_SFLOAT"},
+        {"usage", Json::array({"DEPTH_STENCIL_ATTACHMENT"})},
+    }});
     const auto preset = Json{
         {"schema", "pelican.render_pipeline"},
         {"version", 1},

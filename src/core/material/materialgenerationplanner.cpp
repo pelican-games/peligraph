@@ -124,9 +124,9 @@ defaultMaterialPipelineRenderingContract(
     if (shader_contract ==
         MaterialShaderContract::forward_scene_color_v1) {
         result.color_formats.push_back(
-            forwardMaterialPassColorAttachmentFormat);
+            forwardMaterialPassColorAttachmentFormat());
     } else {
-        const auto &formats =
+        const auto formats =
             materialPassColorAttachmentFormats(
                 GET_MODULE(RenderingPassContainer)
                     .isFeatureEnabled("hdr"));
@@ -134,7 +134,7 @@ defaultMaterialPipelineRenderingContract(
             formats.begin(), formats.end());
     }
     result.depth_format =
-        materialPassDepthAttachmentFormat;
+        materialPassDepthAttachmentFormat();
     result.rasterization_samples = samples;
     return result;
 }

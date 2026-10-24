@@ -2,6 +2,8 @@
 
 #include "graphcomposition.hpp"
 
+#include <algorithm>
+#include <bit>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -48,6 +50,17 @@ std::string_view frameGraphBufferCommandLayoutName(
     }
     throw std::runtime_error(
         "unknown frame-graph buffer command layout");
+}
+
+bool FrameGraphBufferDefinition::operator==(const FrameGraphBufferDefinition &other) const {
+    return name == other.name && size == other.size && persistent == other.persistent &&
+           host_source == other.host_source && extent_size == other.extent_size &&
+           command_layout == other.command_layout && host_view_family == other.host_view_family &&
+           index_buffer == other.index_buffer && initial_f32.size() == other.initial_f32.size() &&
+           std::equal(initial_f32.begin(), initial_f32.end(), other.initial_f32.begin(),
+                      [](float left, float right) {
+                          return std::bit_cast<std::uint32_t>(left) == std::bit_cast<std::uint32_t>(right);
+                      });
 }
 
 namespace {

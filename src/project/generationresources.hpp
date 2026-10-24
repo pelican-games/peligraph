@@ -86,10 +86,9 @@ struct ImagePlacement {
 };
 
 // One runtime variant: its final IR (the config's images and buffers), its
-// placements (one per config image; none: each image as declared --
-// single-sample, materialized, unaliased, its declared format and layers),
-// and the images whose layer count a runtime view count decides (the shadow
-// view families'; their layers here are the plan's, a static floor).
+// placements (exactly one per config image), and the images whose layer
+// count a runtime view count decides (the shadow view families'; their
+// layers here are the plan's, a static floor).
 struct GenerationResourceVariant {
     std::string name;
     const RenderGraphIR *render_graph = nullptr;
@@ -149,10 +148,10 @@ struct GenerationResources {
 // left has two members or more and one contract. Buffers of one name must
 // agree in every field. Refuses by name:
 //   render_graph.image_variant_conflict@1   {resource, field, variants}
-//       field: format | mip_levels | dimension | extent | samples | history
+//       field: format | mip_levels | dimension | extent | samples | history | source
 //   render_graph.image_placement_invalid@1  {variant, resource, reason}
-//       a placement of no config image, a config image without one, or one
-//       of an image twice
+//       a placement of no config image, a config image without one (no
+//       placements at all included), or one of an image twice
 //   render_graph.alias_group_invalid@1      {group, reason, resource?}
 //       reason: member_count | contract
 //   render_graph.image_runtime_layers_invalid@1 {resource, reason}
@@ -164,6 +163,40 @@ struct GenerationResources {
 //       (requireBufferSizeContract) or overflows
 GenerationResources resolveGenerationResources(std::span<const GenerationResourceVariant> variants,
                                                ResolvedResourceExtent output_extent);
+
+// RC-3c2a: the resource checks of a pass, from its IR uses and the
+// generation's description (the values the GPU registration takes), before
+// anything is registered:
+//   render_graph.image_usage_missing@1 {graph, node, resource, usage}
+//       an attachment without COLOR_ATTACHMENT / DEPTH_STENCIL_ATTACHMENT, a
+//       shader read (input, screen input, surface resource, image material
+//       resource) without SAMPLED or a tile-local INPUT_ATTACHMENT
+//   render_graph.history_input_invalid@1 {graph, node, resource}
+//       an @history read of an image that keeps no history
+//   render_graph.attachment_resource_invalid@1 {graph, node, resource, reason}
+//       reason: subresource | extent | samples (the pass's attachments are
+//       of one extent, at their mip, and one sample count; the swapchain's
+//       is 1)
+//   render_graph.snapshot_invalid@1 {graph, node, resource, reason}
+//       reason: unknown_resource | usage | format | extent
+//   render_graph.material_input_invalid@1 {graph, node, resource, port, detail}
+//       a screen input or surface resource whose image's type its contract
+//       does not take (materialInputSourceType)
+//   render_graph.material_attachment_invalid@1 {graph, node, reason, ...}
+//       reason: outputs_require_contract | scene_color_in_deferred |
+//       color_count {expected} | requires_depth | swapchain_color |
+//       numeric_class {resource, output} | color_format {resource,
+//       expected} | depth_format {resource, expected} | unknown_resource
+// Compute tasks, acceleration-structure builds and anchors are not checked
+// here (a compute task's buffers: validateComputeTaskBufferContracts).
+void validateRenderNodeResources(const GraphIR &graph, const NodeIR &node, const GenerationResources &resources);
+void validateRenderGraphResources(const RenderGraphIR &render_graph, const GenerationResources &resources);
+
+// The editor's question, by its own entry: one variant of `render_graph`
+// with each image as declared (single-sample, materialized, unaliased, its
+// declared format and layers) -- no physical plan.
+GenerationResources resolveDeclaredGenerationResources(const RenderGraphIR &render_graph,
+                                                      ResolvedResourceExtent output_extent);
 
 // The images whose layer count a runtime view count decides: the targets of
 // the directional, point and spot shadow contracts (their view families

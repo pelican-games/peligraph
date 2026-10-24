@@ -7950,7 +7950,8 @@ TEST_CASE("G-1 a material pass of the wrong shape is refused in the parser's wor
              {"pass", std::move(pass)}});
         INFO(rejected.dump());
         REQUIRE(rejected.at("status") == "rejected");
-        CHECK(rejected.at("error").at("code") == "render_pipeline_preflight_failed");
+        // RC-3c2a: the pass's resource check, by name.
+        CHECK(rejected.at("error").at("code") == "render_graph.material_attachment_invalid@1");
         CHECK(rejected.at("error").at("message").get<std::string>().find(words) !=
               std::string::npos);
         harness.service->commitPending();
@@ -7964,17 +7965,18 @@ TEST_CASE("G-1 a material pass of the wrong shape is refused in the parser's wor
                                Json::array({"gbuffer_albedo", "gbuffer_normal",
                                             "gbuffer_material"}),
                                "g1_depth"),
-                "requires exactly 5 color outputs");
+                R"({"expected":5,"graph":"main_render","node":"g1_gbuffer","reason":"color_count"})");
     }
     SECTION("a material pass drawing to the swapchain") {
         refused(g1MaterialPass("g1_swapchain", "forward_opaque_v1",
                                Json::array({"swapchain"}), "g1_depth"),
-                "swapchain");
+                // The composed candidate draws to the display image.
+                R"("node":"g1_swapchain","reason":"color_format","resource":"display")");
     }
     SECTION("a material pass with no depth") {
         refused(g1MaterialPass("g1_depthless", "forward_opaque_v1",
                                Json::array({"g1_color"}), nullptr),
-                "requires depth output");
+                R"("node":"g1_depthless","reason":"requires_depth")");
     }
     SECTION("a raster pass is still not authored here") {
         const auto rejected = harness.service->addAuthoredPass(

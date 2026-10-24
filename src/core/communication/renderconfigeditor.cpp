@@ -713,8 +713,12 @@ void validateAuthoredMaterialPass(const Json &config, const std::string &graph,
                 .at("render_targets");
     }
     const auto render_graph = parseRenderGraph(resolved, buildPassFieldOwnershipCapabilities());
-    const std::array variant{GenerationResourceVariant{.name = "editor", .render_graph = &render_graph}};
-    const auto resources = resolveGenerationResources(variant, screen);
+    const auto resources = resolveDeclaredGenerationResources(render_graph, screen);
+    // The pass's resource checks, as the compiler's completion runs them.
+    if (const auto *graph_ir = findGraph(render_graph, graph)) {
+        for (const auto &node : graph_ir->nodes)
+            if (node.name == pass_name) validateRenderNodeResources(*graph_ir, node, resources);
+    }
     std::unordered_set<std::string> buffers;
     for (const auto &buffer : render_graph.buffers) buffers.insert(buffer.name);
     const RenderTargetNameResolver names{[&](const std::string &name) {

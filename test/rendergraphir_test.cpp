@@ -135,6 +135,8 @@ Outcome run(const Json &config, const DeviceFacts &device = {},
                                          .named = finalize->named,
                                          .ray_tracing_project = finalize->ray_tracing_project,
                                          .compute_task_suffix = finalize->suffix,
+                                         // RC-3c2a: a snapshot copy is sized at the output.
+                                         .output_extent = {1920, 1080},
                                      },
                                      planning);
             outcome.planning = planning.graphs;
@@ -997,14 +999,6 @@ TEST_CASE("RC-3c1b refusals: what a revision must pass, parseRenderGraph refuses
          [](Json &c) { c["rendering_passes"][0]["buffers"] = Json::array({{{"name", "local"}}}); },
          "render_graph.graph_declaration_unsupported@1", "field", "buffers"},
         {"a buffer named swapchain", [](Json &c) { c["buffers"][0]["name"] = "swapchain"; }, "render_graph.buffer_invalid@1", "resource", "swapchain"},
-        {"a snapshot copy of a format outside the copy contract",
-         [](Json &c) {
-             c["render_targets"].push_back({{"name", "ids"}, {"extent_scale", 1.0}, {"width", 8}, {"height", 8},
-                                            {"format", "R32_UINT"}, {"usage", {"COLOR_ATTACHMENT", "TRANSFER_DST"}}});
-             pass(c, 2) = {{"name", "copy"}, {"type", "snapshot_copy"}, {"source", "color"},
-                           {"destination", "ids"}, {"snapshot_after", "draw"}};
-         },
-         "render_graph.snapshot_size_unavailable@1", "resource", "ids"},
         {"frame_node_order is not an object", [](Json &c) { c["frame_node_order"] = 1; }, "render_graph.frame_node_order_invalid@1", "reason", "not_an_object"},
         {"a graph with an empty name", [](Json &c) { c["rendering_passes"][0]["name"] = ""; }, "render_graph.graph_name_invalid@1", "reason", "empty"},
         {"two graphs share a name",
@@ -1088,6 +1082,16 @@ TEST_CASE("RC-3c1b refusals: what only the final revision must pass, finalizeRen
         {"frame_node_order naming a node the graph has not",
          [](Json &c) { c["frame_node_order"] = {{"main", {"draw", "ghost"}}}; },
          "render_graph.frame_node_order_unknown@1", "node", "ghost"},
+        // RC-3c2a: a snapshot copy is sized in the final revision, at the
+        // output's extent.
+        {"a snapshot copy of a format outside the copy contract",
+         [](Json &c) {
+             c["render_targets"].push_back({{"name", "ids"}, {"extent_scale", 1.0}, {"width", 8}, {"height", 8},
+                                            {"format", "R32_UINT"}, {"usage", {"COLOR_ATTACHMENT", "TRANSFER_DST"}}});
+             pass(c, 2) = {{"name", "copy"}, {"type", "snapshot_copy"}, {"source", "color"},
+                           {"destination", "ids"}, {"snapshot_after", "draw"}};
+         },
+         "render_graph.snapshot_size_unavailable@1", "resource", "ids"},
     };
     for (const auto &refusal : cases) {
         DYNAMIC_SECTION(refusal.name) {
@@ -1174,23 +1178,22 @@ TEST_CASE("RC-3c1b IR: two unordered writers wait for the final frame_node_order
 TEST_CASE("RC-3c1b IR: a fixed-size image with a class and no format waits for the format",
           "[rendergraphir][rc3c1b][format-class]") {
     // The same 64x64 image with its format, and with its class only: the
-    // first has its snapshot bytes, the second waits on the format (it is
-    // neither refused nor sized).
+    // second waits on the format (it is not refused before the final
+    // revision; RC-3c2a: a snapshot is sized by finalize).
     auto config = refusalBase();
     config["render_targets"][0]["width"] = 64;
     config["render_targets"][0]["height"] = 64;
     const auto with_format = run(normalizeRenderingJson(config));
     INFO(with_format.refusal);
     REQUIRE(with_format.stage.empty());
-    CHECK(with_format.ir->images.at(0).snapshot_copy_bytes == std::optional<std::size_t>{64 * 64 * 4});
+    CHECK(snapshotCopyBytes(with_format.ir->images.at(0), {1920, 1080}) == std::size_t{64 * 64 * 4});
     config["render_targets"][0].erase("format");
     config["render_targets"][0]["format_class"] = "scene";
     const auto class_only = run(normalizeRenderingJson(config));
     INFO(class_only.refusal);
     REQUIRE(class_only.stage.empty());
     CHECK(class_only.ir->images.at(0).format_unresolved);
-    CHECK_FALSE(class_only.ir->images.at(0).snapshot_copy_bytes);
-    CHECK(class_only.ir->images.at(0).snapshot_extent_pending);
+    CHECK(snapshotCopyBytes(class_only.ir->images.at(0), {1920, 1080}) == 0);
     // The final revision needs the format.
     CHECK(run(normalizeRenderingJson(config), {}, Finalize{}).code == "render_graph.image_format_unresolved@1");
 }

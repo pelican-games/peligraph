@@ -1,4 +1,5 @@
 #include "registered_render_targets_test_support.hpp"
+#include "../src/project/generationresources.hpp"
 #include <catch2/generators/catch_generators.hpp>
 #include "../src/core/renderingpass/fullscreenpassinfojsonparser.hpp"
 #include "../src/core/renderingpass/genericrasterpassinfojsonparser.hpp"
@@ -3917,7 +3918,7 @@ TEST_CASE(
 
 TEST_CASE("material pass contracts parse and filter independently of local pass ids",
           "[renderingpass][material-routing]") {
-    REQUIRE(forwardMaterialPassColorAttachmentFormat ==
+    REQUIRE(forwardMaterialPassColorAttachmentFormat() ==
             vk::Format::eR16G16B16A16Sfloat);
     PassDefinition pass_def;
     pass_def.name = "forward_opaque";
@@ -4019,32 +4020,6 @@ TEST_CASE(
             GlobalRenderTargetId{index});
     }
     pass.output_depth = GlobalRenderTargetId{7};
-    const RenderTargetMetadataResolver metadata{
-        [](GlobalRenderTargetId id) {
-            return RenderTargetMetadata{
-                .name =
-                    id.value == 7
-                        ? "depth"
-                        : "gbuffer_" +
-                              std::to_string(id.value),
-                .usage =
-                    id.value == 7
-                        ? ImageUsageBit::
-                              depth_stencil_attachment
-                        : ImageUsageBit::
-                              color_attachment,
-                .format =
-                    id.value == 7
-                        ? ImageFormat::d16_unorm
-                        : id.value == 5
-                              ? ImageFormat::r32_uint
-                              : ImageFormat::r16g16b16a16_sfloat,
-                .extent = {1280, 720},
-            };
-        }};
-    REQUIRE_NOTHROW(
-        validateMaterialPassAttachments(
-            pass, metadata));
     REQUIRE(
         pass.colorClearValue(5).numeric_class ==
         MaterialOutputNumericClass::unsigned_integer);
@@ -4053,22 +4028,44 @@ TEST_CASE(
             .vulkan()
             .uint32[3] == 1u);
 
-    pass.output_color.pop_back();
+    // RC-3c2a: the attachments are the resource check's, on the IR and the
+    // generation's description.
+    const auto checked = [&](const nlohmann::json &outputs, std::size_t colors) {
+        auto targets = nlohmann::json::array();
+        auto color = nlohmann::json::array();
+        for (std::size_t index = 0; index < 7; ++index) {
+            targets.push_back({{"name", "gbuffer_" + std::to_string(index)},
+                               {"extent_scale", 1.0},
+                               {"format", index == 5 ? "R32_UINT" : "R16G16B16A16_SFLOAT"},
+                               {"usage", nlohmann::json::array({"COLOR_ATTACHMENT"})}});
+            if (index < colors) color.push_back("gbuffer_" + std::to_string(index));
+        }
+        targets.push_back({{"name", "depth"}, {"extent_scale", 1.0}, {"format", "D16_UNORM"},
+                           {"usage", nlohmann::json::array({"DEPTH_STENCIL_ATTACHMENT"})}});
+        const nlohmann::json config{
+            {"render_targets", targets},
+            {"rendering_passes",
+             nlohmann::json::array({{{"name", "main"},
+                                     {"passes", nlohmann::json::array({{{"name", "extended_geometry"},
+                                                                        {"type", "material"},
+                                                                        {"material_contract", "deferred_geometry_v1"},
+                                                                        {"material_outputs", outputs},
+                                                                        {"output", {{"color", color}, {"depth", "depth"}}}}})}}})}};
+        const auto ir = TestSupport::renderGraphOf(config);
+        validateRenderGraphResources(ir, resolveDeclaredGenerationResources(ir, {1280, 720}));
+    };
+    REQUIRE_NOTHROW(checked(declaration, 7));
     REQUIRE_THROWS_WITH(
-        validateMaterialPassAttachments(pass, metadata),
+        checked(declaration, 6),
         Catch::Matchers::ContainsSubstring(
-            "output.color count must match"));
+            R"(render_graph.material_attachment_invalid@1 {"expected":7,"graph":"main","node":"extended_geometry","reason":"color_count"})"));
 
     auto invalid = declaration;
     invalid["outputs"][0]["type"] = "uint";
     invalid["outputs"][0]["source"] = "custom";
-    pass.output_color.push_back(GlobalRenderTargetId{6});
-    pass.materialInfo().output_schema =
-        parseMaterialOutputSchema(invalid);
     REQUIRE_THROWS_WITH(
-        validateMaterialPassAttachments(pass, metadata),
-        Catch::Matchers::ContainsSubstring(
-            "numeric class is incompatible"));
+        checked(invalid, 7),
+        Catch::Matchers::ContainsSubstring(R"("reason":"numeric_class","resource":"gbuffer_0")"));
 }
 
 TEST_CASE(
@@ -4098,37 +4095,25 @@ TEST_CASE(
     declaration["outputs"][0]["name"] = "lit";
     declaration["outputs"][0]["source"] =
         "lighting.scene_color";
-    PassDefinition pass;
-    pass.name = "deferred";
-    pass.pass_info = MaterialPassInfo{};
-    pass.materialInfo().contract =
-        MaterialPassContract::deferred_geometry_v1;
-    pass.materialInfo().output_schema =
-        parseMaterialOutputSchema(declaration);
-    pass.output_color = {GlobalRenderTargetId{0}};
-    pass.output_depth = GlobalRenderTargetId{1};
-    const RenderTargetMetadataResolver metadata{
-        [](GlobalRenderTargetId id) {
-            return RenderTargetMetadata{
-                .name =
-                    id.value == 0 ? "color" : "depth",
-                .usage =
-                    id.value == 0
-                        ? ImageUsageBit::
-                              color_attachment
-                        : ImageUsageBit::
-                              depth_stencil_attachment,
-                .format =
-                    id.value == 0
-                        ? ImageFormat::r16g16b16a16_sfloat
-                        : ImageFormat::d32_sfloat,
-                .extent = {1, 1},
-            };
-        }};
+    // RC-3c2a: the resource check, on the IR and the description.
+    const nlohmann::json config{
+        {"render_targets",
+         nlohmann::json::array({{{"name", "color"}, {"extent_scale", 1.0}, {"format", "R16G16B16A16_SFLOAT"},
+                                 {"usage", nlohmann::json::array({"COLOR_ATTACHMENT"})}},
+                                {{"name", "depth"}, {"extent_scale", 1.0}, {"format", "D32_SFLOAT"},
+                                 {"usage", nlohmann::json::array({"DEPTH_STENCIL_ATTACHMENT"})}}})},
+        {"rendering_passes",
+         nlohmann::json::array({{{"name", "main"},
+                                 {"passes", nlohmann::json::array({{{"name", "deferred"},
+                                                                    {"type", "material"},
+                                                                    {"material_contract", "deferred_geometry_v1"},
+                                                                    {"material_outputs", declaration},
+                                                                    {"output", {{"color", nlohmann::json::array({"color"})},
+                                                                                {"depth", "depth"}}}}})}}})}};
+    const auto ir = TestSupport::renderGraphOf(config);
     REQUIRE_THROWS_WITH(
-        validateMaterialPassAttachments(pass, metadata),
-        Catch::Matchers::ContainsSubstring(
-            "cannot use lighting.scene_color"));
+        validateRenderGraphResources(ir, resolveDeclaredGenerationResources(ir, {1, 1})),
+        Catch::Matchers::ContainsSubstring(R"("reason":"scene_color_in_deferred")"));
 }
 
 TEST_CASE(
