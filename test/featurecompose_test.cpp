@@ -5786,7 +5786,8 @@ TEST_CASE("LP-1a a loop's insert places its whole expansion as one run",
 TEST_CASE("LP-1a loop refusals are named", "[render-feature][graph-composition][lp1a]") {
     using Json = nlohmann::json;
     const auto loop_graph = [](const Json &parameters, const Json &definitions = nullptr,
-                               const Json &inputs = Json::object(), const Json &outputs = Json::array()) {
+                               const Json &inputs = nlohmann::json::object(),
+                               const Json &outputs = nlohmann::json::array()) {
         return lp1aGraph(Json::array({lp1aLoop("steps", parameters, inputs, outputs)}), definitions);
     };
     const auto expect = [](const Json &document, const std::string &code, const Json &fields) {
@@ -6244,14 +6245,14 @@ TEST_CASE("RS-15 a loop body image takes its width and height from an expression
 TEST_CASE("RS-15 log2 rounds down, and mip_levels_of a fixed-size full chain is static",
           "[render-feature][graph-composition][lp1b][rs15]") {
     using Json = nlohmann::json;
-    const auto counted = [](const Json &count, const Json &targets = Json::array()) {
+    const auto counted = [](const Json &count, const Json &targets = nlohmann::json::array()) {
         auto loop = lp1bChainLoop(0);
         loop["parameters"]["over"]["range"]["count"] = count;
         auto document = lp1bChainGraph(loop, {{"chain_body", lp1bChainBody()}});
         if (!targets.empty()) document["rendering"]["render_targets"] = targets;
         return document;
     };
-    const auto elements = [&](const Json &count, const Json &targets = Json::array()) {
+    const auto elements = [&](const Json &count, const Json &targets = nlohmann::json::array()) {
         return lp1aNamesUnder(lp0aCompose(counted(count, targets)).config, "chain/").size();
     };
     CHECK(elements({{"$expr", "log2(256)"}}) == 8);
@@ -8610,7 +8611,7 @@ TEST_CASE("RS-14 a numbered input's sampling and subresource reach the pass as i
         for (const auto &[key, value] : extra.items()) port[key] = value;
         return port;
     };
-    const auto numbered = [&](std::int64_t index, Json extra = Json::object()) {
+    const auto numbered = [&](std::int64_t index, Json extra = nlohmann::json::object()) {
         extra["binding"] = "input";
         extra["input_index"] = index;
         return read(extra);
@@ -9342,7 +9343,8 @@ TEST_CASE("RS-9 a render node without the parameters its op requires is refused 
 TEST_CASE("RS-15 render.scalar, value.constant and value.input without their parameters are refused by name",
           "[render-feature][graph-composition][rs9][rs15]") {
     using Json = nlohmann::json;
-    const auto refusal = [](const std::string &op, std::optional<Json> parameters, Json inputs = Json::object()) {
+    const auto refusal = [](const std::string &op, std::optional<Json> parameters,
+                            Json inputs = nlohmann::json::object()) {
         auto document = lp0bGraph({}, Json::object());
         document["nodes"].push_back({{"id", "source"}, {"op", "value.input"}, {"parameters", {{"name", "time"}}},
                                      {"outputs", {"value"}}});
@@ -9561,7 +9563,7 @@ TEST_CASE("RS-13 the rendering section reads a loop's output as <loop>.<output>"
     auto &present = document.at("rendering").at("rendering_passes").at(0).at("passes").at(0);
     REQUIRE(present.at("name") == "present");
     document["definitions"]["paint"] = lp1aPaintBody();
-    const auto graph = [&](std::int64_t count, const Json &outputs = Json::array({"image"})) {
+    const auto graph = [&](std::int64_t count, const Json &outputs = nlohmann::json::array({"image"})) {
         auto with = document;
         with["nodes"] = Json::array({lp1aLoop("steps", lp1aRange(count), Json::object(), outputs)});
         return with;
@@ -9615,7 +9617,7 @@ TEST_CASE("RS-13 the rendering section reads a loop's output as <loop>.<output>"
         lp6RequireInputsProduced(composed);
     }
     SECTION("what names no loop output is refused by name") {
-        const auto refusal = [&](const std::string &reference, const Json &outputs = Json::array({"image"})) {
+        const auto refusal = [&](const std::string &reference, const Json &outputs = nlohmann::json::array({"image"})) {
             auto with = graph(3, outputs);
             rs7AddMaterialPass(with);
             with.at("rendering").at("rendering_passes").at(0).at("passes").at(0)["input"] = Json::array({reference});
