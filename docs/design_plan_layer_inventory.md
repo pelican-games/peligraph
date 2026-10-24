@@ -43,7 +43,7 @@
 | 2-3 | 物理計画の固定ルート(pin / freeze / complete) | **方針決定(2026-10-22): 固定のルートを `target_planning` の policy に一本化する**。細部は後で詰める | 同じ | 語彙、`require` / `prefer`、優先順位(§2-3) |
 | 2-4 | `declared_bytes` = 0 | **埋める**(2026-10-22) | 同じ(RT メモ段 0 と同じ WP、v0 可) | なし |
 | 2-5 | anchor と順序の二重化 | **段タグ + canvas のフィルター階層へ**(段メモ) | 同じ | 段メモ §7 の残り 1 件 |
-| 2-6 | 段階 2 の typed policy | **強化する。core の JSON 二重 parse を解く**([design_stage2_typed_pipeline.md](design_stage2_typed_pipeline.md)) | 同じ | 段メモ側の未決 3 件(同メモ §6) |
+| 2-6 | 段階 2 の typed policy | **強化する。core の JSON 二重 parse を解く**([design_render_graph_ir.md](design_render_graph_ir.md)。旧 [design_stage2_typed_pipeline.md](design_stage2_typed_pipeline.md) は置き換え済み) | 同じ | 段メモ側の未決 3 件(同メモ §6) |
 | 2-7 | 文書のずれ | **メモに残す** | 文書修正だけ | なし |
 
 

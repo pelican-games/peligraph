@@ -1,6 +1,8 @@
 # 段階 2 の強化: 計画用 graph を project で 1 回だけ作り、core はそれを受ける
 
 対象読者: エンジン担当(描画コンパイラ / renderer)。
+> **置き換え済み(2026-10-24)**: このメモは前提を 2 回誤った(「`CompiledRenderPipeline` に `logical_graph` が既にある」「計画用 graph を移すだけで挙動不変」)。現在の方針は [design_render_graph_ir.md](design_render_graph_ir.md)。以下は履歴。
+
 ステータス: 方針決定(2026-10-17。「段階 2 の強化と二重経路のリファクタは行う」)。**2026-10-24 に前提の誤りを直して書き直し**(利用者了承)。
 RC-3a / RC-3b / RC-4 として WP 化。
 前提: [design_plan_layer_inventory.md](design_plan_layer_inventory.md) 2-6、
