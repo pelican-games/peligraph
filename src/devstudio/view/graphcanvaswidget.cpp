@@ -1783,6 +1783,11 @@ void GraphCanvasScene::refreshLayerBands() {
         const QString text = layerBandText(name.toStdString());
         if (const auto found = bands.find(name); found != bands.end()) {
             if (found->second->text() == text) continue;
+            // A band whose text went empty goes, as a full redraw would leave none.
+            if (text.isEmpty()) {
+                delete found->second;
+                continue;
+            }
             found->second->setText(text);
             found->second->setBrush(GraphCanvasDrawing::layerBandColor(text, currentStudioTheme()));
             found->second->setToolTip(
