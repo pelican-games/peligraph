@@ -160,8 +160,8 @@ struct GenerationResources {
 //       history, is a cube or is read from a file
 //   render_graph.buffer_variant_conflict@1  {resource, field, variants}
 //   render_graph.buffer_invalid@1           {resource, field, reason}
-//       a size from an extent that breaks its size contract
-//       (requireBufferSizeContract) or overflows
+//       a size from an extent that names no config image (unknown_image),
+//       breaks its size contract (requireBufferSizeContract) or overflows
 GenerationResources resolveGenerationResources(std::span<const GenerationResourceVariant> variants,
                                                ResolvedResourceExtent output_extent);
 

@@ -531,7 +531,8 @@ compileDefaultVulkanVariant(
         logical.compiled_pipeline.target_planning);
 
     // RC-3c2a: the buffers are the IR's; their capacity is checked once the
-    // generation's resource description has sized them (the registration).
+    // generation's resource description has sized them
+    // (completeGenerationResources, after every compiler program).
     std::unordered_set<std::string> buffer_names;
     for (const auto &buffer : render_graph.buffers)
         buffer_names.insert(buffer.name);

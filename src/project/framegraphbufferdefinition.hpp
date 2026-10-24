@@ -116,7 +116,8 @@ std::uint64_t extentDerivedBufferBytes(
 // non-zero size, each command layout's command, the scene host sources'
 // records). parseRenderGraph checks a declared size; resolveGenerationResources
 // a size from an extent. Refuses render_graph.buffer_invalid@1 {resource,
-// field: size, reason}.
+// field: size, reason}, or {resource, field: initial_f32, reason:
+// count_mismatch} when initial_f32 does not fill the size.
 void requireBufferSizeContract(const FrameGraphBufferDefinition &buffer);
 
 // A compute task's indirect dispatch: the buffer holding the command and the

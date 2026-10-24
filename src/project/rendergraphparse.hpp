@@ -40,6 +40,10 @@ namespace Pelican {
 //   render_graph.resource_reference_invalid@1 {graph, node, field, resource}
 //   render_graph.footprint_invalid@1      {graph, node, field, resource, reason}
 //   render_graph.image_invalid@1          {resource?, field, reason}
+//   render_graph.snapshot_size_unavailable@1 {graph, node, resource}  a
+//                                                  snapshot copy into a
+//                                                  resolved format the copy
+//                                                  contract does not cover
 //   render_graph.buffer_invalid@1         {resource?, field?, reason}  RC-3c2a:
 //                                                  the whole declaration
 //                                                  (size, size_from_extent of
