@@ -9823,14 +9823,18 @@ TEST_CASE("PS-1 a once node that writes a transient resource or reads one that c
         ps1Node(document, "pre")["parameters"]["schedule"] = "once";
         CHECK_NOTHROW(lp0aCompose(document));
     }
-    SECTION("a once pass reads a buffer the value graph derives from time") {
-        auto document = ps1Graph();
-        auto &value = ps1Node(document, "level_value");
-        value["op"] = "value.input";
-        value["parameters"] = {{"name", "time"}};
-        const auto [code, fields] = lp0aRefusal(document);
-        CHECK(code == "graph.once_reads_per_frame@1");
-        CHECK(fields == Json{{"node", "h0"}, {"input", "level"}});
+    SECTION("a once pass reads a buffer the value graph derives from a clock") {
+        // AT-1b: audio_time (AT-1) is a clock like the other three.
+        for (const auto *clock : {"time", "delta_time", "scene_time", "audio_time"}) {
+            INFO(clock);
+            auto document = ps1Graph();
+            auto &value = ps1Node(document, "level_value");
+            value["op"] = "value.input";
+            value["parameters"] = {{"name", clock}};
+            const auto [code, fields] = lp0aRefusal(document);
+            CHECK(code == "graph.once_reads_per_frame@1");
+            CHECK(fields == Json{{"node", "h0"}, {"input", "level"}});
+        }
     }
     SECTION("a schedule or lifetime the engine does not know is refused when edited") {
         auto document = ps1Graph();
