@@ -2,6 +2,7 @@
 
 #include "frameplanmodel.hpp"
 #include "graphcanvaslayerstack.hpp"
+#include "imageformat.hpp"
 #include "projectformat.hpp"
 #include "projectpathresolver.hpp"
 #include "rendereditcompletion.hpp"
@@ -7154,9 +7155,13 @@ std::string GraphCanvasModel::semanticLabel(std::string_view semantic) {
     return label;
 }
 
+// SDF-1: whether a format has a depth aspect, read from the engine's format
+// table (imageformat.hpp) rather than guessed from the name's first letter.
 bool GraphCanvasModel::depthFormat(std::string_view format) {
-    return format.size() > 2 && format.front() == 'D' &&
-           std::isdigit(static_cast<unsigned char>(format[1])) != 0;
+    const auto found = Pelican::findImageFormat(format);
+    if (!found) return false;
+    const auto aspect = Pelican::imageFormatAspect(*found);
+    return aspect == Pelican::ImageAspect::depth || aspect == Pelican::ImageAspect::depth_stencil;
 }
 
 std::vector<GraphCanvasImageType> GraphCanvasModel::imageTypes() const {
@@ -7766,10 +7771,7 @@ bool depthImageNode(const Json &node) {
     if (!node.is_object() || text(node, "op") != "render.image") return false;
     const auto parameters = node.value("parameters", Json::object());
     if (!parameters.is_object()) return false;
-    const auto format = text(parameters, "format");
-    if (format.starts_with("D16") || format.starts_with("D24") || format.starts_with("D32") ||
-        format.starts_with("X8_D24"))
-        return true;
+    if (GraphCanvasModel::depthFormat(text(parameters, "format"))) return true;
     const auto type = parameters.value("type", Json::object());
     return type.is_object() && text(type, "semantic") == "pelican.render.depth@1";
 }

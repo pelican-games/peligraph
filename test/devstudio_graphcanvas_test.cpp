@@ -5103,3 +5103,14 @@ TEST_CASE("JP-1 graphcanvas Japanese audio and image imports keep UTF-8 referenc
     CHECK(fs::exists(project / fs::path{u8"assets/audio/音声ソ表_2.wav"}));
     CHECK(fs::exists(project / fs::path{u8"assets/images/画像ソ表_2.png"}));
 }
+
+TEST_CASE("SDF-1 a depth image is told by the format table's aspect, not by the name's first letter", "[graph-canvas][sdf1]") {
+    CHECK(GraphCanvasModel::depthFormat("D32_SFLOAT"));
+    CHECK(GraphCanvasModel::depthFormat("D16_UNORM"));
+    CHECK(GraphCanvasModel::depthFormat("D24_UNORM_S8_UINT"));
+    CHECK_FALSE(GraphCanvasModel::depthFormat("R16G16B16A16_SFLOAT"));
+    CHECK_FALSE(GraphCanvasModel::depthFormat("B8G8R8A8_SRGB"));
+    // A D and a digit is not enough: the table does not know this name.
+    CHECK_FALSE(GraphCanvasModel::depthFormat("D9_NOT_A_FORMAT"));
+    CHECK_FALSE(GraphCanvasModel::depthFormat(""));
+}

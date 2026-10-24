@@ -543,26 +543,26 @@ filter も全 tree の
 
 編集側は 6 つの操作
 (`connectInput` / `disconnectInput` / `setNodeParameter` / `removeNode` / `setNodeLabel` / `addNode`)で、
-**どれも 1 回で 1 つの `edit_graph_document`** になります([submitOps](../../src/devstudio/model/graphcanvasmodel.cpp#L2351))。
+**どれも 1 回で 1 つの `edit_graph_document`** になります([submitOps](../../src/devstudio/model/graphcanvasmodel.cpp#L2352))。
 `addNodeOps()` だけは複数 op を返します —— 必須の scalar 入力を持つ操作は、未接続のままでは engine が受け取らないので、
-**同じ ops 列で `value.constant` を先に足して**そこへ繋ぎます([生成](../../src/devstudio/model/graphcanvasmodel.cpp#L3103))。
+**同じ ops 列で `value.constant` を先に足して**そこへ繋ぎます([生成](../../src/devstudio/model/graphcanvasmodel.cpp#L3104))。
 種の定数は後で本物の producer を繋いでも自動では消えません(記録された穴)。
 
 Graph タブの履歴の 1 項目(`GraphCanvasModel::HistoryEntry`)は、前向きの ops と逆の ops に加えて、それぞれと一緒に送る root の値 `params` / `inverse_params` を持ちます。
-Edit と Redo は `params`、Undo は `inverse_params` を ops の横に載せ、どちらも 1 つの `edit_graph_document` になります([選ぶ所](../../src/devstudio/model/graphcanvasmodel.cpp#L2777))。
-今これを使うのは palette の forward_opaque の material pass だけです。`params` は `material_route_default: "forward"` で、`inverse_params` には、最後の `get_graph_instances` で読んだ root の書かれた値(不在なら `null`)を入れます([入れる所](../../src/devstudio/model/graphcanvasmodel.cpp#L3696))。
+Edit と Redo は `params`、Undo は `inverse_params` を ops の横に載せ、どちらも 1 つの `edit_graph_document` になります([選ぶ所](../../src/devstudio/model/graphcanvasmodel.cpp#L2778))。
+今これを使うのは palette の forward_opaque の material pass だけです。`params` は `material_route_default: "forward"` で、`inverse_params` には、最後の `get_graph_instances` で読んだ root の書かれた値(不在なら `null`)を入れます([入れる所](../../src/devstudio/model/graphcanvasmodel.cpp#L3697))。
 
 engine 側は `requestedRouteDefault()` が `edit_graph_document` の `null` だけを「member を消す」と読みます(利用者向けは manual 第13章の「material の route の既定と、受け皿の無い material の拒否」)。
 ⚠ Qt の transport では「送らない」と「`null` を送る」を分ける必要があります。`requestEditGraphDocument` の route の引数は `QJsonValue` で、undefined なら param を付けず、`null` ならそのまま `null` を送ります([付けるか決める所](../../src/devstudio/view/graphcanvasreadcapability.cpp#L108))。
 文字列で受けると `null` が空文字になり、Undo の route の復元が黙って落ちます(UD-3 より前はこの形でした)。
 
-**履歴の基準を動かしてよいのは確認済みの commit だけです。**model は履歴を 1 つの digest(`history_digest_`)に結び、読んだ文書の digest がそれと違えば履歴を捨てます([判定](../../src/devstudio/model/graphcanvasmodel.cpp#L1488))。
+**履歴の基準を動かしてよいのは確認済みの commit だけです。**model は履歴を 1 つの digest(`history_digest_`)に結び、読んだ文書の digest がそれと違えば履歴を捨てます([判定](../../src/devstudio/model/graphcanvasmodel.cpp#L1489))。
 例外は、Studio のパネルが commit を確認した digest です。[`RenderConfigDigest`](../../src/devstudio/view/renderconfigdigest.hpp#L25) には観測の `publish` と別に [`publishCommitted`](../../src/devstudio/view/renderconfigdigest.hpp#L49) があり、RenderEditTicket の committed の道・Frame Plan・Pass Editor・Render Features・Graph タブの pass と fold の編集がこちらを呼びます。
 
 `publishCommitted` は購読者が文書を読み直す前に commit の購読者へ知らせ、Graph タブはそれを [`renderDocumentCommitted`](../../src/devstudio/model/graphcanvasmodel.hpp#L1570) で覚えます(render の履歴の戻しの `renderHistoryRestored` も同じ所に入ります)。次の読みの digest がそれと同じときだけ `history_digest_` を進め、違えば今までどおり捨てます。
 ⚠ 観測だけの `publish`(読んだ digest、reload で保った版の digest)をこの道に乗せないこと。外の書き手の版を「確認済み」と見なすと、その上で古い逆の ops が通ってしまいます。
 
-HistoryEntry は前後の graph の hash も持ちます。`before_graph` は送る時の graph([入れる所](../../src/devstudio/model/graphcanvasmodel.cpp#L2782))、`after_graph` は自分の commit を初めて読んだ時の graph、`after_source_digest` は commit の digest です。graph の hash は nodes と配置を除く definitions から作ります([作る所](../../src/devstudio/model/graphcanvasmodel.cpp#L1474))。
+HistoryEntry は前後の graph の hash も持ちます。`before_graph` は送る時の graph([入れる所](../../src/devstudio/model/graphcanvasmodel.cpp#L2783))、`after_graph` は自分の commit を初めて読んだ時の graph、`after_source_digest` は commit の digest です。graph の hash は nodes と配置を除く definitions から作ります([作る所](../../src/devstudio/model/graphcanvasmodel.cpp#L1475))。
 
 `canUndo()` は `undo_.back().after_graph`、`canRedo()` は `redo_.back().before_graph` が今の graph と同じことも求めます([判定](../../src/devstudio/model/graphcanvasmodel.hpp#L1803))。graph を変える render の項目(Ray layout の batch、Decompose)が確認済みで入っても、stack も TabEditOrder の serial も捨てず、その項目が戻って graph が一致すれば再び使えます。
 
