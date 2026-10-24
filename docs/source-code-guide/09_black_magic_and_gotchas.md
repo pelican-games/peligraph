@@ -1469,15 +1469,15 @@ MessageBox も同じ理由で絞ってあります。[`shouldShowPlayerFatalDial
 
 **素朴に読むと**: 計画や物理計画の attachment を test やコードで作るとき、load / store を書かなければ「ふつうの値」(clear / store)が入る、と読めます。RC-3a2 の前はそうでした(`FrameGraphAttachmentDefinition` と `VulkanPhysicalAttachmentPlan` の `load_op` / `store_op` の初期値が aspect に関係なく clear / store)。
 
-**実際は**: 今は書かないと compile が通りません。2 つの struct は解決済みの op を `PassAttachmentOperations operations` 1 欄で持ち([`FrameGraphAttachmentDefinition`](../../src/core/renderingpass/frameplanner.hpp#L25)、[`VulkanPhysicalAttachmentPlan`](../../src/project/targetrenderplanning.hpp#L252))、[`PassAttachmentOperations`](../../src/project/attachmentoperations.hpp#L32) は既定構築を delete してあります。初期値の clear / store は depth の既定(clear / dont_care)とも、`ui` / `imgui` の color の既定(load / store)とも違うので、省略した所は黙って別の値で動いていました。RC-3a2 の実装中にも、既存の test 1 本(`dependency-safe physical fusion rejects mismatched attachment contracts`)が op を省略していて、clear / store を明記しました(報告)。
+**実際は**: 今は書かないと compile が通りません。2 つの struct は解決済みの op を `PassAttachmentOperations operations` 1 欄で持ち([`FrameGraphAttachmentDefinition`](../../src/project/frameplan.hpp#L33)、[`VulkanPhysicalAttachmentPlan`](../../src/project/targetrenderplanning.hpp#L252))、[`PassAttachmentOperations`](../../src/project/attachmentoperations.hpp#L32) は既定構築を delete してあります。初期値の clear / store は depth の既定(clear / dont_care)とも、`ui` / `imgui` の color の既定(load / store)とも違うので、省略した所は黙って別の値で動いていました。RC-3a2 の実装中にも、既存の test 1 本(`dependency-safe physical fusion rejects mismatched attachment contracts`)が op を省略していて、clear / store を明記しました(報告)。
 
-- 値が要るなら、pass の型と aspect から [`defaultPassAttachmentOperations()`](../../src/project/attachmentoperations.cpp#L84) を呼ぶか、attachment > pass > 既定を [`resolveAttachmentOperations()`](../../src/project/attachmentoperations.hpp#L56) で解きます。計画を作る本番のコードはこの 2 つを通ります([`frameplanner.cpp`](../../src/core/renderingpass/frameplanner.cpp#L804))。
+- 値が要るなら、pass の型と aspect から [`defaultPassAttachmentOperations()`](../../src/project/attachmentoperations.cpp#L84) を呼ぶか、attachment > pass > 既定を [`resolveAttachmentOperations()`](../../src/project/attachmentoperations.hpp#L56) で解きます。計画を作る本番のコードはこの 2 つを通ります([`frameplanner.cpp`](../../src/core/renderingpass/frameplanner.cpp#L800))。
 - 「書いていない = 自動 plan のまま」の意味を持つ編集の側(physical fragment の [`VulkanPhysicalAttachmentFragment`](../../src/project/targetrenderplanning.hpp#L350))と、作者の値(`PassDefinition` の pass の op、attachment の `load_op` / `store_op`)は `optional` のままです。省略できないのは解決済みの値だけです。
 - 綴りも同じ考えで、入口ごとに受ける集合が違います。物理計画の package に作者の `dont_care` を書くと断られ(`discard` と書く)、作者の pass に `discard` を書いても断られます(manual [第6章](../manual/06_rendering.md#attachment-load-store) §6.2)。
 
 **不変条件**: 解決済みの計画の attachment は load と store を必ず持つ。既定は 1 か所(`defaultPassAttachmentOperations`)からだけ供給し、struct の初期値に戻さない。
 
-**読む場所**: [`attachmentoperations.hpp`](../../src/project/attachmentoperations.hpp#L32) → [`frameplanner.cpp` の解決](../../src/core/renderingpass/frameplanner.cpp#L804) → [`PassDefinition::colorAttachmentOperations()`](../../src/core/renderingpass/renderingpass.hpp#L480)。本文は [第6章](06_rendering_vulkan_shader.md#render-vocabulary-rest) の「残りの語彙」。
+**読む場所**: [`attachmentoperations.hpp`](../../src/project/attachmentoperations.hpp#L32) → [`frameplanner.cpp` の解決](../../src/core/renderingpass/frameplanner.cpp#L800) → [`PassDefinition::colorAttachmentOperations()`](../../src/core/renderingpass/renderingpass.hpp#L480)。本文は [第6章](06_rendering_vulkan_shader.md#render-vocabulary-rest) の「残りの語彙」。
 
 ---
 
