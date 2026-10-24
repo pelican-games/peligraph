@@ -17,6 +17,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -189,8 +190,22 @@ GenerationResources resolveGenerationResources(std::span<const GenerationResourc
 //       expected} | depth_format {resource, expected} | unknown_resource
 // Compute tasks, acceleration-structure builds and anchors are not checked
 // here (a compute task's buffers: validateComputeTaskBufferContracts).
-void validateRenderNodeResources(const GraphIR &graph, const NodeIR &node, const GenerationResources &resources);
-void validateRenderGraphResources(const RenderGraphIR &render_graph, const GenerationResources &resources);
+//
+// What a use names is decided by `render_graph`, the variant's own IR: a
+// name that is not one of its config images (a buffer, the swapchain) is
+// never looked up in `resources`, though another variant may declare an
+// image of that name. `observe`, when set, receives every image the checks
+// read from `resources`, as they read it.
+struct ResourceCheckRead {
+    std::string_view graph;
+    std::string_view node;
+    const GenerationImage &image;
+};
+using ResourceCheckObserver = std::function<void(const ResourceCheckRead &)>;
+void validateRenderNodeResources(const RenderGraphIR &render_graph, const GraphIR &graph, const NodeIR &node,
+                                 const GenerationResources &resources, const ResourceCheckObserver &observe = {});
+void validateRenderGraphResources(const RenderGraphIR &render_graph, const GenerationResources &resources,
+                                  const ResourceCheckObserver &observe = {});
 
 // The editor's question, by its own entry: one variant of `render_graph`
 // with each image as declared (single-sample, materialized, unaliased, its

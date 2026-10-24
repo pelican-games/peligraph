@@ -220,7 +220,9 @@ void validateVariantOutput(
 
 GenerationResources completeGenerationResources(
     std::span<const RenderCompilerProgramVariantOutput> variants,
-    ResolvedResourceExtent output_extent) {
+    ResolvedResourceExtent output_extent,
+    const std::function<void(std::string_view, const ResourceCheckRead &)>
+        &observe_resource_checks) {
     std::vector<GenerationResourceVariant> inputs;
     std::vector<const RenderCompilerProgramVariantOutput *> runtime;
     for (const auto &variant : variants) {
@@ -253,7 +255,15 @@ GenerationResources completeGenerationResources(
             buffers, variant.compute_task_definitions);
         validateGpuDrawSourceBufferContracts(
             *variant.render_graph, buffers);
-        validateRenderGraphResources(*variant.render_graph, resources);
+        ResourceCheckObserver observe;
+        if (observe_resource_checks) {
+            observe = [&observe_resource_checks,
+                       &name = inputs[index].name](
+                          const ResourceCheckRead &read) {
+                observe_resource_checks(name, read);
+            };
+        }
+        validateRenderGraphResources(*variant.render_graph, resources, observe);
     }
     return resources;
 }
@@ -281,7 +291,8 @@ RenderCompilerProgramOutput runRenderCompilerProgram(
             selection);
     }
     output.generation_resources = completeGenerationResources(
-        output.variants, input.backend_context.outputExtent());
+        output.variants, input.backend_context.outputExtent(),
+        input.observe_resource_checks);
     return output;
 }
 

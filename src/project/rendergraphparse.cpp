@@ -1552,6 +1552,22 @@ RenderGraphIR parseRenderGraph(const nlohmann::json &document,
         append_shared(graph);
         ir.graphs.push_back(std::move(graph));
     }
+    // RC-3c2a: a snapshot copy into a resolved format outside the copy
+    // contract is refused in every revision (a preview's too, which is never
+    // finalized); its size waits on the output's extent (finalizeRenderGraph),
+    // and a class still without its format is checked there.
+    for (const auto &graph : ir.graphs) {
+        for (const auto &node : graph.nodes) {
+            const auto *snapshot = std::get_if<SnapshotNodeInfo>(&node.info);
+            if (snapshot == nullptr) continue;
+            const auto *destination = findConfigImage(ir, snapshot->destination);
+            if (destination != nullptr && !destination->format_unresolved &&
+                !snapshotCopiesFormatOf(*destination)) {
+                refuse("render_graph.snapshot_size_unavailable@1",
+                       {{"graph", graph.name}, {"node", node.name}, {"resource", snapshot->destination}});
+            }
+        }
+    }
     return ir;
 }
 

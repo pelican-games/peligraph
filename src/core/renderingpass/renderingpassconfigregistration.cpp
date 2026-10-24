@@ -1017,6 +1017,9 @@ void RegistrationStages::prepare() {
             dependencies.front()
                 .options.validate_render_feature,
         .inactive_graph_scopes = inactive_graph_scopes,
+        .observe_resource_checks =
+            dependencies.front()
+                .options.observe_resource_checks,
     };
     auto compiler_output =
         runRenderCompilerProgram(

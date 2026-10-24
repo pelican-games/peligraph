@@ -137,6 +137,9 @@ struct Registered {
         GlobalRenderTargetId id;
     };
     std::map<std::string, Target> targets;
+    // What the compiler program's resource checks read, per variant: each
+    // image as the check looked it up (observe_resource_checks).
+    std::map<std::string, std::map<std::string, GenerationImage>> checked;
     std::string refusal;
     std::vector<std::set<std::string>> shared;
     std::size_t allocations = 0;
@@ -208,6 +211,9 @@ Registered registerC1(bool with_xr) {
     flat.gpu_owner_scope = renderPipelineVariantGpuOwnerScope(with_xr, RenderPipelineGraphVariant::flat);
     flat.observe_generation_resources = [&](const GenerationResources &resources) {
         result.resources = resources;
+    };
+    flat.observe_resource_checks = [&](std::string_view variant, const ResourceCheckRead &read) {
+        result.checked[std::string{variant}].insert_or_assign(read.image.declaration.name, read.image);
     };
     flat.validate_prepared_generation = [&](const RendererRuntimeGeneration &) {
         auto &container = GET_MODULE(RenderTargetContainer);
@@ -306,6 +312,45 @@ TEST_CASE("RC-3c2a C1: the registration merges the variants' images once, for th
             CHECK(metadata.storage_mode == entry.metadata.storage_mode);
         }
     }
+
+    // What the resource checks themselves read is what the GPU registration
+    // registered: every image either variant's checks looked up, in both
+    // runs, field by field.
+    for (const auto *run : {&merged, &alone}) {
+        REQUIRE(run->checked.contains("flat"));
+        for (const auto &[variant, images] : run->checked) {
+            for (const auto &[name, image] : images) {
+                INFO(variant << " " << name);
+                REQUIRE(run->targets.contains(name));
+                const auto metadata = renderTargetMetadataOf(image);
+                const auto &entry = run->targets.at(name).metadata;
+                CHECK(metadata.usage == entry.usage);
+                CHECK(metadata.format == entry.format);
+                CHECK(metadata.extent == entry.extent);
+                CHECK(metadata.samples == entry.samples);
+                CHECK(metadata.array_layers == entry.array_layers);
+                CHECK(metadata.alias_group == entry.alias_group);
+                CHECK(metadata.storage_mode == entry.storage_mode);
+            }
+        }
+    }
+    REQUIRE(merged.checked.contains("xr"));
+    CHECK_FALSE(alone.checked.contains("xr"));
+    // The checks read the merged values: both variants' checks see the depth
+    // with the XR export's TRANSFER_SRC and two layers, and the scene with
+    // two layers; flat alone, neither.
+    for (const auto *variant : {"flat", "xr"}) {
+        INFO(variant);
+        REQUIRE(merged.checked.at(variant).contains("depth"));
+        CHECK(merged.checked.at(variant).at("depth").usage ==
+              (ImageUsageBit::depth_stencil_attachment | ImageUsageBit::transfer_src));
+        CHECK(merged.checked.at(variant).at("depth").array_layers == 2);
+        REQUIRE(merged.checked.at(variant).contains("scene"));
+        CHECK(merged.checked.at(variant).at("scene").array_layers == 2);
+    }
+    REQUIRE(alone.checked.at("flat").contains("depth"));
+    CHECK_FALSE(alone.checked.at("flat").at("depth").usage & ImageUsageBit::transfer_src);
+    CHECK(alone.checked.at("flat").at("depth").array_layers == 1);
 
     // The usage union: the XR export's TRANSFER_SRC on the depth flat
     // registers first, materialized (no transient bit). Flat alone: no

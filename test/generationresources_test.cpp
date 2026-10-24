@@ -11,6 +11,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <string>
@@ -381,6 +382,52 @@ TEST_CASE("RC-3c2a buffers of one name agree in every field, whichever variant c
         CHECK(agreed.variants[0].buffers == std::vector<std::size_t>{0});
         CHECK(agreed.variants[1].buffers == std::vector<std::size_t>{0});
     }
+}
+
+TEST_CASE("RC-3c2a a use is an image or a buffer as its own variant declares it",
+          "[generation-resources][rc3c2a][checks]") {
+    // flat reads its buffer `b` in a fullscreen pass; xr declares an image
+    // `b` (a color attachment only, never sampled).
+    const auto with_pass = [](Json targets, Json buffers) {
+        Json config{{"render_targets", std::move(targets)},
+                    {"rendering_passes",
+                     Json::array({Json{{"name", "main"},
+                                       {"passes",
+                                        Json::array({Json{{"name", "read_b"},
+                                                          {"type", "fullscreen"},
+                                                          {"input", Json::array({"b"})},
+                                                          {"output", {{"color", Json::array({Json{{"target", "out"}}})},
+                                                                      {"depth", nullptr}}}}})}}})}};
+        if (!buffers.empty()) config["buffers"] = std::move(buffers);
+        return parseRenderGraph(config, PassFieldOwnershipCapabilities{});
+    };
+    const auto color_only = image("b", {{"usage", Json::array({"COLOR_ATTACHMENT"})}});
+    const auto flat_ir = with_pass(Json::array({image("out")}), Json::array({Json{{"name", "b"}, {"size", 16}}}));
+    const auto xr_ir = irOf(Json::array({image("out"), color_only}));
+    const std::array variants{
+        GenerationResourceVariant{.name = "flat", .render_graph = &flat_ir, .placements = {placed("out")}},
+        GenerationResourceVariant{.name = "xr", .render_graph = &xr_ir, .placements = {placed("out"), placed("b")}}};
+    const auto resources = resolveGenerationResources(variants, {64, 64});
+    REQUIRE(resources.findImage("b") != nullptr);
+    // flat's `b` is its buffer: no SAMPLED asked of xr's image.
+    std::vector<std::string> read;
+    CHECK(refusal([&] {
+              validateRenderGraphResources(flat_ir, resources, [&](const ResourceCheckRead &image) {
+                  read.push_back(image.image.declaration.name);
+              });
+              return 0;
+          }) == "accepted");
+    CHECK(std::find(read.begin(), read.end(), "b") == read.end());
+    CHECK(std::find(read.begin(), read.end(), "out") != read.end());
+    // Within one variant an image `b` is still checked.
+    const auto image_ir = with_pass(Json::array({image("out"), color_only}), Json::array());
+    const GenerationResourceVariant alone{.name = "flat", .render_graph = &image_ir,
+                                          .placements = {placed("out"), placed("b")}};
+    CHECK(refusal([&] {
+              validateRenderGraphResources(image_ir, resolveGenerationResources(std::span{&alone, 1}, {64, 64}));
+              return 0;
+          }) ==
+          R"(render_graph.image_usage_missing@1 {"graph":"main","node":"read_b","resource":"b","usage":"SAMPLED"})");
 }
 
 TEST_CASE("RC-3c2a a snapshot copy is sized from its destination as the generation resolves it",

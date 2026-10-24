@@ -105,6 +105,10 @@ struct RenderCompilerProgramInput {
         validate_feature;
     // Runtime owner availability; never part of the authored JSON document.
     std::set<std::string> inactive_graph_scopes;
+    // RC-3c2a: receives every image the completion's resource checks read
+    // (validateRenderGraphResources' observer), with the variant's name.
+    std::function<void(std::string_view, const ResourceCheckRead &)>
+        observe_resource_checks;
 };
 
 struct RenderCompilerProgramVariantOutput {
@@ -169,7 +173,9 @@ class RenderCompilerProgram {
 // (validateRenderGraphResources). Refuses a runtime variant without its IR.
 GenerationResources completeGenerationResources(
     std::span<const RenderCompilerProgramVariantOutput> variants,
-    ResolvedResourceExtent output_extent);
+    ResolvedResourceExtent output_extent,
+    const std::function<void(std::string_view, const ResourceCheckRead &)>
+        &observe_resource_checks = {});
 
 // Runs one program, verifies the backend package as a complete immutable CPU
 // candidate, completes its generation's resources

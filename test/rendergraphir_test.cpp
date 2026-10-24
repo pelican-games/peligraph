@@ -999,6 +999,16 @@ TEST_CASE("RC-3c1b refusals: what a revision must pass, parseRenderGraph refuses
          [](Json &c) { c["rendering_passes"][0]["buffers"] = Json::array({{{"name", "local"}}}); },
          "render_graph.graph_declaration_unsupported@1", "field", "buffers"},
         {"a buffer named swapchain", [](Json &c) { c["buffers"][0]["name"] = "swapchain"; }, "render_graph.buffer_invalid@1", "resource", "swapchain"},
+        // RC-3c2a: in every revision (a preview is never finalized); the
+        // copy's size waits on the output (finalizeRenderGraph).
+        {"a snapshot copy of a format outside the copy contract",
+         [](Json &c) {
+             c["render_targets"].push_back({{"name", "ids"}, {"extent_scale", 1.0}, {"width", 8}, {"height", 8},
+                                            {"format", "R32_UINT"}, {"usage", {"COLOR_ATTACHMENT", "TRANSFER_DST"}}});
+             pass(c, 2) = {{"name", "copy"}, {"type", "snapshot_copy"}, {"source", "color"},
+                           {"destination", "ids"}, {"snapshot_after", "draw"}};
+         },
+         "render_graph.snapshot_size_unavailable@1", "resource", "ids"},
         {"frame_node_order is not an object", [](Json &c) { c["frame_node_order"] = 1; }, "render_graph.frame_node_order_invalid@1", "reason", "not_an_object"},
         {"a graph with an empty name", [](Json &c) { c["rendering_passes"][0]["name"] = ""; }, "render_graph.graph_name_invalid@1", "reason", "empty"},
         {"two graphs share a name",
@@ -1082,16 +1092,6 @@ TEST_CASE("RC-3c1b refusals: what only the final revision must pass, finalizeRen
         {"frame_node_order naming a node the graph has not",
          [](Json &c) { c["frame_node_order"] = {{"main", {"draw", "ghost"}}}; },
          "render_graph.frame_node_order_unknown@1", "node", "ghost"},
-        // RC-3c2a: a snapshot copy is sized in the final revision, at the
-        // output's extent.
-        {"a snapshot copy of a format outside the copy contract",
-         [](Json &c) {
-             c["render_targets"].push_back({{"name", "ids"}, {"extent_scale", 1.0}, {"width", 8}, {"height", 8},
-                                            {"format", "R32_UINT"}, {"usage", {"COLOR_ATTACHMENT", "TRANSFER_DST"}}});
-             pass(c, 2) = {{"name", "copy"}, {"type", "snapshot_copy"}, {"source", "color"},
-                           {"destination", "ids"}, {"snapshot_after", "draw"}};
-         },
-         "render_graph.snapshot_size_unavailable@1", "resource", "ids"},
     };
     for (const auto &refusal : cases) {
         DYNAMIC_SECTION(refusal.name) {

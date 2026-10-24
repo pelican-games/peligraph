@@ -60,6 +60,11 @@ enum class MaterialPassContract {
     forward_transparent_v1,
 };
 
+// RC-3c2a: the contract of a material pass that omits `material_contract`
+// (the IR's MaterialNodeInfo and the execution's MaterialPassInfo).
+inline constexpr MaterialPassContract defaultMaterialPassContract =
+    MaterialPassContract::legacy_gbuffer_v1;
+
 // EL-4: every contract, in declaration order. materialPassContractFromName
 // accepts exactly their names; get_graph_catalog lists them.
 inline constexpr std::array materialPassContracts{

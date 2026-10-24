@@ -847,6 +847,28 @@ TEST_CASE(
         }),
         Catch::Matchers::ContainsSubstring(
             R"(render_graph.image_usage_missing@1 {"graph":"main","node":"present","resource":"lit_color","usage":"SAMPLED"})"));
+    // A snapshot copy into a format outside the copy contract, compiled as
+    // the preview alone (data_only: no finalize, no completion): refused by
+    // name in the preview's own IR.
+    auto flat = readJsonFixture(std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+                                "test/production_fixtures/pass_field_ownership/gpu_draw_material.json");
+    flat["render_targets"].push_back({{"name", "ids"}, {"extent_scale", 1.0}, {"width", 8}, {"height", 8},
+                                      {"format", "R32_UINT"},
+                                      {"usage", nlohmann::json::array({"COLOR_ATTACHMENT", "TRANSFER_DST"})}});
+    flat["rendering_passes"][0]["passes"].push_back({{"name", "copy_ids"}, {"type", "snapshot_copy"},
+                                                     {"source", "lit_color"}, {"destination", "ids"},
+                                                     {"snapshot_after", "gpu_geometry"}});
+    ProgramInputFixture preview;
+    preview.useAuthoredConfig(std::move(flat), "rc3c2a-preview-snapshot");
+    preview.backend_context = VulkanRenderCompilerBackendContext{
+        vk::Format::eB8G8R8A8Srgb, vk::Extent2D{64, 64}, {}, {}, {},
+        VulkanRenderCompilerDevicePlanningMode::compiler_only};
+    preview.variants = {{.graph_variant = RenderPipelineGraphVariant::preview,
+                         .artifact = RenderCompilerProgramArtifact::data_only}};
+    CHECK_THROWS_WITH(
+        runRenderCompilerProgram(defaultVulkanRenderCompilerProgram(), preview.input()),
+        Catch::Matchers::ContainsSubstring(
+            R"(render_graph.snapshot_size_unavailable@1 {"graph":"main","node":"copy_ids","resource":"ids"})"));
 }
 
 TEST_CASE(

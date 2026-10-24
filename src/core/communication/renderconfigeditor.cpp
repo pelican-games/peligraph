@@ -717,7 +717,7 @@ void validateAuthoredMaterialPass(const Json &config, const std::string &graph,
     // The pass's resource checks, as the compiler's completion runs them.
     if (const auto *graph_ir = findGraph(render_graph, graph)) {
         for (const auto &node : graph_ir->nodes)
-            if (node.name == pass_name) validateRenderNodeResources(*graph_ir, node, resources);
+            if (node.name == pass_name) validateRenderNodeResources(render_graph, *graph_ir, node, resources);
     }
     std::unordered_set<std::string> buffers;
     for (const auto &buffer : render_graph.buffers) buffers.insert(buffer.name);

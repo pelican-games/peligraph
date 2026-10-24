@@ -299,7 +299,8 @@ bool isShaderRead(const ResourceUse &use) {
 
 } // namespace
 
-void validateRenderNodeResources(const GraphIR &graph, const NodeIR &node, const GenerationResources &resources) {
+void validateRenderNodeResources(const RenderGraphIR &render_graph, const GraphIR &graph, const NodeIR &node,
+                                 const GenerationResources &resources, const ResourceCheckObserver &observe) {
     switch (node.shape) {
     case RenderNodeShape::compute:
     case RenderNodeShape::acceleration_structure:
@@ -313,13 +314,22 @@ void validateRenderNodeResources(const GraphIR &graph, const NodeIR &node, const
         more["node"] = node.name;
         return more;
     };
+    // The image a use names, as this variant's IR decides it (a buffer of
+    // this variant is no image, whatever another variant declares), read
+    // from the generation's description.
+    const auto image_of = [&](std::string_view name) -> const GenerationImage * {
+        if (findConfigImage(render_graph, name) == nullptr) return nullptr;
+        const auto *image = resources.findImage(name);
+        if (image != nullptr && observe) observe(ResourceCheckRead{graph.name, node.name, *image});
+        return image;
+    };
     if (const auto *snapshot = std::get_if<SnapshotNodeInfo>(&node.info)) {
         const auto invalid = [&](std::string_view reason, const std::string &resource) {
             refuse("render_graph.snapshot_invalid@1",
                    subject({{"reason", std::string{reason}}, {"resource", resource}}));
         };
-        const auto *source = resources.findImage(snapshot->source);
-        const auto *destination = resources.findImage(snapshot->destination);
+        const auto *source = image_of(snapshot->source);
+        const auto *destination = image_of(snapshot->destination);
         if (source == nullptr) invalid("unknown_resource", snapshot->source);
         if (destination == nullptr) invalid("unknown_resource", snapshot->destination);
         if (!source->usage.contains(requiredImageUsage(ImageUseRequirement::copy_source)))
@@ -357,7 +367,7 @@ void validateRenderNodeResources(const GraphIR &graph, const NodeIR &node, const
             if (color) samples_match(1);
             continue;
         }
-        const auto *image = resources.findImage(use.resource);
+        const auto *image = image_of(use.resource);
         if (image == nullptr) continue;
         const auto bit = color ? ImageUsageBit::color_attachment : ImageUsageBit::depth_stencil_attachment;
         if (!(image->usage & bit)) missing_usage(use.resource, bit);
@@ -383,7 +393,7 @@ void validateRenderNodeResources(const GraphIR &graph, const NodeIR &node, const
     const auto types = makeBuiltinLogicalTypeRegistry();
     for (const auto &use : node.uses) {
         if (!isShaderRead(use) || use.resource == "swapchain") continue;
-        const auto *image = resources.findImage(use.resource);
+        const auto *image = image_of(use.resource);
         if (image == nullptr) continue;
         const bool local_read = image->storage == RenderTargetStorageMode::tile_local_attachment &&
                                 bool(image->usage & ImageUsageBit::input_attachment);
@@ -423,12 +433,12 @@ void validateRenderNodeResources(const GraphIR &graph, const NodeIR &node, const
     const auto color_image = [&](std::size_t location) -> const GenerationImage & {
         const auto &use = *colors[location];
         if (use.resource == "swapchain") invalid("swapchain_color");
-        const auto *image = resources.findImage(use.resource);
+        const auto *image = image_of(use.resource);
         if (image == nullptr) invalid("unknown_resource", {{"resource", use.resource}});
         return *image;
     };
     const auto require_depth = [&] {
-        if (depth == nullptr || depth->resource == "swapchain" || resources.findImage(depth->resource) == nullptr)
+        if (depth == nullptr || depth->resource == "swapchain" || image_of(depth->resource) == nullptr)
             invalid("requires_depth");
     };
     if (material->output_schema) {
@@ -464,7 +474,7 @@ void validateRenderNodeResources(const GraphIR &graph, const NodeIR &node, const
                                      {"format", std::string{imageFormatName(image.format)}}});
         }
     }
-    const auto &depth_image = *resources.findImage(depth->resource);
+    const auto &depth_image = *image_of(depth->resource);
     if (depth_image.format != materialPassDepthImageFormat) {
         invalid("depth_format", {{"resource", depth_image.declaration.name},
                                  {"expected", std::string{imageFormatName(materialPassDepthImageFormat)}},
@@ -472,9 +482,10 @@ void validateRenderNodeResources(const GraphIR &graph, const NodeIR &node, const
     }
 }
 
-void validateRenderGraphResources(const RenderGraphIR &render_graph, const GenerationResources &resources) {
+void validateRenderGraphResources(const RenderGraphIR &render_graph, const GenerationResources &resources,
+                                  const ResourceCheckObserver &observe) {
     for (const auto &graph : render_graph.graphs)
-        for (const auto &node : graph.nodes) validateRenderNodeResources(graph, node, resources);
+        for (const auto &node : graph.nodes) validateRenderNodeResources(render_graph, graph, node, resources, observe);
 }
 
 GenerationResources resolveDeclaredGenerationResources(const RenderGraphIR &render_graph,

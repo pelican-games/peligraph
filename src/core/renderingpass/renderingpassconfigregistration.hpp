@@ -102,6 +102,11 @@ struct RenderingPassConfigRegistrationDependencies {
         // first variant's.
         std::function<void(const GenerationResources &)>
             observe_generation_resources;
+        // RC-3c2a: every image the compiler program's resource checks read
+        // (RenderCompilerProgramInput::observe_resource_checks), with the
+        // variant. The transaction passes the first variant's.
+        std::function<void(std::string_view, const ResourceCheckRead &)>
+            observe_resource_checks;
         // Runs after every program and GPU scope in the transaction has been
         // prepared, but before the single publication CAS.
         std::function<void(const RendererRuntimeGeneration &)>

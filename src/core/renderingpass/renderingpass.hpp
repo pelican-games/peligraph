@@ -172,7 +172,7 @@ struct GpuDrawSourceDefinition : GpuDrawSourceDeclaration {
 struct MaterialPassInfo {
     uint32_t material_start = 0;
     uint32_t material_count = 0;
-    MaterialPassContract contract = MaterialPassContract::legacy_gbuffer_v1;
+    MaterialPassContract contract = defaultMaterialPassContract;
     // Absent preserves the built-in legacy/standard contract. When present,
     // outputs map one-to-one and in order to PassDefinition::output_color.
     // The engine imposes no attachment-count constant; target planning checks

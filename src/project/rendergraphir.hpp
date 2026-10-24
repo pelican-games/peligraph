@@ -179,8 +179,9 @@ struct MaterialNodeInfo {
     std::optional<std::string> variant;
     std::optional<GpuDrawSourceDeclaration> gpu_draw_source;
     // RC-3c2a: what the material pass's attachment check reads
-    // (`material_contract`, legacy when absent; `material_outputs`).
-    MaterialPassContract contract = MaterialPassContract::legacy_gbuffer_v1;
+    // (`material_contract`, defaultMaterialPassContract when absent;
+    // `material_outputs`).
+    MaterialPassContract contract = defaultMaterialPassContract;
     std::optional<MaterialOutputSchema> output_schema;
 
     bool operator==(const MaterialNodeInfo &) const = default;
