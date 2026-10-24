@@ -1,6 +1,7 @@
 #pragma once
 
 #include "previewgraph.hpp"
+#include "rendercompilerprogram.hpp"
 #include "renderingpass.hpp"
 #include "../../project/renderpipeline.hpp"
 #include "../../project/targetrenderplanning.hpp"
@@ -8,6 +9,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <span>
 #include <nlohmann/json_fwd.hpp>
 #include <string>
 #include <string_view>
@@ -138,6 +140,17 @@ struct RenderGraphVariantFamilyRegistrationResult {
         runtime_variants;
     PreviewGraphProgram preview;
 };
+
+// RC-3c1b: the compiler program's variant requests the registration makes
+// for these variants (exposed for tests that go the registration's way
+// without a device): a flat variant composes the ImGui pass when the
+// engine's launch configuration runs ImGui; the request-local preview, when
+// asked for, is the last, data_only.
+std::vector<RenderCompilerProgramVariantRequest>
+makeRenderGraphVariantRequests(
+    std::span<const RenderingPassConfigRegistrationDependencies::Options>
+        variants,
+    bool with_preview);
 
 RenderingPassConfigRegistrationResult registerRenderingPassConfigFromJson(
     const std::string &json_path, vk::Extent2D base_extent,

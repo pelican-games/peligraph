@@ -1095,6 +1095,13 @@ void assignSnapshotSizing(const Json &targets, std::vector<ImageResource> &image
             continue;
         }
         if (width == 0 || height == 0) continue;
+        // A class without its format yet: the copy's bytes wait on the
+        // format as they wait on the output's extent (a copy into it is
+        // sized, and its format required by name, in the final revision).
+        if (image.format_unresolved) {
+            image.snapshot_extent_pending = true;
+            continue;
+        }
         const auto format = target.find("format");
         if (format == target.end() || !format->is_string()) {
             refuse("render_graph.image_invalid@1",

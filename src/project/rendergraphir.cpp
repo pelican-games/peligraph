@@ -537,7 +537,9 @@ CompiledLogicalRenderGraph toLogicalGraph(const RenderGraphIR &ir, const GraphIR
     const auto types = makeBuiltinLogicalTypeRegistry();
     const auto definition = frameGraphDefinitionOf(ir, graph);
     // The planner's refusals (by name) come before the logical graph's own.
-    (void)planFrameGraph(definition);
+    // Two unordered writers are not refused here: the final revision's
+    // frame_node_order may order them (planRenderGraph judges it).
+    requireFrameGraphStructure(definition);
     const auto tile_local = renderGraphTileLocalFormats(
         ir, graph, renderGraphDeviceTileLocalFormats(ir, options.device));
     return compileLogicalFrameGraphShadow(
@@ -614,34 +616,87 @@ void requireRenderGraphRayQueryCapability(
     }
 }
 
-RenderGraphIR insertAccelerationStructureNodes(RenderGraphIR ir,
-                                               const AccelerationStructureNodeRequest &request) {
-    const std::string node_name = "__scene_acceleration_structure";
-    const auto named_exists = [&](const std::string &name) {
-        return std::any_of(request.named.begin(), request.named.end(),
-                           [&](const auto &definition) { return definition.name == name; });
-    };
-    const auto ray_task = [](const NodeIR &node) -> const ComputeNodeInfo * {
-        if (node.shape != RenderNodeShape::compute || node.scope != NodeDeclarationScope::shared) {
-            return nullptr;
-        }
-        return std::get_if<ComputeNodeInfo>(&node.info);
-    };
-    // A config task's named structure must exist (the compiler's check,
-    // before any graph needs the builds).
-    for (const auto &graph : ir.graphs) {
-        for (const auto &node : graph.nodes) {
-            const auto *task = ray_task(node);
-            if (task == nullptr) continue;
-            const auto selected = task->ray_tracing
-                                      ? task->ray_tracing_acceleration_structure
-                                      : task->ray_query_acceleration_structure.value_or("scene");
-            if (selected != "scene" && !named_exists(selected)) {
-                refuse("render_graph.acceleration_structure_unknown@1",
-                       {{"node", node.name}, {"acceleration_structure", selected}});
+namespace {
+
+// `ray_task_acceleration_structures` against the config's compute tasks:
+// each named task exists and traces or queries, and takes the named
+// structure (every graph's copy of it).
+RenderGraphIR resolveRayTaskAccelerationStructures(RenderGraphIR ir) {
+    for (const auto &[task, selected] : ir.ray_task_acceleration_structures) {
+        const auto invalid = [&](std::string_view reason) {
+            refuse("render_graph.compute_task_invalid@1",
+                   {{"node", task},
+                    {"field", "ray_task_acceleration_structures"},
+                    {"reason", std::string{reason}}});
+        };
+        if (!contains(ir.shared_compute_tasks, task)) invalid("unknown_task");
+        for (auto &graph : ir.graphs) {
+            for (auto &node : graph.nodes) {
+                if (node.scope != NodeDeclarationScope::shared || node.name != task) continue;
+                auto &info = std::get<ComputeNodeInfo>(node.info);
+                if (info.ray_tracing) {
+                    info.ray_tracing_acceleration_structure = selected;
+                } else if (info.ray_query_acceleration_structure) {
+                    info.ray_query_acceleration_structure = selected;
+                } else {
+                    invalid("task_declares_no_ray_work");
+                }
             }
         }
     }
+    return ir;
+}
+
+} // namespace
+
+namespace {
+
+const ComputeNodeInfo *configRayTask(const NodeIR &node) {
+    if (node.shape != RenderNodeShape::compute || node.scope != NodeDeclarationScope::shared) {
+        return nullptr;
+    }
+    return std::get_if<ComputeNodeInfo>(&node.info);
+}
+
+} // namespace
+
+void requireSelectedAccelerationStructuresDeclared(
+    const RenderGraphIR &ir, std::span<const SceneAccelerationStructureDefinition> named) {
+    const auto declared = [&](const std::string &name) {
+        return name == "scene" ||
+               std::any_of(named.begin(), named.end(),
+                           [&](const auto &definition) { return definition.name == name; });
+    };
+    for (const auto &graph : ir.graphs) {
+        for (const auto &node : graph.nodes) {
+            std::optional<std::string> selected;
+            if (const auto *task = configRayTask(node)) {
+                selected = task->ray_tracing ? task->ray_tracing_acceleration_structure
+                                             : task->ray_query_acceleration_structure.value_or("scene");
+            } else if (rayQueryPolicy(node) == true) {
+                selected = node.ray_query.value_or("scene");
+            }
+            if (selected && !declared(*selected)) {
+                refuse("render_graph.acceleration_structure_unknown@1",
+                       {{"node", node.name}, {"acceleration_structure", *selected}});
+            }
+        }
+    }
+}
+
+RenderGraphIR resolveRenderGraphReferences(
+    RenderGraphIR ir, std::span<const SceneAccelerationStructureDefinition> named) {
+    ir = resolveRayTaskAccelerationStructures(std::move(ir));
+    requireSelectedAccelerationStructuresDeclared(ir, named);
+    return ir;
+}
+
+RenderGraphIR insertAccelerationStructureNodes(RenderGraphIR ir,
+                                               const AccelerationStructureNodeRequest &request) {
+    const std::string node_name = "__scene_acceleration_structure";
+    const auto ray_task = configRayTask;
+    // Every selected structure must exist, before any graph needs the builds.
+    requireSelectedAccelerationStructuresDeclared(ir, request.named);
     const bool requires_as =
         request.ray_tracing_project ||
         std::any_of(ir.graphs.begin(), ir.graphs.end(), [&](const GraphIR &graph) {
@@ -688,10 +743,6 @@ RenderGraphIR insertAccelerationStructureNodes(RenderGraphIR ir,
             }
             const auto selected_raster = node.ray_query.value_or("scene");
             if (policy == true && selected_raster != "scene") {
-                if (!named_exists(selected_raster)) {
-                    refuse("render_graph.acceleration_structure_unknown@1",
-                           {{"node", node.name}, {"acceleration_structure", selected_raster}});
-                }
                 node.after.push_back(node_name + ":" + selected_raster);
             }
             const auto *task = ray_task(node);
@@ -754,38 +805,6 @@ RenderGraphIR applyFrameNodeOrder(RenderGraphIR ir, bool require_all_graphs) {
     return ir;
 }
 
-namespace {
-
-// `ray_task_acceleration_structures` against the config's compute tasks:
-// each named task exists and traces or queries, and takes the named
-// structure (every graph's copy of it).
-RenderGraphIR resolveRayTaskAccelerationStructures(RenderGraphIR ir) {
-    for (const auto &[task, selected] : ir.ray_task_acceleration_structures) {
-        const auto invalid = [&](std::string_view reason) {
-            refuse("render_graph.compute_task_invalid@1",
-                   {{"node", task},
-                    {"field", "ray_task_acceleration_structures"},
-                    {"reason", std::string{reason}}});
-        };
-        if (!contains(ir.shared_compute_tasks, task)) invalid("unknown_task");
-        for (auto &graph : ir.graphs) {
-            for (auto &node : graph.nodes) {
-                if (node.scope != NodeDeclarationScope::shared || node.name != task) continue;
-                auto &info = std::get<ComputeNodeInfo>(node.info);
-                if (info.ray_tracing) {
-                    info.ray_tracing_acceleration_structure = selected;
-                } else if (info.ray_query_acceleration_structure) {
-                    info.ray_query_acceleration_structure = selected;
-                } else {
-                    invalid("task_declares_no_ray_work");
-                }
-            }
-        }
-    }
-    return ir;
-}
-
-} // namespace
 
 RenderGraphIR finalizeRenderGraph(RenderGraphIR ir, const FinalizeRenderGraphRequest &request,
                                   TargetPlanningPolicy &target_planning) {
@@ -794,7 +813,8 @@ RenderGraphIR finalizeRenderGraph(RenderGraphIR ir, const FinalizeRenderGraphReq
             refuse("render_graph.image_format_unresolved@1", {{"resource", image.name}});
         }
     }
-    ir = resolveRayTaskAccelerationStructures(std::move(ir));
+    // The references by the authored names, before the variant's suffix.
+    ir = resolveRenderGraphReferences(std::move(ir), request.named);
     requireRenderGraphRayQueryCapability(ir, request.named, target_planning);
     ir = namespaceSharedComputeTasks(std::move(ir), request.compute_task_suffix);
     ir = insertAccelerationStructureNodes(

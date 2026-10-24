@@ -4,6 +4,7 @@
 #include "renderingpassconfigloader.hpp"
 #include "renderstrategyregistry.hpp"
 #include "../../project/graphcomposition.hpp"
+#include "../../project/rendergraphparse.hpp"
 #include "../../project/renderpipeline.hpp"
 #include "../renderer/viewfamilyproviderregistry.hpp"
 
@@ -128,7 +129,8 @@ nlohmann::json previewGraphStatusJson(const PreviewGraphProgram &program) {
 PreviewGraphProgram makePreviewGraphProgram(
     std::shared_ptr<const CompiledRenderPipeline>
         render_pipeline,
-    nlohmann::json composed_config) {
+    nlohmann::json composed_config,
+    const RenderGraphIR &render_graph) {
     if (render_pipeline == nullptr) {
         throw std::runtime_error(
             "preview graph requires a compiled render "
@@ -162,24 +164,13 @@ PreviewGraphProgram makePreviewGraphProgram(
         std::move(composed_config);
     result.generation =
         generationOf(result.composed_config);
-    for (const auto &graph :
-         result.composed_config.at(
-             "rendering_passes")) {
-        if (!graph.is_object() ||
-            !graph.contains("passes") ||
-            !graph.at("passes").is_array()) {
-            continue;
-        }
-        for (const auto &pass :
-             graph.at("passes")) {
-            if (pass.is_object() &&
-                pass.value(
-                    "type", std::string{}) !=
-                    "canonical_anchor") {
-                result.pass_names.push_back(
-                    pass.value(
-                        "name",
-                        std::string{"unnamed"}));
+    // The graphs' own passes (not their compute tasks), anchors aside.
+    for (const auto &graph : render_graph.graphs) {
+        for (const auto &node : graph.nodes) {
+            if (node.scope == NodeDeclarationScope::graph &&
+                node.shape != RenderNodeShape::compute &&
+                node.shape != RenderNodeShape::anchor) {
+                result.pass_names.push_back(node.name);
             }
         }
     }
@@ -199,11 +190,13 @@ PreviewGraphProgram precompilePreviewGraph(
             base, "preview graph",
             RenderPipelineGraphVariant::preview,
             load_feature_json, runtime_shader_compiler_enabled);
+    const auto render_graph = parseRenderGraph(
+        normalized_config, buildPassFieldOwnershipCapabilities());
     return makePreviewGraphProgram(
         std::make_shared<
             const CompiledRenderPipeline>(
             std::move(compiled_pipeline)),
-        std::move(normalized_config));
+        std::move(normalized_config), render_graph);
 }
 
 void preflightRenderGraphVariants(

@@ -306,6 +306,16 @@ std::vector<size_t> topologicalOrder(const FrameGraphDefinition &definition, con
     return order;
 }
 
+// The rules a graph holds whatever its final order: names, known resources,
+// the after / before references, no cycle. Two unordered writers are judged
+// once the order is final (planWith).
+void requireStructure(const FrameGraphDefinition &definition) {
+    validateUniqueNames(definition);
+    validateKnownResources(definition);
+    const auto planner_edges = buildEdges(definition, buildNodeIndex(definition));
+    (void)topologicalOrder(definition, planner_edges);
+}
+
 FramePlan planWith(const FrameGraphDefinition &definition) {
     validateUniqueNames(definition);
     validateKnownResources(definition);
@@ -457,6 +467,10 @@ std::string framePlanNodeKindName(FramePlanNodeKind kind) {
 
 FramePlan planFrameGraph(const FrameGraphDefinition &definition) {
     return planWith(definition);
+}
+
+void requireFrameGraphStructure(const FrameGraphDefinition &definition) {
+    requireStructure(definition);
 }
 
 std::vector<std::string> framePlanOrder(const FramePlan &plan) {

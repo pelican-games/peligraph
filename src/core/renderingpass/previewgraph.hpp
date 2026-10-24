@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../project/graphvariantpolicy.hpp"
+#include "../../project/rendergraphir.hpp"
 
 #include <cstdint>
 #include <exception>
@@ -58,10 +59,13 @@ PreviewGraphProgram unavailablePreviewGraphProgram(nlohmann::json reason);
 // get_frame_plan and a committed render edit report it.
 nlohmann::json previewGraphStatusJson(const PreviewGraphProgram &program);
 
+// RC-3c1b: the pass names are the preview IR's (`render_graph`, the
+// composition's parse: every pass has a name).
 PreviewGraphProgram makePreviewGraphProgram(
     std::shared_ptr<const CompiledRenderPipeline>
         render_pipeline,
-    nlohmann::json composed_config);
+    nlohmann::json composed_config,
+    const RenderGraphIR &render_graph);
 
 PreviewGraphProgram precompilePreviewGraph(
     std::string_view rendering_config_json,

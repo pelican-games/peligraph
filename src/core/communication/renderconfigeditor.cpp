@@ -1397,22 +1397,25 @@ OrderedJson withPublishedPreview(OrderedJson result, const nlohmann::json &previ
 }
 } // namespace
 
-OrderedJson RenderConfigEditorService::preflightRejection(
-    const std::exception &error, OrderedJson details) const {
-    return rejection("render_pipeline_preflight_failed", error.what(),
-                     withPreflightRefusalFields(std::move(details), error));
+OrderedJson RenderConfigEditorService::namedRefusal(
+    std::string code, std::string message, const Json &detail, OrderedJson details,
+    std::string_view root_bytes) const {
+    details = withRefusalDetail(std::move(details), detail);
+    // Without root bytes, rejection judges a graph.* refusal against the
+    // document this editor holds.
+    if (!root_bytes.empty())
+        details = withGraphRefusalDocument(std::move(details), code, root_bytes,
+                                           dependencies_.source_reference);
+    return rejection(std::move(code), std::move(message), std::move(details));
 }
 
-OrderedJson RenderConfigEditorService::namedPreflightRejection(
-    const std::exception &error, OrderedJson details,
-    std::string_view root_bytes) const {
-    if (const auto *named = dynamic_cast<const GraphRegistryError *>(&error)) {
-        details = withGraphRefusalDocument(
-            withRefusalDetail(std::move(details), named->detail()), named->code(),
-            root_bytes, dependencies_.source_reference);
-        return rejection(named->code(), error.what(), std::move(details));
-    }
-    return preflightRejection(error, std::move(details));
+OrderedJson RenderConfigEditorService::preflightRejection(
+    const std::exception &error, OrderedJson details, std::string_view root_bytes) const {
+    if (const auto *named = dynamic_cast<const GraphRegistryError *>(&error))
+        return namedRefusal(named->code(), error.what(), named->detail(), std::move(details),
+                            root_bytes);
+    return rejection("render_pipeline_preflight_failed", error.what(),
+                     withPreflightRefusalFields(std::move(details), error));
 }
 
 std::optional<OrderedJson> RenderConfigEditorService::preflightGraphVariants(
@@ -1434,14 +1437,9 @@ std::optional<OrderedJson> RenderConfigEditorService::preflightGraphVariants(
                              std::move(details));
         }
         if (auto refusal = graphRefusalOf(error.cause())) {
-            for (const auto &[key, value] : refusal->second.items())
-                if (!details.contains(key)) details[key] = value;
             // CT-2: judged against the candidate's root, not the live one.
-            details = withGraphRefusalDocument(
-                std::move(details), refusal->first,
-                candidate.rootDocument().bytes,
-                dependencies_.source_reference);
-            return rejection(refusal->first, error.what(), std::move(details));
+            return namedRefusal(refusal->first, error.what(), refusal->second,
+                                std::move(details), candidate.rootDocument().bytes);
         }
         return preflightRejection(error, std::move(details));
     }
@@ -1466,7 +1464,7 @@ std::optional<OrderedJson> RenderConfigEditorService::restartGraphRejection(
         for (const auto &graph : render_graph.graphs)
             (void)toLogicalGraph(render_graph, graph);
     } catch (const std::exception &error) {
-        return namedPreflightRejection(error, details, candidate.rootDocument().bytes);
+        return preflightRejection(error, details, candidate.rootDocument().bytes);
     }
     return std::nullopt;
 }
@@ -2586,17 +2584,9 @@ OrderedJson RenderConfigEditorService::editBatch(const Json &params) {
                 const auto composed = dependencies_.resolve_authoring_context(candidate_set);
                 for (const auto &check : checks)
                     if (check) check(composed);
-            } catch (const GraphRegistryError &error) {
-                OrderedJson fields = details;
-                const auto named = OrderedJson::parse(error.detail().dump());
-                for (const auto &[key, value] : named.items())
-                    if (!fields.contains(key)) fields[key] = value;
-                return rejection(error.code(), error.what(),
-                                 withGraphRefusalDocument(std::move(fields), error.code(),
-                                                          candidate_set.rootDocument().bytes,
-                                                          dependencies_.source_reference));
             } catch (const std::exception &error) {
-                return preflightRejection(error, details);
+                // A named refusal judged against the candidate's root.
+                return preflightRejection(error, details, candidate_set.rootDocument().bytes);
             }
         }
         if (auto refused = preflightGraphVariants(candidate_set, details)) return *refused;
@@ -5418,7 +5408,7 @@ OrderedJson RenderConfigEditorService::editTargetPlanning(const Json &params) {
                 names = planningNamesOf(context.config, graph);
             } catch (const std::exception &error) {
                 return {.value = std::nullopt,
-                        .refusal = namedPreflightRejection(
+                        .refusal = preflightRejection(
                             error,
                             {{"participant", "pelican.render_pipeline"},
                              {"method", "edit_target_planning"}},
@@ -5910,7 +5900,9 @@ OrderedJson RenderConfigEditorService::enqueueAuthoredPassTicket(
                 dependencies_.resolve_authoring_context(candidate_documents);
             if (check) check(candidate);
         } catch (const std::exception &error) {
-            return preflightRejection(error, preflight_details());
+            // A named refusal judged against the candidate's root.
+            return preflightRejection(error, preflight_details(),
+                                      candidate_documents.rootDocument().bytes);
         }
         // G-6: the same candidate, by every variant the engine will compose it
         // with when it publishes.
@@ -6438,7 +6430,7 @@ OrderedJson RenderConfigEditorService::editRenderTargets(const Json &params) {
         try {
             users = renderTargetUsers(current.config);
         } catch (const std::exception &error) {
-            return namedPreflightRejection(error,
+            return preflightRejection(error,
                                            {{"participant", "pelican.render_pipeline"},
                                             {"fragment_reference", reference}},
                                            currentDocumentSet().rootDocument().bytes);
@@ -8137,13 +8129,9 @@ void RenderConfigEditorService::completeCommitTransaction(
                 }
                 if (auto refusal = graphRefusalOf(applied.exception)) {
                     // CT-2: judged against the root this ticket carried.
-                    details = withGraphRefusalDocument(
-                        withRefusalDetail(std::move(details), refusal->second),
-                        refusal->first,
-                        transaction->ticket.candidate.bytes(),
-                        dependencies_.source_reference);
-                    finish(rejection(refusal->first, applied.error,
-                                     std::move(details)));
+                    finish(namedRefusal(refusal->first, applied.error, refusal->second,
+                                        std::move(details),
+                                        transaction->ticket.candidate.bytes()));
                     return;
                 }
                 // EL-2: a physical fragment the linker found stale.

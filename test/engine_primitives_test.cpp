@@ -1518,11 +1518,15 @@ TEST_CASE("Q-14e a present that reads nothing refuses an added input by binding,
                {"variadic_range", nullptr}});
     CHECK(readFile(rendering_path) == root_before);
 
-    // A refusal for another reason carries no shader_input_mismatch.
+    // A refusal for another reason carries no shader_input_mismatch. An
+    // input nobody declares is the planner's unknown resource (RC-3c1b: a
+    // GraphRegistryError comes back with its code and subject).
     const auto unknown = editPresentInputs(rpc, Json::array({"q14e_nobody_declared"}));
     INFO(unknown.dump(2));
     REQUIRE(unknown.at("status") == "rejected");
-    CHECK(unknown.at("error").at("code") == "render_pipeline_preflight_failed");
+    CHECK(unknown.at("error").at("code") == "render_graph.unknown_resource@1");
+    CHECK(unknown.at("error").at("node") == "present");
+    CHECK(unknown.at("error").at("resource") == "q14e_nobody_declared");
     CHECK_FALSE(unknown.at("error").contains("shader_input_mismatch"));
     CHECK(readFile(rendering_path) == root_before);
     GET_MODULE(VulkanManageCore).waitIdle();

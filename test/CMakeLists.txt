@@ -3634,6 +3634,8 @@ target_compile_definitions(pelican_test_renderingjsonnormalize_test PRIVATE
 )
 pelican_define_test(rendercompilerprogram_test GROUP render_pipeline pelican_core)
 pelican_define_test(rendercompilerprogram_ir_test GROUP render_pipeline pelican_core)
+# RC-3c1b: the production compiler program and the registration on a device.
+pelican_define_test(rendercompilerprogram_device_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_rendercompilerprogram_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )

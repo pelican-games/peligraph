@@ -1101,14 +1101,103 @@ TEST_CASE("RC-3c1b refusals: what the planner refused, planRenderGraph refuses b
             CHECK(outcome.stage == "plan");
             requireNamedRefusal(refusal, outcome);
             // The logical graph refuses the same graph by the planner's name
-            // first (toLogicalGraph plans it).
+            // first (its structure), except two unordered writers, which the
+            // final revision's frame_node_order may order.
             const auto ir = parseRenderGraph(prepared(config), buildPassFieldOwnershipCapabilities());
-            try {
-                (void)toLogicalGraph(ir, ir.graphs.at(0));
-                FAIL("toLogicalGraph accepted it");
-            } catch (const GraphRegistryError &error) {
-                CHECK(error.code() == refusal.code);
+            if (refusal.code == "render_graph.ambiguous_writes@1") {
+                CHECK_NOTHROW(toLogicalGraph(ir, ir.graphs.at(0)));
+            } else {
+                try {
+                    (void)toLogicalGraph(ir, ir.graphs.at(0));
+                    FAIL("toLogicalGraph accepted it");
+                } catch (const GraphRegistryError &error) {
+                    CHECK(error.code() == refusal.code);
+                }
             }
+        }
+    }
+}
+
+
+TEST_CASE("RC-3c1b IR: two unordered writers wait for the final frame_node_order",
+          "[rendergraphir][rc3c1b][frame-node-order]") {
+    // A revision (a provider's, the editor's) may write one buffer from two
+    // tasks without an order; the final revision's frame_node_order orders
+    // them, and only the final plan judges the writes.
+    auto config = refusalBase();
+    config["compute_tasks"] = Json::array({{{"name", "write_a"}, {"writes", {"shared"}}},
+                                           {{"name", "write_b"}, {"writes", {"shared"}}}});
+    const auto revision = parseRenderGraph(prepared(config), buildPassFieldOwnershipCapabilities());
+    CHECK_NOTHROW(toLogicalGraph(revision, revision.graphs.at(0)));
+    // Without an order the final plan refuses them by name ...
+    const auto unordered = run(prepared(config), {}, Finalize{});
+    CHECK(unordered.stage == "plan");
+    CHECK(unordered.code == "render_graph.ambiguous_writes@1");
+    // ... with one it plans them in that order.
+    config["frame_node_order"] = {{"main", {"write_b", "write_a"}}};
+    const auto ordered = run(prepared(config), {}, Finalize{});
+    INFO(ordered.refusal);
+    REQUIRE(ordered.stage.empty());
+    const auto order = framePlanOrder(ordered.plans.at(0));
+    CHECK(std::find(order.begin(), order.end(), "write_b") < std::find(order.begin(), order.end(), "write_a"));
+}
+
+TEST_CASE("RC-3c1b IR: a fixed-size image with a class and no format waits for the format",
+          "[rendergraphir][rc3c1b][format-class]") {
+    // The same 64x64 image with its format, and with its class only: the
+    // first has its snapshot bytes, the second waits on the format (it is
+    // neither refused nor sized).
+    auto config = refusalBase();
+    config["render_targets"][0]["width"] = 64;
+    config["render_targets"][0]["height"] = 64;
+    const auto with_format = run(normalizeRenderingJson(config));
+    INFO(with_format.refusal);
+    REQUIRE(with_format.stage.empty());
+    CHECK(with_format.ir->images.at(0).snapshot_copy_bytes == std::optional<std::size_t>{64 * 64 * 4});
+    config["render_targets"][0].erase("format");
+    config["render_targets"][0]["format_class"] = "scene";
+    const auto class_only = run(normalizeRenderingJson(config));
+    INFO(class_only.refusal);
+    REQUIRE(class_only.stage.empty());
+    CHECK(class_only.ir->images.at(0).format_unresolved);
+    CHECK_FALSE(class_only.ir->images.at(0).snapshot_copy_bytes);
+    CHECK(class_only.ir->images.at(0).snapshot_extent_pending);
+    // The final revision needs the format.
+    CHECK(run(normalizeRenderingJson(config), {}, Finalize{}).code == "render_graph.image_format_unresolved@1");
+}
+
+TEST_CASE("RC-3c1b IR: ray_task_acceleration_structures selects a declared structure",
+          "[rendergraphir][rc3c1b][acceleration-structure]") {
+    // A task that queries, and one that traces, both on "scene"; the table
+    // selects the declared `actors` for each. With the table the final IR
+    // carries `actors` and the task waits on its build; without it neither.
+    const std::vector<SceneAccelerationStructureDefinition> named{{.name = "actors"}};
+    for (const bool tracing : {false, true}) {
+        DYNAMIC_SECTION((tracing ? "ray tracing" : "ray query")) {
+            auto config = refusalBase();
+            Json task{{"name", "trace"}, {"writes", {"shared"}}};
+            if (tracing) {
+                task["ray_tracing"] = Json::object();
+            } else {
+                task["ray_query"] = {{"acceleration_structure", "scene"}};
+            }
+            config["compute_tasks"] = Json::array({task});
+            const auto selected = [&](bool table) {
+                auto input = config;
+                if (table) input["ray_task_acceleration_structures"] = {{"trace", "actors"}};
+                const auto outcome = run(normalizeRenderingJson(input), {}, Finalize{.named = named});
+                INFO(outcome.refusal);
+                REQUIRE(outcome.stage.empty());
+                const auto &node = irNode(*outcome.ir, "trace");
+                const auto &info = std::get<ComputeNodeInfo>(node.info);
+                const auto value = tracing ? info.ray_tracing_acceleration_structure
+                                           : info.ray_query_acceleration_structure.value_or("");
+                const bool waits = std::find(node.after.begin(), node.after.end(),
+                                             "__scene_acceleration_structure:actors") != node.after.end();
+                return std::pair{value, waits};
+            };
+            CHECK(selected(false) == std::pair{std::string{"scene"}, false});
+            CHECK(selected(true) == std::pair{std::string{"actors"}, true});
         }
     }
 }

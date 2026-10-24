@@ -664,19 +664,22 @@ class RenderConfigEditorService {
     nlohmann::ordered_json rejection(
         std::string code, std::string message,
         nlohmann::ordered_json details = nlohmann::ordered_json::object()) const;
+    // A refusal of a candidate before it is applied. RC-3c1b: the rule the
+    // apply / commit path follows too (namedRefusal): a named refusal
+    // (GraphRegistryError) keeps its code and its detail's fields beside
+    // `details`, a graph.* one the definition of its node judged against
+    // `root_bytes` (empty: the document this editor holds); any other is
     // render_pipeline_preflight_failed in the exception's words, with the
-    // fields a typed refusal carries (Q-14e: shader_input_mismatch) added to
-    // `details`.
+    // fields a typed refusal carries (Q-14e: shader_input_mismatch).
     nlohmann::ordered_json preflightRejection(
         const std::exception &error,
-        nlohmann::ordered_json details = nlohmann::ordered_json::object()) const;
-    // RC-3c1b: the rule the apply / commit path follows: a named refusal
-    // (GraphRegistryError) keeps its code and its detail's fields beside
-    // `details` (with the definition of a graph.* refusal's node, judged
-    // against `root_bytes`); any other is preflightRejection.
-    nlohmann::ordered_json namedPreflightRejection(
-        const std::exception &error, nlohmann::ordered_json details,
-        std::string_view root_bytes) const;
+        nlohmann::ordered_json details = nlohmann::ordered_json::object(),
+        std::string_view root_bytes = {}) const;
+    // A named refusal's rejection: `code`, `message`, the detail's fields
+    // beside `details`, the graph.* document judged against `root_bytes`.
+    nlohmann::ordered_json namedRefusal(
+        std::string code, std::string message, const nlohmann::json &detail,
+        nlohmann::ordered_json details, std::string_view root_bytes) const;
     // G-6: the candidate through preflight_graph_variants. Returns the
     // refusal naming the variant that could not compose it, or nullopt.
     // `details` are the fields the caller's own preflight refusals carry.

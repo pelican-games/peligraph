@@ -7463,7 +7463,7 @@ TEST_CASE("RC-3c1b the editor answers a planner refusal with its code and subjec
              {{{"after", Json::array({"rc3c1b_pass"})}}, "render_graph.self_dependency@1",
               {{"node", "rc3c1b_pass"}}},
              // (An undeclared input is refused by the composition first:
-             // feature.required_target_missing@1.)
+             // below.)
          }) {
         DYNAMIC_SECTION(refusal.code) {
             const auto result = add(refusal.edit);
@@ -7478,6 +7478,23 @@ TEST_CASE("RC-3c1b the editor answers a planner refusal with its code and subjec
             CHECK(readBytes(harness.project.render_config) == root_before);
         }
     }
+    // An undeclared input: the composition refuses it (a GraphRegistryError)
+    // at the edit's own preflight, before any ticket. The shared
+    // preflightRejection answers it by its code and subject, as the commit
+    // does (it was render_pipeline_preflight_failed here before).
+    Json pass{{"name", "rc3c1b_pass"},
+              {"type", "fullscreen"},
+              {"input", Json::array({"rc3c1b_nobody_declared"})},
+              {"output", {{"color", Json::array({"f1_owned"})}, {"depth", nullptr}}},
+              {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://fullscreen"}}}};
+    const auto refused = Json(harness.service->addAuthoredPass(
+        {{"base_source_digest", harness.digest()}, {"graph", "main_render"}, {"insert", "after:ssao_pass"}, {"pass", pass}}));
+    INFO(refused.dump());
+    CHECK(refused.at("status") == "rejected");
+    CHECK_FALSE(refused.contains("ticket"));
+    CHECK(refused.at("error").at("code") == "feature.required_target_missing@1");
+    CHECK(refused.at("error").value("target", Json()) == "rc3c1b_nobody_declared");
+    CHECK(readBytes(harness.project.render_config) == root_before);
 }
 
 TEST_CASE("F-1 edit_render_targets refuses by name and leaves the documents alone",

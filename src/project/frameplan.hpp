@@ -194,6 +194,11 @@ std::vector<FramePlanUnreadOutput> findFramePlanUnreadOutputs(
 FramePlan planFrameGraph(const FrameGraphDefinition &definition);
 std::vector<std::string> framePlanOrder(const FramePlan &plan);
 
+// RC-3c1b: the refusals above that do not depend on the final order (all
+// but render_graph.ambiguous_writes@1, which frame_node_order may resolve),
+// for a revision before finalizeRenderGraph (a provider's, the editor's).
+void requireFrameGraphStructure(const FrameGraphDefinition &definition);
+
 // RC-2b: the structure every published FramePlan keeps, whoever made it
 // (planFrameGraph, a render compiler program, a hand-built preparation).
 // The runtime runs the nodes in array order and Studio shows them by

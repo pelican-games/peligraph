@@ -767,68 +767,16 @@ struct RegisteredRenderGraphVariantFamily {
     std::optional<PreviewGraphProgram> preview;
 };
 
-// Builds the compiler request list for one publication transaction. One
-// top-level program sees and compiles the complete variant family; its
-// backend package structure is checked before any mutable GPU registry
-// checkpoint is opened. The default program preserves the prior logical +
-// Vulkan sequence; a backend-native program can directly construct the same
-// physical package. Runtime object preparation retains the existing rollback
-// checks in RegistrationStages.
-//
-// Runtime variants keep the order of `dependencies`. The request-local
-// preview, when asked for, is appended after every runtime variant and is the
-// only data_only artifact in the list; it never enters shared GPU
-// registration.
+// The requests of these registration dependencies' options.
 std::vector<RenderCompilerProgramVariantRequest>
 makeRenderGraphVariantRequests(
     const std::vector<RenderingPassConfigRegistrationDependencies>
         &dependencies,
     bool with_preview) {
-    std::vector<RenderCompilerProgramVariantRequest>
-        variant_requests;
-    variant_requests.reserve(
-        dependencies.size() +
-        (with_preview ? 1u : 0u));
-    for (const auto &variant : dependencies) {
-        RenderCompilerProgramVariantRequest request{
-            .graph_variant =
-                variant.options.graph_variant,
-            .enable_multiview_runtime =
-                variant.options
-                    .enable_multiview_runtime,
-            .enable_external_depth_export =
-                variant.options
-                    .enable_external_depth_export,
-        };
-#if PELICAN_WITH_IMGUI
-        if (request.graph_variant ==
-            RenderPipelineGraphVariant::flat) {
-            request.compose_runtime_config =
-                [](nlohmann::json &config) {
-                    invokeImGuiRuntimeCallback(
-                        GET_MODULE(EngineLaunchConfig),
-                        [&config] {
-                            appendImGuiPassToCanonicalGraphs(
-                                config);
-                        });
-                };
-        }
-#endif
-        variant_requests.push_back(
-            std::move(request));
-    }
-    if (with_preview) {
-        variant_requests.push_back(
-            RenderCompilerProgramVariantRequest{
-                .graph_variant =
-                    RenderPipelineGraphVariant::
-                        preview,
-                .artifact =
-                    RenderCompilerProgramArtifact::
-                        data_only,
-            });
-    }
-    return variant_requests;
+    std::vector<RenderingPassConfigRegistrationDependencies::Options> options;
+    options.reserve(dependencies.size());
+    for (const auto &variant : dependencies) options.push_back(variant.options);
+    return makeRenderGraphVariantRequests(std::span{options}, with_preview);
 }
 
 // One publication transaction, split into the four stages the entry point
@@ -1214,6 +1162,9 @@ void RegistrationStages::prepare() {
             preview_variant.unavailable;
         if (!unavailable) {
             try {
+                if (!preview_variant.render_graph)
+                    throw std::logic_error(
+                        "the compiled preview variant has no render graph");
                 prepared_preview =
                     makePreviewGraphProgram(
                         std::move(
@@ -1221,7 +1172,8 @@ void RegistrationStages::prepare() {
                                 .compiled_pipeline),
                         std::move(
                             preview_variant
-                                .normalized_config));
+                                .normalized_config),
+                        *preview_variant.render_graph);
             } catch (...) {
                 unavailable = std::current_exception();
             }
@@ -1664,6 +1616,70 @@ registerRenderingPassConfigVariantsData(
 }
 
 } // namespace
+
+// Builds the compiler request list for one publication transaction. One
+// top-level program sees and compiles the complete variant family; its
+// backend package structure is checked before any mutable GPU registry
+// checkpoint is opened. The default program preserves the prior logical +
+// Vulkan sequence; a backend-native program can directly construct the same
+// physical package. Runtime object preparation retains the existing rollback
+// checks in RegistrationStages.
+//
+// Runtime variants keep the order of `dependencies`. The request-local
+// preview, when asked for, is appended after every runtime variant and is the
+// only data_only artifact in the list; it never enters shared GPU
+// registration.
+std::vector<RenderCompilerProgramVariantRequest>
+makeRenderGraphVariantRequests(
+    std::span<const RenderingPassConfigRegistrationDependencies::Options>
+        variants,
+    bool with_preview) {
+    std::vector<RenderCompilerProgramVariantRequest>
+        variant_requests;
+    variant_requests.reserve(
+        variants.size() +
+        (with_preview ? 1u : 0u));
+    for (const auto &options : variants) {
+        RenderCompilerProgramVariantRequest request{
+            .graph_variant =
+                options.graph_variant,
+            .enable_multiview_runtime =
+                options
+                    .enable_multiview_runtime,
+            .enable_external_depth_export =
+                options
+                    .enable_external_depth_export,
+        };
+#if PELICAN_WITH_IMGUI
+        if (request.graph_variant ==
+            RenderPipelineGraphVariant::flat) {
+            request.compose_runtime_config =
+                [](nlohmann::json &config) {
+                    invokeImGuiRuntimeCallback(
+                        GET_MODULE(EngineLaunchConfig),
+                        [&config] {
+                            appendImGuiPassToCanonicalGraphs(
+                                config);
+                        });
+                };
+        }
+#endif
+        variant_requests.push_back(
+            std::move(request));
+    }
+    if (with_preview) {
+        variant_requests.push_back(
+            RenderCompilerProgramVariantRequest{
+                .graph_variant =
+                    RenderPipelineGraphVariant::
+                        preview,
+                .artifact =
+                    RenderCompilerProgramArtifact::
+                        data_only,
+            });
+    }
+    return variant_requests;
+}
 
 RenderingPassConfigRegistrationResult registerRenderingPassConfigFromJson(
     const std::string &json_path, vk::Extent2D base_extent,

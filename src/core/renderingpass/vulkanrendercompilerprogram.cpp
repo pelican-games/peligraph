@@ -361,10 +361,14 @@ compileDefaultLogicalVariant(
         // target storage.
         compiled_pipeline_value.render_strategy =
             std::move(resolved_render_strategy);
-        // The preview's IR too (its graphs' names; it plans no further).
-        auto render_graph = parseRenderGraph(
-            composed_config,
-            buildPassFieldOwnershipCapabilities());
+        // The preview's IR too, with its final references resolved (a table
+        // naming a task the preview left out is refused here, inside the
+        // preview's own try); it plans no further.
+        auto render_graph = resolveRenderGraphReferences(
+            parseRenderGraph(
+                composed_config,
+                buildPassFieldOwnershipCapabilities()),
+            compiled_pipeline_value.scene_acceleration_structures);
         return {
             .compiled_pipeline =
                 std::move(

@@ -269,7 +269,8 @@ struct ImageResource {
     // render_graph.image_format_unresolved@1 {resource}.
     bool format_unresolved = false;
     // A snapshot copy's size of the image (the copy contract): its bytes,
-    // or that the extent waits on the output's.
+    // or that they wait (on the output's extent, or on the unresolved
+    // format).
     std::optional<std::size_t> snapshot_copy_bytes;
     bool snapshot_extent_pending = false;
 
@@ -438,10 +439,11 @@ LogicalFrameGraphShadowOptions renderGraphShadowOptions(
 struct ToLogicalGraphOptions {
     RenderGraphDeviceFacts device;
 };
-// The graph is planned first (planRenderGraph), so a graph the planner
-// refuses (a cycle, an unknown node or resource, ...) is refused by name
-// before the logical graph is built. The graph's provenance is the logical
-// graph's.
+// The graph's structure is checked first (requireFrameGraphStructure), so a
+// graph the planner refuses whatever the final order (a cycle, an unknown
+// node or resource, ...) is refused by name before the logical graph is
+// built; two unordered writers are left to planRenderGraph after the final
+// frame_node_order. The graph's provenance is the logical graph's.
 CompiledLogicalRenderGraph toLogicalGraph(
     const RenderGraphIR &ir, const GraphIR &graph,
     const ToLogicalGraphOptions &options = {});
@@ -450,9 +452,7 @@ CompiledLogicalRenderGraph toLogicalGraph(
 // provider chain (docs/design_render_graph_ir.md §2.2), in this order:
 //   every config image's format is resolved
 //     (render_graph.image_format_unresolved@1 {resource});
-//   ray_task_acceleration_structures is resolved against the config's
-//     compute tasks (render_graph.compute_task_invalid@1 {node, field,
-//     reason: unknown_task | task_declares_no_ray_work});
+//   resolveRenderGraphReferences (by the authored names);
 //   requireRenderGraphRayQueryCapability; namespaceSharedComputeTasks;
 //   insertAccelerationStructureNodes; applyFrameNodeOrder.
 // The checks a revision needs in itself stay in parseRenderGraph; these are
@@ -468,6 +468,19 @@ struct FinalizeRenderGraphRequest {
 };
 RenderGraphIR finalizeRenderGraph(RenderGraphIR ir, const FinalizeRenderGraphRequest &request,
                                   TargetPlanningPolicy &target_planning);
+
+// The final revision's references, which every variant resolves (the
+// preview too, which goes no further): ray_task_acceleration_structures
+// against the config's compute tasks (render_graph.compute_task_invalid@1
+// {node, field, reason: unknown_task | task_declares_no_ray_work}), then
+// every structure a config task or a raster-family pass selects is declared
+// (requireSelectedAccelerationStructuresDeclared).
+RenderGraphIR resolveRenderGraphReferences(
+    RenderGraphIR ir, std::span<const SceneAccelerationStructureDefinition> named);
+// "scene" or one of `named`: render_graph.acceleration_structure_unknown@1
+// {node, acceleration_structure}.
+void requireSelectedAccelerationStructuresDeclared(
+    const RenderGraphIR &ir, std::span<const SceneAccelerationStructureDefinition> named);
 
 // The steps of finalizeRenderGraph. IR in, IR out; no JSON.
 //
