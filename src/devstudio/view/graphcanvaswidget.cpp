@@ -142,7 +142,8 @@ bool isNodeSurface(const QString &kind) {
 // NB-2b: a part of a stack's body a press on is the body's to answer.
 bool isStackPart(const QString &kind) {
     return kind.startsWith(QLatin1String{"graph_stack_"}) &&
-           kind != QLatin1String{GraphCanvasStackDropLineItem};
+           kind != QLatin1String{GraphCanvasStackDropLineItem} &&
+           kind != QLatin1String{GraphCanvasStackPendingItem};
 }
 
 QGraphicsItem *nodeItemOf(QGraphicsItem *item) {
@@ -1217,6 +1218,9 @@ bool GraphCanvasScene::followDocumentPlacement() {
         else
             loadLayout(drawn);
     }
+    // NB-5: the placement the scene draws is the document's now, as far as
+    // followDocument is to compare.
+    if (follows && drawn_from_ && drawn_from_->scope == scope) drawn_from_->layout = model_->scopeLayout(scope);
     return follows;
 }
 
@@ -1892,9 +1896,12 @@ void GraphCanvasScene::repopulate() {
     setProperty("pelicanGraphNotice", QVariant{});
     setProperty("pelicanGraphZoneCount", QVariant{});
     if (model_ == nullptr) {
+        drawn_from_.reset();
         rebuilding_ = false;
         return;
     }
+    // NB-5: a shape the document now says (or refused) is not drawn ahead.
+    followLayerShape();
     pruneSessionPositions();
     // A placement sent for a scope this draw may not hold has caught up once
     // the document says what was sent.
@@ -2067,6 +2074,7 @@ void GraphCanvasScene::repopulate() {
     drawing.setOpenRows([this](const std::string &row_scope, const std::string &stack, const std::string &input) {
         return layerRowOpen(row_scope, stack, input);
     });
+    if (layer_shape_) drawing.setLayerShape(layer_shape_->scope, layer_shape_->stack, layer_shape_->parameters);
 
     // LP-4d1: every root loop is drawn as a zone around the body its tab
     // shows. The zones are planned before the root is placed, because a
@@ -2717,6 +2725,7 @@ void GraphCanvasScene::repopulate() {
         GraphCanvasDrawing::Builder inside{*this, qtext(body)};
         inside.setContainer(content);
         inside.setThumbnails(thumbnails_.get());
+        if (layer_shape_) inside.setLayerShape(layer_shape_->scope, layer_shape_->stack, layer_shape_->parameters);
         std::set<std::string, std::less<>> ends;
         for (const auto &entry : plan.drawn) {
             const auto key = std::pair{body, entry.node->id};
@@ -2863,6 +2872,7 @@ void GraphCanvasScene::repopulate() {
                 static_cast<qulonglong>(layout.boxes.size()));
     setProperty("pelicanLayoutReversedEdges",
                 static_cast<qulonglong>(layout.reversed_edges.size()));
+    drawn_from_ = drawnFromNow();
     rebuilding_ = false;
     rebuildRoutingIndex();
     applySceneRectNow();
@@ -3533,7 +3543,7 @@ void GraphCanvasScene::finishConnection(const QPointF &position) {
     // is a layer at that place (graphCanvasInsertLayerOps), one edit.
     if (pending.from_output && pending.carry_loop.empty() && !pending.from_folded)
         if (const auto gap = lineGapAt(position); gap && gap->scope == pending.scope) {
-            const auto nodes = model_->nodes(gap->scope);
+            const auto nodes = layerNodes(gap->scope);
             if (pending.node != gap->stack &&
                 GraphCanvasModel::canConnectAmong(nodes, pending.node, pending.port, gap->stack,
                                                   std::string{graphCanvasStackAddPort})) {
@@ -3592,6 +3602,13 @@ void GraphCanvasScene::finishConnection(const QPointF &position) {
 }
 
 void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
+    // NB-5: while a stack's edit is in the air the canvas stays enabled for
+    // that stack's rows alone; any other press is what a disabled canvas
+    // would make of it -- nothing.
+    if (model_ != nullptr && model_->busy() && layerEditInFlight() && !takesWhileBusy(event->scenePos(), false)) {
+        event->accept();
+        return;
+    }
     handling_press_ = true;
     const auto pressed = qScopeGuard([this] { handling_press_ = false; });
     // GL-3a: a fold group's heading, its toggle and its folded node -- not
@@ -3862,6 +3879,10 @@ void GraphCanvasScene::mouseReleaseEvent(QGraphicsSceneMouseEvent *event) {
 }
 
 void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
+    if (model_ != nullptr && model_->busy() && layerEditInFlight()) {
+        event->accept();
+        return;
+    }
     context_position_ = event->scenePos();
     // GL-3a: a fold group's heading has its own menu.
     if (foldItemMenu)
@@ -4494,7 +4515,7 @@ bool GraphCanvasScene::commitInlineEdit() {
         const auto name = text.trimmed().toStdString();
         if (!row || name == row->name) return false;
         return submitLayerOps(scope, node,
-                              graphCanvasSetLayerOps(model_->nodes(scope), scope, node, row->index, "name", name));
+                              graphCanvasSetLayerOps(layerNodes(scope), scope, node, row->index, "name", name));
     }
     // NB-2c: a percent (a `%` after it is allowed), whole, 0..100; the same
     // op the slider and the dock's spin send. What the layer holds sends
@@ -4509,7 +4530,7 @@ bool GraphCanvasScene::commitInlineEdit() {
         const long whole = std::lround(std::clamp(percent, 0.0, 100.0));
         if (whole == std::lround(row->opacity * 100.0)) return false;
         return submitLayerOps(scope, node,
-                              graphCanvasSetLayerOps(model_->nodes(scope), scope, node, row->index, "opacity",
+                              graphCanvasSetLayerOps(layerNodes(scope), scope, node, row->index, "opacity",
                                                      static_cast<double>(whole) / 100.0));
     }
     nlohmann::json value;
@@ -4763,6 +4784,14 @@ bool GraphCanvasScene::deleteSelection() {
 }
 
 void GraphCanvasScene::keyPressEvent(QKeyEvent *event) {
+    // NB-5: no Undo, Redo or Delete while a stack's edit is in the air (the
+    // canvas is enabled for that stack's rows only); an editor types on.
+    if (model_ != nullptr && model_->busy() && layerEditInFlight() && !editingInline() &&
+        (event->matches(QKeySequence::Undo) || event->matches(QKeySequence::Redo) ||
+         event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace)) {
+        event->accept();
+        return;
+    }
     // Text widgets keep their own Undo stack. Only a canvas gesture belongs
     // to graph history, and a drag must finish saving before it can be undone.
     if (!editingInline() && event->matches(QKeySequence::Undo)) {
@@ -4814,7 +4843,7 @@ void GraphCanvasScene::keyPressEvent(QKeyEvent *event) {
 std::optional<GraphCanvasStackRow> GraphCanvasScene::layerRow(const std::string &scope, const std::string &stack,
                                                               const std::string &input) const {
     if (model_ == nullptr || input.empty()) return std::nullopt;
-    for (auto &row : graphCanvasLayerRows(model_->nodes(scope), stack))
+    for (auto &row : graphCanvasLayerRows(layerNodes(scope), stack))
         if (row.input == input) return row;
     return std::nullopt;
 }
@@ -4896,18 +4925,38 @@ std::optional<GraphCanvasScene::LayerTarget> GraphCanvasScene::layerTarget() con
 }
 
 bool GraphCanvasScene::submitLayerOps(const std::string &scope, const std::string &stack, nlohmann::json ops) {
-    if (model_ == nullptr || ops.empty() || !model_->canEdit()) return false;
+    if (model_ == nullptr || ops.empty()) return false;
+    // NB-5: the stack's parameters as the gesture leaves them, when it sets
+    // them -- drawn now, before the engine has said anything.
+    std::optional<nlohmann::json> shape;
+    for (const auto &op : ops)
+        if (op.is_object() && op.value("op", std::string{}) == "set_node_parameters" &&
+            op.value("node", std::string{}) == stack && op.contains("parameters"))
+            shape = op.at("parameters");
+    const bool parameters_only = shape.has_value() && ops.size() == 1;
+    if (!model_->canEdit()) {
+        // The stack's own edit is in the air: this shape is drawn now and
+        // goes once the engine has answered for that one (followLayerShape).
+        if (!parameters_only || !layerEditable(scope, stack)) return false;
+        layer_shape_->parameters = std::move(*shape);
+        drawLayerShape(scope, stack);
+        return true;
+    }
     // The layer a gesture puts on this stack is the one picked next: the
     // input its new `layers` holds that the stack's did not (the dock's rule).
     std::string added;
-    const auto before = graphCanvasLayerRows(model_->nodes(scope), stack);
+    const auto before = graphCanvasLayerRows(layerNodes(scope), stack);
     for (const auto &op : ops)
         if (op.value("op", std::string{}) == "set_node_parameters" && op.value("node", std::string{}) == stack)
             for (const auto &element : op["parameters"].value("layers", nlohmann::json::array()))
                 if (const auto input = element.value("input", std::string{});
                     !input.empty() && std::ranges::find(before, input, &GraphCanvasStackRow::input) == before.end())
                     added = input;
+    const auto previous = layer_shape_;
+    if (shape) layer_shape_ = LayerShape{scope, stack, *shape, *shape, !parameters_only};
     const bool submitted = model_->submitEdit(std::move(ops));
+    if (!submitted) layer_shape_ = previous;
+    else if (shape) drawLayerShape(scope, stack);
     afterEdit(submitted);
     if (!submitted) {
         if (noticeChanged) noticeChanged();
@@ -4917,10 +4966,268 @@ bool GraphCanvasScene::submitLayerOps(const std::string &scope, const std::strin
     return true;
 }
 
+// --- NB-5: a stack's rows drawn ahead of the engine.
+
+bool GraphCanvasScene::layerShapePending(const std::string &scope, const std::string &stack) const {
+    return layer_shape_ && layer_shape_->scope == scope && layer_shape_->stack == stack;
+}
+
+void GraphCanvasScene::drawLayerShape(const std::string &scope, const std::string &stack) {
+    const auto draw = [this, scope, stack] {
+        if (!redrawStackNode(scope, stack)) repopulate();
+        // On screen now, before the edit goes out and the owner follows it
+        // (its synchronization runs before the next paint otherwise).
+        for (QGraphicsView *view : views())
+            if (view->isVisible()) view->viewport()->repaint();
+    };
+    // A press (the eye) stands on an item the drawing deletes: drawn from the
+    // event loop, the moment the press is over.
+    if (handling_press_) QMetaObject::invokeMethod(this, draw, Qt::QueuedConnection);
+    else draw();
+}
+
+bool GraphCanvasScene::layerEditInFlight() const {
+    return layer_shape_ && !layer_shape_->structural && model_ != nullptr && model_->connected() &&
+           !model_->digest().empty();
+}
+
+bool GraphCanvasScene::layerEditable(const std::string &scope, const std::string &stack) const {
+    if (model_ == nullptr || GraphCanvasDrawing::layerScopeReadOnly(*model_, scope)) return false;
+    if (model_->canEdit()) return true;
+    return layerEditInFlight() && layerShapePending(scope, stack);
+}
+
+std::vector<GraphCanvasNode> GraphCanvasScene::layerNodes(const std::string &scope) const {
+    if (model_ == nullptr) return {};
+    auto nodes = model_->nodes(scope);
+    if (layer_shape_ && layer_shape_->scope == scope)
+        if (const auto found = std::ranges::find(nodes, layer_shape_->stack, &GraphCanvasNode::id);
+            found != nodes.end())
+            found->parameters = layer_shape_->parameters;
+    return nodes;
+}
+
+void GraphCanvasScene::followLayerShape() {
+    if (!layer_shape_ || model_ == nullptr || model_->busy()) return;
+    const auto nodes = model_->nodes(layer_shape_->scope);
+    const auto found = std::ranges::find(nodes, layer_shape_->stack, &GraphCanvasNode::id);
+    // The document says what was sent: that edit is answered. A shape drawn
+    // since waits to go; else nothing is ahead of the document any more.
+    const bool answered =
+        found != nodes.end() && !layer_shape_->structural && found->parameters == layer_shape_->sent;
+    if (answered && layer_shape_->parameters != layer_shape_->sent) {
+        if (!layer_shape_send_queued_) {
+            layer_shape_send_queued_ = true;
+            QTimer::singleShot(0, this, [this] {
+                layer_shape_send_queued_ = false;
+                sendWaitingLayerShape();
+            });
+        }
+        return;
+    }
+    // Answered, refused (the document still says what it said before), or
+    // the document moved some other way: the document is what is drawn.
+    layer_shape_.reset();
+}
+
+void GraphCanvasScene::sendWaitingLayerShape() {
+    if (!layer_shape_ || model_ == nullptr) return;
+    // Busy again (a read of its own): the next answer comes back here.
+    if (model_->busy() && model_->connected()) return;
+    const auto shape = *layer_shape_;
+    const auto drop = [this, &shape] {
+        layer_shape_.reset();
+        if (!redrawStackNode(shape.scope, shape.stack)) repopulate();
+    };
+    const auto nodes = model_->nodes(shape.scope);
+    const auto found = std::ranges::find(nodes, shape.stack, &GraphCanvasNode::id);
+    if (!model_->canEdit() || found == nodes.end() || found->parameters == shape.parameters) {
+        drop();
+        return;
+    }
+    auto ops = nlohmann::json::array({nlohmann::json{{"op", "set_node_parameters"},
+                                                     {"scope", shape.scope.empty() ? std::string{"root"} : shape.scope},
+                                                     {"node", shape.stack},
+                                                     {"parameters", shape.parameters}}});
+    layer_shape_->sent = shape.parameters;
+    if (!model_->submitEdit(std::move(ops))) {
+        drop();
+        if (noticeChanged) noticeChanged();
+        return;
+    }
+    afterEdit(true);
+}
+
+bool GraphCanvasScene::redrawStackNode(const std::string &scope, const std::string &stack) {
+    if (model_ == nullptr || rebuilding_ || model_->foldedView() || model_->currentScope() != scope) return false;
+    auto *item = dynamic_cast<QGraphicsPathItem *>(findNodeItem(*this, graphCanvasKinds(), qtext(scope), qtext(stack)));
+    // A zone's body is drawn inside its frame: the whole draw follows it.
+    if (item == nullptr || item->parentItem() != nullptr ||
+        !item->data(GraphCanvasZoneScopeRole).toString().isEmpty())
+        return false;
+    const auto nodes = model_->nodes(scope);
+    const auto found = std::ranges::find(nodes, stack, &GraphCanvasNode::id);
+    if (found == nodes.end() || found->op != "canvas.stack") return false;
+    const NodeDragTraceSpan trace{this, "redraw_stack"};
+    // The outputs a line leaves from keep their rows (NB-1's compact view).
+    std::set<std::string, std::less<>> linked;
+    for (const auto &edge : model_->edges(scope))
+        if (edge.from_node == stack) linked.insert(edge.from_port);
+    const auto carried = carryInlineEdit();
+    rebuilding_ = true;
+    closeEditor();
+    if (pending_connection_ || !lit_sockets_.empty()) clearPendingConnection();
+    layer_drag_.reset();
+    hideLayerDropLine();
+    GraphCanvasDrawing::Builder drawing{*this, qtext(scope)};
+    if (picked_layer_) drawing.setPickedLayer(picked_layer_->scope, picked_layer_->stack, picked_layer_->input);
+    drawing.setThumbnails(thumbnails_.get());
+    drawing.setOpenRows([this](const std::string &row_scope, const std::string &row_stack, const std::string &input) {
+        return layerRowOpen(row_scope, row_stack, input);
+    });
+    if (layer_shape_) drawing.setLayerShape(layer_shape_->scope, layer_shape_->stack, layer_shape_->parameters);
+    const auto entry = drawing.prepareNode(*model_, *found, nodeView(scope, stack), linked);
+    drawing.redrawNode(*item, entry);
+    // GL-2b, decision 2: the band under a root node is the node's child.
+    if (scope.empty())
+        if (const auto band = layerBandText(stack); !band.isEmpty()) drawing.addLayerBand(*item, qtext(stack), band);
+    rebuilding_ = false;
+    rebuildRoutingIndex();
+    // Decision 5: the cut ends of lines to hidden domains, on its sockets.
+    for (const auto &stub : model_->domainStubs()) {
+        if (stub.node != stack) continue;
+        if (QGraphicsItem *socket = findSocketOrAnchor(*this, qtext(scope), qtext(stub.node), qtext(stub.port),
+                                                       stub.input ? QStringLiteral("input") : QStringLiteral("output")))
+            drawing.addDomainStub(stub, *socket);
+    }
+    rerouteGraphCanvasEdges(*this, scope, stack);
+    // A line into a row drawn away ahead of the document (a layer deleted)
+    // has nothing to end on until the document says so: hidden meanwhile.
+    const auto *index = NodeGraphIndex::forScene(*this);
+    for (QGraphicsItem *line : index != nullptr ? index->connected({"edge", qtext(scope), qtext(stack)}) : items()) {
+        if (line == nullptr || nodeGraphItemKind(*line) != QLatin1String{GraphCanvasEdgeItem} ||
+            line->data(GraphCanvasScopeRole).toString() != qtext(scope) ||
+            line->data(NodeGraphToNameRole).toString() != qtext(stack))
+            continue;
+        const QString port = line->data(GraphCanvasToPortRole).toString();
+        const bool ends = findSocketOrAnchor(*this, qtext(scope), qtext(stack), port, QStringLiteral("input")) != nullptr;
+        line->setVisible(ends);
+        if (QGraphicsItem *arrow = findGraphCanvasArrow(*this, qtext(scope),
+                                                        line->data(NodeGraphFromNameRole).toString(),
+                                                        line->data(GraphCanvasFromPortRole).toString(),
+                                                        qtext(stack), port))
+            arrow->setVisible(ends);
+    }
+    if (drawn_from_ && drawn_from_->scope == scope) {
+        const bool pending = layerShapePending(scope, stack);
+        drawn_from_->stacks[stack] = nlohmann::json{
+            {"parameters", pending ? layer_shape_->parameters : found->parameters}, {"pending", pending}};
+    }
+    if (carried) restoreInlineEdit(*carried);
+    scheduleSceneRectUpdate();
+    if (geometryChanged) geometryChanged();
+    return true;
+}
+
+GraphCanvasScene::DrawnFrom GraphCanvasScene::drawnFromNow() const {
+    DrawnFrom from;
+    from.scope = model_->currentScope();
+    // The stacks' `layers` of the scope on screen aside: what followDocument
+    // draws again by itself.
+    const auto withoutLayers = [](nlohmann::json nodes) {
+        if (!nodes.is_array()) return nodes;
+        for (auto &node : nodes)
+            if (node.is_object() && node.value("op", std::string{}) == "canvas.stack" && node.contains("parameters") &&
+                node.at("parameters").is_object())
+                node.at("parameters").erase("layers");
+        return nodes;
+    };
+    nlohmann::json definitions = model_->documentDefinitions();
+    if (!from.scope.empty())
+        if (const auto found = definitions.find(from.scope);
+            found != definitions.end() && found->is_object() && found->contains("nodes"))
+            (*found)["nodes"] = withoutLayers(found->at("nodes"));
+    from.document = nlohmann::json{
+        {"nodes", from.scope.empty() ? withoutLayers(model_->documentNodes()) : model_->documentNodes()},
+        {"definitions", std::move(definitions)}};
+    from.layout = model_->scopeLayout(from.scope);
+    from.nodes = model_->nodes(from.scope);
+    for (auto &node : from.nodes) {
+        from.shown.push_back(model_->nodeShown(from.scope, node));
+        if (node.op != "canvas.stack") continue;
+        const bool pending = layerShapePending(from.scope, node.id);
+        from.stacks[node.id] = nlohmann::json{
+            {"parameters", pending ? layer_shape_->parameters : node.parameters}, {"pending", pending}};
+        if (node.parameters.is_object()) node.parameters.erase("layers");
+        // Its ports are listed in the order of its layers.
+        std::ranges::sort(node.inputs, {}, &GraphCanvasPort::port);
+    }
+    from.folded = model_->foldedNodes();
+    from.derived = model_->derivedEdges();
+    from.passes = model_->planPasses();
+    from.stubs = model_->domainStubs();
+    // The context's version stamps move with every published generation; the
+    // passes and inputs it describes are what the scene draws.
+    from.authoring = model_->renderAuthoringContext();
+    if (from.authoring.is_object()) {
+        from.authoring.erase("source_digest");
+        from.authoring.erase("published_generation");
+    }
+    from.trail = model_->displayTrail();
+    from.decomposable = model_->canShowDecomposed();
+    from.folded_view = model_->foldedView();
+    return from;
+}
+
+bool GraphCanvasScene::followDocument() {
+    if (model_ == nullptr || rebuilding_ || !drawn_from_ || !zones_.empty() || drawn_scopes_.size() != 1) {
+        repopulate();
+        return false;
+    }
+    const NodeDragTraceSpan trace{this, "follow_document"};
+    auto now = drawnFromNow();
+    const DrawnFrom &drawn = *drawn_from_;
+    const bool same = !now.folded_view && now.scope == drawn.scope && now.document == drawn.document &&
+                      now.layout == drawn.layout && now.nodes == drawn.nodes && now.shown == drawn.shown &&
+                      now.folded == drawn.folded && now.derived == drawn.derived && now.passes == drawn.passes &&
+                      now.stubs == drawn.stubs && now.authoring == drawn.authoring && now.trail == drawn.trail &&
+                      now.decomposable == drawn.decomposable && now.folded_view == drawn.folded_view;
+    if (!same) {
+        repopulate();
+        return false;
+    }
+    // Only the stacks' `layers` (or nothing at all) moved.
+    followLayerShape();
+    now = drawnFromNow();
+    std::set<std::string, std::less<>> changed;
+    for (const auto &[id, state] : now.stacks)
+        if (const auto before = drawn.stacks.find(id); before == drawn.stacks.end() || before->second != state)
+            changed.insert(id);
+    // A stack another one holds as a group is in that one's rows' pictures.
+    const auto nodes = layerNodes(now.scope);
+    for (bool grew = !changed.empty(); grew;) {
+        grew = false;
+        for (const auto &[id, state] : now.stacks) {
+            (void)state;
+            if (changed.contains(id)) continue;
+            for (const auto &row : graphCanvasLayerRows(nodes, id))
+                if (row.kind == "group" && changed.contains(row.source)) {
+                    changed.insert(id);
+                    grew = true;
+                    break;
+                }
+        }
+    }
+    drawn_from_ = std::move(now);
+    for (const auto &id : changed) (void)redrawStackNode(drawn_from_->scope, id);
+    setProperty("pelicanGraphNotice", qtext(model_->notice().message));
+    return true;
+}
+
 bool GraphCanvasScene::addLayer(const std::string &what) {
     const auto target = layerTarget();
     if (!target || model_ == nullptr || !model_->canEdit()) return false;
-    const auto nodes = model_->nodes(target->scope);
+    const auto nodes = layerNodes(target->scope);
     if (what == "rect" || what == "ellipse")
         return submitLayerOps(target->scope, target->stack,
                               graphCanvasAddShapeLayerOps(nodes, target->scope, target->stack, what, target->above));
@@ -4945,7 +5252,7 @@ bool GraphCanvasScene::addLayerFilter(const std::string &scope, const std::strin
         return false;
     const auto row = layerRow(scope, stack, input);
     if (!row) return false;
-    auto ops = graphCanvasAddFilterOps(model_->nodes(scope), scope, stack, row->index, op);
+    auto ops = graphCanvasAddFilterOps(layerNodes(scope), scope, stack, row->index, op);
     if (ops.empty()) return false;
     return submitLayerOps(scope, stack, std::move(ops));
 }
@@ -4970,7 +5277,7 @@ bool GraphCanvasScene::addLayerRowMenuEntries(QMenu &menu, const QPointF &at) {
             entry->setObjectName(QStringLiteral("pelican.graphCanvas.layerFilter.") +
                                  qtext(choice.op.substr(choice.op.find('.') + 1)));
             // A filter that cannot go on this row (no line into it) is off.
-            entry->setEnabled(!graphCanvasAddFilterOps(model_->nodes(scope), scope, stack, row->index, choice.op)
+            entry->setEnabled(!graphCanvasAddFilterOps(layerNodes(scope), scope, stack, row->index, choice.op)
                                    .empty());
             QObject::connect(entry, &QAction::triggered, this, [this, scope, stack, input, op = choice.op] {
                 QMetaObject::invokeMethod(
@@ -4996,15 +5303,14 @@ bool GraphCanvasScene::deletePickedLayer() {
     const auto row = layerRow(pick.scope, pick.stack, pick.input);
     if (!row) return false;
     const bool submitted = submitLayerOps(
-        pick.scope, pick.stack, graphCanvasDeleteLayerOps(model_->nodes(pick.scope), pick.scope, pick.stack, row->index));
+        pick.scope, pick.stack, graphCanvasDeleteLayerOps(layerNodes(pick.scope), pick.scope, pick.stack, row->index));
     if (submitted) pickLayerRow(pick.scope, pick.stack, {});
     return submitted;
 }
 
 bool GraphCanvasScene::beginLayerNameEdit(const std::string &scope, const std::string &stack,
                                           const std::string &input) {
-    if (model_ == nullptr || !model_->canEdit() || GraphCanvasDrawing::layerScopeReadOnly(*model_, scope))
-        return false;
+    if (model_ == nullptr || !layerEditable(scope, stack)) return false;
     const auto row = layerRow(scope, stack, input);
     if (!row) return false;
     QGraphicsItem *anchor = nullptr;
@@ -5055,8 +5361,7 @@ bool GraphCanvasScene::beginLayerNameEdit(const std::string &scope, const std::s
 
 bool GraphCanvasScene::beginLayerOpacityEdit(const std::string &scope, const std::string &stack,
                                              const std::string &input) {
-    if (model_ == nullptr || !model_->canEdit() || GraphCanvasDrawing::layerScopeReadOnly(*model_, scope))
-        return false;
+    if (model_ == nullptr || !layerEditable(scope, stack)) return false;
     const auto row = layerRow(scope, stack, input);
     if (!row || row->opacity_driven) return false;
     // The slider's track: the part with no part of its own kind above it.
@@ -5139,7 +5444,7 @@ bool GraphCanvasScene::pressStackPart(QGraphicsItem &item, const QGraphicsSceneM
     const std::string scope = itemScope(item);
     const std::string stack = item.data(NodeGraphNameRole).toString().toStdString();
     const std::string input = item.data(GraphCanvasPortRole).toString().toStdString();
-    const bool editable = model_->canEdit() && !GraphCanvasDrawing::layerScopeReadOnly(*model_, scope);
+    const bool editable = layerEditable(scope, stack);
     layer_drag_.reset();
     pickStackNode(scope, stack, item);
     if (kind == QLatin1String{GraphCanvasStackAddItem}) {
@@ -5182,7 +5487,7 @@ bool GraphCanvasScene::pressStackPart(QGraphicsItem &item, const QGraphicsSceneM
         // The dock's eye: one member of one element (graphCanvasSetLayerOps).
         if (editable)
             (void)submitLayerOps(scope, stack,
-                                 graphCanvasSetLayerOps(model_->nodes(scope), scope, stack, row->index, "visible",
+                                 graphCanvasSetLayerOps(layerNodes(scope), scope, stack, row->index, "visible",
                                                         !row->visible));
         return true;
     }
@@ -5323,7 +5628,7 @@ void GraphCanvasScene::finishLayerDrag(const QPointF &at) {
     layer_drag_.reset();
     hideLayerDropLine();
     if (!drag.moved || model_ == nullptr) return;
-    const auto nodes = model_->nodes(drag.scope);
+    const auto nodes = layerNodes(drag.scope);
     if (drag.opacity) {
         const auto row = layerRow(drag.scope, drag.stack, drag.input);
         if (!row || std::lround(drag.value * 100.0) == std::lround(row->opacity * 100.0)) return;
@@ -5633,7 +5938,36 @@ bool GraphCanvasScene::showDecomposed() {
     return true;
 }
 
+bool GraphCanvasScene::takesWhileBusy(const QPointF &at, bool double_click) const {
+    if (!layer_shape_) return false;
+    for (QGraphicsItem *item : items(at)) {
+        const QString kind = nodeGraphItemKind(*item);
+        // The editor open over a row takes its own clicks.
+        if (kind == QLatin1String{GraphCanvasEditorItem}) return true;
+        if (!isStackPart(kind)) {
+            if (isNodeSurface(kind)) return false;
+            continue;
+        }
+        if (itemScope(*item) != layer_shape_->scope ||
+            item->data(NodeGraphNameRole).toString().toStdString() != layer_shape_->stack)
+            return false;
+        if (double_click)
+            return kind == QLatin1String{GraphCanvasStackNameItem} ||
+                   kind == QLatin1String{GraphCanvasStackOpacityFieldItem};
+        return kind == QLatin1String{GraphCanvasStackRowItem} || kind == QLatin1String{GraphCanvasStackEyeItem} ||
+               kind == QLatin1String{GraphCanvasStackThumbItem} || kind == QLatin1String{GraphCanvasStackNameItem} ||
+               kind == QLatin1String{GraphCanvasStackOpacityItem} ||
+               kind == QLatin1String{GraphCanvasStackOpacityFieldItem} ||
+               kind == QLatin1String{GraphCanvasStackStageItem} || kind == QLatin1String{GraphCanvasStackBlendItem};
+    }
+    return false;
+}
+
 void GraphCanvasScene::mouseDoubleClickEvent(QGraphicsSceneMouseEvent *event) {
+    if (model_ != nullptr && model_->busy() && layerEditInFlight() && !takesWhileBusy(event->scenePos(), true)) {
+        event->accept();
+        return;
+    }
     // GL-3a: a folded fold group opens (rule 6: a double-click goes in).
     if (foldItemDoubleClicked && event->button() == Qt::LeftButton)
         for (QGraphicsItem *item : items(event->scenePos())) {
@@ -11050,7 +11384,9 @@ struct GraphCanvasWidget::Impl {
         // FX-8: a saved ticket still needs its document read back. Socket
         // gestures must wait just like the fields, rather than reach a busy
         // model that cannot submit them and leave the previous saved notice.
-        canvas->setEnabled(!model.busy());
+        // NB-5: except for the rows of a stack whose own edit is in the air,
+        // which take the next gesture at once (the scene turns the rest away).
+        canvas->setEnabled(!model.busy() || scene->layerEditInFlight());
         const NodeDragTraceSpan heavy_trace{scene, "synchronize_heavy"};
         // GL-3a: the fold groups follow the document the tab holds.
         if (folds) folds->follow();
@@ -11126,7 +11462,12 @@ struct GraphCanvasWidget::Impl {
             const bool redraw = content_changed || report_changed ||
                                 !scene->followDocumentPlacement();
             if (redraw) {
-                scene->repopulate();
+                // NB-5: a layer gesture's edit coming back draws its stack
+                // alone (followDocument), anything else the whole scene. A
+                // placement the scene did not draw is drawn whole: what the
+                // scene draws is its own placement, not the last document's.
+                if (placement_changed) scene->repopulate();
+                else scene->followDocument();
                 syncScopeControls();
                 syncValueControls();
                 showDetails();

@@ -234,6 +234,9 @@ inline constexpr auto GraphCanvasStackAddItem = "graph_stack_add";
 inline constexpr auto GraphCanvasStackDeleteItem = "graph_stack_delete";
 inline constexpr auto GraphCanvasStackNoteItem = "graph_stack_note";
 inline constexpr auto GraphCanvasStackDropLineItem = "graph_stack_drop_line";
+// NB-5: the small mark on a stack's band while the rows it draws are a shape
+// the engine has not answered for yet. Clicks go through it.
+inline constexpr auto GraphCanvasStackPendingItem = "graph_stack_pending";
 // NB-2c (design_node_bodies 2.3, a row opened): `graph_stack_expand` the
 // small triangle at a row's left (a press opens or closes the row); on an
 // open row's stage, `graph_stack_stage` its area, `graph_stack_opacity_field`
@@ -393,6 +396,13 @@ class GraphCanvasScene final : public QGraphicsScene {
     // the scene keeps (positions, folds, placements, the selection) is filed
     // under (scope, id). A folded zone is the loop's node, as LP-4c drew it.
     void repopulate();
+    // NB-5: what the owner calls when the document or a report moved. When
+    // what moved is only the `layers` of canvas.stack nodes the canvas draws
+    // (a layer gesture's own edit coming back, an Undo of one), those nodes'
+    // bodies are drawn again in place and the lines into them follow; the
+    // rest of the scene is kept. Anything else is repopulate(). True when
+    // only the stacks were drawn.
+    bool followDocument();
     void clear();
     void rebuildRoutingIndex();
     void invalidateRoutingIndex() { routing_index_.invalidate(); }
@@ -686,6 +696,19 @@ class GraphCanvasScene final : public QGraphicsScene {
     // (Add filter ▸ and its filters, `pelican.graphCanvas.layerFilter.<kind>`);
     // false when `at` is over no row that can take one.
     bool addLayerRowMenuEntries(QMenu &menu, const QPointF &at);
+    // NB-5: a gesture on a stack's rows is drawn the moment it is made -- the
+    // stack's parameters as the gesture leaves them -- and sent; the engine's
+    // answer is not waited for. Until the document says the same (or the
+    // engine refuses, and the rows go back to what the document says), the
+    // stack carries a small mark on its band. While such an edit of a stack's
+    // `layers` alone is in the air, the rows of that stack take more of the
+    // same gestures (a move, the eye, the opacity, a name): each is drawn at
+    // once, and the last shape is sent when the engine has answered for the
+    // one before -- an earlier answer never draws the rows back.
+    [[nodiscard]] bool layerShapePending(const std::string &scope, const std::string &stack) const;
+    // The canvas takes the rows' gestures of the stack in the air although
+    // the model is busy with its edit (the owner keeps the canvas enabled).
+    [[nodiscard]] bool layerEditInFlight() const;
 
     // NB-3 (design_node_bodies 2.5): the pictures the bodies draw, made off
     // the UI thread. `setProjectRoot` is where their images and fonts are read.
@@ -1030,6 +1053,64 @@ class GraphCanvasScene final : public QGraphicsScene {
     bool submitLayerOps(const std::string &scope, const std::string &stack, nlohmann::json ops);
     [[nodiscard]] std::optional<GraphCanvasStackRow> layerRow(const std::string &scope, const std::string &stack,
                                                               const std::string &input) const;
+    // NB-5. The stack's parameters a gesture left it with, drawn ahead of the
+    // document: `sent` is what the edit in the air leaves, `parameters` what
+    // is drawn (a later gesture's, waiting to go once the model is free). A
+    // gesture that also adds or removes nodes (`structural`) is drawn ahead
+    // the same way but takes no gesture after it until it is answered.
+    struct LayerShape {
+        std::string scope;
+        std::string stack;
+        nlohmann::json parameters;
+        nlohmann::json sent;
+        bool structural = false;
+    };
+    std::optional<LayerShape> layer_shape_;
+    bool layer_shape_send_queued_ = false;
+    // The scope's nodes as the canvas draws them: the model's, with the shape
+    // in the air in place of its stack's parameters. Every gesture on a row
+    // is built from these, as the rows on screen are.
+    [[nodiscard]] std::vector<GraphCanvasNode> layerNodes(const std::string &scope) const;
+    // The model is free again: the shape the document now says is dropped;
+    // a waiting one is sent (from the event loop); a refused or overtaken
+    // one gives way to the document.
+    void followLayerShape();
+    void sendWaitingLayerShape();
+    // The stack's body drawn again where it stands (false: it is not a node
+    // of the scope on screen, and nothing was drawn).
+    bool redrawStackNode(const std::string &scope, const std::string &stack);
+    // The shape just made drawn: now, or -- under a press -- from the event
+    // loop; the whole scene when the stack is not drawn by itself.
+    void drawLayerShape(const std::string &scope, const std::string &stack);
+    // A press, a double-click or a key the canvas takes while the model is
+    // busy with a stack's edit: only the rows of that stack.
+    [[nodiscard]] bool takesWhileBusy(const QPointF &at, bool double_click) const;
+    // A row of `stack` takes an edit: the model can take one, or the stack's
+    // own shape is in the air (and the stack is not read only).
+    [[nodiscard]] bool layerEditable(const std::string &scope, const std::string &stack) const;
+    // What the last full draw was drawn from, for followDocument: the
+    // document (the stacks' `layers` aside), the scope's nodes as the model
+    // reads them with their reports, and what the plan adds around them.
+    struct DrawnFrom {
+        std::string scope;
+        nlohmann::json document;
+        nlohmann::json layout;
+        std::vector<GraphCanvasNode> nodes;
+        std::vector<GraphCanvasFoldedNode> folded;
+        std::vector<GraphCanvasDerivedEdge> derived;
+        std::vector<GraphCanvasPlanPass> passes;
+        std::vector<GraphCanvasDomainStub> stubs;
+        nlohmann::json authoring;
+        std::vector<bool> shown;
+        std::vector<std::string> trail;
+        // Each stack's parameters as drawn (the shape in the air, else the
+        // document's) and whether the shape was.
+        std::map<std::string, nlohmann::json, std::less<>> stacks;
+        bool decomposable = false;
+        bool folded_view = false;
+    };
+    std::optional<DrawnFrom> drawn_from_;
+    [[nodiscard]] DrawnFrom drawnFromNow() const;
     std::optional<PassInputPick> selected_pass_input_;
     TabEditOrder *edit_order_ = nullptr;
     // The builders' inputs, from the model: the authoring context parsed

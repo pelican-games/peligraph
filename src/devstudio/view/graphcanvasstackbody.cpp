@@ -440,6 +440,19 @@ class LayerStackNodeBody final : public NodeBody {
         const qreal width = entry.width;
         const StudioTheme &theme = builder.theme();
         const QFontMetricsF &metrics = builder.rowMetrics();
+        // NB-5: on the band, left of the operation's name, while the engine
+        // has not answered for the rows drawn.
+        if (entry.layers_pending) {
+            const QString op = qtext(entry.node->badge.empty() ? entry.node->op : entry.node->badge);
+            const QString dots = QString::fromUtf8("\xE2\x8B\xAF");
+            auto *mark = addText(builder, item, dots, theme.canvas.heading_text);
+            mark->setPos(width - 10.0 - metrics.horizontalAdvance(op) - 8.0 - metrics.horizontalAdvance(dots),
+                         (GraphCanvasHeaderHeight - metrics.height()) / 2.0);
+            mark->setZValue(1.0);
+            mark->setAcceptedMouseButtons(Qt::NoButton);
+            mark->setToolTip(QObject::tr("Saving: the engine has not answered for these rows yet"));
+            builder.tagPart(*mark, entry, GraphCanvasStackPendingItem);
+        }
         if (entry.view == GraphCanvasNodeView::minimal) {
             const qreal centre_y = GraphCanvasHeaderHeight / 2.0;
             if (!entry.inputs.empty()) builder.addAnchor(item, entry, QPointF{0.0, centre_y}, "input");

@@ -57,6 +57,8 @@ struct GraphCanvasPort {
     std::string value_source;
     std::string value_connected_node;
     std::string value_connected_port;
+
+    bool operator==(const GraphCanvasPort &) const = default;
 };
 
 // One output port as the canvas draws it: the name the document connects to
@@ -160,6 +162,9 @@ struct GraphCanvasNode {
     [[nodiscard]] const std::string &heading() const noexcept {
         return label.empty() ? id : label;
     }
+
+    // NB-5: what the canvas drew a node from, compared whole.
+    bool operator==(const GraphCanvasNode &) const = default;
 };
 
 // NB-1 (design_node_bodies 2.2): how much of a node the canvas draws -- every

@@ -16929,6 +16929,25 @@ std::size_t nb3Covered(const QImage &image) {
     return covered;
 }
 
+// NB-4: the part of the canvas a cut picture shows (x, y, width, height).
+std::optional<std::array<double, 4>> nb4Range(const QGraphicsItem *frame) {
+    if (frame == nullptr) return std::nullopt;
+    const QVariant range = frame->data(PelicanStudio::GraphCanvasThumbnailRangeRole);
+    if (!range.isValid()) return std::nullopt;
+    const QRectF rect = range.toRectF();
+    return std::array<double, 4>{rect.x(), rect.y(), rect.width(), rect.height()};
+}
+
+// NB-4: the box of the picture's pixels that are not transparent
+// (x0, y0, x1, y1, exclusive), or an empty one.
+QRect nb4Covered(const QImage &image) {
+    QRect box;
+    for (int y = 0; y < image.height(); ++y)
+        for (int x = 0; x < image.width(); ++x)
+            if (qAlpha(image.pixel(x, y)) > 0) box = box.united(QRect{x, y, 1, 1});
+    return box;
+}
+
 void nb3Open(ZoneHarness &h, const Nb3Project &project) {
     h.scene.setProjectRoot(project.root());
     nb2bOpen(h);
@@ -16961,24 +16980,34 @@ TEST_CASE("NB-3 each row's picture and the composite are the CPU reference's dra
                                QString::fromLatin1(row.input));
         REQUIRE(frame != nullptr);
         REQUIRE(nb3State(frame) == QStringLiteral("ready"));
-        // 32 px on the long side, the canvas's 16:9.
-        CHECK(frame->image().width() == 32);
-        CHECK(frame->image().height() == 18);
+        // 32 px on the long side: the canvas's 16:9, or (NB-4) the part of
+        // it the layer draws in.
+        const auto range = nb4Range(frame);
+        const auto extent = PelicanStudio::graphCanvasThumbnailExtent(
+            range ? std::array<double, 2>{(*range)[2], (*range)[3]} : std::array<double, 2>{128.0, 72.0}, 32);
+        if (!range) {
+            CHECK(frame->image().width() == 32);
+            CHECK(frame->image().height() == 18);
+        }
+        CHECK(frame->image().width() == static_cast<int>(extent[0]));
+        CHECK(frame->image().height() == static_cast<int>(extent[1]));
         CHECK(nb3Covered(frame->image()) > 0);
+        const auto drawn = [&](Json document) {
+            if (range) document = PelicanStudio::graphCanvasCroppedDocument(document, "alone_out", *range);
+            return nb3Reference(document, "alone_out", extent[0], extent[1], project.root());
+        };
         Json nodes = row.nodes;
         nodes.push_back(nb3Stack("alone", Json::array({row.input})));
         nodes.push_back(
             nb3Node("alone_out", "canvas.output", Json::object(), Json{{"layer", nb3Edge("alone")}}, "image"));
-        CHECK(nb3Difference(frame->image(), nb3Reference(nb3Document(nodes), "alone_out", 32, 18, project.root())) <=
-              1);
+        CHECK(nb3Difference(frame->image(), drawn(nb3Document(nodes))) <= 1);
         // Against: the same stack without the layer is another picture.
         Json without = row.nodes;
         without.push_back(nb3Node("alone", "canvas.stack", {{"size", {128, 72}}, {"layers", Json::array()}},
                                   Json::object(), "layer"));
         without.push_back(
             nb3Node("alone_out", "canvas.output", Json::object(), Json{{"layer", nb3Edge("alone")}}, "image"));
-        CHECK(nb3Difference(frame->image(),
-                            nb3Reference(nb3Document(without), "alone_out", 32, 18, project.root())) > 1);
+        CHECK(nb3Difference(frame->image(), drawn(nb3Document(without))) > 1);
     }
     // The composite: the document's own canvas.output, 64 px.
     auto *composite = nb3Frame(scene, PelicanStudio::GraphCanvasStackCompositeItem, QStringLiteral("hud"));
@@ -17644,4 +17673,493 @@ TEST_CASE("NB-2c an imported canvas's rows open, and their slider only reads",
     CHECK_FALSE(scene.editingInline());
     CHECK_FALSE(scene.beginLayerOpacityEdit("logo_psd", "psd_root", "a_fill"));
     requireNoEdit(h.model);
+}
+
+TEST_CASE("NB-4 a small shape's row and card are cut to where it draws; the composite is the whole canvas",
+          "[devstudio][graph-canvas][scene][nb4]") {
+    (void)application();
+    Nb3Project project;
+    // A tenth of the 128 x 72 canvas, off its middle; a colour under it; and
+    // a rectangle off the canvas, which draws no pixel on it.
+    Json nodes = Json::array({
+        nb3Paper(),
+        nb3Node("spot", "shape.rect", {{"size", {12.8, 7.2}}, {"center", {30, 50}}}, Json::object(), "geometry"),
+        nb3Node("spot_fill", "shape.fill", {{"color", {1.0, 0.5, 0.0, 1.0}}},
+                Json{{"geometry", nb3Edge("spot", "geometry")}}, "layer"),
+        nb3Node("away", "shape.rect", {{"size", {10, 10}}, {"center", {-100, -100}}}, Json::object(), "geometry"),
+        nb3Node("away_fill", "shape.fill", {{"color", {0.0, 1.0, 0.0, 1.0}}},
+                Json{{"geometry", nb3Edge("away", "geometry")}}, "layer"),
+    });
+    nodes.push_back(nb3Stack("hud", Json::array({"paper", "spot_fill", "away_fill"})));
+    nodes.push_back(nb3Output("hud"));
+    ZoneHarness h{nb3Document(nodes)};
+    nb3Open(h, project);
+    auto &scene = h.scene;
+    REQUIRE(scene.thumbnails().waitUntilIdle(30000));
+
+    // A1: the small shape's row and its card, cut to it: the shape fills most
+    // of the picture both ways.
+    struct Cut {
+        const char *kind;
+        const char *node;
+        const char *input;
+        int pixels;
+    };
+    for (const Cut &each : {Cut{PelicanStudio::GraphCanvasStackThumbItem, "hud", "spot_fill", 32},
+                            Cut{PelicanStudio::GraphCanvasCardThumbItem, "spot_fill", nullptr, 64}}) {
+        INFO(each.kind);
+        auto *frame = nb3Frame(scene, each.kind, QString::fromLatin1(each.node),
+                               each.input == nullptr ? QString{} : QString::fromLatin1(each.input));
+        REQUIRE(frame != nullptr);
+        REQUIRE(nb3State(frame) == QStringLiteral("ready"));
+        const QImage &image = frame->image();
+        CHECK(std::max(image.width(), image.height()) == each.pixels);
+        const QRect covered = nb4Covered(image);
+        REQUIRE_FALSE(covered.isEmpty());
+        const int short_side = std::min(image.width(), image.height());
+        CHECK(std::min(covered.width(), covered.height()) >= 0.8 * short_side);
+        CHECK(covered.width() >= 0.8 * image.width());
+        CHECK(covered.height() >= 0.8 * image.height());
+        // The range holds the shape (23.6, 46.4 - 36.4, 53.6) and a margin
+        // of 4 % of its long side, no more.
+        const auto range = nb4Range(frame);
+        REQUIRE(range.has_value());
+        const double margin = 0.04 * 12.8;
+        CHECK(std::abs((*range)[0] - (23.6 - margin)) < 1e-6);
+        CHECK(std::abs((*range)[1] - (46.4 - margin)) < 1e-6);
+        CHECK(std::abs((*range)[2] - (12.8 + 2 * margin)) < 1e-6);
+        CHECK(std::abs((*range)[3] - (7.2 + 2 * margin)) < 1e-6);
+        CHECK(frame->toolTip().contains(QStringLiteral("Range 23,46")));
+        // The picture is that part of the canvas drawn at the picture's size.
+        Json alone = Json::array({nodes[1], nodes[2]});
+        alone.push_back(nb3Stack("alone", Json::array({"spot_fill"})));
+        alone.push_back(
+            nb3Node("alone_out", "canvas.output", Json::object(), Json{{"layer", nb3Edge("alone")}}, "image"));
+        const auto extent = PelicanStudio::graphCanvasThumbnailExtent({(*range)[2], (*range)[3]},
+                                                                      static_cast<std::uint32_t>(each.pixels));
+        CHECK(nb3Difference(image, nb3Reference(PelicanStudio::graphCanvasCroppedDocument(nb3Document(alone),
+                                                                                         "alone_out", *range),
+                                                "alone_out", extent[0], extent[1], project.root())) <= 1);
+    }
+
+    // The colour fills the canvas: its row is not cut.
+    auto *paper = nb3Frame(scene, PelicanStudio::GraphCanvasStackThumbItem, QStringLiteral("hud"),
+                           QStringLiteral("paper"));
+    REQUIRE(paper != nullptr);
+    CHECK_FALSE(nb4Range(paper).has_value());
+    CHECK(paper->image().width() == 32);
+    CHECK(paper->image().height() == 18);
+    // No pixel on the canvas: the whole canvas, empty, as before.
+    auto *away = nb3Frame(scene, PelicanStudio::GraphCanvasStackThumbItem, QStringLiteral("hud"),
+                          QStringLiteral("away_fill"));
+    REQUIRE(away != nullptr);
+    REQUIRE(nb3State(away) == QStringLiteral("ready"));
+    CHECK_FALSE(nb4Range(away).has_value());
+    CHECK(away->image().width() == 32);
+    CHECK(away->image().height() == 18);
+    CHECK(nb3Covered(away->image()) == 0);
+
+    // A2: the composite is the whole canvas, the reference's drawing of the
+    // document's own output.
+    auto *composite = nb3Frame(scene, PelicanStudio::GraphCanvasStackCompositeItem, QStringLiteral("hud"));
+    REQUIRE(composite != nullptr);
+    REQUIRE(nb3State(composite) == QStringLiteral("ready"));
+    CHECK_FALSE(nb4Range(composite).has_value());
+    CHECK(composite->image().width() == 64);
+    CHECK(composite->image().height() == 36);
+    CHECK(nb3Difference(composite->image(), nb3Reference(h.document, "screen", 64, 36, project.root())) <= 1);
+}
+
+TEST_CASE("NB-4 where a layer draws: a turned stroke, a shadow's reach, a transform, a nested stack",
+          "[devstudio][graph-canvas][scene][nb4]") {
+    // The bounds are the reference's own quads: every pixel the reference
+    // draws for the layer is inside them.
+    auto shadow = PelicanStudio::graphCanvasFilterDefaults("filter.drop_shadow");
+    shadow["radius"] = 6.0;
+    Json nodes = Json::array({
+        nb3Node("tilt", "shape.rect", {{"size", {20, 6}}, {"center", {40, 30}}, {"rotation", 45.0}}, Json::object(),
+                "geometry"),
+        nb3Node("tilt_line", "shape.stroke", {{"color", {1.0, 1.0, 1.0, 1.0}}, {"width", 3.0}},
+                Json{{"geometry", nb3Edge("tilt", "geometry")}}, "layer"),
+        nb3Node("dark", "filter.drop_shadow", shadow, Json{{"layer", nb3Edge("tilt_line")}}, "layer"),
+        nb3Node("moved", "canvas.transform", {{"translate", {50, 10}}}, Json{{"layer", nb3Edge("dark")}}, "layer"),
+    });
+    nodes.push_back(nb3Stack("inner", Json::array({"moved"})));
+    nodes.push_back(nb3Stack("alone", Json::array({"inner"})));
+    nodes.push_back(nb3Node("alone_out", "canvas.output", Json::object(), Json{{"layer", nb3Edge("alone")}}, "image"));
+    const Json document = nb3Document(nodes);
+    const Pelican::CanvasAssetReader none = [](std::string_view) -> std::shared_ptr<const std::vector<std::byte>> {
+        return nullptr;
+    };
+    const auto ir = Pelican::buildCanvasIr(document, none);
+    REQUIRE(ir.outputs.size() == 1);
+    const auto &output = ir.outputs.front();
+    const auto bounds = PelicanStudio::graphCanvasDrawnBounds(output, {});
+    REQUIRE(bounds.has_value());
+    // The reference at 4 pixels a unit: nothing drawn outside the bounds.
+    const auto picture = PelicanStudio::graphCanvasThumbnailBytes(Pelican::renderCanvasReference(output, 512, 288));
+    std::size_t drawn = 0, outside = 0;
+    for (std::uint32_t y = 0; y < picture.height; ++y)
+        for (std::uint32_t x = 0; x < picture.width; ++x) {
+            if (picture.rgba[(std::size_t{y} * picture.width + x) * 4 + 3] == 0) continue;
+            ++drawn;
+            const double cx = (x + 0.5) / 4.0, cy = (y + 0.5) / 4.0;
+            // A pixel's worth of antialiasing past the quad.
+            if (cx < (*bounds)[0] - 0.5 || cy < (*bounds)[1] - 0.5 || cx > (*bounds)[0] + (*bounds)[2] + 0.5 ||
+                cy > (*bounds)[1] + (*bounds)[3] + 0.5)
+                ++outside;
+        }
+    CHECK(drawn > 0);
+    CHECK(outside == 0);
+    // Moved by the transform: around (90, 40), not the shape's own (40, 30).
+    CHECK((*bounds)[0] + 0.5 * (*bounds)[2] > 80.0);
+    CHECK((*bounds)[1] + 0.5 * (*bounds)[3] > 35.0);
+    // And not the whole canvas.
+    CHECK((*bounds)[2] < 64.0);
+    // The cut document is a canvas of the crop's size.
+    const auto crop = PelicanStudio::graphCanvasThumbnailCrop(*bounds, {128.0, 72.0});
+    REQUIRE(crop.has_value());
+    const auto cut =
+        Pelican::buildCanvasIr(PelicanStudio::graphCanvasCroppedDocument(document, "alone_out", *crop), none);
+    REQUIRE(cut.outputs.size() == 1);
+    CHECK(std::abs(cut.outputs.front().size[0] - ((*crop)[2])) < 1e-6);
+    CHECK(std::abs(cut.outputs.front().size[1] - ((*crop)[3])) < 1e-6);
+}
+
+// NB-4: how long one row's picture takes (a rectangle, a picture, a text, a
+// blur), on the worker's path. Hidden: run it by its tag to measure.
+TEST_CASE("NB-4 the time one row's picture takes", "[.][nb4-timing]") {
+    (void)application();
+    Nb3Project project;
+    QImage green{512, 512, QImage::Format_RGBA8888};
+    green.fill(QColor{0, 255, 0, 255});
+    REQUIRE(green.save(project.dir.path() + QStringLiteral("/assets/images/big.png")));
+    Json nodes = Json::array({
+        nb3Node("box", "shape.rect", {{"size", {128, 72}}, {"center", {300, 200}}}, Json::object(), "geometry"),
+        nb3Node("box_fill", "shape.fill", {{"color", {1.0, 0.5, 0.0, 1.0}}},
+                Json{{"geometry", nb3Edge("box", "geometry")}}, "layer"),
+        nb3Node("img", "canvas.image",
+                {{"asset", "project://assets/images/big.png"}, {"offset", {100, 100}}, {"size", {256, 256}}},
+                Json::object(), "layer"),
+        nb3Node("haze", "filter.blur", {{"radius", 20.0}}, Json{{"layer", nb3Edge("box_fill")}}, "layer"),
+    });
+    Json inputs = Json::array({"box_fill", "img", "haze"});
+    if (project.font) {
+        nodes.push_back(nb3Node("title", "shape.text",
+                                {{"font", "project://assets/fonts/arial.ttf"}, {"text", "Title text"}, {"size", 96},
+                                 {"origin", {640, 360}}},
+                                Json::object(), "geometry"));
+        nodes.push_back(nb3Node("title_fill", "shape.fill", {{"color", {1.0, 1.0, 1.0, 1.0}}},
+                                Json{{"geometry", nb3Edge("title", "geometry")}}, "layer"));
+        inputs.push_back("title_fill");
+    }
+    Json layers = Json::array();
+    Json edges = Json::object();
+    for (const auto &input : inputs) {
+        layers.push_back(Json{{"input", input}});
+        edges[input.get<std::string>()] = nb3Edge(input.get<std::string>());
+    }
+    nodes.push_back(nb3Node("hud", "canvas.stack", {{"size", {1280, 720}}, {"layers", layers}}, edges, "layer"));
+    for (const auto &input : inputs) {
+        PelicanStudio::GraphCanvasThumbnailTarget target;
+        target.kind = PelicanStudio::GraphCanvasThumbnailKind::layer;
+        target.node = "hud";
+        target.input = input.get<std::string>();
+        target.pixels = PelicanStudio::graphCanvasLayerThumbnailPixels;
+        const auto job = PelicanStudio::graphCanvasThumbnailJob(nodes, Json::object(), target, {}, project.root());
+        double total = 0.0;
+        PelicanStudio::GraphCanvasThumbnailPixels pixels;
+        for (int run = 0; run < 3; ++run) {
+            QElapsedTimer timer;
+            timer.start();
+            pixels = PelicanStudio::renderGraphCanvasThumbnail(job, project.root(),
+                                                               &PelicanStudio::decodeGraphCanvasImage);
+            total += static_cast<double>(timer.nsecsElapsed()) / 1e6;
+        }
+        CHECK(pixels.ok());
+        WARN(target.input << ": " << total / 3.0 << " ms, " << pixels.width << " x " << pixels.height
+                          << (pixels.crop ? " (cut)" : " (whole)"));
+    }
+}
+
+// --- NB-5: a stack's rows drawn the moment a gesture is made, the engine's
+// answer followed by drawing that stack alone.
+
+namespace {
+
+struct Nb5Answer {
+    Json ops;
+    // followDocument drew the stacks alone (no repopulate).
+    bool light = false;
+};
+
+// The engine's answer to the one edit in the air -- committed, the document
+// as the edit leaves it, or refused with `refusal` -- then the document read
+// again and followed as the tab follows it (followDocument).
+Nb5Answer nb5Answer(ZoneHarness &h, const std::string &refusal = {}) {
+    const auto edits = h.answerReads();
+    REQUIRE(edits.size() == 1);
+    const auto &submit = edits.front();
+    REQUIRE(submit.params.at("base_source_digest") == h.digest());
+    Nb5Answer answer;
+    answer.ops = submit.params.at("ops");
+    if (!refusal.empty()) {
+        h.model.receiveRpcResult(submit.request_id, Json{{"error", refusal}}.dump());
+    } else {
+        Json edited = Pelican::editGraphDocument(h.document, answer.ops);
+        h.model.receiveRpcResult(submit.request_id, Json{{"status", "accepted"}, {"ticket", "nb5-edit"}}.dump());
+        for (const auto &request : h.model.takeRpcRequests()) {
+            if (request.method != "get_edit_result") continue;
+            h.document = std::move(edited);
+            ++h.generation;
+            h.model.receiveRpcResult(request.request_id,
+                                     Json{{"status", "committed"}, {"committed", true},
+                                          {"source_digest", {{"hex", h.digest()}}}}
+                                         .dump());
+        }
+    }
+    h.answerReads();
+    answer.light = h.scene.followDocument();
+    return answer;
+}
+
+// The bottom row of `stack` let go on the top one's upper edge, or `from`
+// (top first) on the top one.
+void nb5DragToTop(QGraphicsScene &scene, const QString &stack, std::size_t from) {
+    const auto rows = nb2bRows(scene, stack);
+    REQUIRE(rows.size() > from);
+    const QPointF grab = centreOf(rows[from]);
+    drag(scene, grab, QPointF{grab.x(), rows.front()->sceneBoundingRect().top() + 4.0});
+}
+
+QGraphicsItem *nb5Mark(QGraphicsScene &scene, const QString &stack) {
+    return nb2bPart(scene, PelicanStudio::GraphCanvasStackPendingItem, stack);
+}
+
+} // namespace
+
+TEST_CASE("NB-5 a row let go is drawn in its new place before the engine answers, and marked until it has",
+          "[devstudio][graph-canvas][scene][nb5]") {
+    (void)application();
+    ZoneHarness h{nb2bDocument()};
+    nb2bOpen(h);
+    auto &scene = h.scene;
+    const QString hud = QStringLiteral("hud");
+    const QString bg = QStringLiteral("bg_fill");
+    const QString card = QStringLiteral("card_fill");
+    const QString dot = QStringLiteral("dot_fill");
+    REQUIRE(nb2bOrder(scene, hud) == QStringList({dot, card, bg}));
+    CHECK(nb5Mark(scene, hud) == nullptr);
+
+    // Background (the bottom row) onto the top: drawn on top at once. The
+    // edit is still in the outbox -- the engine has said nothing.
+    const auto expected = PelicanStudio::graphCanvasMoveLayerToOps(h.model.nodes(""), "", "hud", 0, 2);
+    QElapsedTimer drop;
+    drop.start();
+    nb5DragToTop(scene, hud, 2);
+    const auto drawn_ms = drop.elapsed();
+    CHECK(nb2bOrder(scene, hud) == QStringList({bg, dot, card}));
+    CHECK(nb2bLayers(h.document, "hud") == QStringList({bg, card, dot}));
+    CHECK(scene.layerShapePending("", "hud"));
+    CHECK(nb5Mark(scene, hud) != nullptr);
+    WARN("NB-5: from the drop to the rows drawn in their new order: " << drawn_ms << " ms (scene test)");
+    // The engine answers with the same order: the mark goes, nothing moves.
+    const auto moved = nb5Answer(h);
+    CHECK(moved.ops == expected);
+    CHECK(nb2bOrder(scene, hud) == QStringList({bg, dot, card}));
+    CHECK(nb2bLayers(h.document, "hud") == QStringList({card, dot, bg}));
+    CHECK_FALSE(scene.layerShapePending("", "hud"));
+    CHECK(nb5Mark(scene, hud) == nullptr);
+
+    // The eye: hidden at once.
+    nb2bClick(scene, centreOf(nb2bPart(scene, PelicanStudio::GraphCanvasStackEyeItem, hud, dot)));
+    CHECK_FALSE(nb2bPart(scene, PelicanStudio::GraphCanvasStackRowItem, hud, dot)
+                    ->data(PelicanStudio::GraphCanvasLayerVisibleRole)
+                    .toBool());
+    CHECK(nb5Mark(scene, hud) != nullptr);
+    (void)nb5Answer(h);
+    CHECK(nb5Mark(scene, hud) == nullptr);
+    CHECK_FALSE(nb2bPart(scene, PelicanStudio::GraphCanvasStackRowItem, hud, dot)
+                    ->data(PelicanStudio::GraphCanvasLayerVisibleRole)
+                    .toBool());
+
+    // A name, in place: the row says it the moment Enter is pressed.
+    click(scene, centreOf(nb2bPart(scene, PelicanStudio::GraphCanvasStackNameItem, hud, card)),
+          QEvent::GraphicsSceneMouseDoubleClick);
+    REQUIRE(scene.editingInline());
+    scene.setInlineEditText(QStringLiteral("Front card"));
+    REQUIRE(scene.commitInlineEdit());
+    CHECK(nb2bText(nb2bPart(scene, PelicanStudio::GraphCanvasStackNameItem, hud, card)) ==
+          QStringLiteral("Front card"));
+    CHECK(nb5Mark(scene, hud) != nullptr);
+    (void)nb5Answer(h);
+    CHECK(nb5Mark(scene, hud) == nullptr);
+
+    // The opacity mark dragged: its percent at once.
+    QGraphicsItem *opacity = nb2bPart(scene, PelicanStudio::GraphCanvasStackOpacityItem, hud, card);
+    REQUIRE(opacity != nullptr);
+    const QPointF grab = centreOf(opacity);
+    drag(scene, grab, grab - QPointF{30.0, 0.0});
+    CHECK(nb2bText(nb2bPart(scene, PelicanStudio::GraphCanvasStackOpacityItem, hud, card)) == QStringLiteral("60%"));
+    (void)nb5Answer(h);
+    CHECK(nb2bText(nb2bPart(scene, PelicanStudio::GraphCanvasStackOpacityItem, hud, card)) == QStringLiteral("60%"));
+}
+
+TEST_CASE("NB-5 an order the engine refuses goes back to the document's, and the notice says why",
+          "[devstudio][graph-canvas][scene][nb5]") {
+    (void)application();
+    ZoneHarness h{nb2bDocument()};
+    nb2bOpen(h);
+    auto &scene = h.scene;
+    const QString hud = QStringLiteral("hud");
+    const QStringList document_order{QStringLiteral("dot_fill"), QStringLiteral("card_fill"), QStringLiteral("bg_fill")};
+    REQUIRE(nb2bOrder(scene, hud) == document_order);
+    const std::string reason = "NB-5 test: the engine keeps this stack's order";
+
+    nb5DragToTop(scene, hud, 2);
+    REQUIRE(nb2bOrder(scene, hud) != document_order);
+    (void)nb5Answer(h, reason);
+    CHECK(nb2bOrder(scene, hud) == document_order);
+    CHECK_FALSE(scene.layerShapePending("", "hud"));
+    CHECK(nb5Mark(scene, hud) == nullptr);
+    CHECK(h.model.notice().message.find(reason) != std::string::npos);
+
+    // A second shape drawn while the first was in the air goes back with it.
+    nb5DragToTop(scene, hud, 2);
+    nb5DragToTop(scene, hud, 2);
+    REQUIRE(nb2bOrder(scene, hud) != document_order);
+    (void)nb5Answer(h, reason);
+    CHECK(nb2bOrder(scene, hud) == document_order);
+    QCoreApplication::processEvents();
+    requireNoEdit(h.model);
+    CHECK(nb2bLayers(h.document, "hud") ==
+          QStringList({QStringLiteral("bg_fill"), QStringLiteral("card_fill"), QStringLiteral("dot_fill")}));
+}
+
+TEST_CASE("NB-5 three quick moves end in the last order, on the canvas and in the document",
+          "[devstudio][graph-canvas][scene][nb5]") {
+    (void)application();
+    ZoneHarness h{nb2bDocument()};
+    nb2bOpen(h);
+    auto &scene = h.scene;
+    const QString hud = QStringLiteral("hud");
+    const QString bg = QStringLiteral("bg_fill");
+    const QString card = QStringLiteral("card_fill");
+    const QString dot = QStringLiteral("dot_fill");
+    // Three moves, the engine answering none of them in between.
+    nb5DragToTop(scene, hud, 2);
+    CHECK(nb2bOrder(scene, hud) == QStringList({bg, dot, card}));
+    nb5DragToTop(scene, hud, 2);
+    CHECK(nb2bOrder(scene, hud) == QStringList({card, bg, dot}));
+    nb5DragToTop(scene, hud, 1);
+    const QStringList last{bg, card, dot};
+    CHECK(nb2bOrder(scene, hud) == last);
+
+    // The first edit's answer: the canvas keeps the last order.
+    const auto first = nb5Answer(h);
+    CHECK(nb2bLayers(h.document, "hud") == QStringList({card, dot, bg}));
+    CHECK(nb2bOrder(scene, hud) == last);
+    CHECK(scene.layerShapePending("", "hud"));
+    CHECK(nb5Mark(scene, hud) != nullptr);
+    // The last order goes out next, as one edit, and is the document's.
+    QCoreApplication::processEvents();
+    const auto second = nb5Answer(h);
+    REQUIRE(second.ops.size() == 1);
+    CHECK(second.ops.at(0).value("op", std::string{}) == "set_node_parameters");
+    CHECK(nb2bLayers(h.document, "hud") == QStringList({dot, card, bg}));
+    CHECK(nb2bOrder(scene, hud) == last);
+    CHECK_FALSE(scene.layerShapePending("", "hud"));
+    CHECK(nb5Mark(scene, hud) == nullptr);
+    QCoreApplication::processEvents();
+    requireNoEdit(h.model);
+    (void)first;
+}
+
+TEST_CASE("NB-5 a stack's edit coming back draws that stack alone; the lines into its rows follow them",
+          "[devstudio][graph-canvas][scene][nb5]") {
+    (void)application();
+    ZoneHarness h{nb2bDocument()};
+    nb2bOpen(h);
+    auto &scene = h.scene;
+    const QString hud = QStringLiteral("hud");
+    QGraphicsItem *screen = nodeItem(scene, QStringLiteral("screen"));
+    QGraphicsItem *stack = nodeItem(scene, hud);
+    QGraphicsItem *pulse = nodeItem(scene, QStringLiteral("pulse"));
+    REQUIRE(screen != nullptr);
+    REQUIRE(stack != nullptr);
+    REQUIRE(pulse != nullptr);
+
+    nb5DragToTop(scene, hud, 2);
+    const auto answer = nb5Answer(h);
+    CHECK(answer.light);
+    // The other nodes, and the stack's own item, are the ones drawn before.
+    CHECK(nodeItem(scene, QStringLiteral("screen")) == screen);
+    CHECK(nodeItem(scene, QStringLiteral("pulse")) == pulse);
+    CHECK(nodeItem(scene, hud) == stack);
+    // The line into Background's row ends on its socket, now at the top.
+    auto *line = dynamic_cast<QGraphicsPathItem *>(
+        scopedEdge(scene, QString{}, QStringLiteral("bg_fill"), QStringLiteral("layer"), hud, QStringLiteral("bg_fill")));
+    QGraphicsItem *socket = socketItem(scene, hud, QStringLiteral("bg_fill"), QStringLiteral("input"));
+    REQUIRE(line != nullptr);
+    REQUIRE(socket != nullptr);
+    CHECK(QLineF(line->mapToScene(line->path().pointAtPercent(1.0)), centreOf(socket)).length() < 1.0);
+    CHECK(centreOf(socket).y() < centreOf(socketItem(scene, hud, QStringLiteral("dot_fill"), QStringLiteral("input"))).y());
+
+    // An edit of another node is the whole draw again.
+    REQUIRE(h.model.setNodeLabel("", "screen", "Out"));
+    const auto other = nb5Answer(h);
+    CHECK_FALSE(other.light);
+    CHECK(nodeItem(scene, QStringLiteral("screen")) != screen);
+}
+
+TEST_CASE("NB-5 a move makes no row picture again; the composite is made again, its last picture shown meanwhile",
+          "[devstudio][graph-canvas][scene][nb5]") {
+    (void)application();
+    Nb3Project project;
+    ZoneHarness h{nb2bDocument()};
+    nb3Open(h, project);
+    auto &scene = h.scene;
+    const QString hud = QStringLiteral("hud");
+    REQUIRE(scene.thumbnails().waitUntilIdle(60000));
+    auto *composite = nb3Frame(scene, PelicanStudio::GraphCanvasStackCompositeItem, hud);
+    REQUIRE(composite != nullptr);
+    REQUIRE(nb3State(composite) == QStringLiteral("ready"));
+    const QString drawn_digest = composite->data(PelicanStudio::GraphCanvasThumbnailDigestRole).toString();
+    const QImage drawn = composite->image();
+    REQUIRE_FALSE(drawn.isNull());
+
+    // The workers wait, so the new composite is still being made below.
+    std::atomic<bool> hold{true};
+    scene.thumbnails().setWorkerHook([&hold] {
+        while (hold.load()) QThread::msleep(5);
+    });
+    struct Release {
+        std::atomic<bool> &hold;
+        GraphCanvasScene &scene;
+        ~Release() {
+            hold = false;
+            (void)scene.thumbnails().waitUntilIdle(60000);
+        }
+    } release{hold, scene};
+    scene.thumbnails().resetCounts();
+    nb5DragToTop(scene, hud, 2);
+    (void)nb5Answer(h);
+    // Only the composite was asked for anew; every row's picture was in hand.
+    const auto &missed = scene.thumbnails().missed();
+    REQUIRE(missed.size() == 1);
+    CHECK(missed.front().kind == PelicanStudio::GraphCanvasThumbnailKind::composite);
+    CHECK(missed.front().node == "hud");
+    for (const auto &input : {QStringLiteral("bg_fill"), QStringLiteral("card_fill"), QStringLiteral("dot_fill")})
+        CHECK(nb3State(nb3Frame(scene, PelicanStudio::GraphCanvasStackThumbItem, hud, input)) ==
+              QStringLiteral("ready"));
+    // The composite is being made, and shows its last picture, not grey.
+    composite = nb3Frame(scene, PelicanStudio::GraphCanvasStackCompositeItem, hud);
+    REQUIRE(composite != nullptr);
+    CHECK(nb3State(composite) == QStringLiteral("pending"));
+    CHECK(composite->data(PelicanStudio::GraphCanvasThumbnailDigestRole).toString() != drawn_digest);
+    CHECK(composite->image() == drawn);
+    hold = false;
+    REQUIRE(scene.thumbnails().waitUntilIdle(60000));
+    composite = nb3Frame(scene, PelicanStudio::GraphCanvasStackCompositeItem, hud);
+    CHECK(nb3State(composite) == QStringLiteral("ready"));
 }

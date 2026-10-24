@@ -20,6 +20,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -34,12 +35,17 @@ class GraphCanvasModel;
 // why), "none" without a model to draw from.
 inline constexpr int GraphCanvasThumbnailDigestRole = Qt::UserRole + 3159;
 inline constexpr int GraphCanvasThumbnailStateRole = Qt::UserRole + 3160;
+// NB-4: the part of the canvas a cut picture shows (a QRectF in canvas units);
+// empty for one of the whole canvas.
+inline constexpr int GraphCanvasThumbnailRangeRole = Qt::UserRole + 3162;
 
 struct GraphCanvasThumbnailState {
     QString digest;
     QImage image;
     QString error;
     bool pending = false;
+    // NB-4: the part shown, when the picture is cut to where the layer draws.
+    std::optional<QRectF> range;
 };
 
 // A picture's frame: the frame's own grey, and the picture over it once
@@ -95,8 +101,14 @@ class GraphCanvasThumbnails final : public QObject {
         bool done = false;
         QImage image;
         QString error;
+        std::optional<QRectF> range;
     };
     void finished(const std::string &digest, GraphCanvasThumbnailPixels pixels);
+    // NB-5: what a frame shows while its new picture is made -- the last
+    // picture drawn for the same target (a stack's composite after its
+    // layers moved), so it does not go grey for the wait.
+    void showPrevious(const GraphCanvasThumbnailTarget &target, const std::string &digest,
+                      GraphCanvasThumbnailState &state);
     [[nodiscard]] const Pelican::CanvasValues &liveValues(const std::string &scope);
 
     QGraphicsScene &scene_;
@@ -109,6 +121,10 @@ class GraphCanvasThumbnails final : public QObject {
     std::uint64_t values_content_ = ~std::uint64_t{0};
     std::uint64_t values_report_ = ~std::uint64_t{0};
     std::map<std::string, Pelican::CanvasValues, std::less<>> values_;
+    // NB-5: the last picture each target was given, and the targets each
+    // picture being made is for.
+    std::map<GraphCanvasThumbnailTarget, Entry> shown_;
+    std::map<std::string, std::vector<GraphCanvasThumbnailTarget>, std::less<>> waiting_;
     Counts counts_;
     std::vector<GraphCanvasThumbnailTarget> missed_;
     std::function<void()> worker_hook_;

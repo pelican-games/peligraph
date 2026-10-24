@@ -8,6 +8,7 @@
 #include <QPainter>
 #include <QThread>
 
+#include <algorithm>
 #include <cstring>
 #include <utility>
 
@@ -22,6 +23,17 @@ GraphCanvasThumbnailFrame::GraphCanvasThumbnailFrame(const QRectF &rect, QGraphi
 void GraphCanvasThumbnailFrame::show(const GraphCanvasThumbnailState &state) {
     setData(GraphCanvasThumbnailDigestRole, state.digest);
     image_ = state.image;
+    // NB-4: a cut picture says which part of the canvas it shows.
+    setData(GraphCanvasThumbnailRangeRole, state.range ? QVariant{*state.range} : QVariant{});
+    const QString shown =
+        state.range ? QObject::tr("%1\nRange %2,%3 \xE2\x80\x93 %4,%5")
+                          .arg(tooltip_)
+                          .arg(state.range->left(), 0, 'f', 0)
+                          .arg(state.range->top(), 0, 'f', 0)
+                          .arg(state.range->right(), 0, 'f', 0)
+                          .arg(state.range->bottom(), 0, 'f', 0)
+                          .trimmed()
+                    : tooltip_;
     if (state.pending) {
         setData(GraphCanvasThumbnailStateRole, QStringLiteral("pending"));
         setToolTip(tooltip_.isEmpty() ? QObject::tr("Drawing the picture...")
@@ -32,7 +44,7 @@ void GraphCanvasThumbnailFrame::show(const GraphCanvasThumbnailState &state) {
                                       : QObject::tr("%1\nNo picture: %2").arg(tooltip_, state.error));
     } else if (!image_.isNull()) {
         setData(GraphCanvasThumbnailStateRole, QStringLiteral("ready"));
-        setToolTip(tooltip_);
+        setToolTip(shown);
     } else {
         setData(GraphCanvasThumbnailStateRole, QStringLiteral("none"));
         setToolTip(tooltip_);
@@ -126,6 +138,9 @@ GraphCanvasThumbnailState GraphCanvasThumbnails::request(const GraphCanvasThumbn
         state.pending = !found->second.done;
         state.image = found->second.image;
         state.error = found->second.error;
+        state.range = found->second.range;
+        if (state.pending) showPrevious(target, job.digest, state);
+        else shown_.insert_or_assign(target, found->second);
         return state;
     }
     ++counts_.misses;
@@ -137,6 +152,7 @@ GraphCanvasThumbnailState GraphCanvasThumbnails::request(const GraphCanvasThumbn
     cache_.emplace(job.digest, Entry{});
     ++in_flight_;
     state.pending = true;
+    showPrevious(target, job.digest, state);
     pool_.start([this, job = std::move(job), root = root_, hook = worker_hook_]() mutable {
         if (hook) hook();
         auto pixels = renderGraphCanvasThumbnail(job, root, &decodeGraphCanvasImage);
@@ -160,17 +176,36 @@ void GraphCanvasThumbnails::finished(const std::string &digest, GraphCanvasThumb
         entry.image = QImage{pixels.rgba.data(), static_cast<int>(pixels.width), static_cast<int>(pixels.height),
                              static_cast<qsizetype>(pixels.width) * 4, QImage::Format_RGBA8888}
                           .copy();
+        if (pixels.crop) {
+            const auto &crop = *pixels.crop;
+            entry.range = QRectF{crop[0], crop[1], crop[2], crop[3]};
+        }
     } else {
         entry.error = QString::fromStdString(pixels.error.empty() ? std::string{"Nothing was drawn"} : pixels.error);
+    }
+    if (const auto targets = waiting_.find(digest); targets != waiting_.end()) {
+        for (const auto &target : targets->second) shown_.insert_or_assign(target, entry);
+        waiting_.erase(targets);
     }
     GraphCanvasThumbnailState state;
     state.digest = QString::fromStdString(digest);
     state.image = entry.image;
     state.error = entry.error;
+    state.range = entry.range;
     for (QGraphicsItem *item : scene_.items())
         if (auto *frame = dynamic_cast<GraphCanvasThumbnailFrame *>(item);
             frame != nullptr && frame->data(GraphCanvasThumbnailDigestRole).toString() == state.digest)
             frame->show(state);
+}
+
+void GraphCanvasThumbnails::showPrevious(const GraphCanvasThumbnailTarget &target, const std::string &digest,
+                                         GraphCanvasThumbnailState &state) {
+    auto &targets = waiting_[digest];
+    if (std::ranges::find(targets, target) == targets.end()) targets.push_back(target);
+    const auto previous = shown_.find(target);
+    if (previous == shown_.end() || previous->second.image.isNull()) return;
+    state.image = previous->second.image;
+    state.range = previous->second.range;
 }
 
 bool GraphCanvasThumbnails::waitUntilIdle(int timeout_ms) {
