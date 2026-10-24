@@ -11589,7 +11589,9 @@ TEST_CASE("UX-9 decision 4: a voice's state reads as the band under its audio.pl
     CHECK(band() == QString::fromStdString("playing" + dot + "1.2 s"));
     CHECK(nodeItem(scene, QStringLiteral("clock")) == node);
     scene.setVoiceBands(PelicanStudio::graphCanvasVoiceBands(status("edit", voice("idle", 0.0))));
-    CHECK(band().isEmpty());
+    // ASF-1: a band whose text went empty goes, as a full redraw would leave none.
+    CHECK(band() == QStringLiteral("<no band>"));
+    CHECK(nodeItem(scene, QStringLiteral("clock")) == node);
 }
 
 // --- IA-1s.
