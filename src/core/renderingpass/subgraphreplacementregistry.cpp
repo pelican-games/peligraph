@@ -6,6 +6,7 @@
 #include "renderingsamplecount.hpp"
 #include "rendertargetjsonparser.hpp"
 #include "../../project/logicalrendertype.hpp"
+#include "../../project/renderingjsonnormalize.hpp"
 #include "../../project/stablefingerprint.hpp"
 
 #include <algorithm>
@@ -1218,6 +1219,10 @@ resolveTaggedSubgraphReplacements(
         const auto requests = parseRegionRequests(
             findGraphObject(result.config, name));
         if (requests.empty()) continue;
+        // RC-3b: the provider reads, and its passes are spliced into, the
+        // normal form (the composition hands it that already).
+        result.config = normalizeRenderingJson(
+            std::move(result.config));
 
         ResolvedTaggedSubgraphGraph
             resolved_graph{
@@ -1321,6 +1326,18 @@ resolveTaggedSubgraphReplacements(
                     inherited_regions,
                     resolved.selection.provider,
                     request.region);
+            // RC-3b: the provider's passes are a boundary of the rendering
+            // JSON: normalized (as the passes of one family) before the
+            // splice reads their after / before.
+            {
+                auto family = normalizeProviderRenderingJson(nlohmann::json{
+                    {"rendering_passes",
+                     nlohmann::json::array({nlohmann::json{
+                         {"name", name},
+                         {"passes", std::move(replacement)}}})}});
+                replacement = std::move(
+                    family.at("rendering_passes").at(0).at("passes"));
+            }
 
             auto candidate = result.config;
             auto &candidate_graph =
@@ -1330,6 +1347,9 @@ resolveTaggedSubgraphReplacements(
                 source_names,
                 std::move(replacement),
                 replacement_names);
+            // RC-3b: and the spliced config is in the normal form before
+            // the core reads it.
+            requireNormalizedRenderingJson(candidate);
             const auto after_state =
                 compileConfigState(candidate);
             const auto &after_graph =

@@ -1,4 +1,5 @@
 #include "../src/core/renderingpass/graphtransformregistry.hpp"
+#include "../src/project/renderingjsonnormalize.hpp"
 #include "../src/core/registrationownerhost.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 #include "../src/core/renderingpass/renderingsamplecount.hpp"
@@ -364,7 +365,8 @@ TEST_CASE(
             authored, providers);
     }
 
-    auto expected = authored;
+    // RC-3b: the provider's response is normalized.
+    auto expected = normalizeRenderingJson(authored);
     expected.erase("graph_transforms");
     REQUIRE(resolved.config == expected);
     REQUIRE(resolved.selections.size() == 1);

@@ -3531,7 +3531,11 @@ std::set<std::string> declaredRenderingNames(const Json &rendering) {
         const auto list = rendering.find(key);
         if (list == rendering.end() || !list->is_array()) continue;
         for (const auto &entry : *list)
-            if (entry.is_object())
+            // RC-3b: a buffer may be its bare name (the root is normalized
+            // before this lowering on the engine's path; devcli lowers the
+            // authored document).
+            if (entry.is_string()) names.insert(entry.get<std::string>());
+            else if (entry.is_object())
                 if (const auto name = entry.find("name"); name != entry.end() && name->is_string())
                     names.insert(name->get<std::string>());
     }

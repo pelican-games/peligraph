@@ -1038,7 +1038,16 @@ void requireLoopExpansionUnreferenced(const Json &document, const std::map<std::
         if (!holder.is_object()) return;
         for (const auto *key : {"after", "before"}) {
             const auto found = holder.find(key);
-            if (found == holder.end() || !found->is_array()) continue;
+            if (found == holder.end()) continue;
+            // RC-3b: this reads the authored document (its pointers are the
+            // author's), which the value and pose graphs hand it before any
+            // normalization: a rendering pass's one-string after / before is
+            // the list of that one name, not no list.
+            if (found->is_string()) {
+                if (underLoop(*found)) refuse(*found, at / key);
+                continue;
+            }
+            if (!found->is_array()) continue;
             for (std::size_t index = 0; index < found->size(); ++index)
                 if (underLoop(found->at(index))) refuse(found->at(index), at / key / index);
         }

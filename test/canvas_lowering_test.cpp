@@ -286,7 +286,8 @@ TEST_CASE("CV-1b the authoring hook lowers in place, idempotently, and names the
     REQUIRE(lowering.changed);
     const auto &passes = lowering.document.at("rendering").at("rendering_passes").at(0).at("passes");
     CHECK(passes.at(0).at("input") == Json::array({"out$canvas_image", "dot", "clock"}));
-    CHECK(passes.at(1).at("input") == "out$canvas_image@history");
+    // RC-3b: the root is normalized before the lowering reads it.
+    CHECK(passes.at(1).at("input") == Json::array({"out$canvas_image@history"}));
     CHECK(passes.at(2).at("input") == Json::array({"out$canvas_image"}));
     // The section's own target of the output's name keeps the name.
     auto shadowed = authored;

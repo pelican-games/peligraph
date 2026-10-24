@@ -242,7 +242,9 @@ constexpr std::string_view blank_rendering_config_json = R"json({
             "input": [],
             "output": {
               "color": [
-                "display"
+                {
+                  "target": "display"
+                }
               ],
               "depth": null
             },

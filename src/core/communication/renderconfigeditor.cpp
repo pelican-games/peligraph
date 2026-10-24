@@ -15,6 +15,7 @@
 #include "../../project/materialdrawloop.hpp"
 #include "../../project/materialpassdecompose.hpp"
 #include "../../project/renderconfigsection.hpp"
+#include "../../project/renderingjsonnormalize.hpp"
 #include "renderconfigtransaction.hpp"
 #include "engineauthoringlists.hpp"
 
@@ -1576,7 +1577,10 @@ OrderedJson RenderConfigEditorService::listRenderFeatures(
             else if (dependencies_.resolve_document_path)
                 bytes = readFileBytes(dependencies_.resolve_document_path(entry.reference));
             if (!bytes.empty()) {
-                const auto feature = Json::parse(bytes);
+                // RC-3b: the feature read here is the one the composition
+                // reads: in the normal form, so a buffer it owns by its bare
+                // name is its own here too.
+                const auto feature = normalizeRenderingJson(Json::parse(bytes));
                 // FR-3: each entry says needs_writer (the feature reads it and
                 // someone in the pipeline has to draw it first).
                 encoded["required_targets"] = OrderedJson::parse(renderFeatureRequiredTargets(feature, /*with_needs_writer=*/true).dump());
@@ -1585,7 +1589,13 @@ OrderedJson RenderConfigEditorService::listRenderFeatures(
                                                                {"anchor", insertion.at("anchor").get<std::string>()},
                                                                {"position", insertion.at("position").get<std::string>()}});
             }
-        } catch (const std::exception &) {
+        } catch (const GraphRegistryError &error) {
+            // RC-3b: a document that cannot be read is not a feature that
+            // needs nothing: the lists stay empty and say why, by name.
+            encoded["document_error"] = OrderedJson{{"code", error.code()},
+                                                    {"detail", OrderedJson::parse(error.detail().dump())}};
+        } catch (const std::exception &error) {
+            encoded["document_error"] = OrderedJson{{"message", error.what()}};
         }
         features.push_back(std::move(encoded));
     }

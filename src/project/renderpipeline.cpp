@@ -4,6 +4,7 @@
 #include "rasterpass.hpp"
 #include "renderconfigdocument.hpp"
 #include "renderconfigsection.hpp"
+#include "renderingjsonnormalize.hpp"
 #include "renderresourcename.hpp"
 
 #include <algorithm>
@@ -952,6 +953,8 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
     if (!document.contains("config") || !document.at("config").is_object()) {
         throw std::runtime_error("render pipeline preset requires object config: " + reference);
     }
+    // RC-3b: a preset is one of the rendering JSON's boundaries.
+    document = normalizeRenderingJson(std::move(document));
     auto resolved = document.at("config");
     if (resolved.contains("pipeline")) {
         throw std::runtime_error("render pipeline presets cannot recursively select a preset: " +
@@ -1690,40 +1693,12 @@ std::vector<std::string> compileStringArray(
     return result;
 }
 
-bool jsonStringListContains(
-    const nlohmann::json &value,
-    std::string_view needle) {
-    if (value.is_string()) {
-        return value.get_ref<const std::string &>() ==
-               needle;
-    }
-    return value.is_array() &&
-           std::any_of(
-               value.begin(), value.end(),
-               [&](const auto &entry) {
-                   return entry.is_string() &&
-                          entry.get_ref<
-                              const std::string &>() ==
-                              needle;
-               });
-}
-
+// RC-3b: an attachment's target, color or depth, in the normal form
+// (RenderJson).
 bool compiledPassWritesResource(
     const nlohmann::json &pass,
     std::string_view resource) {
-    if (!pass.contains("output") ||
-        !pass.at("output").is_object()) {
-        return false;
-    }
-    const auto &output = pass.at("output");
-    return (output.contains("color") &&
-            jsonStringListContains(
-                output.at("color"), resource)) ||
-           (output.contains("depth") &&
-            output.at("depth").is_string() &&
-            output.at("depth")
-                    .get_ref<const std::string &>() ==
-                resource);
+    return RenderJson::writesOutputTarget(pass, resource);
 }
 
 std::vector<CompiledSurfaceResourceContract>
@@ -1888,9 +1863,8 @@ compileSurfaceResourceContracts(
                 found->second->value(
                     "type", std::string{}) !=
                     "fullscreen" ||
-                !found->second->contains("input") ||
-                !jsonStringListContains(
-                    found->second->at("input"),
+                !RenderJson::namesContain(
+                    *found->second, "input",
                     compiled.resource)) {
                 throw std::runtime_error(
                     context + " fullscreen consumer '" +

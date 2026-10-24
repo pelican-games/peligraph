@@ -481,7 +481,8 @@ class Planner {
         const Json present{{"name", "present"},
                            {"type", "fullscreen"},
                            {"input", Json::array({canvasImageNodeId(result.bake_output)})},
-                           {"output", {{"color", Json::array({"display"})}, {"depth", nullptr}}},
+                           // RC-3b: the normal form (renderingjsonnormalize.hpp).
+                           {"output", {{"color", Json::array({Json{{"target", "display"}}})}, {"depth", nullptr}}},
                            {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}}};
         result.document = {{"schema", "pelican.graph"},
                            {"version", 1},

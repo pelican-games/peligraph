@@ -2,6 +2,7 @@
 
 #include "graphcomposition.hpp"
 #include "renderpipeline.hpp"
+#include "renderingjsonnormalize.hpp"
 
 #include <picosha2.h>
 
@@ -293,11 +294,12 @@ GraphFoldApplication applyGraphFoldGroups(const Json &document, Json &composed,
             if (task.is_object() && task.contains("name") && task.at("name").is_string())
                 tasks.insert(task.at("name").get<std::string>());
     std::set<std::string> declared_resources;
-    for (const auto *key : {"render_targets", "buffers"})
-        if (const auto declared = composed.find(key); declared != composed.end() && declared->is_array())
-            for (const auto &resource : *declared)
-                if (resource.is_object() && resource.contains("name") && resource.at("name").is_string())
-                    declared_resources.insert(resource.at("name").get<std::string>());
+    if (const auto declared = composed.find("render_targets"); declared != composed.end() && declared->is_array())
+        for (const auto &resource : *declared)
+            if (resource.is_object() && resource.contains("name") && resource.at("name").is_string())
+                declared_resources.insert(resource.at("name").get<std::string>());
+    // RC-3b: the composed buffers in the normal form (objects).
+    for (auto &buffer : RenderJson::bufferNames(composed)) declared_resources.insert(std::move(buffer));
 
     // The root node each graph-made pass and task came from (GL-2a's origin;
     // a loop's copy by its loop), and the loop element when it is a copy.

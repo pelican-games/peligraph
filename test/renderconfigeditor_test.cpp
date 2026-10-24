@@ -36,6 +36,7 @@
 #include "../src/project/materialdrawloop.hpp"
 #include "../src/project/rendercomponent.hpp"
 #include "../src/project/renderpipeline.hpp"
+#include "../src/project/renderingjsonnormalize.hpp"
 #include "../src/project/graphmodule.hpp"
 #include "../src/core/shader/shaderreference.hpp"
 #include "../src/project/vulkanviewplanning.hpp"
@@ -4289,7 +4290,8 @@ TEST_CASE("The shipping bloom component is readable from the project and derives
     const auto derived = Json::parse(
         readBytes(project.root / "passes" / "bloom-local.json"));
     CHECK(derived.at("name") == "bloom");
-    CHECK(derived.at("passes") == engine_document.at("passes"));
+    // RC-3b: the derivative is written in the normal form.
+    CHECK(derived.at("passes") == normalizeRenderingJson(engine_document).at("passes"));
     CHECK(derived.at("render_targets") ==
           engine_document.at("render_targets"));
     // P-2a-4b: the subject is the shipping `pelican.graph` root, so the

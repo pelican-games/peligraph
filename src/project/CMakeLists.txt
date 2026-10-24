@@ -48,6 +48,7 @@ add_library(pelican_project
     rendercomponent.cpp
     renderconfigdocument.cpp
     renderfeatureoverlay.cpp
+    renderingjsonnormalize.cpp
     renderpipeline.cpp
     samplecountplanning.cpp
     schemawire.cpp
