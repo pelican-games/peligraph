@@ -1,6 +1,6 @@
-#include "logicalframegraphadapter.hpp"
+#include "logicalframegraphshadow.hpp"
 
-#include "frameplanner.hpp"
+#include "frameplan.hpp"
 
 #include <algorithm>
 #include <limits>

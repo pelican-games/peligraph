@@ -1705,6 +1705,32 @@ compileRenderingLogicalGraphs(
     return result;
 }
 
+std::vector<CompiledLogicalRenderGraph>
+compileRenderingLogicalGraphs(
+    std::span<const FrameGraphDefinition> frame_graphs,
+    std::span<const RenderTargetDefinition> render_targets,
+    const RenderingTargetPlanDeviceFacts &device_facts) {
+    const auto target_by_name =
+        renderTargetsByName(render_targets);
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    const auto device_tile_local_formats =
+        tileLocalAttachmentFormats(
+            render_targets, device_facts);
+    std::vector<CompiledLogicalRenderGraph> result;
+    result.reserve(frame_graphs.size());
+    for (const auto &definition : frame_graphs) {
+        result.push_back(
+            compileLogicalFrameGraphShadow(
+                definition, types,
+                shadowOptions(
+                    definition, types, target_by_name,
+                    graphTileLocalAttachmentFormats(
+                        definition, target_by_name,
+                        device_tile_local_formats))));
+    }
+    return result;
+}
+
 RenderingTargetPlanCompilation compileRenderingTargetPlans(
     std::span<const FrameGraphDefinition> frame_graphs,
     std::span<const RenderTargetDefinition> render_targets,

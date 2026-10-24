@@ -153,6 +153,15 @@ std::vector<CompiledLogicalRenderGraph>
 compileRenderingLogicalGraphs(
     std::span<const FrameGraphDefinition> frame_graphs,
     std::span<const RenderTargetDefinition> render_targets);
+// RC-3c1a: the same graphs with the materialization target-plan compilation
+// gives them on a device (its tile-local formats, each graph's eligible
+// ones). Only the bridge test calls it; RC-3c1b removes it with the core
+// planning parse (project's toLogicalGraph is the one path then).
+std::vector<CompiledLogicalRenderGraph>
+compileRenderingLogicalGraphs(
+    std::span<const FrameGraphDefinition> frame_graphs,
+    std::span<const RenderTargetDefinition> render_targets,
+    const RenderingTargetPlanDeviceFacts &device_facts);
 
 // Adapts the existing FrameGraphDefinition into the canonical logical/target
 // planner. The returned VulkanTargetPlan is authoritative for the concrete

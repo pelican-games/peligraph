@@ -30,6 +30,10 @@ add_library(pelican_project
     jsonrpc.cpp
     lightingdata.cpp
     logicalrendergraph.cpp
+    logicalframegraphshadow.cpp
+    frameplan.cpp
+    rendergraphir.cpp
+    rendergraphparse.cpp
     logicalrendertype.cpp
     materialdrawloop.cpp
     materialpassdecompose.cpp

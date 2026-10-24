@@ -2,7 +2,9 @@
 #include "../src/core/renderingpass/frameplanner.hpp"
 #include "../src/core/renderingpass/renderingsamplecount.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
+#include "../src/core/renderingpass/passfieldownershipcapabilities.hpp"
 #include "../src/project/passfusion.hpp"
+#include "../src/project/rendergraphparse.hpp"
 #include "../src/project/renderpipeline.hpp"
 #include "render_graph_root_test_support.hpp"
 
@@ -801,6 +803,76 @@ TEST_CASE("pass fusion counts the bundled configurations",
                     std::cout << "PF1   boundary " << boundaryLine(boundary)
                               << " | " << boundary.detail << '\n';
                 }
+            }
+        }
+    }
+}
+
+namespace {
+
+// RC-3c1a: the same facts from RenderGraphIR -- the node's shape, the
+// logical graph toLogicalGraph makes, the config's images -- instead of the
+// core parse, the authored type and the render target parser.
+FusionInput fusionInputFromRenderGraph(const Json &composed) {
+    FusionInput input;
+    const auto ir = parseRenderGraph(composed, buildPassFieldOwnershipCapabilities());
+    for (const auto &graph : ir.graphs) {
+        input.definitions.push_back(frameGraphDefinitionOf(ir, graph));
+        input.graphs.push_back(toLogicalGraph(ir, graph));
+        PassFusionGraphFacts facts{.graph = graph.name};
+        for (const auto &node : graph.nodes) {
+            facts.nodes.push_back({node.name, node.shape == RenderNodeShape::fullscreen,
+                                   node.schedule == NodeSchedule::once});
+        }
+        for (const auto &resource : input.graphs.back().resources) {
+            if (resource.name == "swapchain") {
+                facts.resources.push_back({resource.name, ResourceExtentPlan{}, "display"});
+                continue;
+            }
+            const auto image = std::find_if(ir.images.begin(), ir.images.end(),
+                                            [&](const auto &entry) { return entry.name == resource.name; });
+            if (image == ir.images.end()) continue; // a buffer
+            facts.resources.push_back(
+                {resource.name,
+                 image->format_class == "display" ? ResourceExtentPlan{} : image->extent,
+                 image->format_class});
+        }
+        input.facts.push_back(std::move(facts));
+    }
+    return input;
+}
+
+std::vector<std::string> keptOutputLines(const PassFusionPlan &plan) {
+    std::vector<std::string> result;
+    for (const auto &chain : plan.chains) {
+        for (const auto &kept : chain.kept_outputs) {
+            std::string line = kept.producer + " " + logicalValueIdName(kept.value) +
+                               (kept.live_out ? " live_out" : "");
+            for (const auto &reader : kept.readers) line += " " + reader;
+            result.push_back(std::move(line));
+        }
+    }
+    return result;
+}
+
+} // namespace
+
+TEST_CASE("RC-3c1a pass fusion plans the same from RenderGraphIR's facts",
+          "[passfusion][rc3c1a][bridge]") {
+    for (const auto &bundled : bundledCases()) {
+        DYNAMIC_SECTION(bundled.name) {
+            const auto resolved = compose(bundled.authored, bundled.name);
+            for (const auto &config :
+                 {resolved.normalized_config, withShaderFootprints(resolved.normalized_config)}) {
+                const auto old_plan = planFor(resolved, fusionInput(config));
+                const auto new_plan = planFor(resolved, fusionInputFromRenderGraph(config));
+                CHECK(chainMembers(new_plan) == chainMembers(old_plan));
+                CHECK(keptOutputLines(new_plan) == keptOutputLines(old_plan));
+                CHECK(boundaryLines(new_plan) == boundaryLines(old_plan));
+                std::size_t chains = old_plan.chains.size();
+                std::cout << "RC3C1A passfusion config=" << bundled.name
+                          << " chains=" << chains
+                          << " boundaries=" << old_plan.boundaries.size() << '\n';
             }
         }
     }

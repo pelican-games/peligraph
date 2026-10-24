@@ -3461,6 +3461,17 @@ target_compile_definitions(pelican_test_project_library_boundary PRIVATE
 target_link_libraries(pelican_test_project_library_boundary PRIVATE pelican_project)
 add_test(NAME project_library_boundary COMMAND pelican_test_project_library_boundary)
 
+# RC-3c1a: JSON -> RenderGraphIR -> FramePlan -> logical graph with nothing
+# but pelican_project linked (the same build-level proof as above; not in a
+# group, whose other members link pelican_core).
+add_executable(pelican_test_render_graph_ir_boundary render_graph_ir_boundary.cpp)
+set_target_properties(pelican_test_render_graph_ir_boundary PROPERTIES
+    CXX_STANDARD 20
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+)
+target_link_libraries(pelican_test_render_graph_ir_boundary PRIVATE pelican_project)
+add_test(NAME render_graph_ir_boundary COMMAND pelican_test_render_graph_ir_boundary)
+
 pelican_define_test(materialformat_test GROUP project_formats pelican_project)
 target_compile_definitions(pelican_test_materialformat_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
@@ -3562,6 +3573,16 @@ pelican_define_test(passfusion_test GROUP render_planning_core pelican_core)
 target_compile_definitions(pelican_test_passfusion_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
+# RC-3c1a: the core planning path and RenderGraphIR's, compared field by
+# field on the bundled projects, the fixtures and the refusals. RC-3c1b
+# removes it with the core planning parse.
+pelican_define_test(rendergraphir_bridge_test GROUP render_planning_core pelican_core)
+target_compile_definitions(pelican_test_rendergraphir_bridge_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+if(MSVC)
+  target_compile_options(pelican_test_rendergraphir_bridge_test PRIVATE /bigobj)
+endif()
 pelican_define_test(targetplanning_test GROUP project_planning pelican_project)
 pelican_define_test(targetrenderplanning_test GROUP project_planning pelican_project)
 pelican_define_test(samplecountplanning_test GROUP project_planning pelican_project)

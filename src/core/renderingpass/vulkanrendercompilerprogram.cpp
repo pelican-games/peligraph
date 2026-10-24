@@ -54,70 +54,11 @@ targetViewExecutionRequest(
         .automatic_policy =
             pipeline.xr_target_policy.multiview_auto,
     };
-    std::set<std::string, std::less<>>
-        capable_candidates;
+    const auto capable_candidates =
+        detail::multiviewCapableFullscreenPasses(
+            config, enable_multiview_runtime);
     std::set<std::string, std::less<>>
         independent_candidates;
-    const auto builtin_fragment =
-        [](std::string_view reference) {
-            static constexpr std::array known{
-                std::string_view{"engine://fullscreen"},
-                std::string_view{"engine://ssao"},
-                std::string_view{"engine://ssao_blur"},
-                std::string_view{"engine://scene_present"},
-                std::string_view{"engine://output_transform"},
-            };
-            return std::find(
-                       known.begin(), known.end(),
-                       reference) != known.end();
-        };
-    if (config.contains("rendering_passes") &&
-        config.at("rendering_passes").is_array()) {
-        for (const auto &rendering_pass :
-             config.at("rendering_passes")) {
-            if (!rendering_pass.is_object() ||
-                !rendering_pass.contains("passes") ||
-                !rendering_pass.at("passes").is_array()) {
-                continue;
-            }
-            for (const auto &pass :
-                 rendering_pass.at("passes")) {
-                if (!pass.is_object() ||
-                    !pass.contains("name") ||
-                    !pass.at("name").is_string() ||
-                    !pass.contains("type") ||
-                    !pass.at("type").is_string()) {
-                    continue;
-                }
-                const auto name =
-                    pass.at("name").get<std::string>();
-                const auto type =
-                    pass.at("type").get<std::string>();
-                if (type != "fullscreen" ||
-                    pass.contains("implementation") ||
-                    !pass.contains("shader") ||
-                    !pass.at("shader").is_object()) {
-                    continue;
-                }
-                const auto &shader = pass.at("shader");
-                if (!shader.contains("vertex") ||
-                    !shader.at("vertex").is_string() ||
-                    !shader.contains("fragment") ||
-                    !shader.at("fragment").is_string()) {
-                    continue;
-                }
-                const auto vertex =
-                    shader.at("vertex").get<std::string>();
-                const auto fragment =
-                    shader.at("fragment").get<std::string>();
-                if (enable_multiview_runtime &&
-                    vertex == "engine://fullscreen" &&
-                    builtin_fragment(fragment)) {
-                    capable_candidates.insert(name);
-                }
-            }
-        }
-    }
     for (const auto &task : compute_tasks) {
         // PS-1: a once task, when it runs, runs as a per_frame one.
         if (task.schedule ==
@@ -220,6 +161,75 @@ targetPlansByName(
 
 } // namespace
 
+std::set<std::string, std::less<>>
+detail::multiviewCapableFullscreenPasses(
+    const nlohmann::json &config,
+    bool enable_multiview_runtime) {
+    std::set<std::string, std::less<>>
+        capable_candidates;
+    const auto builtin_fragment =
+        [](std::string_view reference) {
+            static constexpr std::array known{
+                std::string_view{"engine://fullscreen"},
+                std::string_view{"engine://ssao"},
+                std::string_view{"engine://ssao_blur"},
+                std::string_view{"engine://scene_present"},
+                std::string_view{"engine://output_transform"},
+            };
+            return std::find(
+                       known.begin(), known.end(),
+                       reference) != known.end();
+        };
+    if (config.contains("rendering_passes") &&
+        config.at("rendering_passes").is_array()) {
+        for (const auto &rendering_pass :
+             config.at("rendering_passes")) {
+            if (!rendering_pass.is_object() ||
+                !rendering_pass.contains("passes") ||
+                !rendering_pass.at("passes").is_array()) {
+                continue;
+            }
+            for (const auto &pass :
+                 rendering_pass.at("passes")) {
+                if (!pass.is_object() ||
+                    !pass.contains("name") ||
+                    !pass.at("name").is_string() ||
+                    !pass.contains("type") ||
+                    !pass.at("type").is_string()) {
+                    continue;
+                }
+                const auto name =
+                    pass.at("name").get<std::string>();
+                const auto type =
+                    pass.at("type").get<std::string>();
+                if (type != "fullscreen" ||
+                    pass.contains("implementation") ||
+                    !pass.contains("shader") ||
+                    !pass.at("shader").is_object()) {
+                    continue;
+                }
+                const auto &shader = pass.at("shader");
+                if (!shader.contains("vertex") ||
+                    !shader.at("vertex").is_string() ||
+                    !shader.contains("fragment") ||
+                    !shader.at("fragment").is_string()) {
+                    continue;
+                }
+                const auto vertex =
+                    shader.at("vertex").get<std::string>();
+                const auto fragment =
+                    shader.at("fragment").get<std::string>();
+                if (enable_multiview_runtime &&
+                    vertex == "engine://fullscreen" &&
+                    builtin_fragment(fragment)) {
+                    capable_candidates.insert(name);
+                }
+            }
+        }
+    }
+    return capable_candidates;
+}
+
 void detail::insertSceneAccelerationStructureNodes(
     std::vector<FrameGraphDefinition> &graphs,
     const TargetPlanningPolicy &target_planning,
@@ -293,108 +303,6 @@ void detail::insertSceneAccelerationStructureNodes(
             graph.nodes[i].declaration_index = i;
     }
 }
-
-namespace {
-
-// FO-1: why one node of a frame graph waits on another, as the frame planner
-// orders them: a read of what the last earlier writer wrote (in declaration
-// order), or an `after` / `before` the node carries (written, or added by the
-// composer: the canonical buckets' anchors and chains, compute task waits).
-struct FrameNodeDependency {
-    std::size_t to = 0;
-    std::string_view reason;
-    std::string resource;
-};
-
-std::vector<std::vector<FrameNodeDependency>> frameNodeDependencies(
-    const FrameGraphDefinition &graph) {
-    std::unordered_map<std::string, std::size_t> index;
-    for (std::size_t i = 0; i < graph.nodes.size(); ++i) index.emplace(graph.nodes[i].name, i);
-    std::vector<std::vector<FrameNodeDependency>> waits(graph.nodes.size());
-    std::unordered_map<std::string, std::size_t> last_writer;
-    for (std::size_t i = 0; i < graph.nodes.size(); ++i) {
-        const auto &node = graph.nodes[i];
-        for (const auto &resource : node.reads)
-            if (const auto writer = last_writer.find(resource);
-                writer != last_writer.end() && writer->second != i)
-                waits[writer->second].push_back({i, "reads", resource});
-        for (const auto &resource : node.writes)
-            if (!resource.empty()) last_writer[resource] = i;
-        for (const auto &name : node.after)
-            if (const auto found = index.find(name); found != index.end() && found->second != i)
-                waits[found->second].push_back({i, "after", {}});
-        for (const auto &name : node.before)
-            if (const auto found = index.find(name); found != index.end() && found->second != i)
-                waits[i].push_back({found->second, "before", {}});
-    }
-    return waits;
-}
-
-// FO-1: frame_node_order.conflicts_dependency@1 when the list puts `first`
-// before `second` but `second` must run before `first`:
-//   {graph, first, second, reason: "reads" | "after" | "before" | "canonical_order",
-//    resource? (reads), via? (the nodes between, when the wait is not direct),
-//    anchor? (canonical_order: the canonical anchor between them)}
-// `reason` (and `resource`) say why the first node after `second` on the
-// shortest such path waits on it; "canonical_order" is a path through a
-// canonical anchor or the output transform (the buckets' fixed order).
-void requireFrameNodeOrderAgreesWithDependencies(const FrameGraphDefinition &graph,
-                                                 const std::vector<std::size_t> &listed) {
-    if (listed.size() < 2) return;
-    const auto waits = frameNodeDependencies(graph);
-    std::unordered_map<std::size_t, std::size_t> position;
-    for (std::size_t i = 0; i < listed.size(); ++i) position.emplace(listed[i], i);
-    for (std::size_t later = 1; later < listed.size(); ++later) {
-        // Breadth first from the node the list puts later: an earlier listed
-        // node it reaches must run after it.
-        const auto start = listed[later];
-        std::vector<std::optional<std::pair<std::size_t, std::size_t>>> came_from(graph.nodes.size());
-        std::vector<bool> seen(graph.nodes.size(), false);
-        std::deque<std::size_t> frontier{start};
-        seen[start] = true;
-        std::optional<std::size_t> reached;
-        while (!frontier.empty() && !reached) {
-            const auto current = frontier.front();
-            frontier.pop_front();
-            for (std::size_t edge = 0; edge < waits[current].size(); ++edge) {
-                const auto next = waits[current][edge].to;
-                if (seen[next]) continue;
-                seen[next] = true;
-                came_from[next] = std::pair{current, edge};
-                if (const auto found = position.find(next); found != position.end() && found->second < later) {
-                    reached = next;
-                    break;
-                }
-                frontier.push_back(next);
-            }
-        }
-        if (!reached) continue;
-        std::vector<std::pair<std::size_t, std::size_t>> path; // (from, edge index)
-        for (auto at = *reached; at != start; at = came_from[at]->first) path.push_back(*came_from[at]);
-        std::reverse(path.begin(), path.end());
-        const auto &step = waits[path.front().first][path.front().second];
-        nlohmann::json fields{{"graph", graph.name},
-                              {"first", graph.nodes[*reached].name},
-                              {"second", graph.nodes[start].name},
-                              {"reason", std::string{step.reason}}};
-        if (step.reason == "reads") fields["resource"] = step.resource;
-        nlohmann::json via = nlohmann::json::array();
-        for (std::size_t i = 1; i < path.size(); ++i) {
-            const auto &node = graph.nodes[path[i].first];
-            via.push_back(node.name);
-            if ((node.kind == FramePlanNodeKind::anchor || node.kind == FramePlanNodeKind::output_transform) &&
-                fields.at("reason") != "canonical_order") {
-                fields["reason"] = "canonical_order";
-                fields.erase("resource");
-                fields["anchor"] = node.name;
-            }
-        }
-        if (!via.empty()) fields["via"] = std::move(via);
-        throw GraphRegistryError("frame_node_order.conflicts_dependency@1", std::move(fields));
-    }
-}
-
-} // namespace
 
 void detail::applyFrameNodeOrder(
     std::vector<FrameGraphDefinition> &graphs,

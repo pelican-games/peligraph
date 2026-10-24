@@ -19,7 +19,6 @@ target_sources(pelican_core PRIVATE
     vulkannativescopeexecutor.cpp
     renderpipelinegpuarena.cpp
     renderfeatureparameteraccess.cpp
-    logicalframegraphadapter.cpp
     fullscreenpassinfojsonparser.cpp
     genericrasterpassinfojsonparser.cpp
     materialpassinfojsonparser.cpp

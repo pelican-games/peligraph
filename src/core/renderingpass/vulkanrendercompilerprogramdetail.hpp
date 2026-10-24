@@ -2,6 +2,9 @@
 
 #include "vulkanrendercompilerpackage.hpp"
 
+#include <set>
+#include <string>
+
 namespace Pelican::detail {
 
 // Inserts shared scene construction and one operation for each named TLAS.
@@ -26,5 +29,13 @@ void namespaceComputeTasks(
     std::vector<FrameGraphDefinition> &graphs,
     const nlohmann::json &composed_config,
     CompiledRenderPipeline &compiled_pipeline);
+
+// The fullscreen passes of the composed config an XR variant may run once
+// for all views, as targetViewExecutionRequest reads them from the JSON:
+// type "fullscreen", no `implementation`, engine://fullscreen with a builtin
+// fragment. RC-3c1a: the test seam for the bridge against
+// renderGraphMultiviewCapableNodes (RC-3c1b reads the IR instead).
+std::set<std::string, std::less<>> multiviewCapableFullscreenPasses(
+    const nlohmann::json &config, bool enable_multiview_runtime);
 
 } // namespace Pelican::detail
