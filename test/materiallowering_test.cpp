@@ -101,10 +101,10 @@ TEST_CASE("material overrides bind by name without changing declaration layout",
     REQUIRE(lowered.textures[1].missing_default == MaterialDummyTexture::flat_normal);
     REQUIRE(lowered.textures[2].missing_default == MaterialDummyTexture::black);
     REQUIRE(lowered.render_state.blend == SurfaceBlendMode::additive);
-    REQUIRE(lowered.render_state.cull == SurfaceCullMode::none);
+    REQUIRE(lowered.render_state.cull == RasterCullMode::none);
     REQUIRE(lowered.render_state.depth_test);
     REQUIRE_FALSE(lowered.render_state.depth_write);
-    REQUIRE(lowered.render_state.depth_compare == SurfaceDepthCompare::greater_equal);
+    REQUIRE(lowered.render_state.depth_compare == RasterDepthCompare::greater_equal);
 }
 
 TEST_CASE("material lowering carries texture dimension and sampler contract",
@@ -274,7 +274,7 @@ TEST_CASE("named material variants lower through the ordinary surface and route 
     REQUIRE(lowered.route ==
             MaterialRouteClass::forward_opaque);
     REQUIRE(lowered.render_state.cull ==
-            SurfaceCullMode::front);
+            RasterCullMode::front);
     REQUIRE_FALSE(lowered.render_state.depth_write);
     REQUIRE(readAt<float>(lowered.values, 0) ==
             Catch::Approx(0.025f));
@@ -489,7 +489,7 @@ TEST_CASE("six routing variants lower only through lighting hook and fixed forwa
                 std::string{
                             "//! render_state: { blend: "} +
                 (state.blend == SurfaceBlendMode::blend ? "blend" : "opaque") +
-                ", cull: " + (state.cull == SurfaceCullMode::none ? "none" : "back") +
+                ", cull: " + (state.cull == RasterCullMode::none ? "none" : "back") +
                 ", depth: " + (state.depth_write ? "read_write" : "read_only") +
                 " }\n\n"
                 "vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, "
@@ -796,7 +796,7 @@ TEST_CASE("LP-2 draw steps are refused by name without a GPU",
     MaterialDrawRenderStateOverride solid;
     solid.blend = SurfaceBlendMode::opaque;
     MaterialDrawRenderStateOverride cull_front;
-    cull_front.cull = SurfaceCullMode::front;
+    cull_front.cull = RasterCullMode::front;
 
     // Accepted: the material, an existing variant, a same-phase override.
     CHECK_NOTHROW(validateMaterialDrawStep(MaterialDrawStep::material(),
@@ -852,7 +852,7 @@ TEST_CASE("LP-2 materials are matched by document name or glTF index",
           "engine_default");
 
     MaterialDrawRenderStateOverride cull_front;
-    cull_front.cull = SurfaceCullMode::front;
+    cull_front.cull = RasterCullMode::front;
     CHECK(materialDrawOverrideKey(
               MaterialDrawStep::overridden(cull_front, {"B", "A", "B"})) ==
           materialDrawOverrideKey(
@@ -861,7 +861,7 @@ TEST_CASE("LP-2 materials are matched by document name or glTF index",
           materialDrawOverrideKey(MaterialDrawStep::overridden({})));
     const auto state = applyMaterialDrawRenderStateOverride(
         SurfaceRenderState{}, cull_front);
-    CHECK(state.cull == SurfaceCullMode::front);
+    CHECK(state.cull == RasterCullMode::front);
     CHECK(state.blend == SurfaceBlendMode::opaque);
     CHECK(state.depth_write);
 }

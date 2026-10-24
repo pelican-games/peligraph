@@ -1,6 +1,6 @@
 #pragma once
 
-#include "framegraphbufferdefinition.hpp"
+#include "../../project/framegraphbufferdefinition.hpp"
 #include "frameplanner.hpp"
 #include "../../project/renderpipeline.hpp"
 

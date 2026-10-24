@@ -471,34 +471,6 @@ void splitHistoryReads(const std::vector<std::string> &authored,
     }
 }
 
-FrameGraphAttachmentLoadOp frameGraphAttachmentLoadOp(
-    vk::AttachmentLoadOp op) {
-    switch (op) {
-    case vk::AttachmentLoadOp::eLoad:
-        return FrameGraphAttachmentLoadOp::load;
-    case vk::AttachmentLoadOp::eClear:
-        return FrameGraphAttachmentLoadOp::clear;
-    case vk::AttachmentLoadOp::eDontCare:
-        return FrameGraphAttachmentLoadOp::discard;
-    default:
-        throw std::runtime_error(
-            "Unsupported frame graph attachment load op");
-    }
-}
-
-FrameGraphAttachmentStoreOp frameGraphAttachmentStoreOp(
-    vk::AttachmentStoreOp op) {
-    switch (op) {
-    case vk::AttachmentStoreOp::eStore:
-        return FrameGraphAttachmentStoreOp::store;
-    case vk::AttachmentStoreOp::eDontCare:
-        return FrameGraphAttachmentStoreOp::discard;
-    default:
-        throw std::runtime_error(
-            "Unsupported frame graph attachment store op");
-    }
-}
-
 // The single place a raster attachment is recorded on a node. An attachment
 // that loads is also a same-pixel read of what it writes, so the read and its
 // footprint are stated here rather than at each of the four callers. A pass
@@ -506,7 +478,7 @@ FrameGraphAttachmentStoreOp frameGraphAttachmentStoreOp(
 void appendAttachment(
     FrameGraphNodeDefinition &node, std::string resource,
     std::optional<ImageSubresourceRange> subresource,
-    FrameGraphAttachmentAspect aspect,
+    AttachmentAspect aspect,
     PassAttachmentOperations operations) {
     if (!resource.empty()) {
         node.attachments.push_back(
@@ -514,16 +486,11 @@ void appendAttachment(
                 .resource = resource,
                 .subresource = std::move(subresource),
                 .aspect = aspect,
-                .load_op =
-                    frameGraphAttachmentLoadOp(
-                        operations.load_op),
-                .store_op =
-                    frameGraphAttachmentStoreOp(
-                        operations.store_op),
+                .operations = operations,
             });
     }
     if (operations.load_op !=
-        vk::AttachmentLoadOp::eLoad) {
+        AttachmentLoadOp::load) {
         return;
     }
     appendUnique(node.reads, resource);
@@ -533,24 +500,24 @@ void appendAttachment(
          std::nullopt});
 }
 
-std::optional<vk::AttachmentLoadOp> parseOptionalAttachmentLoadOp(
+std::optional<AttachmentLoadOp> parseOptionalAttachmentLoadOp(
     const nlohmann::json &pass_json,
     std::string_view field) {
     if (!pass_json.contains(field)) {
         return std::nullopt;
     }
-    return stringToLoadOp(
+    return parseAuthoredAttachmentLoadOp(
         parseStringField(
             pass_json, field, "frame graph pass"));
 }
 
-std::optional<vk::AttachmentStoreOp> parseOptionalAttachmentStoreOp(
+std::optional<AttachmentStoreOp> parseOptionalAttachmentStoreOp(
     const nlohmann::json &pass_json,
     std::string_view field) {
     if (!pass_json.contains(field)) {
         return std::nullopt;
     }
-    return stringToStoreOp(
+    return parseAuthoredAttachmentStoreOp(
         parseStringField(
             pass_json, field, "frame graph pass"));
 }
@@ -558,8 +525,8 @@ std::optional<vk::AttachmentStoreOp> parseOptionalAttachmentStoreOp(
 struct ParsedRasterAttachment {
     std::string resource;
     std::optional<ImageSubresourceRange> subresource;
-    std::optional<vk::AttachmentLoadOp> load_op;
-    std::optional<vk::AttachmentStoreOp> store_op;
+    std::optional<AttachmentLoadOp> load_op;
+    std::optional<AttachmentStoreOp> store_op;
 };
 
 ParsedRasterAttachment parseRasterAttachmentReference(
@@ -802,7 +769,7 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
     }
     node.resolution_domain =
         parseRenderResolutionDomain(
-            pass_json, renderPassTypeName(type), node.name);
+            pass_json, type, node.name);
     const auto &output = pass_json.at("output");
     const auto color_outputs = parseOutputColors(output);
     const auto depth_outputs = parseOutputDepth(output);
@@ -825,15 +792,15 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
         pass_json, "depth_store_op");
     const auto color_defaults =
         defaultPassAttachmentOperations(
-            type, PassAttachmentAspect::color);
+            type, AttachmentAspect::color);
     const auto depth_defaults =
         defaultPassAttachmentOperations(
-            type, PassAttachmentAspect::depth);
+            type, AttachmentAspect::depth);
     for (const auto &attachment : color_outputs) {
         appendAttachment(
             node, attachment.resource,
             attachment.subresource,
-            FrameGraphAttachmentAspect::color,
+            AttachmentAspect::color,
             resolveAttachmentOperations(
                 attachment.load_op, attachment.store_op,
                 color_load, color_store, color_defaults));
@@ -842,7 +809,7 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
         appendAttachment(
             node, attachment.resource,
             attachment.subresource,
-            FrameGraphAttachmentAspect::depth,
+            AttachmentAspect::depth,
             resolveAttachmentOperations(
                 attachment.load_op, attachment.store_op,
                 depth_load, depth_store, depth_defaults));
@@ -1268,7 +1235,7 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
         appendUnique(node.writes, resource);
         appendAttachment(
             node, resource, attachment.subresource,
-            FrameGraphAttachmentAspect::color,
+            AttachmentAspect::color,
             pass.colorAttachmentOperations(color_index));
     }
     if (pass.isMaterial()) {
@@ -1340,7 +1307,7 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
         appendAttachment(
             node, depth_resource,
             pass.output_depth.subresource,
-            FrameGraphAttachmentAspect::depth,
+            AttachmentAspect::depth,
             pass.depthAttachmentOperations());
     }
     return node;

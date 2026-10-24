@@ -121,7 +121,7 @@ vk::ImageLayout requiredImageLayout(
                 boundary.logical_resource);
         }
         return aspect ==
-                       VulkanPhysicalAttachmentAspect::depth
+                       AttachmentAspect::depth
                    ? vk::ImageLayout::eDepthAttachmentOptimal
                    : vk::ImageLayout::eColorAttachmentOptimal;
     }

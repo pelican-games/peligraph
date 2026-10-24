@@ -142,29 +142,22 @@ VulkanResourceRepresentation parseRepresentation(
         std::string{value});
 }
 
-VulkanPhysicalAttachmentLoadOp parseAttachmentLoadOp(
+// RC-3a2: the plan's spellings ("discard" for dont_care), from the one
+// table in attachmentoperations.
+AttachmentLoadOp parseAttachmentLoadOp(
     std::string_view value) {
-    if (value == "load") {
-        return VulkanPhysicalAttachmentLoadOp::load;
-    }
-    if (value == "clear") {
-        return VulkanPhysicalAttachmentLoadOp::clear;
-    }
-    if (value == "discard") {
-        return VulkanPhysicalAttachmentLoadOp::discard;
+    if (const auto op = findPlanAttachmentLoadOp(value)) {
+        return *op;
     }
     throw std::runtime_error(
         "Vulkan physical attachment fragment has unknown load_op: " +
         std::string{value});
 }
 
-VulkanPhysicalAttachmentStoreOp parseAttachmentStoreOp(
+AttachmentStoreOp parseAttachmentStoreOp(
     std::string_view value) {
-    if (value == "store") {
-        return VulkanPhysicalAttachmentStoreOp::store;
-    }
-    if (value == "discard") {
-        return VulkanPhysicalAttachmentStoreOp::discard;
+    if (const auto op = findPlanAttachmentStoreOp(value)) {
+        return *op;
     }
     throw std::runtime_error(
         "Vulkan physical attachment fragment has unknown store_op: " +
@@ -896,14 +889,14 @@ void appendPhysicalAttachmentFingerprint(
     fingerprint.appendString(
         attachment.logical_resource);
     fingerprint.appendString(
-        vulkanPhysicalAttachmentAspectName(
+        attachmentAspectName(
             attachment.aspect));
     fingerprint.appendString(
-        vulkanPhysicalAttachmentLoadOpName(
-            attachment.load_op));
+        attachmentLoadOpPlanName(
+            attachment.operations.load_op));
     fingerprint.appendString(
-        vulkanPhysicalAttachmentStoreOpName(
-            attachment.store_op));
+        attachmentStoreOpPlanName(
+            attachment.operations.store_op));
     appendFingerprintOptional(
         fingerprint, attachment.subresource,
         appendImageSubresourceFingerprint);
@@ -1385,7 +1378,7 @@ void validateAliasGroups(
 using ScopeAttachmentContract =
     std::vector<std::tuple<
         std::string,
-        VulkanPhysicalAttachmentAspect,
+        AttachmentAspect,
         std::optional<ImageSubresourceRange>>>;
 
 ScopeAttachmentContract scopeAttachmentContract(
@@ -1966,7 +1959,7 @@ void validateMaterializedRenderingScopeOperations(
             std::map<
                 std::tuple<
                     std::string,
-                    VulkanPhysicalAttachmentAspect,
+                    AttachmentAspect,
                     std::optional<
                         ImageSubresourceRange>>,
                 const VulkanPhysicalAttachmentPlan *>
@@ -1990,11 +1983,11 @@ void validateMaterializedRenderingScopeOperations(
                         previous_writers.find(key);
                     if (previous !=
                         previous_writers.end()) {
-                        if (previous->second->store_op !=
-                                VulkanPhysicalAttachmentStoreOp::
+                        if (previous->second->operations.store_op !=
+                                AttachmentStoreOp::
                                     store ||
-                            attachment.load_op !=
-                                VulkanPhysicalAttachmentLoadOp::
+                            attachment.operations.load_op !=
+                                AttachmentLoadOp::
                                     load) {
                             throw std::runtime_error(
                                 "Vulkan physical local-read scope "
@@ -2038,8 +2031,8 @@ void validateMaterializedRenderingScopeOperations(
                  plan.attachments) {
                 if (attachment.node != node) continue;
                 if (node_index > 0 &&
-                    attachment.load_op !=
-                        VulkanPhysicalAttachmentLoadOp::
+                    attachment.operations.load_op !=
+                        AttachmentLoadOp::
                             load) {
                     throw std::runtime_error(
                         "Vulkan physical fused rendering scope "
@@ -2049,8 +2042,8 @@ void validateMaterializedRenderingScopeOperations(
                 }
                 if (node_index + 1 <
                         scope.nodes.size() &&
-                    attachment.store_op !=
-                        VulkanPhysicalAttachmentStoreOp::
+                    attachment.operations.store_op !=
+                        AttachmentStoreOp::
                             store) {
                     throw std::runtime_error(
                         "Vulkan physical fused rendering scope "
@@ -2201,8 +2194,8 @@ void validateVulkanPhysicalAttachmentPlans(
                                 LogicalAccessIntent::attachment);
                 });
         const auto physically_loads =
-            attachment.load_op ==
-            VulkanPhysicalAttachmentLoadOp::load;
+            attachment.operations.load_op ==
+            AttachmentLoadOp::load;
         if (loads_existing_attachment != physically_loads) {
             throw std::runtime_error(
                 physically_loads
@@ -2344,9 +2337,9 @@ ejectVulkanPhysicalFragmentPackage(
                     .logical_resource =
                         attachment.logical_resource,
                     .load_op =
-                        attachment.load_op,
+                        attachment.operations.load_op,
                     .store_op =
-                        attachment.store_op,
+                        attachment.operations.store_op,
                 });
         }
     }
@@ -2428,12 +2421,12 @@ vulkanPhysicalFragmentPackageToJson(
             };
             if (attachment.load_op) {
                 entry["load_op"] =
-                    vulkanPhysicalAttachmentLoadOpName(
+                    attachmentLoadOpPlanName(
                         *attachment.load_op);
             }
             if (attachment.store_op) {
                 entry["store_op"] =
-                    vulkanPhysicalAttachmentStoreOpName(
+                    attachmentStoreOpPlanName(
                         *attachment.store_op);
             }
             result["attachments"].push_back(
@@ -2809,8 +2802,8 @@ bool hasDownstreamAttachmentLoad(
                            edge.consumer_node &&
                        attachment.logical_resource ==
                            resource &&
-                       attachment.load_op ==
-                           VulkanPhysicalAttachmentLoadOp::
+                       attachment.operations.load_op ==
+                           AttachmentLoadOp::
                                load;
             });
         if (consumer != attachments.end()) {
@@ -3170,15 +3163,15 @@ VulkanTargetPlan linkVulkanPhysicalFragment(
                 automatic_attachments.at(identity);
             const auto requested_load =
                 fragment.load_op.value_or(
-                    found->second->load_op);
+                    found->second->operations.load_op);
             const auto requested_store =
                 fragment.store_op.value_or(
-                    found->second->store_op);
+                    found->second->operations.store_op);
             const auto entry_changed =
                 requested_load !=
-                    original.load_op ||
+                    original.operations.load_op ||
                 requested_store !=
-                    original.store_op;
+                    original.operations.store_op;
             if (entry_changed &&
                 resource->second->representation !=
                     VulkanResourceRepresentation::
@@ -3192,9 +3185,9 @@ VulkanTargetPlan linkVulkanPhysicalFragment(
                     "resource: " +
                     fragment.logical_resource);
             }
-            found->second->load_op =
+            found->second->operations.load_op =
                 requested_load;
-            found->second->store_op =
+            found->second->operations.store_op =
                 requested_store;
             changed = changed || entry_changed;
         }
@@ -3213,12 +3206,12 @@ VulkanTargetPlan linkVulkanPhysicalFragment(
                 automatic_attachments.at(identity);
             const auto &linked =
                 *attachments.at(identity);
-            if (original.store_op !=
-                    VulkanPhysicalAttachmentStoreOp::
+            if (original.operations.store_op !=
+                    AttachmentStoreOp::
                         store ||
-                linked.store_op !=
-                    VulkanPhysicalAttachmentStoreOp::
-                        discard) {
+                linked.operations.store_op !=
+                    AttachmentStoreOp::
+                        dont_care) {
                 continue;
             }
             const auto &resource =

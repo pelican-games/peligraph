@@ -1,5 +1,7 @@
 #include "vulkanimagevocabulary.hpp"
 
+#include "../../project/framegraphbufferdefinition.hpp"
+
 #include <array>
 #include <stdexcept>
 #include <string>
@@ -133,5 +135,31 @@ vk::Extent2D toVulkanExtent(ResolvedResourceExtent extent) {
 ResolvedResourceExtent extentFromVulkan(vk::Extent2D extent) {
     return ResolvedResourceExtent{extent.width, extent.height};
 }
+
+vk::AttachmentLoadOp toVulkanAttachmentLoadOp(AttachmentLoadOp op) {
+    switch (op) {
+    case AttachmentLoadOp::load:
+        return vk::AttachmentLoadOp::eLoad;
+    case AttachmentLoadOp::clear:
+        return vk::AttachmentLoadOp::eClear;
+    case AttachmentLoadOp::dont_care:
+        return vk::AttachmentLoadOp::eDontCare;
+    }
+    throw std::logic_error("unknown attachment load op");
+}
+
+vk::AttachmentStoreOp toVulkanAttachmentStoreOp(AttachmentStoreOp op) {
+    switch (op) {
+    case AttachmentStoreOp::store:
+        return vk::AttachmentStoreOp::eStore;
+    case AttachmentStoreOp::dont_care:
+        return vk::AttachmentStoreOp::eDontCare;
+    }
+    throw std::logic_error("unknown attachment store op");
+}
+
+// The engine's byte size of an indexed draw command (project) is Vulkan's.
+static_assert(sizeof(vk::DrawIndexedIndirectCommand) ==
+              frameGraphIndexedDrawCommandBytes);
 
 } // namespace Pelican

@@ -572,14 +572,14 @@ materialBindingsForGeneration(
                         ShaderResourcePortView::
                             family_array) {
                         view_dimension =
-                            PassInputViewDimension::
+                            VulkanResourceViewLayout::
                                 family_2d_array;
                     } else if (
                         resource_view ==
                         ShaderResourcePortView::
                             shared_2d) {
                         view_dimension =
-                            PassInputViewDimension::
+                            VulkanResourceViewLayout::
                                 shared_2d;
                     }
                     const auto attachment =
@@ -596,10 +596,10 @@ materialBindingsForGeneration(
                             ? ImageSubresourceViewDimension::
                                   cube
                         : view_dimension ==
-                                  PassInputViewDimension::
+                                  VulkanResourceViewLayout::
                                       layered_2d_array ||
                               view_dimension ==
-                                  PassInputViewDimension::
+                                  VulkanResourceViewLayout::
                                       family_2d_array
                             ? ImageSubresourceViewDimension::
                                   two_d_array
@@ -900,7 +900,7 @@ resolveGenerationShaderInputs(
             .input = input,
             .input_attachment_index = std::nullopt,
             .view_dimension =
-                PassInputViewDimension::shared_2d,
+                VulkanResourceViewLayout::shared_2d,
         });
     }
     if (passes.empty()) {
@@ -913,7 +913,7 @@ resolveGenerationShaderInputs(
         std::optional<vk::Extent2D>
             expected_extent;
         auto expected_view =
-            PassInputViewDimension::shared_2d;
+            VulkanResourceViewLayout::shared_2d;
         auto expected_descriptor_dimension =
             ImageSubresourceViewDimension::two_d;
         std::string expected_pass;

@@ -772,25 +772,25 @@ std::string_view blendModeName(SurfaceBlendMode mode) {
     return "unknown";
 }
 
-std::string_view cullModeName(SurfaceCullMode mode) {
+std::string_view cullModeName(RasterCullMode mode) {
     switch (mode) {
-    case SurfaceCullMode::none: return "none";
-    case SurfaceCullMode::front: return "front";
-    case SurfaceCullMode::back: return "back";
+    case RasterCullMode::none: return "none";
+    case RasterCullMode::front: return "front";
+    case RasterCullMode::back: return "back";
     }
     return "unknown";
 }
 
-std::string_view depthCompareName(SurfaceDepthCompare compare) {
+std::string_view depthCompareName(RasterDepthCompare compare) {
     switch (compare) {
-    case SurfaceDepthCompare::never: return "never";
-    case SurfaceDepthCompare::less: return "less";
-    case SurfaceDepthCompare::equal: return "equal";
-    case SurfaceDepthCompare::less_equal: return "less_equal";
-    case SurfaceDepthCompare::greater: return "greater";
-    case SurfaceDepthCompare::not_equal: return "not_equal";
-    case SurfaceDepthCompare::greater_equal: return "greater_equal";
-    case SurfaceDepthCompare::always: return "always";
+    case RasterDepthCompare::never: return "never";
+    case RasterDepthCompare::less: return "less";
+    case RasterDepthCompare::equal: return "equal";
+    case RasterDepthCompare::less_equal: return "less_equal";
+    case RasterDepthCompare::greater: return "greater";
+    case RasterDepthCompare::not_equal: return "not_equal";
+    case RasterDepthCompare::greater_equal: return "greater_equal";
+    case RasterDepthCompare::always: return "always";
     }
     return "unknown";
 }

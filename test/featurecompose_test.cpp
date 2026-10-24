@@ -6882,7 +6882,7 @@ TEST_CASE("LP-3a a draw_loop's branches choose each material's draw steps",
     CHECK(rule.node == "forward_opaque_draws");
     CHECK(rule.branch_count == 3);
     MaterialDrawRenderStateOverride cull_front;
-    cull_front.cull = SurfaceCullMode::front;
+    cull_front.cull = RasterCullMode::front;
     const MaterialDrawStepList twice{MaterialDrawStep::overridden(cull_front), MaterialDrawStep::material()};
     const auto outlined = lp3aSubject("m.json#outlined", {"lit", "outline"});
     const auto skipped = lp3aSubject("m.json#skip", {"lit"});
@@ -6955,7 +6955,7 @@ TEST_CASE("LP-3a a draw_loop's branches choose each material's draw steps",
         MaterialDrawRenderStateOverride state;
         state.blend = SurfaceBlendMode::opaque;
         state.depth_write = false;
-        state.depth_compare = SurfaceDepthCompare::less_equal;
+        state.depth_compare = RasterDepthCompare::less_equal;
         CHECK(steps == std::optional{MaterialDrawStepList{MaterialDrawStep::named("silhouette"),
                                                           MaterialDrawStep::overridden(state, {"LP3A_MARK"}),
                                                           MaterialDrawStep::material()}});

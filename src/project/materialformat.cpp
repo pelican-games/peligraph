@@ -892,10 +892,10 @@ SurfaceRenderState materialVariantRenderState(const MaterialVariantRouting &rout
     state.blend = routing.alpha_mode == MaterialAlphaMode::blend
                       ? SurfaceBlendMode::blend
                       : SurfaceBlendMode::opaque;
-    state.cull = routing.double_sided ? SurfaceCullMode::none : SurfaceCullMode::back;
+    state.cull = routing.double_sided ? RasterCullMode::none : RasterCullMode::back;
     state.depth_test = true;
     state.depth_write = routing.alpha_mode != MaterialAlphaMode::blend;
-    state.depth_compare = SurfaceDepthCompare::less;
+    state.depth_compare = RasterDepthCompare::less;
     return state;
 }
 
@@ -930,7 +930,7 @@ std::string dumpPrimitiveMaterialBindings(
             << " material=" << binding.material
             << " variant=" << materialVariantName(binding.routing)
             << " alpha=" << materialAlphaModeName(binding.routing.alpha_mode)
-            << " cull=" << (state.cull == SurfaceCullMode::back ? "back" : "none")
+            << " cull=" << (state.cull == RasterCullMode::back ? "back" : "none")
             << " front=true back="
             << (materialVariantKeepsFace(binding.routing, false) ? "true" : "false")
             << " blend=" << (state.blend == SurfaceBlendMode::blend ? "blend" : "opaque")

@@ -2066,22 +2066,22 @@ TEST_CASE(
         FrameGraphAttachmentDefinition{
             .resource = "first",
             .aspect =
-                FrameGraphAttachmentAspect::color,
-            .load_op =
-                FrameGraphAttachmentLoadOp::discard,
-            .store_op =
-                FrameGraphAttachmentStoreOp::discard,
+                AttachmentAspect::color,
+            .operations =
+                PassAttachmentOperations{
+                    AttachmentLoadOp::dont_care,
+                    AttachmentStoreOp::dont_care},
         }));
     REQUIRE((
         graph.nodes.at(0).attachments.at(2) ==
         FrameGraphAttachmentDefinition{
             .resource = "depth",
             .aspect =
-                FrameGraphAttachmentAspect::depth,
-            .load_op =
-                FrameGraphAttachmentLoadOp::load,
-            .store_op =
-                FrameGraphAttachmentStoreOp::store,
+                AttachmentAspect::depth,
+            .operations =
+                PassAttachmentOperations{
+                    AttachmentLoadOp::load,
+                    AttachmentStoreOp::store},
         }));
     REQUIRE(
         std::find(
@@ -2090,18 +2090,18 @@ TEST_CASE(
             "depth") !=
         graph.nodes.at(0).reads.end());
     REQUIRE(
-        graph.nodes.at(1).attachments.front().load_op ==
-        FrameGraphAttachmentLoadOp::load);
+        graph.nodes.at(1).attachments.front().operations.load_op ==
+        AttachmentLoadOp::load);
     REQUIRE(
-        graph.nodes.at(1).attachments.front().store_op ==
-        FrameGraphAttachmentStoreOp::store);
+        graph.nodes.at(1).attachments.front().operations.store_op ==
+        AttachmentStoreOp::store);
 #if PELICAN_WITH_IMGUI
     REQUIRE(
-        graph.nodes.at(2).attachments.front().load_op ==
-        FrameGraphAttachmentLoadOp::load);
+        graph.nodes.at(2).attachments.front().operations.load_op ==
+        AttachmentLoadOp::load);
     REQUIRE(
-        graph.nodes.at(2).attachments.front().store_op ==
-        FrameGraphAttachmentStoreOp::store);
+        graph.nodes.at(2).attachments.front().operations.store_op ==
+        AttachmentStoreOp::store);
 #endif
 
     auto malformed = nlohmann::json::parse(R"json({
@@ -2133,22 +2133,22 @@ TEST_CASE(
                 node.attachments.at(index);
             REQUIRE(
                 attachment.aspect ==
-                FrameGraphAttachmentAspect::color);
+                AttachmentAspect::color);
             const bool loaded =
                 std::find(
                     loaded_indices.begin(),
                     loaded_indices.end(), index) !=
                 loaded_indices.end();
             CHECK(
-                attachment.load_op ==
+                attachment.operations.load_op ==
                 (loaded
-                     ? FrameGraphAttachmentLoadOp::load
-                     : FrameGraphAttachmentLoadOp::clear));
+                     ? AttachmentLoadOp::load
+                     : AttachmentLoadOp::clear));
             CHECK(
-                attachment.store_op ==
+                attachment.operations.store_op ==
                 (loaded
-                     ? FrameGraphAttachmentStoreOp::discard
-                     : FrameGraphAttachmentStoreOp::store));
+                     ? AttachmentStoreOp::dont_care
+                     : AttachmentStoreOp::store));
             CHECK(
                 (std::find(
                      node.reads.begin(), node.reads.end(),
@@ -2230,10 +2230,10 @@ TEST_CASE(
     };
     for (const auto &node :
          wp352NodesFromBothPlannerInputs(reverse_color)) {
-        REQUIRE(node.attachments.at(0).load_op ==
-                FrameGraphAttachmentLoadOp::clear);
-        REQUIRE(node.attachments.at(0).store_op ==
-                FrameGraphAttachmentStoreOp::discard);
+        REQUIRE(node.attachments.at(0).operations.load_op ==
+                AttachmentLoadOp::clear);
+        REQUIRE(node.attachments.at(0).operations.store_op ==
+                AttachmentStoreOp::dont_care);
         REQUIRE(std::find(node.reads.begin(), node.reads.end(),
                           "gbuffer_albedo") == node.reads.end());
         REQUIRE(std::none_of(
@@ -2242,10 +2242,10 @@ TEST_CASE(
                 return footprint.resource == "gbuffer_albedo";
             }));
         for (std::size_t index = 1; index < 5; ++index) {
-            REQUIRE(node.attachments.at(index).load_op ==
-                    FrameGraphAttachmentLoadOp::load);
-            REQUIRE(node.attachments.at(index).store_op ==
-                    FrameGraphAttachmentStoreOp::store);
+            REQUIRE(node.attachments.at(index).operations.load_op ==
+                    AttachmentLoadOp::load);
+            REQUIRE(node.attachments.at(index).operations.store_op ==
+                    AttachmentStoreOp::store);
         }
     }
 
@@ -2256,17 +2256,17 @@ TEST_CASE(
         const auto &depth = node.attachments.back();
         REQUIRE(
             depth.aspect ==
-            FrameGraphAttachmentAspect::depth);
+            AttachmentAspect::depth);
         CHECK(
-            depth.load_op ==
+            depth.operations.load_op ==
             (loaded
-                 ? FrameGraphAttachmentLoadOp::load
-                 : FrameGraphAttachmentLoadOp::clear));
+                 ? AttachmentLoadOp::load
+                 : AttachmentLoadOp::clear));
         CHECK(
-            depth.store_op ==
+            depth.operations.store_op ==
             (loaded
-                 ? FrameGraphAttachmentStoreOp::store
-                 : FrameGraphAttachmentStoreOp::discard));
+                 ? AttachmentStoreOp::store
+                 : AttachmentStoreOp::dont_care));
         CHECK(node.reads.size() == (loaded ? 1 : 0));
         CHECK(
             (std::find(
@@ -2328,8 +2328,8 @@ TEST_CASE(
     for (const auto &node :
          wp352NodesFromBothPlannerInputs(reverse_depth)) {
         const auto &depth = node.attachments.back();
-        REQUIRE(depth.load_op == FrameGraphAttachmentLoadOp::clear);
-        REQUIRE(depth.store_op == FrameGraphAttachmentStoreOp::discard);
+        REQUIRE(depth.operations.load_op == AttachmentLoadOp::clear);
+        REQUIRE(depth.operations.store_op == AttachmentStoreOp::dont_care);
         REQUIRE(std::find(node.reads.begin(), node.reads.end(),
                           "offscreen_depth") == node.reads.end());
         REQUIRE(std::none_of(
@@ -2382,8 +2382,8 @@ TEST_CASE(
     const auto nodes = wp352NodesFromBothPlannerInputs(valid);
     REQUIRE(nodes.size() == 2);
     for (const auto &node : nodes) {
-        REQUIRE(node.attachments.back().load_op ==
-                FrameGraphAttachmentLoadOp::load);
+        REQUIRE(node.attachments.back().operations.load_op ==
+                AttachmentLoadOp::load);
     }
 }
 
@@ -2538,7 +2538,7 @@ TEST_CASE(
         graph.nodes.front().attachments.front();
     REQUIRE(
         attachment.aspect ==
-        FrameGraphAttachmentAspect::depth);
+        AttachmentAspect::depth);
     REQUIRE(attachment.subresource.has_value());
     REQUIRE(
         attachment.subresource->base_mip_level ==

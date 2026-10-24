@@ -155,23 +155,6 @@ enum class SurfaceBlendMode {
     additive,
 };
 
-enum class SurfaceCullMode {
-    none,
-    front,
-    back,
-};
-
-enum class SurfaceDepthCompare {
-    never,
-    less,
-    equal,
-    less_equal,
-    greater,
-    not_equal,
-    greater_equal,
-    always,
-};
-
 struct SurfaceHookSet {
     bool vertex_displace_v1 = false;
     bool surface_v1 = false;
@@ -185,10 +168,13 @@ struct SurfaceHookSet {
 
 struct SurfaceRenderState {
     SurfaceBlendMode blend = SurfaceBlendMode::opaque;
-    SurfaceCullMode cull = SurfaceCullMode::back;
+    // RC-3a2: the cull and depth compare are the pipeline state's own types
+    // (rasterpass.hpp); the surface's defaults (cull back, depth on, less)
+    // stay its own, apart from PipelineState's.
+    RasterCullMode cull = RasterCullMode::back;
     bool depth_test = true;
     bool depth_write = true;
-    SurfaceDepthCompare depth_compare = SurfaceDepthCompare::less;
+    RasterDepthCompare depth_compare = RasterDepthCompare::less;
     // PSN-1: the rest of the raster_state vocabulary a surface may write
     // (surfacePipelineStateKeys(): polygon_mode, depth_bias, stencil, ...),
     // read by the same parser. Its topology, cull, front face, depth test /

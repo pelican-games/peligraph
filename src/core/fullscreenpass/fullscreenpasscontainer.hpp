@@ -27,9 +27,9 @@ class FrameGraphResourceContainer;
 struct FullscreenPassInput {
     GlobalRenderTargetId target = noRenderTargetId();
     bool history = false;
-    FullscreenInputSampling sampling{};
-    PassInputViewDimension view =
-        PassInputViewDimension::shared_2d;
+    ShaderResourcePortSampling sampling{};
+    VulkanResourceViewLayout view =
+        VulkanResourceViewLayout::shared_2d;
     std::optional<ImageSubresourceRange> subresource;
     // Absent derives the descriptor view from `view`: layered and family
     // array inputs bind a 2D array view, everything else a plain 2D view.
@@ -40,10 +40,10 @@ struct FullscreenPassInput {
     ImageSubresourceViewDimension
     resolvedViewDimension() const {
         if (view_dimension) return *view_dimension;
-        return view == PassInputViewDimension::
+        return view == VulkanResourceViewLayout::
                            layered_2d_array ||
                        view ==
-                           PassInputViewDimension::
+                           VulkanResourceViewLayout::
                                family_2d_array
                    ? ImageSubresourceViewDimension::
                          two_d_array
@@ -272,7 +272,7 @@ DECLARE_MODULE(FullscreenPassContainer) {
     std::vector<vk::ImageView> boundInputImageViewsForTesting(
         PassId pass_id,
         std::uint32_t view_index = 0) const;
-    std::vector<FullscreenInputSampling>
+    std::vector<ShaderResourcePortSampling>
     inputSamplingForTesting(PassId pass_id) const;
     ShaderBundleId fragmentShaderForTesting(
         PassId pass_id) const;

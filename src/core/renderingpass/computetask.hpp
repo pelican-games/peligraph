@@ -10,7 +10,7 @@
 #include "computetaskdefinitionjson.hpp"
 #include "framegraphbuffercontainer.hpp"
 
-#include "framegraphbufferdefinition.hpp"
+#include "../../project/framegraphbufferdefinition.hpp"
 #include "frameplanner.hpp"
 #include "renderingpass.hpp"
 #include "../../project/targetrenderplanning.hpp"

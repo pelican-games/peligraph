@@ -23,7 +23,6 @@ target_sources(pelican_core PRIVATE
     fullscreenpassinfojsonparser.cpp
     genericrasterpassinfojsonparser.cpp
     materialpassinfojsonparser.cpp
-    passattachmentoperations.cpp
     passattachmentoptionsjsonparser.cpp
     passdefinitionjsonparser.cpp
     passimplementationregistry.cpp

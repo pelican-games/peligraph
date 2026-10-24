@@ -14,7 +14,7 @@
 #endif
 #include "../shader/raygrouplayout.hpp"
 #include "computetask.hpp"
-#include "framegraphbufferdefinition.hpp"
+#include "../../project/framegraphbufferdefinition.hpp"
 #include "../../project/renderpipeline.hpp"
 #include "../../project/vulkanviewplanning.hpp"
 #include "framegraphruntime.hpp"

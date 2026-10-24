@@ -18,7 +18,10 @@ add_library(pelican_project
     rendergraphcomposition.cpp
     gpudrawtiming.cpp
     gltfmateriallowering.cpp
+    attachmentoperations.cpp
+    framegraphbufferdefinition.cpp
     imageformat.cpp
+    renderresolutiondomain.cpp
     imageusage.cpp
     importmanifest.cpp
     importrules.cpp

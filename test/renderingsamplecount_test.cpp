@@ -382,14 +382,14 @@ TEST_CASE("rendering sample planning discovers a hybrid attachment component",
         physicalAttachment(
             *compilation.plans.front(),
             "geometry", "albedo")
-            .load_op ==
-        VulkanPhysicalAttachmentLoadOp::clear);
+            .operations.load_op ==
+        AttachmentLoadOp::clear);
     REQUIRE(
         physicalAttachment(
             *compilation.plans.front(),
             "geometry", "depth")
-            .store_op ==
-        VulkanPhysicalAttachmentStoreOp::discard);
+            .operations.store_op ==
+        AttachmentStoreOp::dont_care);
     REQUIRE(
         ejectVulkanPhysicalFragmentPackage(
             *compilation.plans.front())
@@ -554,7 +554,7 @@ TEST_CASE("rendering target bridge links attachment operations into the physical
         attachment !=
         fragment.attachments->end());
     attachment->load_op =
-        VulkanPhysicalAttachmentLoadOp::discard;
+        AttachmentLoadOp::dont_care;
 
     const std::array fragments{fragment};
     const auto linked =
@@ -569,8 +569,8 @@ TEST_CASE("rendering target bridge links attachment operations into the physical
         physicalAttachment(
             *linked.plans.front(),
             "geometry", "albedo")
-            .load_op ==
-        VulkanPhysicalAttachmentLoadOp::discard);
+            .operations.load_op ==
+        AttachmentLoadOp::dont_care);
     REQUIRE(
         linked.plans.front()
             ->applied_fragment_package ==
@@ -742,8 +742,8 @@ TEST_CASE(
     REQUIRE(
         physicalAttachment(
             plan, "transient_probe", "scratch")
-            .store_op ==
-        VulkanPhysicalAttachmentStoreOp::discard);
+            .operations.store_op ==
+        AttachmentStoreOp::dont_care);
     REQUIRE(
         representationAssignment(
             transient, "scratch")
@@ -813,8 +813,8 @@ TEST_CASE(
         physicalAttachment(
             *conservative.plans.front(),
             "transient_probe", "scratch")
-            .store_op ==
-        VulkanPhysicalAttachmentStoreOp::store);
+            .operations.store_op ==
+        AttachmentStoreOp::store);
 
     auto alternate_fragment =
         ejectVulkanPhysicalFragmentPackage(
@@ -907,9 +907,9 @@ TEST_CASE(
     REQUIRE(
         physicalAttachment(
             plan, "geometry", "gbuffer")
-            .store_op ==
-        VulkanPhysicalAttachmentStoreOp::
-            discard);
+            .operations.store_op ==
+        AttachmentStoreOp::
+            dont_care);
 
     auto applied = targets;
     applyRenderingTargetPlan(applied, local);

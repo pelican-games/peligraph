@@ -428,8 +428,8 @@ TEST_CASE("six OpenPBR routing states have a byte-stable dump and fixed boundari
         const auto state = materialVariantRenderState(binding.routing);
         REQUIRE(state.depth_test);
         REQUIRE(state.cull == (binding.routing.double_sided
-                                   ? SurfaceCullMode::none
-                                   : SurfaceCullMode::back));
+                                   ? RasterCullMode::none
+                                   : RasterCullMode::back));
         REQUIRE(materialVariantKeepsFace(binding.routing, true));
         REQUIRE(materialVariantKeepsFace(binding.routing, false) ==
                 binding.routing.double_sided);

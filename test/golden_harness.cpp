@@ -5022,7 +5022,7 @@ void renderSkeletalToonFrame(RenderTarget &render_target) {
         .occlusion_texture = standard.occlusionDefaultTexture(),
     };
     applyLoweredMaterial(info, lowered);
-    info.render_state.cull = SurfaceCullMode::none;
+    info.render_state.cull = RasterCullMode::none;
     const auto toon_material = GET_MODULE(MaterialContainer).registerMaterial(std::move(info));
     auto &model = GET_MODULE(ModelAssetContainer).getModelTemplateByName("character");
     for (auto &group : model.material_primitives) group.material = toon_material;
@@ -10510,7 +10510,7 @@ struct Wp339SsaoBlurCapture {
     RenderTargetReadback producer;
     RenderTargetReadback blur;
     std::uint32_t sub_texel_precision_bits = 0;
-    std::vector<FullscreenInputSampling> sampling;
+    std::vector<ShaderResourcePortSampling> sampling;
     std::string vertex_shader_ref;
     GraphicsPipelineViewExecution view_execution =
         GraphicsPipelineViewExecution::single_view;
@@ -11030,9 +11030,9 @@ void requireWp339SsaoBlurRelationship(
                 contract.blur_layers);
     REQUIRE(capture.sampling.size() == 1);
     REQUIRE(capture.sampling.front().filter ==
-            FullscreenInputFilter::linear);
+            ShaderResourcePortFilter::linear);
     REQUIRE(capture.sampling.front().address_mode ==
-            FullscreenInputAddressMode::repeat);
+            ShaderResourcePortAddressMode::repeat);
 
     if (contract.multiview || contract.cross_family) {
         REQUIRE(capture.vertex_shader_ref ==

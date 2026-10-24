@@ -18,7 +18,7 @@ RenderPassType parsePassTypeFromJson(
     pass_def.applyDefaultAttachmentOperations(pass_type);
     pass_def.resolution_domain =
         parseRenderResolutionDomain(
-            pass_json, renderPassTypeName(pass_type), pass_def.name);
+            pass_json, pass_type, pass_def.name);
     return pass_type;
 }
 

@@ -2,6 +2,7 @@
 
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
+#include "recordedattachmentops.hpp"
 #include "render_target_layout_tracker.hpp"
 #include "rendertarget.hpp"
 #include "util.hpp"

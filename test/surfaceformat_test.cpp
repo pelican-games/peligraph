@@ -329,24 +329,24 @@ TEST_CASE("OpenPBR wrapper-B variants preserve one declaration ABI",
     struct VariantExpectation {
         const char *file;
         SurfaceBlendMode blend;
-        SurfaceCullMode cull;
+        RasterCullMode cull;
         bool depth_write;
         int alpha_mode;
         int double_sided;
     };
     constexpr std::array variants{
         VariantExpectation{"opaque_single.surface", SurfaceBlendMode::opaque,
-                           SurfaceCullMode::back, true, 0, 0},
+                           RasterCullMode::back, true, 0, 0},
         VariantExpectation{"opaque_double.surface", SurfaceBlendMode::opaque,
-                           SurfaceCullMode::none, true, 0, 1},
+                           RasterCullMode::none, true, 0, 1},
         VariantExpectation{"mask_single.surface", SurfaceBlendMode::opaque,
-                           SurfaceCullMode::back, true, 1, 0},
+                           RasterCullMode::back, true, 1, 0},
         VariantExpectation{"mask_double.surface", SurfaceBlendMode::opaque,
-                           SurfaceCullMode::none, true, 1, 1},
+                           RasterCullMode::none, true, 1, 1},
         VariantExpectation{"blend_single.surface", SurfaceBlendMode::blend,
-                           SurfaceCullMode::back, false, 2, 0},
+                           RasterCullMode::back, false, 2, 0},
         VariantExpectation{"blend_double.surface", SurfaceBlendMode::blend,
-                           SurfaceCullMode::none, false, 2, 1},
+                           RasterCullMode::none, false, 2, 1},
     };
 
     const auto baseline_source = readText(openPbrSurfaceRoot() / variants.front().file);
@@ -398,7 +398,7 @@ TEST_CASE("PSN-1 a surface render_state reads the pipeline vocabulary through th
                 "blend_constants: [1, 0.5, 0.25, 0], editor_hint: x }"),
         "psn1.surface");
     // The surface's own keys stay the surface's.
-    CHECK(document.render_state.cull == SurfaceCullMode::none);
+    CHECK(document.render_state.cull == RasterCullMode::none);
     CHECK(document.render_state.depth_test);
     CHECK_FALSE(document.render_state.depth_write);
     const auto expected = parseSurfacePipelineState(

@@ -14,7 +14,7 @@ namespace Pelican {
 
 namespace {
 
-vk::DeviceSize parseOptionalDeviceSize(
+std::uint64_t parseOptionalByteCount(
     const nlohmann::json &json,
     std::string_view field,
     std::string_view context) {
@@ -22,13 +22,13 @@ vk::DeviceSize parseOptionalDeviceSize(
         json.find(std::string{field});
     if (found == json.end()) return 0;
     if (found->is_number_unsigned()) {
-        return found->get<vk::DeviceSize>();
+        return found->get<std::uint64_t>();
     }
     if (found->is_number_integer()) {
         const auto value =
             found->get<std::int64_t>();
         if (value >= 0) {
-            return static_cast<vk::DeviceSize>(
+            return static_cast<std::uint64_t>(
                 value);
         }
     }
@@ -65,7 +65,7 @@ requireGpuDrawBuffer(
 }
 
 void validateGpuDrawSourceBufferContract(
-    const GpuDrawSourceDefinition &source,
+    const GpuDrawSourceDeclaration &source,
     std::span<const FrameGraphBufferDefinition>
         definitions,
     std::string_view pass_name) {
@@ -96,7 +96,7 @@ void validateGpuDrawSourceBufferContract(
             "' requires command_layout 'draw_count'");
     }
     const auto command_bytes =
-        static_cast<vk::DeviceSize>(
+        static_cast<std::uint64_t>(
             source.max_draw_count) *
         frameGraphIndexedDrawCommandBytes;
     if (source.command_offset >
@@ -193,7 +193,7 @@ parseMaterialDrawTagFilterFromJson(
         std::string{context} + " material_filter");
 }
 
-std::optional<GpuDrawSourceDefinition>
+std::optional<GpuDrawSourceDeclaration>
 parseGpuDrawSourceFromJson(
     const nlohmann::json &pass_json,
     std::string_view context) {
@@ -224,7 +224,7 @@ parseGpuDrawSourceFromJson(
                 field.key() + "'");
         }
     }
-    GpuDrawSourceDefinition result{
+    GpuDrawSourceDeclaration result{
         .commands = parseStringField(
             *found, "commands",
             std::string{context} +
@@ -237,11 +237,11 @@ parseGpuDrawSourceFromJson(
             *found, "max_draw_count",
             std::string{context} +
                 " gpu_draw_source"),
-        .command_offset = parseOptionalDeviceSize(
+        .command_offset = parseOptionalByteCount(
             *found, "command_offset",
             std::string{context} +
                 " gpu_draw_source"),
-        .count_offset = parseOptionalDeviceSize(
+        .count_offset = parseOptionalByteCount(
             *found, "count_offset",
             std::string{context} +
                 " gpu_draw_source"),
@@ -511,10 +511,14 @@ void parseMaterialPassInfoFromJson(PassDefinition &pass_def, const nlohmann::jso
                 "material_range in pass: " +
                     pass_def.name);
     }
-    material_info.gpu_draw_source =
-        parseGpuDrawSourceFromJson(
+    if (const auto declared = parseGpuDrawSourceFromJson(
             pass_json,
-            "Material pass '" + pass_def.name + "'");
+            "Material pass '" + pass_def.name + "'")) {
+        material_info.gpu_draw_source =
+            GpuDrawSourceDefinition{*declared};
+    } else {
+        material_info.gpu_draw_source.reset();
+    }
 }
 
 namespace {

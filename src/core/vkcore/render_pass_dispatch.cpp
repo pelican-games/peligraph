@@ -1,4 +1,5 @@
 #include "render_pass_dispatch.hpp"
+#include "render_pass_frame_setup.hpp"
 #include "../renderer/camera.hpp"
 #include "../renderer/debugdraw.hpp"
 #include "../renderer/debugtext.hpp"
@@ -137,7 +138,7 @@ void renderUiPass(vk::CommandBuffer cmd_buf, const FrameRenderContext &frame, co
     const vk::Format target_format = targets_swapchain ? dependencies.swapchain_color_format
                                                        : toVulkanFormat(rt_container.getMetadata(rt_id).format);
     const auto operations =
-        pass_def.colorAttachmentOperations(0);
+        recordedColorAttachmentOps(pass_def, 0);
     dependencies.ui_renderer->render(cmd_buf, UiDrawRequest{
                                                            .target_view = target_view,
                                                            .target_extent = target_extent,
@@ -172,7 +173,7 @@ void renderImGuiPass(vk::CommandBuffer cmd_buf, const FrameRenderContext &frame,
     const auto target = pass_def.output_color.front();
     const bool swapchain = isSwapchainRenderTarget(target);
     const auto operations =
-        pass_def.colorAttachmentOperations(0);
+        recordedColorAttachmentOps(pass_def, 0);
     dependencies.imgui_system->render(
         cmd_buf,
         swapchain ? frame.color_attachment

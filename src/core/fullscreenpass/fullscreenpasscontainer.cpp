@@ -306,20 +306,20 @@ vk::UniqueDescriptorPool createDescPool(vk::Device device,
 }
 
 vk::SamplerAddressMode samplerAddressMode(
-    FullscreenInputAddressMode mode) {
+    ShaderResourcePortAddressMode mode) {
     switch (mode) {
-    case FullscreenInputAddressMode::repeat:
+    case ShaderResourcePortAddressMode::repeat:
         return vk::SamplerAddressMode::eRepeat;
-    case FullscreenInputAddressMode::mirrored_repeat:
+    case ShaderResourcePortAddressMode::mirrored_repeat:
         return vk::SamplerAddressMode::eMirroredRepeat;
-    case FullscreenInputAddressMode::clamp_to_edge:
+    case ShaderResourcePortAddressMode::clamp_to_edge:
         return vk::SamplerAddressMode::eClampToEdge;
     }
     throw std::runtime_error(
         "Unknown fullscreen sampler address mode");
 }
 
-std::size_t samplerIndex(FullscreenInputSampling sampling) {
+std::size_t samplerIndex(ShaderResourcePortSampling sampling) {
     constexpr std::size_t address_mode_count = 3;
     return static_cast<std::size_t>(sampling.filter) *
                address_mode_count +
@@ -327,9 +327,9 @@ std::size_t samplerIndex(FullscreenInputSampling sampling) {
 }
 
 vk::UniqueSampler createSampler(
-    vk::Device device, FullscreenInputSampling sampling) {
+    vk::Device device, ShaderResourcePortSampling sampling) {
     const auto filter =
-        sampling.filter == FullscreenInputFilter::nearest
+        sampling.filter == ShaderResourcePortFilter::nearest
             ? vk::Filter::eNearest
             : vk::Filter::eLinear;
     const auto address_mode =
@@ -339,7 +339,7 @@ vk::UniqueSampler createSampler(
     create_info.minFilter = filter;
     create_info.mipmapMode =
         sampling.filter ==
-                FullscreenInputFilter::nearest
+                ShaderResourcePortFilter::nearest
             ? vk::SamplerMipmapMode::eNearest
             : vk::SamplerMipmapMode::eLinear;
     create_info.addressModeU = address_mode;
@@ -383,10 +383,10 @@ std::uint32_t deriveLogicalViewCount(
         inputs.begin(), inputs.end(),
         [](const FullscreenPassInput &input) {
             return input.view ==
-                       PassInputViewDimension::
+                       VulkanResourceViewLayout::
                            sequential_2d ||
                    input.view ==
-                       PassInputViewDimension::
+                       VulkanResourceViewLayout::
                            layered_2d_array;
         });
     if (view.execution !=
@@ -396,9 +396,9 @@ std::uint32_t deriveLogicalViewCount(
     }
     for (const auto &input : inputs) {
         if (input.view ==
-                PassInputViewDimension::shared_2d ||
+                VulkanResourceViewLayout::shared_2d ||
             input.view ==
-                PassInputViewDimension::
+                VulkanResourceViewLayout::
                     family_2d_array) {
             continue;
         }
@@ -423,14 +423,14 @@ std::uint32_t deriveVariantCount(
     }
     for (const auto &input : inputs) {
         if (input.view ==
-            PassInputViewDimension::
+            VulkanResourceViewLayout::
                 layered_2d_array) {
             variant_count = std::max(
                 variant_count, logical_view_count);
             continue;
         }
         if (input.view !=
-            PassInputViewDimension::sequential_2d) {
+            VulkanResourceViewLayout::sequential_2d) {
             continue;
         }
         const auto selected_layers =
@@ -483,7 +483,7 @@ void validateResolvedPassInputs(
                 ? input.subresource->layer_count
                 : layers;
         if (input.view ==
-            PassInputViewDimension::
+            VulkanResourceViewLayout::
                 layered_2d_array) {
             if (selected_layers <
                 logical_view_count) {
@@ -501,7 +501,7 @@ void validateResolvedPassInputs(
             }
         } else if (
             input.view ==
-                PassInputViewDimension::
+                VulkanResourceViewLayout::
                     family_2d_array) {
             if (selected_layers == 0) {
                 throw named(
@@ -511,7 +511,7 @@ void validateResolvedPassInputs(
             }
         } else if (
             input.view ==
-                PassInputViewDimension::
+                VulkanResourceViewLayout::
                     sequential_2d) {
             if (selected_layers != 1 &&
                 selected_layers < variant_count) {
@@ -641,7 +641,7 @@ std::size_t FullscreenPassContainer::writeFilledPassInputs(
     if (filled.empty()) return 0;
     const auto &defaults = *default_inputs;
     const auto sampler =
-        input_samplers.at(samplerIndex(FullscreenInputSampling{})).get();
+        input_samplers.at(samplerIndex(ShaderResourcePortSampling{})).get();
     std::vector<std::vector<vk::DescriptorImageInfo>> image_infos;
     std::vector<std::vector<vk::DescriptorBufferInfo>> buffer_infos;
     image_infos.reserve(filled.size());
@@ -845,13 +845,13 @@ FullscreenPassContainer::FullscreenPassContainer()
     : device{GET_MODULE(VulkanManageCore).getDevice()},
       desc_pool{createDescPool(device)} {
     for (const auto filter :
-         {FullscreenInputFilter::linear,
-          FullscreenInputFilter::nearest}) {
+         {ShaderResourcePortFilter::linear,
+          ShaderResourcePortFilter::nearest}) {
         for (const auto address_mode :
-             {FullscreenInputAddressMode::repeat,
-              FullscreenInputAddressMode::mirrored_repeat,
-              FullscreenInputAddressMode::clamp_to_edge}) {
-            const FullscreenInputSampling sampling{
+             {ShaderResourcePortAddressMode::repeat,
+              ShaderResourcePortAddressMode::mirrored_repeat,
+              ShaderResourcePortAddressMode::clamp_to_edge}) {
+            const ShaderResourcePortSampling sampling{
                 filter, address_mode};
             input_samplers.at(samplerIndex(sampling)) =
                 createSampler(device, sampling);
@@ -1044,7 +1044,7 @@ void FullscreenPassContainer::setInputResourcesById(
             inputs.begin(), inputs.end(),
             [](const FullscreenPassInput &input) {
                 return input.view ==
-                       PassInputViewDimension::
+                       VulkanResourceViewLayout::
                            sequential_2d;
             })) {
         throw std::runtime_error(
@@ -1162,15 +1162,15 @@ void FullscreenPassContainer::buildInputDescriptorVariants(
         // cover the variant count reuses one layer for every variant.
         const auto separate_view_layers =
             input.view ==
-                PassInputViewDimension::
+                VulkanResourceViewLayout::
                     layered_2d_array ||
             (input.view ==
-                 PassInputViewDimension::sequential_2d &&
+                 VulkanResourceViewLayout::sequential_2d &&
              selected_layers >= variant_count &&
              variant_count > 1);
         const auto layer_binding =
             input.view ==
-                    PassInputViewDimension::
+                    VulkanResourceViewLayout::
                         family_2d_array
                 ? PassInputLayerBinding::whole_array
             : descriptor_dimension !=
@@ -1318,12 +1318,12 @@ bool FullscreenPassContainer::readsLoopIndex(PassId pass_id) const {
         GET_MODULE(PipelineFactory).reflection(requirePipelineHandle(pass_id, pipelines)));
 }
 
-std::vector<FullscreenInputSampling>
+std::vector<ShaderResourcePortSampling>
 FullscreenPassContainer::inputSamplingForTesting(
     PassId pass_id) const {
     const auto found = input_textures.find(pass_id.value);
     if (found == input_textures.end()) return {};
-    std::vector<FullscreenInputSampling> sampling;
+    std::vector<ShaderResourcePortSampling> sampling;
     sampling.reserve(found->second.inputs.size());
     for (const auto &input : found->second.inputs) {
         sampling.push_back(input.sampling);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../../project/attachmentoperations.hpp"
 #include "../../project/imageformat.hpp"
 #include "../../project/imageusage.hpp"
 #include "../../project/resourceextent.hpp"
@@ -34,5 +35,10 @@ ImageUsage imageUsageFromVulkan(vk::ImageUsageFlags usage);
 
 vk::Extent2D toVulkanExtent(ResolvedResourceExtent extent);
 ResolvedResourceExtent extentFromVulkan(vk::Extent2D extent);
+
+// RC-3a2: an attachment's load / store op, where a rendering scope is
+// recorded (the only way they reach Vulkan).
+vk::AttachmentLoadOp toVulkanAttachmentLoadOp(AttachmentLoadOp op);
+vk::AttachmentStoreOp toVulkanAttachmentStoreOp(AttachmentStoreOp op);
 
 } // namespace Pelican

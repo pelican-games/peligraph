@@ -70,10 +70,10 @@ inline bool isMaterialDrawLoopRefusalCode(std::string_view code) noexcept {
 // Every field left unset keeps the base material's state.
 struct MaterialDrawRenderStateOverride {
     std::optional<SurfaceBlendMode> blend;
-    std::optional<SurfaceCullMode> cull;
+    std::optional<RasterCullMode> cull;
     std::optional<bool> depth_test;
     std::optional<bool> depth_write;
-    std::optional<SurfaceDepthCompare> depth_compare;
+    std::optional<RasterDepthCompare> depth_compare;
 
     bool empty() const noexcept {
         return !blend && !cull && !depth_test && !depth_write &&

@@ -1709,15 +1709,15 @@ TEST_CASE("RS-14 a graph numbered input takes a named port's sampling and subres
         return *found;
     };
     const auto &container = GET_MODULE(FullscreenPassContainer);
-    using Sampling = std::vector<FullscreenInputSampling>;
+    using Sampling = std::vector<ShaderResourcePortSampling>;
     // Without a setting the sampler stays the default (linear, repeat).
     CHECK(container.inputSamplingForTesting(passId("wrap")) ==
-          Sampling{{FullscreenInputFilter::linear, FullscreenInputAddressMode::repeat}});
+          Sampling{{ShaderResourcePortFilter::linear, ShaderResourcePortAddressMode::repeat}});
     CHECK(container.inputSamplingForTesting(passId("clamp")) ==
-          Sampling{{FullscreenInputFilter::linear, FullscreenInputAddressMode::clamp_to_edge}});
+          Sampling{{ShaderResourcePortFilter::linear, ShaderResourcePortAddressMode::clamp_to_edge}});
     CHECK(container.inputSamplingForTesting(passId("comp")) ==
-          Sampling{{FullscreenInputFilter::linear, FullscreenInputAddressMode::repeat},
-                   {FullscreenInputFilter::nearest, FullscreenInputAddressMode::clamp_to_edge}});
+          Sampling{{ShaderResourcePortFilter::linear, ShaderResourcePortAddressMode::repeat},
+                   {ShaderResourcePortFilter::nearest, ShaderResourcePortAddressMode::clamp_to_edge}});
 
     // The pixels: clamp reads the last row, repeat wraps round to the top.
     CHECK(every(rpc.frame(capture), green));

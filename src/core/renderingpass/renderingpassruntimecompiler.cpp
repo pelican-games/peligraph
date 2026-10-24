@@ -84,7 +84,7 @@ void pinGpuDrawSourceBufferBindings(
         }
     }
     const auto command_bytes =
-        static_cast<vk::DeviceSize>(draw_source.max_draw_count) *
+        static_cast<std::uint64_t>(draw_source.max_draw_count) *
         frameGraphIndexedDrawCommandBytes;
     if (draw_source.command_offset > commands.size ||
         commands.size - draw_source.command_offset < command_bytes ||
@@ -264,11 +264,11 @@ std::uint32_t passLogicalViewCount(
     return scope.view_count;
 }
 
-PassInputViewDimension inputViewDimension(
+VulkanResourceViewLayout inputViewDimension(
     const VulkanTargetPlan *plan,
     std::string_view resource) {
     if (plan == nullptr) {
-        return PassInputViewDimension::shared_2d;
+        return VulkanResourceViewLayout::shared_2d;
     }
     const auto found = std::find_if(
         plan->resources.begin(), plan->resources.end(),
@@ -280,44 +280,7 @@ PassInputViewDimension inputViewDimension(
             "render-pass input is absent from the physical target plan: " +
             std::string{resource});
     }
-    switch (found->view_layout) {
-    case VulkanResourceViewLayout::shared_2d:
-        return PassInputViewDimension::shared_2d;
-    case VulkanResourceViewLayout::sequential_2d:
-        return PassInputViewDimension::sequential_2d;
-    case VulkanResourceViewLayout::layered_2d_array:
-        return PassInputViewDimension::layered_2d_array;
-    case VulkanResourceViewLayout::family_2d_array:
-        return PassInputViewDimension::family_2d_array;
-    }
-    throw std::runtime_error(
-        "unknown physical input view layout");
-}
-
-vk::AttachmentLoadOp runtimeAttachmentLoadOp(
-    VulkanPhysicalAttachmentLoadOp op) {
-    switch (op) {
-    case VulkanPhysicalAttachmentLoadOp::load:
-        return vk::AttachmentLoadOp::eLoad;
-    case VulkanPhysicalAttachmentLoadOp::clear:
-        return vk::AttachmentLoadOp::eClear;
-    case VulkanPhysicalAttachmentLoadOp::discard:
-        return vk::AttachmentLoadOp::eDontCare;
-    }
-    throw std::runtime_error(
-        "unknown physical attachment load op");
-}
-
-vk::AttachmentStoreOp runtimeAttachmentStoreOp(
-    VulkanPhysicalAttachmentStoreOp op) {
-    switch (op) {
-    case VulkanPhysicalAttachmentStoreOp::store:
-        return vk::AttachmentStoreOp::eStore;
-    case VulkanPhysicalAttachmentStoreOp::discard:
-        return vk::AttachmentStoreOp::eDontCare;
-    }
-    throw std::runtime_error(
-        "unknown physical attachment store op");
+    return found->view_layout;
 }
 
 std::string physicalTargetName(
@@ -344,7 +307,7 @@ PassAttachmentOperations physicalAttachmentOperations(
     std::string_view resource,
     const std::optional<ImageSubresourceRange>
         &subresource,
-    VulkanPhysicalAttachmentAspect aspect) {
+    AttachmentAspect aspect) {
     const VulkanPhysicalAttachmentPlan *result =
         nullptr;
     for (const auto &attachment :
@@ -378,12 +341,7 @@ PassAttachmentOperations physicalAttachmentOperations(
             std::string{pass} + " -> " +
             std::string{resource});
     }
-    return PassAttachmentOperations{
-        runtimeAttachmentLoadOp(
-            result->load_op),
-        runtimeAttachmentStoreOp(
-            result->store_op),
-    };
+    return result->operations;
 }
 
 PassDefinition applyPhysicalPassContract(
@@ -423,7 +381,7 @@ PassDefinition applyPhysicalPassContract(
         if (!isConcreteRenderTarget(target) ||
             metadata == nullptr) {
             result.input_target_views.push_back(
-                PassInputViewDimension::shared_2d);
+                VulkanResourceViewLayout::shared_2d);
             continue;
         }
         result.input_target_views.push_back(
@@ -487,7 +445,7 @@ PassDefinition applyPhysicalPassContract(
                     physicalTargetName(
                         target, metadata),
                     target.subresource,
-                    VulkanPhysicalAttachmentAspect::
+                    AttachmentAspect::
                         color));
     }
     if (isSwapchainRenderTarget(
@@ -501,7 +459,7 @@ PassDefinition applyPhysicalPassContract(
                     result.output_depth,
                     metadata),
                 result.output_depth.subresource,
-                VulkanPhysicalAttachmentAspect::
+                AttachmentAspect::
                     depth);
     }
     return result;
@@ -530,7 +488,7 @@ PassAttachmentOperations scopeColorAttachmentOperations(
             metadata),
         pass.output_color.at(color_index)
             .subresource,
-        VulkanPhysicalAttachmentAspect::color);
+        AttachmentAspect::color);
 }
 
 PassAttachmentOperations scopeDepthAttachmentOperations(
@@ -545,7 +503,7 @@ PassAttachmentOperations scopeDepthAttachmentOperations(
         physicalTargetName(
             pass.output_depth, metadata),
         pass.output_depth.subresource,
-        VulkanPhysicalAttachmentAspect::depth);
+        AttachmentAspect::depth);
 }
 
 const VulkanPhysicalResourcePlan &
@@ -776,9 +734,9 @@ compilePassRenderingContract(
                     if (previous !=
                             previous_color_operations.end() &&
                         (previous->second.store_op !=
-                             vk::AttachmentStoreOp::eStore ||
+                             AttachmentStoreOp::store ||
                          operations.load_op !=
-                             vk::AttachmentLoadOp::eLoad)) {
+                             AttachmentLoadOp::load)) {
                         throw std::runtime_error(
                             "local-read fused rendering scope cannot "
                             "preserve intermediate materialized "
@@ -809,9 +767,9 @@ compilePassRenderingContract(
                     if (previous_depth_operations &&
                         (previous_depth_operations
                                  ->store_op !=
-                             vk::AttachmentStoreOp::eStore ||
+                             AttachmentStoreOp::store ||
                          operations.load_op !=
-                             vk::AttachmentLoadOp::eLoad)) {
+                             AttachmentLoadOp::load)) {
                         throw std::runtime_error(
                             "local-read fused rendering scope cannot "
                             "preserve intermediate materialized "
@@ -861,7 +819,7 @@ compilePassRenderingContract(
                             *plan, metadata);
                     if (pass_index > 0 &&
                         operations.load_op !=
-                            vk::AttachmentLoadOp::eLoad) {
+                            AttachmentLoadOp::load) {
                         throw std::runtime_error(
                             "materialized fused rendering pass must "
                             "Load every attachment after the first "
@@ -871,7 +829,7 @@ compilePassRenderingContract(
                     if (pass_index + 1 <
                             scope_passes.size() &&
                         operations.store_op !=
-                            vk::AttachmentStoreOp::eStore) {
+                            AttachmentStoreOp::store) {
                         throw std::runtime_error(
                             "materialized fused rendering pass must "
                             "Store every attachment before the final "
@@ -889,7 +847,7 @@ compilePassRenderingContract(
                             metadata);
                     if (pass_index > 0 &&
                         operations.load_op !=
-                            vk::AttachmentLoadOp::eLoad) {
+                            AttachmentLoadOp::load) {
                         throw std::runtime_error(
                             "materialized fused rendering pass must "
                             "Load depth after the first pass: " +
@@ -898,7 +856,7 @@ compilePassRenderingContract(
                     if (pass_index + 1 <
                             scope_passes.size() &&
                         operations.store_op !=
-                            vk::AttachmentStoreOp::eStore) {
+                            AttachmentStoreOp::store) {
                         throw std::runtime_error(
                             "materialized fused rendering pass must "
                             "Store depth before the final pass: " +
@@ -1103,9 +1061,9 @@ void appendViewShaderDefines(
         if ((view.execution ==
                  GraphicsPipelineViewExecution::multiview &&
              dimension ==
-                 PassInputViewDimension::layered_2d_array) ||
+                 VulkanResourceViewLayout::layered_2d_array) ||
             dimension ==
-                PassInputViewDimension::family_2d_array) {
+                VulkanResourceViewLayout::family_2d_array) {
             defines.push_back(
                 "PELICAN_INPUT_" +
                 std::to_string(binding) +
@@ -1178,7 +1136,7 @@ void validatePassInputViewContract(
     if (std::find(
             pass.input_target_views.begin(),
             pass.input_target_views.end(),
-            PassInputViewDimension::sequential_2d) !=
+            VulkanResourceViewLayout::sequential_2d) !=
         pass.input_target_views.end()) {
         throw std::runtime_error(
             "multiview pass cannot consume a sequential-only input: " +
@@ -1562,7 +1520,7 @@ ShaderBundleId registerShaderReference(ShaderLibrary &shader_library, const Path
 
 struct CompiledFullscreenResourceInterface {
     std::vector<ShaderResourceInterfaceBinding> bindings;
-    std::vector<FullscreenInputSampling> sampling;
+    std::vector<ShaderResourcePortSampling> sampling;
     std::vector<std::optional<ImageSubresourceRange>>
         subresources;
     std::vector<ImageSubresourceViewDimension>
@@ -1629,39 +1587,19 @@ std::vector<FullscreenPassInput> fullscreenPassInputs(
 }
 
 VulkanResourceViewLayout physicalViewLayout(
-    PassInputViewDimension view) {
+    VulkanResourceViewLayout view) {
     switch (view) {
-    case PassInputViewDimension::shared_2d:
+    case VulkanResourceViewLayout::shared_2d:
         return VulkanResourceViewLayout::shared_2d;
-    case PassInputViewDimension::sequential_2d:
+    case VulkanResourceViewLayout::sequential_2d:
         return VulkanResourceViewLayout::sequential_2d;
-    case PassInputViewDimension::layered_2d_array:
+    case VulkanResourceViewLayout::layered_2d_array:
         return VulkanResourceViewLayout::layered_2d_array;
-    case PassInputViewDimension::family_2d_array:
+    case VulkanResourceViewLayout::family_2d_array:
         return VulkanResourceViewLayout::family_2d_array;
     }
     throw std::runtime_error(
         "unknown fullscreen input view dimension");
-}
-
-FullscreenInputSampling fullscreenSampling(
-    ShaderResourcePortSampling sampling) {
-    return {
-        sampling.filter ==
-                ShaderResourcePortFilter::nearest
-            ? FullscreenInputFilter::nearest
-            : FullscreenInputFilter::linear,
-        sampling.address_mode ==
-                ShaderResourcePortAddressMode::repeat
-            ? FullscreenInputAddressMode::repeat
-        : sampling.address_mode ==
-                ShaderResourcePortAddressMode::
-                    mirrored_repeat
-            ? FullscreenInputAddressMode::
-                  mirrored_repeat
-            : FullscreenInputAddressMode::
-                  clamp_to_edge,
-    };
 }
 
 // RS-14: a numbered input's own sampling and subresource (input_settings)
@@ -1692,7 +1630,7 @@ void applyPassInputSettings(
         }
         if (setting.sampling) {
             result.sampling.at(input) =
-                fullscreenSampling(*setting.sampling);
+                *setting.sampling;
         }
         if (setting.subresource) {
             if (result.subresources.empty()) {
@@ -1708,7 +1646,7 @@ void applyPassInputSettings(
 void validateFullscreenSamplingCapabilities(
     const PassDefinition &pass,
     const FullscreenRuntimeDependencies &dependencies,
-    std::span<const FullscreenInputSampling> sampling,
+    std::span<const ShaderResourcePortSampling> sampling,
     const std::vector<bool> &local_reads) {
     if (sampling.size() !=
             pass.input_targets.size() ||
@@ -1737,7 +1675,7 @@ void validateFullscreenSamplingCapabilities(
                 pass.name);
         }
         if (sampling[input].filter !=
-            FullscreenInputFilter::linear) {
+            ShaderResourcePortFilter::linear) {
             continue;
         }
         const auto features =
@@ -1792,7 +1730,7 @@ compileFullscreenResourceInterface(
         } else {
             result.sampling =
                 std::vector<
-                    FullscreenInputSampling>(
+                    ShaderResourcePortSampling>(
                     pass.input_targets.size());
         }
         applyPassInputSettings(pass, {}, result);
@@ -1815,10 +1753,10 @@ compileFullscreenResourceInterface(
          input < result.view_dimensions.size();
          ++input) {
         if (pass.input_target_views[input] ==
-                PassInputViewDimension::
+                VulkanResourceViewLayout::
                     layered_2d_array ||
             pass.input_target_views[input] ==
-                PassInputViewDimension::
+                VulkanResourceViewLayout::
                     family_2d_array) {
             result.view_dimensions[input] =
                 ImageSubresourceViewDimension::
@@ -1887,8 +1825,7 @@ compileFullscreenResourceInterface(
                     .writable = false,
                 });
             result.sampling[input] =
-                fullscreenSampling(
-                    port->sampling);
+                port->sampling;
             result.subresources[input] =
                 port->subresource;
             continue;
@@ -2006,7 +1943,7 @@ compileFullscreenResourceInterface(
                 .writable = false,
             });
         result.sampling[input] =
-            fullscreenSampling(port->sampling);
+            port->sampling;
         result.subresources[input] =
             port->subresource;
         result.view_dimensions[input] =

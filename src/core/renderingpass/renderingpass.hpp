@@ -12,6 +12,10 @@
 #include "../../project/viewfamilyrelation.hpp"
 #include "../../project/shaderresourceport.hpp"
 #include "../../project/imagesubresource.hpp"
+#include "../../project/attachmentoperations.hpp"
+#include "../../project/framegraphbufferdefinition.hpp"
+#include "../../project/gpudrawsource.hpp"
+#include "../../project/renderresolutiondomain.hpp"
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -82,8 +86,8 @@ inline constexpr bool isSwapchainRenderTarget(GlobalRenderTargetId rt_id) {
 struct RasterAttachmentView {
     GlobalRenderTargetId target = noRenderTargetId();
     std::optional<ImageSubresourceRange> subresource;
-    std::optional<vk::AttachmentLoadOp> load_op;
-    std::optional<vk::AttachmentStoreOp> store_op;
+    std::optional<AttachmentLoadOp> load_op;
+    std::optional<AttachmentStoreOp> store_op;
 
     RasterAttachmentView() = default;
     RasterAttachmentView(GlobalRenderTargetId target_id)
@@ -91,9 +95,9 @@ struct RasterAttachmentView {
     RasterAttachmentView(
         GlobalRenderTargetId target_id,
         std::optional<ImageSubresourceRange> range,
-        std::optional<vk::AttachmentLoadOp> attachment_load_op =
+        std::optional<AttachmentLoadOp> attachment_load_op =
             std::nullopt,
-        std::optional<vk::AttachmentStoreOp> attachment_store_op =
+        std::optional<AttachmentStoreOp> attachment_store_op =
             std::nullopt)
         : target{target_id},
           subresource{std::move(range)},
@@ -150,37 +154,10 @@ struct MaterialPassResourceBinding {
     }
 };
 
-enum class GpuDrawFallback : std::uint8_t {
-    cpu_draw_queue,
-};
-
-enum class GpuDrawExecutionMode : std::uint8_t {
-    automatic,
-    cpu,
-};
-
-enum class GpuDrawSourceLayout : std::uint8_t {
-    fixed_state_v1,
-    draw_queue_segments_v1,
-};
-
-// A material pass may replace CPU-compiled fixed-state draw ranges with
-// GPU-written indexed indirect commands. Segmented layout retains CPU-owned
-// pipeline/material binding and gives each DrawQueue state range disjoint
-// command/count output slots.
-struct GpuDrawSourceDefinition {
-    std::string commands;
-    std::string count;
-    std::string segments;
-    std::uint32_t max_draw_count = 0;
-    vk::DeviceSize command_offset = 0;
-    vk::DeviceSize count_offset = 0;
-    GpuDrawSourceLayout layout =
-        GpuDrawSourceLayout::fixed_state_v1;
-    GpuDrawFallback fallback =
-        GpuDrawFallback::cpu_draw_queue;
-    GpuDrawExecutionMode execution =
-        GpuDrawExecutionMode::automatic;
+// RC-3a2: the author's declaration (project) and the handles of its buffers
+// in the GPU generation the pass is registered in, pinned by
+// pinGpuDrawSourceBufferBindings.
+struct GpuDrawSourceDefinition : GpuDrawSourceDeclaration {
     FrameGraphBufferId commands_id =
         noFrameGraphBufferId();
     FrameGraphBufferId count_id =
@@ -228,25 +205,6 @@ enum class FullscreenPushConstantData {
     eProjectionView,
 };
 
-enum class FullscreenInputFilter : std::uint8_t {
-    linear,
-    nearest,
-};
-
-enum class FullscreenInputAddressMode : std::uint8_t {
-    repeat,
-    mirrored_repeat,
-    clamp_to_edge,
-};
-
-struct FullscreenInputSampling {
-    FullscreenInputFilter filter = FullscreenInputFilter::linear;
-    FullscreenInputAddressMode address_mode =
-        FullscreenInputAddressMode::repeat;
-
-    bool operator==(const FullscreenInputSampling &) const = default;
-};
-
 struct FullscreenPassInfo {
     ShaderReference vert_shader = ShaderReference{"", ShaderStage::vertex, ShaderReferenceKind::explicit_file, false};
     ShaderReference frag_shader = ShaderReference{"", ShaderStage::fragment, ShaderReferenceKind::explicit_file, false};
@@ -258,7 +216,7 @@ struct FullscreenPassInfo {
     std::optional<RasterFixedFunctionState> raster_state;
     // Empty preserves the legacy linear/repeat policy for every image input.
     // When authored, entries map one-to-one to PassDefinition::input_targets.
-    std::vector<FullscreenInputSampling> input_sampling;
+    std::vector<ShaderResourcePortSampling> input_sampling;
     // Optional typed annotations over input/input@history. Inputs without an
     // entry keep the existing raw set/binding shader ABI.
     std::vector<ShaderResourcePortDefinition> resource_ports;
@@ -350,56 +308,10 @@ struct PassImplementationSelection {
     bool operator==(const PassImplementationSelection &) const = default;
 };
 
-enum class PassInputViewDimension : std::uint8_t {
-    shared_2d,
-    sequential_2d,
-    layered_2d_array,
-    family_2d_array,
-};
-
 struct RenderPassViewInvocation {
     std::uint32_t logical_view_count = 1;
     std::uint32_t view_index = 0;
 };
-
-struct PassAttachmentOperations {
-    vk::AttachmentLoadOp load_op;
-    vk::AttachmentStoreOp store_op;
-
-    PassAttachmentOperations() = delete;
-    explicit constexpr PassAttachmentOperations(
-        vk::AttachmentLoadOp load,
-        vk::AttachmentStoreOp store) noexcept
-        : load_op{load}, store_op{store} {}
-
-    bool operator==(
-        const PassAttachmentOperations &) const = default;
-};
-
-enum class PassAttachmentAspect : std::uint8_t {
-    color,
-    depth,
-};
-
-// The sole authority for omitted attachment operations.  Every raw, typed,
-// and pass-type-specific path asks this function instead of spelling out
-// Vulkan defaults locally.
-PassAttachmentOperations defaultPassAttachmentOperations(
-    RenderPassType pass_type, PassAttachmentAspect aspect);
-
-inline PassAttachmentOperations resolveAttachmentOperations(
-    std::optional<vk::AttachmentLoadOp> attachment_load_op,
-    std::optional<vk::AttachmentStoreOp> attachment_store_op,
-    std::optional<vk::AttachmentLoadOp> pass_load_op,
-    std::optional<vk::AttachmentStoreOp> pass_store_op,
-    PassAttachmentOperations defaults) {
-    return PassAttachmentOperations{
-        attachment_load_op.value_or(
-            pass_load_op.value_or(defaults.load_op)),
-        attachment_store_op.value_or(
-            pass_store_op.value_or(defaults.store_op)),
-    };
-}
 
 struct PhysicalColorClearValue {
     MaterialOutputNumericClass numeric_class =
@@ -422,17 +334,6 @@ struct PhysicalColorClearValue {
 
     bool operator==(const PhysicalColorClearValue &) const =
         default;
-};
-
-// A pass labels the resolution space in which its raster work is defined.
-// The compiler uses the scene domain to derive the camera/jitter render
-// extent. Output and independent work (for example UI and shadow maps) do not
-// participate in that inference.
-enum class RenderResolutionDomain : std::uint8_t {
-    unclassified,
-    scene,
-    output,
-    independent,
 };
 
 // Exact authored-stage presence captured by the typed JSON parsers before a
@@ -485,7 +386,7 @@ struct PassDefinition {
     // Runtime physical annotation aligned with input_targets. Parsed logical
     // definitions leave it empty; runtime compilation fills it from the
     // immutable Vulkan target plan.
-    std::vector<PassInputViewDimension> input_target_views;
+    std::vector<VulkanResourceViewLayout> input_target_views;
     // RS-14: `input_settings`, a fullscreen or raster pass's numbered
     // inputs' own sampling and subresource, by input_targets position. It
     // may be shorter than input_targets; a missing entry keeps the default.
@@ -510,10 +411,10 @@ struct PassDefinition {
     std::string ray_query_acceleration_structure = "scene";
     std::vector<DeclaredShaderReference> declared_shader_refs;
 
-    vk::AttachmentLoadOp color_load_op;
-    vk::AttachmentStoreOp color_store_op;
-    vk::AttachmentLoadOp depth_load_op;
-    vk::AttachmentStoreOp depth_store_op;
+    AttachmentLoadOp color_load_op;
+    AttachmentStoreOp color_store_op;
+    AttachmentLoadOp depth_load_op;
+    AttachmentStoreOp depth_store_op;
     // Runtime-only physical overrides. Authored JSON retains the compact
     // pass-wide defaults above; the target-plan compiler expands them to
     // individual attachments and may safely override selected entries.
@@ -567,9 +468,9 @@ struct PassDefinition {
     void applyDefaultAttachmentOperations(RenderPassType type) {
         pass_type = type;
         const auto color = defaultPassAttachmentOperations(
-            type, PassAttachmentAspect::color);
+            type, AttachmentAspect::color);
         const auto depth = defaultPassAttachmentOperations(
-            type, PassAttachmentAspect::depth);
+            type, AttachmentAspect::depth);
         color_load_op = color.load_op;
         color_store_op = color.store_op;
         depth_load_op = depth.load_op;
@@ -586,7 +487,7 @@ struct PassDefinition {
                 color_load_op,
                 color_store_op,
                 defaultPassAttachmentOperations(
-                    pass_type, PassAttachmentAspect::color));
+                    pass_type, AttachmentAspect::color));
         }
         return physical_color_attachment_operations.at(index);
     }
@@ -599,7 +500,7 @@ struct PassDefinition {
                 depth_load_op,
                 depth_store_op,
                 defaultPassAttachmentOperations(
-                    pass_type, PassAttachmentAspect::depth)));
+                    pass_type, AttachmentAspect::depth)));
     }
 
     PhysicalColorClearValue colorClearValue(
@@ -716,15 +617,6 @@ struct PassDefinition {
     const VelocityPassInfo &velocityInfo() const { return std::get<VelocityPassInfo>(pass_info); }
     PickingPassInfo &pickingInfo() { return std::get<PickingPassInfo>(pass_info); }
     const PickingPassInfo &pickingInfo() const { return std::get<PickingPassInfo>(pass_info); }
-};
-
-struct ComputeIndirectDispatchDefinition {
-    std::string buffer;
-    vk::DeviceSize offset = 0;
-
-    bool operator==(
-        const ComputeIndirectDispatchDefinition &) const =
-        default;
 };
 
 struct ComputeImageExtentDispatchDefinition {

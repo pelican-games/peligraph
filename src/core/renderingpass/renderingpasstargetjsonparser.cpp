@@ -40,8 +40,8 @@ RasterAttachmentView parseRasterAttachment(
     std::string_view role) {
     std::string name;
     std::optional<ImageSubresourceRange> subresource;
-    std::optional<vk::AttachmentLoadOp> load_op;
-    std::optional<vk::AttachmentStoreOp> store_op;
+    std::optional<AttachmentLoadOp> load_op;
+    std::optional<AttachmentStoreOp> store_op;
     if (encoded.is_string()) {
         name = encoded.get<std::string>();
     } else if (encoded.is_object()) {
@@ -70,13 +70,13 @@ RasterAttachmentView parseRasterAttachment(
             subresource,
             std::string{role} + " output");
         if (encoded.contains("load_op")) {
-            load_op = stringToLoadOp(
+            load_op = parseAuthoredAttachmentLoadOp(
                 parseStringField(
                     encoded, "load_op",
                     std::string{role} + " output"));
         }
         if (encoded.contains("store_op")) {
-            store_op = stringToStoreOp(
+            store_op = parseAuthoredAttachmentStoreOp(
                 parseStringField(
                     encoded, "store_op",
                     std::string{role} + " output"));

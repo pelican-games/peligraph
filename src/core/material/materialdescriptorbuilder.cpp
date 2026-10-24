@@ -164,16 +164,16 @@ vk::UniqueSampler createMaterialResourceSampler(
 // --- declared view x physical view relation ------------------------------
 
 constexpr std::uint8_t viewBit(
-    PassInputViewDimension dimension) {
+    VulkanResourceViewLayout dimension) {
     return static_cast<std::uint8_t>(
         1u << static_cast<std::uint8_t>(dimension));
 }
 
 constexpr std::uint8_t anyPhysicalView =
-    viewBit(PassInputViewDimension::shared_2d) |
-    viewBit(PassInputViewDimension::sequential_2d) |
-    viewBit(PassInputViewDimension::layered_2d_array) |
-    viewBit(PassInputViewDimension::family_2d_array);
+    viewBit(VulkanResourceViewLayout::shared_2d) |
+    viewBit(VulkanResourceViewLayout::sequential_2d) |
+    viewBit(VulkanResourceViewLayout::layered_2d_array) |
+    viewBit(VulkanResourceViewLayout::family_2d_array);
 
 struct ViewPolicyRule {
     std::uint8_t allowed = anyPhysicalView;
@@ -185,11 +185,11 @@ constexpr std::array<ViewPolicyRule, 3>
     passInputViewPolicyRules{
         ViewPolicyRule{anyPhysicalView, {}},
         ViewPolicyRule{
-            viewBit(PassInputViewDimension::shared_2d),
+            viewBit(VulkanResourceViewLayout::shared_2d),
             "requires shared_2d view policy"},
         ViewPolicyRule{
             viewBit(
-                PassInputViewDimension::family_2d_array),
+                VulkanResourceViewLayout::family_2d_array),
             "requires family_array view policy"},
     };
 
@@ -199,24 +199,24 @@ constexpr std::array<ViewPolicyRule, 3>
 constexpr std::array<ViewPolicyRule, 4>
     resourcePortViewPolicyRules{
         ViewPolicyRule{
-            viewBit(PassInputViewDimension::shared_2d),
+            viewBit(VulkanResourceViewLayout::shared_2d),
             "requires shared_2d"},
         ViewPolicyRule{
             static_cast<std::uint8_t>(
-                viewBit(PassInputViewDimension::
+                viewBit(VulkanResourceViewLayout::
                             sequential_2d) |
-                viewBit(PassInputViewDimension::
+                viewBit(VulkanResourceViewLayout::
                             layered_2d_array) |
-                viewBit(PassInputViewDimension::
+                viewBit(VulkanResourceViewLayout::
                             family_2d_array)),
             "requires per_view"},
         ViewPolicyRule{
             static_cast<std::uint8_t>(
-                viewBit(PassInputViewDimension::
+                viewBit(VulkanResourceViewLayout::
                             shared_2d) |
-                viewBit(PassInputViewDimension::
+                viewBit(VulkanResourceViewLayout::
                             sequential_2d) |
-                viewBit(PassInputViewDimension::
+                viewBit(VulkanResourceViewLayout::
                             family_2d_array)),
             "requires family_array"},
         ViewPolicyRule{anyPhysicalView, {}},
@@ -234,7 +234,7 @@ void rejectViewPolicy(std::string_view kind,
 
 } // namespace
 
-PassInputViewDimension passInputViewDimensionForTarget(
+VulkanResourceViewLayout passInputViewDimensionForTarget(
     const PassDefinition &pass,
     GlobalRenderTargetId target) {
     const auto position = std::find(
@@ -243,7 +243,7 @@ PassInputViewDimension passInputViewDimensionForTarget(
     if (position == pass.input_targets.end() ||
         pass.input_target_views.size() !=
             pass.input_targets.size()) {
-        return PassInputViewDimension::shared_2d;
+        return VulkanResourceViewLayout::shared_2d;
     }
     return pass.input_target_views.at(
         static_cast<std::size_t>(
@@ -252,7 +252,7 @@ PassInputViewDimension passInputViewDimensionForTarget(
 
 void validateMaterialPassInputViewPolicy(
     MaterialPassInputViewPolicy policy,
-    PassInputViewDimension view_dimension,
+    VulkanResourceViewLayout view_dimension,
     std::string_view input_name,
     const PassDefinition &pass) {
     const auto &rule = passInputViewPolicyRules.at(
@@ -266,7 +266,7 @@ void validateMaterialPassInputViewPolicy(
 
 void validateMaterialResourcePortViewPolicy(
     ShaderResourcePortView port_view,
-    PassInputViewDimension view_dimension,
+    VulkanResourceViewLayout view_dimension,
     std::string_view port_name,
     const PassDefinition &pass) {
     const auto &rule = resourcePortViewPolicyRules.at(
@@ -279,7 +279,7 @@ void validateMaterialResourcePortViewPolicy(
     // A family-array physical target is only meaningful to a port that
     // declared the family (or a cube, which selects all six faces).
     if (view_dimension ==
-            PassInputViewDimension::family_2d_array &&
+            VulkanResourceViewLayout::family_2d_array &&
         port_view !=
             ShaderResourcePortView::family_array &&
         port_view != ShaderResourcePortView::cube) {
@@ -509,15 +509,15 @@ MaterialDescriptorBuilder::build(
     const auto layer_binding =
         [](const MaterialScreenInputResource &resource) {
             if (resource.view_dimension ==
-                    PassInputViewDimension::shared_2d) {
+                    VulkanResourceViewLayout::shared_2d) {
                 return PassInputLayerBinding::shared;
             }
             if (resource.view_dimension ==
-                    PassInputViewDimension::
+                    VulkanResourceViewLayout::
                         family_2d_array ||
                 (resource.isInputAttachment() &&
                  resource.view_dimension ==
-                     PassInputViewDimension::
+                     VulkanResourceViewLayout::
                          layered_2d_array)) {
                 return PassInputLayerBinding::whole_array;
             }
@@ -680,7 +680,7 @@ MaterialDescriptorBuilder::build(
                         ImageSubresourceViewDimension::
                             two_d_array &&
                     resource.view_dimension ==
-                        PassInputViewDimension::
+                        VulkanResourceViewLayout::
                             family_2d_array &&
                     input.subresource->base_array_layer ==
                         0 &&

@@ -1394,7 +1394,7 @@ TEST_CASE(
         sequential_input_pass,
         {FullscreenPassInput{
             .target = capacity_target,
-            .view = PassInputViewDimension::
+            .view = VulkanResourceViewLayout::
                 sequential_2d}},
         {}, target_views, frame_graph_resources, {},
         stereo_view_count);
@@ -1402,7 +1402,7 @@ TEST_CASE(
         multiview_input_pass,
         {FullscreenPassInput{
             .target = capacity_target,
-            .view = PassInputViewDimension::
+            .view = VulkanResourceViewLayout::
                 layered_2d_array}},
         {}, target_views, frame_graph_resources,
         GraphicsPipelineViewContract::multiview(
@@ -1412,14 +1412,14 @@ TEST_CASE(
         local_read_input_pass,
         {FullscreenPassInput{
             .target = managed_target,
-            .view = PassInputViewDimension::shared_2d,
+            .view = VulkanResourceViewLayout::shared_2d,
             .local_read = true}},
         {}, target_views, frame_graph_resources);
     fullscreen_passes.setInputResourcesById(
         local_read_consumer_pass,
         {FullscreenPassInput{
             .target = local_source,
-            .view = PassInputViewDimension::shared_2d,
+            .view = VulkanResourceViewLayout::shared_2d,
             .local_read = true}},
         {}, target_views, frame_graph_resources);
     REQUIRE(
@@ -1479,12 +1479,12 @@ TEST_CASE(
     native_local_contract
         .scope_color_attachment_operations = {
         PassAttachmentOperations{
-            vk::AttachmentLoadOp::eClear,
-            vk::AttachmentStoreOp::eDontCare,
+            AttachmentLoadOp::clear,
+            AttachmentStoreOp::dont_care,
         },
         PassAttachmentOperations{
-            vk::AttachmentLoadOp::eClear,
-            vk::AttachmentStoreOp::eStore,
+            AttachmentLoadOp::clear,
+            AttachmentStoreOp::store,
         }};
     native_local_contract.scope_color_clear_values = {
         {.floating = {0.0f, 0.0f, 0.0f, 1.0f},
@@ -1678,7 +1678,7 @@ TEST_CASE(
         compiled_runtime.passes.front()
             .definition.input_target_views ==
         std::vector{
-            PassInputViewDimension::layered_2d_array});
+            VulkanResourceViewLayout::layered_2d_array});
     REQUIRE(
         fullscreen_passes
             .boundInputImageViewsForTesting(

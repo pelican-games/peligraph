@@ -477,7 +477,7 @@ class NativeClearExecutor final
             const auto &attachment =
                 image.attachments.front();
             if (attachment.aspect !=
-                    VulkanPhysicalAttachmentAspect::
+                    AttachmentAspect::
                         color ||
                 !attachment.image_view) {
                 throw std::runtime_error(

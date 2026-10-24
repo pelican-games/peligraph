@@ -749,44 +749,6 @@ std::set<std::string, std::less<>> attachmentResources(
     return result;
 }
 
-VulkanPhysicalAttachmentAspect physicalAttachmentAspect(
-    FrameGraphAttachmentAspect aspect) {
-    switch (aspect) {
-    case FrameGraphAttachmentAspect::color:
-        return VulkanPhysicalAttachmentAspect::color;
-    case FrameGraphAttachmentAspect::depth:
-        return VulkanPhysicalAttachmentAspect::depth;
-    }
-    throw std::runtime_error(
-        "unknown frame graph attachment aspect");
-}
-
-VulkanPhysicalAttachmentLoadOp physicalAttachmentLoadOp(
-    FrameGraphAttachmentLoadOp op) {
-    switch (op) {
-    case FrameGraphAttachmentLoadOp::load:
-        return VulkanPhysicalAttachmentLoadOp::load;
-    case FrameGraphAttachmentLoadOp::clear:
-        return VulkanPhysicalAttachmentLoadOp::clear;
-    case FrameGraphAttachmentLoadOp::discard:
-        return VulkanPhysicalAttachmentLoadOp::discard;
-    }
-    throw std::runtime_error(
-        "unknown frame graph attachment load op");
-}
-
-VulkanPhysicalAttachmentStoreOp physicalAttachmentStoreOp(
-    FrameGraphAttachmentStoreOp op) {
-    switch (op) {
-    case FrameGraphAttachmentStoreOp::store:
-        return VulkanPhysicalAttachmentStoreOp::store;
-    case FrameGraphAttachmentStoreOp::discard:
-        return VulkanPhysicalAttachmentStoreOp::discard;
-    }
-    throw std::runtime_error(
-        "unknown frame graph attachment store op");
-}
-
 std::vector<VulkanPhysicalAttachmentPlan>
 physicalAttachmentPlans(
     const FrameGraphDefinition &definition) {
@@ -804,15 +766,8 @@ physicalAttachmentPlans(
                         attachment.resource,
                     .subresource =
                         attachment.subresource,
-                    .aspect =
-                        physicalAttachmentAspect(
-                            attachment.aspect),
-                    .load_op =
-                        physicalAttachmentLoadOp(
-                            attachment.load_op),
-                    .store_op =
-                        physicalAttachmentStoreOp(
-                            attachment.store_op),
+                    .aspect = attachment.aspect,
+                    .operations = attachment.operations,
                 });
         }
     }
@@ -1458,9 +1413,9 @@ void validateRuntimePhysicalPlan(
                         return attachment
                                        .logical_resource ==
                                    resource.logical_resource &&
-                               attachment.store_op !=
-                                   VulkanPhysicalAttachmentStoreOp::
-                                       discard;
+                               attachment.operations.store_op !=
+                                   AttachmentStoreOp::
+                                       dont_care;
                     })) {
                 throw std::runtime_error(
                     "runtime scope-local attachment requires every "

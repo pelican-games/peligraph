@@ -120,9 +120,9 @@ void validateViewExecution(
             pass.definition.input_target_views.size() ==
                     pass.definition.input_targets.size() &&
                 (pass.definition.input_target_views[input_index] ==
-                     PassInputViewDimension::shared_2d ||
+                     VulkanResourceViewLayout::shared_2d ||
                  pass.definition.input_target_views[input_index] ==
-                     PassInputViewDimension::
+                     VulkanResourceViewLayout::
                          family_2d_array);
         if (!consumer_independent) {
             require_layers(

@@ -2,6 +2,8 @@
 #include "graphcomposition.hpp"
 #include "graphloopexpression.hpp"
 #include "renderpipeline.hpp"
+#include "attachmentoperations.hpp"
+#include "renderresolutiondomain.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -240,13 +242,24 @@ P canonicalAnchor() {
     return string("canonical_anchor").choicesFrom(authoring_context, "canonical_anchors")
         .describe("A canonical pass anchor the pass lands at (excludes insert).");
 }
-P loadOp(const char *name) {
-    return enumeration(name, {"clear", "load", "dont_care", "Clear", "Load", "DontCare", "dontCare"});
+// RC-3a2: the spellings the engine's pass parser admits (the one table in
+// attachmentoperations.cpp), and the pass type's own default domain.
+std::vector<std::string> spellings(std::span<const std::string_view> names) {
+    return {names.begin(), names.end()};
 }
-P storeOp(const char *name) { return enumeration(name, {"store", "dont_care", "Store", "DontCare", "dontCare"}); }
-P resolutionDomain(const char *fallback) {
+P loadOp(const char *name) {
+    P result{name, Kind::enumeration};
+    result.values(spellings(authoredAttachmentLoadOpSpellings()));
+    return result;
+}
+P storeOp(const char *name) {
+    P result{name, Kind::enumeration};
+    result.values(spellings(authoredAttachmentStoreOpSpellings()));
+    return result;
+}
+P resolutionDomain(RenderPassType type) {
     return enumeration("resolution_domain", {"scene", "output", "independent", "unclassified", "none"})
-        .fallback(fallback)
+        .fallback(std::string{renderResolutionDomainName(defaultRenderResolutionDomain(type))})
         .describe("The extent domain the pass renders in.");
 }
 // CT-5: "scene" or a composed scene_acceleration_structures name
@@ -539,7 +552,7 @@ Table makeTable() {
              .field(string("vertex").required())
              .fallback(Json{{"vertex", "engine://shadow_depth"}})
              .describe("The depth pass's vertex shader (no fragment stage)."),
-         rasterRayQuery(), loadOp("depth_load_op"), storeOp("depth_store_op"), resolutionDomain("independent"),
+         rasterRayQuery(), loadOp("depth_load_op"), storeOp("depth_store_op"), resolutionDomain(RenderPassType::shadow_depth),
          viewFamily(), viewSelect(), regionTags(), passSet(), order("after"), order("before"), insert(false),
          canonicalAnchor()});
     add(table, "render.snapshot_copy", true,
@@ -559,7 +572,7 @@ Table makeTable() {
              json("screen_inputs"), json("surface_resources"), json("material_resources"), rasterRayQuery(),
              loadOp("color_load_op"), storeOp("color_store_op"), loadOp("depth_load_op"), storeOp("depth_store_op"),
              clearColor(), clearColors(), viewFamily(), viewSelect(), regionTags(), regions(),
-             resolutionDomain("scene"), inheritBindingsFrom(),
+             resolutionDomain(RenderPassType::material), inheritBindingsFrom(),
              passSet(), order("after"), order("before"), insert(true), canonicalAnchor()});
     }
     add(table, "render.fullscreen", false,
@@ -574,7 +587,7 @@ Table makeTable() {
          enumeration("push_constants", {"none", "camera_position", "projection_view"}).fallback("none"),
          boolean("uses_light_data").fallback(false), json("raster_state"),
          rasterRayQuery(), loadOp("color_load_op"), storeOp("color_store_op"), loadOp("depth_load_op"),
-         storeOp("depth_store_op"), clearColor(), clearColors(), resolutionDomain("unclassified"),
+         storeOp("depth_store_op"), clearColor(), clearColors(), resolutionDomain(RenderPassType::fullscreen),
          inheritBindingsFrom(), viewFamily(), viewSelect(),
          regionTags(), regions(), passSet(), order("after"), order("before"), insert(true), canonicalAnchor()});
     add(table, "render.raster", false,
@@ -591,7 +604,7 @@ Table makeTable() {
              .describe("Which way the vertex shader's clip +y points on the image (down: the engine's). "
                        "front_face and cull mean the winding seen on the image either way."),
          passSchedule(), rasterRayQuery(), loadOp("color_load_op"), storeOp("color_store_op"),
-         loadOp("depth_load_op"), storeOp("depth_store_op"), clearColor(), clearColors(), resolutionDomain("unclassified"), viewFamily(),
+         loadOp("depth_load_op"), storeOp("depth_store_op"), clearColor(), clearColors(), resolutionDomain(RenderPassType::raster), viewFamily(),
          viewSelect(), regionTags(), regions(), passSet(), order("after"), order("before"), insert(true),
          canonicalAnchor()});
     // CT-6: ray_tracing and dispatch typed, every key the task JSON parser

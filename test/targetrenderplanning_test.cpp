@@ -631,45 +631,41 @@ tileLinkAttachmentOperations(
             .node = "Producer",
             .logical_resource = "tile_link",
             .aspect =
-                VulkanPhysicalAttachmentAspect::color,
-            .load_op =
-                VulkanPhysicalAttachmentLoadOp::clear,
-            .store_op =
-                VulkanPhysicalAttachmentStoreOp::store,
+                AttachmentAspect::color,
+            .operations =
+                PassAttachmentOperations{
+                    AttachmentLoadOp::clear,
+                    AttachmentStoreOp::store},
         },
         VulkanPhysicalAttachmentPlan{
             .node = "Producer",
             .logical_resource = "persistent_color",
             .aspect =
-                VulkanPhysicalAttachmentAspect::color,
-            .load_op =
-                VulkanPhysicalAttachmentLoadOp::clear,
-            .store_op =
-                preserve_materialized_contents
-                    ? VulkanPhysicalAttachmentStoreOp::store
-                    : VulkanPhysicalAttachmentStoreOp::discard,
+                AttachmentAspect::color,
+            .operations =
+                PassAttachmentOperations{
+                    AttachmentLoadOp::clear,
+                    preserve_materialized_contents ? AttachmentStoreOp::store : AttachmentStoreOp::dont_care},
         },
         VulkanPhysicalAttachmentPlan{
             .node = "Consumer",
             .logical_resource = "persistent_color",
             .aspect =
-                VulkanPhysicalAttachmentAspect::color,
-            .load_op =
-                preserve_materialized_contents
-                    ? VulkanPhysicalAttachmentLoadOp::load
-                    : VulkanPhysicalAttachmentLoadOp::clear,
-            .store_op =
-                VulkanPhysicalAttachmentStoreOp::store,
+                AttachmentAspect::color,
+            .operations =
+                PassAttachmentOperations{
+                    preserve_materialized_contents ? AttachmentLoadOp::load : AttachmentLoadOp::clear,
+                    AttachmentStoreOp::store},
         },
         VulkanPhysicalAttachmentPlan{
             .node = "Output",
             .logical_resource = "display_output",
             .aspect =
-                VulkanPhysicalAttachmentAspect::color,
-            .load_op =
-                VulkanPhysicalAttachmentLoadOp::clear,
-            .store_op =
-                VulkanPhysicalAttachmentStoreOp::store,
+                AttachmentAspect::color,
+            .operations =
+                PassAttachmentOperations{
+                    AttachmentLoadOp::clear,
+                    AttachmentStoreOp::store},
         },
     };
 }
@@ -909,11 +905,11 @@ TEST_CASE(
             .logical_resource =
                 "write_only_scratch",
             .aspect =
-                VulkanPhysicalAttachmentAspect::color,
-            .load_op =
-                VulkanPhysicalAttachmentLoadOp::clear,
-            .store_op =
-                VulkanPhysicalAttachmentStoreOp::store,
+                AttachmentAspect::color,
+            .operations =
+                PassAttachmentOperations{
+                    AttachmentLoadOp::clear,
+                    AttachmentStoreOp::store},
         },
     };
 
@@ -934,8 +930,8 @@ TEST_CASE(
         VulkanResourceRepresentation::
             transient_attachment);
     REQUIRE(
-        automatic.attachments.front().store_op ==
-        VulkanPhysicalAttachmentStoreOp::discard);
+        automatic.attachments.front().operations.store_op ==
+        AttachmentStoreOp::dont_care);
     REQUIRE(std::any_of(
         automatic.decisions.begin(),
         automatic.decisions.end(),
@@ -971,7 +967,7 @@ TEST_CASE(
             materialized_image;
     REQUIRE(materialized.attachments.has_value());
     materialized.attachments->front().store_op =
-        VulkanPhysicalAttachmentStoreOp::store;
+        AttachmentStoreOp::store;
     const auto overridden = compile(
         types, graph, transient_target,
         bindingsFor(types, graph),
@@ -985,8 +981,8 @@ TEST_CASE(
         VulkanResourceRepresentation::
             materialized_image);
     REQUIRE(
-        overridden.attachments.front().store_op ==
-        VulkanPhysicalAttachmentStoreOp::store);
+        overridden.attachments.front().operations.store_op ==
+        AttachmentStoreOp::store);
 
     const auto conservative = compile(
         types, graph, transient_target,
@@ -1009,8 +1005,8 @@ TEST_CASE(
         VulkanResourceRepresentation::
             materialized_image);
     REQUIRE(
-        conservative.attachments.front().store_op ==
-        VulkanPhysicalAttachmentStoreOp::store);
+        conservative.attachments.front().operations.store_op ==
+        AttachmentStoreOp::store);
 }
 
 TEST_CASE(
@@ -1047,11 +1043,11 @@ TEST_CASE(
                 "write_only_scratch",
             .subresource = range,
             .aspect =
-                VulkanPhysicalAttachmentAspect::color,
-            .load_op =
-                VulkanPhysicalAttachmentLoadOp::clear,
-            .store_op =
-                VulkanPhysicalAttachmentStoreOp::store,
+                AttachmentAspect::color,
+            .operations =
+                PassAttachmentOperations{
+                    AttachmentLoadOp::clear,
+                    AttachmentStoreOp::store},
         },
     };
     REQUIRE_NOTHROW(
@@ -1877,41 +1873,41 @@ TEST_CASE("Vulkan physical attachment fragments preserve logical dependencies an
                 .node = "GBuffer",
                 .logical_resource = "gbuffer_0",
                 .aspect =
-                    VulkanPhysicalAttachmentAspect::color,
-                .load_op =
-                    VulkanPhysicalAttachmentLoadOp::clear,
-                .store_op =
-                    VulkanPhysicalAttachmentStoreOp::store,
+                    AttachmentAspect::color,
+                .operations =
+                    PassAttachmentOperations{
+                        AttachmentLoadOp::clear,
+                        AttachmentStoreOp::store},
             },
             {
                 .node = "Forward",
                 .logical_resource = "scene_color",
                 .aspect =
-                    VulkanPhysicalAttachmentAspect::color,
-                .load_op =
-                    VulkanPhysicalAttachmentLoadOp::load,
-                .store_op =
-                    VulkanPhysicalAttachmentStoreOp::store,
+                    AttachmentAspect::color,
+                .operations =
+                    PassAttachmentOperations{
+                        AttachmentLoadOp::load,
+                        AttachmentStoreOp::store},
             },
             {
                 .node = "Lighting",
                 .logical_resource = "scene_color",
                 .aspect =
-                    VulkanPhysicalAttachmentAspect::color,
-                .load_op =
-                    VulkanPhysicalAttachmentLoadOp::clear,
-                .store_op =
-                    VulkanPhysicalAttachmentStoreOp::store,
+                    AttachmentAspect::color,
+                .operations =
+                    PassAttachmentOperations{
+                        AttachmentLoadOp::clear,
+                        AttachmentStoreOp::store},
             },
             {
                 .node = "ToneMap",
                 .logical_resource = "display_output",
                 .aspect =
-                    VulkanPhysicalAttachmentAspect::color,
-                .load_op =
-                    VulkanPhysicalAttachmentLoadOp::clear,
-                .store_op =
-                    VulkanPhysicalAttachmentStoreOp::store,
+                    AttachmentAspect::color,
+                .operations =
+                    PassAttachmentOperations{
+                        AttachmentLoadOp::clear,
+                        AttachmentStoreOp::store},
             },
         };
     };
@@ -2008,7 +2004,7 @@ TEST_CASE("Vulkan physical attachment fragments preserve logical dependencies an
     REQUIRE(gbuffer !=
             discard_clear.attachments->end());
     gbuffer->load_op =
-        VulkanPhysicalAttachmentLoadOp::discard;
+        AttachmentLoadOp::dont_care;
     const auto discard_clear_linked = compile(
         types, graph, topology(false),
         bindingsFor(types, graph),
@@ -2017,8 +2013,8 @@ TEST_CASE("Vulkan physical attachment fragments preserve logical dependencies an
         discard_clear, {},
         attachment_contract());
     REQUIRE(
-        discard_clear_linked.attachments.front().load_op ==
-        VulkanPhysicalAttachmentLoadOp::discard);
+        discard_clear_linked.attachments.front().operations.load_op ==
+        AttachmentLoadOp::dont_care);
 
     auto erase_load = ejected;
     const auto forward = std::find_if(
@@ -2029,7 +2025,7 @@ TEST_CASE("Vulkan physical attachment fragments preserve logical dependencies an
         });
     REQUIRE(forward != erase_load.attachments->end());
     forward->load_op =
-        VulkanPhysicalAttachmentLoadOp::clear;
+        AttachmentLoadOp::clear;
     requireThrowsContaining(
         [&] {
             (void)compile(
@@ -2049,7 +2045,7 @@ TEST_CASE("Vulkan physical attachment fragments preserve logical dependencies an
         [](const auto &attachment) {
             return attachment.node == "GBuffer";
         })->load_op =
-        VulkanPhysicalAttachmentLoadOp::load;
+        AttachmentLoadOp::load;
     requireThrowsContaining(
         [&] {
             (void)compile(
@@ -2071,7 +2067,7 @@ TEST_CASE("Vulkan physical attachment fragments preserve logical dependencies an
         [](const auto &attachment) {
             return attachment.node == "GBuffer";
         })->store_op =
-        VulkanPhysicalAttachmentStoreOp::discard;
+        AttachmentStoreOp::dont_care;
     requireThrowsContaining(
         [&] {
             (void)compile(
@@ -2113,7 +2109,7 @@ TEST_CASE("Vulkan physical attachment fragments preserve logical dependencies an
         [](const auto &attachment) {
             return attachment.node == "GBuffer";
         })->store_op =
-        VulkanPhysicalAttachmentStoreOp::discard;
+        AttachmentStoreOp::dont_care;
     const auto resolved = compile(
         types, graph, topology(false),
         bindingsFor(types, graph),
@@ -2123,8 +2119,8 @@ TEST_CASE("Vulkan physical attachment fragments preserve logical dependencies an
         discard_resolved_store, {},
         attachment_contract());
     REQUIRE(
-        resolved.attachments.front().store_op ==
-        VulkanPhysicalAttachmentStoreOp::discard);
+        resolved.attachments.front().operations.store_op ==
+        AttachmentStoreOp::dont_care);
 
     auto discard_before_attachment_load =
         ejectVulkanPhysicalFragmentPackage(msaa);
@@ -2136,7 +2132,7 @@ TEST_CASE("Vulkan physical attachment fragments preserve logical dependencies an
         [](const auto &attachment) {
             return attachment.node == "Lighting";
         })->store_op =
-        VulkanPhysicalAttachmentStoreOp::discard;
+        AttachmentStoreOp::dont_care;
     requireThrowsContaining(
         [&] {
             (void)compile(
@@ -2246,28 +2242,24 @@ TEST_CASE(
                 .logical_resource =
                     "scene_color",
                 .aspect =
-                    VulkanPhysicalAttachmentAspect::
+                    AttachmentAspect::
                         color,
-                .load_op =
-                    VulkanPhysicalAttachmentLoadOp::
-                        clear,
-                .store_op =
-                    VulkanPhysicalAttachmentStoreOp::
-                        store,
+                .operations =
+                    PassAttachmentOperations{
+                        AttachmentLoadOp::clear,
+                        AttachmentStoreOp::store},
             },
             {
                 .node = "Forward",
                 .logical_resource =
                     "scene_color",
                 .aspect =
-                    VulkanPhysicalAttachmentAspect::
+                    AttachmentAspect::
                         color,
-                .load_op =
-                    VulkanPhysicalAttachmentLoadOp::
-                        load,
-                .store_op =
-                    VulkanPhysicalAttachmentStoreOp::
-                        store,
+                .operations =
+                    PassAttachmentOperations{
+                        AttachmentLoadOp::load,
+                        AttachmentStoreOp::store},
             },
         };
     const auto automatic = compile(
@@ -2351,8 +2343,8 @@ TEST_CASE(
         non_final_discard
             .attachments->end());
     lighting->store_op =
-        VulkanPhysicalAttachmentStoreOp::
-            discard;
+        AttachmentStoreOp::
+            dont_care;
     requireThrowsContaining(
         [&] {
             (void)compile(
@@ -2620,16 +2612,24 @@ TEST_CASE(
                 .node = "GBuffer",
                 .logical_resource = "gbuffer_0",
                 .aspect =
-                    VulkanPhysicalAttachmentAspect::
+                    AttachmentAspect::
                         color,
+                .operations =
+                    PassAttachmentOperations{
+                        AttachmentLoadOp::clear,
+                        AttachmentStoreOp::store},
             },
             {
                 .node = "Lighting",
                 .logical_resource =
                     "scene_color",
                 .aspect =
-                    VulkanPhysicalAttachmentAspect::
+                    AttachmentAspect::
                         color,
+                .operations =
+                    PassAttachmentOperations{
+                        AttachmentLoadOp::clear,
+                        AttachmentStoreOp::store},
             },
         };
     const auto automatic = compile(

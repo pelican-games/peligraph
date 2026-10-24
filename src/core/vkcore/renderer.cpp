@@ -957,30 +957,6 @@ FrameUniformData updateFrameResources(
     return data;
 }
 
-std::string loadOpName(vk::AttachmentLoadOp op) {
-    switch (op) {
-    case vk::AttachmentLoadOp::eLoad:
-        return "load";
-    case vk::AttachmentLoadOp::eClear:
-        return "clear";
-    case vk::AttachmentLoadOp::eDontCare:
-        return "dont_care";
-    default:
-        return vk::to_string(op);
-    }
-}
-
-std::string storeOpName(vk::AttachmentStoreOp op) {
-    switch (op) {
-    case vk::AttachmentStoreOp::eStore:
-        return "store";
-    case vk::AttachmentStoreOp::eDontCare:
-        return "dont_care";
-    default:
-        return vk::to_string(op);
-    }
-}
-
 std::string layoutName(vk::ImageLayout layout) {
     switch (layout) {
     case vk::ImageLayout::eUndefined:
@@ -1048,8 +1024,8 @@ nlohmann::json renderNodeTrace(const CompiledPass &pass, size_t order,
         nlohmann::json attachment{
             {"resource", renderTargetName(target, rt_container)},
             {"aspect", "color"},
-            {"load", loadOpName(operations.load_op)},
-            {"store", storeOpName(operations.store_op)},
+            {"load", std::string{attachmentLoadOpName(operations.load_op)}},
+            {"store", std::string{attachmentStoreOpName(operations.store_op)}},
             {"final_layout", trackedLayoutName(target, vk::ImageLayout::eColorAttachmentOptimal,
                                                  layout_tracker, rt_container)},
             {"format", isConcreteRenderTarget(target)
@@ -1058,7 +1034,7 @@ nlohmann::json renderNodeTrace(const CompiledPass &pass, size_t order,
             {"samples", 1},
         };
         if (operations.load_op ==
-            vk::AttachmentLoadOp::eClear) {
+            AttachmentLoadOp::clear) {
             attachment["clear"] =
                 clearColorJson(
                     definition
@@ -1073,14 +1049,14 @@ nlohmann::json renderNodeTrace(const CompiledPass &pass, size_t order,
         nlohmann::json attachment{
             {"resource", renderTargetName(definition.output_depth, rt_container)},
             {"aspect", "depth"},
-            {"load", loadOpName(operations.load_op)},
-            {"store", storeOpName(operations.store_op)},
+            {"load", std::string{attachmentLoadOpName(operations.load_op)}},
+            {"store", std::string{attachmentStoreOpName(operations.store_op)}},
             {"final_layout", trackedLayoutName(definition.output_depth,
                                                  vk::ImageLayout::eDepthAttachmentOptimal,
                                                  layout_tracker, rt_container)},
         };
         if (operations.load_op ==
-            vk::AttachmentLoadOp::eClear) {
+            AttachmentLoadOp::clear) {
             attachment["clear"] = 1.0;
         }
         attachments.push_back(std::move(attachment));

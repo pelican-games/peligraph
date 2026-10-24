@@ -417,7 +417,7 @@ void setUpDrawLoopScene(
 
 MaterialDrawStepList twoDraws() {
     MaterialDrawRenderStateOverride cull_front;
-    cull_front.cull = SurfaceCullMode::front;
+    cull_front.cull = RasterCullMode::front;
     return {MaterialDrawStep::overridden(cull_front),
             MaterialDrawStep::material()};
 }

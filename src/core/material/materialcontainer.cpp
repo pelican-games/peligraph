@@ -2174,13 +2174,13 @@ MaterialContainer::ensureScreenInputDescriptor(
                     view_dimension,
                 .descriptor_dimension =
                     view_dimension ==
-                                PassInputViewDimension::
+                                VulkanResourceViewLayout::
                                     family_2d_array ||
                             (required.descriptor_type ==
                                  vk::DescriptorType::
                                      eInputAttachment &&
                              view_dimension ==
-                                 PassInputViewDimension::
+                                 VulkanResourceViewLayout::
                                      layered_2d_array)
                         ? ImageSubresourceViewDimension::
                               two_d_array
@@ -2311,26 +2311,26 @@ MaterialContainer::ensureScreenInputDescriptor(
                 ShaderResourcePortView::
                     family_array &&
             (view_dimension ==
-                 PassInputViewDimension::
+                 VulkanResourceViewLayout::
                      shared_2d ||
              view_dimension ==
-                 PassInputViewDimension::
+                 VulkanResourceViewLayout::
                      sequential_2d)) {
             // Material pipelines are shared across compatible pass variants.
             // Shared and sequential physical targets still have array-backed
             // storage, so expose the complete family as one array descriptor
             // and keep the shader ABI stable across those variants.
             descriptor_view_dimension =
-                PassInputViewDimension::
+                VulkanResourceViewLayout::
                     family_2d_array;
         }
         auto descriptor_dimension =
             !input_attachment &&
                     (descriptor_view_dimension ==
-                         PassInputViewDimension::
+                         VulkanResourceViewLayout::
                              layered_2d_array ||
                      descriptor_view_dimension ==
-                         PassInputViewDimension::
+                         VulkanResourceViewLayout::
                              family_2d_array)
                 ? ImageSubresourceViewDimension::
                       two_d_array
@@ -2402,7 +2402,7 @@ MaterialContainer::ensureScreenInputDescriptor(
             binding->port.view, view_dimension,
             required.port.name, pass);
         if (view_dimension ==
-            PassInputViewDimension::
+            VulkanResourceViewLayout::
                 layered_2d_array &&
             !input_attachment) {
             throw std::runtime_error(

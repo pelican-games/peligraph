@@ -1,5 +1,6 @@
 #pragma once
 
+#include "attachmentoperations.hpp"
 #include "imagesubresource.hpp"
 #include "imageformat.hpp"
 #include "resourceextent.hpp"
@@ -245,31 +246,6 @@ struct VulkanPhysicalScopePlan {
         const VulkanPhysicalScopePlan &) const = default;
 };
 
-enum class VulkanPhysicalAttachmentAspect : std::uint8_t {
-    color,
-    depth,
-};
-
-std::string_view vulkanPhysicalAttachmentAspectName(
-    VulkanPhysicalAttachmentAspect aspect);
-
-enum class VulkanPhysicalAttachmentLoadOp : std::uint8_t {
-    load,
-    clear,
-    discard,
-};
-
-std::string_view vulkanPhysicalAttachmentLoadOpName(
-    VulkanPhysicalAttachmentLoadOp op);
-
-enum class VulkanPhysicalAttachmentStoreOp : std::uint8_t {
-    store,
-    discard,
-};
-
-std::string_view vulkanPhysicalAttachmentStoreOpName(
-    VulkanPhysicalAttachmentStoreOp op);
-
 // Per-node attachment state belongs to the physical plan rather than the
 // logical resource type. A resource can be cleared in one raster scope and
 // loaded in another, so the node/resource pair is the stable identity.
@@ -277,12 +253,10 @@ struct VulkanPhysicalAttachmentPlan {
     std::string node;
     std::string logical_resource;
     std::optional<ImageSubresourceRange> subresource;
-    VulkanPhysicalAttachmentAspect aspect =
-        VulkanPhysicalAttachmentAspect::color;
-    VulkanPhysicalAttachmentLoadOp load_op =
-        VulkanPhysicalAttachmentLoadOp::clear;
-    VulkanPhysicalAttachmentStoreOp store_op =
-        VulkanPhysicalAttachmentStoreOp::store;
+    AttachmentAspect aspect = AttachmentAspect::color;
+    // RC-3a2: what the plan's executor does, always stated (no default; the
+    // planner copies the node's resolved operations).
+    PassAttachmentOperations operations;
 
     bool operator==(
         const VulkanPhysicalAttachmentPlan &) const = default;
@@ -376,8 +350,8 @@ struct VulkanPhysicalAliasGroupFragment {
 struct VulkanPhysicalAttachmentFragment {
     std::string node;
     std::string logical_resource;
-    std::optional<VulkanPhysicalAttachmentLoadOp> load_op;
-    std::optional<VulkanPhysicalAttachmentStoreOp> store_op;
+    std::optional<AttachmentLoadOp> load_op;
+    std::optional<AttachmentStoreOp> store_op;
 
     bool operator==(
         const VulkanPhysicalAttachmentFragment &) const = default;

@@ -45,13 +45,13 @@ vk::ImageView resolvePassInputImageView(
     // physical target is laid out, so this dispatches on the declared view
     // and not on the descriptor dimension derived from it.
     if (input.view ==
-        PassInputViewDimension::family_2d_array) {
+        VulkanResourceViewLayout::family_2d_array) {
         return rt_views.getLayeredImageView(
             input.target, read);
     }
     if (input.logical_view_count &&
         input.view ==
-            PassInputViewDimension::layered_2d_array) {
+            VulkanResourceViewLayout::layered_2d_array) {
         return rt_views.arrayLayers(input.target) ==
                        *input.logical_view_count
                    ? rt_views

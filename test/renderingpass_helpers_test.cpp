@@ -77,8 +77,8 @@ TEST_CASE("rendering pass JSON helpers parse known values", "[renderingpass]") {
     REQUIRE(std::holds_alternative<UiPassInfo>(makePassInfo("ui")));
 
     REQUIRE(stringToFullscreenPushConstantData("projection_view") == FullscreenPushConstantData::eProjectionView);
-    REQUIRE(stringToLoadOp("dont_care") == vk::AttachmentLoadOp::eDontCare);
-    REQUIRE(stringToStoreOp("store") == vk::AttachmentStoreOp::eStore);
+    REQUIRE(parseAuthoredAttachmentLoadOp("dont_care") == AttachmentLoadOp::dont_care);
+    REQUIRE(parseAuthoredAttachmentStoreOp("store") == AttachmentStoreOp::store);
 
     const nlohmann::json object{
         {"name", "main_pass"},
@@ -574,11 +574,11 @@ TEST_CASE(
             pass_json, "upscale");
 
     REQUIRE(info.input_sampling ==
-            std::vector<FullscreenInputSampling>{
-                {FullscreenInputFilter::nearest,
-                 FullscreenInputAddressMode::clamp_to_edge},
-                {FullscreenInputFilter::linear,
-                 FullscreenInputAddressMode::mirrored_repeat},
+            std::vector<ShaderResourcePortSampling>{
+                {ShaderResourcePortFilter::nearest,
+                 ShaderResourcePortAddressMode::clamp_to_edge},
+                {ShaderResourcePortFilter::linear,
+                 ShaderResourcePortAddressMode::mirrored_repeat},
             });
     auto invalid = pass_json;
     invalid["input_sampling"][0]["address"] =
@@ -2166,8 +2166,8 @@ TEST_CASE("pass info JSON parser reads pass type and applies UI defaults", "[ren
     parsePassTypeFromJson(pass_def, nlohmann::json{{"type", "ui"}});
 
     REQUIRE(pass_def.isUi());
-    REQUIRE(pass_def.color_load_op == vk::AttachmentLoadOp::eLoad);
-    REQUIRE(pass_def.color_store_op == vk::AttachmentStoreOp::eStore);
+    REQUIRE(pass_def.color_load_op == AttachmentLoadOp::load);
+    REQUIRE(pass_def.color_store_op == AttachmentStoreOp::store);
 }
 
 TEST_CASE("pass info JSON parser applies fullscreen info only to fullscreen passes", "[renderingpass]") {
@@ -2482,14 +2482,14 @@ TEST_CASE(
                 return noRenderTargetId();
             }};
     const std::vector<std::pair<
-        std::string, vk::AttachmentLoadOp>> load_cases{
-        {"Clear", vk::AttachmentLoadOp::eClear},
-        {"clear", vk::AttachmentLoadOp::eClear},
-        {"Load", vk::AttachmentLoadOp::eLoad},
-        {"load", vk::AttachmentLoadOp::eLoad},
-        {"DontCare", vk::AttachmentLoadOp::eDontCare},
-        {"dont_care", vk::AttachmentLoadOp::eDontCare},
-        {"dontCare", vk::AttachmentLoadOp::eDontCare},
+        std::string, AttachmentLoadOp>> load_cases{
+        {"Clear", AttachmentLoadOp::clear},
+        {"clear", AttachmentLoadOp::clear},
+        {"Load", AttachmentLoadOp::load},
+        {"load", AttachmentLoadOp::load},
+        {"DontCare", AttachmentLoadOp::dont_care},
+        {"dont_care", AttachmentLoadOp::dont_care},
+        {"dontCare", AttachmentLoadOp::dont_care},
     };
     for (const auto &[spelling, expected] : load_cases) {
         CAPTURE(spelling);
@@ -2507,12 +2507,12 @@ TEST_CASE(
     }
 
     const std::vector<std::pair<
-        std::string, vk::AttachmentStoreOp>> store_cases{
-        {"Store", vk::AttachmentStoreOp::eStore},
-        {"store", vk::AttachmentStoreOp::eStore},
-        {"DontCare", vk::AttachmentStoreOp::eDontCare},
-        {"dont_care", vk::AttachmentStoreOp::eDontCare},
-        {"dontCare", vk::AttachmentStoreOp::eDontCare},
+        std::string, AttachmentStoreOp>> store_cases{
+        {"Store", AttachmentStoreOp::store},
+        {"store", AttachmentStoreOp::store},
+        {"DontCare", AttachmentStoreOp::dont_care},
+        {"dont_care", AttachmentStoreOp::dont_care},
+        {"dontCare", AttachmentStoreOp::dont_care},
     };
     for (const auto &[spelling, expected] : store_cases) {
         CAPTURE(spelling);
@@ -3303,10 +3303,10 @@ TEST_CASE("pass attachment options parser applies explicit color attachment opti
     REQUIRE(pass_def.clear_color[1] == 0.5);
     REQUIRE(pass_def.clear_color[2] == 0.75);
     REQUIRE(pass_def.clear_color[3] == 1.0);
-    REQUIRE(pass_def.color_load_op == vk::AttachmentLoadOp::eLoad);
-    REQUIRE(pass_def.color_store_op == vk::AttachmentStoreOp::eDontCare);
-    REQUIRE(pass_def.depth_load_op == vk::AttachmentLoadOp::eClear);
-    REQUIRE(pass_def.depth_store_op == vk::AttachmentStoreOp::eStore);
+    REQUIRE(pass_def.color_load_op == AttachmentLoadOp::load);
+    REQUIRE(pass_def.color_store_op == AttachmentStoreOp::dont_care);
+    REQUIRE(pass_def.depth_load_op == AttachmentLoadOp::clear);
+    REQUIRE(pass_def.depth_store_op == AttachmentStoreOp::store);
 }
 
 TEST_CASE(
@@ -3362,13 +3362,13 @@ TEST_CASE(
     STATIC_REQUIRE(
         std::is_constructible_v<
             PassAttachmentOperations,
-            vk::AttachmentLoadOp,
-            vk::AttachmentStoreOp>);
+            AttachmentLoadOp,
+            AttachmentStoreOp>);
     const PassAttachmentOperations operations{
-        vk::AttachmentLoadOp::eClear,
-        vk::AttachmentStoreOp::eStore};
-    CHECK(operations.load_op == vk::AttachmentLoadOp::eClear);
-    CHECK(operations.store_op == vk::AttachmentStoreOp::eStore);
+        AttachmentLoadOp::clear,
+        AttachmentStoreOp::store};
+    CHECK(operations.load_op == AttachmentLoadOp::clear);
+    CHECK(operations.store_op == AttachmentStoreOp::store);
 }
 
 TEST_CASE("pass attachment options parser preserves defaults when fields are omitted", "[renderingpass]") {
@@ -3381,23 +3381,23 @@ TEST_CASE("pass attachment options parser preserves defaults when fields are omi
     REQUIRE(pass_def.clear_color[1] == 0.0);
     REQUIRE(pass_def.clear_color[2] == 0.0);
     REQUIRE(pass_def.clear_color[3] == 1.0);
-    REQUIRE(pass_def.color_load_op == vk::AttachmentLoadOp::eClear);
-    REQUIRE(pass_def.color_store_op == vk::AttachmentStoreOp::eStore);
-    REQUIRE(pass_def.depth_load_op == vk::AttachmentLoadOp::eClear);
-    REQUIRE(pass_def.depth_store_op == vk::AttachmentStoreOp::eDontCare);
+    REQUIRE(pass_def.color_load_op == AttachmentLoadOp::clear);
+    REQUIRE(pass_def.color_store_op == AttachmentStoreOp::store);
+    REQUIRE(pass_def.depth_load_op == AttachmentLoadOp::clear);
+    REQUIRE(pass_def.depth_store_op == AttachmentStoreOp::dont_care);
     pass_def.output_color = {GlobalRenderTargetId{0}};
     pass_def.output_depth = GlobalRenderTargetId{1};
     REQUIRE((pass_def.colorAttachmentOperations(0) ==
-             PassAttachmentOperations{vk::AttachmentLoadOp::eClear,
-                                      vk::AttachmentStoreOp::eStore}));
+             PassAttachmentOperations{AttachmentLoadOp::clear,
+                                      AttachmentStoreOp::store}));
     REQUIRE((pass_def.depthAttachmentOperations() ==
-             PassAttachmentOperations{vk::AttachmentLoadOp::eClear,
-                                      vk::AttachmentStoreOp::eDontCare}));
+             PassAttachmentOperations{AttachmentLoadOp::clear,
+                                      AttachmentStoreOp::dont_care}));
 
     const auto ui_color = defaultPassAttachmentOperations(
-        RenderPassType::ui, PassAttachmentAspect::color);
-    REQUIRE(ui_color.load_op == vk::AttachmentLoadOp::eLoad);
-    REQUIRE(ui_color.store_op == vk::AttachmentStoreOp::eStore);
+        RenderPassType::ui, AttachmentAspect::color);
+    REQUIRE(ui_color.load_op == AttachmentLoadOp::load);
+    REQUIRE(ui_color.store_op == AttachmentStoreOp::store);
 }
 
 TEST_CASE("material pass info parser applies explicit material range", "[renderingpass]") {
@@ -4477,8 +4477,8 @@ TEST_CASE("rendering pass JSON helpers reject malformed values", "[renderingpass
     REQUIRE_THROWS_AS(parseAuthoredImageUsage(std::vector<std::string>{}), std::runtime_error);
     REQUIRE_THROWS_AS(makePassInfo("compute"), std::runtime_error);
     REQUIRE_THROWS_AS(stringToFullscreenPushConstantData("camera"), std::runtime_error);
-    REQUIRE_THROWS_AS(stringToLoadOp("keep"), std::runtime_error);
-    REQUIRE_THROWS_AS(stringToStoreOp("load"), std::runtime_error);
+    REQUIRE_THROWS_AS(parseAuthoredAttachmentLoadOp("keep"), std::runtime_error);
+    REQUIRE_THROWS_AS(parseAuthoredAttachmentStoreOp("load"), std::runtime_error);
 
     REQUIRE_THROWS_AS(validateName("", "Pass"), std::runtime_error);
     REQUIRE_THROWS_AS(parseStringField(nlohmann::json{{"name", 1}}, "name", "test"), std::runtime_error);
@@ -4575,11 +4575,11 @@ TEST_CASE(
             .node = "geometry",
             .logical_resource = "swapchain",
             .aspect =
-                VulkanPhysicalAttachmentAspect::color,
-            .load_op =
-                VulkanPhysicalAttachmentLoadOp::discard,
-            .store_op =
-                VulkanPhysicalAttachmentStoreOp::discard,
+                AttachmentAspect::color,
+            .operations =
+                PassAttachmentOperations{
+                    AttachmentLoadOp::dont_care,
+                    AttachmentStoreOp::dont_care},
         },
     };
 
@@ -4593,16 +4593,16 @@ TEST_CASE(
         compiled.passes.front().definition;
     REQUIRE(
         physical.color_load_op ==
-        vk::AttachmentLoadOp::eClear);
+        AttachmentLoadOp::clear);
     REQUIRE((
         physical.colorAttachmentOperations(0) ==
         PassAttachmentOperations{
-            vk::AttachmentLoadOp::eDontCare,
-            vk::AttachmentStoreOp::eDontCare,
+            AttachmentLoadOp::dont_care,
+            AttachmentStoreOp::dont_care,
         }));
 
     plan.attachments.front().aspect =
-        VulkanPhysicalAttachmentAspect::depth;
+        AttachmentAspect::depth;
     REQUIRE_THROWS_WITH(
         compileRenderingPassRuntime(
             definition,
@@ -4756,22 +4756,18 @@ TEST_CASE(
         {
             .node = "geometry",
             .logical_resource = "gbuffer",
-            .load_op =
-                VulkanPhysicalAttachmentLoadOp::
-                    discard,
-            .store_op =
-                VulkanPhysicalAttachmentStoreOp::
-                    discard,
+            .operations =
+                PassAttachmentOperations{
+                    AttachmentLoadOp::dont_care,
+                    AttachmentStoreOp::dont_care},
         },
         {
             .node = "lighting",
             .logical_resource = "lit",
-            .load_op =
-                VulkanPhysicalAttachmentLoadOp::
-                    clear,
-            .store_op =
-                VulkanPhysicalAttachmentStoreOp::
-                    store,
+            .operations =
+                PassAttachmentOperations{
+                    AttachmentLoadOp::clear,
+                    AttachmentStoreOp::store},
         },
     };
 
@@ -4827,12 +4823,12 @@ TEST_CASE(
     const auto expected_scope_operations =
         std::vector<PassAttachmentOperations>{
             PassAttachmentOperations{
-                vk::AttachmentLoadOp::eDontCare,
-                vk::AttachmentStoreOp::eDontCare,
+                AttachmentLoadOp::dont_care,
+                AttachmentStoreOp::dont_care,
             },
             PassAttachmentOperations{
-                vk::AttachmentLoadOp::eClear,
-                vk::AttachmentStoreOp::eStore,
+                AttachmentLoadOp::clear,
+                AttachmentStoreOp::store,
             },
         };
     REQUIRE(
@@ -4878,10 +4874,10 @@ TEST_CASE(
         VulkanPhysicalAttachmentPlan{
             .node = "geometry",
             .logical_resource = "lit",
-            .load_op =
-                VulkanPhysicalAttachmentLoadOp::clear,
-            .store_op =
-                VulkanPhysicalAttachmentStoreOp::store,
+            .operations =
+                PassAttachmentOperations{
+                    AttachmentLoadOp::clear,
+                    AttachmentStoreOp::store},
         });
     REQUIRE_THROWS_WITH(
         compileRenderingPassRuntime(
@@ -4893,8 +4889,8 @@ TEST_CASE(
         Catch::Matchers::ContainsSubstring(
             "cannot preserve intermediate materialized color "
             "attachment operations"));
-    repeated_plan.attachments.back().load_op =
-        VulkanPhysicalAttachmentLoadOp::load;
+    repeated_plan.attachments.back().operations.load_op =
+        AttachmentLoadOp::load;
     REQUIRE_NOTHROW(
         compileRenderingPassRuntime(
             repeated_definition,
@@ -4983,11 +4979,11 @@ TEST_CASE(
             .logical_resource = "probe",
             .subresource = range,
             .aspect =
-                VulkanPhysicalAttachmentAspect::color,
-            .load_op =
-                VulkanPhysicalAttachmentLoadOp::clear,
-            .store_op =
-                VulkanPhysicalAttachmentStoreOp::store,
+                AttachmentAspect::color,
+            .operations =
+                PassAttachmentOperations{
+                    AttachmentLoadOp::clear,
+                    AttachmentStoreOp::store},
         },
     };
 
@@ -5051,7 +5047,7 @@ TEST_CASE(
     overlay.pass_info = MaterialPassInfo{};
     overlay.output_color = {color};
     overlay.color_load_op =
-        vk::AttachmentLoadOp::eLoad;
+        AttachmentLoadOp::load;
 
     const RenderingPassDefinition definition{
         .name = "main",
@@ -5070,23 +5066,19 @@ TEST_CASE(
             .node = "base",
             .logical_resource =
                 "scene_color",
-            .load_op =
-                VulkanPhysicalAttachmentLoadOp::
-                    clear,
-            .store_op =
-                VulkanPhysicalAttachmentStoreOp::
-                    store,
+            .operations =
+                PassAttachmentOperations{
+                    AttachmentLoadOp::clear,
+                    AttachmentStoreOp::store},
         },
         {
             .node = "overlay",
             .logical_resource =
                 "scene_color",
-            .load_op =
-                VulkanPhysicalAttachmentLoadOp::
-                    load,
-            .store_op =
-                VulkanPhysicalAttachmentStoreOp::
-                    store,
+            .operations =
+                PassAttachmentOperations{
+                    AttachmentLoadOp::load,
+                    AttachmentStoreOp::store},
         },
     };
 
@@ -5113,8 +5105,8 @@ TEST_CASE(
             .scope_color_attachment_operations ==
         std::vector<PassAttachmentOperations>{
             PassAttachmentOperations{
-                vk::AttachmentLoadOp::eClear,
-                vk::AttachmentStoreOp::eStore,
+                AttachmentLoadOp::clear,
+                AttachmentStoreOp::store,
             }});
 
     auto multiview_plan = plan;
@@ -5144,8 +5136,8 @@ TEST_CASE(
             "unsupported production pass implementation: base"));
 
     auto invalid = plan;
-    invalid.attachments[1].load_op =
-        VulkanPhysicalAttachmentLoadOp::
+    invalid.attachments[1].operations.load_op =
+        AttachmentLoadOp::
             clear;
     REQUIRE_THROWS_WITH(
         compileRenderingPassRuntime(

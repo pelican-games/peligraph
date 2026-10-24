@@ -325,21 +325,21 @@ void requireB1Resolution(const RenderCompilerProgramVariantOutput &variant) {
     CHECK(to_atlas.at(0).subresource->level_count == 1);
     CHECK(to_atlas.at(0).subresource->base_array_layer == 1);
     CHECK(to_atlas.at(0).subresource->layer_count == 1);
-    CHECK(to_atlas.at(0).load_op == FrameGraphAttachmentLoadOp::discard);
-    CHECK(to_atlas.at(0).store_op == FrameGraphAttachmentStoreOp::store);
+    CHECK(to_atlas.at(0).operations.load_op == AttachmentLoadOp::dont_care);
+    CHECK(to_atlas.at(0).operations.store_op == AttachmentStoreOp::store);
     // An attachment without its own ops takes the pass's (pass > default).
     const auto &to_post2 = node("to_post2").attachments;
     REQUIRE(to_post2.size() == 1);
     CHECK(to_post2.at(0).resource == "post2");
     CHECK_FALSE(to_post2.at(0).subresource.has_value());
-    CHECK(to_post2.at(0).load_op == FrameGraphAttachmentLoadOp::load);
-    CHECK(to_post2.at(0).store_op == FrameGraphAttachmentStoreOp::discard);
+    CHECK(to_post2.at(0).operations.load_op == AttachmentLoadOp::load);
+    CHECK(to_post2.at(0).operations.store_op == AttachmentStoreOp::dont_care);
     // A pass with none takes the defaults (clear / store).
     const auto &from_atlas = node("from_atlas").attachments;
     REQUIRE(from_atlas.size() == 1);
     CHECK(from_atlas.at(0).resource == "post");
-    CHECK(from_atlas.at(0).load_op == FrameGraphAttachmentLoadOp::clear);
-    CHECK(from_atlas.at(0).store_op == FrameGraphAttachmentStoreOp::store);
+    CHECK(from_atlas.at(0).operations.load_op == AttachmentLoadOp::clear);
+    CHECK(from_atlas.at(0).operations.store_op == AttachmentStoreOp::store);
     // The swapchain output is display; the composed config is in the normal
     // form throughout.
     REQUIRE_NOTHROW(requireNormalizedRenderingJson(variant.normalized_config));

@@ -106,8 +106,8 @@ struct VulkanNativeScopePrepareContext {
 
 struct VulkanNativeScopeRuntimeAttachment {
     std::string node;
-    VulkanPhysicalAttachmentAspect aspect =
-        VulkanPhysicalAttachmentAspect::color;
+    AttachmentAspect aspect =
+        AttachmentAspect::color;
     std::optional<ImageSubresourceRange> subresource;
     vk::ImageView image_view;
     vk::ImageView resolve_image_view;

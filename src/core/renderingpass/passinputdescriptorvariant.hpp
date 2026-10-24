@@ -52,8 +52,8 @@ enum class PassInputLayerBinding {
 struct ResolvedPassInput {
     GlobalRenderTargetId target = noRenderTargetId();
     bool history = false;
-    PassInputViewDimension view =
-        PassInputViewDimension::shared_2d;
+    VulkanResourceViewLayout view =
+        VulkanResourceViewLayout::shared_2d;
     ImageSubresourceViewDimension
         descriptor_dimension =
             ImageSubresourceViewDimension::two_d;

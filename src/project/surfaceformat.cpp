@@ -893,11 +893,11 @@ SurfaceRenderState parseRenderState(std::string_view value, std::string_view sou
     if (const auto *field = findField(fields, "cull")) {
         const auto name = parseStringToken(*field, context + " cull");
         if (name == "none") {
-            state.cull = SurfaceCullMode::none;
+            state.cull = RasterCullMode::none;
         } else if (name == "front") {
-            state.cull = SurfaceCullMode::front;
+            state.cull = RasterCullMode::front;
         } else if (name == "back") {
-            state.cull = SurfaceCullMode::back;
+            state.cull = RasterCullMode::back;
         } else {
             throw std::runtime_error(context + " has unknown cull '" + name + "'");
         }
@@ -926,14 +926,14 @@ SurfaceRenderState parseRenderState(std::string_view value, std::string_view sou
     }
     if (const auto *field = findField(fields, "depth_compare")) {
         const auto name = parseStringToken(*field, context + " depth_compare");
-        if (name == "never") state.depth_compare = SurfaceDepthCompare::never;
-        else if (name == "less") state.depth_compare = SurfaceDepthCompare::less;
-        else if (name == "equal") state.depth_compare = SurfaceDepthCompare::equal;
-        else if (name == "less_equal") state.depth_compare = SurfaceDepthCompare::less_equal;
-        else if (name == "greater") state.depth_compare = SurfaceDepthCompare::greater;
-        else if (name == "not_equal") state.depth_compare = SurfaceDepthCompare::not_equal;
-        else if (name == "greater_equal") state.depth_compare = SurfaceDepthCompare::greater_equal;
-        else if (name == "always") state.depth_compare = SurfaceDepthCompare::always;
+        if (name == "never") state.depth_compare = RasterDepthCompare::never;
+        else if (name == "less") state.depth_compare = RasterDepthCompare::less;
+        else if (name == "equal") state.depth_compare = RasterDepthCompare::equal;
+        else if (name == "less_equal") state.depth_compare = RasterDepthCompare::less_equal;
+        else if (name == "greater") state.depth_compare = RasterDepthCompare::greater;
+        else if (name == "not_equal") state.depth_compare = RasterDepthCompare::not_equal;
+        else if (name == "greater_equal") state.depth_compare = RasterDepthCompare::greater_equal;
+        else if (name == "always") state.depth_compare = RasterDepthCompare::always;
         else throw std::runtime_error(context + " has unknown depth_compare '" + name + "'");
     }
     if (!state.depth_test && state.depth_write) {
@@ -1433,29 +1433,10 @@ PipelineState materialPipelineState(const SurfaceRenderState &state) {
     result.topology = RasterPrimitiveTopology::triangle_list;
     result.primitive_restart = false;
     result.front_face = RasterFrontFace::counter_clockwise;
-    switch (state.cull) {
-    case SurfaceCullMode::none: result.cull = RasterCullMode::none; break;
-    case SurfaceCullMode::front: result.cull = RasterCullMode::front; break;
-    case SurfaceCullMode::back: result.cull = RasterCullMode::back; break;
-    }
+    result.cull = state.cull;
     result.depth.test = state.depth_test;
     result.depth.write = state.depth_write;
-    switch (state.depth_compare) {
-    case SurfaceDepthCompare::never: result.depth.compare = RasterDepthCompare::never; break;
-    case SurfaceDepthCompare::less: result.depth.compare = RasterDepthCompare::less; break;
-    case SurfaceDepthCompare::equal: result.depth.compare = RasterDepthCompare::equal; break;
-    case SurfaceDepthCompare::less_equal:
-        result.depth.compare = RasterDepthCompare::less_equal;
-        break;
-    case SurfaceDepthCompare::greater: result.depth.compare = RasterDepthCompare::greater; break;
-    case SurfaceDepthCompare::not_equal:
-        result.depth.compare = RasterDepthCompare::not_equal;
-        break;
-    case SurfaceDepthCompare::greater_equal:
-        result.depth.compare = RasterDepthCompare::greater_equal;
-        break;
-    case SurfaceDepthCompare::always: result.depth.compare = RasterDepthCompare::always; break;
-    }
+    result.depth.compare = state.depth_compare;
     result.color_attachments.clear();
     return result;
 }

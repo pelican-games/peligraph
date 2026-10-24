@@ -1,5 +1,6 @@
 #include "render_pass_frame_setup.hpp"
 #include "depthstencilformat.hpp"
+#include "../renderingpass/vulkanimagevocabulary.hpp"
 
 #include <algorithm>
 #include <optional>
@@ -195,7 +196,7 @@ void transitionPassOutputsToAttachmentLayouts(vk::CommandBuffer cmd_buf, const P
             pass_def
                     .colorAttachmentOperations(index)
                     .load_op ==
-                vk::AttachmentLoadOp::eLoad &&
+                AttachmentLoadOp::load &&
             layout_tracker.currentLayout(
                 rt_id, false, &rt_container,
                 RenderTargetImageKind::attachment) ==
@@ -219,7 +220,7 @@ void transitionPassOutputsToAttachmentLayouts(vk::CommandBuffer cmd_buf, const P
     if (isConcreteRenderTarget(pass_def.output_depth) &&
         rt_container.hasSeparateAttachment(pass_def.output_depth) &&
         depth_operations.load_op ==
-            vk::AttachmentLoadOp::eLoad &&
+            AttachmentLoadOp::load &&
         layout_tracker.currentLayout(
             pass_def.output_depth, false, &rt_container,
             RenderTargetImageKind::attachment) ==
@@ -269,8 +270,7 @@ std::vector<vk::RenderingAttachmentInfo> createColorAttachments(const FrameRende
         const auto &attachment_view =
             pass_def.output_color[index];
         const auto operations =
-            pass_def.colorAttachmentOperations(
-                index);
+            recordedColorAttachmentOps(pass_def, index);
         vk::RenderingAttachmentInfo color_att;
         if (isSwapchainRenderTarget(rt_id)) {
             if (view.execution ==
@@ -336,11 +336,31 @@ vk::RenderingAttachmentInfo createDepthAttachment(const PassDefinition &pass_def
         depth_attachment.resolveImageLayout = depth_layout;
     }
     const auto operations =
-        pass_def.depthAttachmentOperations();
+        recordedDepthAttachmentOps(pass_def);
     depth_attachment.loadOp = operations.load_op;
     depth_attachment.storeOp = operations.store_op;
     depth_attachment.clearValue.depthStencil = vk::ClearDepthStencilValue{1.0f, 0};
     return depth_attachment;
+}
+
+RecordedAttachmentOps recordedAttachmentOps(
+    PassAttachmentOperations operations) {
+    return RecordedAttachmentOps{
+        toVulkanAttachmentLoadOp(operations.load_op),
+        toVulkanAttachmentStoreOp(operations.store_op),
+    };
+}
+
+RecordedAttachmentOps recordedColorAttachmentOps(
+    const PassDefinition &pass_def, std::size_t index) {
+    return recordedAttachmentOps(
+        pass_def.colorAttachmentOperations(index));
+}
+
+RecordedAttachmentOps recordedDepthAttachmentOps(
+    const PassDefinition &pass_def) {
+    return recordedAttachmentOps(
+        pass_def.depthAttachmentOperations());
 }
 
 void setDynamicViewportAndScissor(vk::CommandBuffer cmd_buf, vk::Extent2D extent) {
@@ -564,7 +584,7 @@ void transitionLocalReadScopeAttachments(
         if (rendering
                     .scope_color_attachment_operations[index]
                     .load_op ==
-                vk::AttachmentLoadOp::eLoad &&
+                AttachmentLoadOp::load &&
             layout_tracker.currentLayout(
                 target, false, &rt_container) ==
                 vk::ImageLayout::eUndefined) {
@@ -614,7 +634,7 @@ void transitionLocalReadScopeAttachments(
     if (rendering
                 .scope_depth_attachment_operations
                 ->load_op ==
-            vk::AttachmentLoadOp::eLoad &&
+            AttachmentLoadOp::load &&
         layout_tracker.currentLayout(
             depth, false, &rt_container) ==
             vk::ImageLayout::eUndefined) {
@@ -680,9 +700,9 @@ createLocalReadScopeColorAttachments(
                       eRenderingLocalReadKHR
                 : vk::ImageLayout::
                       eColorAttachmentOptimal;
-        const auto operations =
+        const auto operations = recordedAttachmentOps(
             rendering
-                .scope_color_attachment_operations[index];
+                .scope_color_attachment_operations[index]);
         attachment.loadOp = operations.load_op;
         attachment.storeOp = operations.store_op;
         attachment.clearValue.color =
@@ -727,14 +747,10 @@ createLocalReadScopeDepthAttachment(
                   rt_container
                       .getImage(rendering.depth_attachment)
                       .format);
-    result.loadOp =
-        rendering
-            .scope_depth_attachment_operations
-            ->load_op;
-    result.storeOp =
-        rendering
-            .scope_depth_attachment_operations
-            ->store_op;
+    const auto operations = recordedAttachmentOps(
+        *rendering.scope_depth_attachment_operations);
+    result.loadOp = operations.load_op;
+    result.storeOp = operations.store_op;
     result.clearValue.depthStencil =
         vk::ClearDepthStencilValue{
             rendering.scope_depth_clear_value,

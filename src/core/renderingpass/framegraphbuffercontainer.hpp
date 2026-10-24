@@ -1,6 +1,6 @@
 #pragma once
 
-#include "framegraphbufferdefinition.hpp"
+#include "../../project/framegraphbufferdefinition.hpp"
 #include "renderingpass.hpp"
 #include "../container.hpp"
 #include "../resourcecontainer.hpp"

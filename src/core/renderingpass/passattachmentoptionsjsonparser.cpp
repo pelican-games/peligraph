@@ -128,19 +128,19 @@ void parsePassAttachmentOptionsFromJson(PassDefinition &pass_def, const nlohmann
     }
     if (pass_json.contains("color_load_op")) {
         pass_def.color_load_op =
-            stringToLoadOp(parseStringField(pass_json, "color_load_op", "pass: " + pass_def.name));
+            parseAuthoredAttachmentLoadOp(parseStringField(pass_json, "color_load_op", "pass: " + pass_def.name));
     }
     if (pass_json.contains("color_store_op")) {
         pass_def.color_store_op =
-            stringToStoreOp(parseStringField(pass_json, "color_store_op", "pass: " + pass_def.name));
+            parseAuthoredAttachmentStoreOp(parseStringField(pass_json, "color_store_op", "pass: " + pass_def.name));
     }
     if (pass_json.contains("depth_load_op")) {
         pass_def.depth_load_op =
-            stringToLoadOp(parseStringField(pass_json, "depth_load_op", "pass: " + pass_def.name));
+            parseAuthoredAttachmentLoadOp(parseStringField(pass_json, "depth_load_op", "pass: " + pass_def.name));
     }
     if (pass_json.contains("depth_store_op")) {
         pass_def.depth_store_op =
-            stringToStoreOp(parseStringField(pass_json, "depth_store_op", "pass: " + pass_def.name));
+            parseAuthoredAttachmentStoreOp(parseStringField(pass_json, "depth_store_op", "pass: " + pass_def.name));
     }
 }
 

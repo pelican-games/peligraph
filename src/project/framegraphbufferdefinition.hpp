@@ -5,7 +5,6 @@
 #include <string>
 #include <string_view>
 #include <vector>
-#include <vulkan/vulkan.hpp>
 
 namespace Pelican {
 
@@ -34,27 +33,30 @@ enum class FrameGraphBufferCommandLayout : std::uint8_t {
 std::string_view frameGraphBufferCommandLayoutName(
     FrameGraphBufferCommandLayout layout);
 
-inline constexpr vk::DeviceSize
+// RC-3a2: the byte sizes are the engine's (uint64, as Vulkan's VkDeviceSize
+// is). An indexed draw command is five 32-bit words; core checks that this
+// is Vulkan's VkDrawIndexedIndirectCommand (vulkanimagevocabulary.cpp).
+inline constexpr std::uint64_t
     frameGraphIndexedDrawCommandBytes =
-        sizeof(vk::DrawIndexedIndirectCommand);
-inline constexpr vk::DeviceSize
+        sizeof(std::uint32_t) * 5;
+inline constexpr std::uint64_t
     frameGraphDrawCountBytes =
         sizeof(std::uint32_t);
-inline constexpr vk::DeviceSize
+inline constexpr std::uint64_t
     frameGraphSceneDrawBoundsV1Bytes =
         sizeof(float) * 8;
-inline constexpr vk::DeviceSize
+inline constexpr std::uint64_t
     frameGraphSceneDrawSegmentV1Bytes =
         sizeof(std::uint32_t) * 8;
-inline constexpr vk::DeviceSize
+inline constexpr std::uint64_t
     frameGraphIndirectCommandAlignment = 4;
 
 struct FrameGraphBufferExtentSizeDefinition {
     std::string resource;
     std::uint32_t tile_width = 1;
     std::uint32_t tile_height = 1;
-    vk::DeviceSize header_bytes = 0;
-    vk::DeviceSize bytes_per_tile = 0;
+    std::uint64_t header_bytes = 0;
+    std::uint64_t bytes_per_tile = 0;
     // Repeats the complete header + tiled payload region. View-affine
     // algorithms use one region per bounded logical view and select the
     // region in shader-visible ABI data.
@@ -67,7 +69,7 @@ struct FrameGraphBufferExtentSizeDefinition {
 
 struct FrameGraphBufferDefinition {
     std::string name;
-    vk::DeviceSize size = 0;
+    std::uint64_t size = 0;
     bool persistent = true;
     std::optional<FrameGraphHostBufferSource>
         host_source;
@@ -82,6 +84,17 @@ struct FrameGraphBufferDefinition {
     // the behavior every buffer had before feature parameters could seed one.
     // A `render.scalar` write replaces it from the next frame onwards.
     std::vector<float> initial_f32;
+};
+
+// A compute task's indirect dispatch: the buffer holding the command and the
+// command's byte offset in it.
+struct ComputeIndirectDispatchDefinition {
+    std::string buffer;
+    std::uint64_t offset = 0;
+
+    bool operator==(
+        const ComputeIndirectDispatchDefinition &) const =
+        default;
 };
 
 } // namespace Pelican

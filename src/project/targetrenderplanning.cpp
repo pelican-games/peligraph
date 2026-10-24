@@ -1995,37 +1995,6 @@ std::string_view vulkanPhysicalScopeKindName(
     throw std::runtime_error("unknown Vulkan physical scope kind");
 }
 
-std::string_view vulkanPhysicalAttachmentAspectName(
-    VulkanPhysicalAttachmentAspect aspect) {
-    switch (aspect) {
-    case VulkanPhysicalAttachmentAspect::color: return "color";
-    case VulkanPhysicalAttachmentAspect::depth: return "depth";
-    }
-    throw std::runtime_error(
-        "unknown Vulkan physical attachment aspect");
-}
-
-std::string_view vulkanPhysicalAttachmentLoadOpName(
-    VulkanPhysicalAttachmentLoadOp op) {
-    switch (op) {
-    case VulkanPhysicalAttachmentLoadOp::load: return "load";
-    case VulkanPhysicalAttachmentLoadOp::clear: return "clear";
-    case VulkanPhysicalAttachmentLoadOp::discard: return "discard";
-    }
-    throw std::runtime_error(
-        "unknown Vulkan physical attachment load op");
-}
-
-std::string_view vulkanPhysicalAttachmentStoreOpName(
-    VulkanPhysicalAttachmentStoreOp op) {
-    switch (op) {
-    case VulkanPhysicalAttachmentStoreOp::store: return "store";
-    case VulkanPhysicalAttachmentStoreOp::discard: return "discard";
-    }
-    throw std::runtime_error(
-        "unknown Vulkan physical attachment store op");
-}
-
 namespace {
 
 bool canAppendMaterializedRenderingScope(
@@ -2089,11 +2058,11 @@ bool canAppendMaterializedRenderingScope(
                 attachments.end()) {
                 continue;
             }
-            if (previous_attachment->store_op !=
-                    VulkanPhysicalAttachmentStoreOp::
+            if (previous_attachment->operations.store_op !=
+                    AttachmentStoreOp::
                         store ||
-                attachment.load_op !=
-                    VulkanPhysicalAttachmentLoadOp::
+                attachment.operations.load_op !=
+                    AttachmentLoadOp::
                         load) {
                 return false;
             }
@@ -3315,13 +3284,13 @@ void lowerScopeLocalAttachmentStores(
                 attachment.logical_resource);
         if (resource ==
                 virtual_attachments.end() ||
-            attachment.store_op ==
-                VulkanPhysicalAttachmentStoreOp::
-                    discard) {
+            attachment.operations.store_op ==
+                AttachmentStoreOp::
+                    dont_care) {
             continue;
         }
-        attachment.store_op =
-            VulkanPhysicalAttachmentStoreOp::discard;
+        attachment.operations.store_op =
+            AttachmentStoreOp::dont_care;
         const auto tile_local =
             resource->second ==
             VulkanResourceRepresentation::
@@ -4140,14 +4109,14 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
                 {"logical_resource",
                  attachment.logical_resource},
                 {"aspect",
-                 vulkanPhysicalAttachmentAspectName(
+                 attachmentAspectName(
                      attachment.aspect)},
                 {"load_op",
-                 vulkanPhysicalAttachmentLoadOpName(
-                     attachment.load_op)},
+                 attachmentLoadOpPlanName(
+                     attachment.operations.load_op)},
                 {"store_op",
-                 vulkanPhysicalAttachmentStoreOpName(
-                     attachment.store_op)},
+                 attachmentStoreOpPlanName(
+                     attachment.operations.store_op)},
             };
             if (attachment.subresource) {
                 entry["subresource"] =

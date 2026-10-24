@@ -22,31 +22,13 @@ enum class FramePlanNodeKind {
     output_transform,
 };
 
-enum class FrameGraphAttachmentAspect {
-    color,
-    depth,
-};
-
-enum class FrameGraphAttachmentLoadOp {
-    load,
-    clear,
-    discard,
-};
-
-enum class FrameGraphAttachmentStoreOp {
-    store,
-    discard,
-};
-
 struct FrameGraphAttachmentDefinition {
     std::string resource;
     std::optional<ImageSubresourceRange> subresource;
-    FrameGraphAttachmentAspect aspect =
-        FrameGraphAttachmentAspect::color;
-    FrameGraphAttachmentLoadOp load_op =
-        FrameGraphAttachmentLoadOp::clear;
-    FrameGraphAttachmentStoreOp store_op =
-        FrameGraphAttachmentStoreOp::store;
+    AttachmentAspect aspect = AttachmentAspect::color;
+    // RC-3a2: resolved (attachment > pass > the pass type's defaults) and
+    // never defaulted here; PassAttachmentOperations has no default.
+    PassAttachmentOperations operations;
 
     bool operator==(
         const FrameGraphAttachmentDefinition &) const = default;

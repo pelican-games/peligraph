@@ -334,8 +334,8 @@ CompiledLogicalRenderGraph compileLogicalFrameGraphShadow(
             loaded_attachment_resources;
         for (const auto &attachment :
              source.attachments) {
-            if (attachment.load_op ==
-                FrameGraphAttachmentLoadOp::load) {
+            if (attachment.operations.load_op ==
+                AttachmentLoadOp::load) {
                 loaded_attachment_resources.insert(
                     attachment.resource);
             }

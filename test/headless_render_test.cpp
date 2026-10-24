@@ -4343,9 +4343,9 @@ TEST_CASE(
             program->frame_graph.target_plan
                 ->attachments.end());
         REQUIRE(
-            transient_attachment->store_op ==
-            VulkanPhysicalAttachmentStoreOp::
-                discard);
+            transient_attachment->operations.store_op ==
+            AttachmentStoreOp::
+                dont_care);
         const auto transient_pass =
             std::find_if(
                 program->rendering_pass.passes.begin(),
@@ -4361,7 +4361,7 @@ TEST_CASE(
             transient_pass->definition
                 .colorAttachmentOperations(0)
                 .store_op ==
-            vk::AttachmentStoreOp::eDontCare);
+            AttachmentStoreOp::dont_care);
         const auto upscale_pass =
             std::find_if(
                 program->rendering_pass.passes.begin(),
@@ -4377,9 +4377,9 @@ TEST_CASE(
             GET_MODULE(FullscreenPassContainer)
                 .inputSamplingForTesting(
                     upscale_pass->pass_id) ==
-            std::vector<FullscreenInputSampling>{
-                {FullscreenInputFilter::nearest,
-                 FullscreenInputAddressMode::
+            std::vector<ShaderResourcePortSampling>{
+                {ShaderResourcePortFilter::nearest,
+                 ShaderResourcePortAddressMode::
                      clamp_to_edge}});
 
         const auto require_upscale_output = [] {
@@ -4501,8 +4501,8 @@ TEST_CASE(
             physical_fragment.attachments
                 ->end());
         low_attachment->load_op =
-            VulkanPhysicalAttachmentLoadOp::
-                discard;
+            AttachmentLoadOp::
+                dont_care;
 
         auto replacement =
             upscaleContractRenderingConfig();
@@ -4623,7 +4623,7 @@ TEST_CASE(
             reloaded_produce_low->definition
                 .colorAttachmentOperations(0)
                 .load_op ==
-            vk::AttachmentLoadOp::eDontCare);
+            AttachmentLoadOp::dont_care);
 
         engine_time.advance();
         renderer.render();
@@ -5924,10 +5924,8 @@ TEST_CASE(
             std::vector<
                 PassAttachmentOperations>{
                 PassAttachmentOperations{
-                    vk::AttachmentLoadOp::
-                        eClear,
-                    vk::AttachmentStoreOp::
-                        eStore,
+                    AttachmentLoadOp::clear,
+                    AttachmentStoreOp::store,
                 }});
 
         RendererTestAccess::setExecutionTracing(renderer,
@@ -15826,7 +15824,7 @@ vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 i
     mode_rules->passes["forward_opaque"].rule = [mode_condition](const MaterialDrawSubject &subject)
         -> std::optional<MaterialDrawStepList> {
         if (subject.name != "Paint" || !graphLoopDrawConditionMatches(mode_condition, subject)) return std::nullopt;
-        MaterialDrawRenderStateOverride state; state.cull = SurfaceCullMode::none;
+        MaterialDrawRenderStateOverride state; state.cull = RasterCullMode::none;
         return MaterialDrawStepList{MaterialDrawStep::overridden(state, {"SK1_OVERRIDE"})};
     };
     GET_MODULE(FrameGraphRuntimeContainer).setMaterialDrawLoopRuleSource(
@@ -15944,7 +15942,7 @@ vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 i
     rules->passes["forward_opaque"].rule = [skin_condition](const MaterialDrawSubject &subject)
         -> std::optional<MaterialDrawStepList> {
         if (subject.name != "Paint" || !graphLoopDrawConditionMatches(skin_condition, subject)) return std::nullopt;
-        MaterialDrawRenderStateOverride state; state.cull = SurfaceCullMode::none;
+        MaterialDrawRenderStateOverride state; state.cull = RasterCullMode::none;
         return MaterialDrawStepList{MaterialDrawStep::overridden(state, {"SK1_OVERRIDE"})};
     };
     MaterialDrawLoopTable table{987654};

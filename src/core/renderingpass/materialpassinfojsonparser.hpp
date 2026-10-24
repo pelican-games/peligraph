@@ -18,7 +18,7 @@ parseMaterialDrawTagFilterFromJson(
     const nlohmann::json &pass_json,
     std::string_view context);
 
-std::optional<GpuDrawSourceDefinition>
+std::optional<GpuDrawSourceDeclaration>
 parseGpuDrawSourceFromJson(
     const nlohmann::json &pass_json,
     std::string_view context);

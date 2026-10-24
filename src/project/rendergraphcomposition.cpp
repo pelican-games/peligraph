@@ -39,16 +39,16 @@ MaterialDrawStep drawStepFromNode(const Json &node) {
         state.blend = blend == "opaque" ? SurfaceBlendMode::opaque
             : blend == "blend" ? SurfaceBlendMode::blend : SurfaceBlendMode::additive;
     if (const auto cull = render_state.value("cull", std::string{}); !cull.empty())
-        state.cull = cull == "none" ? SurfaceCullMode::none
-            : cull == "front" ? SurfaceCullMode::front : SurfaceCullMode::back;
+        state.cull = cull == "none" ? RasterCullMode::none
+            : cull == "front" ? RasterCullMode::front : RasterCullMode::back;
     if (render_state.contains("depth_test")) state.depth_test = render_state.at("depth_test").get<bool>();
     if (render_state.contains("depth_write")) state.depth_write = render_state.at("depth_write").get<bool>();
     if (const auto compare = render_state.value("depth_compare", std::string{}); !compare.empty()) {
-        static const std::map<std::string, SurfaceDepthCompare> names{
-            {"never", SurfaceDepthCompare::never}, {"less", SurfaceDepthCompare::less},
-            {"equal", SurfaceDepthCompare::equal}, {"less_equal", SurfaceDepthCompare::less_equal},
-            {"greater", SurfaceDepthCompare::greater}, {"not_equal", SurfaceDepthCompare::not_equal},
-            {"greater_equal", SurfaceDepthCompare::greater_equal}, {"always", SurfaceDepthCompare::always}};
+        static const std::map<std::string, RasterDepthCompare> names{
+            {"never", RasterDepthCompare::never}, {"less", RasterDepthCompare::less},
+            {"equal", RasterDepthCompare::equal}, {"less_equal", RasterDepthCompare::less_equal},
+            {"greater", RasterDepthCompare::greater}, {"not_equal", RasterDepthCompare::not_equal},
+            {"greater_equal", RasterDepthCompare::greater_equal}, {"always", RasterDepthCompare::always}};
         state.depth_compare = names.at(compare);
     }
     std::vector<std::string> defines;

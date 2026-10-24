@@ -354,42 +354,35 @@ VulkanScopeViewExecution parseViewExecution(
         std::string{value} + "'");
 }
 
-VulkanPhysicalAttachmentAspect parseAttachmentAspect(
+AttachmentAspect parseAttachmentAspect(
     std::string_view value) {
     if (value == "color") {
-        return VulkanPhysicalAttachmentAspect::color;
+        return AttachmentAspect::color;
     }
     if (value == "depth") {
-        return VulkanPhysicalAttachmentAspect::depth;
+        return AttachmentAspect::depth;
     }
     throw std::runtime_error(
         "complete physical attachment has unknown aspect '" +
         std::string{value} + "'");
 }
 
-VulkanPhysicalAttachmentLoadOp parseLoadOp(
+// RC-3a2: the plan's spellings ("discard" for dont_care), from the one
+// table in attachmentoperations.
+AttachmentLoadOp parseLoadOp(
     std::string_view value) {
-    if (value == "load") {
-        return VulkanPhysicalAttachmentLoadOp::load;
-    }
-    if (value == "clear") {
-        return VulkanPhysicalAttachmentLoadOp::clear;
-    }
-    if (value == "discard") {
-        return VulkanPhysicalAttachmentLoadOp::discard;
+    if (const auto op = findPlanAttachmentLoadOp(value)) {
+        return *op;
     }
     throw std::runtime_error(
         "complete physical attachment has unknown load_op '" +
         std::string{value} + "'");
 }
 
-VulkanPhysicalAttachmentStoreOp parseStoreOp(
+AttachmentStoreOp parseStoreOp(
     std::string_view value) {
-    if (value == "store") {
-        return VulkanPhysicalAttachmentStoreOp::store;
-    }
-    if (value == "discard") {
-        return VulkanPhysicalAttachmentStoreOp::discard;
+    if (const auto op = findPlanAttachmentStoreOp(value)) {
+        return *op;
     }
     throw std::runtime_error(
         "complete physical attachment has unknown store_op '" +
@@ -751,14 +744,14 @@ nlohmann::ordered_json attachmentToJson(
         {"node", attachment.node},
         {"logical_resource", attachment.logical_resource},
         {"aspect",
-         vulkanPhysicalAttachmentAspectName(
+         attachmentAspectName(
              attachment.aspect)},
         {"load_op",
-         vulkanPhysicalAttachmentLoadOpName(
-             attachment.load_op)},
+         attachmentLoadOpPlanName(
+             attachment.operations.load_op)},
         {"store_op",
-         vulkanPhysicalAttachmentStoreOpName(
-             attachment.store_op)},
+         attachmentStoreOpPlanName(
+             attachment.operations.store_op)},
     };
     if (attachment.subresource) {
         result["subresource"] =
@@ -789,12 +782,13 @@ VulkanPhysicalAttachmentPlan attachmentFromJson(
         .aspect =
             parseAttachmentAspect(
                 requireString(entry, "aspect", context)),
-        .load_op =
-            parseLoadOp(
-                requireString(entry, "load_op", context)),
-        .store_op =
-            parseStoreOp(
-                requireString(entry, "store_op", context)),
+        .operations =
+            PassAttachmentOperations{
+                parseLoadOp(
+                    requireString(entry, "load_op", context)),
+                parseStoreOp(
+                    requireString(entry, "store_op", context)),
+            },
     };
 }
 
@@ -2350,7 +2344,7 @@ verifyVulkanCompletePhysicalPlanPackage(
     using AttachmentContractEntry =
         std::tuple<
             std::string,
-            VulkanPhysicalAttachmentAspect,
+            AttachmentAspect,
             std::optional<ImageSubresourceRange>>;
     const auto attachmentContract =
         [&](std::string_view node) {
@@ -2398,9 +2392,9 @@ verifyVulkanCompletePhysicalPlanPackage(
                                 resource->second
                                     ->type.semantic) ==
                                     "pelican.render.depth@1"
-                                ? VulkanPhysicalAttachmentAspect::
+                                ? AttachmentAspect::
                                       depth
-                                : VulkanPhysicalAttachmentAspect::
+                                : AttachmentAspect::
                                       color,
                             std::nullopt);
                     }
@@ -2483,8 +2477,8 @@ verifyVulkanCompletePhysicalPlanPackage(
                 if (attachment.node != node.name) continue;
                 if (node_index > 0) {
                     require(
-                        attachment.load_op ==
-                            VulkanPhysicalAttachmentLoadOp::
+                        attachment.operations.load_op ==
+                            AttachmentLoadOp::
                                 load,
                         "later node in a single rendering instance "
                         "must Load its attachments: " +
@@ -2493,8 +2487,8 @@ verifyVulkanCompletePhysicalPlanPackage(
                 if (node_index + 1 <
                     scope.nodes.size()) {
                     require(
-                        attachment.store_op ==
-                            VulkanPhysicalAttachmentStoreOp::
+                        attachment.operations.store_op ==
+                            AttachmentStoreOp::
                                 store,
                         "non-final node in a single rendering "
                         "instance must Store its attachments: " +

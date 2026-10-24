@@ -43,8 +43,8 @@ struct MaterialPassShaderInputBinding {
     // The surface compiler uses this independently from the logical port
     // declaration so the same authored algorithm can target a scalar 2D
     // image or a view-family array.
-    PassInputViewDimension view_dimension =
-        PassInputViewDimension::shared_2d;
+    VulkanResourceViewLayout view_dimension =
+        VulkanResourceViewLayout::shared_2d;
     // Descriptor/image-view shape is independent from the scheduler's view
     // family layout. In particular a cube remains one shared logical
     // resource while exposing a samplerCube descriptor.

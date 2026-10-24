@@ -39,11 +39,11 @@ std::vector<std::string> parseAuthoredInputs(
     return result;
 }
 
-FullscreenInputFilter parseInputFilter(
+ShaderResourcePortFilter parseInputFilter(
     const nlohmann::json &sampling, const std::string &pass_name,
     std::size_t input_index) {
     if (!sampling.contains("filter")) {
-        return FullscreenInputFilter::linear;
+        return ShaderResourcePortFilter::linear;
     }
     if (!sampling.at("filter").is_string()) {
         throw std::runtime_error(
@@ -51,19 +51,19 @@ FullscreenInputFilter parseInputFilter(
             std::to_string(input_index) + ": " + pass_name);
     }
     const auto value = sampling.at("filter").get<std::string>();
-    if (value == "linear") return FullscreenInputFilter::linear;
-    if (value == "nearest") return FullscreenInputFilter::nearest;
+    if (value == "linear") return ShaderResourcePortFilter::linear;
+    if (value == "nearest") return ShaderResourcePortFilter::nearest;
     throw std::runtime_error(
         "Unknown fullscreen input_sampling filter '" + value +
         "' at input " + std::to_string(input_index) + ": " +
         pass_name);
 }
 
-FullscreenInputAddressMode parseInputAddressMode(
+ShaderResourcePortAddressMode parseInputAddressMode(
     const nlohmann::json &sampling, const std::string &pass_name,
     std::size_t input_index) {
     if (!sampling.contains("address")) {
-        return FullscreenInputAddressMode::repeat;
+        return ShaderResourcePortAddressMode::repeat;
     }
     if (!sampling.at("address").is_string()) {
         throw std::runtime_error(
@@ -72,13 +72,13 @@ FullscreenInputAddressMode parseInputAddressMode(
     }
     const auto value = sampling.at("address").get<std::string>();
     if (value == "repeat") {
-        return FullscreenInputAddressMode::repeat;
+        return ShaderResourcePortAddressMode::repeat;
     }
     if (value == "mirrored_repeat") {
-        return FullscreenInputAddressMode::mirrored_repeat;
+        return ShaderResourcePortAddressMode::mirrored_repeat;
     }
     if (value == "clamp_to_edge") {
-        return FullscreenInputAddressMode::clamp_to_edge;
+        return ShaderResourcePortAddressMode::clamp_to_edge;
     }
     throw std::runtime_error(
         "Unknown fullscreen input_sampling address '" + value +
@@ -86,7 +86,7 @@ FullscreenInputAddressMode parseInputAddressMode(
         pass_name);
 }
 
-std::vector<FullscreenInputSampling> parseInputSampling(
+std::vector<ShaderResourcePortSampling> parseInputSampling(
     const nlohmann::json &pass_json, const std::string &pass_name) {
     if (!pass_json.contains("input_sampling")) return {};
     const auto &encoded = pass_json.at("input_sampling");
@@ -95,7 +95,7 @@ std::vector<FullscreenInputSampling> parseInputSampling(
             "Fullscreen pass input_sampling must be an array: " +
             pass_name);
     }
-    std::vector<FullscreenInputSampling> result;
+    std::vector<ShaderResourcePortSampling> result;
     result.reserve(encoded.size());
     for (std::size_t index = 0; index < encoded.size(); ++index) {
         const auto &entry = encoded.at(index);
@@ -115,7 +115,7 @@ std::vector<FullscreenInputSampling> parseInputSampling(
                     pass_name);
             }
         }
-        result.push_back(FullscreenInputSampling{
+        result.push_back(ShaderResourcePortSampling{
             .filter = parseInputFilter(entry, pass_name, index),
             .address_mode =
                 parseInputAddressMode(entry, pass_name, index),

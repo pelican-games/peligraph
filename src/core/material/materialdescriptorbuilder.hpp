@@ -27,8 +27,8 @@ struct MaterialScreenInputResource {
     FrameGraphBufferId buffer =
         noFrameGraphBufferId();
     bool history = false;
-    PassInputViewDimension view_dimension =
-        PassInputViewDimension::shared_2d;
+    VulkanResourceViewLayout view_dimension =
+        VulkanResourceViewLayout::shared_2d;
     ImageSubresourceViewDimension
         descriptor_dimension =
             ImageSubresourceViewDimension::two_d;
@@ -77,7 +77,7 @@ struct MaterialPassInputState {
 // Which physical view a pass presents for one of its input targets. Both
 // the pass-input loop and the resource-port loop of
 // ensureScreenInputDescriptor used to spell this out identically.
-PassInputViewDimension passInputViewDimensionForTarget(
+VulkanResourceViewLayout passInputViewDimensionForTarget(
     const PassDefinition &pass,
     GlobalRenderTargetId target);
 
@@ -87,12 +87,12 @@ PassInputViewDimension passInputViewDimensionForTarget(
 // in the relation.
 void validateMaterialPassInputViewPolicy(
     MaterialPassInputViewPolicy policy,
-    PassInputViewDimension view_dimension,
+    VulkanResourceViewLayout view_dimension,
     std::string_view input_name,
     const PassDefinition &pass);
 void validateMaterialResourcePortViewPolicy(
     ShaderResourcePortView port_view,
-    PassInputViewDimension view_dimension,
+    VulkanResourceViewLayout view_dimension,
     std::string_view port_name,
     const PassDefinition &pass);
 

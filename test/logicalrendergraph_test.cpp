@@ -685,12 +685,10 @@ TEST_CASE(
                 .writes = {"scene_color"},
                 .attachments = {{
                     .resource = "scene_color",
-                    .load_op =
-                        FrameGraphAttachmentLoadOp::
-                            clear,
-                    .store_op =
-                        FrameGraphAttachmentStoreOp::
-                            store,
+                    .operations =
+                        PassAttachmentOperations{
+                            AttachmentLoadOp::clear,
+                            AttachmentStoreOp::store},
                 }},
             },
             FrameGraphNodeDefinition{
@@ -710,12 +708,10 @@ TEST_CASE(
                 .writes = {"scene_color"},
                 .attachments = {{
                     .resource = "scene_color",
-                    .load_op =
-                        FrameGraphAttachmentLoadOp::
-                            load,
-                    .store_op =
-                        FrameGraphAttachmentStoreOp::
-                            store,
+                    .operations =
+                        PassAttachmentOperations{
+                            AttachmentLoadOp::load,
+                            AttachmentStoreOp::store},
                 }},
             },
             FrameGraphNodeDefinition{

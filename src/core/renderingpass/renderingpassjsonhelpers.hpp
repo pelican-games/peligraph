@@ -14,18 +14,12 @@ namespace Pelican {
 // RC-3a1: the names of image formats and usages, what a render target may
 // declare and what each format is, are the project's (imageformat.hpp,
 // imageusage.hpp); core maps them to Vulkan (vulkanimagevocabulary.hpp).
+// RC-3a2: so are the attachment operations' spellings
+// (attachmentoperations.hpp) and the resolution domain's
+// (renderresolutiondomain.hpp).
 PassInfo makePassInfo(const std::string &type_str);
 PassInfo makePassInfo(RenderPassType type);
 FullscreenPushConstantData stringToFullscreenPushConstantData(const std::string &data_str);
-std::string_view renderResolutionDomainName(
-    RenderResolutionDomain domain);
-RenderResolutionDomain defaultRenderResolutionDomain(
-    std::string_view pass_type);
-RenderResolutionDomain parseRenderResolutionDomain(
-    const nlohmann::json &pass_json, std::string_view pass_type,
-    const std::string &pass_name);
-vk::AttachmentLoadOp stringToLoadOp(const std::string &op_str);
-vk::AttachmentStoreOp stringToStoreOp(const std::string &op_str);
 
 std::string parseStringField(const nlohmann::json &json, std::string_view field_name,
                              std::string_view context);

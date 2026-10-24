@@ -341,8 +341,8 @@ struct Wp357PhysicalFacts {
     std::string fragment_ref;
     std::string vertex_ref;
     bool descriptor_fragment_matches = false;
-    std::vector<FullscreenInputSampling> sampling;
-    vk::AttachmentLoadOp load_op = vk::AttachmentLoadOp::eDontCare;
+    std::vector<ShaderResourcePortSampling> sampling;
+    AttachmentLoadOp load_op = AttachmentLoadOp::dont_care;
     std::size_t input_count = 0;
     bool input_target_matches = false;
     bool output_target_matches = false;
@@ -499,12 +499,12 @@ void wp357RequirePhysical(const Wp357BloomCapture &capture) {
         CHECK(facts.input_count == 1);
         CHECK(facts.input_target_matches);
         CHECK(facts.output_target_matches);
-        CHECK(facts.load_op == vk::AttachmentLoadOp::eLoad);
+        CHECK(facts.load_op == AttachmentLoadOp::load);
         REQUIRE(facts.sampling.size() == 1);
         CHECK(facts.sampling.front().filter ==
-              FullscreenInputFilter::linear);
+              ShaderResourcePortFilter::linear);
         CHECK(facts.sampling.front().address_mode ==
-              FullscreenInputAddressMode::repeat);
+              ShaderResourcePortAddressMode::repeat);
         CHECK(facts.color_formats == std::vector<vk::Format>{expected_format});
         const bool peeled = capture.peeled_stage == stage;
         if (peeled) {
@@ -1073,7 +1073,7 @@ struct Wp357ProductionCapture {
     bool final_uses_h0 = false;
     std::string final_vertex_ref;
     std::string final_fragment_ref;
-    std::vector<FullscreenInputSampling> final_sampling;
+    std::vector<ShaderResourcePortSampling> final_sampling;
     std::vector<vk::Format> final_color_formats;
     RenderTargetReadback h0;
     RenderTargetReadback v0;
@@ -1255,9 +1255,9 @@ void wp357RequireProductionComposite() {
               "engine://bloom_composite");
         REQUIRE(capture.final_sampling.size() == 2);
         for (const auto &sampling : capture.final_sampling) {
-            CHECK(sampling.filter == FullscreenInputFilter::linear);
+            CHECK(sampling.filter == ShaderResourcePortFilter::linear);
             CHECK(sampling.address_mode ==
-                  FullscreenInputAddressMode::repeat);
+                  ShaderResourcePortAddressMode::repeat);
         }
         CHECK(capture.final_color_formats ==
               std::vector<vk::Format>{
