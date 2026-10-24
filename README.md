@@ -24,6 +24,7 @@ Third-party components keep their own licenses; see
 
 - [利用マニュアル](docs/manual/00_index.md)
 - [ソースコード読解ガイド](docs/source-code-guide/README.md)
+- [アーキテクチャと採用技術（図解）](docs/source-code-guide/architecture_and_technology.md)
 - [用語集](docs/manual/14_glossary.md)
 - [HTML で読む・GitHub Pages で公開する](docs/documentation_site.md)
 

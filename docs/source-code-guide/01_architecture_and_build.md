@@ -44,7 +44,8 @@ flowchart TB
     GameDLL -.->|"実行時ロード"| Player
     ProjectLib --> CLI
     CoreLib --> SpvLink
-    CoreLib --> Studio
+    ProjectLib --> Studio
+    Studio -.->|"JSON-RPC / 別プロセス"| Player
     ProjectLib --> Tests
     CoreLib --> Tests
 ```
@@ -346,7 +347,7 @@ ABIの交渉入口（`getApiV1` / `getPoseStagingServiceV1` / `getApplicationSer
 | RenderDoc in-application API | ヘッダのみvendor同梱（[`src/third_party/renderdoc/renderdoc_app.h`](../../src/third_party/renderdoc/renderdoc_app.h)）。外部取得もバイナリリンクもしません |
 | quill | ログ |
 | Catch2 | 単体テスト |
-| Qt6/QML | Pelican Studio |
+| Qt6 / Qt Widgets | Pelican Studio の UI とプロセス管理 |
 
 外部依存のバージョンはトップレベルの `GIT_TAG` 群（先頭は [`GIT_TAG v10.2.0`](../../CMakeLists.txt#L75)）に固定されています。picosha2はもともと「純粋層だけの依存」でしたが、現在は `pelican_core` からも使われる点に注意してください。
 
