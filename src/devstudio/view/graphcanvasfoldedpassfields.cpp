@@ -301,10 +301,17 @@ void GraphCanvasFoldedPassFields::load(const FramePlanAuthoringPass &row) {
             raster_->setDrawShown(true);
             std::vector<std::string> colors;
             const auto color = original_.value("output", Json::object()).value("color", Json::array());
-            for (std::size_t index = 0; color.is_array() && index < color.size(); ++index)
-                colors.push_back(color[index].is_string()
-                                     ? color[index].get<std::string>()
-                                     : tr("Output %1").arg(index).toStdString());
+            // RC-3b: a composed declaration's colour output is an attachment
+            // object ({target, ...}); an authored one may still be a name.
+            for (std::size_t index = 0; color.is_array() && index < color.size(); ++index) {
+                const auto &entry = color[index];
+                if (entry.is_string())
+                    colors.push_back(entry.get<std::string>());
+                else if (entry.is_object() && entry.contains("target") && entry.at("target").is_string())
+                    colors.push_back(entry.at("target").get<std::string>());
+                else
+                    colors.push_back(tr("Output %1").arg(index).toStdString());
+            }
             if (colors.empty()) colors.push_back(tr("Output").toStdString());
             raster_->setColorAttachments(colors);
             raster_->load(original_.value("raster_state", Json(nullptr)),
