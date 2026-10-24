@@ -32,6 +32,7 @@ add_library(pelican_project
     logicalrendergraph.cpp
     logicalframegraphshadow.cpp
     frameplan.cpp
+    imagesource.cpp
     rendergraphir.cpp
     rendergraphparse.cpp
     logicalrendertype.cpp

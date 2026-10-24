@@ -387,10 +387,7 @@ CompiledLogicalRenderGraph compileLogicalFrameGraphShadow(
                           LogicalReadFootprintKind::
                               same_pixel,
                           std::nullopt}
-                    :
-                    LogicalReadFootprint{
-                        LogicalReadFootprintKind::arbitrary,
-                        std::nullopt};
+                    : undeclaredReadFootprint(false);
             if (attachment_read_write) {
                 auto &output_version =
                     current_versions.at(resource);
@@ -444,8 +441,7 @@ CompiledLogicalRenderGraph compileLogicalFrameGraphShadow(
                                           type->second));
             node.uses.push_back(makeLogicalReadUse(
                 std::move(port), LogicalValueId{resource, 0},
-                LogicalReadFootprint{LogicalReadFootprintKind::temporal,
-                                     std::nullopt},
+                undeclaredReadFootprint(true),
                 access_intent(resource, true)));
         }
         for (const auto &resource : source.writes) {

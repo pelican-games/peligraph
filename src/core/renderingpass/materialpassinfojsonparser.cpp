@@ -853,17 +853,11 @@ void parseMaterialPassResourcesFromJson(
                 ? &source.at("footprint")
                 : nullptr;
         const auto footprint =
-            reference.history
-                ? LogicalReadFootprint{
-                      LogicalReadFootprintKind::temporal,
-                      std::nullopt}
-                : footprint_json != nullptr
-                    ? parseMaterialResourceFootprint(
-                          *footprint_json,
-                          context + ".footprint")
-                    : LogicalReadFootprint{
-                          LogicalReadFootprintKind::arbitrary,
-                          std::nullopt};
+            !reference.history && footprint_json != nullptr
+                ? parseMaterialResourceFootprint(
+                      *footprint_json,
+                      context + ".footprint")
+                : undeclaredReadFootprint(reference.history);
         if (reference.history &&
             footprint_json != nullptr) {
             throw std::runtime_error(

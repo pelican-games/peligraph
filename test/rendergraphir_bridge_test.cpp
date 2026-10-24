@@ -236,33 +236,53 @@ struct Outcome {
     std::vector<FrameGraphDefinition> definitions;
     std::vector<FramePlan> plans;
     std::vector<Json> logical;
+    // The target planning after the ray query capability (finalized only).
+    std::vector<PlanningGraphConstraints> planning;
 };
 
 // Device facts both paths are given: tile-local attachments with local read
 // for the listed formats.
+// A fake device both paths are asked: whether an image of this format,
+// usage and kind (cube or not) is supported as a local-read attachment.
 struct DeviceFacts {
     bool tile_local = false;
-    std::vector<ImageFormat> local_read_formats;
+    std::function<bool(ImageFormat, ImageUsage, bool cube)> supports;
 };
 
 RenderingTargetPlanDeviceFacts oldDeviceFacts(const DeviceFacts &facts) {
     RenderingTargetPlanDeviceFacts result;
     result.transient_attachments = facts.tile_local;
     result.dynamic_rendering_local_read = facts.tile_local;
-    result.query_image_format_capability = [formats = facts.local_read_formats](
+    result.query_image_format_capability = [supports = facts.supports](
                                                const RenderTargetDefinition &target) {
+        const bool supported =
+            supports && supports(target.format, target.usage,
+                                 target.dimension == ImageResourceDimension::cube);
         RenderingImageFormatCapability capability;
-        capability.image_usage_supported = true;
+        capability.image_usage_supported = supported;
         capability.supported_samples = {1};
-        capability.local_read_attachment_supported =
-            std::find(formats.begin(), formats.end(), target.format) != formats.end();
+        capability.local_read_attachment_supported = supported;
         return capability;
     };
     return result;
 }
 
+RenderGraphDeviceFacts newDeviceFacts(const DeviceFacts &facts) {
+    RenderGraphDeviceFacts result;
+    result.tile_local_attachments = facts.tile_local;
+    if (facts.supports) {
+        result.supports_local_read_attachment =
+            [supports = facts.supports](const RenderGraphImageCapabilityQuery &query) {
+                return supports(query.format, query.usage, query.cube_compatible);
+            };
+    }
+    return result;
+}
+
 // What runs before planning, in the order the compiler runs it, or nothing.
 struct Finalize {
+    // The compiled pipeline's target planning the compiler starts from.
+    TargetPlanningPolicy planning;
     std::string suffix;
     std::vector<SceneAccelerationStructureDefinition> named;
     bool ray_tracing_project = false;
@@ -309,8 +329,13 @@ Outcome runOld(const Json &config, const DeviceFacts &device,
                 }
             }
             CompiledRenderPipeline pipeline;
+            pipeline.target_planning = finalize->planning;
             pipeline.graph_variant_policy.rendering_pass_name_suffix = finalize->suffix;
             pipeline.scene_acceleration_structures = finalize->named;
+            // The compiler's order: the ray query capability, the variant's
+            // names, the builds, frame_node_order.
+            detail::requireRayQueryPlanningCapability(outcome.definitions, tasks, pipeline);
+            outcome.planning = pipeline.target_planning.graphs;
             detail::namespaceComputeTasks(tasks, outcome.definitions, config, pipeline);
             detail::insertSceneAccelerationStructureNodes(
                 outcome.definitions, pipeline.target_planning, tasks,
@@ -362,10 +387,13 @@ NewOutcome runNew(const Json &config, const DeviceFacts &device,
     try {
         auto ir = parseRenderGraph(config, buildPassFieldOwnershipCapabilities());
         if (finalize) {
+            auto planning = finalize->planning;
+            requireRenderGraphRayQueryCapability(ir, finalize->named, planning);
+            outcome.planning = planning.graphs;
             ir = namespaceSharedComputeTasks(std::move(ir), finalize->suffix);
             ir = insertAccelerationStructureNodes(
                 std::move(ir), AccelerationStructureNodeRequest{
-                                   .planning_graphs = {},
+                                   .planning_graphs = planning.graphs,
                                    .ray_tracing_project = finalize->ray_tracing_project,
                                    .named = finalize->named});
             if (finalize->apply_frame_node_order) ir = applyFrameNodeOrder(std::move(ir), false);
@@ -391,9 +419,7 @@ NewOutcome runNew(const Json &config, const DeviceFacts &device,
         return outcome;
     }
     try {
-        const ToLogicalGraphOptions options{
-            .device = {.tile_local_attachments = device.tile_local,
-                       .local_read_attachment_formats = device.local_read_formats}};
+        const ToLogicalGraphOptions options{.device = newDeviceFacts(device)};
         for (const auto &graph : outcome.ir->graphs) {
             outcome.logical.push_back(logicalJson(toLogicalGraph(*outcome.ir, graph, options)));
         }
@@ -418,6 +444,7 @@ Counts requireSameOutcome(const std::string &name, const Outcome &old_outcome,
     INFO("old refusal (" << old_outcome.stage << "): " << old_outcome.refusal);
     INFO("new refusal (" << new_outcome.stage << "): " << new_outcome.refusal);
     REQUIRE(old_outcome.stage == new_outcome.stage);
+    CHECK(old_outcome.planning == new_outcome.planning);
     Counts counts;
     if (old_outcome.stage == "parse") return counts;
     REQUIRE(old_outcome.definitions.size() == new_outcome.definitions.size());
@@ -528,6 +555,8 @@ struct ComposedCase {
     std::string how;
     Json config;
     std::optional<Finalize> finalize;
+    // The engine feature appended (none for a shipping project).
+    std::optional<Json> feature;
 };
 
 // The shipping projects (their rendering document composed with its presets
@@ -553,7 +582,7 @@ std::vector<ComposedCase> composedCases(std::vector<std::string> &skipped) {
             result.push_back({project, "resolveRenderPipeline (flat): presets and features expanded, "
                                        "graph lowered, format classes resolved",
                               resolved.normalized_config,
-                              Finalize{.suffix = {},
+                              Finalize{.planning = compiled.target_planning,
                                        .named = compiled.scene_acceleration_structures,
                                        .ray_tracing_project = ray,
                                        .apply_frame_node_order = true}});
@@ -563,6 +592,8 @@ std::vector<ComposedCase> composedCases(std::vector<std::string> &skipped) {
     }
     // Each engine feature on two bases: the example (forward + deferred
     // presets) and animgraph_demo's hybrid_v1 preset without its features.
+    // Which compose and which are refused (and why) is fixed: a new refusal,
+    // a refusal that now composes or a feature added to the engine fails.
     auto hybrid = readJson(sourceRoot() / "projects/animgraph_demo/passes/main.json");
     hybrid["rendering"]["features"] = Json::array();
     const std::vector<std::tuple<std::string, fs::path, Json>> bases{
@@ -570,6 +601,33 @@ std::vector<ComposedCase> composedCases(std::vector<std::string> &skipped) {
          readJson(sourceRoot() / "projects/example/passes/main_rendering_config.json")},
         {"hybrid_v1", sourceRoot() / "projects/animgraph_demo", hybrid},
     };
+    const std::map<std::string, std::string> known_refusals{
+        {"example+clustered_lighting", "references unknown pass: deferred_lighting"},
+        {"example+cube_capture", "references unknown pass 'deferred_lighting'"},
+        {"example+editor", "render feature schema is not supported"},
+        {"example+hdr", "HDR canonical pipeline requires a scene pass"},
+        {"example+planar_reflection", "references unknown pass 'deferred_lighting'"},
+        {"example+rt_shadow_mask", "feature.insertion_anchor_missing@1"},
+        {"example+shadow_point", "references unknown pass: deferred_lighting"},
+        {"example+shadow_spot", "references unknown pass: deferred_lighting"},
+        {"example+sky_ambient", "feature.required_target_missing@1"},
+        {"example+taa", "format_class is incompatible"},
+        {"hybrid_v1+editor", "render feature schema is not supported"},
+        {"hybrid_v1+taa", "role is incompatible"},
+    };
+    const std::set<std::string> composes{
+        "example+debug_draw", "example+debug_text", "example+gizmo", "example+gpu_timing",
+        "example+picking", "example+rt_shadow_mask_pipeline", "example+shadow_directional",
+        "example+sprite", "example+velocity",
+        "hybrid_v1+bloom", "hybrid_v1+clustered_lighting", "hybrid_v1+cube_capture",
+        "hybrid_v1+debug_draw", "hybrid_v1+debug_text", "hybrid_v1+gizmo",
+        "hybrid_v1+gpu_timing", "hybrid_v1+hdr", "hybrid_v1+picking",
+        "hybrid_v1+planar_reflection", "hybrid_v1+rt_shadow_mask",
+        "hybrid_v1+rt_shadow_mask_pipeline", "hybrid_v1+shadow_directional",
+        "hybrid_v1+shadow_point", "hybrid_v1+shadow_spot", "hybrid_v1+sky_ambient",
+        "hybrid_v1+sprite", "hybrid_v1+ui", "hybrid_v1+velocity",
+    };
+    std::set<std::string> seen;
     for (const auto &[base_name, base_root, base] : bases) {
         for (const auto &entry :
              fs::directory_iterator(sourceRoot() / "src/core/resources/features")) {
@@ -586,16 +644,38 @@ std::vector<ComposedCase> composedCases(std::vector<std::string> &skipped) {
             if (present) continue;
             features.push_back(feature);
             const auto name = base_name + "+" + entry.path().stem().string();
+            seen.insert(name);
+            INFO("feature case " << name);
+            std::optional<ResolvedRenderPipeline> resolved;
+            std::string refusal;
             try {
-                auto resolved = composeProject(authored, base_root, name);
-                result.push_back({name,
-                                  base_name + " with the feature appended, resolveRenderPipeline (flat)",
-                                  resolved.normalized_config, std::nullopt});
+                resolved = composeProject(authored, base_root, name);
             } catch (const std::exception &error) {
-                skipped.push_back(name + ": " + error.what());
+                refusal = error.what();
             }
+            if (const auto known = known_refusals.find(name); known != known_refusals.end()) {
+                INFO("refusal: " << refusal);
+                REQUIRE_FALSE(resolved);
+                REQUIRE(refusal.find(known->second) != std::string::npos);
+                skipped.push_back(name + ": " + refusal);
+                continue;
+            }
+            INFO("refusal: " << refusal);
+            REQUIRE(composes.contains(name));
+            REQUIRE(resolved);
+            const auto compiled = compileRenderPipeline(*resolved);
+            result.push_back({name,
+                              base_name + " with the feature appended, resolveRenderPipeline (flat)",
+                              resolved->normalized_config,
+                              Finalize{.planning = compiled.target_planning,
+                                       .named = compiled.scene_acceleration_structures,
+                                       .apply_frame_node_order = true},
+                              readJson(entry.path())});
         }
     }
+    std::set<std::string> expected(composes.begin(), composes.end());
+    for (const auto &[name, reason] : known_refusals) expected.insert(name);
+    REQUIRE(seen == expected);
     return result;
 }
 
@@ -834,6 +914,30 @@ TEST_CASE("RC-3c1a bridge: the shipping projects and the engine features plan al
             REQUIRE(old_outcome.stage.empty());
             // Not a vacuous agreement: the composed graph has passes.
             REQUIRE(nonAnchorNodes(old_outcome.definitions) > 0);
+            if (composed.feature) {
+                // The feature's own passes and tasks are in the composed
+                // graph; a feature without any is named as such.
+                std::set<std::string> nodes;
+                for (const auto &definition : old_outcome.definitions) {
+                    for (const auto &node : definition.nodes) nodes.insert(node.name);
+                }
+                std::vector<std::string> declared;
+                for (const auto &entry : composed.feature->value("passes", Json::array())) {
+                    declared.push_back(entry.contains("pass") ? entry.at("pass").at("name").get<std::string>()
+                                                              : entry.at("name").get<std::string>());
+                }
+                for (const auto &task : composed.feature->value("compute_tasks", Json::array())) {
+                    declared.push_back(task.at("name").get<std::string>());
+                }
+                const auto feature_name = composed.feature->at("name").get<std::string>();
+                static const std::set<std::string> without_nodes{"sprite", "gpu_timing"};
+                INFO("feature " << feature_name);
+                CHECK(declared.empty() == without_nodes.contains(feature_name));
+                for (const auto &name : declared) {
+                    INFO("feature node " << name);
+                    CHECK(nodes.contains(name));
+                }
+            }
             const auto counts = requireSameOutcome(composed.name, old_outcome, runNew(config, {}));
             std::size_t finalized_nodes = 0;
             if (composed.finalize) {
@@ -997,51 +1101,74 @@ TEST_CASE("RC-3c1a bridge: a loading attachment is a same-pixel use in the IR",
 
 TEST_CASE("RC-3c1a bridge: tile-local eligibility is decided by each path from its own graph",
           "[rendergraphir][rc3c1a][bridge][tile-local]") {
-    // gbuffer_color is read same-pixel by a local read: eligible. scene_depth
-    // is a tile-local candidate the device reads locally, but another pass
-    // samples it (arbitrary): not eligible.
+    // Two depth images of one format, read pixel for pixel by a local read
+    // and written as depth attachments: scene_depth (2D) and probe_depth (a
+    // cube). DEPTH_STENCIL_ATTACHMENT | SAMPLED is neither transient nor an
+    // alias candidate, so only tile-local makes either virtual. The device
+    // supports D32_SFLOAT as a local-read attachment, but not as a cube.
+    // gbuffer_depth is a third candidate that another pass samples
+    // (arbitrary): never eligible.
     const auto config = Json::parse(R"json({
       "render_targets": [
-        {"name": "gbuffer_color", "extent_scale": 1.0, "format": "R8G8B8A8_UNORM",
+        {"name": "scene_color", "extent_scale": 1.0, "format": "R8G8B8A8_UNORM",
          "usage": ["COLOR_ATTACHMENT", "SAMPLED"]},
         {"name": "scene_depth", "extent_scale": 1.0, "format": "D32_SFLOAT",
          "usage": ["DEPTH_STENCIL_ATTACHMENT", "SAMPLED"]},
         {"name": "lit", "extent_scale": 1.0, "format": "R8G8B8A8_UNORM",
-         "usage": ["COLOR_ATTACHMENT", "SAMPLED"]}],
+         "usage": ["COLOR_ATTACHMENT", "SAMPLED"]},
+        {"name": "probe_color", "extent_scale": 1.0, "width": 16, "height": 16,
+         "format": "R8G8B8A8_UNORM", "usage": ["COLOR_ATTACHMENT", "SAMPLED"]},
+        {"name": "probe_depth", "extent_scale": 1.0, "width": 16, "height": 16, "dimension": "cube",
+         "format": "D32_SFLOAT", "usage": ["DEPTH_STENCIL_ATTACHMENT", "SAMPLED"]},
+        {"name": "probe_lit", "extent_scale": 1.0, "width": 16, "height": 16,
+         "format": "R8G8B8A8_UNORM", "usage": ["COLOR_ATTACHMENT", "SAMPLED"]},
+        {"name": "gbuffer_color", "extent_scale": 1.0, "format": "R8G8B8A8_UNORM",
+         "usage": ["COLOR_ATTACHMENT", "SAMPLED"]},
+        {"name": "gbuffer_depth", "extent_scale": 1.0, "format": "D32_SFLOAT",
+         "usage": ["DEPTH_STENCIL_ATTACHMENT", "SAMPLED"]}],
       "rendering_passes": [{"name": "main", "passes": [
-        {"name": "gbuffer", "type": "raster",
-         "output": {"color": [{"target": "gbuffer_color"}], "depth": {"target": "scene_depth"}}},
-        {"name": "resolve", "type": "fullscreen", "input": ["gbuffer_color", "scene_depth"],
-         "input_footprints": {"gbuffer_color": "same_pixel"},
+        {"name": "geometry", "type": "raster",
+         "output": {"color": [{"target": "scene_color"}], "depth": {"target": "scene_depth"}}},
+        {"name": "resolve", "type": "fullscreen", "input": ["scene_depth"],
+         "input_footprints": {"scene_depth": "same_pixel"},
          "output": {"color": [{"target": "lit"}], "depth": null}},
-        {"name": "present", "type": "fullscreen", "input": ["lit"],
+        {"name": "probe_geometry", "type": "raster",
+         "output": {"color": [{"target": "probe_color"}], "depth": {"target": "probe_depth"}}},
+        {"name": "probe_resolve", "type": "fullscreen", "input": ["probe_depth"],
+         "input_footprints": {"probe_depth": "same_pixel"},
+         "output": {"color": [{"target": "probe_lit"}], "depth": null}},
+        {"name": "gbuffer", "type": "raster",
+         "output": {"color": [{"target": "gbuffer_color"}], "depth": {"target": "gbuffer_depth"}}},
+        {"name": "shade", "type": "fullscreen", "input": ["gbuffer_depth", "gbuffer_color", "lit", "probe_lit"],
          "output": {"color": [{"target": "swapchain"}], "depth": null}}]}]})json");
     const DeviceFacts device{.tile_local = true,
-                             .local_read_formats = {ImageFormat::r8g8b8a8_unorm,
-                                                    ImageFormat::d32_sfloat}};
-    const auto new_outcome = runNew(config, device);
-    REQUIRE(new_outcome.stage.empty());
-    const auto &ir = *new_outcome.ir;
-    const auto device_formats = renderGraphDeviceTileLocalFormats(
-        ir, {.tile_local_attachments = true,
-             .local_read_attachment_formats = device.local_read_formats});
-    CHECK(device_formats.contains({"scene_depth", ImageFormat::d32_sfloat}));
-    CHECK(device_formats.contains({"gbuffer_color", ImageFormat::r8g8b8a8_unorm}));
-    const auto eligible = renderGraphTileLocalFormats(ir, ir.graphs.at(0), device_formats);
-    CHECK(eligible == RenderGraphTileLocalFormats{{"gbuffer_color", ImageFormat::r8g8b8a8_unorm}});
-    requireSameOutcome("tile-local depth read arbitrarily", runOld(config, device), new_outcome);
-    const auto materialization = [&](std::string_view name) {
-        for (const auto &resource : new_outcome.logical.at(0).at("resources")) {
+                             .supports = [](ImageFormat format, ImageUsage, bool cube) {
+                                 return format == ImageFormat::d32_sfloat && !cube;
+                             }};
+    const auto materialization = [](const NewOutcome &outcome, std::string_view name) {
+        for (const auto &resource : outcome.logical.at(0).at("resources")) {
             if (resource.at("name").get<std::string>() == name) {
                 return resource.at("materialization").get<std::string>();
             }
         }
         return std::string{};
     };
-    CHECK(materialization("gbuffer_color") == "virtual");
-    CHECK(materialization("scene_depth") == "required");
-    // Without the device facts neither path keeps gbuffer_color tile-local.
-    requireSameOutcome("tile-local without device facts", runOld(config, {}), runNew(config, {}));
+    const auto with_device = runNew(config, device);
+    REQUIRE(with_device.stage.empty());
+    const auto &ir = *with_device.ir;
+    const auto device_formats = renderGraphDeviceTileLocalFormats(ir, newDeviceFacts(device));
+    CHECK(device_formats == RenderGraphTileLocalFormats{{"gbuffer_depth", ImageFormat::d32_sfloat},
+                                                        {"scene_depth", ImageFormat::d32_sfloat}});
+    const auto eligible = renderGraphTileLocalFormats(ir, ir.graphs.at(0), device_formats);
+    CHECK(eligible == RenderGraphTileLocalFormats{{"scene_depth", ImageFormat::d32_sfloat}});
+    CHECK(materialization(with_device, "scene_depth") == "virtual");
+    CHECK(materialization(with_device, "probe_depth") == "required");
+    CHECK(materialization(with_device, "gbuffer_depth") == "required");
+    requireSameOutcome("tile-local with the device", runOld(config, device), with_device);
+    // Without the device's support the same image is materialized.
+    const auto without_device = runNew(config, {});
+    CHECK(materialization(without_device, "scene_depth") == "required");
+    requireSameOutcome("tile-local without the device", runOld(config, {}), without_device);
 }
 
 TEST_CASE("RC-3c1a bridge: multiview candidates follow the authored implementation",
@@ -1161,6 +1288,194 @@ TEST_CASE("RC-3c1a bridge: compute namespacing and frame_node_order agree with c
     CHECK_FALSE(runOld(conflicting, {}, ordered).refusal.empty());
 }
 
+namespace {
+
+ResolvedRenderPipeline composeWithFeature(const std::string &base, const Json &feature) {
+    if (base == "example") {
+        auto authored = readJson(sourceRoot() / "projects/example/passes/main_rendering_config.json");
+        authored["rendering"]["features"].push_back(feature);
+        return composeProject(authored, sourceRoot() / "projects/example", "example+feature");
+    }
+    auto authored = readJson(sourceRoot() / "projects/animgraph_demo/passes/main.json");
+    authored["rendering"]["features"] = Json::array({feature});
+    return composeProject(authored, sourceRoot() / "projects/animgraph_demo", "hybrid_v1+feature");
+}
+
+const NodeIR &irNode(const RenderGraphIR &ir, std::string_view name) {
+    for (const auto &graph : ir.graphs) {
+        for (const auto &node : graph.nodes) {
+            if (node.name == name) return node;
+        }
+    }
+    throw std::runtime_error("no node " + std::string{name});
+}
+
+Json *composedTask(Json &config, std::string_view name) {
+    if (config.contains("compute_tasks")) {
+        for (auto &task : config["compute_tasks"]) {
+            if (task.value("name", std::string{}) == name) return &task;
+        }
+    }
+    for (auto &graph : config["rendering_passes"]) {
+        if (!graph.contains("compute_tasks")) continue;
+        for (auto &task : graph["compute_tasks"]) {
+            if (task.value("name", std::string{}) == name) return &task;
+        }
+    }
+    return nullptr;
+}
+
+} // namespace
+
+TEST_CASE("RC-3c1a bridge: a compute task's ray query alone brings the acceleration-structure build",
+          "[rendergraphir][rc3c1a][bridge][acceleration-structure]") {
+    const auto resolved =
+        composeWithFeature("hybrid_v1", Json("engine://features/planar_reflection.json"));
+    const auto compiled = compileRenderPipeline(resolved);
+    REQUIRE(compiled.scene_acceleration_structures.empty());
+    const Finalize finalize{.planning = compiled.target_planning, .apply_frame_node_order = true};
+    const std::string build = "__scene_acceleration_structure";
+    for (const bool query : {false, true}) {
+        DYNAMIC_SECTION("compute ray_query " << query) {
+            auto config = prepared(resolved.normalized_config);
+            auto *task = composedTask(config, "planar_reflection_filter_mip_1");
+            REQUIRE(task != nullptr);
+            if (query) (*task)["ray_query"] = {{"acceleration_structure", "scene"}};
+            const auto old_outcome = runOld(config, {}, finalize);
+            const auto new_outcome = runNew(config, {}, finalize);
+            REQUIRE(new_outcome.stage.empty());
+            // No raster pass queries: the task is the only reason.
+            for (const auto &graph : new_outcome.ir->graphs) {
+                for (const auto &node : graph.nodes) CHECK_FALSE(node.ray_query.has_value());
+            }
+            const auto &nodes = new_outcome.ir->graphs.at(0).nodes;
+            CHECK((nodes.front().name == build) == query);
+            const auto &filter = irNode(*new_outcome.ir, "planar_reflection_filter_mip_1");
+            CHECK((std::find(filter.after.begin(), filter.after.end(), build) != filter.after.end()) ==
+                  query);
+            const auto capability = std::any_of(
+                new_outcome.planning.begin(), new_outcome.planning.end(), [](const auto &graph) {
+                    return std::find(graph.required_capabilities.begin(),
+                                     graph.required_capabilities.end(),
+                                     "pelican.vulkan.ray_query@1") !=
+                           graph.required_capabilities.end();
+                });
+            CHECK(capability == query);
+            requireSameOutcome("hybrid_v1+planar_reflection, compute ray_query " +
+                                   std::to_string(query),
+                               old_outcome, new_outcome);
+            // The build is found from the task even without the capability.
+            auto ir = parseRenderGraph(config, buildPassFieldOwnershipCapabilities());
+            ir = insertAccelerationStructureNodes(std::move(ir), {});
+            CHECK((ir.graphs.at(0).nodes.front().name == build) == query);
+        }
+    }
+}
+
+TEST_CASE("RC-3c1a bridge: a history read is a temporal use in the IR",
+          "[rendergraphir][rc3c1a][bridge]") {
+    // The shipping TAA feature, bound to the example as passfusion_test binds
+    // it: taa_resolve reads taa_accum@history and the current scene colour.
+    auto authored = readJson(sourceRoot() / "projects/example/passes/main_rendering_config.json");
+    for (auto &target : authored["rendering"]["render_targets"]) {
+        if (target.value("name", std::string{}) == "lit_color") target["format_class"] = "scene";
+    }
+    auto &features = authored["rendering"]["features"];
+    features.push_back("engine://features/velocity.json");
+    features.push_back(Json{{"ref", "engine://features/taa.json"},
+                            {"parameters",
+                             {{"scene_color", "lit_color"},
+                              {"velocity", "velocity"},
+                              {"depth", "offscreen_depth"},
+                              {"downstream_color", "lit_color"}}}});
+    const auto resolved = composeProject(authored, sourceRoot() / "projects/example", "example+taa");
+    const auto config = prepared(resolved.normalized_config);
+    const auto ir = parseRenderGraph(config, buildPassFieldOwnershipCapabilities());
+    const auto &resolve = irNode(ir, "taa_resolve");
+    std::size_t history = 0;
+    std::size_t current = 0;
+    for (const auto &use : resolve.uses) {
+        if (use.role != ResourceUseRole::input) continue;
+        INFO("use " << use.resource << (use.history ? "@history" : ""));
+        if (use.history) {
+            ++history;
+            CHECK(use.resource == "taa_accum");
+            REQUIRE(use.footprint);
+            CHECK(use.footprint->kind == LogicalReadFootprintKind::temporal);
+        } else {
+            ++current;
+            CHECK((!use.footprint || use.footprint->kind != LogicalReadFootprintKind::temporal));
+        }
+    }
+    CHECK(history == 1);
+    CHECK(current > 0);
+    requireSameOutcome("example+taa", runOld(config, {}), runNew(config, {}));
+}
+
+TEST_CASE("RC-3c1a bridge: a resource port's direction is its own",
+          "[rendergraphir][rc3c1a][bridge]") {
+    // planar_reflection_filter_mip_1 samples mip 0 of planar_reflection_color
+    // and stores mip 1 of it.
+    const auto resolved =
+        composeWithFeature("hybrid_v1", Json("engine://features/planar_reflection.json"));
+    const auto config = prepared(resolved.normalized_config);
+    const auto ir = parseRenderGraph(config, buildPassFieldOwnershipCapabilities());
+    const auto &filter = irNode(ir, "planar_reflection_filter_mip_1");
+    std::map<std::string, const ResourceUse *> ports;
+    for (const auto &use : filter.uses) {
+        if (use.role == ResourceUseRole::resource_port) ports[use.binding.port] = &use;
+    }
+    REQUIRE(ports.contains("source_color"));
+    REQUIRE(ports.contains("filtered_color"));
+    const auto &source = *ports.at("source_color");
+    const auto &destination = *ports.at("filtered_color");
+    CHECK(source.resource == "planar_reflection_color");
+    CHECK(source.access == ResourceUseAccess::read);
+    CHECK(source.intent == LogicalAccessIntent::sampled);
+    REQUIRE(source.subresource);
+    CHECK(source.subresource->base_mip_level == 0);
+    CHECK(destination.resource == "planar_reflection_color");
+    CHECK(destination.access == ResourceUseAccess::write);
+    CHECK(destination.intent == LogicalAccessIntent::storage);
+    REQUIRE(destination.subresource);
+    CHECK(destination.subresource->base_mip_level == 1);
+    requireSameOutcome("hybrid_v1+planar_reflection", runOld(config, {}), runNew(config, {}));
+}
+
+TEST_CASE("RC-3c1a refusals: a graph image's format_class is a string where the planner read it",
+          "[rendergraphir][rc3c1a][refusal]") {
+    const auto config = [](Json format_class, bool sized) {
+        Json image{{"name", "t"}, {"format", "R8G8B8A8_UNORM"}, {"format_class", std::move(format_class)}};
+        if (sized) {
+            image["width"] = 1;
+            image["height"] = 1;
+        }
+        Json pass{{"name", "p"},
+                  {"type", "fullscreen"},
+                  {"output", {{"color", Json::array({Json{{"target", "swapchain"}}})}, {"depth", nullptr}}}};
+        Json graph{{"name", "g"},
+                   {"render_targets", Json::array({image})},
+                   {"passes", Json::array({pass})}};
+        return Json{{"rendering_passes", Json::array({graph})}};
+    };
+    const auto refused = runNew(config(42, true), {});
+    INFO(refused.refusal);
+    CHECK(refused.code == "render_graph.image_invalid@1");
+    const auto detail = Json::parse(refused.refusal.substr(refused.refusal.find('{')));
+    CHECK(detail.at("graph") == "g");
+    CHECK(detail.at("resource") == "t");
+    CHECK(detail.at("field") == "format_class");
+    CHECK(runOld(config(42, true), {}).stage == "parse");
+    // The planner read it only for an image with a width and a height; a
+    // string is accepted by both.
+    requireSameOutcome("unsized graph image with a numeric format_class",
+                       runOld(config(42, false), {}), runNew(config(42, false), {}));
+    CHECK(runNew(config(42, false), {}).stage.empty());
+    requireSameOutcome("graph image with a string format_class", runOld(config("data", true), {}),
+                       runNew(config("data", true), {}));
+    CHECK(runNew(config("data", true), {}).stage.empty());
+}
+
 // ---------------------------------------------------------------------------
 // F2: refusals, by group, each with its code and subject.
 
@@ -1262,6 +1577,12 @@ TEST_CASE("RC-3c1a refusals: what the planning parse refused, parseRenderGraph r
         {"a render target's history is not a boolean", [](Json &c) { c["render_targets"][2]["history"] = "yes"; }, "render_graph.image_invalid@1", "resource", "accum"},
         {"a render target named swapchain", [](Json &c) { c["render_targets"][0]["name"] = "swapchain"; }, "render_graph.image_invalid@1", "reason", "reserved"},
         {"a render target without extent_scale", [](Json &c) { c["render_targets"][0].erase("extent_scale"); }, "render_graph.image_invalid@1", "resource", "color"},
+        {"a graph image whose format_class is not a string",
+         [](Json &c) {
+             c["rendering_passes"][0]["render_targets"] = Json::array(
+                 {{{"name", "t"}, {"width", 1}, {"height", 1}, {"format", "R8G8B8A8_UNORM"}, {"format_class", 42}}});
+         },
+         "render_graph.image_invalid@1", "resource", "t"},
         {"a buffer named swapchain", [](Json &c) { c["buffers"][0]["name"] = "swapchain"; }, "render_graph.buffer_invalid@1", "resource", "swapchain"},
         {"a snapshot copy of a format outside the copy contract",
          [](Json &c) {

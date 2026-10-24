@@ -230,6 +230,36 @@ detail::multiviewCapableFullscreenPasses(
     return capable_candidates;
 }
 
+void detail::requireRayQueryPlanningCapability(
+    const std::vector<FrameGraphDefinition> &graphs,
+    const std::vector<ComputeTaskDefinition> &tasks,
+    CompiledRenderPipeline &pipeline) {
+    const bool raster_query = std::any_of(graphs.begin(), graphs.end(), [](const auto &graph) {
+        return std::any_of(graph.nodes.begin(), graph.nodes.end(), [](const auto &node) { return node.ray_query == true; });
+    });
+    if (raster_query || !pipeline.scene_acceleration_structures.empty() || std::any_of(tasks.begin(),
+            tasks.end(), [](const auto &task) {
+                return task.ray_query_acceleration_structure.has_value();
+            })) {
+        for (const auto &graph : graphs) {
+            auto &constraints = pipeline.target_planning.graphs;
+            auto found = std::find_if(constraints.begin(), constraints.end(), [&](const auto &entry) {
+                return entry.graph == graph.name;
+            });
+            if (found == constraints.end()) {
+                constraints.push_back(PlanningGraphConstraints{.graph = graph.name});
+                found = std::prev(constraints.end());
+            }
+            const std::string capability = "pelican.vulkan.ray_query@1";
+            auto &required = found->required_capabilities;
+            if (std::find(required.begin(), required.end(), capability) == required.end()) {
+                required.push_back(capability);
+                std::sort(required.begin(), required.end());
+            }
+        }
+    }
+}
+
 void detail::insertSceneAccelerationStructureNodes(
     std::vector<FrameGraphDefinition> &graphs,
     const TargetPlanningPolicy &target_planning,
@@ -769,30 +799,9 @@ compileDefaultVulkanVariant(
             throw std::runtime_error("Compute task '" + task.name +
                 "' selects unknown scene acceleration structure '" + selected + "'");
     }
-    const bool raster_query = std::any_of(graph_definitions.begin(), graph_definitions.end(), [](const auto &graph) {
-        return std::any_of(graph.nodes.begin(), graph.nodes.end(), [](const auto &node) { return node.ray_query == true; });
-    });
-    if (raster_query || !scene_as.empty() || std::any_of(compute_task_definitions.begin(),
-            compute_task_definitions.end(), [](const auto &task) {
-                return task.ray_query_acceleration_structure.has_value();
-            })) {
-        for (const auto &graph : graph_definitions) {
-            auto &constraints = logical.compiled_pipeline.target_planning.graphs;
-            auto found = std::find_if(constraints.begin(), constraints.end(), [&](const auto &entry) {
-                return entry.graph == graph.name;
-            });
-            if (found == constraints.end()) {
-                constraints.push_back(PlanningGraphConstraints{.graph = graph.name});
-                found = std::prev(constraints.end());
-            }
-            const std::string capability = "pelican.vulkan.ray_query@1";
-            auto &required = found->required_capabilities;
-            if (std::find(required.begin(), required.end(), capability) == required.end()) {
-                required.push_back(capability);
-                std::sort(required.begin(), required.end());
-            }
-        }
-    }
+    detail::requireRayQueryPlanningCapability(
+        graph_definitions, compute_task_definitions,
+        logical.compiled_pipeline);
     detail::namespaceComputeTasks(
         compute_task_definitions,
         graph_definitions,

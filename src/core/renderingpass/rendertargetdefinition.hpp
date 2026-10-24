@@ -2,6 +2,7 @@
 
 #include "rendertargetstoragemode.hpp"
 #include "../../project/imageformat.hpp"
+#include "../../project/imagesource.hpp"
 #include "../../project/imagesubresource.hpp"
 #include "../../project/imageusage.hpp"
 #include "../../project/resourceextent.hpp"
@@ -17,21 +18,10 @@
 
 namespace Pelican {
 
-// EN-2: a render.image read from a project image file. The image is read
-// only: its pixels are uploaded whenever the target's image is created (each
-// generation and each extent change) and it is never cleared, aliased or
-// written by a pass.
-struct RenderTargetSource {
-    std::string asset;
-    // "srgb": the image has an sRGB view and shaders read linear values.
-    // "linear": UNORM, read as stored.
-    std::string color_space = "srgb";
-    // "straight": the file's values; "premultiply": RGB times alpha, in
-    // linear space, when the file is read.
-    std::string alpha = "straight";
-    // "none" or "full" (every mip generated at upload).
-    std::string mips = "none";
-};
+// EN-2: a render.image read from a project image file (each generation and
+// each extent change uploads its pixels). RC-3c1a: the declaration and its
+// defaults are project's (imagesource.hpp).
+using RenderTargetSource = ImageSourceDeclaration;
 
 // The decoded RGBA8 pixels of a RenderTargetSource, in the target's format
 // (premultiplied when asked), shared by every variant that registers it.

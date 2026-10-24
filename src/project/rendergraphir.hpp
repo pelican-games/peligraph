@@ -4,6 +4,7 @@
 #include "frameplan.hpp"
 #include "gpudrawsource.hpp"
 #include "imageformat.hpp"
+#include "imagesource.hpp"
 #include "imageresourcedimension.hpp"
 #include "imagesubresource.hpp"
 #include "imageusage.hpp"
@@ -21,6 +22,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <set>
 #include <span>
@@ -128,9 +130,12 @@ struct ResourceUse {
     std::optional<ImageSubresourceRange> subresource;
     // How far from the invocation the read reaches. Declared
     // (input_footprints / read_footprints / material_resources.*.footprint)
-    // or derived (§2.3: a loading attachment is same_pixel, a screen input
-    // and a surface resource take their contract's, a material resource
-    // without one is arbitrary). nullopt: none declared, read as arbitrary.
+    // or derived (§2.3: a history read is temporal, a loading attachment is
+    // same_pixel, a screen input and a surface resource take their
+    // contract's, a material resource without one is arbitrary;
+    // undeclaredReadFootprint). nullopt only for a current input / reads /
+    // indirect read that declares none (read as arbitrary; the logical
+    // graph notes it as conservative) and for the uses that read nothing.
     std::optional<LogicalReadFootprint> footprint;
     ResourceBinding binding;
     // An attachment's resolved load / store (RC-3a2: attachment > pass >
@@ -233,15 +238,6 @@ struct NodeIR {
     bool operator==(const NodeIR &) const = default;
 };
 
-struct ImageSourceDeclaration {
-    std::string asset;
-    std::string color_space = "srgb";
-    std::string alpha = "straight";
-    std::string mips = "none";
-
-    bool operator==(const ImageSourceDeclaration &) const = default;
-};
-
 // A render target. RenderGraphIR::images (the config's render_targets, the
 // images registration makes) carry the whole declaration, read as the render
 // target parser reads it. GraphIR::images (a graph's own render_targets) are
@@ -340,12 +336,26 @@ FrameGraphDefinition frameGraphDefinitionOf(const RenderGraphIR &ir,
 // planFrameGraphWithNamedRefusals).
 FramePlan planRenderGraph(const RenderGraphIR &ir, const GraphIR &graph);
 
+// What the device is asked about an image in one of its formats: the image's
+// usage and whether it is a cube (cube-compatible images), as core asks
+// Vulkan for the format's properties.
+struct RenderGraphImageCapabilityQuery {
+    ImageFormat format = ImageFormat::r8g8b8a8_unorm;
+    ImageUsage usage;
+    bool cube_compatible = false;
+
+    bool operator==(const RenderGraphImageCapabilityQuery &) const = default;
+};
+
 // Neutral device facts for the logical graph's materialization: whether the
 // device keeps attachments tile-local (transient attachments and dynamic
-// rendering local read) and the formats it can read locally.
+// rendering local read), and whether it supports an image of this format,
+// usage and kind as a local-read attachment (the usage supported and the
+// local read supported). No query: nothing is supported.
 struct RenderGraphDeviceFacts {
     bool tile_local_attachments = false;
-    std::vector<ImageFormat> local_read_attachment_formats;
+    std::function<bool(const RenderGraphImageCapabilityQuery &)>
+        supports_local_read_attachment;
 };
 
 using RenderGraphTileLocalFormats =
@@ -354,7 +364,7 @@ using RenderGraphTileLocalFormats =
 // The (image, format) pairs the device could keep tile-local: a config image
 // that is an attachment, neither history nor persistent, used for nothing but
 // attachments, sampling and input attachments, in one of its declared formats
-// the device reads locally.
+// the device supports for it as a local-read attachment.
 RenderGraphTileLocalFormats renderGraphDeviceTileLocalFormats(
     const RenderGraphIR &ir, const RenderGraphDeviceFacts &device);
 // Of those, the ones this graph can use: no node reads the image's history;
@@ -389,6 +399,15 @@ CompiledLogicalRenderGraph toLogicalGraph(
 RenderGraphIR namespaceSharedComputeTasks(RenderGraphIR ir,
                                           std::string_view suffix);
 
+// The compiler's rule before the builds: when a pass of a raster family or a
+// config compute task queries the scene, or the pipeline names scene
+// acceleration structures, every graph's target planning requires
+// pelican.vulkan.ray_query@1 (added once, the list kept sorted).
+void requireRenderGraphRayQueryCapability(
+    const RenderGraphIR &ir,
+    std::span<const SceneAccelerationStructureDefinition> named,
+    TargetPlanningPolicy &target_planning);
+
 struct AccelerationStructureNodeRequest {
     // Graphs whose target planning requires ray query or a ray pipeline.
     std::span<const PlanningGraphConstraints> planning_graphs;
@@ -397,7 +416,9 @@ struct AccelerationStructureNodeRequest {
 };
 // The scene's acceleration-structure builds ("__scene_acceleration_structure"
 // and one "__scene_acceleration_structure:<name>" per named one, after it) at
-// the head of every graph when anything queries or traces, and the passes and
+// the head of every graph when anything queries or traces (a raster-family
+// pass's ray_query, a config task's ray_query or ray_tracing, the target
+// planning's capability, a ray tracing project), and the passes and
 // tasks that do waiting on them; declaration order is renumbered. Refuses
 // render_graph.acceleration_structure_reserved@1 {graph, node} and
 // render_graph.acceleration_structure_unknown@1 {node, acceleration_structure}.

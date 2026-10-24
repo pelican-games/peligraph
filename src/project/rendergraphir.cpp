@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <iterator>
 #include <map>
 #include <stdexcept>
 #include <unordered_map>
@@ -379,9 +380,12 @@ RenderGraphTileLocalFormats renderGraphDeviceTileLocalFormats(
             }
         }
         for (const auto format : formats) {
-            if (std::find(device.local_read_attachment_formats.begin(),
-                          device.local_read_attachment_formats.end(),
-                          format) != device.local_read_attachment_formats.end()) {
+            if (device.supports_local_read_attachment &&
+                device.supports_local_read_attachment(RenderGraphImageCapabilityQuery{
+                    .format = format,
+                    .usage = image.usage,
+                    .cube_compatible = image.dimension == ImageResourceDimension::cube,
+                })) {
                 result.emplace(image.name, format);
             }
         }
@@ -521,6 +525,39 @@ RenderGraphIR namespaceSharedComputeTasks(RenderGraphIR ir, std::string_view suf
     return ir;
 }
 
+void requireRenderGraphRayQueryCapability(
+    const RenderGraphIR &ir, std::span<const SceneAccelerationStructureDefinition> named,
+    TargetPlanningPolicy &target_planning) {
+    const bool raster_query = std::any_of(ir.graphs.begin(), ir.graphs.end(), [](const auto &graph) {
+        return std::any_of(graph.nodes.begin(), graph.nodes.end(),
+                           [](const auto &node) { return rayQueryPolicy(node) == true; });
+    });
+    // The config's tasks (a copy in every graph).
+    const bool task_query = std::any_of(ir.graphs.begin(), ir.graphs.end(), [](const auto &graph) {
+        return std::any_of(graph.nodes.begin(), graph.nodes.end(), [](const NodeIR &node) {
+            const auto *task = std::get_if<ComputeNodeInfo>(&node.info);
+            return node.scope == NodeDeclarationScope::shared && task != nullptr &&
+                   task->ray_query_acceleration_structure.has_value();
+        });
+    });
+    if (!raster_query && named.empty() && !task_query) return;
+    const std::string capability = "pelican.vulkan.ray_query@1";
+    for (const auto &graph : ir.graphs) {
+        auto &constraints = target_planning.graphs;
+        auto found = std::find_if(constraints.begin(), constraints.end(),
+                                  [&](const auto &entry) { return entry.graph == graph.name; });
+        if (found == constraints.end()) {
+            constraints.push_back(PlanningGraphConstraints{.graph = graph.name});
+            found = std::prev(constraints.end());
+        }
+        auto &required = found->required_capabilities;
+        if (std::find(required.begin(), required.end(), capability) == required.end()) {
+            required.push_back(capability);
+            std::sort(required.begin(), required.end());
+        }
+    }
+}
+
 RenderGraphIR insertAccelerationStructureNodes(RenderGraphIR ir,
                                                const AccelerationStructureNodeRequest &request) {
     const std::string node_name = "__scene_acceleration_structure";
@@ -567,7 +604,8 @@ RenderGraphIR insertAccelerationStructureNodes(RenderGraphIR ir,
             const bool has_ray_task =
                 std::any_of(graph.nodes.begin(), graph.nodes.end(), [&](const auto &node) {
                     const auto *task = ray_task(node);
-                    return task != nullptr && task->ray_tracing;
+                    return task != nullptr &&
+                           (task->ray_tracing || task->ray_query_acceleration_structure);
                 });
             const bool raster_query =
                 std::any_of(graph.nodes.begin(), graph.nodes.end(), [](const auto &node) {

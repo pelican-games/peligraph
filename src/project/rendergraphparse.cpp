@@ -2,6 +2,7 @@
 
 #include "framegraphbufferdefinition.hpp"
 #include "graphcomposition.hpp"
+#include "imagesource.hpp"
 #include "imagesubresourcejson.hpp"
 #include "logicalrendertype.hpp"
 #include "materialformat.hpp"
@@ -310,10 +311,16 @@ void appendResourcePorts(const Json &owner, std::span<const std::string> authore
         use.resource = history ? port.resource.substr(0, port.resource.size() - suffix.size())
                                : port.resource;
         use.role = ResourceUseRole::resource_port;
-        use.access = written ? ResourceUseAccess::write : ResourceUseAccess::read;
+        // The port's own direction, with its subresource: a sampled view
+        // reads (a task may sample one mip and store another of the image it
+        // writes); a storage view of a written resource writes it.
+        use.access = access == ShaderResourcePortAccess::sampled || !written
+                         ? ResourceUseAccess::read
+                         : ResourceUseAccess::write;
         use.intent = access == ShaderResourcePortAccess::sampled ? LogicalAccessIntent::sampled
                                                                  : LogicalAccessIntent::storage;
         use.history = history;
+        if (history) use.footprint = undeclaredReadFootprint(true);
         use.subresource = port.subresource;
         use.binding = bindingOf(port);
         node.uses.push_back(std::move(use));
@@ -658,12 +665,14 @@ void appendMaterialResources(const Json &pass, NodeIR &node, const Subject &subj
         use.intent = port.access == ShaderResourcePortAccess::sampled ? LogicalAccessIntent::sampled
                      : port.access == ShaderResourcePortAccess::storage ? LogicalAccessIntent::storage
                                                                          : LogicalAccessIntent::automatic;
-        if (!history) {
+        if (history) {
+            use.footprint = undeclaredReadFootprint(true);
+        } else {
             use.footprint = declares_footprint
                                 ? footprintOf(source.at("footprint"), subject,
                                               "material_resources." + port.name + ".footprint",
                                               port.name)
-                                : LogicalReadFootprint{LogicalReadFootprintKind::arbitrary, std::nullopt};
+                                : undeclaredReadFootprint(false);
             // §2.3 (ahead of the execution parser): a same-pixel read is a
             // local-read candidate, which a cube view or a subresource view
             // cannot be.
@@ -791,7 +800,9 @@ NodeIR parsePass(const Json &pass, std::size_t index, const GraphScope &scope) {
         node.uses.push_back(ResourceUse{.resource = std::move(resource),
                                         .role = ResourceUseRole::input,
                                         .access = ResourceUseAccess::read,
-                                        .history = history});
+                                        .history = history,
+                                        .footprint = history ? std::optional{undeclaredReadFootprint(true)}
+                                                             : std::nullopt});
     }
     appendResourcePorts(pass, authored_inputs, {}, node, subject);
     declaredFootprints(pass, "input_footprints", node.uses, current_reads, subject);
@@ -955,7 +966,9 @@ NodeIR parseComputeTask(const Json &task, std::size_t index, const GraphScope &s
         node.uses.push_back(ResourceUse{.resource = std::move(resource),
                                         .role = ResourceUseRole::input,
                                         .access = ResourceUseAccess::read,
-                                        .history = history});
+                                        .history = history,
+                                        .footprint = history ? std::optional{undeclaredReadFootprint(true)}
+                                                             : std::nullopt});
     }
     if (const auto dispatch = task.find("dispatch");
         dispatch != task.end() && dispatch->is_object() && dispatch->contains("indirect")) {
@@ -1121,9 +1134,14 @@ std::vector<ImageResource> parseGraphImages(const Json &graph, bool &declares_ex
             invalid("history", "requires_boolean", image.name);
         }
         image.history = target.value("history", false);
-        if (const auto format_class = target.find("format_class");
-            format_class != target.end() && format_class->is_string()) {
-            image.format_class = format_class->get<std::string>();
+        if (const auto format_class = target.find("format_class"); format_class != target.end()) {
+            // The planner read format_class as a string of every image with a
+            // width and a height (its snapshot sizing), and nowhere else.
+            if (format_class->is_string()) {
+                image.format_class = format_class->get<std::string>();
+            } else if (target.contains("width") && target.contains("height")) {
+                invalid("format_class", "requires_string", image.name);
+            }
         }
         images.push_back(std::move(image));
     }
@@ -1283,31 +1301,10 @@ std::vector<ImageResource> parseConfigImages(const Json &config, bool &declares_
             }
             image.array_layers = count;
         }
-        if (const auto source = target.find("source"); source != target.end()) {
-            if (!source->is_object() || !source->contains("asset") ||
-                !source->at("asset").is_string() ||
-                source->at("asset").get_ref<const std::string &>().empty()) {
-                invalid("source", "requires_asset");
-            }
-            ImageSourceDeclaration declaration;
-            declaration.asset = source->at("asset").get<std::string>();
-            const auto choice = [&](const char *key, std::string &value,
-                                    std::initializer_list<std::string_view> allowed) {
-                const auto field = source->find(key);
-                if (field == source->end()) return;
-                if (!field->is_string() ||
-                    std::find(allowed.begin(), allowed.end(),
-                              field->get_ref<const std::string &>()) == allowed.end()) {
-                    invalid("source", "unknown_value");
-                }
-                value = field->get<std::string>();
-            };
-            choice("color_space", declaration.color_space, {"srgb", "linear"});
-            choice("alpha", declaration.alpha, {"straight", "premultiply"});
-            choice("mips", declaration.mips, {"none", "full"});
-            if (!has_width || !has_height) invalid("source", "requires_width_and_height");
-            if (image.history) invalid("source", "history");
-            image.source = std::move(declaration);
+        try {
+            image.source = parseImageSourceDeclaration(target, name);
+        } catch (const std::exception &) {
+            invalid("source", "invalid");
         }
         try {
             image.usage = parseAuthoredImageUsage(usage_names);

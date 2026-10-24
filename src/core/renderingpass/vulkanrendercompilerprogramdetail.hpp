@@ -7,6 +7,15 @@
 
 namespace Pelican::detail {
 
+// Before the builds: a raster ray query, a compute task's ray_query or a
+// named scene acceleration structure makes every graph's target planning
+// require pelican.vulkan.ray_query@1 (RC-3c1a: the test seam for the bridge
+// against requireRenderGraphRayQueryCapability).
+void requireRayQueryPlanningCapability(
+    const std::vector<FrameGraphDefinition> &graphs,
+    const std::vector<ComputeTaskDefinition> &tasks,
+    CompiledRenderPipeline &pipeline);
+
 // Inserts shared scene construction and one operation for each named TLAS.
 void insertSceneAccelerationStructureNodes(
     std::vector<FrameGraphDefinition> &graphs,

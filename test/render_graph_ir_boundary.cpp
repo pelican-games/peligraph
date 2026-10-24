@@ -10,6 +10,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -28,10 +29,12 @@ int main() {
             {"name": "scene", "extent_scale": 1.0, "format": "R16G16B16A16_SFLOAT",
              "usage": ["COLOR_ATTACHMENT", "SAMPLED"]},
             {"name": "accum", "extent_scale": 1.0, "format": "R16G16B16A16_SFLOAT",
-             "usage": ["COLOR_ATTACHMENT", "SAMPLED"], "history": true}],
+             "usage": ["COLOR_ATTACHMENT", "SAMPLED"], "history": true},
+            {"name": "debug_out", "extent_scale": 1.0, "format": "R8G8B8A8_UNORM",
+             "usage": ["COLOR_ATTACHMENT", "SAMPLED"]}],
           "buffers": ["particles"],
           "compute_tasks": [{"name": "simulate", "writes": ["particles"]}],
-          "frame_node_order": {"main": ["simulate", "accumulate"]},
+          "frame_node_order": {"main": ["simulate#xr", "accumulate"]},
           "rendering_passes": [{"name": "main", "passes": [
             {"name": "draw", "type": "fullscreen", "input": ["particles"],
              "ray_query": true, "output": {"color": "scene", "depth": null}},
@@ -40,11 +43,13 @@ int main() {
             {"name": "accumulate", "type": "fullscreen", "input": ["scene", "accum@history"],
              "output": {"color": "accum", "depth": null}},
             {"name": "present", "type": "fullscreen", "input": ["accum"],
-             "output": {"color": "swapchain", "depth": null}}]}]
+             "output": {"color": "swapchain", "depth": null}},
+            {"name": "debug", "type": "fullscreen",
+             "output": {"color": "debug_out", "depth": null}}]}]
         })json"));
 
         auto ir = parseRenderGraph(config, PassFieldOwnershipCapabilities{});
-        ir = namespaceSharedComputeTasks(std::move(ir), "");
+        ir = namespaceSharedComputeTasks(std::move(ir), "#xr");
         ir = insertAccelerationStructureNodes(std::move(ir), AccelerationStructureNodeRequest{});
         ir = applyFrameNodeOrder(std::move(ir), true);
         require(ir.graphs.size() == 1, "one graph");
@@ -53,11 +58,17 @@ int main() {
         const auto plan = planRenderGraph(ir, graph);
         validateFramePlanStructure(plan);
         const auto order = framePlanOrder(plan);
-        // The build first (draw queries the scene), the task where
-        // frame_node_order puts it: before accumulate.
+        // The build first (draw queries the scene), the task (named for the
+        // variant) where frame_node_order puts it: before accumulate.
         const std::vector<std::string> expected{"__scene_acceleration_structure", "draw",
-                                                "overlay", "simulate", "accumulate", "present"};
+                                                "overlay", "debug", "simulate#xr",
+                                                "accumulate", "present"};
         require(order == expected, "plan order");
+        std::unordered_map<std::string, std::vector<std::string>> usage;
+        for (const auto &image : ir.images) usage[image.name] = imageUsageNames(image.usage);
+        const auto unread = findFramePlanUnreadOutputs(plan, usage);
+        require(unread == std::vector<FramePlanUnreadOutput>{{"debug", "debug_out"}},
+                "the one output nothing reads");
         const auto overlay = std::find_if(plan.nodes.begin(), plan.nodes.end(),
                                           [](const auto &node) { return node.name == "overlay"; });
         require(overlay != plan.nodes.end() && overlay->reads == std::vector<std::string>{"scene"},

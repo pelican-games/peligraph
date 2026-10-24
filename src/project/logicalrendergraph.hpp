@@ -129,6 +129,17 @@ struct LogicalReadFootprint {
     bool operator==(const LogicalReadFootprint &) const = default;
 };
 
+// RC-3c1a (design_render_graph_ir.md §2.3): the footprint of a read that
+// declares none. A previous frame's value (`@history`) is temporal; a
+// current read without a declaration reaches anywhere (arbitrary). The one
+// place both defaults live: the render graph parser, the material pass
+// parser and the logical graph take them from here.
+constexpr LogicalReadFootprint undeclaredReadFootprint(bool history) noexcept {
+    return LogicalReadFootprint{history ? LogicalReadFootprintKind::temporal
+                                        : LogicalReadFootprintKind::arbitrary,
+                                std::nullopt};
+}
+
 struct LogicalResourceUse {
     std::string port;
     LogicalAccessMode access = LogicalAccessMode::read;
