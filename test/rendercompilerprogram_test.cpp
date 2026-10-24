@@ -304,7 +304,9 @@ TEST_CASE("named AS operations depend on shared construction and precede consume
         auto config = task_config({{"name", "other"}, {"writes", {"hits"}}});
         config["rendering_passes"][0]["passes"] =
             IrJson::array({fullscreenPass("trace", {{"acceleration_structure", "missing"}})});
-        TestSupport::requireNamedRefusal([&] { (void)insertAs(irOf(config), {}, false, definitions); },
+        // The check is the final references' (finalize runs it before the
+        // builds are inserted).
+        TestSupport::requireNamedRefusal([&] { (void)resolveRenderGraphReferences(irOf(config), definitions); },
                                          "render_graph.acceleration_structure_unknown@1",
                                          {{"node", "trace"}, {"acceleration_structure", "missing"}});
     }

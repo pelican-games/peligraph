@@ -511,8 +511,10 @@ struct AccelerationStructureNodeRequest {
 // pass's ray_query, a config task's ray_query or ray_tracing, the target
 // planning's capability, a ray tracing project), and the passes and
 // tasks that do waiting on them; declaration order is renumbered. Refuses
-// render_graph.acceleration_structure_reserved@1 {graph, node} and
-// render_graph.acceleration_structure_unknown@1 {node, acceleration_structure}.
+// render_graph.acceleration_structure_reserved@1 {graph, node}. Every
+// selected structure is one of `named` or "scene" already: finalize checks
+// that first (resolveRenderGraphReferences, by the author's task names), and
+// a direct caller does the same.
 RenderGraphIR insertAccelerationStructureNodes(
     RenderGraphIR ir, const AccelerationStructureNodeRequest &request);
 

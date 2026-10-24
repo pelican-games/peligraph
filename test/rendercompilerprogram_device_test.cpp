@@ -18,11 +18,14 @@
 #include "../src/core/renderingpass/rendertargetcontainer.hpp"
 #include "../src/core/shader/pipelinefactory.hpp"
 #include "../src/core/shader/shaderlibrary.hpp"
+#include "../src/core/vkcore/core.hpp"
+#include "../src/core/vkcore/renderer_config.hpp"
 #include "../src/core/vkcore/rendertarget.hpp"
 #include "../src/core/vkcore/runtimecapabilities.hpp"
 #include "../src/project/frameplan.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <fstream>
 
@@ -127,7 +130,159 @@ struct RecordingProgram final : RenderCompilerProgram {
     }
 };
 
+// The XR variant's physical plan as the registration's compile made it:
+// whether its graph runs its views with multiview and whether it exports a
+// depth image, or what refused it.
+struct XrRecordingProgram final : RenderCompilerProgram {
+    mutable std::vector<std::pair<bool, bool>> requested_xr_flags;
+    mutable std::optional<bool> uses_multiview;
+    mutable std::optional<std::string> exported_depth;
+    mutable std::string refusal;
+
+    RenderCompilerProgramSelection selection(const RenderCompilerBackendContext &backend) const override {
+        return defaultVulkanRenderCompilerProgram().selection(backend);
+    }
+    RenderCompilerProgramOutput compile(const RenderCompilerProgramInput &input) const override {
+        for (const auto &request : input.variants)
+            if (request.graph_variant == RenderPipelineGraphVariant::xr)
+                requested_xr_flags.emplace_back(request.enable_multiview_runtime,
+                                                request.enable_external_depth_export);
+        try {
+            const auto output = defaultVulkanRenderCompilerProgram().compile(input);
+            for (const auto &variant : output.variants) {
+                if (variant.graph_variant != RenderPipelineGraphVariant::xr) continue;
+                const auto &physical = requireVulkanRenderCompilerPhysicalPackage(*variant.physical_package);
+                REQUIRE(physical.target_plan_compilation.plans.size() == 1);
+                const auto &plan = *physical.target_plan_compilation.plans.front();
+                uses_multiview = plan.view_execution_plan.uses_multiview;
+                exported_depth = plan.external_depth_export ? plan.external_depth_export->source_resource
+                                                            : std::string{};
+            }
+        } catch (const std::exception &error) {
+            refusal = error.what();
+        }
+        throw Compiled{};
+    }
+};
+
 } // namespace
+
+TEST_CASE("RC-3c1b the registration carries the XR variant's multiview and depth export to its physical plan",
+          "[rc3c1b][registration][xr][gpu]") {
+#if PELICAN_WITH_OPENXR
+    // A flat and an XR variant registered together; the XR variant's
+    // options say whether multiview runs and whether depth is exported. Each
+    // flag changes the XR variant's physical plan, the other kept off.
+    // Multiview: the graph's passes are builtin fullscreen ones and its
+    // automatic policy has a measured gain on this device (a profile with
+    // the device's vendor and device id); with the flag the plan runs views
+    // with multiview, without it no pass may and every view runs in turn.
+    // Depth export: `draw` (a material pass) also writes a depth image; with
+    // the flag the plan exports it, without it nothing.
+    setupLogger();
+    struct Outcome {
+        std::vector<std::pair<bool, bool>> requested;
+        std::optional<bool> uses_multiview;
+        std::optional<std::string> exported_depth;
+        std::string refusal;
+    };
+    const auto registered = [](Json rendering, bool multiview, bool depth_export) {
+        FastModuleContainer modules;
+        Project project;
+        std::ofstream{project.root / "scene.json", std::ios::binary}
+            << R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json";
+        std::ofstream{project.root / "assets.json", std::ios::binary}
+            << R"json({"schema":"pelican.asset_data","version":2,"models":[]})json";
+        GET_MODULE(ProjectSource)
+            .setSourceByData(Json{{"basic_config",
+                                   {{"window_size", {{"width", 16}, {"height", 16}}},
+                                    {"scene_data_json", "scene.json"},
+                                    {"asset_data_json", "assets.json"},
+                                    {"default_scene_id", "default_scene"}}}}
+                                 .dump());
+        GET_MODULE(PathResolver).setup(project.root, false);
+        auto &launch = GET_MODULE(EngineLaunchConfig);
+        launch.headless = true;
+        launch.headless_extent = vk::Extent2D{16, 16};
+        if (rendering.contains("xr")) {
+            // This device's profile (the device exists once the target does).
+            (void)GET_MODULE(RenderTarget).getExtent();
+            const auto properties = GET_MODULE(VulkanManageCore).getPhysDevice().getProperties();
+            rendering["xr"]["multiview_auto"]["profiles"][0]["vendor_id"] = properties.vendorID;
+            rendering["xr"]["multiview_auto"]["profiles"][0]["device_id"] = properties.deviceID;
+        }
+        XrRecordingProgram program;
+        std::vector<RenderingPassConfigRegistrationDependencies> runtime;
+        {
+            // As the renderer registers an XR launch's pair: one owner
+            // scope, one feature publisher.
+            RenderingPassConfigRegistrationDependencies::Options flat;
+            flat.render_compiler_program = &program;
+            flat.gpu_owner_scope = renderPipelineVariantGpuOwnerScope(true, RenderPipelineGraphVariant::flat);
+            runtime.push_back(registrationDependencies(std::move(flat)));
+            RenderingPassConfigRegistrationDependencies::Options xr;
+            xr.graph_variant = RenderPipelineGraphVariant::xr;
+            xr.enable_multiview_runtime = multiview;
+            xr.enable_external_depth_export = depth_export;
+            xr.publish_enabled_features = false;
+            xr.gpu_owner_scope = renderPipelineVariantGpuOwnerScope(true, RenderPipelineGraphVariant::xr);
+            xr.render_compiler_program = &program;
+            runtime.push_back(registrationDependencies(std::move(xr)));
+        }
+        const auto document = project.rootOf(rendering).dump();
+        CHECK_THROWS_AS(registerRenderGraphVariantFamilyFromJsonData(document, {16, 16}, std::move(runtime)),
+                        Compiled);
+        return Outcome{program.requested_xr_flags, program.uses_multiview, program.exported_depth,
+                       program.refusal};
+    };
+
+    auto multiview = section(0, false);
+    multiview["xr"] = {
+        {"view_execution", "auto"},
+        {"multiview_auto",
+         {{"profiles", Json::array({Json{{"id", "rc3c1b_this_device"},
+                                         {"vendor_id", 0},
+                                         {"measurement",
+                                          {{"sequential_gpu_ms", 6.0},
+                                           {"multiview_gpu_ms", 4.0},
+                                           {"sample_count", 240},
+                                           {"source", "RenderTiming/gpu_timestamp"}}}}})}}}};
+    {
+        const auto on = registered(multiview, true, false);
+        INFO(on.refusal);
+        CHECK(on.requested == std::vector<std::pair<bool, bool>>{{true, false}});
+        CHECK(on.uses_multiview == std::optional<bool>{true});
+        CHECK(on.exported_depth == std::optional<std::string>{""});
+        const auto off = registered(multiview, false, false);
+        INFO(off.refusal);
+        CHECK(off.requested == std::vector<std::pair<bool, bool>>{{false, false}});
+        CHECK(off.uses_multiview == std::optional<bool>{false});
+    }
+
+    auto depth = section(0, false);
+    depth["render_targets"].push_back(
+        Json{{"name", "depth"}, {"extent_scale", 1.0}, {"format", "D32_SFLOAT"},
+             {"usage", Json::array({"DEPTH_STENCIL_ATTACHMENT"})}});
+    depth["rendering_passes"][0]["passes"][0] =
+        Json{{"name", "draw"},
+             {"type", "material"},
+             {"output", {{"color", Json::array({"scene"})}, {"depth", "depth"}}}};
+    {
+        const auto on = registered(depth, false, true);
+        INFO(on.refusal);
+        CHECK(on.requested == std::vector<std::pair<bool, bool>>{{false, true}});
+        CHECK(on.exported_depth == std::optional<std::string>{"depth"});
+        const auto off = registered(depth, false, false);
+        INFO(off.refusal);
+        CHECK(off.requested == std::vector<std::pair<bool, bool>>{{false, false}});
+        CHECK(off.exported_depth == std::optional<std::string>{""});
+        CHECK(on.uses_multiview == std::optional<bool>{false});
+        CHECK(off.uses_multiview == std::optional<bool>{false});
+    }
+#else
+    SKIP("an XR variant needs PELICAN_WITH_OPENXR");
+#endif
+}
 
 TEST_CASE("RC-3c1b the registration composes ImGui into the flat IR and FramePlan as the launch configuration says",
           "[rc3c1b][registration][imgui][gpu]") {

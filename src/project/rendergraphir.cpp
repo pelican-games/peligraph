@@ -695,8 +695,8 @@ RenderGraphIR insertAccelerationStructureNodes(RenderGraphIR ir,
                                                const AccelerationStructureNodeRequest &request) {
     const std::string node_name = "__scene_acceleration_structure";
     const auto ray_task = configRayTask;
-    // Every selected structure must exist, before any graph needs the builds.
-    requireSelectedAccelerationStructuresDeclared(ir, request.named);
+    // Every selected structure was checked by resolveRenderGraphReferences
+    // (finalize, before the variant's suffix): by the author's names.
     const bool requires_as =
         request.ray_tracing_project ||
         std::any_of(ir.graphs.begin(), ir.graphs.end(), [&](const GraphIR &graph) {

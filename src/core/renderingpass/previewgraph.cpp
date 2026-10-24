@@ -4,7 +4,6 @@
 #include "renderingpassconfigloader.hpp"
 #include "renderstrategyregistry.hpp"
 #include "../../project/graphcomposition.hpp"
-#include "../../project/rendergraphparse.hpp"
 #include "../../project/renderpipeline.hpp"
 #include "../renderer/viewfamilyproviderregistry.hpp"
 
@@ -16,8 +15,7 @@
 namespace Pelican {
 namespace {
 
-// The data-only resolve and compile of one variant, as precompilePreviewGraph
-// does it for preview.
+// The data-only resolve and compile of one variant (the edit preflight's).
 std::pair<CompiledRenderPipeline, nlohmann::json> resolveDataOnlyVariant(
     const nlohmann::json &base, std::string_view source_name,
     RenderPipelineGraphVariant variant,
@@ -177,26 +175,6 @@ PreviewGraphProgram makePreviewGraphProgram(
     // The authored swapchain terminal is a semantic output in this program;
     // PreviewExecutor binds it to its request-local capture image.
     return result;
-}
-
-PreviewGraphProgram precompilePreviewGraph(
-    std::string_view rendering_config_json,
-    const std::function<std::string(std::string_view)> &load_feature_json,
-    bool runtime_shader_compiler_enabled) {
-    const auto base = loadRenderingPassConfigJsonFromString(
-        rendering_config_json, "preview graph");
-    auto [compiled_pipeline, normalized_config] =
-        resolveDataOnlyVariant(
-            base, "preview graph",
-            RenderPipelineGraphVariant::preview,
-            load_feature_json, runtime_shader_compiler_enabled);
-    const auto render_graph = parseRenderGraph(
-        normalized_config, buildPassFieldOwnershipCapabilities());
-    return makePreviewGraphProgram(
-        std::make_shared<
-            const CompiledRenderPipeline>(
-            std::move(compiled_pipeline)),
-        std::move(normalized_config), render_graph);
 }
 
 void preflightRenderGraphVariants(

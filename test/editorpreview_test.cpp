@@ -1,5 +1,6 @@
 #include "../src/core/communication/editorpreviewservice.hpp"
 #include "../src/core/renderingpass/previewgraph.hpp"
+#include "preview_program_test_support.hpp"
 #include "authoringscenetestsupport.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -49,7 +50,8 @@ PreviewGraphProgram graphFixture() {
       ]}]
       }
     })json";
-    return precompilePreviewGraph(
+    // The registration's preview program (RC-3c1b).
+    return TestSupport::registeredPreviewProgram(
         config,
         [](std::string_view ref) {
             if (ref != "fixture://ui") throw std::runtime_error{"unknown fixture feature"};

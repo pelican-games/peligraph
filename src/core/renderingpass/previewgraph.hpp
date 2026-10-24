@@ -25,8 +25,8 @@ struct PreviewGraphProgram {
     std::vector<std::string> pass_names;
     std::vector<std::string> excluded_feature_names;
     // The same immutable compiler provenance and typed policy used by the
-    // runtime variants. Legacy standalone precompile callers also populate
-    // this, but only the coordinated family path carries program provenance.
+    // runtime variants (the registration's family compile; RC-3c1b: the only
+    // way a preview program is made).
     std::shared_ptr<const CompiledRenderPipeline>
         render_pipeline;
     CompiledGraphVariantPolicy graph_variant_policy =
@@ -67,10 +67,6 @@ PreviewGraphProgram makePreviewGraphProgram(
     nlohmann::json composed_config,
     const RenderGraphIR &render_graph);
 
-PreviewGraphProgram precompilePreviewGraph(
-    std::string_view rendering_config_json,
-    const std::function<std::string(std::string_view)> &load_feature_json,
-    bool runtime_shader_compiler_enabled);
 
 // G-6: an edit's candidate, composed by every runtime graph variant the
 // engine registered when it started: flat always, xr only when this launch

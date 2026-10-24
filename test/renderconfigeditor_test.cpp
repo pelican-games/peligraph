@@ -24,6 +24,7 @@
 #include "../src/core/registrationownerhost.hpp"
 #include "../src/core/renderer/viewfamilyproviderregistry.hpp"
 #include "../src/core/renderingpass/previewgraph.hpp"
+#include "preview_program_test_support.hpp"
 #include "../src/core/renderingpass/graphtransformregistry.hpp"
 #include "../src/core/renderingpass/renderstrategyregistry.hpp"
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
@@ -9131,12 +9132,11 @@ TEST_CASE("LP-0d a graph variant's named refusal keeps its code, with the varian
         // gives for preview being unavailable, its code kept as the cause.
         const std::string document{lp0dPreviewRefusedGraph};
         CHECK_NOTHROW(preflightRenderGraphVariants(document, lp0dHistoryBloom, true, false));
-        try {
-            (void)precompilePreviewGraph(document, lp0dHistoryBloom, true);
-            FAIL("preview composed the graph");
-        } catch (const GraphRegistryError &refusal) {
-            CHECK(refusal.code() == "graph.loop_expression_invalid@1");
-            const auto reason = previewUnsupportedAuthoringReason(std::current_exception());
+        // The registration's preview (RC-3c1b): unavailable, for this reason.
+        {
+            const auto program = TestSupport::registeredPreviewProgram(document, lp0dHistoryBloom, true);
+            REQUIRE_FALSE(program.available);
+            const auto &reason = program.unavailable_reason;
             INFO(reason.dump());
             CHECK(reason.at("code") == "preview.unsupported_authoring@1");
             CHECK(reason.at("feature") == "composition");

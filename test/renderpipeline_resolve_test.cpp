@@ -5,6 +5,7 @@
 #include "../src/project/featurecompose.hpp"
 #include "../src/project/renderconfigsection.hpp"
 #include "render_graph_root_test_support.hpp"
+#include "preview_program_test_support.hpp"
 #include "../src/project/renderpipeline.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -1023,8 +1024,9 @@ TEST_CASE(
     CHECK(provider_calls == 0);
     CHECK(runtime.activeGeneration() == 0);
 
-    REQUIRE_THROWS_WITH(
-        precompilePreviewGraph(
+    // The registration's preview (RC-3c1b) refuses it too.
+    CHECK_THAT(
+        Pelican::TestSupport::previewRefusalMessage(
             Pelican::TestSupport::renderGraphRoot(authored).dump(),
             [](std::string_view) -> std::string {
                 throw std::runtime_error(
@@ -1056,8 +1058,9 @@ TEST_CASE(
             RenderPipelineRequest{Pelican::TestSupport::renderGraphRoot(config), "WP355 raster fixture"},
             RenderEnvironmentCapabilities{});
     };
+    // What the registration's preview refuses ("" when it composes).
     const auto preview = [&](const Json &config) {
-        return precompilePreviewGraph(
+        return Pelican::TestSupport::previewRefusalMessage(
             Pelican::TestSupport::renderGraphRoot(config).dump(),
             [](std::string_view) -> std::string {
                 throw std::runtime_error(
@@ -1071,7 +1074,7 @@ TEST_CASE(
         Catch::Matchers::ContainsSubstring(
             "Fullscreen pass 'scene' raster_state color_attachments[0] "
             "blend"));
-    REQUIRE_THROWS_WITH(
+    CHECK_THAT(
         preview(authored),
         Catch::Matchers::ContainsSubstring(
             "Fullscreen pass 'scene' raster_state color_attachments[0] "
@@ -1082,7 +1085,7 @@ TEST_CASE(
         "Fullscreen pass 'scene' raster_state does not support depth field "
         "'depth_compare'";
     REQUIRE_THROWS_WITH(resolve(authored), depth_error);
-    REQUIRE_THROWS_WITH(preview(authored), depth_error);
+    CHECK_THAT(preview(authored), Catch::Matchers::ContainsSubstring(depth_error));
 
     pass["raster_state"] = {
         {"color_attachments",
@@ -1102,7 +1105,7 @@ TEST_CASE(
     REQUIRE(resolved_scene != nullptr);
     REQUIRE(resolved_scene->at("raster_state") ==
             pass.at("raster_state"));
-    REQUIRE_NOTHROW(preview(authored));
+    CHECK(preview(authored).empty());
 }
 
 TEST_CASE("WP180 preview precompile resolves presets through the shared boundary",
@@ -1128,9 +1131,11 @@ TEST_CASE("WP180 preview precompile resolves presets through the shared boundary
     };
     const auto authored =
         Json{{"pipeline", {{"preset", "fixture://preview_pipeline"}}}};
-    const auto program = precompilePreviewGraph(
+    const auto program = Pelican::TestSupport::registeredPreviewProgram(
         Pelican::TestSupport::renderGraphRoot(authored).dump(), load_pipeline,
         true);
+    INFO(program.unavailable_reason.dump());
+    REQUIRE(program.available);
 
     REQUIRE(program.generation != 0);
     REQUIRE(program.composed_config.dump().find("swapchain") ==
@@ -1139,6 +1144,23 @@ TEST_CASE("WP180 preview precompile resolves presets through the shared boundary
             std::string::npos);
     REQUIRE(program.pass_names ==
             std::vector<std::string>{"scene", "output_transform"});
+    {
+        // RC-3c1b: the names are the preview IR's. The same compiled
+        // artifact with an IR whose pass is named otherwise than in the
+        // composed JSON: the program names the IR's pass (a scan of the
+        // JSON would name `scene`).
+        auto variant = Pelican::TestSupport::compiledPreviewVariant(
+            Pelican::TestSupport::renderGraphRoot(authored).dump(), load_pipeline, true);
+        REQUIRE(variant.render_graph != nullptr);
+        auto renamed = *variant.render_graph;
+        for (auto &graph : renamed.graphs)
+            for (auto &node : graph.nodes)
+                if (node.name == "scene") node.name = "scene_in_the_ir";
+        const auto from_ir = makePreviewGraphProgram(
+            variant.compiled_pipeline, variant.normalized_config, renamed);
+        CHECK(from_ir.pass_names ==
+              std::vector<std::string>{"scene_in_the_ir", "output_transform"});
+    }
     const auto &preview_passes =
         program.composed_config
             .at("rendering_passes")

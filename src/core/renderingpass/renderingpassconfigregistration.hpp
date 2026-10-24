@@ -152,6 +152,12 @@ makeRenderGraphVariantRequests(
         variants,
     bool with_preview);
 
+// RC-3c1b: the registration's preview program from the compiler program's
+// data_only artifact: the program, or (PV-1) unavailable with
+// previewUnsupportedAuthoringReason when the program could not compose it.
+PreviewGraphProgram previewGraphProgramOf(
+    RenderCompilerProgramVariantOutput preview_variant);
+
 RenderingPassConfigRegistrationResult registerRenderingPassConfigFromJson(
     const std::string &json_path, vk::Extent2D base_extent,
     RenderingPassConfigRegistrationDependencies dependencies);

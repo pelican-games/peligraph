@@ -1152,38 +1152,9 @@ void RegistrationStages::prepare() {
                    RenderCompilerProgramArtifact::data_only;
         });
     if (preview_request != variant_requests.end()) {
-        auto preview_variant =
-            std::move(prepared_variants.back());
+        prepared_preview = previewGraphProgramOf(
+            std::move(prepared_variants.back()));
         prepared_variants.pop_back();
-        // PV-1: a preview the program could not compose is recorded as
-        // unavailable, with why; the runtime variants register and publish
-        // as they would without it.
-        std::exception_ptr unavailable =
-            preview_variant.unavailable;
-        if (!unavailable) {
-            try {
-                if (!preview_variant.render_graph)
-                    throw std::logic_error(
-                        "the compiled preview variant has no render graph");
-                prepared_preview =
-                    makePreviewGraphProgram(
-                        std::move(
-                            preview_variant
-                                .compiled_pipeline),
-                        std::move(
-                            preview_variant
-                                .normalized_config),
-                        *preview_variant.render_graph);
-            } catch (...) {
-                unavailable = std::current_exception();
-            }
-        }
-        if (unavailable) {
-            prepared_preview =
-                unavailablePreviewGraphProgram(
-                    previewUnsupportedAuthoringReason(
-                        unavailable));
-        }
     }
     if (preview_request != variant_requests.end() &&
         !prepared_preview) {
@@ -1679,6 +1650,29 @@ makeRenderGraphVariantRequests(
             });
     }
     return variant_requests;
+}
+
+PreviewGraphProgram previewGraphProgramOf(
+    RenderCompilerProgramVariantOutput preview_variant) {
+    // PV-1: a preview the program could not compose is recorded as
+    // unavailable, with why; the runtime variants register and publish as
+    // they would without it.
+    std::exception_ptr unavailable = preview_variant.unavailable;
+    if (!unavailable) {
+        try {
+            if (!preview_variant.render_graph)
+                throw std::logic_error(
+                    "the compiled preview variant has no render graph");
+            return makePreviewGraphProgram(
+                std::move(preview_variant.compiled_pipeline),
+                std::move(preview_variant.normalized_config),
+                *preview_variant.render_graph);
+        } catch (...) {
+            unavailable = std::current_exception();
+        }
+    }
+    return unavailablePreviewGraphProgram(
+        previewUnsupportedAuthoringReason(unavailable));
 }
 
 RenderingPassConfigRegistrationResult registerRenderingPassConfigFromJson(
