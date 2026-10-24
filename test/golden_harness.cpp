@@ -5804,7 +5804,7 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
             metadata.array_layers == 3);
         REQUIRE(
             metadata.extent ==
-            vk::Extent2D{64, 64});
+            ResolvedResourceExtent{64, 64});
 
         const auto light_bytes =
             GET_MODULE(VulkanManageCore)
@@ -6008,7 +6008,7 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
             metadata.array_layers == 2);
         REQUIRE(
             metadata.extent ==
-            vk::Extent2D{64, 64});
+            ResolvedResourceExtent{64, 64});
 
         std::array<std::size_t, 2>
             invocations{};
@@ -7766,9 +7766,9 @@ readDepthTargetBytes(
     vk::ImageLayout source_layout) {
     auto &targets = GET_MODULE(RenderTargetContainer);
     const auto metadata = targets.getMetadata(target_id);
-    if (metadata.format != vk::Format::eD32Sfloat ||
+    if (metadata.format != ImageFormat::d32_sfloat ||
         !(metadata.usage &
-          vk::ImageUsageFlagBits::eTransferSrc) ||
+          ImageUsageBit::transfer_src) ||
         array_layer >= metadata.array_layers) {
         throw std::runtime_error("shadow probe requires a transfer-src D32 target");
     }
@@ -7847,13 +7847,13 @@ readColorTargetBytes(
         targets.getMetadata(target_id);
     std::uint32_t bytes_per_texel = 0;
     switch (metadata.format) {
-    case vk::Format::eB8G8R8A8Unorm:
-    case vk::Format::eB8G8R8A8Srgb:
-    case vk::Format::eR8G8B8A8Unorm:
-    case vk::Format::eR8G8B8A8Srgb:
+    case ImageFormat::b8g8r8a8_unorm:
+    case ImageFormat::b8g8r8a8_srgb:
+    case ImageFormat::r8g8b8a8_unorm:
+    case ImageFormat::r8g8b8a8_srgb:
         bytes_per_texel = 4;
         break;
-    case vk::Format::eR16G16B16A16Sfloat:
+    case ImageFormat::r16g16b16a16_sfloat:
         bytes_per_texel = 8;
         break;
     default:
@@ -7861,8 +7861,8 @@ readColorTargetBytes(
     }
     if (bytes_per_texel == 0 ||
         !(metadata.usage &
-          vk::ImageUsageFlagBits::
-              eTransferSrc) ||
+          ImageUsageBit::
+              transfer_src) ||
         array_layer >=
             metadata.array_layers ||
         mip_level >=
@@ -12283,30 +12283,27 @@ void GoldenHarness::runPlanarReflection() {
          }) {
         REQUIRE(
             metadata->extent ==
-            vk::Extent2D{64, 64});
+            ResolvedResourceExtent{64, 64});
         REQUIRE(
             metadata->array_layers ==
             2);
     }
     REQUIRE(
         (probe.albedo.format ==
-             vk::Format::
-                 eB8G8R8A8Unorm ||
+             ImageFormat::b8g8r8a8_unorm ||
          probe.albedo.format ==
-             vk::Format::
-                 eB8G8R8A8Srgb));
+             ImageFormat::b8g8r8a8_srgb));
     REQUIRE(
         probe.depth.format ==
-        vk::Format::eD32Sfloat);
+        ImageFormat::d32_sfloat);
     REQUIRE(
         probe.color.format ==
-        vk::Format::
-            eR16G16B16A16Sfloat);
+        ImageFormat::r16g16b16a16_sfloat);
     REQUIRE(
         probe.color.mip_levels == 7);
     REQUIRE(
         probe.color.usage &
-        vk::ImageUsageFlagBits::eStorage);
+        ImageUsageBit::storage);
     REQUIRE(
         probe.prepared_view_count ==
         1);
@@ -14923,10 +14920,10 @@ void GoldenHarness::runFullscreenRebind() {
             .role = "test",
             .extent_scale = 1.0f,
             .fixed_extent = std::nullopt,
-            .format = vk::Format::eR8G8B8A8Unorm,
-            .usage = vk::ImageUsageFlagBits::eColorAttachment |
-                     vk::ImageUsageFlagBits::eSampled |
-                     vk::ImageUsageFlagBits::eStorage,
+            .format = ImageFormat::r8g8b8a8_unorm,
+            .usage = ImageUsageBit::color_attachment |
+                     ImageUsageBit::sampled |
+                     ImageUsageBit::storage,
             .history = true,
         },
         {goldenWidth, goldenHeight}, vma::MemoryUsage::eAutoPreferDevice);

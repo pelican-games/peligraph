@@ -433,21 +433,21 @@ ResourcePattern patternFor(const LogicalTypeRegistry &types,
         .format_candidates =
             display
                 ? std::vector<ResourceFormatCandidate>{
-                      {"B8G8R8A8_UNORM",
+                      {ImageFormat::b8g8r8a8_unorm,
                        {std::string{
                            kDisplayFormatCapability}}},
                   }
             : depth
                 ? std::vector<ResourceFormatCandidate>{
-                      {"D32_SFLOAT",
+                      {ImageFormat::d32_sfloat,
                        {std::string{
                            kDepthFormatCapability}}},
                   }
                 : std::vector<ResourceFormatCandidate>{
-                      {"R16G16B16A16_SFLOAT",
+                      {ImageFormat::r16g16b16a16_sfloat,
                        {std::string{
                            kHdrFormatCapability}}},
-                      {"R8G8B8A8_UNORM",
+                      {ImageFormat::r8g8b8a8_unorm,
                        {std::string{
                            kLdrFormatCapability}}},
                   },
@@ -693,8 +693,8 @@ VulkanSampleCountPlanRequest sampleCountRequest(
                 semanticTypeIdName(
                     entry.type.semantic) ==
                         "pelican.render.depth@1"
-                    ? "D32_SFLOAT"
-                    : "R16G16B16A16_SFLOAT",
+                    ? ImageFormat::d32_sfloat
+                    : ImageFormat::r16g16b16a16_sfloat,
             .supported_samples =
                 entry.name == limited_resource
                     ? std::vector<std::uint32_t>{1, 2}
@@ -1024,7 +1024,7 @@ TEST_CASE(
         VulkanPhysicalResourcePlan{
             .logical_resource =
                 "write_only_scratch",
-            .format = "R8G8B8A8Unorm",
+            .format = ImageFormat::r8g8b8a8_unorm,
             .mip_levels =
                 ImageMipLevelCount{
                     .mode =
@@ -2697,7 +2697,7 @@ TEST_CASE("physical fragments select declared alternate formats with target capa
     REQUIRE(
         physicalResource(automatic, "gbuffer_0")
             .format ==
-        "R16G16B16A16_SFLOAT");
+        ImageFormat::r16g16b16a16_sfloat);
     REQUIRE(
         physicalResource(automatic, "gbuffer_0")
             .rasterization_samples == 4);
@@ -2713,7 +2713,7 @@ TEST_CASE("physical fragments select declared alternate formats with target capa
                    "gbuffer_0";
         });
     REQUIRE(edited != fragment.resources.end());
-    edited->format = "R8G8B8A8_UNORM";
+    edited->format = ImageFormat::r8g8b8a8_unorm;
 
     const auto linked = compile(
         types, graph, topology(false),
@@ -2723,7 +2723,7 @@ TEST_CASE("physical fragments select declared alternate formats with target capa
         std::nullopt, fragment,
         {VulkanPhysicalResourceFormatCapability{
             .logical_resource = "gbuffer_0",
-            .format = "R8G8B8A8_UNORM",
+            .format = ImageFormat::r8g8b8a8_unorm,
             .image_usage_supported = true,
             .supported_samples = {1, 2, 4},
             .max_array_layers = 1,
@@ -2731,7 +2731,7 @@ TEST_CASE("physical fragments select declared alternate formats with target capa
     REQUIRE(
         physicalResource(linked, "gbuffer_0")
             .format ==
-        "R8G8B8A8_UNORM");
+        ImageFormat::r8g8b8a8_unorm);
     REQUIRE(
         physicalResource(linked, "gbuffer_0")
             .rasterization_samples == 4);
@@ -2745,7 +2745,7 @@ TEST_CASE("physical fragments select declared alternate formats with target capa
     REQUIRE(
         resolved !=
         linked.sample_count_plan->resources.end());
-    REQUIRE(resolved->format == "R8G8B8A8_UNORM");
+    REQUIRE(resolved->format == ImageFormat::r8g8b8a8_unorm);
     const auto lowering = std::find_if(
         linked.lowering_graph.resources.begin(),
         linked.lowering_graph.resources.end(),
@@ -2790,7 +2790,7 @@ TEST_CASE("alternate physical format evidence is fail-closed for usage and sampl
                    "gbuffer_0";
         });
     REQUIRE(edited != fragment.resources.end());
-    edited->format = "R8G8B8A8_UNORM";
+    edited->format = ImageFormat::r8g8b8a8_unorm;
 
     const auto compile_with_capability =
         [&](VulkanPhysicalResourceFormatCapability capability) {
@@ -2806,7 +2806,7 @@ TEST_CASE("alternate physical format evidence is fail-closed for usage and sampl
         [&] {
             (void)compile_with_capability({
                 .logical_resource = "gbuffer_0",
-                .format = "R8G8B8A8_UNORM",
+                .format = ImageFormat::r8g8b8a8_unorm,
                 .image_usage_supported = false,
                 .supported_samples = {1, 2, 4},
             });
@@ -2816,7 +2816,7 @@ TEST_CASE("alternate physical format evidence is fail-closed for usage and sampl
         [&] {
             (void)compile_with_capability({
                 .logical_resource = "gbuffer_0",
-                .format = "R8G8B8A8_UNORM",
+                .format = ImageFormat::r8g8b8a8_unorm,
                 .image_usage_supported = true,
                 .supported_samples = {1, 2},
             });
@@ -2915,7 +2915,7 @@ TEST_CASE("physical fragment verifier rejects stale, aggressive, open-scope, and
         format_resource !=
         alternate_format.resources.end());
     format_resource->format =
-        "R8G8B8A8_UNORM";
+        ImageFormat::r8g8b8a8_unorm;
     requireThrowsContaining(
         [&] {
             (void)compile(
@@ -3444,7 +3444,7 @@ TEST_CASE("external depth export infers camera depth and keeps it materialized a
     REQUIRE(plan.external_depth_export->source_resource ==
             "scene_depth");
     REQUIRE(plan.external_depth_export->format ==
-            "D32_SFLOAT");
+            ImageFormat::d32_sfloat);
     REQUIRE(plan.external_depth_export->view_layout ==
             VulkanResourceViewLayout::layered_2d_array);
     REQUIRE(plan.external_depth_export->array_layers == 2);
@@ -3783,47 +3783,43 @@ TEST_CASE("explicit sample target selects its attachment component and blocks in
 
 TEST_CASE("RC-1 image bytes count every mip, layer and history surface and the multisampled image",
           "[target-render-planning][rc1][memory]") {
-    // The plan's spelling of a format, not the authored one.
-    CHECK(imageFormatTexelBytes("R8Unorm") == 1);
-    CHECK(imageFormatTexelBytes("R16Sfloat") == 2);
-    CHECK(imageFormatTexelBytes("B8G8R8A8Srgb") == 4);
-    CHECK(imageFormatTexelBytes("D32Sfloat") == 4);
-    CHECK(imageFormatTexelBytes("R16G16B16A16Sfloat") == 8);
-    CHECK(imageFormatTexelBytes("D32SfloatS8Uint") == 8);
-    CHECK(imageFormatTexelBytes("R32G32B32A32Sfloat") == 16);
-    CHECK(imageFormatTexelBytes("R16G16B16A16_SFLOAT") == 0);
-    CHECK(imageFormatTexelBytes("Bc7SrgbBlock") == 0);
+    // RC-3a1: the format table's sizes (RC-1's values).
+    CHECK(imageFormatEstimatedTexelBytes(ImageFormat::r8_unorm) == 1);
+    CHECK(imageFormatEstimatedTexelBytes(ImageFormat::r16_sfloat) == 2);
+    CHECK(imageFormatEstimatedTexelBytes(ImageFormat::b8g8r8a8_srgb) == 4);
+    CHECK(imageFormatEstimatedTexelBytes(ImageFormat::d32_sfloat) == 4);
+    CHECK(imageFormatEstimatedTexelBytes(ImageFormat::r16g16b16a16_sfloat) == 8);
+    CHECK(imageFormatEstimatedTexelBytes(ImageFormat::d32_sfloat_s8_uint) == 8);
+    CHECK(imageFormatEstimatedTexelBytes(ImageFormat::r32g32b32a32_sfloat) == 16);
 
-    CHECK(imageResourceBytes({.format = "R8G8B8A8Unorm",
+    CHECK(imageResourceBytes({.format = ImageFormat::r8g8b8a8_unorm,
                               .extent = {1920, 1080}}) == 8'294'400);
     // 8x4, 4x2, 2x1, 1x1: 43 texels.
-    CHECK(imageResourceBytes({.format = "R8Unorm",
+    CHECK(imageResourceBytes({.format = ImageFormat::r8_unorm,
                               .extent = {8, 4},
                               .mip_levels = 4}) == 43);
-    CHECK(imageResourceBytes({.format = "R8Unorm",
+    CHECK(imageResourceBytes({.format = ImageFormat::r8_unorm,
                               .extent = {8, 4},
                               .mip_levels = 4,
                               .array_layers = 6}) == 6 * 43);
-    CHECK(imageResourceBytes({.format = "R16G16B16A16Sfloat",
+    CHECK(imageResourceBytes({.format = ImageFormat::r16g16b16a16_sfloat,
                               .extent = {4, 4},
                               .surfaces = 2}) == 2 * 8 * 16);
     // The sampled image with its two mips (8x4 + 4x2 texels) and the 4x
     // image the passes render into (8x4 texels, four samples each), for
     // each of the two history surfaces.
-    CHECK(imageResourceBytes({.format = "R8G8B8A8Unorm",
+    CHECK(imageResourceBytes({.format = ImageFormat::r8g8b8a8_unorm,
                               .extent = {8, 4},
                               .mip_levels = 2,
                               .samples = 4,
                               .surfaces = 2}) ==
           2 * (4 * (32 + 8) + 4 * 32 * 4));
-    CHECK(imageResourceBytes({.format = "Bc7SrgbBlock",
-                              .extent = {8, 8}}) == 0);
-    CHECK(imageResourceBytes({.format = "R8Unorm",
+    CHECK(imageResourceBytes({.format = ImageFormat::r8_unorm,
                               .extent = {0, 8}}) == 0);
 
     VulkanPhysicalResourcePlan bloom{
         .logical_resource = "bloom",
-        .format = "B8G8R8A8Srgb",
+        .format = ImageFormat::b8g8r8a8_srgb,
         .mip_levels = {ImageMipLevelMode::full_chain, 1},
     };
     // A full chain at 16x8: 128 + 32 + 8 + 2 + 1 texels.
@@ -3834,7 +3830,7 @@ TEST_CASE("RC-1 image bytes count every mip, layer and history surface and the m
           2 * 4 * 171 + 2 * 2 * 4 * 128);
     VulkanPhysicalResourcePlan swapchain{
         .logical_resource = "swapchain",
-        .format = "B8G8R8A8Srgb",
+        .format = ImageFormat::b8g8r8a8_srgb,
         .representation = VulkanResourceRepresentation::external,
     };
     CHECK_FALSE(vulkanPhysicalResourceIsPlannedImage(swapchain));
@@ -3847,11 +3843,11 @@ TEST_CASE("RC-1 memory summary counts an alias group once and finds the node mos
         return TargetLoweringNode{
             .logical = LogicalGraphNode{.name = std::move(name)}};
     };
-    const auto image = [](std::string name, std::string format,
+    const auto image = [](std::string name, ImageFormat format,
                           std::size_t first, std::size_t last) {
         return VulkanPhysicalResourcePlan{
             .logical_resource = std::move(name),
-            .format = std::move(format),
+            .format = format,
             .lifetime = {true, first, last},
         };
     };
@@ -3859,12 +3855,12 @@ TEST_CASE("RC-1 memory summary counts an alias group once and finds the node mos
     plan.lowering_graph.nodes = {node("geometry"), node("blur"),
                                  node("composite"), node("present")};
     plan.resources = {
-        image("depth", "D32Sfloat", 0, 3),
-        image("first", "R8G8B8A8Unorm", 0, 1),
-        image("second", "R8G8B8A8Unorm", 2, 3),
-        image("small", "R8Unorm", 1, 2),
-        image("swapchain", "B8G8R8A8Srgb", 3, 3),
-        image("unknown", "R8G8B8A8Unorm", 0, 3),
+        image("depth", ImageFormat::d32_sfloat, 0, 3),
+        image("first", ImageFormat::r8g8b8a8_unorm, 0, 1),
+        image("second", ImageFormat::r8g8b8a8_unorm, 2, 3),
+        image("small", ImageFormat::r8_unorm, 1, 2),
+        image("swapchain", ImageFormat::b8g8r8a8_srgb, 3, 3),
+        image("unknown", ImageFormat::r8g8b8a8_unorm, 0, 3),
     };
     plan.resources[4].representation =
         VulkanResourceRepresentation::external;

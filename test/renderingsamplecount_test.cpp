@@ -18,10 +18,10 @@ namespace Pelican {
 namespace {
 
 RenderTargetDefinition target(
-    std::string name, vk::Format format,
-    vk::ImageUsageFlags usage =
-        vk::ImageUsageFlagBits::eColorAttachment |
-        vk::ImageUsageFlagBits::eSampled) {
+    std::string name, ImageFormat format,
+    ImageUsage usage =
+        ImageUsageBit::color_attachment |
+        ImageUsageBit::sampled) {
     return {
         .name = std::move(name),
         .format_class = "data",
@@ -336,14 +336,14 @@ localReadDeviceFacts(bool feature = true,
 TEST_CASE("rendering sample planning discovers a hybrid attachment component",
           "[sample-count][rendering]") {
     const std::vector targets{
-        target("albedo", vk::Format::eB8G8R8A8Unorm),
-        target("normal", vk::Format::eR16G16B16A16Sfloat),
-        target("custom_id", vk::Format::eR32Uint),
-        target("depth", vk::Format::eD32Sfloat,
-               vk::ImageUsageFlagBits::eDepthStencilAttachment |
-                   vk::ImageUsageFlagBits::eTransferSrc),
-        target("lit", vk::Format::eR16G16B16A16Sfloat),
-        target("display", vk::Format::eB8G8R8A8Srgb),
+        target("albedo", ImageFormat::b8g8r8a8_unorm),
+        target("normal", ImageFormat::r16g16b16a16_sfloat),
+        target("custom_id", ImageFormat::r32_uint),
+        target("depth", ImageFormat::d32_sfloat,
+               ImageUsageBit::depth_stencil_attachment |
+                   ImageUsageBit::transfer_src),
+        target("lit", ImageFormat::r16g16b16a16_sfloat),
+        target("display", ImageFormat::b8g8r8a8_srgb),
     };
     const auto query = [](const RenderTargetDefinition &definition) {
         if (definition.name == "custom_id") {
@@ -371,7 +371,7 @@ TEST_CASE("rendering sample planning discovers a hybrid attachment component",
     REQUIRE(compilation.plans.front()
                 ->sample_count_plan->groups.at(0)
                 .limiting_resources ==
-            std::vector<std::string>{"custom_id (R32Uint)"});
+            std::vector<std::string>{"custom_id (R32_UINT)"});
     REQUIRE(physicalResource(
                 *compilation.plans.front(), "custom_id")
                 .rasterization_samples == 2);
@@ -399,14 +399,14 @@ TEST_CASE("rendering sample planning discovers a hybrid attachment component",
 TEST_CASE("ray query target requirement is hard and uses the enabled runtime capability",
           "[target-planning][ray-query][capability]") {
     const std::vector targets{
-        target("albedo", vk::Format::eB8G8R8A8Unorm),
-        target("normal", vk::Format::eR16G16B16A16Sfloat),
-        target("custom_id", vk::Format::eR32Uint),
-        target("depth", vk::Format::eD32Sfloat,
-               vk::ImageUsageFlagBits::eDepthStencilAttachment |
-                   vk::ImageUsageFlagBits::eTransferSrc),
-        target("lit", vk::Format::eR16G16B16A16Sfloat),
-        target("display", vk::Format::eB8G8R8A8Srgb),
+        target("albedo", ImageFormat::b8g8r8a8_unorm),
+        target("normal", ImageFormat::r16g16b16a16_sfloat),
+        target("custom_id", ImageFormat::r32_uint),
+        target("depth", ImageFormat::d32_sfloat,
+               ImageUsageBit::depth_stencil_attachment |
+                   ImageUsageBit::transfer_src),
+        target("lit", ImageFormat::r16g16b16a16_sfloat),
+        target("display", ImageFormat::b8g8r8a8_srgb),
     };
     const auto config = hybridConfig();
     const auto graphs =
@@ -455,14 +455,14 @@ TEST_CASE(
     "ray tracing pipeline target requirement is hard and uses the enabled runtime capability",
     "[target-planning][ray-tracing][capability][wp285]") {
     const std::vector targets{
-        target("albedo", vk::Format::eB8G8R8A8Unorm),
-        target("normal", vk::Format::eR16G16B16A16Sfloat),
-        target("custom_id", vk::Format::eR32Uint),
-        target("depth", vk::Format::eD32Sfloat,
-               vk::ImageUsageFlagBits::eDepthStencilAttachment |
-                   vk::ImageUsageFlagBits::eTransferSrc),
-        target("lit", vk::Format::eR16G16B16A16Sfloat),
-        target("display", vk::Format::eB8G8R8A8Srgb),
+        target("albedo", ImageFormat::b8g8r8a8_unorm),
+        target("normal", ImageFormat::r16g16b16a16_sfloat),
+        target("custom_id", ImageFormat::r32_uint),
+        target("depth", ImageFormat::d32_sfloat,
+               ImageUsageBit::depth_stencil_attachment |
+                   ImageUsageBit::transfer_src),
+        target("lit", ImageFormat::r16g16b16a16_sfloat),
+        target("display", ImageFormat::b8g8r8a8_srgb),
     };
     const auto config = hybridConfig();
     const auto graphs =
@@ -511,14 +511,14 @@ TEST_CASE(
 TEST_CASE("rendering target bridge links attachment operations into the physical plan",
           "[target-planning][rendering][physical-attachment][bridge]") {
     const std::vector targets{
-        target("albedo", vk::Format::eB8G8R8A8Unorm),
-        target("normal", vk::Format::eR16G16B16A16Sfloat),
-        target("custom_id", vk::Format::eR32Uint),
-        target("depth", vk::Format::eD32Sfloat,
-               vk::ImageUsageFlagBits::eDepthStencilAttachment |
-                   vk::ImageUsageFlagBits::eTransferSrc),
-        target("lit", vk::Format::eR16G16B16A16Sfloat),
-        target("display", vk::Format::eB8G8R8A8Srgb),
+        target("albedo", ImageFormat::b8g8r8a8_unorm),
+        target("normal", ImageFormat::r16g16b16a16_sfloat),
+        target("custom_id", ImageFormat::r32_uint),
+        target("depth", ImageFormat::d32_sfloat,
+               ImageUsageBit::depth_stencil_attachment |
+                   ImageUsageBit::transfer_src),
+        target("lit", ImageFormat::r16g16b16a16_sfloat),
+        target("display", ImageFormat::b8g8r8a8_srgb),
     };
     const auto config = hybridConfig();
     const auto graphs =
@@ -701,11 +701,11 @@ TEST_CASE(
     auto scratch =
         target(
             "scratch",
-            vk::Format::eR8G8B8A8Unorm,
-            vk::ImageUsageFlagBits::
-                eColorAttachment);
+            ImageFormat::r8g8b8a8_unorm,
+            ImageUsageBit::
+                color_attachment);
     scratch.format_candidates = {
-        vk::Format::eR16G16B16A16Sfloat};
+        ImageFormat::r16g16b16a16_sfloat};
     const std::vector targets{scratch};
     const auto supported_facts =
         RenderingTargetPlanDeviceFacts{
@@ -769,8 +769,7 @@ TEST_CASE(
                 .max_array_layers = 1,
                 .transient_attachment_supported =
                     definition.format ==
-                    vk::Format::
-                        eR16G16B16A16Sfloat,
+                    ImageFormat::r16g16b16a16_sfloat,
             };
         };
     const auto unsupported =
@@ -832,9 +831,7 @@ TEST_CASE(
         fragment_resource !=
         alternate_fragment.resources.end());
     fragment_resource->format =
-        vk::to_string(
-            vk::Format::
-                eR16G16B16A16Sfloat);
+        ImageFormat::r16g16b16a16_sfloat;
     const std::array fragments{
         alternate_fragment};
     auto format_sensitive_facts =
@@ -848,8 +845,7 @@ TEST_CASE(
                 .max_array_layers = 1,
                 .transient_attachment_supported =
                     definition.format ==
-                    vk::Format::
-                        eR8G8B8A8Unorm,
+                    ImageFormat::r8g8b8a8_unorm,
             };
         };
     requireThrowsContaining(
@@ -929,8 +925,8 @@ TEST_CASE(
             tile_local_attachment);
     REQUIRE(
         gbuffer->usage &
-        vk::ImageUsageFlagBits::
-            eInputAttachment);
+        ImageUsageBit::
+            input_attachment);
 
     const auto missing_feature =
         compileRenderingTargetPlans(
@@ -1132,7 +1128,7 @@ TEST_CASE(
     REQUIRE(target->array_layers == 2);
     REQUIRE(
         target->usage &
-        vk::ImageUsageFlagBits::eInputAttachment);
+        ImageUsageBit::input_attachment);
 }
 
 TEST_CASE(
@@ -1197,24 +1193,24 @@ TEST_CASE(
         RenderTargetStorageMode::materialized);
     REQUIRE(
         gbuffer->usage &
-        vk::ImageUsageFlagBits::
-            eInputAttachment);
+        ImageUsageBit::
+            input_attachment);
     REQUIRE(
         gbuffer->usage &
-        vk::ImageUsageFlagBits::eSampled);
+        ImageUsageBit::sampled);
 }
 
 TEST_CASE("rendering target bridge applies a verified alternate physical format",
           "[target-planning][rendering][physical-format][bridge]") {
     auto targets = std::vector{
-        target("albedo", vk::Format::eB8G8R8A8Unorm),
-        target("normal", vk::Format::eR16G16B16A16Sfloat),
-        target("custom_id", vk::Format::eR32Uint),
-        target("depth", vk::Format::eD32Sfloat,
-               vk::ImageUsageFlagBits::eDepthStencilAttachment |
-                   vk::ImageUsageFlagBits::eTransferSrc),
-        target("lit", vk::Format::eR16G16B16A16Sfloat),
-        target("display", vk::Format::eB8G8R8A8Srgb),
+        target("albedo", ImageFormat::b8g8r8a8_unorm),
+        target("normal", ImageFormat::r16g16b16a16_sfloat),
+        target("custom_id", ImageFormat::r32_uint),
+        target("depth", ImageFormat::d32_sfloat,
+               ImageUsageBit::depth_stencil_attachment |
+                   ImageUsageBit::transfer_src),
+        target("lit", ImageFormat::r16g16b16a16_sfloat),
+        target("display", ImageFormat::b8g8r8a8_srgb),
     };
     const auto lit = std::find_if(
         targets.begin(), targets.end(),
@@ -1223,8 +1219,8 @@ TEST_CASE("rendering target bridge applies a verified alternate physical format"
         });
     REQUIRE(lit != targets.end());
     lit->format_candidates = {
-        vk::Format::eR16G16B16A16Sfloat,
-        vk::Format::eR8G8B8A8Unorm,
+        ImageFormat::r16g16b16a16_sfloat,
+        ImageFormat::r8g8b8a8_unorm,
     };
 
     const auto config = hybridConfig();
@@ -1250,7 +1246,7 @@ TEST_CASE("rendering target bridge applies a verified alternate physical format"
             facts);
     REQUIRE(
         formatAssignment(automatic, "lit").format ==
-        vk::Format::eR16G16B16A16Sfloat);
+        ImageFormat::r16g16b16a16_sfloat);
 
     auto fragment =
         ejectVulkanPhysicalFragmentPackage(
@@ -1264,8 +1260,7 @@ TEST_CASE("rendering target bridge applies a verified alternate physical format"
         });
     REQUIRE(resource != fragment.resources.end());
     resource->format =
-        vk::to_string(
-            vk::Format::eR8G8B8A8Unorm);
+        ImageFormat::r8g8b8a8_unorm;
     const std::array fragments{fragment};
     const auto linked =
         compileRenderingTargetPlans(
@@ -1277,13 +1272,12 @@ TEST_CASE("rendering target bridge applies a verified alternate physical format"
             {}, fragments);
     REQUIRE(
         formatAssignment(linked, "lit").format ==
-        vk::Format::eR8G8B8A8Unorm);
+        ImageFormat::r8g8b8a8_unorm);
     REQUIRE(
         physicalResource(
             *linked.plans.front(), "lit")
             .format ==
-        vk::to_string(
-            vk::Format::eR8G8B8A8Unorm));
+        ImageFormat::r8g8b8a8_unorm);
     REQUIRE(
         std::any_of(
             linked.plans.front()
@@ -1293,9 +1287,7 @@ TEST_CASE("rendering target bridge applies a verified alternate physical format"
             [](const auto &candidate) {
                 return candidate.resource == "lit" &&
                        candidate.format ==
-                           vk::to_string(
-                               vk::Format::
-                                   eR8G8B8A8Unorm);
+                           ImageFormat::r8g8b8a8_unorm;
             }));
 
     auto applied_targets = targets;
@@ -1310,7 +1302,7 @@ TEST_CASE("rendering target bridge applies a verified alternate physical format"
     REQUIRE(applied_lit !=
             applied_targets.end());
     REQUIRE(applied_lit->format ==
-            vk::Format::eR8G8B8A8Unorm);
+            ImageFormat::r8g8b8a8_unorm);
 
     auto unsupported_facts = facts;
     unsupported_facts
@@ -1319,7 +1311,7 @@ TEST_CASE("rendering target bridge applies a verified alternate physical format"
             return RenderingImageFormatCapability{
                 .image_usage_supported =
                     definition.format !=
-                    vk::Format::eR8G8B8A8Unorm,
+                    ImageFormat::r8g8b8a8_unorm,
                 .supported_samples = {1, 2, 4},
                 .max_array_layers = 4,
             };
@@ -1340,14 +1332,14 @@ TEST_CASE("rendering target bridge applies a verified alternate physical format"
 TEST_CASE("rendering target bridge applies typed graph planning controls",
           "[target-planning][rendering][bridge]") {
     const std::vector targets{
-        target("albedo", vk::Format::eB8G8R8A8Unorm),
-        target("normal", vk::Format::eR16G16B16A16Sfloat),
-        target("custom_id", vk::Format::eR32Uint),
-        target("depth", vk::Format::eD32Sfloat,
-               vk::ImageUsageFlagBits::eDepthStencilAttachment |
-                   vk::ImageUsageFlagBits::eTransferSrc),
-        target("lit", vk::Format::eR16G16B16A16Sfloat),
-        target("display", vk::Format::eB8G8R8A8Srgb),
+        target("albedo", ImageFormat::b8g8r8a8_unorm),
+        target("normal", ImageFormat::r16g16b16a16_sfloat),
+        target("custom_id", ImageFormat::r32_uint),
+        target("depth", ImageFormat::d32_sfloat,
+               ImageUsageBit::depth_stencil_attachment |
+                   ImageUsageBit::transfer_src),
+        target("lit", ImageFormat::r16g16b16a16_sfloat),
+        target("display", ImageFormat::b8g8r8a8_srgb),
     };
     const auto config = hybridConfig();
     const auto graphs =
@@ -1534,13 +1526,13 @@ TEST_CASE("exact rendering sample planning reports an added G-buffer target",
     auto config = hybridConfig();
     config["multisampling"]["fallback"] = "error";
     const std::vector targets{
-        target("albedo", vk::Format::eB8G8R8A8Unorm),
-        target("normal", vk::Format::eR16G16B16A16Sfloat),
-        target("custom_id", vk::Format::eR32Uint),
-        target("depth", vk::Format::eD32Sfloat,
-               vk::ImageUsageFlagBits::eDepthStencilAttachment),
-        target("lit", vk::Format::eR16G16B16A16Sfloat),
-        target("display", vk::Format::eB8G8R8A8Srgb),
+        target("albedo", ImageFormat::b8g8r8a8_unorm),
+        target("normal", ImageFormat::r16g16b16a16_sfloat),
+        target("custom_id", ImageFormat::r32_uint),
+        target("depth", ImageFormat::d32_sfloat,
+               ImageUsageBit::depth_stencil_attachment),
+        target("lit", ImageFormat::r16g16b16a16_sfloat),
+        target("display", ImageFormat::b8g8r8a8_srgb),
     };
     requireThrowsContaining(
         [&] {
@@ -1560,7 +1552,7 @@ TEST_CASE("exact rendering sample planning reports an added G-buffer target",
                         },
                 });
         },
-        "custom_id (R32Uint)");
+        "custom_id (R32_UINT)");
 }
 
 TEST_CASE("explicit target selects its whole attachment component",
@@ -1569,13 +1561,13 @@ TEST_CASE("explicit target selects its whole attachment component",
     config["multisampling"]["scope"] = "none";
     config["multisampling"]["targets"] = nlohmann::json::array({"lit"});
     const std::vector targets{
-        target("albedo", vk::Format::eB8G8R8A8Unorm),
-        target("normal", vk::Format::eR16G16B16A16Sfloat),
-        target("custom_id", vk::Format::eR32Uint),
-        target("depth", vk::Format::eD32Sfloat,
-               vk::ImageUsageFlagBits::eDepthStencilAttachment),
-        target("lit", vk::Format::eR16G16B16A16Sfloat),
-        target("display", vk::Format::eB8G8R8A8Srgb),
+        target("albedo", ImageFormat::b8g8r8a8_unorm),
+        target("normal", ImageFormat::r16g16b16a16_sfloat),
+        target("custom_id", ImageFormat::r32_uint),
+        target("depth", ImageFormat::d32_sfloat,
+               ImageUsageBit::depth_stencil_attachment),
+        target("lit", ImageFormat::r16g16b16a16_sfloat),
+        target("display", ImageFormat::b8g8r8a8_srgb),
     };
     const auto graphs =
         parseFrameGraphDefinitionsFromConfigJson(config);
@@ -1595,15 +1587,15 @@ TEST_CASE("explicit target selects its whole attachment component",
 
 TEST_CASE("color resolve mode follows Vulkan numeric format rules",
           "[sample-count][rendering][resolve]") {
-    REQUIRE(colorAttachmentResolveMode(vk::Format::eR32Uint) ==
+    REQUIRE(colorAttachmentResolveMode(ImageFormat::r32_uint) ==
             vk::ResolveModeFlagBits::eSampleZero);
-    REQUIRE(colorAttachmentResolveMode(vk::Format::eR16Sint) ==
+    REQUIRE(colorAttachmentResolveMode(ImageFormat::r16_sint) ==
             vk::ResolveModeFlagBits::eSampleZero);
     REQUIRE(colorAttachmentResolveMode(
-                vk::Format::eR16G16B16A16Sfloat) ==
+                ImageFormat::r16g16b16a16_sfloat) ==
             vk::ResolveModeFlagBits::eAverage);
     REQUIRE(colorAttachmentResolveMode(
-                vk::Format::eB8G8R8A8Unorm) ==
+                ImageFormat::b8g8r8a8_unorm) ==
             vk::ResolveModeFlagBits::eAverage);
 }
 
@@ -1612,13 +1604,13 @@ TEST_CASE(
     "[target-planning][alias][runtime]") {
     auto display =
         target("display",
-               vk::Format::eR8G8B8A8Unorm);
+               ImageFormat::r8g8b8a8_unorm);
     display.format_class = "display";
     std::vector targets{
         target("temporary_a",
-               vk::Format::eR8G8B8A8Unorm),
+               ImageFormat::r8g8b8a8_unorm),
         target("temporary_b",
-               vk::Format::eR8G8B8A8Unorm),
+               ImageFormat::r8g8b8a8_unorm),
         display,
     };
     const auto graphs =
@@ -1677,14 +1669,14 @@ TEST_CASE(
     "[target-planning][alias][runtime][po1]") {
     auto display =
         target("display",
-               vk::Format::eR8G8B8A8Unorm);
+               ImageFormat::r8g8b8a8_unorm);
     display.format_class = "display";
-    const auto compile = [&](vk::ImageUsageFlags temporary_b_usage) {
+    const auto compile = [&](ImageUsage temporary_b_usage) {
         const std::vector targets{
             target("temporary_a",
-                   vk::Format::eR8G8B8A8Unorm),
+                   ImageFormat::r8g8b8a8_unorm),
             target("temporary_b",
-                   vk::Format::eR8G8B8A8Unorm,
+                   ImageFormat::r8g8b8a8_unorm,
                    temporary_b_usage),
             display,
         };
@@ -1715,9 +1707,9 @@ TEST_CASE(
         };
 
     const auto transfer =
-        compile(vk::ImageUsageFlagBits::eColorAttachment |
-                vk::ImageUsageFlagBits::eSampled |
-                vk::ImageUsageFlagBits::eTransferSrc);
+        compile(ImageUsageBit::color_attachment |
+                ImageUsageBit::sampled |
+                ImageUsageBit::transfer_src);
     const auto &excluded = *transfer.plans.front();
     REQUIRE(excluded.alias_groups.empty());
     const std::string expected =
@@ -1737,8 +1729,8 @@ TEST_CASE(
 
     // Without TRANSFER_SRC it is a candidate again (the rule is unchanged).
     const auto sampled =
-        compile(vk::ImageUsageFlagBits::eColorAttachment |
-                vk::ImageUsageFlagBits::eSampled);
+        compile(ImageUsageBit::color_attachment |
+                ImageUsageBit::sampled);
     REQUIRE(sampled.plans.front()->alias_groups.size() == 1);
     CHECK(physicalResource(*sampled.plans.front(), "temporary_b")
               .reason ==
@@ -1746,10 +1738,10 @@ TEST_CASE(
 
     // Every usage past the set is named, in the usage table's order.
     const auto storage =
-        compile(vk::ImageUsageFlagBits::eColorAttachment |
-                vk::ImageUsageFlagBits::eSampled |
-                vk::ImageUsageFlagBits::eTransferSrc |
-                vk::ImageUsageFlagBits::eStorage);
+        compile(ImageUsageBit::color_attachment |
+                ImageUsageBit::sampled |
+                ImageUsageBit::transfer_src |
+                ImageUsageBit::storage);
     CHECK(physicalResource(*storage.plans.front(), "temporary_b")
               .reason ==
           "logical materialization requirement is required: usage "
@@ -1762,13 +1754,13 @@ TEST_CASE(
     "[target-planning][alias][runtime][variant]") {
     auto display =
         target("display",
-               vk::Format::eR8G8B8A8Unorm);
+               ImageFormat::r8g8b8a8_unorm);
     display.format_class = "display";
     const std::vector targets{
         target("temporary_a",
-               vk::Format::eR8G8B8A8Unorm),
+               ImageFormat::r8g8b8a8_unorm),
         target("temporary_b",
-               vk::Format::eR8G8B8A8Unorm),
+               ImageFormat::r8g8b8a8_unorm),
         display,
     };
     auto alias_graphs =
@@ -1810,13 +1802,13 @@ TEST_CASE(
     // temporary_a without temporary_b.
     auto display =
         target("display",
-               vk::Format::eR8G8B8A8Unorm);
+               ImageFormat::r8g8b8a8_unorm);
     display.format_class = "display";
     std::vector targets{
         target("temporary_a",
-               vk::Format::eR8G8B8A8Unorm),
+               ImageFormat::r8g8b8a8_unorm),
         target("temporary_b",
-               vk::Format::eR8G8B8A8Unorm),
+               ImageFormat::r8g8b8a8_unorm),
         display,
     };
     auto graphs =
@@ -1886,11 +1878,11 @@ TEST_CASE(
     };
     auto low =
         target("low_color",
-               vk::Format::eR8G8B8A8Unorm);
+               ImageFormat::r8g8b8a8_unorm);
     low.extent_scale = 0.5f;
     auto display =
         target("display",
-               vk::Format::eB8G8R8A8Srgb);
+               ImageFormat::b8g8r8a8_srgb);
     const std::vector targets{low, display};
     const auto graphs =
         parseFrameGraphDefinitionsFromConfigJson(config);
@@ -1961,16 +1953,16 @@ TEST_CASE(
     };
     auto half =
         target("half_color",
-               vk::Format::eR8G8B8A8Unorm);
+               ImageFormat::r8g8b8a8_unorm);
     half.extent_scale = 0.5f;
     auto three_quarter =
         target("three_quarter_color",
-               vk::Format::eR8G8B8A8Unorm);
+               ImageFormat::r8g8b8a8_unorm);
     three_quarter.extent_scale = 0.75f;
     const std::vector targets{
         half, three_quarter,
         target("display",
-               vk::Format::eB8G8R8A8Srgb),
+               ImageFormat::b8g8r8a8_srgb),
     };
 
     requireThrowsContaining(
@@ -1999,13 +1991,13 @@ TEST_CASE("runtime target adapter carries multiview device facts and typed view 
     const auto graphs =
         parseFrameGraphDefinitionsFromConfigJson(config);
     const std::vector targets{
-        target("albedo", vk::Format::eB8G8R8A8Unorm),
-        target("normal", vk::Format::eR16G16B16A16Sfloat),
-        target("custom_id", vk::Format::eR32Uint),
-        target("depth", vk::Format::eD32Sfloat,
-               vk::ImageUsageFlagBits::eDepthStencilAttachment),
-        target("lit", vk::Format::eR16G16B16A16Sfloat),
-        target("display", vk::Format::eB8G8R8A8Srgb),
+        target("albedo", ImageFormat::b8g8r8a8_unorm),
+        target("normal", ImageFormat::r16g16b16a16_sfloat),
+        target("custom_id", ImageFormat::r32_uint),
+        target("depth", ImageFormat::d32_sfloat,
+               ImageUsageBit::depth_stencil_attachment),
+        target("lit", ImageFormat::r16g16b16a16_sfloat),
+        target("display", ImageFormat::b8g8r8a8_srgb),
     };
     const auto compilation = compileRenderingTargetPlans(
         graphs, targets, SampleCountPolicy{},
@@ -2069,7 +2061,7 @@ TEST_CASE("runtime target adapter carries multiview device facts and typed view 
     REQUIRE(plan.external_depth_export->source_resource ==
             "depth");
     REQUIRE(plan.external_depth_export->format ==
-            vk::to_string(vk::Format::eD32Sfloat));
+            ImageFormat::d32_sfloat);
     REQUIRE(plan.external_depth_export->array_layers == 2);
 
     auto materialized_targets = targets;
@@ -2089,7 +2081,7 @@ TEST_CASE("runtime target adapter carries multiview device facts and typed view 
         });
     REQUIRE(depth != materialized_targets.end());
     REQUIRE(depth->usage &
-            vk::ImageUsageFlagBits::eTransferSrc);
+            ImageUsageBit::transfer_src);
 }
 
 TEST_CASE("runtime depth export stays disabled when the device format cannot be a transfer source",
@@ -2098,13 +2090,13 @@ TEST_CASE("runtime depth export stays disabled when the device format cannot be 
     const auto graphs =
         parseFrameGraphDefinitionsFromConfigJson(config);
     const std::vector targets{
-        target("albedo", vk::Format::eB8G8R8A8Unorm),
-        target("normal", vk::Format::eR16G16B16A16Sfloat),
-        target("custom_id", vk::Format::eR32Uint),
-        target("depth", vk::Format::eD32Sfloat,
-               vk::ImageUsageFlagBits::eDepthStencilAttachment),
-        target("lit", vk::Format::eR16G16B16A16Sfloat),
-        target("display", vk::Format::eB8G8R8A8Srgb),
+        target("albedo", ImageFormat::b8g8r8a8_unorm),
+        target("normal", ImageFormat::r16g16b16a16_sfloat),
+        target("custom_id", ImageFormat::r32_uint),
+        target("depth", ImageFormat::d32_sfloat,
+               ImageUsageBit::depth_stencil_attachment),
+        target("lit", ImageFormat::r16g16b16a16_sfloat),
+        target("display", ImageFormat::b8g8r8a8_srgb),
     };
     const auto compilation =
         compileRenderingTargetPlans(
@@ -2139,7 +2131,7 @@ TEST_CASE("runtime depth export stays disabled when the device format cannot be 
     REQUIRE(depth != materialized_targets.end());
     REQUIRE_FALSE(
         depth->usage &
-        vk::ImageUsageFlagBits::eTransferSrc);
+        ImageUsageBit::transfer_src);
 }
 
 // PS-1: a persistent target keeps its contents across frames, so it is never
@@ -2150,16 +2142,16 @@ TEST_CASE(
     "[target-planning][alias][runtime][ps1]") {
     auto display =
         target("display",
-               vk::Format::eR8G8B8A8Unorm);
+               ImageFormat::r8g8b8a8_unorm);
     display.format_class = "display";
     const auto compile = [&](bool persistent) {
         auto temporary_b =
             target("temporary_b",
-                   vk::Format::eR8G8B8A8Unorm);
+                   ImageFormat::r8g8b8a8_unorm);
         temporary_b.persistent = persistent;
         const std::vector targets{
             target("temporary_a",
-                   vk::Format::eR8G8B8A8Unorm),
+                   ImageFormat::r8g8b8a8_unorm),
             temporary_b,
             display,
         };

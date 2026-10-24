@@ -10,73 +10,9 @@
 
 namespace Pelican {
 
-namespace {
-
-// Every format a render target can be authored with (the engine's format
-// names), spelled as vk::to_string spells its enumerant. D32_SFLOAT_S8_UINT
-// counts the 8 bytes an implementation stores, as the engine's readback
-// always counted it.
-constexpr std::array<std::pair<std::string_view, std::uint32_t>, 46>
-    kTexelBytes{{
-        {"R8Unorm", 1},
-        {"R8Snorm", 1},
-        {"R8Uint", 1},
-        {"R8Sint", 1},
-        {"R8G8Unorm", 2},
-        {"R8G8Snorm", 2},
-        {"R8G8Uint", 2},
-        {"R8G8Sint", 2},
-        {"R16Sfloat", 2},
-        {"R16Unorm", 2},
-        {"R16Snorm", 2},
-        {"R16Uint", 2},
-        {"R16Sint", 2},
-        {"D16Unorm", 2},
-        {"R8G8B8A8Unorm", 4},
-        {"R8G8B8A8Snorm", 4},
-        {"R8G8B8A8Uint", 4},
-        {"R8G8B8A8Sint", 4},
-        {"R8G8B8A8Srgb", 4},
-        {"B8G8R8A8Unorm", 4},
-        {"B8G8R8A8Srgb", 4},
-        {"A2B10G10R10UnormPack32", 4},
-        {"A2R10G10B10UnormPack32", 4},
-        {"B10G11R11UfloatPack32", 4},
-        {"R16G16Unorm", 4},
-        {"R16G16Snorm", 4},
-        {"R16G16Uint", 4},
-        {"R16G16Sint", 4},
-        {"R16G16Sfloat", 4},
-        {"R32Uint", 4},
-        {"R32Sint", 4},
-        {"R32Sfloat", 4},
-        {"D24UnormS8Uint", 4},
-        {"D32Sfloat", 4},
-        {"R16G16B16A16Unorm", 8},
-        {"R16G16B16A16Snorm", 8},
-        {"R16G16B16A16Uint", 8},
-        {"R16G16B16A16Sint", 8},
-        {"R16G16B16A16Sfloat", 8},
-        {"R32G32Uint", 8},
-        {"R32G32Sint", 8},
-        {"R32G32Sfloat", 8},
-        {"D32SfloatS8Uint", 8},
-        {"R32G32B32A32Uint", 16},
-        {"R32G32B32A32Sint", 16},
-        {"R32G32B32A32Sfloat", 16},
-    }};
-
-} // namespace
-
-std::uint32_t imageFormatTexelBytes(std::string_view format) {
-    for (const auto &[name, bytes] : kTexelBytes) {
-        if (name == format) return bytes;
-    }
-    return 0;
-}
-
 std::uint64_t imageResourceBytes(const ImageResourceByteShape &shape) {
-    const std::uint64_t texel = imageFormatTexelBytes(shape.format);
+    const std::uint64_t texel =
+        imageFormatEstimatedTexelBytes(shape.format);
     if (texel == 0 || shape.extent.width == 0 ||
         shape.extent.height == 0) {
         return 0;
@@ -117,12 +53,12 @@ std::uint64_t vulkanPhysicalResourceBytes(
     const VulkanPhysicalResourcePlan &resource,
     const VulkanPhysicalImageAllocation &allocation) {
     if (!vulkanPhysicalResourceIsPlannedImage(resource) ||
-        allocation.extent.width == 0 ||
+        !resource.format || allocation.extent.width == 0 ||
         allocation.extent.height == 0) {
         return 0;
     }
     return imageResourceBytes(ImageResourceByteShape{
-        .format = resource.format,
+        .format = *resource.format,
         .extent = allocation.extent,
         .mip_levels =
             resource.mip_levels.mode == ImageMipLevelMode::full_chain

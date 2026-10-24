@@ -3611,6 +3611,7 @@ target_compile_definitions(pelican_test_rendercompilerprogram_test PRIVATE
 )
 pelican_define_test(vulkannativescopeexecutor_test GROUP render_pipeline pelican_core)
 pelican_define_test(renderingsamplecount_test GROUP render_pipeline pelican_core)
+pelican_define_test(imagevocabulary_test GROUP render_pipeline pelican_core)
 
 pelican_define_test(shader_defines_test GROUP render_pipeline pelican_core)
 target_compile_definitions(pelican_test_shader_defines_test PRIVATE

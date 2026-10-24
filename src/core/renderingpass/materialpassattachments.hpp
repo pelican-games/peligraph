@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../../project/imageformat.hpp"
 #include "../../project/materialoutput.hpp"
 #include "../../project/renderpipeline.hpp"
 
@@ -68,10 +69,13 @@ inline constexpr bool materialPassContractAcceptsMaterialOutputs(MaterialPassCon
 // EL-4: the numeric class a color target's format has where a
 // material_outputs output is written to it; the output's type must be of
 // the same class.
-inline MaterialOutputNumericClass materialPassFormatNumericClass(vk::Format format) {
-    const auto name = vk::to_string(format);
-    if (name.ends_with("Sint")) return MaterialOutputNumericClass::signed_integer;
-    if (name.ends_with("Uint")) return MaterialOutputNumericClass::unsigned_integer;
+// RC-3a1: the format table's numeric type.
+inline MaterialOutputNumericClass materialPassFormatNumericClass(ImageFormat format) {
+    switch (imageFormatShaderNumeric(format)) {
+    case ImageShaderNumeric::signed_integer: return MaterialOutputNumericClass::signed_integer;
+    case ImageShaderNumeric::unsigned_integer: return MaterialOutputNumericClass::unsigned_integer;
+    case ImageShaderNumeric::floating: break;
+    }
     return MaterialOutputNumericClass::floating;
 }
 

@@ -391,7 +391,7 @@ VulkanNativeScopeRuntimeAttachment runtimeAttachment(
         .node = attachment.node,
         .aspect = attachment.aspect,
         .subresource = attachment.subresource,
-        .extent = metadata.extent,
+        .extent = toVulkanExtent(metadata.extent),
     };
     if (!attachment.subresource) {
         result.image_view =
@@ -426,7 +426,7 @@ VulkanNativeScopeRuntimeAttachment runtimeAttachment(
             : vk::ImageView{};
     result.extent =
         mipExtent(
-            metadata.extent,
+            toVulkanExtent(metadata.extent),
             subresource.base_mip_level);
     result.subresource = subresource;
     return result;
@@ -1026,7 +1026,7 @@ beginVulkanNativeScopeRuntimeInvocation(
                     RenderTargetImageKind::attachment);
             runtime.image.required_attachment_layout =
                 resource.required_attachment_layout;
-            runtime.image.format = metadata.format;
+            runtime.image.format = toVulkanFormat(metadata.format);
             runtime.image.extent =
                 vk::Extent3D{
                     metadata.extent.width,

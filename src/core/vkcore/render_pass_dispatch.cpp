@@ -135,7 +135,7 @@ void renderUiPass(vk::CommandBuffer cmd_buf, const FrameRenderContext &frame, co
             ? rt_container.getImageView(rt_id)
             : vk::ImageView{};
     const vk::Format target_format = targets_swapchain ? dependencies.swapchain_color_format
-                                                       : rt_container.getMetadata(rt_id).format;
+                                                       : toVulkanFormat(rt_container.getMetadata(rt_id).format);
     const auto operations =
         pass_def.colorAttachmentOperations(0);
     dependencies.ui_renderer->render(cmd_buf, UiDrawRequest{
@@ -178,7 +178,8 @@ void renderImGuiPass(vk::CommandBuffer cmd_buf, const FrameRenderContext &frame,
         swapchain ? frame.color_attachment
                   : rt_container.getAttachmentImageView(target),
         target_extent,
-        swapchain ? dependencies.swapchain_color_format : rt_container.getMetadata(target).format,
+        swapchain ? dependencies.swapchain_color_format
+                  : toVulkanFormat(rt_container.getMetadata(target).format),
         operations.load_op,
         operations.store_op,
         pass_def.colorClearValue(0).vulkan(),

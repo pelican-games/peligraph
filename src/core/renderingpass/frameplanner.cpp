@@ -1,4 +1,5 @@
 #include "frameplanner.hpp"
+#include "../../project/imageformat.hpp"
 #include "../../project/rasterrayquery.hpp"
 #include "passfieldownershipcapabilities.hpp"
 #include "passattachmentoptionsjsonparser.hpp"
@@ -12,6 +13,7 @@
 #include "../../project/renderconfigsection.hpp"
 #include "../renderer/viewfamilyproviderregistry.hpp"
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <optional>
 #include <set>
@@ -983,16 +985,32 @@ std::vector<std::string> parseDeclaredBuffers(const nlohmann::json &json) {
     return resources;
 }
 
-std::size_t formatBlockBytes(std::string_view format) {
-    if (format == "R8_UNORM") return 1;
-    if (format == "R16_SFLOAT" || format == "D16_UNORM") return 2;
-    if (format == "R8G8B8A8_UNORM" || format == "R8G8B8A8_SRGB" ||
-        format == "B8G8R8A8_UNORM" || format == "B8G8R8A8_SRGB" ||
-        format == "D32_SFLOAT" || format == "R32_SFLOAT" ||
-        format == "R16G16_SFLOAT") return 4;
-    if (format == "R16G16B16A16_SFLOAT") return 8;
-    if (format == "R32G32B32A32_SFLOAT") return 16;
-    return 0;
+// The formats a snapshot copy sizes (its own contract, kept as it was); the
+// bytes are the format table's (RC-3a1). 0 for any other format: the copy's
+// size is then unavailable and the snapshot is refused by name.
+constexpr std::array kSnapshotCopyFormats{
+    ImageFormat::r8_unorm,
+    ImageFormat::r16_sfloat,
+    ImageFormat::d16_unorm,
+    ImageFormat::r8g8b8a8_unorm,
+    ImageFormat::r8g8b8a8_srgb,
+    ImageFormat::b8g8r8a8_unorm,
+    ImageFormat::b8g8r8a8_srgb,
+    ImageFormat::d32_sfloat,
+    ImageFormat::r32_sfloat,
+    ImageFormat::r16g16_sfloat,
+    ImageFormat::r16g16b16a16_sfloat,
+    ImageFormat::r32g32b32a32_sfloat,
+};
+
+std::size_t formatBlockBytes(std::string_view name) {
+    const auto format = findImageFormat(name);
+    if (!format ||
+        std::find(kSnapshotCopyFormats.begin(), kSnapshotCopyFormats.end(), *format) ==
+            kSnapshotCopyFormats.end()) {
+        return 0;
+    }
+    return imageFormatEstimatedTexelBytes(*format);
 }
 
 struct RenderTargetByteSizes {

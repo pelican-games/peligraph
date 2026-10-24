@@ -46,6 +46,8 @@ constexpr vk::Extent2D test_extent{8, 4};
 constexpr vk::Extent2D cube_extent{8, 8};
 constexpr vk::Format test_format =
     vk::Format::eR8G8B8A8Unorm;
+constexpr ImageFormat test_image_format =
+    ImageFormat::r8g8b8a8_unorm;
 constexpr std::uint32_t stereo_view_count = 2;
 constexpr std::uint32_t stereo_view_mask = 0b11;
 constexpr std::uint32_t cube_face_count = 6;
@@ -910,8 +912,8 @@ TEST_CASE(
                 .role = "data",
                 .extent_scale = 1.0f,
                 .fixed_extent = std::nullopt,
-                .format = test_format,
-                .usage = usage,
+                .format = test_image_format,
+                .usage = imageUsageFromVulkan(usage),
                 .history = false,
                 .samples = 1,
                 .mip_levels = {},
@@ -929,8 +931,8 @@ TEST_CASE(
                 .role = "data",
                 .extent_scale = 1.0f,
                 .fixed_extent = std::nullopt,
-                .format = test_format,
-                .usage = usage,
+                .format = test_image_format,
+                .usage = imageUsageFromVulkan(usage),
                 .history = false,
                 .samples = 1,
                 .mip_levels = {},
@@ -946,10 +948,9 @@ TEST_CASE(
                 .role = "data",
                 .extent_scale = 1.0f,
                 .fixed_extent =
-                    std::optional<vk::Extent2D>{
-                        cube_extent},
-                .format = test_format,
-                .usage = usage,
+                    extentFromVulkan(cube_extent),
+                .format = test_image_format,
+                .usage = imageUsageFromVulkan(usage),
                 .history = false,
                 .samples = 1,
                 .mip_levels =
@@ -1231,12 +1232,12 @@ TEST_CASE(
                 .role = "data",
                 .extent_scale = 1.0f,
                 .fixed_extent = std::nullopt,
-                .format = test_format,
+                .format = test_image_format,
                 .usage =
-                    vk::ImageUsageFlagBits::
-                            eColorAttachment |
-                        vk::ImageUsageFlagBits::
-                            eSampled,
+                    ImageUsageBit::
+                            color_attachment |
+                        ImageUsageBit::
+                            sampled,
                 .history = false,
                 .samples = 1,
                 .mip_levels = {},
@@ -1255,12 +1256,12 @@ TEST_CASE(
                 .role = "data",
                 .extent_scale = 1.0f,
                 .fixed_extent = std::nullopt,
-                .format = test_format,
+                .format = test_image_format,
                 .usage =
-                    vk::ImageUsageFlagBits::
-                            eColorAttachment |
-                        vk::ImageUsageFlagBits::
-                            eTransferSrc,
+                    ImageUsageBit::
+                            color_attachment |
+                        ImageUsageBit::
+                            transfer_src,
                 .history = false,
                 .samples = 1,
                 .mip_levels = {},
@@ -1277,15 +1278,15 @@ TEST_CASE(
             tile_local_attachment);
     REQUIRE(
         local_source_metadata.usage &
-        vk::ImageUsageFlagBits::
-            eTransientAttachment);
+        ImageUsageBit::
+            transient_attachment);
     REQUIRE(
         local_source_metadata.usage &
-        vk::ImageUsageFlagBits::
-            eInputAttachment);
+        ImageUsageBit::
+            input_attachment);
     REQUIRE_FALSE(
         local_source_metadata.usage &
-        vk::ImageUsageFlagBits::eSampled);
+        ImageUsageBit::sampled);
     REQUIRE(
         render_targets.getMetadata(managed_target)
             .array_layers ==
@@ -1751,8 +1752,8 @@ TEST_CASE(
                 .role = "data",
                 .extent_scale = 1.0f,
                 .fixed_extent = std::nullopt,
-                .format = test_format,
-                .usage = usage,
+                .format = test_image_format,
+                .usage = imageUsageFromVulkan(usage),
                 .history = false,
                 .samples = 1,
                 .mip_levels =

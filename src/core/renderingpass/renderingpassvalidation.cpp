@@ -1,6 +1,7 @@
 #include "renderingpassvalidation.hpp"
 #include "materialpassattachments.hpp"
 #include "rendertargetmetadataresolver.hpp"
+#include "vulkanimagevocabulary.hpp"
 #include <algorithm>
 #include <array>
 #include <optional>
@@ -55,7 +56,7 @@ void validatePassTargetUsage(const PassDefinition &pass_def, const RenderTargetM
 
         const auto rt =
             rt_metadata.get(rt_id.target);
-        if (!(rt.usage & vk::ImageUsageFlagBits::eColorAttachment)) {
+        if (!(rt.usage & ImageUsageBit::color_attachment)) {
             throw std::runtime_error("Color output target missing COLOR_ATTACHMENT usage: " + rt.name +
                                      " in pass: " + pass_def.name);
         }
@@ -63,7 +64,7 @@ void validatePassTargetUsage(const PassDefinition &pass_def, const RenderTargetM
 
     if (isConcreteRenderTarget(pass_def.output_depth)) {
         const auto rt = rt_metadata.get(pass_def.output_depth);
-        if (!(rt.usage & vk::ImageUsageFlagBits::eDepthStencilAttachment)) {
+        if (!(rt.usage & ImageUsageBit::depth_stencil_attachment)) {
             throw std::runtime_error("Depth output target missing DEPTH_STENCIL_ATTACHMENT usage: " + rt.name +
                                      " in pass: " + pass_def.name);
         }
@@ -81,10 +82,10 @@ void validatePassTargetUsage(const PassDefinition &pass_def, const RenderTargetM
                     tile_local_attachment &&
             bool(
                 rt.usage &
-                vk::ImageUsageFlagBits::
-                    eInputAttachment);
+                ImageUsageBit::
+                    input_attachment);
         if (!(rt.usage &
-              vk::ImageUsageFlagBits::eSampled) &&
+              ImageUsageBit::sampled) &&
             !local_read) {
             throw std::runtime_error(
                 "Input target missing SAMPLED or tile-local "
@@ -278,7 +279,7 @@ void validateMaterialPassAttachments(const PassDefinition &pass_def, const Rende
             const auto metadata =
                 rt_metadata.get(target.target);
             const auto format_name =
-                vk::to_string(metadata.format);
+                std::string{imageFormatName(metadata.format)};
             const auto format_class =
                 materialPassFormatNumericClass(metadata.format);
             const auto output_class =
@@ -311,9 +312,10 @@ void validateMaterialPassAttachments(const PassDefinition &pass_def, const Rende
     }
 
     const auto first_format =
-        rt_metadata
-            .get(pass_def.output_color.front().target)
-            .format;
+        toVulkanFormat(
+            rt_metadata
+                .get(pass_def.output_color.front().target)
+                .format);
     const auto expected_formats = materialPassColorAttachmentFormatsFor(
         shader_contract, materialPassUsesHdrColorFormats(first_format));
     for (size_t i = 0; i < pass_def.output_color.size(); ++i) {
@@ -324,14 +326,14 @@ void validateMaterialPassAttachments(const PassDefinition &pass_def, const Rende
 
         const auto rt =
             rt_metadata.get(rt_id.target);
-        if (rt.format != expected_formats[i]) {
+        if (toVulkanFormat(rt.format) != expected_formats[i]) {
             throw std::runtime_error("Material pass color output format mismatch: " + rt.name + " in pass: " +
                                      pass_def.name);
         }
     }
 
     const auto depth_rt = rt_metadata.get(pass_def.output_depth);
-    if (depth_rt.format != materialPassDepthAttachmentFormat) {
+    if (toVulkanFormat(depth_rt.format) != materialPassDepthAttachmentFormat) {
         throw std::runtime_error("Material pass depth output format mismatch: " + depth_rt.name +
                                  " in pass: " + pass_def.name);
     }

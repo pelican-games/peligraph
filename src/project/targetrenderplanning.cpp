@@ -603,21 +603,21 @@ ResourcePattern canonicalizePattern(
             match.detail + ")");
     }
 
-    std::set<std::string, std::less<>> formats;
+    std::set<ImageFormat> formats;
     for (auto &candidate : pattern.format_candidates) {
-        requireNonEmpty(candidate.format,
-                        "resource pattern format candidate");
         if (!formats.insert(candidate.format).second) {
             throw std::runtime_error(
                 "resource pattern '" + pattern.id +
                 "' has duplicate format candidate '" +
-                candidate.format + "'");
+                std::string{imageFormatName(candidate.format)} + "'");
         }
         canonicalizeCapabilities(
             candidate.required_capabilities,
             "resource pattern format capability");
     }
     if (resource.type.constructor == LogicalTypeConstructor::image &&
+        resource.materialization !=
+            LogicalMaterializationRequirement::external &&
         pattern.format_candidates.empty()) {
         throw std::runtime_error(
             "image resource pattern '" + pattern.id +
@@ -954,7 +954,7 @@ bool isMaterialized(VulkanResourceRepresentation representation) {
 }
 
 struct SelectedFormat {
-    std::string format;
+    std::optional<ImageFormat> format;
     std::vector<std::string> required_capabilities;
 };
 
@@ -962,7 +962,10 @@ SelectedFormat selectFormat(
     const ResourcePattern &pattern,
     const TargetEndpoint &endpoint,
     LogicalTypeConstructor constructor) {
-    if (constructor != LogicalTypeConstructor::image) return {};
+    if (constructor != LogicalTypeConstructor::image ||
+        pattern.format_candidates.empty()) {
+        return {};
+    }
     const auto supported = std::find_if(
         pattern.format_candidates.begin(),
         pattern.format_candidates.end(),
@@ -1438,8 +1441,9 @@ void applyResolvedSampleCounts(
                 "sample-count format does not match lowered physical "
                 "format for '" +
                 resolved.resource + "': capability reports '" +
-                resolved.format + "', lowering selected '" +
-                found->format + "'");
+                imageFormatNameOrEmpty(resolved.format) +
+                "', lowering selected '" +
+                imageFormatNameOrEmpty(found->format) + "'");
         }
         found->rasterization_samples = resolved.samples;
         found->resolve_required =
@@ -2836,8 +2840,9 @@ CandidateDraft buildCandidateDraft(
             });
         result.decisions.push_back(PlanningDecision{
             "pelican.plan.resource_format_selected@1",
-            resource.logical.name, selected_format.format,
-            selected_format.format.empty()
+            resource.logical.name,
+            imageFormatNameOrEmpty(selected_format.format),
+            !selected_format.format
                 ? "resource constructor has no image format"
                 : "highest-priority format candidate supported by "
                   "endpoint facts",
@@ -3738,7 +3743,7 @@ VulkanTargetPlan compileVulkanTargetPlan(
                 VulkanResourceRepresentation::
                     materialized_image ||
             !resource->stored ||
-            resource->format.empty()) {
+            !resource->format) {
             throw std::runtime_error(
                 "external depth export did not lower to a stored "
                 "materialized image: " +
@@ -3748,7 +3753,7 @@ VulkanTargetPlan compileVulkanTargetPlan(
             VulkanExternalDepthExportPlan{
                 .source_resource =
                     resource->logical_resource,
-                .format = resource->format,
+                .format = *resource->format,
                 .view_layout =
                     resource->view_layout,
                 .array_layers =
@@ -4042,7 +4047,8 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
                 {"logical_resource",
                  resource.logical_resource},
                 {"pattern", resource.pattern},
-                {"format", resource.format},
+                {"format",
+                 imageFormatNameOrEmpty(resource.format)},
                 {"representation",
                  vulkanResourceRepresentationName(
                      resource.representation)},

@@ -48,13 +48,12 @@ resolveRuntimeExternalDepthExport(
     }
     const auto source =
         render_targets.getMetadata(binding->second);
-    if (plan.format !=
-            vk::to_string(source.format) ||
+    if (plan.format != source.format ||
         !(source.usage &
-          vk::ImageUsageFlagBits::
-              eDepthStencilAttachment) ||
+          ImageUsageBit::
+              depth_stencil_attachment) ||
         !(source.usage &
-          vk::ImageUsageFlagBits::eTransferSrc) ||
+          ImageUsageBit::transfer_src) ||
         source.array_layers <
             plan.array_layers) {
         throw std::runtime_error(
@@ -78,9 +77,9 @@ void recordExternalDepthExport(
     nlohmann::json *node_trace) {
     if (!render_ctx.depth_image ||
         render_ctx.depth_format !=
-            export_depth.source.format ||
+            toVulkanFormat(export_depth.source.format) ||
         render_ctx.extent !=
-            export_depth.source.extent ||
+            toVulkanExtent(export_depth.source.extent) ||
         render_ctx.depth_copy_layout !=
             vk::ImageLayout::eTransferDstOptimal ||
         render_ctx.depth_required_layout !=

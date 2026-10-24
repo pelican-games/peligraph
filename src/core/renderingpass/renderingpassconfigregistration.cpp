@@ -358,8 +358,8 @@ void mergeVariantRenderTargetPhysicalRequirements(
         variants) {
     struct Requirements {
         std::uint32_t maximum_layers = 1;
-        vk::ImageUsageFlags usage;
-        std::optional<vk::Format> format;
+        ImageUsage usage;
+        std::optional<ImageFormat> format;
         std::optional<ImageMipLevelCount>
             mip_levels;
         std::optional<ImageResourceDimension>

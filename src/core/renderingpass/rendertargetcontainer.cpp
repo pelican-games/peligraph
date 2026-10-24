@@ -1,5 +1,6 @@
 #include "rendertargetcontainer.hpp"
 #include "renderingsamplecount.hpp"
+#include "vulkanimagevocabulary.hpp"
 #include "../../project/targetrenderplanning.hpp"
 #include "../../project/targetrendermemory.hpp"
 #include "rendertargetmemory.hpp"
@@ -75,7 +76,7 @@ vk::ResolveModeFlagBits selectDepthResolveMode(
 }
 
 vk::Extent2D resolveRenderTargetExtent(const std::string &name, vk::Extent2D base_extent, float extent_scale,
-                                       std::optional<vk::Extent2D> fixed_extent) {
+                                       std::optional<ResolvedResourceExtent> fixed_extent) {
     const auto resolved = resolveResourceExtent(
         fixed_extent
             ? ResourceExtentPlan{
@@ -238,8 +239,8 @@ void nameAttachmentSurfaces(
 }
 
 ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_extent, float extent_scale,
-                                     std::optional<vk::Extent2D> fixed_extent,
-                                     vk::Format format, vk::ImageUsageFlags usage,
+                                     std::optional<ResolvedResourceExtent> fixed_extent,
+                                     ImageFormat image_format, ImageUsage image_usage,
                                      vma::MemoryUsage memory_usage,
                                      ImageMipLevelCount mip_levels = {},
                                      vk::SampleCountFlagBits samples =
@@ -250,12 +251,16 @@ ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_
                                      bool aliasable = false,
                                      ImageResourceDimension dimension =
                                          ImageResourceDimension::two_d) {
+    // RC-3a1: the image is where the engine's vocabulary becomes Vulkan's.
+    const auto format = toVulkanFormat(image_format);
+    const auto usage = toVulkanImageUsage(image_usage);
     const auto &vkcore = GET_MODULE(VulkanManageCore);
     const auto features = vkcore.getPhysDevice().getFormatProperties(format).optimalTilingFeatures;
     vk::FormatFeatureFlags required;
     if (usage & vk::ImageUsageFlagBits::eColorAttachment) {
         required |= vk::FormatFeatureFlagBits::eColorAttachment;
-        if (format == vk::Format::eR8G8B8A8Srgb || format == vk::Format::eB8G8R8A8Srgb) {
+        if (image_format == ImageFormat::r8g8b8a8_srgb ||
+            image_format == ImageFormat::b8g8r8a8_srgb) {
             required |= vk::FormatFeatureFlagBits::eColorAttachmentBlend;
         }
     }
@@ -456,12 +461,12 @@ std::uint64_t RenderTargetContainer::createAliasGroupToken() {
 
 vk::ClearColorValue physicalRenderTargetHistoryClearColor(
     const RenderTargetDefinition &definition) {
-    const auto format_name =
-        vk::to_string(definition.format);
+    const auto numeric =
+        imageFormatShaderNumeric(definition.format);
     const auto signed_integer =
-        format_name.ends_with("Sint");
+        numeric == ImageShaderNumeric::signed_integer;
     const auto unsigned_integer =
-        format_name.ends_with("Uint");
+        numeric == ImageShaderNumeric::unsigned_integer;
     std::array<float, 4> floating{};
     std::array<std::int32_t, 4> signed_values{};
     std::array<std::uint32_t, 4> unsigned_values{};
@@ -536,6 +541,28 @@ vk::ClearColorValue physicalRenderTargetHistoryClearColor(
     return vk::ClearColorValue{floating};
 }
 
+ImageUsage registeredRenderTargetUsage(
+    const RenderTargetDefinition &definition) {
+    const auto attachment_usage =
+        ImageUsageBit::color_attachment |
+        ImageUsageBit::depth_stencil_attachment;
+    auto usage = definition.usage;
+    switch (definition.storage_mode) {
+    case RenderTargetStorageMode::materialized:
+        break;
+    case RenderTargetStorageMode::transient_attachment:
+        usage |= ImageUsageBit::transient_attachment;
+        break;
+    case RenderTargetStorageMode::tile_local_attachment:
+        usage = (usage & attachment_usage) |
+                ImageUsageBit::input_attachment |
+                ImageUsageBit::transient_attachment;
+        break;
+    }
+    if (definition.history) usage |= ImageUsageBit::transfer_dst;
+    return usage;
+}
+
 GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
     const RenderTargetDefinition &definition,
     vk::Extent2D base_extent,
@@ -603,9 +630,9 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
         }
     }
     const auto attachment_usage =
-        vk::ImageUsageFlagBits::eColorAttachment |
-        vk::ImageUsageFlagBits::
-            eDepthStencilAttachment;
+        ImageUsageBit::color_attachment |
+        ImageUsageBit::
+            depth_stencil_attachment;
     if (mip_levels != ImageMipLevelCount{} &&
         storage_mode !=
             RenderTargetStorageMode::materialized) {
@@ -617,7 +644,7 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
         RenderTargetStorageMode::
             transient_attachment) {
         if (!(usage & attachment_usage) ||
-            bool(usage & ~vk::ImageUsageFlags{
+            bool(usage & ~ImageUsage{
                               attachment_usage})) {
             throw std::runtime_error(
                 "Transient render target may only use color/depth "
@@ -630,19 +657,17 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
                 "single-sample: " +
                 name);
         }
-        usage |= vk::ImageUsageFlagBits::
-            eTransientAttachment;
     } else if (
         storage_mode ==
         RenderTargetStorageMode::
             tile_local_attachment) {
         const auto allowed_usage =
             attachment_usage |
-            vk::ImageUsageFlagBits::eSampled |
-            vk::ImageUsageFlagBits::
-                eInputAttachment;
+            ImageUsageBit::sampled |
+            ImageUsageBit::
+                input_attachment;
         if (!(usage & attachment_usage) ||
-            bool(usage & ~vk::ImageUsageFlags{
+            bool(usage & ~ImageUsage{
                               allowed_usage})) {
             throw std::runtime_error(
                 "Tile-local render target may only declare "
@@ -664,19 +689,15 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
                 "dynamic rendering local read: " +
                 name);
         }
-        usage =
-            (usage & attachment_usage) |
-            vk::ImageUsageFlagBits::eInputAttachment |
-            vk::ImageUsageFlagBits::
-                eTransientAttachment;
     }
-    if (history && !(usage & vk::ImageUsageFlagBits::eSampled)) {
+    if (history && !(usage & ImageUsageBit::sampled)) {
         throw std::runtime_error("History render target requires SAMPLED usage: " + name);
     }
-    if (history && !(usage & vk::ImageUsageFlagBits::eColorAttachment)) {
+    if (history && !(usage & ImageUsageBit::color_attachment)) {
         throw std::runtime_error("History render target requires COLOR_ATTACHMENT usage: " + name);
     }
-    if (history) usage |= vk::ImageUsageFlagBits::eTransferDst;
+    // What the checks above allowed, with the engine's own bits added.
+    usage = registeredRenderTargetUsage(definition);
     if (alias_group &&
         (history || samples != 1 ||
          storage_mode !=
@@ -693,19 +714,19 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
     }
     if (source_pixels) {
         const auto attachment_or_storage =
-            vk::ImageUsageFlagBits::eColorAttachment |
-            vk::ImageUsageFlagBits::eDepthStencilAttachment |
-            vk::ImageUsageFlagBits::eStorage;
+            ImageUsageBit::color_attachment |
+            ImageUsageBit::depth_stencil_attachment |
+            ImageUsageBit::storage;
         if (history || samples != 1 || alias_group ||
             storage_mode != RenderTargetStorageMode::materialized ||
             dimension != ImageResourceDimension::two_d ||
             array_layers != 1 ||
-            !(usage & vk::ImageUsageFlagBits::eSampled) ||
-            !(usage & vk::ImageUsageFlagBits::eTransferDst) ||
+            !(usage & ImageUsageBit::sampled) ||
+            !(usage & ImageUsageBit::transfer_dst) ||
             bool(usage & attachment_or_storage) ||
             fixed_extent !=
-                vk::Extent2D{source_pixels->width,
-                             source_pixels->height}) {
+                ResolvedResourceExtent{source_pixels->width,
+                                       source_pixels->height}) {
             throw std::runtime_error(
                 "render target read from a file must be a single 2D, "
                 "sampled, transfer-destination image of the file's "
@@ -764,7 +785,7 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
 
     const auto sample_count = toSampleCount(samples);
     if (samples > 1 && depth_resolve_mode == vk::ResolveModeFlagBits::eNone &&
-        (usage & vk::ImageUsageFlagBits::eDepthStencilAttachment)) {
+        (usage & ImageUsageBit::depth_stencil_attachment)) {
         throw std::runtime_error(
             "multisampled depth render target requires depth resolve support: " +
             name);
@@ -835,8 +856,8 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
             createLayeredImageView(device, images[i]);
         if (samples > 1) {
             const auto attachment_usage =
-                usage & (vk::ImageUsageFlagBits::eColorAttachment |
-                         vk::ImageUsageFlagBits::eDepthStencilAttachment);
+                usage & (ImageUsageBit::color_attachment |
+                         ImageUsageBit::depth_stencil_attachment);
             attachment_images[i] = createRenderTargetImage(
                 name, base_extent, extent_scale, fixed_extent, format,
                 attachment_usage, memUsage,
@@ -1010,8 +1031,8 @@ RenderTargetContainer::prepareForExtent(
             if (rt.samples > 1) {
                 const auto attachment_usage =
                     rt.usage &
-                    (vk::ImageUsageFlagBits::eColorAttachment |
-                     vk::ImageUsageFlagBits::eDepthStencilAttachment);
+                    (ImageUsageBit::color_attachment |
+                     ImageUsageBit::depth_stencil_attachment);
                 next->attachment_images[i] = createRenderTargetImage(
                     rt.name, base_extent, rt.extent_scale, rt.fixed_extent,
                     rt.format, attachment_usage, rt.memory_usage,
@@ -1105,7 +1126,7 @@ bool RenderTargetContainer::setRuntimeArrayLayers(
         std::make_unique<RenderTargetResourceSet>();
     next->images[0] = createRenderTargetImage(
         target.name, current_extent, 1.0f,
-        current_extent, target.format,
+        extentFromVulkan(current_extent), target.format,
         target.usage, target.memory_usage,
         target.mip_levels,
         vk::SampleCountFlagBits::e1,
@@ -1120,12 +1141,12 @@ bool RenderTargetContainer::setRuntimeArrayLayers(
     if (target.samples > 1) {
         const auto attachment_usage =
             target.usage &
-            (vk::ImageUsageFlagBits::eColorAttachment |
-             vk::ImageUsageFlagBits::eDepthStencilAttachment);
+            (ImageUsageBit::color_attachment |
+             ImageUsageBit::depth_stencil_attachment);
         next->attachment_images[0] =
             createRenderTargetImage(
                 target.name, current_extent, 1.0f,
-                current_extent, target.format,
+                extentFromVulkan(current_extent), target.format,
                 attachment_usage,
                 target.memory_usage,
                 ImageMipLevelCount{},
@@ -1288,7 +1309,7 @@ RenderTargetMetadata RenderTargetContainer::getMetadata(GlobalRenderTargetId id)
         .usage = rt.usage,
         .format = rt.format,
         .extent =
-            vk::Extent2D{
+            ResolvedResourceExtent{
                 rt.resources->images[0].extent.width,
                 rt.resources->images[0].extent.height},
         .history = rt.history,
@@ -1547,7 +1568,7 @@ vk::ResolveModeFlagBits RenderTargetContainer::resolveMode(
     GlobalRenderTargetId id) const {
     const auto &rt = render_targets.get(id);
     if (rt.samples == 1) return vk::ResolveModeFlagBits::eNone;
-    if (rt.usage & vk::ImageUsageFlagBits::eDepthStencilAttachment) {
+    if (rt.usage & ImageUsageBit::depth_stencil_attachment) {
         return depth_resolve_mode;
     }
     return colorAttachmentResolveMode(rt.format);
@@ -1688,9 +1709,8 @@ void RenderTargetContainer::rebuildAliasGroupOwners() {
 }
 
 std::uint64_t renderTargetBytes(const RenderTargetMetadata &metadata) {
-    const auto format = vk::to_string(metadata.format);
     return imageResourceBytes(ImageResourceByteShape{
-        .format = format,
+        .format = metadata.format,
         .extent = {metadata.extent.width, metadata.extent.height},
         .mip_levels = metadata.mip_levels,
         .array_layers = metadata.array_layers,

@@ -2,6 +2,7 @@
 #include "featurecompose.hpp"
 #include "graphpartition.hpp"
 #include "graphloopexpression.hpp"
+#include "imageformat.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -1411,11 +1412,14 @@ Json lowerRenderGraphDocument(const Json &document,
 namespace {
 // A composed target's image in the terms of a logical image type. An absent
 // field is what the target parser defaults it to; an absent format (a target
-// the color resolver fills in later) says nothing about the kind.
+// the color resolver fills in later) says nothing about the kind. RC-3a1: the
+// kind is the format table's aspect (a name it does not know is color, as
+// the target parser will refuse it anyway).
 std::string composedTargetKind(const Json &target) {
     const auto format = target.value("format", std::string{});
     if (format.empty()) return {};
-    return format.front() == 'D' ? "depth" : "color";
+    const auto known = findImageFormat(format);
+    return known && imageFormatAspect(*known) != ImageAspect::color ? "depth" : "color";
 }
 
 std::string composedTargetTopology(const Json &target) {

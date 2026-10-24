@@ -521,20 +521,16 @@ namespace {
 
 LogicalType logicalSourceTypeForTarget(
     const LogicalTypeRegistry &types, const RenderTargetMetadata &metadata) {
-    switch (metadata.format) {
-    case vk::Format::eD16Unorm:
-    case vk::Format::eD24UnormS8Uint:
-    case vk::Format::eD32Sfloat:
-    case vk::Format::eD32SfloatS8Uint:
+    if (imageFormatHasDepth(metadata.format)) {
         return deviceDepthV1(types);
-    case vk::Format::eR16G16B16A16Sfloat:
-        return sceneLinearHdrV1(types);
-    default:
-        throw std::runtime_error(
-            "render target '" + metadata.name + "' format " +
-            vk::to_string(metadata.format) +
-            " has no hybrid material screen-input logical type");
     }
+    if (metadata.format == ImageFormat::r16g16b16a16_sfloat) {
+        return sceneLinearHdrV1(types);
+    }
+    throw std::runtime_error(
+        "render target '" + metadata.name + "' format " +
+        std::string{imageFormatName(metadata.format)} +
+        " has no hybrid material screen-input logical type");
 }
 
 using MaterialInputContractFactory =

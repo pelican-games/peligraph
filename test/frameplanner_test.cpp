@@ -361,7 +361,7 @@ struct ParsedRenderTargetResolvers {
             const auto id = GlobalRenderTargetId{static_cast<int>(i)};
             ids_by_name.emplace(definitions[i].name, id);
             const auto scaled_extent = static_cast<uint32_t>(definitions[i].extent_scale * 100.0f);
-            const auto extent = definitions[i].fixed_extent.value_or(vk::Extent2D{scaled_extent, scaled_extent});
+            const auto extent = definitions[i].fixed_extent.value_or(ResolvedResourceExtent{scaled_extent, scaled_extent});
             metadata.push_back(RenderTargetMetadata{
                 definitions[i].name,
                 definitions[i].usage,
@@ -619,7 +619,7 @@ TEST_CASE("hybrid preset resolves ordered deferred and forward writes",
         const auto id = GlobalRenderTargetId{static_cast<int>(index)};
         ids.emplace(target.name, id);
         metadata.push_back(RenderTargetMetadata{
-            target.name, target.usage, target.format, vk::Extent2D{1280, 720},
+            target.name, target.usage, target.format, ResolvedResourceExtent{1280, 720},
             target.history});
     }
     const RenderTargetNameResolver names{[&](const std::string &name) {
@@ -2828,19 +2828,19 @@ Rc1ExamplePlan rc1ExamplePlan(std::uint32_t width, std::uint32_t height) {
 
 TEST_CASE("RC-1 every format a render target can be authored with has a texel size",
           "[frameplanner][rc1][memory]") {
-    // RC-1b: imageFormats() is the render target parser's own list (every
-    // format_class resolves to one of its names), so a format the texel
-    // table misses fails here, not as a silent 0 in a frame's total.
-    for (const auto &[name, format] : imageFormats()) {
+    // RC-1b: the authored names are the render target parser's own list
+    // (every format_class resolves to one of its names), so a format the
+    // texel sizes miss fails here, not as a silent 0 in a frame's total.
+    // RC-3a1: the sizes are the format table's.
+    for (const auto &name : authoredImageFormatNames()) {
         INFO(name);
-        CHECK(stringToFormat(name) == format);
-        CHECK(imageFormatTexelBytes(vk::to_string(format)) > 0);
+        CHECK(imageFormatEstimatedTexelBytes(parseAuthoredImageFormat(name)) > 0);
     }
-    CHECK(imageFormatTexelBytes(vk::to_string(vk::Format::eR8Unorm)) == 1);
-    CHECK(imageFormatTexelBytes(vk::to_string(vk::Format::eD24UnormS8Uint)) == 4);
-    CHECK(imageFormatTexelBytes(vk::to_string(vk::Format::eB10G11R11UfloatPack32)) == 4);
-    CHECK(imageFormatTexelBytes(vk::to_string(vk::Format::eR16G16B16A16Sfloat)) == 8);
-    CHECK(imageFormatTexelBytes(vk::to_string(vk::Format::eR32G32B32A32Uint)) == 16);
+    CHECK(imageFormatEstimatedTexelBytes(ImageFormat::r8_unorm) == 1);
+    CHECK(imageFormatEstimatedTexelBytes(ImageFormat::d24_unorm_s8_uint) == 4);
+    CHECK(imageFormatEstimatedTexelBytes(ImageFormat::b10g11r11_ufloat_pack32) == 4);
+    CHECK(imageFormatEstimatedTexelBytes(ImageFormat::r16g16b16a16_sfloat) == 8);
+    CHECK(imageFormatEstimatedTexelBytes(ImageFormat::r32g32b32a32_uint) == 16);
 }
 
 TEST_CASE("RC-1 a registered target declares the bytes of the images registration made",
@@ -2850,7 +2850,7 @@ TEST_CASE("RC-1 a registered target declares the bytes of the images registratio
     // (8 x 1024 bytes) and the 4x image it renders into (4 x 8 x 1024).
     CHECK(renderTargetBytes(RenderTargetMetadata{
               .name = "lit_color",
-              .format = vk::Format::eR16G16B16A16Sfloat,
+              .format = ImageFormat::r16g16b16a16_sfloat,
               .extent = {32, 32},
               .history = true,
               .samples = 4,
@@ -2858,7 +2858,7 @@ TEST_CASE("RC-1 a registered target declares the bytes of the images registratio
     // A cube with its full chain at 16x16: six faces of 256 + 64 + 16 + 4 + 1
     // texels.
     CHECK(renderTargetBytes(RenderTargetMetadata{
-              .format = vk::Format::eR8G8B8A8Unorm,
+              .format = ImageFormat::r8g8b8a8_unorm,
               .extent = {16, 16},
               .mip_levels = 5,
               .array_layers = 6,
@@ -2981,10 +2981,10 @@ TEST_CASE("RC-1 get_frame_plan reports what the published generation registered,
     definitions.push_back(RenderTargetDefinition{
         .name = "rc1b_unused",
         .format_class = "data",
-        .fixed_extent = vk::Extent2D{64, 64},
-        .format = vk::Format::eR8Unorm,
-        .usage = vk::ImageUsageFlagBits::eColorAttachment |
-                 vk::ImageUsageFlagBits::eSampled,
+        .fixed_extent = ResolvedResourceExtent{64, 64},
+        .format = ImageFormat::r8_unorm,
+        .usage = ImageUsageBit::color_attachment |
+                 ImageUsageBit::sampled,
     });
     const auto registered = test_support::registerRenderTargetsWithoutDevice(
         definitions, {1920, 1080});

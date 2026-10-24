@@ -2,6 +2,7 @@
 #include "rendergraphcomposition.hpp"
 #include "renderconfigdocument.hpp"
 #include "featurejitter.hpp"
+#include "imageformat.hpp"
 #include "materialscreeninput.hpp"
 #include "renderresourcename.hpp"
 
@@ -2067,16 +2068,17 @@ std::string namedTarget(const nlohmann::json &entry) {
     return {};
 }
 
-// FR-3: "depth" for a D* format, "color" for any other (an absent format is
-// a color target whose format the color resolver fills in); "" for a name
-// the config does not declare.
+// FR-3: "depth" for a depth or stencil format (the format table's aspect,
+// RC-3a1), "color" for any other (an absent format is a color target whose
+// format the color resolver fills in); "" for a name the config does not
+// declare.
 std::string composedTargetKindOf(const nlohmann::json &composed, const std::string &name) {
     const auto targets = composed.find("render_targets");
     if (targets == composed.end() || !targets->is_array()) return {};
     for (const auto &target : *targets)
         if (target.is_object() && target.value("name", std::string{}) == name) {
-            const auto format = target.value("format", std::string{});
-            return !format.empty() && format.front() == 'D' ? "depth" : "color";
+            const auto format = findImageFormat(target.value("format", std::string{}));
+            return format && imageFormatAspect(*format) != ImageAspect::color ? "depth" : "color";
         }
     return {};
 }

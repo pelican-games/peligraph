@@ -4258,12 +4258,12 @@ TEST_CASE(
             GET_MODULE(RenderTargetContainer)
                 .getMetadata(low_id)
                 .extent ==
-            vk::Extent2D{16, 16});
+            ResolvedResourceExtent{16, 16});
         REQUIRE(
             GET_MODULE(RenderTargetContainer)
                 .getMetadata(low_id)
                 .format ==
-            vk::Format::eR8G8B8A8Unorm);
+            ImageFormat::r8g8b8a8_unorm);
         const auto transient_id =
             GET_MODULE(RenderTargetContainer)
                 .getRenderTargetIdByName(
@@ -4277,11 +4277,11 @@ TEST_CASE(
                 transient_attachment);
         REQUIRE(
             transient_metadata.usage &
-            vk::ImageUsageFlagBits::
-                eTransientAttachment);
+            ImageUsageBit::
+                transient_attachment);
         REQUIRE_FALSE(
             transient_metadata.usage &
-            vk::ImageUsageFlagBits::eSampled);
+            ImageUsageBit::sampled);
 
         const auto rendering_pass_id =
             GET_MODULE(RenderingPassContainer)
@@ -4479,9 +4479,7 @@ TEST_CASE(
             low_fragment !=
             physical_fragment.resources.end());
         low_fragment->format =
-            vk::to_string(
-                vk::Format::
-                    eR16G16B16A16Sfloat);
+            ImageFormat::r16g16b16a16_sfloat;
         REQUIRE(
             physical_fragment.attachments
                 .has_value());
@@ -4543,8 +4541,7 @@ TEST_CASE(
             GET_MODULE(RenderTargetContainer)
                 .getMetadata(reloaded_low_id)
                 .format ==
-            vk::Format::
-                eR16G16B16A16Sfloat);
+            ImageFormat::r16g16b16a16_sfloat);
         const auto reloaded_pass_id =
             GET_MODULE(RenderingPassContainer)
                 .getRenderingPassIdByName(
@@ -4572,9 +4569,7 @@ TEST_CASE(
                 .target_plan->resources.end());
         REQUIRE(
             reloaded_low_plan->format ==
-            vk::to_string(
-                vk::Format::
-                    eR16G16B16A16Sfloat));
+            ImageFormat::r16g16b16a16_sfloat);
         const auto reloaded_transient_id =
             GET_MODULE(RenderTargetContainer)
                 .getRenderTargetIdByName(
@@ -4589,8 +4584,8 @@ TEST_CASE(
                 transient_attachment);
         REQUIRE(
             reloaded_transient_metadata.usage &
-            vk::ImageUsageFlagBits::
-                eTransientAttachment);
+            ImageUsageBit::
+                transient_attachment);
         const auto reloaded_transient_plan =
             std::find_if(
                 reloaded_program->frame_graph
@@ -5005,9 +5000,9 @@ TEST_CASE(
                 .getMetadata(source);
         REQUIRE(
             source_metadata.extent ==
-            vk::Extent2D{16, 16});
+            ResolvedResourceExtent{16, 16});
         REQUIRE(
-            source_metadata.extent !=
+            toVulkanExtent(source_metadata.extent) !=
             launch.headless_extent);
         REQUIRE(
             source_metadata.storage_mode ==
@@ -5015,15 +5010,15 @@ TEST_CASE(
                 tile_local_attachment);
         REQUIRE(
             source_metadata.usage &
-            vk::ImageUsageFlagBits::
-                eInputAttachment);
+            ImageUsageBit::
+                input_attachment);
         REQUIRE(
             source_metadata.usage &
-            vk::ImageUsageFlagBits::
-                eTransientAttachment);
+            ImageUsageBit::
+                transient_attachment);
         REQUIRE_FALSE(
             source_metadata.usage &
-            vk::ImageUsageFlagBits::eSampled);
+            ImageUsageBit::sampled);
 
         const auto pass_id =
             GET_MODULE(RenderingPassContainer)
@@ -5072,7 +5067,7 @@ TEST_CASE(
         REQUIRE(
             consumer_pass.rendering
                 .local_read_extent ==
-            source_metadata.extent);
+            toVulkanExtent(source_metadata.extent));
         REQUIRE(
             consumer_pass.rendering
                 .color_attachment_locations ==
@@ -5113,7 +5108,7 @@ TEST_CASE(
         REQUIRE(
             resource_interface.front()
                 .input_attachment_extent ==
-            source_metadata.extent);
+            toVulkanExtent(source_metadata.extent));
         const auto fragment_shader =
             GET_MODULE(FullscreenPassContainer)
                 .fragmentShaderForTesting(
@@ -5350,11 +5345,11 @@ vec3 pelican_lighting_v1(
                 tile_local_attachment);
         REQUIRE(
             source_metadata.usage &
-            vk::ImageUsageFlagBits::
-                eInputAttachment);
+            ImageUsageBit::
+                input_attachment);
         REQUIRE_FALSE(
             source_metadata.usage &
-            vk::ImageUsageFlagBits::eSampled);
+            ImageUsageBit::sampled);
 
         const auto consumer =
             std::find_if(
@@ -6143,11 +6138,11 @@ TEST_CASE(
                 .format_class = "data",
                 .role = "data",
                 .format =
-                    vk::Format::eR8G8B8A8Unorm,
+                    ImageFormat::r8g8b8a8_unorm,
                 .usage =
-                    vk::ImageUsageFlagBits::
-                            eColorAttachment |
-                    vk::ImageUsageFlagBits::eSampled,
+                    ImageUsageBit::
+                            color_attachment |
+                    ImageUsageBit::sampled,
             };
         candidate_a.alias_group =
             metadata_a.alias_group;
@@ -7250,8 +7245,8 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
         // resolved image and the samples-times image it renders into.
         const auto lit_bytes = renderTargetBytes(lit_metadata);
         REQUIRE(lit_bytes >=
-                std::uint64_t{imageFormatTexelBytes(
-                    vk::to_string(lit_metadata.format))} *
+                std::uint64_t{imageFormatEstimatedTexelBytes(
+                    lit_metadata.format)} *
                     lit_metadata.extent.width *
                     lit_metadata.extent.height *
                     (1u + lit_metadata.samples));
@@ -8585,7 +8580,7 @@ void pelican_material_outputs_v1(
                     object_id_target);
         REQUIRE(
             object_id_metadata.format ==
-            vk::Format::eR32Uint);
+            ImageFormat::r32_uint);
         if (object_id_metadata.samples > 1) {
             REQUIRE(
                 GET_MODULE(
@@ -9857,7 +9852,7 @@ TEST_CASE(
         REQUIRE(stale_candidate.targetCount() > 0);
         REQUIRE(
             render_targets.getMetadata(target)
-                .extent == (vk::Extent2D{32, 32}));
+                .extent == (ResolvedResourceExtent{32, 32}));
         REQUIRE(
             render_targets.getImageSubresourceView(
                 target, mip_zero,

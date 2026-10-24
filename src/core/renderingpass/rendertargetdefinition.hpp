@@ -1,7 +1,10 @@
 #pragma once
 
 #include "rendertargetstoragemode.hpp"
+#include "../../project/imageformat.hpp"
 #include "../../project/imagesubresource.hpp"
+#include "../../project/imageusage.hpp"
+#include "../../project/resourceextent.hpp"
 
 #include <array>
 #include <cstddef>
@@ -43,13 +46,13 @@ struct RenderTargetDefinition {
     std::string format_class;
     std::string role;
     float extent_scale = 1.0f;
-    std::optional<vk::Extent2D> fixed_extent;
-    vk::Format format;
+    std::optional<ResolvedResourceExtent> fixed_extent;
+    ImageFormat format = ImageFormat::r8g8b8a8_unorm;
     // The authored format remains the automatic/default choice. Additional
     // entries are explicit candidates a verified physical fragment may
     // select for this target.
-    std::vector<vk::Format> format_candidates;
-    vk::ImageUsageFlags usage;
+    std::vector<ImageFormat> format_candidates;
+    ImageUsage usage;
     bool history = false;
     // Kept logical until the physical format is selected so an alternate
     // SINT/UINT target does not retain a float-tagged Vulkan union.
@@ -81,5 +84,13 @@ struct RenderTargetDefinition {
 // is the upper layer.
 vk::ClearColorValue physicalRenderTargetHistoryClearColor(
     const RenderTargetDefinition &definition);
+
+// RC-3a1: the usage registration creates a target's images with: the
+// declared bits, a scope-local attachment's transient (and tile-local input)
+// bits in place of the rest, and the transfer destination a history image is
+// cleared through. registerRenderTarget refuses a definition first.
+ImageUsage registeredRenderTargetUsage(
+    const RenderTargetDefinition &definition);
+// (Defined with RenderTargetContainer, which makes the images.)
 
 } // namespace Pelican

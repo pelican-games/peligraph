@@ -158,9 +158,10 @@ vk::Extent2D getRenderPassTargetExtent(const FrameRenderContext &frame, const Pa
                 return;
             }
             const auto extent = attachmentExtent(
-                rt_container
-                    .getMetadata(attachment.target)
-                    .extent,
+                toVulkanExtent(
+                    rt_container
+                        .getMetadata(attachment.target)
+                        .extent),
                 attachment);
             if (result && *result != extent) {
                 throw std::runtime_error(
@@ -443,9 +444,10 @@ vk::Extent2D getLocalReadScopeTargetExtent(
             }
             const auto extent =
                 attachmentExtent(
-                    rt_container
-                        .getMetadata(target.target)
-                        .extent,
+                    toVulkanExtent(
+                        rt_container
+                            .getMetadata(target.target)
+                            .extent),
                     target);
             if (result && *result != extent) {
                 throw std::runtime_error(
@@ -553,8 +555,8 @@ void transitionLocalReadScopeAttachments(
         }
         if (local_read_color_attachments[index] &&
             !(rt_container.getMetadata(target).usage &
-              vk::ImageUsageFlagBits::
-                  eInputAttachment)) {
+              ImageUsageBit::
+                  input_attachment)) {
             throw std::runtime_error(
                 "tile-local color attachment lacks Vulkan "
                 "INPUT_ATTACHMENT usage");
@@ -603,8 +605,8 @@ void transitionLocalReadScopeAttachments(
     }
     if (local_read_depth_attachment &&
         !(rt_container.getMetadata(depth).usage &
-          vk::ImageUsageFlagBits::
-              eInputAttachment)) {
+          ImageUsageBit::
+              input_attachment)) {
         throw std::runtime_error(
             "tile-local depth attachment lacks Vulkan "
             "INPUT_ATTACHMENT usage");

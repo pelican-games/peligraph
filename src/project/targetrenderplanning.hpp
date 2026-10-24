@@ -1,6 +1,8 @@
 #pragma once
 
 #include "imagesubresource.hpp"
+#include "imageformat.hpp"
+#include "resourceextent.hpp"
 #include "samplecountplanning.hpp"
 #include "targetplanning.hpp"
 #include "vulkanviewplanning.hpp"
@@ -28,7 +30,7 @@ std::string_view resourcePatternFallbackName(
     ResourcePatternFallback fallback);
 
 struct ResourceFormatCandidate {
-    std::string format;
+    ImageFormat format = ImageFormat::r8g8b8a8_unorm;
     std::vector<std::string> required_capabilities;
 
     bool operator==(const ResourceFormatCandidate &) const = default;
@@ -54,41 +56,6 @@ struct ResourcePattern {
     // for a required or stored materialization; planning never reads it.
     std::string store_reason;
 };
-
-enum class ResourceExtentKind : std::uint8_t {
-    output_relative,
-    fixed,
-};
-
-std::string_view resourceExtentKindName(ResourceExtentKind kind);
-
-// Typed physical-size contract carried beside a resource pattern. It is
-// intentionally binding-specific: two resources using the same format and
-// materialization pattern may live at different resolutions.
-struct ResourceExtentPlan {
-    ResourceExtentKind kind =
-        ResourceExtentKind::output_relative;
-    float scale_x = 1.0f;
-    float scale_y = 1.0f;
-    std::uint32_t width = 0;
-    std::uint32_t height = 0;
-
-    bool operator==(const ResourceExtentPlan &) const = default;
-};
-
-struct ResolvedResourceExtent {
-    std::uint32_t width = 0;
-    std::uint32_t height = 0;
-
-    bool operator==(const ResolvedResourceExtent &) const = default;
-};
-
-// This is the producer's sole float-to-integer extent rule. Runtime image
-// allocation and compiled-plan validation both call this resolver; wire
-// consumers receive the resulting integers and do not repeat the arithmetic.
-ResolvedResourceExtent resolveResourceExtent(
-    const ResourceExtentPlan &plan,
-    ResolvedResourceExtent output_extent);
 
 struct ResourcePatternBinding {
     std::string resource;
@@ -208,7 +175,8 @@ std::string_view vulkanResourceViewLayoutName(
 struct VulkanPhysicalResourcePlan {
     std::string logical_resource;
     std::string pattern;
-    std::string format;
+    // nullopt for a buffer (its dump and fingerprint spell it "").
+    std::optional<ImageFormat> format;
     VulkanResourceRepresentation representation =
         VulkanResourceRepresentation::materialized_image;
     LogicalReadFootprintKind widest_read =
@@ -350,7 +318,7 @@ struct VulkanExternalDepthExportRequest {
 
 struct VulkanExternalDepthExportPlan {
     std::string source_resource;
-    std::string format;
+    ImageFormat format = ImageFormat::d32_sfloat;
     VulkanResourceViewLayout view_layout =
         VulkanResourceViewLayout::shared_2d;
     std::uint32_t array_layers = 1;
@@ -382,7 +350,7 @@ struct VulkanTargetPlanPinPackage {
 // compatible rendering-scope fusion do not silently broaden older packages.
 struct VulkanPhysicalResourceFragment {
     std::string logical_resource;
-    std::optional<std::string> format;
+    std::optional<ImageFormat> format;
     std::optional<VulkanResourceRepresentation> representation;
 
     bool operator==(
@@ -428,7 +396,7 @@ std::string_view vulkanPhysicalScopeEditModeName(
 // device. A fragment cannot infer support from a format name alone.
 struct VulkanPhysicalResourceFormatCapability {
     std::string logical_resource;
-    std::string format;
+    ImageFormat format = ImageFormat::r8g8b8a8_unorm;
     bool image_usage_supported = false;
     std::vector<std::uint32_t> supported_samples;
     std::uint32_t max_mip_levels = 1;

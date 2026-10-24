@@ -242,12 +242,6 @@ VulkanPhysicalFragmentPackage canonicalizePackage(
                 "format or representation: " +
                 resource.logical_resource);
         }
-        if (resource.format && resource.format->empty()) {
-            throw std::runtime_error(
-                "Vulkan physical resource fragment format must not "
-                "be empty: " +
-                resource.logical_resource);
-        }
     }
     std::sort(
         package.resources.begin(), package.resources.end(),
@@ -734,7 +728,8 @@ void appendTargetLoweringGraphFingerprint(
                 resource.pattern.format_candidates,
                 [](StableFingerprint64 &nested,
                    const ResourceFormatCandidate &candidate) {
-                    nested.appendString(candidate.format);
+                    nested.appendString(
+                        imageFormatName(candidate.format));
                     appendFingerprintStrings(
                         nested,
                         candidate.required_capabilities);
@@ -812,7 +807,8 @@ void appendPhysicalResourceFingerprint(
     const VulkanPhysicalResourcePlan &resource) {
     fingerprint.appendString(resource.logical_resource);
     fingerprint.appendString(resource.pattern);
-    fingerprint.appendString(resource.format);
+    fingerprint.appendString(
+        imageFormatNameOrEmpty(resource.format));
     fingerprint.appendString(
         vulkanResourceRepresentationName(
             resource.representation));
@@ -993,7 +989,7 @@ void appendSampleCountPlanFingerprint(
         [](StableFingerprint64 &target,
            const ResolvedSampleCountResource &resource) {
             target.appendString(resource.resource);
-            target.appendString(resource.format);
+            target.appendString(imageFormatNameOrEmpty(resource.format));
             target.appendUnsigned(resource.samples);
         });
 }
@@ -1042,7 +1038,7 @@ bool isConservativeRepresentationChange(
 
 const ResourceFormatCandidate &requireFormatCandidate(
     const TargetLoweringResource &lowering,
-    std::string_view format) {
+    std::optional<ImageFormat> format) {
     const auto found = std::find_if(
         lowering.pattern.format_candidates.begin(),
         lowering.pattern.format_candidates.end(),
@@ -1056,13 +1052,13 @@ const ResourceFormatCandidate &requireFormatCandidate(
             "ResourcePattern '" +
             lowering.pattern.id + "' for resource '" +
             lowering.logical.name + "': " +
-            std::string{format});
+            imageFormatNameOrEmpty(format));
     }
     return *found;
 }
 
 using FormatCapabilityKey =
-    std::pair<std::string, std::string>;
+    std::pair<std::string, ImageFormat>;
 
 std::map<
     FormatCapabilityKey,
@@ -1079,22 +1075,19 @@ indexFormatCapabilities(
         requireNonEmpty(
             capability.logical_resource,
             "Vulkan physical format capability resource");
-        requireNonEmpty(
-            capability.format,
-            "Vulkan physical format capability format");
         if (capability.max_mip_levels == 0) {
             throw std::runtime_error(
                 "Vulkan physical format capability max mip "
                 "levels must be positive: " +
                 capability.logical_resource + " -> " +
-                capability.format);
+                std::string{imageFormatName(capability.format)});
         }
         if (capability.max_array_layers == 0) {
             throw std::runtime_error(
                 "Vulkan physical format capability max array "
                 "layers must be positive: " +
                 capability.logical_resource + " -> " +
-                capability.format);
+                std::string{imageFormatName(capability.format)});
         }
         std::set<std::uint32_t> sample_counts;
         for (const auto samples :
@@ -1105,7 +1098,7 @@ indexFormatCapabilities(
                     "Vulkan physical format capability has an "
                     "invalid sample count: " +
                     capability.logical_resource + " -> " +
-                    capability.format + " -> " +
+                    std::string{imageFormatName(capability.format)} + " -> " +
                     std::to_string(samples));
             }
             if (!sample_counts.insert(samples).second) {
@@ -1113,7 +1106,7 @@ indexFormatCapabilities(
                     "Vulkan physical format capability has a "
                     "duplicate sample count: " +
                     capability.logical_resource + " -> " +
-                    capability.format + " -> " +
+                    std::string{imageFormatName(capability.format)} + " -> " +
                     std::to_string(samples));
             }
         }
@@ -1126,7 +1119,7 @@ indexFormatCapabilities(
                 "Vulkan physical format capabilities contain a "
                 "duplicate resource/format pair: " +
                 capability.logical_resource + " -> " +
-                capability.format);
+                std::string{imageFormatName(capability.format)});
         }
     }
     return result;
@@ -1139,19 +1132,19 @@ requireAlternateFormatCapability(
         const VulkanPhysicalResourceFormatCapability *>
         &capabilities,
     const VulkanPhysicalResourcePlan &resource,
-    std::string_view format,
+    ImageFormat format,
     bool exports_depth) {
     const auto found = capabilities.find(
         FormatCapabilityKey{
             resource.logical_resource,
-            std::string{format},
+            format,
         });
     if (found == capabilities.end()) {
         throw std::runtime_error(
             "Vulkan physical fragment has no target format "
             "capability for alternate format: " +
             resource.logical_resource + " -> " +
-            std::string{format});
+            std::string{imageFormatName(format)});
     }
     const auto &capability = *found->second;
     if (!capability.image_usage_supported) {
@@ -1159,7 +1152,7 @@ requireAlternateFormatCapability(
             "Vulkan physical fragment alternate format does not "
             "support the required image usage: " +
             resource.logical_resource + " -> " +
-            std::string{format});
+            std::string{imageFormatName(format)});
     }
     if (std::find(
             capability.supported_samples.begin(),
@@ -1170,7 +1163,7 @@ requireAlternateFormatCapability(
             "Vulkan physical fragment alternate format does not "
             "support the selected rasterization sample count: " +
             resource.logical_resource + " -> " +
-            std::string{format} + " -> " +
+            std::string{imageFormatName(format)} + " -> " +
             std::to_string(
                 resource.rasterization_samples) +
             " samples");
@@ -1181,7 +1174,7 @@ requireAlternateFormatCapability(
             "Vulkan physical fragment alternate format does not "
             "support the selected array layer count: " +
             resource.logical_resource + " -> " +
-            std::string{format} + " -> " +
+            std::string{imageFormatName(format)} + " -> " +
             std::to_string(resource.array_layers));
     }
     if (resource.mip_levels.mode ==
@@ -1192,7 +1185,7 @@ requireAlternateFormatCapability(
             "Vulkan physical fragment alternate format does not "
             "support the selected mip-level count: " +
             resource.logical_resource + " -> " +
-            std::string{format} + " -> " +
+            std::string{imageFormatName(format)} + " -> " +
             std::to_string(
                 resource.mip_levels.count));
     }
@@ -1203,7 +1196,7 @@ requireAlternateFormatCapability(
             "does not support the external transfer-source "
             "contract: " +
             resource.logical_resource + " -> " +
-            std::string{format});
+            std::string{imageFormatName(format)});
     }
     return capability;
 }
@@ -2275,7 +2268,7 @@ std::uint64_t vulkanAutomaticTargetPlanFingerprint(
         [](StableFingerprint64 &target,
            const VulkanExternalDepthExportPlan &depth) {
             target.appendString(depth.source_resource);
-            target.appendString(depth.format);
+            target.appendString(imageFormatName(depth.format));
             target.appendString(
                 vulkanResourceViewLayoutName(
                     depth.view_layout));
@@ -2317,11 +2310,7 @@ ejectVulkanPhysicalFragmentPackage(
             VulkanPhysicalResourceFragment{
                 .logical_resource =
                     resource.logical_resource,
-                .format =
-                    resource.format.empty()
-                        ? std::nullopt
-                        : std::optional{
-                              resource.format},
+                .format = resource.format,
                 .representation =
                     resource.representation,
             });
@@ -2605,8 +2594,10 @@ vulkanPhysicalFragmentPackageFromJson(
                     "Vulkan physical resource fragment format "
                     "must be a non-empty string");
             }
-            resource.format =
-                format->get<std::string>();
+            // RC-3a1: a v0 package spells the format as Vulkan did.
+            resource.format = parsePhysicalPlanImageFormat(
+                format->get_ref<const std::string &>(),
+                "Vulkan physical resource fragment format");
         }
         if (const auto representation =
                 entry.find("representation");
@@ -3066,14 +3057,16 @@ VulkanTargetPlan linkVulkanPhysicalFragment(
                         vulkanResourceRepresentationName(
                             physical->second
                                 ->representation)} +
-                        ":" + physical->second->format,
+                        ":" +
+                        imageFormatNameOrEmpty(
+                            physical->second->format),
                     "same-layer fragment passed conservative "
                     "representation/format verification",
                 });
         }
         if (exports_depth) {
             automatic_plan.external_depth_export->format =
-                physical->second->format;
+                *physical->second->format;
         }
     }
 

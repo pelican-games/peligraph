@@ -52,19 +52,20 @@ TEST_CASE("rendering pass helper ids name invalid and special targets", "[render
 }
 
 TEST_CASE("rendering pass JSON helpers parse known values", "[renderingpass]") {
-    REQUIRE(stringToFormat("R8_UNORM") == vk::Format::eR8Unorm);
-    REQUIRE(stringToFormat("D32_SFLOAT") == vk::Format::eD32Sfloat);
+    REQUIRE(parseAuthoredImageFormat("R8_UNORM") == ImageFormat::r8_unorm);
+    REQUIRE(parseAuthoredImageFormat("D32_SFLOAT") == ImageFormat::d32_sfloat);
     REQUIRE(
-        stringToFormat("R32_SFLOAT") ==
-        vk::Format::eR32Sfloat);
+        parseAuthoredImageFormat("R32_SFLOAT") ==
+        ImageFormat::r32_sfloat);
     REQUIRE(
-        formatToString(
-            vk::Format::eR32Sfloat) ==
+        std::string{imageFormatName(
+            ImageFormat::r32_sfloat)} ==
         "R32_SFLOAT");
 
-    const auto usage = stringToUsageFlags({"COLOR_ATTACHMENT", "SAMPLED"});
-    REQUIRE(static_cast<bool>(usage & vk::ImageUsageFlagBits::eColorAttachment));
-    REQUIRE(static_cast<bool>(usage & vk::ImageUsageFlagBits::eSampled));
+    const auto usage = parseAuthoredImageUsage(
+        std::vector<std::string>{"COLOR_ATTACHMENT", "SAMPLED"});
+    REQUIRE(static_cast<bool>(usage & ImageUsageBit::color_attachment));
+    REQUIRE(static_cast<bool>(usage & ImageUsageBit::sampled));
 
     REQUIRE(std::holds_alternative<MaterialPassInfo>(makePassInfo("material")));
     REQUIRE(std::holds_alternative<FullscreenPassInfo>(makePassInfo("fullscreen")));
@@ -163,14 +164,14 @@ TEST_CASE("render target JSON parser returns target definitions", "[renderingpas
     REQUIRE(definitions[0].name == "half_color");
     REQUIRE(definitions[0].extent_scale == 0.5f);
     REQUIRE_FALSE(definitions[0].fixed_extent.has_value());
-    REQUIRE(definitions[0].format == vk::Format::eR8Unorm);
+    REQUIRE(definitions[0].format == ImageFormat::r8_unorm);
     REQUIRE(
         definitions[0].format_candidates ==
-        std::vector<vk::Format>{
-            vk::Format::eR8Unorm,
-            vk::Format::eR16G16Sfloat});
-    REQUIRE(static_cast<bool>(definitions[0].usage & vk::ImageUsageFlagBits::eColorAttachment));
-    REQUIRE(static_cast<bool>(definitions[0].usage & vk::ImageUsageFlagBits::eSampled));
+        std::vector<ImageFormat>{
+            ImageFormat::r8_unorm,
+            ImageFormat::r16g16_sfloat});
+    REQUIRE(static_cast<bool>(definitions[0].usage & ImageUsageBit::color_attachment));
+    REQUIRE(static_cast<bool>(definitions[0].usage & ImageUsageBit::sampled));
 }
 
 TEST_CASE("render target JSON parser rejects malformed format candidates",
@@ -295,7 +296,7 @@ TEST_CASE("resolver v2 selects B8 SRGB scene/display and float HDR", "[rendering
     REQUIRE(resolved.at("render_targets").at(1).at("width").get<uint32_t>() == 64);
     REQUIRE(resolved.at("render_targets").at(1).at("height").get<uint32_t>() == 32);
     REQUIRE(parseRenderTargetDefinitionsFromJson(resolved).at(0).format ==
-            vk::Format::eB8G8R8A8Srgb);
+            ImageFormat::b8g8r8a8_srgb);
     const auto hdr = resolveRenderTargetFormatClassesV2(
         config, vk::Format::eR8G8B8A8Srgb, vk::Extent2D{64, 32}, true);
     REQUIRE(hdr.at("render_targets").at(0).at("format") == "R16G16B16A16_SFLOAT");
@@ -516,7 +517,7 @@ TEST_CASE(
     REQUIRE(definitions.front().array_layers == 6);
     REQUIRE(
         definitions.front().fixed_extent ==
-        vk::Extent2D{256, 256});
+        ResolvedResourceExtent{256, 256});
 
     auto invalid = document;
     invalid["render_targets"][0].erase("width");
@@ -2211,16 +2212,16 @@ TEST_CASE(
                 if (id == GlobalRenderTargetId{0}) {
                     return RenderTargetMetadata{
                         "scene_color",
-                        vk::ImageUsageFlagBits::eColorAttachment,
-                        vk::Format::eR16G16B16A16Sfloat,
-                        vk::Extent2D{1280, 720}};
+                        ImageUsageBit::color_attachment,
+                        ImageFormat::r16g16b16a16_sfloat,
+                        ResolvedResourceExtent{1280, 720}};
                 }
                 if (id == GlobalRenderTargetId{1}) {
                     return RenderTargetMetadata{
                         "scene_depth",
-                        vk::ImageUsageFlagBits::eDepthStencilAttachment,
-                        vk::Format::eD32Sfloat,
-                        vk::Extent2D{1280, 720}};
+                        ImageUsageBit::depth_stencil_attachment,
+                        ImageFormat::d32_sfloat,
+                        ResolvedResourceExtent{1280, 720}};
                 }
                 throw std::runtime_error(
                     "unexpected render target metadata lookup");
@@ -2576,9 +2577,9 @@ TEST_CASE("pass definition JSON parser builds a fullscreen pass definition", "[r
     }};
     const auto metadata_resolver = RenderTargetMetadataResolver{[](GlobalRenderTargetId id) {
         if (id == GlobalRenderTargetId{3}) {
-            return RenderTargetMetadata{"half_color", vk::ImageUsageFlagBits::eColorAttachment |
-                                                          vk::ImageUsageFlagBits::eSampled,
-                                        vk::Format::eR8G8B8A8Unorm, vk::Extent2D{1280, 720}};
+            return RenderTargetMetadata{"half_color", ImageUsageBit::color_attachment |
+                                                          ImageUsageBit::sampled,
+                                        ImageFormat::r8g8b8a8_unorm, ResolvedResourceExtent{1280, 720}};
         }
         throw std::runtime_error("unexpected render target metadata lookup");
     }};
@@ -2688,38 +2689,38 @@ TEST_CASE(
             if (target == GlobalRenderTargetId{10}) {
                 return RenderTargetMetadata{
                     "lit_color",
-                    vk::ImageUsageFlagBits::eColorAttachment |
-                        vk::ImageUsageFlagBits::eSampled,
-                    vk::Format::eR16G16B16A16Sfloat,
-                    vk::Extent2D{1280, 720}, true};
+                    ImageUsageBit::color_attachment |
+                        ImageUsageBit::sampled,
+                    ImageFormat::r16g16b16a16_sfloat,
+                    ResolvedResourceExtent{1280, 720}, true};
             }
             if (target == GlobalRenderTargetId{11}) {
                 return RenderTargetMetadata{
                     "offscreen_depth",
-                    vk::ImageUsageFlagBits::eDepthStencilAttachment,
-                    vk::Format::eD32Sfloat,
-                    vk::Extent2D{1280, 720}};
+                    ImageUsageBit::depth_stencil_attachment,
+                    ImageFormat::d32_sfloat,
+                    ResolvedResourceExtent{1280, 720}};
             }
             if (target == GlobalRenderTargetId{12}) {
                 return RenderTargetMetadata{
                     "source_color",
-                    vk::ImageUsageFlagBits::eSampled,
-                    vk::Format::eR8G8B8A8Unorm,
-                    vk::Extent2D{1280, 720}};
+                    ImageUsageBit::sampled,
+                    ImageFormat::r8g8b8a8_unorm,
+                    ResolvedResourceExtent{1280, 720}};
             }
             if (target == GlobalRenderTargetId{13}) {
                 return RenderTargetMetadata{
                     "output_color",
-                    vk::ImageUsageFlagBits::eColorAttachment,
-                    vk::Format::eR8G8B8A8Unorm,
-                    vk::Extent2D{1280, 720}};
+                    ImageUsageBit::color_attachment,
+                    ImageFormat::r8g8b8a8_unorm,
+                    ResolvedResourceExtent{1280, 720}};
             }
             if (target == GlobalRenderTargetId{14}) {
                 return RenderTargetMetadata{
                     "second_color",
-                    vk::ImageUsageFlagBits::eColorAttachment,
-                    vk::Format::eR8G8B8A8Unorm,
-                    vk::Extent2D{1280, 720}};
+                    ImageUsageBit::color_attachment,
+                    ImageFormat::r8g8b8a8_unorm,
+                    ResolvedResourceExtent{1280, 720}};
             }
             throw std::runtime_error(
                 "unexpected WP326 render target metadata lookup");
@@ -2979,26 +2980,26 @@ TEST_CASE(
                 if (id == GlobalRenderTargetId{10}) {
                     return RenderTargetMetadata{
                         "gbuffer_a",
-                        vk::ImageUsageFlagBits::
-                            eColorAttachment,
-                        vk::Format::eR16G16B16A16Sfloat,
-                        vk::Extent2D{960, 540}};
+                        ImageUsageBit::
+                            color_attachment,
+                        ImageFormat::r16g16b16a16_sfloat,
+                        ResolvedResourceExtent{960, 540}};
                 }
                 if (id == GlobalRenderTargetId{11}) {
                     return RenderTargetMetadata{
                         "gbuffer_b",
-                        vk::ImageUsageFlagBits::
-                            eColorAttachment,
-                        vk::Format::eR8G8B8A8Unorm,
-                        vk::Extent2D{960, 540}};
+                        ImageUsageBit::
+                            color_attachment,
+                        ImageFormat::r8g8b8a8_unorm,
+                        ResolvedResourceExtent{960, 540}};
                 }
                 if (id == GlobalRenderTargetId{12}) {
                     return RenderTargetMetadata{
                         "scene_depth",
-                        vk::ImageUsageFlagBits::
-                            eDepthStencilAttachment,
-                        vk::Format::eD32Sfloat,
-                        vk::Extent2D{960, 540}};
+                        ImageUsageBit::
+                            depth_stencil_attachment,
+                        ImageFormat::d32_sfloat,
+                        ResolvedResourceExtent{960, 540}};
                 }
                 throw std::runtime_error(
                     "unexpected render target metadata lookup");
@@ -3072,10 +3073,10 @@ TEST_CASE(
                 }
                 return RenderTargetMetadata{
                     "half_color",
-                    vk::ImageUsageFlagBits::eColorAttachment |
-                        vk::ImageUsageFlagBits::eSampled,
-                    vk::Format::eR8G8B8A8Unorm,
-                    vk::Extent2D{1280, 720}};
+                    ImageUsageBit::color_attachment |
+                        ImageUsageBit::sampled,
+                    ImageFormat::r8g8b8a8_unorm,
+                    ResolvedResourceExtent{1280, 720}};
             }};
     const nlohmann::json material_json{
         {"name", "material"},
@@ -3172,13 +3173,13 @@ TEST_CASE("pass sequence JSON parser resolves input target references", "[render
     }};
     const auto metadata_resolver = RenderTargetMetadataResolver{[](GlobalRenderTargetId id) {
         if (id == GlobalRenderTargetId{3}) {
-            return RenderTargetMetadata{"source_color", vk::ImageUsageFlagBits::eColorAttachment |
-                                                            vk::ImageUsageFlagBits::eSampled,
-                                        vk::Format::eR8G8B8A8Unorm, vk::Extent2D{1280, 720}};
+            return RenderTargetMetadata{"source_color", ImageUsageBit::color_attachment |
+                                                            ImageUsageBit::sampled,
+                                        ImageFormat::r8g8b8a8_unorm, ResolvedResourceExtent{1280, 720}};
         }
         if (id == GlobalRenderTargetId{4}) {
-            return RenderTargetMetadata{"final_color", vk::ImageUsageFlagBits::eColorAttachment,
-                                        vk::Format::eR8G8B8A8Unorm, vk::Extent2D{1280, 720}};
+            return RenderTargetMetadata{"final_color", ImageUsageBit::color_attachment,
+                                        ImageFormat::r8g8b8a8_unorm, ResolvedResourceExtent{1280, 720}};
         }
         throw std::runtime_error("unexpected render target metadata lookup");
     }};
@@ -3222,13 +3223,13 @@ TEST_CASE("pass sequence JSON parser allows depth output as later input", "[rend
     }};
     const auto metadata_resolver = RenderTargetMetadataResolver{[](GlobalRenderTargetId id) {
         if (id == GlobalRenderTargetId{3}) {
-            return RenderTargetMetadata{"shadow_map", vk::ImageUsageFlagBits::eDepthStencilAttachment |
-                                                          vk::ImageUsageFlagBits::eSampled,
-                                        vk::Format::eD32Sfloat, vk::Extent2D{2048, 2048}};
+            return RenderTargetMetadata{"shadow_map", ImageUsageBit::depth_stencil_attachment |
+                                                          ImageUsageBit::sampled,
+                                        ImageFormat::d32_sfloat, ResolvedResourceExtent{2048, 2048}};
         }
         if (id == GlobalRenderTargetId{4}) {
-            return RenderTargetMetadata{"lit_color", vk::ImageUsageFlagBits::eColorAttachment,
-                                        vk::Format::eR8G8B8A8Unorm, vk::Extent2D{1280, 720}};
+            return RenderTargetMetadata{"lit_color", ImageUsageBit::color_attachment,
+                                        ImageFormat::r8g8b8a8_unorm, ResolvedResourceExtent{1280, 720}};
         }
         throw std::runtime_error("unexpected render target metadata lookup");
     }};
@@ -3498,17 +3499,17 @@ TEST_CASE("material pass screen inputs resolve named typed targets and reject mi
             if (target == GlobalRenderTargetId{10}) {
                 return RenderTargetMetadata{
                     "opaque_color",
-                    vk::ImageUsageFlagBits::eTransferDst |
-                        vk::ImageUsageFlagBits::eSampled,
-                    vk::Format::eR16G16B16A16Sfloat,
-                    vk::Extent2D{1280, 720}};
+                    ImageUsageBit::transfer_dst |
+                        ImageUsageBit::sampled,
+                    ImageFormat::r16g16b16a16_sfloat,
+                    ResolvedResourceExtent{1280, 720}};
             }
             if (target == GlobalRenderTargetId{11}) {
                 return RenderTargetMetadata{
                     "opaque_depth",
-                    vk::ImageUsageFlagBits::eTransferDst |
-                        vk::ImageUsageFlagBits::eSampled,
-                    vk::Format::eD32Sfloat, vk::Extent2D{1280, 720}};
+                    ImageUsageBit::transfer_dst |
+                        ImageUsageBit::sampled,
+                    ImageFormat::d32_sfloat, ResolvedResourceExtent{1280, 720}};
             }
             throw std::runtime_error("unexpected target");
         }};
@@ -3579,18 +3580,18 @@ TEST_CASE("material pass surface resources resolve the feature-owned directional
             if (target == GlobalRenderTargetId{20}) {
                 return RenderTargetMetadata{
                     "shadow_map",
-                    vk::ImageUsageFlagBits::eDepthStencilAttachment |
-                        vk::ImageUsageFlagBits::eSampled,
-                    vk::Format::eD32Sfloat,
-                    vk::Extent2D{2048, 2048}};
+                    ImageUsageBit::depth_stencil_attachment |
+                        ImageUsageBit::sampled,
+                    ImageFormat::d32_sfloat,
+                    ResolvedResourceExtent{2048, 2048}};
             }
             if (target == GlobalRenderTargetId{21}) {
                 return RenderTargetMetadata{
                     "scene_color",
-                    vk::ImageUsageFlagBits::eColorAttachment |
-                        vk::ImageUsageFlagBits::eSampled,
-                    vk::Format::eR16G16B16A16Sfloat,
-                    vk::Extent2D{1280, 720}};
+                    ImageUsageBit::color_attachment |
+                        ImageUsageBit::sampled,
+                    ImageFormat::r16g16b16a16_sfloat,
+                    ResolvedResourceExtent{1280, 720}};
             }
             throw std::runtime_error("unexpected target");
         }};
@@ -4021,17 +4022,16 @@ TEST_CASE(
                               std::to_string(id.value),
                 .usage =
                     id.value == 7
-                        ? vk::ImageUsageFlagBits::
-                              eDepthStencilAttachment
-                        : vk::ImageUsageFlagBits::
-                              eColorAttachment,
+                        ? ImageUsageBit::
+                              depth_stencil_attachment
+                        : ImageUsageBit::
+                              color_attachment,
                 .format =
                     id.value == 7
-                        ? vk::Format::eD16Unorm
+                        ? ImageFormat::d16_unorm
                         : id.value == 5
-                              ? vk::Format::eR32Uint
-                              : vk::Format::
-                                    eR16G16B16A16Sfloat,
+                              ? ImageFormat::r32_uint
+                              : ImageFormat::r16g16b16a16_sfloat,
                 .extent = {1280, 720},
             };
         }};
@@ -4107,15 +4107,14 @@ TEST_CASE(
                     id.value == 0 ? "color" : "depth",
                 .usage =
                     id.value == 0
-                        ? vk::ImageUsageFlagBits::
-                              eColorAttachment
-                        : vk::ImageUsageFlagBits::
-                              eDepthStencilAttachment,
+                        ? ImageUsageBit::
+                              color_attachment
+                        : ImageUsageBit::
+                              depth_stencil_attachment,
                 .format =
                     id.value == 0
-                        ? vk::Format::
-                              eR16G16B16A16Sfloat
-                        : vk::Format::eD32Sfloat,
+                        ? ImageFormat::r16g16b16a16_sfloat
+                        : ImageFormat::d32_sfloat,
                 .extent = {1, 1},
             };
         }};
@@ -4474,8 +4473,8 @@ TEST_CASE("material pass info parser rejects malformed material range", "[render
 }
 
 TEST_CASE("rendering pass JSON helpers reject malformed values", "[renderingpass]") {
-    REQUIRE_THROWS_AS(stringToFormat("UNKNOWN"), std::runtime_error);
-    REQUIRE_THROWS_AS(stringToUsageFlags({}), std::runtime_error);
+    REQUIRE_THROWS_AS(parseAuthoredImageFormat("UNKNOWN"), std::runtime_error);
+    REQUIRE_THROWS_AS(parseAuthoredImageUsage(std::vector<std::string>{}), std::runtime_error);
     REQUIRE_THROWS_AS(makePassInfo("compute"), std::runtime_error);
     REQUIRE_THROWS_AS(stringToFullscreenPushConstantData("camera"), std::runtime_error);
     REQUIRE_THROWS_AS(stringToLoadOp("keep"), std::runtime_error);
@@ -4624,9 +4623,9 @@ TEST_CASE(
             return RenderTargetMetadata{
                 .name = "object_id",
                 .usage =
-                    vk::ImageUsageFlagBits::
-                        eColorAttachment,
-                .format = vk::Format::eR32Uint,
+                    ImageUsageBit::
+                        color_attachment,
+                .format = ImageFormat::r32_uint,
                 .extent = {64, 64},
             };
         }};
@@ -4688,10 +4687,10 @@ TEST_CASE(
                 return RenderTargetMetadata{
                     .name = "gbuffer",
                     .usage =
-                        vk::ImageUsageFlagBits::
-                            eColorAttachment,
+                        ImageUsageBit::
+                            color_attachment,
                     .format =
-                        vk::Format::eR8G8B8A8Unorm,
+                        ImageFormat::r8g8b8a8_unorm,
                     .extent = {64, 64},
                 };
             }
@@ -4699,11 +4698,10 @@ TEST_CASE(
                 return RenderTargetMetadata{
                     .name = "lit",
                     .usage =
-                        vk::ImageUsageFlagBits::
-                            eColorAttachment,
+                        ImageUsageBit::
+                            color_attachment,
                     .format =
-                        vk::Format::
-                            eR16G16B16A16Sfloat,
+                        ImageFormat::r16g16b16a16_sfloat,
                     .extent = {64, 64},
                 };
             }
@@ -4932,10 +4930,10 @@ TEST_CASE(
             return RenderTargetMetadata{
                 .name = "probe",
                 .usage =
-                    vk::ImageUsageFlagBits::
-                        eColorAttachment,
+                    ImageUsageBit::
+                        color_attachment,
                 .format =
-                    vk::Format::eR8G8B8A8Unorm,
+                    ImageFormat::r8g8b8a8_unorm,
                 .extent = {64, 64},
                 .samples = 1,
                 .mip_levels = 4,
@@ -4959,7 +4957,7 @@ TEST_CASE(
     plan.resources = {
         VulkanPhysicalResourcePlan{
             .logical_resource = "probe",
-            .format = "R8G8B8A8Unorm",
+            .format = ImageFormat::r8g8b8a8_unorm,
             .mip_levels =
                 ImageMipLevelCount{
                     .mode =
@@ -5035,10 +5033,10 @@ TEST_CASE(
             return RenderTargetMetadata{
                 .name = "scene_color",
                 .usage =
-                    vk::ImageUsageFlagBits::
-                        eColorAttachment,
+                    ImageUsageBit::
+                        color_attachment,
                 .format =
-                    vk::Format::eR8G8B8A8Unorm,
+                    ImageFormat::r8g8b8a8_unorm,
                 .extent = {64, 64},
             };
         }};

@@ -299,8 +299,8 @@ makeComputeResourceInterface(
                 ShaderResourcePortAccess::sampled;
             const auto required_usage =
                 sampled
-                    ? vk::ImageUsageFlagBits::eSampled
-                    : vk::ImageUsageFlagBits::eStorage;
+                    ? ImageUsageBit::sampled
+                    : ImageUsageBit::storage;
             if (!(metadata.usage &
                   required_usage)) {
                 throw std::runtime_error(
@@ -467,7 +467,7 @@ makeComputeResourceInterface(
                     .storage_format =
                         sampled
                             ? vk::Format::eUndefined
-                            : metadata.format,
+                            : toVulkanFormat(metadata.format),
                     .readable =
                         sampled ? true : readable,
                     .writable =

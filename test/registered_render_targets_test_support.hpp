@@ -64,7 +64,7 @@ registerRenderTargetsWithoutDevice(
                     .name = target.name,
                     .usage = target.usage,
                     .format = target.format,
-                    .extent = {extent.width, extent.height},
+                    .extent = extent,
                     .history = target.history,
                     .samples = target.samples,
                     .mip_levels = resolveImageMipLevels(

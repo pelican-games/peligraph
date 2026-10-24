@@ -58,7 +58,7 @@ struct RenderingTargetArrayLayerAssignment {
 
 struct RenderingTargetFormatAssignment {
     std::string resource;
-    vk::Format format = vk::Format::eUndefined;
+    ImageFormat format = ImageFormat::r8g8b8a8_unorm;
 
     bool operator==(
         const RenderingTargetFormatAssignment &) const =
@@ -194,6 +194,7 @@ void applyRenderingTargetPlan(
     std::span<RenderTargetDefinition> render_targets,
     const RenderingTargetPlanCompilation &compilation);
 
-vk::ResolveModeFlagBits colorAttachmentResolveMode(vk::Format format);
+// RC-3a1: by the format table's numeric type.
+vk::ResolveModeFlagBits colorAttachmentResolveMode(ImageFormat format);
 
 } // namespace Pelican

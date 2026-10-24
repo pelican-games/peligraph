@@ -29,6 +29,8 @@
 #include "../renderer/viewfamilyproviderregistry.hpp"
 #include "../renderingpass/passdefinitionjsonparser.hpp"
 #include "../renderingpass/renderingpassjsonhelpers.hpp"
+#include "../../project/imageformat.hpp"
+#include "../../project/imageusage.hpp"
 #include "../renderingpass/rendertargetjsonparser.hpp"
 #include "../renderingpass/rendertargetmetadataresolver.hpp"
 #include "../renderingpass/rendertargetnameresolver.hpp"
@@ -709,7 +711,7 @@ void validateAuthoredMaterialPass(const Json &config, const std::string &graph,
                 1, static_cast<std::uint32_t>(size * definition.extent_scale + 0.5f));
         };
         const auto extent = definition.fixed_extent.value_or(
-            vk::Extent2D{scaled(screen.width), scaled(screen.height)});
+            ResolvedResourceExtent{scaled(screen.width), scaled(screen.height)});
         return RenderTargetMetadata{
             .name = definition.name,
             .usage = definition.usage,
@@ -3546,8 +3548,8 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
     result["render_targets"] = std::move(editable_targets);
     result["render_target_fragment"] = renderTargetFragmentReference();
     result["render_target_vocabulary"] = {
-        {"formats", imageFormatNames()},
-        {"usage", imageUsageFlagNames()},
+        {"formats", authoredImageFormatNames()},
+        {"usage", authoredImageUsageNames()},
         {"format_classes", OrderedJson::array({"scene", "display", "data", "explicit"})},
         // CT-5: how a class with an argument is written, as
         // resolveRenderTargetFormatClasses reads it: "explicit(<format>)",
@@ -3559,11 +3561,12 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
              {"argument_choices_from",
               {{"rpc", "get_render_authoring_context"}, {"key", "render_target_vocabulary.formats"}}}}})},
     };
-    // EL-4: each format's aspect, from its Vulkan format traits; `formats`
-    // stays the list of names.
+    // EL-4: each format's aspect, from the format table (RC-3a1); `formats`
+    // stays the list of names. Only the formats a target may declare.
     auto format_aspects = OrderedJson::object();
-    for (const auto &[name, format] : imageFormats())
-        format_aspects[name] = std::string{imageFormatAspectName(format)};
+    for (const auto &row : imageFormatTable())
+        if (row.authorable)
+            format_aspects[std::string{row.name}] = std::string{imageAspectName(row.aspect)};
     result["render_target_vocabulary"]["format_aspects"] = std::move(format_aspects);
     // CT-4: the names a pass's view_family and canonical_anchor take (the
     // catalog's choices_from): the main family and each registered

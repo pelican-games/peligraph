@@ -7,6 +7,7 @@
 #include "rendertargetdefinition.hpp"
 #include "rendertargetmetadata.hpp"
 #include "rendertargetread.hpp"
+#include "vulkanimagevocabulary.hpp"
 #include "../../project/imagesubresource.hpp"
 #include <map>
 #include <optional>
@@ -82,9 +83,9 @@ DECLARE_MODULE(RenderTargetContainer) {
         std::string format_class;
         std::string role;
         float extent_scale;
-        std::optional<vk::Extent2D> fixed_extent;
-        vk::Format format;
-        vk::ImageUsageFlags usage;
+        std::optional<ResolvedResourceExtent> fixed_extent;
+        ImageFormat format = ImageFormat::r8g8b8a8_unorm;
+        ImageUsage usage;
         vma::MemoryUsage memory_usage;
         bool history;
         vk::ClearColorValue history_clear_color;

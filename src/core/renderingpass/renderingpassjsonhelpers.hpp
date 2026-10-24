@@ -11,21 +11,9 @@
 
 namespace Pelican {
 
-vk::Format stringToFormat(const std::string &format_str);
-std::string formatToString(vk::Format format);
-vk::ImageUsageFlags stringToUsageFlags(const std::vector<std::string> &usage_strs);
-// The names stringToFormat / stringToUsageFlags accept, in table order.
-std::vector<std::string> imageFormatNames();
-std::vector<std::string> imageUsageFlagNames();
-// PO-1: the names of the flags set in `usage`, in table order; a flag the
-// table has no name for is given vk::to_string's.
-std::vector<std::string> imageUsageNames(vk::ImageUsageFlags usage);
-// EL-4: every format stringToFormat accepts, with its name, in table order.
-std::vector<std::pair<std::string, vk::Format>> imageFormats();
-// EL-4: which aspects a format's texels carry, read off Vulkan's format
-// traits (its components named D and S), not off its name: "color",
-// "depth", "depth_stencil" or "stencil".
-std::string_view imageFormatAspectName(vk::Format format);
+// RC-3a1: the names of image formats and usages, what a render target may
+// declare and what each format is, are the project's (imageformat.hpp,
+// imageusage.hpp); core maps them to Vulkan (vulkanimagevocabulary.hpp).
 PassInfo makePassInfo(const std::string &type_str);
 PassInfo makePassInfo(RenderPassType type);
 FullscreenPushConstantData stringToFullscreenPushConstantData(const std::string &data_str);

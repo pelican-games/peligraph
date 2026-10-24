@@ -114,6 +114,20 @@ std::string requireString(
     return found->get<std::string>();
 }
 
+// RC-3a1: a format of the package: its name, or v0's spelling of it (a
+// package ejected before the physical plan spelled formats as the author
+// does). "" (a buffer's) is none.
+std::optional<ImageFormat> requireFormat(
+    const nlohmann::json &object,
+    std::string_view key, std::string_view context,
+    bool allow_empty = false) {
+    const auto name =
+        requireString(object, key, context, allow_empty);
+    if (name.empty()) return std::nullopt;
+    return parsePhysicalPlanImageFormat(
+        name, std::string{context} + " " + std::string{key});
+}
+
 bool requireBool(
     const nlohmann::json &object,
     std::string_view key, std::string_view context) {
@@ -435,7 +449,7 @@ nlohmann::ordered_json resourceToJson(
     nlohmann::ordered_json result{
         {"logical_resource", resource.logical_resource},
         {"pattern", resource.pattern},
-        {"format", resource.format},
+        {"format", imageFormatNameOrEmpty(resource.format)},
         {"representation",
          vulkanResourceRepresentationName(
              resource.representation)},
@@ -585,7 +599,7 @@ VulkanPhysicalResourcePlan resourceFromJson(
         .pattern =
             requireString(entry, "pattern", context),
         .format =
-            requireString(
+            requireFormat(
                 entry, "format", context, true),
         .representation =
             parseRepresentation(
@@ -1243,7 +1257,7 @@ findFormatCapability(
     std::span<
         const VulkanPhysicalResourceFormatCapability>
         capabilities,
-    std::string_view resource, std::string_view format) {
+    std::string_view resource, std::optional<ImageFormat> format) {
     const auto found = std::find_if(
         capabilities.begin(), capabilities.end(),
         [&](const auto &candidate) {
@@ -1446,7 +1460,7 @@ vulkanCompletePhysicalPlanPackageFromJson(
                         "source_resource",
                         external_context),
                 .format =
-                    requireString(
+                    *requireFormat(
                         *external_depth, "format",
                         external_context),
                 .view_layout =
@@ -2114,7 +2128,7 @@ verifyVulkanCompletePhysicalPlanPackage(
                 "alternate complete-plan format lacks device usage "
                 "evidence: " +
                     resource.logical_resource + " -> " +
-                    resource.format);
+                    imageFormatNameOrEmpty(resource.format));
             require(
                 std::find(
                     capability->supported_samples.begin(),

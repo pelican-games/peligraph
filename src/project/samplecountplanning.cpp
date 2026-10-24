@@ -47,7 +47,8 @@ std::vector<std::string> limitingResources(
     std::vector<std::string> limiting;
     for (const auto &resource : group.resources) {
         if (!supports(resource, samples)) {
-            limiting.push_back(resource.resource + " (" + resource.format + ")");
+            limiting.push_back(resource.resource + " (" +
+                               imageFormatNameOrEmpty(resource.format) + ")");
         }
     }
     return limiting;
@@ -272,11 +273,6 @@ ResolvedSampleCountPlan resolveSampleCountPlan(
                     "exactly one group: " +
                     resource.resource);
             }
-            if (resource.format.empty()) {
-                throw std::runtime_error("sample-count resource '" +
-                                         resource.resource +
-                                         "' has no format");
-            }
             resource.supported_samples = canonicalCounts(
                 std::move(resource.supported_samples), resource.resource);
             if (!supports(resource, 1)) {
@@ -367,7 +363,7 @@ nlohmann::ordered_json resolvedSampleCountPlanToJson(
     for (const auto &resource : plan.resources) {
         resources.push_back({
             {"resource", resource.resource},
-            {"format", resource.format},
+            {"format", imageFormatNameOrEmpty(resource.format)},
             {"samples", resource.samples},
         });
     }

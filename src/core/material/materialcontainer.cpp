@@ -73,21 +73,11 @@ static void forEachCompiledPass(
 }
 
 
-static bool isIntegerColorFormat(vk::Format format) {
-    switch (format) {
-    case vk::Format::eD16Unorm:
-    case vk::Format::eX8D24UnormPack32:
-    case vk::Format::eD32Sfloat:
-    case vk::Format::eD16UnormS8Uint:
-    case vk::Format::eD24UnormS8Uint:
-    case vk::Format::eD32SfloatS8Uint:
-        return false;
-    default:
-        break;
-    }
-    const auto name = vk::to_string(format);
-    return name.find("Uint") != std::string::npos ||
-           name.find("Sint") != std::string::npos;
+// RC-3a1: by the format table (a depth format is never an integer color).
+static bool isIntegerColorFormat(ImageFormat format) {
+    return imageFormatAspect(format) == ImageAspect::color &&
+           imageFormatShaderNumeric(format) !=
+               ImageShaderNumeric::floating;
 }
 
 static void validateMaterialInputAttachmentFormat(
@@ -101,7 +91,7 @@ static void validateMaterialInputAttachmentFormat(
         throw std::runtime_error(
             "material input '" + std::string{input_name} +
             "' cannot use integer input attachment format " +
-            vk::to_string(format) +
+            std::string{imageFormatName(format)} +
             "; the generated material image accessor currently "
             "returns vec4");
     }

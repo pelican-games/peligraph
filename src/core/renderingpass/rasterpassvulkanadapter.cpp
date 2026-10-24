@@ -1,6 +1,7 @@
 #include "rasterpassvulkanadapter.hpp"
 
 #include "renderingpassjsonhelpers.hpp"
+#include "vulkanimagevocabulary.hpp"
 #include "../vkcore/depthstencilformat.hpp"
 
 #include <algorithm>
@@ -185,11 +186,7 @@ GraphicsPipelineStencilFaceState lowerStencilFace(
 }
 
 std::string depthFormatName(vk::Format format) {
-    try {
-        return formatToString(format);
-    } catch (const std::exception &) {
-        return vk::to_string(format);
-    }
+    return vulkanFormatName(format);
 }
 
 } // namespace

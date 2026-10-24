@@ -325,7 +325,8 @@ void XrMirrorSink::tryPresent() noexcept {
         const auto &frame = frame_token.context();
         const vk::CommandBuffer cmd = frame.cmd_buf;
         rebindSourceIfNeeded();
-        const auto source_extent = render_targets.getMetadata(source_id).extent;
+        const auto source_extent =
+            toVulkanExtent(render_targets.getMetadata(source_id).extent);
         const auto letterbox = mirrorLetterboxRect(source_extent, frame.extent);
         if (!letterbox) {
             target.submit(frame_token.release());

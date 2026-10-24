@@ -3,6 +3,8 @@
 #include "rendertargetimageviewresolver.hpp"
 #include "rendertargetmetadataresolver.hpp"
 #include "rasterpassvulkanadapter.hpp"
+#include "materialpassattachments.hpp"
+#include "vulkanimagevocabulary.hpp"
 #include "../../project/targetrenderplanning.hpp"
 #include "../fullscreenpass/fullscreeninputbindingmismatch.hpp"
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
@@ -400,19 +402,10 @@ PassDefinition applyPhysicalPassContract(
             result.output_color.size());
         for (const auto target : result.output_color) {
             if (isConcreteRenderTarget(target)) {
-                const auto format_name =
-                    vk::to_string(
-                        metadata->get(target).format);
                 result.physical_color_numeric_classes
                     .push_back(
-                        format_name.ends_with("Sint")
-                            ? MaterialOutputNumericClass::
-                                  signed_integer
-                            : format_name.ends_with("Uint")
-                                  ? MaterialOutputNumericClass::
-                                        unsigned_integer
-                                  : MaterialOutputNumericClass::
-                                        floating);
+                        materialPassFormatNumericClass(
+                            metadata->get(target).format));
             } else {
                 // Window/XR composition color formats are normalized
                 // floating-point outputs at the shader interface.
@@ -606,9 +599,10 @@ vk::Extent2D resolveLocalReadScopeExtent(
                 return;
             }
             auto extent =
-                metadata->get(
-                    attachment.target)
-                    .extent;
+                toVulkanExtent(
+                    metadata->get(
+                        attachment.target)
+                        .extent);
             if (attachment.subresource) {
                 const auto mip =
                     attachment.subresource
@@ -1291,7 +1285,7 @@ void validatePassAttachmentViews(
             }
             const auto extent =
                 rasterAttachmentExtent(
-                    target.extent,
+                    toVulkanExtent(target.extent),
                     attachment.subresource);
             if (concrete_extent &&
                 *concrete_extent != extent) {
@@ -1318,7 +1312,8 @@ vk::Format resolveFirstColorFormat(const PassDefinition &pass_def, RenderTarget 
 
     const auto &first_color = pass_def.output_color.front();
     if (isConcreteRenderTarget(first_color)) {
-        return rt_metadata.get(first_color).format;
+        return toVulkanFormat(
+            rt_metadata.get(first_color).format);
     }
     return rt_module.getSwapchainFormat();
 }
@@ -1329,7 +1324,8 @@ vk::Format resolvePhysicalColorFormat(
     const RenderTargetMetadataResolver
         &metadata) {
     if (isConcreteRenderTarget(target)) {
-        return metadata.get(target).format;
+        return toVulkanFormat(
+            metadata.get(target).format);
     }
     if (isSwapchainRenderTarget(target)) {
         return render_target
@@ -1377,9 +1373,10 @@ resolvePhysicalDepthFormat(
             rendering.depth_attachment)) {
         return std::nullopt;
     }
-    return metadata
-        .get(rendering.depth_attachment)
-        .format;
+    return toVulkanFormat(
+        metadata
+            .get(rendering.depth_attachment)
+            .format);
 }
 
 GraphicsPipelineRenderingLocalReadContract
@@ -1732,7 +1729,7 @@ void validateFullscreenSamplingCapabilities(
             dependencies.render_target_metadata.get(
                 pass.input_targets[input]);
         if (!(metadata.usage &
-              vk::ImageUsageFlagBits::eSampled)) {
+              ImageUsageBit::sampled)) {
             throw std::runtime_error(
                 "Fullscreen pass sampled input '" +
                 metadata.name +
@@ -1746,7 +1743,7 @@ void validateFullscreenSamplingCapabilities(
         const auto features =
             physical_device
                 .getFormatProperties(
-                    metadata.format)
+                    toVulkanFormat(metadata.format))
                 .optimalTilingFeatures;
         if (!(features &
               vk::FormatFeatureFlagBits::
@@ -1758,7 +1755,7 @@ void validateFullscreenSamplingCapabilities(
                         : "Fullscreen"} +
                 " pass input '" +
                 metadata.name + "' format " +
-                vk::to_string(metadata.format) +
+                std::string{imageFormatName(metadata.format)} +
                 " does not support linear filtering; author " +
                 std::string{
                     pass.isGenericRaster()
@@ -1859,7 +1856,7 @@ compileFullscreenResourceInterface(
         }
         if (!local_reads[input] &&
             !(metadata.usage &
-              vk::ImageUsageFlagBits::eSampled)) {
+              ImageUsageBit::sampled)) {
             throw std::runtime_error(
                 "Shader resource port '" + port->name +
                 "' (resource '" + port->resource +
@@ -2717,7 +2714,7 @@ PassId compileShadowDepthPass(const PassDefinition &pass_def, ShadowDepthRuntime
                                                      pass_def.shadowDepthInfo().vert_shader,
                                                      dependencies.warn_backend_specific_shader_refs,
                                                      dependencies.shader_defines);
-    return dependencies.shadow_depth_pass_container.registerShadowDepthPass(depth_rt.format, vert_shader,
+    return dependencies.shadow_depth_pass_container.registerShadowDepthPass(toVulkanFormat(depth_rt.format), vert_shader,
                                                                            dependencies.shader_defines,
                                                                            pass_def.rasterization_samples,
                                                                            pass_def.ray_query,
@@ -2728,10 +2725,10 @@ PassId compileVelocityPass(const PassDefinition &pass_def,
                            GeometryPassRuntimeDependencies dependencies) {
     const auto color = dependencies.render_target_metadata.get(pass_def.output_color.front());
     const auto depth = dependencies.render_target_metadata.get(pass_def.output_depth);
-    if (color.format != vk::Format::eR16G16Sfloat) {
+    if (color.format != ImageFormat::r16g16_sfloat) {
         throw std::runtime_error("Velocity pass color output must be R16G16_SFLOAT: " + color.name);
     }
-    if (depth.format != vk::Format::eD32Sfloat) {
+    if (depth.format != ImageFormat::d32_sfloat) {
         throw std::runtime_error("Velocity pass depth output must be D32_SFLOAT: " + depth.name);
     }
     const auto &info = pass_def.velocityInfo();
@@ -2745,7 +2742,8 @@ PassId compileVelocityPass(const PassDefinition &pass_def,
         dependencies.shader_library, dependencies.path_resolver, info.frag_shader,
         dependencies.warn_backend_specific_shader_refs, dependencies.shader_defines);
     return dependencies.velocity_pass_container.registerVelocityPass(
-        color.format, depth.format, regular_vert, skinned_vert, frag,
+        toVulkanFormat(color.format), toVulkanFormat(depth.format),
+        regular_vert, skinned_vert, frag,
         dependencies.shader_defines, pass_def.rasterization_samples,
         pass_def.ray_query, pass_def.ray_query_acceleration_structure);
 }
@@ -2756,11 +2754,11 @@ PassId compilePickingPass(const PassDefinition &pass_def,
         dependencies.render_target_metadata.get(pass_def.output_color.front());
     const auto depth =
         dependencies.render_target_metadata.get(pass_def.output_depth);
-    if (color.format != vk::Format::eR32Uint) {
+    if (color.format != ImageFormat::r32_uint) {
         throw std::runtime_error(
             "Picking pass color output must be R32_UINT: " + color.name);
     }
-    if (depth.format != vk::Format::eD32Sfloat) {
+    if (depth.format != ImageFormat::d32_sfloat) {
         throw std::runtime_error(
             "Picking pass depth output must be D32_SFLOAT: " + depth.name);
     }
@@ -2782,7 +2780,8 @@ PassId compilePickingPass(const PassDefinition &pass_def,
     // regular/skinned pipeline shape. Keeping them in one registry also gives
     // picking the render-generation rollback/retirement contract.
     return dependencies.velocity_pass_container.registerVelocityPass(
-        color.format, depth.format, regular_vert, skinned_vert, frag,
+        toVulkanFormat(color.format), toVulkanFormat(depth.format),
+        regular_vert, skinned_vert, frag,
         dependencies.shader_defines, pass_def.rasterization_samples,
         pass_def.ray_query, pass_def.ray_query_acceleration_structure);
 }

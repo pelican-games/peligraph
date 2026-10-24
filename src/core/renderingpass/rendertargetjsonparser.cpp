@@ -16,8 +16,8 @@ namespace Pelican {
 
 namespace {
 
-std::optional<vk::Extent2D> parseFixedExtent(const nlohmann::json &rt_json,
-                                             const std::string &name) {
+std::optional<ResolvedResourceExtent> parseFixedExtent(const nlohmann::json &rt_json,
+                                                       const std::string &name) {
     const bool has_width = rt_json.contains("width");
     const bool has_height = rt_json.contains("height");
     if (!has_width && !has_height) {
@@ -31,7 +31,7 @@ std::optional<vk::Extent2D> parseFixedExtent(const nlohmann::json &rt_json,
     if (width == 0 || height == 0) {
         throw std::runtime_error("Render target fixed extent must be positive: " + name);
     }
-    return vk::Extent2D{width, height};
+    return ResolvedResourceExtent{width, height};
 }
 
 std::array<double, 4>
@@ -60,11 +60,11 @@ parseHistoryClearColor(const nlohmann::json &rt_json,
     return color;
 }
 
-std::vector<vk::Format> parseFormatCandidates(
+std::vector<ImageFormat> parseFormatCandidates(
     const nlohmann::json &rt_json,
     const std::string &name,
-    vk::Format automatic_format) {
-    std::vector<vk::Format> result{
+    ImageFormat automatic_format) {
+    std::vector<ImageFormat> result{
         automatic_format};
     if (!rt_json.contains("format_candidates")) {
         return result;
@@ -86,7 +86,7 @@ std::vector<vk::Format> parseFormatCandidates(
                 name);
         }
         const auto candidate =
-            stringToFormat(entry.get<std::string>());
+            parseAuthoredImageFormat(entry.get<std::string>());
         if (std::find(
                 result.begin(), result.end(),
                 candidate) == result.end()) {
@@ -329,7 +329,7 @@ std::vector<RenderTargetDefinition> parseRenderTargetDefinitionsFromJson(const n
         }
         const auto history_clear_color = parseHistoryClearColor(rt_json, name);
         const auto format =
-            stringToFormat(format_str);
+            parseAuthoredImageFormat(format_str);
         auto format_candidates =
             parseFormatCandidates(
                 rt_json, name, format);
@@ -370,7 +370,7 @@ std::vector<RenderTargetDefinition> parseRenderTargetDefinitionsFromJson(const n
             .format = format,
             .format_candidates =
                 std::move(format_candidates),
-            .usage = stringToUsageFlags(usage_strs),
+            .usage = parseAuthoredImageUsage(usage_strs),
             .history = history,
             .history_clear_color =
                 history_clear_color,

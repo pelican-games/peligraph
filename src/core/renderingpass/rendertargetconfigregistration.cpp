@@ -68,7 +68,7 @@ void registerRenderTargetDefinitions(const std::vector<RenderTargetDefinition> &
         if (definition.format_class == "display") {
             const auto features = GET_MODULE(VulkanManageCore)
                                       .getPhysDevice()
-                                      .getFormatProperties(definition.format)
+                                      .getFormatProperties(toVulkanFormat(definition.format))
                                       .optimalTilingFeatures;
             const auto required = vk::FormatFeatureFlagBits::eColorAttachment |
                                   vk::FormatFeatureFlagBits::eTransferSrc;

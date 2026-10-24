@@ -50,9 +50,9 @@ std::vector<PassDefinition> parsePassSequenceFromJson(const nlohmann::json &pass
             }
             const auto source_meta = rt_metadata.get(source);
             const auto destination_meta = rt_metadata.get(destination);
-            if (!(source_meta.usage & vk::ImageUsageFlagBits::eTransferSrc) ||
-                !(destination_meta.usage & vk::ImageUsageFlagBits::eTransferDst) ||
-                !(destination_meta.usage & vk::ImageUsageFlagBits::eSampled)) {
+            if (!(source_meta.usage & ImageUsageBit::transfer_src) ||
+                !(destination_meta.usage & ImageUsageBit::transfer_dst) ||
+                !(destination_meta.usage & ImageUsageBit::sampled)) {
                 throw std::runtime_error("Snapshot copy usage mismatch: " + pass_name);
             }
             if (source_meta.format != destination_meta.format ||

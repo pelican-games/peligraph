@@ -398,10 +398,10 @@ TEST_CASE("WP354 shipping shader families project their concrete effective refer
             }
             return RenderTargetMetadata{
                 "ssao_blur",
-                vk::ImageUsageFlagBits::eColorAttachment |
-                    vk::ImageUsageFlagBits::eSampled,
-                vk::Format::eR8Unorm,
-                vk::Extent2D{128, 128}};
+                ImageUsageBit::color_attachment |
+                    ImageUsageBit::sampled,
+                ImageFormat::r8_unorm,
+                ResolvedResourceExtent{128, 128}};
         }};
     auto raster = parsePassDefinitionFromJson(
         *raster_json, raster_names, raster_metadata);
@@ -422,17 +422,17 @@ TEST_CASE("WP354 shipping shader families project their concrete effective refer
             if (id == GlobalRenderTargetId{0}) {
                 return RenderTargetMetadata{
                     "velocity",
-                    vk::ImageUsageFlagBits::eColorAttachment |
-                        vk::ImageUsageFlagBits::eSampled,
-                    vk::Format::eR16G16Sfloat,
-                    vk::Extent2D{128, 128}};
+                    ImageUsageBit::color_attachment |
+                        ImageUsageBit::sampled,
+                    ImageFormat::r16g16_sfloat,
+                    ResolvedResourceExtent{128, 128}};
             }
             if (id == GlobalRenderTargetId{1}) {
                 return RenderTargetMetadata{
                     "velocity_depth",
-                    vk::ImageUsageFlagBits::eDepthStencilAttachment,
-                    vk::Format::eD32Sfloat,
-                    vk::Extent2D{128, 128}};
+                    ImageUsageBit::depth_stencil_attachment,
+                    ImageFormat::d32_sfloat,
+                    ResolvedResourceExtent{128, 128}};
             }
             throw std::runtime_error("unexpected velocity target");
         }};
@@ -908,16 +908,16 @@ TEST_CASE("typed parsers capture declared stage presence before provider replace
             if (id == GlobalRenderTargetId{0}) {
                 return RenderTargetMetadata{
                     "scene_color",
-                    vk::ImageUsageFlagBits::eColorAttachment,
-                    vk::Format::eR8G8B8A8Unorm,
-                    vk::Extent2D{128, 128}};
+                    ImageUsageBit::color_attachment,
+                    ImageFormat::r8g8b8a8_unorm,
+                    ResolvedResourceExtent{128, 128}};
             }
             if (id == GlobalRenderTargetId{1}) {
                 return RenderTargetMetadata{
                     "scene_depth",
-                    vk::ImageUsageFlagBits::eDepthStencilAttachment,
-                    vk::Format::eD32Sfloat,
-                    vk::Extent2D{128, 128}};
+                    ImageUsageBit::depth_stencil_attachment,
+                    ImageFormat::d32_sfloat,
+                    ResolvedResourceExtent{128, 128}};
             }
             throw std::runtime_error("unexpected metadata lookup");
         }};

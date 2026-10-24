@@ -669,11 +669,11 @@ Pelican::PassDefinition parseCoreShape(
                 static_cast<std::size_t>(id.value)];
             return Pelican::RenderTargetMetadata{
                 .name = name,
-                .usage = vk::ImageUsageFlagBits::eSampled |
-                         vk::ImageUsageFlagBits::eColorAttachment |
-                         vk::ImageUsageFlagBits::eDepthStencilAttachment,
-                .format = vk::Format::eR8G8B8A8Unorm,
-                .extent = vk::Extent2D{16, 16},
+                .usage = Pelican::ImageUsageBit::sampled |
+                         Pelican::ImageUsageBit::color_attachment |
+                         Pelican::ImageUsageBit::depth_stencil_attachment,
+                .format = Pelican::ImageFormat::r8g8b8a8_unorm,
+                .extent = Pelican::ResolvedResourceExtent{16, 16},
                 .history = resources.history_targets.contains(name),
             };
         }};

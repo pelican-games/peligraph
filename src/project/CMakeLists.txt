@@ -18,6 +18,8 @@ add_library(pelican_project
     rendergraphcomposition.cpp
     gpudrawtiming.cpp
     gltfmateriallowering.cpp
+    imageformat.cpp
+    imageusage.cpp
     importmanifest.cpp
     importrules.cpp
     inputactionoverlay.cpp

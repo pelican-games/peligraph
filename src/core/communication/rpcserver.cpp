@@ -53,6 +53,7 @@
 #include "../../project/projectformat.hpp"
 #include "../../project/projectmigration.hpp"
 #include "../renderingpass/renderingpassjsonhelpers.hpp"
+#include "../renderingpass/vulkanimagevocabulary.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
 #include "../shader/pipelinefactory.hpp"
@@ -1805,7 +1806,7 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
                          {"initialized_after_runtime_start",
                           module_graph.initialized_after_runtime_start}}},
             {"color", {{"contract", 2},
-                       {"swapchain_format", formatToString(
+                       {"swapchain_format", vulkanFormatName(
                             color_caps.compile_facts.color_format)},
                        {"path", outputEncodingPathRpcName(
                             color_caps.compile_facts.encoding_path)},

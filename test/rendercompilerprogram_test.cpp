@@ -876,27 +876,27 @@ TEST_CASE(
             if (id == GlobalRenderTargetId{0}) {
                 return {
                     "lit_color",
-                    vk::ImageUsageFlagBits::eColorAttachment |
-                        vk::ImageUsageFlagBits::eSampled,
-                    vk::Format::eR16G16B16A16Sfloat,
-                    vk::Extent2D{64, 64},
+                    ImageUsageBit::color_attachment |
+                        ImageUsageBit::sampled,
+                    ImageFormat::r16g16b16a16_sfloat,
+                    ResolvedResourceExtent{64, 64},
                 };
             }
             if (id == GlobalRenderTargetId{1}) {
                 return {
                     "scene_depth",
-                    vk::ImageUsageFlagBits::eDepthStencilAttachment,
-                    vk::Format::eD32Sfloat,
-                    vk::Extent2D{64, 64},
+                    ImageUsageBit::depth_stencil_attachment,
+                    ImageFormat::d32_sfloat,
+                    ResolvedResourceExtent{64, 64},
                 };
             }
             if (id == GlobalRenderTargetId{2}) {
                 return {
                     "display",
-                    vk::ImageUsageFlagBits::eColorAttachment |
-                        vk::ImageUsageFlagBits::eSampled,
-                    vk::Format::eB8G8R8A8Srgb,
-                    vk::Extent2D{64, 64},
+                    ImageUsageBit::color_attachment |
+                        ImageUsageBit::sampled,
+                    ImageFormat::b8g8r8a8_srgb,
+                    ResolvedResourceExtent{64, 64},
                 };
             }
             throw std::runtime_error(

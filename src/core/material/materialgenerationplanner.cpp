@@ -33,9 +33,10 @@ std::string activeRenderingConfigReference() {
 vk::Format resolveMaterialColorFormat(
     GlobalRenderTargetId target) {
     if (isConcreteRenderTarget(target)) {
-        return GET_MODULE(RenderTargetContainer)
-            .getMetadata(target)
-            .format;
+        return toVulkanFormat(
+            GET_MODULE(RenderTargetContainer)
+                .getMetadata(target)
+                .format);
     }
     if (isSwapchainRenderTarget(target)) {
         return GET_MODULE(RenderTarget)
@@ -165,10 +166,11 @@ resolveMaterialPassRenderingBinding(
     if (isConcreteRenderTarget(
             binding.rendering.depth_attachment)) {
         result.depth_format =
-            GET_MODULE(RenderTargetContainer)
-                .getMetadata(
-                    binding.rendering.depth_attachment)
-                .format;
+            toVulkanFormat(
+                GET_MODULE(RenderTargetContainer)
+                    .getMetadata(
+                        binding.rendering.depth_attachment)
+                    .format);
     } else if (isSwapchainRenderTarget(
                    binding.rendering.depth_attachment)) {
         throw std::runtime_error(

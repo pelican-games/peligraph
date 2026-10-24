@@ -320,10 +320,10 @@ struct ImGuiSystem::Impl {
               auto actions = parseInputActionsString(toggleActionDocument);
               return applyInputProfile(actions, parseInputProfileString(toggleProfileDocument, actions));
           }()),
-          color_format(GET_MODULE(RenderTargetContainer)
-                           .getMetadata(GET_MODULE(RenderTargetContainer)
-                                            .getRenderTargetIdByName("display"))
-                           .format),
+          color_format(toVulkanFormat(GET_MODULE(RenderTargetContainer)
+                                          .getMetadata(GET_MODULE(RenderTargetContainer)
+                                                           .getRenderTargetIdByName("display"))
+                                          .format)),
           raw_color_format(static_cast<VkFormat>(color_format)),
           editor_service{makeEditorRuntimeService()},
           asset_browser{*editor_service, asset_browser_trace},

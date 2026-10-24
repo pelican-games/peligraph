@@ -23,15 +23,12 @@ namespace Pelican {
 // pass uses too) and keeps an alias group only when every graph agrees on it.
 // totalRegisteredTargetMemory counts what registration made.
 
-// The one table of texel sizes. `format` is spelled as the physical plan
-// spells it: Vulkan's enumerant without its leading `e` (vk::to_string's
-// form, "R16G16B16A16Sfloat"). 0 for a format the table does not list;
-// every format a render target can be authored with is listed.
-std::uint32_t imageFormatTexelBytes(std::string_view format);
+// The texel sizes are the format table's (imageFormatEstimatedTexelBytes,
+// imageformat.hpp): RC-3a1 moved RC-1's table there.
 
 // One image resource as the runtime allocates it.
 struct ImageResourceByteShape {
-    std::string_view format;
+    ImageFormat format = ImageFormat::r8g8b8a8_unorm;
     // Of mip 0.
     ResolvedResourceExtent extent;
     // The resolved count: a full chain is already counted for `extent`.
@@ -47,7 +44,7 @@ struct ImageResourceByteShape {
 // multisampled target is two images per surface, as RenderTargetContainer
 // creates it: the single-sample image passes sample (with its mips) and the
 // `samples`-times image it renders into (mip 0 only). 0 for an empty extent
-// or a format imageFormatTexelBytes does not list.
+// (a format's estimated texel bytes are never 0).
 std::uint64_t imageResourceBytes(const ImageResourceByteShape &shape);
 
 // Whether the plan allocates the resource as an image of its own: a

@@ -15,6 +15,7 @@
 #include "../renderingpass/renderstrategyregistry.hpp"
 #include "../renderingpass/subgraphreplacementregistry.hpp"
 #include "../renderingpass/renderingpassjsonhelpers.hpp"
+#include "../renderingpass/vulkanimagevocabulary.hpp"
 #include "../shader/pelican_sets.hpp"
 #include "../shader/shadercompiler.hpp"
 #include "../shader/shaderresourceinterface.hpp"
@@ -80,27 +81,34 @@ OrderedJson materialPassContractsJson() {
             if (std::find(combinations.begin(), combinations.end(), formats) == combinations.end())
                 combinations.push_back(std::move(formats));
         }
+        // The material pass's attachment formats are Vulkan's; each is a
+        // format of the table.
+        const auto attachmentFormat = [](vk::Format format) {
+            return requireImageFormatFromVulkan(format, "material pass attachment");
+        };
+        const auto depth_format = attachmentFormat(materialPassDepthAttachmentFormat);
         auto socket_entries = OrderedJson::array();
         for (std::size_t location = 0; location < sockets.size(); ++location) {
             auto formats = OrderedJson::array();
             std::string aspect;
             for (const auto &combination : combinations) {
                 if (location >= combination.size()) continue;
-                const auto format = formatToString(combination[location]);
-                if (aspect.empty()) aspect = imageFormatAspectName(combination[location]);
+                const auto image_format = attachmentFormat(combination[location]);
+                const auto format = std::string{imageFormatName(image_format)};
+                if (aspect.empty()) aspect = std::string{imageAspectName(imageFormatAspect(image_format))};
                 if (std::find(formats.begin(), formats.end(), format) == formats.end()) formats.push_back(format);
             }
             socket_entries.push_back({{"socket", sockets[location]}, {"aspect", aspect}, {"formats", formats}});
         }
         socket_entries.push_back({{"socket", "depth"},
-                                  {"aspect", imageFormatAspectName(materialPassDepthAttachmentFormat)},
-                                  {"formats", OrderedJson::array({formatToString(materialPassDepthAttachmentFormat)})}});
+                                  {"aspect", imageAspectName(imageFormatAspect(depth_format))},
+                                  {"formats", OrderedJson::array({imageFormatName(depth_format)})}});
         auto combination_entries = OrderedJson::array();
         for (const auto &combination : combinations) {
             auto entry = OrderedJson::object();
             for (std::size_t location = 0; location < sockets.size() && location < combination.size(); ++location)
-                entry[sockets[location]] = formatToString(combination[location]);
-            entry["depth"] = formatToString(materialPassDepthAttachmentFormat);
+                entry[sockets[location]] = imageFormatName(attachmentFormat(combination[location]));
+            entry["depth"] = imageFormatName(depth_format);
             combination_entries.push_back(std::move(entry));
         }
         result.push_back({{"contract", name},
@@ -114,20 +122,21 @@ OrderedJson materialPassContractsJson() {
 }
 
 OrderedJson materialOutputFormatsJson() {
-    const auto formats = imageFormats();
+    // The formats a render target may declare, in table order.
     auto color = OrderedJson::object();
     for (const auto type : materialOutputTypes) {
         auto accepted = OrderedJson::array();
-        for (const auto &[name, format] : formats)
-            if (imageFormatAspectName(format) == "color" &&
-                materialPassFormatNumericClass(format) == materialOutputNumericClass(type))
-                accepted.push_back(name);
+        for (const auto &row : imageFormatTable())
+            if (row.authorable && row.aspect == ImageAspect::color &&
+                materialPassFormatNumericClass(row.format) == materialOutputNumericClass(type))
+                accepted.push_back(row.name);
         color[std::string{materialOutputTypeName(type)}] = std::move(accepted);
     }
     auto depth = OrderedJson::array();
-    for (const auto &[name, format] : formats) {
-        const auto aspect = imageFormatAspectName(format);
-        if (aspect == "depth" || aspect == "depth_stencil") depth.push_back(name);
+    for (const auto &row : imageFormatTable()) {
+        if (row.authorable &&
+            (row.aspect == ImageAspect::depth || row.aspect == ImageAspect::depth_stencil))
+            depth.push_back(row.name);
     }
     return {{"color", std::move(color)}, {"depth", std::move(depth)}};
 }
@@ -232,9 +241,9 @@ std::optional<ShaderReflection> reflectShaderForms(const ShaderStageForms &forms
 // EL-4c: a format's name as render_target_vocabulary's formats give it, if
 // the vocabulary has the format.
 std::optional<std::string> vocabularyFormatName(vk::Format format) {
-    for (const auto &[name, listed] : imageFormats())
-        if (listed == format) return name;
-    return std::nullopt;
+    const auto found = imageFormatFromVulkan(format);
+    if (!found || !imageFormatInfo(*found).authorable) return std::nullopt;
+    return std::string{imageFormatName(*found)};
 }
 
 // One stage's entry, get_engine_shaders' (EL-4b) and get_shader_interface's

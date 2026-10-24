@@ -1,6 +1,9 @@
 #pragma once
 
+#include "imageformat.hpp"
+
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -51,7 +54,8 @@ nlohmann::ordered_json sampleCountPolicyToJson(
 
 struct SampleCountResourceCapability {
     std::string resource;
-    std::string format;
+    // nullopt for an external image whose format the engine does not list.
+    std::optional<ImageFormat> format;
     std::vector<std::uint32_t> supported_samples;
 
     bool operator==(const SampleCountResourceCapability &) const = default;
@@ -69,7 +73,7 @@ struct SampleCountGroupRequest {
 
 struct ResolvedSampleCountResource {
     std::string resource;
-    std::string format;
+    std::optional<ImageFormat> format;
     std::uint32_t samples = 1;
 
     bool operator==(const ResolvedSampleCountResource &) const = default;

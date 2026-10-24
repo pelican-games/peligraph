@@ -15,9 +15,9 @@ namespace Pelican {
 namespace {
 
 SampleCountResourceCapability capability(
-    std::string resource, std::string format,
+    std::string resource, ImageFormat format,
     std::vector<std::uint32_t> counts) {
-    return {std::move(resource), std::move(format), std::move(counts)};
+    return {std::move(resource), format, std::move(counts)};
 }
 
 void requireThrowsContaining(const std::function<void()> &operation,
@@ -39,13 +39,13 @@ TEST_CASE("sample-count planning selects one count for an attachment group",
         SampleCountGroupRequest{
             "main_geometry", true,
             {
-                capability("gbuffer_albedo", "BGRA8", {1, 2, 4, 8}),
-                capability("gbuffer_normal", "RGBA16F", {1, 2, 4}),
-                capability("scene_depth", "D32F", {1, 2, 4}),
+                capability("gbuffer_albedo", ImageFormat::b8g8r8a8_unorm, {1, 2, 4, 8}),
+                capability("gbuffer_normal", ImageFormat::r16g16b16a16_sfloat, {1, 2, 4}),
+                capability("scene_depth", ImageFormat::d32_sfloat, {1, 2, 4}),
             }},
         SampleCountGroupRequest{
             "post", false,
-            {capability("display", "BGRA8", {1, 2, 4, 8})}},
+            {capability("display", ImageFormat::b8g8r8a8_unorm, {1, 2, 4, 8})}},
     };
 
     const auto plan = resolveSampleCountPlan(
@@ -65,9 +65,9 @@ TEST_CASE("preferred sample-count fallback names every limiting resource",
         SampleCountGroupRequest{
             "custom_gbuffer", true,
             {
-                capability("albedo", "BGRA8", {1, 2, 4, 8}),
-                capability("custom_id", "R32_UINT", {1, 2}),
-                capability("depth", "D32F", {1, 2}),
+                capability("albedo", ImageFormat::b8g8r8a8_unorm, {1, 2, 4, 8}),
+                capability("custom_id", ImageFormat::r32_uint, {1, 2}),
+                capability("depth", ImageFormat::d32_sfloat, {1, 2}),
             }},
     };
 
@@ -79,7 +79,7 @@ TEST_CASE("preferred sample-count fallback names every limiting resource",
     REQUIRE(group.reason == "preferred_common_fallback");
     REQUIRE(group.limiting_resources ==
             std::vector<std::string>{"custom_id (R32_UINT)",
-                                     "depth (D32F)"});
+                                     "depth (D32_SFLOAT)"});
 }
 
 TEST_CASE("exact sample-count rejection identifies the custom attachment",
@@ -88,8 +88,8 @@ TEST_CASE("exact sample-count rejection identifies the custom attachment",
         SampleCountGroupRequest{
             "custom_gbuffer", true,
             {
-                capability("albedo", "BGRA8", {1, 2, 4}),
-                capability("object_id", "R32_UINT", {1}),
+                capability("albedo", ImageFormat::b8g8r8a8_unorm, {1, 2, 4}),
+                capability("object_id", ImageFormat::r32_uint, {1}),
             }},
     };
 
@@ -106,10 +106,10 @@ TEST_CASE("sample-count plan dump is deterministic",
     const std::vector groups{
         SampleCountGroupRequest{
             "z", true,
-            {capability("z_depth", "D32F", {4, 1, 2, 4})}},
+            {capability("z_depth", ImageFormat::d32_sfloat, {4, 1, 2, 4})}},
         SampleCountGroupRequest{
             "a", true,
-            {capability("a_color", "RGBA16F", {1, 4, 2})}},
+            {capability("a_color", ImageFormat::r16g16b16a16_sfloat, {1, 4, 2})}},
     };
 
     const auto first = resolveSampleCountPlan(

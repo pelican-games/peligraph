@@ -798,7 +798,8 @@ vk::Extent2D resolveResolutionSourceExtent(
             "Frame resolution source is not bound to a concrete render target: " +
             std::string{resource});
     }
-    return render_targets.getMetadata(binding->second).extent;
+    return toVulkanExtent(
+        render_targets.getMetadata(binding->second).extent);
 }
 
 struct FrameResolutionExtents {
@@ -823,9 +824,10 @@ resolveViewFamilyRasterExtent(
                 return;
             }
             const auto extent =
-                render_targets
-                    .getMetadata(target)
-                    .extent;
+                toVulkanExtent(
+                    render_targets
+                        .getMetadata(target)
+                        .extent);
             if (!result) {
                 result = extent;
             } else if (*result != extent) {
@@ -1043,9 +1045,6 @@ nlohmann::json renderNodeTrace(const CompiledPass &pass, size_t order,
         const auto operations =
             definition.colorAttachmentOperations(
                 index);
-        const auto format = isConcreteRenderTarget(target)
-                                ? rt_container.getMetadata(target).format
-                                : vk::Format::eUndefined;
         nlohmann::json attachment{
             {"resource", renderTargetName(target, rt_container)},
             {"aspect", "color"},
@@ -1053,7 +1052,9 @@ nlohmann::json renderNodeTrace(const CompiledPass &pass, size_t order,
             {"store", storeOpName(operations.store_op)},
             {"final_layout", trackedLayoutName(target, vk::ImageLayout::eColorAttachmentOptimal,
                                                  layout_tracker, rt_container)},
-            {"format", isConcreteRenderTarget(target) ? formatToString(format) : "frame_target"},
+            {"format", isConcreteRenderTarget(target)
+                           ? std::string{imageFormatName(rt_container.getMetadata(target).format)}
+                           : std::string{"frame_target"}},
             {"samples", 1},
         };
         if (operations.load_op ==
@@ -1116,22 +1117,15 @@ nlohmann::json anchorNodeTrace(const std::string &name, size_t order) {
     return nlohmann::json{{"name", name}, {"kind", "anchor"}, {"order", order}};
 }
 
-// RC-1: the planner's texel table is the engine's one table (the physical
-// plan names formats as vk::to_string does).
-std::size_t formatTexelBytes(vk::Format format) {
-    return imageFormatTexelBytes(vk::to_string(format));
+// RC-1: the planner's texel sizes are the format table's (RC-3a1).
+std::size_t formatTexelBytes(ImageFormat format) {
+    return imageFormatEstimatedTexelBytes(format);
 }
 
-vk::ImageAspectFlags snapshotAspect(vk::Format format) {
-    switch (format) {
-    case vk::Format::eD16Unorm:
-    case vk::Format::eD24UnormS8Uint:
-    case vk::Format::eD32Sfloat:
-    case vk::Format::eD32SfloatS8Uint:
-        return vk::ImageAspectFlagBits::eDepth;
-    default:
-        return vk::ImageAspectFlagBits::eColor;
-    }
+vk::ImageAspectFlags snapshotAspect(ImageFormat format) {
+    return imageFormatHasDepth(format)
+               ? vk::ImageAspectFlags{vk::ImageAspectFlagBits::eDepth}
+               : vk::ImageAspectFlags{vk::ImageAspectFlagBits::eColor};
 }
 
 nlohmann::json snapshotCopyTrace(const FramePlanNode &node, const RenderTargetMetadata &source,
@@ -1143,7 +1137,7 @@ nlohmann::json snapshotCopyTrace(const FramePlanNode &node, const RenderTargetMe
         {"snapshot_after", node.snapshot_after},
         {"source", source.name},
         {"destination", destination.name},
-        {"format", formatToString(destination.format)},
+        {"format", imageFormatName(destination.format)},
         {"aspect", snapshotAspect(destination.format) ==
                            vk::ImageAspectFlagBits::eDepth
                        ? "depth"
@@ -1176,8 +1170,8 @@ nlohmann::json outputTransformTrace(size_t order, vk::ImageLayout source_old_lay
         {"mode", fallback ? "shader_oetf_unorm_fallback" : "hardware_srgb_encode"},
         {"source", "display"},
         {"destination", "swapchain"},
-        {"source_format", formatToString(display.format)},
-        {"destination_format", formatToString(destination_format)},
+        {"source_format", imageFormatName(display.format)},
+        {"destination_format", vulkanFormatName(destination_format)},
         {"extent", {display.extent.width, display.extent.height}},
         {"samples", 1},
         {"texel_block_bytes", 4},
@@ -1396,7 +1390,7 @@ std::vector<std::string> pairedSrgbStorageEdges(
                 continue;
             }
             const auto format = rt_container.getMetadata(target).format;
-            if (format != vk::Format::eR8G8B8A8Srgb && format != vk::Format::eB8G8R8A8Srgb) {
+            if (format != ImageFormat::r8g8b8a8_srgb && format != ImageFormat::b8g8r8a8_srgb) {
                 continue;
             }
             bool sampled = node.kind == FramePlanNodeKind::output_transform && barrier.resource == "display";
@@ -2404,13 +2398,15 @@ void executePlannedFrameGraph(
                               .getAttachmentImageLayerView(
                                   color_id, color_layer);
                 const auto &depth_meta = request.modules.render_target_container.getMetadata(depth_id);
-                const auto color_format = isSwapchainRenderTarget(color_id)
-                                              ? request.frame_target_format
-                                              : request.modules.render_target_container.getMetadata(color_id).format;
-                const auto extent = isSwapchainRenderTarget(color_id)
-                                        ? request.render_ctx.extent
-                                        : request.modules.render_target_container.getMetadata(color_id).extent;
-                if (depth_meta.extent != extent)
+                const auto color_format =
+                    isSwapchainRenderTarget(color_id)
+                        ? request.frame_target_format
+                        : toVulkanFormat(request.modules.render_target_container.getMetadata(color_id).format);
+                const auto extent =
+                    isSwapchainRenderTarget(color_id)
+                        ? request.render_ctx.extent
+                        : toVulkanExtent(request.modules.render_target_container.getMetadata(color_id).extent);
+                if (toVulkanExtent(depth_meta.extent) != extent)
                     throw std::runtime_error("sprite color and depth attachments must have matching extents");
                 request.modules.sprite.renderer->render(
                     request.render_ctx.cmd_buf,
@@ -2422,7 +2418,7 @@ void executePlannedFrameGraph(
                                     depth_id, depth_layer),
                         .extent = extent,
                         .color_format = color_format,
-                        .depth_format = depth_meta.format,
+                        .depth_format = toVulkanFormat(depth_meta.format),
                         .color_resolve_view =
                             isConcreteRenderTarget(color_id) &&
                                     request.modules.render_target_container
@@ -2924,10 +2920,10 @@ void recordXrMirrorIntermediate(const FrameRenderContext &render_ctx,
     if (source.format != destination.format || source.extent != destination.extent) {
         throw std::runtime_error(
             "OpenXR mirror intermediate must match the engine-owned display source "
-            "(source=" + vk::to_string(source.format) + " " +
+            "(source=" + std::string{imageFormatName(source.format)} + " " +
             std::to_string(source.extent.width) + "x" +
             std::to_string(source.extent.height) + ", destination=" +
-            vk::to_string(destination.format) + " " +
+            std::string{imageFormatName(destination.format)} + " " +
             std::to_string(destination.extent.width) + "x" +
             std::to_string(destination.extent.height) + ")");
     }
@@ -5151,15 +5147,14 @@ PickingReadbackResult Renderer::readPickingPixel(std::uint32_t x,
 
     auto &targets = GET_MODULE(RenderTargetContainer);
     const auto metadata = targets.getMetadata(target_id);
-    if (metadata.format != vk::Format::eR32Uint || metadata.samples != 1 ||
+    if (metadata.format != ImageFormat::r32_uint || metadata.samples != 1 ||
         metadata.dimension != ImageResourceDimension::two_d ||
         metadata.array_layers != 1 ||
-        (metadata.usage & vk::ImageUsageFlagBits::eTransferSrc) !=
-            vk::ImageUsageFlagBits::eTransferSrc) {
+        !(metadata.usage & ImageUsageBit::transfer_src)) {
         throw std::runtime_error(
             "picking_id must be a single-sample R32_UINT 2D transfer source");
     }
-    if (metadata.extent != *last_picking_extent) {
+    if (toVulkanExtent(metadata.extent) != *last_picking_extent) {
         throw std::runtime_error(
             "picking render target changed after the last completed picking frame");
     }
@@ -5210,7 +5205,7 @@ PickingReadbackResult Renderer::readPickingPixel(std::uint32_t x,
     PickingReadbackResult result{
         .x = x,
         .y = y,
-        .extent = metadata.extent,
+        .extent = toVulkanExtent(metadata.extent),
         .frame_index = last_picking_frame_index,
     };
     if (encoded_id == 0) return result;
@@ -5252,9 +5247,8 @@ RenderTargetReadback Renderer::readRenderTargetForTesting(
     const auto texel_bytes = formatTexelBytes(metadata.format);
     if (metadata.samples != 1 || texel_bytes == 0 ||
         (snapshotAspect(metadata.format) != vk::ImageAspectFlagBits::eColor &&
-         metadata.format != vk::Format::eD32Sfloat) ||
-        (metadata.usage & vk::ImageUsageFlagBits::eTransferSrc) !=
-            vk::ImageUsageFlagBits::eTransferSrc) {
+         metadata.format != ImageFormat::d32_sfloat) ||
+        !(metadata.usage & ImageUsageBit::transfer_src)) {
         throw std::runtime_error(
             "render-target readback requires a supported single-sample "
             "color or D32 transfer source: " +
@@ -5329,7 +5323,7 @@ RenderTargetReadback Renderer::readRenderTargetForTesting(
 
     return RenderTargetReadback{
         .extent = extent,
-        .format = metadata.format,
+        .format = toVulkanFormat(metadata.format),
         .layer_count = range.layer_count,
         .image_layer_count = metadata.array_layers,
         .bytes = vulkan.readBuf(
@@ -5406,15 +5400,14 @@ Renderer::xrCompositionDepthFormat() const {
     }
     const auto metadata =
         render_targets->getMetadata(binding->second);
-    if (export_plan.format !=
-            vk::to_string(metadata.format) ||
+    if (export_plan.format != metadata.format ||
         !(metadata.usage &
-          vk::ImageUsageFlagBits::eTransferSrc)) {
+          ImageUsageBit::transfer_src)) {
         throw std::runtime_error(
             "XR external depth plan does not match its physical "
             "render target");
     }
-    return metadata.format;
+    return toVulkanFormat(metadata.format);
 }
 
 std::vector<std::string> Renderer::currentFramePlanOrderForTesting() const {
@@ -6607,12 +6600,14 @@ void Renderer::LogicalFrameRecorder::configureExternalDepthExport() {
     external_depth_submission_active =
         target.configureExternalDepthSubmission(
             external_depth_export
-                ? external_depth_export
-                      ->source.format
+                ? toVulkanFormat(
+                      external_depth_export
+                          ->source.format)
                 : vk::Format::eUndefined,
             external_depth_export
-                ? external_depth_export
-                      ->source.extent
+                ? toVulkanExtent(
+                      external_depth_export
+                          ->source.extent)
                 : vk::Extent2D{});
     if (external_depth_submission_active &&
         !external_depth_export) {
@@ -6938,11 +6933,7 @@ void Renderer::LogicalFrameRecorder::uploadImageInitialAssets() {
             continue;
         record = Renderer::ImageInitialUpload{handle, runtime_generation->generation, asset};
         const auto metadata = targets.getMetadata(binding->second);
-        std::string target_format;
-        try {
-            target_format = formatToString(metadata.format);
-        } catch (const std::exception &) {
-        }
+        const std::string target_format{imageFormatName(metadata.format)};
         const auto shape = [](std::string format) {
             if (const auto srgb = format.find("SRGB"); srgb != std::string::npos) format.replace(srgb, 4, "UNORM");
             return format;
@@ -7091,9 +7082,10 @@ void Renderer::LogicalFrameRecorder::retainPickingSnapshot() {
         renderer.last_picking_runtime_generation =
             runtime_generation->generation;
         renderer.last_picking_extent =
-            modules.render_target_container
-                .getMetadata(picking_target)
-                .extent;
+            toVulkanExtent(
+                modules.render_target_container
+                    .getMetadata(picking_target)
+                    .extent);
         renderer.last_picking_frame_index =
             engine_time.evaluationIndex();
         renderer.last_picking_model_instances =

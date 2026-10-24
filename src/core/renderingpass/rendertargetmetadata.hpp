@@ -1,20 +1,22 @@
 #pragma once
 
 #include "rendertargetstoragemode.hpp"
+#include "../../project/imageformat.hpp"
 #include "../../project/imageresourcedimension.hpp"
+#include "../../project/imageusage.hpp"
+#include "../../project/resourceextent.hpp"
 
 #include <cstdint>
 #include <optional>
 #include <string>
-#include <vulkan/vulkan.hpp>
 
 namespace Pelican {
 
 struct RenderTargetMetadata {
     std::string name;
-    vk::ImageUsageFlags usage;
-    vk::Format format;
-    vk::Extent2D extent;
+    ImageUsage usage;
+    ImageFormat format = ImageFormat::r8g8b8a8_unorm;
+    ResolvedResourceExtent extent;
     bool history = false;
     std::uint32_t samples = 1;
     std::uint32_t mip_levels = 1;
