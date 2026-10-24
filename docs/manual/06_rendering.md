@@ -113,7 +113,7 @@ editor の RPC から書くときは、`shader_defines`・`snapshots`・`resolve
 | `name` | ✔ | `"swapchain"` は予約名(書くとエラー) |
 | `extent_scale` | ✔ | ウィンドウ(swapchain)サイズ × scale。> 0 |
 | `width` / `height` | 任意(両方セット) | 固定サイズ RT(シャドウマップ等)。片方だけはエラー |
-| `format` | ✔ | 45 種。8/16/32-bit の `R` / `RG` / `RGBA` に対する UNORM・SNORM・UINT・SINT・SFLOAT、sRGB、10/11-bit packed、depth を受理する。完全な正は [`renderingpassjsonhelpers.cpp`](../../src/core/renderingpass/renderingpassjsonhelpers.cpp) の `format_names` |
+| `format` | ✔ | 45 種。8/16/32-bit の `R` / `RG` / `RGBA` に対する UNORM・SNORM・UINT・SINT・SFLOAT、sRGB、10/11-bit packed、depth を受理する。一覧の正は engine の format の性質表 [`imageformat.cpp`](../../src/project/imageformat.cpp#L17) の、作者が書ける(`authorable`)行です(下の「format と usage の表」) |
 | `format_candidates` | 任意 string 配列 | verified Vulkan physical fragment が選択してよい追加 format。`format` は常に自動/default候補として先頭へ補われ、重複は除去される。宣言しただけでは自動formatは変わらない |
 | `format_class` | 任意 | `scene` / `display` / `data` / `explicit(<FORMAT>)`。カラーリゾルバ(= `format_class` から実 Vulkan format を決める解決器。§6.3 で説明します)が実 format を決めるWP73 |
 | `role` | 任意 | `color` / `data`。SRGB view / UNORM view の選択 |
@@ -123,7 +123,18 @@ editor の RPC から書くときは、`shader_defines`・`snapshots`・`resolve
 | `dimension` | 任意 | `2d`(既定) / `cube`。cubeは固定かつ正方形の`width`/`height`と6 layersが必要 |
 | `mip_levels` | 任意 | 正整数または `"full"`。省略時1。`"full"`は実extentから最大mip chainを作り、resize時に再計算する |
 | `layers` | 任意 | 正整数。2Dは省略時1でarray容量を表し、XRの内部view数とはphysical loweringで最大値を取る。cubeは省略時6、明示時も6固定 |
-| `usage` | ✔ | `COLOR_ATTACHMENT` / `DEPTH_STENCIL_ATTACHMENT` / `SAMPLED` / `STORAGE` / `TRANSFER_DST` / `TRANSFER_SRC` |
+| `usage` | ✔ | `COLOR_ATTACHMENT` / `DEPTH_STENCIL_ATTACHMENT` / `SAMPLED` / `STORAGE` / `TRANSFER_DST` / `TRANSFER_SRC`。一覧の正は [`imageusage.cpp`](../../src/project/imageusage.cpp#L11) の表の、作者が書ける行です |
+
+<a id="image-format-usage-table"></a>
+
+**format と usage の表(RC-3a1)。**render target の `format` / `format_candidates` / `usage` に書ける名前は、engine の 2 つの表が決めます。
+
+- **format**: [`imageformat.cpp` の表](../../src/project/imageformat.cpp#L17)は 46 行で、1 行に名前(作者の綴り)・作者が書けるか・aspect(`color` / `depth` / `stencil` / `depth_stencil`)・成分ごとの格納の型(unorm / snorm / uint / sint / sfloat / ufloat / srgb)・容量の見積もりの bytes を持ちます。作者が書けるのは 45 行で、残りの `D32_SFLOAT_S8_UINT` は engine が内部で使う値です。render target の宣言に書くと、今までどおり `Unknown format: D32_SFLOAT_S8_UINT` で断られます([断る所](../../src/project/imageformat.cpp#L189))。
+- **usage**: [`imageusage.cpp` の表](../../src/project/imageusage.cpp#L11)は 8 行で、作者が書けるのは上の 6 つです。`INPUT_ATTACHMENT` と `TRANSIENT_ATTACHMENT` は engine が tile-local / transient の image に足すビットで、宣言に書くと `Unknown image usage flag: <名前>` です。空の配列は `Image usage flags must not be empty` です([読む所](../../src/project/imageusage.cpp#L51))。
+- 受け付ける名前と断る文言は RC-3a1 の前と同じです(test「RC-3a1 a render target declaration accepts and refuses the formats and usages it did」、[test](../../test/imagevocabulary_test.cpp#L91))。Vulkan の enum の綴り(`R16G16B16A16Sfloat`)は宣言には書けません。
+- Studio の format / usage の候補(`get_render_authoring_context` の `render_target_vocabulary.formats` / `usage`、[第13章](13_editor.md))はこの表の作者が書ける行だけで、内部の値は出ません。
+- shader から見た数の種類(浮動小数 / 符号付き整数 / 符号なし整数)は、表の格納の型から導きます(uint → 符号なし整数、sint → 符号付き整数、ほかは浮動小数)。material pass の出力の型との照合や MSAA の resolve の方式もこれを使います。
+- `get_frame_plan` の物理計画、fingerprint、eject した package の format は、RC-3a1 から宣言と同じ作者の綴り(`R16G16B16A16_SFLOAT`)です(下の「Vulkan physical fragment」)。
 
 **知らない鍵は名前付きで断ります。**合成した構成の `render_targets[]` の entry(rendering 節・preset・feature の `render_targets[]` と、graph の `render.image` の node を lowering したもの)が次の 18 個以外の鍵を持つと、`graph.image_key_unknown@1 {image, key, allowed}` です([image の鍵を見る所](../../src/project/renderpipeline.cpp#L101))。
 
@@ -1055,7 +1066,7 @@ Studio は繋ぐときに `render.target_ref` の型を書き換えていまし�
   - 見ない target: buffer、`initial` を持つ target(IA-1 の image は pass より前に中身を持つ)、宣言の無い target(FR-1 の `feature.required_target_missing@1` が先に断る)、その合成に feature の読む pass が無いもの。
   - 「書いている」の判定: pipeline の pass と compute task の宣言のどこかが、読む鍵(`input` / `reads` / `input_sampling`)と `name` / `after` / `before` 以外の所でその名前を持っていれば、書いているとみなします。コードの注記では、迷えば「書くかもしれない」に倒し、残りは frame planner の拒否に任せます。
   - feature の parameter に結んだ target(`taa` の `depth` など): この検査は parameter を束ねる前の feature の文書を、instance の値(resolved parameters)と合わせて読みます。`$<parameter>` は parameter の `default` ではなく結んだ先の名前になり、parameter の宣言の `usage` がその target の型に入ります([RG-3 で結んだ先の名前を読む所](../../src/project/featurecompose.cpp#L4289))。そのため depth の parameter(`usage` が `DEPTH_STENCIL_ATTACHMENT`)に結んだ target は `pelican.render.depth@1` として断られ、`writer_candidates` は depth を書く pass の出力です。例(test): example の pipeline に `velocity` と、`depth` を誰も描かない `taa_bound_depth` に結んだ `taa` を足すと、`target: "taa_bound_depth"`、`type` は depth で、候補の `port` はすべて `depth`(`offscreen_depth` を書く出力を含む)です。
-- **`writer_candidates`** は、feature の読む pass と同じ family で、その pass より前にある pass の出力のうち、同じ種類の target を書くものです。種類は、`type` の semantic が `pelican.render.depth@1` なら depth(`output.depth` を見る)、それ以外は color(`output.color`。2 つ目からは `color.1` …)です。書いている target の種類は、その宣言の format の先頭が `D` なら depth です。
+- **`writer_candidates`** は、feature の読む pass と同じ family で、その pass より前にある pass の出力のうち、同じ種類の target を書くものです。種類は、`type` の semantic が `pelican.render.depth@1` なら depth(`output.depth` を見る)、それ以外は color(`output.color`。2 つ目からは `color.1` …)です。書いている target の種類は、その宣言の format の aspect(engine の format の性質表の列)が color 以外(`depth` / `depth_stencil`)なら depth、表に無い名前は color です([`composedTargetKindOf()`](../../src/project/featurecompose.cpp#L2014)。RC-3a1 の前は「format の先頭が `D`」で見ていました)。
   - 外すもの: `view_family` を書いた pass(shadow map など別の view を描く pass)、feature の pass、`swapchain` / `display` と要る target 自身を書く出力です([FR-3 で候補から外す所](../../src/project/featurecompose.cpp#L2120))。
   - `pass` は frame の pass の名前、`resource` は今書いている target です。root の graph の node が作った pass(instance やループの中ではないもの)で、その node の入力 port が `render.image` か `render.target_ref` を通してその target に繋がっていれば、`node` にその node の id、`port` にその graph の port の名前が入ります。それ以外は `node` が無く、`port` は `depth` / `color` / `color.<番号>` です。
   - 候補が無ければ空の配列です(test: depth を書く pass の無い pipeline)。
@@ -1957,7 +1968,8 @@ flowchart TB
 
 - **`physical_target_plan.resources[].bytes`**: その資源の image の bytes。texel の bytes × 幅 × 高さ × layers を mip の全段で足し(段ごとに幅と高さを半分にして切り捨て、1 より小さくしない)、history の target は 2 面分です。MSAA の target は面ごとに、sample する 1 sample の image(mip 込み)と、描き込む samples 倍の image(mip 0 だけ)の 2 枚を数えます([`imageResourceBytes()`](../../src/project/targetrendermemory.cpp#L13))。
   - 付くのは representation が `materialized_image` / `transient_attachment` / `tile_local_attachment` の資源だけです。external(swapchain)と buffer には付きません。
-  - texel の大きさの表は engine に 1 つです([表](../../src/project/imageformat.cpp#L17))。render target の JSON parser が受け付ける format(46 種)は全部この表に bytes を持ちます(test で固定しています)。renderer の snapshot の `byte_size` や readback も同じ表を引きます。
+  - texel の大きさは、engine に 1 つの format の性質表の列です([表](../../src/project/imageformat.cpp#L17)。RC-3a1 から。上の「format と usage の表」)。render target の JSON parser が受け付ける format(作者が書ける 45 種)は全部この表に 0 より大きい bytes を持ちます(test で固定しています)。renderer の snapshot の `byte_size` や readback も同じ列を引きます。snapshot が写せる format の集合(12 種)は、この表とは別の決まりのままです。
+    - 表は内部の `D32_SFLOAT_S8_UINT` も含めて 46 行で、その bytes は 8 です(Vulkan の texel block の 5 ではなく、実装が置く大きさの見積もり)。
 - **最上位の `memory_summary {total_bytes, unused_bytes, unused_resources, peak_live_bytes, peak_node, peak_graph}`**:
   - `total_bytes` は、**公開中の世代の GPU arena に登録された render target 全部**を、今の metadata で 1 回ずつ足した和です([`totalRegisteredTargetMemory()`](../../src/project/targetrendermemory.cpp#L121))。どの graph も使わない render target も入ります(登録は render target の定義を全部登録して確保するためです)。
     - alias の組は、runtime の登録が残した組(registry の `aliasGroup(id)`)ごとに 1 回、組の中で最大の住人の 1 sample の image の bytes で数えます。MSAA の住人が描き込む samples 倍の image は住人ごとの確保なので、住人ごとに数えます。複数の graph で runtime が alias を取り消した資源は、計画に組があっても別々の確保として数えます。
@@ -2101,7 +2113,7 @@ attachment load/storeを扱う既存packageとして引き続き読めます。v
         "resources": [
           {
             "logical_resource": "gbuffer_albedo",
-            "format": "R8G8B8A8Unorm",
+            "format": "R8G8B8A8_UNORM",
             "representation": "materialized_image"
           }
         ],
@@ -2143,9 +2155,10 @@ attachment load/storeを扱う既存packageとして引き続き読めます。v
 }
 ```
 
-その後、自動planからejectしたfragmentの該当resourceを、eject結果と同じ**canonical 表記**（fragment 側の format 名の綴り方。render target JSON の `R16G16B16A16_SFLOAT` に対し、fragment では区切り記号の無い綴り）
-（例: `"R16G16B16A16Sfloat"`）へ変更します。render target JSONのformat名をfragmentへ
-推測で転記せず、必ず現在の`ejectable_physical_fragment`を編集してください。
+その後、自動planからejectしたfragmentの該当resourceの`format`を、`format_candidates`に宣言した名前
+（例: `"R16G16B16A16_SFLOAT"`）へ変更します。RC-3a1 から、fragment の format は render target JSON と同じ作者の綴りです
+(以前は区切り記号の無い Vulkan の綴り `"R16G16B16A16Sfloat"` でした。下の「v0 で eject した package」)。
+fragment は eject したときの自動 plan の fingerprint に束縛されるので、手で書き起こさず、必ず現在の`ejectable_physical_fragment`を編集してください。
 link時には、対象deviceのrequired image usage（historyなら`TRANSFER_DST`も含む）、
 sample count、array layer上限、external depthなら`TRANSFER_SRC`契約を再照合します。
 候補未宣言、非`materialized_image`、device非対応の変更は**黙って別の値へ落とさず(fallback せず)**、名前付きエラーで起動を止めます。「指定は通ったが実際は別の format で動いていた」という状態を作らないためです。
@@ -2177,6 +2190,17 @@ sample count、array layer上限、external depthなら`TRANSFER_SRC`契約を�
   sampled/storage/transfer依存を含む融合はまだ受理しません。
 
 貼り付け後は`applied_physical_fragment`で適用内容を再観測できます。logical graphだけでなく、変更前の自動plan、target facts、選択候補、provider generationも`automatic_plan_fingerprint`へ束縛されます。いずれかが変わった古いfragmentは **stale error**(貼った package が前提にしていた plan はもう存在しない、という失敗)となり、部分的に推測して修復しません。直し方は「もう一度 eject してから編集し直す」だけです。
+
+<a id="v0-physical-fragment-format"></a>
+
+**v0 で eject した package(RC-3a1)。**v0 の engine は fragment の `resources[].format` を Vulkan の enum の綴り(`R8G8B8A8Unorm`、`R16G16B16A16Sfloat`)で書きました。
+
+- この綴りは今も読めます。読み手は fragment の format を、今の綴りで引けなければ v0 の綴りとして 1 か所で読み替えます([`imageFormatFromV0PhysicalPlanName()`](../../src/project/imageformat.cpp#L201)、[fragment の読み手が呼ぶ所](../../src/project/vulkanphysicalfragment.cpp#L2598))。どちらでもない名前は `Vulkan physical resource fragment format names an unknown image format: <名前>` です。
+- ただし `automatic_plan_fingerprint` は資源の format の名前を含めて計算するので([足す所](../../src/project/vulkanphysicalfragment.cpp#L810))、綴りが変わった RC-3a1 から値が変わります。v0 で eject した fragment は、読めても `automatic_plan` の stale error(`Vulkan physical fragment is stale for the current target facts/provider generation: expected <今の値>, got <package の値>`)になります([投げる所](../../src/project/vulkanphysicalfragment.cpp#L2885))。今の engine で eject し直し、編集をやり直してください。
+  - `put_vulkan_physical_fragment` で送った fragment なら、ticket の結果が `physical_fragment_stale`(`fingerprint: "automatic_plan"`)で、Studio では Frame Plan の **Eject again**([第15章](15_studio.md) §15.8)が画面の plan の fragment で置き換えます。
+  - 文書に既に入っている fragment を読み込むとき、この error が起動を止めるのか、構成の拒否(fallback)として見えるのかは未確認です(この例外を名前付きの拒否に変えるのは編集の RPC の側だけです。[拒否に変える所](../../src/core/communication/renderconfigeditor.cpp#L5240))。
+- これはコードの読みです。v0 で実際に eject した package を読む test はありません(RC-3a1 の test は、今 eject した package の format を v0 の綴りに書き換えて、同じに読めることを見ます)。
+- `vulkan_plan_pins` の package は format を持たず、照合するのは `logical_graph_fingerprint` だけです。RC-3a1 はこの値の計算を変えていません(差分の読み)。
 
 RPC から書くときは `put_vulkan_physical_fragment {base_source_digest, family, fragment}`です。stale な fragment は、ticket の結果の `physical_fragment_stale {family, graph, fingerprint, expected, actual}` で返り、文書は変わりません(`fingerprint` は `logical_graph` か `automatic_plan`。[第13章](13_editor.md)の「graph 全体の計画の決定を書く」)。Studio の Frame Plan の Physical plan タブの **Freeze this physical plan** が `ejectable_physical_fragment` をそのままこの RPC で送り、**Remove** が消し、stale で断られたときは **Eject again** が画面の plan の fragment で置き換えます(第13章の「下の層の決定を Frame Plan から書く」)。
 
@@ -4001,7 +4025,7 @@ rendering 節・preset・feature が宣言した render target を、グラフ�
 
 - parameters は **`name` と `type` だけ**で、`type`(image の論理型)は必須です。`name` に `@` を含めると断られます(前のフレームは下の `history` で読む)。
 - 名前が合成後に無ければ `graph.target_ref_unknown@1` `{node, name}`。検査は解決の段なので、**編集の時点では後から feature が足す target を名指してよい**のです。
-- `type` の `semantic` が `color_signal` / `depth` のときは、合成後の宣言と突き合わせます。format の先頭が `D` なら depth、それ以外は color で、違えば `graph.target_ref_type_mismatch@1` `{node, name, field: "kind", declared, actual}`。`arguments.topology`(省略は `two_d`)も `cube` / `two_d_array`(layers > 1)/ `two_d` と比べ、違えば `field: "topology"`。`legacy_opaque_image@1` は何も言わない型なので比べません([`checkTargetReference()`](../../src/project/rendergraphcomposition.cpp#L1510))。この拒否に **`expected: {type, layers?}`** が付きます。`type` は書き直せば通る型で、kind が合っていれば書いた型の `arguments.topology` を target のものに替えたもの(`two_d` なら鍵を消す)、合っていなければ depth の target には device の depth、color の target には `legacy_opaque_image@1` です。`layers` は target が `two_d_array` のときのその層の数です([`expectedTargetRefType()`](../../src/project/rendergraphcomposition.cpp#L1477))。例(test): `shadow_directional` の `cascade_count` を 3 にすると `shadow_map` は 3 層の配列になり、`two_d` の depth と書いた `render.target_ref` は `{field: "topology", declared: "two_d", actual: "two_d_array", expected: {type: <device の depth、topology two_d_array>, layers: 3}}` で断られ、`expected.type` に書き換えると通ります([「FR-1 a target_ref whose type contradicts its target is told the type to write」](../../test/featurecompose_test.cpp#L10239))。
+- `type` の `semantic` が `color_signal` / `depth` のときは、合成後の宣言と突き合わせます。format の aspect(engine の format の性質表の列)が color 以外なら depth、それ以外(表に無い名前も)は color で([`composedTargetKind()`](../../src/project/rendergraphcomposition.cpp#L1455)。RC-3a1 の前は format の先頭が `D` なら depth)、違えば `graph.target_ref_type_mismatch@1` `{node, name, field: "kind", declared, actual}`。`arguments.topology`(省略は `two_d`)も `cube` / `two_d_array`(layers > 1)/ `two_d` と比べ、違えば `field: "topology"`。`legacy_opaque_image@1` は何も言わない型なので比べません([`checkTargetReference()`](../../src/project/rendergraphcomposition.cpp#L1510))。この拒否に **`expected: {type, layers?}`** が付きます。`type` は書き直せば通る型で、kind が合っていれば書いた型の `arguments.topology` を target のものに替えたもの(`two_d` なら鍵を消す)、合っていなければ depth の target には device の depth、color の target には `legacy_opaque_image@1` です。`layers` は target が `two_d_array` のときのその層の数です([`expectedTargetRefType()`](../../src/project/rendergraphcomposition.cpp#L1477))。例(test): `shadow_directional` の `cascade_count` を 3 にすると `shadow_map` は 3 層の配列になり、`two_d` の depth と書いた `render.target_ref` は `{field: "topology", declared: "two_d", actual: "two_d_array", expected: {type: <device の depth、topology two_d_array>, layers: 3}}` で断られ、`expected.type` に書き換えると通ります([「FR-1 a target_ref whose type contradicts its target is told the type to write」](../../test/featurecompose_test.cpp#L10239))。
 
 **前のフレームを読む `history`。**`render.compute` / `render.fullscreen` / `render.raster` の port に `"history": true` を書くと、その image を `<target>@history` として読みます。読みだけで、同じフレームのどの pass も待ちません。
 

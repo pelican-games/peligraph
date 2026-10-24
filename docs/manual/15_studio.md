@@ -1696,7 +1696,7 @@ Frame Plan の関数を呼ぶものは、GL-5d と同じく `whenRead` で plan 
 
 **render.image の値を選んで決める**: Graph タブで `render.image` を選ぶと、詳細表の上(Loop・Draw・View の欄と同じ並び)に image の欄が出ます([`GraphCanvasImageFields`](../../src/devstudio/view/graphcanvasrenderfields.hpp#L117))。どの値も選んで決め、JSON や型名を打ちません(利用者の指摘「生 json とか生の型を書くよりかは、なるべく選択したい」)。
 
-- **Format**: engine の `get_render_authoring_context` の `render_target_vocabulary.formats`(上の「レンダー設定を編集する」)から選びます。depth の型なら depth の format(`D` と数字で始まる名前)だけ、それ以外の型なら depth 以外だけです([`GraphCanvasModel::imageFormatChoices`](../../src/devstudio/model/graphcanvasmodel.cpp#L7223))。
+- **Format**: engine の `get_render_authoring_context` の `render_target_vocabulary.formats`(上の「レンダー設定を編集する」)から選びます。depth の型なら depth の format だけ、それ以外の型なら depth 以外だけです([`GraphCanvasModel::imageFormatChoices`](../../src/devstudio/model/graphcanvasmodel.cpp#L7223))。depth かどうかは engine の `render_target_vocabulary.format_aspects` が color でないことで見て、その鍵が無い(届いていない、古い engine)ときだけ `D` と数字で始まる名前で見ます([`isDepthFormat`](../../src/devstudio/model/graphcanvasmodel.cpp#L8062))。
 - **Type**: graph catalog の型のうち constructor が `image` のものを、人の読める名前(`pelican.render.color_signal@1` → `Color signal`)で並べます。`legacy_untyped` の型は、今の値のときだけ出ます([`GraphCanvasModel::imageTypes`](../../src/devstudio/model/graphcanvasmodel.cpp#L7162))。
   - その下に、型の引数ごとの comboが出ます。取りうる値は catalog の型 schema の `parameters[].allowed` で、EL-1 の `types[].arguments.<名前>.values`(上の「レンダー設定を編集する」の EL-1 の段落)があればそれが優先です。既定値のある引数は先頭が `(default: <値>)` で、選ぶと鍵を消します。一覧の無い引数(`{min, max}` だけのもの)の combo は、既定値の項目と文書の値だけです([引数の欄を組む所](../../src/devstudio/view/graphcanvasrenderfields.cpp#L1026))。
   - 型を Depth と Color の間で替えると、format と usage も一緒に動きます。format は engine の一覧から depth なら `D32_SFLOAT`、color なら `R16G16B16A16_SFLOAT`(一覧に無ければ同じ側の format)を選び、usage の `COLOR_ATTACHMENT` と `DEPTH_STENCIL_ATTACHMENT` を入れ替えます。前の型と共通で新しい型が受ける引数は残します([`GraphCanvasModel::imageParametersWithSemantic`](../../src/devstudio/model/graphcanvasmodel.cpp#L7238))。
@@ -2558,6 +2558,16 @@ engine の RC-1b で `total_bytes` の意味が「この計画の image の和�
   - RC-1 から render target の行に値が入ります(以前は `0 B`)。frame graph buffer は以前から buffer の大きさで、shader bundle・pipeline・pass 系と acceleration structure は `0 B` のままです。
   - RC-1b の engine では、dump に出る render target の `declared_bytes` は dump を書き出す時点の metadata から数え直した値なので、登録の後に同じ id のまま image を作り直す経路(window 以外の出力の resize、影の layer 数の変更)の後も、status 行や `Bytes` と同じ今の大きさです。RC-1 の engine では登録時の値のままで、食い違うことがありました。viewport の窓の大きさを変えたあとの表示は画面では確かめていません(第6章の同じ節)。
 - test: `devstudio_frameplan_graph_test` の [「RC-1 the Frame Plan says on its status line what the physical plan's images take and where most of them are alive, and each image's bytes」](../../test/devstudio_frameplan_graph_test.cpp#L12920)。
+
+### Frame Plan の format の綴り(RC-3a1)
+
+engine の RC-3a1 から、`get_frame_plan` の物理計画の format は render target の宣言と同じ作者の綴り(`R16G16B16A16_SFLOAT`、`B8G8R8A8_SRGB`)です。以前は Vulkan の enum の綴り(`R16G16B16A16Sfloat`)でした(engine 側の変更の一覧は [第13章](13_editor.md) の「`get_frame_plan` に足されたもの」の `format` の行)。
+
+- Studio は format を文字列のまま読んで出すだけなので、Studio のコードは変わっていません。読むのは `physical_target_plan.resources[].format` です([読む所](../../src/devstudio/model/frameplanmodel.cpp#L1795))。
+- 出る所: Resources のタブの **Format** の列([列に出す所](../../src/devstudio/view/frameplanwidget.cpp#L4878))と、資源の名前に format を添えた `<名前>  [<format>]` の字([`resourceLabel`](../../src/devstudio/view/frameplanwidget.cpp#L370))です。RC-3a1 より前の engine につなげば、前の綴りがそのまま出ます。
+- Studio の test が読む plan の fixture(`test/fixtures/devstudio/example_frame_plan.json`)は、format の綴りだけを新しい形に直しました(fingerprint の値は変えていません。Studio の test は計算し直さないため。RC-3a1 の実装者の報告)。
+- v0 の engine で **Freeze this physical plan** した fragment(文書の `vulkan_physical_fragments`)は、RC-3a1 の engine では fingerprint が合わず stale になります([第6章](06_rendering.md#v0-physical-fragment-format))。commit の組み直しで断られたときは、上の「下の層の決定を Frame Plan から書く」の **Eject again** で今の plan の fragment に置き換えます。文書に入ったまま project を開いたときの見え方は未確認です。
+- 画面での見え方は確かめていません(コードの読み)。
 
 ## 15.9 Pass Editor
 
