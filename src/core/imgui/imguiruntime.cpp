@@ -44,9 +44,10 @@ void appendImGuiPassToCanonicalGraphs(nlohmann::json &composed_config) {
             {"name", "imgui_pass"},
             {"type", "imgui"},
             {"after", nlohmann::json::array({anchor->at("name")})},
-            {"output", {{"color", "display"}, {"depth", nullptr}}},
-            {"color_load_op", "Load"},
-            {"color_store_op", "Store"},
+            // RC-3b: written in the normal form (renderingjsonnormalize.hpp).
+            {"output", {{"color", nlohmann::json::array({nlohmann::json{{"target", "display"}}})}, {"depth", nullptr}}},
+            {"color_load_op", "load"},
+            {"color_store_op", "store"},
         };
         passes.insert(std::next(anchor), std::move(imgui_pass));
     }

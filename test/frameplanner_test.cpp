@@ -6,6 +6,7 @@
 #include "../src/project/renderpipeline.hpp"
 #include "../src/project/featurecompose.hpp"
 #include "../src/project/renderconfigsection.hpp"
+#include "../src/project/renderingjsonnormalize.hpp"
 #include "../src/core/renderingpass/renderingpassconfigjsonparser.hpp"
 #include "../src/core/renderingpass/renderingpassjsonhelpers.hpp"
 #include "../src/core/renderingpass/renderingsamplecount.hpp"
@@ -1543,7 +1544,8 @@ TEST_CASE("canonical C1b frame-plan diff preserves every legacy pass and target 
         }
     }
     REQUIRE(new_legacy_order == old_legacy_order);
-    REQUIRE(legacyPassProjection(composed.config) == legacyPassProjection(legacy));
+    // RC-3b: the composed passes are the authored ones in the normal form.
+    REQUIRE(legacyPassProjection(composed.config) == legacyPassProjection(normalizeRenderingJson(legacy)));
     REQUIRE(legacyTargetProjection(composed.config) == legacyTargetProjection(legacy));
 
     const auto &display = composed.config.at("render_targets").back();

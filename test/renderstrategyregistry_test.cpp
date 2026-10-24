@@ -4,6 +4,7 @@
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 #include "../src/core/renderingpass/renderingsamplecount.hpp"
 #include "../src/project/renderpipeline.hpp"
+#include "../src/project/renderingjsonnormalize.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -336,7 +337,8 @@ TEST_CASE(
             authored, policy, true, providers);
     }
 
-    auto expected = authored;
+    // RC-3b: the provider's response is normalized.
+    auto expected = normalizeRenderingJson(authored);
     expected.erase("render_strategy");
     REQUIRE(resolved.config == expected);
     REQUIRE(resolved.selection.has_value());
@@ -371,7 +373,7 @@ TEST_CASE(
         with_controls = resolveRenderStrategy(
             controlled, policy, true, providers);
     }
-    auto expected_with_controls = controlled;
+    auto expected_with_controls = normalizeRenderingJson(controlled);
     expected_with_controls.erase("render_strategy");
     REQUIRE(with_controls.config ==
             expected_with_controls);

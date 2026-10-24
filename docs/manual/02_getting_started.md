@@ -276,8 +276,8 @@ mygame/
 
 生成されるファイルは全 16 エントリで、一覧は [projecttemplate.cpp](../../src/project/projecttemplate.cpp) の `templateFiles()` が正本です(F-2 で `pelican_cli` から `pelican_project` へ移り、Studio の File > New Project... も同じ関数で書きます)。2 点だけ、生成物の形に約束があります(✅P-2a-4b / X-1):
 
-- **`passes/main_rendering_config.json` は `pelican.graph` root で生成されます** —— 最上位が `{"schema": "pelican.graph", "version": 1, "definitions": {}, "nodes": [], "outputs": {}, "rendering": { … }}` で、pipeline preset と features は `rendering` 節の中です([renderingConfigJson()](../../src/project/projecttemplate.cpp#L261) は graph root をそのまま書いた文字列を返します。包み関数 `wrapLegacyRenderingConfig` は MG-2b で撤去されました)。rendering config の root はこの形だけで、rendering のキーを最上位に直接並べた旧い形は `render_config.legacy_root@1` で拒否されます([第3章 §3.2](03_project_format.md))。
-- **`code/CMakeLists.txt` は 2 行**です —— `pelican_game_sources(game.cpp)` の**後に** `pelican_packages()`([projecttemplate.cpp:276](../../src/project/projecttemplate.cpp#L275))。`pelican_packages()` は `packages/*/` に複製済みで code を持つ package を build してゲームロジック DLL に合流させるので、**順序が意味を持ちます**(合流先の DLL が先に定義されている必要があります)。package を使わないうちは何もしません。
+- **`passes/main_rendering_config.json` は `pelican.graph` root で生成されます** —— 最上位が `{"schema": "pelican.graph", "version": 1, "definitions": {}, "nodes": [], "outputs": {}, "rendering": { … }}` で、pipeline preset と features は `rendering` 節の中です([renderingConfigJson()](../../src/project/projecttemplate.cpp#L263) は graph root をそのまま書いた文字列を返します。包み関数 `wrapLegacyRenderingConfig` は MG-2b で撤去されました)。rendering config の root はこの形だけで、rendering のキーを最上位に直接並べた旧い形は `render_config.legacy_root@1` で拒否されます([第3章 §3.2](03_project_format.md))。
+- **`code/CMakeLists.txt` は 2 行**です —— `pelican_game_sources(game.cpp)` の**後に** `pelican_packages()`([projecttemplate.cpp:276](../../src/project/projecttemplate.cpp#L277))。`pelican_packages()` は `packages/*/` に複製済みで code を持つ package を build してゲームロジック DLL に合流させるので、**順序が意味を持ちます**(合流先の DLL が先に定義されている必要があります)。package を使わないうちは何もしません。
 
 生成される `project.json`(実物・`src/project/projecttemplate.cpp` が出力):
 
@@ -314,7 +314,7 @@ mygame/
 
 雛形の `scenes/main.scene.json` の `MainCamera` は `pos` が `(0, 0, 3)`・回転なしで、回転なしの camera は −Z を向くので原点を見ます([雛形の scene](../../src/project/projecttemplate.cpp#L133))。同じ scene の `KeyLight`(directional)の `direction` は `(-0.5, -1, -0.25)` で、光は −Z の側へ進み、camera から見える面を照らします([雛形の KeyLight の向き](../../src/project/projecttemplate.cpp#L148))。
 
-✅CC-1c(`b0b2fc77`)の前は `(-0.5, -1, 0.25)` のままで、CC-1 で camera が z = +3 に移った後は光が +Z へ進み、camera の見る面が光の裏になって黒く写っていました(commit の記録は ambient が無いことを理由に挙げています。Studio の scenario 7 本(`add_primitive_object`・`forward_loop_from_scratch`・`gui_build_A` / `B` / `C` / `full` / `optimize`)で見つかりました)。この scene は Standard と Blank の両方の雛形が書きます([`templateFiles()`](../../src/project/projecttemplate.cpp#L350))。座標の規約は [第6章 §6.1](06_rendering.md) の「座標の規約」です。
+✅CC-1c(`b0b2fc77`)の前は `(-0.5, -1, 0.25)` のままで、CC-1 で camera が z = +3 に移った後は光が +Z へ進み、camera の見る面が光の裏になって黒く写っていました(commit の記録は ambient が無いことを理由に挙げています。Studio の scenario 7 本(`add_primitive_object`・`forward_loop_from_scratch`・`gui_build_A` / `B` / `C` / `full` / `optimize`)で見つかりました)。この scene は Standard と Blank の両方の雛形が書きます([`templateFiles()`](../../src/project/projecttemplate.cpp#L352))。座標の規約は [第6章 §6.1](06_rendering.md) の「座標の規約」です。
 
 **描画パイプラインを 0 から組みたいときは `--template blank`** です(✅F-2。既定は上の `standard`)。
 `pelican_cli project init mygame --template blank` は上と同じ 16 エントリを書きますが、

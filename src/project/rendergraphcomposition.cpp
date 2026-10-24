@@ -3,6 +3,7 @@
 #include "graphpartition.hpp"
 #include "graphloopexpression.hpp"
 #include "imageformat.hpp"
+#include "renderingjsonnormalize.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -55,10 +56,33 @@ MaterialDrawStep drawStepFromNode(const Json &node) {
     return MaterialDrawStep::overridden(state, std::move(defines));
 }
 
+// RC-3b: the graph lowering's result is a boundary of the rendering JSON.
+// What it generates is in the normal form already; what a node's parameters
+// carry through into a pass (after, before, a load / store spelling) is
+// normalized here, as the passes of one family or a declaration list.
+Json normalizedLoweredPass(Json pass) {
+    auto family = normalizeRenderingJson(Json{
+        {"rendering_passes", Json::array({Json{{"name", ""}, {"passes", Json::array({std::move(pass)})}}})}});
+    return std::move(family.at("rendering_passes").at(0).at("passes").at(0));
+}
+
+Json normalizedLoweredList(Json list, const char *key) {
+    auto holder = normalizeRenderingJson(Json{{key, std::move(list)}});
+    return std::move(holder.at(key));
+}
+
+// RC-3b: a lowered or composed pass's / task's after / before, in the normal
+// form (RenderJson::names refuses anything else by name).
 std::vector<std::string> orderNames(const Json &declaration, const char *key) {
+    return RenderJson::names(declaration, key);
+}
+
+// A graph node's parameters are not a pass: their after / before are read as
+// the node contract wrote them.
+std::vector<std::string> nodeParameterOrderNames(const Json &parameters, const char *key) {
     std::vector<std::string> names;
-    const auto found = declaration.find(key);
-    if (found == declaration.end() || !found->is_array()) return names;
+    const auto found = parameters.find(key);
+    if (found == parameters.end() || !found->is_array()) return names;
     for (const auto &name : *found)
         if (name.is_string()) names.push_back(name.get<std::string>());
     return names;
@@ -128,8 +152,10 @@ Json lowerRenderPassKindNode(const Json &node, Json parameters,
     parameters["name"] = node.at("id");
     if (op == "render.shadow_depth") {
         parameters["type"] = "shadow_depth";
-        // As the feature writes it: no color attachment.
-        parameters["output"] = Json{{"color", nullptr}, {"depth", attach("depth", after)}};
+        // As the feature writes it: no color attachment. RC-3b: in the
+        // normal form.
+        parameters["output"] = Json{{"color", Json::array()},
+                                    {"depth", RenderJson::attachment(attach("depth", after))}};
     } else {
         parameters["type"] = "snapshot_copy";
         parameters["source"] = attach("source", after);
@@ -334,8 +360,8 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
                 if (const auto producer = producerOf(endpoint); !producer.empty()) downstream[producer].insert(id);
             });
         if (const auto parameters = node.find("parameters"); parameters != node.end() && parameters->is_object()) {
-            for (const auto &name : orderNames(*parameters, "after")) downstream[name].insert(id);
-            for (const auto &name : orderNames(*parameters, "before")) downstream[id].insert(name);
+            for (const auto &name : nodeParameterOrderNames(*parameters, "after")) downstream[name].insert(id);
+            for (const auto &name : nodeParameterOrderNames(*parameters, "before")) downstream[id].insert(name);
             if (const auto snapshot = parameters->find("snapshot_after");
                 snapshot != parameters->end() && snapshot->is_string())
                 downstream[snapshot->get<std::string>()].insert(id);
@@ -623,6 +649,7 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
     // A lowered graphics pass joins a loop body, waits for its anchor, or is
     // appended to its family (LP-3a: a render.material_pass the same way).
     const auto landGraphicsPass = [&](const std::string &id, Json parameters, RenderGraphLoopBody *body) {
+        parameters = normalizedLoweredPass(std::move(parameters));
         const auto family = parameters.value("pass_set", default_pass_family);
         parameters.erase("pass_set");
         if (!graph.node_scopes.at(id).empty()) {
@@ -773,8 +800,10 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
                     after.push_back(producer);
                 return resourceName(endpoint);
             };
-            for (const auto &port : renderMaterialPassColorPorts(parameters)) output["color"].push_back(attach(port));
-            output["depth"] = attach("depth");
+            // RC-3b: attachments in the normal form.
+            for (const auto &port : renderMaterialPassColorPorts(parameters))
+                output["color"].push_back(RenderJson::attachment(attach(port)));
+            output["depth"] = RenderJson::attachment(attach("depth"));
             pass["output"] = std::move(output);
             if (!after.empty()) pass["after"] = std::move(after);
             // Its draws: a draw_loop's, or today's drawing when unconnected.
@@ -985,7 +1014,7 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
                 } else if (attachment == "depth") {
                     if (declaration.contains("location") || !attachments["depth"].is_null())
                         throw std::invalid_argument("duplicate depth attachment or invalid depth location");
-                    attachments["depth"] = resource;
+                    attachments["depth"] = RenderJson::attachment(resource);
                 } else throw std::invalid_argument("unknown render attachment: " + attachment);
                 continue;
             }
@@ -1021,7 +1050,8 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
             for (const auto &[location, resource] : colors) {
                 if (location != attachments["color"].size())
                     throw std::invalid_argument("color attachment locations must be contiguous from zero");
-                attachments["color"].push_back(resource);
+                // RC-3b: attachments in the normal form.
+                attachments["color"].push_back(RenderJson::attachment(resource));
             }
             parameters.erase("reads");
             parameters.erase("writes");
@@ -1273,12 +1303,13 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
                     if (!pass.is_object() || !pass.contains("name") || !pass.at("name").is_string()) continue;
                     const auto name = pass.at("name").get<std::string>();
                     if (graph_pass_family.contains(name)) continue;
-                    for (const auto *key : {"input", "reads"})
-                        if (const auto found = pass.find(key); found != pass.end() && found->is_array())
-                            for (auto &entry : *found) {
-                                if (entry.is_object() && entry.contains("target")) resolve(name, entry.at("target"));
-                                else resolve(name, entry);
-                            }
+                    // RC-3b: the lists in the normal form (an `input` the root
+                    // wrote as one string was normalized before the lowering).
+                    for (const auto *key : {"input", "reads"}) {
+                        (void)RenderJson::names(pass, key);
+                        if (const auto found = pass.find(key); found != pass.end())
+                            for (auto &entry : *found) resolve(name, entry);
+                    }
                     if (const auto ports = pass.find("resource_ports"); ports != pass.end() && ports->is_object()) {
                         const auto writes = declarationWrites(pass);
                         for (auto &[port, binding] : ports->items()) {
@@ -1374,7 +1405,13 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
             else run->passes.push_back(std::move(pending.pass));
         }
     }
-    lowered.config = std::move(config);
+    lowered.config = normalizeRenderingJson(std::move(config));
+    for (auto &loop : lowered.loops)
+        for (auto &branch : loop.branches)
+            if (branch) {
+                branch->compute_tasks = normalizedLoweredList(std::move(branch->compute_tasks), "compute_tasks");
+                branch->buffers = normalizedLoweredList(std::move(branch->buffers), "buffers");
+            }
     return lowered;
 }
 
@@ -1658,22 +1695,16 @@ std::string resourceBase(const std::string &resource) {
     return resource.ends_with(history) ? resource.substr(0, resource.size() - history.size()) : resource;
 }
 
-// The resources a lowered pass or task names, read or written.
+// The resources a lowered pass or task names, read or written. RC-3b: the
+// lists and attachments in the normal form (RenderJson).
 std::set<std::string> declarationResources(const Json &declaration) {
     std::set<std::string> resources;
     const auto add = [&](const Json &name) {
         if (name.is_string()) resources.insert(resourceBase(name.get<std::string>()));
-        else if (name.is_object() && name.contains("target") && name.at("target").is_string())
-            resources.insert(resourceBase(name.at("target").get<std::string>()));
     };
     for (const auto *key : {"input", "reads", "writes"})
-        if (const auto found = declaration.find(key); found != declaration.end() && found->is_array())
-            for (const auto &name : *found) add(name);
-    if (const auto output = declaration.find("output"); output != declaration.end() && output->is_object()) {
-        if (const auto colors = output->find("color"); colors != output->end() && colors->is_array())
-            for (const auto &name : *colors) add(name);
-        if (const auto depth = output->find("depth"); depth != output->end()) add(*depth);
-    }
+        for (const auto &name : RenderJson::names(declaration, key)) resources.insert(resourceBase(name));
+    for (const auto &name : RenderJson::outputTargets(declaration)) resources.insert(resourceBase(name));
     if (const auto ports = declaration.find("resource_ports"); ports != declaration.end() && ports->is_object())
         for (const auto &[port, binding] : ports->items()) {
             (void)port;
@@ -1691,19 +1722,8 @@ std::set<std::string> declarationResources(const Json &declaration) {
 // The resources a lowered pass or task writes.
 std::set<std::string> declarationWrites(const Json &declaration) {
     std::set<std::string> resources;
-    if (const auto writes = declaration.find("writes"); writes != declaration.end() && writes->is_array())
-        for (const auto &name : *writes)
-            if (name.is_string()) resources.insert(name.get<std::string>());
-    if (const auto output = declaration.find("output"); output != declaration.end() && output->is_object()) {
-        const auto add = [&](const Json &name) {
-            if (name.is_string()) resources.insert(name.get<std::string>());
-            else if (name.is_object() && name.contains("target") && name.at("target").is_string())
-                resources.insert(name.at("target").get<std::string>());
-        };
-        if (const auto colors = output->find("color"); colors != output->end() && colors->is_array())
-            for (const auto &name : *colors) add(name);
-        if (const auto depth = output->find("depth"); depth != output->end()) add(*depth);
-    }
+    for (const auto &name : RenderJson::names(declaration, "writes")) resources.insert(name);
+    for (const auto &name : RenderJson::outputTargets(declaration)) resources.insert(name);
     // LP-0e: a snapshot copy writes its destination.
     if (declaration.value("type", std::string{}) == "snapshot_copy")
         if (const auto destination = declaration.find("destination");
@@ -1718,15 +1738,12 @@ std::set<std::string> declarationWrites(const Json &declaration) {
 std::set<std::string> declarationFrameReads(const Json &declaration) {
     std::set<std::string> reads;
     const auto add = [&](const Json &name) {
-        std::string resource;
-        if (name.is_string()) resource = name.get<std::string>();
-        else if (name.is_object() && name.contains("target") && name.at("target").is_string())
-            resource = name.at("target").get<std::string>();
+        if (!name.is_string()) return;
+        const auto resource = name.get<std::string>();
         if (!resource.empty() && !resource.ends_with("@history")) reads.insert(resource);
     };
     for (const auto *key : {"input", "reads"})
-        if (const auto found = declaration.find(key); found != declaration.end() && found->is_array())
-            for (const auto &name : *found) add(name);
+        for (const auto &name : RenderJson::names(declaration, key)) add(name);
     const auto writes = declarationWrites(declaration);
     if (const auto ports = declaration.find("resource_ports"); ports != declaration.end() && ports->is_object())
         for (const auto &[port, binding] : ports->items()) {
@@ -1848,9 +1865,7 @@ std::optional<std::size_t> graphPassRunReaderPosition(const Json &config, const 
 
 namespace {
 void appendOrder(Json &declaration, const char *key, const std::string &name) {
-    auto &list = declaration[key];
-    if (list.is_null()) list = Json::array();
-    if (std::find(list.begin(), list.end(), name) == list.end()) list.push_back(name);
+    RenderJson::appendName(declaration, key, name);
 }
 
 // A pass or task by name, and its family ("" for a task).
@@ -3196,12 +3211,7 @@ std::vector<GraphTaskReaderWait> waitOnGraphTasksInScenePasses(Json &composed,
                 added.push_back({family.value("name", std::string{}), pass.at("name").get<std::string>(), task_name});
                 // The pass samples what the task stored: a graph image it
                 // reads as an input needs SAMPLED.
-                const auto input = pass.find("input");
-                if (!graph_images.contains(image) || input == pass.end() || !input->is_array() ||
-                    std::none_of(input->begin(), input->end(), [&](const Json &entry) {
-                        return entry == image || (entry.is_object() && entry.value("target", Json()) == image);
-                    }))
-                    continue;
+                if (!graph_images.contains(image) || !RenderJson::namesContain(pass, "input", image)) continue;
                 for (auto &target : composed.at("render_targets"))
                     if (target.is_object() && target.value("name", std::string{}) == image &&
                         target.contains("usage") && target.at("usage").is_array() &&
@@ -3231,9 +3241,7 @@ std::vector<std::string> requiredInputs(const Json &pass) {
             names.push_back(source->get<std::string>());
         return names;
     }
-    if (const auto input = pass.find("input"); input != pass.end() && input->is_array())
-        for (const auto &name : *input)
-            if (name.is_string()) names.push_back(name.get<std::string>());
+    for (auto &name : RenderJson::names(pass, "input")) names.push_back(std::move(name));
     return names;
 }
 
@@ -3338,10 +3346,7 @@ void moveSceneWritersBeforeReaders(Json &composed,
     if (const auto tasks = composed.find("compute_tasks"); tasks != composed.end() && tasks->is_array())
         for (const auto &task : *tasks)
             if (task.is_object()) tasks_write.merge(declarationWrites(task));
-    if (const auto list = composed.find("buffers"); list != composed.end() && list->is_array())
-        for (const auto &buffer : *list)
-            if (buffer.is_object() && buffer.contains("name") && buffer.at("name").is_string())
-                buffers.insert(buffer.at("name").get<std::string>());
+    for (auto &buffer : RenderJson::bufferNames(composed)) buffers.insert(std::move(buffer));
     for (auto &family : *families) {
         if (!family.is_object() || !family.contains("passes") || !family.at("passes").is_array()) continue;
         auto &passes = family.at("passes");

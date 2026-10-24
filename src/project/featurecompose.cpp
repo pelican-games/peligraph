@@ -5,6 +5,7 @@
 #include "imageformat.hpp"
 #include "materialscreeninput.hpp"
 #include "renderresourcename.hpp"
+#include "renderingjsonnormalize.hpp"
 
 #include <algorithm>
 #include <array>
@@ -139,8 +140,9 @@ nlohmann::json loadFeatureJson(std::string_view ref,
     if (!dependencies.load_feature_json) {
         throw std::runtime_error("render feature loader is not configured: " + std::string{ref});
     }
-    // BS-1b: bytes that are not JSON are refused by name.
-    return parseRenderDocument(dependencies.load_feature_json(ref), ref);
+    // BS-1b: bytes that are not JSON are refused by name. RC-3b: a feature is
+    // one of the rendering JSON's boundaries.
+    return normalizeRenderingJson(parseRenderDocument(dependencies.load_feature_json(ref), ref));
 }
 
 struct FeatureInstance {
@@ -213,37 +215,20 @@ nlohmann::json &ensureArray(nlohmann::json &config, std::string_view field_name)
     return config.at(field);
 }
 
-bool stringListContains(const nlohmann::json &value, std::string_view needle) {
-    if (value.is_string()) {
-        return value.get<std::string>() == needle;
-    }
-    if (!value.is_array()) {
-        return false;
-    }
-    return std::any_of(value.begin(), value.end(), [needle](const auto &entry) {
-        return entry.is_string() && entry.get<std::string>() == needle;
-    });
-}
-
+// RC-3b: a color attachment's target, as the normal form writes it
+// (RenderJson). A depth target named swapchain is no swapchain output.
 bool passWritesSwapchain(const nlohmann::json &pass) {
-    return pass.contains("output") && pass.at("output").is_object() &&
-           pass.at("output").contains("color") &&
-           stringListContains(pass.at("output").at("color"), "swapchain");
+    const auto colors = RenderJson::colorTargets(pass);
+    return std::find(colors.begin(), colors.end(), "swapchain") != colors.end();
 }
 
-void replaceSwapchainAlias(nlohmann::json &value) {
-    if (value.is_string()) {
-        if (value.get<std::string>() == "swapchain") {
-            value = "display";
-        }
-        return;
-    }
-    if (!value.is_array()) {
-        return;
-    }
-    for (auto &entry : value) {
-        replaceSwapchainAlias(entry);
-    }
+// swapchain -> display on the color attachments' targets only; each
+// attachment keeps its subresource and load / store.
+void replaceSwapchainAlias(nlohmann::json &pass) {
+    RenderJson::retargetColorOutputs(pass, [](const std::string &target) -> std::optional<std::string> {
+        if (target == "swapchain") return std::string{"display"};
+        return std::nullopt;
+    });
 }
 
 std::string inferFormatClass(const nlohmann::json &target) {
@@ -337,7 +322,8 @@ nlohmann::json makeOutputTransform() {
         {"name", "output_transform"},
         {"type", "output_transform"},
         {"input", nlohmann::json::array({"display"})},
-        {"output", {{"color", "swapchain"}, {"depth", nullptr}}},
+        // RC-3b: written in the normal form.
+        {"output", {{"color", nlohmann::json::array({RenderJson::attachment("swapchain")})}, {"depth", nullptr}}},
         {"shader", {{"vertex", "engine://fullscreen"},
                     {"fragment", "engine://output_transform"}}},
         {"color_load_op", "dont_care"},
@@ -369,37 +355,20 @@ void prepareHdrSceneOutput(nlohmann::json &config) {
     if (scene_terminal == nullptr) {
         throw std::runtime_error("HDR canonical pipeline requires a scene pass that writes swapchain/display");
     }
-    replaceSwapchainAlias(scene_terminal->at("output").at("color"));
-    auto &output = scene_terminal->at("output").at("color");
-    if (output.is_string()) {
-        output = "scene_ldr_in";
-    } else {
-        for (auto &entry : output) {
-            if (entry == "display") {
-                entry = "scene_ldr_in";
-            }
-        }
-    }
+    // RC-3b: the scene terminal's display output (swapchain is its alias)
+    // becomes the HDR intermediate; only the attachments' targets change.
+    RenderJson::retargetColorOutputs(*scene_terminal, [](const std::string &target) -> std::optional<std::string> {
+        if (target == "swapchain" || target == "display") return std::string{"scene_ldr_in"};
+        return std::nullopt;
+    });
 }
 
 void appendAfter(nlohmann::json &node, const std::string &dependency) {
-    if (!node.contains("after")) {
-        node["after"] = nlohmann::json::array();
-    } else if (node.at("after").is_string()) {
-        node["after"] = nlohmann::json::array({node.at("after")});
-    }
-    if (!node.at("after").is_array()) {
-        throw std::runtime_error("canonical frame pass after must be a string or array");
-    }
-    auto &after = node.at("after");
-    if (std::find(after.begin(), after.end(), dependency) == after.end()) {
-        after.push_back(dependency);
-    }
+    RenderJson::appendName(node, "after", dependency);
 }
 
 bool hasExplicitRelation(const nlohmann::json &lhs, const std::string &rhs_name) {
-    return (lhs.contains("after") && stringListContains(lhs.at("after"), rhs_name)) ||
-           (lhs.contains("before") && stringListContains(lhs.at("before"), rhs_name));
+    return RenderJson::namesContain(lhs, "after", rhs_name) || RenderJson::namesContain(lhs, "before", rhs_name);
 }
 
 // FO-1: `listed` is the graph's frame_node_order list (or null). The passes of
@@ -529,10 +498,7 @@ void retargetSwapchainAliases(nlohmann::json &config) {
             if (pass.value("type", std::string{}) == "output_transform") {
                 continue;
             }
-            if (pass.contains("output") && pass.at("output").is_object() &&
-                pass.at("output").contains("color")) {
-                replaceSwapchainAlias(pass.at("output").at("color"));
-            }
+            replaceSwapchainAlias(pass);
         }
     }
 }
@@ -1361,18 +1327,6 @@ std::string replaceBoundTargetReference(
     return found->second + (history ? std::string{history_suffix} : std::string{});
 }
 
-void replaceBoundTargetValue(nlohmann::json &value,
-                             const std::unordered_map<std::string, std::string> &bindings,
-                             const std::string &feature_name) {
-    if (value.is_string()) {
-        value = replaceBoundTargetReference(value.get<std::string>(), bindings, feature_name);
-    } else if (value.is_array()) {
-        for (auto &entry : value) {
-            replaceBoundTargetValue(entry, bindings, feature_name);
-        }
-    }
-}
-
 void replaceBoundScalarValues(
     nlohmann::json &value,
     const std::unordered_map<std::string, nlohmann::json>
@@ -1697,28 +1651,21 @@ nlohmann::json bindFeatureParameters(const nlohmann::json &authored_feature,
     replaceBoundShaderAssetValues(
         feature, shader_asset_bindings,
         feature_name);
+    // RC-3b: a `$name` target parameter in an input or an attachment's
+    // target; the attachment keeps its subresource and load / store.
+    const RenderJson::TargetRename bind = [&](const std::string &authored) -> std::optional<std::string> {
+        return replaceBoundTargetReference(authored, bindings, feature_name);
+    };
     if (feature.contains("passes")) {
         for (auto &entry : feature.at("passes")) {
             auto &pass = entry.at("pass");
-            if (pass.contains("input")) {
-                replaceBoundTargetValue(pass.at("input"), bindings, feature_name);
-            }
-            if (pass.contains("output") && pass.at("output").is_object()) {
-                auto &output = pass.at("output");
-                if (output.contains("color")) {
-                    replaceBoundTargetValue(output.at("color"), bindings, feature_name);
-                }
-                if (output.contains("depth")) {
-                    replaceBoundTargetValue(output.at("depth"), bindings, feature_name);
-                }
-            }
+            RenderJson::retargetNames(pass, "input", bind);
+            RenderJson::retargetOutputs(pass, bind);
         }
     }
     if (feature.contains("pass_overrides")) {
         for (auto &override_json : feature.at("pass_overrides")) {
-            if (override_json.contains("input")) {
-                replaceBoundTargetValue(override_json.at("input"), bindings, feature_name);
-            }
+            RenderJson::retargetNames(override_json, "input", bind);
         }
     }
     if (feature.contains("surface_resources")) {
@@ -2060,14 +2007,6 @@ bool mayWriteTarget(const nlohmann::json &value, const std::string &target, std:
     return false;
 }
 
-// FR-3: a pass's `input` (or output) entry as the target it names.
-std::string namedTarget(const nlohmann::json &entry) {
-    if (entry.is_string()) return entry.get<std::string>();
-    if (entry.is_object() && entry.contains("target") && entry.at("target").is_string())
-        return entry.at("target").get<std::string>();
-    return {};
-}
-
 // FR-3: "depth" for a depth or stencil format (the format table's aspect,
 // RC-3a1), "color" for any other (an absent format is a color target whose
 // format the color resolver fills in); "" for a name the config does not
@@ -2139,13 +2078,10 @@ void requireFeatureTargetsWritten(const nlohmann::json &composed, const nlohmann
             for (std::size_t index = 0; index < passes->size() && reader_family == nullptr; ++index) {
                 const auto &pass = passes->at(index);
                 if (!pass.is_object() || !feature_passes.contains(pass.value("name", std::string{}))) continue;
-                const auto input = pass.find("input");
-                if (input == pass.end() || !input->is_array()) continue;
-                for (const auto &read : *input)
-                    if (namedTarget(read) == target) {
-                        reader_family = &family;
-                        reader_index = index;
-                    }
+                if (RenderJson::namesContain(pass, "input", target)) {
+                    reader_family = &family;
+                    reader_index = index;
+                }
             }
             if (reader_family != nullptr) break;
         }
@@ -2188,16 +2124,12 @@ void requireFeatureTargetsWritten(const nlohmann::json &composed, const nlohmann
                 continue;
             std::vector<std::pair<std::string, std::string>> writes; // {port, resource}
             if (kind == "depth") {
-                if (const auto depth = output->find("depth"); depth != output->end())
-                    writes.emplace_back("depth", namedTarget(*depth));
-            } else if (const auto colors = output->find("color"); colors != output->end()) {
-                if (colors->is_array()) {
-                    for (std::size_t color = 0; color < colors->size(); ++color)
-                        writes.emplace_back(color == 0 ? std::string{"color"} : "color." + std::to_string(color),
-                                            namedTarget(colors->at(color)));
-                } else {
-                    writes.emplace_back("color", namedTarget(*colors));
-                }
+                if (auto depth = RenderJson::depthTarget(pass)) writes.emplace_back("depth", std::move(*depth));
+            } else {
+                const auto colors = RenderJson::colorTargets(pass);
+                for (std::size_t color = 0; color < colors.size(); ++color)
+                    writes.emplace_back(color == 0 ? std::string{"color"} : "color." + std::to_string(color),
+                                        colors.at(color));
             }
             // A root node of the rendering graph made it: the port is that
             // node's.
@@ -2252,22 +2184,10 @@ void insertPassAtBeginning(
     passes.insert(passes.begin(), pass);
 }
 
+// RC-3b: on the normal form (RenderJson::appendName).
 void appendStringListValue(nlohmann::json &json, const std::string &field_name,
                            const std::string &value) {
-    if (!json.contains(field_name)) {
-        json[field_name] = nlohmann::json::array();
-    } else if (json.at(field_name).is_string()) {
-        json[field_name] = nlohmann::json::array({json.at(field_name).get<std::string>()});
-    }
-    if (!json.at(field_name).is_array()) {
-        throw std::runtime_error("render feature pass explicit edge must be a string or array: " + field_name);
-    }
-
-    auto &values = json.at(field_name);
-    const auto exists = std::find(values.begin(), values.end(), value);
-    if (exists == values.end()) {
-        values.push_back(value);
-    }
+    RenderJson::appendName(json, field_name, value);
 }
 
 } // namespace
@@ -2454,46 +2374,17 @@ bool passWritesResource(
         !pass.at("output").is_object()) {
         return false;
     }
-    const auto &output = pass.at("output");
-    return (output.contains("color") &&
-            stringListContains(
-                output.at("color"), resource)) ||
-           (output.contains("depth") &&
-            output.at("depth").is_string() &&
-            output.at("depth").get<std::string>() ==
-                resource);
-}
-
-std::size_t stringListSize(
-    const nlohmann::json &object,
-    std::string_view field_name,
-    std::string_view context) {
-    const auto field = std::string{field_name};
-    if (!object.contains(field)) return 0;
-    const auto &value = object.at(field);
-    if (value.is_string()) return 1;
-    if (!value.is_array() ||
-        !std::all_of(
-            value.begin(), value.end(),
-            [](const auto &entry) {
-                return entry.is_string();
-            })) {
-        throw std::runtime_error(
-            std::string{context} + " " + field +
-            " must be a string or string array");
-    }
-    return value.size();
+    // RC-3b: an attachment's target, color or depth, in the normal form.
+    return RenderJson::writesOutputTarget(pass, resource);
 }
 
 void appendFullscreenSurfaceResource(
     nlohmann::json &pass, const std::string &resource,
     const MaterialPassInputContract &contract) {
     const auto input_count =
-        stringListSize(pass, "input",
-                       "fullscreen surface-resource consumer");
+        RenderJson::names(pass, "input").size();
     const auto already_bound =
-        pass.contains("input") &&
-        stringListContains(pass.at("input"), resource);
+        RenderJson::namesContain(pass, "input", resource);
     if (already_bound) {
         throw std::runtime_error(
             "fullscreen surface-resource consumer already binds "
@@ -2587,8 +2478,7 @@ void validateFullscreenConsumerSelector(
 bool fullscreenPassReadsResource(const nlohmann::json &pass,
                                  const std::string &resource) {
     return pass.value("type", std::string{}) == "fullscreen" &&
-           pass.contains("input") &&
-           stringListContains(pass.at("input"), resource);
+           RenderJson::namesContain(pass, "input", resource);
 }
 
 // RS-10: a fullscreen pass with the light-data contract a selector asks for
@@ -3392,9 +3282,12 @@ nlohmann::json boundFeatureDocument(nlohmann::json feature,
 } // namespace
 
 nlohmann::json materializeRenderFeatureDocument(
-    const nlohmann::json &authored_feature,
+    const nlohmann::json &feature_document,
     const nlohmann::json &instance_parameters,
     const nlohmann::json &config) {
+    // RC-3b: a document the caller read is a boundary; the derivative is
+    // written in the normal form.
+    const auto authored_feature = normalizeRenderFeatureJson(feature_document);
     const auto name = validateFeatureEnvelope(authored_feature, "materialize");
     if (!instance_parameters.is_object())
         throw std::invalid_argument("Render feature instance parameters must be an object");
@@ -3465,11 +3358,16 @@ std::string defaultGraphPassFamily(const nlohmann::json &document, const RenderP
 } // namespace
 
 RenderFeatureComposeResult composeRenderFeatureConfig(
-    const nlohmann::json &config,
+    const nlohmann::json &authored_config,
     const RenderFeatureComposeDependencies &dependencies) {
-    if (!config.is_object()) {
+    if (!authored_config.is_object()) {
         throw std::runtime_error("Rendering config must be an object");
     }
+    // RC-3b: the root in the normal form before anything reads its passes --
+    // the graph lowering below reads `input` as an array only. The authoring
+    // lowering (lowerAuthoringDocument) normalized it already when the caller
+    // went through it; a second pass changes nothing.
+    const auto config = normalizeRenderingJson(authored_config);
 
     const bool common_graph = config.value("schema", std::string{}) == "pelican.graph";
     // LP-0a: the graph is lowered before the preset and the features are
@@ -3601,6 +3499,10 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
                 "resolved rendering config transform must "
                 "return an object");
         }
+        // RC-3b: the render strategy's provider answers here (its registry
+        // normalizes the response too); whatever this hook returns is a
+        // boundary of its own.
+        resolved_config = normalizeProviderRenderingJson(std::move(resolved_config));
     }
 
     const auto feature_instances = parseFeatureInstances(resolved_config);
@@ -4303,6 +4205,10 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
                          ? composed.at("draw_sort")
                          : nlohmann::json{};
     RenderFeatureComposeResult result;
+    // RC-3b: what the composition wrote (canonical passes, snapshots, loop
+    // copies, the graph's lowered passes) is in the normal form already; a
+    // generator that is not is refused here by name, not passed on.
+    requireNormalizedRenderingJson(composed);
     result.config = std::move(composed);
     result.shader_defines = std::move(shader_defines);
     result.feature_names = std::move(feature_names);
@@ -4336,24 +4242,19 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
 }
 
 // FR-1: renderFeatureRequiredTargets (featurecompose.hpp).
-nlohmann::json renderFeatureRequiredTargets(const nlohmann::json &feature, bool with_needs_writer,
+nlohmann::json renderFeatureRequiredTargets(const nlohmann::json &authored_feature, bool with_needs_writer,
                                             const nlohmann::json *bindings) {
     auto result = nlohmann::json::array();
-    if (!feature.is_object()) return result;
-    const auto stringOf = [](const nlohmann::json &value) {
-        if (value.is_string()) return value.get<std::string>();
-        if (value.is_object() && value.contains("target") && value.at("target").is_string())
-            return value.at("target").get<std::string>();
-        return std::string{};
-    };
+    if (!authored_feature.is_object()) return result;
+    // RC-3b: a document the caller read is a boundary: the feature in the
+    // normal form (RenderJson) from here on.
+    const auto feature = normalizeRenderFeatureJson(authored_feature);
     std::unordered_set<std::string> own;
-    for (const auto *key : {"render_targets", "buffers"}) {
-        const auto declared = feature.find(key);
-        if (declared == feature.end() || !declared->is_array()) continue;
+    if (const auto declared = feature.find("render_targets"); declared != feature.end() && declared->is_array())
         for (const auto &entry : *declared)
             if (entry.is_object() && entry.contains("name") && entry.at("name").is_string())
                 own.insert(entry.at("name").get<std::string>());
-    }
+    for (auto &buffer : RenderJson::bufferNames(feature)) own.insert(std::move(buffer));
     std::unordered_map<std::string, const nlohmann::json *> parameters;
     if (const auto declared = feature.find("parameters"); declared != feature.end() && declared->is_object())
         if (const auto targets = declared->find("render_targets"); targets != declared->end() && targets->is_array())
@@ -4408,24 +4309,9 @@ nlohmann::json renderFeatureRequiredTargets(const nlohmann::json &feature, bool 
         for (const auto &entry : *passes) {
             if (!entry.is_object()) continue;
             const auto &pass = entry.contains("pass") && entry.at("pass").is_object() ? entry.at("pass") : entry;
-            if (const auto output = pass.find("output"); output != pass.end() && output->is_object()) {
-                if (const auto color = output->find("color"); color != output->end()) {
-                    if (color->is_array()) {
-                        for (const auto &target : *color) note(stringOf(target), "COLOR_ATTACHMENT", nullptr);
-                    } else {
-                        note(stringOf(*color), "COLOR_ATTACHMENT", nullptr);
-                    }
-                }
-                if (const auto depth = output->find("depth"); depth != output->end())
-                    note(stringOf(*depth), "DEPTH_STENCIL_ATTACHMENT", nullptr);
-            }
-            if (const auto input = pass.find("input"); input != pass.end()) {
-                if (input->is_array()) {
-                    for (const auto &target : *input) note(stringOf(target), "SAMPLED", nullptr);
-                } else {
-                    note(stringOf(*input), "SAMPLED", nullptr);
-                }
-            }
+            for (auto &target : RenderJson::colorTargets(pass)) note(std::move(target), "COLOR_ATTACHMENT", nullptr);
+            if (auto depth = RenderJson::depthTarget(pass)) note(std::move(*depth), "DEPTH_STENCIL_ATTACHMENT", nullptr);
+            for (auto &target : RenderJson::names(pass, "input")) note(std::move(target), "SAMPLED", nullptr);
         }
     }
     if (const auto overrides = feature.find("render_target_overrides");

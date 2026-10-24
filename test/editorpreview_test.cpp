@@ -156,7 +156,8 @@ TEST_CASE("WP172 preview graph is a third startup program with an exclusion poli
     auto retained_terminal = first.composed_config;
     retained_terminal.at("rendering_passes").at(0).at("passes").push_back(
         {{"name", "taa_present"}, {"type", "fullscreen"},
-         {"output", {{"color", "preview_capture"}, {"depth", nullptr}}}});
+         // RC-3b: the composed config's attachments are in the normal form.
+         {"output", {{"color", Json::array({Json{{"target", "preview_capture"}}})}, {"depth", nullptr}}}});
     REQUIRE_NOTHROW(validateGraphVariantConfig(
         first.graph_variant_policy, retained_terminal));
 

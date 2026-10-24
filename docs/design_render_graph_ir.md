@@ -173,13 +173,16 @@ NodeIR {
 | 段 | 内容 | 受け入れ |
 |---|---|---|
 | RC-3a 語彙 | §4 の format の表、usage、load / store(既定と優先順)、`Extent2D`、`RenderResolutionDomain`、gpu draw の宣言、buffer / compute の大きさ(uint64)を project に。写しの enum を統合。core は写像 | 全 GPU golden・headless・Studio シナリオが緑(挙動不変)。dump の format の綴りの変更だけ fixture を更新 |
-| RC-3b 正規化 | §2.1 を全ての入口に。内部 generator を正規形に。target 参照の読みと書き換えを 1 組の helper に | 短縮形を root・feature・provider 応答のそれぞれに置いた project を本番の loader で読み、**解決した writer → reader の対応・FramePlan の順・出力先(swapchain → display、HDR の中間資源、`$dst` の parameter 先)が期待値どおり**。対照: 正規化を外すと、同じ入力が所定の名前付きコードで断られる |
+| RC-3b 正規化(**済み**: 70aa7c0b1 / afd204203) | §2.1 を全ての入口に。内部 generator を正規形に。target 参照の読みと書き換えを 1 組の helper に | 短縮形を root・feature・provider 応答のそれぞれに置いた project を本番の loader で読み、**解決した writer → reader の対応・FramePlan の順・出力先(swapchain → display、HDR の中間資源、`$dst` の parameter 先)が期待値どおり**。対照: 正規化を外すと、同じ入力が所定の名前付きコードで断られる |
 | RC-3c1 IR と計画 | `parseRenderGraph`(§2.2、§2.3)、provider の改訂ごとの IR の引き継ぎ、`finalizeRenderGraph`、FramePlan・論理 graph を IR から(project)。core の計画用 parse と部分読みを削る | 本番の registration を通して、`parseRenderGraph` の呼び出し回数 == 完成した graph の改訂の数(transform 1 個なら 2)。provider が足した node を `frame_node_order` が指せる。拒否は入力ごとにコードと対象名を検査。golden・headless 緑 |
 | RC-3c2 資源と registration | §2.4、資源の検査の純ロジック化、registration を確定 IR + 資源の記述から(実行用 parse を削り、normalized JSON を保持しない)、§2.5 の material の検査 | XR の外部 depth を足した 2 variant と、片方の variant に無い alias member を持つ構成で、**検査と GPU 登録が消費した format・usage・extent・samples・layers・alias group が期待値(usage の和集合、layers の最大、group の解除)どおり**。対照: 統合の各規則を外すと、その具体的な値の欠落が検出される。shadow の light 数を変えた時の layers の検査が効く。ここで「1 改訂 1 parse」が完成 |
 | RC-3d 順序 | §2.6。物理計画は FramePlan の順を入力に、scope ↔ node の対応を前計算、`frameNodeDependencies` を削る | 融合 scope + 2 view の構成で、実際の呼び出し列が A₀→B₀→A₁→B₁、scope を展開した node 順が FramePlan と一致。対照: 物理計画に別の順を渡すと静的検査が名前付きで断る |
 | RC-3e Studio | §2.9 | 正常な編集が公開される / 不正な候補は名前付きで断られ公開中の generation が変わらない / **compose で失敗する文書(存在しない node を指す `snapshots[].after` など)と IR で失敗する文書の両方**で原文・digest が取れ、直して保存できる、を同じ test で |
 | (後) | 変わっていない部分の再 compile を省く、窓の大きさの変更で全段に入らない | — |
 
+- RC-3b で決まった細部: 入口は `lowerAuthoringDocument` と `composeRenderFeatureConfig` の先頭(lowering の前。core の `loadRenderingPassConfigJsonFromString` には置かない)・preset・feature の読み込み・graph の lower の結果で、ImGui・template・canvas ship・fallback の root は正規形を直接書き、合成の出口で `requireNormalizedRenderingJson`。core の parser は短縮形を受けたまま(RC-3c で置き換わる)。
+- provider の応答(graph transform / subgraph replacement / render strategy)は `normalizeProviderRenderingJson`(正規化してから検査)。入力側も正規化する(graph transform は最初の要求の前、subgraph は要求の前、strategy は seed。identity の strategy で fingerprint が揃う)。
+- Studio の feature 一覧(`list_render_features`)は読んだ feature を正規化し、読めない文書に `document_error: {code, detail}` か `{message}` を付ける(Studio はまだ読まない)。folded pass の色の行は attachment object の `target` を読む(afd204203)。
 - RC-3a と RC-3b は独立(並行可)。RC-3c1 は両方の後、RC-3c2 は 3c1 の後。RC-3d・3e は 3c2 の後。
 - PF-3 は RC-3c1 の後(`shape` と `uses[].footprint`)。PSN-2 以降は IR の `info` に足す。
 

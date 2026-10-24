@@ -2,6 +2,7 @@
 
 #if PELICAN_WITH_CANVAS
 #include "canvas/canvaslowering.hpp"
+#include "renderingjsonnormalize.hpp"
 #endif
 
 #include <fstream>
@@ -121,9 +122,12 @@ AuthoringLoweringContext projectFileLoweringContext(
     }};
 }
 
-AuthoringLowering lowerAuthoringDocument(const nlohmann::json &graph_document,
+AuthoringLowering lowerAuthoringDocument(const nlohmann::json &authored_document,
                                          const AuthoringLoweringContext &context) {
     AuthoringLowering result;
+    // RC-3b: the root's passes in the normal form before any lowering reads
+    // them (canvas's rendering inputs here, the graph's in the composition).
+    const auto graph_document = normalizeRenderingJson(authored_document);
 #if PELICAN_WITH_CANVAS
     // pelican.canvas: one directory per shader pair (and per glyph atlas)
     // under the project's own metadata, so a pair's compile cache key never

@@ -6,6 +6,7 @@
 #include "rendertargetjsonparser.hpp"
 #include "../../project/logicalrendertype.hpp"
 #include "../../project/renderpipeline.hpp"
+#include "../../project/renderingjsonnormalize.hpp"
 #include "../../project/stablefingerprint.hpp"
 
 #include <algorithm>
@@ -1214,6 +1215,13 @@ resolveLogicalGraphTransforms(
     for (std::size_t index = 0;
          index < requests.size(); ++index) {
         const auto &request = requests[index];
+        // RC-3b: the provider reads, and its response is compared with, the
+        // normal form (the composition hands it that already; a direct
+        // caller's short forms are normalized here once).
+        if (index == 0) {
+            result.config = normalizeRenderingJson(
+                std::move(result.config));
+        }
         const auto before =
             compileConfigState(result.config);
         const auto contract =
@@ -1262,6 +1270,10 @@ resolveLogicalGraphTransforms(
                 "' reintroduced reserved graph_transforms "
                 "control data");
         }
+        // RC-3b: the provider's response is a boundary of the rendering
+        // JSON: normalized, then held to the normal form before the core
+        // reads it (the core parser would take the short forms too).
+        candidate = normalizeProviderRenderingJson(std::move(candidate));
         requireSameProtectedStructure(
             result.config, candidate,
             request.name);

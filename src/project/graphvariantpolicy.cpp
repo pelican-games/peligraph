@@ -1,6 +1,7 @@
 #include "graphvariantpolicy.hpp"
 
 #include "featurecompose.hpp"
+#include "renderingjsonnormalize.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -248,37 +249,20 @@ bool knownXrExcludedFeature(std::string_view name) {
 }
 #endif
 
+// RC-3b: the lists and attachments below are read in the normal form
+// (RenderJson).
 bool hasHistoryInput(const nlohmann::json &pass) {
-    if (!pass.contains("input")) return false;
-    const auto is_history = [](const nlohmann::json &value) {
-        return value.is_string() &&
-               value.get_ref<const std::string &>().ends_with(
-                   "@history");
-    };
-    const auto &inputs = pass.at("input");
-    return is_history(inputs) ||
-           (inputs.is_array() &&
-            std::any_of(inputs.begin(), inputs.end(), is_history));
+    const auto inputs = RenderJson::names(pass, "input");
+    return std::any_of(inputs.begin(), inputs.end(), [](const std::string &name) {
+        return name.ends_with("@history");
+    });
 }
 
 bool outputsRequestLocalTerminal(const nlohmann::json &pass) {
-    if (!pass.contains("output") ||
-        !pass.at("output").is_object() ||
-        !pass.at("output").contains("color")) {
-        return false;
-    }
-    const auto is_request_local =
-        [](const nlohmann::json &value) {
-            if (!value.is_string()) return false;
-            const auto &name =
-                value.get_ref<const std::string &>();
-            return name == "preview_capture" || name == "display";
-        };
-    const auto &color = pass.at("output").at("color");
-    return is_request_local(color) ||
-           (color.is_array() &&
-            std::any_of(color.begin(), color.end(),
-                        is_request_local));
+    const auto colors = RenderJson::colorTargets(pass);
+    return std::any_of(colors.begin(), colors.end(), [](const std::string &name) {
+        return name == "preview_capture" || name == "display";
+    });
 }
 
 [[noreturn]] void rejectPreviewPass(
@@ -300,18 +284,39 @@ bool outputsRequestLocalTerminal(const nlohmann::json &pass) {
 }
 #endif
 
+// RC-3b: swapchain -> preview_capture where a pass or a task names a target
+// (an attachment's target, an input / reads / writes entry), nowhere else: a
+// shader define spelled `swapchain` stays. Each attachment keeps its
+// subresource and load / store.
 void redirectSwapchainToRequestLocalCapture(
-    nlohmann::json &value) {
-    if (value.is_string() &&
-        value.get_ref<const std::string &>() == "swapchain") {
-        value = "preview_capture";
-        return;
-    }
-    if (value.is_array() || value.is_object()) {
-        for (auto &entry : value) {
-            redirectSwapchainToRequestLocalCapture(entry);
+    nlohmann::json &config) {
+    const RenderJson::TargetRename capture =
+        [](const std::string &target) -> std::optional<std::string> {
+        if (target == "swapchain") return std::string{"preview_capture"};
+        return std::nullopt;
+    };
+    const auto declaration = [&](nlohmann::json &value) {
+        if (!value.is_object()) return;
+        RenderJson::retargetOutputs(value, capture);
+        for (const auto *key : {"input", "reads", "writes"})
+            RenderJson::retargetNames(value, key, capture);
+    };
+    const auto tasks = [&](nlohmann::json &holder) {
+        if (const auto found = holder.find("compute_tasks");
+            found != holder.end() && found->is_array())
+            for (auto &task : *found) declaration(task);
+    };
+    if (const auto families = config.find("rendering_passes");
+        families != config.end() && families->is_array()) {
+        for (auto &family : *families) {
+            if (!family.is_object()) continue;
+            if (const auto passes = family.find("passes");
+                passes != family.end() && passes->is_array())
+                for (auto &pass : *passes) declaration(pass);
+            tasks(family);
         }
     }
+    tasks(config);
 }
 
 void validatePreviewConfig(const nlohmann::json &config) {
@@ -705,37 +710,6 @@ GraphVariantFeatureDecision decideGraphVariantFeature(
 
 namespace {
 
-// The names a JSON value lists: a string, or the strings of an array.
-void forEachListedName(const nlohmann::json &value,
-                       const std::function<void(const std::string &)> &visit) {
-    if (value.is_string()) {
-        visit(value.get_ref<const std::string &>());
-    } else if (value.is_array()) {
-        for (const auto &entry : value) {
-            if (entry.is_string()) {
-                visit(entry.get_ref<const std::string &>());
-            }
-        }
-    }
-}
-
-// Every resource a pass's `input` / `output` names, as a string anywhere
-// under them. A history read ("name@history") names the resource before '@'.
-void forEachResourceName(const nlohmann::json &value,
-                         const std::function<void(const std::string &)> &visit) {
-    if (value.is_string()) {
-        const auto &name = value.get_ref<const std::string &>();
-        const auto at = name.find('@');
-        visit(at == std::string::npos ? name : name.substr(0, at));
-        return;
-    }
-    if (value.is_array() || value.is_object()) {
-        for (const auto &entry : value) {
-            forEachResourceName(entry, visit);
-        }
-    }
-}
-
 // The pass of a feature `passes[]` entry ({insert, pass}); a bare pass object
 // is accepted the same way decideGraphVariantFeature accepts it.
 const nlohmann::json *featurePassOf(const nlohmann::json &entry) {
@@ -815,17 +789,18 @@ void GraphVariantFeatureSelection::carryExcluded(
             }
         }
     }
-    for (const std::string_view field :
-         {std::string_view{"render_targets"},
-          std::string_view{"buffers"}}) {
-        if (const auto *resources = arrayField(feature, field)) {
-            for (const auto &resource : *resources) {
-                if (resource.is_object()) {
-                    keep(excluded_resources_,
-                         resource.value("name", std::string{}));
-                }
+    if (const auto *resources = arrayField(feature, "render_targets")) {
+        for (const auto &resource : *resources) {
+            if (resource.is_object()) {
+                keep(excluded_resources_,
+                     resource.value("name", std::string{}));
             }
         }
+    }
+    // RC-3b: the buffers in the normal form (a string entry is an object
+    // after normalizeRenderingJson).
+    for (const auto &buffer : RenderJson::bufferNames(feature)) {
+        keep(excluded_resources_, buffer);
     }
 }
 
@@ -852,20 +827,25 @@ const std::string *GraphVariantFeatureSelection::usedExcludedFeature(
     };
     // A graph node of this feature: its explicit edges and what it reads and
     // writes.
+    // RC-3b: in the normal form (RenderJson); a task's reads and writes
+    // name resources as a pass's input and output do.
     const auto node = [&](const nlohmann::json &pass) {
-        for (const std::string_view edge :
-             {std::string_view{"after"}, std::string_view{"before"}}) {
-            if (const auto found = pass.find(std::string{edge});
-                found != pass.end()) {
-                forEachListedName(*found, pass_named);
+        for (const auto *edge : {"after", "before"}) {
+            for (const auto &name : RenderJson::names(pass, edge)) {
+                pass_named(name);
             }
         }
-        for (const std::string_view field :
-             {std::string_view{"input"}, std::string_view{"output"}}) {
-            if (const auto found = pass.find(std::string{field});
-                found != pass.end()) {
-                forEachResourceName(*found, resource_named);
+        const auto resource = [&](const std::string &name) {
+            const auto at = name.find('@');
+            resource_named(at == std::string::npos ? name : name.substr(0, at));
+        };
+        for (const auto *field : {"input", "reads", "writes"}) {
+            for (const auto &name : RenderJson::names(pass, field)) {
+                resource(name);
             }
+        }
+        for (const auto &name : RenderJson::outputTargets(pass)) {
+            resource(name);
         }
     };
     if (const auto *passes = arrayField(feature, "passes")) {

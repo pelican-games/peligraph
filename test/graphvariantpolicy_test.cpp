@@ -1,6 +1,7 @@
 #include "../src/project/graphvariantpolicy.hpp"
 #include "render_graph_root_test_support.hpp"
 #include "../src/project/renderpipeline.hpp"
+#include "../src/project/renderingjsonnormalize.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -26,8 +27,10 @@ Json feature(std::string name) {
     };
 }
 
+// RC-3b: what the variant rewrite reads is the composed config, in the
+// normal form.
 Json baseConfig(std::vector<std::string> features = {}) {
-    return {
+    return normalizeRenderingJson(Json{
         {"features", std::move(features)},
         {"render_targets", Json::array()},
         {"rendering_passes",
@@ -48,7 +51,7 @@ Json baseConfig(std::vector<std::string> features = {}) {
                   })},
              },
          })},
-    };
+    });
 }
 
 } // namespace

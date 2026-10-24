@@ -425,7 +425,7 @@ std::string renderPipelineFallbackConfigJson(
         {"type", "fullscreen"},
         {"input", nlohmann::json::array()},
         {"output",
-         {{"color", nlohmann::json::array({"display"})},
+         {{"color", nlohmann::json::array({nlohmann::json{{"target", "display"}}})},
           {"depth", nullptr}}},
         {"shader",
          {{"vertex", "engine://fullscreen"},

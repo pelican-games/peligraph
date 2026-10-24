@@ -157,7 +157,8 @@ string(JSON pass_name GET "${blank_config}" rendering rendering_passes 0 passes 
 string(JSON pass_type GET "${blank_config}" rendering rendering_passes 0 passes 0 type)
 string(JSON pass_input_count LENGTH "${blank_config}" rendering rendering_passes 0 passes 0 input)
 string(JSON pass_output_count LENGTH "${blank_config}" rendering rendering_passes 0 passes 0 output color)
-string(JSON pass_output GET "${blank_config}" rendering rendering_passes 0 passes 0 output color 0)
+# RC-3b: the template writes its attachment in the normal form ({target}).
+string(JSON pass_output GET "${blank_config}" rendering rendering_passes 0 passes 0 output color 0 target)
 string(JSON pass_vertex GET "${blank_config}" rendering rendering_passes 0 passes 0 shader vertex)
 string(JSON pass_fragment GET "${blank_config}" rendering rendering_passes 0 passes 0 shader fragment)
 if(NOT pass_name STREQUAL "present" OR NOT pass_type STREQUAL "fullscreen" OR

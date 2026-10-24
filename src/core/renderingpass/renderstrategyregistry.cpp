@@ -3,6 +3,7 @@
 
 #include "providerregistrycommon.hpp"
 #include "../../project/logicalrendertype.hpp"
+#include "../../project/renderingjsonnormalize.hpp"
 #include "../../project/stablefingerprint.hpp"
 
 #include <algorithm>
@@ -765,7 +766,10 @@ ResolvedRenderStrategyConfig resolveRenderStrategy(
         return {.config = config};
     }
 
-    auto seed = config;
+    // RC-3b: the provider reads the normal form (the composition hands it
+    // that already; a direct caller's short forms are normalized here), so
+    // an identity strategy's input and output fingerprints agree.
+    auto seed = normalizeRenderingJson(config);
     seed.erase("render_strategy");
     // Target/physical compiler controls belong to lower layers. They must
     // survive a renderer-wide strategy expansion, but including them in the
@@ -836,6 +840,9 @@ ResolvedRenderStrategyConfig resolveRenderStrategy(
                 field);
         }
     }
+    // RC-3b: the provider's response is a boundary of the rendering JSON.
+    // The fingerprint below is of the normalized config.
+    candidate = normalizeProviderRenderingJson(std::move(candidate));
     const auto canonical_candidate =
         canonicalJson(candidate);
     if (canonical_candidate.size() >

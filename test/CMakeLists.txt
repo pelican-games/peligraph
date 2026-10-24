@@ -3605,6 +3605,11 @@ pelican_define_test(renderconfigtransactionreplace_test GROUP render_pipeline
                     pelican_core)
 
 pelican_define_test(renderpipeline_resolve_test GROUP render_pipeline pelican_core)
+# RC-3b: the rendering JSON's normal form at every boundary.
+pelican_define_test(renderingjsonnormalize_test GROUP render_pipeline pelican_core)
+target_compile_definitions(pelican_test_renderingjsonnormalize_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
 pelican_define_test(rendercompilerprogram_test GROUP render_pipeline pelican_core)
 target_compile_definitions(pelican_test_rendercompilerprogram_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"

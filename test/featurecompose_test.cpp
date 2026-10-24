@@ -55,6 +55,15 @@ namespace Pelican {
 
 namespace {
 
+// RC-3b: the composed config writes attachments in the normal form
+// (renderingjsonnormalize.hpp): {"target": name}, color as a list.
+nlohmann::json rc3bAttachment(const std::string &target) { return nlohmann::json{{"target", target}}; }
+nlohmann::json rc3bColors(std::initializer_list<std::string> targets) {
+    auto colors = nlohmann::json::array();
+    for (const auto &target : targets) colors.push_back(rc3bAttachment(target));
+    return colors;
+}
+
 std::filesystem::path fixtureRoot() {
     return std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" / "fixtures" / "render_features";
 }
@@ -1332,7 +1341,7 @@ TEST_CASE(
             nlohmann::json::array(
                 {"gbuffer_worldpos", "gbuffer_normal"}));
     REQUIRE(pass.at("output").at("color") ==
-            "rt_shadow_mask");
+            rc3bColors({"rt_shadow_mask"}));
     const auto &required =
         enabled.config.at("target_planning")
             .at("graphs")
@@ -1647,7 +1656,7 @@ TEST_CASE(
                   {"address",
                    "clamp_to_edge"}}}));
     REQUIRE(pass.at("output").at("color") ==
-            nlohmann::json::array(
+            rc3bColors(
                 {"lit_color"}));
     REQUIRE(pass.at("color_load_op") ==
             "load");
@@ -2262,12 +2271,12 @@ TEST_CASE(
     REQUIRE(
         forward_capture.at("output")
             .at("color") ==
-        nlohmann::json::array(
+        rc3bColors(
             {"planar_reflection_color"}));
     REQUIRE(
         forward_capture.at("output")
             .at("depth") ==
-        "planar_reflection_depth");
+        rc3bAttachment("planar_reflection_depth"));
     REQUIRE(
         forward_capture.at(
             "color_load_op") ==
@@ -2831,7 +2840,7 @@ TEST_CASE(
             "cube_capture_lighting")
             .at("output")
             .at("color") ==
-        nlohmann::json::array({
+        rc3bColors({
             "cube_capture_color"}));
     REQUIRE(
         passByName(
@@ -3501,7 +3510,7 @@ TEST_CASE("gizmo feature owns a purgeable output overlay pass",
         });
     REQUIRE(gizmo != passes.end());
     REQUIRE(gizmo->at("type") == "gizmo");
-    REQUIRE(gizmo->at("output").at("color") == "display");
+    REQUIRE(gizmo->at("output").at("color") == rc3bColors({"display"}));
     REQUIRE(gizmo->at("color_load_op") == "load");
     REQUIRE(debug_text != passes.end());
     REQUIRE(gizmo < debug_text);
@@ -3592,10 +3601,10 @@ TEST_CASE("bundled TAA composes into the example pipeline as a two-pass history 
     const auto &resolve = passByName(result.config, "taa_resolve");
     REQUIRE(resolve.at("input") == nlohmann::json::array(
         {"lit_color", "velocity", "offscreen_depth", "taa_accum@history"}));
-    REQUIRE(resolve.at("output").at("color") == "taa_accum");
+    REQUIRE(resolve.at("output").at("color") == rc3bColors({"taa_accum"}));
     const auto &composite = passByName(result.config, "taa_composite");
     REQUIRE(composite.at("input") == nlohmann::json::array({"taa_accum"}));
-    REQUIRE(composite.at("output").at("color") == "lit_color");
+    REQUIRE(composite.at("output").at("color") == rc3bColors({"lit_color"}));
 
     const auto &targets = result.config.at("render_targets");
     const auto depth = std::find_if(targets.begin(), targets.end(), [](const auto &target) {
@@ -3714,7 +3723,7 @@ TEST_CASE("shadow directional feature inserts depth pass and lighting dependency
             .at("cascade_count") == 1);
 
     const auto &shadow_pass = passByName(result.config, "shadow_depth");
-    REQUIRE(shadow_pass.at("output").at("depth").get<std::string>() == "shadow_map");
+    REQUIRE(shadow_pass.at("output").at("depth").at("target").get<std::string>() == "shadow_map");
     REQUIRE(shadow_pass.at("depth_store_op").get<std::string>() == "store");
 
     const auto &lighting_pass = passByName(result.config, "lighting_pass");
@@ -4034,7 +4043,7 @@ TEST_CASE("named render-target binding resolves pass IO history and override key
             {"destination", "bound_output"}, {"source", source}});
         const auto &pass = passByName(result.config, "bound_temporal_pass");
         REQUIRE(pass.at("input").at(0) == source + std::string{"@history"});
-        REQUIRE(pass.at("output").at("color") == "bound_output");
+        REQUIRE(pass.at("output").at("color") == rc3bColors({"bound_output"}));
         const auto target = std::find_if(
             result.config.at("render_targets").begin(), result.config.at("render_targets").end(),
             [&](const auto &entry) { return entry.value("name", std::string{}) == source; });
@@ -4871,7 +4880,7 @@ TEST_CASE("common graphics ports retain shaders and order attachment consumers",
         }
         REQUIRE(pass.at("name") == "draw");
         REQUIRE(pass.at("shader").at("fragment") == "project://custom");
-        REQUIRE(pass.at("output").at("color") == Json::array({"image"}));
+        REQUIRE(pass.at("output").at("color") == rc3bColors({"image"}));
         REQUIRE(pass.at("resource_ports").at("source").at("resource") == "data");
         REQUIRE(computeTaskByName(config, "consume").at("after") == Json::array({"draw"}));
         auto planning = config;
@@ -5048,8 +5057,8 @@ TEST_CASE("LP-0a render.target_ref reads and writes targets declared outside the
         const auto &blit = passByName(config, "blit");
         CHECK(blit.at("input") == Json::array({"lit_color"}));
         CHECK(blit.at("resource_ports").at("source").at("resource") == "lit_color");
-        CHECK(blit.at("output").at("color") == Json::array({"copy"}));
-        CHECK(passByName(config, "paint").at("output").at("color") == Json::array({"Bloom_Threshold_RT"}));
+        CHECK(blit.at("output").at("color") == rc3bColors({"copy"}));
+        CHECK(passByName(config, "paint").at("output").at("color") == rc3bColors({"Bloom_Threshold_RT"}));
         // Connected straight to a reference, the pass waits for no graph node.
         INFO(blit.dump());
         for (const auto &name : blit.value("after", Json::array())) {
@@ -5587,7 +5596,7 @@ TEST_CASE("LP-1a a range loop copies its body per element into passes and target
         const auto prefix = "steps/" + std::to_string(element) + "/";
         expected_passes.push_back(prefix + "fill");
         const auto &pass = passByName(config, prefix + "fill");
-        CHECK(pass.at("output").at("color") == Json::array({prefix + "image"}));
+        CHECK(pass.at("output").at("color") == rc3bColors({prefix + "image"}));
         CHECK(std::count_if(config.at("render_targets").begin(), config.at("render_targets").end(),
                             [&](const Json &target) { return target.at("name") == prefix + "image"; }) == 1);
     }
@@ -6547,7 +6556,7 @@ TEST_CASE("LP-1b a per-element input reads another loop's element, as bloom's up
         // It draws into the down step of its own element, and reads the one
         // below: the first up step reads down's last, the others what the
         // up step before them drew.
-        CHECK(passByName(config, name).at("output").at("color") == Json::array({own}));
+        CHECK(passByName(config, name).at("output").at("color") == rc3bColors({own}));
         CHECK(lp1bSource(config, name) == below);
         CHECK(lp0bListed(passByName(config, name).at("after"), "down/" + std::to_string(element) + "/step"));
     }
@@ -7408,7 +7417,7 @@ TEST_CASE("LP-0e a loop of render.shadow_depth selects one cascade per element i
         CHECK(pass.at("type") == "shadow_depth");
         CHECK(pass.at("view_family") == "$shadow/directional");
         CHECK(pass.at("view_select") == Json{{"cascade", element}});
-        CHECK(pass.at("output") == Json{{"color", nullptr}, {"depth", "shadow_map"}});
+        CHECK(pass.at("output") == Json{{"color", Json::array()}, {"depth", rc3bAttachment("shadow_map")}});
         CHECK(lp0bIndex(declared, name) == slot + element);
     }
     CHECK(lp0dContract(composed.surface_resource_contracts, "directional_shadow").at("producer") ==
@@ -8964,7 +8973,7 @@ TEST_CASE("RS-4 a graph pass hands on the images it wrote as output ports",
         CHECK(lp0bListed(tone.at("after"), "forward"));
         CHECK(lp0bListed(tone.at("input"), "scene_color"));
         CHECK(passByName(composed.config, "forward").at("output") ==
-              Json{{"color", Json::array({"scene_color"})}, {"depth", "scene_depth"}});
+              Json{{"color", rc3bColors({"scene_color"})}, {"depth", rc3bAttachment("scene_depth")}});
         const auto declared = lp0bDeclared(composed.config);
         CHECK(lp0bIndex(declared, "forward") < lp0bIndex(declared, "tone"));
         CHECK(lp0bIndex(declared, "forward") < lp0bIndex(declared, "present"));
@@ -9338,7 +9347,7 @@ TEST_CASE("RS-9 a render node without the parameters its op requires is refused 
     const auto composed = lp0aCompose(document);
     const auto &cast = passByName(composed.config, "cast");
     CHECK(cast.at("type") == "shadow_depth");
-    CHECK(cast.at("output").at("depth") == "cast_depth");
+    CHECK(cast.at("output").at("depth") == rc3bAttachment("cast_depth"));
     REQUIRE_NOTHROW(compileComposition(composed));
 }
 
