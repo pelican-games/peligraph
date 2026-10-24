@@ -1154,7 +1154,7 @@ Graph で組んだ pipeline に feature や snapshot を足したときの拒否
 - **挿入先の拒否**: `insertPassByAnchor()` は feature 名と文書の参照を受けるようになり、`findRenderPassAnchorMatches()` が 0 件のとき `feature.insertion_anchor_missing@1` `{feature, anchor, candidates, document}` を投げます([投げる所 FR-2](../../src/project/featurecompose.cpp#L2379))。`candidates` は [`insertionCandidatesOf()`](../../src/project/featurecompose.cpp#L2336) で、その時点の config の全 family の pass(anchor は anchor 名)を順に集め、`findRenderPassAnchorMatches()` がちょうど 1 件になる名前だけを残します。2 件以上は今までどおり code の無い `ambiguous` です。
 - **snapshot の `after`**: `materializeSnapshots()` は、copy を挿す前に候補を `snapshotAfterCandidatesOf()`([候補の本体](../../src/project/featurecompose.cpp#L559))で読み、family に `after` の node が無いと `snapshot.after_unknown@1` `{snapshot, after, resolved?, candidates}` を投げます([投げる所 FR-1 snapshot](../../src/project/featurecompose.cpp#L654))。あわせて copy の `snapshot_after` を、anchor のときは `__anchor_<anchor>` にしました([書く所 FR-1 snapshot](../../src/project/featurecompose.cpp#L677))。前は anchor の素の名前を書いていて、その名前の frame node が無いので実行計画(`pelican.dependency.snapshot_after@1` の依存)が断っていました。`materializeSnapshots()` は合成で 1 回だけ、pipeline の作り方を見ずに呼ばれるので、この不具合は anchor 名を書いたどの pipeline にもありました。
 
-3 つの code の定義と fields の注記は [`featurecompose.hpp` の FR-1 / FR-2 の code](../../src/project/featurecompose.hpp#L182) の周りです。同じ FR-1 で、`render.target_ref` の型の食い違い `graph.target_ref_type_mismatch@1` に `expected: {type, layers?}` が付きました([`expectedTargetRefType()`](../../src/project/rendergraphcomposition.cpp#L1433))。kind が合えば書いた型の topology を target のものに替え、合わなければ depth か legacy の型にし、`two_d_array` なら `layers` を付けます。
+3 つの code の定義と fields の注記は [`featurecompose.hpp` の FR-1 / FR-2 の code](../../src/project/featurecompose.hpp#L182) の周りです。同じ FR-1 で、`render.target_ref` の型の食い違い `graph.target_ref_type_mismatch@1` に `expected: {type, layers?}` が付きました([`expectedTargetRefType()`](../../src/project/rendergraphcomposition.cpp#L1436))。kind が合えば書いた型の topology を target のものに替え、合わなければ depth か legacy の型にし、`two_d_array` なら `layers` を付けます。
 
 RPC 側は 2 か所だけです。`listRenderFeatures()` は catalog の各 entry の文書を読み(`engine://` は engine resource、それ以外は `resolve_document_path`)、2 つの関数の結果を `required_targets` / `insertion` に入れます。読めなければどちらも `[]` です([足す所 FR-1 / FR-2](../../src/core/communication/renderconfigeditor.cpp#L1568))。`getRenderAuthoringContext()` は解決した config から `snapshot_after_candidates` を入れます([足す所 FR-1 context](../../src/core/communication/renderconfigeditor.cpp#L3499))。
 
@@ -1176,7 +1176,7 @@ test: `renderconfigeditor_test` の [「FR-3 a feature's target that no pass wri
 
 FR-1 / FR-2 の `featurecompose_test` は、宣言だけでなく前の pass の `output.depth` を `scene_depth` にして通す形に書き換えました(FR-1 の test は、宣言と target_ref だけでは候補が空の `feature.required_target_unwritten@1` になることも見ます)。RPC の `edit_batch` は第7章の編集系の表です。
 
-test: `featurecompose_test` の [「FR-1 a feature names the targets it leaves to the pipeline and is refused by name without one」](../../test/featurecompose_test.cpp#L10070)・[「FR-1 a snapshot after a name the pipeline lacks is refused with the names it takes」](../../test/featurecompose_test.cpp#L10182)・[「FR-1 a target_ref whose type contradicts its target is told the type to write」](../../test/featurecompose_test.cpp#L10226)・[「FR-2 a feature inserted after a pass the pipeline lacks is refused with the names it takes」](../../test/featurecompose_test.cpp#L10268)。
+test: `featurecompose_test` の [「FR-1 a feature names the targets it leaves to the pipeline and is refused by name without one」](../../test/featurecompose_test.cpp#L10074)・[「FR-1 a snapshot after a name the pipeline lacks is refused with the names it takes」](../../test/featurecompose_test.cpp#L10186)・[「FR-1 a target_ref whose type contradicts its target is told the type to write」](../../test/featurecompose_test.cpp#L10230)・[「FR-2 a feature inserted after a pass the pipeline lacks is refused with the names it takes」](../../test/featurecompose_test.cpp#L10272)。
 
 RPC の道は `renderconfigeditor_test` の FR-1 / FR-2 の 2 本です。
 
@@ -1705,7 +1705,7 @@ P-2a-4b までは、`rendering` 相当の中身を最上位に直接書く **leg
 
 **包む関数はもうありません。** P-2a-4b では `wrapLegacyRenderingConfig()` が5キーを付けて legacy 設定を `rendering` へ入れる唯一の場所でしたが、読み手が graph root しか受けなくなったので MG-2b で撤去されました。雛形の [`rendering_config_json`](../../src/project/projecttemplate.cpp#L199) と [`blank_rendering_config_json`](../../src/project/projecttemplate.cpp#L228) は graph root の全文を直接書いています(blank の `present` の fragment は VI-2 から `engine://passthrough` で、雛形は shader を書きません)。
 
-**`rendering` 節には `buffers` / `compute_tasks` を書けません。** graph root の lowering（[`lowerRenderGraphDocument()`](../../src/project/rendergraphcomposition.cpp#L1403)）が、この2つを graph node（`render.buffer` / `render.compute`）の接続から作るため、節にあれば `render graph derives field from connections: <key>` で拒否します。この規則は MG-2b より前からあります。legacy root には lowering が無かったので根に書けましたが、legacy root が無くなったことでその書き方も無くなりました。テストで根に宣言していたものは task feature へ移されています。エディタの「root scope で compute_tasks / buffers を編集する」経路はこれで到達不能になり、後の掃除の WP（台帳の MG-3）に回っています。
+**`rendering` 節には `buffers` / `compute_tasks` を書けません。** graph root の lowering（[`lowerRenderGraphDocument()`](../../src/project/rendergraphcomposition.cpp#L1406)）が、この2つを graph node（`render.buffer` / `render.compute`）の接続から作るため、節にあれば `render graph derives field from connections: <key>` で拒否します。この規則は MG-2b より前からあります。legacy root には lowering が無かったので根に書けましたが、legacy root が無くなったことでその書き方も無くなりました。テストで根に宣言していたものは task feature へ移されています。エディタの「root scope で compute_tasks / buffers を編集する」経路はこれで到達不能になり、後の掃除の WP（台帳の MG-3）に回っています。
 
 編集側の唯一の書き手は [`AuthoredRenderConfigDocument::withSectionValue()`](../../src/project/renderconfigdocument.cpp#L755) で、graph root 自身の5キー（`schema` / `version` / `definitions` / `nodes` / `outputs`）と editor の `layout` は根へ、それ以外は `rendering.<key>` へ書きます。この関数はJSONを組み直さず、元のバイト列の中で該当メンバの範囲を差し替えます（[`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L309)）。理由は digest がファイル全体のバイト列に対して取られるためで、詳細は[第6章](06_rendering_vulkan_shader.md)にあります。
 
@@ -1775,7 +1775,7 @@ instance / ループの供給 port、削除した境界入力、definition の�
 
 `graph.loop`(書き方の正は manual 第6章 §6.18)は `graph.instance` と同じ構造の node で、処理が 2 つの段に分かれます。**形の検査は展開器**([`expandGraphDocument()`](../../src/project/graphcomposition.cpp#L1148) の中のループの展開)が編集と読み込みのたびに行い、各分岐の body を `<loop>/$<branch>/` の名前で 1 回だけ**雛形**として展開します(port の型の検査のため)。
 
-**回ごとの複写は合成の後**で、preset と feature の合成が済んでから [`resolveGraphDocumentAfterComposition()`](../../src/project/rendergraphcomposition.cpp#L1560) が [`expandRenderGraphLoops()`](../../src/project/rendergraphcomposition.cpp#L2246) を呼び、雛形の名前 `<loop>/$<branch>/` を `<loop>/<element>/` へ付け替えます。lowering はそのために、合成の後で使うもの(target の参照、history の読み、置き場所待ちの run、ループの body、ループの出力を読む側、draw_loop)を [`LoweredRenderGraphDocument`](../../src/project/rendergraphcomposition.hpp#L200) に残します。
+**回ごとの複写は合成の後**で、preset と feature の合成が済んでから [`resolveGraphDocumentAfterComposition()`](../../src/project/rendergraphcomposition.cpp#L1563) が [`expandRenderGraphLoops()`](../../src/project/rendergraphcomposition.cpp#L2249) を呼び、雛形の名前 `<loop>/$<branch>/` を `<loop>/<element>/` へ付け替えます。lowering はそのために、合成の後で使うもの(target の参照、history の読み、置き場所待ちの run、ループの body、ループの出力を読む側、draw_loop)を [`LoweredRenderGraphDocument`](../../src/project/rendergraphcomposition.hpp#L200) に残します。
 
 | ファイル | 持ち物 |
 |---|---|
@@ -1793,15 +1793,15 @@ instance / ループの供給 port、削除した境界入力、definition の�
 - (1) graph の lowering(`pass_set` の既定は [`defaultGraphPassFamily()`](../../src/project/featurecompose.cpp#L3439))→
 - (2) `insert.declared` の run を宣言の列へ置く →
 - (3) feature・integration の合成 →
-- (4) 変種で外れる feature に依存する node を外す([`withoutExcludedGraphDependents()`](../../src/project/rendergraphcomposition.cpp#L2678))→
+- (4) 変種で外れる feature に依存する node を外す([`withoutExcludedGraphDependents()`](../../src/project/rendergraphcomposition.cpp#L2681))→
 - (5) 残りの run を置く →
 - (6) surface resources の consumer の選択と snapshot →
-- (7) 解決の段(target の参照の検査 → ループの展開 → draw_loop の報告 → [`applyRenderFeaturePassReplacements()`](../../src/project/rendergraphcomposition.cpp#L2860))→
+- (7) 解決の段(target の参照の検査 → ループの展開 → draw_loop の報告 → [`applyRenderFeaturePassReplacements()`](../../src/project/rendergraphcomposition.cpp#L2863))→
 - (8) ループの回の中で consumer を選び直す、です。
 
 run を consumer の選択より前に置くのは graph で書いた material pass が影の map を受けるため(LP-3a)、(8) は置き換えた consumer の代わりの回が受けるため(LP-Vb)です。
 
-**graph の node の出所(✅GL-2a)。**lowering は node が作った pass・compute task の名前ごとに、展開の [`GraphNodeOrigin`](../../src/project/graphcomposition.hpp#L82)(instance path・definition・node・loop・loop branch)を `LoweredRenderGraphDocument::origins` に残します([残す所](../../src/project/rendergraphcomposition.cpp#L1063))。ループの body の node は雛形の id `<loop>/$<branch>/<node>` で残ります。`applyRenderFeaturePassReplacements()` は、置き換え先ごとに置き換えた `{feature, pass}` を `RenderGraphLoopResolution::replacements` に返します(ループでは置き換えた pass と同じ family の回だけ。[返す所](../../src/project/rendergraphcomposition.cpp#L2951))。
+**graph の node の出所(✅GL-2a)。**lowering は node が作った pass・compute task の名前ごとに、展開の [`GraphNodeOrigin`](../../src/project/graphcomposition.hpp#L82)(instance path・definition・node・loop・loop branch)を `LoweredRenderGraphDocument::origins` に残します([残す所](../../src/project/rendergraphcomposition.cpp#L1066))。ループの body の node は雛形の id `<loop>/$<branch>/<node>` で残ります。`applyRenderFeaturePassReplacements()` は、置き換え先ごとに置き換えた `{feature, pass}` を `RenderGraphLoopResolution::replacements` に返します(ループでは置き換えた pass と同じ family の回だけ。[返す所](../../src/project/rendergraphcomposition.cpp#L2954))。
 
 合成は provenance を同期した直後に、この 2 つを [`RenderPassProvenance`](../../src/project/renderpipeline.hpp#L277) の `graph_origin` と `replaces` へ載せます([載せる所](../../src/project/featurecompose.cpp#L4253)):root と instance の宣言は `graph_declarations` にある名前で引き、ループの回は `loop_origin` の `(loop, element)` が選んだ分岐から雛形の id を作って引き、`instance_path` を空にします。feature の provenance は飛ばします。`get_frame_plan` の `origin` / `replaces`(`framePlanToJson()`)と `get_compute_task_authoring` の `graph_node` は、どちらもこの 1 つを読みます(GL-2a の前は、editor が root を展開し直して task 名と突き合わせていました)。
 
@@ -1813,21 +1813,21 @@ run を consumer の選択より前に置くのは graph で書いた material p
 
 `framePlanToJson()` はそれを `fold_decisions` として出し、`appendFramePlanPhysicalNodeReferences()` が `pelican.plan.fold_decision_applied@1` の要素にします(第7章)。editor は同じ `fold_planning` を authoring context に受け([渡す所](../../src/core/communication/editorruntimefactory.cpp#L2293))、EL-2 の `edit_target_planning` の `false` と [`graphFoldDecisionConflict()`](../../src/project/graphfold.hpp#L147) で突き合わせます。文書には展開名を書かないので、写しは組み立てのたびに作り直され、文書には残りません。
 
-**graph の compute task を読む rendering 節の pass(✅RS-6)。**compute task は全 pass の後に宣言されるので、合成は canonical の順と terminal の待ちを明示した後に [`waitOnGraphTasksInScenePasses()`](../../src/project/rendergraphcomposition.cpp#L3131) を呼び([RS-6 を呼ぶ所](../../src/project/featurecompose.cpp#L4216))、graph の task(`graph_declarations` とループの展開の名前で選ぶ。✅RS-6b から `graph_features.feature_passes` に載る feature と integration の task も。[task を選ぶ所](../../src/project/featurecompose.cpp#L4210))が書く render target を、family ごとに最初の canonical anchor より前で読む最初の rendering 節・preset の pass に `after: <task>` を足します。
+**graph の compute task を読む rendering 節の pass(✅RS-6)。**compute task は全 pass の後に宣言されるので、合成は canonical の順と terminal の待ちを明示した後に [`waitOnGraphTasksInScenePasses()`](../../src/project/rendergraphcomposition.cpp#L3134) を呼び([RS-6 を呼ぶ所](../../src/project/featurecompose.cpp#L4216))、graph の task(`graph_declarations` とループの展開の名前で選ぶ。✅RS-6b から `graph_features.feature_passes` に載る feature と integration の task も。[task を選ぶ所](../../src/project/featurecompose.cpp#L4210))が書く render target を、family ごとに最初の canonical anchor より前で読む最初の rendering 節・preset の pass に `after: <task>` を足します。
 
-足すかどうかは、frame planner と同じ順(`after` / `before` と、前に宣言された最後の書き手から読みへ)を family ごとに組んだ [`FamilyOrder`](../../src/project/rendergraphcomposition.cpp#L3078) の到達で決め、書き手がすでに読み手に届くときと、読み手が task に届く(足すと循環になる)ときは足しません。読み手が `input` に挙げる graph の `render.image` には `SAMPLED` を足します(RS-6b から feature の render target も。合成が `resource_provenance` の source が feature の名前を `graph_images` に加えて渡します。[加える所](../../src/project/featurecompose.cpp#L4215))。読み手の候補から feature の pass を外す判定は RS-6 のままなので、feature が `before` / `after` で決めた順は変わりません。
+足すかどうかは、frame planner と同じ順(`after` / `before` と、前に宣言された最後の書き手から読みへ)を family ごとに組んだ [`FamilyOrder`](../../src/project/rendergraphcomposition.cpp#L3081) の到達で決め、書き手がすでに読み手に届くときと、読み手が task に届く(足すと循環になる)ときは足しません。読み手が `input` に挙げる graph の `render.image` には `SAMPLED` を足します(RS-6b から feature の render target も。合成が `resource_provenance` の source が feature の名前を `graph_images` に加えて渡します。[加える所](../../src/project/featurecompose.cpp#L4215))。読み手の候補から feature の pass を外す判定は RS-6 のままなので、feature が `before` / `after` で決めた順は変わりません。
 
-足した組([`GraphTaskReaderWait`](../../src/project/rendergraphcomposition.hpp#L428))は、provenance を同期した後に `RenderPassProvenance::added_after`([宣言](../../src/project/renderpipeline.hpp#L301))へ載り([載せる所](../../src/project/featurecompose.cpp#L4233))、`framePlanToJson()` が node の `added_after` として出します。RS-6b: `SAMPLED` を足した image は [`GraphTaskReaderWait::sampled`](../../src/project/rendergraphcomposition.hpp#L434) に残り([残す所](../../src/project/rendergraphcomposition.cpp#L3204))、合成がそれを `RenderResourceProvenance::added_usage`([`added_usage` の宣言](../../src/project/renderpipeline.hpp#L326))へ載せ([`added_usage` に載せる所](../../src/project/featurecompose.cpp#L4241))、`framePlanToJson()` が `resources[]` の `added_usage` として出します。
+足した組([`GraphTaskReaderWait`](../../src/project/rendergraphcomposition.hpp#L428))は、provenance を同期した後に `RenderPassProvenance::added_after`([宣言](../../src/project/renderpipeline.hpp#L301))へ載り([載せる所](../../src/project/featurecompose.cpp#L4233))、`framePlanToJson()` が node の `added_after` として出します。RS-6b: `SAMPLED` を足した image は [`GraphTaskReaderWait::sampled`](../../src/project/rendergraphcomposition.hpp#L434) に残り([残す所](../../src/project/rendergraphcomposition.cpp#L3207))、合成がそれを `RenderResourceProvenance::added_usage`([`added_usage` の宣言](../../src/project/renderpipeline.hpp#L326))へ載せ([`added_usage` に載せる所](../../src/project/featurecompose.cpp#L4241))、`framePlanToJson()` が `resources[]` の `added_usage` として出します。
 
-関数名 `waitOnGraphTasksInScenePasses` は RS-6 のままで、中身は graph と feature の task です。task が待つ置き場所の無い graph の pass の塊を読み手の前に動かすのは、RS-3 の [`graphPassRunReaderPosition()`](../../src/project/rendergraphcomposition.cpp#L1736) の後半です([RS-6 の分](../../src/project/rendergraphcomposition.cpp#L1790)。塊を待つ task を `after` / `before` で閉包に集め、そういう task だけが書く image の最初の読み手を、塊が直接書く image の読み手と比べて早い方を取ります)。
+関数名 `waitOnGraphTasksInScenePasses` は RS-6 のままで、中身は graph と feature の task です。task が待つ置き場所の無い graph の pass の塊を読み手の前に動かすのは、RS-3 の [`graphPassRunReaderPosition()`](../../src/project/rendergraphcomposition.cpp#L1739) の後半です([RS-6 の分](../../src/project/rendergraphcomposition.cpp#L1793)。塊を待つ task を `after` / `before` で閉包に集め、そういう task だけが書く image の最初の読み手を、塊が直接書く image の読み手と比べて早い方を取ります)。
 
-**graph の番号付きの入力の読み方(✅RS-14)。**graph module の [`renderPorts()`](../../src/project/graphmodule.cpp#L391) は `binding: "input"` の port について `view` だけを断り([断る所](../../src/project/graphmodule.cpp#L506))、`sampling` / `subresource` は値を見ずに通します。lowering([`lowerRenderGraphDocumentForComposition()`](../../src/project/rendergraphcomposition.cpp#L151))は番号付きの port を pass の `input` に並べるときに、その 2 つを `input_index` ごとに集め、pass の `input_settings` に番号の順の配列(設定の無い番号は `null`、設定を持つ最後の番号まで)として書きます([書く所](../../src/project/rendergraphcomposition.cpp#L1032))。
+**graph の番号付きの入力の読み方(✅RS-14)。**graph module の [`renderPorts()`](../../src/project/graphmodule.cpp#L391) は `binding: "input"` の port について `view` だけを断り([断る所](../../src/project/graphmodule.cpp#L506))、`sampling` / `subresource` は値を見ずに通します。lowering([`lowerRenderGraphDocumentForComposition()`](../../src/project/rendergraphcomposition.cpp#L151))は番号付きの port を pass の `input` に並べるときに、その 2 つを `input_index` ごとに集め、pass の `input_settings` に番号の順の配列(設定の無い番号は `null`、設定を持つ最後の番号まで)として書きます([書く所](../../src/project/rendergraphcomposition.cpp#L1035))。
 
-設定が 1 つも無ければ field を出さないので、書かない graph の合成結果は変わりません。node の `parameters` に `input_settings` があれば、`type` / `input` / `output` と同じく `render graph derives field from connections` で断ります([断る所](../../src/project/rendergraphcomposition.cpp#L863))。値の検査は engine が pass の JSON を読むときで、名前付きの port と同じ parser です(第6章 §6.2「番号付きの入力の設定」。書き方の正は manual 第6章 §6.18「番号付きの入力」)。
+設定が 1 つも無ければ field を出さないので、書かない graph の合成結果は変わりません。node の `parameters` に `input_settings` があれば、`type` / `input` / `output` と同じく `render graph derives field from connections` で断ります([断る所](../../src/project/rendergraphcomposition.cpp#L866))。値の検査は engine が pass の JSON を読むときで、名前付きの port と同じ parser です(第6章 §6.2「番号付きの入力の設定」。書き方の正は manual 第6章 §6.18「番号付きの入力」)。
 
 **body の image の大きさと `log2`(✅RS-15)。**式を許す場所の表 [`bodyExpressionPlace()`](../../src/project/graphcomposition.cpp#L586) に、body の `render.image` の `width` / `height` / `layers` / `mip_levels`(整数の式)が加わりました([該当箇所](../../src/project/graphcomposition.cpp#L593))。評価した整数は、書いた数と同じく render target を読む所で検査されます。
 
-式の評価器には `log2(n)`(正の整数の切り捨て。1 未満と小数は `not_integer`。[評価する所](../../src/project/graphloopexpression.cpp#L252))が、組み直し時の定数 [`composedConstants()`](../../src/project/rendergraphcomposition.cpp#L1969) には「`mip_levels: "full"` で `width` / `height` が正の整数、`format_class` が `display` でない target の `mip_levels_of` は `bit_width(max(width, height))`」が加わりました([該当箇所](../../src/project/rendergraphcomposition.cpp#L1980))。文法の正本の BNF([graphloopexpression.hpp](../../src/project/graphloopexpression.hpp#L20))も `log2` を含みます。
+式の評価器には `log2(n)`(正の整数の切り捨て。1 未満と小数は `not_integer`。[評価する所](../../src/project/graphloopexpression.cpp#L252))が、組み直し時の定数 [`composedConstants()`](../../src/project/rendergraphcomposition.cpp#L1972) には「`mip_levels: "full"` で `width` / `height` が正の整数、`format_class` が `display` でない target の `mip_levels_of` は `bit_width(max(width, height))`」が加わりました([該当箇所](../../src/project/rendergraphcomposition.cpp#L1983))。文法の正本の BNF([graphloopexpression.hpp](../../src/project/graphloopexpression.hpp#L20))も `log2` を含みます。
 
 **必須の parameter と欠けた鍵(✅RS-15 / CT-1)。**op の必須の表 [`renderNodeRequiredParameters()`](../../src/project/graphmodule.cpp#L268) の検査は、✅RS-15 から [`GraphModuleRegistry::resolveOperation()`](../../src/project/graphmodule.cpp#L740) が契約を作る前に 1 回呼びます([呼ぶ所](../../src/project/graphmodule.cpp#L749))。
 
@@ -1880,7 +1880,7 @@ test は `renderconfigeditor_test` の `CT-2 …` 2 本(編集の ticket の道�
 
 > 🧩 **難所 — 回の順は名前に頼れない**: 展開器は node を id の辞書順に並べるので、`<loop>/10/x` は `<loop>/9/x` より前に来ます。そこで body の外の資源に触る回は、要素の順に明示の `after` でつながれます。回ごとの `render.image` だけに触る回はつながれず、並列にできます。
 
-> 🧩 **難所 — image node は pass を作らない(✅LP-6)**([書き手の表](../../src/project/rendergraphcomposition.cpp#L299) / [`waitOnImageWriters` の定義](../../src/project/rendergraphcomposition.cpp#L603))
+> 🧩 **難所 — image node は pass を作らない(✅LP-6)**([書き手の表](../../src/project/rendergraphcomposition.cpp#L299) / [`waitOnImageWriters` の定義](../../src/project/rendergraphcomposition.cpp#L606))
 >
 > **何をする所か**: `render.image` node から読む pass の `after` に、その image を書く graph の pass を足します。
 >
@@ -1900,7 +1900,7 @@ test は `renderconfigeditor_test` の `CT-2 …` 2 本(編集の ticket の道�
 >
 > - **downstream**: 足した待ちも到達に入れる。
 >
-> **手がかり**: 呼ぶのは fullscreen / raster / compute の `access: "read"` の port と、snapshot_copy の `source` の 2 か所です。表は `render.image` だけを載せ、`render.target_ref` と buffer は対象外です。root の graph の pass は、ループの有無によらず依存の順に並べてから宣言します([その所](../../src/project/rendergraphcomposition.cpp#L1104))。ループが無いときに id 順のままだと、`enforceCanonicalOrder` が宣言順で鎖をつなぐので、足した `after` と逆向きの辺ができて循環します。
+> **手がかり**: 呼ぶのは fullscreen / raster / compute の `access: "read"` の port と、snapshot_copy の `source` の 2 か所です。表は `render.image` だけを載せ、`render.target_ref` と buffer は対象外です。root の graph の pass は、ループの有無によらず依存の順に並べてから宣言します([その所](../../src/project/rendergraphcomposition.cpp#L1107))。ループが無いときに id 順のままだと、`enforceCanonicalOrder` が宣言順で鎖をつなぐので、足した `after` と逆向きの辺ができて循環します。
 >
 > **不変条件**: 読み手の下流にいる書き手は待たない(到達を見てから足し、足した辺も到達に加える)ので、足した待ちが循環を作りません。規則の一覧は [design_graph_loops.md](../design_graph_loops.md) §5.2 です。
 
