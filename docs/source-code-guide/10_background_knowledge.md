@@ -492,7 +492,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 「途中で失敗したら、それまでの副作用を取り消す」を例外安全に書く定型です。ローカルなガード型のデストラクタに巻き戻し処理を書き、正常系の最後で「もう巻き戻さない」印(commit / dismiss と呼ばれることが多い)を立ててガードを無効化します。こうすると、途中のどの `throw` からでも巻き戻しが走り、成功経路でだけ走りません(`std::scope_exit` / `scope_fail` は C++ 標準ライブラリ拡張の同種の道具です)。ガードに「そもそも何もしていない」状態を表す番兵(世代番号が 0、ハンドルが無効など)を持たせて、staging 前に抜けたときに巻き戻しを飛ばす形もよく使われます。
 
-**使用場所**: [LogicalFrameAbortGuard](../../src/core/vkcore/renderer.cpp#L3129) / [StagedRuntimeRollbackGuard](../../src/core/vkcore/renderer.cpp#L3152) / [ConstructionScope](../../src/core/container.hpp#L174)(構築中スタックの pop を必ず走らせる) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L406)(`catch (...)` で確保済みの範囲を返す)
+**使用場所**: [LogicalFrameAbortGuard](../../src/core/vkcore/renderer.cpp#L3101) / [StagedRuntimeRollbackGuard](../../src/core/vkcore/renderer.cpp#L3128) / [ConstructionScope](../../src/core/container.hpp#L174)(構築中スタックの pop を必ず走らせる) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L406)(`catch (...)` で確保済みの範囲を返す)
 
 ### double-checked locking と acquire / release
 
@@ -912,7 +912,7 @@ NDC からフレームバッファ座標への変換は Vulkan 仕様 "Controlli
 
 **このリポジトリでは**: **viewport は正の height のまま、y の反転は camera の射影の中で行います**(✅CC-1、`c8367b87`。[design_coordinate_convention.md](../design_coordinate_convention.md) §2)。`src/core/vkcore/offscreenframetarget.cpp` の `setViewportAndScissor()`(85 行)と `src/core/vkcore/swapchainframetarget.cpp` のフレーム開始処理が、どちらも `viewport.height` に **正の** `extent.height` を、`minDepth=0 / maxDepth=1` を入れます。
 
-つまり負 height の Y 反転トリックは使わず、NDC の +Y はフレームバッファ下方向に対応し、clip・NDC・画素・uv はすべて y 下で揃います。例外は利用者が clip を直接書く `raster` pass の `clip_y: "up"`(✅CC-2、`1501685a`)だけで、その pass を描く間だけ負の height の viewport にして戻します([`setClipYViewport()`](../../src/core/vkcore/render_pass_dispatch.cpp#L44))。world(y 上)から画面(y 下)への変換点は射影の 1 か所で、[`vulkanPerspective()`](../../src/core/renderer/clipspace.hpp#L35) などが clip の y を反転します。
+つまり負 height の Y 反転トリックは使わず、NDC の +Y はフレームバッファ下方向に対応し、clip・NDC・画素・uv はすべて y 下で揃います。例外は利用者が clip を直接書く `raster` pass の `clip_y: "up"`(✅CC-2、`1501685a`)だけで、その pass を描く間だけ負の height の viewport にして戻します([`setClipYViewport()`](../../src/core/vkcore/render_pass_dispatch.cpp#L45))。world(y 上)から画面(y 下)への変換点は射影の 1 か所で、[`vulkanPerspective()`](../../src/core/renderer/clipspace.hpp#L35) などが clip の y を反転します。
 
 負の height ではなく射影で反転するのは、NDC と画素と uv の向きを揃えたまま(`uv = ndc * 0.5 + 0.5`)にしておけば、TAA の jitter・velocity・再投影、SSAO、影の参照、gizmo の投影など NDC と画素の対応に依る code を変えずに済むからです(設計 §3.4 の「変えなくてよい所」)。この符号は engine 全体の約束事で、`src/core/renderer/projectionjitter.cpp` の `projectionJitterSample()`(69〜70 行コメント)が「positive-height だから CPU/シェーダ/画像の符号が一致する」と明記します。y の反転は jitter を足す前の射影に入っているので、この約束は CC-1 の前後で変わっていません。片方のターゲットだけ反転させると、ジッタやピクセルスナップが逆向きに効いて preview と実画面がずれるため、GPU 各ターゲットと CPU ラスタで Y の向きを 1 つに固定しています。
 
