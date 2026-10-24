@@ -411,9 +411,7 @@ void appendMaterialResourceReads(
                           source.at("footprint"),
                           "Frame graph pass.material_resources." +
                               port.name + ".footprint")
-                    : LogicalReadFootprint{
-                          LogicalReadFootprintKind::arbitrary,
-                          std::nullopt});
+                    : undeclaredReadFootprint(false));
         }
         if (history &&
             encoded.at(port.name).is_object() &&

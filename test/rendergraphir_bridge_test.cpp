@@ -1122,6 +1122,8 @@ TEST_CASE("RC-3c1a bridge: tile-local eligibility is decided by each path from i
          "format": "D32_SFLOAT", "usage": ["DEPTH_STENCIL_ATTACHMENT", "SAMPLED"]},
         {"name": "probe_lit", "extent_scale": 1.0, "width": 16, "height": 16,
          "format": "R8G8B8A8_UNORM", "usage": ["COLOR_ATTACHMENT", "SAMPLED"]},
+        {"name": "shadow_depth", "extent_scale": 1.0, "format": "D32_SFLOAT",
+         "usage": ["DEPTH_STENCIL_ATTACHMENT"]},
         {"name": "gbuffer_color", "extent_scale": 1.0, "format": "R8G8B8A8_UNORM",
          "usage": ["COLOR_ATTACHMENT", "SAMPLED"]},
         {"name": "gbuffer_depth", "extent_scale": 1.0, "format": "D32_SFLOAT",
@@ -1142,8 +1144,12 @@ TEST_CASE("RC-3c1a bridge: tile-local eligibility is decided by each path from i
         {"name": "shade", "type": "fullscreen", "input": ["gbuffer_depth", "gbuffer_color", "lit", "probe_lit"],
          "output": {"color": [{"target": "swapchain"}], "depth": null}}]}]})json");
     const DeviceFacts device{.tile_local = true,
-                             .supports = [](ImageFormat format, ImageUsage, bool cube) {
-                                 return format == ImageFormat::d32_sfloat && !cube;
+                             // D32_SFLOAT as a sampled depth attachment, not
+                             // as a cube and not with another usage.
+                             .supports = [](ImageFormat format, ImageUsage usage, bool cube) {
+                                 return format == ImageFormat::d32_sfloat && !cube &&
+                                        usage == (ImageUsageBit::depth_stencil_attachment |
+                                                  ImageUsageBit::sampled);
                              }};
     const auto materialization = [](const NewOutcome &outcome, std::string_view name) {
         for (const auto &resource : outcome.logical.at(0).at("resources")) {
@@ -1157,6 +1163,8 @@ TEST_CASE("RC-3c1a bridge: tile-local eligibility is decided by each path from i
     REQUIRE(with_device.stage.empty());
     const auto &ir = *with_device.ir;
     const auto device_formats = renderGraphDeviceTileLocalFormats(ir, newDeviceFacts(device));
+    // shadow_depth (D32_SFLOAT, a 2D depth attachment only) is a candidate
+    // the device declines for its usage; probe_depth for being a cube.
     CHECK(device_formats == RenderGraphTileLocalFormats{{"gbuffer_depth", ImageFormat::d32_sfloat},
                                                         {"scene_depth", ImageFormat::d32_sfloat}});
     const auto eligible = renderGraphTileLocalFormats(ir, ir.graphs.at(0), device_formats);
@@ -1474,6 +1482,76 @@ TEST_CASE("RC-3c1a refusals: a graph image's format_class is a string where the 
     requireSameOutcome("graph image with a string format_class", runOld(config("data", true), {}),
                        runNew(config("data", true), {}));
     CHECK(runNew(config("data", true), {}).stage.empty());
+    // The planner's search stops at the first display image: a numeric
+    // format_class after it is never read, before it is.
+    const auto pair = [](bool display_first) {
+        Json display{{"name", "d"}, {"width", 1}, {"height", 1}, {"format", "R8G8B8A8_UNORM"},
+                     {"format_class", "display"}};
+        Json numeric{{"name", "t"}, {"width", 1}, {"height", 1}, {"format", "R8G8B8A8_UNORM"},
+                     {"format_class", 42}};
+        Json pass{{"name", "p"},
+                  {"type", "fullscreen"},
+                  {"output", {{"color", Json::array({Json{{"target", "swapchain"}}})}, {"depth", nullptr}}}};
+        Json graph{{"name", "g"},
+                   {"render_targets", display_first ? Json::array({display, numeric})
+                                                    : Json::array({numeric, display})},
+                   {"passes", Json::array({pass})}};
+        return Json{{"rendering_passes", Json::array({graph})}};
+    };
+    requireSameOutcome("display first, then a numeric format_class", runOld(pair(true), {}),
+                       runNew(pair(true), {}));
+    CHECK(runNew(pair(true), {}).stage.empty());
+    const auto swapped = runNew(pair(false), {});
+    CHECK(swapped.code == "render_graph.image_invalid@1");
+    CHECK(swapped.refusal.find("\"resource\":\"t\"") != std::string::npos);
+    CHECK(runOld(pair(false), {}).stage == "parse");
+}
+
+TEST_CASE("RC-3c1a bridge: every way a history read enters is a temporal use",
+          "[rendergraphir][rc3c1a][bridge]") {
+    // A current and a history read through each entry: a pass's input, a
+    // resource port, a material resource, a compute task's reads.
+    const auto config = Json::parse(R"json({
+      "render_targets": [
+        {"name": "color", "extent_scale": 1.0, "format": "R8G8B8A8_UNORM", "usage": ["COLOR_ATTACHMENT", "SAMPLED"]},
+        {"name": "accum", "extent_scale": 1.0, "format": "R16G16B16A16_SFLOAT",
+         "usage": ["COLOR_ATTACHMENT", "SAMPLED"], "history": true},
+        {"name": "depth", "extent_scale": 1.0, "format": "D32_SFLOAT", "usage": ["DEPTH_STENCIL_ATTACHMENT"]},
+        {"name": "shaded", "extent_scale": 1.0, "format": "R16G16B16A16_SFLOAT", "usage": ["COLOR_ATTACHMENT", "SAMPLED"]}],
+      "buffers": [{"name": "stats"}],
+      "compute_tasks": [{"name": "measure", "reads": ["color", "accum@history"], "writes": ["stats"]}],
+      "rendering_passes": [{"name": "main", "passes": [
+        {"name": "draw", "type": "fullscreen", "output": {"color": [{"target": "color"}], "depth": null}},
+        {"name": "blend", "type": "fullscreen", "input": ["color", "accum@history"],
+         "resource_ports": {"now": {"resource": "color"}, "before": {"resource": "accum@history"}},
+         "output": {"color": [{"target": "accum"}], "depth": null}},
+        {"name": "shade", "type": "material", "material_contract": "forward_opaque_v1",
+         "material_resources": {"now": "color", "before": "accum@history"},
+         "output": {"color": [{"target": "shaded"}], "depth": {"target": "depth"}}}]}]})json");
+    const auto ir = parseRenderGraph(config, buildPassFieldOwnershipCapabilities());
+    const auto expect = [&](std::string_view node, ResourceUseRole role, std::size_t count) {
+        std::size_t seen = 0;
+        for (const auto &use : irNode(ir, node).uses) {
+            if (use.role != role) continue;
+            ++seen;
+            INFO(node << " " << resourceUseRoleName(role) << " " << use.resource
+                      << (use.history ? "@history" : ""));
+            // CHECK, not REQUIRE: every entry is judged on its own.
+            if (use.history) {
+                CHECK((use.footprint && use.footprint->kind == LogicalReadFootprintKind::temporal));
+            } else if (role == ResourceUseRole::material_resource) {
+                CHECK((use.footprint && use.footprint->kind == LogicalReadFootprintKind::arbitrary));
+            } else {
+                CHECK_FALSE(use.footprint);
+            }
+        }
+        CHECK(seen == count);
+    };
+    expect("blend", ResourceUseRole::input, 2);
+    expect("blend", ResourceUseRole::resource_port, 2);
+    expect("shade", ResourceUseRole::material_resource, 2);
+    expect("measure", ResourceUseRole::input, 2);
+    requireSameOutcome("history through every entry", runOld(config, {}), runNew(config, {}));
 }
 
 // ---------------------------------------------------------------------------

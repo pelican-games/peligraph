@@ -3,6 +3,7 @@
 #include "graphpartition.hpp"
 #include "graphloopexpression.hpp"
 #include "imageformat.hpp"
+#include "imagesource.hpp"
 #include "renderingjsonnormalize.hpp"
 
 #include <algorithm>
@@ -857,10 +858,12 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
             if (const auto source = parameters.find("source"); source != parameters.end()) {
                 if (!source->contains("width") || !source->contains("height"))
                     throw std::invalid_argument("image source must be resolved before render lowering: " + id);
+                // The defaults are the declaration's (imagesource.hpp).
+                const ImageSourceDeclaration defaults;
                 const Json lowered_source{{"asset", source->at("asset")},
-                                          {"color_space", source->value("color_space", "srgb")},
-                                          {"alpha", source->value("alpha", "straight")},
-                                          {"mips", source->value("mips", "none")}};
+                                          {"color_space", source->value("color_space", defaults.color_space)},
+                                          {"alpha", source->value("alpha", defaults.alpha)},
+                                          {"mips", source->value("mips", defaults.mips)}};
                 parameters["width"] = source->at("width");
                 parameters["height"] = source->at("height");
                 parameters["extent_scale"] = 1.0;

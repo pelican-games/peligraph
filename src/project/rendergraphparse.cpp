@@ -1056,11 +1056,19 @@ void assignSnapshotSizing(const Json &targets, std::vector<ImageResource> &image
         ImageFormat::r16g16b16a16_sfloat, ImageFormat::r32g32b32a32_sfloat,
     };
     std::optional<std::pair<std::size_t, std::size_t>> base;
+    // The planner's search: the images with a width and a height, in order,
+    // up to the first display one; it read their format_class as a string
+    // and no other image's.
     for (const auto &target : targets) {
         if (!target.contains("width") || !target.contains("height")) continue;
         const auto format_class = target.find("format_class");
-        if (format_class != target.end() && format_class->is_string() &&
-            *format_class == "display") {
+        if (format_class != target.end() && !format_class->is_string()) {
+            refuse("render_graph.image_invalid@1",
+                   subject.detail({{"resource", target.value("name", std::string{})},
+                                   {"field", "format_class"},
+                                   {"reason", "requires_string"}}));
+        }
+        if (format_class != target.end() && *format_class == "display") {
             const auto name = target.value("name", std::string{});
             base = {sizeValue(target, "width", subject, name),
                     sizeValue(target, "height", subject, name)};
@@ -1134,14 +1142,11 @@ std::vector<ImageResource> parseGraphImages(const Json &graph, bool &declares_ex
             invalid("history", "requires_boolean", image.name);
         }
         image.history = target.value("history", false);
-        if (const auto format_class = target.find("format_class"); format_class != target.end()) {
-            // The planner read format_class as a string of every image with a
-            // width and a height (its snapshot sizing), and nowhere else.
-            if (format_class->is_string()) {
-                image.format_class = format_class->get<std::string>();
-            } else if (target.contains("width") && target.contains("height")) {
-                invalid("format_class", "requires_string", image.name);
-            }
+        // A format_class of another type is refused where the planner read it
+        // (assignSnapshotSizing's search for the display image).
+        if (const auto format_class = target.find("format_class");
+            format_class != target.end() && format_class->is_string()) {
+            image.format_class = format_class->get<std::string>();
         }
         images.push_back(std::move(image));
     }
