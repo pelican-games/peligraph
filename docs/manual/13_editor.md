@@ -2498,12 +2498,12 @@ op の形が壊れているだけのもの(`ops` が配列でない、`source` �
 - **scene journal とは別の履歴です。**Graph タブは成功した直近100操作を保持し、   Undo / Redo ボタンとキャンバスの Ctrl+Z / Ctrl+Y（または Ctrl+Shift+Z）で逆編集・再編集を送ります。
   保存済み文書の digest が別の編集で変わった場合は履歴を破棄します。engine の再起動(Studio から見れば再接続)では破棄しません。
   Studio 自身の Render Undo / Redo の commit については、その commit が返した digest に一致し、Graph の nodes と definitions が変わらない場合に限り Graph の履歴を保ちます。例えば render target の宣言を戻してから、Graph の参照 node を Redo できます。外部変更、Graph 自体の変更、別 project への切り替えはこの例外に入りません。
-  再接続の後に読んだ文書の digest が履歴を作った文書と同じなら Undo / Redo はそのまま効き、違えば破棄します([`GraphCanvasModel::clearContext()`](../../src/devstudio/model/graphcanvasmodel.cpp#L669))。
-  別の project を開くと、digest が同じでも破棄します([`GraphCanvasModel::forgetHistory()`](../../src/devstudio/model/graphcanvasmodel.cpp#L2808))。送信中だった編集は engine と一緒に捨てます。
+  再接続の後に読んだ文書の digest が履歴を作った文書と同じなら Undo / Redo はそのまま効き、違えば破棄します([`GraphCanvasModel::clearContext()`](../../src/devstudio/model/graphcanvasmodel.cpp#L670))。
+  別の project を開くと、digest が同じでも破棄します([`GraphCanvasModel::forgetHistory()`](../../src/devstudio/model/graphcanvasmodel.cpp#L2809))。送信中だった編集は engine と一緒に捨てます。
   接続が切れている間は Undo / Redo を押せません。
   palette で forward_opaque の material pass を足し、ops と一緒に `material_route_default: "forward"` を送った履歴項目(第15章の「forward の route の既定を一緒に送ります」)は、
-  送る前に `get_graph_instances` で読んだ root の書かれた値(無ければ `null`)を覚えます([覚える所](../../src/devstudio/model/graphcanvasmodel.cpp#L3696))。
-  その Undo は、pass を消す逆の ops とその値を**1 つの `edit_graph_document`** で送ります([Undo と Redo で送る値を選ぶ所](../../src/devstudio/model/graphcanvasmodel.cpp#L2777))。
+  送る前に `get_graph_instances` で読んだ root の書かれた値(無ければ `null`)を覚えます([覚える所](../../src/devstudio/model/graphcanvasmodel.cpp#L3697))。
+  その Undo は、pass を消す逆の ops とその値を**1 つの `edit_graph_document`** で送ります([Undo と Redo で送る値を選ぶ所](../../src/devstudio/model/graphcanvasmodel.cpp#L2778))。
   元が不在なら `null` で member を消し、元の値があればその値を書き戻します。forward から不在・`"auto"` へ戻る Undo は 1 回の ticket・1 回の再起動です。
   Redo は `"forward"` を付けて入れ直します。
   ほかに既定を書く Studio の入口(**Add material pass...** の form の `add_authored_pass`、Rendering settings の `set_material_route_default`)は render の編集の履歴(文書の snapshot)に入るので([記録する method の一覧](../../src/devstudio/model/renderedithistory.cpp#L29))、そちらの Undo は文書ごと既定を戻します。

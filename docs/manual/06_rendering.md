@@ -3745,7 +3745,7 @@ op は **module** が登録します。登録済み module はエンジンに最
 
 `render.shadow_depth` / `render.snapshot_copy` の `outputs` には書いた socket と同名の出力 port が `{"port": "depth", "type_from_input": "depth"}` の形で載ります(`type` の鍵は無く、型はその名前の入力 socket に入る edge の型。[載せる所](../../src/project/graphmodule.cpp#L677))。`render.material_pass` も出力 port を持ちますが、port が node の parameters から決まるので catalog は `parameter_dependent` のままです(§6.18)。
 
-`pose.state_machine` は包む文書に従ってポートが増えますが、`pose` 出力を宣言しているので catalog の `ports` は **`declared`** です —— 増えた入力ポートは解決後にしか見えません。Studio のキャンバスもこのフィールドで分岐します([graphcanvasmodel.cpp:434](../../src/devstudio/model/graphcanvasmodel.cpp#L2039))。
+`pose.state_machine` は包む文書に従ってポートが増えますが、`pose` 出力を宣言しているので catalog の `ports` は **`declared`** です —— 増えた入力ポートは解決後にしか見えません。Studio のキャンバスもこのフィールドで分岐します([graphcanvasmodel.cpp:434](../../src/devstudio/model/graphcanvasmodel.cpp#L2040))。
 
 ### op 一覧
 
