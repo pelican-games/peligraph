@@ -97,7 +97,7 @@
 
 ### フレームグラフ(宣言 → 計画 → 実行)
 
-読み順: [computetaskdefinitionjson.cpp](../../src/core/renderingpass/computetaskdefinitionjson.cpp)(`buffers` / `compute_tasks` の宣言の JSON パース。旧 computetask.cpp は宣言パース / [container](../../src/core/renderingpass/computetaskcontainer.cpp) / [buffer container](../../src/core/renderingpass/framegraphbuffercontainer.cpp) の 3 つに分かれ、`computetask.hpp` は傘の include になりました)→ [frameplanner.cpp](../../src/core/renderingpass/frameplanner.cpp)(reads/writes からトポロジカルソート・レベル・バリアを導出。曖昧な writes-writes は hard error)→ [framegraphruntime.cpp](../../src/core/renderingpass/framegraphruntime.cpp)(プラン駆動実行)。
+読み順: [computetaskdefinitionjson.cpp](../../src/core/renderingpass/computetaskdefinitionjson.cpp)(`compute_tasks` の宣言の JSON パース。`buffers` の宣言は ✅RC-3c2a から [rendergraphparse.cpp](../../src/project/rendergraphparse.cpp) の `parseRenderGraph()` が読みます。旧 computetask.cpp は宣言パース / [container](../../src/core/renderingpass/computetaskcontainer.cpp) / [buffer container](../../src/core/renderingpass/framegraphbuffercontainer.cpp) の 3 つに分かれ、`computetask.hpp` は傘の include になりました)→ [frameplanner.cpp](../../src/core/renderingpass/frameplanner.cpp)(reads/writes からトポロジカルソート・レベル・バリアを導出。曖昧な writes-writes は hard error)→ [framegraphruntime.cpp](../../src/core/renderingpass/framegraphruntime.cpp)(プラン駆動実行)。
 
 > **設計決定(三層):** ①ユーザーは依存(reads/writes)だけ宣言する ②順序・バリアは機械導出 ③どうしても必要な箇所だけ `after`/`before` で手詰め。順序を手書きさせないことでパス追加が局所変更になる([design_compute_task_graph.md](../design_compute_task_graph.md))。
 
