@@ -53,6 +53,7 @@
 | `asset_data.json`(`pelican.asset_data` v2。MG-2b から v2 だけ) | [第5章](05_assets.md) | 純ロジック(エンベロープ・models/materials/textures): [project/assetdataformat.cpp](../../src/project/assetdataformat.cpp) / model 登録: [asset/model.cpp](../../src/core/asset/model.cpp) / project material 登録: [material/projectmaterialasset.cpp](../../src/core/material/projectmaterialasset.cpp) |
 | `.vrma`(VRM Animation GLB) | [第5章](05_assets.md) | デコード: [loader/vrmadecoder.cpp](../../src/core/loader/vrmadecoder.cpp)(拡張子 `.vrma` が alias ゲート)/ リターゲット: [animation/vrmaretarget.cpp](../../src/core/animation/vrmaretarget.cpp)(版付き profile v1)/ 統合: [animation/animationservice.cpp](../../src/core/animation/animationservice.cpp) |
 | rendering config | [第6章](06_rendering.md) | [renderingpass/](../../src/core/renderingpass) の *jsonparser 群(RT フォーマット 45 種: [renderingpassjsonhelpers.cpp](../../src/core/renderingpass/renderingpassjsonhelpers.cpp) `format_names` / パス種別 **14 種**: 一覧と鍵の所有は [project/passfieldownership.hpp](../../src/project/passfieldownership.hpp)。形の規則の正本は [project/passshapepolicy.cpp](../../src/project/passshapepolicy.cpp)) |
+| rendering config の短縮形 → 正規形(RC-3b) | [第6章](06_rendering.md) §6.2 | 純ロジック: [project/renderingjsonnormalize.cpp](../../src/project/renderingjsonnormalize.cpp)(全ての入口で `normalizeRenderingJson`、正規形の読みと書き換えは `RenderJson::*`) |
 | feature fragment(pelican.render_feature) | [第6章](06_rendering.md) | 純ロジック: [project/featurecompose.cpp](../../src/project/featurecompose.cpp) |
 | 共通グラフ文書(`pelican.graph` v1) | [第3章](03_project_format.md) | 純ロジック: [project/graphcomposition.cpp](../../src/project/graphcomposition.cpp)(`definitions` / `nodes` / `outputs` の展開と編集 op)→ [project/graphpartition.cpp](../../src/project/graphpartition.cpp)(`values` / `rendering` / `animation` への分割)。rendering config はこの文書の `rendering` メンバに入り、住所の判定は [project/renderconfigsection.hpp](../../src/project/renderconfigsection.hpp) だけが持つ |
 | `pelican.value_graph` v1 | — | [userpublic/valuegraph.cpp](../../src/core/userpublic/valuegraph.cpp)。**内部 IR + テスト面であって外部契約ではない**(`pelican.graph` を lowering した結果と同じ形。本番で `Graph` を作る場所は 1 箇所で、入力は `pelican.graph` のみ) |
@@ -166,7 +167,7 @@ owner の払い出しと builtin 登録は game DLL のヘッダから外れ、
 
 実装は:
 
-- [projectinit.cpp](../../src/devcli/projectinit.cpp)(`--template standard|blank` を読むだけ。雛形の中身は F-2 で `pelican_project` の [project/projecttemplate.cpp](../../src/project/projecttemplate.cpp) へ移り、正は [同ファイル](../../src/project/projecttemplate.cpp#L350) の `templateFiles()`。standard / blank とも **16 エントリ**(blank は VI-2 から `shaders/present.frag` を書かない)。Studio の File > New Project... も同じ関数を呼ぶ)
+- [projectinit.cpp](../../src/devcli/projectinit.cpp)(`--template standard|blank` を読むだけ。雛形の中身は F-2 で `pelican_project` の [project/projecttemplate.cpp](../../src/project/projecttemplate.cpp) へ移り、正は [同ファイル](../../src/project/projecttemplate.cpp#L352) の `templateFiles()`。standard / blank とも **16 エントリ**(blank は VI-2 から `shaders/present.frag` を書かない)。Studio の File > New Project... も同じ関数を呼ぶ)
 - [importcommand.cpp](../../src/devcli/importcommand.cpp)(sha256 照合 → asset_data.json 追記・冪等)
 - [distconfig.cpp](../../src/devcli/distconfig.cpp)(プロジェクト内容から PELICAN_WITH_* を導出。GLB の JSON チャンクを直接パースして VAT 有無を判定する箇所が読みどころ)。
 

@@ -571,14 +571,14 @@ pelican_cli <assets|audio|bake-camera|image|import|dist-config|package|project|d
 空でないディレクトリは `project init target directory is not empty: <dir>` で拒否し、何も書きません。
 
 雛形の中身は [`src/project/projecttemplate.cpp`](../../src/project/projecttemplate.cpp) の 1 箇所にあり(`pelican_project`)、
-CLI は `--template` を読んで [`initializeProjectTemplate()`](../../src/project/projecttemplate.cpp#L400) を呼ぶだけです
+CLI は `--template` を読んで [`initializeProjectTemplate()`](../../src/project/projecttemplate.cpp#L402) を呼ぶだけです
 ([CLI 側](../../src/devcli/projectinit.cpp#L30))。Studio の File > New Project... も同じ関数を呼びます([第13章](13_editor.md))。
 `--template` は 2 つです。
 
 - **`standard`**(既定): 以下で説明する 3D シーン向けの 16 エントリ。F-2 の前に `project init` が書いていたものと
   byte 単位で同じでした(`devcli_project_templates` が SHA-256 で固定)。MG-1 から `project.json` だけが 1 行違い、
   `engine_min_version` の次の行に `"saved_by_engine": "0.1.0"`(書いたエンジンの版。[第3章 §3.2](03_project_format.md))が入ります。
-- **`blank`**: `standard` と同じ 16 エントリ。違うのは   `passes/main_rendering_config.json` の `rendering` 節だけで、`pipeline` キーが無い **direct config** です   (preset も `features` も `render_targets` もありません)。中身は fullscreen pass `present` 1 本   (`input: []`、`output.color: ["display"]`、vertex `engine://fullscreen`、fragment `engine://passthrough`)で、   雛形は shader を書きません(`shaders/` もありません)。`engine://passthrough` は入力がすべて可変の engine の shader で、   入力が 0 本なら UV の gradient を、入力があれば入力 0 をそのまま書きます。`present` に target を   読ませるだけなら shader を書かずに済みます   ([雛形](../../src/project/projecttemplate.cpp#L228))。engine は direct config にも canonical anchor と   `display` を読む `output_transform` を足すので、描かれる frame は「project が書いた pass 1 本 + engine の終端」です。
+- **`blank`**: `standard` と同じ 16 エントリ。違うのは   `passes/main_rendering_config.json` の `rendering` 節だけで、`pipeline` キーが無い **direct config** です   (preset も `features` も `render_targets` もありません)。中身は fullscreen pass `present` 1 本   (`input: []`、`output.color: [{"target": "display"}]`(RC-3b から正規形で書きます。[第6章](06_rendering.md) §6.2「短縮形と正規形」)、vertex `engine://fullscreen`、fragment `engine://passthrough`)で、   雛形は shader を書きません(`shaders/` もありません)。`engine://passthrough` は入力がすべて可変の engine の shader で、   入力が 0 本なら UV の gradient を、入力があれば入力 0 をそのまま書きます。`present` に target を   読ませるだけなら shader を書かずに済みます   ([雛形](../../src/project/projecttemplate.cpp#L228))。engine は direct config にも canonical anchor と   `display` を読む `output_transform` を足すので、描かれる frame は「project が書いた pass 1 本 + engine の終端」です。
   scene / input / ui / code / asset は `standard` と同じです(3D の model は置きません)。
 
 知らない名前は `unknown project template: <name> (expected standard|blank)` で拒否します。
@@ -587,7 +587,7 @@ CLI は `--template` を読んで [`initializeProjectTemplate()`](../../src/proj
 (`pipeline.preset` = `engine://render_pipelines/hybrid_v1.json`、`features` = `shadow_directional` と
 `sky_ambient` の 2 本)は `rendering` オブジェクトの中に入ります。雛形の文字列は graph root をそのまま書いたもので
 ([standard](../../src/project/projecttemplate.cpp#L199) / [blank](../../src/project/projecttemplate.cpp#L228)。
-[選ぶ関数](../../src/project/projecttemplate.cpp#L261))、以前それを包んでいた `wrapLegacyRenderingConfig()` は MG-2b で撤去しました
+[選ぶ関数](../../src/project/projecttemplate.cpp#L263))、以前それを包んでいた `wrapLegacyRenderingConfig()` は MG-2b で撤去しました
 (`standard` の生成物は撤去の前と同じバイト列で、`run_devcli_project_templates.cmake` の digest も変わっていません)。
 
 `render_targets` / `rendering_passes` は preset が持つので
@@ -596,7 +596,7 @@ object であることを確かめてから**、節の中に禁止メンバが�
 ([検査](../../test/run_devcli_project_init.cmake#L48)。順序が逆だと、節ごと消えたときに検査が素通りします)。
 
 生成される `code/CMakeLists.txt` は 2 行で、`pelican_game_sources(game.cpp)` の**後に**
-`pelican_packages()` を呼びます([template](../../src/project/projecttemplate.cpp#L274))。順序が意味を持ちます ——
+`pelican_packages()` を呼びます([template](../../src/project/projecttemplate.cpp#L276))。順序が意味を持ちます ——
 package の object は、その前に作られたゲームロジック DLL へ合流するからです。
 
 <a id="pelican_cli-project-migrate---project----dry-runmg-1"></a>
@@ -1162,7 +1162,7 @@ HEAD が動くと configure が再実行される。
 - 結合テスト: `test/run_*.cmake` が player / cli を子プロセス起動して検証。例: `run_devcli_assets`/ `run_event_schema_compile`/ `run_dump_lowered_material`/ `run_devcli_gltf_extract`/ `run_spvlink_golden`/ `run_devcli_rules_import`/ `run_devcli_bake_camera` + `run_input_record_replay_headless`/ `run_ui_u2_rpc_replay`など。
 - 統合テスト: [`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake)(ctest 名 `devcli_graph_catalog`。`pelican_cli graph-catalog` の出力を検査し、**さらに `docs/v0_freeze.md` の操作表と突き合わせます** —— 表は `<!-- graph-op-table:begin -->` / `:end` のコメントで区切られていて、誰も比べない写しを 2 つ目の正にしないための仕掛けです)、`package_install_smoke`(X-1。install → カタログ → 描画 → uninstall を実 player で。`gpu` ラベル)、[`run_project_catalog_smoke.cmake`](../../test/run_project_catalog_smoke.cmake)(出荷 project の走査。`project.json` の `requires` が満たせない project は**名前を出して skip** し、player の中で落ちません)。
 - **Studio のシナリオ(Q-1)**: `test/studio_scenarios/*.json` は 1 本が 1 つの ctest `studio_scenario_<名前>` になり
-([登録](../../test/CMakeLists.txt#L3843))、`pelican_gpu_lease_run` 経由の **GPU lane** で走ります —— 実物の窓に
+([登録](../../test/CMakeLists.txt#L3848))、`pelican_gpu_lease_run` 経由の **GPU lane** で走ります —— 実物の窓に
 実物の player が埋まるので `QT_QPA_PLATFORM=offscreen` は掛けません。Studio target と Python 製テストを有効にし、
 Python 3.11 以上を用意します。`uv` は不要です。完全な GPU gate はシナリオの未登録・skip を失敗にするため、
 `SKIP_DEVSTUDIO=OFF` と `PELICAN_PYTHON_TESTS=ON` を指定します。[`run_studio_scenario.cmake`](../../test/run_studio_scenario.cmake#L30) が fixture
