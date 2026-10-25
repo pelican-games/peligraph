@@ -114,7 +114,7 @@
     {
       "name": "legacy_fullscreen_config",
       "matrix": "FrameUBO projection/view transport",
-      "route": "legacy projection_view declaration accepted by rendering-pass parser",
+      "route": "projection_view declaration read by the IR parser; the former rendering-pass parser read has been removed",
       "taa_policy": "declaration adds no push transport; GPU data remains FrameUBO"
     }
   ],
@@ -248,10 +248,28 @@
       "needles": ["glm::vec2 current_jitter_ndc", "glm::vec2 previous_jitter_ndc"]
     },
     {
-      "source": "src/core/renderingpass/renderingpassjsonhelpers.cpp",
+      "source": "src/project/rendergraphparse.cpp",
+      "scan": false,
+      "scan_reason": "IR parsing moved to project, outside the src/core discovery root; the projection_view scan still detects any returning core reader.",
       "consumer": "legacy_fullscreen_config",
-      "role": "legacy projection_view parser",
-      "needles": ["if (data_str == \"projection_view\")"]
+      "role": "projection_view declaration is read once into typed IR",
+      "needles": ["requiredString(pass, \"push_constants\", subject, \"push_constants\")", "else if (value == \"projection_view\") info.push_constants = FullscreenPushConstantData::eProjectionView;"]
+    },
+    {
+      "source": "src/project/passdeclaration.hpp",
+      "scan": false,
+      "scan_reason": "Shared pass defaults are outside the src/core discovery root.",
+      "consumer": "legacy_fullscreen_config",
+      "role": "push constants default to no transport",
+      "needles": ["defaultFullscreenPushConstants = FullscreenPushConstantData::eNone;"]
+    },
+    {
+      "source": "src/project/rendergraphir.hpp",
+      "scan": false,
+      "scan_reason": "Typed IR is outside the src/core discovery root.",
+      "consumer": "legacy_fullscreen_config",
+      "role": "fullscreen IR consumes the shared push constants default",
+      "needles": ["FullscreenPushConstantData push_constants = defaultFullscreenPushConstants;"]
     },
     {
       "source": "src/project/passfieldownership.cpp",

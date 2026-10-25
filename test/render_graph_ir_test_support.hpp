@@ -38,6 +38,12 @@ inline nlohmann::json wrapSingleGraph(const nlohmann::json &config) {
         return config;
     }
     auto graph = config;
+    // Only this test-only shorthand synthesizes a graph. Explicit
+    // rendering_passes entries above must retain any missing required fields.
+    if (!graph.contains("name")) graph["name"] = "frame_graph";
+    if (!graph.contains("passes") && graph.contains("compute_tasks")) {
+        graph["passes"] = nlohmann::json::array();
+    }
     nlohmann::json result = nlohmann::json::object();
     for (const auto *key : {"render_targets", "buffers", "compute_tasks", "ray_task_acceleration_structures",
                             "ray_task_callable_records"}) {

@@ -39,6 +39,13 @@ void validateGpuDrawSourceBufferContract(const GpuDrawSourceDeclaration &source,
         invalidGpuDraw(graph, node, "count", "command_layout_mismatch",
             {{"buffer", source.count}, {"expected", "draw_count"}, {"detail", "requires command_layout 'draw_count'"}});
     }
+    // Programs may return their own IR, bypassing the JSON alignment check.
+    if (source.command_offset % frameGraphIndirectCommandAlignment != 0) {
+        invalidGpuDraw(graph, node, "command_offset", "not_4_byte_aligned", {{"offset", source.command_offset}});
+    }
+    if (source.count_offset % frameGraphIndirectCommandAlignment != 0) {
+        invalidGpuDraw(graph, node, "count_offset", "not_4_byte_aligned", {{"offset", source.count_offset}});
+    }
     const auto command_bytes = static_cast<std::uint64_t>(source.max_draw_count) * frameGraphIndexedDrawCommandBytes;
     if (source.command_offset > commands.size || commands.size - source.command_offset < command_bytes) {
         invalidGpuDraw(graph, node, "command_offset", "command_range_exceeds_buffer",

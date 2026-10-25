@@ -2064,7 +2064,7 @@ RenderGraphIR parseRenderGraph(const nlohmann::json &document,
             }
             graph.name = name->get<std::string>();
         } else {
-            graph.name = "frame_graph";
+            refuse("render_graph.graph_name_invalid@1", {{"index", graph_index}, {"reason", "missing"}});
         }
         if (graph.name.empty()) {
             refuse("render_graph.graph_name_invalid@1", {{"index", graph_index}, {"reason", "empty"}});
@@ -2085,12 +2085,12 @@ RenderGraphIR parseRenderGraph(const nlohmann::json &document,
                 refuse("render_graph.graph_declaration_unsupported@1", {{"graph", graph.name}, {"field", key}});
             }
         }
-        if (!graph_json.contains("passes") && shared_tasks.empty()) {
+        if (!graph_json.contains("passes")) {
             refuse("render_graph.section_invalid@1", subject.detail({{"field", "passes"}}));
         }
         std::size_t index = 0;
         std::unordered_set<std::string> pass_names;
-        if (graph_json.contains("passes")) for (const auto &pass : arrayField(graph_json, "passes", subject)) {
+        for (const auto &pass : arrayField(graph_json, "passes", subject)) {
             auto node = parsePass(pass, index++, scope);
             if (node.name.empty()) refuse("render_graph.node_name_empty@1", subject.detail());
             if (!pass_names.insert(node.name).second) {

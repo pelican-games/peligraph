@@ -952,12 +952,14 @@ struct PassCompilerRefusal {
     bool provider_revision = false;
 };
 
-RenderCompilerProgramResult compilePassFixture(const Json &rendering, const RenderCompilerProgram *program = nullptr) {
+RenderCompilerProgramResult compilePassFixture(const Json &rendering, const RenderCompilerProgram *program = nullptr,
+                                             std::function<void(Json &)> compose_runtime_config = {}) {
     Project project;
     Providers providers;
     FastModuleContainer modules;
     GET_MODULE(EngineLaunchConfig).headless = false;
-    const auto requests = requestsOf(Variants::flat);
+    auto requests = requestsOf(Variants::flat);
+    requests.front().compose_runtime_config = std::move(compose_runtime_config);
     const auto transforms = providers.transforms.snapshot();
     const auto strategies = providers.strategies.snapshot();
     const auto subgraphs = providers.subgraphs.snapshot();
@@ -1187,6 +1189,34 @@ TEST_CASE("RC-3c2b2 D2 compiler entry retains GPU draw source shape and buffer c
         p.erase("material_contract"); p.erase("material_range");
     }, "render_graph.pass_field_ownership@1", {{"graph", "main"}, {"node", "tone"}}, true});
     checkPassCompilerRefusals(base, rows);
+    SECTION("returned IR offsets are aligned independently of JSON parsing") {
+        auto rendering = base;
+        rendering["buffers"][0]["size"] = 64;
+        rendering["buffers"][1]["size"] = 8;
+        rendering["rendering_passes"][0]["passes"][1]["gpu_draw_source"]["max_draw_count"] = 1;
+        for (const bool command : {true, false}) {
+            INFO((command ? "command_offset" : "count_offset"));
+            const auto compiled = [&](std::uint64_t offset) {
+                EditingProgram program;
+                program.edit = [command, offset](RenderGraphIR &ir) {
+                    auto &source = *std::get<MaterialNodeInfo>(ir.graphs.at(0).nodes.at(1).info).gpu_draw_source;
+                    (command ? source.command_offset : source.count_offset) = offset;
+                };
+                return compilePassFixture(rendering, &program);
+            };
+            const auto accepted = compiled(0);
+            const auto definitions = renderingPassDefinitionsOf(*variantOf(accepted, RenderPipelineGraphVariant::flat).render_graph,
+                accepted.generation_resources, generationRenderTargetNames(accepted.generation_resources));
+            const auto &source = definitions.at(0).passes.at(1).materialInfo().gpu_draw_source;
+            REQUIRE(source.has_value());
+            CHECK(source->command_offset == 0);
+            CHECK(source->count_offset == 0);
+            TestSupport::requireNamedRefusal([&] { (void)compiled(2); }, "render_graph.gpu_draw_source_invalid@1",
+                {{"graph", "main"}, {"node", "tone"},
+                 {"field", command ? "gpu_draw_source.command_offset" : "gpu_draw_source.count_offset"},
+                 {"reason", "not_4_byte_aligned"}, {"offset", 2}});
+        }
+    }
     auto segmented = base;
     segmented["rendering_passes"][0]["passes"][1]["material_range"]["count"] = 2;
     segmented["rendering_passes"][0]["passes"][1]["gpu_draw_source"]["layout"] = "draw_queue_segments_v1";
@@ -1372,6 +1402,32 @@ TEST_CASE("RC-3c2b2 D2 compiler entry retains completed sequence structure and f
             "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "tone"}, {"field", "raster_state"}, {"reason", "invalid"}}, true},
     };
     checkPassCompilerRefusals(base, rows);
+    SECTION("shared compute requires an explicit passes array") {
+        auto rendering = base;
+        rendering["render_targets"][2]["usage"].push_back("STORAGE");
+        rendering["compute_tasks"] = Json::array({Json{{"name", "tick"},
+            {"shader", "engine://shaders/compute/fixture"}, {"writes", Json::array({"post"})},
+            {"dispatch", {{"groups", Json::array({1, 1, 1})}}}}});
+        const auto accepted = compilePassFixture(rendering, nullptr,
+            [](Json &config) { config["rendering_passes"][0]["passes"] = Json::array(); });
+        const auto &graph = variantOf(accepted, RenderPipelineGraphVariant::flat).render_graph->graphs.at(0);
+        CHECK(graph.name == "main");
+        REQUIRE(graph.nodes.size() == 1);
+        CHECK(graph.nodes.at(0).name == "tick");
+        const auto definitions = renderingPassDefinitionsOf(*variantOf(accepted, RenderPipelineGraphVariant::flat).render_graph,
+            accepted.generation_resources, generationRenderTargetNames(accepted.generation_resources));
+        CHECK(definitions.at(0).passes.empty());
+        TestSupport::requireNamedRefusal([&] {
+            (void)compilePassFixture(rendering, nullptr, [](Json &config) { config["rendering_passes"][0].erase("passes"); });
+        }, "render_graph.section_invalid@1", {{"graph", "main"}, {"field", "passes"}});
+    }
+    SECTION("the completed graph requires its authored name") {
+        const auto accepted = compilePassFixture(base);
+        CHECK(variantOf(accepted, RenderPipelineGraphVariant::flat).render_graph->graphs.at(0).name == "main");
+        TestSupport::requireNamedRefusal([&] {
+            (void)compilePassFixture(base, nullptr, [](Json &config) { config["rendering_passes"][0].erase("name"); });
+        }, "render_graph.graph_name_invalid@1", {{"index", 0}, {"reason", "missing"}});
+    }
 }
 
 TEST_CASE("RC-3c2b2 D2 compose leaves fullscreen state to the named IR parser",
