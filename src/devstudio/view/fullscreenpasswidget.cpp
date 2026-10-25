@@ -17,6 +17,8 @@
 #include "passfieldownership.hpp"
 #include "renderconfigsection.hpp"
 #include "passshapepolicy.hpp"
+#include "rendergraphparse.hpp"
+#include "renderingjsonnormalize.hpp"
 #include "rasterpass.hpp"
 #include "inspectormodel.hpp"
 #include "viewselectfield.hpp"
@@ -2157,41 +2159,63 @@ struct FullscreenPassWidget::Impl {
                     QString::fromUtf8(error.what()));
         }
 
+        bool shape_observed = false;
         try {
-            std::vector<std::string> non_image_inputs;
+            // A draft has the same graph parse and injected policy as core.
+            // The frame plan publishes buffer kinds; image metadata and name
+            // resolution belong to the separate resource axes below.
+            Json buffers = Json::array();
             for (const auto &[resource_name, kind] : resource_kinds) {
                 if (kind == Pelican::PassShapeResourceKind::buffer) {
-                    non_image_inputs.push_back(resource_name);
+                    buffers.push_back(Json{{"name", resource_name}});
                 }
             }
             auto shape_draft = draft;
             if (!shape_draft.at("output").contains("depth")) shape_draft["output"]["depth"] = nullptr;
-            const auto violations = Pelican::evaluatePassShape(
-                shape_policy,
-                Pelican::passShapeObservationFromJson(
-                    Pelican::validatePassFieldOwnership(shape_draft, {}, "pass editor draft"),
-                    shape_draft, non_image_inputs));
-            QStringList violation_names;
-            for (const auto &violation : violations) {
-                violation_names.push_back(text(
-                    Pelican::passShapeViolationName(violation.kind)));
+            // This axis observes resource roles and cardinalities. Attachment
+            // operations stay in the draft and their own form; they cannot
+            // prevent the parser from reporting the independent shape result.
+            for (const auto *field : {"clear_color", "clear_colors", "color_load_op",
+                                     "color_store_op", "depth_load_op", "depth_store_op"}) {
+                shape_draft.erase(field);
             }
-            pass_shape->setProperty("pelicanPassShapeViolations",
-                                    violation_names);
-            if (violations.empty()) {
-                setAxis(*pass_shape, owner.tr("Pass shape"), "valid",
-                        owner.tr("the injected PassShapePolicy accepts the "
-                                 "input/output shape."));
+            const auto without_operations = [](Json &attachment) {
+                if (attachment.is_object()) {
+                    attachment.erase("load_op");
+                    attachment.erase("store_op");
+                }
+            };
+            auto &color = shape_draft["output"]["color"];
+            if (color.is_array()) {
+                for (auto &attachment : color) without_operations(attachment);
             } else {
-                setAxis(*pass_shape, owner.tr("Pass shape"), "invalid",
-                        text(Pelican::passShapeViolationDescription(
-                            violations.front())));
+                without_operations(color);
             }
+            without_operations(shape_draft["output"]["depth"]);
+            const Json config{{"buffers", std::move(buffers)},
+                {"rendering_passes", Json::array({Json{{"name", plan ? plan->graph : "draft"},
+                    {"passes", Json::array({std::move(shape_draft)})}}})}};
+            (void)Pelican::parseRenderGraph(Pelican::normalizeRenderingJson(config), {}, shape_policy,
+                [&](const std::vector<Pelican::PassShapeViolation> &violations) {
+                    shape_observed = true;
+                    QStringList names;
+                    for (const auto &violation : violations) {
+                        names.push_back(text(Pelican::passShapeViolationName(violation.kind)));
+                    }
+                    pass_shape->setProperty("pelicanPassShapeViolations", names);
+                    setAxis(*pass_shape, owner.tr("Pass shape"), violations.empty() ? "valid" : "invalid",
+                        violations.empty()
+                            ? owner.tr("the injected PassShapePolicy accepts the input/output shape.")
+                            : text(Pelican::passShapeViolationDescription(violations.front())));
+                });
         } catch (const std::exception &error) {
-            pass_shape->setProperty("pelicanPassShapeViolations",
-                                    QStringList{});
-            setAxis(*pass_shape, owner.tr("Pass shape"), "invalid",
-                    QString::fromUtf8(error.what()));
+            // A later field check belongs to its own axis. Shape results
+            // already delivered by the same parser remain authoritative.
+            if (!shape_observed) {
+                pass_shape->setProperty("pelicanPassShapeViolations", QStringList{});
+                setAxis(*pass_shape, owner.tr("Pass shape"), "invalid",
+                        QString::fromUtf8(error.what()));
+            }
         }
 
         if (!plan || !authoring_available) {

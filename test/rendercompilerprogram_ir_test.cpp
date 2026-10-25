@@ -875,4 +875,72 @@ TEST_CASE("RC-3c2b2 named material feedback is rejected at compiler entry with a
         {{"graph", "main"}, {"node", "tone"}, {"target", "depth"}, {"violation", "current_frame_depth_feedback"}});
 }
 
+TEST_CASE("RC-3c2b2 D2 compiler entry retains material filters ranges and variants",
+          "[rc3c2b2][render-compiler][passes][d2]") {
+    const auto compiled = [](const Json &rendering) {
+        Project project;
+        Providers providers;
+        return compile(project, providers, rendering, Variants::flat);
+    };
+    auto base = section(0, false);
+    base["render_targets"].push_back(Json{{"name", "depth"}, {"extent_scale", 1.0}, {"format", "D32_SFLOAT"},
+        {"usage", Json::array({"DEPTH_STENCIL_ATTACHMENT"})}});
+    base["rendering_passes"][0]["passes"][1] = Json{{"name", "tone"}, {"type", "material"},
+        {"material_contract", "forward_opaque_v1"}, {"material_variant", "silhouette"}, {"material_filter", {{"include", {"outlined", "character"}}, {"exclude", {"hidden"}}}},
+        {"material_range", {{"start", 3}, {"count", 7}}}, {"output", {{"color", "post"}, {"depth", "depth"}}}};
+    struct Refusal { std::string label; std::function<void(Json &)> edit; Json fields; std::string detail; };
+    std::vector<Refusal> refusals{
+        {"filter object", [](Json &p) { p["material_filter"] = 1; }, {{"field", "material_filter"}, {"reason", "not_an_object"}}, {}},
+        {"filter key", [](Json &p) { p["material_filter"] = {{"any", {"outlined"}}}; }, {{"field", "material_filter"}, {"reason", "unknown_field"}, {"key", "any"}}, {}},
+        {"filter array", [](Json &p) { p["material_filter"]["include"] = "outlined"; }, {{"field", "material_filter"}, {"reason", "not_a_string_array"}}, {}},
+        {"filter tag type", [](Json &p) { p["material_filter"]["include"] = {1}; }, {{"field", "material_filter"}, {"reason", "not_a_string_array"}}, {}},
+        {"empty tag", [](Json &p) { p["material_filter"]["include"] = {""}; }, {{"field", "material_filter"}, {"reason", "invalid"}}, "tag is empty or too long"},
+        {"duplicate tag", [](Json &p) { p["material_filter"]["include"] = {"outlined", "outlined"}; }, {{"field", "material_filter"}, {"reason", "invalid"}}, "duplicate tag: outlined"},
+        {"include exclude overlap", [](Json &p) { p["material_filter"]["exclude"] = {"outlined"}; }, {{"field", "material_filter"}, {"reason", "invalid"}}, "includes and excludes the same tag"},
+        {"range object", [](Json &p) { p["material_range"] = 1; }, {{"field", "material_range"}, {"reason", "not_an_object"}}, {}},
+        {"range key", [](Json &p) { p["material_range"]["typo"] = 1; }, {{"field", "material_range.typo"}, {"reason", "unknown_field"}}, {}},
+        {"unknown contract", [](Json &p) { p["material_contract"] = "unknown_v1"; }, {{"field", "material_contract"}, {"reason", "unknown"}}, {}},
+        {"variant contract", [](Json &p) { p["material_variant"] = "silhouette"; p.erase("material_contract"); }, {{"field", "material_variant"}, {"reason", "requires_material_contract"}}, {}},
+        {"variant filter", [](Json &p) { p["material_variant"] = "silhouette"; p["material_filter"]["include"] = Json::array(); }, {{"field", "material_variant"}, {"reason", "requires_material_filter_include"}}, {}},
+        {"variant name", [](Json &p) { p["material_variant"] = "bad/name"; }, {{"field", "material_variant"}, {"reason", "invalid_name"}}, {}},
+        {"states schema", [](Json &p) { p["material_output_states"] = Json::object(); }, {{"field", "material_output_states"}, {"reason", "requires_material_outputs"}}, {}},
+    };
+    for (const auto *field : {"start", "count"}) {
+        const std::string path = "material_range." + std::string{field};
+        for (const auto &value : std::vector<Json>{-1, 1.5, "3", nullptr, 4294967296ULL}) {
+            const std::string reason = value.is_number_unsigned() ? "too_large" : "requires_unsigned_integer";
+            refusals.push_back({path + "=" + value.dump(), [field, value](Json &p) { p["material_range"][field] = value; },
+                {{"field", path}, {"reason", reason}}, {}});
+        }
+        refusals.push_back({path + " missing", [field](Json &p) { p["material_range"].erase(field); },
+            {{"field", path}, {"reason", "requires_unsigned_integer"}}, {}});
+    }
+    for (const auto &entry : refusals) {
+        DYNAMIC_SECTION(entry.label) {
+            auto invalid = base;
+            entry.edit(invalid["rendering_passes"][0]["passes"][1]);
+            auto fields = entry.fields;
+            fields["graph"] = "main"; fields["node"] = "tone";
+            TestSupport::requireNamedRefusal([&] { (void)compiled(invalid); }, "render_graph.node_field_invalid@1", fields);
+            if (!entry.detail.empty()) {
+                try { (void)compiled(invalid); FAIL("invalid material accepted"); }
+                catch (const GraphRegistryError &error) {
+                    CHECK(error.detail().at("detail").get<std::string>().find(entry.detail) != std::string::npos);
+                }
+            }
+            const auto accepted = compiled(base);
+            const auto &variant = variantOf(accepted, RenderPipelineGraphVariant::flat);
+            const auto names = generationRenderTargetNames(accepted.generation_resources);
+            const auto definitions = renderingPassDefinitionsOf(*variant.render_graph, accepted.generation_resources, names);
+            const auto &info = definitions.at(0).passes.at(1).materialInfo();
+            CHECK(info.material_variant == std::optional<std::string>{"silhouette"});
+            REQUIRE(info.material_filter);
+            CHECK(info.material_filter->include == std::vector<std::string>{"character", "outlined"});
+            CHECK(info.material_filter->exclude == std::vector<std::string>{"hidden"});
+            CHECK(info.material_start == 3);
+            CHECK(info.material_count == 7);
+        }
+    }
+}
+
 } // namespace Pelican

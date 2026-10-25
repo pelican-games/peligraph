@@ -58,9 +58,11 @@ inline nlohmann::json wrapSingleGraph(const nlohmann::json &config) {
     return result;
 }
 
-inline RenderGraphIR renderGraphOf(const nlohmann::json &config) {
+inline RenderGraphIR renderGraphOf(
+    const nlohmann::json &config,
+    const PassShapePolicy &shape_policy = defaultPassShapePolicy()) {
     return parseRenderGraph(normalizeRenderingJson(wrapSingleGraph(config)),
-                            buildPassFieldOwnershipCapabilities());
+                            buildPassFieldOwnershipCapabilities(), shape_policy);
 }
 
 // The planner's view of every graph (frameGraphDefinitionOf).

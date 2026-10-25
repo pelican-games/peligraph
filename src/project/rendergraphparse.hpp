@@ -1,9 +1,11 @@
 #pragma once
 
 #include "passfieldownership.hpp"
+#include "passshapepolicy.hpp"
 #include "rendergraphir.hpp"
 
 #include <nlohmann/json.hpp>
+#include <functional>
 
 namespace Pelican {
 
@@ -68,8 +70,15 @@ namespace Pelican {
 // unresolved (ImageResource::format_unresolved).
 // `reason` is a fixed word per check; `detail` the refusing helper's sentence
 // where a shared project helper refuses.
+// Optional synchronous diagnostics for editors with separate validation axes.
+// These are the violations evaluated by this parse, before later declaration
+// checks; the sink does not change acceptance or bypass any check.
+using PassShapeDiagnosticSink = std::function<void(const std::vector<PassShapeViolation> &)>;
+
 RenderGraphIR parseRenderGraph(const nlohmann::json &document,
-                               PassFieldOwnershipCapabilities capabilities);
+                               PassFieldOwnershipCapabilities capabilities,
+                               const PassShapePolicy &shape_policy = defaultPassShapePolicy(),
+                               const PassShapeDiagnosticSink &shape_diagnostics = {});
 
 // RC-3c1b: how many times parseRenderGraph has run on this thread (one
 // parse per completed revision; tests count the production path with it).

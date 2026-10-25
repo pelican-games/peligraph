@@ -918,6 +918,8 @@ struct GraphScope {
     PassFieldOwnershipCapabilities capabilities;
     const LogicalTypeRegistry *types = nullptr;
     const RenderGraphIR *ir = nullptr;
+    const PassShapePolicy *shape_policy = nullptr;
+    const PassShapeDiagnosticSink *shape_diagnostics = nullptr;
 };
 
 NodeIR parsePass(const Json &pass, std::size_t index, const GraphScope &scope) {
@@ -957,6 +959,7 @@ NodeIR parsePass(const Json &pass, std::size_t index, const GraphScope &scope) {
     const auto check_shape = [&](const PassShapePolicy &policy) {
         const auto violations = evaluatePassShape(
             policy, passShapeObservationOf(type, *scope.ir, node));
+        if (*scope.shape_diagnostics) (*scope.shape_diagnostics)(violations);
         if (!violations.empty()) {
             refuse("render_graph.pass_shape@1",
                    subject.detail({{"violation", std::string{passShapeViolationName(violations.front().kind)}},
@@ -997,7 +1000,7 @@ NodeIR parsePass(const Json &pass, std::size_t index, const GraphScope &scope) {
         }
     }
     if (type == RenderPassType::canonical_anchor) {
-        check_shape(defaultPassShapePolicy());
+        check_shape(*scope.shape_policy);
         return node;
     }
     if (type == RenderPassType::snapshot_copy) {
@@ -1014,7 +1017,7 @@ NodeIR parsePass(const Json &pass, std::size_t index, const GraphScope &scope) {
                                         .access = ResourceUseAccess::write,
                                         .intent = LogicalAccessIntent::transfer});
         node.info = std::move(info);
-        check_shape(defaultPassShapePolicy());
+        check_shape(*scope.shape_policy);
         return node;
     }
     if (!pass.contains("output") || !pass.at("output").is_object()) {
@@ -1133,7 +1136,7 @@ NodeIR parsePass(const Json &pass, std::size_t index, const GraphScope &scope) {
                                            depth_store, depth_defaults));
     }
 
-    check_shape(defaultPassShapePolicy());
+    check_shape(*scope.shape_policy);
     passExecutionDeclaration(pass, node, std::move(material), *scope.ir, subject);
     return node;
 }
@@ -2001,7 +2004,9 @@ thread_local std::size_t parse_count = 0;
 std::size_t renderGraphParseCount() noexcept { return parse_count; }
 
 RenderGraphIR parseRenderGraph(const nlohmann::json &document,
-                               PassFieldOwnershipCapabilities capabilities) {
+                               PassFieldOwnershipCapabilities capabilities,
+                               const PassShapePolicy &shape_policy,
+                               const PassShapeDiagnosticSink &shape_diagnostics) {
     ++parse_count;
     if (!document.is_object()) refuse("render_graph.not_object@1", {{"field", "document"}});
     const Json &config = isRenderGraphRoot(document) ? renderingSectionOf(document) : document;
@@ -2069,7 +2074,7 @@ RenderGraphIR parseRenderGraph(const nlohmann::json &document,
                    {{"index", graph_index}, {"graph", graph.name}, {"reason", "duplicate"}});
         }
         const Subject subject{graph.name, {}};
-        const GraphScope scope{graph.name, capabilities, &types, &ir};
+        const GraphScope scope{graph.name, capabilities, &types, &ir, &shape_policy, &shape_diagnostics};
         // RC-3c2a: nothing composes a graph's own declarations (a graph
         // document's images and a loop's copies are the config's), and
         // nothing would register them. RC-3c2b1: nor a graph's own compute

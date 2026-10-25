@@ -8,7 +8,7 @@
 #include "../src/core/loader/engineresources.hpp"
 #include "compute_task_test_support.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
-#include "../src/core/renderingpass/materialpassinfojsonparser.hpp"
+#include "rendering_pass_test_support.hpp"
 #include "../src/core/renderingpass/passfieldownershipcapabilities.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 #include "../src/core/renderingpass/rendertargetmetadata.hpp"
@@ -1238,33 +1238,17 @@ TEST_CASE("RC-3c1b IR: ray_task_acceleration_structures selects a declared struc
 
 namespace {
 
-// The execution parsers that refused the (c) group before: the material
-// pass's material_resources parser (with the registered targets' names) and
-// the compute task parser.
+// Check the public test-support route for the material nodes and compute
+// tasks, retaining each refusal and its valid neighbor after leaf removal.
 std::string executionRefusal(const Json &config) {
     try {
-        const auto definitions = Pelican::test_support::renderTargetDefinitionsOf(
-            Json{{"render_targets", config.value("render_targets", Json::array())}});
-        std::unordered_map<std::string, GlobalRenderTargetId> ids;
-        for (std::size_t index = 0; index < definitions.size(); ++index) {
-            ids.emplace(definitions[index].name, GlobalRenderTargetId{static_cast<int>(index)});
-        }
-        std::unordered_set<std::string> buffers;
-        for (const auto &buffer : config.value("buffers", Json::array())) {
-            buffers.insert(buffer.at("name").get<std::string>());
-        }
-        const RenderTargetNameResolver names{[&](const std::string &name) {
-            const auto found = ids.find(name);
-            return found == ids.end() ? noRenderTargetId() : found->second;
-        }};
-        for (const auto &pass_json : config.at("rendering_passes").at(0).at("passes")) {
-            if (pass_json.value("type", std::string{}) != "material") continue;
-            PassDefinition pass_definition;
-            pass_definition.name = pass_json.at("name").get<std::string>();
-            pass_definition.pass_info = MaterialPassInfo{};
-            parseMaterialPassResourcesFromJson(pass_definition, pass_json, names, buffers);
-        }
-        (void)Pelican::TestSupport::computeTaskDefinitionsOf(config, nullptr);
+        auto material_config = config;
+        auto &passes = material_config["rendering_passes"][0]["passes"];
+        std::erase_if(passes.get_ref<Json::array_t &>(), [](const Json &pass) {
+            return pass.value("type", std::string{}) != "material";
+        });
+        (void)TestSupport::renderingPassDefinitionsOf(material_config);
+        (void)TestSupport::computeTaskDefinitionsOf(config, nullptr);
     } catch (const std::exception &error) {
         return error.what();
     }
@@ -1273,11 +1257,10 @@ std::string executionRefusal(const Json &config) {
 
 } // namespace
 
-TEST_CASE("RC-3c1b refusals: the execution parsers refuse what the IR refuses first",
+TEST_CASE("RC-3c1b refusals: execution conversion retains the IR refusal controls",
           "[rendergraphir][rc3c1b][refusal]") {
-    // The (c) group RC-3c1a moved ahead of the execution parsers: the IR
-    // refuses them by name; the execution parser still refuses the same
-    // input (the IR's refusal comes first on the production path).
+    // The (c) group RC-3c1a moved ahead of execution: the shared parse
+    // refuses each invalid input before conversion, and keeps its control.
     const auto task = [](Json extra) {
         Json result{{"name", "task"},
                     {"shader", "engine://shaders/compute/fixture"},

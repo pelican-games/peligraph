@@ -7,7 +7,8 @@
 #include "../src/project/renderfeatureoverlay.hpp"
 #include "../src/project/renderpipeline.hpp"
 #include "../src/core/renderer/fullscreenpassrenderer.hpp"
-#include "../src/core/renderingpass/fullscreenpassinfojsonparser.hpp"
+#include "rendering_pass_test_support.hpp"
+#include <set>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -775,10 +776,37 @@ TEST_CASE(
         6, 1, 0, 0};
     for (const auto &entry : entries) {
         DYNAMIC_SECTION(entry.identity) {
-            const auto draw = fullscreenDrawCommand(
-                parseFullscreenPassInfoFromJson(
-                    entry.pass,
-                    entry.pass.at("name").get<std::string>()));
+            // The manifest contains individual pass declarations, without
+            // their composed graph. Supply fixture resources for their exact
+            // input/output names; leave every authored pass value unchanged.
+            using Json = nlohmann::json;
+            auto config = TestSupport::wrapSingleGraph(Json{{"passes", Json::array({entry.pass})}});
+            config = normalizeRenderingJson(config);
+            const auto &pass = config.at("rendering_passes").at(0).at("passes").at(0);
+            std::set<std::string> image_names;
+            std::set<std::string> buffer_names;
+            if (pass.contains("resource_ports")) {
+                for (const auto &port : pass.at("resource_ports")) {
+                    if (port.value("kind", "image") == "buffer") buffer_names.insert(port.at("resource").get<std::string>());
+                }
+            }
+            for (auto name : pass.value("input", Json::array())) {
+                auto resource = name.get<std::string>();
+                if (resource.ends_with("@history")) resource.resize(resource.size() - std::string_view{"@history"}.size());
+                if (!buffer_names.contains(resource) && resource != "swapchain") image_names.insert(resource);
+            }
+            for (const auto &attachment : pass.at("output").at("color")) {
+                const auto name = attachment.at("target").get<std::string>();
+                if (name != "swapchain") image_names.insert(name);
+            }
+            config["render_targets"] = Json::array();
+            for (const auto &name : image_names) config["render_targets"].push_back(Json{
+                {"name", name}, {"extent_scale", 1.0}, {"format", "R8G8B8A8_UNORM"}, {"history", true},
+                {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}});
+            config["buffers"] = Json::array();
+            for (const auto &name : buffer_names) config["buffers"].push_back(Json{{"name", name}, {"size", 16}});
+            const auto definitions = TestSupport::renderingPassDefinitionsOf(config);
+            const auto draw = fullscreenDrawCommand(definitions.at(0).passes.at(0).fullscreenInfo());
             const bool bloom_upsample =
                 std::find(
                     bloom_upsample_identities.begin(),

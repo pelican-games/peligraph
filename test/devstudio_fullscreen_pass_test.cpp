@@ -23,7 +23,7 @@
 #include "renderpipeline.hpp"
 #include "rasterpass.hpp"
 #include "renderingpass/frameplanner.hpp"
-#include "renderingpass/passdefinitionjsonparser.hpp"
+#include "renderingpass/passdefinitionfromir.hpp"
 #include "renderingpass/rendertargetmetadataresolver.hpp"
 #include "renderingpass/rendertargetnameresolver.hpp"
 #include "render_graph_ir_test_support.hpp"
@@ -664,7 +664,9 @@ const CoreShapeResources &defaultCoreShapeResources() {
 // planFrameGraph's named refusals), and its resources checked as the compiler
 // program's completion checks them (validateRenderGraphResources over the
 // declared resources). RC-3c2a moved those checks out of the pass parse.
-void requireCoreShapeInGraph(const Json &pass, const CoreShapeResources &resources) {
+Pelican::RenderGraphIR requireCoreShapeInGraph(
+    const Json &pass, const CoreShapeResources &resources,
+    const Pelican::PassShapePolicy &policy = Pelican::defaultPassShapePolicy()) {
     Json config{{"render_targets", Json::array()}, {"buffers", Json::array()}, {"passes", Json::array({pass})}};
     for (const auto &name : resources.render_targets) {
         config["render_targets"].push_back(
@@ -679,17 +681,18 @@ void requireCoreShapeInGraph(const Json &pass, const CoreShapeResources &resourc
     std::vector<std::string> buffers{resources.buffers.begin(), resources.buffers.end()};
     std::ranges::sort(buffers);
     for (const auto &name : buffers) config["buffers"].push_back(Json{{"name", name}, {"size", 16}});
-    const auto ir = Pelican::TestSupport::renderGraphOf(config);
+    const auto ir = Pelican::TestSupport::renderGraphOf(config, policy);
     for (const auto &graph : ir.graphs) (void)Pelican::planRenderGraph(ir, graph);
     Pelican::validateRenderGraphResources(ir, Pelican::resolveDeclaredGenerationResources(ir, {16, 16}));
+    return ir;
 }
 
-// The production checks (requireCoreShapeInGraph), then the execution's pass
-// parse with `policy` (the injected shape policy).
+// The same injected policy enters the one graph parser, followed by
+// planning, resource validation and the production IR-to-pass conversion.
 Pelican::PassDefinition parseCoreShape(
     const Json &pass, const Pelican::PassShapePolicy &policy,
     const CoreShapeResources &resources = defaultCoreShapeResources()) {
-    requireCoreShapeInGraph(pass, resources);
+    const auto ir = requireCoreShapeInGraph(pass, resources, policy);
     const Pelican::RenderTargetNameResolver names{
         [&resources](const std::string &name) {
             const auto found =
@@ -700,26 +703,8 @@ Pelican::PassDefinition parseCoreShape(
                              static_cast<int>(
                                  found - resources.render_targets.begin())};
         }};
-    const Pelican::RenderTargetMetadataResolver metadata{
-        [&resources](Pelican::GlobalRenderTargetId id) {
-            if (id.value < 0 ||
-                static_cast<std::size_t>(id.value) >=
-                    resources.render_targets.size()) {
-                throw std::runtime_error(
-                    "unexpected shape target metadata lookup");
-            }
-            const auto &name = resources.render_targets[
-                static_cast<std::size_t>(id.value)];
-            return Pelican::RenderTargetMetadata{
-                .name = name,
-                .usage = Pelican::parseAuthoredImageUsage(coreShapeUsage(resources, name)),
-                .format = Pelican::ImageFormat::r8g8b8a8_unorm,
-                .extent = Pelican::ResolvedResourceExtent{16, 16},
-                .history = resources.history_targets.contains(name),
-            };
-        }};
-    return Pelican::parsePassDefinitionFromJson(
-        pass, names, metadata, policy, resources.buffers);
+    const auto declared = Pelican::resolveDeclaredGenerationResources(ir, {16, 16});
+    return Pelican::renderingPassDefinitionsOf(ir, declared, names).at(0).passes.at(0);
 }
 
 bool coreAcceptsShape(
@@ -1994,15 +1979,19 @@ TEST_CASE(
          {{"vertex", "engine://fullscreen"},
           {"fragment", "engine://fullscreen"}}},
     };
+    const auto core_before = Pelican::renderGraphParseCount();
     REQUIRE(coreAcceptsShape(authored, production));
     REQUIRE_FALSE(coreAcceptsShape(authored, requires_input));
+    CHECK(Pelican::renderGraphParseCount() == core_before + 2);
 
     RefreshHarness production_refresh;
     FullscreenPassWidget production_form{production_refresh.driver(),
                                          production};
     production_form.receiveResult(
         QByteArray::fromStdString(shapePlan().dump()));
+    const auto production_before = Pelican::renderGraphParseCount();
     driveShapeDraft(production_form, {}, {"output_a"}, std::nullopt);
+    CHECK(Pelican::renderGraphParseCount() > production_before);
     REQUIRE(axisState(
                 production_form,
                 "pelican.fullscreenPass.axis.passShape") == "valid");
@@ -2012,7 +2001,9 @@ TEST_CASE(
                                        requires_input};
     injected_form.receiveResult(
         QByteArray::fromStdString(shapePlan().dump()));
+    const auto injected_before = Pelican::renderGraphParseCount();
     driveShapeDraft(injected_form, {}, {"output_a"}, std::nullopt);
+    CHECK(Pelican::renderGraphParseCount() > injected_before);
     REQUIRE(axisState(
                 injected_form,
                 "pelican.fullscreenPass.axis.passShape") == "invalid");
