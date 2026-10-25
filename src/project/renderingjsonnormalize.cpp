@@ -356,6 +356,22 @@ void retargetColorOutputs(nlohmann::json &pass, const TargetRename &rename) {
     (void)colorTargets(pass);
     const auto *colors = attachmentsOf(pass, "color");
     if (colors == nullptr) return;
+    // Clear overrides name the same attachments. Keep those references in
+    // step with compose's HDR alias and the preview's capture target.
+    if (auto clear = pass.find("clear_colors"); clear != pass.end() && clear->is_object()) {
+        auto rewritten = nlohmann::json::object();
+        for (auto value = clear->begin(); value != clear->end(); ++value) {
+            const auto renamed = rename(value.key());
+            const auto key = renamed.value_or(value.key());
+            if (rewritten.contains(key)) {
+                throw GraphRegistryError("render_graph.node_field_invalid@1",
+                    {{"node", pass.value("name", std::string{})}, {"field", "clear_colors"},
+                     {"resource", key}, {"reason", "retarget_collision"}});
+            }
+            rewritten[key] = value.value();
+        }
+        *clear = std::move(rewritten);
+    }
     for (auto &entry : pass.at("output").at("color")) {
         auto &target = entry.at("target");
         if (auto renamed = rename(target.get<std::string>())) target = std::move(*renamed);

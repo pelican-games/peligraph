@@ -8,6 +8,8 @@
 #include "materialformat.hpp"
 #include "materialscreeninput.hpp"
 #include "passshapepolicy.hpp"
+#include "passshaderdefines.hpp"
+#include "shadersourceresolver.hpp"
 #include "rasterrayquery.hpp"
 #include "rayrecordabi.hpp"
 #include "raytracingrefusal.hpp"
@@ -21,6 +23,7 @@
 #include <functional>
 #include <initializer_list>
 #include <limits>
+#include <map>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -70,6 +73,8 @@ auto guarded(const Subject &subject, std::string_view field,
              std::string_view reason, Fn &&fn) -> decltype(fn()) {
     try {
         return fn();
+    } catch (const PassShaderDefineError &) {
+        throw;
     } catch (const GraphRegistryError &) {
         throw;
     } catch (const std::exception &error) {
@@ -691,12 +696,228 @@ void appendMaterialResources(const Json &pass, NodeIR &node, const Subject &subj
     }
 }
 
+// ---- pass execution declarations (shape here, required stages in core)
+
+void onlyKeys(const Json &object, std::initializer_list<std::string_view> keys,
+              const Subject &subject, std::string_view field) {
+    if (!object.is_object()) subject.field(field, "not_an_object");
+    for (auto entry = object.begin(); entry != object.end(); ++entry) {
+        if (std::find(keys.begin(), keys.end(), entry.key()) == keys.end()) {
+            subject.field(std::string{field} + "." + entry.key(), "unknown_field");
+        }
+    }
+}
+
+PassShaderDeclaration passShader(const Json &pass, const Subject &subject,
+                                 bool raster) {
+    PassShaderDeclaration result;
+    const auto shader = pass.find("shader");
+    if (shader == pass.end()) return result;
+    result.shader_declared = true;
+    if (raster) onlyKeys(*shader, {"vertex", "fragment", "implementation", "defines"}, subject, "shader");
+    else onlyKeys(*shader, {"vertex", "skinned_vertex", "fragment", "defines"}, subject, "shader");
+    const auto stage = [&](const char *field) -> std::optional<std::string> {
+        const auto found = shader->find(field);
+        if (found == shader->end()) return {};
+        if (!found->is_string()) subject.field(std::string{"shader."} + field, "requires_string");
+        auto ref = found->get<std::string>();
+        if (hasKnownShaderSourceExtension(ref, ShaderSourceStage::vertex)) {
+            subject.field(std::string{"shader."} + field, "explicit_extension", {{"ref", ref}});
+        }
+        return ref;
+    };
+    result.vertex_shader = stage("vertex");
+    result.skinned_vertex_shader = stage("skinned_vertex");
+    result.fragment_shader = stage("fragment");
+    return result;
+}
+
+std::array<double, 4> passClearColor(const Json &value, const Subject &subject,
+                                    std::string_view field) {
+    if (!value.is_array() || value.size() != 4) subject.field(field, "requires_four_numbers");
+    std::array<double, 4> result;
+    for (std::size_t i = 0; i < result.size(); ++i) {
+        if (!value.at(i).is_number()) subject.field(field, "requires_four_numbers");
+        result[i] = value.at(i).get<double>();
+        if (!std::isfinite(result[i])) subject.field(field, "requires_finite_numbers");
+    }
+    return result;
+}
+
+void passExecutionDeclaration(const Json &pass, NodeIR &node,
+                               MaterialNodeInfo material, const RenderGraphIR &ir,
+                               const Subject &subject) {
+    const bool fullscreen = node.shape == RenderNodeShape::fullscreen ||
+                            node.shape == RenderNodeShape::output_transform;
+    const bool raster = node.shape == RenderNodeShape::raster;
+    std::vector<std::string> colors;
+    std::size_t image_inputs = 0;
+    bool depth = false;
+    std::set<std::string, std::less<>> ports;
+    std::map<std::string, bool, std::less<>> material_reads;
+    // Presence matters even for empty bindings and an empty/null input.
+    for (const auto *field : {"screen_inputs", "surface_resources", "material_resources"}) {
+        if (pass.contains(field) && pass.contains("input")) subject.field(field, "replaces_positional_input");
+    }
+    for (const auto &use : node.uses) {
+        if (use.role == ResourceUseRole::color_attachment) colors.push_back(use.resource);
+        if (use.role == ResourceUseRole::depth_attachment) depth = true;
+        const bool buffer = findConfigBuffer(ir, use.resource) != nullptr;
+        if (use.role == ResourceUseRole::input) {
+            if (buffer && use.history) subject.field("input", "buffer_history", {{"resource", use.resource}});
+            if (!buffer) ++image_inputs;
+        }
+        if ((fullscreen || raster) && use.role == ResourceUseRole::resource_port) {
+            const auto authored = use.resource + (use.history ? "@history" : "");
+            if (!ports.insert(authored).second) subject.field("resource_ports", "duplicate_resource", {{"resource", authored}});
+            ShaderResourcePortDefinition port;
+            port.kind = use.binding.kind;
+            port.access = use.binding.access;
+            const auto expected = port.kind == ShaderResourcePortKind::buffer
+                                      ? ShaderResourcePortAccess::storage : ShaderResourcePortAccess::sampled;
+            if (effectiveShaderResourcePortAccess(port, port.kind != ShaderResourcePortKind::buffer, false) != expected) {
+                subject.field("resource_ports", "invalid_access", {{"port", use.binding.port}});
+            }
+        }
+        const bool contract_input = use.role == ResourceUseRole::screen_input || use.role == ResourceUseRole::surface_resource;
+        if (contract_input || use.role == ResourceUseRole::material_resource) {
+            const auto field = resourceUseRoleName(use.role);
+            if (use.resource.empty() || use.binding.port.empty()) subject.field(field, "empty_name");
+            if (use.role == ResourceUseRole::surface_resource && !isFeatureOwnedMaterialPassInputContract(use.binding.port)) {
+                subject.field(field, "not_feature_owned", {{"port", use.binding.port}});
+            }
+            const auto [found, inserted] = material_reads.emplace(use.resource, use.history);
+            if (!inserted && found->second != use.history) subject.field(field, "current_and_history", {{"resource", use.resource}});
+        }
+        if (use.role == ResourceUseRole::material_resource) {
+            ShaderResourcePortDefinition port;
+            port.kind = use.binding.kind;
+            port.access = use.binding.access;
+            const auto field = "material_resources." + use.binding.port;
+            if (buffer) {
+                if (use.history) subject.field(field, "buffer_history");
+                if (effectiveShaderResourcePortAccess(port, false, false) != ShaderResourcePortAccess::storage) subject.field(field, "requires_storage");
+                if (use.binding.view != ShaderResourcePortView::shared_2d) subject.field(field, "buffer_image_view");
+                const auto &encoded = pass.at("material_resources").at(use.binding.port);
+                if (encoded.is_object() && encoded.contains("sampling")) subject.field(field, "buffer_sampling");
+            } else if (effectiveShaderResourcePortAccess(port, true, false) != ShaderResourcePortAccess::sampled) {
+                subject.field(field, "requires_sampled");
+            }
+        }
+    }
+    if (node.shape == RenderNodeShape::material) {
+        // Positional material inputs have no material descriptor contract.
+        if (std::any_of(node.uses.begin(), node.uses.end(), [](const auto &use) { return use.role == ResourceUseRole::input; })) {
+            subject.field("input", "requires_named_material_inputs");
+        }
+    }
+    if (const auto clear = pass.find("clear_color"); clear != pass.end()) node.clear_color = passClearColor(*clear, subject, "clear_color");
+    if (const auto clear = pass.find("clear_colors"); clear != pass.end()) {
+        if (!clear->is_object()) subject.field("clear_colors", "not_an_object");
+        node.color_clear_values.assign(colors.size(), node.clear_color);
+        for (auto value = clear->begin(); value != clear->end(); ++value) {
+            const auto found = std::find(colors.begin(), colors.end(), value.key());
+            if (found == colors.end()) subject.field("clear_colors", "not_a_color_output", {{"resource", value.key()}});
+            node.color_clear_values[static_cast<std::size_t>(found - colors.begin())] = passClearColor(value.value(), subject, "clear_colors." + value.key());
+        }
+    }
+    if (const auto settings = pass.find("input_settings"); settings != pass.end()) {
+        if (!fullscreen && !raster) subject.field("input_settings", "requires_fullscreen_or_raster");
+        if (!settings->is_array()) subject.field("input_settings", "not_an_array");
+        if (settings->size() > image_inputs) subject.field("input_settings", "too_many_entries");
+        for (const auto &entry : *settings) {
+            node.input_settings.push_back(entry.is_null() ? ShaderResourceInputSetting{} : guarded(subject, "input_settings", "invalid", [&] {
+                return parseShaderResourceInputSetting(entry, "pass '" + node.name + "' input_settings");
+            }));
+        }
+    }
+    node.shader_declaration_parsed = true;
+    if (fullscreen) {
+        FullscreenNodeInfo info;
+        static_cast<PassShaderDeclaration &>(info) = passShader(pass, subject, false);
+        if (const auto implementation = pass.find("implementation"); implementation != pass.end()) {
+            onlyKeys(*implementation, {"provider"}, subject, "implementation");
+            auto provider = requiredString(*implementation, "provider", subject, "implementation.provider");
+            if (provider.empty() || provider.size() > maximumPassImplementationProviderNameBytes) subject.field("implementation.provider", "empty_or_too_long");
+            info.implementation_provider = std::move(provider);
+        }
+        if (pass.contains("raster_state")) info.raster_state = guarded(subject, "raster_state", "invalid", [&] {
+            return parseFullscreenRasterFixedFunctionState(pass, "pass '" + node.name + "'");
+        });
+        if (pass.contains("push_constants")) {
+            const auto value = requiredString(pass, "push_constants", subject, "push_constants");
+            if (value == "none") info.push_constants = FullscreenPushConstantData::eNone;
+            else if (value == "camera_position") info.push_constants = FullscreenPushConstantData::eCameraPosition;
+            else if (value == "projection_view") info.push_constants = FullscreenPushConstantData::eProjectionView;
+            else subject.field("push_constants", "unknown_value");
+        }
+        if (const auto lighting = pass.find("uses_light_data"); lighting != pass.end()) {
+            if (!lighting->is_boolean()) subject.field("uses_light_data", "requires_boolean");
+            info.uses_light_data = lighting->get<bool>();
+        }
+        if (const auto sampling = pass.find("input_sampling"); sampling != pass.end()) {
+            if (!ports.empty()) subject.field("input_sampling", "replaced_by_resource_ports");
+            if (!sampling->is_array()) subject.field("input_sampling", "not_an_array");
+            if (sampling->size() != image_inputs) subject.field("input_sampling", "image_input_count_mismatch");
+            for (const auto &entry : *sampling) {
+                info.input_sampling.push_back(guarded(subject, "input_sampling", "invalid", [&] {
+                    return *parseShaderResourceInputSetting(Json{{"sampling", entry}}, "pass '" + node.name + "' input_sampling").sampling;
+                }));
+            }
+        }
+        if (info.shader_declared) info.shader_defines = guarded(subject, "shader.defines", "invalid", [&] { return parsePassShaderDefines(pass.at("shader"), node.name); });
+        if (info.vertex_shader == "engine://fullscreen" && info.raster_state && info.raster_state->topology != RasterPrimitiveTopology::triangle_list) {
+            subject.field("raster_state.topology", "fullscreen_requires_triangle_list");
+        }
+        node.info = std::move(info);
+    } else if (raster) {
+        RasterNodeInfo info;
+        static_cast<PassShaderDeclaration &>(info) = passShader(pass, subject, true);
+        info.draw_declared = pass.contains("draw");
+        info.contract = guarded(subject, "draw/raster_state/clip_y", "invalid", [&] {
+            return parseRasterPassContract(pass, colors.size(), depth, "pass '" + node.name + "'", false);
+        });
+        if (info.shader_declared) {
+            const auto &shader = pass.at("shader");
+            if (shader.contains("implementation")) info.shader_implementation = requiredString(shader, "implementation", subject, "shader.implementation");
+            guarded(subject, "shader.implementation", "not_a_canonical_id", [&] {
+                if (semanticTypeIdName(parseSemanticTypeId(info.shader_implementation)) != info.shader_implementation) subject.field("shader.implementation", "not_a_canonical_id");
+            });
+            info.shader_defines = guarded(subject, "shader.defines", "invalid", [&] { return parsePassShaderDefines(shader, node.name); });
+        }
+        node.info = std::move(info);
+    } else if (node.shape == RenderNodeShape::material) {
+        if (const auto states = pass.find("material_output_states"); states != pass.end()) {
+            if (!material.output_schema) subject.field("material_output_states", "requires_material_outputs");
+            material.output_states = guarded(subject, "material_output_states", "invalid", [&] {
+                return parseMaterialOutputAttachmentStates(*states, *material.output_schema, "pass '" + node.name + "'");
+            });
+        }
+        if (const auto range = pass.find("material_range"); range != pass.end()) {
+            onlyKeys(*range, {"start", "count"}, subject, "material_range");
+            material.material_start = uint32Field(*range, "start", subject, "material_range.start");
+            material.material_count = uint32Field(*range, "count", subject, "material_range.count");
+        }
+        node.info = std::move(material);
+    } else if (node.shape != RenderNodeShape::ui && node.shape != RenderNodeShape::imgui) {
+        AuxiliaryNodeInfo info;
+        static_cast<PassShaderDeclaration &>(info) = passShader(pass, subject, false);
+        // A shadow pass has no fragment stage. Leave required stages to the
+        // execution boundary, including an explicitly empty shader object.
+        if (node.shape == RenderNodeShape::shadow_depth && info.fragment_shader) subject.field("shader.fragment", "unsupported_stage");
+        if (pass.contains("shader") && pass.at("shader").contains("defines")) subject.field("shader.defines", "unsupported_field");
+        node.info = std::move(info);
+    }
+}
+
+
 // ---- nodes
 
 struct GraphScope {
     std::string graph;
     PassFieldOwnershipCapabilities capabilities;
     const LogicalTypeRegistry *types = nullptr;
+    const RenderGraphIR *ir = nullptr;
 };
 
 NodeIR parsePass(const Json &pass, std::size_t index, const GraphScope &scope) {
@@ -918,33 +1139,7 @@ NodeIR parsePass(const Json &pass, std::size_t index, const GraphScope &scope) {
                                            depth_store, depth_defaults));
     }
 
-    if (type == RenderPassType::fullscreen || type == RenderPassType::output_transform) {
-        FullscreenNodeInfo info;
-        if (const auto implementation = pass.find("implementation");
-            implementation != pass.end()) {
-            const auto provider = implementation->is_object()
-                                      ? implementation->find("provider")
-                                      : implementation->end();
-            info.implementation_provider =
-                implementation->is_object() && provider != implementation->end() &&
-                        provider->is_string()
-                    ? provider->get<std::string>()
-                    : std::string{};
-        }
-        if (const auto shader = pass.find("shader"); shader != pass.end() && shader->is_object()) {
-            if (const auto vertex = shader->find("vertex");
-                vertex != shader->end() && vertex->is_string()) {
-                info.vertex_shader = vertex->get<std::string>();
-            }
-            if (const auto fragment = shader->find("fragment");
-                fragment != shader->end() && fragment->is_string()) {
-                info.fragment_shader = fragment->get<std::string>();
-            }
-        }
-        node.info = std::move(info);
-    } else if (type == RenderPassType::material) {
-        node.info = std::move(material);
-    }
+    passExecutionDeclaration(pass, node, std::move(material), *scope.ir, subject);
     return node;
 }
 
@@ -1879,7 +2074,7 @@ RenderGraphIR parseRenderGraph(const nlohmann::json &document,
                    {{"index", graph_index}, {"graph", graph.name}, {"reason", "duplicate"}});
         }
         const Subject subject{graph.name, {}};
-        const GraphScope scope{graph.name, capabilities, &types};
+        const GraphScope scope{graph.name, capabilities, &types, &ir};
         // RC-3c2a: nothing composes a graph's own declarations (a graph
         // document's images and a loop's copies are the config's), and
         // nothing would register them. RC-3c2b1: nor a graph's own compute

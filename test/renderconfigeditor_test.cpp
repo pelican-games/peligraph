@@ -5794,9 +5794,9 @@ TEST_CASE("Project preset pass edits publish without changing the root document"
         });
         REQUIRE(material != passes.end());
         const auto patches = Json::array({
-            Json{{"input", Json::array({"gbuffer_albedo"})}},
+            Json{{"material_settings", {{"material_resources", {{"source", "gbuffer_albedo"}}}}}},
             Json{{"output", {{"color", Json::array({"gbuffer_normal"})}, {"depth", "scene_depth"}}}},
-            Json{{"input", Json::array()}}});
+            Json{{"material_settings", {{"material_resources", nullptr}}}}});
         for (const auto &patch : patches) {
             const auto current = service->getRenderAuthoringContext(Json::object());
             Json material_request{
@@ -5813,7 +5813,12 @@ TEST_CASE("Project preset pass edits publish without changing the root document"
             INFO(result.dump());
             REQUIRE(result.at("committed") == true);
             REQUIRE(result.at("source_commit_called") == true);
-            material->update(patch);
+            if (patch.contains("material_settings")) {
+                for (const auto &[key, value] : patch.at("material_settings").items()) {
+                    if (value.is_null()) material->erase(key);
+                    else (*material)[key] = value;
+                }
+            } else material->update(patch);
             CHECK(Json::parse(readBytes(preset_path)) == preset);
             CHECK(readBytes(project.render_config) == root_before);
             const auto nodes = runtime.frame_plan.at("nodes");
@@ -5823,7 +5828,7 @@ TEST_CASE("Project preset pass edits publish without changing the root document"
             REQUIRE(node != nodes.end());
             const bool reads_albedo = std::ranges::find(node->at("reads"), Json("gbuffer_albedo"))
                                       != node->at("reads").end();
-            CHECK(reads_albedo == !material->at("input").empty());
+            CHECK(reads_albedo == material->contains("material_resources"));
             for (const auto &target : material->at("output").at("color")) {
                 CHECK(std::ranges::find(node->at("writes"), target) != node->at("writes").end());
             }
@@ -6075,6 +6080,8 @@ TEST_CASE("Project feature pass edits publish their source and retain the render
                   {"output", {{"color", Json::array({"lit_color"})}, {"depth", nullptr}}}};
         if (auxiliary) pass.erase("input");
         if (std::string_view{type} == "material") {
+            pass.erase("input");
+            pass["material_resources"] = {{"source", "gbuffer_normal"}};
             pass["material_contract"] = "forward_opaque_v1";
             pass["output"]["depth"] = "scene_depth";
         } else {
@@ -6104,6 +6111,10 @@ TEST_CASE("Project feature pass edits publish their source and retain the render
                      {"graph", "main_render"}, {"pass_name", "feature_probe"},
                      {"input", Json::array({"gbuffer_albedo"})}, {"output", pass.at("output")}};
         if (std::string_view{type} == "fullscreen") request["shader"] = pass.at("shader");
+        if (std::string_view{type} == "material") {
+            request.erase("input");
+            request["material_settings"] = {{"material_resources", {{"source", "gbuffer_albedo"}}}};
+        }
         if (auxiliary) {
             request.erase("input");
             request["ray_query"] = true;
@@ -6124,6 +6135,7 @@ TEST_CASE("Project feature pass edits publish their source and retain the render
         INFO(result.dump());
         REQUIRE(result.at("committed") == true);
         if (auxiliary) feature["passes"][0]["pass"]["ray_query"] = true;
+        else if (std::string_view{type} == "material") feature["passes"][0]["pass"]["material_resources"] = request.at("material_settings").at("material_resources");
         else feature["passes"][0]["pass"]["input"] = request.at("input");
         CHECK(Json::parse(readBytes(feature_path)) == feature);
         CHECK(readBytes(project.render_config) == root_before);
@@ -6137,6 +6149,7 @@ TEST_CASE("Project feature pass edits publish their source and retain the render
     CHECK(nlohmann::json(saved->at("feature_declaration")) == nlohmann::json(feature.at("passes")[0].at("pass")));
         request["base_feature_digest"] = saved->at("feature_source_digest").at("hex");
         if (auxiliary) request["ray_query"] = false;
+        else if (std::string_view{type} == "material") request["material_settings"] = {{"material_resources", {{"source", "gbuffer_normal"}}}};
         else request["input"] = Json::array({"gbuffer_normal"});
         const auto queued = service->editPresetPass(request);
         REQUIRE(queued.at("status") == "accepted");

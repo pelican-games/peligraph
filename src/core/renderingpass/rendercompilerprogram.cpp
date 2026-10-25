@@ -1,4 +1,5 @@
 #include "rendercompilerprogram.hpp"
+#include "passdefinitionfromir.hpp"
 #include "computetaskdefinition.hpp"
 #include "materialpassinfojsonparser.hpp"
 
@@ -263,6 +264,8 @@ GenerationResources completeGenerationResources(
             };
         }
         validateRenderGraphResources(*variant.render_graph, resources, observe);
+        (void)renderingPassDefinitionsOf(*variant.render_graph, resources,
+                                         generationRenderTargetNames(resources));
     }
     return resources;
 }

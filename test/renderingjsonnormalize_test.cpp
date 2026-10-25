@@ -79,7 +79,7 @@ Json b1Root(bool shorthand, const Json &extra_present = Json::object()) {
     auto atlas = image("atlas");
     atlas["mip_levels"] = 3;
     atlas["layers"] = 2;
-    Json present{{"name", "present"}, {"type", "fullscreen"}};
+    Json present{{"name", "present"}, {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}}, {"type", "fullscreen"}};
     if (shorthand) {
         present["input"] = "post";
         present["after"] = "draw";
@@ -90,7 +90,7 @@ Json b1Root(bool shorthand, const Json &extra_present = Json::object()) {
         present["output"] = Json{{"color", Json::array({att("swapchain")})}, {"depth", nullptr}};
     }
     for (const auto &[key, value] : extra_present.items()) present[key] = value;
-    Json draw{{"name", "draw"},
+    Json draw{{"name", "draw"}, {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}},
               {"type", "fullscreen"},
               {"output", shorthand ? Json{{"color", "scene"}, {"depth", nullptr}}
                                    : Json{{"color", Json::array({att("scene")})}, {"depth", nullptr}}}};
@@ -110,7 +110,7 @@ Json b1Root(bool shorthand, const Json &extra_present = Json::object()) {
 // the pass's ops only; `from_atlas` reads `$dst` and writes `post` with
 // neither (the defaults, clear / store).
 Json b1Feature(bool shorthand) {
-    Json to_atlas{{"name", "to_atlas"},
+    Json to_atlas{{"name", "to_atlas"}, {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}},
                   {"type", "fullscreen"},
                   {"color_load_op", "load"},
                   {"color_store_op", "dont_care"}};
@@ -118,11 +118,11 @@ Json b1Feature(bool shorthand) {
                                 {"subresource", {{"mip", 2}, {"layer", 1}}},
                                 {"load_op", shorthand ? "DontCare" : "dont_care"},
                                 {"store_op", "store"}};
-    Json to_post2{{"name", "to_post2"},
+    Json to_post2{{"name", "to_post2"}, {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}},
                   {"type", "fullscreen"},
                   {"color_load_op", shorthand ? "Load" : "load"},
                   {"color_store_op", "dont_care"}};
-    Json from_atlas{{"name", "from_atlas"}, {"type", "fullscreen"}};
+    Json from_atlas{{"name", "from_atlas"}, {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}}, {"type", "fullscreen"}};
     if (shorthand) {
         to_atlas["input"] = "scene";
         to_atlas["output"] = Json{{"color", atlas_attachment}, {"depth", nullptr}};
@@ -179,7 +179,7 @@ RenderGraphTransform::Status resolveB1Transform(
             (*present)["input"] = Json::array({"blurred"});
             (*present)["after"] = Json::array({"provider_pass"});
         }
-        Json pass{{"name", "provider_pass"}, {"type", "fullscreen"}};
+        Json pass{{"name", "provider_pass"}, {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}}, {"type", "fullscreen"}};
         if (state.shorthand) {
             pass["input"] = "post";
             pass["after"] = "from_atlas";
@@ -463,7 +463,9 @@ TEST_CASE("RC-3b target rewrites change only an attachment's target",
         if (target == "$dst") return std::string{"atlas"};
         return std::nullopt;
     };
+    pass["clear_colors"] = {{"$dst", Json::array({0.1, 0.2, 0.3, 1.0})}};
     RenderJson::retargetOutputs(pass, bind);
+    CHECK(pass.at("clear_colors") == Json{{"atlas", Json::array({0.1, 0.2, 0.3, 1.0})}});
     RenderJson::retargetNames(pass, "input", bind);
     CHECK(pass.at("output").at("color") == Json::array({Json{{"target", "atlas"},
                                                              {"subresource", {{"mip", 1}, {"layer", 2}}},

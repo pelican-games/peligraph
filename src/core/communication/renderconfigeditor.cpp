@@ -29,7 +29,7 @@
 #include "../renderingpass/frameplanner.hpp"
 #include "../renderingpass/renderingsamplecount.hpp"
 #include "../renderer/viewfamilyproviderregistry.hpp"
-#include "../renderingpass/passdefinitionjsonparser.hpp"
+#include "../renderingpass/passdefinitionfromir.hpp"
 #include "../renderingpass/passfieldownershipcapabilities.hpp"
 #include "../renderingpass/renderingpassjsonhelpers.hpp"
 #include "../../project/imageformat.hpp"
@@ -681,28 +681,10 @@ std::string managedFragmentBytes(std::string_view id,
     return fragment.dump(2) + "\n";
 }
 
-// G-1. A material pass is judged by the pass parser the pipeline load runs --
-// contract, color count, depth, formats, no swapchain output -- against the
-// targets of the composed candidate, so a shape the load would refuse is
-// refused before anything is written, in the parser's own words. Composition
-// alone does not look at attachment formats. The screen extent is nominal:
-// only the ratios between one pass's outputs matter to the parser. RC-3c2a:
-// the targets are the candidate's IR, described as a one-variant generation
-// at that extent (resolveGenerationResources: each image as declared, the
-// one extent rule), as the registration describes them.
+// G-1 validates only the added node in the composed, unfinalized IR.
+// Unrelated passes can still need stages supplied by later transforms.
 void validateAuthoredMaterialPass(const Json &config, const std::string &graph,
                                   const std::string &pass_name, bool hdr) {
-    std::optional<Json> pass;
-    for (const auto &candidate : config.value("rendering_passes", Json::array())) {
-        if (!candidate.is_object() || candidate.value("name", std::string{}) != graph)
-            continue;
-        for (const auto &entry : candidate.value("passes", Json::array()))
-            if (entry.is_object() && entry.value("name", std::string{}) == pass_name)
-                pass = entry;
-    }
-    if (!pass)
-        throw std::runtime_error("the composed candidate has no pass " + pass_name +
-                                 " in " + graph);
     constexpr ResolvedResourceExtent screen{1920, 1080};
     auto resolved = config;
     if (config.contains("render_targets")) {
@@ -714,25 +696,18 @@ void validateAuthoredMaterialPass(const Json &config, const std::string &graph,
     }
     const auto render_graph = parseRenderGraph(resolved, buildPassFieldOwnershipCapabilities());
     const auto resources = resolveDeclaredGenerationResources(render_graph, screen);
-    // The pass's resource checks, as the compiler's completion runs them.
     if (const auto *graph_ir = findGraph(render_graph, graph)) {
-        for (const auto &node : graph_ir->nodes)
-            if (node.name == pass_name) validateRenderNodeResources(render_graph, *graph_ir, node, resources);
+        for (const auto &node : graph_ir->nodes) {
+            if (node.name != pass_name) continue;
+            validateRenderNodeResources(render_graph, *graph_ir, node, resources);
+            (void)passDefinitionOf(render_graph, *graph_ir, node, resources,
+                                   generationRenderTargetNames(resources));
+            return;
+        }
     }
-    std::unordered_set<std::string> buffers;
-    for (const auto &buffer : render_graph.buffers) buffers.insert(buffer.name);
-    const RenderTargetNameResolver names{[&](const std::string &name) {
-        for (std::size_t index = 0; index < resources.images.size(); ++index)
-            if (resources.images[index].declaration.name == name)
-                return GlobalRenderTargetId{static_cast<int>(index)};
-        return noRenderTargetId();
-    }};
-    const RenderTargetMetadataResolver metadata{[&](GlobalRenderTargetId id) {
-        if (id.value < 0 || static_cast<std::size_t>(id.value) >= resources.images.size())
-            throw std::runtime_error("render target metadata requested for an unknown target");
-        return renderTargetMetadataOf(resources.images[static_cast<std::size_t>(id.value)]);
-    }};
-    (void)parsePassDefinitionFromJson(*pass, names, metadata, buffers);
+    throw GraphRegistryError("render_graph.pass_execution_invalid@1",
+                             {{"graph", graph}, {"node", pass_name},
+                              {"field", "name"}, {"reason", "missing"}});
 }
 
 std::string provenanceSourceName(RenderPipelineProvenanceSource source) {

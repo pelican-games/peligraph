@@ -4,6 +4,8 @@
 // (parseRenderGraph), hands the provider chain's IR on, finalizes the last
 // revision once, and refuses by name where an input is first refused.
 #include "rendercompilerprogram_ir_test_support.hpp"
+#include "../src/core/renderingpass/passdefinitionfromir.hpp"
+#include "../src/project/passshaderdefines.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -510,6 +512,145 @@ TEST_CASE("RC-3c2b1 the completion refuses by name an IR whose compute tasks it 
                             {"field", "dispatch.indirect.offset"},
                             {"reason", "not_4_byte_aligned"},
                             {"offset", 2}});
+    }
+}
+
+
+TEST_CASE("RC-3c2b2 completion and registration derive pass values from IR",
+          "[rc3c2b2][render-compiler][passes]") {
+    const auto bloom = Json::parse(engineResourceOrThrow("features/bloom.json"));
+    Json state;
+    for (const auto &entry : bloom.at("passes")) {
+        const auto &pass = entry.contains("pass") ? entry.at("pass") : entry;
+        if (pass.contains("raster_state")) { state = pass.at("raster_state"); break; }
+    }
+    REQUIRE(state.is_object());
+    for (const bool authored : {false, true}) {
+        DYNAMIC_SECTION("bloom state authored " << authored) {
+            Project project;
+            Providers providers;
+            auto rendering = section(0, false);
+            auto &passes = rendering["rendering_passes"][0]["passes"];
+            auto tone = std::find_if(passes.begin(), passes.end(), [](const auto &pass) { return pass.at("name") == "tone"; });
+            REQUIRE(tone != passes.end());
+            if (authored) (*tone)["raster_state"] = state;
+            else tone->erase("raster_state");
+            const auto output = compile(project, providers, rendering, Variants::flat);
+            const auto &variant = variantOf(output, RenderPipelineGraphVariant::flat);
+            const auto definitions = renderingPassDefinitionsOf(*variant.render_graph, output.generation_resources,
+                                                                generationRenderTargetNames(output.generation_resources));
+            const auto &actual_passes = definitions.at(0).passes;
+            const auto actual = std::find_if(actual_passes.begin(), actual_passes.end(), [](const auto &pass) { return pass.name == "tone"; });
+            REQUIRE(actual != actual_passes.end());
+            const auto &raster_state = actual->fullscreenInfo().raster_state;
+            REQUIRE(raster_state.has_value() == authored);
+            if (authored) {
+                REQUIRE_FALSE(raster_state->color_attachments.empty());
+                const auto &blend = raster_state->color_attachments.at(0).blend;
+                CHECK(blend.enabled);
+                CHECK(blend.color.source == MaterialOutputBlendFactor::one);
+                CHECK(blend.color.destination == MaterialOutputBlendFactor::one);
+            }
+        }
+    }
+    // A compiler program can return typed IR directly. Common completion
+    // must refuse a missing execution stage before registration exists.
+    Project project;
+    Providers providers;
+    EditingProgram program;
+    program.edit = [](RenderGraphIR &ir) {
+        for (auto &node : ir.graphs.front().nodes) {
+            if (node.name == "tone") std::get<FullscreenNodeInfo>(node.info).fragment_shader.reset();
+        }
+    };
+    TestSupport::requireNamedRefusal([&] {
+        (void)compile(project, providers, section(0, false), Variants::flat, true, nullptr, &program);
+    }, "render_graph.pass_execution_invalid@1",
+       {{"graph", "main"}, {"node", "tone"}, {"field", "shader.fragment"}, {"reason", "required"}});
+}
+
+
+TEST_CASE("RC-3c2b2 pass declarations separate shape from execution requirements",
+          "[rc3c2b2][render-compiler][passes]") {
+    const auto parsed = [](Json pass) {
+        return parseRenderGraph(normalizeRenderingJson(Json{
+            {"render_targets", Json::array({image("color"), Json{{"name", "depth"}, {"extent_scale", 1.0},
+                {"format", "D32_SFLOAT"}, {"usage", Json::array({"DEPTH_STENCIL_ATTACHMENT"})}}})},
+            {"rendering_passes", Json::array({Json{{"name", "main"}, {"passes", Json::array({pass})}}})}}),
+            buildPassFieldOwnershipCapabilities());
+    };
+    const auto definition = [](const RenderGraphIR &ir) {
+        const auto resources = resolveDeclaredGenerationResources(ir, {64, 64});
+        return passDefinitionOf(ir, ir.graphs.at(0), ir.graphs.at(0).nodes.at(0), resources,
+                                generationRenderTargetNames(resources));
+    };
+    auto pass = fullscreen("subject", {}, "color");
+    SECTION("missing fullscreen stages remain valid planning input") {
+        pass.erase("shader");
+        const auto ir = parsed(pass);
+        TestSupport::requireNamedRefusal([&] { (void)definition(ir); }, "render_graph.pass_execution_invalid@1",
+            {{"graph", "main"}, {"node", "subject"}, {"field", "shader.vertex"}, {"reason", "required"}});
+    }
+    SECTION("missing raster draw remains valid planning input") {
+        pass["type"] = "raster";
+        const auto ir = parsed(pass);
+        TestSupport::requireNamedRefusal([&] { (void)definition(ir); }, "render_graph.pass_execution_invalid@1",
+            {{"node", "subject"}, {"field", "draw"}, {"reason", "required"}});
+        pass["draw"] = {{"vertex_count", 3}};
+        CHECK(definition(parsed(pass)).isGenericRaster());
+    }
+    SECTION("shape refusals name the field and node") {
+        for (const auto &bad : std::vector<std::pair<std::string, Json>>{
+                {"uses_light_data", "yes"}, {"push_constants", "unknown"},
+                {"input_settings", Json::array({nullptr})}, {"input_sampling", Json::array({Json::object()})},
+                {"clear_color", Json::array({0, 1, 2})},
+                {"clear_colors", {{"not_an_output", Json::array({0, 0, 0, 1})}}}}) {
+            auto invalid = pass;
+            invalid[bad.first] = bad.second;
+            TestSupport::requireNamedRefusal([&] { (void)parsed(invalid); }, "render_graph.node_field_invalid@1",
+                {{"graph", "main"}, {"node", "subject"}, {"field", bad.first}});
+        }
+        pass["shader"]["fragment"] = "fixture.frag";
+        TestSupport::requireNamedRefusal([&] { (void)parsed(pass); }, "render_graph.node_field_invalid@1",
+            {{"node", "subject"}, {"field", "shader.fragment"}, {"reason", "explicit_extension"}});
+    }
+    SECTION("even empty named bindings replace an empty positional declaration") {
+        pass["type"] = "material";
+        pass.erase("shader");
+        pass["input"] = Json::array();
+        pass["output"]["depth"] = "depth";
+        for (const auto *field : {"screen_inputs", "surface_resources", "material_resources"}) {
+            auto invalid = pass;
+            invalid[field] = Json::object();
+            TestSupport::requireNamedRefusal([&] { (void)parsed(invalid); }, "render_graph.node_field_invalid@1",
+                {{"node", "subject"}, {"field", field}, {"reason", "replaces_positional_input"}});
+        }
+    }
+    SECTION("define details survive the parser guard") {
+        pass["shader"]["defines"] = Json::array({"LOCAL=1", "PELICAN_PASS_TEXTURE_INPUT_COUNT=5"});
+        try { (void)parsed(pass); FAIL("reserved define accepted"); }
+        catch (const PassShaderDefineError &error) {
+            CHECK(error.info().pass == "subject");
+            CHECK(error.info().define == "PELICAN_PASS_TEXTURE_INPUT_COUNT=5");
+            CHECK(error.info().name == "PELICAN_PASS_TEXTURE_INPUT_COUNT");
+            CHECK(error.info().index == 1);
+            CHECK(error.info().reason == passShaderDefineReserved);
+        }
+    }
+    SECTION("auxiliary defaults and an explicit empty shader are distinct") {
+        for (const auto *type : {"shadow_depth", "velocity", "picking"}) {
+            pass["type"] = type;
+            if (std::string_view{type} == "shadow_depth") pass["output"] = {{"color", nullptr}, {"depth", "depth"}};
+            else pass["output"] = {{"color", Json::array({Json{{"target", "color"}}})}, {"depth", "depth"}};
+            pass.erase("shader");
+            const auto omitted = definition(parsed(pass));
+            CHECK(omitted.shader_declaration_parsed);
+            CHECK(omitted.declared_shader_refs.empty());
+            pass["shader"] = Json::object();
+            const auto empty = parsed(pass);
+            TestSupport::requireNamedRefusal([&] { (void)definition(empty); }, "render_graph.pass_execution_invalid@1",
+                {{"node", "subject"}, {"field", "shader.vertex"}, {"reason", "required"}});
+        }
     }
 }
 

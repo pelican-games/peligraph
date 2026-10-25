@@ -26,7 +26,7 @@
 #include "rendercompilerprogram.hpp"
 #include "renderpipelinegpuarena.hpp"
 #include "renderstrategyregistry.hpp"
-#include "renderingpassconfigjsonparser.hpp"
+#include "passdefinitionfromir.hpp"
 #include "renderingpassconfigloader.hpp"
 #include "renderingpasscontainer.hpp"
 #include "renderingpassruntimecompiler.hpp"
@@ -420,27 +420,9 @@ registerPreparedRenderingPassConfigVariant(
         dependencies.render_targets.render_target_container};
     const RenderTargetImageViewResolver rt_views{
         dependencies.render_targets.render_target_container};
-    // RC-3c2a: the resource checks ran on the description before anything
-    // was registered (completeGenerationResources); the pass parse resolves
-    // the IDs and builds the definitions from the same description's values
-    // (a target the engine registered beside it, the XR mirror, from the
-    // registry).
-    const RenderTargetMetadataResolver resource_metadata{
-        [&resources, &dependencies](GlobalRenderTargetId id) {
-            const auto &container =
-                dependencies.render_targets.render_target_container;
-            if (const auto *image = resources.findImage(
-                    container.getRenderTargetName(id))) {
-                return renderTargetMetadataOf(*image);
-            }
-            return container.getMetadata(id);
-        }};
-    auto pass_definitions =
-        parseRenderingPassDefinitionsFromConfigJson(
-            // The pass parse (RC-3c2b moves it to the IR) still reads the
-            // normalized JSON; the target IDs are the registry's.
-            prepared.normalized_config,
-            rt_resolver, resource_metadata, prepared.buffer_names);
+    // The same IR conversion completion validated, now with registry IDs.
+    auto pass_definitions = renderingPassDefinitionsOf(
+        *prepared.render_graph, resources, rt_resolver);
     for (auto &definition : pass_definitions) {
         const auto target_plan =
             physical.target_plans.find(definition.name);

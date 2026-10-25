@@ -441,7 +441,8 @@ RasterPassContract parseRasterPassContract(
     const nlohmann::json &pass,
     std::size_t color_attachment_count,
     bool has_depth_attachment,
-    std::string_view context = "raster pass");
+    std::string_view context = "raster pass",
+    bool require_draw = true);
 
 void validateRasterPassContract(
     const RasterPassContract &contract,

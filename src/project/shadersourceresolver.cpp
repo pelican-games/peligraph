@@ -2,11 +2,49 @@
 
 #include "projectpathresolver.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <system_error>
 #include <stdexcept>
 #include <variant>
 
 namespace Pelican {
+
+namespace {
+
+std::string lowerExtension(std::string_view ref) {
+    auto ext = std::filesystem::path{std::string{ref}}.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return ext;
+}
+
+} // namespace
+
+bool hasKnownShaderSourceExtension(std::string_view ref) {
+    const auto ext = lowerExtension(ref);
+    return ext == ".spv" || ext == ".vert" || ext == ".frag" ||
+           ext == ".comp" || ext == ".rgen" || ext == ".rmiss" ||
+           ext == ".rchit" || ext == ".rahit" || ext == ".rint" || ext == ".rcall" ||
+           ext == ".wgsl";
+}
+
+bool hasKnownShaderSourceExtension(
+    std::string_view ref, ShaderSourceStage stage) {
+    const auto ext = lowerExtension(ref);
+    // .rahit became vocabulary in RT2a.  Before that addition it was a
+    // perfectly valid final component of an arbitrary stem (for example a
+    // closest-hit stem "foo.rahit" resolved to foo.rahit.rchit).  Reserve
+    // the new suffix only in the stage that owns it so old tasks keep that
+    // resolution behavior.  All older explicit suffixes retain their
+    // historical, stage-independent rejection.
+    if (ext == ".rahit") return stage == ShaderSourceStage::anyhit;
+    if (ext == ".rint") return stage == ShaderSourceStage::intersection;
+    return hasKnownShaderSourceExtension(ref);
+}
+
+
 namespace {
 
 constexpr std::string_view engine_scheme = "engine://";

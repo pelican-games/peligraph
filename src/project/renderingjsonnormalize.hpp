@@ -90,7 +90,8 @@ bool writesOutputTarget(const nlohmann::json &pass, std::string_view target);
 std::vector<std::string> bufferNames(const nlohmann::json &holder);
 
 // What `rename` returns for an attachment's target replaces it; its
-// subresource and load / store stay. std::nullopt keeps the target.
+// subresource and load / store stay, and clear_colors keys follow color
+// targets. std::nullopt keeps the target.
 using TargetRename = std::function<std::optional<std::string>(const std::string &)>;
 void retargetColorOutputs(nlohmann::json &pass, const TargetRename &rename);
 void retargetOutputs(nlohmann::json &pass, const TargetRename &rename);

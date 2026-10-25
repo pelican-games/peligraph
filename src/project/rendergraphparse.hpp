@@ -21,7 +21,11 @@ namespace Pelican {
 // unknown compute schedule, a malformed compute ray_query /
 // ray_tracing.acceleration_structure / ray_task_acceleration_structures.
 //
-// Every refusal is a GraphRegistryError (graphcomposition.hpp), a code and
+// Authored pass execution values are read here too. Required stages (and a
+// raster draw declaration) are checked by core's IR-to-pass conversion, so
+// planning-only declarations can omit them. PassShaderDefineError preserves
+// the editor's structured pass/define/name/index/reason diagnostic.
+// Other refusals are GraphRegistryError (graphcomposition.hpp), a code and
 // the subject's names ("<code> <detail>"):
 //   render.json_not_normalized@1          {path}   a form other than the
 //                                                  normal one (a string

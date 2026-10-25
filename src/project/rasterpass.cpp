@@ -1016,10 +1016,10 @@ RasterPassContract parseRasterPassContract(
     const nlohmann::json &pass,
     std::size_t color_attachment_count,
     bool has_depth_attachment,
-    std::string_view context) {
+    std::string_view context, bool require_draw) {
     requireObject(pass, context);
     RasterPassContract result;
-    result.geometry = parseGeometry(pass, context);
+    if (require_draw || pass.contains("draw")) result.geometry = parseGeometry(pass, context);
     result.state =
         parseRasterFixedFunctionState(
             pass, color_attachment_count,

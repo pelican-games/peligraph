@@ -36,6 +36,7 @@ add_library(pelican_project
     imagesource.cpp
     rendergraphir.cpp
     rendergraphparse.cpp
+    passshaderdefines.cpp
     rayrecordabi.cpp
     nodeschedule.cpp
     logicalrendertype.cpp

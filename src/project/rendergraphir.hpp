@@ -16,6 +16,8 @@
 #include "materialoutput.hpp"
 #include "nodeschedule.hpp"
 #include "passfieldownership.hpp"
+#include "passdeclaration.hpp"
+#include "rasterpass.hpp"
 #include "renderpipeline.hpp"
 #include "renderresolutiondomain.hpp"
 #include "resourceextent.hpp"
@@ -45,9 +47,8 @@ namespace Pelican {
 // frame plan and the logical graph are derived from it here. The values are
 // project vocabulary only (no Vulkan type).
 //
-// RC-3c1a carries what planning needs; the execution values (the pipeline
-// state, shader defines, the per-pass details registration reads) arrive with
-// RC-3c2 in NodeIR::info and in the resources.
+// Planning and execution share these values: core derives pass and task
+// definitions from NodeIR::info, uses and the generation's resources.
 
 // What a node is. Every authored pass type, a compute task, and the scene
 // acceleration-structure build the engine inserts (never authored).
@@ -159,15 +160,29 @@ enum class NodeDeclarationScope : std::uint8_t {
     synthesized,
 };
 
-// A fullscreen or output-transform pass: the shader pair and whether the
-// author named an implementation (`implementation`; the provider as written,
-// "" when it is not a string). The provider is resolved later.
-struct FullscreenNodeInfo {
+// Execution values; resource ports are derived from the node's uses.
+struct FullscreenNodeInfo : PassShaderDeclaration {
     std::optional<std::string> implementation_provider;
-    std::optional<std::string> vertex_shader;
-    std::optional<std::string> fragment_shader;
+    std::optional<PipelineState> raster_state;
+    FullscreenPushConstantData push_constants = FullscreenPushConstantData::eNone;
+    bool uses_light_data = false;
+    std::vector<ShaderResourcePortSampling> input_sampling;
+    std::vector<std::string> shader_defines;
 
     bool operator==(const FullscreenNodeInfo &) const = default;
+};
+
+struct RasterNodeInfo : PassShaderDeclaration {
+    bool draw_declared = false;
+    RasterPassContract contract;
+    std::string shader_implementation{"pelican.raster.authored_shader@1"};
+    std::vector<std::string> shader_defines;
+
+    bool operator==(const RasterNodeInfo &) const = default;
+};
+
+struct AuxiliaryNodeInfo : PassShaderDeclaration {
+    bool operator==(const AuxiliaryNodeInfo &) const = default;
 };
 
 struct MaterialNodeInfo {
@@ -179,6 +194,9 @@ struct MaterialNodeInfo {
     // `material_outputs`).
     MaterialPassContract contract = defaultMaterialPassContract;
     std::optional<MaterialOutputSchema> output_schema;
+    std::vector<MaterialOutputAttachmentState> output_states;
+    std::uint32_t material_start = 0;
+    std::uint32_t material_count = 0;
 
     bool operator==(const MaterialNodeInfo &) const = default;
 };
@@ -225,6 +243,7 @@ struct AccelerationStructureNodeInfo {
 };
 
 using NodeInfo = std::variant<std::monostate, FullscreenNodeInfo,
+                              RasterNodeInfo, AuxiliaryNodeInfo,
                               MaterialNodeInfo, ComputeNodeInfo,
                               SnapshotNodeInfo,
                               AccelerationStructureNodeInfo>;
@@ -246,6 +265,12 @@ struct NodeIR {
     // The acceleration structure a pass of a raster family queries
     // (`ray_query`: true is "scene"); nullopt when it does not query.
     std::optional<std::string> ray_query;
+    // Color overrides are indexed by attachment location. An absent
+    // clear_colors is empty; an explicit {} expands the default per output.
+    std::array<double, 4> clear_color{0.0, 0.0, 0.0, 1.0};
+    std::vector<std::array<double, 4>> color_clear_values;
+    std::vector<ShaderResourceInputSetting> input_settings;
+    bool shader_declaration_parsed = false;
     NodeInfo info;
 
     bool operator==(const NodeIR &) const = default;

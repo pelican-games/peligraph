@@ -24,6 +24,7 @@ target_sources(pelican_core PRIVATE
     materialpassinfojsonparser.cpp
     passattachmentoptionsjsonparser.cpp
     passdefinitionjsonparser.cpp
+    passdefinitionfromir.cpp
     passimplementationregistry.cpp
     passinfojsonparser.cpp
     passinputdescriptorvariant.cpp

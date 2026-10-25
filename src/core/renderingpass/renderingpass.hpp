@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../../project/passdeclaration.hpp"
+
 #include "../container.hpp"
 #include "../handle.hpp"
 #include "../shader/graphicsviewcontract.hpp"
@@ -201,12 +203,6 @@ struct MaterialPassInfo {
     std::optional<GpuDrawSourceDefinition> gpu_draw_source;
 };
 
-enum class FullscreenPushConstantData {
-    eNone,
-    eCameraPosition,
-    eProjectionView,
-};
-
 struct FullscreenPassInfo {
     ShaderReference vert_shader = ShaderReference{"", ShaderStage::vertex, ShaderReferenceKind::explicit_file, false};
     ShaderReference frag_shader = ShaderReference{"", ShaderStage::fragment, ShaderReferenceKind::explicit_file, false};
@@ -405,8 +401,8 @@ struct PassDefinition {
     RenderPassType pass_type = RenderPassType::material;
     std::optional<std::string> requested_implementation_provider;
     std::optional<PassImplementationSelection> implementation_selection;
-    // True only after the typed JSON parser observed the pre-default pass
-    // object.  An absent declared stage is engine_default iff this is true;
+    // True only after parseRenderGraph observed the pre-default pass
+    // object (also set by the legacy parser used by tests).  An absent declared stage is engine_default iff this is true;
     // programmatically constructed passes use generated provenance instead.
     bool shader_declaration_parsed = false;
     bool ray_query = false;

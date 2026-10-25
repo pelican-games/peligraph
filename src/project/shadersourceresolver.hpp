@@ -45,6 +45,9 @@ struct ShaderSourceOpenResolution {
 using EngineShaderSourceExists =
     std::function<bool(std::string_view)>;
 
+bool hasKnownShaderSourceExtension(std::string_view ref);
+bool hasKnownShaderSourceExtension(std::string_view ref, ShaderSourceStage stage);
+
 std::string_view shaderSourceStageExtension(ShaderSourceStage stage);
 std::string shaderSourceCandidateReference(
     std::string_view stem, ShaderSourceStage stage, bool spirv);
