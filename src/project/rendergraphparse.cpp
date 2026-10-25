@@ -9,6 +9,8 @@
 #include "materialscreeninput.hpp"
 #include "passshapepolicy.hpp"
 #include "rasterrayquery.hpp"
+#include "rayrecordabi.hpp"
+#include "raytracingrefusal.hpp"
 #include "renderconfigsection.hpp"
 #include "renderingjsonnormalize.hpp"
 #include "renderresourcename.hpp"
@@ -946,6 +948,317 @@ NodeIR parsePass(const Json &pass, std::size_t index, const GraphScope &scope) {
     return node;
 }
 
+// ---- compute tasks (RC-3c2b1: every execution value of a task)
+
+AuthoredShaderField authoredShaderFieldOf(const Json &value) {
+    AuthoredShaderField field;
+    if (value.is_string()) {
+        field.form = AuthoredShaderField::Form::string;
+        field.value = value.get<std::string>();
+    } else {
+        field.form = AuthoredShaderField::Form::other;
+    }
+    return field;
+}
+
+AuthoredShaderField authoredShaderField(const Json &holder, std::string_view key) {
+    const auto found = holder.find(std::string{key});
+    if (found == holder.end()) return {};
+    return authoredShaderFieldOf(*found);
+}
+
+AuthoredShaderList authoredShaderList(const Json &holder, std::string_view key) {
+    AuthoredShaderList list;
+    const auto found = holder.find(std::string{key});
+    if (found == holder.end()) return list;
+    if (found->is_string()) {
+        list.form = AuthoredShaderList::Form::string;
+        list.entries.push_back(authoredShaderFieldOf(*found));
+    } else if (found->is_array()) {
+        list.form = AuthoredShaderList::Form::array;
+        for (const auto &entry : *found) list.entries.push_back(authoredShaderFieldOf(entry));
+    } else {
+        list.form = AuthoredShaderList::Form::other;
+    }
+    return list;
+}
+
+// A list of shader references either form takes (`callable`): one non-empty
+// string or an array of them (the ray tracing refusals it always had).
+std::vector<std::string> rayShaderList(const Json &pipeline, std::string_view field,
+                                       const std::string &task) {
+    const auto &found = pipeline.at(std::string{field});
+    const auto invalid = [&](const std::string &message) {
+        throw RayTracingRefusal("pelican.ray_tracing.invalid_shader_reference@1",
+                                Json{{"task", task}, {"stage", std::string{field}}},
+                                "pelican.ray_tracing.invalid_shader_reference@1: compute task '" + task +
+                                    "' ray_tracing." + std::string{field} + message);
+    };
+    std::vector<std::string> result;
+    const auto append = [&](const Json &value) {
+        if (!value.is_string() || value.get_ref<const std::string &>().empty()) {
+            invalid(" must contain non-empty strings");
+        }
+        result.push_back(value.get<std::string>());
+    };
+    if (found.is_string()) {
+        append(found);
+    } else if (found.is_array()) {
+        for (const auto &value : found) append(value);
+    } else {
+        invalid(" must be a string or string array");
+    }
+    if (result.empty()) {
+        throw RayTracingRefusal("pelican.ray_tracing.shader_stage_required@1",
+                                Json{{"task", task}, {"stage", std::string{field}}},
+                                "pelican.ray_tracing.shader_stage_required@1: compute task '" + task +
+                                    "' requires at least one ray_tracing." + std::string{field} + " shader");
+    }
+    return result;
+}
+
+RayTracingTaskDeclaration rayTracingDeclaration(const Json &pipeline, const std::string &task,
+                                                const std::function<void(std::string_view, std::string_view)>
+                                                    &compute_invalid) {
+    if (!pipeline.is_object()) {
+        throw RayTracingRefusal("pelican.ray_tracing.invalid_pipeline_declaration@1", Json{{"task", task}},
+                                "pelican.ray_tracing.invalid_pipeline_declaration@1: compute task '" + task +
+                                    "' ray_tracing must be an object");
+    }
+    RayTracingTaskDeclaration ray;
+    for (auto field = pipeline.begin(); field != pipeline.end(); ++field) ray.keys.push_back(field.key());
+    ray.raygen = authoredShaderField(pipeline, "raygen");
+    ray.miss = authoredShaderList(pipeline, "miss");
+    ray.closesthit = authoredShaderList(pipeline, "closesthit");
+    ray.traced_ray_types = authoredShaderList(pipeline, "traced_ray_types");
+    if (const auto misses = pipeline.find("misses"); misses != pipeline.end()) {
+        if (misses->is_object()) {
+            ray.misses_form = RayTracingTaskDeclaration::Form::object;
+            for (auto entry = misses->begin(); entry != misses->end(); ++entry) {
+                ray.misses.emplace_back(entry.key(), authoredShaderFieldOf(entry.value()));
+            }
+        } else {
+            ray.misses_form = RayTracingTaskDeclaration::Form::other;
+        }
+    }
+    if (const auto hits = pipeline.find("hit_shaders"); hits != pipeline.end()) {
+        if (hits->is_object()) {
+            ray.hit_shaders_form = RayTracingTaskDeclaration::Form::object;
+            for (auto ray_type = hits->begin(); ray_type != hits->end(); ++ray_type) {
+                AuthoredHitShaders shaders{.ray_type = ray_type.key(), .is_object = ray_type->is_object()};
+                if (shaders.is_object) {
+                    for (auto group = ray_type->begin(); group != ray_type->end(); ++group) {
+                        AuthoredHitGroup hit{.group = group.key(), .is_object = group->is_object()};
+                        if (hit.is_object) {
+                            hit.closesthit = authoredShaderField(*group, "closesthit");
+                            hit.anyhit = authoredShaderField(*group, "anyhit");
+                            hit.intersection = authoredShaderField(*group, "intersection");
+                            hit.declares_type = group->contains("type");
+                            for (auto field = group->begin(); field != group->end(); ++field) {
+                                if (field.key() != "closesthit" && field.key() != "anyhit" &&
+                                    field.key() != "intersection" && field.key() != "type") {
+                                    hit.has_unknown_field = true;
+                                }
+                            }
+                        }
+                        shaders.groups.push_back(std::move(hit));
+                    }
+                }
+                ray.hit_shaders.push_back(std::move(shaders));
+            }
+        } else {
+            ray.hit_shaders_form = RayTracingTaskDeclaration::Form::other;
+        }
+    }
+    // What either form takes the same way.
+    if (pipeline.contains("callable")) ray.callables = rayShaderList(pipeline, "callable", task);
+    if (pipeline.contains("callable_record") || pipeline.contains("callable_records")) {
+        if (ray.callables.empty() || !pipeline.contains("callable_record") ||
+            !pipeline.contains("callable_records")) {
+            throw RayTracingRefusal("pelican.ray_tracing.callable_records_invalid@1", Json{{"task", task}},
+                                    "pelican.ray_tracing.callable_records_invalid@1: task '" + task +
+                                        "' requires callable, callable_record and callable_records together");
+        }
+        ray.callable_record = parseRayCallableRecordLayout(pipeline.at("callable_record"), task);
+        ray.callable_records = encodeRayCallableRecords(pipeline.at("callable_records"), *ray.callable_record,
+                                                        ray.callables.size(), task);
+    }
+    if (const auto recursion = pipeline.find("max_recursion"); recursion != pipeline.end()) {
+        const auto positive_signed = recursion->is_number_integer() && !recursion->is_number_unsigned() &&
+                                     recursion->get<std::int64_t>() > 0;
+        const auto unsigned_integer = recursion->is_number_unsigned();
+        const auto encoded = positive_signed    ? static_cast<std::uint64_t>(recursion->get<std::int64_t>())
+                             : unsigned_integer ? recursion->get<std::uint64_t>()
+                                                : 0;
+        if ((!positive_signed && !unsigned_integer) || encoded == 0 ||
+            encoded > std::numeric_limits<std::uint32_t>::max()) {
+            throw RayTracingRefusal("pelican.ray_tracing.invalid_recursion@1", Json{{"task", task}},
+                                    "pelican.ray_tracing.invalid_recursion@1: compute task '" + task +
+                                        "' max_recursion must be a positive uint32 integer");
+        }
+        ray.max_recursion = static_cast<std::uint32_t>(encoded);
+    }
+    if (const auto selected = pipeline.find("acceleration_structure"); selected != pipeline.end()) {
+        if (!selected->is_string()) compute_invalid("ray_tracing.acceleration_structure", "requires_string");
+        ray.acceleration_structure = selected->get<std::string>();
+    }
+    return ray;
+}
+
+// A positive uint32 count as written (not a float, a sign, zero, or a value
+// past uint32).
+std::optional<std::uint32_t> positiveCount(const Json &value) {
+    if (value.is_number_unsigned()) {
+        const auto number = value.get<std::uint64_t>();
+        if (number > 0 && number <= std::numeric_limits<std::uint32_t>::max()) {
+            return static_cast<std::uint32_t>(number);
+        }
+        return std::nullopt;
+    }
+    if (value.is_number_integer()) {
+        const auto number = value.get<std::int64_t>();
+        if (number > 0 && number <= std::numeric_limits<std::uint32_t>::max()) {
+            return static_cast<std::uint32_t>(number);
+        }
+    }
+    return std::nullopt;
+}
+
+// `dispatch`: the rules the compute task parser had, every key known. What a
+// task must have to run (a ray tracing task's launch: rays, rays_from or
+// indirect) is the execution's to require (computeTaskDefinitionsOf), as its
+// shader is; a planning revision may leave it out.
+ComputeDispatchDefinition computeDispatch(const Json &task, const std::string &name, bool ray_tracing,
+                                          const std::function<void(std::string_view, std::string_view)>
+                                              &compute_invalid) {
+    ComputeDispatchDefinition dispatch;
+    const auto invalid_trace = [&](const std::string &message) {
+        throw RayTracingRefusal("pelican.ray_tracing.invalid_trace_dispatch@1", Json{{"task", name}},
+                                "pelican.ray_tracing.invalid_trace_dispatch@1: " + message);
+    };
+    const auto found = task.find("dispatch");
+    if (found == task.end()) return dispatch;
+    const auto &json = *found;
+    if (!json.is_object()) compute_invalid("dispatch", "not_an_object");
+    // Only these keys; local_size is the shader's (refused by its reason).
+    const auto known_keys = [&](std::initializer_list<std::string_view> keys) {
+        for (auto field = json.begin(); field != json.end(); ++field) {
+            if (std::find(keys.begin(), keys.end(), field.key()) == keys.end()) {
+                compute_invalid("dispatch." + field.key(), "unknown_field");
+            }
+        }
+    };
+    if (json.contains("rays")) {
+        if (!ray_tracing || json.size() != 1) {
+            invalid_trace("dispatch.rays requires a ray_tracing task and cannot be combined with other dispatch "
+                          "fields: " + name);
+        }
+        const auto &rays = json.at("rays");
+        const auto dimensions = "dispatch.rays must contain three positive uint32 dimensions: " + name;
+        if (!rays.is_array() || rays.size() != 3) invalid_trace(dimensions);
+        std::array<std::uint32_t, 3> extent{};
+        for (std::size_t i = 0; i < extent.size(); ++i) {
+            const auto count = positiveCount(rays.at(i));
+            if (!count) invalid_trace(dimensions);
+            extent[i] = *count;
+        }
+        dispatch.rays = extent;
+        return dispatch;
+    }
+    if (json.contains("rays_from")) {
+        if (!ray_tracing) {
+            throw RayTracingRefusal("pelican.ray_tracing.rays_from_requires_pipeline@1", Json{{"task", name}},
+                                    "pelican.ray_tracing.rays_from_requires_pipeline@1: dispatch.rays_from "
+                                    "requires a ray_tracing task: " + name);
+        }
+        if (json.size() != 1) {
+            invalid_trace("dispatch.rays_from cannot be combined with compute dispatch fields: " + name);
+        }
+        const auto &rays_from = json.at("rays_from");
+        if (!rays_from.is_object() || rays_from.size() != 1 || !rays_from.contains("port") ||
+            !rays_from.at("port").is_string()) {
+            invalid_trace("dispatch.rays_from must contain exactly one image port: " + name);
+        }
+        auto port = rays_from.at("port").get<std::string>();
+        if (port.empty()) invalid_trace("dispatch.rays_from.port must not be empty: " + name);
+        dispatch.rays_from = ComputeImageExtentDispatchDefinition{.port = std::move(port)};
+        return dispatch;
+    }
+    // A ray tracing task without a launch: nothing more is read.
+    if (ray_tracing && !json.contains("indirect")) return dispatch;
+    if (json.contains("indirect")) {
+        if (ray_tracing && json.size() != 1) {
+            invalid_trace("indirect trace cannot be combined with other dispatch fields: " + name);
+        }
+        if (json.contains("groups") || json.contains("groups_from") || json.contains("local_size")) {
+            compute_invalid("dispatch.indirect", "combined_with_groups");
+        }
+        known_keys({"indirect"});
+        // indirect.buffer was read with the task's uses.
+        const auto &indirect = json.at("indirect");
+        for (auto field = indirect.begin(); field != indirect.end(); ++field) {
+            if (field.key() != "buffer" && field.key() != "offset") {
+                compute_invalid("dispatch.indirect." + field.key(), "unknown_field");
+            }
+        }
+        ComputeIndirectDispatchDefinition definition{.buffer = indirect.at("buffer").get<std::string>()};
+        if (definition.buffer.empty()) compute_invalid("dispatch.indirect.buffer", "empty");
+        if (const auto offset = indirect.find("offset"); offset != indirect.end()) {
+            const bool unsigned_value =
+                offset->is_number_unsigned() || (offset->is_number_integer() && offset->get<std::int64_t>() >= 0);
+            if (!unsigned_value) compute_invalid("dispatch.indirect.offset", "requires_unsigned_integer");
+            definition.offset = offset->is_number_unsigned()
+                                    ? offset->get<std::uint64_t>()
+                                    : static_cast<std::uint64_t>(offset->get<std::int64_t>());
+        }
+        if (definition.offset % frameGraphIndirectCommandAlignment != 0) {
+            compute_invalid("dispatch.indirect.offset", "not_4_byte_aligned");
+        }
+        dispatch.indirect = std::move(definition);
+        return dispatch;
+    }
+    if (json.contains("groups") && json.contains("groups_from")) {
+        compute_invalid("dispatch.groups", "combined_with_groups_from");
+    }
+    if (json.contains("local_size")) compute_invalid("dispatch.local_size", "declared_by_the_shader");
+    known_keys({"groups", "groups_from"});
+    if (const auto groups = json.find("groups"); groups != json.end()) {
+        std::array<std::uint32_t *, 3> axes{&dispatch.groups_x, &dispatch.groups_y, &dispatch.groups_z};
+        if (groups->is_array()) {
+            if (groups->size() != 3) compute_invalid("dispatch.groups", "requires_three_entries");
+            for (std::size_t axis = 0; axis < axes.size(); ++axis) {
+                const auto count = positiveCount(groups->at(axis));
+                if (!count) compute_invalid("dispatch.groups", "requires_positive_uint32");
+                *axes[axis] = *count;
+            }
+        } else if (groups->is_object()) {
+            static constexpr std::array<std::string_view, 3> names{"x", "y", "z"};
+            for (auto field = groups->begin(); field != groups->end(); ++field) {
+                const auto axis = std::find(names.begin(), names.end(), field.key());
+                if (axis == names.end()) compute_invalid("dispatch.groups." + field.key(), "unknown_axis");
+                const auto count = positiveCount(field.value());
+                if (!count) compute_invalid("dispatch.groups." + field.key(), "requires_positive_uint32");
+                *axes[static_cast<std::size_t>(axis - names.begin())] = *count;
+            }
+        } else {
+            compute_invalid("dispatch.groups", "not_an_array_or_object");
+        }
+    }
+    if (const auto groups_from = json.find("groups_from"); groups_from != json.end()) {
+        if (!groups_from->is_object()) compute_invalid("dispatch.groups_from", "not_an_object");
+        for (auto field = groups_from->begin(); field != groups_from->end(); ++field) {
+            if (field.key() != "port") compute_invalid("dispatch.groups_from." + field.key(), "unknown_field");
+        }
+        const auto port = groups_from->find("port");
+        if (port == groups_from->end() || !port->is_string()) {
+            compute_invalid("dispatch.groups_from.port", "requires_string");
+        }
+        if (port->get_ref<const std::string &>().empty()) compute_invalid("dispatch.groups_from.port", "empty");
+        dispatch.groups_from = ComputeImageExtentDispatchDefinition{.port = port->get<std::string>()};
+    }
+    return dispatch;
+}
+
 NodeIR parseComputeTask(const Json &task, std::size_t index, const GraphScope &scope,
                         NodeDeclarationScope declared_in) {
     if (!task.is_object()) {
@@ -963,10 +1276,21 @@ NodeIR parseComputeTask(const Json &task, std::size_t index, const GraphScope &s
     node.scope = declared_in;
     node.declaration_index = index;
     const Subject subject{scope.graph, node.name};
-    const auto compute_invalid = [&](std::string_view field, std::string_view reason) {
-        refuse("render_graph.compute_task_invalid@1",
-               {{"node", node.name}, {"field", std::string{field}}, {"reason", std::string{reason}}});
-    };
+    const std::function<void(std::string_view, std::string_view)> compute_invalid =
+        [&](std::string_view field, std::string_view reason) {
+            refuse("render_graph.compute_task_invalid@1",
+                   {{"node", node.name}, {"field", std::string{field}}, {"reason", std::string{reason}}});
+        };
+    // A stage only ray_tracing takes, written on the task itself.
+    for (const auto *unsupported : {"any_hit", "anyhit", "intersection", "callable"}) {
+        if (task.contains(unsupported)) {
+            throw RayTracingRefusal("pelican.ray_tracing.unsupported_shader_stage@1",
+                                    Json{{"task", node.name}, {"stage", std::string{unsupported}}},
+                                    "pelican.ray_tracing.unsupported_shader_stage@1: compute task '" + node.name +
+                                        "' declares unsupported top-level ray tracing stage '" + unsupported +
+                                        "'");
+        }
+    }
     node.view_family = viewFamily(task, subject);
     node.view_select = viewSelect(task, subject);
     const auto authored_reads = nameList(task, "reads", subject);
@@ -1002,19 +1326,17 @@ NodeIR parseComputeTask(const Json &task, std::size_t index, const GraphScope &s
     node.after = nameList(task, "after", subject);
     node.before = nameList(task, "before", subject);
     node.regions = regionTags(task, subject);
-    // Ahead of the compute task parser, which refused these before.
     if (const auto schedule = task.find("schedule"); schedule != task.end()) {
         if (!schedule->is_string()) compute_invalid("schedule", "requires_string");
-        const auto &value = schedule->get_ref<const std::string &>();
-        if (value == "per_frame") node.schedule = NodeSchedule::per_frame;
-        else if (value == "per_view") node.schedule = NodeSchedule::per_view;
-        else if (value == "once") node.schedule = NodeSchedule::once;
-        else compute_invalid("schedule", "not_per_frame_per_view_or_once");
+        // A compute task also takes per_view (one dispatch per logical view).
+        const auto value = nodeScheduleFromName(schedule->get_ref<const std::string &>());
+        if (!value) compute_invalid("schedule", "not_per_frame_per_view_or_once");
+        node.schedule = *value;
     }
     ComputeNodeInfo info;
-    info.ray_tracing = task.contains("ray_tracing");
+    const bool ray_tracing = task.contains("ray_tracing");
     if (const auto query = task.find("ray_query"); query != task.end()) {
-        if (info.ray_tracing || !query->is_object() || query->size() != 1 ||
+        if (ray_tracing || !query->is_object() || query->size() != 1 ||
             !query->contains("acceleration_structure")) {
             compute_invalid("ray_query", "requires_only_acceleration_structure");
         }
@@ -1027,15 +1349,29 @@ NodeIR parseComputeTask(const Json &task, std::size_t index, const GraphScope &s
             compute_invalid("ray_query", "empty_acceleration_structure");
         }
     }
-    if (info.ray_tracing) {
-        const auto &ray = task.at("ray_tracing");
-        if (ray.is_object() && ray.contains("acceleration_structure")) {
-            if (!ray.at("acceleration_structure").is_string()) {
-                compute_invalid("ray_tracing.acceleration_structure", "requires_string");
-            }
-            info.ray_tracing_acceleration_structure =
-                ray.at("acceleration_structure").get<std::string>();
+    if (ray_tracing && task.contains("shader")) {
+        throw RayTracingRefusal("pelican.ray_tracing.ambiguous_pipeline_declaration@1", Json{{"task", node.name}},
+                                "pelican.ray_tracing.ambiguous_pipeline_declaration@1: compute task '" + node.name +
+                                    "' cannot declare both shader and ray_tracing");
+    }
+    if (ray_tracing) {
+        info.ray_tracing = rayTracingDeclaration(task.at("ray_tracing"), node.name, compute_invalid);
+    } else {
+        if (const auto shader = task.find("shader"); shader != task.end()) {
+            if (!shader->is_string()) compute_invalid("shader", "requires_string");
+            info.shader = shader->get<std::string>();
         }
+    }
+    info.dispatch = computeDispatch(task, node.name, ray_tracing, compute_invalid);
+    // An image extent dispatch names one of the task's image ports.
+    const auto &extent_from = info.dispatch.groups_from ? info.dispatch.groups_from : info.dispatch.rays_from;
+    if (extent_from) {
+        const auto field = info.dispatch.groups_from ? "dispatch.groups_from.port" : "dispatch.rays_from.port";
+        const auto port = std::find_if(node.uses.begin(), node.uses.end(), [&](const ResourceUse &use) {
+            return use.role == ResourceUseRole::resource_port && use.binding.port == extent_from->port;
+        });
+        if (port == node.uses.end()) compute_invalid(field, "unknown_resource_port");
+        if (port->binding.kind == ShaderResourcePortKind::buffer) compute_invalid(field, "not_an_image");
     }
     node.info = std::move(info);
     return node;
@@ -1414,6 +1750,23 @@ std::vector<FrameNodeOrderIR> parseFrameNodeOrder(const Json &config) {
     return result;
 }
 
+// RC-3c2b1: the callable records' table as written (its values packed by the
+// task's schema when the final revision resolves it, as the structures'
+// table).
+std::vector<std::pair<std::string, RayCallableRecordValues>> parseRayTaskCallableRecords(const Json &config) {
+    std::vector<std::pair<std::string, RayCallableRecordValues>> result;
+    const auto found = config.find("ray_task_callable_records");
+    if (found == config.end()) return result;
+    if (!found->is_object()) {
+        refuse("render_graph.compute_task_invalid@1",
+               {{"node", ""}, {"field", "ray_task_callable_records"}, {"reason", "not_an_object"}});
+    }
+    for (const auto &[name, records] : found->items()) {
+        result.emplace_back(name, rayCallableRecordValuesOf(records));
+    }
+    return result;
+}
+
 // The table's form only: the tasks it names may be a provider's, so the
 // final revision resolves it (finalizeRenderGraph).
 std::vector<std::pair<std::string, std::string>> parseRayTaskAccelerationStructures(
@@ -1467,6 +1820,7 @@ RenderGraphIR parseRenderGraph(const nlohmann::json &document,
     ir.buffers = parseBuffers(config, ir.images);
     ir.frame_node_order = parseFrameNodeOrder(config);
     ir.ray_task_acceleration_structures = parseRayTaskAccelerationStructures(config);
+    ir.ray_task_callable_records = parseRayTaskCallableRecords(config);
 
     if (!config.contains("rendering_passes")) {
         // The single-graph form (top-level passes / compute_tasks) is not the
@@ -1490,6 +1844,7 @@ RenderGraphIR parseRenderGraph(const nlohmann::json &document,
                 parseComputeTask(tasks.at(index), index, scope, NodeDeclarationScope::shared));
         }
         for (const auto &task : shared_tasks) ir.shared_compute_tasks.push_back(task.name);
+        ir.authored_shared_compute_tasks = ir.shared_compute_tasks;
     }
 
     const auto append_shared = [&](GraphIR &graph) {
@@ -1524,8 +1879,10 @@ RenderGraphIR parseRenderGraph(const nlohmann::json &document,
         const GraphScope scope{graph.name, capabilities, &types};
         // RC-3c2a: nothing composes a graph's own declarations (a graph
         // document's images and a loop's copies are the config's), and
-        // nothing would register them.
-        for (const auto *key : {"render_targets", "buffers"}) {
+        // nothing would register them. RC-3c2b1: nor a graph's own compute
+        // tasks (compose, a loop and Studio write the config's; nothing
+        // would have registered them).
+        for (const auto *key : {"render_targets", "buffers", "compute_tasks"}) {
             if (graph_json.contains(key)) {
                 refuse("render_graph.graph_declaration_unsupported@1", {{"graph", graph.name}, {"field", key}});
             }
@@ -1534,12 +1891,6 @@ RenderGraphIR parseRenderGraph(const nlohmann::json &document,
         if (graph_json.contains("passes")) {
             for (const auto &pass : arrayField(graph_json, "passes", subject)) {
                 graph.nodes.push_back(parsePass(pass, index++, scope));
-            }
-        }
-        if (graph_json.contains("compute_tasks")) {
-            for (const auto &task : arrayField(graph_json, "compute_tasks", subject)) {
-                graph.nodes.push_back(
-                    parseComputeTask(task, index++, scope, NodeDeclarationScope::graph));
             }
         }
         append_shared(graph);

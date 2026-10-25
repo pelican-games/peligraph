@@ -4,10 +4,10 @@
 // against the single compute-task header. The declarations now live next to
 // the class they belong to:
 //   framegraphbuffercontainer.hpp  FrameGraphResourceContainer (buffer side)
-//   computetaskdefinitionjson.hpp  frame graph / compute task JSON parsing
+//   computetaskdefinition.hpp      compute task definitions from the render graph IR
 //   computetaskcontainer.hpp       ComputeTaskContainer and its dependencies
 #include "computetaskcontainer.hpp"
-#include "computetaskdefinitionjson.hpp"
+#include "computetaskdefinition.hpp"
 #include "framegraphbuffercontainer.hpp"
 
 #include "../../project/framegraphbufferdefinition.hpp"

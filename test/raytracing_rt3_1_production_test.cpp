@@ -1,4 +1,5 @@
 #include "../src/core/communication/proceduralassetpublication.hpp"
+#include "compute_task_test_support.hpp"
 #include "render_graph_root_test_support.hpp"
 #include "../src/project/renderconfigsection.hpp"
 #include <catch2/catch_test_macros.hpp>
@@ -915,7 +916,7 @@ TEST_CASE("project AS connections override authored ray query tasks", "[renderco
          {"dispatch", {{"groups", {1, 1, 1}}}},
          {"ray_query", {{"acceleration_structure", "scene"}}}}
     })}};
-    const auto parse = [&] { return parseComputeTaskDefinitionsFromConfigJson(config, nullptr); };
+    const auto parse = [&] { return Pelican::TestSupport::computeTaskDefinitionsOf(config, nullptr); };
     REQUIRE(parse().front().ray_query_acceleration_structure == "scene");
     config["ray_task_acceleration_structures"] = {{"query", "actors"}};
     CHECK(parse().front().ray_query_acceleration_structure == "actors");
@@ -927,9 +928,9 @@ TEST_CASE("project AS connections override authored ray query tasks", "[renderco
     }
     config["ray_task_acceleration_structures"] = {{"query", "actors"}};
     config["compute_tasks"][0].erase("ray_query");
-    CHECK_THROWS_WITH(parse(), Catch::Matchers::ContainsSubstring("does not declare"));
+    CHECK_THROWS_WITH(parse(), Catch::Matchers::ContainsSubstring("task_declares_no_ray_work"));
     config.erase("compute_tasks");
-    CHECK_THROWS_WITH(parse(), Catch::Matchers::ContainsSubstring("unknown task"));
+    CHECK_THROWS_WITH(parse(), Catch::Matchers::ContainsSubstring("unknown_task"));
 }
 
 TEST_CASE("project callable initial values use the declared record schema", "[rendercompiler][rt7][callable-edit]") {
@@ -940,7 +941,7 @@ TEST_CASE("project callable initial values use the declared record schema", "[re
             {"callable_record", Json::array({{{"name", "value"}, {"type", "u32"}}})},
             {"callable_records", Json::array({{{"value", 1}}})}}}
     }})}};
-    const auto parse = [&] { return parseComputeTaskDefinitionsFromConfigJson(config); };
+    const auto parse = [&] { return Pelican::TestSupport::computeTaskDefinitionsOf(config); };
     const auto original = parse().front().ray_tracing->callable_records;
     config["ray_task_callable_records"] = {{"trace", Json::array({{{"value", 4294967295u}}})}};
     CHECK(bool(parse().front().ray_tracing->callable_records != original));
@@ -963,7 +964,7 @@ TEST_CASE("compute ray query declares its acceleration structure", "[rendercompi
         {"dispatch", {{"groups", {1, 1, 1}}}},
         {"ray_query", {{"acceleration_structure", "actors"}}}};
     const auto parse = [&] {
-        return parseComputeTaskDefinitionsFromConfigJson({{"compute_tasks", Json::array({task})}});
+        return Pelican::TestSupport::computeTaskDefinitionsOf({{"compute_tasks", Json::array({task})}});
     };
     REQUIRE(parse().front().ray_query_acceleration_structure == "actors");
     for (const auto &bad : Json::array({Json::object(), "actors",

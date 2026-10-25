@@ -1,4 +1,5 @@
 #include "registered_render_targets_test_support.hpp"
+#include "compute_task_test_support.hpp"
 #include "../src/project/featurecompose.hpp"
 #include "../src/project/graphpartition.hpp"
 #include "../src/project/rendergraphcomposition.hpp"
@@ -24,7 +25,6 @@
 #include "../src/core/renderingpass/renderstrategyregistry.hpp"
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
 #include "../src/core/renderingpass/vulkanrendercompilerpackage.hpp"
-#include "../src/core/renderingpass/vulkanrendercompilerprogramdetail.hpp"
 #include "render_graph_ir_test_support.hpp"
 
 #include <catch2/catch_approx.hpp>
@@ -671,26 +671,17 @@ TEST_CASE(
         const auto resolved = resolve(variant);
         auto compiled = compileRenderPipeline(resolved);
         const auto stale_compiled = compiled;
-        std::vector<ComputeTaskDefinition> tasks{
-            ComputeTaskDefinition{
-                .name =
-                    resolved.normalized_config
-                        .at("compute_tasks")
-                        .front()
-                        .at("name")
-                        .get<std::string>(),
-            },
-        };
-        // RC-3c1b: the IR's names (namespaceSharedComputeTasks) and core's
-        // remainder: the execution declarations and the provenance.
+        // RC-3c1b / RC-3c2b1: the IR's names (namespaceSharedComputeTasks)
+        // and the provenance synchronized from them, as the compiler does
+        // (synchronizeRenderGraphProvenance).
         const auto ir = namespaceSharedComputeTasks(
             TestSupport::renderGraphOf(resolved.normalized_config),
             compiled.graph_variant_policy.rendering_pass_name_suffix);
-        REQUIRE(tasks.size() == 1);
+        REQUIRE(ir.shared_compute_tasks.size() == 1);
         REQUIRE(ir.graphs.size() == 1);
 
-        detail::namespaceComputeTaskDefinitions(
-            tasks, resolved.normalized_config, compiled);
+        synchronizeRenderGraphProvenance(
+            ir, compiled.pass_provenance, compiled.resource_provenance);
         const auto plan = planRenderGraph(ir, ir.graphs.front());
         return VariantPlans{
             .stale_provenance =
@@ -852,21 +843,24 @@ TEST_CASE(
                 .variants = requests,
             });
     };
+    // RC-3c2b1: the compute tasks are the program run's, made from the IR.
     const auto require_compute_provenance = [](
-                                                const auto
-                                                    &variant,
+                                                const RenderCompilerProgramOutput
+                                                    &output,
                                                 std::string_view
                                                     graph,
                                                 std::string_view
                                                     name) {
+        const auto &variant = output.variants.front();
         const std::string graph_name{graph};
         const std::string node_name{name};
         REQUIRE(variant.physical_package != nullptr);
+        REQUIRE(output.compute_task_definitions.size() == 1);
         REQUIRE(
-            variant.compute_task_definitions.size() ==
+            output.compute_task_definitions.front().size() ==
             1);
         REQUIRE(
-            variant.compute_task_definitions.front()
+            output.compute_task_definitions.front().front()
                 .name == node_name);
         REQUIRE(variant.frame_plans.size() == 1);
         const auto plan = framePlanToJson(
@@ -1024,7 +1018,7 @@ TEST_CASE(
             "wp309_subgraph_gate"});
     const auto flat_plan =
         require_compute_provenance(
-            flat_variant, "main", "probe");
+            flat_with_feature, "main", "probe");
     REQUIRE(has_node(
         flat_plan, "resolved_probe_path", "render"));
     REQUIRE_FALSE(has_node(
@@ -1059,7 +1053,7 @@ TEST_CASE(
             "wp309_compute_provenance"});
     const auto flat_without_gate_plan =
         require_compute_provenance(
-            flat_without_gate_variant,
+            flat_without_gate_feature,
             "main", "probe");
     REQUIRE(has_node(
         flat_without_gate_plan,
@@ -1085,7 +1079,7 @@ TEST_CASE(
         xr_with_feature.variants.front();
     const auto xr_plan =
         require_compute_provenance(
-            xr_variant, "main#xr", "probe#xr");
+            xr_with_feature, "main#xr", "probe#xr");
     REQUIRE(has_node(
         xr_plan, "resolved_probe_path", "render"));
     REQUIRE_FALSE(has_node(
@@ -4780,10 +4774,10 @@ TEST_CASE("common graph buffer ports lower into native compute declarations", "[
     REQUIRE(document == original);
     const auto &config = resolved.normalized_config;
     const auto buffers = Pelican::test_support::bufferDefinitionsOf(config);
-    const auto tasks = parseComputeTaskDefinitionsFromConfigJson(config);
+    const auto tasks = Pelican::TestSupport::computeTaskDefinitionsOf(config);
     REQUIRE(buffers.size() == 2);
     REQUIRE(tasks.size() == 3);
-    REQUIRE_NOTHROW(validateComputeTaskBufferContracts(buffers, tasks));
+    REQUIRE_NOTHROW(validateComputeTaskBufferContracts(TestSupport::renderGraphOf(config), buffers));
     REQUIRE(config.at("buffers")[0].at("name") == "left/data");
     REQUIRE(config.at("buffers")[1].at("name") == "right/data");
     REQUIRE(computeTaskByName(config, "left/run").at("writes") == nlohmann::json::array({"left/data"}));
@@ -4989,7 +4983,7 @@ TEST_CASE("graph render nodes lower view_select onto their pass",
     const auto &task = computeTaskByName(config, "probe");
     CHECK(task.at("view_family") == "$capture/cube");
     CHECK(task.at("view_select") == Json{{"face", 2}});
-    const auto tasks = parseComputeTaskDefinitionsFromConfigJson(config);
+    const auto tasks = Pelican::TestSupport::computeTaskDefinitionsOf(config);
     REQUIRE(tasks.size() == 1);
     CHECK(tasks.front().view_select == RenderViewSelect{{"face", 2}});
     const auto graph = TestSupport::frameGraphOf(config);

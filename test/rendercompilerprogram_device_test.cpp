@@ -13,6 +13,7 @@
 #include "../src/core/renderer/shadowdepthpasscontainer.hpp"
 #include "../src/core/renderer/velocitypasscontainer.hpp"
 #include "../src/core/renderingpass/computetask.hpp"
+#include "../src/core/renderingpass/computetaskdefinition.hpp"
 #include "../src/core/renderingpass/framegraphruntime.hpp"
 #include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/core/renderingpass/rendertargetcontainer.hpp"
@@ -23,6 +24,7 @@
 #include "../src/core/vkcore/rendertarget.hpp"
 #include "../src/core/vkcore/runtimecapabilities.hpp"
 #include "../src/project/frameplan.hpp"
+#include "../src/project/rayrecordabi.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -402,6 +404,218 @@ TEST_CASE("RC-3c1b a table naming a task the preview leaves out leaves the previ
     TestSupport::requireNamedRefusal([&] { std::rethrow_exception(preview.unavailable); },
                                      "render_graph.compute_task_invalid@1",
                                      {{"node", "trace"}, {"reason", "unknown_task"}});
+}
+
+namespace {
+
+// RC-3c2b1: a record {value: <value>} as the u32 schema packs it.
+std::vector<std::byte> packedValue(std::uint32_t value) {
+    std::vector<std::byte> bytes(4);
+    writeRayRecordU32(bytes, value);
+    return bytes;
+}
+
+// Records as hex (Catch prints them).
+std::vector<std::string> hexOf(const std::vector<std::vector<std::byte>> &records) {
+    static constexpr char digits[] = "0123456789abcdef";
+    std::vector<std::string> result;
+    for (const auto &record : records) {
+        std::string text;
+        for (const auto byte : record) {
+            text.push_back(digits[(static_cast<unsigned>(byte) >> 4) & 15]);
+            text.push_back(digits[static_cast<unsigned>(byte) & 15]);
+        }
+        result.push_back(std::move(text));
+    }
+    return result;
+}
+
+const ComputeTaskDefinition &taskNamed(const std::vector<ComputeTaskDefinition> &tasks, const std::string &name) {
+    const auto found = std::find_if(tasks.begin(), tasks.end(), [&](const auto &task) { return task.name == name; });
+    REQUIRE(found != tasks.end());
+    return *found;
+}
+
+struct ObservedComputeTasks {};
+
+// RC-3c2b1 D3: what the production registration receives as each runtime
+// variant's compute tasks (observe_compute_task_definitions, before anything
+// is registered; then the registration stops), and the table entries and
+// renames this thread applied while it compiled.
+struct ReceivedComputeTasks {
+    std::vector<std::vector<ComputeTaskDefinition>> variants;
+    RenderGraphApplicationCounts applied;
+    std::string refusal;
+};
+
+ReceivedComputeTasks receivedComputeTasks(const Json &rendering, bool with_xr) {
+    FastModuleContainer modules;
+    Project project;
+    std::ofstream{project.root / "scene.json", std::ios::binary}
+        << R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json";
+    std::ofstream{project.root / "assets.json", std::ios::binary}
+        << R"json({"schema":"pelican.asset_data","version":2,"models":[]})json";
+    GET_MODULE(ProjectSource)
+        .setSourceByData(Json{{"basic_config",
+                               {{"window_size", {{"width", 16}, {"height", 16}}},
+                                {"scene_data_json", "scene.json"},
+                                {"asset_data_json", "assets.json"},
+                                {"default_scene_id", "default_scene"}}}}
+                             .dump());
+    GET_MODULE(PathResolver).setup(project.root, false);
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.headless_extent = vk::Extent2D{16, 16};
+    ReceivedComputeTasks result;
+    std::vector<RenderingPassConfigRegistrationDependencies> runtime;
+    {
+        RenderingPassConfigRegistrationDependencies::Options flat;
+        flat.gpu_owner_scope = renderPipelineVariantGpuOwnerScope(with_xr, RenderPipelineGraphVariant::flat);
+        flat.observe_compute_task_definitions = [&result](auto variants) {
+            result.variants.assign(variants.begin(), variants.end());
+            throw ObservedComputeTasks{};
+        };
+        runtime.push_back(registrationDependencies(std::move(flat)));
+#if PELICAN_WITH_OPENXR
+        if (with_xr) {
+            RenderingPassConfigRegistrationDependencies::Options xr;
+            xr.graph_variant = RenderPipelineGraphVariant::xr;
+            xr.publish_enabled_features = false;
+            xr.gpu_owner_scope = renderPipelineVariantGpuOwnerScope(true, RenderPipelineGraphVariant::xr);
+            runtime.push_back(registrationDependencies(std::move(xr)));
+        }
+#endif
+    }
+    const auto document = project.rootOf(rendering).dump();
+    const auto before = renderGraphApplicationCounts();
+    try {
+        (void)registerRenderGraphVariantFamilyFromJsonData(document, {16, 16}, std::move(runtime));
+        result.refusal = "published without reaching the observation point";
+    } catch (const ObservedComputeTasks &) {
+    } catch (const std::exception &error) {
+        result.refusal = error.what();
+    }
+    const auto after = renderGraphApplicationCounts();
+    result.applied = {
+        .acceleration_structure_entries =
+            after.acceleration_structure_entries - before.acceleration_structure_entries,
+        .callable_record_entries = after.callable_record_entries - before.callable_record_entries,
+        .compute_task_renames = after.compute_task_renames - before.compute_task_renames,
+    };
+    return result;
+}
+
+} // namespace
+
+TEST_CASE("RC-3c2b1 D3 the registration receives each table and the variant's names applied once, from the IR",
+          "[rc3c2b1][registration][compute][gpu]") {
+    // Two config tasks: `query` (a ray query of `actors`) and `trace` (a ray
+    // tracing task without a ray group layout, tracing `actors`, with one
+    // callable and its inline record {value: 1}). With the tables, both
+    // trace `props` and trace's record is {value: 9}; without, what they
+    // declare. Each table entry is applied once per variant's final revision
+    // (flat, XR, and the preview's references), each XR name once; the
+    // definitions are what the IR holds after that.
+    setupLogger();
+    auto rendering = section(0, false);
+    rendering["scene_acceleration_structures"] = Json::array({Json{{"name", "actors"}}, Json{{"name", "props"}}});
+    rendering["buffers"] = Json::array({Json{{"name", "hits"}}});
+    rendering["compute_tasks"] = Json::array({
+        rayQueryTask("query", "actors"),
+        Json{{"name", "trace"},
+             {"ray_tracing",
+              {{"raygen", "shaders/trace"},
+               {"miss", "shaders/trace"},
+               {"closesthit", "shaders/trace"},
+               {"callable", Json::array({"shaders/callable"})},
+               {"callable_record", Json::array({Json{{"name", "value"}, {"type", "u32"}}})},
+               {"callable_records", Json::array({Json{{"value", 1}}})},
+               {"acceleration_structure", "actors"}}},
+             {"dispatch", {{"rays", Json::array({1, 1, 1})}}}},
+    });
+    auto with_tables = rendering;
+    with_tables["ray_task_acceleration_structures"] = {{"query", "props"}, {"trace", "props"}};
+    with_tables["ray_task_callable_records"] = {{"trace", Json::array({Json{{"value", 9}}})}};
+#if PELICAN_WITH_OPENXR
+    constexpr bool xr = true;
+    const std::vector<std::string> suffixes{"", "#xr"};
+#else
+    constexpr bool xr = false;
+    const std::vector<std::string> suffixes{""};
+#endif
+    // The finalized runtime variants and the preview.
+    const std::size_t revisions = suffixes.size() + 1;
+    for (const bool tables : {false, true}) {
+        DYNAMIC_SECTION("tables " << tables) {
+            const auto received = receivedComputeTasks(tables ? with_tables : rendering, xr);
+            INFO(received.refusal);
+            REQUIRE(received.refusal.empty());
+            REQUIRE(received.variants.size() == suffixes.size());
+            const std::string structure = tables ? "props" : "actors";
+            for (std::size_t index = 0; index < suffixes.size(); ++index) {
+                INFO("variant " << index);
+                const auto &tasks = received.variants[index];
+                REQUIRE(tasks.size() == 2);
+                const auto &query = taskNamed(tasks, "query" + suffixes[index]);
+                CHECK(query.ray_query_acceleration_structure == std::optional{structure});
+                const auto &trace = taskNamed(tasks, "trace" + suffixes[index]);
+                REQUIRE(trace.ray_tracing);
+                CHECK(trace.ray_tracing->acceleration_structure == structure);
+                REQUIRE(trace.ray_tracing->callable_record_layout);
+                CHECK(trace.ray_tracing->callable_record_layout->data_size == 4);
+                CHECK(hexOf(trace.ray_tracing->callable_records) == hexOf({packedValue(tables ? 9 : 1)}));
+                CHECK(trace.ray_tracing->callables.size() == 1);
+            }
+            CHECK(received.applied.acceleration_structure_entries == (tables ? 2 * revisions : 0));
+            CHECK(received.applied.callable_record_entries == (tables ? revisions : 0));
+            // XR's suffix on the two tasks, once.
+            CHECK(received.applied.compute_task_renames == (suffixes.size() - 1) * 2);
+        }
+    }
+    // The variant's names: flat alone renames nothing.
+    const auto flat_only = receivedComputeTasks(with_tables, false);
+    INFO(flat_only.refusal);
+    REQUIRE(flat_only.variants.size() == 1);
+    CHECK(taskNamed(flat_only.variants.front(), "trace").ray_tracing->acceleration_structure == "props");
+    CHECK(flat_only.applied.compute_task_renames == 0);
+}
+
+TEST_CASE("RC-3c2b1 the callable records' table names a task a provider adds; the preview without it is unavailable",
+          "[rc3c2b1][render-compiler][preview][compute][gpu]") {
+    // The transform adds x_call (a ray tracing task with one callable and
+    // its inline record {value: 1}); the author's table gives it {value: 7}.
+    // The runtime variant's final IR resolves the table (the provider's
+    // task); the preview, which no provider reaches, resolves the same table
+    // in its own references and has no such task: unavailable, by name.
+    Device device;
+    const auto compiled = [&](bool table) {
+        auto rendering = section(1, false);
+        if (table) rendering["ray_task_callable_records"] = {{"x_call", Json::array({Json{{"value", 7}}})}};
+        Project project;
+        Providers providers;
+        providers.first.behavior = TransformBehavior::ray_callable_task;
+        return compile(project, providers, rendering, Variants::flat_and_preview, true, &*device.backend);
+    };
+    for (const bool table : {false, true}) {
+        DYNAMIC_SECTION("table " << table) {
+            const auto output = compiled(table);
+            REQUIRE(output.compute_task_definitions.size() == 1);
+            const auto &call = taskNamed(output.compute_task_definitions.front(), "x_call");
+            REQUIRE(call.ray_tracing);
+            CHECK(hexOf(call.ray_tracing->callable_records) == hexOf({packedValue(table ? 7 : 1)}));
+            const auto &preview = variantOf(output, RenderPipelineGraphVariant::preview);
+            if (!table) {
+                CHECK_FALSE(preview.unavailable);
+                continue;
+            }
+            REQUIRE(preview.unavailable);
+            TestSupport::requireNamedRefusal([&] { std::rethrow_exception(preview.unavailable); },
+                                             "render_graph.compute_task_invalid@1",
+                                             {{"node", "x_call"},
+                                              {"field", "ray_task_callable_records"},
+                                              {"reason", "unknown_task"}});
+        }
+    }
 }
 
 } // namespace Pelican

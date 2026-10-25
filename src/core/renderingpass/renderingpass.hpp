@@ -13,6 +13,8 @@
 #include "../../project/shaderresourceport.hpp"
 #include "../../project/imagesubresource.hpp"
 #include "../../project/attachmentoperations.hpp"
+#include "../../project/computetaskdeclaration.hpp"
+#include "../../project/nodeschedule.hpp"
 #include "../../project/framegraphbufferdefinition.hpp"
 #include "../../project/gpudrawsource.hpp"
 #include "../../project/renderresolutiondomain.hpp"
@@ -619,40 +621,14 @@ struct PassDefinition {
     const PickingPassInfo &pickingInfo() const { return std::get<PickingPassInfo>(pass_info); }
 };
 
-struct ComputeImageExtentDispatchDefinition {
-    // Names a typed image entry in resource_ports. The selected port's
-    // subresource mip and the reflected shader workgroup size determine the
-    // direct dispatch group count.
-    std::string port;
-
-    bool operator==(
-        const ComputeImageExtentDispatchDefinition &) const =
-        default;
-};
-
-struct ComputeDispatchDefinition {
-    uint32_t groups_x = 1;
-    uint32_t groups_y = 1;
-    uint32_t groups_z = 1;
-    std::optional<ComputeImageExtentDispatchDefinition>
-        groups_from;
-    // Ray-tracing tasks launch one ray per selected image pixel. This uses
-    // the same typed image-port resolution as groups_from, without a compute
-    // local-size conversion.
-    std::optional<ComputeImageExtentDispatchDefinition>
-        rays_from;
-    // Explicit ray launch dimensions, independent of any image resource.
-    std::optional<std::array<std::uint32_t, 3>> rays;
-    std::optional<ComputeIndirectDispatchDefinition>
-        indirect;
-};
-
-struct RayCallableRecordLayout;
+// RC-3c2b1: ComputeDispatchDefinition and ComputeImageExtentDispatchDefinition
+// are the project's (computetaskdeclaration.hpp): the IR holds the dispatch
+// and core takes it as it is.
 
 struct RayTracingTaskShaderDefinition {
-    std::string acceleration_structure = "scene";
-    // The sole production default literal for RT recursion.
-    std::uint32_t max_recursion = 1;
+    std::string acceleration_structure{defaultRayTracingAccelerationStructure};
+    // The project's default (computetaskdeclaration.hpp).
+    std::uint32_t max_recursion = defaultRayTracingMaxRecursion;
     ShaderReference raygen{
         "", ShaderStage::raygen,
         ShaderReferenceKind::explicit_file, false};
@@ -674,18 +650,15 @@ struct RayTracingTaskShaderDefinition {
     std::vector<std::optional<ShaderReference>> intersection_shader_slots;
 };
 
-enum class ComputeTaskSchedule : std::uint8_t {
-    // Executes once for the logical frame and may feed every view.
-    per_frame,
-    // Executes once for each logical view. Physical lowering may keep these
-    // invocations sequential while other scopes use Vulkan multiview.
-    per_view,
-    // PS-1: dispatched as per_frame, but only on a frame where its inputs
-    // or outputs changed (a new runtime generation, a recreated persistent
-    // output, different host bytes read, an upstream once node that ran,
-    // rerun_once). The frame plan node carries FrameGraphNodeDefinition::once.
-    once,
-};
+// per_frame: executes once for the logical frame and may feed every view.
+// per_view: executes once for each logical view; physical lowering may keep
+// these invocations sequential while other scopes use Vulkan multiview.
+// once (PS-1): dispatched as per_frame, but only on a frame where its inputs
+// or outputs changed (a new runtime generation, a recreated persistent
+// output, different host bytes read, an upstream once node that ran,
+// rerun_once); the frame plan node carries FrameGraphNodeDefinition::once.
+// RC-3c2b1: the IR's NodeSchedule (one set, one default).
+using ComputeTaskSchedule = NodeSchedule;
 
 std::string_view computeTaskScheduleName(
     ComputeTaskSchedule schedule);
@@ -708,8 +681,7 @@ struct ComputeTaskDefinition {
     // remain authoritative and are not synthesized from these declarations.
     std::vector<ShaderResourcePortDefinition> resource_ports;
     ComputeDispatchDefinition dispatch;
-    ComputeTaskSchedule schedule =
-        ComputeTaskSchedule::per_frame;
+    ComputeTaskSchedule schedule = defaultNodeSchedule;
     std::string view_family{
         mainRenderViewFamilyId};
     RenderViewSelect view_select;

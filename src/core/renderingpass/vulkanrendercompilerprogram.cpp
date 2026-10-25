@@ -1,4 +1,4 @@
-#include "vulkanrendercompilerprogramdetail.hpp"
+#include "vulkanrendercompilerpackage.hpp"
 
 #include "computetask.hpp"
 #include "graphtransformregistry.hpp"
@@ -143,57 +143,6 @@ targetPlansByName(
 }
 
 } // namespace
-
-void detail::namespaceComputeTaskDefinitions(
-    std::vector<ComputeTaskDefinition> &tasks,
-    const nlohmann::json &composed_config,
-    CompiledRenderPipeline &compiled_pipeline) {
-    synchronizeRenderPipelineProvenance(
-        composed_config,
-        compiled_pipeline.pass_provenance,
-        compiled_pipeline.resource_provenance);
-    const auto suffix =
-        compiled_pipeline.graph_variant_policy
-            .rendering_pass_name_suffix;
-    if (suffix.empty() || tasks.empty()) {
-        return;
-    }
-    // The names are unique and collide with no node of a graph (the IR's
-    // namespaceSharedComputeTasks refused otherwise, by name).
-    std::unordered_map<std::string, std::string>
-        renamed;
-    for (const auto &task : tasks) {
-        renamed.emplace(task.name,
-                        task.name + std::string{suffix});
-    }
-    for (auto &task : tasks) {
-        task.name = renamed.at(task.name);
-    }
-    const auto rename =
-        [&renamed](std::string &name) {
-            if (const auto found = renamed.find(name);
-                found != renamed.end()) {
-                name = found->second;
-            }
-        };
-
-    auto provenance_config = composed_config;
-    for (auto &task :
-         provenance_config.at("compute_tasks")) {
-        auto name =
-            task.at("name").get<std::string>();
-        rename(name);
-        task["name"] = std::move(name);
-    }
-    for (auto &provenance :
-         compiled_pipeline.pass_provenance) {
-        rename(provenance.name);
-    }
-    synchronizeRenderPipelineProvenance(
-        provenance_config,
-        compiled_pipeline.pass_provenance,
-        compiled_pipeline.resource_provenance);
-}
 
 namespace {
 
@@ -536,14 +485,13 @@ compileDefaultVulkanVariant(
     std::unordered_set<std::string> buffer_names;
     for (const auto &buffer : render_graph.buffers)
         buffer_names.insert(buffer.name);
-    auto compute_task_definitions =
-        parseComputeTaskDefinitionsFromConfigJson(
-            logical.composed_config,
-            input.ray_tracing_project.get());
-    detail::namespaceComputeTaskDefinitions(
-        compute_task_definitions,
-        logical.composed_config,
-        logical.compiled_pipeline);
+    // RC-3c2b1: the provenance of the final revision, from its IR (the
+    // variant's names; each config task found by its authored name). The
+    // compute tasks are made from the IR by runRenderCompilerProgram.
+    synchronizeRenderGraphProvenance(
+        render_graph,
+        logical.compiled_pipeline.pass_provenance,
+        logical.compiled_pipeline.resource_provenance);
 
     // The frame plans, before the physical plan: the planner refuses an
     // invalid graph by name first. IA-1 / EN-2: an image holding an asset or
@@ -626,8 +574,6 @@ compileDefaultVulkanVariant(
             std::move(logical.composed_config),
         .buffer_names =
             std::move(buffer_names),
-        .compute_task_definitions =
-            std::move(compute_task_definitions),
         .frame_plans =
             std::move(frame_plans),
         .physical_package = std::move(physical),

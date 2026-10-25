@@ -15,6 +15,9 @@ namespace Pelican {
 
 namespace {
 
+// RC-3c2b1: renderGraphApplicationCounts.
+thread_local RenderGraphApplicationCounts application_counts;
+
 [[noreturn]] void refuse(std::string_view code, nlohmann::json detail) {
     throw GraphRegistryError(std::string{code}, std::move(detail));
 }
@@ -409,6 +412,146 @@ void requireRenderGraphInputsProduced(const RenderGraphIR &ir, const GraphIR &gr
     }
 }
 
+std::vector<SharedComputeTask> sharedComputeTasksOf(const RenderGraphIR &ir) {
+    std::vector<SharedComputeTask> result;
+    result.reserve(ir.shared_compute_tasks.size());
+    for (std::size_t index = 0; index < ir.shared_compute_tasks.size(); ++index) {
+        const auto &name = ir.shared_compute_tasks[index];
+        const NodeIR *found = nullptr;
+        for (const auto &graph : ir.graphs) {
+            for (const auto &node : graph.nodes) {
+                if (node.scope == NodeDeclarationScope::shared && node.name == name) {
+                    found = &node;
+                    break;
+                }
+            }
+            if (found != nullptr) break;
+        }
+        if (found == nullptr) {
+            throw std::runtime_error("render graph config compute task has no node: " + name);
+        }
+        result.push_back(SharedComputeTask{
+            .node = found,
+            .authored_name = index < ir.authored_shared_compute_tasks.size()
+                                 ? std::string_view{ir.authored_shared_compute_tasks[index]}
+                                 : std::string_view{name},
+        });
+    }
+    return result;
+}
+
+void validateComputeTaskBufferContracts(const RenderGraphIR &ir,
+                                        std::span<const FrameGraphBufferDefinition> buffers) {
+    for (const auto &task : sharedComputeTasksOf(ir)) {
+        const auto &node = *task.node;
+        const auto &info = std::get<ComputeNodeInfo>(node.info);
+        if (!info.dispatch.indirect) continue;
+        const auto &indirect = *info.dispatch.indirect;
+        const auto invalid = [&](std::string_view field, std::string_view reason, nlohmann::json more) {
+            more["node"] = node.name;
+            more["field"] = std::string{field};
+            more["reason"] = std::string{reason};
+            more["buffer"] = indirect.buffer;
+            refuse("render_graph.compute_task_invalid@1", std::move(more));
+        };
+        const bool written = std::any_of(node.uses.begin(), node.uses.end(), [&](const ResourceUse &use) {
+            return use.role == ResourceUseRole::output && use.resource == indirect.buffer;
+        });
+        if (written) invalid("dispatch.indirect.buffer", "written_by_task", nlohmann::json::object());
+        const auto buffer = std::find_if(buffers.begin(), buffers.end(), [&](const auto &candidate) {
+            return candidate.name == indirect.buffer;
+        });
+        if (buffer == buffers.end()) invalid("dispatch.indirect.buffer", "unknown_buffer", nlohmann::json::object());
+        const auto expected = info.ray_tracing ? FrameGraphBufferCommandLayout::ray_dispatch
+                                               : FrameGraphBufferCommandLayout::compute_dispatch;
+        if (buffer->command_layout != expected) {
+            invalid("dispatch.indirect.buffer", "command_layout_mismatch",
+                    {{"expected", std::string{frameGraphBufferCommandLayoutName(expected)}}});
+        }
+        // The offset's alignment is the parse's (dispatch.indirect.offset).
+        if (indirect.offset > buffer->size || buffer->size - indirect.offset < frameGraphDispatchCommandBytes) {
+            invalid("dispatch.indirect.offset", "command_exceeds_buffer",
+                    {{"offset", indirect.offset}, {"size", buffer->size}});
+        }
+    }
+}
+
+void synchronizeRenderGraphProvenance(const RenderGraphIR &ir,
+                                      std::vector<RenderPassProvenance> &passes,
+                                      std::vector<RenderResourceProvenance> &resources) {
+    std::unordered_map<std::string, RenderPassProvenance> known_passes;
+    for (auto &pass : passes) {
+        if (pass.name.empty() || !known_passes.emplace(pass.name, std::move(pass)).second) {
+            throw std::runtime_error("render pass provenance has an empty or duplicate name");
+        }
+    }
+    std::vector<RenderPassProvenance> synchronized_passes;
+    std::unordered_set<std::string> seen;
+    // `known` is the name the provenance has it by; `name` the final one.
+    const auto append_pass = [&](const std::string &known, const std::string &name) {
+        if (!seen.insert(name).second) return;
+        RenderPassProvenance entry;
+        if (const auto found = known_passes.find(known); found != known_passes.end()) {
+            entry = found->second;
+        } else {
+            entry.source = RenderPipelineProvenanceSource::engine;
+        }
+        if (entry.authored_name.empty()) entry.authored_name = known;
+        entry.name = name;
+        synchronized_passes.push_back(std::move(entry));
+    };
+    for (const auto &graph : ir.graphs) {
+        for (const auto &node : graph.nodes) {
+            if (node.scope == NodeDeclarationScope::graph) append_pass(node.name, node.name);
+        }
+    }
+    for (std::size_t index = 0; index < ir.shared_compute_tasks.size(); ++index) {
+        const auto &name = ir.shared_compute_tasks[index];
+        append_pass(index < ir.authored_shared_compute_tasks.size() ? ir.authored_shared_compute_tasks[index]
+                                                                    : name,
+                    name);
+    }
+    const bool output_transform = seen.contains("output_transform");
+    passes = std::move(synchronized_passes);
+
+    std::unordered_map<std::string, RenderResourceProvenance> known_resources;
+    for (auto &resource : resources) {
+        if (resource.name.empty() || !known_resources.emplace(resource.name, std::move(resource)).second) {
+            throw std::runtime_error("render resource provenance has an empty or duplicate name");
+        }
+    }
+    std::vector<RenderResourceProvenance> synchronized_resources;
+    std::unordered_set<std::string> seen_resources;
+    const auto append_resource = [&](const std::string &name, std::string kind,
+                                     std::optional<std::vector<std::string>> usage) {
+        if (!seen_resources.insert(name).second) return;
+        RenderResourceProvenance entry;
+        if (const auto found = known_resources.find(name); found != known_resources.end()) {
+            entry = found->second;
+            // The spelling compose recorded, unless the set changed since.
+            const auto as_set = [](std::optional<std::vector<std::string>> names) {
+                if (names) std::sort(names->begin(), names->end());
+                return names;
+            };
+            if (as_set(entry.usage) != as_set(usage)) entry.usage = std::move(usage);
+        } else {
+            entry.name = name;
+            entry.source = RenderPipelineProvenanceSource::engine;
+            entry.usage = std::move(usage);
+        }
+        entry.kind = std::move(kind);
+        synchronized_resources.push_back(std::move(entry));
+    };
+    for (const auto &image : ir.images) {
+        auto names = imageUsageNames(image.usage);
+        append_resource(image.name, "render_target",
+                        names.empty() ? std::nullopt : std::optional{std::move(names)});
+    }
+    for (const auto &buffer : ir.buffers) append_resource(buffer.name, "buffer", std::nullopt);
+    if (output_transform) append_resource("swapchain", "frame_target", std::nullopt);
+    resources = std::move(synchronized_resources);
+}
+
 RenderGraphTileLocalFormats renderGraphDeviceTileLocalFormats(
     const RenderGraphIR &ir, const RenderGraphDeviceFacts &device) {
     RenderGraphTileLocalFormats result;
@@ -541,6 +684,7 @@ CompiledLogicalRenderGraph toLogicalGraph(const RenderGraphIR &ir, const GraphIR
 
 RenderGraphIR namespaceSharedComputeTasks(RenderGraphIR ir, std::string_view suffix) {
     if (suffix.empty() || ir.shared_compute_tasks.empty()) return ir;
+    application_counts.compute_task_renames += ir.shared_compute_tasks.size();
     std::unordered_map<std::string, std::string> renamed;
     for (const auto &task : ir.shared_compute_tasks) {
         if (!renamed.emplace(task, task + std::string{suffix}).second) {
@@ -611,10 +755,20 @@ void requireRenderGraphRayQueryCapability(
 
 namespace {
 
-// `ray_task_acceleration_structures` against the config's compute tasks:
-// each named task exists and traces or queries, and takes the named
-// structure (every graph's copy of it).
-RenderGraphIR resolveRayTaskAccelerationStructures(RenderGraphIR ir) {
+// Every graph's copy of the config's task `task` (by its authored name).
+template <class Fn>
+void forEachSharedTaskCopy(RenderGraphIR &ir, const std::string &task, Fn &&fn) {
+    for (auto &graph : ir.graphs) {
+        for (auto &node : graph.nodes) {
+            if (node.scope != NodeDeclarationScope::shared || node.name != task) continue;
+            fn(std::get<ComputeNodeInfo>(node.info));
+        }
+    }
+}
+
+} // namespace
+
+RenderGraphIR applyRayTaskTables(RenderGraphIR ir) {
     for (const auto &[task, selected] : ir.ray_task_acceleration_structures) {
         const auto invalid = [&](std::string_view reason) {
             refuse("render_graph.compute_task_invalid@1",
@@ -623,24 +777,43 @@ RenderGraphIR resolveRayTaskAccelerationStructures(RenderGraphIR ir) {
                     {"reason", std::string{reason}}});
         };
         if (!contains(ir.shared_compute_tasks, task)) invalid("unknown_task");
-        for (auto &graph : ir.graphs) {
-            for (auto &node : graph.nodes) {
-                if (node.scope != NodeDeclarationScope::shared || node.name != task) continue;
-                auto &info = std::get<ComputeNodeInfo>(node.info);
-                if (info.ray_tracing) {
-                    info.ray_tracing_acceleration_structure = selected;
-                } else if (info.ray_query_acceleration_structure) {
-                    info.ray_query_acceleration_structure = selected;
-                } else {
-                    invalid("task_declares_no_ray_work");
-                }
+        ++application_counts.acceleration_structure_entries;
+        forEachSharedTaskCopy(ir, task, [&](ComputeNodeInfo &info) {
+            if (info.ray_tracing) {
+                info.ray_tracing->acceleration_structure = selected;
+            } else if (info.ray_query_acceleration_structure) {
+                info.ray_query_acceleration_structure = selected;
+            } else {
+                invalid("task_declares_no_ray_work");
             }
-        }
+        });
+    }
+    for (const auto &[task, values] : ir.ray_task_callable_records) {
+        const auto invalid = [&](std::string_view reason) {
+            refuse("render_graph.compute_task_invalid@1",
+                   {{"node", task},
+                    {"field", "ray_task_callable_records"},
+                    {"reason", std::string{reason}}});
+        };
+        if (!contains(ir.shared_compute_tasks, task)) invalid("unknown_task");
+        ++application_counts.callable_record_entries;
+        std::optional<std::vector<std::vector<std::byte>>> records;
+        forEachSharedTaskCopy(ir, task, [&](ComputeNodeInfo &info) {
+            if (!info.ray_tracing || !info.ray_tracing->callable_record) {
+                invalid("task_declares_no_callable_record");
+            }
+            auto &ray = *info.ray_tracing;
+            // Packed once, by the task's schema (every copy is the same task).
+            if (!records) {
+                records = encodeRayCallableRecords(values, *ray.callable_record, ray.callables.size(), task);
+            }
+            ray.callable_records = *records;
+        });
     }
     return ir;
 }
 
-} // namespace
+RenderGraphApplicationCounts renderGraphApplicationCounts() noexcept { return application_counts; }
 
 namespace {
 
@@ -664,7 +837,7 @@ void requireSelectedAccelerationStructuresDeclared(
         for (const auto &node : graph.nodes) {
             std::optional<std::string> selected;
             if (const auto *task = configRayTask(node)) {
-                selected = task->ray_tracing ? task->ray_tracing_acceleration_structure
+                selected = task->ray_tracing ? task->ray_tracing->acceleration_structure
                                              : task->ray_query_acceleration_structure.value_or("scene");
             } else if (rayQueryPolicy(node) == true) {
                 selected = node.ray_query.value_or("scene");
@@ -679,7 +852,7 @@ void requireSelectedAccelerationStructuresDeclared(
 
 RenderGraphIR resolveRenderGraphReferences(
     RenderGraphIR ir, std::span<const SceneAccelerationStructureDefinition> named) {
-    ir = resolveRayTaskAccelerationStructures(std::move(ir));
+    ir = applyRayTaskTables(std::move(ir));
     requireSelectedAccelerationStructuresDeclared(ir, named);
     return ir;
 }
@@ -744,7 +917,7 @@ RenderGraphIR insertAccelerationStructureNodes(RenderGraphIR ir,
             }
             node.after.push_back(node_name);
             const auto selected = task->ray_tracing
-                                      ? task->ray_tracing_acceleration_structure
+                                      ? task->ray_tracing->acceleration_structure
                                       : task->ray_query_acceleration_structure.value_or("scene");
             if (selected != "scene") node.after.push_back(node_name + ":" + selected);
         }

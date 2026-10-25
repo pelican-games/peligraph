@@ -69,6 +69,10 @@ enum class TransformBehavior {
     cycle,
     // a config compute task x_trace that queries the scene.
     ray_task,
+    // RC-3c2b1: a config ray tracing task x_call (no ray group layout) with
+    // one callable and its record schema ({value: u32}), its inline record
+    // {value: 1}.
+    ray_callable_task,
     // a second pass named draw.
     duplicate,
 };
@@ -117,6 +121,7 @@ RenderGraphTransform::Status resolveTransform(void *context,
                 (*named("draw"))["after"] = Json::array({"present"});
                 break;
             case TransformBehavior::ray_task:
+            case TransformBehavior::ray_callable_task:
                 break;
             case TransformBehavior::duplicate:
                 passes.insert(passes.begin(), fullscreen("draw", {}, "scratch"));
@@ -131,6 +136,18 @@ RenderGraphTransform::Status resolveTransform(void *context,
                      {"writes", Json::array({"hits"})},
                      {"dispatch", {{"groups", Json::array({1, 1, 1})}}},
                      {"ray_query", {{"acceleration_structure", "scene"}}}});
+        }
+        if (state.behavior == TransformBehavior::ray_callable_task) {
+            config["compute_tasks"].push_back(
+                Json{{"name", "x_call"},
+                     {"ray_tracing",
+                      {{"raygen", "shaders/x_call"},
+                       {"miss", "shaders/x_call"},
+                       {"closesthit", "shaders/x_call"},
+                       {"callable", Json::array({"shaders/x_callable"})},
+                       {"callable_record", Json::array({Json{{"name", "value"}, {"type", "u32"}}})},
+                       {"callable_records", Json::array({Json{{"value", 1}}})}}},
+                     {"dispatch", {{"rays", Json::array({1, 1, 1})}}}});
         }
         state.response = config.dump();
     } catch (...) {

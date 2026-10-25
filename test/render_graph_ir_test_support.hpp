@@ -24,8 +24,9 @@
 namespace Pelican::TestSupport {
 
 // The single-graph form as the normal form: the config becomes the one graph
-// of rendering_passes, its render_targets and buffers the config's (RC-3c2a:
-// a graph declares none of its own). A planning fixture's image that only
+// of rendering_passes, its render_targets, buffers and compute_tasks (and the
+// tasks' tables) the config's (RC-3c2a / RC-3c2b1: a graph declares none of
+// its own). A planning fixture's image that only
 // names itself (what the planner read of a graph's own image: the name and
 // `history`) is completed as a sampled color image: extent_scale 1,
 // R8G8B8A8_UNORM, COLOR_ATTACHMENT + SAMPLED. A config with
@@ -38,7 +39,8 @@ inline nlohmann::json wrapSingleGraph(const nlohmann::json &config) {
     }
     auto graph = config;
     nlohmann::json result = nlohmann::json::object();
-    for (const auto *key : {"render_targets", "buffers"}) {
+    for (const auto *key : {"render_targets", "buffers", "compute_tasks", "ray_task_acceleration_structures",
+                            "ray_task_callable_records"}) {
         if (const auto found = graph.find(key); found != graph.end()) {
             result[key] = std::move(*found);
             graph.erase(key);

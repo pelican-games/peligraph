@@ -24,7 +24,7 @@
 #include <set>
 #include <stdexcept>
 #include <utility>
-#include "computetaskdefinitionjson.hpp"
+#include "computetaskdefinition.hpp"
 
 namespace Pelican {
 

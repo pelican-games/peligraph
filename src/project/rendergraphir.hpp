@@ -1,6 +1,7 @@
 #pragma once
 
 #include "attachmentoperations.hpp"
+#include "computetaskdeclaration.hpp"
 #include "framegraphbufferdefinition.hpp"
 #include "frameplan.hpp"
 #include "gpudrawsource.hpp"
@@ -13,6 +14,7 @@
 #include "logicalrendergraph.hpp"
 #include "materialdrawtag.hpp"
 #include "materialoutput.hpp"
+#include "nodeschedule.hpp"
 #include "passfieldownership.hpp"
 #include "renderpipeline.hpp"
 #include "renderresolutiondomain.hpp"
@@ -148,12 +150,6 @@ struct ResourceUse {
     bool operator==(const ResourceUse &) const = default;
 };
 
-enum class NodeSchedule : std::uint8_t {
-    per_frame,
-    per_view,
-    once,
-};
-
 // Where the node was declared: in its graph's `passes` / `compute_tasks`,
 // in the config's `compute_tasks` (shared: every graph has a copy, after its
 // own), or made by the engine (the acceleration-structure builds).
@@ -187,14 +183,22 @@ struct MaterialNodeInfo {
     bool operator==(const MaterialNodeInfo &) const = default;
 };
 
+// RC-3c2b1: a compute task's execution values (core makes its
+// ComputeTaskDefinition from these and the node's uses: reads, writes,
+// resource ports, the indirect buffer).
 struct ComputeNodeInfo {
-    // `ray_tracing` (a ray pipeline) and the acceleration structure it traces
-    // (`ray_tracing.acceleration_structure`, or the config's
-    // `ray_task_acceleration_structures`; "scene" when neither names one).
-    bool ray_tracing = false;
-    std::string ray_tracing_acceleration_structure = "scene";
+    // `shader` of a compute shader task (nullopt for a ray tracing one; a
+    // compute task without one plans, and computeTaskDefinitionsOf refuses
+    // it).
+    std::optional<std::string> shader;
+    // `ray_tracing` (a ray pipeline): its declaration, with the acceleration
+    // structure it traces (`ray_tracing.acceleration_structure`, or the
+    // config's `ray_task_acceleration_structures`; "scene" when neither
+    // names one).
+    std::optional<RayTracingTaskDeclaration> ray_tracing;
     // `ray_query.acceleration_structure` of a compute shader that queries.
     std::optional<std::string> ray_query_acceleration_structure;
+    ComputeDispatchDefinition dispatch;
 
     bool operator==(const ComputeNodeInfo &) const = default;
 };
@@ -236,7 +240,7 @@ struct NodeIR {
     std::vector<std::string> regions;
     std::string view_family{mainRenderViewFamilyId};
     RenderViewSelect view_select;
-    NodeSchedule schedule = NodeSchedule::per_frame;
+    NodeSchedule schedule = defaultNodeSchedule;
     RenderResolutionDomain resolution_domain =
         RenderResolutionDomain::unclassified;
     // The acceleration structure a pass of a raster family queries
@@ -291,10 +295,11 @@ using BufferResource = FrameGraphBufferDefinition;
 // RC-3c2a: a graph declares no render_targets or buffers of its own (nothing
 // composes them; parseRenderGraph refuses them,
 // render_graph.graph_declaration_unsupported@1). Every resource is the
-// config's.
+// config's. RC-3c2b1: nor compute_tasks (the same refusal): every compute
+// task is the config's, copied into every graph.
 struct GraphIR {
     std::string name;
-    // Its passes, its own compute tasks, then the config's compute tasks.
+    // Its passes, then the config's compute tasks.
     std::vector<NodeIR> nodes;
     // Provenance: what made this graph (the render strategy, the graph
     // transforms, this graph's tagged subgraph replacements). The compiler
@@ -318,8 +323,13 @@ struct FrameNodeOrderIR {
 struct RenderGraphIR {
     std::vector<ImageResource> images;
     std::vector<BufferResource> buffers;
-    // The config's compute tasks, by name, in declaration order.
+    // The config's compute tasks, by name, in declaration order
+    // (namespaceSharedComputeTasks gives them the variant's suffix).
     std::vector<std::string> shared_compute_tasks;
+    // RC-3c2b1: the same tasks by the names they were authored with (no
+    // rename touches these): shared_compute_tasks[i] is
+    // authored_shared_compute_tasks[i] renamed.
+    std::vector<std::string> authored_shared_compute_tasks;
     std::vector<GraphIR> graphs;
     // `frame_node_order`, in its graphs' (sorted) order.
     std::vector<FrameNodeOrderIR> frame_node_order;
@@ -328,6 +338,11 @@ struct RenderGraphIR {
     // it names may arrive later from a provider, so finalizeRenderGraph
     // resolves it.
     std::vector<std::pair<std::string, std::string>> ray_task_acceleration_structures;
+    // RC-3c2b1: `ray_task_callable_records` as written (task -> its records'
+    // values, in the table's order). Like the structures' table, the final
+    // revision resolves it (resolveRenderGraphReferences): each task's
+    // records packed by its callable record schema.
+    std::vector<std::pair<std::string, RayCallableRecordValues>> ray_task_callable_records;
 
     bool operator==(const RenderGraphIR &) const = default;
 };
@@ -363,6 +378,37 @@ FramePlan planRenderGraph(const RenderGraphIR &ir, const GraphIR &graph);
 // resource}.
 void requireRenderGraphInputsProduced(const RenderGraphIR &ir, const GraphIR &graph,
                                       const FramePlan &plan);
+
+// RC-3c2b1: the config's compute tasks, one node each (the first graph's
+// copy), with the name it was authored with, in declaration order.
+struct SharedComputeTask {
+    const NodeIR *node = nullptr;
+    std::string_view authored_name;
+};
+std::vector<SharedComputeTask> sharedComputeTasksOf(const RenderGraphIR &ir);
+
+// RC-3c2b1: a compute task's indirect dispatch against the buffers as the
+// generation's resource description sized them: the buffer is declared, the
+// task does not write it, its command_layout is the task's
+// (compute_dispatch, or ray_dispatch for a ray tracing task) and the command
+// at the offset fits. Refuses render_graph.compute_task_invalid@1 {node,
+// field: "dispatch.indirect.buffer" | "dispatch.indirect.offset", reason:
+// written_by_task | unknown_buffer | command_layout_mismatch |
+// command_exceeds_buffer} (with buffer, and expected / offset / size).
+void validateComputeTaskBufferContracts(const RenderGraphIR &ir,
+                                        std::span<const FrameGraphBufferDefinition> buffers);
+
+// RC-3c2b1: the compiled pipeline's provenance for the final revision, from
+// its IR: one pass entry per node a graph declares (each name once, in graph
+// order) and one per config compute task (named as the variant renamed it,
+// found by the name it was authored with, so its authored_name, feature and
+// graph / loop origin stay), then one resource entry per config image,
+// buffer and the swapchain of output_transform. An entry the provenance did
+// not have is the engine's; a known image keeps its usage as spelled unless
+// the final revision declares another set.
+void synchronizeRenderGraphProvenance(const RenderGraphIR &ir,
+                                      std::vector<RenderPassProvenance> &passes,
+                                      std::vector<RenderResourceProvenance> &resources);
 
 // The facts of an image declaration the physical plan's eligibility rules
 // read. The one definition of each rule is here, over these facts; core
@@ -481,13 +527,31 @@ std::size_t snapshotCopyBytes(const ImageResource &destination, ResolvedResource
 bool snapshotCopiesFormatOf(const ImageResource &destination);
 
 // The final revision's references, which every variant resolves (the
-// preview too, which goes no further): ray_task_acceleration_structures
-// against the config's compute tasks (render_graph.compute_task_invalid@1
-// {node, field, reason: unknown_task | task_declares_no_ray_work}), then
-// every structure a config task or a raster-family pass selects is declared
+// preview too, which goes no further): the config's task tables
+// (applyRayTaskTables), then every structure a config task or a
+// raster-family pass selects is declared
 // (requireSelectedAccelerationStructuresDeclared).
 RenderGraphIR resolveRenderGraphReferences(
     RenderGraphIR ir, std::span<const SceneAccelerationStructureDefinition> named);
+// The config's task tables against its compute tasks, by the authored names
+// (every graph's copy of a task takes the value):
+// ray_task_acceleration_structures selects the structure a task traces or
+// queries (render_graph.compute_task_invalid@1 {node, field, reason:
+// unknown_task | task_declares_no_ray_work}); ray_task_callable_records
+// replaces a task's records, packed by its callable record schema
+// (render_graph.compute_task_invalid@1 {node, field, reason: unknown_task |
+// task_declares_no_callable_record}; the packing's refusals as for inline
+// records). The only place either table is applied.
+RenderGraphIR applyRayTaskTables(RenderGraphIR ir);
+
+// RC-3c2b1: how many table entries and compute task renames this thread has
+// applied (a test's count: each once per variant's final revision).
+struct RenderGraphApplicationCounts {
+    std::size_t acceleration_structure_entries = 0;
+    std::size_t callable_record_entries = 0;
+    std::size_t compute_task_renames = 0;
+};
+RenderGraphApplicationCounts renderGraphApplicationCounts() noexcept;
 // "scene" or one of `named`: render_graph.acceleration_structure_unknown@1
 // {node, acceleration_structure}.
 void requireSelectedAccelerationStructuresDeclared(

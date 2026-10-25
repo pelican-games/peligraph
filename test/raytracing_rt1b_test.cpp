@@ -1,4 +1,5 @@
 #include "../src/core/shader/raygrouplayout.hpp"
+#include "compute_task_test_support.hpp"
 #include "render_graph_root_test_support.hpp"
 #include "../src/core/renderingpass/computetask.hpp"
 #include "../src/core/renderingpass/framegraphruntime.hpp"
@@ -264,7 +265,7 @@ TEST_CASE("WP367 typed triangle hit groups expose only optional anyhit",
     })json");
 
     const auto parsed =
-        parseComputeTaskDefinitionsFromConfigJson(config, project.get());
+        Pelican::TestSupport::computeTaskDefinitionsOf(config, project.get());
     REQUIRE(parsed.size() == 1);
     REQUIRE(parsed.front().ray_tracing);
     const auto &ray = *parsed.front().ray_tracing;
@@ -290,7 +291,7 @@ TEST_CASE("WP367 typed triangle hit groups expose only optional anyhit",
             invalid["compute_tasks"][0]["ray_tracing"]["hit_shaders"]
                    ["primary"]["opaque"]["type"] = type;
             CHECK_THROWS_WITH(
-                parseComputeTaskDefinitionsFromConfigJson(invalid, project.get()),
+                Pelican::TestSupport::computeTaskDefinitionsOf(invalid, project.get()),
                 ContainsSubstring(
                     "pelican.ray_group_type_declared_in_task@1"));
         }
@@ -300,7 +301,7 @@ TEST_CASE("WP367 typed triangle hit groups expose only optional anyhit",
         invalid["compute_tasks"][0]["ray_tracing"]["hit_shaders"]
                ["primary"]["opaque"]["intersection"] = "shaders/nope";
         CHECK_THROWS_WITH(
-            parseComputeTaskDefinitionsFromConfigJson(invalid, project.get()),
+            Pelican::TestSupport::computeTaskDefinitionsOf(invalid, project.get()),
             ContainsSubstring(
                 "pelican.ray_tracing.unsupported_shader_stage@1"));
     }
@@ -309,7 +310,7 @@ TEST_CASE("WP367 typed triangle hit groups expose only optional anyhit",
         invalid["compute_tasks"][0]["ray_tracing"]["hit_shaders"]
                ["primary"]["opaque"]["shader"] = "shaders/nope";
         CHECK_THROWS_WITH(
-            parseComputeTaskDefinitionsFromConfigJson(invalid, project.get()),
+            Pelican::TestSupport::computeTaskDefinitionsOf(invalid, project.get()),
             ContainsSubstring(
                 "pelican.ray_tracing.ray_hit_group_invalid@1"));
     }
@@ -318,7 +319,7 @@ TEST_CASE("WP367 typed triangle hit groups expose only optional anyhit",
         invalid["compute_tasks"][0]["ray_tracing"]["hit_shaders"]
                ["primary"]["opaque"]["anyhit"] = "";
         CHECK_THROWS_WITH(
-            parseComputeTaskDefinitionsFromConfigJson(invalid, project.get()),
+            Pelican::TestSupport::computeTaskDefinitionsOf(invalid, project.get()),
             ContainsSubstring(
                 "pelican.ray_tracing.ray_hit_group_invalid@1"));
     }
@@ -331,7 +332,7 @@ TEST_CASE("WP367 typed triangle hit groups expose only optional anyhit",
         REQUIRE(input.is_open());
         const auto legacy = nlohmann::json::parse(input);
         const auto tasks =
-            parseComputeTaskDefinitionsFromConfigJson(legacy);
+            Pelican::TestSupport::computeTaskDefinitionsOf(legacy);
         REQUIRE(tasks.size() == 1);
         REQUIRE(tasks.front().ray_tracing);
         REQUIRE(tasks.front().ray_tracing->closest_hits.size() == 1);
@@ -661,7 +662,7 @@ TEST_CASE("WP366 root sidecar is single-load and drives the complete task gramma
       }]
     })json");
     const auto tasks =
-        parseComputeTaskDefinitionsFromConfigJson(config, project.get());
+        Pelican::TestSupport::computeTaskDefinitionsOf(config, project.get());
     REQUIRE(tasks.size() == 1);
     REQUIRE(tasks[0].ray_tracing);
     CHECK(tasks[0].ray_tracing->uses_group_layout);
@@ -678,7 +679,7 @@ TEST_CASE("WP366 root sidecar is single-load and drives the complete task gramma
         invalid["compute_tasks"][0]["ray_tracing"]["hit_shaders"]
                ["primary"].erase("foliage");
         CHECK_THROWS_WITH(
-            parseComputeTaskDefinitionsFromConfigJson(invalid, project.get()),
+            Pelican::TestSupport::computeTaskDefinitionsOf(invalid, project.get()),
             Catch::Matchers::ContainsSubstring(
                 "pelican.ray_tracing.hit_shader_missing@1: compute task 'trace' group='foliage' ray_type='primary' available=[opaque]"));
     }
@@ -687,7 +688,7 @@ TEST_CASE("WP366 root sidecar is single-load and drives the complete task gramma
         invalid["compute_tasks"][0]["ray_tracing"]["misses"].erase(
             "shadow_open");
         CHECK_THROWS_WITH(
-            parseComputeTaskDefinitionsFromConfigJson(invalid, project.get()),
+            Pelican::TestSupport::computeTaskDefinitionsOf(invalid, project.get()),
             Catch::Matchers::ContainsSubstring(
                 "pelican.ray_tracing.miss_shader_missing@1"));
     }
@@ -700,17 +701,17 @@ TEST_CASE("WP366 root sidecar is single-load and drives the complete task gramma
         pipeline["miss"] = "shaders/legacy";
         pipeline["closesthit"] = "shaders/legacy";
         CHECK_THROWS_WITH(
-            parseComputeTaskDefinitionsFromConfigJson(invalid, project.get()),
+            Pelican::TestSupport::computeTaskDefinitionsOf(invalid, project.get()),
             Catch::Matchers::ContainsSubstring(
                 "pelican.ray_tracing.legacy_syntax_with_layout@1"));
-        CHECK_NOTHROW(parseComputeTaskDefinitionsFromConfigJson(invalid));
+        CHECK_NOTHROW(Pelican::TestSupport::computeTaskDefinitionsOf(invalid));
     }
     SECTION("explicit SPIR-V is source-only named reject") {
         auto invalid = config;
         invalid["compute_tasks"][0]["ray_tracing"]["raygen"] =
             "shaders/trace.rgen.spv";
         CHECK_THROWS_WITH(
-            parseComputeTaskDefinitionsFromConfigJson(invalid, project.get()),
+            Pelican::TestSupport::computeTaskDefinitionsOf(invalid, project.get()),
             Catch::Matchers::ContainsSubstring(
                 "pelican.ray_tracing.layout_source_only@1"));
     }
@@ -756,7 +757,7 @@ TEST_CASE("RTL-1b the ray tracing task parser refuses by a typed code with its f
         "dispatch":{"rays_from":{"port":"mask"}}
       }]
     })json");
-    REQUIRE_NOTHROW(parseComputeTaskDefinitionsFromConfigJson(config, project.get()));
+    REQUIRE_NOTHROW(Pelican::TestSupport::computeTaskDefinitionsOf(config, project.get()));
     struct Refused {
         std::string code;
         nlohmann::json fields;
@@ -767,7 +768,7 @@ TEST_CASE("RTL-1b the ray tracing task parser refuses by a typed code with its f
         auto invalid = config;
         change(invalid["compute_tasks"][0]["ray_tracing"]);
         try {
-            (void)parseComputeTaskDefinitionsFromConfigJson(invalid, layout);
+            (void)Pelican::TestSupport::computeTaskDefinitionsOf(invalid, layout);
         } catch (const RayTracingRefusal &refusal) {
             return Refused{refusal.code(), refusal.fields(), refusal.what()};
         }

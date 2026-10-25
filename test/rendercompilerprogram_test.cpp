@@ -316,12 +316,11 @@ TEST_CASE("named AS operations depend on shared construction and precede consume
 TEST_CASE("frame node ordering adds constraints without rewriting resource dependencies",
           "[rendercompiler][rt7][node-order]") {
     using Json = nlohmann::json;
-    // Two independent compute tasks of the graph.
+    // Two independent compute tasks (the config's; RC-3c2b1: a graph has
+    // none of its own).
     auto config = Json{{"buffers", Json::array({Json{{"name", "result"}}})},
-                       {"rendering_passes",
-                        Json::array({Json{{"name", "main"},
-                                          {"compute_tasks", Json::array({Json{{"name", "first"}},
-                                                                         Json{{"name", "second"}}})}}})}};
+                       {"compute_tasks", Json::array({Json{{"name", "first"}}, Json{{"name", "second"}}})},
+                       {"rendering_passes", Json::array({Json{{"name", "main"}, {"passes", Json::array()}}})}};
     SECTION("independent nodes execute in the requested order") {
         const auto ir = ordered(irOf(config), {"second", "first"});
         CHECK(ir.graphs[0].nodes[0].name == "first");
@@ -329,8 +328,8 @@ TEST_CASE("frame node ordering adds constraints without rewriting resource depen
         CHECK(planOrder(ir) == std::vector<std::string>{"second", "first"});
     }
     SECTION("reversing producer and consumer is rejected") {
-        config["rendering_passes"][0]["compute_tasks"][0]["writes"] = {"result"};
-        config["rendering_passes"][0]["compute_tasks"][1]["reads"] = {"result"};
+        config["compute_tasks"][0]["writes"] = {"result"};
+        config["compute_tasks"][1]["reads"] = {"result"};
         requireOrderConflict(irOf(config), {"second", "first"});
     }
     SECTION("named AS order changes within the shared publication boundary") {

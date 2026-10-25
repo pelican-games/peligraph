@@ -3,6 +3,8 @@
 #include "graphloopexpression.hpp"
 #include "renderpipeline.hpp"
 #include "attachmentoperations.hpp"
+#include "computetaskdeclaration.hpp"
+#include "nodeschedule.hpp"
 #include "renderresolutiondomain.hpp"
 
 #include <algorithm>
@@ -282,28 +284,29 @@ P clearColors() {
     return object("clear_colors").item(color("")).describe("Clear values by color output name.");
 }
 P passSchedule() {
-    return enumeration("schedule", {"per_frame", "once"}).fallback("per_frame").describe("When the pass runs.");
+    return enumeration("schedule", {"per_frame", "once"})
+        .fallback(std::string{nodeScheduleName(defaultNodeSchedule)})
+        .describe("When the pass runs.");
 }
 P shaderDefines() {
     return array("defines", string("").expression()).describe("NAME or NAME=VALUE defines.");
 }
 
-// --- CT-6: render.compute's ray_tracing and dispatch
-// (computetaskdefinitionjson.cpp). ---
+// --- CT-6: render.compute's ray_tracing and dispatch (RC-3c2b1: read by
+// parseRenderGraph, rendergraphparse.cpp; the shaders resolved against the
+// ray group layout by core's computeTaskDefinitionsOf). The defaults are the
+// project's (computetaskdeclaration.hpp, nodeschedule.hpp). ---
 
 // One shader's path, or several (parseRayTracingShaderList).
 P rayShaderList(std::string name) {
     return union_(std::move(name)).variant(shader("")).variant(array("", shader("")));
 }
 
-// parseRayTracingShaders without a project ray_group_layout reads raygen,
-// miss and closesthit; parseLayoutRayTracingShaders with one reads raygen,
-// traced_ray_types, misses and hit_shaders and refuses miss / closesthit.
-// Either reads callable, callable_record / callable_records
-// (parseCallableRecords, parseRayCallableRecordLayout, encodeRayCallableRecords),
-// max_recursion (parseRayTracingRecursion) and acceleration_structure
-// (parseComputeTaskDefinitionsFromConfigJson). The defaults are
-// RayTracingTaskShaderDefinition's.
+// Without a project ray_group_layout a task takes raygen, miss and
+// closesthit; with one raygen, traced_ray_types, misses and hit_shaders, and
+// miss / closesthit are refused. Either takes callable, callable_record /
+// callable_records (parseRayCallableRecordLayout, encodeRayCallableRecords),
+// max_recursion and acceleration_structure.
 P rayTracing() {
     return object("ray_tracing")
         .field(shader("raygen").required().describe("The ray generation shader."))
@@ -343,24 +346,26 @@ P rayTracing() {
                      object("").item(union_("").variant(number("")).variant(array("", number("")))))
                    .describe("One record per callable: each member of callable_record by name, a number or a "
                              "vector's numbers."))
-        .field(uint32("max_recursion").range(1.0, uint32_max).fallback(1))
-        .field(string("acceleration_structure").fallback("scene").choicesFrom(authoring_context,
-                                                                              "acceleration_structures")
+        .field(uint32("max_recursion").range(1.0, uint32_max).fallback(defaultRayTracingMaxRecursion))
+        .field(string("acceleration_structure")
+                   .fallback(std::string{defaultRayTracingAccelerationStructure})
+                   .choicesFrom(authoring_context, "acceleration_structures")
                    .describe("The acceleration structure it traces: \"scene\" or a composed "
                              "scene_acceleration_structures name."))
         .describe("A ray tracing pipeline (excludes shader).");
 }
 
-// parseDispatch. A ray tracing task takes exactly one of rays, rays_from or
-// indirect; a compute task groups or groups_from, or indirect alone
-// (local_size is refused). Absent: one group.
+// A ray tracing task takes exactly one of rays, rays_from or indirect; a
+// compute task groups or groups_from, or indirect alone (local_size and any
+// other key are refused). Absent: one group.
 P computeDispatch() {
     const auto count = [](std::string name) {
-        return uint32(std::move(name)).range(1.0, uint32_max).fallback(1);
+        return uint32(std::move(name)).range(1.0, uint32_max).fallback(defaultComputeDispatchGroupCount);
     };
     return object("dispatch")
         .field(union_("groups")
-                   .fallback(Json::array({1, 1, 1}))
+                   .fallback(Json::array({defaultComputeDispatchGroupCount, defaultComputeDispatchGroupCount,
+                                          defaultComputeDispatchGroupCount}))
                    .variant(array("", uint32("").range(1.0, uint32_max)))
                    .variant(object("").field(count("x")).field(count("y")).field(count("z")))
                    .describe("Workgroup counts: [x, y, z] or {x, y, z}, each positive (a compute task)."))
@@ -380,7 +385,7 @@ P computeDispatch() {
                               .where("command_layout", {"compute_dispatch", "ray_dispatch"})
                               .describe("A buffer the task does not write, of command_layout compute_dispatch "
                                         "(a compute task) or ray_dispatch (a ray tracing task)."))
-                   .field(integer("offset").range(0.0, std::nullopt).fallback(0)
+                   .field(integer("offset").range(0.0, std::nullopt).fallback(ComputeIndirectDispatchDefinition{}.offset)
                               .describe("Where the command starts, in bytes (a multiple of 4)."))
                    .describe("The counts a buffer holds (excludes the others)."))
         .describe("How many groups or rays the task launches.");
@@ -615,7 +620,8 @@ Table makeTable() {
          rayTracing(),
          object("ray_query").field(accelerationStructure()),
          computeDispatch(),
-         enumeration("schedule", {"per_frame", "per_view", "once"}).fallback("per_frame")
+         enumeration("schedule", {"per_frame", "per_view", "once"})
+             .fallback(std::string{nodeScheduleName(defaultNodeSchedule)})
              .describe("When the task runs."),
          viewFamily(), viewSelect(), regionTags(), regions(), order("after"), order("before")});
 

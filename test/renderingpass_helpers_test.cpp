@@ -1,4 +1,5 @@
 #include "registered_render_targets_test_support.hpp"
+#include "compute_task_test_support.hpp"
 #include "../src/project/generationresources.hpp"
 #include <catch2/generators/catch_generators.hpp>
 #include "../src/core/renderingpass/fullscreenpassinfojsonparser.hpp"
@@ -1182,7 +1183,7 @@ TEST_CASE(
           }]
         })json");
     const auto tasks =
-        parseComputeTaskDefinitionsFromConfigJson(
+        Pelican::TestSupport::computeTaskDefinitionsOf(
             config);
     REQUIRE(tasks.size() == 1);
     REQUIRE(
@@ -1210,7 +1211,7 @@ TEST_CASE(
            ["resource_ports"]["reduced_depth"]
            ["subresource"]["mip"] = 2;
     REQUIRE_THROWS_WITH(
-        parseComputeTaskDefinitionsFromConfigJson(
+        Pelican::TestSupport::computeTaskDefinitionsOf(
             overlap),
         Catch::Matchers::ContainsSubstring(
             "overlapping shader read/write subresources"));
@@ -1220,7 +1221,7 @@ TEST_CASE(
             ["resource_ports"]["source_depth"]
             .erase("subresource");
     REQUIRE_THROWS_WITH(
-        parseComputeTaskDefinitionsFromConfigJson(
+        Pelican::TestSupport::computeTaskDefinitionsOf(
             implicit),
         Catch::Matchers::ContainsSubstring(
             "only through an explicit subresource"));
@@ -1246,7 +1247,7 @@ TEST_CASE(
         })json");
 
     const auto tasks =
-        parseComputeTaskDefinitionsFromConfigJson(
+        Pelican::TestSupport::computeTaskDefinitionsOf(
             config);
     REQUIRE(tasks.size() == 2);
     REQUIRE(
@@ -1275,17 +1276,16 @@ TEST_CASE(
     auto invalid = config;
     invalid["compute_tasks"][1]["schedule"] =
         "per_pass";
-    REQUIRE_THROWS_WITH(
-        parseComputeTaskDefinitionsFromConfigJson(
-            invalid),
-        Catch::Matchers::ContainsSubstring(
-            "per_frame, per_view or once"));
+    TestSupport::requireNamedRefusal(
+        [&] { (void)Pelican::TestSupport::computeTaskDefinitionsOf(invalid); },
+        "render_graph.compute_task_invalid@1",
+        {{"node", "per_eye"}, {"field", "schedule"}, {"reason", "not_per_frame_per_view_or_once"}});
 
     // PS-1: once is a third schedule.
     auto once = config;
     once["compute_tasks"][1]["schedule"] = "once";
     const auto once_tasks =
-        parseComputeTaskDefinitionsFromConfigJson(once);
+        Pelican::TestSupport::computeTaskDefinitionsOf(once);
     REQUIRE(std::string{computeTaskScheduleName(
                 once_tasks[1].schedule)} == "once");
 }
@@ -1309,7 +1309,7 @@ TEST_CASE(
       }]
     })json");
     const auto tasks =
-        parseComputeTaskDefinitionsFromConfigJson(config);
+        Pelican::TestSupport::computeTaskDefinitionsOf(config);
     REQUIRE(tasks.size() == 1);
     REQUIRE(tasks.front().ray_tracing.has_value());
     CHECK(tasks.front().ray_tracing->raygen.stage ==
@@ -1327,7 +1327,7 @@ TEST_CASE(
 
     auto explicit_rays = config;
     explicit_rays["compute_tasks"][0]["dispatch"] = {{"rays", {2, 3, 4}}};
-    const auto ray_tasks = parseComputeTaskDefinitionsFromConfigJson(explicit_rays);
+    const auto ray_tasks = Pelican::TestSupport::computeTaskDefinitionsOf(explicit_rays);
     REQUIRE(ray_tasks[0].dispatch.rays.has_value());
     CHECK(*ray_tasks[0].dispatch.rays == std::array<std::uint32_t, 3>{2, 3, 4});
     CHECK_FALSE(ray_tasks[0].dispatch.rays_from.has_value());
@@ -1336,24 +1336,24 @@ TEST_CASE(
             {1, 1}, {1, 1, 1, 1}, "2,3,4"}) {
         auto invalid = explicit_rays;
         invalid["compute_tasks"][0]["dispatch"]["rays"] = bad;
-        CHECK_THROWS_WITH(parseComputeTaskDefinitionsFromConfigJson(invalid),
+        CHECK_THROWS_WITH(Pelican::TestSupport::computeTaskDefinitionsOf(invalid),
             Catch::Matchers::ContainsSubstring("invalid_trace_dispatch"));
     }
     auto mixed_rays = explicit_rays;
     mixed_rays["compute_tasks"][0]["dispatch"]["rays_from"] = {{"port", "mask"}};
-    CHECK_THROWS_WITH(parseComputeTaskDefinitionsFromConfigJson(mixed_rays),
+    CHECK_THROWS_WITH(Pelican::TestSupport::computeTaskDefinitionsOf(mixed_rays),
         Catch::Matchers::ContainsSubstring("invalid_trace_dispatch"));
     auto compute_rays = explicit_rays;
     compute_rays["compute_tasks"][0].erase("ray_tracing");
     compute_rays["compute_tasks"][0]["shader"] = "shaders/compute";
-    CHECK_THROWS_WITH(parseComputeTaskDefinitionsFromConfigJson(compute_rays),
+    CHECK_THROWS_WITH(Pelican::TestSupport::computeTaskDefinitionsOf(compute_rays),
         Catch::Matchers::ContainsSubstring("invalid_trace_dispatch"));
 
     auto explicit_depth = config;
     explicit_depth["compute_tasks"][0]["ray_tracing"]
                   ["max_recursion"] = 2;
     const auto depth_tasks =
-        parseComputeTaskDefinitionsFromConfigJson(explicit_depth);
+        Pelican::TestSupport::computeTaskDefinitionsOf(explicit_depth);
     CHECK(depth_tasks.front().ray_tracing->max_recursion == 2);
 
     for (const auto &invalid_depth :
@@ -1363,25 +1363,25 @@ TEST_CASE(
         invalid["compute_tasks"][0]["ray_tracing"]
                ["max_recursion"] = invalid_depth;
         REQUIRE_THROWS_WITH(
-            parseComputeTaskDefinitionsFromConfigJson(invalid),
+            Pelican::TestSupport::computeTaskDefinitionsOf(invalid),
             Catch::Matchers::ContainsSubstring(
                 "pelican.ray_tracing.invalid_recursion@1"));
     }
 
     auto with_callable = config;
     with_callable["compute_tasks"][0]["ray_tracing"]["callable"] = {"shaders/a", "shaders/b"};
-    const auto callable_tasks = parseComputeTaskDefinitionsFromConfigJson(with_callable);
+    const auto callable_tasks = Pelican::TestSupport::computeTaskDefinitionsOf(with_callable);
     REQUIRE(callable_tasks[0].ray_tracing->callables.size() == 2);
     CHECK(callable_tasks[0].ray_tracing->callables[1].stage == ShaderStage::callable);
     with_callable["compute_tasks"][0]["ray_tracing"]["callable_record"] = {
         {{"name", "increment"}, {"type", "u32"}}};
     with_callable["compute_tasks"][0]["ray_tracing"]["callable_records"] = {
         {{"increment", 100}}, {{"increment", 200}}};
-    const auto record_tasks = parseComputeTaskDefinitionsFromConfigJson(with_callable);
+    const auto record_tasks = Pelican::TestSupport::computeTaskDefinitionsOf(with_callable);
     REQUIRE(record_tasks[0].ray_tracing->callable_records.size() == 2);
     CHECK(record_tasks[0].ray_tracing->callable_records[1].size() == 4);
     with_callable["compute_tasks"][0]["ray_tracing"]["callable_records"].erase(1);
-    CHECK_THROWS_WITH(parseComputeTaskDefinitionsFromConfigJson(with_callable),
+    CHECK_THROWS_WITH(Pelican::TestSupport::computeTaskDefinitionsOf(with_callable),
         Catch::Matchers::ContainsSubstring("callable_records_invalid"));
 
 
@@ -1391,7 +1391,7 @@ TEST_CASE(
         invalid["compute_tasks"][0]["ray_tracing"]
                [unsupported] = "shaders/unsupported";
         REQUIRE_THROWS_WITH(
-            parseComputeTaskDefinitionsFromConfigJson(invalid),
+            Pelican::TestSupport::computeTaskDefinitionsOf(invalid),
             Catch::Matchers::ContainsSubstring(
                 "pelican.ray_tracing.unsupported_shader_stage@1"));
 
@@ -1399,7 +1399,7 @@ TEST_CASE(
         invalid["compute_tasks"][0][unsupported] =
             "shaders/unsupported";
         REQUIRE_THROWS_WITH(
-            parseComputeTaskDefinitionsFromConfigJson(invalid),
+            Pelican::TestSupport::computeTaskDefinitionsOf(invalid),
             Catch::Matchers::ContainsSubstring(
                 "pelican.ray_tracing.unsupported_shader_stage@1"));
     }
@@ -1434,7 +1434,7 @@ TEST_CASE(
         })json");
 
     const auto tasks =
-        parseComputeTaskDefinitionsFromConfigJson(
+        Pelican::TestSupport::computeTaskDefinitionsOf(
             config);
     REQUIRE(tasks.size() == 1);
     REQUIRE(
@@ -1448,41 +1448,37 @@ TEST_CASE(
     mixed["compute_tasks"][0]["dispatch"]
          ["groups"] =
         nlohmann::json::array({1, 1, 1});
-    REQUIRE_THROWS_WITH(
-        parseComputeTaskDefinitionsFromConfigJson(
-            mixed),
-        Catch::Matchers::ContainsSubstring(
-            "cannot be combined"));
+    TestSupport::requireNamedRefusal(
+        [&] { (void)Pelican::TestSupport::computeTaskDefinitionsOf(mixed); },
+        "render_graph.compute_task_invalid@1",
+        {{"node", "reduce_reflection"}, {"field", "dispatch.groups"}, {"reason", "combined_with_groups_from"}});
 
     auto legacy_scalar = config;
     legacy_scalar["compute_tasks"][0]
                  ["dispatch"]["groups_from"] =
         "pixel_count";
-    REQUIRE_THROWS_WITH(
-        parseComputeTaskDefinitionsFromConfigJson(
-            legacy_scalar),
-        Catch::Matchers::ContainsSubstring(
-            "must be an object"));
+    TestSupport::requireNamedRefusal(
+        [&] { (void)Pelican::TestSupport::computeTaskDefinitionsOf(legacy_scalar); },
+        "render_graph.compute_task_invalid@1",
+        {{"node", "reduce_reflection"}, {"field", "dispatch.groups_from"}, {"reason", "not_an_object"}});
 
     auto authored_local_size = config;
     authored_local_size["compute_tasks"][0]
                        ["dispatch"]["local_size"] =
         64;
-    REQUIRE_THROWS_WITH(
-        parseComputeTaskDefinitionsFromConfigJson(
-            authored_local_size),
-        Catch::Matchers::ContainsSubstring(
-            "declare the workgroup size in the compute shader"));
+    TestSupport::requireNamedRefusal(
+        [&] { (void)Pelican::TestSupport::computeTaskDefinitionsOf(authored_local_size); },
+        "render_graph.compute_task_invalid@1",
+        {{"node", "reduce_reflection"}, {"field", "dispatch.local_size"}, {"reason", "declared_by_the_shader"}});
 
     auto missing_port = config;
     missing_port["compute_tasks"][0]
                 ["dispatch"]["groups_from"]
                 ["port"] = "missing";
-    REQUIRE_THROWS_WITH(
-        parseComputeTaskDefinitionsFromConfigJson(
-            missing_port),
-        Catch::Matchers::ContainsSubstring(
-            "unknown resource port"));
+    TestSupport::requireNamedRefusal(
+        [&] { (void)Pelican::TestSupport::computeTaskDefinitionsOf(missing_port); },
+        "render_graph.compute_task_invalid@1",
+        {{"node", "reduce_reflection"}, {"field", "dispatch.groups_from.port"}, {"reason", "unknown_resource_port"}});
 
     const auto buffer_port =
         nlohmann::json::parse(R"json({
@@ -1503,11 +1499,10 @@ TEST_CASE(
             }
           }]
         })json");
-    REQUIRE_THROWS_WITH(
-        parseComputeTaskDefinitionsFromConfigJson(
-            buffer_port),
-        Catch::Matchers::ContainsSubstring(
-            "port must be an image"));
+    TestSupport::requireNamedRefusal(
+        [&] { (void)Pelican::TestSupport::computeTaskDefinitionsOf(buffer_port); },
+        "render_graph.compute_task_invalid@1",
+        {{"node", "write_buffer"}, {"field", "dispatch.groups_from.port"}, {"reason", "not_an_image"}});
 }
 
 TEST_CASE(
@@ -1607,7 +1602,7 @@ TEST_CASE(
         2);
 
     const auto tasks =
-        parseComputeTaskDefinitionsFromConfigJson(
+        Pelican::TestSupport::computeTaskDefinitionsOf(
             config);
     REQUIRE(tasks.size() == 1);
     REQUIRE(tasks[0].resource_ports.size() == 2);
@@ -1692,7 +1687,7 @@ TEST_CASE(
         Pelican::test_support::bufferDefinitionsOf(
             config);
     const auto tasks =
-        parseComputeTaskDefinitionsFromConfigJson(
+        Pelican::TestSupport::computeTaskDefinitionsOf(
             config);
     REQUIRE(
         buffers.at(0).command_layout ==
@@ -1711,7 +1706,7 @@ TEST_CASE(
         tasks.at(1).dispatch.indirect->offset == 12);
     REQUIRE_NOTHROW(
         validateComputeTaskBufferContracts(
-            buffers, tasks));
+            TestSupport::renderGraphOf(config), buffers));
 
     const auto graphs =
         TestSupport::frameGraphsOf(
@@ -1752,21 +1747,27 @@ TEST_CASE(
     auto mixed = config;
     mixed["compute_tasks"][1]["dispatch"]["groups"] =
         nlohmann::json::array({1, 1, 1});
-    REQUIRE_THROWS_WITH(
-        parseComputeTaskDefinitionsFromConfigJson(
-            mixed),
-        Catch::Matchers::ContainsSubstring(
-            "cannot be combined"));
+    if (ray) {
+        // A ray tracing task's launch keeps its ray tracing refusal.
+        REQUIRE_THROWS_WITH(
+            Pelican::TestSupport::computeTaskDefinitionsOf(mixed),
+            Catch::Matchers::ContainsSubstring(
+                "pelican.ray_tracing.invalid_trace_dispatch@1"));
+    } else {
+        TestSupport::requireNamedRefusal(
+            [&] { (void)Pelican::TestSupport::computeTaskDefinitionsOf(mixed); },
+            "render_graph.compute_task_invalid@1",
+            {{"node", "consume_dispatch"}, {"field", "dispatch.indirect"}, {"reason", "combined_with_groups"}});
+    }
 
     auto unaligned = config;
     unaligned["compute_tasks"][1]
              ["dispatch"]["indirect"]["offset"] =
         2;
-    REQUIRE_THROWS_WITH(
-        parseComputeTaskDefinitionsFromConfigJson(
-            unaligned),
-        Catch::Matchers::ContainsSubstring(
-            "4-byte aligned"));
+    TestSupport::requireNamedRefusal(
+        [&] { (void)Pelican::TestSupport::computeTaskDefinitionsOf(unaligned); },
+        "render_graph.compute_task_invalid@1",
+        {{"node", "consume_dispatch"}, {"field", "dispatch.indirect.offset"}, {"reason", "not_4_byte_aligned"}});
 
     auto wrong_layout = config;
     wrong_layout["buffers"][0].erase(
@@ -1774,43 +1775,60 @@ TEST_CASE(
     const auto untyped_buffers =
         Pelican::test_support::bufferDefinitionsOf(
             wrong_layout);
-    REQUIRE_THROWS_WITH(
-        validateComputeTaskBufferContracts(
-            untyped_buffers, tasks),
-        Catch::Matchers::ContainsSubstring(
-            "requires command_layout"));
+    // RC-3c2b1: the IR's task against the sized buffers, refused by name.
+    TestSupport::requireNamedRefusal(
+        [&] {
+            validateComputeTaskBufferContracts(
+                TestSupport::renderGraphOf(config), untyped_buffers);
+        },
+        "render_graph.compute_task_invalid@1",
+        {{"node", "consume_dispatch"},
+         {"field", "dispatch.indirect.buffer"},
+         {"reason", "command_layout_mismatch"},
+         {"buffer", "dispatch_arguments"},
+         {"expected", ray ? "ray_dispatch" : "compute_dispatch"}});
 
-    auto unknown_buffer_tasks = tasks;
-    unknown_buffer_tasks.at(1)
-        .dispatch.indirect->buffer =
+    auto unknown_buffer = config;
+    unknown_buffer["compute_tasks"][1]["dispatch"]["indirect"]["buffer"] =
         "missing_arguments";
-    REQUIRE_THROWS_WITH(
-        validateComputeTaskBufferContracts(
-            buffers, unknown_buffer_tasks),
-        Catch::Matchers::ContainsSubstring(
-            "unknown buffer"));
+    TestSupport::requireNamedRefusal(
+        [&] {
+            validateComputeTaskBufferContracts(
+                TestSupport::renderGraphOf(unknown_buffer), buffers);
+        },
+        "render_graph.compute_task_invalid@1",
+        {{"node", "consume_dispatch"},
+         {"reason", "unknown_buffer"},
+         {"buffer", "missing_arguments"}});
 
-    auto self_writing_tasks = tasks;
-    self_writing_tasks.at(1).writes.push_back(
+    auto self_writing = config;
+    self_writing["compute_tasks"][1]["writes"].push_back(
         "dispatch_arguments");
-    REQUIRE_THROWS_WITH(
-        validateComputeTaskBufferContracts(
-            buffers, self_writing_tasks),
-        Catch::Matchers::ContainsSubstring(
-            "separate producer task"));
+    TestSupport::requireNamedRefusal(
+        [&] {
+            validateComputeTaskBufferContracts(
+                TestSupport::renderGraphOf(self_writing), buffers);
+        },
+        "render_graph.compute_task_invalid@1",
+        {{"node", "consume_dispatch"},
+         {"reason", "written_by_task"},
+         {"buffer", "dispatch_arguments"}});
 
     auto out_of_bounds = config;
     out_of_bounds["compute_tasks"][1]
                  ["dispatch"]["indirect"]["offset"] =
         16;
-    const auto out_of_bounds_tasks =
-        parseComputeTaskDefinitionsFromConfigJson(
-            out_of_bounds);
-    REQUIRE_THROWS_WITH(
-        validateComputeTaskBufferContracts(
-            buffers, out_of_bounds_tasks),
-        Catch::Matchers::ContainsSubstring(
-            "exceeds buffer"));
+    TestSupport::requireNamedRefusal(
+        [&] {
+            validateComputeTaskBufferContracts(
+                TestSupport::renderGraphOf(out_of_bounds), buffers);
+        },
+        "render_graph.compute_task_invalid@1",
+        {{"node", "consume_dispatch"},
+         {"field", "dispatch.indirect.offset"},
+         {"reason", "command_exceeds_buffer"},
+         {"offset", 16},
+         {"size", 24}});
 }
 
 TEST_CASE(

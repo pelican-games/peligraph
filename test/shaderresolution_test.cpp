@@ -1,4 +1,5 @@
 #include "../src/core/container.hpp"
+#include "compute_task_test_support.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/renderingpass/computetask.hpp"
 #include "../src/core/renderingpass/framegraphruntime.hpp"
@@ -442,8 +443,11 @@ TEST_CASE("WP354 shipping shader families project their concrete effective refer
     const auto clustered = readJson(
         source_root / "src" / "core" / "resources" / "features" /
         "clustered_lighting.json");
+    // RC-3c2b1: the feature's tasks (its buffers are sized from the
+    // pipeline's images, which the feature alone does not declare).
     auto compute_tasks =
-        parseComputeTaskDefinitionsFromConfigJson(clustered);
+        Pelican::TestSupport::computeTaskDefinitionsOf(
+            nlohmann::json{{"compute_tasks", clustered.at("compute_tasks")}});
     const auto clustered_task = std::find_if(
         compute_tasks.begin(), compute_tasks.end(),
         [](const auto &task) {
@@ -459,7 +463,7 @@ TEST_CASE("WP354 shipping shader families project their concrete effective refer
     ray_pipeline["miss"] = nlohmann::json::array({
         ray_pipeline.at("miss"), ray_pipeline.at("miss")});
     auto ray_tasks =
-        parseComputeTaskDefinitionsFromConfigJson(rt_feature);
+        Pelican::TestSupport::computeTaskDefinitionsOf(rt_feature);
     REQUIRE(ray_tasks.size() == 1);
 
     CompiledRenderingPass compiled;
@@ -948,7 +952,7 @@ TEST_CASE("typed parsers capture declared stage presence before provider replace
         names, metadata);
     REQUIRE(shadow.declared_shader_refs.empty());
 
-    const auto tasks = parseComputeTaskDefinitionsFromConfigJson(Json{
+    const auto tasks = Pelican::TestSupport::computeTaskDefinitionsOf(Json{
         {"compute_tasks",
          {{{"name", "ray"},
            {"ray_tracing",

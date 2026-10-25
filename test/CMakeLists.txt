@@ -3577,6 +3577,8 @@ target_compile_definitions(pelican_test_passfusion_test PRIVATE
 # field on the bundled projects, the fixtures and the refusals. RC-3c1b
 # removes it with the core planning parse.
 pelican_define_test(rendergraphir_test GROUP render_planning_core pelican_core)
+# RC-3c2b1: a compute task read once into the IR; its execution definition from the final IR.
+pelican_define_test(computetaskdefinition_test GROUP render_planning_core pelican_core)
 target_compile_definitions(pelican_test_rendergraphir_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )

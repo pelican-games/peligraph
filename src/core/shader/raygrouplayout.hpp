@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../container.hpp"
+#include "../../project/rayrecordabi.hpp"
 #include "../userpublic/components/rayinstance.hpp"
 
 #include <array>
@@ -25,39 +26,8 @@ namespace Pelican {
 inline constexpr std::string_view rayGroupLayoutVirtualIncludeName =
     "__pelican_ray_group_layout.glsl";
 
-enum class RayRecordType : std::uint8_t {
-    i32,
-    u32,
-    f32,
-    vec2,
-    vec3,
-    vec4,
-};
-
-struct RayRecordMemberLayout {
-    std::string name;
-    RayRecordType type = RayRecordType::u32;
-    std::uint32_t offset = 0;
-    std::uint32_t size = 0;
-    std::uint32_t alignment = 0;
-
-    bool operator==(const RayRecordMemberLayout &) const = default;
-};
-
-// Callable records have their own std430 schema, without hit-group engine fields.
-struct RayCallableRecordLayout {
-    std::vector<RayRecordMemberLayout> members;
-    std::uint32_t data_size = 0;
-};
-
-RayCallableRecordLayout parseRayCallableRecordLayout(
-    const nlohmann::json &members, std::string_view diagnostic = {});
-std::vector<std::byte> encodeRayCallableRecord(
-    const nlohmann::json &values, const RayCallableRecordLayout &layout,
-    std::string_view diagnostic = {});
-std::vector<std::vector<std::byte>> encodeRayCallableRecords(
-    const nlohmann::json &records, const RayCallableRecordLayout &layout,
-    std::size_t callable_count, std::string_view diagnostic = {});
+// RC-3c2b1: RayRecordType, RayRecordMemberLayout, RayCallableRecordLayout and
+// the callable record parse / packing are the project's (rayrecordabi.hpp).
 
 enum class RayEngineRecordField : std::uint8_t {
     material_index,

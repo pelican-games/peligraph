@@ -1,4 +1,5 @@
 #include "../src/core/shader/pipelinefactory.hpp"
+#include "compute_task_test_support.hpp"
 #include "render_graph_root_test_support.hpp"
 #include "../src/core/shader/raygrouplayout.hpp"
 #include "../src/core/shader/raytracingvalidation.hpp"
@@ -1017,7 +1018,7 @@ TEST_CASE(
           RayPortableProfile::material_alpha_v1);
 
     RayTracingProjectConfig project{.layout = layout};
-    const auto tasks = parseComputeTaskDefinitionsFromConfigJson(
+    const auto tasks = Pelican::TestSupport::computeTaskDefinitionsOf(
         wp369TypedTask(), &project);
     REQUIRE(tasks.size() == 1);
     REQUIRE(tasks.front().ray_tracing);
@@ -1053,7 +1054,7 @@ TEST_CASE(
     multi_ray["hit_shaders"]["primary"]["foliage"] = hit_template;
     multi_ray["hit_shaders"]["secondary"]["opaque"] = hit_template;
     multi_ray["hit_shaders"]["secondary"]["foliage"] = hit_template;
-    const auto multi_tasks = parseComputeTaskDefinitionsFromConfigJson(
+    const auto multi_tasks = Pelican::TestSupport::computeTaskDefinitionsOf(
         multi_task, &multi_project);
     REQUIRE(multi_tasks.size() == 1);
     REQUIRE(multi_tasks.front().ray_tracing);
@@ -1078,7 +1079,7 @@ TEST_CASE(
                                 ["hit_shaders"][ray_name]["foliage"];
         group["intersection"] = "project://shaders/sphere";
     }
-    const auto mixed_tasks = parseComputeTaskDefinitionsFromConfigJson(
+    const auto mixed_tasks = Pelican::TestSupport::computeTaskDefinitionsOf(
         mixed_task, &mixed_project);
     const auto &mixed_slots = mixed_tasks.front().ray_tracing->any_hit_shader_slots;
     REQUIRE(mixed_slots.size() == 4);
@@ -1089,7 +1090,7 @@ TEST_CASE(
     mixed_task["compute_tasks"][0]["ray_tracing"]
               ["hit_shaders"]["primary"]["foliage"]["anyhit"] =
         "project://shaders/procedural_filter";
-    const auto filtered_tasks = parseComputeTaskDefinitionsFromConfigJson(
+    const auto filtered_tasks = Pelican::TestSupport::computeTaskDefinitionsOf(
         mixed_task, &mixed_project);
     const auto &filter = filtered_tasks.front().ray_tracing->any_hit_shader_slots[2];
     REQUIRE(filter.has_value());
@@ -1100,7 +1101,7 @@ TEST_CASE(
                   ["hit_shaders"]["secondary"]["foliage"]["anyhit"] =
         "project://shaders/authored_filter";
     CHECK_THROWS_WITH(
-        parseComputeTaskDefinitionsFromConfigJson(
+        Pelican::TestSupport::computeTaskDefinitionsOf(
             authored_multi, &multi_project),
         ContainsSubstring("pelican.ray_profile_authored_anyhit@1") &&
             ContainsSubstring("authored_filter"));
@@ -1142,7 +1143,7 @@ TEST_CASE(
             ["primary"]["opaque"]["anyhit"] =
         "project://shaders/authored_filter";
     CHECK_THROWS_WITH(
-        parseComputeTaskDefinitionsFromConfigJson(authored, &project),
+        Pelican::TestSupport::computeTaskDefinitionsOf(authored, &project),
         ContainsSubstring("pelican.ray_profile_authored_anyhit@1") &&
             ContainsSubstring("authored_filter"));
 
@@ -1154,7 +1155,7 @@ TEST_CASE(
     })json");
     RayTracingProjectConfig absent{
         .layout = parseRayGroupLayout(absent_layout_json.dump())};
-    const auto absent_tasks = parseComputeTaskDefinitionsFromConfigJson(
+    const auto absent_tasks = Pelican::TestSupport::computeTaskDefinitionsOf(
         wp369TypedTask(), &absent);
     REQUIRE(absent_tasks.size() == 1);
     REQUIRE(absent_tasks.front().ray_tracing);

@@ -377,6 +377,7 @@ std::unordered_map<std::string, PassLoopIndex> loopIndicesOf(
 std::vector<RenderPipelineProgramPreparation>
 registerPreparedRenderingPassConfigVariant(
     RenderCompilerProgramVariantOutput &prepared,
+    std::vector<ComputeTaskDefinition> compute_tasks,
     const GenerationResources &resources,
     const std::vector<RenderTargetDefinition> &render_targets,
     const std::vector<FrameGraphBufferDefinition> &buffers,
@@ -461,13 +462,13 @@ registerPreparedRenderingPassConfigVariant(
             for (auto &pass : definition.passes)
                 if (const auto found = loop_indices.find(pass.name); found != loop_indices.end())
                     pass.loop_index = found->second;
-        for (auto &task : prepared.compute_task_definitions)
+        for (auto &task : compute_tasks)
             if (const auto found = loop_indices.find(task.name); found != loop_indices.end())
                 task.loop_index = found->second;
     }
     auto compiled_compute_tasks =
         compileComputeTasks(
-            prepared.compute_task_definitions,
+            compute_tasks,
             prepared.ray_tracing_project,
             physical.target_plans,
             dependencies);
@@ -756,6 +757,8 @@ class RegistrationStages {
     // RC-3c2a: the generation's resource description, and each variant's
     // images and buffers as its GPU registration takes them.
     GenerationResources generation_resources;
+    // RC-3c2b1: each runtime variant's compute tasks, from its IR.
+    std::vector<std::vector<ComputeTaskDefinition>> compute_task_definitions;
     std::vector<std::vector<RenderTargetDefinition>>
         variant_render_targets;
     std::vector<std::vector<FrameGraphBufferDefinition>>
@@ -1054,6 +1057,8 @@ void RegistrationStages::prepare() {
     // (completeGenerationResources), every runtime variant at once.
     generation_resources =
         std::move(compiler_output.generation_resources);
+    compute_task_definitions =
+        std::move(compiler_output.compute_task_definitions);
     // The compiler returns one prepared variant per request, in request
     // order. makeRenderGraphVariantRequests appends the request-local preview
     // after every runtime variant and marks it data_only, so the preview
@@ -1094,9 +1099,14 @@ void RegistrationStages::prepare() {
     // images and buffers from it, so the later variants reuse a safe
     // physical superset without expanding live resources inside the
     // transaction. The preview (no physical package) is not part of it.
-    if (generation_resources.variants.size() != prepared_variants.size()) {
+    if (generation_resources.variants.size() != prepared_variants.size() ||
+        compute_task_definitions.size() != prepared_variants.size()) {
         throw std::runtime_error(
             "Render compiler program completed a different set of runtime variants");
+    }
+    if (dependencies.front().options.observe_compute_task_definitions) {
+        dependencies.front().options.observe_compute_task_definitions(
+            compute_task_definitions);
     }
     if (dependencies.front().options.observe_generation_resources) {
         dependencies.front().options.observe_generation_resources(
@@ -1250,7 +1260,8 @@ void RegistrationStages::registerVariants() {
          index < dependencies.size(); ++index) {
         auto variant_programs =
             registerPreparedRenderingPassConfigVariant(
-                prepared_variants[index], generation_resources,
+                prepared_variants[index], compute_task_definitions[index],
+                generation_resources,
                 variant_render_targets[index], variant_buffers[index],
                 base_extent,
                 dependencies[index], *gpu_arena,

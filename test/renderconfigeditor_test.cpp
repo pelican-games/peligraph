@@ -28,7 +28,6 @@
 #include "../src/core/renderingpass/graphtransformregistry.hpp"
 #include "../src/core/renderingpass/renderstrategyregistry.hpp"
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
-#include "../src/core/renderingpass/vulkanrendercompilerprogramdetail.hpp"
 #include "../src/core/shader/raygrouplayout.hpp"
 #include "../src/core/shader/raytracingrefusal.hpp"
 #include "../src/core/vkcore/renderer_config.hpp"

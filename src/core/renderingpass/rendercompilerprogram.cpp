@@ -1,5 +1,5 @@
 #include "rendercompilerprogram.hpp"
-#include "computetaskdefinitionjson.hpp"
+#include "computetaskdefinition.hpp"
 #include "materialpassinfojsonparser.hpp"
 
 #include <algorithm>
@@ -251,8 +251,7 @@ GenerationResources completeGenerationResources(
         std::vector<FrameGraphBufferDefinition> buffers;
         for (const auto buffer : resources.variants[index].buffers)
             buffers.push_back(resources.buffers[buffer]);
-        validateComputeTaskBufferContracts(
-            buffers, variant.compute_task_definitions);
+        validateComputeTaskBufferContracts(*variant.render_graph, buffers);
         validateGpuDrawSourceBufferContracts(
             *variant.render_graph, buffers);
         ResourceCheckObserver observe;
@@ -289,6 +288,18 @@ RenderCompilerProgramOutput runRenderCompilerProgram(
             output.variants[index],
             input.variants[index],
             selection);
+    }
+    // RC-3c2b1: the compute tasks every runtime variant registers, from its
+    // IR (the ray tracing refusals before the resources', as the task parse
+    // came first).
+    for (const auto &variant : output.variants) {
+        if (variant.physical_package == nullptr) continue;
+        if (variant.render_graph == nullptr) {
+            throw std::runtime_error(
+                "Render compiler runtime variant has no render graph");
+        }
+        output.compute_task_definitions.push_back(computeTaskDefinitionsOf(
+            *variant.render_graph, input.ray_tracing_project.get()));
     }
     output.generation_resources = completeGenerationResources(
         output.variants, input.backend_context.outputExtent(),

@@ -6,7 +6,7 @@
 #include "registered_render_targets_test_support.hpp"
 #include "render_graph_ir_test_support.hpp"
 #include "../src/core/loader/engineresources.hpp"
-#include "../src/core/renderingpass/computetaskdefinitionjson.hpp"
+#include "compute_task_test_support.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
 #include "../src/core/renderingpass/materialpassinfojsonparser.hpp"
 #include "../src/core/renderingpass/passfieldownershipcapabilities.hpp"
@@ -442,19 +442,21 @@ TEST_CASE("RC-3c2a IR: a graph declares no images or buffers of its own", "[rend
     // Nothing composes a graph's own render_targets or buffers (a graph
     // document's images and a loop's copies are the config's) and nothing
     // would register them: the parse refuses them by name, each key in turn.
+    // RC-3c2b1: nor compute_tasks (compose, a loop and Studio write the
+    // config's).
     const auto local = Json::parse(R"json({
       "render_targets": [{"name": "color", "extent_scale": 1.0, "format": "R8G8B8A8_UNORM",
                           "usage": ["COLOR_ATTACHMENT", "SAMPLED"]}],
-      "compute_tasks": [{"name": "shared_task", "reads": ["x"], "writes": ["y"]}],
+      "compute_tasks": [{"name": "own_task", "writes": ["x"]},
+                        {"name": "shared_task", "reads": ["x"], "writes": ["y"]}],
       "rendering_passes": [
         {"name": "a",
-         "compute_tasks": [{"name": "own_task", "writes": ["x"]}],
          "passes": [{"name": "draw", "type": "fullscreen",
                      "output": {"color": [{"target": "color"}], "depth": null}}]},
         {"name": "b",
          "passes": [{"name": "present", "type": "fullscreen", "input": ["x"],
                      "output": {"color": [{"target": "swapchain"}], "depth": null}}]}]})json");
-    for (const auto *key : {"buffers", "render_targets"}) {
+    for (const auto *key : {"buffers", "render_targets", "compute_tasks"}) {
         INFO(key);
         auto config = local;
         config["buffers"] = Json::array({Json{{"name", "x"}}, Json{{"name", "y"}}});
@@ -471,11 +473,12 @@ TEST_CASE("RC-3c2a IR: a graph declares no images or buffers of its own", "[rend
                                          Json{{"name", "unused_top"}}});
         const auto outcome = run(config);
         REQUIRE(outcome.stage.empty());
-        // The graph's own compute tasks come first, the config's after them.
+        // The graph's passes, then the config's compute tasks.
         const auto &a = outcome.ir->graphs.at(0);
         REQUIRE(a.nodes.size() == 3);
+        CHECK(a.nodes[0].scope == NodeDeclarationScope::graph);
         CHECK(a.nodes[1].name == "own_task");
-        CHECK(a.nodes[1].scope == NodeDeclarationScope::graph);
+        CHECK(a.nodes[1].scope == NodeDeclarationScope::shared);
         CHECK(a.nodes[2].name == "shared_task");
         CHECK(a.nodes[2].scope == NodeDeclarationScope::shared);
         // An unused declaration is still a resource of the logical graph.
@@ -1222,7 +1225,7 @@ TEST_CASE("RC-3c1b IR: ray_task_acceleration_structures selects a declared struc
                 REQUIRE(outcome.stage.empty());
                 const auto &node = irNode(*outcome.ir, "trace");
                 const auto &info = std::get<ComputeNodeInfo>(node.info);
-                const auto value = tracing ? info.ray_tracing_acceleration_structure
+                const auto value = tracing ? info.ray_tracing->acceleration_structure
                                            : info.ray_query_acceleration_structure.value_or("");
                 const bool waits = std::find(node.after.begin(), node.after.end(),
                                              "__scene_acceleration_structure:actors") != node.after.end();
@@ -1262,7 +1265,7 @@ std::string executionRefusal(const Json &config) {
             pass_definition.pass_info = MaterialPassInfo{};
             parseMaterialPassResourcesFromJson(pass_definition, pass_json, names, buffers);
         }
-        (void)parseComputeTaskDefinitionsFromConfigJson(config, nullptr);
+        (void)Pelican::TestSupport::computeTaskDefinitionsOf(config, nullptr);
     } catch (const std::exception &error) {
         return error.what();
     }

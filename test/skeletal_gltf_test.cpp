@@ -1,4 +1,5 @@
 #include "registered_render_targets_test_support.hpp"
+#include "compute_task_test_support.hpp"
 #include "../src/core/appflow/enginetime.hpp"
 #include "../src/core/animation/animationservice.hpp"
 #include "../src/core/ecs/predefined/animationsystem.hpp"
@@ -1269,7 +1270,7 @@ void main() { pelican_store_destination(0, pelican_load_source(0) * 3.0 + 1.0); 
     auto &resources = GET_MODULE(FrameGraphResourceContainer);
     resources.registerBuffers(Pelican::test_support::bufferDefinitionsOf(config));
     auto &tasks = GET_MODULE(ComputeTaskContainer);
-    const auto definitions = parseComputeTaskDefinitionsFromConfigJson(config);
+    const auto definitions = Pelican::TestSupport::computeTaskDefinitionsOf(config);
     REQUIRE(definitions.size() == 1);
     const auto task = tasks.registerComputeTask(definitions[0], ComputeTaskRuntimeDependencies{
         GET_MODULE(ShaderLibrary), GET_MODULE(PathResolver)});

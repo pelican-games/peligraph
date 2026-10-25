@@ -122,8 +122,6 @@ struct RenderCompilerProgramVariantOutput {
     // The names of the IR's buffers (RC-3c2a: the declarations are the
     // IR's, render_graph->buffers; the registration sizes them).
     std::unordered_set<std::string> buffer_names;
-    std::vector<ComputeTaskDefinition>
-        compute_task_definitions;
     std::unordered_map<std::string, FramePlan>
         frame_plans;
     std::unique_ptr<
@@ -147,6 +145,11 @@ struct RenderCompilerProgramOutput {
     // variants (variants[i] is the i-th runtime_package variant, in order),
     // made and checked by runRenderCompilerProgram (completeGenerationResources).
     GenerationResources generation_resources;
+    // RC-3c2b1: each runtime variant's compute tasks (the same order), made
+    // by runRenderCompilerProgram from the variant's final IR
+    // (computeTaskDefinitionsOf). A program returns none of its own: what
+    // registers is what the IR says.
+    std::vector<std::vector<ComputeTaskDefinition>> compute_task_definitions;
 };
 
 // One program owns compilation of the complete requested variant family.
@@ -168,8 +171,8 @@ class RenderCompilerProgram {
 // resource description (resolveGenerationResources over every runtime
 // variant's final IR and placements, at `output_extent`), then each
 // variant's resource checks on it -- its compute tasks' and GPU draws'
-// buffers (validateComputeTaskBufferContracts,
-// validateGpuDrawSourceBufferContracts) and its passes' images
+// buffers (validateComputeTaskBufferContracts and
+// validateGpuDrawSourceBufferContracts, over the IR) and its passes' images
 // (validateRenderGraphResources). Refuses a runtime variant without its IR.
 GenerationResources completeGenerationResources(
     std::span<const RenderCompilerProgramVariantOutput> variants,
@@ -178,9 +181,10 @@ GenerationResources completeGenerationResources(
         &observe_resource_checks = {});
 
 // Runs one program, verifies the backend package as a complete immutable CPU
-// candidate, completes its generation's resources
-// (completeGenerationResources), and stamps trusted program provenance before
-// any GPU mutation.
+// candidate, makes each runtime variant's compute tasks from its final IR
+// (computeTaskDefinitionsOf, against input.ray_tracing_project), completes
+// its generation's resources (completeGenerationResources), and stamps
+// trusted program provenance before any GPU mutation.
 RenderCompilerProgramOutput runRenderCompilerProgram(
     const RenderCompilerProgram &program,
     const RenderCompilerProgramInput &input);

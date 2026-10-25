@@ -107,6 +107,12 @@ struct RenderingPassConfigRegistrationDependencies {
         // variant. The transaction passes the first variant's.
         std::function<void(std::string_view, const ResourceCheckRead &)>
             observe_resource_checks;
+        // RC-3c2b1: the compute tasks the registration receives from the
+        // compiler program's completion (made from each runtime variant's
+        // IR; in the variants' order), before anything is registered. The
+        // transaction calls the first variant's. A test's view.
+        std::function<void(std::span<const std::vector<ComputeTaskDefinition>>)>
+            observe_compute_task_definitions;
         // Runs after every program and GPU scope in the transaction has been
         // prepared, but before the single publication CAS.
         std::function<void(const RendererRuntimeGeneration &)>
