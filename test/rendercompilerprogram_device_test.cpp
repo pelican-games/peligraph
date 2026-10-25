@@ -30,6 +30,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <fstream>
+#include <map>
 
 namespace Pelican {
 namespace {
@@ -578,6 +579,30 @@ TEST_CASE("RC-3c2b1 D3 the registration receives each table and the variant's na
     REQUIRE(flat_only.variants.size() == 1);
     CHECK(taskNamed(flat_only.variants.front(), "trace").ray_tracing->acceleration_structure == "props");
     CHECK(flat_only.applied.compute_task_renames == 0);
+    // The preview's own IR, as the program returns it (it is not finalized:
+    // its references are resolved, the tables applied, in its own try):
+    // the same values the runtime variants register.
+    Device device;
+    for (const bool tables : {false, true}) {
+        DYNAMIC_SECTION("preview, tables " << tables) {
+            Project project;
+            Providers providers;
+            const auto output = compile(project, providers, tables ? with_tables : rendering,
+                                        Variants::flat_and_preview, false, &*device.backend);
+            const auto &preview = variantOf(output, RenderPipelineGraphVariant::preview);
+            REQUIRE_FALSE(preview.unavailable);
+            REQUIRE(preview.render_graph != nullptr);
+            std::map<std::string, const ComputeNodeInfo *> infos;
+            for (const auto &task : sharedComputeTasksOf(*preview.render_graph))
+                infos.emplace(task.node->name, &std::get<ComputeNodeInfo>(task.node->info));
+            REQUIRE(infos.size() == 2);
+            const std::string structure = tables ? "props" : "actors";
+            CHECK(infos.at("query")->ray_query_acceleration_structure == std::optional{structure});
+            REQUIRE(infos.at("trace")->ray_tracing);
+            CHECK(infos.at("trace")->ray_tracing->acceleration_structure == structure);
+            CHECK(hexOf(infos.at("trace")->ray_tracing->callable_records) == hexOf({packedValue(tables ? 9 : 1)}));
+        }
+    }
 }
 
 TEST_CASE("RC-3c2b1 the callable records' table names a task a provider adds; the preview without it is unavailable",

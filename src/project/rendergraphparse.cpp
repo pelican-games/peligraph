@@ -1124,10 +1124,11 @@ std::optional<std::uint32_t> positiveCount(const Json &value) {
     return std::nullopt;
 }
 
-// `dispatch`: the rules the compute task parser had, every key known. What a
-// task must have to run (a ray tracing task's launch: rays, rays_from or
-// indirect) is the execution's to require (computeTaskDefinitionsOf), as its
-// shader is; a planning revision may leave it out.
+// `dispatch`: the rules the compute task parser had, every key known. A
+// ray tracing task may leave its dispatch out (a planning revision; the
+// execution requires its launch, computeTaskDefinitionsOf, as a compute
+// task's shader); a dispatch it writes is checked here whole, as a compute
+// task's: unknown keys and values are refused, and one without a launch.
 ComputeDispatchDefinition computeDispatch(const Json &task, const std::string &name, bool ray_tracing,
                                           const std::function<void(std::string_view, std::string_view)>
                                               &compute_invalid) {
@@ -1140,14 +1141,15 @@ ComputeDispatchDefinition computeDispatch(const Json &task, const std::string &n
     if (found == task.end()) return dispatch;
     const auto &json = *found;
     if (!json.is_object()) compute_invalid("dispatch", "not_an_object");
-    // Only these keys; local_size is the shader's (refused by its reason).
-    const auto known_keys = [&](std::initializer_list<std::string_view> keys) {
-        for (auto field = json.begin(); field != json.end(); ++field) {
-            if (std::find(keys.begin(), keys.end(), field.key()) == keys.end()) {
-                compute_invalid("dispatch." + field.key(), "unknown_field");
-            }
+    // Only these keys, before any form is read (a ray tracing task's too);
+    // local_size is the shader's (refused below by its reason).
+    static constexpr std::array<std::string_view, 6> keys{"groups", "groups_from", "local_size",
+                                                          "rays",   "rays_from",   "indirect"};
+    for (auto field = json.begin(); field != json.end(); ++field) {
+        if (std::find(keys.begin(), keys.end(), field.key()) == keys.end()) {
+            compute_invalid("dispatch." + field.key(), "unknown_field");
         }
-    };
+    }
     if (json.contains("rays")) {
         if (!ray_tracing || json.size() != 1) {
             invalid_trace("dispatch.rays requires a ray_tracing task and cannot be combined with other dispatch "
@@ -1184,8 +1186,12 @@ ComputeDispatchDefinition computeDispatch(const Json &task, const std::string &n
         dispatch.rays_from = ComputeImageExtentDispatchDefinition{.port = std::move(port)};
         return dispatch;
     }
-    // A ray tracing task without a launch: nothing more is read.
-    if (ray_tracing && !json.contains("indirect")) return dispatch;
+    // A ray tracing task's dispatch that launches nothing.
+    if (ray_tracing && !json.contains("indirect")) {
+        throw RayTracingRefusal("pelican.ray_tracing.trace_extent_required@1", Json{{"task", name}},
+                                "pelican.ray_tracing.trace_extent_required@1: compute task '" + name +
+                                    "' requires dispatch.rays_from, dispatch.rays, or dispatch.indirect");
+    }
     if (json.contains("indirect")) {
         if (ray_tracing && json.size() != 1) {
             invalid_trace("indirect trace cannot be combined with other dispatch fields: " + name);
@@ -1193,7 +1199,6 @@ ComputeDispatchDefinition computeDispatch(const Json &task, const std::string &n
         if (json.contains("groups") || json.contains("groups_from") || json.contains("local_size")) {
             compute_invalid("dispatch.indirect", "combined_with_groups");
         }
-        known_keys({"indirect"});
         // indirect.buffer was read with the task's uses.
         const auto &indirect = json.at("indirect");
         for (auto field = indirect.begin(); field != indirect.end(); ++field) {
@@ -1221,7 +1226,6 @@ ComputeDispatchDefinition computeDispatch(const Json &task, const std::string &n
         compute_invalid("dispatch.groups", "combined_with_groups_from");
     }
     if (json.contains("local_size")) compute_invalid("dispatch.local_size", "declared_by_the_shader");
-    known_keys({"groups", "groups_from"});
     if (const auto groups = json.find("groups"); groups != json.end()) {
         std::array<std::uint32_t *, 3> axes{&dispatch.groups_x, &dispatch.groups_y, &dispatch.groups_z};
         if (groups->is_array()) {

@@ -13,6 +13,7 @@
 #include "taskconnectiongraphics.hpp"
 #include "inspectormodel.hpp"
 #include "viewselectfield.hpp"
+#include "computetaskdeclaration.hpp"
 
 #include "../viewport/embeddedviewport.hpp"
 
@@ -443,7 +444,10 @@ class ComputeTaskDialog final : public QDialog, public RestartsEngine {
     QJsonObject task{{"name", index == 0 ? "new_compute" : "new_ray_tracing"}};
     if (index == 0) {
       task.insert("shader", "project://shaders/compute");
-      task.insert("dispatch", QJsonObject{{"groups", QJsonArray{1, 1, 1}}});
+      QJsonArray groups;
+      for (const auto count : Pelican::defaultComputeDispatchGroups)
+        groups.append(static_cast<int>(count));
+      task.insert("dispatch", QJsonObject{{"groups", groups}});
     } else {
       // CT-6s, decision 3: the set the Graph's New... writes (raygen + miss
       // + closest hit), written under a free name -- a draft never names a

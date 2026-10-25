@@ -182,13 +182,23 @@ TEST_CASE("RC-3c2b1 D2 the dispatch: every form's keys, exclusions and integer r
             requireRayRefusal([&] { (void)TestSupport::renderGraphOf(taskConfig(rayTask(std::move(dispatch)))); },
                               code, {{"task", "trace"}});
         };
-        // Without a launch: the execution's refusal (a planning revision
-        // may leave it out).
-        for (const auto &launchless : std::vector<Json>{nullptr, Json::object(), {{"groups", Json::array({1, 1, 1})}}}) {
-            INFO(launchless.dump());
-            CHECK_NOTHROW(TestSupport::renderGraphOf(taskConfig(rayTask(launchless))));
-            requireRayRefusal([&] { (void)TestSupport::computeTaskDefinitionsOf(taskConfig(rayTask(launchless))); },
-                              "pelican.ray_tracing.trace_extent_required@1", {{"task", "trace"}});
+        // A dispatch left out: the execution's refusal (a planning
+        // revision may leave it out).
+        CHECK_NOTHROW(TestSupport::renderGraphOf(taskConfig(rayTask(nullptr))));
+        requireRayRefusal([&] { (void)TestSupport::computeTaskDefinitionsOf(taskConfig(rayTask(nullptr))); },
+                          "pelican.ray_tracing.trace_extent_required@1", {{"task", "trace"}});
+        // A dispatch written without a launch: the parse's (the preview's
+        // too).
+        refused(Json::object(), "pelican.ray_tracing.trace_extent_required@1");
+        refused({{"groups", Json::array({1, 1, 1})}}, "pelican.ray_tracing.trace_extent_required@1");
+        // A key no task takes, refused before any form is read.
+        for (const auto &unknown : std::vector<Json>{{{"gropus", Json::array({8, 1, 1})}},
+                                                     {{"rays", Json::array({1, 1, 1})}, {"extra", 1}}}) {
+            INFO(unknown.dump());
+            const auto field = unknown.contains("gropus") ? "dispatch.gropus" : "dispatch.extra";
+            TestSupport::requireNamedRefusal(
+                [&] { (void)TestSupport::renderGraphOf(taskConfig(rayTask(unknown))); },
+                "render_graph.compute_task_invalid@1", {{"node", "trace"}, {"field", field}, {"reason", "unknown_field"}});
         }
         for (const auto &bad : std::vector<Json>{Json::array({0, 1, 1}), Json::array({-1, 1, 1}),
                                                  Json::array({1.5, 1, 1}), Json::array({4294967296ULL, 1, 1}),
@@ -324,6 +334,16 @@ TEST_CASE("RC-3c2b1 the definitions are the final IR's, the ray tracing refusals
     TestSupport::requireNamedRefusal(
         [&] { (void)TestSupport::computeTaskDefinitionsOf(raygenless); }, "render_graph.compute_task_invalid@1",
         {{"node", "trace"}, {"field", "ray_tracing.raygen"}, {"reason", "requires_string"}});
+}
+
+TEST_CASE("RC-3c2b1 a schedule's name: the three, and a value outside them refused by name",
+          "[rc3c2b1][compute][schedule]") {
+    CHECK(std::string{computeTaskScheduleName(ComputeTaskSchedule::per_frame)} == "per_frame");
+    CHECK(std::string{computeTaskScheduleName(ComputeTaskSchedule::per_view)} == "per_view");
+    CHECK(std::string{computeTaskScheduleName(ComputeTaskSchedule::once)} == "once");
+    TestSupport::requireNamedRefusal(
+        [] { (void)computeTaskScheduleName(static_cast<ComputeTaskSchedule>(255)); },
+        "render_graph.node_schedule_unknown@1", {{"value", 255}});
 }
 
 } // namespace Pelican

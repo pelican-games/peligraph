@@ -22,6 +22,10 @@ namespace Pelican {
 // The defaults of a compute task's fields, once: the IR's parse, the
 // execution's types and the graph parameter schema (Studio) read these.
 inline constexpr std::uint32_t defaultComputeDispatchGroupCount = 1;
+// A dispatch's groups when none are written ([x, y, z]; Studio writes them
+// for a new task).
+inline constexpr std::array<std::uint32_t, 3> defaultComputeDispatchGroups{
+    defaultComputeDispatchGroupCount, defaultComputeDispatchGroupCount, defaultComputeDispatchGroupCount};
 inline constexpr std::uint32_t defaultRayTracingMaxRecursion = 1;
 inline constexpr std::string_view defaultRayTracingAccelerationStructure = "scene";
 

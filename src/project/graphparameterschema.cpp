@@ -364,8 +364,7 @@ P computeDispatch() {
     };
     return object("dispatch")
         .field(union_("groups")
-                   .fallback(Json::array({defaultComputeDispatchGroupCount, defaultComputeDispatchGroupCount,
-                                          defaultComputeDispatchGroupCount}))
+                   .fallback(Json(defaultComputeDispatchGroups))
                    .variant(array("", uint32("").range(1.0, uint32_max)))
                    .variant(object("").field(count("x")).field(count("y")).field(count("z")))
                    .describe("Workgroup counts: [x, y, z] or {x, y, z}, each positive (a compute task)."))

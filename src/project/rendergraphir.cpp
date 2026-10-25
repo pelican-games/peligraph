@@ -412,29 +412,72 @@ void requireRenderGraphInputsProduced(const RenderGraphIR &ir, const GraphIR &gr
     }
 }
 
+namespace {
+
+// Two copies of one config task run the same: equal but for the edges each
+// graph gives it (the structures' builds, frame_node_order) and its place.
+bool sameExecution(NodeIR left, NodeIR right) {
+    for (auto *node : {&left, &right}) {
+        node->after.clear();
+        node->before.clear();
+        node->declaration_index = 0;
+    }
+    return left == right;
+}
+
+} // namespace
+
 std::vector<SharedComputeTask> sharedComputeTasksOf(const RenderGraphIR &ir) {
-    std::vector<SharedComputeTask> result;
-    result.reserve(ir.shared_compute_tasks.size());
-    for (std::size_t index = 0; index < ir.shared_compute_tasks.size(); ++index) {
-        const auto &name = ir.shared_compute_tasks[index];
-        const NodeIR *found = nullptr;
-        for (const auto &graph : ir.graphs) {
-            for (const auto &node : graph.nodes) {
-                if (node.scope == NodeDeclarationScope::shared && node.name == name) {
-                    found = &node;
-                    break;
-                }
+    // RC-3c2b1: what every compiler program's IR must hold for its compute
+    // tasks to be made from it -- each graph has one copy of each config
+    // task the index names, nothing the index does not, and the copies run
+    // the same -- refused by name (nothing is dropped or picked silently).
+    const auto invalid = [](const std::string &node, std::string_view reason, nlohmann::json more) {
+        more["node"] = node;
+        more["field"] = "shared_compute_tasks";
+        more["reason"] = std::string{reason};
+        refuse("render_graph.compute_task_invalid@1", std::move(more));
+    };
+    const auto &names = ir.shared_compute_tasks;
+    if (ir.authored_shared_compute_tasks.size() != names.size()) {
+        invalid("", "authored_names_mismatch", nlohmann::json::object());
+    }
+    std::unordered_map<std::string, std::size_t> indexed;
+    for (std::size_t index = 0; index < names.size(); ++index) {
+        if (!indexed.emplace(names[index], index).second) invalid(names[index], "duplicate", nlohmann::json::object());
+    }
+    std::vector<const NodeIR *> first(names.size(), nullptr);
+    for (const auto &graph : ir.graphs) {
+        std::unordered_set<std::string> seen;
+        for (const auto &node : graph.nodes) {
+            if (node.shape == RenderNodeShape::compute && node.scope == NodeDeclarationScope::graph) {
+                invalid(node.name, "graph_scope", {{"graph", graph.name}});
             }
-            if (found != nullptr) break;
+            if (node.scope != NodeDeclarationScope::shared) continue;
+            if (node.shape != RenderNodeShape::compute || !std::holds_alternative<ComputeNodeInfo>(node.info)) {
+                invalid(node.name, "not_a_compute_task", {{"graph", graph.name}});
+            }
+            const auto found = indexed.find(node.name);
+            if (found == indexed.end()) invalid(node.name, "unindexed", {{"graph", graph.name}});
+            if (!seen.insert(node.name).second) invalid(node.name, "duplicate", {{"graph", graph.name}});
+            auto &copy = first[found->second];
+            if (copy == nullptr) {
+                copy = &node;
+            } else if (!sameExecution(*copy, node)) {
+                invalid(node.name, "copies_differ", {{"graph", graph.name}});
+            }
         }
-        if (found == nullptr) {
-            throw std::runtime_error("render graph config compute task has no node: " + name);
+        for (const auto &name : names) {
+            if (!seen.contains(name)) invalid(name, "missing_copy", {{"graph", graph.name}});
         }
+    }
+    std::vector<SharedComputeTask> result;
+    result.reserve(names.size());
+    for (std::size_t index = 0; index < names.size(); ++index) {
+        if (first[index] == nullptr) invalid(names[index], "missing_copy", nlohmann::json::object());
         result.push_back(SharedComputeTask{
-            .node = found,
-            .authored_name = index < ir.authored_shared_compute_tasks.size()
-                                 ? std::string_view{ir.authored_shared_compute_tasks[index]}
-                                 : std::string_view{name},
+            .node = first[index],
+            .authored_name = ir.authored_shared_compute_tasks[index],
         });
     }
     return result;
@@ -468,7 +511,11 @@ void validateComputeTaskBufferContracts(const RenderGraphIR &ir,
             invalid("dispatch.indirect.buffer", "command_layout_mismatch",
                     {{"expected", std::string{frameGraphBufferCommandLayoutName(expected)}}});
         }
-        // The offset's alignment is the parse's (dispatch.indirect.offset).
+        // The parse refuses it too; an IR a program made itself is checked
+        // here, as the registration takes it.
+        if (indirect.offset % frameGraphIndirectCommandAlignment != 0) {
+            invalid("dispatch.indirect.offset", "not_4_byte_aligned", {{"offset", indirect.offset}});
+        }
         if (indirect.offset > buffer->size || buffer->size - indirect.offset < frameGraphDispatchCommandBytes) {
             invalid("dispatch.indirect.offset", "command_exceeds_buffer",
                     {{"offset", indirect.offset}, {"size", buffer->size}});

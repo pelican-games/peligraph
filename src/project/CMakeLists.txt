@@ -37,6 +37,7 @@ add_library(pelican_project
     rendergraphir.cpp
     rendergraphparse.cpp
     rayrecordabi.cpp
+    nodeschedule.cpp
     logicalrendertype.cpp
     materialdrawloop.cpp
     materialpassdecompose.cpp

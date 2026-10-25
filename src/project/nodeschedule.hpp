@@ -19,17 +19,9 @@ enum class NodeSchedule : std::uint8_t {
 
 inline constexpr NodeSchedule defaultNodeSchedule = NodeSchedule::per_frame;
 
-constexpr std::string_view nodeScheduleName(NodeSchedule schedule) {
-    switch (schedule) {
-    case NodeSchedule::per_frame:
-        return "per_frame";
-    case NodeSchedule::per_view:
-        return "per_view";
-    case NodeSchedule::once:
-        return "once";
-    }
-    return "per_frame";
-}
+// Refuses a value outside the three: render_graph.node_schedule_unknown@1
+// {value}.
+std::string_view nodeScheduleName(NodeSchedule schedule);
 
 constexpr std::optional<NodeSchedule> nodeScheduleFromName(std::string_view name) {
     if (name == "per_frame") return NodeSchedule::per_frame;

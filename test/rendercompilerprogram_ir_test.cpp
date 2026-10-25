@@ -7,6 +7,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <functional>
+
 namespace Pelican {
 
 TEST_CASE("RC-3c1b B1 the production compiler reads each completed revision once",
@@ -384,6 +386,121 @@ TEST_CASE("RC-3c1b a compute task's persistent image is not a pass input; a pass
     TestSupport::requireNamedRefusal(
         [&] { (void)compile(project, providers, rendering, Variants::flat); },
         "render_graph.input_not_produced@1", {{"node", "present"}, {"resource", "never"}});
+}
+
+namespace {
+
+// RC-3c2b1: a compiler program that returns the engine's output with each
+// runtime variant's IR changed by `edit` (what a program of its own may
+// return: the common completion makes the compute tasks from it).
+struct EditingProgram final : RenderCompilerProgram {
+    std::function<void(RenderGraphIR &)> edit;
+
+    RenderCompilerProgramSelection selection(const RenderCompilerBackendContext &backend) const override {
+        return defaultVulkanRenderCompilerProgram().selection(backend);
+    }
+    RenderCompilerProgramOutput compile(const RenderCompilerProgramInput &input) const override {
+        auto output = defaultVulkanRenderCompilerProgram().compile(input);
+        for (auto &variant : output.variants) {
+            if (variant.physical_package == nullptr || variant.render_graph == nullptr) continue;
+            auto edited = *variant.render_graph;
+            edit(edited);
+            variant.render_graph = std::make_shared<const RenderGraphIR>(std::move(edited));
+        }
+        return output;
+    }
+};
+
+NodeIR &sharedNode(GraphIR &graph, std::string_view name) {
+    const auto found = std::find_if(graph.nodes.begin(), graph.nodes.end(), [&](const NodeIR &node) {
+        return node.scope == NodeDeclarationScope::shared && node.name == name;
+    });
+    REQUIRE(found != graph.nodes.end());
+    return *found;
+}
+
+} // namespace
+
+TEST_CASE("RC-3c2b1 the completion refuses by name an IR whose compute tasks it cannot make whole",
+          "[rc3c2b1][render-compiler][compute]") {
+    // Two config tasks: make_args (groups) and run (indirect from args at
+    // offset 12). Whatever a program returns, the compute tasks are made
+    // from its IR: a task the name index does not hold, two copies that do
+    // not run the same, an indirect command off its 4-byte alignment are
+    // refused there by name, before anything registers. Each with its
+    // control (the same program, an IR that holds).
+    auto rendering = section(0, false);
+    rendering["buffers"] = Json::array({Json{{"name", "args"}, {"size", 32}, {"command_layout", "compute_dispatch"}},
+                                        Json{{"name", "data"}, {"size", 16}}});
+    rendering["compute_tasks"] = Json::array(
+        {Json{{"name", "make_args"},
+              {"shader", "engine://shaders/compute/fixture"},
+              {"writes", Json::array({"args"})},
+              {"dispatch", {{"groups", Json::array({1, 1, 1})}}}},
+         Json{{"name", "run"},
+              {"shader", "engine://shaders/compute/fixture"},
+              {"writes", Json::array({"data"})},
+              {"dispatch", {{"indirect", {{"buffer", "args"}, {"offset", 12}}}}}}});
+    const auto compiled = [&](std::function<void(RenderGraphIR &)> edit) {
+        EditingProgram program;
+        program.edit = std::move(edit);
+        Project project;
+        Providers providers;
+        return compile(project, providers, rendering, Variants::flat, true, nullptr, &program);
+    };
+    const auto refused = [&](std::function<void(RenderGraphIR &)> edit, const Json &detail) {
+        TestSupport::requireNamedRefusal([&] { (void)compiled(std::move(edit)); },
+                                         "render_graph.compute_task_invalid@1", detail);
+    };
+    SECTION("the name index holds every copy") {
+        const auto control = compiled([](RenderGraphIR &) {});
+        REQUIRE(control.compute_task_definitions.size() == 1);
+        CHECK(control.compute_task_definitions.front().size() == 2);
+        refused([](RenderGraphIR &ir) {
+                    ir.shared_compute_tasks.clear();
+                    ir.authored_shared_compute_tasks.clear();
+                },
+                {{"node", "make_args"}, {"field", "shared_compute_tasks"}, {"reason", "unindexed"}, {"graph", "main"}});
+        refused([](RenderGraphIR &ir) { ir.authored_shared_compute_tasks.pop_back(); },
+                {{"field", "shared_compute_tasks"}, {"reason", "authored_names_mismatch"}});
+        refused([](RenderGraphIR &ir) {
+                    auto &nodes = ir.graphs.front().nodes;
+                    nodes.erase(std::find_if(nodes.begin(), nodes.end(),
+                                             [](const NodeIR &node) { return node.name == "run"; }));
+                },
+                {{"node", "run"}, {"field", "shared_compute_tasks"}, {"reason", "missing_copy"}, {"graph", "main"}});
+    }
+    SECTION("every graph's copy runs the same, whatever its edges") {
+        const auto two_graphs = [](RenderGraphIR &ir) {
+            auto copy = ir.graphs.front();
+            copy.name = "copy";
+            sharedNode(copy, "make_args").after.push_back("elsewhere");
+            ir.graphs.push_back(std::move(copy));
+        };
+        const auto control = compiled(two_graphs);
+        REQUIRE(control.compute_task_definitions.size() == 1);
+        CHECK(control.compute_task_definitions.front().size() == 2);
+        refused(
+            [&](RenderGraphIR &ir) {
+                two_graphs(ir);
+                std::get<ComputeNodeInfo>(sharedNode(ir.graphs.back(), "make_args").info).dispatch.groups_x = 8;
+            },
+            {{"node", "make_args"}, {"field", "shared_compute_tasks"}, {"reason", "copies_differ"}, {"graph", "copy"}});
+    }
+    SECTION("an indirect command is 4-byte aligned") {
+        const auto offset = [](std::uint64_t value) {
+            return [value](RenderGraphIR &ir) {
+                std::get<ComputeNodeInfo>(sharedNode(ir.graphs.front(), "run").info).dispatch.indirect->offset = value;
+            };
+        };
+        const auto aligned = compiled(offset(0));
+        REQUIRE(aligned.compute_task_definitions.size() == 1);
+        CHECK(aligned.compute_task_definitions.front().at(1).dispatch.indirect->offset == 0);
+        refused(offset(2), {{"node", "run"},
+                            {"field", "dispatch.indirect.offset"},
+                            {"reason", "not_4_byte_aligned"},
+                            {"offset", 2}});
+    }
 }
 
 } // namespace Pelican

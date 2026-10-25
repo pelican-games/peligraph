@@ -2,6 +2,7 @@
 
 #include "frameplanmodel.hpp"
 #include "graphcanvaslayerstack.hpp"
+#include "computetaskdeclaration.hpp"
 #include "imageformat.hpp"
 #include "projectformat.hpp"
 #include "projectpathresolver.hpp"
@@ -3329,7 +3330,7 @@ Json GraphCanvasModel::addNodeOpsIn(std::string_view in_scope, const std::string
                 if (std::ranges::find(compute_shader_choices_, picked) == compute_shader_choices_.end())
                     return Json::array();
                 node["parameters"] = Json{{"shader", picked},
-                                          {"dispatch", Json{{"groups", Json::array({1, 1, 1})}}},
+                                          {"dispatch", Json{{"groups", Json(Pelican::defaultComputeDispatchGroups)}}},
                                           {"ports", Json::object()}};
                 node["outputs"] = Json::array();
                 add(std::move(node));
@@ -3340,7 +3341,7 @@ Json GraphCanvasModel::addNodeOpsIn(std::string_view in_scope, const std::string
             node["parameters"] = Json{
                 {"shader", preferred != compute_shader_choices_.end() ? *preferred
                                                                       : compute_shader_choices_.front()},
-                {"dispatch", Json{{"groups", Json::array({1, 1, 1})}}},
+                {"dispatch", Json{{"groups", Json(Pelican::defaultComputeDispatchGroups)}}},
                 {"ports", Json::object()}};
             node["outputs"] = Json::array();
             add(std::move(node));
@@ -8858,7 +8859,7 @@ Json GraphCanvasModel::computeShaderOps(std::string_view scope, const std::strin
         // node had if it had one.
         const auto dispatch = parameters.value("dispatch", Json::object());
         if (!(dispatch.is_object() && dispatch.size() == 1 && dispatch.contains("groups")))
-            parameters["dispatch"] = Json{{"groups", Json::array({1, 1, 1})}};
+            parameters["dispatch"] = Json{{"groups", Json(Pelican::defaultComputeDispatchGroups)}};
     }
 
     // A port the shader no longer declares loses the lines read from it.

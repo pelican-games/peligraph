@@ -346,10 +346,12 @@ std::size_t runtimeVariantsOf(Variants variants) {
 }
 
 // `imgui`: the launch configuration runs ImGui (the default one does; a
-// headless driver does not).
+// headless driver does not). `program`: another compiler program than the
+// engine's default.
 RenderCompilerProgramOutput compile(Project &project, Providers &providers, const Json &rendering_section,
                                     Variants variants, bool imgui = true,
-                                    const VulkanRenderCompilerBackendContext *device = nullptr) {
+                                    const VulkanRenderCompilerBackendContext *device = nullptr,
+                                    const RenderCompilerProgram *program = nullptr) {
     FastModuleContainer modules;
     GET_MODULE(EngineLaunchConfig).headless = !imgui;
     const auto root = project.rootOf(rendering_section);
@@ -363,7 +365,7 @@ RenderCompilerProgramOutput compile(Project &project, Providers &providers, cons
         VulkanRenderCompilerDevicePlanningMode::compiler_only};
     const auto &backend = device != nullptr ? *device : compiler_only;
     return runRenderCompilerProgram(
-        defaultVulkanRenderCompilerProgram(),
+        program != nullptr ? *program : defaultVulkanRenderCompilerProgram(),
         RenderCompilerProgramInput{
             .rendering_config = lowering.document,
             .source_name = "rc3c1b",

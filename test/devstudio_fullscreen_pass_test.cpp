@@ -27,6 +27,7 @@
 #include "renderingpass/rendertargetmetadataresolver.hpp"
 #include "renderingpass/rendertargetnameresolver.hpp"
 #include "render_graph_ir_test_support.hpp"
+#include "generationresources.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -645,9 +646,39 @@ const CoreShapeResources &defaultCoreShapeResources() {
     return resources;
 }
 
+// The pass as the production path checks it: in a graph of `resources` (each
+// render target 16x16, R8G8B8A8_UNORM, sampled and both attachments, with
+// `history` as listed; each buffer 16 bytes), read once (parseRenderGraph),
+// planned (an unknown resource, a history read of a target without history:
+// planFrameGraph's named refusals), and its resources checked as the compiler
+// program's completion checks them (validateRenderGraphResources over the
+// declared resources). RC-3c2a moved those checks out of the pass parse.
+void requireCoreShapeInGraph(const Json &pass, const CoreShapeResources &resources) {
+    Json config{{"render_targets", Json::array()}, {"buffers", Json::array()}, {"passes", Json::array({pass})}};
+    for (const auto &name : resources.render_targets) {
+        config["render_targets"].push_back(
+            Json{{"name", name},
+                 {"width", 16},
+                 {"height", 16},
+                 {"extent_scale", 1.0},
+                 {"format", "R8G8B8A8_UNORM"},
+                 {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED", "DEPTH_STENCIL_ATTACHMENT"})},
+                 {"history", resources.history_targets.contains(name)}});
+    }
+    std::vector<std::string> buffers{resources.buffers.begin(), resources.buffers.end()};
+    std::ranges::sort(buffers);
+    for (const auto &name : buffers) config["buffers"].push_back(Json{{"name", name}, {"size", 16}});
+    const auto ir = Pelican::TestSupport::renderGraphOf(config);
+    for (const auto &graph : ir.graphs) (void)Pelican::planRenderGraph(ir, graph);
+    Pelican::validateRenderGraphResources(ir, Pelican::resolveDeclaredGenerationResources(ir, {16, 16}));
+}
+
+// The production checks (requireCoreShapeInGraph), then the execution's pass
+// parse with `policy` (the injected shape policy).
 Pelican::PassDefinition parseCoreShape(
     const Json &pass, const Pelican::PassShapePolicy &policy,
     const CoreShapeResources &resources = defaultCoreShapeResources()) {
+    requireCoreShapeInGraph(pass, resources);
     const Pelican::RenderTargetNameResolver names{
         [&resources](const std::string &name) {
             const auto found =

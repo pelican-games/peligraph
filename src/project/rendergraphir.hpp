@@ -380,7 +380,15 @@ void requireRenderGraphInputsProduced(const RenderGraphIR &ir, const GraphIR &gr
                                       const FramePlan &plan);
 
 // RC-3c2b1: the config's compute tasks, one node each (the first graph's
-// copy), with the name it was authored with, in declaration order.
+// copy), with the name it was authored with, in declaration order. What
+// every compiler program's IR must hold for this is checked first, by name
+// (render_graph.compute_task_invalid@1 {node, field: shared_compute_tasks,
+// reason, graph?}): the authored names match the index one for one, no name
+// is indexed twice, every graph has one copy of each indexed task
+// (missing_copy, duplicate) and no shared node the index does not name
+// (unindexed, not_a_compute_task), no graph has a compute task of its own
+// (graph_scope), and the copies run the same but for their edges
+// (copies_differ).
 struct SharedComputeTask {
     const NodeIR *node = nullptr;
     std::string_view authored_name;
@@ -391,10 +399,12 @@ std::vector<SharedComputeTask> sharedComputeTasksOf(const RenderGraphIR &ir);
 // generation's resource description sized them: the buffer is declared, the
 // task does not write it, its command_layout is the task's
 // (compute_dispatch, or ray_dispatch for a ray tracing task) and the command
-// at the offset fits. Refuses render_graph.compute_task_invalid@1 {node,
-// field: "dispatch.indirect.buffer" | "dispatch.indirect.offset", reason:
+// at the (4-byte aligned) offset fits. Refuses
+// render_graph.compute_task_invalid@1 {node, field:
+// "dispatch.indirect.buffer" | "dispatch.indirect.offset", reason:
 // written_by_task | unknown_buffer | command_layout_mismatch |
-// command_exceeds_buffer} (with buffer, and expected / offset / size).
+// not_4_byte_aligned | command_exceeds_buffer} (with buffer, and expected /
+// offset / size).
 void validateComputeTaskBufferContracts(const RenderGraphIR &ir,
                                         std::span<const FrameGraphBufferDefinition> buffers);
 
