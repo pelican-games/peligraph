@@ -367,7 +367,11 @@ struct ActualCpuRenderRuntime {
             throw std::runtime_error(
                 "hybrid_v1 did not produce main_render");
         }
-        const auto compiled = compileComposition(composition);
+        auto compiled = compileComposition(composition);
+        if (compiled.material_routing) {
+            deriveMaterialRoutingFromIR(*compiled.material_routing, ir);
+            validateMaterialRoutingAgainstIR(*compiled.material_routing, ir);
+        }
         return Prepared{
             .enabled_feature_names = composition.feature_names,
             .frame_plan = framePlanToJson(

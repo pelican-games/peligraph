@@ -1,4 +1,5 @@
 #include "fullscreenpasssettings.hpp"
+#include "../../project/passdeclaration.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -60,7 +61,7 @@ FullscreenPassInterfaceRow::FullscreenPassInterfaceRow(QWidget *parent,
            "(pelicanLights, pelican_lighting_v1.glsl)."));
     push_constants_ = new QComboBox(this);
     push_constants_->setObjectName(prefix + QStringLiteral(".pushConstants"));
-    push_constants_->addItem(tr("No push constants"), QString{});
+    push_constants_->addItem(tr("No push constants"), text(Pelican::defaultFullscreenPushConstantsAuthoringValue));
     push_constants_->addItem(tr("Camera position"),
                              QStringLiteral("camera_position"));
     push_constants_->addItem(tr("Projection and view"),
@@ -88,7 +89,7 @@ void FullscreenPassInterfaceRow::setChangedAction(
 void FullscreenPassInterfaceRow::reset() {
     const QSignalBlocker lights{uses_light_data_};
     const QSignalBlocker push{push_constants_};
-    uses_light_data_->setChecked(false);
+    uses_light_data_->setChecked(Pelican::defaultFullscreenUsesLightData);
     while (push_constants_->count() > 3) push_constants_->removeItem(3);
     push_constants_->setCurrentIndex(0);
 }
@@ -98,11 +99,11 @@ void FullscreenPassInterfaceRow::load(const Json &declaration) {
     const QSignalBlocker lights{uses_light_data_};
     const QSignalBlocker push{push_constants_};
     const auto uses = declaration.find("uses_light_data");
-    uses_light_data_->setChecked(uses != declaration.end() &&
-                                 uses->is_boolean() && uses->get<bool>());
+    uses_light_data_->setChecked(uses != declaration.end() && uses->is_boolean()
+        ? uses->get<bool>() : Pelican::defaultFullscreenUsesLightData);
     const auto push_value = declaration.find("push_constants");
     if (push_value != declaration.end() && push_value->is_string() &&
-        push_value->get<std::string>() != "none")
+        push_value->get<std::string>() != Pelican::defaultFullscreenPushConstantsName)
         selectValue(*push_constants_, push_value->get<std::string>());
 }
 
@@ -137,11 +138,11 @@ void fullscreenInterfaceEditParams(const Json &original, const Json &draft,
                                    Json &params) {
     const auto lights = [](const Json &declaration) {
         const auto uses = declaration.find("uses_light_data");
-        return uses != declaration.end() && uses->is_boolean() && uses->get<bool>();
+        return uses != declaration.end() && uses->is_boolean() ? uses->get<bool>() : Pelican::defaultFullscreenUsesLightData;
     };
     const auto pushing = [](const Json &declaration) {
-        auto value = declaration.value("push_constants", std::string{});
-        if (value == "none") value.clear();
+        auto value = declaration.value("push_constants", std::string{Pelican::defaultFullscreenPushConstantsAuthoringValue});
+        if (value == Pelican::defaultFullscreenPushConstantsName) value.clear();
         return value;
     };
     if (lights(original) != lights(draft))

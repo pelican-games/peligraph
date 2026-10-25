@@ -42,6 +42,9 @@ enum class ShaderResourcePortAddressMode : std::uint8_t {
     clamp_to_edge,
 };
 
+std::string_view shaderResourcePortFilterName(ShaderResourcePortFilter filter);
+std::string_view shaderResourcePortAddressModeName(ShaderResourcePortAddressMode address);
+
 // Storage-buffer element types deliberately describe the shader-visible
 // std430 array element rather than a Vulkan format. The producer and consumer
 // can therefore share one generated accessor contract without exposing a raw
@@ -81,11 +84,14 @@ enum class ShaderResourcePortKind : std::uint8_t {
 std::string_view shaderResourcePortKindName(
     ShaderResourcePortKind kind);
 
+inline constexpr auto defaultInputSamplingFilter = ShaderResourcePortFilter::linear;
+inline constexpr auto defaultInputSamplingAddressMode = ShaderResourcePortAddressMode::repeat;
+
 struct ShaderResourcePortSampling {
     ShaderResourcePortFilter filter =
-        ShaderResourcePortFilter::linear;
+        defaultInputSamplingFilter;
     ShaderResourcePortAddressMode address_mode =
-        ShaderResourcePortAddressMode::repeat;
+        defaultInputSamplingAddressMode;
 
     bool operator==(
         const ShaderResourcePortSampling &) const = default;

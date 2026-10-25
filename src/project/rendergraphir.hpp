@@ -164,8 +164,8 @@ enum class NodeDeclarationScope : std::uint8_t {
 struct FullscreenNodeInfo : PassShaderDeclaration {
     std::optional<std::string> implementation_provider;
     std::optional<PipelineState> raster_state;
-    FullscreenPushConstantData push_constants = FullscreenPushConstantData::eNone;
-    bool uses_light_data = false;
+    FullscreenPushConstantData push_constants = defaultFullscreenPushConstants;
+    bool uses_light_data = defaultFullscreenUsesLightData;
     std::vector<ShaderResourcePortSampling> input_sampling;
     std::vector<std::string> shader_defines;
 
@@ -175,7 +175,7 @@ struct FullscreenNodeInfo : PassShaderDeclaration {
 struct RasterNodeInfo : PassShaderDeclaration {
     bool draw_declared = false;
     RasterPassContract contract;
-    std::string shader_implementation{"pelican.raster.authored_shader@1"};
+    std::string shader_implementation{defaultRasterShaderImplementation};
     std::vector<std::string> shader_defines;
 
     bool operator==(const RasterNodeInfo &) const = default;
@@ -267,7 +267,7 @@ struct NodeIR {
     std::optional<std::string> ray_query;
     // Color overrides are indexed by attachment location. An absent
     // clear_colors is empty; an explicit {} expands the default per output.
-    std::array<double, 4> clear_color{0.0, 0.0, 0.0, 1.0};
+    std::array<double, 4> clear_color = defaultPassClearColor;
     std::vector<std::array<double, 4>> color_clear_values;
     std::vector<ShaderResourceInputSetting> input_settings;
     bool shader_declaration_parsed = false;

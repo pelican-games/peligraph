@@ -1,4 +1,6 @@
 #include "graphparameterschema.hpp"
+#include "passdeclaration.hpp"
+#include "rasterpass.hpp"
 #include "graphcomposition.hpp"
 #include "graphloopexpression.hpp"
 #include "renderpipeline.hpp"
@@ -554,7 +556,7 @@ Table makeTable() {
     add(table, "render.shadow_depth", true,
         {shader("shader")
              .field(string("vertex").required())
-             .fallback(Json{{"vertex", "engine://shadow_depth"}})
+             .fallback(Json{{"vertex", defaultShadowDepthShader}})
              .describe("The depth pass's vertex shader (no fragment stage)."),
          rasterRayQuery(), loadOp("depth_load_op"), storeOp("depth_store_op"), resolutionDomain(RenderPassType::shadow_depth),
          viewFamily(), viewSelect(), regionTags(), passSet(), order("after"), order("before"), insert(false),
@@ -588,8 +590,8 @@ Table makeTable() {
              .required(),
          passSchedule(),
          // CT-5: stringToFullscreenPushConstantData's names.
-         enumeration("push_constants", {"none", "camera_position", "projection_view"}).fallback("none"),
-         boolean("uses_light_data").fallback(false), json("raster_state"),
+         enumeration("push_constants", {"none", "camera_position", "projection_view"}).fallback(defaultFullscreenPushConstantsName),
+         boolean("uses_light_data").fallback(defaultFullscreenUsesLightData), json("raster_state"),
          rasterRayQuery(), loadOp("color_load_op"), storeOp("color_store_op"), loadOp("depth_load_op"),
          storeOp("depth_store_op"), clearColor(), clearColors(), resolutionDomain(RenderPassType::fullscreen),
          inheritBindingsFrom(), viewFamily(), viewSelect(),
@@ -604,7 +606,7 @@ Table makeTable() {
              .required(),
          object("draw").required().describe("What the pass draws."), json("raster_state"),
          // CC-2: parseRasterPassContract's clip_y.
-         enumeration("clip_y", {"down", "up"}).fallback("down")
+         enumeration("clip_y", {"down", "up"}).fallback(rasterClipYName(defaultRasterClipY))
              .describe("Which way the vertex shader's clip +y points on the image (down: the engine's). "
                        "front_face and cull mean the winding seen on the image either way."),
          passSchedule(), rasterRayQuery(), loadOp("color_load_op"), storeOp("color_store_op"),

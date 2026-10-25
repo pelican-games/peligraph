@@ -1,4 +1,5 @@
 #include "graphcanvasmodel.hpp"
+#include "../../project/rasterpass.hpp"
 
 #include "frameplanmodel.hpp"
 #include "graphcanvaslayerstack.hpp"
@@ -3432,7 +3433,7 @@ Json GraphCanvasModel::addNodeOpsIn(std::string_view in_scope, const std::string
                                           {"attachment", "color"}, {"location", 0}}}}}};
         // A raster pass draws what its `draw` says: the three vertices of
         // the screen-covering triangle engine://fullscreen makes.
-        if (op == "render.raster") node["parameters"]["draw"] = Json{{"vertex_count", 3}};
+        if (op == "render.raster") node["parameters"]["draw"] = Json{{"vertex_count", Pelican::defaultRasterDirectVertexCount}};
         if (!family.empty()) {
             node["parameters"]["view_family"] = family;
             // A fixed size is not the screen's: the pass is resolved on its

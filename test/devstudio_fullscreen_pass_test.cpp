@@ -5482,3 +5482,28 @@ TEST_CASE("GL-5f New pass on a root that selects no preset is the Graph's render
     }
 }
 } // namespace PelicanStudio
+
+namespace PelicanStudio {
+TEST_CASE("RC-3c2b2 Studio no push constants preserves omission through load apply and RPC",
+          "[devstudio][fullscreen-pass][rc3c2b2]") {
+    (void)application();
+    FullscreenPassInterfaceRow row{nullptr, QStringLiteral("defaults")};
+    const Json lit{{"push_constants", "projection_view"}, {"uses_light_data", true}};
+    for (const auto &original : {Json::object(), Json{{"push_constants", "none"}}, Json{{"push_constants", ""}}}) {
+        row.load(original);
+        CHECK(row.pushConstants().empty());
+        CHECK_FALSE(row.usesLightData());
+        auto draft = original;
+        row.apply(draft);
+        CHECK_FALSE(draft.contains("push_constants"));
+        CHECK_FALSE(draft.contains("uses_light_data"));
+        Json unchanged = Json::object();
+        fullscreenInterfaceEditParams(original, draft, unchanged);
+        CHECK(unchanged.empty());
+        Json params = Json::object();
+        fullscreenInterfaceEditParams(lit, draft, params);
+        CHECK(params.at("push_constants").is_null());
+        CHECK(params.at("uses_light_data").is_null());
+    }
+}
+} // namespace PelicanStudio

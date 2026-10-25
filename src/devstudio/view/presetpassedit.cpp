@@ -1,4 +1,5 @@
 #include "presetpassedit.hpp"
+#include "../../project/computetaskdeclaration.hpp"
 
 #include "frameplanedit.hpp"
 #include "fullscreenpasssettings.hpp"
@@ -87,9 +88,9 @@ Json presetPassRayQuery(const Json &declaration) {
     const auto query = declaration.is_object() ? declaration.value("ray_query", Json(false)) : Json(false);
     if (query.is_object())
         return Json{{"acceleration_structure",
-                     query.value("acceleration_structure", std::string{"scene"})}};
+                     query.value("acceleration_structure", std::string{Pelican::defaultRayTracingAccelerationStructure})}};
     if (query.is_boolean() && query.get<bool>())
-        return Json{{"acceleration_structure", "scene"}};
+        return Json{{"acceleration_structure", Pelican::defaultRayTracingAccelerationStructure}};
     return false;
 }
 

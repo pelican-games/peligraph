@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../../project/computetaskdeclaration.hpp"
+
 #include "../renderingpass/renderingpass.hpp"
 #include "../shader/pipelinefactory.hpp"
 #include "../vkcore/buf.hpp"
@@ -21,7 +23,7 @@ class FrameResources;
 struct LineOverlayPipelineRecord {
     PipelineHandle pipeline;
     vk::UniqueDescriptorSet descriptor_set;
-    std::string acceleration_structure = "scene";
+    std::string acceleration_structure = std::string{defaultRayTracingAccelerationStructure};
 };
 
 // What one overlay class fixes once, at construction. Everything else about

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../../project/computetaskdeclaration.hpp"
+
 #include "../container.hpp"
 #include "../renderingpass/renderingpass.hpp"
 #include "../shader/pipelinefactory.hpp"
@@ -208,7 +210,7 @@ DECLARE_MODULE(Gizmo) {
                         vk::SampleCountFlagBits samples =
                             vk::SampleCountFlagBits::e1,
                         bool ray_query = false,
-                        std::string acceleration_structure = "scene");
+                        std::string acceleration_structure = std::string{defaultRayTracingAccelerationStructure});
     void render(vk::CommandBuffer cmd_buf, PassId pass_id,
                 const FrameResources &frame_resources,
                 const std::optional<glm::vec3> &world_position,

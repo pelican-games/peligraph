@@ -1,3 +1,6 @@
+#include "../src/project/renderingjsonnormalize.hpp"
+#include "render_graph_ir_test_support.hpp"
+#include "../src/project/rendergraphparse.hpp"
 #include "../src/core/renderingpass/previewgraph.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
 #include "../src/core/renderingpass/framegraphruntime.hpp"
@@ -123,18 +126,21 @@ Json hybridPassSet(std::string name,
                  {"material_contract",
                   "deferred_geometry_v1"},
                  {"material_outputs", output_schema},
+                 {"output", {{"color", Json::array({"a", "b", "c"})}, {"depth", "depth"}}},
              },
              {
                  {"name", "forward_opaque"},
                  {"type", "material"},
                  {"material_contract",
                   "forward_opaque_v1"},
+                 {"output", {{"color", Json::array({"a"})}, {"depth", "depth"}}},
              },
              {
                  {"name", "forward_transparent"},
                  {"type", "material"},
                  {"material_contract",
                   "forward_transparent_v1"},
+                 {"output", {{"color", Json::array({"a"})}, {"depth", "depth"}}},
              },
          })},
     };
@@ -244,9 +250,12 @@ TEST_CASE(
     };
     const auto routing =
         resolveMaterialRoutingTable(config);
-    const auto &deferred =
-        routing.at("routes").at(
-            "deferred_geometry");
+    ResolvedRenderPipeline typed_source;
+    typed_source.material_routing = routing;
+    auto typed = compileRenderPipeline(typed_source);
+    deriveMaterialRoutingFromIR(*typed.material_routing, parseRenderGraph(normalizeRenderingJson(config), PassFieldOwnershipCapabilities{}));
+    const auto typed_metadata = serializeCompiledRenderPipelineMetadata(typed);
+    const auto &deferred = typed_metadata.at("material_routing").at("routes").at("deferred_geometry");
     REQUIRE(
         deferred.at("output_schema").at("outputs").size() ==
         3);
@@ -259,8 +268,8 @@ TEST_CASE(
 
     ResolvedRenderPipeline resolved;
     resolved.material_routing = routing;
-    const auto compiled =
-        compileRenderPipeline(resolved);
+    auto compiled = compileRenderPipeline(resolved);
+    deriveMaterialRoutingFromIR(*compiled.material_routing, parseRenderGraph(normalizeRenderingJson(config), PassFieldOwnershipCapabilities{}));
     REQUIRE(compiled.material_routing);
     REQUIRE(
         compiled.material_routing->routes.front()
@@ -279,9 +288,8 @@ TEST_CASE(
           ["material_outputs"]["name"] =
         "project.xr_only_schema";
     REQUIRE_THROWS_WITH(
-        resolveMaterialRoutingTable(config),
-        Catch::Matchers::ContainsSubstring(
-            "different material_outputs schemas"));
+        deriveMaterialRoutingFromIR(*compiled.material_routing, parseRenderGraph(normalizeRenderingJson(config), PassFieldOwnershipCapabilities{})),
+        Catch::Matchers::ContainsSubstring("material_outputs"));
 }
 
 TEST_CASE(
@@ -317,9 +325,12 @@ TEST_CASE(
 
     const auto routing =
         resolveMaterialRoutingTable(config);
-    const auto &deferred =
-        routing.at("routes")
-            .at("deferred_geometry");
+    ResolvedRenderPipeline typed_source;
+    typed_source.material_routing = routing;
+    auto typed = compileRenderPipeline(typed_source);
+    deriveMaterialRoutingFromIR(*typed.material_routing, parseRenderGraph(normalizeRenderingJson(config), PassFieldOwnershipCapabilities{}));
+    const auto typed_metadata = serializeCompiledRenderPipelineMetadata(typed);
+    const auto &deferred = typed_metadata.at("material_routing").at("routes").at("deferred_geometry");
     REQUIRE(
         deferred.at("output_states")
             .contains("base_color"));
@@ -331,8 +342,8 @@ TEST_CASE(
 
     ResolvedRenderPipeline resolved;
     resolved.material_routing = routing;
-    const auto compiled =
-        compileRenderPipeline(resolved);
+    auto compiled = compileRenderPipeline(resolved);
+    deriveMaterialRoutingFromIR(*compiled.material_routing, parseRenderGraph(normalizeRenderingJson(config), PassFieldOwnershipCapabilities{}));
     REQUIRE(compiled.material_routing);
     REQUIRE(
         compiled.material_routing->routes.front()
@@ -351,21 +362,15 @@ TEST_CASE(
           ["material_output_states"]["base_color"]
           ["write_mask"] = "rgb";
     REQUIRE_THROWS_WITH(
-        resolveMaterialRoutingTable(config),
-        Catch::Matchers::ContainsSubstring(
-            "different material_output_states"));
+        deriveMaterialRoutingFromIR(*compiled.material_routing, parseRenderGraph(normalizeRenderingJson(config), PassFieldOwnershipCapabilities{})),
+        Catch::Matchers::ContainsSubstring("material_output_states"));
 
-    auto tampered = routing;
-    tampered["routes"]["deferred_geometry"]
-            ["output_states_fingerprint"] =
-        "tampered";
-    ResolvedRenderPipeline tampered_resolved;
-    tampered_resolved.material_routing =
-        std::move(tampered);
-    REQUIRE_THROWS_WITH(
-        compileRenderPipeline(tampered_resolved),
-        Catch::Matchers::ContainsSubstring(
-            "output_states_fingerprint does not match"));
+    auto tampered = *typed.material_routing;
+    tampered.routes.front().output_states.clear();
+    TestSupport::requireNamedRefusal([&] {
+        validateMaterialRoutingAgainstIR(tampered, TestSupport::renderGraphOf(Json{{"rendering_passes", Json::array({flat, xr})}}));
+    }, "render_graph.material_route_invalid@1", {{"graph", "flat"}, {"node", "deferred_geometry"},
+        {"field", "material_output_states"}, {"reason", "mismatch"}});
 }
 
 TEST_CASE("WP180 flat resolver preserves FeatureCompose bytes without modules",
@@ -1069,23 +1074,19 @@ TEST_CASE(
             false);
     };
 
-    REQUIRE_THROWS_WITH(
-        resolve(authored),
-        Catch::Matchers::ContainsSubstring(
-            "Fullscreen pass 'scene' raster_state color_attachments[0] "
-            "blend"));
-    CHECK_THAT(
-        preview(authored),
-        Catch::Matchers::ContainsSubstring(
-            "Fullscreen pass 'scene' raster_state color_attachments[0] "
-            "blend"));
+    const auto named = [&](const Json &config) {
+        const auto composed = resolve(config);
+        TestSupport::requireNamedRefusal([&] {
+            (void)parseRenderGraph(composed.composed_config, PassFieldOwnershipCapabilities{});
+        }, "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "scene"},
+            {"field", "raster_state"}, {"reason", "invalid"}});
+        CHECK_THAT(preview(config), Catch::Matchers::ContainsSubstring("render_graph.node_field_invalid@1"));
+        CHECK_THAT(preview(config), Catch::Matchers::ContainsSubstring("\"node\":\"scene\""));
+    };
+    named(authored);
 
     pass["raster_state"] = {{"depth_compare", "always"}};
-    const std::string depth_error =
-        "Fullscreen pass 'scene' raster_state does not support depth field "
-        "'depth_compare'";
-    REQUIRE_THROWS_WITH(resolve(authored), depth_error);
-    CHECK_THAT(preview(authored), Catch::Matchers::ContainsSubstring(depth_error));
+    named(authored);
 
     pass["raster_state"] = {
         {"color_attachments",

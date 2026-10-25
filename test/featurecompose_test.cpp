@@ -1,3 +1,4 @@
+#include "render_graph_ir_test_support.hpp"
 #include "registered_render_targets_test_support.hpp"
 #include "compute_task_test_support.hpp"
 #include "../src/project/featurecompose.hpp"
@@ -1869,12 +1870,15 @@ TEST_CASE("pipeline preset refuses structural deep merge and invalid route contr
         engineResourceOrThrow("render_pipelines/hybrid_v1.json"));
     invalid["config"]["rendering_passes"][0]["passes"][4]["material_contract"] =
         "forward_transparent_v1";
-    REQUIRE_THROWS_WITH(
-        composeRenderFeatureConfig(
-            nlohmann::json{{"pipeline", {{"preset", "project://bad.json"}}}},
-            RenderFeatureComposeDependencies{
-                {}, true, {}, [text = invalid.dump()](std::string_view) { return text; }}),
-        Catch::Matchers::ContainsSubstring("forward_opaque_v1"));
+    const auto composition = composeRenderFeatureConfig(
+        nlohmann::json{{"pipeline", {{"preset", "project://bad.json"}}}},
+        RenderFeatureComposeDependencies{
+            {}, true, {}, [text = invalid.dump()](std::string_view) { return text; }});
+    auto compiled = compileComposition(composition);
+    TestSupport::requireNamedRefusal([&] {
+        deriveMaterialRoutingFromIR(*compiled.material_routing, TestSupport::renderGraphOf(composition.config));
+    }, "render_graph.material_route_invalid@1", {{"graph", "main_render"}, {"node", "forward_opaque"},
+        {"field", "material_contract"}, {"reason", "mismatch"}});
 }
 
 TEST_CASE("render feature fixtures compose and reject expected cases", "[render-feature]") {

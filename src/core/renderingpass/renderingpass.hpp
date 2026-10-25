@@ -206,8 +206,8 @@ struct MaterialPassInfo {
 struct FullscreenPassInfo {
     ShaderReference vert_shader = ShaderReference{"", ShaderStage::vertex, ShaderReferenceKind::explicit_file, false};
     ShaderReference frag_shader = ShaderReference{"", ShaderStage::fragment, ShaderReferenceKind::explicit_file, false};
-    FullscreenPushConstantData push_constants = FullscreenPushConstantData::eNone;
-    bool uses_light_data = false;
+    FullscreenPushConstantData push_constants = defaultFullscreenPushConstants;
+    bool uses_light_data = defaultFullscreenUsesLightData;
     // Absence is observable compatibility state: legacy fullscreen pipelines
     // keep GraphicsPipelineDesc::color_attachment_states empty. Authored state
     // is expanded and lowered only when raster_state is present in JSON.
@@ -230,7 +230,7 @@ struct FullscreenPassInfo {
 struct GenericRasterPassInfo {
     RasterPassContract contract;
     std::string shader_implementation{
-        "pelican.raster.authored_shader@1"};
+        defaultRasterShaderImplementation};
     ShaderReference vert_shader =
         ShaderReference{"", ShaderStage::vertex,
                         ShaderReferenceKind::explicit_file,
@@ -406,7 +406,7 @@ struct PassDefinition {
     // programmatically constructed passes use generated provenance instead.
     bool shader_declaration_parsed = false;
     bool ray_query = false;
-    std::string ray_query_acceleration_structure = "scene";
+    std::string ray_query_acceleration_structure{defaultRayTracingAccelerationStructure};
     std::vector<DeclaredShaderReference> declared_shader_refs;
 
     AttachmentLoadOp color_load_op;
@@ -429,8 +429,7 @@ struct PassDefinition {
     // Logical numeric values are converted independently for each attachment.
     // double preserves every uint32 value exactly and permits mixed
     // float/integer MRTs to share the compact pass-wide default.
-    std::array<double, 4> clear_color{
-        0.0, 0.0, 0.0, 1.0};
+    std::array<double, 4> clear_color = defaultPassClearColor;
     // Optional authored overrides aligned with output_color. Empty retains
     // clear_color for every attachment.
     std::vector<std::array<double, 4>>

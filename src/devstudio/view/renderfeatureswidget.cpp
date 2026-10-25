@@ -1,4 +1,5 @@
 #include "renderfeatureswidget.hpp"
+#include "../../project/computetaskdeclaration.hpp"
 #include "rendereditticketclient.hpp"
 #include "featureparameterform.hpp"
 #include "featurerefusalfix.hpp"
@@ -1911,7 +1912,7 @@ class SceneAccelerationStructuresDialog final : public QDialog, public RestartsE
         apply->setEnabled(viewport.rpcReady() && !busy && !digest.isEmpty());
     }
     void connectionOptions() {
-        QStringList options{QStringLiteral("scene")};
+        QStringList options{QString::fromStdString(std::string{Pelican::defaultRayTracingAccelerationStructure})};
         for (int i = 0; i < table->rowCount(); ++i)
             if (table->item(i, 0) && !table->item(i, 0)->text().isEmpty())
                 options.append(table->item(i, 0)->text());
@@ -1954,7 +1955,7 @@ class SceneAccelerationStructuresDialog final : public QDialog, public RestartsE
         QSet<QString> names;
         for (int index = 0; index < table->rowCount(); ++index) {
             const auto name = table->item(index, 0)->text();
-            if (name.isEmpty() || name == QStringLiteral("scene") || names.contains(name)) {
+            if (name.isEmpty() || name == QString::fromStdString(std::string{Pelican::defaultRayTracingAccelerationStructure}) || names.contains(name)) {
                 notice->setText(tr("Use unique names. The name scene is reserved."));
                 return;
             }

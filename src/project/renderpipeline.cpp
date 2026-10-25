@@ -1,4 +1,6 @@
 #include "renderpipeline.hpp"
+#include "rendergraphir.hpp"
+#include "graphcomposition.hpp"
 #include "featurecompose.hpp"
 #include "passfieldownership.hpp"
 #include "rasterpass.hpp"
@@ -38,18 +40,7 @@ void validatePassFieldOwnershipInConfig(
             continue;
         }
         for (const auto &pass : *passes) {
-            const auto type =
-                validatePassFieldOwnership(pass, capabilities, context);
-            if ((type == RenderPassType::fullscreen ||
-                 type == RenderPassType::output_transform) &&
-                pass.contains("raster_state")) {
-                const auto name =
-                    pass.contains("name") && pass.at("name").is_string()
-                        ? pass.at("name").get<std::string>()
-                        : std::string{"<unnamed>"};
-                (void)parseFullscreenRasterFixedFunctionState(
-                    pass, "Fullscreen pass '" + name + "'");
-            }
+            (void)validatePassFieldOwnership(pass, capabilities, context);
         }
     }
 }
@@ -1114,6 +1105,52 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
                                          reference, name, supported_preset_version}};
 }
 
+namespace {
+
+void materialRoutingFromIR(CompiledMaterialRouting &routing,
+                           const RenderGraphIR &ir, bool derive) {
+    for (auto &route : routing.routes) {
+        bool first = true;
+        for (const auto &graph : ir.graphs) {
+            const auto fail = [&](std::string_view field, std::string_view reason) {
+                throw GraphRegistryError("render_graph.material_route_invalid@1",
+                    {{"graph", graph.name}, {"node", route.pass_name},
+                     {"route", materialRouteClassName(route.route)},
+                     {"field", field}, {"reason", reason}});
+            };
+            const auto node = std::find_if(graph.nodes.begin(), graph.nodes.end(),
+                [&](const auto &n) { return n.name == route.pass_name; });
+            if (node == graph.nodes.end()) fail("pass", "missing");
+            const auto *info = std::get_if<MaterialNodeInfo>(&node->info);
+            if (!info) fail("pass", "not_material");
+            if (info->contract != route.pass_contract) fail("material_contract", "mismatch");
+            if (derive && first) {
+                route.output_schema = info->output_schema;
+                route.output_states = info->output_states;
+            } else {
+                if (info->output_schema != route.output_schema)
+                    fail("material_outputs", "mismatch");
+                if (info->output_states != route.output_states)
+                    fail("material_output_states", "mismatch");
+            }
+            first = false;
+        }
+        if (first) throw GraphRegistryError("render_graph.material_route_invalid@1",
+            {{"node", route.pass_name}, {"field", "pass"}, {"reason", "no_graphs"}});
+    }
+}
+
+} // namespace
+
+void deriveMaterialRoutingFromIR(CompiledMaterialRouting &routing, const RenderGraphIR &ir) {
+    materialRoutingFromIR(routing, ir, true);
+}
+
+void validateMaterialRoutingAgainstIR(const CompiledMaterialRouting &routing, const RenderGraphIR &ir) {
+    auto expected = routing;
+    materialRoutingFromIR(expected, ir, false);
+}
+
 nlohmann::json resolveMaterialRoutingTable(const nlohmann::json &composed_config) {
     if (!composed_config.contains("material_routing")) return nullptr;
     const auto &routing = composed_config.at("material_routing");
@@ -1152,97 +1189,6 @@ nlohmann::json resolveMaterialRoutingTable(const nlohmann::json &composed_config
             composed_config.at("rendering_passes").empty()) {
             throw std::runtime_error("material_routing requires rendering_passes");
         }
-        std::optional<MaterialOutputSchema>
-            selected_output_schema;
-        bool selected_output_schema_initialized = false;
-        std::vector<MaterialOutputAttachmentState>
-            selected_output_states;
-        bool selected_output_states_initialized = false;
-        for (const auto &pass_set : composed_config.at("rendering_passes")) {
-            const auto *pass = findPass(pass_set, pass_name);
-            const auto set_name = pass_set.value("name", std::string{"<unnamed>"});
-            if (pass == nullptr) {
-                throw std::runtime_error("material_routing route '" +
-                                         std::string{route_name} + "' pass '" + pass_name +
-                                         "' is missing from rendering pass '" + set_name + "'");
-            }
-            if (pass->value("type", std::string{}) != "material") {
-                throw std::runtime_error("material_routing route '" +
-                                         std::string{route_name} + "' selects non-material pass '" +
-                                         pass_name + "'");
-            }
-            if (!pass->contains("material_contract") ||
-                !pass->at("material_contract").is_string()) {
-                throw std::runtime_error("material_routing pass '" + pass_name +
-                                         "' requires explicit material_contract");
-            }
-            const auto parsed = materialPassContractFromName(
-                pass->at("material_contract").get<std::string>());
-            if (!parsed || *parsed != expected) {
-                throw std::runtime_error("material_routing route '" +
-                                         std::string{route_name} + "' pass '" + pass_name +
-                                         "' requires contract '" +
-                                         std::string{materialPassContractName(expected)} + "'");
-            }
-            std::optional<MaterialOutputSchema>
-                pass_output_schema;
-            if (pass->contains("material_outputs")) {
-                pass_output_schema =
-                    parseMaterialOutputSchema(
-                        pass->at("material_outputs"),
-                        "material_routing pass '" +
-                            pass_name +
-                            "' material_outputs");
-            }
-            std::vector<MaterialOutputAttachmentState>
-                pass_output_states;
-            if (pass->contains("material_output_states")) {
-                if (!pass_output_schema) {
-                    throw std::runtime_error(
-                        "material_routing pass '" +
-                        pass_name +
-                        "' material_output_states requires "
-                        "material_outputs");
-                }
-                pass_output_states =
-                    parseMaterialOutputAttachmentStates(
-                        pass->at(
-                            "material_output_states"),
-                        *pass_output_schema,
-                        "material_routing pass '" +
-                            pass_name +
-                            "' material_output_states");
-            }
-            if (!selected_output_schema_initialized) {
-                selected_output_schema =
-                    pass_output_schema;
-                selected_output_schema_initialized =
-                    true;
-            } else if (
-                selected_output_schema !=
-                pass_output_schema) {
-                throw std::runtime_error(
-                    "material_routing route '" +
-                    std::string{route_name} +
-                    "' pass '" + pass_name +
-                    "' has different material_outputs "
-                    "schemas across rendering pass variants");
-            }
-            if (!selected_output_states_initialized) {
-                selected_output_states =
-                    std::move(pass_output_states);
-                selected_output_states_initialized = true;
-            } else if (
-                selected_output_states !=
-                pass_output_states) {
-                throw std::runtime_error(
-                    "material_routing route '" +
-                    std::string{route_name} +
-                    "' pass '" + pass_name +
-                    "' has different material_output_states "
-                    "across rendering pass variants");
-            }
-        }
         auto resolved_route = nlohmann::json{
             {"pass", pass_name},
             {"contract", materialPassContractName(expected)},
@@ -1250,25 +1196,6 @@ nlohmann::json resolveMaterialRoutingTable(const nlohmann::json &composed_config
                                     materialPassShaderContract(expected))},
             {"phase", materialPhaseName(materialPassPhase(expected))},
         };
-        if (selected_output_schema) {
-            resolved_route["output_schema"] =
-                materialOutputSchemaToJson(
-                    *selected_output_schema);
-            resolved_route["output_schema_fingerprint"] =
-                materialOutputSchemaFingerprint(
-                    *selected_output_schema);
-            if (!selected_output_states.empty()) {
-                resolved_route["output_states"] =
-                    materialOutputAttachmentStatesToJson(
-                        selected_output_states,
-                        *selected_output_schema);
-                resolved_route[
-                    "output_states_fingerprint"] =
-                    materialOutputAttachmentStatesFingerprint(
-                        selected_output_states,
-                        *selected_output_schema);
-            }
-        }
         resolved_routes[route_name] =
             std::move(resolved_route);
     }
@@ -1922,11 +1849,7 @@ CompiledMaterialRouting compileMaterialRouting(
         const auto route_context = "resolved material_routing route '" +
                                    std::string{route_name} + "'";
         requireOnlyKeys(*entry,
-                        {"pass", "contract", "shader_contract", "phase",
-                         "output_schema",
-                         "output_schema_fingerprint",
-                         "output_states",
-                         "output_states_fingerprint"},
+                        {"pass", "contract", "shader_contract", "phase"},
                         route_context);
         const auto pass_name = requireString(*entry, "pass", route_context);
         if (!selected_passes.insert(pass_name).second) {
@@ -1959,74 +1882,9 @@ CompiledMaterialRouting compileMaterialRouting(
             throw std::runtime_error(route_context + " requires phase '" +
                                      std::string{expected_phase} + "'");
         }
-        std::optional<MaterialOutputSchema>
-            output_schema;
-        const auto encoded_output_schema =
-            entry->find("output_schema");
-        const auto encoded_fingerprint =
-            entry->find("output_schema_fingerprint");
-        if ((encoded_output_schema == entry->end()) !=
-            (encoded_fingerprint == entry->end())) {
-            throw std::runtime_error(
-                route_context +
-                " must provide output_schema and "
-                "output_schema_fingerprint together");
-        }
-        if (encoded_output_schema != entry->end()) {
-            output_schema = parseMaterialOutputSchema(
-                *encoded_output_schema,
-                route_context + " output_schema");
-            if (!encoded_fingerprint->is_string() ||
-                encoded_fingerprint->get<std::string>() !=
-                    materialOutputSchemaFingerprint(
-                        *output_schema)) {
-                throw std::runtime_error(
-                    route_context +
-                    " output_schema_fingerprint does not match "
-                    "output_schema");
-            }
-        }
-        std::vector<MaterialOutputAttachmentState>
-            output_states;
-        const auto encoded_output_states =
-            entry->find("output_states");
-        const auto encoded_states_fingerprint =
-            entry->find("output_states_fingerprint");
-        if ((encoded_output_states == entry->end()) !=
-            (encoded_states_fingerprint == entry->end())) {
-            throw std::runtime_error(
-                route_context +
-                " must provide output_states and "
-                "output_states_fingerprint together");
-        }
-        if (encoded_output_states != entry->end()) {
-            if (!output_schema) {
-                throw std::runtime_error(
-                    route_context +
-                    " output_states requires output_schema");
-            }
-            output_states =
-                parseMaterialOutputAttachmentStates(
-                    *encoded_output_states,
-                    *output_schema,
-                    route_context + " output_states");
-            if (!encoded_states_fingerprint->is_string() ||
-                encoded_states_fingerprint
-                        ->get<std::string>() !=
-                    materialOutputAttachmentStatesFingerprint(
-                        output_states,
-                        *output_schema)) {
-                throw std::runtime_error(
-                    route_context +
-                    " output_states_fingerprint does not match "
-                    "output_states");
-            }
-        }
         result.routes.push_back(
             CompiledMaterialRoute{
-                route, pass_name, expected,
-                std::move(output_schema),
-                std::move(output_states)});
+                route, pass_name, expected, {}, {}});
     }
     return result;
 }
@@ -2306,7 +2164,7 @@ static std::vector<SceneAccelerationStructureDefinition> parseSceneAccelerationS
             throw std::runtime_error("scene_acceleration_structures entries must be objects");
         requireOnlyKeys(entry, {"name", "instance_mask"}, "scene_acceleration_structures entry");
         auto name = requireString(entry, "name", "scene_acceleration_structures entry");
-        if (name.empty() || name == "scene" || !names.insert(name).second)
+        if (name.empty() || name == defaultRayTracingAccelerationStructure || !names.insert(name).second)
             throw std::runtime_error("scene_acceleration_structures name is empty, reserved, or duplicated: " + name);
         std::uint32_t mask = 255;
         if (entry.contains("instance_mask")) {
@@ -2321,7 +2179,7 @@ static std::vector<SceneAccelerationStructureDefinition> parseSceneAccelerationS
 }
 
 CompiledRenderPipeline compileRenderPipeline(
-    const ResolvedRenderPipeline &pipeline) {
+    const ResolvedRenderPipeline &pipeline, const RenderGraphIR *initial_graph) {
     if (renderPipelineGraphVariantName(
             pipeline.graph_variant_policy.variant) == "unknown") {
         throw std::runtime_error("resolved render pipeline has unknown graph variant");
@@ -2390,14 +2248,15 @@ CompiledRenderPipeline compileRenderPipeline(
     }
     result.feature_instances =
         compileFeatureInstances(pipeline.feature_instances);
+    if (!pipeline.material_routing.is_null()) {
+        result.material_routing = compileMaterialRouting(pipeline.material_routing);
+        if (initial_graph)
+            deriveMaterialRoutingFromIR(*result.material_routing, *initial_graph);
+    }
     result.surface_resource_contracts =
         compileSurfaceResourceContracts(
             pipeline.surface_resource_contracts,
             pipeline.composed_config);
-    if (!pipeline.material_routing.is_null()) {
-        result.material_routing =
-            compileMaterialRouting(pipeline.material_routing);
-    }
     result.lighting_data =
         compileLightingDataPlan(
             pipeline.composed_config);

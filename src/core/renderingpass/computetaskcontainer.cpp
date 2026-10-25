@@ -1966,7 +1966,7 @@ void ComputeTaskContainer::dispatch(
         frame_resources.bindCompute(
             cmd_buf,
             pipeline_factory.layout(record.pipeline),
-            record.definition.ray_query_acceleration_structure.value_or("scene"));
+            record.definition.ray_query_acceleration_structure.value_or(std::string{defaultRayTracingAccelerationStructure}));
     }
     const auto parity = GET_MODULE(RenderTargetContainer).historyFrameIndex();
     if (record.descriptor_sets

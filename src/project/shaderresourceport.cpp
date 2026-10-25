@@ -109,7 +109,7 @@ ShaderResourcePortFilter parseFilter(
     const nlohmann::json &sampling,
     std::string_view context) {
     if (!sampling.contains("filter")) {
-        return ShaderResourcePortFilter::linear;
+        return defaultInputSamplingFilter;
     }
     if (!sampling.at("filter").is_string()) {
         throw std::runtime_error(
@@ -133,7 +133,7 @@ ShaderResourcePortAddressMode parseAddressMode(
     const nlohmann::json &sampling,
     std::string_view context) {
     if (!sampling.contains("address")) {
-        return ShaderResourcePortAddressMode::repeat;
+        return defaultInputSamplingAddressMode;
     }
     if (!sampling.at("address").is_string()) {
         throw std::runtime_error(
@@ -256,6 +256,23 @@ bool contains(
 }
 
 } // namespace
+
+std::string_view shaderResourcePortFilterName(ShaderResourcePortFilter filter) {
+    switch (filter) {
+    case ShaderResourcePortFilter::linear: return "linear";
+    case ShaderResourcePortFilter::nearest: return "nearest";
+    }
+    throw std::runtime_error("unknown shader resource port filter");
+}
+
+std::string_view shaderResourcePortAddressModeName(ShaderResourcePortAddressMode address) {
+    switch (address) {
+    case ShaderResourcePortAddressMode::repeat: return "repeat";
+    case ShaderResourcePortAddressMode::mirrored_repeat: return "mirrored_repeat";
+    case ShaderResourcePortAddressMode::clamp_to_edge: return "clamp_to_edge";
+    }
+    throw std::runtime_error("unknown shader resource port address mode");
+}
 
 std::string_view shaderResourcePortAccessName(
     ShaderResourcePortAccess access) {

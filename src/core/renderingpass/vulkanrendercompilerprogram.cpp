@@ -287,8 +287,14 @@ compileDefaultLogicalVariant(
                 buildPassFieldOwnershipCapabilities(),
         },
         resolve_dependencies);
-    auto compiled_pipeline_value =
-        compileRenderPipeline(resolved);
+    // Parse revision zero once, after runtime host additions. Routing must
+    // see that typed declaration before unrelated metadata indices can reject
+    // it (for example a surface-contract index across graph variants).
+    auto composed_config = resolved.composed_config;
+    if (request.artifact != RenderCompilerProgramArtifact::data_only && request.compose_runtime_config)
+        request.compose_runtime_config(composed_config);
+    auto initial_graph = parseRenderGraph(composed_config, buildPassFieldOwnershipCapabilities());
+    auto compiled_pipeline_value = compileRenderPipeline(resolved, &initial_graph);
     if (input.ray_tracing_project) {
         compiled_pipeline_value.ray_group_layout_reference =
             input.ray_tracing_project->layout.source_reference;
@@ -297,8 +303,6 @@ compileDefaultLogicalVariant(
                 input.ray_tracing_project->bindings->source_reference;
         }
     }
-    auto composed_config =
-        std::move(resolved.composed_config);
     if (request.artifact ==
         RenderCompilerProgramArtifact::data_only) {
         // Preview remains a request-local CPU program: resolve feature and
@@ -311,9 +315,7 @@ compileDefaultLogicalVariant(
         // naming a task the preview left out is refused here, inside the
         // preview's own try); it plans no further.
         auto render_graph = resolveRenderGraphReferences(
-            parseRenderGraph(
-                composed_config,
-                buildPassFieldOwnershipCapabilities()),
+            std::move(initial_graph),
             compiled_pipeline_value.scene_acceleration_structures);
         return {
             .compiled_pipeline =
@@ -322,20 +324,12 @@ compileDefaultLogicalVariant(
             .render_graph = std::move(render_graph),
         };
     }
-    if (request.compose_runtime_config) {
-        request.compose_runtime_config(
-            composed_config);
-    }
     // RC-3c1b: the completed graph, revision 0 (after the host's additions),
     // parsed once; every provider response is the next revision, parsed once
     // by the provider chain, which hands its IR on.
     auto resolved_transforms =
         resolveLogicalGraphTransforms(
-            composed_config,
-            parseRenderGraph(
-                composed_config,
-                buildPassFieldOwnershipCapabilities()),
-            input.graph_transforms);
+            composed_config, std::move(initial_graph), input.graph_transforms);
     composed_config =
         std::move(resolved_transforms.config);
     validateGraphVariantConfig(

@@ -293,6 +293,9 @@ RenderCompilerProgramResult runRenderCompilerProgram(
             output.variants[index],
             input.variants[index],
             selection);
+        const auto &variant = output.variants[index];
+        if (variant.render_graph && variant.compiled_pipeline && variant.compiled_pipeline->material_routing)
+            validateMaterialRoutingAgainstIR(*variant.compiled_pipeline->material_routing, *variant.render_graph);
     }
     // RC-3c2b1: the compute tasks every runtime variant registers, from its
     // IR (the ray tracing refusals before the resources', as the task parse

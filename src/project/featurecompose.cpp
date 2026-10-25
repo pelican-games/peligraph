@@ -1,4 +1,6 @@
 #include "featurecompose.hpp"
+#include "passdeclaration.hpp"
+#include "shaderresourceport.hpp"
 #include "rendergraphcomposition.hpp"
 #include "renderconfigdocument.hpp"
 #include "featurejitter.hpp"
@@ -2410,8 +2412,8 @@ void appendFullscreenSurfaceResource(
         for (std::size_t index = 0;
              index < input_count; ++index) {
             pass["input_sampling"].push_back({
-                {"filter", "linear"},
-                {"address", "repeat"},
+                {"filter", shaderResourcePortFilterName(defaultInputSamplingFilter)},
+                {"address", shaderResourcePortAddressModeName(defaultInputSamplingAddressMode)},
             });
         }
     } else if (!pass.at("input_sampling").is_array() ||
@@ -2505,7 +2507,7 @@ bool fullscreenLightingWithoutSelector(const nlohmann::json &pass,
         selectors.begin(), selectors.end(),
         [&](const nlohmann::json &selector) {
             return selector.at("uses_light_data").get<bool>() &&
-                   pass.value("uses_light_data", false);
+                   pass.value("uses_light_data", defaultFullscreenUsesLightData);
         });
 }
 
@@ -2516,7 +2518,7 @@ bool fullscreenConsumerMatches(
         "fullscreen") {
         return false;
     }
-    if (pass.value("uses_light_data", false) !=
+    if (pass.value("uses_light_data", defaultFullscreenUsesLightData) !=
         selector.at("uses_light_data").get<bool>()) {
         return false;
     }

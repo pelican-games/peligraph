@@ -704,7 +704,7 @@ RasterGeometryContract parseGeometry(
     result.operation = RasterDirectDrawOperation{
         .vertex_count =
             optionalUint32(
-                *found, "vertex_count", 3,
+                *found, "vertex_count", defaultRasterDirectVertexCount,
                 draw_context),
         .instance_count =
             optionalUint32(

@@ -211,9 +211,9 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
     const nlohmann::json &authored_config,
     const RenderPipelinePresetLoader &load_preset_json = {});
 
-// Validates the optional detailed material_routing table after features have
-// been composed.  The returned object is stable diagnostic metadata suitable
-// for frame-plan dumps.  A null JSON value means legacy routing.
+// Resolves only routing selection after feature composition. Pass contracts,
+// output schemas and states come from the parsed IR, never a second JSON read.
+// A null JSON value means legacy routing.
 nlohmann::json resolveMaterialRoutingTable(const nlohmann::json &composed_config);
 
 struct RenderPipelineRequest {
@@ -534,6 +534,12 @@ struct CompiledMaterialRouting {
     std::vector<CompiledMaterialRoute> routes;
 };
 
+struct RenderGraphIR;
+// Compose selects routes only. The first completed revision supplies their
+// typed states once; completion checks every final revision against them.
+void deriveMaterialRoutingFromIR(CompiledMaterialRouting &routing, const RenderGraphIR &ir);
+void validateMaterialRoutingAgainstIR(const CompiledMaterialRouting &routing, const RenderGraphIR &ir);
+
 enum class DrawSortXrViewPolicy {
     logical_view_center,
     per_view,
@@ -663,7 +669,8 @@ struct CompiledRenderPipeline {
 // contract.  Any malformed transitional metadata is rejected before runtime
 // containers can be mutated.
 CompiledRenderPipeline compileRenderPipeline(
-    const ResolvedRenderPipeline &pipeline);
+    const ResolvedRenderPipeline &pipeline,
+    const RenderGraphIR *initial_graph = nullptr);
 
 // Dump-only compatibility serializer.  Runtime code must consume the typed
 // fields above rather than reading keys from this representation.

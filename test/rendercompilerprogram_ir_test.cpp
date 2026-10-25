@@ -952,7 +952,7 @@ struct PassCompilerRefusal {
     bool provider_revision = false;
 };
 
-RenderCompilerProgramResult compilePassFixture(const Json &rendering) {
+RenderCompilerProgramResult compilePassFixture(const Json &rendering, const RenderCompilerProgram *program = nullptr) {
     Project project;
     Providers providers;
     FastModuleContainer modules;
@@ -967,7 +967,7 @@ RenderCompilerProgramResult compilePassFixture(const Json &rendering) {
     // These empty graph roots contain no value/pose nodes to lower. Feed
     // the declaration into the program itself, so malformed short forms
     // must be refused inside this entry, rather than by fixture preparation.
-    return runRenderCompilerProgram(defaultVulkanRenderCompilerProgram(), RenderCompilerProgramInput{
+    return runRenderCompilerProgram(program ? *program : defaultVulkanRenderCompilerProgram(), RenderCompilerProgramInput{
         .rendering_config = project.rootOf(rendering),
         .source_name = "rc3c2b2-d2",
         .path_resolver = project.paths,
@@ -1372,6 +1372,118 @@ TEST_CASE("RC-3c2b2 D2 compiler entry retains completed sequence structure and f
             "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "tone"}, {"field", "raster_state"}, {"reason", "invalid"}}, true},
     };
     checkPassCompilerRefusals(base, rows);
+}
+
+TEST_CASE("RC-3c2b2 D2 compose leaves fullscreen state to the named IR parser",
+          "[rc3c2b2][render-compiler][passes][d2]") {
+    const auto base = section(0, false);
+    std::vector<PassCompilerRefusal> rows;
+    const auto row = [&](const char *name, Json state) {
+        rows.push_back({name, [state](Json &r) { r["rendering_passes"][0]["passes"][1]["raster_state"] = state; },
+            "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "tone"}, {"field", "raster_state"}, {"reason", "invalid"}}, false});
+    };
+    row("compose state not object", 1);
+    row("compose state unknown key", {{"typo", true}});
+    row("compose depth ownership", {{"depth_test", true}});
+    row("compose state bad blend", {{"blend", "mystery"}});
+    row("compose state attachment count", {{"color_attachments", Json::array()}});
+    rows.push_back({"compose topology", [](Json &r) { r["rendering_passes"][0]["passes"][1]["raster_state"] = {{"topology", "triangle_strip"}}; },
+        "render_graph.node_field_invalid@1", {{"node", "tone"}, {"field", "raster_state.topology"}, {"reason", "fullscreen_requires_triangle_list"}}, false});
+    checkPassCompilerRefusals(base, rows);
+}
+
+TEST_CASE("RC-3c2b2 D2 routed material state has one parser and completion checks final IR",
+          "[rc3c2b2][render-compiler][passes][d2]") {
+    auto base = materialCompilerFixture();
+    base["render_targets"].erase(base["render_targets"].end()-1);
+    auto &passes = base["rendering_passes"][0]["passes"];
+    auto &tone = passes[1];
+    tone["material_contract"] = "forward_opaque_v1";
+    tone["material_outputs"] = {{"schema", "pelican.material_outputs"}, {"version", 1}, {"name", "project.routed"},
+        {"outputs", Json::array({Json{{"name", "color"}, {"type", "vec4"}, {"source", "surface.base_color"}}})}};
+    tone["material_output_states"] = {{"color", {{"write_mask", "rg"}}}};
+    auto deferred = tone;
+    deferred["name"] = "deferred";
+    deferred["material_contract"] = "deferred_geometry_v1";
+    deferred["after"] = Json::array({"draw"});
+    auto transparent = tone;
+    transparent["name"] = "transparent";
+    transparent["material_contract"] = "forward_transparent_v1";
+    transparent["after"] = Json::array({"tone"});
+    passes.insert(passes.begin()+1, deferred);
+    passes.insert(passes.end()-1, transparent);
+    base["material_routing"] = {{"policy", "hybrid_auto_v1"}, {"routes", {
+        {"deferred_geometry", "deferred"}, {"forward_opaque", "tone"}, {"forward_transparent", "transparent"}}}};
+    const auto compiled = [&](const Json &rendering, EditingProgram *program = nullptr) {
+        return compilePassFixture(rendering, program);
+    };
+    const auto before = renderGraphParseCount();
+    const auto control = compiled(base);
+    CHECK(renderGraphParseCount() == before + 1);
+    const auto &flat = variantOf(control, RenderPipelineGraphVariant::flat);
+    REQUIRE(flat.compiled_pipeline->material_routing);
+    const auto &route = flat.compiled_pipeline->material_routing->routes.at(1);
+    REQUIRE(route.output_schema);
+    CHECK(route.output_states.size() == 1);
+    const auto refused = [&](const char *label, std::function<void(Json &)> edit, const char *field) {
+        INFO(label);
+        auto bad = base;
+        edit(bad["rendering_passes"][0]["passes"][2]);
+        TestSupport::requireNamedRefusal([&] { (void)compiled(bad); }, "render_graph.node_field_invalid@1",
+            {{"graph", "main"}, {"node", "tone"}, {"field", field}, {"reason", "invalid"}});
+    };
+    refused("compose routing schema type", [](Json &p) { p["material_outputs"] = 1; }, "material_outputs");
+    refused("compose routing schema unknown key", [](Json &p) { p["material_outputs"]["typo"] = true; }, "material_outputs");
+    auto no_schema = base;
+    no_schema["rendering_passes"][0]["passes"][2].erase("material_outputs");
+    TestSupport::requireNamedRefusal([&] { (void)compiled(no_schema); }, "render_graph.node_field_invalid@1",
+        {{"graph", "main"}, {"node", "tone"}, {"field", "material_output_states"}, {"reason", "requires_material_outputs"}});
+    refused("compose routing states type", [](Json &p) { p["material_output_states"] = 1; }, "material_output_states");
+    refused("compose routing states unknown output", [](Json &p) { p["material_output_states"]["missing"] = {{"write_mask", "r"}}; }, "material_output_states");
+    refused("compose routing states blend", [](Json &p) { p["material_output_states"]["color"]["blend"] = "mystery"; }, "material_output_states");
+    const auto route_refusal = [&](Json rendering, const char *graph, const char *node,
+                                   const char *field, const char *reason) {
+        TestSupport::requireNamedRefusal([&] { (void)compiled(rendering); }, "render_graph.material_route_invalid@1",
+            {{"graph", graph}, {"node", node}, {"route", "forward_opaque"}, {"field", field}, {"reason", reason}});
+    };
+    auto missing = base;
+    missing["material_routing"]["routes"]["forward_opaque"] = "missing";
+    route_refusal(missing, "main", "missing", "pass", "missing");
+    auto non_material = base;
+    non_material["material_routing"]["routes"]["forward_opaque"] = "draw";
+    route_refusal(non_material, "main", "draw", "pass", "not_material");
+    for (const bool omitted : {false, true}) {
+        auto contract = base;
+        auto &pass = contract["rendering_passes"][0]["passes"][2];
+        if (omitted) pass.erase("material_contract");
+        else pass["material_contract"] = "forward_transparent_v1";
+        route_refusal(contract, "main", "tone", "material_contract", "mismatch");
+    }
+    for (const auto *field : {"material_outputs", "material_output_states"}) {
+        auto different = base;
+        auto other = different["rendering_passes"][0];
+        other["name"] = "other";
+        auto &pass = other["passes"][2];
+        if (std::string_view{field} == "material_outputs") pass["material_outputs"]["name"] = "project.other";
+        else pass.erase("material_output_states");
+        different["rendering_passes"].push_back(other);
+        route_refusal(different, "other", "tone", field, "mismatch");
+    }
+    for (const auto *field : {"material_contract", "material_outputs", "material_output_states"}) {
+        INFO(field);
+        EditingProgram program;
+        program.edit = [field](RenderGraphIR &ir) {
+            auto &nodes = ir.graphs.front().nodes;
+            auto node = std::find_if(nodes.begin(), nodes.end(), [](const auto &n) { return n.name == "tone"; });
+            REQUIRE(node != nodes.end());
+            auto &info = std::get<MaterialNodeInfo>(node->info);
+            if (std::string_view{field} == "material_contract") info.contract = MaterialPassContract::forward_transparent_v1;
+            else if (std::string_view{field} == "material_outputs") info.output_schema->name = "changed";
+            else info.output_states.clear();
+        };
+        TestSupport::requireNamedRefusal([&] { (void)compiled(base, &program); }, "render_graph.material_route_invalid@1",
+            {{"graph", "main"}, {"node", "tone"}, {"route", "forward_opaque"}, {"field", field}, {"reason", "mismatch"}});
+    }
 }
 
 } // namespace Pelican

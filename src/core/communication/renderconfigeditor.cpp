@@ -2633,7 +2633,7 @@ OrderedJson RenderConfigEditorService::getSceneAccelerationStructures(const Json
         if (!task.contains("ray_tracing") && !task.contains("ray_query")) continue;
         const auto name = task.at("name").get<std::string>();
         const auto &ray = task.at(task.contains("ray_tracing") ? "ray_tracing" : "ray_query");
-        const auto authored = ray.value("acceleration_structure", std::string{"scene"});
+        const auto authored = ray.value("acceleration_structure", std::string{defaultRayTracingAccelerationStructure});
         connections.push_back({{"name", name}, {"authored_acceleration_structure", authored},
             {"acceleration_structure", overrides.value(name, authored)}});
     }
@@ -3567,7 +3567,7 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
     // CT-5: the names a ray_query's acceleration_structure takes: "scene" and
     // each composed scene_acceleration_structures entry
     // (vulkanrendercompilerprogram.cpp refuses any other).
-    auto acceleration_structures = OrderedJson::array({"scene"});
+    auto acceleration_structures = OrderedJson::array({defaultRayTracingAccelerationStructure});
     if (const auto declared = resolved.config.find("scene_acceleration_structures");
         declared != resolved.config.end() && declared->is_array())
         for (const auto &entry : *declared)

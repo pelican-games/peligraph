@@ -1,5 +1,7 @@
 #pragma once
 
+#include "computetaskdeclaration.hpp"
+
 #include "attachmentoperations.hpp"
 #include "imagesubresource.hpp"
 #include "logicalrendergraph.hpp"
@@ -97,7 +99,7 @@ struct FrameGraphNodeDefinition {
     // Material/fullscreen/generic passes declare queries before physical planning.
     // nullopt is reserved for nodes without an explicit raster query policy.
     std::optional<bool> ray_query;
-    std::string ray_query_acceleration_structure = "scene";
+    std::string ray_query_acceleration_structure{defaultRayTracingAccelerationStructure};
     RenderResolutionDomain resolution_domain =
         RenderResolutionDomain::unclassified;
     std::optional<MaterialDrawTagFilter> material_filter;

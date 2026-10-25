@@ -134,8 +134,11 @@ std::string_view rasterLogicOperationName(
 // implementation id. A replaceable algorithm may emit this operation without
 // teaching the backend about the algorithm itself. More native operation
 // shapes (indirect/mesh) can be added to this variant later.
+inline constexpr std::uint32_t defaultRasterDirectVertexCount = 3;
+inline constexpr auto defaultRasterClipY = RasterClipY::down;
+
 struct RasterDirectDrawOperation {
-    std::uint32_t vertex_count = 3;
+    std::uint32_t vertex_count = defaultRasterDirectVertexCount;
     std::uint32_t instance_count = 1;
     std::uint32_t first_vertex = 0;
     std::uint32_t first_instance = 0;
@@ -431,7 +434,7 @@ struct RasterPassContract {
     RasterFixedFunctionState state;
     // A pass-level field, not raster_state: fullscreen passes share
     // raster_state and their clip space is the engine's.
-    RasterClipY clip_y = RasterClipY::down;
+    RasterClipY clip_y = defaultRasterClipY;
 
     bool operator==(
         const RasterPassContract &) const = default;

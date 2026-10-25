@@ -262,7 +262,7 @@ void RasterStateForm::load(const Json &raster_state, const Json &draw) {
         index_buffer_->setEditText(text(drawn.value("index_buffer", std::string{})));
     }
     for (const auto &[spin, key, fallback] :
-         {std::tuple{vertex_count_, "vertex_count", 3},
+         {std::tuple{vertex_count_, "vertex_count", static_cast<int>(Pelican::defaultRasterDirectVertexCount)},
           std::tuple{index_count_, "index_count", 0},
           std::tuple{instance_count_, "instance_count", 1},
           std::tuple{first_vertex_, "first_vertex", 0},
@@ -413,7 +413,7 @@ Json RasterStateForm::draw() const {
         put(index_count_, "index_count", 0);
         put(first_index_, "first_index", 0);
     } else {
-        put(vertex_count_, "vertex_count", 3);
+        put(vertex_count_, "vertex_count", static_cast<int>(Pelican::defaultRasterDirectVertexCount));
         put(first_vertex_, "first_vertex", 0);
     }
     put(instance_count_, "instance_count", 1);

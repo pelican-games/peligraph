@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../../project/passdeclaration.hpp"
+
 #include <array>
 #include <filesystem>
 #include <functional>
@@ -71,8 +73,8 @@ std::span<const FullscreenShaderTemplateRole> fullscreenShaderTemplateInputRoles
 // The pass settings a kind's shader needs from the pass that runs it. An empty
 // push_constants asks for none.
 struct FullscreenShaderTemplatePassSettings {
-    bool uses_light_data = false;
-    std::string_view push_constants;
+    bool uses_light_data = Pelican::defaultFullscreenUsesLightData;
+    std::string_view push_constants = Pelican::defaultFullscreenPushConstantsAuthoringValue;
 };
 FullscreenShaderTemplatePassSettings fullscreenShaderTemplatePassSettings(
     FullscreenShaderTemplateKind kind);

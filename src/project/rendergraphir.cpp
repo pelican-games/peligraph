@@ -183,7 +183,7 @@ FrameGraphNodeDefinition nodeDefinitionOf(const NodeIR &node) {
         node.shape == RenderNodeShape::velocity || node.shape == RenderNodeShape::picking ||
         node.shape == RenderNodeShape::raster;
     result.ray_query = rayQueryPolicy(node);
-    result.ray_query_acceleration_structure = node.ray_query.value_or("scene");
+    result.ray_query_acceleration_structure = node.ray_query.value_or(std::string{defaultRayTracingAccelerationStructure});
     result.resolution_domain = node.resolution_domain;
     if (const auto *material = std::get_if<MaterialNodeInfo>(&node.info)) {
         result.material_filter = material->filter;
@@ -879,7 +879,7 @@ const ComputeNodeInfo *configRayTask(const NodeIR &node) {
 void requireSelectedAccelerationStructuresDeclared(
     const RenderGraphIR &ir, std::span<const SceneAccelerationStructureDefinition> named) {
     const auto declared = [&](const std::string &name) {
-        return name == "scene" ||
+        return name == defaultRayTracingAccelerationStructure ||
                std::any_of(named.begin(), named.end(),
                            [&](const auto &definition) { return definition.name == name; });
     };
@@ -888,9 +888,9 @@ void requireSelectedAccelerationStructuresDeclared(
             std::optional<std::string> selected;
             if (const auto *task = configRayTask(node)) {
                 selected = task->ray_tracing ? task->ray_tracing->acceleration_structure
-                                             : task->ray_query_acceleration_structure.value_or("scene");
+                                             : task->ray_query_acceleration_structure.value_or(std::string{defaultRayTracingAccelerationStructure});
             } else if (rayQueryPolicy(node) == true) {
-                selected = node.ray_query.value_or("scene");
+                selected = node.ray_query.value_or(std::string{defaultRayTracingAccelerationStructure});
             }
             if (selected && !declared(*selected)) {
                 refuse("render_graph.acceleration_structure_unknown@1",
@@ -957,8 +957,8 @@ RenderGraphIR insertAccelerationStructureNodes(RenderGraphIR ir,
                 policy.value_or(true)) {
                 node.after.push_back(node_name);
             }
-            const auto selected_raster = node.ray_query.value_or("scene");
-            if (policy == true && selected_raster != "scene") {
+            const auto selected_raster = node.ray_query.value_or(std::string{defaultRayTracingAccelerationStructure});
+            if (policy == true && selected_raster != defaultRayTracingAccelerationStructure) {
                 node.after.push_back(node_name + ":" + selected_raster);
             }
             const auto *task = ray_task(node);
@@ -968,8 +968,8 @@ RenderGraphIR insertAccelerationStructureNodes(RenderGraphIR ir,
             node.after.push_back(node_name);
             const auto selected = task->ray_tracing
                                       ? task->ray_tracing->acceleration_structure
-                                      : task->ray_query_acceleration_structure.value_or("scene");
-            if (selected != "scene") node.after.push_back(node_name + ":" + selected);
+                                      : task->ray_query_acceleration_structure.value_or(std::string{defaultRayTracingAccelerationStructure});
+            if (selected != defaultRayTracingAccelerationStructure) node.after.push_back(node_name + ":" + selected);
         }
         std::vector<NodeIR> operations;
         for (const auto &name : as_nodes) {

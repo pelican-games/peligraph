@@ -1,5 +1,6 @@
 #include <set>
 #include "fullscreenpasswidget.hpp"
+#include "../../project/computetaskdeclaration.hpp"
 #include "frameplanedit.hpp"
 
 #include "../model/frameplanmodel.hpp"
@@ -532,7 +533,7 @@ struct FullscreenPassWidget::Impl {
         ray_query_scene->setToolTip(owner.tr(
             "The scene acceleration structure the ray query reads: scene, or one "
             "the project declares (Render Features, Acceleration structures)."));
-        showSceneStructures(QStringLiteral("scene"));
+        showSceneStructures(QString::fromStdString(std::string{Pelican::defaultRayTracingAccelerationStructure}));
         form->addRow(owner.tr("Ray scene"), ray_query_scene);
 
         // UX-4a: raster_state and draw, shader.defines, the material settings
@@ -1263,7 +1264,7 @@ struct FullscreenPassWidget::Impl {
         ray_query_scene->clear();
         for (const auto &structure : names)
             ray_query_scene->addItem(text(structure), text(structure));
-        passform::selectData(*ray_query_scene, current.isEmpty() ? QStringLiteral("scene") : current);
+        passform::selectData(*ray_query_scene, current.isEmpty() ? QString::fromStdString(std::string{Pelican::defaultRayTracingAccelerationStructure}) : current);
     }
 
     void requestSceneStructures() {
@@ -2626,7 +2627,7 @@ struct FullscreenPassWidget::Impl {
       const auto query = declaration.value("ray_query", Json(false));
       ray_query->setChecked(query.is_object() || (query.is_boolean() && query.get<bool>()));
       showSceneStructures(query.is_object()
-          ? text(query.at("acceleration_structure").get<std::string>()) : QStringLiteral("scene"));
+          ? text(query.at("acceleration_structure").get<std::string>()) : QString::fromStdString(std::string{Pelican::defaultRayTracingAccelerationStructure}));
       name->setText(text(editing_preset_pass->second));
       name->setReadOnly(true);
       position->setEnabled(false);
@@ -3385,7 +3386,7 @@ struct FullscreenPassWidget::Impl {
         fragment_shader->clear();
         skinned_vertex_shader->clear();
         ray_query->setChecked(false);
-        showSceneStructures(QStringLiteral("scene"));
+        showSceneStructures(QString::fromStdString(std::string{Pelican::defaultRayTracingAccelerationStructure}));
         inputs->clear();
         colors->clear();
         pending_color_target.clear();

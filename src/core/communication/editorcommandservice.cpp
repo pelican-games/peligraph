@@ -2288,7 +2288,7 @@ OrderedJson EditorCommandRpcAdapter::getRayTable(const Json &params) const {
             groups.push_back({{"index", index}, {"name", plan.group_names[index]},
                               {"type", index < table.group_types.size()
                                   ? OrderedJson(table.group_types[index]) : OrderedJson(nullptr)}});
-        acceleration_structures.push_back({{"name", "scene"}, {"instance_mask", nullptr}});
+        acceleration_structures.push_back({{"name", defaultRayTracingAccelerationStructure}, {"instance_mask", nullptr}});
         for (const auto &[name, mask] : table.named_acceleration_structures)
             acceleration_structures.push_back({{"name", name}, {"instance_mask", mask}});
         std::map<std::uint32_t, const RaySceneRow *> rows_by_q;
@@ -2319,7 +2319,7 @@ OrderedJson EditorCommandRpcAdapter::getRayTable(const Json &params) const {
                 encoded["mask"] = binding.at("mask");
                 // The scene TLAS holds every row; a named one the rows whose
                 // instance mask meets its own (FrameBuild::recordNamedTopLevel).
-                tlas.push_back("scene");
+                tlas.push_back(defaultRayTracingAccelerationStructure);
                 for (const auto &[name, mask] : table.named_acceleration_structures)
                     if ((row->instance_mask & mask) != 0) tlas.push_back(name);
             }

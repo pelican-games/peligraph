@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../../project/computetaskdeclaration.hpp"
+
 #include "../container.hpp"
 #include "../renderingpass/renderingpass.hpp"
 #include "../shader/pipelinefactory.hpp"
@@ -15,7 +17,7 @@ DECLARE_MODULE(ShadowDepthPassContainer) {
     struct PipelineVariants {
         PipelineHandle regular;
         PipelineHandle skinned;
-        std::string acceleration_structure = "scene";
+        std::string acceleration_structure = std::string{defaultRayTracingAccelerationStructure};
     };
   private:
     std::unordered_map<int, PipelineVariants> pipelines;
@@ -33,7 +35,7 @@ DECLARE_MODULE(ShadowDepthPassContainer) {
                                    vk::SampleCountFlagBits samples =
                                        vk::SampleCountFlagBits::e1,
                                 bool ray_query = false,
-                                std::string acceleration_structure = "scene");
+                                std::string acceleration_structure = std::string{defaultRayTracingAccelerationStructure});
     const std::string &accelerationStructure(PassId pass_id) const;
     void bind(vk::CommandBuffer cmd_buf, PassId pass_id, bool skinned = false) const;
     vk::PipelineLayout pipelineLayout(PassId pass_id, bool skinned = false) const;

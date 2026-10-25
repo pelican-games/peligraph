@@ -1,4 +1,5 @@
 #include "graphcanvasrenderfields.hpp"
+#include "../../project/rasterpass.hpp"
 
 #include "fullscreenpasssettings.hpp"
 #include "fullscreenshadertemplate.hpp"
@@ -1853,7 +1854,7 @@ void GraphCanvasPassFields::loadDraw(const Json &parameters) {
                                                                std::numeric_limits<int>::max()))
                    : fallback;
     };
-    for (auto [spin, key, fallback] : {std::tuple{vertex_count_, "vertex_count", 3},
+    for (auto [spin, key, fallback] : {std::tuple{vertex_count_, "vertex_count", static_cast<int>(Pelican::defaultRasterDirectVertexCount)},
                                        std::tuple{instance_count_, "instance_count", 1}}) {
         // A count being typed (not yet confirmed) is the hand's, not the
         // document's: a reload under it would put the old one back.

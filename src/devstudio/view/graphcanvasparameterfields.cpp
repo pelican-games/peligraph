@@ -1,4 +1,5 @@
 #include "graphcanvasparameterfields.hpp"
+#include "../../project/passdeclaration.hpp"
 
 #include "featureparameterform.hpp"
 #include "graphcanvascomputefields.hpp"
@@ -98,7 +99,7 @@ Json itemFallback(const Json &schema) {
     if (kind == "vec2") return Json::array({0.0, 0.0});
     if (kind == "vec3") return Json::array({0.0, 0.0, 0.0});
     if (kind == "vec4") return Json::array({0.0, 0.0, 0.0, 0.0});
-    if (kind == "color") return Json::array({0.0, 0.0, 0.0, 1.0});
+    if (kind == "color") return Json(Pelican::defaultPassClearColor);
     if (kind == "object") return Json::object();
     if (kind == "array") return Json::array();
     if (kind == "json") return nullptr;

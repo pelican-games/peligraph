@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../../project/computetaskdeclaration.hpp"
+
 #include "../container.hpp"
 #include "../renderingpass/renderingpass.hpp"
 #include "../shader/pipelinefactory.hpp"
@@ -73,7 +75,7 @@ DECLARE_MODULE(DebugText) {
                         vk::SampleCountFlagBits samples =
                             vk::SampleCountFlagBits::e1,
                         bool ray_query = false,
-                        std::string acceleration_structure = "scene");
+                        std::string acceleration_structure = std::string{defaultRayTracingAccelerationStructure});
     void text(int x, int y, std::string_view value,
               glm::vec4 color = glm::vec4{1.0f}, int scale = 1);
     void clear();

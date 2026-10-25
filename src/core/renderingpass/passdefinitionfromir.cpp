@@ -91,7 +91,7 @@ PassDefinition passDefinitionOf(const RenderGraphIR &ir, const GraphIR &graph,
     result.resolution_domain = node.resolution_domain;
     result.once = node.schedule == NodeSchedule::once;
     result.ray_query = node.ray_query.has_value();
-    result.ray_query_acceleration_structure = node.ray_query.value_or("scene");
+    result.ray_query_acceleration_structure = node.ray_query.value_or(std::string{defaultRayTracingAccelerationStructure});
     result.clear_color = node.clear_color;
     result.color_clear_values = node.color_clear_values;
     result.input_target_settings = node.input_settings;
@@ -241,16 +241,16 @@ PassDefinition passDefinitionOf(const RenderGraphIR &ir, const GraphIR &graph,
         const auto &info = infoOf<AuxiliaryNodeInfo>(graph, node);
         declared = &info;
         if (node.shape == RenderNodeShape::shadow_depth) {
-            result.pass_info = ShadowDepthPassInfo{shader(info.shader_declared ? info.vertex_shader : std::optional<std::string>{"engine://shadow_depth"}, ShaderStage::vertex, "shader.vertex")};
+            result.pass_info = ShadowDepthPassInfo{shader(info.shader_declared ? info.vertex_shader : std::optional<std::string>{defaultShadowDepthShader}, ShaderStage::vertex, "shader.vertex")};
             break;
         }
         const bool velocity = node.shape == RenderNodeShape::velocity;
         const bool picking = node.shape == RenderNodeShape::picking;
-        const std::string stem = velocity ? "engine://velocity" : "engine://picking";
+        const std::string stem{velocity ? defaultVelocityShader : defaultPickingShader};
         const auto vert = shader((velocity || picking) && !info.shader_declared ? std::optional<std::string>{stem} : info.vertex_shader, ShaderStage::vertex, "shader.vertex");
         const auto frag = shader((velocity || picking) && !info.shader_declared ? std::optional<std::string>{stem} : info.fragment_shader, ShaderStage::fragment, "shader.fragment");
         if (velocity || picking) {
-            const auto skinned = shader(info.skinned_vertex_shader.value_or(stem + "_skinned"), ShaderStage::vertex, "shader.skinned_vertex");
+            const auto skinned = shader(info.skinned_vertex_shader.value_or(std::string{velocity ? defaultVelocitySkinnedShader : defaultPickingSkinnedShader}), ShaderStage::vertex, "shader.skinned_vertex");
             if (velocity) result.pass_info = VelocityPassInfo{vert, skinned, frag};
             else result.pass_info = PickingPassInfo{vert, skinned, frag};
         } else if (node.shape == RenderNodeShape::debug_draw) result.pass_info = DebugDrawPassInfo{vert, frag};

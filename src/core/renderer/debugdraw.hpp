@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../../project/computetaskdeclaration.hpp"
+
 #include "../container.hpp"
 #include "../renderingpass/renderingpass.hpp"
 #include "../shader/pipelinefactory.hpp"
@@ -48,7 +50,7 @@ DECLARE_MODULE(DebugDraw) {
                         vk::SampleCountFlagBits samples =
                             vk::SampleCountFlagBits::e1,
                         bool ray_query = false,
-                        std::string acceleration_structure = "scene");
+                        std::string acceleration_structure = std::string{defaultRayTracingAccelerationStructure});
     void line(glm::vec3 from_ndc, glm::vec3 to_ndc, glm::vec4 color);
     void line(glm::vec3 from_ndc, glm::vec3 to_ndc, glm::vec4 from_color, glm::vec4 to_color);
     void clear();

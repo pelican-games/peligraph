@@ -1,4 +1,5 @@
 #include "attachmentopsform.hpp"
+#include "../../../project/passdeclaration.hpp"
 
 #include <QColor>
 #include <QColorDialog>
@@ -107,10 +108,10 @@ QString AttachmentOpsForm::clearColorText(double red, double green, double blue,
 }
 
 std::array<double, 4> AttachmentOpsForm::clearColorComponents(const QString &text) {
-    std::array<double, 4> result{0.0, 0.0, 0.0, 1.0};
+    auto result = Pelican::defaultPassClearColor;
     const auto parts = text.split(QLatin1Char(','), Qt::SkipEmptyParts);
     if (parts.size() != 3 && parts.size() != 4) return result;
-    std::array<double, 4> read{0.0, 0.0, 0.0, 1.0};
+    auto read = Pelican::defaultPassClearColor;
     for (qsizetype index = 0; index < parts.size(); ++index) {
         bool number = false;
         const double value = parts[index].trimmed().toDouble(&number);
@@ -241,7 +242,7 @@ void AttachmentOpsForm::rebuild() {
         row.load->setToolTip(tr("load_op of %1").arg(target));
         row.clear_color = new QLineEdit(this);
         row.clear_color->setObjectName(childName("outputClearColor.") + number);
-        row.clear_color->setPlaceholderText(QStringLiteral("0, 0, 0, 1"));
+        row.clear_color->setPlaceholderText(clearColorText(Pelican::defaultPassClearColor[0], Pelican::defaultPassClearColor[1], Pelican::defaultPassClearColor[2], Pelican::defaultPassClearColor[3]));
         row.clear_color->setToolTip(
             tr("Clear colour of %1: r, g, b[, a] (clear_colors)").arg(target));
         row.pick_color = new QToolButton(this);

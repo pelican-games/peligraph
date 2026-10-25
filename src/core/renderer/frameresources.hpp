@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../../project/computetaskdeclaration.hpp"
+
 #include "../container.hpp"
 #include "../vkcore/buf.hpp"
 #include <cstddef>
@@ -156,7 +158,7 @@ DECLARE_MODULE(FrameResources) {
         vk::CommandBuffer cmd_buf,
         vk::PipelineLayout pipeline_layout,
         vk::PipelineBindPoint bind_point,
-        std::string_view acceleration_structure = "scene") const;
+        std::string_view acceleration_structure = defaultRayTracingAccelerationStructure) const;
     const RtDescriptorBundle *selectedRayTracingBundle(std::string_view name) const;
     std::shared_ptr<RtDescriptorBundle> createRayTracingBundle(
         vk::AccelerationStructureKHR top_level,
@@ -241,13 +243,13 @@ DECLARE_MODULE(FrameResources) {
     void updateMultiviewResolutions(
         std::span<const FrameResolutionUniformData> data);
     void bindGraphics(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout,
-                      std::string_view acceleration_structure = "scene") const;
+                      std::string_view acceleration_structure = defaultRayTracingAccelerationStructure) const;
     void bindCompute(vk::CommandBuffer cmd_buf,
                      vk::PipelineLayout pipeline_layout,
-                     std::string_view acceleration_structure = "scene") const;
+                     std::string_view acceleration_structure = defaultRayTracingAccelerationStructure) const;
     void bindRayTracing(
         vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout,
-        std::string_view acceleration_structure = "scene") const;
+        std::string_view acceleration_structure = defaultRayTracingAccelerationStructure) const;
 
     std::uint32_t viewCountForTesting() const { return view_count; }
     std::uint32_t sequentialViewCountForTesting() const {

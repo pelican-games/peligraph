@@ -1,5 +1,6 @@
 #pragma once
 
+#include "computetaskdeclaration.hpp"
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <stdexcept>
@@ -11,7 +12,7 @@ inline std::optional<std::string> parseRasterRayQuery(const nlohmann::json &pass
     const auto found = pass.find("ray_query");
     if (found == pass.end()) return std::nullopt;
     if (found->is_boolean())
-        return found->get<bool>() ? std::optional<std::string>{"scene"} : std::nullopt;
+        return found->get<bool>() ? std::optional<std::string>{defaultRayTracingAccelerationStructure} : std::nullopt;
     if (!found->is_object() || found->size() != 1 ||
         !found->contains("acceleration_structure") ||
         !found->at("acceleration_structure").is_string() ||

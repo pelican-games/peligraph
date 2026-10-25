@@ -733,7 +733,7 @@ void FrameResources::updateMultiviewResolutions(
 
 const RtDescriptorBundle *FrameResources::selectedRayTracingBundle(std::string_view name) const {
     const auto &bundle = recording_rt_bundle ? recording_rt_bundle : active_rt_bundle;
-    if (name == "scene") return bundle.get();
+    if (name == defaultRayTracingAccelerationStructure) return bundle.get();
     if (bundle) {
         const auto found = bundle->named_bundles.find(name);
         if (found != bundle->named_bundles.end()) return found->second.get();
