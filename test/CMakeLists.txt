@@ -2626,6 +2626,9 @@ target_compile_definitions(pelican_test_projectconfig_test PRIVATE
 )
 pelican_define_test(renderingpass_helpers_test GROUP runtime_services pelican_core
                     VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+if(MSVC)
+  target_compile_options(pelican_test_renderingpass_helpers_test PRIVATE /bigobj)
+endif()
 pelican_define_test(sceneformat_test GROUP runtime_services pelican_core glm)
 target_compile_definitions(pelican_test_sceneformat_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"

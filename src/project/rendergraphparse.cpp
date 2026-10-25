@@ -2085,11 +2085,18 @@ RenderGraphIR parseRenderGraph(const nlohmann::json &document,
                 refuse("render_graph.graph_declaration_unsupported@1", {{"graph", graph.name}, {"field", key}});
             }
         }
+        if (!graph_json.contains("passes") && shared_tasks.empty()) {
+            refuse("render_graph.section_invalid@1", subject.detail({{"field", "passes"}}));
+        }
         std::size_t index = 0;
-        if (graph_json.contains("passes")) {
-            for (const auto &pass : arrayField(graph_json, "passes", subject)) {
-                graph.nodes.push_back(parsePass(pass, index++, scope));
+        std::unordered_set<std::string> pass_names;
+        if (graph_json.contains("passes")) for (const auto &pass : arrayField(graph_json, "passes", subject)) {
+            auto node = parsePass(pass, index++, scope);
+            if (node.name.empty()) refuse("render_graph.node_name_empty@1", subject.detail());
+            if (!pass_names.insert(node.name).second) {
+                refuse("render_graph.duplicate_node@1", subject.detail({{"node", node.name}}));
             }
+            graph.nodes.push_back(std::move(node));
         }
         append_shared(graph);
         ir.graphs.push_back(std::move(graph));

@@ -29,6 +29,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -112,6 +113,8 @@ enum class TransformBehavior {
     ray_callable_task,
     // a second pass named draw.
     duplicate,
+    // D2: leave revision zero intact, then edit one provider response.
+    edit_response,
 };
 
 struct TransformState {
@@ -122,6 +125,7 @@ struct TransformState {
     std::string received_graphs;
     std::uint64_t received_fingerprint = 0;
     std::string response;
+    std::function<void(Json &)> edit_response;
 };
 
 RenderGraphTransform::Status resolveTransform(void *context,
@@ -157,6 +161,7 @@ RenderGraphTransform::Status resolveTransform(void *context,
             case TransformBehavior::cycle:
                 (*named("draw"))["after"] = Json::array({"present"});
                 break;
+            case TransformBehavior::edit_response:
             case TransformBehavior::ray_task:
             case TransformBehavior::ray_callable_task:
                 break;
@@ -186,6 +191,7 @@ RenderGraphTransform::Status resolveTransform(void *context,
                        {"callable_records", Json::array({Json{{"value", 1}}})}}},
                      {"dispatch", {{"rays", Json::array({1, 1, 1})}}}});
         }
+        if (state.edit_response) state.edit_response(config);
         state.response = config.dump();
     } catch (...) {
         return RenderGraphTransform::Status::provider_error;

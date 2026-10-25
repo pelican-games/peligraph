@@ -1133,16 +1133,19 @@ TEST_CASE("RC-3c1b refusals: what the planner refused, planRenderGraph refuses b
             auto config = refusalBase();
             refusal.edit(config);
             const auto outcome = run(prepared(config));
-            CHECK(outcome.stage == "plan");
+            const bool name_refusal = refusal.code == "render_graph.duplicate_node@1" ||
+                refusal.code == "render_graph.node_name_empty@1";
+            CHECK(outcome.stage == (name_refusal ? "parse" : "plan"));
             requireNamedRefusal(refusal, outcome);
-            // The logical graph refuses the same graph by the planner's name
+            // The parse/logical entry refuses the same graph by the same name
             // first (its structure), except two unordered writers, which the
             // final revision's frame_node_order may order.
-            const auto ir = parseRenderGraph(prepared(config), buildPassFieldOwnershipCapabilities());
             if (refusal.code == "render_graph.ambiguous_writes@1") {
+                const auto ir = parseRenderGraph(prepared(config), buildPassFieldOwnershipCapabilities());
                 CHECK_NOTHROW(toLogicalGraph(ir, ir.graphs.at(0)));
             } else {
                 try {
+                    const auto ir = parseRenderGraph(prepared(config), buildPassFieldOwnershipCapabilities());
                     (void)toLogicalGraph(ir, ir.graphs.at(0));
                     FAIL("toLogicalGraph accepted it");
                 } catch (const GraphRegistryError &error) {

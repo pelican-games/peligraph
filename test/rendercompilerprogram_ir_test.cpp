@@ -943,4 +943,435 @@ TEST_CASE("RC-3c2b2 D2 compiler entry retains material filters ranges and varian
     }
 }
 
+namespace {
+struct PassCompilerRefusal {
+    std::string label;
+    std::function<void(Json &)> edit;
+    std::string code;
+    Json fields;
+    bool provider_revision = false;
+};
+
+RenderCompilerProgramResult compilePassFixture(const Json &rendering) {
+    Project project;
+    Providers providers;
+    FastModuleContainer modules;
+    GET_MODULE(EngineLaunchConfig).headless = false;
+    const auto requests = requestsOf(Variants::flat);
+    const auto transforms = providers.transforms.snapshot();
+    const auto strategies = providers.strategies.snapshot();
+    const auto subgraphs = providers.subgraphs.snapshot();
+    const VulkanRenderCompilerBackendContext backend{
+        vk::Format::eB8G8R8A8Srgb, vk::Extent2D{64, 64}, {}, {}, {},
+        VulkanRenderCompilerDevicePlanningMode::compiler_only};
+    // These empty graph roots contain no value/pose nodes to lower. Feed
+    // the declaration into the program itself, so malformed short forms
+    // must be refused inside this entry, rather than by fixture preparation.
+    return runRenderCompilerProgram(defaultVulkanRenderCompilerProgram(), RenderCompilerProgramInput{
+        .rendering_config = project.rootOf(rendering),
+        .source_name = "rc3c2b2-d2",
+        .path_resolver = project.paths,
+        .load_document = [&project](std::string_view ref) { return project.load(ref); },
+        .runtime_shader_compiler_enabled = true,
+        .graph_transforms = transforms,
+        .render_strategies = strategies,
+        .subgraph_replacements = subgraphs,
+        .backend_context = backend,
+        .variants = requests,
+    });
+}
+
+RenderCompilerProgramResult compilePassRevisionFixture(const Json &rendering, std::function<void(Json &)> edit) {
+    Project project;
+    Providers providers;
+    providers.first.behavior = TransformBehavior::edit_response;
+    providers.first.edit_response = std::move(edit);
+    auto input = rendering;
+    input["graph_transforms"] = Json::array({Json{{"name", "rc3c1b.t1"}, {"provider", "rc3c1b.transform_1"}}});
+    return compile(project, providers, input, Variants::flat);
+}
+
+Json materialCompilerFixture() {
+    auto base = section(0, false);
+    base["render_targets"].push_back(Json{{"name", "depth"}, {"extent_scale", 1.0}, {"format", "D32_SFLOAT"},
+        {"usage", Json::array({"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"})}});
+    base["render_targets"].push_back(Json{{"name", "source_depth"}, {"extent_scale", 1.0}, {"format", "D32_SFLOAT"},
+        {"source", {{"type", "solid"}}}, {"usage", Json::array({"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"})}});
+    base["buffers"] = Json::array({Json{{"name", "data"}, {"size", 64}}});
+    base["rendering_passes"][0]["passes"][1] = Json{{"name", "tone"}, {"type", "material"},
+        {"material_contract", "forward_opaque_v1"}, {"output", {{"color", "post"}, {"depth", "depth"}}}};
+    return base;
+}
+
+void checkPassCompilerRefusals(const Json &base, const std::vector<PassCompilerRefusal> &rows) {
+    REQUIRE(compilePassFixture(base).variants.size() == 1);
+    for (const auto &row : rows) {
+        DYNAMIC_SECTION(row.label) {
+            auto invalid = base;
+            row.edit(invalid);
+            TestSupport::requireNamedRefusal([&] {
+                if (row.provider_revision) (void)compilePassRevisionFixture(base, row.edit);
+                else (void)compilePassFixture(invalid);
+            }, row.code, row.fields);
+            if (row.provider_revision) CHECK(compilePassRevisionFixture(base, {}).variants.size() == 1);
+            const auto accepted = compilePassFixture(base);
+            const auto &variant = variantOf(accepted, RenderPipelineGraphVariant::flat);
+            const auto definitions = renderingPassDefinitionsOf(*variant.render_graph, accepted.generation_resources,
+                generationRenderTargetNames(accepted.generation_resources));
+            const auto &passes = definitions.at(0).passes;
+            CHECK(std::any_of(passes.begin(), passes.end(), [](const auto &pass) { return pass.name == "tone"; }));
+        }
+    }
+}
+} // namespace
+
+TEST_CASE("RC-3c2b2 D2 compiler entry retains material named resource contracts",
+          "[rc3c2b2][render-compiler][passes][d2]") {
+    auto base = materialCompilerFixture();
+    // The source depth is produced upstream, independently of the subject's depth.
+    base["render_targets"].back().erase("source");
+    base["rendering_passes"][0]["passes"].push_back(Json{{"name", "shadow"}, {"type", "shadow_depth"},
+        {"output", {{"color", nullptr}, {"depth", "source_depth"}}}});
+    const std::string field_code = "render_graph.node_field_invalid@1";
+    std::vector<PassCompilerRefusal> rows;
+    const auto field = [&](std::string label, std::function<void(Json &)> edit,
+                           std::string path, std::string reason, Json more = Json::object()) {
+        more["graph"] = "main"; more["node"] = "tone"; more["field"] = path; more["reason"] = reason;
+        rows.push_back({std::move(label), [edit](Json &r) { edit(r["rendering_passes"][0]["passes"][1]); }, field_code, more});
+    };
+    for (const auto *key : {"screen_inputs", "surface_resources", "material_resources"}) {
+        field(std::string{key}+" object", [key](Json &p) { p[key] = 4; }, key, "not_an_object");
+        field(std::string{key}+" positional conflict", [key](Json &p) { p[key] = Json::object(); p["input"] = Json::array(); }, key, "replaces_positional_input");
+    }
+    field("screen entry type", [](Json &p) { p["screen_inputs"] = {{"opaque_color", 2}}; }, "screen_inputs", "entry_not_a_resource", {{"key", "opaque_color"}});
+    field("unknown screen contract", [](Json &p) { p["screen_inputs"] = {{"history_magic", "scene"}}; }, "screen_inputs", "unknown_contract");
+    field("surface is feature owned", [](Json &p) { p["surface_resources"] = {{"opaque_depth", "source_depth"}}; }, "surface_resource", "not_feature_owned", {{"port", "opaque_depth"}});
+    field("buffer history", [](Json &p) { p["material_resources"] = {{"previous", "data@history"}}; }, "material_resources.previous", "buffer_history");
+    field("buffer sampled", [](Json &p) { p["material_resources"] = {{"data", {{"resource", "data"}, {"access", "sampled"}}}}; }, "material_resources.data", "requires_storage");
+    field("buffer view", [](Json &p) { p["material_resources"] = {{"data", {{"resource", "data"}, {"view", "per_view"}}}}; }, "material_resources.data", "buffer_image_view");
+    field("explicit default buffer sampling", [](Json &p) { p["material_resources"] = {{"data", {{"resource", "data"}, {"sampling", Json::object()}}}}; }, "material_resources.data", "buffer_sampling");
+    field("image storage", [](Json &p) { p["material_resources"] = {{"color", {{"resource", "scene"}, {"access", "storage"}}}}; }, "material_resources.color", "requires_sampled");
+    field("material positional input", [](Json &p) { p["input"] = Json::array({"scene"}); }, "input", "requires_named_material_inputs");
+    field("resource entry", [](Json &p) { p["material_resources"] = {{"color", 1}}; }, "material_resources", "entry_not_a_resource", {{"key", "color"}});
+    field("resource string", [](Json &p) { p["material_resources"] = {{"color", {{"resource", 1}}}}; }, "material_resources", "resource_not_a_string", {{"key", "color"}});
+    field("resource empty", [](Json &p) { p["screen_inputs"] = {{"opaque_color", ""}}; }, "screen_input", "empty_name");
+    const auto special = [&](std::string label, std::function<void(Json &)> edit, std::string code, Json fields) {
+        fields["graph"] = "main"; fields["node"] = "tone";
+        rows.push_back({std::move(label), [edit](Json &r) { edit(r["rendering_passes"][0]["passes"][1]); }, std::move(code), fields});
+    };
+    special("screen source type", [](Json &p) { p["screen_inputs"] = {{"opaque_color", "source_depth"}}; },
+        "render_graph.material_input_invalid@1", {{"resource", "source_depth"}, {"port", "opaque_color"}});
+    special("surface source type", [](Json &p) { p["surface_resources"] = {{"directional_shadow", "scene"}}; },
+        "render_graph.material_input_invalid@1", {{"resource", "scene"}, {"port", "directional_shadow"}});
+    special("resource unknown", [](Json &p) { p["material_resources"] = {{"color", "ghost"}}; },
+        "render_graph.unknown_resource@1", {{"resource", "ghost"}});
+    special("same pixel selected mip", [](Json &p) { p["material_resources"] = {{"color", {{"resource", "scene"}, {"subresource", {{"mip", 0}}}, {"footprint", "same_pixel"}}}}; },
+        "render_graph.footprint_invalid@1", {{"field", "material_resources"}, {"resource", "color"}, {"reason", "same_pixel_subresource"}});
+    special("same pixel cube", [](Json &p) { p["material_resources"] = {{"color", {{"resource", "scene"}, {"view", "cube"}, {"footprint", "same_pixel"}}}}; },
+        "render_graph.footprint_invalid@1", {{"field", "material_resources"}, {"resource", "color"}, {"reason", "same_pixel_cube_view"}});
+    special("material resource mixes current and history", [](Json &p) {
+        p["material_resources"] = {{"current", "scene"}, {"previous", "scene@history"}};
+    }, "render_graph.pass_shape@1", {{"violation", "duplicate_input"}, {"target", "scene"}});
+    checkPassCompilerRefusals(base, rows);
+
+    SECTION("accepted named inputs retain their resolved contracts") {
+        auto r = base;
+        r["rendering_passes"][0]["passes"][1]["screen_inputs"] = {{"opaque_color", "scene"}, {"linear_view_depth", "source_depth"}};
+        const auto accepted = compilePassFixture(r);
+        const auto definitions = renderingPassDefinitionsOf(*variantOf(accepted, RenderPipelineGraphVariant::flat).render_graph,
+            accepted.generation_resources, generationRenderTargetNames(accepted.generation_resources));
+        const auto &info = definitions.at(0).passes.at(1).materialInfo();
+        REQUIRE(info.screen_inputs.size() == 2);
+        const auto &linear = info.screen_inputs.at(0).contract;
+        CHECK(linear.name == "linear_view_depth");
+        CHECK(linear.conversion == std::optional<std::string>{"pelican.render.depth_linearize@1"});
+        CHECK(linear.footprint.kind == LogicalReadFootprintKind::same_pixel);
+        r["rendering_passes"][0]["passes"][1].erase("screen_inputs");
+        r["rendering_passes"][0]["passes"][1]["surface_resources"] = {{"directional_shadow", "source_depth"}};
+        CHECK(compilePassFixture(r).variants.size() == 1);
+        r["rendering_passes"][0]["passes"][1].erase("surface_resources");
+        r["rendering_passes"][0]["passes"][1]["material_resources"] = {{"positions", "data"}, {"color", "scene"}};
+        CHECK(compilePassFixture(r).variants.size() == 1);
+        r["render_targets"][0]["history"] = true;
+        r["rendering_passes"][0]["passes"][1]["material_resources"] = {{"previous", "scene@history"}};
+        CHECK(compilePassFixture(r).variants.size() == 1);
+    }
+}
+
+TEST_CASE("RC-3c2b2 D2 compiler entry retains raster execution declarations",
+          "[rc3c2b2][render-compiler][passes][d2]") {
+    auto base = section(0, false);
+    auto &tone = base["rendering_passes"][0]["passes"][1];
+    tone["type"] = "raster";
+    tone["draw"] = {{"implementation", "project.fixture_draw@1"}, {"vertex_count", 3}};
+    tone["shader"]["implementation"] = "project.fixture_shader@1";
+    std::vector<PassCompilerRefusal> rows;
+    const auto field = [&](std::string label, std::function<void(Json &)> edit, std::string path,
+                           std::string reason = "invalid", std::string code = "render_graph.node_field_invalid@1") {
+        rows.push_back({std::move(label), [edit](Json &r) { edit(r["rendering_passes"][0]["passes"][1]); }, std::move(code),
+            {{"graph", "main"}, {"node", "tone"}, {"field", path}, {"reason", reason}}});
+    };
+    field("missing raster draw", [](Json &p) { p.erase("draw"); }, "draw", "required", "render_graph.pass_execution_invalid@1");
+    for (const auto *stage : {"vertex", "fragment"}) {
+        field(std::string{"missing raster "}+stage, [stage](Json &p) { p["shader"].erase(stage); }, std::string{"shader."}+stage, "required", "render_graph.pass_execution_invalid@1");
+        field(std::string{"raster stage type "}+stage, [stage](Json &p) { p["shader"][stage] = 4; }, std::string{"shader."}+stage, "requires_string");
+    }
+    field("raster shader object", [](Json &p) { p["shader"] = 1; }, "shader", "not_an_object");
+    field("raster shader key", [](Json &p) { p["shader"]["typo"] = "ignored"; }, "shader.typo", "unknown_field");
+    field("raster implementation id", [](Json &p) { p["shader"]["implementation"] = "project.shader"; }, "shader.implementation", "not_a_canonical_id");
+    field("raster implementation type", [](Json &p) { p["shader"]["implementation"] = 2; }, "shader.implementation", "requires_string");
+    field("raster draw object", [](Json &p) { p["draw"] = 1; }, "draw/raster_state/clip_y");
+    field("raster draw key", [](Json &p) { p["draw"]["typo"] = 1; }, "draw/raster_state/clip_y");
+    field("raster draw count", [](Json &p) { p["draw"]["vertex_count"] = -1; }, "draw/raster_state/clip_y");
+    field("raster draw operation", [](Json &p) { p["draw"]["operation"] = "mystery"; }, "draw/raster_state/clip_y");
+    field("raster clip direction", [](Json &p) { p["clip_y"] = "sideways"; }, "draw/raster_state/clip_y");
+    field("raster state key", [](Json &p) { p["raster_state"] = {{"typo", true}}; }, "draw/raster_state/clip_y");
+    field("raster MRT state count", [](Json &p) { p["raster_state"] = {{"color_attachments", Json::array()}}; }, "draw/raster_state/clip_y");
+    field("raster depth without depth", [](Json &p) { p["raster_state"] = {{"depth_write", true}}; }, "draw/raster_state/clip_y");
+    field("raster port input edge", [](Json &p) { p["resource_ports"] = {{"color", "ghost"}}; }, "resource_ports");
+    field("raster port sampled access", [](Json &p) { p["resource_ports"] = {{"color", {{"resource", "scene"}, {"access", "storage"}}}}; }, "resource_ports", "invalid_access");
+    field("raster port duplicate", [](Json &p) { p["resource_ports"] = {{"a", "scene"}, {"b", "scene"}}; }, "resource_ports", "invalid");
+    checkPassCompilerRefusals(base, rows);
+}
+
+TEST_CASE("RC-3c2b2 D2 compiler entry retains GPU draw source shape and buffer contracts",
+          "[rc3c2b2][render-compiler][passes][d2]") {
+    auto base = materialCompilerFixture();
+    base["render_targets"].erase(base["render_targets"].end()-1);
+    base["buffers"] = Json::array({Json{{"name", "commands"}, {"size", 320}, {"command_layout", "indexed_draw"}},
+        Json{{"name", "count"}, {"size", 4}, {"command_layout", "draw_count"}},
+        Json{{"name", "segments"}, {"size", 128}, {"host_source", "scene_draw_segments_v1"}}});
+    auto &tone = base["rendering_passes"][0]["passes"][1];
+    tone["material_range"] = {{"start", 0}, {"count", 1}};
+    tone["gpu_draw_source"] = {{"commands", "commands"}, {"count", "count"}, {"max_draw_count", 16}};
+    std::vector<PassCompilerRefusal> rows;
+    const auto field = [&](std::string label, std::function<void(Json &)> edit, std::string path, std::string reason) {
+        rows.push_back({std::move(label), [edit](Json &r) { edit(r["rendering_passes"][0]["passes"][1]); },
+            "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "tone"}, {"field", path}, {"reason", reason}}});
+    };
+    field("GPU draw object", [](Json &p) { p["gpu_draw_source"] = 1; }, "gpu_draw_source", "not_an_object");
+    field("GPU draw key", [](Json &p) { p["gpu_draw_source"]["typo"] = 1; }, "gpu_draw_source", "unknown_field");
+    for (const auto *key : {"commands", "count"}) {
+        field(std::string{"GPU missing "}+key, [key](Json &p) { p["gpu_draw_source"].erase(key); }, std::string{"gpu_draw_source."}+key, "requires_string");
+        field(std::string{"GPU non-string "}+key, [key](Json &p) { p["gpu_draw_source"][key] = 1; }, std::string{"gpu_draw_source."}+key, "requires_string");
+        field(std::string{"GPU empty "}+key, [key](Json &p) { p["gpu_draw_source"][key] = ""; }, "gpu_draw_source", "empty_buffer_name");
+    }
+    for (const auto *key : {"max_draw_count", "command_offset", "count_offset"}) {
+        field(std::string{"GPU negative "}+key, [key](Json &p) { p["gpu_draw_source"][key] = -1; }, std::string{"gpu_draw_source."}+key, "requires_unsigned_integer");
+    }
+    for (const auto *key : {"command_offset", "count_offset"}) {
+        field(std::string{"GPU alignment "}+key, [key](Json &p) { p["gpu_draw_source"][key] = 2; }, "gpu_draw_source", "offset_unaligned");
+    }
+    field("GPU count overflow", [](Json &p) { p["gpu_draw_source"]["max_draw_count"] = 4294967296ULL; }, "gpu_draw_source.max_draw_count", "too_large");
+    field("GPU count zero", [](Json &p) { p["gpu_draw_source"]["max_draw_count"] = 0; }, "gpu_draw_source", "max_draw_count_zero");
+    field("GPU equal buffers", [](Json &p) { p["gpu_draw_source"]["count"] = "commands"; }, "gpu_draw_source", "commands_equal_count");
+    field("GPU layout", [](Json &p) { p["gpu_draw_source"]["layout"] = "mystery"; }, "gpu_draw_source", "unknown_layout");
+    field("GPU fixed segments", [](Json &p) { p["gpu_draw_source"]["segments"] = "segments"; }, "gpu_draw_source", "fixed_state_with_segments");
+    field("GPU missing segments", [](Json &p) { p["gpu_draw_source"]["layout"] = "draw_queue_segments_v1"; }, "gpu_draw_source", "segments_required");
+    field("GPU aliased segments", [](Json &p) { p["gpu_draw_source"]["layout"] = "draw_queue_segments_v1"; p["gpu_draw_source"]["segments"] = "count"; }, "gpu_draw_source", "buffer_names_not_distinct");
+    field("GPU fallback", [](Json &p) { p["gpu_draw_source"]["fallback"] = "skip"; }, "gpu_draw_source", "unknown_fallback");
+    field("GPU execution", [](Json &p) { p["gpu_draw_source"]["execution"] = "gpu"; }, "gpu_draw_source", "unknown_execution");
+    field("GPU fixed material range", [](Json &p) { p["material_range"]["count"] = 2; }, "gpu_draw_source", "fixed_state_requires_one_material");
+    field("GPU segmented material range", [](Json &p) { p["material_range"]["count"] = 0; p["gpu_draw_source"]["layout"] = "draw_queue_segments_v1"; p["gpu_draw_source"]["segments"] = "segments"; }, "gpu_draw_source", "segments_require_material_range");
+    for (const auto &[index, role, expected] : std::vector<std::tuple<int, std::string, std::string>>{{0, "commands", "indexed_draw"}, {1, "count", "draw_count"}}) {
+        rows.push_back({"GPU buffer layout " + role, [index](Json &r) { r["buffers"][index].erase("command_layout"); },
+            "render_graph.gpu_draw_source_invalid@1", {{"graph", "main"}, {"node", "tone"}, {"field", "gpu_draw_source." + role}, {"reason", "command_layout_mismatch"}, {"buffer", role}, {"expected", expected}}});
+    }
+    for (const auto &[key, value, reason] : std::vector<std::tuple<std::string, int, std::string>>{{"command_offset", 4, "command_range_exceeds_buffer"}, {"count_offset", 4, "count_exceeds_buffer"}}) {
+        rows.push_back({"GPU buffer capacity " + key, [key, value](Json &r) { r["rendering_passes"][0]["passes"][1]["gpu_draw_source"][key] = value; },
+            "render_graph.gpu_draw_source_invalid@1", {{"graph", "main"}, {"node", "tone"}, {"reason", reason}}});
+    }
+    rows.push_back({"GPU draw is material only", [](Json &r) {
+        auto &p = r["rendering_passes"][0]["passes"][1];
+        p["type"] = "fullscreen";
+        p.erase("material_contract"); p.erase("material_range");
+    }, "render_graph.pass_field_ownership@1", {{"graph", "main"}, {"node", "tone"}}, true});
+    checkPassCompilerRefusals(base, rows);
+    auto segmented = base;
+    segmented["rendering_passes"][0]["passes"][1]["material_range"]["count"] = 2;
+    segmented["rendering_passes"][0]["passes"][1]["gpu_draw_source"]["layout"] = "draw_queue_segments_v1";
+    segmented["rendering_passes"][0]["passes"][1]["gpu_draw_source"]["segments"] = "segments";
+    CHECK(compilePassFixture(segmented).variants.size() == 1);
+    auto wrong = segmented;
+    wrong["buffers"][2].erase("host_source");
+    TestSupport::requireNamedRefusal([&] { (void)compilePassFixture(wrong); }, "render_graph.gpu_draw_source_invalid@1",
+        {{"graph", "main"}, {"node", "tone"}, {"buffer", "segments"}, {"reason", "host_source_mismatch"}, {"expected", "scene_draw_segments_v1"}});
+}
+
+TEST_CASE("RC-3c2b2 D2 compiler entry retains material schemas and sparse attachment states",
+          "[rc3c2b2][render-compiler][passes][d2]") {
+    auto base = materialCompilerFixture();
+    base["render_targets"].erase(base["render_targets"].end()-1);
+    auto &tone = base["rendering_passes"][0]["passes"][1];
+    tone["material_contract"] = "forward_opaque_v1";
+    tone["material_outputs"] = {{"schema", "pelican.material_outputs"}, {"version", 1}, {"name", "project.fixture"},
+        {"outputs", Json::array({Json{{"name", "color"}, {"type", "vec4"}, {"source", "surface.base_color"}}})}};
+    tone["material_output_states"] = {{"color", {{"blend", "additive"}, {"write_mask", "rg"}}}};
+    std::vector<PassCompilerRefusal> rows;
+    const auto field = [&](std::string label, std::function<void(Json &)> edit, const std::string &path) {
+        rows.push_back({std::move(label), [edit](Json &r) { edit(r["rendering_passes"][0]["passes"][1]); },
+            "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "tone"}, {"field", path}, {"reason", "invalid"}}});
+    };
+    field("schema object", [](Json &p) { p["material_outputs"] = 4; }, "material_outputs");
+    field("schema tag", [](Json &p) { p["material_outputs"]["schema"] = "unknown"; }, "material_outputs");
+    field("schema version", [](Json &p) { p["material_outputs"]["version"] = 2; }, "material_outputs");
+    field("schema key", [](Json &p) { p["material_outputs"]["typo"] = true; }, "material_outputs");
+    field("schema empty name", [](Json &p) { p["material_outputs"]["name"] = ""; }, "material_outputs");
+    field("schema outputs array", [](Json &p) { p["material_outputs"]["outputs"] = 1; }, "material_outputs");
+    field("schema empty outputs", [](Json &p) { p["material_outputs"]["outputs"] = Json::array(); }, "material_outputs");
+    field("schema output object", [](Json &p) { p["material_outputs"]["outputs"][0] = 1; }, "material_outputs");
+    field("schema output key", [](Json &p) { p["material_outputs"]["outputs"][0]["typo"] = true; }, "material_outputs");
+    field("schema output identifier", [](Json &p) { p["material_outputs"]["outputs"][0]["name"] = "bad/name"; }, "material_outputs");
+    field("schema output type", [](Json &p) { p["material_outputs"]["outputs"][0]["type"] = "mystery"; }, "material_outputs");
+    field("schema output source", [](Json &p) { p["material_outputs"]["outputs"][0]["source"] = "mystery"; }, "material_outputs");
+    field("schema duplicate output", [](Json &p) { p["material_outputs"]["outputs"].push_back(p["material_outputs"]["outputs"][0]); }, "material_outputs");
+    field("schema nonfloating source", [](Json &p) { p["material_outputs"]["outputs"][0]["type"] = "uint"; }, "material_outputs");
+    field("states object", [](Json &p) { p["material_output_states"] = 1; }, "material_output_states");
+    field("state object", [](Json &p) { p["material_output_states"]["color"] = 1; }, "material_output_states");
+    field("state key", [](Json &p) { p["material_output_states"]["color"]["typo"] = 1; }, "material_output_states");
+    field("state unknown output", [](Json &p) { p["material_output_states"]["unknown"] = {{"write_mask", "rgba"}}; }, "material_output_states");
+    field("state empty override", [](Json &p) { p["material_output_states"]["color"] = Json::object(); }, "material_output_states");
+    field("state duplicate mask", [](Json &p) { p["material_output_states"]["color"]["write_mask"] = "rr"; }, "material_output_states");
+    field("state blend enum", [](Json &p) { p["material_output_states"]["color"]["blend"] = "mystery"; }, "material_output_states");
+    field("state integer blend", [](Json &p) { p["material_outputs"]["outputs"][0]["type"] = "uint"; p["material_outputs"]["outputs"][0]["source"] = "custom"; }, "material_output_states");
+    const auto attachment = [&](std::string label, std::function<void(Json &)> edit, std::string reason, Json more = Json::object()) {
+        more["graph"] = "main"; more["node"] = "tone"; more["reason"] = reason;
+        rows.push_back({std::move(label), [edit](Json &r) { edit(r["rendering_passes"][0]["passes"][1]); },
+            "render_graph.material_attachment_invalid@1", more});
+    };
+    attachment("schema attachment count", [](Json &p) { p["output"]["color"] = Json::array({"post", "scratch"}); }, "color_count", {{"expected", 1}});
+    attachment("schema attachment numeric class", [](Json &p) {
+        p["material_outputs"]["outputs"][0]["type"] = "uint";
+        p["material_outputs"]["outputs"][0]["source"] = "custom";
+        p["material_output_states"]["color"]["blend"] = "opaque";
+    }, "numeric_class", {{"resource", "post"}, {"output", "color"}});
+    attachment("schema deferred lit data", [](Json &p) {
+        p["material_contract"] = "deferred_geometry_v1";
+        p["material_outputs"]["outputs"][0]["source"] = "lighting.scene_color";
+    }, "scene_color_in_deferred");
+    attachment("schema requires depth", [](Json &p) { p["output"]["depth"] = nullptr; }, "requires_depth");
+    attachment("schema requires explicit contract", [](Json &p) { p["material_contract"] = "legacy_gbuffer_v1"; }, "outputs_require_contract");
+    checkPassCompilerRefusals(base, rows);
+    const auto accepted = compilePassFixture(base);
+    const auto definitions = renderingPassDefinitionsOf(*variantOf(accepted, RenderPipelineGraphVariant::flat).render_graph,
+        accepted.generation_resources, generationRenderTargetNames(accepted.generation_resources));
+    const auto &info = definitions.at(0).passes.at(1).materialInfo();
+    REQUIRE(info.output_schema);
+    CHECK(info.output_schema->outputs.size() == 1);
+    REQUIRE(info.output_states.size() == 1);
+    CHECK(info.output_states.front().output == "color");
+    CHECK(info.output_states.front().blend->enabled);
+    CHECK(info.output_states.front().write_mask == (materialOutputWriteRed | materialOutputWriteGreen));
+}
+
+TEST_CASE("RC-3c2b2 D2 compiler entry retains attachment and input vocabulary",
+          "[rc3c2b2][render-compiler][passes][d2]") {
+    const auto base = section(0, false);
+    std::vector<PassCompilerRefusal> rows;
+    const auto add = [&](std::string label, std::function<void(Json &)> edit, std::string code, Json fields) {
+        fields["graph"] = "main"; fields["node"] = "tone";
+        rows.push_back({std::move(label), [edit](Json &r) { edit(r["rendering_passes"][0]["passes"][1]); }, std::move(code), fields});
+    };
+    for (const auto *aspect : {"color", "depth"}) {
+        const std::string path = "output." + std::string{aspect};
+        add(path+" missing", [aspect](Json &p) { p["output"].erase(aspect); }, "render_graph.node_field_invalid@1", {{"field", path}, {"reason", "missing"}});
+        add(path+" unknown key", [aspect](Json &p) { p["output"][aspect] = {{"target", "post"}, {"typo", 1}}; }, "render_graph.attachment_invalid@1", {{"field", path}, {"reason", "unknown_field"}, {"key", "typo"}});
+        add(path+" missing target", [aspect](Json &p) { p["output"][aspect] = Json::object(); }, "render_graph.attachment_invalid@1", {{"field", path}, {"reason", "requires_target"}});
+        add(path+" empty target", [aspect](Json &p) { p["output"][aspect] = {{"target", ""}}; }, "render_graph.attachment_invalid@1", {{"field", path}, {"reason", "target_empty"}});
+        add(path+" selected mips", [aspect](Json &p) { p["output"][aspect] = {{"target", "post"}, {"subresource", {{"mip_count", 2}}}}; }, "render_graph.attachment_invalid@1", {{"field", path}, {"reason", "subresource_not_one_mip"}});
+        add(path+" swapchain subresource", [aspect](Json &p) { p["output"][aspect] = {{"target", "swapchain"}, {"subresource", {{"mip", 0}}}}; }, "render_graph.attachment_invalid@1", {{"field", path}, {"reason", "swapchain_subresource"}});
+        for (const auto *op : {"load_op", "store_op"}) {
+            add(path+op+" type", [aspect, op](Json &p) { p["output"][aspect] = {{"target", "post"}, {op, 1}}; }, "render_graph.attachment_invalid@1", {{"field", path}, {"reason", "op_not_a_string"}});
+            add(path+op+" unknown", [aspect, op](Json &p) { p["output"][aspect] = {{"target", "post"}, {op, "mystery"}}; }, "render_graph.attachment_invalid@1", {{"field", path}, {"reason", "unknown_op"}});
+        }
+    }
+    add("output object", [](Json &p) { p["output"] = 1; }, "render_graph.node_field_invalid@1", {{"field", "output"}, {"reason", "requires_object"}});
+    add("input element type", [](Json &p) { p["input"] = Json::array({1}); }, "render_graph.node_field_invalid@1", {{"field", "input"}, {"reason", "not_a_string_array"}});
+    add("input invalid qualifier", [](Json &p) { p["input"] = Json::array({"scene@bad"}); }, "render_graph.resource_reference_invalid@1", {{"field", "input"}, {"resource", "scene@bad"}});
+    add("empty input", [](Json &p) { p["input"] = Json::array({""}); }, "render_graph.resource_reference_invalid@1", {{"field", "input"}, {"resource", ""}});
+    add("clear override arity", [](Json &p) { p["clear_colors"] = {{"post", Json::array({0, 1})}}; }, "render_graph.node_field_invalid@1", {{"field", "clear_colors.post"}, {"reason", "requires_four_numbers"}});
+    for (const auto *key : {"color_load_op", "color_store_op"}) {
+        add(std::string{key}+" type", [key](Json &p) { p[key] = 2; }, "render_graph.node_field_invalid@1", {{"field", key}, {"reason", "requires_string"}});
+        add(std::string{key}+" enum", [key](Json &p) { p[key] = "mystery"; }, "render_graph.node_field_invalid@1", {{"field", key}, {"reason", "unknown_op"}});
+    }
+    for (const auto *key : {"depth_load_op", "depth_store_op"}) {
+        add(std::string{key}+" requires output", [key](Json &p) { p[key] = "mystery"; }, "render_graph.attachment_option_without_output@1", {{"field", key}});
+    }
+    for (auto &row : rows) {
+        if (row.label == "output.color missing target" || row.label == "output.depth missing target") {
+            const auto aspect = row.label.starts_with("output.color") ? "color" : "depth";
+            row.code = "render.json_shape_invalid@1";
+            row.fields = {{"expected", "a render target name"},
+                {"path", std::string{"/rendering/rendering_passes/0/passes/1/output/"} + aspect + "/target"}};
+        } else if (row.label == "input element type") {
+            row.code = "render.json_shape_invalid@1";
+            row.fields = {{"expected", "a string"}, {"path", "/rendering/rendering_passes/0/passes/1/input/0"}};
+        } else if (row.label == "empty input") {
+            row.code = "render_graph.input_not_produced@1";
+            row.fields = {{"graph", "main"}, {"node", "tone"}, {"resource", ""}};
+        } else if (row.label == "output.color swapchain subresource") {
+            row.provider_revision = true;
+        }
+    }
+    checkPassCompilerRefusals(base, rows);
+    SECTION("normalization preserves authored attachment and input aliases") {
+        const std::vector<std::pair<std::string, AttachmentLoadOp>> loads{
+            {"Clear", AttachmentLoadOp::clear}, {"clear", AttachmentLoadOp::clear},
+            {"Load", AttachmentLoadOp::load}, {"load", AttachmentLoadOp::load},
+            {"DontCare", AttachmentLoadOp::dont_care}, {"dontCare", AttachmentLoadOp::dont_care}, {"dont_care", AttachmentLoadOp::dont_care}};
+        for (const auto &[spelling, expected] : loads) {
+            auto authored = base;
+            auto &p = authored["rendering_passes"][0]["passes"][1];
+            p["input"] = "scene";
+            p["output"]["color"] = {{"target", "post"}, {"load_op", spelling}};
+            const auto accepted = compilePassFixture(authored);
+            const auto definitions = renderingPassDefinitionsOf(*variantOf(accepted, RenderPipelineGraphVariant::flat).render_graph,
+                accepted.generation_resources, generationRenderTargetNames(accepted.generation_resources));
+            CHECK(definitions.at(0).passes.at(1).colorAttachmentOperations(0).load_op == expected);
+            CHECK(definitions.at(0).passes.at(1).input_targets.size() == 1);
+        }
+
+        for (const auto &[spelling, expected] : std::vector<std::pair<std::string, AttachmentStoreOp>>{
+                {"Store", AttachmentStoreOp::store}, {"store", AttachmentStoreOp::store},
+                {"DontCare", AttachmentStoreOp::dont_care}, {"dontCare", AttachmentStoreOp::dont_care}, {"dont_care", AttachmentStoreOp::dont_care}}) {
+            auto authored = base;
+            auto &p = authored["rendering_passes"][0]["passes"][1];
+            p["output"]["color"] = "post";
+            p["color_store_op"] = spelling;
+            const auto accepted = compilePassFixture(authored);
+            const auto definitions = renderingPassDefinitionsOf(*variantOf(accepted, RenderPipelineGraphVariant::flat).render_graph,
+                accepted.generation_resources, generationRenderTargetNames(accepted.generation_resources));
+            CHECK(definitions.at(0).passes.at(1).colorAttachmentOperations(0).store_op == expected);
+        }
+    }
+}
+
+TEST_CASE("RC-3c2b2 D2 compiler entry retains completed sequence structure and fullscreen state",
+          "[rc3c2b2][render-compiler][passes][d2]") {
+    const auto base = section(0, false);
+    const std::vector<PassCompilerRefusal> rows{
+        {"completed graph missing passes", [](Json &r) { r["rendering_passes"][0].erase("passes"); },
+            "render_graph.section_invalid@1", {{"graph", "main"}, {"field", "passes"}}, true},
+        {"completed graph passes type", [](Json &r) { r["rendering_passes"][0]["passes"] = 1; },
+            "render_graph.section_invalid@1", {{"graph", "main"}, {"field", "passes"}}, true},
+        {"completed graph duplicate name", [](Json &r) { auto &p = r["rendering_passes"][0]["passes"]; p.push_back(p[1]); },
+            "render_graph.duplicate_node@1", {{"graph", "main"}, {"node", "tone"}}, true},
+        {"completed pass object", [](Json &r) { r["rendering_passes"][0]["passes"][1] = Json::array(); },
+            "render_graph.not_object@1", {{"graph", "main"}, {"field", "passes"}, {"index", 1}}, true},
+        {"completed pass missing name", [](Json &r) { r["rendering_passes"][0]["passes"][1].erase("name"); },
+            "render_graph.node_name_invalid@1", {{"graph", "main"}, {"field", "passes"}, {"index", 1}}, true},
+        {"completed pass name type", [](Json &r) { r["rendering_passes"][0]["passes"][1]["name"] = 1; },
+            "render_graph.node_name_invalid@1", {{"graph", "main"}, {"field", "passes"}, {"index", 1}}, true},
+        {"completed pass empty name", [](Json &r) { r["rendering_passes"][0]["passes"][1]["name"] = ""; },
+            "render_graph.node_name_empty@1", {{"graph", "main"}}, true},
+        {"completed pass output missing", [](Json &r) { r["rendering_passes"][0]["passes"][1].erase("output"); },
+            "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "tone"}, {"field", "output"}, {"reason", "requires_object"}}, true},
+        {"completed fullscreen topology", [](Json &r) { r["rendering_passes"][0]["passes"][1]["raster_state"] = {{"topology", "triangle_strip"}}; },
+            "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "tone"}, {"field", "raster_state.topology"}, {"reason", "fullscreen_requires_triangle_list"}}, true},
+        {"completed fullscreen state shape", [](Json &r) { r["rendering_passes"][0]["passes"][1]["raster_state"] = {{"typo", true}}; },
+            "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "tone"}, {"field", "raster_state"}, {"reason", "invalid"}}, true},
+    };
+    checkPassCompilerRefusals(base, rows);
+}
+
 } // namespace Pelican

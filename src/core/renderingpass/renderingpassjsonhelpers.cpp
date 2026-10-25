@@ -1,75 +1,11 @@
 #include "renderingpassjsonhelpers.hpp"
-#include "passfieldownershipcapabilities.hpp"
 #include "../../project/logicalrendergraph.hpp"
 #include <algorithm>
-#include <array>
 #include <limits>
 #include <set>
 #include <stdexcept>
-#include <unordered_map>
 
 namespace Pelican {
-
-PassInfo makePassInfo(RenderPassType type) {
-    switch (type) {
-    case RenderPassType::material:
-        return MaterialPassInfo{};
-    case RenderPassType::fullscreen:
-        return FullscreenPassInfo{};
-    case RenderPassType::raster:
-        return GenericRasterPassInfo{};
-    case RenderPassType::output_transform:
-        return FullscreenPassInfo{};
-    case RenderPassType::debug_draw:
-        return DebugDrawPassInfo{};
-    case RenderPassType::gizmo:
-        return GizmoPassInfo{};
-    case RenderPassType::debug_text:
-        return DebugTextPassInfo{};
-    case RenderPassType::shadow_depth:
-        return ShadowDepthPassInfo{};
-    case RenderPassType::velocity:
-        return VelocityPassInfo{};
-    case RenderPassType::picking:
-        return PickingPassInfo{};
-    case RenderPassType::ui:
-        return UiPassInfo{};
-    case RenderPassType::imgui:
-#if PELICAN_WITH_IMGUI
-        return ImGuiPassInfo{};
-#else
-        break;
-#endif
-    case RenderPassType::canonical_anchor:
-    case RenderPassType::snapshot_copy:
-        break;
-    }
-    throw std::runtime_error(
-        "Pass type cannot be materialized as a rendering pass: " +
-        std::string{renderPassTypeName(type)});
-}
-
-PassInfo makePassInfo(const std::string &type_str) {
-    const nlohmann::json pass{
-        {"name", type_str},
-        {"type", type_str},
-    };
-    return makePassInfo(validatePassFieldOwnership(
-        pass, buildPassFieldOwnershipCapabilities()));
-}
-
-FullscreenPushConstantData stringToFullscreenPushConstantData(const std::string &data_str) {
-    if (data_str == "none") {
-        return FullscreenPushConstantData::eNone;
-    }
-    if (data_str == "camera_position") {
-        return FullscreenPushConstantData::eCameraPosition;
-    }
-    if (data_str == "projection_view") {
-        return FullscreenPushConstantData::eProjectionView;
-    }
-    throw std::runtime_error("Unknown fullscreen push constant data: " + data_str);
-}
 
 std::string parseStringField(const nlohmann::json &json, std::string_view field_name,
                              std::string_view context) {
@@ -187,26 +123,6 @@ std::vector<std::string> parseOptionalRegionTags(
     return result;
 }
 
-std::string parseRenderViewFamilyId(
-    const nlohmann::json &json,
-    const std::string &context) {
-    auto family_id =
-        std::string{mainRenderViewFamilyId};
-    if (json.contains("view_family")) {
-        if (!json.at("view_family").is_string()) {
-            throw std::runtime_error(
-                context +
-                " view_family must be a string");
-        }
-        family_id =
-            json.at("view_family")
-                .get<std::string>();
-    }
-    validateRenderViewFamilyId(
-        family_id, context);
-    return family_id;
-}
-
 RenderViewSelect parseRenderViewSelect(
     const nlohmann::json &json,
     const std::string &context) {
@@ -253,18 +169,6 @@ RenderViewSelect parseRenderViewSelect(
     return result;
 }
 
-bool parsePassSchedule(const nlohmann::json &json,
-                       const std::string &pass_name) {
-    const auto found = json.find("schedule");
-    if (found == json.end()) return false;
-    if (!found->is_string() ||
-        (*found != "per_frame" && *found != "once")) {
-        throw std::runtime_error(
-            "Pass schedule must be per_frame or once: " + pass_name);
-    }
-    return *found == "once";
-}
-
 uint32_t parseUint32Field(const nlohmann::json &json, const std::string &field_name,
                           const std::string &context) {
     if (!json.contains(field_name) || !json.at(field_name).is_number_integer()) {
@@ -288,24 +192,4 @@ uint32_t parseUint32Field(const nlohmann::json &json, const std::string &field_n
     }
     return static_cast<uint32_t>(value);
 }
-
-std::array<double, 4>
-jsonToClearColor(const nlohmann::json &json) {
-    if (!json.is_array() || json.size() != 4) {
-        throw std::runtime_error("clear_color must be an array of four numbers");
-    }
-    for (const auto &value_json : json) {
-        if (!value_json.is_number()) {
-            throw std::runtime_error("clear_color must be an array of four numbers");
-        }
-    }
-
-    return {
-        json.at(0).get<double>(),
-        json.at(1).get<double>(),
-        json.at(2).get<double>(),
-        json.at(3).get<double>(),
-    };
-}
-
 } // namespace Pelican

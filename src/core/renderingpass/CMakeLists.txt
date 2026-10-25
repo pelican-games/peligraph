@@ -2,12 +2,9 @@ target_sources(pelican_core PRIVATE
     computetaskcontainer.cpp
     computetaskdefinition.cpp
     framegraphbuffercontainer.cpp
-    debugdrawpassinfojsonparser.cpp
-    debugtextpassinfojsonparser.cpp
     frameplanner.cpp
     oncescheduler.cpp
     framegraphruntime.cpp
-    gizmopassinfojsonparser.cpp
     graphtransformregistry.cpp
     graphinputs.cpp
     graphdeformedattribute.cpp
@@ -19,16 +16,9 @@ target_sources(pelican_core PRIVATE
     vulkannativescopeexecutor.cpp
     renderpipelinegpuarena.cpp
     renderfeatureparameteraccess.cpp
-    fullscreenpassinfojsonparser.cpp
-    genericrasterpassinfojsonparser.cpp
-    materialpassinfojsonparser.cpp
-    passattachmentoptionsjsonparser.cpp
-    passdefinitionjsonparser.cpp
     passdefinitionfromir.cpp
     passimplementationregistry.cpp
-    passinfojsonparser.cpp
     passinputdescriptorvariant.cpp
-    passsequencejsonparser.cpp
     previewgraph.cpp
     renderingpasscontainer.cpp
     renderingpassconfigloader.cpp
@@ -37,7 +27,6 @@ target_sources(pelican_core PRIVATE
     renderingpassruntimecompiler.cpp
     rasterpassvulkanadapter.cpp
     renderingsamplecount.cpp
-    renderingpasstargetjsonparser.cpp
     renderingpassvalidation.cpp
     subgraphreplacementregistry.cpp
     rendertargetconfigregistration.cpp

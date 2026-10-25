@@ -17,10 +17,6 @@ namespace Pelican {
 // RC-3a2: so are the attachment operations' spellings
 // (attachmentoperations.hpp) and the resolution domain's
 // (renderresolutiondomain.hpp).
-PassInfo makePassInfo(const std::string &type_str);
-PassInfo makePassInfo(RenderPassType type);
-FullscreenPushConstantData stringToFullscreenPushConstantData(const std::string &data_str);
-
 std::string parseStringField(const nlohmann::json &json, std::string_view field_name,
                              std::string_view context);
 // A field that accepts a single string or an array of strings. The context
@@ -40,23 +36,9 @@ std::vector<std::string> parseStringArrayField(const nlohmann::json &json, const
                                                const std::string &context);
 std::vector<std::string> parseOptionalRegionTags(
     const nlohmann::json &json, const std::string &context);
-std::string parseRenderViewFamilyId(
-    const nlohmann::json &json,
-    const std::string &context);
-// LP-Va: optional `view_select` object, axis name -> non-negative integer.
-// Absent -> empty. Whether the axis exists is checked at recompile time
-// against the family's provider (validateRenderViewSelects).
-RenderViewSelect parseRenderViewSelect(
-    const nlohmann::json &json,
-    const std::string &context);
-// PS-1: a pass's optional `schedule`, "per_frame" (the default) or "once".
-// True for "once". Which pass types may carry it is the field ownership
-// table's (fullscreen, raster).
-bool parsePassSchedule(const nlohmann::json &json,
-                       const std::string &pass_name);
+// Authoring edits validate view selection before publishing a draft.
+RenderViewSelect parseRenderViewSelect(const nlohmann::json &json, const std::string &context);
 uint32_t parseUint32Field(const nlohmann::json &json, const std::string &field_name,
                           const std::string &context);
-std::array<double, 4>
-jsonToClearColor(const nlohmann::json &json);
 
 } // namespace Pelican

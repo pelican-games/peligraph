@@ -3,16 +3,11 @@
 #include "rendering_pass_test_support.hpp"
 #include "../src/project/generationresources.hpp"
 #include <catch2/generators/catch_generators.hpp>
-#include "../src/core/renderingpass/genericrasterpassinfojsonparser.hpp"
 #include "../src/core/renderingpass/computetask.hpp"
 #include "../src/core/renderingpass/materialpassattachments.hpp"
-#include "../src/core/renderingpass/materialpassinfojsonparser.hpp"
-#include "../src/core/renderingpass/passdefinitionjsonparser.hpp"
-#include "../src/core/renderingpass/passsequencejsonparser.hpp"
 #include "../src/core/renderingpass/renderingpassjsonhelpers.hpp"
 #include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/core/renderingpass/renderingpassruntimecompiler.hpp"
-#include "../src/core/renderingpass/renderingpasstargetjsonparser.hpp"
 #include "../src/core/renderingpass/renderingpassvalidation.hpp"
 #include "../src/core/renderingpass/rasterpassvulkanadapter.hpp"
 #include "../src/core/renderingpass/rendertargetconfigregistration.hpp"
@@ -40,6 +35,43 @@
 namespace Pelican {
 
 namespace {
+
+using Json = nlohmann::json;
+
+Json fixtureImage(const std::string &name, bool depth = false) {
+    return Json{{"name", name}, {"extent_scale", 1.0},
+        {"format", depth ? "D32_SFLOAT" : "R16G16B16A16_SFLOAT"},
+        {"usage", Json::array({depth ? "DEPTH_STENCIL_ATTACHMENT" : "COLOR_ATTACHMENT", "SAMPLED"})}};
+}
+
+std::vector<PassDefinition> passesInGraph(Json graph, const Json &images,
+    const Json &buffers, const RenderTargetNameResolver &names) {
+    graph["name"] = "main";
+    return TestSupport::renderingPassDefinitionsOf(Json{{"render_targets", images}, {"buffers", buffers},
+        {"rendering_passes", Json::array({std::move(graph)})}}, names).at(0).passes;
+}
+
+PassDefinition passInGraph(const Json &pass, const Json &images,
+    const Json &buffers, const RenderTargetNameResolver &names) {
+    return passesInGraph(Json{{"passes", Json::array({pass})}}, images, buffers, names).at(0);
+}
+
+// Former leaf fixtures provide only target or material fields. Complete their
+// surrounding declaration explicitly, then use the production parse/conversion.
+PassDefinition targetPassOf(Json fields, const std::string &name, const Json &images,
+    const RenderTargetNameResolver &names) {
+    fields["name"] = name; fields["type"] = "raster";
+    fields["draw"] = {{"vertex_count", 3}};
+    fields["shader"] = {{"vertex", "engine://fixture"}, {"fragment", "engine://fixture"}};
+    return passInGraph(fields, images, Json::array(), names);
+}
+
+PassDefinition namedMaterialOf(Json fields, const std::string &name, const Json &images,
+    const Json &buffers, const RenderTargetNameResolver &names) {
+    fields["name"] = name; fields["type"] = "material";
+    fields["output"] = {{"color", "swapchain"}, {"depth", nullptr}};
+    return passInGraph(fields, images, buffers, names);
+}
 
 // These tests used to provide only the fullscreen-specific fields. Supply
 // the surrounding graph and explicit resources; all pass values still go
@@ -78,6 +110,18 @@ PassDefinition materialPassOf(nlohmann::json fields, const std::string &name) {
     return TestSupport::renderingPassDefinitionsOf(config).at(0).passes.at(0);
 }
 
+PassDefinition typedFixtureOf(const std::string &type, Json fields = Json::object()) {
+    fields["name"] = "utility"; fields["type"] = type;
+    fields["output"] = {{"color", type == "shadow_depth" ? Json(nullptr) : Json("swapchain")},
+        {"depth", type == "shadow_depth" ? Json("depth") : Json(nullptr)}};
+    if (type == "fullscreen" || type == "raster")
+        fields["shader"] = {{"vertex", "engine://fixture"}, {"fragment", "engine://fixture"}};
+    if (type == "raster") fields["draw"] = {{"vertex_count", 3}};
+    Json config{{"render_targets", Json::array({fixtureImage("depth", true)})},
+        {"rendering_passes", Json::array({Json{{"name", "main"}, {"passes", Json::array({fields})}}})}};
+    return TestSupport::renderingPassDefinitionsOf(config).at(0).passes.at(0);
+}
+
 } // namespace
 
 
@@ -111,16 +155,16 @@ TEST_CASE("rendering pass JSON helpers parse known values", "[renderingpass]") {
     REQUIRE(static_cast<bool>(usage & ImageUsageBit::color_attachment));
     REQUIRE(static_cast<bool>(usage & ImageUsageBit::sampled));
 
-    REQUIRE(std::holds_alternative<MaterialPassInfo>(makePassInfo("material")));
-    REQUIRE(std::holds_alternative<FullscreenPassInfo>(makePassInfo("fullscreen")));
+    REQUIRE(std::holds_alternative<MaterialPassInfo>(typedFixtureOf("material").pass_info));
+    REQUIRE(std::holds_alternative<FullscreenPassInfo>(typedFixtureOf("fullscreen").pass_info));
     REQUIRE(
         std::holds_alternative<
             GenericRasterPassInfo>(
-            makePassInfo("raster")));
-    REQUIRE(std::holds_alternative<ShadowDepthPassInfo>(makePassInfo("shadow_depth")));
-    REQUIRE(std::holds_alternative<UiPassInfo>(makePassInfo("ui")));
+            typedFixtureOf("raster").pass_info));
+    REQUIRE(std::holds_alternative<ShadowDepthPassInfo>(typedFixtureOf("shadow_depth").pass_info));
+    REQUIRE(std::holds_alternative<UiPassInfo>(typedFixtureOf("ui").pass_info));
 
-    REQUIRE(stringToFullscreenPushConstantData("projection_view") == FullscreenPushConstantData::eProjectionView);
+    REQUIRE(typedFixtureOf("fullscreen", Json{{"push_constants", "projection_view"}}).fullscreenInfo().push_constants == FullscreenPushConstantData::eProjectionView);
     REQUIRE(parseAuthoredAttachmentLoadOp("dont_care") == AttachmentLoadOp::dont_care);
     REQUIRE(parseAuthoredAttachmentStoreOp("store") == AttachmentStoreOp::store);
 
@@ -134,57 +178,23 @@ TEST_CASE("rendering pass JSON helpers parse known values", "[renderingpass]") {
     REQUIRE(parseFloatField(object, "scale", "test") == 1.5f);
     REQUIRE(parseStringArrayField(object, "usage", "test").size() == 2);
     REQUIRE(parseUint32Field(object, "count", "test") == 42);
-    REQUIRE(
-        parseRenderViewFamilyId(
-            nlohmann::json::object(),
-            "test") ==
-        "$main");
-    REQUIRE(
-        parseRenderViewFamilyId(
-            nlohmann::json{
-                {"view_family",
-                 "$reflection/probe/0"}},
-            "test") ==
-        "$reflection/probe/0");
-    REQUIRE_THROWS_WITH(
-        parseRenderViewFamilyId(
-            nlohmann::json{
-                {"view_family", ""}},
-            "test"),
-        Catch::Matchers::ContainsSubstring(
-            "non-empty view_family"));
-    REQUIRE(
-        parseOptionalRegionTags(
-            nlohmann::json{
-                {"regions",
-                 nlohmann::json::array(
-                     {"region.post", "region.debug"})}},
-            "test") ==
-        std::vector<std::string>{
-            "region.post", "region.debug"});
-    REQUIRE_THROWS_WITH(
-        parseOptionalRegionTags(
-            nlohmann::json{
-                {"regions",
-                 nlohmann::json::array(
-                     {"region.post", "region.post"})}},
-            "test"),
-        Catch::Matchers::ContainsSubstring(
-            "duplicate region tag"));
-    REQUIRE_THROWS_WITH(
-        parseOptionalRegionTags(
-            nlohmann::json{
-                {"regions",
-                 nlohmann::json::array({""})}},
-            "test"),
-        Catch::Matchers::ContainsSubstring(
-            "empty or too long"));
-
-    const auto clear_color = jsonToClearColor(nlohmann::json::array({1.0f, 0.5f, 0.25f, 1.0f}));
+    CHECK(typedFixtureOf("ui").view_family == "$main");
+    CHECK(typedFixtureOf("ui", Json{{"view_family", "$reflection/probe/0"}}).view_family == "$reflection/probe/0");
+    TestSupport::requireNamedRefusal([&] { (void)typedFixtureOf("ui", Json{{"view_family", ""}}); },
+        "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "utility"}, {"field", "view_family"}});
+    CHECK(typedFixtureOf("ui", Json{{"regions", Json::array({"region.post", "region.debug"})}}).region_tags ==
+        std::vector<std::string>{"region.post", "region.debug"});
+    for (const auto &regions : {Json::array({"region.post", "region.post"}), Json::array({""})}) {
+        TestSupport::requireNamedRefusal([&] { (void)typedFixtureOf("ui", Json{{"regions", regions}}); },
+            "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "utility"}, {"field", "regions"},
+                {"reason", regions.size() == 2 ? "duplicate" : "empty_or_too_long"}, {"region", regions.at(0)}});
+    }
+    const auto clear_color = typedFixtureOf("ui", Json{{"clear_color", Json::array({1.0, 0.5, 0.25, 1.0})}}).clear_color;
     REQUIRE(clear_color[0] == 1.0);
     REQUIRE(clear_color[1] == 0.5);
     REQUIRE(clear_color[2] == 0.25);
     REQUIRE(clear_color[3] == 1.0);
+
 }
 
 TEST_CASE("render target JSON parser returns target definitions", "[renderingpass]") {
@@ -791,9 +801,17 @@ TEST_CASE(
           }
         })json");
 
+    const Json images = Json::array({fixtureImage("scene_color"), fixtureImage("out_a"), fixtureImage("out_b"), fixtureImage("depth", true)});
+    const Json buffers = Json::array({Json{{"name", "draw_metadata"}, {"size", 64}}});
+    const auto raster = [&](Json fields) {
+        fields["name"] = "sky"; fields["type"] = "raster";
+        fields["output"] = {{"color", Json::array({"out_a", "out_b"})}, {"depth", "depth"}};
+        Json config{{"render_targets", images}, {"buffers", buffers},
+            {"rendering_passes", Json::array({Json{{"name", "main"}, {"passes", Json::array({fields})}}})}};
+        return TestSupport::renderingPassDefinitionsOf(config).at(0).passes.at(0).genericRasterInfo();
+    };
     const auto info =
-        parseGenericRasterPassInfoFromJson(
-            pass_json, "sky", 2, true);
+        raster(pass_json);
     CHECK(
         info.contract.geometry.implementation ==
         "project.procedural_sky@2");
@@ -828,20 +846,14 @@ TEST_CASE(
 
     auto missing_fragment = pass_json;
     missing_fragment["shader"].erase("fragment");
-    CHECK_THROWS_WITH(
-        parseGenericRasterPassInfoFromJson(
-            missing_fragment, "sky", 2, true),
-        Catch::Matchers::ContainsSubstring(
-            "color outputs requires a fragment"));
+    TestSupport::requireNamedRefusal([&] { (void)raster(missing_fragment); },
+        "render_graph.pass_execution_invalid@1", {{"graph", "main"}, {"node", "sky"}, {"field", "shader.fragment"}, {"reason", "required"}});
 
     auto unversioned = pass_json;
     unversioned["shader"]["implementation"] =
         "project.sky_shader";
-    CHECK_THROWS_WITH(
-        parseGenericRasterPassInfoFromJson(
-            unversioned, "sky", 2, true),
-        Catch::Matchers::ContainsSubstring(
-            "namespace.name@major"));
+    TestSupport::requireNamedRefusal([&] { (void)raster(unversioned); },
+        "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "sky"}, {"field", "shader.implementation"}, {"reason", "not_a_canonical_id"}});
 }
 
 TEST_CASE(
@@ -1999,10 +2011,11 @@ TEST_CASE(
     const auto too_small_buffers =
         Pelican::test_support::bufferDefinitionsOf(
             too_small);
-    REQUIRE_THROWS_WITH(
-        validateGpuDrawSourceBufferContracts(TestSupport::renderGraphOf(too_small), too_small_buffers),
-        Catch::Matchers::ContainsSubstring(
-            "command range exceeds"));
+    TestSupport::requireNamedRefusal([&] {
+        validateGpuDrawSourceBufferContracts(TestSupport::renderGraphOf(too_small), too_small_buffers);
+    }, "render_graph.gpu_draw_source_invalid@1", {{"graph", "main"}, {"node", "geometry"},
+        {"field", "gpu_draw_source.command_offset"}, {"reason", "command_range_exceeds_buffer"},
+        {"buffer", "visible_draws"}, {"bytes", 40}, {"offset", 0}, {"size", 20}});
 
     auto unaligned = config;
     unaligned["rendering_passes"][0]["passes"][0]
@@ -2219,6 +2232,8 @@ TEST_CASE("pass info JSON parser applies fullscreen info only to fullscreen pass
 TEST_CASE(
     "pass definition JSON parser keeps GPU draw sources material-only",
     "[renderingpass][wp303]") {
+    const Json images = Json::array({fixtureImage("scene_color"), fixtureImage("scene_depth", true)});
+    const Json buffers = Json::array({Json{{"name", "visible_draws"}, {"size", 320}, {"usage", Json::array({"STORAGE_BUFFER", "INDIRECT_BUFFER"})}}, Json{{"name", "visible_draw_count"}, {"size", 4}, {"usage", Json::array({"STORAGE_BUFFER", "INDIRECT_BUFFER"})}}});
     const auto name_resolver =
         RenderTargetNameResolver{
             [](const std::string &name) {
@@ -2230,26 +2245,7 @@ TEST_CASE(
                 }
                 return noRenderTargetId();
             }};
-    const auto metadata_resolver =
-        RenderTargetMetadataResolver{
-            [](GlobalRenderTargetId id) {
-                if (id == GlobalRenderTargetId{0}) {
-                    return RenderTargetMetadata{
-                        "scene_color",
-                        ImageUsageBit::color_attachment,
-                        ImageFormat::r16g16b16a16_sfloat,
-                        ResolvedResourceExtent{1280, 720}};
-                }
-                if (id == GlobalRenderTargetId{1}) {
-                    return RenderTargetMetadata{
-                        "scene_depth",
-                        ImageUsageBit::depth_stencil_attachment,
-                        ImageFormat::d32_sfloat,
-                        ResolvedResourceExtent{1280, 720}};
-                }
-                throw std::runtime_error(
-                    "unexpected render target metadata lookup");
-            }};
+
     const nlohmann::json gpu_draw_source{
         {"commands", "visible_draws"},
         {"count", "visible_draw_count"},
@@ -2263,23 +2259,15 @@ TEST_CASE(
         {"gpu_draw_source", gpu_draw_source},
     };
 
-    REQUIRE_THROWS_WITH(
-        parsePassDefinitionFromJson(
-            fullscreen_json, name_resolver,
-            metadata_resolver),
-        "Pass 'post_process' type 'fullscreen' does not own field "
-        "'gpu_draw_source'");
+    TestSupport::requireNamedRefusal([&] { (void)passInGraph(fullscreen_json, images, buffers, name_resolver); },
+        "render_graph.pass_field_ownership@1", {{"graph", "main"}, {"node", "post_process"}});
 
     auto contract_on_fullscreen = fullscreen_json;
     contract_on_fullscreen.erase("gpu_draw_source");
     contract_on_fullscreen["material_contract"] =
         "forward_opaque_v1";
-    REQUIRE_THROWS_WITH(
-        parsePassDefinitionFromJson(
-            contract_on_fullscreen, name_resolver,
-            metadata_resolver),
-        "Pass 'post_process' type 'fullscreen' does not own field "
-        "'material_contract'");
+    TestSupport::requireNamedRefusal([&] { (void)passInGraph(contract_on_fullscreen, images, buffers, name_resolver); },
+        "render_graph.pass_field_ownership@1", {{"graph", "main"}, {"node", "post_process"}});
 
     const nlohmann::json material_json{
         {"name", "gpu_geometry"},
@@ -2290,9 +2278,7 @@ TEST_CASE(
         {"output", {{"color", "scene_color"}, {"depth", "scene_depth"}}},
     };
     const auto material_pass =
-        parsePassDefinitionFromJson(
-            material_json, name_resolver,
-            metadata_resolver);
+        passInGraph(material_json, images, buffers, name_resolver);
 
     REQUIRE(material_pass.isMaterial());
     REQUIRE(material_pass.materialInfo().gpu_draw_source);
@@ -2355,16 +2341,14 @@ TEST_CASE("rendering pass target JSON parser applies output and input targets", 
         return noRenderTargetId();
     }};
 
-    PassDefinition pass_def;
-    pass_def.name = "postprocess";
 
+    const Json images = Json::array({fixtureImage("color_target"), fixtureImage("depth_target", true), fixtureImage("input_target")});
     const nlohmann::json pass_json{
         {"output", {{"color", "color_target"}, {"depth", "depth_target"}}},
         {"input", "input_target"},
     };
 
-    parsePassOutputTargetsFromJson(pass_def, resolver, pass_json);
-    parsePassInputTargetsFromJson(pass_def, resolver, pass_json);
+    const auto pass_def = targetPassOf(pass_json, "postprocess", images, resolver);
 
     REQUIRE(pass_def.output_color.size() == 1);
     REQUIRE(pass_def.output_color[0] == GlobalRenderTargetId{3});
@@ -2376,15 +2360,13 @@ TEST_CASE("rendering pass target JSON parser applies output and input targets", 
 TEST_CASE("rendering pass target JSON parser handles swapchain and omitted input", "[renderingpass]") {
     const auto resolver = RenderTargetNameResolver{[](const std::string &) { return noRenderTargetId(); }};
 
-    PassDefinition pass_def;
-    pass_def.name = "present";
 
+    const Json images = Json::array();
     const nlohmann::json pass_json{
         {"output", {{"color", "swapchain"}, {"depth", nullptr}}},
     };
 
-    parsePassOutputTargetsFromJson(pass_def, resolver, pass_json);
-    parsePassInputTargetsFromJson(pass_def, resolver, pass_json);
+    const auto pass_def = targetPassOf(pass_json, "present", images, resolver);
 
     REQUIRE(pass_def.output_color.size() == 1);
     REQUIRE(isSwapchainRenderTarget(pass_def.output_color[0]));
@@ -2406,8 +2388,7 @@ TEST_CASE(
                 }
                 return noRenderTargetId();
             }};
-    PassDefinition pass;
-    pass.name = "probe_face";
+    const Json images = Json::array({fixtureImage("probe_color"), fixtureImage("probe_depth", true)});
     const auto authored = nlohmann::json{
         {"output",
          {
@@ -2436,8 +2417,7 @@ TEST_CASE(
          }},
     };
 
-    parsePassOutputTargetsFromJson(
-        pass, resolver, authored);
+    const auto pass = targetPassOf(authored, "probe_face", images, resolver);
     REQUIRE(pass.output_color.size() == 1);
     REQUIRE(
         pass.output_color.front().target ==
@@ -2461,29 +2441,20 @@ TEST_CASE(
     invalid["output"]["color"][0]
            ["subresource"]["mip_count"] =
         "remaining";
-    REQUIRE_THROWS_WITH(
-        parsePassOutputTargetsFromJson(
-            pass, resolver, invalid),
-        Catch::Matchers::ContainsSubstring(
-            "must select exactly one mip"));
+    TestSupport::requireNamedRefusal([&] { (void)targetPassOf(invalid, "probe_face", images, resolver); },
+        "render_graph.attachment_invalid@1", {{"graph", "main"}, {"node", "probe_face"}, {"field", "output.color"}, {"reason", "subresource_not_one_mip"}});
 
     invalid = authored;
     invalid["output"]["color"][0]
            ["unknown"] = true;
-    REQUIRE_THROWS_WITH(
-        parsePassOutputTargetsFromJson(
-            pass, resolver, invalid),
-        Catch::Matchers::ContainsSubstring(
-            "unknown field"));
+    TestSupport::requireNamedRefusal([&] { (void)targetPassOf(invalid, "probe_face", images, resolver); },
+        "render_graph.attachment_invalid@1", {{"graph", "main"}, {"node", "probe_face"}, {"field", "output.color"}, {"reason", "unknown_field"}, {"key", "unknown"}});
 
     invalid = authored;
     invalid["output"]["color"][0]
            ["target"] = "swapchain";
-    REQUIRE_THROWS_WITH(
-        parsePassOutputTargetsFromJson(
-            pass, resolver, invalid),
-        Catch::Matchers::ContainsSubstring(
-            "Swapchain output cannot select"));
+    TestSupport::requireNamedRefusal([&] { (void)targetPassOf(invalid, "probe_face", images, resolver); },
+        "render_graph.attachment_invalid@1", {{"graph", "main"}, {"node", "probe_face"}, {"field", "output.color"}, {"reason", "swapchain_subresource"}});
 }
 
 TEST_CASE(
@@ -2542,33 +2513,26 @@ TEST_CASE(
 TEST_CASE("rendering pass target JSON parser rejects malformed pass outputs", "[renderingpass]") {
     const auto resolver = RenderTargetNameResolver{[](const std::string &) { return noRenderTargetId(); }};
 
-    PassDefinition pass_def;
-    pass_def.name = "bad_pass";
-
-    REQUIRE_THROWS_AS(parsePassOutputTargetsFromJson(pass_def, resolver, nlohmann::json::object()),
-                      std::runtime_error);
-    REQUIRE_THROWS_AS(parsePassOutputTargetsFromJson(pass_def, resolver, nlohmann::json{{"output", 1}}),
-                      std::runtime_error);
-    REQUIRE_THROWS_AS(parsePassOutputTargetsFromJson(pass_def, resolver,
-                                                     nlohmann::json{{"output", {{"color", "swapchain"}}}}),
-                      std::runtime_error);
+    const Json images = Json::array();
+    for (const auto &fields : std::vector<Json>{Json::object(), Json{{"output", 1}},
+            Json{{"output", {{"color", "swapchain"}}}}}) {
+        const bool missing_depth = fields.contains("output") && fields["output"].is_object();
+        TestSupport::requireNamedRefusal([&] { (void)targetPassOf(fields, "bad_pass", images, resolver); },
+            "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "bad_pass"},
+                {"field", missing_depth ? "output.depth" : "output"}, {"reason", missing_depth ? "missing" : "requires_object"}});
+    }
 }
 
 TEST_CASE("pass definition JSON parser builds a fullscreen pass definition", "[renderingpass]") {
+    const Json images = Json::array({fixtureImage("half_color")});
+    const Json buffers = Json::array();
     const auto name_resolver = RenderTargetNameResolver{[](const std::string &name) {
         if (name == "half_color") {
             return GlobalRenderTargetId{3};
         }
         return noRenderTargetId();
     }};
-    const auto metadata_resolver = RenderTargetMetadataResolver{[](GlobalRenderTargetId id) {
-        if (id == GlobalRenderTargetId{3}) {
-            return RenderTargetMetadata{"half_color", ImageUsageBit::color_attachment |
-                                                          ImageUsageBit::sampled,
-                                        ImageFormat::r8g8b8a8_unorm, ResolvedResourceExtent{1280, 720}};
-        }
-        throw std::runtime_error("unexpected render target metadata lookup");
-    }};
+
 
     const nlohmann::json pass_json{
         {"name", "debug_texture"},
@@ -2590,7 +2554,7 @@ TEST_CASE("pass definition JSON parser builds a fullscreen pass definition", "[r
         {"clear_color", nlohmann::json::array({0.0f, 0.0f, 0.0f, 1.0f})},
     };
 
-    const auto pass_def = parsePassDefinitionFromJson(pass_json, name_resolver, metadata_resolver);
+    const auto pass_def = passInGraph(pass_json, images, buffers, name_resolver);
 
     REQUIRE(pass_def.name == "debug_texture");
     REQUIRE(pass_def.isFullscreen());
@@ -2620,9 +2584,7 @@ TEST_CASE("pass definition JSON parser builds a fullscreen pass definition", "[r
     output_transform_json["name"] = "output_transform_fixture";
     output_transform_json["type"] = "output_transform";
     const auto output_transform =
-        parsePassDefinitionFromJson(
-            output_transform_json, name_resolver,
-            metadata_resolver);
+        passInGraph(output_transform_json, images, buffers, name_resolver);
     REQUIRE(output_transform.isFullscreen());
     REQUIRE(
         output_transform.fullscreenInfo()
@@ -2641,11 +2603,8 @@ TEST_CASE("pass definition JSON parser builds a fullscreen pass definition", "[r
           {"depth", nullptr}}},
         {"raster_state", pass_json.at("raster_state")},
     };
-    REQUIRE_THROWS_WITH(
-        parsePassDefinitionFromJson(
-            non_owner, name_resolver,
-            metadata_resolver),
-        "Pass 'ui_fixture' type 'ui' does not own field 'raster_state'");
+    TestSupport::requireNamedRefusal([&] { (void)passInGraph(non_owner, images, buffers, name_resolver); },
+        "render_graph.pass_field_ownership@1", {{"graph", "main"}, {"node", "ui_fixture"}});
 }
 
 TEST_CASE(
@@ -2924,6 +2883,8 @@ TEST_CASE(
 TEST_CASE(
     "pass definition JSON parser builds an arbitrary-MRT generic raster pass",
     "[renderingpass][raster][wp238b]") {
+    const Json images = Json::array({fixtureImage("gbuffer_a"), fixtureImage("gbuffer_b"), fixtureImage("scene_depth", true)});
+    const Json buffers = Json::array();
     const auto name_resolver =
         RenderTargetNameResolver{
             [](const std::string &name) {
@@ -2935,36 +2896,7 @@ TEST_CASE(
                     return GlobalRenderTargetId{12};
                 return noRenderTargetId();
             }};
-    const auto metadata_resolver =
-        RenderTargetMetadataResolver{
-            [](GlobalRenderTargetId id) {
-                if (id == GlobalRenderTargetId{10}) {
-                    return RenderTargetMetadata{
-                        "gbuffer_a",
-                        ImageUsageBit::
-                            color_attachment,
-                        ImageFormat::r16g16b16a16_sfloat,
-                        ResolvedResourceExtent{960, 540}};
-                }
-                if (id == GlobalRenderTargetId{11}) {
-                    return RenderTargetMetadata{
-                        "gbuffer_b",
-                        ImageUsageBit::
-                            color_attachment,
-                        ImageFormat::r8g8b8a8_unorm,
-                        ResolvedResourceExtent{960, 540}};
-                }
-                if (id == GlobalRenderTargetId{12}) {
-                    return RenderTargetMetadata{
-                        "scene_depth",
-                        ImageUsageBit::
-                            depth_stencil_attachment,
-                        ImageFormat::d32_sfloat,
-                        ResolvedResourceExtent{960, 540}};
-                }
-                throw std::runtime_error(
-                    "unexpected render target metadata lookup");
-            }};
+
     const auto encoded =
         nlohmann::json::parse(R"json({
           "name": "custom_gbuffer",
@@ -2993,9 +2925,7 @@ TEST_CASE(
         })json");
 
     const auto pass =
-        parsePassDefinitionFromJson(
-            encoded, name_resolver,
-            metadata_resolver);
+        passInGraph(encoded, images, buffers, name_resolver);
     CHECK(pass.isGenericRaster());
     CHECK(
         pass.resolution_domain ==
@@ -3018,6 +2948,8 @@ TEST_CASE(
 TEST_CASE(
     "pass definition JSON parser keeps implementation selection typed and fullscreen-only",
     "[renderingpass][render-pass][wp200]") {
+    const Json images = Json::array({fixtureImage("half_color")});
+    const Json buffers = Json::array();
     const auto name_resolver =
         RenderTargetNameResolver{
             [](const std::string &name) {
@@ -3025,20 +2957,7 @@ TEST_CASE(
                            ? GlobalRenderTargetId{3}
                            : noRenderTargetId();
             }};
-    const auto metadata_resolver =
-        RenderTargetMetadataResolver{
-            [](GlobalRenderTargetId id) {
-                if (id != GlobalRenderTargetId{3}) {
-                    throw std::runtime_error(
-                        "unexpected render target metadata lookup");
-                }
-                return RenderTargetMetadata{
-                    "half_color",
-                    ImageUsageBit::color_attachment |
-                        ImageUsageBit::sampled,
-                    ImageFormat::r8g8b8a8_unorm,
-                    ResolvedResourceExtent{1280, 720}};
-            }};
+
     const nlohmann::json material_json{
         {"name", "material"},
         {"type", "material"},
@@ -3048,12 +2967,8 @@ TEST_CASE(
          {{"color", "half_color"},
           {"depth", nullptr}}},
     };
-    REQUIRE_THROWS_WITH(
-        parsePassDefinitionFromJson(
-            material_json, name_resolver,
-            metadata_resolver),
-        Catch::Matchers::ContainsSubstring(
-            "does not own field 'implementation'"));
+    TestSupport::requireNamedRefusal([&] { (void)passInGraph(material_json, images, buffers, name_resolver); },
+        "render_graph.pass_field_ownership@1", {{"graph", "main"}, {"node", "material"}});
 
     auto malformed = nlohmann::json{
         {"name", "fullscreen"},
@@ -3068,32 +2983,20 @@ TEST_CASE(
          {{"vertex", "fullscreen"},
           {"fragment", "composite"}}},
     };
-    REQUIRE_THROWS_WITH(
-        parsePassDefinitionFromJson(
-            malformed, name_resolver,
-            metadata_resolver),
-        Catch::Matchers::ContainsSubstring(
-            "containing only a provider string"));
+    TestSupport::requireNamedRefusal([&] { (void)passInGraph(malformed, images, buffers, name_resolver); },
+        "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "fullscreen"}, {"field", "implementation.fallback"}, {"reason", "unknown_field"}});
 
     malformed["implementation"] =
         {{"provider", ""}};
-    REQUIRE_THROWS_WITH(
-        parsePassDefinitionFromJson(
-            malformed, name_resolver,
-            metadata_resolver),
-        Catch::Matchers::ContainsSubstring(
-            "empty or too long"));
+    TestSupport::requireNamedRefusal([&] { (void)passInGraph(malformed, images, buffers, name_resolver); },
+        "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "fullscreen"}, {"field", "implementation.provider"}, {"reason", "empty_or_too_long"}});
     malformed["implementation"] = {
         {"provider",
          std::string(
              RenderPass::maximumProviderNameBytesV1 + 1,
              'x')}};
-    REQUIRE_THROWS_WITH(
-        parsePassDefinitionFromJson(
-            malformed, name_resolver,
-            metadata_resolver),
-        Catch::Matchers::ContainsSubstring(
-            "empty or too long"));
+    TestSupport::requireNamedRefusal([&] { (void)passInGraph(malformed, images, buffers, name_resolver); },
+        "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "fullscreen"}, {"field", "implementation.provider"}, {"reason", "empty_or_too_long"}});
 }
 
 TEST_CASE("fullscreen pass JSON parser accepts shader stem references", "[renderingpass]") {
@@ -3113,16 +3016,14 @@ TEST_CASE("fullscreen pass JSON parser accepts shader stem references", "[render
 }
 
 TEST_CASE("pass definition JSON parser rejects invalid pass object", "[renderingpass]") {
-    const auto name_resolver = RenderTargetNameResolver{[](const std::string &) { return noRenderTargetId(); }};
-    const auto metadata_resolver = RenderTargetMetadataResolver{[](GlobalRenderTargetId) -> RenderTargetMetadata {
-        throw std::runtime_error("unexpected render target metadata lookup");
-    }};
-
-    REQUIRE_THROWS_AS(parsePassDefinitionFromJson(nlohmann::json::array(), name_resolver, metadata_resolver),
-                      std::runtime_error);
+    TestSupport::requireNamedRefusal([&] {
+        (void)TestSupport::renderingPassDefinitionsOf(Json{{"rendering_passes", Json::array({
+            Json{{"name", "main"}, {"passes", Json::array({Json::array()})}}})}});
+    }, "render_graph.not_object@1", {{"graph", "main"}, {"field", "passes"}, {"index", 0}});
 }
 
 TEST_CASE("pass sequence JSON parser resolves input target references", "[renderingpass]") {
+    const Json images = Json::array({fixtureImage("source_color"), fixtureImage("final_color")});
     const auto name_resolver = RenderTargetNameResolver{[](const std::string &name) {
         if (name == "source_color") {
             return GlobalRenderTargetId{3};
@@ -3132,18 +3033,7 @@ TEST_CASE("pass sequence JSON parser resolves input target references", "[render
         }
         return noRenderTargetId();
     }};
-    const auto metadata_resolver = RenderTargetMetadataResolver{[](GlobalRenderTargetId id) {
-        if (id == GlobalRenderTargetId{3}) {
-            return RenderTargetMetadata{"source_color", ImageUsageBit::color_attachment |
-                                                            ImageUsageBit::sampled,
-                                        ImageFormat::r8g8b8a8_unorm, ResolvedResourceExtent{1280, 720}};
-        }
-        if (id == GlobalRenderTargetId{4}) {
-            return RenderTargetMetadata{"final_color", ImageUsageBit::color_attachment,
-                                        ImageFormat::r8g8b8a8_unorm, ResolvedResourceExtent{1280, 720}};
-        }
-        throw std::runtime_error("unexpected render target metadata lookup");
-    }};
+
 
     const nlohmann::json pass_set_json{
         {"passes",
@@ -3157,7 +3047,7 @@ TEST_CASE("pass sequence JSON parser resolves input target references", "[render
          })},
     };
 
-    const auto passes = parsePassSequenceFromJson(pass_set_json, "main", name_resolver, metadata_resolver);
+    const auto passes = passesInGraph(pass_set_json, images, Json::array(), name_resolver);
 
     REQUIRE(passes.size() == 2);
     REQUIRE(passes[0].name == "source");
@@ -3165,14 +3055,13 @@ TEST_CASE("pass sequence JSON parser resolves input target references", "[render
     REQUIRE(passes[1].input_targets[0] == GlobalRenderTargetId{3});
 
     // Its producer may be a compute/ray task outside this raster-only list.
-    const auto consumer_only = parsePassSequenceFromJson(
-        nlohmann::json{{"passes", nlohmann::json::array({pass_set_json["passes"][1]})}},
-        "main", name_resolver, metadata_resolver);
+    const auto consumer_only = passesInGraph(nlohmann::json{{"passes", nlohmann::json::array({pass_set_json["passes"][1]})}}, images, Json::array(), name_resolver);
     REQUIRE(consumer_only.size() == 1);
     REQUIRE(consumer_only[0].input_targets[0] == GlobalRenderTargetId{3});
 }
 
 TEST_CASE("pass sequence JSON parser allows depth output as later input", "[renderingpass]") {
+    const Json images = Json::array({fixtureImage("shadow_map", true), fixtureImage("lit_color")});
     const auto name_resolver = RenderTargetNameResolver{[](const std::string &name) {
         if (name == "shadow_map") {
             return GlobalRenderTargetId{3};
@@ -3182,18 +3071,7 @@ TEST_CASE("pass sequence JSON parser allows depth output as later input", "[rend
         }
         return noRenderTargetId();
     }};
-    const auto metadata_resolver = RenderTargetMetadataResolver{[](GlobalRenderTargetId id) {
-        if (id == GlobalRenderTargetId{3}) {
-            return RenderTargetMetadata{"shadow_map", ImageUsageBit::depth_stencil_attachment |
-                                                          ImageUsageBit::sampled,
-                                        ImageFormat::d32_sfloat, ResolvedResourceExtent{2048, 2048}};
-        }
-        if (id == GlobalRenderTargetId{4}) {
-            return RenderTargetMetadata{"lit_color", ImageUsageBit::color_attachment,
-                                        ImageFormat::r8g8b8a8_unorm, ResolvedResourceExtent{1280, 720}};
-        }
-        throw std::runtime_error("unexpected render target metadata lookup");
-    }};
+
 
     const nlohmann::json pass_set_json{
         {"passes",
@@ -3206,7 +3084,7 @@ TEST_CASE("pass sequence JSON parser allows depth output as later input", "[rend
          })},
     };
 
-    const auto passes = parsePassSequenceFromJson(pass_set_json, "main", name_resolver, metadata_resolver);
+    const auto passes = passesInGraph(pass_set_json, images, Json::array(), name_resolver);
 
     REQUIRE(passes.size() == 2);
     REQUIRE(passes[0].isShadowDepth());
@@ -3214,10 +3092,9 @@ TEST_CASE("pass sequence JSON parser allows depth output as later input", "[rend
 }
 
 TEST_CASE("pass sequence JSON parser rejects duplicate pass names", "[renderingpass]") {
+    const Json images = Json::array();
     const auto name_resolver = RenderTargetNameResolver{[](const std::string &) { return noRenderTargetId(); }};
-    const auto metadata_resolver = RenderTargetMetadataResolver{[](GlobalRenderTargetId) -> RenderTargetMetadata {
-        throw std::runtime_error("unexpected render target metadata lookup");
-    }};
+
 
     const nlohmann::json pass_set_json{
         {"passes",
@@ -3229,21 +3106,20 @@ TEST_CASE("pass sequence JSON parser rejects duplicate pass names", "[renderingp
          })},
     };
 
-    REQUIRE_THROWS_AS(parsePassSequenceFromJson(pass_set_json, "main", name_resolver, metadata_resolver),
-                      std::runtime_error);
+    TestSupport::requireNamedRefusal([&] { (void)passesInGraph(pass_set_json, images, Json::array(), name_resolver); },
+        "render_graph.duplicate_node@1", {{"graph", "main"}, {"node", "same"}});
 }
 
 TEST_CASE("pass sequence JSON parser rejects malformed pass list", "[renderingpass]") {
+    const Json images = Json::array();
     const auto name_resolver = RenderTargetNameResolver{[](const std::string &) { return noRenderTargetId(); }};
-    const auto metadata_resolver = RenderTargetMetadataResolver{[](GlobalRenderTargetId) -> RenderTargetMetadata {
-        throw std::runtime_error("unexpected render target metadata lookup");
-    }};
 
-    REQUIRE_THROWS_AS(parsePassSequenceFromJson(nlohmann::json::object(), "main", name_resolver, metadata_resolver),
-                      std::runtime_error);
-    REQUIRE_THROWS_AS(parsePassSequenceFromJson(nlohmann::json{{"passes", 1}}, "main", name_resolver,
-                                                metadata_resolver),
-                      std::runtime_error);
+
+    for (const auto &graph : {Json::object(), Json{{"passes", 1}}}) {
+        TestSupport::requireNamedRefusal([&] { (void)passesInGraph(graph, images, Json::array(), name_resolver); },
+            "render_graph.section_invalid@1", {{"graph", "main"}, {"field", "passes"}});
+    }
+    CHECK(passesInGraph(Json{{"passes", Json::array()}}, images, Json::array(), name_resolver).empty());
 }
 
 TEST_CASE("pass attachment options parser applies explicit color attachment options", "[renderingpass]") {
@@ -3429,42 +3305,23 @@ TEST_CASE("material pass info parser compiles stable include and exclude tags",
 
 TEST_CASE("material pass screen inputs resolve named typed targets and reject mismatches",
           "[renderingpass][material-screen-input][rpe6b1]") {
+    const Json images = Json::array({fixtureImage("opaque_color"), fixtureImage("opaque_depth", true)});
+    const Json buffer_declarations = Json::array({Json{{"name", "deformed_positions"}, {"size", 64}}});
     const RenderTargetNameResolver names{[](const std::string &name) {
         if (name == "opaque_color") return GlobalRenderTargetId{10};
         if (name == "opaque_depth") return GlobalRenderTargetId{11};
         return noRenderTargetId();
     }};
-    const RenderTargetMetadataResolver metadata{
-        [](GlobalRenderTargetId target) {
-            if (target == GlobalRenderTargetId{10}) {
-                return RenderTargetMetadata{
-                    "opaque_color",
-                    ImageUsageBit::transfer_dst |
-                        ImageUsageBit::sampled,
-                    ImageFormat::r16g16b16a16_sfloat,
-                    ResolvedResourceExtent{1280, 720}};
-            }
-            if (target == GlobalRenderTargetId{11}) {
-                return RenderTargetMetadata{
-                    "opaque_depth",
-                    ImageUsageBit::transfer_dst |
-                        ImageUsageBit::sampled,
-                    ImageFormat::d32_sfloat, ResolvedResourceExtent{1280, 720}};
-            }
-            throw std::runtime_error("unexpected target");
-        }};
+
 
     PassDefinition pass;
     pass.name = "forward_transparent";
     pass.pass_info = MaterialPassInfo{};
-    parseMaterialPassScreenInputsFromJson(
-        pass,
-        nlohmann::json{{"screen_inputs",
+    pass = namedMaterialOf(nlohmann::json{{"screen_inputs",
                         {{"opaque_color", "opaque_color"},
                          {"opaque_depth", "opaque_depth"},
                          {"scene_depth", "opaque_depth"},
-                         {"linear_view_depth", "opaque_depth"}}}},
-        names, metadata);
+                         {"linear_view_depth", "opaque_depth"}}}}, "forward_transparent", images, buffer_declarations, names);
     REQUIRE(pass.materialInfo().screen_inputs.size() == 4);
     REQUIRE(pass.input_targets.size() == 2);
     REQUIRE(std::find(pass.input_targets.begin(), pass.input_targets.end(),
@@ -3484,67 +3341,32 @@ TEST_CASE("material pass screen inputs resolve named typed targets and reject mi
     REQUIRE(linear->contract.conversion ==
             std::optional<std::string>{"pelican.render.depth_linearize@1"});
 
-    PassDefinition mismatch;
-    mismatch.name = "bad_forward";
-    mismatch.pass_info = MaterialPassInfo{};
-    REQUIRE_THROWS_WITH(
-        parseMaterialPassScreenInputsFromJson(
-            mismatch,
-            nlohmann::json{{"screen_inputs",
-                            {{"opaque_color", "opaque_depth"}}}},
-            names, metadata),
-        Catch::Matchers::ContainsSubstring("opaque_color") &&
-            Catch::Matchers::ContainsSubstring("source type"));
+    TestSupport::requireNamedRefusal([&] { (void)namedMaterialOf(nlohmann::json{{"screen_inputs",
+                            {{"opaque_color", "opaque_depth"}}}}, "bad_forward", images, buffer_declarations, names); },
+        "render_graph.pass_execution_invalid@1", {{"graph", "main"}, {"node", "bad_forward"}, {"field", "screen_input"}, {"reason", "invalid_contract"}, {"port", "opaque_color"}});
 
-    PassDefinition unknown;
-    unknown.name = "unknown_forward";
-    unknown.pass_info = MaterialPassInfo{};
-    REQUIRE_THROWS_WITH(
-        parseMaterialPassScreenInputsFromJson(
-            unknown,
-            nlohmann::json{{"screen_inputs",
-                            {{"history_magic", "opaque_color"}}}},
-            names, metadata),
-        Catch::Matchers::ContainsSubstring("history_magic"));
+    TestSupport::requireNamedRefusal([&] { (void)namedMaterialOf(nlohmann::json{{"screen_inputs",
+                            {{"history_magic", "opaque_color"}}}}, "unknown_forward", images, buffer_declarations, names); },
+        "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "unknown_forward"}, {"field", "screen_inputs"}, {"reason", "unknown_contract"}});
 }
 
 TEST_CASE("material pass surface resources resolve the feature-owned directional shadow contract",
           "[renderingpass][material-surface-resource][wp205]") {
+    const Json images = Json::array({fixtureImage("shadow_map", true), fixtureImage("scene_color")});
+    const Json buffer_declarations = Json::array({Json{{"name", "deformed_positions"}, {"size", 64}}});
     const RenderTargetNameResolver names{[](const std::string &name) {
         if (name == "shadow_map") return GlobalRenderTargetId{20};
         if (name == "scene_color") return GlobalRenderTargetId{21};
         return noRenderTargetId();
     }};
-    const RenderTargetMetadataResolver metadata{
-        [](GlobalRenderTargetId target) {
-            if (target == GlobalRenderTargetId{20}) {
-                return RenderTargetMetadata{
-                    "shadow_map",
-                    ImageUsageBit::depth_stencil_attachment |
-                        ImageUsageBit::sampled,
-                    ImageFormat::d32_sfloat,
-                    ResolvedResourceExtent{2048, 2048}};
-            }
-            if (target == GlobalRenderTargetId{21}) {
-                return RenderTargetMetadata{
-                    "scene_color",
-                    ImageUsageBit::color_attachment |
-                        ImageUsageBit::sampled,
-                    ImageFormat::r16g16b16a16_sfloat,
-                    ResolvedResourceExtent{1280, 720}};
-            }
-            throw std::runtime_error("unexpected target");
-        }};
+
 
     PassDefinition pass;
     pass.name = "forward_opaque";
     pass.pass_info = MaterialPassInfo{};
-    parseMaterialPassSurfaceResourcesFromJson(
-        pass,
-        nlohmann::json{
+    pass = namedMaterialOf(nlohmann::json{
             {"surface_resources",
-             {{"directional_shadow", "shadow_map"}}}},
-        names, metadata);
+             {{"directional_shadow", "shadow_map"}}}}, "forward_opaque", images, buffer_declarations, names);
 
     REQUIRE(pass.materialInfo().surface_resources.size() == 1);
     const auto &binding =
@@ -3572,37 +3394,22 @@ TEST_CASE("material pass surface resources resolve the feature-owned directional
             std::vector<GlobalRenderTargetId>{
                 GlobalRenderTargetId{20}});
 
-    PassDefinition wrong_type;
-    wrong_type.name = "bad_forward";
-    wrong_type.pass_info = MaterialPassInfo{};
-    REQUIRE_THROWS_WITH(
-        parseMaterialPassSurfaceResourcesFromJson(
-            wrong_type,
-            nlohmann::json{
+    TestSupport::requireNamedRefusal([&] { (void)namedMaterialOf(nlohmann::json{
                 {"surface_resources",
-                 {{"directional_shadow", "scene_color"}}}},
-            names, metadata),
-        Catch::Matchers::ContainsSubstring(
-            "directional_shadow") &&
-            Catch::Matchers::ContainsSubstring("source type"));
+                 {{"directional_shadow", "scene_color"}}}}, "bad_forward", images, buffer_declarations, names); },
+        "render_graph.pass_execution_invalid@1", {{"graph", "main"}, {"node", "bad_forward"}, {"field", "surface_resource"}, {"reason", "invalid_contract"}, {"port", "directional_shadow"}});
 
-    PassDefinition user_owned;
-    user_owned.name = "bad_forward";
-    user_owned.pass_info = MaterialPassInfo{};
-    REQUIRE_THROWS_WITH(
-        parseMaterialPassSurfaceResourcesFromJson(
-            user_owned,
-            nlohmann::json{
+    TestSupport::requireNamedRefusal([&] { (void)namedMaterialOf(nlohmann::json{
                 {"surface_resources",
-                 {{"opaque_depth", "shadow_map"}}}},
-            names, metadata),
-        Catch::Matchers::ContainsSubstring("opaque_depth") &&
-            Catch::Matchers::ContainsSubstring("not feature-owned"));
+                 {{"opaque_depth", "shadow_map"}}}}, "bad_forward", images, buffer_declarations, names); },
+        "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "bad_forward"}, {"field", "surface_resource"}, {"reason", "not_feature_owned"}, {"port", "opaque_depth"}});
 }
 
 TEST_CASE(
     "material pass resource ports resolve named image and buffer reads",
     "[renderingpass][material-resource][wp207b]") {
+    const Json images = Json::array({fixtureImage("simulation_color"), [] { auto image = fixtureImage("history_color"); image["history"] = true; return image; }()});
+    const Json buffer_declarations = Json::array({Json{{"name", "deformed_positions"}, {"size", 64}}});
     const RenderTargetNameResolver names{
         [](const std::string &name) {
             if (name == "simulation_color") {
@@ -3613,15 +3420,11 @@ TEST_CASE(
             }
             return noRenderTargetId();
         }};
-    const std::unordered_set<std::string> buffers{
-        "deformed_positions"};
 
     PassDefinition pass;
     pass.name = "geometry";
     pass.pass_info = MaterialPassInfo{};
-    parseMaterialPassResourcesFromJson(
-        pass,
-        nlohmann::json{
+    pass = namedMaterialOf(nlohmann::json{
             {"material_resources",
              {
                  {"displacement",
@@ -3655,8 +3458,7 @@ TEST_CASE(
                        "history_color@history"},
                       {"access", "sampled"},
                   }},
-             }}},
-        names, buffers);
+             }}}, "geometry", images, buffer_declarations, names);
 
     REQUIRE(
         pass.materialInfo().material_resources.size() ==
@@ -3741,9 +3543,7 @@ TEST_CASE(
     PassDefinition subresource;
     subresource.name = "subresource";
     subresource.pass_info = MaterialPassInfo{};
-    parseMaterialPassResourcesFromJson(
-        subresource,
-        nlohmann::json{
+    subresource = namedMaterialOf(nlohmann::json{
             {"material_resources",
              {{"pyramid",
                {
@@ -3756,8 +3556,7 @@ TEST_CASE(
                         {"mip_count",
                          "remaining"},
                     }},
-               }}}}},
-        names, buffers);
+               }}}}}, "subresource", images, buffer_declarations, names);
     REQUIRE(
         subresource.materialInfo()
             .material_resources.size() == 1);
@@ -3795,57 +3594,29 @@ TEST_CASE(
                     {{"mip", 1}}},
                    {"footprint", "same_pixel"},
                }}}}};
-    REQUIRE_THROWS_WITH(
-        parseMaterialPassResourcesFromJson(
-            subresource, local_subresource,
-            names, buffers),
-        Catch::Matchers::ContainsSubstring(
-            "cannot use same_pixel"));
+    TestSupport::requireNamedRefusal([&] { (void)namedMaterialOf(local_subresource, "subresource", images, buffer_declarations, names); },
+        "render_graph.footprint_invalid@1", {{"graph", "main"}, {"node", "subresource"}, {"field", "material_resources"}, {"resource", "pyramid"}, {"reason", "same_pixel_subresource"}});
 
-    PassDefinition missing;
-    missing.name = "missing";
-    missing.pass_info = MaterialPassInfo{};
-    REQUIRE_THROWS_WITH(
-        parseMaterialPassResourcesFromJson(
-            missing,
-            nlohmann::json{
+    TestSupport::requireNamedRefusal([&] { (void)namedMaterialOf(nlohmann::json{
                 {"material_resources",
-                 {{"unknown", "missing_target"}}}},
-            names, buffers),
-        Catch::Matchers::ContainsSubstring(
-            "resource not found"));
+                 {{"unknown", "missing_target"}}}}, "missing", images, buffer_declarations, names); },
+        "render_graph.pass_execution_invalid@1", {{"graph", "main"}, {"node", "missing"}, {"field", "material_resource"}, {"reason", "unknown_image"}, {"resource", "missing_target"}});
 
-    PassDefinition buffer_history;
-    buffer_history.name = "buffer_history";
-    buffer_history.pass_info = MaterialPassInfo{};
-    REQUIRE_THROWS_WITH(
-        parseMaterialPassResourcesFromJson(
-            buffer_history,
-            nlohmann::json{
+    TestSupport::requireNamedRefusal([&] { (void)namedMaterialOf(nlohmann::json{
                 {"material_resources",
                  {{"previous",
-                   "deformed_positions@history"}}}},
-            names, buffers),
-        Catch::Matchers::ContainsSubstring(
-            "buffer history is not supported"));
+                   "deformed_positions@history"}}}}, "buffer_history", images, buffer_declarations, names); },
+        "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "buffer_history"}, {"field", "material_resources.previous"}, {"reason", "buffer_history"}});
 
-    PassDefinition mixed_history;
-    mixed_history.name = "mixed_history";
-    mixed_history.pass_info = MaterialPassInfo{};
-    REQUIRE_THROWS_WITH(
-        parseMaterialPassResourcesFromJson(
-            mixed_history,
-            nlohmann::json{
+    TestSupport::requireNamedRefusal([&] { (void)namedMaterialOf(nlohmann::json{
                 {"material_resources",
                  {
                      {"current",
                       "simulation_color"},
                      {"previous",
                       "simulation_color@history"},
-                 }}},
-            names, buffers),
-        Catch::Matchers::ContainsSubstring(
-            "both current and history"));
+                 }}}, "mixed_history", images, buffer_declarations, names); },
+        "render_graph.pass_shape@1", {{"graph", "main"}, {"node", "mixed_history"}, {"violation", "duplicate_input"}, {"target", "simulation_color"}});
 }
 
 TEST_CASE("material pass contracts parse and filter independently of local pass ids",
@@ -3922,40 +3693,6 @@ TEST_CASE(
          }},
     };
 
-    PassDefinition pass;
-    pass.name = "extended_geometry";
-    pass.pass_info = MaterialPassInfo{};
-    parseMaterialPassInfoFromJson(
-        pass,
-        nlohmann::json{
-            {"material_contract",
-             "deferred_geometry_v1"},
-            {"material_outputs", declaration},
-        });
-    REQUIRE(pass.materialInfo().output_schema);
-    REQUIRE(
-        pass.materialInfo().output_schema->outputs.size() ==
-        7);
-    REQUIRE(
-        materialOutputSchemaFingerprint(
-            *pass.materialInfo().output_schema)
-            .starts_with(
-                "pelican.material_outputs@1:"
-                "project.extended_gbuffer"));
-
-    for (int index = 0; index < 7; ++index) {
-        pass.output_color.push_back(
-            GlobalRenderTargetId{index});
-    }
-    pass.output_depth = GlobalRenderTargetId{7};
-    REQUIRE(
-        pass.colorClearValue(5).numeric_class ==
-        MaterialOutputNumericClass::unsigned_integer);
-    REQUIRE(
-        pass.colorClearValue(5)
-            .vulkan()
-            .uint32[3] == 1u);
-
     // RC-3c2a: the attachments are the resource check's, on the IR and the
     // generation's description.
     const auto checked = [&](const nlohmann::json &outputs, std::size_t colors) {
@@ -3981,7 +3718,28 @@ TEST_CASE(
                                                                         {"output", {{"color", color}, {"depth", "depth"}}}}})}}})}};
         const auto ir = TestSupport::renderGraphOf(config);
         validateRenderGraphResources(ir, resolveDeclaredGenerationResources(ir, {1280, 720}));
+        return TestSupport::renderingPassDefinitionsOf(config).at(0).passes.at(0);
     };
+    const auto pass = checked(declaration, 7);
+    REQUIRE(pass.materialInfo().output_schema);
+    REQUIRE(
+        pass.materialInfo().output_schema->outputs.size() ==
+        7);
+    REQUIRE(
+        materialOutputSchemaFingerprint(
+            *pass.materialInfo().output_schema)
+            .starts_with(
+                "pelican.material_outputs@1:"
+                "project.extended_gbuffer"));
+
+    REQUIRE(
+        pass.colorClearValue(5).numeric_class ==
+        MaterialOutputNumericClass::unsigned_integer);
+    REQUIRE(
+        pass.colorClearValue(5)
+            .vulkan()
+            .uint32[3] == 1u);
+
     REQUIRE_NOTHROW(checked(declaration, 7));
     REQUIRE_THROWS_WITH(
         checked(declaration, 6),
@@ -4384,8 +4142,8 @@ TEST_CASE("material pass info parser rejects malformed material range", "[render
 TEST_CASE("rendering pass JSON helpers reject malformed values", "[renderingpass]") {
     REQUIRE_THROWS_AS(parseAuthoredImageFormat("UNKNOWN"), std::runtime_error);
     REQUIRE_THROWS_AS(parseAuthoredImageUsage(std::vector<std::string>{}), std::runtime_error);
-    REQUIRE_THROWS_AS(makePassInfo("compute"), std::runtime_error);
-    REQUIRE_THROWS_AS(stringToFullscreenPushConstantData("camera"), std::runtime_error);
+    REQUIRE_THROWS_AS(typedFixtureOf("compute").pass_info, std::runtime_error);
+    REQUIRE_THROWS_AS(typedFixtureOf("fullscreen", Json{{"push_constants", "camera"}}), std::runtime_error);
     REQUIRE_THROWS_AS(parseAuthoredAttachmentLoadOp("keep"), std::runtime_error);
     REQUIRE_THROWS_AS(parseAuthoredAttachmentStoreOp("load"), std::runtime_error);
 
@@ -4396,7 +4154,7 @@ TEST_CASE("rendering pass JSON helpers reject malformed values", "[renderingpass
                                             "usage", "test"),
                       std::runtime_error);
     REQUIRE_THROWS_AS(parseUint32Field(nlohmann::json{{"count", -1}}, "count", "test"), std::runtime_error);
-    REQUIRE_THROWS_AS(jsonToClearColor(nlohmann::json::array({1.0f, 0.0f, 0.0f})), std::runtime_error);
+    REQUIRE_THROWS_AS(typedFixtureOf("ui", Json{{"clear_color", Json::array({1.0f, 0.0f, 0.0f})}}), std::runtime_error);
     REQUIRE_THROWS_AS(Pelican::test_support::renderTargetDefinitionsOf(nlohmann::json{{"render_targets", 1}}),
                       std::runtime_error);
 }

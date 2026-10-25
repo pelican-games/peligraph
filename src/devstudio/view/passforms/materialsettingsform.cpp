@@ -34,7 +34,7 @@ constexpr std::array material_contracts{"legacy_gbuffer_v1", "deferred_geometry_
 constexpr std::array resource_kinds{"screen_inputs", "surface_resources",
                                     "material_resources"};
 // UX-15a, decision 6: gpu_draw_source's layout that draws several materials
-// (materialpassinfojsonparser.cpp; docs/manual/06_rendering.md).
+// (project/rendergraphparse.cpp; docs/manual/06_rendering.md).
 constexpr const char *gpu_segments_layout = "draw_queue_segments_v1";
 
 std::vector<std::string> outputTypeNames() {

@@ -888,9 +888,11 @@ TEST_CASE(
     CHECK(output.generation_resources.findBuffer("visible_draws")->size == 40);
     // Two indexed draws of 20 bytes do not fit 20 bytes (the declaration
     // alone fits one command): the GPU draw's capacity check.
-    CHECK_THROWS_WITH(compiled([](nlohmann::json &flat) { flat["buffers"][1]["size"] = 20; }),
-                      Catch::Matchers::ContainsSubstring(
-                          "gpu_draw_source command range exceeds buffer 'visible_draws'"));
+    TestSupport::requireNamedRefusal([&] {
+        (void)compiled([](nlohmann::json &flat) { flat["buffers"][1]["size"] = 20; });
+    }, "render_graph.gpu_draw_source_invalid@1", {{"graph", "main"}, {"node", "gpu_geometry"},
+        {"field", "gpu_draw_source.command_offset"}, {"reason", "command_range_exceeds_buffer"},
+        {"buffer", "visible_draws"}, {"bytes", 40}, {"offset", 0}, {"size", 20}});
     // A pass sampling an image without SAMPLED: the pass's resource check.
     CHECK_THROWS_WITH(
         compiled([](nlohmann::json &flat) {

@@ -38,7 +38,7 @@ invariant starts passing, the same test runs its normal assertions without a ski
   `src/core/resources/shadow_depth.vert:19`, `velocity.vert:22`, `picking.vert:14`.
   They do not compose the project surface's vertex hook. Pipeline construction is
   pass-specific (`src/core/renderer/shadowdepthpasscontainer.cpp:37`,
-  `velocitypasscontainer.cpp:34`, `src/core/renderingpass/passinfojsonparser.cpp:123`).
+  `velocitypasscontainer.cpp:34`, `src/core/renderingpass/passdefinitionfromir.cpp`).
 - Proposed WP: VD-1, propagate material vertex displacement into shadow, velocity
   (including previous-frame deformation), and picking pipelines and their reloads.
   CB-1 changes no product code.

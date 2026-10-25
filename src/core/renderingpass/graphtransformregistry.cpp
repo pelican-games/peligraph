@@ -1261,14 +1261,14 @@ resolveLogicalGraphTransforms(
         // JSON: normalized, then held to the normal form before the core
         // reads it (the core parser would take the short forms too).
         candidate = normalizeProviderRenderingJson(std::move(candidate));
+        // The response is the next revision. Its single typed parse
+        // refuses malformed declarations by name before the ABI envelope
+        // comparison; the same IR is "after" here and the next "before".
+        auto after_graph = parseRenderGraph(
+            candidate, buildPassFieldOwnershipCapabilities());
         requireSameProtectedStructure(
             result.config, candidate,
             request.name);
-
-        // The response is the next revision: parsed once, its IR the
-        // "after" here and the "before" of the next request.
-        auto after_graph = parseRenderGraph(
-            candidate, buildPassFieldOwnershipCapabilities());
         const auto after = logicalGraphsOf(after_graph);
         const auto after_contract =
             makeLogicalGraphSetContract(after);
