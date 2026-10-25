@@ -386,9 +386,9 @@ void requireRenderGraphInputsProduced(const RenderGraphIR &ir, const GraphIR &gr
 // reason, graph?}): the authored names match the index one for one, no name
 // is indexed twice, every graph has one copy of each indexed task
 // (missing_copy, duplicate) and no shared node the index does not name
-// (unindexed, not_a_compute_task), no graph has a compute task of its own
-// (graph_scope), and the copies run the same but for their edges
-// (copies_differ).
+// (unindexed, not_a_compute_task), every compute node is a shared one (a
+// graph's own: graph_scope; any other: not_shared), and the copies run the
+// same but for their edges (copies_differ).
 struct SharedComputeTask {
     const NodeIR *node = nullptr;
     std::string_view authored_name;

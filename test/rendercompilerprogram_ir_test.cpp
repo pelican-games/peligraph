@@ -461,6 +461,16 @@ TEST_CASE("RC-3c2b1 the completion refuses by name an IR whose compute tasks it 
                     ir.authored_shared_compute_tasks.clear();
                 },
                 {{"node", "make_args"}, {"field", "shared_compute_tasks"}, {"reason", "unindexed"}, {"graph", "main"}});
+        // Neither index names them and the nodes claim another scope: a
+        // compute node that is not the config's (shared) is refused, not
+        // passed over.
+        refused([](RenderGraphIR &ir) {
+                    ir.shared_compute_tasks.clear();
+                    ir.authored_shared_compute_tasks.clear();
+                    for (auto &node : ir.graphs.front().nodes)
+                        if (node.shape == RenderNodeShape::compute) node.scope = NodeDeclarationScope::synthesized;
+                },
+                {{"node", "make_args"}, {"field", "shared_compute_tasks"}, {"reason", "not_shared"}, {"graph", "main"}});
         refused([](RenderGraphIR &ir) { ir.authored_shared_compute_tasks.pop_back(); },
                 {{"field", "shared_compute_tasks"}, {"reason", "authored_names_mismatch"}});
         refused([](RenderGraphIR &ir) {

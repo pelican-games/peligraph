@@ -450,8 +450,11 @@ std::vector<SharedComputeTask> sharedComputeTasksOf(const RenderGraphIR &ir) {
     for (const auto &graph : ir.graphs) {
         std::unordered_set<std::string> seen;
         for (const auto &node : graph.nodes) {
-            if (node.shape == RenderNodeShape::compute && node.scope == NodeDeclarationScope::graph) {
-                invalid(node.name, "graph_scope", {{"graph", graph.name}});
+            // Every compute task is the config's (shared): a graph's own is
+            // refused, as is one the engine would claim to have made.
+            if (node.shape == RenderNodeShape::compute && node.scope != NodeDeclarationScope::shared) {
+                invalid(node.name, node.scope == NodeDeclarationScope::graph ? "graph_scope" : "not_shared",
+                        {{"graph", graph.name}});
             }
             if (node.scope != NodeDeclarationScope::shared) continue;
             if (node.shape != RenderNodeShape::compute || !std::holds_alternative<ComputeNodeInfo>(node.info)) {

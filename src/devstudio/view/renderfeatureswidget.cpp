@@ -629,14 +629,16 @@ private:
         if (dispatch.contains(key))
           mode = key;
       for (int index = 0; index < 3; ++index) {
-        Json value = 1;
+        // A missing axis is the project's default count.
+        Json value = Pelican::defaultComputeDispatchGroups[index];
         const auto dimensions = dispatch.find(ray ? "rays" : "groups");
         if (dimensions != dispatch.end()) {
           if (dimensions->is_array() && dimensions->size() == 3)
             value = dimensions->at(index);
           else if (dimensions->is_object())
             value =
-                dimensions->value(std::array{"x", "y", "z"}[index], Json(1));
+                dimensions->value(std::array{"x", "y", "z"}[index],
+                                  Json(Pelican::defaultComputeDispatchGroups[index]));
         }
         dispatch_axes[index]->setText(QString::fromStdString(value.dump()));
       }

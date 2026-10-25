@@ -182,15 +182,15 @@ TEST_CASE("RC-3c2b1 D2 the dispatch: every form's keys, exclusions and integer r
             requireRayRefusal([&] { (void)TestSupport::renderGraphOf(taskConfig(rayTask(std::move(dispatch)))); },
                               code, {{"task", "trace"}});
         };
-        // A dispatch left out: the execution's refusal (a planning
-        // revision may leave it out).
-        CHECK_NOTHROW(TestSupport::renderGraphOf(taskConfig(rayTask(nullptr))));
-        requireRayRefusal([&] { (void)TestSupport::computeTaskDefinitionsOf(taskConfig(rayTask(nullptr))); },
-                          "pelican.ray_tracing.trace_extent_required@1", {{"task", "trace"}});
-        // A dispatch written without a launch: the parse's (the preview's
-        // too).
-        refused(Json::object(), "pelican.ray_tracing.trace_extent_required@1");
-        refused({{"groups", Json::array({1, 1, 1})}}, "pelican.ray_tracing.trace_extent_required@1");
+        // Without a launch (left out, `{}` a later revision fills, a
+        // compute task's groups): the plan reads it, the execution refuses
+        // it.
+        for (const auto &launchless : std::vector<Json>{nullptr, Json::object(), {{"groups", Json::array({1, 1, 1})}}}) {
+            INFO(launchless.dump());
+            CHECK_NOTHROW(TestSupport::renderGraphOf(taskConfig(rayTask(launchless))));
+            requireRayRefusal([&] { (void)TestSupport::computeTaskDefinitionsOf(taskConfig(rayTask(launchless))); },
+                              "pelican.ray_tracing.trace_extent_required@1", {{"task", "trace"}});
+        }
         // A key no task takes, refused before any form is read.
         for (const auto &unknown : std::vector<Json>{{{"gropus", Json::array({8, 1, 1})}},
                                                      {{"rays", Json::array({1, 1, 1})}, {"extra", 1}}}) {

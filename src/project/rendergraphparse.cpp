@@ -1124,11 +1124,12 @@ std::optional<std::uint32_t> positiveCount(const Json &value) {
     return std::nullopt;
 }
 
-// `dispatch`: the rules the compute task parser had, every key known. A
-// ray tracing task may leave its dispatch out (a planning revision; the
-// execution requires its launch, computeTaskDefinitionsOf, as a compute
-// task's shader); a dispatch it writes is checked here whole, as a compute
-// task's: unknown keys and values are refused, and one without a launch.
+// `dispatch`: the rules the compute task parser had, every key known. The
+// parse refuses what is malformed (an unknown key, a value out of range, a
+// combination no task takes); whether a ray tracing task launches anything
+// (rays, rays_from or indirect) is the execution's to require
+// (computeTaskDefinitionsOf), as a compute task's shader: a planning
+// revision may leave it out, or write `{}` a later revision fills.
 ComputeDispatchDefinition computeDispatch(const Json &task, const std::string &name, bool ray_tracing,
                                           const std::function<void(std::string_view, std::string_view)>
                                               &compute_invalid) {
@@ -1186,12 +1187,10 @@ ComputeDispatchDefinition computeDispatch(const Json &task, const std::string &n
         dispatch.rays_from = ComputeImageExtentDispatchDefinition{.port = std::move(port)};
         return dispatch;
     }
-    // A ray tracing task's dispatch that launches nothing.
-    if (ray_tracing && !json.contains("indirect")) {
-        throw RayTracingRefusal("pelican.ray_tracing.trace_extent_required@1", Json{{"task", name}},
-                                "pelican.ray_tracing.trace_extent_required@1: compute task '" + name +
-                                    "' requires dispatch.rays_from, dispatch.rays, or dispatch.indirect");
-    }
+    // A ray tracing task's dispatch without a launch (`{}` while a later
+    // revision adds it, or a compute task's groups) is read as a compute
+    // task's, its values checked; the execution requires the launch
+    // (computeTaskDefinitionsOf: trace_extent_required).
     if (json.contains("indirect")) {
         if (ray_tracing && json.size() != 1) {
             invalid_trace("indirect trace cannot be combined with other dispatch fields: " + name);

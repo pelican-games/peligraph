@@ -28,6 +28,7 @@
 #include "renderingpass/rendertargetnameresolver.hpp"
 #include "render_graph_ir_test_support.hpp"
 #include "generationresources.hpp"
+#include "imageusage.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -633,7 +634,17 @@ struct CoreShapeResources {
     std::vector<std::string> render_targets;
     std::unordered_set<std::string> buffers;
     std::unordered_set<std::string> history_targets;
+    // A render target's declared usage, as its config writes it; one not
+    // listed is SAMPLED and both attachments.
+    std::map<std::string, std::vector<std::string>> usage;
 };
+
+const std::vector<std::string> &coreShapeUsage(const CoreShapeResources &resources,
+                                               const std::string &name) {
+    static const std::vector<std::string> every{"COLOR_ATTACHMENT", "SAMPLED", "DEPTH_STENCIL_ATTACHMENT"};
+    const auto found = resources.usage.find(name);
+    return found == resources.usage.end() ? every : found->second;
+}
 
 const CoreShapeResources &defaultCoreShapeResources() {
     static const CoreShapeResources resources{
@@ -647,8 +658,8 @@ const CoreShapeResources &defaultCoreShapeResources() {
 }
 
 // The pass as the production path checks it: in a graph of `resources` (each
-// render target 16x16, R8G8B8A8_UNORM, sampled and both attachments, with
-// `history` as listed; each buffer 16 bytes), read once (parseRenderGraph),
+// render target 16x16, R8G8B8A8_UNORM, of its declared usage, with `history`
+// as listed; each buffer 16 bytes), read once (parseRenderGraph),
 // planned (an unknown resource, a history read of a target without history:
 // planFrameGraph's named refusals), and its resources checked as the compiler
 // program's completion checks them (validateRenderGraphResources over the
@@ -662,7 +673,7 @@ void requireCoreShapeInGraph(const Json &pass, const CoreShapeResources &resourc
                  {"height", 16},
                  {"extent_scale", 1.0},
                  {"format", "R8G8B8A8_UNORM"},
-                 {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED", "DEPTH_STENCIL_ATTACHMENT"})},
+                 {"usage", coreShapeUsage(resources, name)},
                  {"history", resources.history_targets.contains(name)}});
     }
     std::vector<std::string> buffers{resources.buffers.begin(), resources.buffers.end()};
@@ -701,9 +712,7 @@ Pelican::PassDefinition parseCoreShape(
                 static_cast<std::size_t>(id.value)];
             return Pelican::RenderTargetMetadata{
                 .name = name,
-                .usage = Pelican::ImageUsageBit::sampled |
-                         Pelican::ImageUsageBit::color_attachment |
-                         Pelican::ImageUsageBit::depth_stencil_attachment,
+                .usage = Pelican::parseAuthoredImageUsage(coreShapeUsage(resources, name)),
                 .format = Pelican::ImageFormat::r8g8b8a8_unorm,
                 .extent = Pelican::ResolvedResourceExtent{16, 16},
                 .history = resources.history_targets.contains(name),
@@ -1082,6 +1091,33 @@ TEST_CASE(
     REQUIRE(assess(unavailable_history).history_support == "not_checked");
     REQUIRE(assess(unavailable_history).history_support != "valid");
     REQUIRE(assess(current_target).history_support == "valid");
+}
+
+// RC-3c2b1: the helper's resource checks are the production's
+// (validateRenderGraphResources over the declared usage): a fullscreen pass
+// reading a target declared without SAMPLED is refused there, by name, and
+// the same pass reading it with SAMPLED is accepted; nothing else differs
+// (the parse and the plan accept both).
+TEST_CASE(
+    "RC-3c2b1 the core shape helper refuses what the production resource checks refuse",
+    "[devstudio][fullscreen-pass][rc3c2b1][resource-usage][negative-contrast]") {
+    const Json pass{
+        {"name", "usage_case"},
+        {"type", "fullscreen"},
+        {"input", Json::array({"plain_target"})},
+        {"output", {{"color", Json::array({"output_target"})}, {"depth", nullptr}}},
+        {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://fullscreen"}}},
+    };
+    const auto &policy = Pelican::defaultPassShapePolicy();
+    CoreShapeResources unsampled{.render_targets = {"plain_target", "output_target"},
+                                 .usage = {{"plain_target", {"COLOR_ATTACHMENT"}}}};
+    auto sampled = unsampled;
+    sampled.usage["plain_target"] = {"COLOR_ATTACHMENT", "SAMPLED"};
+    REQUIRE(coreAcceptsShape(pass, policy, sampled));
+    REQUIRE_FALSE(coreAcceptsShape(pass, policy, unsampled));
+    Pelican::TestSupport::requireNamedRefusal([&] { requireCoreShapeInGraph(pass, unsampled); },
+                                              "render_graph.image_usage_missing@1",
+                                              {{"resource", "plain_target"}, {"usage", "SAMPLED"}});
 }
 
 TEST_CASE(
