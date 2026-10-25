@@ -524,6 +524,69 @@ nlohmann::json materializeShippingAttachmentOperations(
 
 } // namespace
 
+TEST_CASE("frame node conflict details preserve provenance and traversal priority",
+          "[frameplanner][node-order][rc3d1]") {
+    // These complete details were captured with the pre-unification planner.
+    // In particular, planner insertion order visits U before T; diagnostics
+    // must retain the node-local reads / after / before order instead.
+    FrameGraphDefinition graph{.name = "priority"};
+    graph.nodes = {
+        {.name = "S", .writes = {"x", "y"}},
+        {.name = "T", .after = {"S"}},
+        {.name = "U", .reads = {"x"}},
+        {.name = "V", .after = {"T", "U"}},
+    };
+    std::vector<std::size_t> listed{1, 2, 0};
+    nlohmann::json expected{{"graph", "priority"}, {"first", "T"},
+                            {"second", "S"}, {"reason", "after"}};
+    const auto check = [&] {
+        try {
+            requireFrameNodeOrderAgreesWithDependencies(graph, listed);
+            FAIL("expected a frame node order conflict");
+        } catch (const GraphRegistryError &error) {
+            CHECK(error.code() == "frame_node_order.conflicts_dependency@1");
+            CHECK(error.detail() == expected);
+        }
+    };
+    SECTION("two conflicting destinations use node-local priority") { check(); }
+    SECTION("one edge retains before reads and after provenance") {
+        graph.nodes[0].before = {"T"};
+        graph.nodes[1].reads = {"y", "x"};
+        expected["reason"] = "before";
+        check();
+    }
+    SECTION("multiple resources preserve the first read") {
+        graph.nodes[1].reads = {"y", "x"};
+        expected["reason"] = "reads";
+        expected["resource"] = "y";
+        check();
+    }
+    SECTION("equal-length paths retain the first path") {
+        listed = {3, 0};
+        expected["first"] = "V";
+        expected["via"] = {"T"};
+        check();
+    }
+    SECTION("anchor path retains canonical order and anchor") {
+        graph.nodes[1].kind = FramePlanNodeKind::anchor;
+        listed = {3, 0};
+        expected["first"] = "V";
+        expected["reason"] = "canonical_order";
+        expected["via"] = {"T"};
+        expected["anchor"] = "T";
+        check();
+    }
+    SECTION("output transform path retains canonical order and anchor") {
+        graph.nodes[1].kind = FramePlanNodeKind::output_transform;
+        listed = {3, 0};
+        expected["first"] = "V";
+        expected["reason"] = "canonical_order";
+        expected["via"] = {"T"};
+        expected["anchor"] = "T";
+        check();
+    }
+}
+
 TEST_CASE("frame planner preserves existing rendering config order", "[frameplanner]") {
     const auto cases = allShadowConfigCases();
     REQUIRE_FALSE(cases.empty());

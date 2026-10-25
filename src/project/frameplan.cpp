@@ -13,13 +13,23 @@ namespace Pelican {
 
 namespace {
 
+struct EdgeOrigin {
+    std::string_view reason;
+    std::string resource;
+    // Node index, then reads / after / before entry within that node.
+    // Planner insertion order is deliberately different: all reads first.
+    std::pair<size_t, size_t> diagnostic_order;
+};
+
 struct Edge {
     size_t from = 0;
     size_t to = 0;
+    std::vector<EdgeOrigin> origins;
 };
 
 struct PlannerEdges {
-    std::vector<std::vector<bool>> exists;
+    // Lookup only: iteration order comes from edges, never these maps.
+    std::vector<std::unordered_map<size_t, size_t>> edge_by_target;
     std::vector<Edge> edges;
     std::vector<FramePlanBarrier> barriers;
 };
@@ -98,16 +108,18 @@ void validateKnownResources(const FrameGraphDefinition &definition) {
 }
 
 void addEdge(PlannerEdges &planner_edges, size_t from, size_t to,
-             const FrameGraphDefinition &definition) {
+             const FrameGraphDefinition &definition, EdgeOrigin origin,
+             bool validate_references) {
     if (from == to) {
+        if (!validate_references) return;
         refuse("render_graph.self_dependency@1",
                 {{"graph", definition.name},
                          {"node", definition.nodes[from].name}});
     }
-    if (!planner_edges.exists[from][to]) {
-        planner_edges.exists[from][to] = true;
-        planner_edges.edges.push_back(Edge{from, to});
-    }
+    const auto [entry, inserted] =
+        planner_edges.edge_by_target[from].emplace(to, planner_edges.edges.size());
+    if (inserted) planner_edges.edges.push_back(Edge{from, to, {}});
+    planner_edges.edges[entry->second].origins.push_back(std::move(origin));
 }
 
 void addBarrier(PlannerEdges &planner_edges, std::string kind,
@@ -131,13 +143,6 @@ void addBarrier(PlannerEdges &planner_edges, std::string kind,
     }
 }
 
-void addDataEdge(PlannerEdges &planner_edges, size_t from, size_t to, const std::string &resource,
-                 const FrameGraphDefinition &definition) {
-    addEdge(planner_edges, from, to, definition);
-    addBarrier(planner_edges, "read_after_write", from, to, resource,
-               definition);
-}
-
 void addBarriersForOrderedResourceEdges(PlannerEdges &planner_edges, const FrameGraphDefinition &definition) {
     for (const auto &edge : planner_edges.edges) {
         const auto &from = definition.nodes[edge.from];
@@ -146,23 +151,37 @@ void addBarriersForOrderedResourceEdges(PlannerEdges &planner_edges, const Frame
             if (written.empty() || std::find(to.reads.begin(), to.reads.end(), written) == to.reads.end()) {
                 continue;
             }
-            addDataEdge(planner_edges, edge.from, edge.to, written, definition);
+            // This is a barrier on an existing ordered pair, not another
+            // declaration-order read dependency (or diagnostic origin).
+            addBarrier(planner_edges, "read_after_write", edge.from, edge.to, written, definition);
         }
     }
 }
 
+// Planning refuses unknown / self references and records the barriers; the
+// order-conflict diagnostic needs neither (structure validation names the bad
+// references, and barriers are not part of its detail).
+enum class EdgeUse { planning, diagnostics };
+
 PlannerEdges buildEdges(const FrameGraphDefinition &definition,
-                        const std::unordered_map<std::string, size_t> &node_index) {
+                        const std::unordered_map<std::string, size_t> &node_index,
+                        EdgeUse use = EdgeUse::planning) {
+    const bool validate_references = use == EdgeUse::planning;
+    const bool record_barriers = use == EdgeUse::planning;
     PlannerEdges planner_edges;
-    planner_edges.exists.assign(definition.nodes.size(), std::vector<bool>(definition.nodes.size(), false));
+    planner_edges.edge_by_target.resize(definition.nodes.size());
 
     std::unordered_map<std::string, size_t> last_writer;
     for (size_t i = 0; i < definition.nodes.size(); ++i) {
         const auto &node = definition.nodes[i];
-        for (const auto &resource : node.reads) {
+        for (size_t entry = 0; entry < node.reads.size(); ++entry) {
+            const auto &resource = node.reads[entry];
             auto found = last_writer.find(resource);
             if (found != last_writer.end()) {
-                addDataEdge(planner_edges, found->second, i, resource, definition);
+                addEdge(planner_edges, found->second, i, definition,
+                        {"reads", resource, {i, entry}}, validate_references);
+                if (record_barriers)
+                    addBarrier(planner_edges, "read_after_write", found->second, i, resource, definition);
             }
         }
         for (const auto &resource : node.writes) {
@@ -174,36 +193,44 @@ PlannerEdges buildEdges(const FrameGraphDefinition &definition,
 
     for (size_t i = 0; i < definition.nodes.size(); ++i) {
         const auto &node = definition.nodes[i];
-        for (const auto &after : node.after) {
+        for (size_t entry = 0; entry < node.after.size(); ++entry) {
+            const auto &after = node.after[entry];
             const auto found = node_index.find(after);
             if (found == node_index.end()) {
+                if (!validate_references) continue;
                 refuse("render_graph.order_reference_unknown@1",
                 {{"graph", definition.name},
                                  {"node", node.name},
                                  {"field", "after"},
                                  {"reference", after}});
             }
-            addEdge(planner_edges, found->second, i, definition);
+            addEdge(planner_edges, found->second, i, definition,
+                    {"after", {}, {i, node.reads.size() + entry}}, validate_references);
         }
-        for (const auto &before : node.before) {
+        for (size_t entry = 0; entry < node.before.size(); ++entry) {
+            const auto &before = node.before[entry];
             const auto found = node_index.find(before);
             if (found == node_index.end()) {
+                if (!validate_references) continue;
                 refuse("render_graph.order_reference_unknown@1",
                 {{"graph", definition.name},
                                  {"node", node.name},
                                  {"field", "before"},
                                  {"reference", before}});
             }
-            addEdge(planner_edges, i, found->second, definition);
+            addEdge(planner_edges, i, found->second, definition,
+                    {"before", {}, {i, node.reads.size() + node.after.size() + entry}}, validate_references);
         }
     }
 
-    addBarriersForOrderedResourceEdges(planner_edges, definition);
+    if (record_barriers) addBarriersForOrderedResourceEdges(planner_edges, definition);
     return planner_edges;
 }
 
-std::vector<std::vector<bool>> transitiveClosure(std::vector<std::vector<bool>> reachability) {
-    const auto count = reachability.size();
+std::vector<std::vector<bool>> transitiveClosure(const PlannerEdges &planner_edges) {
+    const auto count = planner_edges.edge_by_target.size();
+    std::vector<std::vector<bool>> reachability(count, std::vector<bool>(count, false));
+    for (const auto &edge : planner_edges.edges) reachability[edge.from][edge.to] = true;
     for (size_t k = 0; k < count; ++k) {
         for (size_t i = 0; i < count; ++i) {
             if (!reachability[i][k]) {
@@ -321,7 +348,7 @@ FramePlan planWith(const FrameGraphDefinition &definition) {
     validateKnownResources(definition);
     const auto node_index = buildNodeIndex(definition);
     auto planner_edges = buildEdges(definition, node_index);
-    const auto reachability = transitiveClosure(planner_edges.exists);
+    const auto reachability = transitiveClosure(planner_edges);
     validateWritesAreOrdered(definition, reachability);
     const auto order = topologicalOrder(definition, planner_edges);
     addWriteAfterWriteBarriers(planner_edges, definition, order);
@@ -352,40 +379,6 @@ FramePlan planWith(const FrameGraphDefinition &definition) {
         });
     }
     return plan;
-}
-
-// FO-1: why one node of a frame graph waits on another, as the frame planner
-// orders them: a read of what the last earlier writer wrote (in declaration
-// order), or an `after` / `before` the node carries (written, or added by the
-// composer: the canonical buckets' anchors and chains, compute task waits).
-struct FrameNodeDependency {
-    std::size_t to = 0;
-    std::string_view reason;
-    std::string resource;
-};
-
-std::vector<std::vector<FrameNodeDependency>> frameNodeDependencies(
-    const FrameGraphDefinition &graph) {
-    std::unordered_map<std::string, std::size_t> index;
-    for (std::size_t i = 0; i < graph.nodes.size(); ++i) index.emplace(graph.nodes[i].name, i);
-    std::vector<std::vector<FrameNodeDependency>> waits(graph.nodes.size());
-    std::unordered_map<std::string, std::size_t> last_writer;
-    for (std::size_t i = 0; i < graph.nodes.size(); ++i) {
-        const auto &node = graph.nodes[i];
-        for (const auto &resource : node.reads)
-            if (const auto writer = last_writer.find(resource);
-                writer != last_writer.end() && writer->second != i)
-                waits[writer->second].push_back({i, "reads", resource});
-        for (const auto &resource : node.writes)
-            if (!resource.empty()) last_writer[resource] = i;
-        for (const auto &name : node.after)
-            if (const auto found = index.find(name); found != index.end() && found->second != i)
-                waits[found->second].push_back({i, "after", {}});
-        for (const auto &name : node.before)
-            if (const auto found = index.find(name); found != index.end() && found->second != i)
-                waits[i].push_back({found->second, "before", {}});
-    }
-    return waits;
 }
 
 } // namespace
@@ -521,7 +514,25 @@ void validateFramePlanStructure(const FramePlan &plan) {
 void requireFrameNodeOrderAgreesWithDependencies(const FrameGraphDefinition &graph,
                                                  const std::vector<std::size_t> &listed) {
     if (listed.size() < 2) return;
-    const auto waits = frameNodeDependencies(graph);
+    // Preserve the diagnostic boundary: unknown/self references are left to
+    // structure validation, rather than displacing an order-conflict detail.
+    const auto planner_edges = buildEdges(graph, buildNodeIndex(graph), EdgeUse::diagnostics);
+    // References into the shared edges and their origins, not rebuilt edges.
+    using OriginIndex = std::pair<std::size_t, std::size_t>;
+    std::vector<std::vector<OriginIndex>> waits(graph.nodes.size());
+    const auto origin = [&](const OriginIndex &index) -> const EdgeOrigin & {
+        return planner_edges.edges[index.first].origins[index.second];
+    };
+    for (std::size_t edge = 0; edge < planner_edges.edges.size(); ++edge) {
+        const auto &value = planner_edges.edges[edge];
+        for (std::size_t entry = 0; entry < value.origins.size(); ++entry)
+            waits[value.from].emplace_back(edge, entry);
+    }
+    for (auto &outgoing : waits) {
+        std::stable_sort(outgoing.begin(), outgoing.end(), [&](const auto &lhs, const auto &rhs) {
+            return origin(lhs).diagnostic_order < origin(rhs).diagnostic_order;
+        });
+    }
     std::unordered_map<std::size_t, std::size_t> position;
     for (std::size_t i = 0; i < listed.size(); ++i) position.emplace(listed[i], i);
     for (std::size_t later = 1; later < listed.size(); ++later) {
@@ -537,7 +548,7 @@ void requireFrameNodeOrderAgreesWithDependencies(const FrameGraphDefinition &gra
             const auto current = frontier.front();
             frontier.pop_front();
             for (std::size_t edge = 0; edge < waits[current].size(); ++edge) {
-                const auto next = waits[current][edge].to;
+                const auto next = planner_edges.edges[waits[current][edge].first].to;
                 if (seen[next]) continue;
                 seen[next] = true;
                 came_from[next] = std::pair{current, edge};
@@ -552,7 +563,7 @@ void requireFrameNodeOrderAgreesWithDependencies(const FrameGraphDefinition &gra
         std::vector<std::pair<std::size_t, std::size_t>> path; // (from, edge index)
         for (auto at = *reached; at != start; at = came_from[at]->first) path.push_back(*came_from[at]);
         std::reverse(path.begin(), path.end());
-        const auto &step = waits[path.front().first][path.front().second];
+        const auto &step = origin(waits[path.front().first][path.front().second]);
         nlohmann::json fields{{"graph", graph.name},
                               {"first", graph.nodes[*reached].name},
                               {"second", graph.nodes[start].name},
