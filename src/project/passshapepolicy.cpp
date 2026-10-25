@@ -1,4 +1,5 @@
 #include "passshapepolicy.hpp"
+#include "rendergraphir.hpp"
 
 #include <algorithm>
 #include <nlohmann/json.hpp>
@@ -343,6 +344,34 @@ PassShapeObservation passShapeObservationFromJson(
             .image = image,
         });
     });
+    return observation;
+}
+
+PassShapeObservation passShapeObservationOf(
+    RenderPassType type, const RenderGraphIR &ir, const NodeIR &node) {
+    PassShapeObservation observation{.type = type};
+    for (const auto &use : node.uses) {
+        if (use.role == ResourceUseRole::color_attachment) {
+            observation.color_outputs.push_back(use.resource);
+        } else if (use.role == ResourceUseRole::depth_attachment) {
+            observation.depth_output = use.resource;
+        } else if (use.role == ResourceUseRole::input) {
+            observation.inputs.push_back({use.resource, use.history,
+                                          findConfigBuffer(ir, use.resource) == nullptr});
+        }
+    }
+    for (const auto &use : node.uses) {
+        if (use.role != ResourceUseRole::resource_port &&
+            use.role != ResourceUseRole::screen_input &&
+            use.role != ResourceUseRole::surface_resource &&
+            use.role != ResourceUseRole::material_resource) continue;
+        if (use.access == ResourceUseAccess::write) continue;
+        const PassShapeInputObservation input{
+            use.resource, use.history, findConfigBuffer(ir, use.resource) == nullptr};
+        if (std::ranges::find(observation.inputs, input) == observation.inputs.end()) {
+            observation.inputs.push_back(input);
+        }
+    }
     return observation;
 }
 

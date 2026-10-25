@@ -4,7 +4,7 @@
 #include "../src/core/renderingpass/computetask.hpp"
 #include "../src/core/renderingpass/framegraphruntime.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
-#include "../src/core/renderingpass/passdefinitionjsonparser.hpp"
+#include "rendering_pass_test_support.hpp"
 #include "../src/core/renderingpass/rendertargetmetadataresolver.hpp"
 #include "../src/core/renderingpass/rendertargetnameresolver.hpp"
 #include "../src/core/shader/shaderlibrary.hpp"
@@ -392,20 +392,11 @@ TEST_CASE("WP354 shipping shader families project their concrete effective refer
             return name == "ssao_blur" ? GlobalRenderTargetId{0}
                                         : noRenderTargetId();
         }};
-    const RenderTargetMetadataResolver raster_metadata{
-        [](GlobalRenderTargetId id) -> RenderTargetMetadata {
-            if (id != GlobalRenderTargetId{0}) {
-                throw std::runtime_error("unexpected sprite target");
-            }
-            return RenderTargetMetadata{
-                "ssao_blur",
-                ImageUsageBit::color_attachment |
-                    ImageUsageBit::sampled,
-                ImageFormat::r8_unorm,
-                ResolvedResourceExtent{128, 128}};
-        }};
-    auto raster = parsePassDefinitionFromJson(
-        *raster_json, raster_names, raster_metadata);
+    auto raster = TestSupport::renderingPassDefinitionsOf(
+        Json{{"render_targets", Json::array({Json{{"name", "ssao_blur"}, {"extent_scale", 1.0}, {"width", 128}, {"height", 128},
+                {"format", "R8_UNORM"}, {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}}})},
+             {"rendering_passes", Json::array({Json{{"name", "main"}, {"passes", Json::array({*raster_json})}}})}},
+        raster_names).at(0).passes.at(0);
 
     const auto velocity_feature = readJson(
         source_root / "src" / "core" / "resources" / "features" /
@@ -418,27 +409,14 @@ TEST_CASE("WP354 shipping shader families project their concrete effective refer
             if (name == "velocity_depth") return GlobalRenderTargetId{1};
             return noRenderTargetId();
         }};
-    const RenderTargetMetadataResolver velocity_metadata{
-        [](GlobalRenderTargetId id) -> RenderTargetMetadata {
-            if (id == GlobalRenderTargetId{0}) {
-                return RenderTargetMetadata{
-                    "velocity",
-                    ImageUsageBit::color_attachment |
-                        ImageUsageBit::sampled,
-                    ImageFormat::r16g16_sfloat,
-                    ResolvedResourceExtent{128, 128}};
-            }
-            if (id == GlobalRenderTargetId{1}) {
-                return RenderTargetMetadata{
-                    "velocity_depth",
-                    ImageUsageBit::depth_stencil_attachment,
-                    ImageFormat::d32_sfloat,
-                    ResolvedResourceExtent{128, 128}};
-            }
-            throw std::runtime_error("unexpected velocity target");
-        }};
-    auto velocity = parsePassDefinitionFromJson(
-        velocity_json, velocity_names, velocity_metadata);
+    auto velocity = TestSupport::renderingPassDefinitionsOf(
+        Json{{"render_targets", Json::array({
+                Json{{"name", "velocity"}, {"extent_scale", 1.0}, {"width", 128}, {"height", 128},
+                     {"format", "R16G16_SFLOAT"}, {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}},
+                Json{{"name", "velocity_depth"}, {"extent_scale", 1.0}, {"width", 128}, {"height", 128},
+                     {"format", "D32_SFLOAT"}, {"usage", Json::array({"DEPTH_STENCIL_ATTACHMENT"})}}})},
+             {"rendering_passes", Json::array({Json{{"name", "main"}, {"passes", Json::array({velocity_json})}}})}},
+        velocity_names).at(0).passes.at(0);
 
     const auto clustered = readJson(
         source_root / "src" / "core" / "resources" / "features" /
@@ -907,25 +885,16 @@ TEST_CASE("typed parsers capture declared stage presence before provider replace
             if (name == "scene_depth") return GlobalRenderTargetId{1};
             return noRenderTargetId();
         }};
-    const RenderTargetMetadataResolver metadata{
-        [](GlobalRenderTargetId id) -> RenderTargetMetadata {
-            if (id == GlobalRenderTargetId{0}) {
-                return RenderTargetMetadata{
-                    "scene_color",
-                    ImageUsageBit::color_attachment,
-                    ImageFormat::r8g8b8a8_unorm,
-                    ResolvedResourceExtent{128, 128}};
-            }
-            if (id == GlobalRenderTargetId{1}) {
-                return RenderTargetMetadata{
-                    "scene_depth",
-                    ImageUsageBit::depth_stencil_attachment,
-                    ImageFormat::d32_sfloat,
-                    ResolvedResourceExtent{128, 128}};
-            }
-            throw std::runtime_error("unexpected metadata lookup");
-        }};
-    const auto pass = parsePassDefinitionFromJson(
+    const auto definition = [&](const Json &authored) {
+        const Json config{{"render_targets", Json::array({
+            Json{{"name", "scene_color"}, {"extent_scale", 1.0}, {"width", 128}, {"height", 128},
+                 {"format", "R8G8B8A8_UNORM"}, {"usage", Json::array({"COLOR_ATTACHMENT"})}},
+            Json{{"name", "scene_depth"}, {"extent_scale", 1.0}, {"width", 128}, {"height", 128},
+                 {"format", "D32_SFLOAT"}, {"usage", Json::array({"DEPTH_STENCIL_ATTACHMENT"})}}})},
+            {"rendering_passes", Json::array({Json{{"name", "main"}, {"passes", Json::array({authored})}}})}};
+        return TestSupport::renderingPassDefinitionsOf(config, names).at(0).passes.at(0);
+    };
+    const auto pass = definition(
         Json{
             {"name", "provided"},
             {"type", "fullscreen"},
@@ -934,8 +903,7 @@ TEST_CASE("typed parsers capture declared stage presence before provider replace
              {{"vertex", "project://declared"},
               {"fragment", "project://declared"}}},
             {"implementation", {{"provider", "fixture.provider"}}},
-        },
-        names, metadata);
+        });
     REQUIRE(pass.declared_shader_refs ==
             std::vector<DeclaredShaderReference>{
                 declared(DeclaredShaderStage::vertex,
@@ -943,13 +911,12 @@ TEST_CASE("typed parsers capture declared stage presence before provider replace
                 declared(DeclaredShaderStage::fragment,
                          "project://declared")});
 
-    const auto shadow = parsePassDefinitionFromJson(
+    const auto shadow = definition(
         Json{
             {"name", "shadow"},
             {"type", "shadow_depth"},
             {"output", {{"color", nullptr}, {"depth", "scene_depth"}}},
-        },
-        names, metadata);
+        });
     REQUIRE(shadow.declared_shader_refs.empty());
 
     const auto tasks = Pelican::TestSupport::computeTaskDefinitionsOf(Json{

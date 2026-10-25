@@ -7,7 +7,7 @@
 #include "../src/project/featurecompose.hpp"
 #include "../src/project/renderconfigsection.hpp"
 #include "../src/project/renderingjsonnormalize.hpp"
-#include "../src/core/renderingpass/renderingpassconfigjsonparser.hpp"
+#include "rendering_pass_test_support.hpp"
 #include "../src/core/renderingpass/renderingpassjsonhelpers.hpp"
 #include "../src/core/renderingpass/renderingsamplecount.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
@@ -595,10 +595,8 @@ TEST_CASE("hybrid preset resolves ordered deferred and forward writes",
         const auto found = ids.find(name);
         return found == ids.end() ? noRenderTargetId() : found->second;
     }};
-    const RenderTargetMetadataResolver target_metadata{
-        [&](GlobalRenderTargetId id) { return metadata.at(static_cast<std::size_t>(id.value)); }};
-    const auto passes = parseRenderingPassDefinitionsFromConfigJson(
-        resolved, names, target_metadata);
+    const auto passes = TestSupport::renderingPassDefinitionsOf(
+        resolved, names);
     REQUIRE(passes.size() == 1);
     REQUIRE(passes.front().passes.at(0).materialInfo().contract ==
             MaterialPassContract::deferred_geometry_v1);
@@ -2358,9 +2356,6 @@ TEST_CASE(
 TEST_CASE(
     "WP355 attachment operations require a corresponding output in raw and typed planners",
     "[frameplanner][attachment-operations][wp355][missing-output]") {
-    const std::string expected =
-        "Pass 'gbuffer_pass' field 'depth_load_op' requires a non-empty "
-        "output.depth attachment";
     for (const auto missing_depth :
          {nlohmann::json(nullptr), nlohmann::json::array()}) {
         auto invalid = wp352FiveColorConfig();
@@ -2373,11 +2368,10 @@ TEST_CASE(
             "render_graph.attachment_option_without_output@1",
             {{"node", "gbuffer_pass"}, {"field", "depth_load_op"}});
         const ParsedRenderTargetResolvers resolvers{invalid};
-        REQUIRE_THROWS_WITH(
-            parseRenderingPassDefinitionsFromConfigJson(
-                invalid, resolvers.nameResolver(),
-                resolvers.metadataResolver()),
-            expected);
+        TestSupport::requireNamedRefusal(
+            [&] { (void)TestSupport::renderingPassDefinitionsOf(invalid, resolvers.nameResolver()); },
+            "render_graph.attachment_option_without_output@1",
+            {{"node", "gbuffer_pass"}, {"field", "depth_load_op"}});
     }
 
     auto valid = wp352FiveColorConfig();
@@ -2410,20 +2404,16 @@ TEST_CASE(
                                     {{"not_an_output",
                                       nlohmann::json::array(
                                           {0.0, 0.0, 0.0, 1.0})}});
-            const std::string expected =
-                "Pass 'shadow_pass' field '" + field +
-                "' requires a non-empty output.color attachment";
 
             TestSupport::requireNamedRefusal(
                 [&] { (void)TestSupport::frameGraphsOf(invalid); },
                 "render_graph.attachment_option_without_output@1",
                 {{"node", "shadow_pass"}, {"field", field}});
             const ParsedRenderTargetResolvers resolvers{invalid};
-            REQUIRE_THROWS_WITH(
-                parseRenderingPassDefinitionsFromConfigJson(
-                    invalid, resolvers.nameResolver(),
-                    resolvers.metadataResolver()),
-                expected);
+            TestSupport::requireNamedRefusal(
+                [&] { (void)TestSupport::renderingPassDefinitionsOf(invalid, resolvers.nameResolver()); },
+                "render_graph.attachment_option_without_output@1",
+                {{"node", "shadow_pass"}, {"field", field}});
         }
     }
 }

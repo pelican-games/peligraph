@@ -2,7 +2,6 @@
 
 #include "computetask.hpp"
 #include "graphtransformregistry.hpp"
-#include "materialpassinfojsonparser.hpp"
 #include "passfieldownershipcapabilities.hpp"
 #include "renderstrategyregistry.hpp"
 #include "rendertargetjsonparser.hpp"

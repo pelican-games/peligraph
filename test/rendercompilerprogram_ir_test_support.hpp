@@ -58,6 +58,43 @@ Json fullscreen(const std::string &name, const std::vector<std::string> &input, 
     return pass;
 }
 
+// RC-3c2b1: a compiler program that returns the engine's output with each
+// runtime variant's IR changed by `edit` (what a program of its own may
+// return: the common completion makes the compute tasks from it).
+struct EditingProgram final : RenderCompilerProgram {
+    std::function<void(RenderGraphIR &)> edit;
+    bool copy_graph = false;
+
+    RenderCompilerProgramSelection selection(const RenderCompilerBackendContext &backend) const override {
+        return defaultVulkanRenderCompilerProgram().selection(backend);
+    }
+    RenderCompilerProgramOutput compile(const RenderCompilerProgramInput &input) const override {
+        auto output = defaultVulkanRenderCompilerProgram().compile(input);
+        for (auto &variant : output.variants) {
+            if (variant.physical_package == nullptr || variant.render_graph == nullptr) continue;
+            auto edited = *variant.render_graph;
+            if (copy_graph) {
+                // This compiler-output test duplicates the base artifact,
+                // including its plans, before changing only a task's values.
+                // The copied graph must also satisfy the output name boundary.
+                auto graph = edited.graphs.front();
+                auto frame = variant.frame_plans.at(graph.name);
+                auto &physical = requireVulkanRenderCompilerPhysicalPackage(*variant.physical_package);
+                auto target = std::make_shared<VulkanTargetPlan>(*physical.target_plans.at(graph.name));
+                graph.name = frame.name = target->graph = "copy";
+                edited.graphs.push_back(std::move(graph));
+                variant.frame_plans.emplace(frame.name, std::move(frame));
+                physical.target_plan_compilation.plans.push_back(target);
+                physical.target_plans.emplace(target->graph, std::move(target));
+            }
+            edit(edited);
+            variant.render_graph = std::make_shared<const RenderGraphIR>(std::move(edited));
+        }
+        return output;
+    }
+};
+
+
 // --- the providers -------------------------------------------------------------
 
 enum class TransformBehavior {

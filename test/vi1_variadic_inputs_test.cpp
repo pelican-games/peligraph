@@ -9,7 +9,7 @@
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/log.hpp"
-#include "../src/core/renderingpass/passshaderdefines.hpp"
+#include "../src/project/passshaderdefines.hpp"
 #include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/core/shader/pelican_sets.hpp"
 #include "../src/core/shader/shadercompiler.hpp"

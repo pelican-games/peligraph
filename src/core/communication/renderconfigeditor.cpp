@@ -24,7 +24,7 @@
 #include "../fullscreenpass/shaderinputmismatchjson.hpp"
 #include "../material/materialphysicalcontractchanged.hpp"
 #include "../material/materialpassesremoved.hpp"
-#include "../renderingpass/passshaderdefines.hpp"
+#include "../../project/passshaderdefines.hpp"
 #include "../loader/engineresources.hpp"
 #include "../renderingpass/frameplanner.hpp"
 #include "../renderingpass/renderingsamplecount.hpp"

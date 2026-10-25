@@ -21,7 +21,6 @@
 #include "framegraphruntime.hpp"
 #include "frameplanner.hpp"
 #include "graphtransformregistry.hpp"
-#include "materialpassinfojsonparser.hpp"
 #include "passimplementationregistry.hpp"
 #include "rendercompilerprogram.hpp"
 #include "renderpipelinegpuarena.hpp"

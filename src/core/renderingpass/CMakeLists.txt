@@ -28,13 +28,10 @@ target_sources(pelican_core PRIVATE
     passimplementationregistry.cpp
     passinfojsonparser.cpp
     passinputdescriptorvariant.cpp
-    passshaderdefines.cpp
     passsequencejsonparser.cpp
     previewgraph.cpp
     renderingpasscontainer.cpp
     renderingpassconfigloader.cpp
-    renderingpassconfigjsonparser.cpp
-    renderingpassdefinitionjsonparser.cpp
     renderingpassjsonhelpers.cpp
     renderingpassconfigregistration.cpp
     renderingpassruntimecompiler.cpp

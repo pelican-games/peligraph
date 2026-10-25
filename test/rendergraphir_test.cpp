@@ -10,7 +10,6 @@
 #include "../src/core/renderingpass/frameplanner.hpp"
 #include "../src/core/renderingpass/materialpassinfojsonparser.hpp"
 #include "../src/core/renderingpass/passfieldownershipcapabilities.hpp"
-#include "../src/core/renderingpass/renderingpassconfigjsonparser.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 #include "../src/core/renderingpass/rendertargetmetadata.hpp"
 #include "../src/core/renderingpass/rendertargetmetadataresolver.hpp"
@@ -957,7 +956,7 @@ TEST_CASE("RC-3c1b refusals: what a revision must pass, parseRenderGraph refuses
         {"a snapshot copy without snapshot_after",
          [](Json &c) { pass(c, 2) = {{"name", "copy"}, {"type", "snapshot_copy"}, {"source", "color"}, {"destination", "accum"}}; },
          "render_graph.node_field_invalid@1", "field", "snapshot_after"},
-        {"an input qualifier other than @history", [](Json &c) { pass(c, 2)["input"] = {"color@previous"}; }, "render_graph.pass_shape@1", "node", "present"},
+        {"an input qualifier other than @history", [](Json &c) { pass(c, 2)["input"] = {"color@previous"}; }, "render_graph.resource_reference_invalid@1", "node", "present"},
         {"a compute read qualifier other than @history",
          [](Json &c) { c["compute_tasks"] = Json::array({{{"name", "task"}, {"reads", {"shared@previous"}}}}); },
          "render_graph.resource_reference_invalid@1", "resource", "shared@previous"},

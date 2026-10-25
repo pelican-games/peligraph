@@ -719,4 +719,75 @@ TEST_CASE("RC-3c2b2 D4 preview generations identify the production IR",
     CHECK(malformed.unavailable_reason.at("cause").at("graph") == "main");
 }
 
+TEST_CASE("RC-3c2b2 registration derives the registered blend from edited IR",
+          "[rc3c2b2][registration][passes][gpu]") {
+    setupLogger();
+    // The authoring input is identical in both runs. Only the compiler's
+    // returned IR changes, so reparsing the authoring input cannot pass.
+    const auto registered = [](bool edited) {
+        FastModuleContainer modules;
+        Project project;
+        std::ofstream{project.root / "scene.json", std::ios::binary}
+            << R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json";
+        std::ofstream{project.root / "assets.json", std::ios::binary}
+            << R"json({"schema":"pelican.asset_data","version":2,"models":[]})json";
+        GET_MODULE(ProjectSource).setSourceByData(Json{{"basic_config",
+            {{"window_size", {{"width", 16}, {"height", 16}}},
+             {"scene_data_json", "scene.json"}, {"asset_data_json", "assets.json"},
+             {"default_scene_id", "default_scene"}}}}.dump());
+        GET_MODULE(PathResolver).setup(project.root, false);
+        auto &launch = GET_MODULE(EngineLaunchConfig);
+        launch.headless = true;
+        launch.headless_extent = vk::Extent2D{16, 16};
+
+        EditingProgram program;
+        std::size_t edits = 0;
+        program.edit = [&](RenderGraphIR &ir) {
+            for (auto &node : ir.graphs.front().nodes) {
+                if (node.name != "paint") continue;
+                ++edits;
+                auto &info = std::get<FullscreenNodeInfo>(node.info);
+                REQUIRE_FALSE(info.raster_state);
+                if (edited) {
+                    info.raster_state = PipelineState{};
+                    info.raster_state->color_attachments.resize(1);
+                    auto &blend = info.raster_state->color_attachments.front().blend;
+                    blend.enabled = true;
+                    blend.color.source = MaterialOutputBlendFactor::one;
+                    blend.color.destination = MaterialOutputBlendFactor::one;
+                }
+            }
+        };
+        auto pass = fullscreen("paint", {}, "swapchain");
+        pass["shader"]["fragment"] = "engine://shader_lab_hello";
+        const Json rendering{{"render_targets", Json::array()},
+            {"rendering_passes", Json::array({Json{{"name", "main"}, {"passes", Json::array({pass})}}})}};
+        RenderingPassConfigRegistrationDependencies::Options options;
+        options.render_compiler_program = &program;
+        const auto result = registerRenderingPassConfigFromJsonData(
+            project.rootOf(rendering).dump(), {16, 16}, registrationDependencies(std::move(options)));
+        REQUIRE(edits == 1);
+        REQUIRE(result.rendering_pass_ids.size() == 1);
+        const auto &compiled = GET_MODULE(RenderingPassContainer).getCompiledRenderingPass(
+            result.rendering_pass_ids.front());
+        const auto paint = std::find_if(compiled.passes.begin(), compiled.passes.end(), [](const auto &pass) {
+            return pass.definition.name == "paint";
+        });
+        REQUIRE(paint != compiled.passes.end());
+        CHECK(std::count_if(compiled.passes.begin(), compiled.passes.end(), [](const auto &pass) {
+            return pass.definition.name == "paint";
+        }) == 1);
+        return paint->definition.fullscreenInfo().raster_state;
+    };
+    const auto unchanged = registered(false);
+    const auto changed = registered(true);
+    CHECK_FALSE(unchanged.has_value());
+    REQUIRE(changed.has_value());
+    REQUIRE(changed->color_attachments.size() == 1);
+    const auto &blend = changed->color_attachments.front().blend;
+    CHECK(blend.enabled);
+    CHECK(blend.color.source == MaterialOutputBlendFactor::one);
+    CHECK(blend.color.destination == MaterialOutputBlendFactor::one);
+}
+
 } // namespace Pelican

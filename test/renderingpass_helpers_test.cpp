@@ -1,8 +1,8 @@
 #include "registered_render_targets_test_support.hpp"
 #include "compute_task_test_support.hpp"
+#include "rendering_pass_test_support.hpp"
 #include "../src/project/generationresources.hpp"
 #include <catch2/generators/catch_generators.hpp>
-#include "../src/core/renderingpass/fullscreenpassinfojsonparser.hpp"
 #include "../src/core/renderingpass/genericrasterpassinfojsonparser.hpp"
 #include "../src/core/renderingpass/computetask.hpp"
 #include "../src/core/renderingpass/materialpassattachments.hpp"
@@ -40,6 +40,34 @@
 #include <vector>
 
 namespace Pelican {
+
+namespace {
+
+// These tests used to provide only the fullscreen-specific fields. Supply
+// the surrounding graph and explicit resources; all pass values still go
+// through the same parse and conversion as production.
+FullscreenPassInfo fullscreenInfoOf(nlohmann::json fields, const std::string &name) {
+    using Json = nlohmann::json;
+    fields["name"] = name;
+    fields["type"] = "fullscreen";
+    if (!fields.contains("output")) fields["output"] = {{"color", "swapchain"}, {"depth", nullptr}};
+    Json images = Json::array();
+    for (const auto *target : {"scene_color", "first_input", "second_input"}) {
+        images.push_back(Json{{"name", target}, {"extent_scale", 1.0},
+            {"format", "R8G8B8A8_UNORM"}, {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}});
+    }
+    images.push_back(Json{{"name", "scene_depth"}, {"extent_scale", 1.0}, {"history", true},
+        {"format", "D32_SFLOAT"}, {"usage", Json::array({"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"})}});
+    images.push_back(Json{{"name", "environment_probe"}, {"extent_scale", 1.0}, {"width", 256}, {"height", 256},
+        {"dimension", "cube"}, {"format", "R16G16B16A16_SFLOAT"}, {"usage", Json::array({"SAMPLED"})}});
+    const Json config{{"render_targets", std::move(images)},
+        {"buffers", Json::array({Json{{"name", "light_inventory"}, {"size", 16}}})},
+        {"rendering_passes", Json::array({Json{{"name", "main"}, {"passes", Json::array({std::move(fields)})}}})}};
+    return TestSupport::renderingPassDefinitionsOf(config).at(0).passes.at(0).fullscreenInfo();
+}
+
+} // namespace
+
 
 TEST_CASE("rendering pass helper ids name invalid and special targets", "[renderingpass]") {
     REQUIRE(invalidRenderingPassId().value == invalidRenderingPassIdValue);
@@ -313,7 +341,7 @@ TEST_CASE("fullscreen pass JSON parser reads explicit fullscreen options", "[ren
         {"shader", {{"vertex", "fullscreen"}, {"fragment", "lighting"}}},
     };
 
-    const auto info = parseFullscreenPassInfoFromJson(pass_json, "lighting_pass");
+    const auto info = fullscreenInfoOf(pass_json, "lighting_pass");
 
     REQUIRE(info.push_constants == FullscreenPushConstantData::eCameraPosition);
     REQUIRE(info.uses_light_data);
@@ -330,7 +358,7 @@ TEST_CASE(
         {"shader", {{"vertex", "fullscreen"}, {"fragment", "lighting"}}},
     };
     const auto legacy =
-        parseFullscreenPassInfoFromJson(omitted, "legacy");
+        fullscreenInfoOf(omitted, "legacy");
     REQUIRE_FALSE(legacy.raster_state.has_value());
 
     auto authored = omitted;
@@ -344,7 +372,7 @@ TEST_CASE(
                {"write_mask", "ga"}}})},
     };
     const auto parsed =
-        parseFullscreenPassInfoFromJson(authored, "authored");
+        fullscreenInfoOf(authored, "authored");
     REQUIRE(parsed.raster_state.has_value());
     CHECK(
         parsed.raster_state->topology ==
@@ -372,12 +400,9 @@ TEST_CASE(
                 std::string_view{field} == "depth_compare"
                     ? nlohmann::json{"less"}
                     : nlohmann::json{true};
-            CHECK_THROWS_WITH(
-                parseFullscreenPassInfoFromJson(
-                    invalid, "depth_is_out_of_scope"),
-                Catch::Matchers::ContainsSubstring(field) &&
-                    Catch::Matchers::ContainsSubstring(
-                        "does not support depth field"));
+            TestSupport::requireNamedRefusal([&] { (void)fullscreenInfoOf(
+                    invalid, "depth_is_out_of_scope"); },
+            "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "depth_is_out_of_scope"}, {"field", "raster_state"}, {"reason", "invalid"}});
         }
     }
 }
@@ -396,7 +421,7 @@ TEST_CASE(
       }
     })json");
     const auto triangle =
-        parseFullscreenPassInfoFromJson(
+        fullscreenInfoOf(
             blended, "wp357a_triangle_blend");
     CHECK((fullscreenDrawCommand(triangle) ==
            FullscreenDrawCommand{3, 1, 0, 0}));
@@ -416,12 +441,9 @@ TEST_CASE(
     auto authored_line = blended;
     authored_line["raster_state"]["topology"] =
         "line_list";
-    REQUIRE_THROWS_WITH(
-        parseFullscreenPassInfoFromJson(
-            authored_line, "wp357a_line_blend"),
-        "Fullscreen pass 'wp357a_line_blend' cannot use "
-        "engine://fullscreen with raster_state topology 'line_list'; "
-        "expected triangle_list");
+    TestSupport::requireNamedRefusal([&] { (void)fullscreenInfoOf(
+            authored_line, "wp357a_line_blend"); },
+            "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "wp357a_line_blend"}, {"field", "raster_state.topology"}, {"reason", "fullscreen_requires_triangle_list"}});
 }
 
 TEST_CASE(
@@ -562,6 +584,7 @@ TEST_CASE(
     "fullscreen pass JSON parser keeps per-input sampling typed",
     "[renderingpass][upscale][sampling]") {
     const nlohmann::json pass_json{
+        {"input", nlohmann::json::array({"first_input", "second_input"})},
         {"input_sampling",
          nlohmann::json::array(
              {{{"filter", "nearest"},
@@ -574,7 +597,7 @@ TEST_CASE(
     };
 
     const auto info =
-        parseFullscreenPassInfoFromJson(
+        fullscreenInfoOf(
             pass_json, "upscale");
 
     REQUIRE(info.input_sampling ==
@@ -587,10 +610,9 @@ TEST_CASE(
     auto invalid = pass_json;
     invalid["input_sampling"][0]["address"] =
         "wrap_somehow";
-    REQUIRE_THROWS_AS(
-        parseFullscreenPassInfoFromJson(
-            invalid, "upscale"),
-        std::runtime_error);
+    TestSupport::requireNamedRefusal([&] { (void)fullscreenInfoOf(
+            invalid, "upscale"); },
+            "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "upscale"}, {"field", "input_sampling"}, {"reason", "invalid"}});
 }
 
 TEST_CASE(
@@ -621,7 +643,7 @@ TEST_CASE(
         })json");
 
     const auto info =
-        parseFullscreenPassInfoFromJson(
+        fullscreenInfoOf(
             pass_json, "resolve");
     REQUIRE(info.resource_ports.size() == 2);
     REQUIRE(
@@ -645,20 +667,16 @@ TEST_CASE(
     conflicting["input_sampling"] =
         nlohmann::json::array(
             {{{"filter", "linear"}}});
-    REQUIRE_THROWS_WITH(
-        parseFullscreenPassInfoFromJson(
-            conflicting, "resolve"),
-        Catch::Matchers::ContainsSubstring(
-            "resource_ports sampling replaces input_sampling"));
+    TestSupport::requireNamedRefusal([&] { (void)fullscreenInfoOf(
+            conflicting, "resolve"); },
+            "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "resolve"}, {"field", "input_sampling"}, {"reason", "replaced_by_resource_ports"}});
 
     auto unknown = pass_json;
     unknown["resource_ports"]["color"]["resource"] =
         "not_an_input";
-    REQUIRE_THROWS_WITH(
-        parseFullscreenPassInfoFromJson(
-            unknown, "resolve"),
-        Catch::Matchers::ContainsSubstring(
-            "absent from reads/writes/input"));
+    TestSupport::requireNamedRefusal([&] { (void)fullscreenInfoOf(
+            unknown, "resolve"); },
+            "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "resolve"}, {"field", "resource_ports"}, {"reason", "invalid"}});
 
     auto duplicate = pass_json;
     duplicate["resource_ports"]["color"]["subresource"] =
@@ -669,11 +687,9 @@ TEST_CASE(
              ["access"] = "sampled";
     duplicate["resource_ports"]["previous_depth"]
              ["subresource"] = {{"mip", 1}};
-    REQUIRE_THROWS_WITH(
-        parseFullscreenPassInfoFromJson(
-            duplicate, "resolve"),
-        Catch::Matchers::ContainsSubstring(
-            "cannot map multiple ports"));
+    TestSupport::requireNamedRefusal([&] { (void)fullscreenInfoOf(
+            duplicate, "resolve"); },
+            "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "resolve"}, {"field", "resource_ports"}, {"reason", "duplicate_resource"}});
 }
 
 TEST_CASE(
@@ -701,7 +717,7 @@ TEST_CASE(
         })json");
 
     const auto info =
-        parseFullscreenPassInfoFromJson(
+        fullscreenInfoOf(
             pass_json, "lighting");
     REQUIRE(info.resource_ports.size() == 2);
     REQUIRE(
@@ -714,11 +730,9 @@ TEST_CASE(
     auto invalid = pass_json;
     invalid["resource_ports"]["lights"]["access"] =
         "sampled";
-    REQUIRE_THROWS_WITH(
-        parseFullscreenPassInfoFromJson(
-            invalid, "lighting"),
-        Catch::Matchers::ContainsSubstring(
-            "buffer ports require storage access"));
+    TestSupport::requireNamedRefusal([&] { (void)fullscreenInfoOf(
+            invalid, "lighting"); },
+            "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "lighting"}, {"field", "resource_ports"}, {"reason", "invalid"}});
 }
 
 TEST_CASE(
@@ -1136,7 +1150,7 @@ TEST_CASE(
       }
     })json");
     const auto info =
-        parseFullscreenPassInfoFromJson(
+        fullscreenInfoOf(
             pass_json, "environment");
     REQUIRE(info.resource_ports.size() == 1);
     REQUIRE(
@@ -1145,11 +1159,9 @@ TEST_CASE(
 
     pass_json["resource_ports"]["environment"]
              ["access"] = "storage";
-    REQUIRE_THROWS_WITH(
-        parseFullscreenPassInfoFromJson(
-            pass_json, "environment"),
-        Catch::Matchers::ContainsSubstring(
-            "cube views currently require sampled access"));
+    TestSupport::requireNamedRefusal([&] { (void)fullscreenInfoOf(
+            pass_json, "environment"); },
+            "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "environment"}, {"field", "resource_ports"}, {"reason", "invalid"}});
 }
 
 TEST_CASE(
@@ -2132,15 +2144,9 @@ TEST_CASE("fullscreen pass JSON parser rejects explicit shader files and names t
         {"shader", {{"vertex", "fullscreen.vert.spv"}, {"fragment", "lighting"}}},
     };
 
-    std::string message;
-    try {
-        (void)parseFullscreenPassInfoFromJson(pass_json, "lighting_pass");
-    } catch (const std::exception &ex) {
-        message = ex.what();
-    }
-    REQUIRE(message.find("fullscreen.vert.spv") != std::string::npos);
-    REQUIRE(message.find("extensionless") != std::string::npos);
-    REQUIRE(message.find("vertex") != std::string::npos);
+    TestSupport::requireNamedRefusal([&] { (void)fullscreenInfoOf(pass_json, "lighting_pass"); },
+            "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "lighting_pass"}, {"field", "shader.vertex"}, {"reason", "explicit_extension"}, {"ref", "fullscreen.vert.spv"}});
+
 }
 
 TEST_CASE("fullscreen pass JSON parser does not infer options from pass name", "[renderingpass]") {
@@ -2148,7 +2154,7 @@ TEST_CASE("fullscreen pass JSON parser does not infer options from pass name", "
         {"shader", {{"vertex", "fullscreen"}, {"fragment", "lighting"}}},
     };
 
-    const auto info = parseFullscreenPassInfoFromJson(pass_json, "lighting_pass");
+    const auto info = fullscreenInfoOf(pass_json, "lighting_pass");
 
     REQUIRE(info.push_constants == FullscreenPushConstantData::eNone);
     REQUIRE_FALSE(info.uses_light_data);
@@ -2178,7 +2184,8 @@ TEST_CASE("fullscreen pass JSON parser rejects deprecated projection matrix flag
         {"shader", {{"vertex", "fullscreen"}, {"fragment", "ssao"}}},
     };
 
-    REQUIRE_THROWS_AS(parseFullscreenPassInfoFromJson(pass_json, "ssao_pass"), std::runtime_error);
+    TestSupport::requireNamedRefusal([&] { (void)fullscreenInfoOf(pass_json, "ssao_pass"); },
+            "render_graph.pass_field_ownership@1", {{"graph", "main"}, {"node", "ssao_pass"}});
 }
 
 TEST_CASE("pass info JSON parser reads pass type and applies UI defaults", "[renderingpass]") {
@@ -2757,7 +2764,7 @@ TEST_CASE(
     };
 
     SECTION("regression 1 observes named material inputs after resolution") {
-        const auto formerly_accepted = nlohmann::json::parse(R"json({
+        auto formerly_accepted = nlohmann::json::parse(R"json({
           "name": "forward_transparent",
           "type": "material",
           "material_contract": "forward_transparent_v1",
@@ -2767,31 +2774,42 @@ TEST_CASE(
             "depth": "offscreen_depth"
           }
         })json");
-        const auto rejected = rejectionMessage([&] {
-            (void)parsePassDefinitionFromJson(
-                formerly_accepted, names, metadata);
-        });
-        REQUIRE_FALSE(rejected.empty());
-        REQUIRE_THAT(
-            rejected,
-            Catch::Matchers::ContainsSubstring(
-                "Pass shape violation 'current_frame_color_feedback'") &&
-                Catch::Matchers::ContainsSubstring("lit_color"));
+        const auto definitions = [&](const nlohmann::json &pass) {
+            using Json = nlohmann::json;
+            const Json config{
+                {"render_targets", Json::array({
+                    Json{{"name", "lit_color"}, {"extent_scale", 1.0},
+                         {"format", "R16G16B16A16_SFLOAT"}, {"history", true},
+                         {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}},
+                    Json{{"name", "offscreen_depth"}, {"extent_scale", 1.0},
+                         {"format", "D32_SFLOAT"}, {"usage", Json::array({"DEPTH_STENCIL_ATTACHMENT"})}}})},
+                {"rendering_passes", Json::array({Json{{"name", "main"}, {"passes", Json::array({pass})}}})}};
+            return TestSupport::renderingPassDefinitionsOf(config, names).at(0).passes.at(0);
+        };
+        TestSupport::requireNamedRefusal([&] { (void)definitions(formerly_accepted); },
+            "render_graph.pass_shape@1", {{"graph", "main"}, {"node", "forward_transparent"},
+                {"violation", "current_frame_color_feedback"}, {"target", "lit_color"}});
+        // The other named material read follows the same policy.
+        formerly_accepted.erase("screen_inputs");
+        formerly_accepted["material_resources"] = {{"current_color", "lit_color"}};
+        TestSupport::requireNamedRefusal([&] { (void)definitions(formerly_accepted); },
+            "render_graph.pass_shape@1", {{"node", "forward_transparent"},
+                {"violation", "current_frame_color_feedback"}, {"target", "lit_color"}});
 
         const auto history_neighbor = nlohmann::json::parse(R"json({
           "name": "forward_transparent_history",
           "type": "material",
           "material_contract": "forward_transparent_v1",
           "material_resources": {
-            "previous_color": "lit_color@history"
+            "previous_color": {"resource": "lit_color@history", "access": "sampled", "subresource": {"mip": 0}},
+            "previous_color_again": {"resource": "lit_color@history", "access": "sampled", "subresource": {"mip": 0}}
           },
           "output": {
             "color": ["lit_color"],
             "depth": "offscreen_depth"
           }
         })json");
-        const auto resolved = parsePassDefinitionFromJson(
-            history_neighbor, names, metadata);
+        const auto resolved = definitions(history_neighbor);
         REQUIRE(
             resolved.input_targets ==
             std::vector<GlobalRenderTargetId>{
@@ -2805,6 +2823,13 @@ TEST_CASE(
         REQUIRE(
             resolved.materialInfo()
                 .material_resources.front().history);
+        // Both ports survive, but the image is read once. History is part
+        // of the binding and of the common input list, not just acceptance.
+        REQUIRE(resolved.materialInfo().material_resources.size() == 2);
+        for (const auto &binding : resolved.materialInfo().material_resources) {
+            CHECK(binding.target == GlobalRenderTargetId{10});
+            CHECK(binding.history);
+        }
     }
 
     SECTION("regression 2 reserves swapchain for every authored resource kind") {
@@ -3166,7 +3191,7 @@ TEST_CASE("fullscreen pass JSON parser accepts shader stem references", "[render
         {"shader", {{"vertex", "shaders/fullscreen"}, {"fragment", "engine://bloom_blur_h"}}},
     };
 
-    const auto info = parseFullscreenPassInfoFromJson(pass_json, "stem_pass");
+    const auto info = fullscreenInfoOf(pass_json, "stem_pass");
 
     REQUIRE(info.vert_shader.ref == "shaders/fullscreen");
     REQUIRE(info.vert_shader.stage == ShaderStage::vertex);

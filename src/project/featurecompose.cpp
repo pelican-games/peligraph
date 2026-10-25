@@ -723,7 +723,7 @@ std::unordered_set<std::string> collectPassNames(const nlohmann::json &config) {
     return names;
 }
 
-std::unordered_set<std::string> collectBufferNames(const nlohmann::json &config) {
+std::unordered_set<std::string> collectAuthoredBufferNames(const nlohmann::json &config) {
     std::unordered_set<std::string> names;
     if (!config.contains("buffers")) {
         return names;
@@ -1803,7 +1803,7 @@ void addRenderTargets(nlohmann::json &config, const nlohmann::json &feature,
 }
 
 void addBuffers(nlohmann::json &config, const nlohmann::json &feature,
-                std::unordered_set<std::string> &buffer_names,
+                std::unordered_set<std::string> &authored_buffer_names,
                 std::string_view provider_feature,
                 std::string_view provider_reference,
                 std::vector<RenderResourceProvenance> &provenance) {
@@ -1823,7 +1823,7 @@ void addBuffers(nlohmann::json &config, const nlohmann::json &feature,
             throw std::runtime_error("render feature buffers entries must be strings or objects");
         }
         validateAuthoredRenderResourceName(name, "buffer");
-        if (!buffer_names.insert(name).second) {
+        if (!authored_buffer_names.insert(name).second) {
             throw std::runtime_error("Render feature buffer name collides: " + name);
         }
         buffers.push_back(buffer);
@@ -2066,7 +2066,7 @@ std::string graphWritePort(const nlohmann::json &root, const std::string &node_i
 // feature reads that nothing in `composed` writes (featurecompose.hpp).
 void requireFeatureTargetsWritten(const nlohmann::json &composed, const nlohmann::json &root,
                                   const std::vector<RenderPassProvenance> &provenance,
-                                  const std::unordered_set<std::string> &buffer_names,
+                                  const std::unordered_set<std::string> &authored_buffer_names,
                                   const std::string &feature_name, const std::string &reference,
                                   const nlohmann::json &required) {
     const auto families = composed.find("rendering_passes");
@@ -2078,7 +2078,7 @@ void requireFeatureTargetsWritten(const nlohmann::json &composed, const nlohmann
     for (const auto &entry : required) {
         if (!entry.is_object() || !entry.value("needs_writer", false)) continue;
         const auto target = entry.at("name").get<std::string>();
-        if (buffer_names.contains(target)) continue;
+        if (authored_buffer_names.contains(target)) continue;
         // The feature's pass that reads it, in this composition (none: the
         // feature's passes were left out here, and nothing reads it).
         const nlohmann::json *reader_family = nullptr;
@@ -3609,7 +3609,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
             }
         }
     }
-    auto buffer_names = collectBufferNames(composed);
+    auto authored_buffer_names = collectAuthoredBufferNames(composed);
     auto task_names = collectComputeTaskNames(composed);
     nlohmann::json resolved_instances = nlohmann::json::array();
     struct PendingSurfaceResourceFeature {
@@ -3662,7 +3662,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
             loaded.name, loaded.instance.ref,
             resource_provenance);
         addBuffers(
-            composed, feature, buffer_names,
+            composed, feature, authored_buffer_names,
             loaded.name, loaded.instance.ref,
             resource_provenance);
         requireFeatureTargets(feature, loaded.name, loaded.instance.ref, available_targets);
@@ -3884,7 +3884,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
                 resource_provenance);
             addBuffers(
                 composed, fragment,
-                buffer_names,
+                authored_buffer_names,
                 integration_provider,
                 provider.reference,
                 resource_provenance);
@@ -4209,7 +4209,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     // FR-3: a target a feature reads is one something in the pipeline
     // writes; the frame planner would refuse it later only by text.
     for (const auto &[feature_name, reference, required] : written_checks)
-        requireFeatureTargetsWritten(composed, config, pass_provenance, buffer_names, feature_name, reference,
+        requireFeatureTargetsWritten(composed, config, pass_provenance, authored_buffer_names, feature_name, reference,
                                      required);
     auto material_routing = resolveMaterialRoutingTable(composed);
     auto draw_sort = composed.contains("draw_sort")

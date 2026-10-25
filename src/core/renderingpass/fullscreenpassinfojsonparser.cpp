@@ -1,6 +1,6 @@
 #include "fullscreenpassinfojsonparser.hpp"
 #include "passfieldownershipcapabilities.hpp"
-#include "passshaderdefines.hpp"
+#include "../../project/passshaderdefines.hpp"
 #include "renderingpassjsonhelpers.hpp"
 #include <set>
 #include <span>

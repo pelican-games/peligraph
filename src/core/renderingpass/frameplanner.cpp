@@ -2,8 +2,6 @@
 #include "../../project/imageformat.hpp"
 #include "../../project/rasterrayquery.hpp"
 #include "passfieldownershipcapabilities.hpp"
-#include "passattachmentoptionsjsonparser.hpp"
-#include "materialpassinfojsonparser.hpp"
 #include "../../project/materialformat.hpp"
 #include "../../project/imagesubresourcejson.hpp"
 #include "../../project/passshapepolicy.hpp"

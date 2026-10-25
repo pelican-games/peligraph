@@ -1,11 +1,9 @@
 #include "materialpassinfojsonparser.hpp"
 #include "passfieldownershipcapabilities.hpp"
-#include "computetask.hpp"
 #include "renderingpassjsonhelpers.hpp"
 #include "rendertargetmetadataresolver.hpp"
 #include "rendertargetnameresolver.hpp"
 #include "../../project/materialformat.hpp"
-#include "../../project/rendergraphir.hpp"
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
@@ -38,105 +36,6 @@ std::uint64_t parseOptionalByteCount(
             std::string{context} + " " +
             std::string{field} +
             " must be an unsigned integer");
-    }
-}
-
-const FrameGraphBufferDefinition &
-requireGpuDrawBuffer(
-    std::span<const FrameGraphBufferDefinition>
-        definitions,
-    std::string_view name,
-    std::string_view role,
-    std::string_view pass_name) {
-    const auto found = std::find_if(
-        definitions.begin(), definitions.end(),
-        [&](const auto &candidate) {
-            return candidate.name == name;
-        });
-    if (found == definitions.end()) {
-        throw std::runtime_error(
-            "Material pass '" +
-            std::string{pass_name} +
-            "' gpu_draw_source " +
-            std::string{role} +
-            " references unknown buffer '" +
-            std::string{name} + "'");
-    }
-    return *found;
-}
-
-void validateGpuDrawSourceBufferContract(
-    const GpuDrawSourceDeclaration &source,
-    std::span<const FrameGraphBufferDefinition>
-        definitions,
-    std::string_view pass_name) {
-    const auto &commands = requireGpuDrawBuffer(
-        definitions, source.commands, "commands",
-        pass_name);
-    const auto &count = requireGpuDrawBuffer(
-        definitions, source.count, "count",
-        pass_name);
-    if (commands.command_layout !=
-        FrameGraphBufferCommandLayout::
-            indexed_draw) {
-        throw std::runtime_error(
-            "Material pass '" +
-            std::string{pass_name} +
-            "' gpu_draw_source commands buffer '" +
-            source.commands +
-            "' requires command_layout 'indexed_draw'");
-    }
-    if (count.command_layout !=
-        FrameGraphBufferCommandLayout::
-            draw_count) {
-        throw std::runtime_error(
-            "Material pass '" +
-            std::string{pass_name} +
-            "' gpu_draw_source count buffer '" +
-            source.count +
-            "' requires command_layout 'draw_count'");
-    }
-    const auto command_bytes =
-        static_cast<std::uint64_t>(
-            source.max_draw_count) *
-        frameGraphIndexedDrawCommandBytes;
-    if (source.command_offset >
-            commands.size ||
-        commands.size - source.command_offset <
-            command_bytes) {
-        throw std::runtime_error(
-            "Material pass '" +
-            std::string{pass_name} +
-            "' gpu_draw_source command range exceeds buffer '" +
-            source.commands + "'");
-    }
-    if (source.count_offset > count.size ||
-        count.size - source.count_offset <
-            frameGraphDrawCountBytes) {
-        throw std::runtime_error(
-            "Material pass '" +
-            std::string{pass_name} +
-            "' gpu_draw_source count value exceeds buffer '" +
-            source.count + "'");
-    }
-    if (source.layout ==
-        GpuDrawSourceLayout::
-            draw_queue_segments_v1) {
-        const auto &segments =
-            requireGpuDrawBuffer(
-                definitions, source.segments,
-                "segments", pass_name);
-        if (segments.host_source !=
-            FrameGraphHostBufferSource::
-                scene_draw_segments_v1) {
-            throw std::runtime_error(
-                "Material pass '" +
-                std::string{pass_name} +
-                "' gpu_draw_source segments buffer '" +
-                source.segments +
-                "' requires host_source "
-                "'scene_draw_segments_v1'");
-        }
     }
 }
 
@@ -387,25 +286,6 @@ parseGpuDrawSourceFromJson(
             "a non-empty material_range");
     }
     return result;
-}
-
-void validateGpuDrawSourceBufferContracts(
-    const RenderGraphIR &render_graph,
-    std::span<const FrameGraphBufferDefinition>
-        buffer_definitions) {
-    for (const auto &graph : render_graph.graphs) {
-        for (const auto &node : graph.nodes) {
-            const auto *material =
-                std::get_if<MaterialNodeInfo>(&node.info);
-            if (material == nullptr ||
-                !material->gpu_draw_source) {
-                continue;
-            }
-            validateGpuDrawSourceBufferContract(
-                *material->gpu_draw_source,
-                buffer_definitions, node.name);
-        }
-    }
 }
 
 void parseMaterialPassInfoFromJson(PassDefinition &pass_def, const nlohmann::json &pass_json) {

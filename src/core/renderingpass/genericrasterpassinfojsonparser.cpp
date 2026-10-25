@@ -1,5 +1,5 @@
 #include "genericrasterpassinfojsonparser.hpp"
-#include "passshaderdefines.hpp"
+#include "../../project/passshaderdefines.hpp"
 
 #include "renderingpassjsonhelpers.hpp"
 #include "../../project/logicalrendertype.hpp"

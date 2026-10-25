@@ -1,6 +1,6 @@
 #include "shaderlibrary.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
-#include "../renderingpass/passshaderdefines.hpp"
+#include "../../project/passshaderdefines.hpp"
 #include "shadercompiler.hpp"
 #include "../loader/engineresources.hpp"
 #include "../loader/fileio.hpp"

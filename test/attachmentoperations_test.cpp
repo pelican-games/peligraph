@@ -2,7 +2,7 @@
 // planner, the physical plan and registration to what the recording hands
 // beginRendering.
 #include "../src/core/renderingpass/frameplanner.hpp"
-#include "../src/core/renderingpass/renderingpassconfigjsonparser.hpp"
+#include "rendering_pass_test_support.hpp"
 #include "../src/core/renderingpass/renderingpassruntimecompiler.hpp"
 #include "../src/core/renderingpass/renderingsamplecount.hpp"
 #include "../src/core/renderingpass/rendertargetdefinition.hpp"
@@ -167,7 +167,7 @@ Registered registered(const RenderGraphIR &render_graph,
     return result;
 }
 
-// Registration's pass parse and runtime compile against `plan` (nullptr: no
+// Registration's pass conversion and runtime compile against `plan` (nullptr: no
 // physical contract), and what the recording then hands beginRendering.
 std::map<std::string, Recorded> recorded(const Json &config, const Registered &targets,
                                          const VulkanTargetPlan *plan) {
@@ -178,7 +178,7 @@ std::map<std::string, Recorded> recorded(const Json &config, const Registered &t
     const RenderTargetMetadataResolver metadata{[&](GlobalRenderTargetId id) {
         return targets.metadata.at(static_cast<std::size_t>(id.value));
     }};
-    const auto definitions = parseRenderingPassDefinitionsFromConfigJson(config, names, metadata);
+    const auto definitions = TestSupport::renderingPassDefinitionsOf(config, names);
     REQUIRE(definitions.size() == 1);
     const auto compiled = compileRenderingPassRuntime(
         definitions.front(),

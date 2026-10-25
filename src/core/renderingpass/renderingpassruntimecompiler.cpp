@@ -9,7 +9,7 @@
 #include "../fullscreenpass/fullscreeninputbindingmismatch.hpp"
 #include "../fullscreenpass/fullscreenpasscontainer.hpp"
 #include "../fullscreenpass/passinputlayout.hpp"
-#include "passshaderdefines.hpp"
+#include "../../project/passshaderdefines.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../log.hpp"
 #include "../profiler.hpp"

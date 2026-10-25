@@ -34,6 +34,7 @@ add_library(pelican_project
     logicalframegraphshadow.cpp
     frameplan.cpp
     imagesource.cpp
+    gpudrawsource.cpp
     rendergraphir.cpp
     rendergraphfingerprint.cpp
     rendergraphparse.cpp

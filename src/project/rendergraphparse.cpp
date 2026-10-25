@@ -954,23 +954,15 @@ NodeIR parsePass(const Json &pass, std::size_t index, const GraphScope &scope) {
     } catch (const std::exception &error) {
         refuse("render_graph.pass_field_ownership@1", subject.detail({{"detail", error.what()}}));
     }
-    // The planner's shape check: no buffer names, so a buffer input is
-    // checked as an image for duplicates and feedback, as it always was.
-    {
-        PassShapeObservation observation;
-        try {
-            observation = passShapeObservationFromJson(type, pass, {});
-        } catch (const std::exception &error) {
-            refuse("render_graph.pass_shape@1",
-                   subject.detail({{"violation", "unreadable"}, {"detail", error.what()}}));
-        }
-        const auto violations = evaluatePassShape(defaultPassShapePolicy(), observation);
+    const auto check_shape = [&](const PassShapePolicy &policy) {
+        const auto violations = evaluatePassShape(
+            policy, passShapeObservationOf(type, *scope.ir, node));
         if (!violations.empty()) {
             refuse("render_graph.pass_shape@1",
                    subject.detail({{"violation", std::string{passShapeViolationName(violations.front().kind)}},
                                    {"target", violations.front().target}}));
         }
-    }
+    };
     node.shape = renderNodeShapeOfPassType(type);
 
     MaterialNodeInfo material;
@@ -1005,6 +997,7 @@ NodeIR parsePass(const Json &pass, std::size_t index, const GraphScope &scope) {
         }
     }
     if (type == RenderPassType::canonical_anchor) {
+        check_shape(defaultPassShapePolicy());
         return node;
     }
     if (type == RenderPassType::snapshot_copy) {
@@ -1021,6 +1014,7 @@ NodeIR parsePass(const Json &pass, std::size_t index, const GraphScope &scope) {
                                         .access = ResourceUseAccess::write,
                                         .intent = LogicalAccessIntent::transfer});
         node.info = std::move(info);
+        check_shape(defaultPassShapePolicy());
         return node;
     }
     if (!pass.contains("output") || !pass.at("output").is_object()) {
@@ -1139,6 +1133,7 @@ NodeIR parsePass(const Json &pass, std::size_t index, const GraphScope &scope) {
                                            depth_store, depth_defaults));
     }
 
+    check_shape(defaultPassShapePolicy());
     passExecutionDeclaration(pass, node, std::move(material), *scope.ir, subject);
     return node;
 }

@@ -392,41 +392,6 @@ TEST_CASE("RC-3c1b a compute task's persistent image is not a pass input; a pass
 
 namespace {
 
-// RC-3c2b1: a compiler program that returns the engine's output with each
-// runtime variant's IR changed by `edit` (what a program of its own may
-// return: the common completion makes the compute tasks from it).
-struct EditingProgram final : RenderCompilerProgram {
-    std::function<void(RenderGraphIR &)> edit;
-    bool copy_graph = false;
-
-    RenderCompilerProgramSelection selection(const RenderCompilerBackendContext &backend) const override {
-        return defaultVulkanRenderCompilerProgram().selection(backend);
-    }
-    RenderCompilerProgramOutput compile(const RenderCompilerProgramInput &input) const override {
-        auto output = defaultVulkanRenderCompilerProgram().compile(input);
-        for (auto &variant : output.variants) {
-            if (variant.physical_package == nullptr || variant.render_graph == nullptr) continue;
-            auto edited = *variant.render_graph;
-            if (copy_graph) {
-                // This compiler-output test duplicates the base artifact,
-                // including its plans, before changing only a task's values.
-                // The copied graph must also satisfy the output name boundary.
-                auto graph = edited.graphs.front();
-                auto frame = variant.frame_plans.at(graph.name);
-                auto &physical = requireVulkanRenderCompilerPhysicalPackage(*variant.physical_package);
-                auto target = std::make_shared<VulkanTargetPlan>(*physical.target_plans.at(graph.name));
-                graph.name = frame.name = target->graph = "copy";
-                edited.graphs.push_back(std::move(graph));
-                variant.frame_plans.emplace(frame.name, std::move(frame));
-                physical.target_plan_compilation.plans.push_back(target);
-                physical.target_plans.emplace(target->graph, std::move(target));
-            }
-            edit(edited);
-            variant.render_graph = std::make_shared<const RenderGraphIR>(std::move(edited));
-        }
-        return output;
-    }
-};
 
 NodeIR &sharedNode(GraphIR &graph, std::string_view name) {
     const auto found = std::find_if(graph.nodes.begin(), graph.nodes.end(), [&](const NodeIR &node) {
@@ -532,7 +497,7 @@ TEST_CASE("RC-3c2b1 the completion refuses by name an IR whose compute tasks it 
 }
 
 
-TEST_CASE("RC-3c2b2 completion and registration derive pass values from IR",
+TEST_CASE("RC-3c2b2 completion derives optional pass state and refuses missing stages",
           "[rc3c2b2][render-compiler][passes]") {
     const auto bloom = Json::parse(engineResourceOrThrow("features/bloom.json"));
     Json state;
@@ -662,12 +627,252 @@ TEST_CASE("RC-3c2b2 pass declarations separate shape from execution requirements
             const auto omitted = definition(parsed(pass));
             CHECK(omitted.shader_declaration_parsed);
             CHECK(omitted.declared_shader_refs.empty());
+            const std::string stem = std::string{"engine://"} + type;
+            const auto check_shader = [](const ShaderReference &shader, const std::string &ref, ShaderStage stage) {
+                CHECK(shader.ref == ref);
+                CHECK(shader.stage == stage);
+            };
+            const auto check_effective = [&](const PassDefinition &definition, bool explicit_refs, bool skinned) {
+                const auto vertex = explicit_refs ? "engine://custom_aux" : stem;
+                const auto fragment = explicit_refs ? "engine://custom_aux" : stem;
+                const auto skin = skinned ? "engine://custom_skin" : stem + "_skinned";
+                if (std::string_view{type} == "shadow_depth") {
+                    check_shader(definition.shadowDepthInfo().vert_shader, vertex, ShaderStage::vertex);
+                } else if (std::string_view{type} == "velocity") {
+                    check_shader(definition.velocityInfo().vert_shader, vertex, ShaderStage::vertex);
+                    check_shader(definition.velocityInfo().frag_shader, fragment, ShaderStage::fragment);
+                    check_shader(definition.velocityInfo().skinned_vert_shader, skin, ShaderStage::vertex);
+                } else {
+                    check_shader(definition.pickingInfo().vert_shader, vertex, ShaderStage::vertex);
+                    check_shader(definition.pickingInfo().frag_shader, fragment, ShaderStage::fragment);
+                    check_shader(definition.pickingInfo().skinned_vert_shader, skin, ShaderStage::vertex);
+                }
+            };
+            check_effective(omitted, false, false);
+            pass["shader"] = {{"vertex", "engine://custom_aux"}};
+            const bool shadow = std::string_view{type} == "shadow_depth";
+            if (!shadow) pass["shader"]["fragment"] = "engine://custom_aux";
+            const auto explicit_pair = definition(parsed(pass));
+            check_effective(explicit_pair, true, false);
+            REQUIRE(explicit_pair.declared_shader_refs.size() == (shadow ? 1 : 2));
+            CHECK(explicit_pair.declared_shader_refs.front().ref == "engine://custom_aux");
+            CHECK(explicit_pair.declared_shader_refs.front().stage == DeclaredShaderStage::vertex);
+            if (!shadow) {
+                CHECK(explicit_pair.declared_shader_refs.back().stage == DeclaredShaderStage::fragment);
+                pass["shader"]["skinned_vertex"] = "engine://custom_skin";
+                const auto explicit_skinned = definition(parsed(pass));
+                check_effective(explicit_skinned, true, true);
+                REQUIRE(explicit_skinned.declared_shader_refs.size() == 3);
+                CHECK(explicit_skinned.declared_shader_refs.at(1).ref == "engine://custom_skin");
+                CHECK(explicit_skinned.declared_shader_refs.at(1).stage == DeclaredShaderStage::skinned_vertex);
+            }
             pass["shader"] = Json::object();
             const auto empty = parsed(pass);
             TestSupport::requireNamedRefusal([&] { (void)definition(empty); }, "render_graph.pass_execution_invalid@1",
                 {{"node", "subject"}, {"field", "shader.vertex"}, {"reason", "required"}});
         }
     }
+}
+
+TEST_CASE("RC-3c2b2 D2 compiler entry preserves fullscreen and auxiliary refusals",
+          "[rc3c2b2][render-compiler][passes][d2]") {
+    const auto compiled = [](const Json &rendering) {
+        Project project;
+        Providers providers;
+        return compile(project, providers, rendering, Variants::flat);
+    };
+    const auto base = section(0, false);
+    REQUIRE(compiled(base).variants.size() == 1);
+    struct Refusal {
+        std::string label;
+        std::function<void(Json &)> edit;
+        std::string code;
+        Json fields;
+    };
+    const std::string field_code = "render_graph.node_field_invalid@1";
+    const std::string execution_code = "render_graph.pass_execution_invalid@1";
+    const std::vector<Refusal> refusals{
+        {"missing shader", [](Json &p) { p.erase("shader"); }, execution_code,
+            {{"field", "shader.vertex"}, {"reason", "required"}}},
+        {"missing vertex", [](Json &p) { p["shader"].erase("vertex"); }, execution_code,
+            {{"field", "shader.vertex"}, {"reason", "required"}}},
+        {"missing fragment", [](Json &p) { p["shader"].erase("fragment"); }, execution_code,
+            {{"field", "shader.fragment"}, {"reason", "required"}}},
+        {"shader not object", [](Json &p) { p["shader"] = "fullscreen"; }, field_code,
+            {{"field", "shader"}, {"reason", "not_an_object"}}},
+        {"shader stage not string", [](Json &p) { p["shader"]["fragment"] = 4; }, field_code,
+            {{"field", "shader.fragment"}, {"reason", "requires_string"}}},
+        {"explicit shader extension", [](Json &p) { p["shader"]["vertex"] = "fullscreen.vert.spv"; }, field_code,
+            {{"field", "shader.vertex"}, {"reason", "explicit_extension"}, {"ref", "fullscreen.vert.spv"}}},
+        {"unknown shader field", [](Json &p) { p["shader"]["typo"] = "ignored_before"; }, field_code,
+            {{"field", "shader.typo"}, {"reason", "unknown_field"}}},
+        {"push constants", [](Json &p) { p["push_constants"] = "unknown"; }, field_code,
+            {{"field", "push_constants"}, {"reason", "unknown_value"}}},
+        {"lighting type", [](Json &p) { p["uses_light_data"] = "true"; }, field_code,
+            {{"field", "uses_light_data"}, {"reason", "requires_boolean"}}},
+        {"sampling not array", [](Json &p) { p["input_sampling"] = "linear"; }, field_code,
+            {{"field", "input_sampling"}, {"reason", "not_an_array"}}},
+        {"sampling cardinality", [](Json &p) { p["input_sampling"] = Json::array(); }, field_code,
+            {{"field", "input_sampling"}, {"reason", "image_input_count_mismatch"}}},
+        {"sampling enum", [](Json &p) { p["input_sampling"] = Json::array({Json{{"filter", "invalid"}}}); }, field_code,
+            {{"field", "input_sampling"}, {"reason", "invalid"}}},
+        {"sampling unknown key", [](Json &p) { p["input_sampling"] = Json::array({Json{{"wrap", "repeat"}}}); }, field_code,
+            {{"field", "input_sampling"}, {"reason", "invalid"}}},
+        {"sampling and ports", [](Json &p) {
+            p["resource_ports"] = {{"color", "scene"}};
+            p["input_sampling"] = Json::array({Json::object()});
+        }, field_code, {{"field", "input_sampling"}, {"reason", "replaced_by_resource_ports"}}},
+        {"port missing edge", [](Json &p) { p["resource_ports"] = {{"color", "unknown_input"}}; }, field_code,
+            {{"field", "resource_ports"}, {"reason", "invalid"}}},
+        {"duplicate ports", [](Json &p) { p["resource_ports"] = {
+            {"a", {{"resource", "scene"}, {"access", "sampled"}, {"subresource", {{"mip", 0}}}}},
+            {"b", {{"resource", "scene"}, {"access", "sampled"}, {"subresource", {{"mip", 1}}}}}}; }, field_code,
+            {{"field", "resource_ports"}, {"reason", "duplicate_resource"}}},
+        {"input settings not array", [](Json &p) { p["input_settings"] = Json::object(); }, field_code,
+            {{"field", "input_settings"}, {"reason", "not_an_array"}}},
+        {"too many input settings", [](Json &p) { p["input_settings"] = Json::array({nullptr, nullptr}); }, field_code,
+            {{"field", "input_settings"}, {"reason", "too_many_entries"}}},
+        {"clear arity", [](Json &p) { p["clear_color"] = Json::array({0, 1, 2}); }, field_code,
+            {{"field", "clear_color"}, {"reason", "requires_four_numbers"}}},
+        {"clear component type", [](Json &p) { p["clear_color"] = Json::array({0, 0, "zero", 1}); }, field_code,
+            {{"field", "clear_color"}, {"reason", "requires_four_numbers"}}},
+        {"clear overrides not object", [](Json &p) { p["clear_colors"] = Json::array(); }, field_code,
+            {{"field", "clear_colors"}, {"reason", "not_an_object"}}},
+        {"clear target absent", [](Json &p) { p["clear_colors"] = {{"unknown_color", Json::array({0, 0, 0, 1})}}; }, field_code,
+            {{"field", "clear_colors"}, {"reason", "not_a_color_output"}, {"resource", "unknown_color"}}},
+        {"implementation object", [](Json &p) { p["implementation"] = "fixture"; }, field_code,
+            {{"field", "implementation"}, {"reason", "not_an_object"}}},
+        {"implementation extra field", [](Json &p) { p["implementation"] = {{"provider", "fixture"}, {"typo", true}}; }, field_code,
+            {{"field", "implementation.typo"}, {"reason", "unknown_field"}}},
+        {"implementation empty", [](Json &p) { p["implementation"] = {{"provider", ""}}; }, field_code,
+            {{"field", "implementation.provider"}, {"reason", "empty_or_too_long"}}},
+        {"implementation length", [](Json &p) { p["implementation"] = {{"provider", std::string(maximumPassImplementationProviderNameBytes + 1, 'a')}}; }, field_code,
+            {{"field", "implementation.provider"}, {"reason", "empty_or_too_long"}}},
+    };
+    for (const auto &entry : refusals) {
+        DYNAMIC_SECTION(entry.label) {
+            auto invalid = base;
+            entry.edit(invalid["rendering_passes"][0]["passes"][1]);
+            auto detail = entry.fields;
+            detail["graph"] = "main";
+            detail["node"] = "tone";
+            TestSupport::requireNamedRefusal([&] { (void)compiled(invalid); }, entry.code, detail);
+            // The neighboring accepted declaration reaches common completion.
+            const auto accepted = compiled(base);
+            const auto &ir = *variantOf(accepted, RenderPipelineGraphVariant::flat).render_graph;
+            const auto &info = std::get<FullscreenNodeInfo>(ir.graphs.front().nodes.at(1).info);
+            CHECK(info.fragment_shader == "engine://scene_present");
+        }
+    }
+    SECTION("reserved define diagnostics retain all structured fields at compiler entry") {
+        auto rendering = base;
+        auto &defines = rendering["rendering_passes"][0]["passes"][1]["shader"]["defines"];
+        defines = Json::array({"LOCAL=1", "PELICAN_PASS_TEXTURE_INPUT_COUNT=5"});
+        try { (void)compiled(rendering); FAIL("reserved define accepted"); }
+        catch (const PassShaderDefineError &error) {
+            CHECK(error.info().pass == "tone");
+            CHECK(error.info().define == "PELICAN_PASS_TEXTURE_INPUT_COUNT=5");
+            CHECK(error.info().name == "PELICAN_PASS_TEXTURE_INPUT_COUNT");
+            CHECK(error.info().index == 1);
+            CHECK(error.info().reason == passShaderDefineReserved);
+        }
+        defines = Json::array({"LOCAL=1", "LOCAL_COUNT=5"});
+        CHECK(compiled(rendering).variants.size() == 1);
+    }
+    SECTION("auxiliary omitted empty vertex pair and skinned forms") {
+        for (const auto *type : {"shadow_depth", "velocity", "picking", "debug_draw", "gizmo", "debug_text"}) {
+            const bool shadow = std::string_view{type} == "shadow_depth";
+            const bool defaults = shadow || std::string_view{type} == "velocity" || std::string_view{type} == "picking";
+            Json pass{{"name", "aux"}, {"type", type},
+                {"output", {{"color", shadow ? Json(nullptr) : Json("color")}, {"depth", defaults ? Json("depth") : Json(nullptr)}}}};
+            Json present = fullscreen("present", shadow ? std::vector<std::string>{} : std::vector<std::string>{"color"}, "swapchain");
+            const auto rendering = [&](const Json &aux) {
+                return Json{{"render_targets", Json::array({image("color"),
+                    Json{{"name", "depth"}, {"extent_scale", 1.0}, {"format", "D32_SFLOAT"},
+                         {"usage", Json::array({"DEPTH_STENCIL_ATTACHMENT"})}}})},
+                    {"rendering_passes", Json::array({Json{{"name", "main"}, {"passes", Json::array({fullscreen("initialize", {}, "color"), aux, present})}}})}};
+            };
+            for (const auto *form : {"omitted", "empty", "vertex", "pair", "skinned"}) {
+                INFO(type << " " << form);
+                auto authored = pass;
+                if (std::string_view{form} != "omitted") authored["shader"] = Json::object();
+                if (std::string_view{form} == "vertex" || std::string_view{form} == "pair" || std::string_view{form} == "skinned") {
+                    authored["shader"]["vertex"] = "engine://custom_aux";
+                }
+                if (std::string_view{form} == "pair" || std::string_view{form} == "skinned") authored["shader"]["fragment"] = "engine://custom_aux";
+                if (std::string_view{form} == "skinned") authored["shader"]["skinned_vertex"] = "engine://custom_skin";
+                const bool accepted = (defaults && std::string_view{form} == "omitted") ||
+                    (shadow && std::string_view{form} == "vertex") ||
+                    (!shadow && (std::string_view{form} == "pair" || std::string_view{form} == "skinned"));
+                if (accepted) {
+                    CHECK(compiled(rendering(authored)).variants.size() == 1);
+                } else {
+                    const bool unsupported = shadow && (std::string_view{form} == "pair" || std::string_view{form} == "skinned");
+                    const auto field = unsupported || std::string_view{form} == "vertex" ? "shader.fragment" : "shader.vertex";
+                    TestSupport::requireNamedRefusal([&] { (void)compiled(rendering(authored)); },
+                        unsupported ? field_code : execution_code,
+                        {{"graph", "main"}, {"node", "aux"}, {"field", field},
+                         {"reason", unsupported ? "unsupported_stage" : "required"}});
+                }
+            }
+        }
+    }
+}
+
+
+TEST_CASE("RC-3c2b2 named material feedback is rejected at compiler entry with a history control",
+          "[rc3c2b2][render-compiler][passes][d2]") {
+    const auto compiled = [](const Json &rendering) {
+        Project project;
+        Providers providers;
+        return compile(project, providers, rendering, Variants::flat);
+    };
+    auto rendering = section(0, false);
+    rendering["render_targets"].push_back(Json{{"name", "depth"}, {"extent_scale", 1.0},
+        {"format", "D32_SFLOAT"}, {"usage", Json::array({"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"})}});
+    for (auto &image : rendering["render_targets"]) if (image["name"] == "post") image["history"] = true;
+    auto &pass = rendering["rendering_passes"][0]["passes"][1];
+    pass = Json{{"name", "tone"}, {"type", "material"}, {"material_contract", "forward_transparent_v1"},
+        {"screen_inputs", {{"opaque_color", "scene"}}},
+        {"output", {{"color", "post"}, {"depth", "depth"}}}};
+    REQUIRE(compiled(rendering).variants.size() == 1);
+    pass["screen_inputs"]["opaque_color"] = "post";
+    TestSupport::requireNamedRefusal([&] { (void)compiled(rendering); }, "render_graph.pass_shape@1",
+        {{"graph", "main"}, {"node", "tone"}, {"target", "post"}, {"violation", "current_frame_color_feedback"}});
+    pass.erase("screen_inputs");
+    pass["material_resources"] = {
+        {"a", {{"resource", "post"}, {"access", "sampled"}, {"subresource", {{"mip", 0}}}}},
+        {"b", {{"resource", "post"}, {"access", "sampled"}, {"subresource", {{"mip", 0}}}}}};
+    TestSupport::requireNamedRefusal([&] { (void)compiled(rendering); }, "render_graph.pass_shape@1",
+        {{"graph", "main"}, {"node", "tone"}, {"target", "post"}, {"violation", "current_frame_color_feedback"}});
+    // The compiler's history control has one binding. The WP326 helper
+    // test also checks two bindings to one image and their deduplicated
+    // input list; logical shadow planning separately forbids duplicate
+    // explicit access declarations for the same resource.
+    pass["material_resources"] = {{"a", "post@history"}};
+    const auto history = compiled(rendering);
+    const auto &variant = variantOf(history, RenderPipelineGraphVariant::flat);
+    const auto names = generationRenderTargetNames(history.generation_resources);
+    const auto definitions = renderingPassDefinitionsOf(*variant.render_graph, history.generation_resources, names);
+    const auto &passes = definitions.at(0).passes;
+    const auto found = std::find_if(passes.begin(), passes.end(), [](const auto &p) { return p.name == "tone"; });
+    REQUIRE(found != passes.end());
+    const auto post_id = names.resolve("post");
+    REQUIRE(isConcreteRenderTarget(post_id));
+    CHECK(found->input_targets == std::vector<GlobalRenderTargetId>{post_id});
+    CHECK(found->input_target_history == std::vector<bool>{true});
+    REQUIRE(found->materialInfo().material_resources.size() == 1);
+    for (const auto &resource : found->materialInfo().material_resources) {
+        CHECK(resource.target == post_id);
+        CHECK(resource.history);
+    }
+    // A current-frame read of an upstream image is accepted; the same
+    // binding to this pass's depth attachment is rejected.
+    pass["material_resources"] = {{"a", "scene"}};
+    CHECK(compiled(rendering).variants.size() == 1);
+    pass["material_resources"] = {{"a", "depth"}};
+    TestSupport::requireNamedRefusal([&] { (void)compiled(rendering); }, "render_graph.pass_shape@1",
+        {{"graph", "main"}, {"node", "tone"}, {"target", "depth"}, {"violation", "current_frame_depth_feedback"}});
 }
 
 } // namespace Pelican

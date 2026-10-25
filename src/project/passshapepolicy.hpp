@@ -144,6 +144,15 @@ PassShapeObservation passShapeObservationFromJson(
     RenderPassType type, const nlohmann::json &pass,
     std::span<const std::string> non_image_inputs = {});
 
+struct RenderGraphIR;
+struct NodeIR;
+
+// All shader reads and attachments of a parsed pass. Named bindings and
+// resource ports may describe the same image more than once; positional
+// duplicates remain observable, and history stays distinct from current.
+PassShapeObservation passShapeObservationOf(
+    RenderPassType type, const RenderGraphIR &ir, const NodeIR &node);
+
 std::vector<PassShapeViolation> evaluatePassShape(
     const PassShapePolicy &policy,
     const PassShapeObservation &observation);

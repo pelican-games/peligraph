@@ -1,7 +1,7 @@
 #include "rendercompilerprogram.hpp"
 #include "passdefinitionfromir.hpp"
 #include "computetaskdefinition.hpp"
-#include "materialpassinfojsonparser.hpp"
+#include "../../project/gpudrawsource.hpp"
 #include "../../project/graphcomposition.hpp"
 
 #include <algorithm>

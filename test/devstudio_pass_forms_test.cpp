@@ -9,7 +9,7 @@
 #include "passforms/shaderdefinesform.hpp"
 
 #include "rasterpass.hpp"
-#include "renderingpass/passshaderdefines.hpp"
+#include "../src/project/passshaderdefines.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

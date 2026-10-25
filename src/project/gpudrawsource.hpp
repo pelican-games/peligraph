@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <span>
 #include <string>
 
 namespace Pelican {
@@ -45,5 +46,12 @@ struct GpuDrawSourceDeclaration {
     bool operator==(
         const GpuDrawSourceDeclaration &) const = default;
 };
+
+struct RenderGraphIR;
+struct FrameGraphBufferDefinition;
+
+void validateGpuDrawSourceBufferContracts(
+    const RenderGraphIR &render_graph,
+    std::span<const FrameGraphBufferDefinition> buffer_definitions);
 
 } // namespace Pelican
