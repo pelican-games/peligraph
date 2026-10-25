@@ -43,13 +43,22 @@ PreviewGraphProgram graphFixture() {
       "schema":"pelican.graph","version":1,"definitions":{},"nodes":[],"outputs":{},
       "rendering":{
       "features":["fixture://ui"],
-      "render_targets":[],
+      "render_targets":[{"name":"preview_depth","extent_scale":1.0,"format":"D32_SFLOAT",
+                         "usage":["DEPTH_STENCIL_ATTACHMENT"]}],
       "rendering_passes":[{"name":"main_render","passes":[
         {"name":"main_scene","type":"material",
-         "output":{"color":["swapchain"],"depth":null}}
+         "resolution_domain":"output",
+         "material_contract":"forward_opaque_v1",
+         "material_outputs":{"schema":"pelican.material_outputs","version":1,"name":"wp172.outputs",
+                             "outputs":[{"name":"color","type":"vec4","source":"custom"}]},
+         "output":{"color":["swapchain"],"depth":"preview_depth"}}
       ]}]
       }
     })json";
+    // RC-3c2a: the flat variant the registration compiles beside the preview
+    // passes its resource checks in the compiler program: a material pass
+    // draws its declared outputs over a depth target, at the output's
+    // resolution (the display it draws to is the output).
     // The registration's preview program (RC-3c1b).
     return TestSupport::registeredPreviewProgram(
         config,
