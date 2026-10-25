@@ -275,7 +275,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 
 同じコンポーネントで、**クリップ 1 本の再生**か、**ステートマシン文書(`pelican.anim_graph`)の再生**かのどちらかを宣言します。受理するキーは `name` を除いて 6 つで、**`clip` と `graph` はちょうど一方**でなければなりません(両方書いても、どちらも書かなくても `field 'animation' requires exactly one of clip or graph` — [componentcodec.cpp:990](../../src/core/loader/componentcodec.cpp#L1529))。メッセージの `field '<path>' ` という前置きは検査側が付けるもので([structfieldjson.hpp:56](../../src/core/userpublic/details/schema/structfieldjson.hpp#L151))、ロード時にはさらに `animation.schema_validation` の legacy 拒否として包み直されます([componentcodec.cpp:1537](../../src/core/loader/componentcodec.cpp#L2183))。以下で引用するのは**その中の一節**です。
 
-(`graph` 装着の形。[skeletal_gltf_test.cpp:1074](../../test/skeletal_gltf_test.cpp#L1079) の実物から):
+(`graph` 装着の形。[skeletal_gltf_test.cpp:1074](../../test/skeletal_gltf_test.cpp#L1080) の実物から):
 
 ```json
 { "name": "animation", "graph": "turn.json",

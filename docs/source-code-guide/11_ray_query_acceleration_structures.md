@@ -40,7 +40,7 @@ BLAS が保持するのは大域 index / vertex pool のデバイスアドレス
 
 TLAS の行がどこから来るかは、3つの型を順に読むと追えます。宣言面(mask / flags / custom index / material 鍵規則)そのものは[第6章 §6.20](06_rendering_vulkan_shader.md)にあります。
 
-identity が層ごとに姿を変えるのがこの経路の読みどころです。同じ 1 行を指す identity が、snapshot では**構造化された field 群**、`RaySceneRowInput` では**3 本の文字列**、material 側では**1 つの typed union** になります。名前が似ていて役割が違うので、まず全体をこの形で掴んでから各節へ入ってください。3 本に分かれているのは、`scene_identity` と `geometry_identity` が **canonical sort の第1/第2キー**であるのに対し、3 本目の `geometry_match_identity` は sort キーではなく**曖昧性 guard の等価域**だからで、ヘッダのコメントがその理由を書いています — 「authored 側の asset / mesh / node の別名が、同じ位置にある同じ geometry を別物に見せてはいけない」([`RaySceneRowInput` の `geometry_match_identity` の上](../../src/core/shader/raygrouplayout.hpp#L285))。詳細は §「`RaySceneRowInput` の identity 3 種」。
+identity が層ごとに姿を変えるのがこの経路の読みどころです。同じ 1 行を指す identity が、snapshot では**構造化された field 群**、`RaySceneRowInput` では**3 本の文字列**、material 側では**1 つの typed union** になります。名前が似ていて役割が違うので、まず全体をこの形で掴んでから各節へ入ってください。3 本に分かれているのは、`scene_identity` と `geometry_identity` が **canonical sort の第1/第2キー**であるのに対し、3 本目の `geometry_match_identity` は sort キーではなく**曖昧性 guard の等価域**だからで、ヘッダのコメントがその理由を書いています — 「authored 側の asset / mesh / node の別名が、同じ位置にある同じ geometry を別物に見せてはいけない」([`RaySceneRowInput` の `geometry_match_identity` の上](../../src/core/shader/raygrouplayout.hpp#L255))。詳細は §「`RaySceneRowInput` の identity 3 種」。
 
 | 順 | 型・要素 | 変換と意味 |
 |---|---|---|
@@ -75,21 +75,21 @@ identity が層ごとに姿を変えるのがこの経路の読みどころで�
 
 ### `RaySceneRowInput` の identity 3 種
 
-[`RaySceneRowInput`](../../src/core/shader/raygrouplayout.hpp#L279) は identity 文字列を3本持ちます。名前が似ていますが役割は別で、混ぜると壊れます([resolveRayTracingSceneRows()](../../src/core/renderer/accelerationstructure.cpp#L568))。
+[`RaySceneRowInput`](../../src/core/shader/raygrouplayout.hpp#L249) は identity 文字列を3本持ちます。名前が似ていますが役割は別で、混ぜると壊れます([resolveRayTracingSceneRows()](../../src/core/renderer/accelerationstructure.cpp#L568))。
 
 | field | 形 | 役割 |
 |---|---|---|
-| [`scene_identity`](../../src/core/shader/raygrouplayout.hpp#L283) | `asset@<canonical transform>` | 永続的な scene 上の同一性。`q` の canonical sort の第1キー。**draw inventory の publish 順を意図的に含みません**(instance slot / generation / 公開順序を入れると `q` が公開順に依存します) |
+| [`scene_identity`](../../src/core/shader/raygrouplayout.hpp#L253) | `asset@<canonical transform>` | 永続的な scene 上の同一性。`q` の canonical sort の第1キー。**draw inventory の publish 順を意図的に含みません**(instance slot / generation / 公開順序を入れると `q` が公開順に依存します) |
 | `geometry_identity` | `asset#allocation:index_offset:vertex_offset:mesh:primitive:node` | 同一 object 内で primitive を区別する第2キー |
-| [`geometry_match_identity`](../../src/core/shader/raygrouplayout.hpp#L289) | `allocation:index_offset:index_count:vertex_offset:vertex_count@<transform>` | **曖昧性 guard の等価域**。canonical sort キーと違い、物理的な GPU geometry 範囲と canonical transform だけを含みます |
+| [`geometry_match_identity`](../../src/core/shader/raygrouplayout.hpp#L259) | `allocation:index_offset:index_count:vertex_offset:vertex_count@<transform>` | **曖昧性 guard の等価域**。canonical sort キーと違い、物理的な GPU geometry 範囲と canonical transform だけを含みます |
 
-3本目だけ設計意図が違います。コメントが理由を書いています — authored 側の asset / mesh / node の別名が、**同じ位置にある同じ geometry を別物に見せてはいけない**からです。sort 後に隣接行を突き合わせ、`geometry_match_identity` が一致するのに group か record data が違えば [`pelican.ray_row_binding_ambiguous@1`](../../src/core/shader/raygrouplayout.cpp#L1746) で止めます。
+3本目だけ設計意図が違います。コメントが理由を書いています — authored 側の asset / mesh / node の別名が、**同じ位置にある同じ geometry を別物に見せてはいけない**からです。sort 後に隣接行を突き合わせ、`geometry_match_identity` が一致するのに group か record data が違えば [`pelican.ray_row_binding_ambiguous@1`](../../src/core/shader/raygrouplayout.cpp#L1538) で止めます。
 
-`q` は sort 後の添字で、行数が 2^24 を超えると [scene row q の24-bit上限診断](../../src/core/shader/raygrouplayout.cpp#L1758) です(instance SBT offset が 24 bit のため)。
+`q` は sort 後の添字で、行数が 2^24 を超えると [scene row q の24-bit上限診断](../../src/core/shader/raygrouplayout.cpp#L1550) です(instance SBT offset が 24 bit のため)。
 
 ### `MaterialRowIdentity`: gate と lookup が同じ値を見る
 
-material 側は元々 `{document, material_name, asset, source_material_index}` の4 field がバラバラに使われていて、AS rule の gate と material lookup が別の解釈をする組み合わせがありました。WP383 で正準化し、[`MaterialRowIdentity`](../../src/core/shader/raygrouplayout.hpp#L335) という **1つの typed union** に寄せてあります。
+material 側は元々 `{document, material_name, asset, source_material_index}` の4 field がバラバラに使われていて、AS rule の gate と material lookup が別の解釈をする組み合わせがありました。WP383 で正準化し、[`MaterialRowIdentity`](../../src/core/shader/raygrouplayout.hpp#L305) という **1つの typed union** に寄せてあります。
 
 ```cpp
 using MaterialRowIdentity =
@@ -101,16 +101,16 @@ using MaterialRowIdentity =
 
 | 入力 | 結果 |
 |---|---|
-| `material_document` が非空 | [`MaterialRowDocumentIdentity{document, material_name}`](../../src/core/shader/raygrouplayout.hpp#L319)。**document の存在が勝ちます** |
-| document が空、`material_asset` が非空、`source_material_index` が有る | [`MaterialRowAssetIdentity{asset, source_material_index}`](../../src/core/shader/raygrouplayout.hpp#L324) |
+| `material_document` が非空 | [`MaterialRowDocumentIdentity{document, material_name}`](../../src/core/shader/raygrouplayout.hpp#L289)。**document の存在が勝ちます** |
+| document が空、`material_asset` が非空、`source_material_index` が有る | [`MaterialRowAssetIdentity{asset, source_material_index}`](../../src/core/shader/raygrouplayout.hpp#L294) |
 | 同上で index が `UINT32_MAX` | [`pelican.ray_material_index_out_of_range@1`](../../src/core/shader/raygrouplayout.cpp#L73) |
-| それ以外 | [`MaterialRowIdentityUnavailable`](../../src/core/shader/raygrouplayout.hpp#L329) |
+| それ以外 | [`MaterialRowIdentityUnavailable`](../../src/core/shader/raygrouplayout.hpp#L299) |
 
-**`material_name` は optional**です。単一 material の `.mat.json` のように名前を持たない document material があるので、「document かつ名前あり」を Document の条件にすると、それが Asset か Unavailable へ落ちて document selector が解決できなくなります。document selector 側も、名前が空なら名前を問わず一致し、名前付きなら一致を要求する非対称になっています([`rayAsSelectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L724))。
+**`material_name` は optional**です。単一 material の `.mat.json` のように名前を持たない document material があるので、「document かつ名前あり」を Document の条件にすると、それが Asset か Unavailable へ落ちて document selector が解決できなくなります。document selector 側も、名前が空なら名前を問わず一致し、名前付きなら一致を要求する非対称になっています([`rayAsSelectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L547))。
 
 もう1つの要点は `source_material_index` が `RaySceneRowInput` / snapshot の両方で `std::optional` であることです。コメントが規範を書いています — **欠損した index が黙って 0 になってはいけません**。glTF の直読みなどで material が無い primitive は index を持たず、identity は `Unavailable` になります。0 に丸めると、たまたま 0 番 material を指す asset selector が誤って一致します。
 
-この単一 identity は、AS rule の gate([`rayAsSelectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L724))、ray bindings の selector 照合([`selectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L476))、`material_reference` の生成、material 表の lookup がすべて同じ値を見ます。
+この単一 identity は、AS rule の gate([`rayAsSelectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L547))、ray bindings の selector 照合([`selectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L299))、`material_reference` の生成、material 表の lookup がすべて同じ値を見ます。
 
 ## `rt_shadow_mask` feature
 
@@ -175,8 +175,8 @@ read が返すのは 6 キーです。
 
 layout と bindings の文書そのものを読み書きするのは `get_ray_layout` / `edit_ray_layout` で、render 文書の 2 つの kind(`ray_group_layout` / `ray_bindings`)として restore と reload にも乗ります。契約は manual [第13章](../manual/13_editor.md) §13.5 の「ray の layout と bindings を読み書きする」、作りの要点は [第7章](07_tools_rpc_tests.md) §7.7 の「ray の layout と bindings の編集」です。この章の行の解決に関わる変更は 2 つです。
 
-- **行に当たらない binding は記録だけ**: scene の行の解決で、どの行にも当たらなかった binding の番号を [`RaySceneRowSnapshot::unresolved_binding_indices`](../../src/core/shader/raygrouplayout.hpp#L415) に残し、`bindings_digest_sha256` と一緒に持ちます([記録する所(RTL-1a)](../../src/core/shader/raygrouplayout.cpp#L1724))。その行は binding の無い行と同じく既定の group です。前は `ray_binding_selector_unresolved` で世代が巻き戻りました。`pelican.ray_row_binding_ambiguous@1` などの曖昧さの検査はそのままです。
-- **mode の判定は登録の最後**: layout の有無(`LegacyNoLayout` / `LayoutV3`)は起動時に決まり、違う mode の候補は登録の最後に [`RayLayoutModeChanged`](../../src/core/shader/raygrouplayout.hpp#L180) で止まります。editor はそれだけが理由の候補を commit して `restart_required` にします([第2章](02_runtime_lifecycle.md) の `configureRayLayoutModeBeforeComponentRegistration()` の項)。
+- **行に当たらない binding は記録だけ**: scene の行の解決で、どの行にも当たらなかった binding の番号を [`RaySceneRowSnapshot::unresolved_binding_indices`](../../src/core/shader/raygrouplayout.hpp#L385) に残し、`bindings_digest_sha256` と一緒に持ちます([記録する所(RTL-1a)](../../src/core/shader/raygrouplayout.cpp#L1516))。その行は binding の無い行と同じく既定の group です。前は `ray_binding_selector_unresolved` で世代が巻き戻りました。`pelican.ray_row_binding_ambiguous@1` などの曖昧さの検査はそのままです。
+- **mode の判定は登録の最後**: layout の有無(`LegacyNoLayout` / `LayoutV3`)は起動時に決まり、違う mode の候補は登録の最後に [`RayLayoutModeChanged`](../../src/core/shader/raygrouplayout.hpp#L150) で止まります。editor はそれだけが理由の候補を commit して `restart_required` にします([第2章](02_runtime_lifecycle.md) の `configureRayLayoutModeBeforeComponentRegistration()` の項)。
 
 ## 出荷サンプル `projects/raytracing_demo`
 

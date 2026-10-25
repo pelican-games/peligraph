@@ -95,7 +95,7 @@ sequenceDiagram
 6. `Persistence`からsettingsを読み、audio設定を適用。
 7. ray mode を component 登録前に固定します([`configureRayLayoutModeBeforeComponentRegistration()`](../../src/core/userpublic/pelican_core.cpp#L44))。
    - **決定**: rendering config から ray project を parse し、layout の有無で `RayLayoutRuntimeState` を configure します。形式と旧版の拒否は[第6章の ray layout](../manual/06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v3-と-pelican_ray_instancert3-1--wp374374a377379383)を参照してください。
-   - **検証**: 候補の task parse・shader compile・世代検証後、staging 前に `RayLayoutRuntimeState::validate()` が固定 mode と比較します。fallback 世代は対象外です([登録時の検査](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1405))。
+   - **検証**: 候補の task parse・shader compile・世代検証後、staging 前に `RayLayoutRuntimeState::validate()` が固定 mode と比較します。fallback 世代は対象外です([登録時の検査](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1416))。
    - **登録と失敗**: 固定 mode は次段の `pelican_ray_instance` の登録可否に使います。通常は例外を上位へ送ります。`--render-fallback` の場合は拒否を `RenderPipelineStartupRefusal` に保持し、`LegacyNoLayout` で起動を続けます([catch](../../src/core/userpublic/pelican_core.cpp#L183))。編集時の再起動応答は[第13章の描画編集](../manual/13_editor.md#render-edit-sequence)を参照してください。
 8. [`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L22) で組み込みComponent/Systemを登録。
 9. **[`initializeConfiguredGameLogic()`](../../src/core/gamelogic/gamelogicreload.cpp#L917) でgame DLLをロード**（WP110系列。§2.11）。失敗しても`run()`は続行し、`error_code` と `error_fields` を添えて [`LOG_ERROR`](../../src/core/userpublic/pelican_core.cpp#L164) するだけです。保存された失敗はRPC `status` から読めます（§2.11）。
@@ -108,7 +108,7 @@ sequenceDiagram
 16. [`internal::runTerminalShutdown(teardown)`](../../src/core/userpublic/pelican_core.cpp#L235) — `teardown.run()` でruntime資源を順序付き解放し、続けて `shutdownConfiguredGameLogic()`。
 17. 関数を抜けるとmodule containerがmoduleを生成逆順に破棄。
 
-16番はtry-catchの**外**にあります（[呼び出し箇所](../../src/core/userpublic/pelican_core.cpp#L235)）。この2手を [`terminalshutdown.hpp`](../../src/core/terminalshutdown.hpp#L10) の `noexcept` 関数1本にまとめてあるのはWP379aで、ヘッダのコメントが規範です — playerとlifecycleの受け入れテストが**同じ終了順序**を共有します（テスト側の呼び出しは [`raytracing_rt3_1_production_test.cpp` 内](../../test/raytracing_rt3_1_production_test.cpp#L4529)）。順序が2箇所に書かれていれば、テストだけが正しい順で終わる状態を作れてしまいます。
+16番はtry-catchの**外**にあります（[呼び出し箇所](../../src/core/userpublic/pelican_core.cpp#L235)）。この2手を [`terminalshutdown.hpp`](../../src/core/terminalshutdown.hpp#L10) の `noexcept` 関数1本にまとめてあるのはWP379aで、ヘッダのコメントが規範です — playerとlifecycleの受け入れテストが**同じ終了順序**を共有します（テスト側の呼び出しは [`raytracing_rt3_1_production_test.cpp` 内](../../test/raytracing_rt3_1_production_test.cpp#L4530)）。順序が2箇所に書かれていれば、テストだけが正しい順で終わる状態を作れてしまいます。
 
 `RuntimeTeardownGuard` は関数冒頭（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L105)）で `RuntimeTeardownMode::terminal_shutdown` として作られ、`FastModuleContainer::beginShutdown()` はguardの外ではなく [`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp#L149) の内部で、8段階の解放へ入る直前に呼ばれます（[`teardown.cpp` 内](../../src/core/appflow/teardown.cpp#L158)）。したがって初期化途中で例外が出ても、同じ「新規module生成を閉じてから順序解放」という経路を通ります。
 
@@ -762,7 +762,7 @@ flat画面では`render()`がactive Cameraを1-view providerとして渡しま�
 
 flat / xr の `RenderingPassId` に対して、preview は**データだけのグラフプログラム**です（[`PreviewGraphProgram`](../../src/core/renderingpass/previewgraph.hpp#L22)）。
 
-- コンパイルは起動時、runtime moduleが凍結される前です。[`loadRenderGraphVariantsFromConfig()`](../../src/core/vkcore/renderer_config.cpp#L590) が flat / xr と同じ 1 回の registration([`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1661))を呼びます。registration は compiler program の preview の variant(data_only)の出力を [`previewGraphProgramOf()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1589) に渡して preview の program を作り、結果を `Renderer` の [`preview_graph_program`](../../src/core/vkcore/renderer.hpp#L225) が保持します。✅RC-3c1b から preview の program を作る道はこの 1 つだけで、前にあった単独の入口 `precompilePreviewGraph()` は消えました。
+- コンパイルは起動時、runtime moduleが凍結される前です。[`loadRenderGraphVariantsFromConfig()`](../../src/core/vkcore/renderer_config.cpp#L590) が flat / xr と同じ 1 回の registration([`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1672))を呼びます。registration は compiler program の preview の variant(data_only)の出力を [`previewGraphProgramOf()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1600) に渡して preview の program を作り、結果を `Renderer` の [`preview_graph_program`](../../src/core/vkcore/renderer.hpp#L225) が保持します。✅RC-3c1b から preview の program を作る道はこの 1 つだけで、前にあった単独の入口 `precompilePreviewGraph()` は消えました。
 - 共有のrender target / pass登録は**意図的に行いません**。ヘッダのコメント通り、`render_preview` がリクエストローカルな資源に対して実行するため、`Renderer::renderLogicalFrame()` には入りません。
 - 実行と隔離キャプチャは [`PreviewExecutor`](../../src/core/vkcore/previewexecutor.hpp#L61) が担当します。
 - ✅PV-1(`a173e70c`)から、preview を組めなくても起動は失敗しません。`preview_graph_program` は `available: false` と理由を持つ空の program になり、flat / xr は通常どおり公開されます。起動の log に warning が 1 行出て、`render_preview` は `preview.unavailable@1` で断ります(第6章「graph variant: flat、`#xr`、preview」の PV-1 の段落)。

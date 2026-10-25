@@ -633,25 +633,25 @@ game DLL 境界の v2 record は「凍結」と書かれていますが、実際
 
 **答え**: q は正準 scene row の連番で、hit record の先頭は q × ray type 数です。 → [第6章 §6.20 の本文](06_rendering_vulkan_shader.md#reading-note-025)。
 
-#### [`index >= (1u << 24u)` の上限](../../src/core/shader/raygrouplayout.cpp#L1756) — 24 ビットの出所
+#### [`index >= (1u << 24u)` の上限](../../src/core/shader/raygrouplayout.cpp#L1548) — 24 ビットの出所
 
 **分からなくなること**: なぜ 2^24 なのか(エンジン都合か Vulkan 都合か)。
 
 **答え**: SBT record offset と custom index は別フィールドですが、いずれも24ビットに制限されます。 → [第6章 §6.20 の本文](06_rendering_vulkan_shader.md#reading-note-026)。
 
-#### [`resolveRaySceneRows()`](../../src/core/shader/raygrouplayout.cpp#L1536) — 同じ geometry_match_identity に別 binding を許さない
+#### [`resolveRaySceneRows()`](../../src/core/shader/raygrouplayout.cpp#L1328) — 同じ geometry_match_identity に別 binding を許さない
 
 **分からなくなること**: 「曖昧」と判定される条件が何を意味するのか。
 
 **答え**: 同じ物理ヒットに異なる binding が付くと選択不能なので拒否します。 → [第6章 §6.20 の本文](06_rendering_vulkan_shader.md#reading-note-027)。
 
-#### [profile モードの material_index](../../src/core/shader/raygrouplayout.cpp#L2200) — なぜ `material_index == q` になるか
+#### [profile モードの material_index](../../src/core/shader/raygrouplayout.cpp#L1992) — なぜ `material_index == q` になるか
 
 **分からなくなること**: 通常モードとの表の作り方の違い。
 
 **答え**: profile の alpha override は行固有なので、material table も1行1エントリになります。 → [第6章 §6.20 の本文](06_rendering_vulkan_shader.md#reading-note-028)。
 
-#### [硬コードされた頂点オフセット](../../src/core/shader/raygrouplayout.cpp#L1208) — `10u` / `3u` / `12u` の出所
+#### [硬コードされた頂点オフセット](../../src/core/shader/raygrouplayout.cpp#L1000) — `10u` / `3u` / `12u` の出所
 
 **分からなくなること**: 生成される GLSL に埋まる裸の定数がどこから来たのか。
 
@@ -701,18 +701,18 @@ game DLL 境界の v2 record は「凍結」と書かれていますが、実際
 | [`validateRayProfileAccelerationStructureFlags()`](../../src/core/renderer/accelerationstructure.cpp#L531) | eOpaque / eForceOpaque | profile 時の制約 | 両者は「片方でも立つと any-hit が省略され得る」点で等価な不透明化指定。profile 有効時は any-hit でのアルファ判定が必須なので、BLAS geometry でも TLAS instance 行でも**どちらのビットも立っていないこと**を要求し、立っていれば `pelican.ray_profile_opaque_as@1` |
 | [`lowerRayTracingTlasInstancePlan()`](../../src/core/renderer/accelerationstructure.cpp#L757) | ray_scene_rows の有無で分岐 | source_index の役割 | source_index は元の instance 配列への戻り参照。分岐の全体像は**未執筆** |
 | [`geometryName()`](../../src/core/renderer/accelerationstructure.cpp#L49) | asset/geometry/mesh/primitive/node | 5 階層の意味 | **未執筆**(§9.23.17 の glTF 階層と対) |
-| [`RaySceneRow`](../../src/core/shader/raygrouplayout.hpp#L353) | uint32 max 初期化 | 何を表す値か | 「未解決」の sentinel。詳細は**未執筆** |
-| [`MaterialRowDocumentIdentity`](../../src/core/shader/raygrouplayout.hpp#L319) | document / asset / unavailable | 3 状態の使い分け | → [第11章「`MaterialRowIdentity`: gate と lookup が同じ値を見る」](11_ray_query_acceleration_structures.md) |
-| [`resolveRaySceneRows()` の宣言](../../src/core/shader/raygrouplayout.hpp#L569) | 引数と optional bindings | 何が任意なのか | **未執筆**(根拠がコードにない) |
-| [layout digest から AS 宣言を外すコメント](../../src/core/shader/raygrouplayout.cpp#L880) | ダイジェストの分離 | なぜ AS だけ外すのか | コメントどおり **AS 宣言はシェーダ / SBT の ABI に影響しない**ので、AS だけを変えたときにシェーダ・SBT のダイジェストが動いて不要な再コンパイル / 再構築が起きないよう構造的に分離する(AS 側は独立ダイジェスト) |
-| [`source_by_handle` / `source_by_key`](../../src/core/shader/raygrouplayout.cpp#L1845) | 2 名前空間の同時照合 | 両方見る理由 | 前者は(handle, generation, canonical_key)という**ランタイムのマテリアルリース同一性**、後者は**内容由来の正準キー同一性**で、別々に崩れうる(同一世代が違うデータを持つ / 別世代が同じキーに衝突する)。→ §9.22「identity / canonical key / lease の三層」 |
-| [`texture_identity`](../../src/core/shader/raygrouplayout.cpp#L1908) | profile_active での切替 | 参照先が変わる理由 | profile の表は base color 全体ではなく**アルファ専用 IR** を載せるので、テクスチャ参照も MASK のときだけ `alpha_texture_identity` を使い、非 MASK は空にする |
-| [`validateRayProfileGeometryAttributes()`](../../src/core/shader/raygrouplayout.cpp#L2246) | UV0 / COLOR_0 の必須化 | なぜ profile だけ必須か | profile の any-hit はアルファをテクスチャサンプルと頂点カラーから計算するので、texture_index が有効なら TEXCOORD_0 が、`uses_vertex_color` なら COLOR_0 が BLAS ジオメトリ側に実在しなければならない(欠ければ `pelican.ray_geometry_attribute_missing@1`) |
-| [`alpha_override_mask`](../../src/core/shader/raygrouplayout.cpp#L2070) | override を行に持つ | material 側でない理由 | override は**マテリアルの改変ではなく「そのインスタンス配置におけるアルファの上書き」**で、同じマテリアルを共有する他の行に波及させてはいけないため、行に持って per-row 表に焼き込む |
-| [`normalized_*` フィールド](../../src/core/shader/raygrouplayout.cpp#L2034) | 誰が計算したか | 出所 | §9.23.17 の `normalized_alpha_ir`(glTF の material lowering)。[検証側](../../src/core/shader/raygrouplayout.cpp#L1872)は WP368a の authored reference 由来であることを要求する |
-| [material selector の 2 形態(document_material / asset_material)](../../src/core/shader/raygrouplayout.cpp#L665) / [`selectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L476) | document 形式と asset 形式 | 比較方法が違う理由 | **未執筆**(§9.23.7 の canonical key と対) |
-| [engine フィールドの必須化](../../src/core/shader/raygrouplayout.cpp#L969) | profile 有効時 | material_index と geometry_index の両方が要る理由 | **未執筆**(根拠がコードにない) |
-| [`validName()`](../../src/core/shader/raygrouplayout.cpp#L133) | 名前の文字集合 | どこ由来の制約か | 外部ツール契約 R7(`docs/external_tools_requirements.md`)と同系統。→ §9.23.11 |
+| [`RaySceneRow`](../../src/core/shader/raygrouplayout.hpp#L323) | uint32 max 初期化 | 何を表す値か | 「未解決」の sentinel。詳細は**未執筆** |
+| [`MaterialRowDocumentIdentity`](../../src/core/shader/raygrouplayout.hpp#L289) | document / asset / unavailable | 3 状態の使い分け | → [第11章「`MaterialRowIdentity`: gate と lookup が同じ値を見る」](11_ray_query_acceleration_structures.md) |
+| [`resolveRaySceneRows()` の宣言](../../src/core/shader/raygrouplayout.hpp#L539) | 引数と optional bindings | 何が任意なのか | **未執筆**(根拠がコードにない) |
+| [layout digest から AS 宣言を外すコメント](../../src/core/shader/raygrouplayout.cpp#L672) | ダイジェストの分離 | なぜ AS だけ外すのか | コメントどおり **AS 宣言はシェーダ / SBT の ABI に影響しない**ので、AS だけを変えたときにシェーダ・SBT のダイジェストが動いて不要な再コンパイル / 再構築が起きないよう構造的に分離する(AS 側は独立ダイジェスト) |
+| [`source_by_handle` / `source_by_key`](../../src/core/shader/raygrouplayout.cpp#L1637) | 2 名前空間の同時照合 | 両方見る理由 | 前者は(handle, generation, canonical_key)という**ランタイムのマテリアルリース同一性**、後者は**内容由来の正準キー同一性**で、別々に崩れうる(同一世代が違うデータを持つ / 別世代が同じキーに衝突する)。→ §9.22「identity / canonical key / lease の三層」 |
+| [`texture_identity`](../../src/core/shader/raygrouplayout.cpp#L1700) | profile_active での切替 | 参照先が変わる理由 | profile の表は base color 全体ではなく**アルファ専用 IR** を載せるので、テクスチャ参照も MASK のときだけ `alpha_texture_identity` を使い、非 MASK は空にする |
+| [`validateRayProfileGeometryAttributes()`](../../src/core/shader/raygrouplayout.cpp#L2038) | UV0 / COLOR_0 の必須化 | なぜ profile だけ必須か | profile の any-hit はアルファをテクスチャサンプルと頂点カラーから計算するので、texture_index が有効なら TEXCOORD_0 が、`uses_vertex_color` なら COLOR_0 が BLAS ジオメトリ側に実在しなければならない(欠ければ `pelican.ray_geometry_attribute_missing@1`) |
+| [`alpha_override_mask`](../../src/core/shader/raygrouplayout.cpp#L1867) | override を行に持つ | material 側でない理由 | override は**マテリアルの改変ではなく「そのインスタンス配置におけるアルファの上書き」**で、同じマテリアルを共有する他の行に波及させてはいけないため、行に持って per-row 表に焼き込む |
+| [`normalized_*` フィールド](../../src/core/shader/raygrouplayout.cpp#L1826) | 誰が計算したか | 出所 | §9.23.17 の `normalized_alpha_ir`(glTF の material lowering)。[検証側](../../src/core/shader/raygrouplayout.cpp#L1664)は WP368a の authored reference 由来であることを要求する |
+| [material selector の 2 形態(document_material / asset_material)](../../src/core/shader/raygrouplayout.cpp#L488) / [`selectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L299) | document 形式と asset 形式 | 比較方法が違う理由 | **未執筆**(§9.23.7 の canonical key と対) |
+| [engine フィールドの必須化](../../src/core/shader/raygrouplayout.cpp#L761) | profile 有効時 | material_index と geometry_index の両方が要る理由 | **未執筆**(根拠がコードにない) |
+| [`validName()`](../../src/core/shader/raygrouplayout.cpp#L123) | 名前の文字集合 | どこ由来の制約か | 外部ツール契約 R7(`docs/external_tools_requirements.md`)と同系統。→ §9.23.11 |
 | [`ePartiallyBound` を binding 1 だけに](../../src/core/shader/pipelinefactory.cpp#L191) | set 3(ray material)の binding flags | なぜ binding 1 だけか | binding 1 だけが `rayBindlessTextureCapacity` 個の bindless サンプラ配列で、使うスロットはシーン依存でまばら。全スロットに有効な descriptor を書く義務を外すため必要で、単一 descriptor の binding 0/2 には不要 |
 | [`ray_query_frame_set` 必須化](../../src/core/shader/pipelinefactory.cpp#L1285) | frame set の TLAS binding | 無いと作成拒否になる理由 | RT パイプラインは frame set の TLAS binding を必ず参照する契約なので、reflection に現れなければ `pelican.ray_tracing.frame_tlas_required@1`(descriptor が無ければシーンをトレースできない)。この検査を通した後、ray table 使用時は続けて[bindless device 要件](../../src/core/shader/pipelinefactory.cpp#L1295)も検証する |
 | [production branch observer](../../src/core/shader/pipelinefactory.cpp#L1778) | SBT 書き込み直前の通知 | 本番に観測点がある理由 | コメントどおり「removing the actual GPU write or routing different bytes makes its A/B test fail」。→ §9.22「fault injection seam」 |
@@ -731,7 +731,7 @@ game DLL 境界の v2 record は「凍結」と書かれていますが、実際
 
 ### 9.23.6 shader / computetask
 
-#### [`slot_index = group_index * ray_count + ray_index`](../../src/core/renderingpass/computetaskdefinitionjson.cpp#L392) — 線形化の向き
+#### [`slot_index = group_index * ray_count + ray_index`](../../src/core/renderingpass/computetaskdefinition.cpp#L308) — 線形化の向き
 
 **分からなくなること**: 2 次元表をどちら major で潰しているのか、その並びに意味があるのか。
 
@@ -751,8 +751,8 @@ game DLL 境界の v2 record は「凍結」と書かれていますが、実際
 
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
-| [`material_alpha_v1` の any_hit 自動生成](../../src/core/renderingpass/computetaskdefinitionjson.cpp#L417) | 生成の条件 | なぜ勝手に足すのか | profile が要求するアルファ判定を全 group×ray に行き渡らせるため。authored な anyhit と衝突したら検出する(→ §9.23.5 の profile 制約) |
-| [`traced_ray_type_indices` の構築](../../src/core/renderingpass/computetaskdefinitionjson.cpp#L248) | 追加と重複チェック | 何の集合か | **未執筆**(根拠がコードにない) |
+| [`material_alpha_v1` の any_hit 自動生成](../../src/core/renderingpass/computetaskdefinition.cpp#L328) | 生成の条件 | なぜ勝手に足すのか | profile が要求するアルファ判定を全 group×ray に行き渡らせるため。authored な anyhit と衝突したら検出する(→ §9.23.5 の profile 制約) |
+| [`traced_ray_type_indices` の構築](../../src/core/renderingpass/computetaskdefinition.cpp#L187) | 追加と重複チェック | 何の集合か | **未執筆**(根拠がコードにない) |
 | [`physical_view_count` の決定](../../src/core/renderingpass/computetaskcontainer.cpp#L278) | 論理 view との関係 | 2 つの view 数の別 | **未執筆**(§9.23.4 の view family と対) |
 | [sampled 判定](../../src/core/renderingpass/computetaskcontainer.cpp#L1101) | descriptor type の対応 | 対応表 | Vulkan の descriptor 種別の前提知識(→ [第10章](10_background_knowledge.md)) |
 | [`next_extra_binding`](../../src/core/renderingpass/computetaskcontainer.cpp#L149) | 同一 resource に複数 port | binding の割当規則 | **未執筆**(根拠がコードにない) |
@@ -1364,7 +1364,7 @@ editor の側では、runtime の完了が [`completeCommitTransaction()`](../..
 
 live の material を見るのは authored の経路だけです。[`Renderer::applyRenderPipelineAuthoringCandidate()`](../../src/core/vkcore/renderer.cpp#L3874) は `validate_live_materials = true`、ディスクからの [`reloadRenderPipelineFromDisk()`](../../src/core/vkcore/renderer.cpp#L3648) は reload service がいるとき `false` で、material の組み直しは reload service の companion reload(`MaterialContainer::prepareRuntimeGenerationReload()`)に任せます。
 
-検査は flat の variant の `validate_prepared_generation` の中にあり、XR の variant の検査と `before_publish`(publish の直前の準備と source commit)はその後です([variant ごとに検査を呼ぶ所](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1395))。だから RS-1 の経路ではそれらは走りません。
+検査は flat の variant の `validate_prepared_generation` の中にあり、XR の variant の検査と `before_publish`(publish の直前の準備と source commit)はその後です([variant ごとに検査を呼ぶ所](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1406))。だから RS-1 の経路ではそれらは走りません。
 
 **同じ枝に乗る 2 つ目の型(UD-1)**: [`MaterialPassesRemoved`](../../src/core/material/materialpassesremoved.hpp#L12)(`std::runtime_error` の派生、code は [`materialPassesRemovedCode`](../../src/core/material/materialpassesremoved.hpp#L7))は、material pass を 1 つも持たない候補が公開中の世代の描いていた route を落とすときに、[`requireEveryMaterialServed()` の最後](../../src/core/material/materialgenerationplanner.cpp#L887)で投げます。`physicalContractRestartReason()` がこれも `{code: "material_passes_removed", message}` に変える([その catch](../../src/core/communication/renderconfigeditor.cpp#L246))ので、editor は RS-1 と同じく commit して `restart_required` を返します。
 
@@ -1471,13 +1471,13 @@ MessageBox も同じ理由で絞ってあります。[`shouldShowPlayerFatalDial
 
 **実際は**: 今は書かないと compile が通りません。2 つの struct は解決済みの op を `PassAttachmentOperations operations` 1 欄で持ち([`FrameGraphAttachmentDefinition`](../../src/project/frameplan.hpp#L33)、[`VulkanPhysicalAttachmentPlan`](../../src/project/targetrenderplanning.hpp#L252))、[`PassAttachmentOperations`](../../src/project/attachmentoperations.hpp#L32) は既定構築を delete してあります。初期値の clear / store は depth の既定(clear / dont_care)とも、`ui` / `imgui` の color の既定(load / store)とも違うので、省略した所は黙って別の値で動いていました。RC-3a2 の実装中にも、既存の test 1 本(`dependency-safe physical fusion rejects mismatched attachment contracts`)が op を省略していて、clear / store を明記しました(報告)。
 
-- 値が要るなら、pass の型と aspect から [`defaultPassAttachmentOperations()`](../../src/project/attachmentoperations.cpp#L84) を呼ぶか、attachment > pass > 既定を [`resolveAttachmentOperations()`](../../src/project/attachmentoperations.hpp#L56) で解きます。計画を作る本番のコードはこの 2 つを通ります([`rendergraphparse.cpp`](../../src/project/rendergraphparse.cpp#L910)。✅RC-3c1b で core の計画用 parse から project の parser に移った)。
+- 値が要るなら、pass の型と aspect から [`defaultPassAttachmentOperations()`](../../src/project/attachmentoperations.cpp#L84) を呼ぶか、attachment > pass > 既定を [`resolveAttachmentOperations()`](../../src/project/attachmentoperations.hpp#L56) で解きます。計画を作る本番のコードはこの 2 つを通ります([`rendergraphparse.cpp`](../../src/project/rendergraphparse.cpp#L912)。✅RC-3c1b で core の計画用 parse から project の parser に移った)。
 - 「書いていない = 自動 plan のまま」の意味を持つ編集の側(physical fragment の [`VulkanPhysicalAttachmentFragment`](../../src/project/targetrenderplanning.hpp#L350))と、作者の値(`PassDefinition` の pass の op、attachment の `load_op` / `store_op`)は `optional` のままです。省略できないのは解決済みの値だけです。
 - 綴りも同じ考えで、入口ごとに受ける集合が違います。物理計画の package に作者の `dont_care` を書くと断られ(`discard` と書く)、作者の pass に `discard` を書いても断られます(manual [第6章](../manual/06_rendering.md#attachment-load-store) §6.2)。
 
 **不変条件**: 解決済みの計画の attachment は load と store を必ず持つ。既定は 1 か所(`defaultPassAttachmentOperations`)からだけ供給し、struct の初期値に戻さない。
 
-**読む場所**: [`attachmentoperations.hpp`](../../src/project/attachmentoperations.hpp#L32) → [`rendergraphparse.cpp` の解決](../../src/project/rendergraphparse.cpp#L910) → [`PassDefinition::colorAttachmentOperations()`](../../src/core/renderingpass/renderingpass.hpp#L480)。本文は [第6章](06_rendering_vulkan_shader.md#render-vocabulary-rest) の「残りの語彙」。
+**読む場所**: [`attachmentoperations.hpp`](../../src/project/attachmentoperations.hpp#L32) → [`rendergraphparse.cpp` の解決](../../src/project/rendergraphparse.cpp#L912) → [`PassDefinition::colorAttachmentOperations()`](../../src/core/renderingpass/renderingpass.hpp#L482)。本文は [第6章](06_rendering_vulkan_shader.md#render-vocabulary-rest) の「残りの語彙」。
 
 ---
 
