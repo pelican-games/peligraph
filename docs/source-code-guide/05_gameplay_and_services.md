@@ -822,7 +822,7 @@ busはmaster/bgm/seで、実効音量はmaster×個別busです。設定変更�
 
 **bake の ticket の流れ。**[`bakeAudioAnalysis()` の RPC 側](../../src/core/communication/renderconfigaudioanalysis.cpp#L36)は、engine の thread で引数と settings を見て(settings の拒否と `audio.analysis_busy@1` はここですぐ返す)、`asset` / `out` を `resolve_document_path` で解き、`std::async` の thread に bake を渡します。worker は engine の状態を読みません(コードの注記)。
 
-結果は `AudioAnalysisBakeOutcome`(committed の fields か、拒否の code・message・fields)で返り、`commitPending()` が frame の境界ごとに最初に呼ぶ [`harvestAudioBakes()`](../../src/core/communication/renderconfigaudioanalysis.cpp#L113) が終わったものを `results_` と `completed_` に移します([呼ぶ所 AB-1](../../src/core/communication/renderconfigeditor.cpp#L8302))。render 文書を書かないので、待っている編集の ticket とは関係なく終わります。editor の destructor は走っている bake を待ちます。この file は audio の有無によらず `pelican_core` に入り、`PELICAN_WITH_AUDIO=OFF` の build では `bake_audio_analysis` が settings を見た後に `audio.analysis_unavailable@1` を返すだけになります(`list_derived_assets` は同じに動きます)。
+結果は `AudioAnalysisBakeOutcome`(committed の fields か、拒否の code・message・fields)で返り、`commitPending()` が frame の境界ごとに最初に呼ぶ [`harvestAudioBakes()`](../../src/core/communication/renderconfigaudioanalysis.cpp#L113) が終わったものを `results_` と `completed_` に移します([呼ぶ所 AB-1](../../src/core/communication/renderconfigeditor.cpp#L8277))。render 文書を書かないので、待っている編集の ticket とは関係なく終わります。editor の destructor は走っている bake を待ちます。この file は audio の有無によらず `pelican_core` に入り、`PELICAN_WITH_AUDIO=OFF` の build では `bake_audio_analysis` が settings を見た後に `audio.analysis_unavailable@1` を返すだけになります(`list_derived_assets` は同じに動きます)。
 
 **古さの判定。**[`readDerivedAssetStatus()`](../../src/project/audioanalysisformat.cpp#L250) は manifest の最初の output を asset とし、source と output の file の有無と sha256、`pelican.audio_analysis` の manifest なら版と `settings_sha256` を見ます。sha256 は file の更新時刻と大きさが変わったときだけ計算し直します([`fileSha256()` の cache](../../src/project/audioanalysisformat.cpp#L60)。`get_frame_plan` が呼ばれるたびに派生 asset の全部を見るため、とコードの注記)。
 
@@ -887,7 +887,7 @@ audioと同じく、persistenceも「用意」と「書き込み」に割れて�
 
 ## 5.11 Debug text
 
-`RenderContext::debugText(x,y,text,color,scale)`(`ctx.render().debugText`)は [`DebugText::text()`](../../src/core/renderer/debugtext.hpp#L77) へglyphをqueueします。描画configで`debug_text` featureが有効なときだけrendererが`DebugText` moduleを生成し、対応passで描画します。APIを呼べることと、passが画面へ出すことは別条件です。
+`RenderContext::debugText(x,y,text,color,scale)`(`ctx.render().debugText`)は [`DebugText::text()`](../../src/core/renderer/debugtext.hpp#L79) へglyphをqueueします。描画configで`debug_text` featureが有効なときだけrendererが`DebugText` moduleを生成し、対応passで描画します。APIを呼べることと、passが画面へ出すことは別条件です。
 
 ## 5.12 ゲームコードの推奨境界
 
@@ -1446,7 +1446,7 @@ outboxのentryは呼び出しごとに1件ではありません。
 - mutator（と `emit`）なのに manifest に分類が無い → `mutator lacks manifest classification`（[その throw](../../tools/public_api_inventory.py#L173)）
 - manifest にあるのに inventory 側で消費されなかった → `runtime manifest API absent from inventory`（[その throw](../../tools/public_api_inventory.py#L180)）
 
-結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L4409)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
+結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L4412)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
 
 ## 5.16 姿勢を駆動する2つの様式 ✅実装済み（AG-1a / AG-1b / AG-2）
 

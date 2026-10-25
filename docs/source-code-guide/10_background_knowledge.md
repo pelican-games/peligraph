@@ -242,7 +242,7 @@ VMA は Vulkan のメモリタイプ選択とサブアロケーションを引�
 
 GLSL の uniform ブロックは既定で **std140**、storage ブロックは **std430** のレイアウト規則に従います(GLSL 仕様の "Standard Uniform Block Layout" / "Standard Shader Storage Block Layout")。std140 では、スカラーは自身のサイズ、`vec2` は 8、`vec3` と `vec4` は 16 バイト境界に置かれ(`vec3` は**サイズ 12・アラインメント 16**)、**配列の要素と構造体は 16 バイトの倍数へ切り上げられます**。std430 はこの「配列・構造体を 16 へ切り上げる」規則だけが緩み、要素の素のアラインメントがそのまま使われます。C++ 側で同じバイト列を作るには `alignas` を明示し、`offsetof` の `static_assert` で固定するのが定型で、これを怠るとシェーダ側が 1 メンバぶんずれた値を読みます。
 
-**使用場所**: [FrameUniformData](../../src/core/renderer/frameresources.hpp#L48)(型自体が `alignas(16)`。vec4 / mat4 のメンバに `alignas(16)`、`vec2` の 2 本には `alignas(8)`、後続の `uint32_t` 4 本には指定なしで自然に 4 バイト刻みに詰まり、直後の offset / `sizeof` の `static_assert` 群がその並びを凍結します) / [RayMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L418) / [RayProfileMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L430)
+**使用場所**: [FrameUniformData](../../src/core/renderer/frameresources.hpp#L50)(型自体が `alignas(16)`。vec4 / mat4 のメンバに `alignas(16)`、`vec2` の 2 本には `alignas(8)`、後続の `uint32_t` 4 本には指定なしで自然に 4 バイト刻みに詰まり、直後の offset / `sizeof` の `static_assert` 群がその並びを凍結します) / [RayMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L418) / [RayProfileMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L430)
 
 **このコードベースでの注意**: レイトレーシング側は「profile 有り/無しで別の行構造体」を用意し、profile が無い構成では以前の ABI をバイト単位で保つようにしてあります。同じ意味の行なのに型が 2 つあるのはそのためです。
 

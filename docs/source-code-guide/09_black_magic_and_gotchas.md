@@ -609,7 +609,7 @@ game DLL 境界の v2 record は「凍結」と書かれていますが、実際
 | [RT 無しの空 diagnostics](../../src/core/vkcore/renderer.cpp#L4823) | `ray_query_acceleration_structures` | 空になる条件 | **未執筆**(根拠がコードにない) |
 | [`sequential_count < count` の拒否](../../src/core/renderer/frameresources.cpp#L116) | スロット数の下限 | 何を保証するか | in-flight frame ごとに sequential_count 個のスロットを確保するので、**main family の全 view が自分専用の frame/resolution UBO スロットを持つ**(view 同士の UBO 別名衝突の防止) |
 | [`updateSceneDescriptors()`](../../src/core/renderer/frameresources.cpp#L312) | 全 set の無条件更新 | 差分検知しない理由 | 呼び出し側に同値比較ガードがあり、buffer identity が変わったときと `configureViewCount` の再構築時にしか来ないので、関数内で差分を取る意味がなく、全スロット書き直しの方が漏れがない |
-| [multiview のスロット分離](../../src/core/renderer/frameresources.hpp#L117) | seq / multiview の別配列 | last_data が vector になる理由 | **未執筆**(上記スロット確保と対で書く必要がある) |
+| [multiview のスロット分離](../../src/core/renderer/frameresources.hpp#L119) | seq / multiview の別配列 | last_data が vector になる理由 | **未執筆**(上記スロット確保と対で書く必要がある) |
 | [RT SBT のリース](../../src/core/renderer/frameresources.cpp#L386) / [RT descriptor bundle の publication](../../src/core/renderer/frameresources.cpp#L403) | 世代の保持と二重 bind | 何を指しているのか | **未執筆**(根拠がコードにない) |
 | [`SubmissionLeaseBundle`](../../src/core/vkcore/deletionqueue.hpp#L67) | 入れ子リースの upstream | 完了順序 | **未執筆**(根拠がコードにない) |
 | [`declaration_ordinal`](../../src/core/renderer/polygoninstancecontainer.cpp#L860) | 単調増加の宣言順 | 単調性が要る理由 | `DrawQueueBuilder` 側の[一意性検査](../../src/core/renderer/drawqueuebuilder.cpp#L504)(重複したら拒否)を満たし、`stableOrderKey` の**最後の要素=同点時の決定的なタイブレーク(宣言順)**になる |
@@ -1204,13 +1204,13 @@ game DLL 境界の v2 record は「凍結」と書かれていますが、実際
 
 この性質があるので、節を編集しても CAS の単位([`renderConfigSourceDigest()`](../../src/project/renderconfigdocument.cpp#L431))は文書全体のままで変わりません。書き手は [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L755) 1 本で、graph root 自身のキー(と editor の `layout`)は [`withRootValue()`](../../src/project/renderconfigdocument.cpp#L714) へ落ちます(MG-2b で legacy root は読み手ごと無くなりました)。
 
-読み手と書き手の非対称も意図です。[`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L36) は節が無ければ `RenderConfigSectionUnlocated` を投げ、[`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L49) は空 object を返します。**読みは節が無くても失敗せず、編集だけが `render_config_section_unlocated` という名前で拒否されます**([拒否の実例](../../src/core/communication/renderconfigeditor.cpp#L1766))。
+読み手と書き手の非対称も意図です。[`renderingSectionOf()`](../../src/project/renderconfigsection.hpp#L36) は節が無ければ `RenderConfigSectionUnlocated` を投げ、[`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L49) は空 object を返します。**読みは節が無くても失敗せず、編集だけが `render_config_section_unlocated` という名前で拒否されます**([拒否の実例](../../src/core/communication/renderconfigeditor.cpp#L1741))。
 
 **不変条件**: 節の中の offset を「節の先頭からの相対」に変えないこと(digest が節だけを覆う別物になり、CAS の意味が変わります)。読みの経路に `renderingSectionOf()` を使わないこと — 節を持たない graph root を読んだだけで例外になります。authored key の住所判定を各 caller が `if (graph)` で持たないこと。
 
 **読む場所**: [`renderconfigsection.hpp`](../../src/project/renderconfigsection.hpp#L12) → [`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L309) → [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L755)。
 
-> **N-6 の例外**: `edit_graph_document` の op 列が `set_layout` だけのとき、editor は候補文書を `apply_candidate` に通さず(`Ticket::source_only`)、文書を書くだけで commit を終えます。「すべての commit は候補経路を通る」の唯一の例外で、置き場所は engine の挙動に触れないためです([経路](../../src/core/communication/renderconfigeditor.cpp#L3884))。
+> **N-6 の例外**: `edit_graph_document` の op 列が `set_layout` だけのとき、editor は候補文書を `apply_candidate` に通さず(`Ticket::source_only`)、文書を書くだけで commit を終えます。「すべての commit は候補経路を通る」の唯一の例外で、置き場所は engine の挙動に触れないためです([経路](../../src/core/communication/renderconfigeditor.cpp#L3859))。
 
 ### 難所 — 排他 create の committed marker
 
@@ -1356,15 +1356,15 @@ seek が無い代わりに置かれているのが **replay prologue** です。
 
 型は [`MaterialPhysicalContractChanged`](../../src/core/material/materialphysicalcontractchanged.hpp#L46)(`std::runtime_error` の派生。`info()` が `{material_id, material, pass, detail[]}`)で、code は [`materialPhysicalContractChangedCode`](../../src/core/material/materialphysicalcontractchanged.hpp#L13) です。**この順があるので、editor はこの型を見たら「これが唯一の拒否だった」と読めます。**
 
-editor の側では、runtime の完了が [`completeCommitTransaction()`](../../src/core/communication/renderconfigeditor.cpp#L8006) に戻ったとき、staged でも committed でもなく source commit も呼ばれていない結果の例外を、[`physicalContractRestartReason()`](../../src/core/communication/renderconfigeditor.cpp#L234) が rethrow して型を見ます。
+editor の側では、runtime の完了が [`completeCommitTransaction()`](../../src/core/communication/renderconfigeditor.cpp#L7981) に戻ったとき、staged でも committed でもなく source commit も呼ばれていない結果の例外を、[`physicalContractRestartReason()`](../../src/core/communication/renderconfigeditor.cpp#L234) が rethrow して型を見ます。
 
-この型のときだけ、editor 自身が ticket の preset の CAS(`CommitTransaction::verify_preset`。[`commitPending()` で取っておく所](../../src/core/communication/renderconfigeditor.cpp#L8463))と複数ファイルの commit(`commitRenderConfigCandidateDocuments`)を行い、`applied.committed = true`、`published_generation` を runtime の今の世代にして、成功の経路へ合流します([合流する所](../../src/core/communication/renderconfigeditor.cpp#L8055))。
+この型のときだけ、editor 自身が ticket の preset の CAS(`CommitTransaction::verify_preset`。[`commitPending()` で取っておく所](../../src/core/communication/renderconfigeditor.cpp#L8438))と複数ファイルの commit(`commitRenderConfigCandidateDocuments`)を行い、`applied.committed = true`、`published_generation` を runtime の今の世代にして、成功の経路へ合流します([合流する所](../../src/core/communication/renderconfigeditor.cpp#L8030))。
 
-結果に `restart_required` と `restart_reason` を付けるのは最後の 1 か所で、G-4 の `material_route_default_changed` より先に見ます([結果に載せる所](../../src/core/communication/renderconfigeditor.cpp#L8268))。runtime に行く ticket はすべて [`commitPending()`](../../src/core/communication/renderconfigeditor.cpp#L8299) → `apply_candidate` → `completeCommitTransaction()` を通るので、この 1 か所が graph の編集・`add_authored_pass`・restore などのすべてに効きます。`set_layout` だけの ticket(`source_only`)はここを通りません。
+結果に `restart_required` と `restart_reason` を付けるのは最後の 1 か所で、G-4 の `material_route_default_changed` より先に見ます([結果に載せる所](../../src/core/communication/renderconfigeditor.cpp#L8243))。runtime に行く ticket はすべて [`commitPending()`](../../src/core/communication/renderconfigeditor.cpp#L8274) → `apply_candidate` → `completeCommitTransaction()` を通るので、この 1 か所が graph の編集・`add_authored_pass`・restore などのすべてに効きます。`set_layout` だけの ticket(`source_only`)はここを通りません。
 
 live の material を見るのは authored の経路だけです。[`Renderer::applyRenderPipelineAuthoringCandidate()`](../../src/core/vkcore/renderer.cpp#L3874) は `validate_live_materials = true`、ディスクからの [`reloadRenderPipelineFromDisk()`](../../src/core/vkcore/renderer.cpp#L3648) は reload service がいるとき `false` で、material の組み直しは reload service の companion reload(`MaterialContainer::prepareRuntimeGenerationReload()`)に任せます。
 
-検査は flat の variant の `validate_prepared_generation` の中にあり、XR の variant の検査と `before_publish`(publish の直前の準備と source commit)はその後です([variant ごとに検査を呼ぶ所](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1406))。だから RS-1 の経路ではそれらは走りません。
+検査は flat の variant の `validate_prepared_generation` の中にあり、XR の variant の検査と `before_publish`(publish の直前の準備と source commit)はその後です([variant ごとに検査を呼ぶ所](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1387))。だから RS-1 の経路ではそれらは走りません。
 
 **同じ枝に乗る 2 つ目の型(UD-1)**: [`MaterialPassesRemoved`](../../src/core/material/materialpassesremoved.hpp#L12)(`std::runtime_error` の派生、code は [`materialPassesRemovedCode`](../../src/core/material/materialpassesremoved.hpp#L7))は、material pass を 1 つも持たない候補が公開中の世代の描いていた route を落とすときに、[`requireEveryMaterialServed()` の最後](../../src/core/material/materialgenerationplanner.cpp#L887)で投げます。`physicalContractRestartReason()` がこれも `{code: "material_passes_removed", message}` に変える([その catch](../../src/core/communication/renderconfigeditor.cpp#L246))ので、editor は RS-1 と同じく commit して `restart_required` を返します。
 
@@ -1375,7 +1375,7 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 
 **不変条件**: 物理の契約の拒否より後ろで新しい検査を走らせないこと —— RS-1 の経路はそこで止まるので、その検査が見るはずの誤りを抱えた候補が commit されます。足すなら `validateCompatibility()` の中で、`physical_change` を投げる前に。editor で型付きの拒否以外を commit に回さないこと。
 
-**読む場所**: [`materialphysicalcontractchanged.hpp`](../../src/core/material/materialphysicalcontractchanged.hpp#L39) → [`validateCompatibility()`](../../src/core/material/materialgenerationplanner.cpp#L1204) → [`physicalContractRestartReason()`](../../src/core/communication/renderconfigeditor.cpp#L234) → [`completeCommitTransaction()` の RS-1 の枝](../../src/core/communication/renderconfigeditor.cpp#L8055)。利用者から見た結果の形は manual の第13章 §13.5。
+**読む場所**: [`materialphysicalcontractchanged.hpp`](../../src/core/material/materialphysicalcontractchanged.hpp#L39) → [`validateCompatibility()`](../../src/core/material/materialgenerationplanner.cpp#L1204) → [`physicalContractRestartReason()`](../../src/core/communication/renderconfigeditor.cpp#L234) → [`completeCommitTransaction()` の RS-1 の枝](../../src/core/communication/renderconfigeditor.cpp#L8030)。利用者から見た結果の形は manual の第13章 §13.5。
 
 ### 難所 — Studio の widget の破棄では、Impl が QWidget の基底より先に消える(FX-4)
 
@@ -1447,7 +1447,7 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 **実際は**: v0 を閉じる段で、製品を変えずに揺れる test が 2 つ残っています。
 
 - **`studio_scenario_gui_build_optimize`**: step「the frame's GPU time went up」(scenario の最後ではなく、この後に Features tab の step が続く)は、Multisampling を 4 にした後の `get_status` の `gpu_timing.logical_frame_averages[0].average_total_ms` が、Multisampling を変える前の `[count3]` の step で覚えた値(`ms_count3`)より大きいことを `op: gt` で見ます([その step](../../test/studio_scenarios/gui_build_optimize.json#L500)、[覚える step](../../test/studio_scenarios/gui_build_optimize.json#L459))。平均は engine の履歴の窓([`gpu_timing_history_capacity` = 120](../../src/core/vkcore/rendertiming.hpp#L18))の上で取るので、差が小さいと測り方の揺れで逆になります(RX-1 の W1 で 0.218 ms と 0.226 ms の比較が赤。統合側の記録)。NVIDIA の driver が起動の直後の shader を数秒から十数秒後に最適化した code へ差し替える、という統合側の観察がありますが、この step の揺れの原因かは未確認です(コードからは確かめられない)。scenario の側で幅を持たせるか比べ方を変えるのが残りの仕事です。
-- **`wp380c_production_has_no_fault_setter_symbol`**: production の archive(`pelican_core` / `pelican_project`)の全部の symbol を `dumpbin` で調べる test で([定義](../../test/CMakeLists.txt#L2721))、通った回で 75〜150 秒ほどかかり(上限を 300 秒にした再実行で 203 秒の回もある)、`-j16` の全数の中では 120 秒の上限を越えることがあります(単独で 300 秒でも越えた回あり。どれも各 WP の報告の数字)。test の定義は LABELS だけで TIMEOUT を持たないので、上限は gate の `ctest --timeout` です。assertion の失敗は出ていません。
+- **`wp380c_production_has_no_fault_setter_symbol`**: production の archive(`pelican_core` / `pelican_project`)の全部の symbol を `dumpbin` で調べる test で([定義](../../test/CMakeLists.txt#L2724))、通った回で 75〜150 秒ほどかかり(上限を 300 秒にした再実行で 203 秒の回もある)、`-j16` の全数の中では 120 秒の上限を越えることがあります(単独で 300 秒でも越えた回あり。どれも各 WP の報告の数字)。test の定義は LABELS だけで TIMEOUT を持たないので、上限は gate の `ctest --timeout` です。assertion の失敗は出ていません。
 
 **不変条件**: この 2 つが赤のときは、単独で流し直してから製品を疑う。揺れを「既知」とするのは記録のある間だけで、記録は `docs/v0_freeze.md` §6.1 にあります。
 
@@ -1469,15 +1469,15 @@ MessageBox も同じ理由で絞ってあります。[`shouldShowPlayerFatalDial
 
 **素朴に読むと**: 計画や物理計画の attachment を test やコードで作るとき、load / store を書かなければ「ふつうの値」(clear / store)が入る、と読めます。RC-3a2 の前はそうでした(`FrameGraphAttachmentDefinition` と `VulkanPhysicalAttachmentPlan` の `load_op` / `store_op` の初期値が aspect に関係なく clear / store)。
 
-**実際は**: 今は書かないと compile が通りません。2 つの struct は解決済みの op を `PassAttachmentOperations operations` 1 欄で持ち([`FrameGraphAttachmentDefinition`](../../src/project/frameplan.hpp#L33)、[`VulkanPhysicalAttachmentPlan`](../../src/project/targetrenderplanning.hpp#L252))、[`PassAttachmentOperations`](../../src/project/attachmentoperations.hpp#L32) は既定構築を delete してあります。初期値の clear / store は depth の既定(clear / dont_care)とも、`ui` / `imgui` の color の既定(load / store)とも違うので、省略した所は黙って別の値で動いていました。RC-3a2 の実装中にも、既存の test 1 本(`dependency-safe physical fusion rejects mismatched attachment contracts`)が op を省略していて、clear / store を明記しました(報告)。
+**実際は**: 今は書かないと compile が通りません。2 つの struct は解決済みの op を `PassAttachmentOperations operations` 1 欄で持ち([`FrameGraphAttachmentDefinition`](../../src/project/frameplan.hpp#L35)、[`VulkanPhysicalAttachmentPlan`](../../src/project/targetrenderplanning.hpp#L252))、[`PassAttachmentOperations`](../../src/project/attachmentoperations.hpp#L32) は既定構築を delete してあります。初期値の clear / store は depth の既定(clear / dont_care)とも、`ui` / `imgui` の color の既定(load / store)とも違うので、省略した所は黙って別の値で動いていました。RC-3a2 の実装中にも、既存の test 1 本(`dependency-safe physical fusion rejects mismatched attachment contracts`)が op を省略していて、clear / store を明記しました(報告)。
 
-- 値が要るなら、pass の型と aspect から [`defaultPassAttachmentOperations()`](../../src/project/attachmentoperations.cpp#L84) を呼ぶか、attachment > pass > 既定を [`resolveAttachmentOperations()`](../../src/project/attachmentoperations.hpp#L56) で解きます。計画を作る本番のコードはこの 2 つを通ります([`rendergraphparse.cpp`](../../src/project/rendergraphparse.cpp#L912)。✅RC-3c1b で core の計画用 parse から project の parser に移った)。
+- 値が要るなら、pass の型と aspect から [`defaultPassAttachmentOperations()`](../../src/project/attachmentoperations.cpp#L84) を呼ぶか、attachment > pass > 既定を [`resolveAttachmentOperations()`](../../src/project/attachmentoperations.hpp#L56) で解きます。計画を作る本番のコードはこの 2 つを通ります([`rendergraphparse.cpp`](../../src/project/rendergraphparse.cpp#L1130)。✅RC-3c1b で core の計画用 parse から project の parser に移った)。
 - 「書いていない = 自動 plan のまま」の意味を持つ編集の側(physical fragment の [`VulkanPhysicalAttachmentFragment`](../../src/project/targetrenderplanning.hpp#L350))と、作者の値(`PassDefinition` の pass の op、attachment の `load_op` / `store_op`)は `optional` のままです。省略できないのは解決済みの値だけです。
 - 綴りも同じ考えで、入口ごとに受ける集合が違います。物理計画の package に作者の `dont_care` を書くと断られ(`discard` と書く)、作者の pass に `discard` を書いても断られます(manual [第6章](../manual/06_rendering.md#attachment-load-store) §6.2)。
 
 **不変条件**: 解決済みの計画の attachment は load と store を必ず持つ。既定は 1 か所(`defaultPassAttachmentOperations`)からだけ供給し、struct の初期値に戻さない。
 
-**読む場所**: [`attachmentoperations.hpp`](../../src/project/attachmentoperations.hpp#L32) → [`rendergraphparse.cpp` の解決](../../src/project/rendergraphparse.cpp#L912) → [`PassDefinition::colorAttachmentOperations()`](../../src/core/renderingpass/renderingpass.hpp#L482)。本文は [第6章](06_rendering_vulkan_shader.md#render-vocabulary-rest) の「残りの語彙」。
+**読む場所**: [`attachmentoperations.hpp`](../../src/project/attachmentoperations.hpp#L32) → [`rendergraphparse.cpp` の解決](../../src/project/rendergraphparse.cpp#L1130) → [`PassDefinition::colorAttachmentOperations()`](../../src/core/renderingpass/renderingpass.hpp#L477)。本文は [第6章](06_rendering_vulkan_shader.md#render-vocabulary-rest) の「残りの語彙」。
 
 ---
 
