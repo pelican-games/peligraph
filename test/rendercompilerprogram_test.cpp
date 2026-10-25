@@ -4,7 +4,7 @@
 #include "../src/core/renderingpass/graphtransformregistry.hpp"
 #include "../src/core/renderingpass/rendercompilerprogram.hpp"
 #include "../src/core/renderingpass/renderstrategyregistry.hpp"
-#include "../src/core/renderingpass/renderingpassdefinitionjsonparser.hpp"
+#include "../src/core/renderingpass/passdefinitionfromir.hpp"
 #include "../src/core/renderingpass/renderingpassruntimecompiler.hpp"
 #include "../src/core/renderingpass/rendertargetmetadataresolver.hpp"
 #include "../src/core/renderingpass/rendertargetnameresolver.hpp"
@@ -28,11 +28,12 @@
 #include <fstream>
 #include <iterator>
 #include <set>
+#include <tuple>
 
 namespace Pelican {
 TEST_CASE("named scene AS definitions validate mask and preserve metadata", "[rendercompiler][rt6][multi-tlas]") {
     ResolvedRenderPipeline resolved;
-    resolved.normalized_config["scene_acceleration_structures"] = nlohmann::json::array({
+    resolved.composed_config["scene_acceleration_structures"] = nlohmann::json::array({
         {{"name", "actors"}, {"instance_mask", 1}}, {{"name", "everything"}},
         {{"name", "empty"}, {"instance_mask", 0}}});
     const auto compiled = compileRenderPipeline(resolved);
@@ -48,10 +49,10 @@ TEST_CASE("named scene AS definitions validate mask and preserve metadata", "[re
             {{"name", "bad"}, {"instance_mask", 256}},
             {{"name", "bad"}, {"instance_mask", 1.5}},
             {{"name", "bad"}, {"unknown", 1}}})) {
-        resolved.normalized_config["scene_acceleration_structures"] = nlohmann::json::array({entry});
+        resolved.composed_config["scene_acceleration_structures"] = nlohmann::json::array({entry});
         CHECK_THROWS(compileRenderPipeline(resolved));
     }
-    resolved.normalized_config["scene_acceleration_structures"] = nlohmann::json::array({
+    resolved.composed_config["scene_acceleration_structures"] = nlohmann::json::array({
         {{"name", "same"}}, {{"name", "same"}}});
     CHECK_THROWS(compileRenderPipeline(resolved));
 }
@@ -408,6 +409,12 @@ enum class NativeProgramFault {
     missing_target_index,
     data_only_physical_package,
     duplicate_frame_plan_node,
+    missing_ir,
+    missing_preview_ir,
+    missing_plan,
+    extra_plan,
+    unnamed_buffer,
+    duplicate_buffer,
 };
 
 class NativeVulkanProgram final
@@ -459,8 +466,19 @@ class NativeVulkanProgram final
                 request.graph_variant;
             variant.compiled_pipeline =
                 std::move(pipeline);
-            variant.normalized_config =
-                nlohmann::json::object();
+            auto ir = std::make_shared<RenderGraphIR>();
+            ir->graphs.push_back(GraphIR{.name = "native_graph"});
+            if (fault_ == NativeProgramFault::unnamed_buffer)
+                ir->buffers.push_back(BufferResource{.size = 16});
+            if (fault_ == NativeProgramFault::duplicate_buffer) {
+                ir->buffers.push_back(BufferResource{.name = "scratch", .size = 16});
+                ir->buffers.push_back(ir->buffers.front());
+            }
+            variant.render_graph = std::move(ir);
+            if (fault_ == NativeProgramFault::missing_ir ||
+                (fault_ == NativeProgramFault::missing_preview_ir &&
+                 request.artifact == RenderCompilerProgramArtifact::data_only))
+                variant.render_graph.reset();
             if (request.artifact ==
                 RenderCompilerProgramArtifact::
                     data_only) {
@@ -510,12 +528,11 @@ class NativeVulkanProgram final
             variant.frame_plans.emplace(
                 "native_graph",
                 std::move(frame_plan));
+            if (fault_ == NativeProgramFault::missing_plan) variant.frame_plans.clear();
+            if (fault_ == NativeProgramFault::extra_plan)
+                variant.frame_plans.emplace("extra", FramePlan{.name = "extra"});
             variant.physical_package =
                 std::move(physical);
-            // RC-3c2a: a runtime variant carries its IR (the generation's
-            // resources are completed from it); this one declares none.
-            variant.render_graph =
-                std::make_shared<const RenderGraphIR>();
             output.variants.push_back(
                 std::move(variant));
         }
@@ -601,6 +618,41 @@ struct ProgramInputFixture {
         };
     }
 };
+
+template <typename T> concept HasCompletionResources = requires(T value) {
+    value.generation_resources;
+    value.compute_task_definitions;
+};
+static_assert(!HasCompletionResources<RenderCompilerProgramOutput>);
+static_assert(HasCompletionResources<RenderCompilerProgramResult>);
+
+TEST_CASE("RC-3c2b2 compiler outputs require IR and exact runtime graph coverage",
+          "[rc3c2b2][render-compiler]") {
+    ProgramInputFixture fixture;
+    const auto refuse = [&](NativeProgramFault fault, const nlohmann::json &detail) {
+        NativeVulkanProgram program{fault};
+        TestSupport::requireNamedRefusal([&] {
+            (void)runRenderCompilerProgram(program, fixture.input());
+        }, "render_graph.compiler_output_invalid@1", detail);
+    };
+    REQUIRE_NOTHROW(runRenderCompilerProgram(NativeVulkanProgram{}, fixture.input()));
+    refuse(NativeProgramFault::missing_ir,
+           {{"variant", "flat"}, {"reason", "render_graph_required"}});
+    refuse(NativeProgramFault::missing_preview_ir,
+           {{"variant", "preview"}, {"reason", "render_graph_required"}});
+    refuse(NativeProgramFault::missing_plan,
+           {{"variant", "flat"}, {"graph", "native_graph"}, {"reason", "frame_plan_missing"}});
+    refuse(NativeProgramFault::extra_plan,
+           {{"variant", "flat"}, {"graph", "extra"}, {"reason", "graph_missing"}});
+    for (const auto &[fault, resource, reason] : {
+            std::tuple{NativeProgramFault::unnamed_buffer, "", "required"},
+            std::tuple{NativeProgramFault::duplicate_buffer, "scratch", "duplicate"}}) {
+        TestSupport::requireNamedRefusal([&] {
+            (void)runRenderCompilerProgram(NativeVulkanProgram{fault}, fixture.input());
+        }, "render_graph.buffer_invalid@1",
+           {{"variant", "flat"}, {"resource", resource}, {"field", "name"}, {"reason", reason}});
+    }
+}
 
 TEST_CASE(
     "backend-native compiler programs converge at the "
@@ -931,40 +983,9 @@ TEST_CASE(
             return name == "display" ? GlobalRenderTargetId{2}
                                      : noRenderTargetId();
         }};
-    const RenderTargetMetadataResolver target_metadata{
-        [](GlobalRenderTargetId id) -> RenderTargetMetadata {
-            if (id == GlobalRenderTargetId{0}) {
-                return {
-                    "lit_color",
-                    ImageUsageBit::color_attachment |
-                        ImageUsageBit::sampled,
-                    ImageFormat::r16g16b16a16_sfloat,
-                    ResolvedResourceExtent{64, 64},
-                };
-            }
-            if (id == GlobalRenderTargetId{1}) {
-                return {
-                    "scene_depth",
-                    ImageUsageBit::depth_stencil_attachment,
-                    ImageFormat::d32_sfloat,
-                    ResolvedResourceExtent{64, 64},
-                };
-            }
-            if (id == GlobalRenderTargetId{2}) {
-                return {
-                    "display",
-                    ImageUsageBit::color_attachment |
-                        ImageUsageBit::sampled,
-                    ImageFormat::b8g8r8a8_srgb,
-                    ResolvedResourceExtent{64, 64},
-                };
-            }
-            throw std::runtime_error(
-                "WP311 fixture target is unknown");
-        }};
-    auto rendering_pass = parseRenderingPassDefinitionFromJson(
-        variant.normalized_config.at("rendering_passes").at(0),
-        target_names, target_metadata, variant.buffer_names);
+    auto rendering_pass = renderingPassDefinitionOf(
+        *variant.render_graph, variant.render_graph->graphs.at(0),
+        output.generation_resources, target_names);
     const auto material = std::find_if(
         rendering_pass.passes.begin(),
         rendering_pass.passes.end(),

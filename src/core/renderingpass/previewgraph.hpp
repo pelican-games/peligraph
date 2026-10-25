@@ -33,7 +33,6 @@ struct PreviewGraphProgram {
         compileGraphVariantPolicy(
             GraphVariantPolicyRequest{
                 RenderPipelineGraphVariant::preview});
-    nlohmann::json composed_config = nlohmann::json::object();
     // PV-1: false when the preview variant could not compose an authoring
     // the runtime variants published (an authored history target, say).
     // Normal play runs; render_preview refuses as preview.unavailable@1 with
@@ -64,7 +63,6 @@ nlohmann::json previewGraphStatusJson(const PreviewGraphProgram &program);
 PreviewGraphProgram makePreviewGraphProgram(
     std::shared_ptr<const CompiledRenderPipeline>
         render_pipeline,
-    nlohmann::json composed_config,
     const RenderGraphIR &render_graph);
 
 

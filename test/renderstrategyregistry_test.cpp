@@ -575,10 +575,10 @@ TEST_CASE(
             resolved.pipeline_preset->reference ==
             "fixture://strategy");
         REQUIRE_FALSE(
-            resolved.normalized_config.contains(
+            resolved.composed_config.contains(
                 "render_strategy"));
         REQUIRE(
-            resolved.normalized_config.at(
+            resolved.composed_config.at(
                 "generated_marker") == "strategy");
         const auto strategy_seed =
             nlohmann::json::parse(state.seed);

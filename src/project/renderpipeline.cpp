@@ -1358,7 +1358,7 @@ ResolvedRenderPipeline resolveRenderPipeline(
         request.source_name);
 
     ResolvedRenderPipeline result;
-    result.normalized_config = std::move(composed.config);
+    result.composed_config = std::move(composed.config);
     result.shader_defines = std::move(composed.shader_defines);
     result.feature_names = std::move(composed.feature_names);
     result.excluded_feature_names =
@@ -1385,43 +1385,43 @@ ResolvedRenderPipeline resolveRenderPipeline(
         std::move(feature_decisions);
 
     if (dependencies.normalize_config) {
-        result.normalized_config = dependencies.normalize_config(
-            result.normalized_config, result.feature_names);
+        result.composed_config = dependencies.normalize_config(
+            result.composed_config, result.feature_names);
     }
     transformGraphVariantConfig(
-        result.graph_variant_policy, result.normalized_config);
+        result.graph_variant_policy, result.composed_config);
     if (dependencies.transform_config) {
-        dependencies.transform_config(result.normalized_config);
+        dependencies.transform_config(result.composed_config);
     }
     validatePassFieldOwnershipInConfig(
-        result.normalized_config,
+        result.composed_config,
         capabilities.pass_field_ownership,
         request.source_name);
     validateGraphVariantConfig(
-        result.graph_variant_policy, result.normalized_config);
+        result.graph_variant_policy, result.composed_config);
     if (dependencies.validate_config) {
-        dependencies.validate_config(result.normalized_config);
+        dependencies.validate_config(result.composed_config);
     }
     result.sample_count_policy =
-        compileSampleCountPolicy(result.normalized_config);
+        compileSampleCountPolicy(result.composed_config);
     result.target_planning =
         compileTargetPlanningPolicy(
-            result.normalized_config,
+            result.composed_config,
             result.graph_variant_policy
                 .rendering_pass_name_suffix);
     result.vulkan_plan_pins =
         compileVulkanTargetPlanPins(
-            result.normalized_config,
+            result.composed_config,
             result.graph_variant_policy.variant);
     result.vulkan_physical_fragments =
         compileVulkanPhysicalFragments(
-            result.normalized_config,
+            result.composed_config,
             result.graph_variant_policy.variant);
     result.xr_target_policy =
         compileXrTargetPolicy(
-            result.normalized_config,
+            result.composed_config,
             result.graph_variant_policy.variant);
-    suffixRenderingPassNames(result.normalized_config,
+    suffixRenderingPassNames(result.composed_config,
                              result.graph_variant_policy
                                  .rendering_pass_name_suffix);
     // FG-1: by the frame graph names target_planning was compiled under.
@@ -2337,20 +2337,20 @@ CompiledRenderPipeline compileRenderPipeline(
     }
     const auto canonical_xr_target_policy =
         compileXrTargetPolicy(
-            pipeline.normalized_config,
+            pipeline.composed_config,
             pipeline.graph_variant_policy.variant);
     const auto canonical_target_planning =
         compileTargetPlanningPolicy(
-            pipeline.normalized_config,
+            pipeline.composed_config,
             pipeline.graph_variant_policy
                 .rendering_pass_name_suffix);
     const auto canonical_vulkan_plan_pins =
         compileVulkanTargetPlanPins(
-            pipeline.normalized_config,
+            pipeline.composed_config,
             pipeline.graph_variant_policy.variant);
     const auto canonical_vulkan_physical_fragments =
         compileVulkanPhysicalFragments(
-            pipeline.normalized_config,
+            pipeline.composed_config,
             pipeline.graph_variant_policy.variant);
     if (pipeline.target_planning.authored &&
         pipeline.target_planning !=
@@ -2393,19 +2393,19 @@ CompiledRenderPipeline compileRenderPipeline(
     result.surface_resource_contracts =
         compileSurfaceResourceContracts(
             pipeline.surface_resource_contracts,
-            pipeline.normalized_config);
+            pipeline.composed_config);
     if (!pipeline.material_routing.is_null()) {
         result.material_routing =
             compileMaterialRouting(pipeline.material_routing);
     }
     result.lighting_data =
         compileLightingDataPlan(
-            pipeline.normalized_config);
+            pipeline.composed_config);
     result.draw_sorting = compileDrawSorting(pipeline.draw_sort);
     result.sample_count_policy = pipeline.sample_count_policy;
     result.target_planning =
         canonical_target_planning;
-    result.scene_acceleration_structures = parseSceneAccelerationStructures(pipeline.normalized_config);
+    result.scene_acceleration_structures = parseSceneAccelerationStructures(pipeline.composed_config);
     result.vulkan_plan_pins =
         canonical_vulkan_plan_pins;
     result.vulkan_physical_fragments =
@@ -2424,7 +2424,7 @@ CompiledRenderPipeline compileRenderPipeline(
     result.deactivated_graph_nodes = pipeline.deactivated_graph_nodes;
     result.fold_planning = pipeline.fold_planning;
     synchronizeRenderPipelineProvenance(
-        pipeline.normalized_config,
+        pipeline.composed_config,
         result.pass_provenance,
         result.resource_provenance);
     result.used_features = pipeline.used_features;

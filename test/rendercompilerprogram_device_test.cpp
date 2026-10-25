@@ -643,4 +643,80 @@ TEST_CASE("RC-3c2b1 the callable records' table names a task a provider adds; th
     }
 }
 
+
+TEST_CASE("RC-3c2b2 D4 preview generations identify the production IR",
+          "[rc3c2b2][render-compiler][preview][gpu]") {
+    struct Program final : RenderCompilerProgram {
+        std::function<void(RenderGraphIR &)> edit;
+        RenderCompilerProgramSelection selection(const RenderCompilerBackendContext &backend) const override {
+            return defaultVulkanRenderCompilerProgram().selection(backend);
+        }
+        RenderCompilerProgramOutput compile(const RenderCompilerProgramInput &input) const override {
+            auto output = defaultVulkanRenderCompilerProgram().compile(input);
+            for (auto &variant : output.variants) {
+                if (variant.graph_variant != RenderPipelineGraphVariant::preview || !edit) continue;
+                auto ir = *variant.render_graph;
+                edit(ir);
+                variant.render_graph = std::make_shared<const RenderGraphIR>(std::move(ir));
+            }
+            return output;
+        }
+    } program;
+    Device device;
+    Project project;
+    Providers providers;
+    const auto preview = [&](const Json &rendering) {
+        auto result = compile(project, providers, rendering, Variants::flat_and_preview,
+                              false, &*device.backend, &program);
+        return previewGraphProgramOf(std::move(result.variants.back()));
+    };
+    const auto input = section(0, false);
+    const auto first = preview(input);
+    const auto same = preview(input);
+    REQUIRE(first.available);
+    CHECK(first.generation != 0);
+    CHECK(first.generation < (1ull << 53u));
+    CHECK(first.generation == same.generation);
+    auto changed_input = input;
+    changed_input["rendering_passes"][0]["passes"][0]["clear_color"] = {0.25, 0.5, 0.75, 1.0};
+    const auto changed = preview(changed_input);
+    REQUIRE(changed.available);
+    CHECK(changed.generation != first.generation);
+
+    // Keep policy and provenance unchanged: these contrasts must depend on
+    // actual final IR values, not an earlier JSON/provenance fingerprint.
+    const std::vector<std::function<void(RenderGraphIR &)>> edits{
+        [](auto &ir) { ir.graphs.front().nodes.front().clear_color[0] = 0.5; },
+        [](auto &ir) { ir.graphs.front().nodes.front().color_clear_values.push_back({0., 0., 0., 1.}); },
+        [](auto &ir) { std::get<FullscreenNodeInfo>(ir.graphs.front().nodes.front().info).fragment_shader = "engine://other"; },
+        [](auto &ir) { std::get<FullscreenNodeInfo>(ir.graphs.front().nodes.front().info).shader_defines = {"D4=1"}; },
+        [](auto &ir) { std::get<FullscreenNodeInfo>(ir.graphs.front().nodes.front().info).uses_light_data = true; },
+        [](auto &ir) { std::get<FullscreenNodeInfo>(ir.graphs.front().nodes.front().info).raster_state = PipelineState{}; },
+        [](auto &ir) { auto &info = std::get<FullscreenNodeInfo>(ir.graphs.front().nodes.front().info);
+            info.raster_state = PipelineState{};
+            info.raster_state->color_attachments.push_back(RasterColorAttachmentState{}); },
+        [](auto &ir) { auto &info = std::get<FullscreenNodeInfo>(ir.graphs.front().nodes.front().info);
+            info.raster_state = PipelineState{};
+            info.raster_state->color_attachments.push_back(RasterColorAttachmentState{});
+            info.raster_state->color_attachments.front().blend.color.destination = MaterialOutputBlendFactor::one; },
+        [](auto &ir) { ir.images.front().extent.scale_x = 0.5f; },
+        [](auto &ir) { ir.graphs.front().nodes.front().input_settings.push_back(ShaderResourceInputSetting{}); },
+        [](auto &ir) { ir.graphs.front().nodes.front().name += "_changed"; },
+    };
+    std::set<std::uint64_t> generations{first.generation, changed.generation};
+    for (std::size_t index = 0; index < edits.size(); ++index) {
+        CAPTURE(index);
+        program.edit = edits[index];
+        const auto edited = preview(input);
+        REQUIRE(edited.available);
+        CHECK(edited.generation != 0);
+        CHECK(generations.insert(edited.generation).second);
+    }
+    program.edit = [](auto &ir) { ir.graphs.front().nodes.front().name.clear(); };
+    const auto malformed = preview(input);
+    CHECK_FALSE(malformed.available);
+    CHECK(malformed.unavailable_reason.at("cause").at("code") == "render_graph.preview_invalid@1");
+    CHECK(malformed.unavailable_reason.at("cause").at("graph") == "main");
+}
+
 } // namespace Pelican

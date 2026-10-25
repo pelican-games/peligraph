@@ -146,12 +146,10 @@ targetPlansByName(
 
 namespace {
 
-// RC-3c1b: the variant's composed config (the JSON the provider ABI and the
-// execution parsers read) and the IR of its final revision, with the
-// provenance on its graphs.
+// The provider phase's result: the final typed revision and its policy.
+// Temporary composition/provider JSON stays inside compileDefaultLogicalVariant.
 struct DefaultLogicalVariantCompilation {
     CompiledRenderPipeline compiled_pipeline;
-    nlohmann::json composed_config;
     RenderGraphIR render_graph;
 };
 
@@ -301,7 +299,7 @@ compileDefaultLogicalVariant(
         }
     }
     auto composed_config =
-        std::move(resolved.normalized_config);
+        std::move(resolved.composed_config);
     if (request.artifact ==
         RenderCompilerProgramArtifact::data_only) {
         // Preview remains a request-local CPU program: resolve feature and
@@ -322,8 +320,6 @@ compileDefaultLogicalVariant(
             .compiled_pipeline =
                 std::move(
                     compiled_pipeline_value),
-            .composed_config =
-                std::move(composed_config),
             .render_graph = std::move(render_graph),
         };
     }
@@ -371,8 +367,6 @@ compileDefaultLogicalVariant(
     return {
         .compiled_pipeline =
             std::move(compiled_pipeline_value),
-        .composed_config =
-            std::move(composed_config),
         .render_graph = std::move(render_graph),
     };
 }
@@ -410,9 +404,6 @@ compileDefaultVulkanVariant(
                     std::move(
                         logical.compiled_pipeline)),
             .ray_tracing_project = input.ray_tracing_project,
-            .normalized_config =
-                std::move(
-                    logical.composed_config),
             .render_graph =
                 std::make_shared<const RenderGraphIR>(
                     std::move(logical.render_graph)),
@@ -479,12 +470,6 @@ compileDefaultVulkanVariant(
         },
         logical.compiled_pipeline.target_planning);
 
-    // RC-3c2a: the buffers are the IR's; their capacity is checked once the
-    // generation's resource description has sized them
-    // (completeGenerationResources, after every compiler program).
-    std::unordered_set<std::string> buffer_names;
-    for (const auto &buffer : render_graph.buffers)
-        buffer_names.insert(buffer.name);
     // RC-3c2b1: the provenance of the final revision, from its IR (the
     // variant's names; each config task found by its authored name). The
     // compute tasks are made from the IR by runRenderCompilerProgram.
@@ -570,10 +555,6 @@ compileDefaultVulkanVariant(
         .compiled_pipeline =
             std::move(compiled_pipeline),
         .ray_tracing_project = input.ray_tracing_project,
-        .normalized_config =
-            std::move(logical.composed_config),
-        .buffer_names =
-            std::move(buffer_names),
         .frame_plans =
             std::move(frame_plans),
         .physical_package = std::move(physical),

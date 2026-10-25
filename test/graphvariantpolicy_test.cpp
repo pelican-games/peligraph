@@ -317,7 +317,7 @@ TEST_CASE("WP192 resolver owns XR and preview policy without injected callbacks"
         });
     REQUIRE(xr.graph_variant_policy.view_execution ==
             GraphVariantViewExecution::sequential);
-    REQUIRE(xr.normalized_config.at("rendering_passes")
+    REQUIRE(xr.composed_config.at("rendering_passes")
                 .at(0)
                 .at("name") == "main#xr");
     REQUIRE(xr.feature_names == std::vector<std::string>{"safe"});
@@ -342,9 +342,9 @@ TEST_CASE("WP192 resolver owns XR and preview policy without injected callbacks"
         });
     REQUIRE(preview.graph_variant_policy.terminal ==
             GraphVariantTerminal::request_local_capture);
-    REQUIRE(preview.normalized_config.dump().find("swapchain") ==
+    REQUIRE(preview.composed_config.dump().find("swapchain") ==
             std::string::npos);
-    REQUIRE(preview.normalized_config.dump().find(
+    REQUIRE(preview.composed_config.dump().find(
                 "preview_capture") != std::string::npos);
 }
 

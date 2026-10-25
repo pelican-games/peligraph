@@ -305,7 +305,10 @@ void requireB1Resolution(const RenderCompilerProgramVariantOutput &variant) {
     CHECK_FALSE(lists(planNode(plan, "present").writes, "swapchain"));
     CHECK(lists(planNode(plan, "output_transform").reads, "display"));
     // The composed declarations: after / input as lists, the attachments.
-    const auto graphs = TestSupport::frameGraphsOf(variant.normalized_config);
+    REQUIRE(variant.render_graph != nullptr);
+    std::vector<FrameGraphDefinition> graphs;
+    for (const auto &graph : variant.render_graph->graphs)
+        graphs.push_back(frameGraphDefinitionOf(*variant.render_graph, graph));
     REQUIRE(graphs.size() == 1);
     const auto node = [&](const std::string &name) -> const FrameGraphNodeDefinition & {
         const auto found = std::find_if(graphs.front().nodes.begin(), graphs.front().nodes.end(),
@@ -340,9 +343,8 @@ void requireB1Resolution(const RenderCompilerProgramVariantOutput &variant) {
     CHECK(from_atlas.at(0).resource == "post");
     CHECK(from_atlas.at(0).operations.load_op == AttachmentLoadOp::clear);
     CHECK(from_atlas.at(0).operations.store_op == AttachmentStoreOp::store);
-    // The swapchain output is display; the composed config is in the normal
-    // form throughout.
-    REQUIRE_NOTHROW(requireNormalizedRenderingJson(variant.normalized_config));
+    // The parser accepted the normal form and handed on the typed revision.
+    CHECK(node("present").attachments.at(0).resource == "display");
 }
 
 } // namespace

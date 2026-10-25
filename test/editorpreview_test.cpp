@@ -38,7 +38,7 @@ Json sceneFixture() {
     )json");
 }
 
-PreviewGraphProgram graphFixture() {
+RenderCompilerProgramVariantOutput graphVariantFixture() {
     const auto config = R"json({
       "schema":"pelican.graph","version":1,"definitions":{},"nodes":[],"outputs":{},
       "rendering":{
@@ -60,7 +60,7 @@ PreviewGraphProgram graphFixture() {
     // draws its declared outputs over a depth target, at the output's
     // resolution (the display it draws to is the output).
     // The registration's preview program (RC-3c1b).
-    return TestSupport::registeredPreviewProgram(
+    return TestSupport::compiledPreviewVariant(
         config,
         [](std::string_view ref) {
             if (ref != "fixture://ui") throw std::runtime_error{"unknown fixture feature"};
@@ -72,6 +72,10 @@ PreviewGraphProgram graphFixture() {
               }}]
             })json"};
         }, true);
+}
+
+PreviewGraphProgram graphFixture() {
+    return previewGraphProgramOf(graphVariantFixture());
 }
 
 OrderedJson exactSharedStateFixture() {
@@ -140,8 +144,17 @@ TEST_CASE("WP172 preview graph is a third startup program with an exclusion poli
     REQUIRE(first.generation != 0);
     REQUIRE(first.generation == second.generation);
     REQUIRE(first.excluded_feature_names == std::vector<std::string>{"ui"});
-    REQUIRE(first.composed_config.dump().find("swapchain") == std::string::npos);
-    REQUIRE(first.composed_config.dump().find("preview_capture") != std::string::npos);
+    const auto variant = graphVariantFixture();
+    REQUIRE(variant.render_graph != nullptr);
+    bool capture_output = false;
+    for (const auto &graph : variant.render_graph->graphs)
+        for (const auto &node : graph.nodes)
+            for (const auto &use : node.uses) {
+                CHECK(use.resource != "swapchain");
+                capture_output = capture_output ||
+                    (use.role == ResourceUseRole::color_attachment && use.resource == "preview_capture");
+            }
+    CHECK(capture_output);
     REQUIRE(first.pass_names ==
             std::vector<std::string>{"main_scene", "output_transform"});
 
@@ -164,7 +177,8 @@ TEST_CASE("WP172 preview graph is a third startup program with an exclusion poli
     REQUIRE(is_excluded("custom_taa", taa_feature));
     REQUIRE(is_excluded("custom_motion", velocity_feature));
 
-    auto retained_terminal = first.composed_config;
+    Json retained_terminal{{"rendering_passes", Json::array({
+        {{"name", "main_render"}, {"passes", Json::array()}}})}};
     retained_terminal.at("rendering_passes").at(0).at("passes").push_back(
         {{"name", "taa_present"}, {"type", "fullscreen"},
          // RC-3b: the composed config's attachments are in the normal form.
@@ -172,7 +186,7 @@ TEST_CASE("WP172 preview graph is a third startup program with an exclusion poli
     REQUIRE_NOTHROW(validateGraphVariantConfig(
         first.graph_variant_policy, retained_terminal));
 
-    auto unsafe = first.composed_config;
+    auto unsafe = retained_terminal;
     unsafe.at("rendering_passes").at(0).at("passes").push_back(
         {{"name", "authored_velocity"}, {"type", "velocity"}});
     try {

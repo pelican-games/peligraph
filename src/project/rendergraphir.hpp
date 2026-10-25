@@ -372,6 +372,11 @@ struct RenderGraphIR {
     bool operator==(const RenderGraphIR &) const = default;
 };
 
+// Canonical fingerprint of every IR field, with stable byte order and
+// optional/variant presence. Float bits are preserved, including signed zero.
+// This is a content identity, not a cryptographic digest.
+std::uint64_t renderGraphFingerprint(const RenderGraphIR &ir);
+
 const GraphIR *findGraph(const RenderGraphIR &ir, std::string_view name);
 // The config's declaration of `name`; nullptr for none.
 const ImageResource *findConfigImage(const RenderGraphIR &ir, std::string_view name);

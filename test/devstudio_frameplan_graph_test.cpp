@@ -301,7 +301,7 @@ Json resolvedFramePlan(Pelican::ResolvedRenderPipeline resolved,
     // Runtime resolution publishes the concrete display extent before frame
     // planning. Reproduce that CPU-only boundary without duplicating Studio's
     // separate extent arithmetic (WP315).
-    for (auto &target : resolved.normalized_config.at("render_targets")) {
+    for (auto &target : resolved.composed_config.at("render_targets")) {
         if (target.value("format_class", std::string{}) == "display") {
             target["width"] = 160;
             target["height"] = 90;
@@ -310,7 +310,7 @@ Json resolvedFramePlan(Pelican::ResolvedRenderPipeline resolved,
     const Pelican::CompiledRenderPipeline compiled =
         Pelican::compileRenderPipeline(resolved);
     const auto render_graph = Pelican::TestSupport::renderGraphOf(
-        resolved.normalized_config);
+        resolved.composed_config);
     const auto graphs = Pelican::TestSupport::frameGraphsOf(render_graph);
     if (graphs.size() != 1) {
         throw std::runtime_error(std::string{label} +
@@ -323,7 +323,7 @@ Json resolvedFramePlan(Pelican::ResolvedRenderPipeline resolved,
         return wire;
     }
     const auto targets = Pelican::test_support::renderTargetDefinitionsOf(
-        resolved.normalized_config);
+        resolved.composed_config);
     const auto physical = Pelican::compileRenderingTargetPlans(
         render_graph, targets, compiled.sample_count_policy,
         vk::Format::eB8G8R8A8Srgb, planningDeviceFacts(), std::nullopt,
@@ -561,7 +561,7 @@ const Wp348CubeCaptureMeasurement &wp348CubeCaptureMeasurement() {
             });
 
         for (auto &target :
-             resolved.normalized_config.at("render_targets")) {
+             resolved.composed_config.at("render_targets")) {
             if (target.value("format_class", std::string{}) ==
                 "display") {
                 target["width"] = 160;
@@ -572,7 +572,7 @@ const Wp348CubeCaptureMeasurement &wp348CubeCaptureMeasurement() {
             Pelican::compileRenderPipeline(resolved);
         const auto render_graph =
             Pelican::TestSupport::renderGraphOf(
-                resolved.normalized_config);
+                resolved.composed_config);
         const auto graphs = Pelican::TestSupport::frameGraphsOf(render_graph);
         if (graphs.size() != 1) {
             throw std::runtime_error(
@@ -585,7 +585,7 @@ const Wp348CubeCaptureMeasurement &wp348CubeCaptureMeasurement() {
 
         const auto targets =
             Pelican::test_support::renderTargetDefinitionsOf(
-                resolved.normalized_config);
+                resolved.composed_config);
         const auto physical = Pelican::compileRenderingTargetPlans(
             render_graph, targets, compiled.sample_count_policy,
             vk::Format::eB8G8R8A8Srgb, planningDeviceFacts(),

@@ -1039,10 +1039,10 @@ TEST_CASE(
         });
     const auto omitted_descriptors =
         canonicalFullscreenDescriptorsInConfig(
-            omitted_resolved.normalized_config);
+            omitted_resolved.composed_config);
     const auto explicit_descriptors =
         canonicalFullscreenDescriptorsInConfig(
-            explicit_resolved.normalized_config);
+            explicit_resolved.composed_config);
     REQUIRE(omitted_descriptors.size() == 7);
     REQUIRE(
         omitted_descriptors ==

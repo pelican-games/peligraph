@@ -348,7 +348,7 @@ std::size_t runtimeVariantsOf(Variants variants) {
 // `imgui`: the launch configuration runs ImGui (the default one does; a
 // headless driver does not). `program`: another compiler program than the
 // engine's default.
-RenderCompilerProgramOutput compile(Project &project, Providers &providers, const Json &rendering_section,
+RenderCompilerProgramResult compile(Project &project, Providers &providers, const Json &rendering_section,
                                     Variants variants, bool imgui = true,
                                     const VulkanRenderCompilerBackendContext *device = nullptr,
                                     const RenderCompilerProgram *program = nullptr) {
@@ -404,7 +404,7 @@ Revision revisionOf(const std::string &response) {
     return result;
 }
 
-const RenderCompilerProgramVariantOutput &variantOf(const RenderCompilerProgramOutput &output,
+const RenderCompilerProgramVariantOutput &variantOf(const RenderCompilerProgramResult &output,
                                                     RenderPipelineGraphVariant variant) {
     const auto found = std::find_if(output.variants.begin(), output.variants.end(),
                                     [&](const auto &entry) { return entry.graph_variant == variant; });

@@ -294,7 +294,7 @@ Json exampleFramePlanFromProducer() {
         });
     const auto graphs =
         Pelican::TestSupport::frameGraphsOf(
-            resolved.normalized_config);
+            resolved.composed_config);
     if (graphs.size() != 1) {
         throw std::runtime_error(
             "projects/example did not resolve to one frame graph");

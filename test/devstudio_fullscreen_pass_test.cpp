@@ -743,7 +743,7 @@ Json resolvedFramePlanFromAuthoredConfig(const Json &authored,
         Pelican::RenderEnvironmentCapabilities{});
     const auto compiled = Pelican::compileRenderPipeline(resolved);
     const auto graphs = Pelican::TestSupport::frameGraphsOf(
-        resolved.normalized_config);
+        resolved.composed_config);
     if (graphs.size() != 1) {
         throw std::runtime_error(
             "real-file test expected exactly one resolved frame graph");
@@ -1489,7 +1489,7 @@ TEST_CASE(
                    Pelican::RenderPipelineRequest{
                        Pelican::TestSupport::renderGraphRoot(config), "WP355 saved fullscreen form"},
                    Pelican::RenderEnvironmentCapabilities{})
-            .normalized_config;
+            .composed_config;
     };
     const Json additive_resolved = resolve_saved(additive_pass);
     const Json omitted_resolved = resolve_saved(omitted_pass);

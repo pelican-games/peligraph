@@ -474,8 +474,8 @@ TEST_CASE("pass fusion finds the same-pixel chains of a post-processing graph",
           "[passfusion][pf1]") {
     const auto resolved = compose(
         TestSupport::renderGraphRoot(postChainSection()), "pf1 post chain");
-    const auto input = fusionInput(resolved.normalized_config);
-    requireFullscreenMatchesPassType(resolved.normalized_config, input);
+    const auto input = fusionInput(resolved.composed_config);
+    requireFullscreenMatchesPassType(resolved.composed_config, input);
     const auto plan = planFor(resolved, input);
 
     REQUIRE(chainMembers(plan) ==
@@ -554,7 +554,7 @@ TEST_CASE("pass fusion stops at a node whose fuse constraint is false",
     REQUIRE((resolved.target_planning.graphs.front().nodes ==
              std::vector<PlanningNodeConstraint>{
                  {.node = "grade", .fuse = false}}));
-    const auto input = fusionInput(resolved.normalized_config);
+    const auto input = fusionInput(resolved.composed_config);
     const auto plan = planFor(resolved, input);
 
     REQUIRE(chainMembers(plan) ==
@@ -716,8 +716,8 @@ TEST_CASE("pass fusion names extent, format, in-place and outside-path boundarie
     })json");
     const auto resolved = compose(TestSupport::renderGraphRoot(section),
                                   "pf1 boundaries");
-    const auto input = fusionInput(resolved.normalized_config);
-    requireFullscreenMatchesPassType(resolved.normalized_config, input);
+    const auto input = fusionInput(resolved.composed_config);
+    requireFullscreenMatchesPassType(resolved.composed_config, input);
     const auto plan = planFor(resolved, input);
 
     // c hands y to c1; c1 would hand a data mask on, another class. t1 and
@@ -759,7 +759,7 @@ TEST_CASE("pass fusion counts the bundled configurations",
     for (const auto &bundled : bundledCases()) {
         DYNAMIC_SECTION(bundled.name) {
             const auto resolved = compose(bundled.authored, bundled.name);
-            const auto composed = resolved.normalized_config;
+            const auto composed = resolved.composed_config;
             for (const auto &[mode, config] :
                  {std::pair<std::string, Json>{"authored", composed},
                   std::pair<std::string, Json>{
@@ -862,7 +862,7 @@ TEST_CASE("RC-3c1a pass fusion plans the same from RenderGraphIR's facts",
         DYNAMIC_SECTION(bundled.name) {
             const auto resolved = compose(bundled.authored, bundled.name);
             for (const auto &config :
-                 {resolved.normalized_config, withShaderFootprints(resolved.normalized_config)}) {
+                 {resolved.composed_config, withShaderFootprints(resolved.composed_config)}) {
                 const auto old_plan = planFor(resolved, fusionInput(config));
                 const auto new_plan = planFor(resolved, fusionInputFromRenderGraph(config));
                 CHECK(chainMembers(new_plan) == chainMembers(old_plan));

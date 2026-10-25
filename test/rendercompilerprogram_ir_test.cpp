@@ -397,6 +397,7 @@ namespace {
 // return: the common completion makes the compute tasks from it).
 struct EditingProgram final : RenderCompilerProgram {
     std::function<void(RenderGraphIR &)> edit;
+    bool copy_graph = false;
 
     RenderCompilerProgramSelection selection(const RenderCompilerBackendContext &backend) const override {
         return defaultVulkanRenderCompilerProgram().selection(backend);
@@ -406,6 +407,20 @@ struct EditingProgram final : RenderCompilerProgram {
         for (auto &variant : output.variants) {
             if (variant.physical_package == nullptr || variant.render_graph == nullptr) continue;
             auto edited = *variant.render_graph;
+            if (copy_graph) {
+                // This compiler-output test duplicates the base artifact,
+                // including its plans, before changing only a task's values.
+                // The copied graph must also satisfy the output name boundary.
+                auto graph = edited.graphs.front();
+                auto frame = variant.frame_plans.at(graph.name);
+                auto &physical = requireVulkanRenderCompilerPhysicalPackage(*variant.physical_package);
+                auto target = std::make_shared<VulkanTargetPlan>(*physical.target_plans.at(graph.name));
+                graph.name = frame.name = target->graph = "copy";
+                edited.graphs.push_back(std::move(graph));
+                variant.frame_plans.emplace(frame.name, std::move(frame));
+                physical.target_plan_compilation.plans.push_back(target);
+                physical.target_plans.emplace(target->graph, std::move(target));
+            }
             edit(edited);
             variant.render_graph = std::make_shared<const RenderGraphIR>(std::move(edited));
         }
@@ -443,9 +458,11 @@ TEST_CASE("RC-3c2b1 the completion refuses by name an IR whose compute tasks it 
               {"shader", "engine://shaders/compute/fixture"},
               {"writes", Json::array({"data"})},
               {"dispatch", {{"indirect", {{"buffer", "args"}, {"offset", 12}}}}}}});
+    bool copy_graph = false;
     const auto compiled = [&](std::function<void(RenderGraphIR &)> edit) {
         EditingProgram program;
         program.edit = std::move(edit);
+        program.copy_graph = copy_graph;
         Project project;
         Providers providers;
         return compile(project, providers, rendering, Variants::flat, true, nullptr, &program);
@@ -483,11 +500,10 @@ TEST_CASE("RC-3c2b1 the completion refuses by name an IR whose compute tasks it 
                 {{"node", "run"}, {"field", "shared_compute_tasks"}, {"reason", "missing_copy"}, {"graph", "main"}});
     }
     SECTION("every graph's copy runs the same, whatever its edges") {
+        copy_graph = true;
         const auto two_graphs = [](RenderGraphIR &ir) {
-            auto copy = ir.graphs.front();
-            copy.name = "copy";
-            sharedNode(copy, "make_args").after.push_back("elsewhere");
-            ir.graphs.push_back(std::move(copy));
+            REQUIRE(ir.graphs.size() == 2);
+            sharedNode(ir.graphs.back(), "make_args").after.push_back("draw");
         };
         const auto control = compiled(two_graphs);
         REQUIRE(control.compute_task_definitions.size() == 1);

@@ -1592,7 +1592,6 @@ PreviewGraphProgram previewGraphProgramOf(
                     "the compiled preview variant has no render graph");
             return makePreviewGraphProgram(
                 std::move(preview_variant.compiled_pipeline),
-                std::move(preview_variant.normalized_config),
                 *preview_variant.render_graph);
         } catch (...) {
             unavailable = std::current_exception();

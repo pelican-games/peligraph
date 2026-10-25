@@ -408,7 +408,9 @@ struct RenderPipelineResolveDependencies {
 struct MaterialDrawLoopRules;
 
 struct ResolvedRenderPipeline {
-    nlohmann::json normalized_config = nlohmann::json::object();
+    // Transient composition result for policy compilation and the provider
+    // ABI. Compiler artifacts and runtime generations retain only the IR.
+    nlohmann::json composed_config = nlohmann::json::object();
     std::vector<std::string> shader_defines;
     std::vector<std::string> feature_names;
     std::vector<std::string> excluded_feature_names;

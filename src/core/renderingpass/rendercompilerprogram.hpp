@@ -118,10 +118,6 @@ struct RenderCompilerProgramVariantOutput {
         compiled_pipeline;
     std::shared_ptr<const RayTracingProjectConfig>
         ray_tracing_project;
-    nlohmann::json normalized_config;
-    // The names of the IR's buffers (RC-3c2a: the declarations are the
-    // IR's, render_graph->buffers; the registration sizes them).
-    std::unordered_set<std::string> buffer_names;
     std::unordered_map<std::string, FramePlan>
         frame_plans;
     std::unique_ptr<
@@ -134,13 +130,22 @@ struct RenderCompilerProgramVariantOutput {
     std::exception_ptr unavailable;
     // RC-3c1b: the variant's final IR (a runtime artifact's finalized one,
     // the frame plans and the physical plan were made from; the preview's as
-    // parsed). Null when unavailable.
+    // parsed). Required for every available artifact; null when unavailable.
+    // Runtime graph names exactly match frame_plans' keys. A data-only
+    // artifact carries its IR without runtime plans.
     std::shared_ptr<const RenderGraphIR> render_graph;
 };
 
 struct RenderCompilerProgramOutput {
     std::vector<RenderCompilerProgramVariantOutput>
         variants;
+};
+
+// Only the common host completion produces this result. A compiler program
+// returns RenderCompilerProgramOutput and cannot supply registration's
+// resource descriptions or execution definitions through its output.
+struct RenderCompilerProgramResult {
+    std::vector<RenderCompilerProgramVariantOutput> variants;
     // RC-3c2a: the generation's resource description of the runtime
     // variants (variants[i] is the i-th runtime_package variant, in order),
     // made and checked by runRenderCompilerProgram (completeGenerationResources).
@@ -185,7 +190,7 @@ GenerationResources completeGenerationResources(
 // (computeTaskDefinitionsOf, against input.ray_tracing_project), completes
 // its generation's resources (completeGenerationResources), and stamps
 // trusted program provenance before any GPU mutation.
-RenderCompilerProgramOutput runRenderCompilerProgram(
+RenderCompilerProgramResult runRenderCompilerProgram(
     const RenderCompilerProgram &program,
     const RenderCompilerProgramInput &input);
 

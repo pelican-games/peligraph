@@ -758,18 +758,19 @@ TEST_CASE(
     };
 
     const auto absent = compile(nullptr);
-    std::vector<nlohmann::json> absent_targets(
+    std::vector<std::vector<ImageResource>> absent_targets(
         absent.variants.size());
     for (std::size_t index = 0; index < absent.variants.size(); ++index) {
         const auto &variant = absent.variants[index];
         CAPTURE(index);
         CHECK(wp368BindlessCapabilityCount(
                   *variant.compiled_pipeline) == 0);
-        CHECK(variant.buffer_names.empty());
-        REQUIRE(variant.normalized_config.contains("render_targets"));
+        REQUIRE(variant.render_graph != nullptr);
+        CHECK(variant.render_graph->buffers.empty());
+        CHECK_FALSE(variant.render_graph->images.empty());
         CHECK(variant.physical_package == nullptr);
         absent_targets[index] =
-            variant.normalized_config.at("render_targets");
+            variant.render_graph->images;
     }
 
     auto legacy_project = std::make_shared<RayTracingProjectConfig>();
@@ -780,9 +781,10 @@ TEST_CASE(
         CAPTURE(index);
         CHECK(wp368BindlessCapabilityCount(
                   *variant.compiled_pipeline) == 0);
-        CHECK(variant.buffer_names.empty());
+        REQUIRE(variant.render_graph != nullptr);
+        CHECK(variant.render_graph->buffers.empty());
         CHECK(variant.physical_package == nullptr);
-        CHECK(variant.normalized_config.at("render_targets") ==
+        CHECK(variant.render_graph->images ==
               absent_targets[index]);
     }
 
@@ -798,9 +800,10 @@ TEST_CASE(
         CAPTURE(index);
         CHECK(wp368BindlessCapabilityCount(
                   *variant.compiled_pipeline) == 1);
-        CHECK(variant.buffer_names.empty());
+        REQUIRE(variant.render_graph != nullptr);
+        CHECK(variant.render_graph->buffers.empty());
         CHECK(variant.physical_package == nullptr);
-        CHECK(variant.normalized_config.at("render_targets") ==
+        CHECK(variant.render_graph->images ==
               absent_targets[index]);
     }
 

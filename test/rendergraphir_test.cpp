@@ -280,7 +280,7 @@ TEST_CASE("RC-3c1b IR: the shipping projects and the engine features plan on the
             const auto compiled = compileRenderPipeline(resolved);
             const bool ray = project == "raytracing_demo" || project == "pathtrace_demo";
             const auto outcome =
-                run(prepared(resolved.normalized_config), {},
+                run(prepared(resolved.composed_config), {},
                     Finalize{.planning = compiled.target_planning,
                              .named = compiled.scene_acceleration_structures,
                              .ray_tracing_project = ray});
@@ -368,7 +368,7 @@ TEST_CASE("RC-3c1b IR: the shipping projects and the engine features plan on the
             REQUIRE(composes.contains(name));
             REQUIRE(resolved);
             const auto compiled = compileRenderPipeline(*resolved);
-            const auto outcome = run(prepared(resolved->normalized_config), {},
+            const auto outcome = run(prepared(resolved->composed_config), {},
                                      Finalize{.planning = compiled.target_planning,
                                               .named = compiled.scene_acceleration_structures});
             INFO(outcome.refusal);
@@ -717,7 +717,7 @@ TEST_CASE("RC-3c1b IR: a compute task's ray query alone brings the acceleration-
     const std::string build = "__scene_acceleration_structure";
     for (const bool query : {false, true}) {
         DYNAMIC_SECTION("compute ray_query " << query) {
-            auto config = prepared(resolved.normalized_config);
+            auto config = prepared(resolved.composed_config);
             auto *task = composedTask(config, "planar_reflection_filter_mip_1");
             REQUIRE(task != nullptr);
             if (query) (*task)["ray_query"] = {{"acceleration_structure", "scene"}};
@@ -763,7 +763,7 @@ TEST_CASE("RC-3c1b IR: a history read is a temporal use", "[rendergraphir][rc3c1
                               {"depth", "offscreen_depth"},
                               {"downstream_color", "lit_color"}}}});
     const auto resolved = composeProject(authored, sourceRoot() / "projects/example", "example+taa");
-    const auto ir = parseRenderGraph(prepared(resolved.normalized_config),
+    const auto ir = parseRenderGraph(prepared(resolved.composed_config),
                                      buildPassFieldOwnershipCapabilities());
     const auto &resolve = irNode(ir, "taa_resolve");
     std::size_t history = 0;
@@ -790,7 +790,7 @@ TEST_CASE("RC-3c1b IR: a resource port's direction is its own", "[rendergraphir]
     // and stores mip 1 of it.
     const auto resolved =
         composeWithFeature("hybrid_v1", Json("engine://features/planar_reflection.json"));
-    const auto ir = parseRenderGraph(prepared(resolved.normalized_config),
+    const auto ir = parseRenderGraph(prepared(resolved.composed_config),
                                      buildPassFieldOwnershipCapabilities());
     const auto &filter = irNode(ir, "planar_reflection_filter_mip_1");
     std::map<std::string, const ResourceUse *> ports;

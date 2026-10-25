@@ -9,6 +9,7 @@
 
 #include <exception>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <utility>
 
@@ -62,18 +63,7 @@ std::pair<CompiledRenderPipeline, nlohmann::json> resolveDataOnlyVariant(
     compiled_pipeline.render_strategy =
         std::move(resolved_render_strategy);
     return {std::move(compiled_pipeline),
-            std::move(resolved.normalized_config)};
-}
-
-std::uint64_t generationOf(const nlohmann::json &config) {
-    // Keep the value exactly representable by JSON number consumers.
-    std::uint64_t hash = 1469598103934665603ull;
-    for (const unsigned char byte : config.dump()) {
-        hash ^= byte;
-        hash *= 1099511628211ull;
-    }
-    hash &= (1ull << 53u) - 1u;
-    return hash == 0 ? 1 : hash;
+            std::move(resolved.composed_config)};
 }
 
 } // namespace
@@ -127,7 +117,6 @@ nlohmann::json previewGraphStatusJson(const PreviewGraphProgram &program) {
 PreviewGraphProgram makePreviewGraphProgram(
     std::shared_ptr<const CompiledRenderPipeline>
         render_pipeline,
-    nlohmann::json composed_config,
     const RenderGraphIR &render_graph) {
     if (render_pipeline == nullptr) {
         throw std::runtime_error(
@@ -140,14 +129,17 @@ PreviewGraphProgram makePreviewGraphProgram(
             "preview graph requires the preview graph "
             "variant");
     }
-    if (!composed_config.is_object() ||
-        !composed_config.contains(
-            "rendering_passes") ||
-        !composed_config.at(
-            "rendering_passes").is_array()) {
-        throw std::runtime_error(
-            "preview graph requires a composed "
-            "rendering_passes array");
+    std::set<std::string> graph_names;
+    for (const auto &graph : render_graph.graphs) {
+        if (graph.name.empty() || !graph_names.insert(graph.name).second)
+            throw GraphRegistryError{"render_graph.preview_invalid@1",
+                {{"graph", graph.name}, {"reason", "graph_name_invalid"}}};
+        std::set<std::string> node_names;
+        for (const auto &node : graph.nodes) {
+            if (node.name.empty() || !node_names.insert(node.name).second)
+                throw GraphRegistryError{"render_graph.preview_invalid@1",
+                    {{"graph", graph.name}, {"node", node.name}, {"reason", "node_name_invalid"}}};
+        }
     }
 
     PreviewGraphProgram result;
@@ -158,10 +150,9 @@ PreviewGraphProgram makePreviewGraphProgram(
     result.graph_variant_policy =
         result.render_pipeline
             ->graph_variant_policy;
-    result.composed_config =
-        std::move(composed_config);
-    result.generation =
-        generationOf(result.composed_config);
+    // Keep the RPC value exactly representable by JSON number consumers.
+    result.generation = renderGraphFingerprint(render_graph) & ((1ull << 53u) - 1u);
+    if (result.generation == 0) result.generation = 1;
     // The graphs' own passes (not their compute tasks), anchors aside.
     for (const auto &graph : render_graph.graphs) {
         for (const auto &node : graph.nodes) {

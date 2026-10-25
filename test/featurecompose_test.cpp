@@ -424,7 +424,7 @@ TEST_CASE("canonical color pipeline rejects unsupported resolver versions", "[re
 CompiledRenderPipeline compileComposition(
     const RenderFeatureComposeResult &composition) {
     ResolvedRenderPipeline resolved;
-    resolved.normalized_config = composition.config;
+    resolved.composed_config = composition.config;
     resolved.shader_defines = composition.shader_defines;
     resolved.feature_names = composition.feature_names;
     resolved.excluded_feature_names = composition.excluded_feature_names;
@@ -524,7 +524,7 @@ TEST_CASE(
     const auto response = [](const ResolvedRenderPipeline &resolved) {
         const auto graphs =
             TestSupport::frameGraphsOf(
-                resolved.normalized_config);
+                resolved.composed_config);
         REQUIRE(graphs.size() == 1);
         const auto compiled = compileRenderPipeline(resolved);
         return framePlanToJson(
@@ -665,7 +665,7 @@ TEST_CASE(
     struct VariantPlans {
         nlohmann::json stale_provenance;
         nlohmann::json synchronized_provenance;
-        nlohmann::json normalized_config;
+        nlohmann::json composed_config;
     };
     const auto plan_variant = [&](RenderPipelineGraphVariant variant) {
         const auto resolved = resolve(variant);
@@ -675,7 +675,7 @@ TEST_CASE(
         // and the provenance synchronized from them, as the compiler does
         // (synchronizeRenderGraphProvenance).
         const auto ir = namespaceSharedComputeTasks(
-            TestSupport::renderGraphOf(resolved.normalized_config),
+            TestSupport::renderGraphOf(resolved.composed_config),
             compiled.graph_variant_policy.rendering_pass_name_suffix);
         REQUIRE(ir.shared_compute_tasks.size() == 1);
         REQUIRE(ir.graphs.size() == 1);
@@ -688,8 +688,8 @@ TEST_CASE(
                 framePlanToJson(plan, &stale_compiled),
             .synchronized_provenance =
                 framePlanToJson(plan, &compiled),
-            .normalized_config =
-                resolved.normalized_config,
+            .composed_config =
+                resolved.composed_config,
         };
     };
     const auto find_named = [](const nlohmann::json &entries,
@@ -725,7 +725,7 @@ TEST_CASE(
     const auto xr = plan_variant(
         RenderPipelineGraphVariant::xr);
     REQUIRE(
-        xr.normalized_config.at("compute_tasks")
+        xr.composed_config.at("compute_tasks")
             .front()
             .at("name") ==
         "compute_provenance_task");
@@ -845,7 +845,7 @@ TEST_CASE(
     };
     // RC-3c2b1: the compute tasks are the program run's, made from the IR.
     const auto require_compute_provenance = [](
-                                                const RenderCompilerProgramOutput
+                                                const RenderCompilerProgramResult
                                                     &output,
                                                 std::string_view
                                                     graph,
@@ -4772,7 +4772,7 @@ TEST_CASE("common graph buffer ports lower into native compute declarations", "[
     const auto original = document;
     const auto resolved = resolveRenderPipeline(RenderPipelineRequest{document}, {});
     REQUIRE(document == original);
-    const auto &config = resolved.normalized_config;
+    const auto &config = resolved.composed_config;
     const auto buffers = Pelican::test_support::bufferDefinitionsOf(config);
     const auto tasks = Pelican::TestSupport::computeTaskDefinitionsOf(config);
     REQUIRE(buffers.size() == 2);
@@ -4868,7 +4868,7 @@ TEST_CASE("common graphics ports retain shaders and order attachment consumers",
     std::uint64_t expected_size = 4;
     const auto verify = [&]() {
         const auto resolved = resolveRenderPipeline(RenderPipelineRequest{document}, {});
-        const auto &config = resolved.normalized_config;
+        const auto &config = resolved.composed_config;
         const auto &pass = config.at("rendering_passes").at(0).at("passes").at(0);
         REQUIRE(config.at("buffers").at(0).at("size") == expected_size);
         if (expected_size == 48) REQUIRE(pass.at("draw").at("vertex_count") == 2);
@@ -7583,8 +7583,8 @@ TEST_CASE("LP-0d a graph node that depends on a feature the variant excluded is 
     const auto flat = lp0dResolve(document, RenderPipelineGraphVariant::flat);
     CHECK(flat.excluded_feature_names.empty());
     CHECK(flat.deactivated_graph_nodes.empty());
-    for (const auto *name : {"blit", "paint", "glow", "trail", "early"}) CHECK(lp0dDeclares(flat.normalized_config, name));
-    CHECK_FALSE(lp0dDeclares(flat.normalized_config, "HighLuminanceExtraction"));
+    for (const auto *name : {"blit", "paint", "glow", "trail", "early"}) CHECK(lp0dDeclares(flat.composed_config, name));
+    CHECK_FALSE(lp0dDeclares(flat.composed_config, "HighLuminanceExtraction"));
 
     // Preview excludes bloom, and the recompose passes: what depends on bloom
     // is inactive, the rest stays.
@@ -7594,7 +7594,7 @@ TEST_CASE("LP-0d a graph node that depends on a feature the variant excluded is 
     // edge to `glow` leaves.
     CHECK(preview.deactivated_graph_nodes == std::vector<RenderGraphDeactivatedNode>{
         {"paint", "bloom", "pass_replacement"}, {"glow", "bloom", "insert"}, {"trail", "bloom", "insert"}});
-    const auto &config = preview.normalized_config;
+    const auto &config = preview.composed_config;
     for (const auto *name : {"paint", "glow", "trail", "HighLuminanceExtraction"})
         CHECK_FALSE(lp0dDeclares(config, name));
     CHECK(lp0dDeclares(config, "blit"));
@@ -7616,8 +7616,8 @@ TEST_CASE("LP-0d a graph node that depends on a feature the variant excluded is 
         const auto resolved = lp0dResolve(plain, RenderPipelineGraphVariant::preview);
         CHECK(resolved.deactivated_graph_nodes ==
               std::vector<RenderGraphDeactivatedNode>{{"paint", "bloom", "target_ref"}});
-        CHECK_FALSE(lp0dDeclares(resolved.normalized_config, "paint"));
-        CHECK(lp0dDeclares(resolved.normalized_config, "blit"));
+        CHECK_FALSE(lp0dDeclares(resolved.composed_config, "paint"));
+        CHECK(lp0dDeclares(resolved.composed_config, "blit"));
     }
     SECTION("loops: one that draws into bloom's target, one placed by a bloom pass, whoever reads it") {
         auto placed = lp1aRange(2);
@@ -7640,10 +7640,10 @@ TEST_CASE("LP-0d a graph node that depends on a feature the variant excluded is 
         const auto resolved = lp0dResolve(looped, RenderPipelineGraphVariant::preview);
         CHECK(resolved.deactivated_graph_nodes == std::vector<RenderGraphDeactivatedNode>{
             {"acc", "bloom", "target_ref"}, {"steps", "bloom", "insert"}, {"reads", "bloom", "loop_output"}});
-        CHECK(lp1aNamesUnder(resolved.normalized_config, "acc/").empty());
-        CHECK(lp1aNamesUnder(resolved.normalized_config, "steps/").empty());
-        CHECK_FALSE(lp0dDeclares(resolved.normalized_config, "reads"));
-        CHECK(lp1aNamesUnder(resolved.normalized_config, "later/").size() == 2);
+        CHECK(lp1aNamesUnder(resolved.composed_config, "acc/").empty());
+        CHECK(lp1aNamesUnder(resolved.composed_config, "steps/").empty());
+        CHECK_FALSE(lp0dDeclares(resolved.composed_config, "reads"));
+        CHECK(lp1aNamesUnder(resolved.composed_config, "later/").size() == 2);
         REQUIRE_NOTHROW(compileRenderPipeline(resolved));
     }
 }

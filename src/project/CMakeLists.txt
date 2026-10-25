@@ -35,6 +35,7 @@ add_library(pelican_project
     frameplan.cpp
     imagesource.cpp
     rendergraphir.cpp
+    rendergraphfingerprint.cpp
     rendergraphparse.cpp
     passshaderdefines.cpp
     rayrecordabi.cpp

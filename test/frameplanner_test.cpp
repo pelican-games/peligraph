@@ -2773,10 +2773,10 @@ Rc1ExamplePlan rc1ExamplePlan(std::uint32_t width, std::uint32_t height) {
         });
     const auto compiled = compileRenderPipeline(resolved);
     const auto render_graph =
-        TestSupport::renderGraphOf(resolved.normalized_config);
+        TestSupport::renderGraphOf(resolved.composed_config);
     REQUIRE(render_graph.graphs.size() == 1);
     auto targets =
-        Pelican::test_support::renderTargetDefinitionsOf(resolved.normalized_config);
+        Pelican::test_support::renderTargetDefinitionsOf(resolved.composed_config);
     const auto compilation = compileRenderingTargetPlans(
         render_graph, targets, compiled.sample_count_policy,
         vk::Format::eB8G8R8A8Srgb,

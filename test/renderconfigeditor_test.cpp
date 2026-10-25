@@ -239,7 +239,7 @@ std::string loadEngineDocument(std::string_view reference) {
 CompiledRenderPipeline compileComposition(
     const RenderFeatureComposeResult &composition) {
     ResolvedRenderPipeline resolved;
-    resolved.normalized_config = composition.config;
+    resolved.composed_config = composition.config;
     resolved.shader_defines = composition.shader_defines;
     resolved.feature_names = composition.feature_names;
     resolved.excluded_feature_names =

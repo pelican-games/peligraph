@@ -2,6 +2,7 @@
 #include "passdefinitionfromir.hpp"
 #include "computetaskdefinition.hpp"
 #include "materialpassinfojsonparser.hpp"
+#include "../../project/graphcomposition.hpp"
 
 #include <algorithm>
 #include <set>
@@ -107,7 +108,7 @@ void validateVariantOutput(
         }
         if (variant.compiled_pipeline != nullptr ||
             variant.physical_package != nullptr ||
-            !variant.frame_plans.empty()) {
+            !variant.frame_plans.empty() || variant.render_graph != nullptr) {
             throw std::runtime_error(
                 "Render compiler unavailable data-only artifact "
                 "returned compiled output");
@@ -126,35 +127,34 @@ void validateVariantOutput(
             "Render compiler program returned a compiled "
             "pipeline for the wrong graph variant");
     }
-    if (!variant.normalized_config.is_object()) {
-        throw std::runtime_error(
-            "Render compiler program normalized config "
-            "must be an object");
+    const auto refuse_graph = [&](std::string_view reason, std::string_view graph = {}) {
+        nlohmann::json detail{
+            {"variant", renderPipelineGraphVariantName(variant.graph_variant)},
+            {"reason", reason}};
+        if (!graph.empty()) detail["graph"] = graph;
+        throw GraphRegistryError{"render_graph.compiler_output_invalid@1", std::move(detail)};
+    };
+    if (!variant.render_graph) refuse_graph("render_graph_required");
+    // The removed buffer-name index also rejected malformed identities.
+    // Keep that boundary check on the declarations themselves.
+    std::unordered_set<std::string> seen_buffers;
+    for (const auto &buffer : variant.render_graph->buffers) {
+        const auto invalid = [&](std::string_view reason) {
+            throw GraphRegistryError{"render_graph.buffer_invalid@1",
+                {{"variant", renderPipelineGraphVariantName(variant.graph_variant)},
+                 {"resource", buffer.name}, {"field", "name"}, {"reason", reason}}};
+        };
+        if (buffer.name.empty()) invalid("required");
+        if (!seen_buffers.insert(buffer.name).second) invalid("duplicate");
     }
-
-    // A runtime artifact names its IR's buffers (a data-only one, none).
-    std::unordered_set<std::string>
-        expected_buffer_names;
-    if (request.artifact ==
-            RenderCompilerProgramArtifact::runtime_package &&
-        variant.render_graph != nullptr) {
-        for (const auto &definition :
-             variant.render_graph->buffers) {
-            if (definition.name.empty() ||
-                !expected_buffer_names
-                     .insert(definition.name)
-                     .second) {
-                throw std::runtime_error(
-                    "Render compiler program produced a "
-                    "duplicate or unnamed buffer definition");
-            }
-        }
-    }
-    if (expected_buffer_names !=
-        variant.buffer_names) {
-        throw std::runtime_error(
-            "Render compiler program buffer-name index "
-            "does not match its definitions");
+    std::set<std::string> ir_graph_names;
+    for (const auto &graph : variant.render_graph->graphs) {
+        if (graph.name.empty()) refuse_graph("graph_name_required");
+        if (!ir_graph_names.insert(graph.name).second)
+            refuse_graph("duplicate_graph", graph.name);
+        if (request.artifact == RenderCompilerProgramArtifact::runtime_package &&
+            !variant.frame_plans.contains(graph.name))
+            refuse_graph("frame_plan_missing", graph.name);
     }
     std::vector<std::string> frame_graph_names;
     frame_graph_names.reserve(
@@ -163,9 +163,10 @@ void validateVariantOutput(
          variant.frame_plans) {
         if (name.empty() ||
             frame_plan.name != name) {
-            throw std::runtime_error(
-                "Render compiler program produced a "
-                "mismatched or unnamed frame plan");
+            refuse_graph("frame_plan_name_mismatch", name);
+        }
+        if (!ir_graph_names.contains(name)) {
+            refuse_graph("graph_missing", name);
         }
         // RC-2b: the compiler output boundary.
         validateFramePlanStructure(frame_plan);
@@ -270,7 +271,7 @@ GenerationResources completeGenerationResources(
     return resources;
 }
 
-RenderCompilerProgramOutput runRenderCompilerProgram(
+RenderCompilerProgramResult runRenderCompilerProgram(
     const RenderCompilerProgram &program,
     const RenderCompilerProgramInput &input) {
     validateInput(input);
@@ -278,7 +279,8 @@ RenderCompilerProgramOutput runRenderCompilerProgram(
         program.selection(input.backend_context);
     validateSelection(
         selection, input.backend_context);
-    auto output = program.compile(input);
+    auto authored_output = program.compile(input);
+    RenderCompilerProgramResult output{.variants = std::move(authored_output.variants)};
     if (output.variants.size() !=
         input.variants.size()) {
         throw std::runtime_error(

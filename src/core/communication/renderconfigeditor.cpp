@@ -2706,7 +2706,7 @@ OrderedJson RenderConfigEditorService::editSceneAccelerationStructures(const Jso
     return queueRootEdit(base_digest, "edit_scene_acceleration_structures",
         [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
             ResolvedRenderPipeline validation;
-            validation.normalized_config["scene_acceleration_structures"] = params.at("definitions");
+            validation.composed_config["scene_acceleration_structures"] = params.at("definitions");
             try {
                 (void)compileRenderPipeline(validation);
             } catch (const std::exception &error) {

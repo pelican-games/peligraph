@@ -403,7 +403,7 @@ TEST_CASE("WP180 flat resolver preserves FeatureCompose bytes without modules",
                                       RenderPipelineGraphVariant::flat},
         RenderPipelineResolveDependencies{load_feature, load_pipeline});
 
-    REQUIRE(resolved.normalized_config.dump() == legacy.config.dump());
+    REQUIRE(resolved.composed_config.dump() == legacy.config.dump());
     REQUIRE(resolved.shader_defines == legacy.shader_defines);
     REQUIRE(resolved.feature_names == legacy.feature_names);
     REQUIRE(resolved.excluded_feature_names ==
@@ -485,7 +485,7 @@ TEST_CASE("WP180 XR resolution preserves policy order suffix and metadata",
 
     REQUIRE(resolution_order ==
             std::vector<std::string>{"normalize", "transform", "validate"});
-    REQUIRE(resolved.normalized_config.dump() == legacy.config.dump());
+    REQUIRE(resolved.composed_config.dump() == legacy.config.dump());
     REQUIRE(resolved.feature_names == std::vector<std::string>{"safe"});
     REQUIRE(resolved.excluded_feature_names ==
             std::vector<std::string>{"ui"});
@@ -523,7 +523,7 @@ TEST_CASE("WP180 hybrid resolver preserves semantic material routing",
         RenderPipelineResolveDependencies{loadEngineResource,
                                           loadEngineResource});
 
-    REQUIRE(resolved.normalized_config.dump() == legacy.config.dump());
+    REQUIRE(resolved.composed_config.dump() == legacy.config.dump());
     REQUIRE(resolved.material_routing == legacy.material_routing);
     REQUIRE(resolved.material_routing.at("routes")
                 .at("deferred_geometry")
@@ -1095,7 +1095,7 @@ TEST_CASE(
     const auto resolved = resolve(authored);
     const Json *resolved_scene = nullptr;
     for (const auto &graph :
-         resolved.normalized_config.at("rendering_passes")) {
+         resolved.composed_config.at("rendering_passes")) {
         for (const auto &candidate : graph.at("passes")) {
             if (candidate.value("name", std::string{}) == "scene") {
                 resolved_scene = &candidate;
@@ -1158,10 +1158,18 @@ TEST_CASE("WP180 preview precompile resolves presets through the shared boundary
     REQUIRE(program.available);
 
     REQUIRE(program.generation != 0);
-    REQUIRE(program.composed_config.dump().find("swapchain") ==
-            std::string::npos);
-    REQUIRE(program.composed_config.dump().find("preview_capture") !=
-            std::string::npos);
+    const auto preview_variant = Pelican::TestSupport::compiledPreviewVariant(
+        Pelican::TestSupport::renderGraphRoot(authored).dump(), load_pipeline, true);
+    REQUIRE(preview_variant.render_graph != nullptr);
+    bool capture_output = false;
+    for (const auto &graph : preview_variant.render_graph->graphs)
+        for (const auto &node : graph.nodes)
+            for (const auto &use : node.uses) {
+                CHECK(use.resource != "swapchain");
+                capture_output = capture_output ||
+                    (use.role == ResourceUseRole::color_attachment && use.resource == "preview_capture");
+            }
+    CHECK(capture_output);
     REQUIRE(program.pass_names ==
             std::vector<std::string>{"scene", "output_transform"});
     {
@@ -1177,36 +1185,18 @@ TEST_CASE("WP180 preview precompile resolves presets through the shared boundary
             for (auto &node : graph.nodes)
                 if (node.name == "scene") node.name = "scene_in_the_ir";
         const auto from_ir = makePreviewGraphProgram(
-            variant.compiled_pipeline, variant.normalized_config, renamed);
+            variant.compiled_pipeline, renamed);
         CHECK(from_ir.pass_names ==
               std::vector<std::string>{"scene_in_the_ir", "output_transform"});
     }
-    const auto &preview_passes =
-        program.composed_config
-            .at("rendering_passes")
-            .at(0)
-            .at("passes");
-    const auto preview_material =
-        std::find_if(
-            preview_passes.begin(),
-            preview_passes.end(),
-            [](const Json &pass) {
-                return pass.value(
-                           "name",
-                           std::string{}) ==
-                       "scene";
-            });
-    REQUIRE(
-        preview_material !=
-        preview_passes.end());
-    REQUIRE(
-        preview_material->at("material_filter")
-            .at("include") ==
-        Json{"preview_selected"});
-    REQUIRE(
-        preview_material->at("material_filter")
-            .at("exclude") ==
-        Json{"preview_hidden"});
+    const auto &preview_nodes = preview_variant.render_graph->graphs.at(0).nodes;
+    const auto preview_material = std::find_if(preview_nodes.begin(), preview_nodes.end(),
+        [](const NodeIR &node) { return node.name == "scene"; });
+    REQUIRE(preview_material != preview_nodes.end());
+    const auto &material = std::get<MaterialNodeInfo>(preview_material->info);
+    REQUIRE(material.filter.has_value());
+    CHECK(material.filter->include == std::vector<std::string>{"preview_selected"});
+    CHECK(material.filter->exclude == std::vector<std::string>{"preview_hidden"});
 
     const auto resolved = resolveRenderPipeline(
         RenderPipelineRequest{Pelican::TestSupport::renderGraphRoot(authored), "preview typed fixture"},
@@ -1237,7 +1227,7 @@ TEST_CASE("WP181 compiles dump metadata into a typed immutable runtime contract"
     const auto selected_suffix = std::string{};
 #endif
     ResolvedRenderPipeline resolved;
-    resolved.normalized_config = {{"authoring_only", true}};
+    resolved.composed_config = {{"authoring_only", true}};
     resolved.shader_defines = {"PELICAN_TYPED_FIXTURE"};
     resolved.feature_names = {"typed_feature"};
     resolved.excluded_feature_names = {"xr_excluded"};
