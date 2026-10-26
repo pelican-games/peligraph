@@ -180,19 +180,19 @@ TEST_CASE("RC-3a2 each way in admits the attachment op spellings it did and refu
     SECTION("authored: the pass parser's and Studio's") {
         for (const auto &[spelling, op] : authored_loads) {
             CAPTURE(spelling);
-            CHECK(parseAuthoredAttachmentLoadOp(spelling) == op);
+            CHECK(findAuthoredAttachmentLoadOp(spelling) == op);
         }
         for (const auto &[spelling, op] : authored_stores) {
             CAPTURE(spelling);
-            CHECK(parseAuthoredAttachmentStoreOp(spelling) == op);
+            CHECK(findAuthoredAttachmentStoreOp(spelling) == op);
         }
         for (const std::string spelling : {"discard", "Discard", "LOAD", "dont-care", ""}) {
             CAPTURE(spelling);
-            CHECK_THROWS_WITH(parseAuthoredAttachmentLoadOp(spelling), "Unknown attachment load op: " + spelling);
+            CHECK_FALSE(findAuthoredAttachmentLoadOp(spelling).has_value());
         }
         for (const std::string spelling : {"discard", "load", "clear", ""}) {
             CAPTURE(spelling);
-            CHECK_THROWS_WITH(parseAuthoredAttachmentStoreOp(spelling), "Unknown attachment store op: " + spelling);
+            CHECK_FALSE(findAuthoredAttachmentStoreOp(spelling).has_value());
         }
         // Studio offers and checks exactly these.
         const std::vector<std::string> load_values{"clear", "load", "dont_care", "Clear", "Load", "DontCare",

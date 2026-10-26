@@ -87,10 +87,6 @@ std::optional<AttachmentLoadOp> findAuthoredAttachmentLoadOp(
     std::string_view spelling);
 std::optional<AttachmentStoreOp> findAuthoredAttachmentStoreOp(
     std::string_view spelling);
-// findAuthored*, throwing "Unknown attachment load op: <spelling>" /
-// "Unknown attachment store op: <spelling>".
-AttachmentLoadOp parseAuthoredAttachmentLoadOp(std::string_view spelling);
-AttachmentStoreOp parseAuthoredAttachmentStoreOp(std::string_view spelling);
 std::optional<AttachmentLoadOp> findPlanAttachmentLoadOp(
     std::string_view spelling);
 std::optional<AttachmentStoreOp> findPlanAttachmentStoreOp(

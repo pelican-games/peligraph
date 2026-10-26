@@ -7,7 +7,6 @@ target_sources(pelican_core PRIVATE
     shadercompiler.cpp
     shaderbindingtable.cpp
     shaderlibrary.cpp
-    shaderreference.cpp
     shaderreflection.cpp
     shaderresourceinterface.cpp
     surfacecompiler.cpp

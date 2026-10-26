@@ -1,0 +1,78 @@
+#pragma once
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <string_view>
+
+namespace Pelican {
+
+enum class ShaderStage {
+    vertex,
+    fragment,
+    compute,
+    raygen,
+    miss,
+    closesthit,
+    anyhit,
+    intersection,
+    callable,
+};
+
+// EL-4: every stage, in declaration order. A stem reference loads the stage's
+// file <stem><shaderStageSourceExtension> (or its .spv), and a shader path's
+// extension names its stage, from this list; get_engine_shaders' list is
+// read off it.
+inline constexpr std::array shaderStages{
+    ShaderStage::vertex,     ShaderStage::fragment,     ShaderStage::compute,
+    ShaderStage::raygen,     ShaderStage::miss,         ShaderStage::closesthit,
+    ShaderStage::anyhit,     ShaderStage::intersection, ShaderStage::callable,
+};
+
+enum class ShaderReferenceKind {
+    explicit_file,
+    stem,
+    engine_generated,
+};
+
+struct ShaderReference {
+    std::string ref;
+    ShaderStage stage = ShaderStage::vertex;
+    ShaderReferenceKind kind = ShaderReferenceKind::explicit_file;
+    bool backend_specific = false;
+};
+
+std::string_view shaderStageSourceExtension(ShaderStage stage);
+std::string shaderStageName(ShaderStage stage);
+bool hasKnownShaderExtension(std::string_view ref);
+bool hasKnownShaderExtension(std::string_view ref, ShaderStage stage);
+ShaderReference makeShaderReference(std::string ref, ShaderStage stage);
+
+// Exact authored-stage presence captured by the typed JSON parsers before a
+// pass implementation provider can replace the effective shader pair.  The
+// semantic skinned_vertex stage is intentionally distinct from the Vulkan
+// vertex stage, and ray arrays retain their authored indices.
+enum class DeclaredShaderStage : std::uint8_t {
+    vertex,
+    skinned_vertex,
+    fragment,
+    compute,
+    raygen,
+    miss,
+    closesthit,
+    anyhit,
+    intersection,
+    callable,
+};
+
+struct DeclaredShaderReference {
+    DeclaredShaderStage stage = DeclaredShaderStage::vertex;
+    std::optional<std::size_t> index;
+    std::string ref;
+
+    bool operator==(const DeclaredShaderReference &) const = default;
+};
+
+} // namespace Pelican

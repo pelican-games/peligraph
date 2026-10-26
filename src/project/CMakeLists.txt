@@ -72,6 +72,8 @@ add_library(pelican_project
     sceneformat.cpp
     sha256stream.cpp
     shadersourceresolver.cpp
+    shaderreference.cpp
+    computetaskdefinition.cpp
     shaderresourceport.cpp
     surfaceformat.cpp
     targetplanning.cpp

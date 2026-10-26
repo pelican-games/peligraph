@@ -85,11 +85,8 @@ PassDefinition passDefinitionOf(const RenderGraphIR &ir, const GraphIR &graph,
     result.name = node.name;
     if (result.name.empty()) refuse(graph, node, "name", "empty");
     result.applyDefaultAttachmentOperations(passType(graph, node));
-    result.region_tags = node.regions;
     result.view_family = node.view_family;
     result.view_select = node.view_select;
-    result.resolution_domain = node.resolution_domain;
-    result.once = node.schedule == NodeSchedule::once;
     result.ray_query = node.ray_query.has_value();
     result.ray_query_acceleration_structure = node.ray_query.value_or(std::string{defaultRayTracingAccelerationStructure});
     result.clear_color = node.clear_color;

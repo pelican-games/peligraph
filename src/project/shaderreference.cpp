@@ -1,6 +1,6 @@
 #include "shaderreference.hpp"
 
-#include "../../project/shadersourceresolver.hpp"
+#include "shadersourceresolver.hpp"
 
 #include <algorithm>
 #include <cctype>

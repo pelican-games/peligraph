@@ -5,7 +5,8 @@
 #include "../container.hpp"
 #include "../handle.hpp"
 #include "../shader/graphicsviewcontract.hpp"
-#include "../shader/shaderreference.hpp"
+#include "../../project/passinfo.hpp"
+#include "../../project/computetaskdefinition.hpp"
 #include "../../project/materialdrawtag.hpp"
 #include "../../project/materialoutput.hpp"
 #include "../../project/renderpipeline.hpp"
@@ -19,7 +20,6 @@
 #include "../../project/nodeschedule.hpp"
 #include "../../project/framegraphbufferdefinition.hpp"
 #include "../../project/gpudrawsource.hpp"
-#include "../../project/renderresolutiondomain.hpp"
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -203,78 +203,6 @@ struct MaterialPassInfo {
     std::optional<GpuDrawSourceDefinition> gpu_draw_source;
 };
 
-struct FullscreenPassInfo {
-    ShaderReference vert_shader = ShaderReference{"", ShaderStage::vertex, ShaderReferenceKind::explicit_file, false};
-    ShaderReference frag_shader = ShaderReference{"", ShaderStage::fragment, ShaderReferenceKind::explicit_file, false};
-    FullscreenPushConstantData push_constants = defaultFullscreenPushConstants;
-    bool uses_light_data = defaultFullscreenUsesLightData;
-    // Absence is observable compatibility state: legacy fullscreen pipelines
-    // keep GraphicsPipelineDesc::color_attachment_states empty. Authored state
-    // is expanded and lowered only when raster_state is present in JSON.
-    std::optional<RasterFixedFunctionState> raster_state;
-    // Empty preserves the legacy linear/repeat policy for every image input.
-    // When authored, entries map one-to-one to PassDefinition::input_targets.
-    std::vector<ShaderResourcePortSampling> input_sampling;
-    // Optional typed annotations over input/input@history. Inputs without an
-    // entry keep the existing raw set/binding shader ABI.
-    std::vector<ShaderResourcePortDefinition> resource_ports;
-    // VI-1: `shader.defines`, "NAME" / "NAME=VALUE" added to this pass's
-    // shader compile after the root's shader_defines.
-    std::vector<std::string> shader_defines;
-};
-
-// One extensible raster entry replaces the need for a new engine-owned pass
-// kind for every custom raster technique. The portable contract describes
-// draw/fixed state; ShaderReference is resolved only by the selected backend
-// adapter.
-struct GenericRasterPassInfo {
-    RasterPassContract contract;
-    std::string shader_implementation{
-        defaultRasterShaderImplementation};
-    ShaderReference vert_shader =
-        ShaderReference{"", ShaderStage::vertex,
-                        ShaderReferenceKind::explicit_file,
-                        false};
-    std::optional<ShaderReference> frag_shader;
-    std::vector<ShaderResourcePortDefinition>
-        resource_ports;
-    // VI-1: `shader.defines`, as a fullscreen pass's.
-    std::vector<std::string> shader_defines;
-};
-
-struct DebugDrawPassInfo {
-    ShaderReference vert_shader = ShaderReference{"", ShaderStage::vertex, ShaderReferenceKind::explicit_file, false};
-    ShaderReference frag_shader = ShaderReference{"", ShaderStage::fragment, ShaderReferenceKind::explicit_file, false};
-};
-
-struct GizmoPassInfo {
-    ShaderReference vert_shader = ShaderReference{"", ShaderStage::vertex, ShaderReferenceKind::explicit_file, false};
-    ShaderReference frag_shader = ShaderReference{"", ShaderStage::fragment, ShaderReferenceKind::explicit_file, false};
-};
-
-struct DebugTextPassInfo {
-    ShaderReference vert_shader = ShaderReference{"", ShaderStage::vertex, ShaderReferenceKind::explicit_file, false};
-    ShaderReference frag_shader = ShaderReference{"", ShaderStage::fragment, ShaderReferenceKind::explicit_file, false};
-};
-
-struct ShadowDepthPassInfo {
-    ShaderReference vert_shader = ShaderReference{"", ShaderStage::vertex, ShaderReferenceKind::explicit_file, false};
-};
-
-struct VelocityPassInfo {
-    ShaderReference vert_shader = ShaderReference{"", ShaderStage::vertex, ShaderReferenceKind::explicit_file, false};
-    ShaderReference skinned_vert_shader = ShaderReference{"", ShaderStage::vertex, ShaderReferenceKind::explicit_file, false};
-    ShaderReference frag_shader = ShaderReference{"", ShaderStage::fragment, ShaderReferenceKind::explicit_file, false};
-};
-
-struct PickingPassInfo {
-    ShaderReference vert_shader = ShaderReference{"", ShaderStage::vertex, ShaderReferenceKind::explicit_file, false};
-    ShaderReference skinned_vert_shader = ShaderReference{"", ShaderStage::vertex, ShaderReferenceKind::explicit_file, false};
-    ShaderReference frag_shader = ShaderReference{"", ShaderStage::fragment, ShaderReferenceKind::explicit_file, false};
-};
-
-struct UiPassInfo {};
-
 #if PELICAN_WITH_IMGUI
 struct ImGuiPassInfo {};
 #endif
@@ -334,42 +262,6 @@ struct PhysicalColorClearValue {
         default;
 };
 
-// Exact authored-stage presence captured by the typed JSON parsers before a
-// pass implementation provider can replace the effective shader pair.  The
-// semantic skinned_vertex stage is intentionally distinct from the Vulkan
-// vertex stage, and ray arrays retain their authored indices.
-enum class DeclaredShaderStage : std::uint8_t {
-    vertex,
-    skinned_vertex,
-    fragment,
-    compute,
-    raygen,
-    miss,
-    closesthit,
-    anyhit,
-    intersection,
-    callable,
-};
-
-struct DeclaredShaderReference {
-    DeclaredShaderStage stage = DeclaredShaderStage::vertex;
-    std::optional<std::size_t> index;
-    std::string ref;
-
-    bool operator==(const DeclaredShaderReference &) const = default;
-};
-
-// LC-1: the graph.loop element a pass or compute task is a copy of, and how
-// many elements the loop expanded (pelican_loop.glsl). Pushed at
-// PELICAN_PUSH_LOOP_OFFSET to every stage whose push-constant range holds it.
-// A pass no loop expanded is element 0 of 1.
-struct PassLoopIndex {
-    std::uint32_t element = 0;
-    std::uint32_t count = 1;
-
-    bool operator==(const PassLoopIndex &) const = default;
-};
-
 struct PassDefinition {
     PassDefinition() : output_depth{noRenderTargetId()} {
         applyDefaultAttachmentOperations(RenderPassType::material);
@@ -390,7 +282,6 @@ struct PassDefinition {
     // may be shorter than input_targets; a missing entry keeps the default.
     std::vector<ShaderResourceInputSetting> input_target_settings;
     std::vector<std::string> input_buffers;
-    std::vector<std::string> region_tags;
     std::string view_family{
         mainRenderViewFamilyId};
     // LP-Va: run only on the views of view_family whose axis coordinates
@@ -436,14 +327,9 @@ struct PassDefinition {
         color_clear_values;
     vk::SampleCountFlagBits rasterization_samples =
         vk::SampleCountFlagBits::e1;
-    RenderResolutionDomain resolution_domain =
-        RenderResolutionDomain::unclassified;
     // LC-1: runtime-only. Set from the compiled pipeline's provenance when
     // the pass is registered; never parsed from JSON.
     PassLoopIndex loop_index;
-    // PS-1: `schedule: "once"` (fullscreen and raster passes; absent or
-    // "per_frame" is false). See ComputeTaskSchedule::once.
-    bool once = false;
 
     bool isMaterial() const { return std::holds_alternative<MaterialPassInfo>(pass_info); }
     bool isFullscreen() const { return std::holds_alternative<FullscreenPassInfo>(pass_info); }
@@ -614,74 +500,6 @@ struct PassDefinition {
     const VelocityPassInfo &velocityInfo() const { return std::get<VelocityPassInfo>(pass_info); }
     PickingPassInfo &pickingInfo() { return std::get<PickingPassInfo>(pass_info); }
     const PickingPassInfo &pickingInfo() const { return std::get<PickingPassInfo>(pass_info); }
-};
-
-// RC-3c2b1: ComputeDispatchDefinition and ComputeImageExtentDispatchDefinition
-// are the project's (computetaskdeclaration.hpp): the IR holds the dispatch
-// and core takes it as it is.
-
-struct RayTracingTaskShaderDefinition {
-    std::string acceleration_structure{defaultRayTracingAccelerationStructure};
-    // The project's default (computetaskdeclaration.hpp).
-    std::uint32_t max_recursion = defaultRayTracingMaxRecursion;
-    ShaderReference raygen{
-        "", ShaderStage::raygen,
-        ShaderReferenceKind::explicit_file, false};
-    std::vector<ShaderReference> misses;
-    std::vector<ShaderReference> closest_hits;
-    std::vector<ShaderReference> callables;
-    std::shared_ptr<const RayCallableRecordLayout> callable_record_layout;
-    std::vector<std::vector<std::byte>> callable_records;
-    bool uses_group_layout = false;
-    std::vector<std::string> group_names;
-    std::vector<std::string> ray_type_names;
-    std::vector<std::uint32_t> traced_ray_type_indices;
-    // H[g,r], group-major. Null slots are materialized as valid generated
-    // no-op closest-hit groups for ray types this task never traces.
-    std::vector<std::optional<ShaderReference>> hit_shader_slots;
-    // Optional any-hit stage paired with the same physical H[g,r]
-    // occurrence. The vector is empty for legacy RT1a definitions.
-    std::vector<std::optional<ShaderReference>> any_hit_shader_slots;
-    std::vector<std::optional<ShaderReference>> intersection_shader_slots;
-};
-
-// per_frame: executes once for the logical frame and may feed every view.
-// per_view: executes once for each logical view; physical lowering may keep
-// these invocations sequential while other scopes use Vulkan multiview.
-// once (PS-1): dispatched as per_frame, but only on a frame where its inputs
-// or outputs changed (a new runtime generation, a recreated persistent
-// output, different host bytes read, an upstream once node that ran,
-// rerun_once); the frame plan node carries FrameGraphNodeDefinition::once.
-// RC-3c2b1: the IR's NodeSchedule (one set, one default).
-using ComputeTaskSchedule = NodeSchedule;
-
-std::string_view computeTaskScheduleName(
-    ComputeTaskSchedule schedule);
-
-struct ComputeTaskDefinition {
-    std::string name;
-    ShaderReference shader = ShaderReference{"", ShaderStage::compute, ShaderReferenceKind::explicit_file, false};
-    // Present for a trace-rays task. It remains a top-level compute node in
-    // the frame plan because both execution kinds must run outside dynamic
-    // rendering.
-    std::optional<RayTracingTaskShaderDefinition> ray_tracing;
-    std::optional<std::string> ray_query_acceleration_structure;
-    bool shader_declaration_parsed = false;
-    std::vector<DeclaredShaderReference> declared_shader_refs;
-    std::vector<std::string> reads;
-    std::vector<std::string> writes;
-    std::vector<std::string> after;
-    std::vector<std::string> before;
-    // Optional typed annotations over reads/writes. The dependency lists
-    // remain authoritative and are not synthesized from these declarations.
-    std::vector<ShaderResourcePortDefinition> resource_ports;
-    ComputeDispatchDefinition dispatch;
-    ComputeTaskSchedule schedule = defaultNodeSchedule;
-    std::string view_family{
-        mainRenderViewFamilyId};
-    RenderViewSelect view_select;
-    // LC-1: as PassDefinition::loop_index.
-    PassLoopIndex loop_index;
 };
 
 struct CompiledComputeTask {

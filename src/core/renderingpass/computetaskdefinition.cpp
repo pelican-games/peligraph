@@ -386,13 +386,7 @@ std::vector<DeclaredShaderReference> declaredShaderRefsOf(const ComputeTaskDefin
     return result;
 }
 
-void appendEdges(std::vector<std::string> &into, const std::vector<std::string> &edges) {
-    for (const auto &edge : edges) {
-        if (std::find(into.begin(), into.end(), edge) == into.end()) into.push_back(edge);
-    }
-}
-
-ComputeTaskDefinition computeTaskDefinitionOf(const RenderGraphIR &ir, const SharedComputeTask &task,
+ComputeTaskDefinition computeTaskDefinitionOf(const SharedComputeTask &task,
                                               const RayTracingProjectConfig *project) {
     const auto &node = *task.node;
     const auto &info = std::get<ComputeNodeInfo>(node.info);
@@ -445,15 +439,6 @@ ComputeTaskDefinition computeTaskDefinitionOf(const RenderGraphIR &ir, const Sha
             break;
         }
     }
-    // The final edges (renamed, the structures' builds, frame_node_order),
-    // every graph's copy.
-    for (const auto &graph : ir.graphs) {
-        for (const auto &copy : graph.nodes) {
-            if (copy.scope != NodeDeclarationScope::shared || copy.name != node.name) continue;
-            appendEdges(definition.after, copy.after);
-            appendEdges(definition.before, copy.before);
-        }
-    }
     definition.dispatch = info.dispatch;
     definition.schedule = node.schedule;
     definition.view_family = node.view_family;
@@ -463,15 +448,11 @@ ComputeTaskDefinition computeTaskDefinitionOf(const RenderGraphIR &ir, const Sha
 
 } // namespace
 
-std::string_view computeTaskScheduleName(ComputeTaskSchedule schedule) {
-    return nodeScheduleName(schedule);
-}
-
 std::vector<ComputeTaskDefinition> computeTaskDefinitionsOf(
     const RenderGraphIR &ir, const RayTracingProjectConfig *ray_tracing_project) {
     std::vector<ComputeTaskDefinition> result;
     for (const auto &task : sharedComputeTasksOf(ir)) {
-        result.push_back(computeTaskDefinitionOf(ir, task, ray_tracing_project));
+        result.push_back(computeTaskDefinitionOf(task, ray_tracing_project));
     }
     return result;
 }

@@ -1,10 +1,5 @@
 #include "renderingpassvalidation.hpp"
-#include "materialpassattachments.hpp"
-#include "rendertargetmetadataresolver.hpp"
-#include "vulkanimagevocabulary.hpp"
 #include <algorithm>
-#include <array>
-#include <optional>
 #include <stdexcept>
 
 namespace Pelican {
@@ -45,39 +40,6 @@ void validatePassInputs(const PassDefinition &pass_def) {
 
     if (pass_def.input_target_history.size() != pass_def.input_targets.size()) {
         throw std::runtime_error("Pass input history metadata is inconsistent: " + pass_def.name);
-    }
-}
-
-// RC-3c2a: the pass's rasterization sample count, from its attachments
-// (the swapchain's is 1). That the attachments agree is the resource check's
-// (validateRenderNodeResources), before anything is registered.
-vk::SampleCountFlagBits passOutputSamples(
-    const PassDefinition &pass_def,
-    const RenderTargetMetadataResolver &rt_metadata) {
-    std::optional<std::uint32_t> samples;
-    for (const auto &attachment : pass_def.output_color) {
-        if (samples) break;
-        if (isSwapchainRenderTarget(attachment.target)) {
-            samples = 1;
-        } else if (isConcreteRenderTarget(attachment.target)) {
-            samples = rt_metadata.get(attachment.target).samples;
-        }
-    }
-    if (!samples && isConcreteRenderTarget(pass_def.output_depth)) {
-        samples = rt_metadata.get(pass_def.output_depth).samples;
-    }
-    switch (samples.value_or(1)) {
-    case 1: return vk::SampleCountFlagBits::e1;
-    case 2: return vk::SampleCountFlagBits::e2;
-    case 4: return vk::SampleCountFlagBits::e4;
-    case 8: return vk::SampleCountFlagBits::e8;
-    case 16: return vk::SampleCountFlagBits::e16;
-    case 32: return vk::SampleCountFlagBits::e32;
-    case 64: return vk::SampleCountFlagBits::e64;
-    default:
-        throw std::runtime_error(
-            "Pass output target has invalid sample count in pass: " +
-            pass_def.name);
     }
 }
 

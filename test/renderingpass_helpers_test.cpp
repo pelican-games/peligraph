@@ -111,7 +111,7 @@ PassDefinition materialPassOf(nlohmann::json fields, const std::string &name) {
     return TestSupport::renderingPassDefinitionsOf(config).at(0).passes.at(0);
 }
 
-PassDefinition typedFixtureOf(const std::string &type, Json fields = Json::object()) {
+Json typedFixtureConfig(const std::string &type, Json fields = Json::object()) {
     fields["name"] = "utility"; fields["type"] = type;
     fields["output"] = {{"color", type == "shadow_depth" ? Json(nullptr) : Json("swapchain")},
         {"depth", type == "shadow_depth" ? Json("depth") : Json(nullptr)}};
@@ -120,7 +120,11 @@ PassDefinition typedFixtureOf(const std::string &type, Json fields = Json::objec
     if (type == "raster") fields["draw"] = {{"vertex_count", 3}};
     Json config{{"render_targets", Json::array({fixtureImage("depth", true)})},
         {"rendering_passes", Json::array({Json{{"name", "main"}, {"passes", Json::array({fields})}}})}};
-    return TestSupport::renderingPassDefinitionsOf(config).at(0).passes.at(0);
+    return config;
+}
+
+PassDefinition typedFixtureOf(const std::string &type, Json fields = Json::object()) {
+    return TestSupport::renderingPassDefinitionsOf(typedFixtureConfig(type, std::move(fields))).at(0).passes.at(0);
 }
 
 } // namespace
@@ -166,8 +170,9 @@ TEST_CASE("rendering pass JSON helpers parse known values", "[renderingpass]") {
     REQUIRE(std::holds_alternative<UiPassInfo>(typedFixtureOf("ui").pass_info));
 
     REQUIRE(typedFixtureOf("fullscreen", Json{{"push_constants", "projection_view"}}).fullscreenInfo().push_constants == FullscreenPushConstantData::eProjectionView);
-    REQUIRE(parseAuthoredAttachmentLoadOp("dont_care") == AttachmentLoadOp::dont_care);
-    REQUIRE(parseAuthoredAttachmentStoreOp("store") == AttachmentStoreOp::store);
+    const auto ops = typedFixtureOf("ui", Json{{"color_load_op", "dont_care"}, {"color_store_op", "store"}});
+    REQUIRE(ops.output_color.at(0).load_op == AttachmentLoadOp::dont_care);
+    REQUIRE(ops.output_color.at(0).store_op == AttachmentStoreOp::store);
 
     const nlohmann::json object{
         {"name", "main_pass"},
@@ -183,7 +188,9 @@ TEST_CASE("rendering pass JSON helpers parse known values", "[renderingpass]") {
     CHECK(typedFixtureOf("ui", Json{{"view_family", "$reflection/probe/0"}}).view_family == "$reflection/probe/0");
     TestSupport::requireNamedRefusal([&] { (void)typedFixtureOf("ui", Json{{"view_family", ""}}); },
         "render_graph.node_field_invalid@1", {{"graph", "main"}, {"node", "utility"}, {"field", "view_family"}});
-    CHECK(typedFixtureOf("ui", Json{{"regions", Json::array({"region.post", "region.debug"})}}).region_tags ==
+    const auto region_ir = TestSupport::renderGraphOf(typedFixtureConfig(
+        "ui", Json{{"regions", Json::array({"region.post", "region.debug"})}}));
+    CHECK(region_ir.graphs.at(0).nodes.at(0).regions ==
         std::vector<std::string>{"region.post", "region.debug"});
     for (const auto &regions : {Json::array({"region.post", "region.post"}), Json::array({""})}) {
         TestSupport::requireNamedRefusal([&] { (void)typedFixtureOf("ui", Json{{"regions", regions}}); },
@@ -196,6 +203,20 @@ TEST_CASE("rendering pass JSON helpers parse known values", "[renderingpass]") {
     REQUIRE(clear_color[2] == 0.25);
     REQUIRE(clear_color[3] == 1.0);
 
+}
+
+TEST_CASE("RC-4 raster schedule stays in the IR and FramePlan", "[renderingpass][rc4][schedule]") {
+    for (const auto schedule : {"per_frame", "once"}) {
+        CAPTURE(schedule);
+        const auto ir = TestSupport::renderGraphOf(typedFixtureConfig(
+            "fullscreen", Json{{"schedule", schedule}}));
+        const bool once = std::string_view{schedule} == "once";
+        CHECK(ir.graphs.at(0).nodes.at(0).schedule ==
+              (once ? NodeSchedule::once : NodeSchedule::per_frame));
+        const auto plan = planRenderGraph(ir, ir.graphs.at(0));
+        REQUIRE(plan.nodes.size() == 1);
+        CHECK(plan.nodes.at(0).once == once);
+    }
 }
 
 TEST_CASE("render target JSON parser returns target definitions", "[renderingpass]") {
@@ -2573,8 +2594,10 @@ TEST_CASE("pass definition JSON parser builds a fullscreen pass definition", "[r
         pass_def.requested_implementation_provider ==
         std::optional<std::string>{"fixture.fullscreen"});
     REQUIRE_FALSE(pass_def.implementation_selection.has_value());
+    const auto region_ir = TestSupport::renderGraphOf(Json{{"render_targets", images}, {"buffers", buffers},
+        {"rendering_passes", Json::array({Json{{"name", "main"}, {"passes", Json::array({pass_json})}}})}});
     REQUIRE(
-        pass_def.region_tags ==
+        region_ir.graphs.at(0).nodes.at(0).regions ==
         std::vector<std::string>{
             "region.post.fixture", "region.post"});
     REQUIRE(
@@ -2928,8 +2951,10 @@ TEST_CASE(
     const auto pass =
         passInGraph(encoded, images, buffers, name_resolver);
     CHECK(pass.isGenericRaster());
+    const auto domain_ir = TestSupport::renderGraphOf(Json{{"render_targets", images}, {"buffers", buffers},
+        {"rendering_passes", Json::array({Json{{"name", "main"}, {"passes", Json::array({encoded})}}})}});
     CHECK(
-        pass.resolution_domain ==
+        domain_ir.graphs.at(0).nodes.at(0).resolution_domain ==
         RenderResolutionDomain::scene);
     REQUIRE(pass.output_color.size() == 2);
     CHECK(
@@ -4145,8 +4170,8 @@ TEST_CASE("rendering pass JSON helpers reject malformed values", "[renderingpass
     REQUIRE_THROWS_AS(parseAuthoredImageUsage(std::vector<std::string>{}), std::runtime_error);
     REQUIRE_THROWS_AS(typedFixtureOf("compute").pass_info, std::runtime_error);
     REQUIRE_THROWS_AS(typedFixtureOf("fullscreen", Json{{"push_constants", "camera"}}), std::runtime_error);
-    REQUIRE_THROWS_AS(parseAuthoredAttachmentLoadOp("keep"), std::runtime_error);
-    REQUIRE_THROWS_AS(parseAuthoredAttachmentStoreOp("load"), std::runtime_error);
+    REQUIRE_THROWS_AS(typedFixtureOf("ui", Json{{"color_load_op", "keep"}}), std::runtime_error);
+    REQUIRE_THROWS_AS(typedFixtureOf("ui", Json{{"color_store_op", "load"}}), std::runtime_error);
 
     REQUIRE_THROWS_AS(validateName("", "Pass"), std::runtime_error);
     REQUIRE_THROWS_AS(parseStringField(nlohmann::json{{"name", 1}}, "name", "test"), std::runtime_error);

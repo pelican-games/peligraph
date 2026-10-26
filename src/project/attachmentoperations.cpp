@@ -135,16 +135,6 @@ std::optional<AttachmentStoreOp> findAuthoredAttachmentStoreOp(
     return findAuthored(kStoreOps, spelling);
 }
 
-AttachmentLoadOp parseAuthoredAttachmentLoadOp(std::string_view spelling) {
-    if (const auto op = findAuthoredAttachmentLoadOp(spelling)) return *op;
-    throw std::runtime_error("Unknown attachment load op: " + std::string{spelling});
-}
-
-AttachmentStoreOp parseAuthoredAttachmentStoreOp(std::string_view spelling) {
-    if (const auto op = findAuthoredAttachmentStoreOp(spelling)) return *op;
-    throw std::runtime_error("Unknown attachment store op: " + std::string{spelling});
-}
-
 std::optional<AttachmentLoadOp> findPlanAttachmentLoadOp(
     std::string_view spelling) {
     return findPlan(kLoadOps, spelling);

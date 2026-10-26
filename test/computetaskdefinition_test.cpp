@@ -15,6 +15,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <functional>
@@ -314,7 +315,24 @@ TEST_CASE("RC-3c2b1 the definitions are the final IR's, the ray tracing refusals
     CHECK(tasks[0].name == "first#xr");
     CHECK(tasks[1].name == "trace#xr");
     // The final edges (renamed); reads, writes and ports from the uses.
-    CHECK(tasks[1].after == std::vector<std::string>{"first#xr"});
+    const auto final_tasks = sharedComputeTasksOf(ir);
+    REQUIRE(final_tasks.size() == 2);
+    CHECK(final_tasks[1].node->after == std::vector<std::string>{"first#xr"});
+    for (const auto &graph : ir.graphs) {
+        const auto frame_graph = frameGraphDefinitionOf(ir, graph);
+        const auto trace = std::find_if(frame_graph.nodes.begin(), frame_graph.nodes.end(),
+            [](const auto &node) { return node.name == "trace#xr"; });
+        REQUIRE(trace != frame_graph.nodes.end());
+        CHECK(trace->after == std::vector<std::string>{"first#xr"});
+        const auto plan = planRenderGraph(ir, graph);
+        const auto first = std::find_if(plan.nodes.begin(), plan.nodes.end(),
+            [](const auto &node) { return node.name == "first#xr"; });
+        const auto last = std::find_if(plan.nodes.begin(), plan.nodes.end(),
+            [](const auto &node) { return node.name == "trace#xr"; });
+        REQUIRE(first != plan.nodes.end());
+        REQUIRE(last != plan.nodes.end());
+        CHECK(first->order < last->order);
+    }
     CHECK(tasks[1].writes == std::vector<std::string>{"image"});
     REQUIRE(tasks[1].resource_ports.size() == 1);
     CHECK(tasks[1].resource_ports.front().name == "target");

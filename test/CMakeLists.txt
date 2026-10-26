@@ -8,6 +8,17 @@ list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
 include(Catch)
 include(${CMAKE_CURRENT_SOURCE_DIR}/gpu_lease_config.cmake)
 
+# RC-4: deliberately bypass pelican_define_test, which injects Vulkan's
+# include path. Each public header must compile alone with project's closure.
+add_executable(pelican_test_project_execution_leaf
+    project_execution_shaderreference_test.cpp
+    project_execution_passinfo_test.cpp
+    project_execution_passloopindex_test.cpp
+    project_execution_computetaskdefinition_test.cpp)
+set_target_properties(pelican_test_project_execution_leaf PROPERTIES CXX_STANDARD 20)
+target_link_libraries(pelican_test_project_execution_leaf PRIVATE pelican_project)
+add_test(NAME project_execution_leaf COMMAND pelican_test_project_execution_leaf)
+
 # CPU reference math and fixture generators belong only to the tests that
 # consume them; pelican_player whole-archives pelican_core for SDK exports.
 add_library(pelican_test_raytracing_oracle STATIC
@@ -509,27 +520,10 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     Qt6::Core
     Qt6::Widgets
   )
-  target_sources(pelican_test_devstudio_engine_failure_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanwidget.cpp)
-  target_sources(pelican_test_devstudio_engine_failure_test PRIVATE
-    ${CMAKE_SOURCE_DIR}/src/devstudio/view/shaderdiagnostics.cpp
-    ${CMAKE_SOURCE_DIR}/src/devstudio/view/shaderreloadfollower.cpp
-    ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanedit.cpp
-    ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenshadertemplate.cpp
-    ${CMAKE_SOURCE_DIR}/src/devstudio/view/shaderinputcontract.cpp
-    ${CMAKE_SOURCE_DIR}/src/devstudio/view/rendertargetform.cpp
-    ${CMAKE_SOURCE_DIR}/src/devstudio/view/materialpassedit.cpp
-    ${CMAKE_SOURCE_DIR}/src/devstudio/view/materialpassform.cpp
-    ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplangraphics.cpp
-    ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodegraphics.cpp
-    ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodelayout.cpp
-    ${CMAKE_SOURCE_DIR}/src/devstudio/view/studiotheme.cpp
-    # PB-1s: WP298's example falls back now; the row above the viewport and
-    # the Problems row say so.
-    ${CMAKE_SOURCE_DIR}/src/devstudio/view/renderfallbacknotice.cpp
-    ${CMAKE_SOURCE_DIR}/src/devstudio/view/problemsdock.cpp)
+  # The notice also navigates GraphCanvasWidget. Use the production view
+  # library so that integration dependencies stay with their implementation.
   target_link_libraries(pelican_test_devstudio_engine_failure_test PRIVATE
-    pelican_studio_resources)
+    pelican_studio_view pelican_studio_resources)
   target_include_directories(pelican_test_devstudio_engine_failure_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devstudio/view)
   set(pelican_wp298_example_project
