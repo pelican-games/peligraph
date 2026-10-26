@@ -697,6 +697,60 @@ AuthoredRenderConfigDocument::inspect(std::string bytes) {
     return AuthoredRenderConfigDocument{std::move(bytes), false};
 }
 
+bool AuthoredRenderConfigDocument::readable(std::string_view bytes) {
+    try {
+        (void)inspect(std::string{bytes});
+        return true;
+    } catch (const std::invalid_argument &) {
+        return false;
+    }
+}
+
+AuthoredRenderConfigDocument AuthoredRenderConfigDocument::retain(std::string bytes) {
+    return readable(bytes) ? inspect(std::move(bytes)) : unparsed(std::move(bytes));
+}
+
+std::optional<nlohmann::json> renderRootRefusal(
+    std::string_view bytes, std::string_view reference) {
+    if (auto fields = renderDocumentSyntax(bytes, reference)) {
+        (*fields)["code"] = renderDocumentSyntaxCode;
+        (*fields)["message"] = renderDocumentSyntaxMessage(*fields);
+        return fields;
+    }
+    try {
+        (void)AuthoredRenderConfigDocument::inspect(std::string{bytes});
+    } catch (const std::invalid_argument &error) {
+        return nlohmann::json{
+            {"code", dynamic_cast<const RenderConfigLegacyRoot *>(&error)
+                         ? renderConfigLegacyRootCode : renderDocumentEnvelopeCode},
+            {"message", error.what()}, {"document", reference}};
+    }
+    return std::nullopt;
+}
+
+std::string_view renderRefusalStage(std::string_view code) {
+    if (code.empty() || code == "render_pipeline_preflight_failed" ||
+        code == "invalid_graph_document" || code == "render_config_rollback_failed")
+        return "unknown";
+    if (code == renderDocumentSyntaxCode || code == renderDocumentEnvelopeCode ||
+        code == renderConfigLegacyRootCode)
+        return "decode";
+    // Normalization runs inside lowering; canvas is the current lowerer.
+    if (code == "render.json_shape_invalid@1" || code == "render.json_not_normalized@1")
+        return "lowering";
+    static constexpr std::pair<std::string_view, std::string_view> stages[] = {
+        {"authoring.", "lowering"}, {"canvas.", "lowering"},
+        {"graph.", "compose"}, {"snapshot.", "compose"},
+        {"feature.", "compose"}, {"render_pipeline.", "compose"},
+        {"render_graph.", "parse"}, {"render_compiler.", "plan"},
+        {"physical_fragment.", "plan"}, {"complete_physical_plan.", "plan"},
+        {"target_plan.", "plan"},
+    };
+    for (const auto &[prefix, stage] : stages)
+        if (code.starts_with(prefix)) return stage;
+    return "runtime";
+}
+
 AuthoredRenderConfigDocument
 AuthoredRenderConfigDocument::parse(std::string bytes) {
     return AuthoredRenderConfigDocument{std::move(bytes), true};

@@ -190,6 +190,21 @@ internal::makeEditorPrefabBehaviorProjectionAdapters(
 }
 
 namespace {
+std::vector<std::string> publishedRenderProviderReferences() {
+    std::vector<std::string> result;
+    const auto generation = GET_MODULE(FrameGraphRuntimeContainer).snapshot();
+    if (!generation) return result;
+    for (const auto &[id, program] : generation->programs) {
+        (void)id;
+        const auto &pipeline = program.frame_graph.render_pipeline;
+        if (!pipeline) continue;
+        for (const auto &entry : pipeline->pass_provenance)
+            result.push_back(entry.provider_reference);
+        for (const auto &entry : pipeline->resource_provenance)
+            result.push_back(entry.provider_reference);
+    }
+    return result;
+}
 
 struct EditorRuntimeModules {
     ECSCore &ecs_core;
@@ -2433,6 +2448,7 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                         }
                         return result;
                     },
+                    .published_provider_references = publishedRenderProviderReferences,
                     // IA-2: the initial assets the live generation read, as
                     // its programs recorded them. IA-3: and the tables its
                     // value graphs' value.sample_table nodes read, each with

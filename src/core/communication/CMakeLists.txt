@@ -55,7 +55,8 @@ target_sources(pelican_core PRIVATE
     editorruntimefactory.cpp
 )
 
-# FR-3: this translation unit exceeds COFF's 16-bit section count in MSVC Debug.
+# These translation units exceed COFF's 16-bit section count in MSVC Debug.
 set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/renderconfigeditor.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/editorruntimefactory.cpp"
     TARGET_DIRECTORY pelican_core APPEND PROPERTY COMPILE_OPTIONS
     "$<$<CXX_COMPILER_ID:MSVC>:/bigobj>")

@@ -618,9 +618,11 @@ std::vector<std::string> allFeatureReferences(std::string_view bytes) {
     return result;
 }
 
-// G-4's material_route_default of the root the editor holds. BS-1b: one that
-// is not JSON authors none, as the engine on its fallback generation read none.
+// G-4's material_route_default of the root the editor holds. A raw root
+// outside inspect's domain authors none, as the fallback generation read none.
 MaterialRouteDefault heldRouteDefault(std::string_view held_root) {
+    if (!AuthoredRenderConfigDocument::readable(held_root))
+        return readMaterialRouteDefault(Json::object());
     const auto held = Json::parse(held_root, nullptr, false);
     if (held.is_discarded()) return readMaterialRouteDefault(Json::object());
     return readMaterialRouteDefault(renderingSectionOrEmpty(held));
@@ -1152,13 +1154,8 @@ composeRenderFeatureCatalog(
 RenderConfigEditorService::RenderConfigEditorService(
     RenderConfigEditorDependencies dependencies)
     : dependencies_{std::move(dependencies)},
-      // BS-1b: a root that is not JSON (an engine on its fallback generation
-      // was refused it) is held as its bytes, to be listed and replaced.
-      document_{Json::accept(dependencies_.source_bytes)
-                    ? AuthoredRenderConfigDocument::inspect(
-                          dependencies_.source_bytes)
-                    : AuthoredRenderConfigDocument::unparsed(
-                          dependencies_.source_bytes)} {
+      // Keep syntax/envelope refusals as exact bytes for full-document repair.
+      document_{AuthoredRenderConfigDocument::retain(dependencies_.source_bytes)} {
     if (dependencies_.source_reference.empty() ||
         dependencies_.source_path.empty() || !dependencies_.gate ||
         !dependencies_.runtime_snapshot || !dependencies_.apply_candidate) {
@@ -1209,10 +1206,10 @@ RenderConfigEditorService::~RenderConfigEditorService() {
 
 void RenderConfigEditorService::loadManagedDocumentBaselines() {
     managed_documents_.clear();
-    // BS-1b: a root that is not JSON names no fragment.
+    // An unreadable envelope has no managed document baseline.
     if (!dependencies_.normalize_reference ||
         !dependencies_.resolve_document_path ||
-        !Json::accept(document_.bytes())) {
+        !AuthoredRenderConfigDocument::readable(document_.bytes())) {
         return;
     }
     for (const auto &reference : allFeatureReferences(document_.bytes())) {
@@ -1351,6 +1348,9 @@ OrderedJson RenderConfigEditorService::rejection(
                                        dependencies_.source_reference);
     details["code"] = std::move(code);
     details["message"] = std::move(message);
+    const auto digest = details.value("document_digest", document_.sourceDigest());
+    addRenderRefusalIdentity(details, document_.bytes());
+    details["document_digest"] = digest;
     return {{"status", "rejected"},
             {"committed", false},
             {"error", std::move(details)}};
@@ -1374,6 +1374,10 @@ OrderedJson RenderConfigEditorService::namedRefusal(
     if (!root_bytes.empty())
         details = withGraphRefusalDocument(std::move(details), code, root_bytes,
                                            dependencies_.source_reference);
+    if (!root_bytes.empty()) {
+        details["code"] = code;
+        addRenderRefusalIdentity(details, root_bytes);
+    }
     return rejection(std::move(code), std::move(message), std::move(details));
 }
 
@@ -1390,6 +1394,8 @@ std::optional<OrderedJson> RenderConfigEditorService::preflightGraphVariants(
     const RenderConfigCandidateDocumentSet &candidate,
     OrderedJson details) const {
     if (!dependencies_.preflight_graph_variants) return std::nullopt;
+    // Every pre-acceptance branch below is about this candidate, not the held root.
+    details["document_digest"] = renderConfigSourceDigest(candidate.rootDocument().bytes);
     try {
         dependencies_.preflight_graph_variants(candidate);
     } catch (const GraphVariantCompositionError &error) {
@@ -2178,10 +2184,12 @@ RenderConfigEditorService::checkAuthoringPreconditions(
     } catch (const std::exception &error) {
         return rejection("external_modification", error.what());
     }
-    // BS-1b: nothing in a root that is not JSON can be edited in place; it is
-    // fixed on disk and reloaded, or replaced whole (restore_render_documents).
-    return syntaxRejection(document_.bytes(), dependencies_.source_reference,
-                           method);
+    // Only inspect-readable roots support structural edits. Others require
+    // full-document repair (restore_render_documents or an external reload).
+    if (const auto refusal = renderRootRefusal(document_.bytes(), dependencies_.source_reference))
+        return rejection(refusal->at("code"), refusal->at("message"),
+                         withRefusalDetail({{"method", std::string{method}}}, *refusal));
+    return std::nullopt;
 }
 
 std::optional<OrderedJson> RenderConfigEditorService::syntaxRejection(
@@ -6571,6 +6579,9 @@ RenderConfigEditorService::renderDocumentsOf(
         .path = dependencies_.source_path,
         .kind = "root",
     });
+    // A raw held root has no readable document references. Its replacement
+    // is still inspected and preflighted by restore before acceptance.
+    if (!AuthoredRenderConfigDocument::readable(root_bytes)) return documents;
     if (!dependencies_.resolve_authoring_context ||
         !dependencies_.normalize_reference ||
         !dependencies_.resolve_document_path)
@@ -6713,7 +6724,7 @@ std::vector<RenderConfigEditorService::WritableRenderDocument>
 RenderConfigEditorService::namedRenderDocuments(
     std::string_view root_bytes,
     const std::function<std::optional<std::string>(const std::string &)>
-        &preset_bytes) const {
+        &preset_bytes, bool writable_only) const {
     std::vector<WritableRenderDocument> named;
     if (!dependencies_.normalize_reference ||
         !dependencies_.resolve_document_path)
@@ -6721,10 +6732,12 @@ RenderConfigEditorService::namedRenderDocuments(
     std::vector<std::pair<std::string, std::string_view>> references;
     try {
         const auto root = Json::parse(root_bytes);
-        const auto &section = renderingSectionOrEmpty(root);
+        const auto &section = !writable_only && root.is_object() && root.contains("rendering") &&
+                                      root.at("rendering").is_object()
+                                  ? root.at("rendering") : renderingSectionOrEmpty(root);
         std::vector<std::string> features;
-        appendFeatureReferences(section.value("features", Json::array()),
-                                features);
+        if (writable_only)
+            appendFeatureReferences(section.value("features", Json::array()), features);
         const auto pipeline = section.find("pipeline");
         if (pipeline != section.end() && pipeline->is_object()) {
             const auto preset = pipeline->find("preset");
@@ -6732,7 +6745,7 @@ RenderConfigEditorService::namedRenderDocuments(
                 const auto reference = preset->get<std::string>();
                 // Only a project:// preset is the project's, as every preset
                 // edit requires.
-                if (reference.starts_with("project://"))
+                if (!writable_only || reference.starts_with("project://"))
                     references.emplace_back(reference, "preset");
                 try {
                     if (const auto bytes = preset_bytes(reference)) {
@@ -6751,6 +6764,9 @@ RenderConfigEditorService::namedRenderDocuments(
                 }
             }
         }
+        // Preserve the getter's preset-before-root feature order without compose.
+        if (!writable_only)
+            appendFeatureReferences(section.value("features", Json::array()), features);
         for (auto &feature : features)
             references.emplace_back(std::move(feature), "feature");
         // RTL-1a: the layout and bindings the root's section names.
@@ -6764,27 +6780,34 @@ RenderConfigEditorService::namedRenderDocuments(
         // by the restore's own content check.
     }
     for (const auto &[reference, kind] : references) {
-        if (reference.empty() || reference.starts_with("engine://") ||
-            reference.find('#') != std::string::npos)
+        if (writable_only && (reference.empty() || reference.starts_with("engine://") ||
+            reference.find('#') != std::string::npos))
             continue;
         try {
             auto normalized = dependencies_.normalize_reference(reference);
-            if (normalized == source_normalized_reference_ ||
+            if ((normalized == source_normalized_reference_ &&
+                 (writable_only || reference.find('#') == std::string::npos)) ||
                 std::any_of(named.begin(), named.end(), [&](const auto &entry) {
+                    if (!writable_only && reference.find('#') != std::string::npos)
+                        return entry.reference == reference;
                     return entry.normalized_reference == normalized;
                 }))
                 continue;
             auto path = dependencies_.resolve_document_path(reference);
             // The path, or for a document to create the directory it lands
             // in, resolves inside the project (symbolic links resolved).
-            if (!isWithinDirectory(dependencies_.project_root, path)) continue;
+            if (writable_only && !isWithinDirectory(dependencies_.project_root, path)) continue;
             named.push_back(WritableRenderDocument{
                 .reference = reference,
                 .normalized_reference = std::move(normalized),
                 .path = std::move(path),
                 .kind = std::string{kind},
             });
-        } catch (const std::exception &) {
+        } catch (const std::exception &error) {
+            if (!writable_only && std::none_of(named.begin(), named.end(),
+                    [&](const auto &entry) { return entry.reference == reference; }))
+                named.push_back(WritableRenderDocument{.reference = reference,
+                    .kind = std::string{kind}, .resolution_error = error.what()});
         }
     }
     return named;
@@ -6952,61 +6975,173 @@ OrderedJson RenderConfigEditorService::getRenderDocuments(
             requested->push_back(reference.get<std::string>());
         }
     }
-    if (!dependencies_.resolve_authoring_context ||
-        !dependencies_.normalize_reference ||
-        !dependencies_.resolve_document_path)
+    if (!dependencies_.normalize_reference || !dependencies_.resolve_document_path)
         return rejection("method_unavailable",
                          "get_render_documents requires the project document resolver",
                          {{"method", std::string{method}}});
-    std::vector<WritableRenderDocument> writable;
-    try {
-        writable = writableRenderDocuments();
-    } catch (const std::exception &error) {
-        return preflightRejection(error, {{"participant", "pelican.render_pipeline"},
-                                          {"method", std::string{method}}});
-    }
-    std::vector<const WritableRenderDocument *> selected;
-    if (!requested) {
-        for (const auto &entry : writable) selected.push_back(&entry);
-    } else {
-        for (const auto &reference : *requested) {
-            const auto *found = findWritableRenderDocument(writable, reference);
-            if (found == nullptr) {
-                // RD-1b: a document inside the project that is not there now
-                // (one an edit deleted, or one an undo would create) is named
-                // as missing, not as a document this service does not write.
-                if (isAbsentProjectDocument(reference))
-                    return rejection(
-                        std::string{renderDocumentMissingCode},
-                        "Render document " + reference + " is not there",
-                        {{"method", std::string{method}},
-                         {"reference", reference}});
-                return renderDocumentNotWritable(method, reference);
+    // RC-3e: enumerate disk references before deciding whether they are writable.
+    // No authoring resolver (and therefore no lowering or compose) is used.
+    const auto read = [&](const std::string &reference) {
+        if (reference.starts_with("engine://"))
+            return std::string{engineResourceOrThrow(reference.substr(9))};
+        return readFileBytes(dependencies_.resolve_document_path(reference));
+    };
+    std::string root_bytes;
+    std::string root_error;
+    try { root_bytes = readFileBytes(dependencies_.source_path); }
+    catch (const std::exception &error) { root_error = error.what(); }
+    auto entries = namedRenderDocuments(root_bytes,
+        [&](const std::string &reference) -> std::optional<std::string> {
+            return read(reference.substr(0, reference.find('#')));
+        }, false);
+    const auto restore_targets = namedRenderDocuments(document_.bytes(),
+        [&](const std::string &reference) -> std::optional<std::string> {
+            return read(reference);
+        });
+    entries.insert(entries.begin(), WritableRenderDocument{
+        .reference = dependencies_.source_reference,
+        .normalized_reference = source_normalized_reference_,
+        .path = dependencies_.source_path, .kind = "root",
+        .resolution_error = root_error});
+    std::set<std::string> published;
+    if (dependencies_.published_provider_references) {
+        for (const auto &reference : dependencies_.published_provider_references()) {
+            if (reference.empty()) continue;
+            if (std::none_of(entries.begin(), entries.end(),
+                    [&](const auto &entry) { return entry.reference == reference; })) {
+                entries.push_back(WritableRenderDocument{.reference = reference, .kind = "feature"});
+                published.insert(reference);
             }
-            selected.push_back(found);
+        }
+    }
+    // A fragment has identity only. Its parent is the single full document,
+    // but merely observing that parent does not make it a restore target.
+    std::set<std::string> fragment_parents;
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        const auto reference = entries[i].reference;
+        const auto hash = reference.find('#');
+        if (hash == std::string::npos) continue;
+        const auto parent = reference.substr(0, hash);
+        if (std::none_of(entries.begin(), entries.end(),
+                [&](const auto &entry) { return entry.reference == parent; })) {
+            const auto kind = entries[i].kind;
+            entries.push_back(WritableRenderDocument{.reference = parent, .kind = kind});
+            fragment_parents.insert(parent);
+            if (published.contains(reference)) published.insert(parent);
         }
     }
     auto documents = OrderedJson::array();
-    for (const auto *entry : selected) {
-        std::string bytes;
-        try {
-            bytes = readFileBytes(entry->path);
-        } catch (const std::exception &error) {
-            return rejection("external_modification", error.what(),
-                             {{"method", std::string{method}},
-                              {"reference", entry->reference}});
+    auto other_documents = OrderedJson::array();
+    std::set<std::string> seen;
+    for (const auto &entry : entries) {
+        std::string normalized;
+        try { normalized = dependencies_.normalize_reference(entry.reference); }
+        catch (const std::exception &) { normalized = entry.reference; }
+        const auto hash = entry.reference.find('#');
+        const auto identity = hash == std::string::npos ? normalized : entry.reference;
+        if (!seen.insert(identity).second) continue;
+        if (requested && std::none_of(requested->begin(), requested->end(), [&](const auto &reference) {
+                if (reference == entry.reference) return true;
+                if (hash != std::string::npos || reference.find('#') != std::string::npos) return false;
+                try { return dependencies_.normalize_reference(reference) == normalized; }
+                catch (const std::exception &) { return false; }
+            })) continue;
+        OrderedJson row{{"reference", entry.reference}, {"kind", entry.kind}, {"writable", false}};
+        if (published.contains(entry.reference)) row["source"] = "published_provenance";
+        if (hash != std::string::npos) {
+            row["fragment_of"] = entry.reference.substr(0, hash);
+            other_documents.push_back(std::move(row));
+            continue;
         }
-        documents.push_back({{"reference", entry->reference},
-                             {"kind", entry->kind},
-                             {"digest", renderConfigSourceDigest(bytes)},
-                             {"content", std::move(bytes)}});
+        try {
+            if (entry.kind == "root" && !root_error.empty()) throw std::runtime_error(root_error);
+            const auto bytes = entry.kind == "root" ? root_bytes : read(entry.reference);
+            row["content"] = bytes;
+            row["digest"] = renderConfigSourceDigest(bytes);
+            if (entry.kind == "root") {
+                row["writable"] = true;
+                if (row["digest"] != document_.sourceDigest()) row["held_digest"] = document_.sourceDigest();
+            } else if (!entry.reference.starts_with("engine://")) {
+                const auto path = dependencies_.resolve_document_path(entry.reference);
+                row["writable"] = isWithinDirectory(dependencies_.project_root, path) &&
+                    std::filesystem::is_regular_file(path) &&
+                    ((!published.contains(entry.reference) && !fragment_parents.contains(entry.reference)) ||
+                     findWritableRenderDocument(restore_targets, entry.reference) != nullptr) &&
+                    (!Json::accept(bytes) || isListedRenderDocument(bytes, entry.kind));
+            }
+        } catch (const std::exception &error) {
+            row["error"] = {{"code", entry.resolution_error.empty()
+                ? "render_document_read_failed" : "render_document_reference_unresolved"},
+                {"message", error.what()}};
+        }
+        if (row.at("writable") == true && !row.contains("error"))
+            documents.push_back(std::move(row));
+        else
+            other_documents.push_back(std::move(row));
+    }
+    if (requested) for (const auto &reference : *requested) {
+        const auto matches = [&](const auto &row) {
+            if (row.at("reference") == reference) return true;
+            if (reference.find('#') != std::string::npos || row.contains("fragment_of")) return false;
+            try { return dependencies_.normalize_reference(row.at("reference").template get<std::string>()) ==
+                         dependencies_.normalize_reference(reference); }
+            catch (const std::exception &) { return false; }
+        };
+        if (std::none_of(documents.begin(), documents.end(), matches) &&
+            std::none_of(other_documents.begin(), other_documents.end(), matches)) {
+            if (isAbsentProjectDocument(reference))
+                return rejection(std::string{renderDocumentMissingCode}, "Render document " + reference + " is not there",
+                                 {{"method", std::string{method}}, {"reference", reference}});
+            return renderDocumentNotWritable(method, reference);
+        }
+    }
+    // Explicit selections retain the caller's order, including repeated names.
+    if (requested) {
+        auto selected = OrderedJson::array();
+        for (const auto &reference : *requested) {
+            for (const auto &row : documents) {
+                bool matches = row.at("reference") == reference;
+                if (!matches && reference.find('#') == std::string::npos) {
+                    try {
+                        matches = dependencies_.normalize_reference(row.at("reference").get<std::string>()) ==
+                                  dependencies_.normalize_reference(reference);
+                    } catch (const std::exception &) {}
+                }
+                if (matches) {
+                    selected.push_back(row);
+                    break;
+                }
+            }
+        }
+        documents = std::move(selected);
     }
     // RR-1: whether these are the documents the live generation was composed
     // from (false on the fallback and after a refused reload).
-    return {{"documents", std::move(documents)}, {"live", documentsLive()}};
+    return {{"documents", std::move(documents)},
+            {"other_documents", std::move(other_documents)}, {"live", documentsLive()}};
 }
 
 OrderedJson RenderConfigEditorService::restoreRenderDocuments(
+    const Json &params) {
+    auto result = restoreRenderDocumentsUnnoted(params);
+    if (result.value("status", std::string{}) != "rejected") return result;
+    // Includes content/inspect refusals before a candidate set could be made.
+    // A restored dependency still identifies the candidate's root bytes.
+    std::string_view root_bytes = document_.bytes();
+    for (const auto &entry : params.at("documents")) {
+        if (!entry.at("content").is_string()) continue;
+        try {
+            if (dependencies_.normalize_reference(entry.at("reference").get<std::string>()) ==
+                source_normalized_reference_)
+                root_bytes = entry.at("content").get_ref<const std::string &>();
+        } catch (const std::exception &) {
+        }
+    }
+    addRenderRefusalIdentity(result["error"], root_bytes);
+    return result;
+}
+
+OrderedJson RenderConfigEditorService::restoreRenderDocumentsUnnoted(
     const Json &params) {
     constexpr std::string_view method = "restore_render_documents";
     requireOnly(params, {"documents"}, method);
@@ -7625,7 +7760,7 @@ void RenderConfigEditorService::holdRefusedDocuments(
     const std::map<std::string, std::string> &digests, bool unparsed) {
     if (!unparsed) {
         readable_document_.reset();
-    } else if (!readable_document_ && Json::accept(document_.bytes())) {
+    } else if (!readable_document_ && AuthoredRenderConfigDocument::readable(document_.bytes())) {
         // The root held until now stays what the structural reads answer
         // from, with its managed fragments (a root that is not JSON names
         // none).
@@ -7747,14 +7882,13 @@ OrderedJson RenderConfigEditorService::reloadRenderDocumentsUnnoted(
     // BS-1b: one that is not JSON, by name. RR-1: held as its bytes, as an
     // engine on its fallback holds it, so a restore on its digest replaces
     // it.
-    if (auto refused = syntaxRejection(
-            root_bytes, dependencies_.source_reference, method)) {
+    if (auto refused = renderRootRefusal(root_bytes, dependencies_.source_reference)) {
         holdRefusedDocuments(AuthoredRenderConfigDocument::unparsed(root_bytes),
                              {}, /*unparsed=*/true);
-        return *refused;
+        return rejection(refused->at("code"), refused->at("message"),
+                         withRefusalDetail({{"method", std::string{method}}}, *refused));
     }
-    // A root that is JSON but not a pelican.graph object is refused and not
-    // held: the editor holds a graph root or bytes that are not JSON.
+    // The shared gate above accepted this envelope; retain its lexical spans.
     std::optional<AuthoredRenderConfigDocument> root;
     try {
         root = AuthoredRenderConfigDocument::inspect(root_bytes);
@@ -7789,6 +7923,7 @@ OrderedJson RenderConfigEditorService::reloadRenderDocumentsUnnoted(
     // RR-1: a refusal of what was read makes the root and every document
     // read so far the editor's base.
     const auto held_refusal = [&](OrderedJson refusal) {
+        addRenderRefusalIdentity(refusal["error"], root_bytes);
         std::map<std::string, std::string> read;
         for (const auto &document : documents)
             read.insert_or_assign(document.normalized_reference,
@@ -7989,6 +8124,8 @@ void RenderConfigEditorService::completeCommitTransaction(
         if (!result.contains("ticket")) {
             result["ticket"] = transaction->ticket.id;
         }
+        if (result.value("status", std::string{}) == "rejected")
+            addRenderRefusalIdentity(result["error"], transaction->ticket.candidate.bytes());
         noteProblems(transaction->ticket.reload,
                      transaction->ticket.source_only, result);
         noteHeldDocuments(transaction->ticket, result);
@@ -8285,6 +8422,8 @@ void RenderConfigEditorService::commitPending() noexcept {
         auto &ticket = *ticket_iterator;
         auto finish = [&](OrderedJson result) {
             if (!result.contains("ticket")) result["ticket"] = ticket.id;
+            if (result.value("status", std::string{}) == "rejected")
+                addRenderRefusalIdentity(result["error"], ticket.candidate.bytes());
             noteProblems(ticket.reload, ticket.source_only, result);
             noteHeldDocuments(ticket, result);
             results_[ticket.id] = result;

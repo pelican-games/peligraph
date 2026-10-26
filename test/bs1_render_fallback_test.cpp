@@ -6,6 +6,7 @@
 // child, line by line over its stdin/stdout.
 
 #include "../src/project/projecttemplate.hpp"
+#include "../src/project/renderconfigdocument.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -954,6 +955,7 @@ struct RtChecksProject {
 void requireTraceRecordRefusal(const Json &fields) {
     INFO(fields.dump(2));
     CHECK(fields.at("task") == "trace");
+    CHECK(fields.at("pipeline_stage") == "runtime");
     CHECK(fields.at("stage") == "closesthit");
     CHECK(fields.at("ray_type") == "primary");
     CHECK(fields.at("group") == "mesh");
@@ -1174,5 +1176,278 @@ TEST_CASE("FO-1 Order... swaps two passes of the rendering section with no depen
     CHECK(positionOf(names, "right") < positionOf(names, "left"));
     again.close();
     CHECK(again.exit_code == 0u);
+}
+#endif
+
+#ifdef _WIN32
+TEST_CASE("RC-3e1 A1 production RPC authoring recovery and publication", "[rc3e1][render-fallback][rpc]") {
+    using Pelican::renderConfigSourceDigest;
+    TempProject project{"rc3e1"};
+    const auto good = fo1OrderRoot();
+    const auto hash = [](const std::string &bytes) { return renderConfigSourceDigest(bytes); };
+    const auto rootOf = [](PlayerRpc &player) {
+        return player.result("get_render_documents").at("documents").at(0);
+    };
+    const auto restore = [&](PlayerRpc &player, const std::string &bytes, const std::string &digest) {
+        return player.result("restore_render_documents", {{"documents", Json::array({
+            {{"reference", root_reference}, {"base_digest", digest}, {"content", bytes}}})}});
+    };
+    const auto checkRefusal = [&](const Json &error, const char *code, const char *pipeline_stage, const std::string &bytes) {
+        INFO(error.dump(2));
+        CHECK(error.at("code") == code);
+        CHECK(error.at("pipeline_stage") == pipeline_stage);
+        CHECK(error.at("document_digest") == hash(bytes));
+        if (error.contains("document")) CHECK(error.at("document").is_string());
+    };
+    // A1-1/2: normal publication, then pre-acceptance and actual apply refusal.
+    writeFile(project.rootPath(), good);
+    {
+        PlayerRpc player{project.root, project.stderrLog("a1_publish")};
+        REQUIRE(player.result("get_status").at("render_pipeline").at("state") == "ready");
+        const auto generation = publishedGeneration(player);
+        auto changed = Json::parse(good);
+        changed["rendering"]["frame_node_order"] = {{"main_render", {"right", "left", "present"}}};
+        const auto changed_bytes = changed.dump(2) + "\n";
+        const auto accepted = restore(player, changed_bytes, rootOf(player).at("digest"));
+        REQUIRE(accepted.at("status") == "accepted");
+        REQUIRE(player.settle(accepted).at("status") == "committed");
+        (void)player.result("step_frame");
+        CHECK(publishedGeneration(player) > generation);
+        CHECK(readFile(project.rootPath()) == changed_bytes);
+        CHECK(rootOf(player).at("digest") == hash(changed_bytes));
+        const auto published = publishedGeneration(player);
+        const auto plan = player.result("get_frame_plan");
+        auto compose_bad = changed;
+        compose_bad["rendering"]["snapshots"] = Json::array({{{"name", "rc3e_snapshot"}, {"after", "rc3e_absent"}}});
+        const auto compose_bytes = compose_bad.dump(2);
+        const auto refused = restore(player, compose_bytes, hash(changed_bytes));
+        REQUIRE(refused.at("status") == "rejected");
+        CHECK_FALSE(refused.contains("ticket"));
+        checkRefusal(refused.at("error"), "snapshot.after_unknown@1", "compose", compose_bytes);
+        CHECK(refused.at("error").at("after") == "rc3e_absent");
+        auto apply_bad = changed;
+        apply_bad["rendering"]["frame_node_order"] = {{"main_render", {"present", "left"}}};
+        const auto apply_bytes = apply_bad.dump(2);
+        const auto queued = restore(player, apply_bytes, hash(changed_bytes));
+        INFO(queued.dump(2));
+        REQUIRE(queued.at("status") == "accepted");
+        const auto applied = player.settle(queued);
+        REQUIRE(applied.at("status") == "rejected");
+        checkRefusal(applied.at("error"), "frame_node_order.conflicts_dependency@1", "runtime", apply_bytes);
+        CHECK(applied.at("error").at("first") == "present");
+        CHECK(applied.at("error").at("second") == "left");
+        (void)player.result("step_frame");
+        (void)player.result("step_frame");
+        CHECK(publishedGeneration(player) == published);
+        CHECK(player.result("get_frame_plan") == plan);
+        CHECK(readFile(project.rootPath()) == changed_bytes);
+        // Accepted, but the source CAS refuses before runtime apply. The
+        // refusal identifies the candidate, rather than the held or disk root.
+        const auto cas_candidate = good + "\n";
+        const auto cas_queued = restore(player, cas_candidate, hash(changed_bytes));
+        REQUIRE(cas_queued.at("status") == "accepted");
+        const auto external_bytes = changed_bytes + " ";
+        writeFile(project.rootPath(), external_bytes);
+        const auto cas_refused = player.settle(cas_queued);
+        REQUIRE(cas_refused.at("status") == "rejected");
+        checkRefusal(cas_refused.at("error"), "external_modification", "runtime", cas_candidate);
+        CHECK(cas_refused.at("error").at("expected_source_digest") == hash(changed_bytes));
+        CHECK(cas_refused.at("error").at("actual_source_digest") == hash(external_bytes));
+        (void)player.result("step_frame");
+        CHECK(publishedGeneration(player) == published);
+        CHECK(player.result("get_frame_plan") == plan);
+        CHECK(readFile(project.rootPath()) == external_bytes);
+        player.close();
+        CHECK(player.exit_code == 0u);
+    }
+    // A1-3: preset-only references remain readable even when snapshots fail.
+    auto composed_root = Json::parse(good);
+    auto preset_config = composed_root.at("rendering");
+    preset_config["features"] = Json::array({"engine://features/debug_draw.json"});
+    const auto preset_path = project.root / "passes/rc3e-preset.json";
+    writeFile(preset_path, Json{{"schema", "pelican.render_pipeline"}, {"version", 1},
+        {"name", "rc3e"}, {"config", preset_config}}.dump(2));
+    composed_root["rendering"] = {{"pipeline", {{"preset", "project://passes/rc3e-preset.json"}}},
+        {"features", Json::array()},
+        {"snapshots", Json::array({{{"name", "rc3e_snapshot"}, {"after", "rc3e_absent"}}})}};
+    const auto compose_bytes = composed_root.dump(2) + "\n";
+    writeFile(project.rootPath(), compose_bytes);
+    {
+        PlayerRpc player{project.root, project.stderrLog("a1_compose")};
+        const auto status = player.result("get_status").at("render_pipeline");
+        REQUIRE(status.at("state") == "fallback");
+        checkRefusal(status.at("refusal"), "snapshot.after_unknown@1", "compose", compose_bytes);
+        CHECK(status.at("refusal").at("after") == "rc3e_absent");
+        const auto answer = player.result("get_render_documents");
+        const auto &documents = answer.at("documents");
+        const auto &other = answer.at("other_documents");
+        REQUIRE(documents.size() == 2);
+        CHECK(documents.at(1).at("reference") == "project://passes/rc3e-preset.json");
+        CHECK(documents.at(0).at("content") == compose_bytes);
+        CHECK(documents.at(0).at("reference") == root_reference);
+        CHECK(documents.at(0).at("digest") == hash(compose_bytes));
+        const auto feature = std::find_if(other.begin(), other.end(), [](const auto &row) {
+            return row.at("reference") == "engine://features/debug_draw.json";
+        });
+        REQUIRE(feature != other.end());
+        CHECK(feature->at("writable") == false);
+        CHECK_FALSE(feature->at("content").get<std::string>().empty());
+        // F1 errors are observations, not a failed whole getter. Deliberately
+        // use disk bytes distinct from held bytes; put them back before restore.
+        auto unreadable = composed_root;
+        unreadable["rendering"]["features"] = Json::array({"missing-scheme://rc3e.json",
+            "project://passes/rc3e-directory.json", "project://passes/rc3e-missing.json"});
+        std::filesystem::create_directory(project.root / "passes/rc3e-directory.json");
+        writeFile(project.rootPath(), unreadable.dump(2));
+        const auto unreadable_documents = player.result("get_render_documents").at("other_documents");
+        for (const auto *reference : {"missing-scheme://rc3e.json", "project://passes/rc3e-directory.json",
+                                     "project://passes/rc3e-missing.json"}) {
+            const auto row = std::find_if(unreadable_documents.begin(), unreadable_documents.end(), [&](const auto &entry) {
+                return entry.at("reference") == reference;
+            });
+            REQUIRE(row != unreadable_documents.end());
+            CHECK(row->at("writable") == false);
+            CHECK(row->contains("error"));
+        }
+        writeFile(project.rootPath(), compose_bytes);
+        const auto generation = publishedGeneration(player);
+        REQUIRE(player.settle(restore(player, good, hash(compose_bytes))).at("status") == "committed");
+        (void)player.result("step_frame");
+        CHECK(publishedGeneration(player) > generation);
+        CHECK(readFile(project.rootPath()) == good);
+        player.close();
+        CHECK(player.exit_code == 0u);
+    }
+    // A1-4: compose succeeds on current authored input, strict IR refuses it.
+    auto ir = Json::parse(good);
+    ir["rendering"]["render_targets"].push_back({{"name", "depth"}, {"extent_scale", 1},
+        {"format", "D32_SFLOAT"}, {"usage", {"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"}}});
+    ir["rendering"]["rendering_passes"][0]["passes"][0] = {
+        {"name", "left"}, {"type", "material"}, {"material_contract", "forward_transparent_v1"},
+        {"screen_inputs", {{"opaque_color", "left_color"}}},
+        {"output", {{"color", "left_color"}, {"depth", "depth"}}}};
+    const auto ir_bytes = ir.dump(2) + "\n";
+    writeFile(project.rootPath(), ir_bytes);
+    {
+        PlayerRpc player{project.root, project.stderrLog("a1_ir")};
+        const auto status = player.result("get_status").at("render_pipeline");
+        REQUIRE(status.at("state") == "fallback");
+        checkRefusal(status.at("refusal"), "render_graph.pass_shape@1", "parse", ir_bytes);
+        CHECK(status.at("refusal").at("node") == "left");
+        CHECK(rootOf(player).at("content") == ir_bytes);
+        const auto context = player.result("get_render_authoring_context");
+        CHECK(context.at("source_digest").at("hex") == hash(ir_bytes));
+        bool found_left = false;
+        for (const auto &graph : context.at("graphs")) for (const auto &pass : graph.at("passes")) {
+            if (pass.at("name") != "left") continue;
+            found_left = true;
+            CHECK(pass.at("provenance").at("source") == "project");
+            CHECK(pass.at("root_declaration").at("screen_inputs").at("opaque_color") == "left_color");
+        }
+        CHECK(found_left);
+        REQUIRE(player.settle(restore(player, good, hash(ir_bytes))).at("status") == "committed");
+        (void)player.result("step_frame");
+        CHECK(player.result("get_status").at("render_pipeline").at("state") == "ready");
+        player.close();
+        CHECK(player.exit_code == 0u);
+    }
+    // A1-5/6: invalid envelopes at start and repeated reload, readable fallback,
+    // structural gate and the two independent CAS comparisons H and D.
+    const std::string schema_bytes = R"({"schema":"other"})";
+    writeFile(project.rootPath(), schema_bytes);
+    {
+        PlayerRpc player{project.root, project.stderrLog("a1_schema")};
+        checkRefusal(player.result("get_status").at("render_pipeline").at("refusal"),
+                     "render_config.legacy_root@1", "decode", schema_bytes);
+        CHECK(rootOf(player).at("content") == schema_bytes);
+        CHECK(rootOf(player).at("digest") == hash(schema_bytes));
+        const auto start_restore = restore(player, good, hash(schema_bytes));
+        INFO(start_restore.dump(2));
+        REQUIRE(start_restore.at("status") == "accepted");
+        const auto start_result = player.settle(start_restore);
+        INFO(start_result.dump(2));
+        REQUIRE(start_result.at("status") == "committed");
+        writeFile(project.rootPath(), schema_bytes);
+        const auto refused = player.settle(player.result("reload_render_documents"));
+        REQUIRE(refused.at("status") == "rejected");
+        checkRefusal(refused.at("error"), "render_config.legacy_root@1", "decode", schema_bytes);
+        CHECK(rootOf(player).at("content") == schema_bytes);
+        const auto generation = publishedGeneration(player);
+        const auto reload_restore = restore(player, good, hash(schema_bytes));
+        INFO(reload_restore.dump(2));
+        REQUIRE(reload_restore.at("status") == "accepted");
+        const auto reload_result = player.settle(reload_restore);
+        INFO(reload_result.dump(2));
+        REQUIRE(reload_result.at("status") == "committed");
+        (void)player.result("step_frame");
+        CHECK(publishedGeneration(player) > generation);
+        CHECK(player.result("get_status").at("render_pipeline").at("state") == "ready");
+        CHECK(readFile(project.rootPath()) == good);
+        player.close();
+        CHECK(player.exit_code == 0u);
+    }
+    auto envelope = Json::parse(good);
+    envelope["rendering"]["features"] = 17;
+    const auto envelope_bytes = envelope.dump(2);
+    writeFile(project.rootPath(), envelope_bytes);
+    {
+        PlayerRpc player{project.root, project.stderrLog("a1_envelope_start")};
+        checkRefusal(player.result("get_status").at("render_pipeline").at("refusal"),
+                     "render_document_envelope@1", "decode", envelope_bytes);
+        CHECK(rootOf(player).at("content") == envelope_bytes);
+        REQUIRE(player.settle(restore(player, good, hash(envelope_bytes))).at("status") == "committed");
+        const auto readable = player.result("get_graph_instances");
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            const auto bytes = envelope_bytes + std::string(attempt + 1, ' ');
+            writeFile(project.rootPath(), bytes);
+            const auto refusal = player.settle(player.result("reload_render_documents"));
+            REQUIRE(refusal.at("status") == "rejected");
+            checkRefusal(refusal.at("error"), "render_document_envelope@1", "decode", bytes);
+            CHECK(rootOf(player).at("content") == bytes);
+            const auto graph = player.result("get_graph_instances");
+            CHECK(graph.at("held_unparsed") == true);
+            CHECK(graph.at("source_digest") == readable.at("source_digest"));
+            const auto edit = player.result("edit_graph_document", {{"base_source_digest", hash(bytes)},
+                {"ops", Json::array({{{"op", "set_node_label"}, {"node", "absent"}, {"label", "x"}}})}});
+            checkRefusal(edit.at("error"), "render_document_envelope@1", "decode", bytes);
+        }
+        const auto held = rootOf(player).at("digest").get<std::string>();
+        const auto disk = envelope_bytes + "   ";
+        writeFile(project.rootPath(), disk);
+        const auto reread = rootOf(player);
+        CHECK(reread.at("held_digest") == held);
+        CHECK(reread.at("digest") == hash(disk));
+        for (const auto &digest : {held, hash(disk)}) {
+            const auto refused = restore(player, good, digest);
+            CHECK(refused.at("status") == "rejected");
+            CHECK(refused.at("error").at("code") == "external_modification");
+        }
+        const auto reloaded = player.settle(player.result("reload_render_documents"));
+        REQUIRE(reloaded.at("status") == "rejected");
+        CHECK_FALSE(rootOf(player).contains("held_digest"));
+        REQUIRE(player.settle(restore(player, good, hash(disk))).at("status") == "committed");
+        (void)player.result("step_frame");
+        CHECK(readFile(project.rootPath()) == good);
+        // No features array remains accepted; a structural rendering edit works.
+        const auto ordered = player.result("edit_frame_node_order", {{"base_source_digest", hash(good)},
+            {"orders", {{"main_render", {"right", "left", "present"}}}}});
+        REQUIRE(player.settle(ordered).at("status") == "committed");
+        auto sectionless = Json::parse(good);
+        sectionless.erase("rendering");
+        const auto sectionless_bytes = sectionless.dump(2);
+        writeFile(project.rootPath(), sectionless_bytes);
+        (void)player.settle(player.result("reload_render_documents"));
+        const auto root_edit = player.result("edit_graph_document", {
+            {"base_source_digest", hash(sectionless_bytes)},
+            {"ops", Json::array({{{"op", "set_layout"}, {"scope", "root"},
+                                  {"layout", {{"nodes", Json::object()}}}}})}});
+        REQUIRE(player.settle(root_edit).at("status") == "committed");
+        const auto section_edit = player.result("edit_frame_node_order", {
+            {"base_source_digest", rootOf(player).at("digest")}, {"orders", Json::object()}});
+        CHECK(section_edit.at("status") == "rejected");
+        CHECK(section_edit.at("error").at("code") == "render_config_section_unlocated");
+        player.close();
+        CHECK(player.exit_code == 0u);
+    }
 }
 #endif

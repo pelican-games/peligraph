@@ -472,9 +472,8 @@ nlohmann::json renderPipelineRefusalJson(
     // BS-1b: a root that is not JSON is refused by that name, whatever
     // reader met it first.
     if (!root_json.empty())
-        if (auto fields = renderDocumentSyntax(root_json, root_reference)) {
-            (*fields)["code"] = std::string{renderDocumentSyntaxCode};
-            (*fields)["message"] = renderDocumentSyntaxMessage(*fields);
+        if (auto fields = renderRootRefusal(root_json, root_reference)) {
+            addRenderRefusalIdentity(*fields, root_json);
             return std::move(*fields);
         }
     const auto root =
@@ -538,6 +537,7 @@ nlohmann::json renderPipelineRefusalJson(
     }
     refusal["code"] = std::move(code);
     refusal["message"] = std::move(message);
+    addRenderRefusalIdentity(refusal, root_json);
     return refusal;
 }
 

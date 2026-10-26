@@ -13,6 +13,23 @@
 
 namespace Pelican {
 
+// RC-3e: classification of the existing wire code, not a compiler trace.
+std::string_view renderRefusalStage(std::string_view code);
+std::string renderConfigSourceDigest(std::string_view bytes);
+
+template<class Json>
+void addRenderRefusalIdentity(Json &refusal, std::string_view root_bytes) {
+    refusal["pipeline_stage"] = renderRefusalStage(refusal.value("code", std::string{}));
+    refusal["document_digest"] = renderConfigSourceDigest(root_bytes);
+}
+
+inline constexpr std::string_view renderDocumentEnvelopeCode =
+    "render_document_envelope@1";
+// Syntax keeps its existing code; valid JSON outside inspect's domain gets
+// a named envelope refusal (including the existing legacy-root code).
+std::optional<nlohmann::json> renderRootRefusal(
+    std::string_view bytes, std::string_view reference);
+
 // P-2a-4a: a `pelican.graph` root owns five keys of its own and keeps the
 // whole legacy rendering config under `rendering`. One predicate decides
 // where a key lives so no caller grows its own `if (graph)`.
@@ -79,6 +96,9 @@ class AuthoredRenderConfigDocument {
     // without a rendering section). initialize() remains the explicit
     // transition to the editable form.
     static AuthoredRenderConfigDocument inspect(std::string bytes);
+    // The common retention/edit/readability gate: exactly inspect's domain.
+    static bool readable(std::string_view bytes);
+    static AuthoredRenderConfigDocument retain(std::string bytes);
     static AuthoredRenderConfigDocument parse(std::string bytes);
 
     const std::string &bytes() const noexcept { return bytes_; }
@@ -120,8 +140,6 @@ class AuthoredRenderConfigDocument {
     AuthoredRenderConfigDocument withFeatureRemoved(
         std::string_view reference) const;
 };
-
-std::string renderConfigSourceDigest(std::string_view bytes);
 
 // BS-1b: a render document (the rendering root, or a feature or preset a
 // composition reads) whose bytes are not JSON. It is refused by this name

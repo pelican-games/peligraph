@@ -13817,14 +13817,18 @@ TEST_CASE("RTL-2s b decision 3: a ray tracing refusal reads as one sentence sayi
                        {"node", "trace"},
                        {"ray_type", "shadow"},
                        {"group", "mesh"},
+                       {"stage", "closesthit"},
+                       {"pipeline_stage", "runtime"},
                        {"message", "pelican.ray_tracing.hit_shader_missing@1: compute task 'trace' group='mesh' "
                                    "ray_type='shadow' available=[]"}};
     CHECK(rayTracingRefusalDescription(missing) ==
           "Task trace needs a closest-hit shader for every ray type it traces and every hit group (ray type "
-          "shadow, hit group mesh) (pelican.ray_tracing.hit_shader_missing@1).");
+          "shadow, hit group mesh, stage closesthit) (pelican.ray_tracing.hit_shader_missing@1).");
     // The message alone says where too.
+    auto message_only = missing;
+    message_only.erase("stage");
     CHECK(PelicanStudio::knownRefusalDescription({}, missing.at("message").get<std::string>()) ==
-          rayTracingRefusalDescription(missing));
+          rayTracingRefusalDescription(message_only));
     // The layout's and the assignments' parsers; a rolled-back generation by
     // its own code, not the one it quotes.
     CHECK(rayTracingRefusalDescription(
@@ -13849,11 +13853,12 @@ TEST_CASE("RTL-2s b decision 3: a ray tracing refusal reads as one sentence sayi
     const auto row = PelicanStudio::readEngineProblem(
         Json{{"id", "p1"}, {"severity", "error"}, {"source", "startup"},
              {"code", "pelican.ray_tracing.hit_shader_missing@1"}, {"message", missing.at("message")},
-             {"fields", {{"task", "trace"}, {"ray_type", "shadow"}, {"group", "mesh"}}}});
+             {"fields", {{"task", "trace"}, {"ray_type", "shadow"}, {"group", "mesh"},
+                         {"stage", "closesthit"}, {"pipeline_stage", "runtime"}}}});
     REQUIRE(row.has_value());
     CHECK(row->place == PelicanStudio::ProblemRow::Place::GraphNode);
     CHECK(row->node == "trace");
-    CHECK(row->sentence.find("(ray type shadow, hit group mesh)") != std::string::npos);
+    CHECK(row->sentence.find("(ray type shadow, hit group mesh, stage closesthit)") != std::string::npos);
 
     // The Graph: an edit refused at commit marks the node, and the section
     // has the cell red with the sentence.
@@ -13892,7 +13897,7 @@ TEST_CASE("RTL-2s b decision 3: a ray tracing refusal reads as one sentence sayi
                   .startsWith(QStringLiteral("Task trace needs a closest-hit shader")));
         auto *problem = tab.field<QLabel>("pelican.graphCanvasRayTracing.problem");
         CHECK(problem->isVisible());
-        CHECK(problem->text().contains(QStringLiteral("(ray type shadow, hit group mesh)")));
+        CHECK(problem->text().contains(QStringLiteral("(ray type shadow, hit group mesh, stage closesthit)")));
         auto *cell = tab.field<QComboBox>("pelican.graphCanvasRayTracing.hit.shadow.mesh.closesthit");
         CHECK(cell->property("pelicanInvalid").toBool());
         CHECK_FALSE(tab.field<QComboBox>("pelican.graphCanvasRayTracing.hit.primary.mesh.closesthit")

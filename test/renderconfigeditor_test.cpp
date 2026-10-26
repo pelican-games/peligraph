@@ -9867,11 +9867,12 @@ struct Rd1Harness {
 };
 
 // The documents of a get_render_documents answer, by reference.
-std::map<std::string, Json> rd1Documents(const nlohmann::ordered_json &answer) {
+std::map<std::string, Json> rd1Documents(const nlohmann::ordered_json &answer,
+                                      const char *field = "documents") {
     INFO(answer.dump());
-    REQUIRE(answer.contains("documents"));
+    REQUIRE(answer.contains(field));
     std::map<std::string, Json> documents;
-    for (const auto &document : answer.at("documents"))
+    for (const auto &document : answer.at(field))
         documents.emplace(document.at("reference").get<std::string>(), Json(document));
     return documents;
 }
@@ -10154,8 +10155,16 @@ TEST_CASE("RD-1 restore_render_documents refuses what it may not write, and cont
             CHECK(restored.at("method") == "restore_render_documents");
             CHECK(restored.at("reference") == reference);
             CHECK(restored.at("reason") == reason);
-            const auto got = rd1Error(harness.service->getRenderDocuments(
-                {{"references", Json::array({reference})}}));
+            const auto answer = harness.service->getRenderDocuments(
+                {{"references", Json::array({reference})}});
+            if (reason == "engine_document" && answer.contains("documents")) {
+                CHECK(answer.at("documents").empty());
+                REQUIRE(answer.at("other_documents").size() == 1);
+                CHECK(answer.at("other_documents").at(0).at("writable") == false);
+                CHECK(answer.at("other_documents").at(0).at("reference") == reference);
+                continue;
+            }
+            const auto got = rd1Error(answer);
             CHECK(got.at("method") == "get_render_documents");
             if (reference == "project://passes/no-such-document.json") {
                 // RD-1b: a document inside the project that is not there is
@@ -13872,5 +13881,187 @@ TEST_CASE("renderconfigdocument SV1 repeated component names keep distinct sourc
     value[0]["params"] = 3;
     CHECK(renderJsonDocument(value, bytes) ==
         "[{\"name\":\"behavior\",\"params\":3}, { \"name\" : \"behavior\", \"params\":2e0 }]");
+}
+}
+
+namespace Pelican {
+TEST_CASE("RC-3e raw document closure never composes and keeps unreadable references", "[render-config-editor][rc3e1]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    std::size_t compositions = 0;
+    auto service = makeProjectService(project, resolver, runtime, {}, {}, {}, {},
+        [&](RenderConfigEditorDependencies &dependencies) {
+            const auto compose = dependencies.resolve_authoring_context;
+            dependencies.resolve_authoring_context = [&, compose](const auto &documents) {
+                ++compositions;
+                return compose(documents);
+            };
+            dependencies.published_provider_references = [] {
+                return std::vector<std::string>{"engine://features/debug_draw.json"};
+            };
+        });
+    const auto original = readBytes(project.render_config);
+    const auto healthy = rd1Documents(service->getRenderDocuments(Json::object()), "other_documents");
+    CHECK(compositions == 0);
+    CHECK(healthy.at("engine://render_pipelines/hybrid_v1.json").at("writable") == false);
+    auto root = Json::parse(original);
+    root["rendering"]["features"] = Json::array({"project://features/rc3e-missing.json",
+        "invalid://rc3e.json", "project://features/rc3e-unreadable.json",
+        "project://features/rc3e-parent.json#part"});
+    std::filesystem::create_directories(project.root / "features/rc3e-unreadable.json");
+    writeBytes(project.root / "features/rc3e-parent.json", R"({"schema":"pelican.render_feature","version":1,"name":"rc3e"})");
+    const auto bytes = root.dump(2);
+    writeBytes(project.render_config, bytes);
+    const auto answer = service->getRenderDocuments(Json::object());
+    const auto documents = rd1Documents(answer);
+    const auto other = rd1Documents(answer, "other_documents");
+    CHECK(compositions == 0);
+    REQUIRE(answer.at("documents").size() == 1);
+    CHECK(answer.at("documents").at(0).at("reference") == "passes/main.json");
+    CHECK(documents.at("passes/main.json").at("content") == bytes);
+    CHECK(documents.at("passes/main.json").at("digest") == renderConfigSourceDigest(bytes));
+    CHECK(documents.at("passes/main.json").at("held_digest") == renderConfigSourceDigest(original));
+    for (const auto *reference : {"project://features/rc3e-missing.json", "invalid://rc3e.json",
+                                 "project://features/rc3e-unreadable.json"}) {
+        CHECK(other.at(reference).at("writable") == false);
+        CHECK(other.at(reference).contains("error"));
+    }
+    const auto &fragment = other.at("project://features/rc3e-parent.json#part");
+    CHECK(fragment.at("fragment_of") == "project://features/rc3e-parent.json");
+    CHECK_FALSE(fragment.contains("content"));
+    CHECK_FALSE(fragment.contains("digest"));
+    CHECK(other.at("project://features/rc3e-parent.json").contains("content"));
+    CHECK(other.at("engine://features/debug_draw.json").at("source") == "published_provenance");
+    CHECK(other.at("engine://features/debug_draw.json").at("writable") == false);
+    // Restore keeps its old target restrictions despite the larger read set.
+    CHECK(rd1Error(service->restoreRenderDocuments({{"documents", Json::array({
+        rd1Restore(other.at("engine://features/debug_draw.json"),
+                   other.at("engine://features/debug_draw.json").at("digest"))})}})).at("code") ==
+        "render_document_not_writable");
+
+    // Keep the old root/preset/preset-features/root-features order even when
+    // the root mentions its feature before the preset does.
+    const std::string preset_reference = "project://passes/rc3e-preset.json";
+    const std::string preset_feature = "project://features/rc3e-preset.json";
+    const std::string root_feature = "project://features/rc3e-root.json";
+    const std::string feature_bytes = R"({"schema":"pelican.render_feature","version":1,"name":"rc3e"})";
+    writeBytes(project.root / "features/rc3e-preset.json", feature_bytes);
+    writeBytes(project.root / "features/rc3e-root.json", feature_bytes);
+    writeBytes(project.root / "passes/rc3e-preset.json", Json{
+        {"schema", "pelican.render_pipeline"}, {"version", 1},
+        {"config", {{"features", Json::array({preset_feature})}}}}.dump());
+    root = Json::parse(original);
+    root["rendering"]["pipeline"]["preset"] = preset_reference;
+    root["rendering"]["features"] = Json::array({root_feature});
+    writeBytes(project.render_config, root.dump());
+    const auto before_get = compositions;
+    const auto ordered = service->getRenderDocuments(Json::object()).at("documents");
+    REQUIRE(ordered.size() == 4);
+    CHECK(ordered.at(0).at("reference") == "passes/main.json");
+    CHECK(ordered.at(1).at("reference") == preset_reference);
+    CHECK(ordered.at(2).at("reference") == preset_feature);
+    CHECK(ordered.at(3).at("reference") == root_feature);
+    const auto selected = service->getRenderDocuments({{"references",
+        Json::array({root_feature, "passes/main.json", root_feature})}}).at("documents");
+    REQUIRE(selected.size() == 3);
+    CHECK(selected.at(0).at("reference") == root_feature);
+    CHECK(selected.at(1).at("reference") == "passes/main.json");
+    CHECK(selected.at(2) == selected.at(0));
+    CHECK(compositions == before_get);
+}
+
+TEST_CASE("RC-3e published provenance is writable only while currently named", "[render-config-editor][rc3e1]") {
+    TemporaryAnimgraphProject project;
+    const std::string reference = "project://passes/rc3e-published.json";
+    const std::string feature = R"({"schema":"pelican.render_feature","version":1,"name":"rc3e_published"})";
+    writeBytes(project.root / "passes/rc3e-published.json", feature);
+    auto root = Json::parse(emptyHybridConfig());
+    root["rendering"]["features"] = Json::array({reference});
+    writeBytes(project.render_config, root.dump(2));
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    std::size_t compositions = 0;
+    auto service = makeProjectService(project, resolver, runtime, {}, {}, {}, {},
+        [&](RenderConfigEditorDependencies &dependencies) {
+            const auto compose = dependencies.resolve_authoring_context;
+            dependencies.resolve_authoring_context = [&, compose](const auto &documents) {
+                ++compositions;
+                return compose(documents);
+            };
+            dependencies.published_provider_references = [reference] {
+                return std::vector<std::string>{reference};
+            };
+        });
+    CHECK(rd1Documents(service->getRenderDocuments(Json::object())).at(reference).at("writable") == true);
+    CHECK(compositions == 0);
+    root["rendering"]["features"] = Json::array();
+    root["rendering"]["snapshots"] = Json::array({{{"name", "broken"}, {"after", "absent"}}});
+    writeBytes(project.render_config, root.dump(2));
+    const auto reload = service->reloadRenderDocuments(Json::object());
+    REQUIRE(reload.at("status") == "accepted");
+    service->commitPending();
+    REQUIRE(service->getResult({{"ticket", reload.at("ticket")}}).at("status") == "rejected");
+    const auto before_get = compositions;
+    const auto answer = service->getRenderDocuments(Json::object());
+    CHECK_FALSE(rd1Documents(answer).contains(reference));
+    const auto other = rd1Documents(answer, "other_documents");
+    CHECK(compositions == before_get);
+    const auto &published = other.at(reference);
+    CHECK(published.at("source") == "published_provenance");
+    CHECK(published.at("content") == feature);
+    CHECK(published.at("digest") == renderConfigSourceDigest(feature));
+    CHECK(published.at("writable") == false);
+    CHECK(rd1Error(service->restoreRenderDocuments({{"documents", Json::array({
+        rd1Restore(published, published.at("digest"))})}})).at("code") == "render_document_not_writable");
+}
+
+TEST_CASE("RC-3e inspect is the retention and editing domain", "[render-config-editor][rc3e1]") {
+    for (const auto &bytes : {std::string{"{bad"}, std::string{R"({"schema":"other"})"},
+                             std::string{R"({"schema":"pelican.graph","rendering":{"features":7}})"}}) {
+        CHECK_FALSE(AuthoredRenderConfigDocument::readable(bytes));
+        CHECK(AuthoredRenderConfigDocument::retain(bytes).bytes() == bytes);
+        const auto refusal = renderRootRefusal(bytes, "project://root.json");
+        REQUIRE(refusal);
+        CHECK(std::string{renderRefusalStage(refusal->at("code").get<std::string>())} == "decode");
+    }
+    for (const auto &bytes : {R"({"schema":"pelican.graph","nodes":[]})",
+                             R"({"schema":"pelican.graph","nodes":[],"rendering":{}})",
+                             R"({"schema":"pelican.graph","nodes":[],"rendering":7})"}) {
+        CHECK(AuthoredRenderConfigDocument::readable(bytes));
+        CHECK_FALSE(renderRootRefusal(bytes, "project://root.json"));
+        CHECK_NOTHROW(AuthoredRenderConfigDocument::retain(bytes).withRootValue("nodes", "[]"));
+    }
+    const auto sectionless = AuthoredRenderConfigDocument::retain(R"({"schema":"pelican.graph","nodes":[]})");
+    CHECK_THROWS_AS(sectionless.withSectionValue("features", "[]"), RenderConfigSectionUnlocated);
+}
+
+TEST_CASE("RC-3e refusal stages classify codes without changing document references", "[render-config-editor][rc3e1]") {
+    Json shader{{"code", "pelican.ray_tracing.shader_record_abi_mismatch@1"}, {"stage", "closesthit"}};
+    addRenderRefusalIdentity(shader, "candidate bytes");
+    addRenderRefusalIdentity(shader, "candidate bytes");
+    CHECK(shader.at("pipeline_stage") == "runtime");
+    CHECK(shader.at("stage") == "closesthit");
+    CHECK_FALSE(shader.contains("shader_stage"));
+    for (const auto &[code, expected] : std::vector<std::pair<std::string, std::string>>{
+        {"render_document_syntax@1", "decode"}, {"render_document_envelope@1", "decode"},
+        {"render_config.legacy_root@1", "decode"}, {"authoring.invalid@1", "lowering"},
+        {"canvas.mask_unsupported@1", "lowering"}, {"render.json_shape_invalid@1", "lowering"},
+        {"graph.port_field_missing@1", "compose"}, {"snapshot.after_unknown@1", "compose"},
+        {"feature.required_target_missing@1", "compose"}, {"render_pipeline.invalid@1", "compose"},
+        {"render_graph.pass_shape@1", "parse"}, {"render_compiler.physical_order_mismatches_frame_plan@1", "plan"},
+        {"physical_fragment.reorders_frame_plan@1", "plan"}, {"complete_physical_plan.stale_automatic_plan@1", "plan"},
+        {"target_plan.node_order_mismatch@1", "plan"}, {"frame_node_order.conflicts_dependency@1", "runtime"},
+        {"pelican.ray_tracing.generation_stale@1", "runtime"}, {"external_modification", "runtime"},
+        {"render_pipeline_preflight_failed", "unknown"}, {"", "unknown"}}) {
+        CAPTURE(code);
+        Json refusal{{"code", code}, {"document", "project://dependency.json"}};
+        addRenderRefusalIdentity(refusal, "candidate bytes");
+        CHECK(refusal.at("pipeline_stage") == expected);
+        CHECK(refusal.at("document") == "project://dependency.json");
+        CHECK(refusal.at("document_digest") == renderConfigSourceDigest("candidate bytes"));
+    }
 }
 }

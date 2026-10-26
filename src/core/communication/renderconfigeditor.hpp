@@ -242,6 +242,8 @@ struct RenderConfigEditorDependencies {
     // with it to say whether the document changed. Unset: such a document is
     // reported as changed.
     std::function<std::map<std::string, std::string>()> published_documents;
+    // References from the live generation only; never evaluates authored input.
+    std::function<std::vector<std::string>()> published_provider_references;
     // IA-2: the assets the published generation read (render.image
     // `initial: {asset}`; IA-3: value.sample_table's table and its
     // manifest), each with the sha256 of the bytes that generation read.
@@ -371,6 +373,7 @@ class RenderConfigEditorService {
         std::string normalized_reference;
         std::filesystem::path path;
         std::string kind; // "root", "preset" or "feature"
+        std::string resolution_error;
     };
 
     struct ManagedDocumentBaseline {
@@ -699,6 +702,7 @@ class RenderConfigEditorService {
     // first. Nothing outside the project root, nothing engine://, and nothing
     // that is not a render document of the kind the composition reads it as.
     std::vector<WritableRenderDocument> writableRenderDocuments() const;
+    nlohmann::ordered_json restoreRenderDocumentsUnnoted(const nlohmann::json &params);
     // RL-1: the same for a candidate document set whose root is `root_bytes`
     // (writableRenderDocuments is this for the current set).
     std::vector<WritableRenderDocument> renderDocumentsOf(
@@ -725,7 +729,7 @@ class RenderConfigEditorService {
     std::vector<WritableRenderDocument> namedRenderDocuments(
         std::string_view root_bytes,
         const std::function<std::optional<std::string>(const std::string &)>
-            &preset_bytes) const;
+            &preset_bytes, bool writable_only = true) const;
     // RD-1b: the reference is not engine:// or a fragment address, resolves
     // inside the project, and nothing is at that path.
     bool isAbsentProjectDocument(const std::string &reference) const;
@@ -984,7 +988,7 @@ class RenderConfigEditorService {
     // edit on the disk's digest fixes it, and the reads say `live: false`.
     // While the editor holds such documents (or the engine runs its
     // fallback) a reload composes them even when nothing changed. A root
-    // that is JSON but not a pelican.graph object is not held. A pending or
+    // outside inspect's domain is held raw. A pending or
     // in-flight ticket, or `preview_open`, is reload_busy.
     nlohmann::ordered_json reloadRenderDocuments(
         const nlohmann::json &params, bool preview_open = false);

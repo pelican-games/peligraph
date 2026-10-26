@@ -470,6 +470,7 @@ TEST_CASE("RTL-3s decision 6: a shader record's and a payload's refusal read the
                       {"ray_type", "shadow"},
                       {"group", "mesh"},
                       {"stage", "closesthit"},
+                      {"pipeline_stage", "runtime"},
                       {"shader", "project://shaders/wrong_record.rchit"},
                       {"expected", Json::array({{{"name", "material_index"}, {"offset", 0}, {"type", "u32"}},
                                                 {{"name", "geometry_index"}, {"offset", 4}, {"type", "u32"}}})},
