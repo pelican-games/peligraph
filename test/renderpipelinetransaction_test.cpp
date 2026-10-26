@@ -1,6 +1,7 @@
 #include "../src/core/renderingpass/framegraphruntime.hpp"
 #include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/project/graphvariantpolicy.hpp"
+#include "../src/project/graphcomposition.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -64,6 +65,7 @@ RenderPipelineProgramPreparation programFor(
 
     auto target_plan = std::make_shared<VulkanTargetPlan>();
     target_plan->graph = rendering_pass.name;
+    target_plan->scopes.push_back(VulkanPhysicalScopePlan{.id = "draw", .nodes = {"draw"}});
     target_plan->sample_count_plan =
         ResolvedSampleCountPlan{};
     target_plan->sample_count_plan->request.samples =
@@ -100,6 +102,41 @@ int revisionOf(const RendererRuntimeGeneration &generation,
         return -1;
     }
     return pass_revision;
+}
+
+TEST_CASE("RC-3d2 direct generation and compatibility registration validate physical node coverage and order",
+          "[render-pipeline][transaction][rc3d2]") {
+    FrameGraphRuntimeContainer runtime;
+    runtime.publishPreparedGeneration(runtime.prepareGeneration({programFor(1)}));
+    const auto before = runtime.snapshot();
+    const auto check = [&](std::vector<std::string> names, std::string_view reason, bool compatibility) {
+        auto candidate = programFor(2);
+        auto target = std::make_shared<VulkanTargetPlan>(*candidate.target_plan);
+        target->scopes.front().nodes = std::move(names);
+        candidate.target_plan = target;
+        try {
+            if (compatibility)
+                runtime.registerExecutionPlan(RenderingPassId{0}, candidate.rendering_pass,
+                    candidate.frame_plan, candidate.render_pipeline, candidate.target_plan);
+            else (void)runtime.prepareGeneration({std::move(candidate)});
+            FAIL("invalid scope coverage accepted");
+        } catch (const GraphRegistryError &error) {
+            CHECK(error.code() == "render_compiler.physical_order_mismatches_frame_plan@1");
+            CHECK(error.detail().at("graph") == "main");
+            CHECK(error.detail().at("reason") == std::string{reason});
+            CHECK(error.detail().contains("position"));
+            CHECK(error.detail().contains("expected"));
+            CHECK(error.detail().contains("actual"));
+        }
+        CHECK(runtime.snapshot() == before);
+        CHECK(runtime.activeGeneration() == before->generation);
+    };
+    for (const bool compatibility : {false, true}) {
+        check({"extra", "extra"}, "duplicate", compatibility); // also missing + extra
+        check({"extra"}, "missing", compatibility);           // also extra
+        check({"draw", "extra"}, "extra", compatibility);
+        check({}, "missing", compatibility);
+    }
 }
 
 OutputCompileFacts windowFacts(
@@ -238,6 +275,7 @@ TEST_CASE(
     auto invalid = programFor(3);
     invalid.frame_plan.nodes.front().name =
         "missing_runtime_pass";
+    invalid.target_plan.reset();
     REQUIRE_THROWS_WITH(
         runtime.prepareGeneration(
             {std::move(invalid)}),

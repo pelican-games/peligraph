@@ -129,6 +129,7 @@ verifyVulkanCompletePhysicalPlanPackage(
     const CompiledLogicalRenderGraph &canonical_graph,
     const TargetTopologySnapshot &topology,
     const VulkanTargetPlan &automatic_plan,
+    const FramePlanNodeOrder &expected_node_order,
     VulkanCompletePhysicalPlanPackage package,
     std::span<const VulkanPhysicalResourceFormatCapability>
         format_capabilities = {},

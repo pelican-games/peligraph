@@ -69,6 +69,7 @@
 #include "../src/core/vkcore/deletionqueue.hpp"
 #include "../src/core/vkcore/renderer.hpp"
 #include "renderer_testaccess.hpp"
+#include "renderpassexecutor_testaccess.hpp"
 #include "rendertarget_testaccess.hpp"
 #include "../src/core/vkcore/renderer_config.hpp"
 #include "../src/core/vkcore/rendertarget.hpp"
@@ -82,6 +83,7 @@
 #include <array>
 #include <bit>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <chrono>
 #include <cstring>
@@ -5589,7 +5591,7 @@ vec3 pelican_lighting_v1(
 }
 
 TEST_CASE(
-    "dependency-safe physical scopes reorder and fuse real Vulkan rendering",
+    "frame_node_order and dependency-safe scope fusion execute real Vulkan rendering",
     "[headless][render][physical-scope][reorder][fusion]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     setupLogger();
@@ -5669,6 +5671,15 @@ TEST_CASE(
             GET_MODULE(RenderingPassContainer)
                 .getRenderingPassIdByName(
                     "physical_scope_main");
+        // Order is authored before the automatic plan is made and ejected.
+        // Keep the initial, unmodified compile above for the D1 corpus.
+        auto replacement = dependencySafePhysicalScopeRenderingConfig();
+        replacement["frame_node_order"]["physical_scope_main"] =
+            {"physical_scope_independent", "physical_scope_base", "physical_scope_overlay", "physical_scope_present"};
+        writeTextFile(temp_dir / "pipeline.json",
+                      Pelican::TestSupport::renderGraphRootWithTaskFeature(replacement, temp_dir).dump(2));
+        REQUIRE(GET_MODULE(watch::ReloadService).applyRequestForTesting(
+            watch::ReloadRequest{watch::makeAssetKey("pipeline.json"), watch::ReloadKind::modified, {}, 1}));
         const auto automatic_program =
             runtime.findProgram(pass_id);
         REQUIRE(automatic_program != nullptr);
@@ -5790,8 +5801,6 @@ TEST_CASE(
             std::vector<
                 VulkanPhysicalAliasGroupFragment>{};
 
-        auto replacement =
-            dependencySafePhysicalScopeRenderingConfig();
         replacement["vulkan_physical_fragments"] =
             nlohmann::json::object();
         replacement["vulkan_physical_fragments"]
@@ -15760,6 +15769,339 @@ void main() {
 #endif
 }
 
+} // namespace Pelican
+
+namespace Pelican {
+namespace {
+
+// The two independent tasks deliberately disagree with lexical order. No
+// frame_node_order/after edges mask a physical planner that sorts by name.
+nlohmann::json rc3d2RenderingConfig() {
+    auto config = dependencySafePhysicalScopeRenderingConfig();
+    config["compute_tasks"] = nlohmann::json::array();
+    config.erase("buffers");
+    for (const auto name : {"z_first", "a_second"}) {
+        config["compute_tasks"].push_back({{"name", name}, {"shader", "shaders/physical_scope_independent"},
+            {"dispatch", {{"groups", {1, 1, 1}}}}, {"schedule", "per_frame"}});
+    }
+    return config;
+}
+
+struct Rc3d2Project {
+    std::filesystem::path root = makeTempProjectDir();
+    nlohmann::json document;
+    explicit Rc3d2Project(bool stereo = false, bool mixed = false) {
+        auto config = rc3d2RenderingConfig();
+        if (stereo) config["xr"]["view_execution"] = "sequential";
+        document = TestSupport::renderGraphRootWithTaskFeature(config, root);
+        writeTextFile(root / "scene.json", R"({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})");
+        writeTextFile(root / "assets.json", R"({"schema":"pelican.asset_data","version":2,"models":[]})");
+        writeTextFile(root / "pipeline.json", document.dump());
+        writeTextFile(root / "shaders/physical_scope_fullscreen.vert", gpuArenaFullscreenVertexShader());
+        writeTextFile(root / "shaders/physical_scope_base.frag", physicalScopeBaseFragmentShader());
+        writeTextFile(root / "shaders/physical_scope_overlay.frag", physicalScopeOverlayFragmentShader());
+        writeTextFile(root / "shaders/physical_scope_present.frag", gpuArenaCopyFragmentShader());
+        writeTextFile(root / "shaders/physical_scope_independent.comp", "#version 450\nlayout(local_size_x=1) in; void main() {}\n");
+        auto project = makeProjectConfig("scene.json", "assets.json");
+        project["basic_config"]["default_scene_id"] = "default_scene";
+        project["basic_config"]["rendering_config_json"] = "pipeline.json";
+        project["basic_config"]["default_rendering_pass"] = "physical_scope_main";
+        project["schema"] = "pelican.project";
+        project["version"] = 1;
+        project["name"] = "rc3d2-order-contract";
+        GET_MODULE(ProjectSource).setProjectData(project.dump());
+        GET_MODULE(PathResolver).setup(root, false, project.dump());
+        auto &launch = GET_MODULE(EngineLaunchConfig);
+        launch.headless = true;
+        launch.headless_extent = vk::Extent2D{32, 32};
+        launch.headless_frames = 1;
+        (void)GET_MODULE(VulkanManageCore);
+        launch.xr_active = stereo;
+        if (mixed) {
+            auto probe = config["render_targets"][0];
+            probe["name"] = "multiview_probe_color";
+            config["render_targets"].push_back(std::move(probe));
+            config["rendering_passes"][0]["passes"].push_back({
+                {"name", "multiview_probe"}, {"type", "fullscreen"}, {"input", {"physical_scope_color"}},
+                {"output", {{"color", "multiview_probe_color"}, {"depth", nullptr}}},
+                {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://scene_present"}}}});
+            const auto properties = GET_MODULE(VulkanManageCore).getPhysDevice().getProperties();
+            config["xr"] = {{"view_execution", "auto"}, {"multiview_auto", {{"profiles", nlohmann::json::array({
+                {{"id", "rc3d2_test_device"}, {"vendor_id", properties.vendorID}, {"device_id", properties.deviceID},
+                 {"measurement", {{"sequential_gpu_ms", 6.0}, {"multiview_gpu_ms", 4.0}, {"sample_count", 240},
+                                  {"source", "RenderTiming/gpu_timestamp"}}}}})}}}};
+            document = TestSupport::renderGraphRootWithTaskFeature(config, root);
+            writeTextFile(root / "pipeline.json", document.dump());
+        }
+        GET_MODULE(EngineTime).setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
+    }
+    ~Rc3d2Project() {
+        std::error_code ignored;
+        std::filesystem::remove_all(root, ignored);
+    }
+};
+
+enum class Rc3d2PackageRoute { custom, fragment, complete };
+
+class Rc3d2Compiler final : public RenderCompilerProgram {
+  public:
+    Rc3d2PackageRoute route = Rc3d2PackageRoute::custom;
+    bool reorder = false;
+    bool fuse = false;
+    mutable bool legal_complete_reorder_verified = false;
+
+    RenderCompilerProgramSelection selection(const RenderCompilerBackendContext &context) const override {
+        auto result = defaultVulkanRenderCompilerProgram().selection(context);
+        result.name = "test.rc3d2.order";
+        return result;
+    }
+
+    RenderCompilerProgramOutput compile(const RenderCompilerProgramInput &input) const override {
+        auto result = defaultVulkanRenderCompilerProgram().compile(input);
+        for (auto &variant : result.variants) {
+            if (!variant.physical_package) continue;
+            auto &physical = requireVulkanRenderCompilerPhysicalPackage(*variant.physical_package);
+            for (auto &[graph, plan] : physical.target_plans) {
+                auto &contexts = physical.target_plan_compilation.verification_contexts;
+                auto context = std::find_if(contexts.begin(), contexts.end(), [&](const auto &entry) {
+                    return entry.logical_graph->name == graph;
+                });
+                REQUIRE(context != contexts.end());
+                const auto node = [](std::string name) { return name; };
+                const std::string task_suffix = variant.graph_variant == RenderPipelineGraphVariant::xr ? "#xr" : "";
+                const auto scopeIndex = [&](const auto &scopes, const std::string &name) {
+                    INFO("graph=" << graph << " node=" << name << " order=" << nlohmann::json(physicalNodeOrderOf(plan->scopes).nodes).dump());
+                    const auto found = std::find_if(scopes.begin(), scopes.end(), [&](const auto &scope) {
+                        return std::find(scope.nodes.begin(), scope.nodes.end(), name) != scope.nodes.end();
+                    });
+                    REQUIRE(found != scopes.end());
+                    return static_cast<std::size_t>(found - scopes.begin());
+                };
+                const auto swapIndependent = [&](auto &scopes) {
+                    const auto first = scopeIndex(scopes, "z_first" + task_suffix);
+                    const auto second = scopeIndex(scopes, "a_second" + task_suffix);
+                    REQUIRE(scopes[first].nodes.size() == 1);
+                    REQUIRE(scopes[second].nodes.size() == 1);
+                    if (reorder) std::swap(scopes[first], scopes[second]);
+                };
+                if (route == Rc3d2PackageRoute::complete) {
+                    auto package = ejectVulkanCompletePhysicalPlanPackage(*plan);
+                    swapIndependent(package.scopes);
+                    if (reorder) {
+                        const auto names = physicalNodeOrderOf(package.scopes).nodes;
+                        // The independent tasks have no resource ports. Their
+                        // swap preserves every resource lifetime and dependency.
+                        (void)verifyVulkanCompletePhysicalPlanPackage(
+                            *context->logical_graph, context->topology, *context->automatic_plan,
+                            FramePlanNodeOrder{*context->logical_graph, names}, package);
+                        legal_complete_reorder_verified = true;
+                    }
+                    installVerifiedVulkanCompletePhysicalPlanPackage(physical, graph, std::move(package));
+                    continue;
+                }
+                auto changed = std::make_shared<VulkanTargetPlan>(*plan);
+                if (route == Rc3d2PackageRoute::fragment || fuse) {
+                    auto fragment = ejectVulkanPhysicalFragmentPackage(*plan);
+                    swapIndependent(*fragment.scopes);
+                    if (fuse) {
+                        auto &scopes = *fragment.scopes;
+                        const auto first = scopeIndex(scopes, node("physical_scope_base"));
+                        const auto second = scopeIndex(scopes, node("physical_scope_overlay"));
+                        REQUIRE(second == first + 1);
+                        scopes[first].id = "rc3d2:fused";
+                        scopes[first].nodes.push_back(node("physical_scope_overlay"));
+                        scopes.erase(scopes.begin() + static_cast<std::ptrdiff_t>(second));
+                    }
+                    *changed = linkVulkanPhysicalFragment(*context->logical_graph, context->topology,
+                                                          *plan, std::move(fragment));
+                } else {
+                    swapIndependent(changed->scopes);
+                }
+                const auto previous = plan;
+                plan = changed;
+                for (auto &indexed : physical.target_plan_compilation.plans)
+                    if (indexed == previous) indexed = changed;
+                context->compiled_plan = changed;
+            }
+        }
+        return result;
+    }
+};
+
+void requireRc3d2Pixels(const std::vector<std::uint8_t> &pixels) {
+    REQUIRE(pixels.size() == 32u * 32u * 4u);
+    std::size_t mismatches = 0;
+    for (std::uint32_t y = 0; y < 32; ++y) {
+        for (std::uint32_t x = 0; x < 32; ++x) {
+            const auto expected = x < 16 ? std::array<std::uint8_t, 4>{124, 170, 231, 255}
+                                         : std::array<std::uint8_t, 4>{231, 124, 170, 255};
+            if (!std::equal(expected.begin(), expected.end(), pixels.begin() + (y * 32u + x) * 4u)) ++mismatches;
+        }
+    }
+    REQUIRE(mismatches == 0);
+}
+
+RenderViewFamily rc3d2StereoViews() {
+    RenderViewFamily result{.family_id = std::string{mainRenderViewFamilyId}};
+    for (std::uint32_t index = 0; index < 2; ++index) {
+        RenderViewParameters view;
+        view.view_id = "$xr/" + std::to_string(index);
+        view.view = glm::lookAt(glm::vec3{0, 0, 2}, glm::vec3{0, 0, 0}, glm::vec3{0, 1, 0});
+        view.projection = glm::perspective(glm::radians(70.0f), 1.0f, 0.1f, 100.0f);
+        view.projection[1][1] *= -1.0f;
+        view.camera_position = {0, 0, 2};
+        result.views.push_back(view);
+    }
+    return result;
+}
+
+} // namespace
+
+TEST_CASE("RC-3d2 fused ordinary pass bodies execute A0 B0 A1 B1 with known pixels",
+          "[headless][render][rc3d2][order][fusion]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER && PELICAN_WITH_OPENXR
+    const bool mixed = GENERATE(false, true);
+    CAPTURE(mixed);
+    setupLogger();
+    FastModuleContainer modules;
+    Rc3d2Project project{true, mixed};
+    auto &renderer = GET_MODULE(Renderer);
+    Rc3d2Compiler compiler;
+    compiler.fuse = true;
+    std::vector<RenderingPassConfigRegistrationDependencies> registrations;
+    for (const auto variant : {RenderPipelineGraphVariant::flat, RenderPipelineGraphVariant::xr}) {
+        RenderingPassConfigRegistrationDependencies::Options options;
+        options.graph_variant = variant;
+        options.render_compiler_program = &compiler;
+        options.enable_multiview_runtime = mixed;
+        if (variant == RenderPipelineGraphVariant::xr)
+            options.prepare_additional_gpu_resources = [] { Test::registerSyntheticXrMirrorTarget({32, 32}); };
+        options.gpu_owner_scope = renderPipelineVariantGpuOwnerScope(true, variant);
+        options.publish_enabled_features = variant == RenderPipelineGraphVariant::flat;
+        registrations.push_back(gpuArenaRegistrationDependencies(std::move(options)));
+    }
+    registerRenderingPassConfigVariantsFromJsonData(project.document.dump(), {32, 32}, registrations);
+    renderer.selectGraphVariant(RenderGraphVariant::xr);
+    const auto id = GET_MODULE(RenderingPassContainer).getRenderingPassIdByName("physical_scope_main#xr");
+    const auto program = GET_MODULE(FrameGraphRuntimeContainer).findProgram(id);
+    REQUIRE(program != nullptr);
+    const auto &plan = *program->frame_graph.target_plan;
+    INFO(vulkanTargetPlanToJson(plan).at("view_execution_plan").dump());
+    REQUIRE(plan.view_execution_plan.uses_multiview == mixed);
+    REQUIRE(plan.view_execution_plan.mixed_execution == mixed);
+    const auto names = framePlanOrder(program->frame_graph.plan);
+    REQUIRE(physicalNodeOrderOf(plan.scopes).nodes == names);
+    REQUIRE(std::find(names.begin(), names.end(), "z_first#xr") < std::find(names.begin(), names.end(), "a_second#xr"));
+    const auto fused = std::find_if(plan.scopes.begin(), plan.scopes.end(), [](const auto &scope) { return scope.id == "rc3d2:fused"; });
+    REQUIRE(fused != plan.scopes.end());
+    REQUIRE(fused->single_rendering_instance);
+    REQUIRE(fused->nodes == std::vector<std::string>{"physical_scope_base", "physical_scope_overlay"});
+    RendererTestAccess::setExecutionTracing(renderer, true);
+    RenderPassExecutorTestAccess::startBodyTrace(GET_MODULE(RenderPassExecutor));
+    const auto render_target = [&](auto &target) {
+        GET_MODULE(EngineTime).advance();
+        renderer.renderLogicalFrame(target, rc3d2StereoViews());
+        GET_MODULE(VulkanManageCore).waitIdle();
+        requireRc3d2Pixels(target.readback(0));
+        requireRc3d2Pixels(target.readback(1));
+    };
+    if (mixed) {
+        Test::VulkanSyntheticViewFamilyTarget target{{32, 32}, GET_MODULE(RenderTarget).getSwapchainFormat()};
+        render_target(target);
+    } else {
+        Test::VulkanSyntheticStereoTarget target{{32, 32}, GET_MODULE(RenderTarget).getSwapchainFormat()};
+        render_target(target);
+    }
+    const std::vector<std::pair<std::string, std::uint32_t>> expected{
+        {"physical_scope_base", 0}, {"physical_scope_overlay", 0},
+        {"physical_scope_base", 1}, {"physical_scope_overlay", 1}};
+    std::vector<std::pair<std::string, std::uint32_t>> bodies, trace_calls;
+    for (const auto &call : RenderPassExecutorTestAccess::bodyCalls(GET_MODULE(RenderPassExecutor)))
+        if (call.first == "physical_scope_base" || call.first == "physical_scope_overlay") bodies.push_back(call);
+    REQUIRE(bodies == expected);
+    const auto &trace = RendererTestAccess::lastExecutionTrace(renderer);
+    const auto collect_trace = [&](const auto &view) {
+        for (const auto &node : view.at("nodes")) {
+            const auto name = node.at("name").get<std::string>();
+            if (name != "physical_scope_base" && name != "physical_scope_overlay") continue;
+            REQUIRE(node.at("kind") == "render");
+            trace_calls.emplace_back(name, node.at("view_index").get<std::uint32_t>());
+        }
+    };
+    if (mixed) collect_trace(trace.at("view_family"));
+    else for (const auto &view : trace.at("views")) collect_trace(view);
+    REQUIRE(trace_calls == expected);
+#else
+    SKIP("runtime shader compiler and XR graph compilation required");
+#endif
+}
+
+TEST_CASE("RC-3d2 registration rejects three reordered packages and preserves the published drawing",
+          "[headless][render][rc3d2][transaction][order]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    FastModuleContainer modules;
+    Rc3d2Project project;
+    auto &renderer = GET_MODULE(Renderer);
+    auto &runtime = GET_MODULE(FrameGraphRuntimeContainer);
+    const auto id = GET_MODULE(RenderingPassContainer).getRenderingPassIdByName("physical_scope_main");
+    const auto draw = [&] {
+        GET_MODULE(EngineTime).advance();
+        renderer.render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+        return GET_MODULE(RenderTarget).readbackLastFrameRGBA8();
+    };
+    const auto pixels = draw();
+    requireRc3d2Pixels(pixels);
+    for (const auto route : {Rc3d2PackageRoute::custom, Rc3d2PackageRoute::fragment, Rc3d2PackageRoute::complete}) {
+        CAPTURE(static_cast<int>(route));
+        const auto before = runtime.snapshot();
+        const auto program = runtime.findProgram(id);
+        const auto old_frame = framePlanToJson(program->frame_graph.plan);
+        const auto old_target = vulkanTargetPlanToJson(*program->frame_graph.target_plan);
+        Rc3d2Compiler compiler;
+        compiler.route = route;
+        compiler.reorder = true;
+        std::size_t additional_preparations = 0;
+        const auto apply = [&] {
+            RenderingPassConfigRegistrationDependencies::Options options;
+            options.render_compiler_program = &compiler;
+            options.prepare_additional_gpu_resources = [&] { ++additional_preparations; };
+            return registerRenderingPassConfigFromJsonData(project.document.dump(), {32, 32},
+                                                           gpuArenaRegistrationDependencies(std::move(options)));
+        };
+        try {
+            (void)apply();
+            FAIL("reordered package published");
+        } catch (const GraphRegistryError &error) {
+            INFO(error.what());
+            REQUIRE(error.code() == (route == Rc3d2PackageRoute::fragment
+                ? "physical_fragment.reorders_frame_plan@1" : "render_compiler.physical_order_mismatches_frame_plan@1"));
+            REQUIRE(error.detail().at("graph") == "physical_scope_main");
+            const auto order = framePlanOrder(program->frame_graph.plan);
+            REQUIRE(error.detail().at("position") == static_cast<std::size_t>(
+                std::find(order.begin(), order.end(), "z_first") - order.begin()));
+            REQUIRE(error.detail().at("expected") == "z_first");
+            REQUIRE(error.detail().at("actual") == "a_second");
+        }
+        if (route == Rc3d2PackageRoute::complete) REQUIRE(compiler.legal_complete_reorder_verified);
+        REQUIRE(additional_preparations == 0); // Common completion rejects before GPU preparation.
+        REQUIRE(runtime.snapshot() == before);
+        REQUIRE(runtime.activeGeneration() == before->generation);
+        REQUIRE(framePlanToJson(runtime.findProgram(id)->frame_graph.plan) == old_frame);
+        REQUIRE(vulkanTargetPlanToJson(*runtime.findProgram(id)->frame_graph.target_plan) == old_target);
+        REQUIRE(draw() == pixels);
+        compiler.reorder = false;
+        (void)apply();
+        REQUIRE(additional_preparations == 1);
+        REQUIRE(runtime.activeGeneration() == before->generation + 1);
+        REQUIRE(runtime.snapshot() != before);
+        REQUIRE(draw() == pixels);
+    }
+#else
+    SKIP("runtime shader compiler required");
+#endif
+}
 } // namespace Pelican
 
 namespace Pelican {

@@ -1,4 +1,5 @@
 #include "vulkancompletephysicalplan.hpp"
+#include "graphcomposition.hpp"
 
 #include "imagesubresourcejson.hpp"
 #include "stablefingerprint.hpp"
@@ -1549,6 +1550,7 @@ verifyVulkanCompletePhysicalPlanPackage(
     const CompiledLogicalRenderGraph &canonical_graph,
     const TargetTopologySnapshot &source_topology,
     const VulkanTargetPlan &automatic_plan,
+    const FramePlanNodeOrder &expected_node_order,
     VulkanCompletePhysicalPlanPackage source_package,
     std::span<
         const VulkanPhysicalResourceFormatCapability>
@@ -1570,13 +1572,6 @@ verifyVulkanCompletePhysicalPlanPackage(
                 logical_fingerprint,
         "Vulkan complete physical plan is stale for the logical "
         "graph");
-    require(
-        package.backend_candidate ==
-            automatic_plan.backend_selection
-                .selected_candidate,
-        "Vulkan complete physical plan backend candidate "
-        "mismatch");
-
     const auto topology =
         canonicalizeTargetTopology(source_topology);
     const auto automatic_fingerprint =
@@ -1587,11 +1582,17 @@ verifyVulkanCompletePhysicalPlanPackage(
             automatic_fingerprint,
         "automatic Vulkan target plan fingerprint is "
         "inconsistent");
+    if (package.automatic_plan_fingerprint != automatic_fingerprint)
+        throw GraphRegistryError{"complete_physical_plan.stale_automatic_plan@1",
+            {{"graph", canonical_graph.name}, {"expected", automatic_fingerprint},
+             {"actual", package.automatic_plan_fingerprint},
+             {"message", "Vulkan complete physical plan is stale for the target environment; eject it again."}}};
     require(
-        package.automatic_plan_fingerprint ==
-            automatic_fingerprint,
-        "Vulkan complete physical plan is stale for the target "
-        "environment");
+        package.backend_candidate ==
+            automatic_plan.backend_selection.selected_candidate,
+        "Vulkan complete physical plan backend candidate mismatch");
+    expected_node_order.requireGraph(canonical_graph);
+    requirePhysicalNodeOrderMatchesFramePlan(expected_node_order, physicalNodeOrderOf(package.scopes).nodes);
 
     const auto &probe = selectedProbe(automatic_plan);
     const auto *endpoint =

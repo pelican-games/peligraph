@@ -80,6 +80,9 @@ RenderGraphIR parseRenderGraph(const nlohmann::json &document,
                                const PassShapePolicy &shape_policy = defaultPassShapePolicy(),
                                const PassShapeDiagnosticSink &shape_diagnostics = {});
 
+// Validate the author's list before composition expands loop ids.
+std::vector<FrameNodeOrderIR> parseFrameNodeOrder(const nlohmann::json &config);
+
 // RC-3c1b: how many times parseRenderGraph has run on this thread (one
 // parse per completed revision; tests count the production path with it).
 std::size_t renderGraphParseCount() noexcept;

@@ -24,8 +24,10 @@
 #include "../src/core/shader/shaderlibrary.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/renderer.hpp"
+#include "../src/core/vkcore/renderer_config.hpp"
 #include "../src/core/vkcore/rendertarget.hpp"
 #include "vulkan_test_support.hpp"
+#include "synthetic_stereo_target.hpp"
 
 #include <algorithm>
 #include <array>
@@ -250,31 +252,33 @@ class NativeClearVulkanCompilerProgram final
             auto &physical =
                 requireVulkanRenderCompilerPhysicalPackage(
                     *variant.physical_package);
-            if (!physical.target_plans.contains(
-                    "native_scope_main")) {
+            const std::string suffix = variant.graph_variant == RenderPipelineGraphVariant::xr ? "#xr" : "";
+            const auto graph_name = "native_scope_main" + suffix;
+            const std::string clear_name = "native_clear";
+            if (!physical.target_plans.contains(graph_name)) {
                 continue;
             }
             const auto &context =
                 requireVulkanTargetPlanVerificationContext(
                     physical,
-                    "native_scope_main");
+                    graph_name);
             const auto &automatic =
                 *context.automatic_plan;
             const auto scope =
                 std::find_if(
                     automatic.scopes.begin(),
                     automatic.scopes.end(),
-                    [](const auto &candidate) {
+                    [&](const auto &candidate) {
                         return std::find(
                                    candidate.nodes.begin(),
                                    candidate.nodes.end(),
-                                   "native_clear") !=
+                                   clear_name) !=
                                candidate.nodes.end();
                     });
             if (scope == automatic.scopes.end() ||
                 scope->nodes !=
                     std::vector<std::string>{
-                        "native_clear"}) {
+                        clear_name}) {
                 throw std::runtime_error(
                     "NativeScope clear fixture requires an isolated "
                     "native_clear physical scope");
@@ -408,7 +412,7 @@ class NativeClearVulkanCompilerProgram final
                 std::move(declaration));
             installVerifiedVulkanCompletePhysicalPlanPackage(
                 physical,
-                "native_scope_main",
+                graph_name,
                 std::move(package));
         }
         return output;
@@ -419,6 +423,8 @@ struct NativeClearExecutorStats {
     std::atomic_size_t prepare_calls{0};
     std::atomic_size_t record_calls{0};
     std::atomic_size_t destroyed_executors{0};
+    std::mutex mutex;
+    std::vector<std::pair<std::string, std::uint32_t>> scope_views;
 };
 
 class NativeClearExecutor final
@@ -518,6 +524,8 @@ class NativeClearExecutor final
         context.command_buffer
             .endRendering();
         ++stats_->record_calls;
+        std::scoped_lock lock{stats_->mutex};
+        stats_->scope_views.emplace_back(context.scope->id, context.view.view_index);
     }
 };
 
@@ -1029,6 +1037,88 @@ TEST_CASE(
             error, "Vulkan NativeScope execution unavailable");
         throw;
     }
+#endif
+}
+
+TEST_CASE("RC-3d2 NativeScope records one callback per scope and sequential view",
+          "[headless][native-scope][rc3d2][views]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER && PELICAN_WITH_OPENXR
+    setupLogger();
+    FastModuleContainer modules;
+    const auto root = makeTempProjectDir();
+    std::filesystem::create_directories(root / "shaders");
+    writeTextFile(root / "scene.json", R"({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})");
+    writeTextFile(root / "assets.json", R"({"schema":"pelican.asset_data","version":2,"models":[]})");
+    writeTextFile(root / "shaders/native_fullscreen.vert", gpuArenaFullscreenVertexShader());
+    writeTextFile(root / "shaders/native_fallback.frag", pipelineReloadFragmentShader());
+    writeTextFile(root / "shaders/native_copy.frag", gpuArenaCopyFragmentShader());
+    auto config = nativeScopeRenderingConfig();
+    config["xr"]["view_execution"] = "sequential";
+    config["render_targets"][0]["layers"] = 2;
+    const auto document = TestSupport::renderGraphRootWithTaskFeature(config, root);
+    writeTextFile(root / "native_scope.json", document.dump());
+    auto project = makeProjectConfig("scene.json", "assets.json");
+    project["basic_config"]["default_scene_id"] = "default_scene";
+    project["basic_config"]["rendering_config_json"] = "native_scope.json";
+    project["basic_config"]["default_rendering_pass"] = "native_scope_main";
+    GET_MODULE(ProjectSource).setSourceByData(project.dump());
+    GET_MODULE(PathResolver).setup(root, false);
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.headless_extent = vk::Extent2D{16, 16};
+    (void)GET_MODULE(VulkanManageCore);
+    launch.xr_active = true;
+    GET_MODULE(EngineTime).setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
+    auto &renderer = GET_MODULE(Renderer);
+    auto stats = std::make_shared<NativeClearExecutorStats>();
+    NativeClearProviderOwner provider{stats};
+    NativeClearVulkanCompilerProgram compiler{{1.0f, 0.0f, 1.0f, 1.0f}};
+    std::vector<RenderingPassConfigRegistrationDependencies> registrations;
+    for (const auto variant : {RenderPipelineGraphVariant::flat, RenderPipelineGraphVariant::xr}) {
+        RenderingPassConfigRegistrationDependencies::Options options;
+        options.graph_variant = variant;
+        options.render_compiler_program = &compiler;
+        options.gpu_owner_scope = renderPipelineVariantGpuOwnerScope(true, variant);
+        if (variant == RenderPipelineGraphVariant::xr)
+            options.prepare_additional_gpu_resources = [] { Test::registerSyntheticXrMirrorTarget({16, 16}); };
+        options.publish_enabled_features = variant == RenderPipelineGraphVariant::flat;
+        registrations.push_back(gpuArenaRegistrationDependencies(std::move(options)));
+    }
+    registerRenderingPassConfigVariantsFromJsonData(document.dump(), {16, 16}, registrations);
+    renderer.selectGraphVariant(RenderGraphVariant::xr);
+    const auto id = GET_MODULE(RenderingPassContainer).getRenderingPassIdByName("native_scope_main#xr");
+    const auto program = GET_MODULE(FrameGraphRuntimeContainer).findProgram(id);
+    REQUIRE(program != nullptr);
+    const auto &scopes = program->frame_graph.target_plan->scopes;
+    const auto scope = std::find_if(scopes.begin(), scopes.end(), [](const auto &entry) {
+        return entry.nodes == std::vector<std::string>{"native_clear"};
+    });
+    REQUIRE(scope != scopes.end());
+    RenderViewFamily family{.family_id = std::string{mainRenderViewFamilyId}};
+    for (std::uint32_t index = 0; index < 2; ++index) {
+        RenderViewParameters view;
+        view.view_id = "$xr/" + std::to_string(index);
+        family.views.push_back(view);
+    }
+    Test::VulkanSyntheticStereoTarget target{{16, 16}, GET_MODULE(RenderTarget).getSwapchainFormat()};
+    GET_MODULE(EngineTime).advance();
+    renderer.renderLogicalFrame(target, family);
+    GET_MODULE(VulkanManageCore).waitIdle();
+    REQUIRE(stats->record_calls == 2);
+    REQUIRE(stats->scope_views == std::vector<std::pair<std::string, std::uint32_t>>{{scope->id, 0}, {scope->id, 1}});
+    for (std::uint32_t view = 0; view < 2; ++view) {
+        const auto pixels = target.readback(view);
+        REQUIRE(pixels.size() == 16u * 16u * 4u);
+        for (std::size_t offset = 0; offset < pixels.size(); offset += 4) {
+            REQUIRE(pixels[offset] == 255);
+            REQUIRE(pixels[offset + 1] == 0);
+            REQUIRE(pixels[offset + 2] == 255);
+            REQUIRE(pixels[offset + 3] == 255);
+        }
+    }
+    std::filesystem::remove_all(root);
+#else
+    SKIP("runtime shader compiler and XR graph compilation required");
 #endif
 }
 

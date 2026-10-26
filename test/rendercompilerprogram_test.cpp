@@ -2088,6 +2088,45 @@ nlohmann::json fg1Verified(nlohmann::json document) {
     return document;
 }
 
+TEST_CASE("RC-3d2 production compiler forwards stress seeds to the FramePlan and physical plan",
+          "[rendercompiler][rc3d2][hazard-stress]") {
+    const auto compile_seed = [](std::uint64_t seed) {
+        ProgramInputFixture fixture;
+        nlohmann::json config;
+        config["target_planning"]["profile"] = {{"kind", "hazard_stress"}, {"seed", seed}};
+        config["render_targets"] = nlohmann::json::array();
+        auto passes = nlohmann::json::array({fullscreenPass("present")});
+        passes[0]["shader"] = {{"vertex", "engine://fullscreen"}, {"fragment", "engine://scene_present"}};
+        for (const auto name : {"z_first", "a_second", "m_third"}) {
+            config["compute_tasks"].push_back({{"name", name}, {"shader", "shaders/independent"},
+                {"dispatch", {{"groups", {1, 1, 1}}}}, {"schedule", "per_frame"}});
+        }
+        config["rendering_passes"] = {{{"name", "main"}, {"passes", passes}}};
+        fixture.useAuthoredConfig(config, "rc3d2-seed");
+        fixture.backend_context = VulkanRenderCompilerBackendContext{
+            vk::Format::eB8G8R8A8Srgb, vk::Extent2D{32, 32}, {}, {}, {},
+            VulkanRenderCompilerDevicePlanningMode::compiler_only};
+        fixture.variants = {{.graph_variant = RenderPipelineGraphVariant::flat}};
+        auto input = fixture.input();
+        input.runtime_shader_compiler_enabled = true;
+        const auto result = runRenderCompilerProgram(defaultVulkanRenderCompilerProgram(), input);
+        const auto &variant = result.variants.front();
+        const auto &plan = *requireVulkanRenderCompilerPhysicalPackage(*variant.physical_package).target_plans.at("main");
+        const auto order = framePlanOrder(variant.frame_plans.at("main"));
+        REQUIRE(physicalNodeOrderOf(plan.scopes).nodes == order);
+        REQUIRE(plan.opportunities.node_order == order);
+        return std::make_pair(order, vulkanTargetPlanToJson(plan));
+    };
+    std::set<std::vector<std::string>> orders;
+    for (std::uint64_t seed = 0; seed < 8; ++seed) {
+        CAPTURE(seed);
+        const auto first = compile_seed(seed);
+        REQUIRE(compile_seed(seed) == first);
+        orders.insert(first.first);
+    }
+    REQUIRE(orders.size() > 1);
+}
+
 struct Fg1Compiled {
     nlohmann::json plan;
     TargetPlanningPolicy planning;
@@ -2125,6 +2164,258 @@ std::string fg1Refusal(const nlohmann::json &config, nlohmann::json *detail = nu
         return std::string{"not a graph refusal: "} + error.what();
     }
     return "not refused";
+}
+
+TEST_CASE("RC-3d2 loop fragment recovery copies directly into the authored document",
+          "[rendercompiler][rc3d2][physical-fragment][loop-order]") {
+    using Json = nlohmann::json;
+    auto document = fg1Document(2, nullptr);
+    document["definitions"] = {{"paint", {{"nodes", Json::array({fg1Image("canvas"), fg1Fill("fill", "canvas")})},
+                                          {"outputs", Json::object()}}}};
+    document["nodes"] = Json::array({
+        {{"id", "steps"}, {"op", "graph.loop"},
+         {"parameters", {{"over", {{"range", {{"count", 2}}}}},
+                         {"branches", Json::array({{{"body", "paint"}}})}}},
+         {"inputs", Json::object()}, {"outputs", Json::array()}},
+        {{"id", "data"}, {"op", "render.buffer"},
+         {"parameters", {{"element", "float"}, {"size", 16}}}, {"outputs", {"resource"}}},
+        {{"id", "independent"}, {"op", "render.compute"},
+         {"parameters", {{"shader", "engine://ray_deform"}, {"dispatch", {{"groups", {1, 1, 1}}}},
+                         {"ports", {{"data", {{"kind", "buffer"}, {"element", "float"}, {"access", "read_write"}}}}}}},
+         {"inputs", {{"data", {{"node", "data"}, {"port", "resource"}}}}}, {"outputs", {"data"}}}});
+    std::vector variants{RenderPipelineGraphVariant::flat};
+#if PELICAN_WITH_OPENXR
+    variants.push_back(RenderPipelineGraphVariant::xr);
+#endif
+    const auto render_document = document;
+    for (const bool compute_loop : {false, true}) {
+        CAPTURE(compute_loop);
+        document = render_document;
+        if (compute_loop) {
+            auto task = document["nodes"][2];
+            task["id"] = "fill";
+            document["definitions"]["paint"]["nodes"] = Json::array({document["nodes"][1], task});
+        }
+        for (const auto variant_kind : variants) {
+            CAPTURE(variant_kind);
+            const std::string graph = variant_kind == RenderPipelineGraphVariant::flat ? "main_render" : "main_render#xr";
+            const std::string task_name = variant_kind == RenderPipelineGraphVariant::flat ? "independent" : "independent#xr";
+            const std::string first_copy = "steps/0/fill" + std::string{compute_loop && variant_kind == RenderPipelineGraphVariant::xr ? "#xr" : ""};
+            const auto compile = [&](const Json &source) {
+                ProgramInputFixture fixture;
+                fixture.config = source;
+                fixture.backend_context = VulkanRenderCompilerBackendContext{
+                    vk::Format::eB8G8R8A8Srgb, vk::Extent2D{64, 64}, {}, {}, {},
+                    VulkanRenderCompilerDevicePlanningMode::compiler_only};
+                fixture.variants = {{.graph_variant = variant_kind}};
+                auto input = fixture.input();
+                input.runtime_shader_compiler_enabled = true;
+                const auto result = runRenderCompilerProgram(defaultVulkanRenderCompilerProgram(), input);
+                const auto &variant = result.variants.front();
+                const auto &plan = *requireVulkanRenderCompilerPhysicalPackage(*variant.physical_package).target_plans.at(graph);
+                const auto order = framePlanOrder(variant.frame_plans.at(graph));
+                REQUIRE(physicalNodeOrderOf(plan.scopes).nodes == order);
+                if (source.at("rendering").contains("frame_node_order")) {
+                    const auto &orders = variant.render_graph->frame_node_order;
+                    const auto listed = std::find_if(orders.begin(), orders.end(), [&](const auto &entry) {
+                        return entry.graph == graph;
+                    });
+                    REQUIRE(listed != orders.end());
+                    REQUIRE(std::find(listed->nodes.begin(), listed->nodes.end(), first_copy) != listed->nodes.end());
+                }
+                return std::make_pair(order, vulkanPhysicalFragmentPackageToJson(ejectVulkanPhysicalFragmentPackage(plan)));
+            };
+            const auto [original_order, original_fragment] = compile(document);
+            for (const bool interleaved : {false, true}) {
+                CAPTURE(interleaved);
+                auto fragment = original_fragment;
+                auto &scopes = fragment["scopes"];
+                const auto task = std::find_if(scopes.begin(), scopes.end(), [&](const auto &scope) {
+                    return scope.at("nodes") == Json::array({task_name});
+                });
+                REQUIRE(task != scopes.end());
+                const auto task_scope = *task;
+                scopes.erase(task);
+                auto place = scopes.begin();
+                if (interleaved) {
+                    place = std::find_if(scopes.begin(), scopes.end(), [&](const auto &scope) {
+                        return scope.at("nodes") == Json::array({first_copy});
+                    });
+                    REQUIRE(place != scopes.end());
+                    ++place;
+                }
+                scopes.insert(place, task_scope);
+                std::vector<std::string> desired;
+                for (const auto &scope : scopes)
+                    for (const auto &node : scope.at("nodes")) desired.push_back(node.template get<std::string>());
+                REQUIRE(desired != original_order);
+                auto edited = document;
+                const auto variant_name = std::string{renderPipelineGraphVariantName(variant_kind)};
+                edited["rendering"]["vulkan_physical_fragments"] = {{variant_name, Json::array({fragment})}};
+                Json detail;
+                try {
+                    (void)compile(edited);
+                    FAIL("fragment order must be refused");
+                } catch (const GraphRegistryError &error) {
+                    REQUIRE(error.code() == "physical_fragment.reorders_frame_plan@1");
+                    detail = error.detail();
+                }
+                if (interleaved) {
+                    CHECK_FALSE(detail.contains("frame_node_order"));
+                    CHECK(detail.at("not_expressible") == "loop_interleaved");
+                    CHECK(detail.at("loop") == "steps");
+                } else {
+                    const auto &names = detail.at("frame_node_order").at(graph);
+                    CHECK(std::find(names.begin(), names.end(), Json(task_name)) != names.end());
+                    CHECK(std::count(names.begin(), names.end(), Json("steps")) == 1);
+                    CHECK(std::find(names.begin(), names.end(), Json(first_copy)) == names.end());
+                    // Copy the complete object verbatim into the original authoring.
+                    auto recovered = document;
+                    recovered["rendering"]["frame_node_order"] = detail.at("frame_node_order");
+                    const auto [actual, fresh] = compile(recovered);
+                    CHECK(actual == desired);
+                    recovered["rendering"]["vulkan_physical_fragments"] = {{variant_name, Json::array({fresh})}};
+                    CHECK(compile(recovered).first == desired);
+                }
+            }
+        }
+    }
+}
+
+// One expansion with two independent tasks, each writing its own buffer.
+nlohmann::json rc3d2TwoTaskLoop() {
+    using Json = nlohmann::json;
+    auto document = fg1Document(1, nullptr);
+    auto body = Json::array();
+    for (const auto *id : {"a", "b"}) {
+        const auto buffer = std::string{id} + "_data";
+        body.push_back({{"id", buffer}, {"op", "render.buffer"},
+                        {"parameters", {{"element", "float"}, {"size", 16}}}, {"outputs", {"resource"}}});
+        body.push_back({{"id", id}, {"op", "render.compute"},
+            {"parameters", {{"shader", "engine://ray_deform"}, {"dispatch", {{"groups", {1, 1, 1}}}},
+                            {"ports", {{"data", {{"kind", "buffer"}, {"element", "float"}, {"access", "read_write"}}}}}}},
+            {"inputs", {{"data", {{"node", buffer}, {"port", "resource"}}}}}, {"outputs", {"data"}}});
+    }
+    document["definitions"]["blur_body"]["nodes"] = std::move(body);
+    document["nodes"] = Json::array({document["nodes"].back()});
+    document["nodes"][0]["id"] = "steps";
+    return document;
+}
+
+RenderCompilerProgramResult rc3d2CompileDocument(const nlohmann::json &document) {
+    ProgramInputFixture fixture;
+    fixture.config = document;
+    fixture.backend_context = VulkanRenderCompilerBackendContext{
+        vk::Format::eB8G8R8A8Srgb, vk::Extent2D{64, 64}, {}, {}, {},
+        VulkanRenderCompilerDevicePlanningMode::compiler_only};
+    fixture.variants = {{.graph_variant = RenderPipelineGraphVariant::flat}};
+    auto input = fixture.input();
+    input.runtime_shader_compiler_enabled = true;
+    return runRenderCompilerProgram(defaultVulkanRenderCompilerProgram(), input);
+}
+
+TEST_CASE("RC-3d2 loop internal reordering has no copyable authoring order",
+          "[rendercompiler][rc3d2][physical-fragment][loop-order]") {
+    auto document = rc3d2TwoTaskLoop();
+    const auto result = rc3d2CompileDocument(document);
+    const auto &variant = result.variants.front();
+    const auto &plan = *requireVulkanRenderCompilerPhysicalPackage(*variant.physical_package).target_plans.at("main_render");
+    auto fragment = ejectVulkanPhysicalFragmentPackage(plan);
+    auto &scopes = *fragment.scopes;
+    const auto find = [&](const std::string &name) {
+        return std::find_if(scopes.begin(), scopes.end(), [&](const auto &scope) {
+            return scope.nodes == std::vector<std::string>{name};
+        });
+    };
+    const auto a = find("steps/0/a");
+    const auto b = find("steps/0/b");
+    REQUIRE(a != scopes.end());
+    REQUIRE(b == a + 1);
+    std::iter_swap(a, b);
+    const auto original = framePlanOrder(variant.frame_plans.at("main_render"));
+    const auto position = std::find(original.begin(), original.end(), "steps/0/a") - original.begin();
+    document["rendering"]["vulkan_physical_fragments"] = {{"flat", nlohmann::json::array({vulkanPhysicalFragmentPackageToJson(fragment)})}};
+    try {
+        (void)rc3d2CompileDocument(document);
+        FAIL("loop internal reordering must be refused");
+    } catch (const GraphRegistryError &error) {
+        CHECK(error.code() == "physical_fragment.reorders_frame_plan@1");
+        CHECK(error.detail().at("graph") == "main_render");
+        CHECK(error.detail().at("position") == position);
+        CHECK(error.detail().at("expected") == "steps/0/a");
+        CHECK(error.detail().at("actual") == "steps/0/b");
+        CHECK_FALSE(error.detail().contains("frame_node_order"));
+        CHECK(error.detail().value("not_expressible", "") == "loop_internal_order");
+    }
+}
+
+TEST_CASE("RC-3d2 authored loop orders validate before expansion and require graph membership",
+          "[rendercompiler][rc3d2][loop-order]") {
+    using Json = nlohmann::json;
+    auto document = fg1Document(0, nullptr);
+    document["rendering"]["frame_node_order"] = {{"main_render", {"blur", "blur"}}};
+    Json detail;
+    CHECK(fg1Refusal(document, &detail) == "render_graph.frame_node_order_invalid@1");
+    CHECK(detail == Json{{"graph", "main_render"}, {"node", "blur"}, {"reason", "duplicate"}});
+    for (const auto &names : {Json(42), Json::array({""}), Json::array({false})}) {
+        document["rendering"]["frame_node_order"]["main_render"] = names;
+        CHECK(fg1Refusal(document, &detail) == "render_graph.frame_node_order_invalid@1");
+        CHECK(detail.at("graph") == "main_render");
+    }
+    document["rendering"]["frame_node_order"]["main_render"] = {"blur"};
+    REQUIRE_NOTHROW(fg1Compile(document));
+    for (const int count : {0, 1}) {
+        CAPTURE(count);
+        document["nodes"].back()["parameters"]["over"]["range"]["count"] = count;
+        document["definitions"]["blur_body"]["nodes"][1]["parameters"]["pass_set"] = "other";
+        CHECK(fg1Refusal(document, &detail) == "render_graph.frame_node_order_unknown@1");
+        CHECK(detail == Json{{"graph", "main_render"}, {"node", "blur"}});
+    }
+}
+
+TEST_CASE("RC-3d2 request fragment packages omit advice when loop provenance is unavailable",
+          "[rendercompiler][rc3d2][physical-fragment][loop-order]") {
+    const auto document = rc3d2TwoTaskLoop();
+    const auto result = rc3d2CompileDocument(document);
+    const auto &variant = result.variants.front();
+    const auto &physical = requireVulkanRenderCompilerPhysicalPackage(*variant.physical_package);
+    const auto &context = requireVulkanTargetPlanVerificationContext(physical, "main_render");
+    const auto &graph = *context.logical_graph;
+    REQUIRE(std::any_of(variant.compiled_pipeline->pass_provenance.begin(),
+                        variant.compiled_pipeline->pass_provenance.end(),
+                        [](const auto &origin) { return origin.loop_origin.has_value(); }));
+    CompilerProviderRegistry registry;
+    registry.registerProvider({"pelican.test.loop@1", CompilerProviderKind::target_lowering, 0, 0, "test:loop-v1"});
+    VulkanTargetPlanRequest request{.node_order = context.node_order,
+                                   .endpoint = "device:0", .provider = "pelican.test.loop@1"};
+    for (const auto &resource : context.automatic_plan->lowering_graph.resources)
+        request.pattern_bindings.push_back({resource.logical.name, resource.pattern, resource.extent,
+                                            resource.mip_levels, resource.array_layers, resource.dimension});
+    request.automatic_attachments = context.automatic_plan->attachments;
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    const auto automatic = compileVulkanTargetPlan(types, graph, context.topology, registry.snapshot(), request);
+    request.fragment_package = ejectVulkanPhysicalFragmentPackage(automatic);
+    // The unchanged request.fragment_package path remains accepted.
+    CHECK_NOTHROW(compileVulkanTargetPlan(types, graph, context.topology, registry.snapshot(), request));
+    auto &scopes = *request.fragment_package->scopes;
+    const auto task = std::find_if(scopes.begin(), scopes.end(), [](const auto &scope) {
+        return scope.nodes == std::vector<std::string>{"steps/0/a"};
+    });
+    REQUIRE(task != scopes.end());
+    REQUIRE(task != scopes.begin());
+    std::rotate(scopes.begin(), task, task + 1);
+    try {
+        (void)compileVulkanTargetPlan(types, graph, context.topology, registry.snapshot(), request);
+        FAIL("request fragment reordering must be refused");
+    } catch (const GraphRegistryError &error) {
+        CHECK(error.code() == "physical_fragment.reorders_frame_plan@1");
+        CHECK(error.detail().at("graph") == "main_render");
+        CHECK(error.detail().at("position") == 0);
+        CHECK(error.detail().at("expected") == context.node_order.nodes().front());
+        CHECK(error.detail().at("actual") == "steps/0/a");
+        CHECK_FALSE(error.detail().contains("frame_node_order"));
+        CHECK(error.detail().value("not_expressible", "") == "provenance_unavailable");
+    }
 }
 
 // What target_planning says for main_render's node / resource `name`.

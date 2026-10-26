@@ -375,7 +375,7 @@ TEST_CASE("optimized planning exposes independent work while explicit constraint
     LogicalPlanningOpportunityInput optimized_input;
     optimized_input.legal_alias_candidates = aliasCandidates();
     const auto optimized =
-        analyzeLogicalPlanningOpportunities(graph, optimized_input);
+        analyzeLogicalPlanningOpportunities(graph, FramePlanNodeOrder{graph, {"alpha", "beta", "gamma", "producer", "consumer"}}, optimized_input);
 
     REQUIRE(containsPair(optimized.parallel_candidates, "alpha", "beta"));
     REQUIRE(containsPair(optimized.fusion_candidates, "alpha", "beta"));
@@ -392,7 +392,7 @@ TEST_CASE("optimized planning exposes independent work while explicit constraint
         PlanningResourceConstraint{.resource = "alias_a",
                                    .no_alias = true});
     const auto constrained =
-        analyzeLogicalPlanningOpportunities(graph, constrained_input);
+        analyzeLogicalPlanningOpportunities(graph, FramePlanNodeOrder{graph, {"alpha", "beta", "gamma", "producer", "consumer"}}, constrained_input);
     REQUIRE_FALSE(
         containsPair(constrained.parallel_candidates, "alpha", "beta"));
     REQUIRE(std::none_of(
@@ -406,13 +406,13 @@ TEST_CASE("optimized planning exposes independent work while explicit constraint
     conservative_input.profile.kind =
         PlanningProfileKind::conservative_debug;
     const auto conservative =
-        analyzeLogicalPlanningOpportunities(graph, conservative_input);
+        analyzeLogicalPlanningOpportunities(graph, FramePlanNodeOrder{graph, {"alpha", "beta", "gamma", "producer", "consumer"}}, conservative_input);
     REQUIRE(conservative.parallel_candidates.empty());
     REQUIRE(conservative.fusion_candidates.empty());
     REQUIRE(conservative.alias_candidates.empty());
 }
 
-TEST_CASE("hazard stress is seed-reproducible and varies only legal decisions",
+TEST_CASE("hazard stress preserves the supplied order and varies legal candidates",
           "[target-planning][hazard-stress]") {
     const auto graph = planningGraph();
     const auto legal_aliases = aliasCandidates();
@@ -421,24 +421,27 @@ TEST_CASE("hazard stress is seed-reproducible and varies only legal decisions",
     input.legal_alias_candidates = legal_aliases;
 
     const auto first =
-        analyzeLogicalPlanningOpportunities(graph, input);
+        analyzeLogicalPlanningOpportunities(graph, FramePlanNodeOrder{graph, {"alpha", "beta", "gamma", "producer", "consumer"}}, input);
     const auto second =
-        analyzeLogicalPlanningOpportunities(graph, input);
+        analyzeLogicalPlanningOpportunities(graph, FramePlanNodeOrder{graph, {"alpha", "beta", "gamma", "producer", "consumer"}}, input);
     REQUIRE(logicalPlanningOpportunityReportToJson(first).dump() ==
             logicalPlanningOpportunityReportToJson(second).dump());
 
     std::set<std::string> schedules;
     std::set<std::string> aliases;
+    std::set<std::string> parallel_orders;
     for (std::uint64_t seed = 1; seed <= 24; ++seed) {
         input.profile.seed = seed;
         const auto report =
-            analyzeLogicalPlanningOpportunities(graph, input);
+            analyzeLogicalPlanningOpportunities(graph, FramePlanNodeOrder{graph, {"alpha", "beta", "gamma", "producer", "consumer"}}, input);
         schedules.insert(
             nlohmann::ordered_json(report.node_order).dump());
         aliases.insert(
             logicalPlanningOpportunityReportToJson(report)
                 .at("alias_candidates")
                 .dump());
+        parallel_orders.insert(logicalPlanningOpportunityReportToJson(report).at("parallel_candidates").dump());
+        REQUIRE(report.node_order == std::vector<std::string>{"alpha", "beta", "gamma", "producer", "consumer"});
         REQUIRE(std::find(report.node_order.begin(),
                           report.node_order.end(), "producer") <
                 std::find(report.node_order.begin(),
@@ -448,14 +451,15 @@ TEST_CASE("hazard stress is seed-reproducible and varies only legal decisions",
                                  pair.second));
         }
     }
-    REQUIRE(schedules.size() > 1);
+    REQUIRE(schedules.size() == 1); // The supplied order belongs to the planner.
     REQUIRE(aliases.size() > 1);
+    REQUIRE(parallel_orders.size() > 1);
 
     requireThrowsContaining(
         [&] {
             LogicalPlanningOpportunityInput invalid;
             invalid.profile = {PlanningProfileKind::optimized, 1};
-            (void)analyzeLogicalPlanningOpportunities(graph, invalid);
+            (void)analyzeLogicalPlanningOpportunities(graph, FramePlanNodeOrder{graph, {"alpha", "beta", "gamma", "producer", "consumer"}}, invalid);
         },
         "only valid for hazard_stress");
 }

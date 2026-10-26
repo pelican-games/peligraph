@@ -1,3 +1,4 @@
+#include "../../project/graphcomposition.hpp"
 #include "renderingsamplecount.hpp"
 
 #include "logicalframegraphadapter.hpp"
@@ -1459,6 +1460,7 @@ TargetEndpoint renderingTargetRuntimeEndpoint(
 
 RenderingTargetPlanCompilation compileRenderingTargetPlans(
     const RenderGraphIR &render_graph,
+    const std::unordered_map<std::string, FramePlan> &frame_plans,
     std::span<const RenderTargetDefinition> render_targets,
     const SampleCountPolicy &policy,
     vk::Format swapchain_format,
@@ -1471,7 +1473,8 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
     std::span<const VulkanTargetPlanPinPackage>
         plan_pins,
     std::span<const VulkanPhysicalFragmentPackage>
-        physical_fragments) {
+        physical_fragments,
+    std::span<const RenderPassProvenance> provenance) {
     const auto target_by_name =
         renderTargetsByName(render_targets);
     const auto types = makeBuiltinLogicalTypeRegistry();
@@ -1649,11 +1652,16 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
         const auto fragment =
             fragments_by_graph.find(
                 definition.name);
+        const auto frame = frame_plans.find(definition.name);
+        if (frame == frame_plans.end())
+            throw GraphRegistryError{"target_plan.node_order_missing@1", {{"graph", definition.name}}};
+        const FramePlanNodeOrder node_order{frame->second};
         auto plan_value =
             compileVulkanTargetPlan(
                 types, logical_graph, topology,
                 runtimeProviders(),
                 VulkanTargetPlanRequest{
+                    .node_order = node_order,
                     .endpoint = "device:0",
                     .provider = std::string{kRuntimeProvider},
                     .required_endpoint_capabilities =
@@ -1727,7 +1735,7 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                 logical_graph, topology,
                 std::move(plan_value),
                 *fragment->second,
-                format_capabilities);
+                format_capabilities, provenance);
         }
         auto plan =
             std::make_shared<const VulkanTargetPlan>(
@@ -1867,6 +1875,7 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
         }
         result.verification_contexts.push_back(
             RenderingTargetPlanVerificationContext{
+                .node_order = node_order,
                 .logical_graph =
                     std::make_shared<
                         const CompiledLogicalRenderGraph>(
@@ -1962,6 +1971,7 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
 RenderingTargetPlanCompilation
 compileRenderingTargetPlansForVulkanDevice(
     const RenderGraphIR &render_graph,
+    const std::unordered_map<std::string, FramePlan> &frame_plans,
     std::span<const RenderTargetDefinition> render_targets,
     const SampleCountPolicy &policy,
     vk::Format swapchain_format,
@@ -1975,7 +1985,8 @@ compileRenderingTargetPlansForVulkanDevice(
     std::span<const VulkanTargetPlanPinPackage>
         plan_pins,
     std::span<const VulkanPhysicalFragmentPackage>
-        physical_fragments) {
+        physical_fragments,
+    std::span<const RenderPassProvenance> provenance) {
     const auto features =
         physical_device.getFeatures2<
             vk::PhysicalDeviceFeatures2,
@@ -1994,7 +2005,7 @@ compileRenderingTargetPlansForVulkanDevice(
         supportsDynamicRenderingLocalRead(
             physical_device);
     return compileRenderingTargetPlans(
-        render_graph, render_targets, policy, swapchain_format,
+        render_graph, frame_plans, render_targets, policy, swapchain_format,
         RenderingTargetPlanDeviceFacts{
             .max_color_attachments =
                 device_properties
@@ -2056,7 +2067,7 @@ compileRenderingTargetPlansForVulkanDevice(
         std::move(external_depth_export),
         std::move(target_planning),
         plan_pins,
-        physical_fragments);
+        physical_fragments, provenance);
 }
 
 std::vector<ImagePlacement> imagePlacementsOf(

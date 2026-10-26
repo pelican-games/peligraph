@@ -116,6 +116,7 @@ TargetEndpoint renderingTargetRuntimeEndpoint(
 // delegating backend compiler can verify and install a complete physical
 // replacement without reconstructing private runtime-device facts.
 struct RenderingTargetPlanVerificationContext {
+    FramePlanNodeOrder node_order;
     std::shared_ptr<const CompiledLogicalRenderGraph>
         logical_graph;
     TargetTopologySnapshot topology;
@@ -158,6 +159,7 @@ struct RenderingTargetPlanCompilation {
 // `render_targets` are the execution declarations of the IR's config images.
 RenderingTargetPlanCompilation compileRenderingTargetPlans(
     const RenderGraphIR &render_graph,
+    const std::unordered_map<std::string, FramePlan> &frame_plans,
     std::span<const RenderTargetDefinition> render_targets,
     const SampleCountPolicy &policy,
     vk::Format swapchain_format,
@@ -170,9 +172,11 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
     std::span<const VulkanTargetPlanPinPackage>
         plan_pins = {},
     std::span<const VulkanPhysicalFragmentPackage>
-        physical_fragments = {});
+        physical_fragments = {},
+    std::span<const RenderPassProvenance> provenance = {});
 RenderingTargetPlanCompilation compileRenderingTargetPlansForVulkanDevice(
     const RenderGraphIR &render_graph,
+    const std::unordered_map<std::string, FramePlan> &frame_plans,
     std::span<const RenderTargetDefinition> render_targets,
     const SampleCountPolicy &policy,
     vk::Format swapchain_format,
@@ -186,7 +190,8 @@ RenderingTargetPlanCompilation compileRenderingTargetPlansForVulkanDevice(
     std::span<const VulkanTargetPlanPinPackage>
         plan_pins = {},
     std::span<const VulkanPhysicalFragmentPackage>
-        physical_fragments = {});
+        physical_fragments = {},
+    std::span<const RenderPassProvenance> provenance = {});
 
 // RC-3c2a: what the physical plan placed of each render target (one variant,
 // in `render_targets`' order): its sample count, layers, format, storage and

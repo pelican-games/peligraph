@@ -3,6 +3,7 @@
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/renderer.hpp"
 #include "../src/core/vkcore/util.hpp"
+#include "../src/core/renderingpass/rendertargetcontainer.hpp"
 
 #include <array>
 #include <cstdint>
@@ -11,6 +12,19 @@
 #include <vector>
 
 namespace Pelican::Test {
+
+// A replacement XR generation owns the same mirror resource as startup.
+// Synthetic targets still exercise the production left-eye copy.
+inline void registerSyntheticXrMirrorTarget(vk::Extent2D extent) {
+    auto &targets = GET_MODULE(RenderTargetContainer);
+    const auto metadata = targets.getMetadata(targets.getRenderTargetIdByName("display"));
+    targets.registerRenderTarget(RenderTargetDefinition{
+        .name = "__xr_mirror_left",
+        .format_class = "explicit(" + std::string{imageFormatName(metadata.format)} + ")",
+        .role = "color", .extent_scale = 1.0f, .fixed_extent = metadata.extent,
+        .format = metadata.format, .usage = ImageUsageBit::transfer_dst | ImageUsageBit::sampled,
+    }, extent, vma::MemoryUsage::eAutoPreferDevice);
+}
 
 class VulkanSyntheticStereoTarget final : public ILogicalFrameTarget {
     static constexpr std::uint32_t stereo_view_count = 2;

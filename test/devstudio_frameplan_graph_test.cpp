@@ -325,7 +325,7 @@ Json resolvedFramePlan(Pelican::ResolvedRenderPipeline resolved,
     const auto targets = Pelican::test_support::renderTargetDefinitionsOf(
         resolved.composed_config);
     const auto physical = Pelican::compileRenderingTargetPlans(
-        render_graph, targets, compiled.sample_count_policy,
+        render_graph, Pelican::TestSupport::framePlanMapOf(render_graph), targets, compiled.sample_count_policy,
         vk::Format::eB8G8R8A8Srgb, planningDeviceFacts(), std::nullopt,
         std::nullopt, compiled.target_planning, compiled.vulkan_plan_pins,
         compiled.vulkan_physical_fragments);
@@ -587,7 +587,7 @@ const Wp348CubeCaptureMeasurement &wp348CubeCaptureMeasurement() {
             Pelican::test_support::renderTargetDefinitionsOf(
                 resolved.composed_config);
         const auto physical = Pelican::compileRenderingTargetPlans(
-            render_graph, targets, compiled.sample_count_policy,
+            render_graph, Pelican::TestSupport::framePlanMapOf(render_graph), targets, compiled.sample_count_policy,
             vk::Format::eB8G8R8A8Srgb, planningDeviceFacts(),
             std::nullopt, std::nullopt, compiled.target_planning,
             compiled.vulkan_plan_pins,
@@ -1293,7 +1293,7 @@ Json independentOpportunityFramePlan(
     const auto targets =
         Pelican::test_support::renderTargetDefinitionsOf(config);
     const auto compilation = Pelican::compileRenderingTargetPlans(
-        render_graph, targets, Pelican::compileSampleCountPolicy(config),
+        render_graph, Pelican::TestSupport::framePlanMapOf(render_graph), targets, Pelican::compileSampleCountPolicy(config),
         vk::Format::eB8G8R8A8Unorm,
         planningDeviceFacts(),
         std::nullopt, std::nullopt,
@@ -1355,7 +1355,7 @@ Json fractionalScaleFramePlan() {
     const auto targets =
         Pelican::test_support::renderTargetDefinitionsOf(config);
     const auto compilation = Pelican::compileRenderingTargetPlans(
-        render_graph, targets, Pelican::compileSampleCountPolicy(config),
+        render_graph, Pelican::TestSupport::framePlanMapOf(render_graph), targets, Pelican::compileSampleCountPolicy(config),
         vk::Format::eB8G8R8A8Unorm, planningDeviceFacts());
     if (graphs.size() != 1 || compilation.plans.size() != 1) {
         throw std::runtime_error(

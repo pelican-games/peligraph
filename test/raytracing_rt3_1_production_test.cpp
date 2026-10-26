@@ -1487,6 +1487,20 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
         CHECK(covered > 0);
     }
     const auto &execution_nodes = RendererTestAccess::lastExecutionTrace(GET_MODULE(Renderer)).at("nodes");
+    const auto acceleration_structure_order = [](const Json &nodes) {
+        std::vector<std::string> names;
+        for (const auto &node : nodes) {
+            const auto name = node.value("name", std::string{});
+            if (name.rfind("__scene_acceleration_structure", 0) == 0)
+                names.push_back(name);
+        }
+        return names;
+    };
+    const auto frame_plan_as_order = [&] {
+        return acceleration_structure_order(
+            GET_MODULE(Renderer).currentFramePlanJson().at("nodes"));
+    };
+    CHECK(acceleration_structure_order(execution_nodes) == frame_plan_as_order());
     REQUIRE(execution_nodes.size() >= 4);
     const auto node_position = [&](const std::string &name) {
         const auto found = std::find_if(execution_nodes.begin(), execution_nodes.end(),
@@ -1681,7 +1695,6 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
             CHECK(result.dump().find("does not declare ray_query") != std::string::npos);
             CHECK(readWp374aText(feature_path) == saved);
         }
-        REQUIRE(execution_nodes[as_offset + 1].at("name") == "__scene_acceleration_structure:empty");
         const auto set_as_order = [&](const Json &orders) {
             const auto context = runWp374aRpcBytes(*service, rpc_id++, "get_frame_node_order", Json::object());
             const auto accepted = runWp374aRpcBytes(*service, rpc_id++, "edit_frame_node_order", {
@@ -1699,6 +1712,7 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
         // Publication replaces the targets at the boundary; read the next completed frame.
         (void)renderWp374aProductionRows();
         const auto ordered_nodes = RendererTestAccess::lastExecutionTrace(GET_MODULE(Renderer)).at("nodes");
+        CHECK(acceleration_structure_order(ordered_nodes) == frame_plan_as_order());
         const auto execution_position = [&](const std::string &name) {
             const auto found = std::find_if(ordered_nodes.begin(), ordered_nodes.end(), [&](const auto &node) { return node.at("name") == name; });
             REQUIRE(found != ordered_nodes.end());

@@ -368,6 +368,7 @@ void RenderPassExecutor::execute(const FrameRenderContext &frame, const Compiled
 
     renderDynamicPassDrawCalls(cmd_buf, pass.pass_id, pass_def, target_extent,
                                dependencies.dispatch, invocation);
+    recordBodyForTesting(pass, invocation);
 
     cmd_buf.endRendering();
 }
@@ -468,6 +469,7 @@ void RenderPassExecutor::executeRenderingScopePass(
         frame.cmd_buf, pass.pass_id,
         pass.definition, extent,
         dependencies.dispatch, invocation);
+    recordBodyForTesting(pass, invocation);
 }
 
 void RenderPassExecutor::renderingScopeDependency(

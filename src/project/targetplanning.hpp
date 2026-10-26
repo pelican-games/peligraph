@@ -1,6 +1,7 @@
 #pragma once
 
 #include "logicalrendergraph.hpp"
+#include "frameplan.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -341,6 +342,7 @@ struct LogicalPlanningOpportunityReport {
 
 LogicalPlanningOpportunityReport analyzeLogicalPlanningOpportunities(
     const CompiledLogicalRenderGraph &graph,
+    const FramePlanNodeOrder &node_order,
     LogicalPlanningOpportunityInput input = {});
 nlohmann::ordered_json logicalPlanningOpportunityReportToJson(
     const LogicalPlanningOpportunityReport &report);

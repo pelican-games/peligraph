@@ -1,6 +1,7 @@
 #include "frameplan.hpp"
 
 #include "graphcomposition.hpp"
+#include "planningrank.hpp"
 
 #include <algorithm>
 #include <deque>
@@ -295,7 +296,8 @@ void addWriteAfterWriteBarriers(
     }
 }
 
-std::vector<size_t> topologicalOrder(const FrameGraphDefinition &definition, const PlannerEdges &planner_edges) {
+std::vector<size_t> topologicalOrder(const FrameGraphDefinition &definition, const PlannerEdges &planner_edges,
+                                    FramePlanningOptions options = {}) {
     const auto count = definition.nodes.size();
     std::vector<size_t> indegree(count, 0);
     std::vector<std::vector<size_t>> adjacency(count);
@@ -314,9 +316,19 @@ std::vector<size_t> topologicalOrder(const FrameGraphDefinition &definition, con
     std::vector<size_t> order;
     order.reserve(count);
     while (!ready.empty()) {
-        const auto [unused_index, node_index] = *ready.begin();
+        auto selected = ready.begin();
+        if (options.hazard_stress_seed) {
+            selected = std::min_element(ready.begin(), ready.end(), [&](const auto &left, const auto &right) {
+                const auto &a = definition.nodes[left.second].name;
+                const auto &b = definition.nodes[right.second].name;
+                const auto rank_a = stablePlanningRank(*options.hazard_stress_seed, order.size(), a);
+                const auto rank_b = stablePlanningRank(*options.hazard_stress_seed, order.size(), b);
+                return rank_a != rank_b ? rank_a < rank_b : a < b;
+            });
+        }
+        const auto [unused_index, node_index] = *selected;
         (void)unused_index;
-        ready.erase(ready.begin());
+        ready.erase(selected);
         order.push_back(node_index);
         for (const auto next : adjacency[node_index]) {
             --indegree[next];
@@ -343,14 +355,14 @@ void requireStructure(const FrameGraphDefinition &definition) {
     (void)topologicalOrder(definition, planner_edges);
 }
 
-FramePlan planWith(const FrameGraphDefinition &definition) {
+FramePlan planWith(const FrameGraphDefinition &definition, FramePlanningOptions options) {
     validateUniqueNames(definition);
     validateKnownResources(definition);
     const auto node_index = buildNodeIndex(definition);
     auto planner_edges = buildEdges(definition, node_index);
     const auto reachability = transitiveClosure(planner_edges);
     validateWritesAreOrdered(definition, reachability);
-    const auto order = topologicalOrder(definition, planner_edges);
+    const auto order = topologicalOrder(definition, planner_edges, options);
     addWriteAfterWriteBarriers(planner_edges, definition, order);
 
     FramePlan plan;
@@ -458,12 +470,77 @@ std::string framePlanNodeKindName(FramePlanNodeKind kind) {
     throw std::runtime_error("unknown frame plan node kind");
 }
 
-FramePlan planFrameGraph(const FrameGraphDefinition &definition) {
-    return planWith(definition);
+FramePlan planFrameGraph(const FrameGraphDefinition &definition, FramePlanningOptions options) {
+    return planWith(definition, options);
 }
 
 void requireFrameGraphStructure(const FrameGraphDefinition &definition) {
     requireStructure(definition);
+}
+
+FramePlanNodeOrder::FramePlanNodeOrder(const FramePlan &plan)
+    : graph_{plan.name}, nodes_{framePlanOrder(plan)} {
+    validateFramePlanStructure(plan);
+}
+
+FramePlanNodeOrder::FramePlanNodeOrder(const CompiledLogicalRenderGraph &graph,
+                                     std::vector<std::string> nodes)
+    : graph_{graph.name}, nodes_{std::move(nodes)} {
+    requireGraph(graph);
+}
+
+void FramePlanNodeOrder::requireGraph(const CompiledLogicalRenderGraph &graph) const {
+    std::set<std::string> expected, actual;
+    std::vector<std::string> missing, extra, duplicates;
+    for (const auto &node : graph.nodes) expected.insert(node.name);
+    for (const auto &node : nodes_) {
+        if (!actual.insert(node).second) duplicates.push_back(node);
+        if (!expected.contains(node)) extra.push_back(node);
+    }
+    for (const auto &node : graph.nodes)
+        if (!actual.contains(node.name)) missing.push_back(node.name);
+    if (graph_ != graph.name || !missing.empty() || !extra.empty() || !duplicates.empty()) {
+        refuse("target_plan.node_order_mismatch@1",
+               {{"graph", graph.name}, {"order_graph", graph_}, {"missing", missing},
+                {"extra", extra}, {"duplicates", duplicates}});
+    }
+    std::unordered_map<std::string, std::size_t> position;
+    for (std::size_t i = 0; i < nodes_.size(); ++i) position.emplace(nodes_[i], i);
+    const auto require_before = [&](const std::string &first, const std::string &second,
+                                    std::string_view reason) {
+        if (!position.contains(first) || !position.contains(second) ||
+            position.at(first) >= position.at(second)) {
+            refuse("target_plan.node_order_conflicts_dependency@1",
+                   {{"graph", graph.name}, {"first", first}, {"second", second}, {"reason", reason}});
+        }
+    };
+    for (const auto &edge : deriveLogicalDataEdges(graph))
+        require_before(edge.producer_node, edge.consumer_node, "data");
+    for (const auto &node : graph.nodes) {
+        for (const auto &after : node.after) require_before(after, node.name, "after");
+        for (const auto &before : node.before) require_before(node.name, before, "before");
+    }
+}
+
+void requirePhysicalNodeOrderMatchesFramePlan(
+    const FramePlanNodeOrder &expected_order, std::span<const std::string> actual) {
+    const auto &expected = expected_order.nodes();
+    const auto mismatch = [&](std::size_t position, std::string_view reason) {
+        refuse("render_compiler.physical_order_mismatches_frame_plan@1",
+               {{"graph", expected_order.graph()}, {"position", position}, {"reason", reason},
+                {"expected", position < expected.size() ? nlohmann::json(expected[position]) : nlohmann::json{}},
+                {"actual", position < actual.size() ? nlohmann::json(actual[position]) : nlohmann::json{}}});
+    };
+    std::unordered_set<std::string> seen;
+    for (std::size_t i = 0; i < actual.size(); ++i)
+        if (!seen.insert(actual[i]).second) mismatch(i, "duplicate");
+    for (std::size_t i = 0; i < expected.size(); ++i)
+        if (!seen.contains(expected[i])) mismatch(i, "missing");
+    const std::unordered_set<std::string> expected_set(expected.begin(), expected.end());
+    for (std::size_t i = 0; i < actual.size(); ++i)
+        if (!expected_set.contains(actual[i])) mismatch(i, "extra");
+    for (std::size_t i = 0; i < expected.size(); ++i)
+        if (expected[i] != actual[i]) mismatch(i, "position");
 }
 
 std::vector<std::string> framePlanOrder(const FramePlan &plan) {

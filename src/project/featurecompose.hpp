@@ -43,6 +43,9 @@ struct RenderFeatureComposeDependencies {
     std::set<std::string> inactive_graph_scopes;
     // LP-Vb: sizes a graph.loop over view_axis (RenderPipelineResolveDependencies).
     RenderGraphViewAxisLengthResolver view_axis_length;
+    // The final variant's graph and compute-task suffix. Loop ids in
+    // frame_node_order expand to names in that variant's final IR.
+    std::string frame_node_order_suffix;
 };
 
 struct RenderFeatureComposeResult {

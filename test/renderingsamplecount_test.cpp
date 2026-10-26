@@ -405,7 +405,7 @@ TEST_CASE("rendering sample planning discovers a hybrid attachment component",
     const auto graphs =
         TestSupport::renderGraphOf(config);
     const auto compilation = compileRenderingTargetPlans(
-        withImagesOf(graphs, targets), targets, compileSampleCountPolicy(config),
+        withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets, compileSampleCountPolicy(config),
         vk::Format::eB8G8R8A8Unorm,
         RenderingTargetPlanDeviceFacts{
             .query_attachment_samples = query,
@@ -475,7 +475,7 @@ TEST_CASE("ray query target requirement is hard and uses the enabled runtime cap
     };
     const auto compile = [&](bool ray_query) {
         return compileRenderingTargetPlans(
-            withImagesOf(graphs, targets), targets, compileSampleCountPolicy(config),
+            withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets, compileSampleCountPolicy(config),
             vk::Format::eB8G8R8A8Unorm,
             RenderingTargetPlanDeviceFacts{
                 .ray_query = ray_query,
@@ -532,7 +532,7 @@ TEST_CASE(
     };
     const auto compile = [&](bool ray_tracing_pipeline) {
         return compileRenderingTargetPlans(
-            withImagesOf(graphs, targets), targets, compileSampleCountPolicy(config),
+            withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets, compileSampleCountPolicy(config),
             vk::Format::eB8G8R8A8Unorm,
             RenderingTargetPlanDeviceFacts{
                 .ray_tracing_pipeline = ray_tracing_pipeline,
@@ -583,7 +583,7 @@ TEST_CASE("rendering target bridge links attachment operations into the physical
         };
     const auto automatic =
         compileRenderingTargetPlans(
-            withImagesOf(graphs, targets), targets,
+            withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
             compileSampleCountPolicy(config),
             vk::Format::eB8G8R8A8Unorm,
             facts);
@@ -608,7 +608,7 @@ TEST_CASE("rendering target bridge links attachment operations into the physical
     const std::array fragments{fragment};
     const auto linked =
         compileRenderingTargetPlans(
-            withImagesOf(graphs, targets), targets,
+            withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
             compileSampleCountPolicy(config),
             vk::Format::eB8G8R8A8Unorm,
             facts,
@@ -694,7 +694,7 @@ TEST_CASE(
     bool queried_cube = false;
     const auto compilation =
         compileRenderingTargetPlans(
-            withImagesOf(graphs, targets), targets,
+            withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
             SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             RenderingTargetPlanDeviceFacts{
@@ -773,7 +773,7 @@ TEST_CASE(
 
     const auto transient =
         compileRenderingTargetPlans(
-            withImagesOf(graphs, targets), targets,
+            withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
             compileSampleCountPolicy(config),
             vk::Format::eB8G8R8A8Unorm,
             supported_facts);
@@ -823,7 +823,7 @@ TEST_CASE(
         };
     const auto unsupported =
         compileRenderingTargetPlans(
-            withImagesOf(graphs, targets), targets,
+            withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
             compileSampleCountPolicy(config),
             vk::Format::eB8G8R8A8Unorm,
             unsupported_facts);
@@ -841,7 +841,7 @@ TEST_CASE(
 
     const auto conservative =
         compileRenderingTargetPlans(
-            withImagesOf(graphs, targets), targets,
+            withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
             compileSampleCountPolicy(config),
             vk::Format::eB8G8R8A8Unorm,
             supported_facts,
@@ -900,7 +900,7 @@ TEST_CASE(
     requireThrowsContaining(
         [&] {
             (void)compileRenderingTargetPlans(
-                withImagesOf(graphs, targets), targets,
+                withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
                 compileSampleCountPolicy(config),
                 vk::Format::eB8G8R8A8Unorm,
                 format_sensitive_facts,
@@ -924,7 +924,7 @@ TEST_CASE(
 
     const auto local =
         compileRenderingTargetPlans(
-            withImagesOf(graphs, targets), targets, SampleCountPolicy{},
+            withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets, SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             localReadDeviceFacts());
     REQUIRE(local.plans.size() == 1);
@@ -979,7 +979,7 @@ TEST_CASE(
 
     const auto missing_feature =
         compileRenderingTargetPlans(
-            withImagesOf(graphs, targets), targets, SampleCountPolicy{},
+            withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets, SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             localReadDeviceFacts(false, true));
     REQUIRE(
@@ -991,7 +991,7 @@ TEST_CASE(
 
     const auto missing_format =
         compileRenderingTargetPlans(
-            withImagesOf(graphs, targets), targets, SampleCountPolicy{},
+            withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets, SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             localReadDeviceFacts(true, false));
     REQUIRE(
@@ -1015,7 +1015,7 @@ TEST_CASE(
                 Pelican::test_support::renderTargetDefinitionsOf(
                     config);
             return compileRenderingTargetPlans(
-                withImagesOf(graphs, targets), targets, samples,
+                withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets, samples,
                 vk::Format::eB8G8R8A8Unorm,
                 localReadDeviceFacts());
         };
@@ -1105,7 +1105,7 @@ TEST_CASE(
 
     const auto compilation =
         compileRenderingTargetPlans(
-            withImagesOf(graphs, targets), targets, SampleCountPolicy{},
+            withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets, SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             std::move(device_facts),
             VulkanViewExecutionPlanRequest{
@@ -1206,7 +1206,7 @@ TEST_CASE(
             config);
     const auto compilation =
         compileRenderingTargetPlans(
-            withImagesOf(graphs, targets), targets, SampleCountPolicy{},
+            withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets, SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             localReadDeviceFacts());
 
@@ -1289,7 +1289,7 @@ TEST_CASE("rendering target bridge applies a verified alternate physical format"
         };
     const auto automatic =
         compileRenderingTargetPlans(
-            withImagesOf(graphs, targets), targets,
+            withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
             compileSampleCountPolicy(config),
             vk::Format::eB8G8R8A8Unorm,
             facts);
@@ -1313,7 +1313,7 @@ TEST_CASE("rendering target bridge applies a verified alternate physical format"
     const std::array fragments{fragment};
     const auto linked =
         compileRenderingTargetPlans(
-            withImagesOf(graphs, targets), targets,
+            withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
             compileSampleCountPolicy(config),
             vk::Format::eB8G8R8A8Unorm,
             facts,
@@ -1368,7 +1368,7 @@ TEST_CASE("rendering target bridge applies a verified alternate physical format"
     requireThrowsContaining(
         [&] {
             (void)compileRenderingTargetPlans(
-                withImagesOf(graphs, targets), targets,
+                withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
                 compileSampleCountPolicy(config),
                 vk::Format::eB8G8R8A8Unorm,
                 unsupported_facts,
@@ -1420,7 +1420,7 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
     };
 
     const auto compilation = compileRenderingTargetPlans(
-        withImagesOf(graphs, targets), targets, compileSampleCountPolicy(config),
+        withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets, compileSampleCountPolicy(config),
         vk::Format::eB8G8R8A8Unorm,
         RenderingTargetPlanDeviceFacts{
             .query_attachment_samples = query,
@@ -1451,7 +1451,7 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
         ejectVulkanTargetPlanPinPackage(plan)};
     const auto pinned_compilation =
         compileRenderingTargetPlans(
-            withImagesOf(graphs, targets), targets,
+            withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
             compileSampleCountPolicy(config),
             vk::Format::eB8G8R8A8Unorm,
             RenderingTargetPlanDeviceFacts{
@@ -1469,7 +1469,7 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
         ejectVulkanPhysicalFragmentPackage(plan)};
     const auto fragment_compilation =
         compileRenderingTargetPlans(
-            withImagesOf(graphs, targets), targets,
+            withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
             compileSampleCountPolicy(config),
             vk::Format::eB8G8R8A8Unorm,
             RenderingTargetPlanDeviceFacts{
@@ -1495,7 +1495,7 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
     requireThrowsContaining(
         [&] {
             (void)compileRenderingTargetPlans(
-                withImagesOf(graphs, targets), targets,
+                withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
                 compileSampleCountPolicy(config),
                 vk::Format::eB8G8R8A8Unorm,
                 RenderingTargetPlanDeviceFacts{
@@ -1511,7 +1511,7 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
     requireThrowsContaining(
         [&] {
             (void)compileRenderingTargetPlans(
-                withImagesOf(graphs, targets), targets,
+                withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
                 compileSampleCountPolicy(config),
                 vk::Format::eB8G8R8A8Unorm,
                 RenderingTargetPlanDeviceFacts{
@@ -1527,7 +1527,7 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
     requireThrowsContaining(
         [&] {
             (void)compileRenderingTargetPlans(
-                withImagesOf(graphs, targets), targets,
+                withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
                 compileSampleCountPolicy(config),
                 vk::Format::eB8G8R8A8Unorm,
                 RenderingTargetPlanDeviceFacts{
@@ -1543,7 +1543,7 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
     requireThrowsContaining(
         [&] {
             (void)compileRenderingTargetPlans(
-                withImagesOf(graphs, targets), targets, compileSampleCountPolicy(config),
+                withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets, compileSampleCountPolicy(config),
                 vk::Format::eB8G8R8A8Unorm,
                 RenderingTargetPlanDeviceFacts{
                     .query_attachment_samples = query,
@@ -1559,7 +1559,7 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
     requireThrowsContaining(
         [&] {
             (void)compileRenderingTargetPlans(
-                withImagesOf(graphs, targets), targets, compileSampleCountPolicy(config),
+                withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets, compileSampleCountPolicy(config),
                 vk::Format::eB8G8R8A8Unorm,
                 RenderingTargetPlanDeviceFacts{
                     .query_attachment_samples = query,
@@ -1588,7 +1588,7 @@ TEST_CASE("exact rendering sample planning reports an added G-buffer target",
             const auto graphs =
                 TestSupport::renderGraphOf(config);
             (void)compileRenderingTargetPlans(
-                withImagesOf(graphs, targets), targets,
+                withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
                 compileSampleCountPolicy(config),
                 vk::Format::eB8G8R8A8Unorm,
                 RenderingTargetPlanDeviceFacts{
@@ -1621,7 +1621,7 @@ TEST_CASE("explicit target selects its whole attachment component",
     const auto graphs =
         TestSupport::renderGraphOf(config);
     const auto compilation = compileRenderingTargetPlans(
-        withImagesOf(graphs, targets), targets, compileSampleCountPolicy(config),
+        withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets, compileSampleCountPolicy(config),
         vk::Format::eB8G8R8A8Unorm,
         RenderingTargetPlanDeviceFacts{
             .query_attachment_samples =
@@ -1667,7 +1667,7 @@ TEST_CASE(
             aliasLifetimeConfig());
     const auto compilation =
         compileRenderingTargetPlans(
-            withImagesOf(graphs, targets), targets, SampleCountPolicy{},
+            withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets, SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             RenderingTargetPlanDeviceFacts{
                 .query_attachment_samples =
@@ -1732,7 +1732,9 @@ TEST_CASE(
         return compileRenderingTargetPlans(
             withImagesOf(TestSupport::renderGraphOf(
                              aliasLifetimeConfig()),
-                         targets),
+                         targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(TestSupport::renderGraphOf(
+                             aliasLifetimeConfig()),
+                         targets)),
             targets, SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             RenderingTargetPlanDeviceFacts{
@@ -1827,7 +1829,7 @@ TEST_CASE(
 
     const auto compilation =
         compileRenderingTargetPlans(
-            withImagesOf(alias_graphs, targets), targets,
+            withImagesOf(alias_graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(alias_graphs, targets)), targets,
             SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             RenderingTargetPlanDeviceFacts{
@@ -1872,7 +1874,7 @@ TEST_CASE(
                          single_graphs.graphs.end());
     const auto compilation =
         compileRenderingTargetPlans(
-            withImagesOf(graphs, targets), targets, SampleCountPolicy{},
+            withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets, SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             RenderingTargetPlanDeviceFacts{
                 .query_attachment_samples =
@@ -1939,7 +1941,7 @@ TEST_CASE(
         TestSupport::renderGraphOf(config);
     const auto compilation =
         compileRenderingTargetPlans(
-            withImagesOf(graphs, targets), targets, SampleCountPolicy{},
+            withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets, SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             RenderingTargetPlanDeviceFacts{
                 .query_attachment_samples =
@@ -2022,7 +2024,7 @@ TEST_CASE(
                 TestSupport::renderGraphOf(
                     config);
             (void)compileRenderingTargetPlans(
-                withImagesOf(graphs, targets), targets,
+                withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
                 SampleCountPolicy{},
                 vk::Format::eB8G8R8A8Unorm,
                 RenderingTargetPlanDeviceFacts{
@@ -2051,7 +2053,7 @@ TEST_CASE("runtime target adapter carries multiview device facts and typed view 
         target("display", ImageFormat::b8g8r8a8_srgb),
     };
     const auto compilation = compileRenderingTargetPlans(
-        withImagesOf(graphs, targets), targets, SampleCountPolicy{},
+        withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets, SampleCountPolicy{},
         vk::Format::eB8G8R8A8Unorm,
         RenderingTargetPlanDeviceFacts{
             .multiview = true,
@@ -2151,7 +2153,7 @@ TEST_CASE("runtime depth export stays disabled when the device format cannot be 
     };
     const auto compilation =
         compileRenderingTargetPlans(
-            withImagesOf(graphs, targets), targets, SampleCountPolicy{},
+            withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets, SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             RenderingTargetPlanDeviceFacts{
                 .query_attachment_samples =
@@ -2209,7 +2211,9 @@ TEST_CASE(
         return compileRenderingTargetPlans(
             withImagesOf(TestSupport::renderGraphOf(
                              aliasLifetimeConfig()),
-                         targets),
+                         targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(TestSupport::renderGraphOf(
+                             aliasLifetimeConfig()),
+                         targets)),
             targets, SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             RenderingTargetPlanDeviceFacts{
@@ -2274,7 +2278,7 @@ TEST_CASE(
         for (const auto &node : graphs.front().nodes)
             CHECK(node.once == (once && node.name == "lighting"));
         return compileRenderingTargetPlans(
-            render_graph, Pelican::test_support::renderTargetDefinitionsOf(config),
+            render_graph, Pelican::TestSupport::framePlanMapOf(render_graph), Pelican::test_support::renderTargetDefinitionsOf(config),
             SampleCountPolicy{},
             vk::Format::eB8G8R8A8Unorm,
             localReadDeviceFacts());
@@ -2299,6 +2303,24 @@ TEST_CASE(
           std::vector<std::string>{"lighting"});
     CHECK(scopeOf(*separate.plans.front(), "geometry") ==
           std::vector<std::string>{"geometry"});
+}
+
+TEST_CASE("RC-3d2 upper physical planning requires the graph FramePlan map",
+          "[rendering-sample-count][rc3d2][node-order]") {
+    const auto ir = TestSupport::renderGraphOf(
+        {{"name", "main"}, {"passes", nlohmann::json::array({
+            {{"name", "draw"}, {"type", "fullscreen"},
+             {"output", {{"color", "swapchain"}, {"depth", nullptr}}}}})}});
+    const auto compile = [&](const std::unordered_map<std::string, FramePlan> &plans) {
+        return compileRenderingTargetPlans(ir, plans, {}, SampleCountPolicy{}, vk::Format::eB8G8R8A8Unorm, {});
+    };
+    TestSupport::requireNamedRefusal([&] { (void)compile({}); },
+        "target_plan.node_order_missing@1", {{"graph", "main"}});
+    const auto plans = TestSupport::framePlanMapOf(ir);
+    REQUIRE(framePlanOrder(plans.at("main")) == std::vector<std::string>{"draw"});
+    const auto accepted = compile(plans);
+    REQUIRE(accepted.plans.size() == 1);
+    CHECK(physicalNodeOrderOf(accepted.plans.front()->scopes).nodes == std::vector<std::string>{"draw"});
 }
 
 } // namespace Pelican

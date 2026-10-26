@@ -236,7 +236,7 @@ TEST_CASE("RC-3a2 the loader, the planner and registration hand the recording th
     const auto graphs = TestSupport::frameGraphsOf(render_graph);
     const auto facts = deviceFacts();
     const auto automatic =
-        compileRenderingTargetPlans(render_graph, declared, compileSampleCountPolicy(config), vk::Format::eB8G8R8A8Srgb, facts);
+        compileRenderingTargetPlans(render_graph, Pelican::TestSupport::framePlanMapOf(render_graph), declared, compileSampleCountPolicy(config), vk::Format::eB8G8R8A8Srgb, facts);
     REQUIRE(automatic.plans.size() == 1);
     const auto &plan = *automatic.plans.front();
     CHECK(planned(plan, "a").representation == VulkanResourceRepresentation::materialized_image);
@@ -275,7 +275,7 @@ TEST_CASE("RC-3a2 the loader, the planner and registration hand the recording th
         }
         REQUIRE(edited);
         const std::array fragments{vulkanPhysicalFragmentPackageFromJson(document)};
-        const auto linked = compileRenderingTargetPlans(render_graph, declared, compileSampleCountPolicy(config),
+        const auto linked = compileRenderingTargetPlans(render_graph, Pelican::TestSupport::framePlanMapOf(render_graph), declared, compileSampleCountPolicy(config),
                                                         vk::Format::eB8G8R8A8Srgb, facts, std::nullopt,
                                                         std::nullopt, {}, {}, fragments);
         REQUIRE(linked.plans.size() == 1);

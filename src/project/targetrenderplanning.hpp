@@ -22,6 +22,8 @@
 
 namespace Pelican {
 
+struct RenderPassProvenance;
+
 enum class ResourcePatternFallback : std::uint8_t {
     materialize,
     reject,
@@ -144,7 +146,7 @@ TargetLoweringGraph makeTargetLoweringGraph(
     const LogicalTypeRegistry &types,
     const CompiledLogicalRenderGraph &canonical_graph,
     std::span<const ResourcePatternBinding> pattern_bindings,
-    std::span<const std::string> node_order = {});
+    const FramePlanNodeOrder &node_order);
 void lowerTargetExecutionDialect(TargetLoweringGraph &graph);
 void lowerVulkanPhysicalDialect(TargetLoweringGraph &graph);
 void validateTargetLoweringGraphDialect(
@@ -405,6 +407,7 @@ struct VulkanPhysicalFragmentPackage {
 };
 
 struct VulkanTargetPlanRequest {
+    FramePlanNodeOrder node_order;
     std::string endpoint;
     std::string provider;
     std::vector<std::string> required_endpoint_capabilities;
@@ -461,6 +464,8 @@ struct VulkanTargetPlan {
 void validateVulkanPhysicalFeatureClosure(
     const BackendProbeResult &selected_probe,
     std::span<const std::string> lowered_required_features);
+PhysicalNodeOrder physicalNodeOrderOf(std::span<const VulkanPhysicalScopePlan> scopes);
+
 VulkanTargetPlan compileVulkanTargetPlan(
     const LogicalTypeRegistry &types,
     const CompiledLogicalRenderGraph &canonical_graph,
@@ -520,7 +525,8 @@ VulkanTargetPlan linkVulkanPhysicalFragment(
     VulkanPhysicalFragmentPackage package,
     std::span<
         const VulkanPhysicalResourceFormatCapability>
-        format_capabilities = {});
+        format_capabilities = {},
+    std::span<const RenderPassProvenance> provenance = {});
 void validateVulkanPhysicalAttachmentPlans(
     const CompiledLogicalRenderGraph &canonical_graph,
     std::span<const VulkanPhysicalResourcePlan> resources,

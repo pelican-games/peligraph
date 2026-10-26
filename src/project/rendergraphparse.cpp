@@ -1919,6 +1919,8 @@ std::vector<BufferResource> parseBuffers(const Json &config, const std::vector<I
     return buffers;
 }
 
+} // namespace
+
 std::vector<FrameNodeOrderIR> parseFrameNodeOrder(const Json &config) {
     std::vector<FrameNodeOrderIR> result;
     const auto found = config.find("frame_node_order");
@@ -1945,6 +1947,8 @@ std::vector<FrameNodeOrderIR> parseFrameNodeOrder(const Json &config) {
     }
     return result;
 }
+
+namespace {
 
 // RC-3c2b1: the callable records' table as written (its values packed by the
 // task's schema when the final revision resolves it, as the structures'

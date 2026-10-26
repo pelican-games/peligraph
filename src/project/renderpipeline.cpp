@@ -1278,6 +1278,7 @@ ResolvedRenderPipeline resolveRenderPipeline(
             .validate_feature = dependencies.validate_feature,
             .inactive_graph_scopes = dependencies.inactive_graph_scopes,
             .view_axis_length = dependencies.view_axis_length,
+            .frame_node_order_suffix = graph_variant_policy.rendering_pass_name_suffix,
         });
 
     validatePassFieldOwnershipInConfig(

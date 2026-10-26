@@ -1,4 +1,6 @@
 #include "targetrenderplanning.hpp"
+#include "graphcomposition.hpp"
+#include "renderpipeline.hpp"
 
 #include "imagesubresourcejson.hpp"
 #include "stablefingerprint.hpp"
@@ -1422,56 +1424,6 @@ requireScopeAttachmentResource(
     return *found;
 }
 
-void validateDependencySafeNodeOrder(
-    const CompiledLogicalRenderGraph &canonical_graph,
-    const std::map<std::string, std::size_t, std::less<>>
-        &position) {
-    const auto require_before =
-        [&](std::string_view source,
-            std::string_view destination,
-            std::string_view dependency_kind) {
-            if (source == destination) return;
-            const auto from = position.find(source);
-            const auto to = position.find(destination);
-            if (from == position.end() ||
-                to == position.end()) {
-                throw std::runtime_error(
-                    "Vulkan physical scope partition lost a " +
-                    std::string{dependency_kind} +
-                    " dependency endpoint: " +
-                    std::string{source} + " -> " +
-                    std::string{destination});
-            }
-            if (from->second >= to->second) {
-                throw std::runtime_error(
-                    "Vulkan physical dependency-safe scope order "
-                    "reverses " +
-                    std::string{dependency_kind} +
-                    " dependency: " +
-                    std::string{source} + " -> " +
-                    std::string{destination});
-            }
-        };
-
-    for (const auto &edge :
-         deriveLogicalDataEdges(canonical_graph)) {
-        require_before(
-            edge.producer_node,
-            edge.consumer_node,
-            "data");
-    }
-    for (const auto &node : canonical_graph.nodes) {
-        for (const auto &dependency : node.after) {
-            require_before(
-                dependency, node.name, "after");
-        }
-        for (const auto &dependent : node.before) {
-            require_before(
-                node.name, dependent, "before");
-        }
-    }
-}
-
 void validateCompatibleRenderingScopeFusion(
     const VulkanTargetPlan &plan,
     const VulkanPhysicalScopeFragment &fragment,
@@ -1557,94 +1509,13 @@ void validateCompatibleRenderingScopeFusion(
     }
 }
 
-void recomputePhysicalResourceLifetimes(
-    VulkanTargetPlan &plan) {
-    std::map<std::string,
-             TargetLoweringResource *,
-             std::less<>>
-        resources;
-    for (auto &resource :
-         plan.lowering_graph.resources) {
-        resource.lifetime = {};
-        resources.emplace(
-            resource.logical.name, &resource);
-    }
-    const auto include =
-        [&](std::string_view name,
-            std::size_t position) {
-            const auto found = resources.find(name);
-            if (found == resources.end()) return;
-            auto &lifetime =
-                found->second->lifetime;
-            if (!lifetime.used) {
-                lifetime = {
-                    true, position, position};
-            } else {
-                lifetime.first_use =
-                    std::min(
-                        lifetime.first_use,
-                        position);
-                lifetime.last_use =
-                    std::max(
-                        lifetime.last_use,
-                        position);
-            }
-        };
-    for (std::size_t node_index = 0;
-         node_index <
-         plan.lowering_graph.nodes.size();
-         ++node_index) {
-        for (const auto &use :
-             plan.lowering_graph.nodes[node_index]
-                 .logical.uses) {
-            if (use.input_value) {
-                include(
-                    use.input_value->resource,
-                    node_index);
-            }
-            if (use.output_value) {
-                include(
-                    use.output_value->resource,
-                    node_index);
-            }
-        }
-    }
-    if (!plan.lowering_graph.nodes.empty()) {
-        const auto terminal =
-            plan.lowering_graph.nodes.size() - 1;
-        for (auto &[name, resource] :
-             resources) {
-            (void)name;
-            if (!resource->lifetime.used) continue;
-            if (resource->logical.materialization ==
-                    LogicalMaterializationRequirement::
-                        required ||
-                resource->logical.materialization ==
-                    LogicalMaterializationRequirement::
-                        external ||
-                resource->pattern.require_store) {
-                resource->lifetime.last_use =
-                    terminal;
-            }
-        }
-    }
-    for (auto &physical : plan.resources) {
-        const auto found =
-            resources.find(
-                physical.logical_resource);
-        if (found != resources.end()) {
-            physical.lifetime =
-                found->second->lifetime;
-        }
-    }
-}
-
 void applyScopePartition(
     const CompiledLogicalRenderGraph &canonical_graph,
     VulkanTargetPlan &plan,
     const std::vector<VulkanPhysicalScopeFragment>
         &fragments,
-    VulkanPhysicalScopeEditMode edit_mode) {
+    VulkanPhysicalScopeEditMode edit_mode,
+    std::span<const RenderPassProvenance> provenance) {
     std::vector<std::string> canonical_nodes;
     canonical_nodes.reserve(plan.lowering_graph.nodes.size());
     std::map<std::string,
@@ -1794,30 +1665,73 @@ void applyScopePartition(
                 "Vulkan physical split-only scope fragments must "
                 "preserve lowered graph node order");
         }
-    } else {
-        validateDependencySafeNodeOrder(
-            canonical_graph,
-            authored_position);
+    } else if (authored_nodes != canonical_nodes) {
+        const auto different = std::mismatch(canonical_nodes.begin(), canonical_nodes.end(), authored_nodes.begin());
+        const auto position = static_cast<std::size_t>(different.first - canonical_nodes.begin());
+        nlohmann::json detail{
+            {"graph", plan.graph}, {"position", position},
+            {"expected", canonical_nodes[position]}, {"actual", authored_nodes[position]}};
+        // Composition owns loop copy identities. Other final IR names
+        // (including provider nodes and namespaced tasks) are directly
+        // accepted by applyFrameNodeOrder after provider finalization.
+        std::map<std::string, const RenderPassProvenance *, std::less<>> origins;
+        for (const auto &entry : provenance) origins.emplace(entry.name, &entry);
+        // Logical declarations retain composition's pass-then-task order,
+        // independent of the FramePlan's execution order.
+        std::map<std::string, std::vector<std::string>, std::less<>> loop_expansions;
+        for (const auto &node : canonical_graph.nodes) {
+            const auto found = origins.find(node.name);
+            if (found == origins.end()) {
+                detail["not_expressible"] = "provenance_unavailable";
+                break;
+            }
+            if (found->second->loop_origin)
+                loop_expansions[found->second->loop_origin->loop].push_back(node.name);
+        }
+        std::vector<std::string> names;
+        std::set<std::string> emitted_loops;
+        std::string active_loop;
+        for (const auto &node : authored_nodes) {
+            if (detail.contains("not_expressible")) break;
+            const auto found = origins.find(node);
+            const auto *origin = found == origins.end() ? nullptr : found->second;
+            if (origin != nullptr && origin->loop_origin) {
+                const auto &loop = origin->loop_origin->loop;
+                if (active_loop == loop) continue;
+                if (!emitted_loops.insert(loop).second) {
+                    detail["not_expressible"] = "loop_interleaved";
+                    detail["loop"] = loop;
+                    break;
+                }
+                names.push_back(loop);
+                active_loop = loop;
+            } else {
+                names.push_back(node);
+                active_loop.clear();
+            }
+        }
+        if (!detail.contains("not_expressible")) {
+            std::vector<std::string> expanded;
+            for (const auto &name : names) {
+                if (const auto loop = loop_expansions.find(name); loop != loop_expansions.end())
+                    expanded.insert(expanded.end(), loop->second.begin(), loop->second.end());
+                else
+                    expanded.push_back(name);
+            }
+            if (expanded != authored_nodes) {
+                detail["not_expressible"] = "loop_internal_order";
+            }
+        }
+        if (!detail.contains("not_expressible")) {
+            detail["message"] = "Specify this node order with frame_node_order, then eject the physical fragment again.";
+            detail["frame_node_order"] = {{plan.graph, names}};
+        } else {
+            detail["message"] = "A copyable frame_node_order cannot be guaranteed for this order; see not_expressible.";
+        }
+        throw GraphRegistryError{"physical_fragment.reorders_frame_plan@1", std::move(detail)};
     }
 
     plan.scopes = std::move(scopes);
-    if (authored_nodes != canonical_nodes) {
-        std::vector<TargetLoweringNode>
-            reordered_nodes;
-        reordered_nodes.reserve(
-            authored_nodes.size());
-        for (const auto &node :
-             authored_nodes) {
-            reordered_nodes.push_back(
-                std::move(
-                    plan.lowering_graph.nodes[
-                        lowering_node_indices.at(
-                            node)]));
-        }
-        plan.lowering_graph.nodes =
-            std::move(reordered_nodes);
-    }
-    recomputePhysicalResourceLifetimes(plan);
 }
 
 void validateScopeResourceBoundaries(
@@ -2822,7 +2736,8 @@ VulkanTargetPlan linkVulkanPhysicalFragment(
     VulkanPhysicalFragmentPackage source_package,
     std::span<
         const VulkanPhysicalResourceFormatCapability>
-        format_capabilities) {
+        format_capabilities,
+    std::span<const RenderPassProvenance> provenance) {
     auto package =
         canonicalizePackage(
             std::move(source_package));
@@ -2854,16 +2769,6 @@ VulkanTargetPlan linkVulkanPhysicalFragment(
             "Vulkan physical fragment is stale for logical graph '" +
             canonical_graph.name + "'");
     }
-    if (package.backend_candidate !=
-        automatic_plan.backend_selection
-            .selected_candidate) {
-        throw std::runtime_error(
-            "Vulkan physical fragment backend candidate mismatch: "
-            "expected '" +
-            automatic_plan.backend_selection
-                .selected_candidate +
-            "', got '" + package.backend_candidate + "'");
-    }
     const auto automatic_fingerprint =
         vulkanAutomaticTargetPlanFingerprint(
             topology, automatic_plan);
@@ -2889,6 +2794,14 @@ VulkanTargetPlan linkVulkanPhysicalFragment(
                  stableFingerprint64String(automatic_fingerprint),
              .actual = stableFingerprint64String(
                  package.automatic_plan_fingerprint)}};
+    }
+
+    if (package.backend_candidate !=
+        automatic_plan.backend_selection.selected_candidate) {
+        throw std::runtime_error(
+            "Vulkan physical fragment backend candidate mismatch: expected '" +
+            automatic_plan.backend_selection.selected_candidate +
+            "', got '" + package.backend_candidate + "'");
     }
 
     const auto canonical_topology =
@@ -3065,9 +2978,10 @@ VulkanTargetPlan linkVulkanPhysicalFragment(
 
     if (package.scopes) {
         applyScopePartition(
-            canonical_graph, automatic_plan,
+            canonical_graph,
+            automatic_plan,
             *package.scopes,
-            package.scope_edit_mode);
+            package.scope_edit_mode, provenance);
         automatic_plan.decisions.push_back(
             PlanningDecision{
                 package.scope_edit_mode ==

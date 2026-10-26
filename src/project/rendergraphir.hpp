@@ -397,7 +397,8 @@ FrameGraphDefinition frameGraphDefinitionOf(const RenderGraphIR &ir,
                                             const GraphIR &graph);
 
 // The frame plan (planFrameGraph's rules and named refusals).
-FramePlan planRenderGraph(const RenderGraphIR &ir, const GraphIR &graph);
+FramePlan planRenderGraph(const RenderGraphIR &ir, const GraphIR &graph,
+                         FramePlanningOptions options = {});
 
 // What a pass's authored inputs need: every current `input` of a pass of the
 // graph (and a snapshot copy's `source`) is written by a node the plan runs

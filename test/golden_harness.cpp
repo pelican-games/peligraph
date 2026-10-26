@@ -8611,9 +8611,13 @@ void verifySegmentedGpuDrawHotReload() {
         graph_reload_error.is_string() &&
             graph_reload_error
                     .get<std::string>()
-                    .find(
-                        "size must be a multiple of 32 bytes") !=
-                std::string::npos,
+                    .find("render_graph.buffer_invalid@1") !=
+                std::string::npos &&
+            graph_reload_error.get<std::string>().find(
+                "scene_draw_segments_not_whole_records") !=
+                std::string::npos &&
+            graph_reload_error.get<std::string>().find(
+                "draw_segments") != std::string::npos,
         "segment ABI diagnostic");
     auto after_segment_failure =
         captureSegmentedDrawRuntimeSnapshot();

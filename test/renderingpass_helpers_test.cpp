@@ -4935,23 +4935,18 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "view-family scheduler follows dependency-verified physical order",
+    "view-family scheduler preserves registered FramePlan order across fused scopes",
     "[renderingpass][view-execution][schedule][reorder]") {
-    const std::vector<FrameGraphExecutionNode> nodes{
-        {.name = "A"},
-        {.name = "B"},
-        {.name = "C"},
-        {.name = "D"},
-    };
     VulkanTargetPlan plan;
+    plan.graph = "registered";
     plan.view_execution_plan.view_count = 1;
     plan.scopes = {
         {
-            .id = "reordered",
+            .id = "first",
             .nodes = {"C"},
         },
         {
-            .id = "non_contiguous_fused",
+            .id = "adjacent_fused",
             .nodes = {"A", "D"},
             .single_rendering_instance = true,
         },
@@ -4961,9 +4956,20 @@ TEST_CASE(
         },
     };
 
+    FramePlan frame{.name = "registered"};
+    for (const auto name : {"C", "A", "D", "B"})
+        frame.nodes.push_back(FramePlanNode{.name = name, .kind = FramePlanNodeKind::anchor,
+                                            .order = frame.nodes.size()});
+    FrameGraphRuntimeContainer runtime;
+    CompiledRenderingPass compiled;
+    compiled.name = "registered";
+    runtime.registerExecutionPlan(RenderingPassId{0}, compiled, frame, std::make_shared<CompiledRenderPipeline>(),
+                                  std::make_shared<VulkanTargetPlan>(plan));
+    const auto execution = runtime.find(RenderingPassId{0});
+    REQUIRE(execution != nullptr);
     const auto schedule =
         buildLogicalFrameViewFamilySchedule(
-            nodes, plan, 1);
+            execution->nodes, *execution->target_plan, 1);
     REQUIRE(schedule.size() == 4);
     REQUIRE(
         std::vector<std::size_t>{
@@ -4971,7 +4977,7 @@ TEST_CASE(
             schedule[1].node_index,
             schedule[2].node_index,
             schedule[3].node_index} ==
-        std::vector<std::size_t>{2, 0, 3, 1});
+        std::vector<std::size_t>{0, 1, 2, 3});
     REQUIRE(
         schedule[1].beginsScopeExecution());
     REQUIRE_FALSE(

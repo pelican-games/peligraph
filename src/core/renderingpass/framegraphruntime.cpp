@@ -101,6 +101,9 @@ CompiledFrameGraphExecution compileExecution(
     // without a target plan (the renderer's fallback schedule) would run a
     // repeated node twice, or in an order Studio does not show.
     validateFramePlanStructure(plan);
+    if (target_plan)
+        requirePhysicalNodeOrderMatchesFramePlan(
+            FramePlanNodeOrder{plan}, physicalNodeOrderOf(target_plan->scopes).nodes);
     auto pass_indices = renderPassIndices(compiled_pass);
     auto task_indices = computeTaskIndices(compiled_pass);
     auto material_routes =

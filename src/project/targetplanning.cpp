@@ -1,3 +1,4 @@
+#include "planningrank.hpp"
 #include "targetplanning.hpp"
 
 #include "logicalrendertype.hpp"
@@ -150,27 +151,6 @@ PlanningNamePair canonicalPair(PlanningNamePair pair,
     return pair;
 }
 
-std::uint64_t stableRank(std::uint64_t seed, std::uint64_t salt,
-                         std::string_view value) {
-    std::uint64_t hash = 1469598103934665603ULL;
-    auto add_byte = [&](std::uint8_t byte) {
-        hash ^= byte;
-        hash *= 1099511628211ULL;
-    };
-    for (std::uint32_t shift = 0; shift < 64; shift += 8) {
-        add_byte(static_cast<std::uint8_t>(seed >> shift));
-        add_byte(static_cast<std::uint8_t>(salt >> shift));
-    }
-    for (const auto character : value) {
-        add_byte(static_cast<std::uint8_t>(character));
-    }
-    // Finalized with the SplitMix64 mixer (S. Vigna, public domain).
-    hash ^= hash >> 30U;
-    hash *= 0xbf58476d1ce4e5b9ULL;
-    hash ^= hash >> 27U;
-    hash *= 0x94d049bb133111ebULL;
-    return hash ^ (hash >> 31U);
-}
 
 std::string pairKey(const PlanningNamePair &pair) {
     return pair.first + '\n' + pair.second;
@@ -743,6 +723,7 @@ std::string_view planningProfileKindName(PlanningProfileKind kind) {
 
 LogicalPlanningOpportunityReport analyzeLogicalPlanningOpportunities(
     const CompiledLogicalRenderGraph &graph,
+    const FramePlanNodeOrder &node_order,
     LogicalPlanningOpportunityInput input) {
     requireNonEmpty(graph.name, "logical planning graph name");
     if (input.profile.kind != PlanningProfileKind::hazard_stress &&
@@ -803,6 +784,7 @@ LogicalPlanningOpportunityReport analyzeLogicalPlanningOpportunities(
         }
     }
 
+    node_order.requireGraph(graph);
     const auto count = graph.nodes.size();
     std::vector<std::set<std::size_t>> edges(count);
     const auto add_edge = [&](std::string_view source,
@@ -834,46 +816,11 @@ LogicalPlanningOpportunityReport analyzeLogicalPlanningOpportunities(
         }
     }
 
-    std::vector<std::size_t> indegree(count, 0);
-    for (const auto &outgoing : edges) {
-        for (const auto destination : outgoing) ++indegree[destination];
-    }
-    std::vector<std::size_t> ready;
-    for (std::size_t index = 0; index < count; ++index) {
-        if (indegree[index] == 0) ready.push_back(index);
-    }
-
     LogicalPlanningOpportunityReport report{
         .graph = graph.name,
         .profile = input.profile,
+        .node_order = node_order.nodes(),
     };
-    std::uint64_t step = 0;
-    while (!ready.empty()) {
-        const auto selected = std::min_element(
-            ready.begin(), ready.end(), [&](std::size_t left,
-                                            std::size_t right) {
-                if (input.profile.kind ==
-                    PlanningProfileKind::hazard_stress) {
-                    const auto left_rank = stableRank(
-                        input.profile.seed, step, graph.nodes[left].name);
-                    const auto right_rank = stableRank(
-                        input.profile.seed, step, graph.nodes[right].name);
-                    if (left_rank != right_rank) return left_rank < right_rank;
-                }
-                return graph.nodes[left].name < graph.nodes[right].name;
-            });
-        const auto node_index = *selected;
-        ready.erase(selected);
-        report.node_order.push_back(graph.nodes[node_index].name);
-        for (const auto destination : edges[node_index]) {
-            if (--indegree[destination] == 0) ready.push_back(destination);
-        }
-        ++step;
-    }
-    if (report.node_order.size() != count) {
-        throw std::runtime_error(
-            "logical planning graph contains a dependency cycle");
-    }
 
     std::vector<std::vector<bool>> reachable(
         count, std::vector<bool>(count, false));
@@ -960,9 +907,9 @@ LogicalPlanningOpportunityReport analyzeLogicalPlanningOpportunities(
     const auto seeded_sort = [&](auto &values, std::uint64_t salt) {
         std::sort(values.begin(), values.end(),
                   [&](const auto &left, const auto &right) {
-                      const auto left_rank = stableRank(
+                      const auto left_rank = stablePlanningRank(
                           input.profile.seed, salt, pairKey(left));
-                      const auto right_rank = stableRank(
+                      const auto right_rank = stablePlanningRank(
                           input.profile.seed, salt, pairKey(right));
                       if (left_rank != right_rank) {
                           return left_rank < right_rank;

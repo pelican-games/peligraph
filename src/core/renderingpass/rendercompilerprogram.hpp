@@ -51,6 +51,7 @@ class RenderCompilerBackendPhysicalPackage {
     virtual void validate(
         std::span<const std::string>
             frame_graph_names) const = 0;
+    virtual PhysicalNodeOrder physicalNodeOrder(std::string_view graph) const = 0;
     // RC-3c2a: what the physical plan placed of each config image of the
     // variant's IR (the generation's resource description merges them).
     virtual std::span<const ImagePlacement> imagePlacements() const noexcept = 0;

@@ -345,7 +345,7 @@ TEST_CASE(
 
     const auto target =
         compileRenderingTargetPlans(
-            ir, Pelican::test_support::renderTargetDefinitionsOf(resolved.config),
+            ir, Pelican::TestSupport::framePlanMapOf(ir), Pelican::test_support::renderTargetDefinitionsOf(resolved.config),
             SampleCountPolicy{}, vk::Format::eB8G8R8A8Srgb,
             RenderingTargetPlanDeviceFacts{
                 .query_attachment_samples =

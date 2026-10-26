@@ -524,6 +524,33 @@ nlohmann::json materializeShippingAttachmentOperations(
 
 } // namespace
 
+TEST_CASE("RC-3d2 planner stress seeds vary ready nodes while preserving dependencies",
+          "[frameplanner][rc3d2][hazard-stress]") {
+    FrameGraphDefinition graph{.name = "stress"};
+    graph.nodes = {
+        {.name = "z_first", .declaration_index = 0},
+        {.name = "a_second", .declaration_index = 1},
+        {.name = "producer", .declaration_index = 2, .writes = {"value"}},
+        {.name = "consumer", .declaration_index = 3, .reads = {"value"}},
+    };
+    const std::vector<std::string> declared{"z_first", "a_second", "producer", "consumer"};
+    CHECK(framePlanOrder(planFrameGraph(graph)) == declared);
+    std::set<std::vector<std::string>> orders;
+    for (std::uint64_t seed = 0; seed < 24; ++seed) {
+        const FramePlanningOptions options{.hazard_stress_seed = seed};
+        const auto plan = planFrameGraph(graph, options);
+        const auto order = framePlanOrder(plan);
+        CHECK(framePlanOrder(planFrameGraph(graph, options)) == order);
+        CHECK(std::find(order.begin(), order.end(), "producer") <
+              std::find(order.begin(), order.end(), "consumer"));
+        REQUIRE(plan.barriers.size() == 1);
+        CHECK(plan.barriers.front().from == "producer");
+        CHECK(plan.barriers.front().to == "consumer");
+        orders.insert(order);
+    }
+    CHECK(orders.size() > 1);
+}
+
 TEST_CASE("frame node conflict details preserve provenance and traversal priority",
           "[frameplanner][node-order][rc3d1]") {
     // These complete details were captured with the pre-unification planner.
@@ -2831,7 +2858,7 @@ Rc1ExamplePlan rc1ExamplePlan(std::uint32_t width, std::uint32_t height) {
     auto targets =
         Pelican::test_support::renderTargetDefinitionsOf(resolved.composed_config);
     const auto compilation = compileRenderingTargetPlans(
-        render_graph, targets, compiled.sample_count_policy,
+        render_graph, Pelican::TestSupport::framePlanMapOf(render_graph), targets, compiled.sample_count_policy,
         vk::Format::eB8G8R8A8Srgb,
         RenderingTargetPlanDeviceFacts{
             .multiview = true,
@@ -3049,6 +3076,8 @@ TEST_CASE("RC-1 get_frame_plan reports what the published generation registered,
     // resolution sources are the RenderTargetContainer's to say.
     auto target_plan = std::make_shared<VulkanTargetPlan>(*example.plan);
     target_plan->resolution_plan.reset();
+    // This memory-only CPU seam publishes no executable nodes.
+    target_plan->scopes.clear();
     const auto graph_name = target_plan->graph;
     REQUIRE_FALSE(graph_name.empty());
 

@@ -475,8 +475,11 @@ compileDefaultVulkanVariant(
     // invalid graph by name first. IA-1 / EN-2: an image holding an asset or
     // a file's pixels may be read without an earlier writer, as a buffer is.
     std::unordered_map<std::string, FramePlan> frame_plans;
+    FramePlanningOptions frame_options;
+    if (logical.compiled_pipeline.target_planning.profile.kind == PlanningProfileKind::hazard_stress)
+        frame_options.hazard_stress_seed = logical.compiled_pipeline.target_planning.profile.seed;
     for (const auto &graph : render_graph.graphs) {
-        auto plan = planRenderGraph(render_graph, graph);
+        auto plan = planRenderGraph(render_graph, graph, frame_options);
         requireRenderGraphInputsProduced(
             render_graph, graph, plan);
         frame_plans.emplace(graph.name, std::move(plan));
@@ -504,6 +507,7 @@ compileDefaultVulkanVariant(
         physical->target_plan_compilation =
             compileRenderingTargetPlansForVulkanDevice(
                 render_graph,
+                frame_plans,
                 render_target_definitions,
                 compiled_pipeline->sample_count_policy,
                 backend.output_format,
@@ -514,11 +518,13 @@ compileDefaultVulkanVariant(
                 compiled_pipeline->target_planning,
                 compiled_pipeline->vulkan_plan_pins,
                 compiled_pipeline
-                    ->vulkan_physical_fragments);
+                    ->vulkan_physical_fragments,
+                compiled_pipeline->pass_provenance);
     } else {
         physical->target_plan_compilation =
             compileRenderingTargetPlans(
                 render_graph,
+                frame_plans,
                 render_target_definitions,
                 compiled_pipeline->sample_count_policy,
                 backend.output_format,
@@ -528,7 +534,8 @@ compileDefaultVulkanVariant(
                 compiled_pipeline->target_planning,
                 compiled_pipeline->vulkan_plan_pins,
                 compiled_pipeline
-                    ->vulkan_physical_fragments);
+                    ->vulkan_physical_fragments,
+                compiled_pipeline->pass_provenance);
     }
     for (auto &verification :
          physical->target_plan_compilation
@@ -814,6 +821,10 @@ void validateVulkanPhysicalPackage(
 
 } // namespace
 
+PhysicalNodeOrder VulkanRenderCompilerPhysicalPackage::physicalNodeOrder(std::string_view graph) const {
+    return physicalNodeOrderOf(target_plans.at(std::string{graph})->scopes);
+}
+
 void VulkanRenderCompilerPhysicalPackage::validate(
     std::span<const std::string>
         frame_graph_names) const {
@@ -945,6 +956,7 @@ void installVerifiedVulkanCompletePhysicalPlanPackage(
             *context.logical_graph,
             context.topology,
             *context.automatic_plan,
+            context.node_order,
             std::move(package),
             context.format_capabilities,
             context.enabled_device_extensions);

@@ -95,6 +95,7 @@ class VulkanRenderCompilerPhysicalPackage final
     void validate(
         std::span<const std::string>
             frame_graph_names) const override;
+    PhysicalNodeOrder physicalNodeOrder(std::string_view graph) const override;
     std::span<const ImagePlacement> imagePlacements() const noexcept override {
         return image_placements;
     }

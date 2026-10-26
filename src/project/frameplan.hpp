@@ -11,6 +11,7 @@
 
 #include <cstddef>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -193,8 +194,44 @@ std::vector<FramePlanUnreadOutput> findFramePlanUnreadOutputs(
 //   render_graph.self_dependency@1        {graph, node}
 //   render_graph.ambiguous_writes@1       {graph, resource, first, second}
 //   render_graph.cycle@1                  {graph}
-FramePlan planFrameGraph(const FrameGraphDefinition &definition);
+struct FramePlanningOptions {
+    // Unset preserves declaration order; zero is a valid stress seed.
+    std::optional<std::uint64_t> hazard_stress_seed;
+};
+FramePlan planFrameGraph(const FrameGraphDefinition &definition,
+                        FramePlanningOptions options = {});
 std::vector<std::string> framePlanOrder(const FramePlan &plan);
+
+// An explicit order, including the empty order of an empty graph. There is
+// no default/missing state. Logical-only callers must validate their named
+// sequence against the graph; production takes it from the FramePlan.
+class FramePlanNodeOrder {
+  public:
+    explicit FramePlanNodeOrder(const FramePlan &plan);
+    FramePlanNodeOrder(const CompiledLogicalRenderGraph &graph, std::vector<std::string> nodes);
+    const std::string &graph() const noexcept { return graph_; }
+    const std::vector<std::string> &nodes() const noexcept { return nodes_; }
+    void requireGraph(const CompiledLogicalRenderGraph &graph) const;
+
+  private:
+    std::string graph_;
+    std::vector<std::string> nodes_;
+};
+
+struct PhysicalNodeOrder {
+    struct ScopeRange {
+        std::size_t first = 0;
+        std::size_t count = 0;
+    };
+    std::vector<std::string> nodes;
+    std::vector<ScopeRange> scopes;
+};
+
+// One refusal shared by compiler completion, standalone complete-package
+// verification, and direct runtime registration. Duplicate coverage wins
+// over missing/extra coverage, which wins over a positional disagreement.
+void requirePhysicalNodeOrderMatchesFramePlan(
+    const FramePlanNodeOrder &expected, std::span<const std::string> actual);
 
 // RC-3c1b: the refusals above that do not depend on the final order (all
 // but render_graph.ambiguous_writes@1, which frame_node_order may resolve),

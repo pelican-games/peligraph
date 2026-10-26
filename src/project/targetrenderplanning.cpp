@@ -848,35 +848,6 @@ canonicalPatternBindings(
     return result;
 }
 
-std::vector<std::string> canonicalNodeOrder(
-    const CompiledLogicalRenderGraph &graph,
-    std::span<const std::string> requested_order) {
-    std::vector<std::string> result;
-    if (requested_order.empty()) {
-        result =
-            analyzeLogicalPlanningOpportunities(graph).node_order;
-    } else {
-        result.assign(requested_order.begin(), requested_order.end());
-    }
-
-    std::set<std::string, std::less<>> expected;
-    for (const auto &node : graph.nodes) expected.insert(node.name);
-    std::set<std::string, std::less<>> actual;
-    for (const auto &node : result) {
-        if (!actual.insert(node).second) {
-            throw std::runtime_error(
-                "target lowering node order contains duplicate node: " +
-                node);
-        }
-    }
-    if (actual != expected) {
-        throw std::runtime_error(
-            "target lowering node order is not a permutation of the "
-            "canonical graph nodes");
-    }
-    return result;
-}
-
 TargetIrDialect expectedDialect(TargetLoweringStage stage) {
     switch (stage) {
     case TargetLoweringStage::canonical_workspace:
@@ -1588,12 +1559,12 @@ TargetLoweringGraph makeTargetLoweringGraph(
     const LogicalTypeRegistry &types,
     const CompiledLogicalRenderGraph &canonical_graph,
     std::span<const ResourcePatternBinding> pattern_bindings,
-    std::span<const std::string> requested_node_order) {
+    const FramePlanNodeOrder &requested_node_order) {
     validateCompiledLogicalRenderGraph(types, canonical_graph);
     const auto patterns = canonicalPatternBindings(
         types, canonical_graph, pattern_bindings);
-    const auto node_order =
-        canonicalNodeOrder(canonical_graph, requested_node_order);
+    requested_node_order.requireGraph(canonical_graph);
+    const auto &node_order = requested_node_order.nodes();
 
     std::map<std::string, const LogicalGraphNode *, std::less<>>
         logical_nodes;
@@ -3465,6 +3436,16 @@ void validateVulkanPhysicalFeatureClosure(
     }
 }
 
+PhysicalNodeOrder physicalNodeOrderOf(std::span<const VulkanPhysicalScopePlan> scopes) {
+    PhysicalNodeOrder result;
+    result.scopes.reserve(scopes.size());
+    for (const auto &scope : scopes) {
+        result.scopes.push_back({result.nodes.size(), scope.nodes.size()});
+        result.nodes.insert(result.nodes.end(), scope.nodes.begin(), scope.nodes.end());
+    }
+    return result;
+}
+
 VulkanTargetPlan compileVulkanTargetPlan(
     const LogicalTypeRegistry &types,
     const CompiledLogicalRenderGraph &canonical_graph,
@@ -3556,12 +3537,11 @@ VulkanTargetPlan compileVulkanTargetPlan(
         .resource_constraints =
             request.resource_constraints,
     };
-    const auto initial_opportunities =
-        analyzeLogicalPlanningOpportunities(
-            canonical_graph, initial_input);
+    (void)analyzeLogicalPlanningOpportunities(
+            canonical_graph, request.node_order, initial_input);
     auto workspace = makeTargetLoweringGraph(
         types, canonical_graph, request.pattern_bindings,
-        initial_opportunities.node_order);
+        request.node_order);
     const auto external_depth_export =
         selectExternalDepthExport(
             types, workspace,
@@ -3633,7 +3613,7 @@ VulkanTargetPlan compileVulkanTargetPlan(
     };
     auto opportunities =
         analyzeLogicalPlanningOpportunities(
-            canonical_graph, std::move(final_input));
+            canonical_graph, request.node_order, std::move(final_input));
     auto alias_groups =
         buildAliasGroups(opportunities.alias_candidates);
 

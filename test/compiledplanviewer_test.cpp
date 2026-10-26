@@ -95,7 +95,7 @@ nlohmann::json compileIndependentOpportunityPlan(
     const auto graphs = TestSupport::renderGraphOf(config);
     const auto targets = Pelican::test_support::renderTargetDefinitionsOf(config);
     const auto compilation = compileRenderingTargetPlans(
-        graphs, targets, compileSampleCountPolicy(config),
+        graphs, Pelican::TestSupport::framePlanMapOf(graphs), targets, compileSampleCountPolicy(config),
         vk::Format::eB8G8R8A8Unorm, planningDeviceFacts(), std::nullopt,
         std::nullopt,
         TargetPlanningPolicy{

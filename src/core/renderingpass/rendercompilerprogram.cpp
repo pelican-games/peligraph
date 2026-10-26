@@ -294,6 +294,12 @@ RenderCompilerProgramResult runRenderCompilerProgram(
             input.variants[index],
             selection);
         const auto &variant = output.variants[index];
+        if (variant.physical_package) {
+            for (const auto &[graph, plan] : variant.frame_plans) {
+                const auto physical = variant.physical_package->physicalNodeOrder(graph);
+                requirePhysicalNodeOrderMatchesFramePlan(FramePlanNodeOrder{plan}, physical.nodes);
+            }
+        }
         if (variant.render_graph && variant.compiled_pipeline && variant.compiled_pipeline->material_routing)
             validateMaterialRoutingAgainstIR(*variant.compiled_pipeline->material_routing, *variant.render_graph);
     }

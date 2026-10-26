@@ -6,8 +6,13 @@
 #include "render_pass_frame_setup.hpp"
 #include "rendertarget.hpp"
 #include <span>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace Pelican {
+
+namespace test_support { struct RenderPassExecutorTestAccess; }
 
 class RenderTargetContainer;
 struct RenderPassDispatchDependencies;
@@ -20,6 +25,13 @@ struct RenderPassExecutorDependencies {
 };
 
 DECLARE_MODULE(RenderPassExecutor) {
+    friend struct test_support::RenderPassExecutorTestAccess;
+    bool trace_bodies_for_testing = false;
+    mutable std::vector<std::pair<std::string, std::uint32_t>> body_calls_for_testing;
+    void recordBodyForTesting(const CompiledPass &pass, RenderPassViewInvocation invocation) const {
+        if (trace_bodies_for_testing)
+            body_calls_for_testing.emplace_back(pass.definition.name, invocation.view_index);
+    }
   public:
     void execute(const FrameRenderContext &frame, const CompiledPass &pass,
                  const RenderPassExecutorDependencies &dependencies,

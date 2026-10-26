@@ -91,6 +91,13 @@ inline FrameGraphDefinition frameGraphOf(const nlohmann::json &config) {
 }
 
 // The frame plan of each graph (planRenderGraph).
+inline std::unordered_map<std::string, FramePlan> framePlanMapOf(
+    const RenderGraphIR &ir, FramePlanningOptions options = {}) {
+    std::unordered_map<std::string, FramePlan> result;
+    for (const auto &graph : ir.graphs) result.emplace(graph.name, planRenderGraph(ir, graph, options));
+    return result;
+}
+
 inline std::vector<FramePlan> framePlansOf(const nlohmann::json &config) {
     const auto ir = renderGraphOf(config);
     std::vector<FramePlan> result;

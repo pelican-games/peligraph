@@ -371,8 +371,8 @@ FrameGraphDefinition frameGraphDefinitionOf(const RenderGraphIR &ir, const Graph
     return result;
 }
 
-FramePlan planRenderGraph(const RenderGraphIR &ir, const GraphIR &graph) {
-    return planFrameGraph(frameGraphDefinitionOf(ir, graph));
+FramePlan planRenderGraph(const RenderGraphIR &ir, const GraphIR &graph, FramePlanningOptions options) {
+    return planFrameGraph(frameGraphDefinitionOf(ir, graph), options);
 }
 
 void requireRenderGraphInputsProduced(const RenderGraphIR &ir, const GraphIR &graph,

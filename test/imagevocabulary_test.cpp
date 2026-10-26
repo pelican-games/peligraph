@@ -235,7 +235,7 @@ TEST_CASE("RC-3a1 the loader, the planner and registration consume the declared 
             },
     };
     const auto automatic = compileRenderingTargetPlans(
-        graphs, targets, compileSampleCountPolicy(config), vk::Format::eB8G8R8A8Srgb, facts);
+        graphs, Pelican::TestSupport::framePlanMapOf(graphs), targets, compileSampleCountPolicy(config), vk::Format::eB8G8R8A8Srgb, facts);
     REQUIRE(automatic.plans.size() == 1);
     const auto &plan = *automatic.plans.front();
 
@@ -295,7 +295,7 @@ TEST_CASE("RC-3a1 the loader, the planner and registration consume the declared 
             }
         const std::array fragments{vulkanPhysicalFragmentPackageFromJson(document)};
         const auto linked = compileRenderingTargetPlans(
-            graphs, targets, compileSampleCountPolicy(config), vk::Format::eB8G8R8A8Srgb, facts,
+            graphs, Pelican::TestSupport::framePlanMapOf(graphs), targets, compileSampleCountPolicy(config), vk::Format::eB8G8R8A8Srgb, facts,
             std::nullopt, std::nullopt, {}, {}, fragments);
         CHECK(planned(*linked.plans.front(), "lit").format == ImageFormat::r8g8b8a8_unorm);
         const auto applied = test_support::plannedRenderTargets(graphs, linked);
@@ -327,7 +327,7 @@ TEST_CASE("RC-3a1 the loader, the planner and registration consume the declared 
             }
         REQUIRE(edited);
         const auto verified = verifyVulkanCompletePhysicalPlanPackage(
-            *context.logical_graph, context.topology, *context.automatic_plan,
+            *context.logical_graph, context.topology, *context.automatic_plan, context.node_order,
             vulkanCompletePhysicalPlanPackageFromJson(document), context.format_capabilities);
         const auto installed = applyVerifiedVulkanCompletePhysicalPlanPackage(*context.automatic_plan, verified);
         CHECK(planned(installed, "lit").format == ImageFormat::r8g8b8a8_unorm);

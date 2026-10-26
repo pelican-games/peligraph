@@ -2,6 +2,7 @@
 #include "passdeclaration.hpp"
 #include "shaderresourceport.hpp"
 #include "rendergraphcomposition.hpp"
+#include "rendergraphparse.hpp"
 #include "renderconfigdocument.hpp"
 #include "featurejitter.hpp"
 #include "generationresources.hpp"
@@ -4095,11 +4096,61 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     });
     // FO-1: a graph's frame_node_order list chains its bucket's passes in the
     // list's order instead of the declared one.
+    // An author's loop id names its entire expansion. Expand in declaration
+    // order before canonical ordering and final IR reference resolution.
+    (void)parseFrameNodeOrder(composed);
+    if (auto orders = composed.find("frame_node_order"); orders != composed.end() && orders->is_object()) {
+        for (auto &[graph, names] : orders->items()) {
+            if (!names.is_array()) continue;
+            auto expanded = nlohmann::json::array();
+            for (const auto &name : names) {
+                const auto loop = std::find_if(graph_loops.begin(), graph_loops.end(), [&](const auto &entry) {
+                    return name.is_string() && entry.node == name.get<std::string>() && entry.tier == "expand";
+                });
+                if (loop == graph_loops.end()) {
+                    expanded.push_back(name);
+                    continue;
+                }
+                const auto first = expanded.size();
+                const auto append = [&](const nlohmann::json &declarations, const std::string &suffix) {
+                    for (const auto &declaration : declarations) {
+                        const auto node = declaration.value("name", std::string{});
+                        const auto copy = graph_loop_copy_of.find(node);
+                        if (copy != graph_loop_copy_of.end() && copy->second == loop->node)
+                            expanded.push_back(node + suffix);
+                    }
+                };
+                for (const auto &family : ensureArray(composed, "rendering_passes"))
+                    if (family.value("name", std::string{}) + dependencies.frame_node_order_suffix == graph)
+                        append(family.at("passes"), {});
+                if (const auto tasks = composed.find("compute_tasks"); tasks != composed.end() && tasks->is_array())
+                    append(*tasks, dependencies.frame_node_order_suffix);
+                if (expanded.size() == first) {
+                    // A zero-count loop still belongs to the graphs its body
+                    // declares. Tasks are shared by every graph.
+                    const auto declaration = std::find_if(active_graph.loops.begin(), active_graph.loops.end(),
+                        [&](const auto &entry) { return entry.shape.node == loop->node; });
+                    bool belongs = false;
+                    if (loop->count == 0 && declaration != active_graph.loops.end())
+                        for (const auto &branch : declaration->branches) {
+                            if (!branch) continue;
+                            belongs = belongs || !branch->compute_tasks.empty();
+                            for (const auto &[family, pass] : branch->passes)
+                                belongs = belongs || family + dependencies.frame_node_order_suffix == graph;
+                        }
+                    if (!belongs)
+                        throw GraphRegistryError{"render_graph.frame_node_order_unknown@1",
+                                                 {{"graph", graph}, {"node", loop->node}}};
+                }
+            }
+            names = std::move(expanded);
+        }
+    }
     const auto frame_node_order = composed.value("frame_node_order", nlohmann::json::object());
     for (auto &pass_set : ensureArray(composed, "rendering_passes")) {
         const nlohmann::json *listed = nullptr;
         if (frame_node_order.is_object() && pass_set.contains("name") && pass_set.at("name").is_string()) {
-            if (const auto found = frame_node_order.find(pass_set.at("name").get<std::string>());
+            if (const auto found = frame_node_order.find(pass_set.at("name").get<std::string>() + dependencies.frame_node_order_suffix);
                 found != frame_node_order.end()) {
                 listed = &*found;
             }
