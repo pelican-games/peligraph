@@ -47,6 +47,12 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "RC-3d3 frames reuse registered scope mapping while views selection and once execution change",
+    "[golden][headless][rc3d3][view-select][schedule]") {
+    GoldenHarness::runScopeMappingReuse();
+}
+
+TEST_CASE(
     "WP338 planar SSAO output is byte-identical in both views",
     "[golden][headless][wp338][ssao][planar]") {
     GoldenHarness::runSsaoPlanarGolden();

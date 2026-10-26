@@ -118,10 +118,12 @@ inline ViewLayerCopyPlan planViewLayerCopy(
 
 inline std::vector<LogicalFrameNodeInvocation>
 buildLogicalFrameViewFamilySchedule(
-    std::span<const FrameGraphExecutionNode> nodes,
-    const VulkanTargetPlan &target_plan,
+    const CompiledFrameGraphExecution &frame_graph,
     std::span<const LogicalFrameViewFamilyCardinality>
         view_families) {
+    const auto &nodes = frame_graph.nodes;
+    const auto &target_plan = *frame_graph.target_plan;
+    const auto &mapping = frame_graph.scope_mapping.value();
     std::map<std::string_view, std::uint32_t,
              std::less<>>
         view_count_by_family;
@@ -168,22 +170,6 @@ buildLogicalFrameViewFamilySchedule(
             "physical target-plan view count");
     }
 
-    std::map<std::string_view, std::size_t, std::less<>>
-        node_by_name;
-    for (std::size_t node_index = 0;
-         node_index < nodes.size(); ++node_index) {
-        if (!node_by_name
-                 .emplace(nodes[node_index].name,
-                          node_index)
-                 .second) {
-            throw std::runtime_error(
-                "compiled frame graph contains a duplicate node: " +
-                nodes[node_index].name);
-        }
-    }
-
-    std::map<std::string_view, std::size_t, std::less<>>
-        scope_by_node;
     struct ScopeFamily {
         std::string_view family_id;
         std::uint32_t view_count = 1;
@@ -209,30 +195,19 @@ buildLogicalFrameViewFamilySchedule(
         }
         std::optional<std::string_view>
             scope_family_id;
-        for (const auto &name : scope.nodes) {
-            const auto found =
-                node_by_name.find(name);
-            if (found == node_by_name.end()) {
+        const auto &range = mapping.scopes[scope_index];
+        for (std::size_t position = 0; position < range.count; ++position) {
+            const auto &node = nodes[range.first + position];
+            const auto &family = node.view_family;
+            if (scope_family_id && *scope_family_id != family) {
                 throw std::runtime_error(
-                    "physical target plan contains a scope node that "
-                    "is absent from the compiled frame graph: " +
-                    name);
-            }
-            const auto &family =
-                nodes[found->second].view_family;
-            if (scope_family_id &&
-                *scope_family_id != family) {
-                throw std::runtime_error(
-                    "physical target-plan scope mixes view families: " +
-                    scope.id);
+                    "physical target-plan scope mixes view families: " + scope.id);
             }
             scope_family_id = family;
-            if (nodes[found->second].view_select !=
-                scope.view_select) {
+            if (node.view_select != scope.view_select) {
                 throw std::runtime_error(
                     "physical target-plan scope view_select does not "
-                    "match node '" +
-                    name + "': " + scope.id);
+                    "match node '" + node.name + "': " + scope.id);
             }
         }
         const auto family =
@@ -349,61 +324,30 @@ buildLogicalFrameViewFamilySchedule(
                 execution,
                 execution_count,
                 std::move(selected_views)});
-        for (const auto &node : scope.nodes) {
-            if (!scope_by_node.emplace(node, scope_index).second) {
-                throw std::runtime_error(
-                    "physical target plan assigns a node to more than "
-                    "one scope: " +
-                    node);
-            }
-        }
     }
 
     std::vector<LogicalFrameNodeInvocation> result;
-    std::vector<bool> scheduled_nodes(
-        nodes.size(), false);
     for (std::size_t scope_index = 0;
          scope_index < target_plan.scopes.size();
          ++scope_index) {
-        const auto &scope =
-            target_plan.scopes[scope_index];
-        const auto &scope_family =
-            scope_families[scope_index];
-        std::vector<std::size_t> scope_nodes;
-        scope_nodes.reserve(scope.nodes.size());
-        for (const auto &name : scope.nodes) {
-            const auto found = node_by_name.find(name);
-            if (found == node_by_name.end()) {
-                throw std::runtime_error(
-                    "physical target plan contains a scope node that "
-                    "is absent from the compiled frame graph: " +
-                    name);
-            }
-            if (scheduled_nodes[found->second]) {
-                throw std::runtime_error(
-                    "physical target-plan scopes schedule a compiled "
-                    "frame-graph node more than once: " +
-                    name);
-            }
-            scheduled_nodes[found->second] = true;
-            scope_nodes.push_back(found->second);
-        }
+        const auto &scope_family = scope_families[scope_index];
+        const auto &range = mapping.scopes[scope_index];
         const auto execution_count =
             scope_family.execution_count;
         if (scope_family.selected_views &&
             scope_family.selected_views->empty()) {
             for (std::size_t scope_node_index = 0;
-                 scope_node_index < scope_nodes.size();
+                 scope_node_index < range.count;
                  ++scope_node_index) {
                 result.push_back(
                     LogicalFrameNodeInvocation{
                         .node_index =
-                            scope_nodes[scope_node_index],
+                            range.first + scope_node_index,
                         .scope_index = scope_index,
                         .scope_node_index =
                             scope_node_index,
                         .scope_node_count =
-                            scope_nodes.size(),
+                            range.count,
                         .execution =
                             scope_family.execution,
                         .logical_view_count =
@@ -423,18 +367,17 @@ buildLogicalFrameViewFamilySchedule(
              execution_index < execution_count;
              ++execution_index) {
             for (std::size_t scope_node_index = 0;
-                 scope_node_index < scope_nodes.size();
+                 scope_node_index < range.count;
                  ++scope_node_index) {
                 result.push_back(
                     LogicalFrameNodeInvocation{
                         .node_index =
-                            scope_nodes[
-                                scope_node_index],
+                            range.first + scope_node_index,
                         .scope_index = scope_index,
                         .scope_node_index =
                             scope_node_index,
                         .scope_node_count =
-                            scope_nodes.size(),
+                            range.count,
                         .execution =
                             scope_family.execution,
                         .logical_view_count =
@@ -461,29 +404,19 @@ buildLogicalFrameViewFamilySchedule(
             }
         }
     }
-    for (std::size_t node_index = 0;
-         node_index < nodes.size(); ++node_index) {
-        if (!scheduled_nodes[node_index]) {
-            throw std::runtime_error(
-                "physical target plan has no scope for frame-graph "
-                "node: " +
-                nodes[node_index].name);
-        }
-    }
     return result;
 }
 
 inline std::vector<LogicalFrameNodeInvocation>
 buildLogicalFrameViewFamilySchedule(
-    std::span<const FrameGraphExecutionNode> nodes,
-    const VulkanTargetPlan &target_plan,
+    const CompiledFrameGraphExecution &frame_graph,
     std::uint32_t logical_view_count) {
     const std::array families{
         LogicalFrameViewFamilyCardinality{
             mainRenderViewFamilyId,
             logical_view_count}};
     return buildLogicalFrameViewFamilySchedule(
-        nodes, target_plan, families);
+        frame_graph, families);
 }
 
 // Selects the scope-complete command-recording work for one view when the

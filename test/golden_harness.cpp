@@ -65,6 +65,7 @@
 #include "../src/core/vkcore/deletionqueue.hpp"
 #include "../src/core/vkcore/renderer.hpp"
 #include "renderer_testaccess.hpp"
+#include "framegraphruntime_testaccess.hpp"
 #include "../src/core/renderer/viewfamilyproviderregistry.hpp"
 #include "../src/core/vkcore/rendertarget.hpp"
 #include "../src/core/vkcore/rendertiming.hpp"
@@ -9903,6 +9904,7 @@ void requireCubeLoopEquivalence() {
 // The engine providers cannot produce this today (every compile-time value is
 // inside the family), which is why the probe provider is registered here.
 constexpr std::string_view lpvaProbeFamilyId = "$lpva/probe";
+std::vector<std::uint32_t> lpvaProbeSlots{0};
 
 void registerLpvaProbeProvider() {
     auto &registry = renderViewFamilyProviderRegistry();
@@ -9921,19 +9923,20 @@ void registerLpvaProbeProvider() {
                 auto projection = glm::perspective(
                     glm::radians(60.0f), 1.0f, 0.1f, 10.0f);
                 projection[1][1] *= -1.0f;
-                return RenderViewFamily{
-                    .family_id = std::string{lpvaProbeFamilyId},
-                    .views = {RenderViewParameters{
+                RenderViewFamily family{.family_id = std::string{lpvaProbeFamilyId}};
+                for (std::size_t index = 0; index < lpvaProbeSlots.size(); ++index) {
+                    family.views.push_back(RenderViewParameters{
                         .view = glm::lookAt(
                             glm::vec3{0.0f, 0.0f, 2.0f},
                             glm::vec3{0.0f},
                             glm::vec3{0.0f, 1.0f, 0.0f}),
                         .projection = projection,
                         .camera_position = {0.0f, 0.0f, 2.0f},
-                        .view_id = "$lpva/probe/0",
-                        .axes = {{"slot", 0}},
-                    }},
-                };
+                        .view_id = "$lpva/probe/" + std::to_string(index),
+                        .axes = {{"slot", lpvaProbeSlots[index]}},
+                    });
+                }
+                return family;
             },
     });
 }
@@ -9945,7 +9948,8 @@ struct LpvaProbeFramePlans {
 };
 
 nlohmann::json captureLpvaProbeTrace(
-    std::uint32_t slot, LpvaProbeFramePlans *plans = nullptr) {
+    std::uint32_t slot, LpvaProbeFramePlans *plans = nullptr,
+    bool exercise_mapping_reuse = false) {
     registerLpvaProbeProvider();
     const auto root = makeTempProjectDir(
         "lpva_zero_match_" + std::to_string(slot));
@@ -9962,7 +9966,7 @@ nlohmann::json captureLpvaProbeTrace(
                       solidFullscreenFragmentShader());
         writeTextFile(root / "shaders" / "copy_input.frag",
                       copyInputFragmentShader());
-        const auto rendering = nlohmann::json{
+        auto rendering = nlohmann::json{
             {"render_targets",
              nlohmann::json::array({{
                  {"name", "probe_color"},
@@ -10000,6 +10004,22 @@ nlohmann::json captureLpvaProbeTrace(
                   })},
              }})},
         };
+        if (exercise_mapping_reuse) {
+            // This fixture varies the probe's layer count. Keep presentation
+            // independent of it: copy_input declares a scalar 2D sampler.
+            auto &present = rendering["rendering_passes"][0]["passes"][1];
+            present.erase("input");
+            present["shader"]["fragment"] = "shaders/solid";
+            present["after"] = {"probe_selected"};
+            rendering["render_targets"].push_back({
+                {"name", "once_color"}, {"extent_scale", 1.0},
+                {"format", "R8G8B8A8_UNORM"}, {"lifetime", "persistent"},
+                {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}});
+            rendering["rendering_passes"][0]["passes"].push_back({
+                {"name", "once_probe"}, {"type", "fullscreen"}, {"schedule", "once"},
+                {"output", {{"color", "once_color"}, {"depth", nullptr}}},
+                {"shader", {{"vertex", "shaders/solid"}, {"fragment", "shaders/solid"}}}});
+        }
         writeTextFile(root / "passes" / "main.json",
                       Pelican::TestSupport::renderGraphRoot(rendering)
                           .dump(2));
@@ -10015,6 +10035,8 @@ nlohmann::json captureLpvaProbeTrace(
             launch.headless_frames = 1;
             auto &time = GET_MODULE(EngineTime);
             time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
+            const auto builds_before_registration =
+                test_support::FrameGraphRuntimeTestAccess::scopeMappingBuilds();
             auto &renderer = GET_MODULE(Renderer);
             RendererTestAccess::setExecutionTracing(renderer, true);
             if (plans != nullptr)
@@ -10025,9 +10047,44 @@ nlohmann::json captureLpvaProbeTrace(
             trace = RendererTestAccess::lastExecutionTrace(renderer);
             if (plans != nullptr)
                 plans->after_frame = renderer.currentFramePlanJson();
+            if (exercise_mapping_reuse) {
+                auto &runtime = GET_MODULE(FrameGraphRuntimeContainer);
+                const auto generation = runtime.snapshot();
+                const auto builds = test_support::FrameGraphRuntimeTestAccess::scopeMappingBuilds();
+                REQUIRE(generation != nullptr);
+                CHECK(builds == builds_before_registration + 1);
+                const auto find = [](const nlohmann::json &frame, std::string_view name) {
+                    const auto &nodes = frame.at("nodes");
+                    const auto found = std::find_if(nodes.begin(), nodes.end(), [&](const nlohmann::json &node) {
+                        return node.at("name").get<std::string>() == name;
+                    });
+                    REQUIRE(found != nodes.end());
+                    return *found;
+                };
+                CHECK(find(trace, "probe_selected").at("no_selected_view") == true);
+                CHECK(find(trace, "once_probe").value("recorded", true));
+                for (const auto &slots : std::vector<std::vector<std::uint32_t>>{{0, 1}, {1}, {0}}) {
+                    lpvaProbeSlots = slots;
+                    time.advance();
+                    renderer.render();
+                    GET_MODULE(VulkanManageCore).waitIdle();
+                    const auto &frame = RendererTestAccess::lastExecutionTrace(renderer);
+                    const auto selected = find(frame, "probe_selected");
+                    const bool matches = std::find(slots.begin(), slots.end(), slot) != slots.end();
+                    CHECK(selected.value("recorded", true) == matches);
+                    CHECK(selected.value("no_selected_view", false) == !matches);
+                    if (matches) CHECK(selected.at("view_index") == (slots.size() == 2 ? 1 : 0));
+                    CHECK(find(frame, "once_probe").at("recorded") == false);
+                    CHECK(find(frame, "present").value("recorded", true));
+                    CHECK(runtime.snapshot() == generation);
+                    CHECK(test_support::FrameGraphRuntimeTestAccess::scopeMappingBuilds() == builds);
+                }
+                lpvaProbeSlots = {0};
+            }
         }
         std::filesystem::remove_all(root);
     } catch (...) {
+        lpvaProbeSlots = {0};
         std::filesystem::remove_all(root);
         throw;
     }
@@ -11441,6 +11498,16 @@ void GoldenHarness::runViewSelectZeroMatch() {
     requireViewSelectZeroMatchCompletes();
 #else
     SKIP("LP-Va zero-match view_select requires the runtime shader compiler");
+#endif
+}
+
+void GoldenHarness::runScopeMappingReuse() {
+    setupLogger();
+    requireGoldenVulkanDevice();
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    (void)captureLpvaProbeTrace(1, nullptr, true);
+#else
+    SKIP("RC-3d3 scope mapping reuse requires the runtime shader compiler");
 #endif
 }
 

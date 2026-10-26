@@ -631,9 +631,14 @@ const Wp348CubeCaptureMeasurement &wp348CubeCaptureMeasurement() {
                 Pelican::cubeCaptureRenderViewFamilyId,
                 static_cast<std::uint32_t>(cube_views.views.size())},
         };
+        Pelican::CompiledFrameGraphExecution execution;
+        execution.plan = plan;
+        execution.nodes = execution_nodes;
+        execution.target_plan = physical.plans.front();
+        execution.scope_mapping = Pelican::compileFrameGraphScopeMapping(plan, target_plan);
         auto invocations =
             Pelican::buildLogicalFrameViewFamilySchedule(
-                execution_nodes, target_plan, families);
+                execution, families);
         std::vector<std::string> view_ids;
         view_ids.reserve(cube_views.views.size());
         for (const auto &view : cube_views.views) {

@@ -19,6 +19,7 @@
 #include "../src/core/renderer/fullscreenpassrenderer.hpp"
 #include "../src/core/userpublic/render/pass_implementation_abi_v1.hpp"
 #include "render_graph_ir_test_support.hpp"
+#include "framegraphruntime_testaccess.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -4818,6 +4819,34 @@ TEST_CASE(
             "must Load every attachment"));
 }
 
+namespace {
+
+std::shared_ptr<const CompiledFrameGraphExecution> registerScheduleFixture(
+    std::span<const FrameGraphExecutionNode> nodes, const VulkanTargetPlan &target) {
+    FramePlan frame{.name = target.graph.empty() ? "schedule_fixture" : target.graph};
+    for (const auto &node : nodes) {
+        frame.nodes.push_back(FramePlanNode{
+            .name = node.name, .kind = FramePlanNodeKind::anchor,
+            .order = frame.nodes.size(), .view_family = node.view_family,
+            .view_select = node.view_select, .once = node.once});
+    }
+    FrameGraphRuntimeContainer runtime;
+    CompiledRenderingPass compiled;
+    compiled.name = frame.name;
+    runtime.registerExecutionPlan(RenderingPassId{0}, compiled, std::move(frame),
+        std::make_shared<CompiledRenderPipeline>(), std::make_shared<VulkanTargetPlan>(target));
+    return runtime.find(RenderingPassId{0});
+}
+
+template <typename Families>
+std::vector<LogicalFrameNodeInvocation> registeredViewFamilySchedule(
+    std::span<const FrameGraphExecutionNode> nodes, const VulkanTargetPlan &target,
+    const Families &families) {
+    const auto execution = registerScheduleFixture(nodes, target);
+    return buildLogicalFrameViewFamilySchedule(*execution, families);
+}
+
+} // namespace
 TEST_CASE(
     "view-family scheduler expands mixed physical scopes in scope order",
     "[renderingpass][view-execution][schedule]") {
@@ -4869,7 +4898,7 @@ TEST_CASE(
     };
 
     const auto schedule =
-        buildLogicalFrameViewFamilySchedule(
+        registeredViewFamilySchedule(
             nodes, plan, 2);
     REQUIRE(schedule.size() == 5);
     REQUIRE(schedule[0].node_index == 0);
@@ -4913,7 +4942,7 @@ TEST_CASE(
     };
 
     const auto schedule =
-        buildLogicalFrameViewFamilySchedule(
+        registeredViewFamilySchedule(
             nodes, plan, 2);
     REQUIRE(schedule.size() == 4);
     REQUIRE(schedule[0].node_index == 0);
@@ -4967,9 +4996,15 @@ TEST_CASE(
                                   std::make_shared<VulkanTargetPlan>(plan));
     const auto execution = runtime.find(RenderingPassId{0});
     REQUIRE(execution != nullptr);
+    REQUIRE(execution->scope_mapping);
+    const auto &mapping = *execution->scope_mapping;
+    REQUIRE(mapping.scopes.size() == 3);
+    CHECK(mapping.scopes[1].first == 1);
+    CHECK(mapping.scopes[1].count == 2);
+    CHECK(mapping.nodes[2].scope_index == 1);
+    CHECK(mapping.nodes[2].scope_node_index == 1);
     const auto schedule =
-        buildLogicalFrameViewFamilySchedule(
-            execution->nodes, *execution->target_plan, 1);
+        buildLogicalFrameViewFamilySchedule(*execution, 1);
     REQUIRE(schedule.size() == 4);
     REQUIRE(
         std::vector<std::size_t>{
@@ -4987,6 +5022,11 @@ TEST_CASE(
     REQUIRE(
         schedule[1].scope_index ==
         schedule[2].scope_index);
+
+    // A legal dependency order still cannot replace this registered order.
+    std::swap(plan.scopes.front(), plan.scopes.back());
+    REQUIRE_THROWS_WITH(registerScheduleFixture(execution->nodes, plan),
+        Catch::Matchers::StartsWith("render_compiler.physical_order_mismatches_frame_plan@1"));
 }
 
 TEST_CASE(
@@ -5019,7 +5059,7 @@ TEST_CASE(
     };
 
     const auto logical_frame_schedule =
-        buildLogicalFrameViewFamilySchedule(
+        registeredViewFamilySchedule(
             nodes, plan, 2);
     const auto first_view =
         selectLogicalFrameSequentialViewSchedule(
@@ -5082,7 +5122,7 @@ TEST_CASE(
     };
 
     const auto schedule =
-        buildLogicalFrameViewFamilySchedule(
+        registeredViewFamilySchedule(
             nodes, plan, families);
     REQUIRE(schedule.size() == 5);
     for (std::uint32_t cascade = 0;
@@ -5142,7 +5182,7 @@ TEST_CASE(
         "$main");
 
     REQUIRE_THROWS_WITH(
-        buildLogicalFrameViewFamilySchedule(
+        registeredViewFamilySchedule(
             nodes, plan,
             std::span{
                 families.data(), 1}),
@@ -5160,7 +5200,7 @@ TEST_CASE(
         .execution_count = 1,
     }};
     REQUIRE_THROWS_WITH(
-        buildLogicalFrameViewFamilySchedule(
+        registeredViewFamilySchedule(
             nodes, mixed, families),
         Catch::Matchers::ContainsSubstring(
             "mixes view families"));
@@ -5171,7 +5211,7 @@ TEST_CASE(
     non_template.scopes.front().view_count = 3;
     non_template.scopes.front().execution_count = 3;
     REQUIRE_THROWS_WITH(
-        buildLogicalFrameViewFamilySchedule(
+        registeredViewFamilySchedule(
             nodes, non_template, families),
         Catch::Matchers::ContainsSubstring(
             "must be a single-view template"));
@@ -5273,7 +5313,7 @@ TEST_CASE(
     SECTION("one matching face stays a sequential family invocation") {
         const RenderViewSelect select{{"face", 4}};
         const auto schedule =
-            buildLogicalFrameViewFamilySchedule(
+            registeredViewFamilySchedule(
                 lpvaSelectedNodes(select),
                 lpvaSelectedScopePlan(select),
                 families);
@@ -5311,7 +5351,7 @@ TEST_CASE(
         };
         const RenderViewSelect select{{"cascade", 1}};
         const auto schedule =
-            buildLogicalFrameViewFamilySchedule(
+            registeredViewFamilySchedule(
                 lpvaSelectedNodes(select),
                 lpvaSelectedScopePlan(select),
                 shadow_families);
@@ -5335,7 +5375,7 @@ TEST_CASE(
         };
         const RenderViewSelect select{{"light", 1}};
         const auto schedule =
-            buildLogicalFrameViewFamilySchedule(
+            registeredViewFamilySchedule(
                 lpvaSelectedNodes(select),
                 lpvaSelectedScopePlan(select),
                 one_light_families);
@@ -5358,7 +5398,7 @@ TEST_CASE(
     SECTION("an unknown axis on this frame's views is refused by name") {
         const RenderViewSelect select{{"cascade", 0}};
         try {
-            (void)buildLogicalFrameViewFamilySchedule(
+            (void)registeredViewFamilySchedule(
                 lpvaSelectedNodes(select),
                 lpvaSelectedScopePlan(select), families);
             FAIL("expected a refusal");
@@ -5384,7 +5424,7 @@ TEST_CASE(
         };
         const RenderViewSelect select{{"face", 0}};
         REQUIRE_THROWS_WITH(
-            buildLogicalFrameViewFamilySchedule(
+            registeredViewFamilySchedule(
                 lpvaSelectedNodes(select),
                 lpvaSelectedScopePlan(select), authored),
             Catch::Matchers::StartsWith(
@@ -5397,7 +5437,7 @@ TEST_CASE(
         nodes[0].view_family = "$main";
         auto plan = lpvaSelectedScopePlan(select);
         REQUIRE_THROWS_WITH(
-            buildLogicalFrameViewFamilySchedule(
+            registeredViewFamilySchedule(
                 nodes, plan, families),
             Catch::Matchers::StartsWith(
                 "graph.view_select_primary_family@1: "));
@@ -5407,11 +5447,55 @@ TEST_CASE(
         auto plan =
             lpvaSelectedScopePlan({{"face", 1}});
         REQUIRE_THROWS_WITH(
-            buildLogicalFrameViewFamilySchedule(
+            registeredViewFamilySchedule(
                 lpvaSelectedNodes({{"face", 2}}), plan,
                 families),
             Catch::Matchers::ContainsSubstring(
                 "view_select does not match"));
+    }
+}
+
+TEST_CASE(
+    "RC-3d3 registered scope mapping is reused as frame cardinality and selection change",
+    "[renderingpass][view-execution][schedule][rc3d3]") {
+    const RenderViewSelect select{{"face", 1}};
+    const auto before = test_support::FrameGraphRuntimeTestAccess::scopeMappingBuilds();
+    const auto execution = registerScheduleFixture(
+        lpvaSelectedNodes(select), lpvaSelectedScopePlan(select));
+    REQUIRE(execution->scope_mapping);
+    const auto &mapping = *execution->scope_mapping;
+    REQUIRE(mapping.scopes.size() == 2);
+    REQUIRE(mapping.nodes.size() == 2);
+    for (std::size_t index = 0; index < 2; ++index) {
+        CHECK(mapping.scopes[index].first == index);
+        CHECK(mapping.scopes[index].count == 1);
+        CHECK(mapping.nodes[index].scope_index == index);
+        CHECK(mapping.nodes[index].scope_node_index == 0);
+    }
+    REQUIRE(test_support::FrameGraphRuntimeTestAccess::scopeMappingBuilds() == before + 1);
+    const std::vector<std::vector<RenderViewAxisCoordinates>> frames{
+        {{{"face", 0}}, {{"face", 1}}},
+        {{{"face", 1}}, {{"face", 0}}, {{"face", 1}}, {{"face", 2}}},
+        {{{"face", 0}}},
+    };
+    const std::vector<std::vector<std::uint32_t>> expected{{1}, {0, 2}, {}};
+    for (std::size_t frame = 0; frame < frames.size(); ++frame) {
+        CAPTURE(frame);
+        const auto &axes = frames[frame];
+        const std::array families{
+            LogicalFrameViewFamilyCardinality{mainRenderViewFamilyId, 1},
+            LogicalFrameViewFamilyCardinality{"$capture/cube", static_cast<std::uint32_t>(axes.size()), axes},
+        };
+        const auto schedule = buildLogicalFrameViewFamilySchedule(*execution, families);
+        const auto &selected = expected[frame];
+        REQUIRE(schedule.size() == std::max(std::size_t{1}, selected.size()) + 1);
+        CHECK(schedule.front().logical_view_count == axes.size());
+        CHECK(schedule.front().no_selected_view == selected.empty());
+        for (std::size_t i = 0; i < selected.size(); ++i) {
+            CHECK(schedule[i].view_index == selected[i]);
+            CHECK(schedule[i].execution_count == selected.size());
+        }
+        CHECK(test_support::FrameGraphRuntimeTestAccess::scopeMappingBuilds() == before + 1);
     }
 }
 
@@ -5427,7 +5511,7 @@ TEST_CASE(
     plan.scopes = {
         {
             .id = "broken",
-            .nodes = {"A"},
+            .nodes = {"A", "B"},
             .view_execution =
                 VulkanScopeViewExecution::sequential,
             .view_count = 2,
@@ -5438,7 +5522,7 @@ TEST_CASE(
         [&](std::uint32_t view_count,
             std::string_view expected) {
             try {
-                (void)buildLogicalFrameViewFamilySchedule(
+                (void)registeredViewFamilySchedule(
                     nodes, plan, view_count);
                 FAIL("schedule did not reject an invalid contract");
             } catch (const std::runtime_error &error) {
@@ -5450,8 +5534,9 @@ TEST_CASE(
         2, "inconsistent view-execution contract");
 
     plan.scopes.front().execution_count = 2;
-    require_error(2, "no scope");
     require_error(3, "view count");
+    plan.scopes.front().nodes = {"A"};
+    require_error(2, "render_compiler.physical_order_mismatches_frame_plan@1");
 }
 
 TEST_CASE(

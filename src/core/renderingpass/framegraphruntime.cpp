@@ -10,6 +10,25 @@
 
 namespace Pelican {
 
+std::atomic<std::uint64_t> FrameGraphScopeMapping::builds{0};
+
+FrameGraphScopeMapping compileFrameGraphScopeMapping(
+    const FramePlan &plan, const VulkanTargetPlan &target_plan) {
+    auto physical = physicalNodeOrderOf(target_plan.scopes);
+    requirePhysicalNodeOrderMatchesFramePlan(
+        FramePlanNodeOrder{plan}, physical.nodes);
+    FrameGraphScopeMapping mapping;
+    mapping.scopes = std::move(physical.scopes);
+    mapping.nodes.resize(plan.nodes.size());
+    for (std::size_t scope = 0; scope < mapping.scopes.size(); ++scope) {
+        const auto &range = mapping.scopes[scope];
+        for (std::size_t position = 0; position < range.count; ++position)
+            mapping.nodes[range.first + position] = {scope, position};
+    }
+    FrameGraphScopeMapping::builds.fetch_add(1, std::memory_order_relaxed);
+    return mapping;
+}
+
 namespace {
 
 std::unordered_map<std::string, size_t> renderPassIndices(const CompiledRenderingPass &compiled_pass) {
@@ -101,9 +120,9 @@ CompiledFrameGraphExecution compileExecution(
     // without a target plan (the renderer's fallback schedule) would run a
     // repeated node twice, or in an order Studio does not show.
     validateFramePlanStructure(plan);
+    std::optional<FrameGraphScopeMapping> scope_mapping;
     if (target_plan)
-        requirePhysicalNodeOrderMatchesFramePlan(
-            FramePlanNodeOrder{plan}, physicalNodeOrderOf(target_plan->scopes).nodes);
+        scope_mapping = compileFrameGraphScopeMapping(plan, *target_plan);
     auto pass_indices = renderPassIndices(compiled_pass);
     auto task_indices = computeTaskIndices(compiled_pass);
     auto material_routes =
@@ -113,6 +132,7 @@ CompiledFrameGraphExecution compileExecution(
     execution.plan = std::move(plan);
     execution.render_pipeline = std::move(render_pipeline);
     execution.target_plan = std::move(target_plan);
+    execution.scope_mapping = std::move(scope_mapping);
     execution.native_scopes =
         std::move(native_scopes);
     if (execution.target_plan != nullptr &&

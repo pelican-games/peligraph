@@ -87,6 +87,28 @@ struct CompiledMaterialRouteBinding {
     std::vector<MaterialOutputAttachmentState> output_states;
 };
 
+namespace test_support { struct FrameGraphRuntimeTestAccess; }
+
+// Registration validates the physical order and records its contiguous
+// ranges in FramePlan/execution-node order. No frame values belong here.
+struct FrameGraphScopeMapping {
+    struct NodeScope {
+        std::size_t scope_index = 0;
+        std::size_t scope_node_index = 0;
+    };
+    std::vector<PhysicalNodeOrder::ScopeRange> scopes;
+    std::vector<NodeScope> nodes;
+
+  private:
+    friend struct test_support::FrameGraphRuntimeTestAccess;
+    friend FrameGraphScopeMapping compileFrameGraphScopeMapping(
+        const FramePlan &, const VulkanTargetPlan &);
+    static std::atomic<std::uint64_t> builds;
+};
+
+FrameGraphScopeMapping compileFrameGraphScopeMapping(
+    const FramePlan &plan, const VulkanTargetPlan &target_plan);
+
 struct CompiledFrameGraphExecution {
     FramePlan plan;
     std::shared_ptr<const CompiledRenderPipeline> render_pipeline;
@@ -100,6 +122,8 @@ struct CompiledFrameGraphExecution {
     std::unordered_map<std::string, FrameGraphBufferId>
         buffer_bindings;
     std::vector<FrameGraphExecutionNode> nodes;
+    // Present exactly when target_plan is present; built once at registration.
+    std::optional<FrameGraphScopeMapping> scope_mapping;
     std::shared_ptr<const ValueGraph::Graph> value_graph;
 #if PELICAN_WITH_ANIMATION
     // The animation partition of the same document. Evaluated in the animation

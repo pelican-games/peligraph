@@ -43,6 +43,7 @@ void runCubeViewSelectEquivalence();
 void runCubeLoopEquivalence();
 void runCascadeLoopShadowEquivalence();
 void runViewSelectZeroMatch();
+void runScopeMappingReuse();
 void runSsaoPlanarGolden();
 void runSsaoBlurFlatOracle();
 void runSsaoBlurHalfResolutionOracle();

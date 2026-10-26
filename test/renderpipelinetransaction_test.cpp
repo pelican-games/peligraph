@@ -2,6 +2,7 @@
 #include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/project/graphvariantpolicy.hpp"
 #include "../src/project/graphcomposition.hpp"
+#include "framegraphruntime_testaccess.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -137,6 +138,39 @@ TEST_CASE("RC-3d2 direct generation and compatibility registration validate phys
         check({"draw", "extra"}, "extra", compatibility);
         check({}, "missing", compatibility);
     }
+}
+
+TEST_CASE("RC-3d3 empty target plans have a mapping and fallback registrations have none",
+          "[render-pipeline][transaction][rc3d3]") {
+    FrameGraphRuntimeContainer runtime;
+    auto fallback = programFor(1);
+    fallback.target_plan.reset();
+    const auto before = test_support::FrameGraphRuntimeTestAccess::scopeMappingBuilds();
+    runtime.publishPreparedGeneration(runtime.prepareGeneration({std::move(fallback)}));
+    const auto execution = runtime.find(RenderingPassId{0});
+    REQUIRE(execution);
+    CHECK_FALSE(execution->target_plan);
+    CHECK_FALSE(execution->scope_mapping);
+    CHECK(test_support::FrameGraphRuntimeTestAccess::scopeMappingBuilds() == before);
+
+    auto empty = programFor(2, "empty");
+    empty.frame_plan.nodes.clear();
+    empty.rendering_pass.passes.clear();
+    auto pipeline = std::make_shared<CompiledRenderPipeline>(*empty.render_pipeline);
+    pipeline->material_routing.reset();
+    empty.render_pipeline = std::move(pipeline);
+    auto target = std::make_shared<VulkanTargetPlan>(*empty.target_plan);
+    target->scopes.clear();
+    empty.target_plan = std::move(target);
+    auto prepared = runtime.prepareGeneration({std::move(empty)});
+    CHECK(test_support::FrameGraphRuntimeTestAccess::scopeMappingBuilds() == before + 1);
+    runtime.publishPreparedGeneration(std::move(prepared));
+    const auto generation = runtime.snapshot();
+    const auto *program = generation->find(generation->name_to_id.at("empty"));
+    REQUIRE(program);
+    REQUIRE(program->frame_graph.scope_mapping);
+    CHECK(program->frame_graph.scope_mapping->scopes.empty());
+    CHECK(program->frame_graph.scope_mapping->nodes.empty());
 }
 
 OutputCompileFacts windowFacts(

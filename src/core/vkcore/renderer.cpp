@@ -6562,8 +6562,7 @@ void Renderer::LogicalFrameRecorder::planLogicalFrameSchedule() {
         }
         logical_frame_schedule =
             buildLogicalFrameViewFamilySchedule(
-                frame_graph.nodes,
-                *frame_graph.target_plan,
+                frame_graph,
                 family_cardinalities);
     }
 }
