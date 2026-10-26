@@ -78,6 +78,7 @@ class RenderFallbackSession {
         bool known = false;
         bool live = true;
         bool held_unparsed = false;
+        std::string held_reason;
         // The root as the project names it ("passes/main.json").
         std::string root;
         // The digest of the version the reads answer from (decision 4).

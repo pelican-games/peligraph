@@ -818,6 +818,7 @@ TEST_CASE("RR-1 a reload refused for a root that is not JSON holds its bytes, th
         INFO(graph.dump(2).substr(0, 2000));
         CHECK(graph.at("live") == true);
         CHECK(graph.at("held_unparsed") == true);
+        CHECK(graph.at("held_reason") == "syntax");
         CHECK(graph.at("source_digest").at("hex") == live_digest);
         CHECK(graph.at("nodes").dump().find("rr1_fill") != std::string::npos);
     }
@@ -1406,6 +1407,7 @@ TEST_CASE("RC-3e1 A1 production RPC authoring recovery and publication", "[rc3e1
             CHECK(rootOf(player).at("content") == bytes);
             const auto graph = player.result("get_graph_instances");
             CHECK(graph.at("held_unparsed") == true);
+            CHECK(graph.at("held_reason") == "envelope");
             CHECK(graph.at("source_digest") == readable.at("source_digest"));
             const auto edit = player.result("edit_graph_document", {{"base_source_digest", hash(bytes)},
                 {"ops", Json::array({{{"op", "set_node_label"}, {"node", "absent"}, {"label", "x"}}})}});

@@ -664,6 +664,25 @@ TEST_CASE("RC-3e2 compose and IR refusals open the exact document with stage cod
     }
 }
 
+TEST_CASE("RC-3e3 held envelope banner uses the refusal message", "[devstudio][render-fallback][rc3e3]") {
+    application();
+    Rig rig;
+    rig.notice.observeStatus(readyStatus());
+    auto row = reloadSyntaxRow();
+    row.code = "render_document_envelope@1";
+    row.message = "render_document_envelope@1: features must be an array";
+    row.fields = Json::object();
+    rig.notice.observeProblems({row});
+    auto reply = Json::parse(graphRead(true, std::string(64, 'e'), true).toStdString());
+    reply["held_reason"] = "envelope";
+    CHECK(rig.notice.receiveResult(rig.requests.back().id, QByteArray::fromStdString(reply.dump())));
+    CHECK(rig.notice.line()->text() == QStringLiteral(
+        "passes/main_rendering_config.json is not a rendering document Pelican can read: "
+        "render_document_envelope@1: features must be an array"));
+    CHECK_FALSE(rig.notice.session().notice().syntax);
+    CHECK(rig.showing("pelican.renderFallbackNotice.showDocument"));
+}
+
 TEST_CASE("RC-3e2 other documents errors and held digests prevent every save path",
           "[devstudio][render-fallback][rc3e2]") {
     application();

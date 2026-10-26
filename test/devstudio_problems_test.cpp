@@ -18,6 +18,7 @@
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QStatusBar>
 #include <QTest>
 #include <QTextBlock>
 #include <QTextCursor>
@@ -725,4 +726,43 @@ TEST_CASE("RC-3e2 Problems keeps Graph classification and repairs a failed read 
     REQUIRE(label != nullptr);
     CHECK(label->text().contains(kind >= 4 ? QStringLiteral("parse: render_graph.pass_shape@1")
                                          : QStringLiteral("compose: snapshot.after_unknown@1")));
+}
+
+TEST_CASE("RC-3e3 Problems missing definition node without a document reports status",
+          "[devstudio][problems][rc3e3]") {
+    application();
+    Rig rig;
+    qint64 read = 0;
+    GraphCanvasWidget graph{GraphCanvasReadCapability{
+        .requestGraphInstances = [&](QString *) { return read = 101; },
+        .requestGraphCatalog = [&](QString *) { return 102; },
+    }};
+    QStatusBar status;
+    RenderFallbackNotice notice{RenderFallbackNotice::Hooks{
+        .completed = [&](const QString &line) { status.showMessage(line, 8000); },
+    }};
+    graph.setConnected(true);
+    auto problem = nodeProblem("reload_rpc");
+    problem.erase("document");
+    problem["fields"].erase("document");
+    problem["message"] = "definition node is invalid";
+    problem["document_kind"] = "definition";
+    problem["definition"] = "Inner";
+    rig.dock.engineAvailable();
+    rig.dock.observeStatus(statusAt(1, 1));
+    rig.answer(1, Json::array({problem}));
+    rig.open_place = [&](const ProblemRow &row) { notice.showGraphProblem(row, graph); };
+    rig.click(rig.rowFor("00000000000000b2"));
+    CHECK(status.currentMessage().isEmpty());
+    graph.receiveResult(read, bytes(Json{
+        {"source_reference", "project://passes/main_rendering_config.json"},
+        {"source_digest", {{"hex", "disk-digest"}}}, {"root_schema", "pelican.graph"},
+        {"nodes", Json::array()}, {"definitions", Json::object()}}));
+    REQUIRE(graph.model().contextReadFinished());
+    REQUIRE_FALSE(graph.model().contextReadFailed());
+    QTest::qWait(601);
+    rig.click(rig.rowFor("00000000000000b2"));
+    REQUIRE(rig.opened.size() == 2);
+    CHECK(status.currentMessage() == QStringLiteral("The Graph does not show sim of Inner."));
+    CHECK(notice.documentDialog() == nullptr);
 }

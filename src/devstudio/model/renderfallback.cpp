@@ -56,6 +56,7 @@ bool RenderFallbackSession::observeAuthoringRead(const Json &reply) {
     next.live = live->get<bool>();
     const auto unparsed = reply.find("held_unparsed");
     next.held_unparsed = unparsed != reply.end() && unparsed->is_boolean() && unparsed->get<bool>();
+    next.held_reason = reply.value("held_reason", std::string{});
     if (const auto root = reply.find("source_reference"); root != reply.end() && root->is_string())
         next.root = graphRefusalSource(Json{{"document", *root}}, "document");
     if (const auto digest = reply.find("source_digest"); digest != reply.end()) {
@@ -139,7 +140,11 @@ bool RenderFallbackSession::compose() {
         next.line = (file.empty() ? std::string{"The rendering root"} : file) +
                     " is not valid JSON; the Graph shows the last version that was.";
         next.document = file;
-        next.syntax = !file.empty();
+        if (authoring_.held_reason == "envelope")
+            next.line = (file.empty() ? std::string{"The rendering root"} : file) +
+                        " is not a rendering document Pelican can read: " +
+                        held_problem_.diagnostic.value("message", std::string{});
+        next.syntax = authoring_.held_reason != "envelope" && !file.empty();
         if (held_problem_.code == "render_document_syntax@1") {
             next.syntax_line = held_problem_.line;
             next.syntax_column = held_problem_.column;

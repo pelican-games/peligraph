@@ -211,10 +211,15 @@ void RenderFallbackNotice::showGraphProblem(const ProblemRow &row, GraphCanvasWi
     auto diagnostic = row.fields;
     diagnostic["code"] = row.code;
     diagnostic["message"] = row.message;
-    const auto repair = [self = QPointer<RenderFallbackNotice>(this), row, diagnostic] {
+    const auto repair = [self = QPointer<RenderFallbackNotice>(this),
+                         canvas = QPointer<GraphCanvasWidget>(&graph), row, diagnostic] {
         if (self && !row.document.empty())
             self->showDocumentAt(qtext(row.document), row.line, row.column,
                                  QLatin1Char('"') + qtext(row.node) + QLatin1Char('"'), diagnostic);
+        else if (self && canvas && !row.definition.empty() && canvas->model().contextReadFinished() &&
+                 !canvas->model().contextReadFailed() && self->hooks_.completed)
+            self->hooks_.completed(self->tr("The Graph does not show %1 of %2.")
+                                      .arg(qtext(row.node), qtext(row.definition)));
     };
     if (graph.model().contextReadFailed()) {
         repair();

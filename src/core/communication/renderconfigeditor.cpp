@@ -6565,7 +6565,39 @@ void appendFeatureReferences(const Json &features,
 
 std::vector<RenderConfigEditorService::WritableRenderDocument>
 RenderConfigEditorService::writableRenderDocuments() const {
-    return renderDocumentsOf(currentDocumentSet(), document_.bytes());
+    // Shared with the getter; candidate validation still composes/preflights.
+    auto documents = namedRenderDocuments(document_.bytes(),
+        [&](const std::string &reference) -> std::optional<std::string> {
+            const auto parent = reference.substr(0, reference.find('#'));
+            if (parent.starts_with("engine://"))
+                return std::string{engineResourceOrThrow(parent.substr(9))};
+            return readFileBytes(dependencies_.resolve_document_path(parent));
+        }, false);
+    if (dependencies_.published_provider_references)
+        for (const auto &reference : dependencies_.published_provider_references())
+            documents.push_back(WritableRenderDocument{.reference = reference, .kind = "feature"});
+    std::vector<WritableRenderDocument> writable{{
+        .reference = dependencies_.source_reference,
+        .normalized_reference = source_normalized_reference_,
+        .path = dependencies_.source_path, .kind = "root"}};
+    for (auto &entry : documents) {
+        const auto &reference = entry.reference;
+        if (reference.empty() || reference.starts_with("engine://") ||
+            reference.find('#') != std::string::npos) continue;
+        try {
+            entry.normalized_reference = dependencies_.normalize_reference(reference);
+            if (findWritableRenderDocument(writable, reference)) continue;
+            entry.path = dependencies_.resolve_document_path(reference);
+            if (!isWithinDirectory(dependencies_.project_root, entry.path) ||
+                !std::filesystem::is_regular_file(entry.path)) continue;
+            const auto bytes = readFileBytes(entry.path);
+            if (Json::accept(bytes) && !isListedRenderDocument(bytes, entry.kind)) continue;
+            writable.push_back(std::move(entry));
+        } catch (const std::exception &) {
+            // Unresolved, missing, unreadable and non-project files are read-only.
+        }
+    }
+    return writable;
 }
 
 std::vector<RenderConfigEditorService::WritableRenderDocument>
@@ -6994,10 +7026,7 @@ OrderedJson RenderConfigEditorService::getRenderDocuments(
         [&](const std::string &reference) -> std::optional<std::string> {
             return read(reference.substr(0, reference.find('#')));
         }, false);
-    const auto restore_targets = namedRenderDocuments(document_.bytes(),
-        [&](const std::string &reference) -> std::optional<std::string> {
-            return read(reference);
-        });
+    const auto restore_targets = writableRenderDocuments();
     entries.insert(entries.begin(), WritableRenderDocument{
         .reference = dependencies_.source_reference,
         .normalized_reference = source_normalized_reference_,
@@ -7016,7 +7045,6 @@ OrderedJson RenderConfigEditorService::getRenderDocuments(
     }
     // A fragment has identity only. Its parent is the single full document,
     // but merely observing that parent does not make it a restore target.
-    std::set<std::string> fragment_parents;
     for (std::size_t i = 0; i < entries.size(); ++i) {
         const auto reference = entries[i].reference;
         const auto hash = reference.find('#');
@@ -7026,7 +7054,6 @@ OrderedJson RenderConfigEditorService::getRenderDocuments(
                 [&](const auto &entry) { return entry.reference == parent; })) {
             const auto kind = entries[i].kind;
             entries.push_back(WritableRenderDocument{.reference = parent, .kind = kind});
-            fragment_parents.insert(parent);
             if (published.contains(reference)) published.insert(parent);
         }
     }
@@ -7062,12 +7089,7 @@ OrderedJson RenderConfigEditorService::getRenderDocuments(
                 row["writable"] = true;
                 if (row["digest"] != document_.sourceDigest()) row["held_digest"] = document_.sourceDigest();
             } else if (!entry.reference.starts_with("engine://")) {
-                const auto path = dependencies_.resolve_document_path(entry.reference);
-                row["writable"] = isWithinDirectory(dependencies_.project_root, path) &&
-                    std::filesystem::is_regular_file(path) &&
-                    ((!published.contains(entry.reference) && !fragment_parents.contains(entry.reference)) ||
-                     findWritableRenderDocument(restore_targets, entry.reference) != nullptr) &&
-                    (!Json::accept(bytes) || isListedRenderDocument(bytes, entry.kind));
+                row["writable"] = findWritableRenderDocument(restore_targets, entry.reference) != nullptr;
             }
         } catch (const std::exception &error) {
             row["error"] = {{"code", entry.resolution_error.empty()
@@ -7786,7 +7808,10 @@ bool RenderConfigEditorService::readLive() const {
 }
 
 OrderedJson RenderConfigEditorService::markRead(OrderedJson read) const {
-    if (readable_document_) read["held_unparsed"] = true;
+    if (readable_document_) {
+        read["held_unparsed"] = true;
+        read["held_reason"] = Json::accept(document_.bytes()) ? "envelope" : "syntax";
+    }
     return read;
 }
 

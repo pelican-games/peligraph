@@ -525,7 +525,8 @@ class RenderConfigEditorService {
     // RR-1: the root the structural reads answer from -- the held one, or
     // readable_document_ while the held one is not JSON -- with the managed
     // fragments, whether it is live, and the fields that say which it is:
-    // {live} and, while the held root is not JSON, held_unparsed: true.
+    // {live} and, while a raw root is held, held_unparsed: true and
+    // held_reason: syntax | envelope.
     const AuthoredRenderConfigDocument &readDocument() const;
     RenderConfigCandidateDocumentSet readDocumentSet() const;
     bool readLive() const;
@@ -698,13 +699,12 @@ class RenderConfigEditorService {
     // RR-1: currentDocumentSet with `root` in the root's place.
     RenderConfigCandidateDocumentSet documentSetOf(
         const AuthoredRenderConfigDocument &root) const;
-    // RD-1: every render document the current composition can write, root
+    // RD-1: current static closure plus published providers, root
     // first. Nothing outside the project root, nothing engine://, and nothing
     // that is not a render document of the kind the composition reads it as.
     std::vector<WritableRenderDocument> writableRenderDocuments() const;
     nlohmann::ordered_json restoreRenderDocumentsUnnoted(const nlohmann::json &params);
-    // RL-1: the same for a candidate document set whose root is `root_bytes`
-    // (writableRenderDocuments is this for the current set).
+    // RL-1: documents read by a reload candidate (may compose).
     std::vector<WritableRenderDocument> renderDocumentsOf(
         const RenderConfigCandidateDocumentSet &documents,
         std::string_view root_bytes) const;

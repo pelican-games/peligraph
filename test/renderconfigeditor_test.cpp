@@ -13956,6 +13956,12 @@ TEST_CASE("RC-3e raw document closure never composes and keeps unreadable refere
     root["rendering"]["pipeline"]["preset"] = preset_reference;
     root["rendering"]["features"] = Json::array({root_feature});
     writeBytes(project.render_config, root.dump());
+    // Advance the held root as a real reload does; a getter alone does not
+    // grant write access to references added externally on disk.
+    const auto reload = service->reloadRenderDocuments(Json::object());
+    REQUIRE(reload.at("status") == "accepted");
+    service->commitPending();
+    REQUIRE(service->getResult({{"ticket", reload.at("ticket")}}).at("status") == "rejected");
     const auto before_get = compositions;
     const auto ordered = service->getRenderDocuments(Json::object()).at("documents");
     REQUIRE(ordered.size() == 4);
@@ -13972,13 +13978,14 @@ TEST_CASE("RC-3e raw document closure never composes and keeps unreadable refere
     CHECK(compositions == before_get);
 }
 
-TEST_CASE("RC-3e published provenance is writable only while currently named", "[render-config-editor][rc3e1]") {
+TEST_CASE("RC-3e3 getter and restore share static closure plus published providers", "[render-config-editor][rc3e3]") {
     TemporaryAnimgraphProject project;
     const std::string reference = "project://passes/rc3e-published.json";
     const std::string feature = R"({"schema":"pelican.render_feature","version":1,"name":"rc3e_published"})";
     writeBytes(project.root / "passes/rc3e-published.json", feature);
     auto root = Json::parse(emptyHybridConfig());
-    root["rendering"]["features"] = Json::array({reference});
+    const bool published_provider = GENERATE(false, true);
+    root["rendering"]["features"] = Json::array();
     writeBytes(project.render_config, root.dump(2));
     PathResolver resolver;
     resolver.setup(project.root, false);
@@ -13989,33 +13996,32 @@ TEST_CASE("RC-3e published provenance is writable only while currently named", "
             const auto compose = dependencies.resolve_authoring_context;
             dependencies.resolve_authoring_context = [&, compose](const auto &documents) {
                 ++compositions;
-                return compose(documents);
+                auto context = compose(documents);
+                if (!published_provider) context.config["features"].push_back(reference);
+                return context;
             };
-            dependencies.published_provider_references = [reference] {
-                return std::vector<std::string>{reference};
+            dependencies.published_provider_references = [reference, published_provider] {
+                return published_provider ? std::vector<std::string>{reference} : std::vector<std::string>{};
             };
         });
-    CHECK(rd1Documents(service->getRenderDocuments(Json::object())).at(reference).at("writable") == true);
-    CHECK(compositions == 0);
-    root["rendering"]["features"] = Json::array();
-    root["rendering"]["snapshots"] = Json::array({{{"name", "broken"}, {"after", "absent"}}});
-    writeBytes(project.render_config, root.dump(2));
-    const auto reload = service->reloadRenderDocuments(Json::object());
-    REQUIRE(reload.at("status") == "accepted");
-    service->commitPending();
-    REQUIRE(service->getResult({{"ticket", reload.at("ticket")}}).at("status") == "rejected");
     const auto before_get = compositions;
     const auto answer = service->getRenderDocuments(Json::object());
-    CHECK_FALSE(rd1Documents(answer).contains(reference));
-    const auto other = rd1Documents(answer, "other_documents");
     CHECK(compositions == before_get);
-    const auto &published = other.at(reference);
-    CHECK(published.at("source") == "published_provenance");
-    CHECK(published.at("content") == feature);
-    CHECK(published.at("digest") == renderConfigSourceDigest(feature));
-    CHECK(published.at("writable") == false);
-    CHECK(rd1Error(service->restoreRenderDocuments({{"documents", Json::array({
-        rd1Restore(published, published.at("digest"))})}})).at("code") == "render_document_not_writable");
+    CHECK(rd1Documents(answer).contains(reference) == published_provider);
+    const auto restore = service->restoreRenderDocuments({{"documents", Json::array({
+        rd1Document(reference, renderConfigSourceDigest(feature), feature)})}});
+    INFO(restore.dump());
+    if (published_provider) {
+        const auto row = rd1Documents(answer).at(reference);
+        CHECK(row.at("source") == "published_provenance");
+        CHECK(row.at("writable") == true);
+        REQUIRE(restore.at("status") == "accepted");
+        service->commitPending();
+        CHECK(service->getResult({{"ticket", restore.at("ticket")}}).at("committed") == true);
+    } else {
+        CHECK(rd1Error(restore).at("code") == "render_document_not_writable");
+        CHECK(compositions == before_get);
+    }
 }
 
 TEST_CASE("RC-3e inspect is the retention and editing domain", "[render-config-editor][rc3e1]") {
