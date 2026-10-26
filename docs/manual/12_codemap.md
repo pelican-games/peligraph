@@ -60,7 +60,7 @@
 | モジュールカタログ(`pelican.graph_catalog` v1) | [第10章](10_tools.md) | [project/graphmodule.cpp](../../src/project/graphmodule.cpp) の `catalog()`(名前順。出力は `pelican_cli graph-catalog`) |
 | package manifest(`pelican.package` v1) | [第3章](03_project_format.md) | 純ロジック: [project/packagemanifest.cpp](../../src/project/packagemanifest.cpp)(install は `<project>/packages/<namespace>/` への copy、`project.json` に `{namespace, package_version, sha256}` を記録)/ CLI: [devcli/packagecommand.cpp](../../src/devcli/packagecommand.cpp) |
 | 持ち出し部品(`pelican.render_component` v1) | [第6章](06_rendering.md) | 純ロジック: [project/rendercomponent.cpp](../../src/project/rendercomponent.cpp)(materialize 済み feature 1 本 + host が満たす render target 契約。公開はディレクトリ rename)|
-| シェーダ stem 参照 | [第6章](06_rendering.md) | [`makeShaderReference()`](../../src/core/shader/shaderreference.cpp#L76) `makeShaderReference`(拡張子 hard error はここ) |
+| シェーダ stem 参照 | [第6章](06_rendering.md) | [`makeShaderReference()`](../../src/project/shaderreference.cpp#L76) `makeShaderReference`(拡張子 hard error はここ) |
 | `input/actions.json`(pelican.input_actions) | [第7章](07_input_ui.md) | [os/actionmap.cpp](../../src/core/os/actionmap.cpp)(schema/version ゲートは `input_actions_schema` の照合箇所) |
 | `ui/ui_overlay.json` | [第7章](07_input_ui.md) | [loader/basicconfig.cpp](../../src/core/loader/basicconfig.cpp) `uiConfigJson()` → [renderer/uicontainer.cpp](../../src/core/renderer/uicontainer.cpp) |
 | collider コンポーネント | [第4章](04_scene_ecs.md)・[第8章](08_gameplay.md) | 受理の正: [`decodeCollider()`](../../src/core/loader/componentcodec.cpp#L1418) `decodeCollider`(**closed schema** = 列挙した鍵以外を拒否する schema。未知の鍵を黙って無視する open な受理はしない)。ランタイム型は [userpublic/components/collider.cpp](../../src/core/userpublic/components/collider.cpp) |

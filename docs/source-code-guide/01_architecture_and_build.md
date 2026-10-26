@@ -13,7 +13,7 @@ Pelican2のコードは、最初から個々のクラスを読むより、次の
 | 実行ファイル | 引数を読み、ライブラリを起動する | [`src/player/main.cpp`](../../src/player/main.cpp#L733)、[`src/devcli/main.cpp`](../../src/devcli/main.cpp#L19)、[`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L6)、[`src/spvlink/main.cpp`](../../src/spvlink/main.cpp#L1)（オフラインSPIR-VリンカCLI、[`spvlink.hpp`](../../src/core/shader/spvlink.hpp)を使用） |
 | 純粋ロジック | JSONやテキスト形式のパース・検証・合成。Vulkan不要 | [`src/project/CMakeLists.txt`](../../src/project/CMakeLists.txt#L1) |
 | エンジン本体 | ECS、入力、scene、描画、音声、物理、保存、RPC | [`src/core/CMakeLists.txt`](../../src/core/CMakeLists.txt) |
-| ゲーム/検証 | プロジェクト固有コード、fixture、単体・結合・golden test | [`projects/example/code/playercontrol.cpp`](../../projects/example/code/playercontrol.cpp#L1)、[`test/CMakeLists.txt`](../../test/CMakeLists.txt#L70) |
+| ゲーム/検証 | プロジェクト固有コード、fixture、単体・結合・golden test | [`projects/example/code/playercontrol.cpp`](../../projects/example/code/playercontrol.cpp#L1)、[`test/CMakeLists.txt`](../../test/CMakeLists.txt#L81) |
 
 この分離で最も重要なのは `pelican_project` です。[`src/project/CMakeLists.txt`](../../src/project/CMakeLists.txt#L1) を見ると、依存は主に `nlohmann_json` とハッシュ用の `picosha2` だけです。project.json封筒とパス参照、scene形式、render feature合成、material/surface形式、JSON-RPCエンベロープ、import/assets manifestをGPUなしで扱えます。
 
@@ -57,7 +57,7 @@ flowchart TB
 
 宣言は [`src/schema/CMakeLists.txt`](../../src/schema/CMakeLists.txt#L1) です。依存は `nlohmann_json` だけの STATIC ライブラリで、[`src/schema/schema.hpp`](../../src/schema/schema.hpp#L16) の `Pelican::Schema` 名前空間だけを持ちます。`FieldType` / [`FieldPresence`](../../src/schema/schema.hpp#L110) / [`Node`](../../src/schema/schema.hpp#L127) が、descriptor が core から project / Studio 側へ渡るときの**プロジェクト所有の再帰 wire モデル**です（`Node` 直前のコメントが規範）。
 
-ここでいう wire モデルとは、**層やプロセスの境界を越えて受け渡すためだけに定義した表現**のことです（配線の上を流れる形、という含み）。core 側の `SchemaNode` をそのまま渡さず、境界の手前で必ずこの型へ変換するので、core の内部型が project / Studio 側の型に染み出しません。`pelican_project` は PUBLIC にリンクします（[`target_link_libraries(pelican_project PUBLIC nlohmann_json pelican_schema_leaf PRIVATE picosha2)`](../../src/project/CMakeLists.txt#L121)）。
+ここでいう wire モデルとは、**層やプロセスの境界を越えて受け渡すためだけに定義した表現**のことです（配線の上を流れる形、という含み）。core 側の `SchemaNode` をそのまま渡さず、境界の手前で必ずこの型へ変換するので、core の内部型が project / Studio 側の型に染み出しません。`pelican_project` は PUBLIC にリンクします（[`target_link_libraries(pelican_project PUBLIC nlohmann_json pelican_schema_leaf PRIVATE picosha2)`](../../src/project/CMakeLists.txt#L123)）。
 
 core 側からこの葉を使うための橋が [`pelican_schema_core_adapter`](../../src/core/communication/CMakeLists.txt#L1) で、`schemavocabularyadapter` 1 対だけを持つ別 STATIC ターゲットです。`pelican_core` へは PRIVATE にリンクされ（[同 L20](../../src/core/communication/CMakeLists.txt#L20)）、この 1 ターゲットだけが `/we4061 /we4062`（GCC/Clang では `-Wswitch-enum -Werror=switch-enum`）で **enum の網羅を error に上げて**います。ここでいう網羅とは、`switch` が対象 enum の全列挙子を `case` で明示的に書いているか、という意味です（MSVC の C4061 は `default` があっても未記述の列挙子を、C4062 は `default` が無い場合を指摘します）。語彙の追加が黙って落ちないようにするための局所設定です。
 
@@ -174,7 +174,7 @@ core 配下の target はリンクせず、CMake が推移リンクを含めて 
 | [`ecs/`](../../src/core/ecs) | 内部ECSのファサード、Componentメタデータ、組み込みSystem | [`ECSCore`](../../src/core/ecs/core.hpp#L13)、[`ComponentInfoManager`](../../src/core/ecs/componentinfo.hpp#L60) |
 | [`userpublic/`](../../src/core/userpublic) | ゲームコード向け公開APIとECS実体テンプレート | [`GameContext`](../../src/core/userpublic/gamecontext.hpp#L284)、[`GameObjects`](../../src/core/userpublic/gameobjects.hpp#L31) |
 | [`os/`](../../src/core/os) | GLFW window、生入力、Action map | [`InputStateCore`](../../src/core/os/inputstate.hpp#L252)、[`InputActionMap`](../../src/core/os/actionmap.hpp#L65) |
-| [`renderingpass/`](../../src/core/renderingpass) | 描画宣言のパース、検証、frame graph、compute task、RT | [`PassDefinition`](../../src/core/renderingpass/renderingpass.hpp#L373)、[`FramePlan`](../../src/project/frameplan.hpp#L156)(型と planner は ✅RC-3c1a から `src/project/frameplan.hpp`。描画グラフの IR は `src/project/rendergraphir.hpp`、[第6章](06_rendering_vulkan_shader.md#render-graph-ir)) |
+| [`renderingpass/`](../../src/core/renderingpass) | 描画宣言のパース、検証、frame graph、compute task、RT | [`PassDefinition`](../../src/core/renderingpass/renderingpass.hpp#L265)、[`FramePlan`](../../src/project/frameplan.hpp#L156)(型と planner は ✅RC-3c1a から `src/project/frameplan.hpp`。描画グラフの IR は `src/project/rendergraphir.hpp`、[第6章](06_rendering_vulkan_shader.md#render-graph-ir)) |
 | [`renderer/`](../../src/core/renderer) | material/fullscreen/UI/debug/shadowの実描画。frameresources / projectionjitter / temporal / sprite* / velocitypasscontainer / shadowdepthpasscontainer / atlasassetresource が追加 | [`MaterialRenderer`](../../src/core/renderer/materialrender.hpp#L104)、[`Camera`](../../src/core/renderer/camera.hpp#L21) |
 | [`render_algorithms/`](../../src/core/render_algorithms) | 差し替え可能な標準render algorithm（cube capture / planar reflection）のViewFamily provider。`PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=OFF` で丸ごと外れる | [`registerStandardRenderAlgorithmProviders()`](../../src/core/render_algorithms/standardrenderalgorithms.hpp#L9) |
 | [`vkcore/`](../../src/core/vkcore) | Vulkan instance/device、FrameTarget、command、layout、renderer編成 | [`VulkanManageCore`](../../src/core/vkcore/core.hpp#L36)、[`IFrameTarget`](../../src/core/vkcore/frametarget.hpp#L254) |
@@ -264,7 +264,7 @@ Pelicanは継承ベースのinterfaceを多用しません。このガイドで�
 | 仮想基底 | [`IFrameTarget`](../../src/core/vkcore/frametarget.hpp#L254)、[`ILogicalFrameTarget`](../../src/core/vkcore/renderer.hpp#L127) | windowed/headless/XRの実装差し替え |
 | 依存構造体 | [`MaterialRendererDependencies`](../../src/core/renderer/materialrender.hpp#L54) | 呼び出しに必要な協力オブジェクトを明示 |
 | Concept/duck typing | [`HasBatchProcess`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L77)、[`HasGameSystemUpdate`](../../src/core/userpublic/details/system/registerer.hpp#L38) | メソッド形だけをcompile時に要求 |
-| `std::variant` | [`PassInfo`](../../src/core/renderingpass/renderingpass.hpp#L282)、[`phys::Shape`](../../src/core/phys/physquery.hpp#L43) | 閉じた型集合を安全に分岐 |
+| `std::variant` | [`PassInfo`](../../src/core/renderingpass/renderingpass.hpp#L210)、[`phys::Shape`](../../src/core/phys/physquery.hpp#L43) | 閉じた型集合を安全に分岐 |
 | 関数コールバック | [`RenderFeatureComposeDependencies`](../../src/project/featurecompose.hpp#L15)、[`RpcServer::MethodHandler`](../../src/core/communication/rpcserver.hpp#L58) | I/Oやdispatchだけを注入 |
 | サービスロケータ | [`DECLARE_MODULE` / `GET_MODULE`](../../src/core/container.hpp#L15) | プロセス内の共有モジュールを遅延生成 |
 | module マニフェスト登録 | [`GraphModuleManifest`](../../src/project/graphmodule.hpp#L35) / [`GraphOperationRegistration`](../../src/project/graphmodule.hpp#L25) | 共通グラフの語彙（semantic型・op・sink）を1本の登録で持ち込む |
@@ -290,7 +290,7 @@ registryの各行が持つキーのうち、この節で効くのは2つです�
 | `PELICAN_WITH_VAT` | VAT parser/player、VAT shaderをリンク | GLBにVAT extrasがあれば明示エラー、playerはstub |
 | `PELICAN_WITH_EXR` | tinyexrでEXRロード | EXR指定時に明示エラー |
 | `PELICAN_WITH_RPC` | stdio RPC server | [`rpcserver_stub.cpp`](../../src/core/communication/rpcserver_stub.cpp#L1) |
-| [`PELICAN_WITH_ANIMATION`](../../cmake/pelican_feature_registry.cmake#L149) | skeletal animation評価器と `pelican.pose` graph module | `src/core/animation` の実装が外れて [`animation_disabled.cpp`](../../src/core/animation/animation_disabled.cpp#L1) だけになり、`pelican_project` から [`posegraphmodule.cpp` が外れます](../../src/project/CMakeLists.txt#L100)。帰結は4つ（下の段落） |
+| [`PELICAN_WITH_ANIMATION`](../../cmake/pelican_feature_registry.cmake#L149) | skeletal animation評価器と `pelican.pose` graph module | `src/core/animation` の実装が外れて [`animation_disabled.cpp`](../../src/core/animation/animation_disabled.cpp#L1) だけになり、`pelican_project` から [`posegraphmodule.cpp` が外れます](../../src/project/CMakeLists.txt#L102)。帰結は4つ（下の段落） |
 | `PELICAN_WITH_SEQPLAYER` | transform sequence parser/player | [`seqplayer_stub.cpp`](../../src/core/playback/seqplayer_stub.cpp#L1) |
 | `PELICAN_WITH_IMGUI` | 開発者UI（ImGui）をリンク | imguiモジュールなし |
 | `PELICAN_WITH_PHYSICS` | 物理クエリサービスとcollider world | [`physicsservice_stub.cpp`](../../src/core/phys/physicsservice_stub.cpp)、colliderを持つobjectは scene load の prepare でも editor の `add_component` / `spawn` でも `physics.module_unavailable@1`（[`resolvedObjectFeatureRefusal()`](../../src/core/loader/resolvedscene.cpp#L78)。下の 4 と同じ検査） |
@@ -445,12 +445,12 @@ configuration smokeはregistry matrix生成、対照build、clean-cloneの3 job�
 
 ### GPU テストの直列化: label と `RESOURCE_LOCK` と launcher の三点一致
 
-`gpu` ラベルの付いた CTest は、1つの `ctest` 実行の中では [`RESOURCE_LOCK pelican_gpu`](../../test/CMakeLists.txt#L41) で直列化され、**プロセスを跨ぐ側**は [`pelican_gpu_lease_run`](../../test/CMakeLists.txt#L27) という launcher が machine-wide の lease で担います。この launcher は意図的に `pelican_core` へ依存しません（本番ビルドが壊れても lease が消えないため）。
+`gpu` ラベルの付いた CTest は、1つの `ctest` 実行の中では [`RESOURCE_LOCK pelican_gpu`](../../test/CMakeLists.txt#L52) で直列化され、**プロセスを跨ぐ側**は [`pelican_gpu_lease_run`](../../test/CMakeLists.txt#L38) という launcher が machine-wide の lease で担います。この launcher は意図的に `pelican_core` へ依存しません（本番ビルドが壊れても lease が消えないため）。
 
 ビルド構成として押さえるのは次の3点です。lease 自体の状態機械は[第7章](07_tools_rpc_tests.md)にあります。
 
 - `gpu` label / `RESOURCE_LOCK=pelican_gpu` / launcher 起動の3つは**必ず同時に成立**していなければならず、[`verify_gpu_lease_inventory.py`](../../test/ci/verify_gpu_lease_inventory.py#L6) が CTest の inventory を読んで食い違いを落とします。
-- 手書きの `add_test()` は [`pelican_gpu_test_properties(<test> <intrinsic>)`](../../test/CMakeLists.txt#L36) を呼び、Catch2 が discover した分は build 後に `add_test()` 行を書き換えて launcher を差し込みます。
+- 手書きの `add_test()` は [`pelican_gpu_test_properties(<test> <intrinsic>)`](../../test/CMakeLists.txt#L47) を呼び、Catch2 が discover した分は build 後に `add_test()` 行を書き換えて launcher を差し込みます。
 - CTest の `TIMEOUT` は `lease_timeout_max + intrinsic + grace` で生成し、3つの数値の出所は [`test/gpu_lease_config.cmake`](../../test/gpu_lease_config.cmake#L3) の1ファイルだけです。
 
 ### test-only TU: `PELICAN_TESTING` は使わない
