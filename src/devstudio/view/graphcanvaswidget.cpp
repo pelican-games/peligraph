@@ -8015,6 +8015,11 @@ struct GraphCanvasWidget::Impl {
             });
         if (graph.ready)
             graph.ready(&view, [this](bool available, const QString &) {
+                if (!available) {
+                    if (pending_reveal_failed) pending_reveal.clear();
+                    pending_reveal_failed = {};
+                    document_reread = false;
+                }
                 if (!available) restart_asked = false;
                 model.setConnected(available);
                 dispatch();
@@ -9137,14 +9142,23 @@ struct GraphCanvasWidget::Impl {
     }
     // LP-4e: a root node another panel made, shown once it is here.
     std::string pending_reveal;
+    std::function<void()> pending_reveal_failed;
     bool revealPending() {
         if (pending_reveal.empty()) return false;
         const auto nodes = model.nodes({});
-        if (std::ranges::none_of(nodes, [&](const GraphCanvasNode &drawn) {
-                return drawn.id == pending_reveal;
-            }))
+        const bool missing = std::ranges::none_of(nodes, [&](const GraphCanvasNode &drawn) {
+            return drawn.id == pending_reveal;
+        });
+        if (pending_reveal_failed && model.contextReadFinished() &&
+            (model.contextReadFailed() || missing)) {
+            pending_reveal.clear();
+            auto failed = std::exchange(pending_reveal_failed, {});
+            failed();
             return false;
+        }
+        if (missing) return false;
         const auto id = std::exchange(pending_reveal, {});
+        pending_reveal_failed = {};
         model.selectScope({});
         showDomainOf({}, id);
         scene->repopulate();
@@ -9169,6 +9183,10 @@ struct GraphCanvasWidget::Impl {
     // a move it could not follow while busy is followed now.
     void followDocument() {
         if (digest_hub) digest_hub->publish(model.digest(), &view);
+        if (model.contextReadFailed()) {
+            document_reread = false;
+            return;
+        }
         if (document_reread && model.canRefresh()) {
             document_reread = false;
             model.refresh();
@@ -9211,6 +9229,7 @@ struct GraphCanvasWidget::Impl {
         const auto model_id = found.value();
         transport_requests.erase(found);
         model.receiveRpcFailure(model_id, message.toStdString());
+        revealPending();
         followDocument();
         dispatch();
     }
@@ -11963,9 +11982,20 @@ bool openGraphNodeInTabs(QTabWidget &tabs, GraphCanvasWidget &graph,
     return graph.revealGraphNode(scope, node, instance);
 }
 
-void GraphCanvasWidget::revealNodeWhenPresent(const QString &node) {
+void GraphCanvasWidget::revealNodeWhenPresent(const QString &node, std::function<void()> read_failed) {
     impl_->pending_reveal = node.toStdString();
+    impl_->pending_reveal_failed = std::move(read_failed);
     if (impl_->revealPending()) return;
+    if (impl_->pending_reveal.empty()) return;
+    if (impl_->pending_reveal_failed) {
+        // The first context read is already in flight. Its successful answer
+        // decides whether this Problems target exists; do not queue a reread.
+        if (impl_->model.canRefresh()) {
+            impl_->model.refresh();
+            impl_->dispatch();
+        }
+        return;
+    }
     // The document in hand predates the edit: read it again, now or when
     // what is in flight lands.
     if (impl_->model.canRefresh()) {
@@ -11977,6 +12007,9 @@ void GraphCanvasWidget::revealNodeWhenPresent(const QString &node) {
 }
 
 void GraphCanvasWidget::setConnected(bool connected) {
+    if (impl_->pending_reveal_failed) impl_->pending_reveal.clear();
+    impl_->pending_reveal_failed = {};
+    impl_->document_reread = false;
     impl_->model.setConnected(connected);
     impl_->dispatch();
 }
@@ -12004,6 +12037,8 @@ void GraphCanvasWidget::setProjectRoot(const std::filesystem::path &project_root
     // OT-1: the graph history survives an engine restart, not a project
     // switch.
     if (impl_->project_root != project_root) {
+        impl_->pending_reveal.clear();
+        impl_->pending_reveal_failed = {};
         impl_->model.forgetHistory();
         impl_->edit_order.clear();
         // NB-1: another project's document decides Canvas again.

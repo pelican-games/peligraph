@@ -1078,6 +1078,7 @@ class GraphCanvasModel {
     nlohmann::json layout_ = nlohmann::json::object();
     bool definitions_reported_ = false;
     bool context_received_ = false;
+    bool context_read_failed_ = false;
 
     std::vector<GraphCanvasUiNode> ui_nodes_;
     std::vector<std::string> audio_assets_;
@@ -1576,6 +1577,11 @@ class GraphCanvasModel {
     }
 
     void refresh();
+    [[nodiscard]] bool contextReadFailed() const noexcept { return context_read_failed_; }
+    [[nodiscard]] bool contextReadFinished() const noexcept {
+        return (context_received_ || context_read_failed_) &&
+               !(pending_ && pending_->kind == RequestKind::Context);
+    }
     void requestCatalog();
     // Which root instance the values overlay follows. Idempotent: reselecting
     // the same instance must not throw away what is already shown.

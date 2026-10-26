@@ -52,6 +52,7 @@ class RenderFallbackSession {
         std::string line;
         // The engine's own words, for the tooltip and Copy message.
         std::string detail;
+        Json diagnostic = Json::object();
         // The file the refusal names, as the project names it; empty: none.
         std::string document;
         // The node the refusal names; empty: none.
@@ -120,6 +121,7 @@ class RenderFallbackSession {
         std::string node;
         std::int64_t line = 0;
         std::int64_t column = 0;
+        Json diagnostic = Json::object();
 
         bool operator==(const HeldProblem &) const = default;
     };
@@ -174,7 +176,8 @@ class RenderDocumentRepair {
     // Show the document: get_render_documents, then the one `document` names
     // (as the project names it, or project://...). line / column: where the
     // editor puts the cursor.
-    bool open(const std::string &document, std::int64_t line, std::int64_t column);
+    bool open(const std::string &document, std::int64_t line, std::int64_t column,
+              const Json &diagnostic = Json::object());
     // Save: refused (false, with notice()) while `content` is not JSON;
     // otherwise restore_render_documents against the digest read.
     bool save(const std::string &content);
@@ -197,6 +200,10 @@ class RenderDocumentRepair {
     [[nodiscard]] std::int64_t line() const noexcept { return line_; }
     [[nodiscard]] std::int64_t column() const noexcept { return column_; }
     [[nodiscard]] const std::string &notice() const noexcept { return notice_; }
+    [[nodiscard]] bool writable() const noexcept { return writable_; }
+    [[nodiscard]] const std::string &diagnostic() const noexcept { return diagnostic_text_; }
+    [[nodiscard]] bool diagnosticMatches() const noexcept { return diagnostic_matches_; }
+    [[nodiscard]] const std::string &completion() const noexcept { return completion_; }
 
     // Anything shown may read differently.
     std::function<void()> changed;
@@ -210,6 +217,11 @@ class RenderDocumentRepair {
     std::string reference_;
     std::string digest_;
     std::string content_;
+    bool writable_ = false;
+    Json diagnostic_ = Json::object();
+    std::string diagnostic_text_;
+    bool diagnostic_matches_ = true;
+    std::string completion_;
     std::int64_t line_ = 0;
     std::int64_t column_ = 0;
     std::string notice_;

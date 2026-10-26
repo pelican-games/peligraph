@@ -20,6 +20,7 @@
 #include <QPushButton>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -83,6 +84,7 @@ struct Rig {
     std::int64_t next_id = 500;
     std::vector<std::function<void()>> tasks;
     std::vector<Json> restored;
+    std::vector<QString> completed;
     // RR-1s, decision 4: the digests told to the panels.
     std::vector<std::string> held;
     RenderFallbackNotice notice;
@@ -99,9 +101,15 @@ struct Rig {
                   return next_id;
               },
               .schedule = [this](int, std::function<void()> task) { tasks.push_back(std::move(task)); },
-              .restored = [this](const Json &commit) { restored.push_back(commit); },
+              .restored = [this](const Json &commit) {
+                  // The owner refreshes panels/restarts before the final
+                  // completion line replaces those operations' status text.
+                  CHECK(completed.empty());
+                  restored.push_back(commit);
+              },
               .held_digest = [this](const std::string &digest) { held.push_back(digest); },
               .shown_changed = [this](bool on, const QString &line) { shown.emplace_back(on, line); },
+              .completed = [this](const QString &line) { completed.push_back(line); },
           }} {}
 
     template <typename T>
@@ -362,9 +370,9 @@ TEST_CASE("BS-1s decision 7: a render document that is not JSON is one sentence 
     CHECK(rig.showing("pelican.renderFallbackNotice.showDocument"));
     CHECK(rig.showing("pelican.renderFallbackNotice.reload"));
     CHECK_FALSE(rig.showing("pelican.renderFallbackNotice.openGraph"));
-    // A structural refusal offers no document window.
+    // RC-3e2: a structural refusal with a document offers the same repair.
     rig.notice.observeStatus(fallbackStatus());
-    CHECK_FALSE(rig.showing("pelican.renderFallbackNotice.showDocument"));
+    CHECK(rig.showing("pelican.renderFallbackNotice.showDocument"));
 }
 
 TEST_CASE("BS-1s decision 8: Show the document opens the bytes on disk at the line and the column, Save waits "
@@ -552,7 +560,7 @@ TEST_CASE("RR-1s decision 1: while a refused version is held the row says the pi
               " See Problems.");
     CHECK(rig.showing("pelican.renderFallbackNotice.reload"));
     CHECK(rig.showing("pelican.renderFallbackNotice.openGraph"));
-    CHECK_FALSE(rig.showing("pelican.renderFallbackNotice.showDocument"));
+    CHECK(rig.showing("pelican.renderFallbackNotice.showDocument"));
     REQUIRE_FALSE(rig.shown.empty());
     CHECK(rig.shown.back().first);
     // Open in Graph goes to the node (the Graph reads the held version).
@@ -627,4 +635,163 @@ TEST_CASE("RR-1s decision 4: the digest of the held version is told to every pan
     const auto failed = rig.requests.back().id;
     CHECK(rig.notice.receiveFailure(failed, QStringLiteral("engine gone")));
     CHECK(rig.requests.back().id == failed);
+}
+
+TEST_CASE("RC-3e2 compose and IR refusals open the exact document with stage code and message",
+          "[devstudio][render-fallback][rc3e2]") {
+    application();
+    for (const auto &[stage, code] : std::vector<std::pair<std::string, std::string>>{
+             {"compose", "snapshot.after_unknown@1"}, {"parse", "render_graph.pass_shape@1"}}) {
+        Rig rig;
+        auto status = fallbackStatus();
+        auto &error = status["render_pipeline"]["refusal"];
+        error["pipeline_stage"] = stage;
+        error["code"] = code;
+        error["message"] = "the failing production input";
+        error["document_digest"] = "disk-digest";
+        rig.notice.observeStatus(status);
+        REQUIRE(rig.showing("pelican.renderFallbackNotice.showDocument"));
+        rig.named<QPushButton>("pelican.renderFallbackNotice.showDocument")->click();
+        REQUIRE(rig.notice.documentDialog() != nullptr);
+        REQUIRE(rig.notice.receiveResult(rig.requests.back().id, QByteArray::fromStdString(Json{
+            {"documents", Json::array({{{"reference", "passes/main_rendering_config.json"},
+              {"content", "{}"}, {"digest", "disk-digest"}, {"writable", true}}})}}.dump())));
+        auto *label = rig.notice.documentDialog()->findChild<QLabel *>(
+            QStringLiteral("pelican.renderDocumentDialog.diagnostic"));
+        REQUIRE(label != nullptr);
+        CHECK(label->text().contains(QString::fromStdString(stage + ": " + code)));
+        CHECK(label->text().contains(QStringLiteral("the failing production input")));
+    }
+}
+
+TEST_CASE("RC-3e2 other documents errors and held digests prevent every save path",
+          "[devstudio][render-fallback][rc3e2]") {
+    application();
+    Rig rig;
+    Json document{{"reference", "passes/main_rendering_config.json"}, {"content", "{}"},
+                  {"digest", "disk-digest"}, {"writable", false}};
+    std::string expected;
+    const auto kind = GENERATE(0, 1, 2, 3);
+    if (kind == 0) { expected = "Read only"; document["reference"] = "engine://features/builtin.json"; }
+    if (kind == 1) {
+        document["error"] = {{"code", "render_document.read_failed@1"}, {"message", "permission denied"}};
+        document.erase("content");
+        expected = "render_document.read_failed@1: permission denied";
+    }
+    if (kind == 2) {
+        document["fragment_of"] = "project://passes/parent.json";
+        expected = "open its parent document";
+    }
+    if (kind == 3) {
+        document["writable"] = true;
+        document["held_digest"] = "held-digest";
+        expected = "The file changed outside Studio. Reload from disk before repairing it";
+    }
+    rig.notice.showDocumentAt(QString::fromStdString(document.at("reference").get<std::string>()), 0, 0);
+    REQUIRE(rig.notice.receiveResult(rig.requests.back().id, QByteArray::fromStdString(Json{
+        {"documents", kind == 3 ? Json::array({document}) : Json::array()},
+        {"other_documents", kind == 3 ? Json::array() : Json::array({document})}}.dump())));
+    auto *dialog = rig.notice.documentDialog();
+    REQUIRE(dialog != nullptr);
+    auto *save = dialog->findChild<QPushButton *>(QStringLiteral("pelican.renderDocumentDialog.save"));
+    auto *text = dialog->findChild<QPlainTextEdit *>(QStringLiteral("pelican.renderDocumentDialog.text"));
+    auto *label = dialog->findChild<QLabel *>(QStringLiteral("pelican.renderDocumentDialog.notice"));
+    REQUIRE(save != nullptr);
+    REQUIRE(text != nullptr);
+    REQUIRE(label != nullptr);
+    CHECK_FALSE(save->isEnabled());
+    CHECK(text->isReadOnly());
+    CHECK(label->text().contains(QString::fromStdString(expected)));
+    auto &repair = const_cast<RenderDocumentRepair &>(rig.notice.repair());
+    CHECK_FALSE(repair.save("{}"));
+    CHECK(rig.requests.size() == 1);
+}
+
+TEST_CASE("RC-3e2 root mismatch blocks a selected feature or preset until root reload",
+          "[devstudio][render-fallback][rc3e2]") {
+    application();
+    Rig rig;
+    const auto kind = GENERATE("feature", "preset");
+    const std::string reference = std::string{"passes/"} + kind + ".json";
+    rig.notice.showDocumentAt(QString::fromStdString(reference), 0, 0);
+    const Json root{{"reference", "passes/main_rendering_config.json"}, {"kind", "root"},
+                    {"content", "{}"}, {"digest", "disk-root"}, {"held_digest", "held-root"}, {"writable", true}};
+    const Json selected{{"reference", reference}, {"kind", kind}, {"content", "{}"},
+                        {"digest", "selected-digest"}, {"writable", true}};
+    // Root may follow the selected document: inspect the whole response first.
+    REQUIRE(rig.notice.receiveResult(rig.requests.back().id, QByteArray::fromStdString(Json{
+        {"documents", Json::array({selected, root})}}.dump())));
+    auto *dialog = rig.notice.documentDialog();
+    REQUIRE(dialog != nullptr);
+    auto *save = dialog->findChild<QPushButton *>(QStringLiteral("pelican.renderDocumentDialog.save"));
+    auto *text = dialog->findChild<QPlainTextEdit *>(QStringLiteral("pelican.renderDocumentDialog.text"));
+    auto *label = dialog->findChild<QLabel *>(QStringLiteral("pelican.renderDocumentDialog.notice"));
+    REQUIRE(save != nullptr);
+    REQUIRE(text != nullptr);
+    REQUIRE(label != nullptr);
+    CHECK_FALSE(save->isEnabled());
+    CHECK(text->isReadOnly());
+    CHECK(text->toPlainText() == QStringLiteral("{}"));
+    CHECK(label->text().contains(QStringLiteral("Reload from disk before repairing")));
+    CHECK_FALSE(const_cast<RenderDocumentRepair &>(rig.notice.repair()).save("{}"));
+    CHECK(rig.requests.size() == 1);
+}
+
+TEST_CASE("RC-3e2 diagnostics of another digest are not attached to disk text or its cursor",
+          "[devstudio][render-fallback][rc3e2]") {
+    application();
+    Rig rig;
+    auto status = syntaxStatus();
+    status["render_pipeline"]["refusal"]["document_digest"] = "older-digest";
+    rig.notice.observeStatus(status);
+    rig.notice.showDocument();
+    REQUIRE(rig.notice.receiveResult(rig.requests.back().id, QByteArray::fromStdString(Json{
+        {"documents", Json::array({{{"reference", "passes/main_rendering_config.json"},
+          {"content", "{\n\"a\": 1,\n\"b\": 2\n}\n"}, {"digest", "current-digest"}}})}}.dump())));
+    auto *dialog = rig.notice.documentDialog();
+    REQUIRE(dialog != nullptr);
+    auto *label = dialog->findChild<QLabel *>(QStringLiteral("pelican.renderDocumentDialog.diagnostic"));
+    REQUIRE(label != nullptr);
+    CHECK(label->text() == QStringLiteral("This diagnostic belongs to another version of the document."));
+    auto *text = dialog->findChild<QPlainTextEdit *>(QStringLiteral("pelican.renderDocumentDialog.text"));
+    REQUIRE(text != nullptr);
+    CHECK(text->textCursor().atEnd());
+}
+
+TEST_CASE("RC-3e2 restore ticket distinguishes publication restart source only and no change",
+          "[devstudio][render-fallback][rc3e2]") {
+    application();
+    Rig rig;
+    Json commit{{"status", "committed"}, {"committed", true}, {"ticket", "repair-ticket"}};
+    QString expected;
+    const auto kind = GENERATE(0, 1, 2, 3);
+    if (kind == 0) { commit["published_generation"] = std::uint64_t{42}; expected = "Saved and published generation 42."; }
+    if (kind == 1) { commit["restart_required"] = true; expected = "Saved, waiting for engine restart (restart_required)."; }
+    if (kind == 2) { commit["recomposed"] = false; commit["published_generation"] = std::uint64_t{41}; expected = "Saved source only (source_only); no new generation published."; }
+    if (kind == 3) { commit["no_change"] = true; expected = "No changes (no_change); no new generation published."; }
+    rig.notice.observeStatus(fallbackStatus());
+    rig.notice.showDocumentAt(QStringLiteral("passes/main_rendering_config.json"), 0, 0);
+    rig.notice.receiveResult(rig.requests.back().id, QByteArray::fromStdString(Json{
+        {"documents", Json::array({{{"reference", "passes/main_rendering_config.json"},
+          {"content", "{}"}, {"digest", "disk-digest"}}})}}.dump()));
+    auto *save = rig.notice.documentDialog()->findChild<QPushButton *>(QStringLiteral("pelican.renderDocumentDialog.save"));
+    REQUIRE(save != nullptr);
+    save->click();
+    rig.notice.receiveResult(rig.requests.back().id, QByteArray::fromStdString(Json{
+        {"status", "accepted"}, {"ticket", "repair-ticket"}}.dump()));
+    CHECK(rig.completed.empty());
+    REQUIRE(rig.tasks.size() == 1);
+    rig.tasks.back()();
+    CHECK(rig.requests.back().method == "get_edit_result");
+    CHECK_FALSE(rig.notice.receiveResult(rig.requests.back().id, QByteArray::fromStdString(commit.dump())));
+    REQUIRE(rig.completed.size() == 1);
+    CHECK(rig.completed.back() == expected);
+    REQUIRE(rig.restored.size() == 1);
+    CHECK(rig.restored.back() == commit);
+    const auto shown_before_ready = rig.shown.size();
+    // This get_status response arrives after the ticket's completion hook.
+    rig.notice.observeStatus(readyStatus());
+    CHECK(rig.notice.isHidden());
+    CHECK(rig.shown.size() == shown_before_ready);
+    CHECK(rig.completed.back() == expected);
 }

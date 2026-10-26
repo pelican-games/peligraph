@@ -1,4 +1,5 @@
 #include "renderfallback.hpp"
+#include "rendereditcompletion.hpp"
 
 #include <utility>
 
@@ -81,7 +82,10 @@ bool RenderFallbackSession::observeProblems(const std::vector<ProblemRow> &rows)
             row.document_kind == "shader" || row.document_kind == "material" || row.document_kind == "scene" ||
             row.code.starts_with("material."))
             continue;
-        next = HeldProblem{row.sentence, row.code, row.document, row.node, row.line, row.column};
+        auto diagnostic = row.fields;
+        diagnostic["code"] = row.code;
+        diagnostic["message"] = row.message;
+        next = HeldProblem{row.sentence, row.code, row.document, row.node, row.line, row.column, diagnostic};
         break;
     }
     if (next == held_problem_) return false;
@@ -108,6 +112,7 @@ bool RenderFallbackSession::compose() {
         next.shown = true;
         next.line = renderFallbackSentence(reading_);
         next.document = renderFallbackDocument(reading_);
+        next.diagnostic = reading_.refusal;
         next.node = renderFallbackNode(reading_);
         const auto code = reading_.refusal.value("code", std::string{});
         const auto message = reading_.refusal.value("message", std::string{});
@@ -140,6 +145,7 @@ bool RenderFallbackSession::compose() {
             next.syntax_column = held_problem_.column;
         }
         next.detail = held_problem_.sentence;
+        next.diagnostic = held_problem_.diagnostic;
     } else if (authoring_.known && !authoring_.live) {
         // RR-1s, decision 1: a reload refused the version on disk; the Graph
         // and every structural read show it, the picture is the one before.
@@ -148,6 +154,7 @@ bool RenderFallbackSession::compose() {
         next.line = "Showing the saved version; the picture is still the previous one";
         next.line += held_problem_.sentence.empty() ? std::string{"."} : " \xE2\x80\x94 " + held_problem_.sentence;
         next.document = held_problem_.document;
+        next.diagnostic = held_problem_.diagnostic;
         next.node = held_problem_.node;
         next.detail = "The Graph and the other panels show the version on disk and edit it; the engine draws "
                       "the version before until a fixed version is taken in.";
@@ -206,12 +213,18 @@ void RenderDocumentRepair::notify() {
     if (changed) changed();
 }
 
-bool RenderDocumentRepair::open(const std::string &document, std::int64_t line, std::int64_t column) {
+bool RenderDocumentRepair::open(const std::string &document, std::int64_t line, std::int64_t column,
+                                const Json &diagnostic) {
     ++epoch_;
     wanted_ = graphRefusalSource(Json{{"document", document}}, "document");
     reference_.clear();
     digest_.clear();
     content_.clear();
+    writable_ = false;
+    diagnostic_ = diagnostic;
+    diagnostic_text_.clear();
+    diagnostic_matches_ = true;
+    completion_.clear();
     ticket_.clear();
     poll_request_ = 0;
     restore_request_ = 0;
@@ -225,7 +238,7 @@ bool RenderDocumentRepair::open(const std::string &document, std::int64_t line, 
 }
 
 bool RenderDocumentRepair::save(const std::string &content) {
-    if (state_ != State::Editing) return false;
+    if (state_ != State::Editing || !writable_) return false;
     if (const auto spot = renderDocumentSyntaxOf(content)) {
         notice_ = "Not valid JSON yet";
         if (spot->line > 0)
@@ -290,6 +303,20 @@ void RenderDocumentRepair::answered(const Json &result, bool *taken) {
         *taken = false;
         state_ = State::Closed;
         notice_.clear();
+        const auto completion = readRenderEditCompletion(result);
+        if (completion.restart_required)
+            completion_ = "Saved, waiting for engine restart (restart_required).";
+        else if (completion.no_change)
+            completion_ = "No changes (no_change); no new generation published.";
+        else if (result.value("source_only", false) ||
+                 (result.contains("recomposed") && result.at("recomposed") == false))
+            completion_ = "Saved source only (source_only); no new generation published.";
+        else if (completion.published_generation != 0)
+            completion_ = "Saved and published generation " + std::to_string(completion.published_generation) + ".";
+        else
+            completion_ = "Saved; publication was not reported.";
+        if (!completion.post_commit_error.empty())
+            completion_ += " " + renderEditPostCommitErrorLine(completion);
         if (restored) restored(result);
         return;
     }
@@ -308,8 +335,18 @@ bool RenderDocumentRepair::receiveResult(std::int64_t id, const Json &result) {
     bool taken = true;
     if (id == list_request_) {
         list_request_ = 0;
-        const auto documents = result.is_object() ? result.find("documents") : result.end();
-        if (documents != result.end() && documents->is_array())
+        bool root_changed = false;
+        for (const auto *key : {"documents", "other_documents"}) {
+            const auto documents = result.is_object() ? result.find(key) : result.end();
+            if (documents == result.end() || !documents->is_array()) continue;
+            for (const auto &document : *documents)
+                if (document.is_object() && document.value("kind", std::string{}) == "root" &&
+                    document.contains("held_digest"))
+                    root_changed = true;
+        }
+        for (const auto *key : {"documents", "other_documents"}) {
+            const auto documents = result.is_object() ? result.find(key) : result.end();
+            if (documents == result.end() || !documents->is_array()) continue;
             for (const auto &document : *documents) {
                 if (!document.is_object()) continue;
                 const auto reference = document.value("reference", std::string{});
@@ -317,8 +354,40 @@ bool RenderDocumentRepair::receiveResult(std::int64_t id, const Json &result) {
                 reference_ = reference;
                 digest_ = document.value("digest", std::string{});
                 content_ = document.value("content", std::string{});
+                writable_ = document.value("writable", std::string_view{key} == "documents") &&
+                            !document.contains("error") && !document.contains("fragment_of");
+                if (document.contains("error")) {
+                    const auto &error = document.at("error");
+                    notice_ = error.is_object() ? error.value("code", std::string{}) + ": " +
+                                                  error.value("message", std::string{}) : error.dump();
+                } else if (document.contains("fragment_of")) {
+                    notice_ = "This is a fragment; open its parent document: " +
+                              document.value("fragment_of", std::string{});
+                } else if (!writable_) {
+                    notice_ = "Read only: this document cannot be saved.";
+                }
+                if (root_changed || document.contains("held_digest")) {
+                    writable_ = false;
+                    notice_ = "The file changed outside Studio. Reload from disk before repairing it. "
+                              "Close this dialog, then use the banner's Reload from disk button "
+                              "or the Graph's Reload from disk action.";
+                }
+                const auto diagnostic_digest = diagnostic_.value("document_digest", std::string{});
+                if (!diagnostic_digest.empty() && diagnostic_digest != digest_) {
+                    diagnostic_matches_ = false;
+                    diagnostic_text_ = "This diagnostic belongs to another version of the document.";
+                    line_ = column_ = 0;
+                } else {
+                    const auto stage = diagnostic_.value("pipeline_stage", std::string{});
+                    const auto code = diagnostic_.value("code", std::string{});
+                    const auto message = diagnostic_.value("message", std::string{});
+                    diagnostic_text_ = stage.empty() ? code : stage + ": " + code;
+                    if (!message.empty()) diagnostic_text_ += "\n" + message;
+                }
                 break;
             }
+            if (!reference_.empty()) break;
+        }
         if (reference_.empty()) {
             state_ = State::Closed;
             notice_ = "The engine does not list " + wanted_ + " among the render documents.";

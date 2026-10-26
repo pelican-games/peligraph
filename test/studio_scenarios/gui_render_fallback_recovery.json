@@ -1,0 +1,391 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "gui_render_fallback_recovery",
+  "description": "RC-3e2: compose snapshot.after_unknown@1 and strict IR render_graph.pass_shape@1 each start on fallback, expose stage/code in Show the document, and publish a newer generation after a whole-document repair in the dialog. The recovered Frame Plan pass, the actual Graph widget with a newly inserted root node, and the current Graph digest are checked.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "invariants": {
+    "log_allow": [
+      {
+        "pattern": "LOG_ERROR\\s+pelican\\s+render pipeline refused at start;.*(?:snapshot\\.after_unknown|render_graph\\.pass_shape)@1",
+        "reason": "Two deliberately broken roots start on fallback; the scenario repairs each."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "label": "the fixture's engine is up, so the switch to the broken project is something that happens",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "start from the default layout: the panel layout is the desktop's, saved by whichever Studio closed last",
+      "cmd": "action",
+      "name": "pelican.layout.resetDefault"
+    },
+    {
+      "label": "RC-3e2 compose: open a root refused at production compiler entry",
+      "cmd": "open_project",
+      "dir": "{artifacts}/incoming/compose"
+    },
+    {
+      "label": "RC-3e2 compose: fallback banner appears",
+      "cmd": "wait",
+      "name": "pelican.renderFallbackNotice.showDocument",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "RC-3e2 compose: production refusal code",
+      "expect": "rpc_equals",
+      "method": "get_status",
+      "params": {},
+      "path": "render_pipeline.refusal.code",
+      "value": "snapshot.after_unknown@1",
+      "retry_ms": 30000
+    },
+    {
+      "label": "RC-3e2 compose: production pipeline stage",
+      "expect": "rpc_equals",
+      "method": "get_status",
+      "params": {},
+      "path": "render_pipeline.refusal.pipeline_stage",
+      "value": "compose"
+    },
+    {
+      "label": "RC-3e2 compose: remember placeholder generation",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_frame_plan",
+        "params": {}
+      },
+      "path": "result.runtime_generation",
+      "remember": "compose_before"
+    },
+    {
+      "label": "RC-3e2 compose: Show the document",
+      "cmd": "click",
+      "name": "pelican.renderFallbackNotice.showDocument"
+    },
+    {
+      "label": "RC-3e2 compose: dialog stage",
+      "cmd": "wait",
+      "name": "pelican.renderDocumentDialog.diagnostic",
+      "contains": "compose: snapshot.after_unknown@1",
+      "timeout_ms": 30000,
+      "visible": true
+    },
+    {
+      "label": "RC-3e2 compose: diagnostic screenshot",
+      "expect": "screenshot",
+      "path": "gui_render_fallback_compose_diagnostic.png",
+      "name": "pelican.renderDocumentDialog"
+    },
+    {
+      "label": "RC-3e2 compose: replace the full document in its editor",
+      "cmd": "type",
+      "name": "pelican.renderDocumentDialog.text",
+      "text": "{\"schema\":\"pelican.graph\",\"version\":1,\"definitions\":{},\"nodes\":[{\"id\":\"repaired_compose_marker\",\"op\":\"value.constant\",\"parameters\":{\"value\":1},\"outputs\":[\"value\"]}],\"outputs\":{},\"rendering\":{\"rendering_passes\":[{\"name\":\"main_render\",\"passes\":[{\"name\":\"recovered_compose\",\"type\":\"fullscreen\",\"input\":[],\"output\":{\"color\":[{\"target\":\"display\"}],\"depth\":null},\"shader\":{\"vertex\":\"engine://fullscreen\",\"fragment\":\"engine://passthrough\"}}]}]}}",
+      "select_all": true
+    },
+    {
+      "label": "RC-3e2 compose: Save enabled for valid JSON",
+      "cmd": "wait",
+      "name": "pelican.renderDocumentDialog.save",
+      "enabled": true,
+      "timeout_ms": 5000
+    },
+    {
+      "label": "RC-3e2 compose: Save through restore ticket",
+      "cmd": "click",
+      "name": "pelican.renderDocumentDialog.save"
+    },
+    {
+      "label": "RC-3e2 compose: ticket committed closes repair",
+      "cmd": "wait",
+      "name": "pelican.renderDocumentDialog",
+      "missing": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "RC-3e2 compose: published project replaces fallback",
+      "expect": "rpc_equals",
+      "method": "get_status",
+      "params": {},
+      "path": "render_pipeline.state",
+      "value": "ready",
+      "retry_ms": 30000
+    },
+    {
+      "label": "RC-3e2 compose: generation advances",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_frame_plan",
+        "params": {}
+      },
+      "path": "result.runtime_generation",
+      "op": "gt",
+      "value_of": "compose_before",
+      "retry_ms": 30000
+    },
+    {
+      "label": "RC-3e2 compose: published Frame Plan tab",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
+    },
+    {
+      "label": "RC-3e2 compose: new plan appears on screen",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#recovered_compose",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "RC-3e2 compose: read saved root digest",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_render_documents",
+        "params": {}
+      },
+      "path": "result.documents[0].digest",
+      "remember": "compose_digest"
+    },
+    {
+      "label": "RC-3e2 compose: Graph reads the saved version",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_graph_instances",
+        "params": {}
+      },
+      "path": "result.source_digest.hex",
+      "value_of": "compose_digest"
+    },
+    {
+      "label": "RC-3e2 compose: Graph is live",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "live",
+      "value": true
+    },
+    {
+      "label": "RC-3e2 compose: open the actual Graph tab after repair",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "RC-3e2: show values to inspect the new root marker",
+      "cmd": "click",
+      "name": "pelican.graphCanvasShow.value"
+    },
+    {
+      "label": "RC-3e2 compose: Graph widget holds the newly saved root node",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#repaired_compose_marker",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "RC-3e2 compose: Graph widget draws the new rendering pass",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#recovered_compose",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "RC-3e2 compose: recovery screenshot",
+      "expect": "screenshot",
+      "path": "gui_render_fallback_compose_recovered.png"
+    },
+    {
+      "label": "RC-3e2 ir: open a root refused at production compiler entry",
+      "cmd": "open_project",
+      "dir": "{artifacts}/incoming/ir"
+    },
+    {
+      "label": "Keep the repaired rendering documents before switching projects",
+      "cmd": "wait",
+      "name": "pelican.unsavedScenePrompt",
+      "visible": true,
+      "timeout_ms": 15000
+    },
+    {
+      "label": "Save the repaired project baseline",
+      "cmd": "click",
+      "name": "pelican.unsavedScenePrompt.save"
+    },
+    {
+      "label": "RC-3e2 ir: fallback banner appears",
+      "cmd": "wait",
+      "name": "pelican.renderFallbackNotice.showDocument",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "RC-3e2 ir: production refusal code",
+      "expect": "rpc_equals",
+      "method": "get_status",
+      "params": {},
+      "path": "render_pipeline.refusal.code",
+      "value": "render_graph.pass_shape@1",
+      "retry_ms": 30000
+    },
+    {
+      "label": "RC-3e2 ir: production pipeline stage",
+      "expect": "rpc_equals",
+      "method": "get_status",
+      "params": {},
+      "path": "render_pipeline.refusal.pipeline_stage",
+      "value": "parse"
+    },
+    {
+      "label": "RC-3e2 ir: remember placeholder generation",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_frame_plan",
+        "params": {}
+      },
+      "path": "result.runtime_generation",
+      "remember": "ir_before"
+    },
+    {
+      "label": "RC-3e2 ir: Show the document",
+      "cmd": "click",
+      "name": "pelican.renderFallbackNotice.showDocument"
+    },
+    {
+      "label": "RC-3e2 ir: dialog stage",
+      "cmd": "wait",
+      "name": "pelican.renderDocumentDialog.diagnostic",
+      "contains": "parse: render_graph.pass_shape@1",
+      "timeout_ms": 30000,
+      "visible": true
+    },
+    {
+      "label": "RC-3e2 ir: diagnostic screenshot",
+      "expect": "screenshot",
+      "path": "gui_render_fallback_ir_diagnostic.png",
+      "name": "pelican.renderDocumentDialog"
+    },
+    {
+      "label": "RC-3e2 ir: replace the full document in its editor",
+      "cmd": "type",
+      "name": "pelican.renderDocumentDialog.text",
+      "text": "{\"schema\":\"pelican.graph\",\"version\":1,\"definitions\":{},\"nodes\":[{\"id\":\"repaired_ir_marker\",\"op\":\"value.constant\",\"parameters\":{\"value\":1},\"outputs\":[\"value\"]}],\"outputs\":{},\"rendering\":{\"rendering_passes\":[{\"name\":\"main_render\",\"passes\":[{\"name\":\"recovered_ir\",\"type\":\"fullscreen\",\"input\":[],\"output\":{\"color\":[{\"target\":\"display\"}],\"depth\":null},\"shader\":{\"vertex\":\"engine://fullscreen\",\"fragment\":\"engine://passthrough\"}}]}]}}",
+      "select_all": true
+    },
+    {
+      "label": "RC-3e2 ir: Save enabled for valid JSON",
+      "cmd": "wait",
+      "name": "pelican.renderDocumentDialog.save",
+      "enabled": true,
+      "timeout_ms": 5000
+    },
+    {
+      "label": "RC-3e2 ir: Save through restore ticket",
+      "cmd": "click",
+      "name": "pelican.renderDocumentDialog.save"
+    },
+    {
+      "label": "RC-3e2 ir: ticket committed closes repair",
+      "cmd": "wait",
+      "name": "pelican.renderDocumentDialog",
+      "missing": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "RC-3e2 ir: published project replaces fallback",
+      "expect": "rpc_equals",
+      "method": "get_status",
+      "params": {},
+      "path": "render_pipeline.state",
+      "value": "ready",
+      "retry_ms": 30000
+    },
+    {
+      "label": "RC-3e2 ir: generation advances",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_frame_plan",
+        "params": {}
+      },
+      "path": "result.runtime_generation",
+      "op": "gt",
+      "value_of": "ir_before",
+      "retry_ms": 30000
+    },
+    {
+      "label": "RC-3e2 ir: published Frame Plan tab",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
+    },
+    {
+      "label": "RC-3e2 ir: new plan appears on screen",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#recovered_ir",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "RC-3e2 ir: read saved root digest",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_render_documents",
+        "params": {}
+      },
+      "path": "result.documents[0].digest",
+      "remember": "ir_digest"
+    },
+    {
+      "label": "RC-3e2 ir: Graph reads the saved version",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_graph_instances",
+        "params": {}
+      },
+      "path": "result.source_digest.hex",
+      "value_of": "ir_digest"
+    },
+    {
+      "label": "RC-3e2 ir: Graph is live",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "live",
+      "value": true
+    },
+    {
+      "label": "RC-3e2 ir: open the actual Graph tab after repair",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "RC-3e2 ir: Graph widget holds the newly saved root node",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#repaired_ir_marker",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "RC-3e2 ir: Graph widget draws the new rendering pass",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#recovered_ir",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "RC-3e2 ir: recovery screenshot",
+      "expect": "screenshot",
+      "path": "gui_render_fallback_ir_recovered.png"
+    }
+  ]
+}

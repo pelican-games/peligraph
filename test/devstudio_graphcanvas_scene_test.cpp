@@ -2334,6 +2334,7 @@ struct RecordedCapability {
     std::vector<Call> calls;
     qint64 next = 1;
     std::function<void(qint64, QByteArray)> deliver;
+    std::function<void(bool)> availability;
 
     PelicanStudio::GraphCanvasReadCapability capability(bool node_values = true) {
         PelicanStudio::GraphCanvasReadCapability seam;
@@ -2342,7 +2343,10 @@ struct RecordedCapability {
             calls.push_back(Call{std::move(method), std::move(instance), time});
             return next++;
         };
-        seam.ready = [](QObject *, auto handler) { handler(true, {}); };
+        seam.ready = [this](QObject *, auto handler) {
+            availability = [handler](bool available) { handler(available, {}); };
+            handler(true, {});
+        };
         seam.requestGraphInstances = [note](QString *) {
             return note(QStringLiteral("get_graph_instances"));
         };
@@ -4001,6 +4005,16 @@ TEST_CASE("LP-4e the Graph tab selects the loop a decompose made once a document
     QCoreApplication::processEvents();
     REQUIRE(transport.countOf(QStringLiteral("get_graph_instances")) == 2);
     CHECK_FALSE(widget.scene().selectedNode().has_value());
+    // A committed material edit can restart the engine before its document
+    // read arrives. Its selection must survive both disconnect paths.
+    const auto reconnect = GENERATE(false, true);
+    if (reconnect) {
+        transport.availability(false);
+        transport.availability(true);
+    } else {
+        widget.setConnected(false);
+        widget.setConnected(true);
+    }
     auto moved = context(after);
     moved["source_digest"] = {{"hex", "source-b"}};
     answerRpc(QStringLiteral("get_graph_instances"), moved);

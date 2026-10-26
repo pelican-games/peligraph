@@ -9,6 +9,7 @@
 #include "../src/devstudio/model/problemsmodel.hpp"
 #include "problemsdock.hpp"
 #include "renderfallbacknotice.hpp"
+#include "graphcanvaswidget.hpp"
 
 #include <QApplication>
 #include <QComboBox>
@@ -24,6 +25,7 @@
 #include <QTreeWidgetItem>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -138,6 +140,7 @@ struct Rig {
     qint64 next_id = 100;
     int status_reads = 0;
     std::vector<ProblemRow> opened;
+    std::function<void(const ProblemRow &)> open_place;
     std::vector<QString> restarts;
     std::vector<std::pair<std::size_t, std::size_t>> counts;
     ProblemsDock dock;
@@ -149,7 +152,7 @@ struct Rig {
                   return next_id;
               },
               .read_status = [this] { ++status_reads; },
-              .open = [this](const ProblemRow &row) { opened.push_back(row); },
+              .open = [this](const ProblemRow &row) { opened.push_back(row); if (open_place) open_place(row); },
               .restart = [this](const QString &reason) { restarts.push_back(reason); },
               .counted = [this](std::size_t errors, std::size_t warnings) { counts.emplace_back(errors, warnings); },
           }} {
@@ -621,4 +624,105 @@ TEST_CASE("MO1 object_material missing primitive problem points to its scene obj
     CHECK(row->object_name == "PartOwner");
     CHECK(row->scene_id == "default_scene");
     CHECK(row->place_text == "Inspector: PartOwner");
+}
+
+TEST_CASE("RC-3e2 Problems keeps Graph classification and repairs a failed read or missing node",
+          "[devstudio][problems][rc3e2]") {
+    application();
+    Rig rig;
+    std::vector<qint64> graph_reads;
+    qint64 next = 1000;
+    GraphCanvasWidget graph{GraphCanvasReadCapability{
+        .requestGraphInstances = [&](QString *) { graph_reads.push_back(++next); return next; },
+        .requestGraphCatalog = [&](QString *) { return ++next; },
+    }};
+    std::vector<std::string> requests;
+    RenderFallbackNotice notice{RenderFallbackNotice::Hooks{
+        .request = [&](const std::string &method, const Json &, std::string *) -> std::int64_t {
+            requests.push_back(method); return 9001;
+        },
+    }};
+    graph.setConnected(true);
+    REQUIRE(graph_reads.size() == 1);
+    auto problem = nodeProblem("reload_rpc");
+    const auto kind = GENERATE(0, 1, 2, 3, 4);
+    problem["code"] = "snapshot.after_unknown@1";
+    problem["pipeline_stage"] = "compose";
+    problem["document_digest"] = "disk-digest";
+    problem["message"] = "snapshot refers to missing node";
+    if (kind == 4) {
+        problem["code"] = "render_graph.pass_shape@1";
+        problem["pipeline_stage"] = "parse";
+        problem["node"] = "tone";
+        problem["fields"]["node"] = "tone";
+    }
+    rig.dock.engineAvailable();
+    rig.dock.observeStatus(statusAt(1, 5));
+    rig.answer(1, Json::array({problem}));
+    rig.open_place = [&](const ProblemRow &row) { notice.showGraphProblem(row, graph); };
+    // The actual Problems row still promises Graph: sim. Before the answer,
+    // clicking it must wait rather than treating an unread graph as failed.
+    CHECK(rig.rowFor("00000000000000b2")->text(4) ==
+          (kind == 4 ? QStringLiteral("Graph: tone") : QStringLiteral("Graph: sim")));
+    rig.click(rig.rowFor("00000000000000b2"));
+    CHECK(notice.documentDialog() == nullptr);
+    CHECK(requests.empty());
+    CAPTURE(kind);
+    if (kind == 0) {
+        graph.receiveFailure(graph_reads.back(), QStringLiteral("compose failed"));
+        REQUIRE(graph.model().contextReadFailed());
+    }
+    if (kind == 1) {
+        graph.receiveResult(graph_reads.back(), bytes(Json{{"error", {{"message", "compose failed"}}}}));
+        REQUIRE(graph.model().contextReadFailed());
+    }
+    if (kind == 2) {
+        // A failure without a pending Problems navigation is also handled.
+        graph.setConnected(false);
+        graph.setConnected(true);
+        graph.receiveFailure(graph_reads.back(), QStringLiteral("compose failed"));
+        REQUIRE(graph.model().contextReadFailed());
+        CHECK(notice.documentDialog() == nullptr);
+        // The dock coalesces clicks on the same row for 600 ms. This is a
+        // separate navigation after reconnect, not the first click's double.
+        QTest::qWait(601);
+        rig.click(rig.rowFor("00000000000000b2"));
+        REQUIRE(rig.opened.size() == 2);
+    }
+    if (kind == 3) {
+        graph.receiveResult(graph_reads.back(), bytes(Json{
+            {"source_reference", "project://passes/main_rendering_config.json"},
+            {"source_digest", {{"hex", "disk-digest"}}}, {"root_schema", "pelican.graph"},
+            {"nodes", Json::array({{{"id", "sim"}, {"op", "render.compute"},
+                                   {"parameters", Json::object()}, {"outputs", Json::array()}}})},
+            {"definitions", Json::object()}}));
+        CHECK_FALSE(graph.model().contextReadFailed());
+        CHECK(graph.canRevealGraphNode(QStringLiteral("root"), QStringLiteral("sim")));
+        QTest::qWait(601);
+        rig.click(rig.rowFor("00000000000000b2"));
+        REQUIRE(rig.opened.size() == 2);
+        CHECK(notice.documentDialog() == nullptr);
+        CHECK(requests.empty());
+        return;
+    }
+    if (kind == 4) {
+        // The real IR-refusal path: get_graph_instances succeeds, but tone
+        // is a rendering pass, not a root graph node.
+        const Json context{
+            {"source_reference", "project://passes/main_rendering_config.json"},
+            {"source_digest", {{"hex", "disk-digest"}}}, {"root_schema", "pelican.graph"},
+            {"nodes", Json::array()}, {"definitions", Json::object()}};
+        graph.receiveResult(graph_reads.back(), bytes(context));
+        CHECK_FALSE(graph.model().contextReadFailed());
+        CHECK(graph.model().contextReadFinished());
+    }
+    REQUIRE(notice.documentDialog() != nullptr);
+    REQUIRE(requests.size() == 1);
+    CHECK(requests.back() == "get_render_documents");
+    notice.receiveResult(9001, bytes(Json{{"documents", Json::array({{
+        {"reference", "passes/main_rendering_config.json"}, {"digest", "disk-digest"}, {"content", "{}"}}})}}));
+    auto *label = notice.documentDialog()->findChild<QLabel *>(QStringLiteral("pelican.renderDocumentDialog.diagnostic"));
+    REQUIRE(label != nullptr);
+    CHECK(label->text().contains(kind >= 4 ? QStringLiteral("parse: render_graph.pass_shape@1")
+                                         : QStringLiteral("compose: snapshot.after_unknown@1")));
 }

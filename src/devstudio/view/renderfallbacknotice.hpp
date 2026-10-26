@@ -3,6 +3,7 @@
 #include "../model/renderfallback.hpp"
 
 #include <QByteArray>
+#include <QElapsedTimer>
 #include <QFrame>
 #include <QPointer>
 #include <QString>
@@ -20,6 +21,7 @@ class QPlainTextEdit;
 class QPushButton;
 
 namespace PelicanStudio {
+class GraphCanvasWidget;
 
 // BS-1s, decisions 2-4 and 8. The row above the viewport while the engine
 // draws its placeholder because the project's rendering setup was refused at
@@ -62,6 +64,7 @@ class RenderFallbackNotice final : public QFrame {
         std::function<void(const std::string &digest)> held_digest;
         // The notice appeared (true) or went away (false), with its line.
         std::function<void(bool shown, const QString &line)> shown_changed;
+        std::function<void(const QString &line)> completed;
     };
 
     explicit RenderFallbackNotice(Hooks hooks, QWidget *parent = nullptr);
@@ -104,7 +107,8 @@ class RenderFallbackNotice final : public QFrame {
     // RR-1s, decision 2: Save restores it against the digest listed, after a
     // refused reload as on the placeholder.
     void showDocumentAt(const QString &document, std::int64_t line, std::int64_t column,
-                        const QString &find = {});
+                        const QString &find = {}, const nlohmann::json &diagnostic = nlohmann::json::object());
+    void showGraphProblem(const ProblemRow &row, GraphCanvasWidget &graph);
     // PB-1s, decision 4: the sentence ends "See Problems." while the window
     // has the Problems dock.
     void setSeeProblems(bool see);
@@ -120,6 +124,7 @@ class RenderFallbackNotice final : public QFrame {
     QPushButton *show_document_ = nullptr;
     QPushButton *restart_ = nullptr;
     bool shown_ = false;
+    QElapsedTimer completion_age_;
     QPointer<QDialog> dialog_;
     QPlainTextEdit *dialog_text_ = nullptr;
     QLabel *dialog_notice_ = nullptr;

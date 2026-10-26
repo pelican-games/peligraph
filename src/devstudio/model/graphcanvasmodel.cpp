@@ -670,6 +670,7 @@ GraphCanvasModel::takeRead(std::uint64_t id) {
 }
 
 void GraphCanvasModel::clearContext() {
+    context_read_failed_ = false;
     // OT-1, decision 3: the history outlives the document it was read with.
     // An engine that comes back (a restart after a graph edit asked for one)
     // serves the same document, and the digest the next read brings decides:
@@ -779,7 +780,10 @@ void GraphCanvasModel::setConnected(bool connected) {
 }
 
 void GraphCanvasModel::refresh() {
-    if (canRefresh()) request(RequestKind::Context, "get_graph_instances", Json::object());
+    if (canRefresh()) {
+        context_read_failed_ = false;
+        request(RequestKind::Context, "get_graph_instances", Json::object());
+    }
 }
 
 void GraphCanvasModel::engineRestartDeclined(std::string message) {
@@ -1091,6 +1095,7 @@ void GraphCanvasModel::receiveRpcFailure(std::uint64_t id, std::string message) 
         refresh();
         return;
     }
+    if (kind == RequestKind::Context) context_read_failed_ = true;
     failure_ = {InspectorNoticeKind::Error, std::move(message)};
     ++content_revision_;
 }
@@ -1437,6 +1442,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
     try {
         const auto response = Json::parse(json);
         if (response.contains("error")) {
+            context_read_failed_ = true;
             failure_ = {InspectorNoticeKind::Error, diagnostic(response)};
             ++content_revision_;
             return;
@@ -1500,6 +1506,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             undo_.back().after_source_digest == digest_)
             undo_.back().after_graph = history_graph_;
         context_received_ = true;
+        context_read_failed_ = false;
         failure_ = {};
         // NB-1, design_node_bodies 2.6: a document opened with canvas nodes
         // shows them.
@@ -1558,6 +1565,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
         plan_wait_budget_ = planWaitLimit;
         requestLoopReports();
     } catch (const std::exception &error) {
+        context_read_failed_ = true;
         failure_ = {InspectorNoticeKind::Error, error.what()};
         ++content_revision_;
     }

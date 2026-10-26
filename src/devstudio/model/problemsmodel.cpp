@@ -277,6 +277,8 @@ std::optional<ProblemRow> readEngineProblem(const Json &problem) {
     row.message = stringOf(problem, "message");
     if (const auto fields = problem.find("fields"); fields != problem.end() && fields->is_object())
         row.fields = *fields;
+    for (const auto *key : {"pipeline_stage", "document_digest"})
+        if (problem.contains(key)) row.fields[key] = problem.at(key);
     row.document = graphRefusalSource(problem, "document");
     row.document_kind = stringOf(problem, "document_kind");
     row.line = numberOf(problem, "line");

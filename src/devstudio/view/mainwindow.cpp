@@ -388,7 +388,7 @@ void MainWindow::createWorkspace() {
             },
             .restored = [this](const nlohmann::json &commit) {
                 // Every panel reads the documents again, as after a reload.
-                renderDocumentsRestored(commit, false);
+                renderDocumentsRestored(commit, readRenderEditCompletion(commit).restart_required);
                 // PB-1s: the restore committed; the list follows.
                 if (problems_dock_ != nullptr) problems_dock_->readNow();
                 // RR-1s: and the held version may be the live one now.
@@ -409,6 +409,7 @@ void MainWindow::createWorkspace() {
                     statusBar()->showMessage(tr("The project's rendering setup runs again."), 8000);
                 }
             },
+            .completed = [this](const QString &line) { statusBar()->showMessage(line, 15000); },
         },
         workspace);
     workspace_layout->addWidget(render_fallback_);
@@ -1686,8 +1687,6 @@ void MainWindow::openProblem(const ProblemRow &row) {
     switch (row.place) {
     case Place::GraphNode: {
         if (graph_canvas_ == nullptr || !showRenderToolsTab(QStringLiteral("graph"))) return;
-        const QString node = text(row.node);
-        const QString scope = row.definition.empty() ? QStringLiteral("root") : text(row.definition);
         // RTL-2s b, decision 3: a ray tracing task's refusal is marked on
         // its node, the place its fields name red in its fields.
         if (row.definition.empty() && !rayTracingRefusalDescription(nlohmann::json{{"code", row.code}}).empty()) {
@@ -1697,22 +1696,7 @@ void MainWindow::openProblem(const ProblemRow &row) {
             if (!error.contains("task")) error["task"] = row.node;
             graph_canvas_->model().markRayTracingRefusal(error, row.sentence);
         }
-        if (graph_canvas_->canRevealGraphNode(scope, node)) {
-            (void)graph_canvas_->revealGraphNode(scope, node, {});
-            return;
-        }
-        if (row.definition.empty()) {
-            // The Graph has not read the document yet -- RR-1s: after a
-            // refused reload it reads the version on disk again -- and the
-            // node is selected once it has.
-            graph_canvas_->revealNodeWhenPresent(node);
-            return;
-        }
-        if (!document.isEmpty()) {
-            render_fallback_->showDocumentAt(document, 0, 0, node_text);
-            return;
-        }
-        statusBar()->showMessage(tr("The Graph does not show %1 of %2.").arg(node, text(row.definition)), 8000);
+        render_fallback_->showGraphProblem(row, *graph_canvas_);
         return;
     }
     case Place::Material:
@@ -1729,11 +1713,16 @@ void MainWindow::openProblem(const ProblemRow &row) {
                                          .arg(row.material.empty() ? document : text(row.material)),
                                      8000);
         return;
-    case Place::DocumentText:
+    case Place::DocumentText: {
         // RR-1s, decision 2: the engine holds the file as it is on disk --
         // at start and after a refused reload alike -- and restores it.
-        render_fallback_->showDocumentAt(document, row.line, row.column, row.line > 0 ? QString{} : node_text);
+        auto diagnostic = row.fields;
+        diagnostic["code"] = row.code;
+        diagnostic["message"] = row.message;
+        render_fallback_->showDocumentAt(document, row.line, row.column,
+                                        row.line > 0 ? QString{} : node_text, diagnostic);
         return;
+    }
     case Place::ShaderFile: {
         const QString root = viewport_->projectRoot();
         if (root.isEmpty() || document.isEmpty() || document.startsWith(QStringLiteral("engine://"))) {

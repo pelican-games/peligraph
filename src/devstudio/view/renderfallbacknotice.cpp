@@ -1,6 +1,7 @@
 #include "renderfallbacknotice.hpp"
 
 #include "panelhelp.hpp"
+#include "graphcanvaswidget.hpp"
 
 #include <QDialog>
 #include <QFontDatabase>
@@ -73,7 +74,12 @@ RenderFallbackNotice::RenderFallbackNotice(Hooks hooks, QWidget *parent)
     });
     repair_.changed = [this] { presentRepair(); };
     repair_.restored = [this](const nlohmann::json &commit) {
+        // Refreshing panels or requesting a restart may write a status line
+        // (and close the repair). Keep the ticket's result as the final line.
+        const auto completion = qtext(repair_.completion());
+        completion_age_.start();
         if (hooks_.restored) hooks_.restored(commit);
+        if (hooks_.completed) hooks_.completed(completion);
     };
     present(true);
 }
@@ -183,20 +189,42 @@ bool RenderFallbackNotice::receiveFailure(qint64 id, const QString &message) {
 
 void RenderFallbackNotice::showDocument() {
     const auto &notice = session_.notice();
-    if (!notice.syntax || notice.document.empty()) return;
+    if (notice.document.empty()) return;
     dialog_filled_ = false;
     dialog_find_.clear();
-    if (repair_.open(notice.document, notice.syntax_line, notice.syntax_column)) buildDialog();
+    if (repair_.open(notice.document, notice.syntax_line, notice.syntax_column, notice.diagnostic)) buildDialog();
     presentRepair();
 }
 
 void RenderFallbackNotice::showDocumentAt(const QString &document, std::int64_t line, std::int64_t column,
-                                          const QString &find) {
+                                          const QString &find, const nlohmann::json &diagnostic) {
     if (document.isEmpty()) return;
     dialog_filled_ = false;
     dialog_find_ = find;
-    if (repair_.open(document.toStdString(), line, column)) buildDialog();
+    if (repair_.open(document.toStdString(), line, column, diagnostic)) buildDialog();
     presentRepair();
+}
+
+void RenderFallbackNotice::showGraphProblem(const ProblemRow &row, GraphCanvasWidget &graph) {
+    const auto node = qtext(row.node);
+    const auto scope = row.definition.empty() ? QStringLiteral("root") : qtext(row.definition);
+    auto diagnostic = row.fields;
+    diagnostic["code"] = row.code;
+    diagnostic["message"] = row.message;
+    const auto repair = [self = QPointer<RenderFallbackNotice>(this), row, diagnostic] {
+        if (self && !row.document.empty())
+            self->showDocumentAt(qtext(row.document), row.line, row.column,
+                                 QLatin1Char('"') + qtext(row.node) + QLatin1Char('"'), diagnostic);
+    };
+    if (graph.model().contextReadFailed()) {
+        repair();
+    } else if (graph.canRevealGraphNode(scope, node)) {
+        (void)graph.revealGraphNode(scope, node, {});
+    } else if (row.definition.empty()) {
+        graph.revealNodeWhenPresent(node, repair);
+    } else {
+        repair();
+    }
 }
 
 void RenderFallbackNotice::setSeeProblems(bool see) {
@@ -216,7 +244,13 @@ void RenderFallbackNotice::buildDialog() {
     auto *heading = new QLabel(dialog);
     heading->setObjectName(QStringLiteral("pelican.renderDocumentDialog.heading"));
     heading->setWordWrap(true);
+    heading->setTextFormat(Qt::PlainText);
     layout->addWidget(heading);
+    auto *diagnostic = new QLabel(dialog);
+    diagnostic->setObjectName(QStringLiteral("pelican.renderDocumentDialog.diagnostic"));
+    diagnostic->setTextFormat(Qt::PlainText);
+    diagnostic->setWordWrap(true);
+    layout->addWidget(diagnostic);
     dialog_text_ = new QPlainTextEdit(dialog);
     dialog_text_->setObjectName(QStringLiteral("pelican.renderDocumentDialog.text"));
     dialog_text_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
@@ -265,7 +299,9 @@ void RenderFallbackNotice::checkDialogText() {
     }
     const auto spot = renderDocumentSyntaxOf(dialog_text_->toPlainText().toStdString());
     QString line;
-    if (spot) {
+    if (!repair_.writable()) {
+        line = qtext(repair_.notice());
+    } else if (spot) {
         line = spot->line > 0 ? tr("Not valid JSON yet at line %1, column %2: %3")
                                     .arg(spot->line)
                                     .arg(spot->column)
@@ -277,7 +313,7 @@ void RenderFallbackNotice::checkDialogText() {
         line = tr("Valid JSON. Save writes it to %1.").arg(qtext(repair_.reference()));
     }
     setPanelNotice(dialog_notice_, line, line);
-    dialog_save_->setEnabled(!spot.has_value());
+    dialog_save_->setEnabled(repair_.writable() && !spot.has_value());
 }
 
 void RenderFallbackNotice::presentRepair() {
@@ -297,11 +333,12 @@ void RenderFallbackNotice::presentRepair() {
     if (auto *heading = dialog_->findChild<QLabel *>(QStringLiteral("pelican.renderDocumentDialog.heading"))) {
         heading->setText(state == State::Reading
                              ? tr("Reading the document\xE2\x80\xA6")
-                             : tr("%1 as it is on disk. Fix it and Save: the file is replaced whole. "
-                                  "This is for a document that is not JSON at all; the Graph and the "
-                                  "Frame Plan edit it otherwise.")
+                             : tr("%1 as it is on disk. Repair one document at a time. "
+                                  "Save validates and replaces the whole file.")
                                    .arg(qtext(repair_.reference())));
     }
+    if (auto *diagnostic = dialog_->findChild<QLabel *>(QStringLiteral("pelican.renderDocumentDialog.diagnostic")))
+        diagnostic->setText(qtext(repair_.diagnostic()));
     if (state == State::Editing && !dialog_filled_ && dialog_text_ != nullptr) {
         dialog_filled_ = true;
         auto content = qtext(repair_.content());
@@ -316,7 +353,8 @@ void RenderFallbackNotice::presentRepair() {
         if (block.isValid()) {
             const int column = static_cast<int>(std::max<std::int64_t>(repair_.column(), 1)) - 1;
             cursor.setPosition(block.position() + std::min(column, std::max(0, block.length() - 1)));
-        } else if (const QTextCursor found = dialog_find_.isEmpty()
+        } else if (const QTextCursor found = dialog_find_.isEmpty() ||
+                                            !repair_.diagnosticMatches()
                                                  ? QTextCursor{}
                                                  : dialog_text_->document()->find(dialog_find_);
                    !found.isNull()) {
@@ -328,7 +366,7 @@ void RenderFallbackNotice::presentRepair() {
         dialog_text_->centerCursor();
         dialog_text_->setFocus(Qt::OtherFocusReason);
     }
-    if (dialog_text_ != nullptr) dialog_text_->setReadOnly(state != State::Editing);
+    if (dialog_text_ != nullptr) dialog_text_->setReadOnly(state != State::Editing || !repair_.writable());
     checkDialogText();
     if (state == State::Editing && !repair_.notice().empty() && dialog_notice_ != nullptr)
         setPanelNotice(dialog_notice_, qtext(repair_.notice()), qtext(repair_.notice()));
@@ -351,13 +389,15 @@ void RenderFallbackNotice::present(bool changed) {
     open_graph_->setToolTip(notice.node.empty() ? QString{} : tr("Show %1 on the Graph tab").arg(qtext(notice.node)));
     open_file_->setVisible(notice.shown && !restart && !notice.document.empty());
     open_file_->setToolTip(notice.document.empty() ? QString{} : tr("Open %1").arg(qtext(notice.document)));
-    show_document_->setVisible(notice.shown && !restart && notice.syntax && !notice.document.empty() &&
+    show_document_->setVisible(notice.shown && !restart && !notice.document.empty() &&
                                static_cast<bool>(hooks_.request));
     restart_->setVisible(notice.shown && restart && static_cast<bool>(hooks_.restart));
     setVisible(notice.shown);
     // Said when it appears or changes, and once when it goes.
     const bool was_shown = std::exchange(shown_, notice.shown);
-    if (hooks_.shown_changed && (notice.shown || was_shown)) hooks_.shown_changed(notice.shown, qtext(notice.line));
+    if (hooks_.shown_changed && (notice.shown || was_shown) &&
+        (!completion_age_.isValid() || completion_age_.elapsed() >= 15000))
+        hooks_.shown_changed(notice.shown, qtext(notice.line));
 }
 
 } // namespace PelicanStudio

@@ -1322,7 +1322,7 @@ class GraphCanvasWidget final : public QWidget {
     // loop's graph.loop): the document is read again, and the node is
     // selected as soon as a document that holds it arrives -- at once when
     // the one in hand already does.
-    void revealNodeWhenPresent(const QString &node);
+    void revealNodeWhenPresent(const QString &node, std::function<void()> read_failed = {});
     // GL-1, decision 6. The Frame Plan's Open in Graph on any pass: the
     // real root, with the node the pass is drawn under -- the graph node that
     // made it, its feature's folded node, or its own -- selected and brought
