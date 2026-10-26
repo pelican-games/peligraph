@@ -1556,7 +1556,7 @@ graph root の Add は graph の `nodes` に書きます。rendering 節へ直�
 - **Frame Plan が隠れていても動きます**: Order… / Fix sockets / Make sockets variadic は Frame Plan の関数を呼ぶので、Graph タブは [`FramePlanWidget::whenRead`](../../src/devstudio/view/frameplanwidget.cpp#L5528) を通します。Frame Plan は隠れている間 plan も context も自分では読まない(N-8)ので、`whenRead` は plan と authoring context を読み直してから操作を走らせます。その操作が Frame Plan の status 行に出す文は、Graph の notice にも出ます([GL-5d の MainWindow の配線](../../src/devstudio/view/mainwindow.cpp#L999))。
 - **Order…**(決定 1): root の rendering 節の畳んだ node にだけ出ます。graph の node(順は線と Place の欄で決まる)には出ません。押すと、Frame Plan の toolbar の **Order...**と同じ [`orderNodes`](../../src/devstudio/view/frameplanwidget.cpp#L3629) が、plan の node を plan の順に並べて Features タブの順序のダイアログ(§13.5「レンダー設定を編集する」の Frame Plan の **Order...** の段落)を開きます。Frame Plan の Order... のボタンも GL-5d からこの関数を呼びます。ダイアログの 1 行に、GL-5d で
   - **rendering 節の pass の入れ替え(FO-1  で engine 側が直りました)** engine が rendering 節の pass を同じ canonical の区切りの中で宣言順に `after` でつなぎ(その 2 つの間に明示の `after` / `before` が無い限り)、`frame_node_order` はその上に隣どうしの `after` を足すだけだったためです。依存の無い 2 つの pass を入れ替えても `logical graph contains a dependency cycle: main_render (render_pipeline_preflight_failed)` で断られていました(GL-5d の。fixture の `left` / `right` でも、`studio_automation_graph` の 2 つの snapshot copy でも同じ)。
-    FO-1 から、`frame_node_order` が名指した pass は宣言順の代わりに並びの順でつながり([`enforceCanonicalOrder`](../../src/project/featurecompose.cpp#L384))、依存の無い 2 つの入れ替えは committed になって plan の順も入れ替わります。Order… が送る plan の全部の並びでも、入れ替える 2 つだけの並びでも通ります(engine の test)。
+    FO-1 から、`frame_node_order` が名指した pass は宣言順の代わりに並びの順でつながり([`enforceCanonicalOrder`](../../src/project/featurecompose.cpp#L385))、依存の無い 2 つの入れ替えは committed になって plan の順も入れ替わります。Order… が送る plan の全部の並びでも、入れ替える 2 つだけの並びでも通ります(engine の test)。
     依存と矛盾する並びは、ticket の結果(`get_edit_result` の `status: "rejected"`)の `error` で `frame_node_order.conflicts_dependency@1` です。fields は `graph`・`first`(並びが先に置いた node)・`second`(後に置いた node)・`reason`(`reads` なら `resource` も)・`via?`・`anchor?` です(形は [第6章](06_rendering.md) §6.6 の「pass の順を指定する」)。たとえば `present` が `left` の `left_color` を読む構成で `present` を先に置くと、`{first: "present", second: "left", reason: "reads", resource: "left_color"}` です。
 その直後の GL-5eから、順序のダイアログは断られた Apply を Studio の拒否の表の 1 文で出し、表に無い code なら engine の message と code のまま出します(`orderRefusal`。コードの読み)。`frame_node_order.conflicts_dependency@1` は表にまだ無いので、engine の message のまま出る見込みです(実物では未確認)。
     → FO-1sで表に入りました。拒否はダイアログの 1 文になり、並びが逆にした 2 行が赤くなります(§13.1 の「Studio の Materials のドック」の末尾の FO-1s の段落)。`gui_graph_order` は入れ替えの形に広がりました。
@@ -2557,7 +2557,7 @@ engine の RC-1b で `total_bytes` の意味が「この計画の image の和�
 - **Physical plan のタブの `GPU resource arena (N)`**: 登録の行の 4 列目(Detail)が `declared_bytes` です([列に出す所](../../src/devstudio/view/frameplanwidget.cpp#L5151))。
   - RC-1 から render target の行に値が入ります(以前は `0 B`)。frame graph buffer は以前から buffer の大きさで、shader bundle・pipeline・pass 系と acceleration structure は `0 B` のままです。
   - RC-1b の engine では、dump に出る render target の `declared_bytes` は dump を書き出す時点の metadata から数え直した値なので、登録の後に同じ id のまま image を作り直す経路(window 以外の出力の resize、影の layer 数の変更)の後も、status 行や `Bytes` と同じ今の大きさです。RC-1 の engine では登録時の値のままで、食い違うことがありました。viewport の窓の大きさを変えたあとの表示は画面では確かめていません(第6章の同じ節)。
-- test: `devstudio_frameplan_graph_test` の [「RC-1 the Frame Plan says on its status line what the physical plan's images take and where most of them are alive, and each image's bytes」](../../test/devstudio_frameplan_graph_test.cpp#L12925)。
+- test: `devstudio_frameplan_graph_test` の [「RC-1 the Frame Plan says on its status line what the physical plan's images take and where most of them are alive, and each image's bytes」](../../test/devstudio_frameplan_graph_test.cpp#L12930)。
 
 ### Frame Plan の format の綴り(RC-3a1)
 
@@ -2567,6 +2567,15 @@ engine の RC-3a1 から、`get_frame_plan` の物理計画の format は render
 - 出る所: Resources のタブの **Format** の列([列に出す所](../../src/devstudio/view/frameplanwidget.cpp#L4878))と、資源の名前に format を添えた `<名前>  [<format>]` の字([`resourceLabel`](../../src/devstudio/view/frameplanwidget.cpp#L370))です。RC-3a1 より前の engine につなげば、前の綴りがそのまま出ます。
 - Studio の test が読む plan の fixture(`test/fixtures/devstudio/example_frame_plan.json`)は、format の綴りだけを新しい形に直しました(fingerprint の値は変えていません。Studio の test は計算し直さないため。RC-3a1 の実装者の報告)。
 - v0 の engine で **Freeze this physical plan** した fragment(文書の `vulkan_physical_fragments`)は、RC-3a1 の engine では fingerprint が合わず stale になります([第6章](06_rendering.md#v0-physical-fragment-format))。commit の組み直しで断られたときは、上の「下の層の決定を Frame Plan から書く」の **Eject again** で今の plan の fragment に置き換えます。文書に入ったまま project を開いたときの見え方は未確認です。
+- 画面での見え方は確かめていません(コードの読み)。
+
+### Frame Plan の物理の順(RC-3d2)
+
+engine の ✅RC-3d2 から、物理計画の scope を順に展開した node の列は frame plan の順と同じです([第6章](06_rendering.md#physical-order-follows-frame-plan))。Studio のコードは RC-3d では変わっていません(RC-3d2 / RC-3d3 の差分に `src/devstudio` は無い)。
+
+- raytracing_demo / pathtrace_demo / playground_rt では、Physical plan のタブが読む `physical_target_plan.scopes` の先頭(`scope:0`)が `__scene_acceleration_structure` の scope になります(前は `__anchor_post_ldr` の後ろの `scope:4`。実装者の記録)。
+- その前に **Freeze this physical plan** した fragment は stale になり、上の v0 の fragment と同じく **Eject again** で置き換えます(§13.5 の「graph 全体の計画の決定を書く」)。
+- 順を変えるのは Order…(`frame_node_order`)で、Physical plan のタブの fragment では変えられません。
 - 画面での見え方は確かめていません(コードの読み)。
 
 ## 15.9 Pass Editor
