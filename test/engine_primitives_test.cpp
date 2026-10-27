@@ -22,6 +22,7 @@
 #include "../src/core/vkcore/renderer.hpp"
 #include "../src/project/audioanalysisformat.hpp"
 #include "../src/project/assetsmanifest.hpp"
+#include "../src/project/renderconfigdocument.hpp"
 #include "../src/project/materialpassdecompose.hpp"
 #include "../src/project/projecttemplate.hpp"
 #include "../src/project/renderconfigsection.hpp"
@@ -3420,6 +3421,34 @@ struct Fr3Engine {
     }
     Json batch(Json edits) { return send("edit_batch", {{"edits", std::move(edits)}}); }
 };
+
+TEST_CASE("RC-5 recipe authoring getters and fork retain the selected preset document",
+          "[rc5][pipeline-preset][render-feature][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("rc5_authoring");
+    const auto root = makeBlankProject(dir.root);
+    constexpr auto reference = "engine://render_pipelines/experimental/hybrid_recipe_lit.json";
+    const auto preset_bytes = engineResourceOrThrow(std::string_view{reference}.substr(9));
+    const auto preset = Json::parse(preset_bytes);
+    writeFile(root / "passes/main_rendering_config.json",
+              TestSupport::renderGraphRoot(Json{{"pipeline", {{"preset", reference}}}}).dump(2));
+    Fr3Engine engine{root};
+    const auto context = engine.rpc.result("get_render_authoring_context");
+    const auto features = engine.rpc.result("get_render_features");
+    const auto digest = renderConfigSourceDigest(preset_bytes);
+    CHECK(context.at("pipeline_preset").at("reference") == reference);
+    CHECK(context.at("pipeline_preset").at("source_digest").at("hex") == digest);
+    REQUIRE(features.at("feature_instances").size() == preset.at("config").at("features").size());
+    for (const auto &instance : features.at("feature_instances")) {
+        CHECK(instance.at("source_reference") == reference);
+        CHECK(instance.at("source_digest").at("hex") == digest);
+    }
+    const auto forked = engine.send("fork_render_pipeline",
+        {{"base_preset_digest", digest}, {"destination_reference", "project://passes/recipe-copy.json"}});
+    INFO(forked.dump(2));
+    REQUIRE(forked.at("committed") == true);
+    CHECK(readFile(root / "passes/recipe-copy.json") == preset_bytes);
+}
 
 const Json fr3Depth{{"semantic", "pelican.render.depth@1"},
                     {"arguments", {{"representation", "device"}, {"space", "projection"}}}};

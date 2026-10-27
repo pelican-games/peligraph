@@ -24,6 +24,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -195,9 +196,17 @@ struct RenderPipelinePresetInfo {
     int version = 1;
 };
 
+struct RenderPipelineFragmentOrigin {
+    std::string name;
+    std::string reference;
+    bool operator==(const RenderPipelineFragmentOrigin &) const = default;
+};
+
 struct RenderPipelinePresetResolution {
     nlohmann::json config;
     std::optional<RenderPipelinePresetInfo> preset;
+    std::unordered_map<std::string, RenderPipelineFragmentOrigin> fragment_passes;
+    std::unordered_map<std::string, RenderPipelineFragmentOrigin> fragment_targets;
 };
 
 using RenderPipelinePresetLoader =
@@ -308,6 +317,9 @@ struct RenderPassProvenance {
     // order its fields list them.
     std::vector<RenderPassLoopOutputReference> loop_outputs;
 
+    // Declaration ownership only; never changes source or resource planning.
+    std::optional<RenderPipelineFragmentOrigin> fragment;
+
     bool operator==(const RenderPassProvenance &) const = default;
 };
 
@@ -329,6 +341,8 @@ struct RenderResourceProvenance {
     // feature's compute task wrote; waitOnGraphTasksInScenePasses), in the
     // order added. `usage` already lists them.
     std::vector<std::string> added_usage;
+
+    std::optional<RenderPipelineFragmentOrigin> fragment;
 
     bool operator==(const RenderResourceProvenance &) const = default;
 };

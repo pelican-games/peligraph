@@ -3504,6 +3504,13 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     synchronizeRenderPipelineProvenance(
         resolved_config, pass_provenance,
         resource_provenance, authored_source);
+    for (auto &pass : pass_provenance)
+        if (const auto found = preset_resolution.fragment_passes.find(pass.name);
+            found != preset_resolution.fragment_passes.end()) pass.fragment = found->second;
+    for (auto &resource : resource_provenance)
+        if (resource.kind == "render_target")
+            if (const auto found = preset_resolution.fragment_targets.find(resource.name);
+                found != preset_resolution.fragment_targets.end()) resource.fragment = found->second;
     if (dependencies.transform_resolved_config) {
         resolved_config =
             dependencies.transform_resolved_config(

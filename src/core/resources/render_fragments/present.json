@@ -1,0 +1,28 @@
+{
+  "schema": "pelican.render_fragment",
+  "version": 1,
+  "name": "present",
+  "render_targets": [],
+  "passes": [
+    {
+      "name": "scene_present",
+      "type": "fullscreen",
+      "output": {
+        "color": [
+          "swapchain"
+        ],
+        "depth": null
+      },
+      "input": [
+        "lit_color"
+      ],
+      "shader": {
+        "vertex": "engine://fullscreen",
+        "fragment": "engine://scene_present"
+      }
+    }
+  ],
+  "required_targets": [
+    "lit_color"
+  ]
+}

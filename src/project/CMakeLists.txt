@@ -66,6 +66,7 @@ add_library(pelican_project
     renderfeatureoverlay.cpp
     renderingjsonnormalize.cpp
     renderpipeline.cpp
+    renderpipelinerecipe.cpp
     samplecountplanning.cpp
     schemawire.cpp
     schemawire.hpp

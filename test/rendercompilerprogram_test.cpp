@@ -18,6 +18,7 @@
 #include "render_graph_ir_test_support.hpp"
 
 #include <functional>
+#include <cstdlib>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
@@ -2587,3 +2588,9 @@ TEST_CASE("FG-1 a verified fold group's decisions reach target_planning and the 
 #endif
 } // namespace
 } // namespace Pelican
+
+namespace Pelican {
+#if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+#include "rc5_recipe_compiler_test.inc"
+#endif
+}

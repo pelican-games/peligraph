@@ -1,4 +1,5 @@
 #include "renderpipeline.hpp"
+#include "renderpipelinerecipe.hpp"
 #include "rendergraphir.hpp"
 #include "graphcomposition.hpp"
 #include "featurecompose.hpp"
@@ -897,6 +898,8 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
     // preflight refuses a bad value, and it never reaches the composed config.
     (void)readMaterialRouteDefault(authored_config);
     if (!authored_config.contains("pipeline")) {
+        if (authored_config.contains("fragment_overrides"))
+            throw GraphRegistryError("render_pipeline.fragment_overrides_need_recipe@1", nlohmann::json::object());
         if (!authored_config.contains(materialRouteDefaultKey)) {
             return {authored_config, std::nullopt};
         }
@@ -936,13 +939,24 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
                                  std::string{preset_schema} + "': " + reference);
     }
     if (!document.contains("version") || !document.at("version").is_number_integer() ||
-        document.at("version").get<int>() != supported_preset_version) {
+        (document.at("version").get<int>() != supported_preset_version && document.at("version").get<int>() != 2)) {
         throw std::runtime_error("render pipeline preset version must be exactly 1: " +
                                  reference);
     }
     const auto name = requireString(document, "name", "render pipeline preset '" + reference + "'");
     if (!document.contains("config") || !document.at("config").is_object()) {
         throw std::runtime_error("render pipeline preset requires object config: " + reference);
+    }
+    const auto version = document.at("version").get<int>();
+    RenderPipelinePresetResolution recipe;
+    auto overlay = authored_config;
+    if (version == 2) {
+        recipe = expandRenderPipelineRecipe(document.at("config"),
+            authored_config.value("fragment_overrides", nlohmann::json::object()), load_preset_json);
+        document["config"] = std::move(recipe.config);
+        overlay.erase("fragment_overrides");
+    } else if (authored_config.contains("fragment_overrides")) {
+        throw GraphRegistryError("render_pipeline.fragment_overrides_need_recipe@1", nlohmann::json::object());
     }
     // RC-3b: a preset is one of the rendering JSON's boundaries.
     document = normalizeRenderingJson(std::move(document));
@@ -961,7 +975,7 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
 
     // Keep v1 deterministic.  Structural overrides use an explicit eject/copy
     // workflow so a preset update cannot silently reinterpret a deep merge.
-    requireOnlyKeys(authored_config,
+    requireOnlyKeys(overlay,
                     {"pipeline", "features", "snapshots", "shader_defines",
                      "draw_sort", "graph_transforms",
                      "render_strategy", "target_planning",
@@ -1102,7 +1116,8 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
         }
     }
     return {std::move(resolved), RenderPipelinePresetInfo{
-                                         reference, name, supported_preset_version}};
+                                         reference, name, version},
+            std::move(recipe.fragment_passes), std::move(recipe.fragment_targets)};
 }
 
 namespace {

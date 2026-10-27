@@ -168,6 +168,11 @@ if(PELICAN_TEST_NO_DISCOVERY)
   return()
 endif()
 set(discovery_properties)
+if(target_name STREQUAL "pelican_test_group_render_pipeline" OR
+   target_name STREQUAL "pelican_test_group_golden_runtime")
+  # Catch2 3: a discovered case whose whole execution is skipped exits with 4.
+  list(APPEND discovery_properties SKIP_RETURN_CODE 4)
+endif()
 if(source_name MATCHES "^devstudio_" AND
    NOT PELICAN_TEST_GPU AND NOT PELICAN_TEST_MIXED_GPU)
   list(APPEND discovery_properties LABELS studio_cpu)
@@ -3634,6 +3639,9 @@ target_compile_definitions(pelican_test_renderingjsonnormalize_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 pelican_define_test(rendercompilerprogram_test GROUP render_pipeline pelican_core)
+if(MSVC)
+    target_compile_options(pelican_test_rendercompilerprogram_test PRIVATE /bigobj)
+endif()
 pelican_define_test(rendercompilerprogram_ir_test GROUP render_pipeline pelican_core)
 # RC-3c1b: the production compiler program and the registration on a device.
 pelican_define_test(rendercompilerprogram_device_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
@@ -3787,6 +3795,16 @@ add_test(
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_preset_project_headless.cmake
 )
 pelican_gpu_test_properties(animgraph_demo_preset_headless_player 120)
+
+add_test(
+    NAME rc5_recipe_preset_headless_player
+    COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
+        -DPLAYER=$<TARGET_FILE:pelican_player>
+        -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/animgraph_demo
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/rc5_recipe_preset
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_recipe_project_headless.cmake
+)
+pelican_gpu_test_properties(rc5_recipe_preset_headless_player 120)
 
 if(NOT SKIP_DEVSTUDIO)
     add_executable(pelican_test_studio_player_arguments

@@ -1,0 +1,100 @@
+{
+  "schema": "pelican.render_fragment",
+  "version": 1,
+  "name": "ssao",
+  "render_targets": [
+    {
+      "name": "ssao_output",
+      "extent_scale": 1.0,
+      "format": "R8_UNORM",
+      "format_class": "data",
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "SAMPLED"
+      ]
+    },
+    {
+      "name": "ssao_blur",
+      "extent_scale": 1.0,
+      "format": "R8_UNORM",
+      "format_class": "data",
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "SAMPLED"
+      ]
+    }
+  ],
+  "passes": [
+    {
+      "name": "ssao_pass",
+      "type": "fullscreen",
+      "output": {
+        "color": [
+          "ssao_output"
+        ],
+        "depth": null
+      },
+      "input": [
+        "gbuffer_worldpos",
+        "gbuffer_normal"
+      ],
+      "resource_ports": {
+        "world": {
+          "resource": "gbuffer_worldpos",
+          "access": "sampled",
+          "view": "per_view"
+        },
+        "normal": {
+          "resource": "gbuffer_normal",
+          "access": "sampled",
+          "view": "per_view"
+        }
+      },
+      "push_constants": "projection_view",
+      "shader": {
+        "vertex": "engine://fullscreen",
+        "fragment": "engine://ssao"
+      },
+      "clear_color": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "name": "ssao_blur_pass",
+      "type": "fullscreen",
+      "output": {
+        "color": [
+          "ssao_blur"
+        ],
+        "depth": null
+      },
+      "input": [
+        "ssao_output"
+      ],
+      "resource_ports": {
+        "ssaoInput": {
+          "resource": "ssao_output",
+          "access": "sampled",
+          "view": "per_view"
+        }
+      },
+      "shader": {
+        "vertex": "engine://fullscreen",
+        "fragment": "engine://ssao_blur"
+      },
+      "clear_color": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ]
+    }
+  ],
+  "required_targets": [
+    "gbuffer_worldpos",
+    "gbuffer_normal"
+  ]
+}

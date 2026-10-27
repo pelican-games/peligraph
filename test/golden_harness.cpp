@@ -13222,11 +13222,59 @@ struct DrawLoopProbeScope {
 
 } // namespace
 
-// LP-2 acceptance 1: every golden case built on the hybrid preset renders
-// the same pixels, issues the same material-pass binds and draws, and
-// compiles the same draw queue bytes whether its generation has no
-// draw-step table or a table that spells out today's drawing for every
-// material of every material pass.
+// RC-5 A2: compare the recipe to the existing hybrid golden cases and,
+// the RGBA captured with the fixed HEAD binary.
+void GoldenHarness::runRecipeEquivalence() {
+    const auto *directory = std::getenv("RC5_GOLDEN_BASELINE_DIR");
+    if (!directory || !*directory) SKIP("RC5_GOLDEN_BASELINE_DIR is required for the fixed HEAD comparison");
+    setupLogger();
+    requireGoldenVulkanDevice();
+    const std::set<std::string> hybrid_modes{
+        "shadow_b_layer_engine", "shadow_b_layer_off", "shadow_b_layer_project", "usd0c_openpbr_material",
+#if PELICAN_WITH_VAT
+        "vat_playback",
+#endif
+    };
+    std::size_t compared = 0;
+    for (const auto &golden_case : loadGoldenInventoryCases()) {
+        if (!hybrid_modes.contains(golden_case.mode)) continue;
+        CAPTURE(golden_case.name);
+        const auto baseline = renderCase(golden_case);
+        {
+            std::ifstream file{std::filesystem::path{directory} / (golden_case.name + ".rgba"), std::ios::binary};
+            REQUIRE(file.good());
+            const std::vector<char> frozen{std::istreambuf_iterator<char>{file}, {}};
+            REQUIRE(frozen.size() == baseline.image.pixels.size());
+            REQUIRE(std::memcmp(frozen.data(), baseline.image.pixels.data(), frozen.size()) == 0);
+        }
+        {
+            std::size_t rewritten = 0;
+            DrawLoopProbe recipe;
+            recipe.rewrite_project = [&](const std::filesystem::path &root) {
+                for (const auto &entry : std::filesystem::recursive_directory_iterator(root)) {
+                    if (!entry.is_regular_file() || entry.path().extension() != ".json") continue;
+                    auto document = nlohmann::json::parse(readTextFile(entry.path()), nullptr, false);
+                    if (!document.is_object() || document.value("schema", std::string{}) != "pelican.graph" ||
+                        !document.contains("rendering")) continue;
+                    auto &section = document["rendering"];
+                    if (section.value("pipeline", nlohmann::json{}) != nlohmann::json{{"preset", "engine://render_pipelines/hybrid_v1.json"}}) continue;
+                    section["pipeline"]["preset"] = "engine://render_pipelines/experimental/hybrid_recipe.json";
+                    writeTextFile(entry.path(), document.dump(2));
+                    ++rewritten;
+                }
+            };
+            const auto rendered = [&] { DrawLoopProbeScope scope{recipe}; return renderCase(golden_case); }();
+            REQUIRE(rewritten > 0);
+            REQUIRE(rendered.image.width == baseline.image.width);
+            REQUIRE(rendered.image.height == baseline.image.height);
+            REQUIRE(rendered.image.pixels == baseline.image.pixels);
+        }
+        ++compared;
+    }
+    REQUIRE(compared == hybrid_modes.size());
+}
+
+// LP-2: spelling out today's material draw steps preserves draws and pixels.
 void GoldenHarness::runDrawLoopIdentityEquivalence() {
     setupLogger();
     requireGoldenVulkanDevice();
@@ -13268,6 +13316,12 @@ void GoldenHarness::runDrawLoopIdentityEquivalence() {
         REQUIRE(baseline.image.width == explicit_steps.image.width);
         REQUIRE(baseline.image.height == explicit_steps.image.height);
         REQUIRE(baseline.image.pixels == explicit_steps.image.pixels);
+        if (const auto *directory = std::getenv("RC5_RECORD_DIR")) {
+            std::filesystem::create_directories(directory);
+            std::ofstream output{std::filesystem::path{directory} / (golden_case.name + ".rgba"), std::ios::binary};
+            output.write(reinterpret_cast<const char *>(baseline.image.pixels.data()),
+                         static_cast<std::streamsize>(baseline.image.pixels.size()));
+        }
         ++compared;
     }
     REQUIRE(compared == hybrid_modes.size());

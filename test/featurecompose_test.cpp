@@ -14,6 +14,7 @@
 #include "../src/project/projecttemplate.hpp"
 #include "../src/project/renderfeatureoverlay.hpp"
 #include "../src/project/renderpipeline.hpp"
+#include "../src/project/renderpipelinerecipe.hpp"
 #include "../src/project/passshapepolicy.hpp"
 #include "../src/project/shaderresourceport.hpp"
 #include "../src/core/loader/engineresources.hpp"
@@ -10535,3 +10536,7 @@ TEST_CASE("EN-2 a file image's parameters and its readers are refused by name",
 }
 
 } // namespace Pelican
+
+namespace Pelican {
+#include "rc5_recipe_resolver_test.inc"
+}

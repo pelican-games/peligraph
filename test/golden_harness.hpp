@@ -19,6 +19,7 @@ void runGpuSegmentedOcclusionXr();
 void runGpuSegmentedOcclusionHotReload();
 void runGoldenImages();
 void runDrawLoopIdentityEquivalence();
+void runRecipeEquivalence();
 void runDrawLoopDecomposedEquivalence();
 void runMaterialPassDecomposeEquivalence();
 void runEditorRuntimeBinding();

@@ -48,6 +48,7 @@
 #include "../watch/reloadservice.hpp"
 #include "../../project/authoringlowering.hpp"
 #include "../../project/featurecompose.hpp"
+#include "../../project/renderconfigsection.hpp"
 #include "../../project/renderfeatureoverlay.hpp"
 
 #include <algorithm>
@@ -2270,6 +2271,8 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                 projectLoweringContext(runtime->modules.path_resolver));
                             writeAuthoringGeneratedSources(
                                 lowering, runtime->modules.path_resolver.projectRoot());
+                            const auto preset_reference = renderingSectionOrEmpty(lowering.document)
+                                .value("pipeline", nlohmann::json::object()).value("preset", std::string{});
                             auto composed = composeRenderFeatureConfig(
                                 resolveGraphImageSourceExtents(
                                     lowering.document,
@@ -2282,8 +2285,9 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                     .runtime_shader_compiler_enabled = false,
 #endif
                                     .load_pipeline_json = [&](std::string_view reference) {
-                                        preset_bytes = loader(reference);
-                                        return *preset_bytes;
+                                        auto bytes = loader(reference);
+                                        if (reference == preset_reference) preset_bytes = bytes;
+                                        return bytes;
                                     },
                                     .validate_feature =
                                         [](std::string_view name,

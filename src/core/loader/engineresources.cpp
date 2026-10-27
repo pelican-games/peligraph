@@ -26,6 +26,13 @@ constexpr auto registered_ids =
     "default.frag.spv",
     "default.vert.spv",
     "render_pipelines/hybrid_v1.json",
+    "render_fragments/deferred_geometry.json",
+    "render_fragments/ssao.json",
+    "render_fragments/deferred_lighting.json",
+    "render_fragments/forward_base.json",
+    "render_fragments/present.json",
+    "render_pipelines/experimental/hybrid_recipe.json",
+    "render_pipelines/experimental/hybrid_recipe_lit.json",
     "debug_draw.frag.spv",
     "debug_draw.vert.spv",
     "debug_draw.vert",
@@ -193,6 +200,13 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("default.frag.spv")
     PELICAN_ENGINE_RESOURCE("default.vert.spv")
     PELICAN_ENGINE_RESOURCE("render_pipelines/hybrid_v1.json")
+    PELICAN_ENGINE_RESOURCE("render_fragments/deferred_geometry.json")
+    PELICAN_ENGINE_RESOURCE("render_fragments/ssao.json")
+    PELICAN_ENGINE_RESOURCE("render_fragments/deferred_lighting.json")
+    PELICAN_ENGINE_RESOURCE("render_fragments/forward_base.json")
+    PELICAN_ENGINE_RESOURCE("render_fragments/present.json")
+    PELICAN_ENGINE_RESOURCE("render_pipelines/experimental/hybrid_recipe.json")
+    PELICAN_ENGINE_RESOURCE("render_pipelines/experimental/hybrid_recipe_lit.json")
     PELICAN_ENGINE_RESOURCE("debug_draw.frag.spv")
     PELICAN_ENGINE_RESOURCE("debug_draw.vert.spv")
     PELICAN_ENGINE_RESOURCE("debug_draw.vert")

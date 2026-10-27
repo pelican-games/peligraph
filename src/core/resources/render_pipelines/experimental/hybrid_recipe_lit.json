@@ -1,0 +1,43 @@
+{
+  "schema": "pelican.render_pipeline",
+  "version": 2,
+  "name": "hybrid_recipe_lit",
+  "config": {
+    "shader_defines": [
+      "PELICAN_HYBRID_SCENE_LINEAR"
+    ],
+    "draw_sort": {
+      "opaque": {
+        "provider": "state_batched_v1"
+      },
+      "transparent": {
+        "provider": "back_to_front_v1"
+      },
+      "xr_view_policy": "logical_view_center"
+    },
+    "material_routing": {
+      "policy": "hybrid_auto_v1",
+      "routes": {
+        "deferred_geometry": "deferred_geometry",
+        "forward_opaque": "forward_opaque",
+        "forward_transparent": "forward_transparent"
+      }
+    },
+    "base": [
+      {
+        "family": "main_render",
+        "fragments": [
+          "engine://render_fragments/deferred_geometry.json",
+          "engine://render_fragments/ssao.json",
+          "engine://render_fragments/deferred_lighting.json",
+          "engine://render_fragments/forward_base.json",
+          "engine://render_fragments/present.json"
+        ]
+      }
+    ],
+    "features": [
+      "engine://features/shadow_directional.json",
+      "engine://features/sky_ambient.json"
+    ]
+  }
+}

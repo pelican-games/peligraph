@@ -4,6 +4,10 @@
 
 namespace Pelican {
 
+TEST_CASE("RC-5 hybrid recipes draw byte identical golden images", "[golden][headless][rc5]") {
+    GoldenHarness::runRecipeEquivalence();
+}
+
 TEST_CASE("golden image cases match expected output",
           "[golden][headless][byte-exact][framegraph]") {
     GoldenHarness::runGoldenImages();

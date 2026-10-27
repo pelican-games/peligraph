@@ -153,6 +153,8 @@ nlohmann::json framePlanToJson(
         if (const auto found = pass_provenance.find(node.name);
             found != pass_provenance.end()) {
             const auto &provenance = *found->second;
+            if (provenance.fragment)
+                node_json["fragment"] = {{"name", provenance.fragment->name}, {"reference", provenance.fragment->reference}};
             if (!provenance.authored_name.empty())
                 node_json["authored_name"] = provenance.authored_name;
             node_json["source"] =
@@ -311,8 +313,11 @@ nlohmann::json framePlanToJson(
                         provenance.provider_reference;
                 }
                 if (provenance.usage) {
+                    // Fragment identity is authoring ownership, separate from usage.
                     resource["usage"] = *provenance.usage;
                 }
+                if (provenance.fragment)
+                    resource["fragment"] = {{"name", provenance.fragment->name}, {"reference", provenance.fragment->reference}};
                 if (!provenance.added_usage.empty()) {
                     resource["added_usage"] = provenance.added_usage;
                 }

@@ -1,0 +1,52 @@
+{
+  "schema": "pelican.render_fragment",
+  "version": 1,
+  "name": "deferred_lighting",
+  "render_targets": [
+    {
+      "name": "lit_color",
+      "extent_scale": 1.0,
+      "format": "R16G16B16A16_SFLOAT",
+      "format_class": "explicit(R16G16B16A16_SFLOAT)",
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "SAMPLED",
+        "TRANSFER_SRC"
+      ]
+    }
+  ],
+  "passes": [
+    {
+      "name": "deferred_lighting",
+      "type": "fullscreen",
+      "output": {
+        "color": [
+          "lit_color"
+        ],
+        "depth": null
+      },
+      "input": [
+        "gbuffer_albedo",
+        "gbuffer_normal",
+        "gbuffer_material",
+        "gbuffer_worldpos",
+        "g_emissive",
+        "ssao_blur"
+      ],
+      "shader": {
+        "vertex": "engine://fullscreen",
+        "fragment": "engine://fullscreen"
+      },
+      "push_constants": "camera_position",
+      "uses_light_data": true
+    }
+  ],
+  "required_targets": [
+    "gbuffer_albedo",
+    "gbuffer_normal",
+    "gbuffer_material",
+    "gbuffer_worldpos",
+    "g_emissive",
+    "ssao_blur"
+  ]
+}
