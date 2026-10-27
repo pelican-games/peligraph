@@ -9,6 +9,19 @@
 [design_render_pipeline_extensibility.md](design_render_pipeline_extensibility.md)。
 行番号は `develop`(v0.1.0 + WR-1)時点。
 
+> **2026-10-27 注記(利用者の決定。RC-5 の仕様の冒頭)**: stage の扱いを変えた。**stage は engine の語彙にしない**。pass / feature / loop に
+> engine が読む `stage` 属性を持たせる案(下の §0 の提案と §3 以降)は採らず、stage は「**カスタム可能な階層フィルター**(Studio の `Show:` の
+> 拡張。GF-1 = filter の利用者定義と一体)の 1 例として、preset などに付いてくるデータ」にする。作るのは Studio 側の別の WP で、RC-5 の
+> レシピの preset(`pelican.render_pipeline@2`)にはフィルターの定義を持つ欄をまだ作っていない
+> ([recipe メモ §7](design_render_preset_feature_recipe.md#rc5-implementation))。
+>
+> - 下の提案 (2) の「`insert:` を省いた pass の既定の置き場」という stage の役割は**捨てる**(stage はナビゲーションのデータだけで、合成の
+>   置き場を決めない)。
+> - anchor の撤去 —— フレーム順の骨格(§1 の役割 2)、`__anchor_*` の runtime のノード(役割 5)、`__anchor_sprite` の実仕事を sprite の
+>   本物の pass にすること(役割 4)—— は engine の **RC-5s** として残る。HDR / LDR の境界を資源の型に移すこと(役割 3)もそこで扱う。
+> - 本文は議論の記録として残す。本文の「stage タグ」「`get_frame_plan` に stage 属性を載せる」などの engine 側の記述は、この注記の方針とは
+>   食い違う所がある(どちらを採るかはこの注記が正)。
+
 ## 0. 要約
 
 - canonical anchor(`sprite` / `post_main` / `tonemap` / `post_ldr` / `pelican_ui` / `debug_draw` / `debug_text` / `imgui`)は
