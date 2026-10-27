@@ -275,6 +275,25 @@ AG-1b で「一本化」は **v0 から撤回**され、v0 が約束するのは
 (loop / speed / start_time、位相、状態移送)と owner 単位の排他。二重 writer は
 `authority_conflict` / `pose.sink_conflict@1` で名前付きに落ちる。
 
+### 1.7 追記: v1 で外した書き方(RC-5s、2026-10-28)
+
+この節は v1 の追記で、§1.1〜§1.6 の v0 時点の記録(LP-0b の `canonical_anchor` の field を含む)は書き換えていない。
+
+v1 の RC-5s(develop_v1 の `1e05031d7` / `e17754510`)で canonical anchor を外した。v0 の形式のうち次の書き方は、開いたときに名前付きで断る
+(code は `render_graph.canonical_anchor_removed@1 {anchor, pointer, document, suggestion}`。`pointer` は書いた場所の JSON pointer。[manual 6 章 §6.5「canonical anchor」](manual/06_rendering.md#canonical-anchorwp73)):
+
+- authored pass・graph の render node・`graph.loop` の `canonical_anchor`(LP-0b の field)と、`type: "canonical_anchor"` の pass
+- feature と graph の `insert` が旧い anchor の 8 つの名前(`sprite` / `post_main` / `tonemap` / `post_ldr` / `pelican_ui` / `debug_draw` / `debug_text` / `imgui`)を指し、合成の結果に同じ名前の pass が無いもの
+- `rendering.snapshots[].after` の旧い anchor 名(同じ名前の pass が無いもの)
+
+保存済みの `frame_node_order` に入った `__anchor_*` は断らず、読み飛ばして `frame_node_order.anchor_ignored@1` の warning を出す(Studio の Order… が保存した並びがありうるため)。
+
+**移行の step は作らない**(利用者の決定 2026-10-28: anchor の鎖が決めていた細かい順は守らない、旧い書き方を同じ順に読み替える層は作らない、1 段で外す。守るのは見た目と資源の依存の順)。
+出荷 7 project と `test/fixtures/project_corpus/v0/` に、上の書き方の直接の記述は 0 件。§1 の「自動で直せない箇所は名前付きで列挙される」は、この変更については移行の手順の `manual_items` ではなく、開いたときの上の名前付きの拒否(code と pointer)で示す。
+
+- **v0 corpus の `sprite_demo`**: `engine://features/sprite.json` を binding 無しで参照している。RC-5s の sprite feature は描く先を parameter(既定 `lit_color` / `scene_depth`)で受けるので、この文書は `feature.parameter_target_unknown@1`(feature `sprite`、parameter `color`、target `lit_color`)で断られる。直すのは手で、出荷の `projects/sprite_demo` と同じ形にする: sprite の feature を project の feature として写して `insert: "after:lighting_pass"` にし、instance に `{"color": "display", "depth": "offscreen_depth"}` を書く。corpus の文書は書き換えていない(test: `rendercompilerprogram_test` の「RC-5s frozen v0 sprite requires explicit target bindings」)。
+- 保存済みの physical fragment / complete package / pin は、物理計画の fingerprint が変わるので stale になり、eject し直す(RC-3d2 と同じ扱い)。
+
 ## 2. 撤去 / 維持の表
 
 v1 計画 R 群「表の各行を『撤去 / 維持(理由)』で閉じる」の裁定(台帳 `### R-1:` の転記)。

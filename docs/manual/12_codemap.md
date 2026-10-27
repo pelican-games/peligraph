@@ -68,7 +68,7 @@
 | pelican.transform_seq(JSONL) | [第5章](05_assets.md) | [playback/seqplayer.cpp](../../src/core/playback/seqplayer.cpp) `TransformSequence::fromJsonLines` |
 | pelican.vat(GLB extras) | [第5章](05_assets.md) | 純ロジック: [model/vatformat.cpp](../../src/core/model/vatformat.cpp) / 再生: [playback/vatplayer.cpp](../../src/core/playback/vatplayer.cpp) |
 | pelican.material / `.surface` | [第6章](06_rendering.md) | 純ロジック: [project/materialformat.cpp](../../src/project/materialformat.cpp)・[project/surfaceformat.cpp](../../src/project/surfaceformat.cpp)・[project/materiallowering.cpp](../../src/project/materiallowering.cpp) / 接続: [shader/surfacecompiler.cpp](../../src/core/shader/surfacecompiler.cpp)・[material/](../../src/core/material) |
-| rendering config の `snapshots` / canonical anchor | [第6章](06_rendering.md) | [project/featurecompose.cpp](../../src/project/featurecompose.cpp) |
+| rendering config の `snapshots` / pass の置き場所(canonical anchor は RC-5s で撤去、旧い書き方の拒否は [project/canonicalanchorremoved.hpp](../../src/project/canonicalanchorremoved.hpp)) | [第6章](06_rendering.md) | [project/featurecompose.cpp](../../src/project/featurecompose.cpp) |
 | pelican.import(納品 manifest) | [第5章](05_assets.md) | [project/importmanifest.cpp](../../src/project/importmanifest.cpp) `parseImportManifestJson`(利用者: [devcli/importcommand.cpp](../../src/devcli/importcommand.cpp)) |
 | JSON-RPC エンベロープ | [第10章](10_tools.md) | 純ロジック: [project/jsonrpc.cpp](../../src/project/jsonrpc.cpp) / メソッド実装: [communication/rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1556) `configureEngineRpcHandlers`(`setHandler` 群はすべてこの関数の中。エディタ系メソッドの実体は [editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp) ほか) |
 | pelican.frame_plan(出力専用) | [第6章](06_rendering.md) | 生成: [renderingpass/frameplanner.cpp](../../src/core/renderingpass/frameplanner.cpp)。物理 image の `bytes` と `memory_summary`(RC-1)の式: [project/targetrendermemory.cpp](../../src/project/targetrendermemory.cpp) |
@@ -101,7 +101,7 @@
 
 > **設計決定(三層):** ①ユーザーは依存(reads/writes)だけ宣言する ②順序・バリアは機械導出 ③どうしても必要な箇所だけ `after`/`before` で手詰め。順序を手書きさせないことでパス追加が局所変更になる([design_compute_task_graph.md](../design_compute_task_graph.md))。
 
-補足: canonical anchor ノード(`__anchor_sprite` など 8 個)・`snapshot_copy`・終端 `output_transform` は [featurecompose.cpp](../../src/project/featurecompose.cpp) の合成段階で実体化されます。実行系は WP64 で全構成プラン駆動に一本化済みです(レガシー経路は撤去)。
+補足: `snapshot_copy`・終端 `output_transform` は [featurecompose.cpp](../../src/project/featurecompose.cpp) の合成段階で実体化されます。canonical anchor ノード(`__anchor_sprite` など 8 個)は ✅RC-5s で撤去しました(sprite は feature の `sprite_draw` の pass、ImGui は `output_transform` の直前に足す `imgui_pass`)。実行系は WP64 で全構成プラン駆動に一本化済みです(レガシー経路は撤去)。
 
 ### 入力(4 層のうち実装は 2 層 + 注入)
 

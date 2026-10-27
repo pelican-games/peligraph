@@ -158,7 +158,7 @@ resolver、graph compiler、scheduler、backendは残ります。
 
 ビルドユニットの「消え方」を 1 つ具体的に見ておきます。`-DPELICAN_WITH_ANIMATION=OFF` にすると:
 
-- **消えるもの**: `src/core/animation/*` のソース一式(clip サンプラ・state machine 評価器 `EvaluatorV1`・`AnimationSystem`・pose graph の runtime。[src/core/animation/CMakeLists.txt:1](../../src/core/animation/CMakeLists.txt#L1))と、共通グラフの `pelican.pose` module(登録呼び出し自体が `#if` の中 — [makeBuiltinGraphModuleRegistry()](../../src/project/graphmodule.cpp#L803))。`pelican_cli graph-catalog` は 4 module 27 op ではなく **3 module 21 op** を返します(`PELICAN_WITH_AUDIO=ON` のとき。`PELICAN_WITH_AUDIO=OFF` では `pelican.audio` module も登録されません。[../v0_freeze.md](../v0_freeze.md) §1.3)。
+- **消えるもの**: `src/core/animation/*` のソース一式(clip サンプラ・state machine 評価器 `EvaluatorV1`・`AnimationSystem`・pose graph の runtime。[src/core/animation/CMakeLists.txt:1](../../src/core/animation/CMakeLists.txt#L1))と、共通グラフの `pelican.pose` module(登録呼び出し自体が `#if` の中 — [makeBuiltinGraphModuleRegistry()](../../src/project/graphmodule.cpp#L797))。`pelican_cli graph-catalog` は 4 module 27 op ではなく **3 module 21 op** を返します(`PELICAN_WITH_AUDIO=ON` のとき。`PELICAN_WITH_AUDIO=OFF` では `pelican.audio` module も登録されません。[../v0_freeze.md](../v0_freeze.md) §1.3)。
 - **残るもの**: 凍結ヘッダ(`abi_v1.hpp` / `pose_staging_v1.hpp`)と、その**交渉入口**(`getApiV1` / `getPoseStagingServiceV1` / `Vrm::getApplicationServiceV1`)。ゲーム DLL はこれらをリンクするので、入口は残したまま **`unsupported_version` を返す stub** に差し替わります([animation_disabled.cpp:13](../../src/core/animation/animation_disabled.cpp#L13))。「関数が無くてロードできない」ではなく「名前で『この build には無い』と答える」形です。**skinning の compute 側(palette / `skinned.vert` / `ray_deform.comp`)も残ります** —— 姿勢を受け取る側であって、姿勢を作る側ではないからです。
 - **使おうとしたときの見え方**: `animation` コンポーネントを持つシーンは scene load の prepare で `animation.module_unavailable@1`(→ トランザクションなので旧シーンが保たれます。検査は [`resolvedObjectFeatureRefusal()`](../../src/core/loader/resolvedscene.cpp#L78)・[第4章 §4.3](04_scene_ecs.md))。エディタでこのコンポーネントを足す(`add_component` / `spawn`)ときも同じ関数・同じ名前で拒否されます(✅PG-1)。`pose.*` を書いた共通グラフ文書は `graph.operation_unregistered@1`。`project.json` に `requires: ["animation"]` を書いてあるプロジェクトは、**そこまで行く前に** project の parse で止まります(下記)。
 
@@ -171,7 +171,7 @@ skip posegraph_demo: requires animation (PELICAN_WITH_ANIMATION=OFF)
 この 1 行は宣言したプロジェクトごとに出るので、OFF build では `animgraph_demo` / `posegraph_demo` /
 `vrm_xr_demo` の **3 行**が並びます([プロジェクトの skip 出力](../../test/run_project_catalog_smoke.cmake#L123))。
 飛ばされたプロジェクトがエディタ経路のレーンを持っていた場合は `skip editor lane: <project> requires …` が続き
-([editor lane の skip 出力](../../test/run_project_catalog_smoke.cmake#L352))、最後に「何件中何件を飛ばしたか」の要約が 1 行出ます。
+([editor lane の skip 出力](../../test/run_project_catalog_smoke.cmake#L371))、最後に「何件中何件を飛ばしたか」の要約が 1 行出ます。
 
 語彙・検証規則は [第3章 §3.2](03_project_format.md) の「機能ユニットの要求(`requires`)」にあります。
 

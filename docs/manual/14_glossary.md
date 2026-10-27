@@ -307,7 +307,7 @@ GPU 機能を JSON とシェーダの断片で足すユーザー空間の単位�
 
 ### canonical anchor(標準アンカー)
 
-feature の挿入先になる 8 つの標準ノード。ノード間への挿入はできますが、標準ノードの全順序は固定です。 定義: [第6章 canonical anchor][def-68]。
+RC-5s の前に feature の挿入先になっていた 8 つの標準ノード(`__anchor_sprite` など)。✅RC-5s(v1)で撤去され、今の挿入先は実在する pass の名前です。旧い名前を書くと `render_graph.canonical_anchor_removed@1` で断られます。 定義: [第6章 canonical anchor][def-68]。
 
 ### frame graph(フレームグラフ)
 

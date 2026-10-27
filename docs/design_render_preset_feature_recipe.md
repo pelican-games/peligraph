@@ -263,7 +263,7 @@ RC-5a(4001e48af)と RC-5b(0f0cea36b)。branch `agent/rc5`。仕様は `<作業�
 
 ### 7.6 残り
 
-- RC-5s: canonical anchor の撤去(順の骨格・`__anchor_*`・sprite の本物の pass)。報告の申し送り: canonical anchor・HDR の初期化・Graph の
+- RC-5s: canonical anchor の撤去(順の骨格・`__anchor_*`・sprite の本物の pass)。✅2026-10-28 に着地(§7.7)。報告の申し送り: canonical anchor・HDR の初期化・Graph の
   既定 family と配置・snapshot・IR → FramePlan → 物理計画は RC-5 で触っていない。変えるときは RC-5a の 16 構成の全 node・fingerprint・
   旧 package の適用の比較を保つこと。
 - stage(カスタム可能な階層フィルター)= Studio 側の WP。既定の preset の決定と雛形の切り替え。web の鏡像。
@@ -271,3 +271,27 @@ RC-5a(4001e48af)と RC-5b(0f0cea36b)。branch `agent/rc5`。仕様は `<作業�
   ([検査](../src/project/renderpipeline.cpp#L941))。engine のレシピが `features` に持つ instance(`hybrid_recipe_lit` の shadow / sky)は、
   `get_render_features` で `scope: "preset"` の行になり、今までの engine preset の feature と同じく「先に fork」と案内される
   (`materializable: false`)。
+
+<a id="rc5s-implementation"></a>
+
+### 7.7 RC-5s(canonical anchor の撤去、2026-10-28)
+
+develop_v1 の `1e05031d7` / `e17754510`。仕様は `<作業ディレクトリ>/rc5s_spec.md`(冒頭の利用者の決定と追記 1 が正)、報告は `<作業ディレクトリ>/rc5s_report.md`。
+全体は [段メモ §8](design_render_stage_as_canvas_filter.md#rc5s-implementation) と [manual 第6章「canonical anchor」](manual/06_rendering.md#canonical-anchorwp73)。
+レシピに関わる所だけ書く。
+
+- **展開の後の道**: §7.2 の「`@1` と同じ道」から canonical anchor の振り分けと鎖が抜けた。レシピを展開した config も、`@1` の preset と同じく
+  宣言順 → feature の `insert` の位置 → Graph の node の列と、資源の依存・`after` / `before`・`frame_node_order` で順が決まる。
+  manual の「断片を feature にしなかった理由」(canonical の振り分けが feature の挿入より前にあること、など)は RC-5 の判断の時点の理由として残した。
+- **断片の境界**: 断片を読むとき `canonical_anchor` の欄と `type: "canonical_anchor"` を `render_graph.canonical_anchor_removed@1` で断る
+  ([`loadFragment()` で見る所](../src/project/renderpipelinerecipe.cpp#L38))。展開の後、実効の断片それぞれの `insert` が旧い anchor 名を指し、
+  展開した config に同じ名前の pass が無ければ同じ code で断る([展開の後に見る所](../src/project/renderpipelinerecipe.cpp#L151))。preset の文書も
+  同じ検査を通る([`resolveRenderPipelinePreset()` で見る所](../src/project/renderpipeline.cpp#L951))。同梱の断片(`present.json` など)に旧い書き方は無い。
+- **§7.6 の申し送りへの答え**: RC-5 の 16 構成の比較は保った。typed IR / FramePlan / 物理計画 / 新しく eject した package の比較は
+  基準が無くても常に走り、固定 HEAD(`c85717be8`)で作った complete fragment と pin の package は stale として断られる、に期待を変えて
+  別の名前付きの test に分けた(「RC-5s fixed HEAD complete fragment and pin packages are stale」。基準 `RC5_BASELINE_DIR` が無ければ
+  `rc5s.fixed_head_packages_unavailable@1` の名前付きの skip。`test/ci/cpu_skip_allowlist.txt` に登録)。物理計画の fingerprint が変わるのは
+  意図した変化(RC-3d2 と同じ扱い)。報告では compiler の 16 構成が 16/16(OpenXR ON)、runtime も 8 flat + 8 の合成の stereo で 16/16。
+- **sprite の資源計画**: レシピの 16 構成の test に、sprite の pass の IR の use・attachment・物理計画の rendering scope・barrier・lifetime の
+  検査を足した(`rc5_recipe_compiler_test.inc` の「RC-5s sprite attachments participate in IR and physical planning」)。
+- **stage**: §7.1 の決定 4 のまま。RC-5s でもレシピの preset にフィルターの定義を持つ欄は作っていない。

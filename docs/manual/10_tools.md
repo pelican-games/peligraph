@@ -166,7 +166,7 @@ test は `ew1_engine_window_embedded`([engine_window_embedded.py](../../test/eng
 | `capture_gpu` | `{}` | `render_frame` と同じcurrent-time描画を1回だけ**RenderDoc**(GPU に送った描画コマンドを 1 フレーム分丸ごと記録して後から追える外部デバッガ)で captureし、実際に増えたindexのcanonical `.rdc` pathを返す |
 | `capture` | `{path}` | 直近フレームを PNG 保存(sRGB)。応答は `{path, encoding: "srgb", contract: 2}`(`path` は書いたファイルの絶対 path) |
 | `get_frame_plan` | `{}`、または `{loop_elements: {node, offset?, limit?}}`(LP-3b。draw_loop の要素の paging) | フレームプラン JSON(fullscreen / raster pass の node には shader の set 1 の宣言 `pass_inputs` が付く。VI-1 / VI-1b。LP 系からは最上位の `loops[]`、node と resource の `loop_origin`、node の `view_select` / `view_axes` / `no_selected_view` も。shader が `pelican_loop.glsl` の回の番号を読む pass / task の node に `reads_loop_index: true`。`schedule: "once"` の node に `schedule: "once"`・`last_run_generation`・`last_run_frame`(まだ走っていなければ `null`)。`physical_target_plan.resources[]` の `initial: {asset}` を持つ image の要素に `initial_asset: {asset, sha256}`(`sha256` は `assets.manifest` の値、載っていなければ `null`。asset の隣に `.import.json` があれば `derived_from` / `stale` / `stale_reasons` も)。物理計画の image の要素に `bytes`、最上位に `memory_summary {total_bytes, unused_bytes, unused_resources, peak_live_bytes, peak_node, peak_graph}`(RC-1 / RC-1b。数え方は[第 6 章](06_rendering.md#physical-plan-memory) §6.6)。最上位に `preview: {available, reason?}`(`get_status` の `preview` と同じ形)。fallback の世代の間だけ最上位に `render_pipeline`(`get_status` の `render_pipeline` と同じ形)。形は[第 13 章](13_editor.md) §13.5「ループと分解の RPC」) |
-| `rerun_once` | `{node?}`(PS-1。`node` は空でない文字列。ほかの鍵は `-32602`) | `{scheduled: [<pass / task の名前>...]}`。`schedule: "once"` の node を次の frame で走らせる。`node` を省くと今の frame plan の once の全部、graph の node の id ならその node が作った once、`graph.loop` の id なら全回の once。per_frame の node は `[]`。frame plan に無い名前は `-32602` で `data` が `{code: "node_unknown", node}`([`rerun_once` の登録](../../src/core/communication/rpcserver.cpp#L2509)、[`Renderer::requestOnceRerun()`](../../src/core/vkcore/renderer.cpp#L4222)。走る条件は[第 6 章](06_rendering.md) §6.18「一度だけ走る pass と、frame をまたぐ image」) |
+| `rerun_once` | `{node?}`(PS-1。`node` は空でない文字列。ほかの鍵は `-32602`) | `{scheduled: [<pass / task の名前>...]}`。`schedule: "once"` の node を次の frame で走らせる。`node` を省くと今の frame plan の once の全部、graph の node の id ならその node が作った once、`graph.loop` の id なら全回の once。per_frame の node は `[]`。frame plan に無い名前は `-32602` で `data` が `{code: "node_unknown", node}`([`rerun_once` の登録](../../src/core/communication/rpcserver.cpp#L2509)、[`Renderer::requestOnceRerun()`](../../src/core/vkcore/renderer.cpp#L4171)。走る条件は[第 6 章](06_rendering.md) §6.18「一度だけ走る pass と、frame をまたぐ image」) |
 | `pick_object` | `{x, y}` | 最後に完了した **ID バッファ**(色ではなく「そのピクセルに写っているオブジェクトの ID」を書き出す描画出力。`picking` feature が宣言する `R32_UINT` のレンダーターゲット `picking_id` — [picking.json](../../src/core/resources/features/picking.json))の 1 ピクセルを同期読み出し。`engine://features/picking.json` が必要 |
 | `set_gizmo` | `{selection:GizmoSelection\|null, mode}` | 選択 transform のギズモ表示を設定/解除。`engine://features/gizmo.json` が必要 |
 | `query_gizmo_handle` | `{selection:GizmoSelection, mode, x, y}` | 指定した選択・mode・物理 pixel にある handle を状態なしで問い合わせ。同 feature が必要 |
@@ -792,7 +792,7 @@ pelican_cli graph-catalog
 この個数と、各操作が
 `domain` / `evaluation` / `change` / `sink` を持つことは
 [`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake#L24)(ctest 名 `devcli_graph_catalog`)が
-固定しています。出力はモジュール名・操作名・型・sink のどれも**名前順**です([catalog()](../../src/project/graphmodule.cpp#L777) が名前を鍵にした `std::map` を走り、型と sink は明示的に sort します)。登録順に依存しません。
+固定しています。出力はモジュール名・操作名・型・sink のどれも**名前順**です([catalog()](../../src/project/graphmodule.cpp#L771) が名前を鍵にした `std::map` を走り、型と sink は明示的に sort します)。登録順に依存しません。
 
 <a id="pelican_cli-image-ktx2---out----format----raw----width-w---height-h----hdr-ia-1"></a>
 
@@ -920,7 +920,7 @@ behavior paramsをside-decodeします。不適合なら旧DLL/runtimeを一切�
   メニューバー「Pelican」の項目は **7 つ** —— Asset Browser / Object Tree / Inspector /
   Frame Plan Viewer / **Compiled Passes** / Frame Stats / Dear ImGui Demo。
 - **Frame Plan Viewer**: フレームプランのノードグラフ可視化(パス = ノード、RT = エッジ。ホイールでズーム、中/右ドラッグでパン、左クリックで選択詳細)。データ源は `get_frame_plan` と同一の公開 JSON のみ — **D0(エディタ特権の禁止)準拠の第 1 実例**です。
-  ノードの副題は種別と実行順(`<kind>  #<order>`)で、列は viewer が plan の `barriers` から決めます(待つ相手の列の 1 つ右。[列を決める所](../../src/core/imgui/planviewer.cpp#L709))。✅RC-2 の前は plan の `level` を列と副題(`L<level>`)に使っていました。
+  ノードの副題は種別と実行順(`<kind>  #<order>`)で、列は viewer が plan の `barriers` から決めます(待つ相手の列の 1 つ右。[列を決める所](../../src/core/imgui/planviewer.cpp#L702))。✅RC-2 の前は plan の `level` を列と副題(`L<level>`)に使っていました。✅RC-5s で選択詳細の `anchor: <名前>` の行を消し、anchor の node 用の色分けもやめました(plan に anchor の node が無いため。[`buildPlanViewerModel()`](../../src/core/imgui/planviewer.cpp#L602))。
 - Asset Browserは読み取り専用です。Object Tree / Inspectorの編集は
   ECS/renderer/PhysWorldへ直接触れず、RPCと同じtyped
   `EditorCommandService`を通ります。schema-driven field、live/ticket
@@ -1031,12 +1031,12 @@ dock を増やすことは「見失う場所」を増やすことなので、同
 logical graph / passes / resources / physical plan / decisions / backends / barriers / materials / raw JSON。
 **タブは掴んで並べ替えでき、その順序は保存されます**(下記のツール配置)。
 
-Passes の先頭行を上から読むと実行順が分かり、同じ行に入力／出力 target、 種別(render / compute / anchor / snapshot copy / output transform)が出ます。行を開くと履歴入力、 color/depth attachment の load/store、前後 barrier、material filter が見えます。
+Passes の先頭行を上から読むと実行順が分かり、同じ行に入力／出力 target、 種別(render / compute / anchor / snapshot copy / output transform。✅RC-5s から anchor の node は plan にありません)が出ます。行を開くと履歴入力、 color/depth attachment の load/store、前後 barrier、material filter が見えます。
 ✅RC-2 で plan の `execution_plan` と `levels` が無くなり、それを読んでいた表示も消えました: Passes の行の Plan facts の **Level**、
 行の **Execution** の節(dialect・implementation・endpoint・capability・resource use)、Physical plan のタブの
 **Physical target plan** の木の **Execution plan unavailable** / **Execution dependencies** の節、Logical graph の
 「Logical graph unavailable」の panel です。status 行の tooltip は依存の数ではなく
-`N barriers` を言い、status 行の色は physical plan だけで決まります([status 行を組む所](../../src/devstudio/view/frameplanwidget.cpp#L4285))。
+`N barriers` を言い、status 行の色は physical plan だけで決まります([status 行を組む所](../../src/devstudio/view/frameplanwidget.cpp#L4286))。
 Logical graph の辺については [第13章](13_editor.md) の「Frame Plan のノード表示と順序」。
 Resources、Barriers、Materials では writer/reader、hazard edge、公開された material route を逆引きでき、 上部 filter は折りたたみ配下も検索します。
 
@@ -1054,7 +1054,7 @@ Resources、Barriers、Materials では writer/reader、hazard edge、公開さ�
 ボタンは 3 段です。著作一覧の下の行が **Remove selected** / **Parameters...** / **Make editable...**、
 カタログの下が **Add selected**、最下段が **Refresh** / **Procedural assets...** / **Tasks...** /
 **Fork preset...** / **Region replacements...** / **Callable Records...** / **Scene AS...** / **Apply**
-([構築](../../src/devstudio/view/renderfeatureswidget.cpp#L2408))。
+([構築](../../src/devstudio/view/renderfeatureswidget.cpp#L2415))。
 
 **Parameters...** は選択 feature の
 scalar パラメータを編集し、**Make editable...** は materialize(具体値へ展開した派生を新しい
@@ -1162,7 +1162,7 @@ HEAD が動くと configure が再実行される。
 - 結合テスト: `test/run_*.cmake` が player / cli を子プロセス起動して検証。例: `run_devcli_assets`/ `run_event_schema_compile`/ `run_dump_lowered_material`/ `run_devcli_gltf_extract`/ `run_spvlink_golden`/ `run_devcli_rules_import`/ `run_devcli_bake_camera` + `run_input_record_replay_headless`/ `run_ui_u2_rpc_replay`など。
 - 統合テスト: [`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake)(ctest 名 `devcli_graph_catalog`。`pelican_cli graph-catalog` の出力を検査し、**さらに `docs/v0_freeze.md` の操作表と突き合わせます** —— 表は `<!-- graph-op-table:begin -->` / `:end` のコメントで区切られていて、誰も比べない写しを 2 つ目の正にしないための仕掛けです)、`package_install_smoke`(X-1。install → カタログ → 描画 → uninstall を実 player で。`gpu` ラベル)、[`run_project_catalog_smoke.cmake`](../../test/run_project_catalog_smoke.cmake)(出荷 project の走査。`project.json` の `requires` が満たせない project は**名前を出して skip** し、player の中で落ちません)。
 - **Studio のシナリオ(Q-1)**: `test/studio_scenarios/*.json` は 1 本が 1 つの ctest `studio_scenario_<名前>` になり
-([登録](../../test/CMakeLists.txt#L3896))、`pelican_gpu_lease_run` 経由の **GPU lane** で走ります —— 実物の窓に
+([登録](../../test/CMakeLists.txt#L3899))、`pelican_gpu_lease_run` 経由の **GPU lane** で走ります —— 実物の窓に
 実物の player が埋まるので `QT_QPA_PLATFORM=offscreen` は掛けません。Studio target と Python 製テストを有効にし、
 Python 3.11 以上を用意します。`uv` は不要です。完全な GPU gate はシナリオの未登録・skip を失敗にするため、
 `SKIP_DEVSTUDIO=OFF` と `PELICAN_PYTHON_TESTS=ON` を指定します。[`run_studio_scenario.cmake`](../../test/run_studio_scenario.cmake#L30) が fixture

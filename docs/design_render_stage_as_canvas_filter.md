@@ -19,6 +19,7 @@
 >   置き場を決めない)。
 > - anchor の撤去 —— フレーム順の骨格(§1 の役割 2)、`__anchor_*` の runtime のノード(役割 5)、`__anchor_sprite` の実仕事を sprite の
 >   本物の pass にすること(役割 4)—— は engine の **RC-5s** として残る。HDR / LDR の境界を資源の型に移すこと(役割 3)もそこで扱う。
+> - **2026-10-28 追記**: RC-5s で engine 側の撤去が着地した。実装は [§8](#rc5s-implementation)。
 > - 本文は議論の記録として残す。本文の「stage タグ」「`get_frame_plan` に stage 属性を載せる」などの engine 側の記述は、この注記の方針とは
 >   食い違う所がある(どちらを採るかはこの注記が正)。
 
@@ -164,3 +165,37 @@ stage の値(フレーム順。今のアンカー名 + scene 段)
 残るもの:
 
 - `stage` の既定を feature 全体に 1 つ持たせるか、pass ごとに必須にするか(書きやすさと曖昧さの釣り合い)。
+
+<a id="rc5s-implementation"></a>
+
+## 8. RC-5s の実装(2026-10-28、develop_v1 `1e05031d7` / `e17754510`)
+
+冒頭の 2026-10-27 の注記の方針のまま、engine 側の anchor の撤去を **RC-5s** で入れた。利用者の決定(2026-10-28): anchor の鎖が決めていた
+細かい順(独立な pass どうしの順、同じ anchor に挿した feature の順など)は守らない、旧い書き方を同じ順に読み替える層は作らない、1 段で外す。
+守るのは見た目(出荷 project・golden の画素)と資源の依存の順。stage は engine の語彙にせず、`insert` を省いた pass の既定の置き場も作らない
+(本文 §3 の stage タグと §7 の「`after:<stage名>` を 1 版だけ別名として読む」は採っていない)。利用者から見た形は
+[manual 第6章「canonical anchor」](manual/06_rendering.md#canonical-anchorwp73)。
+
+§1 の 5 つの役割の行き先:
+
+| 役割 | RC-5s の後 |
+|---|---|
+| 1 挿入位置の名前 | 実在する pass の名前だけ。旧い 8 つの名前は、同じ名前の pass が無ければ `render_graph.canonical_anchor_removed@1 {anchor, pointer, document, suggestion}` で断る([`canonicalanchorremoved.hpp`](../src/project/canonicalanchorremoved.hpp#L9))。authored pass / graph / loop の `canonical_anchor` の欄も同じ code。移行の step は作らない |
+| 2 フレーム順の骨格 | `canonicalBucket()` / `canonicalizePasses()` / `enforceCanonicalOrder()` を撤去。順は資源の依存・`after` / `before`・`frame_node_order`・宣言順だけ。`output_transform` は family の他の全 node と全 task を明示の `after` で待つ([合成](../src/project/featurecompose.cpp#L360)、[最終 IR](../src/project/rendergraphir.cpp#L1079))。loop の run は前後両方の境界に辺を持ち(run の中の順は守らない)、通常の Place は指定した側の辺だけ |
+| 3 HDR / LDR の境界 | 区画ではなく、feature を足す前の base の最後の display / swapchain の writer(UI / debug 系を除く)を scene の終端として `scene_ldr_in` へ付け替える([`prepareHdrSceneOutput()`](../src/project/featurecompose.cpp#L299))。色の型の照合は足していない(本文 §0 の「資源の型が守る」は未着手) |
+| 4 `__anchor_sprite` の実仕事 | sprite feature の本物の pass `sprite_draw`(type `sprite`)。描く先は parameter の color / depth の明示の attachment(既定 `lit_color` / `scene_depth`、他の構成は instance に binding)。IR の use・barrier・lifetime に乗り、scope は単独(ui / imgui と同じ)。runtime は「最新の scene color / depth」の追跡をやめ、compiled pass の出力にだけ描く([sprite の分岐](../src/core/vkcore/renderer.cpp#L2258)) |
+| 5 runtime の anchor ノード | 作らない。`FramePlanNodeKind::anchor` などの型の値と runtime の分岐は残っている(作る所は無くなった。コードの読み)。GPU timing の契約から anchor の行を消し、sprite は `sprite_draw` の行。ImGui の plan viewer の anchor 表示も消した |
+
+その他:
+
+- `frame_node_order` の `__anchor_*` は断らずに読み飛ばし、`frame_node_order.anchor_ignored@1` の warning を pipeline の diagnostics に出す。
+  Studio の Order… は anchor を列挙・保存しない。`frame_node_order.conflicts_dependency@1` の `reason: canonical_order` は `output_terminal` になった。
+- ImGui の pass は anchor を探さず、family の最後(`output_transform` の直前)に足して display を load する。
+- snapshot の `after` は具体の pass だけ。制限(最大 1 つ・透明の後は不可)は「`after` の pass が最初の透明の material pass と同じか後なら断る」に置き換えた。
+- engine の feature のうち anchor を指していた 9 本と `graphs/bloom_loop.json` を具体の置き場所で書き直し、sprite に pass を足した(sprite / taa は `before:scene_present`、hdr / ui / debug 系は `end`、
+  velocity / picking は `begin`、bloom は `end` + 鎖)。出荷の `example` に `scene_present` を足し、`sprite_demo` は project の feature と明示の binding にした。
+- variant の判定(`graphvariantpolicy.cpp`)は旧い anchor の綴りを特別扱いしなくなった。UI は pass の型で見る。21 feature の flat / preview / XR の採否は書き直し前と同じ(test の比較元 `test/fixtures/rc5s_legacy_features.json`)。
+- 変わった物: 依存の無い pass の順、物理計画の fingerprint、保存済みの physical fragment / complete package / pin(stale → eject し直し)。
+  golden 52 ケースと出荷 7 project の画像は固定 HEAD(`c85717be8`)と byte 一致(実装者の報告)。
+- 残る穴(実装者の報告): 既存の color target の論理型は legacy image で、`format_class` だけでは scene / display の意味型にならない。target_ref は kind / topology が中心で reference / transfer / range を十分に照合しない。HDR の終端の選び方は feature 名と合成前の終端の検出に依存する。どれも RC-5s の範囲外。
+- 段で見せるカスタム階層フィルターは、冒頭の注記のとおり Studio 側の別の WP(未着手)。

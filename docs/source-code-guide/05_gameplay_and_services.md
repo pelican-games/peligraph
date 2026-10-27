@@ -438,7 +438,7 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 - active camera名
 - optional orbit/follow/fly controller定義
 
-加えて [`discontinuityRevision()`](../../src/core/renderer/camera.hpp#L166) と [`getProjectionSpec()`](../../src/core/renderer/camera.hpp#L171) を公開します。前者はrendererのtemporal reset（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1524)）、後者はXR eye projectionの入力（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L589)）です。
+加えて [`discontinuityRevision()`](../../src/core/renderer/camera.hpp#L166) と [`getProjectionSpec()`](../../src/core/renderer/camera.hpp#L171) を公開します。前者はrendererのtemporal reset（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1526)）、後者はXR eye projectionの入力（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L589)）です。
 
 GP-4 の [`rayThroughPixel()`](../../src/core/renderer/camera.cpp#L435) は、framebuffer ピクセルの位置を projection と view の逆行列（double で計算）で world の ray にします。NDC は `2 × px ÷ viewport − 1` で y を反転せず（平面描画のフレームが NDC を framebuffer へ写す向き。コメントは gizmo の `projectPoint` を参照）、深度 0（near 面）と 1（far 面）の2点を戻して、起点を near 面上の点、方向をその差の正規化にします。公開面は `RenderContext::screenRay()` で、XR 中の拒否と有限性の検査はそちらが持ちます。
 
@@ -826,7 +826,7 @@ busはmaster/bgm/seで、実効音量はmaster×個別busです。設定変更�
 
 **古さの判定。**[`readDerivedAssetStatus()`](../../src/project/audioanalysisformat.cpp#L250) は manifest の最初の output を asset とし、source と output の file の有無と sha256、`pelican.audio_analysis` の manifest なら版と `settings_sha256` を見ます。sha256 は file の更新時刻と大きさが変わったときだけ計算し直します([`fileSha256()` の cache](../../src/project/audioanalysisformat.cpp#L60)。`get_frame_plan` が呼ばれるたびに派生 asset の全部を見るため、とコードの注記)。
 
-✅AB-2 から、manifest は読み終えて閉じてから source と output を hash します(bake の置き換えが待つのはこの読みの間だけ、とコードの注記)。`get_frame_plan` 側は `Renderer::currentFramePlanJson()` が `initial_asset` の file に [`derivedAssetStatusOf()`](../../src/core/vkcore/renderer.cpp#L5069) を当てます。
+✅AB-2 から、manifest は読み終えて閉じてから source と output を hash します(bake の置き換えが待つのはこの読みの間だけ、とコードの注記)。`get_frame_plan` 側は `Renderer::currentFramePlanJson()` が `initial_asset` の file に [`derivedAssetStatusOf()`](../../src/core/vkcore/renderer.cpp#L5018) を当てます。
 
 **`value.sample_table` の作り。**lowering は `time` の edge が無ければ `<id>/$scene_time` の input node を足し([lowering の AB-1 の分](../../src/core/userpublic/valuegraph.cpp#L224))、`Graph` の構築で `Op::sample_table` の node が表を `loadSampleTable()` で読んで `shared_ptr` で持ちます([構築の AB-1 の分](../../src/core/userpublic/valuegraph.cpp#L507))。評価は memory を読むだけです([評価の AB-1 の分](../../src/core/userpublic/valuegraph.cpp#L927))。
 
@@ -1446,7 +1446,7 @@ outboxのentryは呼び出しごとに1件ではありません。
 - mutator（と `emit`）なのに manifest に分類が無い → `mutator lacks manifest classification`（[その throw](../../tools/public_api_inventory.py#L173)）
 - manifest にあるのに inventory 側で消費されなかった → `runtime manifest API absent from inventory`（[その throw](../../tools/public_api_inventory.py#L180)）
 
-結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L4424)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
+結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L4427)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
 
 ## 5.16 姿勢を駆動する2つの様式 ✅実装済み（AG-1a / AG-1b / AG-2）
 
@@ -1470,7 +1470,7 @@ opの契約はprojectの層に置かれます（[`registerPoseGraphModule()`](..
 - **`pelican.pose@1` は意図的に不透明です。** ポートが運ぶのは `PoseStageHandle` と、それが作られた PoseLayout の世代・frame revision であって**バイト列ではありません**。だからレイアウト世代の違う2つの姿勢は、memcpyで混ざる代わりに `pose.layout_mismatch@1` という名前で区別できます（[`posegraphmodule.hpp` 冒頭のコメント](../../src/project/posegraphmodule.hpp#L11)が規範）。
 - **再生パラメータは契約の検証もバックエンドの読み出しも同じ関数を通ります**。ただし**既定値そのものを持っているのは 2 関数**で、[`poseClipSampleLoop()`](../../src/project/posegraphmodule.hpp#L35) の `true` と [`poseClipSampleExtractsRootMotion()`](../../src/project/posegraphmodule.hpp#L45) の `false` だけです。[`poseClipSampleNumber()`](../../src/project/posegraphmodule.hpp#L33) は `fallback` を引数で受けるため、`speed = 1` / `start_time = 0`（animation component が持つのと同じ値）のリテラルは[契約側](../../src/project/posegraphmodule.cpp#L166)と[評価側](../../src/core/animation/posegraph.cpp#L107)の呼び出しに書かれています。ノードが「catalogにとっての意味」と「評価器にとっての意味」を持てないようにする作りです。
 - **エラーの使い分けに規則があります。** `root_motion` に `none` / `extract` 以外を書いたような「その場で分かる」不正は素の `invalid_argument`、rig と clip とオブジェクトが揃って初めて分かるものだけが名前付き（`pose.root_node_unknown@1` など）です（[`poseClipSampleExtractsRootMotion()` のコメント](../../src/project/posegraphmodule.hpp#L36)）。
-- **AG-2の副作用**: root motion を抽出する `pose.clip_sample` は前フレームの変位を覚えるので、素のサンプラより1段強い `replay` になります。契約の分類は「モジュールが宣言した値と、ノードごとに解決した値の**強い方**」で決まり（[`graphmodule.cpp` の `max()`](../../src/project/graphmodule.cpp#L764)）、factoryは引き上げられても緩められません。catalog とノードが食い違わないための片側制約です。
+- **AG-2の副作用**: root motion を抽出する `pose.clip_sample` は前フレームの変位を覚えるので、素のサンプラより1段強い `replay` になります。契約の分類は「モジュールが宣言した値と、ノードごとに解決した値の**強い方**」で決まり（[`graphmodule.cpp` の `max()`](../../src/project/graphmodule.cpp#L758)）、factoryは引き上げられても緩められません。catalog とノードが食い違わないための片側制約です。
 
 ### コンパイル: `PoseGraph`（`src/core/animation/posegraph.hpp`）
 
