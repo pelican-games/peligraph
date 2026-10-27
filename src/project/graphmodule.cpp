@@ -1,4 +1,5 @@
 #include "graphmodule.hpp"
+#include "canonicalanchorremoved.hpp"
 #include "featurecompose.hpp"
 #include "graphparameterschema.hpp"
 #include "materialoutput.hpp"
@@ -84,10 +85,7 @@ GraphOperationContract renderPassKindPorts(const Json &node, const Json &paramet
             throw std::invalid_argument("render insert must be {\"after\" | \"before\": \"<pass>\"}: " + id);
     }
     if (const auto anchor = parameters->find("canonical_anchor"); anchor != parameters->end()) {
-        if (!anchor->is_string()) throw std::invalid_argument("render canonical_anchor must be a string: " + id);
-        if (!isCanonicalRenderPassAnchor(anchor->get<std::string>()))
-            throw GraphRegistryError("graph.insert_anchor_unknown@1",
-                                     {{"node", id}, {"anchor", anchor->get<std::string>()}});
+        refuseRemovedCanonicalAnchor(*anchor, "/parameters/canonical_anchor");
     }
     GraphOperationContract contract;
     LogicalTypePattern image;
@@ -184,11 +182,7 @@ void checkRenderPlacement(const std::string &op, const Json &parameters, const J
                 nodeId(node));
     }
     if (const auto anchor = parameters.find("canonical_anchor"); anchor != parameters.end()) {
-        if (!anchor->is_string())
-            throw std::invalid_argument("render canonical_anchor must be a string: " + nodeId(node));
-        if (!isCanonicalRenderPassAnchor(anchor->get<std::string>()))
-            throw GraphRegistryError("graph.insert_anchor_unknown@1",
-                                     {{"node", nodeId(node)}, {"anchor", anchor->get<std::string>()}});
+        refuseRemovedCanonicalAnchor(*anchor, "/parameters/canonical_anchor");
     }
 }
 

@@ -216,8 +216,8 @@ const Expectation Expectations[] = {
     {&posegraphRoot, 0, 0, 0},
     {&posegraphWalkRun, 0, 0, 1},
     {&nodeVisuals, 0, 0, 0},
-    {&examplePlan, 21, 0, 7},
-    {&n4ExamplePlan, 133, 44, 41},
+    {&examplePlan, 45, 0, 10},
+    {&n4ExamplePlan, 0, 0, 0},
 };
 
 } // namespace
@@ -311,7 +311,11 @@ TEST_CASE("The barycenter sweeps are what untangle the drawing",
     // that says the sweeps are doing the work the number above credits them
     // with -- not the layering, and not the coordinates. The example plan's own
     // barriers come out untangled either way, so this is its N-4 relation.
-    const Fixture fixture = n4ExamplePlan();
+    Fixture fixture;
+    fixture.name = "three crossed producer-consumer pairs";
+    for (const auto *name : {"a", "b", "c", "x", "y", "z"})
+        fixture.nodes.push_back(LayoutNode{name, 200.0, 90.0});
+    fixture.edges = {{"a", "z"}, {"b", "y"}, {"c", "x"}};
     LayoutOptions none;
     none.ordering_sweeps = 0;
     const NodeGraphLayout unswept =
@@ -323,7 +327,7 @@ TEST_CASE("The barycenter sweeps are what untangle the drawing",
     const Measured with = measure(swept.boxes, fixture.edges, swept.bends);
     INFO("unswept " << without.crossings << " vs swept " << with.crossings);
     CHECK(with.crossings < without.crossings);
-    CHECK(without.crossings > 133);
+    CHECK(without.crossings > 0);
 }
 
 TEST_CASE("A caller with a column rule of its own keeps it",

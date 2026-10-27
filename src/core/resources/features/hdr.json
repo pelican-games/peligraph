@@ -4,7 +4,7 @@
   "name": "hdr",
   "passes": [
     {
-      "insert": "after:tonemap",
+      "insert": "end",
       "pass": {
         "name": "hdr_tonemap",
         "type": "fullscreen",
@@ -12,7 +12,9 @@
           "color": "swapchain",
           "depth": null
         },
-        "input": ["scene_ldr_in"],
+        "input": [
+          "scene_ldr_in"
+        ],
         "shader": {
           "vertex": "engine://tonemap",
           "fragment": "engine://tonemap"
@@ -21,5 +23,7 @@
       }
     }
   ],
-  "shader_defines": ["PELICAN_FEATURE_HDR"]
+  "shader_defines": [
+    "PELICAN_FEATURE_HDR"
+  ]
 }

@@ -4,6 +4,27 @@
 
 namespace Pelican {
 
+TEST_CASE("RC-5s seven shipping graphs and sixteen recipe configurations execute without anchors", "[golden][headless][rc5s][rc5s-a1]") {
+    GoldenHarness::runRc5sRuntimeMatrix();
+}
+
+TEST_CASE("RC-5s sprite preserves stereo layers FrameUBO depth and MSAA resolves", "[golden][headless][rc5s][sprite]") {
+    GoldenHarness::runRc5sSpriteViews();
+}
+
+TEST_CASE("RC-5s sprite binds its attachment and handles empty work", "[golden][headless][rc5s][sprite]") {
+    GoldenHarness::runRc5sSpriteWork();
+}
+
+
+TEST_CASE("RC-5s all golden images match the fixed HEAD capture", "[golden][headless][rc5s][rc5s-a3]") {
+    GoldenHarness::runRc5sFixedHeadImages();
+}
+
+TEST_CASE("RC-5s snapshot captures the writer awaited by its named pass", "[golden][headless][rc5s][review-snapshot-wait]") {
+    GoldenHarness::runRc5sSnapshotWait();
+}
+
 TEST_CASE("RC-5 hybrid recipes draw byte identical golden images", "[golden][headless][rc5]") {
     GoldenHarness::runRecipeEquivalence();
 }

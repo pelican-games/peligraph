@@ -210,7 +210,7 @@ struct ImGuiPassInfo {};
 using PassInfo = std::variant<MaterialPassInfo, FullscreenPassInfo, GenericRasterPassInfo,
                               DebugDrawPassInfo, GizmoPassInfo, DebugTextPassInfo,
                               ShadowDepthPassInfo, VelocityPassInfo, PickingPassInfo,
-                              UiPassInfo
+                              SpritePassInfo, UiPassInfo
 #if PELICAN_WITH_IMGUI
                               , ImGuiPassInfo
 #endif
@@ -343,6 +343,7 @@ struct PassDefinition {
     bool isShadowDepth() const { return std::holds_alternative<ShadowDepthPassInfo>(pass_info); }
     bool isVelocity() const { return std::holds_alternative<VelocityPassInfo>(pass_info); }
     bool isPicking() const { return std::holds_alternative<PickingPassInfo>(pass_info); }
+    bool isSprite() const { return std::holds_alternative<SpritePassInfo>(pass_info); }
     bool isUi() const { return std::holds_alternative<UiPassInfo>(pass_info); }
 #if PELICAN_WITH_IMGUI
     bool isImGui() const { return std::holds_alternative<ImGuiPassInfo>(pass_info); }

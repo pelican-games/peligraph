@@ -4,12 +4,15 @@
   "name": "gizmo",
   "passes": [
     {
-      "insert": "before:debug_text",
+      "insert": "end",
       "pass": {
         "name": "gizmo_pass",
         "type": "gizmo",
         "resolution_domain": "output",
-        "output": {"color": "swapchain", "depth": null},
+        "output": {
+          "color": "swapchain",
+          "depth": null
+        },
         "color_load_op": "load",
         "shader": {
           "vertex": "engine://gizmo",

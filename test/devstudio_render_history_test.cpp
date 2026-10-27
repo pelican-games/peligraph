@@ -189,6 +189,29 @@ const Json AddPass{{"graph", "main_render"},
 
 } // namespace
 
+TEST_CASE("RC-5s Order Undo and Redo never restore removed anchor names", "[devstudio][render-history][rc5s]") {
+    const std::string next_digest(64, 'b');
+    Json before{{"schema", "pelican.graph"}, {"version", 1}, {"definitions", Json::object()},
+        {"nodes", Json::array()}, {"outputs", Json::object()},
+        {"rendering", {{"features", Json::array()}, {"frame_node_order", {
+            {"main_render", {"left", "__anchor_sprite", "right"}}, {"overlay", {"__anchor_imgui", "post_ldr"}}}}}}};
+    auto after = before;
+    after["rendering"]["frame_node_order"] = {{"main_render", {"right", "left"}}, {"overlay", {"post_ldr"}}};
+    Rig rig;
+    rig.edit("edit_frame_node_order", {{"base_source_digest", RootA}, {"orders", after["rendering"]["frame_node_order"]}},
+        Json::array({document(Root, "root", RootA, before.dump(2))}), committed({{Root, next_digest}}),
+        Json::array({document(Root, "root", next_digest, after.dump(2))}));
+    const auto undo = rig.restore(true, Json::array({document(Root, "root", next_digest, after.dump(2))}), committed({{Root, RootA}}));
+    const auto undone_text = undo.at(0).at("content").get<std::string>();
+    auto clean_before = before;
+    clean_before["rendering"]["frame_node_order"] = {{"main_render", {"left", "right"}}, {"overlay", {"post_ldr"}}};
+    CHECK(Json::parse(undone_text) == clean_before);
+    CHECK(undone_text.find("__anchor_") == std::string::npos);
+    const auto redo = rig.restore(false, Json::array({document(Root, "root", RootA, undone_text)}), committed({{Root, next_digest}}));
+    CHECK(Json::parse(redo.at(0).at("content").get<std::string>()) == after);
+    CHECK(redo.at(0).at("content").get<std::string>().find("__anchor_") == std::string::npos);
+}
+
 TEST_CASE("RU-1 an edit is recorded with the documents it wrote, and Undo / Redo restore them "
           "under the digests the commits named",
           "[devstudio][render-history][ru1][negative-contrast]") {

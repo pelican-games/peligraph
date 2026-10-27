@@ -391,6 +391,10 @@
       "cmd": "action",
       "name": "pelican.graphCanvas.fitView"
     },
+    {"label": "pick the fullscreen writer before connecting its existing target", "cmd": "click", "name": "pelican.graphCanvasView::graph_node#render_fullscreen"},
+    {"label": "Place offers concrete passes", "cmd": "wait", "name": "pelican.graphCanvasPlace.place", "visible": true, "enabled": true, "timeout_ms": 120000},
+    {"label": "the new writer precedes the scene terminal", "cmd": "select", "name": "pelican.graphCanvasPlace.place", "text": "after forward_transparent"},
+    {"label": "the explicit placement is saved", "cmd": "wait", "name": "pelican.graphCanvasNotice", "text": "Graph change saved.", "timeout_ms": 120000},
     {
       "label": "the lit colour onto the pass's colour: the pass writes it",
       "cmd": "drag",

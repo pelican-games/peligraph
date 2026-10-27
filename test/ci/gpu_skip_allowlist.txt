@@ -25,3 +25,5 @@ CB1 08 vertex displacement main shadow velocity picking
 # baseline (RC5_GOLDEN_BASELINE_DIR, recorded by the integration side); without it
 # the test reports a named skip instead of comparing the build with itself.
 RC-5 hybrid recipes draw byte identical golden images
+# RC-5s names the missing fixed HEAD capture when RC5S_BASELINE_DIR is unset.
+RC-5s all golden images match the fixed HEAD capture

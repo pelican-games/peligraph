@@ -1,3 +1,4 @@
+#include "../../project/canonicalanchorremoved.hpp"
 #include "graphtransformregistry.hpp"
 #include "../registrationownerhost.hpp"
 
@@ -447,8 +448,7 @@ ProtectedNodeList protectedNodes(
                 const auto type =
                     pass.value(
                         "type", std::string{});
-                if (type == "canonical_anchor" ||
-                    type == "output_transform") {
+                if (type == "output_transform") {
                     nodes.push_back(pass);
                 }
             }
@@ -538,7 +538,7 @@ void requireSameProtectedStructure(
         throw std::runtime_error(
             "logical graph transform '" +
             std::string{transform} +
-            "' changed canonical anchors or output_transform");
+            "' changed protected output_transform");
     }
     if (resolveMaterialRoutingTable(before) !=
         resolveMaterialRoutingTable(after)) {
@@ -1260,6 +1260,7 @@ resolveLogicalGraphTransforms(
         // RC-3b: the provider's response is a boundary of the rendering
         // JSON: normalized, then held to the normal form before the core
         // reads it (the core parser would take the short forms too).
+        rejectRemovedCanonicalAuthoring(candidate, "provider://" + resolved.selection.provider);
         candidate = normalizeProviderRenderingJson(std::move(candidate));
         // The response is the next revision. Its single typed parse
         // refuses malformed declarations by name before the ABI envelope

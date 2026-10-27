@@ -860,6 +860,10 @@ nlohmann::json wp357TwoLevelBloomFeature(nlohmann::json feature) {
             continue;
         }
         passes.push_back(entry);
+        if (name == "UpsampleBlend_1") {
+            // The two-level derivative no longer has UpsampleBlend_2.
+            passes.back()["insert"] = "after:VerticalBlur_1";
+        }
     }
     if (passes.size() + dropped_passes.size() !=
         feature.at("passes").size()) {
@@ -1737,6 +1741,9 @@ void GoldenHarness::runLp1cBloomDecomposition() {
         REQUIRE(one_plan.at("nodes").size() == graph_plan.at("nodes").size());
         for (std::size_t i = 0; i < one_plan.at("nodes").size(); ++i) {
             INFO(one_plan.at("nodes").at(i).dump() << " / " << graph_plan.at("nodes").at(i).dump());
+            for (const auto &[key, value] : one_plan.at("nodes").at(i).items())
+                if (graph_plan.at("nodes").at(i).value(key, nlohmann::json{}) != value)
+                    INFO("differing field " << key << ": " << value.dump() << " vs " << graph_plan.at("nodes").at(i).value(key, nlohmann::json{}).dump());
             CHECK(one_plan.at("nodes").at(i) == graph_plan.at("nodes").at(i));
         }
         CHECK(one_plan.at("order") == graph_plan.at("order"));

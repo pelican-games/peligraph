@@ -10,7 +10,7 @@
     {"label": "start from the default layout: the panel layout is the desktop's, saved by whichever Studio closed last", "cmd": "action", "name": "pelican.layout.resetDefault"},
     {"label": "the Frame Plan tab is in front", "cmd": "action", "name": "pelican.view.renderTools.frame_plan"},
     {"label": "the first frame plan has arrived", "cmd": "wait", "name": "pelican.framePlanStatus", "contains": "main_render", "timeout_ms": 180000},
-    {"label": "the engine says the copies of cascades came from the loop's body node", "expect": "rpc_equals", "method": "get_frame_plan", "params": {}, "path": "nodes[2].origin.loop", "value": "cascades"},
+    {"label": "the engine says the copies of cascades came from the loop's body node", "expect": "rpc_equals", "method": "get_frame_plan", "params": {}, "path": "nodes[name=cascades/0/depth].origin.loop", "value": "cascades"},
     {"label": "the Graph tab is in front", "cmd": "action", "name": "pelican.view.renderTools.graph"},
     {"label": "the loop is drawn as a zone", "cmd": "wait", "name": "pelican.graphCanvasView::graph_zone#cascades", "visible": true, "timeout_ms": 120000},
     {"label": "and the barriers its copies take part in", "cmd": "wait", "name": "pelican.graphCanvasView::graph_layer_band#cascades", "contains": "barriers", "timeout_ms": 10000},
@@ -22,8 +22,8 @@
 
     {"label": "decision 4: to the Frame Plan", "cmd": "action", "name": "pelican.view.renderTools.frame_plan"},
     {"label": "its Barriers tab", "cmd": "action", "name": "pelican.framePlan.tab.barriers"},
-    {"label": "the plan's barrier 20 is tint's image, from tint to show", "expect": "rpc_equals", "method": "get_frame_plan", "params": {}, "path": "barriers[20].from", "value": "tint"},
-    {"label": "pick that row", "cmd": "select", "name": "pelican.framePlanBarriers", "text": "20"},
+    {"label": "the dependency barrier is identified by producer, consumer and resource", "expect": "rpc_equals", "method": "get_frame_plan", "params": {}, "path": "barriers[from=tint&to=show&resource=tint_image].from", "value": "tint"},
+    {"label": "pick that row", "cmd": "select", "name": "pelican.framePlanBarriers", "text": "21"},
     {"label": "Open in Graph, fired by name on the row picked (its first pass)", "cmd": "action", "name": "pelican.framePlan.openRowInGraph"},
     {"label": "the Graph tab has tint selected: its Layers section names it", "cmd": "wait", "name": "pelican.graphCanvasLayersToggle", "contains": "Layers: tint", "visible": true, "timeout_ms": 30000},
     {"label": "and lists the barrier", "cmd": "wait", "name": "pelican.graphCanvasLayers::row#L2 physical", "visible": true, "timeout_ms": 10000},
@@ -31,7 +31,7 @@
 
     {"label": "back to the Frame Plan", "cmd": "action", "name": "pelican.view.renderTools.frame_plan"},
     {"label": "its Barriers tab again", "cmd": "action", "name": "pelican.framePlan.tab.barriers"},
-    {"label": "the plan's barrier 9 is from the copy of element 2", "expect": "rpc_equals", "method": "get_frame_plan", "params": {}, "path": "barriers[9].from", "value": "cascades/2/depth"},
+    {"label": "the dependency barrier is identified by producer, consumer and resource", "expect": "rpc_equals", "method": "get_frame_plan", "params": {}, "path": "barriers[from=cascades/2/depth&to=deferred_lighting&resource=shadow_map].from", "value": "cascades/2/depth"},
     {"label": "pick that row", "cmd": "select", "name": "pelican.framePlanBarriers", "text": "9"},
     {"label": "Open in Graph on it", "cmd": "action", "name": "pelican.framePlan.openRowInGraph"},
     {"label": "the zone's tab moved to the else branch: its body cascade is drawn", "cmd": "wait", "name": "pelican.graphCanvasView::graph_node#cascade/depth", "visible": true, "timeout_ms": 30000},

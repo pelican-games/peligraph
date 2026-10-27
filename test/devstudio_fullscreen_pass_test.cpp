@@ -2209,9 +2209,8 @@ TEST_CASE(
     auto &position = required<QSpinBox>(
         form, "pelican.fullscreenPass.position");
     REQUIRE(position.value() == static_cast<int>(authored_count));
-    // Seven authored passes remain after P-2a-1b moved the 13 bloom passes
-    // into engine://features/bloom.json; the runtime plan still has 30 nodes.
-    REQUIRE(position.value() == 7);
+    // Eight authored passes include the explicit scene_present; feature and engine nodes remain runtime-only.
+    REQUIRE(position.value() == 8);
     REQUIRE(position.value() != static_cast<int>(plan.at("nodes").size()));
 }
 

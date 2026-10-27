@@ -690,13 +690,13 @@ compilePassRenderingContract(
                 scope.id);
         }
         for (const auto *scope_pass : scope_passes) {
-            if (scope_pass->isUi()
+            if (scope_pass->isSprite() || scope_pass->isUi()
 #if PELICAN_WITH_IMGUI
                 || scope_pass->isImGui()
 #endif
             ) {
                 throw std::runtime_error(
-                    "UI pass implementation cannot execute inside "
+                    "Scope-owning pass implementation cannot execute inside "
                     "a fused physical rendering scope: " +
                     scope_pass->name);
             }

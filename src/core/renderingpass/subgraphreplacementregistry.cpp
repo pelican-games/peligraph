@@ -1,4 +1,5 @@
 #include "subgraphreplacementregistry.hpp"
+#include "../../project/canonicalanchorremoved.hpp"
 #include "../registrationownerhost.hpp"
 
 #include "passfieldownershipcapabilities.hpp"
@@ -1315,6 +1316,7 @@ resolveTaggedSubgraphReplacements(
                     request.region + "': " +
                     error.what());
             }
+            rejectRemovedCanonicalAuthoring(replacement, "provider://" + resolved.selection.provider, &result.config);
             auto replacement_names =
                 replacementPassNames(
                     replacement,

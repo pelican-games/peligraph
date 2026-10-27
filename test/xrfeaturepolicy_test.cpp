@@ -126,7 +126,37 @@ TEST_CASE("OpenXR graph policy removes custom velocity and UI providers as units
          {"pass", {{"name", "hud"}, {"type", "fullscreen"}}}},
     });
     REQUIRE_FALSE(includeInXrGraph("custom_motion", motion));
-    REQUIRE_FALSE(includeInXrGraph("custom_hud", hud));
+    auto ui = envelope("ui");
+    ui["passes"] = nlohmann::json::array({
+        {{"pass", {{"name", "pelican_ui"}, {"type", "ui"}}}},
+    });
+    auto edged = hud;
+    edged["passes"][0].erase("insert");
+    edged["passes"][0]["pass"]["after"] = {"pelican_ui"};
+    // Preview classifies the fullscreen HUD as safe; unlike XR it does not
+    // classify a feature as UI just because its placement names pelican_ui.
+    const auto preview = Pelican::compileGraphVariantPolicy(
+        {Pelican::RenderPipelineGraphVariant::preview});
+    for (const auto &dependent : {hud, edged})
+        CHECK(Pelican::decideGraphVariantFeature(preview, "custom_hud", dependent).disposition ==
+              Pelican::GraphVariantFeatureDisposition::include);
+    for (const auto variant : {Pelican::RenderPipelineGraphVariant::flat,
+                               Pelican::RenderPipelineGraphVariant::xr}) {
+        CAPTURE(variant);
+        Pelican::GraphVariantFeatureSelection selection{
+            Pelican::compileGraphVariantPolicy({variant})};
+        (void)selection.decide("ui", ui);
+        for (const auto &dependent : {hud, edged}) {
+            const auto decision = selection.decide("custom_hud", dependent);
+            if (variant == Pelican::RenderPipelineGraphVariant::xr) {
+                REQUIRE(decision.disposition == Pelican::GraphVariantFeatureDisposition::exclude);
+                CHECK(decision.reason == Pelican::GraphVariantFeatureReason::dependency);
+                CHECK(decision.depends_on == "ui");
+            } else {
+                REQUIRE(decision.disposition == Pelican::GraphVariantFeatureDisposition::include);
+            }
+        }
+    }
 }
 
 TEST_CASE("OpenXR graph validation rejects authored history reads by pass name",

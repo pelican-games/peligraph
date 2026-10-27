@@ -242,10 +242,6 @@ P insert(bool declared) {
         result.field(boolean("declared").fallback(false).describe("Among the declared passes, before any feature."));
     return result.describe("Where the pass lands: exactly one of after / before.");
 }
-P canonicalAnchor() {
-    return string("canonical_anchor").choicesFrom(authoring_context, "canonical_anchors")
-        .describe("A canonical pass anchor the pass lands at (excludes insert).");
-}
 // RC-3a2: the spellings the engine's pass parser admits (the one table in
 // attachmentoperations.cpp), and the pass type's own default domain.
 std::vector<std::string> spellings(std::span<const std::string_view> names) {
@@ -559,11 +555,10 @@ Table makeTable() {
              .fallback(Json{{"vertex", defaultShadowDepthShader}})
              .describe("The depth pass's vertex shader (no fragment stage)."),
          rasterRayQuery(), loadOp("depth_load_op"), storeOp("depth_store_op"), resolutionDomain(RenderPassType::shadow_depth),
-         viewFamily(), viewSelect(), regionTags(), passSet(), order("after"), order("before"), insert(false),
-         canonicalAnchor()});
+         viewFamily(), viewSelect(), regionTags(), passSet(), order("after"), order("before"), insert(false)});
     add(table, "render.snapshot_copy", true,
         {nodeRef("snapshot_after").required().describe("The pass the copy runs after."), viewFamily(), viewSelect(),
-         regionTags(), passSet(), order("after"), order("before"), insert(false), canonicalAnchor()});
+         regionTags(), passSet(), order("after"), order("before"), insert(false)});
 
     // Passes. Incomplete: the pass JSON parsers read more than is traced here
     // (raster_state, the draw source).
@@ -579,7 +574,7 @@ Table makeTable() {
              loadOp("color_load_op"), storeOp("color_store_op"), loadOp("depth_load_op"), storeOp("depth_store_op"),
              clearColor(), clearColors(), viewFamily(), viewSelect(), regionTags(), regions(),
              resolutionDomain(RenderPassType::material), inheritBindingsFrom(),
-             passSet(), order("after"), order("before"), insert(true), canonicalAnchor()});
+             passSet(), order("after"), order("before"), insert(true)});
     }
     add(table, "render.fullscreen", false,
         {object("ports").required().describe("Port name to its declaration."),
@@ -595,7 +590,7 @@ Table makeTable() {
          rasterRayQuery(), loadOp("color_load_op"), storeOp("color_store_op"), loadOp("depth_load_op"),
          storeOp("depth_store_op"), clearColor(), clearColors(), resolutionDomain(RenderPassType::fullscreen),
          inheritBindingsFrom(), viewFamily(), viewSelect(),
-         regionTags(), regions(), passSet(), order("after"), order("before"), insert(true), canonicalAnchor()});
+         regionTags(), regions(), passSet(), order("after"), order("before"), insert(true)});
     add(table, "render.raster", false,
         {object("ports").required().describe("Port name to its declaration."),
          shader("shader")
@@ -611,8 +606,7 @@ Table makeTable() {
                        "front_face and cull mean the winding seen on the image either way."),
          passSchedule(), rasterRayQuery(), loadOp("color_load_op"), storeOp("color_store_op"),
          loadOp("depth_load_op"), storeOp("depth_store_op"), clearColor(), clearColors(), resolutionDomain(RenderPassType::raster), viewFamily(),
-         viewSelect(), regionTags(), regions(), passSet(), order("after"), order("before"), insert(true),
-         canonicalAnchor()});
+         viewSelect(), regionTags(), regions(), passSet(), order("after"), order("before"), insert(true)});
     // CT-6: ray_tracing and dispatch typed, every key the task JSON parser
     // and the composition read is listed.
     add(table, "render.compute", true,

@@ -899,7 +899,7 @@ void passExecutionDeclaration(const Json &pass, NodeIR &node,
             material.material_count = uint32Field(*range, "count", subject, "material_range.count");
         }
         node.info = std::move(material);
-    } else if (node.shape != RenderNodeShape::ui && node.shape != RenderNodeShape::imgui) {
+    } else if (node.shape != RenderNodeShape::sprite && node.shape != RenderNodeShape::ui && node.shape != RenderNodeShape::imgui) {
         AuxiliaryNodeInfo info;
         static_cast<PassShaderDeclaration &>(info) = passShader(pass, subject, false);
         // A shadow pass has no fragment stage. Leave required stages to the
@@ -1938,6 +1938,7 @@ std::vector<FrameNodeOrderIR> parseFrameNodeOrder(const Json &config) {
                 invalid({{"graph", graph}, {"reason", "node_not_a_non_empty_string"}});
             }
             const auto &name = value.get_ref<const std::string &>();
+            if (name.rfind("__anchor_", 0) == 0) continue;
             if (!seen.insert(name).second) {
                 invalid({{"graph", graph}, {"node", name}, {"reason", "duplicate"}});
             }

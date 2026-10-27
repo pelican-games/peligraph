@@ -1,4 +1,5 @@
 #include "renderpipelinerecipe.hpp"
+#include "canonicalanchorremoved.hpp"
 #include "graphcomposition.hpp"
 #include "renderconfigdocument.hpp"
 
@@ -34,6 +35,7 @@ Fragment loadFragment(std::string family, const Json &reference,
         invalid(code, "reference", "expected_nonempty_string");
     const auto ref = reference.get<std::string>();
     auto document = parseRenderDocument(load_json(ref), ref);
+    rejectCanonicalAnchorFields(document, {}, ref);
     if (!document.is_object()) invalid(code, "document", "expected_object");
     for (const auto &[key, value] : document.items()) {
         if (key != "schema" && key != "version" && key != "name" && key != "render_targets" &&
@@ -145,6 +147,8 @@ RenderPipelinePresetResolution expandRenderPipelineRecipe(
                 if (!targets.contains(target.get<std::string>()))
                     throw GraphRegistryError("render_pipeline.fragment_missing_target@1",
                         {{"fragment", fragment.origin.name}, {"target", target}});
+    for (const auto &fragment : effective)
+        rejectRemovedCanonicalAuthoring(fragment.document, fragment.origin.reference, &result.config);
     return result;
 }
 } // namespace Pelican

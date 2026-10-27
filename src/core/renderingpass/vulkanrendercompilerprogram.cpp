@@ -951,6 +951,11 @@ void installVerifiedVulkanCompletePhysicalPlanPackage(
             "compilation");
     }
 
+    for (const auto &scope : package.scopes)
+        if (scope.nodes.size() > 1)
+            for (const auto &node : scope.nodes)
+                if (std::find(context.scope_owning_nodes.begin(), context.scope_owning_nodes.end(), node) != context.scope_owning_nodes.end())
+                    throw GraphRegistryError("render_graph.scope_implementation_unfusible@1", {{"graph", graph}, {"node", node}});
     auto verified =
         verifyVulkanCompletePhysicalPlanPackage(
             *context.logical_graph,

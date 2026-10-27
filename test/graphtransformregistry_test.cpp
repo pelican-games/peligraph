@@ -355,6 +355,7 @@ void requireThrowsContaining(
         function();
         FAIL("expected an exception");
     } catch (const std::exception &error) {
+        INFO(error.what());
         REQUIRE(
             std::string_view{error.what()}.find(text) !=
             std::string_view::npos);
@@ -599,6 +600,13 @@ TEST_CASE(
     auto terminal = authored;
     terminal["rendering_passes"][0]["passes"][1]
             ["type"] = "output_transform";
+    state.behavior = ProviderBehavior::change_boundary;
+    {
+        const auto providers = registry.snapshot();
+        requireThrowsContaining([&] {
+            (void)resolveLogicalGraphTransforms(terminal, providers);
+        }, "protected output_transform");
+    }
     state.behavior =
         ProviderBehavior::append_after_terminal;
     {

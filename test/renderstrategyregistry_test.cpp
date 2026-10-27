@@ -134,6 +134,7 @@ struct ProviderState {
     std::string implementation =
         "fixture.render.strategy@1";
     std::string output;
+    std::optional<std::string> removed_field;
 };
 
 bool equalsRange(
@@ -276,6 +277,12 @@ RenderStrategy::Status resolveStrategy(
                 .dump();
     }
 
+    if (state.removed_field) {
+        auto generated = nlohmann::json::parse(state.output);
+        generated["rendering_passes"][0]["passes"][0][*state.removed_field] =
+            *state.removed_field == "insert" ? "after:post_ldr" : "post_ldr";
+        state.output = generated.dump();
+    }
     *output =
         RenderStrategy::descriptor<
             RenderStrategy::RenderStrategyOutputV1>();
@@ -785,6 +792,33 @@ TEST_CASE(
             api.context, &declaration,
             &api_handle) ==
         RenderStrategy::Status::wrong_owner);
+}
+
+TEST_CASE("RC-5s render strategy response refuses removed authoring with provider pointer", "[render-strategy][rc5s][review-boundary]") {
+    RenderStrategyRegistry registry;
+    ProviderState state;
+    constexpr std::string_view name = "fixture.render_strategy";
+    const auto owner = internal::allocateRegistrationOwner();
+    RenderStrategy::ProviderHandleV1 handle{};
+    REQUIRE(registry.registerProvider(provider(name, state), owner, handle) == RenderStrategy::Status::ok);
+    registry.activateOwner(owner);
+    {
+        const auto providers = registry.snapshot();
+        const auto policy = compileGraphVariantPolicy(GraphVariantPolicyRequest{RenderPipelineGraphVariant::flat});
+        for (const auto *field : {"canonical_anchor", "insert"}) {
+            state.removed_field = field;
+            try {
+                (void)resolveRenderStrategy(authoredRendererConfig(name), policy, true, providers);
+                FAIL("removed strategy authoring was accepted");
+            } catch (const GraphRegistryError &error) {
+                CHECK(error.code() == "render_graph.canonical_anchor_removed@1");
+                CHECK(error.detail().at("document") == "provider://fixture.render_strategy");
+                CHECK(error.detail().at("pointer") == std::string("/rendering_passes/0/passes/0/") + field);
+            }
+        }
+    }
+    registry.releaseOwner(owner);
+    internal::releaseRegistrationOwner(owner);
 }
 
 } // namespace Pelican

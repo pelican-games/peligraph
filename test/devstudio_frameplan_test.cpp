@@ -473,7 +473,7 @@ TEST_CASE(
     REQUIRE(model.barriers.size() == captured.at("barriers").size());
 
     const std::size_t published_decisions = decisionEntryCount(captured);
-    REQUIRE(published_decisions == 131);
+    REQUIRE(published_decisions == 126);
     REQUIRE(modelDecisionCount(model) == published_decisions);
     REQUIRE(hasDecision(model, "pelican.plan.multiview_auto_gate@1"));
     REQUIRE(hasDecision(model, "pelican.plan.backend_candidate_selected@1"));
@@ -680,10 +680,10 @@ TEST_CASE(
     }
 
     REQUIRE(model.gpu_resource_arena.has_value());
-    REQUIRE(model.gpu_resource_arena->resource_count == 89);
+    REQUIRE(model.gpu_resource_arena->resource_count == 94);
     REQUIRE(model.gpu_resource_arena->scopes.size() ==
             captured.at("gpu_resource_arena").at("scopes").size());
-    REQUIRE(model.gpu_resource_arena->scopes.front().resources.size() == 89);
+    REQUIRE(model.gpu_resource_arena->scopes.front().resources.size() == 94);
 
     const FramePlanResource *display = findResource(model, "display");
     REQUIRE(display != nullptr);

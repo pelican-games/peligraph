@@ -65,6 +65,7 @@ enum class RenderNodeShape : std::uint8_t {
     picking,
     ui,
     imgui,
+    sprite,
     anchor,
     snapshot_copy,
     compute,

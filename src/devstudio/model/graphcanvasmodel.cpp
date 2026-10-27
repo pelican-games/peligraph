@@ -4296,21 +4296,21 @@ bool GraphCanvasModel::setLoopOutputs(const std::string &id,
 }
 
 const std::vector<std::string> &GraphCanvasModel::loopAnchors() {
-    // The engine's canonical anchors (featurecompose.cpp), in frame order.
-    static const std::vector<std::string> anchors{
-        "sprite", "post_main", "tonemap", "post_ldr",
-        "pelican_ui", "debug_draw", "debug_text", "imgui"};
+    static const std::vector<std::string> anchors;
     return anchors;
 }
 
 bool GraphCanvasModel::setLoopAnchor(const std::string &id, const std::string &anchor) {
     auto parameters = loopParameters(id);
-    if (!anchor.empty() && std::ranges::find(loopAnchors(), anchor) == loopAnchors().end())
-        return false;
-    // One place at a time: an anchor and an insert exclude each other.
+    parameters.erase("canonical_anchor");
     parameters.erase("insert");
-    if (anchor.empty()) parameters.erase("canonical_anchor");
-    else parameters["canonical_anchor"] = anchor;
+    if (!anchor.empty()) {
+        const auto bar = anchor.find('|');
+        if (bar == std::string::npos || bar + 1 == anchor.size()) return false;
+        const auto side = anchor.substr(0, bar);
+        if (side != "before" && side != "after") return false;
+        parameters["insert"] = Json{{side, anchor.substr(bar + 1)}};
+    }
     return setLoopParameters(id, std::move(parameters));
 }
 
@@ -7654,8 +7654,6 @@ bool GraphCanvasModel::setPlace(std::string_view scope, const std::string &node,
         // pass kinds' insert takes no `declared` (graphmodule).
         if (place.declared && text(*found, "op") == kMaterialPass) insert["declared"] = true;
         parameters["insert"] = std::move(insert);
-    } else if (place.kind == "anchor") {
-        parameters["canonical_anchor"] = place.target;
     }
     if (place.pass_set.empty()) parameters.erase("pass_set");
     else parameters["pass_set"] = place.pass_set;

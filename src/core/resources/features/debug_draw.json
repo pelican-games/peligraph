@@ -4,11 +4,14 @@
   "name": "debug_draw",
   "passes": [
     {
-      "insert": "after:debug_draw",
+      "insert": "end",
       "pass": {
         "name": "debug_draw",
         "type": "debug_draw",
-        "output": {"color": "swapchain", "depth": null},
+        "output": {
+          "color": "swapchain",
+          "depth": null
+        },
         "color_load_op": "load",
         "shader": {
           "vertex": "engine://debug_draw",

@@ -19,8 +19,8 @@ TEST_CASE("GPU timing records compute body separately from incoming barriers",
     GoldenHarness::runGpuTimingCompute();
 }
 
-TEST_CASE("GPU timing marks sprite anchor body as supported work",
-          "[wp143][gpu-timing][anchor][sprite][headless]") {
+TEST_CASE("GPU timing marks sprite pass body as supported work",
+          "[wp143][gpu-timing][sprite][headless]") {
     GoldenHarness::runGpuTimingSprite();
 }
 

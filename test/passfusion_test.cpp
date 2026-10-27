@@ -708,7 +708,7 @@ TEST_CASE("pass fusion names extent, format, in-place and outside-path boundarie
            "output": {"color": ["s"], "depth": null}},
           {"name": "t1", "type": "fullscreen", "input": ["hdr"],
            "output": {"color": ["u"], "depth": null}},
-          {"name": "t2", "type": "fullscreen", "canonical_anchor": "post_main",
+          {"name": "t2", "type": "fullscreen", "after": ["t1"],
            "input": ["u"], "input_footprints": {"u": "same_pixel"},
            "output": {"color": ["w"], "depth": null}}
         ]

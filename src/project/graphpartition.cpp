@@ -1,4 +1,5 @@
 #include "graphpartition.hpp"
+#include "canonicalanchorremoved.hpp"
 #include "graphinstanceowner.hpp"
 #include "graphparameterschema.hpp"
 #include "shaderresourceport.hpp"
@@ -342,6 +343,7 @@ GraphExecutionPartitions partitionGraphDocument(const Json &document) {
 
 GraphExecutionPartitions partitionGraphDocument(const Json &document,
                                                 const GraphModuleRegistry &modules) {
+    rejectCanonicalAnchorFields(document);
     const auto graph = expandGraphDocument(document);
     const auto &registry = modules.typeRegistry();
     // The module that registered an operation also declares which domain runs

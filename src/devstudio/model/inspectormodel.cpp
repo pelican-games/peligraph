@@ -1619,9 +1619,9 @@ std::string frameNodeOrderWhy(const nlohmann::json &fields) {
         for (const auto &node : *found)
             if (node.is_string()) via.push_back(node.get<std::string>());
     const auto reason = graphRefusalFieldText(fields, "reason");
-    if (reason == "canonical_order") {
+    if (reason == "output_terminal") {
         const auto anchor = fields.contains("anchor") ? graphRefusalFieldText(fields, "anchor") : std::string{};
-        return "the stages of a frame run in a fixed order" +
+        return "output_transform must run after the family's other nodes" +
                (anchor.empty() ? std::string{} : " (" + anchor + " stands between them)");
     }
     const auto &next = via.empty() ? first : via.front();

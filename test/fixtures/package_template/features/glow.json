@@ -9,39 +9,54 @@
       "extent_scale": 0.25,
       "format": "B8G8R8A8_UNORM",
       "format_class": "scene",
-      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "SAMPLED"
+      ]
     }
   ],
   "passes": [
     {
-      "insert": "after:post_ldr",
+      "insert": "after:forward_transparent",
       "pass": {
         "name": "AcmeGlowDownsample",
         "type": "fullscreen",
-        "canonical_anchor": "post_ldr",
         "output": {
-          "color": ["AcmeGlow_Downsample_RT"],
+          "color": [
+            "AcmeGlow_Downsample_RT"
+          ],
           "depth": null
         },
-        "input": ["lit_color"],
+        "input": [
+          "lit_color"
+        ],
         "shader": {
           "vertex": "engine://fullscreen",
           "fragment": "engine://bloom_upsample"
         },
-        "clear_color": [0.0, 0.0, 0.0, 0.0]
+        "clear_color": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
       }
     },
     {
-      "insert": "after:post_ldr",
+      "insert": "after:AcmeGlowDownsample",
       "pass": {
         "name": "AcmeGlowComposite",
+        "after": ["scene_present"],
         "type": "fullscreen",
-        "canonical_anchor": "post_ldr",
         "output": {
-          "color": ["swapchain"],
+          "color": [
+            "swapchain"
+          ],
           "depth": null
         },
-        "input": ["AcmeGlow_Downsample_RT"],
+        "input": [
+          "AcmeGlow_Downsample_RT"
+        ],
         "shader": {
           "vertex": "engine://fullscreen",
           "fragment": "engine://bloom_upsample"
@@ -51,8 +66,16 @@
           "color_attachments": [
             {
               "blend": {
-                "color": {"src": "one", "dst": "one", "op": "add"},
-                "alpha": {"src": "one", "dst": "one", "op": "add"}
+                "color": {
+                  "src": "one",
+                  "dst": "one",
+                  "op": "add"
+                },
+                "alpha": {
+                  "src": "one",
+                  "dst": "one",
+                  "op": "add"
+                }
               }
             }
           ]

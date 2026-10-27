@@ -594,20 +594,18 @@ TEST_CASE("frame node conflict details preserve provenance and traversal priorit
         expected["via"] = {"T"};
         check();
     }
-    SECTION("anchor path retains canonical order and anchor") {
+    SECTION("a plain boundary does not imply canonical order") {
         graph.nodes[1].kind = FramePlanNodeKind::anchor;
         listed = {3, 0};
         expected["first"] = "V";
-        expected["reason"] = "canonical_order";
         expected["via"] = {"T"};
-        expected["anchor"] = "T";
         check();
     }
-    SECTION("output transform path retains canonical order and anchor") {
+    SECTION("output transform path reports the terminal constraint") {
         graph.nodes[1].kind = FramePlanNodeKind::output_transform;
         listed = {3, 0};
         expected["first"] = "V";
-        expected["reason"] = "canonical_order";
+        expected["reason"] = "output_terminal";
         expected["via"] = {"T"};
         expected["anchor"] = "T";
         check();
@@ -1501,7 +1499,7 @@ TEST_CASE("snapshot plan node reports copy bytes and screen input read dependenc
       {
         "name": "refract",
         "type": "fullscreen",
-        "canonical_anchor": "post_ldr",
+        "after": ["opaque"],
         "input": ["opaque_color"],
         "output": {"color": "swapchain", "depth": null}
       }
@@ -1830,7 +1828,7 @@ TEST_CASE("frame planner debug text feature plan matches fixture", "[frameplanne
     requirePlanFixture(plan_json, fixtureRoot() / "plans" / "debug_text_feature_main.json");
 }
 
-TEST_CASE("UI feature occupies the canonical pelican_ui anchor and has no base-pass fallback",
+TEST_CASE("UI feature loads display before the output terminal without empty anchors",
           "[frameplanner][ui][u1]") {
     const auto config = nlohmann::json::parse(R"json({
       "features":["engine://features/ui.json"],"render_targets":[],
@@ -1852,12 +1850,12 @@ TEST_CASE("UI feature occupies the canonical pelican_ui anchor and has no base-p
     REQUIRE(composed.feature_names == std::vector<std::string>{"ui"});
     const auto graphs = TestSupport::frameGraphsOf(composed.config);
     const auto order = framePlanOrder(planFrameGraph(graphs.front()));
-    const auto anchor = std::find(order.begin(), order.end(), "__anchor_pelican_ui");
     const auto pass = std::find(order.begin(), order.end(), "pelican_ui");
-    const auto next_anchor = std::find(order.begin(), order.end(), "__anchor_debug_draw");
-    REQUIRE(anchor != order.end());
-    REQUIRE(pass == anchor + 1);
-    REQUIRE(next_anchor == pass + 1);
+    REQUIRE(pass != order.end());
+    REQUIRE(order == std::vector<std::string>{"present", "pelican_ui", "output_transform"});
+    const auto &node = *std::find_if(graphs.front().nodes.begin(), graphs.front().nodes.end(), [](const auto &n) { return n.name == "pelican_ui"; });
+    CHECK(node.reads == std::vector<std::string>{"display"});
+    CHECK(node.writes == std::vector<std::string>{"display"});
 }
 
 TEST_CASE("frame planner shadow feature plan matches fixture", "[frameplanner]") {
@@ -2517,7 +2515,7 @@ TEST_CASE(
         "projects/sprite_demo/passes/main.json",
         "projects/vrm_xr_demo/passes/main.json",
     };
-    const auto dependencies =
+    auto dependencies =
         RenderFeatureComposeDependencies{
             .load_feature_json = loadEngineJsonForWp352,
             .runtime_shader_compiler_enabled = true,
@@ -2528,6 +2526,11 @@ TEST_CASE(
     std::size_t compared_plans = 0;
     for (const auto *relative_path : shipping_configs) {
         INFO(relative_path);
+        const auto project_root = (sourceRoot() / relative_path).parent_path().parent_path();
+        dependencies.load_feature_json = [project_root](std::string_view ref) {
+            constexpr std::string_view prefix = "project://";
+            return ref.starts_with(prefix) ? readText(project_root / ref.substr(prefix.size())) : loadEngineJsonForWp352(ref);
+        };
         const auto composed = composeRenderFeatureConfig(
             readJson(sourceRoot() / relative_path),
             dependencies);

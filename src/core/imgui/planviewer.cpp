@@ -588,7 +588,7 @@ ImU32 nodeColor(const PlanViewerNode &node) {
     if (node.kind == "snapshot_copy") return IM_COL32(232, 151, 52, 255);
     if (node.kind == "compute") return IM_COL32(147, 94, 214, 255);
     if (node.source.starts_with("feature:")) return IM_COL32(57, 160, 118, 255);
-    if (node.source == "engine" || node.kind == "anchor" || node.kind == "output_transform")
+    if (node.source == "engine" || node.kind == "output_transform")
         return IM_COL32(72, 103, 142, 255);
     return IM_COL32(54, 126, 190, 255);
 }
@@ -670,13 +670,6 @@ PlanViewerModel buildPlanViewerModel(
             node_json.value("depth_store_op", std::string{});
         node.shader_resolution =
             readShaderResolution(node_json, node.name);
-        if (node.kind == "anchor" &&
-            node.name.starts_with("__anchor_")) {
-            node.anchor = node.name.substr(
-                std::string_view{"__anchor_"}.size());
-        } else if (node.kind == "compute") {
-            node.anchor = "compute";
-        }
         if (!node_names.insert(node.name).second) {
             throw std::runtime_error("plan viewer duplicate node: " + node.name);
         }
@@ -1040,7 +1033,6 @@ struct PlanViewer::Impl {
             ImGui::TextWrapped("provider: %s",
                                node.provider_reference.c_str());
         }
-        if (!node.anchor.empty()) ImGui::Text("anchor: %s", node.anchor.c_str());
         if (node.kind == "snapshot_copy") {
             ImGui::SeparatorText("snapshot copy");
             ImGui::Text("copy point: %s", node.snapshot_after.c_str());

@@ -1144,7 +1144,6 @@ void main() {
         {
           "name": "refract",
           "type": "fullscreen",
-          "canonical_anchor": "post_ldr",
           "input": ["opaque_color"],
           "output": {"color": "swapchain", "depth": null},
           "shader": {"vertex": "shaders/fullscreen", "fragment": "shaders/refract"}
@@ -1281,7 +1280,7 @@ void main() {
   "name": "dummy_feature",
   "passes": [
     {
-      "insert": "after:post_ldr",
+      "insert": "after:present",
       "pass": {
         "name": "feature_present",
         "type": "fullscreen",
@@ -1538,7 +1537,7 @@ void main() { outColor = texture(accumulatedTexture, uv); }
     "usage":["COLOR_ATTACHMENT","SAMPLED"],"history":true,
     "clear_color":[0.0,0.0,0.0,1.0]
   }],
-  "passes":[{"insert":"after:post_main","pass":{
+  "passes":[{"insert":"before:temporal_present","pass":{
     "name":"temporal_accumulate","type":"fullscreen",
     "input":["current_color","temporal_accum@history"],
     "output":{"color":"temporal_accum","depth":null},
@@ -1562,7 +1561,7 @@ void main() { outColor = texture(accumulatedTexture, uv); }
       {"name":"current_frame","type":"fullscreen",
        "output":{"color":"current_color","depth":null},
        "shader":{"vertex":"shaders/fullscreen","fragment":"shaders/current"}},
-      {"name":"temporal_present","type":"fullscreen","canonical_anchor":"post_ldr",
+      {"name":"temporal_present","type":"fullscreen",
        "input":["temporal_accum"],"output":{"color":"swapchain","depth":null},
        "shader":{"vertex":"shaders/fullscreen","fragment":"shaders/present"}}
     ]}]
@@ -2125,7 +2124,6 @@ nlohmann::json makeHdrRenderingConfig(bool hdr_enabled) {
                       {
                           {"name", "HighLuminanceExtraction"},
                           {"type", "fullscreen"},
-                          {"canonical_anchor", bloom_anchor},
                           {"output", {{"color", "Bloom_Threshold_RT"}, {"depth", nullptr}}},
                           {"input", nlohmann::json::array({"lit_color"})},
                           {"shader", {{"vertex", "engine://fullscreen"},
@@ -2135,7 +2133,6 @@ nlohmann::json makeHdrRenderingConfig(bool hdr_enabled) {
                       {
                           {"name", "FinalBloomComposite"},
                           {"type", "fullscreen"},
-                          {"canonical_anchor", bloom_anchor},
                           {"output", {{"color", "swapchain"}, {"depth", nullptr}}},
                           {"input", nlohmann::json::array({"lit_color", "Bloom_Threshold_RT",
                                                            "bloom.intensity"})},
@@ -2165,10 +2162,9 @@ nlohmann::json makeHdrRenderingConfig(bool hdr_enabled) {
         "PELICAN_FEATURE_BLOOM_THRESHOLD=0.4",
         "PELICAN_FEATURE_BLOOM_KNEE=0.7",
     });
-    config["features"] = nlohmann::json::array({"engine://features/debug_text.json"});
-    if (hdr_enabled) {
-        config["features"].push_back("engine://features/hdr.json");
-    }
+    config["features"] = nlohmann::json::array();
+    if (hdr_enabled) config["features"].push_back("engine://features/hdr.json");
+    config["features"].push_back("engine://features/debug_text.json");
     return config;
 }
 
@@ -2352,12 +2348,13 @@ nlohmann::json makeTaaRenderingConfig() {
     passes.push_back({
         {"name", "taa_present"},
         {"type", "fullscreen"},
-        {"canonical_anchor", "post_ldr"},
         {"input", nlohmann::json::array({"lit_color"})},
         {"output", {{"color", "swapchain"}, {"depth", nullptr}}},
         {"shader", {{"vertex", "shaders/fullscreen"},
                     {"fragment", "shaders/copy_input"}}},
     });
+    for (auto &pass : passes)
+        if (pass.value("name", std::string{}) == "taa_present") pass["name"] = "scene_present";
     config["features"] = nlohmann::json::array({
         "engine://features/velocity.json",
         nlohmann::json{
@@ -4728,7 +4725,11 @@ nlohmann::json writeSpriteProject(const std::filesystem::path &root,
 layout(location=0) out vec4 outColor;
 void main(){outColor=vec4(1.0);})glsl");
     auto rendering = makeShadowRenderingConfig(false);
-    rendering["features"] = nlohmann::json::array({"engine://features/sprite.json"});
+    auto sprite_feature = nlohmann::json::parse(engineResourceOrThrow("features/sprite.json"));
+    sprite_feature["passes"][0]["insert"] = "after:lighting_pass";
+    writeTextFile(root / "features/sprite.json", sprite_feature.dump(2));
+    rendering["features"] = nlohmann::json::array({{{"ref", "project://features/sprite.json"},
+        {"parameters", {{"color", "display"}, {"depth", "offscreen_depth"}}}}});
     if (with_ui) rendering["features"].push_back("engine://features/ui.json");
     if (gpu_timing) rendering["features"].push_back("engine://features/gpu_timing.json");
     writeTextFile(root / "passes/main.json", Pelican::TestSupport::renderGraphRootWithTaskFeature(rendering, root).dump(2));
@@ -6963,6 +6964,7 @@ struct DrawLoopProbe {
     // LP-3a: rewrites the written project before it loads (the rendering
     // root's material passes written in the graph).
     std::function<void(const std::filesystem::path &)> rewrite_project;
+    std::function<void()> after_render;
     std::vector<MaterialDrawRecord> records;
     std::size_t table_hits = 0;
     std::size_t material_draws = 0;
@@ -7020,6 +7022,8 @@ void beginDrawLoopProbe() {
 }
 
 void endDrawLoopProbe() {
+    if (active_draw_loop_probe != nullptr && active_draw_loop_probe->after_render)
+        active_draw_loop_probe->after_render();
     if (active_draw_loop_probe == nullptr) return;
     auto &probe = *active_draw_loop_probe;
     GET_MODULE(MaterialRenderer).recordMaterialDrawsForTesting(nullptr);
@@ -13611,6 +13615,278 @@ void GoldenHarness::runMaterialPassDecomposeEquivalence() {
     REQUIRE(compared == hybrid_modes.size());
 }
 
+#include "rc5s_sprite_views_test.inc"
+#include "rc5s_runtime_matrix_test.inc"
+
+void GoldenHarness::runRc5sSpriteWork() {
+    setupLogger();
+    requireGoldenVulkanDevice();
+    const auto cases = loadGoldenInventoryCases();
+    const auto found = std::find_if(cases.begin(), cases.end(), [](const auto &c) { return c.mode == "sprite_ortho_atlas"; });
+    REQUIRE(found != cases.end());
+    const auto expected = renderCase(*found);
+    DrawLoopProbe placed;
+    std::vector<std::uint8_t> decoy_drawn, decoy_empty;
+    placed.after_render = [&] {
+        GET_MODULE(VulkanManageCore).waitIdle();
+        decoy_drawn = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer), "decoy_color", {}).bytes;
+    };
+    placed.rewrite_project = [](const auto &root) {
+        auto document = loadJsonFile(root / "passes/main.json");
+        auto &config = document["rendering"];
+        config["render_targets"].push_back({{"name", "decoy_color"}, {"extent_scale", 1.0},
+            {"format", "B8G8R8A8_SRGB"}, {"usage", {"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"}}});
+        auto &passes = config["rendering_passes"][0]["passes"];
+        auto decoy = passes.back();
+        decoy["name"] = "decoy";
+        decoy["output"]["color"] = "decoy_color";
+        decoy["after"] = {"lighting_pass"};
+        passes.push_back(decoy);
+        auto feature = loadJsonFile(root / "features/sprite.json");
+        feature["passes"][0]["insert"] = "after:decoy";
+        writeTextFile(root / "features/sprite.json", feature.dump(2));
+        writeTextFile(root / "passes/main.json", document.dump(2));
+    };
+    const auto actual = [&] { DrawLoopProbeScope scope{placed}; return renderCase(*found); }();
+    CHECK(actual.image.pixels == expected.image.pixels);
+    bool declared_target = false;
+    for (const auto &node : actual.execution_trace.at("nodes")) {
+        if (node.value("name", std::string{}) == "sprite_draw") {
+            REQUIRE(node.contains("sprite_draw"));
+            CHECK(node.at("sprite_draw").at("color") == "display");
+            declared_target = true;
+        }
+    }
+    CHECK(declared_target);
+    std::uintptr_t expected_color_view = 0, expected_depth_view = 0;
+    DrawLoopProbe layer_one;
+    layer_one.rewrite_project = [](const auto &root) {
+        auto doc = loadJsonFile(root / "passes/main.json");
+        auto &config = doc["rendering"];
+        config["render_targets"].push_back({{"name", "layer_color"}, {"extent_scale", 1.0},
+            {"layers", 2}, {"format", "B8G8R8A8_SRGB"}, {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}});
+        for (auto &target : config["render_targets"])
+            if (target.at("name") == "offscreen_depth") target["layers"] = 2;
+        auto &passes = config["rendering_passes"][0]["passes"];
+        for (auto &pass : passes) {
+            if (pass.value("name", std::string{}) == "lighting_pass")
+                pass["output"]["color"] = {{"target", "layer_color"}, {"subresource", {{"layer", 1}}}};
+            if (pass["output"].value("depth", nlohmann::json{}) == "offscreen_depth")
+                pass["output"]["depth"] = {{"target", "offscreen_depth"}, {"subresource", {{"layer", 1}}}};
+        }
+        passes.push_back({{"name", "present"}, {"type", "fullscreen"}, {"input", {"layer_color"}},
+            {"after", {"sprite_draw"}}, {"output", {{"color", "swapchain"}, {"depth", nullptr}}},
+            {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}}});
+        auto feature = loadJsonFile(root / "features/sprite.json");
+        feature["passes"][0]["pass"]["output"] = {
+            {"color", {{"target", "layer_color"}, {"subresource", {{"layer", 1}}}}},
+            {"depth", {{"target", "offscreen_depth"}, {"subresource", {{"layer", 1}}}}}};
+        for (auto &instance : config["features"])
+            if (instance.is_object() && instance.value("ref", std::string{}) == "project://features/sprite.json")
+                instance["parameters"]["color"] = "layer_color";
+        writeTextFile(root / "features/sprite.json", feature.dump(2));
+        writeTextFile(root / "passes/main.json", doc.dump(2));
+    };
+    layer_one.after_render = [&] {
+        auto &targets = GET_MODULE(RenderTargetContainer);
+        const auto view = [&](const char *name) {
+            return reinterpret_cast<std::uintptr_t>(static_cast<VkImageView>(targets.getAttachmentImageSubresourceView(
+                targets.getRenderTargetIdByName(name), {.base_array_layer = 1}, ImageSubresourceViewDimension::two_d)));
+        };
+        expected_color_view = view("layer_color");
+        expected_depth_view = view("offscreen_depth");
+    };
+    const auto layered = [&] { DrawLoopProbeScope scope{layer_one}; return renderCase(*found); }();
+    bool layer_recorded = false;
+    for (const auto &node : layered.execution_trace.at("nodes"))
+        if (node.value("name", std::string{}) == "sprite_draw") {
+            layer_recorded = true;
+            CHECK(node.at("sprite_draw").at("color_view") == expected_color_view);
+            CHECK(node.at("sprite_draw").at("depth_view") == expected_depth_view);
+        }
+    CHECK(layer_recorded);
+    DrawLoopProbe background;
+    background.rewrite_project = [&](const auto &root) {
+        placed.rewrite_project(root);
+        auto scene = loadJsonFile(root / "scene.json");
+        for (auto &object : scene["scenes"]["default_scene"]["objects"]) {
+            auto &components = object["components"];
+            components.erase(std::remove_if(components.begin(), components.end(), [](const auto &component) {
+                return component.value("name", std::string{}) == "sprite_view";
+            }), components.end());
+        }
+        writeTextFile(root / "scene.json", scene.dump(2));
+    };
+    background.after_render = [&] {
+        GET_MODULE(VulkanManageCore).waitIdle();
+        decoy_empty = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer), "decoy_color", {}).bytes;
+    };
+    const auto without_sprites = [&] { DrawLoopProbeScope scope{background}; return renderCase(*found); }();
+    CHECK(without_sprites.image.pixels != actual.image.pixels);
+    CHECK_FALSE(decoy_drawn.empty());
+    CHECK(decoy_drawn == decoy_empty);
+
+    std::vector<std::vector<std::uint8_t>> images, depths;
+    for (int state = 0; state != 3; ++state) {
+        CAPTURE(state);
+        FastModuleContainer modules;
+        const auto root = makeTempProjectDir("rc5s_sprite_empty");
+        const auto project = writeSpriteProject(root, *found, true);
+        auto document = loadJsonFile(root / "passes/main.json");
+        auto &config = document["rendering"];
+        config["render_targets"].push_back({{"name", "sprite_color"}, {"extent_scale", 1.0},
+            {"format", "B8G8R8A8_SRGB"}, {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}});
+        auto &passes = config["rendering_passes"][0]["passes"];
+        for (auto &pass : passes)
+            if (pass.value("name", std::string{}) == "lighting_pass") {
+                pass["type"] = "raster";
+                pass.erase("push_constants");
+                pass.erase("uses_light_data");
+                pass["draw"] = {{"vertex_count", 3}};
+                pass["output"] = {{"color", "sprite_color"}, {"depth", "offscreen_depth"}};
+                pass["depth_load_op"] = "load";
+                pass["depth_store_op"] = "store";
+                pass["raster_state"] = {{"depth_test", false}, {"depth_write", false}};
+            }
+        passes.push_back({{"name", "present"}, {"type", "fullscreen"}, {"input", {"sprite_color"}},
+            {"after", {"sprite_draw"}}, {"output", {{"color", "swapchain"}, {"depth", nullptr}}},
+            {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}}});
+        for (auto &feature : config["features"])
+            if (feature.is_object() && feature.value("ref", std::string{}) == "project://features/sprite.json")
+                feature["parameters"]["color"] = "sprite_color";
+        for (auto &image : document["rendering"]["render_targets"])
+            if (image.at("name") == "offscreen_depth") image["usage"].push_back("TRANSFER_SRC");
+        writeTextFile(root / "passes/main.json", document.dump(2));
+        GET_MODULE(PathResolver).setup(root, false);
+        GET_MODULE(ProjectSource).setProjectData(project.dump());
+        auto &launch = GET_MODULE(EngineLaunchConfig);
+        launch.headless = true;
+        launch.shader_hot_reload = false;
+        launch.headless_extent = vk::Extent2D{found->width, found->height};
+        auto &target = GET_MODULE(RenderTarget);
+        auto &renderer = GET_MODULE(Renderer);
+        GET_MODULE(ECSPredefinedRegistration).reg();
+        test_support::loadScene(GET_MODULE(SceneLoader), "default_scene");
+        GET_MODULE(ECSCore).update();
+        GET_MODULE(ECSCore).update();
+        auto &camera = GET_MODULE(Camera);
+        camera.setPos({0,0,4}); camera.setDir({0,0,-1}); camera.setUp({0,1,0});
+        GET_MODULE(ECSCore).update();
+        auto &scene = GET_MODULE(SpriteScene);
+        if (state == 0) scene.clear();
+        if (state == 1) {
+            TransformComponent transform{{2.0e9f,0,0}, {1,0,0,0}, {1,1,1}};
+            SpriteViewComponent view;
+            view.texture = "atlas#sprite/page0";
+            view.size = {1,1}; view.has_explicit_size = 1;
+            const std::array items{SpriteSceneItem{EntityId{123,1}, &transform, &view}};
+            scene.prepareAssets(items); scene.rebuild(items);
+        }
+        CHECK(scene.frame().logical_count == (state == 0 ? 0 : state == 1 ? 1 : 3));
+        CHECK((scene.frame().visible_count > 0) == (state == 2));
+        renderer.render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+        images.push_back(target.readbackLastFrameRGBA8());
+        depths.push_back(RendererTestAccess::readRenderTarget(renderer, "offscreen_depth", {}).bytes);
+        auto &timing = GET_MODULE(RenderTiming);
+        timing.flush();
+        bool body = false;
+        const auto timing_status = timing.statusJson();
+        for (const auto &sample : timing_status.at("nodes")) {
+            if (sample.at("node_name") == "sprite_draw" && sample.at("subrange") == "body") {
+                body = true;
+                CHECK(sample.at("supported").get<bool>() == (state == 2));
+            }
+            CHECK(sample.at("node_name").get<std::string>().rfind("__anchor_",0) != 0);
+        }
+        CHECK(body);
+        CHECK(GET_MODULE(SpriteRenderer).hasGpuBuffersForTesting() == (state == 2));
+        std::filesystem::remove_all(root);
+    }
+    CHECK(images.at(0) == images.at(1));
+    CHECK(images.at(0) != images.at(2));
+    CHECK(depths.at(0) == depths.at(1));
+    CHECK(depths.at(0) == depths.at(2));
+}
+
+void GoldenHarness::runRc5sSnapshotWait() {
+    setupLogger();
+    requireGoldenVulkanDevice();
+    const auto cases = loadGoldenInventoryCases();
+    const auto found = std::find_if(cases.begin(), cases.end(), [](const auto &c) { return c.mode == "sprite_ortho_atlas"; });
+    REQUIRE(found != cases.end());
+    DrawLoopProbe probe;
+    std::vector<std::uint8_t> captured;
+    probe.rewrite_project = [](const auto &root) {
+        auto doc = loadJsonFile(root / "passes/main.json");
+        auto &config = doc["rendering"];
+        config["features"] = nlohmann::json::array();
+        config["snapshots"] = nlohmann::json::array({{{"name", "saved"}, {"after", "Q"}}});
+        config["render_targets"].push_back({{"name", "q_color"}, {"extent_scale", 1.0},
+            {"format", "B8G8R8A8_SRGB"}, {"usage", {"COLOR_ATTACHMENT"}}});
+        config["render_targets"].push_back({{"name", "r_color"}, {"extent_scale", 1.0},
+            {"format", "B8G8R8A8_SRGB"}, {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}});
+        writeTextFile(root / "shaders/red.frag", "#version 450\nlayout(location=0) out vec4 c; void main(){c=vec4(1,0,0,1);}");
+        writeTextFile(root / "shaders/green.frag", "#version 450\nlayout(location=0) out vec4 c; void main(){c=vec4(0,1,0,1);}");
+        const auto pass = [](const char *name, const char *target, const char *shader) {
+            return nlohmann::json{{"name", name}, {"type", "fullscreen"},
+                {"output", {{"color", target}, {"depth", nullptr}}},
+                {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", shader}}}};
+        };
+        auto p = pass("P", "swapchain", "project://shaders/red");
+        auto q = pass("Q", "q_color", "project://shaders/red"); q["after"] = {"D"};
+        auto r = pass("R", "r_color", "engine://passthrough"); r["input"] = {"saved"};
+        auto d = pass("D", "swapchain", "project://shaders/green"); d["after"] = {"P"}; d["color_load_op"] = "load";
+        auto show = pass("show", "swapchain", "engine://passthrough"); show["input"] = {"r_color"}; show["after"] = {"R", "D"};
+        config["rendering_passes"][0]["passes"] = nlohmann::json::array({p,q,r,d,show});
+        writeTextFile(root / "passes/main.json", doc.dump(2));
+    };
+    const auto rendered = [&] { DrawLoopProbeScope scope{probe}; return renderCase(*found); }();
+    captured = rendered.image.pixels;
+    REQUIRE_FALSE(captured.empty());
+    std::size_t wrong = 0;
+    for (std::size_t i = 0; i < captured.size(); i += 4)
+        if (captured[i] != 0 || captured[i+1] != 255 || captured[i+2] != 0 || captured[i+3] != 255) ++wrong;
+    CHECK(wrong == 0);
+    const auto &order = rendered.plan_order;
+    const auto at = [&](const char *name) { return std::find(order.begin(), order.end(), name); };
+    CHECK(at("D") < at("Q"));
+    CHECK(at("Q") < at("__snapshot_saved"));
+}
+
+void GoldenHarness::runRc5sFixedHeadImages() {
+    const auto *directory = std::getenv("RC5S_BASELINE_DIR");
+    if (directory == nullptr || *directory == '\0')
+        SKIP("rc5s.fixed_head_baseline_unavailable@1: set RC5S_BASELINE_DIR to the fixed HEAD capture");
+    setupLogger();
+    requireGoldenVulkanDevice();
+    std::size_t compared = 0;
+    for (const auto &golden_case : loadGoldenInventoryCases()) {
+        CAPTURE(golden_case.name);
+        try {
+        const auto frozen = loadPng(std::filesystem::path{directory} / "golden" / (golden_case.name + ".png"));
+        const auto rendered = renderCase(golden_case);
+        writePng(binaryRoot() / "test_artifacts/rc5s_current" / (golden_case.name + ".png"), rendered.image);
+        CHECK(rendered.image.width == frozen.width);
+        CHECK(rendered.image.height == frozen.height);
+        CHECK(rendered.image.pixels == frozen.pixels);
+        for (const auto &name : rendered.plan_order) CHECK(name.rfind("__anchor_", 0) != 0);
+        for (const auto &name : rendered.gpu_timing_node_names) CHECK(name.rfind("__anchor_", 0) != 0);
+        if (usesRenderer(golden_case)) {
+            for (const auto &node : rendered.execution_trace.at("nodes")) {
+                CHECK(node.at("name").get<std::string>().rfind("__anchor_", 0) != 0);
+            }
+            REQUIRE_FALSE(rendered.plan_order.empty());
+            CHECK(rendered.plan_order.back() == "output_transform");
+        }
+        } catch (const std::exception &error) {
+            FAIL_CHECK(error.what());
+        }
+        ++compared;
+    }
+    CHECK(compared == loadGoldenInventoryCases().size());
+}
+
 void GoldenHarness::runGoldenImages() {
     setupLogger();
     requireGoldenVulkanDevice();
@@ -14235,7 +14511,6 @@ void GoldenHarness::runOpenXrTaaTransition() {
     REQUIRE(timing_status.at("query_pool").at("pending_ranges") == 0);
 
     std::array<std::size_t, 3> timing_samples_per_view{};
-    std::size_t unsupported_anchor_bodies = 0;
     std::set<std::string> timing_identities;
     for (const auto &sample : timing_status.at("nodes")) {
         REQUIRE(sample.at("logical_frame") == xr_logical_frame);
@@ -14244,12 +14519,9 @@ void GoldenHarness::runOpenXrTaaTransition() {
         REQUIRE(view_index < timing_samples_per_view.size());
         ++timing_samples_per_view.at(view_index);
         REQUIRE(timing_identities.insert(sample.at("identity").get<std::string>()).second);
-        if (sample.at("node_kind") == "anchor" && sample.at("subrange") == "body" &&
-            !sample.at("supported").get<bool>()) {
-            REQUIRE(sample.at("reason") == "no_gpu_work");
-            REQUIRE(sample.at("ms") == 0.0);
-            ++unsupported_anchor_bodies;
-        }
+        REQUIRE_FALSE(sample.at("node_name").get<std::string>().starts_with("__anchor_"));
+        REQUIRE(sample.at("node_kind") != "anchor");
+        if (sample.at("subrange") == "body") REQUIRE(sample.at("supported").get<bool>());
     }
     const auto &xr_execution_trace =
         RendererTestAccess::lastExecutionTrace(renderer);
@@ -14274,7 +14546,6 @@ void GoldenHarness::runOpenXrTaaTransition() {
                 xr_execution_trace.at("views").at(1)) *
                 2);
     REQUIRE(timing_samples_per_view.at(2) == 2);
-    REQUIRE(unsupported_anchor_bodies > 0);
 
     time.advance();
     renderer.render();
@@ -15001,8 +15272,8 @@ void GoldenHarness::runGpuTimingSprite() {
     const auto status = timing.statusJson();
     bool sprite_body = false;
     for (const auto &sample : status.at("nodes")) {
-        if (sample.at("node_kind") == "anchor" &&
-            sample.at("node_name") == "__anchor_sprite" &&
+        if (sample.at("node_kind") == "render" &&
+            sample.at("node_name") == "sprite_draw" &&
             sample.at("subrange") == "body") {
             sprite_body = true;
             REQUIRE(sample.at("supported").get<bool>());

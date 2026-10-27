@@ -95,6 +95,8 @@ std::string_view renderPipelineDiagnosticKindName(
         return "graph_node_deactivated";
     case RenderPipelineDiagnosticKind::fold_stale:
         return "fold_stale";
+    case RenderPipelineDiagnosticKind::anchor_ignored:
+        return "frame_node_order.anchor_ignored@1";
     case RenderPipelineDiagnosticKind::fold_unverified:
         return "fold_unverified";
     }

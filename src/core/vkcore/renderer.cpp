@@ -466,7 +466,7 @@ SpriteRenderModules resolveSpriteRenderModules(const RenderingPassContainer &ren
     if (!rendering_pass_container.isFeatureEnabled("sprite")) return {};
 
     auto *scene = FastModuleContainer::tryGet<SpriteScene>();
-    if (scene == nullptr || scene->commandCountForTesting() == 0) return {};
+    if (scene == nullptr || scene->frame().logical_count == 0) return {};
 
     return {scene, &GET_MODULE(SpriteRenderer), &GET_MODULE(AtlasAssetResource)};
 }
@@ -1288,6 +1288,7 @@ nlohmann::json finalLayoutsTrace(const CompiledRenderingPass &rendering_pass,
 }
 
 GpuTimingNodeDescriptor plannedTimingNode(
+    const CompiledRenderingPass &rendering_pass,
     const CompiledFrameGraphExecution &frame_graph,
     const SpriteRenderModules &sprite,
     std::size_t ordinal) {
@@ -1313,19 +1314,20 @@ GpuTimingNodeDescriptor plannedTimingNode(
             frame_graph.native_scopes->find(
                 scope->id) != nullptr;
     }
-    const bool anchor_has_work =
-        node.kind != FramePlanNodeKind::anchor ||
-        (node.name == "__anchor_sprite" &&
-         sprite.scene != nullptr) ||
-        native_scope_has_work;
+    const bool sprite_pass = node.kind == FramePlanNodeKind::render &&
+        rendering_pass.passes.at(node.index).definition.isSprite();
+    const bool body_has_work = native_scope_has_work ||
+        (node.kind != FramePlanNodeKind::anchor &&
+         (!sprite_pass || (sprite.scene != nullptr && sprite.scene->frame().visible_count > 0)));
     return GpuTimingNodeDescriptor{
         ordinal,
         std::string{framePlanNodeKindName(node.kind)},
         node.name,
-        anchor_has_work};
+        body_has_work};
 }
 
 std::vector<GpuTimingNodeDescriptor> plannedTimingNodes(
+    const CompiledRenderingPass &rendering_pass,
     const CompiledFrameGraphExecution &frame_graph,
     const SpriteRenderModules &sprite,
     std::span<const LogicalFrameNodeInvocation> schedule) {
@@ -1345,7 +1347,7 @@ std::vector<GpuTimingNodeDescriptor> plannedTimingNodes(
         included[invocation.node_index] = 1;
         nodes.push_back(
             plannedTimingNode(
-                frame_graph, sprite,
+                rendering_pass, frame_graph, sprite,
                 invocation.node_index));
     }
     return nodes;
@@ -1397,14 +1399,14 @@ void executeCompiledFrameGraphBarrier(
     std::size_t consumer_node_index,
     const CompiledFrameGraphBarrier &barrier,
     std::span<const std::uint8_t> completed_nodes) {
-    (void)consumer_node_index;
     if (barrier.from_node_index >=
             completed_nodes.size() ||
         !completed_nodes[
             barrier.from_node_index]) {
         throw std::runtime_error(
             "Compiled frame graph barrier source was not executed "
-            "before target");
+            "before target: " + std::to_string(barrier.from_node_index) +
+            " -> " + std::to_string(consumer_node_index) + " (" + barrier.resource + ")");
     }
     const auto buffer_id =
         boundFrameGraphBuffer(
@@ -1537,7 +1539,8 @@ bool isPhysicalScopeAttachment(
 // Everything one planned frame-graph execution needs from the caller that
 // planned it. The dependencies the caller has to build first
 // (RenderPassExecutorDependencies, the per-invocation view binding hook) stay
-// explicit parameters so that the request itself is pure input.
+// explicit parameters. completed_logical_nodes retains shared-family completion
+// across sequential eye recordings of the same logical frame.
 // The reference members all name objects the caller already owns for the whole
 // execution; `record_scene_as` is held by value because callers pass a lambda,
 // which would otherwise bind the reference to a materialized temporary.
@@ -1566,6 +1569,7 @@ struct FrameGraphExecutionRequest {
     // MP-1: the frame's tally of what its material passes drew; null keeps
     // none.
     MaterialPassDrawTally *drawn_materials = nullptr;
+    std::vector<std::uint8_t> *completed_logical_nodes = nullptr;
 };
 
 void executePlannedFrameGraph(
@@ -1664,7 +1668,7 @@ void executePlannedFrameGraph(
             request.render_ctx.cmd_buf, request.render_ctx.in_flight_frame_index, request.view_index,
             GpuTimingRangeIdentity{request.logical_frame, std::string{request.graph_variant}, request.view_index},
             plannedTimingNodes(
-                request.frame_graph, request.modules.sprite,
+                request.rendering_pass, request.frame_graph, request.modules.sprite,
                 schedule));
     }
     const auto paired_storage_edges = pairedSrgbStorageEdges(
@@ -1678,10 +1682,17 @@ void executePlannedFrameGraph(
         std::numeric_limits<std::size_t>::max();
     std::vector<std::uint8_t> completed_nodes(
         request.frame_graph.nodes.size(), 0);
-    GlobalRenderTargetId latest_scene_color =
-        noRenderTargetId();
-    GlobalRenderTargetId latest_scene_depth =
-        noRenderTargetId();
+    if (request.completed_logical_nodes != nullptr) {
+        auto &prior = *request.completed_logical_nodes;
+        if (prior.size() != completed_nodes.size()) prior.assign(completed_nodes.size(), 0);
+        completed_nodes = prior;
+        // A family recorded only for the first eye (for example directional
+        // shadows) remains completed. Nodes this eye records must prove their
+        // dependencies again in this eye's own execution order.
+        for (const auto &invocation : schedule)
+            if (invocation.node_index < completed_nodes.size())
+                completed_nodes[invocation.node_index] = 0;
+    }
 
     for (std::size_t schedule_position = 0;
          schedule_position < schedule.size();
@@ -2213,21 +2224,6 @@ void executePlannedFrameGraph(
                 throw std::logic_error(
                     "NativeScope continuation prepared a second callback");
             }
-            if (render_pass != nullptr) {
-                if (!render_pass->definition
-                         .output_color.empty()) {
-                    latest_scene_color =
-                        render_pass->definition
-                            .output_color.front();
-                }
-                if (isConcreteRenderTarget(
-                        render_pass->definition
-                            .output_depth)) {
-                    latest_scene_depth =
-                        render_pass->definition
-                            .output_depth;
-                }
-            }
             if (request.trace_out != nullptr) {
                 request.trace_out->push_back(
                     {
@@ -2259,6 +2255,74 @@ void executePlannedFrameGraph(
                     std::numeric_limits<
                         std::size_t>::max();
             }
+        } else if (execution_node.kind == FramePlanNodeKind::render && render_pass->definition.isSprite()) {
+            if (request.trace_out != nullptr)
+                request.trace_out->push_back(renderNodeTrace(*render_pass, node_index, request.modules.render_target_container, request.layout_tracker));
+            if (request.modules.sprite.scene != nullptr) {
+                const auto color_id =
+                    render_pass->definition.output_color.at(0).target;
+                const auto depth_id =
+                    render_pass->definition.output_depth.target;
+                if ((!isConcreteRenderTarget(color_id) && !isSwapchainRenderTarget(color_id)) ||
+                    !isConcreteRenderTarget(depth_id))
+                    throw std::runtime_error("sprite feature requires a scene color and depth attachment for sprite pass");
+                const auto &sprite_attachments = render_pass->definition;
+                transitionPassOutputsToAttachmentLayouts(request.render_ctx.cmd_buf, sprite_attachments,
+                                                          request.modules.render_target_container, request.modules.vk_utils,
+                                                          request.layout_tracker);
+                const RenderPassViewInvocation invocation{scheduled.logical_view_count, scheduled.view_index};
+                const auto colors = createColorAttachments(request.render_ctx, sprite_attachments,
+                    request.modules.render_target_container, render_pass->view, invocation);
+                const auto depth = createDepthAttachment(sprite_attachments,
+                    request.modules.render_target_container, render_pass->view, invocation);
+                const auto color_view = colors.at(0).imageView;
+                const auto &depth_meta = request.modules.render_target_container.getMetadata(depth_id);
+                const auto color_format =
+                    isSwapchainRenderTarget(color_id)
+                        ? request.frame_target_format
+                        : toVulkanFormat(request.modules.render_target_container.getMetadata(color_id).format);
+                const auto extent = getRenderPassTargetExtent(request.render_ctx, sprite_attachments,
+                    request.modules.render_target_container);
+                request.modules.sprite.renderer->render(
+                    request.render_ctx.cmd_buf,
+                    SpriteDrawRequest{
+                        .color_view = color_view,
+                        .depth_view = depth.imageView,
+                        .extent = extent,
+                        .color_format = color_format,
+                        .depth_format = toVulkanFormat(depth_meta.format),
+                        .color_resolve_view = colors.at(0).resolveImageView,
+                        .depth_resolve_view = depth.resolveImageView,
+                        .samples =
+                            isConcreteRenderTarget(color_id)
+                                ? request.modules.render_target_container
+                                      .sampleCount(color_id)
+                                : vk::SampleCountFlagBits::e1,
+                        .color_resolve_mode =
+                            isConcreteRenderTarget(color_id)
+                                ? request.modules.render_target_container
+                                      .resolveMode(color_id)
+                                : vk::ResolveModeFlagBits::eNone,
+                        .depth_resolve_mode =
+                            request.modules.render_target_container
+                                .resolveMode(depth_id),
+                    },
+                    SpriteRendererDependencies{*request.modules.sprite.scene, *request.modules.sprite.atlas,
+                                               request.modules.frame_resources});
+                if (request.trace_out != nullptr && isConcreteRenderTarget(color_id)) {
+                    request.trace_out->back()["sprite_draw"] = {
+                        {"color", request.modules.render_target_container.getMetadata(color_id).name},
+                        {"depth", depth_meta.name}, {"depth_test", true}, {"depth_write", false},
+                        {"blend", "straight_alpha"},
+                        {"policy", request.modules.sprite.scene->statusJson()},
+                    };
+                    if (sprite_attachments.output_color.at(0).subresource || sprite_attachments.output_depth.subresource) {
+                        auto &trace = request.trace_out->back()["sprite_draw"];
+                        trace["color_view"] = reinterpret_cast<std::uintptr_t>(static_cast<VkImageView>(color_view));
+                        trace["depth_view"] = reinterpret_cast<std::uintptr_t>(static_cast<VkImageView>(depth.imageView));
+                    }
+                }
+            }
         } else if (execution_node.kind == FramePlanNodeKind::render) {
             const auto &pass = *render_pass;
             if (fused_rendering_scope) {
@@ -2289,16 +2353,6 @@ void executePlannedFrameGraph(
                         scheduled.logical_view_count,
                         scheduled.view_index});
             }
-            if (!pass.definition.output_color.empty()) {
-                latest_scene_color =
-                    pass.definition
-                        .output_color.front();
-            }
-            if (isConcreteRenderTarget(
-                    pass.definition.output_depth)) {
-                latest_scene_depth =
-                    pass.definition.output_depth;
-            }
             if (request.trace_out != nullptr) {
                 request.trace_out->push_back(renderNodeTrace(pass, node_index, request.modules.render_target_container,
                                                       request.layout_tracker));
@@ -2326,115 +2380,8 @@ void executePlannedFrameGraph(
                 request.trace_out->back()["recorded"] = true;
             }
         } else if (execution_node.kind == FramePlanNodeKind::anchor) {
-            if (request.trace_out != nullptr) {
+            if (request.trace_out != nullptr)
                 request.trace_out->push_back(anchorNodeTrace(execution_node.name, node_index));
-            }
-            if (execution_node.name == "__anchor_sprite" && request.modules.sprite.scene != nullptr) {
-                const auto color_id =
-                    latest_scene_color;
-                const auto depth_id =
-                    latest_scene_depth;
-                if ((!isConcreteRenderTarget(color_id) && !isSwapchainRenderTarget(color_id)) ||
-                    !isConcreteRenderTarget(depth_id))
-                    throw std::runtime_error("sprite feature requires a scene color and depth attachment before sprite anchor");
-                PassDefinition sprite_attachments;
-                sprite_attachments.output_color = {color_id};
-                sprite_attachments.output_depth = depth_id;
-                transitionPassOutputsToAttachmentLayouts(request.render_ctx.cmd_buf, sprite_attachments,
-                                                          request.modules.render_target_container, request.modules.vk_utils,
-                                                          request.layout_tracker);
-                const auto sequential_layer =
-                    [&](std::uint32_t array_layers) {
-                        return scheduled.execution ==
-                                       VulkanScopeViewExecution::sequential &&
-                                   array_layers >=
-                                       scheduled.logical_view_count
-                                   ? scheduled.view_index
-                                   : 0u;
-                    };
-                const auto color_layer =
-                    isConcreteRenderTarget(color_id)
-                        ? sequential_layer(
-                              request.modules.render_target_container
-                                  .getMetadata(color_id)
-                                  .array_layers)
-                        : scheduled.view_index;
-                const auto depth_layer =
-                    sequential_layer(
-                        request.modules.render_target_container
-                            .getMetadata(depth_id)
-                            .array_layers);
-                const auto color_view =
-                    isSwapchainRenderTarget(color_id)
-                        ? (!request.render_ctx.color_layer_attachments.empty()
-                               ? request.render_ctx.color_layer_attachments.at(
-                                     color_layer)
-                               : request.render_ctx.color_attachment)
-                        : request.modules.render_target_container
-                              .getAttachmentImageLayerView(
-                                  color_id, color_layer);
-                const auto &depth_meta = request.modules.render_target_container.getMetadata(depth_id);
-                const auto color_format =
-                    isSwapchainRenderTarget(color_id)
-                        ? request.frame_target_format
-                        : toVulkanFormat(request.modules.render_target_container.getMetadata(color_id).format);
-                const auto extent =
-                    isSwapchainRenderTarget(color_id)
-                        ? request.render_ctx.extent
-                        : toVulkanExtent(request.modules.render_target_container.getMetadata(color_id).extent);
-                if (toVulkanExtent(depth_meta.extent) != extent)
-                    throw std::runtime_error("sprite color and depth attachments must have matching extents");
-                request.modules.sprite.renderer->render(
-                    request.render_ctx.cmd_buf,
-                    SpriteDrawRequest{
-                        .color_view = color_view,
-                        .depth_view =
-                            request.modules.render_target_container
-                                .getAttachmentImageLayerView(
-                                    depth_id, depth_layer),
-                        .extent = extent,
-                        .color_format = color_format,
-                        .depth_format = toVulkanFormat(depth_meta.format),
-                        .color_resolve_view =
-                            isConcreteRenderTarget(color_id) &&
-                                    request.modules.render_target_container
-                                        .hasSeparateAttachment(color_id)
-                                ? request.modules.render_target_container
-                                      .getImageLayerView(
-                                          color_id, color_layer)
-                                : vk::ImageView{},
-                        .depth_resolve_view =
-                            request.modules.render_target_container
-                                    .hasSeparateAttachment(depth_id)
-                                ? request.modules.render_target_container
-                                      .getImageLayerView(
-                                          depth_id, depth_layer)
-                                : vk::ImageView{},
-                        .samples =
-                            isConcreteRenderTarget(color_id)
-                                ? request.modules.render_target_container
-                                      .sampleCount(color_id)
-                                : vk::SampleCountFlagBits::e1,
-                        .color_resolve_mode =
-                            isConcreteRenderTarget(color_id)
-                                ? request.modules.render_target_container
-                                      .resolveMode(color_id)
-                                : vk::ResolveModeFlagBits::eNone,
-                        .depth_resolve_mode =
-                            request.modules.render_target_container
-                                .resolveMode(depth_id),
-                    },
-                    SpriteRendererDependencies{*request.modules.sprite.scene, *request.modules.sprite.atlas,
-                                               request.modules.frame_resources});
-                if (request.trace_out != nullptr && isConcreteRenderTarget(color_id)) {
-                    request.trace_out->back()["sprite_draw"] = {
-                        {"color", request.modules.render_target_container.getMetadata(color_id).name},
-                        {"depth", depth_meta.name}, {"depth_test", true}, {"depth_write", false},
-                        {"blend", "straight_alpha"},
-                        {"policy", request.modules.sprite.scene->statusJson()},
-                    };
-                }
-            }
         } else if (execution_node.kind == FramePlanNodeKind::snapshot_copy) {
             const auto &planned_node = request.frame_graph.plan.nodes.at(node_index);
             if (planned_node.reads.size() != 1 || planned_node.writes.size() != 1) {
@@ -2570,6 +2517,8 @@ void executePlannedFrameGraph(
             "schedule");
     }
     if (request.modules.render_timing != nullptr) request.modules.render_timing->endGpuRange();
+    if (request.completed_logical_nodes != nullptr)
+        *request.completed_logical_nodes = std::move(completed_nodes);
 }
 
 void executeRenderingPasses(
@@ -5221,7 +5170,9 @@ RenderTargetReadback Renderer::readRenderTargetForTesting(
     auto &targets = GET_MODULE(RenderTargetContainer);
     const auto metadata = targets.getMetadata(target_id);
     const auto texel_bytes = formatTexelBytes(metadata.format);
-    if (metadata.samples != 1 || texel_bytes == 0 ||
+    // The public image is the single-sample resolve when a target has a
+    // separate MSAA attachment. Validate the image being copied.
+    if (targets.getImage(target_id).samples != vk::SampleCountFlagBits::e1 || texel_bytes == 0 ||
         (snapshotAspect(metadata.format) != vk::ImageAspectFlagBits::eColor &&
          metadata.format != ImageFormat::d32_sfloat) ||
         !(metadata.usage & ImageUsageBit::transfer_src)) {
@@ -5692,6 +5643,7 @@ class Renderer::LogicalFrameRecorder {
     nlohmann::json view_traces;
     bool use_view_family_execution = false;
     std::vector<LogicalFrameNodeInvocation> logical_frame_schedule;
+    std::vector<std::uint8_t> completed_logical_nodes;
 
     // Valid from configureExternalDepthExport.
     std::optional<RuntimeExternalDepthExport> external_depth_export;
@@ -6799,6 +6751,7 @@ void Renderer::LogicalFrameRecorder::recordOneExecution(
                     : nullptr,
             .once_skipped = once_skipped,
             .drawn_materials = &drawn_materials,
+            .completed_logical_nodes = &completed_logical_nodes,
         },
         view_family_states, per_view_sort);
     if (external_depth_submission_active) {

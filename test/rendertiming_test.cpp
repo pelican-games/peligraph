@@ -50,13 +50,13 @@ TEST_CASE("GPU timing attribution table is an exact fixture",
     REQUIRE(gpuTimingAttributionContractJson() == expected);
 
     const auto &rows = expected.at("rows");
-    REQUIRE(rows.size() == 7);
+    REQUIRE(rows.size() == 6);
     REQUIRE(rows.at(0).at("node_kind") == "render");
     REQUIRE(rows.at(1).at("node_kind") == "compute");
-    REQUIRE(rows.at(2).at("node_kind") == "anchor");
-    REQUIRE(rows.at(4).at("node_kind") == "output_transform");
-    REQUIRE(rows.at(5).at("operation") == "xr_mirror_intermediate");
-    REQUIRE(rows.at(6).at("operation") == "desktop_mirror");
+    REQUIRE(rows.at(2).at("node_kind") == "snapshot_copy");
+    REQUIRE(rows.at(3).at("node_kind") == "output_transform");
+    REQUIRE(rows.at(4).at("operation") == "xr_mirror_intermediate");
+    REQUIRE(rows.at(5).at("operation") == "desktop_mirror");
 }
 
 TEST_CASE("disabled GPU timing status keeps the additive v2 schema",

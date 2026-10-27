@@ -134,6 +134,8 @@ struct RenderingTargetPlanVerificationContext {
     // device contract rather than the target planner.
     std::vector<std::string>
         enabled_device_extensions;
+    // Runtime implementations which begin/end their own rendering instance.
+    std::vector<std::string> scope_owning_nodes;
 };
 
 struct RenderingTargetPlanCompilation {

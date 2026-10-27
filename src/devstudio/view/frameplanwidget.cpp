@@ -3636,7 +3636,8 @@ struct FramePlanWidget::Impl {
             return;
         }
         QStringList names;
-        for (const auto &node : model->nodes) names.push_back(QString::fromStdString(node.name));
+        for (const auto &node : model->nodes)
+            if (!node.name.starts_with("__anchor_")) names.push_back(QString::fromStdString(node.name));
         node_order_action(QString::fromStdString(model->graph), names, *model->runtime_generation);
     }
 
@@ -4325,7 +4326,7 @@ struct FramePlanWidget::Impl {
                 .arg(static_cast<qulonglong>(model->nodes.size()))
                 .arg(static_cast<qulonglong>(compute_count))
                 .arg(static_cast<qulonglong>(model->resources.size()))
-                .arg(barrier_summary) + memory_summary,
+                .arg(barrier_summary),
             owner.tr("%1 | %2 | %3%4 passes/tasks (%5 compute), %6, "
                      "%7 resources | %8 | %9 | %10 response | "
                      "refreshed %11. Snapshot updates "
@@ -4338,7 +4339,7 @@ struct FramePlanWidget::Impl {
                 .arg(static_cast<qulonglong>(model->resources.size()))
                 .arg(barrier_summary)
                 .arg(physical_summary, byteCount(model->response_bytes),
-                     QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"))));
+                     QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"))) + memory_summary);
         // G-5: a restart the user declined outlives the plan it refreshed.
         if (!restart_declined_notice.isEmpty())
             showStatus(std::exchange(restart_declined_notice, {}));

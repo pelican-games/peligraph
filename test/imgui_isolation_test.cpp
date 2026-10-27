@@ -4,6 +4,16 @@
 #include "../src/core/imgui/imguisystem.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
 #include "render_graph_ir_test_support.hpp"
+#include "../src/core/loader/pathresolver.hpp"
+#include "../src/core/loader/projectsrc.hpp"
+#include "../src/core/vkcore/renderer.hpp"
+#include "../src/core/vkcore/rendertarget.hpp"
+#include "../src/core/vkcore/core.hpp"
+#include "../src/core/appflow/enginetime.hpp"
+#include "../src/core/log.hpp"
+#include "renderer_testaccess.hpp"
+#include <filesystem>
+#include <fstream>
 
 #include <algorithm>
 #include <nlohmann/json.hpp>
@@ -28,14 +38,10 @@ nlohmann::json canonicalGraph() {
                    {{"name", "display_source"},
                     {"type", "ui"},
                     {"output", {{"color", "display"}, {"depth", nullptr}}}},
-                   {{"name", "__anchor_imgui"},
-                    {"type", "canonical_anchor"},
-                    {"anchor", "imgui"},
-                    {"after", nlohmann::json::array({"display_source"})}},
                    {{"name", "output_transform"},
                     {"type", "output_transform"},
                     {"input", nlohmann::json::array({"display"})},
-                    {"after", nlohmann::json::array({"__anchor_imgui"})},
+                    {"after", nlohmann::json::array({"display_source"})},
                     {"output", {{"color", "swapchain"}, {"depth", nullptr}}}},
                })}},
          })},
@@ -97,7 +103,7 @@ TEST_CASE("deterministic drivers execute zero ImGui callbacks and keep input unc
     }
 }
 
-TEST_CASE("interactive graph places ImGui at its canonical anchor", "[imgui][frame-plan]") {
+TEST_CASE("interactive graph loads display and places ImGui before output", "[imgui][frame-plan][rc5s]") {
     EngineLaunchConfig config;
     auto graph = canonicalGraph();
     std::uint64_t public_api_calls = 0;
@@ -108,14 +114,18 @@ TEST_CASE("interactive graph places ImGui at its canonical anchor", "[imgui][fra
     REQUIRE(public_api_calls == 1);
 
     const auto order = planOrder(graph);
-    const auto anchor = std::find(order.begin(), order.end(), "__anchor_imgui");
+    const auto source = std::find(order.begin(), order.end(), "display_source");
     const auto pass = std::find(order.begin(), order.end(), "imgui_pass");
     const auto output = std::find(order.begin(), order.end(), "output_transform");
-    REQUIRE(anchor != order.end());
+    REQUIRE(source != order.end());
     REQUIRE(pass != order.end());
     REQUIRE(output != order.end());
-    REQUIRE(anchor < pass);
+    REQUIRE(source < pass);
     REQUIRE(pass < output);
+    const auto &imgui = graph.at("rendering_passes").at(0).at("passes").at(1);
+    CHECK(imgui.at("color_load_op") == "load");
+    CHECK(imgui.at("output").at("color").at(0).at("target") == "display");
+    CHECK(std::none_of(order.begin(), order.end(), [](const auto &name) { return name.rfind("__anchor_", 0) == 0; }));
 }
 
 TEST_CASE("input priority is ImGui then pelican UI then gameplay", "[imgui][input]") {
@@ -137,4 +147,46 @@ TEST_CASE("input priority is ImGui then pelican UI then gameplay", "[imgui][inpu
     REQUIRE_FALSE(gameplay.getKey(KeyCode::MouseLeft));
     REQUIRE(gameplay.mouse_delta_x == 0.0f);
     REQUIRE(gameplay.mouse_delta_y == 0.0f);
+}
+
+TEST_CASE("RC-5s interactive startup includes ImGui in captured final output", "[imgui][rc5s][gpu]") {
+    setupLogger();
+    FastModuleContainer modules;
+    const auto project_root = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects/sprite_demo";
+    GET_MODULE(PathResolver).setup(project_root, false);
+    std::ifstream stream{project_root / "project.json"};
+    const auto project = nlohmann::json::parse(stream);
+    GET_MODULE(ProjectSource).setProjectData(project.dump());
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.embedded = true;
+    launch.shader_hot_reload = false;
+    REQUIRE(isImGuiRuntimeEnabled(launch));
+    auto &renderer = GET_MODULE(Renderer);
+    RendererTestAccess::setExecutionTracing(renderer, true);
+    auto &input = GET_MODULE(InputState);
+    auto &time = GET_MODULE(EngineTime);
+    time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
+    const auto capture = [&] {
+        time.advance();
+        input.beginFrame();
+        GET_MODULE(ImGuiSystem).routeInputAndBeginFrame(input);
+        renderer.render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+        return GET_MODULE(RenderTarget).readbackLastFrameRGBA8();
+    };
+    const auto visible = capture();
+    InputEvent toggle;
+    toggle.type = InputEvent::Type::button;
+    toggle.code = KeyCode::F1;
+    toggle.pressed = true;
+    input.queueEvent(toggle);
+    const auto hidden = capture();
+    CHECK_FALSE(visible.empty());
+    CHECK(visible != hidden);
+    const auto order = RendererTestAccess::currentFramePlanOrder(renderer);
+    REQUIRE(order.size() >= 2);
+    CHECK(order[order.size() - 2] == "imgui_pass");
+    CHECK(order.back() == "output_transform");
+    CHECK(std::none_of(order.begin(), order.end(), [](const auto &name) { return name.starts_with("__anchor_"); }));
+    CHECK(GET_MODULE(ImGuiSystem).publicApiCallCountForTesting() > 0);
 }

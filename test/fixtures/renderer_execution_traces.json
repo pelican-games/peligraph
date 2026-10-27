@@ -12,38 +12,6 @@
     ],
     "nodes": [
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 0,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 1,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 2,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 3,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "attachments": [
           {
             "aspect": "color",
@@ -67,23 +35,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "present",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 5,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 6,
+        "order": 0,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -105,29 +57,13 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "debug_draw",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 9,
+        "order": 1,
         "view_execution": "single_view",
         "view_index": 0
       },
       {
         "color_counters": {
-          "paired_storage_round_trip": 1,
+          "paired_storage_round_trip": 2,
           "shader_oetf": 0,
           "terminal_display_encode": 1,
           "tone_curve": 1
@@ -142,9 +78,10 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 10,
+        "order": 2,
         "paired_storage_edges": [
-          "debug_draw:display->output_transform"
+          "debug_draw:display->output_transform",
+          "present:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
@@ -198,42 +135,10 @@
     ],
     "nodes": [
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 0,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 1,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 2,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 3,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "kind": "compute",
         "logical_view_count": 1,
         "name": "build_dispatch",
-        "order": 4,
+        "order": 0,
         "reads": [],
         "recorded": true,
         "view_execution": "single_view",
@@ -249,7 +154,7 @@
         "kind": "compute",
         "logical_view_count": 1,
         "name": "write_color",
-        "order": 5,
+        "order": 1,
         "reads": [],
         "recorded": true,
         "view_execution": "single_view",
@@ -287,39 +192,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "present",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 10,
+        "order": 2,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -340,7 +213,7 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 11,
+        "order": 3,
         "paired_storage_edges": [
           "present:display->output_transform"
         ],
@@ -396,38 +269,6 @@
     ],
     "nodes": [
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 0,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 1,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 2,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 3,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "attachments": [
           {
             "aspect": "color",
@@ -451,23 +292,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "present",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 5,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 6,
+        "order": 0,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -489,29 +314,13 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "debug_draw",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 9,
+        "order": 1,
         "view_execution": "single_view",
         "view_index": 0
       },
       {
         "color_counters": {
-          "paired_storage_round_trip": 1,
+          "paired_storage_round_trip": 2,
           "shader_oetf": 0,
           "terminal_display_encode": 1,
           "tone_curve": 1
@@ -526,9 +335,10 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 10,
+        "order": 2,
         "paired_storage_edges": [
-          "debug_draw:display->output_transform"
+          "debug_draw:display->output_transform",
+          "present:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
@@ -582,38 +392,6 @@
     ],
     "nodes": [
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 0,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 1,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 2,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 3,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "attachments": [
           {
             "aspect": "color",
@@ -637,31 +415,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "present",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 5,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 7,
+        "order": 0,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -683,21 +437,13 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "debug_text",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 9,
+        "order": 1,
         "view_execution": "single_view",
         "view_index": 0
       },
       {
         "color_counters": {
-          "paired_storage_round_trip": 1,
+          "paired_storage_round_trip": 2,
           "shader_oetf": 0,
           "terminal_display_encode": 1,
           "tone_curve": 1
@@ -712,9 +458,10 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 10,
+        "order": 2,
         "paired_storage_edges": [
-          "debug_text:display->output_transform"
+          "debug_text:display->output_transform",
+          "present:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
@@ -768,38 +515,6 @@
     ],
     "nodes": [
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 0,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 1,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 2,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 3,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "attachments": [
           {
             "aspect": "color",
@@ -823,7 +538,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "blue_first",
-        "order": 4,
+        "order": 0,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -851,45 +566,13 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "red_after_blue",
-        "order": 5,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 9,
+        "order": 1,
         "view_execution": "single_view",
         "view_index": 0
       },
       {
         "color_counters": {
-          "paired_storage_round_trip": 1,
+          "paired_storage_round_trip": 2,
           "shader_oetf": 0,
           "terminal_display_encode": 1,
           "tone_curve": 1
@@ -904,9 +587,10 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 10,
+        "order": 2,
         "paired_storage_edges": [
-          "blue_first:display->output_transform"
+          "blue_first:display->output_transform",
+          "red_after_blue:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
@@ -960,38 +644,6 @@
     ],
     "nodes": [
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 0,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 1,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 2,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 3,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "attachments": [
           {
             "aspect": "color",
@@ -1015,7 +667,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "present",
-        "order": 4,
+        "order": 0,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -1043,45 +695,13 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "feature_present",
-        "order": 5,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 9,
+        "order": 1,
         "view_execution": "single_view",
         "view_index": 0
       },
       {
         "color_counters": {
-          "paired_storage_round_trip": 1,
+          "paired_storage_round_trip": 2,
           "shader_oetf": 0,
           "terminal_display_encode": 1,
           "tone_curve": 1
@@ -1096,9 +716,10 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 10,
+        "order": 2,
         "paired_storage_edges": [
-          "feature_present:display->output_transform"
+          "feature_present:display->output_transform",
+          "present:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
@@ -1188,38 +809,6 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 1,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 2,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 3,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "attachments": [
           {
             "aspect": "color",
@@ -1248,7 +837,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "HighLuminanceExtraction",
-        "order": 5,
+        "order": 1,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -1287,31 +876,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "FinalBloomComposite",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 9,
+        "order": 2,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -1333,21 +898,13 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "debug_text",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 11,
+        "order": 3,
         "view_execution": "single_view",
         "view_index": 0
       },
       {
         "color_counters": {
-          "paired_storage_round_trip": 4,
+          "paired_storage_round_trip": 5,
           "shader_oetf": 0,
           "terminal_display_encode": 1,
           "tone_curve": 1
@@ -1362,12 +919,13 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 12,
+        "order": 4,
         "paired_storage_edges": [
           "hdr_source:lit_color->HighLuminanceExtraction",
           "hdr_source:lit_color->FinalBloomComposite",
           "HighLuminanceExtraction:Bloom_Threshold_RT->FinalBloomComposite",
-          "debug_text:display->output_transform"
+          "debug_text:display->output_transform",
+          "FinalBloomComposite:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
@@ -1461,22 +1019,6 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 1,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 2,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "attachments": [
           {
             "aspect": "color",
@@ -1505,7 +1047,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "HighLuminanceExtraction",
-        "order": 3,
+        "order": 1,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -1544,15 +1086,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "FinalBloomComposite",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 5,
+        "order": 2,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -1579,39 +1113,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "hdr_tonemap",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 10,
+        "order": 3,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -1633,21 +1135,13 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "debug_text",
-        "order": 11,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 12,
+        "order": 4,
         "view_execution": "single_view",
         "view_index": 0
       },
       {
         "color_counters": {
-          "paired_storage_round_trip": 1,
+          "paired_storage_round_trip": 2,
           "shader_oetf": 0,
           "terminal_display_encode": 1,
           "tone_curve": 1
@@ -1662,9 +1156,10 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 13,
+        "order": 5,
         "paired_storage_edges": [
-          "debug_text:display->output_transform"
+          "debug_text:display->output_transform",
+          "hdr_tonemap:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
@@ -1923,70 +1418,6 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 3,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 5,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "color_counters": {
           "paired_storage_round_trip": 3,
           "shader_oetf": 0,
@@ -2003,7 +1434,7 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 11,
+        "order": 3,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
@@ -2266,70 +1697,6 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 3,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 5,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "color_counters": {
           "paired_storage_round_trip": 3,
           "shader_oetf": 0,
@@ -2346,7 +1713,7 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 11,
+        "order": 3,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
@@ -2639,70 +2006,6 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 5,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 11,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "color_counters": {
           "paired_storage_round_trip": 3,
           "shader_oetf": 0,
@@ -2719,7 +2022,7 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 12,
+        "order": 4,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
@@ -2777,38 +2080,6 @@
     ],
     "nodes": [
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 0,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 1,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 2,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 3,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "attachments": [
           {
             "aspect": "color",
@@ -2832,39 +2103,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "orbit_camera",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 5,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 8,
+        "order": 0,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -2885,7 +2124,7 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 9,
+        "order": 1,
         "paired_storage_edges": [
           "orbit_camera:display->output_transform"
         ],
@@ -2941,38 +2180,6 @@
     ],
     "nodes": [
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 0,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 1,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 2,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 3,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "attachments": [
           {
             "aspect": "color",
@@ -2996,39 +2203,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "ortho_camera",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 5,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 8,
+        "order": 0,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -3049,7 +2224,7 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 9,
+        "order": 1,
         "paired_storage_edges": [
           "ortho_camera:display->output_transform"
         ],
@@ -3105,38 +2280,6 @@
     ],
     "nodes": [
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 0,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 1,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 2,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 3,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "attachments": [
           {
             "aspect": "color",
@@ -3160,23 +2303,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "present",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 5,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 6,
+        "order": 0,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -3198,29 +2325,13 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "debug_draw",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 9,
+        "order": 1,
         "view_execution": "single_view",
         "view_index": 0
       },
       {
         "color_counters": {
-          "paired_storage_round_trip": 1,
+          "paired_storage_round_trip": 2,
           "shader_oetf": 0,
           "terminal_display_encode": 1,
           "tone_curve": 1
@@ -3235,9 +2346,10 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 10,
+        "order": 2,
         "paired_storage_edges": [
-          "debug_draw:display->output_transform"
+          "debug_draw:display->output_transform",
+          "present:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
@@ -3730,38 +2842,6 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 11,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 12,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "attachments": [
           {
             "aspect": "color",
@@ -3790,39 +2870,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "scene_present",
-        "order": 13,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 14,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 15,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 16,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 17,
+        "order": 9,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -3843,7 +2891,7 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 18,
+        "order": 10,
         "paired_storage_edges": [
           "deferred_geometry:gbuffer_albedo->deferred_lighting",
           "deferred_geometry:g_emissive->deferred_lighting",
@@ -4301,38 +3349,6 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 11,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "attachments": [
           {
             "aspect": "color",
@@ -4361,39 +3377,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "scene_present",
-        "order": 12,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 13,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 14,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 15,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 16,
+        "order": 8,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -4414,7 +3398,7 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 17,
+        "order": 9,
         "paired_storage_edges": [
           "deferred_geometry:gbuffer_albedo->deferred_lighting",
           "deferred_geometry:g_emissive->deferred_lighting",
@@ -4911,38 +3895,6 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 11,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 12,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "attachments": [
           {
             "aspect": "color",
@@ -4971,39 +3923,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "scene_present",
-        "order": 13,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 14,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 15,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 16,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 17,
+        "order": 9,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -5024,7 +3944,7 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 18,
+        "order": 10,
         "paired_storage_edges": [
           "deferred_geometry:gbuffer_albedo->deferred_lighting",
           "deferred_geometry:g_emissive->deferred_lighting",
@@ -5287,70 +4207,6 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 3,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 5,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "color_counters": {
           "paired_storage_round_trip": 3,
           "shader_oetf": 0,
@@ -5367,7 +4223,7 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 11,
+        "order": 3,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
@@ -5660,70 +4516,6 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 5,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 11,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "color_counters": {
           "paired_storage_round_trip": 3,
           "shader_oetf": 0,
@@ -5740,7 +4532,7 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 12,
+        "order": 4,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
@@ -6205,34 +4997,35 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "clear",
+            "resource": "display",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "lit_color"
+          }
+        ],
+        "kind": "render",
         "logical_view_count": 1,
-        "name": "__anchor_sprite",
+        "name": "scene_present",
         "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 10,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -6265,7 +5058,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "HighLuminanceExtraction",
-        "order": 11,
+        "order": 8,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -6298,7 +5091,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "HorizontalBlur_0",
-        "order": 12,
+        "order": 9,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -6331,7 +5124,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "VerticalBlur_0",
-        "order": 13,
+        "order": 10,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -6364,7 +5157,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "HorizontalBlur_1",
-        "order": 14,
+        "order": 11,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -6397,7 +5190,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "VerticalBlur_1",
-        "order": 15,
+        "order": 12,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -6430,7 +5223,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "HorizontalBlur_2",
-        "order": 16,
+        "order": 13,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -6463,7 +5256,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "VerticalBlur_2",
-        "order": 17,
+        "order": 14,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -6496,7 +5289,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "HorizontalBlur_3",
-        "order": 18,
+        "order": 15,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -6529,7 +5322,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "VerticalBlur_3",
-        "order": 19,
+        "order": 16,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -6556,7 +5349,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "UpsampleBlend_3",
-        "order": 20,
+        "order": 17,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -6583,7 +5376,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "UpsampleBlend_2",
-        "order": 21,
+        "order": 18,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -6610,7 +5403,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "UpsampleBlend_1",
-        "order": 22,
+        "order": 19,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -6643,15 +5436,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "FinalBloomComposite",
-        "order": 23,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 24,
+        "order": 20,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -6673,37 +5458,13 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "pelican_ui",
-        "order": 25,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 26,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 27,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 28,
+        "order": 21,
         "view_execution": "single_view",
         "view_index": 0
       },
       {
         "color_counters": {
-          "paired_storage_round_trip": 15,
+          "paired_storage_round_trip": 17,
           "shader_oetf": 0,
           "terminal_display_encode": 1,
           "tone_curve": 1
@@ -6718,7 +5479,7 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 29,
+        "order": 22,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
@@ -6734,7 +5495,9 @@
           "UpsampleBlend_3:Bloom_Upsample_V_2_RT->UpsampleBlend_2",
           "UpsampleBlend_2:Bloom_Upsample_V_1_RT->UpsampleBlend_1",
           "UpsampleBlend_1:Bloom_Upsample_V_0_RT->FinalBloomComposite",
-          "pelican_ui:display->output_transform"
+          "pelican_ui:display->output_transform",
+          "scene_present:display->output_transform",
+          "FinalBloomComposite:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
@@ -6792,38 +5555,6 @@
     ],
     "nodes": [
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 0,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 1,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 2,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 3,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "attachments": [
           {
             "aspect": "color",
@@ -6847,7 +5578,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "opaque",
-        "order": 4,
+        "order": 0,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -6863,7 +5594,7 @@
         "kind": "snapshot_copy",
         "logical_view_count": 1,
         "name": "__snapshot_opaque_color",
-        "order": 5,
+        "order": 1,
         "semantics": "fixed_once_before_transparency",
         "sequential_refraction": false,
         "snapshot_after": "opaque",
@@ -6915,45 +5646,13 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "refract",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 10,
+        "order": 2,
         "view_execution": "single_view",
         "view_index": 0
       },
       {
         "color_counters": {
-          "paired_storage_round_trip": 2,
+          "paired_storage_round_trip": 3,
           "shader_oetf": 0,
           "terminal_display_encode": 1,
           "tone_curve": 1
@@ -6968,10 +5667,11 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 11,
+        "order": 3,
         "paired_storage_edges": [
           "__snapshot_opaque_color:opaque_color->refract",
-          "refract:display->output_transform"
+          "refract:display->output_transform",
+          "opaque:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
@@ -7230,9 +5930,30 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
+        "attachments": [
+          {
+            "aspect": "color",
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "load",
+            "resource": "display",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "final_layout": "depth_attachment_optimal",
+            "load": "load",
+            "resource": "offscreen_depth",
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
         "logical_view_count": 1,
-        "name": "__anchor_sprite",
+        "name": "sprite_draw",
         "order": 3,
         "sprite_draw": {
           "blend": "straight_alpha",
@@ -7284,64 +6005,8 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 5,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "color_counters": {
-          "paired_storage_round_trip": 3,
+          "paired_storage_round_trip": 4,
           "shader_oetf": 0,
           "terminal_display_encode": 1,
           "tone_curve": 1
@@ -7356,10 +6021,11 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 11,
+        "order": 4,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
+          "sprite_draw:display->output_transform",
           "lighting_pass:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
@@ -7619,9 +6285,30 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
+        "attachments": [
+          {
+            "aspect": "color",
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "load",
+            "resource": "display",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "final_layout": "depth_attachment_optimal",
+            "load": "load",
+            "resource": "offscreen_depth",
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
         "logical_view_count": 1,
-        "name": "__anchor_sprite",
+        "name": "sprite_draw",
         "order": 3,
         "sprite_draw": {
           "blend": "straight_alpha",
@@ -7671,64 +6358,8 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 5,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "color_counters": {
-          "paired_storage_round_trip": 3,
+          "paired_storage_round_trip": 4,
           "shader_oetf": 0,
           "terminal_display_encode": 1,
           "tone_curve": 1
@@ -7743,10 +6374,11 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 11,
+        "order": 4,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
+          "sprite_draw:display->output_transform",
           "lighting_pass:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
@@ -8006,9 +6638,30 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
+        "attachments": [
+          {
+            "aspect": "color",
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "load",
+            "resource": "display",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "final_layout": "depth_attachment_optimal",
+            "load": "load",
+            "resource": "offscreen_depth",
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
         "logical_view_count": 1,
-        "name": "__anchor_sprite",
+        "name": "sprite_draw",
         "order": 3,
         "sprite_draw": {
           "blend": "straight_alpha",
@@ -8058,64 +6711,8 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 5,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "color_counters": {
-          "paired_storage_round_trip": 3,
+          "paired_storage_round_trip": 4,
           "shader_oetf": 0,
           "terminal_display_encode": 1,
           "tone_curve": 1
@@ -8130,10 +6727,11 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 11,
+        "order": 4,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
+          "sprite_draw:display->output_transform",
           "lighting_pass:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
@@ -8393,9 +6991,30 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
+        "attachments": [
+          {
+            "aspect": "color",
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "load",
+            "resource": "display",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "final_layout": "depth_attachment_optimal",
+            "load": "load",
+            "resource": "offscreen_depth",
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
         "logical_view_count": 1,
-        "name": "__anchor_sprite",
+        "name": "sprite_draw",
         "order": 3,
         "sprite_draw": {
           "blend": "straight_alpha",
@@ -8445,64 +7064,8 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 5,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "color_counters": {
-          "paired_storage_round_trip": 3,
+          "paired_storage_round_trip": 4,
           "shader_oetf": 0,
           "terminal_display_encode": 1,
           "tone_curve": 1
@@ -8517,10 +7080,11 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 11,
+        "order": 4,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
+          "sprite_draw:display->output_transform",
           "lighting_pass:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
@@ -8780,9 +7344,30 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
+        "attachments": [
+          {
+            "aspect": "color",
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "load",
+            "resource": "display",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "final_layout": "depth_attachment_optimal",
+            "load": "load",
+            "resource": "offscreen_depth",
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
         "logical_view_count": 1,
-        "name": "__anchor_sprite",
+        "name": "sprite_draw",
         "order": 3,
         "sprite_draw": {
           "blend": "straight_alpha",
@@ -8832,38 +7417,6 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 5,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "attachments": [
           {
             "aspect": "color",
@@ -8881,37 +7434,13 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "pelican_ui",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 11,
+        "order": 4,
         "view_execution": "single_view",
         "view_index": 0
       },
       {
         "color_counters": {
-          "paired_storage_round_trip": 3,
+          "paired_storage_round_trip": 5,
           "shader_oetf": 0,
           "terminal_display_encode": 1,
           "tone_curve": 1
@@ -8926,11 +7455,13 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 12,
+        "order": 5,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
-          "pelican_ui:display->output_transform"
+          "pelican_ui:display->output_transform",
+          "lighting_pass:display->output_transform",
+          "sprite_draw:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
@@ -9189,9 +7720,30 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
+        "attachments": [
+          {
+            "aspect": "color",
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "load",
+            "resource": "display",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "final_layout": "depth_attachment_optimal",
+            "load": "load",
+            "resource": "offscreen_depth",
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
         "logical_view_count": 1,
-        "name": "__anchor_sprite",
+        "name": "sprite_draw",
         "order": 3,
         "sprite_draw": {
           "blend": "straight_alpha",
@@ -9241,64 +7793,8 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 5,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "color_counters": {
-          "paired_storage_round_trip": 3,
+          "paired_storage_round_trip": 4,
           "shader_oetf": 0,
           "terminal_display_encode": 1,
           "tone_curve": 1
@@ -9313,10 +7809,11 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 11,
+        "order": 4,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
+          "sprite_draw:display->output_transform",
           "lighting_pass:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
@@ -9576,9 +8073,30 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
+        "attachments": [
+          {
+            "aspect": "color",
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "load",
+            "resource": "display",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "final_layout": "depth_attachment_optimal",
+            "load": "load",
+            "resource": "offscreen_depth",
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
         "logical_view_count": 1,
-        "name": "__anchor_sprite",
+        "name": "sprite_draw",
         "order": 3,
         "sprite_draw": {
           "blend": "straight_alpha",
@@ -9628,64 +8146,8 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 5,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "color_counters": {
-          "paired_storage_round_trip": 3,
+          "paired_storage_round_trip": 4,
           "shader_oetf": 0,
           "terminal_display_encode": 1,
           "tone_curve": 1
@@ -9700,10 +8162,11 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 11,
+        "order": 4,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
+          "sprite_draw:display->output_transform",
           "lighting_pass:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
@@ -9963,9 +8426,30 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
+        "attachments": [
+          {
+            "aspect": "color",
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "load",
+            "resource": "display",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "final_layout": "depth_attachment_optimal",
+            "load": "load",
+            "resource": "offscreen_depth",
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
         "logical_view_count": 1,
-        "name": "__anchor_sprite",
+        "name": "sprite_draw",
         "order": 3,
         "sprite_draw": {
           "blend": "straight_alpha",
@@ -10015,64 +8499,8 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 5,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "color_counters": {
-          "paired_storage_round_trip": 3,
+          "paired_storage_round_trip": 4,
           "shader_oetf": 0,
           "terminal_display_encode": 1,
           "tone_curve": 1
@@ -10087,10 +8515,11 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 11,
+        "order": 4,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
+          "sprite_draw:display->output_transform",
           "lighting_pass:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
@@ -10350,9 +8779,30 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
+        "attachments": [
+          {
+            "aspect": "color",
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "load",
+            "resource": "display",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "final_layout": "depth_attachment_optimal",
+            "load": "load",
+            "resource": "offscreen_depth",
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
         "logical_view_count": 1,
-        "name": "__anchor_sprite",
+        "name": "sprite_draw",
         "order": 3,
         "sprite_draw": {
           "blend": "straight_alpha",
@@ -10405,64 +8855,8 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 5,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "color_counters": {
-          "paired_storage_round_trip": 3,
+          "paired_storage_round_trip": 4,
           "shader_oetf": 0,
           "terminal_display_encode": 1,
           "tone_curve": 1
@@ -10477,10 +8871,11 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 11,
+        "order": 4,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
+          "sprite_draw:display->output_transform",
           "lighting_pass:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
@@ -10535,38 +8930,6 @@
     ],
     "nodes": [
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 0,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 1,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 2,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 3,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "attachments": [
           {
             "aspect": "color",
@@ -10590,39 +8953,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "solid",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 5,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 8,
+        "order": 0,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -10643,7 +8974,7 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 9,
+        "order": 1,
         "paired_storage_edges": [
           "solid:display->output_transform"
         ],
@@ -10750,6 +9081,42 @@
               0.0,
               0.0,
               0.0,
+              0.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R16G16_SFLOAT",
+            "load": "clear",
+            "resource": "velocity",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "clear": 1.0,
+            "final_layout": "depth_attachment_optimal",
+            "load": "clear",
+            "resource": "velocity_depth",
+            "store": "dont_care"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "logical_view_count": 1,
+        "name": "velocity_pass",
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
               1.0
             ],
             "final_layout": "color_attachment_optimal",
@@ -10834,7 +9201,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0,
+        "order": 1,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -10862,7 +9229,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1,
+        "order": 2,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -10915,59 +9282,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
         "order": 3,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              0.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "format": "R16G16_SFLOAT",
-            "load": "clear",
-            "resource": "velocity",
-            "samples": 1,
-            "store": "store"
-          },
-          {
-            "aspect": "depth",
-            "clear": 1.0,
-            "final_layout": "depth_attachment_optimal",
-            "load": "clear",
-            "resource": "velocity_depth",
-            "store": "dont_care"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "velocity_pass",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 5,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -11012,7 +9327,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "taa_resolve",
-        "order": 6,
+        "order": 4,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -11045,23 +9360,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "taa_composite",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 9,
+        "order": 5,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -11093,40 +9392,8 @@
         ],
         "kind": "render",
         "logical_view_count": 1,
-        "name": "taa_present",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 11,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 12,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 13,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 14,
+        "name": "scene_present",
+        "order": 6,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -11147,13 +9414,13 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 15,
+        "order": 7,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
           "lighting_pass:lit_color->taa_resolve",
-          "taa_composite:lit_color->taa_present",
-          "taa_present:display->output_transform"
+          "taa_composite:lit_color->scene_present",
+          "scene_present:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
@@ -11258,6 +9525,42 @@
               0.0,
               0.0,
               0.0,
+              0.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R16G16_SFLOAT",
+            "load": "clear",
+            "resource": "velocity",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "clear": 1.0,
+            "final_layout": "depth_attachment_optimal",
+            "load": "clear",
+            "resource": "velocity_depth",
+            "store": "dont_care"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "logical_view_count": 1,
+        "name": "velocity_pass",
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
               1.0
             ],
             "final_layout": "color_attachment_optimal",
@@ -11342,7 +9645,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0,
+        "order": 1,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -11370,7 +9673,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1,
+        "order": 2,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -11423,59 +9726,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
         "order": 3,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              0.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "format": "R16G16_SFLOAT",
-            "load": "clear",
-            "resource": "velocity",
-            "samples": 1,
-            "store": "store"
-          },
-          {
-            "aspect": "depth",
-            "clear": 1.0,
-            "final_layout": "depth_attachment_optimal",
-            "load": "clear",
-            "resource": "velocity_depth",
-            "store": "dont_care"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "velocity_pass",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 5,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -11520,7 +9771,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "taa_resolve",
-        "order": 6,
+        "order": 4,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -11553,23 +9804,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "taa_composite",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 9,
+        "order": 5,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -11601,40 +9836,8 @@
         ],
         "kind": "render",
         "logical_view_count": 1,
-        "name": "taa_present",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 11,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 12,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 13,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 14,
+        "name": "scene_present",
+        "order": 6,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -11655,13 +9858,13 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 15,
+        "order": 7,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
           "lighting_pass:lit_color->taa_resolve",
-          "taa_composite:lit_color->taa_present",
-          "taa_present:display->output_transform"
+          "taa_composite:lit_color->scene_present",
+          "scene_present:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
@@ -11766,6 +9969,42 @@
               0.0,
               0.0,
               0.0,
+              0.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R16G16_SFLOAT",
+            "load": "clear",
+            "resource": "velocity",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "clear": 1.0,
+            "final_layout": "depth_attachment_optimal",
+            "load": "clear",
+            "resource": "velocity_depth",
+            "store": "dont_care"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "logical_view_count": 1,
+        "name": "velocity_pass",
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
               1.0
             ],
             "final_layout": "color_attachment_optimal",
@@ -11850,7 +10089,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0,
+        "order": 1,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -11878,7 +10117,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1,
+        "order": 2,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -11931,59 +10170,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
         "order": 3,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              0.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "format": "R16G16_SFLOAT",
-            "load": "clear",
-            "resource": "velocity",
-            "samples": 1,
-            "store": "store"
-          },
-          {
-            "aspect": "depth",
-            "clear": 1.0,
-            "final_layout": "depth_attachment_optimal",
-            "load": "clear",
-            "resource": "velocity_depth",
-            "store": "dont_care"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "velocity_pass",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 5,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -12028,7 +10215,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "taa_resolve",
-        "order": 6,
+        "order": 4,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -12061,23 +10248,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "taa_composite",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 9,
+        "order": 5,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -12109,40 +10280,8 @@
         ],
         "kind": "render",
         "logical_view_count": 1,
-        "name": "taa_present",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 11,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 12,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 13,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 14,
+        "name": "scene_present",
+        "order": 6,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -12163,13 +10302,13 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 15,
+        "order": 7,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
           "lighting_pass:lit_color->taa_resolve",
-          "taa_composite:lit_color->taa_present",
-          "taa_present:display->output_transform"
+          "taa_composite:lit_color->scene_present",
+          "scene_present:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
@@ -12274,6 +10413,42 @@
               0.0,
               0.0,
               0.0,
+              0.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R16G16_SFLOAT",
+            "load": "clear",
+            "resource": "velocity",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "clear": 1.0,
+            "final_layout": "depth_attachment_optimal",
+            "load": "clear",
+            "resource": "velocity_depth",
+            "store": "dont_care"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "logical_view_count": 1,
+        "name": "velocity_pass",
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
               1.0
             ],
             "final_layout": "color_attachment_optimal",
@@ -12358,7 +10533,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0,
+        "order": 1,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -12386,7 +10561,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1,
+        "order": 2,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -12439,59 +10614,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
         "order": 3,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              0.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "format": "R16G16_SFLOAT",
-            "load": "clear",
-            "resource": "velocity",
-            "samples": 1,
-            "store": "store"
-          },
-          {
-            "aspect": "depth",
-            "clear": 1.0,
-            "final_layout": "depth_attachment_optimal",
-            "load": "clear",
-            "resource": "velocity_depth",
-            "store": "dont_care"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "velocity_pass",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 5,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -12536,7 +10659,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "taa_resolve",
-        "order": 6,
+        "order": 4,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -12569,23 +10692,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "taa_composite",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 9,
+        "order": 5,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -12617,40 +10724,8 @@
         ],
         "kind": "render",
         "logical_view_count": 1,
-        "name": "taa_present",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 11,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 12,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 13,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 14,
+        "name": "scene_present",
+        "order": 6,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -12671,13 +10746,13 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 15,
+        "order": 7,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
           "lighting_pass:lit_color->taa_resolve",
-          "taa_composite:lit_color->taa_present",
-          "taa_present:display->output_transform"
+          "taa_composite:lit_color->scene_present",
+          "scene_present:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
@@ -12782,6 +10857,42 @@
               0.0,
               0.0,
               0.0,
+              0.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R16G16_SFLOAT",
+            "load": "clear",
+            "resource": "velocity",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "clear": 1.0,
+            "final_layout": "depth_attachment_optimal",
+            "load": "clear",
+            "resource": "velocity_depth",
+            "store": "dont_care"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "logical_view_count": 1,
+        "name": "velocity_pass",
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
               1.0
             ],
             "final_layout": "color_attachment_optimal",
@@ -12866,7 +10977,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0,
+        "order": 1,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -12894,7 +11005,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1,
+        "order": 2,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -12947,59 +11058,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
         "order": 3,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              0.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "format": "R16G16_SFLOAT",
-            "load": "clear",
-            "resource": "velocity",
-            "samples": 1,
-            "store": "store"
-          },
-          {
-            "aspect": "depth",
-            "clear": 1.0,
-            "final_layout": "depth_attachment_optimal",
-            "load": "clear",
-            "resource": "velocity_depth",
-            "store": "dont_care"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "velocity_pass",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 5,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -13044,7 +11103,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "taa_resolve",
-        "order": 6,
+        "order": 4,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -13077,23 +11136,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "taa_composite",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 9,
+        "order": 5,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -13125,40 +11168,8 @@
         ],
         "kind": "render",
         "logical_view_count": 1,
-        "name": "taa_present",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 11,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 12,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 13,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 14,
+        "name": "scene_present",
+        "order": 6,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -13179,13 +11190,13 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 15,
+        "order": 7,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
           "lighting_pass:lit_color->taa_resolve",
-          "taa_composite:lit_color->taa_present",
-          "taa_present:display->output_transform"
+          "taa_composite:lit_color->scene_present",
+          "scene_present:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
@@ -13290,6 +11301,42 @@
               0.0,
               0.0,
               0.0,
+              0.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R16G16_SFLOAT",
+            "load": "clear",
+            "resource": "velocity",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "clear": 1.0,
+            "final_layout": "depth_attachment_optimal",
+            "load": "clear",
+            "resource": "velocity_depth",
+            "store": "dont_care"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "logical_view_count": 1,
+        "name": "velocity_pass",
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
               1.0
             ],
             "final_layout": "color_attachment_optimal",
@@ -13374,7 +11421,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0,
+        "order": 1,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -13402,7 +11449,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1,
+        "order": 2,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -13455,59 +11502,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
         "order": 3,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              0.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "format": "R16G16_SFLOAT",
-            "load": "clear",
-            "resource": "velocity",
-            "samples": 1,
-            "store": "store"
-          },
-          {
-            "aspect": "depth",
-            "clear": 1.0,
-            "final_layout": "depth_attachment_optimal",
-            "load": "clear",
-            "resource": "velocity_depth",
-            "store": "dont_care"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "velocity_pass",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 5,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -13552,7 +11547,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "taa_resolve",
-        "order": 6,
+        "order": 4,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -13585,23 +11580,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "taa_composite",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 9,
+        "order": 5,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -13633,40 +11612,8 @@
         ],
         "kind": "render",
         "logical_view_count": 1,
-        "name": "taa_present",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 11,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 12,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 13,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 14,
+        "name": "scene_present",
+        "order": 6,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -13687,13 +11634,13 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 15,
+        "order": 7,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
           "lighting_pass:lit_color->taa_resolve",
-          "taa_composite:lit_color->taa_present",
-          "taa_present:display->output_transform"
+          "taa_composite:lit_color->scene_present",
+          "scene_present:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
@@ -13798,6 +11745,42 @@
               0.0,
               0.0,
               0.0,
+              0.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "R16G16_SFLOAT",
+            "load": "clear",
+            "resource": "velocity",
+            "samples": 1,
+            "store": "store"
+          },
+          {
+            "aspect": "depth",
+            "clear": 1.0,
+            "final_layout": "depth_attachment_optimal",
+            "load": "clear",
+            "resource": "velocity_depth",
+            "store": "dont_care"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [],
+        "kind": "render",
+        "logical_view_count": 1,
+        "name": "velocity_pass",
+        "order": 0,
+        "view_execution": "single_view",
+        "view_index": 0
+      },
+      {
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
               1.0
             ],
             "final_layout": "color_attachment_optimal",
@@ -13882,7 +11865,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "gbuffer_pass",
-        "order": 0,
+        "order": 1,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -13910,7 +11893,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "ssao_clear",
-        "order": 1,
+        "order": 2,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -13963,59 +11946,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "lighting_pass",
-        "order": 2,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
         "order": 3,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "attachments": [
-          {
-            "aspect": "color",
-            "clear": [
-              0.0,
-              0.0,
-              0.0,
-              0.0
-            ],
-            "final_layout": "color_attachment_optimal",
-            "format": "R16G16_SFLOAT",
-            "load": "clear",
-            "resource": "velocity",
-            "samples": 1,
-            "store": "store"
-          },
-          {
-            "aspect": "depth",
-            "clear": 1.0,
-            "final_layout": "depth_attachment_optimal",
-            "load": "clear",
-            "resource": "velocity_depth",
-            "store": "dont_care"
-          }
-        ],
-        "blend": false,
-        "input_buffers": [],
-        "inputs": [],
-        "kind": "render",
-        "logical_view_count": 1,
-        "name": "velocity_pass",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 5,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -14060,7 +11991,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "taa_resolve",
-        "order": 6,
+        "order": 4,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -14093,23 +12024,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "taa_composite",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 9,
+        "order": 5,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -14141,40 +12056,8 @@
         ],
         "kind": "render",
         "logical_view_count": 1,
-        "name": "taa_present",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 11,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 12,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 13,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 14,
+        "name": "scene_present",
+        "order": 6,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -14195,13 +12078,13 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 15,
+        "order": 7,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
           "lighting_pass:lit_color->taa_resolve",
-          "taa_composite:lit_color->taa_present",
-          "taa_present:display->output_transform"
+          "taa_composite:lit_color->scene_present",
+          "scene_present:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
@@ -14291,22 +12174,6 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 1,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 2,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "attachments": [
           {
             "aspect": "color",
@@ -14339,23 +12206,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "temporal_accumulate",
-        "order": 3,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 5,
+        "order": 1,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -14388,39 +12239,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "temporal_present",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 10,
+        "order": 2,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -14441,7 +12260,7 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 11,
+        "order": 3,
         "paired_storage_edges": [
           "temporal_present:display->output_transform"
         ],
@@ -14497,38 +12316,6 @@
     ],
     "nodes": [
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 0,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 1,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 2,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 3,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "attachments": [
           {
             "aspect": "color",
@@ -14552,15 +12339,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "present",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 5,
+        "order": 0,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -14582,37 +12361,13 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "pelican_ui",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 9,
+        "order": 1,
         "view_execution": "single_view",
         "view_index": 0
       },
       {
         "color_counters": {
-          "paired_storage_round_trip": 1,
+          "paired_storage_round_trip": 2,
           "shader_oetf": 0,
           "terminal_display_encode": 1,
           "tone_curve": 1
@@ -14627,9 +12382,10 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 10,
+        "order": 2,
         "paired_storage_edges": [
-          "pelican_ui:display->output_transform"
+          "pelican_ui:display->output_transform",
+          "present:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
@@ -14683,38 +12439,6 @@
     ],
     "nodes": [
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 0,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 1,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 2,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 3,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "attachments": [
           {
             "aspect": "color",
@@ -14738,15 +12462,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "present",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 5,
+        "order": 0,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -14768,37 +12484,13 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "pelican_ui",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 9,
+        "order": 1,
         "view_execution": "single_view",
         "view_index": 0
       },
       {
         "color_counters": {
-          "paired_storage_round_trip": 1,
+          "paired_storage_round_trip": 2,
           "shader_oetf": 0,
           "terminal_display_encode": 1,
           "tone_curve": 1
@@ -14813,9 +12505,10 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 10,
+        "order": 2,
         "paired_storage_edges": [
-          "pelican_ui:display->output_transform"
+          "pelican_ui:display->output_transform",
+          "present:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
@@ -15276,34 +12969,35 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
+        "attachments": [
+          {
+            "aspect": "color",
+            "clear": [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ],
+            "final_layout": "color_attachment_optimal",
+            "format": "B8G8R8A8_SRGB",
+            "load": "clear",
+            "resource": "display",
+            "samples": 1,
+            "store": "store"
+          }
+        ],
+        "blend": false,
+        "input_buffers": [],
+        "inputs": [
+          {
+            "final_layout": "shader_read_only_optimal",
+            "resource": "lit_color"
+          }
+        ],
+        "kind": "render",
         "logical_view_count": 1,
-        "name": "__anchor_sprite",
+        "name": "scene_present",
         "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 10,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -15336,7 +13030,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "HighLuminanceExtraction",
-        "order": 11,
+        "order": 8,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -15369,7 +13063,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "HorizontalBlur_0",
-        "order": 12,
+        "order": 9,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -15402,7 +13096,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "VerticalBlur_0",
-        "order": 13,
+        "order": 10,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -15435,7 +13129,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "HorizontalBlur_1",
-        "order": 14,
+        "order": 11,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -15468,7 +13162,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "VerticalBlur_1",
-        "order": 15,
+        "order": 12,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -15501,7 +13195,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "HorizontalBlur_2",
-        "order": 16,
+        "order": 13,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -15534,7 +13228,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "VerticalBlur_2",
-        "order": 17,
+        "order": 14,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -15567,7 +13261,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "HorizontalBlur_3",
-        "order": 18,
+        "order": 15,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -15600,7 +13294,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "VerticalBlur_3",
-        "order": 19,
+        "order": 16,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -15627,7 +13321,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "UpsampleBlend_3",
-        "order": 20,
+        "order": 17,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -15654,7 +13348,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "UpsampleBlend_2",
-        "order": 21,
+        "order": 18,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -15681,7 +13375,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "UpsampleBlend_1",
-        "order": 22,
+        "order": 19,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -15714,15 +13408,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "FinalBloomComposite",
-        "order": 23,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 24,
+        "order": 20,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -15744,37 +13430,13 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "pelican_ui",
-        "order": 25,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 26,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 27,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 28,
+        "order": 21,
         "view_execution": "single_view",
         "view_index": 0
       },
       {
         "color_counters": {
-          "paired_storage_round_trip": 15,
+          "paired_storage_round_trip": 17,
           "shader_oetf": 0,
           "terminal_display_encode": 1,
           "tone_curve": 1
@@ -15789,7 +13451,7 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 29,
+        "order": 22,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
@@ -15805,7 +13467,9 @@
           "UpsampleBlend_3:Bloom_Upsample_V_2_RT->UpsampleBlend_2",
           "UpsampleBlend_2:Bloom_Upsample_V_1_RT->UpsampleBlend_1",
           "UpsampleBlend_1:Bloom_Upsample_V_0_RT->FinalBloomComposite",
-          "pelican_ui:display->output_transform"
+          "pelican_ui:display->output_transform",
+          "scene_present:display->output_transform",
+          "FinalBloomComposite:display->output_transform"
         ],
         "queue_ownership": "same_family_or_concurrent; VK_QUEUE_FAMILY_IGNORED",
         "samples": 1,
@@ -16259,38 +13923,6 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 11,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "attachments": [
           {
             "aspect": "color",
@@ -16319,39 +13951,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "scene_present",
-        "order": 12,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 13,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 14,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 15,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 16,
+        "order": 8,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -16372,7 +13972,7 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 17,
+        "order": 9,
         "paired_storage_edges": [
           "deferred_geometry:gbuffer_albedo->deferred_lighting",
           "deferred_geometry:g_emissive->deferred_lighting",
@@ -16857,38 +14457,6 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 11,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 12,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "attachments": [
           {
             "aspect": "color",
@@ -16917,39 +14485,7 @@
         "kind": "render",
         "logical_view_count": 1,
         "name": "scene_present",
-        "order": 13,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 14,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 15,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 16,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 17,
+        "order": 9,
         "view_execution": "single_view",
         "view_index": 0
       },
@@ -16970,7 +14506,7 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 18,
+        "order": 10,
         "paired_storage_edges": [
           "deferred_geometry:gbuffer_albedo->deferred_lighting",
           "deferred_geometry:g_emissive->deferred_lighting",
@@ -17233,70 +14769,6 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 3,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 5,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "color_counters": {
           "paired_storage_round_trip": 3,
           "shader_oetf": 0,
@@ -17313,7 +14785,7 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 11,
+        "order": 3,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
@@ -17576,70 +15048,6 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 3,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 5,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "color_counters": {
           "paired_storage_round_trip": 3,
           "shader_oetf": 0,
@@ -17656,7 +15064,7 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 11,
+        "order": 3,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",
@@ -17919,70 +15327,6 @@
         "view_index": 0
       },
       {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_sprite",
-        "order": 3,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_main",
-        "order": 4,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_tonemap",
-        "order": 5,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_post_ldr",
-        "order": 6,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_pelican_ui",
-        "order": 7,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_draw",
-        "order": 8,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_debug_text",
-        "order": 9,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
-        "kind": "anchor",
-        "logical_view_count": 1,
-        "name": "__anchor_imgui",
-        "order": 10,
-        "view_execution": "single_view",
-        "view_index": 0
-      },
-      {
         "color_counters": {
           "paired_storage_round_trip": 3,
           "shader_oetf": 0,
@@ -17999,7 +15343,7 @@
         "logical_view_count": 1,
         "mode": "hardware_srgb_encode",
         "name": "output_transform",
-        "order": 11,
+        "order": 3,
         "paired_storage_edges": [
           "gbuffer_pass:gbuffer_albedo->lighting_pass",
           "gbuffer_pass:g_emissive->lighting_pass",

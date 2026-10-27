@@ -1,3 +1,4 @@
+#include "../../project/canonicalanchorremoved.hpp"
 #include "renderstrategyregistry.hpp"
 #include "../registrationownerhost.hpp"
 
@@ -842,7 +843,8 @@ ResolvedRenderStrategyConfig resolveRenderStrategy(
     }
     // RC-3b: the provider's response is a boundary of the rendering JSON.
     // The fingerprint below is of the normalized config.
-    candidate = normalizeProviderRenderingJson(std::move(candidate));
+    rejectRemovedCanonicalAuthoring(candidate, "provider://" + resolved.selection.provider);
+        candidate = normalizeProviderRenderingJson(std::move(candidate));
     const auto canonical_candidate =
         canonicalJson(candidate);
     if (canonical_candidate.size() >

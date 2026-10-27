@@ -5125,6 +5125,13 @@ TEST_CASE("LP-4f1 the Loop fields run over a view axis the frame plan lists, nev
     h.answerReads();
     PelicanStudio::GraphCanvasLoopFields fields{h.model, [] {}, {}};
     fields.showLoop("steps");
+    auto *place = lp4f1Field<QComboBox>(fields, "pelican.graphCanvasLoop.place");
+    CHECK(place->findData(QStringLiteral("before|present")) >= 0);
+    CHECK(place->findData(QStringLiteral("after|present")) >= 0);
+    for (int row = 0; row < place->count(); ++row) {
+        CHECK_FALSE(place->itemData(row).toString().startsWith(QStringLiteral("anchor|")));
+        CHECK_FALSE(place->itemData(row).toString().contains(QStringLiteral("__anchor_")));
+    }
     auto *over = lp4f1Field<QComboBox>(fields, "pelican.graphCanvasLoop.over");
     CHECK(over->currentData().toString() == QStringLiteral("range"));
     // The candidates are the families a pass of the plan runs in, with
@@ -9289,7 +9296,7 @@ TEST_CASE("UX-3 decision 2: a render node's Place and family are picked, each on
           "set_node_parameters; a compute task takes none",
           "[devstudio][graph-canvas][scene][ux3]") {
     (void)application();
-    Ux2Tab tab{true};
+    Ux2Tab tab{true, true};
     auto document = ux2Document();
     tab.read(document, "ux3-0");
     tab.answer("get_graph_catalog", ux2Catalog());
@@ -9300,19 +9307,29 @@ TEST_CASE("UX-3 decision 2: a render node's Place and family are picked, each on
     tab.widget->poll();
     REQUIRE(tab.reads("get_render_authoring_context") == 1);
     tab.answer("get_render_authoring_context", ux3Authoring());
+    tab.answer("get_frame_plan", {{"graph", "main_render"}, {"nodes", Json::array({
+        {{"name", "lighting"}, {"kind", "render"}, {"order", 0}},
+        {{"name", "post_ldr"}, {"kind", "render"}, {"order", 1}},
+        {{"name", "__anchor_sprite"}, {"kind", "anchor"}, {"order", 2}}})}});
     tab.widget->poll();
     QCoreApplication::processEvents();
     auto *place = tab.field<QComboBox>("pelican.graphCanvasPlace.place");
     auto *family = tab.field<QComboBox>("pelican.graphCanvasPlace.passSet");
     CHECK(place->currentData().toString() == QStringLiteral("automatic|"));
-    CHECK(place->findData(QStringLiteral("anchor|post_ldr")) >= 0);
+    CHECK(place->findData(QStringLiteral("anchor|post_ldr")) < 0);
+    CHECK(place->findData(QStringLiteral("before|lighting")) >= 0);
+    CHECK(place->findData(QStringLiteral("after|post_ldr")) >= 0);
+    for (int row = 0; row < place->count(); ++row) {
+        CHECK_FALSE(place->itemData(row).toString().startsWith(QStringLiteral("anchor|")));
+        CHECK_FALSE(place->itemData(row).toString().contains(QStringLiteral("__anchor_")));
+    }
     CHECK(family->findData(QStringLiteral("overlay")) >= 0);
 
     // After an anchor: one edit, the anchor and nothing else changed.
-    tab.pick(place, QStringLiteral("anchor|post_ldr"));
+    tab.pick(place, QStringLiteral("before|lighting"));
     auto op = tab.sent(1);
     auto expected = ux2Pass();
-    expected["canonical_anchor"] = "post_ldr";
+    expected["insert"] = {{"before", "lighting"}};
     CHECK(op.at("parameters") == expected);
     document["nodes"][1]["parameters"] = expected;
     tab.commit(document, "ux3-1");

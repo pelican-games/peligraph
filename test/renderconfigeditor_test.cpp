@@ -4930,25 +4930,20 @@ TEST_CASE("FO-1 frame_node_order swaps two passes of the rendering section with 
         start(fo1OrderRoot([](Json &passes, Json &) { passes.at(0)["before"] = {"right"}; }));
         requireConflict(order({{"main_render", {"right", "left"}}}), "right", "left", "before");
     }
-    SECTION("a pass of a later canonical bucket before a scene pass: canonical_order, with the anchor") {
-        // `tint` is in the post_main bucket; `present` reads it, so it is no
-        // pass nothing reads.
+    SECTION("independent scene and display-era passes can cross their former buckets") {
         start(fo1OrderRoot([](Json &passes, Json &targets) {
             targets.push_back(targets.at(0));
             targets.back()["name"] = "tint_color";
             Json tint = passes.at(0);
             tint["name"] = "tint";
             tint["output"]["color"] = {"tint_color"};
-            tint["canonical_anchor"] = "post_main";
             passes.at(2)["input"].push_back("tint_color");
             passes.insert(passes.begin() + 2, tint);
         }));
         REQUIRE(position("right") < position("tint"));
         const auto result = order({{"main_render", {"tint", "left"}}});
-        requireConflict(result, "tint", "left", "canonical_order");
-        CHECK(result.at("error").at("anchor").get<std::string>().starts_with("__anchor_"));
-        CHECK_FALSE(result.at("error").at("via").empty());
-        // In the buckets' order, the same two are accepted.
+        CHECK(result.at("committed") == true);
+        CHECK(position("tint") < position("left"));
         const auto agreed = order({{"main_render", {"left", "tint"}}});
         CHECK(agreed.at("committed") == true);
     }
@@ -5657,7 +5652,7 @@ TEST_CASE("Project preset pass edits publish without changing the root document"
         CHECK(Json::parse(readBytes(preset_path)) == preset);
     }
     SECTION("generated and feature nodes cannot be edited as preset passes") {
-        request["pass_name"] = "__anchor_tonemap";
+        request["pass_name"] = "output_transform";
         REQUIRE(service->editPresetPass(request).at("status") == "rejected");
         request["pass_name"] = "pelican_ui";
         REQUIRE(service->editPresetPass(request).at("status") == "rejected");
@@ -5952,7 +5947,7 @@ TEST_CASE("Feature parameter overrides publish through the shared binder and pre
       "parameters":{"schema":"pelican.render_feature_parameters","version":1,
                     "scalars":[{"name":"strength","type":"float","range":[0,1],"default":0.25}]},
       "passes":[{"insert":"before:scene_present","pass":{
-        "name":"parameter_probe","type":"fullscreen","input":["gbuffer_normal"],
+        "name":"parameter_probe","type":"fullscreen","input":["gbuffer_normal"],"after":["forward_transparent"],
         "output":{"color":["lit_color"],"depth":null},"clear_color":["$strength",0,0,1],
         "shader":{"vertex":"engine://fullscreen","fragment":"engine://fullscreen"}}}]
     })json");
@@ -6082,7 +6077,7 @@ TEST_CASE("Project feature pass edits publish their source and retain the render
         TemporaryAnimgraphProject project;
         PathResolver resolver;
         resolver.setup(project.root, false);
-        Json pass{{"name", "feature_probe"}, {"type", type},
+        Json pass{{"name", "feature_probe"}, {"type", type}, {"after", {"forward_transparent"}},
                   {"input", Json::array({"gbuffer_normal"})},
                   {"output", {{"color", Json::array({"lit_color"})}, {"depth", nullptr}}}};
         if (auxiliary) pass.erase("input");
@@ -6130,7 +6125,7 @@ TEST_CASE("Project feature pass edits publish their source and retain the render
         invalid["material_routing"] = nullptr;
         CHECK(service->editPresetPass(invalid).at("status") == "rejected");
         invalid = request;
-        invalid["pass_name"] = "__anchor_tonemap";
+        invalid["pass_name"] = "output_transform";
         CHECK(service->editPresetPass(invalid).at("status") == "rejected");
         const auto before = readBytes(feature_path);
         const auto accepted = service->editPresetPass(request);
@@ -6184,6 +6179,7 @@ TEST_CASE("Project auxiliary preset edits preserve declarations and reopen",
             {"format", std::string_view{type} == "picking" ? "R32_UINT" : "R16G16B16A16_SFLOAT"},
             {"format_class", "data"}, {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}});
         Json declaration{{"name", "aux_probe"}, {"type", type},
+            {"after", {"scene_present"}},
             {"output", {{"color", shadow ? Json(nullptr) : Json::array({"aux_color"})},
                         {"depth", geometry ? Json("scene_depth") : Json(nullptr)}}}};
         if (std::string_view{type} != "debug_draw") {
@@ -10706,7 +10702,9 @@ struct Gt1Harness {
     explicit Gt1Harness(const std::vector<std::string> &extra = {},
                         std::function<std::optional<std::string>(std::string_view)> authoring_override = {}) {
         auto root = Json::parse(readBytes(project.render_config));
-        for (const auto &feature : extra) root["rendering"]["features"].push_back(feature);
+        auto &features = root["rendering"]["features"];
+        for (const auto &feature : extra)
+            features.insert(std::find(features.begin(), features.end(), Json("engine://features/ui.json")), feature);
         writeBytes(project.render_config, root.dump(2) + "\n");
         resolver.setup(project.root, false);
         service = makeProjectService(project, resolver, runtime, {}, std::move(authoring_override));
@@ -10887,6 +10885,52 @@ TEST_CASE("GT-1 apply_graph_template takes bloom_loop in place of the bloom feat
     CHECK(call("get_edit_result", {{"ticket", restored.at("ticket")}}).at("committed") == true);
     CHECK(readBytes(harness.project.render_config) == root_before);
     CHECK(harness.runtime.frame_plan == plan_before);
+}
+
+TEST_CASE("RC-5s graph template replacement removes bloom from the direct root RPC features",
+          "[render-config-editor][gt1][rc5s]") {
+    TemporaryAnimgraphProject project;
+    writeBytes(project.render_config, readBytes(std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+        "test/fixtures/studio_graph_template_bloom/passes/main.json"));
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    std::shared_ptr<RenderConfigEditorService> service = makeProjectService(project, resolver, runtime);
+    const auto scene = AuthoringSceneDocument::load(
+        readBytes(std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+            "test/fixtures/authoring_scene/multi_scene_roundtrip.json"), SceneRevision{1});
+    EditorCommandService commands{EditorCommandServiceDependencies{
+        .document = [&scene]() -> const AuthoringSceneDocument & { return scene; },
+        .current_scene_id = [] { return std::string{"main"}; },
+        .render_config_editor = service,
+    }};
+    EditorCommandRpcAdapter adapter{commands};
+    std::istringstream input;
+    std::ostringstream output;
+    RpcServer rpc{input, output};
+    configureEditorRpcHandlers(rpc, adapter,
+        EditorRpcHandlerHooks{.snapshot_imported = [] {}, .save_busy = [] { return false; }});
+    int id = 1;
+    const auto call = [&](std::string_view method, Json params) {
+        const auto response = Json::parse(rpc.processLine(Json{
+            {"jsonrpc", "2.0"}, {"id", id++}, {"method", method}, {"params", std::move(params)}}.dump()));
+        INFO(response.dump());
+        REQUIRE(response.contains("result"));
+        return response.at("result");
+    };
+    REQUIRE(call("get_render_features", Json::object()).at("features") ==
+            Json::array({"engine://features/bloom.json"}));
+    const auto accepted = call("apply_graph_template", {
+        {"base_source_digest", call("get_render_features", Json::object()).at("source_digest").at("hex")},
+        {"template", gt1Reference("bloom_loop.json")}});
+    INFO(accepted.dump());
+    REQUIRE(accepted.at("status") == "accepted");
+    commands.commitPendingEdits();
+    const auto result = call("get_edit_result", {{"ticket", accepted.at("ticket")}});
+    INFO(result.dump());
+    REQUIRE(result.at("committed") == true);
+    CHECK(call("get_render_features", Json::object()).at("features").empty());
+    CHECK(Json::parse(readBytes(project.render_config)).at("rendering").at("features").empty());
 }
 
 // Acceptance 3: shadow_cascade_loop into a project with shadow_directional.
@@ -12261,7 +12305,7 @@ TEST_CASE("FR-1 the catalog gives each feature's required targets and adding one
     CHECK(readBytes(project.render_config) == before);
 
     const auto context = service->getRenderAuthoringContext(Json::object());
-    CHECK(context.at("snapshot_after_candidates") == nlohmann::ordered_json::array({"post_ldr"}));
+    CHECK(context.at("snapshot_after_candidates") == nlohmann::ordered_json::array({"present"}));
 }
 
 // FR-2: Blank built up in the Graph with the depth sky_ambient reads but no

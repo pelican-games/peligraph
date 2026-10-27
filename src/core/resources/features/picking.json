@@ -9,7 +9,10 @@
       "format": "R32_UINT",
       "format_class": "data",
       "role": "data",
-      "usage": ["COLOR_ATTACHMENT", "TRANSFER_SRC"]
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "TRANSFER_SRC"
+      ]
     },
     {
       "name": "picking_depth",
@@ -17,22 +20,32 @@
       "format": "D32_SFLOAT",
       "format_class": "data",
       "role": "data",
-      "usage": ["DEPTH_STENCIL_ATTACHMENT"]
+      "usage": [
+        "DEPTH_STENCIL_ATTACHMENT"
+      ]
     }
   ],
   "passes": [
     {
-      "insert": "before:post_main",
+      "insert": "begin",
       "pass": {
         "name": "picking_pass",
         "type": "picking",
-        "output": {"color": "picking_id", "depth": "picking_depth"},
+        "output": {
+          "color": "picking_id",
+          "depth": "picking_depth"
+        },
         "shader": {
           "vertex": "engine://picking",
           "skinned_vertex": "engine://picking_skinned",
           "fragment": "engine://picking"
         },
-        "clear_color": [0, 0, 0, 0],
+        "clear_color": [
+          0,
+          0,
+          0,
+          0
+        ],
         "color_store_op": "store",
         "depth_store_op": "dont_care"
       }

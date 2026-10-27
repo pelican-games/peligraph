@@ -674,7 +674,7 @@ TEST_CASE("FO-1s decision 1: a refused node order is one sentence by its reason,
           "[devstudio][frame-node-order][fo1s][widget]") {
     Rig rig;
     rig.features->editFrameNodeOrder(QStringLiteral("main_render"),
-                                     {QStringLiteral("left"), QStringLiteral("right"), QStringLiteral("present")},
+                                     {QStringLiteral("left"), QStringLiteral("__anchor_sprite"), QStringLiteral("right"), QStringLiteral("present")},
                                      5);
     const auto context = rig.next("get_frame_node_order");
     REQUIRE(context);
@@ -745,10 +745,48 @@ TEST_CASE("FO-1s decision 1: a refused node order is one sentence by its reason,
                     {"via", {"b", "d"}}}) ==
           "a must stay before c: b reads a_color, which a writes, and c waits on b through d "
           "(frame_node_order.conflicts_dependency@1).");
-    CHECK(sentence({{"first", "sprite"}, {"second", "shade"}, {"reason", "canonical_order"},
-                    {"anchor", "__anchor_sprite"}, {"via", {"__anchor_sprite"}}}) ==
-          "shade must stay before sprite: the stages of a frame run in a fixed order (__anchor_sprite stands "
+    CHECK(sentence({{"first", "sprite"}, {"second", "shade"}, {"reason", "output_terminal"},
+                    {"anchor", "output_transform"}, {"via", {"output_transform"}}}) ==
+          "shade must stay before sprite: output_transform must run after the family's other nodes (output_transform stands "
           "between them) (frame_node_order.conflicts_dependency@1).");
+}
+
+TEST_CASE("RC-5s Order Apply and reopening save only concrete node names", "[devstudio][frame-node-order][rc5s][widget]") {
+    Rig rig;
+    rig.features->editFrameNodeOrder(QStringLiteral("main_render"),
+        {QStringLiteral("left"), QStringLiteral("__anchor_sprite"), QStringLiteral("post_ldr"), QStringLiteral("right")}, 5);
+    auto context = rig.next("get_frame_node_order"); REQUIRE(context);
+    rig.answer(*context, {{"published_generation", 5}, {"source_digest", {{"hex", RootA}}},
+        {"orders", {{"main_render", {"left", "__anchor_sprite", "post_ldr", "right"}}, {"overlay", {"__anchor_imgui", "tail"}}}}});
+    auto *dialog = rig.features->findChild<QDialog *>(QStringLiteral("pelican.frameNodeOrder")); REQUIRE(dialog);
+    auto &nodes = required<QListWidget>(*dialog, "pelican.frameNodeOrder.nodes");
+    REQUIRE(nodes.count() == 3);
+    nodes.setCurrentRow(2);
+    required<QPushButton>(*dialog, "pelican.frameNodeOrder.up").click();
+    required<QPushButton>(*dialog, "pelican.frameNodeOrder.up").click();
+    required<QPushButton>(*dialog, "pelican.frameNodeOrder.apply").click();
+    const auto sent = rig.next("edit_frame_node_order"); REQUIRE(sent);
+    const auto saved = sent->at("params").at("orders");
+    CHECK(saved == Json{{"main_render", {"right", "left", "post_ldr"}}, {"overlay", {"tail"}}});
+    CHECK(saved.dump().find("__anchor_") == std::string::npos);
+    rig.answer(*sent, {{"status", "accepted"}, {"ticket", "rc5s-order"}});
+    const auto poll = rig.next("get_edit_result"); REQUIRE(poll);
+    rig.answer(*poll, {{"status", "committed"}, {"committed", true}, {"source_digest", {{"hex", RootB}}}, {"published_generation", 6}});
+    rig.features.reset();
+    rig.features = std::make_unique<RenderFeaturesWidget>(&rig.viewport);
+    rig.features->setRenderConfigDigest(rig.digest);
+    rig.features->editFrameNodeOrder(QStringLiteral("main_render"),
+        {QStringLiteral("right"), QStringLiteral("left"), QStringLiteral("post_ldr")}, 6);
+    context = rig.next("get_frame_node_order"); REQUIRE(context);
+    rig.answer(*context, {{"published_generation", 6}, {"source_digest", {{"hex", RootB}}}, {"orders", Json::parse(saved.dump())}});
+    dialog = rig.features->findChild<QDialog *>(QStringLiteral("pelican.frameNodeOrder")); REQUIRE(dialog);
+    auto &reopened = required<QListWidget>(*dialog, "pelican.frameNodeOrder.nodes");
+    REQUIRE(reopened.count() == 3);
+    CHECK(reopened.item(0)->text() == QStringLiteral("right"));
+    CHECK(reopened.item(2)->text() == QStringLiteral("post_ldr"));
+    required<QPushButton>(*dialog, "pelican.frameNodeOrder.reset").click();
+    const auto reset = rig.next("edit_frame_node_order"); REQUIRE(reset);
+    CHECK(reset->at("params").at("orders") == Json{{"overlay", {"tail"}}});
 }
 
 TEST_CASE("RT-A dialog unconfirmed recovery coalesces one feature refresh per committed digest", "[devstudio][rta][task-editor][widget]") {

@@ -1,4 +1,5 @@
 #include "graphcomposition.hpp"
+#include "canonicalanchorremoved.hpp"
 #include "featurecompose.hpp"
 #include "graphloopexpression.hpp"
 #include "renderpipeline.hpp"
@@ -398,10 +399,7 @@ GraphLoopShape parseGraphLoopShape(const Json &node, const std::string &pointer)
         shape.placement = GraphLoopPlacement{side.key() == "after", side->get<std::string>()};
     }
     if (const auto anchor = parameters.find("canonical_anchor"); anchor != parameters.end()) {
-        if (!anchor->is_string()) throw std::invalid_argument("graph.loop canonical_anchor must be a string: " + id);
-        if (!isCanonicalRenderPassAnchor(anchor->get<std::string>()))
-            throw GraphRegistryError("graph.insert_anchor_unknown@1", {{"node", id}, {"anchor", *anchor}});
-        shape.placement = GraphLoopPlacement{true, anchor->get<std::string>()};
+        refuseRemovedCanonicalAnchor(*anchor, "/parameters/canonical_anchor");
     }
     return shape;
 }

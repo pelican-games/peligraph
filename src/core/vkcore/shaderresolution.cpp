@@ -160,6 +160,7 @@ Json passShaderResolution(
     if (pass.isMaterial()) {
         return Json{{"state", "material_owned"}};
     }
+    if (pass.isSprite()) return engineFixedResolution("engine://sprite");
     if (pass.isUi()) {
         return engineFixedResolution("engine://ui");
     }

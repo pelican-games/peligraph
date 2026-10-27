@@ -83,6 +83,8 @@ auto findPlan(const Rows &rows, std::string_view spelling)
 
 PassAttachmentOperations defaultPassAttachmentOperations(
     RenderPassType pass_type, AttachmentAspect aspect) {
+    if (pass_type == RenderPassType::sprite)
+        return PassAttachmentOperations{AttachmentLoadOp::load, AttachmentStoreOp::store};
     switch (aspect) {
     case AttachmentAspect::color:
         return PassAttachmentOperations{

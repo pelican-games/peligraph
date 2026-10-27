@@ -1651,14 +1651,14 @@
       "value_of": "sea_0"
     },
     {
-      "label": "PS-1s decision 6: the frame plan's node 0 is render_compute",
+      "label": "PS-1s decision 6: the frame plan's named node is render_compute",
       "expect": "result",
       "command": {
         "cmd": "rpc",
         "method": "get_frame_plan",
         "params": {}
       },
-      "path": "result.nodes[0].name",
+      "path": "result.nodes[name=render_compute].name",
       "value": "render_compute",
       "retry_ms": 30000
     },
@@ -1670,7 +1670,7 @@
         "method": "get_frame_plan",
         "params": {}
       },
-      "path": "result.nodes[0].schedule",
+      "path": "result.nodes[name=render_compute].schedule",
       "value": "once",
       "retry_ms": 30000
     },
@@ -1682,7 +1682,7 @@
         "method": "get_frame_plan",
         "params": {}
       },
-      "path": "result.nodes[0].last_run_generation",
+      "path": "result.nodes[name=render_compute].last_run_generation",
       "op": "ne",
       "value": null,
       "retry_ms": 30000
@@ -1695,7 +1695,7 @@
         "method": "get_frame_plan",
         "params": {}
       },
-      "path": "result.nodes[0].last_run_frame",
+      "path": "result.nodes[name=render_compute].last_run_frame",
       "remember": "h0_ran"
     },
     {
@@ -1731,7 +1731,7 @@
         "method": "get_frame_plan",
         "params": {}
       },
-      "path": "result.nodes[0].last_run_frame",
+      "path": "result.nodes[name=render_compute].last_run_frame",
       "value_of": "h0_ran"
     },
     {
@@ -1772,7 +1772,7 @@
         "method": "get_frame_plan",
         "params": {}
       },
-      "path": "result.nodes[0].last_run_frame",
+      "path": "result.nodes[name=render_compute].last_run_frame",
       "op": "gt",
       "value_of": "h0_ran",
       "retry_ms": 30000

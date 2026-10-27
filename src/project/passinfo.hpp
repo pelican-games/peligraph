@@ -83,5 +83,6 @@ struct PickingPassInfo {
 };
 
 struct UiPassInfo {};
+struct SpritePassInfo {};
 
 } // namespace Pelican

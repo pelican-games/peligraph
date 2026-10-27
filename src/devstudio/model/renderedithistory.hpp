@@ -94,6 +94,8 @@ class RenderEditHistory {
     // One item of the history, as the UI names it.
     struct Entry {
         std::string label;
+        // Order edits never write the removed empty nodes back, including Undo.
+        bool concrete_node_order = false;
         // Undo (or Redo) stops here; `barrier_reason` says why.
         bool barrier = false;
         std::string barrier_reason;

@@ -649,7 +649,7 @@ TEST_CASE("RC-3b B3 the generators write the normal form", "[rc3b][b3]") {
     // (requireNormalizedRenderingJson) before returning it.
     const auto root = TestSupport::renderGraphRoot(Json{
         {"render_targets", Json::array({image("scene")})},
-        {"snapshots", Json::array({Json{{"name", "opaque"}, {"after", "post_ldr"}}})},
+        {"snapshots", Json::array({Json{{"name", "opaque"}, {"after", "draw"}}})},
         {"rendering_passes",
          Json::array({Json{{"name", "main"},
                            {"passes", Json::array({Json{{"name", "draw"},

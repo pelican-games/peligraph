@@ -789,6 +789,14 @@ bool pointFor(const QJsonObject &request, const Target &target, QPoint *out,
         return true;
     }
     *out = hotspot(target);
+    if (const auto offset = request.value(QStringLiteral("offset")); offset.isArray()) {
+        const auto values = offset.toArray();
+        if (values.size() != 2) {
+            *rejected = AutomationReply::failure(BadRequest, QStringLiteral("offset must be [x, y]"));
+            return false;
+        }
+        *out += QPoint{values.at(0).toInt(), values.at(1).toInt()};
+    }
     return true;
 }
 

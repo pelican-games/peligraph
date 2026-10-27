@@ -1050,7 +1050,7 @@ TEST_CASE("RT6 named TLAS tasks select independent scene subsets with shared rec
         rendering["frame_node_order"] = {{"main_render", {"deferred_geometry", "__scene_acceleration_structure"}}};
     if (sprite_before_as) {
         rendering["features"].push_back("engine://features/sprite.json");
-        rendering["frame_node_order"] = {{"main_render", {"__anchor_sprite", "__scene_acceleration_structure"}}};
+        rendering["frame_node_order"] = {{"main_render", {"sprite_draw", "__scene_acceleration_structure"}}};
     }
     if (ui_before_as) {
         rendering["features"].push_back("project://features/ui.json");
@@ -1060,7 +1060,7 @@ TEST_CASE("RT6 named TLAS tasks select independent scene subsets with shared rec
           "runtime_shader_compiler":"optional",
           "render_targets":[{"name":"pre_as_ui","extent_scale":1.0,"width":32,"height":32,"format":"R8G8B8A8_UNORM",
                              "format_class":"explicit(R8G8B8A8_UNORM)","usage":["COLOR_ATTACHMENT","TRANSFER_SRC"]}],
-          "passes":[{"insert":"after:pelican_ui","pass":{"name":"pelican_ui","type":"ui",
+          "passes":[{"insert":"begin","pass":{"name":"pelican_ui","type":"ui",
                      "output":{"color":"pre_as_ui","depth":null}}}]
         })json");
         writeWp374aText(project.path / "ui.json", R"json({
@@ -1078,7 +1078,7 @@ TEST_CASE("RT6 named TLAS tasks select independent scene subsets with shared rec
           "schema":"pelican.render_feature","version":1,"name":"debug_draw",
           "render_targets":[{"name":"debug_result","extent_scale":1.0,"width":32,"height":32,"format":"R8G8B8A8_UNORM",
                              "format_class":"explicit(R8G8B8A8_UNORM)","usage":["COLOR_ATTACHMENT","TRANSFER_SRC"]}],
-          "passes":[{"insert":"after:debug_draw","pass":{"name":"debug_draw","type":"debug_draw",
+          "passes":[{"insert":"begin","pass":{"name":"debug_draw","type":"debug_draw",
                      "output":{"color":"debug_result","depth":null},
                      "shader":{"vertex":"engine://debug_draw","fragment":"engine://debug_draw"}}}]
         })json");
@@ -1127,7 +1127,7 @@ void main() {
             {"name":"geometry_depth","extent_scale":1.0,"format":"D32_SFLOAT","format_class":"data","usage":["DEPTH_STENCIL_ATTACHMENT","SAMPLED"]},
             {"name":"geometry_color","extent_scale":1.0,"format":"R16G16_SFLOAT","format_class":"data","usage":["COLOR_ATTACHMENT","TRANSFER_SRC"]},
             {"name":"geometry_depth_readback","extent_scale":1.0,"format":"R32_SFLOAT","format_class":"data","usage":["COLOR_ATTACHMENT","TRANSFER_SRC"]}],
-          "passes":[{"insert":"before:post_main","pass":{"name":"geometry_query","type":"velocity",
+          "passes":[{"insert":"before:scene_present","pass":{"name":"geometry_query","type":"velocity",
             "output":{"color":"geometry_color","depth":"geometry_depth"},"depth_store_op":"store",
             "shader":{"vertex":"engine://velocity","skinned_vertex":"engine://velocity_skinned","fragment":"engine://velocity"}}}]
         })json");
@@ -1177,7 +1177,7 @@ vec2 queryHits() {
             {"name", "geometry_depth_readback"}, {"type", "fullscreen"}, {"input", {"geometry_depth"}},
             {"output", {{"color", "geometry_depth_readback"}, {"depth", nullptr}}},
             {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "project://shaders/depth_readback"}}}};
-        geometry_feature["passes"].push_back({{"insert", "before:post_main"}, {"pass", depth_readback_pass}});
+        geometry_feature["passes"].push_back({{"insert", "before:scene_present"}, {"pass", depth_readback_pass}});
         writeWp374aText(project.path / "shaders/depth_readback.frag", R"glsl(#version 460
 layout(set=1,binding=0) uniform sampler2D sourceDepth;
 layout(location=0) out float outDepth;
@@ -1510,7 +1510,7 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
     };
     const std::size_t as_offset = node_position("__scene_acceleration_structure");
     if (material_before_as) CHECK(node_position("deferred_geometry") < as_offset);
-    if (sprite_before_as) CHECK(node_position("__anchor_sprite") < as_offset);
+    if (sprite_before_as) CHECK(node_position("sprite_draw") < as_offset);
     if (!geometry_type.empty()) {
         if (geometry_query.empty()) CHECK(node_position("geometry_query") < as_offset);
         else CHECK(node_position("geometry_query") > node_position("__scene_acceleration_structure:" + geometry_query));

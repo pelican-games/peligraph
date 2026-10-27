@@ -31,25 +31,27 @@ void appendImGuiPassToCanonicalGraphs(nlohmann::json &composed_config) {
 
     for (auto &rendering_pass : composed_config.at("rendering_passes")) {
         auto &passes = rendering_pass.at("passes");
-        const auto anchor = std::find_if(passes.begin(), passes.end(), [](const auto &pass) {
-            return pass.is_object() &&
-                   pass.value("type", std::string{}) == "canonical_anchor" &&
-                   pass.value("anchor", std::string{}) == "imgui";
+        const auto terminal = std::find_if(passes.begin(), passes.end(), [](const auto &pass) {
+            return pass.is_object() && pass.value("type", std::string{}) == "output_transform";
         });
-        if (anchor == passes.end()) {
-            throw std::runtime_error("Canonical imgui anchor is missing from composed frame graph");
+        if (terminal == passes.end()) {
+            throw std::runtime_error("ImGui requires output_transform in the composed frame graph");
         }
-
+        auto predecessors = nlohmann::json::array();
+        for (const auto &pass : passes)
+            if (pass.value("type", std::string{}) != "output_transform")
+                predecessors.push_back(pass.at("name"));
         nlohmann::json imgui_pass{
             {"name", "imgui_pass"},
             {"type", "imgui"},
-            {"after", nlohmann::json::array({anchor->at("name")})},
+            {"after", std::move(predecessors)},
             // RC-3b: written in the normal form (renderingjsonnormalize.hpp).
             {"output", {{"color", nlohmann::json::array({nlohmann::json{{"target", "display"}}})}, {"depth", nullptr}}},
             {"color_load_op", "load"},
             {"color_store_op", "store"},
         };
-        passes.insert(std::next(anchor), std::move(imgui_pass));
+        (*terminal)["after"].push_back("imgui_pass");
+        passes.insert(terminal, std::move(imgui_pass));
     }
 }
 

@@ -19,6 +19,7 @@ enum class RenderPassType {
     picking,
     ui,
     imgui,
+    sprite,
     canonical_anchor,
     snapshot_copy,
 };

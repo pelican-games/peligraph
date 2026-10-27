@@ -630,7 +630,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[4].name",
+      "path": "nodes[name=loop/1/render_fullscreen].name",
       "value": "loop/1/render_fullscreen",
       "retry_ms": 60000
     },
@@ -639,7 +639,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[4].reads[0]",
+      "path": "nodes[name=loop/1/render_fullscreen].reads[0]",
       "value": "loop/0/render_fullscreen__color"
     },
     {
@@ -749,7 +749,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[6].name",
+      "path": "nodes[name=present].name",
       "value": "present",
       "retry_ms": 60000
     },
@@ -758,7 +758,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[6].loop_outputs[0].reference",
+      "path": "nodes[name=present].loop_outputs[0].reference",
       "value": "loop.color"
     },
     {
@@ -766,7 +766,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[6].loop_outputs[0].resource",
+      "path": "nodes[name=present].loop_outputs[0].resource",
       "value": "loop/3/render_fullscreen__color"
     },
     {
@@ -774,7 +774,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[6].reads[0]",
+      "path": "nodes[name=present].reads[0]",
       "value": "loop/3/render_fullscreen__color"
     },
     {
@@ -1033,7 +1033,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[6].reads[1]",
+      "path": "nodes[name=render_fullscreen_2].reads[1]",
       "value": "loop/3/render_fullscreen__color",
       "retry_ms": 120000
     },
@@ -1042,7 +1042,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[7].reads[0]",
+      "path": "nodes[name=present].reads[0]",
       "value": "render_fullscreen_2__color",
       "retry_ms": 60000
     },

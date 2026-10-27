@@ -87,7 +87,7 @@ bool hasRasterQueryPolicy(RenderNodeShape shape) {
 // raster family (ui and imgui never query), nullopt for any other node.
 std::optional<bool> rayQueryPolicy(const NodeIR &node) {
     if (hasRasterQueryPolicy(node.shape)) return node.ray_query.has_value();
-    if (node.shape == RenderNodeShape::ui || node.shape == RenderNodeShape::imgui) return false;
+    if (node.shape == RenderNodeShape::sprite || node.shape == RenderNodeShape::ui || node.shape == RenderNodeShape::imgui) return false;
     return std::nullopt;
 }
 
@@ -264,6 +264,7 @@ std::string_view renderNodeShapeName(RenderNodeShape shape) {
     case RenderNodeShape::shadow_depth: return "shadow_depth";
     case RenderNodeShape::velocity: return "velocity";
     case RenderNodeShape::picking: return "picking";
+    case RenderNodeShape::sprite: return "sprite";
     case RenderNodeShape::ui: return "ui";
     case RenderNodeShape::imgui: return "imgui";
     case RenderNodeShape::anchor: return "anchor";
@@ -286,6 +287,7 @@ RenderNodeShape renderNodeShapeOfPassType(RenderPassType type) {
     case RenderPassType::shadow_depth: return RenderNodeShape::shadow_depth;
     case RenderPassType::velocity: return RenderNodeShape::velocity;
     case RenderPassType::picking: return RenderNodeShape::picking;
+    case RenderPassType::sprite: return RenderNodeShape::sprite;
     case RenderPassType::ui: return RenderNodeShape::ui;
     case RenderPassType::imgui: return RenderNodeShape::imgui;
     case RenderPassType::canonical_anchor: return RenderNodeShape::anchor;
@@ -1074,6 +1076,12 @@ RenderGraphIR finalizeRenderGraph(RenderGraphIR ir, const FinalizeRenderGraphReq
                            .ray_tracing_project = request.ray_tracing_project,
                            .named = request.named,
                        });
+    // Providers and synthesized tasks have now supplied every node.
+    for (auto &graph : ir.graphs)
+        for (auto &terminal : graph.nodes)
+            if (terminal.shape == RenderNodeShape::output_transform)
+                for (const auto &node : graph.nodes)
+                    if (node.name != terminal.name) appendUnique(terminal.after, node.name);
     return applyFrameNodeOrder(std::move(ir), request.require_all_graphs);
 }
 

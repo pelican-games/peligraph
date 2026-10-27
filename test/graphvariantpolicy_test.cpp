@@ -694,12 +694,8 @@ TEST_CASE("G-6 preview judges a feature by its passes, not by where it is insert
     hud["type"] = "ui";
     exclude(g6Feature("g6_hud", "end", hud),
             GraphVariantFeatureReason::user_interface);
-    exclude(g6Feature("g6_on_top", "after:pelican_ui",
-                      g6Pass("on_top", Json::array(), "swapchain")),
-            GraphVariantFeatureReason::user_interface);
-    exclude(g6Feature("g6_beneath", "before:pelican_ui",
-                      g6Pass("beneath", Json::array(), "swapchain")),
-            GraphVariantFeatureReason::user_interface);
+    include(g6Feature("g6_on_top", "after:pelican_ui", g6Pass("on_top", Json::array(), "swapchain")));
+    include(g6Feature("g6_beneath", "before:pelican_ui", g6Pass("beneath", Json::array(), "swapchain")));
 
     // Words, not pieces of words: "ui" is not in fluid or build, and
     // "present" is not in presentation.

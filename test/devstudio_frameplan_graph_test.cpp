@@ -778,14 +778,12 @@ Json wp343GroupingAuthoredExample() {
     for (auto &pass : passes) {
         const std::string name = pass.value("name", std::string{});
         if (name != "__snapshot_opaque_color" &&
-            name != "__snapshot_opaque_depth") {
-            pass["canonical_anchor"] = "post_ldr";
+            name != "__snapshot_opaque_depth" && name != "scene_present") {
             retained.push_back(std::move(pass));
             if (name == "forward_transparent") {
                 retained.push_back({
                     {"name", "wp343_render_19"},
                     {"type", "fullscreen"},
-                    {"canonical_anchor", "post_ldr"},
                     {"output",
                      {{"color", Json::array({"wp343_scene_color"})},
                       {"depth", nullptr}}},
@@ -797,6 +795,13 @@ Json wp343GroupingAuthoredExample() {
                 });
             }
         }
+    }
+    // This fixture intentionally needs one convex grouping block. Express
+    // that requirement with concrete dependencies instead of an old bucket.
+    for (std::size_t i = 1; i < retained.size(); ++i) {
+        auto &after = retained[i]["after"];
+        if (after.is_null()) after = Json::array();
+        after.push_back(retained[i - 1].at("name"));
     }
     passes = std::move(retained);
     authored = Pelican::TestSupport::renderGraphRoot(std::move(authored));
@@ -2089,28 +2094,21 @@ const std::vector<ExpectedNode> &expectedExpandedNodes() {
         {"__snapshot_opaque_color", "project"},
         {"__snapshot_opaque_depth", "project"},
         {"forward_transparent", "project"},
-        {"__anchor_sprite", "engine", true},
-        {"__anchor_post_main", "engine", true},
-        {"__anchor_tonemap", "engine", true},
-        {"__anchor_post_ldr", "engine", true},
-        {"HighLuminanceExtraction", "project"},
-        {"HorizontalBlur_0", "project"},
-        {"VerticalBlur_0", "project"},
-        {"HorizontalBlur_1", "project"},
-        {"VerticalBlur_1", "project"},
-        {"HorizontalBlur_2", "project"},
-        {"VerticalBlur_2", "project"},
-        {"HorizontalBlur_3", "project"},
-        {"VerticalBlur_3", "project"},
-        {"UpsampleBlend_3", "project"},
-        {"UpsampleBlend_2", "project"},
-        {"UpsampleBlend_1", "project"},
-        {"FinalBloomComposite", "project"},
-        {"__anchor_pelican_ui", "engine", true},
+        {"scene_present", "project"},
+        {"HighLuminanceExtraction", "feature:bloom"},
+        {"HorizontalBlur_0", "feature:bloom"},
+        {"VerticalBlur_0", "feature:bloom"},
+        {"HorizontalBlur_1", "feature:bloom"},
+        {"VerticalBlur_1", "feature:bloom"},
+        {"HorizontalBlur_2", "feature:bloom"},
+        {"VerticalBlur_2", "feature:bloom"},
+        {"HorizontalBlur_3", "feature:bloom"},
+        {"VerticalBlur_3", "feature:bloom"},
+        {"UpsampleBlend_3", "feature:bloom"},
+        {"UpsampleBlend_2", "feature:bloom"},
+        {"UpsampleBlend_1", "feature:bloom"},
+        {"FinalBloomComposite", "feature:bloom"},
         {"pelican_ui", "feature:ui"},
-        {"__anchor_debug_draw", "engine", true},
-        {"__anchor_debug_text", "engine", true},
-        {"__anchor_imgui", "engine", true},
         {"output_transform", "engine"},
     };
     return expected;
@@ -2127,6 +2125,18 @@ const StringSet &expectedBloomMembers() {
         "VerticalBlur_3",
     };
     return expected;
+}
+
+TEST_CASE("RC-5s Frame Plan producer model and canvas contain no canonical nodes", "[devstudio][frame-plan][rc5s]") {
+    (void)application();
+    const auto wire = capturedRuntimeFramePlan();
+    const auto model = buildFramePlanModel(wire.dump());
+    REQUIRE(model.nodes.size() == 23);
+    for (const auto &node : model.nodes) CHECK_FALSE(node.name.starts_with("__anchor_"));
+    FramePlanGraphicsScene scene;
+    scene.populate(model, FramePlanNodeKey{model.graph, "swapchain"}, 64);
+    REQUIRE_FALSE(sceneNodeNames(scene).empty());
+    for (const auto &name : sceneNodeNames(scene)) CHECK_FALSE(name.starts_with("__anchor_"));
 }
 
 std::vector<QGraphicsItem *> itemsWithEndpoints(QGraphicsScene &value,
@@ -4618,7 +4628,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "WP318 every example target stays within five direct nodes and named depths are exact",
+    "WP318 every example target stays within six direct nodes and named depths are exact",
     "[devstudio][frame-plan][target-subtree][wp318]") {
     (void)application();
     Json wire = capturedRuntimeFramePlan();
@@ -4633,23 +4643,27 @@ TEST_CASE(
     QComboBox &selector = targetSelector(widget);
     QSpinBox &depth = subtreeDepth(widget);
 
-    // F-7: the whole frame, then the 22 targets.
-    REQUIRE(selector.count() == 23);
+    // F-7: the whole frame, then every published target.
+    REQUIRE(selector.count() == 24);
     REQUIRE(selector.itemText(0) == QStringLiteral("Whole frame"));
     REQUIRE(depth.value() == 1);
-    REQUIRE(logical.property("pelicanNodeRecordCount").toULongLong() == 30);
+    REQUIRE(logical.property("pelicanNodeRecordCount").toULongLong() == 23);
 
     for (int index = 1; index < selector.count(); ++index) {
         selector.setCurrentIndex(index);
         QApplication::processEvents();
         CAPTURE(selector.currentText().toStdString());
-        REQUIRE(itemsOfKind(logical, FramePlanNodeItem).size() <= 5);
+        REQUIRE(itemsOfKind(logical, FramePlanNodeItem).size() <= 6);
         REQUIRE(logical.property("pelicanVisibleItemCount").toULongLong() <=
-                5);
+                6);
         REQUIRE(logical.property("pelicanTarget").toString() ==
                 selector.currentText());
+        const auto selected = selector.currentText().toStdString();
+        const auto &physical_resources = wire.at("physical_target_plan").at("resources");
+        const auto image_count = std::count_if(physical_resources.begin(), physical_resources.end(),
+            [&](const auto &resource) { return resource.at("logical_resource") == selected; });
         REQUIRE(itemsOfKind(logical, FramePlanResourceLifetimeItem).size() ==
-                1);
+                static_cast<std::size_t>(image_count));
     }
 
     const std::map<std::string, StringSet, std::less<>> direct{
@@ -4658,11 +4672,11 @@ TEST_CASE(
         {"lit_color",
          {"FinalBloomComposite", "HighLuminanceExtraction",
           "__snapshot_opaque_color", "forward_transparent",
-          "lighting_pass"}},
+          "lighting_pass", "scene_present"}},
         {"Bloom_Threshold_RT",
          {"HighLuminanceExtraction", "HorizontalBlur_0"}},
         {"display",
-         {"FinalBloomComposite", "output_transform", "pelican_ui"}},
+         {"FinalBloomComposite", "output_transform", "pelican_ui", "scene_present"}},
     };
     for (const auto &[target, expected] : direct) {
         selector.setCurrentText(QString::fromStdString(target));
@@ -4677,7 +4691,7 @@ TEST_CASE(
         StringSet{"FinalBloomComposite", "HighLuminanceExtraction",
                   "HorizontalBlur_0", "VerticalBlur_0",
                   "__snapshot_opaque_color", "forward_transparent",
-                  "lighting_pass"},
+                  "lighting_pass", "scene_present"},
     };
     for (int value = 0; value <= 2; ++value) {
         depth.setValue(value);
@@ -4686,12 +4700,12 @@ TEST_CASE(
         REQUIRE(sceneNodeNames(logical) == expected_by_depth[value]);
         REQUIRE(logical.property("pelicanSubtreeDepth").toInt() == value);
     }
-    REQUIRE(expected_by_depth[2].size() == 7);
+    REQUIRE(expected_by_depth[2].size() == 8);
     REQUIRE(expected_by_depth[2].size() < wire.at("nodes").size());
 }
 
 TEST_CASE(
-    "WP318 subtree coordinates and bundle order ignore every input array order",
+    "WP318 subtree coordinates and bundle order ignore unordered input arrays",
     "[devstudio][frame-plan][target-subtree][determinism][wp318]") {
     (void)application();
     Json wire = capturedRuntimeFramePlan();
@@ -4707,7 +4721,10 @@ TEST_CASE(
     std::reverse(reversed.physical_plan.alias_candidates.begin(),
                  reversed.physical_plan.alias_candidates.end());
     for (auto &node : reversed.nodes) {
-        std::reverse(node.reads.begin(), node.reads.end());
+        // Reflected shader input order names bindings, so it is authored
+        // data, unlike the unordered dependency lists being shuffled here.
+        if (!node.pass_inputs)
+            std::reverse(node.reads.begin(), node.reads.end());
         std::reverse(node.writes.begin(), node.writes.end());
     }
 
@@ -5007,7 +5024,7 @@ TEST_CASE(
     REQUIRE(std::abs(band_bounds.height() - FramePlanHeaderHeight) < 0.001);
     REQUIRE(std::abs(band_bounds.width() - body.width()) < 0.001);
     REQUIRE(band_path->brush().color() ==
-            QColor{QStringLiteral("#3978a8")});
+            QColor{QStringLiteral("#c47b25")});
     auto *heading = dynamic_cast<QGraphicsSimpleTextItem *>(
         nodeLabelItem(logical, "HighLuminanceExtraction"));
     REQUIRE(heading != nullptr);
@@ -5445,7 +5462,7 @@ TEST_CASE(
     REQUIRE(logical.property("pelicanSelectedResourceRepresentation")
                 .toString() == QStringLiteral("materialized_image"));
     REQUIRE(logical.property("pelicanSelectedResourceLifetime").toString() ==
-            QStringLiteral("[11, 12]"));
+            QStringLiteral("[8, 9]"));
 }
 
 TEST_CASE(
@@ -12949,10 +12966,10 @@ TEST_CASE("RC-1 the Frame Plan says on its status line what the physical plan's 
     widget.receiveResult(QByteArray::fromStdString(wire.dump()));
     QApplication::processEvents();
 #if PELICAN_RUNTIME_SHADER_COMPILER
-    CHECK(framePlanStatus(widget).text().endsWith(
+    CHECK(framePlanStatus(widget).toolTip().endsWith(
         QStringLiteral(" · RT 852.7 KiB / peak 576.6 KiB at lighting_pass")));
 #else
-    CHECK(framePlanStatus(widget).text().contains(QStringLiteral(" · RT ")));
+    CHECK(framePlanStatus(widget).toolTip().contains(QStringLiteral(" · RT ")));
 #endif
 
     auto *resources = widget.findChild<QTreeWidget *>(

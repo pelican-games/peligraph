@@ -321,11 +321,11 @@
       "timeout_ms": 60000
     },
     {
-      "label": "present is the frame plan's first node while it reads nothing (the graph's pass comes before it once it does)",
+      "label": "present is the frame plan's named node while it reads nothing (the graph's pass comes before it once it does)",
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[0].name",
+      "path": "nodes[name=present].name",
       "value": "present"
     },
     {
@@ -333,7 +333,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[0].pass_inputs.variadic_range.max",
+      "path": "nodes[name=present].pass_inputs.variadic_range.max",
       "value": 8
     },
     {
@@ -741,7 +741,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[1].pass_inputs.declarations.$len",
+      "path": "nodes[name=present].pass_inputs.declarations.$len",
       "value": 2,
       "retry_ms": 60000
     },
@@ -750,7 +750,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[1].pass_inputs.declarations[1].name",
+      "path": "nodes[name=present].pass_inputs.declarations[1].name",
       "value": "in_render_material_pass_normal"
     },
     {
@@ -758,7 +758,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[1].pass_inputs.variadic_range",
+      "path": "nodes[name=present].pass_inputs.variadic_range",
       "value": null
     },
     {
@@ -838,7 +838,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[1].pass_inputs.variadic_range.max",
+      "path": "nodes[name=present].pass_inputs.variadic_range.max",
       "value": 8,
       "retry_ms": 120000
     },

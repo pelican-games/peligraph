@@ -1,79 +1,89 @@
 {
   "note": "A layout input, not a plan: the relation the Frame Plan canvas drew when N-4 measured nodelayout -- example_frame_plan.json's execution_plan.dependencies (its barriers and the explicit after / before / snapshot_after order), one entry per (from, to) pair in the order they were listed. RC-2 removed execution_plan from get_frame_plan; this keeps the tangled graph the barycenter sweeps were measured on.",
   "edges": [
-    ["FinalBloomComposite", "__anchor_pelican_ui"],
-    ["FinalBloomComposite", "pelican_ui"],
-    ["HighLuminanceExtraction", "HorizontalBlur_0"],
-    ["HighLuminanceExtraction", "__anchor_pelican_ui"],
-    ["HorizontalBlur_0", "VerticalBlur_0"],
-    ["HorizontalBlur_0", "__anchor_pelican_ui"],
-    ["HorizontalBlur_1", "VerticalBlur_1"],
-    ["HorizontalBlur_1", "__anchor_pelican_ui"],
-    ["HorizontalBlur_2", "VerticalBlur_2"],
-    ["HorizontalBlur_2", "__anchor_pelican_ui"],
-    ["HorizontalBlur_3", "VerticalBlur_3"],
-    ["HorizontalBlur_3", "__anchor_pelican_ui"],
-    ["UpsampleBlend_1", "FinalBloomComposite"],
-    ["UpsampleBlend_1", "__anchor_pelican_ui"],
-    ["UpsampleBlend_2", "UpsampleBlend_1"],
-    ["UpsampleBlend_2", "__anchor_pelican_ui"],
-    ["UpsampleBlend_3", "UpsampleBlend_2"],
-    ["UpsampleBlend_3", "__anchor_pelican_ui"],
-    ["VerticalBlur_0", "HorizontalBlur_1"],
-    ["VerticalBlur_0", "UpsampleBlend_1"],
-    ["VerticalBlur_0", "__anchor_pelican_ui"],
-    ["VerticalBlur_1", "HorizontalBlur_2"],
-    ["VerticalBlur_1", "UpsampleBlend_2"],
-    ["VerticalBlur_1", "__anchor_pelican_ui"],
-    ["VerticalBlur_2", "HorizontalBlur_3"],
-    ["VerticalBlur_2", "UpsampleBlend_3"],
-    ["VerticalBlur_2", "__anchor_pelican_ui"],
-    ["VerticalBlur_3", "UpsampleBlend_3"],
-    ["VerticalBlur_3", "__anchor_pelican_ui"],
-    ["__anchor_debug_draw", "__anchor_debug_text"],
-    ["__anchor_debug_text", "__anchor_imgui"],
-    ["__anchor_imgui", "output_transform"],
-    ["__anchor_pelican_ui", "__anchor_debug_draw"],
-    ["__anchor_pelican_ui", "pelican_ui"],
-    ["__anchor_post_ldr", "FinalBloomComposite"],
-    ["__anchor_post_ldr", "HighLuminanceExtraction"],
-    ["__anchor_post_ldr", "HorizontalBlur_0"],
-    ["__anchor_post_ldr", "HorizontalBlur_1"],
-    ["__anchor_post_ldr", "HorizontalBlur_2"],
-    ["__anchor_post_ldr", "HorizontalBlur_3"],
-    ["__anchor_post_ldr", "UpsampleBlend_1"],
-    ["__anchor_post_ldr", "UpsampleBlend_2"],
-    ["__anchor_post_ldr", "UpsampleBlend_3"],
-    ["__anchor_post_ldr", "VerticalBlur_0"],
-    ["__anchor_post_ldr", "VerticalBlur_1"],
-    ["__anchor_post_ldr", "VerticalBlur_2"],
-    ["__anchor_post_ldr", "VerticalBlur_3"],
-    ["__anchor_post_ldr", "__anchor_pelican_ui"],
-    ["__anchor_post_main", "__anchor_tonemap"],
-    ["__anchor_sprite", "__anchor_post_main"],
-    ["__anchor_tonemap", "__anchor_post_ldr"],
-    ["__snapshot_opaque_color", "__anchor_sprite"],
-    ["__snapshot_opaque_color", "__snapshot_opaque_depth"],
-    ["__snapshot_opaque_color", "forward_transparent"],
-    ["__snapshot_opaque_depth", "__anchor_sprite"],
-    ["__snapshot_opaque_depth", "forward_transparent"],
-    ["forward_transparent", "FinalBloomComposite"],
-    ["forward_transparent", "HighLuminanceExtraction"],
-    ["forward_transparent", "__anchor_sprite"],
-    ["gbuffer_pass", "__anchor_sprite"],
-    ["gbuffer_pass", "__snapshot_opaque_depth"],
-    ["gbuffer_pass", "forward_transparent"],
-    ["gbuffer_pass", "lighting_pass"],
-    ["gbuffer_pass", "ssao_pass"],
-    ["lighting_pass", "__anchor_sprite"],
-    ["lighting_pass", "__snapshot_opaque_color"],
-    ["lighting_pass", "__snapshot_opaque_depth"],
-    ["lighting_pass", "forward_transparent"],
-    ["pelican_ui", "__anchor_debug_draw"],
-    ["pelican_ui", "output_transform"],
-    ["ssao_blur_pass", "__anchor_sprite"],
-    ["ssao_blur_pass", "lighting_pass"],
-    ["ssao_pass", "__anchor_sprite"],
-    ["ssao_pass", "ssao_blur_pass"]
+    [
+      "FinalBloomComposite",
+      "pelican_ui"
+    ],
+    [
+      "HighLuminanceExtraction",
+      "HorizontalBlur_0"
+    ],
+    [
+      "HorizontalBlur_0",
+      "VerticalBlur_0"
+    ],
+    [
+      "HorizontalBlur_1",
+      "VerticalBlur_1"
+    ],
+    [
+      "HorizontalBlur_2",
+      "VerticalBlur_2"
+    ],
+    [
+      "HorizontalBlur_3",
+      "VerticalBlur_3"
+    ],
+    [
+      "UpsampleBlend_1",
+      "FinalBloomComposite"
+    ],
+    [
+      "UpsampleBlend_2",
+      "UpsampleBlend_1"
+    ],
+    [
+      "UpsampleBlend_3",
+      "UpsampleBlend_2"
+    ],
+    [
+      "VerticalBlur_0",
+      "HorizontalBlur_1"
+    ],
+    [
+      "VerticalBlur_1",
+      "HorizontalBlur_2"
+    ],
+    [
+      "VerticalBlur_2",
+      "HorizontalBlur_3"
+    ],
+    [
+      "VerticalBlur_3",
+      "UpsampleBlend_3"
+    ],
+    [
+      "__snapshot_opaque_color",
+      "__snapshot_opaque_depth"
+    ],
+    [
+      "__snapshot_opaque_depth",
+      "forward_transparent"
+    ],
+    [
+      "forward_transparent",
+      "HighLuminanceExtraction"
+    ],
+    [
+      "gbuffer_pass",
+      "ssao_pass"
+    ],
+    [
+      "lighting_pass",
+      "__snapshot_opaque_color"
+    ],
+    [
+      "pelican_ui",
+      "output_transform"
+    ],
+    [
+      "ssao_blur_pass",
+      "lighting_pass"
+    ],
+    [
+      "ssao_pass",
+      "ssao_blur_pass"
+    ]
   ]
 }

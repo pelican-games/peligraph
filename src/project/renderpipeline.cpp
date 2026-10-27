@@ -1,4 +1,5 @@
 #include "renderpipeline.hpp"
+#include "canonicalanchorremoved.hpp"
 #include "renderpipelinerecipe.hpp"
 #include "rendergraphir.hpp"
 #include "graphcomposition.hpp"
@@ -947,6 +948,7 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
     if (!document.contains("config") || !document.at("config").is_object()) {
         throw std::runtime_error("render pipeline preset requires object config: " + reference);
     }
+    rejectRemovedCanonicalAuthoring(document, reference);
     const auto version = document.at("version").get<int>();
     RenderPipelinePresetResolution recipe;
     auto overlay = authored_config;
@@ -1408,6 +1410,19 @@ ResolvedRenderPipeline resolveRenderPipeline(
                 result.graph_variant_policy.variant)} +
                 ":" + node.reason + ":" + node.feature,
         });
+    }
+    if (const auto orders = result.composed_config.find("frame_node_order");
+        orders != result.composed_config.end() && orders->is_object()) {
+        for (const auto &[graph, names] : orders->items()) {
+            if (!names.is_array()) continue;
+            for (const auto &name : names) {
+                if (name.is_string() && name.get_ref<const std::string &>().rfind("__anchor_", 0) == 0)
+                    result.diagnostics.push_back(RenderPipelineDiagnostic{
+                        .kind = RenderPipelineDiagnosticKind::anchor_ignored,
+                        .subject = name.get<std::string>(), .detail = "warning",
+                        .detail_fields = {{"severity", "warning"}, {"graph", graph}, {"node", name}}});
+            }
+        }
     }
     // FG-1: a fold group that runs its open form says why.
     for (const auto &group : composed.fold_groups) {

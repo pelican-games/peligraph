@@ -87,6 +87,7 @@ constexpr std::array ownership_table{
                             auxiliary_raster_fields},
     PassFieldOwnershipEntry{RenderPassType::picking, "picking"sv,
                             auxiliary_raster_fields},
+    PassFieldOwnershipEntry{RenderPassType::sprite, "sprite"sv, {}},
     PassFieldOwnershipEntry{RenderPassType::ui, "ui"sv, {}},
     PassFieldOwnershipEntry{RenderPassType::imgui, "imgui"sv, {}, true},
     PassFieldOwnershipEntry{RenderPassType::canonical_anchor,

@@ -754,6 +754,11 @@ TEST_CASE("UX-10 decision 4: Snapshots are rows -- + adds one after the opaque p
     QApplication::processEvents();
     settingsRead(engine, RootA, Json::object());
     auto &add = required<QPushButton>(settings, "pelican.renderingSettings.snapshots.add");
+    CHECK_FALSE(add.isEnabled());
+    const auto context = engine.next("get_render_authoring_context");
+    REQUIRE(context);
+    engine.answer(*context, {{"snapshot_after_candidates", {"opaque_pass"}}});
+    QApplication::processEvents();
     CHECK(add.isEnabled());
     CHECK(settings.findChild<QLineEdit *>(QStringLiteral("pelican.renderingSettings.snapshots.row0.name")) ==
           nullptr);
@@ -761,7 +766,7 @@ TEST_CASE("UX-10 decision 4: Snapshots are rows -- + adds one after the opaque p
     add.click();
     auto sent = engine.next("edit_rendering_keys");
     REQUIRE(sent);
-    const Json one = Json::array({{{"name", "opaque_snapshot"}, {"after", "post_ldr"}}});
+    const Json one = Json::array({{{"name", "opaque_snapshot"}, {"after", "opaque_pass"}}});
     CHECK(sent->at("params") == Json{{"base_source_digest", RootA}, {"set", {{"snapshots", one}}}});
     engine.answer(*sent, {{"status", "accepted"}, {"ticket", "render-keys-1"}});
     auto poll = engine.next("get_edit_result");
@@ -773,7 +778,7 @@ TEST_CASE("UX-10 decision 4: Snapshots are rows -- + adds one after the opaque p
     CHECK(name.text() == QStringLiteral("opaque_snapshot"));
     auto &after = required<QComboBox>(settings, "pelican.renderingSettings.snapshots.row0.after");
     CHECK(after.count() == 1);
-    CHECK(after.currentData().toString() == QStringLiteral("post_ldr"));
+    CHECK(after.currentData().toString() == QStringLiteral("opaque_pass"));
     // v1 takes one snapshot: + is off while there is one.
     CHECK_FALSE(add.isEnabled());
     // x: the key is removed.
@@ -802,6 +807,21 @@ TEST_CASE("UX-10 decision 4: Snapshots are rows -- + adds one after the opaque p
     auto multiview = profiles;
     multiview["view_execution"] = "multiview";
     CHECK(sent->at("params") == Json{{"base_source_digest", RootC}, {"set", {{"xr", multiview}}}});
+}
+
+TEST_CASE("RC-5s snapshot Add stays disabled without a concrete candidate", "[devstudio][rendering-settings][rc5s][widget]") {
+    Transport engine;
+    RenderingSettingsWidget settings{&engine.viewport};
+    settings.show();
+    QApplication::processEvents();
+    settingsRead(engine, RootA, Json::object());
+    const auto context = engine.next("get_render_authoring_context"); REQUIRE(context);
+    engine.answer(*context, {{"snapshot_after_candidates", Json::array()}});
+    QApplication::processEvents();
+    auto &add = required<QPushButton>(settings, "pelican.renderingSettings.snapshots.add");
+    CHECK_FALSE(add.isEnabled());
+    add.click();
+    CHECK_FALSE(engine.next("edit_rendering_keys", 100));
 }
 
 
@@ -1042,7 +1062,7 @@ TEST_CASE("UX-15a decision 5: a root that selects a project preset shows the pre
                       {"name", "fork"},
                       {"config",
                        {{"shader_defines", Json::array({"P=1", "Q"})},
-                        {"snapshots", Json::array({{{"name", "s"}, {"after", "post_ldr"}}})},
+                        {"snapshots", Json::array({{{"name", "s"}, {"after", "opaque_pass"}}})},
                         {"draw_sort", DefaultDrawSort},
                         {"graph_transforms", Json::array({{{"name", "theirs"}}})}}}};
     auto documents = rootDocuments(RootA, rendering);
@@ -1057,7 +1077,7 @@ TEST_CASE("UX-15a decision 5: a root that selects a project preset shows the pre
     CHECK(row("pelican.renderingSettings.shader_defines.preset.row0").text() == QStringLiteral("Preset: P=1"));
     CHECK(row("pelican.renderingSettings.shader_defines.preset.row1").text() == QStringLiteral("Preset: Q"));
     CHECK(row("pelican.renderingSettings.snapshots.preset.row0").text() ==
-          QStringLiteral("Preset: s, after post_ldr"));
+          QStringLiteral("Preset: s, after opaque_pass"));
     CHECK(row("pelican.renderingSettings.draw_sort.preset.row0").text() ==
           QStringLiteral("Preset: state_batched_v1 / back_to_front_v1, XR logical_view_center"));
     auto &theirs = row("pelican.renderingSettings.graph_transforms.preset.row0");
@@ -1263,11 +1283,11 @@ TEST_CASE("UX-12b decision 2: a feature with no pass to go after is refused as s
     const auto named = insertionAnchorMissing({{"code", "feature.insertion_anchor_missing@1"},
                                                {"feature", "sky_ambient"},
                                                {"anchor", "deferred_lighting"},
-                                               {"candidates", {"lighting_pass", "present", "post_ldr"}},
+                                               {"candidates", {"lighting_pass", "present", "opaque_pass"}},
                                                {"document", SkyFeature}});
     REQUIRE(named);
     CHECK(named->anchor == "deferred_lighting");
-    CHECK(named->candidates == std::vector<std::string>{"lighting_pass", "present", "post_ldr"});
+    CHECK(named->candidates == std::vector<std::string>{"lighting_pass", "present", "opaque_pass"});
     const auto sentence = insertionAnchorMissing(
         {{"code", "render_pipeline_preflight_failed"},
          {"message", "render feature pass insert anchor was not found: deferred_lighting"}});
@@ -1283,7 +1303,7 @@ TEST_CASE("UX-12b decision 2: a feature with no pass to go after is refused as s
     CHECK(missingInsertionAnchors(fr2, {"render_fullscreen"}) == std::vector<std::string>{"deferred_lighting"});
     CHECK(missingInsertionAnchors(fr2, {"deferred_lighting"}).empty());
     // A canonical anchor is in every composed pipeline.
-    CHECK(missingInsertionAnchors({{"insertion", Json::array({{{"pass", "x"}, {"anchor", "post_ldr"}, {"position", "after"}}})}}, {}).empty());
+    CHECK(missingInsertionAnchors({{"insertion", Json::array({{{"pass", "x"}, {"anchor", "opaque_pass"}, {"position", "after"}}})}}, {}) == std::vector<std::string>{"opaque_pass"});
 
     Transport engine;
     RenderFeaturesWidget features{&engine.viewport};
@@ -1339,9 +1359,9 @@ TEST_CASE("UX-12b decision 3: a snapshot's after is picked from the places the p
     CHECK(snapshotAfterUnknownLine({{"code", "snapshot.after_unknown@1"},
                                     {"snapshot", "opaque_snapshot"},
                                     {"after", "opaque"},
-                                    {"candidates", {"post_ldr", "present"}}}) ==
+                                    {"candidates", {"opaque_pass", "present"}}}) ==
           std::optional<std::string>{"Snapshot opaque_snapshot cannot be taken after opaque: this "
-                                     "pipeline takes it after post_ldr or present."});
+                                     "pipeline takes it after opaque_pass or present."});
     Transport engine;
     RenderingSettingsWidget settings{&engine.viewport};
     settings.show();
@@ -1349,12 +1369,12 @@ TEST_CASE("UX-12b decision 3: a snapshot's after is picked from the places the p
     settingsRead(engine, RootA, Json::object());
     auto context = engine.next("get_render_authoring_context");
     REQUIRE(context);
-    engine.answer(*context, {{"snapshot_after_candidates", {"post_ldr", "present"}}});
+    engine.answer(*context, {{"snapshot_after_candidates", {"opaque_pass", "present"}}});
     // +: after the first place the pipeline offers.
     required<QPushButton>(settings, "pelican.renderingSettings.snapshots.add").click();
     auto sent = engine.next("edit_rendering_keys");
     REQUIRE(sent);
-    const Json one = Json::array({{{"name", "opaque_snapshot"}, {"after", "post_ldr"}}});
+    const Json one = Json::array({{{"name", "opaque_snapshot"}, {"after", "opaque_pass"}}});
     CHECK(sent->at("params") == Json{{"base_source_digest", RootA}, {"set", {{"snapshots", one}}}});
     engine.answer(*sent, {{"status", "accepted"}, {"ticket", "render-keys-ux12b-1"}});
     auto poll = engine.next("get_edit_result");
@@ -1364,7 +1384,7 @@ TEST_CASE("UX-12b decision 3: a snapshot's after is picked from the places the p
     QApplication::processEvents();
     auto &after = required<QComboBox>(settings, "pelican.renderingSettings.snapshots.row0.after");
     REQUIRE(after.count() == 2);
-    CHECK(after.itemText(0) == QStringLiteral("After opaque (post_ldr)"));
+    CHECK(after.itemText(0) == QStringLiteral("After opaque_pass"));
     CHECK(after.itemData(1).toString() == QStringLiteral("present"));
     after.setCurrentIndex(1);
     sent = engine.next("edit_rendering_keys");
@@ -1379,10 +1399,10 @@ TEST_CASE("UX-12b decision 3: a snapshot's after is picked from the places the p
                                         {"message", "unknown"},
                                         {"snapshot", "opaque_snapshot"},
                                         {"after", "present"},
-                                        {"candidates", {"post_ldr"}}}));
+                                        {"candidates", {"opaque_pass"}}}));
     CHECK(required<QLabel>(settings, "pelican.renderingSettings.notice").text() ==
           QStringLiteral("Snapshot opaque_snapshot cannot be taken after present: this pipeline "
-                         "takes it after post_ldr."));
+                         "takes it after opaque_pass."));
 }
 
 TEST_CASE("UX-12b decision 4 / UX-12d decision 3: a target_ref the engine expects another type of "

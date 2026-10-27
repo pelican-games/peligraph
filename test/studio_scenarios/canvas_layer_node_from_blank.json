@@ -63,7 +63,7 @@
     {"label": "the node takes edits", "cmd": "wait", "name": "pelican.graphCanvasAddNode", "timeout_ms": 120000, "enabled": true},
     {"label": "fit", "cmd": "action", "name": "pelican.graphCanvas.fitView"},
     {"label": "let it settle", "cmd": "wait", "name": "pelican.graphCanvasNotice", "contains": "zz-never-shown", "timeout_ms": 800, "expect_error": "automation.wait_timeout@1"},
-    {"label": "the rectangle's row (the bottom one) dragged onto the ellipse's (the top one)", "cmd": "drag", "from": {"name": "pelican.graphCanvasView::graph_stack_row#canvas_stack/rect_1"}, "to": {"name": "pelican.graphCanvasView::graph_stack_row#canvas_stack/ellipse_1"}, "steps": 12},
+    {"label": "the rectangle's row (the bottom one) dragged onto the ellipse's (the top one)", "cmd": "drag", "from": {"name": "pelican.graphCanvasView::graph_stack_row#canvas_stack/rect_1"}, "to": {"name": "pelican.graphCanvasView::graph_stack_row#canvas_stack/ellipse_1", "offset": [0, -6]}, "steps": 12},
     {"label": "saved", "cmd": "wait", "name": "pelican.graphCanvasNotice", "timeout_ms": 120000, "text": "Graph change saved."},
     {"label": "one edit put the rectangle on top", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "nodes[0].parameters.layers[1].input", "value": "rect_1", "retry_ms": 60000},
     {"label": "and the ellipse under it", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "nodes[0].parameters.layers[0].input", "value": "ellipse_1"},

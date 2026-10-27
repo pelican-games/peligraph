@@ -66,7 +66,7 @@ RenderCompilerProgramVariantOutput graphVariantFixture() {
             if (ref != "fixture://ui") throw std::runtime_error{"unknown fixture feature"};
             return std::string{R"json({
               "schema":"pelican.render_feature","version":1,"name":"ui",
-              "passes":[{"insert":"after:pelican_ui","pass":{
+              "passes":[{"insert":"after:main_scene","pass":{
                 "name":"pelican_ui","type":"ui",
                 "output":{"color":"swapchain","depth":null}
               }}]

@@ -58,6 +58,12 @@ PassShapePolicy makeDefaultPolicy() {
     }
 
     {
+        auto &rule = policy.types[typeIndex(RenderPassType::sprite)];
+        rule.minimum_color_outputs = 1;
+        rule.maximum_color_outputs = 1;
+        rule.depth_output_required = true;
+    }
+    {
         auto &rule = policy.types[typeIndex(RenderPassType::shadow_depth)];
         rule.maximum_color_outputs = 0;
         rule.depth_output_required = true;

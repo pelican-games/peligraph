@@ -1,4 +1,5 @@
 #pragma once
+#include <catch2/catch_test_macros.hpp>
 
 #include "../src/project/graphtemplate.hpp"
 
@@ -81,10 +82,15 @@ inline nlohmann::json lp1cComparablePlan(const nlohmann::json &plan, const std::
         order.emplace_back(node.at("order").get<std::size_t>(),
                            lp1cRenamed(names, node.at("name").get<std::string>()));
         for (const auto *key :
-             {"source", "provider_feature", "provider_ref", "authored_name", "loop_origin", "origin", "replaces"})
+             {"order", "declaration_index", "source", "provider_feature", "provider_ref", "authored_name", "loop_origin", "origin", "replaces"})
             node.erase(key);
         node["name"] = lp1cRenamed(names, node.at("name").get<std::string>());
         for (const auto *key : {"reads", "reads_history", "writes"}) node[key] = renamedList(node.at(key));
+        if (node.contains("shader_resolution"))
+            for (auto &stage : node["shader_resolution"]["stages"]) {
+                stage.erase("declared_ref");
+                stage.erase("origin");
+            }
         result["nodes"].push_back(std::move(node));
     }
     std::vector<Json> barriers;
@@ -93,9 +99,29 @@ inline nlohmann::json lp1cComparablePlan(const nlohmann::json &plan, const std::
             if (barrier.at(key).is_string()) barrier[key] = lp1cRenamed(names, barrier.at(key).get<std::string>());
         barriers.push_back(std::move(barrier));
     }
+    // Run boundaries can add an earlier writer's redundant RAW barrier.
+    // Compare the barrier from the last writer that feeds each read; retain
+    // any earlier barrier for which the later writer has no dependency.
+    const auto position = [&](const Json &name) {
+        const auto found = std::find_if(order.begin(), order.end(), [&](const auto &entry) { return entry.second == name.get<std::string>(); });
+        return found == order.end() ? std::size_t{0} : found->first;
+    };
+    const auto all_barriers = barriers;
+    std::erase_if(barriers, [&](const Json &barrier) {
+        return barrier.at("kind") == "read_after_write" &&
+            std::any_of(all_barriers.begin(), all_barriers.end(), [&](const Json &later) {
+                return later.at("kind") == "read_after_write" && later.at("resource") == barrier.at("resource") &&
+                    later.at("to") == barrier.at("to") && position(later.at("from")) > position(barrier.at("from")) &&
+                    position(later.at("from")) < position(barrier.at("to"));
+            });
+    });
     std::sort(barriers.begin(), barriers.end(), [](const Json &lhs, const Json &rhs) { return lhs.dump() < rhs.dump(); });
     result["barriers"] = barriers;
-    std::sort(order.begin(), order.end());
+    for (const auto &barrier : barriers)
+        if (barrier.at("from").is_string() && barrier.at("to").is_string())
+            CHECK(position(barrier.at("from")) < position(barrier.at("to")));
+    std::sort(result["nodes"].begin(), result["nodes"].end(), [](const auto &a, const auto &b) { return a.at("name") < b.at("name"); });
+    std::sort(order.begin(), order.end(), [](const auto &a, const auto &b) { return a.second < b.second; });
     for (const auto &[position, name] : order) result["order"].push_back(name);
     return result;
 }

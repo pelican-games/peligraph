@@ -9,3 +9,7 @@ crt_report_to_stderr
 # RC-5 (2026-10-27): the recipe equivalence against a fixed HEAD needs a recorded
 # baseline (RC5_BASELINE_DIR); without it the test reports a named skip.
 RC-5 A2 recipes preserve typed IR frame plans physical plans and old packages
+
+# RC-5s: stale complete fragment / pin checks require packages captured at the
+# fixed HEAD (RC5_BASELINE_DIR); without that baseline this named test skips.
+RC-5s fixed HEAD complete fragment and pin packages are stale

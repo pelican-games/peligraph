@@ -2015,12 +2015,10 @@ class GraphCanvasModel {
     bool setLoopCarry(const std::string &id,
                       const std::vector<std::pair<std::string, std::string>> &carry);
     bool setLoopOutputs(const std::string &id, const std::vector<std::string> &outputs);
-    // Where the copies land: one of loopAnchors() as canonical_anchor, or ""
-    // for none (the end of the pass family). Either way an `insert` goes.
+    // Where the copies land: before|pass, after|pass, or "" for the end
+    // of the pass family. Writing a place clears legacy canonical_anchor.
     bool setLoopAnchor(const std::string &id, const std::string &anchor);
-    // The canonical anchors a loop can be placed at, in the frame's order.
-    // A loop with none expands after the scene passes, before the first
-    // anchor (LP-1e): Studio does not give one on its own.
+    // Legacy canonical choices are empty; concrete candidates use placePasses().
     [[nodiscard]] static const std::vector<std::string> &loopAnchors();
 
     // Decision 4: the branch table. The last branch is the else, which is

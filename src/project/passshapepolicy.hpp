@@ -14,7 +14,7 @@
 
 namespace Pelican {
 
-inline constexpr std::size_t passShapeTypeCount = 14;
+inline constexpr std::size_t passShapeTypeCount = 15;
 
 struct PassShapeTypePolicy {
     std::size_t minimum_color_outputs;

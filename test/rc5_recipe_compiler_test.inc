@@ -21,7 +21,7 @@ Rc5Json rc5Document(bool lit, bool hdr, bool extras) {
     return root;
 }
 
-RenderCompilerProgramResult rc5Compile(const Rc5Json &root, bool xr) {
+RenderCompilerProgramResult rc5Compile(const Rc5Json &root, bool xr, const Rc5Json *local_feature = nullptr) {
     ProgramInputFixture fixture;
     fixture.task_project = std::filesystem::temp_directory_path() /
         ("pelican-rc5-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -29,6 +29,7 @@ RenderCompilerProgramResult rc5Compile(const Rc5Json &root, bool xr) {
     fixture.path_resolver.setup(fixture.task_project, false);
     auto feature = Rc5Json::parse(fixture.path_resolver.loadText("engine://features/ui.json"));
     feature["name"] = "local_ui";
+    if (local_feature) feature = *local_feature;
     std::ofstream{fixture.task_project / "features/local.json"} << feature.dump(2);
     std::ofstream{fixture.task_project / "lighting.json"} << fixture.path_resolver.loadText("engine://render_fragments/deferred_lighting.json");
     fixture.config = root;
@@ -57,6 +58,63 @@ Rc5Json rc5Snapshot(const RenderCompilerProgramResult &result) {
     return snapshot;
 }
 } // namespace
+
+TEST_CASE("RC-5s sprite attachments participate in IR and physical planning", "[rendercompiler][rc5s][sprite]") {
+    auto root = rc5Document(false, false, false);
+    root["rendering"]["features"] = Rc5Json::array({"engine://features/sprite.json"});
+    const auto result = rc5Compile(root, false);
+    const auto &variant = result.variants.at(0);
+    const auto &graph = variant.render_graph->graphs.at(0);
+    const auto sprite = std::find_if(graph.nodes.begin(), graph.nodes.end(), [](const auto &n) { return n.name == "sprite_draw"; });
+    REQUIRE(sprite != graph.nodes.end());
+    CHECK(sprite->shape == RenderNodeShape::sprite);
+    REQUIRE(sprite->uses.size() == 2);
+    for (const auto &use : sprite->uses) {
+        CHECK(use.access == ResourceUseAccess::read_write);
+        REQUIRE(use.operations.has_value());
+        CHECK(use.operations->load_op == AttachmentLoadOp::load);
+        CHECK(use.operations->store_op == AttachmentStoreOp::store);
+    }
+    CHECK(sprite->uses.at(0).resource == "lit_color");
+    CHECK(sprite->uses.at(1).resource == "scene_depth");
+    CHECK(sprite->uses.at(0).role == ResourceUseRole::color_attachment);
+    CHECK(sprite->uses.at(1).role == ResourceUseRole::depth_attachment);
+    const auto snapshot = rc5Snapshot(result);
+    const auto &physical = snapshot.at("physical_plans").at("main_render");
+    const auto scope = std::find_if(physical.at("scopes").begin(), physical.at("scopes").end(), [](const auto &s) {
+        return s.at("nodes") == Rc5Json::array({"sprite_draw"});
+    });
+    REQUIRE(scope != physical.at("scopes").end());
+    CHECK(scope->at("kind") == "rendering");
+    const auto &frame = variant.frame_plans.at("main_render");
+    const auto planned = std::find_if(frame.nodes.begin(), frame.nodes.end(), [](const auto &n) { return n.name == "sprite_draw"; });
+    REQUIRE(planned != frame.nodes.end());
+    CHECK(planned->reads.size() == 2);
+    CHECK(planned->writes.size() == 2);
+    const auto has_barrier = [&](std::string_view from, std::string_view to, std::string_view resource) {
+        return std::any_of(frame.barriers.begin(), frame.barriers.end(), [&](const auto &barrier) {
+            return barrier.from == from && barrier.to == to && barrier.resource == resource;
+        });
+    };
+    CHECK(has_barrier("forward_transparent", "sprite_draw", "lit_color"));
+    CHECK(has_barrier("forward_transparent", "sprite_draw", "scene_depth"));
+    CHECK(has_barrier("sprite_draw", "scene_present", "lit_color"));
+    const auto order = framePlanOrder(frame);
+    const auto sprite_order = std::find(order.begin(), order.end(), "sprite_draw") - order.begin();
+    for (const auto *name : {"lit_color", "scene_depth"}) {
+        const auto resource = std::find_if(physical.at("resources").begin(), physical.at("resources").end(),
+            [&](const auto &entry) { return entry.at("logical_resource") == name; });
+        REQUIRE(resource != physical.at("resources").end());
+        CHECK(resource->at("lifetime").at("used") == true);
+        CHECK(resource->at("lifetime").at("first_use").get<std::size_t>() <= sprite_order);
+        CHECK(resource->at("lifetime").at("last_use").get<std::size_t>() >= sprite_order);
+        const auto attachment = std::find_if(physical.at("attachments").begin(), physical.at("attachments").end(),
+            [&](const auto &entry) { return entry.at("node") == "sprite_draw" && entry.at("logical_resource") == name; });
+        REQUIRE(attachment != physical.at("attachments").end());
+        CHECK(attachment->at("load_op") == "load");
+        CHECK(attachment->at("store_op") == "store");
+    }
+}
 
 TEST_CASE("RC-5 fixed HEAD compiler baseline", "[rendercompiler][rc5-baseline]") {
     for (const bool lit : {false, true}) for (const bool hdr : {false, true})
@@ -133,9 +191,10 @@ void rc5RequireFragmentProvenance(const RenderCompilerProgramResult &result, boo
 }
 }
 
-TEST_CASE("RC-5 A2 recipes preserve typed IR frame plans physical plans and old packages", "[rendercompiler][rc5][rc5-a2]") {
+void rc5RequireRecipeMatrix(bool fixed_head_packages) {
     const auto *directory = std::getenv("RC5_BASELINE_DIR");
-    if (!directory || !*directory) SKIP("RC5_BASELINE_DIR is required for the fixed HEAD comparison");
+    if (fixed_head_packages) REQUIRE((directory != nullptr && *directory != '\0'));
+    std::size_t configurations = 0;
     for (const bool lit : {false, true}) for (const bool hdr : {false, true})
     for (const bool extras : {false, true}) for (const bool xr : {false, true}) {
 #if !PELICAN_WITH_OPENXR
@@ -145,7 +204,42 @@ TEST_CASE("RC-5 A2 recipes preserve typed IR frame plans physical plans and old 
         const auto old_root = rc5Document(lit, hdr, extras);
         const auto old_result = rc5Compile(old_root, xr);
         const auto original = rc5Snapshot(old_result);
-        REQUIRE(original == readJsonFixture(std::filesystem::path{directory} / rc5Filename(lit, hdr, extras, xr)));
+        Rc5Json frozen;
+        if (fixed_head_packages) {
+            frozen = readJsonFixture(std::filesystem::path{directory} / rc5Filename(lit, hdr, extras, xr));
+            REQUIRE(original.at("typed_ir_fingerprint") != frozen.at("typed_ir_fingerprint"));
+        }
+        for (const auto &graph : old_result.variants.at(0).render_graph->graphs)
+            for (const auto &node : graph.nodes)
+                CHECK(node.name.rfind("__anchor_", 0) != 0);
+        for (const auto &[name, frame] : original.at("frame_plans").items()) {
+            for (const auto &node : frame.at("nodes"))
+                CHECK(node.at("name").get<std::string>().rfind("__anchor_", 0) != 0);
+        }
+        for (const auto &[name, physical] : original.at("physical_plans").items())
+            for (const auto &scope : physical.at("scopes"))
+                for (const auto &node : scope.at("nodes"))
+                    CHECK(node.get<std::string>().rfind("__anchor_", 0) != 0);
+        ++configurations;
+        const auto &physical_packages = requireVulkanRenderCompilerPhysicalPackage(*old_result.variants.at(0).physical_package);
+        for (const auto &[name, plan] : physical_packages.target_plans) {
+            const auto &context = requireVulkanTargetPlanVerificationContext(physical_packages, name);
+            const auto verify = [&](VulkanCompletePhysicalPlanPackage package) {
+                return verifyVulkanCompletePhysicalPlanPackage(*context.logical_graph, context.topology,
+                    *context.automatic_plan, context.node_order, std::move(package), context.format_capabilities,
+                    context.enabled_device_extensions);
+            };
+            if (fixed_head_packages) {
+                const auto stale = vulkanCompletePhysicalPlanPackageFromJson(
+                    frozen.at("physical_plans").at(name).at("ejectable_complete_physical_plan"));
+                REQUIRE_THROWS_WITH(verify(stale), Catch::Matchers::ContainsSubstring("stale"));
+            }
+            const auto fresh = ejectVulkanCompletePhysicalPlanPackage(*plan);
+            const auto reapplied = applyVerifiedVulkanCompletePhysicalPlanPackage(*plan, verify(fresh));
+            CHECK(physicalNodeOrderOf(reapplied.scopes).nodes == framePlanOrder(old_result.variants.at(0).frame_plans.at(name)));
+            CHECK(vulkanCompletePhysicalPlanPackageToJson(ejectVulkanCompletePhysicalPlanPackage(reapplied)) ==
+                  vulkanCompletePhysicalPlanPackageToJson(fresh));
+        }
         auto root = rc5Document(false, hdr, extras);
         root["rendering"]["pipeline"]["preset"] = lit
             ? "engine://render_pipelines/experimental/hybrid_recipe_lit.json"
@@ -174,6 +268,14 @@ TEST_CASE("RC-5 A2 recipes preserve typed IR frame plans physical plans and old 
             for (const auto &[name, package] : original.at(std::string{key} == "vulkan_plan_pins" ? "pins" : "physical_fragments").items())
                 packages.push_back(package);
             pinned["rendering"][key][variant_name] = packages;
+            if (fixed_head_packages) {
+                auto stale = pinned;
+                auto old_packages = Rc5Json::array();
+                for (const auto &[name, package] : frozen.at(std::string{key} == "vulkan_plan_pins" ? "pins" : "physical_fragments").items())
+                    old_packages.push_back(package);
+                stale["rendering"][key][variant_name] = old_packages;
+                REQUIRE_THROWS_AS(rc5Compile(stale, xr), std::exception);
+            }
             const auto applied = rc5Compile(pinned, xr);
             REQUIRE(*applied.variants.at(0).render_graph == *result.variants.at(0).render_graph);
             const auto &physical = requireVulkanRenderCompilerPhysicalPackage(*applied.variants.at(0).physical_package);
@@ -189,6 +291,21 @@ TEST_CASE("RC-5 A2 recipes preserve typed IR frame plans physical plans and old 
             }
         }
     }
+#if PELICAN_WITH_OPENXR
+    CHECK(configurations == 16);
+#else
+    CHECK(configurations == 8);
+#endif
+}
+
+TEST_CASE("RC-5 A2 recipes preserve typed IR frame plans physical plans and old packages", "[rendercompiler][rc5][rc5-a2]") {
+    rc5RequireRecipeMatrix(false);
+}
+
+TEST_CASE("RC-5s fixed HEAD complete fragment and pin packages are stale", "[rendercompiler][rc5s][fixed-head-package]") {
+    const auto *directory = std::getenv("RC5_BASELINE_DIR");
+    if (!directory || !*directory) SKIP("rc5s.fixed_head_packages_unavailable@1: set RC5_BASELINE_DIR");
+    rc5RequireRecipeMatrix(true);
 }
 
 TEST_CASE("RC5b materialized fragment preserves typed IR and every plan field", "[rendercompiler][rc5b]") {

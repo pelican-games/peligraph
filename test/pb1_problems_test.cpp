@@ -81,7 +81,7 @@ const Json feature_json{
     {"version", 1},
     {"name", "debug_text"},
     {"passes",
-     Json::array({{{"insert", "after:debug_text"},
+     Json::array({{{"insert", "after:present"},
                    {"pass",
                     {{"name", "debug_text"},
                      {"type", "debug_text"},

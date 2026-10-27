@@ -128,6 +128,16 @@ bool unsafePreviewDirectPassSurface(std::string_view value) {
     return containsMarkerWord(value, markers);
 }
 
+bool unsafePreviewPassName(std::string_view value, bool include_present) {
+    constexpr std::array markers{
+        std::string_view{"taa"}, std::string_view{"velocity"}, std::string_view{"motion_vector"},
+        std::string_view{"projection_jitter"}, std::string_view{"mirror"},
+    };
+    constexpr std::array terminal{std::string_view{"present"}};
+    // UI is identified by implementation type, never by an old anchor spelling.
+    return containsMarkerWord(value, markers) || (include_present && containsMarkerWord(value, terminal));
+}
+
 bool looksLikeVelocityName(std::string_view name) {
     constexpr std::array markers{
         std::string_view{"velocity"},
@@ -183,24 +193,6 @@ bool declaresVelocityTarget(const nlohmann::json &feature) {
         });
 }
 
-// A pass placed on the UI anchor draws over the UI: the one placement a
-// preview must never take, whatever the pass calls itself. Exactly the two
-// spellings of that anchor; an insert that merely mentions "ui" is not it.
-bool declaresUiAnchor(const nlohmann::json &feature) {
-    if (!feature.contains("passes") ||
-        !feature.at("passes").is_array()) {
-        return false;
-    }
-    return std::any_of(
-        feature.at("passes").begin(), feature.at("passes").end(),
-        [](const auto &entry) {
-            if (!entry.is_object()) return false;
-            const auto insert = entry.value("insert", std::string{});
-            return insert == "after:pelican_ui" ||
-                   insert == "before:pelican_ui";
-        });
-}
-
 bool declaresUnsafePreviewTarget(const nlohmann::json &feature) {
     if (!feature.contains("render_targets") ||
         !feature.at("render_targets").is_array()) {
@@ -230,7 +222,7 @@ bool declaresUnsafePreviewPass(const nlohmann::json &feature) {
         // property of the pass: "before:present" is just a place, and a pass
         // anchored on an excluded feature's pass is excluded by
         // GraphVariantFeatureSelection, which knows that feature.
-        if (unsafePreviewName(pass.value("name", std::string{})) ||
+        if (unsafePreviewPassName(pass.value("name", std::string{}), true) ||
             unsafePreviewName(pass.value("type", std::string{}))) {
             return true;
         }
@@ -373,7 +365,7 @@ void validatePreviewConfig(const nlohmann::json &config) {
                 outputsRequestLocalTerminal(pass) &&
                 lower_name.ends_with("present") &&
                 !containsMarkerWord(pass_name, overlay_words);
-            if ((unsafePreviewDirectPassSurface(pass_name) &&
+            if ((unsafePreviewPassName(pass_name, false) &&
                  !retained_terminal) ||
                 unsafePreviewDirectPassSurface(type)) {
                 rejectPreviewPass(
@@ -648,8 +640,7 @@ GraphVariantFeatureDecision decideGraphVariantFeature(
         } else if (declaresVelocityTarget(feature) ||
                    declaresPassType(feature, "velocity")) {
             result.reason = GraphVariantFeatureReason::velocity;
-        } else if (declaresPassType(feature, "ui") ||
-                   declaresUiAnchor(feature)) {
+        } else if (declaresPassType(feature, "ui") || declaresPassType(feature, "imgui")) {
             result.reason =
                 GraphVariantFeatureReason::user_interface;
         } else if (declaresUnsafePreviewTarget(feature) ||
@@ -692,8 +683,7 @@ GraphVariantFeatureDecision decideGraphVariantFeature(
             result.disposition =
                 GraphVariantFeatureDisposition::exclude;
             result.reason = GraphVariantFeatureReason::velocity;
-        } else if (declaresPassType(feature, "ui") ||
-                   declaresUiAnchor(feature)) {
+        } else if (declaresPassType(feature, "ui") || declaresPassType(feature, "imgui")) {
             result.disposition =
                 GraphVariantFeatureDisposition::exclude;
             result.reason =
@@ -851,12 +841,11 @@ const std::string *GraphVariantFeatureSelection::usedExcludedFeature(
     if (const auto *passes = arrayField(feature, "passes")) {
         for (const auto &entry : *passes) {
             if (!entry.is_object()) continue;
-            // (a) The anchor an insert names. A canonical anchor is the
-            // pipeline's own node, never a feature's pass of the same name.
+            // (a) The concrete pass named by insert belongs to the
+            // excluded feature just like an explicit ordering edge.
             const auto anchor =
                 insertAnchor(entry.value("insert", std::string{}));
-            if (!anchor.empty() &&
-                !isCanonicalRenderPassAnchor(anchor)) {
+            if (!anchor.empty()) {
                 pass_named(anchor);
             }
             if (const auto *pass = featurePassOf(entry)) node(*pass);

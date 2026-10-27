@@ -250,6 +250,7 @@ enum class RenderPipelineDiagnosticKind {
     // (fold_unverified). detail_fields {verified_digest?, current_digest}.
     fold_stale,
     fold_unverified,
+    anchor_ignored,
 };
 
 struct RenderPipelineDiagnostic {

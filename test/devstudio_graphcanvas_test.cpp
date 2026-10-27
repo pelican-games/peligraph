@@ -1387,9 +1387,11 @@ TEST_CASE("LP-4c Add loop sends the new body and the loop in one list",
         CHECK(read->body_draws);
         CHECK(read->anchor.empty());
         CHECK_FALSE(h.document.at("nodes").back().at("parameters").contains("canonical_anchor"));
-        REQUIRE(h.client.model.setLoopAnchor("loop", "post_ldr"));
+        REQUIRE(h.client.model.setLoopAnchor("loop", "after|present"));
         h.commit();
-        CHECK(h.document.at("nodes").back().at("parameters").at("canonical_anchor") == "post_ldr");
+        CHECK(h.document.at("nodes").back().at("parameters").at("insert") == Json{{"after", "present"}});
+        CHECK_FALSE(h.document.dump().find("canonical_anchor") != std::string::npos);
+        CHECK(GraphCanvasModel::loopAnchors().empty());
         CHECK_FALSE(h.client.model.setLoopAnchor("loop", "nowhere"));
     }
     // A loop stands in the root only; the palette says so.

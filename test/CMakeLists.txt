@@ -2544,7 +2544,10 @@ pelican_define_test(xrfeaturepolicy_test GROUP core_xr_tools pelican_core pelica
 endif()
 pelican_define_test(inputsequence_test GROUP core_xr_tools pelican_core)
 if(PELICAN_WITH_IMGUI)
-pelican_define_test(imgui_isolation_test GROUP core_xr_tools pelican_core)
+pelican_define_test(imgui_isolation_test MIXED_GPU RUNTIME_SHADER pelican_core
+    VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
+target_compile_definitions(pelican_test_imgui_isolation_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 pelican_define_test(planviewer_test GROUP core_xr_tools pelican_core)
 pelican_define_test(assetbrowser_test GROUP core_xr_tools pelican_core glm)
 target_compile_definitions(pelican_test_assetbrowser_test PRIVATE

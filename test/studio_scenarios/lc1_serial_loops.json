@@ -334,11 +334,11 @@
       "timeout_ms": 120000
     },
     {
-      "label": "the copies, as the plan lists them: the second copy is the third node",
+      "label": "the copies, as the plan lists them: the second copy is the named node",
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[2].name",
+      "path": "nodes[name=loop/1/render_fullscreen].name",
       "value": "loop/1/render_fullscreen",
       "retry_ms": 60000
     },
@@ -350,7 +350,7 @@
         "method": "get_frame_plan",
         "params": {}
       },
-      "path": "result.nodes[2].reads",
+      "path": "result.nodes[name=loop/1/render_fullscreen].reads",
       "op": "excludes",
       "value": "loop/0/render_fullscreen__color"
     },
@@ -420,7 +420,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[3].name",
+      "path": "nodes[name=loop/1/render_fullscreen].name",
       "value": "loop/1/render_fullscreen",
       "retry_ms": 60000
     },
@@ -432,7 +432,7 @@
         "method": "get_frame_plan",
         "params": {}
       },
-      "path": "result.nodes[3].reads",
+      "path": "result.nodes[name=loop/1/render_fullscreen].reads",
       "op": "contains",
       "value": "loop/0/render_fullscreen__color",
       "retry_ms": 60000
@@ -610,7 +610,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[4].name",
+      "path": "nodes[name=loop_2/0/render_fullscreen].name",
       "value": "loop_2/0/render_fullscreen",
       "retry_ms": 60000
     },
@@ -619,7 +619,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[4].reads",
+      "path": "nodes[name=loop_2/0/render_fullscreen].reads",
       "value": [
         "loop/1/render_fullscreen__color"
       ],
@@ -630,7 +630,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[5].name",
+      "path": "nodes[name=loop_2/1/render_fullscreen].name",
       "value": "loop_2/1/render_fullscreen",
       "retry_ms": 60000
     },
@@ -639,7 +639,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[5].reads",
+      "path": "nodes[name=loop_2/1/render_fullscreen].reads",
       "value": [
         "loop_2/0/render_fullscreen__color"
       ],

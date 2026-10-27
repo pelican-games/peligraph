@@ -52,7 +52,6 @@ struct PlanViewerNode {
     std::string source;
     std::string feature;
     std::string provider_reference;
-    std::string anchor;
     std::string color_load_op;
     std::string color_store_op;
     std::string depth_load_op;

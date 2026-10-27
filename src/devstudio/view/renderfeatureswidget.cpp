@@ -235,6 +235,12 @@ class FrameNodeOrderDialog final : public QDialog, public RestartsEngine {
       } else {
         digest = next_digest;
         orders = response.value("orders").toObject();
+        for (auto order = orders.begin(); order != orders.end(); ++order) {
+          QJsonArray concrete;
+          for (const auto &name : order.value().toArray())
+            if (!name.toString().startsWith(QStringLiteral("__anchor_"))) concrete.append(name);
+          order.value() = concrete;
+        }
         notice->setText(
             tr("Move nodes, then Apply. Data dependencies and the AS "
                "publication boundary are enforced by the compiler."));
@@ -295,7 +301,8 @@ public:
     auto *layout = new QVBoxLayout(this);
     nodes = new QListWidget(this);
     nodes->setObjectName("pelican.frameNodeOrder.nodes");
-    nodes->addItems(names);
+    for (const auto &name : names)
+      if (!name.startsWith(QStringLiteral("__anchor_"))) nodes->addItem(name);
     layout->addWidget(nodes);
     notice = new QLabel(tr("Loading saved orders..."), this);
     // GL-5d: named, so a scenario reads what the engine said of Apply.

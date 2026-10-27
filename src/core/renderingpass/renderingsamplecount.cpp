@@ -146,13 +146,18 @@ std::string runtimeAliasExclusion(
 
 // PS-1: a frame that skips a once node records nothing for it, so the node
 // must not share a physical scope (begun, cleared, fused) with a node that
-// runs. Every once node of the graph is isolated, on top of what the authored
-// target_planning says of it.
-std::vector<PlanningNodeConstraint> onceIsolatedNodeConstraints(
-    const FrameGraphDefinition &definition,
+// runs. Scope-owning implementations must likewise begin and end their own
+// scope. Both are isolated on top of authored target_planning constraints.
+std::vector<PlanningNodeConstraint> isolatedNodeConstraints(
+    const FrameGraphDefinition &definition, const GraphIR &graph,
     std::vector<PlanningNodeConstraint> constraints) {
     for (const auto &node : definition.nodes) {
-        if (!node.once) continue;
+        const auto typed = std::find_if(graph.nodes.begin(), graph.nodes.end(),
+            [&](const auto &entry) { return entry.name == node.name; });
+        const bool owns_scope = typed != graph.nodes.end() &&
+            (typed->shape == RenderNodeShape::sprite || typed->shape == RenderNodeShape::ui ||
+             typed->shape == RenderNodeShape::imgui);
+        if (!node.once && !owns_scope) continue;
         const auto found = std::find_if(
             constraints.begin(), constraints.end(),
             [&](const PlanningNodeConstraint &constraint) {
@@ -1677,8 +1682,8 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                             tile_local_formats),
                     .profile = target_planning.profile,
                     .node_constraints =
-                        onceIsolatedNodeConstraints(
-                            definition,
+                        isolatedNodeConstraints(
+                            definition, *findGraph(render_graph, definition.name),
                             graph_constraints == nullptr
                                 ? std::vector<PlanningNodeConstraint>{}
                                 : graph_constraints->nodes),
@@ -1721,6 +1726,19 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
         plan_value.resolution_plan =
             makeRuntimeResolutionPlan(
                 definition, plan_value);
+        for (const auto &node : findGraph(render_graph, definition.name)->nodes) {
+            if (node.shape != RenderNodeShape::sprite) continue;
+            const auto scope = std::find_if(plan_value.scopes.begin(), plan_value.scopes.end(),
+                [&](const auto &s) { return std::find(s.nodes.begin(), s.nodes.end(), node.name) != s.nodes.end(); });
+            for (const auto &use : node.uses)
+                if ((use.role == ResourceUseRole::color_attachment ||
+                     use.role == ResourceUseRole::depth_attachment) &&
+                    use.subresource && scope != plan_value.scopes.end() &&
+                    (use.subresource->layer_count != scope->view_count ||
+                     (scope->rasterization_samples > 1 && use.subresource->base_mip_level != 0)))
+                    throw GraphRegistryError("render_graph.sprite_attachment_range_unsupported@1",
+                        {{"graph", definition.name}, {"node", node.name}, {"resource", use.resource}});
+        }
         std::shared_ptr<const VulkanTargetPlan>
             automatic_plan;
         if (fragment != fragments_by_graph.end()) {
@@ -1736,6 +1754,16 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                 std::move(plan_value),
                 *fragment->second,
                 format_capabilities, provenance);
+        }
+        for (const auto &scope : plan_value.scopes) {
+            if (scope.nodes.size() < 2) continue;
+            for (const auto &name : scope.nodes) {
+                const auto &nodes = findGraph(render_graph, definition.name)->nodes;
+                const auto node = std::find_if(nodes.begin(), nodes.end(), [&](const auto &entry) { return entry.name == name; });
+                if (node != nodes.end() && (node->shape == RenderNodeShape::sprite ||
+                    node->shape == RenderNodeShape::ui || node->shape == RenderNodeShape::imgui))
+                    throw GraphRegistryError("render_graph.scope_implementation_unfusible@1", {{"graph", definition.name}, {"node", name}});
+            }
         }
         auto plan =
             std::make_shared<const VulkanTargetPlan>(
@@ -1887,6 +1915,9 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                 .format_capabilities =
                     std::move(format_capabilities),
             });
+        for (const auto &node : findGraph(render_graph, definition.name)->nodes)
+            if (node.shape == RenderNodeShape::sprite || node.shape == RenderNodeShape::ui || node.shape == RenderNodeShape::imgui)
+                result.verification_contexts.back().scope_owning_nodes.push_back(node.name);
         result.plans.push_back(std::move(plan));
     }
 

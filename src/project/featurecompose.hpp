@@ -201,19 +201,13 @@ nlohmann::json renderFeatureInsertions(const nlohmann::json &feature);
 inline constexpr std::string_view featureInsertionAnchorMissingCode =
     "feature.insertion_anchor_missing@1";
 
-// FR-1: a rendering.snapshots entry whose `after` names no pass or anchor in
-// some pass family. Fields: {snapshot, after, resolved?, candidates} --
-// `resolved` is the frame node an anchor name stands for
-// (`__anchor_<anchor>`), `candidates` renderSnapshotAfterCandidates of the
-// pipeline. Raised as GraphRegistryError.
+// A snapshot whose `after` names no concrete pass in a family. Fields:
+// {snapshot, after, candidates}. Raised as GraphRegistryError.
 inline constexpr std::string_view snapshotAfterUnknownCode =
     "snapshot.after_unknown@1";
 
-// FR-1: the names a rendering.snapshots entry's `after` may take in a composed
-// (or canonicalized) config: in every pass family, the frame nodes from the
-// post_ldr anchor up to the pelican_ui anchor -- an anchor by its anchor name
-// (`post_ldr`), a pass by its name -- that every family has, in the first
-// family's order. Snapshot copies are not among them.
+// Concrete pass names common to every family before the first transparent
+// material pass, in declaration order. Copies and output terminals are omitted.
 std::vector<std::string> renderSnapshotAfterCandidates(const nlohmann::json &config);
 
 } // namespace Pelican

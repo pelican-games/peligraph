@@ -19,6 +19,27 @@ namespace {
 using Json = nlohmann::json;
 using OrderedJson = nlohmann::ordered_json;
 
+std::string concreteFrameNodeOrder(const std::string &bytes) {
+    const auto root = OrderedJson::parse(bytes, nullptr, false);
+    if (!root.is_object()) return bytes;
+    const auto section = root.find("rendering");
+    if (section == root.end() || !section->is_object()) return bytes;
+    const auto order = section->find("frame_node_order");
+    if (order == section->end() || !order->is_object()) return bytes;
+    auto cleaned = *order;
+    bool changed = false;
+    for (auto &[family, names] : cleaned.items()) {
+        if (!names.is_array()) continue;
+        const auto end = std::remove_if(names.begin(), names.end(), [](const auto &name) {
+            return name.is_string() && name.template get_ref<const std::string &>().starts_with("__anchor_");
+        });
+        if (end != names.end()) { names.erase(end, names.end()); changed = true; }
+    }
+    if (!changed) return bytes;
+    return Pelican::AuthoredRenderConfigDocument::inspect(bytes)
+        .withSectionValue("frame_node_order", cleaned.dump(2)).bytes();
+}
+
 // How long a ticket is left before it is asked about again: the panels' own
 // poll, so the engine sees nothing new.
 constexpr int TicketPollMs = 25;
@@ -641,6 +662,7 @@ void RenderEditHistory::finishEdit(PendingEdit edit, const Json &commit) {
     }
     Entry entry;
     entry.label = edit.label;
+    entry.concrete_node_order = edit.method == "edit_frame_node_order";
     entry.serial = next_serial_++;
     entry.base_source_digest = std::move(edit.base_source_digest);
     entry.source_digest = stringAt(commit.value("source_digest", Json::object()), "hex");
@@ -920,6 +942,8 @@ void RenderEditHistory::sendRestore() {
                 base = now->second.digest;
             }
         }
+        if (entry.concrete_node_order && document && document->kind == "root" && content)
+            content = concreteFrameNodeOrder(*content);
         Json restore{{"reference", reference},
                      {"base_digest", stringOrNull(base)},
                      {"content", stringOrNull(content)}};

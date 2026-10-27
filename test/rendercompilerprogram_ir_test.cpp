@@ -785,6 +785,7 @@ TEST_CASE("RC-3c2b2 D2 compiler entry preserves fullscreen and auxiliary refusal
             const bool defaults = shadow || std::string_view{type} == "velocity" || std::string_view{type} == "picking";
             Json pass{{"name", "aux"}, {"type", type},
                 {"output", {{"color", shadow ? Json(nullptr) : Json("color")}, {"depth", defaults ? Json("depth") : Json(nullptr)}}}};
+            pass["after"] = Json::array({"initialize"});
             Json present = fullscreen("present", shadow ? std::vector<std::string>{} : std::vector<std::string>{"color"}, "swapchain");
             const auto rendering = [&](const Json &aux) {
                 return Json{{"render_targets", Json::array({image("color"),
@@ -991,6 +992,43 @@ RenderCompilerProgramResult compilePassRevisionFixture(const Json &rendering, st
     auto input = rendering;
     input["graph_transforms"] = Json::array({Json{{"name", "rc3c1b.t1"}, {"provider", "rc3c1b.transform_1"}}});
     return compile(project, providers, input, Variants::flat);
+}
+
+TEST_CASE("RC-5s output terminal waits for provider compute and its render consumer", "[rendercompiler][rc5s][review-terminal]") {
+    const auto result = compilePassRevisionFixture(section(0, false), [](Json &config) {
+        config["buffers"].push_back(Json{{"name", "provider_buffer"}, {"size", 16}});
+        config["render_targets"].push_back(image("provider_image"));
+        config["compute_tasks"].push_back(Json{{"name", "provider_compute"},
+            {"shader", "engine://shaders/compute/fixture"}, {"dispatch", {{"groups", {1, 1, 1}}}},
+            {"after", {"present"}}, {"writes", {"provider_buffer"}}});
+        auto pass = fullscreen("provider_pass", {}, "provider_image", {"provider_compute"});
+        auto &passes = config["rendering_passes"][0]["passes"];
+        passes.insert(std::prev(passes.end()), pass);
+    });
+    const auto &variant = result.variants.at(0);
+    const auto order = framePlanOrder(variant.frame_plans.at("main"));
+    const auto at = [&](const std::string &name) { return std::find(order.begin(), order.end(), name); };
+    CHECK(at("present") < at("provider_compute"));
+    CHECK(at("provider_compute") < at("provider_pass"));
+    CHECK(at("provider_pass") < at("output_transform"));
+    CHECK(order.back() == "output_transform");
+}
+
+TEST_CASE("RC-5s graph provider refuses removed authoring at its response boundary", "[rendercompiler][rc5s][review-boundary]") {
+    for (const bool insert : {false, true}) {
+        try {
+            (void)compilePassRevisionFixture(section(0, false), [=](Json &config) {
+                config["rendering_passes"][0]["passes"][0][insert ? "insert" : "canonical_anchor"] =
+                    insert ? "after:post_ldr" : "post_ldr";
+            });
+            FAIL("removed provider authoring was accepted");
+        } catch (const GraphRegistryError &error) {
+            CHECK(error.code() == "render_graph.canonical_anchor_removed@1");
+            CHECK(error.detail().at("document") == "provider://rc3c1b.transform_1");
+            CHECK(error.detail().at("pointer") == std::string("/rendering_passes/0/passes/0/") +
+                (insert ? "insert" : "canonical_anchor"));
+        }
+    }
 }
 
 Json materialCompilerFixture() {
@@ -1462,6 +1500,7 @@ TEST_CASE("RC-3c2b2 D2 routed material state has one parser and completion check
     deferred["name"] = "deferred";
     deferred["material_contract"] = "deferred_geometry_v1";
     deferred["after"] = Json::array({"draw"});
+    tone["after"] = Json::array({"deferred"});
     auto transparent = tone;
     transparent["name"] = "transparent";
     transparent["material_contract"] = "forward_transparent_v1";

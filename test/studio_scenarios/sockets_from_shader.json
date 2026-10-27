@@ -321,11 +321,11 @@
       "timeout_ms": 60000
     },
     {
-      "label": "present is the frame plan's first node while it reads nothing (the graph's pass comes before it once it does)",
+      "label": "present is the frame plan's named node while it reads nothing (the graph's pass comes before it once it does)",
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[0].name",
+      "path": "nodes[name=present].name",
       "value": "present"
     },
     {
@@ -333,7 +333,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[0].pass_inputs.variadic_range.max",
+      "path": "nodes[name=present].pass_inputs.variadic_range.max",
       "value": 8
     },
     {
@@ -648,7 +648,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[1].pass_inputs.reload_refused.declarations.$len",
+      "path": "nodes[name=present].pass_inputs.reload_refused.declarations.$len",
       "value": 1
     },
     {
@@ -656,7 +656,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[1].pass_inputs.declarations.$len",
+      "path": "nodes[name=present].pass_inputs.declarations.$len",
       "value": 2
     },
     {
@@ -698,7 +698,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[1].pass_inputs.$len",
+      "path": "nodes[name=present].pass_inputs.$len",
       "value": 7,
       "retry_ms": 120000
     },
@@ -707,7 +707,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[1].pass_inputs.declarations.$len",
+      "path": "nodes[name=present].pass_inputs.declarations.$len",
       "value": 1
     },
     {

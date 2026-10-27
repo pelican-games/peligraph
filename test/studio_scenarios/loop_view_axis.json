@@ -255,7 +255,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[16].name",
+      "path": "nodes[name=loop/0/render_fullscreen].name",
       "value": "loop/0/render_fullscreen"
     },
     {
@@ -263,7 +263,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[16].view_select.face",
+      "path": "nodes[name=loop/0/render_fullscreen].view_select.face",
       "value": 0
     },
     {
@@ -271,7 +271,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[17].name",
+      "path": "nodes[name=loop/1/render_fullscreen].name",
       "value": "loop/1/render_fullscreen"
     },
     {
@@ -279,7 +279,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[17].view_select.face",
+      "path": "nodes[name=loop/1/render_fullscreen].view_select.face",
       "value": 1
     },
     {
@@ -287,7 +287,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[18].name",
+      "path": "nodes[name=loop/2/render_fullscreen].name",
       "value": "loop/2/render_fullscreen"
     },
     {
@@ -295,7 +295,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[18].view_select.face",
+      "path": "nodes[name=loop/2/render_fullscreen].view_select.face",
       "value": 2
     },
     {
@@ -303,7 +303,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[19].name",
+      "path": "nodes[name=loop/3/render_fullscreen].name",
       "value": "loop/3/render_fullscreen"
     },
     {
@@ -311,7 +311,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[19].view_select.face",
+      "path": "nodes[name=loop/3/render_fullscreen].view_select.face",
       "value": 3
     },
     {
@@ -319,7 +319,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[20].name",
+      "path": "nodes[name=loop/4/render_fullscreen].name",
       "value": "loop/4/render_fullscreen"
     },
     {
@@ -327,7 +327,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[20].view_select.face",
+      "path": "nodes[name=loop/4/render_fullscreen].view_select.face",
       "value": 4
     },
     {
@@ -335,7 +335,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[21].name",
+      "path": "nodes[name=loop/5/render_fullscreen].name",
       "value": "loop/5/render_fullscreen"
     },
     {
@@ -343,7 +343,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[21].view_select.face",
+      "path": "nodes[name=loop/5/render_fullscreen].view_select.face",
       "value": 5
     },
     {

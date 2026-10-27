@@ -268,6 +268,23 @@
             "color_load_op": "load",
             "depth_load_op": "load",
             "depth_store_op": "store"
+          },
+          {
+            "name": "scene_present",
+            "type": "fullscreen",
+            "input": [
+              "lit_color"
+            ],
+            "output": {
+              "color": [
+                "swapchain"
+              ],
+              "depth": null
+            },
+            "shader": {
+              "vertex": "engine://fullscreen",
+              "fragment": "engine://scene_present"
+            }
           }
         ]
       }

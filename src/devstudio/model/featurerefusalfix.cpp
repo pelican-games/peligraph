@@ -185,14 +185,9 @@ std::vector<std::string> missingInsertionAnchors(const Json &catalog_entry,
     if (!catalog_entry.is_object()) return missing;
     const auto insertion = catalog_entry.find("insertion");
     if (insertion == catalog_entry.end() || !insertion->is_array()) return missing;
-    // The engine's canonical anchors (featurecompose.cpp) are in every
-    // composed pipeline, whatever its passes are called.
-    static const std::set<std::string> canonical{"sprite",     "post_main",  "tonemap",
-                                                 "post_ldr",   "pelican_ui", "debug_draw",
-                                                 "debug_text", "imgui"};
     for (const auto &entry : *insertion) {
         const auto anchor = stringOf(entry, "anchor");
-        if (anchor.empty() || canonical.contains(anchor) ||
+        if (anchor.empty() ||
             std::ranges::find(passes, anchor) != passes.end() ||
             std::ranges::find(missing, anchor) != missing.end())
             continue;

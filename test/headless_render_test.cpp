@@ -15054,7 +15054,7 @@ TEST_CASE("LP-0a a graph pass reads the preset's lit_color and writes a feature'
                 // declared ahead of the copy draws a gradient into it first,
                 // through the same reference.
                 {{"id", "fill"}, {"op", "render.fullscreen"},
-                 {"parameters", {{"pass_set", "main_render"}, {"shader", shader}, {"ports", {{"color", color}}}}},
+                 {"parameters", {{"pass_set", "main_render"}, {"after", {"forward_transparent"}}, {"before", {"scene_present"}}, {"shader", shader}, {"ports", {{"color", color}}}}},
                  {"inputs", {{"color", {{"node", "lit"}, {"port", "resource"}}}}},
                  {"outputs", {"color"}}},
                 {{"id", "take"}, {"op", "render.fullscreen"},

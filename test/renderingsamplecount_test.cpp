@@ -1,4 +1,5 @@
 #include "../src/core/renderingpass/renderingsamplecount.hpp"
+#include "../src/core/renderingpass/vulkanrendercompilerpackage.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 #include "registered_render_targets_test_support.hpp"
 #include "render_graph_ir_test_support.hpp"
@@ -2258,6 +2259,50 @@ TEST_CASE(
                  {{{"name", "kept"}, {"format", "R8G8B8A8_UNORM"}, {"extent_scale", 1.0},
                    {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}, {"lifetime", "forever"}}})}}),
         Catch::Matchers::ContainsSubstring(R"(render_graph.image_invalid@1 {"field":"lifetime","reason":"not_persistent_or_transient","resource":"kept"})"));
+}
+
+TEST_CASE("RC-5s sprite owns a scope in an otherwise fusible attachment chain", "[target-planning][rc5s][review-scope]") {
+    auto config = nlohmann::json::parse(R"({
+      "render_targets":[
+        {"name":"color","format":"R8G8B8A8_UNORM","extent_scale":1.0,"usage":["COLOR_ATTACHMENT","SAMPLED"]},
+        {"name":"depth","format":"D32_SFLOAT","extent_scale":1.0,"usage":["DEPTH_STENCIL_ATTACHMENT"]}],
+      "rendering_passes":[{"name":"main","passes":[
+        {"name":"initialize","type":"raster","draw":{"vertex_count":3},"depth_store_op":"store",
+         "output":{"color":"color","depth":"depth"}},
+        {"name":"sprites","type":"sprite","after":["initialize"],"output":{"color":"color","depth":"depth"}},
+        {"name":"present","type":"fullscreen","input":["color"],"output":{"color":"swapchain","depth":null}}
+      ]}]})");
+    const auto tile = localReadAttachmentConfig();
+    for (const auto &target : tile.at("render_targets")) config["render_targets"].push_back(target);
+    auto &passes = config["rendering_passes"][0]["passes"];
+    passes[0]["after"] = {"lighting"};
+    passes.insert(passes.begin(), tile["rendering_passes"][0]["passes"][1]);
+    passes.insert(passes.begin(), tile["rendering_passes"][0]["passes"][0]);
+    auto ir = TestSupport::renderGraphOf(config);
+    const auto compile = [&](const RenderGraphIR &graph) {
+        return compileRenderingTargetPlans(graph, TestSupport::framePlanMapOf(graph),
+            test_support::renderTargetDefinitionsOf(config), SampleCountPolicy{}, vk::Format::eB8G8R8A8Unorm,
+            localReadDeviceFacts());
+    };
+    const auto sprite = compile(ir);
+    const auto scope = std::find_if(sprite.plans[0]->scopes.begin(), sprite.plans[0]->scopes.end(),
+        [](const auto &s) { return std::find(s.nodes.begin(), s.nodes.end(), "sprites") != s.nodes.end(); });
+    REQUIRE(scope != sprite.plans[0]->scopes.end());
+    CHECK(scope->nodes == std::vector<std::string>{"sprites"});
+    CHECK_FALSE(scope->single_rendering_instance);
+    // The control keeps exactly the same resource uses and changes only the implementation's ownership.
+    std::find_if(ir.graphs[0].nodes.begin(), ir.graphs[0].nodes.end(), [](const auto &n) { return n.name == "sprites"; })->shape = RenderNodeShape::raster;
+    const auto ordinary = compile(ir);
+    CHECK(std::any_of(ordinary.plans[0]->scopes.begin(), ordinary.plans[0]->scopes.end(),
+        [](const auto &s) { return s.nodes == std::vector<std::string>{"initialize", "sprites"} && s.single_rendering_instance; }));
+    VulkanRenderCompilerPhysicalPackage physical;
+    physical.target_plan_compilation = sprite;
+    physical.target_plans.emplace("main", sprite.plans[0]);
+    const auto fused_package = ejectVulkanCompletePhysicalPlanPackage(*ordinary.plans[0]);
+    TestSupport::requireNamedRefusal([&] { installVerifiedVulkanCompletePhysicalPlanPackage(physical, "main", fused_package); },
+        "render_graph.scope_implementation_unfusible@1", {{"graph", "main"}, {"node", "sprites"}});
+    CHECK_NOTHROW(installVerifiedVulkanCompletePhysicalPlanPackage(physical, "main",
+        ejectVulkanCompletePhysicalPlanPackage(*sprite.plans[0])));
 }
 
 // PS-1: a frame that skips a once node records nothing for it, so target

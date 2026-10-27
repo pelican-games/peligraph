@@ -36,7 +36,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[2].view_axes[0].labels[2]",
+      "path": "nodes[name=cube_capture_ssao_blur].view_axes[0].labels[2]",
       "value": "+Y"
     },
     {
@@ -87,7 +87,7 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[2].view_select.face",
+      "path": "nodes[name=cube_capture_ssao_blur].view_select.face",
       "value": 2,
       "retry_ms": 120000
     },
@@ -136,7 +136,7 @@
         "method": "get_frame_plan",
         "params": {}
       },
-      "path": "result.nodes[2]",
+      "path": "result.nodes[name=cube_capture_ssao_blur]",
       "op": "lacks_key",
       "value": "view_select",
       "retry_ms": 120000

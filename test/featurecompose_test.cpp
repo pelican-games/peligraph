@@ -1906,7 +1906,7 @@ TEST_CASE("render feature fixtures compose and reject expected cases", "[render-
                 const auto &feature_pass = passByName(result.config, "feature_present");
                 REQUIRE(feature_pass.at("name").get<std::string>() == "feature_present");
                 REQUIRE(feature_pass.at("after").get<std::vector<std::string>>() ==
-                        std::vector<std::string>{"__anchor_post_ldr", "present"});
+                        std::vector<std::string>{"present"});
                 REQUIRE(result.shader_defines ==
                         entry.at("expected_shader_defines").get<std::vector<std::string>>());
                 REQUIRE(result.config.at("render_targets").size() == 3);
@@ -3059,8 +3059,10 @@ TEST_CASE("HDR render feature marks scene targets and uses the canonical tonemap
 
     const auto &tonemap = passByName(result.config, "hdr_tonemap");
     REQUIRE(tonemap.at("name").get<std::string>() == "hdr_tonemap");
-    REQUIRE(tonemap.at("after").get<std::vector<std::string>>() ==
-            std::vector<std::string>{"__anchor_tonemap"});
+    const auto hdr_plan = TestSupport::frameGraphsOf(result.config);
+    const auto hdr_order = framePlanOrder(planFrameGraph(hdr_plan.front()));
+    CHECK(std::find(hdr_order.begin(), hdr_order.end(), "present") <
+          std::find(hdr_order.begin(), hdr_order.end(), "hdr_tonemap"));
     REQUIRE(tonemap.at("input").get<std::vector<std::string>>() ==
             std::vector<std::string>{"scene_ldr_in"});
     REQUIRE(tonemap.at("shader").at("vertex").get<std::string>() == "engine://tonemap");
@@ -3094,7 +3096,7 @@ TEST_CASE("velocity feature is purgeable and occupies the scene-to-post boundary
         return entry.value("name", std::string{}) == "velocity_pass";
     });
     const auto post_main = std::find_if(passes.begin(), passes.end(), [](const auto &entry) {
-        return entry.value("name", std::string{}) == "__anchor_post_main";
+        return entry.value("name", std::string{}) == "output_transform";
     });
     REQUIRE(pass != passes.end());
     REQUIRE(post_main != passes.end());
@@ -3454,7 +3456,7 @@ TEST_CASE("picking feature owns a purgeable integer target and geometry pass",
     const auto post_main = std::find_if(
         passes.begin(), passes.end(), [](const auto &entry) {
             return entry.value("name", std::string{}) ==
-                   "__anchor_post_main";
+                   "output_transform";
         });
     REQUIRE(picking != passes.end());
     REQUIRE(picking->at("type") == "picking");
@@ -3511,7 +3513,7 @@ TEST_CASE("gizmo feature owns a purgeable output overlay pass",
     const auto debug_text = std::find_if(
         passes.begin(), passes.end(), [](const auto &entry) {
             return entry.value("name", std::string{}) ==
-                   "__anchor_debug_text";
+                   "output_transform";
         });
     REQUIRE(gizmo != passes.end());
     REQUIRE(gizmo->at("type") == "gizmo");
@@ -3852,9 +3854,9 @@ TEST_CASE("snapshot v1 rejects a second copy point by name", "[render-feature][s
 TEST_CASE("snapshot v1 rejects transparent-after copy points by name",
           "[render-feature][snapshot]") {
     const auto config = nlohmann::json::parse(R"json({
-  "snapshots": [{"name": "late_color", "after": "pelican_ui"}],
+  "snapshots": [{"name": "late_color", "after": "glass"}],
   "render_targets": [],
-  "rendering_passes": [{"name": "main", "passes": []}]
+  "rendering_passes": [{"name": "main", "passes": [{"name":"glass","type":"material","material_contract":"forward_transparent_v1","output":{"color":"swapchain","depth":null}}]}]
 })json");
     REQUIRE_THROWS_WITH(composeRenderFeatureConfig(config),
                         Catch::Matchers::ContainsSubstring("late_color") &&
@@ -5030,7 +5032,7 @@ nlohmann::json lp0aTargetRefGraph() {
             {{"id", "threshold"}, {"op", "render.target_ref"},
              {"parameters", {{"name", "Bloom_Threshold_RT"}, {"type", type}}}, {"outputs", {"resource"}}},
             {{"id", "paint"}, {"op", "render.fullscreen"},
-             {"parameters", {{"pass_set", "main_render"}, {"shader", shader},
+             {"parameters", {{"pass_set", "main_render"}, {"after", {"HighLuminanceExtraction"}}, {"shader", shader},
                              {"ports", {{"color", color}}}}},
              {"inputs", {{"color", {{"node", "threshold"}, {"port", "resource"}}}}},
              {"outputs", {"color"}}},
@@ -5366,19 +5368,11 @@ TEST_CASE("LP-0b a graph pass lands right after or before the pass its insert na
     }
 }
 
-TEST_CASE("LP-0b canonical_anchor puts a graph pass in the anchor's bucket after the features' passes",
-          "[render-feature][graph-composition][lp0b]") {
-    const auto composed = lp0aCompose(lp0bGraph({"blit"}, {{"canonical_anchor", "post_ldr"}}));
-    const auto names = lp0bDeclared(composed.config);
-    const auto blit = lp0bIndex(names, "blit");
-    CHECK(blit > lp0bIndex(names, "__anchor_post_ldr"));
-    // The end of the bucket: after bloom, which the feature put after post_ldr.
-    CHECK(blit > lp0bIndex(names, "HighLuminanceExtraction"));
-    CHECK(blit + 1 == lp0bIndex(names, "__anchor_pelican_ui"));
-    const auto &pass = passByName(composed.config, "blit");
-    CHECK(lp0bListed(pass.at("after"), "__anchor_post_ldr"));
-    CHECK_FALSE(pass.contains("canonical_anchor"));
-    REQUIRE_NOTHROW(compileComposition(composed));
+TEST_CASE("RC-5s canonical_anchor on a graph pass is refused by name", "[render-feature][rc5s]") {
+    const auto [code, fields] = lp0aRefusal(lp0bGraph({"blit"}, {{"canonical_anchor", "post_ldr"}}));
+    CHECK(code == "render_graph.canonical_anchor_removed@1");
+    CHECK(fields.at("anchor") == "post_ldr");
+    CHECK(fields.at("pointer") == "/nodes/2/parameters/canonical_anchor");
 }
 
 TEST_CASE("LP-0b graph passes at one anchor keep the graph's dependency order",
@@ -5407,7 +5401,7 @@ TEST_CASE("LP-0b graph passes at one anchor keep the graph's dependency order",
     SECTION("ids against dependency order follow the dependencies") {
         expect_run({"z_pass", "m_pass", "a_pass"});
     }
-    SECTION("passes with no dependency between them are chained in id order") {
+    SECTION("independent passes wait on the specified side without an internal chain") {
         auto document = lp0bGraph({"p_one", "p_two"}, placement);
         for (auto &node : document.at("nodes"))
             if (node.at("id") == "p_two") node["inputs"]["source"] = {{"node", "lit"}, {"port", "resource"}};
@@ -5415,8 +5409,11 @@ TEST_CASE("LP-0b graph passes at one anchor keep the graph's dependency order",
         const auto names = lp0bDeclared(composed.config);
         CHECK(lp0bIndex(names, "p_one") == lp0bIndex(names, "deferred_lighting") + 1);
         CHECK(lp0bIndex(names, "p_two") == lp0bIndex(names, "p_one") + 1);
-        CHECK_FALSE(lp0bListed(passByName(composed.config, "p_two").at("after"), "deferred_lighting"));
-        CHECK(lp0bListed(passByName(composed.config, "p_two").at("after"), "p_one"));
+        CHECK(lp0bListed(passByName(composed.config, "p_two").at("after"), "deferred_lighting"));
+        CHECK_FALSE(lp0bListed(passByName(composed.config, "p_two").at("after"), "p_one"));
+        CHECK(lp0bListed(passByName(composed.config, "p_one").at("after"), "deferred_lighting"));
+        CHECK_FALSE(lp0bListed(passByName(composed.config, "p_one").value("before", nlohmann::json::array()), "forward_opaque"));
+        CHECK_FALSE(lp0bListed(passByName(composed.config, "p_two").value("before", nlohmann::json::array()), "forward_opaque"));
     }
     SECTION("a run may name a pass another run places") {
         auto document = lp0bGraph({"a_pass", "b_pass"}, placement);
@@ -5440,8 +5437,8 @@ TEST_CASE("LP-0b placement refusals are named", "[render-feature][graph-composit
     }
     SECTION("an unknown canonical anchor is refused when edited") {
         const auto [code, fields] = lp0bEditRefusal(lp0bGraph({"blit"}, {{"canonical_anchor", "nowhere"}}));
-        CHECK(code == "graph.insert_anchor_unknown@1");
-        CHECK(fields == Json{{"node", "blit"}, {"anchor", "nowhere"}});
+        CHECK(code == "render_graph.canonical_anchor_removed@1");
+        CHECK(fields.at("anchor") == "nowhere");
     }
     SECTION("an anchor in another pass family is refused after composition") {
         auto document = lp0bGraph({"blit"}, {{"insert", {{"after", "deferred_lighting"}}}});
@@ -5453,8 +5450,8 @@ TEST_CASE("LP-0b placement refusals are named", "[render-feature][graph-composit
         document["nodes"][2]["parameters"].erase("insert");
         document["nodes"][2]["parameters"]["canonical_anchor"] = "post_ldr";
         std::tie(code, fields) = lp0aRefusal(document);
-        CHECK(code == "graph.insert_family_mismatch@1");
-        CHECK(fields == Json{{"node", "blit"}, {"anchor", "post_ldr"}});
+        CHECK(code == "render_graph.canonical_anchor_removed@1");
+        CHECK(fields.at("pointer") == "/nodes/2/parameters/canonical_anchor");
     }
     SECTION("a compute node takes no place among passes") {
         const Json buffer_port{{"kind", "buffer"}, {"element", "float"}, {"access", "read_write"}};
@@ -5472,8 +5469,13 @@ TEST_CASE("LP-0b placement refusals are named", "[render-feature][graph-composit
                                          {"inputs", {{"data", {{"node", "data"}, {"port", "resource"}}}}},
                                          {"outputs", {"data"}}});
             const auto [code, fields] = lp0bEditRefusal(document);
-            CHECK(code == "graph.insert_on_compute@1");
-            CHECK(fields == Json{{"node", "simulate"}});
+            if (placement.contains("canonical_anchor")) {
+                CHECK(code == "render_graph.canonical_anchor_removed@1");
+                CHECK(fields.contains("pointer"));
+            } else {
+                CHECK(code == "graph.insert_on_compute@1");
+                CHECK(fields == Json{{"node", "simulate"}});
+            }
         }
     }
     SECTION("the shape is checked when edited") {
@@ -5492,8 +5494,13 @@ TEST_CASE("LP-0b placement refusals are named", "[render-feature][graph-composit
                 (void)partitionGraphDocument(lp0bGraph({"blit"}, placement));
                 FAIL("the placement was accepted");
             } catch (const GraphRegistryError &error) {
-                CHECK(error.code() == "graph.render_node_parameter_invalid@1");
-                CHECK(error.detail().at("reason") == "type");
+                if (placement.contains("canonical_anchor")) {
+                    CHECK(error.code() == "render_graph.canonical_anchor_removed@1");
+                    CHECK(error.detail().contains("pointer"));
+                } else {
+                    CHECK(error.code() == "graph.render_node_parameter_invalid@1");
+                    CHECK(error.detail().at("reason") == "type");
+                }
             } catch (const std::invalid_argument &) {
             }
         }
@@ -5650,6 +5657,27 @@ TEST_CASE("LP-1a a range loop copies its body per element into passes and target
     }
 }
 
+TEST_CASE("RC-5s every loop member waits at both boundaries despite a compute wait", "[render-feature][rc5s][loop]") {
+    auto parameters = lp1aRange(3);
+    parameters["insert"] = {{"before", "forward_opaque"}};
+    parameters["after"] = {"delayed"};
+    auto document = lp1aGraph(nlohmann::json::array({lp1aLoop("steps", parameters)}));
+    document["nodes"].push_back({{"id", "delayed"}, {"op", "render.compute"},
+        {"parameters", {{"shader", "engine://shaders/compute/fixture"}, {"ports", nlohmann::json::object()},
+                        {"dispatch", {{"groups", {1, 1, 1}}}}, {"after", {"deferred_lighting"}}}},
+        {"outputs", nlohmann::json::array()}});
+    const auto composed = lp0aCompose(document);
+    const auto order = lp0bPlanOrder(composed);
+    for (const auto &name : lp1aNamesUnder(composed.config, "steps/")) {
+        const auto &pass = passByName(composed.config, name);
+        CHECK(lp0bListed(pass.at("after"), "deferred_lighting"));
+        CHECK(lp0bListed(pass.at("before"), "forward_opaque"));
+        CHECK(lp0bIndex(order, "delayed") < lp0bIndex(order, name));
+        CHECK(lp0bIndex(order, name) < lp0bIndex(order, "forward_opaque"));
+    }
+    CHECK(order.back() == "output_transform");
+}
+
 TEST_CASE("LP-1a elements that touch an outside target run in element order",
           "[render-feature][graph-composition][lp1a]") {
     using Json = nlohmann::json;
@@ -5789,13 +5817,13 @@ TEST_CASE("LP-1a a loop's insert places its whole expansion as one run",
     CHECK(lp0bIndex(order, "steps/0/fill") == lp0bIndex(order, "deferred_lighting") + 1);
     REQUIRE_NOTHROW(compileComposition(composed));
 
-    SECTION("canonical_anchor") {
+    SECTION("removed canonical_anchor is refused with a pointer") {
         auto anchored = lp1aRange(2);
         anchored["canonical_anchor"] = "post_ldr";
-        const auto placed = lp0aCompose(lp1aGraph(Json::array({lp1aLoop("steps", anchored)})));
-        const auto declared = lp0bDeclared(placed.config);
-        CHECK(lp0bIndex(declared, "steps/0/fill") > lp0bIndex(declared, "HighLuminanceExtraction"));
-        CHECK(lp0bIndex(declared, "steps/1/fill") + 1 == lp0bIndex(declared, "__anchor_pelican_ui"));
+        const auto [code, fields] = lp0aRefusal(lp1aGraph(Json::array({lp1aLoop("steps", anchored)})));
+        CHECK(code == "render_graph.canonical_anchor_removed@1");
+        CHECK(fields.at("anchor") == "post_ldr");
+        CHECK(fields.contains("pointer"));
     }
     SECTION("an anchor nothing declares is refused under the loop's id") {
         auto unknown = lp1aRange(2);
@@ -7144,6 +7172,7 @@ TEST_CASE("LP-0d pass_replacements puts a graph pass where the feature's pass st
     auto nodes = lp0dNeighbours();
     nodes.push_back(lp0dShadowRef());
     nodes.push_back(lp0dRaster("cascade_depth", {{"node", "shadow"}, {"port", "resource"}}));
+    nodes.back()["parameters"]["after"] = {"shadow_depth"};
     // The same graph without the replacement: shadow_depth draws, and the
     // graph pass is appended with the other scene passes.
     const auto kept = lp0aCompose(lp0dGraph(nodes, nullptr));
@@ -7461,8 +7490,9 @@ TEST_CASE("LP-0e render.shadow_depth and render.snapshot_copy refusals",
     }
     SECTION("a canonical anchor that is not one") {
         const auto [code, fields] = lp0bEditRefusal(shadow({{"canonical_anchor", "nowhere"}}));
-        CHECK(code == "graph.insert_anchor_unknown@1");
-        CHECK(fields == Json{{"node", "graph_shadow"}, {"anchor", "nowhere"}});
+        CHECK(code == "render_graph.canonical_anchor_removed@1");
+        CHECK(fields.at("anchor") == "nowhere");
+        CHECK(fields.contains("pointer"));
     }
     SECTION("a copy without snapshot_after, or with a field it does not own") {
         auto nodes = lp0eCubeCopyNodes();
@@ -7629,7 +7659,7 @@ TEST_CASE("LP-0d a graph node that depends on a feature the variant excluded is 
         placed["insert"] = {{"after", "FinalBloomComposite"}};
         auto later = lp1aRange(2);
         later["after"] = Json::array({"acc"});
-        auto reads = lp0bPass("reads", "lit", "read_image", {{"canonical_anchor", "post_ldr"}});
+        auto reads = lp0bPass("reads", "lit", "read_image", {{"insert", {{"before", "output_transform"}}}});
         // `reads` samples the last image `steps` painted.
         reads["inputs"]["source"] = {{"node", "steps"}, {"port", "image"}};
         const auto looped = lp1aGraph(Json::array({
@@ -8731,7 +8761,7 @@ nlohmann::json lp1eBlankRenderingConfig() {
 // family's first canonical anchor, and so before output_transform.
 void lp1eAmongScenePasses(const std::vector<std::string> &declared, const std::vector<std::string> &names,
                           std::string_view after = {}) {
-    const auto first_anchor = lp0bIndex(declared, "__anchor_sprite");
+    const auto first_anchor = lp0bIndex(declared, "output_transform");
     for (std::ptrdiff_t i = 0; i < first_anchor; ++i)
         CHECK_FALSE(declared[static_cast<std::size_t>(i)].starts_with("__anchor_"));
     for (const auto &name : names) {
@@ -8811,7 +8841,7 @@ TEST_CASE("LP-1e an unplaced graph pass and an unplaced loop land after the hybr
         const auto order = lp0bPlanOrder(composed);
         for (const auto *name : {"blit", "steps/0/fill", "steps/1/fill"}) {
             CHECK(lp0bIndex(order, name) > lp0bIndex(order, "forward_transparent"));
-            CHECK(lp0bIndex(order, name) < lp0bIndex(order, "__anchor_sprite"));
+            CHECK(lp0bIndex(order, name) < lp0bIndex(order, "output_transform"));
         }
         REQUIRE_NOTHROW(compileComposition(composed));
     }
@@ -8819,10 +8849,10 @@ TEST_CASE("LP-1e an unplaced graph pass and an unplaced loop land after the hybr
         const auto composed = lp0aCompose(lp1aGraph(Json::array({lp1aLoop("steps", lp1aRange(2))})));
         const auto declared = lp0bDeclared(composed.config);
         lp1eAmongScenePasses(declared, lp1eCopies, "forward_transparent");
-        CHECK(lp0bIndex(declared, "steps/1/fill") + 1 == lp0bIndex(declared, "__anchor_sprite"));
+        CHECK(lp0bIndex(declared, "steps/1/fill") + 1 == lp0bIndex(declared, "output_transform"));
         const auto order = lp0bPlanOrder(composed);
         for (const auto &name : lp1eCopies)
-            CHECK(lp0bIndex(order, name) < lp0bIndex(order, "__anchor_sprite"));
+            CHECK(lp0bIndex(order, name) < lp0bIndex(order, "output_transform"));
         REQUIRE_NOTHROW(compileComposition(composed));
     }
     SECTION("a loop that waits on a feature's pass stands after it") {
@@ -10214,14 +10244,14 @@ TEST_CASE("FR-1 a snapshot after a name the pipeline lacks is refused with the n
     const auto [code, fields] = lp0aRefusal(document);
     CHECK(code == "snapshot.after_unknown@1");
     CHECK(fields == Json{{"snapshot", "opaque_snapshot"}, {"after", "opaque"},
-                         {"candidates", Json::array({"post_ldr"})}});
+                         {"candidates", Json::array({"present"})}});
     // The authoring context reads the same names off the composed pipeline.
     CHECK(Json(renderSnapshotAfterCandidates(lp0aCompose(fr1BlankGraph()).config)) == fields.at("candidates"));
     // A pass in the region (one that writes the swapchain) is one too.
     auto swapchain = baseConfigWithFeature("valid/dummy_feature.json");
     swapchain["features"] = Json::array();
     CHECK(renderSnapshotAfterCandidates(composeRenderFeatureConfig(swapchain).config) ==
-          std::vector<std::string>{"post_ldr", "present"});
+          std::vector<std::string>{"present"});
 
     // Each candidate composes, and the copy follows a frame node that the
     // plan knows (the anchor's, not its bare name).
@@ -10231,7 +10261,7 @@ TEST_CASE("FR-1 a snapshot after a name the pipeline lacks is refused with the n
         fixed["rendering"]["snapshots"][0]["after"] = candidate;
         auto composed = lp0aCompose(fixed);
         const auto &copy = passByName(composed.config, "__snapshot_opaque_snapshot");
-        CHECK(copy.at("snapshot_after") == "__anchor_post_ldr");
+        CHECK(copy.at("snapshot_after") == candidate.get<std::string>());
         for (auto &target : composed.config.at("render_targets")) {
             if (target.value("format_class", std::string{}) != "display") continue;
             target["width"] = 1280;
@@ -10240,12 +10270,12 @@ TEST_CASE("FR-1 a snapshot after a name the pipeline lacks is refused with the n
         const auto graphs = TestSupport::frameGraphsOf(composed.config);
         REQUIRE(graphs.size() == 1);
         const auto plan = planFrameGraph(graphs.front());
-        const auto anchor = std::ranges::find(plan.nodes, std::string{"__anchor_post_ldr"}, &FramePlanNode::name);
+        const auto anchor = std::ranges::find(plan.nodes, candidate.get<std::string>(), &FramePlanNode::name);
         const auto snapshot =
             std::ranges::find(plan.nodes, std::string{"__snapshot_opaque_snapshot"}, &FramePlanNode::name);
         REQUIRE(anchor != plan.nodes.end());
         REQUIRE(snapshot != plan.nodes.end());
-        CHECK(snapshot->snapshot_after == "__anchor_post_ldr");
+        CHECK(snapshot->snapshot_after == candidate.get<std::string>());
         CHECK(anchor->order < snapshot->order);
     }
 }
@@ -10317,8 +10347,7 @@ TEST_CASE("FR-2 a feature inserted after a pass the pipeline lacks is refused wi
     CHECK(fields.at("feature") == "sky_ambient");
     CHECK(fields.at("anchor") == "deferred_lighting");
     CHECK(fields.at("document") == "engine://features/sky_ambient.json");
-    CHECK(fields.at("candidates") == Json::array({"lighting_pass", "present", "sprite", "post_main", "tonemap", "post_ldr",
-                                                   "pelican_ui", "debug_draw", "debug_text", "imgui", "output_transform"}));
+    CHECK(fields.at("candidates") == Json::array({"lighting_pass", "present", "output_transform"}));
 
     // Each candidate takes the pass: the feature's insert pointed there composes.
     for (const auto &candidate : fields.at("candidates")) {

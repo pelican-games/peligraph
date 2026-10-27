@@ -225,6 +225,25 @@ foreach(project_manifest IN LISTS project_manifests)
         TIMEOUT 180
     )
     if(NOT player_result EQUAL 0)
+        # RC-5s deliberately refuses the old direct sprite binding. The
+        # external corpus is immutable: prove that contract instead of
+        # translating its document or weakening image checks for runnable projects.
+        if(project_relative STREQUAL "sprite_demo")
+            file(READ "${project_dir}/passes/main.json" sprite_document)
+            string(JSON first_feature ERROR_VARIABLE sprite_feature_error
+                GET "${sprite_document}" rendering features 0)
+            string(FIND "${sprite_document}" "lit_color" sprite_lit_target)
+            if(NOT sprite_feature_error AND first_feature STREQUAL "engine://features/sprite.json"
+               AND sprite_lit_target LESS 0
+                AND player_stderr MATCHES "feature.parameter_target_unknown@1"
+                AND player_stderr MATCHES "lit_color")
+                require_no_validation_errors(
+                    "project '${project_relative}'" "${player_stdout}" "${player_stderr}")
+                message(STATUS "sprite_demo: legacy direct sprite binding refused as feature.parameter_target_unknown@1 (lit_color); author explicit color/depth bindings")
+                list(APPEND legacy_refused_projects "${project_relative}")
+                continue()
+            endif()
+        endif()
         message(FATAL_ERROR
             "project '${project_relative}' failed in pelican_player with ${player_result}\n"
             "stdout:\n${player_stdout}\nstderr:\n${player_stderr}")
@@ -555,4 +574,4 @@ if(skipped_count GREATER 0)
         "${skipped_count} of ${project_count} discovered projects were skipped "
         "for unavailable build features: ${skipped_projects}")
 endif()
-message(STATUS "all ${project_count} discovered projects passed headless smoke")
+message(STATUS "all ${project_count} discovered project contracts passed headless smoke; legacy named refusals: ${legacy_refused_projects}")

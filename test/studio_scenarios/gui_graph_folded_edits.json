@@ -35,7 +35,7 @@
     {"label": "face 2, chosen from the list", "cmd": "select", "name": "pelican.graphCanvasFoldedPass.view.face", "text": "2 (+Y)"},
     {"label": "saved", "cmd": "wait", "name": "pelican.graphCanvasNotice", "text": "face_tint saved.", "timeout_ms": 120000},
     {"label": "the root holds the view_select", "expect": "result", "command": {"cmd": "rpc", "method": "get_render_documents", "params": {}}, "path": "result.documents[0].content", "op": "contains", "value": "view_select", "retry_ms": 60000},
-    {"label": "the plan runs face_tint for face 2", "expect": "rpc_equals", "method": "get_frame_plan", "params": {}, "path": "nodes[0].view_select.face", "value": 2, "retry_ms": 120000},
+    {"label": "the plan runs face_tint for face 2", "expect": "rpc_equals", "method": "get_frame_plan", "params": {}, "path": "nodes[name=face_tint].view_select.face", "value": 2, "retry_ms": 120000},
     {"label": "and the field says so", "cmd": "wait", "name": "pelican.graphCanvasFoldedPass.view.face", "text": "2 (+Y)", "timeout_ms": 120000},
     {"label": "the engine has presented frames", "cmd": "wait_engine", "timeout_ms": 180000, "frames": 30},
     {"label": "the picture is the same: present does not read the cube", "expect": "result", "command": {"cmd": "screenshot", "name": "pelican.viewportHost", "mode": "screen", "path": "{artifacts}/gui_graph_folded_edits_view.png", "pixels": [[0.5, 0.5]]}, "path": "pixels[0]", "op": "eq", "value_of": "before", "retry_ms": 120000},

@@ -40,23 +40,16 @@ struct RenderGraphHistoryRead {
     std::string target;
 };
 
-// LP-0b: graph passes that land together at one anchor of one pass family.
-// A graphics node that names `insert: {after|before: "<pass>"}` or
-// `canonical_anchor: "<anchor>"` is not appended to its family by the
-// lowering; the anchor may be a preset's or a feature's pass, which exist only
-// after composition. `canonical_anchor: X` is `insert: {after: X}` for one of
-// the canonical anchors (the end of that anchor's bucket). Nodes with the
-// same family, side and anchor form one run, in the graph's dependency order
-// (edges and `after` / `before`), and the run is placed as a whole: the first
-// pass waits on the anchor (or the last is before it) and the rest follow it
-// in order. A loop's expansion (LP-1a) is one such run.
+// Graph passes sharing a concrete insert position in one family. They retain
+// their own dependencies; every member waits on the preceding boundary and
+// precedes the following boundary. Independent members have no internal chain.
 struct RenderGraphPassRun {
     // The node a refusal names: the first node of the run.
     std::string node;
     // The pass family (`pass_set`, "main" when absent) the passes belong to.
     std::string family;
     bool after = true;
-    // A canonical anchor name, or a pass name.
+    // A concrete pass name.
     std::string anchor;
     // Lowered pass declarations, in execution order.
     std::vector<nlohmann::json> passes;
@@ -68,6 +61,9 @@ struct RenderGraphPassRun {
     // pass_overrides reach it, an integration's requires_passes finds it.
     // decompose_material_pass writes its render.material_pass this way.
     bool declared = false;
+    // Location of the first member's insert in the authored document.
+    std::string insert_pointer;
+    bool loop = false;
 };
 
 // LP-1a: one branch body of a graph.loop, lowered once as a template. Every

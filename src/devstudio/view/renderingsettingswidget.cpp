@@ -215,7 +215,7 @@ const char *const RouteDefaultMethod = "set_material_route_default";
 
 // UX-10, decision 4: where a snapshot can be taken. v1 takes exactly one,
 // after the opaque pass (featurecompose.cpp: the post_ldr region).
-const char *const SnapshotAfter = "post_ldr";
+
 const char *const SnapshotName = "opaque_snapshot";
 
 // EL-3: the reasons a root that selects a preset refuses a key, as the engine
@@ -731,12 +731,10 @@ struct RenderingSettingsWidget::Impl {
 
     // The after entries a row offers: the candidates, else v1's one place.
     std::vector<std::string> snapshotAfters() const {
-        return snapshot_candidates.empty() ? std::vector<std::string>{SnapshotAfter}
-                                           : snapshot_candidates;
+        return snapshot_candidates;
     }
 
     QString snapshotAfterLabel(const std::string &after) const {
-        if (after == SnapshotAfter) return owner.tr("After opaque (post_ldr)");
         return owner.tr("After %1").arg(text(after));
     }
 
@@ -1360,6 +1358,7 @@ struct RenderingSettingsWidget::Impl {
     }
 
     void addSnapshot() {
+        if (snapshot_candidates.empty()) return;
         auto value = snapshotsRead();
         value.push_back({{"name", SnapshotName}, {"after", snapshotAfters().front()}});
         edit("snapshots", std::move(value));
@@ -1422,7 +1421,7 @@ struct RenderingSettingsWidget::Impl {
         gate(xr_view_execution, "xr");
         gate(snapshots_box, "snapshots");
         // v1 takes exactly one snapshot.
-        snapshot_add->setEnabled(snapshots_box->isEnabled() && snapshot_rows.empty());
+        snapshot_add->setEnabled(snapshots_box->isEnabled() && snapshot_rows.empty() && !snapshot_candidates.empty());
         snapshot_add->setToolTip(snapshot_rows.empty()
                                      ? owner.tr("Add a snapshot of the picture after the opaque pass")
                                      : owner.tr("This version takes one snapshot"));

@@ -4,11 +4,14 @@
   "name": "ui",
   "passes": [
     {
-      "insert": "after:pelican_ui",
+      "insert": "end",
       "pass": {
         "name": "pelican_ui",
         "type": "ui",
-        "output": {"color": "swapchain", "depth": null},
+        "output": {
+          "color": "swapchain",
+          "depth": null
+        },
         "color_load_op": "load"
       }
     }

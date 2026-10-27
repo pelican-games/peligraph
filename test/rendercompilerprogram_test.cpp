@@ -3,6 +3,8 @@
 #include "../src/core/renderingpass/framegraphruntime.hpp"
 #include "../src/core/renderingpass/graphtransformregistry.hpp"
 #include "../src/core/renderingpass/rendercompilerprogram.hpp"
+#include "../src/core/shader/raygrouplayout.hpp"
+#include "../src/project/featurecompose.hpp"
 #include "../src/core/renderingpass/renderstrategyregistry.hpp"
 #include "../src/core/renderingpass/passdefinitionfromir.hpp"
 #include "../src/core/renderingpass/renderingpassruntimecompiler.hpp"
@@ -1212,7 +1214,7 @@ nlohmann::json lpvaViewSelectConfig(nlohmann::json first_select,
               {"passes",
                nlohmann::json::array({
                    face_pass("face_first", std::move(first_select)),
-                   face_pass("face_three", {{"face", 3}}),
+                   ([&] { auto pass = face_pass("face_three", {{"face", 3}}); pass["after"] = {"face_first"}; return pass; })(),
                    {{"name", "present"},
                     {"type", "fullscreen"},
                     {"output", {{"color", "swapchain"},
@@ -2592,5 +2594,6 @@ TEST_CASE("FG-1 a verified fold group's decisions reach target_planning and the 
 namespace Pelican {
 #if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
 #include "rc5_recipe_compiler_test.inc"
+#include "rc5s_anchor_removal_test.inc"
 #endif
 }

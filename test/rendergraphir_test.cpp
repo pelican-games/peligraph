@@ -312,7 +312,6 @@ TEST_CASE("RC-3c1b IR: the shipping projects and the engine features plan on the
         {"example+clustered_lighting", "references unknown pass: deferred_lighting"},
         {"example+cube_capture", "references unknown pass 'deferred_lighting'"},
         {"example+editor", "render feature schema is not supported"},
-        {"example+hdr", "HDR canonical pipeline requires a scene pass"},
         {"example+planar_reflection", "references unknown pass 'deferred_lighting'"},
         {"example+rt_shadow_mask", "feature.insertion_anchor_missing@1"},
         {"example+shadow_point", "references unknown pass: deferred_lighting"},
@@ -325,7 +324,7 @@ TEST_CASE("RC-3c1b IR: the shipping projects and the engine features plan on the
     const std::set<std::string> composes{
         "example+debug_draw", "example+debug_text", "example+gizmo", "example+gpu_timing",
         "example+picking", "example+rt_shadow_mask_pipeline", "example+shadow_directional",
-        "example+sprite", "example+velocity",
+        "example+sprite", "example+velocity", "example+hdr",
         "hybrid_v1+bloom", "hybrid_v1+clustered_lighting", "hybrid_v1+cube_capture",
         "hybrid_v1+debug_draw", "hybrid_v1+debug_text", "hybrid_v1+gizmo",
         "hybrid_v1+gpu_timing", "hybrid_v1+hdr", "hybrid_v1+picking",
@@ -346,7 +345,9 @@ TEST_CASE("RC-3c1b IR: the shipping projects and the engine features plan on the
                 return value == feature || (value.is_object() && value.value("ref", "") == feature);
             });
             if (present) continue;
-            features.push_back(feature);
+            if (base_name == "example" && entry.path().stem() == "sprite")
+                features.push_back({{"ref", feature}, {"parameters", {{"color", "lit_color"}, {"depth", "offscreen_depth"}}}});
+            else features.push_back(feature);
             const auto name = base_name + "+" + entry.path().stem().string();
             seen.insert(name);
             INFO("feature case " << name);
@@ -376,7 +377,10 @@ TEST_CASE("RC-3c1b IR: the shipping projects and the engine features plan on the
             // without any is named as such.
             std::set<std::string> nodes;
             for (const auto &definition : outcome.definitions) {
-                for (const auto &node : definition.nodes) nodes.insert(node.name);
+                for (const auto &node : definition.nodes) {
+                    CHECK(node.name.rfind("__anchor_", 0) != 0);
+                    nodes.insert(node.name);
+                }
             }
             const auto feature_json = readJson(entry.path());
             std::vector<std::string> declared;
@@ -387,7 +391,7 @@ TEST_CASE("RC-3c1b IR: the shipping projects and the engine features plan on the
             for (const auto &task : feature_json.value("compute_tasks", Json::array())) {
                 declared.push_back(task.at("name").get<std::string>());
             }
-            static const std::set<std::string> without_nodes{"sprite", "gpu_timing"};
+            static const std::set<std::string> without_nodes{"gpu_timing"};
             CHECK(declared.empty() == without_nodes.contains(feature_json.at("name").get<std::string>()));
             for (const auto &declared_name : declared) {
                 INFO("feature node " << declared_name);

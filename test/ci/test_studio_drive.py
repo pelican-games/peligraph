@@ -14,6 +14,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 import studio_drive  # noqa: E402
 
 
+class StudioDriveNamedPathTest(unittest.TestCase):
+    def test_named_node_and_barrier_paths_ignore_array_order(self) -> None:
+        nodes = [{"name": "picking", "order": 0}, {"name": "present", "order": 1}]
+        for entries in (nodes, list(reversed(nodes))):
+            self.assertEqual(studio_drive.follow({"nodes": entries}, "nodes[name=present].order"), 1)
+        self.assertEqual(studio_drive.follow({"barriers": [{"from": "tint", "to": "show", "resource": "color"}]},
+                                             "barriers[from=tint&to=show].resource"), "color")
+        for entries in ([], [nodes[1], nodes[1]]):
+            with self.assertRaises(studio_drive.PathError):
+                studio_drive.follow({"nodes": entries}, "nodes[name=present].order")
+
+
 class StudioDriveTimingTest(unittest.TestCase):
     def test_short_command_keeps_submillisecond_timing_on_performance_clock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

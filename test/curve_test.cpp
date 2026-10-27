@@ -1462,7 +1462,10 @@ TEST_CASE("CT-4 the catalog says where a value is chosen from, an asset's kind, 
           Json::array({"render.buffer", "render.attribute"}));
     CHECK(parameter("render.shadow_depth", "view_family").at("choices_from") == from("view_families"));
     CHECK(parameter("render.shadow_depth", "pass_set").at("choices_from") == from("graphs", "name"));
-    CHECK(parameter("render.shadow_depth", "canonical_anchor").at("choices_from") == from("canonical_anchors"));
+    CHECK(parameter("render.shadow_depth", "insert").at("kind") == "object");
+    const auto shadow_operation = operation("render.shadow_depth");
+    for (const auto &entry : shadow_operation.at("parameters"))
+        CHECK(entry.at("name") != "canonical_anchor");
     CHECK(parameter("render.image", "format").at("choices_from") == from("render_target_vocabulary.formats"));
     CHECK(parameter("render.image", "format_class").at("choices_from") ==
           from("render_target_vocabulary.format_classes"));

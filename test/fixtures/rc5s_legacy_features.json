@@ -1,0 +1,3246 @@
+{
+  "bloom": {
+    "schema": "pelican.render_feature",
+    "version": 1,
+    "name": "bloom",
+    "parameters": {
+      "schema": "pelican.render_feature_parameters",
+      "version": 1,
+      "scalars": [
+        {
+          "name": "threshold",
+          "type": "float",
+          "range": [
+            0.0,
+            4.0
+          ],
+          "default": 0.4
+        },
+        {
+          "name": "knee",
+          "type": "float",
+          "range": [
+            0.0,
+            1.0
+          ],
+          "default": 0.7
+        },
+        {
+          "name": "intensity",
+          "type": "float",
+          "range": [
+            0.0,
+            8.0
+          ],
+          "default": 2.0,
+          "binding": "buffer"
+        }
+      ]
+    },
+    "buffers": [
+      {
+        "name": "bloom.intensity",
+        "size": 4,
+        "lifetime": "persistent",
+        "host_source": "runtime_f32"
+      }
+    ],
+    "render_targets": [
+      {
+        "name": "Bloom_Threshold_RT",
+        "extent_scale": 1.0,
+        "format": "B8G8R8A8_UNORM",
+        "format_class": "scene",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      },
+      {
+        "name": "Bloom_Downsample_H_0_RT",
+        "extent_scale": 0.5,
+        "format": "B8G8R8A8_UNORM",
+        "format_class": "scene",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      },
+      {
+        "name": "Bloom_Upsample_V_0_RT",
+        "extent_scale": 0.5,
+        "format": "B8G8R8A8_UNORM",
+        "format_class": "scene",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      },
+      {
+        "name": "Bloom_Downsample_H_1_RT",
+        "extent_scale": 0.25,
+        "format": "B8G8R8A8_UNORM",
+        "format_class": "scene",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      },
+      {
+        "name": "Bloom_Upsample_V_1_RT",
+        "extent_scale": 0.25,
+        "format": "B8G8R8A8_UNORM",
+        "format_class": "scene",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      },
+      {
+        "name": "Bloom_Downsample_H_2_RT",
+        "extent_scale": 0.125,
+        "format": "B8G8R8A8_UNORM",
+        "format_class": "scene",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      },
+      {
+        "name": "Bloom_Upsample_V_2_RT",
+        "extent_scale": 0.125,
+        "format": "B8G8R8A8_UNORM",
+        "format_class": "scene",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      },
+      {
+        "name": "Bloom_Downsample_H_3_RT",
+        "extent_scale": 0.0625,
+        "format": "B8G8R8A8_UNORM",
+        "format_class": "scene",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      },
+      {
+        "name": "Bloom_Upsample_V_3_RT",
+        "extent_scale": 0.0625,
+        "format": "B8G8R8A8_UNORM",
+        "format_class": "scene",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      }
+    ],
+    "passes": [
+      {
+        "insert": "after:post_ldr",
+        "pass": {
+          "name": "HighLuminanceExtraction",
+          "type": "fullscreen",
+          "canonical_anchor": "post_ldr",
+          "output": {
+            "color": [
+              "Bloom_Threshold_RT"
+            ],
+            "depth": null
+          },
+          "input": [
+            "lit_color"
+          ],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://bloom_highpass"
+          },
+          "clear_color": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "insert": "after:post_ldr",
+        "pass": {
+          "name": "HorizontalBlur_0",
+          "type": "fullscreen",
+          "canonical_anchor": "post_ldr",
+          "output": {
+            "color": [
+              "Bloom_Downsample_H_0_RT"
+            ],
+            "depth": null
+          },
+          "input": [
+            "Bloom_Threshold_RT"
+          ],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://bloom_blur_h"
+          },
+          "clear_color": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "insert": "after:post_ldr",
+        "pass": {
+          "name": "VerticalBlur_0",
+          "type": "fullscreen",
+          "canonical_anchor": "post_ldr",
+          "output": {
+            "color": [
+              "Bloom_Upsample_V_0_RT"
+            ],
+            "depth": null
+          },
+          "input": [
+            "Bloom_Downsample_H_0_RT"
+          ],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://bloom_blur_v"
+          },
+          "clear_color": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "insert": "after:post_ldr",
+        "pass": {
+          "name": "HorizontalBlur_1",
+          "type": "fullscreen",
+          "canonical_anchor": "post_ldr",
+          "output": {
+            "color": [
+              "Bloom_Downsample_H_1_RT"
+            ],
+            "depth": null
+          },
+          "input": [
+            "Bloom_Upsample_V_0_RT"
+          ],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://bloom_blur_h"
+          },
+          "clear_color": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "insert": "after:post_ldr",
+        "pass": {
+          "name": "VerticalBlur_1",
+          "type": "fullscreen",
+          "canonical_anchor": "post_ldr",
+          "output": {
+            "color": [
+              "Bloom_Upsample_V_1_RT"
+            ],
+            "depth": null
+          },
+          "input": [
+            "Bloom_Downsample_H_1_RT"
+          ],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://bloom_blur_v"
+          },
+          "clear_color": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "insert": "after:post_ldr",
+        "pass": {
+          "name": "HorizontalBlur_2",
+          "type": "fullscreen",
+          "canonical_anchor": "post_ldr",
+          "output": {
+            "color": [
+              "Bloom_Downsample_H_2_RT"
+            ],
+            "depth": null
+          },
+          "input": [
+            "Bloom_Upsample_V_1_RT"
+          ],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://bloom_blur_h"
+          },
+          "clear_color": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "insert": "after:post_ldr",
+        "pass": {
+          "name": "VerticalBlur_2",
+          "type": "fullscreen",
+          "canonical_anchor": "post_ldr",
+          "output": {
+            "color": [
+              "Bloom_Upsample_V_2_RT"
+            ],
+            "depth": null
+          },
+          "input": [
+            "Bloom_Downsample_H_2_RT"
+          ],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://bloom_blur_v"
+          },
+          "clear_color": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "insert": "after:post_ldr",
+        "pass": {
+          "name": "HorizontalBlur_3",
+          "type": "fullscreen",
+          "canonical_anchor": "post_ldr",
+          "output": {
+            "color": [
+              "Bloom_Downsample_H_3_RT"
+            ],
+            "depth": null
+          },
+          "input": [
+            "Bloom_Upsample_V_2_RT"
+          ],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://bloom_blur_h"
+          },
+          "clear_color": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "insert": "after:post_ldr",
+        "pass": {
+          "name": "VerticalBlur_3",
+          "type": "fullscreen",
+          "canonical_anchor": "post_ldr",
+          "output": {
+            "color": [
+              "Bloom_Upsample_V_3_RT"
+            ],
+            "depth": null
+          },
+          "input": [
+            "Bloom_Downsample_H_3_RT"
+          ],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://bloom_blur_v"
+          },
+          "clear_color": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "insert": "after:post_ldr",
+        "pass": {
+          "name": "UpsampleBlend_3",
+          "type": "fullscreen",
+          "canonical_anchor": "post_ldr",
+          "output": {
+            "color": [
+              {
+                "target": "Bloom_Upsample_V_2_RT",
+                "load_op": "Load"
+              }
+            ],
+            "depth": null
+          },
+          "input": [
+            "Bloom_Upsample_V_3_RT"
+          ],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://bloom_upsample"
+          },
+          "raster_state": {
+            "color_attachments": [
+              {
+                "blend": {
+                  "color": {
+                    "src": "one",
+                    "dst": "one",
+                    "op": "add"
+                  },
+                  "alpha": {
+                    "src": "one",
+                    "dst": "one",
+                    "op": "add"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "insert": "after:post_ldr",
+        "pass": {
+          "name": "UpsampleBlend_2",
+          "type": "fullscreen",
+          "canonical_anchor": "post_ldr",
+          "output": {
+            "color": [
+              {
+                "target": "Bloom_Upsample_V_1_RT",
+                "load_op": "Load"
+              }
+            ],
+            "depth": null
+          },
+          "input": [
+            "Bloom_Upsample_V_2_RT"
+          ],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://bloom_upsample"
+          },
+          "raster_state": {
+            "color_attachments": [
+              {
+                "blend": {
+                  "color": {
+                    "src": "one",
+                    "dst": "one",
+                    "op": "add"
+                  },
+                  "alpha": {
+                    "src": "one",
+                    "dst": "one",
+                    "op": "add"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "insert": "after:post_ldr",
+        "pass": {
+          "name": "UpsampleBlend_1",
+          "type": "fullscreen",
+          "canonical_anchor": "post_ldr",
+          "output": {
+            "color": [
+              {
+                "target": "Bloom_Upsample_V_0_RT",
+                "load_op": "Load"
+              }
+            ],
+            "depth": null
+          },
+          "input": [
+            "Bloom_Upsample_V_1_RT"
+          ],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://bloom_upsample"
+          },
+          "raster_state": {
+            "color_attachments": [
+              {
+                "blend": {
+                  "color": {
+                    "src": "one",
+                    "dst": "one",
+                    "op": "add"
+                  },
+                  "alpha": {
+                    "src": "one",
+                    "dst": "one",
+                    "op": "add"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      },
+      {
+        "insert": "after:post_ldr",
+        "pass": {
+          "name": "FinalBloomComposite",
+          "type": "fullscreen",
+          "canonical_anchor": "post_ldr",
+          "output": {
+            "color": [
+              "swapchain"
+            ],
+            "depth": null
+          },
+          "input": [
+            "lit_color",
+            "Bloom_Upsample_V_0_RT",
+            "bloom.intensity"
+          ],
+          "resource_ports": {
+            "bloomIntensity": {
+              "resource": "bloom.intensity",
+              "kind": "buffer",
+              "element": "float",
+              "access": "storage"
+            }
+          },
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://bloom_composite"
+          },
+          "color_load_op": "Load"
+        }
+      }
+    ],
+    "required_targets": [
+      {
+        "name": "lit_color",
+        "type": {
+          "semantic": "pelican.render.color_signal@1",
+          "arguments": {
+            "reference": "scene",
+            "transfer": "linear",
+            "range": "extended"
+          }
+        }
+      }
+    ]
+  },
+  "clustered_lighting": {
+    "schema": "pelican.render_feature",
+    "version": 1,
+    "name": "clustered_lighting",
+    "buffers": [
+      {
+        "name": "clustered_light_inventory",
+        "size": 65568,
+        "lifetime": "persistent",
+        "host_source": "scene_lights_v2"
+      },
+      {
+        "name": "clustered_light_selection",
+        "lifetime": "persistent",
+        "size_from_extent": {
+          "resource": "lit_color",
+          "tile_width": 32,
+          "tile_height": 32,
+          "header_bytes": 48,
+          "bytes_per_tile": 260,
+          "copies": 2
+        }
+      }
+    ],
+    "compute_tasks": [
+      {
+        "name": "clustered_light_select",
+        "shader": "engine://shaders/compute/clustered_light_select",
+        "reads": [
+          "clustered_light_inventory"
+        ],
+        "writes": [
+          "clustered_light_selection"
+        ],
+        "schedule": "per_view",
+        "before": [
+          "deferred_lighting",
+          "forward_opaque",
+          "forward_transparent"
+        ],
+        "resource_ports": {
+          "light_inventory": {
+            "resource": "clustered_light_inventory",
+            "kind": "buffer",
+            "element": "uvec4",
+            "access": "storage"
+          },
+          "light_selection": {
+            "resource": "clustered_light_selection",
+            "kind": "buffer",
+            "element": "uint",
+            "access": "storage"
+          }
+        },
+        "dispatch": {
+          "groups": [
+            64,
+            1,
+            1
+          ]
+        }
+      }
+    ],
+    "pass_overrides": {
+      "deferred_lighting": {
+        "input": [
+          "clustered_light_inventory",
+          "clustered_light_selection"
+        ],
+        "resource_ports": {
+          "light_inventory": {
+            "resource": "clustered_light_inventory",
+            "kind": "buffer",
+            "element": "uvec4",
+            "access": "storage"
+          },
+          "light_selection": {
+            "resource": "clustered_light_selection",
+            "kind": "buffer",
+            "element": "uint",
+            "access": "storage"
+          }
+        }
+      },
+      "forward_opaque": {
+        "material_resources": {
+          "light_inventory": "clustered_light_inventory",
+          "light_selection": "clustered_light_selection"
+        }
+      },
+      "forward_transparent": {
+        "material_resources": {
+          "light_inventory": "clustered_light_inventory",
+          "light_selection": "clustered_light_selection"
+        }
+      }
+    },
+    "integrations": [
+      {
+        "name": "planar_reflection_view_local_selection_v2",
+        "requires": [
+          "planar_reflection"
+        ],
+        "fragment": {
+          "buffers": [
+            {
+              "name": "planar_reflection_light_selection",
+              "lifetime": "persistent",
+              "size_from_extent": {
+                "resource": "planar_reflection_color",
+                "tile_width": 32,
+                "tile_height": 32,
+                "header_bytes": 48,
+                "bytes_per_tile": 260,
+                "copies": 2
+              }
+            }
+          ],
+          "compute_tasks": [
+            {
+              "name": "planar_reflection_light_select",
+              "shader": "engine://shaders/compute/clustered_light_select",
+              "reads": [
+                "clustered_light_inventory"
+              ],
+              "writes": [
+                "planar_reflection_light_selection"
+              ],
+              "schedule": "per_view",
+              "view_family": "$reflection/planar",
+              "before": [
+                "planar_reflection_lighting"
+              ],
+              "resource_ports": {
+                "light_inventory": {
+                  "resource": "clustered_light_inventory",
+                  "kind": "buffer",
+                  "element": "uvec4",
+                  "access": "storage"
+                },
+                "light_selection": {
+                  "resource": "planar_reflection_light_selection",
+                  "kind": "buffer",
+                  "element": "uint",
+                  "access": "storage"
+                }
+              },
+              "dispatch": {
+                "groups": [
+                  64,
+                  1,
+                  1
+                ]
+              }
+            }
+          ],
+          "pass_overrides": {
+            "planar_reflection_lighting": {
+              "resource_ports": {
+                "light_selection": {
+                  "resource": "planar_reflection_light_selection",
+                  "kind": "buffer",
+                  "element": "uint",
+                  "access": "storage"
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "name": "planar_reflection_forward_opaque_selection_v2",
+        "requires": [
+          "planar_reflection"
+        ],
+        "requires_passes": [
+          "planar_reflection_forward_opaque"
+        ],
+        "fragment": {
+          "pass_overrides": {
+            "planar_reflection_forward_opaque": {
+              "material_resources": {
+                "light_selection": "planar_reflection_light_selection"
+              }
+            }
+          }
+        }
+      },
+      {
+        "name": "planar_reflection_forward_transparent_selection_v2",
+        "requires": [
+          "planar_reflection"
+        ],
+        "requires_passes": [
+          "planar_reflection_forward_transparent"
+        ],
+        "fragment": {
+          "pass_overrides": {
+            "planar_reflection_forward_transparent": {
+              "material_resources": {
+                "light_selection": "planar_reflection_light_selection"
+              }
+            }
+          }
+        }
+      },
+      {
+        "name": "cube_capture_view_local_selection_v2",
+        "requires": [
+          "cube_capture"
+        ],
+        "fragment": {
+          "buffers": [
+            {
+              "name": "cube_capture_light_selection",
+              "lifetime": "persistent",
+              "size_from_extent": {
+                "resource": "cube_capture_color",
+                "tile_width": 32,
+                "tile_height": 32,
+                "header_bytes": 48,
+                "bytes_per_tile": 260,
+                "copies": 6
+              }
+            }
+          ],
+          "compute_tasks": [
+            {
+              "name": "cube_capture_light_select",
+              "shader": "engine://shaders/compute/clustered_light_select",
+              "reads": [
+                "clustered_light_inventory"
+              ],
+              "writes": [
+                "cube_capture_light_selection"
+              ],
+              "schedule": "per_view",
+              "view_family": "$capture/cube",
+              "before": [
+                "cube_capture_lighting"
+              ],
+              "resource_ports": {
+                "light_inventory": {
+                  "resource": "clustered_light_inventory",
+                  "kind": "buffer",
+                  "element": "uvec4",
+                  "access": "storage"
+                },
+                "light_selection": {
+                  "resource": "cube_capture_light_selection",
+                  "kind": "buffer",
+                  "element": "uint",
+                  "access": "storage"
+                }
+              },
+              "dispatch": {
+                "groups": [
+                  64,
+                  1,
+                  1
+                ]
+              }
+            }
+          ],
+          "pass_overrides": {
+            "cube_capture_lighting": {
+              "resource_ports": {
+                "light_selection": {
+                  "resource": "cube_capture_light_selection",
+                  "kind": "buffer",
+                  "element": "uint",
+                  "access": "storage"
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "name": "cube_capture_forward_opaque_selection_v2",
+        "requires": [
+          "cube_capture"
+        ],
+        "requires_passes": [
+          "cube_capture_forward_opaque"
+        ],
+        "fragment": {
+          "pass_overrides": {
+            "cube_capture_forward_opaque": {
+              "material_resources": {
+                "light_selection": "cube_capture_light_selection"
+              }
+            }
+          }
+        }
+      },
+      {
+        "name": "cube_capture_forward_transparent_selection_v2",
+        "requires": [
+          "cube_capture"
+        ],
+        "requires_passes": [
+          "cube_capture_forward_transparent"
+        ],
+        "fragment": {
+          "pass_overrides": {
+            "cube_capture_forward_transparent": {
+              "material_resources": {
+                "light_selection": "cube_capture_light_selection"
+              }
+            }
+          }
+        }
+      }
+    ],
+    "lighting_data": {
+      "inventory_contract": "pelican.light_inventory_v2",
+      "selection_contract": "project.clustered_selection_v2",
+      "inventory_resource": "clustered_light_inventory",
+      "selection_resource": "clustered_light_selection",
+      "selector_task": "clustered_light_select",
+      "algorithm": "project.fixed_tile_sphere_v2",
+      "tile_width": 32,
+      "tile_height": 32,
+      "max_lights_per_tile": 64,
+      "overflow": "deterministic_truncate",
+      "desktop_path": "compute_clustered",
+      "tile_gpu_path": "small_light_v1",
+      "xr_path": "compute_clustered",
+      "tile_gpu_fallback_reason": "tile_device_profile_requires_explicit_cluster_opt_in",
+      "xr_fallback_reason": "selection_v2_is_view_family_affine"
+    },
+    "shader_defines": [
+      "PELICAN_FEATURE_CLUSTERED_LIGHTING"
+    ]
+  },
+  "cube_capture": {
+    "schema": "pelican.render_feature",
+    "version": 1,
+    "name": "cube_capture",
+    "parameters": {
+      "schema": "pelican.render_feature_parameters",
+      "version": 1,
+      "scalars": [
+        {
+          "name": "resolution",
+          "type": "int",
+          "range": [
+            64,
+            8192
+          ],
+          "default": 256,
+          "shader_define": false
+        },
+        {
+          "name": "position_x",
+          "type": "float",
+          "range": [
+            -100000.0,
+            100000.0
+          ],
+          "default": 0.0,
+          "shader_define": false
+        },
+        {
+          "name": "position_y",
+          "type": "float",
+          "range": [
+            -100000.0,
+            100000.0
+          ],
+          "default": 0.0,
+          "shader_define": false
+        },
+        {
+          "name": "position_z",
+          "type": "float",
+          "range": [
+            -100000.0,
+            100000.0
+          ],
+          "default": 0.0,
+          "shader_define": false
+        },
+        {
+          "name": "near_distance",
+          "type": "float",
+          "range": [
+            0.001,
+            1000.0
+          ],
+          "default": 0.1,
+          "shader_define": false
+        },
+        {
+          "name": "far_distance",
+          "type": "float",
+          "range": [
+            0.01,
+            1000000.0
+          ],
+          "default": 1000.0,
+          "shader_define": false
+        }
+      ]
+    },
+    "render_targets": [
+      {
+        "name": "cube_capture_albedo",
+        "extent_scale": 1.0,
+        "width": "$resolution",
+        "height": "$resolution",
+        "layers": 6,
+        "format": "B8G8R8A8_UNORM",
+        "format_class": "scene",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      },
+      {
+        "name": "cube_capture_normal",
+        "extent_scale": 1.0,
+        "width": "$resolution",
+        "height": "$resolution",
+        "layers": 6,
+        "format": "R16G16B16A16_SFLOAT",
+        "format_class": "data",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      },
+      {
+        "name": "cube_capture_material",
+        "extent_scale": 1.0,
+        "width": "$resolution",
+        "height": "$resolution",
+        "layers": 6,
+        "format": "R8G8B8A8_UNORM",
+        "format_class": "data",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      },
+      {
+        "name": "cube_capture_worldpos",
+        "extent_scale": 1.0,
+        "width": "$resolution",
+        "height": "$resolution",
+        "layers": 6,
+        "format": "R16G16B16A16_SFLOAT",
+        "format_class": "data",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      },
+      {
+        "name": "cube_capture_emissive",
+        "extent_scale": 1.0,
+        "width": "$resolution",
+        "height": "$resolution",
+        "layers": 6,
+        "format": "B8G8R8A8_UNORM",
+        "format_class": "scene",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      },
+      {
+        "name": "cube_capture_depth",
+        "extent_scale": 1.0,
+        "width": "$resolution",
+        "height": "$resolution",
+        "layers": 6,
+        "format": "D32_SFLOAT",
+        "format_class": "data",
+        "usage": [
+          "DEPTH_STENCIL_ATTACHMENT",
+          "TRANSFER_SRC"
+        ]
+      },
+      {
+        "name": "cube_capture_ao",
+        "extent_scale": 1.0,
+        "width": "$resolution",
+        "height": "$resolution",
+        "layers": 6,
+        "format": "R8_UNORM",
+        "format_class": "data",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      },
+      {
+        "name": "cube_capture_ao_blur",
+        "extent_scale": 1.0,
+        "width": "$resolution",
+        "height": "$resolution",
+        "layers": 6,
+        "format": "R8_UNORM",
+        "format_class": "data",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      },
+      {
+        "name": "cube_capture_color",
+        "extent_scale": 1.0,
+        "width": "$resolution",
+        "height": "$resolution",
+        "dimension": "cube",
+        "layers": 6,
+        "mip_levels": 1,
+        "format": "R16G16B16A16_SFLOAT",
+        "format_class": "explicit(R16G16B16A16_SFLOAT)",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED",
+          "TRANSFER_SRC"
+        ]
+      },
+      {
+        "name": "cube_capture_opaque_color",
+        "extent_scale": 1.0,
+        "width": "$resolution",
+        "height": "$resolution",
+        "layers": 6,
+        "format": "R16G16B16A16_SFLOAT",
+        "format_class": "explicit(R16G16B16A16_SFLOAT)",
+        "usage": [
+          "TRANSFER_DST",
+          "SAMPLED"
+        ]
+      },
+      {
+        "name": "cube_capture_opaque_depth",
+        "extent_scale": 1.0,
+        "width": "$resolution",
+        "height": "$resolution",
+        "layers": 6,
+        "format": "D32_SFLOAT",
+        "format_class": "data",
+        "usage": [
+          "TRANSFER_DST",
+          "SAMPLED"
+        ]
+      }
+    ],
+    "passes": [
+      {
+        "insert": "begin",
+        "pass": {
+          "name": "cube_capture_geometry",
+          "type": "material",
+          "material_contract": "deferred_geometry_v1",
+          "resolution_domain": "independent",
+          "view_family": "$capture/cube",
+          "output": {
+            "color": [
+              "cube_capture_albedo",
+              "cube_capture_normal",
+              "cube_capture_material",
+              "cube_capture_worldpos",
+              "cube_capture_emissive"
+            ],
+            "depth": "cube_capture_depth"
+          },
+          "depth_store_op": "store"
+        }
+      },
+      {
+        "insert": "after:cube_capture_geometry",
+        "pass": {
+          "name": "cube_capture_ssao",
+          "type": "fullscreen",
+          "resolution_domain": "independent",
+          "view_family": "$capture/cube",
+          "output": {
+            "color": [
+              "cube_capture_ao"
+            ],
+            "depth": null
+          },
+          "input": [
+            "cube_capture_worldpos",
+            "cube_capture_normal"
+          ],
+          "resource_ports": {
+            "world": {
+              "resource": "cube_capture_worldpos",
+              "access": "sampled",
+              "view": "per_view"
+            },
+            "normal": {
+              "resource": "cube_capture_normal",
+              "access": "sampled",
+              "view": "per_view"
+            }
+          },
+          "push_constants": "projection_view",
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://ssao"
+          },
+          "clear_color": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      },
+      {
+        "insert": "after:cube_capture_ssao",
+        "pass": {
+          "name": "cube_capture_ssao_blur",
+          "type": "fullscreen",
+          "resolution_domain": "independent",
+          "view_family": "$capture/cube",
+          "output": {
+            "color": [
+              "cube_capture_ao_blur"
+            ],
+            "depth": null
+          },
+          "input": [
+            "cube_capture_ao"
+          ],
+          "resource_ports": {
+            "ssaoInput": {
+              "resource": "cube_capture_ao",
+              "access": "sampled",
+              "view": "per_view"
+            }
+          },
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://ssao_blur"
+          },
+          "clear_color": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      },
+      {
+        "insert": "after:cube_capture_ssao_blur",
+        "pass": {
+          "name": "cube_capture_lighting",
+          "type": "fullscreen",
+          "inherit_bindings_from": "deferred_lighting",
+          "resolution_domain": "independent",
+          "view_family": "$capture/cube",
+          "output": {
+            "color": [
+              "cube_capture_color"
+            ],
+            "depth": null
+          },
+          "input": [
+            "cube_capture_albedo",
+            "cube_capture_normal",
+            "cube_capture_material",
+            "cube_capture_worldpos",
+            "cube_capture_emissive",
+            "cube_capture_ao_blur"
+          ],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://fullscreen"
+          },
+          "push_constants": "camera_position",
+          "uses_light_data": true
+        }
+      },
+      {
+        "insert": "after:cube_capture_lighting",
+        "pass": {
+          "name": "cube_capture_forward_opaque",
+          "type": "material",
+          "material_contract": "forward_opaque_v1",
+          "inherit_bindings_from": "forward_opaque",
+          "resolution_domain": "independent",
+          "view_family": "$capture/cube",
+          "output": {
+            "color": [
+              "cube_capture_color"
+            ],
+            "depth": "cube_capture_depth"
+          },
+          "color_load_op": "load",
+          "depth_load_op": "load",
+          "depth_store_op": "store"
+        }
+      },
+      {
+        "insert": "after:cube_capture_forward_opaque",
+        "pass": {
+          "name": "cube_capture_snapshot_opaque_color",
+          "type": "snapshot_copy",
+          "view_family": "$capture/cube",
+          "source": "cube_capture_color",
+          "destination": "cube_capture_opaque_color",
+          "snapshot": "cube_capture_opaque_color",
+          "snapshot_after": "cube_capture_forward_opaque"
+        }
+      },
+      {
+        "insert": "after:cube_capture_snapshot_opaque_color",
+        "pass": {
+          "name": "cube_capture_snapshot_opaque_depth",
+          "type": "snapshot_copy",
+          "view_family": "$capture/cube",
+          "source": "cube_capture_depth",
+          "destination": "cube_capture_opaque_depth",
+          "snapshot": "cube_capture_opaque_depth",
+          "snapshot_after": "cube_capture_forward_opaque"
+        }
+      },
+      {
+        "insert": "after:cube_capture_snapshot_opaque_depth",
+        "pass": {
+          "name": "cube_capture_forward_transparent",
+          "type": "material",
+          "material_contract": "forward_transparent_v1",
+          "inherit_bindings_from": "forward_transparent",
+          "resolution_domain": "independent",
+          "view_family": "$capture/cube",
+          "screen_inputs": {
+            "opaque_color": "cube_capture_opaque_color",
+            "opaque_depth": "cube_capture_opaque_depth",
+            "scene_depth": "cube_capture_opaque_depth",
+            "linear_view_depth": "cube_capture_opaque_depth"
+          },
+          "output": {
+            "color": [
+              "cube_capture_color"
+            ],
+            "depth": "cube_capture_depth"
+          },
+          "color_load_op": "load",
+          "depth_load_op": "load",
+          "depth_store_op": "store"
+        }
+      }
+    ],
+    "shader_defines": [
+      "PELICAN_FEATURE_CUBE_CAPTURE"
+    ]
+  },
+  "debug_draw": {
+    "schema": "pelican.render_feature",
+    "version": 1,
+    "name": "debug_draw",
+    "passes": [
+      {
+        "insert": "after:debug_draw",
+        "pass": {
+          "name": "debug_draw",
+          "type": "debug_draw",
+          "output": {
+            "color": "swapchain",
+            "depth": null
+          },
+          "color_load_op": "load",
+          "shader": {
+            "vertex": "engine://debug_draw",
+            "fragment": "engine://debug_draw"
+          }
+        }
+      }
+    ]
+  },
+  "debug_text": {
+    "schema": "pelican.render_feature",
+    "version": 1,
+    "name": "debug_text",
+    "passes": [
+      {
+        "insert": "after:debug_text",
+        "pass": {
+          "name": "debug_text",
+          "type": "debug_text",
+          "output": {
+            "color": "swapchain",
+            "depth": null
+          },
+          "color_load_op": "load",
+          "shader": {
+            "vertex": "engine://debug_text",
+            "fragment": "engine://debug_text"
+          }
+        }
+      }
+    ]
+  },
+  "editor": {
+    "schema": "pelican.render_feature_overlay",
+    "version": 1,
+    "name": "editor",
+    "features": [
+      "engine://features/gizmo.json",
+      "engine://features/picking.json",
+      "engine://features/gpu_timing.json"
+    ]
+  },
+  "gizmo": {
+    "schema": "pelican.render_feature",
+    "version": 1,
+    "name": "gizmo",
+    "passes": [
+      {
+        "insert": "before:debug_text",
+        "pass": {
+          "name": "gizmo_pass",
+          "type": "gizmo",
+          "resolution_domain": "output",
+          "output": {
+            "color": "swapchain",
+            "depth": null
+          },
+          "color_load_op": "load",
+          "shader": {
+            "vertex": "engine://gizmo",
+            "fragment": "engine://gizmo"
+          }
+        }
+      }
+    ]
+  },
+  "gpu_timing": {
+    "schema": "pelican.render_feature",
+    "version": 1,
+    "name": "gpu_timing"
+  },
+  "hdr": {
+    "schema": "pelican.render_feature",
+    "version": 1,
+    "name": "hdr",
+    "passes": [
+      {
+        "insert": "after:tonemap",
+        "pass": {
+          "name": "hdr_tonemap",
+          "type": "fullscreen",
+          "output": {
+            "color": "swapchain",
+            "depth": null
+          },
+          "input": [
+            "scene_ldr_in"
+          ],
+          "shader": {
+            "vertex": "engine://tonemap",
+            "fragment": "engine://tonemap"
+          },
+          "color_load_op": "load"
+        }
+      }
+    ],
+    "shader_defines": [
+      "PELICAN_FEATURE_HDR"
+    ]
+  },
+  "picking": {
+    "schema": "pelican.render_feature",
+    "version": 1,
+    "name": "picking",
+    "render_targets": [
+      {
+        "name": "picking_id",
+        "extent_scale": 1.0,
+        "format": "R32_UINT",
+        "format_class": "data",
+        "role": "data",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "TRANSFER_SRC"
+        ]
+      },
+      {
+        "name": "picking_depth",
+        "extent_scale": 1.0,
+        "format": "D32_SFLOAT",
+        "format_class": "data",
+        "role": "data",
+        "usage": [
+          "DEPTH_STENCIL_ATTACHMENT"
+        ]
+      }
+    ],
+    "passes": [
+      {
+        "insert": "before:post_main",
+        "pass": {
+          "name": "picking_pass",
+          "type": "picking",
+          "output": {
+            "color": "picking_id",
+            "depth": "picking_depth"
+          },
+          "shader": {
+            "vertex": "engine://picking",
+            "skinned_vertex": "engine://picking_skinned",
+            "fragment": "engine://picking"
+          },
+          "clear_color": [
+            0,
+            0,
+            0,
+            0
+          ],
+          "color_store_op": "store",
+          "depth_store_op": "dont_care"
+        }
+      }
+    ]
+  },
+  "planar_reflection": {
+    "schema": "pelican.render_feature",
+    "version": 1,
+    "name": "planar_reflection",
+    "parameters": {
+      "schema": "pelican.render_feature_parameters",
+      "version": 1,
+      "scalars": [
+        {
+          "name": "resolution",
+          "type": "int",
+          "range": [
+            64,
+            8192
+          ],
+          "default": 1024,
+          "shader_define": false
+        },
+        {
+          "name": "plane_x",
+          "type": "float",
+          "range": [
+            -10000.0,
+            10000.0
+          ],
+          "default": 0.0,
+          "shader_define": false
+        },
+        {
+          "name": "plane_y",
+          "type": "float",
+          "range": [
+            -10000.0,
+            10000.0
+          ],
+          "default": 1.0,
+          "shader_define": false
+        },
+        {
+          "name": "plane_z",
+          "type": "float",
+          "range": [
+            -10000.0,
+            10000.0
+          ],
+          "default": 0.0,
+          "shader_define": false
+        },
+        {
+          "name": "plane_offset",
+          "type": "float",
+          "range": [
+            -10000.0,
+            10000.0
+          ],
+          "default": 0.0,
+          "shader_define": false
+        },
+        {
+          "name": "preserve_raster_winding",
+          "type": "bool",
+          "default": true,
+          "shader_define": false
+        },
+        {
+          "name": "oblique_near_plane",
+          "type": "bool",
+          "default": true,
+          "shader_define": false
+        },
+        {
+          "name": "prefilter_radius",
+          "type": "float",
+          "range": [
+            0.5,
+            3.0
+          ],
+          "default": 1.0
+        }
+      ],
+      "shader_assets": [
+        {
+          "name": "prefilter_shader",
+          "stage": "compute",
+          "default": "engine://render_algorithms/planar_reflection/standard_prefilter"
+        }
+      ]
+    },
+    "render_targets": [
+      {
+        "name": "planar_reflection_albedo",
+        "extent_scale": 1.0,
+        "width": "$resolution",
+        "height": "$resolution",
+        "layers": 2,
+        "format": "B8G8R8A8_UNORM",
+        "format_class": "scene",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      },
+      {
+        "name": "planar_reflection_normal",
+        "extent_scale": 1.0,
+        "width": "$resolution",
+        "height": "$resolution",
+        "layers": 2,
+        "format": "R16G16B16A16_SFLOAT",
+        "format_class": "data",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      },
+      {
+        "name": "planar_reflection_material",
+        "extent_scale": 1.0,
+        "width": "$resolution",
+        "height": "$resolution",
+        "layers": 2,
+        "format": "R8G8B8A8_UNORM",
+        "format_class": "data",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      },
+      {
+        "name": "planar_reflection_worldpos",
+        "extent_scale": 1.0,
+        "width": "$resolution",
+        "height": "$resolution",
+        "layers": 2,
+        "format": "R16G16B16A16_SFLOAT",
+        "format_class": "data",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      },
+      {
+        "name": "planar_reflection_emissive",
+        "extent_scale": 1.0,
+        "width": "$resolution",
+        "height": "$resolution",
+        "layers": 2,
+        "format": "B8G8R8A8_UNORM",
+        "format_class": "scene",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      },
+      {
+        "name": "planar_reflection_depth",
+        "extent_scale": 1.0,
+        "width": "$resolution",
+        "height": "$resolution",
+        "layers": 2,
+        "format": "D32_SFLOAT",
+        "format_class": "data",
+        "usage": [
+          "DEPTH_STENCIL_ATTACHMENT",
+          "TRANSFER_SRC"
+        ]
+      },
+      {
+        "name": "planar_reflection_ao",
+        "extent_scale": 1.0,
+        "width": "$resolution",
+        "height": "$resolution",
+        "layers": 2,
+        "format": "R8_UNORM",
+        "format_class": "data",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      },
+      {
+        "name": "planar_reflection_ao_blur",
+        "extent_scale": 1.0,
+        "width": "$resolution",
+        "height": "$resolution",
+        "layers": 2,
+        "format": "R8_UNORM",
+        "format_class": "data",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      },
+      {
+        "name": "planar_reflection_color",
+        "extent_scale": 1.0,
+        "width": "$resolution",
+        "height": "$resolution",
+        "layers": 2,
+        "format": "R16G16B16A16_SFLOAT",
+        "format_class": "explicit(R16G16B16A16_SFLOAT)",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "STORAGE",
+          "SAMPLED",
+          "TRANSFER_SRC"
+        ],
+        "mip_levels": 7
+      },
+      {
+        "name": "planar_reflection_opaque_color",
+        "extent_scale": 1.0,
+        "width": "$resolution",
+        "height": "$resolution",
+        "layers": 2,
+        "format": "R16G16B16A16_SFLOAT",
+        "format_class": "explicit(R16G16B16A16_SFLOAT)",
+        "usage": [
+          "TRANSFER_DST",
+          "SAMPLED"
+        ]
+      },
+      {
+        "name": "planar_reflection_opaque_depth",
+        "extent_scale": 1.0,
+        "width": "$resolution",
+        "height": "$resolution",
+        "layers": 2,
+        "format": "D32_SFLOAT",
+        "format_class": "data",
+        "usage": [
+          "TRANSFER_DST",
+          "SAMPLED"
+        ]
+      }
+    ],
+    "passes": [
+      {
+        "insert": "begin",
+        "pass": {
+          "name": "planar_reflection_geometry",
+          "type": "material",
+          "material_contract": "deferred_geometry_v1",
+          "resolution_domain": "independent",
+          "view_family": "$reflection/planar",
+          "output": {
+            "color": [
+              "planar_reflection_albedo",
+              "planar_reflection_normal",
+              "planar_reflection_material",
+              "planar_reflection_worldpos",
+              "planar_reflection_emissive"
+            ],
+            "depth": "planar_reflection_depth"
+          },
+          "depth_store_op": "store"
+        }
+      },
+      {
+        "insert": "after:planar_reflection_geometry",
+        "pass": {
+          "name": "planar_reflection_ssao",
+          "type": "fullscreen",
+          "resolution_domain": "independent",
+          "view_family": "$reflection/planar",
+          "output": {
+            "color": [
+              "planar_reflection_ao"
+            ],
+            "depth": null
+          },
+          "input": [
+            "planar_reflection_worldpos",
+            "planar_reflection_normal"
+          ],
+          "resource_ports": {
+            "world": {
+              "resource": "planar_reflection_worldpos",
+              "access": "sampled",
+              "view": "per_view"
+            },
+            "normal": {
+              "resource": "planar_reflection_normal",
+              "access": "sampled",
+              "view": "per_view"
+            }
+          },
+          "push_constants": "projection_view",
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://ssao"
+          },
+          "clear_color": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      },
+      {
+        "insert": "after:planar_reflection_ssao",
+        "pass": {
+          "name": "planar_reflection_ssao_blur",
+          "type": "fullscreen",
+          "resolution_domain": "independent",
+          "view_family": "$reflection/planar",
+          "output": {
+            "color": [
+              "planar_reflection_ao_blur"
+            ],
+            "depth": null
+          },
+          "input": [
+            "planar_reflection_ao"
+          ],
+          "resource_ports": {
+            "ssaoInput": {
+              "resource": "planar_reflection_ao",
+              "access": "sampled",
+              "view": "per_view"
+            }
+          },
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://ssao_blur"
+          },
+          "clear_color": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      },
+      {
+        "insert": "after:planar_reflection_ssao_blur",
+        "pass": {
+          "name": "planar_reflection_lighting",
+          "type": "fullscreen",
+          "inherit_bindings_from": "deferred_lighting",
+          "resolution_domain": "independent",
+          "view_family": "$reflection/planar",
+          "output": {
+            "color": [
+              "planar_reflection_color"
+            ],
+            "depth": null
+          },
+          "input": [
+            "planar_reflection_albedo",
+            "planar_reflection_normal",
+            "planar_reflection_material",
+            "planar_reflection_worldpos",
+            "planar_reflection_emissive",
+            "planar_reflection_ao_blur"
+          ],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://fullscreen"
+          },
+          "push_constants": "camera_position",
+          "uses_light_data": true
+        }
+      },
+      {
+        "insert": "after:planar_reflection_lighting",
+        "pass": {
+          "name": "planar_reflection_forward_opaque",
+          "type": "material",
+          "material_contract": "forward_opaque_v1",
+          "inherit_bindings_from": "forward_opaque",
+          "resolution_domain": "independent",
+          "view_family": "$reflection/planar",
+          "output": {
+            "color": [
+              "planar_reflection_color"
+            ],
+            "depth": "planar_reflection_depth"
+          },
+          "color_load_op": "load",
+          "depth_load_op": "load",
+          "depth_store_op": "store"
+        }
+      },
+      {
+        "insert": "after:planar_reflection_forward_opaque",
+        "pass": {
+          "name": "planar_reflection_snapshot_opaque_color",
+          "type": "snapshot_copy",
+          "view_family": "$reflection/planar",
+          "source": "planar_reflection_color",
+          "destination": "planar_reflection_opaque_color",
+          "snapshot": "planar_reflection_opaque_color",
+          "snapshot_after": "planar_reflection_forward_opaque"
+        }
+      },
+      {
+        "insert": "after:planar_reflection_snapshot_opaque_color",
+        "pass": {
+          "name": "planar_reflection_snapshot_opaque_depth",
+          "type": "snapshot_copy",
+          "view_family": "$reflection/planar",
+          "source": "planar_reflection_depth",
+          "destination": "planar_reflection_opaque_depth",
+          "snapshot": "planar_reflection_opaque_depth",
+          "snapshot_after": "planar_reflection_forward_opaque"
+        }
+      },
+      {
+        "insert": "after:planar_reflection_snapshot_opaque_depth",
+        "pass": {
+          "name": "planar_reflection_forward_transparent",
+          "type": "material",
+          "material_contract": "forward_transparent_v1",
+          "inherit_bindings_from": "forward_transparent",
+          "resolution_domain": "independent",
+          "view_family": "$reflection/planar",
+          "screen_inputs": {
+            "opaque_color": "planar_reflection_opaque_color",
+            "opaque_depth": "planar_reflection_opaque_depth",
+            "scene_depth": "planar_reflection_opaque_depth",
+            "linear_view_depth": "planar_reflection_opaque_depth"
+          },
+          "material_resources": {
+            "planar_reflection": {
+              "resource": "planar_reflection_opaque_color",
+              "access": "sampled",
+              "view": "family_array",
+              "sampling": {
+                "filter": "linear",
+                "address": "clamp_to_edge"
+              },
+              "footprint": "arbitrary"
+            }
+          },
+          "output": {
+            "color": [
+              "planar_reflection_color"
+            ],
+            "depth": "planar_reflection_depth"
+          },
+          "color_load_op": "load",
+          "depth_load_op": "load",
+          "depth_store_op": "store"
+        }
+      }
+    ],
+    "compute_tasks": [
+      {
+        "name": "planar_reflection_filter_mip_1",
+        "regions": [
+          "planar_reflection.prefilter"
+        ],
+        "shader": "$prefilter_shader",
+        "reads": [
+          "planar_reflection_color"
+        ],
+        "writes": [
+          "planar_reflection_color"
+        ],
+        "schedule": "per_view",
+        "view_family": "$reflection/planar",
+        "resource_ports": {
+          "source_color": {
+            "resource": "planar_reflection_color",
+            "access": "sampled",
+            "view": "family_array",
+            "sampling": {
+              "filter": "linear",
+              "address": "clamp_to_edge"
+            },
+            "subresource": {
+              "mip": 0,
+              "layer": 0
+            }
+          },
+          "filtered_color": {
+            "resource": "planar_reflection_color",
+            "access": "storage",
+            "view": "family_array",
+            "subresource": {
+              "mip": 1,
+              "layer": 0
+            }
+          }
+        },
+        "dispatch": {
+          "groups_from": {
+            "port": "filtered_color"
+          }
+        }
+      },
+      {
+        "name": "planar_reflection_filter_mip_2",
+        "regions": [
+          "planar_reflection.prefilter"
+        ],
+        "shader": "$prefilter_shader",
+        "reads": [
+          "planar_reflection_color"
+        ],
+        "writes": [
+          "planar_reflection_color"
+        ],
+        "schedule": "per_view",
+        "view_family": "$reflection/planar",
+        "resource_ports": {
+          "source_color": {
+            "resource": "planar_reflection_color",
+            "access": "sampled",
+            "view": "family_array",
+            "sampling": {
+              "filter": "linear",
+              "address": "clamp_to_edge"
+            },
+            "subresource": {
+              "mip": 1,
+              "layer": 0
+            }
+          },
+          "filtered_color": {
+            "resource": "planar_reflection_color",
+            "access": "storage",
+            "view": "family_array",
+            "subresource": {
+              "mip": 2,
+              "layer": 0
+            }
+          }
+        },
+        "dispatch": {
+          "groups_from": {
+            "port": "filtered_color"
+          }
+        }
+      },
+      {
+        "name": "planar_reflection_filter_mip_3",
+        "regions": [
+          "planar_reflection.prefilter"
+        ],
+        "shader": "$prefilter_shader",
+        "reads": [
+          "planar_reflection_color"
+        ],
+        "writes": [
+          "planar_reflection_color"
+        ],
+        "schedule": "per_view",
+        "view_family": "$reflection/planar",
+        "resource_ports": {
+          "source_color": {
+            "resource": "planar_reflection_color",
+            "access": "sampled",
+            "view": "family_array",
+            "sampling": {
+              "filter": "linear",
+              "address": "clamp_to_edge"
+            },
+            "subresource": {
+              "mip": 2,
+              "layer": 0
+            }
+          },
+          "filtered_color": {
+            "resource": "planar_reflection_color",
+            "access": "storage",
+            "view": "family_array",
+            "subresource": {
+              "mip": 3,
+              "layer": 0
+            }
+          }
+        },
+        "dispatch": {
+          "groups_from": {
+            "port": "filtered_color"
+          }
+        }
+      },
+      {
+        "name": "planar_reflection_filter_mip_4",
+        "regions": [
+          "planar_reflection.prefilter"
+        ],
+        "shader": "$prefilter_shader",
+        "reads": [
+          "planar_reflection_color"
+        ],
+        "writes": [
+          "planar_reflection_color"
+        ],
+        "schedule": "per_view",
+        "view_family": "$reflection/planar",
+        "resource_ports": {
+          "source_color": {
+            "resource": "planar_reflection_color",
+            "access": "sampled",
+            "view": "family_array",
+            "sampling": {
+              "filter": "linear",
+              "address": "clamp_to_edge"
+            },
+            "subresource": {
+              "mip": 3,
+              "layer": 0
+            }
+          },
+          "filtered_color": {
+            "resource": "planar_reflection_color",
+            "access": "storage",
+            "view": "family_array",
+            "subresource": {
+              "mip": 4,
+              "layer": 0
+            }
+          }
+        },
+        "dispatch": {
+          "groups_from": {
+            "port": "filtered_color"
+          }
+        }
+      },
+      {
+        "name": "planar_reflection_filter_mip_5",
+        "regions": [
+          "planar_reflection.prefilter"
+        ],
+        "shader": "$prefilter_shader",
+        "reads": [
+          "planar_reflection_color"
+        ],
+        "writes": [
+          "planar_reflection_color"
+        ],
+        "schedule": "per_view",
+        "view_family": "$reflection/planar",
+        "resource_ports": {
+          "source_color": {
+            "resource": "planar_reflection_color",
+            "access": "sampled",
+            "view": "family_array",
+            "sampling": {
+              "filter": "linear",
+              "address": "clamp_to_edge"
+            },
+            "subresource": {
+              "mip": 4,
+              "layer": 0
+            }
+          },
+          "filtered_color": {
+            "resource": "planar_reflection_color",
+            "access": "storage",
+            "view": "family_array",
+            "subresource": {
+              "mip": 5,
+              "layer": 0
+            }
+          }
+        },
+        "dispatch": {
+          "groups_from": {
+            "port": "filtered_color"
+          }
+        }
+      },
+      {
+        "name": "planar_reflection_filter_mip_6",
+        "regions": [
+          "planar_reflection.prefilter"
+        ],
+        "shader": "$prefilter_shader",
+        "reads": [
+          "planar_reflection_color"
+        ],
+        "writes": [
+          "planar_reflection_color"
+        ],
+        "schedule": "per_view",
+        "view_family": "$reflection/planar",
+        "before": [
+          "forward_transparent"
+        ],
+        "resource_ports": {
+          "source_color": {
+            "resource": "planar_reflection_color",
+            "access": "sampled",
+            "view": "family_array",
+            "sampling": {
+              "filter": "linear",
+              "address": "clamp_to_edge"
+            },
+            "subresource": {
+              "mip": 5,
+              "layer": 0
+            }
+          },
+          "filtered_color": {
+            "resource": "planar_reflection_color",
+            "access": "storage",
+            "view": "family_array",
+            "subresource": {
+              "mip": 6,
+              "layer": 0
+            }
+          }
+        },
+        "dispatch": {
+          "groups_from": {
+            "port": "filtered_color"
+          }
+        }
+      }
+    ],
+    "pass_overrides": {
+      "forward_transparent": {
+        "material_resources": {
+          "planar_reflection": {
+            "resource": "planar_reflection_color",
+            "access": "sampled",
+            "view": "family_array",
+            "sampling": {
+              "filter": "linear",
+              "address": "clamp_to_edge"
+            },
+            "subresource": {
+              "mip": 0,
+              "mip_count": "remaining",
+              "layer": 0,
+              "layer_count": 1
+            },
+            "footprint": "arbitrary"
+          }
+        }
+      }
+    }
+  },
+  "rt_shadow_mask": {
+    "schema": "pelican.render_feature",
+    "version": 1,
+    "name": "rt_shadow_mask",
+    "runtime_shader_compiler": "optional",
+    "required_capabilities": [
+      "pelican.vulkan.ray_query@1"
+    ],
+    "render_targets": [
+      {
+        "name": "rt_shadow_mask",
+        "extent_scale": 1.0,
+        "format": "R8_UNORM",
+        "format_class": "data",
+        "role": "data",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "TRANSFER_SRC"
+        ]
+      }
+    ],
+    "passes": [
+      {
+        "insert": "after:deferred_geometry",
+        "pass": {
+          "name": "rt_shadow_mask",
+          "type": "fullscreen",
+          "ray_query": true,
+          "output": {
+            "color": "rt_shadow_mask",
+            "depth": null
+          },
+          "input": [
+            "gbuffer_worldpos",
+            "gbuffer_normal"
+          ],
+          "input_sampling": [
+            {
+              "filter": "nearest",
+              "address": "clamp_to_edge"
+            },
+            {
+              "filter": "nearest",
+              "address": "clamp_to_edge"
+            }
+          ],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://rt_shadow_mask"
+          },
+          "uses_light_data": true,
+          "clear_color": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "color_store_op": "store"
+        }
+      }
+    ],
+    "required_targets": [
+      {
+        "name": "gbuffer_worldpos",
+        "type": {
+          "semantic": "pelican.render.color_signal@1",
+          "arguments": {
+            "reference": "scene",
+            "transfer": "linear",
+            "range": "extended"
+          }
+        }
+      },
+      {
+        "name": "gbuffer_normal",
+        "type": {
+          "semantic": "pelican.render.color_signal@1",
+          "arguments": {
+            "reference": "scene",
+            "transfer": "linear",
+            "range": "extended"
+          }
+        }
+      }
+    ]
+  },
+  "rt_shadow_mask_pipeline": {
+    "schema": "pelican.render_feature",
+    "version": 1,
+    "name": "rt_shadow_mask_pipeline",
+    "runtime_shader_compiler": "optional",
+    "required_capabilities": [
+      "pelican.vulkan.ray_tracing_pipeline@1"
+    ],
+    "render_targets": [
+      {
+        "name": "rt_shadow_mask_pipeline",
+        "extent_scale": 1.0,
+        "format": "R8_UNORM",
+        "format_class": "data",
+        "role": "data",
+        "usage": [
+          "STORAGE",
+          "TRANSFER_SRC"
+        ]
+      }
+    ],
+    "compute_tasks": [
+      {
+        "name": "rt_shadow_mask_pipeline",
+        "ray_tracing": {
+          "raygen": "engine://rt_shadow_mask_pipeline",
+          "miss": "engine://rt_shadow_mask_pipeline",
+          "closesthit": "engine://rt_shadow_mask_pipeline"
+        },
+        "reads": [
+          "gbuffer_worldpos",
+          "gbuffer_normal"
+        ],
+        "writes": [
+          "rt_shadow_mask_pipeline"
+        ],
+        "resource_ports": {
+          "world_position": {
+            "resource": "gbuffer_worldpos",
+            "access": "sampled",
+            "sampling": {
+              "filter": "nearest",
+              "address": "clamp_to_edge"
+            }
+          },
+          "normal": {
+            "resource": "gbuffer_normal",
+            "access": "sampled",
+            "sampling": {
+              "filter": "nearest",
+              "address": "clamp_to_edge"
+            }
+          },
+          "shadow_mask": {
+            "resource": "rt_shadow_mask_pipeline",
+            "access": "storage"
+          }
+        },
+        "dispatch": {
+          "rays_from": {
+            "port": "shadow_mask"
+          }
+        }
+      }
+    ]
+  },
+  "shadow_directional": {
+    "schema": "pelican.render_feature",
+    "version": 1,
+    "name": "shadow_directional",
+    "parameters": {
+      "schema": "pelican.render_feature_parameters",
+      "version": 1,
+      "scalars": [
+        {
+          "name": "cascade_count",
+          "type": "int",
+          "range": [
+            1,
+            8
+          ],
+          "default": 1
+        },
+        {
+          "name": "resolution",
+          "type": "int",
+          "range": [
+            64,
+            8192
+          ],
+          "default": 2048,
+          "shader_define": false
+        },
+        {
+          "name": "max_distance",
+          "type": "float",
+          "range": [
+            1.0,
+            10000.0
+          ],
+          "default": 100.0,
+          "shader_define": false
+        },
+        {
+          "name": "split_lambda",
+          "type": "float",
+          "range": [
+            0.0,
+            1.0
+          ],
+          "default": 0.65,
+          "shader_define": false
+        },
+        {
+          "name": "stabilize",
+          "type": "bool",
+          "default": true,
+          "shader_define": false
+        },
+        {
+          "name": "pcf_radius",
+          "type": "int",
+          "range": [
+            0,
+            2
+          ],
+          "default": 1
+        },
+        {
+          "name": "bias",
+          "type": "float",
+          "range": [
+            0,
+            0.1
+          ],
+          "default": 0.0015
+        },
+        {
+          "name": "strength",
+          "type": "float",
+          "range": [
+            0,
+            1
+          ],
+          "default": 0.65
+        }
+      ]
+    },
+    "render_targets": [
+      {
+        "name": "shadow_map",
+        "extent_scale": 1.0,
+        "width": "$resolution",
+        "height": "$resolution",
+        "format": "D32_SFLOAT",
+        "format_class": "data",
+        "usage": [
+          "DEPTH_STENCIL_ATTACHMENT",
+          "SAMPLED"
+        ],
+        "layers": "$cascade_count"
+      }
+    ],
+    "passes": [
+      {
+        "insert": "begin",
+        "pass": {
+          "name": "shadow_depth",
+          "type": "shadow_depth",
+          "view_family": "$shadow/directional",
+          "output": {
+            "color": null,
+            "depth": "shadow_map"
+          },
+          "depth_store_op": "store",
+          "shader": {
+            "vertex": "engine://shadow_depth"
+          }
+        }
+      }
+    ],
+    "surface_resources": [
+      {
+        "contract": "directional_shadow",
+        "resource": "shadow_map",
+        "producer": "shadow_depth",
+        "material_contracts": [
+          "forward_opaque_v1",
+          "forward_transparent_v1"
+        ],
+        "fullscreen_consumers": [
+          {
+            "fragment": "engine://fullscreen",
+            "uses_light_data": true
+          }
+        ]
+      }
+    ],
+    "shader_defines": [
+      "PELICAN_FEATURE_SHADOW"
+    ]
+  },
+  "shadow_point": {
+    "schema": "pelican.render_feature",
+    "version": 1,
+    "name": "shadow_point",
+    "parameters": {
+      "schema": "pelican.render_feature_parameters",
+      "version": 1,
+      "scalars": [
+        {
+          "name": "resolution",
+          "type": "int",
+          "range": [
+            64,
+            8192
+          ],
+          "default": 1024,
+          "shader_define": false
+        },
+        {
+          "name": "near_distance",
+          "type": "float",
+          "range": [
+            0.001,
+            10000
+          ],
+          "default": 0.1,
+          "shader_define": false
+        },
+        {
+          "name": "far_distance",
+          "type": "float",
+          "range": [
+            0.001,
+            10000
+          ],
+          "default": 100,
+          "shader_define": false
+        },
+        {
+          "name": "matrix_buffer_bytes",
+          "type": "int",
+          "range": [
+            400,
+            16777216
+          ],
+          "default": 65552,
+          "shader_define": false
+        },
+        {
+          "name": "pcf_radius",
+          "type": "int",
+          "range": [
+            0,
+            2
+          ],
+          "default": 1
+        },
+        {
+          "name": "bias",
+          "type": "float",
+          "range": [
+            0,
+            0.1
+          ],
+          "default": 0.0015
+        },
+        {
+          "name": "strength",
+          "type": "float",
+          "range": [
+            0,
+            1
+          ],
+          "default": 0.65
+        }
+      ]
+    },
+    "render_targets": [
+      {
+        "name": "point_shadow_map",
+        "extent_scale": 1,
+        "width": "$resolution",
+        "height": "$resolution",
+        "format": "D32_SFLOAT",
+        "format_class": "data",
+        "usage": [
+          "DEPTH_STENCIL_ATTACHMENT",
+          "SAMPLED"
+        ],
+        "layers": 6
+      }
+    ],
+    "buffers": [
+      {
+        "name": "point_shadow_matrices",
+        "size": "$matrix_buffer_bytes",
+        "lifetime": "persistent",
+        "host_source": "view_family_matrices_v1",
+        "view_family": "$shadow/point"
+      }
+    ],
+    "passes": [
+      {
+        "insert": "begin",
+        "pass": {
+          "name": "point_shadow_depth",
+          "type": "shadow_depth",
+          "view_family": "$shadow/point",
+          "output": {
+            "color": null,
+            "depth": "point_shadow_map"
+          },
+          "depth_store_op": "store",
+          "shader": {
+            "vertex": "engine://shadow_depth"
+          }
+        }
+      }
+    ],
+    "surface_resources": [
+      {
+        "contract": "point_shadow",
+        "resource": "point_shadow_map",
+        "producer": "point_shadow_depth"
+      }
+    ],
+    "pass_overrides": {
+      "deferred_lighting": {
+        "input": [
+          "point_shadow_map",
+          "point_shadow_matrices"
+        ],
+        "resource_ports": {
+          "point_shadow_texture": {
+            "resource": "point_shadow_map",
+            "kind": "image",
+            "access": "sampled",
+            "view": "family_array",
+            "sampling": {
+              "filter": "nearest",
+              "address": "clamp_to_edge"
+            }
+          },
+          "point_shadow_matrices": {
+            "resource": "point_shadow_matrices",
+            "kind": "buffer",
+            "element": "uvec4",
+            "access": "storage"
+          }
+        }
+      },
+      "forward_opaque": {
+        "material_resources": {
+          "point_shadow_texture": {
+            "resource": "point_shadow_map",
+            "view": "family_array",
+            "sampling": {
+              "filter": "nearest",
+              "address": "clamp_to_edge"
+            }
+          },
+          "point_shadow_matrices": "point_shadow_matrices"
+        }
+      },
+      "forward_transparent": {
+        "material_resources": {
+          "point_shadow_texture": {
+            "resource": "point_shadow_map",
+            "view": "family_array",
+            "sampling": {
+              "filter": "nearest",
+              "address": "clamp_to_edge"
+            }
+          },
+          "point_shadow_matrices": "point_shadow_matrices"
+        }
+      }
+    },
+    "shader_defines": [
+      "PELICAN_FEATURE_POINT_SHADOW"
+    ]
+  },
+  "shadow_spot": {
+    "schema": "pelican.render_feature",
+    "version": 1,
+    "name": "shadow_spot",
+    "parameters": {
+      "schema": "pelican.render_feature_parameters",
+      "version": 1,
+      "scalars": [
+        {
+          "name": "resolution",
+          "type": "int",
+          "range": [
+            64,
+            8192
+          ],
+          "default": 1024,
+          "shader_define": false
+        },
+        {
+          "name": "near_distance",
+          "type": "float",
+          "range": [
+            0.001,
+            10000
+          ],
+          "default": 0.1,
+          "shader_define": false
+        },
+        {
+          "name": "far_distance",
+          "type": "float",
+          "range": [
+            0.001,
+            10000
+          ],
+          "default": 100,
+          "shader_define": false
+        },
+        {
+          "name": "matrix_buffer_bytes",
+          "type": "int",
+          "range": [
+            400,
+            16777216
+          ],
+          "default": 65552,
+          "shader_define": false
+        },
+        {
+          "name": "pcf_radius",
+          "type": "int",
+          "range": [
+            0,
+            2
+          ],
+          "default": 1
+        },
+        {
+          "name": "bias",
+          "type": "float",
+          "range": [
+            0,
+            0.1
+          ],
+          "default": 0.0015
+        },
+        {
+          "name": "strength",
+          "type": "float",
+          "range": [
+            0,
+            1
+          ],
+          "default": 0.65
+        }
+      ]
+    },
+    "render_targets": [
+      {
+        "name": "spot_shadow_map",
+        "extent_scale": 1,
+        "width": "$resolution",
+        "height": "$resolution",
+        "format": "D32_SFLOAT",
+        "format_class": "data",
+        "usage": [
+          "DEPTH_STENCIL_ATTACHMENT",
+          "SAMPLED"
+        ],
+        "layers": 1
+      }
+    ],
+    "buffers": [
+      {
+        "name": "spot_shadow_matrices",
+        "size": "$matrix_buffer_bytes",
+        "lifetime": "persistent",
+        "host_source": "view_family_matrices_v1",
+        "view_family": "$shadow/spot"
+      }
+    ],
+    "passes": [
+      {
+        "insert": "begin",
+        "pass": {
+          "name": "spot_shadow_depth",
+          "type": "shadow_depth",
+          "view_family": "$shadow/spot",
+          "output": {
+            "color": null,
+            "depth": "spot_shadow_map"
+          },
+          "depth_store_op": "store",
+          "shader": {
+            "vertex": "engine://shadow_depth"
+          }
+        }
+      }
+    ],
+    "surface_resources": [
+      {
+        "contract": "spot_shadow",
+        "resource": "spot_shadow_map",
+        "producer": "spot_shadow_depth"
+      }
+    ],
+    "pass_overrides": {
+      "deferred_lighting": {
+        "input": [
+          "spot_shadow_map",
+          "spot_shadow_matrices"
+        ],
+        "resource_ports": {
+          "spot_shadow_texture": {
+            "resource": "spot_shadow_map",
+            "kind": "image",
+            "access": "sampled",
+            "view": "family_array",
+            "sampling": {
+              "filter": "nearest",
+              "address": "clamp_to_edge"
+            }
+          },
+          "spot_shadow_matrices": {
+            "resource": "spot_shadow_matrices",
+            "kind": "buffer",
+            "element": "uvec4",
+            "access": "storage"
+          }
+        }
+      },
+      "forward_opaque": {
+        "material_resources": {
+          "spot_shadow_texture": {
+            "resource": "spot_shadow_map",
+            "view": "family_array",
+            "sampling": {
+              "filter": "nearest",
+              "address": "clamp_to_edge"
+            }
+          },
+          "spot_shadow_matrices": "spot_shadow_matrices"
+        }
+      },
+      "forward_transparent": {
+        "material_resources": {
+          "spot_shadow_texture": {
+            "resource": "spot_shadow_map",
+            "view": "family_array",
+            "sampling": {
+              "filter": "nearest",
+              "address": "clamp_to_edge"
+            }
+          },
+          "spot_shadow_matrices": "spot_shadow_matrices"
+        }
+      }
+    },
+    "shader_defines": [
+      "PELICAN_FEATURE_SPOT_SHADOW"
+    ]
+  },
+  "sky_ambient": {
+    "schema": "pelican.render_feature",
+    "version": 1,
+    "name": "sky_ambient",
+    "parameters": {
+      "schema": "pelican.render_feature_parameters",
+      "version": 1,
+      "scalars": [
+        {
+          "name": "color_r",
+          "type": "float",
+          "range": [
+            0.0,
+            64.0
+          ],
+          "default": 0.12,
+          "shader_define": false
+        },
+        {
+          "name": "color_g",
+          "type": "float",
+          "range": [
+            0.0,
+            64.0
+          ],
+          "default": 0.16,
+          "shader_define": false
+        },
+        {
+          "name": "color_b",
+          "type": "float",
+          "range": [
+            0.0,
+            64.0
+          ],
+          "default": 0.24,
+          "shader_define": false
+        },
+        {
+          "name": "ambient_intensity",
+          "type": "float",
+          "range": [
+            0.0,
+            64.0
+          ],
+          "default": 0.5,
+          "shader_define": false
+        },
+        {
+          "name": "sky_intensity",
+          "type": "float",
+          "range": [
+            0.0,
+            64.0
+          ],
+          "default": 1.0,
+          "shader_define": false
+        }
+      ]
+    },
+    "passes": [
+      {
+        "insert": "after:deferred_lighting",
+        "pass": {
+          "name": "sky_background",
+          "type": "fullscreen",
+          "output": {
+            "color": [
+              "lit_color"
+            ],
+            "depth": null
+          },
+          "input": [
+            "scene_depth"
+          ],
+          "input_sampling": [
+            {
+              "filter": "nearest",
+              "address": "clamp_to_edge"
+            }
+          ],
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://sky_ambient"
+          },
+          "uses_light_data": true,
+          "color_load_op": "load"
+        }
+      }
+    ],
+    "render_target_overrides": {
+      "scene_depth": {
+        "usage": [
+          "SAMPLED"
+        ]
+      }
+    },
+    "required_targets": [
+      {
+        "name": "lit_color",
+        "type": {
+          "semantic": "pelican.render.color_signal@1",
+          "arguments": {
+            "reference": "scene",
+            "transfer": "linear",
+            "range": "extended"
+          }
+        }
+      },
+      {
+        "name": "scene_depth",
+        "type": {
+          "semantic": "pelican.render.depth@1",
+          "arguments": {
+            "representation": "device",
+            "space": "projection"
+          }
+        }
+      }
+    ],
+    "shader_defines": [
+      "PELICAN_FEATURE_SKY_AMBIENT"
+    ]
+  },
+  "sprite": {
+    "schema": "pelican.render_feature",
+    "version": 1,
+    "name": "sprite"
+  },
+  "taa": {
+    "schema": "pelican.render_feature",
+    "version": 1,
+    "name": "taa",
+    "parameters": {
+      "schema": "pelican.render_feature_parameters",
+      "version": 1,
+      "render_targets": [
+        {
+          "name": "scene_color",
+          "required": false,
+          "default": "lit_color",
+          "role": "color",
+          "format_class": "scene",
+          "extent_scale": 1.0,
+          "sample_count": 1,
+          "usage": [
+            "SAMPLED"
+          ]
+        },
+        {
+          "name": "velocity",
+          "required": false,
+          "default": "velocity",
+          "role": "data",
+          "format_class": "data",
+          "extent_scale": 1.0,
+          "sample_count": 1,
+          "usage": [
+            "SAMPLED"
+          ]
+        },
+        {
+          "name": "depth",
+          "required": false,
+          "default": "offscreen_depth",
+          "role": "data",
+          "format_class": "data",
+          "extent_scale": 1.0,
+          "sample_count": 1,
+          "usage": [
+            "DEPTH_STENCIL_ATTACHMENT"
+          ]
+        },
+        {
+          "name": "downstream_color",
+          "required": false,
+          "default": "lit_color",
+          "role": "color",
+          "format_class": "scene",
+          "extent_scale": 1.0,
+          "sample_count": 1,
+          "usage": [
+            "COLOR_ATTACHMENT"
+          ]
+        }
+      ],
+      "scalars": [
+        {
+          "name": "alpha",
+          "type": "float",
+          "range": [
+            0.0,
+            1.0
+          ],
+          "default": 0.1
+        },
+        {
+          "name": "disocclusion_tau",
+          "type": "float",
+          "range": [
+            0.0,
+            1.0
+          ],
+          "default": 0.1
+        },
+        {
+          "name": "depth_epsilon",
+          "type": "float",
+          "range": [
+            1e-08,
+            1.0
+          ],
+          "default": 1e-05
+        }
+      ]
+    },
+    "projection_jitter": {
+      "pattern": "halton23",
+      "phases": 8
+    },
+    "render_targets": [
+      {
+        "name": "taa_accum",
+        "extent_scale": 1.0,
+        "format": "R16G16B16A16_SFLOAT",
+        "format_class": "explicit(R16G16B16A16_SFLOAT)",
+        "role": "color",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ],
+        "history": true,
+        "clear_color": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    ],
+    "passes": [
+      {
+        "insert": "after:post_main",
+        "pass": {
+          "name": "taa_resolve",
+          "type": "fullscreen",
+          "input": [
+            "$scene_color",
+            "$velocity",
+            "$depth",
+            "taa_accum@history"
+          ],
+          "output": {
+            "color": "taa_accum",
+            "depth": null
+          },
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://taa_resolve"
+          },
+          "clear_color": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "insert": "after:taa_resolve",
+        "pass": {
+          "name": "taa_composite",
+          "type": "fullscreen",
+          "input": [
+            "taa_accum"
+          ],
+          "output": {
+            "color": "$downstream_color",
+            "depth": null
+          },
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://taa_composite"
+          }
+        }
+      }
+    ],
+    "render_target_overrides": {
+      "$depth": {
+        "usage": [
+          "SAMPLED"
+        ]
+      }
+    },
+    "shader_defines": [
+      "PELICAN_FEATURE_TAA"
+    ]
+  },
+  "ui": {
+    "schema": "pelican.render_feature",
+    "version": 1,
+    "name": "ui",
+    "passes": [
+      {
+        "insert": "after:pelican_ui",
+        "pass": {
+          "name": "pelican_ui",
+          "type": "ui",
+          "output": {
+            "color": "swapchain",
+            "depth": null
+          },
+          "color_load_op": "load"
+        }
+      }
+    ]
+  },
+  "velocity": {
+    "schema": "pelican.render_feature",
+    "version": 1,
+    "name": "velocity",
+    "render_targets": [
+      {
+        "name": "velocity",
+        "extent_scale": 1.0,
+        "format": "R16G16_SFLOAT",
+        "format_class": "data",
+        "role": "data",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      },
+      {
+        "name": "velocity_depth",
+        "extent_scale": 1.0,
+        "format": "D32_SFLOAT",
+        "format_class": "data",
+        "role": "data",
+        "usage": [
+          "DEPTH_STENCIL_ATTACHMENT"
+        ]
+      }
+    ],
+    "passes": [
+      {
+        "insert": "before:post_main",
+        "pass": {
+          "name": "velocity_pass",
+          "type": "velocity",
+          "output": {
+            "color": "velocity",
+            "depth": "velocity_depth"
+          },
+          "shader": {
+            "vertex": "engine://velocity",
+            "skinned_vertex": "engine://velocity_skinned",
+            "fragment": "engine://velocity"
+          },
+          "clear_color": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "color_store_op": "store",
+          "depth_store_op": "dont_care"
+        }
+      }
+    ]
+  }
+}

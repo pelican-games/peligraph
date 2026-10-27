@@ -1,4 +1,5 @@
 #include "rendergraphcomposition.hpp"
+#include "canonicalanchorremoved.hpp"
 #include "featurecompose.hpp"
 #include "generationresources.hpp"
 #include "graphpartition.hpp"
@@ -1141,10 +1142,8 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
         // are declared in it, and each loop remembers its neighbour there,
         // so its copies land where the order puts it.
         //
-        // LP-6: with no loop too. The canonical order chains a family's
-        // passes in declaration order (enforceCanonicalOrder), so an id order
-        // against the edges -- a reader of an image node before its writer,
-        // with a pass between them -- would close a cycle.
+        // LP-6: use the same dependency order even without a loop, keeping
+        // a reader after its writer when the graph block is inserted.
         std::vector<std::string> units = graph_pass_order;
         for (const auto &loop : lowered.loops) units.push_back(loop.shape.node);
         std::sort(units.begin(), units.end());
@@ -1405,10 +1404,25 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
                     return candidate.family == pending.family && candidate.after == pending.after &&
                         candidate.anchor == pending.anchor && candidate.declared == pending.declared;
                 });
-            if (run == lowered.placed_runs.end())
+            if (run == lowered.placed_runs.end()) {
+                const auto &origin = graph.origins.at(pending.node);
+                auto pointer = origin.definition.empty() ? Json::json_pointer{""}
+                    : Json::json_pointer{"/definitions"} / origin.definition;
+                if (document.contains(pointer) && document.at(pointer).contains("nodes")) {
+                    const auto &authored_nodes = document.at(pointer).at("nodes");
+                    for (std::size_t i = 0; i < authored_nodes.size(); ++i) {
+                        if (authored_nodes[i].value("id", std::string{}) == origin.node) {
+                            pointer /= "nodes";
+                            pointer /= std::to_string(i);
+                            pointer /= "parameters";
+                            pointer /= "insert";
+                            break;
+                        }
+                    }
+                }
                 lowered.placed_runs.push_back({pending.node, pending.family, pending.after, pending.anchor,
-                                               {std::move(pending.pass)}, pending.declared});
-            else run->passes.push_back(std::move(pending.pass));
+                                               {std::move(pending.pass)}, pending.declared, pointer.to_string()});
+            } else run->passes.push_back(std::move(pending.pass));
         }
     }
     lowered.config = normalizeRenderingJson(std::move(config));
@@ -1429,6 +1443,8 @@ void placeRenderGraphPassRun(Json &composed, const RenderGraphPassRun &run) {
     std::vector<RenderPassAnchorMatch> own;
     for (const auto &match : matches)
         if (match.family == run.family) own.push_back(match);
+    if (matches.empty() && isCanonicalRenderPassAnchor(run.anchor))
+        refuseRemovedCanonicalAnchor(run.anchor, run.insert_pointer);
     if (own.empty())
         throw GraphRegistryError(matches.empty() ? "graph.insert_anchor_unknown@1" : "graph.insert_family_mismatch@1",
                                  {{"node", run.node}, {"anchor", run.anchor}});
@@ -1444,7 +1460,16 @@ void placeRenderGraphPassRun(Json &composed, const RenderGraphPassRun &run) {
         if (name == "output_transform" || name.rfind("__anchor_", 0) == 0 || !taken.insert(name).second)
             throw std::runtime_error("Pass name collides with canonical frame node: " + name);
     }
-    insertRenderPassRunAtAnchor(*own.front().passes, own.front().index, run.after, run.passes);
+    if (run.loop) {
+        insertRenderPassRunAtAnchor(*own.front().passes, own.front().index, run.after, run.passes);
+    } else {
+        auto &passes = *own.front().passes;
+        auto index = own.front().index + (run.after ? 1 : 0);
+        for (auto pass : run.passes) {
+            RenderJson::appendName(pass, run.after ? "after" : "before", run.anchor);
+            passes.insert(passes.begin() + static_cast<Json::difference_type>(index++), std::move(pass));
+        }
+    }
 }
 
 Json lowerRenderGraphDocument(const Json &document,
@@ -1660,6 +1685,23 @@ RenderGraphLoopResolution resolveGraphDocumentAfterComposition(Json &composed, c
     // LP-0d: the composer left out the replacements whose node the variant
     // made inactive; the feature keeps its own pass in that variant.
     applyRenderFeaturePassReplacements(composed, lowered, resolution.passes, features, &resolution.replacements);
+    // A replacement can move a run across its original neighbours. Bind the
+    // run to both boundaries only after it has reached its final declaration.
+    for (auto &family : composed["rendering_passes"]) {
+        auto &passes = family["passes"];
+        std::map<std::string, std::vector<std::size_t>> runs;
+        for (std::size_t i = 0; i < passes.size(); ++i) {
+            const auto found = resolution.passes.find(passes[i].value("name", std::string{}));
+            if (found != resolution.passes.end()) runs[found->second.loop].push_back(i);
+        }
+        for (const auto &[loop, members] : runs) {
+            const auto first = members.front(), last = members.back();
+            for (const auto i : members) {
+                if (first > 0) RenderJson::appendName(passes[i], "after", passes[first - 1].at("name").get<std::string>());
+                if (last + 1 < passes.size()) RenderJson::appendName(passes[i], "before", passes[last + 1].at("name").get<std::string>());
+            }
+        }
+    }
     return resolution;
 }
 
@@ -2218,10 +2260,8 @@ std::int64_t loopSetLength(const GraphLoopShape &shape, const GraphLoopConstants
     return static_cast<std::int64_t>(length.length);
 }
 
-// LP-1e: a loop's run of passes with no place of its own (no insert, no
-// canonical_anchor) and no graph pass to stand by joins the family's scene
-// passes, as an unplaced graph pass does (canonicalizePasses): before the
-// family's first canonical anchor -- so before output_transform too. It still
+// LP-1e: a loop's run of passes with no insert and no graph pass to stand by
+// joins the family's scene passes before output_transform. It still
 // stands after the last pass it waits on (an after of a copy, a before naming
 // a copy or the loop) and before the first pass that waits on it. RS-3: and
 // before the first scene pass that reads an image of the run no pass before
@@ -2505,7 +2545,7 @@ RenderGraphLoopResolution expandRenderGraphLoops(Json &composed, const LoweredRe
             auto passes = ranked(std::move(run));
             if (loop.shape.placement) {
                 placeRenderGraphPassRun(composed, RenderGraphPassRun{id, family, loop.shape.placement->after,
-                                                                     loop.shape.placement->anchor, std::move(passes)});
+                    loop.shape.placement->anchor, std::move(passes), false, loop.shape.pointer + "/parameters/insert", true});
                 continue;
             }
             auto &families = composed["rendering_passes"];

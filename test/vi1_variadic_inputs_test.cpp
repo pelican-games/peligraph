@@ -1804,6 +1804,7 @@ TEST_CASE("RS-15 a graph raster pass with its own vertex shader and engine://pas
         {{"id", "lift"}, {"op", "render.raster"},
          {"parameters",
           {{"pass_set", "main_render"}, {"insert", {{"before", "present"}}},
+           {"after", {"draw_rs15_out"}},
            {"shader", {{"vertex", "project://shaders/rs15_lift"}, {"fragment", "engine://passthrough"}}},
            {"draw", {{"vertex_count", 3}}},
            {"ports",

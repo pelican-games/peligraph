@@ -8,21 +8,29 @@
       "extent_scale": 1.0,
       "format": "R8G8B8A8_UNORM",
       "format_class": "explicit(R8G8B8A8_UNORM)",
-      "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+      "usage": [
+        "COLOR_ATTACHMENT",
+        "SAMPLED"
+      ]
     }
   ],
   "render_target_overrides": {
     "lit_color": {
-      "usage": ["TRANSFER_SRC"]
+      "usage": [
+        "TRANSFER_SRC"
+      ]
     }
   },
   "passes": [
     {
-      "insert": "after:post_ldr",
+      "insert": "after:present",
       "pass": {
         "name": "feature_present",
         "type": "fullscreen",
-        "output": {"color": "swapchain", "depth": null},
+        "output": {
+          "color": "swapchain",
+          "depth": null
+        },
         "shader": {
           "vertex": "shaders/fullscreen",
           "fragment": "shaders/feature"
@@ -30,5 +38,7 @@
       }
     }
   ],
-  "shader_defines": ["PELICAN_FEATURE_DUMMY"]
+  "shader_defines": [
+    "PELICAN_FEATURE_DUMMY"
+  ]
 }

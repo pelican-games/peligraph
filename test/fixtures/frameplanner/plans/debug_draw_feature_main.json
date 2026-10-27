@@ -11,51 +11,21 @@
       "kind": "read_after_write",
       "resource": "display",
       "to": "output_transform"
+    },
+    {
+      "from": "present",
+      "kind": "read_after_write",
+      "resource": "display",
+      "to": "output_transform"
     }
   ],
   "graph": "main",
   "nodes": [
     {
       "declaration_index": 0,
-      "kind": "anchor",
-      "name": "__anchor_sprite",
-      "order": 0,
-      "reads": [],
-      "reads_history": [],
-      "writes": []
-    },
-    {
-      "declaration_index": 1,
-      "kind": "anchor",
-      "name": "__anchor_post_main",
-      "order": 1,
-      "reads": [],
-      "reads_history": [],
-      "writes": []
-    },
-    {
-      "declaration_index": 2,
-      "kind": "anchor",
-      "name": "__anchor_tonemap",
-      "order": 2,
-      "reads": [],
-      "reads_history": [],
-      "writes": []
-    },
-    {
-      "declaration_index": 3,
-      "kind": "anchor",
-      "name": "__anchor_post_ldr",
-      "order": 3,
-      "reads": [],
-      "reads_history": [],
-      "writes": []
-    },
-    {
-      "declaration_index": 4,
       "kind": "render",
       "name": "present",
-      "order": 4,
+      "order": 0,
       "reads": [],
       "reads_history": [],
       "view_axes": [],
@@ -64,28 +34,10 @@
       ]
     },
     {
-      "declaration_index": 5,
-      "kind": "anchor",
-      "name": "__anchor_pelican_ui",
-      "order": 5,
-      "reads": [],
-      "reads_history": [],
-      "writes": []
-    },
-    {
-      "declaration_index": 6,
-      "kind": "anchor",
-      "name": "__anchor_debug_draw",
-      "order": 6,
-      "reads": [],
-      "reads_history": [],
-      "writes": []
-    },
-    {
-      "declaration_index": 7,
+      "declaration_index": 1,
       "kind": "render",
       "name": "debug_draw",
-      "order": 7,
+      "order": 1,
       "reads": [
         "display"
       ],
@@ -96,28 +48,10 @@
       ]
     },
     {
-      "declaration_index": 8,
-      "kind": "anchor",
-      "name": "__anchor_debug_text",
-      "order": 8,
-      "reads": [],
-      "reads_history": [],
-      "writes": []
-    },
-    {
-      "declaration_index": 9,
-      "kind": "anchor",
-      "name": "__anchor_imgui",
-      "order": 9,
-      "reads": [],
-      "reads_history": [],
-      "writes": []
-    },
-    {
-      "declaration_index": 10,
+      "declaration_index": 2,
       "kind": "output_transform",
       "name": "output_transform",
-      "order": 10,
+      "order": 2,
       "reads": [
         "display"
       ],

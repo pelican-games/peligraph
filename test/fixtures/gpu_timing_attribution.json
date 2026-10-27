@@ -21,13 +21,6 @@
       "body_support": "supported"
     },
     {
-      "node_kind": "anchor",
-      "operation": "frame_graph",
-      "barriers": "compiled incoming barriers",
-      "body": "anchor-owned work such as sprite draw",
-      "body_support": "unsupported with zero ms when no work is bound"
-    },
-    {
       "node_kind": "snapshot_copy",
       "operation": "frame_graph",
       "barriers": "compiled incoming barriers",

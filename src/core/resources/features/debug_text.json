@@ -4,11 +4,14 @@
   "name": "debug_text",
   "passes": [
     {
-      "insert": "after:debug_text",
+      "insert": "end",
       "pass": {
         "name": "debug_text",
         "type": "debug_text",
-        "output": {"color": "swapchain", "depth": null},
+        "output": {
+          "color": "swapchain",
+          "depth": null
+        },
         "color_load_op": "load",
         "shader": {
           "vertex": "engine://debug_text",

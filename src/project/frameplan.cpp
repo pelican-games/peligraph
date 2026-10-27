@@ -650,9 +650,9 @@ void requireFrameNodeOrderAgreesWithDependencies(const FrameGraphDefinition &gra
         for (std::size_t i = 1; i < path.size(); ++i) {
             const auto &node = graph.nodes[path[i].first];
             via.push_back(node.name);
-            if ((node.kind == FramePlanNodeKind::anchor || node.kind == FramePlanNodeKind::output_transform) &&
-                fields.at("reason") != "canonical_order") {
-                fields["reason"] = "canonical_order";
+            if ((node.kind == FramePlanNodeKind::output_transform) &&
+                fields.at("reason") != "output_terminal") {
+                fields["reason"] = "output_terminal";
                 fields.erase("resource");
                 fields["anchor"] = node.name;
             }

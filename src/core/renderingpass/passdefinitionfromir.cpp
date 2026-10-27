@@ -255,6 +255,7 @@ PassDefinition passDefinitionOf(const RenderGraphIR &ir, const GraphIR &graph,
         else result.pass_info = DebugTextPassInfo{vert, frag};
         break;
     }
+    case RenderNodeShape::sprite: result.pass_info = SpritePassInfo{}; break;
     case RenderNodeShape::ui: result.pass_info = UiPassInfo{}; break;
     case RenderNodeShape::imgui:
 #if PELICAN_WITH_IMGUI

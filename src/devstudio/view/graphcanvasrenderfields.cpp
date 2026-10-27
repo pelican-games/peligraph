@@ -2308,7 +2308,7 @@ GraphCanvasPlaceFields::GraphCanvasPlaceFields(GraphCanvasModel &model,
     place_ = new QComboBox(fields_);
     place_->setObjectName(placeFieldName(QStringLiteral("place")));
     place_->setToolTip(tr("Where the pass runs among the frame's passes: where the engine "
-                          "puts it, before or after a pass, or after an anchor."));
+                          "puts it, before or after a concrete pass."));
     form->addRow(caption(tr("Place"), fields_), place_);
     pass_set_ = new QComboBox(fields_);
     pass_set_->setObjectName(placeFieldName(QStringLiteral("passSet")));
@@ -2368,9 +2368,6 @@ void GraphCanvasPlaceFields::load() {
             place_->addItem(tr("before %1").arg(qtext(pass)), QStringLiteral("before|") + qtext(pass));
             place_->addItem(tr("after %1").arg(qtext(pass)), QStringLiteral("after|") + qtext(pass));
         }
-        for (const auto &anchor : GraphCanvasModel::loopAnchors())
-            place_->addItem(tr("after anchor %1").arg(qtext(anchor)),
-                            QStringLiteral("anchor|") + qtext(anchor));
         // What the document says stays visible, a pass the plan does not
         // list (yet) and an insert the field has no form for included.
         const auto current = placeData(place);

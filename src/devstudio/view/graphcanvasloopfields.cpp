@@ -379,13 +379,11 @@ GraphCanvasLoopFields::GraphCanvasLoopFields(
         if (!loop_.empty()) after(model_.rerunOnce({}, loop_));
     });
 
-    // Where the copies land among the passes (LP-0b): a canonical anchor, or
+    // Where the copies land among concrete passes (LP-0b), or
     // the end of the pass family. Only a body that draws takes a place.
     place_ = new QComboBox(this);
     place_->setObjectName(fieldName(QStringLiteral("place")));
     place_->addItem(tr("end of its pass family"), QString{});
-    for (const auto &anchor : GraphCanvasModel::loopAnchors())
-        place_->addItem(tr("after %1").arg(qtext(anchor)), qtext(anchor));
     form->addRow(caption(tr("Place")), place_);
     connect(place_, &QComboBox::currentIndexChanged, this, [this](int index) {
         if (index < 0 || loop_.empty()) return;
@@ -604,14 +602,19 @@ void GraphCanvasLoopFields::rebuild(const GraphCanvasLoop &loop, bool preserve_c
     }
     {
         const QSignalBlocker block{place_};
-        // An insert naming a pass is shown as it is, and stays until another
-        // place is picked.
-        if (const int shown = place_->findData(QStringLiteral("\x1finsert")); shown >= 0)
-            place_->removeItem(shown);
-        if (!loop.insert.empty())
-            place_->addItem(tr("insert %1").arg(qtext(loop.insert)), QStringLiteral("\x1finsert"));
-        const int index = place_->findData(loop.insert.empty() ? qtext(loop.anchor)
-                                                               : QStringLiteral("\x1finsert"));
+        place_->clear();
+        place_->addItem(tr("end of its pass family"), QString{});
+        for (const auto &pass : model_.placePasses(loop_)) {
+            place_->addItem(tr("before %1").arg(qtext(pass)), QStringLiteral("before|") + qtext(pass));
+            place_->addItem(tr("after %1").arg(qtext(pass)), QStringLiteral("after|") + qtext(pass));
+        }
+        QString current;
+        const auto space = loop.insert.find(' ');
+        if (space != std::string::npos)
+            current = qtext(loop.insert.substr(0, space)) + QLatin1Char{'|'} + qtext(loop.insert.substr(space + 1));
+        if (!current.isEmpty() && place_->findData(current) < 0)
+            place_->addItem(tr("insert %1").arg(qtext(loop.insert)), current);
+        const int index = place_->findData(current);
         place_->setCurrentIndex(index < 0 ? 0 : index);
         place_->setEnabled(editable && loop.body_draws);
         place_->setToolTip(loop.body_draws

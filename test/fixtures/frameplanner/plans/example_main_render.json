@@ -89,6 +89,12 @@
       "kind": "read_after_write",
       "resource": "offscreen_depth",
       "to": "forward_transparent"
+    },
+    {
+      "from": "forward_transparent",
+      "kind": "read_after_write",
+      "resource": "lit_color",
+      "to": "scene_present"
     }
   ],
   "graph": "main_render",
@@ -210,6 +216,20 @@
       "writes": [
         "lit_color",
         "offscreen_depth"
+      ]
+    },
+    {
+      "declaration_index": 7,
+      "kind": "render",
+      "name": "scene_present",
+      "order": 7,
+      "reads": [
+        "lit_color"
+      ],
+      "reads_history": [],
+      "view_axes": [],
+      "writes": [
+        "swapchain"
       ]
     }
   ],
