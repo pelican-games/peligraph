@@ -480,8 +480,9 @@ class PathError(LookupError):
 def follow(value: Any, path: str) -> Any:
     """Walk `path` through a decoded JSON value.
 
-    Segments are separated by `.`; `[n]` indexes a list; the segment `$len`
-    is the length of the list or object it stands on.  A missing segment is an
+    Segments are separated by `.`; `[n]` indexes a list and `[key=value]`
+    selects exactly one object (`&` combines keys). The segment `$len` is
+    the length of the list or object it stands on. A missing segment is an
     error rather than a None, so a typo in a scenario reads as a typo.
     """
 
@@ -518,6 +519,15 @@ def follow(value: Any, path: str) -> Any:
                     f"{'.'.join(walked) or '<root>'} is a "
                     f"{type(current).__name__}, not a list"
                 )
+            if "=" in index:
+                fields = [part.split("=", 1) for part in index.split("&")]
+                matches = [item for item in current if isinstance(item, dict) and
+                           all(str(item.get(key)) == value for key, value in fields)]
+                if len(matches) != 1:
+                    raise PathError(f"{'.'.join(walked)}[{index}] matches {len(matches)} entries; expected one")
+                current = matches[0]
+                walked.append(f"[{index}]")
+                continue
             position = int(index)
             if position >= len(current) or position < -len(current):
                 raise PathError(

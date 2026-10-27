@@ -1,0 +1,67 @@
+{
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "sprite",
+  "parameters": {
+    "schema": "pelican.render_feature_parameters",
+    "version": 1,
+    "render_targets": [
+      {
+        "name": "color",
+        "required": false,
+        "default": "lit_color",
+        "usage": [
+          "COLOR_ATTACHMENT"
+        ]
+      },
+      {
+        "name": "depth",
+        "required": false,
+        "default": "scene_depth",
+        "usage": [
+          "DEPTH_STENCIL_ATTACHMENT"
+        ]
+      }
+    ]
+  },
+  "required_targets": [
+    {
+      "name": "$color",
+      "type": {
+        "semantic": "pelican.render.color_signal@1",
+        "arguments": {
+          "reference": "scene",
+          "transfer": "linear",
+          "range": "extended"
+        }
+      }
+    },
+    {
+      "name": "$depth",
+      "type": {
+        "semantic": "pelican.render.depth@1",
+        "arguments": {
+          "representation": "device",
+          "space": "projection"
+        }
+      }
+    }
+  ],
+  "passes": [
+    {
+      "insert": "after:lighting_pass",
+      "pass": {
+        "name": "sprite_draw",
+        "type": "sprite",
+        "output": {
+          "color": "$color",
+          "depth": "$depth"
+        },
+        "color_load_op": "load",
+        "color_store_op": "store",
+        "depth_load_op": "load",
+        "depth_store_op": "store"
+      }
+    }
+  ]
+}

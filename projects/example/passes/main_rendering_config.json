@@ -5,49 +5,70 @@
   "nodes": [],
   "outputs": {},
   "rendering": {
-    "features": ["engine://features/bloom.json", "engine://features/ui.json"],
+    "features": [
+      "engine://features/bloom.json",
+      "engine://features/ui.json"
+    ],
     "render_targets": [
       {
         "name": "gbuffer_albedo",
         "extent_scale": 1.0,
         "format": "B8G8R8A8_UNORM",
         "format_class": "scene",
-        "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
       },
       {
         "name": "gbuffer_normal",
         "extent_scale": 1.0,
         "format": "R16G16B16A16_SFLOAT",
         "format_class": "data",
-        "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
       },
       {
         "name": "gbuffer_material",
         "extent_scale": 1.0,
         "format": "R8G8B8A8_UNORM",
         "format_class": "data",
-        "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
       },
       {
         "name": "g_emissive",
         "extent_scale": 1.0,
         "format": "R8G8B8A8_UNORM",
         "format_class": "scene",
-        "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
       },
       {
         "name": "gbuffer_worldpos",
         "extent_scale": 1.0,
         "format": "R16G16B16A16_SFLOAT",
         "format_class": "data",
-        "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
       },
       {
         "name": "offscreen_depth",
         "extent_scale": 1.0,
         "format": "D32_SFLOAT",
         "format_class": "data",
-        "usage": ["DEPTH_STENCIL_ATTACHMENT", "TRANSFER_SRC"]
+        "usage": [
+          "DEPTH_STENCIL_ATTACHMENT",
+          "TRANSFER_SRC"
+        ]
       },
       {
         "name": "lit_color",
@@ -55,7 +76,11 @@
         "format": "R16G16B16A16_SFLOAT",
         "format_class": "explicit(R16G16B16A16_SFLOAT)",
         "role": "color",
-        "usage": ["COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"]
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED",
+          "TRANSFER_SRC"
+        ]
       },
       {
         "name": "opaque_color",
@@ -63,28 +88,40 @@
         "format": "R16G16B16A16_SFLOAT",
         "format_class": "explicit(R16G16B16A16_SFLOAT)",
         "role": "color",
-        "usage": ["TRANSFER_DST", "SAMPLED"]
+        "usage": [
+          "TRANSFER_DST",
+          "SAMPLED"
+        ]
       },
       {
         "name": "opaque_depth",
         "extent_scale": 1.0,
         "format": "D32_SFLOAT",
         "format_class": "data",
-        "usage": ["TRANSFER_DST", "SAMPLED"]
+        "usage": [
+          "TRANSFER_DST",
+          "SAMPLED"
+        ]
       },
       {
         "name": "ssao_output",
         "extent_scale": 1.0,
         "format": "R8_UNORM",
         "format_class": "data",
-        "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
       },
       {
         "name": "ssao_blur",
         "extent_scale": 1.0,
         "format": "R8_UNORM",
         "format_class": "data",
-        "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
       }
     ],
     "rendering_passes": [
@@ -95,15 +132,29 @@
             "name": "gbuffer_pass",
             "type": "material",
             "output": {
-              "color": ["gbuffer_albedo", "gbuffer_normal", "gbuffer_material", "gbuffer_worldpos", "g_emissive"],
+              "color": [
+                "gbuffer_albedo",
+                "gbuffer_normal",
+                "gbuffer_material",
+                "gbuffer_worldpos",
+                "g_emissive"
+              ],
               "depth": "offscreen_depth"
             }
           },
           {
             "name": "ssao_pass",
             "type": "fullscreen",
-            "output": { "color": ["ssao_output"], "depth": null },
-            "input": ["gbuffer_worldpos", "gbuffer_normal"],
+            "output": {
+              "color": [
+                "ssao_output"
+              ],
+              "depth": null
+            },
+            "input": [
+              "gbuffer_worldpos",
+              "gbuffer_normal"
+            ],
             "resource_ports": {
               "world": {
                 "resource": "gbuffer_worldpos",
@@ -121,13 +172,25 @@
               "vertex": "engine://fullscreen",
               "fragment": "engine://ssao"
             },
-            "clear_color": [1.0, 1.0, 1.0, 1.0]
+            "clear_color": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
           },
           {
             "name": "ssao_blur_pass",
             "type": "fullscreen",
-            "output": { "color": ["ssao_blur"], "depth": null },
-            "input": ["ssao_output"],
+            "output": {
+              "color": [
+                "ssao_blur"
+              ],
+              "depth": null
+            },
+            "input": [
+              "ssao_output"
+            ],
             "resource_ports": {
               "ssaoInput": {
                 "resource": "ssao_output",
@@ -139,16 +202,30 @@
               "vertex": "engine://fullscreen",
               "fragment": "engine://ssao_blur"
             },
-            "clear_color": [1.0, 1.0, 1.0, 1.0]
+            "clear_color": [
+              1.0,
+              1.0,
+              1.0,
+              1.0
+            ]
           },
           {
             "name": "lighting_pass",
             "type": "fullscreen",
             "output": {
-              "color": ["lit_color"],
+              "color": [
+                "lit_color"
+              ],
               "depth": null
             },
-            "input": ["gbuffer_albedo", "gbuffer_normal", "gbuffer_material", "gbuffer_worldpos", "g_emissive", "ssao_blur"],
+            "input": [
+              "gbuffer_albedo",
+              "gbuffer_normal",
+              "gbuffer_material",
+              "gbuffer_worldpos",
+              "g_emissive",
+              "ssao_blur"
+            ],
             "shader": {
               "vertex": "engine://fullscreen",
               "fragment": "engine://fullscreen"
@@ -182,10 +259,32 @@
               "scene_depth": "opaque_depth",
               "linear_view_depth": "opaque_depth"
             },
-            "output": {"color": ["lit_color"], "depth": "offscreen_depth"},
+            "output": {
+              "color": [
+                "lit_color"
+              ],
+              "depth": "offscreen_depth"
+            },
             "color_load_op": "load",
             "depth_load_op": "load",
             "depth_store_op": "store"
+          },
+          {
+            "name": "scene_present",
+            "type": "fullscreen",
+            "input": [
+              "lit_color"
+            ],
+            "output": {
+              "color": [
+                "swapchain"
+              ],
+              "depth": null
+            },
+            "shader": {
+              "vertex": "engine://fullscreen",
+              "fragment": "engine://scene_present"
+            }
           }
         ]
       }
