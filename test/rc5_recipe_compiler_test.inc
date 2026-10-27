@@ -190,3 +190,34 @@ TEST_CASE("RC-5 A2 recipes preserve typed IR frame plans physical plans and old 
         }
     }
 }
+
+TEST_CASE("RC5b materialized fragment preserves typed IR and every plan field", "[rendercompiler][rc5b]") {
+    for (const bool lit : {false, true}) for (const bool hdr : {false, true})
+    for (const bool extras : {false, true}) for (const bool xr : {false, true}) {
+#if !PELICAN_WITH_OPENXR
+        if (xr) continue;
+#endif
+        CAPTURE(lit, hdr, extras, xr);
+        auto root = rc5Document(false, hdr, extras);
+        root["rendering"]["pipeline"]["preset"] = lit
+            ? "engine://render_pipelines/experimental/hybrid_recipe_lit.json"
+            : "engine://render_pipelines/experimental/hybrid_recipe.json";
+        const auto before = rc5Compile(root, xr);
+        root["rendering"]["fragment_overrides"] = {{"deferred_lighting", "project://lighting.json"}};
+        const auto after = rc5Compile(root, xr);
+        REQUIRE(*before.variants.at(0).render_graph == *after.variants.at(0).render_graph);
+        auto expected = rc5Snapshot(before);
+        const auto replace_origin = [&](auto &&self, Rc5Json &value) -> void {
+            if (value.is_object()) {
+                if (value.contains("fragment") && value.at("fragment").value("name", std::string{}) == "deferred_lighting")
+                    value["fragment"]["reference"] = "project://lighting.json";
+                for (auto &child : value) self(self, child);
+            } else if (value.is_array()) for (auto &child : value) self(self, child);
+        };
+        replace_origin(replace_origin, expected);
+        // Every field of FramePlan, physical plan, pins and physical fragments;
+        // the copied document's ownership reference is the only allowed change.
+        REQUIRE(rc5Snapshot(after) == expected);
+        rc5RequireFragmentProvenance(after, true);
+    }
+}

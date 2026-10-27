@@ -60,6 +60,9 @@ struct FramePlanAuthoringPass {
     nlohmann::json editable_declaration = nlohmann::json::object();
     bool preset = false;
     bool feature = false;
+    bool fragment = false;
+    std::string fragment_digest;
+    std::string fragment_reference;
     // F-6: declared by a direct root itself; edit_preset_pass then takes no
     // document digest but the root's own.
     bool root = false;

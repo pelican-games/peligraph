@@ -26,7 +26,7 @@ constexpr int TicketPollMs = 25;
 // The render edits: the ones that replace what documents hold (RD-1), and
 // the ones that create or remove files (RD-1b), which RU-1 could not take
 // back.
-constexpr std::array<std::string_view, 25> RecordedMethods{
+constexpr std::array<std::string_view, 26> RecordedMethods{
     "edit_preset_pass",
     "decompose_material_pass",
     // LP-4f2: a shipped graph template in place of a feature (GT-1).
@@ -44,6 +44,7 @@ constexpr std::array<std::string_view, 25> RecordedMethods{
     "add_authored_pass",
     "remove_authored_pass",
     "fork_render_pipeline",
+    "materialize_render_fragment",
     "import_render_feature",
     // RSX: the rendering section's own keys (EL-3).
     "edit_rendering_keys",
@@ -317,6 +318,7 @@ std::string RenderEditHistory::labelFor(const std::string &method, const Json &p
     if (method == "remove_authored_pass")
         return named("Remove pass ", stringAt(params, "fragment_reference"), "Remove pass");
     if (method == "fork_render_pipeline") return "Fork render pipeline";
+    if (method == "materialize_render_fragment") return named("Materialize fragment ", stringAt(params, "name"), "Materialize fragment");
     if (method == "import_render_feature") return "Import feature";
     // RSX: one key named, more than one as the panel's own name.
     if (method == "edit_rendering_keys") {

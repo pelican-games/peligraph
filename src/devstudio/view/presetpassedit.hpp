@@ -20,7 +20,7 @@ struct PresetPassEditSubject {
     // Where the pass is declared. The root's own pass (F-6) is named by
     // base_source_digest alone; a preset's or a feature's pass carries that
     // document's digest too.
-    enum class Document { root, preset, feature };
+    enum class Document { root, preset, feature, fragment };
 
     std::string source_digest;
     std::string graph;

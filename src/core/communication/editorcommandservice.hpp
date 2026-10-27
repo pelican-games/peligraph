@@ -406,6 +406,7 @@ class EditorCommandService {
     nlohmann::ordered_json getSceneAccelerationStructures(const nlohmann::json &params) const;
     // RTL-1a.
     nlohmann::ordered_json getRayLayout(const nlohmann::json &params) const;
+    nlohmann::ordered_json materializeRenderFragment(const nlohmann::json &params);
     nlohmann::ordered_json forkRenderPipeline(const nlohmann::json &params);
     nlohmann::ordered_json editPresetPass(const nlohmann::json &params);
     nlohmann::ordered_json editRegionReplacement(const nlohmann::json &params);
@@ -525,6 +526,7 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json getRayCallableRecords(const nlohmann::json &params) const;
     nlohmann::ordered_json getSceneAccelerationStructures(const nlohmann::json &params) const;
     nlohmann::ordered_json getRayLayout(const nlohmann::json &params) const;
+    nlohmann::ordered_json materializeRenderFragment(const nlohmann::json &params) const;
     nlohmann::ordered_json forkRenderPipeline(const nlohmann::json &params) const;
     nlohmann::ordered_json editPresetPass(const nlohmann::json &params) const;
     nlohmann::ordered_json editRegionReplacement(const nlohmann::json &params) const;

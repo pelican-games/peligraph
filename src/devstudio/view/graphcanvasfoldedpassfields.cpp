@@ -196,7 +196,7 @@ const FramePlanAuthoringPass *GraphCanvasFoldedPassFields::row(
     const auto *found = authoring.find(model_.planGraph(), pass_);
     // Decision 1: only what the root's rendering section declares, of the
     // kinds whose parts the Pass Editor has here (GL-5g: raster too).
-    if (found == nullptr || !found->root) return nullptr;
+    if (found == nullptr || !(found->root || found->fragment)) return nullptr;
     const auto type = found->editable_declaration.value("type", std::string{});
     return type == "fullscreen" || type == "material" || type == "raster" ? found : nullptr;
 }
@@ -267,10 +267,10 @@ void GraphCanvasFoldedPassFields::load(const FramePlanAuthoringPass &row) {
     // defines, and its own raster_state and draw.
     const bool raster = type_ == "raster";
     const bool shaded = fullscreen || raster;
-    heading_->setText(tr("%1 (%2): from the rendering section").arg(qtext(pass_), qtext(type_)));
-    heading_->setToolTip(tr("%1 is declared by the root's rendering section; a change here is "
-                            "the Pass Editor's edit_preset_pass of it.")
-                             .arg(qtext(pass_)));
+    heading_->setText((row.fragment ? tr("%1 (%2): from a fragment") : tr("%1 (%2): from the rendering section")).arg(qtext(pass_), qtext(type_)));
+    heading_->setToolTip(row.fragment
+        ? tr("%1 is declared by %2; a change here edits that fragment.").arg(qtext(pass_), qtext(row.fragment_reference))
+        : tr("%1 is declared by the root's rendering section; a change here is the Pass Editor's edit_preset_pass of it.").arg(qtext(pass_)));
     shaders_->setVisible(shaded);
     defines_->setVisible(shaded);
     interface_->setVisible(fullscreen);

@@ -1695,6 +1695,11 @@ struct FullscreenPassWidget::Impl {
         return editing_preset_pass && original_preset_pass.value("type", std::string{}) == "material";
     }
 
+    bool editingFragmentPass() const {
+        return editing_preset_pass && feature_pass_info.contains(*editing_preset_pass) &&
+            feature_pass_info.at(*editing_preset_pass).value("editable_fragment_pass", false);
+    }
+
     bool editingFeaturePass() const {
         return editing_preset_pass && feature_pass_info.contains(*editing_preset_pass) &&
             feature_pass_info.at(*editing_preset_pass).value("editable_feature_pass", false);
@@ -1727,10 +1732,12 @@ struct FullscreenPassWidget::Impl {
 
     // Only a preset owns a material_routing edit_preset_pass writes.
     bool editsPresetRouting() const {
-        return !editingFeaturePass() && !editingRootPass();
+        return !editingFeaturePass() && !editingFragmentPass() && !editingRootPass();
     }
 
     std::string passSourceDigest() const {
+        if (editingFragmentPass())
+            return feature_pass_info.at(*editing_preset_pass).at("fragment").at("digest").at("hex").get<std::string>();
         if (editingFeaturePass())
             return feature_pass_info.at(*editing_preset_pass).value("feature_source_digest", Json::object()).value("hex", std::string{});
         if (editingRootPass()) return source_digest;
@@ -2519,7 +2526,8 @@ struct FullscreenPassWidget::Impl {
                                       .pass = editing_preset_pass->second};
         // F-6: the root's own pass is named by base_source_digest alone.
         if (!editingRootPass()) {
-          subject.document = editingFeaturePass() ? PresetPassEditSubject::Document::feature
+          subject.document = editingFragmentPass() ? PresetPassEditSubject::Document::fragment
+                                                  : editingFeaturePass() ? PresetPassEditSubject::Document::feature
                                                   : PresetPassEditSubject::Document::preset;
           subject.document_digest = passSourceDigest();
         }
@@ -2597,7 +2605,7 @@ struct FullscreenPassWidget::Impl {
           return;
         }
         authoringError(found != feature_pass_info.end()
-            ? text(found->second.value("feature_edit_reason", std::string{"This feature node has no editable project pass declaration."}))
+            ? text(found->second.value("fragment_edit_reason", found->second.value("feature_edit_reason", std::string{"This feature node has no editable project pass declaration."})))
             : owner.tr("This node has no editable project preset or feature pass declaration."));
         return;
       }
@@ -2671,7 +2679,7 @@ struct FullscreenPassWidget::Impl {
       loadViewField(declaration);
       load_edit_requested = false;
       updating = false;
-      save->setText(editingFeaturePass() ? owner.tr("Save feature") : owner.tr("Save preset"));
+      save->setText(editingFragmentPass() ? owner.tr("Save fragment") : editingFeaturePass() ? owner.tr("Save feature") : owner.tr("Save preset"));
       save->setToolTip(editingFeaturePass()
           ? authoredPassSaveToolTip() + QStringLiteral("\n") +
                 owner.tr("Updates %1 wherever this feature is used.").arg(text(feature_pass_info.at(*editing_preset_pass).value("feature_source_reference", std::string{})))
@@ -2793,7 +2801,7 @@ struct FullscreenPassWidget::Impl {
                     preset_passes.emplace(std::pair{graph_name, pass_name}, pass_value.at("root_declaration"));
                     root_passes.emplace(graph_name, pass_name);
                 }
-                if (pass_value.contains("feature_edit_reason") || pass_value.value("editable_feature_pass", false))
+                if (pass_value.contains("fragment") || pass_value.contains("feature_edit_reason") || pass_value.value("editable_feature_pass", false))
                     feature_pass_info.emplace(std::pair{graph_name, pass_name}, pass_value);
                 if (const auto provenance = pass_value.find("provenance");
                     provenance != pass_value.end() && provenance->is_object() &&
@@ -2801,6 +2809,8 @@ struct FullscreenPassWidget::Impl {
                     next_root_declared.emplace(graph_name, pass_name);
                 if (pass_value.value("editable_feature_pass", false))
                     preset_passes.insert_or_assign(std::pair{graph_name, pass_name}, pass_value.at("feature_declaration"));
+                if (pass_value.value("editable_fragment_pass", false))
+                    preset_passes.insert_or_assign(std::pair{graph_name, pass_name}, pass_value.at("fragment_declaration"));
                 const Json &declaration =
                     pass_value.contains("declaration")
                         ? pass_value.at("declaration")

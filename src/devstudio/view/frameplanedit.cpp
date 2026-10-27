@@ -118,7 +118,7 @@ std::string join(const std::vector<std::string> &values) {
 // can. The order matters: a feature that said why outranks the generic answer.
 std::string passRefusal(const FramePlanAuthoring &authoring,
                         const FramePlanAuthoringPass &pass) {
-    if (pass.preset || pass.feature || pass.root) return {};
+    if (pass.preset || pass.feature || pass.root || pass.fragment) return {};
     if (!pass.feature_reason.empty())
         return pass.name + ": " + pass.feature_reason;
     if (pass.provenance_source == "feature")
@@ -154,7 +154,8 @@ void addDigests(Json &params, const FramePlanAuthoring &authoring,
     params["base_source_digest"] = authoring.source_digest;
     // F-6: the root's own pass -- base_source_digest already names that file.
     if (pass.root) return;
-    if (pass.feature) params["base_feature_digest"] = pass.feature_digest;
+    if (pass.fragment) params["base_fragment_digest"] = pass.fragment_digest;
+    else if (pass.feature) params["base_feature_digest"] = pass.feature_digest;
     else params["base_preset_digest"] = authoring.preset_digest;
 }
 
@@ -225,11 +226,17 @@ FramePlanAuthoring framePlanAuthoringFromContext(const Json &context) {
                 row.declaration = objectOr(pass, "declaration");
                 row.preset = pass.value("editable_preset_pass", false);
                 row.feature = pass.value("editable_feature_pass", false);
-                row.feature_reason = textOr(pass, "feature_edit_reason");
+                row.fragment = pass.value("editable_fragment_pass", false);
+                row.fragment_digest = textOr(objectOr(objectOr(pass, "fragment"), "digest"), "hex");
+                row.fragment_reference = textOr(objectOr(pass, "fragment"), "reference");
+                row.feature_reason = textOr(pass, "fragment_edit_reason");
+                if (row.feature_reason.empty()) row.feature_reason = textOr(pass, "feature_edit_reason");
                 row.feature_digest =
                     textOr(objectOr(pass, "feature_source_digest"), "hex");
                 row.root = pass.value("editable_root_pass", false);
-                if (row.feature)
+                if (row.fragment)
+                    row.editable_declaration = objectOr(pass, "fragment_declaration");
+                else if (row.feature)
                     row.editable_declaration = objectOr(pass, "feature_declaration");
                 else if (row.preset)
                     row.editable_declaration = objectOr(pass, "preset_declaration");

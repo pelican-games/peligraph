@@ -1,0 +1,170 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "gui_recipe_fragment_materialize",
+  "description": "RC-5b: experimental recipe, inherited lighting materialized from Render Features, edited through Frame Plan, then returned to inheritance. Run on the integration virtual monitor.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "Open the private recipe project",
+      "cmd": "open_project",
+      "dir": "{artifacts}/incoming/recipe"
+    },
+    {
+      "label": "Wait for the recipe engine",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "Reset panel layout",
+      "cmd": "action",
+      "name": "pelican.layout.resetDefault"
+    },
+    {
+      "label": "Show Render Features",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.render_features"
+    },
+    {
+      "label": "The inherited fragments are readable",
+      "expect": "rpc_equals",
+      "method": "get_render_features",
+      "params": {},
+      "path": "base_fragments[2].state",
+      "value": "inherited",
+      "retry_ms": 60000
+    },
+    {
+      "label": "Select inherited lighting",
+      "cmd": "select",
+      "name": "pelican.renderFeatures.baseFragments",
+      "text": "deferred_lighting: Following"
+    },
+    {
+      "label": "Materialize is available",
+      "cmd": "wait",
+      "name": "pelican.renderFeatures.materializeFragment",
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Materialize one fragment",
+      "cmd": "click",
+      "name": "pelican.renderFeatures.materializeFragment"
+    },
+    {
+      "label": "Choose the project document",
+      "cmd": "type",
+      "name": "pelican.renderFeatures.fragmentDestination",
+      "text": "project://passes/lighting-branch.json"
+    },
+    {
+      "label": "Create the branch",
+      "cmd": "click",
+      "name": "pelican.renderFeatures.fragmentConfirm"
+    },
+    {
+      "label": "The branch committed",
+      "expect": "rpc_equals",
+      "method": "get_render_features",
+      "params": {},
+      "path": "base_fragments[2].state",
+      "value": "overridden",
+      "retry_ms": 120000
+    },
+    {
+      "label": "Frame Plan",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
+    },
+    {
+      "label": "The lighting pass is present",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#deferred_lighting",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "Fit the plan",
+      "cmd": "action",
+      "name": "pelican.framePlan.fitView"
+    },
+    {
+      "label": "Open the fragment pass",
+      "cmd": "double_click",
+      "name": "pelican.framePlanLogicalView::node_header#deferred_lighting"
+    },
+    {
+      "label": "The Pass Editor loaded lighting",
+      "cmd": "wait",
+      "name": "pelican.fullscreenPass.name",
+      "text": "deferred_lighting",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Change push constants",
+      "cmd": "select",
+      "name": "pelican.fullscreenPass.pushConstants",
+      "text": "No push constants"
+    },
+    {
+      "label": "Save the fragment pass",
+      "cmd": "click",
+      "name": "pelican.fullscreenPass.save"
+    },
+    {
+      "label": "The project fragment holds the edit",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_render_documents",
+        "params": {
+          "references": [
+            "project://passes/lighting-branch.json"
+          ]
+        }
+      },
+      "path": "result.documents[0].content",
+      "op": "excludes",
+      "value": "camera_position",
+      "retry_ms": 120000
+    },
+    {
+      "label": "Close the Pass Editor",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.render_features"
+    },
+    {
+      "label": "Select the branch",
+      "cmd": "select",
+      "name": "pelican.renderFeatures.baseFragments",
+      "text": "deferred_lighting: Branched"
+    },
+    {
+      "label": "Return to inheritance",
+      "cmd": "click",
+      "name": "pelican.renderFeatures.revertFragment"
+    },
+    {
+      "label": "Lighting follows the engine again",
+      "expect": "rpc_equals",
+      "method": "get_render_features",
+      "params": {},
+      "path": "base_fragments[2].state",
+      "value": "inherited",
+      "retry_ms": 120000
+    },
+    {
+      "label": "The recipe still renders",
+      "cmd": "wait_engine",
+      "frames": 30,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "Window for integration visual review",
+      "expect": "screenshot",
+      "path": "gui_recipe_fragment_materialize.png"
+    }
+  ]
+}

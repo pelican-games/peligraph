@@ -49,6 +49,7 @@
 #include <QTableWidget>
 #include <QTest>
 #include <QTreeWidget>
+#include <QTimer>
 #include <QWidget>
 
 #define private public
@@ -1954,4 +1955,77 @@ TEST_CASE("RT-A Settings engine loss cancels the unconfirmed resume reservation"
     CHECK(sort.isEnabled());
 }
 
+} // namespace PelicanStudio
+
+namespace PelicanStudio {
+TEST_CASE("RC5b Render Features materializes and reverts one base fragment", "[devstudio][render-features][rc5b]") {
+    const bool keep_other = GENERATE(false, true);
+    Transport engine;
+    RenderFeaturesWidget features{&engine.viewport};
+    features.show();
+    const std::string fragmentDigest(64, 'c');
+    const std::string presetDigest(64, 'd');
+    const auto refresh = [&](const std::string &digest, bool branched) {
+        const auto can = engine.next("can_edit"); REQUIRE(can);
+        engine.answer(*can, {{"can_edit", true}});
+        const auto current = engine.next("get_render_features"); REQUIRE(current);
+        Json rows = Json::array({{{"name", "deferred_lighting"}, {"family", "main_render"},
+            {"state", branched ? "overridden" : "inherited"},
+            {"inherited_reference", "engine://render_fragments/deferred_lighting.json"},
+            {"effective_reference", branched ? "project://passes/deferred_lighting-fragment.json" : "engine://render_fragments/deferred_lighting.json"},
+            {"digest", {{"hex", fragmentDigest}}}, {"materializable", !branched}, {"revertible", branched}}});
+        if (keep_other) rows.push_back({{"name", "optional"}, {"family", "main_render"}, {"state", "excluded"},
+            {"inherited_reference", "project://passes/optional.json"}, {"effective_reference", nullptr},
+            {"digest", nullptr}, {"materializable", false}, {"revertible", true}});
+        engine.answer(*current, {{"source_reference", "passes/main.json"}, {"source_digest", {{"hex", digest}}},
+            {"feature_instances", Json::array()}, {"base_fragments", rows}});
+        const auto catalog = engine.next("list_render_features"); REQUIRE(catalog);
+        engine.answer(*catalog, {{"features", Json::array()}});
+        const auto templates = engine.next("get_graph_templates"); REQUIRE(templates);
+        engine.answer(*templates, {{"templates", Json::array()}});
+        const auto context = engine.next("get_render_authoring_context"); REQUIRE(context);
+        engine.answer(*context, {{"pipeline_preset", {{"source_digest", {{"hex", presetDigest}}}}},
+            {"render_targets", Json::array()}});
+    };
+    refresh(RootA, false);
+    auto &rows = required<QListWidget>(features, "pelican.renderFeatures.baseFragments");
+    REQUIRE(rows.count() == (keep_other ? 2 : 1));
+    CHECK(rows.item(0)->text().contains("Following"));
+    rows.setCurrentRow(0);
+    auto &materialize = required<QPushButton>(features, "pelican.renderFeatures.materializeFragment");
+    REQUIRE(materialize.isEnabled());
+    // UX-9: the dialog opens window-modal with open(), so the click returns
+    // and the dialog's OK is pressed like any other button.
+    materialize.click();
+    auto *dialog = features.findChild<QDialog *>("pelican.renderFeatures.fragmentDestinationDialog");
+    REQUIRE(dialog);
+    CHECK(dialog->isVisible());
+    required<QPushButton>(*dialog, "pelican.renderFeatures.fragmentConfirm").click();
+    const auto sent = engine.next("materialize_render_fragment"); REQUIRE(sent);
+    CHECK(sent->at("params") == Json{{"name", "deferred_lighting"}, {"base_source_digest", RootA},
+        {"base_preset_digest", presetDigest}, {"base_fragment_digest", fragmentDigest},
+        {"destination_reference", "project://passes/deferred_lighting-fragment.json"}});
+    engine.answer(*sent, {{"status", "accepted"}, {"ticket", "rc5b-materialize"}});
+    const auto poll = engine.next("get_edit_result"); REQUIRE(poll);
+    engine.answer(*poll, {{"status", "committed"}, {"committed", true}, {"source_digest", {{"hex", RootB}}},
+        {"published_generation", 2}});
+    refresh(RootB, true);
+    REQUIRE(rows.count() == (keep_other ? 2 : 1));
+    CHECK(rows.item(0)->text().contains("Branched"));
+    rows.setCurrentRow(0);
+    auto &revert = required<QPushButton>(features, "pelican.renderFeatures.revertFragment");
+    REQUIRE(revert.isEnabled());
+    revert.click();
+    const auto back = engine.next("edit_rendering_keys"); REQUIRE(back);
+    if (keep_other)
+        CHECK(back->at("params") == Json{{"base_source_digest", RootB}, {"set", {{"fragment_overrides", {{"optional", nullptr}}}}}});
+    else
+        CHECK(back->at("params") == Json{{"base_source_digest", RootB}, {"remove", Json::array({"fragment_overrides"})}});
+    engine.answer(*back, {{"status", "accepted"}, {"ticket", "rc5b-revert"}});
+    const auto backPoll = engine.next("get_edit_result"); REQUIRE(backPoll);
+    engine.answer(*backPoll, {{"status", "committed"}, {"committed", true}, {"source_digest", {{"hex", RootC}}},
+        {"published_generation", 3}});
+    refresh(RootC, false);
+    CHECK(rows.item(0)->text().contains("Following"));
+}
 } // namespace PelicanStudio

@@ -8978,7 +8978,7 @@ struct GraphCanvasWidget::Impl {
             }
             const auto *declared = authoring.find(graph, name);
             if (pass->kind == "render" && declared != nullptr &&
-                (declared->preset || declared->feature) && plan_edits.preset_pass_connection) {
+                (declared->preset || declared->feature || declared->fragment) && plan_edits.preset_pass_connection) {
                 plan_edits.preset_pass_connection(qtext(graph), qtext(name),
                                                   QStringList{qtext(resource)});
                 return true;
@@ -9763,6 +9763,11 @@ struct GraphCanvasWidget::Impl {
         if (at_root)
             for (const auto &node : model.foldedNodes())
                 if (node.id == *selected && node.rendering_section) pass = node.id;
+        if (at_root && pass.empty()) {
+            const auto authoring = framePlanAuthoringFromContext(model.renderAuthoringContext());
+            if (const auto *row = authoring.find(model.planGraph(), *selected); row && row->fragment)
+                pass = *selected;
+        }
         // GL-5g, decision 2: any other pass the frame plan runs -- a preset's
         // or a feature's (one folded node, one pass; in a feature's fold
         // too), or the pass a graph node at the root makes (the plan names it

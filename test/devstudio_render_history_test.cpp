@@ -386,6 +386,68 @@ TEST_CASE("RU-1b Add pass is undone by restoring the root and deleting its fragm
                                 restored(Fragment, FragmentAdded, nullptr)}));
 }
 
+TEST_CASE("RC5b materialize is undone by restoring the root and deleting its fragment in one "
+          "restore, and Redo writes the fragment again",
+          "[devstudio][render-history][rc5b]") {
+    Rig rig;
+    const std::string RootAdded(64, 'b');
+    const std::string FragmentAdded(64, 'c');
+    rig.edit("materialize_render_fragment", Json{{"name", "lighting"}}, rootBefore(),
+             committed({{Fragment, FragmentAdded}, {Root, RootAdded}}));
+    REQUIRE(rig.history.undoStack().size() == 1);
+    const auto &entry = rig.history.undoStack().back();
+    CHECK(entry.label == "Materialize fragment lighting");
+    // Control: RU-1 kept this as a barrier Undo stopped at.
+    CHECK_FALSE(entry.barrier);
+    // The fragment was not there before the edit.
+    CHECK_FALSE(entry.before.at(Fragment).has_value());
+    CHECK(entry.before.at(Root)->content == "root bytes");
+
+    // Undo reads both as they are now, and sends one restore: the root as
+    // it was, and the fragment deleted under the digest the commit named.
+    REQUIRE(rig.history.undo());
+    REQUIRE(rig.last().method == "get_render_documents");
+    CHECK(rig.last().params == Json{{"references", Json::array({Root, Fragment})}});
+    rig.answer(rig.last().id,
+               Json{{"documents",
+                     Json::array({document(Root, "root", RootAdded, "root with the pass"),
+                                  document(Fragment, "fragment", FragmentAdded,
+                                           "fragment bytes")})}});
+    REQUIRE(rig.last().method == "restore_render_documents");
+    CHECK(rig.last().params.at("documents") ==
+          Json::array({restored(Root, RootAdded, "root bytes"),
+                       restored(Fragment, FragmentAdded, nullptr)}));
+    rig.answer(rig.last().id, Json{{"status", "accepted"}, {"ticket", "undo"}});
+    rig.answer(rig.last().id, committed({{Root, RootA}, {Fragment, nullptr}}));
+    CHECK(rig.history.line() == "Undid \"Materialize fragment lighting\".");
+    REQUIRE(rig.history.redoStack().size() == 1);
+    CHECK_FALSE(rig.history.redoStack().back().written.at(Fragment).has_value());
+
+    // Redo: the fragment is not there to read; it is written again (base
+    // null) with the content Undo read, and the root under Undo's digest.
+    REQUIRE(rig.history.redo());
+    REQUIRE(rig.last().method == "get_render_documents");
+    CHECK(rig.last().params == Json{{"references", Json::array({Root})}});
+    rig.answer(rig.last().id, Json{{"documents", rootBefore()}});
+    REQUIRE(rig.last().method == "restore_render_documents");
+    CHECK(rig.last().params.at("documents") ==
+          Json::array({restored(Root, RootA, "root with the pass"),
+                       restored(Fragment, nullptr, "fragment bytes")}));
+    const std::string RootAgain(64, 'd');
+    rig.answer(rig.last().id, Json{{"status", "accepted"}, {"ticket", "redo"}});
+    rig.answer(rig.last().id, committed({{Fragment, FragmentAdded}, {Root, RootAgain}}));
+    CHECK(rig.history.line() == "Redid \"Materialize fragment lighting\".");
+
+    // And undone again, under what the Redo wrote.
+    const auto again = rig.restore(
+        true,
+        Json::array({document(Root, "root", RootAgain, "root with the pass"),
+                     document(Fragment, "fragment", FragmentAdded, "fragment bytes")}),
+        committed({{Root, RootA}, {Fragment, nullptr}}));
+    CHECK(again == Json::array({restored(Root, RootAgain, "root bytes"),
+                                restored(Fragment, FragmentAdded, nullptr)}));
+}
+
 TEST_CASE("RU-1b Remove pass is undone by writing the fragment again from what was read before "
           "it",
           "[devstudio][render-history][ru1b][negative-contrast]") {

@@ -2203,6 +2203,12 @@ struct RenderFeaturesWidget::Impl {
     RenderFeaturesWidget::TaskViewAxesProvider task_view_axes;
     QListWidget *current = nullptr;
     QTreeWidget *catalog = nullptr;
+    QWidget *fragment_section = nullptr;
+    QListWidget *fragments = nullptr;
+    QPushButton *materialize_fragment = nullptr;
+    QPushButton *revert_fragment = nullptr;
+    QString fragment_preset_digest;
+    QJsonObject fragment_overrides;
     QPushButton *add = nullptr;
     QPushButton *remove = nullptr;
     QPushButton *parameters = nullptr;
@@ -2369,6 +2375,26 @@ struct RenderFeaturesWidget::Impl {
             owner.tr("Edit the authored render config features. Changes are "
                      "preflighted and applied at a frame boundary.")));
         layout->addLayout(heading);
+        fragment_section = new QWidget(&owner);
+        auto *fragment_layout = new QVBoxLayout(fragment_section);
+        fragment_layout->setContentsMargins(0, 0, 0, 0);
+        fragment_layout->addWidget(new QLabel(owner.tr("Base fragments"), fragment_section));
+        fragments = new QListWidget(fragment_section);
+        fragments->setObjectName("pelican.renderFeatures.baseFragments");
+        fragment_layout->addWidget(fragments);
+        auto *fragment_actions = new QHBoxLayout;
+        materialize_fragment = new QPushButton(owner.tr("Materialize"), fragment_section);
+        materialize_fragment->setObjectName("pelican.renderFeatures.materializeFragment");
+        revert_fragment = new QPushButton(owner.tr("Return to inheritance"), fragment_section);
+        revert_fragment->setObjectName("pelican.renderFeatures.revertFragment");
+        fragment_actions->addWidget(materialize_fragment);
+        fragment_actions->addWidget(revert_fragment);
+        fragment_layout->addLayout(fragment_actions);
+        fragment_section->hide();
+        layout->addWidget(fragment_section, 1);
+        QObject::connect(fragments, &QListWidget::itemSelectionChanged, &owner, [this] { updateControls(); });
+        QObject::connect(materialize_fragment, &QPushButton::clicked, &owner, [this] { materializeFragment(); });
+        QObject::connect(revert_fragment, &QPushButton::clicked, &owner, [this] { revertFragment(); });
         current = new QListWidget(&owner);
         current->setObjectName(
             QStringLiteral("pelican.renderFeatures.current"));
@@ -3727,6 +3753,8 @@ struct RenderFeaturesWidget::Impl {
         }
         if (request.kind == RequestKind::Context || request.kind == RequestKind::Shaders) {
             consumeChoices(request.kind, *decoded);
+            if (request.refresh_generation != 0) finishRefresh();
+            updateControls();
             return;
         }
         if (request.kind == RequestKind::ChainContext || request.kind == RequestKind::ChainGraph ||
@@ -3771,6 +3799,7 @@ struct RenderFeaturesWidget::Impl {
     // engine's shaders, for the open parameters' combos.
     void consumeChoices(RequestKind kind, const QJsonObject &response) {
         if (kind == RequestKind::Context) {
+            fragment_preset_digest = response.value("pipeline_preset").toObject().value("source_digest").toObject().value("hex").toString();
             render_target_names.clear();
             for (const auto &value : response.value("render_targets").toArray()) {
                 const auto name = value.toObject().value("name").toString();
@@ -3846,6 +3875,55 @@ struct RenderFeaturesWidget::Impl {
         }
     }
 
+    void materializeFragment() {
+        if (!materialize_fragment->isEnabled() || !fragments->currentItem()) return;
+        const auto row = fragments->currentItem()->data(InstanceRole).toJsonObject();
+        const auto base = source_digest;
+        const auto preset = fragment_preset_digest;
+        auto *dialog = new QDialog(&owner);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->setWindowModality(Qt::WindowModal);
+        dialog->setObjectName("pelican.renderFeatures.fragmentDestinationDialog");
+        dialog->setWindowTitle(owner.tr("Materialize fragment"));
+        auto *layout = new QVBoxLayout(dialog);
+        layout->addWidget(new QLabel(owner.tr("Project document"), dialog));
+        auto *destination = new QLineEdit("project://passes/" + row.value("name").toString() + "-fragment.json", dialog);
+        destination->setObjectName("pelican.renderFeatures.fragmentDestination");
+        layout->addWidget(destination);
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dialog);
+        buttons->button(QDialogButtonBox::Ok)->setObjectName("pelican.renderFeatures.fragmentConfirm");
+        layout->addWidget(buttons);
+        QObject::connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+        // UX-9: window-modal open(), not exec(), so the click returns and the
+        // choice is handled from the event loop; the destination is read
+        // before the dialog closes (it deletes itself on close).
+        QObject::connect(buttons, &QDialogButtonBox::accepted, &owner, [this, row, base, preset, dialog, destination] {
+            const auto reference = destination->text();
+            dialog->accept();
+            if (source_digest != base || !can_edit || !have_current) {
+                showError(owner.tr("The rendering document changed. Refresh and try again."));
+                return;
+            }
+            request(RequestKind::Submit, "materialize_render_fragment",
+                {{"name", row.value("name")}, {"base_source_digest", base}, {"base_preset_digest", preset},
+                 {"base_fragment_digest", row.value("digest").toObject().value("hex")},
+                 {"destination_reference", reference}});
+            updateControls();
+        });
+        dialog->open();
+    }
+
+    void revertFragment() {
+        if (!revert_fragment->isEnabled() || !fragments->currentItem()) return;
+        auto remaining = fragment_overrides;
+        remaining.remove(fragments->currentItem()->data(InstanceRole).toJsonObject().value("name").toString());
+        QJsonObject params{{"base_source_digest", source_digest}};
+        if (remaining.isEmpty()) params["remove"] = QJsonArray{"fragment_overrides"};
+        else params["set"] = QJsonObject{{"fragment_overrides", remaining}};
+        request(RequestKind::Submit, "edit_rendering_keys", params);
+        updateControls();
+    }
+
     void consumeCurrent(const QJsonObject &response) {
         const auto digest = response.value(
             QStringLiteral("source_digest")).toObject();
@@ -3854,6 +3932,24 @@ struct RenderFeaturesWidget::Impl {
         if (digest_hub) digest_hub->publish(source_digest.toStdString(), &owner);
         root_reference = response.value(
             QStringLiteral("source_reference")).toString();
+        const auto selected_fragment = fragments->currentItem() ? fragments->currentItem()->data(InstanceRole).toJsonObject().value("name").toString() : QString{};
+        fragments->clear();
+        fragment_overrides = {};
+        fragment_section->setVisible(response.contains("base_fragments"));
+        fragment_preset_digest.clear();
+        if (response.contains("base_fragments"))
+            (void)request(RequestKind::Context, "get_render_authoring_context", {}, refresh_generation);
+        for (const auto &value : response.value("base_fragments").toArray()) {
+            const auto row = value.toObject();
+            const auto name = row.value("name").toString();
+            const auto state = row.value("state").toString();
+            const auto state_label = state == "inherited" ? owner.tr("Following") : state == "excluded" ? owner.tr("Excluded") : owner.tr("Branched");
+            auto *item = new QListWidgetItem(owner.tr("%1: %2").arg(name, state_label), fragments);
+            item->setData(InstanceRole, row);
+            item->setToolTip(row.value("family").toString() + "\n" + row.value("inherited_reference").toString() + "\n" + row.value("effective_reference").toString());
+            if (state != "inherited") fragment_overrides.insert(name, row.value("effective_reference"));
+            if (name == selected_fragment) fragments->setCurrentItem(item);
+        }
         current->clear();
         for (const auto &value : response.value("feature_instances").toArray()) {
                 const auto instance = value.toObject();
@@ -4292,6 +4388,11 @@ struct RenderFeaturesWidget::Impl {
         }
         const bool idle = active_ticket.isEmpty() &&
                           !submit_pending && !chain;
+        const auto fragment = fragments->currentItem() ? fragments->currentItem()->data(InstanceRole).toJsonObject() : QJsonObject{};
+        fragments->setEnabled(have_current && idle && !staged);
+        materialize_fragment->setEnabled(can_edit && idle && have_current && !staged &&
+            !fragment_preset_digest.isEmpty() && fragment.value("materializable").toBool());
+        revert_fragment->setEnabled(can_edit && idle && have_current && !staged && fragment.value("revertible").toBool());
         parameters->setEnabled(can_edit && idle && current->currentItem() &&
             current->currentItem()->data(InstanceRole).toJsonObject().value("editable").toBool());
         const auto instance = current->currentItem() ? current->currentItem()->data(InstanceRole).toJsonObject() : QJsonObject{};

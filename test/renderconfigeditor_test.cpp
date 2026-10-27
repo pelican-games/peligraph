@@ -674,8 +674,11 @@ std::unique_ptr<RenderConfigEditorService> makeProjectService(
                             .runtime_shader_compiler_enabled =
                                 runtime.runtime_shader_compiler_enabled,
                             .load_pipeline_json = [&](std::string_view reference) {
-                                preset_bytes = loader(reference);
-                                return *preset_bytes;
+                                auto bytes = loader(reference);
+                                const auto root = Json::parse(documents.rootDocument().bytes);
+                                const auto selected = renderingSectionOrEmpty(root).value("pipeline", Json::object()).value("preset", std::string{});
+                                if (reference == selected) preset_bytes = bytes;
+                                return bytes;
                             },
                             .validate_feature =
                                 [&runtime](std::string_view name,
@@ -14071,3 +14074,336 @@ TEST_CASE("RC-3e refusal stages classify codes without changing document referen
     }
 }
 }
+
+namespace Pelican {
+namespace {
+// RC-5b uses the production resolver, compiler and publication transaction.
+struct Rc5bHarness : Rd1Harness {
+    Rc5bHarness() : Rd1Harness(false) {
+        auto root = Json::parse(readBytes(project.render_config));
+        root["rendering"]["pipeline"]["preset"] = "engine://render_pipelines/experimental/hybrid_recipe.json";
+        writeBytes(project.render_config, root.dump(2));
+        service = makeProjectService(project, resolver, runtime);
+    }
+    Json rows() { return service->getRenderFeatures(Json::object()).at("base_fragments"); }
+    Json request() {
+        const auto ctx = context();
+        return {{"name", "deferred_lighting"}, {"base_source_digest", ctx.at("source_digest").at("hex")},
+            {"base_preset_digest", ctx.at("pipeline_preset").at("source_digest").at("hex")},
+            {"base_fragment_digest", rows().at(2).at("digest").at("hex")},
+            {"destination_reference", "project://passes/lighting-fragment.json"}};
+    }
+    auto path() { return project.root / "passes/lighting-fragment.json"; }
+};
+}
+
+TEST_CASE("RC5b materialize lists recipe fragments and restores both documents", "[render-config-editor][rc5b]") {
+    Rc5bHarness h;
+    const auto rows = h.rows();
+    REQUIRE(rows.size() == 5);
+    for (const auto &row : rows) {
+        CHECK(row.at("state") == "inherited");
+        CHECK(row.at("materializable") == true);
+        CHECK(row.at("revertible") == false);
+        CHECK(row.at("inherited_reference") == row.at("effective_reference"));
+    }
+    auto expected_plan = h.runtime.frame_plan;
+    std::function<void(Json &)> change_origin = [&](Json &value) {
+        if (value.is_object()) {
+            if (value.contains("fragment") && value.at("fragment").value("name", std::string{}) == "deferred_lighting")
+                value["fragment"]["reference"] = "project://passes/lighting-fragment.json";
+            for (auto &child : value) change_origin(child);
+        } else if (value.is_array()) for (auto &child : value) change_origin(child);
+    };
+    change_origin(expected_plan);
+    const auto before = readBytes(h.project.render_config);
+    const auto request = h.request();
+    const auto fragment = std::string{engineResourceOrThrow("render_fragments/deferred_lighting.json")};
+    const auto result = h.commit(h.service->materializeRenderFragment(request));
+    CHECK(readBytes(h.path()) == fragment);
+    CHECK(Json(h.runtime.frame_plan) == expected_plan);
+    const auto after = readBytes(h.project.render_config);
+    CHECK(Json::parse(after).at("rendering").at("fragment_overrides") ==
+        Json{{"deferred_lighting", "project://passes/lighting-fragment.json"}});
+    CHECK(h.rows().at(2).at("state") == "overridden");
+    CHECK(h.rows().at(2).at("revertible") == true);
+    const auto documents = rd1Documents(h.service->getRenderDocuments(Json::object()));
+    CHECK(documents.at("project://passes/lighting-fragment.json").at("content") == fragment);
+    CHECK(documents.at("project://passes/lighting-fragment.json").at("kind") == "fragment");
+    h.commit(h.service->restoreRenderDocuments({{"documents", Json::array({
+        rd1Document("passes/main.json", renderConfigSourceDigest(after), before),
+        rd1bDelete("project://passes/lighting-fragment.json", renderConfigSourceDigest(fragment))})}}));
+    CHECK(readBytes(h.project.render_config) == before);
+    CHECK_FALSE(std::filesystem::exists(h.path()));
+    h.commit(h.service->restoreRenderDocuments({{"documents", Json::array({
+        rd1Document("passes/main.json", renderConfigSourceDigest(before), after),
+        rd1bCreate("project://passes/lighting-fragment.json", fragment)})}}));
+    CHECK(readBytes(h.project.render_config) == after);
+    CHECK(readBytes(h.path()) == fragment);
+    const auto again = h.service->materializeRenderFragment(h.request());
+    CHECK(again.at("error").at("code") == "render_fragment_already_materialized");
+    CHECK(readBytes(h.project.render_config) == after);
+    CHECK(readBytes(h.path()) == fragment);
+}
+
+TEST_CASE("RC5b materialize refusals preserve root and destination bytes", "[render-config-editor][rc5b]") {
+    Rc5bHarness h;
+    auto request = h.request();
+    std::string expected;
+    const auto kind = GENERATE(0, 1, 2, 3);
+    if (kind == 0) { request["base_fragment_digest"] = std::string(64, '0'); expected = "render_fragment_source_changed"; }
+    if (kind == 1) { request["base_preset_digest"] = std::string(64, '0'); expected = "external_modification"; }
+    if (kind == 2) { request["base_source_digest"] = std::string(64, '0'); expected = "external_modification"; }
+    if (kind == 3) { writeBytes(h.path(), "occupied\n"); expected = "fragment_destination_exists"; }
+    const auto before = readBytes(h.project.render_config);
+    const bool existed = std::filesystem::exists(h.path());
+    const auto submission = h.service->materializeRenderFragment(request);
+    INFO(submission.dump());
+    CHECK(submission.value("error", nlohmann::ordered_json::object()).value("code", std::string{}) == expected);
+    h.service->commitPending();
+    CHECK(readBytes(h.project.render_config) == before);
+    CHECK(std::filesystem::exists(h.path()) == existed);
+    if (existed) CHECK(readBytes(h.path()) == "occupied\n");
+}
+
+TEST_CASE("RC5b materialize refuses reserved project locations without changing documents", "[render-config-editor][rc5b]") {
+    Rc5bHarness h;
+    const auto destination = GENERATE(
+        "project://.pelican/render-authoring.transaction/lighting.json",
+        "project://.pelican/render-authoring.journal/lighting.json",
+        "project://assets/lighting.json", "project://scenes/lighting.json",
+        "project://build-local/lighting.json");
+    auto request = h.request();
+    request["destination_reference"] = destination;
+    const auto root_before = readBytes(h.project.render_config);
+    const auto documents_before = h.service->getRenderDocuments(Json::object());
+    const auto path = std::get<std::filesystem::path>(h.resolver.resolveProjectRef(destination));
+    REQUIRE_FALSE(std::filesystem::exists(path));
+    const auto result = h.service->materializeRenderFragment(request);
+    INFO(result.dump());
+    REQUIRE(result.at("status") == "rejected");
+    CHECK(result.at("error").at("code") == "render_document_not_writable");
+    CHECK(result.at("error").at("reason") == "reserved_location");
+    CHECK(result.at("error").at("reference") == destination);
+    CHECK(result.at("error").contains("location"));
+    h.service->commitPending();
+    CHECK_FALSE(std::filesystem::exists(path));
+    CHECK(readBytes(h.project.render_config) == root_before);
+    CHECK(h.service->getRenderDocuments(Json::object()) == documents_before);
+}
+
+TEST_CASE("RC5b materialized snapshot passes are not editable", "[render-config-editor][rc5b]") {
+    Rc5bHarness h;
+    auto request = h.request();
+    request["name"] = "forward_base";
+    request["base_fragment_digest"] = h.rows().at(3).at("digest").at("hex");
+    request["destination_reference"] = "project://passes/forward-fragment.json";
+    h.commit(h.service->materializeRenderFragment(request));
+    bool found_snapshot = false, found_material = false;
+    const auto context = h.context();
+    for (const auto &graph : context.at("graphs"))
+        for (const auto &pass : graph.at("passes")) {
+            if (pass.at("name") == "__snapshot_opaque_color") {
+                found_snapshot = true;
+                CHECK(pass.at("editable_fragment_pass") == false);
+                CHECK(pass.at("editable_root_pass") == false);
+                CHECK(pass.at("editable_preset_pass") == false);
+                CHECK(pass.at("editable_feature_pass") == false);
+            }
+            if (pass.at("name") == "forward_opaque") {
+                found_material = true;
+                CHECK(pass.at("editable_fragment_pass") == true);
+            }
+        }
+    REQUIRE(found_snapshot);
+    REQUIRE(found_material);
+}
+
+TEST_CASE("RC5b queued fragment edit refuses a preset owner change", "[render-config-editor][rc5b]") {
+    Rc5bHarness h;
+    auto preset = Json::parse(engineResourceOrThrow("render_pipelines/experimental/hybrid_recipe.json"));
+    const auto fragment = std::string{engineResourceOrThrow("render_fragments/deferred_lighting.json")};
+    const auto a = h.project.root / "passes/fragment-a.json";
+    const auto b = h.project.root / "passes/fragment-b.json";
+    writeBytes(a, fragment);
+    writeBytes(b, fragment);
+    preset["config"]["base"][0]["fragments"][2] = "project://passes/fragment-a.json";
+    const auto recipe_path = h.project.root / "passes/recipe.json";
+    const auto recipe_before = preset.dump(2);
+    writeBytes(recipe_path, recipe_before);
+    auto root = Json::parse(readBytes(h.project.render_config));
+    root["rendering"]["pipeline"]["preset"] = "project://passes/recipe.json";
+    const auto root_before = root.dump(2);
+    writeBytes(h.project.render_config, root_before);
+    h.service = makeProjectService(h.project, h.resolver, h.runtime);
+    preset["config"]["base"][0]["fragments"][2] = "project://passes/fragment-b.json";
+    const auto first = h.service->restoreRenderDocuments({{"documents", Json::array({
+        rd1Document("project://passes/recipe.json", renderConfigSourceDigest(recipe_before), preset.dump(2))})}});
+    const auto declaration = Json::parse(fragment).at("passes").at(0);
+    const auto second = h.service->editPresetPass({
+        {"base_source_digest", h.context().at("source_digest").at("hex")},
+        {"base_fragment_digest", renderConfigSourceDigest(fragment)},
+        {"graph", "main_render"}, {"pass_name", "deferred_lighting"},
+        {"input", declaration.at("input")}, {"output", declaration.at("output")},
+        {"shader", declaration.at("shader")}, {"push_constants", "none"}});
+    REQUIRE(first.at("status") == "accepted");
+    REQUIRE(second.at("status") == "accepted");
+    h.service->commitPending();
+    REQUIRE(h.service->getResult({{"ticket", first.at("ticket")}}).at("committed") == true);
+    const auto result = h.service->getResult({{"ticket", second.at("ticket")}});
+    INFO(result.dump());
+    CHECK(result.at("status") == "rejected");
+    CHECK(result.value("error", nlohmann::ordered_json::object()).value("code", std::string{}) == "stale_source_digest");
+    CHECK(readBytes(a) == fragment);
+    CHECK(readBytes(b) == fragment);
+    CHECK(readBytes(h.project.render_config) == root_before);
+    CHECK(readBytes(recipe_path) == preset.dump(2));
+    CHECK(h.rows().at(2).at("effective_reference") == "project://passes/fragment-b.json");
+}
+
+TEST_CASE("RC5b fragment creation rolls back before the root rewrite", "[render-config-editor][rc5b]") {
+    Rc5bHarness h;
+    const auto before = readBytes(h.project.render_config);
+    bool failed_after_create = false;
+    h.service = makeProjectService(h.project, h.resolver, h.runtime, {}, {}, {}, {},
+        [&](RenderConfigEditorDependencies &dependencies) {
+            dependencies.document_commit_fault = [&](std::size_t, const RenderConfigCandidateDocument &document) {
+                if (document.operation != RenderConfigDocumentOperation::create) return;
+                REQUIRE(std::filesystem::exists(h.path()));
+                REQUIRE(readBytes(h.project.render_config) == before);
+                failed_after_create = true;
+                throw std::runtime_error("RC5b injected failure before root");
+            };
+        });
+    const auto generation = h.runtime.snapshot.published_generation;
+    const auto accepted = h.service->materializeRenderFragment(h.request());
+    REQUIRE(accepted.at("status") == "accepted");
+    h.service->commitPending();
+    const auto result = h.service->getResult({{"ticket", accepted.at("ticket")}});
+    INFO(result.dump());
+    CHECK(result.at("status") == "rejected");
+    CHECK_FALSE(result.value("committed", false));
+    CHECK(result.at("error").at("message") == "RC5b injected failure before root");
+    REQUIRE(failed_after_create);
+    CHECK_FALSE(std::filesystem::exists(h.path()));
+    CHECK(readBytes(h.project.render_config) == before);
+    CHECK(h.runtime.snapshot.published_generation == generation);
+}
+} // namespace Pelican
+
+
+namespace Pelican {
+TEST_CASE("RC5b fragment pass ownership, CAS, editing and return to inheritance", "[render-config-editor][rc5b]") {
+    Rc5bHarness h;
+    const auto passRow = [&] {
+        const auto context = h.context();
+        for (const auto &g : context.at("graphs"))
+            for (const auto &p : g.at("passes"))
+                if (p.at("name") == "deferred_lighting") return Json(p);
+        return Json{};
+    };
+    auto row = passRow();
+    REQUIRE(row.contains("fragment"));
+    CHECK(row.at("editable_fragment_pass") == false);
+    const auto root_before = readBytes(h.project.render_config);
+    Json edit{{"base_source_digest", h.request().at("base_source_digest")},
+        {"base_fragment_digest", row.at("fragment").at("digest").at("hex")},
+        {"graph", "main_render"}, {"pass_name", "deferred_lighting"}, {"push_constants", "none"},
+        {"input", row.at("fragment_declaration").at("input")},
+        {"output", row.at("fragment_declaration").at("output")},
+        {"shader", row.at("fragment_declaration").at("shader")}};
+    CHECK(h.service->editPresetPass(edit).at("error").at("code") == "render_fragment_not_materialized");
+    auto wrong = edit;
+    wrong.erase("base_fragment_digest");
+    wrong["base_preset_digest"] = h.request().at("base_preset_digest");
+    CHECK(h.service->editPresetPass(wrong).at("error").at("code") == "fragment_pass_not_editable");
+    wrong = edit;
+    wrong["base_preset_digest"] = h.request().at("base_preset_digest");
+    CHECK_THROWS_AS(h.service->editPresetPass(wrong), std::invalid_argument);
+    h.service->commitPending();
+    CHECK(readBytes(h.project.render_config) == root_before);
+    CHECK_FALSE(std::filesystem::exists(h.path()));
+    h.commit(h.service->materializeRenderFragment(h.request()));
+    row = passRow();
+    REQUIRE(row.at("editable_fragment_pass") == true);
+    CHECK(row.at("editable_root_pass") == false);
+    CHECK(row.at("editable_preset_pass") == false);
+    CHECK(row.at("editable_feature_pass") == false);
+    CHECK(row.at("fragment_declaration") == Json::parse(readBytes(h.path())).at("passes").at(0));
+    const auto before = readBytes(h.path());
+    edit["base_source_digest"] = h.context().at("source_digest").at("hex");
+    edit["base_fragment_digest"] = row.at("fragment").at("digest").at("hex");
+    wrong = edit; wrong["base_fragment_digest"] = std::string(64, '0');
+    CHECK(h.service->editPresetPass(wrong).at("error").at("code") == "external_modification");
+    wrong = edit; wrong["base_source_digest"] = std::string(64, '0');
+    CHECK(h.service->editPresetPass(wrong).at("error").at("code") == "external_modification");
+    CHECK(readBytes(h.path()) == before);
+    const auto submitted = h.service->editPresetPass(edit);
+    INFO(submitted.dump());
+    // Mutation (c): losing fragment ownership must fail here as the named
+    // owner mismatch, with the digest syntax and allowlists still intact.
+    CHECK(submitted.value("error", nlohmann::ordered_json::object()).value("code", std::string{}) != "fragment_pass_not_editable");
+    h.commit(submitted);
+    const auto after = readBytes(h.path());
+    CHECK(Json::parse(after).at("passes").at(0).at("push_constants") == "none");
+    h.commit(h.service->restoreRenderDocuments({{"documents", Json::array({
+        rd1Document("project://passes/lighting-fragment.json", renderConfigSourceDigest(after), before)})}}));
+    CHECK(readBytes(h.path()) == before);
+    h.commit(h.service->restoreRenderDocuments({{"documents", Json::array({
+        rd1Document("project://passes/lighting-fragment.json", renderConfigSourceDigest(before), after)})}}));
+    CHECK(readBytes(h.path()) == after);
+    const auto branched = readBytes(h.project.render_config);
+    h.commit(h.service->editRenderingKeys({{"base_source_digest", h.context().at("source_digest").at("hex")},
+        {"remove", Json::array({"fragment_overrides"})}}));
+    const auto inherited = readBytes(h.project.render_config);
+    CHECK(h.rows().at(2).at("state") == "inherited");
+    CHECK(readBytes(h.path()) == after);
+    h.commit(h.service->restoreRenderDocuments({{"documents", Json::array({
+        rd1Document("passes/main.json", renderConfigSourceDigest(inherited), branched)})}}));
+    CHECK(h.rows().at(2).at("state") == "overridden");
+    h.commit(h.service->restoreRenderDocuments({{"documents", Json::array({
+        rd1Document("passes/main.json", renderConfigSourceDigest(branched), inherited)})}}));
+    CHECK(h.rows().at(2).at("state") == "inherited");
+}
+} // namespace Pelican
+
+namespace Pelican {
+TEST_CASE("RC5b a queued fragment materialize loses CAS after an earlier commit", "[render-config-editor][rc5b]") {
+    Rc5bHarness h;
+    auto request = h.request();
+    const auto first = h.service->materializeRenderFragment(request);
+    request["destination_reference"] = "project://passes/second-fragment.json";
+    const auto second = h.service->materializeRenderFragment(request);
+    REQUIRE(first.at("status") == "accepted"); REQUIRE(second.at("status") == "accepted");
+    h.service->commitPending();
+    REQUIRE(h.service->getResult({{"ticket", first.at("ticket")}}).at("committed") == true);
+    CHECK(h.service->getResult({{"ticket", second.at("ticket")}}).at("error").at("code") == "stale_source_digest");
+    CHECK_FALSE(std::filesystem::exists(h.project.root / "passes/second-fragment.json"));
+    CHECK(Json::parse(readBytes(h.project.render_config)).at("rendering").at("fragment_overrides").size() == 1);
+}
+} // namespace Pelican
+
+namespace Pelican {
+TEST_CASE("RC5b getter represents excluded and directly inherited project fragments", "[render-config-editor][rc5b]") {
+    Rc5bHarness h;
+    auto preset = Json::parse(engineResourceOrThrow("render_pipelines/experimental/hybrid_recipe.json"));
+    preset["config"]["base"][0]["fragments"].push_back("project://passes/optional.json");
+    const Json optional{{"schema", "pelican.render_fragment"}, {"version", 1}, {"name", "optional"},
+        {"passes", Json::array()}, {"render_targets", Json::array()}};
+    writeBytes(h.project.root / "passes/optional.json", optional.dump(2));
+    writeBytes(h.project.root / "passes/recipe.json", preset.dump(2));
+    auto root = Json::parse(readBytes(h.project.render_config));
+    root["rendering"]["pipeline"]["preset"] = "project://passes/recipe.json";
+    writeBytes(h.project.render_config, root.dump(2));
+    h.service = makeProjectService(h.project, h.resolver, h.runtime);
+    auto rows = h.rows();
+    REQUIRE(rows.size() == 6);
+    CHECK(rows.at(5).at("state") == "inherited"); CHECK(rows.at(5).at("materializable") == false);
+    h.commit(h.service->editRenderingKeys({{"base_source_digest", h.context().at("source_digest").at("hex")},
+        {"set", {{"fragment_overrides", {{"optional", nullptr}}}}}}));
+    rows = h.rows();
+    CHECK(rows.at(5).at("state") == "excluded"); CHECK(rows.at(5).at("revertible") == true);
+    CHECK(rows.at(5).at("effective_reference").is_null()); CHECK(rows.at(5).at("digest").is_null());
+    CHECK(rows.at(5).at("inherited_reference") == "project://passes/optional.json");
+}
+} // namespace Pelican

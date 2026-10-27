@@ -283,6 +283,8 @@ struct RenderConfigEditorDependencies {
     // RTL-1a: where asset_data is. nullopt (or unset): no asset_data, and
     // edit_ray_layout refuses procedural_records.
     std::function<std::optional<RayAssetDataDocument>()> ray_asset_data;
+    // Unset in production; exercises rollback through the real ticket commit.
+    RenderConfigDocumentCommitFault document_commit_fault;
 };
 
 // AB-1: what a bake_audio_analysis worker hands back to the engine's thread:
@@ -307,6 +309,8 @@ class RenderConfigEditorService {
         std::string operation;
         std::string fragment_reference;
         std::optional<std::string> base_preset_digest;
+        // Internal receipt-time ownership, independent of the client's digest.
+        std::function<bool(const ResolvedRenderConfigAuthoringContext &)> fragment_owner_matches;
         bool edits_additional_documents = false;
         // N-6: the edit changes authored bytes nothing in the engine reads, so
         // there is no candidate to compile and nothing new to publish. It still
@@ -839,6 +843,7 @@ class RenderConfigEditorService {
     // registry resolves now, read at each call (engineauthoringlists.hpp).
     nlohmann::ordered_json getRegisteredProviders(const nlohmann::json &params) const;
     nlohmann::ordered_json getRayCallableRecords(const nlohmann::json &params) const;
+    nlohmann::ordered_json materializeRenderFragment(const nlohmann::json &params);
     nlohmann::ordered_json forkRenderPipeline(const nlohmann::json &params);
     nlohmann::ordered_json editPresetPass(const nlohmann::json &params);
     nlohmann::ordered_json editRegionReplacement(const nlohmann::json &params);

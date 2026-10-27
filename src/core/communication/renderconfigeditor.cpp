@@ -304,7 +304,9 @@ OrderedJson *findEditablePassIn(OrderedJson &rendering_passes, const std::string
 
 OrderedJson *findPresetEditablePass(OrderedJson &preset, const std::string &graph_name,
                                       const std::string &pass_name) {
-    return findEditablePassIn(preset.at("config").at("rendering_passes"), graph_name, pass_name);
+    auto &config = preset.at("config");
+    const auto passes = config.find("rendering_passes");
+    return passes == config.end() ? nullptr : findEditablePassIn(*passes, graph_name, pass_name);
 }
 
 // F-6: the pass a direct root declares itself, found in the root's rendering
@@ -1452,12 +1454,46 @@ RenderConfigEditorService::findCatalogReference(
     return found == feature_catalog_.end() ? nullptr : &*found;
 }
 
+namespace {
+// Preserve inherited order and identity for overridden and excluded rows too.
+OrderedJson recipeFragmentRows(const Json &preset, const Json &section,
+    const std::function<std::string(const std::string &)> &load) {
+    auto rows = OrderedJson::array();
+    const auto overrides = section.value("fragment_overrides", Json::object());
+    for (const auto &base : preset.at("config").at("base"))
+        for (const auto &ref : base.at("fragments")) {
+            const auto inherited = ref.get<std::string>();
+            const auto name = Json::parse(load(inherited)).at("name").get<std::string>();
+            const auto found = overrides.find(name);
+            const bool overridden = found != overrides.end();
+            const bool excluded = overridden && found->is_null();
+            const auto effective = excluded ? std::string{} : overridden ? found->get<std::string>() : inherited;
+            rows.push_back({{"name", name}, {"family", base.at("family")},
+                {"state", excluded ? "excluded" : overridden ? "overridden" : "inherited"},
+                {"inherited_reference", inherited},
+                {"effective_reference", excluded ? OrderedJson(nullptr) : OrderedJson(effective)},
+                {"digest", excluded ? OrderedJson(nullptr) : digestJson(renderConfigSourceDigest(load(effective)))},
+                {"materializable", !overridden && inherited.starts_with("engine://")},
+                {"revertible", overridden}});
+        }
+    return rows;
+}
+
+OrderedJson *findFragmentEditablePass(OrderedJson &document, const std::string &name) {
+    if (document.value("schema", std::string{}) != "pelican.render_fragment") return nullptr;
+    for (auto &pass : document.at("passes"))
+        if (pass.at("name") == name && isEditablePassType(pass.value("type", std::string{}))) return &pass;
+    return nullptr;
+}
+} // namespace
+
 OrderedJson RenderConfigEditorService::getRenderFeatures(
     const Json &params) const {
     requireOnly(params, {}, "get_render_features");
     const auto uneditable_entries =
         readDocument().uneditableFeatureEntryCount();
     auto instances = OrderedJson::array();
+    std::optional<OrderedJson> fragments;
     const auto root = Json::parse(readDocument().bytes());
     const auto append_instances = [&](const Json &features, std::string_view scope,
                                       const std::string &source_reference, const std::string &source_digest,
@@ -1524,12 +1560,20 @@ OrderedJson RenderConfigEditorService::getRenderFeatures(
         const auto current = dependencies_.resolve_authoring_context(readDocumentSet());
         if (current.pipeline_preset && current.pipeline_preset_bytes) {
             const auto preset = Json::parse(*current.pipeline_preset_bytes);
+            if (preset.value("version", 1) == 2) {
+                const auto documents = readDocumentSet();
+                fragments = recipeFragmentRows(preset, renderingSectionOrEmpty(root), [&](const std::string &ref) {
+                    if (const auto *held = documents.find(dependencies_.normalize_reference(ref))) return held->bytes;
+                    if (ref.starts_with("engine://")) return std::string{engineResourceOrThrow(ref.substr(9))};
+                    return readFileBytes(dependencies_.resolve_document_path(ref));
+                });
+            }
             append_instances(preset.at("config").value("features", Json::array()), "preset",
                              current.pipeline_preset->reference, renderConfigSourceDigest(*current.pipeline_preset_bytes),
                              current.pipeline_preset->reference.starts_with("project://"));
         }
     }
-    return markRead(OrderedJson{{"source_reference", dependencies_.source_reference},
+    auto result = OrderedJson{{"source_reference", dependencies_.source_reference},
             {"source_digest", digestJson(readDocument().sourceDigest())}, {"live", readLive()},
             {"features", readDocument().featureReferences()},
             {"feature_instances", std::move(instances)},
@@ -1537,7 +1581,9 @@ OrderedJson RenderConfigEditorService::getRenderFeatures(
              uneditable_entries != 0},
             {"uneditable_feature_entry_count",
              uneditable_entries},
-            {"runtime", runtimeJson(dependencies_.runtime_snapshot())}});
+            {"runtime", runtimeJson(dependencies_.runtime_snapshot())}};
+    if (fragments) result["base_fragments"] = std::move(*fragments);
+    return markRead(std::move(result));
 }
 
 OrderedJson RenderConfigEditorService::listRenderFeatures(
@@ -2521,6 +2567,12 @@ OrderedJson RenderConfigEditorService::editBatch(const Json &params) {
     merged.source_only = true;
     for (auto &ticket : tickets) {
         if (!merged.base_preset_digest) merged.base_preset_digest = ticket.base_preset_digest;
+        if (ticket.fragment_owner_matches) {
+            merged.fragment_owner_matches = [previous = std::move(merged.fragment_owner_matches),
+                                             next = std::move(ticket.fragment_owner_matches)](const auto &source) {
+                return (!previous || previous(source)) && next(source);
+            };
+        }
         merged.edits_additional_documents = merged.edits_additional_documents || ticket.edits_additional_documents;
         merged.source_only = merged.source_only && ticket.source_only;
         merged.restart_required = merged.restart_required || ticket.restart_required;
@@ -3371,7 +3423,30 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
             if (root_pass) encoded["root_declaration"] = *root_pass;
             const auto source = provenance.find(name);
             encoded["editable_feature_pass"] = false;
-            if (source != provenance.end() && source->second->source == RenderPipelineProvenanceSource::feature) {
+            encoded["editable_fragment_pass"] = false;
+            if (source != provenance.end() && source->second->fragment) {
+                encoded["editable_preset_pass"] = false;
+                encoded["editable_root_pass"] = false;
+                encoded.erase("preset_declaration");
+                encoded.erase("root_declaration");
+                const auto &origin = *source->second->fragment;
+                const auto documents = readDocumentSet();
+                const auto key = dependencies_.normalize_reference(origin.reference);
+                const auto *held = documents.find(key);
+                const auto bytes = held ? held->bytes : origin.reference.starts_with("engine://")
+                    ? std::string{engineResourceOrThrow(origin.reference.substr(9))}
+                    : readFileBytes(dependencies_.resolve_document_path(origin.reference));
+                auto fragment = OrderedJson::parse(bytes);
+                encoded["fragment"] = {{"name", origin.name}, {"reference", origin.reference},
+                    {"digest", digestJson(renderConfigSourceDigest(bytes))}};
+                if (auto *declaration = findFragmentEditablePass(fragment, name)) {
+                    encoded["fragment_declaration"] = *declaration;
+                    encoded["editable_fragment_pass"] = origin.reference.starts_with("project://");
+                }
+                if (!encoded["editable_fragment_pass"].get<bool>())
+                    encoded["fragment_edit_reason"] = "Materialize the engine fragment before editing its passes.";
+            }
+            if (source != provenance.end() && !source->second->fragment && source->second->source == RenderPipelineProvenanceSource::feature) {
                 try {
                     const auto &reference = source->second->provider_reference;
                     if (reference.empty() || reference.starts_with("engine://"))
@@ -3644,6 +3719,64 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
             result["pipeline_preset"]["source_digest"] = digestJson(renderConfigSourceDigest(*resolved.pipeline_preset_bytes));
     }
     return markRead(std::move(result));
+}
+
+OrderedJson RenderConfigEditorService::materializeRenderFragment(const Json &params) {
+    constexpr auto method = "materialize_render_fragment";
+    requireOnly(params, {"name", "base_source_digest", "base_preset_digest", "base_fragment_digest", "destination_reference"}, method);
+    const auto base_digest = requireString(params, "base_source_digest", method);
+    const auto preset_digest = requireString(params, "base_preset_digest", method);
+    const auto fragment_digest = requireString(params, "base_fragment_digest", method);
+    const auto name = requireString(params, "name", method);
+    const auto destination = requireString(params, "destination_reference", method);
+    if (!isLowerHexDigest(base_digest) || !isLowerHexDigest(preset_digest) || !isLowerHexDigest(fragment_digest))
+        throw std::invalid_argument("materialize_render_fragment requires 64 lowercase hex source digests");
+    if (!dependencies_.resolve_authoring_context || !dependencies_.normalize_reference || !dependencies_.resolve_document_path)
+        return rejection("method_unavailable", "materialize_render_fragment requires the project document resolver");
+    try {
+        if (!destination.starts_with("project://") || destination.find('#') != std::string::npos ||
+            !isWithinDirectory(dependencies_.project_root, dependencies_.resolve_document_path(destination)))
+            return rejection("invalid_fragment_destination", "Choose a new project:// file for the fragment");
+        if (const auto location = reservedProjectLocation(dependencies_.resolve_document_path(destination)))
+            return rejection(std::string{renderDocumentNotWritableCode},
+                "Render documents cannot be created under " + *location,
+                {{"method", method}, {"reference", destination},
+                 {"reason", "reserved_location"}, {"location", *location}});
+        const auto documents = currentDocumentSet();
+        const auto current = dependencies_.resolve_authoring_context(documents);
+        if (!current.pipeline_preset_bytes || Json::parse(*current.pipeline_preset_bytes).value("version", 1) != 2)
+            return rejection("pipeline_recipe_required", "The current rendering config does not select a recipe");
+        if (renderConfigSourceDigest(*current.pipeline_preset_bytes) != preset_digest)
+            return rejection("external_modification", "The selected preset changed since it was read");
+        const auto load = [&](const std::string &ref) {
+            if (const auto *held = documents.find(dependencies_.normalize_reference(ref))) return held->bytes;
+            if (ref.starts_with("engine://")) return std::string{engineResourceOrThrow(ref.substr(9))};
+            return readFileBytes(dependencies_.resolve_document_path(ref));
+        };
+        const auto root = Json::parse(document_.bytes());
+        const auto rows = recipeFragmentRows(Json::parse(*current.pipeline_preset_bytes), renderingSectionOrEmpty(root), load);
+        const auto row = std::find_if(rows.begin(), rows.end(), [&](const auto &r) { return r.at("name") == name; });
+        if (row == rows.end()) return rejection("render_fragment_not_found", "Unknown inherited fragment", {{"name", name}});
+        if (row->at("state") != "inherited" || !row->at("materializable").get<bool>())
+            return rejection("render_fragment_already_materialized", "Remove the override before materializing again",
+                {{"name", name}, {"reference", row->at("effective_reference")}});
+        const auto bytes = load(row->at("effective_reference").get<std::string>());
+        if (renderConfigSourceDigest(bytes) != fragment_digest)
+            return rejection("render_fragment_source_changed", "The fragment changed since it was read", {{"name", name}});
+        const auto path = dependencies_.resolve_document_path(destination);
+        if (std::filesystem::exists(path))
+            return rejection("fragment_destination_exists", "The destination already exists: " + destination);
+        const std::array additional{RenderConfigCandidateDocument{
+            .reference = destination, .normalized_reference = dependencies_.normalize_reference(destination),
+            .path = path, .operation = RenderConfigDocumentOperation::create,
+            .expected = {RenderConfigDocumentExistence::missing, {}}, .bytes = bytes}};
+        return queueRootEdit(base_digest, method, [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
+            auto overrides = renderingSectionOrEmpty(Json::parse(candidate.bytes())).value("fragment_overrides", Json::object());
+            overrides[name] = destination;
+            candidate = candidate.withSectionValue("fragment_overrides", overrides.dump(2));
+            return std::nullopt;
+        }, additional, preset_digest);
+    } catch (const std::exception &error) { return preflightRejection(error); }
 }
 
 OrderedJson RenderConfigEditorService::forkRenderPipeline(const Json &params) {
@@ -4856,9 +4989,9 @@ namespace {
 // EL-3: the rendering section keys edit_rendering_keys writes, each whole.
 // Every one is read again when a generation is composed (none is read only
 // at start), so none of them asks for a restart by itself.
-constexpr std::array<std::string_view, 8> renderingEditableKeys{
+constexpr std::array<std::string_view, 9> renderingEditableKeys{
     "draw_sort", "shader_defines", "snapshots", "graph_transforms",
-    "render_strategy", "xr", "multisampling", "resolver_version"};
+    "render_strategy", "xr", "multisampling", "resolver_version", "fragment_overrides"};
 
 // EL-3: the rendering section keys another RPC writes.
 struct OwnedRenderingKey {
@@ -5642,7 +5775,7 @@ namespace {
 void applyEditablePassFields(const Json &params, OrderedJson &pass, OrderedJson *routing_config,
                              const char *method) {
     if (isEditableAuxiliaryPass(pass.at("type").get<std::string>())) {
-        requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "output", "shader", "ray_query", "view_select"}, method);
+        requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "base_fragment_digest", "graph", "pass_name", "output", "shader", "ray_query", "view_select"}, method);
         bool changed = params.contains("view_select");
         for (const auto *key : {"output", "shader", "ray_query"}) {
             if (!params.contains(key)) continue;
@@ -5665,7 +5798,7 @@ void applyEditablePassFields(const Json &params, OrderedJson &pass, OrderedJson 
         }
         if (!changed) throw std::invalid_argument("Auxiliary pass editing requires at least one editable field");
     } else if (pass.at("type") == "raster") {
-        requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "input", "output", "shader", "draw", "raster_state", "ray_query", "view_select"}, method);
+        requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "base_fragment_digest", "graph", "pass_name", "input", "output", "shader", "draw", "raster_state", "ray_query", "view_select"}, method);
         bool changed = params.contains("view_select");
         for (const auto *key : {"input", "output", "shader", "draw", "raster_state", "ray_query"}) {
             if (!params.contains(key)) continue;
@@ -5679,7 +5812,7 @@ void applyEditablePassFields(const Json &params, OrderedJson &pass, OrderedJson 
         (void)parseRasterPassContract(Json(pass), color.is_array() ? color.size() : 1,
             output.contains("depth") && !output.at("depth").is_null(), "edit_preset_pass");
     } else if (pass.at("type") == "material") {
-        requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "input", "output", "ray_query", "material_settings", "material_routing", "view_select"}, method);
+        requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "base_fragment_digest", "graph", "pass_name", "input", "output", "ray_query", "material_settings", "material_routing", "view_select"}, method);
         if (!params.contains("input") && !params.contains("output") && !params.contains("ray_query") &&
             !params.contains("material_settings") && !params.contains("material_routing") &&
             !params.contains("view_select"))
@@ -5702,7 +5835,7 @@ void applyEditablePassFields(const Json &params, OrderedJson &pass, OrderedJson 
             else (*routing_config)["material_routing"] = params.at("material_routing");
         }
     } else {
-        requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "input", "output", "shader", "ray_query", "uses_light_data", "push_constants", "clear_colors", "view_select"}, method);
+        requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "base_fragment_digest", "graph", "pass_name", "input", "output", "shader", "ray_query", "uses_light_data", "push_constants", "clear_colors", "view_select"}, method);
         for (const auto *key : {"input", "output", "shader"}) {
             if (!params.contains(key)) throw std::invalid_argument(std::string{method} + " requires " + key);
             pass[key] = params.at(key);
@@ -5737,17 +5870,18 @@ void applyEditablePassFields(const Json &params, OrderedJson &pass, OrderedJson 
 
 OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
     constexpr auto method = "edit_preset_pass";
-    requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "input", "output", "shader", "draw", "raster_state", "ray_query", "material_settings", "material_routing", "uses_light_data", "push_constants", "clear_colors", "view_select"}, method);
+    requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "base_fragment_digest", "graph", "pass_name", "input", "output", "shader", "draw", "raster_state", "ray_query", "material_settings", "material_routing", "uses_light_data", "push_constants", "clear_colors", "view_select"}, method);
     (void)parseRasterRayQuery(params);
     const auto base_digest = requireString(params, "base_source_digest", method);
     const bool feature_edit = params.contains("base_feature_digest");
-    if (feature_edit && params.contains("base_preset_digest"))
+    const bool fragment_edit = params.contains("base_fragment_digest");
+    if (int(feature_edit) + int(fragment_edit) + int(params.contains("base_preset_digest")) > 1)
         throw std::invalid_argument("edit_preset_pass requires only the selected source document digest");
     // F-6: with neither document digest the request names the root itself;
     // base_source_digest is then the digest of the document being edited.
-    const bool root_edit = !feature_edit && !params.contains("base_preset_digest");
+    const bool root_edit = !feature_edit && !fragment_edit && !params.contains("base_preset_digest");
     const auto preset_digest = root_edit ? base_digest
-        : requireString(params, feature_edit ? "base_feature_digest" : "base_preset_digest", method);
+        : requireString(params, fragment_edit ? "base_fragment_digest" : feature_edit ? "base_feature_digest" : "base_preset_digest", method);
     const auto graph = requireString(params, "graph", method);
     const auto name = requireString(params, "pass_name", method);
     if (!isLowerHexDigest(base_digest) || !isLowerHexDigest(preset_digest))
@@ -5756,19 +5890,37 @@ OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
         return rejection("method_unavailable", "edit_preset_pass requires the project document resolver");
     try {
         const auto current = dependencies_.resolve_authoring_context(currentDocumentSet());
+        const auto fragment_source = std::find_if(current.pass_provenance.begin(), current.pass_provenance.end(),
+            [&](const auto &entry) { return entry.name == name && entry.fragment.has_value(); });
+        if (!fragment_edit && fragment_source != current.pass_provenance.end())
+            return rejection("fragment_pass_not_editable", "Select the fragment document digest for this pass", {{"name", fragment_source->fragment->name}});
         if (root_edit && !current.pipeline_preset)
             return editRootPass(params, base_digest, graph, name, current);
         // A preset root's passes live in the preset, which is edited by its
         // own digest once forked; the root is never the place to write them.
         if (root_edit)
             return rejection("project_preset_required", "Fork the selected preset into the project before editing its passes");
-        if (!feature_edit && (!current.pipeline_preset || !current.pipeline_preset_bytes ||
+        if (!feature_edit && !fragment_edit && (!current.pipeline_preset || !current.pipeline_preset_bytes ||
             !current.pipeline_preset->reference.starts_with("project://")))
             return rejection("project_preset_required", "Fork the selected preset into the project before editing its passes");
         std::string reference;
         std::string authored_name = name;
         std::string provider;
-        if (feature_edit) {
+        if (fragment_edit) {
+            bool graph_contains_pass = false;
+            for (const auto &candidate_graph : current.config.at("rendering_passes"))
+                if (candidate_graph.at("name") == graph)
+                    for (const auto &node : candidate_graph.at("passes"))
+                        if (node.at("name") == name) graph_contains_pass = true;
+            if (!graph_contains_pass || fragment_source == current.pass_provenance.end())
+                return rejection("fragment_pass_not_editable", "The selected pass is not owned by a fragment in this graph");
+            const auto &origin = *fragment_source->fragment;
+            if (!origin.reference.starts_with("project://"))
+                return rejection("render_fragment_not_materialized", "Materialize the engine fragment before editing its passes", {{"name", origin.name}});
+            if (params.contains("material_routing"))
+                return rejection("fragment_routing_not_editable", "Material routing belongs to the preset");
+            reference = origin.reference;
+        } else if (feature_edit) {
             if (params.contains("material_routing"))
                 return rejection("feature_routing_not_editable", "Material routing belongs to the rendering preset, not a feature pass");
             bool graph_contains_pass = false;
@@ -5796,9 +5948,9 @@ OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
         if (held.base_digest != preset_digest)
             return rejection("external_modification", "The selected pass source changed since it was read");
         auto preset = OrderedJson::parse(held.bytes);
-        auto *pass = feature_edit ? findFeatureEditablePass(preset, authored_name, provider) : findPresetEditablePass(preset, graph, name);
+        auto *pass = fragment_edit ? findFragmentEditablePass(preset, name) : feature_edit ? findFeatureEditablePass(preset, authored_name, provider) : findPresetEditablePass(preset, graph, name);
         if (!pass) return rejection("preset_pass_not_editable", "The selected node is not an editable pass in the project preset");
-        applyEditablePassFields(params, *pass, feature_edit ? nullptr : &preset.at("config"), method);
+        applyEditablePassFields(params, *pass, (feature_edit || fragment_edit) ? nullptr : &preset.at("config"), method);
         const std::array documents{RenderConfigCandidateDocument{
             .reference = reference,
             .normalized_reference = dependencies_.normalize_reference(reference),
@@ -5807,9 +5959,23 @@ OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
             .expected = {RenderConfigDocumentExistence::present, preset_digest},
             .bytes = preset.dump(2),
         }};
-        return queueRootEdit(base_digest, method,
+        auto result = queueRootEdit(base_digest, method,
             [](AuthoredRenderConfigDocument &) -> std::optional<OrderedJson> { return std::nullopt; },
-            documents, feature_edit ? std::nullopt : std::optional{preset_digest});
+            documents, (feature_edit || fragment_edit) ? std::nullopt : std::optional{preset_digest});
+        if (fragment_edit && result.at("status") == "accepted") {
+            auto &ticket = pending_.back();
+            ticket.base_preset_digest = renderConfigSourceDigest(*current.pipeline_preset_bytes);
+            ticket.fragment_owner_matches = [graph, name, reference](const ResolvedRenderConfigAuthoringContext &source) {
+                bool in_graph = false;
+                for (const auto &g : source.config.at("rendering_passes"))
+                    if (g.at("name") == graph)
+                        for (const auto &p : g.at("passes"))
+                            if (p.at("name") == name) in_graph = true;
+                return in_graph && std::any_of(source.pass_provenance.begin(), source.pass_provenance.end(),
+                    [&](const auto &entry) { return entry.name == name && entry.fragment && entry.fragment->reference == reference; });
+            };
+        }
+        return result;
     } catch (const std::exception &error) {
         return preflightRejection(error);
     }
@@ -6510,6 +6676,7 @@ OrderedJson writtenDocumentDigests(
 
 std::string_view renderDocumentSchema(std::string_view kind) {
     if (kind == "preset") return "pelican.render_pipeline";
+    if (kind == "fragment") return "pelican.render_fragment";
     // RTL-1a: the documents the root's ray_group_layout and ray_bindings name.
     if (kind == "ray_group_layout") return "pelican.ray_group_layout";
     if (kind == "ray_bindings") return "pelican.ray_bindings";
@@ -6718,6 +6885,13 @@ RenderConfigEditorService::renderDocumentsOf(
     for (const auto &resource : current.resource_provenance)
         features.push_back(resource.provider_reference);
     for (const auto &reference : features) consider(reference, "feature");
+    for (const auto &entry : namedRenderDocuments(root_bytes,
+        [&](const std::string &ref) -> std::optional<std::string> {
+            if (const auto *held = candidate.find(dependencies_.normalize_reference(ref))) return held->bytes;
+            if (ref.starts_with("engine://")) return std::string{engineResourceOrThrow(ref.substr(9))};
+            return readFileBytes(dependencies_.resolve_document_path(ref));
+        }, false))
+        if (entry.kind == "fragment") consider(entry.reference, "fragment");
     // RTL-1a: the ray group layout and the ray bindings the root names (a
     // preset never names them; renderpipeline.cpp refuses it).
     const auto parsed_root = Json::parse(root_bytes);
@@ -6785,10 +6959,12 @@ RenderConfigEditorService::namedRenderDocuments(
                         if (document.is_object() &&
                             document.contains("config") &&
                             document.at("config").is_object())
-                            appendFeatureReferences(
-                                document.at("config").value("features",
-                                                            Json::array()),
-                                features);
+                        {
+                            appendFeatureReferences(document.at("config").value("features", Json::array()), features);
+                            for (const auto &base : document.at("config").value("base", Json::array()))
+                                for (const auto &ref : base.at("fragments"))
+                                    references.emplace_back(ref.get<std::string>(), "fragment");
+                        }
                     }
                 } catch (const std::exception &) {
                     // A preset that does not read names no features; the
@@ -6796,6 +6972,9 @@ RenderConfigEditorService::namedRenderDocuments(
                 }
             }
         }
+        const auto overrides = section.value("fragment_overrides", Json::object());
+        for (const auto &[name, ref] : overrides.items())
+            if (ref.is_string()) references.emplace_back(ref.get<std::string>(), "fragment");
         // Preserve the getter's preset-before-root feature order without compose.
         if (!writable_only)
             appendFeatureReferences(section.value("features", Json::array()), features);
@@ -8215,7 +8394,8 @@ void RenderConfigEditorService::completeCommitTransaction(
                         transaction->source_receipt =
                             commitRenderConfigCandidateDocuments(
                                 dependencies_.project_root,
-                                *transaction->ticket.candidate_documents);
+                                *transaction->ticket.candidate_documents,
+                                dependencies_.document_commit_fault);
                     }
                 } catch (const RenderConfigExternalModification &error) {
                     finish(rejection(
@@ -8475,6 +8655,20 @@ void RenderConfigEditorService::commitPending() noexcept {
                      {"current_source_digest", document_.sourceDigest()}}));
                 continue;
             }
+            if (ticket.fragment_owner_matches) {
+                bool matches = false;
+                try {
+                    const auto source = dependencies_.resolve_authoring_context(currentDocumentSet());
+                    matches = source.pipeline_preset_bytes &&
+                        renderConfigSourceDigest(*source.pipeline_preset_bytes) == *ticket.base_preset_digest &&
+                        ticket.fragment_owner_matches(source);
+                } catch (const std::exception &) {}
+                if (!matches) {
+                    finish(rejection("stale_source_digest", "The preset or fragment pass owner changed after acceptance",
+                        {{"ticket", ticket.id}}));
+                    continue;
+                }
+            }
             const auto disk_digest = renderConfigSourceDigest(
                 readFileBytes(dependencies_.source_path));
             // RL-1: a reload expects the disk to hold what it read, which is
@@ -8589,11 +8783,14 @@ void RenderConfigEditorService::commitPending() noexcept {
             if (transaction->ticket.base_preset_digest) {
                 verify_preset = [resolve = dependencies_.resolve_authoring_context,
                                  baseline = currentDocumentSet(),
-                                 expected = *transaction->ticket.base_preset_digest] {
+                                 expected = *transaction->ticket.base_preset_digest,
+                                 owner_matches = transaction->ticket.fragment_owner_matches] {
                     try {
                         const auto source = resolve(baseline);
                         if (!source.pipeline_preset_bytes || renderConfigSourceDigest(*source.pipeline_preset_bytes) != expected)
                             throw RenderConfigExternalModification("The source preset changed before the edit was saved");
+                        if (owner_matches && !owner_matches(source))
+                            throw RenderConfigExternalModification("The fragment pass owner changed before the edit was saved");
                     } catch (const std::exception &error) {
                         throw RenderConfigExternalModification(error.what());
                     }
@@ -8613,7 +8810,7 @@ void RenderConfigEditorService::commitPending() noexcept {
                 }
             };
             const auto edit_commit =
-                [transaction, project_root, verify_preset = std::move(verify_preset)] {
+                [transaction, project_root, verify_preset = std::move(verify_preset), fault = dependencies_.document_commit_fault] {
                 transaction->source_commit_called = true;
                 try {
                     if (verify_preset) verify_preset();
@@ -8624,7 +8821,7 @@ void RenderConfigEditorService::commitPending() noexcept {
                     transaction->source_receipt =
                         commitRenderConfigCandidateDocuments(
                             project_root,
-                            *transaction->ticket.candidate_documents);
+                            *transaction->ticket.candidate_documents, fault);
                 } catch (const RenderConfigExternalModification &error) {
                     // Production's reload participant converts callback
                     // exceptions to its result type. Preserve the CAS

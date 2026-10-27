@@ -19,7 +19,9 @@ Json presetPassEditParams(const PresetPassEditSubject &subject, const PresetPass
                 {"ray_query", edit.ray_query}};
     // F-6: the root's own pass is named by base_source_digest alone.
     if (subject.document != PresetPassEditSubject::Document::root)
-        params[subject.document == PresetPassEditSubject::Document::feature
+        params[subject.document == PresetPassEditSubject::Document::fragment
+                   ? "base_fragment_digest"
+                   : subject.document == PresetPassEditSubject::Document::feature
                    ? "base_feature_digest"
                    : "base_preset_digest"] = subject.document_digest;
     const auto type = original.value("type", std::string{});
@@ -98,10 +100,13 @@ std::optional<PresetPassEditSubject> presetPassEditSubject(const FramePlanAuthor
                                                            const std::string &graph,
                                                            const std::string &pass) {
     const auto *row = authoring.find(graph, pass);
-    if (row == nullptr || !(row->root || row->preset || row->feature)) return std::nullopt;
+    if (row == nullptr || !(row->root || row->preset || row->feature || row->fragment)) return std::nullopt;
     PresetPassEditSubject subject{.source_digest = authoring.source_digest, .graph = graph, .pass = pass};
     if (row->root) {
         // F-6: base_source_digest alone.
+    } else if (row->fragment) {
+        subject.document = PresetPassEditSubject::Document::fragment;
+        subject.document_digest = row->fragment_digest;
     } else if (row->feature) {
         subject.document = PresetPassEditSubject::Document::feature;
         subject.document_digest = row->feature_digest;

@@ -1453,3 +1453,163 @@ TEST_CASE("RC-3e1 A1 production RPC authoring recovery and publication", "[rc3e1
     }
 }
 #endif
+
+#ifdef _WIN32
+namespace {
+Json rc5bPasses(PlayerRpc &player) {
+    const auto context = player.result("get_render_authoring_context");
+    Json passes = Json::object();
+    for (const auto &graph : context.at("graphs"))
+        for (const auto &pass : graph.at("passes")) passes[pass.at("name").get<std::string>()] = pass.at("declaration");
+    return passes;
+}
+Json rc5bLighting(PlayerRpc &player) {
+    const auto context = player.result("get_render_authoring_context");
+    for (const auto &g : context.at("graphs"))
+        for (const auto &p : g.at("passes")) if (p.at("name") == "deferred_lighting") return p;
+    FAIL("deferred_lighting is missing");
+    return {};
+}
+}
+TEST_CASE("RC5b B1 B2 production player materializes, edits, restores and follows fragments", "[rc5b][rpc][render-fallback]") {
+    using Pelican::renderConfigSourceDigest;
+    TempProject project{"rc5b"};
+    auto root = Json::parse(project.fixed_root);
+    root["nodes"] = Json::array();
+    root["rendering"] = {{"pipeline", {{"preset", "engine://render_pipelines/experimental/hybrid_recipe.json"}}}};
+    const auto before = root.dump(2);
+    writeFile(project.rootPath(), before);
+    const std::string destination = "project://passes/lighting-fragment.json";
+    const auto path = project.root / "passes/lighting-fragment.json";
+    std::string branched_root, branched_fragment;
+    Json expected_passes;
+    {
+        PlayerRpc player{project.root, project.stderrLog("rc5b_materialize")};
+        REQUIRE(player.result("get_status").at("render_pipeline").at("state") == "ready");
+        const auto context = player.result("get_render_authoring_context");
+        const auto rows = player.result("get_render_features").at("base_fragments");
+        REQUIRE(rows.size() == 5);
+        for (const auto &row : rows) {
+            CHECK(row.at("state") == "inherited"); CHECK(row.at("materializable") == true);
+            CHECK(row.at("revertible") == false);
+        }
+        const auto all_before = rc5bPasses(player);
+        const auto engine_docs = player.result("get_render_documents").at("other_documents");
+        std::string source;
+        for (const auto &doc : engine_docs)
+            if (doc.at("reference") == "engine://render_fragments/deferred_lighting.json") source = doc.at("content");
+        REQUIRE_FALSE(source.empty());
+        Json request{{"name", "deferred_lighting"}, {"base_source_digest", context.at("source_digest").at("hex")},
+            {"base_preset_digest", context.at("pipeline_preset").at("source_digest").at("hex")},
+            {"base_fragment_digest", rows.at(2).at("digest").at("hex")}, {"destination_reference", destination}};
+        const auto refused = [&](Json params, const char *code) {
+            const auto answer = player.result("materialize_render_fragment", params);
+            INFO(answer.dump()); CHECK(answer.at("error").at("code") == code);
+            CHECK(readFile(project.rootPath()) == before);
+            CHECK_FALSE(std::filesystem::exists(path));
+        };
+        auto bad = request; bad["base_fragment_digest"] = std::string(64, '0');
+        refused(bad, "render_fragment_source_changed");
+        bad = request; bad["base_preset_digest"] = std::string(64, '0'); refused(bad, "external_modification");
+        bad = request; bad["base_source_digest"] = std::string(64, '0'); refused(bad, "external_modification");
+        writeFile(path, "occupied");
+        CHECK(player.result("materialize_render_fragment", request).at("error").at("code") == "fragment_destination_exists");
+        CHECK(readFile(path) == "occupied"); CHECK(readFile(project.rootPath()) == before);
+        std::filesystem::remove(path);
+        const auto engine_pass = rc5bLighting(player);
+        auto edit = Json{{"base_source_digest", context.at("source_digest").at("hex")},
+            {"base_fragment_digest", rows.at(2).at("digest").at("hex")},
+            {"graph", "main_render"}, {"pass_name", "deferred_lighting"},
+            {"input", engine_pass.at("fragment_declaration").at("input")},
+            {"output", engine_pass.at("fragment_declaration").at("output")},
+            {"shader", engine_pass.at("fragment_declaration").at("shader")}, {"push_constants", "none"}};
+        CHECK(player.result("edit_preset_pass", edit).at("error").at("code") == "render_fragment_not_materialized");
+        bad = edit; bad["base_preset_digest"] = request.at("base_preset_digest");
+        const auto syntax = player.call("edit_preset_pass", bad);
+        CHECK(syntax.at("error").at("code") == -32602);
+        REQUIRE(player.settle(player.result("materialize_render_fragment", request)).at("committed") == true);
+        CHECK(readFile(path) == source);
+        auto after = readFile(project.rootPath());
+        CHECK(Json::parse(after).at("rendering").at("fragment_overrides").size() == 1);
+        CHECK(rc5bPasses(player) == all_before);
+        const auto restore = [&](Json documents) {
+            const auto answer = player.settle(player.result("restore_render_documents", {{"documents", documents}}));
+            INFO(answer.dump()); REQUIRE(answer.at("committed") == true);
+        };
+        const auto doc = [](const std::string &ref, Json digest, Json content) { return Json{{"reference", ref}, {"base_digest", digest}, {"content", content}}; };
+        restore(Json::array({doc(root_reference, renderConfigSourceDigest(after), before), doc(destination, renderConfigSourceDigest(source), nullptr)}));
+        CHECK_FALSE(std::filesystem::exists(path)); CHECK(readFile(project.rootPath()) == before);
+        restore(Json::array({doc(root_reference, renderConfigSourceDigest(before), after), doc(destination, nullptr, source)}));
+        CHECK(readFile(path) == source); CHECK(readFile(project.rootPath()) == after);
+        request["base_source_digest"] = player.result("get_render_features").at("source_digest").at("hex");
+        CHECK(player.result("materialize_render_fragment", request).at("error").at("code") == "render_fragment_already_materialized");
+        CHECK(readFile(path) == source); CHECK(readFile(project.rootPath()) == after);
+        edit["base_source_digest"] = request.at("base_source_digest");
+        edit["base_fragment_digest"] = rc5bLighting(player).at("fragment").at("digest").at("hex");
+        bad = edit; bad["base_fragment_digest"] = std::string(64, '0');
+        CHECK(player.result("edit_preset_pass", bad).at("error").at("code") == "external_modification");
+        REQUIRE(player.settle(player.result("edit_preset_pass", edit)).at("committed") == true);
+        branched_fragment = readFile(path);
+        auto expected = all_before; expected["deferred_lighting"]["push_constants"] = "none";
+        CHECK(rc5bPasses(player) == expected);
+        restore(Json::array({doc(destination, renderConfigSourceDigest(branched_fragment), source)})); CHECK(readFile(path) == source);
+        restore(Json::array({doc(destination, renderConfigSourceDigest(source), branched_fragment)})); CHECK(readFile(path) == branched_fragment);
+        REQUIRE(player.settle(player.result("edit_rendering_keys", {{"base_source_digest", renderConfigSourceDigest(after)},
+            {"remove", Json::array({"fragment_overrides"})}})).at("committed") == true);
+        const auto inherited = readFile(project.rootPath());
+        CHECK(rc5bPasses(player) == all_before); CHECK(readFile(path) == branched_fragment);
+        restore(Json::array({doc(root_reference, renderConfigSourceDigest(inherited), after)})); CHECK(rc5bPasses(player) == expected);
+        restore(Json::array({doc(root_reference, renderConfigSourceDigest(after), inherited)})); CHECK(rc5bPasses(player) == all_before);
+        // Save in the branched state and reopen the real player.
+        restore(Json::array({doc(root_reference, renderConfigSourceDigest(inherited), after)}));
+        branched_root = after; expected_passes = expected;
+        (void)player.result("load_scene", {{"name", "default_scene"}});
+        (void)player.result("save_scene");
+        player.close(); CHECK(player.exit_code == 0u);
+    }
+    {
+        PlayerRpc player{project.root, project.stderrLog("rc5b_reopen")};
+        REQUIRE(player.result("get_status").at("render_pipeline").at("state") == "ready");
+        CHECK(rc5bPasses(player) == expected_passes);
+        CHECK(player.result("get_render_features").at("base_fragments").at(2).at("state") == "overridden");
+        CHECK(readFile(project.rootPath()) == branched_root); CHECK(readFile(path) == branched_fragment);
+        // Project source documents provide a reloadable upstream. No engine
+        // replacement endpoint is added to the player.
+        const auto resources = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "src/core/resources";
+        auto preset = Json::parse(readFile(resources / "render_pipelines/experimental/hybrid_recipe.json"));
+        auto &refs = preset["config"]["base"][0]["fragments"];
+        for (auto &ref : refs) {
+            const auto original = ref.get<std::string>();
+            if (original.ends_with("/ssao.json") || original.ends_with("/deferred_lighting.json")) {
+                const auto filename = std::filesystem::path{original}.filename().string();
+                writeFile(project.root / "passes" / ("upstream-" + filename), readFile(resources / original.substr(9)));
+                ref = "project://passes/upstream-" + filename;
+            }
+        }
+        writeFile(project.root / "passes/upstream-recipe.json", preset.dump(2));
+        auto local = Json::parse(branched_root); local["rendering"]["pipeline"]["preset"] = "project://passes/upstream-recipe.json";
+        writeFile(project.rootPath(), local.dump(2));
+        REQUIRE(player.settle(player.result("reload_render_documents")).at("committed") == true);
+        auto sourceLighting = Json::parse(readFile(project.root / "passes/upstream-deferred_lighting.json"));
+        sourceLighting["passes"][0]["clear_colors"] = {{"lit_color", Json::array({0.2,0.3,0.4,1.0})}};
+        writeFile(project.root / "passes/upstream-deferred_lighting.json", sourceLighting.dump(2));
+        auto ssao = Json::parse(readFile(project.root / "passes/upstream-ssao.json"));
+        ssao["passes"][0]["shader"]["defines"] = Json::array({"RC5B_FOLLOW=1"});
+        writeFile(project.root / "passes/upstream-ssao.json", ssao.dump(2));
+        REQUIRE(player.settle(player.result("reload_render_documents")).at("committed") == true);
+        auto following = rc5bPasses(player);
+        CHECK(following.at("deferred_lighting") == expected_passes.at("deferred_lighting"));
+        CHECK(following.at("ssao_pass").at("shader").at("defines") == Json::array({"RC5B_FOLLOW=1"}));
+        expected_passes["ssao_pass"] = following.at("ssao_pass"); CHECK(following == expected_passes);
+        const auto rows = player.result("get_render_features").at("base_fragments");
+        CHECK(rows.at(1).at("state") == "inherited"); CHECK(rows.at(1).at("materializable") == false);
+        CHECK(rows.at(2).at("state") == "overridden");
+        REQUIRE(player.settle(player.result("edit_rendering_keys", {{"base_source_digest", renderConfigSourceDigest(readFile(project.rootPath()))},
+            {"remove", Json::array({"fragment_overrides"})}})).at("committed") == true);
+        CHECK(rc5bLighting(player).at("editable_fragment_pass") == true);
+        CHECK(rc5bLighting(player).at("fragment_declaration") == sourceLighting.at("passes").at(0));
+        CHECK(readFile(path) == branched_fragment);
+        player.close(); CHECK(player.exit_code == 0u);
+    }
+}
+#endif

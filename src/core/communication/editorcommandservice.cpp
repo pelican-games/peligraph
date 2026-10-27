@@ -1417,6 +1417,11 @@ OrderedJson EditorCommandService::getRenderAuthoringContext(
     return render_config_editor_->getRenderAuthoringContext(params);
 }
 
+OrderedJson EditorCommandService::materializeRenderFragment(const Json &params) {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->materializeRenderFragment(params);
+}
+
 OrderedJson EditorCommandService::forkRenderPipeline(const Json &params) {
     if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
     return render_config_editor_->forkRenderPipeline(params);
@@ -2656,6 +2661,11 @@ OrderedJson EditorCommandRpcAdapter::uninstallPackage(const Json &params) const 
         throw std::logic_error("editor RPC adapter is read-only");
     }
     return mutable_service_->uninstallPackage(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::materializeRenderFragment(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
+    return mutable_service_->materializeRenderFragment(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::forkRenderPipeline(const Json &params) const {

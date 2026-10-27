@@ -221,6 +221,9 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("get_render_authoring_context", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getRenderAuthoringContext(params); });
     });
+    server.setHandler("materialize_render_fragment", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.materializeRenderFragment(params); });
+    });
     server.setHandler("fork_render_pipeline", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.forkRenderPipeline(params); });
     });
