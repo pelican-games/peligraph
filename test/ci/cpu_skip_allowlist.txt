@@ -5,3 +5,7 @@ PathResolver rejects symlink escapes after canonicalization
 # The Debug CRT reports only exist in Debug builds. In Release the probe reports
 # CRT_PROBE_SKIPPED; Debug must execute it and pass (TI-1).
 crt_report_to_stderr
+#
+# RC-5 (2026-10-27): the recipe equivalence against a fixed HEAD needs a recorded
+# baseline (RC5_BASELINE_DIR); without it the test reports a named skip.
+RC-5 A2 recipes preserve typed IR frame plans physical plans and old packages

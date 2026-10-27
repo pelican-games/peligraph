@@ -20,3 +20,8 @@ wsi_fault_window_player
 # test/CB1_FINDINGS.md (VD-1: vertex_displace_v1 has no hook in the fixed shadow /
 # velocity / picking vertex shaders, v1). The test skips with its ticket until VD-1 lands.
 CB1 08 vertex displacement main shadow velocity picking
+#
+# RC-5 (2026-10-27): the recipe / hybrid_v1 golden comparison needs a fixed-HEAD
+# baseline (RC5_GOLDEN_BASELINE_DIR, recorded by the integration side); without it
+# the test reports a named skip instead of comparing the build with itself.
+RC-5 hybrid recipes draw byte identical golden images
