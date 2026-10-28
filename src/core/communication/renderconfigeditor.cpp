@@ -5477,7 +5477,7 @@ std::optional<OrderedJson> RenderConfigEditorService::rayTracingTaskRefusal(
 
 OrderedJson RenderConfigEditorService::editTargetPlanning(const Json &params) {
     constexpr std::string_view method = "edit_target_planning";
-    requireOnly(params, {"base_source_digest", "graph", "nodes", "resources"}, method);
+    requireOnly(params, {"base_source_digest", "graph", "nodes", "resources", "backend"}, method);
     const auto base_digest = requireString(params, "base_source_digest", method);
     const auto graph = requireString(params, "graph", method);
     if (graph.empty())
@@ -5495,7 +5495,7 @@ OrderedJson RenderConfigEditorService::editTargetPlanning(const Json &params) {
     };
     const auto *nodes = entries("nodes");
     const auto *resources = entries("resources");
-    if ((nodes == nullptr || nodes->empty()) && (resources == nullptr || resources->empty()))
+    if (!params.contains("backend") && (nodes == nullptr || nodes->empty()) && (resources == nullptr || resources->empty()))
         throw std::invalid_argument("edit_target_planning requires a name in nodes or resources");
 
     return queuePlanningKeyEdit(
@@ -5528,6 +5528,10 @@ OrderedJson RenderConfigEditorService::editTargetPlanning(const Json &params) {
             if (!planning["graphs"].is_object()) planning["graphs"] = OrderedJson::object();
             auto &declared = planning["graphs"][graph];
             if (!declared.is_object()) declared = OrderedJson::object();
+            if (const auto backend = params.find("backend"); backend != params.end()) {
+                if (backend->is_null()) declared.erase("backend");
+                else declared["backend"] = *backend;
+            }
             for (const auto &[field, kind, edits, known] :
                  {std::tuple{"nodes", "node", nodes, &names->nodes},
                   std::tuple{"resources", "resource", resources, &names->resources}}) {

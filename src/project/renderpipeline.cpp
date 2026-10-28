@@ -254,6 +254,45 @@ TargetPlanningPolicy compileTargetPlanningPolicy(
         source.pointer += pointer + "/" + key;
         return PlanningDeclaration<bool>{value->get<bool>(), strength, std::move(source)};
     };
+    const auto policyEntry = [&](PlanningGraphConstraints &graph, const nlohmann::json &object,
+                                 const char *key, PlanningTargetKind kind, const std::string &target,
+                                 const std::string &pointer, bool string_value) {
+        const auto found = object.find(key);
+        if (found == object.end()) return;
+        auto source = origin;
+        source.pointer += pointer + "/" + key;
+        const auto invalid = [&] {
+            throw GraphRegistryError("target_planning.policy_invalid@1",
+                {{"graph", graph.graph}, {"target", target}, {"key", key},
+                 {"document", source.document}, {"pointer", source.pointer}});
+        };
+        if (std::string_view{key} == "backend" && origin.kind == PlanningOriginKind::part) invalid();
+        auto strength = origin.kind == PlanningOriginKind::root ? PlanningStrength::require : PlanningStrength::prefer;
+        const auto *value = &*found;
+        if (found->is_object()) {
+            requireOnlyKeys(*found, {"value", "strength"}, "target_planning policy");
+            if (!found->contains("value")) invalid();
+            value = &found->at("value");
+            if (const auto s = found->find("strength"); s != found->end()) {
+                if (*s == "require") strength = PlanningStrength::require;
+                else if (*s == "prefer") strength = PlanningStrength::prefer;
+                else invalid();
+            }
+        }
+        std::variant<bool, std::string> parsed;
+        if (string_value) {
+            if (!value->is_string() || value->get_ref<const std::string &>().empty()) invalid();
+            const auto text = value->get<std::string>();
+            if (std::string_view{key} == "backend" && text != "materialized" && text != "transient" && text != "tile_local") invalid();
+            if (std::string_view{key} == "representation" && text != "materialized") invalid();
+            parsed = text;
+        } else {
+            if (!value->is_boolean()) invalid();
+            parsed = value->get<bool>();
+        }
+        graph.declarations.push_back({.graph = graph.graph, .target = target, .key = key,
+            .value = std::move(parsed), .strength = strength, .origin = std::move(source), .target_kind = kind});
+    };
     if (origin.kind != PlanningOriginKind::root && declaration->contains("profile"))
         throw std::runtime_error("target_planning profile belongs to root");
     requireOnlyKeys(
@@ -356,12 +395,14 @@ TargetPlanningPolicy compileTargetPlanningPolicy(
             "target_planning graph '" + graph.key() + "'";
         requireOnlyKeys(
             graph.value(),
-            {"required_capabilities", "nodes", "resources"},
+            {"required_capabilities", "nodes", "resources", "backend"},
             context);
         PlanningGraphConstraints compiled{
             .graph = graph.key() +
                      std::string{graph_name_suffix},
         };
+        policyEntry(compiled, graph.value(), "backend", PlanningTargetKind::graph, {},
+            (nlohmann::json::json_pointer{} / "target_planning" / "graphs" / graph.key()).to_string(), true);
 
         if (const auto capabilities =
                 graph->find("required_capabilities");
@@ -417,7 +458,7 @@ TargetPlanningPolicy compileTargetPlanningPolicy(
                 const auto node_context =
                     context + " node '" + node.key() + "'";
                 requireOnlyKeys(
-                    node.value(), {"serial", "isolate", "fuse"},
+                    node.value(), {"serial", "isolate", "fuse", "scope_break", "scope_join"},
                     node_context);
                 const auto pointer = (nlohmann::json::json_pointer{} / "target_planning" / "graphs" /
                                       graph.key() / "nodes" / node.key()).to_string();
@@ -425,6 +466,8 @@ TargetPlanningPolicy compileTargetPlanningPolicy(
                 constraint.serial.declaration = boolean(node.value(), "serial", pointer, node_context);
                 constraint.isolate.declaration = boolean(node.value(), "isolate", pointer, node_context);
                 constraint.fuse.declaration = boolean(node.value(), "fuse", pointer, node_context);
+                policyEntry(compiled, node.value(), "scope_break", PlanningTargetKind::node, node.key(), pointer, false);
+                policyEntry(compiled, node.value(), "scope_join", PlanningTargetKind::node, node.key(), pointer, false);
                 compiled.nodes.push_back(std::move(constraint));
             }
         }
@@ -449,12 +492,14 @@ TargetPlanningPolicy compileTargetPlanningPolicy(
                 const auto resource_context =
                     context + " resource '" + resource.key() + "'";
                 requireOnlyKeys(
-                    resource.value(), {"no_alias"},
+                    resource.value(), {"no_alias", "representation", "alias_group"},
                     resource_context);
                 const auto pointer = (nlohmann::json::json_pointer{} / "target_planning" / "graphs" /
                                       graph.key() / "resources" / resource.key()).to_string();
                 PlanningResourceConstraint constraint{.resource = resource.key()};
                 constraint.no_alias.declaration = boolean(resource.value(), "no_alias", pointer, resource_context);
+                policyEntry(compiled, resource.value(), "representation", PlanningTargetKind::resource, resource.key(), pointer, true);
+                policyEntry(compiled, resource.value(), "alias_group", PlanningTargetKind::resource, resource.key(), pointer, true);
                 compiled.resources.push_back(std::move(constraint));
             }
         }
@@ -515,6 +560,18 @@ nlohmann::json targetPlanningPolicyToJson(
                 }
                 declaration["resources"] =
                     std::move(resources);
+            }
+            for (const auto &entry : graph.declarations) {
+                if (entry.status != PlanningPolicyStatus::adopted ||
+                    (entry.key != "backend" && entry.key != "representation" && entry.key != "alias_group" &&
+                     entry.key != "scope_break" && entry.key != "scope_join")) continue;
+                auto *target = &declaration;
+                if (entry.target_kind != PlanningTargetKind::graph)
+                    target = &declaration[entry.target_kind == PlanningTargetKind::node ? "nodes" : "resources"][entry.target];
+                nlohmann::json value;
+                std::visit([&](const auto &v) { value = v; }, entry.value);
+                (*target)[entry.key] = {{"value", value},
+                    {"strength", entry.strength == PlanningStrength::require ? "require" : "prefer"}};
             }
             graphs[graph.graph] = std::move(declaration);
         }
@@ -940,7 +997,7 @@ PlanningPolicySource collectPartPlanningPolicy(const nlohmann::json &document, P
         names(family.value("passes", nlohmann::json::array()), nodes);
     for (const auto &graph : result.policy.graphs)
         for (const auto &entry : graph.declarations)
-            if (entry.target_kind == PlanningTargetKind::graph ||
+            if (entry.target_kind != PlanningTargetKind::graph &&
                 !(entry.target_kind == PlanningTargetKind::resource ? resources : nodes).contains(entry.target))
                 throw GraphRegistryError("target_planning.policy_foreign_name@1",
                     {{"document", origin.document}, {"pointer", entry.origin.pointer}, {"target", entry.target}});

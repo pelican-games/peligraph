@@ -14472,3 +14472,4 @@ TEST_CASE("RC-6 B3 B7 RPC accepts wrapped root values over a recipe and restores
     CHECK(readBytes(h.project.render_config) == after);
 }
 }
+#include "rc6a2_rpc_test.inc"

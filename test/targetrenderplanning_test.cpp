@@ -1,4 +1,5 @@
 #include "../src/project/graphcomposition.hpp"
+#include "../src/project/renderpipeline.hpp"
 #include <type_traits>
 #include "../src/project/targetrenderplanning.hpp"
 #include "../src/project/targetrendermemory.hpp"
@@ -4077,4 +4078,5 @@ TEST_CASE("RC-1 the memory total counts each allocation registration made once a
                     std::invalid_argument);
 }
 
+#include "rc6a2_target_policy_test.inc"
 } // namespace Pelican

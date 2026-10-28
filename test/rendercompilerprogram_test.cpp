@@ -2599,5 +2599,6 @@ namespace Pelican {
 #include "rc5_recipe_compiler_test.inc"
 #include "rc5s_anchor_removal_test.inc"
 #include "rc6_policy_test.inc"
+#include "rc6a2_compiler_policy_test.inc"
 #endif
 }

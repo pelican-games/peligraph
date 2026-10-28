@@ -467,6 +467,10 @@ void validateVulkanPhysicalFeatureClosure(
     const BackendProbeResult &selected_probe,
     std::span<const std::string> lowered_required_features);
 PhysicalNodeOrder physicalNodeOrderOf(std::span<const VulkanPhysicalScopePlan> scopes);
+// Also serves as the test seam: an automatic plan with an unapplied policy
+// must pass exactly the same final verification as the selected plan.
+void validateVulkanTargetPlanRequirements(
+    const CompiledLogicalRenderGraph &graph, VulkanTargetPlan &plan);
 
 VulkanTargetPlan compileVulkanTargetPlan(
     const LogicalTypeRegistry &types,

@@ -2,6 +2,7 @@
 #include "imagesubresourcejson.hpp"
 #include "stablefingerprint.hpp"
 #include "vulkancompletephysicalplan.hpp"
+#include "graphcomposition.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -1025,7 +1026,81 @@ struct CandidateDraft {
     std::vector<PlanningDiagnostic> diagnostics;
     std::vector<BackendConstraintFailure> failures;
     BackendCostEstimate cost;
+    std::vector<PlanningPolicyEntry> policy;
+    // Each failed candidate check returns the declarations that caused it. Indices
+    // refer to the stable request ledger, including require declarations.
+    std::vector<std::vector<std::size_t>> policy_conflicts;
+    LogicalPlanningOpportunityReport opportunities;
+    std::vector<VulkanAliasGroupPlan> alias_groups;
 };
+
+bool activePolicy(const PlanningPolicyEntry &entry) {
+    return entry.status == PlanningPolicyStatus::adopted;
+}
+
+bool policyFlag(std::span<const PlanningPolicyEntry> policy, std::string_view target, std::string_view key) {
+    return std::any_of(policy.begin(), policy.end(), [&](const auto &e) {
+        return activePolicy(e) && e.target_kind == PlanningTargetKind::node && e.target == target && e.key == key &&
+               std::get_if<bool>(&e.value) && std::get<bool>(e.value);
+    });
+}
+
+bool hasScopePolicy(std::span<const PlanningPolicyEntry> policy) {
+    return std::any_of(policy.begin(), policy.end(), [](const auto &e) {
+        return activePolicy(e) && (e.key == "scope_join" || e.key == "scope_break") && std::get<bool>(e.value);
+    });
+}
+
+std::string backendPolicyCandidate(const PlanningPolicyEntry &entry) {
+    return "pelican.vulkan." + std::get<std::string>(entry.value) + "_plan@1";
+}
+
+nlohmann::json policyDetail(const PlanningPolicyEntry &entry, std::string_view reason) {
+    return {{"graph", entry.graph}, {"target", entry.target}, {"key", entry.key},
+            {"document", entry.origin.document}, {"pointer", entry.origin.pointer}, {"reason", reason}};
+}
+
+void validatePolicyInput(const CompiledLogicalRenderGraph &graph, const VulkanTargetPlanRequest &request) {
+    for (const auto &entry : request.policy) {
+        if (!activePolicy(entry)) continue;
+        bool invalid = entry.key == "backend" && entry.origin.kind == PlanningOriginKind::part;
+        if (entry.key == "scope_join" && std::get<bool>(entry.value)) {
+            invalid = (!request.node_order.nodes().empty() && request.node_order.nodes().front() == entry.target) ||
+                      policyFlag(request.policy, entry.target, "scope_break");
+        }
+        if (entry.key == "representation") {
+            const auto found = std::find_if(graph.resources.begin(), graph.resources.end(),
+                [&](const auto &r) { return r.name == entry.target; });
+            invalid = found != graph.resources.end() &&
+                (found->type.constructor != LogicalTypeConstructor::image ||
+                 found->materialization == LogicalMaterializationRequirement::external);
+        }
+        if (invalid) throw GraphRegistryError("target_planning.policy_invalid@1", policyDetail(entry, "invalid target or scope relation"));
+    }
+}
+
+// Decide storage before scopes, costs, lifetimes and alias selection. A break
+// can only remove scope locality; no node is reordered to accommodate policy.
+bool policyMaterializes(const VulkanTargetPlanRequest &request, const TargetLoweringGraph &workspace,
+                        std::string_view resource) {
+    for (const auto &e : request.policy)
+        if (activePolicy(e) && e.key == "representation" && e.target == resource) return true;
+    std::map<LogicalValueId, std::size_t> producers;
+    for (std::size_t i = 0; i < workspace.nodes.size(); ++i) {
+        for (const auto &use : workspace.nodes[i].logical.uses)
+            if (use.output_value && use.output_value->resource == resource)
+                producers.emplace(*use.output_value, i);
+    }
+    for (std::size_t consumer = 0; consumer < workspace.nodes.size(); ++consumer)
+        for (const auto &use : workspace.nodes[consumer].logical.uses) {
+            if (!use.input_value || use.input_value->resource != resource) continue;
+            const auto producer = producers.find(*use.input_value);
+            if (producer == producers.end()) continue;
+            for (auto i = producer->second + 1; i <= consumer; ++i)
+                if (policyFlag(request.policy, workspace.nodes[i].logical.name, "scope_break")) return true;
+        }
+    return false;
+}
 
 struct ExternalDepthExportSelection {
     std::string source_resource;
@@ -1968,6 +2043,50 @@ std::string_view vulkanPhysicalScopeKindName(
 
 namespace {
 
+// Mirror the executable rendering instance contract, including attachment
+// order. Local-read instances can have different color sets, but one depth
+// view; ordinary instances require exactly the same color/depth views.
+bool executableScopeAttachments(
+    const VulkanPhysicalScopePlan &scope,
+    std::span<const VulkanPhysicalResourcePlan> resources,
+    std::span<const VulkanPhysicalAttachmentPlan> attachments) {
+    if (scope.kind != VulkanPhysicalScopeKind::rendering || scope.nodes.size() < 2) return true;
+    using View = std::tuple<std::string, AttachmentAspect, std::optional<ImageSubresourceRange>>;
+    std::vector<View> first;
+    std::optional<View> depth;
+    std::vector<std::pair<View, PassAttachmentOperations>> previous;
+    for (std::size_t i = 0; i < scope.nodes.size(); ++i) {
+        std::vector<View> current;
+        for (const auto &a : attachments) {
+            if (a.node != scope.nodes[i]) continue;
+            const View view{a.logical_resource, a.aspect, a.subresource};
+            current.push_back(view);
+            if (a.aspect == AttachmentAspect::depth) {
+                if (depth && *depth != view) return false;
+                depth = view;
+            }
+            const auto *physical = findPhysicalResource(resources, a.logical_resource);
+            if (!physical) return false;
+            const bool materialized = physical->representation == VulkanResourceRepresentation::materialized_image ||
+                                      physical->representation == VulkanResourceRepresentation::external;
+            if (scope.local_reads.empty()) {
+                if (physical->representation == VulkanResourceRepresentation::external || !materialized) return false;
+                if (i > 0 && a.operations.load_op != AttachmentLoadOp::load) return false;
+                if (i + 1 < scope.nodes.size() && a.operations.store_op != AttachmentStoreOp::store) return false;
+            } else if (materialized) {
+                const auto old = std::find_if(previous.begin(), previous.end(), [&](const auto &p) { return p.first == view; });
+                if (old != previous.end() && (old->second.store_op != AttachmentStoreOp::store ||
+                                             a.operations.load_op != AttachmentLoadOp::load)) return false;
+                if (old != previous.end()) old->second = a.operations;
+                else previous.emplace_back(view, a.operations);
+            }
+        }
+        if (i == 0) first = current;
+        else if (scope.local_reads.empty() && first != current) return false;
+    }
+    return true;
+}
+
 bool canAppendMaterializedRenderingScope(
     const VulkanPhysicalScopePlan &scope,
     std::string_view node,
@@ -2052,6 +2171,7 @@ std::vector<VulkanPhysicalScopePlan> buildPhysicalScopes(
     const ResolvedVulkanViewExecutionPlan &view_plan,
     bool tile_candidate, const PlanningProfile &profile,
     std::span<const PlanningNodeConstraint> node_constraints,
+    std::span<const PlanningPolicyEntry> policy,
     std::vector<PlanningDecision> &decisions) {
     std::map<std::string, const LogicalGraphNode *, std::less<>>
         nodes;
@@ -2084,9 +2204,10 @@ std::vector<VulkanPhysicalScopePlan> buildPhysicalScopes(
                 : 1u;
         bool fuse = false;
         std::vector<std::string> local_reads;
-        if (tile_candidate &&
-            profile.kind !=
-                PlanningProfileKind::conservative_debug &&
+        const bool join = policyFlag(policy, node.name, "scope_join");
+        const bool boundary = policyFlag(policy, node.name, "scope_break");
+        if (!boundary && (join || (tile_candidate &&
+            profile.kind != PlanningProfileKind::conservative_debug)) &&
             kind == VulkanPhysicalScopeKind::rendering &&
             !result.empty() &&
             result.back().kind ==
@@ -2124,7 +2245,7 @@ std::vector<VulkanPhysicalScopePlan> buildPhysicalScopes(
                         }
                     }
                 }
-                fuse = !crossing.empty();
+                fuse = join || !crossing.empty();
                 for (const auto *edge : crossing) {
                     const auto *resource = findPhysicalResource(
                         resources, edge->value.resource);
@@ -2166,7 +2287,6 @@ std::vector<VulkanPhysicalScopePlan> buildPhysicalScopes(
                 resources, attachments)) {
             fuse = false;
         }
-
         if (fuse) {
             auto &scope = result.back();
             scope.nodes.push_back(node.name);
@@ -2577,8 +2697,9 @@ CandidateDraft buildCandidateDraft(
                 LogicalReadFootprintKind::arbitrary ||
             resource.uses.widest_read ==
                 LogicalReadFootprintKind::temporal;
+        const bool policy_materialized = policyMaterializes(request, workspace, resource.logical.name);
         const auto tile_local_eligible =
-            tile_candidate && image &&
+            !policy_materialized && tile_candidate && image &&
             resource.pattern.allow_tile_local &&
             resolvesToSingleSample(
                 resource.logical.name,
@@ -2620,7 +2741,7 @@ CandidateDraft buildCandidateDraft(
             representation =
                 VulkanResourceRepresentation::
                     tile_local_attachment;
-        } else if (transient_candidate &&
+        } else if (!policy_materialized && transient_candidate &&
                    resource.pattern.prefer_transient &&
                    resource.uses.written &&
                    !resource.uses.read &&
@@ -2658,6 +2779,7 @@ CandidateDraft buildCandidateDraft(
                 LogicalMaterializationRequirement::required &&
             !external;
         if (tile_local_was_requested &&
+            !policy_materialized &&
             !tile_local_eligible &&
             resource.pattern.local_read_fallback ==
                 ResourcePatternFallback::reject &&
@@ -2674,6 +2796,7 @@ CandidateDraft buildCandidateDraft(
                         "'",
                 });
         } else if (tile_local_was_requested &&
+                   !policy_materialized &&
                    !tile_local_eligible) {
             result.diagnostics.push_back(PlanningDiagnostic{
                 "pelican.plan.tile_local_fallback@1",
@@ -2844,7 +2967,15 @@ CandidateDraft buildCandidateDraft(
         request.automatic_attachments,
         view_plan,
         tile_candidate, request.profile,
-        request.node_constraints, result.decisions);
+        request.node_constraints, request.policy, result.decisions);
+    // A later node can introduce local reads and make an earlier prefix legal.
+    // Check the complete rendering instance, before costs and selection.
+    if (hasScopePolicy(request.policy)) {
+        for (const auto &scope : result.scopes)
+            if (!executableScopeAttachments(scope, result.resources, request.automatic_attachments))
+                result.failures.push_back({"pelican.plan.scope_attachment_contract@1", scope.id,
+                    "completed rendering scope violates executable attachment contract"});
+    }
     appendScopeLocalityFailures(
         canonical_graph, result);
     applyResourceViewLayouts(
@@ -3213,6 +3344,270 @@ std::vector<VulkanAliasGroupPlan> buildAliasGroups(
     return result;
 }
 
+using PolicyAliasKey = std::pair<std::string, std::string>;
+PolicyAliasKey aliasPolicyKey(const PlanningPolicyEntry &entry) {
+    return {entry.origin.document, std::get<std::string>(entry.value)};
+}
+
+bool sameAllocation(std::span<const VulkanAliasGroupPlan> groups, std::string_view a, std::string_view b) {
+    if (a == b) return true;
+    return std::any_of(groups.begin(), groups.end(), [&](const auto &g) {
+        return std::find(g.resources.begin(), g.resources.end(), a) != g.resources.end() &&
+               std::find(g.resources.begin(), g.resources.end(), b) != g.resources.end();
+    });
+}
+
+// This reads the resulting plan, never the application's success flags.
+bool policySatisfied(const PlanningPolicyEntry &entry, const CompiledLogicalRenderGraph &graph,
+                     std::string_view backend, std::span<const VulkanPhysicalResourcePlan> resources,
+                     std::span<const VulkanPhysicalScopePlan> scopes,
+                     std::span<const VulkanAliasGroupPlan> aliases,
+                     const LogicalPlanningOpportunityReport &opportunities,
+                     std::span<const PlanningPolicyEntry> policy) {
+    const auto scopeOf = [&](std::string_view node) -> const VulkanPhysicalScopePlan * {
+        for (const auto &s : scopes)
+            if (std::find(s.nodes.begin(), s.nodes.end(), node) != s.nodes.end()) return &s;
+        return nullptr;
+    };
+    const auto aliased = [&](std::string_view name) {
+        return std::any_of(aliases.begin(), aliases.end(), [&](const auto &g) {
+            return g.resources.size() > 1 && std::find(g.resources.begin(), g.resources.end(), name) != g.resources.end();
+        });
+    };
+    if (entry.key == "backend") return backend == backendPolicyCandidate(entry);
+    if (entry.key == "representation") {
+        const auto *r = findPhysicalResource(resources, entry.target);
+        return r && r->representation == VulkanResourceRepresentation::materialized_image;
+    }
+    if (entry.key == "alias_group") {
+        for (const auto &other : policy)
+            if (activePolicy(other) && other.key == "alias_group" && aliasPolicyKey(other) == aliasPolicyKey(entry) &&
+                !sameAllocation(aliases, entry.target, other.target)) return false;
+        return true;
+    }
+    const auto *value = std::get_if<bool>(&entry.value);
+    if (!value) return false;
+    // false for these controls asks for no relation, sharing or parallelism.
+    if (!*value && entry.key != "fuse") return true;
+    if (entry.key == "scope_break" || entry.key == "scope_join") {
+        const auto &order = opportunities.node_order;
+        const auto node = std::find(order.begin(), order.end(), entry.target);
+        if (node == order.end()) return false;
+        if (node == order.begin()) return entry.key == "scope_break";
+        const auto *current = scopeOf(entry.target), *previous = scopeOf(*std::prev(node));
+        return current && previous && ((current == previous) == (entry.key == "scope_join"));
+    }
+    if (entry.key == "no_alias") return !aliased(entry.target);
+    if (entry.key == "serial" || entry.key == "isolate") {
+        const auto *scope = scopeOf(entry.target);
+        if (!scope || scope->nodes.size() != 1) return false;
+        for (const auto *pairs : {&opportunities.parallel_candidates, &opportunities.fusion_candidates})
+            for (const auto &p : *pairs)
+                if (p.first == entry.target || p.second == entry.target) return false;
+        if (entry.key == "isolate") {
+            for (const auto &node : graph.nodes) if (node.name == entry.target)
+                for (const auto &use : node.uses)
+                    if ((use.input_value && aliased(use.input_value->resource)) ||
+                        (use.output_value && aliased(use.output_value->resource))) return false;
+        }
+        return true;
+    }
+    // Pass fusion is performed upstream without changing the logical nodes.
+    // Its executable partition is not a rendering-scope relation.
+    return entry.key == "fuse";
+}
+
+void policyConflict(CandidateDraft &draft, std::vector<std::size_t> causes,
+                    std::string_view reason) {
+    const auto &entry = draft.policy.at(causes.front());
+    draft.failures.push_back({"target_planning.requirement_unsatisfied@1", entry.target,
+                              policyDetail(entry, reason).dump()});
+    draft.policy_conflicts.push_back(std::move(causes));
+}
+
+// Return the controls participating in an alias conflict, rather than all
+// preferences on the graph (materialization may be necessary for this pair).
+std::vector<std::size_t> aliasConflictCauses(const CompiledLogicalRenderGraph &graph,
+    const CandidateDraft &draft, std::size_t member, std::string_view other) {
+    const auto &entry = draft.policy[member];
+    std::vector<std::size_t> causes{member};
+    for (std::size_t i = 0; i < draft.policy.size(); ++i) {
+        const auto &e = draft.policy[i];
+        if (!activePolicy(e)) continue;
+        if (e.key == "alias_group" && e.target == other && aliasPolicyKey(e) == aliasPolicyKey(entry)) causes.push_back(i);
+        if (e.key == "no_alias" && std::get<bool>(e.value) && (e.target == entry.target || e.target == other)) causes.push_back(i);
+        if (e.key == "isolate" && std::get<bool>(e.value))
+            for (const auto &node : graph.nodes) if (node.name == e.target)
+                for (const auto &use : node.uses)
+                    if ((use.input_value && (use.input_value->resource == entry.target || use.input_value->resource == other)) ||
+                        (use.output_value && (use.output_value->resource == entry.target || use.output_value->resource == other))) {
+                        causes.push_back(i);
+                        break;
+                    }
+    }
+    return causes;
+}
+
+std::vector<std::size_t> scopeConflictCauses(const CompiledLogicalRenderGraph &graph,
+    const CandidateDraft &draft, std::size_t index) {
+    const auto &entry = draft.policy[index];
+    std::set<std::string, std::less<>> nodes{entry.target};
+    const auto &order = draft.opportunities.node_order;
+    const auto at = std::find(order.begin(), order.end(), entry.target);
+    if (at != order.end() && at != order.begin()) nodes.insert(*std::prev(at));
+    for (const auto &scope : draft.scopes)
+        if (std::any_of(scope.nodes.begin(), scope.nodes.end(), [&](const auto &n) { return nodes.contains(n); }))
+            nodes.insert(scope.nodes.begin(), scope.nodes.end());
+    std::vector<std::size_t> causes{index};
+    for (std::size_t i = 0; i < draft.policy.size(); ++i) {
+        const auto &e = draft.policy[i];
+        if (!activePolicy(e) || i == index) continue;
+        if (((nodes.contains(e.target) && (e.key == "serial" || e.key == "isolate")) ||
+             (e.target == entry.target && e.key == "scope_break")) && std::get<bool>(e.value)) causes.push_back(i);
+    }
+    if (causes.size() > 1) return causes;
+    // Materializing a crossing tile value can itself prevent the requested
+    // fusion. Unrelated representation hints are not a cause of this failure.
+    for (const auto &edge : deriveLogicalDataEdges(graph)) {
+        if (!nodes.contains(edge.producer_node) || !nodes.contains(edge.consumer_node)) continue;
+        for (std::size_t i = 0; i < draft.policy.size(); ++i) {
+            const auto &e = draft.policy[i];
+            if (activePolicy(e) && e.key == "representation" && e.target == edge.value.resource) causes.push_back(i);
+        }
+    }
+    return causes;
+}
+
+void applyCandidateAliasPolicy(const CompiledLogicalRenderGraph &graph, const TargetLoweringGraph &workspace,
+                               const VulkanTargetPlanRequest &request, CandidateDraft &draft) {
+    const auto legal = deriveLegalAliasCandidates(workspace, draft.resources);
+    LogicalPlanningOpportunityInput input{.profile = request.profile,
+        .node_constraints = request.node_constraints, .resource_constraints = request.resource_constraints,
+        .legal_alias_candidates = legal};
+    draft.opportunities = analyzeLogicalPlanningOpportunities(graph, request.node_order, input);
+    // Explicit groups may recover opportunities suppressed by a debug/stress
+    // profile, but never bypass no_alias, isolate or physical compatibility.
+    input.profile = {};
+    const auto allowed = analyzeLogicalPlanningOpportunities(graph, request.node_order, std::move(input)).alias_candidates;
+    const auto pairAllowed = [&](std::string a, std::string b) {
+        if (b < a) std::swap(a, b);
+        return std::find(allowed.begin(), allowed.end(), PlanningNamePair{a, b}) != allowed.end();
+    };
+    std::map<PolicyAliasKey, std::vector<std::size_t>> groups;
+    for (std::size_t i = 0; i < draft.policy.size(); ++i)
+        if (activePolicy(draft.policy[i]) && draft.policy[i].key == "alias_group")
+            groups[aliasPolicyKey(draft.policy[i])].push_back(i);
+    std::vector<PlanningNamePair> forced;
+    for (auto &[key, indices] : groups) {
+        std::stable_sort(indices.begin(), indices.end(), [&](auto a, auto b) {
+            const auto &x = draft.policy[a], &y = draft.policy[b];
+            return std::tuple{x.strength, x.target} < std::tuple{y.strength, y.target};
+        });
+        std::vector<std::string> members;
+        for (auto i : indices) {
+            auto &e = draft.policy[i];
+            const auto incompatible = std::find_if(members.begin(), members.end(), [&](const auto &m) { return !pairAllowed(m, e.target); });
+            if (incompatible != members.end()) {
+                policyConflict(draft, aliasConflictCauses(graph, draft, i, *incompatible), "alias_group members are not pairwise legal");
+                continue;
+            }
+            for (const auto &m : members) {
+                PlanningNamePair pair{m, e.target};
+                if (pair.second < pair.first) std::swap(pair.first, pair.second);
+                forced.push_back(std::move(pair));
+            }
+            members.push_back(e.target);
+        }
+    }
+    // Build the required cliques first, before the automatic greedy grouping
+    // can attach one member to a third, incompatible resource.
+    auto selected = forced;
+    for (const auto &pair : draft.opportunities.alias_candidates)
+        if (std::find(selected.begin(), selected.end(), pair) == selected.end()) selected.push_back(pair);
+    draft.alias_groups = buildAliasGroups(selected);
+}
+
+void finishCandidatePolicy(const CompiledLogicalRenderGraph &graph, const TargetLoweringGraph &workspace,
+                           const VulkanTargetPlanRequest &request, CandidateDraft &draft) {
+    draft.policy = request.policy;
+    applyCandidateAliasPolicy(graph, workspace, request, draft);
+    for (std::size_t i = 0; i < draft.policy.size(); ++i) {
+        const auto &e = draft.policy[i];
+        if (!activePolicy(e)) continue;
+        // The pairwise group checks above already returned their witnesses.
+        if (e.key == "alias_group") continue;
+        if (policySatisfied(e, graph, draft.name, draft.resources, draft.scopes, draft.alias_groups, draft.opportunities, draft.policy)) continue;
+        policyConflict(draft, e.key == "scope_join" || e.key == "scope_break"
+            ? scopeConflictCauses(graph, draft, i) : std::vector<std::size_t>{i},
+            "candidate does not satisfy the requested result");
+    }
+}
+
+// Physical feasibility failures participate in the same ledger-ordered retry
+// as unsatisfied declarations. Only controls on the failed scope/value path
+// are witnesses; unrelated preferences must survive the retry.
+void appendPhysicalFailureCauses(const CompiledLogicalRenderGraph &graph,
+    const VulkanTargetPlanRequest &request, const TargetEndpoint &endpoint, CandidateDraft &draft) {
+    const auto edges = deriveLogicalDataEdges(graph);
+    for (auto &failure : draft.failures) {
+        if (failure.id == "target_planning.requirement_unsatisfied@1") continue;
+        const bool escape = failure.id == "pelican.plan.scope_local_resource_escape@1";
+        const bool attachment_contract = failure.id == "pelican.plan.scope_attachment_contract@1";
+        std::set<std::string, std::less<>> nodes;
+        for (const auto &scope : draft.scopes)
+            if (scope.id == failure.subject) nodes.insert(scope.nodes.begin(), scope.nodes.end());
+        const auto failed_scope_nodes = nodes;
+        if (escape || attachment_contract) {
+            // Include intervening nodes: a serial/isolate in the middle also
+            // prevents producer and consumer from sharing a rendering instance.
+            const auto &order = request.node_order.nodes();
+            auto first = order.size();
+            std::size_t last = 0;
+            for (const auto &edge : edges) if ((escape && edge.value.resource == failure.subject) ||
+                (attachment_contract && failed_scope_nodes.contains(edge.producer_node))) {
+                for (const auto &name : {edge.producer_node, edge.consumer_node}) {
+                    const auto at = std::find(order.begin(), order.end(), name);
+                    if (at == order.end()) continue;
+                    const auto index = static_cast<std::size_t>(at - order.begin());
+                    first = std::min(first, index);
+                    last = std::max(last, index);
+                }
+            }
+            if (first < order.size()) nodes.insert(order.begin() + first, order.begin() + last + 1);
+        }
+        for (const auto &scope : draft.scopes) {
+            bool affected = scope.id == failure.subject;
+            if (escape) affected = std::any_of(scope.nodes.begin(), scope.nodes.end(),
+                [&](const auto &n) { return nodes.contains(n); });
+            if (failure.id == "pelican.plan.color_attachment_budget_exceeded@1") {
+                const auto budget = endpointUnsignedFact(endpoint, kColorAttachmentBudgetFact);
+                affected = budget && maximumColorAttachmentCount(graph, std::span{&scope, 1}) > *budget;
+            }
+            if (affected) nodes.insert(scope.nodes.begin(), scope.nodes.end());
+        }
+        std::vector<std::size_t> causes;
+        for (std::size_t i = 0; i < draft.policy.size(); ++i) {
+            const auto &e = draft.policy[i];
+            if (!activePolicy(e)) continue;
+            if (nodes.contains(e.target) &&
+                (e.key == "scope_join" || ((escape || attachment_contract) &&
+                    (e.key == "scope_break" || e.key == "serial" || e.key == "isolate"))) &&
+                std::get<bool>(e.value)) causes.push_back(i);
+            if ((escape || attachment_contract) && e.key == "representation" && std::any_of(edges.begin(), edges.end(),
+                [&](const auto &edge) { return edge.value.resource == e.target &&
+                    nodes.contains(edge.producer_node) && nodes.contains(edge.consumer_node); })) causes.push_back(i);
+        }
+        // An empty witness means a device/graph fact, which cannot be repaired
+        // by removing an unrelated preference.
+        if (!causes.empty()) {
+            auto declarations = nlohmann::json::array();
+            for (auto i : causes) declarations.push_back(policyDetail(draft.policy[i], "physical candidate failure"));
+            failure.detail += "; policy causes: " + declarations.dump();
+        }
+        draft.policy_conflicts.push_back(std::move(causes));
+    }
+}
+
 const BackendProbeResult &selectedProbe(
     const BackendSelection &selection) {
     const auto found = std::find_if(
@@ -3446,6 +3841,47 @@ PhysicalNodeOrder physicalNodeOrderOf(std::span<const VulkanPhysicalScopePlan> s
     return result;
 }
 
+void validateVulkanTargetPlanRequirements(const CompiledLogicalRenderGraph &graph, VulkanTargetPlan &plan) {
+    auto failures = nlohmann::json::array();
+    bool executable_scopes = true;
+    for (const auto &scope : plan.scopes)
+        if (hasScopePolicy(plan.policy) && !executableScopeAttachments(scope, plan.resources, plan.attachments)) {
+            executable_scopes = false;
+            failures.push_back({{"scope", scope.id}, {"reason", "selected rendering scope violates executable attachment contract"}});
+        }
+    const auto legal_aliases = deriveLegalAliasCandidates(plan.lowering_graph, plan.resources);
+    for (auto &e : plan.policy) {
+        e.satisfied.reset();
+        if (!activePolicy(e) || e.strength != PlanningStrength::require) continue;
+        e.satisfied = policySatisfied(e, graph, plan.backend_selection.selected_candidate, plan.resources,
+            plan.scopes, plan.alias_groups, plan.opportunities, plan.policy);
+        if ((e.key == "scope_join" || e.key == "scope_break") && !executable_scopes) e.satisfied = false;
+        if (e.key == "fuse" && !std::get<bool>(e.value)) {
+            bool found = false;
+            for (const auto &node : plan.lowering_graph.nodes) {
+                if (node.logical.name != e.target &&
+                    std::find(node.source_nodes.begin(), node.source_nodes.end(), e.target) == node.source_nodes.end()) continue;
+                found = true;
+                if (node.source_nodes.size() != 1 || node.source_nodes.front() != e.target) e.satisfied = false;
+            }
+            if (!found) e.satisfied = false;
+        }
+        if (e.key == "alias_group") {
+            for (const auto &group : plan.alias_groups) {
+                if (std::find(group.resources.begin(), group.resources.end(), e.target) == group.resources.end()) continue;
+                for (std::size_t a = 0; a < group.resources.size(); ++a) for (auto b = a + 1; b < group.resources.size(); ++b) {
+                    PlanningNamePair pair{group.resources[a], group.resources[b]};
+                    if (pair.second < pair.first) std::swap(pair.first, pair.second);
+                    if (std::find(legal_aliases.begin(), legal_aliases.end(), pair) == legal_aliases.end()) e.satisfied = false;
+                }
+            }
+        }
+        if (!*e.satisfied) failures.push_back(policyDetail(e, "selected plan fails final verification"));
+    }
+    if (!failures.empty()) throw GraphRegistryError("target_planning.requirement_unsatisfied@1",
+        {{"graph", plan.graph}, {"candidate", plan.backend_selection.selected_candidate}, {"requirements", failures}});
+}
+
 VulkanTargetPlan compileVulkanTargetPlan(
     const LogicalTypeRegistry &types,
     const CompiledLogicalRenderGraph &canonical_graph,
@@ -3556,6 +3992,7 @@ VulkanTargetPlan compileVulkanTargetPlan(
     auto workspace = makeTargetLoweringGraph(
         types, canonical_graph, request.pattern_bindings,
         request.node_order);
+    validatePolicyInput(canonical_graph, request);
     const auto external_depth_export =
         selectExternalDepthExport(
             types, workspace,
@@ -3567,27 +4004,49 @@ VulkanTargetPlan compileVulkanTargetPlan(
                       canonical_graph, *request.sample_count)}
             : std::nullopt;
 
-    auto materialized = buildCandidateDraft(
-        canonical_graph, workspace, endpoint, false, false,
-        request,
-        sample_count_plan ? &*sample_count_plan : nullptr,
-        view_execution, external_depth_export);
-    auto transient = buildCandidateDraft(
-        canonical_graph, workspace, endpoint, false, true,
-        request,
-        sample_count_plan ? &*sample_count_plan : nullptr,
-        view_execution, external_depth_export);
-    auto tile_local = buildCandidateDraft(
-        canonical_graph, workspace, endpoint, true, true,
-        request,
-        sample_count_plan ? &*sample_count_plan : nullptr,
-        view_execution, external_depth_export);
-    applyAttachmentBudget(materialized, canonical_graph,
-                          endpoint);
-    applyAttachmentBudget(transient, canonical_graph,
-                          endpoint);
-    applyAttachmentBudget(tile_local, canonical_graph,
-                          endpoint);
+    const auto candidate = [&](bool tile, bool transient) {
+        const auto build = [&](VulkanTargetPlanRequest input) {
+            // A discarded prefer must also leave the legacy typed controls.
+            for (const auto &e : input.policy) if (e.status == PlanningPolicyStatus::infeasible_prefer) {
+                for (auto &n : input.node_constraints) if (n.node == e.target) {
+                    if (e.key == "serial") n.serial = {};
+                    if (e.key == "isolate") n.isolate = {};
+                    if (e.key == "fuse") n.fuse = {};
+                }
+                for (auto &r : input.resource_constraints) if (r.resource == e.target && e.key == "no_alias") r.no_alias = {};
+            }
+            auto draft = buildCandidateDraft(canonical_graph, workspace, endpoint, tile, transient, input,
+                sample_count_plan ? &*sample_count_plan : nullptr, view_execution, external_depth_export);
+            finishCandidatePolicy(canonical_graph, workspace, input, draft);
+            applyAttachmentBudget(draft, canonical_graph, endpoint);
+            if (!input.policy.empty()) appendPhysicalFailureCauses(canonical_graph, input, endpoint, draft);
+            return draft;
+        };
+        auto input = request;
+        for (;;) {
+            auto draft = build(input);
+            if (draft.failures.empty()) return draft;
+            std::optional<std::size_t> discard;
+            for (const auto &causes : draft.policy_conflicts) {
+                bool has_prefer = false;
+                for (auto i : causes) {
+                    const auto &e = input.policy[i];
+                    if (activePolicy(e) && e.strength == PlanningStrength::prefer) {
+                        has_prefer = true;
+                        if (!discard || i < *discard) discard = i;
+                    }
+                }
+                // A conflict involving only requirements cannot be repaired
+                // by dropping an unrelated hint.
+                if (!has_prefer) return draft;
+            }
+            if (!discard) return draft;
+            input.policy[*discard].status = PlanningPolicyStatus::infeasible_prefer;
+        }
+    };
+    auto materialized = candidate(false, false);
+    auto transient = candidate(false, true);
+    auto tile_local = candidate(true, true);
 
     auto materialized_probe = probeCandidate(
         topology, providers, request, materialized);
@@ -3595,12 +4054,46 @@ VulkanTargetPlan compileVulkanTargetPlan(
         topology, providers, request, transient);
     auto tile_probe = probeCandidate(
         topology, providers, request, tile_local);
-    auto selection = selectBackendCandidate(
-        {std::move(materialized_probe),
-         std::move(transient_probe),
-         std::move(tile_probe)},
-        request.diagnostic_policy,
-        requested_backend_candidate);
+    std::vector<BackendProbeResult> probes{std::move(materialized_probe), std::move(transient_probe), std::move(tile_probe)};
+    const auto draftFor = [&](std::string_view name) -> const CandidateDraft & {
+        return name == tile_local.name ? tile_local : name == transient.name ? transient : materialized;
+    };
+    const bool has_require = std::any_of(request.policy.begin(), request.policy.end(), [](const auto &e) {
+        return activePolicy(e) && e.strength == PlanningStrength::require;
+    });
+    if (has_require && std::none_of(probes.begin(), probes.end(), [](const auto &p) { return p.feasible; })) {
+        auto reasons = nlohmann::json::array();
+        for (const auto &p : probes) {
+            auto failures = nlohmann::json::array();
+            for (const auto &f : p.failures) failures.push_back({{"id", f.id}, {"target", f.subject}, {"reason", f.detail}});
+            reasons.push_back({{"candidate", p.candidate}, {"failures", failures}});
+        }
+        throw GraphRegistryError("target_planning.requirement_unsatisfied@1", {{"graph", canonical_graph.name}, {"candidates", reasons}});
+    }
+    std::optional<std::string> policy_preferred;
+    if (!requested_backend_candidate && !request.policy.empty()) {
+        const auto preference = [&](const auto &probe) {
+            const auto &policy = draftFor(probe.candidate).policy;
+            int backend = 0, count = 0;
+            for (const auto &e : policy) if (activePolicy(e) && e.strength == PlanningStrength::prefer) {
+                if (e.key == "backend") backend = 1;
+                else ++count;
+            }
+            return std::pair{backend, count};
+        };
+        std::vector<BackendProbeResult> preferred;
+        std::pair<int, int> best{-1, -1};
+        for (const auto &p : probes) if (p.feasible) {
+            const auto rank = preference(p);
+            if (rank > best) { preferred.clear(); best = rank; }
+            if (rank == best) preferred.push_back(p);
+        }
+        if (!preferred.empty()) policy_preferred = selectBackendCandidate(std::move(preferred), request.diagnostic_policy).selected_candidate;
+    }
+    auto selection = selectBackendCandidate(std::move(probes), request.diagnostic_policy,
+        policy_preferred ? std::optional<std::string_view>{*policy_preferred} : requested_backend_candidate);
+    if (policy_preferred) for (auto &d : selection.decisions)
+        if (d.id == "pelican.plan.backend_candidate_selected@1") d.detail = "policy preference followed by deterministic cost tuple";
     const auto selected_name = selection.selected_candidate;
     const auto &selected_draft =
         selected_name == tile_local.name ? tile_local
@@ -3615,21 +4108,8 @@ VulkanTargetPlan compileVulkanTargetPlan(
             selected_name);
     }
 
-    const auto legal_aliases = deriveLegalAliasCandidates(
-        workspace, selected_draft.resources);
-    LogicalPlanningOpportunityInput final_input{
-        .profile = request.profile,
-        .node_constraints =
-            std::move(request.node_constraints),
-        .resource_constraints =
-            std::move(request.resource_constraints),
-        .legal_alias_candidates = legal_aliases,
-    };
-    auto opportunities =
-        analyzeLogicalPlanningOpportunities(
-            canonical_graph, request.node_order, std::move(final_input));
-    auto alias_groups =
-        buildAliasGroups(opportunities.alias_candidates);
+    auto opportunities = selected_draft.opportunities;
+    auto alias_groups = selected_draft.alias_groups;
 
     std::map<std::string,
              const VulkanPhysicalResourcePlan *,
@@ -3727,7 +4207,7 @@ VulkanTargetPlan compileVulkanTargetPlan(
     }
 
     VulkanTargetPlan result{
-        .policy = std::move(request.policy),
+        .policy = selected_draft.policy,
         .graph = canonical_graph.name,
         .logical_graph_fingerprint =
             logical_graph_fingerprint,
@@ -3764,9 +4244,7 @@ VulkanTargetPlan compileVulkanTargetPlan(
     result.automatic_plan_fingerprint =
         vulkanAutomaticTargetPlanFingerprint(
             topology, result);
-    for (auto &e : result.policy)
-        if (e.status == PlanningPolicyStatus::adopted && e.strength == PlanningStrength::require)
-            e.satisfied = true;
+    validateVulkanTargetPlanRequirements(canonical_graph, result);
     if (request.fragment_package) {
         result = linkVulkanPhysicalFragment(
             canonical_graph, topology,

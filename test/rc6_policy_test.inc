@@ -340,8 +340,10 @@ TEST_CASE("RC-6 typed policy targets carry future string vocabulary without node
     CHECK(resolved.declarations[3].status == PlanningPolicyStatus::absent);
     CHECK(resolved.nodes.empty()); CHECK(resolved.resources.empty());
     CHECK(planningPolicyToJson(resolved.declarations)[2]["value"] == "shared");
-    // The authoring parser still refuses the RC-6a2 vocabulary for now.
-    CHECK_THROWS(parseTargetPlanningPolicy({{"target_planning", {{"graphs", {{"main", {{"backend", "transient"}}}}}}}}, {}));
+    const auto parsed = parseTargetPlanningPolicy({{"target_planning", {{"graphs", {{"main", {{"backend", "transient"}}}}}}}}, {});
+    REQUIRE(parsed.graphs[0].declarations.size() == 1);
+    CHECK(parsed.graphs[0].declarations[0].target_kind == PlanningTargetKind::graph);
+    CHECK(std::get<std::string>(parsed.graphs[0].declarations[0].value) == "transient");
 }
 
 
