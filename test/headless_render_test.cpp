@@ -5674,6 +5674,9 @@ TEST_CASE(
         // Order is authored before the automatic plan is made and ejected.
         // Keep the initial, unmodified compile above for the D1 corpus.
         auto replacement = dependencySafePhysicalScopeRenderingConfig();
+        // Keep automatic scopes separate before editing the legacy package,
+        // without an author node policy that would prohibit that package.
+        replacement["target_planning"] = {{"profile", {{"kind", "conservative_debug"}}}};
         replacement["frame_node_order"]["physical_scope_main"] =
             {"physical_scope_independent", "physical_scope_base", "physical_scope_overlay", "physical_scope_present"};
         writeTextFile(temp_dir / "pipeline.json",
@@ -15778,6 +15781,9 @@ namespace {
 // frame_node_order/after edges mask a physical planner that sorts by name.
 nlohmann::json rc3d2RenderingConfig() {
     auto config = dependencySafePhysicalScopeRenderingConfig();
+    // These tests manually edit legacy packages; only the profile supplies
+    // the initial scope split (profile is outside author policy declarations).
+    config["target_planning"] = {{"profile", {{"kind", "conservative_debug"}}}};
     config["compute_tasks"] = nlohmann::json::array();
     config.erase("buffers");
     for (const auto name : {"z_first", "a_second"}) {

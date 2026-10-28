@@ -3439,6 +3439,13 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
                 renderFeatureRuntimeCompilerRequiredMessage});
     }
 
+    auto planning_sources = preset_resolution.planning_sources;
+    const auto add_engine_isolate = [&](const std::string &family, const std::string &node) {
+        nlohmann::json declaration{{"target_planning", {{"graphs", {{family, {{"nodes", {{node, {{"isolate", true}}}}}}}}}}}};
+        planning_sources.push_back({parseTargetPlanningPolicy(declaration, {},
+            {PlanningOriginKind::engine, "engine:graph_scope", {}})});
+    };
+    for (const auto &[family, node] : lowered_graph.engine_isolates) add_engine_isolate(family, node);
     auto composed = resolved_config;
     composed.erase("features");
     initializeCanonicalColorPipeline(composed, hdr_enabled);
@@ -3492,6 +3499,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
                     integration.at("fragment").is_object())
                     addDeclaredNames(integration.at("fragment"), "render_targets");
     }
+    std::map<std::string, nlohmann::json> planning_owners;
     for (const auto &loaded : loaded_features) {
         nlohmann::json resolved_parameters;
         std::vector<std::string> scalar_defines;
@@ -3505,6 +3513,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         if (dependencies.materialized_feature)
             dependencies.materialized_feature(loaded.instance.ref,
                 boundFeatureDocument(std::move(materialized_document), resolved_parameters));
+        planning_owners.emplace(loaded.instance.ref, feature);
         addRenderTargets(
             composed, feature, target_names,
             loaded.name, loaded.instance.ref,
@@ -3721,6 +3730,14 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
                         integration_name);
                 }
             }
+            // Ownership includes only integrations selected by the same
+            // feature/pass predicates as composition, never required targets.
+            auto &owner = planning_owners.at(provider.reference);
+            for (const auto *key : {"render_targets", "buffers", "passes", "compute_tasks"}) {
+                if (!fragment.contains(key)) continue;
+                if (!owner.contains(key)) owner[key] = nlohmann::json::array();
+                for (const auto &entry : fragment.at(key)) owner[key].push_back(entry);
+            }
             const auto integration_provider =
                 provider.name + "/" +
                 integration_name;
@@ -3769,6 +3786,85 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
                     });
             }
         }
+    }
+    for (const auto &[reference, owner] : planning_owners) {
+        auto policy = collectPartPlanningPolicy(owner, {PlanningOriginKind::part, reference, {}});
+        if (policy.policy.authored) planning_sources.push_back(std::move(policy));
+    }
+    // Bind selected declarations while all original owners still exist.
+    // Replacement/inactive only marks identities; it never rebinds names.
+    std::vector<PlanningPolicyTarget> planning_targets;
+    const auto add_planning_target = [&](PlanningTargetKind kind, const std::string &family,
+                                         const std::string &name, bool task = false) {
+        PlanningPolicyTarget target{kind, family, {name,
+            name + (task ? dependencies.frame_node_order_suffix : std::string{}),
+            (task ? "task/" : kind == PlanningTargetKind::resource ? "resource/" : "pass/" + family + "/") + name}};
+        if (std::none_of(planning_targets.begin(), planning_targets.end(), [&](const auto &t) { return t.binding.owner == target.binding.owner; }))
+            planning_targets.push_back(std::move(target));
+    };
+    for (const auto &family : composed.value("rendering_passes", nlohmann::json::array()))
+        for (const auto &pass : family.at("passes"))
+            add_planning_target(PlanningTargetKind::node, family.at("name"), pass.at("name"));
+    for (const auto &run : lowered_graph.placed_runs) for (const auto &pass : run.passes)
+        add_planning_target(PlanningTargetKind::node, run.family, pass.at("name"));
+    for (const auto &task : composed.value("compute_tasks", nlohmann::json::array()))
+        add_planning_target(PlanningTargetKind::node, {}, task.at("name"), true);
+    for (const auto *key : {"render_targets", "buffers"})
+        for (const auto &resource : composed.value(key, nlohmann::json::array()))
+            add_planning_target(PlanningTargetKind::resource, {}, resource.is_string() ? resource.get<std::string>() : resource.at("name").get<std::string>());
+    auto planning_root_bindings = parseTargetPlanningPolicy(composed);
+    bindPlanningPolicyTargets(planning_root_bindings, planning_targets, dependencies.frame_node_order_suffix);
+    for (auto &source : planning_sources)
+        bindPlanningPolicyTargets(source.policy, planning_targets, dependencies.frame_node_order_suffix);
+    // Fold names have already been selected through graph provenance. Keep
+    // their authored identity, never the root policy's final-name preference.
+    const auto bind_fold_planning = [&](const GraphFoldApplication &application) {
+        auto declarations = parseTargetPlanningPolicy(composed);
+        for (auto &graph : declarations.graphs) for (auto &entry : graph.declarations) {
+            if (std::none_of(application.planning.begin(), application.planning.end(), [&](const auto &fold) {
+                return fold.graph == graph.graph && fold.name == entry.target && fold.field == entry.key &&
+                    (fold.kind == "resource") == (entry.target_kind == PlanningTargetKind::resource);
+            })) continue;
+            const auto target = std::find_if(planning_targets.begin(), planning_targets.end(), [&](const auto &target) {
+                return target.kind == entry.target_kind && target.binding.authored_name == entry.target &&
+                    (target.graph.empty() || target.graph == graph.graph);
+            });
+            if (target == planning_targets.end())
+                throw std::logic_error("fold planning target has no authored binding: " + entry.target);
+            entry.declared_target = entry.target;
+            entry.binding = target->binding;
+            auto bound = std::find_if(planning_root_bindings.graphs.begin(), planning_root_bindings.graphs.end(),
+                [&](const auto &g) { return g.graph == graph.graph; });
+            if (bound == planning_root_bindings.graphs.end()) {
+                planning_root_bindings.graphs.push_back({.graph = graph.graph});
+                bound = std::prev(planning_root_bindings.graphs.end());
+            }
+            auto existing = std::find_if(bound->declarations.begin(), bound->declarations.end(), [&](const auto &e) {
+                return e.declared_target == entry.declared_target && e.target_kind == entry.target_kind && e.key == entry.key;
+            });
+            if (existing == bound->declarations.end()) bound->declarations.push_back(std::move(entry));
+            else if (!existing->binding || existing->binding->authored_name != entry.target) *existing = std::move(entry);
+        }
+    };
+    GraphFoldApplication fold_application;
+    if (common_graph && config.contains("fold_groups")) {
+        // Include placed declarations before placement, replacement or inactive
+        // pruning can remove their owners. Loop copies join when expanded below.
+        auto fold_config = composed;
+        auto fold_passes = pass_provenance;
+        for (const auto &run : lowered_graph.placed_runs) {
+            for (auto &family : fold_config["rendering_passes"]) if (family.at("name") == run.family)
+                for (const auto &pass : run.passes) family["passes"].push_back(pass);
+            for (const auto &pass : run.passes)
+                fold_passes.push_back({.name = pass.at("name"), .source = authored_source});
+        }
+        for (auto &pass : fold_passes)
+            if (pass.source != RenderPipelineProvenanceSource::feature)
+                if (const auto origin = lowered_graph.origins.find(pass.name); origin != lowered_graph.origins.end())
+                    pass.graph_origin = origin->second;
+        fold_application = applyGraphFoldGroups(config, fold_config, fold_passes, resource_provenance);
+        if (fold_config.contains("target_planning")) composed["target_planning"] = std::move(fold_config["target_planning"]);
+        bind_fold_planning(fold_application);
     }
     // LP-3a: the graph's placed passes join the composed passes before the
     // surface resources pick their consumers, so a render.material_pass the
@@ -3865,6 +3961,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
                                                      inputs.surface_resource_contracts);
             };
         auto loop_resolution = resolveGraphDocumentAfterComposition(composed, active_graph, graph_features);
+        for (const auto &[family, node] : loop_resolution.engine_isolates) add_engine_isolate(family, node);
         for (const auto &[name, origin] : loop_resolution.passes) {
             graph_loop_declarations.insert(name);
             graph_loop_copy_of.emplace(name, origin.loop);
@@ -4090,9 +4187,23 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     // node ids, are mapped through the origins above onto the names this
     // composition expanded, and join target_planning. A root without
     // fold_groups is left as it is.
-    GraphFoldApplication fold_application;
-    if (common_graph && config.contains("fold_groups"))
-        fold_application = applyGraphFoldGroups(config, composed, pass_provenance, resource_provenance);
+    if (common_graph && config.contains("fold_groups")) {
+        auto expanded = applyGraphFoldGroups(config, composed, pass_provenance, resource_provenance);
+        // Only newly materialized loop owners need bindings now. Existing fold
+        // bindings remain the identities captured before replacement/inactive.
+        for (const auto &family : composed.value("rendering_passes", nlohmann::json::array()))
+            for (const auto &pass : family.at("passes"))
+                add_planning_target(PlanningTargetKind::node, family.at("name"), pass.at("name"));
+        for (const auto &task : composed.value("compute_tasks", nlohmann::json::array()))
+            add_planning_target(PlanningTargetKind::node, {}, task.at("name"), true);
+        for (const auto *key : {"render_targets", "buffers"})
+            for (const auto &resource : composed.value(key, nlohmann::json::array()))
+                add_planning_target(PlanningTargetKind::resource, {}, resource.at("name"));
+        bind_fold_planning(expanded);
+        for (auto &entry : expanded.planning)
+            if (std::find(fold_application.planning.begin(), fold_application.planning.end(), entry) == fold_application.planning.end())
+                fold_application.planning.push_back(std::move(entry));
+    }
     // FR-3: a target a feature reads is one something in the pipeline
     // writes; the frame planner would refuse it later only by text.
     for (const auto &[feature_name, reference, required] : written_checks)
@@ -4103,6 +4214,22 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
                          ? composed.at("draw_sort")
                          : nlohmann::json{};
     RenderFeatureComposeResult result;
+    result.planning_sources = std::move(planning_sources);
+    for (const auto &[name, entries] : graph_replacements)
+        for (const auto &entry : entries) result.planning_absent_nodes.insert(entry.pass);
+    for (const auto &entry : deactivated_graph_nodes) result.planning_absent_nodes.insert(entry.node);
+    std::set<std::string> removed_planning_owners;
+    for (const auto &target : planning_targets)
+        if (target.kind == PlanningTargetKind::node && result.planning_absent_nodes.contains(target.binding.authored_name))
+            removed_planning_owners.insert(target.binding.owner);
+    const auto mark_removed = [&](auto &policy) {
+        for (auto &graph : policy.graphs) for (auto &entry : graph.declarations)
+            if (entry.binding && entry.target_kind == PlanningTargetKind::node)
+                entry.owner_target_removed = removed_planning_owners.contains(entry.binding->owner);
+    };
+    mark_removed(planning_root_bindings);
+    for (auto &source : result.planning_sources) mark_removed(source.policy);
+    result.planning_root_bindings = std::move(planning_root_bindings);
     // RC-3b: what the composition wrote (canonical passes, snapshots, loop
     // copies, the graph's lowered passes) is in the normal form already; a
     // generator that is not is refused here by name, not passed on.

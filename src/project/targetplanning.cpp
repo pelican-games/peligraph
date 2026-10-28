@@ -1,5 +1,6 @@
 #include "planningrank.hpp"
 #include "targetplanning.hpp"
+#include "graphcomposition.hpp"
 
 #include "logicalrendertype.hpp"
 
@@ -16,6 +17,36 @@
 #include <nlohmann/json.hpp>
 
 namespace Pelican {
+std::optional<bool> planningBooleanValue(const nlohmann::json &value) {
+    if (value.is_boolean()) return value.get<bool>();
+    if (value.is_object() && value.contains("value") && value.at("value").is_boolean())
+        return value.at("value").get<bool>();
+    return std::nullopt;
+}
+nlohmann::ordered_json planningPolicyToJson(std::span<const PlanningPolicyEntry> entries) {
+    auto result = nlohmann::ordered_json::array();
+    for (const auto &e : entries) {
+        const auto kind = e.origin.kind == PlanningOriginKind::root ? "root" :
+            e.origin.kind == PlanningOriginKind::recipe ? "recipe" : e.origin.kind == PlanningOriginKind::part ? "part" : "engine";
+        const auto status = e.status == PlanningPolicyStatus::adopted ? "adopted" :
+            e.status == PlanningPolicyStatus::overridden ? "overridden" :
+            e.status == PlanningPolicyStatus::engine_forced ? "engine_forced" :
+            e.status == PlanningPolicyStatus::absent ? "absent" : "infeasible_prefer";
+        nlohmann::ordered_json row{{"graph", e.graph}, {"target", e.target}, {"key", e.key},
+            {"strength", e.strength == PlanningStrength::require ? "require" : "prefer"},
+            {"origin", {{"kind", kind}, {"document", e.origin.document}, {"pointer", e.origin.pointer}}}, {"status", status}};
+        std::visit([&](const auto &v) { row["value"] = v; }, e.value);
+        if (e.status == PlanningPolicyStatus::adopted && e.strength == PlanningStrength::require && e.satisfied)
+            row["satisfied"] = *e.satisfied;
+        result.push_back(std::move(row));
+    }
+    return result;
+}
+void requireNoLegacyPlanningPolicy(std::string_view graph, std::span<const PlanningPolicyEntry> entries) {
+    if (std::any_of(entries.begin(), entries.end(), [](const auto &e) { return e.origin.kind != PlanningOriginKind::engine; }))
+        throw GraphRegistryError("target_planning.policy_with_legacy_package@1", {{"graph", graph}});
+}
+
 namespace {
 
 void requireNonEmpty(std::string_view value, std::string_view subject) {

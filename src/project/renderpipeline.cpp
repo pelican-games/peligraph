@@ -15,7 +15,9 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <map>
 #include <stdexcept>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -221,7 +223,7 @@ std::uint64_t optionalUnsignedInteger(
 
 TargetPlanningPolicy compileTargetPlanningPolicy(
     const nlohmann::json &config,
-    std::string_view graph_name_suffix) {
+    std::string_view graph_name_suffix, PlanningOrigin origin = {}) {
     TargetPlanningPolicy result;
     const auto declaration = config.find("target_planning");
     if (declaration == config.end()) return result;
@@ -230,6 +232,30 @@ TargetPlanningPolicy compileTargetPlanningPolicy(
             "target_planning must be an object");
     }
     result.authored = true;
+    const auto boolean = [&](const nlohmann::json &object, const char *key,
+                             const std::string &pointer, const std::string &context) -> std::optional<PlanningDeclaration<bool>> {
+        const auto found = object.find(key);
+        if (found == object.end()) return std::nullopt;
+        auto strength = (origin.kind == PlanningOriginKind::root || origin.kind == PlanningOriginKind::engine)
+            ? PlanningStrength::require : PlanningStrength::prefer;
+        const auto *value = &*found;
+        if (found->is_object()) {
+            requireOnlyKeys(*found, {"value", "strength"}, "target_planning policy");
+            if (!found->contains("value")) throw std::runtime_error("target_planning policy requires value");
+            value = &found->at("value");
+            if (const auto strong = found->find("strength"); strong != found->end()) {
+                if (*strong == "require") strength = PlanningStrength::require;
+                else if (*strong == "prefer") strength = PlanningStrength::prefer;
+                else throw std::runtime_error("target_planning policy strength must be require or prefer");
+            }
+        }
+        if (!value->is_boolean()) throw std::runtime_error(context + " " + key + " must be a boolean");
+        auto source = origin;
+        source.pointer += pointer + "/" + key;
+        return PlanningDeclaration<bool>{value->get<bool>(), strength, std::move(source)};
+    };
+    if (origin.kind != PlanningOriginKind::root && declaration->contains("profile"))
+        throw std::runtime_error("target_planning profile belongs to root");
     requireOnlyKeys(
         *declaration, {"profile", "graphs", "diagnostics"},
         "target_planning");
@@ -393,18 +419,13 @@ TargetPlanningPolicy compileTargetPlanningPolicy(
                 requireOnlyKeys(
                     node.value(), {"serial", "isolate", "fuse"},
                     node_context);
-                compiled.nodes.push_back(
-                    PlanningNodeConstraint{
-                        .node = node.key(),
-                        .serial = optionalBoolean(
-                            node.value(), "serial", node_context),
-                        .isolate = optionalBoolean(
-                            node.value(), "isolate", node_context),
-                        // PF-1: unwritten means the node may be fused.
-                        .fuse = !node.value().contains("fuse") ||
-                                optionalBoolean(
-                                    node.value(), "fuse", node_context),
-                    });
+                const auto pointer = (nlohmann::json::json_pointer{} / "target_planning" / "graphs" /
+                                      graph.key() / "nodes" / node.key()).to_string();
+                PlanningNodeConstraint constraint{.node = node.key()};
+                constraint.serial.declaration = boolean(node.value(), "serial", pointer, node_context);
+                constraint.isolate.declaration = boolean(node.value(), "isolate", pointer, node_context);
+                constraint.fuse.declaration = boolean(node.value(), "fuse", pointer, node_context);
+                compiled.nodes.push_back(std::move(constraint));
             }
         }
 
@@ -430,15 +451,23 @@ TargetPlanningPolicy compileTargetPlanningPolicy(
                 requireOnlyKeys(
                     resource.value(), {"no_alias"},
                     resource_context);
-                compiled.resources.push_back(
-                    PlanningResourceConstraint{
-                        .resource = resource.key(),
-                        .no_alias = optionalBoolean(
-                            resource.value(), "no_alias",
-                            resource_context),
-                    });
+                const auto pointer = (nlohmann::json::json_pointer{} / "target_planning" / "graphs" /
+                                      graph.key() / "resources" / resource.key()).to_string();
+                PlanningResourceConstraint constraint{.resource = resource.key()};
+                constraint.no_alias.declaration = boolean(resource.value(), "no_alias", pointer, resource_context);
+                compiled.resources.push_back(std::move(constraint));
             }
         }
+        const auto record = [&](const std::string &target, const char *key, const auto &value, PlanningTargetKind kind) {
+            if (!value.declaration) return;
+            const auto &d = *value.declaration;
+            compiled.declarations.push_back({.graph = compiled.graph, .target = target, .key = key,
+                .value = d.value, .strength = d.strength, .origin = d.origin, .target_kind = kind});
+        };
+        for (const auto &n : compiled.nodes) {
+            record(n.node, "serial", n.serial, PlanningTargetKind::node); record(n.node, "isolate", n.isolate, PlanningTargetKind::node); record(n.node, "fuse", n.fuse, PlanningTargetKind::node);
+        }
+        for (const auto &r : compiled.resources) record(r.resource, "no_alias", r.no_alias, PlanningTargetKind::resource);
         result.graphs.push_back(std::move(compiled));
     }
     return result;
@@ -468,8 +497,8 @@ nlohmann::json targetPlanningPolicyToJson(
                 auto nodes = nlohmann::json::object();
                 for (const auto &node : graph.nodes) {
                     nodes[node.node] = {
-                        {"serial", node.serial},
-                        {"isolate", node.isolate},
+                        {"serial", static_cast<bool>(node.serial)},
+                        {"isolate", static_cast<bool>(node.isolate)},
                     };
                     // PF-1: only the non-default value is written, so a
                     // policy without fuse serializes as before.
@@ -481,7 +510,7 @@ nlohmann::json targetPlanningPolicyToJson(
                 auto resources = nlohmann::json::object();
                 for (const auto &resource : graph.resources) {
                     resources[resource.resource] = {
-                        {"no_alias", resource.no_alias},
+                        {"no_alias", static_cast<bool>(resource.no_alias)},
                     };
                 }
                 declaration["resources"] =
@@ -888,6 +917,250 @@ bool materialPassAcceptsMaterial(
            materialPassShaderContract(pass_contract) == material_shader_contract;
 }
 
+TargetPlanningPolicy parseTargetPlanningPolicy(const nlohmann::json &config,
+    std::string_view suffix, PlanningOrigin origin) {
+    return compileTargetPlanningPolicy(config, suffix, std::move(origin));
+}
+
+PlanningPolicySource collectPartPlanningPolicy(const nlohmann::json &document, PlanningOrigin origin) {
+    PlanningPolicySource result{parseTargetPlanningPolicy(document, {}, origin)};
+    std::set<std::string> nodes, resources;
+    const auto names = [](const nlohmann::json &list, auto &out, bool wrapped = false) {
+        if (!list.is_array()) return;
+        for (const auto &entry : list) {
+            const auto &d = wrapped && entry.contains("pass") ? entry.at("pass") : entry;
+            if (d.is_object() && d.contains("name")) out.insert(d.at("name").template get<std::string>());
+        }
+    };
+    names(document.value("passes", nlohmann::json::array()), nodes, true);
+    names(document.value("compute_tasks", nlohmann::json::array()), nodes);
+    names(document.value("render_targets", nlohmann::json::array()), resources);
+    names(document.value("buffers", nlohmann::json::array()), resources);
+    for (const auto &family : document.value("rendering_passes", nlohmann::json::array()))
+        names(family.value("passes", nlohmann::json::array()), nodes);
+    for (const auto &graph : result.policy.graphs)
+        for (const auto &entry : graph.declarations)
+            if (entry.target_kind == PlanningTargetKind::graph ||
+                !(entry.target_kind == PlanningTargetKind::resource ? resources : nodes).contains(entry.target))
+                throw GraphRegistryError("target_planning.policy_foreign_name@1",
+                    {{"document", origin.document}, {"pointer", entry.origin.pointer}, {"target", entry.target}});
+    return result;
+}
+
+void bindPlanningPolicyTargets(TargetPlanningPolicy &policy,
+    std::span<const PlanningPolicyTarget> targets, std::string_view suffix) {
+    for (auto &graph : policy.graphs) for (auto &entry : graph.declarations) {
+        entry.declared_target = entry.target;
+        if (entry.target_kind == PlanningTargetKind::graph) continue;
+        std::vector<const PlanningPolicyTarget *> authored, final;
+        for (const auto &target : targets) {
+            if (target.kind != entry.target_kind ||
+                (!target.graph.empty() && target.graph != graph.graph)) continue;
+            if (target.binding.authored_name == entry.target) authored.push_back(&target);
+            if (target.binding.final_name == entry.target) final.push_back(&target);
+        }
+        const auto ambiguous = [&](const auto &matches) {
+            if (matches.size() < 2) return;
+            auto candidates = nlohmann::json::array();
+            for (const auto *t : matches) candidates.push_back({
+                {"author_name", t->binding.authored_name}, {"final_name", t->binding.final_name}, {"owner", t->binding.owner}});
+            throw GraphRegistryError("target_planning.policy_name_ambiguous@1",
+                {{"graph", graph.graph + std::string{suffix}}, {"name", entry.target}, {"candidates", candidates}});
+        };
+        ambiguous(authored);
+        const bool root = entry.origin.kind == PlanningOriginKind::root;
+        if (root) ambiguous(final);
+        const auto &matches = root && !final.empty() ? final : authored;
+        if (!matches.empty()) entry.binding = matches.front()->binding;
+    }
+}
+
+namespace {
+// Both the editor's provisional view and the compiler's final IR use this
+// classification, binding, precedence and effective-value path.
+void resolvePlanningGraph(PlanningGraphConstraints &graph, bool graph_present,
+    const std::set<std::string> &nodes, const std::set<std::string> &resources) {
+    graph.nodes.clear(); graph.resources.clear();
+    std::map<std::tuple<PlanningTargetKind, std::string, std::string>, std::size_t> winners;
+    for (std::size_t i = 0; i < graph.declarations.size(); ++i) {
+        auto &entry = graph.declarations[i];
+        const bool present = graph_present && (entry.target_kind == PlanningTargetKind::graph ||
+            (entry.target_kind == PlanningTargetKind::resource ? resources : nodes).contains(entry.target));
+        if (!present || entry.owner_target_removed) {
+            entry.status = PlanningPolicyStatus::absent; continue;
+        }
+        entry.status = PlanningPolicyStatus::adopted;
+        const auto key = std::tuple{entry.target_kind, entry.target, entry.key};
+        const auto [at, inserted] = winners.emplace(key, i);
+        if (!inserted) {
+            auto &previous = graph.declarations[at->second];
+            if (entry.origin.kind > previous.origin.kind) {
+                previous.status = PlanningPolicyStatus::overridden; at->second = i;
+            } else entry.status = PlanningPolicyStatus::overridden;
+        }
+    }
+    for (const auto &[key, index] : winners) {
+        const auto &winner = graph.declarations[index];
+        if (winner.origin.kind == PlanningOriginKind::engine)
+            for (auto &e : graph.declarations) {
+                if (e.target_kind != winner.target_kind || e.target != winner.target || e.key != winner.key || e.origin.kind == PlanningOriginKind::engine ||
+                    e.status != PlanningPolicyStatus::overridden || e.value == winner.value) continue;
+                // Only the winning author declaration conflicts with engine.
+                const bool author_overridden = std::any_of(graph.declarations.begin(), graph.declarations.end(), [&](const auto &other) {
+                    return other.target_kind == e.target_kind && other.target == e.target && other.key == e.key && other.origin.kind != PlanningOriginKind::engine && other.origin.kind > e.origin.kind;
+                });
+                if (author_overridden) continue;
+                if (e.strength == PlanningStrength::require)
+                    throw GraphRegistryError("target_planning.policy_conflicts_engine@1",
+                        {{"graph", graph.graph}, {"target", e.target}, {"key", e.key},
+                         {"document", e.origin.document}, {"pointer", e.origin.pointer}});
+                e.status = PlanningPolicyStatus::engine_forced;
+            }
+        const auto &e = graph.declarations[index];
+        // New string vocabulary can traverse the ledger without a bool
+        // conversion or accidentally creating a node constraint.
+        const auto *value = std::get_if<bool>(&e.value);
+        if (!value) continue;
+        PlanningDeclaration<bool> d{*value, e.strength, e.origin};
+        switch (e.target_kind) {
+        case PlanningTargetKind::resource:
+            if (e.key == "no_alias") {
+                auto at = std::find_if(graph.resources.begin(), graph.resources.end(), [&](const auto &r) { return r.resource == e.target; });
+                if (at == graph.resources.end()) { graph.resources.push_back({.resource = e.target}); at = std::prev(graph.resources.end()); }
+                at->no_alias = d;
+            }
+            break;
+        case PlanningTargetKind::node:
+            if (e.key == "serial" || e.key == "isolate" || e.key == "fuse") {
+                auto at = std::find_if(graph.nodes.begin(), graph.nodes.end(), [&](const auto &n) { return n.node == e.target; });
+                if (at == graph.nodes.end()) { graph.nodes.push_back({.node = e.target}); at = std::prev(graph.nodes.end()); }
+                if (e.key == "serial") at->serial = d;
+                if (e.key == "isolate") at->isolate = d;
+                if (e.key == "fuse") at->fuse = d;
+            }
+            break;
+        case PlanningTargetKind::graph:
+            break;
+        }
+    }
+}
+
+TargetPlanningPolicy resolvedPlanningPolicy(const ResolvedRenderPipeline &pipeline) {
+    const auto &suffix = pipeline.graph_variant_policy.rendering_pass_name_suffix;
+    const PlanningOrigin root_origin = pipeline.planning_from_v1_preset
+        ? PlanningOrigin{PlanningOriginKind::root, pipeline.pipeline_preset->reference, "/config"}
+        : PlanningOrigin{PlanningOriginKind::root, pipeline.planning_document, pipeline.planning_root_pointer};
+    auto result = compileTargetPlanningPolicy(pipeline.composed_config, suffix, root_origin);
+    for (auto &graph : result.graphs)
+        for (auto &e : graph.declarations) {
+            for (const auto &bound_graph : pipeline.planning_root_bindings.graphs)
+                if (bound_graph.graph + suffix == graph.graph)
+                    for (const auto &bound : bound_graph.declarations)
+                        if (bound.declared_target == e.target && bound.target_kind == e.target_kind && bound.key == e.key) {
+                            e.binding = bound.binding;
+                            e.declared_target = bound.declared_target;
+                            e.owner_target_removed = bound.owner_target_removed;
+                        }
+            for (const auto &fold : pipeline.fold_planning)
+                if ((fold.graph == graph.graph || fold.graph + suffix == graph.graph) &&
+                    fold.name == e.target && fold.field == e.key) {
+                    e.origin.document = pipeline.planning_document;
+                    e.origin.pointer = (nlohmann::json::json_pointer{} / "fold_groups" / fold.group /
+                        "folded" / "decisions" / fold.field).to_string();
+                }
+        }
+    // Sources are collected only from the selected, bound documents. Required
+    // capabilities are a union; declarations compete by source, never strength.
+    for (const auto &source : pipeline.planning_sources) {
+        result.authored = result.authored || source.policy.authored;
+        for (const auto &original : source.policy.graphs) {
+            auto g = original;
+            g.graph += suffix;
+            for (auto &entry : g.declarations) entry.graph = g.graph;
+            auto found = std::find_if(result.graphs.begin(), result.graphs.end(),
+                [&](const auto &v) { return v.graph == g.graph; });
+            if (found == result.graphs.end()) result.graphs.push_back(std::move(g));
+            else {
+                found->required_capabilities.insert(found->required_capabilities.end(),
+                    g.required_capabilities.begin(), g.required_capabilities.end());
+                found->declarations.insert(found->declarations.end(), g.declarations.begin(), g.declarations.end());
+            }
+        }
+    }
+    for (auto &graph : result.graphs) {
+        auto &caps = graph.required_capabilities;
+        std::sort(caps.begin(), caps.end()); caps.erase(std::unique(caps.begin(), caps.end()), caps.end());
+        std::set<std::string> nodes, resources;
+        bool graph_present = false;
+        for (const auto &family : pipeline.composed_config.value("rendering_passes", nlohmann::json::array())) {
+            // resolve runs before family names are suffixed; compile runs after.
+            const auto name = family.at("name").get<std::string>();
+            if (name != graph.graph && name + suffix != graph.graph) continue;
+            graph_present = true;
+            for (const auto &pass : family.at("passes")) nodes.insert(pass.at("name").get<std::string>());
+        }
+        for (const auto &task : pipeline.composed_config.value("compute_tasks", nlohmann::json::array()))
+            nodes.insert(task.at("name").get<std::string>());
+        for (const auto *key : {"render_targets", "buffers"})
+            for (const auto &r : pipeline.composed_config.value(key, nlohmann::json::array()))
+                resources.insert(r.at("name").get<std::string>());
+        // swapchain/display can be logical resources without an authored RT.
+        resources.insert("swapchain"); resources.insert("display");
+        for (auto &entry : graph.declarations) {
+            if (entry.binding) entry.target = entry.binding->authored_name;
+            else entry.owner_target_removed = entry.target_kind == PlanningTargetKind::node &&
+                pipeline.planning_absent_nodes.contains(entry.target);
+        }
+        resolvePlanningGraph(graph, graph_present, nodes, resources);
+    }
+    return result;
+}
+} // namespace
+
+void resolveFinalPlanningPolicy(CompiledRenderPipeline &pipeline, const RenderGraphIR &ir) {
+    std::vector<PlanningPolicyTarget> final_targets;
+    for (std::size_t i = 0; i < ir.shared_compute_tasks.size(); ++i)
+        final_targets.push_back({PlanningTargetKind::node, {},
+            {ir.authored_shared_compute_tasks.at(i), ir.shared_compute_tasks[i], "task/" + ir.authored_shared_compute_tasks.at(i)}});
+    std::set<std::string> resources{"swapchain", "display"};
+    for (const auto &r : ir.images) resources.insert(r.name);
+    for (const auto &r : ir.buffers) resources.insert(r.name);
+    for (auto &graph : pipeline.target_planning.graphs) {
+        const auto found = std::find_if(ir.graphs.begin(), ir.graphs.end(),
+            [&](const auto &g) { return g.name == graph.graph; });
+        std::set<std::string> nodes;
+        if (found != ir.graphs.end()) for (const auto &n : found->nodes) nodes.insert(n.name);
+        for (auto &entry : graph.declarations) {
+            if (entry.binding) entry.target = entry.binding->final_name;
+            else if (!entry.owner_target_removed) {
+                // Only targets introduced after collection (engine/loop)
+                // may bind here. A bound owner is never looked up again.
+                auto targets = final_targets;
+                for (const auto &name : nodes)
+                    if (std::none_of(targets.begin(), targets.end(), [&](const auto &t) { return t.binding.final_name == name; }))
+                        targets.push_back({PlanningTargetKind::node, {}, {name, name, "final/" + name}});
+                for (const auto &name : resources)
+                    targets.push_back({PlanningTargetKind::resource, {}, {name, name, "resource/" + name}});
+                TargetPlanningPolicy late;
+                late.graphs.push_back({.graph = graph.graph, .declarations = {entry}});
+                bindPlanningPolicyTargets(late, targets, {});
+                entry.binding = late.graphs[0].declarations[0].binding;
+                if (entry.binding) entry.target = entry.binding->final_name;
+            }
+        }
+        resolvePlanningGraph(graph, found != ir.graphs.end(), nodes, resources);
+    }
+    std::erase_if(pipeline.diagnostics, [](const auto &d) {
+        return d.kind == RenderPipelineDiagnosticKind::planning_name_absent;
+    });
+    for (const auto &g : pipeline.target_planning.graphs)
+        for (const auto &e : g.declarations)
+            if (e.status == PlanningPolicyStatus::absent && e.origin.kind == PlanningOriginKind::root)
+                pipeline.diagnostics.push_back({.kind = RenderPipelineDiagnosticKind::planning_name_absent,
+                    .subject = e.declared_target.empty() ? e.target : e.declared_target, .detail = "warning",
+                    .detail_fields = {{"severity", "warning"}, {"graph", g.graph}, {"name", e.declared_target.empty() ? e.target : e.declared_target}, {"key", e.key}}});
+}
+
 RenderPipelinePresetResolution resolveRenderPipelinePreset(
     const nlohmann::json &authored_config,
     const RenderPipelinePresetLoader &load_preset_json) {
@@ -955,6 +1228,10 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
     if (version == 2) {
         recipe = expandRenderPipelineRecipe(document.at("config"),
             authored_config.value("fragment_overrides", nlohmann::json::object()), load_preset_json);
+        auto recipe_policy = collectPartPlanningPolicy(recipe.config,
+            {PlanningOriginKind::recipe, reference, "/config"});
+        if (recipe_policy.policy.authored) recipe.planning_sources.push_back(std::move(recipe_policy));
+        recipe.config.erase("target_planning");
         document["config"] = std::move(recipe.config);
         overlay.erase("fragment_overrides");
     } else if (authored_config.contains("fragment_overrides")) {
@@ -1119,7 +1396,7 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
     }
     return {std::move(resolved), RenderPipelinePresetInfo{
                                          reference, name, version},
-            std::move(recipe.fragment_passes), std::move(recipe.fragment_targets)};
+            std::move(recipe.fragment_passes), std::move(recipe.fragment_targets), std::move(recipe.planning_sources)};
 }
 
 namespace {
@@ -1304,6 +1581,11 @@ ResolvedRenderPipeline resolveRenderPipeline(
 
     ResolvedRenderPipeline result;
     result.composed_config = std::move(composed.config);
+    result.planning_sources = std::move(composed.planning_sources);
+    result.planning_absent_nodes = std::move(composed.planning_absent_nodes);
+    result.planning_root_bindings = std::move(composed.planning_root_bindings);
+    result.planning_document = request.source_name;
+    result.planning_root_pointer = request.authored_config.value("schema", std::string{}) == "pelican.graph" ? "/rendering" : "";
     result.shader_defines = std::move(composed.shader_defines);
     result.feature_names = std::move(composed.feature_names);
     result.excluded_feature_names =
@@ -1315,6 +1597,8 @@ ResolvedRenderPipeline resolveRenderPipeline(
     result.material_routing = std::move(composed.material_routing);
     result.draw_sort = std::move(composed.draw_sort);
     result.pipeline_preset = std::move(composed.pipeline_preset);
+    result.planning_from_v1_preset = result.pipeline_preset && result.pipeline_preset->version == 1 &&
+        !renderingSectionOrEmpty(request.authored_config).contains("target_planning");
     result.pass_provenance =
         std::move(composed.pass_provenance);
     result.resource_provenance =
@@ -1349,11 +1633,13 @@ ResolvedRenderPipeline resolveRenderPipeline(
     }
     result.sample_count_policy =
         compileSampleCountPolicy(result.composed_config);
-    result.target_planning =
-        compileTargetPlanningPolicy(
-            result.composed_config,
-            result.graph_variant_policy
-                .rendering_pass_name_suffix);
+    result.target_planning = resolvedPlanningPolicy(result);
+    for (const auto &g : result.target_planning.graphs)
+        for (const auto &entry : g.declarations)
+            if (entry.status == PlanningPolicyStatus::absent && entry.origin.kind == PlanningOriginKind::root)
+                result.diagnostics.push_back({.kind = RenderPipelineDiagnosticKind::planning_name_absent,
+                    .subject = entry.declared_target.empty() ? entry.target : entry.declared_target, .detail = "warning",
+                    .detail_fields = {{"severity", "warning"}, {"graph", g.graph}, {"name", entry.declared_target.empty() ? entry.target : entry.declared_target}, {"key", entry.key}}});
     result.vulkan_plan_pins =
         compileVulkanTargetPlanPins(
             result.composed_config,
@@ -2229,10 +2515,7 @@ CompiledRenderPipeline compileRenderPipeline(
             pipeline.composed_config,
             pipeline.graph_variant_policy.variant);
     const auto canonical_target_planning =
-        compileTargetPlanningPolicy(
-            pipeline.composed_config,
-            pipeline.graph_variant_policy
-                .rendering_pass_name_suffix);
+        resolvedPlanningPolicy(pipeline);
     const auto canonical_vulkan_plan_pins =
         compileVulkanTargetPlanPins(
             pipeline.composed_config,

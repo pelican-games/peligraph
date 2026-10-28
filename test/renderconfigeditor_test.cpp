@@ -14451,3 +14451,24 @@ TEST_CASE("RC5b getter represents excluded and directly inherited project fragme
     CHECK(rows.at(5).at("inherited_reference") == "project://passes/optional.json");
 }
 } // namespace Pelican
+namespace Pelican {
+TEST_CASE("RC-6 B3 B7 RPC accepts wrapped root values over a recipe and restores exact bytes", "[render-config-editor][rc6a1][rc6-b3][rc6-b7]") {
+    Rc5bHarness h;
+    auto recipe = Json::parse(h.resolver.loadText("engine://render_pipelines/experimental/hybrid_recipe.json"));
+    recipe["config"]["target_planning"] = {{"graphs", {{"main_render", {{"nodes", {{"forward_opaque", {{"serial", true}}}}}}}}}};
+    writeBytes(h.project.root / "passes/policy_recipe.json", recipe.dump(2));
+    auto root = Json::parse(readBytes(h.project.render_config));
+    root["rendering"]["pipeline"]["preset"] = "project://passes/policy_recipe.json";
+    writeBytes(h.project.render_config, root.dump(2));
+    h.service = makeProjectService(h.project, h.resolver, h.runtime);
+    const auto before = readBytes(h.project.render_config);
+    const Json wrapped{{"value", false}, {"strength", "require"}};
+    h.commit(el2Planning(h, {{"forward_opaque", {{"serial", wrapped}}}}));
+    const auto after = readBytes(h.project.render_config);
+    CHECK(Json::parse(after).at("rendering").at("target_planning").at("graphs").at("main_render").at("nodes").at("forward_opaque").at("serial") == wrapped);
+    h.commit(h.service->restoreRenderDocuments({{"documents", Json::array({rd1Document("passes/main.json", renderConfigSourceDigest(after), before)})}}));
+    CHECK(readBytes(h.project.render_config) == before);
+    h.commit(h.service->restoreRenderDocuments({{"documents", Json::array({rd1Document("passes/main.json", renderConfigSourceDigest(before), after)})}}));
+    CHECK(readBytes(h.project.render_config) == after);
+}
+}

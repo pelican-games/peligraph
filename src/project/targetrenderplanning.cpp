@@ -3452,6 +3452,20 @@ VulkanTargetPlan compileVulkanTargetPlan(
     const TargetTopologySnapshot &source_topology,
     const CompilerProviderRegistrySnapshot &providers,
     VulkanTargetPlanRequest request) {
+    if (request.policy.empty()) {
+        const auto record = [&](const std::string &target, const char *key, const auto &value, PlanningTargetKind kind) {
+            if (!value.declaration || value.declaration->origin.kind == PlanningOriginKind::engine) return;
+            const auto &d = *value.declaration;
+            request.policy.push_back({.graph = canonical_graph.name, .target = target, .key = key,
+                .value = d.value, .strength = d.strength, .origin = d.origin, .target_kind = kind});
+        };
+        for (const auto &n : request.node_constraints) {
+            record(n.node, "serial", n.serial, PlanningTargetKind::node); record(n.node, "isolate", n.isolate, PlanningTargetKind::node); record(n.node, "fuse", n.fuse, PlanningTargetKind::node);
+        }
+        for (const auto &r : request.resource_constraints) record(r.resource, "no_alias", r.no_alias, PlanningTargetKind::resource);
+    }
+    if (request.pin_package || request.fragment_package)
+        requireNoLegacyPlanningPolicy(canonical_graph.name, request.policy);
     requireNonEmpty(request.endpoint,
                     "Vulkan target plan endpoint");
     requireVersionedName(request.provider,
@@ -3713,6 +3727,7 @@ VulkanTargetPlan compileVulkanTargetPlan(
     }
 
     VulkanTargetPlan result{
+        .policy = std::move(request.policy),
         .graph = canonical_graph.name,
         .logical_graph_fingerprint =
             logical_graph_fingerprint,
@@ -3749,6 +3764,9 @@ VulkanTargetPlan compileVulkanTargetPlan(
     result.automatic_plan_fingerprint =
         vulkanAutomaticTargetPlanFingerprint(
             topology, result);
+    for (auto &e : result.policy)
+        if (e.status == PlanningPolicyStatus::adopted && e.strength == PlanningStrength::require)
+            e.satisfied = true;
     if (request.fragment_package) {
         result = linkVulkanPhysicalFragment(
             canonical_graph, topology,
@@ -3826,6 +3844,7 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
              {"reason", plan.view_execution_plan.reason},
          }},
     };
+    if (!plan.policy.empty()) result["policy"] = planningPolicyToJson(plan.policy);
     if (plan.applied_pin_package) {
         result["applied_pin_package"] =
             vulkanTargetPlanPinPackageToJson(

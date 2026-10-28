@@ -593,12 +593,16 @@ TEST_CASE("target planning authoring compiles to typed graph-scoped controls",
                  .required_capabilities ==
              std::vector<std::string>{
                  "pelican.vulkan.ray_query@1"}));
-    REQUIRE((resolved.target_planning.graphs.front().nodes ==
-             std::vector<PlanningNodeConstraint>{
-                 {"scene", true, true}}));
-    REQUIRE((resolved.target_planning.graphs.front().resources ==
-             std::vector<PlanningResourceConstraint>{
-                 {"swapchain", true}}));
+    const auto &node = resolved.target_planning.graphs.front().nodes.at(0);
+    REQUIRE(node.node == "scene");
+    REQUIRE(static_cast<bool>(node.serial));
+    REQUIRE(static_cast<bool>(node.isolate));
+    REQUIRE_FALSE(node.fuse.declaration.has_value());
+    REQUIRE(node.serial.declaration->origin.document == "target planning fixture");
+    REQUIRE(node.serial.declaration->strength == PlanningStrength::require);
+    const auto &resource = resolved.target_planning.graphs.front().resources.at(0);
+    REQUIRE(resource.resource == "swapchain");
+    REQUIRE(static_cast<bool>(resource.no_alias));
     REQUIRE((
         resolved.target_planning.diagnostic_policy
             .strict_warning_ids ==
@@ -1507,3 +1511,19 @@ TEST_CASE("G-4 named refusals round-trip through the renderer's string channel",
 }
 
 } // namespace Pelican
+
+namespace Pelican {
+TEST_CASE("RC-6 v1 preset policy keeps its actual document and pointer", "[render-pipeline][rc6a1]") {
+    auto preset = Json{{"schema", "pelican.render_pipeline"}, {"version", 1}, {"name", "policy-owner"}, {"config", baseConfig()}};
+    preset["config"]["target_planning"]["graphs"]["main"]["nodes"]["scene"]["serial"] = {{"value", false}};
+    const auto root = TestSupport::renderGraphRoot(Json{{"pipeline", {{"preset", "test://policy-owner"}}}});
+    const auto resolved = resolveRenderPipeline({root, "root.json"}, {true},
+        {.load_pipeline_json = [&](std::string_view) { return preset.dump(); }});
+    const auto &declaration = *resolved.target_planning.graphs.at(0).nodes.at(0).serial.declaration;
+    CHECK_FALSE(declaration.value);
+    CHECK(declaration.origin.kind == PlanningOriginKind::root);
+    CHECK(declaration.origin.document == "test://policy-owner");
+    CHECK(declaration.origin.pointer == "/config/target_planning/graphs/main/nodes/scene/serial");
+    REQUIRE_NOTHROW(compileRenderPipeline(resolved));
+}
+}

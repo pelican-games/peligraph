@@ -1448,8 +1448,17 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
                        "depth") != group.resources.end();
         }));
 
+    // Legacy packages are tested without author declarations (RC-6 B9).
+    auto legacy_planning = planning;
+    legacy_planning.graphs.clear();
+    const auto legacy_compilation = compileRenderingTargetPlans(
+        withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
+        compileSampleCountPolicy(config), vk::Format::eB8G8R8A8Unorm,
+        RenderingTargetPlanDeviceFacts{.query_attachment_samples = query},
+        std::nullopt, std::nullopt, legacy_planning);
+    const auto &legacy_plan = *legacy_compilation.plans.front();
     const std::vector pins{
-        ejectVulkanTargetPlanPinPackage(plan)};
+        ejectVulkanTargetPlanPinPackage(legacy_plan)};
     const auto pinned_compilation =
         compileRenderingTargetPlans(
             withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
@@ -1458,7 +1467,7 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
             RenderingTargetPlanDeviceFacts{
                 .query_attachment_samples = query,
             },
-            std::nullopt, std::nullopt, planning,
+            std::nullopt, std::nullopt, legacy_planning,
             pins);
     REQUIRE(
         pinned_compilation.plans.front()
@@ -1467,7 +1476,7 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
             pins.front()});
 
     const std::vector physical_fragments{
-        ejectVulkanPhysicalFragmentPackage(plan)};
+        ejectVulkanPhysicalFragmentPackage(legacy_plan)};
     const auto fragment_compilation =
         compileRenderingTargetPlans(
             withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
@@ -1476,7 +1485,7 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
             RenderingTargetPlanDeviceFacts{
                 .query_attachment_samples = query,
             },
-            std::nullopt, std::nullopt, planning,
+            std::nullopt, std::nullopt, legacy_planning,
             {}, physical_fragments);
     REQUIRE(
         fragment_compilation.plans.front()
@@ -1485,10 +1494,10 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
             physical_fragments.front()});
     REQUIRE(
         fragment_compilation.plans.front()
-            ->resources == plan.resources);
+            ->resources == legacy_plan.resources);
     REQUIRE(
         fragment_compilation.plans.front()
-            ->scopes == plan.scopes);
+            ->scopes == legacy_plan.scopes);
 
     auto stale_fragments = physical_fragments;
     stale_fragments.front()
@@ -1502,7 +1511,7 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
                 RenderingTargetPlanDeviceFacts{
                     .query_attachment_samples = query,
                 },
-                std::nullopt, std::nullopt, planning,
+                std::nullopt, std::nullopt, legacy_planning,
                 {}, stale_fragments);
         },
         "stale for the current target facts/provider generation");
@@ -1518,7 +1527,7 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
                 RenderingTargetPlanDeviceFacts{
                     .query_attachment_samples = query,
                 },
-                std::nullopt, std::nullopt, planning,
+                std::nullopt, std::nullopt, legacy_planning,
                 stale_pins);
         },
         "pin package is stale");
@@ -1534,7 +1543,7 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
                 RenderingTargetPlanDeviceFacts{
                     .query_attachment_samples = query,
                 },
-                std::nullopt, std::nullopt, planning,
+                std::nullopt, std::nullopt, legacy_planning,
                 {}, unknown_fragments);
         },
         "physical fragments reference unknown graph: missing");

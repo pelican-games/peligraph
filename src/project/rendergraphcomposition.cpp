@@ -657,7 +657,7 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
         parameters.erase("pass_set");
         if (!graph.node_scopes.at(id).empty()) {
             if (body != nullptr) body->isolated.emplace_back(family, id);
-            else config["target_planning"]["graphs"][family]["nodes"][id]["isolate"] = true;
+            else lowered.engine_isolates.emplace_back(family, id);
         }
         if (body != nullptr) {
             body->passes.emplace_back(family, std::move(parameters));
@@ -2461,8 +2461,7 @@ RenderGraphLoopResolution expandRenderGraphLoops(Json &composed, const LoweredRe
             for (const auto &[family, pass] : copy.passes) record(pass);
             for (const auto &task : copy.compute_tasks) record(task);
             for (const auto &[family, pass] : body->isolated)
-                composed["target_planning"]["graphs"][family]["nodes"]
-                        [renamedTemplateName(pass, body->prefix, copy.prefix)]["isolate"] = true;
+                resolution.engine_isolates.emplace_back(family, renamedTemplateName(pass, body->prefix, copy.prefix));
         }
         // Step 3: elements that touch an outside resource run in element order.
         LoopCopy *previous = nullptr;
@@ -2696,18 +2695,8 @@ void eraseDeclarations(Json &composed, const std::set<std::string> &names) {
         tasks->erase(std::remove_if(tasks->begin(), tasks->end(), named), tasks->end());
 }
 
-// A name that leaves the config leaves target_planning's nodes with it.
-void forgetPlanningNodes(Json &composed, const std::set<std::string> &names) {
-    const auto planning = composed.find("target_planning");
-    if (planning == composed.end() || !planning->is_object()) return;
-    const auto graphs = planning->find("graphs");
-    if (graphs == planning->end() || !graphs->is_object()) return;
-    for (auto &graph : *graphs) {
-        const auto nodes = graph.find("nodes");
-        if (nodes == graph.end() || !nodes->is_object()) continue;
-        for (const auto &name : names) nodes->erase(name);
-    }
-}
+// Retain declarations until policy resolution can report absent with origin.
+void forgetPlanningNodes(Json &, const std::set<std::string> &) {}
 
 using NameReplacement = std::function<std::optional<std::vector<std::string>>(const std::string &graph,
                                                                               const std::string &name)>;

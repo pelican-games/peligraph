@@ -2738,6 +2738,7 @@ VulkanTargetPlan linkVulkanPhysicalFragment(
         const VulkanPhysicalResourceFormatCapability>
         format_capabilities,
     std::span<const RenderPassProvenance> provenance) {
+    requireNoLegacyPlanningPolicy(canonical_graph.name, automatic_plan.policy);
     auto package =
         canonicalizePackage(
             std::move(source_package));

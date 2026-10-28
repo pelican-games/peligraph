@@ -202,11 +202,20 @@ struct RenderPipelineFragmentOrigin {
     bool operator==(const RenderPipelineFragmentOrigin &) const = default;
 };
 
+struct PlanningPolicySource {
+    TargetPlanningPolicy policy;
+};
+TargetPlanningPolicy parseTargetPlanningPolicy(const nlohmann::json &config,
+    std::string_view suffix = {}, PlanningOrigin origin = {});
+PlanningPolicySource collectPartPlanningPolicy(const nlohmann::json &document,
+    PlanningOrigin origin);
+
 struct RenderPipelinePresetResolution {
     nlohmann::json config;
     std::optional<RenderPipelinePresetInfo> preset;
     std::unordered_map<std::string, RenderPipelineFragmentOrigin> fragment_passes;
     std::unordered_map<std::string, RenderPipelineFragmentOrigin> fragment_targets;
+    std::vector<PlanningPolicySource> planning_sources;
 };
 
 using RenderPipelinePresetLoader =
@@ -251,6 +260,7 @@ enum class RenderPipelineDiagnosticKind {
     fold_stale,
     fold_unverified,
     anchor_ignored,
+    planning_name_absent,
 };
 
 struct RenderPipelineDiagnostic {
@@ -423,6 +433,12 @@ struct RenderPipelineResolveDependencies {
 struct MaterialDrawLoopRules;
 
 struct ResolvedRenderPipeline {
+    std::vector<PlanningPolicySource> planning_sources;
+    std::set<std::string> planning_absent_nodes;
+    TargetPlanningPolicy planning_root_bindings;
+    std::string planning_document;
+    std::string planning_root_pointer;
+    bool planning_from_v1_preset = false;
     // Transient composition result for policy compilation and the provider
     // ABI. Compiler artifacts and runtime generations retain only the IR.
     nlohmann::json composed_config = nlohmann::json::object();
@@ -686,6 +702,11 @@ struct CompiledRenderPipeline {
 CompiledRenderPipeline compileRenderPipeline(
     const ResolvedRenderPipeline &pipeline,
     const RenderGraphIR *initial_graph = nullptr);
+
+// Bind policy only after variant renaming and engine node insertion.
+void resolveFinalPlanningPolicy(CompiledRenderPipeline &pipeline, const RenderGraphIR &ir);
+void bindPlanningPolicyTargets(TargetPlanningPolicy &policy,
+    std::span<const PlanningPolicyTarget> targets, std::string_view suffix);
 
 // Dump-only compatibility serializer.  Runtime code must consume the typed
 // fields above rather than reading keys from this representation.

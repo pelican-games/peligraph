@@ -1,4 +1,5 @@
 #include "graphfold.hpp"
+#include "targetplanning.hpp"
 
 #include "graphcomposition.hpp"
 #include "renderpipeline.hpp"
@@ -414,7 +415,7 @@ GraphFoldApplication applyGraphFoldGroups(const Json &document, Json &composed,
             throw std::runtime_error("rendering config target_planning " + entry.graph + " " + entry.name +
                                      " must be an object");
         if (const auto found = declaration.find(entry.field);
-            found != declaration.end() && found->is_boolean() && !found->get<bool>())
+            found != declaration.end() && planningBooleanValue(*found) == false)
             throw GraphRegistryError(std::string{graphFoldDecisionConflictCode},
                                      graphFoldDecisionConflictDetail(entry));
         declaration[entry.field] = true;

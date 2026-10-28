@@ -5319,7 +5319,8 @@ OrderedJson RenderConfigEditorService::queuePlanningKeyEdit(
         if (context.pipeline_preset_bytes) {
             const auto preset = Json::parse(*context.pipeline_preset_bytes);
             const auto config = preset.find("config");
-            if (config != preset.end() && config->is_object() && config->contains(key_name)) {
+            if (config != preset.end() && config->is_object() && config->contains(key_name) &&
+                !(key_name == "target_planning" && preset.value("version", 1) == 2)) {
                 return rejection(
                     "rendering_key_not_allowed_here",
                     "the pipeline preset this rendering section selects declares " + key_name +
@@ -5545,9 +5546,10 @@ OrderedJson RenderConfigEditorService::editTargetPlanning(const Json &params) {
                 for (const auto &[name, edit] : edits->items()) {
                     if (!edit.is_object()) continue;
                     for (const auto &[decision, value] : edit.items()) {
-                        if (!value.is_boolean()) continue;
+                        const auto boolean = planningBooleanValue(value);
+                        if (!boolean) continue;
                         if (const auto conflict = graphFoldDecisionConflict(
-                                context.fold_planning, graph, kind, name, decision, value.get<bool>()))
+                                context.fold_planning, graph, kind, name, decision, *boolean))
                             return {.value = std::nullopt,
                                     .refusal = rejection(
                                         std::string{graphFoldDecisionConflictCode},

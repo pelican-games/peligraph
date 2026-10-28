@@ -407,6 +407,7 @@ struct VulkanPhysicalFragmentPackage {
 };
 
 struct VulkanTargetPlanRequest {
+    std::vector<PlanningPolicyEntry> policy;
     FramePlanNodeOrder node_order;
     std::string endpoint;
     std::string provider;
@@ -431,6 +432,7 @@ struct VulkanTargetPlanRequest {
 };
 
 struct VulkanTargetPlan {
+    std::vector<PlanningPolicyEntry> policy;
     std::string graph;
     std::uint64_t logical_graph_fingerprint = 0;
     std::uint64_t automatic_plan_fingerprint = 0;

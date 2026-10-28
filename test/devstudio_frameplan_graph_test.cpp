@@ -1,3 +1,4 @@
+#include "graphfoldgroups.hpp"
 #include "enginefailuremodel.hpp"
 #include "render_graph_root_test_support.hpp"
 #include "engineprocess.hpp"
@@ -13003,3 +13004,65 @@ TEST_CASE("RC-1 the Frame Plan says on its status line what the physical plan's 
     CHECK_FALSE(framePlanStatus(widget).text().contains(QStringLiteral(" · RT ")));
 }
 } // namespace PelicanStudio
+namespace PelicanStudio {
+TEST_CASE("RC-6 B7 Frame Plan menu checks wrapped Serial Isolate and No alias and OFF sends null", "[devstudio][frame-plan][rc6a1][rc6-b7]") {
+    application();
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    FramePlanEditRecorder recorder;
+    auto capability = recorder.capability();
+    qint64 root_id = 0;
+    capability.requestRootDocument = [&](const QString &, QString *) { root_id = recorder.next_id++; return root_id; };
+    capability.editTargetPlanning = [&](const QJsonObject &params, QString *) {
+        recorder.params = params; recorder.method = QStringLiteral("edit_target_planning"); ++recorder.submits;
+        return recorder.submit_id = recorder.next_id++;
+    };
+    widget.setEditCapability(capability);
+    widget.resize(1400, 900); widget.show();
+    const auto wire = mixedEditingWire();
+    const auto graph = wire.at("graph").get<std::string>();
+    widget.receiveResult(QByteArray::fromStdString(wire.dump()));
+    auto context = mixedAuthoringContext(graph);
+    context["source_reference"] = "project://passes/main.json";
+    recorder.result(recorder.context_id, QByteArray::fromStdString(context.dump()));
+    QApplication::processEvents();
+    REQUIRE(root_id != 0);
+    Json root{{"schema", "pelican.graph"}};
+    auto &policy = root["rendering"]["target_planning"]["graphs"][graph];
+    policy["nodes"]["wp343_mixed_a"]["serial"] = {{"value", true}};
+    policy["nodes"]["wp343_mixed_a"]["isolate"] = {{"value", true}, {"strength", "prefer"}};
+    policy["resources"]["wp343_mixed_a_output"]["no_alias"] = {{"value", true}};
+    recorder.result(root_id, QByteArray::fromStdString(Json{{"documents", Json::array({{
+        {"reference", "project://passes/main.json"}, {"content", root.dump()}}})}}.dump()));
+    QApplication::processEvents();
+    auto *passes = widget.findChild<QTreeWidget *>(QStringLiteral("pelican.framePlanPasses"));
+    REQUIRE(passes != nullptr);
+    const auto rows = passes->findItems(QStringLiteral("wp343_mixed_a"), Qt::MatchExactly, 1);
+    REQUIRE(rows.size() == 1);
+    passes->setCurrentItem(rows.front());
+    QTimer reader;
+    bool checked_serial = false, checked_isolate = false;
+    QObject::connect(&reader, &QTimer::timeout, &widget, [&] {
+        for (auto *surface : QApplication::topLevelWidgets()) if (auto *menu = qobject_cast<QMenu *>(surface); menu && menu->isVisible()) {
+            for (auto *action : menu->actions()) {
+                if (action->objectName() == QStringLiteral("pelican.framePlan.planning.serial")) checked_serial = action->isChecked();
+                if (action->objectName() == QStringLiteral("pelican.framePlan.planning.isolate")) checked_isolate = action->isChecked();
+            }
+            menu->close();
+        }
+    });
+    reader.start(0);
+    Q_EMIT passes->customContextMenuRequested(passes->visualItemRect(rows.front()).center());
+    reader.stop();
+    REQUIRE(checked_serial); REQUIRE(checked_isolate);
+    CHECK(GraphTargetPlanning::fromRoot(root, graph).flag("resource", "wp343_mixed_a_output", "no_alias"));
+    for (auto *tab : widget.findChildren<QTabWidget *>())
+        if (tab->indexOf(passes) >= 0) tab->setCurrentWidget(passes);
+    auto *serial = widget.findChild<QAction *>(QStringLiteral("pelican.framePlan.planning.serial"));
+    REQUIRE(serial != nullptr);
+    serial->trigger();
+    QApplication::processEvents();
+    REQUIRE(recorder.submits == 1);
+    CHECK(Json::parse(QJsonDocument(recorder.params).toJson().toStdString()).at("nodes").at("wp343_mixed_a").at("serial").is_null());
+}
+}

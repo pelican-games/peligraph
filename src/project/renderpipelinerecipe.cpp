@@ -39,7 +39,7 @@ Fragment loadFragment(std::string family, const Json &reference,
     if (!document.is_object()) invalid(code, "document", "expected_object");
     for (const auto &[key, value] : document.items()) {
         if (key != "schema" && key != "version" && key != "name" && key != "render_targets" &&
-            key != "passes" && key != "required_targets")
+            key != "passes" && key != "required_targets" && key != "target_planning")
             invalid(code, key, "unknown_key");
     }
     if (stringField(document, "schema", code) != "pelican.render_fragment")
@@ -128,6 +128,9 @@ RenderPipelinePresetResolution expandRenderPipelineRecipe(
                 {{"kind", kind}, {"name", name}, {"fragments", {found->second.name, origin.name}}});
     };
     for (const auto &fragment : effective) {
+        auto policy = collectPartPlanningPolicy(fragment.document,
+            {PlanningOriginKind::part, fragment.origin.reference, {}});
+        if (policy.policy.authored) result.planning_sources.push_back(std::move(policy));
         for (const auto &target : fragment.document.at("render_targets")) {
             const auto name = target.at("name").get<std::string>();
             targets.insert(name);

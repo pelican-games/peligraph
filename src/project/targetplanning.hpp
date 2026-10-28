@@ -12,6 +12,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <variant>
 
 #include <nlohmann/json_fwd.hpp>
 
@@ -267,21 +268,84 @@ struct PlanningProfile {
     bool operator==(const PlanningProfile &) const = default;
 };
 
+enum class PlanningStrength : std::uint8_t { require, prefer };
+enum class PlanningOriginKind : std::uint8_t { part, recipe, root, engine };
+struct PlanningOrigin {
+    PlanningOriginKind kind = PlanningOriginKind::root;
+    std::string document;
+    std::string pointer;
+    bool operator==(const PlanningOrigin &) const = default;
+};
+template<class T> struct PlanningDeclaration {
+    T value;
+    PlanningStrength strength = PlanningStrength::require;
+    PlanningOrigin origin;
+    bool operator==(const PlanningDeclaration &) const = default;
+};
+// Empty and explicitly false remain distinct. Planners consume the effective
+// value through the conversion; authoring retains the complete declaration.
+template<class T, T Default = T{}> struct PlanningValue {
+    std::optional<PlanningDeclaration<T>> declaration;
+    PlanningValue() = default;
+    PlanningValue(T value) : declaration(PlanningDeclaration<T>{value}) {}
+    PlanningValue(PlanningDeclaration<T> value) : declaration(std::move(value)) {}
+    operator T() const { return declaration ? declaration->value : Default; }
+    bool operator==(const PlanningValue &) const = default;
+};
+enum class PlanningPolicyStatus : std::uint8_t {
+    adopted, overridden, engine_forced, absent, infeasible_prefer
+};
+enum class PlanningTargetKind : std::uint8_t { graph, node, resource };
+// Names and identity are separate: removing an owner never transfers policy
+// to another target whose authored or final name happens to match.
+struct PlanningTargetBinding {
+    std::string authored_name;
+    std::string final_name;
+    std::string owner;
+    bool operator==(const PlanningTargetBinding &) const = default;
+};
+struct PlanningPolicyTarget {
+    PlanningTargetKind kind;
+    std::string graph; // Empty for shared compute tasks and resources.
+    PlanningTargetBinding binding;
+};
+// RC-6a2 string values retain their target classification in the same ledger.
+struct PlanningPolicyEntry {
+    std::string graph;
+    std::string target;
+    std::string key;
+    std::variant<bool, std::string> value;
+    PlanningStrength strength = PlanningStrength::require;
+    PlanningOrigin origin;
+    PlanningPolicyStatus status = PlanningPolicyStatus::adopted;
+    std::optional<bool> satisfied;
+    PlanningTargetKind target_kind = PlanningTargetKind::node;
+    // Replacement/inactive removes the original owner, even if a provider
+    // later publishes another node with the same name.
+    bool owner_target_removed = false;
+    std::string declared_target;
+    std::optional<PlanningTargetBinding> binding;
+    bool operator==(const PlanningPolicyEntry &) const = default;
+};
+nlohmann::ordered_json planningPolicyToJson(std::span<const PlanningPolicyEntry> entries);
+void requireNoLegacyPlanningPolicy(std::string_view graph, std::span<const PlanningPolicyEntry> entries);
+std::optional<bool> planningBooleanValue(const nlohmann::json &value);
+
 struct PlanningNodeConstraint {
     std::string node;
-    bool serial = false;
-    bool isolate = false;
+    PlanningValue<bool> serial;
+    PlanningValue<bool> isolate;
     // PF-1: false keeps the node out of pass fusion (passfusion.hpp,
     // docs/design_pass_fusion.md §1-5). Unwritten, the node may be fused;
     // only false is written back.
-    bool fuse = true;
+    PlanningValue<bool, true> fuse;
 
     bool operator==(const PlanningNodeConstraint &) const = default;
 };
 
 struct PlanningResourceConstraint {
     std::string resource;
-    bool no_alias = false;
+    PlanningValue<bool> no_alias;
 
     bool operator==(const PlanningResourceConstraint &) const = default;
 };
@@ -297,6 +361,7 @@ struct PlanningGraphConstraints {
     std::vector<std::string> required_capabilities;
     std::vector<PlanningNodeConstraint> nodes;
     std::vector<PlanningResourceConstraint> resources;
+    std::vector<PlanningPolicyEntry> declarations;
 
     bool operator==(const PlanningGraphConstraints &) const = default;
 };

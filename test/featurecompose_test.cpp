@@ -10569,3 +10569,42 @@ TEST_CASE("EN-2 a file image's parameters and its readers are refused by name",
 namespace Pelican {
 #include "rc5_recipe_resolver_test.inc"
 }
+namespace Pelican {
+TEST_CASE("RC-6 B6 B10 replacement retains declarations without transferring to the replacement", "[render-feature][rc6a1][rc6-b6][rc6-b10]") {
+    using Json = nlohmann::json;
+    auto document = lp0dBloomVariantGraph();
+    document["rendering"]["target_planning"] = {{"graphs", {{"main_render", {{"nodes", {
+        {"HighLuminanceExtraction", {{"serial", true}}}, {"glow", {{"serial", true}}}}}}}}}};
+    auto feature_loader = [](std::string_view ref) {
+        auto feature = Json::parse(lp0dHistoryBloom(ref));
+        if (ref == "engine://features/bloom.json")
+            feature["target_planning"] = {{"graphs", {{"main_render", {{"nodes", {
+                {"HighLuminanceExtraction", {{"serial", true}}}}}}}}}};
+        return feature.dump();
+    };
+    const auto resolve = [&](RenderPipelineGraphVariant variant) {
+        return resolveRenderPipeline({document, "rc6-root"}, {true, variant},
+            {.load_feature_json = feature_loader, .load_pipeline_json = feature_loader});
+    };
+    const auto flat = resolve(RenderPipelineGraphVariant::flat);
+    const auto &graph = flat.target_planning.graphs.at(0);
+    CHECK(graph.declarations.size() == 3);
+    CHECK(std::count_if(graph.declarations.begin(), graph.declarations.end(), [](const auto &e) {
+        return e.target == "HighLuminanceExtraction" && e.status == PlanningPolicyStatus::absent;
+    }) == 2);
+    const auto dumped = planningPolicyToJson(graph.declarations);
+    CHECK(std::count_if(dumped.begin(), dumped.end(), [](const auto &e) {
+        return e.at("target") == "HighLuminanceExtraction" && e.at("origin").at("kind") == "part" && e.at("status") == "absent";
+    }) == 1);
+    CHECK(std::none_of(graph.nodes.begin(), graph.nodes.end(), [](const auto &n) { return n.node == "paint"; }));
+    CHECK(std::count_if(flat.diagnostics.begin(), flat.diagnostics.end(), [](const auto &d) {
+        return d.kind == RenderPipelineDiagnosticKind::planning_name_absent;
+    }) == 1);
+    REQUIRE_NOTHROW(compileRenderPipeline(flat));
+    const auto preview = resolve(RenderPipelineGraphVariant::preview);
+    CHECK(std::count_if(preview.diagnostics.begin(), preview.diagnostics.end(), [](const auto &d) {
+        return d.kind == RenderPipelineDiagnosticKind::planning_name_absent;
+    }) == 2);
+    REQUIRE_NOTHROW(compileRenderPipeline(preview));
+}
+}

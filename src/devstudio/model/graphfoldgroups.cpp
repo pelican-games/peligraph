@@ -420,7 +420,9 @@ bool GraphTargetPlanning::flag(std::string_view kind, std::string_view name,
     const auto entry = entries.find(std::string{name});
     if (entry == entries.end() || !entry->is_object()) return false;
     const auto value = entry->find(std::string{field});
-    return value != entry->end() && value->is_boolean() && value->get<bool>();
+    if (value == entry->end()) return false;
+    const auto &unwrapped = value->is_object() && value->contains("value") ? value->at("value") : *value;
+    return unwrapped.is_boolean() && unwrapped.get<bool>();
 }
 
 Json graphTargetPlanningParams(const std::string &base_source_digest, const std::string &graph,

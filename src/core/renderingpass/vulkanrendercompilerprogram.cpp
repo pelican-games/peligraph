@@ -463,6 +463,8 @@ compileDefaultVulkanVariant(
         },
         logical.compiled_pipeline.target_planning);
 
+    resolveFinalPlanningPolicy(logical.compiled_pipeline, render_graph);
+
     // RC-3c2b1: the provenance of the final revision, from its IR (the
     // variant's names; each config task found by its authored name). The
     // compute tasks are made from the IR by runRenderCompilerProgram.
@@ -928,6 +930,7 @@ void installVerifiedVulkanCompletePhysicalPlanPackage(
             "Vulkan compiler package has no target plan for graph '" +
             std::string{graph} + "'");
     }
+    requireNoLegacyPlanningPolicy(graph, indexed->second->policy);
     const auto &context =
         requireVulkanTargetPlanVerificationContext(
             physical, graph);

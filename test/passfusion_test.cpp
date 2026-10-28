@@ -551,9 +551,12 @@ TEST_CASE("pass fusion stops at a node whose fuse constraint is false",
     const auto resolved = compose(TestSupport::renderGraphRoot(section),
                                   "pf1 fuse false");
     REQUIRE(resolved.target_planning.graphs.size() == 1);
-    REQUIRE((resolved.target_planning.graphs.front().nodes ==
-             std::vector<PlanningNodeConstraint>{
-                 {.node = "grade", .fuse = false}}));
+    const auto &constraint = resolved.target_planning.graphs.front().nodes.at(0);
+    REQUIRE(constraint.node == "grade");
+    REQUIRE_FALSE(static_cast<bool>(constraint.fuse));
+    REQUIRE(constraint.fuse.declaration.has_value());
+    CHECK(constraint.fuse.declaration->strength == PlanningStrength::require);
+    CHECK(constraint.fuse.declaration->origin.kind == PlanningOriginKind::root);
     const auto input = fusionInput(resolved.composed_config);
     const auto plan = planFor(resolved, input);
 

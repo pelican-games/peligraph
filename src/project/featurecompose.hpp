@@ -49,6 +49,9 @@ struct RenderFeatureComposeDependencies {
 };
 
 struct RenderFeatureComposeResult {
+    std::vector<PlanningPolicySource> planning_sources;
+    std::set<std::string> planning_absent_nodes;
+    TargetPlanningPolicy planning_root_bindings;
     nlohmann::json config;
     std::vector<std::string> shader_defines;
     std::vector<std::string> feature_names;

@@ -21,7 +21,8 @@ Rc5Json rc5Document(bool lit, bool hdr, bool extras) {
     return root;
 }
 
-RenderCompilerProgramResult rc5Compile(const Rc5Json &root, bool xr, const Rc5Json *local_feature = nullptr) {
+RenderCompilerProgramResult rc5Compile(const Rc5Json &root, bool xr, const Rc5Json *local_feature = nullptr,
+    const std::map<std::string, Rc5Json> &documents = {}) {
     ProgramInputFixture fixture;
     fixture.task_project = std::filesystem::temp_directory_path() /
         ("pelican-rc5-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -32,6 +33,10 @@ RenderCompilerProgramResult rc5Compile(const Rc5Json &root, bool xr, const Rc5Js
     if (local_feature) feature = *local_feature;
     std::ofstream{fixture.task_project / "features/local.json"} << feature.dump(2);
     std::ofstream{fixture.task_project / "lighting.json"} << fixture.path_resolver.loadText("engine://render_fragments/deferred_lighting.json");
+    for (const auto &[name, document] : documents) {
+        std::filesystem::create_directories((fixture.task_project / name).parent_path());
+        std::ofstream{fixture.task_project / name} << document.dump(2);
+    }
     fixture.config = root;
     fixture.backend_context = VulkanRenderCompilerBackendContext{
         vk::Format::eB8G8R8A8Srgb, vk::Extent2D{64, 64}, {}, {}, {},
@@ -337,4 +342,25 @@ TEST_CASE("RC5b materialized fragment preserves typed IR and every plan field", 
         REQUIRE(rc5Snapshot(after) == expected);
         rc5RequireFragmentProvenance(after, true);
     }
+}
+
+TEST_CASE("RC-6 policy-free snapshots match all sixteen fixed RC-5 baselines", "[.][rc6-baseline-compare]") {
+    const auto *directory = std::getenv("RC6_BASELINE_DIR");
+    REQUIRE(directory != nullptr);
+    REQUIRE(std::string{directory}.size() > 0);
+#if !PELICAN_WITH_OPENXR
+    FAIL("RC-6 baseline comparison requires XR and all sixteen configurations");
+#endif
+    std::size_t count = 0;
+    for (const bool lit : {false, true}) for (const bool hdr : {false, true})
+    for (const bool extras : {false, true}) for (const bool xr : {false, true}) {
+        const auto file = std::filesystem::path{directory} / rc5Filename(lit, hdr, extras, xr);
+        CAPTURE(file);
+        std::ifstream input{file};
+        REQUIRE(input.good());
+        const auto recorded = Rc5Json::parse(input);
+        REQUIRE(rc5Snapshot(rc5Compile(rc5Document(lit, hdr, extras), xr)) == recorded);
+        ++count;
+    }
+    REQUIRE(count == 16);
 }

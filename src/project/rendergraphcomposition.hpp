@@ -227,6 +227,7 @@ struct LoweredRenderGraphDocument {
     std::vector<RenderGraphLoopOutputReference> unknown_loop_output_references;
     // PS-1: once nodes' ports on render.target_ref nodes.
     std::vector<RenderGraphOnceTargetUse> once_target_refs;
+    std::vector<std::pair<std::string, std::string>> engine_isolates;
 };
 
 // LP-0d: one entry of a feature instance's `pass_replacements`
@@ -264,6 +265,7 @@ struct RenderGraphFeatureContext {
 // (get_frame_plan's top-level `loops[]`) and each expanded declaration's
 // origin (`loop_origin`).
 struct RenderGraphLoopResolution {
+    std::vector<std::pair<std::string, std::string>> engine_isolates;
     std::vector<RenderGraphLoopReport> loops;
     // Passes and compute tasks a loop added, by name.
     std::map<std::string, RenderLoopOrigin> passes;

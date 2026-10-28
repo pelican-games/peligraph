@@ -9,6 +9,7 @@
 #include "../src/core/renderingpass/passdefinitionfromir.hpp"
 #include "../src/core/renderingpass/renderingpassruntimecompiler.hpp"
 #include "../src/core/renderingpass/rendertargetmetadataresolver.hpp"
+#include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 #include "../src/core/renderingpass/rendertargetnameresolver.hpp"
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
 #include "../src/core/renderingpass/vulkanrendercompilerpackage.hpp"
@@ -2426,7 +2427,7 @@ std::optional<bool> fg1Isolated(const TargetPlanningPolicy &policy, std::string_
     for (const auto &graph : policy.graphs) {
         if (graph.graph != "main_render") continue;
         for (const auto &node : graph.nodes)
-            if (node.node == name) return node.isolate;
+            if (node.node == name) return static_cast<bool>(node.isolate);
     }
     return std::nullopt;
 }
@@ -2435,7 +2436,7 @@ std::optional<bool> fg1NoAlias(const TargetPlanningPolicy &policy, std::string_v
     for (const auto &graph : policy.graphs) {
         if (graph.graph != "main_render") continue;
         for (const auto &resource : graph.resources)
-            if (resource.resource == name) return resource.no_alias;
+            if (resource.resource == name) return static_cast<bool>(resource.no_alias);
     }
     return std::nullopt;
 }
@@ -2571,6 +2572,8 @@ TEST_CASE("FG-1 a verified fold group's decisions reach target_planning and the 
             {"graphs", {{"main_render", {{"nodes", {{"fold_a", {{"isolate", false}}}}}}}}}};
         CHECK(fg1Refusal(document, &detail) == "graph.fold_decision_conflict@1");
         CHECK(detail == Json{{"group", "post"}, {"name", "fold_a"}, {"field", "isolate"}});
+        document["rendering"]["target_planning"]["graphs"]["main_render"]["nodes"]["fold_a"]["isolate"] = {{"value", false}};
+        CHECK(fg1Refusal(document, &detail) == "graph.fold_decision_conflict@1");
         // The same value is no conflict.
         document["rendering"]["target_planning"]["graphs"]["main_render"]["nodes"]["fold_a"]["isolate"] = true;
         CHECK(fg1Isolated(fg1Compile(document).planning, "fold_a") == std::optional<bool>{true});
@@ -2595,5 +2598,6 @@ namespace Pelican {
 #if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
 #include "rc5_recipe_compiler_test.inc"
 #include "rc5s_anchor_removal_test.inc"
+#include "rc6_policy_test.inc"
 #endif
 }

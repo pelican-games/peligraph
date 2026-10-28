@@ -59,7 +59,11 @@ TEST_CASE("RC-5 recipe keys and family shapes are explicit", "[render-feature][p
         const auto value = (std::string{key} == "features" || std::string{key} == "graph_transforms" || std::string{key} == "shader_defines")
             ? RecipeJson::array() : RecipeJson::object();
         recipe["config"][key] = value;
-        REQUIRE(resolve().config.at(key) == value);
+        if (std::string{key} == "target_planning") {
+            const auto resolved = resolve();
+            REQUIRE_FALSE(resolved.config.contains(key));
+            REQUIRE(resolved.planning_sources.back().policy.authored);
+        } else REQUIRE(resolve().config.at(key) == value);
         recipe = saved;
     }
     SECTION("base is required") {

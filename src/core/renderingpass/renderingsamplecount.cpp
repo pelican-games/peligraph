@@ -150,7 +150,7 @@ std::string runtimeAliasExclusion(
 // scope. Both are isolated on top of authored target_planning constraints.
 std::vector<PlanningNodeConstraint> isolatedNodeConstraints(
     const FrameGraphDefinition &definition, const GraphIR &graph,
-    std::vector<PlanningNodeConstraint> constraints) {
+    std::vector<PlanningNodeConstraint> constraints, std::vector<PlanningPolicyEntry> &policy) {
     for (const auto &node : definition.nodes) {
         const auto typed = std::find_if(graph.nodes.begin(), graph.nodes.end(),
             [&](const auto &entry) { return entry.name == node.name; });
@@ -163,11 +163,23 @@ std::vector<PlanningNodeConstraint> isolatedNodeConstraints(
             [&](const PlanningNodeConstraint &constraint) {
                 return constraint.node == node.name;
             });
+        for (auto &e : policy) {
+            const auto *value = std::get_if<bool>(&e.value);
+            if (e.target_kind != PlanningTargetKind::node || e.target != node.name || e.key != "isolate" ||
+                e.status != PlanningPolicyStatus::adopted || !value || *value) continue;
+            if (e.strength == PlanningStrength::require)
+                throw GraphRegistryError("target_planning.policy_conflicts_engine@1",
+                    {{"graph", definition.name}, {"target", node.name}, {"key", e.key},
+                     {"origin", {{"document", e.origin.document}, {"pointer", e.origin.pointer}}}});
+            e.status = PlanningPolicyStatus::engine_forced;
+        }
+        const PlanningDeclaration<bool> forced{true, PlanningStrength::require,
+            {PlanningOriginKind::engine, "engine", "/isolate"}};
         if (found != constraints.end()) {
-            found->isolate = true;
+            found->isolate = forced;
         } else {
             constraints.push_back(PlanningNodeConstraint{
-                .node = node.name, .serial = false, .isolate = true});
+                .node = node.name, .isolate = forced});
         }
     }
     return constraints;
@@ -1539,6 +1551,10 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
              std::less<>>
         planning_by_graph;
     for (const auto &constraints : target_planning.graphs) {
+        if (!graph_names.contains(constraints.graph) && constraints.nodes.empty() && constraints.resources.empty() &&
+            constraints.required_capabilities.empty() && !constraints.declarations.empty() &&
+            std::all_of(constraints.declarations.begin(), constraints.declarations.end(), [](const auto &e) { return e.status == PlanningPolicyStatus::absent; }))
+            continue;
         if (constraints.graph.empty() ||
             !graph_names.contains(constraints.graph)) {
             throw std::runtime_error(
@@ -1661,11 +1677,17 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
         if (frame == frame_plans.end())
             throw GraphRegistryError{"target_plan.node_order_missing@1", {{"graph", definition.name}}};
         const FramePlanNodeOrder node_order{frame->second};
+        auto policy_entries = graph_constraints ? graph_constraints->declarations : std::vector<PlanningPolicyEntry>{};
+        if (pin != pins_by_graph.end() || fragment != fragments_by_graph.end())
+            requireNoLegacyPlanningPolicy(definition.name, policy_entries);
+        auto node_constraints = isolatedNodeConstraints(definition, *findGraph(render_graph, definition.name),
+            graph_constraints ? graph_constraints->nodes : std::vector<PlanningNodeConstraint>{}, policy_entries);
         auto plan_value =
             compileVulkanTargetPlan(
                 types, logical_graph, topology,
                 runtimeProviders(),
                 VulkanTargetPlanRequest{
+                    .policy = std::move(policy_entries),
                     .node_order = node_order,
                     .endpoint = "device:0",
                     .provider = std::string{kRuntimeProvider},
@@ -1681,12 +1703,7 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                             transient_formats,
                             tile_local_formats),
                     .profile = target_planning.profile,
-                    .node_constraints =
-                        isolatedNodeConstraints(
-                            definition, *findGraph(render_graph, definition.name),
-                            graph_constraints == nullptr
-                                ? std::vector<PlanningNodeConstraint>{}
-                                : graph_constraints->nodes),
+                    .node_constraints = std::move(node_constraints),
                     .resource_constraints =
                         graph_constraints == nullptr
                             ? std::vector<
