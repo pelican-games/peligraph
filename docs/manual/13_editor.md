@@ -35,7 +35,7 @@ Studio の panel ごとの操作は [第15章 Studio の操作](15_studio.md) �
 | commit hook のディスク再検査 | ディスクが期待値と違えば `external_modification`。reload の期待値は「読み直した候補の digest」 |
 | 文書の transaction | root 以外の preset / feature なども期待 digest で照合し、書き込み直前の変更を拒否 |
 
-`stale_source_digest` と `external_modification` の上の区別は **commitPending 内**のものです。受付での `external_modification` には古い panel の保持版も含まれるため、コード名だけで「別のアプリが保存した」とは断定できません。拒否後は文書と編集内容を読み直し、digest だけを新しい値に差し替えて古い操作を送り直さないでください([受付](../../src/core/communication/renderconfigeditor.cpp#L2197)、[commit 時](../../src/core/communication/renderconfigeditor.cpp#L8650))。
+`stale_source_digest` と `external_modification` の上の区別は **commitPending 内**のものです。受付での `external_modification` には古い panel の保持版も含まれるため、コード名だけで「別のアプリが保存した」とは断定できません。拒否後は文書と編集内容を読み直し、digest だけを新しい値に差し替えて古い操作を送り直さないでください([受付](../../src/core/communication/renderconfigeditor.cpp#L2197)、[commit 時](../../src/core/communication/renderconfigeditor.cpp#L8652))。
 
 Studio の `RenderConfigDigest` は panel が読んだり commit した digest を他 panel に通知して再読込を促します。ただし各 panel は**自分が読んだ文脈と対になる digest の写し**を保持します。共有の最新値だけを送ると、古い文脈から作った要求が新しい版を装ってしまうためです([注釈と実装](../../src/devstudio/view/renderconfigdigest.hpp#L13))。
 
@@ -83,7 +83,7 @@ sequenceDiagram
         E-->>S: pending または確定した結果
     end
 ```
-根拠: [renderconfigeditor.cpp:2148](../../src/core/communication/renderconfigeditor.cpp#L2253)、[renderconfigeditor.cpp:8172](../../src/core/communication/renderconfigeditor.cpp#L8616)、[renderer_config.cpp:672](../../src/core/vkcore/renderer_config.cpp#L673)、[renderconfigeditor.cpp:7876](../../src/core/communication/renderconfigeditor.cpp#L8320)、[renderconfigtransaction.hpp:22](../../src/core/communication/renderconfigtransaction.hpp#L22)。
+根拠: [renderconfigeditor.cpp:2148](../../src/core/communication/renderconfigeditor.cpp#L2253)、[renderconfigeditor.cpp:8172](../../src/core/communication/renderconfigeditor.cpp#L8618)、[renderer_config.cpp:672](../../src/core/vkcore/renderer_config.cpp#L673)、[renderconfigeditor.cpp:7876](../../src/core/communication/renderconfigeditor.cpp#L8322)、[renderconfigtransaction.hpp:22](../../src/core/communication/renderconfigtransaction.hpp#L22)。
 
 注: 受付・再照合で拒否すれば後続処理へ進みません。`edit_batch` は最後の候補を一度だけ preflight します。配置などの `source_only` 編集は文書だけを commit し `recomposed: false`、変更なしなら `no_change` で世代を替えません。reload は書き込みをせず読み取った bytes の一致を確認します。ray joint の staged ticket は completion が来るまで pending です。GPU 資源と状態の扱いは[描画世代の所有節](06_rendering.md#render-generation)を参照してください。
 
@@ -1151,14 +1151,14 @@ asset_data の `models[]` の形は [第5章](05_assets.md) §5.2 です。
 | `fork_render_pipeline` | `base_source_digest`・`base_preset_digest`・`destination_reference`で選択中presetを新しいprojectファイルへコピーし、rootの参照先も切り替える |
 | `materialize_render_fragment` | `name`・`base_source_digest`・`base_preset_digest`・`base_fragment_digest`・`destination_reference`。`@2` のレシピから継承した base の断片 1 つを project の新しい文書に写し、root の `fragment_overrides` にその参照を書く(1 つの transaction。preset は fork しない)。受けると `accepted` と ticket(RC-5b。下の「レシピの base の断片を分岐する」) |
 | `edit_region_replacement` | `base_source_digest`・`base_preset_digest`・`graph`・`region`でproject presetのタグ付き領域を指定。`provider`に登録済みprovider名を指定するとコンパイル時の差し替えを選択し、`null`なら差し替え要求を除去して元のノード構成を使用する。元のpass・設定・接続は保持する。現在の指定は`get_render_authoring_context`の各graphの`region_replacements`で取得できる。標準feature全体の展開操作ではない |
-| `edit_preset_pass` | `base_source_digest`・`base_preset_digest`・`graph`・`pass_name`でproject presetのpassを指定。fullscreenは`input`・`output`・`shader`と任意の`ray_query`・`uses_light_data`・`push_constants`・`clear_colors`(後の 3 つは G-3。省略は保持、`null` で削除。[G-3 の 3 field の受け取り](../../src/core/communication/renderconfigeditor.cpp#L5843))、materialは`input`・`output`・`ray_query`・`material_settings`・`material_routing`・`view_select`の1項目以上(`material_settings`は`material_range`・`material_filter`・`material_variant`・`material_contract`・`gpu_draw_source`・`material_outputs`・`material_output_states`・`screen_inputs`・`surface_resources`・`material_resources`の部分objectで、値`null`はその鍵をpassから消す。`material_routing`はpresetの`material_routing`を置き換え、`null`で消す。preset以外の書き先では`-32602`。[material passの受け取り](../../src/core/communication/renderconfigeditor.cpp#L5814))。rasterはさらに`shader`・`draw`・`raster_state`を部分編集できる。省略項目は保持、rasterの`raster_state: null`は既定状態へ戻す。書き先は 3 つ: project preset(`base_preset_digest`)/ project feature(`base_feature_digest`)/ **direct root 自身**(F-6。root が preset を選ばず、要求がどちらの digest も持たないとき。`base_source_digest` が root の digest を兼ね、root の `rendering.rendering_passes` の pass を編集する)。置換規則は 3 つとも同じ関数です([direct root の書き先](../../src/core/communication/renderconfigeditor.cpp#L5984))。RC-5b から 4 つ目の書き先 **project の構造の断片**(`base_fragment_digest`)が増えた。`base_source_digest` は常に必須、所有の digest(`base_preset_digest` / `base_feature_digest` / `base_fragment_digest`)は高々 1 つ(2 つ以上は invalid params)。規則は下の「レシピの base の断片を分岐する」 |
+| `edit_preset_pass` | `base_source_digest`・`base_preset_digest`・`graph`・`pass_name`でproject presetのpassを指定。fullscreenは`input`・`output`・`shader`と任意の`ray_query`・`uses_light_data`・`push_constants`・`clear_colors`(後の 3 つは G-3。省略は保持、`null` で削除。[G-3 の 3 field の受け取り](../../src/core/communication/renderconfigeditor.cpp#L5845))、materialは`input`・`output`・`ray_query`・`material_settings`・`material_routing`・`view_select`の1項目以上(`material_settings`は`material_range`・`material_filter`・`material_variant`・`material_contract`・`gpu_draw_source`・`material_outputs`・`material_output_states`・`screen_inputs`・`surface_resources`・`material_resources`の部分objectで、値`null`はその鍵をpassから消す。`material_routing`はpresetの`material_routing`を置き換え、`null`で消す。preset以外の書き先では`-32602`。[material passの受け取り](../../src/core/communication/renderconfigeditor.cpp#L5816))。rasterはさらに`shader`・`draw`・`raster_state`を部分編集できる。省略項目は保持、rasterの`raster_state: null`は既定状態へ戻す。書き先は 3 つ: project preset(`base_preset_digest`)/ project feature(`base_feature_digest`)/ **direct root 自身**(F-6。root が preset を選ばず、要求がどちらの digest も持たないとき。`base_source_digest` が root の digest を兼ね、root の `rendering.rendering_passes` の pass を編集する)。置換規則は 3 つとも同じ関数です([direct root の書き先](../../src/core/communication/renderconfigeditor.cpp#L5986))。RC-5b から 4 つ目の書き先 **project の構造の断片**(`base_fragment_digest`)が増えた。`base_source_digest` は常に必須、所有の digest(`base_preset_digest` / `base_feature_digest` / `base_fragment_digest`)は高々 1 つ(2 つ以上は invalid params)。規則は下の「レシピの base の断片を分岐する」 |
 | `get_compute_task_authoring` | compute/RT taskの元宣言・編集可否・保存先とdigestを取得する。各 task に出所の `origin`、graph node が作った task には `graph_node` が付く(MG-3b。下の「task の出所」) |
 | `edit_compute_task` | `base_source_digest`・`base_task_source_digest`・`task_name`・`task`でtask宣言を置換する。名前は保持する |
 | `add_compute_task` | 新規 project feature に task を作り、root の `features[]` へ追加する。params・拒否・応答は[専用節](#add-compute-task) |
 | `remove_compute_task` | `base_source_digest`・`base_task_source_digest`・`task_name`で元文書からtaskを削除する |
-| `edit_render_targets` | `base_source_digest`・`ops[]`。op は `{op:"add", target}` / `{op:"replace", name, target}`(`target.name` を変えれば改名)/ `{op:"remove", name}`。書くのは managed fragment `project://passes/authoring/render-targets.json` 1 つだけで、最初の要求で作って root の `features[]` に足す(空になっても消さない)。ops は順に当て、最後に 1 回 preflight して ticket を返す —— **全部入るか、何も入らないか**。名前付きの拒否は下の 6 種([edit_render_targets の実装](../../src/core/communication/renderconfigeditor.cpp#L6378)) |
-| `add_authored_pass` | `base_source_digest`・`graph`・`insert`(authoring context の挿入位置の token)・`pass`。pass 1 つを managed fragment `project://passes/authoring/pass-<id>.json` に書き、root の `features[]` に足して preflight し、ticket を返す。受ける `type` は `fullscreen` と **`material`**だけで、それ以外は `authored_pass_type_unavailable`(detail は `requested_type` と **`supported_types`**(配列)。[add_authored_pass の種類の門](../../src/core/communication/renderconfigeditor.cpp#L6109))。material pass の形の検査は下の段落。任意の **`material_route_default`**(`"auto"` / `"forward"`。G-4)を渡すと、pass と rendering 文書の root の既定を 1 つの ticket で変える(下の「material の route の既定」) |
-| `remove_authored_pass` | `base_source_digest`・`fragment_reference`(ほかの鍵は書けない)。root の `features[]` からその参照を外す ticket を返す。editor が作った fragment(`add_authored_pass` の managed fragment)で、ほかに参照が残らなければファイルも同じ transaction で消す。root に無い参照は `render_feature_not_enabled`(`fragment_reference`)、render target の fragment は `render_target_not_editable`(`edit_render_targets` で編集する)、managed fragment が外で書き換えられていれば `external_modification`。`base_source_digest` が 64 桁の小文字 hex でなければ `-32602`([remove_authored_pass の実装](../../src/core/communication/renderconfigeditor.cpp#L6275)) |
+| `edit_render_targets` | `base_source_digest`・`ops[]`。op は `{op:"add", target}` / `{op:"replace", name, target}`(`target.name` を変えれば改名)/ `{op:"remove", name}`。書くのは managed fragment `project://passes/authoring/render-targets.json` 1 つだけで、最初の要求で作って root の `features[]` に足す(空になっても消さない)。ops は順に当て、最後に 1 回 preflight して ticket を返す —— **全部入るか、何も入らないか**。名前付きの拒否は下の 6 種([edit_render_targets の実装](../../src/core/communication/renderconfigeditor.cpp#L6380)) |
+| `add_authored_pass` | `base_source_digest`・`graph`・`insert`(authoring context の挿入位置の token)・`pass`。pass 1 つを managed fragment `project://passes/authoring/pass-<id>.json` に書き、root の `features[]` に足して preflight し、ticket を返す。受ける `type` は `fullscreen` と **`material`**だけで、それ以外は `authored_pass_type_unavailable`(detail は `requested_type` と **`supported_types`**(配列)。[add_authored_pass の種類の門](../../src/core/communication/renderconfigeditor.cpp#L6111))。material pass の形の検査は下の段落。任意の **`material_route_default`**(`"auto"` / `"forward"`。G-4)を渡すと、pass と rendering 文書の root の既定を 1 つの ticket で変える(下の「material の route の既定」) |
+| `remove_authored_pass` | `base_source_digest`・`fragment_reference`(ほかの鍵は書けない)。root の `features[]` からその参照を外す ticket を返す。editor が作った fragment(`add_authored_pass` の managed fragment)で、ほかに参照が残らなければファイルも同じ transaction で消す。root に無い参照は `render_feature_not_enabled`(`fragment_reference`)、render target の fragment は `render_target_not_editable`(`edit_render_targets` で編集する)、managed fragment が外で書き換えられていれば `external_modification`。`base_source_digest` が 64 桁の小文字 hex でなければ `-32602`([remove_authored_pass の実装](../../src/core/communication/renderconfigeditor.cpp#L6277)) |
 | `set_material_route_default` | `base_source_digest`・`material_route_default`(`"auto"` / `"forward"`)。root の既定だけを変える。root 編集の ticket に乗り、commit の結果に `restart_required: true`(G-4。[`RenderConfigEditorService::setMaterialRouteDefault()`](../../src/core/communication/renderconfigeditor.cpp#L4961)) |
 | `get_frame_node_order` | `{}`。root の rendering 節の `frame_node_order` を `{source_digest, live, published_generation, orders}` で返す。`orders` は書かれたままの `{<graph の名前>: [<node の名前>...]}` で、無ければ `{}`([get_frame_node_order の実装](../../src/core/communication/renderconfigeditor.cpp#L3921)) |
 | `edit_frame_node_order` | `base_source_digest`・`orders`(ほかの鍵は書けない)。root の rendering 節の `frame_node_order` を `orders` で丸ごと置き換える root 編集の ticket。`orders` が object でなければ `invalid_frame_node_order`。並びが依存と矛盾すれば ticket の結果が `frame_node_order.conflicts_dependency@1`(形は [第6章](06_rendering.md) §6.6 の「pass の順を指定する」)。`edit_batch` に入る([edit_frame_node_order の実装](../../src/core/communication/renderconfigeditor.cpp#L4877)) |
@@ -1185,7 +1185,7 @@ asset_data の `models[]` の形は [第5章](05_assets.md) §5.2 です。
 
 #### `add_compute_task` の保存先と応答
 
-params は `{base_source_digest, destination_reference, task}` だけです。`base_source_digest` は root 文書の64桁の小文字 hex、`task` は `name` を持つ宣言 object です。保存先は fragment を含まない **新規の `project://` ファイル**で、既存ファイルの置換には使えません。作る文書は `pelican.render_feature` v1 で、`compute_tasks` にこの task を1件入れます([`RenderConfigEditorService::addComputeTask()`](../../src/core/communication/renderconfigeditor.cpp#L5616))。
+params は `{base_source_digest, destination_reference, task}` だけです。`base_source_digest` は root 文書の64桁の小文字 hex、`task` は `name` を持つ宣言 object です。保存先は fragment を含まない **新規の `project://` ファイル**で、既存ファイルの置換には使えません。作る文書は `pelican.render_feature` v1 で、`compute_tasks` にこの task を1件入れます([`RenderConfigEditorService::addComputeTask()`](../../src/core/communication/renderconfigeditor.cpp#L5618))。
 
 | 固有の拒否 | 条件 |
 |---|---|
@@ -1209,7 +1209,7 @@ feature に置くのは、preset root が root に `render_targets` を置けず
 | `render_target_referenced` | remove / 改名で消える名前を、まだ読む・書く pass / task がある | `name`・`users[]` |
 | `render_target_reserved` | `display` / `swapchain`(engine の予約名) | `name` |
 | `render_target_not_found` | その名前の target がどこにも宣言されていない | `name` |
-| 名前付きの code(`render_graph.image_invalid@1` など) | 宣言の形の誤り。✅RC-3c2a から宣言は計画と同じ `parseRenderGraph()` で読み、その名前付きの code と fields(`resource`・`field`・`reason`)のまま返す。`format_class` だけで `format` の無い宣言は `render_graph.image_format_unresolved@1`([検査する所](../../src/core/communication/renderconfigeditor.cpp#L6594))。participant は `pelican.render_targets`。前は `render_pipeline_preflight_failed` で、文言は core の parser(`parseRenderTargetDefinitionsFromJson`。消えた)の文 | `participant`・`fragment_reference`・code の fields |
+| 名前付きの code(`render_graph.image_invalid@1` など) | 宣言の形の誤り。✅RC-3c2a から宣言は計画と同じ `parseRenderGraph()` で読み、その名前付きの code と fields(`resource`・`field`・`reason`)のまま返す。`format_class` だけで `format` の無い宣言は `render_graph.image_format_unresolved@1`([検査する所](../../src/core/communication/renderconfigeditor.cpp#L6596))。participant は `pelican.render_targets`。前は `render_pipeline_preflight_failed` で、文言は core の parser(`parseRenderTargetDefinitionsFromJson`。消えた)の文 | `participant`・`fragment_reference`・code の fields |
 
 例(`renderconfigeditor_test` の「F-1 edit_render_targets refuses by name and leaves the documents alone」): `extent_scale: -1` の target を add すると `render_graph.image_invalid@1` で、`resource: "f1_negative"`・`field: "extent_scale"`・`reason: "not_positive"` が付きます。
 
@@ -1515,7 +1515,7 @@ Studio は `direction` で行と操作を分けます(Q-15。[拒否を読む所
 **material の route の既定と、受け皿の無い material の拒否。**rendering 文書の root の `material_route_default` (`"auto"` / `"forward"`。意味と書ける場所は [第6章 §6.7](06_rendering.md))は編集 RPC からも変えられます。
 
 - `add_authored_pass` に `material_route_default` を渡すと、pass の fragment と root の key の変更が**同じ候補文書集合**に入り、
-  1 回の preflight・1 つの ticket になります([pass と route の既定を 1 つの候補に入れる所](../../src/core/communication/renderconfigeditor.cpp#L6116))。
+  1 回の preflight・1 つの ticket になります([pass と route の既定を 1 つの候補に入れる所](../../src/core/communication/renderconfigeditor.cpp#L6118))。
   下の受け皿の検査は、新しい既定で計算し直した route で行います。今の値と同じなら key は書かず、再起動も求めません。
 - `set_material_route_default` は既定だけを変えます(上の表)。
 - `edit_graph_document` と `edit_graph_instances` も任意の `material_route_default` を受けます。規則は `add_authored_pass` と   同じで、graph の変更と root の key の変更が同じ ticket・同じ候補に入り、preflight と live の判定は新しい既定で計算し直した route で   行います([graph の編集に route の既定を乗せる所](../../src/core/communication/renderconfigeditor.cpp#L4932))。今の値と同じなら key は書かず、再起動も求めません。
@@ -1533,7 +1533,7 @@ Studio は `direction` で行と操作を分けます(Q-15。[拒否を読む所
     Studio の Graph タブが、forward の material pass を足した履歴項目の Undo で使います(下の「グラフの装着を編集する」の「シーン編集との違い(こちら側です)」)。
     test: `renderconfigeditor_test` の [「UD-3 edit_graph_document removes the route default with graph ops in one ticket」](../../test/renderconfigeditor_test.cpp#L8857)(`"forward"` を付けた ops の後、逆の ops と `null` が 1 回の候補判定・1 回の runtime 適用で member を消し、文書が最初と同じに戻り、`get_graph_instances` が `null` を返す)と [「UD-3 removing explicit auto restores absence without changing runtime routes」](../../test/renderconfigeditor_test.cpp#L8899)(明示の `"auto"` の削除は `restart_required` 無しで commit され、`set_material_route_default` の `null` は断られる)。
   - test: `renderconfigeditor_test` の     [「RS-2 edit_graph_document and edit_graph_instances carry material_route_default in their ticket」](../../test/renderconfigeditor_test.cpp#L8772)     (runtime を差し替えて、判定に使われた既定・`restart_reason`・同じ値の 2 回目・`edit_graph_instances`・値の誤りを見る)と、`engine_primitives_test` の     [「RS-2 edit_graph_document carries material_route_default for a forward material pass」](../../test/engine_primitives_test.cpp#L1196)     (GPU。blank の project に、`render.image` 2 枚(color / depth)・body が `draw.material` 1 つの definition・`over.draw_items(contract)`・     `order: phase_default`・else の分岐 1 つの `graph.loop`・inputs が `color` / `depth` / `draws` の `render.material_pass`(forward_opaque_v1)を     送り、既定無しは `material_route_unserved@1` で文書が変わらないこと、`"forward"` 付きは commit と `restart_required`、起動し直すと     frame plan にその pass が出ることを見る。`restart_reason` の code は `material_physical_contract_changed` と `material_route_default_changed`     のどちらも受けています)。
-- engine はこの key を**起動時に 1 回しか読まない**ので、値を変えた ticket の commit の結果(`get_edit_result` /   `step_frame` の `edit_results[]`)に **`restart_required: true`** と `restart_reason: {code: "material_route_default_changed"}`が付きます   ([G-4 の restart_required と restart_reason を付ける所](../../src/core/communication/renderconfigeditor.cpp#L8586))。engine を起動し直すまで、   route が変わる material は今の pipeline のまま描かれます。⚠ commit から再起動までの間に登録された material は、   古い既定で lowering されます。
+- engine はこの key を**起動時に 1 回しか読まない**ので、値を変えた ticket の commit の結果(`get_edit_result` /   `step_frame` の `edit_results[]`)に **`restart_required: true`** と `restart_reason: {code: "material_route_default_changed"}`が付きます   ([G-4 の restart_required と restart_reason を付ける所](../../src/core/communication/renderconfigeditor.cpp#L8588))。engine を起動し直すまで、   route が変わる material は今の pipeline のまま描かれます。⚠ commit から再起動までの間に登録された material は、   古い既定で lowering されます。
 - runtime shader compiler の無い build で `"forward"` を頼むと、ticket を作る前に **`material_route_default_unavailable@1`**
   (`value: "forward"`・`reason: "runtime_shader_compiler_disabled"`)で断られます。engine の組込 material の forward 版を
   compile できないためです。
@@ -1548,19 +1548,19 @@ material pass を 1 つも持たない候補は、この code では断りませ
 | `unserved[]` | 受け皿の無い route ごとに `route`・`shader_contract`・`materials[]`・`hint`。`materials[]` の各項目は `name`(名前の無い material は `<unnamed>`)・`origin`(`builtin` / `document` / `asset` / `unknown`)・`source`(文書か asset の参照。組込には無い) |
 | `hint` | route ごとの hint を `; ` でつないだもの |
 
-route ごとの hint は 3 つです([route ごとの hint の文](../../src/project/renderpipeline.cpp#L743)):
+route ごとの hint は 3 つです([route ごとの hint の文](../../src/project/renderpipeline.cpp#L772)):
 `forward_opaque` → forward_opaque_v1 の material pass を足す / `deferred_geometry` → root の `material_route_default` を
 `"forward"` にするか deferred_geometry_v1 の material pass を足す / `forward_transparent` → forward_transparent_v1 の
 material pass を足す。`message` は load 時の fatal と同じ読める 1 文です。code と fields は renderer の文字列の経路を
 `<code>: <JSON>` の形で通り、editor の completion handler が名前付きの拒否に戻します
-([文字列から拒否に戻す所](../../src/core/communication/renderconfigeditor.cpp#L8423))。
+([文字列から拒否に戻す所](../../src/core/communication/renderconfigeditor.cpp#L8425))。
 
 
 #### live material の契約変更と再起動
 
 **live の material が受けられない編集は、書いてから再起動を求めます。**runtime に行く ticket(`edit_graph_document`・ `add_authored_pass`・`set_material_route_default`・`restore_render_documents` など、候補を engine に渡して組み直すもの)は、組み直した 候補を生きている material にも当てます([`MaterialGenerationPlanner::validateCompatibility()`](../../src/core/material/materialgenerationplanner.cpp#L1204))。候補の pass が生きている material を別の**物理の描画の契約**(color の format・depth の format・sample 数・local read の割り当て・attachment の state)で描く ことになると、material の pipeline をその場で作り直せないので live には載せられません。
 
-RS-1 からは、**それが唯一の拒否のときだけ**、editor は文書を commit し、live の pipeline は今のまま残して、 ticket を次の結果で終えます([型付きの拒否のときだけ commit する所](../../src/core/communication/renderconfigeditor.cpp#L8371))。
+RS-1 からは、**それが唯一の拒否のときだけ**、editor は文書を commit し、live の pipeline は今のまま残して、 ticket を次の結果で終えます([型付きの拒否のときだけ commit する所](../../src/core/communication/renderconfigeditor.cpp#L8373))。
 
 | field | 中身 |
 |---|---|
@@ -1582,7 +1582,7 @@ RS-1 からは、**それが唯一の拒否のときだけ**、editor は文書�
   もう一度 commit と `restart_required` になります。material pass を消して live と合う形に戻せば、普通に live に載ります。engine を
   起動し直すまで、`get_frame_plan` は古い live の世代を言います。
 - 上の G-4 の route の既定の再起動と両方が当たる ticket では、`restart_reason` は `material_physical_contract_changed` の方です
-  ([RS-1 の restart_reason を載せる所](../../src/core/communication/renderconfigeditor.cpp#L8585))。
+  ([RS-1 の restart_reason を載せる所](../../src/core/communication/renderconfigeditor.cpp#L8587))。
 - `set_layout` だけの `edit_graph_document`(N-6。runtime に行かない)は対象外です。`material_route_default` を付けたものは runtime に行くので対象です。
 - Studio がこの結果を受けて engine を起動し直す流れは、[Studio のノードキャンバス](15_studio.md#studio-のノードキャンバスgraph-タブ)の   「engine の再起動が要る graph の編集」にあります。
 - ディスクからの読み直しとの関係: [`Renderer::reloadRenderPipelineFromDisk()`](../../src/core/vkcore/renderer.cpp#L3597) は live の material の照合を   外し([`validate_live_materials = false` の所](../../src/core/vkcore/renderer.cpp#L3632))、同じ transaction の中で material の shader と pipeline を   作り直してから公開し、作り直しが失敗すれば候補世代ごと捨てて旧世代を保ちます([第6章 §6.7](06_rendering.md) の   「任意 G-buffer / material output ABI・attachment state」)。RS-1 が commit した文書を、その engine 自身の file watcher が拾うことは   ありません。RS-1 の editor は `--rpc` で起こした engine の中でだけ動き([RPC を受け始める所](../../src/core/appflow/loop.cpp#L703))、   `--rpc` の engine では watcher の gate が閉じているためです([gate の条件](../../src/core/watch/reloadgate.cpp#L46))。`hot_reload` を宣言して   gate が開いていても、`--rpc` の下では watcher の変更は render pipeline の参加者に届きません。同じ project を   `--rpc` 無しの窓ありで開いている別の engine があれば、その watcher がファイルを拾い、ディスクの経路で組み直しを試みます   (この道を端から端まで通す test は見当たりません。未確認)。
@@ -1608,7 +1608,7 @@ RS-1 からは、**それが唯一の拒否のときだけ**、editor は文書�
 - 判定は `requireEveryMaterialServed()` の最後で、material pass を持たない候補だけが [`MaterialPassesRemoved`](../../src/core/material/materialpassesremoved.hpp#L12) を投げ、editor が RS-1 と同じ所で `restart_reason` に変えます([型から restart_reason を作る所](../../src/core/communication/renderconfigeditor.cpp#L246))。
   この型は `validateCompatibility()` の最初で投げますが、material pass の無い候補では、その後ろの material ごとの検査(output schema・`ray_query`・物理の契約)が見る binding がありません(コードの読み)。XR の variant の検査と publish の直前の準備がこの経路で走らないのは RS-1 と同じです。
 - material pass を 1 つでも持つ候補の受け皿の不足と、`graph.loop` の描き漏れは、上の `material_route_unserved@1` で断り、文書は変わりません。
-- `material_route_default` も変わる ticket では、`restart_reason` はこちら(`material_passes_removed`)です。G-4 の `material_route_default_changed` より RS-1 の枝を先に見るためです(コードの読み。[restart_reason を載せる所](../../src/core/communication/renderconfigeditor.cpp#L8377))。
+- `material_route_default` も変わる ticket では、`restart_reason` はこちら(`material_passes_removed`)です。G-4 の `material_route_default_changed` より RS-1 の枝を先に見るためです(コードの読み。[restart_reason を載せる所](../../src/core/communication/renderconfigeditor.cpp#L8379))。
 - test: `engine_primitives_test` の [「UD-1 removing the last material pass commits for restart and starts like a blank project」](../../test/engine_primitives_test.cpp#L612)(GPU。forward の pass だけの project を起動し、contract を変えて受け皿を失わせる `restore_render_documents` が `material_route_unserved@1` で断られて文書も世代も変わらないこと、Blank の root に戻す `restore_render_documents` が `material_passes_removed` で commit されること)、`renderconfigeditor_test` の [「UD-1 a no-material-pass restart commits documents and retains the published generation」](../../test/renderconfigeditor_test.cpp#L8194)、`raytracing_rt3_1_production_test` の [「RT4 callable dispatch selects its SBT record and reloads its implementation」](../../test/raytracing_rt3_1_production_test.cpp#L6877)(GPU。material pass の無い世代では検査と再読み込みの準備がこの型を投げ、`restore_render_documents` が `material_passes_removed` で commit され、公開中の世代と callable の出力が起動し直すまで残り、起こし直した engine に material pass が無いこと)。
 
 **再起動を求める commit は、書く前に起動時と同じ検査を通します。**上の RS-1(`material_physical_contract_changed`)、最後の material pass を外す編集(`material_passes_removed`)、ray の layout の有無の変更(`ray_layout_mode_changed`)、G-4 の route の既定の変更(`material_route_default_changed`)は、live に載せずに文書だけを commit します。その前に editor は候補の文書を project の resolver で展開し直し(公開中の世代の資源は使いません)、起動時と同じ logical graph と資源の解決を通します([`RenderConfigEditorService::restartGraphRejection()`](../../src/core/communication/renderconfigeditor.cpp#L1429))。起動し直した engine が読めない root から起動することはありません。
@@ -1617,7 +1617,7 @@ RS-1 からは、**それが唯一の拒否のときだけ**、editor は文書�
   - 例(`renderconfigeditor_test` の [「UD-4 restart boundary rejects an unreadable candidate even if the runtime returns an early restart reason」](../../test/renderconfigeditor_test.cpp#L13775)): 消える image を `present` がまだ読む候補は、`render_graph.unknown_resource@1` で `graph: "main_render"`・`node: "present"` が付き、message に image の名前(`render_material_pass__albedo`)が入ります(RC-3c1b の前は `render_pipeline_preflight_failed` で、message に image の名前が入っていました)。
   - この検査は frame planner の検査のうち、順の決まらない 2 writer(`render_graph.ambiguous_writes@1`)だけは見ません(`frame_node_order` の後で決まるため。起動し直した compile が断ります)。
 - resolver を持たない構成の editor では、**`render_config_restart_validation_unavailable`**(message は `The restart candidate requires the project document resolver`)で断り、文書は変わりません。
-- 検査する時: RS-1・`material_passes_removed`・`ray_layout_mode_changed` は runtime が型付きで断った後、書く前です([呼ぶ所](../../src/core/communication/renderconfigeditor.cpp#L8378))。route の既定の変更は、runtime に渡す前です(runtime が live に載せて commit してしまう前に判定するため。[呼ぶ所](../../src/core/communication/renderconfigeditor.cpp#L8771))。`reload_render_documents` の再起動も同じ検査を通ります(ディスクの文書をそのまま次の起動に使う道で、書く文書はありません)。
+- 検査する時: RS-1・`material_passes_removed`・`ray_layout_mode_changed` は runtime が型付きで断った後、書く前です([呼ぶ所](../../src/core/communication/renderconfigeditor.cpp#L8380))。route の既定の変更は、runtime に渡す前です(runtime が live に載せて commit してしまう前に判定するため。[呼ぶ所](../../src/core/communication/renderconfigeditor.cpp#L8773))。`reload_render_documents` の再起動も同じ検査を通ります(ディスクの文書をそのまま次の起動に使う道で、書く文書はありません)。
 
 
 #### ray layout・bindings の読み取り
@@ -1761,7 +1761,7 @@ params は空の object だけで、鍵を足すと `-32602` です。GPU の te
 - 例外の型は [`RayLayoutModeChanged`](../../src/core/shader/raygrouplayout.hpp#L150)(`from()` / `to()`、`what()` は前の文のまま)で、render pipeline の登録が
   publish の直前に投げます(第6章 §6.15)。
 
-**名前の候補。**`get_render_authoring_context` に `ray_layout` が付きます([`rayLayoutAuthoringNames()`](../../src/core/communication/renderconfigeditor.cpp#L5396))。
+**名前の候補。**`get_render_authoring_context` に `ray_layout` が付きます([`rayLayoutAuthoringNames()`](../../src/core/communication/renderconfigeditor.cpp#L5397))。
 root が名指す layout の文書から読むので、mode が `none` でも、文書に layout があれば名前が出ます。
 
 ```json
@@ -1798,7 +1798,7 @@ catalog の `render.compute` の `traced_ray_types` / `misses` / `hit_shaders` �
 | `pelican.ray_tracing.shader_record_abi_mismatch@1`(EB-3。RT pipeline の作成の時) | `{task, stage, shader, ray_type?, group?, miss?, expected, actual}`。`expected` は宣言してよい record(layout の物理 record を順に `{name, offset, type}`)、`[]` は layout に record が無い、`null` はここでは宣言できない(raygen / miss / untraced の slot)。`actual` は宣言している record(`{offset, type}`)。callable の record の食い違いは `{task, stage, shader}` だけ |
 | `pelican.ray_tracing.payload_mismatch@1`(EB-3。同上) | 受け取る側の shader を指す `{task, stage, shader, ray_type?, group?, miss?, expected, actual, caller: {stage, shader, instruction}}`(`expected` は呼ぶ側の payload の型、`actual` は受け取る側の incoming の型で、宣言が無ければ `null`)。any hit と closest hit の食い違いは `caller` の代わりに `closesthit` |
 
-- **編集・reload の拒否**: `error.code` がその code で、fields は `error` に平らに(`ticket` / `participant` と同じ段に)並びます([`rayTracingTaskRefusal()`](../../src/core/communication/renderconfigeditor.cpp#L5425))。
+- **編集・reload の拒否**: `error.code` がその code で、fields は `error` に平らに(`ticket` / `participant` と同じ段に)並びます([`rayTracingTaskRefusal()`](../../src/core/communication/renderconfigeditor.cpp#L5426))。
   `task` があれば候補を合成し直して、宣言した文書の `document` を足します: feature の task は feature の参照(`project://features/…`)、graph の node の task は   root の参照(editor の `source_reference` の綴りで、`project://` が付かない。実例 `passes/main_rendering_config.json`)と `node`(definition の中なら `definition` も)、   preset の task は preset の参照です。綴りが 2 通りなので、Studio が `document` で照らすなら正規化して比べます。
 - **PB-1 の問題の一覧**(reload の道): `{source: "reload_rpc", code, document, document_kind: "feature", fields: {task, ray_type, group, …}}`(GPU の test)。edit の拒否は一覧に入りません(PB-1 のとおり)。
 - **起動時の fallback**: `get_status.render_pipeline.refusal` が `{code: "pelican.ray_tracing.hit_shader_missing@1", task, ray_type, group, message}` です   ([`renderPipelineRefusalJson()`](../../src/core/vkcore/renderer_config.cpp#L469))。ここと hot reload の道には `document` / `node` が付きません(合成の結果をその場に持たないため)。
@@ -1898,7 +1898,7 @@ catalog の `render.compute` の `traced_ray_types` / `misses` / `hit_shaders` �
   ほかのバイトはそのまま残します([消す所](../../src/project/renderconfigdocument.cpp#L831))。同じキーを `set` と `remove` の両方に書く要求と、
   どちらにもキーが無い要求は invalid params です。
 - root の文書のバイトが変わらないとき(無いキーの `remove` だけ、など)は、commit の結果に `no_change: true` が付き、`documents` は空です
-  ([no_change を返す所](../../src/core/communication/renderconfigeditor.cpp#L8704))。
+  ([no_change を返す所](../../src/core/communication/renderconfigeditor.cpp#L8706))。
 - 書き先は root の rendering 節だけです。preset を選ぶ root(rendering 節に `pipeline` がある root)では、`multisampling` と
   `resolver_version` を **`rendering_key_not_allowed_here`**(`key`・`reason`)で断ります。`reason` は `multisampling` が
   `preset_root_takes_pipeline_settings_msaa`(preset を選ぶ root の MSAA は `pipeline.settings.msaa` に書く)、`resolver_version` が
@@ -1925,7 +1925,7 @@ catalog の `render.compute` の `traced_ray_types` / `misses` / `hit_shaders` �
 - それ以外のキー(`ray_group_layout` や graph root のキーなど)は **`rendering_key_not_editable`**(`key`)です。
 - 要求のキーは書く前に全部判定し、1 つでも断れば何も書きません(ticket も取りません)。
 - 値の形を見る専用の検査はありません。ほかの authored の編集と同じく、ticket を取る前の preflight(候補の合成と graph の変種の合成)と、
-  commit のときの engine の組み直しで判定します([ticket を取る所](../../src/core/communication/renderconfigeditor.cpp#L6017))。preflight で断られた値は、ticket を取らずに
+  commit のときの engine の組み直しで判定します([ticket を取る所](../../src/core/communication/renderconfigeditor.cpp#L6019))。preflight で断られた値は、ticket を取らずに
   `render_pipeline_preflight_failed`(`method: "edit_rendering_keys"`)で返ります。preflight を通って組み直しで断られた値は、ticket の結果が
   `committed: false` と `render_pipeline_preflight_failed` になります。どちらも文書は変わりません。test では、preset を選ぶ root の
   `draw_sort: "el3_not_an_object"` が前者、direct root の `draw_sort: {"opaque": {"provider": 5}}` が後者でした。
@@ -1943,27 +1943,28 @@ catalog の `render.compute` の `traced_ray_types` / `misses` / `hit_shaders` �
 
 Studio の Frame Plan の Passes / Resources の行の右クリックが `edit_target_planning` を送ります(下の「Frame Plan から graph 全体の決定を書く」)。Frame Plan の Backends タブの Pin this candidate / Unpin が `edit_vulkan_plan_pins` を、Physical plan タブの Freeze / Remove / Eject again が `put_vulkan_physical_fragment` を送ります(下の「下の層の決定を Frame Plan から書く」)。
 
-- **`edit_target_planning {base_source_digest, graph, nodes?, resources?}`**([`editTargetPlanning()`](../../src/core/communication/renderconfigeditor.cpp#L5477))。`nodes` は   `{<node 名>: {serial?, isolate?} | null}`、`resources` は `{<資源名>: {no_alias?} | null}` で、`target_planning.graphs.<graph>` に名前ごとに混ぜます   ([混ぜる所](../../src/core/communication/renderconfigeditor.cpp#L5196))。
+- **`edit_target_planning {base_source_digest, graph, nodes?, resources?}`**([`editTargetPlanning()`](../../src/core/communication/renderconfigeditor.cpp#L5478))。`nodes` は   `{<node 名>: {serial?, isolate?} | null}`、`resources` は `{<資源名>: {no_alias?} | null}` で、`target_planning.graphs.<graph>` に名前ごとに混ぜます   ([混ぜる所](../../src/core/communication/renderconfigeditor.cpp#L5196))。
   - 値が `null` の名前は entry ごと消します。object なら書いた field だけを置き換え、書かなかった field は残します(field の値が `null` ならその field を消します)。
+  - ✅RC-6a1 から field の値は裸の bool か `{"value": bool, "strength": "require" | "prefer"}` で、送った形のまま保存します(包んだ形を中で混ぜたり裸に直したりしません)。形の誤りは下の「値の誤り」と同じく組み直しで判定します。値の意味と強さ・出所は[第6章](06_rendering.md#target-planning-policy)の「宣言の強さと出所」です。
   - field が無くなった entry、名前が無くなった `nodes` / `resources`、中身が無くなった graph と `graphs` は消えます。`target_planning` 自体も空になれば消えます     (`profile` や `diagnostics` が残っていれば残ります。この 2 つを書く RPC は無く、文書を直すか `restore_render_documents` です)。
   - `nodes` と `resources` のどちらにも名前が無い要求、名前の値が object でも `null` でもない要求は invalid params です。field の名前と値の型はここでは見ず、     下の「値の誤り」と同じく組み直しで判定します。
   - 名前は `get_frame_plan` が見せる展開名です。今の合成の frame graph に無い名前は、ticket を取らずに **`target_planning_name_unknown`**(`graph`・`kind`・`name`。
-    `kind` は `node` / `resource` / `graph`)で断ります([断る所](../../src/core/communication/renderconfigeditor.cpp#L5506))。
+    `kind` は `node` / `resource` / `graph`)で断ります([断る所](../../src/core/communication/renderconfigeditor.cpp#L5507))。
   - 名前の表は、合成した config を frame graph として読んだ段のものです([`planningNamesOf()`](../../src/core/communication/renderconfigeditor.cpp#L5166))。node は frame graph の node(pass と compute task)、     資源は宣言した target・history の target・node が書く資源と、node が読んでいれば `swapchain` です。`graph_transforms`・`render_strategy`・subgraph の置き換え     (region の provider)はこの後の compile の段で当たり、`__scene_acceleration_structure` も compile が足す node なので、これらが作る node の名前は     `target_planning_name_unknown` になります(コードの読み。test はありません)。
   - 消すとき(`null`)は緩く、今の合成に無い名前でも、root の entry がその名前を持っていれば消せます(組み直しで名前が無くなった後の掃除のため)。
   - ループの回の node(`<loop>/<element>/<node>`)は合成した config に在るので名前の表は通りますが、`target_planning` の node に展開名を書くことは LP-1a が     `graph.loop_expansion_referenced@1` で断ります([第6章](06_rendering.md) の「展開名は書けません」)。コードの読みでは、この要求は組み直しの preflight で     断られます(test は無く、未確認)。ループの回ごとの決定は、root の `fold_groups` にローカル名(`{node: <ループ>, element: N}`)で書きます(FG-1。下の「断片の決定を宣言する」)。
-  - 検査済みの fold group が同じ graph・同じ名前・同じ field を `true` に決めているとき、その field に `false` を書く要求は、ticket を取らずに     **`graph.fold_decision_conflict@1`**(`group`・`name`・`field`)で断ります([EL-2 から断る所](../../src/core/communication/renderconfigeditor.cpp#L5549))。比べる相手は、今の合成が     fold group から足した決定です。
+  - 検査済みの fold group が同じ graph・同じ名前・同じ field を `true` に決めているとき、その field に `false` を書く要求は、ticket を取らずに     **`graph.fold_decision_conflict@1`**(`group`・`name`・`field`)で断ります([EL-2 から断る所](../../src/core/communication/renderconfigeditor.cpp#L5551))。比べる相手は、今の合成が     fold group から足した決定です。✅RC-6a1 から包んだ `{"value": false, …}` も `false` として比べます。
 - **`edit_vulkan_plan_pins {base_source_digest, family, pin, graph?}`** と **`put_vulkan_physical_fragment {base_source_digest, family, fragment, graph?}`**
-  ([`editVulkanPlanPins()`](../../src/core/communication/renderconfigeditor.cpp#L5570) / [`putVulkanPhysicalFragment()`](../../src/core/communication/renderconfigeditor.cpp#L5587))。
+  ([`editVulkanPlanPins()`](../../src/core/communication/renderconfigeditor.cpp#L5572) / [`putVulkanPhysicalFragment()`](../../src/core/communication/renderconfigeditor.cpp#L5589))。
   - `family` は `flat` / `preview` / `xr` のどれかです。package(`pin` / `fragment`)は compiler が読むのと同じ parser で形を見ます([形を見る所](../../src/core/communication/renderconfigeditor.cpp#L5227))。
   - package は、その family の配列のうち同じ `graph` の package を置き換え、無ければ末尾に足します([置き換える所](../../src/core/communication/renderconfigeditor.cpp#L5256))。
   - `null` は、`graph` があればその family のその graph の package を、無ければその family の package を全部消します。package を渡すときに `graph` を付けると
     invalid params です(package が自分の `graph` を持つため)。family の配列が空になればその family を、family が 1 つも無くなればキーごと消します。
   - fragment の fingerprint が今の plan と合うかは、commit の組み直しで runtime の linker が判定します。合わなければ ticket の結果(`get_edit_result` /
     `step_frame` の `edit_results[]`)が **`physical_fragment_stale`**(`family`・`graph`・`fingerprint`・`expected`・`actual`)になり、文書は変わりません
-    ([組み直しの結果から作る所](../../src/core/communication/renderconfigeditor.cpp#L8446)、[`physicalFragmentStaleRefusal()`](../../src/core/communication/renderconfigeditor.cpp#L5362))。
+    ([組み直しの結果から作る所](../../src/core/communication/renderconfigeditor.cpp#L8448)、[`physicalFragmentStaleRefusal()`](../../src/core/communication/renderconfigeditor.cpp#L5363))。
     `fingerprint` は `logical_graph`(論理 graph が変わった)か `automatic_plan`(自動計画の前提が変わった)、`expected` は今の plan の値、`actual` は package の値です
-    ([linker が投げる所](../../src/project/vulkanphysicalfragment.cpp#L2783))。`family` は root の節が同じ graph の package を持つ family で、preset が持つ package
+    ([linker が投げる所](../../src/project/vulkanphysicalfragment.cpp#L2784))。`family` は root の節が同じ graph の package を持つ family で、preset が持つ package
     のときは付きません。ticket の前の preflight は fragment を link しないので、この拒否は ticket を取った後にだけ来ます。
   - v0 で eject した fragment(format が `R16G16B16A16Sfloat` の綴り)は形の検査を通りますが、RC-3a1 から `automatic_plan_fingerprint` の値が変わったので、
     `fingerprint: "automatic_plan"` の `physical_fragment_stale` になります(コードの読み。[第6章](06_rendering.md#v0-physical-fragment-format))。今の plan の `ejectable_physical_fragment` を送り直します。
@@ -1977,13 +1978,15 @@ Studio の Frame Plan の Passes / Resources の行の右クリックが `edit_t
   - **順の拒否(✅RC-3d2)**: fragment の展開した node の順が自動計画(= frame plan)の順と違えば、linker が `physical_fragment.reorders_frame_plan@1`
     `{graph, position, expected, actual, message, frame_node_order? | not_expressible?}` で断ります。依存を守る並べ替えも断ります(利用者の決定。順は `edit_frame_node_order` で変えます)。
     `frame_node_order` が付いていれば、root の rendering 節の `frame_node_order` にそのまま貼れる並びです(形と `not_expressible` の理由は[第6章](06_rendering.md) の「Vulkan physical fragment」の `dependency_safe`)。
-    コードの読みでは、commit の組み直しのこの拒否は `GraphRegistryError` なので、ticket の結果はこの code と detail の欄を持つ名前付きの拒否になります([名前付きにする所](../../src/core/communication/renderconfigeditor.cpp#L8439))。この RPC の道を通した test は無く、未確認です。Studio にこの code の専用の表示はありません(src/devstudio の検索で 0 件)。
+    コードの読みでは、commit の組み直しのこの拒否は `GraphRegistryError` なので、ticket の結果はこの code と detail の欄を持つ名前付きの拒否になります([名前付きにする所](../../src/core/communication/renderconfigeditor.cpp#L8441))。この RPC の道を通した test は無く、未確認です。Studio にこの code の専用の表示はありません(src/devstudio の検索で 0 件)。
   - complete physical plan の package を書く RPC と Studio の UI はありません。package が stale なら `complete_physical_plan.stale_automatic_plan@1`(`graph`・`expected`・`actual`・`message`)、順が frame plan と違えば
     `render_compiler.physical_order_mismatches_frame_plan@1` です([第6章](06_rendering.md#physical-order-follows-frame-plan))。
   - pin の食い違い(第6章の `pin package is stale` / `pinned backend candidate is infeasible`)には専用の code がなく、下の「値の誤り」と同じ形で返ります(コードの読み)。
 - 3 本に共通:
   - preset を選ぶ root で、preset の `config` が同じキーを持っていれば **`rendering_key_not_allowed_here`**(`key`・`reason: "preset_declares_key"`)です。
     preset を fork(`fork_render_pipeline`)してそちらを直します([断る所](../../src/core/communication/renderconfigeditor.cpp#L5047))。preset が持っていなければ、preset を選ぶ root の rendering 節にも書けます。
+    ✅RC-6a1 から、`edit_target_planning` だけは `@2` のレシピ(`version: 2`)が `target_planning` を持っていても断りません。root の宣言はレシピの宣言と葉ごとに競って root が勝ちます([第6章](06_rendering.md#target-planning-policy))。`@1` の preset は今までどおり断ります。
+  - ✅RC-6a1 から、作者の `target_planning` の宣言(engine 以外。`profile` と `required_capabilities` は数えない)がある graph に `edit_vulkan_plan_pins` / `put_vulkan_physical_fragment` で package を書く要求、または package のある graph に `edit_target_planning` で宣言を書く要求は、組み直しが `target_planning.policy_with_legacy_package@1`(`graph`)で断ります(コードの読み。この RPC の道を通した test は無く、未確認)。
   - 値の形の誤り(受けない field、`family` の綴り、parser が断る package など)は invalid params で、ticket を取りません。意味の誤りは EL-3 と同じく、
     preflight か commit の組み直しの `render_pipeline_preflight_failed` です。
   - ticket の id は `render-authored-pass-<N>`、結果の `operation` はメソッド名です。commit の結果は RD-1 の `documents` を持つので、`restore_render_documents`
@@ -2020,7 +2023,7 @@ Studio の Frame Plan の Passes / Resources の行の右クリックが `edit_t
 (`blur` は `graph.loop`、`fold_image` は `render.image`。FG-1 の test の文書と同じ名前です。)
 
 - **形**: `fold_groups.<group> = {nodes: [root の node id], folded: {kind: "decisions", decisions?: {serial?, isolate?, no_alias?}, verified?: {digest, at, frames?}}}`
-  ([`parseGraphFoldGroups()`](../../src/project/graphfold.cpp#L129))。`nodes` は空でない配列で、同じ id は 2 回書けません。知らない鍵、`verified.digest` が 64 桁の小文字 hex でないなどの
+  ([`parseGraphFoldGroups()`](../../src/project/graphfold.cpp#L130))。`nodes` は空でない配列で、同じ id は 2 回書けません。知らない鍵、`verified.digest` が 64 桁の小文字 hex でないなどの
   形の誤りは文書の誤りです(`fold_nodes` では invalid params)。`nodes` の node が文書に在るかはここでは見ません(消えた node は下の digest を変え、group は `stale` になります)。
 - **主語** `{node, element?, port?}`。`node` は group の `nodes` のどれかで、外を指すと **`graph.fold_subject_outside@1`**(`group`・`subject`)です。
   - `serial` / `isolate`: node が作った pass と compute task。`graph.loop` と `graph.instance` の node はその展開の全部、`element` を付けるとループのその回だけ。
@@ -2028,21 +2031,21 @@ Studio の Frame Plan の Passes / Resources の行の右クリックが `edit_t
   - `no_alias`: 資源。`render.image` / `render.buffer` の node 自身、ループ / instance の node ならそれが展開した target と buffer の全部(`element` でその回)、
     `{node: <書き手>, port}` ならその node の入力 `port` につながった `render.image` / `render.buffer`(`render.target_ref` なら指す target)。`port` を書けるのは `no_alias` だけです。
 - `kind` は `decisions` だけです。ほか(`replacement` など)は **`graph.fold_kind_unsupported@1`**(`group`・`kind`)。
-- **写す段**([`applyGraphFoldGroups()`](../../src/project/graphfold.cpp#L270)): 合成が GL-2a の `graph_origin` を provenance に載せた直後、`target_planning` を compile する前に
-  呼ばれます([呼ぶ所](../../src/project/featurecompose.cpp#L4095))。pass と task は provenance の `loop_origin` / `graph_origin` から作った root の node を引き、target と buffer は
+- **写す段**([`applyGraphFoldGroups()`](../../src/project/graphfold.cpp#L271)): 合成が GL-2a の `graph_origin` を provenance に載せた直後、`target_planning` を compile する前に
+  呼ばれます([呼ぶ所](../../src/project/featurecompose.cpp#L4191))。✅RC-6a1 から、その前にもう 1 回、Graph の配置・`pass_replacements`・inactive で対象が消える前に、配置した pass を足した config で呼ばれ([前の呼ぶ所](../../src/project/featurecompose.cpp#L3865))、足した宣言をその時の対象に作者名で結び付けます。後の呼び出しは、ループの展開で後から出来た対象の分だけを足して結びます。pass と task は provenance の `loop_origin` / `graph_origin` から作った root の node を引き、target と buffer は
   `loop_origin` か展開名の先頭(`<node>/…`)で引きます。feature の provenance は見ません。足す先は、pass ならその pass の family の graph、compute task と資源は全 family の graph の
   `target_planning.graphs.<graph>.nodes.<展開名>.<field>` / `.resources.<展開名>.no_alias` で、値は `true` です。どこにも当たらない主語(ループにもう無い回など)は何も足しません。
   合成した config の `target_planning` が同じ entry を `false` にしていれば、組み立てが **`graph.fold_decision_conflict@1`**(`group`・`name`・`field`)で断られます。
-- **digest**([`graphFoldGroupDigest()`](../../src/project/graphfold.cpp#L186)): group の `nodes` の root の node(id の順)を、入力のうち group の他の node から来る線だけを残して入れ、
+- **digest**([`graphFoldGroupDigest()`](../../src/project/graphfold.cpp#L187)): group の `nodes` の root の node(id の順)を、入力のうち group の他の node から来る線だけを残して入れ、
   それらが使う definition(instance の definition とループの各分岐の body。中の node が使う definition も辿る。definition の `layout` は除く)を並べた JSON を、鍵を整列して
   dump した sha256(64 桁の小文字 hex)です。root の `layout` と group の外の node は入りません。node の `parameters` は入るので、ループの `count` を変えると digest が変わり、
   印は古くなります(決定の宣言は古くならず、検査し直すまで効かないだけです)。文書に無い node は `null` として入ります。
 - **印と失効**: `verified.digest` が今の digest と同じ group(`state: "verified"`)の決定だけが効きます。`verified` が無い(`unverified`)・digest が違う(`stale`)group は
   決定を捨てて開いた形で走り、frame plan の `diagnostics` に `{kind: "fold_unverified" | "fold_stale", subject: <group>, detail: {verified_digest?, current_digest}}` が出ます
-  (`verified_digest` は `fold_stale` だけ。組み立ては断りません。[診断にする所](../../src/project/renderpipeline.cpp#L1427))。
+  (`verified_digest` は `fold_stale` だけ。組み立ては断りません。[診断にする所](../../src/project/renderpipeline.cpp#L1713))。
 - **frame plan での見え方**: 効いた決定は、最上位の `fold_decisions` `[{group, kind: "node" | "resource", name, field}]`(その frame graph の分。無ければ鍵ごと無い)と、
   `physical_target_plan.decisions[]` の `{id: "pelican.plan.fold_decision_applied@1", subject: <展開名>, selected: <field>, detail, from_nodes, from_fold: <group>}` に出ます
-  ([足す所](../../src/core/renderingpass/frameplanner.cpp#L591))。`detail` は `fold group <group> declared it in target_planning nodes` / `… resources` です。
+  ([足す所](../../src/core/renderingpass/frameplanner.cpp#L593))。`detail` は `fold group <group> declared it in target_planning nodes` / `… resources` です。
 - **`get_fold_groups {}`** → `{source_digest, fold_groups: [{group, nodes, kind, digest, verified?, state}]}`(group 名の順。`state` は `verified` / `stale` / `unverified`。
   読むだけ。[`getFoldGroups()`](../../src/core/communication/renderconfigeditor.cpp#L4061))。
 - **`fold_nodes {base_source_digest, group, nodes, folded}`**([`foldNodes()`](../../src/core/communication/renderconfigeditor.cpp#L4116)): group 1 つを書く root 編集の ticket
@@ -2206,12 +2209,12 @@ base が project の断片を直接指す行(project の preset のレシピな�
 - 所有は排他です。断片の pass では `editable_preset_pass` / `editable_root_pass` / `editable_feature_pass` は false で、`preset_declaration` / `root_declaration` は付きません。
 - `editable_fragment_pass` が true になるのは、断片が `project://` の文書で、その pass が編集できる種類(fullscreen / material / raster と一部の補助 pass。preset の pass と同じ判定)のときだけです。engine の断片の pass は false で、`fragment_edit_reason: "Materialize the engine fragment before editing its passes."` が付きます。`forward_base` の `__snapshot_opaque_color` などの写しの pass は、materialize した後も false です(test)。
 
-**編集する —— `edit_preset_pass` の `base_fragment_digest`**([`RenderConfigEditorService::editPresetPass()`](../../src/core/communication/renderconfigeditor.cpp#L5871))
+**編集する —— `edit_preset_pass` の `base_fragment_digest`**([`RenderConfigEditorService::editPresetPass()`](../../src/core/communication/renderconfigeditor.cpp#L5873))
 
 - `base_source_digest`(root)は今までどおり必須です。所有の digest は `base_preset_digest` / `base_feature_digest` / `base_fragment_digest` の**高々 1 つ**で、無ければ root の pass の編集です。2 つ以上は invalid params(JSON-RPC の `-32602`)です。
 - `base_fragment_digest` を送ると、その pass を project の断片の文書の `passes` の中で書き換えます(置換の規則はほかの書き先と同じ関数)。digest がその文書の今の digest と違えば `external_modification` です。
 - 拒否: 断片の pass に `base_fragment_digest` を付けずに送った、または `base_fragment_digest` を付けたが pass がその graph で断片のものでない → `fragment_pass_not_editable`(前者は `name` = 断片の名前)。engine の断片の pass → `render_fragment_not_materialized`(`name`)。`material_routing` を送った → `fragment_routing_not_editable`(routing は preset のもの)。断片の中に編集できる宣言が無い → `preset_pass_not_editable`。
-- 受け付けた後、commit の前に preset の digest か「その pass がその断片のものであること」が変わっていれば(先の ticket が preset の参照を替えた、など)、ticket の最終結果は `stale_source_digest` で、何も書きません([受付後の照合](../../src/core/communication/renderconfigeditor.cpp#L8667))。
+- 受け付けた後、commit の前に preset の digest か「その pass がその断片のものであること」が変わっていれば(先の ticket が preset の参照を替えた、など)、ticket の最終結果は `stale_source_digest` で、何も書きません([受付後の照合](../../src/core/communication/renderconfigeditor.cpp#L8669))。
 
 **追随に戻す —— `edit_rendering_keys` の `fragment_overrides`**: 新しい RPC はありません。`base_fragments` から今の map(`overridden` と `excluded` の行の `effective_reference`。外した行は `null`)を作り、戻す名前だけを除いて `set: {fragment_overrides: <残り>}` を送ります。残りが空なら `remove: ["fragment_overrides"]` です。project の断片の文書は消えずに残ります(どこからも指されない文書になります)。
 
@@ -2448,7 +2451,7 @@ port名と型・アクセス等は保持するため、groups_from/rays_fromのp
 辺は**ソケット中心からソケット中心**へ引かれ、対応するソケットを持たない辺(折り畳んだグループ、境界の stub)だけがノード矩形へ落ちます([配線](../../src/devstudio/view/frameplangraphics.cpp#L285))。
 辺のラベルは消えて tooltip になり、ノードを選ぶと触れていない辺が薄くなります ([不透明度](../../src/devstudio/view/frameplangraphics.cpp#L4796))。
 
-**辺は plan の `barriers` です(✅RC-2)。**以前は plan の `execution_plan` の依存から引いていたので、資源を渡さない順序だけの辺(明示の `after` / `before` / `snapshot_after`。灰色の破線で、ラベルは `order only: explicit_after` など)と、ラベルの `same-pixel attachment` がありました。RC-2 で execution plan が無くなり、辺は barrier から作り(同じ 2 つの間の barrier は 1 本に束ねます。[`dependencyRecords()`](../../src/devstudio/view/frameplangraphics.cpp#L412))、`after` だけでつないだ 2 つの node の間には辺を描きません(順は node の `order` で見ます)。ラベルの印で残るのは physical plan から出る `absorbed in fused scope` です。region の凸の判定、畳んだグループに出入りする辺、境界の stub、部分木の列も barrier だけで決まります。test: `devstudio_frameplan_graph_test` の [「WP347 production edges are the plan's barriers and show fused absorption」](../../test/devstudio_frameplan_graph_test.cpp#L2985)(`after` だけの組に辺が無いことを見ます)。
+**辺は plan の `barriers` です(✅RC-2)。**以前は plan の `execution_plan` の依存から引いていたので、資源を渡さない順序だけの辺(明示の `after` / `before` / `snapshot_after`。灰色の破線で、ラベルは `order only: explicit_after` など)と、ラベルの `same-pixel attachment` がありました。RC-2 で execution plan が無くなり、辺は barrier から作り(同じ 2 つの間の barrier は 1 本に束ねます。[`dependencyRecords()`](../../src/devstudio/view/frameplangraphics.cpp#L412))、`after` だけでつないだ 2 つの node の間には辺を描きません(順は node の `order` で見ます)。ラベルの印で残るのは physical plan から出る `absorbed in fused scope` です。region の凸の判定、畳んだグループに出入りする辺、境界の stub、部分木の列も barrier だけで決まります。test: `devstudio_frameplan_graph_test` の [「WP347 production edges are the plan's barriers and show fused absorption」](../../test/devstudio_frameplan_graph_test.cpp#L2986)(`after` だけの組に辺が無いことを見ます)。
 
 **操作・RPC・model は変わっていません** —— ソケットはノード item の子なので、**Shift＋左ドラッグ**はソケットから 始めてもノードの本体から始めても同じ接続になります([起点の解決](../../src/devstudio/view/frameplangraphics.cpp#L4142))。
 行の並びは resource の**名前順**で宣言順ではなく、長い名前は中略されます(幅の上限 [`FramePlanNodeMaximumWidth = 360`](../../src/devstudio/view/frameplangraphics.hpp#L165)。全名は同じ行の ソケットの tooltip に `<resource> : <型>` として出ます)。shader が入力を宣言している fullscreen / raster pass の入力の行は、 名前順ではなく宣言の binding の順です(§13.5「Studio のノードキャンバス」の「ソケットは shader の宣言から出ます」)。
@@ -2642,20 +2645,20 @@ params は `{}` のほかに `{loop_elements: {node, offset?, limit?}}` を受�
 | node と resource | `loop_origin` | LP-1a。ループが展開した pass・compute task・target・buffer に `{loop, element, node}`(node は body の definition の中の id)。Studio は展開名を分解せずにこれを読む |
 | node | `origin` | GL-2a。graph の node が作った pass・compute task(root の node・instance の中の node・ループの回・`pass_replacements` の置き換え先)に、作った node の `{graph, node, definition?, instance_path?, loop?, loop_branch?, element?}`。preset・feature・rendering 節の pass には付かない(preset が `engine://` だと graph の pass も preset の pass も `source: "engine"` なので、これで見分ける)。`graph` は rendering root 文書の参照(`get_compute_task_authoring` が node の task に返す `source_reference` と同じ値)、`node` はその scope に書かれた id、`definition` は node を持つ definition(root の node には無い)、`instance_path` は置いた instance(末尾の `/` は無い。root とループの body には無い)、`loop` / `loop_branch` / `element` はループの回だけ(`element` は `loop_origin.element` と同じ)([組む所](../../src/core/renderingpass/frameplanner.cpp#L63)) |
 | node | `replaces` | GL-2a。feature の pass・task の代わりに入った node に `[{feature, pass}]`(instance が名指した順。1 つの node が複数を置き換えうるので配列)。ループでは、置き換えた pass と同じ pass family の回にだけ付く |
-| node | `added_after` | RS-6。engine がその pass の `after` に足した graph の compute task(feature と integration の compute task も)の名前を、足した順に(その pass が task の書く image を読むため。[第6章](06_rendering.md) §6.18「graph の pass の置き場所」)。足していない node には鍵が無い([出す所](../../src/core/renderingpass/frameplanner.cpp#L192)) |
-| 最上位の `resources[]` | `added_usage` | RS-6b。engine が合成した config の render target の宣言の `usage` に足した flag を、足した順に(今は `SAMPLED` だけ。task が書く render target を rendering 節・preset の pass が `input` で読むため。graph の `render.image` と feature の render target。[第6章](06_rendering.md) §6.18 の同じ項)。`usage` にはもう入っている。feature の文書は書き換えない。足していない resource には鍵が無い([出す所](../../src/core/renderingpass/frameplanner.cpp#L323)) |
+| node | `added_after` | RS-6。engine がその pass の `after` に足した graph の compute task(feature と integration の compute task も)の名前を、足した順に(その pass が task の書く image を読むため。[第6章](06_rendering.md) §6.18「graph の pass の置き場所」)。足していない node には鍵が無い([出す所](../../src/core/renderingpass/frameplanner.cpp#L194)) |
+| 最上位の `resources[]` | `added_usage` | RS-6b。engine が合成した config の render target の宣言の `usage` に足した flag を、足した順に(今は `SAMPLED` だけ。task が書く render target を rendering 節・preset の pass が `input` で読むため。graph の `render.image` と feature の render target。[第6章](06_rendering.md) §6.18 の同じ項)。`usage` にはもう入っている。feature の文書は書き換えない。足していない resource には鍵が無い([出す所](../../src/core/renderingpass/frameplanner.cpp#L325)) |
 | 最上位 | `diagnostics` / `deactivated_graph_nodes` | GL-2a。compiled pipeline の診断 `[{kind, subject, detail}]`(kind は `graph_variant_selected` / `pipeline_preset_resolved` / `feature_excluded` / `graph_node_deactivated`。FG-1 の `fold_stale` / `fold_unverified` と PO-1 の `unread_output` / `unused_binding` は下の行)と、変種で非活性にした graph の node `[{node, feature, reason}]`(reason は `target_ref` / `insert` / `order` / `pass_replacement` / `loop_output`。第6章 §6.18)。compiled pipeline のある plan では空でも鍵がある |
-| 最上位 | `fold_decisions` | FG-1。検査済みの fold group がこの frame graph の `target_planning` に足した決定 `[{group, kind: "node" \| "resource", name, field}]`。無ければ鍵ごと無い([出す所](../../src/core/renderingpass/frameplanner.cpp#L375))。§13.5 の「断片の決定を宣言する」 |
+| 最上位 | `fold_decisions` | FG-1。検査済みの fold group がこの frame graph の `target_planning` に足した決定 `[{group, kind: "node" \| "resource", name, field}]`。無ければ鍵ごと無い([出す所](../../src/core/renderingpass/frameplanner.cpp#L377))。§13.5 の「断片の決定を宣言する」 |
 | `diagnostics` の `fold_stale` / `fold_unverified` | `{kind, subject: <group>, detail: {verified_digest?, current_digest}}` | FG-1。開いた形で走っている fold group。`detail` は文字列ではなく object で、`verified_digest` は `fold_stale` だけ |
 | `diagnostics` の `unread_output` | `{kind, subject: <node>, detail: {resource}}` | PO-1。usage を宣言した image を node が書き、同じ frame の後の node が読みも書きもせず、次の frame に history として読む node も無い。`display`、usage に `TRANSFER_SRC` を持つ image、ほかの出力と一緒に書く depth(`DEPTH_STENCIL_ATTACHMENT`)は出さない。buffer と宣言の無い資源も出さない。同じ資源を後でまた書けば、最後に書いた node だけが出る([`findFramePlanUnreadOutputs()`](../../src/project/frameplan.cpp#L398)) |
 | `diagnostics` の `unused_binding` | `{kind, subject: <pass>, detail: {binding, resource}}` | PO-1。fullscreen / raster の pass が set 1 に渡す入力のうち、shader が宣言しているがコードが読まない binding(spirv-reflect の静的な使用。どれかの stage が読めば読んだことになる)。`resource` は target 名(history の入力は `<名前>@history`)か buffer 名。compute task と material pass は対象外。renderer が `get_frame_plan` を組むときに足す([`appendUnusedBindingDiagnostics()`](../../src/core/vkcore/renderer.cpp#L4125)) |
-| `physical_target_plan.decisions[]` | `pelican.plan.fold_decision_applied@1` と `from_fold` | FG-1。`fold_decisions` の 1 件ごとに `{id: "pelican.plan.fold_decision_applied@1", subject: <展開名>, selected: <field>, detail, from_nodes, from_fold: <group>}`([足す所](../../src/core/renderingpass/frameplanner.cpp#L591)) |
-| `physical_target_plan` の `resources[]`・`alias_groups[]`・`decisions[]`・`backend_selection.candidates[]` | `from_nodes` | GL-2a。その要素が関わる frame plan の node 名を plan の順で。resource は読む・書く・履歴を読む・attachment にする node、alias group はメンバーの resource の和、decision(最上位・`lowering_graph`・`planning_opportunities`・`backend_selection` の 4 か所)は `subject` を node → resource → alias group → scope の順で引く(lowering の node は元の node へ開く)。graph 全体の決定は `[]`。backend の候補は failures / diagnostics の `subject` から引くが、実物で全部 `[]`(候補の拒否の `subject` は候補の名前のため)([`appendFramePlanPhysicalNodeReferences()`](../../src/core/renderingpass/frameplanner.cpp#L471)) |
+| `physical_target_plan.decisions[]` | `pelican.plan.fold_decision_applied@1` と `from_fold` | FG-1。`fold_decisions` の 1 件ごとに `{id: "pelican.plan.fold_decision_applied@1", subject: <展開名>, selected: <field>, detail, from_nodes, from_fold: <group>}`([足す所](../../src/core/renderingpass/frameplanner.cpp#L593)) |
+| `physical_target_plan` の `resources[]`・`alias_groups[]`・`decisions[]`・`backend_selection.candidates[]` | `from_nodes` | GL-2a。その要素が関わる frame plan の node 名を plan の順で。resource は読む・書く・履歴を読む・attachment にする node、alias group はメンバーの resource の和、decision(最上位・`lowering_graph`・`planning_opportunities`・`backend_selection` の 4 か所)は `subject` を node → resource → alias group → scope の順で引く(lowering の node は元の node へ開く)。graph 全体の決定は `[]`。backend の候補は failures / diagnostics の `subject` から引くが、実物で全部 `[]`(候補の拒否の `subject` は候補の名前のため)([`appendFramePlanPhysicalNodeReferences()`](../../src/core/renderingpass/frameplanner.cpp#L473)) |
 | render / compute / snapshot_copy の node | `view_select` | LP-Va。宣言の `{<軸>: <値>}` |
 | 同上 | `view_axes` | LP-Va2。node の family の軸 `[{axis, length, runtime, labels?}]`。並びは provider の index の順(外側が先)、`length` は今の世代の長さで実行時の軸は `null`・`runtime: true`、`labels` は cube の `face` だけ(`+X` 〜 `-Z`)。`$main`・`$reflection/planar`・provider の無い family は `[]` |
 | node | `no_selected_view: true` | LP-Va2。直近に公開したフレームで `view_select` に一致する view が 1 つも無かった node にだけ付く。公開前と、走った node には鍵が無い |
 | fullscreen / raster / compute の node | `reads_loop_index: true` | LC-1。その pass / task の pipeline のどれかの stage が push constant の `[112, 120)`(`pelican_loop.glsl` の回の番号と回数)を宣言している。宣言していなければ鍵が無い([fullscreen / raster](../../src/core/vkcore/renderer.cpp#L4635)、[compute](../../src/core/vkcore/renderer.cpp#L4651)。[第6章](06_rendering.md) §6.18「回の番号を shader に渡す」) |
-| fullscreen / raster / compute の node | `schedule: "once"`・`last_run_generation`・`last_run_frame` | PS-1。`schedule: "once"` の pass / task にだけ付く(per_frame の node には鍵が無い。[`schedule` を出す所](../../src/core/renderingpass/frameplanner.cpp#L244))。`last_run_generation` はその node が最後に走った runtime の世代、`last_run_frame` はその frame の評価の番号で、まだ走っていなければどちらも `null`。記録はその frame を publish した後に残る([出す所](../../src/core/vkcore/renderer.cpp#L4577))。次の frame で走らせ直すのは `rerun_once {node?}` → `{scheduled: [...]}`([第10章](10_tools.md) §10.3。走る条件は[第6章](06_rendering.md) §6.18「一度だけ走る pass と、frame をまたぐ image」) |
+| fullscreen / raster / compute の node | `schedule: "once"`・`last_run_generation`・`last_run_frame` | PS-1。`schedule: "once"` の pass / task にだけ付く(per_frame の node には鍵が無い。[`schedule` を出す所](../../src/core/renderingpass/frameplanner.cpp#L246))。`last_run_generation` はその node が最後に走った runtime の世代、`last_run_frame` はその frame の評価の番号で、まだ走っていなければどちらも `null`。記録はその frame を publish した後に残る([出す所](../../src/core/vkcore/renderer.cpp#L4577))。次の frame で走らせ直すのは `rerun_once {node?}` → `{scheduled: [...]}`([第10章](10_tools.md) §10.3。走る条件は[第6章](06_rendering.md) §6.18「一度だけ走る pass と、frame をまたぐ image」) |
 | `physical_target_plan.resources[]` | `initial_asset` | IA-1。graph の `render.image` の `initial: {asset}` を持つ image の要素にだけ `{asset, sha256}`。`asset` は書いた参照のまま、`sha256` はその file を持つ asset store の `assets.manifest` の値(載っていなければ `null`)。要素は `logical_resource` で引く([`initial_asset` を出す所](../../src/core/vkcore/renderer.cpp#L5011))。例(test): `{"asset": "assets/luts/ltc.ktx2", "sha256": "<manifest の値>"}`。asset の file の隣に `<file>.import.json` があれば `derived_from: {source, tool}`・`stale`・`stale_reasons` も付きます(`list_derived_assets` と同じ値。上の「音の解析を焼く」)。[第6章](06_rendering.md) §6.18「persistent の image を画像資産から始める」 |
 | 最上位 | `memory_summary` | RC-1 / RC-1b。`{total_bytes, unused_bytes, unused_resources, peak_live_bytes, peak_node, peak_graph}`。`total_bytes` は公開中の世代の GPU arena に登録された render target 全部を今の metadata で 1 回ずつ足した和(runtime の登録が残した alias の組 = `aliasGroup(id)` ごとに 1 回、どの graph も使わない render target も入る。RC-1 では「この計画の image の和」で、graph 1 本・未使用なしなら同じ値)、`unused_bytes` はそのうちどの graph の物理計画にも出ない render target の分、`unused_resources` はその名前(sort 済み)。`peak_live_bytes` はこの graph の計画で node の order ごとに生きている image の bytes の和の最大、`peak_node` はその最大を最初に取った node の名前(bytes を持つ image が無ければ `null`)、`peak_graph` はその計画の graph 名(`get_frame_plan` は 1 graph の dump なので peak はその graph の分)。物理計画の無い plan には鍵が無い([出す所](../../src/project/targetrendermemory.cpp#L161))。数えられない image(計画の image に runtime の binding が無い、または登録が無い)は一部だけの summary を返さず、`frame_plan.memory_unmeasured@1 {resource, reason: "unbound" | "not_registered"}` の例外になる(正しい状態では起きない)。数え方と注意は[第6章](06_rendering.md#physical-plan-memory) §6.6「物理 image の bytes と `memory_summary`」。例(test の値、1920×1080 の example): `{"peak_graph": <graph 名>, "peak_live_bytes": 85017600, "peak_node": "lighting_pass", "total_bytes": 125776320, "unused_bytes": 0, "unused_resources": []}` |
 | `physical_target_plan.resources[]` | `bytes` | RC-1。その資源の image の bytes(mip の全段・layer・history の 2 面・MSAA の image を含み、alignment は含まない)。`materialized_image` / `transient_attachment` / `tile_local_attachment` の要素にだけ付き、external(swapchain)と buffer には無い。どちらの鍵も呼ぶたびに今の image の大きさで数える。`gpu_resource_arena.scopes[].resources[]` の render target の `declared_bytes` も、RC-1b から dump を書き出す時点の metadata で数え直した値(arena の構造体が持つ値は登録時のまま) |
@@ -2741,35 +2744,35 @@ engine は、feature の一体版が描くものをグラフのループで描�
 
 render の編集(`edit_preset_pass`・`add_authored_pass`・`edit_render_targets`・`decompose_material_pass` …)の undo を、op ごとの逆 RPC ではなく「編集の前の文書を丸ごと戻す」形で行うための 2 本です。
 
-**`get_render_documents {references?}` → `{documents: [{reference, kind, writable, digest, content, held_digest?}], other_documents: [...], live}`**([`getRenderDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L7172))
+**`get_render_documents {references?}` → `{documents: [{reference, kind, writable, digest, content, held_digest?}], other_documents: [...], live}`**([`getRenderDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L7174))
 
-- `references` を省くと、`documents` に今の構成が書きうる文書を全部返します: root(`kind: "root"`。いつも先頭)、project の(fork 済みの)preset(`"preset"`)、preset と root が名指す project の feature 文書(`"feature"`)。RC-5b から、レシピの `base` と root の `fragment_overrides` が名指す構造の断片も `"fragment"`(schema `pelican.render_fragment`)で並びます([断片の参照を辿る所](../../src/core/communication/renderconfigeditor.cpp#L6966))。engine の断片は他の engine の文書と同じく `other_documents` に入ります(コードの読み)。どれも project の中の通常のファイルで、中身がその種類の schema(`pelican.render_pipeline` / `pelican.render_feature`)のものだけです。`content` は bytes そのまま、`digest` はその sha256(64 桁の小文字 hex)。
-- **✅RC-3e1 から、文書の集め方は構成が組めるかに関わりません。**root から preset・preset の features・root の features・ray の layout / bindings を静的に辿り(合成も lowering もしません)、書けるかを決める前に全部を列挙します([静的な列挙を呼ぶ所](../../src/core/communication/renderconfigeditor.cpp#L7204))。書ける行が `documents`、書けない行が新しい `other_documents` です。
+- `references` を省くと、`documents` に今の構成が書きうる文書を全部返します: root(`kind: "root"`。いつも先頭)、project の(fork 済みの)preset(`"preset"`)、preset と root が名指す project の feature 文書(`"feature"`)。RC-5b から、レシピの `base` と root の `fragment_overrides` が名指す構造の断片も `"fragment"`(schema `pelican.render_fragment`)で並びます([断片の参照を辿る所](../../src/core/communication/renderconfigeditor.cpp#L6968))。engine の断片は他の engine の文書と同じく `other_documents` に入ります(コードの読み)。どれも project の中の通常のファイルで、中身がその種類の schema(`pelican.render_pipeline` / `pelican.render_feature`)のものだけです。`content` は bytes そのまま、`digest` はその sha256(64 桁の小文字 hex)。
+- **✅RC-3e1 から、文書の集め方は構成が組めるかに関わりません。**root から preset・preset の features・root の features・ray の layout / bindings を静的に辿り(合成も lowering もしません)、書けるかを決める前に全部を列挙します([静的な列挙を呼ぶ所](../../src/core/communication/renderconfigeditor.cpp#L7206))。書ける行が `documents`、書けない行が新しい `other_documents` です。
   - `other_documents` に入るもの: engine の文書(`engine://`。`content` と `digest` は付き、`writable: false`)、`#` 付きの参照(`fragment_of: <親の参照>` だけを持ち、`content` は無い。親の全文は親の 1 行)、解決できない参照と読めない文書(`error: {code, message}`。code は `render_document_reference_unresolved` / `render_document_read_failed`。存在しないファイルとディレクトリは後者)。
   - 今の公開版の pass と資源の出所が名指す provider の文書のうち、静的な列挙に無かったものは `source: "published_provenance"` を付けて足します(新しく合成はしません。[公開版の出所を読む所](../../src/core/communication/editorruntimefactory.cpp#L194))。RC-3e3 から、getter と restore は共通の関数で書ける範囲を決めます。範囲は editor が持つ今の root の静的な閉包と公開版の provider 参照の和集合で、project 内の通常のファイルかつ該当 kind の文書(構文不正は修復対象)に限ります。
   - RC-3e1 の前は、`documents` に合成の結果が名指す feature 文書も入り、合成が通らない構成では getter 自体が `render_pipeline_preflight_failed` などで断られました。合成の結果だけが名指し、静的な列挙にも今の公開版の出所にも無い文書は返らず、RC-3e3 から restore の既存文書の置き換え対象にもなりません(候補の compose / preflight は従来通り)。
   - root の行は、editor が持つ root の digest がディスクの digest と違う間 `held_digest: <editor が持つ版の digest>` を持ちます(`content` と `digest` はディスクのまま)。その間の restore は、どちらの digest を送っても `external_modification` で断られ、取り直すだけでは通りません。`reload_render_documents` の後に `held_digest` が消え、その `digest` の restore が通ります(test)。
-- kind は 6 種(RC-5b の `"fragment"` を足す前は 5 種)で、root の rendering 節が名指す ray の layout(`"ray_group_layout"`、schema `pelican.ray_group_layout`)と bindings(`"ray_bindings"`、schema `pelican.ray_bindings`)も並びます([5 つの kind の schema の表](../../src/core/communication/renderconfigeditor.cpp#L6677))。この 2 つは JSON として読めなくても並ぶので、restore で直せます。`restore_render_documents` はこの 2 つを `parseRayGroupLayout()` / `parseRayBindings()` で検査し、bindings は**同じ restore に layout があればその layout で**照らします(layout と bindings を一緒に戻す Undo のため)。test は直った後の形を見ます)。`reload_render_documents` もこの 2 つを比べるので、外で layout だけを書き換えても `no_change` になりません(test)。
+- kind は 6 種(RC-5b の `"fragment"` を足す前は 5 種)で、root の rendering 節が名指す ray の layout(`"ray_group_layout"`、schema `pelican.ray_group_layout`)と bindings(`"ray_bindings"`、schema `pelican.ray_bindings`)も並びます([5 つの kind の schema の表](../../src/core/communication/renderconfigeditor.cpp#L6679))。この 2 つは JSON として読めなくても並ぶので、restore で直せます。`restore_render_documents` はこの 2 つを `parseRayGroupLayout()` / `parseRayBindings()` で検査し、bindings は**同じ restore に layout があればその layout で**照らします(layout と bindings を一緒に戻す Undo のため)。test は直った後の形を見ます)。`reload_render_documents` もこの 2 つを比べるので、外で layout だけを書き換えても `no_change` になりません(test)。
 - `references` で名指したものが上に無ければ `render_document_not_writable` `{method, reference, reason}`。`reason` は `engine_document`(`engine://`)/ `fragment_address`(`#` を含む)/ `outside_project` / `not_render_document`。
   ✅RC-3e1 から、名指したものが `other_documents` にあればこの拒否にならず、その行が `other_documents` に返ります(engine の文書を名指すと `documents` が空で `other_documents` が 1 件。test)。`documents` は名指した順と重複を保ちます。
 - RD-1b: 名指した参照が project の中の path に解決され、そこに今ファイルが無い(編集が消した、undo で作り直す予定の文書など)ときは `render_document_missing` `{method, reference}`。その文書を `restore_render_documents` で作り直すときの `base_digest` は `null` です。
 - 答えの最上位に `live: bool` が付きます。`false` は fallback の間と、reload に断られた版を editor が持っている間で、`content` と `digest` はどちらでもディスクの bytes です(下の「reload に断られた版を持つ」)。
 - 受け付けたがまだ commit していない ticket の候補は返しません。返すのはいつもディスクの bytes です(コードの読み)。
 
-**`restore_render_documents {documents: [{reference, base_digest, content}]}`**([`restoreRenderDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L7325))
+**`restore_render_documents {documents: [{reference, base_digest, content}]}`**([`restoreRenderDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L7327))
 
 - 3 つの鍵は常に書きます。**`content: null` は「その文書を消す」**、**`base_digest: null` は「今その文書は無い」**(作り直すときの CAS)を意味します。両方 `null` は形の誤り(invalid params)です。同じ文書を 2 度名指すのも形の誤りです。
 - **書ける範囲**: 共通の静的閉包と公開版 provider の判定で書ける既存文書(上の `get_render_documents` の範囲)に加えて、**今の root と、戻す先の root(とそれぞれの preset)が名指す** project の文書(authoring の fragment、project の preset、materialize / import が作る feature 文書)を作る・消す対象にできます。範囲の外は `render_document_not_writable`(reason は上と同じ)。
-- RD-1b の追加の拒否: 作る・消すのが予約の場所 —— `.pelican/`・`code/`・`assets/`・`scenes/`・`input/`・`ui/`・`packages/`・`build/`・`build-*/`・`out/`・`output/` と、`project.json` の `basic_config` が指す文書のディレクトリ(rendering config の root を含むディレクトリは除く)—— の下なら `render_document_not_writable` `{reason: "reserved_location", location}`([`reservedProjectLocation()`](../../src/core/communication/renderconfigeditor.cpp#L7071))。既にある文書の置き換え(RD-1 の形)はこの制限を受けません。root を消そうとすると `{reason: "root_document"}` です。
+- RD-1b の追加の拒否: 作る・消すのが予約の場所 —— `.pelican/`・`code/`・`assets/`・`scenes/`・`input/`・`ui/`・`packages/`・`build/`・`build-*/`・`out/`・`output/` と、`project.json` の `basic_config` が指す文書のディレクトリ(rendering config の root を含むディレクトリは除く)—— の下なら `render_document_not_writable` `{reason: "reserved_location", location}`([`reservedProjectLocation()`](../../src/core/communication/renderconfigeditor.cpp#L7073))。既にある文書の置き換え(RD-1 の形)はこの制限を受けません。root を消そうとすると `{reason: "root_document"}` です。
 - **CAS**: 名指した全文書の今の digest が `base_digest` と一致したときだけ書きます(root は engine が持つ文書とディスクの両方)。root を名指さなくても、root がディスクで変わっていれば断ります。ずれは `external_modification` `{method, reference, expected_digest, provided_digest, mismatches[]}` で、`mismatches` に全部の `{reference, expected_digest, provided_digest}` が並びます。ここでの `null` は「文書が無い」を表します(`base_digest: null` なのに在る、など)。
-- 通ったら、編集と同じ preflight(変種を含む)と組み直しを書く前に通し、作る・置き換える・消すを**1 つの transaction** で行って ticket を返します。組み直しに通らない中身は `render_pipeline_preflight_failed` `{participant, method, reference}` で、何も書きません。JSON でない `content` は `render_pipeline_preflight_failed` ではなく `render_document_syntax@1` `{method, reference, document, line?, column?, reason}` です([restore の BS-1b の検査](../../src/core/communication/renderconfigeditor.cpp#L7753)。下の「起動時に断られた構成を直す」)。`material_route_default` が変わる restore の commit 結果には、`add_authored_pass` と同じく `restart_required: true` が付きます。
+- 通ったら、編集と同じ preflight(変種を含む)と組み直しを書く前に通し、作る・置き換える・消すを**1 つの transaction** で行って ticket を返します。組み直しに通らない中身は `render_pipeline_preflight_failed` `{participant, method, reference}` で、何も書きません。JSON でない `content` は `render_pipeline_preflight_failed` ではなく `render_document_syntax@1` `{method, reference, document, line?, column?, reason}` です([restore の BS-1b の検査](../../src/core/communication/renderconfigeditor.cpp#L7755)。下の「起動時に断られた構成を直す」)。`material_route_default` が変わる restore の commit 結果には、`add_authored_pass` と同じく `restart_required: true` が付きます。
 - gate が閉じていれば `gate_closed`。
 
-**commit 結果の `documents`。**render の編集の ticket の commit 結果(`get_edit_result` / `step_frame` の `edit_results[]`)に `documents: {<reference>: <sha256>}` が付きます。その commit が書いた文書だけで、作った文書は digest、消した文書は `null`、何も書かなかった(`no_change`)なら `{}` です([`writtenDocumentDigests()`](../../src/core/communication/renderconfigeditor.cpp#L6660))。
+**commit 結果の `documents`。**render の編集の ticket の commit 結果(`get_edit_result` / `step_frame` の `edit_results[]`)に `documents: {<reference>: <sha256>}` が付きます。その commit が書いた文書だけで、作った文書は digest、消した文書は `null`、何も書かなかった(`no_change`)なら `{}` です([`writtenDocumentDigests()`](../../src/core/communication/renderconfigeditor.cpp#L6662))。
 
 **undo の手順(契約から言えること)。**編集の前に `get_render_documents` で読み、編集の commit 結果の `documents` で「何が作られ・消されたか」を知り、戻すときは: 置き換えた文書は読んだ `content` と、`documents` の digest を `base_digest` にして送る / 作られた文書は `content: null`・`base_digest: <documents の digest>` で消す / 消された文書は読んだ `content` と `base_digest: null` で作り直す。RD-1 の時点で残っていた「ファイルを作る・消す編集(`add_authored_pass` / `remove_authored_pass`、fork、materialize、import)は戻せない」穴は、RD-1b で閉じました。
 
-**ディスクで書き換えた render 文書を取り込む —— `reload_render_documents`。**`--rpc` で起こした engine(Studio の engine)は file watcher の gate が閉じているので ([第6章](06_rendering.md) §6.7 の「ディスクからの読み直し」)、Studio の外で root(やそれが読む preset・feature・authored の fragment)を書き換えても engine は気づかず、 次の編集が `external_modification` で断られていました。`reload_render_documents {}` はそれらをディスクから読み直して取り込みます ([`reloadRenderDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L8029))。
+**ディスクで書き換えた render 文書を取り込む —— `reload_render_documents`。**`--rpc` で起こした engine(Studio の engine)は file watcher の gate が閉じているので ([第6章](06_rendering.md) §6.7 の「ディスクからの読み直し」)、Studio の外で root(やそれが読む preset・feature・authored の fragment)を書き換えても engine は気づかず、 次の編集が `external_modification` で断られていました。`reload_render_documents {}` はそれらをディスクから読み直して取り込みます ([`reloadRenderDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L8031))。
 
 - params は空の object だけです。答えは ticket(`render-config-reload-<N>`)で、結果は `get_edit_result` / `step_frame` の `edit_results[]` に来ます。
 - 読み直すのは `get_render_documents` が返すのと同じ文書です(root、project の preset、project の feature 文書と managed fragment。`engine://` と project の外のものは入りません)。
@@ -2779,14 +2782,14 @@ render の編集(`edit_preset_pass`・`add_authored_pass`・`edit_render_targets
   `documents` は読んだ全部の文書、`changed` はそのうち editor が知っていた digest と違うもの(editor が書いていない文書は、live の世代を組んだ文書の digest と比べます)。
   何も違わなければ公開せず、`no_change: true`・`changed: []`・`source_commit_called: false` です。
 - 文書のほかに、live の世代が `render.image` の `initial` に使う asset の中身(世代を組むときに decode の前に記録した sha256)も比べます。
-  どれかが違えば、文書が同じでも組み直して公開します。committed の結果には毎回 `changed_assets: [<asset>]`(書いた参照のまま、辞書順、重複なし、空のこともある)が付き、   何も違わなければ `no_change: true`・`changed_assets: []` です([結果に `changed_assets` を入れる所](../../src/core/communication/renderconfigeditor.cpp#L8562))。
+  どれかが違えば、文書が同じでも組み直して公開します。committed の結果には毎回 `changed_assets: [<asset>]`(書いた参照のまま、辞書順、重複なし、空のこともある)が付き、   何も違わなければ `no_change: true`・`changed_assets: []` です([結果に `changed_assets` を入れる所](../../src/core/communication/renderconfigeditor.cpp#L8564))。
   文書の変更で新しく足した asset は `changed_assets` に出ず、その文書が `changed` に出ます。asset が image に合わなければ、受けた後の ticket の結果が   `graph.image_initial_mismatch@1` の rejected で、live は前のままです。詳しくは [第6章](06_rendering.md) の「asset だけを書き換えた reload」。
 - live の世代の値の graph の `value.sample_table` が読んだ表(KTX2)と、その隣の `.import.json` の中身も比べます。
   `changed_assets` には表の参照(node の `asset` に書いた綴りのまま)が出ます。manifest だけが変わったときも、出るのは表の名前です。
   新しい世代は表を読み直すので、node の値は新しい表のものになります。依存の名前は `published_initial_assets` から `published_assets` に変わりました。
   詳しくは [第6章](06_rendering.md) の「表を書き換えた reload」。
 - committed の結果に公開した世代の `preview`(`{available: true}` か `{available: false, reason}`)が付きます。preview だけが組めない文書も読み直して公開します([第6章 §6.13](06_rendering.md) の PV-1 の段落)。
-- 拒否は 2 段です。ディスクの root が読めない・parse できない、組み立てや変種の preflight が通らないものは、ticket を取らずにすぐ返ります(`render_pipeline_preflight_failed` で   `method: "reload_render_documents"`、読めない文書には `reference`)。root が JSON として読めないときは `render_pipeline_preflight_failed` ではなく `render_document_syntax@1` `{method, document, line?, column?, reason}` で、これも ticket を取らずにすぐ返ります([reload の BS-1b の検査(RR-1 で持つ形に)](../../src/core/communication/renderconfigeditor.cpp#L8086))。runtime の組み直しで断られるもの(無い shader など)は ticket の結果で返ります。
+- 拒否は 2 段です。ディスクの root が読めない・parse できない、組み立てや変種の preflight が通らないものは、ticket を取らずにすぐ返ります(`render_pipeline_preflight_failed` で   `method: "reload_render_documents"`、読めない文書には `reference`)。root が JSON として読めないときは `render_pipeline_preflight_failed` ではなく `render_document_syntax@1` `{method, document, line?, column?, reason}` で、これも ticket を取らずにすぐ返ります([reload の BS-1b の検査(RR-1 で持つ形に)](../../src/core/communication/renderconfigeditor.cpp#L8088))。runtime の組み直しで断られるもの(無い shader など)は ticket の結果で返ります。
   どちらでも live の世代は前のままで、ディスクの bytes もそのままです。RL-1 の時点では editor の文書も前のままでしたが、文書の都合の拒否(PB-1 が一覧に入れるもの)では editor は読んだディスクの版を持ちます(下の「reload に断られた版を持つ」)。
 - live の material の物理の契約だけが変わる文書は RS-1 と同じく commit して `restart_required`、`material_route_default` が変わる文書は G-4 と同じく `restart_required: true`、最後の material pass を外した文書は `restart_reason.code: "material_passes_removed"` の `restart_required` です   (コードの読み。test はこの道を通していません。§13.5 の「最後の material pass を外す編集」)。ray の layout の有無が変わる文書も commit して `restart_required`(`restart_reason.code: "ray_layout_mode_changed"`)で、   こちらは RTL-1b の GPU の test が reload の道で通しています(上の「ray の layout と bindings を読み書きする」)。
 - **`reload_busy`**(`method`・`reason: "ticket_pending" | "preview_open"`・`tickets`): render の編集の ticket が待っているか処理中、または scene の preview が開いているとき。
@@ -2796,34 +2799,34 @@ render の編集(`edit_preset_pass`・`add_authored_pass`・`edit_render_targets
 Studio はディスクの文書が自分の書いたものでないと見るとこの RPC を呼びます(下の「外のエディタで書き換えた render の文書を拾います」)。
 
 **reload に断られた版を持つ —— 読みの `live` と `held_unparsed`。
-restore の CAS は root を editor が持つ版の digest とディスクの両方で比べるので([restore の CAS が root を比べる所](../../src/core/communication/renderconfigeditor.cpp#L7676))、利用者が保存して断られた root は `restore_render_documents` でどの digest でも `external_modification` になり、その間の `get_graph_instances` などは保存前の版を返し、その間の編集も断られていました (PB-1s の報告。上の §13.1 の「Studio の Problems のドック」の「仕様から外れた判断」)。RR-1 から、断られたディスクの版が editor の base になり、live の世代は前のまま描き続けます。
+restore の CAS は root を editor が持つ版の digest とディスクの両方で比べるので([restore の CAS が root を比べる所](../../src/core/communication/renderconfigeditor.cpp#L7678))、利用者が保存して断られた root は `restore_render_documents` でどの digest でも `external_modification` になり、その間の `get_graph_instances` などは保存前の版を返し、その間の編集も断られていました (PB-1s の報告。上の §13.1 の「Studio の Problems のドック」の「仕様から外れた判断」)。RR-1 から、断られたディスクの版が editor の base になり、live の世代は前のまま描き続けます。
 fallbackの editor が組めないディスクの版を持つのと同じ持ち方です。
 
 - **持つ時**: reload の拒否のうち文書の都合のもの(PB-1 が一覧に入れるもの。`reload_busy`・`gate_closed`・`external_modification`・`stale_source_digest` は除く)。
   ticket を取らずにすぐ返る拒否(文法の検査、組み立て、文書の読み、`material_route_default` の読み、変種の preflight)も、ticket の結果の拒否(runtime の組み直し)も同じです
-  ([`RenderConfigEditorService::holdRefusedDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L7959)。ticket の結果は [`RenderConfigEditorService::noteHeldDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L7997))。
+  ([`RenderConfigEditorService::holdRefusedDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L7961)。ticket の結果は [`RenderConfigEditorService::noteHeldDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L7999))。
 - **持つもの**: root の bytes と digest(JSON として読めなければ BS-1b と同じく読めない bytes のまま)、root が名指す managed fragment をディスクから読み直したもの、読んだ preset・feature の digest。
 - **持たないもの**: root のファイルが読めない拒否では、editor は前の版のままです(コードの読み。test はありません)。
   ✅RC-3e1 から、JSON だが `inspect()` が断る root(旧い形の `render_config.legacy_root@1`、`features` が配列でないなどの `render_document_envelope@1`)は、JSON でない root と同じく bytes のまま持ちます(下の「起動時に断られた構成を直す」の「envelope が不正な root」)。RC-3e1 の前は、この拒否では editor は前の版のままでした。
 - **読みの印**: 構造の読み 8 つ —— `get_graph_instances`・`get_render_authoring_context`・`get_render_features`・`get_fold_groups`・`get_frame_node_order`・
   `get_compute_task_authoring`・`get_ray_callable_records`・`get_scene_acceleration_structures` —— は、`source_digest` の隣に常に `live: bool` を持ちます。
   返すのは editor が持つ版のうち JSON として読める一番新しい版で、`live` はその返した版が live の世代を組んだ版かどうかです
-  ([`RenderConfigEditorService::readDocument()`](../../src/core/communication/renderconfigeditor.cpp#L7981) / [`RenderConfigEditorService::readLive()`](../../src/core/communication/renderconfigeditor.cpp#L7985))。
+  ([`RenderConfigEditorService::readDocument()`](../../src/core/communication/renderconfigeditor.cpp#L7983) / [`RenderConfigEditorService::readLive()`](../../src/core/communication/renderconfigeditor.cpp#L7987))。
   - 中身の壊れ(JSON だが組めない)を持っている間: ディスクの版を `live: false` で返します。`source_digest` はディスクの digest です(test)。
-  - 文法の壊れ(JSON でない)を持っている間: その前に読めた版を返し、`held_unparsed: true` を足します([`RenderConfigEditorService::markRead()`](../../src/core/communication/renderconfigeditor.cpp#L7989))。
+  - 文法の壊れ(JSON でない)を持っている間: その前に読めた版を返し、`held_unparsed: true` を足します([`RenderConfigEditorService::markRead()`](../../src/core/communication/renderconfigeditor.cpp#L7991))。
     ✅RC-3e1 から、envelope が不正な root(JSON だが `inspect()` が断る)を reload で持っている間も同じです(test は `features: 17` の root で `held_unparsed: true` と前の読める版の digest を見ます。2 回続けて断られても前の読める版のまま)。
     前の版が live なら `live: true` です(test)。中身の壊れで断られた版の後に文法を壊したときは、その断られた版を `live: false` で返します(コードの読み)。
   - 読める版を捨てるのは、ticket が committed になった時と、parse できる版で reload が断られた時です。
   - `--render-fallback` で文法の壊れた root から起動したときは読める版が無いので、これらの読みは今までどおり parse で失敗します(BS-1b と同じ)。envelope が不正な root から起動したときのこれらの読みは未確認です。
-- **`get_render_documents`** の答えは `{documents, other_documents, live}` です([`other_documents` と `live` を返す所](../../src/core/communication/renderconfigeditor.cpp#L7321))。`content` と `digest` は今までどおりディスクの bytes で、`held_unparsed` は付きません。
+- **`get_render_documents`** の答えは `{documents, other_documents, live}` です([`other_documents` と `live` を返す所](../../src/core/communication/renderconfigeditor.cpp#L7323))。`content` と `digest` は今までどおりディスクの bytes で、`held_unparsed` は付きません。
   ✅RC-3e1 から、editor が持つ root とディスクの root が違う間は、root の行に `held_digest` が付きます(上の「render 文書を丸ごと読む・戻す」)。
-  `live: false` は fallback の間(BS-1)と、断られた版を持っている間です([`RenderConfigEditorService::documentsLive()`](../../src/core/communication/renderconfigeditor.cpp#L8019))。
+  `live: false` は fallback の間(BS-1)と、断られた版を持っている間です([`RenderConfigEditorService::documentsLive()`](../../src/core/communication/renderconfigeditor.cpp#L8021))。
 - **`get_graph_values` には付けません**。値は live の世代の snapshot です。
 - **直す**: restore の `base_digest` と編集の `base_source_digest` は `get_render_documents` の root の `digest` です(中身の壊れでは `get_graph_instances.source_digest.hex` と同じ)。
   - 前の live の digest の編集は `external_modification` です。
   - 構造の編集は、組めれば committed → publish、組めなければ名前付きで断り、何も書きません(test は欄の足りない node のまま `set_node_label` が `graph.port_field_missing@1` で断られ、     `set_node_parameters` で欄を足すと committed)。
   - 文法の壊れを持っている間: 壊れた bytes の digest の構造の編集は `render_document_syntax@1`、読みが返す live の digest の編集は `external_modification` です     ([編集の事前条件の RR-1 の注記](../../src/core/communication/renderconfigeditor.cpp#L2207)。test)。Studio の RL-1s の決定 5 は `external_modification` を「ディスクの file が読み込めなかった」の 1 文に読み替えます     (下の「外のエディタで書き換えた render の文書を拾います」)。直す道は、壊れた bytes の digest を base にした restore か、ディスクを直して reload です(test は restore)。
-- **持っている間の reload**: 変わった文書が無くても毎回組み直し、`no_change` にしません(fallback の間と同じ。[`no_change` を決める所(RR-1)](../../src/core/communication/renderconfigeditor.cpp#L8254))。
+- **持っている間の reload**: 変わった文書が無くても毎回組み直し、`no_change` にしません(fallback の間と同じ。[`no_change` を決める所(RR-1)](../../src/core/communication/renderconfigeditor.cpp#L8256))。
   素通りすると、直っていないのに PB-1 の問題が消えるためです。直さないままの reload は同じ拒否で、一覧の 1 件も残ります(test)。
 - **`live` が `true` に戻る時**: publish する reload か編集(`source_only` でも `no_change` でもないもの)が committed になった時で、PB-1 の問題が消える時と同じです。
   配置だけの編集(`source_only`)はディスクに書いても `live: false` のままで、問題も残ります。RS-1 の `restart_required` の committed でも `true` に戻します   (PB-1 に揃えたもので、厳密には live の世代と違う版です)。

@@ -1251,7 +1251,7 @@ Place の表は具体の pass の前後を扱い(✅RC-5s の前は canonical an
   - `provider_feature` を持つ pass は、feature ごとに 1 つの畳んだ node にまとまります。見出しは feature の名前(`engine://features/bloom.json` なら `bloom`)、型の所に `feature`、見出しの下に `N passes` です。
   - それ以外の pass は 1 pass 1 node です。型の所は plan の `kind` で、material pass は `material` です。
   - material pass かどうかは plan から決めます。`shader_resolution.state` が `material_owned`、`material_filter` がある、`material_variant` がある、のどれかです([`GraphCanvasModel::readPlanPasses`](../../src/devstudio/model/graphcanvasmodel.cpp#L5750))。
-  - `kind` が `anchor` の node は出ません(✅RC-5s から engine の plan に anchor の node はありません。Frame Plan の canvas と producer の model にも出ないことを test で確かめています: `devstudio_frameplan_graph_test` の [「RC-5s Frame Plan producer model and canvas contain no canonical nodes」](../../test/devstudio_frameplan_graph_test.cpp#L2130)。fixture `test/fixtures/devstudio/example_frame_plan.json` は今の player から採った 23 node の plan で、前は 8 つの空のノードを含む 30 node でした)。GPU timing の行にも `__anchor_*` は出ず、sprite は `sprite_draw` の行です([第6章](06_rendering.md) §6.14)。
+  - `kind` が `anchor` の node は出ません(✅RC-5s から engine の plan に anchor の node はありません。Frame Plan の canvas と producer の model にも出ないことを test で確かめています: `devstudio_frameplan_graph_test` の [「RC-5s Frame Plan producer model and canvas contain no canonical nodes」](../../test/devstudio_frameplan_graph_test.cpp#L2131)。fixture `test/fixtures/devstudio/example_frame_plan.json` は今の player から採った 23 node の plan で、前は 8 つの空のノードを含む 30 node でした)。GPU timing の行にも `__anchor_*` は出ず、sprite は `sprite_draw` の行です([第6章](06_rendering.md) §6.14)。
   - node の行は資源の名前です。右が外へ渡す資源(書く)、左が外から読む資源です。feature の中の pass 同士で受け渡す資源は出ません。
 - **見た目**: 枠は破線で、地の色は graph の node より 1 段落ちます。theme の token は `derived_border` / `derived_body` です([theme の表](../../src/devstudio/resources/studio_themes.json#L65))。見出しの帯は Frame Plan の出所の色を薄くしたものです。
   - tooltip は出どころで替わります([`GraphCanvasFoldedNode::tooltip`](../../src/devstudio/model/graphcanvasmodel.cpp#L5736)): root の rendering 節が宣言した pass(Blank の `present` など)は `From the rendering section: edit it here.`、feature の pass は `From feature <name>: read only here. Expand to edit…`、preset の pass は `From preset <name>: read only here. Expand to edit…`(authoring context が preset の名前を言わなければ `From the preset (<source>): …`)です。潜れる node では `Double-click to look inside.` が続きます([`Builder::addDerivedNode`](../../src/devstudio/view/graphcanvasdrawing.cpp#L1620))。
@@ -1390,10 +1390,10 @@ GL-1c で直しました。
 
 **Frame Plan から graph 全体の決定を書く**: Frame Plan の **Passes** と **Resources** のタブで行を右クリックすると、Open in Graph の上に、pass の行なら **Serial** / **Isolate**、資源の行なら **No alias** の check が出ます( / `.isolate` / `.noAlias`。[`addPlanningEntries`](../../src/devstudio/view/frameplanwidget.cpp#L3389))。engine の契約は §13.5 の「graph 全体の計画の決定を書く」です。
 
-- check の状態は root の rendering 節の `target_planning.graphs.<plan の graph>` です。Frame Plan は authoring context を読むたびに、`get_render_documents` で root を読みます([`requestPlanning`](../../src/devstudio/view/frameplanwidget.cpp#L3540))。
+- check の状態は root の rendering 節の `target_planning.graphs.<plan の graph>` です。✅RC-6a1 から、値が `{"value": …, "strength": …}` の形なら `value` を読みます([`GraphTargetPlanning::flag()`](../../src/devstudio/model/graphfoldgroups.cpp#L417)。Graph の詳細欄の Serial / Isolate / No alias も同じ)。feature・断片・レシピが書いた宣言は check に出ません(読むのは root の文書だけ)。Frame Plan は authoring context を読むたびに、`get_render_documents` で root を読みます([`requestPlanning`](../../src/devstudio/view/frameplanwidget.cpp#L3540))。
 - 押すと `edit_target_planning` を 1 回送ります。付けるときはその field を `true`、外すときは `null`(field を消す。`false` は書きません)です([`togglePlanning`](../../src/devstudio/view/frameplanwidget.cpp#L3416))。status 行は `Isolate set on <名前>.` / `Isolate taken off <名前>.` の形です。
 - ループの回の展開名(plan の `loop_origin` を持つ行)には check を出さず、押せない 1 行 `Fold the loop to set this per element` を出します(engine の LP-1a が展開名を断るため。回ごとの決定は上の fold group で書きます)。authoring context をまだ読んでいない間と、Frame Plan の編集が送信中の間は押せません。
-- preset が `target_planning` を持つ root での `rendering_key_not_allowed_here` は、`The pipeline preset declares target_planning, which this project cannot override: fork the preset to set it (rendering_key_not_allowed_here).` の 1 文です([preset が target_planning を持つときの文](../../src/devstudio/view/frameplanwidget.cpp#L3135))。
+- preset(`@1`)が `target_planning` を持つ root での `rendering_key_not_allowed_here` は、`The pipeline preset declares target_planning, which this project cannot override: fork the preset to set it (rendering_key_not_allowed_here).` の 1 文です([preset が target_planning を持つときの文](../../src/devstudio/view/frameplanwidget.cpp#L3135))。 `@2` のレシピを選ぶ root では、レシピが `target_planning` を持っていても engine が断らないので、この文は出ません(✅RC-6a1)。
 - Physical plan と Decisions のタブの行には出ません。`vulkan_plan_pins` と `vulkan_physical_fragments` は、Backends と Physical plan のタブで書きます(次の段落)。
 - 戻す: render の編集の履歴に `Edit planning decisions` の名前で積まれます(戻す道の test は無く、未確認)。
 
@@ -2557,7 +2557,7 @@ engine の RC-1b で `total_bytes` の意味が「この計画の image の和�
 - **Physical plan のタブの `GPU resource arena (N)`**: 登録の行の 4 列目(Detail)が `declared_bytes` です([列に出す所](../../src/devstudio/view/frameplanwidget.cpp#L5152))。
   - RC-1 から render target の行に値が入ります(以前は `0 B`)。frame graph buffer は以前から buffer の大きさで、shader bundle・pipeline・pass 系と acceleration structure は `0 B` のままです。
   - RC-1b の engine では、dump に出る render target の `declared_bytes` は dump を書き出す時点の metadata から数え直した値なので、登録の後に同じ id のまま image を作り直す経路(window 以外の出力の resize、影の layer 数の変更)の後も、status 行や `Bytes` と同じ今の大きさです。RC-1 の engine では登録時の値のままで、食い違うことがありました。viewport の窓の大きさを変えたあとの表示は画面では確かめていません(第6章の同じ節)。
-- test: `devstudio_frameplan_graph_test` の [「RC-1 the Frame Plan says on its status line what the physical plan's images take and where most of them are alive, and each image's bytes」](../../test/devstudio_frameplan_graph_test.cpp#L12947)。
+- test: `devstudio_frameplan_graph_test` の [「RC-1 the Frame Plan says on its status line what the physical plan's images take and where most of them are alive, and each image's bytes」](../../test/devstudio_frameplan_graph_test.cpp#L12948)。
 
 ### Frame Plan の format の綴り(RC-3a1)
 

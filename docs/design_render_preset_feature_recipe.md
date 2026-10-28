@@ -176,14 +176,14 @@ RC-5a(4001e48af)と RC-5b(0f0cea36b)。branch `agent/rc5`。仕様は `<作業�
   `draw_sort`・`material_routing`・`xr`・`render_strategy`・`target_planning`・`vulkan_plan_pins`・`vulkan_physical_fragments`。
   `render_targets` / `rendering_passes` / `snapshots` / `buffers` / `compute_tasks` は `render_pipeline.recipe_has_structure@1`(`key`)、
   ほかのキーは `render_pipeline.recipe_unknown_key@1`(`key`)で断る([`expandRenderPipelineRecipe()`](../src/project/renderpipelinerecipe.cpp#L65))。
-  `features` 以下の 10 個の合成と root からの上書きの可否は `@1` と同じ(報告 §2 が `@1` の resolver の表と照らした)。
+  `features` 以下の 10 個の合成と root からの上書きの可否は `@1` と同じ(報告 §2 が `@1` の resolver の表と照らした)。RC-6a1 から `target_planning` だけは違う(root が葉ごとに上書きする。§7.8)。
 - **`base: [{family, fragments: [ref …]}]`**: family ごとに、断片の `render_targets` を書いた順に連結し、`passes` を書いた順に連結して、
   `@1` の `config` と同じ形の `render_targets` と `rendering_passes: [{name: family, passes}]` を作る。展開した後は `@1` の道
   (正規化・root の合成・canonical・HDR・feature の挿入・Graph・IR)を**そのまま**通る([`resolveRenderPipelinePreset()` の版の分岐](../src/project/renderpipeline.cpp#L953))。
   展開の結果に `base` と root の `fragment_overrides` は残らず、レシピに無いキーは補わない(`features` の無いレシピは `features` を出さない)。
   family は 1 つ以上で名前の重複は断る。展開した base 全体で pass 名と target 名が重なれば `render_pipeline.recipe_duplicate_name@1`
   (`kind`: `pass` / `target`・`name`・`fragments`)。Graph の pass の既定の family は、展開した `rendering_passes` の先頭(今の規則のまま)。
-- **構造の断片 `pelican.render_fragment@1`**: `{schema, version, name, render_targets, passes, required_targets?}`。`insert` も `parameters` も
+- **構造の断片 `pelican.render_fragment@1`**: `{schema, version, name, render_targets, passes, required_targets?}`。RC-6a1 から `target_planning?` も書ける(§7.8)。`insert` も `parameters` も
   持たない(位置は `base` の列の順)。`required_targets` は target 名の文字列の配列で、展開した base 全体の target の宣言に無ければ
   `render_pipeline.fragment_missing_target@1`(`fragment`・`target`)。形の不正は `render_pipeline.fragment_invalid@1`、レシピの形の不正は
   `render_pipeline.recipe_invalid@1`(どちらも `field`・`reason`)。
@@ -295,3 +295,28 @@ develop_v1 の `1e05031d7` / `e17754510`。仕様は `<作業ディレクトリ>
 - **sprite の資源計画**: レシピの 16 構成の test に、sprite の pass の IR の use・attachment・物理計画の rendering scope・barrier・lifetime の
   検査を足した(`rc5_recipe_compiler_test.inc` の「RC-5s sprite attachments participate in IR and physical planning」)。
 - **stage**: §7.1 の決定 4 のまま。RC-5s でもレシピの preset にフィルターの定義を持つ欄は作っていない。
+
+<a id="rc6a1-implementation"></a>
+
+### 7.8 RC-6a1(部品とレシピの `target_planning`、2026-10-28)
+
+`3fa229eba`(branch `agent/rc6`)。仕様は `<作業ディレクトリ>/rc6_spec.md` §1、報告は `<作業ディレクトリ>/rc6a1_report.md` と修正の報告 3 本。全体(強さ・出所・優先・結び付け・旧い package との同居の拒否・dump)は
+[棚卸しメモ §2-3 の RC-6a1](design_plan_layer_inventory.md#rc6a1-implementation)、利用者向けは manual 第6章「target planning と Vulkan plan pin」。レシピと部品に関わる所だけ書く。
+行番号は `3fa229eba` の物。
+
+- **書ける所**: feature の文書、構造の断片 `pelican.render_fragment@1`(許すキーに `target_planning` を足した。[`loadFragment()` の鍵の検査](../src/project/renderpipelinerecipe.cpp#L42))、
+  `@2` レシピの `config.target_planning` の 3 つ。形は root と同じ `{graphs: {<graph>: {nodes, resources}}, diagnostics?}`。`profile` は root だけ。
+- **書ける名前(所有)**: 自分の文書が宣言した pass・compute task・render target・buffer の名前だけ。レシピの所有は、`fragment_overrides` を当てた後の展開した base が宣言する名前
+  (= 選んだ断片の名前の和)。feature は自分の文書に、採った integration の fragment の `render_targets` / `buffers` / `passes` / `compute_tasks` を足した物が所有になる
+  (feature 条件・pass 条件で採らなかった integration の名前は他人)。`required_targets` で借りた名前は所有に入らない。所有に無い名前は
+  `target_planning.policy_foreign_name@1`(`document`・`pointer`・`target`。[検査](../src/project/renderpipeline.cpp#L925))。例(報告の B4): feature の文書が base の `lit_color` を指すと断る。
+- **集める物**: 選んだ断片と、採って parameter を束縛した feature の文書だけ。`fragment_overrides` で置き換えた・外した断片の宣言は集めない(報告の B10)。
+  レシピの宣言は展開の直後に別の出所として取り出し、展開した config からは `target_planning` を消す([取り出す所](../src/project/renderpipeline.cpp#L1231))。
+  断片の宣言は断片ごとに集める([集める所](../src/project/renderpipelinerecipe.cpp#L131))。
+- **強さと優先**: 裸の値はレシピも部品も `prefer`。同じ (graph, 対象, 鍵) は root > レシピ > 部品で、下は dump に `overridden` で残る。報告の B3 では、断片の `serial: true` に
+  レシピの `serial: false` が勝ち、物理計画の `planning_opportunities.parallel_candidates` が policy の無い時と同じ集合に戻った。
+- **`@2` の root の書き方(§1.1 の表からの変更)**: `@1` の「preset が `target_planning` を持てば root から上書き不可」は `@2` には当てない。`@2` の root は自分の `target_planning` を
+  持て、レシピの宣言と葉((graph, 対象, 鍵))ごとに競って root が勝つ。editor の `edit_target_planning` も `@2` の preset を選ぶ root では `rendering_key_not_allowed_here`
+  で断らない([preset の判定](../src/core/communication/renderconfigeditor.cpp#L5323))。`@1` の preset は今のまま(root から不可、preset の宣言は root の出所として扱う)。
+- **消えた対象**: `pass_replacements` / inactive で部品の宣言の対象が消えても warning は出さず、dump に `absent` で残る。置き換え先の pass には効かない(報告の B6・B10)。
+- **出荷の文書**: engine の feature・断片・レシピに `target_planning` を書いた物は無い(`src/core/resources` の検索で 0 件)。

@@ -40,7 +40,7 @@
 |---|---|---|---|---|
 | 2-1 | `execution_plan` | **削除**(第 2 backend は書かない。mac は MoltenVK) | 同じ | なし(順番は §6)。**RC-2 で済み**(`e15e31bb5`、2026-10-23) |
 | 2-2 | `levels` | **完全に消す**(2026-10-18) | 同じ | なし。**RC-2 で済み**(`e15e31bb5`、2026-10-23) |
-| 2-3 | 物理計画の固定ルート(pin / freeze / complete) | **方針決定(2026-10-22): 固定のルートを `target_planning` の policy に一本化する**。細部は後で詰める | 同じ | 語彙、`require` / `prefer`、優先順位(§2-3) |
+| 2-3 | 物理計画の固定ルート(pin / freeze / complete) | **方針決定(2026-10-22): 固定のルートを `target_planning` の policy に一本化する**。細部は後で詰める | 同じ | 語彙、`require` / `prefer`、優先順位(§2-3)。**RC-6a1 で強さ・出所・優先(root > レシピ > 部品)と部品の宣言が入った**(`3fa229eba`、2026-10-28。§2-3 の [RC-6a1](#rc6a1-implementation))。語彙は今の 4 つのまま |
 | 2-4 | `declared_bytes` = 0 | **埋める**(2026-10-22) | 同じ(RT メモ段 0 と同じ WP、v0 可) | なし |
 | 2-5 | anchor と順序の二重化 | **段タグ + canvas のフィルター階層へ**(段メモ) | 同じ | 段メモ §7 の残り 1 件 |
 | 2-6 | 段階 2 の typed policy | **強化する。core の JSON 二重 parse を解く**([design_render_graph_ir.md](design_render_graph_ir.md)。旧 [design_stage2_typed_pipeline.md](design_stage2_typed_pipeline.md) は置き換え済み) | 同じ | 段メモ側の未決 3 件(同メモ §6) |
@@ -144,6 +144,56 @@
 5. 版をまたいだ byte 一致は policy では約束しない、を文書に明記。
 6. 置き場: v1 の物理計画 WP(RT メモの区間詰め alias と同じ場所)。順序は 語彙 → 強度と優先順位 → Pin / Freeze を policy 書き出しに置換 → package と RPC の削除。
 
+<a id="rc6a1-implementation"></a>
+
+**RC-6a1 で入った物(2026-10-28、`3fa229eba`、branch `agent/rc6`)。**仕様は `<作業ディレクトリ>/rc6_spec.md` §1、実装者の報告は `<作業ディレクトリ>/rc6a1_report.md` と修正の報告 3 本
+(`rc6a1_fix_report.md` / `rc6a1_fix2_report.md` / `rc6a1_fix3_report.md`)。この段の行番号は `3fa229eba` の物。語彙は今の 4 つ(node の `serial` / `isolate` / `fuse`、
+資源の `no_alias`)のままで、上の「後で詰める細部」の 2〜4 がこの形になった。利用者の決定(2026-10-28)は「planning は合成した全体で行い、部品(feature・構造の断片)は
+自分の pass と資源の名前にだけヒントを書ける。root はどの名前にも書け、部品と食い違えば root が勝つ」。
+
+- **値と強さ**: 各値は裸の bool か `{"value": bool, "strength": "require" | "prefer"}`。ほかの鍵、`value` の無い object、別の綴りの `strength` は組み直しの誤り
+  ([包んだ値を読む所](../src/project/renderpipeline.cpp#L235))。裸の値の強さは出所の既定で、root(fold が足した物を含む)と engine は `require`、レシピと部品は `prefer`。
+- **未宣言と宣言**: 内部の型は [`PlanningValue`](../src/project/targetplanning.hpp#L287) で、空が未宣言、中身が [`PlanningDeclaration`](../src/project/targetplanning.hpp#L279)
+  (値・強さ・出所 `{kind, document, pointer}`)。前の `bool` の既定値で潰す形をやめ、明示の `false` と未宣言を区別する。planner が読むのは実効値(宣言の値、無ければ既定。
+  `serial` / `isolate` / `no_alias` は false、`fuse` は true)で、planner の読み方は変えていない。
+- **強さの今の効き方**: planner は強さで値の扱いを変えない(`prefer` の `no_alias: true` も資源を alias の組から外す。報告の B1)。強さで違うのは、engine の強制と食い違うときの
+  扱い(下)と dump の `satisfied` だけ。上の 2 の「`prefer` は tie-break」の形は入っていない。
+- **出所と優先**: root > レシピ(`@2` の preset の `config.target_planning`)> 部品(feature の文書・構造の断片の文書の `target_planning`)。(graph, 対象, 鍵) ごとに一番上の出所の
+  宣言が採られ、下の宣言は `overridden`([`resolvePlanningGraph()`](../src/project/renderpipeline.cpp#L981))。強さは優先を逆転させない。上の宣言の `false` は下の `true` を打ち消す。
+  上の 3 の「project > feature > engine 既定」とは engine の位置が逆で、engine の強制はどの作者の宣言よりも上(作者からは上書きできない)。`required_capabilities` は全部の出所の和、
+  `profile` は root だけ(レシピ・部品の `target_planning` に `profile` があれば `target_planning profile belongs to root` の誤り)。`@1` の preset の `target_planning` は今までどおり
+  root から上書きできず、root の出所(`require`、document は preset の参照、pointer は `/config/target_planning/…`)として扱う。
+- **部品が書ける名前(所有)**: レシピと部品は、自分の文書が宣言した pass・compute task・render target・buffer の名前にだけ書ける。他の名前(`required_targets` で借りた target を含む)は
+  `target_planning.policy_foreign_name@1`(`document`・`pointer`・`target`。[`collectPartPlanningPolicy()`](../src/project/renderpipeline.cpp#L925))。feature は、採った integration の
+  fragment が宣言する名前も自分の物になる([所有に足す所](../src/project/featurecompose.cpp#L3735))。採らなかった integration の名前は他人の名前。部品どうしが同じ名前を宣言すると
+  今の合成が断るので、同じ対象に宣言できるのは root・レシピ・その部品の縦の 1 列だけで、部品どうしの衝突の規則は作っていない。
+- **engine の強制**: `once` / `sprite` / `ui` / `imgui` の node の isolate([`isolatedNodeConstraints()`](../src/core/renderingpass/renderingsamplecount.cpp#L151))と、
+  graph.instance の scope に入る node の isolate(前は合成が作者の `target_planning` の JSON に `true` を書き込んでいた。今は engine の出所の宣言として合成する。
+  [足す所](../src/project/featurecompose.cpp#L3443))。採った作者の宣言がこれと逆(`isolate: false`)なら、`require` は `target_planning.policy_conflicts_engine@1`
+  (graph・target・key と出所の document・pointer)、`prefer` は捨てて dump に `engine_forced` を残す。
+- **集める順と結び付け**: (1) `fragment_overrides` の選択・feature の採否・parameter の束縛を今のまま確定する。(2) 採った文書だけから出所つきで宣言を集め、所有を検査する
+  (選ばれなかった断片の宣言は集めない)。(3) 置き換えや inactive で対象が消える前に、宣言を対象に結び付ける([`bindPlanningPolicyTargets()`](../src/project/renderpipeline.cpp#L950))。
+  root は最終名の完全一致を先に、無ければ作者名で、レシピと部品は作者名で探す。どちらの名前でも 2 つ以上の対象に当たれば `target_planning.policy_name_ambiguous@1`
+  (`graph`・`name`・`candidates: [{author_name, final_name, owner}]`)。(4) `pass_replacements` / inactive は宣言を消さず、結び付いた対象が消えた印だけを付ける
+  (前の `forgetPlanningNodes` は宣言を消していた。今は何もしない)。消えた対象の宣言を、置き換え先や同じ名前の別の対象へ付け直さず、graph.instance の展開先にも写さない。
+  variant の graph(`#xr` など)には graph 名の接尾辞を付けて写す。最終の IR(variant の改名と engine の node の挿入の後)では、まだ結び付いていない宣言(engine やループが
+  後で作った対象を指す物)だけを結び直す([`resolveFinalPlanningPolicy()`](../src/project/renderpipeline.cpp#L1120))。fold が足す宣言は、fold が provenance で選んだ作者名で、
+  通常の宣言と同じ対象の一覧に結ぶ(修正の報告 3)。
+- **消えた対象(absent)**: 宣言の対象が合成の結果に無いとき(graph ごと無い場合も)、root の宣言は warning `target_planning.name_absent@1`(`severity: "warning"`・`graph`・`name`・`key`)
+  を pipeline の diagnostics に出して捨てる。`require` でも compile は止めない。レシピと部品の宣言は warning を出さず、dump に `absent` で残す(置き換えで消えるのは正常のため)。
+- **旧い package との同居の拒否**: graph に作者の宣言(engine 以外の出所。`profile` と `required_capabilities` は数えない。status は問わない)が 1 つでもあり、同じ graph に
+  `vulkan_plan_pins` / `vulkan_physical_fragments` / complete physical plan の install のどれかがあれば `target_planning.policy_with_legacy_package@1`(`graph`)
+  ([`requireNoLegacyPlanningPolicy()`](../src/project/targetplanning.cpp#L45))。旧い package は planner の後で link / install されて policy を見ないので、同居させると `require` が破れる。
+  断る所は物理計画の bridge([pin / fragment を見る所](../src/core/renderingpass/renderingsamplecount.cpp#L1682))、planner の入口、fragment の linker、complete の install
+  ([install で断る所](../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L933))。Studio の Pin / Freeze は今も旧い package を書くので、policy のある graph では断られる
+  (コードの読み。Studio の道を通した test は無い)。
+- **dump**: `get_frame_plan` の `physical_target_plan` に、宣言が 1 つでもある graph だけ `policy` の配列を出す(無いときは欄ごと無い。policy を書かない 16 構成の
+  snapshot は 18a1807fc で記録した物と一致。報告の A5)。各行は `{graph, target, key, strength, origin: {kind, document, pointer}, status, value, satisfied?}`
+  ([JSON にする所](../src/project/targetplanning.cpp#L26))。`status` は `adopted` / `overridden` / `engine_forced` / `absent`(型には `infeasible_prefer` もあるが今は出ない)。
+  `satisfied` は採った `require` だけが持ち、今は planner が計画を作れた時点で `true` を付ける(選んだ計画を宣言と照らし直す検査はまだ無い)。
+  graph.instance の scope 由来の engine の宣言も台帳に入るので、その graph では `origin.kind: "engine"` の行が出る(コードの読み)。policy は fingerprint に入らない
+  (計画が同じなら fingerprint も同じ。報告の B1)。
+
 ### 2-4 `declared_bytes` = 0 — 埋める(決定 2026-10-22)
 
 - arena とは: [`RenderPipelineGpuArena`](../src/core/renderingpass/renderpipelinegpuarena.hpp)。**公開中の runtime 世代が所有する
@@ -215,7 +265,7 @@
 |---|---|---|---|
 | 0 | 文書の修正(2-7)、コードマップに 3-1 の「未使用」 | v0 可 | 文書のみ |
 | 1 | 2-4: `declared_bytes` を計測で埋める(RT メモ段 0 と同じ WP)。**RC-1 で済み(`631caac21`)** | v0 可(鍵は増えない) | planner 単体、手計算 120 / 81 MiB と一致 → 実測は 119.95 / 81.08 MiB(RT メモ §1) |
-| 2 | 2-3: 固定ルートの policy 一本化(語彙 → 強度・優先順位 → Pin / Freeze の置換 → package と RPC の削除)。3-2 / 3-3: 選ばれなかった候補と 1 node scope を既定で隠す | v1(物理計画 WP。RT メモの区間詰めと同じ場所) | policy → plan の golden、Frame Plan の scenario(Pin / Freeze の置換後) |
+| 2 | 2-3: 固定ルートの policy 一本化(語彙 → 強度・優先順位 → Pin / Freeze の置換 → package と RPC の削除)。**強度・優先順位は RC-6a1 で済み(`3fa229eba`)。**3-2 / 3-3: 選ばれなかった候補と 1 node scope を既定で隠す | v1(物理計画 WP。RT メモの区間詰めと同じ場所) | policy → plan の golden、Frame Plan の scenario(Pin / Freeze の置換後) |
 | 3 | 2-1: `execution_plan` の削除(上の表)。2-2: `levels` を契約から外す。**RC-2 で済み**(`e15e31bb5`、2026-10-23) | v1 | golden 不変、GPU gate、Studio scenario。RC-2 の実装者の報告では触った家族の非 GPU test 628 / 628 緑。GPU gate と Studio scenario は統合側で回す(この記録の時点で結果は未確認) |
 | 4 | 2-6: 段階 2 を typed 論理 graph に育て、core の JSON parse を消す。2-5 と preset レシピ化に合流 | v1 | 純ロジック test、golden 不変 |
 

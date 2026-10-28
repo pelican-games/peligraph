@@ -257,6 +257,13 @@ FG-1 の宣言(root の `fold_groups`):
 - RPC: `get_fold_groups {}` は合意の配列ではなく `{source_digest, fold_groups: [...]}` を返す。`fold_nodes` は合意どおり。既存の group は丸ごと置き換わるので、書き直すと `verified` も消える
 - 形と test は manual 13 章の「断片の決定を宣言する(✅FG-1)」。着地の W1 で 106 件が緑(統合側の報告)
 
+**RC-6a1(`3fa229eba`、2026-10-28)で変わった所。**`target_planning` の値が強さと出所を持つようになった(全体は [棚卸しメモ §2-3 の RC-6a1](design_plan_layer_inventory.md#rc6a1-implementation))。fold と Frame Plan に関わる所だけ書く(コードで確認。行番号は `3fa229eba` の物):
+
+- **包んだ値**: `target_planning` の node / 資源の各値は裸の bool か `{"value": bool, "strength": "require" | "prefer"}`。fold の衝突の検査は包んだ値の `value` も読み、root の `{value: false}` は裸の `false` と同じく `graph.fold_decision_conflict@1`([検査](../src/project/graphfold.cpp#L418))。EL-2 の `edit_target_planning` の衝突の検査も同じ読み方([EL-2 の検査](../src/core/communication/renderconfigeditor.cpp#L5549))
+- **fold の出所は root**: fold が足した宣言は root の出所(既定の強さは `require`)で、dump の `origin.pointer` は `/fold_groups/<group>/folded/decisions/<field>`、`origin.document` は root の文書。1 つの決定が複数の展開名へ写っても、指すのは元の決定の欄
+- **写す段が 2 回になった**: 合成は、Graph の配置・`pass_replacements`・inactive で対象が消える前に、配置した pass を足した config で `applyGraphFoldGroups()` を 1 回呼んで宣言を対象に結び付け([前の呼び出し](../src/project/featurecompose.cpp#L3865))、ループを展開した後にもう 1 回呼んで、ループの回のように後から出来た対象の分だけを足して結ぶ([後の呼び出し](../src/project/featurecompose.cpp#L4191))。結び付けは fold が provenance で選んだ作者名で行い、root の宣言の「最終名を先に」の探し方には戻さない(修正の報告 3。XR の `probe_fill#xr` を対象にした fold が flat / XR のそれぞれでその対象だけを serial にする test)
+- **Frame Plan と Graph の詳細欄の check**: Serial / Isolate / No alias の check は root の `target_planning` の値の、包んだ形なら `value` を読む([`GraphTargetPlanning::flag()`](../src/devstudio/model/graphfoldgroups.cpp#L417))。付けると裸の `true`、外すと `null`(root の宣言を消す)を送るのは前と同じで、`false` は書かない。部品やレシピから来た値は check に出ない(check が読むのは root の文書だけ)。Undo / Redo は書いた文書の bytes をそのまま戻す
+
 ### 5.3 検査と印
 
 - `verify_fold {group}`:開いた形と畳んだ形で §3.5 の一致を取り、通れば `verified` を書く(ticket。RD-1 の undo の対象)。通らなければ `graph.fold_mismatch@1 {group, what: "frame_plan" | "queue" | "draws" | "pixels", detail}`
