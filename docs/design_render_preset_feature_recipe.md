@@ -320,3 +320,20 @@ develop_v1 の `1e05031d7` / `e17754510`。仕様は `<作業ディレクトリ>
   で断らない([preset の判定](../src/core/communication/renderconfigeditor.cpp#L5323))。`@1` の preset は今のまま(root から不可、preset の宣言は root の出所として扱う)。
 - **消えた対象**: `pass_replacements` / inactive で部品の宣言の対象が消えても warning は出さず、dump に `absent` で残る。置き換え先の pass には効かない(報告の B6・B10)。
 - **出荷の文書**: engine の feature・断片・レシピに `target_planning` を書いた物は無い(`src/core/resources` の検索で 0 件)。
+
+<a id="rc6a2-implementation"></a>
+
+### 7.9 RC-6a2(レシピの `backend` と、部品の新しい鍵、2026-10-29)
+
+`a99725b5f`(branch `agent/rc6`)。仕様は `<作業ディレクトリ>/rc6_spec.md` §2、報告は `<作業ディレクトリ>/rc6a2_report.md` と修正の報告 2 本。全体(5 つの鍵・候補ごとの反映・`infeasible_prefer`・
+最終の検証)は [棚卸しメモ §2-3 の RC-6a2](design_plan_layer_inventory.md#rc6a2-implementation)。レシピと部品に関わる所だけ書く。行番号は `a99725b5f` の物。
+
+- **書ける鍵**: §7.8 の 3 つの置き場の `target_planning` に、node の `scope_break` / `scope_join` と資源の `representation` / `alias_group` も書ける(名前の所有の規則は §7.8 のまま。
+  裸の値は `prefer`)。graph の `backend`(`graphs.<g>.backend`)は **`@2` レシピの `config.target_planning` だけ**が書け、feature と構造の断片の `backend` は読む時点で
+  `target_planning.policy_invalid@1`(`graph`・`target`・`key`・`document`・`pointer`。[断る所](../src/project/renderpipeline.cpp#L269))。graph を指す宣言は名前の所有の検査から
+  外した([その所](../src/project/renderpipeline.cpp#L1000))ので、レシピの `backend` は `policy_foreign_name@1` にならない。base の断片は出所が部品(`part`)なので書けない。
+- **優先**: レシピの `backend` は root の `backend` に負けて dump に `overridden` で残る(test「RC-6a2 compiler binds new root recipe and part keys through the production bridge」:
+  レシピの `transient` の `prefer` に root の `materialized` が勝ち、materialized の候補が選ばれる)。
+- **`alias_group` の組名は文書の中だけ**: 組は (宣言の出所の document, 組名) で決まる。feature F と feature G が同じ組名 `"scratch"` を書いても別の組で、共有させたければ root に
+  書く(報告の C5)。レシピの組名はレシピの文書の中、断片の組名はその断片の文書の中だけで通じる(断片ごとに document が違うため。コードの読み)。
+- **出荷の文書**: engine の feature・断片・レシピに `target_planning` を書いた物は今も無い(`src/core/resources` の検索で 0 件)。

@@ -175,6 +175,17 @@ NodeIR {
 - **前計算**: 上の 2 項目のとおり、generation で前計算するのは scope ↔ node の対応だけ。[`FrameGraphScopeMapping`](../src/core/renderingpass/framegraphruntime.hpp#L94)(scope ごとの `[first, count)` と、node ごとの scope の添字・scope の中の位置。添字は FramePlan の順の実行 node の配列への添字)を、登録の [`compileFrameGraphScopeMapping`](../src/core/renderingpass/framegraphruntime.cpp#L15) が上の (3) の検査と一体で 1 回作り、[`CompiledFrameGraphExecution::scope_mapping`](../src/core/renderingpass/framegraphruntime.hpp#L126) が持つ。target plan が無い fallback(renderer の仮の schedule)では `nullopt`、空の graph の空の target plan では空の対応表。scheduler は毎フレームこれを読み、node 名 → 添字の表を作らない。view の数・`view_select` の解決・実行要否は本文のとおりフレームごと。
 - **runtime の検査**: 本文の「view を含む呼び出しの依存」の検査は足していない(view ごとの依存の検査は仕様の範囲外)。renderer の実行時の検査は RC-3d3 で変えていない(実装者の報告)。scheduler が毎フレーム見るのは、family の存在・数・view 契約、scope の中の family と `view_select` の一致、axis の照合、secondary family の展開、0 件の placeholder。scheduler の構築時にあった「unknown な node・重複した所属・どの scope にも属さない node」の検査は、登録の (3) に移った。
 
+**追補(RC-6a2、`a99725b5f`、2026-10-29。作者が scope の切れ目を指す policy)。**全体は [棚卸しメモ §2-3 の RC-6a2](design_plan_layer_inventory.md#rc6a2-implementation)。行番号は `a99725b5f` の物。
+
+- **隣り合う 2 node の関係だけ**: `target_planning` の node の `scope_break: true` は「FramePlan の順で直前の node と別の scope」、`scope_join: true` は「直前の node と同じ scope」を言う。
+  順は FramePlan の物をそのまま使い、policy のために node を並べ替えない。scope は今までどおり FramePlan の順の連続区間なので、上の「scope を展開した node 順 == FramePlan の順」の検査は変わらない。
+- **入力の誤り**: FramePlan の先頭の node の `scope_join: true` と、同じ node に両方 true は `target_planning.policy_invalid@1`([`validatePolicyInput()`](../src/project/targetrenderplanning.cpp#L1063)。
+  先頭は planner に渡した `FramePlanNodeOrder` の先頭で判定する)。
+- **物理計画での効き方**: `scope_break` の node は必ず新しい scope を始め、`scope_join` の node は直前の rendering scope への融合を試みる(融合の可否の検査は今のまま。
+  [`buildPhysicalScopes()`](../src/project/targetrenderplanning.cpp#L2165))。break をまたぐ値(同じ値の producer の次から consumer までに break の node がある物)は、その候補でも
+  materialized にする。満たせたかは選んだ計画の scope で、FramePlan の順の直前の node と同じ scope かどうかを見て判定する(analyzer の `planning_opportunities.node_order` を使う。
+  [`policySatisfied()`](../src/project/targetrenderplanning.cpp#L3361))。先頭の node の `scope_break` は常に成り立つ。
+
 ### 2.7 core に残すもの
 
 - 中立値 → vk の写像を 1 つの翻訳単位に。device への問い合わせ → 中立な device facts。
