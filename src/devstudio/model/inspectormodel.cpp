@@ -1345,7 +1345,7 @@ struct GraphLoopRefusalText {
     std::string_view code;
     std::string_view sentence;
 };
-constexpr std::array<GraphLoopRefusalText, 53> GraphLoopRefusalTexts{{
+constexpr std::array<GraphLoopRefusalText, 52> GraphLoopRefusalTexts{{
     {"graph.loop_branch_else_missing@1",
      "Loop {node} has no else: its last branch must have no condition"},
     {"graph.loop_branch_interface@1",
@@ -1469,11 +1469,6 @@ constexpr std::array<GraphLoopRefusalText, 53> GraphLoopRefusalTexts{{
     // table when the graph is built.
     {"value.sample_table_unreadable@1", "{node} cannot read the table {asset}: {reason}"},
     {"value.sample_table_row_unknown@1", "{asset} has no row {row}; its rows are {rows}"},
-    // UX-15b, decision 2 (engine EL-2): a frozen physical plan (a
-    // vulkan_physical_fragments package) whose fingerprint -- `fingerprint`
-    // is "logical_graph" or "automatic_plan" -- is not the plan's any more.
-    {"physical_fragment_stale",
-     "The frozen plan no longer matches the graph ({fingerprint}); Eject again"},
     // FO-1s, decisions 1 and 4 (engine FO-1, EB-1). frame_node_order: the
     // order put `first` before `second`, but `second` must run first; {why}
     // is said from `reason` (frameNodeOrderWhy). An image's or a buffer's

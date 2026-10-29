@@ -304,72 +304,9 @@ struct VulkanExternalDepthExportPlan {
         const VulkanExternalDepthExportPlan &) const = default;
 };
 
-// A same-layer, versioned escape hatch. V1 deliberately pins only the finite
-// backend candidate; resource/scope fields remain compiler-owned until their
-// validators are strong enough for direct authoring. The logical fingerprint
-// prevents a package ejected from an older graph from silently constraining a
-// different graph after hot reload.
-struct VulkanTargetPlanPinPackage {
-    std::string graph;
-    std::uint64_t logical_graph_fingerprint = 0;
-    std::string backend_candidate;
-
-    bool operator==(
-        const VulkanTargetPlanPinPackage &) const = default;
-};
-
-// A sparse, same-layer edit over the automatically compiled physical plan.
-// V1 permits conservative resource materialization, safe scope splitting,
-// verified alias groups, and capability-backed alternate image formats. V2
-// additionally permits verified per-node attachment load/store edits. V3
-// adds an explicit scope-edit mode so dependency-safe scheduling and
-// compatible rendering-scope fusion do not silently broaden older packages.
-struct VulkanPhysicalResourceFragment {
-    std::string logical_resource;
-    std::optional<ImageFormat> format;
-    std::optional<VulkanResourceRepresentation> representation;
-
-    bool operator==(
-        const VulkanPhysicalResourceFragment &) const = default;
-};
-
-struct VulkanPhysicalScopeFragment {
-    std::string id;
-    std::vector<std::string> nodes;
-
-    bool operator==(
-        const VulkanPhysicalScopeFragment &) const = default;
-};
-
-struct VulkanPhysicalAliasGroupFragment {
-    std::string id;
-    std::vector<std::string> resources;
-
-    bool operator==(
-        const VulkanPhysicalAliasGroupFragment &) const = default;
-};
-
-struct VulkanPhysicalAttachmentFragment {
-    std::string node;
-    std::string logical_resource;
-    std::optional<AttachmentLoadOp> load_op;
-    std::optional<AttachmentStoreOp> store_op;
-
-    bool operator==(
-        const VulkanPhysicalAttachmentFragment &) const = default;
-};
-
-enum class VulkanPhysicalScopeEditMode : std::uint8_t {
-    split_only,
-    dependency_safe,
-};
-
-std::string_view vulkanPhysicalScopeEditModeName(
-    VulkanPhysicalScopeEditMode mode);
-
 // Target-specific evidence for selecting a non-automatic image format from
 // a ResourcePattern. The target bridge snapshots these facts from the actual
-// device. A fragment cannot infer support from a format name alone.
+// device. Support cannot be inferred from a format name alone.
 struct VulkanPhysicalResourceFormatCapability {
     std::string logical_resource;
     ImageFormat format = ImageFormat::r8g8b8a8_unorm;
@@ -382,28 +319,6 @@ struct VulkanPhysicalResourceFormatCapability {
     bool operator==(
         const VulkanPhysicalResourceFormatCapability &) const =
         default;
-};
-
-struct VulkanPhysicalFragmentPackage {
-    std::uint32_t schema_version = 1;
-    VulkanPhysicalScopeEditMode scope_edit_mode =
-        VulkanPhysicalScopeEditMode::split_only;
-    std::string graph;
-    std::uint64_t logical_graph_fingerprint = 0;
-    std::uint64_t automatic_plan_fingerprint = 0;
-    std::string backend_candidate;
-    std::vector<VulkanPhysicalResourceFragment> resources;
-    std::optional<std::vector<VulkanPhysicalScopeFragment>>
-        scopes;
-    std::optional<
-        std::vector<VulkanPhysicalAliasGroupFragment>>
-        alias_groups;
-    std::optional<
-        std::vector<VulkanPhysicalAttachmentFragment>>
-        attachments;
-
-    bool operator==(
-        const VulkanPhysicalFragmentPackage &) const = default;
 };
 
 struct VulkanTargetPlanRequest {
@@ -421,12 +336,6 @@ struct VulkanTargetPlanRequest {
     std::optional<VulkanViewExecutionPlanRequest> view_execution;
     std::optional<VulkanExternalDepthExportRequest>
         external_depth_export;
-    std::optional<VulkanTargetPlanPinPackage>
-        pin_package;
-    std::optional<VulkanPhysicalFragmentPackage>
-        fragment_package;
-    std::vector<VulkanPhysicalResourceFormatCapability>
-        fragment_format_capabilities;
     std::vector<VulkanPhysicalAttachmentPlan>
         automatic_attachments;
 };
@@ -458,10 +367,6 @@ struct VulkanTargetPlan {
         resolution_plan;
     std::optional<VulkanExternalDepthExportPlan>
         external_depth_export;
-    std::optional<VulkanTargetPlanPinPackage>
-        applied_pin_package;
-    std::optional<VulkanPhysicalFragmentPackage>
-        applied_fragment_package;
 };
 
 void validateVulkanPhysicalFeatureClosure(
@@ -481,59 +386,9 @@ VulkanTargetPlan compileVulkanTargetPlan(
     VulkanTargetPlanRequest request);
 std::uint64_t vulkanTargetPlanLogicalGraphFingerprint(
     const CompiledLogicalRenderGraph &graph);
-VulkanTargetPlanPinPackage ejectVulkanTargetPlanPinPackage(
-    const VulkanTargetPlan &plan);
-nlohmann::ordered_json vulkanTargetPlanPinPackageToJson(
-    const VulkanTargetPlanPinPackage &package);
-VulkanTargetPlanPinPackage vulkanTargetPlanPinPackageFromJson(
-    const nlohmann::json &document);
 std::uint64_t vulkanAutomaticTargetPlanFingerprint(
     const TargetTopologySnapshot &topology,
     const VulkanTargetPlan &automatic_plan);
-VulkanPhysicalFragmentPackage
-ejectVulkanPhysicalFragmentPackage(
-    const VulkanTargetPlan &plan);
-nlohmann::ordered_json
-vulkanPhysicalFragmentPackageToJson(
-    const VulkanPhysicalFragmentPackage &package);
-VulkanPhysicalFragmentPackage
-vulkanPhysicalFragmentPackageFromJson(
-    const nlohmann::json &document);
-// EL-2: linkVulkanPhysicalFragment's refusal of a package whose fingerprint
-// is not the plan's. The message is the linker's; the editor reads the
-// fields (physical_fragment_stale). `fingerprint` is "logical_graph" or
-// "automatic_plan"; `expected` is the plan's and `actual` the package's, in
-// stableFingerprint64String form (as the package and get_frame_plan write
-// them).
-struct VulkanPhysicalFragmentStaleInfo {
-    std::string graph;
-    std::string fingerprint;
-    std::string expected;
-    std::string actual;
-};
-
-class VulkanPhysicalFragmentStale : public std::runtime_error {
-  public:
-    VulkanPhysicalFragmentStale(const std::string &message,
-                                VulkanPhysicalFragmentStaleInfo info)
-        : std::runtime_error{message}, info_{std::move(info)} {}
-    const VulkanPhysicalFragmentStaleInfo &info() const noexcept {
-        return info_;
-    }
-
-  private:
-    VulkanPhysicalFragmentStaleInfo info_;
-};
-
-VulkanTargetPlan linkVulkanPhysicalFragment(
-    const CompiledLogicalRenderGraph &canonical_graph,
-    const TargetTopologySnapshot &topology,
-    VulkanTargetPlan automatic_plan,
-    VulkanPhysicalFragmentPackage package,
-    std::span<
-        const VulkanPhysicalResourceFormatCapability>
-        format_capabilities = {},
-    std::span<const RenderPassProvenance> provenance = {});
 void validateVulkanPhysicalAttachmentPlans(
     const CompiledLogicalRenderGraph &canonical_graph,
     std::span<const VulkanPhysicalResourcePlan> resources,

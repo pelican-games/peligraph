@@ -122,10 +122,7 @@ struct RenderingTargetPlanVerificationContext {
     TargetTopologySnapshot topology;
     std::shared_ptr<const VulkanTargetPlan>
         automatic_plan;
-    // The plan published by this compilation. It is the automatic plan
-    // itself unless a verified physical fragment was linked. Keeping both
-    // identities prevents validation from treating a linked plan as the
-    // automatic fingerprint source.
+    // Initially the automatic plan; complete install retains automatic_plan as its verification base.
     std::shared_ptr<const VulkanTargetPlan>
         compiled_plan;
     std::vector<VulkanPhysicalResourceFormatCapability>
@@ -170,12 +167,7 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
         std::nullopt,
     std::optional<VulkanExternalDepthExportRequest>
         external_depth_export = std::nullopt,
-    TargetPlanningPolicy target_planning = {},
-    std::span<const VulkanTargetPlanPinPackage>
-        plan_pins = {},
-    std::span<const VulkanPhysicalFragmentPackage>
-        physical_fragments = {},
-    std::span<const RenderPassProvenance> provenance = {});
+    TargetPlanningPolicy target_planning = {});
 RenderingTargetPlanCompilation compileRenderingTargetPlansForVulkanDevice(
     const RenderGraphIR &render_graph,
     const std::unordered_map<std::string, FramePlan> &frame_plans,
@@ -188,12 +180,7 @@ RenderingTargetPlanCompilation compileRenderingTargetPlansForVulkanDevice(
         std::nullopt,
     std::optional<VulkanExternalDepthExportRequest>
         external_depth_export = std::nullopt,
-    TargetPlanningPolicy target_planning = {},
-    std::span<const VulkanTargetPlanPinPackage>
-        plan_pins = {},
-    std::span<const VulkanPhysicalFragmentPackage>
-        physical_fragments = {},
-    std::span<const RenderPassProvenance> provenance = {});
+    TargetPlanningPolicy target_planning = {});
 
 // RC-3c2a: what the physical plan placed of each render target (one variant,
 // in `render_targets`' order): its sample count, layers, format, storage and

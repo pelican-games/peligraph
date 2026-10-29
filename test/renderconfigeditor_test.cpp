@@ -11835,13 +11835,6 @@ TEST_CASE("EL-2 edit_target_planning merges a graph's names into the root, erase
         CHECK(error.at("name") == "el2_no_such_graph");
         // A request of the wrong shape, and a package the parser refuses.
         CHECK_THROWS_AS(el2Planning(harness, {{"forward_opaque", true}}), std::invalid_argument);
-        const auto digest = harness.context().at("source_digest").at("hex");
-        CHECK_THROWS_AS(harness.service->editVulkanPlanPins(
-                            {{"base_source_digest", digest}, {"family", "flat"}, {"pin", Json::object()}}),
-                        std::invalid_argument);
-        CHECK_THROWS_AS(harness.service->putVulkanPhysicalFragment(
-                            {{"base_source_digest", digest}, {"family", "side"}, {"fragment", nullptr}}),
-                        std::invalid_argument);
         harness.service->commitPending();
         CHECK(harness.runtime.apply_calls == applies);
         CHECK(readBytes(harness.project.render_config) == planned);
@@ -14108,7 +14101,7 @@ TEST_CASE("RC-3e refusal stages classify codes without changing document referen
         {"graph.port_field_missing@1", "compose"}, {"snapshot.after_unknown@1", "compose"},
         {"feature.required_target_missing@1", "compose"}, {"render_pipeline.invalid@1", "compose"},
         {"render_graph.pass_shape@1", "parse"}, {"render_compiler.physical_order_mismatches_frame_plan@1", "plan"},
-        {"physical_fragment.reorders_frame_plan@1", "plan"}, {"complete_physical_plan.stale_automatic_plan@1", "plan"},
+        {"target_planning.legacy_package_removed@1", "runtime"}, {"complete_physical_plan.stale_automatic_plan@1", "plan"},
         {"target_plan.node_order_mismatch@1", "plan"}, {"frame_node_order.conflicts_dependency@1", "runtime"},
         {"pelican.ray_tracing.generation_stale@1", "runtime"}, {"external_modification", "runtime"},
         {"render_pipeline_preflight_failed", "unknown"}, {"", "unknown"}}) {
@@ -14477,3 +14470,88 @@ TEST_CASE("RC-6 B3 B7 RPC accepts wrapped root values over a recipe and restores
 }
 #include "rc6a2_rpc_test.inc"
 #include "rc6b1_rpc_test.inc"
+
+namespace Pelican {
+TEST_CASE("RC-6b2 restore rejects removed planning keys in every document even after switching presets",
+          "[render-config-editor][rd1][rc6b2][restore-legacy-package]") {
+    const auto kind = GENERATE("root", "preset", "recipe", "fragment");
+    const auto key = GENERATE("vulkan_plan_pins", "vulkan_physical_fragments");
+    CAPTURE(kind, key);
+    Rd1Harness h{false};
+    h.fork();
+    const std::string preset_a = "project://passes/local-pipeline.json";
+    const std::string preset_b = "project://passes/restore-b.json";
+    const std::string fragment_a = "project://passes/restore-fragment-a.json";
+    const auto fragment_path = h.project.root / "passes/restore-fragment-a.json";
+    auto preset = Json::parse(readBytes(h.presetPath()));
+    if (std::string_view{kind} == "recipe" || std::string_view{kind} == "fragment")
+        preset = Json::parse(engineResourceOrThrow("render_pipelines/experimental/hybrid_recipe.json"));
+    // B is valid and does not read A or A's structural fragment.
+    const auto b_before = preset.dump(2);
+    writeBytes(h.project.root / "passes/restore-b.json", b_before);
+    if (std::string_view{kind} == "fragment") {
+        writeBytes(fragment_path, std::string{engineResourceOrThrow("render_fragments/deferred_lighting.json")});
+        preset["config"]["base"][0]["fragments"][2] = fragment_a;
+    }
+    writeBytes(h.presetPath(), preset.dump(2));
+    h.service = makeProjectService(h.project, h.resolver, h.runtime);
+    const auto read = rd1Documents(h.service->getRenderDocuments(Json::object()));
+    REQUIRE(read.contains(preset_a));
+    const auto root_before = readBytes(h.project.render_config);
+    const auto a_before = readBytes(h.presetPath());
+    auto root = Json::parse(root_before);
+    Json documents = Json::array();
+    std::string reference;
+    std::string fragment_before;
+    if (std::string_view{kind} == "root") {
+        reference = "passes/main.json";
+        root["rendering"][key] = nullptr;
+    } else {
+        root["rendering"]["pipeline"]["preset"] = preset_b;
+        reference = std::string_view{kind} == "fragment" ? fragment_a : preset_a;
+        auto content = Json::parse(read.at(reference).at("content").get<std::string>());
+        if (std::string_view{kind} == "fragment") {
+            fragment_before = readBytes(fragment_path);
+            content[key] = nullptr;
+        } else {
+            content["config"][key] = nullptr;
+        }
+        documents.push_back(rd1Document(reference, read.at(reference).at("digest"), content.dump(2)));
+    }
+    documents.insert(documents.begin(), rd1Document("passes/main.json", read.at("passes/main.json").at("digest"), root.dump(2)));
+    const auto applies = h.runtime.apply_calls;
+    const auto generation = h.runtime.snapshot.published_generation;
+    const auto error = rd1Error(h.service->restoreRenderDocuments({{"documents", documents}}));
+    CHECK(error.at("code") == "target_planning.legacy_package_removed@1");
+    CHECK(error.at("key") == key);
+    CHECK(error.at("document") == reference);
+    CHECK(error.at("reference") == reference);
+    CHECK(error.at("method") == "restore_render_documents");
+    CHECK_THAT(error.at("message").get<std::string>(), Catch::Matchers::ContainsSubstring("reload"));
+    CHECK_THAT(error.at("message").get<std::string>(), Catch::Matchers::ContainsSubstring("Studio Pin / Freeze"));
+    h.service->commitPending();
+    CHECK(h.runtime.apply_calls == applies);
+    CHECK(h.runtime.snapshot.published_generation == generation);
+    CHECK(readBytes(h.project.render_config) == root_before);
+    CHECK(readBytes(h.presetPath()) == a_before);
+    CHECK(readBytes(h.project.root / "passes/restore-b.json") == b_before);
+    if (!fragment_before.empty()) CHECK(readBytes(fragment_path) == fragment_before);
+}
+
+TEST_CASE("RC-6b2 removed planning RPCs are unknown methods", "[render-config-editor][rc6b2][removed-rpc]") {
+    EditorCommandService commands{EditorCommandServiceDependencies{
+        .document = []() -> const AuthoringSceneDocument & { throw std::logic_error("unused for unknown methods"); },
+        .current_scene_id = [] { return std::string{"main"}; }}};
+    EditorCommandRpcAdapter adapter{commands};
+    std::istringstream input;
+    std::ostringstream output;
+    RpcServer rpc{input, output};
+    configureEditorRpcHandlers(rpc, adapter, {.snapshot_imported = [] {}, .save_busy = [] { return false; }});
+    for (const auto *method : {"edit_vulkan_plan_pins", "put_vulkan_physical_fragment"}) {
+        const auto response = nlohmann::json::parse(rpc.processLine(nlohmann::json{
+            {"jsonrpc", "2.0"}, {"id", 1}, {"method", method}, {"params", nlohmann::json::object()}}.dump()));
+        REQUIRE(response.contains("error"));
+        CHECK(response.at("error").at("code") == JsonRpcErrorCodes::methodNotFound);
+    }
+}
+} // namespace Pelican

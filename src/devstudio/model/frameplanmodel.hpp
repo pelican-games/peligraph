@@ -655,16 +655,6 @@ struct FramePlanPhysicalPlan {
     // makes key-set coverage mechanically checkable and prevents silent loss
     // when the producer adds another current-version section.
     std::vector<FramePlanWireSection> wire_sections;
-    // UX-15b, decisions 1 and 2 (engine EL-2): the packages the plan ejects
-    // and the ones the document applied to it, each as its JSON text; empty
-    // when the plan has none. The Frame Plan sends them back unchanged (a
-    // pin with only its candidate swapped).
-    std::string ejectable_pin_package;
-    std::string ejectable_physical_fragment;
-    std::string applied_pin_package;
-    std::string applied_physical_fragment;
-    // applied_pin_package's pins.backend_candidate.
-    std::string pinned_backend_candidate;
     // UX-15b, decision 5: subgraph_replacements, graph_transforms and
     // render_strategy, in that order.
     std::vector<FramePlanRewrite> rewrites;

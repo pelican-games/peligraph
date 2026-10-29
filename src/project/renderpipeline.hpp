@@ -205,6 +205,8 @@ struct RenderPipelineFragmentOrigin {
 struct PlanningPolicySource {
     TargetPlanningPolicy policy;
 };
+// Refuse persisted pin/physical-fragment authoring at every document boundary.
+void rejectRemovedPlanningPackages(const nlohmann::json &config, std::string_view document = {});
 TargetPlanningPolicy parseTargetPlanningPolicy(const nlohmann::json &config,
     std::string_view suffix = {}, PlanningOrigin origin = {});
 PlanningPolicySource collectPartPlanningPolicy(const nlohmann::json &document,
@@ -453,10 +455,6 @@ struct ResolvedRenderPipeline {
     nlohmann::json draw_sort;
     SampleCountPolicy sample_count_policy;
     TargetPlanningPolicy target_planning;
-    std::vector<VulkanTargetPlanPinPackage>
-        vulkan_plan_pins;
-    std::vector<VulkanPhysicalFragmentPackage>
-        vulkan_physical_fragments;
     CompiledXrTargetPolicy xr_target_policy;
     std::optional<RenderPipelinePresetInfo> pipeline_preset;
     CompiledGraphVariantPolicy graph_variant_policy;
@@ -656,10 +654,6 @@ struct CompiledRenderPipeline {
     SampleCountPolicy sample_count_policy;
     TargetPlanningPolicy target_planning;
     std::vector<SceneAccelerationStructureDefinition> scene_acceleration_structures;
-    std::vector<VulkanTargetPlanPinPackage>
-        vulkan_plan_pins;
-    std::vector<VulkanPhysicalFragmentPackage>
-        vulkan_physical_fragments;
     CompiledXrTargetPolicy xr_target_policy;
     std::optional<RenderPipelinePresetInfo> pipeline_preset;
     CompiledGraphVariantPolicy graph_variant_policy;

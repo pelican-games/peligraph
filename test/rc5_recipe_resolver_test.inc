@@ -53,7 +53,7 @@ TEST_CASE("RC-5 recipe keys and family shapes are explicit", "[render-feature][p
         TestSupport::requireNamedRefusal(resolve, "render_pipeline.recipe_unknown_key@1", {{"key", key}});
         recipe = saved;
     }
-    for (const auto *key : {"features", "graph_transforms", "shader_defines", "draw_sort", "material_routing", "xr", "render_strategy", "target_planning", "vulkan_plan_pins", "vulkan_physical_fragments"}) {
+    for (const auto *key : {"features", "graph_transforms", "shader_defines", "draw_sort", "material_routing", "xr", "render_strategy", "target_planning"}) {
         CAPTURE(key);
         auto saved = recipe;
         const auto value = (std::string{key} == "features" || std::string{key} == "graph_transforms" || std::string{key} == "shader_defines")
@@ -156,5 +156,28 @@ TEST_CASE("RC-5 A4 fragment overrides preserve position and reject invalid ident
         replacement["insert"] = "end";
         root["fragment_overrides"] = {{"deferred_lighting", "project://lighting.json"}};
         TestSupport::requireNamedRefusal(resolve, "render_pipeline.fragment_invalid@1", {{"field", "insert"}});
+    }
+}
+
+TEST_CASE("RC-6b2 removed planning keys are refused in preset recipe and structural fragment documents", "[render-feature][pipeline-preset][rc6b2][legacy-package-boundary]") {
+    for (const auto *key : {"vulkan_plan_pins", "vulkan_physical_fragments"})
+    for (const int kind : {1, 2, 3}) {
+        CAPTURE(key, kind);
+        auto preset = recipeDocument();
+        RecipeJson fragment{{"schema", "pelican.render_fragment"}, {"version", 1}, {"name", "old"},
+            {"passes", RecipeJson::array()}, {"render_targets", RecipeJson::array()}};
+        if (kind == 1) {
+            preset["version"] = 1;
+            preset["config"] = {{key, RecipeJson::object()}};
+        } else if (kind == 2) preset["config"][key] = RecipeJson::object();
+        else {
+            fragment[key] = RecipeJson::object();
+            preset["config"]["base"] = {{{"family", "main"}, {"fragments", {"test://old-fragment"}}}};
+        }
+        TestSupport::requireNamedRefusal([&] {
+            (void)resolveRenderPipelinePreset(recipeRoot("test://old-preset"), [&](std::string_view ref) {
+                return (ref == "test://old-fragment" ? fragment : preset).dump();
+            });
+        }, "target_planning.legacy_package_removed@1", {{"key", key}});
     }
 }

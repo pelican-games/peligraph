@@ -771,16 +771,14 @@ ResolvedRenderStrategyConfig resolveRenderStrategy(
     // that already; a direct caller's short forms are normalized here), so
     // an identity strategy's input and output fingerprints agree.
     auto seed = normalizeRenderingJson(config);
+    rejectRemovedPlanningPackages(seed);
     seed.erase("render_strategy");
     // Target/physical compiler controls belong to lower layers. They must
-    // survive a renderer-wide strategy expansion, but including them in the
-    // strategy ABI seed would make an ejected physical-plan fingerprint
-    // self-referential when the pin is pasted back into the same config.
+    // survive a renderer-wide strategy expansion without changing its ABI seed.
     std::vector<std::pair<std::string, nlohmann::json>>
         lower_layer_controls;
     for (const auto *field :
-         {"target_planning", "vulkan_plan_pins",
-          "vulkan_physical_fragments"}) {
+         {"target_planning"}) {
         if (!seed.contains(field)) continue;
         lower_layer_controls.emplace_back(
             field, seed.at(field));

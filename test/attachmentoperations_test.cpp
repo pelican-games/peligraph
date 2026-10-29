@@ -263,33 +263,6 @@ TEST_CASE("RC-3a2 the loader, the planner and registration hand the recording th
         CHECK(recorded(config, registered(render_graph, automatic), nullptr) == byPriority());
     }
 
-    SECTION("a physical fragment's edit reaches the recording") {
-        auto document = vulkanPhysicalFragmentPackageToJson(ejectVulkanPhysicalFragmentPackage(plan));
-        bool edited = false;
-        for (auto &entry : document.at("attachments")) {
-            if (entry.at("node") == "defaults" && entry.at("logical_resource") == "a") {
-                CHECK(entry.at("load_op") == "clear");
-                entry["load_op"] = "discard";
-                edited = true;
-            }
-        }
-        REQUIRE(edited);
-        const std::array fragments{vulkanPhysicalFragmentPackageFromJson(document)};
-        const auto linked = compileRenderingTargetPlans(render_graph, Pelican::TestSupport::framePlanMapOf(render_graph), declared, compileSampleCountPolicy(config),
-                                                        vk::Format::eB8G8R8A8Srgb, facts, std::nullopt,
-                                                        std::nullopt, {}, {}, fragments);
-        REQUIRE(linked.plans.size() == 1);
-        auto expected = byPriority();
-        expected.at("scratch_pass").color.at(0) = ops(VkLoad::eClear, VkStore::eDontCare);
-        expected.at("defaults").color.at(0) = ops(VkLoad::eDontCare, VkStore::eStore);
-        CHECK(recorded(config, registered(render_graph, linked), linked.plans.front().get()) == expected);
-
-        // The wire's spellings are its own: "dont_care" is not one.
-        for (auto &entry : document.at("attachments"))
-            if (entry.at("node") == "defaults" && entry.at("logical_resource") == "a") entry["load_op"] = "dont_care";
-        CHECK_THROWS_WITH(vulkanPhysicalFragmentPackageFromJson(document),
-                          "Vulkan physical attachment fragment has unknown load_op: dont_care");
-    }
 
     SECTION("a complete physical plan reads and writes the plan's spellings") {
         auto document = vulkanCompletePhysicalPlanPackageToJson(ejectVulkanCompletePhysicalPlanPackage(plan));

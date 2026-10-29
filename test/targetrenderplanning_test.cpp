@@ -516,12 +516,6 @@ VulkanTargetPlan compile(
         std::nullopt,
     std::optional<VulkanExternalDepthExportRequest>
         external_depth_export = std::nullopt,
-    std::optional<VulkanTargetPlanPinPackage>
-        pin_package = std::nullopt,
-    std::optional<VulkanPhysicalFragmentPackage>
-        fragment_package = std::nullopt,
-    std::vector<VulkanPhysicalResourceFormatCapability>
-        format_capabilities = {},
     std::vector<VulkanPhysicalAttachmentPlan>
         attachments = {},
     PlanningProfile profile = {}) {
@@ -537,12 +531,6 @@ VulkanTargetPlan compile(
             .view_execution = std::move(view_execution),
             .external_depth_export =
                 std::move(external_depth_export),
-            .pin_package =
-                std::move(pin_package),
-            .fragment_package =
-                std::move(fragment_package),
-            .fragment_format_capabilities =
-                std::move(format_capabilities),
             .automatic_attachments =
                 std::move(attachments),
         });
@@ -829,7 +817,6 @@ TEST_CASE(
         types, preserving_graph, fixtureOrder(preserving_graph), topology(true),
         bindingsFor(types, preserving_graph),
         std::nullopt, std::nullopt, std::nullopt,
-        std::nullopt, std::nullopt, {},
         tileLinkAttachmentOperations(true));
     REQUIRE(
         preserving.backend_selection
@@ -851,7 +838,6 @@ TEST_CASE(
         types, clearing_graph, fixtureOrder(clearing_graph), topology(true),
         bindingsFor(types, clearing_graph),
         std::nullopt, std::nullopt, std::nullopt,
-        std::nullopt, std::nullopt, {},
         tileLinkAttachmentOperations(false));
     REQUIRE(
         clearing.backend_selection
@@ -940,7 +926,6 @@ TEST_CASE(
         types, graph, fixtureOrder(graph), transient_target,
         bindingsFor(types, graph),
         std::nullopt, std::nullopt, std::nullopt,
-        std::nullopt, std::nullopt, {},
         attachments);
     REQUIRE(
         automatic.backend_selection
@@ -971,47 +956,10 @@ TEST_CASE(
                    candidate.feasible;
         }));
 
-    auto materialized =
-        ejectVulkanPhysicalFragmentPackage(
-            automatic);
-    const auto scratch_resource =
-        std::find_if(
-            materialized.resources.begin(),
-            materialized.resources.end(),
-            [](const auto &resource) {
-                return resource.logical_resource ==
-                       "write_only_scratch";
-            });
-    REQUIRE(
-        scratch_resource !=
-        materialized.resources.end());
-    scratch_resource->representation =
-        VulkanResourceRepresentation::
-            materialized_image;
-    REQUIRE(materialized.attachments.has_value());
-    materialized.attachments->front().store_op =
-        AttachmentStoreOp::store;
-    const auto overridden = compile(
-        types, graph, fixtureOrder(graph), transient_target,
-        bindingsFor(types, graph),
-        std::nullopt, std::nullopt, std::nullopt,
-        std::nullopt, materialized, {},
-        attachments);
-    REQUIRE(
-        physicalResource(
-            overridden, "write_only_scratch")
-            .representation ==
-        VulkanResourceRepresentation::
-            materialized_image);
-    REQUIRE(
-        overridden.attachments.front().operations.store_op ==
-        AttachmentStoreOp::store);
-
     const auto conservative = compile(
         types, graph, fixtureOrder(graph), transient_target,
         bindingsFor(types, graph),
         std::nullopt, std::nullopt, std::nullopt,
-        std::nullopt, std::nullopt, {},
         attachments,
         PlanningProfile{
             PlanningProfileKind::
@@ -1110,87 +1058,6 @@ TEST_CASE(
         "unsupported image subresource");
 }
 
-TEST_CASE("Vulkan target plan pins round-trip and bind a logical graph",
-          "[target-render-planning][pin][eject]") {
-    const auto types = makeBuiltinLogicalTypeRegistry();
-    const auto graph = hybridGraph(types, 4, false, true);
-    const auto automatic = compile(
-        types, graph, fixtureOrder(graph), topology(true),
-        bindingsFor(types, graph));
-    REQUIRE(automatic.backend_selection.selected_candidate ==
-            "pelican.vulkan.tile_local_plan@1");
-    REQUIRE(automatic.logical_graph_fingerprint ==
-            vulkanTargetPlanLogicalGraphFingerprint(graph));
-
-    const auto ejected =
-        ejectVulkanTargetPlanPinPackage(automatic);
-    const auto document =
-        vulkanTargetPlanPinPackageToJson(ejected);
-    REQUIRE(
-        vulkanTargetPlanPinPackageFromJson(document) ==
-        ejected);
-    REQUIRE(document.at("schema") ==
-            "pelican.vulkan_target_plan_pins");
-    REQUIRE(document.at("version") == 1);
-    REQUIRE(document.at("logical_graph_fingerprint")
-                .get<std::string>()
-                .starts_with("fnv1a64:"));
-
-    auto materialized_pin = ejected;
-    materialized_pin.backend_candidate =
-        "pelican.vulkan.materialized_plan@1";
-    const auto pinned = compile(
-        types, graph, fixtureOrder(graph), topology(true),
-        bindingsFor(types, graph), std::nullopt,
-        std::nullopt, std::nullopt,
-        materialized_pin);
-    REQUIRE(pinned.backend_selection.selected_candidate ==
-            "pelican.vulkan.materialized_plan@1");
-    REQUIRE(pinned.applied_pin_package ==
-            materialized_pin);
-    const auto pinned_json =
-        vulkanTargetPlanToJson(pinned);
-    REQUIRE(pinned_json.at("applied_pin_package") ==
-            vulkanTargetPlanPinPackageToJson(
-                materialized_pin));
-    REQUIRE(pinned_json.at("ejectable_pin_package")
-                .at("pins")
-                .at("backend_candidate") ==
-            "pelican.vulkan.materialized_plan@1");
-
-    auto stale = materialized_pin;
-    stale.logical_graph_fingerprint ^= 1;
-    requireThrowsContaining(
-        [&] {
-            (void)compile(
-                types, graph, fixtureOrder(graph), topology(true),
-                bindingsFor(types, graph), std::nullopt,
-                std::nullopt, std::nullopt, stale);
-        },
-        "pin package is stale");
-
-    auto wrong_graph = materialized_pin;
-    wrong_graph.graph = "other";
-    requireThrowsContaining(
-        [&] {
-            (void)compile(
-                types, graph, fixtureOrder(graph), topology(true),
-                bindingsFor(types, graph), std::nullopt,
-                std::nullopt, std::nullopt,
-                wrong_graph);
-        },
-        "pin package graph mismatch");
-
-    auto malformed = document;
-    malformed["pins"]["representation"] =
-        "tile_local_attachment";
-    requireThrowsContaining(
-        [&] {
-            (void)vulkanTargetPlanPinPackageFromJson(
-                malformed);
-        },
-        "unknown key 'representation'");
-}
 
 TEST_CASE(
     "target plan fingerprints are deterministic and distinguish structural inputs",
@@ -1283,100 +1150,6 @@ TEST_CASE(
         automatic_fingerprint);
 }
 
-TEST_CASE("Vulkan physical fragments round-trip against an automatic target environment",
-          "[target-render-planning][physical-fragment][eject]") {
-    const auto types = makeBuiltinLogicalTypeRegistry();
-    const auto graph =
-        hybridGraph(types, 4, false, true);
-    auto bindings =
-        bindingsFor(types, graph);
-    const auto scene_color =
-        std::find_if(
-            bindings.begin(), bindings.end(),
-            [](const auto &binding) {
-                return binding.resource ==
-                       "scene_color";
-            });
-    REQUIRE(scene_color != bindings.end());
-    scene_color->mip_levels = {
-        ImageMipLevelMode::full_chain, 1};
-    scene_color->array_layers = 3;
-    const auto automatic = compile(
-        types, graph, fixtureOrder(graph), topology(true),
-        bindings);
-    REQUIRE(
-        physicalResource(
-            automatic, "scene_color")
-            .mip_levels ==
-        scene_color->mip_levels);
-    REQUIRE(
-        physicalResource(
-            automatic, "scene_color")
-            .array_layers == 3);
-
-    const auto ejected =
-        ejectVulkanPhysicalFragmentPackage(
-            automatic);
-    const auto document =
-        vulkanPhysicalFragmentPackageToJson(
-            ejected);
-    REQUIRE(document.at("schema") ==
-            "pelican.vulkan_physical_fragment");
-    REQUIRE(document.at("version") == 3);
-    REQUIRE(
-        document.at("scope_edit_mode") ==
-        "dependency_safe");
-    REQUIRE(document.at("automatic_plan_fingerprint")
-                .get<std::string>()
-                .starts_with("fnv1a64:"));
-    REQUIRE(
-        vulkanPhysicalFragmentPackageFromJson(
-            document) == ejected);
-
-    const auto linked = compile(
-        types, graph, fixtureOrder(graph), topology(true),
-        bindings, std::nullopt,
-        std::nullopt, std::nullopt, std::nullopt,
-        ejected);
-    REQUIRE(linked.resources == automatic.resources);
-    REQUIRE(linked.scopes == automatic.scopes);
-    REQUIRE(linked.alias_groups ==
-            automatic.alias_groups);
-    REQUIRE(linked.required_physical_features ==
-            automatic.required_physical_features);
-    REQUIRE(linked.applied_fragment_package ==
-            ejected);
-    REQUIRE(
-        ejectVulkanPhysicalFragmentPackage(
-            linked) == ejected);
-
-    const auto encoded =
-        vulkanTargetPlanToJson(linked);
-    const auto encoded_scene_color =
-        std::find_if(
-            encoded.at("resources").begin(),
-            encoded.at("resources").end(),
-            [](const auto &resource_json) {
-                return resource_json.at(
-                           "logical_resource") ==
-                       "scene_color";
-            });
-    REQUIRE(
-        encoded_scene_color !=
-        encoded.at("resources").end());
-    REQUIRE(
-        encoded_scene_color->at("mip_levels")
-            .at("mode") == "full");
-    REQUIRE(
-        encoded_scene_color->at("array_layers") ==
-        3);
-    REQUIRE(encoded.at(
-                "ejectable_physical_fragment") ==
-            document);
-    REQUIRE(encoded.at(
-                "applied_physical_fragment") ==
-            document);
-}
 
 TEST_CASE(
     "complete Vulkan physical plans round-trip and verify as an "
@@ -1425,10 +1198,10 @@ TEST_CASE(
 
     const auto dump =
         vulkanTargetPlanToJson(automatic);
-    REQUIRE(
-        dump.at(
-            "ejectable_complete_physical_plan") ==
-        document);
+    for (const auto *field : {"ejectable_pin_package", "ejectable_physical_fragment",
+                             "applied_pin_package", "applied_physical_fragment",
+                             "ejectable_complete_physical_plan"})
+        CHECK_FALSE(dump.contains(field));
 
     auto malformed = document;
     malformed["raw_commands"] =
@@ -1885,7 +1658,7 @@ TEST_CASE(
         "square fixed extent");
 }
 
-TEST_CASE("Vulkan physical attachment fragments preserve logical dependencies and resolve semantics",
+TEST_CASE("Vulkan automatic attachments preserve logical dependencies and resolve semantics",
           "[target-render-planning][physical-fragment][attachment]") {
     const auto types = makeBuiltinLogicalTypeRegistry();
     const auto graph =
@@ -1938,8 +1711,7 @@ TEST_CASE("Vulkan physical attachment fragments preserve logical dependencies an
         types, graph, fixtureOrder(graph), topology(false),
         bindingsFor(types, graph),
         std::nullopt, std::nullopt,
-        std::nullopt, std::nullopt,
-        std::nullopt, {},
+        std::nullopt,
         attachment_contract());
 
     auto temporal_self_read = graph;
@@ -1985,438 +1757,31 @@ TEST_CASE("Vulkan physical attachment fragments preserve logical dependencies an
             bindingsFor(
                 types, temporal_self_read),
             std::nullopt, std::nullopt,
-            std::nullopt, std::nullopt,
-            std::nullopt, {},
+            std::nullopt,
             attachment_contract()));
 
-    const auto ejected =
-        ejectVulkanPhysicalFragmentPackage(
-            automatic);
-    REQUIRE(ejected.schema_version == 3);
-    REQUIRE(
-        ejected.scope_edit_mode ==
-        VulkanPhysicalScopeEditMode::
-            dependency_safe);
-    REQUIRE(ejected.attachments.has_value());
-    REQUIRE(ejected.attachments->size() == 4);
-    const auto document =
-        vulkanPhysicalFragmentPackageToJson(
-            ejected);
-    REQUIRE(document.at("version") == 3);
-    REQUIRE(document.at("attachments").size() == 4);
-    REQUIRE(
-        vulkanPhysicalFragmentPackageFromJson(
-            document) == ejected);
-
-    const auto linked = compile(
-        types, graph, fixtureOrder(graph), topology(false),
-        bindingsFor(types, graph),
-        std::nullopt, std::nullopt,
-        std::nullopt, std::nullopt,
-        ejected, {}, attachment_contract());
-    REQUIRE(linked.attachments ==
-            automatic.attachments);
-
-    auto discard_clear = ejected;
-    const auto gbuffer = std::find_if(
-        discard_clear.attachments->begin(),
-        discard_clear.attachments->end(),
-        [](const auto &attachment) {
-            return attachment.node == "GBuffer";
-        });
-    REQUIRE(gbuffer !=
-            discard_clear.attachments->end());
-    gbuffer->load_op =
-        AttachmentLoadOp::dont_care;
-    const auto discard_clear_linked = compile(
-        types, graph, fixtureOrder(graph), topology(false),
-        bindingsFor(types, graph),
-        std::nullopt, std::nullopt,
-        std::nullopt, std::nullopt,
-        discard_clear, {},
-        attachment_contract());
-    REQUIRE(
-        discard_clear_linked.attachments.front().operations.load_op ==
-        AttachmentLoadOp::dont_care);
-
-    auto erase_load = ejected;
-    const auto forward = std::find_if(
-        erase_load.attachments->begin(),
-        erase_load.attachments->end(),
-        [](const auto &attachment) {
-            return attachment.node == "Forward";
-        });
-    REQUIRE(forward != erase_load.attachments->end());
-    forward->load_op =
-        AttachmentLoadOp::clear;
-    requireThrowsContaining(
-        [&] {
-            (void)compile(
-                types, graph, fixtureOrder(graph), topology(false),
-                bindingsFor(types, graph),
-                std::nullopt, std::nullopt,
-                std::nullopt, std::nullopt,
-                erase_load, {},
-                attachment_contract());
-        },
-        "cannot discard or clear a logical read dependency");
-
-    auto invent_load = ejected;
-    std::find_if(
-        invent_load.attachments->begin(),
-        invent_load.attachments->end(),
-        [](const auto &attachment) {
-            return attachment.node == "GBuffer";
-        })->load_op =
-        AttachmentLoadOp::load;
-    requireThrowsContaining(
-        [&] {
-            (void)compile(
-                types, graph, fixtureOrder(graph), topology(false),
-                bindingsFor(types, graph),
-                std::nullopt, std::nullopt,
-                std::nullopt, std::nullopt,
-                invent_load, {},
-                attachment_contract());
-        },
-        "Load has no logical read dependency");
-
-    auto discard_single_sample_store = ejected;
-    std::find_if(
-        discard_single_sample_store
-            .attachments->begin(),
-        discard_single_sample_store
-            .attachments->end(),
-        [](const auto &attachment) {
-            return attachment.node == "GBuffer";
-        })->store_op =
-        AttachmentStoreOp::dont_care;
-    requireThrowsContaining(
-        [&] {
-            (void)compile(
-                types, graph, fixtureOrder(graph), topology(false),
-                bindingsFor(types, graph),
-                std::nullopt, std::nullopt,
-                std::nullopt, std::nullopt,
-                discard_single_sample_store, {},
-                attachment_contract());
-        },
-        "separate multisample resolve");
-
+    CHECK(automatic.attachments == attachment_contract());
+    auto bad = automatic.attachments;
+    bad.at(0).operations.load_op = AttachmentLoadOp::load;
+    requireThrowsContaining([&] { validateVulkanPhysicalAttachmentPlans(graph, automatic.resources, bad); },
+                            "Load has no logical read dependency");
+    bad = automatic.attachments;
+    bad.at(1).operations.load_op = AttachmentLoadOp::clear;
+    requireThrowsContaining([&] { validateVulkanPhysicalAttachmentPlans(graph, automatic.resources, bad); },
+                            "cannot discard or clear a logical read dependency");
     const SampleCountPolicy msaa_policy{
-        .request =
-            {SampleCountRequestMode::exact, 4},
-        .scope = SampleCountScope::geometry,
-        .authored = true,
-    };
-    const auto msaa = compile(
-        types, graph, fixtureOrder(graph), topology(false),
-        bindingsFor(types, graph),
-        sampleCountRequest(graph, msaa_policy),
-        std::nullopt, std::nullopt,
-        std::nullopt, std::nullopt, {},
+        .request = {SampleCountRequestMode::exact, 4},
+        .scope = SampleCountScope::geometry, .authored = true};
+    const auto msaa = compile(types, graph, fixtureOrder(graph), topology(false), bindingsFor(types, graph),
+        sampleCountRequest(graph, msaa_policy), std::nullopt, std::nullopt,
         attachment_contract());
-    REQUIRE(
-        physicalResource(msaa, "gbuffer_0")
-            .resolve_required);
-    REQUIRE(
-        physicalResource(msaa, "scene_color")
-            .resolve_required);
-    auto discard_resolved_store =
-        ejectVulkanPhysicalFragmentPackage(msaa);
-    std::find_if(
-        discard_resolved_store
-            .attachments->begin(),
-        discard_resolved_store
-            .attachments->end(),
-        [](const auto &attachment) {
-            return attachment.node == "GBuffer";
-        })->store_op =
-        AttachmentStoreOp::dont_care;
-    const auto resolved = compile(
-        types, graph, fixtureOrder(graph), topology(false),
-        bindingsFor(types, graph),
-        sampleCountRequest(graph, msaa_policy),
-        std::nullopt, std::nullopt,
-        std::nullopt,
-        discard_resolved_store, {},
-        attachment_contract());
-    REQUIRE(
-        resolved.attachments.front().operations.store_op ==
-        AttachmentStoreOp::dont_care);
+    CHECK(physicalResource(msaa, "gbuffer_0").resolve_required);
+    CHECK(physicalResource(msaa, "scene_color").resolve_required);
 
-    auto discard_before_attachment_load =
-        ejectVulkanPhysicalFragmentPackage(msaa);
-    std::find_if(
-        discard_before_attachment_load
-            .attachments->begin(),
-        discard_before_attachment_load
-            .attachments->end(),
-        [](const auto &attachment) {
-            return attachment.node == "Lighting";
-        })->store_op =
-        AttachmentStoreOp::dont_care;
-    requireThrowsContaining(
-        [&] {
-            (void)compile(
-                types, graph, fixtureOrder(graph), topology(false),
-                bindingsFor(types, graph),
-                sampleCountRequest(
-                    graph, msaa_policy),
-                std::nullopt, std::nullopt,
-                std::nullopt,
-                discard_before_attachment_load,
-                {}, attachment_contract());
-        },
-        "downstream attachment loads");
-
-    auto v1_with_attachments = document;
-    v1_with_attachments["version"] = 1;
-    v1_with_attachments.erase(
-        "scope_edit_mode");
-    requireThrowsContaining(
-        [&] {
-            (void)vulkanPhysicalFragmentPackageFromJson(
-                v1_with_attachments);
-        },
-        "unknown key 'attachments'");
 }
 
-TEST_CASE("physical fragments conservatively materialize tile data before splitting scopes",
-          "[target-render-planning][physical-fragment][materialize][scope]") {
-    const auto types = makeBuiltinLogicalTypeRegistry();
-    const auto graph =
-        hybridGraph(types, 4, false, true);
-    const auto automatic = compile(
-        types, graph, fixtureOrder(graph), topology(true),
-        bindingsFor(types, graph));
-    REQUIRE(oneScopeContains(
-        automatic, "GBuffer", "Lighting"));
 
-    auto fragment =
-        ejectVulkanPhysicalFragmentPackage(
-            automatic);
-    for (auto &resource_fragment :
-         fragment.resources) {
-        if (physicalResource(
-                automatic,
-                resource_fragment
-                    .logical_resource)
-                .representation ==
-            VulkanResourceRepresentation::
-                tile_local_attachment) {
-            resource_fragment.representation =
-                VulkanResourceRepresentation::
-                    materialized_image;
-        }
-    }
-    fragment.scopes =
-        std::vector<VulkanPhysicalScopeFragment>{};
-    for (const auto &scope : automatic.scopes) {
-        for (const auto &node : scope.nodes) {
-            fragment.scopes->push_back(
-                VulkanPhysicalScopeFragment{
-                    .id = "manual:" + node,
-                    .nodes = {node},
-                });
-        }
-    }
-    fragment.alias_groups =
-        std::vector<
-            VulkanPhysicalAliasGroupFragment>{};
-
-    const auto linked = compile(
-        types, graph, fixtureOrder(graph), topology(true),
-        bindingsFor(types, graph), std::nullopt,
-        std::nullopt, std::nullopt, std::nullopt,
-        fragment);
-    REQUIRE_FALSE(oneScopeContains(
-        linked, "GBuffer", "Lighting"));
-    REQUIRE(std::all_of(
-        linked.resources.begin(),
-        linked.resources.end(),
-        [](const VulkanPhysicalResourcePlan &resource) {
-            return resource.representation !=
-                   VulkanResourceRepresentation::
-                       tile_local_attachment;
-        }));
-    REQUIRE(linked.scopes.size() ==
-            linked.lowering_graph.nodes.size());
-    REQUIRE(std::any_of(
-        linked.decisions.begin(),
-        linked.decisions.end(),
-        [](const PlanningDecision &decision) {
-            return decision.id ==
-                   "pelican.plan.physical_scope_dependency_safe@1";
-    }));
-}
-
-TEST_CASE(
-    "version 3 physical fragments fuse compatible materialized rendering scopes",
-    "[target-render-planning][physical-fragment][scope][fusion]") {
-    const auto types =
-        makeBuiltinLogicalTypeRegistry();
-    const auto graph =
-        hybridGraph(types, 3, false);
-    const std::vector<VulkanPhysicalAttachmentPlan>
-        attachments{
-            {
-                .node = "Lighting",
-                .logical_resource =
-                    "scene_color",
-                .aspect =
-                    AttachmentAspect::
-                        color,
-                .operations =
-                    PassAttachmentOperations{
-                        AttachmentLoadOp::clear,
-                        AttachmentStoreOp::store},
-            },
-            {
-                .node = "Forward",
-                .logical_resource =
-                    "scene_color",
-                .aspect =
-                    AttachmentAspect::
-                        color,
-                .operations =
-                    PassAttachmentOperations{
-                        AttachmentLoadOp::load,
-                        AttachmentStoreOp::store},
-            },
-        };
-    const auto automatic = compile(
-        types, graph, fixtureOrder(graph), topology(false),
-        bindingsFor(types, graph),
-        std::nullopt, std::nullopt,
-        std::nullopt, std::nullopt,
-        std::nullopt, {}, attachments);
-    auto fragment =
-        ejectVulkanPhysicalFragmentPackage(
-            automatic);
-    REQUIRE(fragment.schema_version == 3);
-    REQUIRE(
-        fragment.scope_edit_mode ==
-        VulkanPhysicalScopeEditMode::
-            dependency_safe);
-
-    std::vector<VulkanPhysicalScopeFragment>
-        fused_scopes;
-    for (const auto &scope :
-         *fragment.scopes) {
-        if (std::find(
-                scope.nodes.begin(),
-                scope.nodes.end(),
-                "Lighting") !=
-            scope.nodes.end()) {
-            fused_scopes.push_back({
-                .id = "manual:lighting_forward",
-                .nodes =
-                    {"Lighting", "Forward"},
-            });
-        } else if (std::find(
-                       scope.nodes.begin(),
-                       scope.nodes.end(),
-                       "Forward") ==
-                   scope.nodes.end()) {
-            fused_scopes.push_back(scope);
-        }
-    }
-    fragment.scopes =
-        std::move(fused_scopes);
-    fragment.alias_groups =
-        std::vector<
-            VulkanPhysicalAliasGroupFragment>{};
-
-    const auto linked = compile(
-        types, graph, fixtureOrder(graph), topology(false),
-        bindingsFor(types, graph),
-        std::nullopt, std::nullopt,
-        std::nullopt, std::nullopt,
-        fragment, {}, attachments);
-    const auto &scope =
-        scopeForNode(linked, "Lighting");
-    REQUIRE(
-        scope.nodes ==
-        std::vector<std::string>{
-            "Lighting", "Forward"});
-    REQUIRE(scope.single_rendering_instance);
-    REQUIRE(scope.local_reads.empty());
-    REQUIRE(physicalNodeOrderOf(linked.scopes).nodes == physicalNodeOrderOf(automatic.scopes).nodes);
-    REQUIRE(vulkanTargetPlanToJson(linked).at("resources") == vulkanTargetPlanToJson(automatic).at("resources"));
-    REQUIRE(vulkanTargetPlanToJson(linked).at("alias_groups") == vulkanTargetPlanToJson(automatic).at("alias_groups"));
-    REQUIRE(std::any_of(
-        linked.decisions.begin(),
-        linked.decisions.end(),
-        [](const PlanningDecision &decision) {
-            return decision.id ==
-                   "pelican.plan.physical_scope_dependency_safe@1";
-        }));
-
-    auto non_final_discard = fragment;
-    const auto lighting =
-        std::find_if(
-            non_final_discard
-                .attachments->begin(),
-            non_final_discard
-                .attachments->end(),
-            [](const auto &attachment) {
-                return attachment.node ==
-                       "Lighting";
-            });
-    REQUIRE(
-        lighting !=
-        non_final_discard
-            .attachments->end());
-    lighting->store_op =
-        AttachmentStoreOp::
-            dont_care;
-    requireThrowsContaining(
-        [&] {
-            (void)compile(
-                types, graph, fixtureOrder(graph),
-                topology(false),
-                bindingsFor(types, graph),
-                std::nullopt, std::nullopt,
-                std::nullopt, std::nullopt,
-                non_final_discard, {},
-                attachments);
-        },
-        "separate multisample resolve");
-}
-
-TEST_CASE("RC-3d2 fragments reject independent reordering without unproven authoring advice",
-          "[target-render-planning][physical-fragment][rc3d2]") {
-    const auto types = makeBuiltinLogicalTypeRegistry();
-    const auto graph = graphWithWriteOnlyAttachment(types);
-    const auto order = fixtureOrder(graph);
-    const auto automatic = compile(types, graph, order, topology(false), bindingsFor(types, graph));
-    auto fragment = ejectVulkanPhysicalFragmentPackage(automatic);
-    const auto scratch = std::find_if(fragment.scopes->begin(), fragment.scopes->end(), [](const auto &scope) {
-        return scope.nodes == std::vector<std::string>{"Scratch"};
-    });
-    REQUIRE(scratch != fragment.scopes->end());
-    std::rotate(fragment.scopes->begin(), scratch, scratch + 1);
-    try {
-        (void)linkVulkanPhysicalFragment(graph, topology(false), automatic, fragment);
-        FAIL("independent reordering must be refused");
-    } catch (const GraphRegistryError &error) {
-        CHECK(error.code() == "physical_fragment.reorders_frame_plan@1");
-        CHECK(error.detail().at("graph") == graph.name);
-        CHECK(error.detail().at("position") == 0);
-        CHECK(error.detail().at("expected") == "GBuffer");
-        CHECK(error.detail().at("actual") == "Scratch");
-        CHECK_FALSE(error.detail().contains("frame_node_order"));
-        CHECK(error.detail().at("not_expressible") == "provenance_unavailable");
-    }
-    const auto unchanged = ejectVulkanPhysicalFragmentPackage(automatic);
-    const auto linked = linkVulkanPhysicalFragment(graph, topology(false), automatic, unchanged);
-    CHECK(physicalNodeOrderOf(linked.scopes).nodes == order.nodes());
-    CHECK(linked.resources == automatic.resources);
-    CHECK(linked.alias_groups == automatic.alias_groups);
-}
-
-TEST_CASE("RC-3d2 physical planning consumes explicit orders and stale packages recover by ejecting again",
+TEST_CASE("RC-3d2 explicit physical orders reject stale complete plans and accept fresh complete plans",
           "[target-render-planning][rc3d2][node-order][stale]") {
     static_assert(!std::is_default_constructible_v<FramePlanNodeOrder>);
     static_assert(!std::is_default_constructible_v<VulkanTargetPlanRequest>);
@@ -2440,33 +1805,15 @@ TEST_CASE("RC-3d2 physical planning consumes explicit orders and stale packages 
     REQUIRE(a.automatic_plan_fingerprint != b.automatic_plan_fingerprint);
     CHECK(physicalResource(a, "write_only_scratch").lifetime.first_use == 3);
     CHECK(physicalResource(b, "write_only_scratch").lifetime.first_use == 0);
-    const auto old_fragment = vulkanPhysicalFragmentPackageFromJson(
-        vulkanPhysicalFragmentPackageToJson(ejectVulkanPhysicalFragmentPackage(a)));
-    try {
-        (void)linkVulkanPhysicalFragment(graph, topology(false), b, old_fragment);
-        FAIL("saved fragment must be stale");
-    } catch (const VulkanPhysicalFragmentStale &error) {
-        CHECK(error.info().graph == graph.name);
-        CHECK(error.info().fingerprint == "automatic_plan");
-    }
     const auto old_complete = vulkanCompletePhysicalPlanPackageFromJson(
         vulkanCompletePhysicalPlanPackageToJson(ejectVulkanCompletePhysicalPlanPackage(a)));
     requireThrowsContaining([&] {
         (void)verifyVulkanCompletePhysicalPlanPackage(graph, topology(false), b, second, old_complete);
     }, "complete_physical_plan.stale_automatic_plan@1");
-    const auto fresh_fragment = vulkanPhysicalFragmentPackageFromJson(
-        vulkanPhysicalFragmentPackageToJson(ejectVulkanPhysicalFragmentPackage(b)));
-    const auto reapplied = linkVulkanPhysicalFragment(graph, topology(false), b, fresh_fragment);
-    CHECK(physicalNodeOrderOf(reapplied.scopes).nodes == second.nodes());
     const auto fresh_complete = vulkanCompletePhysicalPlanPackageFromJson(
         vulkanCompletePhysicalPlanPackageToJson(ejectVulkanCompletePhysicalPlanPackage(b)));
     const auto verified = verifyVulkanCompletePhysicalPlanPackage(graph, topology(false), b, second, fresh_complete);
     CHECK(physicalNodeOrderOf(applyVerifiedVulkanCompletePhysicalPlanPackage(b, verified).scopes).nodes == second.nodes());
-    // A pin is bound to the logical graph. This still-feasible candidate
-    // survives the changed physical order without editing the pin.
-    const auto pinned = compile(types, graph, second, topology(false), bindingsFor(types, graph),
-                                std::nullopt, std::nullopt, std::nullopt, ejectVulkanTargetPlanPinPackage(a));
-    CHECK(physicalNodeOrderOf(pinned.scopes).nodes == second.nodes());
     const auto tile = compile(types, graph, first, topology(true), bindingsFor(types, graph));
     REQUIRE(tile.backend_selection.selected_candidate == "pelican.vulkan.tile_local_plan@1");
     const FramePlanNodeOrder interrupted{graph, {"GBuffer", "Scratch", "Lighting", "Forward", "ToneMap"}};
@@ -2474,17 +1821,8 @@ TEST_CASE("RC-3d2 physical planning consumes explicit orders and stale packages 
     REQUIRE(materialized.backend_selection.selected_candidate == "pelican.vulkan.transient_plan@1");
     // Saving through JSON exercises persisted packages across a change that
     // changes both the automatic fingerprint and the selected backend.
-    const auto saved_fragment = vulkanPhysicalFragmentPackageFromJson(
-        vulkanPhysicalFragmentPackageToJson(ejectVulkanPhysicalFragmentPackage(tile)));
     const auto saved_complete = vulkanCompletePhysicalPlanPackageFromJson(
         vulkanCompletePhysicalPlanPackageToJson(ejectVulkanCompletePhysicalPlanPackage(tile)));
-    try {
-        (void)linkVulkanPhysicalFragment(graph, topology(true), materialized, saved_fragment);
-        FAIL("saved tile-local fragment must be stale after backend change");
-    } catch (const VulkanPhysicalFragmentStale &error) {
-        CHECK(error.info().graph == graph.name);
-        CHECK(error.info().fingerprint == "automatic_plan");
-    }
     try {
         (void)verifyVulkanCompletePhysicalPlanPackage(graph, topology(true), materialized, interrupted, saved_complete);
         FAIL("saved tile-local complete plan must be stale after backend change");
@@ -2493,17 +1831,11 @@ TEST_CASE("RC-3d2 physical planning consumes explicit orders and stale packages 
         CHECK(error.detail().at("graph") == graph.name);
         CHECK(error.detail().at("message").get<std::string>().find("eject it again") != std::string::npos);
     }
-    const auto new_fragment = vulkanPhysicalFragmentPackageFromJson(
-        vulkanPhysicalFragmentPackageToJson(ejectVulkanPhysicalFragmentPackage(materialized)));
-    CHECK(physicalNodeOrderOf(linkVulkanPhysicalFragment(graph, topology(true), materialized, new_fragment).scopes).nodes == interrupted.nodes());
     const auto new_complete = vulkanCompletePhysicalPlanPackageFromJson(
         vulkanCompletePhysicalPlanPackageToJson(ejectVulkanCompletePhysicalPlanPackage(materialized)));
     const auto new_verified = verifyVulkanCompletePhysicalPlanPackage(graph, topology(true), materialized, interrupted, new_complete);
     CHECK(physicalNodeOrderOf(applyVerifiedVulkanCompletePhysicalPlanPackage(materialized, new_verified).scopes).nodes == interrupted.nodes());
-    requireThrowsContaining([&] {
-        (void)compile(types, graph, interrupted, topology(true), bindingsFor(types, graph),
-                      std::nullopt, std::nullopt, std::nullopt, ejectVulkanTargetPlanPinPackage(tile));
-    }, "pinned");
+
 }
 
 TEST_CASE("RC-3d2 standalone complete verification requires the expected order beyond dependency legality",
@@ -2551,511 +1883,6 @@ TEST_CASE("RC-3d2 order inputs distinguish empty graphs from missing and invalid
     }, "target_plan.node_order_conflicts_dependency@1");
 }
 
-TEST_CASE(
-    "dependency-safe physical scopes preserve explicit before and after dependencies",
-    "[target-render-planning][physical-fragment][scope][reorder][explicit-dependency]") {
-    const auto types =
-        makeBuiltinLogicalTypeRegistry();
-    const auto move_scope =
-        [](VulkanPhysicalFragmentPackage &fragment,
-           std::string_view node,
-           bool to_front) {
-        const auto found =
-            std::find_if(
-                fragment.scopes->begin(),
-                fragment.scopes->end(),
-                [&](const auto &scope) {
-                    return std::find(
-                               scope.nodes.begin(),
-                               scope.nodes.end(),
-                               node) !=
-                           scope.nodes.end();
-                });
-        REQUIRE(
-            found != fragment.scopes->end());
-        auto scope = *found;
-        fragment.scopes->erase(found);
-        if (to_front) {
-            fragment.scopes->insert(
-                fragment.scopes->begin(),
-                std::move(scope));
-        } else {
-            fragment.scopes->push_back(
-                std::move(scope));
-        }
-        fragment.alias_groups =
-            std::vector<
-                VulkanPhysicalAliasGroupFragment>{};
-    };
-
-    auto after_graph =
-        graphWithWriteOnlyAttachment(types);
-    const auto after_node =
-        std::find_if(
-            after_graph.nodes.begin(),
-            after_graph.nodes.end(),
-            [](const auto &node) {
-                return node.name == "Scratch";
-            });
-    REQUIRE(
-        after_node != after_graph.nodes.end());
-    after_node->after = {"ToneMap"};
-    validateCompiledLogicalRenderGraph(
-        types, after_graph);
-    const auto after_automatic = compile(
-        types, after_graph, FramePlanNodeOrder{after_graph, {"GBuffer", "Lighting", "Forward", "ToneMap", "Scratch"}}, topology(false),
-        bindingsFor(types, after_graph));
-    auto after_fragment =
-        ejectVulkanPhysicalFragmentPackage(
-            after_automatic);
-    move_scope(
-        after_fragment, "Scratch", true);
-    requireThrowsContaining(
-        [&] {
-            (void)compile(
-                types, after_graph, FramePlanNodeOrder{after_graph, {"GBuffer", "Lighting", "Forward", "ToneMap", "Scratch"}},
-                topology(false),
-                bindingsFor(
-                    types, after_graph),
-                std::nullopt, std::nullopt,
-                std::nullopt, std::nullopt,
-                after_fragment);
-        },
-        "physical_fragment.reorders_frame_plan@1");
-
-    auto before_graph =
-        graphWithWriteOnlyAttachment(types);
-    const auto before_node =
-        std::find_if(
-            before_graph.nodes.begin(),
-            before_graph.nodes.end(),
-            [](const auto &node) {
-                return node.name == "Scratch";
-            });
-    REQUIRE(
-        before_node != before_graph.nodes.end());
-    before_node->before = {"GBuffer"};
-    validateCompiledLogicalRenderGraph(
-        types, before_graph);
-    const auto before_automatic = compile(
-        types, before_graph, FramePlanNodeOrder{before_graph, {"Scratch", "GBuffer", "Lighting", "Forward", "ToneMap"}},
-        topology(false),
-        bindingsFor(types, before_graph));
-    auto before_fragment =
-        ejectVulkanPhysicalFragmentPackage(
-            before_automatic);
-    move_scope(
-        before_fragment, "Scratch", false);
-    requireThrowsContaining(
-        [&] {
-            (void)compile(
-                types, before_graph, FramePlanNodeOrder{before_graph, {"Scratch", "GBuffer", "Lighting", "Forward", "ToneMap"}},
-                topology(false),
-                bindingsFor(
-                    types, before_graph),
-                std::nullopt, std::nullopt,
-                std::nullopt, std::nullopt,
-                before_fragment);
-        },
-        "physical_fragment.reorders_frame_plan@1");
-}
-
-TEST_CASE(
-    "dependency-safe physical fusion rejects mismatched attachment contracts",
-    "[target-render-planning][physical-fragment][scope][fusion][reject]") {
-    const auto types =
-        makeBuiltinLogicalTypeRegistry();
-    const auto graph =
-        hybridGraph(types, 3, false);
-    const std::vector<VulkanPhysicalAttachmentPlan>
-        attachments{
-            {
-                .node = "GBuffer",
-                .logical_resource = "gbuffer_0",
-                .aspect =
-                    AttachmentAspect::
-                        color,
-                .operations =
-                    PassAttachmentOperations{
-                        AttachmentLoadOp::clear,
-                        AttachmentStoreOp::store},
-            },
-            {
-                .node = "Lighting",
-                .logical_resource =
-                    "scene_color",
-                .aspect =
-                    AttachmentAspect::
-                        color,
-                .operations =
-                    PassAttachmentOperations{
-                        AttachmentLoadOp::clear,
-                        AttachmentStoreOp::store},
-            },
-        };
-    const auto automatic = compile(
-        types, graph, fixtureOrder(graph), topology(false),
-        bindingsFor(types, graph),
-        std::nullopt, std::nullopt,
-        std::nullopt, std::nullopt,
-        std::nullopt, {}, attachments);
-    auto fragment =
-        ejectVulkanPhysicalFragmentPackage(
-            automatic);
-    std::vector<VulkanPhysicalScopeFragment>
-        scopes;
-    scopes.push_back({
-        .id = "invalid:attachments",
-        .nodes = {"GBuffer", "Lighting"},
-    });
-    for (const auto &scope :
-         *fragment.scopes) {
-        if (std::find(
-                scope.nodes.begin(),
-                scope.nodes.end(),
-                "GBuffer") ==
-                scope.nodes.end() &&
-            std::find(
-                scope.nodes.begin(),
-                scope.nodes.end(),
-                "Lighting") ==
-                scope.nodes.end()) {
-            scopes.push_back(scope);
-        }
-    }
-    fragment.scopes = std::move(scopes);
-    fragment.alias_groups =
-        std::vector<
-            VulkanPhysicalAliasGroupFragment>{};
-    requireThrowsContaining(
-        [&] {
-            (void)compile(
-                types, graph, fixtureOrder(graph),
-                topology(false),
-                bindingsFor(types, graph),
-                std::nullopt, std::nullopt,
-                std::nullopt, std::nullopt,
-                fragment, {}, attachments);
-        },
-        "requires identical ordered attachments");
-}
-
-TEST_CASE("physical fragments select declared alternate formats with target capability evidence",
-          "[target-render-planning][physical-fragment][format]") {
-    const auto types = makeBuiltinLogicalTypeRegistry();
-    const auto graph =
-        hybridGraph(types, 3, false, true);
-    const SampleCountPolicy policy{
-        .request =
-            {SampleCountRequestMode::exact, 4},
-        .scope = SampleCountScope::geometry,
-        .authored = true,
-    };
-    const auto automatic = compile(
-        types, graph, fixtureOrder(graph), topology(false),
-        bindingsFor(types, graph),
-        sampleCountRequest(graph, policy));
-    REQUIRE(
-        physicalResource(automatic, "gbuffer_0")
-            .format ==
-        ImageFormat::r16g16b16a16_sfloat);
-    REQUIRE(
-        physicalResource(automatic, "gbuffer_0")
-            .rasterization_samples == 4);
-
-    auto fragment =
-        ejectVulkanPhysicalFragmentPackage(
-            automatic);
-    const auto edited = std::find_if(
-        fragment.resources.begin(),
-        fragment.resources.end(),
-        [](const auto &resource) {
-            return resource.logical_resource ==
-                   "gbuffer_0";
-        });
-    REQUIRE(edited != fragment.resources.end());
-    edited->format = ImageFormat::r8g8b8a8_unorm;
-
-    const auto linked = compile(
-        types, graph, fixtureOrder(graph), topology(false),
-        bindingsFor(types, graph),
-        sampleCountRequest(graph, policy),
-        std::nullopt, std::nullopt,
-        std::nullopt, fragment,
-        {VulkanPhysicalResourceFormatCapability{
-            .logical_resource = "gbuffer_0",
-            .format = ImageFormat::r8g8b8a8_unorm,
-            .image_usage_supported = true,
-            .supported_samples = {1, 2, 4},
-            .max_array_layers = 1,
-        }});
-    REQUIRE(
-        physicalResource(linked, "gbuffer_0")
-            .format ==
-        ImageFormat::r8g8b8a8_unorm);
-    REQUIRE(
-        physicalResource(linked, "gbuffer_0")
-            .rasterization_samples == 4);
-    REQUIRE(linked.sample_count_plan.has_value());
-    const auto resolved = std::find_if(
-        linked.sample_count_plan->resources.begin(),
-        linked.sample_count_plan->resources.end(),
-        [](const auto &resource) {
-            return resource.resource == "gbuffer_0";
-        });
-    REQUIRE(
-        resolved !=
-        linked.sample_count_plan->resources.end());
-    REQUIRE(resolved->format == ImageFormat::r8g8b8a8_unorm);
-    const auto lowering = std::find_if(
-        linked.lowering_graph.resources.begin(),
-        linked.lowering_graph.resources.end(),
-        [](const auto &resource) {
-            return resource.logical.name ==
-                   "gbuffer_0";
-        });
-    REQUIRE(
-        lowering !=
-        linked.lowering_graph.resources.end());
-    REQUIRE(
-        std::find(
-            lowering->required_physical_features.begin(),
-            lowering->required_physical_features.end(),
-            std::string{kLdrFormatCapability}) !=
-        lowering->required_physical_features.end());
-}
-
-TEST_CASE("alternate physical format evidence is fail-closed for usage and samples",
-          "[target-render-planning][physical-fragment][format][reject]") {
-    const auto types = makeBuiltinLogicalTypeRegistry();
-    const auto graph =
-        hybridGraph(types, 3, false, true);
-    const SampleCountPolicy policy{
-        .request =
-            {SampleCountRequestMode::exact, 4},
-        .scope = SampleCountScope::geometry,
-        .authored = true,
-    };
-    const auto automatic = compile(
-        types, graph, fixtureOrder(graph), topology(false),
-        bindingsFor(types, graph),
-        sampleCountRequest(graph, policy));
-    auto fragment =
-        ejectVulkanPhysicalFragmentPackage(
-            automatic);
-    const auto edited = std::find_if(
-        fragment.resources.begin(),
-        fragment.resources.end(),
-        [](const auto &resource) {
-            return resource.logical_resource ==
-                   "gbuffer_0";
-        });
-    REQUIRE(edited != fragment.resources.end());
-    edited->format = ImageFormat::r8g8b8a8_unorm;
-
-    const auto compile_with_capability =
-        [&](VulkanPhysicalResourceFormatCapability capability) {
-            return compile(
-                types, graph, fixtureOrder(graph), topology(false),
-                bindingsFor(types, graph),
-                sampleCountRequest(graph, policy),
-                std::nullopt, std::nullopt,
-                std::nullopt, fragment,
-                {std::move(capability)});
-        };
-    requireThrowsContaining(
-        [&] {
-            (void)compile_with_capability({
-                .logical_resource = "gbuffer_0",
-                .format = ImageFormat::r8g8b8a8_unorm,
-                .image_usage_supported = false,
-                .supported_samples = {1, 2, 4},
-            });
-        },
-        "does not support the required image usage");
-    requireThrowsContaining(
-        [&] {
-            (void)compile_with_capability({
-                .logical_resource = "gbuffer_0",
-                .format = ImageFormat::r8g8b8a8_unorm,
-                .image_usage_supported = true,
-                .supported_samples = {1, 2},
-            });
-        },
-        "does not support the selected rasterization sample count");
-}
-
-TEST_CASE("physical fragment verifier rejects stale, aggressive, open-scope, and overlapping edits",
-          "[target-render-planning][physical-fragment][reject]") {
-    const auto types = makeBuiltinLogicalTypeRegistry();
-    const auto graph =
-        hybridGraph(types, 3, false, true);
-    const auto tile = compile(
-        types, graph, fixtureOrder(graph), topology(true),
-        bindingsFor(types, graph));
-    auto tile_fragment =
-        ejectVulkanPhysicalFragmentPackage(tile);
-
-    requireThrowsContaining(
-        [&] {
-            (void)compile(
-                types, graph, fixtureOrder(graph), topology(true, 7),
-                bindingsFor(types, graph),
-                std::nullopt, std::nullopt,
-                std::nullopt, std::nullopt,
-                tile_fragment);
-        },
-        "stale for the current target facts/provider generation");
-
-    auto split_without_materialization =
-        tile_fragment;
-    split_without_materialization.scopes =
-        std::vector<VulkanPhysicalScopeFragment>{};
-    for (const auto &scope : tile.scopes) {
-        for (const auto &node : scope.nodes) {
-            split_without_materialization
-                .scopes->push_back(
-                    VulkanPhysicalScopeFragment{
-                        .id = "split:" + node,
-                        .nodes = {node},
-                    });
-        }
-    }
-    requireThrowsContaining(
-        [&] {
-            (void)compile(
-                types, graph, fixtureOrder(graph), topology(true),
-                bindingsFor(types, graph),
-                std::nullopt, std::nullopt,
-                std::nullopt, std::nullopt,
-                split_without_materialization);
-        },
-        "exposes scope-local resource across scopes");
-
-    const auto desktop = compile(
-        types, graph, fixtureOrder(graph), topology(false),
-        bindingsFor(types, graph));
-    auto aggressive =
-        ejectVulkanPhysicalFragmentPackage(
-            desktop);
-    const auto gbuffer =
-        std::find_if(
-            aggressive.resources.begin(),
-            aggressive.resources.end(),
-            [](const auto &resource) {
-                return resource.logical_resource ==
-                       "gbuffer_0";
-            });
-    REQUIRE(gbuffer != aggressive.resources.end());
-    gbuffer->representation =
-        VulkanResourceRepresentation::
-            tile_local_attachment;
-    requireThrowsContaining(
-        [&] {
-            (void)compile(
-                types, graph, fixtureOrder(graph), topology(false),
-                bindingsFor(types, graph),
-                std::nullopt, std::nullopt,
-                std::nullopt, std::nullopt,
-                aggressive);
-        },
-        "conservatively materialize");
-
-    auto alternate_format =
-        ejectVulkanPhysicalFragmentPackage(
-            desktop);
-    const auto format_resource =
-        std::find_if(
-            alternate_format.resources.begin(),
-            alternate_format.resources.end(),
-            [](const auto &resource) {
-                return resource.logical_resource ==
-                       "gbuffer_0";
-            });
-    REQUIRE(
-        format_resource !=
-        alternate_format.resources.end());
-    format_resource->format =
-        ImageFormat::r8g8b8a8_unorm;
-    requireThrowsContaining(
-        [&] {
-            (void)compile(
-                types, graph, fixtureOrder(graph), topology(false),
-                bindingsFor(types, graph),
-                std::nullopt, std::nullopt,
-                std::nullopt, std::nullopt,
-                alternate_format);
-        },
-        "no target format capability");
-
-    auto fused = ejectVulkanPhysicalFragmentPackage(
-        desktop);
-    fused.schema_version = 2;
-    fused.scope_edit_mode =
-        VulkanPhysicalScopeEditMode::split_only;
-    REQUIRE(fused.scopes->size() >= 2);
-    auto fused_scopes =
-        std::vector<VulkanPhysicalScopeFragment>{};
-    fused_scopes.push_back(
-        VulkanPhysicalScopeFragment{
-            .id = "illegal:fused",
-            .nodes = {
-                fused.scopes->at(0).nodes.front(),
-                fused.scopes->at(1).nodes.front(),
-            },
-        });
-    for (std::size_t index = 2;
-         index < fused.scopes->size(); ++index) {
-        fused_scopes.push_back(
-            fused.scopes->at(index));
-    }
-    fused.scopes = std::move(fused_scopes);
-    requireThrowsContaining(
-        [&] {
-            (void)compile(
-                types, graph, fixtureOrder(graph), topology(false),
-                bindingsFor(types, graph),
-                std::nullopt, std::nullopt,
-                std::nullopt, std::nullopt,
-                fused);
-        },
-        "cannot fuse nodes from different automatic scopes");
-
-    auto overlapping =
-        ejectVulkanPhysicalFragmentPackage(
-            desktop);
-    overlapping.alias_groups =
-        std::vector<
-            VulkanPhysicalAliasGroupFragment>{
-            {
-                .id = "manual:overlap",
-                .resources =
-                    {"gbuffer_0", "gbuffer_1"},
-            },
-        };
-    requireThrowsContaining(
-        [&] {
-            (void)compile(
-                types, graph, fixtureOrder(graph), topology(false),
-                bindingsFor(types, graph),
-                std::nullopt, std::nullopt,
-                std::nullopt, std::nullopt,
-                overlapping);
-        },
-        "overlapping resource lifetimes");
-
-    auto malformed =
-        vulkanPhysicalFragmentPackageToJson(
-            tile_fragment);
-    malformed["resources"][0]["load_op"] =
-        "dont_care";
-    requireThrowsContaining(
-        [&] {
-            (void)vulkanPhysicalFragmentPackageFromJson(
-                malformed);
-        },
-        "unknown key 'load_op'");
-}
 
 TEST_CASE("view execution planning keeps mono and sequential stereo as explicit physical contracts",
           "[target-render-planning][view-execution][sequential]") {

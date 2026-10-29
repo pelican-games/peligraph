@@ -743,7 +743,7 @@ std::string_view renderRefusalStage(std::string_view code) {
         {"graph.", "compose"}, {"snapshot.", "compose"},
         {"feature.", "compose"}, {"render_pipeline.", "compose"},
         {"render_graph.", "parse"}, {"render_compiler.", "plan"},
-        {"physical_fragment.", "plan"}, {"complete_physical_plan.", "plan"},
+        {"complete_physical_plan.", "plan"},
         {"target_plan.", "plan"},
     };
     for (const auto &[prefix, stage] : stages)

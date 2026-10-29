@@ -440,10 +440,6 @@ TEST_CASE("rendering sample planning discovers a hybrid attachment component",
             "geometry", "depth")
             .operations.store_op ==
         AttachmentStoreOp::dont_care);
-    REQUIRE(
-        ejectVulkanPhysicalFragmentPackage(
-            *compilation.plans.front())
-            .schema_version == 3);
 }
 
 TEST_CASE("ray query target requirement is hard and uses the enabled runtime capability",
@@ -558,7 +554,7 @@ TEST_CASE(
                 ->required_physical_features.end());
 }
 
-TEST_CASE("rendering target bridge links attachment operations into the physical plan",
+TEST_CASE("rendering target bridge retains automatic attachments and complete verification context",
           "[target-planning][rendering][physical-attachment][bridge]") {
     const std::vector targets{
         target("albedo", ImageFormat::b8g8r8a8_unorm),
@@ -588,45 +584,7 @@ TEST_CASE("rendering target bridge links attachment operations into the physical
             compileSampleCountPolicy(config),
             vk::Format::eB8G8R8A8Unorm,
             facts);
-    auto fragment =
-        ejectVulkanPhysicalFragmentPackage(
-            *automatic.plans.front());
-    const auto attachment = std::find_if(
-        fragment.attachments->begin(),
-        fragment.attachments->end(),
-        [](const auto &candidate) {
-            return candidate.node ==
-                       "geometry" &&
-                   candidate.logical_resource ==
-                       "albedo";
-        });
-    REQUIRE(
-        attachment !=
-        fragment.attachments->end());
-    attachment->load_op =
-        AttachmentLoadOp::dont_care;
-
-    const std::array fragments{fragment};
-    const auto linked =
-        compileRenderingTargetPlans(
-            withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
-            compileSampleCountPolicy(config),
-            vk::Format::eB8G8R8A8Unorm,
-            facts,
-            std::nullopt, std::nullopt, {},
-            {}, fragments);
-    REQUIRE(
-        physicalAttachment(
-            *linked.plans.front(),
-            "geometry", "albedo")
-            .operations.load_op ==
-        AttachmentLoadOp::dont_care);
-    REQUIRE(
-        linked.plans.front()
-            ->applied_fragment_package ==
-        std::optional<
-            VulkanPhysicalFragmentPackage>{
-            fragment});
+    const auto &linked = automatic;
     REQUIRE(linked.verification_contexts.size() == 1);
     const auto &verification =
         linked.verification_contexts.front();
@@ -634,11 +592,8 @@ TEST_CASE("rendering target bridge links attachment operations into the physical
     REQUIRE(verification.automatic_plan != nullptr);
     REQUIRE(verification.compiled_plan ==
             linked.plans.front());
-    REQUIRE(verification.automatic_plan !=
+    REQUIRE(verification.automatic_plan ==
             verification.compiled_plan);
-    REQUIRE_FALSE(
-        verification.automatic_plan
-            ->applied_fragment_package.has_value());
     REQUIRE(
         verification.automatic_plan
             ->automatic_plan_fingerprint ==
@@ -866,49 +821,7 @@ TEST_CASE(
             .operations.store_op ==
         AttachmentStoreOp::store);
 
-    auto alternate_fragment =
-        ejectVulkanPhysicalFragmentPackage(
-            plan);
-    const auto fragment_resource =
-        std::find_if(
-            alternate_fragment.resources.begin(),
-            alternate_fragment.resources.end(),
-            [](const auto &resource) {
-                return resource.logical_resource ==
-                       "scratch";
-            });
-    REQUIRE(
-        fragment_resource !=
-        alternate_fragment.resources.end());
-    fragment_resource->format =
-        ImageFormat::r16g16b16a16_sfloat;
-    const std::array fragments{
-        alternate_fragment};
-    auto format_sensitive_facts =
-        supported_facts;
-    format_sensitive_facts
-        .query_image_format_capability =
-        [](const RenderTargetDefinition &definition) {
-            return RenderingImageFormatCapability{
-                .image_usage_supported = true,
-                .supported_samples = {1},
-                .max_array_layers = 1,
-                .transient_attachment_supported =
-                    definition.format ==
-                    ImageFormat::r8g8b8a8_unorm,
-            };
-        };
-    requireThrowsContaining(
-        [&] {
-            (void)compileRenderingTargetPlans(
-                withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
-                compileSampleCountPolicy(config),
-                vk::Format::eB8G8R8A8Unorm,
-                format_sensitive_facts,
-                std::nullopt, std::nullopt, {},
-                {}, fragments);
-        },
-        "alternate format requires a materialized_image");
+
 }
 
 TEST_CASE(
@@ -1250,134 +1163,6 @@ TEST_CASE(
         ImageUsageBit::sampled);
 }
 
-TEST_CASE("rendering target bridge applies a verified alternate physical format",
-          "[target-planning][rendering][physical-format][bridge]") {
-    auto targets = std::vector{
-        target("albedo", ImageFormat::b8g8r8a8_unorm),
-        target("normal", ImageFormat::r16g16b16a16_sfloat),
-        target("custom_id", ImageFormat::r32_uint),
-        target("depth", ImageFormat::d32_sfloat,
-               ImageUsageBit::depth_stencil_attachment |
-                   ImageUsageBit::transfer_src),
-        target("lit", ImageFormat::r16g16b16a16_sfloat),
-        target("display", ImageFormat::b8g8r8a8_srgb),
-    };
-    const auto lit = std::find_if(
-        targets.begin(), targets.end(),
-        [](const auto &candidate) {
-            return candidate.name == "lit";
-        });
-    REQUIRE(lit != targets.end());
-    lit->format_candidates = {
-        ImageFormat::r16g16b16a16_sfloat,
-        ImageFormat::r8g8b8a8_unorm,
-    };
-
-    const auto config = hybridConfig();
-    const auto graphs =
-        TestSupport::renderGraphOf(
-            config);
-    const auto facts =
-        RenderingTargetPlanDeviceFacts{
-            .query_image_format_capability =
-                [](const RenderTargetDefinition &) {
-                    return RenderingImageFormatCapability{
-                        .image_usage_supported = true,
-                        .supported_samples = {1, 2, 4},
-                        .max_array_layers = 4,
-                    };
-                },
-        };
-    const auto automatic =
-        compileRenderingTargetPlans(
-            withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
-            compileSampleCountPolicy(config),
-            vk::Format::eB8G8R8A8Unorm,
-            facts);
-    REQUIRE(
-        formatAssignment(automatic, "lit").format ==
-        ImageFormat::r16g16b16a16_sfloat);
-
-    auto fragment =
-        ejectVulkanPhysicalFragmentPackage(
-            *automatic.plans.front());
-    const auto resource = std::find_if(
-        fragment.resources.begin(),
-        fragment.resources.end(),
-        [](const auto &candidate) {
-            return candidate.logical_resource ==
-                   "lit";
-        });
-    REQUIRE(resource != fragment.resources.end());
-    resource->format =
-        ImageFormat::r8g8b8a8_unorm;
-    const std::array fragments{fragment};
-    const auto linked =
-        compileRenderingTargetPlans(
-            withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
-            compileSampleCountPolicy(config),
-            vk::Format::eB8G8R8A8Unorm,
-            facts,
-            std::nullopt, std::nullopt, {},
-            {}, fragments);
-    REQUIRE(
-        formatAssignment(linked, "lit").format ==
-        ImageFormat::r8g8b8a8_unorm);
-    REQUIRE(
-        physicalResource(
-            *linked.plans.front(), "lit")
-            .format ==
-        ImageFormat::r8g8b8a8_unorm);
-    REQUIRE(
-        std::any_of(
-            linked.plans.front()
-                ->sample_count_plan->resources.begin(),
-            linked.plans.front()
-                ->sample_count_plan->resources.end(),
-            [](const auto &candidate) {
-                return candidate.resource == "lit" &&
-                       candidate.format ==
-                           ImageFormat::r8g8b8a8_unorm;
-            }));
-
-    auto applied_targets = targets;
-    applyPlan(
-        applied_targets, linked);
-    const auto applied_lit = std::find_if(
-        applied_targets.begin(),
-        applied_targets.end(),
-        [](const auto &candidate) {
-            return candidate.name == "lit";
-        });
-    REQUIRE(applied_lit !=
-            applied_targets.end());
-    REQUIRE(applied_lit->format ==
-            ImageFormat::r8g8b8a8_unorm);
-
-    auto unsupported_facts = facts;
-    unsupported_facts
-        .query_image_format_capability =
-        [](const RenderTargetDefinition &definition) {
-            return RenderingImageFormatCapability{
-                .image_usage_supported =
-                    definition.format !=
-                    ImageFormat::r8g8b8a8_unorm,
-                .supported_samples = {1, 2, 4},
-                .max_array_layers = 4,
-            };
-        };
-    requireThrowsContaining(
-        [&] {
-            (void)compileRenderingTargetPlans(
-                withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
-                compileSampleCountPolicy(config),
-                vk::Format::eB8G8R8A8Unorm,
-                unsupported_facts,
-                std::nullopt, std::nullopt, {},
-                {}, fragments);
-        },
-        "does not support the required image usage");
-}
 
 TEST_CASE("rendering target bridge applies typed graph planning controls",
           "[target-planning][rendering][bridge]") {
@@ -1447,106 +1232,6 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
                        group.resources.end(),
                        "depth") != group.resources.end();
         }));
-
-    // Legacy packages are tested without author declarations (RC-6 B9).
-    auto legacy_planning = planning;
-    legacy_planning.graphs.clear();
-    const auto legacy_compilation = compileRenderingTargetPlans(
-        withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
-        compileSampleCountPolicy(config), vk::Format::eB8G8R8A8Unorm,
-        RenderingTargetPlanDeviceFacts{.query_attachment_samples = query},
-        std::nullopt, std::nullopt, legacy_planning);
-    const auto &legacy_plan = *legacy_compilation.plans.front();
-    const std::vector pins{
-        ejectVulkanTargetPlanPinPackage(legacy_plan)};
-    const auto pinned_compilation =
-        compileRenderingTargetPlans(
-            withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
-            compileSampleCountPolicy(config),
-            vk::Format::eB8G8R8A8Unorm,
-            RenderingTargetPlanDeviceFacts{
-                .query_attachment_samples = query,
-            },
-            std::nullopt, std::nullopt, legacy_planning,
-            pins);
-    REQUIRE(
-        pinned_compilation.plans.front()
-            ->applied_pin_package ==
-        std::optional<VulkanTargetPlanPinPackage>{
-            pins.front()});
-
-    const std::vector physical_fragments{
-        ejectVulkanPhysicalFragmentPackage(legacy_plan)};
-    const auto fragment_compilation =
-        compileRenderingTargetPlans(
-            withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
-            compileSampleCountPolicy(config),
-            vk::Format::eB8G8R8A8Unorm,
-            RenderingTargetPlanDeviceFacts{
-                .query_attachment_samples = query,
-            },
-            std::nullopt, std::nullopt, legacy_planning,
-            {}, physical_fragments);
-    REQUIRE(
-        fragment_compilation.plans.front()
-            ->applied_fragment_package ==
-        std::optional<VulkanPhysicalFragmentPackage>{
-            physical_fragments.front()});
-    REQUIRE(
-        fragment_compilation.plans.front()
-            ->resources == legacy_plan.resources);
-    REQUIRE(
-        fragment_compilation.plans.front()
-            ->scopes == legacy_plan.scopes);
-
-    auto stale_fragments = physical_fragments;
-    stale_fragments.front()
-        .automatic_plan_fingerprint ^= 1;
-    requireThrowsContaining(
-        [&] {
-            (void)compileRenderingTargetPlans(
-                withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
-                compileSampleCountPolicy(config),
-                vk::Format::eB8G8R8A8Unorm,
-                RenderingTargetPlanDeviceFacts{
-                    .query_attachment_samples = query,
-                },
-                std::nullopt, std::nullopt, legacy_planning,
-                {}, stale_fragments);
-        },
-        "stale for the current target facts/provider generation");
-
-    auto stale_pins = pins;
-    stale_pins.front().logical_graph_fingerprint ^= 1;
-    requireThrowsContaining(
-        [&] {
-            (void)compileRenderingTargetPlans(
-                withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
-                compileSampleCountPolicy(config),
-                vk::Format::eB8G8R8A8Unorm,
-                RenderingTargetPlanDeviceFacts{
-                    .query_attachment_samples = query,
-                },
-                std::nullopt, std::nullopt, legacy_planning,
-                stale_pins);
-        },
-        "pin package is stale");
-
-    auto unknown_fragments = physical_fragments;
-    unknown_fragments.front().graph = "missing";
-    requireThrowsContaining(
-        [&] {
-            (void)compileRenderingTargetPlans(
-                withImagesOf(graphs, targets), Pelican::TestSupport::framePlanMapOf(withImagesOf(graphs, targets)), targets,
-                compileSampleCountPolicy(config),
-                vk::Format::eB8G8R8A8Unorm,
-                RenderingTargetPlanDeviceFacts{
-                    .query_attachment_samples = query,
-                },
-                std::nullopt, std::nullopt, legacy_planning,
-                {}, unknown_fragments);
-        },
-        "physical fragments reference unknown graph: missing");
 
     auto unknown_graph = planning;
     unknown_graph.graphs.front().graph = "missing";

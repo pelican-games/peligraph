@@ -1,7 +1,6 @@
 #include "targetrenderplanning.hpp"
 #include "imagesubresourcejson.hpp"
 #include "stablefingerprint.hpp"
-#include "vulkancompletephysicalplan.hpp"
 #include "graphcomposition.hpp"
 
 #include <algorithm>
@@ -44,9 +43,6 @@ constexpr std::string_view kTransientCandidate =
     "pelican.vulkan.transient_plan@1";
 constexpr std::string_view kTileLocalCandidate =
     "pelican.vulkan.tile_local_plan@1";
-constexpr std::string_view kPinPackageSchema =
-    "pelican.vulkan_target_plan_pins";
-constexpr std::uint32_t kPinPackageVersion = 1;
 
 void appendFingerprintBoolean(
     StableFingerprint64 &fingerprint, bool value) {
@@ -479,48 +475,6 @@ void appendLogicalGraphFingerprintPayload(
         });
 }
 
-std::uint64_t parseFingerprint(
-    const nlohmann::json &value,
-    std::string_view context) {
-    if (!value.is_string()) {
-        throw std::runtime_error(
-            std::string{context} +
-            " must be an fnv1a64 fingerprint string");
-    }
-    const auto &encoded =
-        value.get_ref<const std::string &>();
-    return parseStableFingerprint64(encoded, context);
-}
-
-void requireOnlyKeys(
-    const nlohmann::json &object,
-    std::initializer_list<std::string_view> allowed,
-    std::string_view context) {
-    for (auto field = object.begin();
-         field != object.end(); ++field) {
-        if (std::find(
-                allowed.begin(), allowed.end(),
-                field.key()) == allowed.end()) {
-            throw std::runtime_error(
-                std::string{context} +
-                " has unknown key '" + field.key() + "'");
-        }
-    }
-}
-
-std::string requireJsonString(
-    const nlohmann::json &object, std::string_view key,
-    std::string_view context) {
-    const auto found = object.find(key);
-    if (found == object.end() || !found->is_string() ||
-        found->get_ref<const std::string &>().empty()) {
-        throw std::runtime_error(
-            std::string{context} +
-            " requires non-empty string " +
-            std::string{key});
-    }
-    return found->get<std::string>();
-}
 
 void requireNonEmpty(std::string_view value, std::string_view subject) {
     if (value.empty()) {
@@ -3691,109 +3645,6 @@ std::uint64_t vulkanTargetPlanLogicalGraphFingerprint(
     return fingerprint.value();
 }
 
-VulkanTargetPlanPinPackage ejectVulkanTargetPlanPinPackage(
-    const VulkanTargetPlan &plan) {
-    requireNonEmpty(plan.graph, "Vulkan target plan graph");
-    requireNonEmpty(
-        plan.backend_selection.selected_candidate,
-        "Vulkan target plan selected backend candidate");
-    return {
-        .graph = plan.graph,
-        .logical_graph_fingerprint =
-            plan.logical_graph_fingerprint,
-        .backend_candidate =
-            plan.backend_selection.selected_candidate,
-    };
-}
-
-nlohmann::ordered_json vulkanTargetPlanPinPackageToJson(
-    const VulkanTargetPlanPinPackage &package) {
-    requireNonEmpty(
-        package.graph, "Vulkan target plan pin graph");
-    requireVersionedName(
-        package.backend_candidate,
-        "Vulkan target plan pinned backend candidate");
-    return {
-        {"schema", kPinPackageSchema},
-        {"version", kPinPackageVersion},
-        {"graph", package.graph},
-        {"logical_graph_fingerprint",
-         stableFingerprint64String(
-             package.logical_graph_fingerprint)},
-        {"pins",
-         nlohmann::ordered_json{
-             {"backend_candidate",
-              package.backend_candidate},
-         }},
-    };
-}
-
-VulkanTargetPlanPinPackage
-vulkanTargetPlanPinPackageFromJson(
-    const nlohmann::json &document) {
-    constexpr std::string_view context =
-        "Vulkan target plan pin package";
-    if (!document.is_object()) {
-        throw std::runtime_error(
-            std::string{context} + " must be an object");
-    }
-    requireOnlyKeys(
-        document,
-        {"schema", "version", "graph",
-         "logical_graph_fingerprint", "pins"},
-        context);
-    if (requireJsonString(
-            document, "schema", context) !=
-        kPinPackageSchema) {
-        throw std::runtime_error(
-            std::string{context} + " schema must be '" +
-            std::string{kPinPackageSchema} + "'");
-    }
-    const auto version = document.find("version");
-    if (version == document.end() ||
-        !version->is_number_integer() ||
-        version->get<std::int64_t>() !=
-            kPinPackageVersion) {
-        throw std::runtime_error(
-            std::string{context} +
-            " version must be exactly 1");
-    }
-    const auto fingerprint =
-        document.find("logical_graph_fingerprint");
-    if (fingerprint == document.end()) {
-        throw std::runtime_error(
-            std::string{context} +
-            " requires logical_graph_fingerprint");
-    }
-    const auto pins = document.find("pins");
-    if (pins == document.end() || !pins->is_object()) {
-        throw std::runtime_error(
-            std::string{context} +
-            " pins must be an object");
-    }
-    requireOnlyKeys(
-        *pins, {"backend_candidate"},
-        "Vulkan target plan pin package pins");
-
-    VulkanTargetPlanPinPackage result{
-        .graph =
-            requireJsonString(document, "graph", context),
-        .logical_graph_fingerprint =
-            parseFingerprint(
-                *fingerprint,
-                "Vulkan target plan pin package "
-                "logical_graph_fingerprint"),
-        .backend_candidate =
-            requireJsonString(
-                *pins, "backend_candidate",
-                "Vulkan target plan pin package pins"),
-    };
-    requireVersionedName(
-        result.backend_candidate,
-        "Vulkan target plan pinned backend candidate");
-    return result;
-}
-
 void validateVulkanPhysicalFeatureClosure(
     const BackendProbeResult &selected_probe,
     std::span<const std::string> lowered_required_features) {
@@ -3900,8 +3751,6 @@ VulkanTargetPlan compileVulkanTargetPlan(
         }
         for (const auto &r : request.resource_constraints) record(r.resource, "no_alias", r.no_alias, PlanningTargetKind::resource);
     }
-    if (request.pin_package || request.fragment_package)
-        requireNoLegacyPlanningPolicy(canonical_graph.name, request.policy);
     requireNonEmpty(request.endpoint,
                     "Vulkan target plan endpoint");
     requireVersionedName(request.provider,
@@ -3912,66 +3761,6 @@ VulkanTargetPlan compileVulkanTargetPlan(
     const auto logical_graph_fingerprint =
         vulkanTargetPlanLogicalGraphFingerprint(
             canonical_graph);
-    std::optional<std::string_view>
-        requested_backend_candidate;
-    if (request.pin_package) {
-        if (request.pin_package->graph !=
-            canonical_graph.name) {
-            throw std::runtime_error(
-                "Vulkan target plan pin package graph mismatch: "
-                "expected '" +
-                canonical_graph.name + "', got '" +
-                request.pin_package->graph + "'");
-        }
-        if (request.pin_package
-                ->logical_graph_fingerprint !=
-            logical_graph_fingerprint) {
-            throw std::runtime_error(
-                "Vulkan target plan pin package is stale for graph '" +
-                canonical_graph.name + "': expected " +
-                stableFingerprint64String(
-                    logical_graph_fingerprint) +
-                ", got " +
-                stableFingerprint64String(
-                    request.pin_package
-                        ->logical_graph_fingerprint));
-        }
-        requireVersionedName(
-            request.pin_package->backend_candidate,
-            "Vulkan target plan pinned backend candidate");
-        requested_backend_candidate =
-            request.pin_package->backend_candidate;
-    }
-    if (request.fragment_package) {
-        if (request.fragment_package->graph !=
-            canonical_graph.name) {
-            throw std::runtime_error(
-                "Vulkan physical fragment graph mismatch: expected '" +
-                canonical_graph.name + "', got '" +
-                request.fragment_package->graph + "'");
-        }
-        if (request.fragment_package
-                ->logical_graph_fingerprint !=
-            logical_graph_fingerprint) {
-            throw std::runtime_error(
-                "Vulkan physical fragment is stale for logical graph '" +
-                canonical_graph.name + "'");
-        }
-        requireVersionedName(
-            request.fragment_package->backend_candidate,
-            "Vulkan physical fragment backend candidate");
-        if (requested_backend_candidate &&
-            *requested_backend_candidate !=
-                request.fragment_package
-                    ->backend_candidate) {
-            throw std::runtime_error(
-                "Vulkan target plan pin and physical fragment "
-                "select different backend candidates");
-        }
-        requested_backend_candidate =
-            request.fragment_package
-                ->backend_candidate;
-    }
     const auto topology =
         canonicalizeTargetTopology(source_topology);
     const auto &endpoint =
@@ -4071,7 +3860,7 @@ VulkanTargetPlan compileVulkanTargetPlan(
         throw GraphRegistryError("target_planning.requirement_unsatisfied@1", {{"graph", canonical_graph.name}, {"candidates", reasons}});
     }
     std::optional<std::string> policy_preferred;
-    if (!requested_backend_candidate && !request.policy.empty()) {
+    if (!request.policy.empty()) {
         const auto preference = [&](const auto &probe) {
             const auto &policy = draftFor(probe.candidate).policy;
             int backend = 0, count = 0;
@@ -4091,7 +3880,7 @@ VulkanTargetPlan compileVulkanTargetPlan(
         if (!preferred.empty()) policy_preferred = selectBackendCandidate(std::move(preferred), request.diagnostic_policy).selected_candidate;
     }
     auto selection = selectBackendCandidate(std::move(probes), request.diagnostic_policy,
-        policy_preferred ? std::optional<std::string_view>{*policy_preferred} : requested_backend_candidate);
+        policy_preferred ? std::optional<std::string_view>{*policy_preferred} : std::nullopt);
     if (policy_preferred) for (auto &d : selection.decisions)
         if (d.id == "pelican.plan.backend_candidate_selected@1") d.detail = "policy preference followed by deterministic cost tuple";
     const auto selected_name = selection.selected_candidate;
@@ -4232,8 +4021,6 @@ VulkanTargetPlan compileVulkanTargetPlan(
         .view_execution_plan = view_execution.summary,
         .external_depth_export =
             std::move(external_depth_plan),
-        .applied_pin_package =
-            std::move(request.pin_package),
     };
     lowerScopeLocalAttachmentStores(
         result.resources, result.attachments,
@@ -4245,13 +4032,6 @@ VulkanTargetPlan compileVulkanTargetPlan(
         vulkanAutomaticTargetPlanFingerprint(
             topology, result);
     validateVulkanTargetPlanRequirements(canonical_graph, result);
-    if (request.fragment_package) {
-        result = linkVulkanPhysicalFragment(
-            canonical_graph, topology,
-            std::move(result),
-            std::move(*request.fragment_package),
-            request.fragment_format_capabilities);
-    }
     return result;
 }
 
@@ -4274,17 +4054,6 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
         {"automatic_plan_fingerprint",
          stableFingerprint64String(
              plan.automatic_plan_fingerprint)},
-        {"ejectable_pin_package",
-         vulkanTargetPlanPinPackageToJson(
-             ejectVulkanTargetPlanPinPackage(plan))},
-        {"ejectable_physical_fragment",
-         vulkanPhysicalFragmentPackageToJson(
-             ejectVulkanPhysicalFragmentPackage(
-                 plan))},
-        {"ejectable_complete_physical_plan",
-         vulkanCompletePhysicalPlanPackageToJson(
-             ejectVulkanCompletePhysicalPlanPackage(
-                 plan))},
         {"graph_transforms",
          nlohmann::ordered_json::array()},
         {"subgraph_replacements",
@@ -4323,16 +4092,6 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
          }},
     };
     if (!plan.policy.empty()) result["policy"] = planningPolicyToJson(plan.policy);
-    if (plan.applied_pin_package) {
-        result["applied_pin_package"] =
-            vulkanTargetPlanPinPackageToJson(
-                *plan.applied_pin_package);
-    }
-    if (plan.applied_fragment_package) {
-        result["applied_physical_fragment"] =
-            vulkanPhysicalFragmentPackageToJson(
-                *plan.applied_fragment_package);
-    }
     for (const auto &selection :
          plan.graph_transforms) {
         result["graph_transforms"].push_back(

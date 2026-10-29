@@ -648,12 +648,6 @@ class RenderConfigEditorService {
         const std::function<PlanningKeyValue(
             std::optional<nlohmann::ordered_json> current,
             const ResolvedRenderConfigAuthoringContext &context)> &transform);
-    // EL-2: a physical fragment the runtime's linker refused as stale, as
-    // physical_fragment_stale with the family `root_bytes` declares it under
-    // (when the root's section holds it), or nullopt for any other error.
-    std::optional<nlohmann::ordered_json> physicalFragmentStaleRefusal(
-        const std::exception_ptr &error, std::string_view root_bytes,
-        nlohmann::ordered_json details) const;
     // RTL-1b: a ray tracing task's refusal (RayTracingRefusal) by its own
     // code, its fields beside `details`, and for a task the document that
     // declares it (`document`: the feature, the preset or the root) and, for
@@ -877,16 +871,6 @@ class RenderConfigEditorService {
     // or "resource"); a name only the authored entries still hold may be
     // erased.
     nlohmann::ordered_json editTargetPlanning(const nlohmann::json &params);
-    // EL-2: {base_source_digest, family, pin: package | null, graph?}: the
-    // package (vulkanTargetPlanPinPackageFromJson) replaces the family's
-    // package for its graph; null erases the family's package for `graph`,
-    // or every package of the family when `graph` is absent.
-    nlohmann::ordered_json editVulkanPlanPins(const nlohmann::json &params);
-    // EL-2: the same for vulkan_physical_fragments ({..., fragment: package
-    // | null, graph?}). A package the runtime's linker finds stale is refused
-    // as physical_fragment_stale {family?, graph, fingerprint, expected,
-    // actual}.
-    nlohmann::ordered_json putVulkanPhysicalFragment(const nlohmann::json &params);
     nlohmann::ordered_json editComputeTask(const nlohmann::json &params);
     nlohmann::ordered_json addComputeTask(const nlohmann::json &params);
     nlohmann::ordered_json removeComputeTask(const nlohmann::json &params);

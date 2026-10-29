@@ -598,7 +598,6 @@ struct FramePlanWidget::Impl {
     QAction *backend_unpin = nullptr;
     QAction *physical_freeze = nullptr;
     QAction *physical_remove = nullptr;
-    // Beside the line of a physical_fragment_stale refusal.
     // The bands on screen. A tree lets go of a row's widget only later
     // (deleteLater), so a band is deleted here before its tree is filled
     // again, and its name never answers for two widgets at once.
@@ -2108,10 +2107,6 @@ struct FramePlanWidget::Impl {
                 ? edit.decomposeMaterialPass
             // GL-3a, decision 8.
             : request.method == "edit_target_planning" ? edit.editTargetPlanning
-            // UX-15b.
-            : request.method == "edit_vulkan_plan_pins" ? edit.editVulkanPlanPins
-            : request.method == "put_vulkan_physical_fragment"
-                ? edit.putVulkanPhysicalFragment
                 : nullptr;
         if (!sender) {
             showStatus(namedCanvasFailure(request,

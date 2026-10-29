@@ -2884,8 +2884,7 @@ Rc1ExamplePlan rc1ExamplePlan(std::uint32_t width, std::uint32_t height) {
             .transient_attachments = true,
             .dynamic_rendering_local_read = true,
         },
-        std::nullopt, std::nullopt, compiled.target_planning,
-        compiled.vulkan_plan_pins, compiled.vulkan_physical_fragments);
+        std::nullopt, std::nullopt, compiled.target_planning);
     REQUIRE(compilation.plans.size() == 1);
     auto registered_targets =
         test_support::plannedRenderTargets(render_graph, compilation, {width, height});

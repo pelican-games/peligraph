@@ -517,11 +517,7 @@ compileDefaultVulkanVariant(
                 backend.runtime_capabilities,
                 std::move(view_execution),
                 std::move(external_depth_export),
-                compiled_pipeline->target_planning,
-                compiled_pipeline->vulkan_plan_pins,
-                compiled_pipeline
-                    ->vulkan_physical_fragments,
-                compiled_pipeline->pass_provenance);
+                compiled_pipeline->target_planning);
     } else {
         physical->target_plan_compilation =
             compileRenderingTargetPlans(
@@ -533,11 +529,7 @@ compileDefaultVulkanVariant(
                 RenderingTargetPlanDeviceFacts{},
                 std::move(view_execution),
                 std::move(external_depth_export),
-                compiled_pipeline->target_planning,
-                compiled_pipeline->vulkan_plan_pins,
-                compiled_pipeline
-                    ->vulkan_physical_fragments,
-                compiled_pipeline->pass_provenance);
+                compiled_pipeline->target_planning);
     }
     for (auto &verification :
          physical->target_plan_compilation

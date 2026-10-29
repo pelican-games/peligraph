@@ -898,13 +898,7 @@ TEST_CASE(
         REQUIRE(unavailable_code(std::move(input)) ==
                 "physical_plan_graph_mismatch");
     }
-    SECTION("fingerprint") {
-        Json input = captured;
-        input["physical_target_plan"]["ejectable_complete_physical_plan"]
-             ["logical_graph_fingerprint"] = "fnv1a64:0000000000000000";
-        REQUIRE(unavailable_code(std::move(input)) ==
-                "physical_plan_fingerprint_mismatch");
-    }
+
     SECTION("duplicate physical resource") {
         Json input = captured;
         input["physical_target_plan"]["resources"].push_back(

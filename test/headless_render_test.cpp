@@ -4466,172 +4466,6 @@ TEST_CASE(
 
         require_upscale_output();
 
-        auto physical_fragment =
-            ejectVulkanPhysicalFragmentPackage(
-                *program->frame_graph.target_plan);
-        const auto low_fragment =
-            std::find_if(
-                physical_fragment.resources.begin(),
-                physical_fragment.resources.end(),
-                [](const auto &resource) {
-                    return resource.logical_resource ==
-                           "low_color";
-                });
-        REQUIRE(
-            low_fragment !=
-            physical_fragment.resources.end());
-        low_fragment->format =
-            ImageFormat::r16g16b16a16_sfloat;
-        REQUIRE(
-            physical_fragment.attachments
-                .has_value());
-        const auto low_attachment =
-            std::find_if(
-                physical_fragment.attachments
-                    ->begin(),
-                physical_fragment.attachments
-                    ->end(),
-                [](const auto &attachment) {
-                    return attachment.node ==
-                               "produce_low" &&
-                           attachment
-                                   .logical_resource ==
-                               "low_color";
-                });
-        REQUIRE(
-            low_attachment !=
-            physical_fragment.attachments
-                ->end());
-        low_attachment->load_op =
-            AttachmentLoadOp::
-                dont_care;
-
-        auto replacement =
-            upscaleContractRenderingConfig();
-        replacement["vulkan_physical_fragments"] =
-            nlohmann::json::object();
-        replacement["vulkan_physical_fragments"]
-                   ["flat"] =
-            nlohmann::json::array(
-                {vulkanPhysicalFragmentPackageToJson(
-                    physical_fragment)});
-        writeTextFile(
-            temp_dir / "pipeline.json",
-            Pelican::TestSupport::renderGraphRootWithTaskFeature(replacement, temp_dir).dump(2));
-
-        auto &runtime =
-            GET_MODULE(FrameGraphRuntimeContainer);
-        const auto before_generation =
-            runtime.activeGeneration();
-        REQUIRE(
-            GET_MODULE(watch::ReloadService)
-                .applyRequestForTesting(
-                    watch::ReloadRequest{
-                        watch::makeAssetKey(
-                            "pipeline.json"),
-                        watch::ReloadKind::modified,
-                        {}, 1}));
-        REQUIRE(
-            runtime.activeGeneration() ==
-            before_generation + 1);
-
-        const auto reloaded_low_id =
-            GET_MODULE(RenderTargetContainer)
-                .getRenderTargetIdByName(
-                    "low_color");
-        REQUIRE(
-            GET_MODULE(RenderTargetContainer)
-                .getMetadata(reloaded_low_id)
-                .format ==
-            ImageFormat::r16g16b16a16_sfloat);
-        const auto reloaded_pass_id =
-            GET_MODULE(RenderingPassContainer)
-                .getRenderingPassIdByName(
-                    "upscale_main");
-        const auto reloaded_program =
-            runtime.findProgram(
-                reloaded_pass_id);
-        REQUIRE(reloaded_program != nullptr);
-        REQUIRE(
-            reloaded_program->frame_graph
-                .target_plan != nullptr);
-        const auto reloaded_low_plan =
-            std::find_if(
-                reloaded_program->frame_graph
-                    .target_plan->resources.begin(),
-                reloaded_program->frame_graph
-                    .target_plan->resources.end(),
-                [](const auto &resource) {
-                    return resource.logical_resource ==
-                           "low_color";
-                });
-        REQUIRE(
-            reloaded_low_plan !=
-            reloaded_program->frame_graph
-                .target_plan->resources.end());
-        REQUIRE(
-            reloaded_low_plan->format ==
-            ImageFormat::r16g16b16a16_sfloat);
-        const auto reloaded_transient_id =
-            GET_MODULE(RenderTargetContainer)
-                .getRenderTargetIdByName(
-                    "transient_scratch");
-        const auto reloaded_transient_metadata =
-            GET_MODULE(RenderTargetContainer)
-                .getMetadata(
-                    reloaded_transient_id);
-        REQUIRE(
-            reloaded_transient_metadata.storage_mode ==
-            RenderTargetStorageMode::
-                transient_attachment);
-        REQUIRE(
-            reloaded_transient_metadata.usage &
-            ImageUsageBit::
-                transient_attachment);
-        const auto reloaded_transient_plan =
-            std::find_if(
-                reloaded_program->frame_graph
-                    .target_plan->resources.begin(),
-                reloaded_program->frame_graph
-                    .target_plan->resources.end(),
-                [](const auto &resource) {
-                    return resource.logical_resource ==
-                           "transient_scratch";
-                });
-        REQUIRE(
-            reloaded_transient_plan !=
-            reloaded_program->frame_graph
-                .target_plan->resources.end());
-        REQUIRE(
-            reloaded_transient_plan
-                ->representation ==
-            VulkanResourceRepresentation::
-                transient_attachment);
-        const auto reloaded_produce_low =
-            std::find_if(
-                reloaded_program
-                    ->rendering_pass.passes.begin(),
-                reloaded_program
-                    ->rendering_pass.passes.end(),
-                [](const auto &pass) {
-                    return pass.definition.name ==
-                           "produce_low";
-                });
-        REQUIRE(
-            reloaded_produce_low !=
-            reloaded_program
-                ->rendering_pass.passes.end());
-        REQUIRE(
-            reloaded_produce_low->definition
-                .colorAttachmentOperations(0)
-                .load_op ==
-            AttachmentLoadOp::dont_care);
-
-        engine_time.advance();
-        renderer.render();
-        GET_MODULE(VulkanManageCore).waitIdle();
-        require_upscale_output();
-
         GET_MODULE(VulkanManageCore).waitIdle();
         std::filesystem::remove_all(temp_dir);
     } catch (const std::exception &error) {
@@ -5590,455 +5424,6 @@ vec3 pelican_lighting_v1(
 #endif
 }
 
-TEST_CASE(
-    "frame_node_order and dependency-safe scope fusion execute real Vulkan rendering",
-    "[headless][render][physical-scope][reorder][fusion]") {
-#if PELICAN_RUNTIME_SHADER_COMPILER
-    setupLogger();
-    std::filesystem::path temp_dir;
-    try {
-        FastModuleContainer modules;
-        temp_dir = makeTempProjectDir();
-        writeTextFile(
-            temp_dir / "scene.json",
-            R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
-        writeTextFile(
-            temp_dir / "assets.json",
-            R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
-        std::filesystem::create_directories(
-            temp_dir / "shaders");
-        writeTextFile(
-            temp_dir / "shaders" /
-                "physical_scope_fullscreen.vert",
-            gpuArenaFullscreenVertexShader());
-        writeTextFile(
-            temp_dir / "shaders" /
-                "physical_scope_base.frag",
-            physicalScopeBaseFragmentShader());
-        writeTextFile(
-            temp_dir / "shaders" /
-                "physical_scope_overlay.frag",
-            physicalScopeOverlayFragmentShader());
-        writeTextFile(
-            temp_dir / "shaders" /
-                "physical_scope_present.frag",
-            gpuArenaCopyFragmentShader());
-        writeTextFile(
-            temp_dir / "shaders" /
-                "physical_scope_independent.comp",
-            gpuArenaComputeShader());
-        writeTextFile(
-            temp_dir / "pipeline.json",
-            Pelican::TestSupport::renderGraphRootWithTaskFeature(dependencySafePhysicalScopeRenderingConfig(), temp_dir).dump(2));
-
-        auto project =
-            makeProjectConfig(
-                "scene.json", "assets.json");
-        project["basic_config"]
-               ["default_scene_id"] =
-            "default_scene";
-        project["basic_config"]
-               ["rendering_config_json"] =
-            "pipeline.json";
-        project["basic_config"]
-               ["default_rendering_pass"] =
-            "physical_scope_main";
-        project["schema"] = "pelican.project";
-        project["version"] = 1;
-        project["name"] =
-            "dependency-safe-physical-scope";
-        GET_MODULE(ProjectSource)
-            .setProjectData(project.dump());
-        GET_MODULE(PathResolver).setup(
-            temp_dir, false, project.dump());
-
-        auto &launch =
-            GET_MODULE(EngineLaunchConfig);
-        launch.headless = true;
-        launch.headless_extent =
-            vk::Extent2D{32, 32};
-        launch.headless_frames = 1;
-        auto &engine_time =
-            GET_MODULE(EngineTime);
-        engine_time.setup(
-            EngineTime::Mode::fixed_step,
-            1.0 / 60.0);
-
-        auto &renderer = GET_MODULE(Renderer);
-        auto &runtime =
-            GET_MODULE(FrameGraphRuntimeContainer);
-        const auto pass_id =
-            GET_MODULE(RenderingPassContainer)
-                .getRenderingPassIdByName(
-                    "physical_scope_main");
-        // Order is authored before the automatic plan is made and ejected.
-        // Keep the initial, unmodified compile above for the D1 corpus.
-        auto replacement = dependencySafePhysicalScopeRenderingConfig();
-        // Keep automatic scopes separate before editing the legacy package,
-        // without an author node policy that would prohibit that package.
-        replacement["target_planning"] = {{"profile", {{"kind", "conservative_debug"}}}};
-        replacement["frame_node_order"]["physical_scope_main"] =
-            {"physical_scope_independent", "physical_scope_base", "physical_scope_overlay", "physical_scope_present"};
-        writeTextFile(temp_dir / "pipeline.json",
-                      Pelican::TestSupport::renderGraphRootWithTaskFeature(replacement, temp_dir).dump(2));
-        REQUIRE(GET_MODULE(watch::ReloadService).applyRequestForTesting(
-            watch::ReloadRequest{watch::makeAssetKey("pipeline.json"), watch::ReloadKind::modified, {}, 1}));
-        const auto automatic_program =
-            runtime.findProgram(pass_id);
-        REQUIRE(automatic_program != nullptr);
-        REQUIRE(
-            automatic_program->frame_graph
-                .target_plan != nullptr);
-        const auto &automatic_plan =
-            *automatic_program->frame_graph
-                 .target_plan;
-        const auto scope_for =
-            [](const VulkanTargetPlan &plan,
-               std::string_view node)
-            -> const VulkanPhysicalScopePlan & {
-            const auto found =
-                std::find_if(
-                    plan.scopes.begin(),
-                    plan.scopes.end(),
-                    [&](const auto &scope) {
-                        return std::find(
-                                   scope.nodes.begin(),
-                                   scope.nodes.end(),
-                                   node) !=
-                               scope.nodes.end();
-                    });
-            if (found == plan.scopes.end()) {
-                throw std::runtime_error(
-                    "physical scope test node has no scope");
-            }
-            return *found;
-        };
-        REQUIRE(
-            scope_for(
-                automatic_plan,
-                "physical_scope_base")
-                .id !=
-            scope_for(
-                automatic_plan,
-                "physical_scope_overlay")
-                .id);
-
-        auto fragment =
-            ejectVulkanPhysicalFragmentPackage(
-                automatic_plan);
-        REQUIRE(fragment.schema_version == 3);
-        REQUIRE(
-            fragment.scope_edit_mode ==
-            VulkanPhysicalScopeEditMode::
-                dependency_safe);
-        const auto contains_node =
-            [](const VulkanPhysicalScopeFragment &scope,
-               std::string_view node) {
-                return std::find(
-                           scope.nodes.begin(),
-                           scope.nodes.end(),
-                           node) !=
-                       scope.nodes.end();
-            };
-        const auto independent_scope =
-            std::find_if(
-                fragment.scopes->begin(),
-                fragment.scopes->end(),
-                [&](const auto &scope) {
-                    return contains_node(
-                        scope,
-                        "physical_scope_independent");
-                });
-        REQUIRE(
-            independent_scope !=
-            fragment.scopes->end());
-        REQUIRE(
-            independent_scope->nodes ==
-            std::vector<std::string>{
-                "physical_scope_independent"});
-        std::vector<
-            VulkanPhysicalScopeFragment>
-            edited_scopes;
-        auto reordered_independent =
-            *independent_scope;
-        reordered_independent.id =
-            "manual:independent";
-        edited_scopes.push_back(
-            std::move(
-                reordered_independent));
-        bool fused_inserted = false;
-        for (const auto &scope :
-             *fragment.scopes) {
-            if (contains_node(
-                    scope,
-                    "physical_scope_independent") ||
-                contains_node(
-                    scope,
-                    "physical_scope_overlay")) {
-                continue;
-            }
-            if (contains_node(
-                    scope,
-                    "physical_scope_base")) {
-                REQUIRE(
-                    scope.nodes ==
-                    std::vector<std::string>{
-                        "physical_scope_base"});
-                edited_scopes.push_back({
-                    .id =
-                        "manual:base_overlay",
-                    .nodes = {
-                        "physical_scope_base",
-                        "physical_scope_overlay"},
-                });
-                fused_inserted = true;
-            } else {
-                edited_scopes.push_back(
-                    scope);
-            }
-        }
-        REQUIRE(fused_inserted);
-        fragment.scopes =
-            std::move(edited_scopes);
-        fragment.alias_groups =
-            std::vector<
-                VulkanPhysicalAliasGroupFragment>{};
-
-        replacement["vulkan_physical_fragments"] =
-            nlohmann::json::object();
-        replacement["vulkan_physical_fragments"]
-                   ["flat"] =
-            nlohmann::json::array(
-                {vulkanPhysicalFragmentPackageToJson(
-                    fragment)});
-        writeTextFile(
-            temp_dir / "pipeline.json",
-            Pelican::TestSupport::renderGraphRootWithTaskFeature(replacement, temp_dir).dump(2));
-
-        const auto before_generation =
-            runtime.activeGeneration();
-        REQUIRE(
-            GET_MODULE(watch::ReloadService)
-                .applyRequestForTesting(
-                    watch::ReloadRequest{
-                        watch::makeAssetKey(
-                            "pipeline.json"),
-                        watch::ReloadKind::modified,
-                        {}, 1}));
-        REQUIRE(
-            runtime.activeGeneration() ==
-            before_generation + 1);
-
-        const auto reloaded_pass_id =
-            GET_MODULE(RenderingPassContainer)
-                .getRenderingPassIdByName(
-                    "physical_scope_main");
-        const auto program =
-            runtime.findProgram(
-                reloaded_pass_id);
-        REQUIRE(program != nullptr);
-        REQUIRE(
-            program->frame_graph.target_plan !=
-            nullptr);
-        const auto &plan =
-            *program->frame_graph.target_plan;
-        REQUIRE(
-            plan.applied_fragment_package
-                .has_value());
-        REQUIRE(
-            plan.scopes[0].nodes ==
-            std::vector<std::string>{
-                "physical_scope_independent"});
-        const auto &fused_scope =
-            scope_for(
-                plan,
-                "physical_scope_base");
-        REQUIRE(
-            fused_scope.nodes ==
-            std::vector<std::string>{
-                "physical_scope_base",
-                "physical_scope_overlay"});
-        REQUIRE(
-            fused_scope
-                .single_rendering_instance);
-        REQUIRE(
-            fused_scope.local_reads.empty());
-
-        std::vector<std::string>
-            lowering_order;
-        for (const auto &node :
-             plan.lowering_graph.nodes) {
-            lowering_order.push_back(
-                node.logical.name);
-        }
-        REQUIRE(
-            lowering_order.front() ==
-            "physical_scope_independent");
-        const auto base_position =
-            std::find(
-                lowering_order.begin(),
-                lowering_order.end(),
-                "physical_scope_base");
-        REQUIRE(
-            base_position !=
-            lowering_order.end());
-        REQUIRE(
-            std::next(base_position) !=
-            lowering_order.end());
-        REQUIRE(
-            *std::next(base_position) ==
-            "physical_scope_overlay");
-
-        const auto compiled_pass =
-            [&](std::string_view name)
-            -> const CompiledPass & {
-            const auto found =
-                std::find_if(
-                    program->rendering_pass
-                        .passes.begin(),
-                    program->rendering_pass
-                        .passes.end(),
-                    [&](const auto &pass) {
-                        return pass.definition.name ==
-                               name;
-                    });
-            if (found ==
-                program->rendering_pass
-                    .passes.end()) {
-                throw std::runtime_error(
-                    "physical scope test pass was not compiled");
-            }
-            return *found;
-        };
-        const auto &base =
-            compiled_pass(
-                "physical_scope_base");
-        const auto &overlay =
-            compiled_pass(
-                "physical_scope_overlay");
-        REQUIRE(
-            base.rendering
-                .fused_rendering_scope);
-        REQUIRE(
-            overlay.rendering
-                .fused_rendering_scope);
-        REQUIRE_FALSE(
-            base.rendering.local_read_scope);
-        REQUIRE(
-            base.rendering.scope_id ==
-            "manual:base_overlay");
-        REQUIRE(
-            overlay.rendering.scope_id ==
-            base.rendering.scope_id);
-        REQUIRE(
-            base.rendering
-                .scope_color_attachment_operations ==
-            std::vector<
-                PassAttachmentOperations>{
-                PassAttachmentOperations{
-                    AttachmentLoadOp::clear,
-                    AttachmentStoreOp::store,
-                }});
-
-        RendererTestAccess::setExecutionTracing(renderer,
-            true);
-        engine_time.advance();
-        renderer.render();
-        GET_MODULE(VulkanManageCore)
-            .waitIdle();
-
-        const auto &trace =
-            RendererTestAccess::lastExecutionTrace(renderer);
-        REQUIRE(trace.contains("nodes"));
-        std::vector<std::string>
-            executed_nodes;
-        for (const auto &node :
-             trace.at("nodes")) {
-            executed_nodes.push_back(
-                node.at("name")
-                    .get<std::string>());
-        }
-        REQUIRE(
-            executed_nodes ==
-            lowering_order);
-
-        const auto pixels =
-            GET_MODULE(RenderTarget)
-                .readbackLastFrameRGBA8();
-        REQUIRE(
-            pixels.size() ==
-            32u * 32u * 4u);
-        std::size_t mismatches = 0;
-        for (std::uint32_t y = 0;
-             y < 32; ++y) {
-            for (std::uint32_t x = 0;
-                 x < 32; ++x) {
-                const auto offset =
-                    (static_cast<std::size_t>(y) *
-                         32 +
-                     x) *
-                    4;
-                const auto expected =
-                    x < 16
-                        ? std::array<
-                              std::uint8_t, 4>{
-                              124, 170, 231,
-                              255}
-                        : std::array<
-                              std::uint8_t, 4>{
-                              231, 124, 170,
-                              255};
-                if (!std::equal(
-                        expected.begin(),
-                        expected.end(),
-                        pixels.begin() +
-                            static_cast<
-                                std::ptrdiff_t>(
-                                offset))) {
-                    ++mismatches;
-                }
-            }
-        }
-        INFO(
-            "left pixel = (" <<
-            static_cast<unsigned>(
-                pixels[0]) << ", " <<
-            static_cast<unsigned>(
-                pixels[1]) << ", " <<
-            static_cast<unsigned>(
-                pixels[2]) << ", " <<
-            static_cast<unsigned>(
-                pixels[3]) << ")");
-        const auto right =
-            (16u * 4u);
-        INFO(
-            "right pixel = (" <<
-            static_cast<unsigned>(
-                pixels[right]) << ", " <<
-            static_cast<unsigned>(
-                pixels[right + 1]) << ", " <<
-            static_cast<unsigned>(
-                pixels[right + 2]) << ", " <<
-            static_cast<unsigned>(
-                pixels[right + 3]) << ")");
-        REQUIRE(mismatches == 0);
-
-        GET_MODULE(VulkanManageCore)
-            .waitIdle();
-        std::filesystem::remove_all(
-            temp_dir);
-    } catch (const std::exception &error) {
-        if (!temp_dir.empty()) {
-            std::filesystem::remove_all(
-                temp_dir);
-        }
-        TestSupport::skipIfVulkanDeviceUnavailable(
-            error,
-            "Vulkan dependency-safe physical scope rendering unavailable");
-        throw;
-    }
-#endif
-}
 
 TEST_CASE(
     "runtime target planner executes aliased image lifetimes",
@@ -7202,34 +6587,6 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
                     .at("backend_selection")
                     .at("selected_candidate") ==
                 "pelican.vulkan.materialized_plan@1");
-        const auto ejected_pins =
-            vulkanTargetPlanPinPackageFromJson(
-                frame_plan_json.at(
-                    "physical_target_plan")
-                    .at("ejectable_pin_package"));
-        REQUIRE(
-            ejected_pins ==
-            ejectVulkanTargetPlanPinPackage(
-                *execution->target_plan));
-        REQUIRE(
-            ejected_pins.logical_graph_fingerprint ==
-            execution->target_plan
-                ->logical_graph_fingerprint);
-        const auto ejected_fragment =
-            vulkanPhysicalFragmentPackageFromJson(
-                frame_plan_json.at(
-                    "physical_target_plan")
-                    .at(
-                        "ejectable_physical_fragment"));
-        REQUIRE(
-            ejected_fragment ==
-            ejectVulkanPhysicalFragmentPackage(
-                *execution->target_plan));
-        REQUIRE(
-            ejected_fragment
-                .automatic_plan_fingerprint ==
-            execution->target_plan
-                ->automatic_plan_fingerprint);
         const auto physical_lit = std::find_if(
             execution->target_plan->resources.begin(),
             execution->target_plan->resources.end(),
@@ -15781,7 +15138,7 @@ namespace {
 // frame_node_order/after edges mask a physical planner that sorts by name.
 nlohmann::json rc3d2RenderingConfig() {
     auto config = dependencySafePhysicalScopeRenderingConfig();
-    // These tests manually edit legacy packages; only the profile supplies
+    // These tests install complete packages; only the profile supplies
     // the initial scope split (profile is outside author policy declarations).
     config["target_planning"] = {{"profile", {{"kind", "conservative_debug"}}}};
     config["compute_tasks"] = nlohmann::json::array();
@@ -15847,7 +15204,7 @@ struct Rc3d2Project {
     }
 };
 
-enum class Rc3d2PackageRoute { custom, fragment, complete };
+enum class Rc3d2PackageRoute { custom, complete };
 
 class Rc3d2Compiler final : public RenderCompilerProgram {
   public:
@@ -15890,9 +15247,19 @@ class Rc3d2Compiler final : public RenderCompilerProgram {
                     REQUIRE(scopes[second].nodes.size() == 1);
                     if (reorder) std::swap(scopes[first], scopes[second]);
                 };
-                if (route == Rc3d2PackageRoute::complete) {
+                if (route == Rc3d2PackageRoute::complete || fuse) {
                     auto package = ejectVulkanCompletePhysicalPlanPackage(*plan);
                     swapIndependent(package.scopes);
+                    if (fuse) {
+                        auto &scopes = package.scopes;
+                        const auto first = scopeIndex(scopes, node("physical_scope_base"));
+                        const auto second = scopeIndex(scopes, node("physical_scope_overlay"));
+                        REQUIRE(second == first + 1);
+                        scopes[first].id = "rc3d2:fused";
+                        scopes[first].nodes.push_back(node("physical_scope_overlay"));
+                        scopes[first].single_rendering_instance = true;
+                        scopes.erase(scopes.begin() + static_cast<std::ptrdiff_t>(second));
+                    }
                     if (reorder) {
                         const auto names = physicalNodeOrderOf(package.scopes).nodes;
                         // The independent tasks have no resource ports. Their
@@ -15906,23 +15273,7 @@ class Rc3d2Compiler final : public RenderCompilerProgram {
                     continue;
                 }
                 auto changed = std::make_shared<VulkanTargetPlan>(*plan);
-                if (route == Rc3d2PackageRoute::fragment || fuse) {
-                    auto fragment = ejectVulkanPhysicalFragmentPackage(*plan);
-                    swapIndependent(*fragment.scopes);
-                    if (fuse) {
-                        auto &scopes = *fragment.scopes;
-                        const auto first = scopeIndex(scopes, node("physical_scope_base"));
-                        const auto second = scopeIndex(scopes, node("physical_scope_overlay"));
-                        REQUIRE(second == first + 1);
-                        scopes[first].id = "rc3d2:fused";
-                        scopes[first].nodes.push_back(node("physical_scope_overlay"));
-                        scopes.erase(scopes.begin() + static_cast<std::ptrdiff_t>(second));
-                    }
-                    *changed = linkVulkanPhysicalFragment(*context->logical_graph, context->topology,
-                                                          *plan, std::move(fragment));
-                } else {
-                    swapIndependent(changed->scopes);
-                }
+                swapIndependent(changed->scopes);
                 const auto previous = plan;
                 plan = changed;
                 for (auto &indexed : physical.target_plan_compilation.plans)
@@ -16042,7 +15393,7 @@ TEST_CASE("RC-3d2 fused ordinary pass bodies execute A0 B0 A1 B1 with known pixe
 #endif
 }
 
-TEST_CASE("RC-3d2 registration rejects three reordered packages and preserves the published drawing",
+TEST_CASE("RC-3d2 registration rejects custom and complete reordered packages and preserves the published drawing",
           "[headless][render][rc3d2][transaction][order]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     setupLogger();
@@ -16059,7 +15410,7 @@ TEST_CASE("RC-3d2 registration rejects three reordered packages and preserves th
     };
     const auto pixels = draw();
     requireRc3d2Pixels(pixels);
-    for (const auto route : {Rc3d2PackageRoute::custom, Rc3d2PackageRoute::fragment, Rc3d2PackageRoute::complete}) {
+    for (const auto route : {Rc3d2PackageRoute::custom, Rc3d2PackageRoute::complete}) {
         CAPTURE(static_cast<int>(route));
         const auto before = runtime.snapshot();
         const auto program = runtime.findProgram(id);
@@ -16081,8 +15432,7 @@ TEST_CASE("RC-3d2 registration rejects three reordered packages and preserves th
             FAIL("reordered package published");
         } catch (const GraphRegistryError &error) {
             INFO(error.what());
-            REQUIRE(error.code() == (route == Rc3d2PackageRoute::fragment
-                ? "physical_fragment.reorders_frame_plan@1" : "render_compiler.physical_order_mismatches_frame_plan@1"));
+            REQUIRE(error.code() == "render_compiler.physical_order_mismatches_frame_plan@1");
             REQUIRE(error.detail().at("graph") == "physical_scope_main");
             const auto order = framePlanOrder(program->frame_graph.plan);
             REQUIRE(error.detail().at("position") == static_cast<std::size_t>(

@@ -27,6 +27,7 @@ namespace {
 constexpr std::string_view preset_schema = "pelican.render_pipeline";
 constexpr int supported_preset_version = 1;
 
+
 void validatePassFieldOwnershipInConfig(
     const nlohmann::json &config,
     PassFieldOwnershipCapabilities capabilities,
@@ -224,6 +225,7 @@ std::uint64_t optionalUnsignedInteger(
 TargetPlanningPolicy compileTargetPlanningPolicy(
     const nlohmann::json &config,
     std::string_view graph_name_suffix, PlanningOrigin origin = {}) {
+    rejectRemovedPlanningPackages(config, origin.document);
     TargetPlanningPolicy result;
     const auto declaration = config.find("target_planning");
     if (declaration == config.end()) return result;
@@ -586,103 +588,6 @@ nlohmann::json targetPlanningPolicyToJson(
     return result;
 }
 
-std::vector<VulkanTargetPlanPinPackage>
-compileVulkanTargetPlanPins(
-    const nlohmann::json &config,
-    RenderPipelineGraphVariant variant) {
-    const auto declaration =
-        config.find("vulkan_plan_pins");
-    if (declaration == config.end()) return {};
-    if (!declaration->is_object()) {
-        throw std::runtime_error(
-            "vulkan_plan_pins must be an object");
-    }
-    requireOnlyKeys(
-        *declaration, {"flat", "preview", "xr"},
-        "vulkan_plan_pins");
-    const auto variant_name =
-        renderPipelineGraphVariantName(variant);
-    const auto packages =
-        declaration->find(variant_name);
-    if (packages == declaration->end()) return {};
-    if (!packages->is_array()) {
-        throw std::runtime_error(
-            "vulkan_plan_pins " +
-            std::string{variant_name} +
-            " must be an array");
-    }
-
-    std::vector<VulkanTargetPlanPinPackage> result;
-    result.reserve(packages->size());
-    for (const auto &document : *packages) {
-        result.push_back(
-            vulkanTargetPlanPinPackageFromJson(document));
-    }
-    std::sort(
-        result.begin(), result.end(),
-        [](const auto &left, const auto &right) {
-            return left.graph < right.graph;
-        });
-    if (std::adjacent_find(
-            result.begin(), result.end(),
-            [](const auto &left, const auto &right) {
-                return left.graph == right.graph;
-            }) != result.end()) {
-        throw std::runtime_error(
-            "vulkan_plan_pins has duplicate packages for a graph");
-    }
-    return result;
-}
-
-std::vector<VulkanPhysicalFragmentPackage>
-compileVulkanPhysicalFragments(
-    const nlohmann::json &config,
-    RenderPipelineGraphVariant variant) {
-    const auto declaration =
-        config.find("vulkan_physical_fragments");
-    if (declaration == config.end()) return {};
-    if (!declaration->is_object()) {
-        throw std::runtime_error(
-            "vulkan_physical_fragments must be an object");
-    }
-    requireOnlyKeys(
-        *declaration, {"flat", "preview", "xr"},
-        "vulkan_physical_fragments");
-    const auto variant_name =
-        renderPipelineGraphVariantName(variant);
-    const auto packages =
-        declaration->find(variant_name);
-    if (packages == declaration->end()) return {};
-    if (!packages->is_array()) {
-        throw std::runtime_error(
-            "vulkan_physical_fragments " +
-            std::string{variant_name} +
-            " must be an array");
-    }
-
-    std::vector<VulkanPhysicalFragmentPackage> result;
-    result.reserve(packages->size());
-    for (const auto &document : *packages) {
-        result.push_back(
-            vulkanPhysicalFragmentPackageFromJson(
-                document));
-    }
-    std::sort(
-        result.begin(), result.end(),
-        [](const auto &left, const auto &right) {
-            return left.graph < right.graph;
-        });
-    if (std::adjacent_find(
-            result.begin(), result.end(),
-            [](const auto &left, const auto &right) {
-                return left.graph == right.graph;
-            }) != result.end()) {
-        throw std::runtime_error(
-            "vulkan_physical_fragments has duplicate packages "
-            "for a graph");
-    }
-    return result;
-}
 
 } // namespace
 
@@ -974,6 +879,16 @@ bool materialPassAcceptsMaterial(
            materialPassShaderContract(pass_contract) == material_shader_contract;
 }
 
+void rejectRemovedPlanningPackages(const nlohmann::json &config, std::string_view document) {
+    for (const auto *key : {"vulkan_plan_pins", "vulkan_physical_fragments"}) {
+        if (config.contains(key))
+            throw GraphRegistryError("target_planning.legacy_package_removed@1",
+                {{"key", key}, {"document", document},
+                 {"message", std::string{"Remove "} + key +
+                    " from the document and reload it, then recreate the policy with Studio Pin / Freeze."}});
+    }
+}
+
 TargetPlanningPolicy parseTargetPlanningPolicy(const nlohmann::json &config,
     std::string_view suffix, PlanningOrigin origin) {
     return compileTargetPlanningPolicy(config, suffix, std::move(origin));
@@ -1224,6 +1139,7 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
     if (!authored_config.is_object()) {
         throw std::runtime_error("Rendering config must be an object");
     }
+    rejectRemovedPlanningPackages(authored_config, {});
     // G-4: the key is read once per engine start from the authored root
     // (readMaterialRouteDefault). It is validated here so an edit ticket's
     // preflight refuses a bad value, and it never reaches the composed config.
@@ -1281,6 +1197,8 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
     rejectRemovedCanonicalAuthoring(document, reference);
     const auto version = document.at("version").get<int>();
     RenderPipelinePresetResolution recipe;
+    rejectRemovedPlanningPackages(authored_config, reference);
+    rejectRemovedPlanningPackages(document.at("config"), reference);
     auto overlay = authored_config;
     if (version == 2) {
         recipe = expandRenderPipelineRecipe(document.at("config"),
@@ -1315,8 +1233,7 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
                     {"pipeline", "features", "snapshots", "shader_defines",
                      "draw_sort", "graph_transforms",
                      "render_strategy", "target_planning",
-                     "vulkan_plan_pins",
-                     "vulkan_physical_fragments", "xr",
+                     "xr",
                      "ray_group_layout", "ray_bindings", "scene_acceleration_structures",
                      "ray_task_acceleration_structures", "ray_task_callable_records", "frame_node_order",
                      "material_route_default"},
@@ -1378,40 +1295,6 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
         }
         resolved["target_planning"] =
             authored_config.at("target_planning");
-    }
-    if (authored_config.contains("vulkan_plan_pins")) {
-        if (!authored_config.at("vulkan_plan_pins")
-                 .is_object()) {
-            throw std::runtime_error(
-                "rendering config vulkan_plan_pins must be an object");
-        }
-        if (resolved.contains("vulkan_plan_pins")) {
-            throw std::runtime_error(
-                "rendering config cannot override preset "
-                "vulkan_plan_pins; copy/eject the preset first");
-        }
-        resolved["vulkan_plan_pins"] =
-            authored_config.at("vulkan_plan_pins");
-    }
-    if (authored_config.contains(
-            "vulkan_physical_fragments")) {
-        if (!authored_config
-                 .at("vulkan_physical_fragments")
-                 .is_object()) {
-            throw std::runtime_error(
-                "rendering config vulkan_physical_fragments "
-                "must be an object");
-        }
-        if (resolved.contains(
-                "vulkan_physical_fragments")) {
-            throw std::runtime_error(
-                "rendering config cannot override preset "
-                "vulkan_physical_fragments; copy/eject the preset "
-                "first");
-        }
-        resolved["vulkan_physical_fragments"] =
-            authored_config.at(
-                "vulkan_physical_fragments");
     }
     if (authored_config.contains("xr")) {
         if (!authored_config.at("xr").is_object()) {
@@ -1564,6 +1447,7 @@ ResolvedRenderPipeline resolveRenderPipeline(
         throw std::runtime_error("Rendering config must be an object: " +
                                  request.source_name);
     }
+    rejectRemovedPlanningPackages(renderingSectionOrEmpty(request.authored_config), request.source_name);
     // P-2a-4b: this is the one pre-compose read of the authored document. A
     // `pelican.graph` root keeps `rendering_passes` in its `rendering`
     // section, so reading the root here would skip pass-field-ownership
@@ -1697,14 +1581,6 @@ ResolvedRenderPipeline resolveRenderPipeline(
                 result.diagnostics.push_back({.kind = RenderPipelineDiagnosticKind::planning_name_absent,
                     .subject = entry.declared_target.empty() ? entry.target : entry.declared_target, .detail = "warning",
                     .detail_fields = {{"severity", "warning"}, {"graph", g.graph}, {"name", entry.declared_target.empty() ? entry.target : entry.declared_target}, {"key", entry.key}}});
-    result.vulkan_plan_pins =
-        compileVulkanTargetPlanPins(
-            result.composed_config,
-            result.graph_variant_policy.variant);
-    result.vulkan_physical_fragments =
-        compileVulkanPhysicalFragments(
-            result.composed_config,
-            result.graph_variant_policy.variant);
     result.xr_target_policy =
         compileXrTargetPolicy(
             result.composed_config,
@@ -2573,34 +2449,12 @@ CompiledRenderPipeline compileRenderPipeline(
             pipeline.graph_variant_policy.variant);
     const auto canonical_target_planning =
         resolvedPlanningPolicy(pipeline);
-    const auto canonical_vulkan_plan_pins =
-        compileVulkanTargetPlanPins(
-            pipeline.composed_config,
-            pipeline.graph_variant_policy.variant);
-    const auto canonical_vulkan_physical_fragments =
-        compileVulkanPhysicalFragments(
-            pipeline.composed_config,
-            pipeline.graph_variant_policy.variant);
     if (pipeline.target_planning.authored &&
         pipeline.target_planning !=
             canonical_target_planning) {
         throw std::runtime_error(
             "resolved render pipeline has inconsistent target planning "
             "policy");
-    }
-    if (!pipeline.vulkan_plan_pins.empty() &&
-        pipeline.vulkan_plan_pins !=
-            canonical_vulkan_plan_pins) {
-        throw std::runtime_error(
-            "resolved render pipeline has inconsistent Vulkan plan "
-            "pins");
-    }
-    if (!pipeline.vulkan_physical_fragments.empty() &&
-        pipeline.vulkan_physical_fragments !=
-            canonical_vulkan_physical_fragments) {
-        throw std::runtime_error(
-            "resolved render pipeline has inconsistent Vulkan "
-            "physical fragments");
     }
     if (pipeline.xr_target_policy.authored &&
         pipeline.xr_target_policy !=
@@ -2636,10 +2490,6 @@ CompiledRenderPipeline compileRenderPipeline(
     result.target_planning =
         canonical_target_planning;
     result.scene_acceleration_structures = parseSceneAccelerationStructures(pipeline.composed_config);
-    result.vulkan_plan_pins =
-        canonical_vulkan_plan_pins;
-    result.vulkan_physical_fragments =
-        canonical_vulkan_physical_fragments;
     result.xr_target_policy = canonical_xr_target_policy;
     result.pipeline_preset = pipeline.pipeline_preset;
     result.graph_variant_policy =
@@ -2910,28 +2760,6 @@ nlohmann::json serializeCompiledRenderPipelineMetadata(
         metadata["target_planning"] =
             targetPlanningPolicyToJson(
                 pipeline.target_planning);
-    }
-    if (!pipeline.vulkan_plan_pins.empty()) {
-        auto pins = nlohmann::json::array();
-        for (const auto &package :
-             pipeline.vulkan_plan_pins) {
-            pins.push_back(
-                vulkanTargetPlanPinPackageToJson(
-                    package));
-        }
-        metadata["vulkan_plan_pins"] =
-            std::move(pins);
-    }
-    if (!pipeline.vulkan_physical_fragments.empty()) {
-        auto fragments = nlohmann::json::array();
-        for (const auto &package :
-             pipeline.vulkan_physical_fragments) {
-            fragments.push_back(
-                vulkanPhysicalFragmentPackageToJson(
-                    package));
-        }
-        metadata["vulkan_physical_fragments"] =
-            std::move(fragments);
     }
     if (pipeline.xr_target_policy.authored) {
         metadata["xr_target_policy"] =

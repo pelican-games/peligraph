@@ -1469,15 +1469,7 @@ OrderedJson EditorCommandService::editTargetPlanning(const Json &params) {
     return render_config_editor_->editTargetPlanning(params);
 }
 
-OrderedJson EditorCommandService::editVulkanPlanPins(const Json &params) {
-    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
-    return render_config_editor_->editVulkanPlanPins(params);
-}
 
-OrderedJson EditorCommandService::putVulkanPhysicalFragment(const Json &params) {
-    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
-    return render_config_editor_->putVulkanPhysicalFragment(params);
-}
 
 // FG-1.
 OrderedJson EditorCommandService::getFoldGroups(const Json &params) const {
@@ -2711,15 +2703,7 @@ OrderedJson EditorCommandRpcAdapter::editTargetPlanning(const Json &params) cons
     return mutable_service_->editTargetPlanning(params);
 }
 
-OrderedJson EditorCommandRpcAdapter::editVulkanPlanPins(const Json &params) const {
-    if (!mutable_service_) throw std::logic_error("render config editing requires a mutable editor service");
-    return mutable_service_->editVulkanPlanPins(params);
-}
 
-OrderedJson EditorCommandRpcAdapter::putVulkanPhysicalFragment(const Json &params) const {
-    if (!mutable_service_) throw std::logic_error("render config editing requires a mutable editor service");
-    return mutable_service_->putVulkanPhysicalFragment(params);
-}
 
 OrderedJson EditorCommandRpcAdapter::getFoldGroups(const Json &params) const {
     return service_.getFoldGroups(params);

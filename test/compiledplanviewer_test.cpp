@@ -194,8 +194,6 @@ TEST_CASE("Compiled plan facts promote the decisions a person checks first",
         {"mixed_execution", false},
         {"view_execution_plan", nlohmann::json::array({1, 2, 3})},
         {"required_physical_features", nlohmann::json::array({"multiview"})},
-        {"ejectable_pin_package", nlohmann::json::object({{"pins", 1}})},
-        {"ejectable_physical_fragment", nullptr},
     };
 
     const auto facts = buildCompiledPlanFacts(plan);
@@ -210,8 +208,6 @@ TEST_CASE("Compiled plan facts promote the decisions a person checks first",
     REQUIRE(factValue(facts, "view_execution_plan") == "3 entries");
     REQUIRE(factValue(facts, "required_physical_features") == "1 entries");
     // Eject packages report availability, not their whole body.
-    REQUIRE(factValue(facts, "ejectable_pin_package") == "available");
-    REQUIRE(factValue(facts, "ejectable_physical_fragment") == "none");
 }
 
 TEST_CASE("Compiled plan facts tolerate an unknown or partial plan document",

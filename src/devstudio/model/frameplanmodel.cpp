@@ -617,19 +617,6 @@ std::vector<std::string> stringsOr(const Json &object, std::string_view field) {
 }
 
 void readPlanPackages(const Json &physical, FramePlanPhysicalPlan &plan) {
-    const auto package = [&](std::string_view field) {
-        const auto found = physical.find(field);
-        return found != physical.end() && found->is_object() ? found->dump() : std::string{};
-    };
-    plan.ejectable_pin_package = package("ejectable_pin_package");
-    plan.ejectable_physical_fragment = package("ejectable_physical_fragment");
-    plan.applied_pin_package = package("applied_pin_package");
-    plan.applied_physical_fragment = package("applied_physical_fragment");
-    if (const auto applied = physical.find("applied_pin_package");
-        applied != physical.end() && applied->is_object())
-        plan.pinned_backend_candidate =
-            stringOr(applied->value("pins", Json::object()), "backend_candidate");
-
     const auto rewrite = [](const Json &entry, std::string kind, std::string name) {
         return FramePlanRewrite{
             .kind = std::move(kind),

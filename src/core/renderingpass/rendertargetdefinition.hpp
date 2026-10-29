@@ -40,7 +40,7 @@ struct RenderTargetDefinition {
     std::optional<ResolvedResourceExtent> fixed_extent;
     ImageFormat format = ImageFormat::r8g8b8a8_unorm;
     // The authored format remains the automatic/default choice. Additional
-    // entries are explicit candidates a verified physical fragment may
+    // entries are explicit candidates a verified complete physical plan may
     // select for this target.
     std::vector<ImageFormat> format_candidates;
     ImageUsage usage;

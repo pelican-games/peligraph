@@ -37,6 +37,7 @@ Fragment loadFragment(std::string family, const Json &reference,
     auto document = parseRenderDocument(load_json(ref), ref);
     rejectCanonicalAnchorFields(document, {}, ref);
     if (!document.is_object()) invalid(code, "document", "expected_object");
+    rejectRemovedPlanningPackages(document, ref);
     for (const auto &[key, value] : document.items()) {
         if (key != "schema" && key != "version" && key != "name" && key != "render_targets" &&
             key != "passes" && key != "required_targets" && key != "target_planning")
@@ -67,13 +68,14 @@ Fragment loadFragment(std::string family, const Json &reference,
 RenderPipelinePresetResolution expandRenderPipelineRecipe(
     const Json &config, const Json &overrides, const RenderPipelinePresetLoader &load_json) {
     constexpr auto code = "render_pipeline.recipe_invalid@1";
+    rejectRemovedPlanningPackages(config);
     for (const auto &[key, value] : config.items()) {
         if (key == "render_targets" || key == "rendering_passes" || key == "snapshots" ||
             key == "buffers" || key == "compute_tasks")
             throw GraphRegistryError("render_pipeline.recipe_has_structure@1", {{"key", key}});
         if (key != "base" && key != "features" && key != "graph_transforms" && key != "shader_defines" &&
             key != "draw_sort" && key != "material_routing" && key != "xr" && key != "render_strategy" &&
-            key != "target_planning" && key != "vulkan_plan_pins" && key != "vulkan_physical_fragments")
+            key != "target_planning")
             throw GraphRegistryError("render_pipeline.recipe_unknown_key@1", {{"key", key}});
     }
     if (!config.contains("base") || !config.at("base").is_array() || config.at("base").empty())

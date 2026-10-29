@@ -2183,15 +2183,12 @@ Json framePlanRootPolicy(const FramePlanAuthoring &authoring, const FramePlanMod
 
 namespace {
 Json required(Json value) { return {{"value", std::move(value)}, {"strength", "require"}}; }
-std::string lowerLayerPrecondition(const FramePlanAuthoring &authoring, const FramePlanModel &model, bool legacy = true) {
+std::string lowerLayerPrecondition(const FramePlanAuthoring &authoring, const FramePlanModel &model) {
     if (!authoring.received) return "The render authoring context has not arrived yet.";
     if (!model.physical_plan.available()) return "The frame plan has no physical target plan (" + model.physical_plan.unavailable_reason_code + ").";
-    const auto catalog = objectOr(authoring.planning_catalog, framePlanAuthorName(model).c_str());
     const auto wire = Json::parse(model.raw_json, nullptr, false);
-    if (legacy && (catalog.value("legacy_package", false) ||
-        !model.physical_plan.applied_pin_package.empty() || !model.physical_plan.applied_physical_fragment.empty() ||
-        (wire.is_object() && wire.value("legacy_complete_plan", false))))
-        return "This graph has a legacy package: Pin / Freeze cannot add policy (target_planning.policy_with_legacy_package@1).";
+    if (wire.is_object() && wire.value("legacy_complete_plan", false))
+        return "This graph has a complete package: Pin / Freeze cannot add policy (target_planning.policy_with_legacy_package@1).";
     return {};
 }
 FramePlanEditRequest policyRequest(const FramePlanAuthoring &authoring, const FramePlanModel &model) {
@@ -2316,8 +2313,5 @@ FramePlanPlanningCheck framePlanPlanningCheck(const FramePlanAuthoring &authorin
     return result;
 }
 
-bool framePlanPhysicalFragmentStale(const nlohmann::json &error) {
-    return error.is_object() && error.value("code", std::string{}) == "physical_fragment_stale";
-}
 
 } // namespace PelicanStudio

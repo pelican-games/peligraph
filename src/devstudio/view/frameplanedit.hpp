@@ -780,10 +780,6 @@ FramePlanEditRequest framePlanPhysicalFreezeRequest(const FramePlanAuthoring &au
 // Remove all five fixing keys enumerated from the root document.
 FramePlanEditRequest framePlanPhysicalRemoveRequest(const FramePlanAuthoring &authoring,
                                                     const FramePlanModel &model);
-// Whether a refusal is physical_fragment_stale (the frozen fragment's
-// fingerprints are not the plan's). Retained for legacy error readers until RC-6b2.
-bool framePlanPhysicalFragmentStale(const nlohmann::json &error);
-
 struct FramePlanPlanningCheck {
     bool checked = false;
     bool enabled = true;

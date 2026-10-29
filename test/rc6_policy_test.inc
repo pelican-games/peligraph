@@ -124,20 +124,14 @@ TEST_CASE("RC-6 B6 deleted root target warns and retains its absent declaration"
     CHECK(rc6Row(rc6Physical(compiled), "probe_fill", "root").at("status") == "absent");
 }
 
-TEST_CASE("RC-6 B9 policy rejects physical fragments pins and complete installs", "[rendercompiler][rc6a1][rc6-b9]") {
+TEST_CASE("RC-6 B9 policy rejects complete installs", "[rendercompiler][rc6a1][rc6-b9]") {
     auto root = rc5Document(false, false, false);
     const auto automatic = rc5Compile(root, false);
     const auto &physical = requireVulkanRenderCompilerPhysicalPackage(*automatic.variants.at(0).physical_package);
     const auto &plan = *physical.target_plans.at("main_render");
     root["rendering"]["target_planning"] = rc6Policy("nodes", "forward_opaque", "serial", true);
-    SECTION("fragment") {
-        root["rendering"]["vulkan_physical_fragments"] = {{"flat", Rc6Json::array({vulkanPhysicalFragmentPackageToJson(ejectVulkanPhysicalFragmentPackage(plan))})}};
-        CHECK(rc6Refusal([&] { rc5Compile(root, false); }) == "target_planning.policy_with_legacy_package@1");
-    }
-    SECTION("pin") {
-        root["rendering"]["vulkan_plan_pins"] = {{"flat", Rc6Json::array({vulkanTargetPlanPinPackageToJson(ejectVulkanTargetPlanPinPackage(plan))})}};
-        CHECK(rc6Refusal([&] { rc5Compile(root, false); }) == "target_planning.policy_with_legacy_package@1");
-    }
+
+
     SECTION("complete") {
         auto compiled = rc5Compile(root, false);
         auto package = requireVulkanRenderCompilerPhysicalPackage(*compiled.variants.at(0).physical_package);

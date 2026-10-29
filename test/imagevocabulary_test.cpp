@@ -283,36 +283,6 @@ TEST_CASE("RC-3a1 the loader, the planner and registration consume the declared 
         CHECK(trail.extent == vk::Extent2D{1920, 1080});
     }
 
-    SECTION("with a physical fragment selecting the declared candidate") {
-        auto fragment = ejectVulkanPhysicalFragmentPackage(plan);
-        // The package as a document holds it, read back as Studio's eject
-        // and install do.
-        auto document = vulkanPhysicalFragmentPackageToJson(fragment);
-        for (auto &resource : document.at("resources"))
-            if (resource.at("logical_resource") == "lit") {
-                CHECK(resource.at("format") == "R16G16B16A16_SFLOAT");
-                resource["format"] = "R8G8B8A8_UNORM";
-            }
-        const std::array fragments{vulkanPhysicalFragmentPackageFromJson(document)};
-        const auto linked = compileRenderingTargetPlans(
-            graphs, Pelican::TestSupport::framePlanMapOf(graphs), targets, compileSampleCountPolicy(config), vk::Format::eB8G8R8A8Srgb, facts,
-            std::nullopt, std::nullopt, {}, {}, fragments);
-        CHECK(planned(*linked.plans.front(), "lit").format == ImageFormat::r8g8b8a8_unorm);
-        const auto applied = test_support::plannedRenderTargets(graphs, linked);
-        const auto lit = consumed(named(applied, "lit"));
-        CHECK(lit.format == vk::Format::eR8G8B8A8Unorm);
-        CHECK(lit.usage == (vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled));
-        CHECK(lit.extent == vk::Extent2D{960, 540});
-        CHECK(lit.numeric == MaterialOutputNumericClass::floating);
-        // The rest keep the automatic choice.
-        CHECK(consumed(named(applied, "ids")).format == vk::Format::eR8Uint);
-
-        // A v0 package spells the selection as Vulkan did; it reads the same.
-        for (auto &resource : document.at("resources"))
-            if (resource.at("logical_resource") == "lit") resource["format"] = "R8G8B8A8Unorm";
-        CHECK(vulkanPhysicalFragmentPackageFromJson(document).resources ==
-              fragments.front().resources);
-    }
 
     SECTION("with a complete physical plan selecting the declared candidate") {
         REQUIRE(automatic.verification_contexts.size() == 1);

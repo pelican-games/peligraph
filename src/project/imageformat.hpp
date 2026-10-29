@@ -137,7 +137,7 @@ ImageFormat parseAuthoredImageFormat(const std::string &name);
 std::string imageFormatNameOrEmpty(const std::optional<ImageFormat> &format);
 
 // RC-3a1 (D3): v0 wrote the physical plan's formats (in ejected packages:
-// vulkan_physical_fragments, complete physical plans) as Vulkan's enumerant
+// complete physical plans) as Vulkan's enumerant
 // without its `e` ("R16G16B16A16Sfloat"). The format a name of that
 // spelling meant; nullopt for any other name. The one reader of the old
 // spelling.

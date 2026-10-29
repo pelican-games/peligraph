@@ -306,16 +306,6 @@ void requireSameSet(const std::set<std::string, std::less<>> &actual,
     requireSameSet(actual, toSet(expected), subject);
 }
 
-void validateFingerprint(const Json &package, std::string_view key,
-                         std::string_view expected,
-                         std::string_view context) {
-    const auto actual = requireString(package, key, context);
-    if (actual != expected) {
-        fail("physical_plan_fingerprint_mismatch",
-             std::string{context} + "." + std::string{key} + " '" + actual +
-                 "' does not match '" + std::string{expected} + "'");
-    }
-}
 
 using Pair = std::pair<std::string, std::string>;
 
@@ -358,33 +348,6 @@ std::set<Pair> validateOpportunityPairs(
     return pairs;
 }
 
-void validateNestedPackage(const Json &plan, std::string_view key,
-                           std::string_view schema, std::uint64_t version,
-                           std::string_view graph,
-                           std::string_view logical_fingerprint,
-                           std::string_view automatic_fingerprint,
-                           bool require_automatic) {
-    const auto found = plan.find(std::string{key});
-    if (found == plan.end() || found->is_null()) {
-        fail("physical_plan_missing_field",
-             "physical_target_plan requires object field '" +
-                 std::string{key} + "'");
-    }
-    if (!found->is_object()) {
-        fail("physical_plan_type_error",
-             "physical_target_plan." + std::string{key} +
-                 " must be an object");
-    }
-    const auto context = "physical_target_plan." + std::string{key};
-    validateSchemaVersion(*found, schema, version, context);
-    validateGraph(*found, graph, context);
-    validateFingerprint(*found, "logical_graph_fingerprint",
-                        logical_fingerprint, context);
-    if (require_automatic) {
-        validateFingerprint(*found, "automatic_plan_fingerprint",
-                            automatic_fingerprint, context);
-    }
-}
 
 void validatePlan(const Json &plan,
                   const PhysicalTargetPlanWireContext &external_context) {
@@ -402,20 +365,10 @@ void validatePlan(const Json &plan,
                  "' does not match frame plan graph '" +
                  external_context.expected_graph + "'");
     }
-    const auto logical_fingerprint = requireString(
+    requireString(
         plan, "logical_graph_fingerprint", "physical_target_plan");
-    const auto automatic_fingerprint = requireString(
+    requireString(
         plan, "automatic_plan_fingerprint", "physical_target_plan");
-
-    validateNestedPackage(plan, "ejectable_pin_package",
-                          "pelican.vulkan_target_plan_pins", 1, graph,
-                          logical_fingerprint, automatic_fingerprint, false);
-    validateNestedPackage(plan, "ejectable_physical_fragment",
-                          "pelican.vulkan_physical_fragment", 3, graph,
-                          logical_fingerprint, automatic_fingerprint, true);
-    validateNestedPackage(plan, "ejectable_complete_physical_plan",
-                          "pelican.vulkan_complete_physical_plan", 1, graph,
-                          logical_fingerprint, automatic_fingerprint, true);
 
     requireArray(plan, "graph_transforms", "physical_target_plan");
     requireArray(plan, "subgraph_replacements", "physical_target_plan");

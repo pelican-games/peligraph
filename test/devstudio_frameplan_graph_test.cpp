@@ -329,8 +329,7 @@ Json resolvedFramePlan(Pelican::ResolvedRenderPipeline resolved,
     const auto physical = Pelican::compileRenderingTargetPlans(
         render_graph, Pelican::TestSupport::framePlanMapOf(render_graph), targets, compiled.sample_count_policy,
         vk::Format::eB8G8R8A8Srgb, planningDeviceFacts(), std::nullopt,
-        std::nullopt, compiled.target_planning, compiled.vulkan_plan_pins,
-        compiled.vulkan_physical_fragments);
+        std::nullopt, compiled.target_planning);
     if (physical.plans.size() != 1) {
         throw std::runtime_error(std::string{label} +
                                  " must compile exactly one physical target "
@@ -591,9 +590,7 @@ const Wp348CubeCaptureMeasurement &wp348CubeCaptureMeasurement() {
         const auto physical = Pelican::compileRenderingTargetPlans(
             render_graph, Pelican::TestSupport::framePlanMapOf(render_graph), targets, compiled.sample_count_policy,
             vk::Format::eB8G8R8A8Srgb, planningDeviceFacts(),
-            std::nullopt, std::nullopt, compiled.target_planning,
-            compiled.vulkan_plan_pins,
-            compiled.vulkan_physical_fragments);
+            std::nullopt, std::nullopt, compiled.target_planning);
         if (physical.plans.size() != 1) {
             throw std::runtime_error(
                 "WP348 fixture must compile exactly one physical target plan");
@@ -6351,8 +6348,6 @@ struct FramePlanEditRecorder {
         capability.decomposeMaterialPass = record("decompose_material_pass");
         capability.editTargetPlanning = record("edit_target_planning");
         // UX-15b.
-        capability.editVulkanPlanPins = record("edit_vulkan_plan_pins");
-        capability.putVulkanPhysicalFragment = record("put_vulkan_physical_fragment");
         capability.requestEditResult = [this](const QString &, QString *) {
             ticket_id = next_id++;
             return ticket_id;
@@ -12141,11 +12136,9 @@ TEST_CASE("RC-6b1 D1 Pin and Unpin use author graph and backend policy, reject l
     model.graph_name_suffix = "#xr";
     auto author = framePlanAuthoringFromContext(context);
     CHECK(framePlanBackendPinRequest(author, model, candidate).params.at("graph") == fixture.graph);
-    author.planning_catalog[fixture.graph]["legacy_package"] = true;
-    CHECK_FALSE(framePlanBackendPinRequest(author, model, candidate).sendable());
-    author.planning_catalog = Json::object();
     auto legacy = fixture.wire;
     legacy["legacy_complete_plan"] = true;
+    CHECK_FALSE(framePlanBackendPinRequest(author, buildFramePlanModel(legacy.dump()), candidate).sendable());
     CHECK_FALSE(framePlanPhysicalFreezeRequest(author, buildFramePlanModel(legacy.dump())).sendable());
 }
 

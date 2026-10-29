@@ -75,7 +75,7 @@ struct VulkanNativeScopeDeclaration {
 };
 
 // A complete same-layer physical replacement for the current logical graph
-// and target environment. Unlike VulkanPhysicalFragmentPackage, every
+// and target environment. Every
 // engine-visible physical resource, scope, attachment, and alias group is
 // present. Backend-private resources and commands remain inside NativeScope
 // implementation_config and are opaque outside its declared boundary.

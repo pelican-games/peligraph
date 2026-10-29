@@ -57,8 +57,6 @@ Rc5Json rc5Snapshot(const RenderCompilerProgramResult &result) {
         snapshot["frame_plans"][name] = framePlanToJson(frame, variant.compiled_pipeline.get());
         const auto &plan = *physical.target_plans.at(name);
         snapshot["physical_plans"][name] = vulkanTargetPlanToJson(plan);
-        snapshot["pins"][name] = vulkanTargetPlanPinPackageToJson(ejectVulkanTargetPlanPinPackage(plan));
-        snapshot["physical_fragments"][name] = vulkanPhysicalFragmentPackageToJson(ejectVulkanPhysicalFragmentPackage(plan));
     }
     return snapshot;
 }
@@ -196,9 +194,7 @@ void rc5RequireFragmentProvenance(const RenderCompilerProgramResult &result, boo
 }
 }
 
-void rc5RequireRecipeMatrix(bool fixed_head_packages) {
-    const auto *directory = std::getenv("RC5_BASELINE_DIR");
-    if (fixed_head_packages) REQUIRE((directory != nullptr && *directory != '\0'));
+void rc5RequireRecipeMatrix() {
     std::size_t configurations = 0;
     for (const bool lit : {false, true}) for (const bool hdr : {false, true})
     for (const bool extras : {false, true}) for (const bool xr : {false, true}) {
@@ -209,11 +205,6 @@ void rc5RequireRecipeMatrix(bool fixed_head_packages) {
         const auto old_root = rc5Document(lit, hdr, extras);
         const auto old_result = rc5Compile(old_root, xr);
         const auto original = rc5Snapshot(old_result);
-        Rc5Json frozen;
-        if (fixed_head_packages) {
-            frozen = readJsonFixture(std::filesystem::path{directory} / rc5Filename(lit, hdr, extras, xr));
-            REQUIRE(original.at("typed_ir_fingerprint") != frozen.at("typed_ir_fingerprint"));
-        }
         for (const auto &graph : old_result.variants.at(0).render_graph->graphs)
             for (const auto &node : graph.nodes)
                 CHECK(node.name.rfind("__anchor_", 0) != 0);
@@ -234,11 +225,6 @@ void rc5RequireRecipeMatrix(bool fixed_head_packages) {
                     *context.automatic_plan, context.node_order, std::move(package), context.format_capabilities,
                     context.enabled_device_extensions);
             };
-            if (fixed_head_packages) {
-                const auto stale = vulkanCompletePhysicalPlanPackageFromJson(
-                    frozen.at("physical_plans").at(name).at("ejectable_complete_physical_plan"));
-                REQUIRE_THROWS_WITH(verify(stale), Catch::Matchers::ContainsSubstring("stale"));
-            }
             const auto fresh = ejectVulkanCompletePhysicalPlanPackage(*plan);
             const auto reapplied = applyVerifiedVulkanCompletePhysicalPlanPackage(*plan, verify(fresh));
             CHECK(physicalNodeOrderOf(reapplied.scopes).nodes == framePlanOrder(old_result.variants.at(0).frame_plans.at(name)));
@@ -266,35 +252,6 @@ void rc5RequireRecipeMatrix(bool fixed_head_packages) {
         REQUIRE(*replaced.variants.at(0).render_graph == *result.variants.at(0).render_graph);
         REQUIRE(rc5Comparable(rc5Snapshot(replaced)) == rc5Comparable(current));
         rc5RequireFragmentProvenance(replaced, true);
-        const auto variant_name = xr ? "xr" : "flat";
-        for (const auto *key : {"vulkan_plan_pins", "vulkan_physical_fragments"}) {
-            auto pinned = root;
-            auto packages = Rc5Json::array();
-            for (const auto &[name, package] : original.at(std::string{key} == "vulkan_plan_pins" ? "pins" : "physical_fragments").items())
-                packages.push_back(package);
-            pinned["rendering"][key][variant_name] = packages;
-            if (fixed_head_packages) {
-                auto stale = pinned;
-                auto old_packages = Rc5Json::array();
-                for (const auto &[name, package] : frozen.at(std::string{key} == "vulkan_plan_pins" ? "pins" : "physical_fragments").items())
-                    old_packages.push_back(package);
-                stale["rendering"][key][variant_name] = old_packages;
-                REQUIRE_THROWS_AS(rc5Compile(stale, xr), std::exception);
-            }
-            const auto applied = rc5Compile(pinned, xr);
-            REQUIRE(*applied.variants.at(0).render_graph == *result.variants.at(0).render_graph);
-            const auto &physical = requireVulkanRenderCompilerPhysicalPackage(*applied.variants.at(0).physical_package);
-            for (const auto &[name, plan] : applied.variants.at(0).frame_plans) {
-                REQUIRE(physicalNodeOrderOf(physical.target_plans.at(name)->scopes).nodes == framePlanOrder(plan));
-                if (std::string{key} == "vulkan_plan_pins") {
-                    REQUIRE(physical.target_plans.at(name)->applied_pin_package.has_value());
-                    REQUIRE(Rc5Json(vulkanTargetPlanPinPackageToJson(*physical.target_plans.at(name)->applied_pin_package)) == original.at("pins").at(name));
-                } else {
-                    REQUIRE(physical.target_plans.at(name)->applied_fragment_package.has_value());
-                    REQUIRE(Rc5Json(vulkanPhysicalFragmentPackageToJson(*physical.target_plans.at(name)->applied_fragment_package)) == original.at("physical_fragments").at(name));
-                }
-            }
-        }
     }
 #if PELICAN_WITH_OPENXR
     CHECK(configurations == 16);
@@ -303,14 +260,38 @@ void rc5RequireRecipeMatrix(bool fixed_head_packages) {
 #endif
 }
 
-TEST_CASE("RC-5 A2 recipes preserve typed IR frame plans physical plans and old packages", "[rendercompiler][rc5][rc5-a2]") {
-    rc5RequireRecipeMatrix(false);
+TEST_CASE("RC-5 A2 recipes preserve typed IR frame plans physical plans and complete packages", "[rendercompiler][rc5][rc5-a2]") {
+    rc5RequireRecipeMatrix();
 }
 
-TEST_CASE("RC-5s fixed HEAD complete fragment and pin packages are stale", "[rendercompiler][rc5s][fixed-head-package]") {
+TEST_CASE("RC-5s fixed HEAD complete packages are stale", "[rendercompiler][rc5s][fixed-head-package]") {
     const auto *directory = std::getenv("RC5_BASELINE_DIR");
     if (!directory || !*directory) SKIP("rc5s.fixed_head_packages_unavailable@1: set RC5_BASELINE_DIR");
-    rc5RequireRecipeMatrix(true);
+    std::size_t configurations = 0;
+    for (const bool lit : {false, true}) for (const bool hdr : {false, true})
+    for (const bool extras : {false, true}) for (const bool xr : {false, true}) {
+#if !PELICAN_WITH_OPENXR
+        if (xr) continue;
+#endif
+        CAPTURE(lit, hdr, extras, xr);
+        const auto frozen = readJsonFixture(std::filesystem::path{directory} / rc5Filename(lit, hdr, extras, xr));
+        const auto result = rc5Compile(rc5Document(lit, hdr, extras), xr);
+        const auto &physical = requireVulkanRenderCompilerPhysicalPackage(*result.variants.at(0).physical_package);
+        for (const auto &[name, plan] : physical.target_plans) {
+            const auto &context = requireVulkanTargetPlanVerificationContext(physical, name);
+            const auto stale = vulkanCompletePhysicalPlanPackageFromJson(
+                frozen.at("physical_plans").at(name).at("ejectable_complete_physical_plan"));
+            REQUIRE_THROWS_WITH(verifyVulkanCompletePhysicalPlanPackage(*context.logical_graph, context.topology,
+                *context.automatic_plan, context.node_order, stale, context.format_capabilities,
+                context.enabled_device_extensions), Catch::Matchers::ContainsSubstring("stale"));
+        }
+        ++configurations;
+    }
+#if PELICAN_WITH_OPENXR
+    CHECK(configurations == 16);
+#else
+    CHECK(configurations == 8);
+#endif
 }
 
 TEST_CASE("RC5b materialized fragment preserves typed IR and every plan field", "[rendercompiler][rc5b]") {
@@ -337,11 +318,23 @@ TEST_CASE("RC5b materialized fragment preserves typed IR and every plan field", 
             } else if (value.is_array()) for (auto &child : value) self(self, child);
         };
         replace_origin(replace_origin, expected);
-        // Every field of FramePlan, physical plan, pins and physical fragments;
+        // Every remaining field of FramePlan and the physical plan;
         // the copied document's ownership reference is the only allowed change.
         REQUIRE(rc5Snapshot(after) == expected);
         rc5RequireFragmentProvenance(after, true);
     }
+}
+
+// RC-6b2: only these retired fields may differ from the immutable RC-5 snapshot.
+Rc5Json rc6WithoutRemovedPackages(Rc5Json snapshot) {
+    snapshot.erase("pins");
+    snapshot.erase("physical_fragments");
+    for (auto &[name, plan] : snapshot.at("physical_plans").items())
+        for (const auto *field : {"ejectable_pin_package", "ejectable_physical_fragment",
+                                 "applied_pin_package", "applied_physical_fragment",
+                                 "ejectable_complete_physical_plan"})
+            plan.erase(field);
+    return snapshot;
 }
 
 TEST_CASE("RC-6 policy-free snapshots match all sixteen fixed RC-5 baselines", "[.][rc6-baseline-compare]") {
@@ -359,8 +352,63 @@ TEST_CASE("RC-6 policy-free snapshots match all sixteen fixed RC-5 baselines", "
         std::ifstream input{file};
         REQUIRE(input.good());
         const auto recorded = Rc5Json::parse(input);
-        REQUIRE(rc5Snapshot(rc5Compile(rc5Document(lit, hdr, extras), xr)) == recorded);
+        REQUIRE(rc6WithoutRemovedPackages(rc5Snapshot(rc5Compile(rc5Document(lit, hdr, extras), xr))) ==
+                rc6WithoutRemovedPackages(recorded));
         ++count;
     }
     REQUIRE(count == 16);
+}
+
+TEST_CASE("RC-6b2 saved legacy planning keys are refused with reload instructions", "[rendercompiler][rc6b2][legacy-package-removed]") {
+    for (const auto *key : {"vulkan_plan_pins", "vulkan_physical_fragments"})
+    for (const auto &value : {Rc5Json{}, Rc5Json::object(), Rc5Json{{"flat", Rc5Json::array()}}})
+    for (const bool policy : {false, true}) {
+        CAPTURE(key, value, policy);
+        auto root = rc5Document(false, false, false);
+        root["rendering"][key] = value;
+        if (policy) root["rendering"]["target_planning"] = {{"graphs", {{"main_render", {{"backend", "materialized"}}}}}};
+        try { (void)rc5Compile(root, false); FAIL("removed key was accepted"); }
+        catch (const GraphRegistryError &error) {
+            CHECK(error.code() == "target_planning.legacy_package_removed@1");
+            CHECK(error.detail().at("key") == key);
+            const auto message = error.detail().at("message").get<std::string>();
+            CHECK(message.find(key) != std::string::npos);
+            CHECK(message.find("from the document and reload") != std::string::npos);
+            CHECK(message.find("Studio Pin / Freeze") != std::string::npos);
+        }
+    }
+}
+
+TEST_CASE("RC-6b2 complete stale refusal and install identity survive legacy removal", "[rendercompiler][rc6b2][complete-stale]") {
+    const auto result = rc5Compile(rc5Document(false, false, false), false);
+    const auto &physical = requireVulkanRenderCompilerPhysicalPackage(*result.variants.at(0).physical_package);
+    for (const auto &[name, plan] : physical.target_plans) {
+        const auto &context = requireVulkanTargetPlanVerificationContext(physical, name);
+        REQUIRE(context.automatic_plan == plan);
+        auto package = ejectVulkanCompletePhysicalPlanPackage(*plan);
+        SECTION("stale logical graph") {
+            package.logical_graph_fingerprint ^= 1;
+            CHECK_THROWS_WITH(verifyVulkanCompletePhysicalPlanPackage(*context.logical_graph, context.topology,
+                *context.automatic_plan, context.node_order, package, context.format_capabilities,
+                context.enabled_device_extensions), Catch::Matchers::ContainsSubstring("stale for the logical graph"));
+        }
+        SECTION("stale automatic plan") {
+            package.automatic_plan_fingerprint ^= 1;
+            CHECK_THROWS_WITH(verifyVulkanCompletePhysicalPlanPackage(*context.logical_graph, context.topology,
+                *context.automatic_plan, context.node_order, package, context.format_capabilities,
+                context.enabled_device_extensions), Catch::Matchers::ContainsSubstring("complete_physical_plan.stale_automatic_plan@1"));
+        }
+        SECTION("installed plan must be the retained automatic object") {
+            auto changed = physical;
+            changed.target_plans[name] = std::make_shared<const VulkanTargetPlan>(*plan);
+            CHECK_THROWS_WITH(installVerifiedVulkanCompletePhysicalPlanPackage(changed, name, package),
+                Catch::Matchers::ContainsSubstring("modified before complete plan verification"));
+        }
+        SECTION("fresh complete package installs") {
+            auto fresh = physical;
+            REQUIRE_NOTHROW(installVerifiedVulkanCompletePhysicalPlanPackage(fresh, name, package));
+            CHECK(fresh.verified_complete_physical_plans.contains(name));
+            CHECK(fresh.target_plans.at(name) != context.automatic_plan);
+        }
+    }
 }

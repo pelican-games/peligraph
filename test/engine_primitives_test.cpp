@@ -2191,7 +2191,7 @@ TEST_CASE("EL-4 the material pass formats and engine shaders get_graph_catalog l
 // planner aliases them until el2_a is isolated or its target says no_alias.
 // (A rendering scope is fused only for a tile backend candidate, which a
 // desktop device does not select, so the scopes cannot show isolate here.)
-TEST_CASE("EL-2 target planning, plan pins and physical fragments written over RPC reach the frame plan",
+TEST_CASE("EL-2 target planning written over RPC reaches the frame plan",
           "[el2][primitives][rpc][gpu]") {
     setupLogger(true);
     const auto dir = makeTempDir("el2_planning");
@@ -2296,37 +2296,6 @@ TEST_CASE("EL-2 target planning, plan pins and physical fragments written over R
     CHECK(unknown.at("error").at("name") == "el2_nowhere");
     committed("edit_target_planning", {{"graph", "main_render"}, {"resources", {{"el2_color_a", nullptr}}}});
     CHECK(aliased(physical()));
-
-    // 2. The plan's own pin package and physical fragment, written back.
-    const auto pin = physical().at("ejectable_pin_package");
-    committed("edit_vulkan_plan_pins", {{"family", "flat"}, {"pin", pin}});
-    {
-        const auto plan = physical();
-        CHECK(plan.at("applied_pin_package") == pin);
-        CHECK(plan.at("backend_selection").at("selected_candidate") == pin.at("pins").at("backend_candidate"));
-    }
-    const auto fragment = physical().at("ejectable_physical_fragment");
-    committed("put_vulkan_physical_fragment", {{"family", "flat"}, {"fragment", fragment}});
-    CHECK(physical().at("applied_physical_fragment") == fragment);
-    const auto applied_root = readFile(rendering_path);
-
-    // A fragment whose base plan is not the current one: the linker says so.
-    auto broken = fragment;
-    auto fingerprint = broken.at("automatic_plan_fingerprint").get<std::string>();
-    fingerprint.back() = fingerprint.back() == '0' ? '1' : '0';
-    broken["automatic_plan_fingerprint"] = fingerprint;
-    const auto stale = settle(send("put_vulkan_physical_fragment", {{"family", "flat"}, {"fragment", broken}}));
-    INFO(stale.dump(2));
-    REQUIRE(stale.at("status") == "rejected");
-    const auto &error = stale.at("error");
-    CHECK(error.at("code") == "physical_fragment_stale");
-    CHECK(error.at("family") == "flat");
-    CHECK(error.at("graph") == "main_render");
-    CHECK(error.at("fingerprint") == "automatic_plan");
-    CHECK(error.at("expected") == fragment.at("automatic_plan_fingerprint"));
-    CHECK(error.at("actual") == fingerprint);
-    CHECK(readFile(rendering_path) == applied_root);
-    CHECK(physical().at("applied_physical_fragment") == fragment);
 
     // 3. RD-1 takes the root back, and the plan with it.
     const auto current = rpc.result("get_render_documents").at("documents").at(0);

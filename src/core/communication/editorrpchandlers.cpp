@@ -252,12 +252,6 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("edit_target_planning", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.editTargetPlanning(params); });
     });
-    server.setHandler("edit_vulkan_plan_pins", [&editor_rpc](const nlohmann::json &params) {
-        return invokeEditorRpc([&] { return editor_rpc.editVulkanPlanPins(params); });
-    });
-    server.setHandler("put_vulkan_physical_fragment", [&editor_rpc](const nlohmann::json &params) {
-        return invokeEditorRpc([&] { return editor_rpc.putVulkanPhysicalFragment(params); });
-    });
     // FG-1: fold groups of the root graph.
     server.setHandler("get_fold_groups", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getFoldGroups(params); });
