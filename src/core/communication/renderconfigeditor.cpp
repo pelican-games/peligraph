@@ -3348,6 +3348,41 @@ OrderedJson RenderConfigEditorService::editRayLayout(const Json &params) {
     return answer;
 }
 
+namespace {
+struct PlanningNames {
+    std::set<std::string, std::less<>> nodes;
+    std::set<std::string, std::less<>> resources;
+};
+
+std::optional<PlanningNames> planningNamesOf(const Json &composed, std::string_view graph) {
+    const auto render_graph =
+        parseRenderGraph(composed, buildPassFieldOwnershipCapabilities());
+    const auto *found = findGraph(render_graph, graph);
+    if (found == nullptr) return std::nullopt;
+    PlanningNames names;
+    // Declared: the config's images and buffers.
+    for (const auto &image : render_graph.images) names.resources.insert(image.name);
+    for (const auto &buffer : render_graph.buffers) names.resources.insert(buffer.name);
+    for (const auto &node : found->nodes) {
+        names.nodes.insert(node.name);
+        for (const auto &use : node.uses) {
+            const bool attachment = use.role == ResourceUseRole::color_attachment ||
+                                    use.role == ResourceUseRole::depth_attachment;
+            const bool writes = attachment || use.role == ResourceUseRole::output ||
+                                use.role == ResourceUseRole::copy_destination;
+            if (writes) names.resources.insert(use.resource);
+            // swapchain when a node reads it (a loading attachment reads too).
+            const bool reads =
+                attachment ? use.operations && use.operations->load_op == AttachmentLoadOp::load
+                           : !writes && !use.history && use.role != ResourceUseRole::resource_port;
+            if (reads && use.resource == "swapchain") names.resources.insert("swapchain");
+        }
+    }
+    return names;
+}
+
+} // namespace
+
 OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
     const Json &params) const {
     requireOnly(params, {}, "get_render_authoring_context");
@@ -3616,6 +3651,38 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
         }
     }
     for (auto &entry : other_targets) editable_targets.push_back(std::move(entry));
+    // RC-6b1: outside the physical dump (A5). This is the editor's catalog,
+    // not runtime-added nodes. Read the root verbatim for Remove and state.
+    result["planning_root"] = OrderedJson::parse(readDocument().bytes());
+    auto catalog = OrderedJson::object();
+    // Recovery tools still need the declarations when strict IR parsing fails.
+    try {
+        for (const auto &graph : parseRenderGraph(resolved.config, buildPassFieldOwnershipCapabilities()).graphs) {
+            const auto names = planningNamesOf(resolved.config, graph.name);
+            catalog[graph.name]["nodes"] = names->nodes;
+            catalog[graph.name]["resources"] = names->resources;
+            auto forced = OrderedJson::object();
+            for (const auto &node : graph.nodes)
+                if (node.schedule == NodeSchedule::once || node.shape == RenderNodeShape::sprite ||
+                    node.shape == RenderNodeShape::ui || node.shape == RenderNodeShape::imgui)
+                    forced[node.name] = node.schedule == NodeSchedule::once ? "once: engine requires isolate" : "scope-owning node: engine requires isolate";
+            for (const auto &[family, node] : resolved.engine_isolates)
+                if (family == graph.name) forced[node] = "graph scope: engine requires isolate";
+            catalog[graph.name]["engine_isolates"] = std::move(forced);
+            bool legacy = false;
+            for (const auto *key : {"vulkan_plan_pins", "vulkan_physical_fragments"})
+                if (const auto packages = resolved.config.find(key); packages != resolved.config.end() && packages->is_object())
+                    for (const auto &family : *packages)
+                        if (family.is_array()) for (const auto &package : family)
+                            if (package.value("graph", std::string{}) == graph.name ||
+                                package.value("graph", std::string{}) == graph.name + "#xr") legacy = true;
+            catalog[graph.name]["legacy_package"] = legacy;
+        }
+    } catch (const std::exception &error) {
+        catalog = OrderedJson::object();
+        result["planning_catalog_error"] = error.what();
+    }
+    result["planning_catalog"] = std::move(catalog);
     result["render_targets"] = std::move(editable_targets);
     result["render_target_fragment"] = renderTargetFragmentReference();
     result["render_target_vocabulary"] = {
@@ -5158,38 +5225,6 @@ std::string requirePlanFamily(const Json &params, std::string_view method) {
 // composed config: the frame graph's nodes, and the logical resources its
 // shadow graph declares (declared and history targets, what a node writes,
 // swapchain when a node reads it). nullopt: the composition has no such graph.
-struct PlanningNames {
-    std::set<std::string, std::less<>> nodes;
-    std::set<std::string, std::less<>> resources;
-};
-
-std::optional<PlanningNames> planningNamesOf(const Json &composed, std::string_view graph) {
-    const auto render_graph =
-        parseRenderGraph(composed, buildPassFieldOwnershipCapabilities());
-    const auto *found = findGraph(render_graph, graph);
-    if (found == nullptr) return std::nullopt;
-    PlanningNames names;
-    // Declared: the config's images and buffers.
-    for (const auto &image : render_graph.images) names.resources.insert(image.name);
-    for (const auto &buffer : render_graph.buffers) names.resources.insert(buffer.name);
-    for (const auto &node : found->nodes) {
-        names.nodes.insert(node.name);
-        for (const auto &use : node.uses) {
-            const bool attachment = use.role == ResourceUseRole::color_attachment ||
-                                    use.role == ResourceUseRole::depth_attachment;
-            const bool writes = attachment || use.role == ResourceUseRole::output ||
-                                use.role == ResourceUseRole::copy_destination;
-            if (writes) names.resources.insert(use.resource);
-            // swapchain when a node reads it (a loading attachment reads too).
-            const bool reads =
-                attachment ? use.operations && use.operations->load_op == AttachmentLoadOp::load
-                           : !writes && !use.history && use.role != ResourceUseRole::resource_port;
-            if (reads && use.resource == "swapchain") names.resources.insert("swapchain");
-        }
-    }
-    return names;
-}
-
 // {name: object | null} applied to `entries`: null erases the name; an
 // object's fields replace the entry's, a null field erasing that field. An
 // entry left with no field is erased.
@@ -5540,9 +5575,15 @@ OrderedJson RenderConfigEditorService::editTargetPlanning(const Json &params) {
                 for (const auto &[name, edit] : edits->items()) {
                     if (known->contains(name)) continue;
                     // A name the composition no longer has may still be erased.
-                    if (edit.is_null() && authored != declared.end() && authored->is_object() &&
-                        authored->contains(name))
-                        continue;
+                    if (authored != declared.end() && authored->is_object() && authored->contains(name)) {
+                        if (edit.is_null()) continue;
+                        // Only saved leaves may be removed on an absent name.
+                        const auto &saved = authored->at(name);
+                        if (edit.is_object() && !edit.empty() && saved.is_object() &&
+                            std::all_of(edit.begin(), edit.end(), [&](const auto &value) { return value.is_null(); }) &&
+                            std::all_of(edit.items().begin(), edit.items().end(), [&](const auto &leaf) { return saved.contains(leaf.key()); }))
+                            continue;
+                    }
                     return {.value = std::nullopt, .refusal = unknown(kind, name)};
                 }
                 // FG-1: an explicit false against what a verified fold group

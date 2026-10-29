@@ -1086,7 +1086,9 @@ void MainWindow::createWorkspace() {
     // keeps its placement in the same `layout` member the Graph tab writes --
     // through that tab's debounce, because `set_layout` replaces the whole
     // object and two writers would erase each other.
-    frame_plan_->setEditCapability(framePlanEditCapability(*viewport_));
+    auto planning_edit = framePlanEditCapability(*viewport_);
+    planning_edit.planningInfo = [this](const QString &message) { problems_dock_->setPlanningInfo(message); };
+    frame_plan_->setEditCapability(std::move(planning_edit));
     // Q-13. One digest for the rendering document, shared by every panel
     // that edits it: a commit in any of them -- a node's placement included --
     // is news to the others, which read their context again rather than send

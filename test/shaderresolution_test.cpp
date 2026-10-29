@@ -740,6 +740,8 @@ TEST_CASE("renderer-owned WP354 append covers every family and stripWp354 change
         "/profile",
         // PV-1: the renderer's one-shot preview state, beside the plan.
         "/preview",
+        // RC-6b1: the variant the renderer compiled, for Studio's author names.
+        "/graph_variant",
         "/ray_query_acceleration_structures/descriptor_bundle_generation",
         "/ray_query_acceleration_structures/descriptor_top_level_handle",
         "/ray_query_acceleration_structures/descriptor_row_digest"};

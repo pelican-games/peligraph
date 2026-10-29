@@ -1218,6 +1218,7 @@ TEST_CASE("RC-3e1 A1 production RPC authoring recovery and publication", "[rc3e1
         CHECK(rootOf(player).at("digest") == hash(changed_bytes));
         const auto published = publishedGeneration(player);
         const auto plan = player.result("get_frame_plan");
+        CHECK(plan.at("graph_variant") == Json{{"name", "flat"}, {"name_suffix", ""}});
         auto compose_bad = changed;
         compose_bad["rendering"]["snapshots"] = Json::array({{{"name", "rc3e_snapshot"}, {"after", "rc3e_absent"}}});
         const auto compose_bytes = compose_bad.dump(2);

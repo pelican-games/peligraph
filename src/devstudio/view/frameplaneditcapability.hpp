@@ -26,6 +26,7 @@ struct FramePlanEditCapability {
     using FailureHandler =
         std::function<void(qint64 request_id, const QString &message)>;
 
+    std::function<void(const QString &)> planningInfo;
     std::function<void(QObject *context, ReadyHandler handler)> ready;
     std::function<qint64(QString *error)> requestAuthoringContext;
     std::function<qint64(QString *error)> requestTaskAuthoring;

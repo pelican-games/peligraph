@@ -482,6 +482,7 @@ struct FramePlanWidget::Impl {
     // outlasts the refreshed plan's summary
     // until the next edit is sent.
     QString submitted_notice;
+    QString submitted_planning_info;
     QString commit_notice;
     // VI-3a rule 4: a reload was refused for a pass; say so once the plan
     // that shows it arrives, and keep saying it while it stands.
@@ -597,9 +598,7 @@ struct FramePlanWidget::Impl {
     QAction *backend_unpin = nullptr;
     QAction *physical_freeze = nullptr;
     QAction *physical_remove = nullptr;
-    QAction *physical_eject_again = nullptr;
     // Beside the line of a physical_fragment_stale refusal.
-    QPushButton *eject_again = nullptr;
     // The bands on screen. A tree lets go of a row's widget only later
     // (deleteLater), so a band is deleted here before its tree is filled
     // again, and its name never answers for two widgets at once.
@@ -886,17 +885,6 @@ struct FramePlanWidget::Impl {
         QObject::connect(reload_authoring, &QPushButton::clicked, &owner,
                          [this] { reloadAuthoring(); });
         status_row->addWidget(reload_authoring);
-        // UX-15b, decision 2: a frozen plan the graph moved away from.
-        eject_again = new QPushButton(owner.tr("Eject again"), &owner);
-        eject_again->setObjectName(
-            QStringLiteral("pelican.framePlan.physical.ejectAgainButton"));
-        eject_again->setToolTip(owner.tr(
-            "Freeze the physical plan again from the plan on screen: one change, "
-            "which Undo takes back."));
-        eject_again->hide();
-        QObject::connect(eject_again, &QPushButton::clicked, &owner,
-                         [this] { freezePhysicalPlan(); });
-        status_row->addWidget(eject_again);
         // Q-14: the two ways out of a pass whose shader does not read the
         // inputs it was given.
         const auto actions = shaderInputContractActions();
@@ -1461,10 +1449,8 @@ struct FramePlanWidget::Impl {
         physical_freeze = lower_action("pelican.framePlan.physical.freeze",
                                        owner.tr("Freeze this physical plan"),
                                        &Impl::freezePhysicalPlan);
-        physical_remove = lower_action("pelican.framePlan.physical.remove", owner.tr("Remove"),
+        physical_remove = lower_action("pelican.framePlan.physical.remove", owner.tr("Remove all root fixing policy"),
                                        &Impl::removeFrozenPlan);
-        physical_eject_again = lower_action("pelican.framePlan.physical.ejectAgain",
-                                            owner.tr("Eject again"), &Impl::freezePhysicalPlan);
         for (QTreeWidget *tree : {passes, resources, physical, decisions, backends, barriers}) {
             tree->setContextMenuPolicy(Qt::CustomContextMenu);
             QObject::connect(tree, &QWidget::customContextMenuRequested, &owner,
@@ -1527,7 +1513,6 @@ struct FramePlanWidget::Impl {
                              pending_edit_request = 0;
                              pending_ticket_request = 0;
                              pending_ticket.clear();
-                             eject_again->hide();
                              submitted_method.clear();
                              submitted_target.clear();
                              pending_target_selection.clear();
@@ -2156,11 +2141,11 @@ struct FramePlanWidget::Impl {
         hideShaderContract();
         refusal_disconnect->hide();
         refusal_open_shader->hide();
-        eject_again->hide();
         shown_refusal_line.clear();
         canvas_edit_failure.clear();
         canvas_edit_failure_detail.clear();
         submitted_notice = text(request.notice);
+        submitted_planning_info = text(request.planning_info);
         commit_notice.clear();
         picked_loop_line.clear();
         submitted_request = request;
@@ -2195,7 +2180,13 @@ struct FramePlanWidget::Impl {
                 auto context = Json::parse(bytes.constData(), bytes.constData() + bytes.size());
                 const bool had_context = authoring.received;
                 authoring = framePlanAuthoringFromContext(context);
-                if (context.is_object()) context.erase("source_digest");
+                if (context.is_object()) {
+                    context.erase("source_digest");
+                    // A placement-only root read must preserve the live canvas
+                    // (Q-13). Only this graph's policy affects these bands.
+                    context["planning_root"] = model ? framePlanRootPolicy(authoring, *model) : Json::object();
+                    context.erase("planning_catalog");
+                }
                 changed = !had_context || authoring_visuals != context;
                 authoring_visuals = std::move(context);
             } catch (const std::exception &) {
@@ -2329,7 +2320,6 @@ struct FramePlanWidget::Impl {
         showStatus(oneLine(message), message.contains(whole) ? message : message + QLatin1Char('\n') + whole);
         canvas_edit_failure_detail = status->toolTip();
         // UX-15b, decision 2: the frozen plan is older than the graph.
-        if (framePlanPhysicalFragmentStale(refusalOf(response))) eject_again->show();
     }
 
     // --- Q-14. The pass's inputs and its shader's declarations disagree:
@@ -2746,6 +2736,8 @@ struct FramePlanWidget::Impl {
             else requestTaskAuthoring();
             readPlanAgain();
             status->setStyleSheet({});
+            if (submitted_notice.startsWith(QStringLiteral("Physical plan frozen")) && edit.planningInfo)
+                edit.planningInfo(submitted_planning_info);
             commit_notice = std::exchange(submitted_notice, {});
             showStatus(commit_notice.isEmpty()
                            ? owner.tr("Canvas change committed.")
@@ -3401,9 +3393,25 @@ struct FramePlanWidget::Impl {
         const auto name = subject.value(1).toStdString();
         const bool can = authoring.received && pending_edit_request == 0 && pending_ticket.isEmpty();
         const auto entry = [&](QAction *action, const char *field) {
-            action->setChecked(planning.flag(kind, name, field));
-            action->setEnabled(can);
+            const auto state = framePlanPlanningCheck(authoring, *model, kind, name, field);
+            action->setText(text(std::string{field} == "no_alias" ? "No alias" : std::string{field} == "serial" ? "Serial" : "Isolate") +
+                (state.inherited ? owner.tr(" (inherited)") : QString{}));
+            action->setChecked(state.checked);
+            action->setEnabled(can && state.enabled);
+            action->setToolTip(text(state.reason));
             menu.addAction(action);
+            if (state.root) {
+                auto *inherit = menu.addAction(owner.tr("Return %1 to inheritance").arg(action->text()));
+                inherit->setObjectName(QStringLiteral("pelican.framePlan.planning.inherit.") + QString::fromLatin1(field));
+                inherit->setEnabled(can);
+                QObject::connect(inherit, &QAction::triggered, &owner, [this, kind, name, key = std::string{field}] {
+                    FramePlanEditRequest request;
+                    request.method = "edit_target_planning";
+                    request.params = {{"base_source_digest", authoring.source_digest}, {"graph", framePlanAuthorName(*model)},
+                        {kind == "resource" ? "resources" : "nodes", {{kind == "resource" ? name : framePlanAuthorNodeName(*model, name), {{key, nullptr}}}}}};
+                    submit(request);
+                });
+            }
         };
         if (kind == "resource") {
             entry(planning_no_alias, "no_alias");
@@ -3436,11 +3444,13 @@ struct FramePlanWidget::Impl {
             showStatus(owner.tr("The authoring context has not been read yet."));
             return;
         }
-        const bool on = !planning.flag(kind, name, wanted);
+        const auto state = framePlanPlanningCheck(authoring, *model, kind, name, wanted);
+        if (!state.enabled) { showStatus(text(state.reason)); return; }
+        const bool on = !state.checked;
         FramePlanEditRequest request;
         request.method = "edit_target_planning";
-        request.params = graphTargetPlanningParams(authoring.source_digest, model->graph, kind,
-                                                   name, wanted, on);
+        request.params = graphTargetPlanningParams(authoring.source_digest, framePlanAuthorName(*model), kind,
+                                                   kind == "resource" ? name : framePlanAuthorNodeName(*model, name), wanted, on);
         const std::string title = wanted == "no_alias" ? "No alias"
                                   : wanted == "serial" ? "Serial"
                                                        : "Isolate";
@@ -3506,7 +3516,7 @@ struct FramePlanWidget::Impl {
         pin->setToolTip(text(request.refusal));
         QObject::connect(pin, &QAction::triggered, &owner,
                          [this, candidate] { pinCandidate(candidate); });
-        if (!model->physical_plan.pinned_backend_candidate.empty()) {
+        if (framePlanRootPolicy(authoring, *model).contains("backend")) {
             QAction *unpin = menu.addAction(owner.tr("Unpin"));
             unpin->setEnabled(idle);
             QObject::connect(unpin, &QAction::triggered, &owner, [this] { unpinBackend(); });
@@ -3557,7 +3567,10 @@ struct FramePlanWidget::Impl {
                 continue;
             const auto content =
                 Json::parse(document.value("content", std::string{}), nullptr, false);
-            planning = GraphTargetPlanning::fromRoot(content, model->graph);
+            const auto previous = framePlanRootPolicy(authoring, *model);
+            planning = GraphTargetPlanning::fromRoot(content, framePlanAuthorName(*model));
+            authoring.planning_root = content;
+            if (framePlanRootPolicy(authoring, *model) != previous) populate();
         }
         return true;
     }
@@ -4819,8 +4832,12 @@ struct FramePlanWidget::Impl {
                        ? owner.tr("Selected")
                        : (candidate.feasible ? owner.tr("Feasible")
                                              : owner.tr("Rejected")));
-            if (candidate.candidate == model->physical_plan.pinned_backend_candidate)
-                candidate_item->setText(1, owner.tr("%1, pinned").arg(candidate_item->text(1)));
+            const auto root = framePlanRootPolicy(authoring, *model);
+            if (const auto backend = root.find("backend"); backend != root.end()) {
+                const auto value = backend->is_object() ? backend->value("value", std::string{}) : backend->get<std::string>();
+                if (candidate.candidate == "pelican.vulkan." + value + "_plan@1")
+                    candidate_item->setText(1, owner.tr("%1, pinned").arg(candidate_item->text(1)));
+            }
             candidate_item->setText(2, text(candidate.endpoint));
             QFont font = candidate_item->font(0);
             font.setBold(true);
@@ -4848,11 +4865,10 @@ struct FramePlanWidget::Impl {
     // off it; without one, where the way on is.
     void addBackendBand() {
         if (!model->physical_plan.available()) return;
-        const auto &pinned = model->physical_plan.pinned_backend_candidate;
-        if (!model->physical_plan.applied_pin_package.empty())
-            addBand(backends,
-                    owner.tr("Pinned: %1").arg(pinned.empty() ? owner.tr("(no candidate named)")
-                                                              : text(pinned)),
+        const auto root = framePlanRootPolicy(authoring, *model);
+        if (root.contains("backend"))
+            addBand(backends, owner.tr("Pinned: %1").arg(text(root.at("backend").is_object()
+                        ? root.at("backend").value("value", std::string{}) : root.at("backend").get<std::string>())),
                     "pelican.framePlan.backend.state",
                     {{backend_unpin, "pelican.framePlan.backend.unpinButton"}});
         else
@@ -5153,6 +5169,14 @@ struct FramePlanWidget::Impl {
                 }
             }
         }
+        const auto wire = Json::parse(model->raw_json, nullptr, false);
+        if (wire.is_object() && wire.contains("physical_target_plan") && wire.at("physical_target_plan").is_object()) {
+            const auto &plan = wire.at("physical_target_plan");
+            if (plan.contains("policy") && plan.at("policy").is_array()) {
+                auto *rows = groupItem(physical->invisibleRootItem(), owner.tr("Policy"), plan.at("policy").size());
+                for (const auto &entry : plan.at("policy")) addFact(rows, text(entry.value("target", std::string{}) + "." + entry.value("key", std::string{})), text(entry.dump()));
+            }
+        }
         populateTransferSourceRows();
         populateRayQuery();
         addPhysicalBand();
@@ -5161,18 +5185,21 @@ struct FramePlanWidget::Impl {
     // UX-15b, decision 2: whether the document freezes the physical plan,
     // first, and the one button that changes it.
     void addPhysicalBand() {
-        if (!model->physical_plan.available()) return;
-        if (!model->physical_plan.applied_physical_fragment.empty())
-            addBand(physical,
-                    owner.tr("Frozen: every compile keeps the physical plan the document "
-                             "holds."),
-                    "pelican.framePlan.physical.state",
-                    {{physical_remove, "pelican.framePlan.physical.removeButton"}});
-        else
-            addBand(physical,
-                    owner.tr("Not frozen: the planner decides the physical plan each compile."),
-                    "pelican.framePlan.physical.state",
-                    {{physical_freeze, "pelican.framePlan.physical.freezeButton"}});
+        const bool fixing = framePlanPhysicalRemoveRequest(authoring, *model).sendable();
+        auto *label = addBand(physical,
+            fixing ? owner.tr("Root fixing policy present (backend / scope_break / scope_join / alias_group / representation).")
+                   : owner.tr("No root fixing policy: the planner decides the physical plan."),
+            "pelican.framePlan.physical.state",
+            {{physical_freeze, "pelican.framePlan.physical.freezeButton"},
+             {physical_remove, "pelican.framePlan.physical.removeButton"}});
+        label->setToolTip(owner.tr("Remove deletes all five fixing keys, including handwritten declarations and Pin. Serial / Isolate / Fuse / No alias remain."));
+        for (auto *button : physical->findChildren<QPushButton *>()) {
+            if (button->objectName() == QStringLiteral("pelican.framePlan.physical.freezeButton")) {
+                const auto request = framePlanPhysicalFreezeRequest(authoring, *model);
+                button->setEnabled(request.sendable()); button->setToolTip(text(request.refusal));
+            }
+            if (button->objectName() == QStringLiteral("pelican.framePlan.physical.removeButton")) button->setEnabled(fixing);
+        }
     }
 
     // UX-15b, decision 4: the ray-query scene's resident BLAS. A project

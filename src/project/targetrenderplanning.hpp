@@ -432,6 +432,7 @@ struct VulkanTargetPlanRequest {
 };
 
 struct VulkanTargetPlan {
+    bool legacy_complete_install = false; // Runtime metadata; never serialized.
     std::vector<PlanningPolicyEntry> policy;
     std::string graph;
     std::uint64_t logical_graph_fingerprint = 0;

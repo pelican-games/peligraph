@@ -1322,6 +1322,10 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
 
     FramePlanModel model;
     model.profile = "runtime";
+    if (const auto variant = root.find("graph_variant"); variant != root.end() && variant->is_object()) {
+        model.graph_variant = optionalStringField(*variant, "name", "graph_variant");
+        model.graph_name_suffix = optionalStringField(*variant, "name_suffix", "graph_variant");
+    }
     model.response_bytes = response_json.size();
     // Q-4. The reply exactly as it arrived. Laying it out for reading is a
     // quarter of a megabyte of string building that only the raw-JSON tab ever

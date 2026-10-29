@@ -1,4 +1,5 @@
 #include "graphfoldgroups.hpp"
+#include "frameplanpolicy.hpp"
 #include "enginefailuremodel.hpp"
 #include "render_graph_root_test_support.hpp"
 #include "engineprocess.hpp"
@@ -6348,6 +6349,7 @@ struct FramePlanEditRecorder {
         capability.editRenderTargets = record("edit_render_targets");
         capability.addAuthoredPass = record("add_authored_pass");
         capability.decomposeMaterialPass = record("decompose_material_pass");
+        capability.editTargetPlanning = record("edit_target_planning");
         // UX-15b.
         capability.editVulkanPlanPins = record("edit_vulkan_plan_pins");
         capability.putVulkanPhysicalFragment = record("put_vulkan_physical_fragment");
@@ -6521,6 +6523,9 @@ struct EditingFixture {
         QApplication::processEvents();
         REQUIRE(recorder.result);
         auto context = mixedAuthoringContext(graph);
+        context["planning_root"] = Json::object();
+        context["planning_catalog"][graph]["nodes"] = Json::array();
+        for (const auto &node : wire.at("nodes")) context["planning_catalog"][graph]["nodes"].push_back(node.value("authored_name", node.at("name").get<std::string>()));
         if (!root_reference.empty()) context["source_reference"] = root_reference;
         if (tweak_context) tweak_context(context);
         recorder.result(recorder.context_id,
@@ -12100,153 +12105,103 @@ QString bandText(FramePlanWidget &widget, const char *name) {
 
 } // namespace
 
-TEST_CASE("UX-15b decision 1: Pin this candidate sends the ejected pin with that candidate; a pin "
-          "the plan applies is a band with Unpin",
-          "[devstudio][frame-plan][ux15b][canvas-edit]") {
+TEST_CASE("RC-6b1 D1 Pin and Unpin use author graph and backend policy, reject legacy packages", "[devstudio][frame-plan][rc6b1][rc6-d1]") {
     application();
     EditingFixture fixture;
     fixture.open();
-    const auto &physical = fixture.wire.at("physical_target_plan");
-    const Json ejected = physical.at("ejectable_pin_package");
-    REQUIRE(ejected.is_object());
-    std::string pinnable;
-    std::string rejected;
-    for (const auto &candidate : physical.at("backend_selection").at("candidates")) {
-        const auto name = candidate.at("candidate").get<std::string>();
-        if (candidate.value("feasible", false) && pinnable.empty()) pinnable = name;
-        if (!candidate.value("feasible", false) && !candidate.value("selected", false))
-            rejected = name;
-    }
-    REQUIRE_FALSE(pinnable.empty());
-    CHECK(bandText(fixture.widget, "pelican.framePlan.backend.state")
-              .startsWith(QStringLiteral("Not pinned")));
-
-    // The candidate's row, picked; the named entry acts on it.
-    auto *backends =
-        fixture.widget.findChild<QTreeWidget *>(QStringLiteral("pelican.framePlanBackends"));
-    REQUIRE(backends != nullptr);
-    const auto rows = backends->findItems(QString::fromStdString(pinnable), Qt::MatchExactly, 0);
-    REQUIRE(rows.size() == 1);
-    backends->setCurrentItem(rows.front());
-    auto *pin = fixture.widget.findChild<QAction *>(QStringLiteral("pelican.framePlan.backend.pin"));
-    REQUIRE(pin != nullptr);
-    pin->trigger();
+    std::string candidate;
+    for (const auto &entry : fixture.wire.at("physical_target_plan").at("backend_selection").at("candidates"))
+        if (entry.value("feasible", false)) { candidate = entry.at("candidate"); break; }
+    REQUIRE_FALSE(candidate.empty());
+    fixture.widget.pinBackendCandidate(QString::fromStdString(candidate));
     QApplication::processEvents();
     REQUIRE(fixture.recorder.submits == 1);
-    CHECK(fixture.recorder.method == QStringLiteral("edit_vulkan_plan_pins"));
-    Json expected_pin = ejected;
-    expected_pin["pins"]["backend_candidate"] = pinnable;
-    CHECK(sentParams(fixture.recorder) ==
-          Json{{"base_source_digest", RootDigest}, {"family", "flat"}, {"pin", expected_pin}});
+    CHECK(fixture.recorder.method == QStringLiteral("edit_target_planning"));
+    const auto sent = sentParams(fixture.recorder);
+    CHECK(sent.at("graph") == fixture.graph);
+    CHECK(sent.at("backend").at("strength") == "require");
     commitSubmitted(fixture);
-    CHECK(statusText(fixture.widget) == QString::fromStdString("Pinned " + pinnable + "."));
-
-    // The plan read again applies it: the band says so and offers Unpin.
-    Json pinned = fixture.wire;
-    pinned["physical_target_plan"]["applied_pin_package"] = expected_pin;
-    fixture.widget.receiveResult(QByteArray::fromStdString(pinned.dump()));
-    QApplication::processEvents();
-    CHECK(bandText(fixture.widget, "pelican.framePlan.backend.state") ==
-          QString::fromStdString("Pinned: " + pinnable));
-    auto *unpin = fixture.widget.findChild<QPushButton *>(
-        QStringLiteral("pelican.framePlan.backend.unpinButton"));
-    REQUIRE(unpin != nullptr);
-    unpin->click();
-    QApplication::processEvents();
+    auto context = mixedAuthoringContext(fixture.graph);
+    context["planning_root"]["rendering"]["target_planning"]["graphs"][fixture.graph]["backend"] = sent.at("backend");
+    context["planning_root"]["rendering"]["target_planning"]["graphs"][fixture.graph]["backend"]["strength"] = "prefer";
+    fixture.recorder.result(fixture.recorder.context_id, QByteArray::fromStdString(context.dump()));
+    fixture.widget.receiveResult(QByteArray::fromStdString(fixture.wire.dump()));
+    REQUIRE(bandText(fixture.widget, "pelican.framePlan.backend.state").startsWith(QStringLiteral("Pinned:")));
+    auto *backends = fixture.widget.findChild<QTreeWidget *>(QStringLiteral("pelican.framePlanBackends"));
+    REQUIRE(backends != nullptr);
+    const auto rows = backends->findItems(QString::fromStdString(candidate), Qt::MatchExactly, 0);
+    REQUIRE(rows.size() == 1);
+    CHECK(rows.front()->text(1).contains(QStringLiteral("pinned")));
+    fixture.widget.unpinBackend();
     REQUIRE(fixture.recorder.submits == 2);
-    CHECK(sentParams(fixture.recorder) == Json{{"base_source_digest", RootDigest},
-                                               {"family", "flat"},
-                                               {"pin", nullptr},
-                                               {"graph", fixture.graph}});
-
-    // What is not sent says why.
-    const auto model = buildFramePlanModel(pinned.dump());
-    CHECK(framePlanBackendPinRequest(FramePlanAuthoring{}, model, pinnable).refusal ==
-          "The render authoring context has not arrived yet.");
-    FramePlanAuthoring received;
-    received.received = true;
-    CHECK(framePlanBackendPinRequest(received, model, pinnable).refusal ==
-          pinnable + " is pinned already.");
-    if (!rejected.empty())
-        CHECK(framePlanBackendPinRequest(received, model, rejected).refusal ==
-              rejected + " was rejected by the planner: only a Selected or Feasible candidate "
-                         "can be pinned.");
-    CHECK(framePlanPackageFamily("main_render#xr") == "xr");
+    CHECK(sentParams(fixture.recorder) == Json{{"base_source_digest", RootDigest}, {"graph", fixture.graph}, {"backend", nullptr}});
+    auto model = buildFramePlanModel(fixture.wire.dump());
+    model.graph += "#xr";
+    model.graph_variant = "xr";
+    model.graph_name_suffix = "#xr";
+    auto author = framePlanAuthoringFromContext(context);
+    CHECK(framePlanBackendPinRequest(author, model, candidate).params.at("graph") == fixture.graph);
+    author.planning_catalog[fixture.graph]["legacy_package"] = true;
+    CHECK_FALSE(framePlanBackendPinRequest(author, model, candidate).sendable());
+    author.planning_catalog = Json::object();
+    auto legacy = fixture.wire;
+    legacy["legacy_complete_plan"] = true;
+    CHECK_FALSE(framePlanPhysicalFreezeRequest(author, buildFramePlanModel(legacy.dump())).sendable());
 }
 
-TEST_CASE("UX-15b decision 2: Freeze sends the ejected fragment as it is; Frozen offers Remove; a "
-          "stale refusal is one sentence beside Eject again",
-          "[devstudio][frame-plan][ux15b][canvas-edit]") {
+TEST_CASE("RC-6b1 D2 Freeze sends paired scope keys in one RPC and skips loop and runtime names", "[devstudio][frame-plan][rc6b1][rc6-d2]") {
     application();
     EditingFixture fixture;
     fixture.open();
-    const Json fragment = fixture.wire.at("physical_target_plan").at("ejectable_physical_fragment");
-    REQUIRE(fragment.is_object());
-    CHECK(bandText(fixture.widget, "pelican.framePlan.physical.state")
-              .startsWith(QStringLiteral("Not frozen")));
-    auto *freeze = fixture.widget.findChild<QPushButton *>(
-        QStringLiteral("pelican.framePlan.physical.freezeButton"));
-    REQUIRE(freeze != nullptr);
-    freeze->click();
-    QApplication::processEvents();
+    fixture.widget.freezePhysicalPlan();
     REQUIRE(fixture.recorder.submits == 1);
-    CHECK(fixture.recorder.method == QStringLiteral("put_vulkan_physical_fragment"));
-    const Json frozen{{"base_source_digest", RootDigest}, {"family", "flat"}, {"fragment", fragment}};
-    CHECK(sentParams(fixture.recorder) == frozen);
+    CHECK(fixture.recorder.method == QStringLiteral("edit_target_planning"));
+    const auto sent = sentParams(fixture.recorder);
+    const auto model = buildFramePlanModel(fixture.wire.dump());
+    std::map<std::string, std::string> scopes;
+    for (const auto &scope : model.physical_plan.scopes) for (const auto &node : scope.nodes) scopes[node] = scope.id;
+    for (std::size_t i = 1; i < model.nodes.size(); ++i) {
+        const auto &node = model.nodes[i];
+        const auto pair = sent.at("nodes").at(framePlanAuthorNodeName(model, node.name));
+        const bool same = scopes.contains(node.name) && scopes.contains(model.nodes[i - 1].name) && scopes.at(node.name) == scopes.at(model.nodes[i - 1].name);
+        CHECK(pair.at("scope_break") == Json{{"value", !same}, {"strength", "require"}});
+        CHECK(pair.at("scope_join") == Json{{"value", same}, {"strength", "require"}});
+    }
+    auto author = framePlanAuthoringFromContext(mixedAuthoringContext(model.graph));
+    author.planning_catalog[framePlanAuthorName(model)]["nodes"] = Json::array();
+    for (const auto &node : model.nodes) author.planning_catalog[framePlanAuthorName(model)]["nodes"].push_back(framePlanAuthorNodeName(model, node.name));
+    auto skipped = model;
+    REQUIRE(skipped.nodes.size() > 3);
+    skipped.nodes[1].loop_origin = FramePlanLoopOrigin{};
+    author.planning_catalog[framePlanAuthorName(model)]["nodes"].erase(2);
+    const auto request = framePlanPhysicalFreezeRequest(author, skipped);
+    REQUIRE(request.sendable());
+    CHECK_FALSE(request.params.at("nodes").contains(skipped.nodes[1].name));
+    CHECK_FALSE(request.params.at("nodes").contains(skipped.nodes[2].name));
+    CHECK(request.notice.find("1 nodes inside loops are not frozen") != std::string::npos);
+    CHECK(fixture.widget.findChild<QPushButton *>(QStringLiteral("pelican.framePlan.physical.ejectAgainButton")) == nullptr);
+}
 
-    // The runtime's linker finds it stale when the change commits.
-    fixture.recorder.result(
-        fixture.recorder.submit_id,
-        QByteArray::fromStdString(Json{{"status", "accepted"}, {"ticket", "t-stale"}}.dump()));
-    QApplication::processEvents();
-    fixture.recorder.result(
-        fixture.recorder.ticket_id,
-        QByteArray::fromStdString(
-            Json{{"status", "rejected"},
-                 {"error",
-                  {{"code", "physical_fragment_stale"},
-                   {"message", "Vulkan physical fragment automatic plan fingerprint is stale"},
-                   {"family", "flat"},
-                   {"graph", fixture.graph},
-                   {"fingerprint", "automatic_plan"},
-                   {"expected", "fnv1a64:0000000000000001"},
-                   {"actual", "fnv1a64:0000000000000002"}}}}
-                .dump()));
-    QApplication::processEvents();
-    auto *status = fixture.widget.findChild<QLabel *>(QStringLiteral("pelican.framePlanStatus"));
-    REQUIRE(status != nullptr);
-    CHECK(status->toolTip().contains(QStringLiteral(
-        "The frozen plan no longer matches the graph (automatic_plan); Eject again "
-        "(physical_fragment_stale).")));
-    auto *eject = fixture.widget.findChild<QPushButton *>(
-        QStringLiteral("pelican.framePlan.physical.ejectAgainButton"));
-    REQUIRE(eject != nullptr);
-    CHECK_FALSE(eject->isHidden());
-    // Eject again: the plan on screen's fragment, in one edit.
-    eject->click();
-    QApplication::processEvents();
-    REQUIRE(fixture.recorder.submits == 2);
-    CHECK(sentParams(fixture.recorder) == frozen);
-    CHECK(eject->isHidden());
-    commitSubmitted(fixture);
-
-    // The plan read again applies it: Frozen, and Remove.
-    Json applied = fixture.wire;
-    applied["physical_target_plan"]["applied_physical_fragment"] = fragment;
-    fixture.widget.receiveResult(QByteArray::fromStdString(applied.dump()));
-    QApplication::processEvents();
-    CHECK(bandText(fixture.widget, "pelican.framePlan.physical.state")
-              .startsWith(QStringLiteral("Frozen")));
-    auto *remove = fixture.widget.findChild<QPushButton *>(
-        QStringLiteral("pelican.framePlan.physical.removeButton"));
+TEST_CASE("RC-6b1 D3 Remove enumerates five root keys even without physical plan", "[devstudio][frame-plan][rc6b1][rc6-d3]") {
+    application();
+    EditingFixture fixture;
+    fixture.tweak_context = [](Json &context) {
+        const auto graph = context.at("graphs").at(0).at("name").get<std::string>();
+        context["planning_root"]["rendering"]["target_planning"]["graphs"][graph] = {
+            {"backend", "materialized"}, {"nodes", {{"gone", {{"scope_break", true}, {"scope_join", false}, {"serial", true}, {"isolate", true}, {"fuse", false}}}}},
+            {"resources", {{"gone_resource", {{"alias_group", "handwritten"}, {"representation", "materialized"}, {"no_alias", true}}}}}};
+    };
+    fixture.wire.erase("physical_target_plan");
+    fixture.open();
+    auto *remove = fixture.widget.findChild<QPushButton *>(QStringLiteral("pelican.framePlan.physical.removeButton"));
     REQUIRE(remove != nullptr);
+    REQUIRE(remove->isEnabled());
     remove->click();
-    QApplication::processEvents();
-    REQUIRE(fixture.recorder.submits == 3);
-    CHECK(sentParams(fixture.recorder) == Json{{"base_source_digest", RootDigest},
-                                               {"family", "flat"},
-                                               {"fragment", nullptr},
-                                               {"graph", fixture.graph}});
+    REQUIRE(fixture.recorder.submits == 1);
+    CHECK(fixture.recorder.method == QStringLiteral("edit_target_planning"));
+    CHECK(sentParams(fixture.recorder) == Json{{"base_source_digest", RootDigest}, {"graph", fixture.graph}, {"backend", nullptr},
+        {"nodes", {{"gone", {{"scope_break", nullptr}, {"scope_join", nullptr}}}}},
+        {"resources", {{"gone_resource", {{"alias_group", nullptr}, {"representation", nullptr}}}}}});
 }
 
 TEST_CASE("UX-15b decisions 4 and 5: the resident BLAS only for a ray-query scene, and the rewrite "
@@ -12618,13 +12573,14 @@ TEST_CASE("FX-8 a plan read between picking a backend and Pin preserves the cand
     pin->trigger();
     QApplication::processEvents();
     REQUIRE(fixture.recorder.submits == 1);
-    CHECK(sentParams(fixture.recorder).at("pin").at("pins").at("backend_candidate") == candidate);
+    CHECK(sentParams(fixture.recorder).at("backend").at("strength") == "require");
     commitSubmitted(fixture);
     CHECK(statusText(fixture.widget) == QString::fromStdString("Pinned " + candidate + "."));
     // The visible Backends tab receives the plan produced by the commit.
     Json pinned = fixture.wire;
-    pinned["physical_target_plan"]["applied_pin_package"] =
-        sentParams(fixture.recorder).at("pin");
+    auto pinned_context = mixedAuthoringContext(fixture.graph);
+    pinned_context["planning_root"]["rendering"]["target_planning"]["graphs"][fixture.graph]["backend"] = sentParams(fixture.recorder).at("backend");
+    fixture.recorder.result(fixture.recorder.context_id, QByteArray::fromStdString(pinned_context.dump()));
     for (int refresh = 0; refresh < 3; ++refresh) {
         Q_EMIT fixture.viewport.inspectorRpcSucceeded(
             plan_request, QByteArray::fromStdString(pinned.dump()));
@@ -12636,7 +12592,7 @@ TEST_CASE("FX-8 a plan read between picking a backend and Pin preserves the cand
         REQUIRE(tree->currentItem() != nullptr);
         CHECK(tree->currentItem()->text(0) == QString::fromStdString(candidate));
         CHECK(bandText(fixture.widget, "pelican.framePlan.backend.state") ==
-              QString::fromStdString("Pinned: " + candidate));
+              QString::fromStdString("Pinned: " + sentParams(fixture.recorder).at("backend").at("value").get<std::string>()));
         if (refresh < 2) fixture.widget.refresh();
     }
     const auto buttons = fixture.widget.findChildren<QPushButton *>(
@@ -12645,7 +12601,10 @@ TEST_CASE("FX-8 a plan read between picking a backend and Pin preserves the cand
     QPointer<QPushButton> old_unpin = buttons.front();
     buttons.front()->click();
     REQUIRE(fixture.recorder.submits == 2);
-    CHECK(sentParams(fixture.recorder).at("pin").is_null());
+    CHECK(sentParams(fixture.recorder).at("backend").is_null());
+    commitSubmitted(fixture);
+    auto unpinned_context = mixedAuthoringContext(fixture.graph);
+    fixture.recorder.result(fixture.recorder.context_id, QByteArray::fromStdString(unpinned_context.dump()));
     commitSubmitted(fixture);
     Q_EMIT fixture.viewport.inspectorRpcSucceeded(
         plan_request, QByteArray::fromStdString(fixture.wire.dump()));
@@ -13005,7 +12964,7 @@ TEST_CASE("RC-1 the Frame Plan says on its status line what the physical plan's 
 }
 } // namespace PelicanStudio
 namespace PelicanStudio {
-TEST_CASE("RC-6 B7 Frame Plan menu checks wrapped Serial Isolate and No alias and OFF sends null", "[devstudio][frame-plan][rc6a1][rc6-b7]") {
+TEST_CASE("RC-6 B7 Frame Plan menu checks wrapped Serial Isolate and No alias and OFF sends root false", "[devstudio][frame-plan][rc6a1][rc6-b7]") {
     application();
     EmbeddedViewport viewport;
     FramePlanWidget widget{&viewport};
@@ -13019,8 +12978,10 @@ TEST_CASE("RC-6 B7 Frame Plan menu checks wrapped Serial Isolate and No alias an
     };
     widget.setEditCapability(capability);
     widget.resize(1400, 900); widget.show();
-    const auto wire = mixedEditingWire();
+    auto wire = mixedEditingWire();
     const auto graph = wire.at("graph").get<std::string>();
+    wire["physical_target_plan"]["policy"] = Json::array();
+    for (const auto *key : {"serial", "isolate"}) wire["physical_target_plan"]["policy"].push_back({{"target", "wp343_mixed_a"}, {"key", key}, {"value", true}, {"status", "adopted"}, {"origin", {{"kind", "root"}, {"document", "root"}, {"pointer", "/rendering"}}}});
     widget.receiveResult(QByteArray::fromStdString(wire.dump()));
     auto context = mixedAuthoringContext(graph);
     context["source_reference"] = "project://passes/main.json";
@@ -13063,6 +13024,7 @@ TEST_CASE("RC-6 B7 Frame Plan menu checks wrapped Serial Isolate and No alias an
     serial->trigger();
     QApplication::processEvents();
     REQUIRE(recorder.submits == 1);
-    CHECK(Json::parse(QJsonDocument(recorder.params).toJson().toStdString()).at("nodes").at("wp343_mixed_a").at("serial").is_null());
+    CHECK(Json::parse(QJsonDocument(recorder.params).toJson().toStdString()).at("nodes").at("wp343_mixed_a").at("serial") == Json{{"value", false}, {"strength", "require"}});
 }
 }
+#include "rc6b1_studio_test.inc"

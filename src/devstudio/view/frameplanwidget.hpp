@@ -235,7 +235,7 @@ class FramePlanWidget final : public QWidget {
                            std::optional<std::size_t> binding, bool use_passthrough);
     void runReloadRefusal(const QString &graph, const QString &pass, bool disconnect);
     // decision 5, the lower layer's decisions: Pin this candidate, Unpin,
-    // Freeze this physical plan (Eject again is the same), Remove.
+    // Freeze this physical plan, Remove all root fixing policy.
     void pinBackendCandidate(const QString &candidate);
     void unpinBackend();
     void freezePhysicalPlan();

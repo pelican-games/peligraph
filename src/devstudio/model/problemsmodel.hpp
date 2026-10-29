@@ -35,7 +35,7 @@ namespace PelicanStudio {
 // and scene once the engine lists them), and with node / line where it is
 // fixed (ProblemRow::Place).
 struct ProblemRow {
-    enum class Severity { Error, Warning };
+    enum class Severity { Error, Warning, Info };
     enum class Origin { Engine, Assets };
     // Where a click on the row goes (decision 3).
     enum class Place {
@@ -156,6 +156,7 @@ class ProblemsSession {
     void engineGone();
     // The Assets dock's check (AV-1s). True when the rows changed.
     bool setAssetIssues(const std::vector<AssetStoreVerification> &stores);
+    void setPlanningInfo(std::string message);
 
     [[nodiscard]] bool owns(std::int64_t id) const noexcept { return id != 0 && id == request_; }
     // The replies to get_problems. False for an id that is not its own.
@@ -187,6 +188,7 @@ class ProblemsSession {
     std::optional<std::uint64_t> revision_;
     std::vector<ProblemRow> engine_rows_;
     std::vector<ProblemRow> asset_rows_;
+    std::vector<ProblemRow> planning_rows_;
     std::vector<ProblemRow> rows_;
     std::string notice_;
 

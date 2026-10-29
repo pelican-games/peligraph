@@ -1331,6 +1331,7 @@ class GraphCanvasModel {
     // --- GL-1: what the frame plan holds besides the graph's own nodes.
     std::vector<GraphCanvasPlanPass> plan_passes_;
     std::string plan_graph_;
+    std::string plan_author_graph_;
     void readPlanPasses(const nlohmann::json &plan);
     // --- GL-1e: the plan's buffers (resources[].kind), and the authoring
     // context read after a plan with a rendering-section pass.
@@ -2251,6 +2252,7 @@ class GraphCanvasModel {
         return plan_passes_;
     }
     [[nodiscard]] const std::string &planGraph() const noexcept { return plan_graph_; }
+    [[nodiscard]] const std::string &planAuthorGraph() const noexcept { return plan_author_graph_; }
     // Decision 1. The folded nodes the canvas draws: at the root, one per
     // feature and one per other pass no graph node made (not the anchors),
     // in the plan's order -- none while the Render domain is hidden; inside

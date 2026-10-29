@@ -122,6 +122,7 @@ class GraphCanvasFoldedPassFields final : public QWidget {
     void fillShaderChoices(const nlohmann::json &declaration);
     void showPlanning();
     void readPlanning();
+    std::string planningNodeName(const std::string &name) const;
     void togglePlanning(const std::string &kind, const std::string &name, const std::string &field,
                         bool on);
     [[nodiscard]] nlohmann::json draftJson(const nlohmann::json &original) const;

@@ -1,3 +1,5 @@
+#include "../src/devstudio/model/frameplanpolicy.hpp"
+#include "../src/core/imgui/imguiruntime.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/renderconfigcandidate.hpp"
 #include "../src/core/renderingpass/framegraphruntime.hpp"
@@ -2600,5 +2602,6 @@ namespace Pelican {
 #include "rc5s_anchor_removal_test.inc"
 #include "rc6_policy_test.inc"
 #include "rc6a2_compiler_policy_test.inc"
+#include "rc6b1_compiler_policy_test.inc"
 #endif
 }

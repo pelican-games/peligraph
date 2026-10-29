@@ -1,4 +1,5 @@
 #include "frameplanedit.hpp"
+#include "../model/frameplanpolicy.hpp"
 
 #include "fullscreenshadertemplate.hpp"
 #include "inspectormodel.hpp"
@@ -207,6 +208,8 @@ FramePlanAuthoring framePlanAuthoringFromContext(const Json &context) {
         textOr(preset, "reference").starts_with("project://");
     authoring.direct = textOr(context, "config_kind") == "direct";
     authoring.source_reference = textOr(context, "source_reference");
+    authoring.planning_root = objectOr(context, "planning_root");
+    authoring.planning_catalog = objectOr(context, "planning_catalog");
     const auto graphs = context.find("graphs");
     if (graphs == context.end() || !graphs->is_array()) return authoring;
     for (const auto &graph : *graphs) {
@@ -2164,94 +2167,153 @@ std::string framePlanPackageFamily(const std::string &graph) {
     return graph.ends_with("#xr") ? "xr" : "flat";
 }
 
-namespace {
+std::string framePlanAuthorName(const FramePlanModel &model) {
+    return planningAuthorGraphName(model.graph, {{"name", model.graph_variant}, {"name_suffix", model.graph_name_suffix}});
+}
 
-// What every one of the four needs before it can be sent.
-std::string lowerLayerPrecondition(const FramePlanAuthoring &authoring,
-                                   const FramePlanModel &model) {
+std::string framePlanAuthorNodeName(const FramePlanModel &model, const std::string &name) {
+    const auto node = std::ranges::find(model.nodes, name, &FramePlanNode::name);
+    return node != model.nodes.end() && !node->authored_name.empty() ? node->authored_name : name;
+}
+
+Json framePlanRootPolicy(const FramePlanAuthoring &authoring, const FramePlanModel &model) {
+    return objectOr(objectOr(objectOr(objectOr(authoring.planning_root, "rendering"),
+        "target_planning"), "graphs"), framePlanAuthorName(model).c_str());
+}
+
+namespace {
+Json required(Json value) { return {{"value", std::move(value)}, {"strength", "require"}}; }
+std::string lowerLayerPrecondition(const FramePlanAuthoring &authoring, const FramePlanModel &model, bool legacy = true) {
     if (!authoring.received) return "The render authoring context has not arrived yet.";
-    if (!model.physical_plan.available())
-        return "The frame plan has no physical target plan (" +
-               model.physical_plan.unavailable_reason_code + ").";
+    if (!model.physical_plan.available()) return "The frame plan has no physical target plan (" + model.physical_plan.unavailable_reason_code + ").";
+    const auto catalog = objectOr(authoring.planning_catalog, framePlanAuthorName(model).c_str());
+    const auto wire = Json::parse(model.raw_json, nullptr, false);
+    if (legacy && (catalog.value("legacy_package", false) ||
+        !model.physical_plan.applied_pin_package.empty() || !model.physical_plan.applied_physical_fragment.empty() ||
+        (wire.is_object() && wire.value("legacy_complete_plan", false))))
+        return "This graph has a legacy package: Pin / Freeze cannot add policy (target_planning.policy_with_legacy_package@1).";
     return {};
 }
-
-FramePlanEditRequest lowerLayerRequest(const FramePlanAuthoring &authoring,
-                                       const FramePlanModel &model, const char *method,
-                                       const char *field, Json package) {
+FramePlanEditRequest policyRequest(const FramePlanAuthoring &authoring, const FramePlanModel &model) {
     FramePlanEditRequest request;
-    request.method = method;
-    request.params = Json{{"base_source_digest", authoring.source_digest},
-                          {"family", framePlanPackageFamily(model.physical_plan.graph)},
-                          {field, package}};
-    // A null package erases the one for this graph only.
-    if (package.is_null()) request.params["graph"] = model.physical_plan.graph;
+    request.method = "edit_target_planning";
+    request.params = {{"base_source_digest", authoring.source_digest}, {"graph", framePlanAuthorName(model)}};
     return request;
 }
-
-Json packageOf(const std::string &text) {
-    return text.empty() ? Json(nullptr) : Json::parse(text, nullptr, false);
+std::string backendValue(const std::string &candidate) {
+    if (candidate == "pelican.vulkan.materialized_plan@1") return "materialized";
+    if (candidate == "pelican.vulkan.transient_plan@1") return "transient";
+    if (candidate == "pelican.vulkan.tile_local_plan@1") return "tile_local";
+    return {};
+}
 }
 
-} // namespace
-
-FramePlanEditRequest framePlanBackendPinRequest(const FramePlanAuthoring &authoring,
-                                                const FramePlanModel &model,
+FramePlanEditRequest framePlanBackendPinRequest(const FramePlanAuthoring &authoring, const FramePlanModel &model,
                                                 const std::string &candidate) {
     if (auto why = lowerLayerPrecondition(authoring, model); !why.empty()) return refuse(why);
-    const auto row = std::ranges::find(model.backend_candidates, candidate,
-                                       &FramePlanBackendCandidate::candidate);
-    if (row == model.backend_candidates.end())
-        return refuse(candidate + " is not a backend candidate of this plan.");
-    if (!row->selected && !row->feasible)
-        return refuse(candidate + " was rejected by the planner: only a Selected or Feasible "
-                                  "candidate can be pinned.");
-    if (model.physical_plan.pinned_backend_candidate == candidate)
-        return refuse(candidate + " is pinned already.");
-    auto pin = packageOf(model.physical_plan.ejectable_pin_package);
-    if (!pin.is_object() || !pin.contains("pins") || !pin.at("pins").is_object())
-        return refuse("The plan ejects no pin package to pin a candidate with.");
-    pin["pins"]["backend_candidate"] = candidate;
-    auto request = lowerLayerRequest(authoring, model, "edit_vulkan_plan_pins", "pin",
-                                     std::move(pin));
+    const auto row = std::ranges::find(model.backend_candidates, candidate, &FramePlanBackendCandidate::candidate);
+    if (row == model.backend_candidates.end()) return refuse(candidate + " is not a backend candidate of this plan.");
+    if (!row->selected && !row->feasible) return refuse(candidate + " was rejected by the planner: only a Selected or Feasible candidate can be pinned.");
+    const auto value = backendValue(candidate);
+    if (value.empty()) return refuse("This backend has no authoring policy value.");
+    auto request = policyRequest(authoring, model);
+    request.params["backend"] = required(value);
     request.notice = "Pinned " + candidate + ".";
     return request;
 }
 
-FramePlanEditRequest framePlanBackendUnpinRequest(const FramePlanAuthoring &authoring,
-                                                  const FramePlanModel &model) {
-    if (auto why = lowerLayerPrecondition(authoring, model); !why.empty()) return refuse(why);
-    if (model.physical_plan.applied_pin_package.empty())
-        return refuse("No backend candidate is pinned.");
-    auto request = lowerLayerRequest(authoring, model, "edit_vulkan_plan_pins", "pin", nullptr);
-    request.notice = "Unpinned " + model.physical_plan.pinned_backend_candidate +
-                     ": the planner picks the candidate again.";
+FramePlanEditRequest framePlanBackendUnpinRequest(const FramePlanAuthoring &authoring, const FramePlanModel &model) {
+    if (!authoring.received) return refuse("The render authoring context has not arrived yet.");
+    if (!framePlanRootPolicy(authoring, model).contains("backend")) return refuse("No root backend policy is declared.");
+    auto request = policyRequest(authoring, model);
+    request.params["backend"] = nullptr;
+    request.notice = "Unpinned backend: the planner picks the candidate again.";
     return request;
 }
 
-FramePlanEditRequest framePlanPhysicalFreezeRequest(const FramePlanAuthoring &authoring,
-                                                    const FramePlanModel &model) {
+FramePlanEditRequest framePlanPhysicalFreezeRequest(const FramePlanAuthoring &authoring, const FramePlanModel &model) {
     if (auto why = lowerLayerPrecondition(authoring, model); !why.empty()) return refuse(why);
-    auto fragment = packageOf(model.physical_plan.ejectable_physical_fragment);
-    if (!fragment.is_object())
-        return refuse("The plan ejects no physical fragment to freeze.");
-    auto request = lowerLayerRequest(authoring, model, "put_vulkan_physical_fragment",
-                                     "fragment", std::move(fragment));
-    request.notice = model.physical_plan.applied_physical_fragment.empty()
-                         ? "Physical plan frozen."
-                         : "Physical plan frozen again from the current plan.";
+    const auto catalog = objectOr(authoring.planning_catalog, framePlanAuthorName(model).c_str());
+    if (!catalog.contains("nodes")) return refuse("The planning name catalog has not arrived yet.");
+    std::set<std::string> editable, loop_names;
+    std::vector<std::string> order;
+    std::map<std::string, std::string> authored_names;
+    std::set<std::string> resources;
+    for (const auto &name : catalog.value("resources", Json::array())) resources.insert(name.get<std::string>());
+    for (const auto &name : catalog.at("nodes")) editable.insert(name.get<std::string>());
+    for (const auto &node : model.nodes) {
+        order.push_back(node.name);
+        authored_names[node.name] = framePlanAuthorNodeName(model, node.name);
+        if (node.loop_origin) loop_names.insert(node.name);
+    }
+    auto request = policyRequest(authoring, model);
+    try {
+        request.params.update(freezeFramePlanPolicy(Json::parse(model.raw_json).at("physical_target_plan"),
+            order, editable, loop_names, framePlanRootPolicy(authoring, model), authored_names,
+            catalog.contains("resources") ? &resources : nullptr));
+    } catch (const std::exception &error) { return refuse(std::string{"Cannot freeze this plan: "} + error.what()); }
+    const auto loops = loop_names.size();
+    request.notice = "Physical plan frozen as root policy.";
+    if (loops) {
+        request.planning_info = std::to_string(loops) + " nodes inside loops are not frozen.";
+        request.notice += " " + request.planning_info;
+    }
     return request;
 }
 
-FramePlanEditRequest framePlanPhysicalRemoveRequest(const FramePlanAuthoring &authoring,
-                                                    const FramePlanModel &model) {
-    if (auto why = lowerLayerPrecondition(authoring, model); !why.empty()) return refuse(why);
-    if (model.physical_plan.applied_physical_fragment.empty())
-        return refuse("The physical plan is not frozen.");
-    auto request = lowerLayerRequest(authoring, model, "put_vulkan_physical_fragment",
-                                     "fragment", nullptr);
-    request.notice = "The frozen physical plan was removed.";
+FramePlanEditRequest framePlanPhysicalRemoveRequest(const FramePlanAuthoring &authoring, const FramePlanModel &model) {
+    if (!authoring.received) return refuse("The render authoring context has not arrived yet.");
+    auto request = policyRequest(authoring, model);
+    const auto root = framePlanRootPolicy(authoring, model);
+    if (root.contains("backend")) request.params["backend"] = nullptr;
+    for (const auto *member : {"nodes", "resources"}) {
+        const auto entries = objectOr(root, member);
+        for (const auto &[name, entry] : entries.items())
+            for (const auto *key : {"scope_break", "scope_join", "alias_group", "representation"})
+                if (entry.contains(key)) request.params[member][name][key] = nullptr;
+    }
+    if (request.params.size() == 2) return refuse("This graph has no root fixing policy.");
+    request.notice = "Removed all five root fixing policy keys from this graph.";
     return request;
+}
+
+FramePlanPlanningCheck framePlanPlanningCheck(const FramePlanAuthoring &authoring, const FramePlanModel &model,
+    const std::string &kind, const std::string &name, const std::string &key) {
+    FramePlanPlanningCheck result;
+    const auto root = objectOr(framePlanRootPolicy(authoring, model), kind == "resource" ? "resources" : "nodes");
+    result.root = objectOr(root, (kind == "resource" ? name : framePlanAuthorNodeName(model, name)).c_str()).contains(key);
+    const auto wire = Json::parse(model.raw_json, nullptr, false);
+    const auto physical = objectOr(wire, "physical_target_plan");
+    if (const auto rows = physical.find("policy"); rows != physical.end() && rows->is_array())
+        for (const auto &row : *rows) {
+            if (row.value("target", std::string{}) != name || row.value("key", std::string{}) != key) continue;
+            const auto status = row.value("status", std::string{});
+            if (status != "adopted" && status != "infeasible_prefer" && status != "engine_forced") continue;
+            const auto origin = objectOr(row, "origin");
+            result.reason = origin.value("kind", std::string{}) + ": " + origin.value("document", std::string{}) + " " + origin.value("pointer", std::string{}) + " (" + status + ")";
+            result.inherited = origin.value("kind", std::string{}) != "root";
+            result.checked = status == "adopted" && row.value("value", false);
+            const auto pointer = origin.value("pointer", std::string{});
+            if (pointer.starts_with("/fold_groups/")) {
+                result.enabled = false;
+                result.reason += "; change this in the fold group";
+            }
+        }
+    if (kind == "node" && key == "isolate") {
+        const auto catalog = objectOr(authoring.planning_catalog, framePlanAuthorName(model).c_str());
+        const auto forced = objectOr(catalog, "engine_isolates");
+        if (forced.contains(framePlanAuthorNodeName(model, name))) {
+            result.checked = true; result.enabled = false;
+            result.reason = forced.at(framePlanAuthorNodeName(model, name)).get<std::string>();
+        }
+        // Runtime-only scope owners have no authoring catalog row.
+        if (wire.is_object()) for (const auto &node : wire.value("nodes", Json::array()))
+            if (node.value("name", std::string{}) == name &&
+                (node.value("schedule", std::string{}) == "once" || name == "imgui_pass")) {
+                result.checked = true; result.enabled = false; result.reason = "engine requires isolate (once / imgui scope)";
+            }
+    }
+    return result;
 }
 
 bool framePlanPhysicalFragmentStale(const nlohmann::json &error) {

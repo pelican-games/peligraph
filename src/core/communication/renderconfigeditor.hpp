@@ -176,6 +176,7 @@ struct ResolvedRenderConfigAuthoringContext {
     // (RenderFeatureComposeResult::fold_planning). edit_target_planning
     // refuses an explicit opposite of one of them.
     std::vector<GraphFoldPlanningEntry> fold_planning;
+    std::vector<std::pair<std::string, std::string>> engine_isolates;
 };
 
 struct RenderConfigEditorDependencies {

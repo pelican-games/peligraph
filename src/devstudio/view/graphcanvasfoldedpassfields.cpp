@@ -639,8 +639,8 @@ void GraphCanvasFoldedPassFields::showPlanning() {
     {
         const QSignalBlocker serial{serial_};
         const QSignalBlocker isolate{isolate_};
-        serial_->setChecked(planning_state_.flag("node", pass_, "serial"));
-        isolate_->setChecked(planning_state_.flag("node", pass_, "isolate"));
+        serial_->setChecked(planning_state_.flag("node", planningNodeName(pass_), "serial"));
+        isolate_->setChecked(planning_state_.flag("node", planningNodeName(pass_), "isolate"));
     }
     // No alias: each render target the pass writes.
     std::vector<std::string> written;
@@ -695,7 +695,7 @@ bool GraphCanvasFoldedPassFields::deliverResult(qint64 request_id, const QByteAr
                 document.value("reference", std::string{}) != model_.sourceReference())
                 continue;
             const auto content = Json::parse(document.value("content", std::string{}), nullptr, false);
-            planning_state_ = GraphTargetPlanning::fromRoot(content, model_.planGraph());
+            planning_state_ = GraphTargetPlanning::fromRoot(content, model_.planAuthorGraph());
         }
     if (editable_ || planning_only_) showPlanning();
     // The document moved while it was read: read it again.
@@ -712,6 +712,12 @@ void GraphCanvasFoldedPassFields::editFinished() {
     readPlanning();
 }
 
+std::string GraphCanvasFoldedPassFields::planningNodeName(const std::string &name) const {
+    const auto &passes = model_.planPasses();
+    const auto pass = std::ranges::find(passes, name, &GraphCanvasPlanPass::name);
+    return pass != passes.end() && !pass->authored_name.empty() ? pass->authored_name : name;
+}
+
 void GraphCanvasFoldedPassFields::togglePlanning(const std::string &kind, const std::string &name,
                                                  const std::string &field, bool on) {
     if (!send_ || name.empty()) return;
@@ -720,8 +726,8 @@ void GraphCanvasFoldedPassFields::togglePlanning(const std::string &kind, const 
     const auto request = [this, kind, name, field, on] {
         FramePlanEditRequest planning;
         planning.method = "edit_target_planning";
-        planning.params = graphTargetPlanningParams(authoring().source_digest, model_.planGraph(),
-                                                    kind, name, field, on);
+        planning.params = graphTargetPlanningParams(authoring().source_digest, model_.planAuthorGraph(),
+                                                    kind, kind == "node" ? planningNodeName(name) : name, field, on);
         const std::string title = field == "no_alias" ? "No alias"
                                   : field == "serial"  ? "Serial"
                                                        : "Isolate";

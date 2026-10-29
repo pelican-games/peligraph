@@ -766,3 +766,16 @@ TEST_CASE("RC-3e3 Problems missing definition node without a document reports st
     CHECK(status.currentMessage() == QStringLiteral("The Graph does not show sim of Inner."));
     CHECK(notice.documentDialog() == nullptr);
 }
+TEST_CASE("RC-6b1 Freeze loop info appears in Problems without error or warning counts", "[devstudio][problems][rc6b1]") {
+    application();
+    Rig rig;
+    rig.dock.setPlanningInfo(QStringLiteral("3 nodes inside loops are not frozen."));
+    REQUIRE(rig.dock.session().rows().size() == 1);
+    CHECK(rig.dock.session().rows().front().severity == ProblemRow::Severity::Info);
+    CHECK(rig.dock.session().errors() == 0);
+    CHECK(rig.dock.session().warnings() == 0);
+    REQUIRE(rig.dock.list()->topLevelItemCount() == 1);
+    CHECK(rig.dock.list()->topLevelItem(0)->text(0) == QStringLiteral("Info"));
+    rig.dock.engineUnavailable();
+    CHECK(rig.dock.session().rows().empty());
+}

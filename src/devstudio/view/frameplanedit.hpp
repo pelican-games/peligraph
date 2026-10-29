@@ -37,6 +37,7 @@ struct FramePlanEditRequest {
     // edit did something the gesture alone does not show ("the inputs after
     // binding 1 moved up by one").
     std::string notice;
+    std::string planning_info;
     // VI-3b: a drop on a pass whose shader declares no input is not sent.
     // The canvas offers Use engine://passthrough with these inputs instead --
     // the pass's own and the dropped one, with that fragment, in one edit --
@@ -49,6 +50,11 @@ struct FramePlanEditRequest {
     }
 };
 
+// Policy names are shared by every variant.
+std::string framePlanAuthorName(const FramePlanModel &model);
+std::string framePlanAuthorNodeName(const FramePlanModel &model, const std::string &name);
+struct FramePlanAuthoring;
+nlohmann::json framePlanRootPolicy(const FramePlanAuthoring &authoring, const FramePlanModel &model);
 // One pass row of get_render_authoring_context, joined on (graph, pass name).
 struct FramePlanAuthoringPass {
     std::string graph;
@@ -88,6 +94,8 @@ struct FramePlanRenderTarget {
 };
 
 struct FramePlanAuthoring {
+    nlohmann::json planning_root = nlohmann::json::object();
+    nlohmann::json planning_catalog = nlohmann::json::object();
     bool received = false;
     std::string source_digest;
     std::string preset_digest;
@@ -753,33 +761,36 @@ FramePlanEditRequest framePlanTaskViewSelectRequest(
     const FramePlanTaskAuthoring &authoring, const std::string &task,
     const std::string &axis, std::optional<std::uint64_t> value);
 
-// --- UX-15b: the lower layer's decisions, written into the root by EL-2's
-// edit_vulkan_plan_pins and put_vulkan_physical_fragment ({base_source_digest,
-// family, pin | fragment, graph?}).
+// RC-6b1: lower-layer decisions use one edit_target_planning request.
 
 // The plan family a graph's packages are declared under ("flat" or "xr").
 // get_frame_plan does not say: this is inferred from the graph's name.
 std::string framePlanPackageFamily(const std::string &graph);
 
-// Pin this candidate: the plan's ejectable_pin_package with its
-// pins.backend_candidate swapped. Refused, in one line, for a candidate the
-// planner rejected or one pinned already, and without the context's digest
-// or a package to eject.
+// Pin a Selected / Feasible candidate as root backend require.
 FramePlanEditRequest framePlanBackendPinRequest(const FramePlanAuthoring &authoring,
                                                 const FramePlanModel &model,
                                                 const std::string &candidate);
-// Unpin: pin null for the plan's graph.
+// Unpin: root backend null, addressed by author graph name.
 FramePlanEditRequest framePlanBackendUnpinRequest(const FramePlanAuthoring &authoring,
                                                   const FramePlanModel &model);
-// Freeze this physical plan -- and Eject again, which is the same edit made
-// from the plan on screen: its ejectable_physical_fragment as it is.
+// Freeze the displayed decisions as one root policy batch.
 FramePlanEditRequest framePlanPhysicalFreezeRequest(const FramePlanAuthoring &authoring,
                                                     const FramePlanModel &model);
-// Remove: fragment null for the plan's graph.
+// Remove all five fixing keys enumerated from the root document.
 FramePlanEditRequest framePlanPhysicalRemoveRequest(const FramePlanAuthoring &authoring,
                                                     const FramePlanModel &model);
 // Whether a refusal is physical_fragment_stale (the frozen fragment's
-// fingerprints are not the plan's): the line offers Eject again.
+// fingerprints are not the plan's). Retained for legacy error readers until RC-6b2.
 bool framePlanPhysicalFragmentStale(const nlohmann::json &error);
 
+struct FramePlanPlanningCheck {
+    bool checked = false;
+    bool enabled = true;
+    bool inherited = false;
+    bool root = false;
+    std::string reason;
+};
+FramePlanPlanningCheck framePlanPlanningCheck(const FramePlanAuthoring &, const FramePlanModel &,
+    const std::string &kind, const std::string &name, const std::string &key);
 } // namespace PelicanStudio

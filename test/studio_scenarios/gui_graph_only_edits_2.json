@@ -804,12 +804,14 @@
       "expect": "result",
       "command": {
         "cmd": "rpc",
-        "method": "get_render_documents",
+        "method": "get_render_authoring_context",
         "params": {}
       },
-      "path": "result.documents[0].content",
-      "op": "contains",
-      "value": "\"serial\": true",
+      "path": "result.planning_root.rendering.target_planning.graphs.main_render.nodes.render_fullscreen_2.serial",
+      "value": {
+        "value": true,
+        "strength": "require"
+      },
       "retry_ms": 30000
     },
     {

@@ -160,6 +160,9 @@ std::vector<CompiledPlanFact> buildCompiledPlanFacts(
         if (it == plan_json.end()) continue;
         facts.push_back({std::string{key}, it->is_null() ? "none" : "available"});
     }
+    if (const auto rows = plan_json.find("policy"); rows != plan_json.end() && rows->is_array())
+        for (const auto &row : *rows)
+            facts.push_back({"policy " + row.value("target", std::string{}) + "." + row.value("key", std::string{}), row.dump()});
     return facts;
 }
 

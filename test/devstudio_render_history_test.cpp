@@ -1176,3 +1176,22 @@ TEST_CASE("RTL-3s decision 4: a raygen switch Studio wrote is an entry of its ow
 }
 
 } // namespace PelicanStudio
+namespace PelicanStudio {
+TEST_CASE("RC-6b1 policy batch records one history entry and one Undo Redo restores exact root", "[devstudio][render-history][rc6b1]") {
+    Rig rig;
+    const std::string after_digest(64, 'e');
+    const std::string before = "{\"schema\":\"pelican.graph\",\"rendering\":{}}\n";
+    const std::string after = "{\"schema\":\"pelican.graph\",\"rendering\":{\"target_planning\":{\"graphs\":{\"main_render\":{\"backend\":{\"value\":\"materialized\",\"strength\":\"require\"},\"nodes\":{\"B\":{\"scope_break\":true,\"scope_join\":false}}}}}}}\n";
+    const auto before_docs = Json::array({document(Root, "root", RootA, before)});
+    const auto after_docs = Json::array({document(Root, "root", after_digest, after)});
+    rig.edit("edit_target_planning", {{"base_source_digest", RootA}, {"graph", "main_render"}, {"backend", "materialized"},
+        {"nodes", {{"B", {{"scope_break", true}, {"scope_join", false}}}}}}, before_docs, committed({{Root, after_digest}}), after_docs);
+    REQUIRE(rig.history.undoStack().size() == 1);
+    const auto undo = rig.restore(true, after_docs, committed({{Root, RootA}}));
+    CHECK(undo == Json::array({restored(Root, after_digest, before)}));
+    CHECK(rig.history.undoStack().empty());
+    const auto redo = rig.restore(false, before_docs, committed({{Root, after_digest}}));
+    CHECK(redo == Json::array({restored(Root, RootA, after)}));
+    REQUIRE(rig.history.undoStack().size() == 1);
+}
+}

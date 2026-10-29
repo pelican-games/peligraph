@@ -14273,8 +14273,8 @@ TEST_CASE("GL-5e a rendering-section pass's View field, a click on its passthrou
     fire("pelican.graphCanvas.layers.pin");
     CHECK(pins == std::vector<QString>{QStringLiteral("vulkan_raster")});
     fire("pelican.graphCanvas.layers.freeze");
-    fire("pelican.graphCanvas.layers.ejectAgain");
-    CHECK(freezes == 2);
+    CHECK(widget.findChild<QAction *>(QStringLiteral("pelican.graphCanvas.layers.ejectAgain")) == nullptr);
+    CHECK(freezes == 1);
 }
 
 TEST_CASE("GL-5f Delete task on a compute task the project authored -- inside its feature's fold, "
@@ -14382,7 +14382,7 @@ TEST_CASE("GL-5f Delete task on a compute task the project authored -- inside it
 }
 
 TEST_CASE("GL-5f with no row in Layers, the heading stays with nothing picked and its right-click "
-          "holds the whole graph's decisions: the Frame Plan's Unpin, Freeze, Eject again and Remove",
+          "holds the whole graph's decisions: the Frame Plan's Unpin, Freeze and Remove root fixing policy",
           "[devstudio][graph-canvas][scene][gl5f]") {
     (void)application();
     Gl5bTab tab;
@@ -14408,7 +14408,6 @@ TEST_CASE("GL-5f with no row in Layers, the heading stays with nothing picked an
     CHECK(toggle->contextMenuPolicy() == Qt::CustomContextMenu);
     CHECK(toggle->toolTip().contains(QStringLiteral("whole graph")));
     for (const char *name : {"pelican.graphCanvas.layers.unpin", "pelican.graphCanvas.layers.freeze",
-                             "pelican.graphCanvas.layers.ejectAgain",
                              "pelican.graphCanvas.layers.removeFrozen"}) {
         auto *action = widget.findChild<QAction *>(QString::fromLatin1(name));
         REQUIRE(action != nullptr);
@@ -14418,7 +14417,7 @@ TEST_CASE("GL-5f with no row in Layers, the heading stays with nothing picked an
         QCoreApplication::processEvents();
     }
     CHECK(unpins == 1);
-    CHECK(freezes == 2);
+    CHECK(freezes == 1);
     CHECK(removes == 1);
 }
 

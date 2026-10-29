@@ -4231,6 +4231,11 @@ nlohmann::json framePlanGenerationPartJson(
     auto result = framePlanToJson(frame_graph->plan,
                                   frame_graph->render_pipeline.get(),
                                   graph_reference);
+    if (frame_graph->render_pipeline) {
+        const auto &variant = frame_graph->render_pipeline->graph_variant_policy;
+        result["graph_variant"] = {{"name", renderPipelineGraphVariantName(variant.variant)},
+                                   {"name_suffix", variant.rendering_pass_name_suffix}};
+    }
     result["runtime_generation"] = generation->generation;
     result["gpu_owner_scope"] = program->owner_scope;
     result["retained_resource_lease_count"] =
@@ -4304,6 +4309,7 @@ nlohmann::json framePlanGenerationPartJson(
         };
     }
     if (frame_graph->target_plan != nullptr) {
+        if (frame_graph->target_plan->legacy_complete_install) result["legacy_complete_plan"] = true;
         result["physical_target_plan"] =
             vulkanTargetPlanToJson(*frame_graph->target_plan);
         // GL-2a: resources, alias groups, decisions and backend candidates

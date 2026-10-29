@@ -1,4 +1,7 @@
+#include "../src/core/imgui/imguiruntime.hpp"
 #include "../src/project/jsondocument.hpp"
+#include "../src/devstudio/model/frameplanpolicy.hpp"
+#include "../src/core/renderingpass/vulkanrendercompilerpackage.hpp"
 #include "../src/core/communication/editorcommandservice.hpp"
 #include "../src/core/communication/engineauthoringlists.hpp"
 #include "render_graph_root_test_support.hpp"
@@ -14473,3 +14476,4 @@ TEST_CASE("RC-6 B3 B7 RPC accepts wrapped root values over a recipe and restores
 }
 }
 #include "rc6a2_rpc_test.inc"
+#include "rc6b1_rpc_test.inc"

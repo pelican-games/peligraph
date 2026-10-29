@@ -2299,6 +2299,12 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                     .view_axis_length =
                                         renderGraphViewAxisLengthResolver(),
                                 });
+                            std::vector<std::pair<std::string, std::string>> engine_isolates;
+                            for (const auto &source : composed.planning_sources)
+                                for (const auto &graph : source.policy.graphs)
+                                    for (const auto &entry : graph.declarations)
+                                        if (entry.origin.kind == PlanningOriginKind::engine && entry.key == "isolate")
+                                            engine_isolates.emplace_back(graph.graph, entry.target);
                             return ResolvedRenderConfigAuthoringContext{
                                 .config = std::move(composed.config),
                                 .pipeline_preset =
@@ -2311,6 +2317,7 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                 // FG-1: edit_target_planning reads them.
                                 .fold_planning =
                                     std::move(composed.fold_planning),
+                                .engine_isolates = std::move(engine_isolates),
                             };
                         },
                     // G-6: the candidate as the engine's start-up

@@ -369,3 +369,10 @@ TEST_CASE(
     REQUIRE((false_row == std::string::npos ||
              (raw_heading != std::string::npos && false_row > raw_heading)));
 }
+TEST_CASE("RC-6b1 Plan Viewer promotes policy origin status and satisfied", "[compiled-plan-viewer][rc6b1]") {
+    using Json = nlohmann::json;
+    const Json row{{"target", "B"}, {"key", "serial"}, {"value", true}, {"strength", "require"}, {"status", "adopted"}, {"satisfied", true},
+        {"origin", {{"kind", "root"}, {"document", "project://root"}, {"pointer", "/rendering/target_planning"}}}};
+    const auto facts = buildCompiledPlanFacts({{"policy", Json::array({row})}});
+    CHECK(factValue(facts, "policy B.serial") == row.dump());
+}

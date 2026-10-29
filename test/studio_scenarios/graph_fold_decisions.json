@@ -118,7 +118,7 @@
     {"label": "pick its row", "cmd": "select", "name": "pelican.framePlanResources", "text": "render_fullscreen_2__color"},
     {"label": "the row's No alias (its right-click entry)", "cmd": "action", "name": "pelican.framePlan.planning.noAlias"},
     {"label": "committed", "cmd": "wait", "name": "pelican.framePlanStatus", "contains": "No alias set on render_fullscreen_2__color.", "timeout_ms": 120000},
-    {"label": "the root's target_planning holds it by its expanded name", "expect": "result", "command": {"cmd": "rpc", "method": "get_render_documents", "params": {}}, "path": "result.documents[0].content", "op": "contains", "value": "\"no_alias\": true", "retry_ms": 30000},
+    {"label": "the root's target_planning holds it by its expanded name", "expect": "result", "command": {"cmd": "rpc", "method": "get_render_authoring_context", "params": {}}, "path": "result.planning_root.rendering.target_planning.graphs.main_render.resources.render_fullscreen_2__color.no_alias", "value": {"value": true, "strength": "require"}, "retry_ms": 30000},
     {"label": "a picture of the window", "expect": "screenshot", "path": "graph_fold_decisions_window.png"}
   ]
 }

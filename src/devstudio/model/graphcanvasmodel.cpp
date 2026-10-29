@@ -1,3 +1,4 @@
+#include "frameplanpolicy.hpp"
 #include "graphcanvasmodel.hpp"
 #include "../../project/rasterpass.hpp"
 
@@ -699,6 +700,7 @@ void GraphCanvasModel::clearContext() {
     plan_loop_copies_.clear();
     plan_passes_.clear();
     plan_graph_.clear();
+    plan_author_graph_.clear();
     plan_retry_budget_ = 0;
     plan_retry_wanted_ = false;
     committed_renames_.clear();
@@ -853,6 +855,7 @@ void GraphCanvasModel::requestLoopReports() {
         plan_loop_copies_.clear();
         plan_passes_.clear();
         plan_graph_.clear();
+        plan_author_graph_.clear();
         plan_buffers_.clear();
         render_authoring_ = Json::object();
         ray_layout_read_.reset();
@@ -5749,6 +5752,7 @@ std::string GraphCanvasDomainStub::text() const {
 
 void GraphCanvasModel::readPlanPasses(const Json &plan) {
     plan_graph_ = text(plan, "graph");
+    plan_author_graph_ = planningAuthorGraphName(plan_graph_, plan.value("graph_variant", Json::object()));
     // The contract each material pass draws with, as material_routing says.
     std::map<std::string, std::string, std::less<>> contracts;
     // UX-11, decision 4: and the routes that name each.

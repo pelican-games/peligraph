@@ -71,6 +71,7 @@ class ProblemsDock final : public QWidget {
     // A reply that may have changed the list (a reload, a restore): read it.
     void readNow();
     // The Assets dock's contents check.
+    void setPlanningInfo(const QString &message);
     void setAssetIssues(const std::vector<AssetStoreVerification> &stores);
     // The replies to get_problems. False for an id that is not its own.
     bool receiveResult(qint64 request_id, const QByteArray &result_json);

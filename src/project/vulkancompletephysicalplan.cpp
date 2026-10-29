@@ -2800,6 +2800,7 @@ VulkanTargetPlan applyVerifiedVulkanCompletePhysicalPlanPackage(
     }
 
     auto result = automatic_plan;
+    result.legacy_complete_install = true;
     result.resources = package.resources;
     result.scopes = package.scopes;
     result.attachments = package.attachments;

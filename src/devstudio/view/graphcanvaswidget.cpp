@@ -6616,7 +6616,6 @@ struct GraphCanvasWidget::Impl {
     QAction *layers_pin_action = nullptr;
     QAction *layers_unpin_action = nullptr;
     QAction *layers_freeze_action = nullptr;
-    QAction *layers_eject_action = nullptr;
     QAction *layers_remove_frozen_action = nullptr;
     QAction *layers_transfer_action = nullptr;
     // Decision 1: what a picked folded node is, in one line.
@@ -7515,7 +7514,7 @@ struct GraphCanvasWidget::Impl {
         };
         layers_pin_action = layersAction(
             QObject::tr("Pin this candidate"), "pelican.graphCanvas.layers.pin",
-            QObject::tr("The Frame Plan's Pin this candidate (edit_vulkan_plan_pins), on the "
+            QObject::tr("The Frame Plan's Pin this candidate (root backend policy), on the "
                         "candidate row picked in Layers."),
             &Impl::pinLayersCandidate);
         layers_unpin_action = layersAction(QObject::tr("Unpin"), "pelican.graphCanvas.layers.unpin",
@@ -7524,15 +7523,10 @@ struct GraphCanvasWidget::Impl {
         layers_freeze_action = layersAction(
             QObject::tr("Freeze this physical plan"), "pelican.graphCanvas.layers.freeze",
             QObject::tr("The Frame Plan's Freeze this physical plan "
-                        "(put_vulkan_physical_fragment)."),
-            &Impl::freezeLayers);
-        layers_eject_action = layersAction(
-            QObject::tr("Eject again"), "pelican.graphCanvas.layers.ejectAgain",
-            QObject::tr("The Frame Plan's Eject again: the frozen physical plan, from the plan "
-                        "the engine runs now."),
+                        "(root fixing policy)."),
             &Impl::freezeLayers);
         layers_remove_frozen_action = layersAction(
-            QObject::tr("Remove the frozen plan"), "pelican.graphCanvas.layers.removeFrozen",
+            QObject::tr("Remove all root fixing policy"), "pelican.graphCanvas.layers.removeFrozen",
             QObject::tr("The Frame Plan's Remove on the Physical plan tab."),
             &Impl::removeFrozenLayers);
         layers_transfer_action = layersAction(
@@ -9553,7 +9547,7 @@ struct GraphCanvasWidget::Impl {
         layers_toggle->setVisible(!rows.empty() || (!selected && model.layersShown()));
         layers_toggle->setToolTip(
             !selected ? QObject::tr("Right-click: the whole graph's decisions (Unpin, Freeze, "
-                                    "Eject again, Remove) -- the Frame Plan's.")
+                                    "Remove all root fixing policy) -- the Frame Plan's.")
                       : QString{});
         layers->setVisible(!rows.empty() && open);
         syncLayersActions();  // GL-5f, decision 4: their state with or without rows
@@ -9619,7 +9613,6 @@ struct GraphCanvasWidget::Impl {
                                       !subject.empty());
         layers_unpin_action->setEnabled(plan_edits.unpin && connected);
         layers_freeze_action->setEnabled(plan_edits.freeze && connected);
-        layers_eject_action->setEnabled(plan_edits.freeze && connected);
         layers_remove_frozen_action->setEnabled(plan_edits.remove_frozen && connected);
         layers_transfer_action->setEnabled(kind == "resource" && model.canEdit() &&
                                            (rootImageHasTransferSource(subject) ||
@@ -9645,7 +9638,7 @@ struct GraphCanvasWidget::Impl {
         syncLayersActions();
         QMenu menu;
         menu.setToolTipsVisible(true);
-        for (QAction *action : {layers_unpin_action, layers_freeze_action, layers_eject_action,
+        for (QAction *action : {layers_unpin_action, layers_freeze_action,
                                 layers_remove_frozen_action})
             menu.addAction(action);
         menu.exec(layers_toggle->mapToGlobal(at));
@@ -9660,7 +9653,7 @@ struct GraphCanvasWidget::Impl {
         if (kind == "backend" && !subject.empty()) menu.addAction(layers_pin_action);
         if (kind == "resource") menu.addAction(layers_transfer_action);
         if (!menu.isEmpty()) menu.addSeparator();
-        for (QAction *action : {layers_unpin_action, layers_freeze_action, layers_eject_action,
+        for (QAction *action : {layers_unpin_action, layers_freeze_action,
                                 layers_remove_frozen_action})
             menu.addAction(action);
         menu.exec(layers->viewport()->mapToGlobal(at));

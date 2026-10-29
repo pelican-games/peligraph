@@ -211,7 +211,7 @@ struct ProblemsDock::Impl {
     bool shown(const ProblemRow &row) const {
         const int wanted = severity->currentIndex();
         if (wanted == 1 && !row.error()) return false;
-        if (wanted == 2 && row.error()) return false;
+        if (wanted == 2 && row.severity != ProblemRow::Severity::Warning) return false;
         const auto words = filter->text().trimmed();
         if (words.isEmpty()) return true;
         for (const auto &text : {row.sentence, row.document, row.code, row.place_text, row.message})
@@ -268,8 +268,8 @@ struct ProblemsDock::Impl {
             tree->clear();
             for (const auto &row : session.rows()) {
                 auto *item = new ProblemItem(tree);
-                item->setText(SeverityColumn, row.error() ? owner.tr("Error") : owner.tr("Warning"));
-                item->setIcon(SeverityColumn, row.error() ? error_icon : warning_icon);
+                item->setText(SeverityColumn, row.error() ? owner.tr("Error") : row.severity == ProblemRow::Severity::Info ? owner.tr("Info") : owner.tr("Warning"));
+                item->setIcon(SeverityColumn, row.error() ? error_icon : row.severity == ProblemRow::Severity::Info ? owner.style()->standardIcon(QStyle::SP_MessageBoxInformation) : warning_icon);
                 item->setData(SeverityColumn, ProblemIdRole, qtext(row.id));
                 item->setData(SeverityColumn, SeverityRankRole, row.error() ? 0 : 1);
                 item->setText(ProblemColumn, qtext(row.sentence));
@@ -337,6 +337,8 @@ void ProblemsDock::observeStatus(const nlohmann::json &status) {
 }
 
 void ProblemsDock::readNow() { impl_->session.readNow(); }
+
+void ProblemsDock::setPlanningInfo(const QString &message) { impl_->session.setPlanningInfo(message.toStdString()); }
 
 void ProblemsDock::setAssetIssues(const std::vector<AssetStoreVerification> &stores) {
     (void)impl_->session.setAssetIssues(stores);

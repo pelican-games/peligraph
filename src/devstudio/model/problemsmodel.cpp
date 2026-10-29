@@ -397,8 +397,23 @@ void ProblemsSession::engineGone() {
     again_ = false;
     revision_.reset();
     notice_.clear();
-    if (engine_rows_.empty()) return;
+    if (engine_rows_.empty() && planning_rows_.empty()) return;
     engine_rows_.clear();
+    planning_rows_.clear();
+    compose();
+}
+
+void ProblemsSession::setPlanningInfo(std::string message) {
+    planning_rows_.clear();
+    if (!message.empty()) {
+        ProblemRow row;
+        row.id = "studio:freeze_loops";
+        row.severity = ProblemRow::Severity::Info;
+        row.source = "Studio";
+        row.code = "target_planning.freeze_loops_skipped@1";
+        row.message = row.sentence = std::move(message);
+        planning_rows_.push_back(std::move(row));
+    }
     compose();
 }
 
@@ -464,12 +479,13 @@ std::size_t ProblemsSession::errors() const noexcept {
 }
 
 std::size_t ProblemsSession::warnings() const noexcept {
-    return rows_.size() - errors();
+    return static_cast<std::size_t>(std::ranges::count_if(rows_, [](const ProblemRow &row) { return row.severity == ProblemRow::Severity::Warning; }));
 }
 
 void ProblemsSession::compose() {
     rows_ = engine_rows_;
     rows_.insert(rows_.end(), asset_rows_.begin(), asset_rows_.end());
+    rows_.insert(rows_.end(), planning_rows_.begin(), planning_rows_.end());
     if (changed) changed();
 }
 

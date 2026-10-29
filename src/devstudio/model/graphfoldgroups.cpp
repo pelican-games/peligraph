@@ -1,3 +1,4 @@
+#include "frameplanpolicy.hpp"
 #include "graphfoldgroups.hpp"
 
 #include "inspectormodel.hpp"
@@ -431,7 +432,7 @@ Json graphTargetPlanningParams(const std::string &base_source_digest, const std:
     const std::string member = kind == "resource" ? "resources" : "nodes";
     return Json{{"base_source_digest", base_source_digest},
                 {"graph", graph},
-                {member, Json{{name, Json{{field, on ? Json(true) : Json(nullptr)}}}}}};
+                {member, Json{{name, Json{{field, Json{{"value", on}, {"strength", "require"}}}}}}}};
 }
 
 } // namespace PelicanStudio

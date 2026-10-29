@@ -280,15 +280,20 @@ TEST_CASE("GL-3a decision 8: the Frame Plan's Serial / Isolate / No alias read t
     CHECK(planning.flag("resource", "lit", "no_alias"));
     CHECK_FALSE(GraphTargetPlanning::fromRoot(root, "other").flag("node", "tint", "isolate"));
 
+    const Json required_true{{"value", true}, {"strength", "require"}};
+    // The caller has resolved author identities; literal suffixes stay intact.
+    const auto xr = graphTargetPlanningParams("d", "main_render#xr", "node", "T#xr", "serial", true);
+    CHECK(xr.at("graph") == "main_render#xr");
+    CHECK(xr.at("nodes").contains("T#xr"));
+    CHECK(graphTargetPlanningParams("d", "main_render#xr", "resource", "R#xr", "no_alias", true).at("resources").contains("R#xr"));
+    const Json required_false{{"value", false}, {"strength", "require"}};
     CHECK(graphTargetPlanningParams("d", "main_render", "resource", "lit", "no_alias", true) ==
-          Json{{"base_source_digest", "d"},
-               {"graph", "main_render"},
-               {"resources", {{"lit", {{"no_alias", true}}}}}});
-    // Off is the field erased (null), not false.
+          Json{{"base_source_digest", "d"}, {"graph", "main_render"},
+               {"resources", {{"lit", {{"no_alias", required_true}}}}}});
     CHECK(graphTargetPlanningParams("d", "main_render", "node", "tint", "isolate", false) ==
-          Json{{"base_source_digest", "d"},
-               {"graph", "main_render"},
-               {"nodes", {{"tint", {{"isolate", nullptr}}}}}});
+          Json{{"base_source_digest", "d"}, {"graph", "main_render"},
+               {"nodes", {{"tint", {{"isolate", required_false}}}}}});
+
 }
 
 // --- GL-4a: Verify (FG-2's verify_fold) and what it found.

@@ -755,6 +755,8 @@ struct FramePlanMemorySummary {
 };
 
 struct FramePlanModel {
+    std::string graph_variant;
+    std::string graph_name_suffix;
     std::string profile;
     std::string graph;
     std::optional<std::uint64_t> runtime_generation;

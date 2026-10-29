@@ -210,7 +210,7 @@ struct GraphTargetPlanning {
                             std::string_view field) const;
 };
 
-// edit_target_planning's params: the field set true, or erased (null).
+// edit_target_planning's params: the inverse displayed value as root require.
 nlohmann::json graphTargetPlanningParams(const std::string &base_source_digest,
                                          const std::string &graph, std::string_view kind,
                                          const std::string &name, const std::string &field,
