@@ -947,7 +947,7 @@ pelican_studio --project <dir> --tab graph     # render-tools dock のタブを�
 pelican_studio --automation <名前>             # test 用の自動化チャネルを開く(Q-1)
 ```
 
-`--tab` が取るのは `frame_plan` / `render_features` / `rendering_settings` / `graph` の 4 つ(`rendering_settings` は RSX から。[第13章](13_editor.md)「Studio の Rendering settings タブ」) ([一覧](../../src/devstudio/view/mainwindow.cpp#L2472))。**未知の名前は window を作る前に console へ 理由を出して終了コード 2** です([検査](../../src/devstudio/main.cpp#L40)) —— window を開いて「たまたま前にあった タブ」を見せると、綴り間違いが成功に見えるためです。`--tab` は `openProject` の**後**に適用されます ([順序](../../src/devstudio/view/uimain.cpp#L89)) —— project を開くとその project のツール配置が復元され、 どのタブが前かが変わるからです。
+`--tab` が取るのは `frame_plan` / `render_features` / `rendering_settings` / `graph` の 4 つ(`rendering_settings` は RSX から。[第13章](13_editor.md)「Studio の Rendering settings タブ」) ([一覧](../../src/devstudio/view/mainwindow.cpp#L2474))。**未知の名前は window を作る前に console へ 理由を出して終了コード 2** です([検査](../../src/devstudio/main.cpp#L40)) —— window を開いて「たまたま前にあった タブ」を見せると、綴り間違いが成功に見えるためです。`--tab` は `openProject` の**後**に適用されます ([順序](../../src/devstudio/view/uimain.cpp#L89)) —— project を開くとその project のツール配置が復元され、 どのタブが前かが変わるからです。
 
 見た目は **View ▸ Theme ▸ Light / Dark** で切り替えます(N-5。CLI の引数ではありません)。選択は QSettings の `studio/theme` に残り、**再起動なしで**窓と 2 つのノードキャンバスに当たります([第13章 §13.5](13_editor.md))。
 
@@ -1036,11 +1036,11 @@ Passes の先頭行を上から読むと実行順が分かり、同じ行に入�
 行の **Execution** の節(dialect・implementation・endpoint・capability・resource use)、Physical plan のタブの
 **Physical target plan** の木の **Execution plan unavailable** / **Execution dependencies** の節、Logical graph の
 「Logical graph unavailable」の panel です。status 行の tooltip は依存の数ではなく
-`N barriers` を言い、status 行の色は physical plan だけで決まります([status 行を組む所](../../src/devstudio/view/frameplanwidget.cpp#L4286))。
+`N barriers` を言い、status 行の色は physical plan だけで決まります([status 行を組む所](../../src/devstudio/view/frameplanwidget.cpp#L4299))。
 Logical graph の辺については [第13章](13_editor.md) の「Frame Plan のノード表示と順序」。
 Resources、Barriers、Materials では writer/reader、hazard edge、公開された material route を逆引きでき、 上部 filter は折りたたみ配下も検索します。
 
-**Physical plan は alias group と scope をそのまま出します。**Backends のタブで backend の候補を pin し、Physical plan のタブで物理の計画を凍結(Freeze / Remove / Eject again)でき、Physical plan には常駐 BLAS の節と compile の書き換え(subgraph の置き換え・graph transform・render strategy)の節も出ます([第13章](13_editor.md)の「下の層の決定を Frame Plan から書く」)。
+**Physical plan は alias group と scope をそのまま出します。**Backends のタブで backend の候補を pin し、Physical plan のタブで物理の計画を凍結(Freeze / Remove。✅RC-6b1 からどちらも root の `target_planning` の policy を書き、Eject again は無くなりました)でき、Physical plan には常駐 BLAS の節と compile の書き換え(subgraph の置き換え・graph transform・render strategy)の節も出ます([第13章](13_editor.md)の「下の層の決定を Frame Plan から書く」)。
 
 **Logical graph は左右 2 面**です。左のキャンバスでノードを選ぶと、右の詳細ペインにそのパスの行が出ます。
 境目は掴んで動かせ、位置は保存されます。

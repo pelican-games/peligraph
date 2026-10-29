@@ -270,6 +270,53 @@
 - **残り**: Studio の Pin / Freeze の置き換え(報告の案では、Pin は `backend` の `require` / `null`、Freeze は `backend`・`scope_break` / `scope_join`・`representation`・
   `alias_group`・`no_alias` の `require` の書き出し)と旧い package・RPC の削除は RC-6b。新しい語彙を指定した
   GPU の描画、全数・scenario、XR 無効の build は未検証(報告)。
+  → **RC-6b1 で Studio の Pin / Freeze の置き換えが入った**。報告の案と違い、Freeze は `no_alias` を書かない(下の [RC-6b1](#rc6b1-implementation))。
+
+<a id="rc6b1-implementation"></a>
+
+**RC-6b1 で入った物(2026-10-29、`a0367bd23`、branch `agent/rc6`)。**仕様は `<作業ディレクトリ>/rc6_spec.md` §5 の RC-6b1、実装者の報告は `<作業ディレクトリ>/rc6b1_report.md` と修正の報告
+`rc6b1_fix_report.md`。この段の行番号は `a0367bd23` の物。上の「方針」の「Studio の Pin は `backend` の policy を書く操作に、Freeze は今の計画の決定を policy として書き出す操作に」と、
+「後で詰める細部」の 6 の 3 段目(Pin / Freeze を policy 書き出しに置換)がこの形になった。**固定のルートは Studio の側では root の policy の 1 本になった。**旧い package
+(`vulkan_plan_pins` / `vulkan_physical_fragments`)と、それを書く `edit_vulkan_plan_pins` / `put_vulkan_physical_fragment`、dump の `ejectable_*` は今は残っているが、Studio は使わない。
+
+- **書く道は 1 本**: Pin / Unpin / Freeze / Remove と Frame Plan の Serial / Isolate / No alias の check は、どれも今の `edit_target_planning` を 1 回送る(新しい RPC は無い)。
+  CAS も文書の履歴も 1 回で、render の編集の履歴の 1 項目(`Edit planning decisions`)を Undo 1 回で全部戻す。RPC で変えたのは 1 点だけで、合成の結果に無い名前でも、保存済みの
+  葉だけを `null` にする要求を受ける([受ける所](../src/core/communication/renderconfigeditor.cpp#L5580))。Remove が消えた名前の葉を消すため。
+- **作者の名前で書く**: graph 名は、表示中の variant の compiler が実際に付けた接尾辞だけを外す(`get_frame_plan` の最上位に足した `graph_variant: {name, name_suffix}`。
+  [足す所](../src/core/vkcore/renderer.cpp#L4236)、[外す所](../src/devstudio/model/frameplanpolicy.hpp#L13))。作者が書いた `#xr` は残る。node 名は frame plan の `authored_name`。
+  policy は variant に共通で、root の宣言は RC-6a1 の規則(最終名 → 作者名)で各 variant に結ぶ。XR の compute task を含む graph の Freeze が flat と XR の両方で同じ計画になる(test)。
+- **Pin**: root の `backend` を `require` で書く / Unpin は `null`([`framePlanBackendPinRequest()`](../src/devstudio/view/frameplanedit.cpp#L2211))。「Pinned」の表示は root に `backend` の
+  宣言があること(手で書いた `prefer` も含む)。
+- **Freeze**: 表示中の物理計画から root に `require` で書き出す([`freezeFramePlanPolicy()`](../src/devstudio/model/frameplanpolicy.hpp#L23)、
+  [`framePlanPhysicalFreezeRequest()`](../src/devstudio/view/frameplanedit.cpp#L2234))。
+  - 書く物: `backend`、先頭以外の各 node の `scope_break` と `scope_join` の**両方**(直前と別の scope なら break true / join false、同じなら逆。下の出所や手書きの逆の宣言を打ち消し、
+    片方だけで両方 true になる `policy_invalid@1` を避ける)、共有する allocation ごとの `alias_group: "frozen_<n>"`(`n` は dump の `alias_groups` の並びで 1 から、root にある組名と
+    重なれば次へ)、`materialized_image` の資源の `representation: "materialized"`。
+  - 書かない物: `no_alias`、format、load / store。
+  - 書かない名前: ループの回の node(`loop_origin`。作者が指せない展開名)、runtime の合成だけが足す node(`imgui_pass` など)、文書が名指せない資源(Blank に runtime で足される
+    picking の `picking_depth` / `picking_id`。修正の報告)。判別は authoring context の `planning_catalog`(RPC の preflight と同じ名前の一覧。[`planningNamesOf()`](../src/core/communication/renderconfigeditor.cpp#L3357))
+    に名前があるか。ループの回を飛ばした数は status 行の文と Problems の Info の行(`target_planning.freeze_loops_skipped@1`)に出る。runtime だけの node の境界は engine の isolate が保つ
+    (ImGui を有効にした graph で Freeze の前後の計画が一致する test)。
+  - **保証の範囲**: Freeze の直後は、backend・node 名で見た scope の分け方・資源名で見た alias の組・representation が Freeze の前と同じ(test)。その後に graph を変えたときに保つのは
+    書いた正の制約だけで、組に入っていない資源が後で共有される・transient / tile-local の扱いが変わる、は起こり得る。上の「後で詰める細部」の 5(版をまたいだ byte 一致は約束しない)
+    のとおり、版をまたいで同じ計画を保つ物ではない(利用者の決定)。効いている証拠として、Freeze の後に自動の計画なら scope の融合が変わる合法な入力の変更(`view_select` を外す)を
+    加えても Freeze の scope の分け方が保たれることを、Freeze なしでは変わることと一緒に test が見る(報告の D2)。
+  - Studio は送る前に計画を予測しない。書き出した policy が成り立たなければ適用の前の検証で要求全体が断られ、一部だけ書いた Freeze にはならない。
+- **Remove**: 固定用の 5 つの鍵(`backend` / `scope_break` / `scope_join` / `alias_group` / `representation`)を、手書きと Pin の分も含めて root の文書から数えて全部消す
+  ([`framePlanPhysicalRemoveRequest()`](../src/devstudio/view/frameplanedit.cpp#L2264))。計画が失敗している間も押せる。`serial` / `isolate` / `fuse` / `no_alias` は残す。
+  Undo は手で書いた形のまま戻す。状態の表示は「固定用 policy あり」で、Freeze が済んだ証拠としては扱わない。**Eject again は無くなった**(名前で指すので古くならない)。
+- **check**([`framePlanPlanningCheck()`](../src/devstudio/view/frameplanedit.cpp#L2280)): checked は dump の `policy` の行で `adopted` の値。`infeasible_prefer` は unchecked で理由を
+  tooltip に、root 以外の出所は ` (inherited)` と tooltip に出す。押すと root に今の表示の逆を `require` で書き、root に宣言がある時だけ「継承に戻す」(root の宣言を `null`)を別に出す。
+  engine の強制の isolate と fold の決定(`origin.pointer` が `/fold_groups/`)の check は押せず理由を出す。
+- **物理計画の dump は変えない**: engine の強制の情報は物理計画の台帳(`policy`)に足さない(policy の無い project で欄が出ると A5 の比較が壊れる)。Studio が読むのは
+  authoring context に足した `planning_catalog.<graph>.engine_isolates`([足す所](../src/core/communication/renderconfigeditor.cpp#L3656))と、plan の `once` の node と `imgui_pass`。
+  complete physical plan の install の有無も `physical_target_plan` の外の最上位 `legacy_complete_plan`([付ける所](../src/core/vkcore/renderer.cpp#L4312))。A5 の 16 構成の比較は
+  記録し直さずに一致(報告)。
+- **旧い package との同居**: RC-6a1 の同居の拒否と同じ理由で、旧い package(root の pin / physical fragment、applied の pin / fragment、complete の install)がある graph では Studio が
+  Pin / Freeze を送る前に断る。移行の機能は作らない。
+- **表示**: Plan Viewer(ImGui の Compiled Passes。[足す所](../src/core/imgui/compiledplanviewer.cpp#L163))と Studio の Frame Plan の Physical plan のタブに、dump の `policy` の行
+  (出所・`status`・`satisfied`)を出す。
+- **確かめた範囲**: シナリオ `gui_lower_layer_pin_freeze` は統合側の仮想モニタで緑(着地前の gate、シナリオ 26 本)。GPU の実機の描画・XR の実機は未検証。
 
 ### 2-4 `declared_bytes` = 0 — 埋める(決定 2026-10-22)
 
@@ -342,7 +389,7 @@
 |---|---|---|---|
 | 0 | 文書の修正(2-7)、コードマップに 3-1 の「未使用」 | v0 可 | 文書のみ |
 | 1 | 2-4: `declared_bytes` を計測で埋める(RT メモ段 0 と同じ WP)。**RC-1 で済み(`631caac21`)** | v0 可(鍵は増えない) | planner 単体、手計算 120 / 81 MiB と一致 → 実測は 119.95 / 81.08 MiB(RT メモ §1) |
-| 2 | 2-3: 固定ルートの policy 一本化(語彙 → 強度・優先順位 → Pin / Freeze の置換 → package と RPC の削除)。**強度・優先順位は RC-6a1 で済み(`3fa229eba`)。語彙は RC-6a2 で済み(`a99725b5f`)。残りは Pin / Freeze の置換と package・RPC の削除(RC-6b)。**3-2 / 3-3: 選ばれなかった候補と 1 node scope を既定で隠す | v1(物理計画 WP。RT メモの区間詰めと同じ場所) | policy → plan の golden、Frame Plan の scenario(Pin / Freeze の置換後) |
+| 2 | 2-3: 固定ルートの policy 一本化(語彙 → 強度・優先順位 → Pin / Freeze の置換 → package と RPC の削除)。**強度・優先順位は RC-6a1 で済み(`3fa229eba`)。語彙は RC-6a2 で済み(`a99725b5f`)。残りは Pin / Freeze の置換と package・RPC の削除(RC-6b)。Studio の Pin / Freeze の置換は RC-6b1 で済み(`a0367bd23`)。**3-2 / 3-3: 選ばれなかった候補と 1 node scope を既定で隠す | v1(物理計画 WP。RT メモの区間詰めと同じ場所) | policy → plan の golden、Frame Plan の scenario(Pin / Freeze の置換後) |
 | 3 | 2-1: `execution_plan` の削除(上の表)。2-2: `levels` を契約から外す。**RC-2 で済み**(`e15e31bb5`、2026-10-23) | v1 | golden 不変、GPU gate、Studio scenario。RC-2 の実装者の報告では触った家族の非 GPU test 628 / 628 緑。GPU gate と Studio scenario は統合側で回す(この記録の時点で結果は未確認) |
 | 4 | 2-6: 段階 2 を typed 論理 graph に育て、core の JSON parse を消す。2-5 と preset レシピ化に合流 | v1 | 純ロジック test、golden 不変 |
 

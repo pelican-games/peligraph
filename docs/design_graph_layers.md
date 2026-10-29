@@ -263,6 +263,16 @@ FG-1 の宣言(root の `fold_groups`):
 - **fold の出所は root**: fold が足した宣言は root の出所(既定の強さは `require`)で、dump の `origin.pointer` は `/fold_groups/<group>/folded/decisions/<field>`、`origin.document` は root の文書。1 つの決定が複数の展開名へ写っても、指すのは元の決定の欄
 - **写す段が 2 回になった**: 合成は、Graph の配置・`pass_replacements`・inactive で対象が消える前に、配置した pass を足した config で `applyGraphFoldGroups()` を 1 回呼んで宣言を対象に結び付け([前の呼び出し](../src/project/featurecompose.cpp#L3865))、ループを展開した後にもう 1 回呼んで、ループの回のように後から出来た対象の分だけを足して結ぶ([後の呼び出し](../src/project/featurecompose.cpp#L4191))。結び付けは fold が provenance で選んだ作者名で行い、root の宣言の「最終名を先に」の探し方には戻さない(修正の報告 3。XR の `probe_fill#xr` を対象にした fold が flat / XR のそれぞれでその対象だけを serial にする test)
 - **Frame Plan と Graph の詳細欄の check**: Serial / Isolate / No alias の check は root の `target_planning` の値の、包んだ形なら `value` を読む([`GraphTargetPlanning::flag()`](../src/devstudio/model/graphfoldgroups.cpp#L417))。付けると裸の `true`、外すと `null`(root の宣言を消す)を送るのは前と同じで、`false` は書かない。部品やレシピから来た値は check に出ない(check が読むのは root の文書だけ)。Undo / Redo は書いた文書の bytes をそのまま戻す
+  → **RC-6b1 で変わった**(下の「RC-6b1 で変わった所」)
+
+**RC-6b1(`a0367bd23`、2026-10-29)で変わった所。**Studio の Pin / Freeze / Remove と Serial / Isolate / No alias の check が root の `target_planning` を書く形になった(全体は [棚卸しメモ §2-3 の RC-6b1](design_plan_layer_inventory.md#rc6b1-implementation))。fold・engine の強制・ループと Graph に関わる所だけ書く(コードで確認。行番号は `a0367bd23` の物):
+
+- **継承と実効値**: Frame Plan の check は root の文書ではなく、dump の `policy` の行の実効値を出す。`adopted` の `true` が checked、`infeasible_prefer` は unchecked、feature・断片・レシピから来た値は ` (inherited)` と出所の tooltip が付く([`framePlanPlanningCheck()`](../src/devstudio/view/frameplanedit.cpp#L2280))。押すと root に今の表示の逆を `{value, strength: "require"}` で書く(外すのも `null` ではなく `false` の require)。root にその宣言がある時だけ別の項目 **Return <名前> to inheritance** が root の宣言を `null` で消す([出す所](../src/devstudio/view/frameplanwidget.cpp#L3404))
+- **engine と fold の決定は押せない**: engine が強制する isolate(`once` / `sprite` / `ui` / `imgui` の node、graph.instance の scope)の Isolate と、fold が足した決定(台帳の `origin.pointer` が `/fold_groups/` で始まる行)の check は無効で、理由を tooltip に出す(fold は `; change this in the fold group`)。engine の強制は物理計画の台帳に足さず、authoring context の `planning_catalog.<graph>.engine_isolates` と plan の `once` の node・`imgui_pass` から読む(dump を変えると policy の無い project の比較が壊れるため)
+- **ループの回と runtime だけの node は書き出さない**: Freeze は frame plan の `loop_origin` を持つ node(作者が指せない展開名。LP-1a)と、runtime の合成だけが足す node(`imgui_pass` など。authoring context の名前の一覧に無い物)の `scope_break` / `scope_join` を書かない。ループの回を飛ばした数は status 行と Problems の Info の行(`target_planning.freeze_loops_skipped@1`)に出る。回ごとの決定は今までどおり fold group で書く
+- **作者の名前**: graph は表示中の variant の接尾辞を外した名前、node は frame plan の `authored_name` で送る。Graph の詳細欄も同じ名前で送る([`GraphCanvasFoldedPassFields::planningNodeName`](../src/devstudio/view/graphcanvasfoldedpassfields.cpp#L715))
+- **Graph の詳細欄の check**: 今も root の文書の値だけを読み([`GraphTargetPlanning::flag()`](../src/devstudio/model/graphfoldgroups.cpp#L418))、送るのは check の新しい状態の `require`([`graphTargetPlanningParams()`](../src/devstudio/model/graphfoldgroups.cpp#L429))。出所の表示・継承に戻す操作・engine と fold での無効化は無い
+- **Layers**: Graph の Layers の **Eject again** は無くなり、`.removeFrozen` の文言は **Remove all root fixing policy** になった。どれも Frame Plan と同じ関数を呼ぶ
 
 ### 5.3 検査と印
 

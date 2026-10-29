@@ -186,6 +186,19 @@ NodeIR {
   materialized にする。満たせたかは選んだ計画の scope で、FramePlan の順の直前の node と同じ scope かどうかを見て判定する(analyzer の `planning_opportunities.node_order` を使う。
   [`policySatisfied()`](../src/project/targetrenderplanning.cpp#L3361))。先頭の node の `scope_break` は常に成り立つ。
 
+**追補(RC-6b1、`a0367bd23`、2026-10-29。Studio の Freeze が scope の分け方を policy で書き出す)。**全体は [棚卸しメモ §2-3 の RC-6b1](design_plan_layer_inventory.md#rc6b1-implementation)。行番号は `a0367bd23` の物。
+
+- **FramePlan の順の隣どうし**: Freeze は get_frame_plan の node の並び(= FramePlan の順)を上から見て、先頭以外の各 node に、直前の node と同じ scope なら `scope_join: true` と
+  `scope_break: false`、別なら `scope_break: true` と `scope_join: false` を、どちらも `require` で書く([`freezeFramePlanPolicy()`](../src/devstudio/model/frameplanpolicy.hpp#L23))。
+  両方を書くのは、下の出所や手書きの逆の宣言を打ち消し、片方だけで同じ node に両方 true(`policy_invalid@1`)にならないため。順は書かない(順は `frame_node_order`)。
+- **書かない node**: ループの回の node(`loop_origin` を持つ展開名。作者は指せない)と、runtime の合成だけが足す node(`imgui_pass` など。authoring context の `planning_catalog` の
+  名前の一覧に無い物)。隣どうしの比較は飛ばした node も含めた並びで行い、書く node の直前が飛ばした node でも、その node との関係を書く。runtime だけの node の境界は engine の isolate が
+  保つ(ImGui を有効にした graph で Freeze の前後の計画が一致する test)。
+- **engine と fold**: engine が強制する isolate と fold が足した決定は、Studio の check では押せない(理由を出す)。engine の強制は物理計画の台帳に足さず、authoring context の
+  `planning_catalog.<graph>.engine_isolates` から読む(物理計画の dump は変えない)。
+- **効いている証拠**: Freeze の後に、自動の計画なら scope の融合が変わる入力の変更(`Forward` の `view_select` を外す)を加えても、Freeze の scope の分け方が保たれる(test
+  「RC-6b1 D2 Freeze round trip preserves decisions and scope constraints survive changed view selection」)。保つのは書いた正の制約だけで、版をまたいで同じ計画を保つ物ではない。
+
 ### 2.7 core に残すもの
 
 - 中立値 → vk の写像を 1 つの翻訳単位に。device への問い合わせ → 中立な device facts。
@@ -424,6 +437,10 @@ NodeIR {
   **決定(2026-10-24、利用者了承)**: 今回の RC-3 では complete physical plan の install の口を残す(壊さない)。NativeScope の ABI を設計する時に入口を IR の node(`native_scope`)に作り直し、その後でこの口を削る。この口は最適化のための物ではなく、今は NativeScope の宣言を運ぶ唯一の入口(node の最適化 = 自動・policy・provider はどれもこの口を通らない)。
   理由の記録(10-24 の推奨): compiler program の丸ごとの差し替えは削る(大きすぎる口。混在の穴も消える)。complete physical plan の install と NativeScope の仕組みは残す: v1 の方向(2026-10-08 の利用者との整理: DLSS などの外部 SDK、CGH の CUDA 相互運用、語彙に無い Vulkan 機能の試作)の受け皿で、今の NativeScope はこの口を通る時だけ動く。NativeScope の ABI を設計する時に、IR の node の 1 種類(`native_scope`)として入口を作り直す。
   **RC-6a1(`3fa229eba`、2026-10-28)**: 利用者の決定(2026-10-28)で、complete package は作者向けの dump / eject の道から外し、NativeScope のための C++ の install の口だけを残す方向になった。RC-6a1 で入ったのは同居の拒否だけ: 作者の `target_planning` の宣言(engine 以外の出所。`profile` と `required_capabilities` は数えない)を 1 つでも持つ graph では、complete physical plan の install が `target_planning.policy_with_legacy_package@1 {graph}` で断られる([install で断る所](../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L933))。同じ graph の `vulkan_plan_pins` と `vulkan_physical_fragments` も同じ code(物理計画の bridge・planner の入口・fragment の linker)。complete・pin・fragment は planner の後で link / install されて policy を見ないので、同居させると `require` が破れるため。policy の無い graph の install・link は今のまま。形は [棚卸しメモ §2-3 の RC-6a1](design_plan_layer_inventory.md#rc6a1-implementation)。
+  **RC-6b1(`a0367bd23`、2026-10-29)**: Studio の Pin / Freeze が root の policy を書く形になり、complete physical plan を install した graph では Studio が送る前に断る。そのために
+  [`VulkanTargetPlan`](../src/project/targetrenderplanning.hpp#L434) に runtime だけの印 `legacy_complete_install`(直列化しない)を足し、install の時に立て
+  ([立てる所](../src/project/vulkancompletephysicalplan.cpp#L2803))、get_frame_plan は `physical_target_plan` の外の最上位に `legacy_complete_plan: true` を出す
+  ([出す所](../src/core/vkcore/renderer.cpp#L4312))。物理計画の dump と install の口は変えていない。
 - **D2(決定 2026-10-24: 揃える)**: 拒否の文言を「名前付きコード + 対象名」に揃えて変えてよいか(test が文言を固定している所は直す)。
 - **D3(決定 2026-10-24: 揃える)**: 物理計画の dump と Studio の format の綴りを作者の形(`R16G16B16A16_SFLOAT`)に揃えてよいか。
 
