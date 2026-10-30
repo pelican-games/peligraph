@@ -609,7 +609,7 @@ materialize 済み feature 1 本と宿主への要求をまとめ、別 project 
 [def-69]: 06_rendering.md#66-フレームグラフf0f2--wp3335--wp64
 [def-70]: 06_rendering.md#66-フレームグラフf0f2--wp3335--wp64
 [def-71]: 06_rendering.md#target-planning-と-vulkan-plan-pin
-[def-72]: 06_rendering.md#vulkan-physical-fragment-v1--v2--v3
+[def-72]: 06_rendering.md#legacy-plan-packages-removed
 [def-721]: ../source-code-guide/06_rendering_vulkan_shader.md
 [def-73]: 06_rendering.md#612-openxr-ステレオレンダリングwp125138--wp203ac実装済み
 [def-74]: 06_rendering.md#surface--自己記述コンテナ

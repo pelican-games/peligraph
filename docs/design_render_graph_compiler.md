@@ -1644,7 +1644,13 @@ gate:
 
 ### RPE12a — target policy authoring / Vulkan decision pin
 
-状態: **WP204 Phase Aで実装済み(2026-07-26)**。通常経路を手書き physical plan に
+状態: **WP204 Phase Aで実装済み(2026-07-26)。→ pin は RC-6b2(`4e21d7d03`、2026-10-29)で撤去**。
+`vulkan_plan_pins`・`VulkanTargetPlanPinPackage`・`ejectable_pin_package` / `applied_pin_package`・RPC `edit_vulkan_plan_pins` は消え、
+backend の固定は `target_planning.graphs.<g>.backend`(RC-6a2)で書く。文書に `vulkan_plan_pins` があれば
+`target_planning.legacy_package_removed@1`。strategy ABI seed から退避する lower-layer control は `target_planning` だけになった。
+全体は [棚卸しメモ §2-3 の RC-6b2](design_plan_layer_inventory.md#rc6b2-implementation)。以下は撤去前の記録。
+
+通常経路を手書き physical plan に
 置き換える前に、既存 compiler の portable control と target-specific pin を別の型として
 公開した。
 
@@ -1690,7 +1696,15 @@ gate:
 
 状態: **WP204 Phase B v1 + verified alternate-format / attachment-operation /
 transient / tile-local / alias / dependency-safe-scope runtime sliceで実装済み
-(2026-07-26)**。自動target compilerを通常経路に残したまま、同じphysical層の一部だけを
+(2026-07-26)**。→ **RC-6b2(`4e21d7d03`、2026-10-29)で撤去**: `vulkan_physical_fragments`・
+`VulkanPhysicalFragmentPackage` と fragment の型・parse / link / eject・`ejectable_physical_fragment` / `applied_physical_fragment`・
+RPC `put_vulkan_physical_fragment`・`physical_fragment_stale`・`physical_fragment.reorders_frame_plan@1` は消えた。
+representation・scope の分割と融合・alias の組は `target_planning` の policy(RC-6a2)で書き、format の上書き・store の破棄・
+個々の load / store の編集・版をまたいだ固定は能力ごと無くなった。共有の attachment 検査・automatic plan fingerprint・feature closure は
+`vulkanphysicalfragment.cpp` に残り、complete physical plan は NativeScope のための C++ の口だけ。全体は
+[棚卸しメモ §2-3 の RC-6b2](design_plan_layer_inventory.md#rc6b2-implementation)。以下は撤去前の記録。
+
+自動target compilerを通常経路に残したまま、同じphysical層の一部だけを
 編集して自動planへ戻す境界を実装した。
 dependency-safe scopeの実装・検証台帳は
 [`design_reviews/2026-07-26_wp204_scope_execution_report.md`](design_reviews/2026-07-26_wp204_scope_execution_report.md)

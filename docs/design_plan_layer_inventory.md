@@ -40,7 +40,7 @@
 |---|---|---|---|---|
 | 2-1 | `execution_plan` | **削除**(第 2 backend は書かない。mac は MoltenVK) | 同じ | なし(順番は §6)。**RC-2 で済み**(`e15e31bb5`、2026-10-23) |
 | 2-2 | `levels` | **完全に消す**(2026-10-18) | 同じ | なし。**RC-2 で済み**(`e15e31bb5`、2026-10-23) |
-| 2-3 | 物理計画の固定ルート(pin / freeze / complete) | **方針決定(2026-10-22): 固定のルートを `target_planning` の policy に一本化する**。細部は後で詰める | 同じ | 語彙、`require` / `prefer`、優先順位(§2-3)。**RC-6a1 で強さ・出所・優先(root > レシピ > 部品)と部品の宣言が入った**(`3fa229eba`、2026-10-28。§2-3 の [RC-6a1](#rc6a1-implementation))。**RC-6a2 で語彙 5 つ(`backend` / `representation` / `alias_group` / `scope_break` / `scope_join`)、候補ごとの反映、最終の検証が入った**(`a99725b5f`、2026-10-29。[RC-6a2](#rc6a2-implementation)) |
+| 2-3 | 物理計画の固定ルート(pin / freeze / complete) | **方針決定(2026-10-22): 固定のルートを `target_planning` の policy に一本化する**。細部は後で詰める | 同じ | 語彙、`require` / `prefer`、優先順位(§2-3)。**RC-6a1 で強さ・出所・優先(root > レシピ > 部品)と部品の宣言が入った**(`3fa229eba`、2026-10-28。§2-3 の [RC-6a1](#rc6a1-implementation))。**RC-6a2 で語彙 5 つ(`backend` / `representation` / `alias_group` / `scope_break` / `scope_join`)、候補ごとの反映、最終の検証が入った**(`a99725b5f`、2026-10-29。[RC-6a2](#rc6a2-implementation))。**RC-6b1 で Studio の Pin / Freeze が policy を書くようになり**(`a0367bd23`。[RC-6b1](#rc6b1-implementation))、**RC-6b2 で旧い pin / fragment の鍵・RPC・dump の欄を消した**(`4e21d7d03`。[RC-6b2](#rc6b2-implementation)) |
 | 2-4 | `declared_bytes` = 0 | **埋める**(2026-10-22) | 同じ(RT メモ段 0 と同じ WP、v0 可) | なし |
 | 2-5 | anchor と順序の二重化 | **段タグ + canvas のフィルター階層へ**(段メモ) | 同じ | 段メモ §7 の残り 1 件 |
 | 2-6 | 段階 2 の typed policy | **強化する。core の JSON 二重 parse を解く**([design_render_graph_ir.md](design_render_graph_ir.md)。旧 [design_stage2_typed_pipeline.md](design_stage2_typed_pipeline.md) は置き換え済み) | 同じ | 段メモ側の未決 3 件(同メモ §6) |
@@ -131,6 +131,7 @@
 - Studio の Pin は `backend` の policy を書く操作に、Freeze は「今の計画の決定を policy として書き出す」操作(eject as policy)になる。
   名前で指すので graph の変更に強く、消えた名前は purge の規則で名前付きの警告。
 - `ejectable_pin_package` / `ejectable_physical_fragment` / `vulkan_plan_pins` / `vulkan_physical_fragments` / `put_vulkan_physical_fragment` / `edit_vulkan_plan_pins` は消える。
+  → **RC-6b2 で消えた**(`ejectable_complete_physical_plan` も。下の [RC-6b2](#rc6b2-implementation))。
   complete package は残るが、ユーザーのルートではなく runtime の artifact(NativeScope の identity と検証)。ダンプは **plan + policy + 説明**。
 - 線引き: **写し(eject)を許すのはユーザー空間の成果物(feature のコピー)だけ。導出物には許さない。** preset レシピ化と同じ向き。
 - 失うもの: 版を上げたときに再決定せず古い答えを使う能力。版固定で代替する。policy で表せない決定が出たら、写しに戻らず語彙を足す。
@@ -188,6 +189,7 @@
   断る所は物理計画の bridge([pin / fragment を見る所](../src/core/renderingpass/renderingsamplecount.cpp#L1682))、planner の入口、fragment の linker、complete の install
   ([install で断る所](../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L933))。Studio の Pin / Freeze は今も旧い package を書くので、policy のある graph では断られる
   (コードの読み。Studio の道を通した test は無い)。
+  → **RC-6b2 で変わった**: pin と fragment は文書の鍵ごと無くなり、この拒否が出るのは complete の install だけ(下の [RC-6b2](#rc6b2-implementation))。
 - **dump**: `get_frame_plan` の `physical_target_plan` に、宣言が 1 つでもある graph だけ `policy` の配列を出す(無いときは欄ごと無い。policy を書かない 16 構成の
   snapshot は 18a1807fc で記録した物と一致。報告の A5)。各行は `{graph, target, key, strength, origin: {kind, document, pointer}, status, value, satisfied?}`
   ([JSON にする所](../src/project/targetplanning.cpp#L26))。`status` は `adopted` / `overridden` / `engine_forced` / `absent`(型には `infeasible_prefer` もあるが今は出ない)。
@@ -271,6 +273,7 @@
   `alias_group`・`no_alias` の `require` の書き出し)と旧い package・RPC の削除は RC-6b。新しい語彙を指定した
   GPU の描画、全数・scenario、XR 無効の build は未検証(報告)。
   → **RC-6b1 で Studio の Pin / Freeze の置き換えが入った**。報告の案と違い、Freeze は `no_alias` を書かない(下の [RC-6b1](#rc6b1-implementation))。
+  → **旧い package・RPC は RC-6b2 で消した**(下の [RC-6b2](#rc6b2-implementation))。
 
 <a id="rc6b1-implementation"></a>
 
@@ -278,6 +281,7 @@
 `rc6b1_fix_report.md`。この段の行番号は `a0367bd23` の物。上の「方針」の「Studio の Pin は `backend` の policy を書く操作に、Freeze は今の計画の決定を policy として書き出す操作に」と、
 「後で詰める細部」の 6 の 3 段目(Pin / Freeze を policy 書き出しに置換)がこの形になった。**固定のルートは Studio の側では root の policy の 1 本になった。**旧い package
 (`vulkan_plan_pins` / `vulkan_physical_fragments`)と、それを書く `edit_vulkan_plan_pins` / `put_vulkan_physical_fragment`、dump の `ejectable_*` は今は残っているが、Studio は使わない。
+→ **RC-6b2 で全部消えた**(下の [RC-6b2](#rc6b2-implementation))。
 
 - **書く道は 1 本**: Pin / Unpin / Freeze / Remove と Frame Plan の Serial / Isolate / No alias の check は、どれも今の `edit_target_planning` を 1 回送る(新しい RPC は無い)。
   CAS も文書の履歴も 1 回で、render の編集の履歴の 1 項目(`Edit planning decisions`)を Undo 1 回で全部戻す。RPC で変えたのは 1 点だけで、合成の結果に無い名前でも、保存済みの
@@ -314,9 +318,35 @@
   記録し直さずに一致(報告)。
 - **旧い package との同居**: RC-6a1 の同居の拒否と同じ理由で、旧い package(root の pin / physical fragment、applied の pin / fragment、complete の install)がある graph では Studio が
   Pin / Freeze を送る前に断る。移行の機能は作らない。
+  → **RC-6b2 で変わった**: 見るのは `legacy_complete_plan` だけで、文は `This graph has a complete package: …`(下の [RC-6b2](#rc6b2-implementation))。
 - **表示**: Plan Viewer(ImGui の Compiled Passes。[足す所](../src/core/imgui/compiledplanviewer.cpp#L163))と Studio の Frame Plan の Physical plan のタブに、dump の `policy` の行
   (出所・`status`・`satisfied`)を出す。
 - **確かめた範囲**: シナリオ `gui_lower_layer_pin_freeze` は統合側の仮想モニタで緑(着地前の gate、シナリオ 26 本)。GPU の実機の描画・XR の実機は未検証。
+
+<a id="rc6b2-implementation"></a>
+
+**RC-6b2 で消した物(2026-10-29、`4e21d7d03`、branch `agent/rc6`)。**仕様は `<作業ディレクトリ>/rc6_spec.md` §5 の RC-6b2、実装者の報告は `<作業ディレクトリ>/rc6b2_report.md` と修正の報告
+`rc6b2_fix_report.md`、消した symbol の一覧は `<作業ディレクトリ>/rc6b2_evidence/removed_symbols.txt`。上の「後で詰める細部」の 6 の 4 段目(package と RPC の削除)がこの形になった。
+**物理計画を固定するルートは root の `target_planning` の policy の 1 本だけになった。**
+
+- **消した物**: 文書の `vulkan_plan_pins` / `vulkan_physical_fragments`、RPC `edit_vulkan_plan_pins` / `put_vulkan_physical_fragment`(登録・`edit_batch` の表・Studio の送信の分岐・
+  render の編集の履歴の分類と label。送ると method not found)、dump の `ejectable_pin_package` / `ejectable_physical_fragment` / `applied_pin_package` / `applied_physical_fragment` /
+  `ejectable_complete_physical_plan`(wire の validator・Studio の model・Plan Viewer からも)、型 `VulkanTargetPlanPinPackage` / `VulkanPhysicalFragmentPackage` と fragment の
+  resource / scope / alias / attachment の型・scope edit mode・stale の型、pin と fragment の parse / serialize / eject / link、`physical_fragment_stale` と
+  `physical_fragment.reorders_frame_plan@1`、authoring context の `planning_catalog.<graph>.legacy_package`。ファイル丸ごとの削除は無い(共有の部分は `vulkanphysicalfragment.cpp` に残した)。
+- **旧い鍵の拒否**: 文書(root の rendering 節・preset と `@2` のレシピの `config`・構造の断片)に 2 つの鍵のどちらかがあれば、値によらず(空・`null`・policy の有無を問わない)
+  `target_planning.legacy_package_removed@1 {key, document, message}`。`message` は `Remove <key> from the document and reload it, then recreate the policy with Studio Pin / Freeze.`
+  (読み込めない文書に Freeze を勧めない)。読む所の共通の guard は [`rejectRemovedPlanningPackages()`](../src/project/renderpipeline.cpp#L882)。`restore_render_documents` は
+  消さない文書を 1 つずつ同じ guard に通す(復元の後に選ばれなくなる文書も。修正の報告)。黙って無視はしない。自動の移行は作らない。
+- **無くなった能力**(project 空間での使用は 0 件): format の上書き、attachment の store の破棄、個々の load / store の編集、版をまたいで同じ計画を固定すること。
+  backend の固定・scope の分割と融合・alias の組・materialize は RC-6a2 の policy で書ける(報告: RC-6a2 C1〜C7 と RC-6b1 D2 が同じ事実を持つ)。
+- **残した物**: `validateVulkanPhysicalAttachmentPlans`・`vulkanAutomaticTargetPlanFingerprint` と helper・`validateVulkanPhysicalFeatureClosure`・`physicalNodeOrderOf`・最終の policy の
+  検証・`VulkanPhysicalResourceFormatCapability`。complete physical plan の型・C++ の eject / verify / install と、policy との同居の拒否は NativeScope のために残し、dump には出さない。
+  verification context の `automatic_plan` と install の時の同一性の検査も残した(compile の直後は `automatic_plan` と `compiled_plan` が同じ object)。Studio の Pin / Freeze の
+  前提は `legacy_complete_plan` だけを見る(`This graph has a complete package: Pin / Freeze cannot add policy (target_planning.policy_with_legacy_package@1).`)。
+- **test**: 消すかどうかは assertion / SECTION の単位で決め、17 test case と 5 SECTION を消した(一覧は報告に)。RC-5s の stale の test は complete の stale の検査だけを分けて残し、
+  A5 は記録し直さずに、期待と実際の両方から廃止した欄(snapshot の `pins` / `physical_fragments` と dump の 5 欄)だけを明示して除いて比べる。
+- **確かめた範囲**: 非 GPU の触った family・NativeScope の GPU 2 件・A5 は緑(報告)。GPU・非 GPU・シナリオの全数は統合側(報告の時点で未実施)。
 
 ### 2-4 `declared_bytes` = 0 — 埋める(決定 2026-10-22)
 
@@ -389,7 +419,7 @@
 |---|---|---|---|
 | 0 | 文書の修正(2-7)、コードマップに 3-1 の「未使用」 | v0 可 | 文書のみ |
 | 1 | 2-4: `declared_bytes` を計測で埋める(RT メモ段 0 と同じ WP)。**RC-1 で済み(`631caac21`)** | v0 可(鍵は増えない) | planner 単体、手計算 120 / 81 MiB と一致 → 実測は 119.95 / 81.08 MiB(RT メモ §1) |
-| 2 | 2-3: 固定ルートの policy 一本化(語彙 → 強度・優先順位 → Pin / Freeze の置換 → package と RPC の削除)。**強度・優先順位は RC-6a1 で済み(`3fa229eba`)。語彙は RC-6a2 で済み(`a99725b5f`)。残りは Pin / Freeze の置換と package・RPC の削除(RC-6b)。Studio の Pin / Freeze の置換は RC-6b1 で済み(`a0367bd23`)。**3-2 / 3-3: 選ばれなかった候補と 1 node scope を既定で隠す | v1(物理計画 WP。RT メモの区間詰めと同じ場所) | policy → plan の golden、Frame Plan の scenario(Pin / Freeze の置換後) |
+| 2 | 2-3: 固定ルートの policy 一本化(語彙 → 強度・優先順位 → Pin / Freeze の置換 → package と RPC の削除)。**強度・優先順位は RC-6a1 で済み(`3fa229eba`)。語彙は RC-6a2 で済み(`a99725b5f`)。残りは Pin / Freeze の置換と package・RPC の削除(RC-6b)。Studio の Pin / Freeze の置換は RC-6b1 で済み(`a0367bd23`)。package・RPC の削除は RC-6b2 で済み(`4e21d7d03`)。**3-2 / 3-3: 選ばれなかった候補と 1 node scope を既定で隠す | v1(物理計画 WP。RT メモの区間詰めと同じ場所) | policy → plan の golden、Frame Plan の scenario(Pin / Freeze の置換後) |
 | 3 | 2-1: `execution_plan` の削除(上の表)。2-2: `levels` を契約から外す。**RC-2 で済み**(`e15e31bb5`、2026-10-23) | v1 | golden 不変、GPU gate、Studio scenario。RC-2 の実装者の報告では触った家族の非 GPU test 628 / 628 緑。GPU gate と Studio scenario は統合側で回す(この記録の時点で結果は未確認) |
 | 4 | 2-6: 段階 2 を typed 論理 graph に育て、core の JSON parse を消す。2-5 と preset レシピ化に合流 | v1 | 純ロジック test、golden 不変 |
 

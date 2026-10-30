@@ -30,7 +30,7 @@ silently reinterpret a deep merge."*
 |---|---|
 | root の `features` / `shader_defines` / `graph_transforms` を preset へ追記 | 可 |
 | root の `draw_sort` で preset を置換 | 可 |
-| `render_strategy` / `snapshots` / `target_planning` / `vulkan_plan_pins` / `vulkan_physical_fragments` | preset が持っていれば root から不可 |
+| `render_strategy` / `snapshots` / `target_planning` / `vulkan_plan_pins` / `vulkan_physical_fragments` | preset が持っていれば root から不可(後の 2 つは RC-6b2 で撤去。§7.10) |
 | preset を選ぶ root に `render_targets` / `rendering_passes` を併記 | 不可(hard error) |
 | preset から preset の参照 | 不可 |
 
@@ -173,7 +173,7 @@ RC-5a(4001e48af)と RC-5b(0f0cea36b)。branch `agent/rc5`。仕様は `<作業�
 ### 7.2 入った形: base は feature ではなく「構造の断片」
 
 - **`pelican.render_pipeline@2`(レシピ)**: `config` に書けるキーは 11 個 —— `base`・`features`・`graph_transforms`・`shader_defines`・
-  `draw_sort`・`material_routing`・`xr`・`render_strategy`・`target_planning`・`vulkan_plan_pins`・`vulkan_physical_fragments`。
+  `draw_sort`・`material_routing`・`xr`・`render_strategy`・`target_planning`・`vulkan_plan_pins`・`vulkan_physical_fragments`(RC-6b2 で後の 2 つが外れて 9 個。§7.10)。
   `render_targets` / `rendering_passes` / `snapshots` / `buffers` / `compute_tasks` は `render_pipeline.recipe_has_structure@1`(`key`)、
   ほかのキーは `render_pipeline.recipe_unknown_key@1`(`key`)で断る([`expandRenderPipelineRecipe()`](../src/project/renderpipelinerecipe.cpp#L65))。
   `features` 以下の 10 個の合成と root からの上書きの可否は `@1` と同じ(報告 §2 が `@1` の resolver の表と照らした)。RC-6a1 から `target_planning` だけは違う(root が葉ごとに上書きする。§7.8)。
@@ -210,7 +210,7 @@ RC-5a(4001e48af)と RC-5b(0f0cea36b)。branch `agent/rc5`。仕様は `<作業�
 - **等価の結果**(報告): 展開の直後の config は `hybrid_v1` の config と JSON で一致(lit は「`hybrid_v1` + root の shadow / sky」と一致)。
   bare / lit × HDR on / off × project の feature と Graph の node の有無 × flat / XR の 16 構成で、typed IR の全体・3 種の fingerprint・
   FramePlan の全 JSON・物理計画の全 JSON が一致。差は各構成 25 の JSON pointer(node / resource の `fragment` 欄と、preset の文書の識別
-  `pipeline_preset.{name, ref, version}` と診断 `pipeline_preset_resolved`)だけ。旧構成で作った pin / physical fragment は新構成にそのまま
+  `pipeline_preset.{name, ref, version}` と診断 `pipeline_preset_resolved`)だけ。旧構成で作った pin / physical fragment(RC-6b2 で撤去)は新構成にそのまま
   適用できた。golden 5 ケースと `animgraph_demo` の preset の headless の PNG が byte 一致。
 
 ### 7.3 root の `fragment_overrides`(base の断片の置き換えと除外)
@@ -337,3 +337,17 @@ develop_v1 の `1e05031d7` / `e17754510`。仕様は `<作業ディレクトリ>
 - **`alias_group` の組名は文書の中だけ**: 組は (宣言の出所の document, 組名) で決まる。feature F と feature G が同じ組名 `"scratch"` を書いても別の組で、共有させたければ root に
   書く(報告の C5)。レシピの組名はレシピの文書の中、断片の組名はその断片の文書の中だけで通じる(断片ごとに document が違うため。コードの読み)。
 - **出荷の文書**: engine の feature・断片・レシピに `target_planning` を書いた物は今も無い(`src/core/resources` の検索で 0 件)。
+
+### 7.10 RC-6b2(旧い pin と physical fragment の撤去、2026-10-29)
+
+`4e21d7d03`(branch `agent/rc6`)。仕様は `<作業ディレクトリ>/rc6_spec.md` §5 の RC-6b2、報告は `<作業ディレクトリ>/rc6b2_report.md` と修正の報告。全体は
+[棚卸しメモ §2-3 の RC-6b2](design_plan_layer_inventory.md#rc6b2-implementation)。レシピと部品に関わる所だけ書く。
+
+- **鍵**: `@1` の preset の `config`、`@2` のレシピの `config`、構造の断片の文書に `vulkan_plan_pins` / `vulkan_physical_fragments` があれば、値によらず
+  `target_planning.legacy_package_removed@1 {key, document, message}`。レシピの `config` の鍵の検査より先に断る([`expandRenderPipelineRecipe()`](../src/project/renderpipelinerecipe.cpp#L71) の
+  先頭)ので、レシピの `config` に書ける鍵は 9 個(`base`・`features`・`graph_transforms`・`shader_defines`・`draw_sort`・`material_routing`・`xr`・`render_strategy`・`target_planning`)。
+  test「RC-6b2 removed planning keys are refused in preset recipe and structural fragment documents」。
+- **`restore_render_documents`**: preset / レシピの `config` と構造の断片も、復元の後に選ばれなくなる場合を含めて同じ code で断る(test「RC-6b2 restore rejects removed planning keys
+  in every document even after switching presets」)。
+- **A5**: §7.2 の 16 構成の比較は記録し直さず、期待と実際の両方から snapshot の `pins` / `physical_fragments` と dump の廃止した 5 欄だけを除いて比べる。RC-5s の固定 HEAD の stale の test は
+  complete package の検査だけを残した(「RC-5s fixed HEAD complete packages are stale」)。

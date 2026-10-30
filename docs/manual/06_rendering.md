@@ -93,11 +93,11 @@ staged 世代・lease・状態移送を含む所有と寿命は[読解ガイド�
 
 <a id="render-preset"></a>
 
-**preset** は、描画パスや target などの構成を再利用する `pelican.render_pipeline` v1(`@1`)文書です(`@2` の実験のレシピは下の「preset のレシピ」)。root の `rendering.pipeline.preset` で選び、`settings` で対応する設定を渡します。engine preset(`engine://…`)は同梱の構成、project preset(`project://…`)は project が所有する編集可能な構成です。engine preset の構造を編集するときは `fork_render_pipeline` で project の新規ファイルへ複製し、root の参照先も切り替えます。preset 自身から別の preset を選ぶ再帰はできません([形式の検査](../../src/project/renderpipeline.cpp#L1242)、[fork](../../src/core/communication/renderconfigeditor.cpp#L3849))。
+**preset** は、描画パスや target などの構成を再利用する `pelican.render_pipeline` v1(`@1`)文書です(`@2` の実験のレシピは下の「preset のレシピ」)。root の `rendering.pipeline.preset` で選び、`settings` で対応する設定を渡します。engine preset(`engine://…`)は同梱の構成、project preset(`project://…`)は project が所有する編集可能な構成です。engine preset の構造を編集するときは `fork_render_pipeline` で project の新規ファイルへ複製し、root の参照先も切り替えます。preset 自身から別の preset を選ぶ再帰はできません([形式の検査](../../src/project/renderpipeline.cpp#L1162)、[fork](../../src/core/communication/renderconfigeditor.cpp#L3842))。
 
-preset の合成では、root の `features`・`shader_defines`・`graph_transforms` を配列へ追記します。root の `draw_sort` は preset の値を置換します。`render_strategy`・`snapshots`・`target_planning`・`vulkan_plan_pins`・`vulkan_physical_fragments` は preset が既に持つ場合に root から上書きできません。preset を選ぶ root に `render_targets` / `rendering_passes` を直接併記することもできません。構造を変更するときは先に fork します([合成の検査](../../src/project/renderpipeline.cpp#L1314))。preset の `config.features` も同じ規則で合成されます(preset の配列を起点に root の `features` を後ろへ足し、JSON 値の完全一致で重複を省く)。出荷の `hybrid_v1` は `features` を持ちません。
+preset の合成では、root の `features`・`shader_defines`・`graph_transforms` を配列へ追記します。root の `draw_sort` は preset の値を置換します。`render_strategy`・`snapshots`・`target_planning` は preset が既に持つ場合に root から上書きできません(✅RC-6b2 の前は `vulkan_plan_pins`・`vulkan_physical_fragments` もこの扱いでした。今はどの文書に書いても `target_planning.legacy_package_removed@1` です。§6.6「[旧い pin と physical fragment](#legacy-plan-packages-removed)」)。preset を選ぶ root に `render_targets` / `rendering_passes` を直接併記することもできません。構造を変更するときは先に fork します([合成の検査](../../src/project/renderpipeline.cpp#L1236))。preset の `config.features` も同じ規則で合成されます(preset の配列を起点に root の `features` を後ろへ足し、JSON 値の完全一致で重複を省く)。出荷の `hybrid_v1` は `features` を持ちません。
 
-このほか `target_planning`(§6.6)、`vulkan_plan_pins` / `vulkan_physical_fragments`(§6.6)、`xr`(§6.12)もトップレベルキーです。
+このほか `target_planning`(§6.6)、`xr`(§6.12)もトップレベルキーです(`vulkan_plan_pins` / `vulkan_physical_fragments` は ✅RC-6b2 で無くなりました)。
 
 editor の RPC から書くときは、`shader_defines`・`snapshots`・`resolver_version`・`draw_sort`・`graph_transforms`・`render_strategy`・`xr`・`multisampling`・`fragment_overrides`(RC-5b) を `edit_rendering_keys`が丸ごと書き、ほかのキーはそれぞれ別の RPC が書きます(`features` は `edit_render_features`、`material_route_default` は `set_material_route_default` など。対応の表は [第13章](13_editor.md) §13.5 の「rendering 節のほかのキーを書く」)。preset を選ぶ root では `multisampling` と `resolver_version` を書けません。
 
@@ -113,7 +113,7 @@ editor の RPC から書くときは、`shader_defines`・`snapshots`・`resolve
 
 **実験の機能です。**`@1` の preset(`hybrid_v1` を含む)、新しい project の雛形、出荷の project は何も変わっていません。何を既定の preset にするかは決まっていません(2026-10-27 の利用者の決定)。
 
-**レシピ**は、構造(target と pass)を自分では書かず、**構造の断片**を並べて指す preset です。engine は読み込むときに断片をつないで `@1` と同じ形の config に展開し、そこから先は `@1` の preset と全く同じ道(root の合成、HDR、feature の挿入、Graph、IR。RC-5 の時点ではこの間に canonical anchor の振り分けがありましたが、✅RC-5s で無くなりました)を通します([`@2` の分岐](../../src/project/renderpipeline.cpp#L1285)、[`expandRenderPipelineRecipe()`](../../src/project/renderpipelinerecipe.cpp#L67))。断片を feature にしなかったのは、feature の `insert` では `hybrid_v1` と同じ pass の順と依存を作れないためです(RC-5 の判断の時点の理由: canonical の振り分けが feature の挿入より前にあること、HDR の初期化、同じ pass への `after` の並びの規則。振り分けは RC-5s で無くなりました。設計は [recipe メモ §7](../design_render_preset_feature_recipe.md#rc5-implementation))。
+**レシピ**は、構造(target と pass)を自分では書かず、**構造の断片**を並べて指す preset です。engine は読み込むときに断片をつないで `@1` と同じ形の config に展開し、そこから先は `@1` の preset と全く同じ道(root の合成、HDR、feature の挿入、Graph、IR。RC-5 の時点ではこの間に canonical anchor の振り分けがありましたが、✅RC-5s で無くなりました)を通します([`@2` の分岐](../../src/project/renderpipeline.cpp#L1207)、[`expandRenderPipelineRecipe()`](../../src/project/renderpipelinerecipe.cpp#L68))。断片を feature にしなかったのは、feature の `insert` では `hybrid_v1` と同じ pass の順と依存を作れないためです(RC-5 の判断の時点の理由: canonical の振り分けが feature の挿入より前にあること、HDR の初期化、同じ pass への `after` の並びの規則。振り分けは RC-5s で無くなりました。設計は [recipe メモ §7](../design_render_preset_feature_recipe.md#rc5-implementation))。
 
 ```json
 {
@@ -142,7 +142,7 @@ editor の RPC から書くときは、`shader_defines`・`snapshots`・`resolve
 | `features` / `graph_transforms` / `shader_defines` | `@1` と同じ | `@1` と同じ(root の配列を後ろへ足す) |
 | `draw_sort` / `xr` | `@1` と同じ | `@1` と同じ(root が置き換える) |
 | `material_routing` | `@1` と同じ | `@1` と同じ(preset のもの) |
-| `render_strategy` / `vulkan_plan_pins` / `vulkan_physical_fragments` | `@1` と同じ | `@1` と同じ(preset が持てば root から上書き不可) |
+| `render_strategy` | `@1` と同じ | `@1` と同じ(preset が持てば root から上書き不可)。✅RC-6b2 の前はこの行に `vulkan_plan_pins` / `vulkan_physical_fragments` もあった。今はレシピの `config` に書くと `target_planning.legacy_package_removed@1` |
 | `target_planning` | `@1` と同じ形。✅RC-6a1 から、書ける名前は base の断片(`fragment_overrides` を当てた後)が宣言する pass と資源だけで、裸の値の強さは `prefer` | ✅RC-6a1 から `@1` と違い、root も書ける。同じ graph・対象・鍵ではレシピより root が勝つ(§6.6「[宣言の強さと出所](#target-planning-policy)」) |
 
 - 展開の結果に `base` は残らず、レシピに無いキーは補いません(`features` の無いレシピの展開に `features` は出ません)。
@@ -179,13 +179,13 @@ editor の RPC から書くときは、`shader_defines`・`snapshots`・`resolve
 
 (`lighting-branch.json` は `name` が `deferred_lighting` の `pelican.render_fragment@1`。Studio の Materialize が作る形です)
 
-- キーは base が指す断片の `name`、値は置き換える断片の参照か `null` です。参照なら **base の中の同じ位置で**置き換え、`null` ならその断片を外します([置き換えと除外](../../src/project/renderpipelinerecipe.cpp#L111))。置き換えの後の pass の並びは置き換えの前と同じです(test)。
+- キーは base が指す断片の `name`、値は置き換える断片の参照か `null` です。参照なら **base の中の同じ位置で**置き換え、`null` ならその断片を外します([置き換えと除外](../../src/project/renderpipelinerecipe.cpp#L113))。置き換えの後の pass の並びは置き換えの前と同じです(test)。
 - 置き換え先の文書の `name` はキーと同じでなければなりません。
 - 外したことで足りなくなる target や pass を engine は補いません。今の名前付きの拒否のままです(例: `"ssao": null` は `deferred_lighting` が `ssao_blur` を要るので `render_pipeline.fragment_missing_target@1`。test)。material routing が要る pass(`deferred_geometry` / `forward_opaque` / `forward_transparent`)を無くす置き換えは、今の routing の拒否になります(仕様の決め事。test はありません)。
 - 同じ中身の断片への置き換え(下の materialize が作るもの)だけが、置き換えの前と同じ結果を約束します。
 - Studio と RPC で断片を 1 本だけ project に写して編集する手順は [第13章「レシピの base の断片を分岐する」](13_editor.md#recipe-fragment-materialize) です。
 
-**名前付きの拒否**(接頭辞はどれも `render_pipeline.`。[構造のキーと表に無いキーを断る所](../../src/project/renderpipelinerecipe.cpp#L70)、[`fragment_overrides` を `@1` の root で断る所](../../src/project/renderpipeline.cpp#L1294)):
+**名前付きの拒否**(接頭辞はどれも `render_pipeline.`。[構造のキーと表に無いキーを断る所](../../src/project/renderpipelinerecipe.cpp#L72)、[`fragment_overrides` を `@1` の root で断る所](../../src/project/renderpipeline.cpp#L1216)):
 
 | code | いつ | detail |
 |---|---|---|
@@ -207,7 +207,7 @@ editor の RPC から書くときは、`shader_defines`・`snapshots`・`resolve
 - `pelican.render_fragment` と `@2` は `docs/v0_freeze.md` の凍結表に入れていません。`@1` は読み替えずに今のまま読みます。
 - web の鏡像(別 repo)が `@2` と断片を読めるかは未確認です。
 - レシピの `features` の instance を置き換える / 外す仕組みはありません(root の `features` を後ろへ足すだけ)。engine のレシピの `features` の instance は、`@1` の engine preset と同じく、materialize の前に preset の fork が要ります。
-- 版の検査の文は `@2` を受けるようになった今も `render pipeline preset version must be exactly 1: <参照>` です(`@1` / `@2` 以外の版で出ます。[版の検査](../../src/project/renderpipeline.cpp#L1272))。
+- 版の検査の文は `@2` を受けるようになった今も `render pipeline preset version must be exactly 1: <参照>` です(`@1` / `@2` 以外の版で出ます。[版の検査](../../src/project/renderpipeline.cpp#L1192))。
 
 ### render_targets
 
@@ -217,7 +217,7 @@ editor の RPC から書くときは、`shader_defines`・`snapshots`・`resolve
 | `extent_scale` | ✔ | ウィンドウ(swapchain)サイズ × scale。> 0 |
 | `width` / `height` | 任意(両方セット) | 固定サイズ RT(シャドウマップ等)。片方だけはエラー |
 | `format` | ✔ | 45 種。8/16/32-bit の `R` / `RG` / `RGBA` に対する UNORM・SNORM・UINT・SINT・SFLOAT、sRGB、10/11-bit packed、depth を受理する。一覧の正は engine の format の性質表 [`imageformat.cpp`](../../src/project/imageformat.cpp#L17) の、作者が書ける(`authorable`)行です(下の「format と usage の表」) |
-| `format_candidates` | 任意 string 配列 | verified Vulkan physical fragment が選択してよい追加 format。`format` は常に自動/default候補として先頭へ補われ、重複は除去される。宣言しただけでは自動formatは変わらない |
+| `format_candidates` | 任意 string 配列 | 検査済みの complete physical plan(C++ の口だけ。§6.6「[旧い pin と physical fragment](#legacy-plan-packages-removed)」)が選択してよい追加 format(✅RC-6b2 の前は physical fragment も選べた)。`format` は常に自動/default候補として先頭へ補われ、重複は除去される。宣言しただけでは自動formatは変わらない |
 | `format_class` | 任意 | `scene` / `display` / `data` / `explicit(<FORMAT>)`。カラーリゾルバ(= `format_class` から実 Vulkan format を決める解決器。§6.3 で説明します)が実 format を決めるWP73 |
 | `role` | 任意 | `color` / `data`。SRGB view / UNORM view の選択 |
 | `history` | 任意 bool | `true` で 2 面持ち。前フレーム面は `<名前>@history` で読める(§6.8)WP88 |
@@ -238,9 +238,9 @@ editor の RPC から書くときは、`shader_defines`・`snapshots`・`resolve
 - **断る形**: 宣言を読むのは engine の 1 つの parser で、format の誤りは `render_graph.image_invalid@1 {resource, field: "format", reason: "unknown"}`(`format_candidates` なら `field: "format_candidates"`)、usage の誤りと空の配列は `{field: "usage", reason: "unknown"}` です(test が `{"field":"format","reason":"unknown","resource":"t"}` を見ています)。✅RC-3c2a で、`Unknown format: <名前>` / `Unknown image usage flag: <名前>` / `Image usage flags must not be empty` の文をそのまま返していた core の render target の parser は消えました(文は表を引く関数の中にだけ残ります)。
 - Studio の format / usage の候補(`get_render_authoring_context` の `render_target_vocabulary.formats` / `usage`、[第13章](13_editor.md))はこの表の作者が書ける行だけで、内部の値は出ません。
 - shader から見た数の種類(浮動小数 / 符号付き整数 / 符号なし整数)は、表の格納の型から導きます(uint → 符号なし整数、sint → 符号付き整数、ほかは浮動小数)。material pass の出力の型との照合や MSAA の resolve の方式もこれを使います。
-- `get_frame_plan` の物理計画、fingerprint、eject した package の format は、RC-3a1 から宣言と同じ作者の綴り(`R16G16B16A16_SFLOAT`)です(下の「Vulkan physical fragment」)。
+- `get_frame_plan` の物理計画、fingerprint、eject した package の format は、RC-3a1 から宣言と同じ作者の綴り(`R16G16B16A16_SFLOAT`)です。✅RC-6b2 から eject できる package は C++ の口の complete physical plan だけです(§6.6「[旧い pin と physical fragment](#legacy-plan-packages-removed)」)。
 
-**知らない鍵は名前付きで断ります。**合成した構成の `render_targets[]` の entry(rendering 節・preset・feature の `render_targets[]` と、graph の `render.image` の node を lowering したもの)が次の 18 個以外の鍵を持つと、`graph.image_key_unknown@1 {image, key, allowed}` です([image の鍵を見る所](../../src/project/renderpipeline.cpp#L96))。
+**知らない鍵は名前付きで断ります。**合成した構成の `render_targets[]` の entry(rendering 節・preset・feature の `render_targets[]` と、graph の `render.image` の node を lowering したもの)が次の 18 個以外の鍵を持つと、`graph.image_key_unknown@1 {image, key, allowed}` です([image の鍵を見る所](../../src/project/renderpipeline.cpp#L97))。
 
 - `allowed` は `name` / `format` / `format_class` / `format_candidates` / `extent_scale` / `width` / `height` / `layers` / `mip_levels` / `dimension` / `usage` / `history` / `clear_color` / `role` / `lifetime` / `initial` / `sample_count` / `source` です。上の表の鍵に、IA-1 の `initial`(§6.18「persistent の image を画像資産から始める」)と、feature の parameter の binding の制約が読む `sample_count` と、EN-2 の `source`(`render.image` が読む project の画像ファイル)を足したものです。
 - `image` は entry の `name` です。graph の `render.image` の node では node の id になります(test では `{image: "image", key: "lifetme"}`)。
@@ -363,7 +363,7 @@ raster の pass が attachment を描く前にどうするか(load: 前の値を
   | color(ほかの type) | `clear` | `store` |
   | depth(全 type) | `clear` | `dont_care` |
 
-- **物理計画が変える場合**: 上の優先順で決まった値を、物理計画が正当な理由で変えることがあります。`transient_attachment` / `tile_local_attachment` に選ばれた資源の store は `dont_care` になります(作者が `store` を書いていても。[変える所](../../src/project/targetrenderplanning.cpp#L3658)、dump では `discard`)。1 つの scope に融合した pass の color attachment は、最初に書く pass の load と最後に書く pass の store を使います([組み立てる所](../../src/core/renderingpass/renderingpassruntimecompiler.cpp#L916))。physical fragment で手で変えることもできます(§6.6「Vulkan physical fragment v1 / v2 / v3」)。
+- **物理計画が変える場合**: 上の優先順で決まった値を、物理計画が正当な理由で変えることがあります。`transient_attachment` / `tile_local_attachment` に選ばれた資源の store は `dont_care` になります(作者が `store` を書いていても。[変える所](../../src/project/targetrenderplanning.cpp#L3619)、dump では `discard`)。1 つの scope に融合した pass の color attachment は、最初に書く pass の load と最後に書く pass の store を使います([組み立てる所](../../src/core/renderingpass/renderingpassruntimecompiler.cpp#L916))。✅RC-6b2 の前は physical fragment で手で変えることもできましたが、この道は無くなりました(§6.6「[旧い pin と physical fragment](#legacy-plan-packages-removed)」)。
 - **計画は op を省略できません**: 計画の attachment([`FrameGraphAttachmentDefinition`](../../src/project/frameplan.hpp#L36))と物理計画の attachment([`VulkanPhysicalAttachmentPlan`](../../src/project/targetrenderplanning.hpp#L254))は、解決済みの load と store を 1 欄 `operations` で持ちます。この型([`PassAttachmentOperations`](../../src/project/attachmentoperations.hpp#L32))には既定の値が無いので、op を書かずに作るコードは compile が通りません(RC-3a2 の前は aspect に関係なく `clear` / `store` が初期値でした)。
 
 **受ける綴りは入口ごとに違います。**綴りの表は 1 つですが([表](../../src/project/attachmentoperations.cpp#L29))、入口ごとに受ける集合が決まっています。作者の `color_load_op: "discard"` も、物理計画の package の `load_op: "dont_care"` も断られます。
@@ -373,11 +373,11 @@ raster の pass が attachment を描く前にどうするか(load: 前の値を
 | 作者が書く pass と attachment(ファイルに書ける綴り。engine は下の行の正規化で小文字に直してから読みます。✅RC-3c2b2 の前は core の実行用の pass の parser がこの綴りを直に読み、✅RC-3c1b の前は core の計画用 parse もそうでした) | `clear` `Clear` `load` `Load` `dont_care` `DontCare` `dontCare` | `store` `Store` `dont_care` `DontCare` `dontCare` | 知らない綴りは正規化が残し、[`parseRenderGraph()`](../../src/project/rendergraphparse.cpp#L2011) が名前付きで断ります(下の行)。前の core の parser の文 `Unknown attachment load op: <綴り>` / `Unknown attachment store op: <綴り>` は、今は出ません(✅RC-3c2b2 から本番の道では出ず、この文を投げる関数も ✅RC-4 で消えました) |
 | graph の node の parameter(Studio と catalog の `parameters` の enum。[表から取る所](../../src/project/graphparameterschema.cpp#L250)) | 上と同じ 7 つ(小文字の 3 つが先) | 上と同じ 5 つ | `graph.render_node_parameter_invalid@1`(`reason: "enum"`) |
 | 正規化の後(§6.2「短縮形と正規形」。合成済みの宣言、合成の出口の検査) | `clear` `load` `dont_care` | `store` `dont_care` | 別の綴りは正規化で小文字に直ります。直さずに読む所へ届くと `render.json_not_normalized@1`。知らない綴りは正規化が残します。compile では [`parseRenderGraph()`](../../src/project/rendergraphparse.cpp#L2011)(✅RC-3c1b から本番の道、✅RC-3c2b2 から pass の宣言を読む唯一の所)が読み、attachment の `load_op` / `store_op` なら `render_graph.attachment_invalid@1`、pass の `color_load_op` などなら `render_graph.node_field_invalid@1`(どちらも `reason: "unknown_op"` と `value`)で断ります。RC-3c1b の前は core の parser の上の文言でした |
-| 物理計画の package(physical fragment と complete physical plan)、`get_frame_plan` の dump、fingerprint | `clear` `load` `discard` | `store` `discard` | `Vulkan physical attachment fragment has unknown load_op: <綴り>`([fragment](../../src/project/vulkanphysicalfragment.cpp#L149))/ `complete physical attachment has unknown load_op '<綴り>'`([complete plan](../../src/project/vulkancompletephysicalplan.cpp#L373))。store も同じ形 |
+| 物理計画の package(complete physical plan。✅RC-6b2 の前は physical fragment も)、`get_frame_plan` の dump、fingerprint | `clear` `load` `discard` | `store` `discard` | `complete physical attachment has unknown load_op '<綴り>'`([complete plan](../../src/project/vulkancompletephysicalplan.cpp#L373))。store も同じ形。physical fragment の文 `Vulkan physical attachment fragment has unknown load_op: <綴り>` は ✅RC-6b2 で読み手ごと無くなりました |
 
-- 物理計画の `discard` は作者の `dont_care` と同じ値です。eject・dump が書く綴り(`discard`)と fingerprint に入る文字列は RC-3a2 で変わっていません([fingerprint に足す所](../../src/project/vulkanphysicalfragment.cpp#L897))。
+- 物理計画の `discard` は作者の `dont_care` と同じ値です。eject・dump が書く綴り(`discard`)と fingerprint に入る文字列は RC-3a2 で変わっていません([fingerprint に足す所](../../src/project/vulkanphysicalfragment.cpp#L556))。
 - 正規化が小文字に直す表は、RC-3a2 の後も `renderingjsonnormalize.cpp` に別にあります([綴りの表](../../src/project/renderingjsonnormalize.cpp#L39))。受ける集合は上の作者の集合と同じです(コードの読み)。
-- test: [「RC-3a2 each way in admits the attachment op spellings it did and refuses the rest by name」](../../test/rendervocabulary_test.cpp#L169) が入口ごとの受理と拒否を、[「RC-3a2 the loader, the planner and registration hand the recording the attachment ops they resolve」](../../test/attachmentoperations_test.cpp#L229) が、本番の loader → 計画 → registration を通して記録が `beginRendering` に渡す値(その直前の関数 [`recordedColorAttachmentOps()`](../../src/core/vkcore/recordedattachmentops.hpp#L22))を、優先順・transient の store・physical fragment の編集のそれぞれで、独立に書いた期待値と比べます。GPU は要りません。
+- test: [「RC-3a2 each way in admits the attachment op spellings it did and refuses the rest by name」](../../test/rendervocabulary_test.cpp#L169) が入口ごとの受理と拒否を、[「RC-3a2 the loader, the planner and registration hand the recording the attachment ops they resolve」](../../test/attachmentoperations_test.cpp#L229) が、本番の loader → 計画 → registration を通して記録が `beginRendering` に渡す値(その直前の関数 [`recordedColorAttachmentOps()`](../../src/core/vkcore/recordedattachmentops.hpp#L22))を、優先順・transient の store・complete physical plan のそれぞれで、独立に書いた期待値と比べます(physical fragment の編集の SECTION は ✅RC-6b2 で消えました)。GPU は要りません。
 
 #### 短縮形と正規形(RC-3b)
 
@@ -401,7 +401,7 @@ pass・compute task・buffer の宣言は、今までどおり短い書き方(�
 拒否は 2 つの code です([code の宣言](../../src/project/renderingjsonnormalize.hpp#L39))。
 
 - **`render.json_shape_invalid@1 {path, expected}`**: 正規形に直せない値。`path` はその値の JSON pointer、`expected` は求める形の文(`a string`、`a render target name or an attachment object` など)です。例(test): `after: ["draw", 7]` → `path` `/rendering/rendering_passes/0/passes/1/after/1`、`output.color: ["swapchain", 7]` → `…/output/color/1`、要素のある `output.depth` の配列 → `…/output/depth`、数値の buffer の要素 → `/buffers/0`。`target` が文字列でない attachment も同じ code です。provider の応答の同じ形も同じ code で断られます。
-- **`render.json_not_normalized@1 {path}`**: 正規形でない JSON が正規化を通らずに読む所へ届いたときの code です。engine の内部の不変条件で、作者の文書がこれで断られるのは engine の不具合です。合成の出口([合成の結果を検査する所](../../src/project/featurecompose.cpp#L4236))と provider の応答の検査、合成の後の読み手で出ます。`path` は JSON pointer か、読み手のときは `<pass の名前>/<鍵>`(例 `present/input`)です。
+- **`render.json_not_normalized@1 {path}`**: 正規形でない JSON が正規化を通らずに読む所へ届いたときの code です。engine の内部の不変条件で、作者の文書がこれで断られるのは engine の不具合です。合成の出口([合成の結果を検査する所](../../src/project/featurecompose.cpp#L4250))と provider の応答の検査、合成の後の読み手で出ます。`path` は JSON pointer か、読み手のときは `<pass の名前>/<鍵>`(例 `present/input`)です。
 
 ### type 別の要点
 
@@ -1163,7 +1163,7 @@ feature が作った RT を、**material 側の公開アクセサとして配る
 3. `output_transform` は各 family の最後に 1 つ足され([`appendOutputTransforms()`](../../src/project/featurecompose.cpp#L336))、family の他の全ノードと全 compute task を明示の `after` で待ちます([合成で足す所](../../src/project/featurecompose.cpp#L360))。provider と合成した task が出そろった最終 IR でももう一度足します([最終 IR で足す所](../../src/project/rendergraphir.cpp#L1079))。終端の保証は鎖ではなくこの辺です。
 4. ImGui が有効な構成では、`imgui_pass` を family の最後(`output_transform` の直前)に足し、display を load します。`imgui_pass` はそれまでの全 pass を待ち、`output_transform` は `imgui_pass` を待ちます([`appendImGuiPassToCanonicalGraphs()`](../../src/core/imgui/imguiruntime.cpp#L26))。
 
-変わってよいとした物: 資源の依存で決まらない独立な pass どうしの順(FramePlan の順が変わります)、物理計画の fingerprint、保存済みの physical fragment / complete package / pin(stale になり、eject し直します。RC-3d2 と同じ扱い)。test: 依存の無い 2 つの pass を `frame_node_order` で逆に並べると FramePlan と物理計画の順がその順になり、依存に反する並びは今どおり断られます([「RC-5s independent scene and display passes can reverse order」](../../test/rc5s_anchor_removal_test.inc#L142))。
+変わってよいとした物: 資源の依存で決まらない独立な pass どうしの順(FramePlan の順が変わります)、物理計画の fingerprint、保存済みの physical fragment / complete package / pin(stale になり、eject し直します。RC-3d2 と同じ扱い。pin と physical fragment は ✅RC-6b2 で無くなりました)。test: 依存の無い 2 つの pass を `frame_node_order` で逆に並べると FramePlan と物理計画の順がその順になり、依存に反する並びは今どおり断られます([「RC-5s independent scene and display passes can reverse order」](../../test/rc5s_anchor_removal_test.inc#L142))。
 
 **作者が書く物**
 
@@ -1206,7 +1206,7 @@ Graph で組んだ pipeline(Blank から始めたものなど)は、同梱の pr
 
 **要る target —— `required_targets`**
 
-- `list_render_features` の各 feature に `required_targets: [{name, type, usage?}]` が付きます。feature が読み書きするのに自分では宣言しない target の一覧です([`renderFeatureRequiredTargets()`](../../src/project/featurecompose.cpp#L4270))。
+- `list_render_features` の各 feature に `required_targets: [{name, type, usage?}]` が付きます。feature が読み書きするのに自分では宣言しない target の一覧です([`renderFeatureRequiredTargets()`](../../src/project/featurecompose.cpp#L4284))。
   - 拾う所: pass の `output.color` / `output.depth` / `input`、`render_target_overrides` の鍵、feature 文書の `required_targets`。`$<parameter>` の名前はその parameter の `default` で読み、`<名前>@history` は `<名前>` として数えます。
   - 外すもの: feature 自身の `render_targets` / `buffers`、`swapchain` / `display`、`default` の無い parameter、integration の fragment。
   - `type` は `render.target_ref` に書く論理型です。文書の `required_targets` に同じ名前があればその型、無ければ depth attachment に使う target は `pelican.render.depth@1`(`representation: device`、`space: projection`)、それ以外は `pelican.render.legacy_opaque_image@1` です。
@@ -1224,11 +1224,11 @@ Studio は繋ぐときに `render.target_ref` の型を書き換えていまし�
 
 宣言だけがある target を feature が読む場合は、合成が名前付きで断り、書き手の pass を候補として返します。
 
-- `list_render_features` の `required_targets` の各要素に `needs_writer: true | false` が付きます([FR-3 で needs_writer を決める所](../../src/project/featurecompose.cpp#L4370))。`true` は、feature の pass がその target をこの frame に読み(`input` の `SAMPLED`。`<名前>@history` の読みは数えません)、feature のどの pass も color / depth の出力として書かないものです。pipeline の誰かが先に描いておく必要がある target です。例(test): `sky_ambient` は `lit_color` が `false`(`sky_background` が描く)、`scene_depth` が `true`(読むだけ)です。
-- **断る**: 合成の終わり(全 feature と fold group を当てた後)に、各 feature の `needs_writer` の target を見て、誰も書いていなければ `feature.required_target_unwritten@1` `{feature, target, type, writer_candidates: [{node?, pass, port, resource}], document}` で断ります([`requireFeatureTargetsWritten()`](../../src/project/featurecompose.cpp#L1922)、[FR-3 の検査を呼ぶ所](../../src/project/featurecompose.cpp#L4210))。`feature` / `type` / `document` は FR-1 の拒否と同じ意味です。
+- `list_render_features` の `required_targets` の各要素に `needs_writer: true | false` が付きます([FR-3 で needs_writer を決める所](../../src/project/featurecompose.cpp#L4384))。`true` は、feature の pass がその target をこの frame に読み(`input` の `SAMPLED`。`<名前>@history` の読みは数えません)、feature のどの pass も color / depth の出力として書かないものです。pipeline の誰かが先に描いておく必要がある target です。例(test): `sky_ambient` は `lit_color` が `false`(`sky_background` が描く)、`scene_depth` が `true`(読むだけ)です。
+- **断る**: 合成の終わり(全 feature と fold group を当てた後)に、各 feature の `needs_writer` の target を見て、誰も書いていなければ `feature.required_target_unwritten@1` `{feature, target, type, writer_candidates: [{node?, pass, port, resource}], document}` で断ります([`requireFeatureTargetsWritten()`](../../src/project/featurecompose.cpp#L1922)、[FR-3 の検査を呼ぶ所](../../src/project/featurecompose.cpp#L4224))。`feature` / `type` / `document` は FR-1 の拒否と同じ意味です。
   - 見ない target: buffer、`initial` を持つ target(IA-1 の image は pass より前に中身を持つ)、宣言の無い target(FR-1 の `feature.required_target_missing@1` が先に断る)、その合成に feature の読む pass が無いもの。
   - 「書いている」の判定: pipeline の pass と compute task の宣言のどこかが、読む鍵(`input` / `reads` / `input_sampling`)と `name` / `after` / `before` 以外の所でその名前を持っていれば、書いているとみなします。コードの注記では、迷えば「書くかもしれない」に倒し、残りは frame planner の拒否に任せます。
-  - feature の parameter に結んだ target(`taa` の `depth` など): この検査は parameter を束ねる前の feature の文書を、instance の値(resolved parameters)と合わせて読みます。`$<parameter>` は parameter の `default` ではなく結んだ先の名前になり、parameter の宣言の `usage` がその target の型に入ります([RG-3 で結んだ先の名前を読む所](../../src/project/featurecompose.cpp#L4314))。そのため depth の parameter(`usage` が `DEPTH_STENCIL_ATTACHMENT`)に結んだ target は `pelican.render.depth@1` として断られ、`writer_candidates` は depth を書く pass の出力です。例(test): example の pipeline に `velocity` と、`depth` を誰も描かない `taa_bound_depth` に結んだ `taa` を足すと、`target: "taa_bound_depth"`、`type` は depth で、候補の `port` はすべて `depth`(`offscreen_depth` を書く出力を含む)です。
+  - feature の parameter に結んだ target(`taa` の `depth` など): この検査は parameter を束ねる前の feature の文書を、instance の値(resolved parameters)と合わせて読みます。`$<parameter>` は parameter の `default` ではなく結んだ先の名前になり、parameter の宣言の `usage` がその target の型に入ります([RG-3 で結んだ先の名前を読む所](../../src/project/featurecompose.cpp#L4328))。そのため depth の parameter(`usage` が `DEPTH_STENCIL_ATTACHMENT`)に結んだ target は `pelican.render.depth@1` として断られ、`writer_candidates` は depth を書く pass の出力です。例(test): example の pipeline に `velocity` と、`depth` を誰も描かない `taa_bound_depth` に結んだ `taa` を足すと、`target: "taa_bound_depth"`、`type` は depth で、候補の `port` はすべて `depth`(`offscreen_depth` を書く出力を含む)です。
 - **`writer_candidates`** は、feature の読む pass と同じ family で、その pass より前にある pass の出力のうち、同じ種類の target を書くものです。種類は、`type` の semantic が `pelican.render.depth@1` なら depth(`output.depth` を見る)、それ以外は color(`output.color`。2 つ目からは `color.1` …)です。書いている target の種類は、その宣言の format の aspect(engine の format の性質表の列)が color 以外(`depth` / `depth_stencil`)なら depth、表に無い名前は color です([`composedTargetKindOf()`](../../src/project/featurecompose.cpp#L1880)。RC-3a1 の前は「format の先頭が `D`」で見ていました)。
   - 外すもの: `view_family` を書いた pass(shadow map など別の view を描く pass)、feature の pass、`swapchain` / `display` と要る target 自身を書く出力です([FR-3 で候補から外す所](../../src/project/featurecompose.cpp#L1986))。
   - `pass` は frame の pass の名前、`resource` は今書いている target です。root の graph の node が作った pass(instance やループの中ではないもの)で、その node の入力 port が `render.image` か `render.target_ref` を通してその target に繋がっていれば、`node` にその node の id、`port` にその graph の port の名前が入ります。それ以外は `node` が無く、`port` は `depth` / `color` / `color.<番号>` です。
@@ -1238,15 +1238,15 @@ Studio は繋ぐときに `render.target_ref` の型を書き換えていまし�
 
 **挿入先 —— `insertion`**
 
-- `list_render_features` の各 feature に `insertion: [{pass, anchor, position}]` が付きます。`insert` が `after:<名前>` / `before:<名前>` の pass ごとに 1 件、文書の順です([`renderFeatureInsertions()`](../../src/project/featurecompose.cpp#L4377))。`begin` / `end` と、名前の無い `after:` は載りません。例(test): `sky_ambient` は `[{"pass": "sky_background", "anchor": "deferred_lighting", "position": "after"}]`。
+- `list_render_features` の各 feature に `insertion: [{pass, anchor, position}]` が付きます。`insert` が `after:<名前>` / `before:<名前>` の pass ごとに 1 件、文書の順です([`renderFeatureInsertions()`](../../src/project/featurecompose.cpp#L4391))。`begin` / `end` と、名前の無い `after:` は載りません。例(test): `sky_ambient` は `[{"pass": "sky_background", "anchor": "deferred_lighting", "position": "after"}]`。
 - 挿入先の名前が pipeline に無いと `feature.insertion_anchor_missing@1` `{feature, anchor, candidates, document}` です。ただし名前が旧い canonical anchor の 8 つのどれかなら、先に `render_graph.canonical_anchor_removed@1` です(上の「canonical anchor」。[FR-2 で断る所](../../src/project/featurecompose.cpp#L2147))。`feature` は feature の名前(integration の pass ではヘッダの注記どおり `<provider>/<integration>`)、`anchor` は指した名前、`document` は feature 文書の参照です。
   - `candidates` は、その時点まで合成した pipeline で `after:` / `before:` がちょうど 1 つの frame node に解決する名前です。pass 名で、pipeline の並び(family の順、その中の pass の順)のままです(✅RC-5s の前は 8 つの anchor 名も入っていました。[FR-2 の候補を作る所](../../src/project/featurecompose.cpp#L2103))。
 2 つ以上に当たる名前は今も code の無い `render feature pass insert anchor is ambiguous: <名前>` です。
 - 例(test): `deferred_lighting` の代わりに `lighting_pass` を持つ graph の pipeline に `sky_ambient` を足すと、`candidates` は `["lighting_pass", "present", "output_transform"]` で(RC-5s から)、どれを `after:` に書いた feature も合成が通ります。pass の名前を `deferred_lighting` に変えれば、元の feature のまま通ります。
-- **断る順**: 1 つの feature では、要る target の検査が pass の挿入より先です([FR-1 の検査を呼ぶ所](../../src/project/featurecompose.cpp#L3525))。両方が欠けていれば `feature.required_target_missing@1` が出ます。FR-3 の `feature.required_target_unwritten@1` は合成の終わりの検査なので、この 2 つのどちらかが出る間は出ません。
+- **断る順**: 1 つの feature では、要る target の検査が pass の挿入より先です([FR-1 の検査を呼ぶ所](../../src/project/featurecompose.cpp#L3528))。両方が欠けていれば `feature.required_target_missing@1` が出ます。FR-3 の `feature.required_target_unwritten@1` は合成の終わりの検査なので、この 2 つのどちらかが出る間は出ません。
   - feature の parameter に結んだ target(instance の値でも `default` でも)は、要る target の検査より前の、parameter を束ねる段で宣言の有無を見られ、無ければ `feature.parameter_target_unknown@1 {feature, parameter, target, message}` で断られます(`message` は前の文 `render feature '<feature>' parameter '<parameter>' target '<target>': unknown render target`。[束ねる段で断る所](../../src/project/featurecompose.cpp#L1142))。だから FR-1 の `feature.required_target_missing@1` はこの target には届きません。✅RC-5s でこの拒否は名前付きになりました(前は code の無い文。FR-5 の実測)。例: v0 corpus の `sprite_demo`(RC-5s の前の書き方で、sprite feature に binding を書いていない)は、既定の `lit_color` が無いので `{feature: "sprite", parameter: "color", target: "lit_color"}` で断られます(§6.9)。
 
-test(FR-3): `renderconfigeditor_test` の [「FR-3 a feature's target that no pass writes is refused with the passes that could write it, and connecting one composes」](../../test/renderconfigeditor_test.cpp#L12546)(編集の ticket と、実際の Vulkan の program を device 無しで組む preflight を通す)と、`engine_primitives_test` の [「FR-3 sky_ambient on the Blank-built deferred pipeline names the material pass's depth as its writer, and connecting it publishes, through the running renderer」](../../test/engine_primitives_test.cpp#L3487)(RPC と実 Renderer。GPU)。
+test(FR-3): `renderconfigeditor_test` の [「FR-3 a feature's target that no pass writes is refused with the passes that could write it, and connecting one composes」](../../test/renderconfigeditor_test.cpp#L12539)(編集の ticket と、実際の Vulkan の program を device 無しで組む preflight を通す)と、`engine_primitives_test` の [「FR-3 sky_ambient on the Blank-built deferred pipeline names the material pass's depth as its writer, and connecting it publishes, through the running renderer」](../../test/engine_primitives_test.cpp#L3456)(RPC と実 Renderer。GPU)。
 
 
 <a id="id-バッファ-pickingwp262"></a>
@@ -1996,7 +1996,7 @@ root の rendering 節の `frame_node_order` は、frame graph ごとに node �
 
 - pass の配列そのものは並べ替えません。読む・書くの依存(宣言順で最後に書いた pass を読む)を変えないためです。
 - 区切りが無くなったので、RC-5s の前は区切りの順で前後が決まっていた 2 つ(例: シーンの pass と display を書く pass)も、資源の依存が無ければ並びで逆にできます(test: [「RC-5s independent scene and display passes can reverse order」](../../test/rc5s_anchor_removal_test.inc#L142))。
-- 並びに `__anchor_` で始まる名前があれば、読む段で読み飛ばし([読み飛ばす所](../../src/project/rendergraphparse.cpp#L1941))、断りません。残りの並びは効きます。pipeline の diagnostics(`get_frame_plan` の `diagnostics`)に、読み飛ばした名前ごとに `{kind: "frame_node_order.anchor_ignored@1", subject: "<名前>", detail: {severity: "warning", graph, node}}` が出ます([warning を足す所](../../src/project/renderpipeline.cpp#L1757))。test: [「RC-5s saved anchor ordering entries warn and preserve the remaining order」](../../test/rc5s_anchor_removal_test.inc#L158)。
+- 並びに `__anchor_` で始まる名前があれば、読む段で読み飛ばし([読み飛ばす所](../../src/project/rendergraphparse.cpp#L1941))、断りません。残りの並びは効きます。pipeline の diagnostics(`get_frame_plan` の `diagnostics`)に、読み飛ばした名前ごとに `{kind: "frame_node_order.anchor_ignored@1", subject: "<名前>", detail: {severity: "warning", graph, node}}` が出ます([warning を足す所](../../src/project/renderpipeline.cpp#L1637))。test: [「RC-5s saved anchor ordering entries warn and preserve the remaining order」](../../test/rc5s_anchor_removal_test.inc#L158)。
 - RC-5s の前(FO-1 から)は、合成の最後に canonical anchor と anchor の間の pass を宣言順に `after` でつなぎ、並びが名指した pass はその場所を並びの順で埋め直してつないでいました。
 
 **依存と矛盾する並びは名前付きで断ります。**並びを当てる前に、engine は並びと依存を照らします([並びと依存を照らす所(FO-1)](../../src/project/frameplan.cpp#L591))。依存は frame planner と同じ規則で作ります。読む(宣言順で最後に書いた node を読む)、`after`、`before` の 3 つです。
@@ -2018,7 +2018,7 @@ root の rendering 節の `frame_node_order` は、frame graph ごとに node �
 - 並びの形と名前の拒否も ✅RC-3c1b から名前付きです(前は名前の無い文)。
   - `render_graph.frame_node_order_invalid@1`: `frame_node_order` が object でない(`reason: not_an_object`)、graph の値が配列でない(`not_an_array`)、node が空でない文字列でない(`node_not_a_non_empty_string`)、同じ node を 2 度書いた(`duplicate`、`node` 付き)。読み込みの parse で断ります([parse する所](../../src/project/rendergraphparse.cpp#L1924))。
   - `render_graph.frame_node_order_unknown@1 {graph, node}`: 並びがその graph に無い node を書いた([当てる所](../../src/project/rendergraphir.cpp#L996))。
-  - `render_graph.frame_node_order_unknown@1 {graph}`: 組めたどの variant(flat / XR / preview。unavailable の preview は数えない)の graph にも無い graph の名前を鍵に書いた([全 variant を見る所](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L656))。
+  - `render_graph.frame_node_order_unknown@1 {graph}`: 組めたどの variant(flat / XR / preview。unavailable の preview は数えない)の graph にも無い graph の名前を鍵に書いた([全 variant を見る所](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L648))。
 - 照らす所は compile の `applyFrameNodeOrder()` です。編集だけでなく起動と reload でも同じ code になり、`get_status.render_pipeline.refusal` と問題の一覧に出る。起動と reload の道の test はありません(未確認)。
 - 名前付きの AS の操作(`__scene_acceleration_structure` など)の順も同じ照らし方です。前は「並びは通り、後の planner が `Cycle` で落ちる」でした。今は並びの時点でこの code で断ります(既存の test の 7 か所の期待を変えました)。
 
@@ -2034,11 +2034,11 @@ root の rendering 節の `frame_node_order` は、frame graph ごとに node �
 
 編集の場合、断るのは ticket の結果(`get_edit_result` の `status: "rejected"`)で、受付の時点ではありません。ファイルは書かれず、plan も前のままです。message は EB-1 の buffer の拒否と同じ `<code> <fields の JSON>` の形です。
 
-**並びは物理計画の順にもなります(✅RC-3d2)。**物理計画は frame plan の順を入力に取るので、`frame_node_order` で決めた順がそのまま Vulkan の scope の順と実行の順です(§6.6「[物理計画は frame plan の順で走る](#physical-order-follows-frame-plan)」)。physical fragment で順を変えることはできず、順を変えた fragment の拒否(`physical_fragment.reorders_frame_plan@1`)には、ここに貼れる並びが付きます(下の「Vulkan physical fragment」)。
+**並びは物理計画の順にもなります(✅RC-3d2)。**物理計画は frame plan の順を入力に取るので、`frame_node_order` で決めた順がそのまま Vulkan の scope の順と実行の順です(§6.6「[物理計画は frame plan の順で走る](#physical-order-follows-frame-plan)」)。物理計画の側で順を変える道はありません。✅RC-6b2 の前は、順を変えた physical fragment の拒否(`physical_fragment.reorders_frame_plan@1`)にここに貼れる並びが付きましたが、fragment ごと無くなりました(下の「[旧い pin と physical fragment](#legacy-plan-packages-removed)」)。
 
 - 並びで順を決めた独立な node どうしは、隣どうしに `after` が足されるので、物理計画の `planning_opportunities.parallel_candidates`(並列の候補)から外れます(✅RC-3d2 の fixture の記録で 10 組 → 0 組)。今この候補を読むのは ImGui の Plan Viewer と Studio の Frame Plan の表示だけで、実行は読みません(src の検索)。
 
-**ループの id を書く(✅RC-3d2)。**並びには、展開の段(`expand`。§6.18 の `graph.loop`)のループの id を書けます。ループの id 1 つが、その graph へのそのループの展開全体を表し、合成の宣言の順(その graph の pass、次に compute task)に並べた回の node の列に置き換わります([置き換える所](../../src/project/featurecompose.cpp#L4043))。
+**ループの id を書く(✅RC-3d2)。**並びには、展開の段(`expand`。§6.18 の `graph.loop`)のループの id を書けます。ループの id 1 つが、その graph へのそのループの展開全体を表し、合成の宣言の順(その graph の pass、次に compute task)に並べた回の node の列に置き換わります([置き換える所](../../src/project/featurecompose.cpp#L4057))。
 
 - 置き換えは合成の中で、canonical の区切りのつなぎと最終の graph での名前の照合より前です。XR の variant の graph の鍵(`main#xr`)と task の接尾辞も当たります。
 - 並びの形は、置き換える前に上の `render_graph.frame_node_order_invalid@1` と同じ検査を通ります(ループの id を 2 度書けば `duplicate`)。
@@ -2109,7 +2109,7 @@ request-local な preview graph はこの renderer runtime 投影の対象外で
 - 世代で決まる部分: `framePlanToJson` の plan(ループ・`diagnostics`・fold の決定を含む)、`gpu_owner_scope`、`window_output`、`gpu_resource_arena`、`physical_target_plan`(と `from_nodes`)、`native_scope_executors`、`sample_count_plan` など。
 - 呼ぶたびに読む部分: `shader_resolution`(source の file が在るかは今の file system)、`preview`、PS-1 の `last_run_*`・MP-1 の `drawn_materials`・LP-3a の draw_loop の要素など frame で変わる node の field、material filter、`runtime_resolution`、照明(`lighting_data_runtime`)、`sprite`、`initial_asset`、RC-1 の `memory_summary` と `physical_target_plan.resources[].bytes`、RC-1b の `gpu_resource_arena` の render target の `declared_bytes`(arena の他の部分は世代で決まる部分。下の「[物理 image の bytes と `memory_summary`](#physical-plan-memory)」)など。
 - 組み直すのは、世代(の object)・世代の番号・rendering pass の id・rendering の root の参照のどれかが変わったときです([FP-1 で組み直しを決める所](../../src/core/vkcore/renderer.cpp#L4542))。
-- commit の記録の計測: Debug の player、約 197 KB の返り値で、往復 190〜222 ms → 68〜84 ms(15 回の中央値、前後を交互に)。前後 6 組の返り値は byte 一致でした。test: `engine_primitives_test` の [「FP-1 get_frame_plan builds its generation's part once and reads a frame's part on every call」](../../test/engine_primitives_test.cpp#L2806)(GPU)。
+- commit の記録の計測: Debug の player、約 197 KB の返り値で、往復 190〜222 ms → 68〜84 ms(15 回の中央値、前後を交互に)。前後 6 組の返り値は byte 一致でした。test: `engine_primitives_test` の [「FP-1 get_frame_plan builds its generation's part once and reads a frame's part on every call」](../../test/engine_primitives_test.cpp#L2775)(GPU)。
 
 **`execution_plan` と `levels` は無くなりました(✅RC-2、`e15e31bb5`)。**以前のダンプには、backend 非依存の共通 IR
 `execution_plan`(WP238a。`schema: "pelican.frame_execution_plan"`)と、依存の段数の `levels` / node の `level` が載っていました。
@@ -2211,7 +2211,7 @@ render / compute / transfer / output / marker のノード本体は provider の
 }
 ```
 
-- 包んだ形にほかの鍵があるもの、`value` の無いもの、`strength` が上の 2 つ以外のものは組み直しの誤りです([包んだ値を読む所](../../src/project/renderpipeline.cpp#L235))。
+- 包んだ形にほかの鍵があるもの、`value` の無いもの、`strength` が上の 2 つ以外のものは組み直しの誤りです([包んだ値を読む所](../../src/project/renderpipeline.cpp#L237))。
 - 裸の値の強さは書いた所で決まります。root(と fold が足した決定)は `require`、レシピと feature・断片は `prefer` です。
 - 成り立つなら、`prefer` も `require` と同じく計画に効きます(`prefer` の `no_alias: true` でも、その資源は alias の組から外れます。test)。✅RC-6a2 から強さで違うのは、満たせないときの扱いです。`require` が満たせなければ組み直しが断られ、`prefer` は外されて dump に `infeasible_prefer` で残ります。成り立つ候補が複数あれば `prefer` が cost より先に効きます(下の「[計画の結果を指す鍵](#target-planning-result-keys)」の「効き方」)。ほかに、下の engine の強制と食い違うときの扱いと、dump の `satisfied` が強さで違います。
 
@@ -2224,24 +2224,24 @@ render / compute / transfer / output / marker のノード本体は provider の
 | `part` | feature の文書、構造の断片の文書の `target_planning` | その文書が宣言する pass・compute task・render target・buffer。feature は採った integration の fragment が宣言する名前も含む。`required_targets` で借りた名前は含まない。graph の `backend` は書けない(✅RC-6a2) | `prefer` |
 | `engine` | `once` / `sprite` / `ui` / `imgui` の node と、graph.instance の scope に入る node の `isolate: true` | — | 作者からは上書きできない |
 
-- 書けない名前を指すと `target_planning.policy_foreign_name@1`(`document`・`pointer`・`target`)で断られます([検査](../../src/project/renderpipeline.cpp#L982))。例: `bloom` の feature の文書が base の `lit_color` を指す(test)。
+- 書けない名前を指すと `target_planning.policy_foreign_name@1`(`document`・`pointer`・`target`)で断られます([検査](../../src/project/renderpipeline.cpp#L897))。例: `bloom` の feature の文書が base の `lit_color` を指す(test)。
 - `profile` は root だけです(レシピと feature・断片の `target_planning` に書くと誤り)。`required_capabilities` は全部の出所の和です。
 - 宣言を集めるのは、選んだ断片と、採って parameter を束縛した feature の文書だけです。`fragment_overrides` で置き換えた・外した断片の宣言は集めません。
 
-**どれが効くか**: 同じ graph・対象・鍵では root > `recipe` > `part` の順に上の宣言が効き、下の宣言は dump に `overridden` で残ります([決める所](../../src/project/renderpipeline.cpp#L1038))。強さはこの順を変えません。上の宣言の `false` は下の `true` を打ち消します(例: feature の `no_alias: true` に root が `no_alias: false` を書くと、その資源は alias の組に戻る。test)。
+**どれが効くか**: 同じ graph・対象・鍵では root > `recipe` > `part` の順に上の宣言が効き、下の宣言は dump に `overridden` で残ります([決める所](../../src/project/renderpipeline.cpp#L957))。強さはこの順を変えません。上の宣言の `false` は下の `true` を打ち消します(例: feature の `no_alias: true` に root が `no_alias: false` を書くと、その資源は alias の組に戻る。test)。
 
 **engine の強制と逆の宣言**: 採った宣言が engine の強制した `isolate` に `false` を書いていると、`require` なら `target_planning.policy_conflicts_engine@1`(`graph`・`target`・`key` と出所の document・pointer)で断られ、`prefer` なら捨てられて dump に `engine_forced` で残ります(例: `sprite_draw` への root の `{"value": false, "strength": "require"}` は断られる。test)。
 
 **名前の結び付けと、消えた名前**:
 
-- 宣言は、`pass_replacements` や inactive で pass が消える前に、その時の対象に結び付きます([結ぶ所](../../src/project/renderpipeline.cpp#L1007))。root は最終名(variant の接尾辞が付いた compute task の名前など。例 `probe_fill#xr`)の完全一致を先に、無ければ作者名で探し、レシピと feature・断片は作者名で探します。どちらでも 2 つ以上の対象に当たると `target_planning.policy_name_ambiguous@1`(`graph`・`name`・`candidates: [{author_name, final_name, owner}]`)です。
+- 宣言は、`pass_replacements` や inactive で pass が消える前に、その時の対象に結び付きます([結ぶ所](../../src/project/renderpipeline.cpp#L926))。root は最終名(variant の接尾辞が付いた compute task の名前など。例 `probe_fill#xr`)の完全一致を先に、無ければ作者名で探し、レシピと feature・断片は作者名で探します。どちらでも 2 つ以上の対象に当たると `target_planning.policy_name_ambiguous@1`(`graph`・`name`・`candidates: [{author_name, final_name, owner}]`)です。
 - 結び付いた対象が置き換えや inactive で消えても、宣言を置き換え先や同じ名前の別の対象に付け直しません(test)。
 - 対象が合成の結果に無い root の宣言は、frame plan の `diagnostics` に `{kind: "target_planning.name_absent@1", subject: <名前>, detail: {severity: "warning", graph, name, key}}` を出して捨てます。`require` でも組み直しは止まりません。graph ごと無い場合も同じです。レシピと feature・断片の宣言は warning を出さず、dump に `absent` で残ります(置き換えで消えるのは正常のため)。
 - RPC の `edit_target_planning` は今までどおり、今の合成に無い名前を `target_planning_name_unknown` で断り、消えた名前を `null` で消せます。✅RC-6b1 から、消えた名前の保存済みの葉だけを `null` で消す要求(`{"<名前>": {"scope_break": null}}` など)も受けます(下の「[Studio の Pin / Freeze / Remove と check](#target-planning-studio)」の RPC の緩め)。
 
-**`vulkan_plan_pins` / `vulkan_physical_fragments` / complete install との同居**: graph に作者の宣言(engine 以外。`profile` と `required_capabilities` は数えません)が 1 つでもあり、同じ graph に pin・physical fragment・complete physical plan の install のどれかがあると `target_planning.policy_with_legacy_package@1`(`graph`)で断られます([`requireNoLegacyPlanningPolicy()`](../../src/project/targetplanning.cpp#L45))。これらの package は planner の後で当たって宣言を見ないためです。✅RC-6b1 から Studio の Pin this candidate と Freeze this physical plan は pin と fragment を書かず、root の `target_planning` に書きます。旧い package がある graph では、Studio が送る前に Pin / Freeze を断ります(下の「[Studio の Pin / Freeze / Remove と check](#target-planning-studio)」)。
+**complete install との同居**: graph に作者の宣言(engine 以外。`profile` と `required_capabilities` は数えません)が 1 つでもあり、その graph に complete physical plan を install すると `target_planning.policy_with_legacy_package@1`(`graph`)で断られます([`requireNoLegacyPlanningPolicy()`](../../src/project/targetplanning.cpp#L45)、[install で呼ぶ所](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L925))。complete package は planner の後で当たって宣言を見ないためです。✅RC-6b2 の前は `vulkan_plan_pins` の pin と `vulkan_physical_fragments` の physical fragment も同じ拒否でしたが、この 2 つは文書の鍵ごと無くなり、書けば `target_planning.legacy_package_removed@1` です(下の「[旧い pin と physical fragment](#legacy-plan-packages-removed)」)。✅RC-6b1 から Studio の Pin this candidate と Freeze this physical plan は root の `target_planning` に書きます。complete package を install した graph では、Studio が送る前に Pin / Freeze を断ります(下の「[Studio の Pin / Freeze / Remove と check](#target-planning-studio)」)。
 
-**dump の `policy`**: `get_frame_plan` の `physical_target_plan` は、その graph に宣言が 1 つでもあるときだけ `policy` の配列を持ちます。宣言が無ければ欄ごとありません([出す所](../../src/project/targetrenderplanning.cpp#L4325))。
+**dump の `policy`**: `get_frame_plan` の `physical_target_plan` は、その graph に宣言が 1 つでもあるときだけ `policy` の配列を持ちます。宣言が無ければ欄ごとありません([出す所](../../src/project/targetrenderplanning.cpp#L4106))。
 
 ```json
 "policy": [
@@ -2259,7 +2259,7 @@ render / compute / transfer / output / marker のノード本体は provider の
 
 - `status` は `adopted`(採った)/ `overridden`(上の出所に負けた)/ `engine_forced`(engine の強制と逆の `prefer` を捨てた)/ `absent`(対象が無い)/ `infeasible_prefer`(✅RC-6a2。満たせない `prefer` を外した)です。`infeasible_prefer` は候補ごとに付き、dump に出るのは選んだ候補での状態です。
 - `origin.pointer` は宣言を書いた文書の中の JSON pointer です。`recipe` の document は preset の参照、pointer は `/config/target_planning/…`、fold の決定は `/fold_groups/<group>/folded/decisions/<field>` です。
-- `satisfied` は採った `require` の行だけが持ちます(`prefer` の行は持ちません)。✅RC-6a2 から、選んだ計画を採ったすべての `require` と照らした結果です([`validateVulkanTargetPlanRequirements()`](../../src/project/targetrenderplanning.cpp#L3844))。1 つでも成り立たなければ組み直しが `target_planning.requirement_unsatisfied@1` で断られるので、組めた計画の dump ではいつも `true` です(コードの読み)。
+- `satisfied` は採った `require` の行だけが持ちます(`prefer` の行は持ちません)。✅RC-6a2 から、選んだ計画を採ったすべての `require` と照らした結果です([`validateVulkanTargetPlanRequirements()`](../../src/project/targetrenderplanning.cpp#L3702))。1 つでも成り立たなければ組み直しが `target_planning.requirement_unsatisfied@1` で断られるので、組めた計画の dump ではいつも `true` です(コードの読み)。
 - graph.instance の scope 由来の engine の `isolate` も台帳に入るので、その graph では `origin.kind: "engine"` の行も出ます(コードの読み)。
 - policy は fingerprint に入りません。宣言を書いても計画が同じなら `logical_graph_fingerprint` も `automatic_plan_fingerprint` も同じです(test)。
 
@@ -2303,12 +2303,12 @@ render / compute / transfer / output / marker のノード本体は provider の
 - `require` が成り立たない候補は不成立です。3 候補とも不成立なら `target_planning.requirement_unsatisfied@1`(`graph`・`candidates: [{candidate, failures: [{id, target, reason}]}]`)で組み直しが断られます。
 - `prefer` が失敗の原因になった候補では、原因の `prefer` を台帳の順で 1 つずつ外して候補を作り直します。外した宣言は dump で `status: "infeasible_prefer"` です。原因に `prefer` が無い失敗(`require` どうしの食い違いや device の制約)は直さず、その候補は不成立です。4 つの鍵の `prefer` も同じ扱いで、例えば `alias_group` の `require` と食い違う `no_alias` の `prefer` は外れます(test)。
 - 成り立つ候補が複数あれば、`prefer` が cost より先に効きます。採ったままの `backend` の `prefer` がある候補が先、次に採ったままの `prefer` が多い候補で、残りは今の cost の順です。だから `"backend": {"value": "materialized", "strength": "prefer"}` は、tile_local の方が安くても materialized を選ばせます(test)。指した候補が成り立たなければ `infeasible_prefer` になって cost の順に戻ります。policy が順位を決めたときの `decisions[]` の `pelican.plan.backend_candidate_selected@1` の detail は `policy preference followed by deterministic cost tuple` です。
-- 最後に、選んだ計画を採ったすべての `require`(4 つの鍵を含む)と 1 回照らします。成り立たない物があれば `target_planning.requirement_unsatisfied@1`(`graph`・`candidate`・`requirements: [...]`)です([`validateVulkanTargetPlanRequirements()`](../../src/project/targetrenderplanning.cpp#L3844))。dump の `satisfied` はこの結果です。
+- 最後に、選んだ計画を採ったすべての `require`(4 つの鍵を含む)と 1 回照らします。成り立たない物があれば `target_planning.requirement_unsatisfied@1`(`graph`・`candidate`・`requirements: [...]`)です([`validateVulkanTargetPlanRequirements()`](../../src/project/targetrenderplanning.cpp#L3702))。dump の `satisfied` はこの結果です。
 - 宣言を 1 つも書かなければ、どれも働かず、計画は前と同じです(16 構成の比較の test)。
 
-**入力の誤り `target_planning.policy_invalid@1`**(`graph`・`target`・`key`・`document`・`pointer`): 先頭の node の `scope_join: true`、同じ node の `scope_break` と `scope_join` が両方 `true`、external の資源・image でない資源への `representation`、feature・構造の断片の `backend`([`validatePolicyInput()`](../../src/project/targetrenderplanning.cpp#L1063))。5 つの鍵の値の形の誤り(型の違い、空の文字列、`backend` の 3 つ以外、`representation` の `"materialized"` 以外、包んだ形の `value` の欠けや `strength` の綴り)も同じ code です。
+**入力の誤り `target_planning.policy_invalid@1`**(`graph`・`target`・`key`・`document`・`pointer`): 先頭の node の `scope_join: true`、同じ node の `scope_break` と `scope_join` が両方 `true`、external の資源・image でない資源への `representation`、feature・構造の断片の `backend`([`validatePolicyInput()`](../../src/project/targetrenderplanning.cpp#L1017))。5 つの鍵の値の形の誤り(型の違い、空の文字列、`backend` の 3 つ以外、`representation` の `"materialized"` 以外、包んだ形の `value` の欠けや `strength` の綴り)も同じ code です。
 
-**RPC**: `edit_target_planning` は `backend` も受けます。送った値を graph の `backend` にそのまま書き、`null` で消します。`backend` だけの要求もできます([backend を書く所](../../src/core/communication/renderconfigeditor.cpp#L5567))。node と資源の新しい鍵は `nodes` / `resources` に書けば送った形のまま保存されます(test)。値の誤りは組み直しで断られます(コードの読み)。
+**RPC**: `edit_target_planning` は `backend` も受けます。送った値を graph の `backend` にそのまま書き、`null` で消します。`backend` だけの要求もできます([backend を書く所](../../src/core/communication/renderconfigeditor.cpp#L5451))。node と資源の新しい鍵は `nodes` / `resources` に書けば送った形のまま保存されます(test)。値の誤りは組み直しで断られます(コードの読み)。
 
 <a id="target-planning-studio"></a>
 
@@ -2316,16 +2316,16 @@ render / compute / transfer / output / marker のノード本体は provider の
 
 ✅RC-6b1(`a0367bd23`)から、Studio の Frame Plan の Pin / Unpin / Freeze / Remove と、Serial / Isolate / No alias の check は、どれも root の `target_planning` を書く `edit_target_planning` を 1 回送るだけです。新しい RPC はありません。1 回の要求なので CAS(`base_source_digest`)も render の編集の履歴の項目(`Edit planning decisions`)も 1 つで、Undo 1 回で全部戻ります(test)。設計は[棚卸しメモ §2-3 の RC-6b1](../design_plan_layer_inventory.md#rc6b1-implementation)、画面の操作は[第15章](15_studio.md)の「下の層の決定を Frame Plan から書く」です。
 
-`vulkan_plan_pins` / `vulkan_physical_fragments` を書く `edit_vulkan_plan_pins` / `put_vulkan_physical_fragment`、`get_frame_plan` の `ejectable_pin_package` / `ejectable_physical_fragment` は今も残っていますが、Studio は使いません。
+RC-6b1 の時点では `vulkan_plan_pins` / `vulkan_physical_fragments` を書く `edit_vulkan_plan_pins` / `put_vulkan_physical_fragment` と、`get_frame_plan` の `ejectable_pin_package` / `ejectable_physical_fragment` が残っていて、Studio が使わないだけでした。✅RC-6b2 でこれらは全部無くなりました(下の「[旧い pin と physical fragment](#legacy-plan-packages-removed)」)。
 
 **書く名前は作者の名前です。**policy は variant(flat / preview / xr)に共通です。
 
 - graph 名は、表示中の variant の compiler が実際に付けた接尾辞だけを外します。`get_frame_plan` の最上位に足した `graph_variant: {name, name_suffix}`(物理計画の外の欄)を読みます([足す所](../../src/core/vkcore/renderer.cpp#L4236)、[外す所 `planningAuthorGraphName()`](../../src/devstudio/model/frameplanpolicy.hpp#L13))。作者が名前に書いた `#xr` などは残ります(test)。
 - node 名は frame plan の node の `authored_name` です(XR の compute task `probe_fill#xr` なら `probe_fill`)。root の宣言は RC-6a1 の規則(最終名 → 作者名)で各 variant の node に結び付きます。XR で Freeze した policy が flat と XR の両方で同じ計画になります(test「RC-6b1 D2 Freeze XR compute author names bind both flat and XR」)。
 
-**Pin / Unpin**: Pin は root の `graphs.<graph>.backend` に `{"value": "materialized" | "transient" | "tile_local", "strength": "require"}` を書きます。押せるのは Selected か Feasible の候補だけです([`framePlanBackendPinRequest()`](../../src/devstudio/view/frameplanedit.cpp#L2211))。Unpin は `backend: null` です。Studio の「Pinned」の表示は「root に `backend` の宣言がある」ことで、手で書いた `prefer` も Pinned に見えます。
+**Pin / Unpin**: Pin は root の `graphs.<graph>.backend` に `{"value": "materialized" | "transient" | "tile_local", "strength": "require"}` を書きます。押せるのは Selected か Feasible の候補だけです([`framePlanBackendPinRequest()`](../../src/devstudio/view/frameplanedit.cpp#L2208))。Unpin は `backend: null` です。Studio の「Pinned」の表示は「root に `backend` の宣言がある」ことで、手で書いた `prefer` も Pinned に見えます。
 
-**Freeze**: 表示中の物理計画の決定を、root に `require` で書き出します([`freezeFramePlanPolicy()`](../../src/devstudio/model/frameplanpolicy.hpp#L23)、[`framePlanPhysicalFreezeRequest()`](../../src/devstudio/view/frameplanedit.cpp#L2234))。
+**Freeze**: 表示中の物理計画の決定を、root に `require` で書き出します([`freezeFramePlanPolicy()`](../../src/devstudio/model/frameplanpolicy.hpp#L23)、[`framePlanPhysicalFreezeRequest()`](../../src/devstudio/view/frameplanedit.cpp#L2231))。
 
 | 書く物 | 中身 |
 |---|---|
@@ -2340,15 +2340,17 @@ render / compute / transfer / output / marker のノード本体は provider の
 - **保証の範囲**: Freeze の直後の計画は、backend・node 名で見た scope の分け方・資源名で見た alias の組・representation が Freeze の前と同じです(test「RC-6b1 D2 Freeze round trip preserves decisions and scope constraints survive changed view selection」)。その後に graph を変えたときに保たれるのは、書いた正の制約だけです。組に入っていない資源が後で共有される、transient / tile-local の資源の扱いが変わる、は起こり得ます。版をまたいで同じ計画を保つ物ではありません(利用者の決定)。同じ test は、Freeze の後に自動の計画なら scope の融合が変わる入力の変更(`Forward` の `view_select` を外す)を加えても、Freeze の scope の分け方が保たれることを見ます。
 - 書き出した policy が組み直しで断られる(`policy_invalid@1` や `requirement_unsatisfied@1` など)ときは、適用の前の検証で要求全体が断られ、何も書かれません。Studio は送る前に計画を予測しません。
 
-**Remove**: その graph の root にある固定用の 5 つの鍵(`backend` / `scope_break` / `scope_join` / `alias_group` / `representation`)を、手で書いた物と Pin の分も含めて全部消します([`framePlanPhysicalRemoveRequest()`](../../src/devstudio/view/frameplanedit.cpp#L2264))。
+**Remove**: その graph の root にある固定用の 5 つの鍵(`backend` / `scope_break` / `scope_join` / `alias_group` / `representation`)を、手で書いた物と Pin の分も含めて全部消します([`framePlanPhysicalRemoveRequest()`](../../src/devstudio/view/frameplanedit.cpp#L2261))。
 
 - 消す対象は表示中の物理計画ではなく、authoring context の `planning_root`(root の文書)から数えます。合成の結果に無い名前の葉も消します(下の RPC の緩め)。
 - 物理計画が出ていない(計画が失敗している)ときも押せます(test「RC-6b1 D3 Remove enumerates five root keys even without physical plan」)。
 - `serial` / `isolate` / `fuse` / `no_alias` は残します。Undo は手で書いた形のまま、消す前の文書に戻します(test)。
 
-**旧い package がある graph**: Pin と Freeze は送る前に `This graph has a legacy package: Pin / Freeze cannot add policy (target_planning.policy_with_legacy_package@1).` で断ります。旧い package があるとみなすのは、`planning_catalog` の `legacy_package` が真のとき(root の `vulkan_plan_pins` / `vulkan_physical_fragments` にその graph か `<graph>#xr` の package がある)、plan に applied の pin / fragment があるとき、`get_frame_plan` の最上位の `legacy_complete_plan: true`(complete physical plan を install した。物理計画の外の欄。[出す所](../../src/core/vkcore/renderer.cpp#L4312))のときです。移行の機能はありません。Unpin と Remove はこの検査をしません(コードの読み)。
+**complete package を install した graph**: `get_frame_plan` の最上位に `legacy_complete_plan: true`(complete physical plan を install した。物理計画の外の欄。[出す所](../../src/core/vkcore/renderer.cpp#L4312))があるとき、Pin と Freeze は送る前に `This graph has a complete package: Pin / Freeze cannot add policy (target_planning.policy_with_legacy_package@1).` で断ります([断る所](../../src/devstudio/view/frameplanedit.cpp#L2190))。移行の機能はありません。Unpin と Remove はこの検査をしません(コードの読み)。
 
-**Serial / Isolate / No alias の check**([`framePlanPlanningCheck()`](../../src/devstudio/view/frameplanedit.cpp#L2280)):
+- RC-6b1 では文が `This graph has a legacy package: …` で、`planning_catalog` の `legacy_package`(root の `vulkan_plan_pins` / `vulkan_physical_fragments` にその graph か `<graph>#xr` の package がある)と、plan の applied の pin / fragment も見ていました。✅RC-6b2 でこの 2 つは無くなりました(旧い鍵のある文書はそもそも読み込めません。上の「[旧い pin と physical fragment](#legacy-plan-packages-removed)」)。
+
+**Serial / Isolate / No alias の check**([`framePlanPlanningCheck()`](../../src/devstudio/view/frameplanedit.cpp#L2277)):
 
 - checked は「その宣言が実際に効いている」ことで、dump の `policy` の行のうち `status: "adopted"` で値が `true` の物です。`infeasible_prefer` の宣言は unchecked で、tooltip が理由(`<origin.kind>: <document> <pointer> (<status>)`)を言います。root 以外(`part` / `recipe`)から来た値は、項目の名前に ` (inherited)` が付き、tooltip が出所を言います。
 - 押すと、root に「今の表示の逆」を `require` で書きます(`{"value": <逆>, "strength": "require"}`)。外す操作も `null` ではなく `false` の `require` です。
@@ -2362,12 +2364,12 @@ render / compute / transfer / output / marker のノード本体は provider の
 | 鍵 | 中身 |
 |---|---|
 | `planning_root` | root の文書をそのまま。Remove と、Pinned・固定用 policy の表示が読む |
-| `planning_catalog` | `{<graph>: {nodes, resources, engine_isolates, legacy_package}}`。`nodes` / `resources` は `edit_target_planning` が名前の検査に使うのと同じ一覧([`planningNamesOf()`](../../src/core/communication/renderconfigeditor.cpp#L3357))。`engine_isolates` は `{<node>: <理由の文>}`(`once: engine requires isolate` / `scope-owning node: engine requires isolate` / `graph scope: engine requires isolate`) |
+| `planning_catalog` | `{<graph>: {nodes, resources, engine_isolates}}`(RC-6b1 にあった `legacy_package` は ✅RC-6b2 で消えた)。`nodes` / `resources` は `edit_target_planning` が名前の検査に使うのと同じ一覧([`planningNamesOf()`](../../src/core/communication/renderconfigeditor.cpp#L3355))。`engine_isolates` は `{<node>: <理由の文>}`(`once: engine requires isolate` / `scope-owning node: engine requires isolate` / `graph scope: engine requires isolate`) |
 | `planning_catalog_error` | 合成した文書を計画の IR として読めなかったときの理由。このとき `planning_catalog` は空の object で、context のほかの欄は返ります(文書を直す道を塞がないため。test) |
 
-**RPC の緩め**: `edit_target_planning` は、合成の結果に無い名前でも、root の文書に保存してある葉を `null` で消す要求を受けます。名前の値が object で、その field がどれも `null`、どれも保存済みの entry にある場合だけです([受ける所](../../src/core/communication/renderconfigeditor.cpp#L5580))。それ以外の、無い名前への書き込みは今までどおり `target_planning_name_unknown` です。
+**RPC の緩め**: `edit_target_planning` は、合成の結果に無い名前でも、root の文書に保存してある葉を `null` で消す要求を受けます。名前の値が object で、その field がどれも `null`、どれも保存済みの entry にある場合だけです([受ける所](../../src/core/communication/renderconfigeditor.cpp#L5464))。それ以外の、無い名前への書き込みは今までどおり `target_planning_name_unknown` です。
 
-**表示**: Studio の Frame Plan の Physical plan のタブに **Policy** の節が出て、dump の `policy` の行を `<target>.<key>` と行の JSON で並べます([節を作る所](../../src/devstudio/view/frameplanwidget.cpp#L5176))。ImGui の Pelican Compiled Passes も、物理計画の facts に `policy <target>.<key>` の行を足します([足す所](../../src/core/imgui/compiledplanviewer.cpp#L163))。
+**表示**: Studio の Frame Plan の Physical plan のタブに **Policy** の節が出て、dump の `policy` の行を `<target>.<key>` と行の JSON で並べます([節を作る所](../../src/devstudio/view/frameplanwidget.cpp#L5171))。ImGui の Pelican Compiled Passes も、物理計画の facts に `policy <target>.<key>` の行を足します([足す所](../../src/core/imgui/compiledplanviewer.cpp#L157))。
 
 #### 3 つの representation と、その選ばれ方
 
@@ -2390,7 +2392,7 @@ flowchart TB
     D -->|"はい"| E["実行可能候補: pin があれば照合 / なければ policy の prefer → cost 順"]
     E --> F["選択した物理 plan: representation・scope・alias"]
 ```
-根拠: [targetrenderplanning.cpp:2636](../../src/project/targetrenderplanning.cpp#L2701)、[targetrenderplanning.cpp:2897](../../src/project/targetrenderplanning.cpp#L2965)、[targetrenderplanning.cpp:4007](../../src/project/targetrenderplanning.cpp#L4007)、[targetplanning.cpp:91](../../src/project/targetplanning.cpp#L123)。
+根拠: [targetrenderplanning.cpp:2636](../../src/project/targetrenderplanning.cpp#L2655)、[targetrenderplanning.cpp:2897](../../src/project/targetrenderplanning.cpp#L2919)、[targetrenderplanning.cpp:4007](../../src/project/targetrenderplanning.cpp#L3804)、[targetplanning.cpp:91](../../src/project/targetplanning.cpp#L123)。
 
 <a id="physical-plan-scope"></a>
 
@@ -2401,7 +2403,7 @@ flowchart TB
 **物理計画は frame plan の順で走る(✅RC-3d2)。**node の順を決めるのは frame planner だけです。物理計画は graph ごとの frame plan の順を必須の入力に取り、その順の連続した区間で scope を切ります。scope を順に展開した node の列は、いつも frame plan の `nodes` の順と同じです。
 
 - 前は物理計画が自分で順を選び直していて(依存の無い node は名前の順)、frame plan と物理の順が違う graph がありました。出荷の project では raytracing_demo / pathtrace_demo と Studio の playground_rt の `main_render` が該当し、✅RC-3d2 から `__scene_acceleration_structure` が物理の順でも先頭になりました(frame plan の順は前と同じ)。golden の画像は前とバイト一致です(実装者の報告)。
-- 順を変えたいときは `frame_node_order`(§6.6「[pass の順を指定する](#pass-の順を指定する--frame_node_orderfo-1-a4d7760a)」)で書きます。physical fragment で並べ替えることはできません(下の「Vulkan physical fragment」の `dependency_safe`)。
+- 順を変えたいときは `frame_node_order`(§6.6「[pass の順を指定する](#pass-の順を指定する--frame_node_orderfo-1-a4d7760a)」)で書きます。物理計画の側で並べ替える道はありません(✅RC-6b2 の前の physical fragment も並べ替えは断りました。下の「[旧い pin と physical fragment](#legacy-plan-packages-removed)」)。
 - 別の順を持つ物理計画は、どの道から来ても `render_compiler.physical_order_mismatches_frame_plan@1 {graph, position, reason, expected, actual}` で断ります(`reason` は `duplicate` / `missing` / `extra` / `position` で、この順に優先。[断る所](../../src/project/frameplan.cpp#L525))。照らすのは compiler の共通の仕上げ([その所](../../src/core/renderingpass/rendercompilerprogram.cpp#L297))、complete physical plan の検査([その所](../../src/project/vulkancompletephysicalplan.cpp#L1595))、それを通らない直接の登録([その所](../../src/core/renderingpass/framegraphruntime.cpp#L15))です。差し替えた compiler program が scope を入れ替えた package を返したときもここで断られ、公開中の世代はそのまま残ります(GPU の test「RC-3d2 registration rejects three reordered packages and preserves the published drawing」)。
 
 注: `materialized_image` は通常の device-local image として内容を保存し、`transient_attachment` は lazily allocated memory を優先して区間外に内容を残さず最後の Store を Discard にする attachment、`tile_local_attachment` は同じ scope 内の same-pixel read に値を渡す attachment です。transient は write-only、tile-local は read があるため、3 種を段階的に 1 段ずつ落とす関係にはなりません。external 資源・buffer・使わない semantic resource はこの image の三分岐の対象外です。
@@ -2429,8 +2431,8 @@ flowchart TB
 - **上限として読みます**: transient / tile_local の image も同じ式で満額を数えます(lazily allocated memory に置かれれば、実際の確保はこれより小さいことがあります)。bytes は texel × extent の大きさで、`VkMemoryRequirements.size` の alignment や圧縮のメタデータは含みません。
 - **呼ぶたびに数えます**: renderer は `get_frame_plan` を呼ぶたびに、登録した image の今の metadata(extent・layers・解決済みの mip 数)から数えます([数える所](../../src/core/vkcore/renderer.cpp#L4823))。窓の大きさを変えた後は新しい大きさの値です(上の「プランダンプ」の、呼ぶたびに読む部分)。
 - **GPU arena の `declared_bytes`**: `gpu_resource_arena` の render target の登録も同じ式の bytes を登録時に写します([登録で写す所](../../src/core/renderingpass/renderpipelinegpuarena.cpp#L582))。RC-1b から、dump に出す render target の `declared_bytes` は、書き出す時点の metadata から数え直した値です。登録の後に同じ id のまま image を作り直す経路(window 以外の出力の resize、影の view の数に合わせた layer 数の変更 `setRuntimeArrayLayers()`)の後も今の値になります。arena の構造体が持つ値そのものは登録時のままです(dump だけが今の値)。frame graph buffer は buffer の大きさ、shader bundle・pipeline・pass 系と acceleration structure は 0 です。
-- 例(test、GPU 不要): example を 1920×1080 の出力で計画すると、`total_bytes` は 125,776,320(119.95 MiB。21 枚が alias の 1 組を分け合って 20 の確保)、`unused_bytes` は 0、`peak_live_bytes` は 85,017,600(81.08 MiB)、`peak_node` は `lighting_pass`(order 3。G-buffer 5 枚・`offscreen_depth`・`ssao_blur`・`lit_color` が生きています)。`display` は出力の大きさ(1920×1080)で数えます([test](../../test/frameplanner_test.cpp#L2937))。
-  - どの graph も使わない 64×64 R8 の render target を 1 枚足して登録すると、`total_bytes` は 125,780,416、`unused_bytes` は 4,096、`unused_resources` は `["rc1b_unused"]` です。その後 `lit_color` の layers を 2 にすると、arena の `declared_bytes`・資源の `bytes`・`total_bytes`・`peak_live_bytes` がそろって 16,588,800 増えます([test](../../test/frameplanner_test.cpp#L3039)。renderer の `currentFramePlanJson()` を CPU だけの代役の登録で通します)。
+- 例(test、GPU 不要): example を 1920×1080 の出力で計画すると、`total_bytes` は 125,776,320(119.95 MiB。21 枚が alias の 1 組を分け合って 20 の確保)、`unused_bytes` は 0、`peak_live_bytes` は 85,017,600(81.08 MiB)、`peak_node` は `lighting_pass`(order 3。G-buffer 5 枚・`offscreen_depth`・`ssao_blur`・`lit_color` が生きています)。`display` は出力の大きさ(1920×1080)で数えます([test](../../test/frameplanner_test.cpp#L2936))。
+  - どの graph も使わない 64×64 R8 の render target を 1 枚足して登録すると、`total_bytes` は 125,780,416、`unused_bytes` は 4,096、`unused_resources` は `["rc1b_unused"]` です。その後 `lit_color` の layers を 2 にすると、arena の `declared_bytes`・資源の `bytes`・`total_bytes`・`peak_live_bytes` がそろって 16,588,800 増えます([test](../../test/frameplanner_test.cpp#L3038)。renderer の `currentFramePlanJson()` を CPU だけの代役の登録で通します)。
 
 #### 自動 transient attachment
 
@@ -2510,175 +2512,70 @@ multiview選択時は2-layer image、`viewMask=0b11`、execution count 1とな�
 同じlogical planをlayerごとに実行します。synthetic Vulkan fixtureはlayered local readの
 左右出力を検証しますが、Quest/Meta XR Simulatorでの帯域効果と実表示は外部gateです。
 
-さらに、現在の自動計画が選んだ Vulkan backend candidate を固定したい場合は、まず pin なしで起動し、`get_frame_plan.physical_target_plan.ejectable_pin_package` をそのままコピーします。`get_frame_plan` は実行中の player に stdio で問い合わせる **JSON-RPC メソッド**です([第10章](10_tools.md#基盤メソッド一覧)。Studio の Frame Plan タブと Plan Viewer も同じ JSON を読みます)。`ejectable_pin_package` はその応答に入っている**そのまま貼れる形の JSON 断片**で、「今回の自動計画がどの backend candidate を選んだか」を記録したものです。コピー先は variant 別の `vulkan_plan_pins` 配列です。
+計画の一部を固定したいときは、root の `target_planning` の policy に書きます(上の「[宣言の強さと出所](#target-planning-policy)」と「[計画の結果を指す鍵](#target-planning-result-keys)」。Studio の Pin / Freeze も同じ物を書きます)。✅RC-6b2 の前にあった、`get_frame_plan` の package をコピーして文書に貼る道(`vulkan_plan_pins` / `vulkan_physical_fragments`)は無くなりました(下の「[旧い pin と physical fragment](#legacy-plan-packages-removed)」)。`get_frame_plan` は実行中の player に stdio で問い合わせる **JSON-RPC メソッド**です([第10章](10_tools.md#基盤メソッド一覧)。Studio の Frame Plan タブと Plan Viewer も同じ JSON を読みます)。
 
-```json
-{
-  "vulkan_plan_pins": {
-    "flat": [
-      {
-        "schema": "pelican.vulkan_target_plan_pins",
-        "version": 1,
-        "graph": "main",
-        "logical_graph_fingerprint": "fnv1a64:0123456789abcdef",
-        "pins": {
-          "backend_candidate": "pelican.vulkan.materialized_plan@1"
-        }
-      }
-    ],
-    "xr": []
-  }
-}
-```
-
-貼り付け後は `physical_target_plan.applied_pin_package` に同じ package が出ます。論理 graph が変わった package は `pin package is stale`、現在の device/provider で成立しない candidate は `pinned backend candidate is infeasible` として失敗し、別 candidate へ黙って fallback しません。ここで **fingerprint** は「対象の内容から計算した短いハッシュ値」で、貼った package が今のグラフ向けかどうかを照合するための鍵です。`logical_graph_fingerprint` は論理グラフ(パスと資源と依存)から計算され、**物理側の指定(`target_planning` / `vulkan_plan_pins` / `vulkan_physical_fragments`)はその計算に入りません**。したがってこれらを貼ったこと自体では logical fingerprint は変わらず、貼った package が直後に stale になることもありません。
-
-✅RC-6a1 から、作者の `target_planning` の宣言がある graph に pin を書くと `target_planning.policy_with_legacy_package@1` で断られます(§6.6「[宣言の強さと出所](#target-planning-policy)」)。physical fragment と complete physical plan の install も同じです。
-
-RPC から書くときは `edit_vulkan_plan_pins {base_source_digest, family, pin}`です。同じ family の同じ `graph` の package を置き換え、`pin: null` で消します([第13章](13_editor.md)の「graph 全体の計画の決定を書く」)。この RPC は今もありますが、✅RC-6b1 から Studio は使いません。Studio の Frame Plan の Backends タブの **Pin this candidate** は、pin の package ではなく root の `target_planning` の `backend` を書きます(§6.6「[Studio の Pin / Freeze / Remove と check](#target-planning-studio)」)。
-
-v1 pin が固定するのは有限集合の **backend candidate だけ**です。resource/scopeを編集する場合は、次の別schemaを使います。
+**fingerprint** は「対象の内容から計算した短いハッシュ値」です。`logical_graph_fingerprint` は論理グラフ(パスと資源と依存)から計算され、物理側の指定(`target_planning`)はその計算に入りません。
 
 **logical plan / physical plan(論理プラン / 物理プラン)** — 違いは型の欄で見るのが早く、論理側の 1 リソースは `name` / `type` / materialization の 3 項だけ([LogicalResourceDesc](../../src/project/logicalrendergraph.hpp#L60))、物理側の同じリソースにはそこへ `format` / `rasterization_samples` / `view_layout` / `mip_levels` / `array_layers` / alias 可否が付きます([VulkanPhysicalResourcePlan](../../src/project/targetrenderplanning.hpp#L178))。例えば `format_class: "scene"` は論理側では文字どおり「scene 用の色」でしかなく、実 format(HDR なら `R16G16B16A16_SFLOAT`、SDR なら `B8G8R8A8_SRGB`)を欄として持つのは物理側です([第6章 §6.3](06_rendering.md))。
 
-### Vulkan physical fragment v1 / v2 / v3
+<a id="legacy-plan-packages-removed"></a>
 
-`physical_target_plan.ejectable_physical_fragment`を丸ごとコピーし、対応するvariantの`vulkan_physical_fragments`へ貼ります。
-現在はversion 3をejectします。version 1はresource/scope/alias、version 2はさらに
-attachment load/storeを扱う既存packageとして引き続き読めます。version 3は
-`scope_edit_mode`を追加し、古いpackageの意味を広げずに、順を保ったまま隣り合うscopeを融合する編集を選べます(下の`dependency_safe`)。
+### 旧い pin と physical fragment(✅RC-6b2 で撤去)
 
-```json
-{
-  "vulkan_physical_fragments": {
-    "flat": [
-      {
-        "schema": "pelican.vulkan_physical_fragment",
-        "version": 3,
-        "scope_edit_mode": "dependency_safe",
-        "graph": "main",
-        "logical_graph_fingerprint": "fnv1a64:0123456789abcdef",
-        "automatic_plan_fingerprint": "fnv1a64:fedcba9876543210",
-        "backend_candidate": "pelican.vulkan.tile_local_plan@1",
-        "resources": [
-          {
-            "logical_resource": "gbuffer_albedo",
-            "format": "R8G8B8A8_UNORM",
-            "representation": "materialized_image"
-          }
-        ],
-        "scopes": [
-          {
-            "id": "manual:geometry",
-            "nodes": ["geometry"]
-          },
-          {
-            "id": "manual:lighting",
-            "nodes": ["lighting"]
-          }
-        ],
-        "alias_groups": [],
-        "attachments": [
-          {
-            "node": "geometry",
-            "logical_resource": "gbuffer_albedo",
-            "load_op": "discard",
-            "store_op": "store"
-          }
-        ]
-      }
-    ]
-  }
-}
+✅RC-6b2(`4e21d7d03`)で、物理計画を JSON の package で固定・編集する旧い道を消しました。計画を固定する道は root の `target_planning` の policy だけです。
+
+| 無くなった物 | 中身 |
+|---|---|
+| 文書の鍵 `vulkan_plan_pins` | variant(`flat` / `preview` / `xr`)ごとの配列に `get_frame_plan` の `ejectable_pin_package`(schema `pelican.vulkan_target_plan_pins` v1)を貼り、graph の backend candidate を 1 つに固定した |
+| 文書の鍵 `vulkan_physical_fragments` | 同じく `ejectable_physical_fragment`(schema `pelican.vulkan_physical_fragment` v1 / v2 / v3)を編集して貼り、資源の format・表現・scope の分割と融合・alias の組・attachment の load / store を変えた。eject したときの自動計画に fingerprint で縛られた |
+| RPC | `edit_vulkan_plan_pins` と `put_vulkan_physical_fragment`。登録と `edit_batch` の表から消え、送ると JSON-RPC の method not found です(test「RC-6b2 removed planning RPCs are unknown methods」) |
+| `get_frame_plan` の `physical_target_plan` の欄 | `ejectable_pin_package`・`ejectable_physical_fragment`・`applied_pin_package`・`applied_physical_fragment`・`ejectable_complete_physical_plan`。wire の検査([`validatePlan()`](../../src/project/physicaltargetplanwire.cpp#L352))、Studio の model、Plan Viewer からも消えました |
+| 拒否 | `physical_fragment_stale`(fragment を書いた ticket の結果)、`physical_fragment.reorders_frame_plan@1`(順を変えた fragment)、`pin package is stale` / `pinned backend candidate is infeasible` の文 |
+
+**無くなった能力**(どれも project 空間での使用は 0 件でした):
+
+- 資源の format の上書き(render target の `format_candidates` から選ぶ)
+- attachment の store の破棄(自動計画の `store` を `discard` にする)
+- attachment の個々の load / store の編集
+- 版をまたいで同じ計画を固定すること(Studio の Freeze が保証する範囲は上の「[Studio の Pin / Freeze / Remove と check](#target-planning-studio)」)
+
+backend の固定・scope の分割と融合・alias の組・materialize は、policy の `backend` / `scope_break` / `scope_join` / `alias_group` / `representation` で書けます。
+
+**文書に旧い鍵があるとき**: root の rendering 節、preset の `config`、`@2` のレシピの `config`、構造の断片(`pelican.render_fragment`)のどれかが `vulkan_plan_pins` か `vulkan_physical_fragments` を持つと、合成が `target_planning.legacy_package_removed@1 {key, document, message}` で断ります([`rejectRemovedPlanningPackages()`](../../src/project/renderpipeline.cpp#L882))。鍵があるかだけを見ます(値が空の object・空の配列・`null` でも、同じ文書に `target_planning` があっても無くても同じ。test「RC-6b2 saved legacy planning keys are refused with reload instructions」「RC-6b2 removed planning keys are refused in preset recipe and structural fragment documents」)。`message` は次の文です。
+
+```
+Remove <key> from the document and reload it, then recreate the policy with Studio Pin / Freeze.
 ```
 
-`scopes[].id` の `manual:` は「自動計画が付けた ID ではなく、人が手で書いた scope である」ことを示す接頭辞です(上の例では `manual:geometry` / `manual:lighting`)。eject結果は全resource/scope/alias groupを含みますが、手書きpackageの`resources`は変更するresourceだけに減らせます。`scopes`または`alias_groups`自体を省略すると、その部分は自動planを維持します。**alias group** は「同じ GPU メモリ確保を使い回してよい resource の組」です。lifetime(生存区間)が重ならない画像同士なら、別々に確保せず 1 つの割り当てを共有できるので VRAM が減ります。`alias_groups: []`はaliasなしの明示指定です。`scopes`は全nodeのexact partitionなので、空配列が有効なのはnodeを持たないgraphだけです。
+- 直し方: 文書からその鍵を消して読み込み直し、Studio の Pin / Freeze で root の policy として作り直します。自動の移行はありません。鍵が残った文書は読み込めないので、鍵を消す前に Freeze することはできません。
+- `restore_render_documents` でも同じです。消さない文書(root の rendering 節、preset / レシピの `config`、構造の断片)を 1 つずつ見て、復元の後にその文書が選ばれなくなる場合も断ります。error は同じ code で、`key`・`document`・`reference`・`method: "restore_render_documents"` を持ち、文書も公開中の世代も変わりません(test「RC-6b2 restore rejects removed planning keys in every document even after switching presets」)。
+- `edit_rendering_keys` はこの 2 つの鍵を `rendering_key_not_editable` で断ります(書く RPC の表から消えたため。コードの読み)。
+- 鍵の残った project を開いたときの画面の見え方は未確認です。
 
-別formatを選ぶ場合は、先にrender target側で許可する集合を宣言します。
+**complete physical plan は C++ の口だけ**: complete physical plan(engine が見る全ての資源・scope・attachment・alias の組を持つ package。schema `pelican.vulkan_complete_physical_plan` v1)は、NativeScope のために C++ の関数だけが残ります。eject は [`ejectVulkanCompletePhysicalPlanPackage()`](../../src/project/vulkancompletephysicalplan.cpp#L1268)、検査は [`verifyVulkanCompletePhysicalPlanPackage()`](../../src/project/vulkancompletephysicalplan.cpp#L1549)、install は [`installVerifiedVulkanCompletePhysicalPlanPackage()`](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L905) です。
 
-```json
-{
-  "name": "low_color",
-  "format": "R8G8B8A8_UNORM",
-  "format_candidates": ["R16G16B16A16_SFLOAT"],
-  "usage": ["COLOR_ATTACHMENT", "SAMPLED"]
-}
-```
-
-その後、自動planからejectしたfragmentの該当resourceの`format`を、`format_candidates`に宣言した名前
-（例: `"R16G16B16A16_SFLOAT"`）へ変更します。RC-3a1 から、fragment の format は render target JSON と同じ作者の綴りです
-(以前は区切り記号の無い Vulkan の綴り `"R16G16B16A16Sfloat"` でした。下の「v0 で eject した package」)。
-fragment は eject したときの自動 plan の fingerprint に束縛されるので、手で書き起こさず、必ず現在の`ejectable_physical_fragment`を編集してください。
-link時には、対象deviceのrequired image usage（historyなら`TRANSFER_DST`も含む）、
-sample count、array layer上限、external depthなら`TRANSFER_SRC`契約を再照合します。
-候補未宣言、非`materialized_image`、device非対応の変更は**黙って別の値へ落とさず(fallback せず)**、名前付きエラーで起動を止めます。「指定は通ったが実際は別の format で動いていた」という状態を作らないためです。
-
-全versionで共通して許可する編集は次です。
-
-- resource representationの維持、または自動`tile_local_attachment` / `transient_attachment`から`materialized_image`への保守的な変更
-- 自動planが選んだformatの保持、または`format_candidates`で宣言され、実device capabilityを満たす`materialized_image` formatへの変更
-- format、representation、sample count、view layout、extentが一致し、**論理lifetime**(そのresourceが最初にwriteされるnodeから最後にreadされるnodeまでの、論理グラフ上の区間)が重ならないresourceだけのalias group
-- v2以降では`(node, logical_resource)`で特定したraster attachmentの`load_op` / `store_op`。
-  `load_op`は`load|clear|discard`、`store_op`は`store|discard`で、未記述fieldは自動planを維持する
-  (`discard` は作者の綴りの `dont_care` と同じ値。package に `dont_care` と書くと `Vulkan physical attachment fragment has unknown load_op: dont_care` で断られます。§6.2「attachment の load / store」の綴りの表)。
-  変えた後の load は論理の read と合っている必要があります: 論理の read の無い attachment を `load` にすると `Vulkan physical attachment Load has no logical read dependency: <node> -> <資源>`、read のある attachment を `clear` / `discard` にすると `Vulkan physical attachment cannot discard or clear a logical read dependency: <node> -> <資源>` です([検査](../../src/project/vulkanphysicalfragment.cpp#L1975))。
-  自動 plan が `store` にした attachment を `discard` にできるのは、別の multisample resolve が値を残すときだけで、そうでなければ `Vulkan physical attachment Store may only be discarded when a separate multisample resolve preserves the logical value: <node> -> <資源>` です([検査](../../src/project/vulkanphysicalfragment.cpp#L3137))。
-
-`scope_edit_mode` は[物理プランの scope](#physical-plan-scope)の編集許可範囲を指定し、その範囲は version ごとに異なります。
-
-- v1/v2、またはv3の`scope_edit_mode: "split_only"`は、自動scopeをさらに**分ける**
-  exact ordered partitionだけを許可します。**tile-local 値**(scope の中だけで受け渡され、GPU メモリへ書き戻さない attachment の値。上の「自動 tile-local attachment / same-pixel local read」)が新しい境界をまたぐ場合は、その
-  resourceを先にmaterializeします。
-- v3の`scope_edit_mode: "dependency_safe"`は、自動計画の node の順(= frame plan の順。上の「[物理計画は frame plan の順で走る](#physical-order-follows-frame-plan)」)を**保ったまま**、scope を割ることと、隣り合う scope を 1 つに融合することができます。✅RC-3d2 から、node の順を変える編集は、依存を守る並べ替えでも受けません(利用者の決定。順は `frame_node_order` で書きます)。
-
-  具体例(回帰テスト `test/targetrenderplanning_test.cpp` の「version 3 physical fragments fuse compatible materialized rendering scopes」と「RC-3d2 fragments reject independent reordering without unproven authoring advice」): 自動 scope が `[GBuffer, Lighting]` と `[Forward]` に分かれているとき、`split_only` でできるのは `[GBuffer]` と `[Lighting]` へ**割る**ことだけです。`dependency_safe` なら、`Lighting` が書いた `scene_color` を `Forward` が同じ attachment として `load` していて、2 つが隣り合っているので、`{"id": "manual:lighting_forward", "nodes": ["Lighting", "Forward"]}` と書いて 2 ノードを**1 つの scope へ融合**できます。順を保つ融合なので、resource・lifetime・alias group は自動計画と同じです(test)。`Forward` を `Lighting` より前へ動かす編集も、依存の無い node を前へ動かす編集も、同じ拒否になります。
-- 展開した node の順が自動計画と違う fragment は、`physical_fragment.reorders_frame_plan@1 {graph, position, expected, actual, message, frame_node_order? | not_expressible?}` で断ります(`GraphRegistryError`。[断る所](../../src/project/vulkanphysicalfragment.cpp#L1731))。`position` は最初に食い違った位置、`expected` は自動計画のその位置の node、`actual` は fragment のその位置の node です。
-  - fragment の順を `frame_node_order` に書ける形にできたときは、`frame_node_order` に **そのままコピーできる object**(`{"<graph>": [<node>, …]}`)が付きます。root の rendering 節の `frame_node_order` に貼って組み直し、fragment を eject し直してください(`message` もそう言います)。ループの回の node は、連続していればループの id 1 つにまとめて書きます(下の `frame_node_order` の「ループの id を書く」)。
-  - その列を合成と同じ規則で展開し直して fragment の順と完全に一致しないときは、object を付けず、`not_expressible` に理由が入ります: `loop_interleaved`(同じループの回が離れて現れる。`loop` にループの id)、`loop_internal_order`(ループの回が連続していても中の順が宣言と違う)、`provenance_unavailable`(node の由来が無い。下の層の API を直接呼ぶときなど)。本番の compiler の道では由来が渡ります。
-  - 例(本番の compiler の道の test「RC-3d2 loop fragment recovery copies directly into the authored document」): `steps` ループが `steps/0/fill`, `steps/1/fill` を作る graph で、独立な compute task を先頭に動かした fragment を貼ると断られ、detail の `frame_node_order` には `steps` が 1 つの名前として入ります。その object を加工せずに文書へ貼ると、frame plan と物理の順が fragment の希望の順になり、eject し直した fragment も通ります。
-- ✅RC-3d2 の前にあった「並べ替えた後に resource の lifetime を新しい物理順序から再計算し、手書きの alias group をその lifetime へ再照合する」処理は、順が変わらなくなったので消えました。
-- 異なる自動scopeの融合は、内部`materialized_image`だけを使うsingle-sample rendering
-  scopeに限定します。kind、view実行、ordered color/depth attachmentが一致し、2番目以降が
-  Load、最後以外がStoreでなければrejectされます。成立したscopeは一つのVulkan dynamic
-  rendering instanceとして実行されます。swapchain、UI/ImGui、MSAA、異なるattachment集合、
-  sampled/storage/transfer依存を含む融合はまだ受理しません。
-
-貼り付け後は`applied_physical_fragment`で適用内容を再観測できます。logical graphだけでなく、変更前の自動plan、target facts、選択候補、provider generationも`automatic_plan_fingerprint`へ束縛されます。いずれかが変わった古いfragmentは **stale error**(貼った package が前提にしていた plan はもう存在しない、という失敗)となり、部分的に推測して修復しません。直し方は「もう一度 eject してから編集し直す」だけです。
-
-**順が変わった graph の保存済み package(✅RC-3d2)。**物理計画が frame plan の順を使うようになって物理の順が変わった graph(上の「[物理計画は frame plan の順で走る](#physical-order-follows-frame-plan)」の 3 つ)では、`automatic_plan_fingerprint` の値も変わりました。`logical_graph_fingerprint` は変わりません(論理 graph は同じ)。`frame_node_order` を書き換えて順を変えたときは、足される `after` で論理 graph も変わるので、`logical_graph_fingerprint` も変わります(実装者の記録)。
-
-- その前に eject して保存した fragment は、並べ替えをしていなくても stale error になります(RPC では `physical_fragment_stale`。上の 3 つの graph では `fingerprint: "automatic_plan"`)。
-- complete physical plan の package は `complete_physical_plan.stale_automatic_plan@1 {graph, expected, actual, message}` で断ります(`message` は「eject し直す」。[断る所](../../src/project/vulkancompletephysicalplan.cpp#L1586))。
-- どちらも、backend の候補が変わっていても候補の食い違いより先にこの stale で断ります。
-- 移行の自動書き換えはありません。今の engine で eject し直して編集をやり直します(test「RC-3d2 physical planning consumes explicit orders and stale packages recover by ejecting again」が、JSON に保存した fragment と complete package で「stale で断る → eject し直す → 再適用が通る」を見ます)。`projects/` の出荷 project には保存済みの fragment / complete package はありません(実装者の報告)。
-- `vulkan_plan_pins` の pin は `logical_graph_fingerprint` だけを照らすので、順が変わってもそのまま通ります。ただし順の変化で pin した候補が成り立たなくなれば `pinned backend candidate is infeasible` です(test の例: GBuffer と Lighting の間に独立な Scratch を置くと tile-local が成り立たず、自動計画は transient を選び、tile-local の pin は断られる)。
+- dump には出ません(`ejectable_complete_physical_plan` は消えました)。文書の鍵・RPC・Studio の UI もありません。install した graph は、`get_frame_plan` の最上位(物理計画の外)に `legacy_complete_plan: true` が付きます([出す所](../../src/core/vkcore/renderer.cpp#L4312))。
+- install は、検査に使った自動計画と install の時の計画が同じ object であることを確かめ、違えば `Vulkan compiler target plan was modified before complete plan verification` で断ります。作者の `target_planning` の宣言がある graph への install は `target_planning.policy_with_legacy_package@1` です(上の「[宣言の強さと出所](#target-planning-policy)」)。
+- 古い package は、自動計画が変わっていれば `complete_physical_plan.stale_automatic_plan@1 {graph, expected, actual, message}`(`message` は「eject し直す」。[断る所](../../src/project/vulkancompletephysicalplan.cpp#L1586))、論理 graph が変わっていれば `stale for the logical graph` を含む文で断ります(test「RC-6b2 complete stale refusal and install identity survive legacy removal」)。順が frame plan と違えば `render_compiler.physical_order_mismatches_frame_plan@1` です(上の「[物理計画は frame plan の順で走る](#physical-order-follows-frame-plan)」)。
+- render target の `format_candidates` で宣言した format を選べるのは、今は complete physical plan だけです(コードの注記)。
 
 <a id="v0-physical-fragment-format"></a>
 
-**v0 で eject した package(RC-3a1)。**v0 の engine は fragment の `resources[].format` を Vulkan の enum の綴り(`R8G8B8A8Unorm`、`R16G16B16A16Sfloat`)で書きました。
-
-- この綴りは今も読めます。読み手は fragment の format を、今の綴りで引けなければ v0 の綴りとして 1 か所で読み替えます([`imageFormatFromV0PhysicalPlanName()`](../../src/project/imageformat.cpp#L201)、[fragment の読み手が呼ぶ所](../../src/project/vulkanphysicalfragment.cpp#L2505))。どちらでもない名前は `Vulkan physical resource fragment format names an unknown image format: <名前>` です。
-- ただし `automatic_plan_fingerprint` は資源の format の名前を含めて計算するので([足す所](../../src/project/vulkanphysicalfragment.cpp#L806))、綴りが変わった RC-3a1 から値が変わります。v0 で eject した fragment は、読めても `automatic_plan` の stale error(`Vulkan physical fragment is stale for the current target facts/provider generation: expected <今の値>, got <package の値>`)になります([投げる所](../../src/project/vulkanphysicalfragment.cpp#L2784))。今の engine で eject し直し、編集をやり直してください。
-  - `put_vulkan_physical_fragment` で送った fragment なら、ticket の結果が `physical_fragment_stale`(`fingerprint: "automatic_plan"`)です。✅RC-6b1 から Studio に Eject again はありません(Studio の Freeze は fragment を書かない)。今の plan の `ejectable_physical_fragment` をこの RPC で送り直します。
-  - 文書に既に入っている fragment を読み込むとき、この error が起動を止めるのか、構成の拒否(fallback)として見えるのかは未確認です(この例外を名前付きの拒否に変えるのは編集の RPC の側だけです。[拒否に変える所](../../src/core/communication/renderconfigeditor.cpp#L5403))。
-- これはコードの読みです。v0 で実際に eject した package を読む test はありません(RC-3a1 の test は、今 eject した package の format を v0 の綴りに書き換えて、同じに読めることを見ます)。
-- `vulkan_plan_pins` の package は format を持たず、照合するのは `logical_graph_fingerprint` だけです。RC-3a1 はこの値の計算を変えていません(差分の読み)。
-
-RPC から書くときは `put_vulkan_physical_fragment {base_source_digest, family, fragment}`です。stale な fragment は、ticket の結果の `physical_fragment_stale {family, graph, fingerprint, expected, actual}` で返り、文書は変わりません(`fingerprint` は `logical_graph` か `automatic_plan`。[第13章](13_editor.md)の「graph 全体の計画の決定を書く」)。この RPC は今もありますが、✅RC-6b1 から Studio は使いません。Studio の Physical plan タブの **Freeze this physical plan** は fragment ではなく root の `target_planning` に policy を書き出し、Eject again はありません(§6.6「[Studio の Pin / Freeze / Remove と check](#target-planning-studio)」)。
+**RC-6b2 の前の扱い(履歴)。**pin は `logical_graph_fingerprint` だけを、fragment は `automatic_plan_fingerprint`(変更前の自動計画・target facts・選択候補・provider generation)も照らし、合わない package は stale で断られ、直す道は「今の plan から eject し直して編集をやり直す」だけでした。fragment の version 3 の `scope_edit_mode: "dependency_safe"` は順を保った scope の融合を受け、✅RC-3d2 から順を変える編集は `physical_fragment.reorders_frame_plan@1` で断りました。v0 で eject した fragment(format が `R16G16B16A16Sfloat` の綴り)は、RC-3a1 から `automatic_plan` の stale でした。v0 の綴りを読み替える [`imageFormatFromV0PhysicalPlanName()`](../../src/project/imageformat.cpp#L201) は今は complete physical plan の parser だけが使います。✅RC-6b1 で Studio は pin と fragment を書かなくなり、✅RC-6b2 で文書の鍵と RPC ごと無くなりました。
 
 同じ名前のtargetを複数graphやflat/XR variantが共有する場合、全planは同じphysical formatを選ぶ必要があります。異なるformatを同時に使う設計ならtarget名を分けてください。hot reloadでformatを変更した場合は、新しいruntime generationのimage・view・pipelineを作ってから一括publishし、旧generationは既存のGPU lease規則でretireします。
 
-v2/v3のattachment編集はlogical dependencyを壊せません。論理readを持つattachmentは必ず
-`load`、readを持たないattachmentは`load`にできません。編集対象は現在
-`materialized_image`またはexternal targetに限定されます。`store`から`discard`への変更は、
-別MSAA resolveが論理値を保存し、そのmultisample surfaceを後続attachmentがloadしない場合だけ
-許可されます。通常raster、output transform、UI、ImGuiはいずれもlink済みのattachmentごとの
-操作をdynamic renderingへ適用します。hot reloadもformat変更と同じgeneration transactionで
-prepare/publishされます。
+通常raster、output transform、UI、ImGuiはいずれも物理計画のattachmentごとの
+操作をdynamic renderingへ適用します。✅RC-6b2 の前は physical fragment の v2 / v3 で
+attachment の load / store を編集でき(論理の read と合うこと、`store` から `discard` は別の
+MSAA resolve が値を残すときだけ、を検査)、hot reload も format 変更と同じ generation transaction
+でした。この編集の道は無くなりました(上の「[旧い pin と physical fragment](#legacy-plan-packages-removed)」)。
 
 自動planがwrite-only targetを`transient_attachment`にした場合、そのattachmentは初めから
-`discard`です。内容の保存が必要な特殊実験では、ejectした同じfragmentでresourceを
-`materialized_image`へ保守的に変更し、attachmentを`store`へ戻せます。
+`discard`です。✅RC-6b2 の前は、eject した同じ fragment で resource を `materialized_image` に
+戻し、attachment を `store` に戻せました。今は policy の `representation: "materialized"` で
+資源を materialize します(§6.2「物理計画が変える場合」の通り、store を `dont_care` にするのは
+transient / tile-local の資源だけです)。
 
 自動planのalias groupは、non-history・single-sample・materializedで、format、usage、
 extent、view契約が同一、かつlifetimeが重ならないimageに限ってruntime allocationへ適用されます。
@@ -2694,7 +2591,7 @@ allocation共有だけを無効化します。実行時はgroup内でも別々�
 - light の数で層が変わる shadow の image を含む組も解除します。
 - 残った組は 2 人以上で、format・usage・大きさ・sample 数・mip・layer 数・`dimension` が揃い、materialized で history でないことを最後に確かめ、違えば `render_graph.alias_group_invalid@1 {group, reason: "member_count" | "contract", resource?}` です。example の `Bloom_Threshold_RT` と `g_emissive` の共有(21 枚・20 の確保)は変わりません(実装者の報告)。
 
-まだ受理しないのはphysical fragmentによる`materialized_image`からtile-localへの攻めた変更、
+まだ受理しないのは`materialized_image`からtile-localへの攻めた変更(policy の `representation` が受ける値は `materialized` だけ)、
 MSAA・external・異なるattachment集合をまたぐscope融合、node の順を変える reorder(✅RC-3d2 から依存を守るものも。順は `frame_node_order` で書く)、一般の
 materialized single-sample surfaceに対するstore elision、barrier、queue、任意Vulkan flagです。
 production runtimeが実行する
@@ -2704,7 +2601,7 @@ color attachment + sampled用途のmaterialized imageだけを対象とし、MSA
 storage/transfer image、bufferとの混在はまだ受理しません。
 
 **alias から外れた理由。**runtime の alias の候補は、history でなく、format class が `display` でなく、storage mode が materialized で、usage がちょうど `{COLOR_ATTACHMENT, SAMPLED}` の target です。外れた target の理由は `physical_target_plan.resources[].reason`(と `pelican.plan.resource_representation@1` の `detail`)が `logical materialization requirement is required` か `ResourcePattern requires contents to be stored` のとき、その後に `: ` と原因を続けて言います(原因が複数なら `; ` で区切る。
-[原因の文を作る所](../../src/core/renderingpass/renderingsamplecount.cpp#L103)、[理由に続ける所](../../src/project/targetrenderplanning.cpp#L972))。
+[原因の文を作る所](../../src/core/renderingpass/renderingsamplecount.cpp#L103)、[理由に続ける所](../../src/project/targetrenderplanning.cpp#L926))。
 
 | 原因の文 | いつ |
 |---|---|
@@ -2716,8 +2613,8 @@ storage/transfer image、bufferとの混在はまだ受理しません。
 
 たとえば usage に `TRANSFER_SRC` を足した target は `logical materialization requirement is required: usage TRANSFER_SRC is outside the alias-safe set {COLOR_ATTACHMENT, SAMPLED}`
 になります(PO-1 の test)。判定の規則は変えておらず、言葉を足しただけです。ただし `reason` は `automatic_plan_fingerprint` に入るので
-([入れる所](../../src/project/vulkanphysicalfragment.cpp#L822))、上の 2 つの理由で外れた target を持つ plan では PO-1 の前後で fingerprint の値が変わり、PO-1 より前に eject して
-貼った physical fragment は stale になります(eject し直して貼り直します)。
+([入れる所](../../src/project/vulkanphysicalfragment.cpp#L481))、上の 2 つの理由で外れた target を持つ plan では PO-1 の前後で fingerprint の値が変わり、PO-1 より前に eject して
+貼った physical fragment は stale になりました(physical fragment は ✅RC-6b2 で無くなりました。complete physical plan の package も同じく stale です)。
 
 ## 6.7 マテリアル(M1〜M3.5 = WP58/68/70/76/78/83)
 
@@ -2967,7 +2864,7 @@ floating-point `vec4`契約で、UINT/SINT input attachmentはtyped image port�
 - surface の hot reload は 2 つの mode の頂点 program を compile し直し、両方の pipeline(と draw_loop の override の pipeline)を作り直します。
 - glTF の material の「skin 用の双子」と、組込の `pelican.builtin.skinned_fallback` は無くなりました。skin 付きの部品も、その部品の material(glTF に material が無ければ組込の `pelican.builtin.transparent`)をそのまま使います。
 - **variant は mode に依らず同じ集合です(SK-3)**: material の variant は standard と skinned のどちらの描き方からも同じ名前で引けます。base の material と variant は一緒に登録してから描画の表に知らせるので、`draw.variant` の step を `when: {skinned: true}` の分岐に置いても `graph.loop_variant_missing@1` にはなりません(この拒否は本当に宣言が無いときだけです)。
-- draw_loop の `when.skinned` は部品の側で判定します。1 つの material が `standard` と `skinned` の 2 つの描き分けの対象になり、照合の鍵(§6.18 の「material の照合の鍵」)は mode を含みません。`get_render_authoring_context` の `materials[]` は material ごとに 1 行、`get_frame_plan` の draw_loop の `elements[]` は material と分岐の組ごとに 1 行で(skin 付きと skin なしが別の分岐に入る material は 2 行になります)、その行の mode を `vertex_modes`(`["standard"]` / `["standard", "skinned"]` など)で持ちます([context の行](../../src/core/communication/renderconfigeditor.cpp#L3753)、[plan の要素](../../src/project/materialdrawloop.cpp#L218))。
+- draw_loop の `when.skinned` は部品の側で判定します。1 つの material が `standard` と `skinned` の 2 つの描き分けの対象になり、照合の鍵(§6.18 の「material の照合の鍵」)は mode を含みません。`get_render_authoring_context` の `materials[]` は material ごとに 1 行、`get_frame_plan` の draw_loop の `elements[]` は material と分岐の組ごとに 1 行で(skin 付きと skin なしが別の分岐に入る material は 2 行になります)、その行の mode を `vertex_modes`(`["standard"]` / `["standard", "skinned"]` など)で持ちます([context の行](../../src/core/communication/renderconfigeditor.cpp#L3746)、[plan の要素](../../src/project/materialdrawloop.cpp#L218))。
 - 当てられる material と VAT の制限は [第5章](05_assets.md) §5.2 の「material の割り当て」です。
 
 ### 安定した描画対象の選択（WP206a）
@@ -3100,7 +2997,7 @@ rendering 文書の root に `material_route_default` を置くと、automatic �
   preset 文書の `config` と feature に書くと名前付きで断られます(`render pipeline preset config cannot own material_route_default` /
   `render feature cannot declare material_route_default`)。値が `"auto"` / `"forward"` 以外なら
   `rendering config material_route_default must be "auto" or "forward"` です
-  ([`readMaterialRouteDefault()`](../../src/project/renderpipeline.cpp#L795))。合成した config には残りません。
+  ([`readMaterialRouteDefault()`](../../src/project/renderpipeline.cpp#L700))。合成した config には残りません。
 - **engine は起動時に 1 回だけ読みます**(renderer を作るとき。[起動時の snapshot](../../src/core/vkcore/renderer.cpp#L3169))。
   起動後に文書を書き換えても、編集 RPC で変えても、engine を起動し直すまで効きません。編集 RPC は `restart_required: true` を返し、
   Studio はそれを受けて engine を再起動します([第13章](13_editor.md) §13.5)。renderer を持たない構成(loader や tool の test)では
@@ -3401,8 +3298,8 @@ RC-5s の前は RT もパスも足さない**純ゲート**で、canonical ancho
 
 - **v0 の `sprite_demo`**(凍結した corpus)は binding を書いていないので、RC-5s の engine では `feature.parameter_target_unknown@1 {feature: "sprite", parameter: "color", target: "lit_color"}` で断られます。直すには上の表の 3 行目と同じ binding と置き場所を手で書きます。移行の step はありません([v0_freeze](../v0_freeze.md))。
 - **資源の計画**: `sprite_draw` は color と depth を IR の read_write の use として持つので、前後の barrier と lifetime が他の pass と同じ道で決まります(test: 前の writer `forward_transparent` からの barrier と、`scene_present` への barrier。[「RC-5s sprite resource uses induce incoming and outgoing barriers」](../../test/rc5s_anchor_removal_test.inc#L117))。
-- **自分の scope**: sprite の描画は `SpriteRenderer` が rendering の begin / end を自分で持つので、`sprite` の pass(と `ui` / `imgui`)はいつも単独の物理 rendering scope になります([単独にする所](../../src/core/renderingpass/renderingsamplecount.cpp#L151))。physical fragment や complete package がこれを他の pass と同じ scope に入れていれば `render_graph.scope_implementation_unfusible@1 {graph, node}` です([計画で断る所](../../src/core/renderingpass/renderingsamplecount.cpp#L1782)、[package の install で断る所](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L957))。
-- **attachment の範囲**: color / depth の use の layer 数が scope の view 数と違う、または MSAA の scope で mip が 0 でないときは `render_graph.sprite_attachment_range_unsupported@1 {graph, node, resource}` です([断る所](../../src/core/renderingpass/renderingsamplecount.cpp#L1756))。
+- **自分の scope**: sprite の描画は `SpriteRenderer` が rendering の begin / end を自分で持つので、`sprite` の pass(と `ui` / `imgui`)はいつも単独の物理 rendering scope になります([単独にする所](../../src/core/renderingpass/renderingsamplecount.cpp#L151))。計画や complete package(✅RC-6b2 の前は physical fragment も)がこれを他の pass と同じ scope に入れていれば `render_graph.scope_implementation_unfusible@1 {graph, node}` です([計画で断る所](../../src/core/renderingpass/renderingsamplecount.cpp#L1705)、[package の install で断る所](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L949))。
+- **attachment の範囲**: color / depth の use の layer 数が scope の view 数と違う、または MSAA の scope で mip が 0 でないときは `render_graph.sprite_attachment_range_unsupported@1 {graph, node, resource}` です([断る所](../../src/core/renderingpass/renderingsamplecount.cpp#L1695))。
 - **XR・MSAA**: sequential の XR の view / layer、FrameUBO、MSAA の resolve は RC-5s の前の描画と同じ結果にしています(test: 左右で配置と遮る物の違う fixture、MSAA 1x / 4x。`golden_cases_test` の [「RC-5s sprite preserves stereo layers FrameUBO depth and MSAA resolves」](../../test/golden_cases_test.cpp#L11)。本体は [`runRc5sSpriteViews()`](../../test/rc5s_sprite_views_test.inc#L1))。
 - **描く物が無いフレーム**: sprite の command が 0 のフレームでも pass は実行の列に残り、何も描かずに終わります。GPU timing の行は `sprite_draw` の名前で出て、見える sprite が 1 つ以上ある時だけ `body` が supported です(§6.14)。
 - color か depth が具体の target(color は swapchain も可)でない構成は、実行時に `sprite feature requires a scene color and depth attachment for sprite pass` で断られます([sprite の分岐](../../src/core/vkcore/renderer.cpp#L2258))。
@@ -3468,7 +3365,8 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 | `target_planning.policy_foreign_name@1` `{document, pointer, target}` | ✅RC-6a1。feature・構造の断片・`@2` のレシピの `target_planning` が、その文書の宣言していない名前(`required_targets` で借りた target を含む)を指した。root に書くか、宣言している文書に書く(§6.6「[宣言の強さと出所](#target-planning-policy)」) |
 | `target_planning.policy_conflicts_engine@1` `{graph, target, key, …}` | ✅RC-6a1。engine が強制する `isolate`(`once` / `sprite` / `ui` / `imgui`、graph.instance の scope)に、採った宣言が `require` の `false` を書いた。`prefer` なら断らず dump に `engine_forced` |
 | `target_planning.policy_name_ambiguous@1` `{graph, name, candidates}` | ✅RC-6a1。宣言の名前が作者名か最終名で 2 つ以上の対象に当たる。`candidates` は `{author_name, final_name, owner}` |
-| `target_planning.policy_with_legacy_package@1` `{graph}` | ✅RC-6a1。作者の `target_planning` の宣言がある graph に `vulkan_plan_pins` / `vulkan_physical_fragments` / complete physical plan の install を重ねた。どちらかを外す |
+| `target_planning.policy_with_legacy_package@1` `{graph}` | ✅RC-6a1。作者の `target_planning` の宣言がある graph に complete physical plan の install を重ねた(C++ の口。✅RC-6b2 の前は `vulkan_plan_pins` / `vulkan_physical_fragments` も)。どちらかを外す |
+| `target_planning.legacy_package_removed@1` `{key, document, message}` | ✅RC-6b2。root の rendering 節・preset / レシピの `config`・構造の断片に `vulkan_plan_pins` か `vulkan_physical_fragments` がある(値は問わない。`restore_render_documents` でも同じ)。鍵を消して読み込み直し、Studio の Pin / Freeze で作り直す(§6.6「[旧い pin と physical fragment](#legacy-plan-packages-removed)」) |
 | `target_planning.name_absent@1`(warning。`diagnostics` の `detail` が `{severity, graph, name, key}`) | ✅RC-6a1。root の `target_planning` の宣言の対象が合成の結果に無い(消した・置き換えた・inactive)。宣言は捨てられ、組み直しは止まらない |
 | `target_planning.policy_invalid@1` `{graph, target, key, document, pointer, …}` | ✅RC-6a2。`target_planning` の新しい鍵の入力の誤り: frame plan の先頭の node の `scope_join: true`、同じ node に `scope_break` と `scope_join` が両方 `true`、external の資源・image でない資源(buffer など)への `representation`、feature・構造の断片の `backend`、値の形の誤り(`backend` の 3 つ以外の値など)(§6.6「[計画の結果を指す鍵](#target-planning-result-keys)」) |
 | `target_planning.requirement_unsatisfied@1` `{graph, candidates}` / `{graph, candidate, requirements}` | ✅RC-6a2。`require` の宣言を満たせない。`candidates` の形は 3 つの候補がどれも成り立たなかった(候補ごとの失敗の理由つき)、`requirements` の形は選んだ計画が最後の照合で宣言と合わなかった。寿命の重なる資源の `alias_group`、`isolate` / `serial` の node や engine が isolate する node(`sprite_draw` など)への `scope_join` など。強さを `prefer` にすれば、満たせないときは外されて dump に `infeasible_prefer` で残る |
@@ -3585,8 +3483,8 @@ preview graph の合成規則(すべて起動時に検証されます):
 **preview を組めない構成でも通常の再生は起動する。**
 
 - **背景**: 利用者の intro link の比較で見つかりました。`history: true` の render target を root に直書きした project を player で起動すると、通常の再生でも `preview graph '<config>' rejects authored history target 'accum'` で起動できませんでした。通常の起動でも preview の変種を含む family を組み、preview の検査の例外で登録全体が落ちていたためです(仕様書の記述)。
-- **今の扱い**: preview の検査([`validatePreviewConfig()`](../../src/project/graphvariantpolicy.cpp#L314))そのものは変わらず、断る構成を preview で走らせることはしません。断りは [`PreviewUnsupportedAuthoringError`](../../src/project/graphvariantpolicy.hpp#L235) になり、compiler program は preview の変種を組めないとき、それを「利用できない」と記録して flat / xr を今までどおり登録・公開します([PV-1 で preview の失敗を記録する所](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L609)、[登録の段で unavailable の preview を作る所](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1583))。flat / xr が組めない構成は今までどおり失敗です。
-今は `PreviewUnsupportedAuthoringError` は常に「利用できない」と記録し、それ以外の失敗は、同じ呼び出しで runtime の変種(flat / xr)が先に組めた後だけ記録します(下の `composition`)。runtime の変種が組めていなければ、flat と同じように投げます([RG-3 で投げ直す所](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L634))。登録は runtime の変種を先に並べるので(コードの注記)、起動の扱いは変わりません。runtime の変種の無い呼び出しがどこから来るかは未確認です。
+- **今の扱い**: preview の検査([`validatePreviewConfig()`](../../src/project/graphvariantpolicy.cpp#L314))そのものは変わらず、断る構成を preview で走らせることはしません。断りは [`PreviewUnsupportedAuthoringError`](../../src/project/graphvariantpolicy.hpp#L235) になり、compiler program は preview の変種を組めないとき、それを「利用できない」と記録して flat / xr を今までどおり登録・公開します([PV-1 で preview の失敗を記録する所](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L601)、[登録の段で unavailable の preview を作る所](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1583))。flat / xr が組めない構成は今までどおり失敗です。
+今は `PreviewUnsupportedAuthoringError` は常に「利用できない」と記録し、それ以外の失敗は、同じ呼び出しで runtime の変種(flat / xr)が先に組めた後だけ記録します(下の `composition`)。runtime の変種が組めていなければ、flat と同じように投げます([RG-3 で投げ直す所](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L626))。登録は runtime の変種を先に並べるので(コードの注記)、起動の扱いは変わりません。runtime の変種の無い呼び出しがどこから来るかは未確認です。
 - **状態の形**([`previewGraphStatusJson()`](../../src/core/renderingpass/previewgraph.cpp#L112)、reason は [`previewUnsupportedAuthoringReason()`](../../src/core/renderingpass/previewgraph.cpp#L71)): 組めたときは `preview: {available: true}`、組めないときは `preview: {available: false, reason: {code: "preview.unsupported_authoring@1", feature, target?, graph?, pass?, cause?, message}}` です。`message` は断った文そのものです。`feature` は次のどれかです。
   - `history`: `history: true` の render target(`target` に名前)
   - `projection_jitter`: `projection_jitter` の直書き
@@ -3595,7 +3493,7 @@ preview graph の合成規則(すべて起動時に検証されます):
   - `history_read`: `<target>@history` を読む pass(`graph`・`pass`)
   - `history_write`: `writes_history` の pass(`graph`・`pass`)
   - `composition`: それ以外の理由で preview を組めなかった。拒否が名前付き(`GraphRegistryError` か `<code>: <fields>` の形)なら `cause: {code, ...その fields}` が付きます(例: preview だけが断る graph のループの `graph.loop_expression_invalid@1` は `cause: {code: "graph.loop_expression_invalid@1", node: "steps", reason: "not_static"}`。test)
-- **出る所**: `get_status` の `preview`([`get_status` の PV-1 の鍵](../../src/core/communication/rpcserver.cpp#L1680))、`get_frame_plan` の最上位の `preview`([frame plan の PV-1 の鍵](../../src/core/vkcore/renderer.cpp#L4564))、render の編集の committed の結果の `preview`(公開した世代の状態。`reload_render_documents` と `edit_batch` の committed も同じ。[committed に preview を足す所](../../src/core/communication/renderconfigeditor.cpp#L8616))。
+- **出る所**: `get_status` の `preview`([`get_status` の PV-1 の鍵](../../src/core/communication/rpcserver.cpp#L1680))、`get_frame_plan` の最上位の `preview`([frame plan の PV-1 の鍵](../../src/core/vkcore/renderer.cpp#L4564))、render の編集の committed の結果の `preview`(公開した世代の状態。`reload_render_documents` と `edit_batch` の committed も同じ。[committed に preview を足す所](../../src/core/communication/renderconfigeditor.cpp#L8480))。
 - **`render_preview`**: preview が利用できない世代では、capture の中身を読む前に `preview.unavailable@1` で断ります。JSON-RPC の error(`-32000`)の `data` が `{code: "preview.unavailable@1", method: "render_preview", reason: <上の reason>}` です([`checkPreviewAvailable()`](../../src/core/communication/editorpreviewservice.cpp#L134))。
 - **編集**: 編集の preflight は preview を組みません([PV-1 で preview を組まなくなった preflight](../../src/core/renderingpass/previewgraph.cpp#L185))。preview だけが組めない編集も committed になり、`preview` が `available: false` に変わります。逆に history を外す編集で `available: true` に戻ります。
 - **log**: 起動時に、preview が利用できなければ warning を 1 行出します。形は `render preview unavailable (preview.unsupported_authoring@1 feature=history target=accum); normal play continues, render_preview refuses: <message>` で、`target=` は reason に `target` があるときだけです([PV-1 の warning の行](../../src/core/vkcore/renderer_config.cpp#L763))。同じ関数は reload と編集の組み直しでも通るので、そこでも preview が利用できなければ同じ行が出ます(コードの読み。test は起動時の 1 行だけを見ます)。
@@ -4036,13 +3934,13 @@ stderr に `--render-fallback requires --rpc` と usage を出し、終了コー
 
 **直し方**は 3 つです。どれも、project の構成を publish した時点で fallback が終わります([publish で fallback を終える所](../../src/core/vkcore/renderer.cpp#L182))。
 
-1. ディスクの文書を直して `reload_render_documents {}`。committed になり、`state` が `ready` に戻ります。fallback の間の reload は、文書が変わっていなくても毎回組み直し、    `no_change` で素通りしません(ディスクのどれも live ではないため。[fallback の間は毎回組み直す所](../../src/core/communication/renderconfigeditor.cpp#L8297))。
+1. ディスクの文書を直して `reload_render_documents {}`。committed になり、`state` が `ready` に戻ります。fallback の間の reload は、文書が変わっていなくても毎回組み直し、    `no_change` で素通りしません(ディスクのどれも live ではないため。[fallback の間は毎回組み直す所](../../src/core/communication/renderconfigeditor.cpp#L8168))。
    直す前の reload は同じ code で断られ、fallback のままです。reload はディスクを書きません。
 2. 壊れた root の digest(`get_render_documents` が返す)を `base_source_digest` にした render の編集。BS-1 の test は `edit_graph_document` の `remove_node` で問題の node を消し、    committed・`ready` になり、ディスクの root からも node が消えることを見ます。
 3. BS-1b: root を丸ごと置き換える `restore_render_documents {documents: [{reference, base_digest: <壊れた bytes の digest>, content: <正しい JSON>}]}`。
 
 組めない root でも、`get_render_documents` は root と、その rendering 節が名指す文書のうちディスクにあるものを返します
-(✅RC-3e1 から合成を使わない静的な列挙で、ディスクに無い・読めない・engine の文書も `other_documents` に出ます。[静的な列挙を呼ぶ所](../../src/core/communication/renderconfigeditor.cpp#L7251))。RPC の形の詳細は [第13章](13_editor.md) §13.5 の「起動時に断られた構成を直す」です。
+(✅RC-3e1 から合成を使わない静的な列挙で、ディスクに無い・読めない・engine の文書も `other_documents` に出ます。[静的な列挙を呼ぶ所](../../src/core/communication/renderconfigeditor.cpp#L7101))。RPC の形の詳細は [第13章](13_editor.md) §13.5 の「起動時に断られた構成を直す」です。
 
 **JSON として読めない文書。**root、または root の rendering 節が名指す feature / preset が JSON として読めないとき、拒否は `render_document_syntax@1` `{document, line?, column?, reason}` です([`renderDocumentSyntax()`](../../src/project/renderconfigdocument.cpp#L435))。
 
@@ -4050,7 +3948,7 @@ stderr に `--render-fallback requires --rpc` と usage を出し、終了コー
 - `message` は `render_document_syntax@1: <document> is not valid JSON at line L, column C: <reason>` です([`renderDocumentSyntaxMessage()`](../../src/project/renderconfigdocument.cpp#L464))。
 - この code は、`--render-fallback` の起動の `refusal`、`reload_render_documents`、`restore_render_documents`、編集の preflight、読めない root を抱えた editor への構造の編集で出ます。
   root が JSON でないときは、拒否のもとの例外の種類に関わらずこの code です([root が JSON でなければこの code にする所](../../src/core/vkcore/renderer_config.cpp#L472))。
-- feature と preset の読みは、composer の feature の読み([feature の読みの BS-1b](../../src/project/featurecompose.cpp#L144))と preset の読み([preset の読みの BS-1b](../../src/project/renderpipeline.cpp#L1257))が
+- feature と preset の読みは、composer の feature の読み([feature の読みの BS-1b](../../src/project/featurecompose.cpp#L144))と preset の読み([preset の読みの BS-1b](../../src/project/renderpipeline.cpp#L1177))が
   同じ判定を通ります。この 2 つの道はコードの読みで、BS-1b の test は root だけを壊します。
 - 既存の契約の変更: `--render-fallback` の有無に関わらず、root が JSON でない `reload_render_documents` と、JSON でない `content` の `restore_render_documents` は、
   `render_pipeline_preflight_failed` からこの code に変わりました。
@@ -4095,14 +3993,14 @@ BS-1 の `get_status.render_pipeline.refusal` は起動時の 1 件だけで、h
 |---|---|
 | `startup` | `--render-fallback` の起動で構成が断られた(BS-1 / BS-1b。[起動時の拒否を一覧に入れる所](../../src/core/vkcore/renderer.cpp#L3158))。material の route を受ける pass が無い起動(下の engine_backlog 23)。material 文書が無い・読めない起動(`--strict-assets` 無し。フラグ `--render-fallback` は要りません) |
 | `hot_reload` | engine 自身の disk からの読み直し(file 監視)が断られた([disk からの読み直しの拒否を入れる所](../../src/core/vkcore/renderer.cpp#L3779))。render 文書は `--rpc` の無い起動だけです(`--rpc` の下では HW-1 で、監視の変更が render pipeline の participant に届きません)。shader は `--rpc` の下でも、監視しているものは入ります |
-| `reload_rpc` | `reload_render_documents` の拒否(ticket を取らずにすぐ返る拒否も、ticket の結果の拒否も。[`RenderConfigEditorService::noteProblems()`](../../src/core/communication/renderconfigeditor.cpp#L7977))と、`reload_shaders` の失敗 |
+| `reload_rpc` | `reload_render_documents` の拒否(ticket を取らずにすぐ返る拒否も、ticket の結果の拒否も。[`RenderConfigEditorService::noteProblems()`](../../src/core/communication/renderconfigeditor.cpp#L7848))と、`reload_shaders` の失敗 |
 | `edit_rpc` | 編集 RPC(`create_material`・`edit_material`・`bind_material` と、`register_material` の読み直し)が material の文書を書いたのに、それを描く pass が material の使うものを宣言していないので engine がまだ描けない(答えの `applied: "unusable"`)。code は `material.pass_contract_unmet@1` で、engine が取り込むまで載ります([`notePassContractRefusal()`](../../src/core/material/projectmaterialasset.cpp#L1134))。拒否ではないので、下の「入らないもの」の編集 RPC の拒否とは別です。render の編集が検証を通った後、適用の途中で失敗したもの(descriptor の失敗、`vk::SystemError`・`std::bad_alloc`。[`recordRenderPipelineAuthoringFailure()`](../../src/core/vkcore/renderer.cpp#L3802))と、staged の後に戻した編集([rollback で入れる所](../../src/core/vkcore/renderer.cpp#L256))もこの source です(CP-1 / CP-1b) |
 
 入らないもの:
 
 - 編集 RPC の拒否(`edit_graph_document` など)。送った client が答えで受け取り、一覧に残すと次の編集で古くなるためです(コードの注記)。test は、存在しない node の `remove_node` が断られた後も一覧が空であることを見ます。
   CP-1b から、GPU の準備の途中で走る検査(RT の shader record の ABI など)の拒否も入らず、前からある行を置き換えもしません(test: `reloadtransaction_test` の「CP1 RPC edit refusals do not add or replace Problems」)。
-- その時の都合の拒否 `reload_busy`・`gate_closed`・`external_modification`・`stale_source_digest`。文書の問題ではないためです([その時の都合の拒否を除く所(PB-1、RR-1 で切り出し)](../../src/core/communication/renderconfigeditor.cpp#L8001))。
+- その時の都合の拒否 `reload_busy`・`gate_closed`・`external_modification`・`stale_source_digest`。文書の問題ではないためです([その時の都合の拒否を除く所(PB-1、RR-1 で切り出し)](../../src/core/communication/renderconfigeditor.cpp#L7872))。
 - AV-1 の素材の照合。Studio が `get_assets_verification` から同じ窓に混ぜる予定です。
 - material の文書の読み込みの問題(文書が無い・読めない、MT-2 の解けない上書き)。別 WP です。
   → 起動時の文書の問題は入ります(下の「material 文書の問題」)。MT-2 の解けない上書きも、EB-6 から warning `material.object_material_unresolved@1`(`document_kind: "scene"`)として入ります。
@@ -4188,7 +4086,7 @@ Studio の `--rpc` の下では、render 文書の外部保存は engine の監�
 起動後(live の世代がある時)に `reload_render_documents` が文書の都合で断られると、描画は前の世代のまま、editor の編集の base はディスクの版に進みます。
 fallbackの editor が組めないディスクの版をもともと持っていたのと同じ持ち方です。RPC の形の詳細は [第13章](13_editor.md) §13.5 の「reload に断られた版を持つ」です。
 
-- **持つ時と持つもの**: PB-1 が一覧に入れる reload の拒否(その時の都合の 4 つを除く。[文書の都合の拒否かを決める所(RR-1)](../../src/core/communication/renderconfigeditor.cpp#L7995))で、ticket を取らずにすぐ返るものも ticket の結果のものも同じです。
+- **持つ時と持つもの**: PB-1 が一覧に入れる reload の拒否(その時の都合の 4 つを除く。[文書の都合の拒否かを決める所(RR-1)](../../src/core/communication/renderconfigeditor.cpp#L7866))で、ticket を取らずにすぐ返るものも ticket の結果のものも同じです。
   持つのは root の bytes と digest(JSON でなければ読めない bytes のまま)、root が名指す managed fragment をディスクから読み直したもの、preset・feature の digest です。
   root のファイルが読めないときと、JSON だが `pelican.graph` の object でない root は持ちません(コードの読み)。
   → ✅RC-3e1 から、JSON だが `inspect()` が断る root(旧形式・envelope の不正)は JSON でない root と同じく bytes のまま持ちます。持たないのは root のファイルが読めないときだけです(コードの読み)。
@@ -4403,7 +4301,7 @@ frame が値を渡す名前の検査(`validateGraphInputs()`)も同じ表を読�
 | `audio.volume` / `audio.pitch` の `target` | `{graph_nodes: ["audio.playback"]}` |
 | `render.scalar` の `target` | `{graph_nodes: ["render.buffer", "render.attribute"]}` |
 
-- `get_render_authoring_context` には CT-4 で `view_families`(`$main` と、登録された view family の provider の family の名前)と `canonical_anchors`(合成が pass を置く 8 つの anchor を pipeline の順に。`sprite` から `imgui` まで)を足しました([CT-4 で context に view_families を足す所](../../src/core/communication/renderconfigeditor.cpp#L3715))。✅RC-5s から `canonical_anchors` は鍵だけが残り、いつも空の配列です([空を返す所](../../src/project/featurecompose.cpp#L52))。catalog の `canonical_anchor` の parameter(`choices_from: {key: "canonical_anchors"}`)も消え、置き場所の parameter は `insert` だけです([`insert` の schema](../../src/project/graphparameterschema.cpp#L237))。
+- `get_render_authoring_context` には CT-4 で `view_families`(`$main` と、登録された view family の provider の family の名前)と `canonical_anchors`(合成が pass を置く 8 つの anchor を pipeline の順に。`sprite` から `imgui` まで)を足しました([CT-4 で context に view_families を足す所](../../src/core/communication/renderconfigeditor.cpp#L3708))。✅RC-5s から `canonical_anchors` は鍵だけが残り、いつも空の配列です([空を返す所](../../src/project/featurecompose.cpp#L52))。catalog の `canonical_anchor` の parameter(`choices_from: {key: "canonical_anchors"}`)も消え、置き場所の parameter は `insert` だけです([`insert` の schema](../../src/project/graphparameterschema.cpp#L237))。
 - **`asset_kind` と `extensions`**: kind `asset` の parameter の asset の種類と、それを読む所が受ける拡張子です。`pose.clip_sample` / `pose.state_machine` の `rig` は `model`(`.glb` / `.gltf` / `.vrm`)、`render.attribute` の `source.asset` は `model`(`.glb` / `.gltf`)、`render.image` の `initial.asset` は `image`(`.ktx2` / `.png` / `.jpg`)、`audio.playback` の `asset` は `audio`(`.wav` / `.ogg`)、`value.sample_table` の `asset` は `analysis_table`(`.ktx2`)です。
 - **kind `union` と `variants`**: 2 通りの形を取る値は kind `union` で、`variants` に形を並べます(各形は `name` を持ちません)。今の 3 つ:
   - pass の `ray_query`(`render.shadow_depth` / `render.material_pass` / `render.fullscreen` / `render.raster`): `bool` か、`acceleration_structure`(string、必須)を持つ `object`。既定は `false`。
@@ -4435,8 +4333,8 @@ test: `curve_test` の [「CT-4 the catalog says where a value is chosen from, a
 
 - **`push_constants`**: `render.fullscreen` の `push_constants` は kind `enum` `["none", "camera_position", "projection_view"]`、既定 `none` になっています(graph を読む `parseRenderGraph()` が読む名前。[CT-5 の enum](../../src/project/graphparameterschema.cpp#L588)。既定の名前は ✅RC-3c2b2 から engine の既定値の定数 `defaultFullscreenPushConstantsName` から取る)。CT-3 の検査に乗るので、外の値(例 `"camera"`)は `graph.render_node_parameter_invalid@1` で断られます(test)。
 - **`get_render_authoring_context`** に 2 つ足しました。
-  - `acceleration_structures`: ray_query の `acceleration_structure` に書ける名前で、先頭が `"scene"`、その後に合成された `scene_acceleration_structures` の各要素の `name` です(ほかの名前は compiler が断ります。コードの注記。[CT-5 で一覧を足す所](../../src/core/communication/renderconfigeditor.cpp#L3726))。
-  - `render_target_vocabulary.format_class_patterns`: 引数を取る format class の書き方です。今は `[{name: "explicit", form: "explicit(<format>)", argument_choices_from: {rpc: "get_render_authoring_context", key: "render_target_vocabulary.formats"}}]` の 1 つです([CT-5 で書き方を足す所](../../src/core/communication/renderconfigeditor.cpp#L3695))。
+  - `acceleration_structures`: ray_query の `acceleration_structure` に書ける名前で、先頭が `"scene"`、その後に合成された `scene_acceleration_structures` の各要素の `name` です(ほかの名前は compiler が断ります。コードの注記。[CT-5 で一覧を足す所](../../src/core/communication/renderconfigeditor.cpp#L3719))。
+  - `render_target_vocabulary.format_class_patterns`: 引数を取る format class の書き方です。今は `[{name: "explicit", form: "explicit(<format>)", argument_choices_from: {rpc: "get_render_authoring_context", key: "render_target_vocabulary.formats"}}]` の 1 つです([CT-5 で書き方を足す所](../../src/core/communication/renderconfigeditor.cpp#L3688))。
 - **付けなかったもの**(engine が読む一覧が無い。test): `pose.retarget` の `profile`、`draw.override` の `defines` の要素、`render.attribute` の `source.semantic`。`soft_min` はどこにも足していません。
 - definition を owner 付きの instance だけが使うかは、`get_graph_instances` の `definition_instances` で読みます([第13章](13_editor.md) §13.5 の表の `get_graph_instances`)。
 
@@ -4551,11 +4449,11 @@ graph の render node(`render.fullscreen` / `render.raster` / `render.material_p
   - 明示の置き場所(`insert` / `declared: true`、置き場所を書いたループ)は対象外です。塊がその読み手かそれより後ろの pass を待つとき(塊の `after` がその pass を名指す、その pass の `before` が塊を名指す、塊が読む image をその pass が書く)は動かさず、今どおり断られます(明示が勝ちます)。
   - **制限**: feature の pass が読み手より前で同じ image を書く構成は未確認です。
 - RS-6。**graph の compute task が書く image を rendering 節の pass が読むと、その pass はその task を待ちます。
-  - 対象の task は graph が作った compute task です: root の `render.compute`、ループが展開した task、`pass_replacements` で feature の task の代わりに入った task。feature と integration の compute task(ray tracing を含む。例: `rt_shadow_mask_pipeline` の task)も対象です([task を選ぶ所](../../src/project/featurecompose.cpp#L4109)、[合成から RS-6 を呼ぶ所](../../src/project/featurecompose.cpp#L4115))。適用は root が `pelican.graph` の文書のときだけです(RS-6 と同じ)。
+  - 対象の task は graph が作った compute task です: root の `render.compute`、ループが展開した task、`pass_replacements` で feature の task の代わりに入った task。feature と integration の compute task(ray tracing を含む。例: `rt_shadow_mask_pipeline` の task)も対象です([task を選ぶ所](../../src/project/featurecompose.cpp#L4123)、[合成から RS-6 を呼ぶ所](../../src/project/featurecompose.cpp#L4129))。適用は root が `pelican.graph` の文書のときだけです(RS-6 と同じ)。
   - task が書く render target ごと、family ごとに、`output_transform` より前でその image を読む最初の pass に `after: <task>` を足します(✅RC-5s の前は「最初の canonical anchor(か `output_transform`)より前」。コードは今も `canonical_anchor` の型を区切りとして見ますが、そのノードはもう作られません。[`waitOnGraphTasksInScenePasses()`](../../src/project/rendergraphcomposition.cpp#L3188))。読み手の候補は RS-3 と同じく rendering 節と preset の pass で(graph の pass、feature の pass、swapchain に書く pass、type が `ui` / `debug_draw` / `gizmo` / `debug_text` の pass は数えません)、「読む」も RS-3 と同じ数え方です(`@history` の読みは数えません)。feature の pass は読み手に数えないので、feature が自分の `before` / `after` で決めた順は RS-6b でも変わりません。task の側には何も足しません。task はどの family の frame graph にも入るので、task が pass を名指すと、その pass の無い family で断られるためです。
   - 足さないとき: その pass より前の pass がその image を書く / その image の書き手(task 自身を含む)がすでにその pass より前に走る / task がその pass かそれより後ろを待つ(足すと循環になる)。「前に走る」は frame planner と同じ順(`after` / `before` と、前に宣言された最後の書き手から読みへの順)で辿ります([`FamilyOrder`](../../src/project/rendergraphcomposition.cpp#L3135))。buffer は対象外です(見るのは render target だけ)。
   - task が待っている、置き場所の無い graph の pass の塊も、その読み手の前へ動きます。「待っている」は、task の `after` が塊の pass を名指すか、塊の pass の `before` が task を名指すことで、そういう task を同じように待つ task も含みます。これで G-buffer を書く graph の pass → trace の task → `present` が組めます([`graphPassRunReaderPosition()` の RS-6 の分](../../src/project/rendergraphcomposition.cpp#L1862))。塊かその task が読み手かそれより後ろの pass を待つときは、塊を動かさず `after` も足さず、今どおり断られます。
-  - 読み手がその image を `input` に挙げ、image が graph の `render.image` で `usage` に `SAMPLED` が無ければ、`SAMPLED` を足します。feature の render target も同じです([feature の target を加える所](../../src/project/featurecompose.cpp#L4114))。足すのは合成した config の宣言だけで、feature の文書は書き換えません。足した target は `get_frame_plan` の `resources[]` に `added_usage: ["SAMPLED"]` が付きます(graph の `render.image` に足したときも同じ。足していない target には鍵が無い。[第13章](13_editor.md) §13.5「`get_frame_plan` に足されたもの」)。
+  - 読み手がその image を `input` に挙げ、image が graph の `render.image` で `usage` に `SAMPLED` が無ければ、`SAMPLED` を足します。feature の render target も同じです([feature の target を加える所](../../src/project/featurecompose.cpp#L4128))。足すのは合成した config の宣言だけで、feature の文書は書き換えません。足した target は `get_frame_plan` の `resources[]` に `added_usage: ["SAMPLED"]` が付きます(graph の `render.image` に足したときも同じ。足していない target には鍵が無い。[第13章](13_editor.md) §13.5「`get_frame_plan` に足されたもの」)。
   - 足した順序は `get_frame_plan` の node の `added_after: [<task>, ...]` に出ます(足していない node には鍵が無い。[第13章](13_editor.md) §13.5「`get_frame_plan` に足されたもの」)。
   - **制限**: ループの展開で生まれる task を介した塊の移動と、`render.target_ref` を介した読みは未確認です。feature の task が読む G-buffer を書く pass が `present` より後ろにある構成は断られます。
   - test: `featurecompose_test` の [「RS-6 a scene pass that reads what a graph compute task wrote waits on that task」](../../test/featurecompose_test.cpp#L9154)(3 SECTION: `present` が task を待ち、task は何も名指さず、`SAMPLED` が足され、`added_after: ["trace"]` が出る / task が読む graph の pass が task と一緒に `present` の前へ動く / `present` を待つ graph の pass があれば何も動かず今どおり断られる)。
@@ -4900,7 +4798,7 @@ rendering 節に直接書いた once は graph lowering の拒否検査を通り
 **asset だけを書き換えた reload。**
 
 - **比べる相手**: 世代を組む段で asset を読むとき、decode の前に file の中身の sha256 を `assetFileSha256` で記録します([IA-2 で decode の前に hash を取る所](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L953))。decode の前に取るので、間に書き込まれても次の reload では「変わった」と読まれ、「変わっていない」とは読まれません(コードの注記)。`get_frame_plan` の `initial_asset.sha256`(manifest の値)とは別の値です。
-- **比べ方**: `reload_render_documents` は live の世代の program が記録した asset を集め([live の世代の initial の asset を集める所](../../src/core/communication/editorruntimefactory.cpp#L2463))、各 file を読み直して hash し、記録と比べます([IA-2 で asset を比べる所](../../src/core/communication/renderconfigeditor.cpp#L8272))。今読めない file は「変わった」に数えます。
+- **比べ方**: `reload_render_documents` は live の世代の program が記録した asset を集め([live の世代の initial の asset を集める所](../../src/core/communication/editorruntimefactory.cpp#L2463))、各 file を読み直して hash し、記録と比べます([IA-2 で asset を比べる所](../../src/core/communication/renderconfigeditor.cpp#L8143))。今読めない file は「変わった」に数えます。
 - **結果**: committed の結果には毎回 `changed_assets: [<asset>...]` が付きます。値は書いた参照のまま(`assets/luts/ltc.ktx2`)、辞書順、重複なしで、空のこともあります。文書も asset も変わらなければ今どおり `no_change: true` で、`changed_assets: []` です。asset だけが変わったときは `changed: []` で `changed_assets` にその asset が出て、`source_digest` は変わりません(editor の文書は変わらないため)。
 - **文書の変更で新しく足した asset**: 比べるのは live の世代がすでに読んだ asset だけなので、文書を書き換えて新しく `initial` に足した asset は `changed_assets` には出ず、その文書が `changed` に出ます(コードの読み)。
 - **合わない asset**: 書き換えた asset が image に合わないときは、ticket が受けられた(`accepted`)後、次の frame の組み直しの段で `graph.image_initial_mismatch@1` の rejected になり(asset を読むのは世代を組む段だけで、ticket を取る前の preflight は読みません。コードの読み)、live の世代は前のまま、画面も前の値のままです(GPU の test。64×64 の 1 成分の KTX2 を RGBA32F の image の asset に上書きして `node` / `asset` / `what: "format"` を見る)。CT-2 の規則で error に `document` も付くはずですが、この test は `document` を確かめていません(未確認)。
@@ -4937,7 +4835,7 @@ asset の隣に `<asset>.import.json` があれば `derived_from: {source, tool:
 **表を書き換えた reload。**上の「asset だけを書き換えた reload」と同じ口に、`value.sample_table` の表を足しました。
 
 - **記録するもの**: 表を読むときに、表の KTX2 と隣の `<表>.import.json` の両方の中身の sha256 を `SampleTable` に入れます(`file_sha256` / `manifest_sha256`)。値の graph は、どの node がどの表を読んだかを [`Graph::sampleTables()`](../../src/core/userpublic/valuegraph.cpp#L881) で返します。
-- **比べるもの**: `reload_render_documents` が比べる asset の一覧(依存の名前は IA-2 の `published_initial_assets` から `published_assets` に、型は `RenderConfigPublishedInitialAsset` から `RenderConfigPublishedAsset` に変わりました)に、live の世代の値の graph が読んだ表を 2 行(表と manifest)ずつ足します。どちらの行も表の参照の名前で入ります([IA-3 で表と manifest を足す所](../../src/core/communication/editorruntimefactory.cpp#L2467))。比べ方は IA-2 と同じで、参照ごとにまとめ、どちらかが違うか読めなければ変わったと数えます([IA-3 も通る asset の比較](../../src/core/communication/renderconfigeditor.cpp#L8279))。
+- **比べるもの**: `reload_render_documents` が比べる asset の一覧(依存の名前は IA-2 の `published_initial_assets` から `published_assets` に、型は `RenderConfigPublishedInitialAsset` から `RenderConfigPublishedAsset` に変わりました)に、live の世代の値の graph が読んだ表を 2 行(表と manifest)ずつ足します。どちらの行も表の参照の名前で入ります([IA-3 で表と manifest を足す所](../../src/core/communication/editorruntimefactory.cpp#L2467))。比べ方は IA-2 と同じで、参照ごとにまとめ、どちらかが違うか読めなければ変わったと数えます([IA-3 も通る asset の比較](../../src/core/communication/renderconfigeditor.cpp#L8150))。
 - **結果**: `changed_assets` には表の参照(node の `asset` に書いた綴りのまま)が出ます。manifest だけが変わったときも、出るのは表の名前です。新しい世代は表を読み直すので、node の値は新しい表のものになります。何も変えなければ今どおり `no_change: true`・`changed_assets: []` です。
 - **見張り**: hot reload の render pipeline の監視対象(`renderPipelineWatchSources()` の [IA-3 で表と manifest を監視に入れる所](../../src/core/vkcore/renderer.cpp#L368))にも表と manifest を足しました。対象は flat の program の値の graph が読んだ表です。`--rpc` の下では watcher の変更は render pipeline に届きません(HW-1。上の「asset を変えた時」と同じ)。hot reload の道でこれを確かめる test はありません(未確認)。
 
@@ -5138,7 +5036,7 @@ feature の instance は object 形で `pass_replacements` を持てます。値
   - 拒否がもう同じ名前の field を持っていれば、その値を残します(`graph.loop_nested@1` の `definition` など、code 自身の意味の field)。分からない field は出しません(`null` は入れません)。`graph.` 以外の code には付けません。
   - 載る所: 起動時の致命の行、編集の ticket の rejected の error(field と message の両方)、`reload_render_documents` の message。例: `Pelican fatal error : graph.port_field_missing@1 {"document":"project://passes/main.json","field":"element","node":"sim","port":"data"}`(仕様書の例)。下の項の `<code>: <JSON>` の形で運ばれる code(`view_select` の 4 つと draw_loop の 5 つ)にも同じ規則で付けます([CT-2 で renderer が構成を読む所で足す所](../../src/core/vkcore/renderer_config.cpp#L809))。
   - 付かないもの(仕様書の記述。CT-2 の差分はこれらの経路を変えていません): `edit_graph_instances` の `invalid_graph_attachment`、scene の読み直しでの graph の拒否、`pelican_cli` の出力。
-    - `edit_graph_instances` は graph の名前付きの拒否(`GraphRegistryError`)を `invalid_graph_attachment` に畳まず、その code と field のまま CT-2 の `document`(と `definition`)を付けて返します。判定に使う root は edit を当てた後のものです([CT-5 で edit_graph_instances が code を保つ所](../../src/core/communication/renderconfigeditor.cpp#L4049))。`invalid_graph_attachment` に残るのは名前の無い拒否だけです。例(test。root にもうある id の instance を attach): `{code: "graph.node_duplicate@1", node: "left", document: "project://passes/main.json"}`。`graph.op_requires_owned_instance@1` に `edit_graph_document` と `edit_batch` の道でも `document` と `definition` が付くことも、同じ test が見ます([「CT-5 an owned-instance op refused inside a definition names its document on every edit path」](../../test/renderconfigeditor_test.cpp#L1610))。
+    - `edit_graph_instances` は graph の名前付きの拒否(`GraphRegistryError`)を `invalid_graph_attachment` に畳まず、その code と field のまま CT-2 の `document`(と `definition`)を付けて返します。判定に使う root は edit を当てた後のものです([CT-5 で edit_graph_instances が code を保つ所](../../src/core/communication/renderconfigeditor.cpp#L4042))。`invalid_graph_attachment` に残るのは名前の無い拒否だけです。例(test。root にもうある id の instance を attach): `{code: "graph.node_duplicate@1", node: "left", document: "project://passes/main.json"}`。`graph.op_requires_owned_instance@1` に `edit_graph_document` と `edit_batch` の道でも `document` と `definition` が付くことも、同じ test が見ます([「CT-5 an owned-instance op refused inside a definition names its document on every edit path」](../../test/renderconfigeditor_test.cpp#L1610))。
   - `get_frame_plan` の node の `origin.graph`は、今も `project://` の付かない参照のままで、`document` と書き方が揃っていません。
   - `--render-fallback` の起動で断られた構成の `get_status.render_pipeline.refusal` にも、同じ規則で `document`(と `definition`)が付きます([`renderPipelineRefusalJson()`](../../src/core/vkcore/renderer_config.cpp#L469))。BS-1 の test が `document: "project://passes/main_rendering_config.json"` を見ます。
   - test が確かめているのは編集の ticket の道(root の node、definition の body の node、RS-9 の code)と、展開名から definition を辿る規則です。起動時の致命の行と reload の message は、コードの読みとで、test はありません。

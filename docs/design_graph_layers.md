@@ -56,6 +56,7 @@
 - `target_planning.graphs.<g>.{nodes: {serial, isolate}, resources: {no_alias}}`
 - `vulkan_physical_fragments`(format・表現・scope・alias・load/store、fingerprint 付き)
 - `vulkan_plan_pins`(graph 全体の backend candidate を 1 つ固定)
+- → **RC-6b2(`4e21d7d03`)で上の 2 つは消えた**。文書にあれば `target_planning.legacy_package_removed@1`。backend・scope の分割と融合・alias の組・materialize は RC-6a2 の `target_planning` の鍵(`backend` / `scope_break` / `scope_join` / `alias_group` / `representation`)で書き、format と load / store を変える口は無くなった([棚卸しメモ §2-3 の RC-6b2](design_plan_layer_inventory.md#rc6b2-implementation))
 - node 単位の raster / compute / RT の選択を書く口は無い(`selected_implementation` は pass の種類から自動)。raster と RT は別の feature を選ぶ形(`rt_shadow_mask*`)
 
 **開いた形は 1 つの definition ではない。** `graph.loop` は root にしか置けず(`graph.loop_nested@1`)、definition の中に instance も置けない(`graph.nested_instance@1`)。bloom・cube・cascade・draw_loop の開いた形は「root の断片(nodes + 複数の body definition)」で、GT-1 の雛形もこの形である。feature の instance は `rendering.features[]` にあり `graph.instance` ではない。`deferred_geometry` は feature ではなく preset `hybrid_v1` の material pass(分解は `decompose_material_pass`)。
@@ -206,10 +207,10 @@ canvas は 1 枚だが、**見せる領域を選ぶ**。全領域を一度に描
 
 | WP | 中身 | 状態 |
 |---|---|---|
-| EL-2 | graph 全体の口(`target_planning` / `vulkan_plan_pins` / `vulkan_physical_fragments`)を**展開名で**書く ticket 3 本(`edit_target_planning` / `edit_vulkan_plan_pins` / `put_vulkan_physical_fragment`) | 着地(`b5a58b11`)。形は manual 13 章の「graph 全体の計画の決定を書く(✅EL-2)」、入口は [`editTargetPlanning()`](../src/core/communication/renderconfigeditor.cpp#L3527) |
+| EL-2 | graph 全体の口(`target_planning` / `vulkan_plan_pins` / `vulkan_physical_fragments`)を**展開名で**書く ticket 3 本(`edit_target_planning` / `edit_vulkan_plan_pins` / `put_vulkan_physical_fragment`) | 着地(`b5a58b11`)。後の 2 本は RC-6b2(`4e21d7d03`)で撤去。形は manual 13 章の「graph 全体の計画の決定を書く(✅EL-2)」、入口は [`editTargetPlanning()`](../src/core/communication/renderconfigeditor.cpp#L3527) |
 | FG-1 | `fold_groups` の宣言と、ローカル名で書いた決定を組み立てのたびに展開名へ写す段(この節) | 未着地 |
 | FG-2 | `verify_fold`(等価性の検査と印。§5.3) | 未着地 |
-| FG-3(後回し) | physical fragment のローカル名化、`kind: "replacement"`、feature と分解版の名前の対応表のデータ化 | 後回し |
+| FG-3(後回し) | physical fragment のローカル名化(RC-6b2 で fragment ごと撤去したので対象外)、`kind: "replacement"`、feature と分解版の名前の対応表のデータ化 | 後回し |
 
 FG-1 の宣言(root の `fold_groups`):
 
@@ -273,6 +274,8 @@ FG-1 の宣言(root の `fold_groups`):
 - **作者の名前**: graph は表示中の variant の接尾辞を外した名前、node は frame plan の `authored_name` で送る。Graph の詳細欄も同じ名前で送る([`GraphCanvasFoldedPassFields::planningNodeName`](../src/devstudio/view/graphcanvasfoldedpassfields.cpp#L715))
 - **Graph の詳細欄の check**: 今も root の文書の値だけを読み([`GraphTargetPlanning::flag()`](../src/devstudio/model/graphfoldgroups.cpp#L418))、送るのは check の新しい状態の `require`([`graphTargetPlanningParams()`](../src/devstudio/model/graphfoldgroups.cpp#L429))。出所の表示・継承に戻す操作・engine と fold での無効化は無い
 - **Layers**: Graph の Layers の **Eject again** は無くなり、`.removeFrozen` の文言は **Remove all root fixing policy** になった。どれも Frame Plan と同じ関数を呼ぶ
+
+**RC-6b2(`4e21d7d03`、2026-10-29)で変わった所。**§1 と上の表の `vulkan_physical_fragments` / `vulkan_plan_pins` の口は文書の鍵・RPC(`edit_vulkan_plan_pins` / `put_vulkan_physical_fragment`)・dump の `ejectable_*` / `applied_*` の欄ごと消えた。文書にあれば `target_planning.legacy_package_removed@1` で、鍵を消して読み込み直し Pin / Freeze で作り直す。表の「format・表現・scope・alias・load/store」の行のうち、表現・scope・alias は `target_planning` の鍵で書け、format と load / store を変える口は無い(利用者の決定。使用 0 件)。「backend の候補の固定」の行は `target_planning.graphs.<g>.backend` になった。上の表は RC-6b2 の前の記録として残す。全体は [棚卸しメモ §2-3 の RC-6b2](design_plan_layer_inventory.md#rc6b2-implementation)。
 
 ### 5.3 検査と印
 

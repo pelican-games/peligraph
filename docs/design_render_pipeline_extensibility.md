@@ -48,6 +48,7 @@ RPE12a / WP204 Phase A はさらに下流の target planning control と、compi
 graph fingerprint に束縛された versioned Vulkan backend decision pin を実装した。
 自動 plan の dump は同じ物理層へ戻せる pin package を常に出し、古い graph、
 未知 candidate、現在の device で infeasible な candidate は fallback せず reject する。
+(RPE12a の pin と RPE12b の physical fragment は RC-6b2 で撤去した。§3.2 の注。)
 RPE12b / WP204 Phase B v1 はその下へverified physical fragmentを追加した。自動planを
 基準にconservative resource materialization、split-only scope partition、compatibleな
 alias groupだけをlinkし、logical/environment fingerprint、boundary、lifetime、feature
@@ -288,11 +289,11 @@ eject は層別にする。物理 plan を論理 graph へ損失なく戻すこ�
 必要な tooling:
 
 - `dump-resolved-render-pipeline` — typed plan と選択理由を見る診断
-- 実装済みの `physical_target_plan.ejectable_pin_package` — 現在選択された
+- (RC-6b2 で撤去。下の注)`physical_target_plan.ejectable_pin_package` — 現在選択された
   backend candidate を logical graph fingerprint 付きで同じ物理層へコピーする
-- 実装済みの `physical_target_plan.ejectable_physical_fragment` — 自動planの
+- (RC-6b2 で撤去)`physical_target_plan.ejectable_physical_fragment` — 自動planの
   resource/scope/alias記述をlogical/environment fingerprint付きで同じ物理層へコピーする
-- 実装済みの `physical_target_plan.ejectable_complete_physical_plan` — engineが見る全
+- (RC-6b2 で dump から撤去。C++ の `ejectVulkanCompletePhysicalPlanPackage()` だけが残る)`physical_target_plan.ejectable_complete_physical_plan` — engineが見る全
   physical resource / scope / attachment / alias group と `NativeScope` 宣言を、
   environment fingerprint付きの完全な同一層 package としてコピーする(WP238c)
 - 将来の `eject-render-pipeline` — resolved authoring / logical graph / Vulkan physical
@@ -310,6 +311,13 @@ resource/scopeを編集する別schemaは`pelican.vulkan_physical_fragment` vers
 `applied_physical_fragment`で再観測する。v1は自動planを安全側へmaterializeする変更、
 scope split、verified alias、および宣言済み候補から実device検証済み
 `materialized_image` formatへの変更を受ける。任意Vulkan同期値は受けない。
+
+**RC-6b2(`4e21d7d03`、2026-10-29)で撤去。**上の pin と physical fragment の package、貼り戻し先の `vulkan_plan_pins` /
+`vulkan_physical_fragments`、`applied_*` の再観測、RPC `edit_vulkan_plan_pins` / `put_vulkan_physical_fragment` は消えた。文書に鍵があれば
+`target_planning.legacy_package_removed@1`(鍵を消して読み込み直し、Studio の Pin / Freeze で作り直す)。物理計画の固定は root の
+`target_planning` の policy(backend / representation / alias_group / scope_break / scope_join)だけで、format の上書き・store の破棄・
+個々の load / store の編集・版をまたいだ固定は無くなった。complete physical plan は dump から外れ、NativeScope のための C++ の
+eject / verify / install の口だけが残る。全体は [棚卸しメモ §2-3 の RC-6b2](design_plan_layer_inventory.md#rc6b2-implementation)。
 
 ### 3.3 Policy provider — アルゴリズムを交換する入口
 
@@ -1176,7 +1184,7 @@ RPE8d / WP219 は RPE8c 節、RPE9 / WP192 と RPE10a〜RPE10b3 / WP193〜WP196 
 - OIT の方式選定
 - `PassInfo` の未知 custom pass kind ABI（`type: "raster"` 追加後も `PassInfo` は closed variant）
 - public `GraphVariantProvider` の ABI 凍結
-- MSAA/external/異種attachmentを含む一般scope-fusion、load-store / queue-barrier physical fragment
+- MSAA/external/異種attachmentを含む一般scope-fusion、load-store / queue-barrier physical fragment(physical fragment は RC-6b2 で撤去。作者の指定は `target_planning` の policy で足す)
 - raster operation の indexed / indirect+count / mesh・task / custom vertex stream variant
 - `NativeScope` の game-DLL ABI
 - bindless / GPU-driven sort

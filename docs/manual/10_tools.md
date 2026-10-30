@@ -365,7 +365,7 @@ selection の硬いエラーは `error.data.code` でも判別できます。宣
 | material 文書 | `list_materials` / `get_material` / `get_surface_schema` / `list_surfaces` / `get_material_bindings`(material 文書・`.surface` の宣言・model の割り当てを読む)/ `edit_material` / `create_material` / `bind_material`(書く)/ `set_object_material` / `get_object_materials`(scene の object ごとの上書き) | [第13章 material 文書を読み書きする](13_editor.md#material-文書を読み書きするmt-1) |
 | material の削除・戻し・改名 | `delete_material` / `register_material` / `rename_material` | [第13章 material を消す・戻す・改名する](13_editor.md#material-を消す戻す改名するeb-1) |
 | model の登録 | `register_model` / `unregister_model`(project の中の model のファイルを asset_data に載せる・外す) | [第13章 project の中の model ファイルを登録する・外す](13_editor.md#project-の中の-model-ファイルを登録する外すmi-1) |
-| レンダー設定 | `get_render_features` / `list_render_features` / `edit_render_features`(feature の一覧と有効化・`materialize`)/ `get_render_authoring_context`(編集に要る名前と候補)/ `fork_render_pipeline`(preset を project の文書へ写す)/ `edit_region_replacement`(preset の領域の差し替え)/ `edit_preset_pass`(preset・feature・root の pass を直す)/ `add_authored_pass` / `remove_authored_pass`(editor が作る pass の fragment を足す・外す)/ `edit_render_targets`(editor が作る render target)/ `set_material_route_default` / `edit_rendering_keys`(rendering 節のほかの鍵)/ `edit_target_planning` / `edit_vulkan_plan_pins` / `put_vulkan_physical_fragment`(計画の決定)/ `get_frame_node_order` / `edit_frame_node_order`(pass の順) | [第13章 レンダー設定を編集する](13_editor.md#レンダー設定を編集する) |
+| レンダー設定 | `get_render_features` / `list_render_features` / `edit_render_features`(feature の一覧と有効化・`materialize`)/ `get_render_authoring_context`(編集に要る名前と候補)/ `fork_render_pipeline`(preset を project の文書へ写す)/ `edit_region_replacement`(preset の領域の差し替え)/ `edit_preset_pass`(preset・feature・root の pass を直す)/ `add_authored_pass` / `remove_authored_pass`(editor が作る pass の fragment を足す・外す)/ `edit_render_targets`(editor が作る render target)/ `set_material_route_default` / `edit_rendering_keys`(rendering 節のほかの鍵)/ `edit_target_planning`(計画の決定。EL-2 の `edit_vulkan_plan_pins` / `put_vulkan_physical_fragment` は ✅RC-6b2 で無くなった)/ `get_frame_node_order` / `edit_frame_node_order`(pass の順) | [第13章 レンダー設定を編集する](13_editor.md#レンダー設定を編集する) |
 | compute / RT の task と AS | `get_compute_task_authoring` / `edit_compute_task` / `add_compute_task` / `remove_compute_task`(task の宣言)/ `get_ray_callable_records` / `edit_ray_callable_records`(callable の record の初期値)/ `get_scene_acceleration_structures` / `edit_scene_acceleration_structures`(名前付きの TLAS と task の接続、三角形と AABB の座標系) | [第13章 レンダー設定を編集する](13_editor.md#レンダー設定を編集する) |
 | 断片の決定 | `get_fold_groups` / `fold_nodes`(group の宣言)/ `verify_fold`(開いた形と比べて印を付ける非同期の ticket) | [第13章 レンダー設定を編集する](13_editor.md#レンダー設定を編集する) |
 | 音の解析 | `bake_audio_analysis`(音の解析を焼く非同期の ticket)/ `list_derived_assets`(取り込みで作った file と、古いか) | [第13章 レンダー設定を編集する](13_editor.md#レンダー設定を編集する) |
@@ -1036,11 +1036,11 @@ Passes の先頭行を上から読むと実行順が分かり、同じ行に入�
 行の **Execution** の節(dialect・implementation・endpoint・capability・resource use)、Physical plan のタブの
 **Physical target plan** の木の **Execution plan unavailable** / **Execution dependencies** の節、Logical graph の
 「Logical graph unavailable」の panel です。status 行の tooltip は依存の数ではなく
-`N barriers` を言い、status 行の色は physical plan だけで決まります([status 行を組む所](../../src/devstudio/view/frameplanwidget.cpp#L4299))。
+`N barriers` を言い、status 行の色は physical plan だけで決まります([status 行を組む所](../../src/devstudio/view/frameplanwidget.cpp#L4294))。
 Logical graph の辺については [第13章](13_editor.md) の「Frame Plan のノード表示と順序」。
 Resources、Barriers、Materials では writer/reader、hazard edge、公開された material route を逆引きでき、 上部 filter は折りたたみ配下も検索します。
 
-**Physical plan は alias group と scope をそのまま出します。**Backends のタブで backend の候補を pin し、Physical plan のタブで物理の計画を凍結(Freeze / Remove。✅RC-6b1 からどちらも root の `target_planning` の policy を書き、Eject again は無くなりました)でき、Physical plan には常駐 BLAS の節と compile の書き換え(subgraph の置き換え・graph transform・render strategy)の節も出ます([第13章](13_editor.md)の「下の層の決定を Frame Plan から書く」)。
+**Physical plan は alias group と scope をそのまま出します。**Backends のタブで backend の候補を pin し、Physical plan のタブで物理の計画を凍結(Freeze / Remove。✅RC-6b1 からどちらも root の `target_planning` の policy を書き、Eject again は無くなりました。✅RC-6b2 で旧い pin / fragment の RPC と dump の欄も無くなりました)でき、Physical plan には常駐 BLAS の節と compile の書き換え(subgraph の置き換え・graph transform・render strategy)の節も出ます([第13章](13_editor.md)の「下の層の決定を Frame Plan から書く」)。
 
 **Logical graph は左右 2 面**です。左のキャンバスでノードを選ぶと、右の詳細ペインにそのパスの行が出ます。
 境目は掴んで動かせ、位置は保存されます。
