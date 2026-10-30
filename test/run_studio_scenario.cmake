@@ -20,6 +20,9 @@ if(NOT EXISTS "${SCENARIO}")
 endif()
 
 get_filename_component(scenario_name "${SCENARIO}" NAME_WE)
+if(NOT DEFINED DRIVER_TIMEOUT)
+    set(DRIVER_TIMEOUT 540)
+endif()
 set(run_dir "${OUT_DIR}/${scenario_name}")
 file(REMOVE_RECURSE "${run_dir}")
 file(MAKE_DIRECTORY "${run_dir}")
@@ -104,7 +107,7 @@ execute_process(
     ERROR_VARIABLE driver_stderr
     # Under the intrinsic GPU timeout, so a scenario that hangs is reported here
     # with its report path rather than killed by CTest with nothing to read.
-    TIMEOUT 540
+    TIMEOUT ${DRIVER_TIMEOUT}
 )
 
 message(STATUS "studio scenario ${scenario_name}:\n${driver_stdout}")

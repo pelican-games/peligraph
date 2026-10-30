@@ -3937,6 +3937,14 @@ if(NOT SKIP_DEVSTUDIO AND TARGET pelican_studio)
             if(TARGET pelican_cli)
                 set(pelican_studio_scenario_cli "-DCLI=$<TARGET_FILE:pelican_cli>")
             endif()
+            # gui_build_optimize ends with the undo invariant, which recompiles
+            # every step back, and needs more than the shared driver timeout.
+            set(pelican_studio_scenario_intrinsic ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
+            set(pelican_studio_scenario_driver_timeout 540)
+            if(pelican_studio_scenario_name STREQUAL "gui_build_optimize")
+                set(pelican_studio_scenario_intrinsic 1080)
+                set(pelican_studio_scenario_driver_timeout 1020)
+            endif()
             add_test(
                 NAME studio_scenario_${pelican_studio_scenario_name}
                 COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
@@ -3950,13 +3958,14 @@ if(NOT SKIP_DEVSTUDIO AND TARGET pelican_studio)
                     -DQT_BIN_DIR=$<TARGET_FILE_DIR:Qt6::Core>
                     ${pelican_studio_scenario_game_logic}
                     ${pelican_studio_scenario_cli}
+                    -DDRIVER_TIMEOUT=${pelican_studio_scenario_driver_timeout}
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/run_studio_scenario.cmake
             )
             set_property(TEST studio_scenario_${pelican_studio_scenario_name}
                 APPEND PROPERTY LABELS "studio_scenario;python")
             pelican_gpu_test_properties(
                 studio_scenario_${pelican_studio_scenario_name}
-                ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
+                ${pelican_studio_scenario_intrinsic})
         endforeach()
     else()
         message(STATUS
