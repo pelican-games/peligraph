@@ -168,6 +168,10 @@ if(PELICAN_TEST_NO_DISCOVERY)
   return()
 endif()
 set(discovery_properties)
+if(is_new_executable)
+  target_sources(${target_name} PRIVATE retain_observed_test_support.cpp)
+endif()
+
 if(target_name STREQUAL "pelican_test_group_render_pipeline" OR
    target_name STREQUAL "pelican_test_group_golden_runtime")
   # Catch2 3: a discovered case whose whole execution is skipped exits with 4.

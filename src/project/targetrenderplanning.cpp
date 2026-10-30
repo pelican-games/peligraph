@@ -972,6 +972,8 @@ std::string materializationReason(
 }
 
 struct CandidateDraft {
+    TargetResourceRetainReasons retain_reasons;
+    std::vector<VulkanPhysicalAttachmentPlan> attachments;
     std::string name;
     std::vector<VulkanPhysicalResourcePlan> resources;
     std::vector<VulkanPhysicalScopePlan> scopes;
@@ -1035,10 +1037,16 @@ void validatePolicyInput(const CompiledLogicalRenderGraph &graph, const VulkanTa
 
 // Decide storage before scopes, costs, lifetimes and alias selection. A break
 // can only remove scope locality; no node is reordered to accommodate policy.
+bool materializingPolicy(const PlanningPolicyEntry &e) {
+    // Derived materialization keeps the retain declaration's strength, origin
+    // and retry identity instead of adding a second row to the ledger.
+    return e.key == "representation" || (e.key == "retain" && std::get<bool>(e.value));
+}
+
 bool policyMaterializes(const VulkanTargetPlanRequest &request, const TargetLoweringGraph &workspace,
                         std::string_view resource) {
     for (const auto &e : request.policy)
-        if (activePolicy(e) && e.key == "representation" && e.target == resource) return true;
+        if (activePolicy(e) && materializingPolicy(e) && e.target == resource) return true;
     std::map<LogicalValueId, std::size_t> producers;
     for (std::size_t i = 0; i < workspace.nodes.size(); ++i) {
         for (const auto &use : workspace.nodes[i].logical.uses)
@@ -1587,7 +1595,7 @@ std::string_view targetLoweringStageName(TargetLoweringStage stage) {
 bool isTargetResourceRetainReason(std::string_view reason) {
     return reason == "present" || reason == "history" ||
         reason == "persistent" || reason == "external_depth_export" ||
-        reason == "xr_mirror" || reason == "picking" || reason == "capture";
+        reason == "xr_mirror" || reason == "picking" || reason == "capture" || reason == "readback";
 }
 
 std::map<std::string, TargetResourceLifetime, std::less<>>
@@ -3332,13 +3340,50 @@ bool sameAllocation(std::span<const VulkanAliasGroupPlan> groups, std::string_vi
     });
 }
 
+std::string retainContractFailure(std::string_view resource, const CompiledLogicalRenderGraph &graph,
+    std::span<const VulkanPhysicalResourcePlan> resources, const std::vector<std::string> &order,
+    std::span<const VulkanPhysicalAttachmentPlan> attachments,
+    const std::map<std::string, ImageUsage, std::less<>> &usage) {
+    const auto *r = findPhysicalResource(resources, resource);
+    const auto u = usage.find(resource);
+    if (!r || !r->lifetime.used) return "resource has no used physical image";
+    if (r->representation != VulkanResourceRepresentation::materialized_image)
+        return "resource must be a materialized image (external and buffer resources cannot be retained)";
+    if (!r->format || (imageFormatInfo(*r->format).aspect != ImageAspect::color && *r->format != ImageFormat::d32_sfloat))
+        return "format must support color or D32 readback";
+    if (r->rasterization_samples > 1 && !r->resolve_required) return "multisample image has no single-sample resolve";
+    if (u == usage.end() || !(u->second & ImageUsageBit::transfer_src)) return "effective image usage lacks TRANSFER_SRC";
+    if (order.empty() || r->lifetime.last_use != order.size() - 1 ||
+        std::find(r->lifetime.retain.begin(), r->lifetime.retain.end(), "readback") == r->lifetime.retain.end())
+        return "readback lifetime must reach the terminal node";
+    // Check coverage as well as the supplied operations. Omitting a writer
+    // from the final attachment table must not make a promise pass vacuously.
+    for (const auto &node : graph.nodes) for (const auto &use : node.uses) {
+        if (!use.output_value || use.output_value->resource != resource ||
+            (use.intent != LogicalAccessIntent::attachment &&
+             !(use.intent == LogicalAccessIntent::automatic &&
+               (node.kind == LogicalGraphNodeKind::render || node.kind == LogicalGraphNodeKind::output_transform)))) continue;
+        const auto at = std::find_if(attachments.begin(), attachments.end(), [&](const auto &a) {
+            return a.node == node.name && a.logical_resource == resource;
+        });
+        if (at == attachments.end() || at->operations.store_op != AttachmentStoreOp::store) return "every attachment writer must store retained contents";
+    }
+    if (std::any_of(attachments.begin(), attachments.end(), [&](const auto &a) {
+        return a.logical_resource == resource && a.operations.store_op != AttachmentStoreOp::store;
+    })) return "every attachment writer must store retained contents";
+    return {};
+}
+
+
 // This reads the resulting plan, never the application's success flags.
 bool policySatisfied(const PlanningPolicyEntry &entry, const CompiledLogicalRenderGraph &graph,
                      std::string_view backend, std::span<const VulkanPhysicalResourcePlan> resources,
                      std::span<const VulkanPhysicalScopePlan> scopes,
                      std::span<const VulkanAliasGroupPlan> aliases,
                      const LogicalPlanningOpportunityReport &opportunities,
-                     std::span<const PlanningPolicyEntry> policy) {
+                     std::span<const PlanningPolicyEntry> policy,
+                     std::span<const VulkanPhysicalAttachmentPlan> attachments,
+                     const std::map<std::string, ImageUsage, std::less<>> &usage) {
     const auto scopeOf = [&](std::string_view node) -> const VulkanPhysicalScopePlan * {
         for (const auto &s : scopes)
             if (std::find(s.nodes.begin(), s.nodes.end(), node) != s.nodes.end()) return &s;
@@ -3354,6 +3399,8 @@ bool policySatisfied(const PlanningPolicyEntry &entry, const CompiledLogicalRend
         const auto *r = findPhysicalResource(resources, entry.target);
         return r && r->representation == VulkanResourceRepresentation::materialized_image;
     }
+    if (entry.key == "retain") return !std::get<bool>(entry.value) ||
+        retainContractFailure(entry.target, graph, resources, opportunities.node_order, attachments, usage).empty();
     if (entry.key == "alias_group") {
         for (const auto &other : policy)
             if (activePolicy(other) && other.key == "alias_group" && aliasPolicyKey(other) == aliasPolicyKey(entry) &&
@@ -3410,7 +3457,7 @@ std::vector<std::size_t> aliasConflictCauses(const CompiledLogicalRenderGraph &g
         const auto &e = draft.policy[i];
         if (!activePolicy(e)) continue;
         if (e.key == "alias_group" && e.target == other && aliasPolicyKey(e) == aliasPolicyKey(entry)) causes.push_back(i);
-        if (e.key == "no_alias" && std::get<bool>(e.value) && (e.target == entry.target || e.target == other)) causes.push_back(i);
+        if (((e.key == "no_alias" || e.key == "retain") && std::get<bool>(e.value)) && (e.target == entry.target || e.target == other)) causes.push_back(i);
         if (e.key == "isolate" && std::get<bool>(e.value))
             for (const auto &node : graph.nodes) if (node.name == e.target)
                 for (const auto &use : node.uses)
@@ -3447,7 +3494,7 @@ std::vector<std::size_t> scopeConflictCauses(const CompiledLogicalRenderGraph &g
         if (!nodes.contains(edge.producer_node) || !nodes.contains(edge.consumer_node)) continue;
         for (std::size_t i = 0; i < draft.policy.size(); ++i) {
             const auto &e = draft.policy[i];
-            if (activePolicy(e) && e.key == "representation" && e.target == edge.value.resource) causes.push_back(i);
+            if (activePolicy(e) && materializingPolicy(e) && e.target == edge.value.resource) causes.push_back(i);
         }
     }
     return causes;
@@ -3518,10 +3565,11 @@ void finishCandidatePolicy(const CompiledLogicalRenderGraph &graph, const Target
         if (!activePolicy(e)) continue;
         // The pairwise group checks above already returned their witnesses.
         if (e.key == "alias_group") continue;
-        if (policySatisfied(e, graph, draft.name, draft.resources, draft.scopes, draft.alias_groups, draft.opportunities, draft.policy)) continue;
+        if (policySatisfied(e, graph, draft.name, draft.resources, draft.scopes, draft.alias_groups, draft.opportunities, draft.policy, request.automatic_attachments, request.effective_image_usage)) continue;
         policyConflict(draft, e.key == "scope_join" || e.key == "scope_break"
             ? scopeConflictCauses(graph, draft, i) : std::vector<std::size_t>{i},
-            "candidate does not satisfy the requested result");
+            e.key == "retain" ? retainContractFailure(e.target, graph, draft.resources, draft.opportunities.node_order,
+                request.automatic_attachments, request.effective_image_usage) : "candidate does not satisfy the requested result");
     }
 }
 
@@ -3575,7 +3623,7 @@ void appendPhysicalFailureCauses(const CompiledLogicalRenderGraph &graph,
                 (e.key == "scope_join" || ((escape || attachment_contract) &&
                     (e.key == "scope_break" || e.key == "serial" || e.key == "isolate"))) &&
                 std::get<bool>(e.value)) causes.push_back(i);
-            if ((escape || attachment_contract) && e.key == "representation" && std::any_of(edges.begin(), edges.end(),
+            if ((escape || attachment_contract) && materializingPolicy(e) && std::any_of(edges.begin(), edges.end(),
                 [&](const auto &edge) { return edge.value.resource == e.target &&
                     nodes.contains(edge.producer_node) && nodes.contains(edge.consumer_node); })) causes.push_back(i);
         }
@@ -3720,6 +3768,21 @@ PhysicalNodeOrder physicalNodeOrderOf(std::span<const VulkanPhysicalScopePlan> s
     return result;
 }
 
+void validateTargetReadbackRetention(const VulkanTargetPlan *plan,
+                                    std::string_view resource, std::string_view graph) {
+    if (plan) for (const auto &r : plan->resources) {
+        if (r.logical_resource != resource) continue;
+        const auto &reasons = r.lifetime.retain;
+        if (std::any_of(reasons.begin(), reasons.end(), [](const auto &reason) {
+            return reason == "readback" || reason == "present" || reason == "capture";
+        })) return;
+        break;
+    }
+    throw GraphRegistryError("render_target.readback_not_retained@1",
+        {{"resource", resource}, {"graph", graph},
+         {"reason", "named render-target readback requires retain: true in target_planning"}});
+}
+
 void validateVulkanTargetPlanRequirements(const CompiledLogicalRenderGraph &graph, VulkanTargetPlan &plan) {
     auto failures = nlohmann::json::array();
     if (plan.policy.empty()) return;
@@ -3734,7 +3797,7 @@ void validateVulkanTargetPlanRequirements(const CompiledLogicalRenderGraph &grap
         e.satisfied.reset();
         if (!activePolicy(e) || e.strength != PlanningStrength::require) continue;
         e.satisfied = policySatisfied(e, graph, plan.backend_selection.selected_candidate, plan.resources,
-            plan.scopes, plan.alias_groups, plan.opportunities, plan.policy);
+            plan.scopes, plan.alias_groups, plan.opportunities, plan.policy, plan.attachments, plan.effective_image_usage);
         if ((e.key == "scope_join" || e.key == "scope_break") && !executable_scopes) e.satisfied = false;
         if (e.key == "fuse" && !std::get<bool>(e.value)) {
             bool found = false;
@@ -3817,6 +3880,7 @@ VulkanTargetPlan compileVulkanTargetPlan(
             request.external_depth_export);
     if (external_depth_export) {
         request.retain_reasons[external_depth_export->source_resource].push_back("external_depth_export");
+        request.effective_image_usage[external_depth_export->source_resource] |= ImageUsageBit::transfer_src;
         const auto lifetimes = calculateTargetResourceLifetimes(canonical_graph, request.node_order, request.retain_reasons);
         for (auto &resource : workspace.resources) resource.lifetime = lifetimes.at(resource.logical.name);
     }
@@ -3838,13 +3902,24 @@ VulkanTargetPlan compileVulkanTargetPlan(
                 }
                 for (auto &r : input.resource_constraints) if (r.resource == e.target && e.key == "no_alias") r.no_alias = {};
             }
-            auto draft = buildCandidateDraft(canonical_graph, workspace, endpoint, tile, transient, input,
+            auto candidate_workspace = workspace;
+            for (const auto &e : input.policy) {
+                if (!activePolicy(e) || e.key != "retain" || !std::get<bool>(e.value)) continue;
+                input.retain_reasons[e.target].push_back("readback");
+                for (auto &attachment : input.automatic_attachments)
+                    if (attachment.logical_resource == e.target) attachment.operations.store_op = AttachmentStoreOp::store;
+            }
+            const auto lifetimes = calculateTargetResourceLifetimes(canonical_graph, input.node_order, input.retain_reasons);
+            for (auto &r : candidate_workspace.resources) r.lifetime = lifetimes.at(r.logical.name);
+            auto draft = buildCandidateDraft(canonical_graph, candidate_workspace, endpoint, tile, transient, input,
                 sample_count_plan ? &*sample_count_plan : nullptr, view_execution, external_depth_export);
             // Without policy, candidate feasibility and cost do not use alias
             // analysis. Materialize it once for the selected candidate below.
-            if (!input.policy.empty()) finishCandidatePolicy(canonical_graph, workspace, input, draft);
+            if (!input.policy.empty()) finishCandidatePolicy(canonical_graph, candidate_workspace, input, draft);
             applyAttachmentBudget(draft, canonical_graph, endpoint);
             if (!input.policy.empty()) appendPhysicalFailureCauses(canonical_graph, input, endpoint, draft);
+            draft.retain_reasons = std::move(input.retain_reasons);
+            draft.attachments = std::move(input.automatic_attachments);
             return draft;
         };
         auto input = request;
@@ -3893,6 +3968,17 @@ VulkanTargetPlan compileVulkanTargetPlan(
             for (const auto &f : p.failures) failures.push_back({{"id", f.id}, {"target", f.subject}, {"reason", f.detail}});
             reasons.push_back({{"candidate", p.candidate}, {"failures", failures}});
         }
+        for (const auto &e : request.policy) if (activePolicy(e) && e.key == "retain" &&
+            std::get<bool>(e.value) && e.strength == PlanningStrength::require) {
+            const bool unsatisfied = std::all_of(probes.begin(), probes.end(), [&](const auto &p) {
+                const auto &draft = draftFor(p.candidate);
+                return !policySatisfied(e, canonical_graph, draft.name, draft.resources, draft.scopes,
+                    draft.alias_groups, draft.opportunities, draft.policy, draft.attachments, request.effective_image_usage);
+            });
+            if (unsatisfied) throw GraphRegistryError("target_planning.retain_unsatisfiable@1",
+                {{"graph", canonical_graph.name}, {"resource", e.target}, {"declaration", policyDetail(e,
+                    "requires a used materialized single-sample color or D32 transfer source with stored writers")}, {"candidates", reasons}});
+        }
         throw GraphRegistryError("target_planning.requirement_unsatisfied@1", {{"graph", canonical_graph.name}, {"candidates", reasons}});
     }
     std::optional<std::string> policy_preferred;
@@ -3935,6 +4021,8 @@ VulkanTargetPlan compileVulkanTargetPlan(
 
     if (request.policy.empty())
         finishCandidatePolicy(canonical_graph, workspace, request, selected_draft);
+    const auto selected_lifetimes = calculateTargetResourceLifetimes(canonical_graph, request.node_order, selected_draft.retain_reasons);
+    for (auto &r : workspace.resources) r.lifetime = selected_lifetimes.at(r.logical.name);
     auto opportunities = selected_draft.opportunities;
     auto alias_groups = selected_draft.alias_groups;
 
@@ -4034,7 +4122,8 @@ VulkanTargetPlan compileVulkanTargetPlan(
     }
 
     VulkanTargetPlan result{
-        .retain_reasons = request.retain_reasons,
+        .retain_reasons = selected_draft.retain_reasons,
+        .effective_image_usage = request.effective_image_usage,
         .policy = selected_draft.policy,
         .graph = canonical_graph.name,
         .logical_graph_fingerprint =
@@ -4051,7 +4140,7 @@ VulkanTargetPlan compileVulkanTargetPlan(
         .resources = selected_draft.resources,
         .scopes = selected_draft.scopes,
         .attachments =
-            std::move(request.automatic_attachments),
+            std::move(selected_draft.attachments),
         .alias_groups = std::move(alias_groups),
         .required_physical_features =
             selected_draft.required_features,

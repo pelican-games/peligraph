@@ -59,7 +59,9 @@ void main() { gl_FragDepth = 0.75; color = vec4(0,0,1,1); }
                  {"usage", {"DEPTH_STENCIL_ATTACHMENT", "TRANSFER_SRC"}}}})},
             {"rendering_passes", nlohmann::json::array({{{"name", "main"}, {"passes", passes}}})}
         };
-        writeTextFile(root / "passes/main.json", TestSupport::renderGraphRoot(rendering).dump(2));
+        auto observed_root = TestSupport::renderGraphRoot(rendering);
+        TestSupport::retainObserved(observed_root, "main", {"sprite_depth", "sprite_color"});
+        writeTextFile(root / "passes/main.json", observed_root.dump(2));
         GET_MODULE(PathResolver).setup(root, false);
         GET_MODULE(ProjectSource).setProjectData(project.dump());
         auto &launch = GET_MODULE(EngineLaunchConfig);

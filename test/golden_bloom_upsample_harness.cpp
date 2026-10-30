@@ -1,3 +1,4 @@
+#include "retain_observed_test_support.hpp"
 #include "bloom_upsample_oracle.hpp"
 #include "golden_harness.hpp"
 #include "../src/project/rendercomponent.hpp"
@@ -335,6 +336,9 @@ void wp357WriteBloomProject(const std::filesystem::path &root,
                    Pelican::TestSupport::renderGraphRoot(
                        wp357BloomConfig(hdr, peeled_stage))
                        .dump(2));
+    Pelican::TestSupport::retainObservedFile(root / "passes/main.json", "main_render",
+        {"wp357_seed_V0", "wp357_seed_V1", "wp357_seed_V2", "wp357_seed_V3",
+         "Bloom_Upsample_V_0_RT", "Bloom_Upsample_V_1_RT", "Bloom_Upsample_V_2_RT", "Bloom_Upsample_V_3_RT"});
 }
 
 struct Wp357PhysicalFacts {
@@ -1015,6 +1019,8 @@ void wp357WriteProductionProbeProject(
                                       variant.graph_sink)
              : wp357WrapGraphRoot(std::move(config)))
             .dump(2));
+    Pelican::TestSupport::retainObservedFile(root / "passes/main.json", "main_render",
+        {"Bloom_Downsample_H_0_RT", "Bloom_Upsample_V_0_RT", "display"});
 }
 
 CommonPolygonVertData wp357EmissiveQuad() {
@@ -1360,6 +1366,7 @@ std::array<std::uint8_t, 4> wp357CaptureMinimal(std::string_view load_op) {
                        Pelican::TestSupport::renderGraphRoot(
                            wp357MinimalConfig(load_op))
                            .dump(2));
+        Pelican::TestSupport::retainObservedFile(root / "passes/main.json", "wp357_minimal", {"display"});
         std::array<std::uint8_t, 4> result{};
         {
             FastModuleContainer modules;
@@ -1668,6 +1675,9 @@ Lp1cBloomCapture lp1cCaptureBloom(bool decomposed) {
             config.at("features").push_back("project://" + std::string{lp1cBloomProbeFeatureFile});
             document = wp357WrapGraphRoot(config);
         }
+        std::vector<std::string> observed{"display"};
+        for (const auto &[from, to] : names) if (from.ends_with("_RT")) observed.push_back(decomposed ? to : from);
+        TestSupport::retainObserved(document, "main_render", observed);
         wp357WriteText(root / "passes" / "main.json", document.dump(2));
         Lp1cBloomCapture capture;
         {

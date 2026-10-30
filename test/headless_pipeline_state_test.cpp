@@ -1,3 +1,4 @@
+#include "retain_observed_test_support.hpp"
 // PSN-1 A1: the generic raster pass draws with the pipeline-state vocabulary
 // the pipeline factory used to hard-code. On the GPU:
 //   (a) polygon_mode line leaves a triangle's inside unpainted,
@@ -286,6 +287,8 @@ TEST_CASE("PSN-1 a raster pass draws wireframe, depth bias, stencil and wide lin
         const bool wide_lines = vkcore.getRuntimeCapabilities().wide_lines;
         CAPTURE(wide_lines);
         writePsn1RenderingConfig(root, psn1RenderingConfig(wide_lines));
+        if (wide_lines) TestSupport::retainObservedFile(root / "pipeline.json", "psn1_main", {"psn1_wire", "psn1_bias", "psn1_mask", "psn1_line"});
+        else TestSupport::retainObservedFile(root / "pipeline.json", "psn1_main", {"psn1_wire", "psn1_bias", "psn1_mask"});
 
         auto &renderer = GET_MODULE(Renderer);
         // The descs carry what the documents wrote (the factory reads them).

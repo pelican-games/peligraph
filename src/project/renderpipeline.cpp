@@ -494,12 +494,13 @@ TargetPlanningPolicy compileTargetPlanningPolicy(
                 const auto resource_context =
                     context + " resource '" + resource.key() + "'";
                 requireOnlyKeys(
-                    resource.value(), {"no_alias", "representation", "alias_group"},
+                    resource.value(), {"no_alias", "representation", "alias_group", "retain"},
                     resource_context);
                 const auto pointer = (nlohmann::json::json_pointer{} / "target_planning" / "graphs" /
                                       graph.key() / "resources" / resource.key()).to_string();
                 PlanningResourceConstraint constraint{.resource = resource.key()};
                 constraint.no_alias.declaration = boolean(resource.value(), "no_alias", pointer, resource_context);
+                policyEntry(compiled, resource.value(), "retain", PlanningTargetKind::resource, resource.key(), pointer, false);
                 policyEntry(compiled, resource.value(), "representation", PlanningTargetKind::resource, resource.key(), pointer, true);
                 policyEntry(compiled, resource.value(), "alias_group", PlanningTargetKind::resource, resource.key(), pointer, true);
                 compiled.resources.push_back(std::move(constraint));
@@ -565,7 +566,7 @@ nlohmann::json targetPlanningPolicyToJson(
             }
             for (const auto &entry : graph.declarations) {
                 if (entry.status != PlanningPolicyStatus::adopted ||
-                    (entry.key != "backend" && entry.key != "representation" && entry.key != "alias_group" &&
+                    (entry.key != "retain" && entry.key != "backend" && entry.key != "representation" && entry.key != "alias_group" &&
                      entry.key != "scope_break" && entry.key != "scope_join")) continue;
                 auto *target = &declaration;
                 if (entry.target_kind != PlanningTargetKind::graph)

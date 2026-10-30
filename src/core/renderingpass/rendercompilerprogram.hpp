@@ -181,6 +181,12 @@ class RenderCompilerProgram {
 // buffers (validateComputeTaskBufferContracts and
 // validateGpuDrawSourceBufferContracts, over the IR) and its passes' images
 // (validateRenderGraphResources). Refuses a runtime variant without its IR.
+// The shared generation merge used by physical planning and registration.
+// Resource validation belongs to completeGenerationResources after final planning.
+GenerationResources resolveCompilerGenerationResources(
+    std::span<const RenderCompilerProgramVariantOutput> variants,
+    ResolvedResourceExtent output_extent);
+
 GenerationResources completeGenerationResources(
     std::span<const RenderCompilerProgramVariantOutput> variants,
     ResolvedResourceExtent output_extent,

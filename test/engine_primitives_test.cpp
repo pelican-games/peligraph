@@ -1,3 +1,4 @@
+#include "retain_observed_test_support.hpp"
 #include "../src/core/appflow/enginetime.hpp"
 #include "../src/core/asset/model.hpp"
 #include "../src/core/communication/engineauthoringlists.hpp"
@@ -2608,7 +2609,12 @@ TEST_CASE("PS-1 once passes run on the first frame and again only when asked, ed
     initializeProjectTemplate(root, ProjectTemplate::Blank);
     const auto rendering_path = root / "passes/main_rendering_config.json";
     const auto blank_root = Json::parse(readFile(rendering_path));
-    writeFile(rendering_path, ps1RenderingRoot(blank_root, 0.25).dump(2));
+    const auto observedRoot = [&](double level) {
+        auto document = ps1RenderingRoot(blank_root, level);
+        Pelican::TestSupport::retainObserved(document, "main_render", {"show_image"});
+        return document;
+    };
+    writeFile(rendering_path, observedRoot(0.25).dump(2));
     writeFile(root / "shaders/ps1_h0.frag", ps1_h0_frag);
     writeFile(root / "shaders/ps1_twiddle.frag", ps1_twiddle_frag);
     writeFile(root / "shaders/ps1_show.frag", ps1_show_frag);
@@ -2743,7 +2749,7 @@ TEST_CASE("PS-1 once passes run on the first frame and again only when asked, ed
 
     // 2. The constant edited (the document rewritten and reloaded): the new
     // generation runs both once passes, and the pattern follows the value.
-    writeFile(rendering_path, ps1RenderingRoot(blank_root, 0.75).dump(2));
+    writeFile(rendering_path, observedRoot(0.75).dump(2));
     const auto reloaded = rpc.result("reload_render_documents");
     INFO(reloaded.dump(2));
     REQUIRE(reloaded.at("status") == "accepted");
@@ -2879,7 +2885,8 @@ constexpr std::string_view ia1_show_frag =
     "    outColor = PELICAN_TEXTURE_2D_0(field, inUV);\n"
     "}\n";
 
-Json ia1RenderingRoot(const Json &blank_root) {
+Json ia1RenderingRoot(const Json &blank_root,
+    const std::vector<std::string> &observed = {"shown_float"}) {
     const Json type{{"semantic", "pelican.render.color_signal@1"},
                     {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
     const Json color{{"kind", "image"}, {"type", type}, {"access", "write"}, {"attachment", "color"},
@@ -2927,6 +2934,7 @@ Json ia1RenderingRoot(const Json &blank_root) {
         show("show_unorm", "lut_unorm", "shown_unorm"),
         show("show_srgb", "lut_srgb", "shown_srgb"),
     });
+    Pelican::TestSupport::retainObserved(root, "main_render", observed);
     return root;
 }
 
@@ -2994,7 +3002,7 @@ TEST_CASE("IA-1 persistent images start from their KTX2 and PNG assets and per-f
                                  "main", true);
     const auto rendering_path = root / "passes/main_rendering_config.json";
     const auto blank_root = Json::parse(readFile(rendering_path));
-    writeFile(rendering_path, ia1RenderingRoot(blank_root).dump(2));
+    writeFile(rendering_path, ia1RenderingRoot(blank_root, {"shown_float", "lut_float", "shown_unorm", "shown_srgb"}).dump(2));
     writeFile(root / "shaders/ia1_show.frag", ia1_show_frag);
 
     FastModuleContainer modules;
@@ -3055,7 +3063,7 @@ TEST_CASE("IA-1 persistent images start from their KTX2 and PNG assets and per-f
     // root is rewritten too (same content, other layout); IA-2's test
     // reloads the asset alone.
     ia1WriteLut(root / "assets/luts/ltc.ktx2", ia1LutValues(7.0f));
-    writeFile(rendering_path, ia1RenderingRoot(blank_root).dump(4));
+    writeFile(rendering_path, ia1RenderingRoot(blank_root, {"shown_float", "lut_float", "shown_unorm", "shown_srgb"}).dump(4));
     const auto reloaded = rpc.result("reload_render_documents");
     INFO(reloaded.dump(2));
     REQUIRE(reloaded.at("status") == "accepted");

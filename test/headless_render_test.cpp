@@ -1,3 +1,4 @@
+#include "retain_observed_test_support.hpp"
 #include "vrm_xr_demo_fixture.hpp"
 #include "../src/core/animation/vrmapplication.hpp"
 #include "skeletal_fixture.hpp"
@@ -4596,6 +4597,7 @@ TEST_CASE(
         project["name"] = "wp353-fullscreen-blend";
         GET_MODULE(ProjectSource).setProjectData(
             project.dump());
+        Pelican::TestSupport::retainObservedFile(temp_dir / "pipeline.json", "wp353_blend_main", {"wp353_omitted", "wp353_additive", "wp353_one_one"});
         GET_MODULE(PathResolver).setup(
             temp_dir, false, project.dump());
 
@@ -9777,6 +9779,7 @@ TEST_CASE(
             FastModuleContainer modules;
             writeRtShadowMaskTestProject(
                 temp_dir, raster_shadow, true);
+            Pelican::TestSupport::retainObservedFile(temp_dir / "hybrid.json", "main_render", {"rt_shadow_mask", "rt_shadow_mask_pipeline"});
             configureRayQueryTestRuntime(temp_dir);
 
             auto &renderer = GET_MODULE(Renderer);
@@ -10015,6 +10018,7 @@ TEST_CASE(
         FastModuleContainer modules;
         temp_dir = makeTempProjectDir();
         writeRtShadowMaskTestProject(temp_dir, false, true);
+        Pelican::TestSupport::retainObservedFile(temp_dir / "hybrid.json", "main_render", {"rt_shadow_mask", "rt_shadow_mask_pipeline"});
         configureRayQueryTestRuntime(temp_dir);
 
         auto &renderer = GET_MODULE(Renderer);
@@ -10129,6 +10133,7 @@ TEST_CASE(
         FastModuleContainer modules;
         temp_dir = makeTempProjectDir();
         writeEmbeddedRtShadowMaskTestProject(temp_dir);
+        Pelican::TestSupport::retainObservedFile(temp_dir / "hybrid.json", "main_render", {"rt_shadow_mask", "rt_shadow_mask_pipeline"});
         configureRayQueryTestRuntime(temp_dir);
 
         auto &renderer = GET_MODULE(Renderer);
@@ -10227,6 +10232,7 @@ TEST_CASE(
         temp_dir = makeTempProjectDir();
         writeEmbeddedRtShadowMaskTestProject(
             temp_dir, std::nullopt, false, true);
+        Pelican::TestSupport::retainObservedFile(temp_dir / "hybrid.json", "main_render", {"rt_shadow_mask", "rt_shadow_mask_pipeline"});
         configureRayQueryTestRuntime(temp_dir);
 
         auto &renderer = GET_MODULE(Renderer);
@@ -10506,6 +10512,7 @@ TEST_CASE(
     try {
         FastModuleContainer modules;
         writeRt1aOracleProject(temp_dir);
+        Pelican::TestSupport::retainObservedFile(temp_dir / "hybrid.json", "main_render", {"wp364_oracle", "wp364_oracle_shifted"});
         configureRayQueryTestRuntime(temp_dir);
 
         auto &renderer = GET_MODULE(Renderer);
@@ -10925,6 +10932,7 @@ TEST_CASE(
         RuntimeTeardownGuard teardown{
             RuntimeTeardownMode::terminal_shutdown};
         writeRt1bLayoutProject(temp_dir);
+        Pelican::TestSupport::retainObservedFile(temp_dir / "hybrid.json", "main_render", {"wp366_a", "wp366_b"});
         configureRayQueryTestRuntime(temp_dir);
         auto &vkcore = GET_MODULE(VulkanManageCore);
         if (!vkcore.getRuntimeCapabilities().ray_tracing_pipeline) {
@@ -12062,6 +12070,9 @@ TEST_CASE(
         auto &non_rt = renderingSectionOf(non_rt_config);
         non_rt.erase("ray_group_layout");
         non_rt.erase("ray_bindings");
+        // This phase removes the producers and does not observe their images.
+        non_rt["target_planning"]["graphs"]["main_render"]["resources"].erase("wp366_a");
+        non_rt["target_planning"]["graphs"]["main_render"]["resources"].erase("wp366_b");
         auto &non_rt_features = non_rt["features"];
         non_rt_features.erase(
             std::remove(non_rt_features.begin(), non_rt_features.end(),
@@ -12144,6 +12155,7 @@ TEST_CASE(
     try {
         FastModuleContainer modules;
         writeWp369MaterialAlphaProject(temp_dir);
+        Pelican::TestSupport::retainObservedFile(temp_dir / "hybrid.json", "main_render", {"wp366_a", "gbuffer_albedo"});
         const auto rendering_config =
             readTextFile(temp_dir / "hybrid.json");
         setWp369PortableProfile(temp_dir, false);
@@ -12801,6 +12813,7 @@ TEST_CASE(
     try {
         FastModuleContainer modules;
         writeRt2bTableProject(temp_dir);
+        Pelican::TestSupport::retainObservedFile(temp_dir / "hybrid.json", "main_render", {"wp366_a", "wp366_b"});
         const auto active_config =
             readTextFile(temp_dir / "hybrid.json");
         const auto inactive_config =
@@ -13367,6 +13380,7 @@ TEST_CASE(
     try {
         FastModuleContainer modules;
         writeRt2aAnyHitProject(temp_dir);
+        Pelican::TestSupport::retainObservedFile(temp_dir / "hybrid.json", "main_render", {"wp367_actual", "wp367_always"});
         configureRayQueryTestRuntime(temp_dir);
         auto &vkcore = GET_MODULE(VulkanManageCore);
         if (!vkcore.getRuntimeCapabilities().ray_tracing_pipeline) {
@@ -14048,6 +14062,7 @@ TEST_CASE(
     try {
         FastModuleContainer modules;
         writeWp374aRt1bV2Project(temp_dir);
+        Pelican::TestSupport::retainObservedFile(temp_dir / "hybrid.json", "main_render", {"wp366_a"});
         configureRayQueryTestRuntime(temp_dir);
         auto &vkcore = GET_MODULE(VulkanManageCore);
         if (!vkcore.getRuntimeCapabilities().ray_tracing_pipeline) {
@@ -14132,6 +14147,7 @@ TEST_CASE(
     try {
         FastModuleContainer modules;
         writeWp374aRt2aV2Project(temp_dir, 0);
+        Pelican::TestSupport::retainObservedFile(temp_dir / "hybrid.json", "main_render", {"wp367_actual"});
         configureRayQueryTestRuntime(temp_dir);
         auto &vkcore = GET_MODULE(VulkanManageCore);
         if (!vkcore.getRuntimeCapabilities().ray_tracing_pipeline) {
@@ -14188,6 +14204,7 @@ TEST_CASE(
     try {
         FastModuleContainer modules;
         writeWp374aRt1bV2Project(temp_dir);
+        Pelican::TestSupport::retainObservedFile(temp_dir / "hybrid.json", "main_render", {"wp366_a"});
         configureRayQueryTestRuntime(temp_dir);
         auto &vkcore = GET_MODULE(VulkanManageCore);
         if (!vkcore.getRuntimeCapabilities().ray_tracing_pipeline) {
@@ -14290,6 +14307,7 @@ TEST_CASE(
     try {
         FastModuleContainer modules;
         writeWp374aRt2aV2Project(temp_dir, 0);
+        Pelican::TestSupport::retainObservedFile(temp_dir / "hybrid.json", "main_render", {"wp367_actual"});
         configureRayQueryTestRuntime(temp_dir);
         auto &vkcore = GET_MODULE(VulkanManageCore);
         if (!vkcore.getRuntimeCapabilities().ray_tracing_pipeline) {
@@ -14343,6 +14361,7 @@ TEST_CASE(
         const auto publish_layout = [&](std::uint32_t flags,
                                         std::uint64_t sequence) {
             writeWp374aRt2aV2Project(temp_dir, flags);
+            Pelican::TestSupport::retainObservedFile(temp_dir / "hybrid.json", "main_render", {"wp367_actual"});
             const auto before = runtime.snapshot();
             REQUIRE(before != nullptr);
             REQUIRE(reload.applyRequestForTesting(
@@ -14448,6 +14467,7 @@ void main() {
     outColor = pelican_sample_source(inUV);
 }
 )glsl");
+        Pelican::TestSupport::retainObservedFile(temp_dir / "hybrid.json", "main_render", {"lit_color", "copy", "lp0a_probe_rt"});
         configureRayQueryTestRuntime(temp_dir);
 
         auto &renderer = GET_MODULE(Renderer);
@@ -14617,6 +14637,7 @@ TEST_CASE("LP-1a a graph.loop draws one copy per element, in element order where
         writeTextFile(temp_dir / "shaders" / "lp1a_white.frag", constant("vec4(1.0, 1.0, 1.0, 0.5)"));
         writeTextFile(temp_dir / "shaders" / "lp1a_black.frag", constant("vec4(0.0, 0.0, 0.0, 0.5)"));
         writeTextFile(temp_dir / "shaders" / "lp1a_zero.frag", constant("vec4(0.0)"));
+        Pelican::TestSupport::retainObservedFile(temp_dir / "hybrid.json", "main_render", {"steps/0/image", "steps/1/image", "steps/2/image", "steps/3/image", "lp1a_acc_up", "lp1a_acc_down"});
         configureRayQueryTestRuntime(temp_dir);
 
         auto &renderer = GET_MODULE(Renderer);
@@ -14775,6 +14796,7 @@ void main() {
                     float(pelican_loop_count())) * 0.2;
 }
 )glsl");
+        Pelican::TestSupport::retainObservedFile(temp_dir / "hybrid.json", "main_render", {"steps/0/paint_image", "steps/0/raster_image", "steps/1/paint_image", "steps/1/raster_image", "steps/2/paint_image", "steps/2/raster_image", "outside_image"});
         configureRayQueryTestRuntime(temp_dir);
 
         auto &renderer = GET_MODULE(Renderer);
@@ -14934,6 +14956,7 @@ void main() {
 #endif
 }
 )glsl");
+        Pelican::TestSupport::retainObservedFile(temp_dir / "hybrid.json", "main_render", {"cull_down_image", "cull_up_image", "facing_down_image", "facing_up_image"});
         configureRayQueryTestRuntime(temp_dir);
 
         auto &renderer = GET_MODULE(Renderer);
@@ -15078,6 +15101,7 @@ void main() {
         writeTextFile(temp_dir / "shaders" / "lp1b_zero.frag",
             "#version 450\nlayout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\n"
             "void main() {\n    outColor = vec4(0.0, 0.0, 0.0, 1.0);\n}\n");
+        Pelican::TestSupport::retainObservedFile(temp_dir / "hybrid.json", "main_render", {"seed_image", "chain/0/image", "chain/1/image", "chain/2/image", "chain/3/image"});
         configureRayQueryTestRuntime(temp_dir);
 
         auto &renderer = GET_MODULE(Renderer);
@@ -15514,6 +15538,7 @@ vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 i
         {"output", {{"color", {"lit_color"}}, {"depth", "scene_depth"}}},
         {"depth_load_op", "load"}, {"depth_store_op", "store"}});
     writeTextFile(root / "hybrid.json", TestSupport::renderGraphRootWithTaskFeature(config, root).dump());
+    Pelican::TestSupport::retainObservedFile(root / "hybrid.json", "main_render", {"scene_depth"});
     configureRayQueryTestRuntime(root);
     GET_MODULE(EngineLaunchConfig).headless_extent = vk::Extent2D{128, 128};
     TestSupport::requireVulkanDevice("SK1 requires Vulkan");
@@ -15875,6 +15900,7 @@ void main() {
         writeTextFile(temp_dir / "shaders" / "lp1b_zero.frag",
             "#version 450\nlayout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\n"
             "void main() {\n    outColor = vec4(0.0, 0.0, 0.0, 1.0);\n}\n");
+        Pelican::TestSupport::retainObservedFile(temp_dir / "hybrid.json", "main_render", {"b/1/image"});
         configureRayQueryTestRuntime(temp_dir);
 
         auto &renderer = GET_MODULE(Renderer);
@@ -15985,6 +16011,7 @@ vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 i
         {"output", {{"color", {"lit_color"}}, {"depth", "scene_depth"}}},
         {"depth_load_op", "load"}, {"depth_store_op", "store"}});
     writeTextFile(root / "hybrid.json", TestSupport::renderGraphRootWithTaskFeature(config, root).dump());
+    Pelican::TestSupport::retainObservedFile(root / "hybrid.json", "main_render", {"lit_color", "gbuffer_albedo"});
     configureRayQueryTestRuntime(root);
     GET_MODULE(EngineLaunchConfig).headless_extent = vk::Extent2D{128, 128};
     TestSupport::requireVulkanDevice("VR1 requires Vulkan");
@@ -16139,4 +16166,5 @@ vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 i
     SKIP("runtime shader compiler unavailable");
 #endif
 }
+#include "rc7a_readback_test.inc"
 } // namespace Pelican

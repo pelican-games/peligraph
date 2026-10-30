@@ -3,6 +3,7 @@
 #include "attachmentoperations.hpp"
 #include "imagesubresource.hpp"
 #include "imageformat.hpp"
+#include "imageusage.hpp"
 #include "resourceextent.hpp"
 #include "samplecountplanning.hpp"
 #include "targetplanning.hpp"
@@ -342,6 +343,7 @@ struct VulkanTargetPlanRequest {
     std::vector<std::string> required_endpoint_capabilities;
     std::vector<ResourcePatternBinding> pattern_bindings;
     TargetResourceRetainReasons retain_reasons;
+    std::map<std::string, ImageUsage, std::less<>> effective_image_usage;
     PlanningProfile profile;
     std::vector<PlanningNodeConstraint> node_constraints;
     std::vector<PlanningResourceConstraint> resource_constraints;
@@ -357,6 +359,7 @@ struct VulkanTargetPlanRequest {
 struct VulkanTargetPlan {
     bool legacy_complete_install = false; // Runtime metadata; never serialized.
     TargetResourceRetainReasons retain_reasons; // Trusted compiler input, not lifetime output.
+    std::map<std::string, ImageUsage, std::less<>> effective_image_usage; // Compiler facts; not package claims.
     std::vector<PlanningPolicyEntry> policy;
     std::string graph;
     std::uint64_t logical_graph_fingerprint = 0;
@@ -383,6 +386,10 @@ struct VulkanTargetPlan {
     std::optional<VulkanExternalDepthExportPlan>
         external_depth_export;
 };
+
+// Named intermediate reads are promises of this program's selected plan.
+void validateTargetReadbackRetention(const VulkanTargetPlan *plan,
+                                    std::string_view resource, std::string_view graph);
 
 void validateVulkanPhysicalFeatureClosure(
     const BackendProbeResult &selected_probe,

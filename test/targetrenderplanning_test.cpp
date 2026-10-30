@@ -3020,4 +3020,5 @@ TEST_CASE("RC-1 the memory total counts each allocation registration made once a
 
 #include "rc6a2_target_policy_test.inc"
 #include "rc6b1_target_policy_test.inc"
+#include "rc7a_target_policy_test.inc"
 } // namespace Pelican

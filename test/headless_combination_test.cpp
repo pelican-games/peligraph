@@ -1,3 +1,4 @@
+#include "retain_observed_test_support.hpp"
 // CB-1: one independently selectable case per combination. Failed captures
 // are retained under PELICAN_CB1_ARTIFACT_DIR (or the CTest working directory).
 #include "render_coverage_test_support.hpp"
@@ -46,6 +47,13 @@ using namespace TestSupport::CB1;
 struct CombinationFixture : CombinationProject {
     using CombinationProject::CombinationProject;
     void configure() const {
+        std::vector<std::string> observed{"scene_depth"};
+        if (row == 1 || row == 6 || row == 8) observed.push_back("cb_shadow");
+        if (row == 8) { observed.push_back("cb_velocity"); observed.push_back("cb_picking"); }
+        if (row == 2 || row == 3) observed.push_back("lit_color");
+        if (row == 11) observed.push_back("rt_shadow_mask");
+        TestSupport::retainObservedFile(root / "hybrid.json", "main_render", observed);
+
         GET_MODULE(ProjectSource).setSourceByFile((root / "project.json").string());
         GET_MODULE(PathResolver).setup(root, false);
         auto &launch = GET_MODULE(EngineLaunchConfig);

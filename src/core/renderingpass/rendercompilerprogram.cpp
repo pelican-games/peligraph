@@ -220,13 +220,10 @@ void validateVariantOutput(
 
 } // namespace
 
-GenerationResources completeGenerationResources(
+GenerationResources resolveCompilerGenerationResources(
     std::span<const RenderCompilerProgramVariantOutput> variants,
-    ResolvedResourceExtent output_extent,
-    const std::function<void(std::string_view, const ResourceCheckRead &)>
-        &observe_resource_checks) {
+    ResolvedResourceExtent output_extent) {
     std::vector<GenerationResourceVariant> inputs;
-    std::vector<const RenderCompilerProgramVariantOutput *> runtime;
     for (const auto &variant : variants) {
         if (variant.physical_package == nullptr) continue;
         if (variant.render_graph == nullptr) {
@@ -243,11 +240,20 @@ GenerationResources completeGenerationResources(
             .runtime_layered_images =
                 runtimeLayeredImagesOf(*variant.compiled_pipeline),
         });
-        runtime.push_back(&variant);
     }
     if (inputs.empty()) return {};
-    auto resources =
-        resolveGenerationResources(inputs, output_extent);
+    return resolveGenerationResources(inputs, output_extent);
+}
+
+GenerationResources completeGenerationResources(
+    std::span<const RenderCompilerProgramVariantOutput> variants,
+    ResolvedResourceExtent output_extent,
+    const std::function<void(std::string_view, const ResourceCheckRead &)>
+        &observe_resource_checks) {
+    auto resources = resolveCompilerGenerationResources(variants, output_extent);
+    std::vector<const RenderCompilerProgramVariantOutput *> runtime;
+    for (const auto &variant : variants)
+        if (variant.physical_package) runtime.push_back(&variant);
     for (std::size_t index = 0; index < runtime.size(); ++index) {
         const auto &variant = *runtime[index];
         std::vector<FrameGraphBufferDefinition> buffers;
@@ -259,9 +265,9 @@ GenerationResources completeGenerationResources(
         ResourceCheckObserver observe;
         if (observe_resource_checks) {
             observe = [&observe_resource_checks,
-                       &name = inputs[index].name](
+                       &variant](
                           const ResourceCheckRead &read) {
-                observe_resource_checks(name, read);
+                observe_resource_checks(renderPipelineGraphVariantName(variant.graph_variant), read);
             };
         }
         validateRenderGraphResources(*variant.render_graph, resources, observe);

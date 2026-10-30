@@ -518,3 +518,20 @@ TEST_CASE("RC-6b2 complete stale refusal and install identity survive legacy rem
         }
     }
 }
+
+TEST_CASE("RC-7a F4 unchanged HEAD baseline including fingerprints", "[.][rendercompiler][rc7a][rc7-baseline-compare]") {
+    const std::filesystem::path directory{"<作業ディレクトリ>/rc7_baseline/rc5"};
+    REQUIRE(std::filesystem::is_directory(directory));
+    std::size_t count = 0;
+    for (const bool lit : {false, true}) for (const bool hdr : {false, true})
+    for (const bool extras : {false, true}) for (const bool xr : {false, true}) {
+        const auto filename = directory / rc5Filename(lit, hdr, extras, xr);
+        CAPTURE(filename.string());
+        REQUIRE(std::filesystem::is_regular_file(filename));
+        const auto expected = Rc5Json::parse(std::ifstream{filename});
+        const auto actual = rc5Snapshot(rc5Compile(rc5Document(lit, hdr, extras), xr));
+        CHECK(actual == expected);
+        ++count;
+    }
+    CHECK(count == 16);
+}

@@ -1522,7 +1522,8 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
     std::optional<VulkanExternalDepthExportRequest>
         external_depth_export,
     TargetPlanningPolicy target_planning,
-    RenderingTargetExternalReaders external_readers) {
+    RenderingTargetExternalReaders external_readers,
+    const std::map<std::string, ImageUsage, std::less<>> &generation_usage) {
     const auto target_by_name =
         renderTargetsByName(render_targets);
     const auto types = makeBuiltinLogicalTypeRegistry();
@@ -1622,6 +1623,11 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
     std::map<std::string, VulkanResourceRepresentation,
              std::less<>>
         merged_representations;
+    auto effective_usage = generation_usage;
+    if (effective_usage.empty()) for (const auto &target : render_targets)
+        effective_usage.emplace(target.name, engineImageUsage({.declared = target.usage,
+            .history = target.history, .external_depth_source = external_depth_export &&
+                external_depth_export->source_resource == target.name}));
     for (std::size_t index = 0; index < frame_graphs.size();
          ++index) {
         const auto &definition = frame_graphs[index];
@@ -1688,6 +1694,7 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                             transient_formats,
                             tile_local_formats),
                     .retain_reasons = renderingTargetRetainReasons(render_graph, render_graph.graphs[index], external_readers),
+                    .effective_image_usage = effective_usage,
                     .profile = target_planning.profile,
                     .node_constraints = std::move(node_constraints),
                     .resource_constraints =
@@ -1988,7 +1995,8 @@ compileRenderingTargetPlansForVulkanDevice(
     std::optional<VulkanExternalDepthExportRequest>
         external_depth_export,
     TargetPlanningPolicy target_planning,
-    RenderingTargetExternalReaders external_readers) {
+    RenderingTargetExternalReaders external_readers,
+    const std::map<std::string, ImageUsage, std::less<>> &generation_usage) {
     const auto features =
         physical_device.getFeatures2<
             vk::PhysicalDeviceFeatures2,
@@ -2067,7 +2075,7 @@ compileRenderingTargetPlansForVulkanDevice(
         },
         std::move(view_execution),
         std::move(external_depth_export),
-        std::move(target_planning), external_readers);
+        std::move(target_planning), external_readers, generation_usage);
 }
 
 std::vector<ImagePlacement> imagePlacementsOf(

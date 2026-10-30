@@ -1,3 +1,4 @@
+#include "retain_observed_test_support.hpp"
 #include "../src/core/container.hpp"
 #include "render_graph_root_test_support.hpp"
 #include "lp3a_decompose_support.hpp"
@@ -7276,6 +7277,20 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
         active_draw_loop_probe->rewrite_project(temp_dir);
     }
 
+    std::vector<std::string> observed;
+    const auto mode = std::string_view{golden_case.mode};
+    if (mode == "shadow_b_layer_cascaded" || isViewSelectShadowGoldenMode(mode) ||
+        (isMultiLightShadowGoldenMode(mode) && multiLightShadowEnabled(mode))) observed.push_back("shadow_map");
+    if (isPunctualShadowGoldenMode(mode) && mode.ends_with("_on") && punctualShadowFace(mode) >= 0)
+        observed.push_back("point_shadow_map");
+    if (mode == "planar_reflection" || mode == "planar_reflection_opaque_only" || mode == "planar_reflection_deferred_only")
+        observed = {"planar_reflection_color", "planar_reflection_albedo", "planar_reflection_depth"};
+    if (!observed.empty()) {
+        const auto project = nlohmann::json::parse(GET_MODULE(ProjectSource).loadProjectSource());
+        TestSupport::retainObservedFile(temp_dir / project.at("basic_config").at("rendering_config_json").get<std::string>(),
+            project.at("basic_config").at("default_rendering_pass").get<std::string>(), observed);
+    }
+
     auto &launch_config = GET_MODULE(EngineLaunchConfig);
     launch_config.headless = true;
     launch_config.shader_hot_reload = false;
@@ -7769,76 +7784,11 @@ readDepthTargetBytes(
     GlobalRenderTargetId target_id,
     std::uint32_t array_layer,
     vk::ImageLayout source_layout) {
-    auto &targets = GET_MODULE(RenderTargetContainer);
-    const auto metadata = targets.getMetadata(target_id);
-    if (metadata.format != ImageFormat::d32_sfloat ||
-        !(metadata.usage &
-          ImageUsageBit::transfer_src) ||
-        array_layer >= metadata.array_layers) {
-        throw std::runtime_error("shadow probe requires a transfer-src D32 target");
-    }
-    const auto &image = targets.getImage(target_id);
-    const auto byte_count = static_cast<vk::DeviceSize>(metadata.extent.width) *
-                            metadata.extent.height * sizeof(float);
-    auto &vkcore = GET_MODULE(VulkanManageCore);
-    auto staging = vkcore.allocBuf(byte_count, vk::BufferUsageFlagBits::eTransferDst,
-                                   vma::MemoryUsage::eAutoPreferHost,
-                                   vma::AllocationCreateFlagBits::eHostAccessRandom);
-    auto &utils = GET_MODULE(VulkanUtils);
-    utils.executeOneTimeCmd(
-        [&](vk::CommandBuffer command) {
-            auto source_stage =
-                vk::PipelineStageFlags{
-                    vk::PipelineStageFlagBits::
-                        eFragmentShader};
-            auto source_access =
-                vk::AccessFlags{
-                    vk::AccessFlagBits::
-                        eShaderRead};
-            if (source_layout ==
-                vk::ImageLayout::
-                    eDepthAttachmentOptimal) {
-                source_stage =
-                    vk::PipelineStageFlagBits::
-                        eEarlyFragmentTests |
-                    vk::PipelineStageFlagBits::
-                        eLateFragmentTests |
-                    vk::PipelineStageFlagBits::
-                        eColorAttachmentOutput;
-                source_access =
-                    vk::AccessFlagBits::
-                        eDepthStencilAttachmentRead |
-                    vk::AccessFlagBits::
-                        eDepthStencilAttachmentWrite |
-                    vk::AccessFlagBits::
-                        eColorAttachmentWrite;
-            }
-            utils.changeImageLayoutCmd(
-                command, image, source_layout,
-                vk::ImageLayout::eTransferSrcOptimal,
-                {.src_stage = source_stage,
-                 .dst_stage = vk::PipelineStageFlagBits::eTransfer,
-                 .src_access = source_access,
-                 .dst_access = vk::AccessFlagBits::eTransferRead});
-            vk::BufferImageCopy copy;
-            copy.imageSubresource = {
-                vk::ImageAspectFlagBits::eDepth,
-                0,
-                array_layer,
-                1};
-            copy.imageExtent = image.extent;
-            command.copyImageToBuffer(image.image.get(), vk::ImageLayout::eTransferSrcOptimal,
-                                      staging.buffer.get(), copy);
-            utils.changeImageLayoutCmd(
-                command, image, vk::ImageLayout::eTransferSrcOptimal,
-                source_layout,
-                {.src_stage = vk::PipelineStageFlagBits::eTransfer,
-                 .dst_stage = source_stage,
-                 .src_access = vk::AccessFlagBits::eTransferRead,
-                 .dst_access = source_access});
-        },
-        true);
-    return vkcore.readBuf(staging, byte_count);
+    const auto name = GET_MODULE(RenderTargetContainer).getRenderTargetName(target_id);
+    const auto result = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer), name,
+        {.base_array_layer = array_layer});
+    if (result.format != vk::Format::eD32Sfloat) throw std::runtime_error("shadow probe requires D32");
+    return result.bytes;
 }
 
 std::vector<std::uint8_t>
@@ -7846,131 +7796,9 @@ readColorTargetBytes(
     GlobalRenderTargetId target_id,
     std::uint32_t array_layer,
     std::uint32_t mip_level) {
-    auto &targets =
-        GET_MODULE(RenderTargetContainer);
-    const auto metadata =
-        targets.getMetadata(target_id);
-    std::uint32_t bytes_per_texel = 0;
-    switch (metadata.format) {
-    case ImageFormat::b8g8r8a8_unorm:
-    case ImageFormat::b8g8r8a8_srgb:
-    case ImageFormat::r8g8b8a8_unorm:
-    case ImageFormat::r8g8b8a8_srgb:
-        bytes_per_texel = 4;
-        break;
-    case ImageFormat::r16g16b16a16_sfloat:
-        bytes_per_texel = 8;
-        break;
-    default:
-        break;
-    }
-    if (bytes_per_texel == 0 ||
-        !(metadata.usage &
-          ImageUsageBit::
-              transfer_src) ||
-        array_layer >=
-            metadata.array_layers ||
-        mip_level >=
-            metadata.mip_levels) {
-        throw std::runtime_error(
-            "color probe requires a transfer-src "
-            "RGBA8 or RGBA16F target subresource");
-    }
-
-    const auto &image =
-        targets.getImage(target_id);
-    const auto mip_extent =
-        vk::Extent3D{
-            std::max(
-                1u,
-                metadata.extent.width >>
-                    mip_level),
-            std::max(
-                1u,
-                metadata.extent.height >>
-                    mip_level),
-            1u,
-        };
-    const auto byte_count =
-        static_cast<vk::DeviceSize>(
-            mip_extent.width) *
-        mip_extent.height *
-        bytes_per_texel;
-    auto &vkcore =
-        GET_MODULE(VulkanManageCore);
-    auto staging =
-        vkcore.allocBuf(
-            byte_count,
-            vk::BufferUsageFlagBits::
-                eTransferDst,
-            vma::MemoryUsage::
-                eAutoPreferHost,
-            vma::AllocationCreateFlagBits::
-                eHostAccessRandom);
-    auto &utils =
-        GET_MODULE(VulkanUtils);
-    utils.executeOneTimeCmd(
-        [&](vk::CommandBuffer command) {
-            utils.changeImageLayoutCmd(
-                command, image,
-                vk::ImageLayout::
-                    eShaderReadOnlyOptimal,
-                vk::ImageLayout::
-                    eTransferSrcOptimal,
-                {
-                    .src_stage =
-                        vk::PipelineStageFlagBits::
-                            eFragmentShader,
-                    .dst_stage =
-                        vk::PipelineStageFlagBits::
-                            eTransfer,
-                    .src_access =
-                        vk::AccessFlagBits::
-                            eShaderRead,
-                    .dst_access =
-                        vk::AccessFlagBits::
-                            eTransferRead,
-                });
-            vk::BufferImageCopy copy;
-            copy.imageSubresource = {
-                vk::ImageAspectFlagBits::
-                    eColor,
-                mip_level,
-                array_layer,
-                1,
-            };
-            copy.imageExtent =
-                mip_extent;
-            command.copyImageToBuffer(
-                image.image.get(),
-                vk::ImageLayout::
-                    eTransferSrcOptimal,
-                staging.buffer.get(),
-                copy);
-            utils.changeImageLayoutCmd(
-                command, image,
-                vk::ImageLayout::
-                    eTransferSrcOptimal,
-                vk::ImageLayout::
-                    eShaderReadOnlyOptimal,
-                {
-                    .src_stage =
-                        vk::PipelineStageFlagBits::
-                            eTransfer,
-                    .dst_stage =
-                        vk::PipelineStageFlagBits::
-                            eFragmentShader,
-                    .src_access =
-                        vk::AccessFlagBits::
-                            eTransferRead,
-                    .dst_access =
-                        vk::AccessFlagBits::
-                            eShaderRead,
-                });
-        },
-        true);
-    return vkcore.readBuf(
-        staging, byte_count);
+    const auto name = GET_MODULE(RenderTargetContainer).getRenderTargetName(target_id);
+    return RendererTestAccess::readRenderTarget(GET_MODULE(Renderer), name,
+        {.base_mip_level = mip_level, .base_array_layer = array_layer}).bytes;
 }
 
 struct ShadowProbeCapture {
@@ -7993,6 +7821,7 @@ ShadowProbeCapture captureShadowProbe(bool jitter_enabled) {
     auto rendering = makeShadowRenderingConfig(true);
     rendering["features"].push_back("features/shadow_probe.json");
     writeTextFile(root / "passes" / "main.json", Pelican::TestSupport::renderGraphRootWithTaskFeature(rendering, root).dump(2));
+    TestSupport::retainObservedFile(root / "passes/main.json", "main", {"shadow_map"});
     GET_MODULE(PathResolver).setup(root, false);
     GET_MODULE(ProjectSource).setProjectData(makeShadowProjectJson().dump());
     auto &launch = GET_MODULE(EngineLaunchConfig);
@@ -9554,6 +9383,7 @@ RenderTargetReadback captureWp338Ssao(
         std::string{contract.golden_name});
     try {
         writeWp338SsaoProject(root, scenario);
+        TestSupport::retainObservedFile(root / "passes/main.json", "main_render", {std::string{contract.target}});
         RenderTargetReadback readback;
         {
             FastModuleContainer modules;
@@ -10634,6 +10464,7 @@ Wp339SsaoBlurCapture captureWp339SsaoBlur(
         std::string{contract.name});
     try {
         writeWp339SsaoBlurProject(root, scenario);
+        TestSupport::retainObservedFile(root / "passes/main.json", "main_render", {std::string{contract.producer_target}, std::string{contract.blur_target}});
         Wp339SsaoBlurCapture capture;
         {
             FastModuleContainer modules;
@@ -11369,6 +11200,7 @@ void requireWp339SsaoBlurIntegrationSmoke() {
         "wp339_ssao_blur_integration");
     try {
         writeWp339SsaoBlurIntegrationProject(root);
+        TestSupport::retainObservedFile(root / "passes/main.json", "main_render", {"ssao_output", "ssao_blur"});
         {
             FastModuleContainer modules;
             GET_MODULE(PathResolver).setup(root, false);
@@ -13645,6 +13477,7 @@ void GoldenHarness::runRc5sSpriteWork() {
         auto feature = loadJsonFile(root / "features/sprite.json");
         feature["passes"][0]["insert"] = "after:decoy";
         writeTextFile(root / "features/sprite.json", feature.dump(2));
+        TestSupport::retainObserved(document, "main", {"decoy_color"});
         writeTextFile(root / "passes/main.json", document.dump(2));
     };
     const auto actual = [&] { DrawLoopProbeScope scope{placed}; return renderCase(*found); }();
@@ -13756,6 +13589,7 @@ void GoldenHarness::runRc5sSpriteWork() {
                 feature["parameters"]["color"] = "sprite_color";
         for (auto &image : document["rendering"]["render_targets"])
             if (image.at("name") == "offscreen_depth") image["usage"].push_back("TRANSFER_SRC");
+        TestSupport::retainObserved(document, "main", {"offscreen_depth"});
         writeTextFile(root / "passes/main.json", document.dump(2));
         GET_MODULE(PathResolver).setup(root, false);
         GET_MODULE(ProjectSource).setProjectData(project.dump());

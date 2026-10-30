@@ -5164,6 +5164,8 @@ RenderTargetReadback Renderer::readRenderTargetForTesting(
         throw std::runtime_error(
             "render-target readback requires a compiled render pipeline");
     }
+    validateTargetReadbackRetention(program->frame_graph.target_plan.get(), name,
+        program->frame_graph.target_plan ? program->frame_graph.target_plan->graph : "<no plan>");
     const auto target_id =
         boundRenderTarget(
             program->frame_graph, std::string{name});

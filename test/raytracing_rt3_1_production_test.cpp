@@ -1,3 +1,4 @@
+#include "retain_observed_test_support.hpp"
 #include "../src/core/communication/proceduralassetpublication.hpp"
 #include "compute_task_test_support.hpp"
 #include "render_graph_root_test_support.hpp"
@@ -784,6 +785,7 @@ TEST_CASE("RT6 multiple geometry BLAS preserve per-geometry records and refit",
     writeWp374aText(feature_path, feature.dump());
     FastModuleContainer modules;
     Wp380RuntimeCleanup cleanup;
+    TestSupport::retainObservedFile(project.path / "hybrid.json", "main_render", {"multi_primary", "multi_shadow"});
     loadWp374aScene(project.path);
     std::uint32_t expected_depth = 8;
     const auto sample = [&](bool moved) {
@@ -1351,6 +1353,29 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
     writeWp374aText(feature_path, feature.dump());
     FastModuleContainer modules;
     Wp380RuntimeCleanup cleanup;
+    std::vector<std::string> observed;
+    const bool refuses_before_read = debug_bad_atlas || (material_undeclared && material_strict) ||
+        debug_undeclared || geometry_undeclared || undeclared_query;
+    if (!refuses_before_read) {
+        if (material_query || sprite_before_as) observed.push_back("lit_color");
+        if (!material_undeclared) {
+            if (!geometry_type.empty()) {
+                observed.push_back("geometry_depth_readback");
+                if (geometry_type == "picking" || (geometry_type == "velocity" && !geometry_query.empty()))
+                    observed.push_back("geometry_color");
+            }
+            if (debug_draw_case) observed.push_back("debug_result");
+            if (ui_before_as) observed.push_back("pre_as_ui");
+            if (before_as) observed.push_back("pre_as_output");
+            if (!debug_bad_reload) {
+                for (const auto *name : {"left", "right", "empty"}) {
+                    observed.push_back(std::string{"rt6_"} + name);
+                    if (raster_query) observed.push_back(std::string{"raster_rt6_"} + name);
+                }
+            }
+        }
+    }
+    if (!observed.empty()) TestSupport::retainObservedFile(project.path / "hybrid.json", "main_render", observed);
     const auto load = [&] {
         if (!material_query && !sprite_before_as && !ui_before_as && !debug_draw_case && geometry_type.empty()) {
             loadWp374aScene(project.path);
@@ -1886,6 +1911,7 @@ void main() {
 
     FastModuleContainer modules;
     Wp380RuntimeCleanup cleanup;
+    TestSupport::retainObservedFile(project.path / "hybrid.json", "main_render", {"wp386_out"});
     (void)configureWp374aRuntime(project.path);
     TestSupport::requireVulkanDevice("RT6 indirect ray launch");
     if (!GET_MODULE(VulkanManageCore).getRuntimeCapabilities().ray_tracing_indirect) {
@@ -1971,6 +1997,15 @@ void main() { pelican_resource_args.values[0] = uvec4(0u, 1u, 2u, 1u); }
         INFO(changed.dump());
         REQUIRE(changed.at("committed") == true);
     };
+    const auto retain_output = [&](Json value) {
+        const auto context = runWp374aRpcBytes(*service, rpc_id++, "get_compute_task_authoring", Json::object());
+        commit_task_change(runWp374aRpcBytes(*service, rpc_id++, "edit_target_planning", {
+            {"base_source_digest", context.at("source_digest").at("hex")}, {"graph", "main_render"},
+            {"resources", {{"wp386_out", {{"retain", value}}}}}}));
+    };
+    // No observation while its producers are removed; promise it again before
+    // compiling the observed phase with the recreated tasks.
+    retain_output(nullptr);
     // Remove both kinds through the live editor, then recreate them in separate project features.
     const auto catalog = runWp374aRpcBytes(*service, rpc_id++, "get_compute_task_authoring", Json::object());
     for (const auto &entry : catalog.at("tasks")) {
@@ -1991,6 +2026,7 @@ void main() { pelican_resource_args.values[0] = uvec4(0u, 1u, 2u, 1u); }
             {"destination_reference", "project://features/new_" + entry.at("name").get<std::string>() + ".json"},
             {"task", entry.at("declaration")}}));
     }
+    retain_output(true);
     check_lanes(2, 1, 1);
     edit_task("wp386_trace", [](Json &task) { task["dispatch"] = {{"indirect", {{"buffer", "ray_args"}, {"offset", 4}}}}; });
     check_lanes(1, 2, 1);
@@ -2057,6 +2093,7 @@ TEST_CASE("RT6 explicit ray launch dimensions and runtime edits reach every 3D l
 
     FastModuleContainer modules;
     Wp380RuntimeCleanup cleanup;
+    TestSupport::retainObservedFile(project.path / "hybrid.json", "main_render", {"wp386_out"});
     loadWp374aScene(project.path);
     const auto check_lanes = [&](std::uint32_t width, std::uint32_t height,
                                  std::uint32_t depth) {
@@ -2124,6 +2161,7 @@ TEST_CASE("RT5 shared skinned mesh instances trace their current skin and morph 
 
     FastModuleContainer modules;
     Wp380RuntimeCleanup cleanup;
+    TestSupport::retainObservedFile(project.path / "hybrid.json", "main_render", {"wp366_a"});
     loadWp374aScene(project.path);
     auto &instances = GET_MODULE(PolygonInstanceContainer);
     const auto sample = [&] {
@@ -2216,6 +2254,7 @@ TEST_CASE("RT5 VAT ray hits follow interpolated playback with loop and clamp",
 
     FastModuleContainer modules;
     Wp380RuntimeCleanup cleanup;
+    TestSupport::retainObservedFile(project.path / "hybrid.json", "main_render", {"wp366_a"});
     loadWp374aScene(project.path);
     const auto sample = [&](double time) {
         GET_MODULE(EngineTime).setTime(time);
@@ -2287,6 +2326,7 @@ TEST_CASE("WP382d authored occurrence masks and custom indices reach the product
 
     FastModuleContainer modules;
     Wp380RuntimeCleanup cleanup;
+    TestSupport::retainObservedFile(project.path / "hybrid.json", "main_render", {"wp366_a"});
     loadWp374aScene(project.path);
     (void)renderWp374aProductionRows();
     const auto catalog = GET_MODULE(PolygonInstanceContainer).rayOccurrences();
@@ -2516,6 +2556,7 @@ TEST_CASE(
     writeWp374aText(project.path / "scene.json", scene.dump());
     FastModuleContainer modules;
     try {
+        TestSupport::retainObservedFile(project.path / "hybrid.json", "main_render", {"wp386_out"});
         loadWp374aScene(project.path);
         auto &vkcore = GET_MODULE(VulkanManageCore);
         if (!vkcore.getRuntimeCapabilities().ray_tracing_pipeline) {
@@ -6819,6 +6860,7 @@ TEST_CASE("RT7 project preset pass shader edits publish to the production render
     }
     FastModuleContainer modules;
     Wp380RuntimeCleanup cleanup;
+    TestSupport::retainObservedFile(project.path / "hybrid.json", "main_render", {"display"});
     (void)configureWp374aRuntime(project.path);
     TestSupport::requireVulkanDevice("RT7 preset pass editing");
     GET_MODULE(ECSPredefinedRegistration).reg();
@@ -6938,6 +6980,7 @@ void main() { value += )glsl"} + std::to_string(increment) + "u; }\n";
     {
     FastModuleContainer modules;
     Wp380RuntimeCleanup cleanup;
+    TestSupport::retainObservedFile(project.path / "hybrid.json", "main_render", {"wp386_out"});
     (void)configureWp374aRuntime(project.path);
     TestSupport::requireVulkanDevice("RT4 callable dispatch");
     GET_MODULE(ECSPredefinedRegistration).reg();
@@ -7164,6 +7207,7 @@ void main() {
 )glsl");
     FastModuleContainer modules;
     Wp380RuntimeCleanup cleanup;
+    TestSupport::retainObservedFile(project.path / "hybrid.json", "main_render", {"wp386_out"});
     loadWp374aScene(project.path);
     const auto sample = [&](float right_depth) {
         const auto rows = renderWp374aProductionRows();
@@ -7272,6 +7316,7 @@ void main() {
 )glsl");
     FastModuleContainer modules;
     Wp380RuntimeCleanup cleanup;
+    TestSupport::retainObservedFile(project.path / "hybrid.json", "main_render", {"wp386_out"});
     loadWp374aScene(project.path);
     const auto sample = [&](float left_radius) {
         const auto rows = renderWp374aProductionRows();
@@ -7496,6 +7541,7 @@ void main() {
 )glsl");
     FastModuleContainer modules;
     Wp380RuntimeCleanup cleanup;
+    TestSupport::retainObservedFile(project.path / "hybrid.json", "main_render", {"wp386_out"});
     (void)configureWp374aRuntime(project.path);
     const auto off_source = GET_MODULE(PathResolver).loadText("engine://procedural_no_report.rint");
     const auto on_source = GET_MODULE(PathResolver).loadText("engine://procedural_sphere.rint");
@@ -7633,6 +7679,7 @@ TEST_CASE("RTL-1a edit_ray_layout adds a miss with its task in one batch, takes 
     const auto assets_path = project.path / "assets.json";
     FastModuleContainer modules;
     Wp380RuntimeCleanup cleanup;
+    TestSupport::retainObservedFile(project.path / "hybrid.json", "main_render", {"wp386_out"});
     loadWp374aScene(project.path);
     // The renderer (and the reload participant edits go through) is made by
     // the first frame; the editor service finds it then.
@@ -7935,6 +7982,7 @@ void main() { occluded = float(ray_record.geometry_kind); }
     const auto shadow_bytes = readWp374aText(shadow_path);
     FastModuleContainer modules;
     Wp380RuntimeCleanup cleanup;
+    TestSupport::retainObservedFile(project.path / "hybrid.json", "main_render", {"wp386_out"});
     loadWp374aScene(project.path);
     REQUIRE(rtl1aFrame().empty());
     auto service = makeEditorRuntimeService(
@@ -8117,6 +8165,7 @@ void main() { payload.marker = 0xdead386au; }
     const auto feature_bytes = readWp374aText(feature_path);
     FastModuleContainer modules;
     Wp380RuntimeCleanup cleanup;
+    TestSupport::retainObservedFile(project.path / "hybrid.json", "main_render", {"wp386_out"});
     loadWp374aScene(project.path);
     REQUIRE(rtl1aFrame().empty());
     auto service = makeEditorRuntimeService(

@@ -1,3 +1,4 @@
+#include "retain_observed_test_support.hpp"
 #include "../src/devstudio/model/frameplanpolicy.hpp"
 #include "../src/core/imgui/imguiruntime.hpp"
 #include "../src/core/loader/pathresolver.hpp"
@@ -2378,5 +2379,6 @@ namespace Pelican {
 #include "rc6_policy_test.inc"
 #include "rc6a2_compiler_policy_test.inc"
 #include "rc6b1_compiler_policy_test.inc"
+#include "rc7a_compiler_policy_test.inc"
 #endif
 }

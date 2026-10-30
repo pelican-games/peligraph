@@ -491,6 +491,45 @@ compileDefaultVulkanVariant(
         std::make_shared<const CompiledRenderPipeline>(
             std::move(logical.compiled_pipeline));
 
+    return RenderCompilerProgramVariantOutput{
+        .graph_variant = request.graph_variant,
+        .compiled_pipeline =
+            std::move(compiled_pipeline),
+        .ray_tracing_project = input.ray_tracing_project,
+        .frame_plans =
+            std::move(frame_plans),
+        .render_graph =
+            std::make_shared<const RenderGraphIR>(
+                std::move(render_graph)),
+    };
+}
+
+// The generation resolver is authoritative for engine additions and the
+// variant union. Permission remains in each individual program's target plan.
+void compileDefaultVulkanPhysical(RenderCompilerProgramVariantOutput &variant,
+    const VulkanRenderCompilerBackendContext &backend,
+    const RenderCompilerProgramVariantRequest &request,
+    const std::map<std::string, ImageUsage, std::less<>> &generation_usage,
+    bool discover_placements = false) {
+    const auto &render_graph = *variant.render_graph;
+    const auto &compiled_pipeline = variant.compiled_pipeline;
+    const auto &frame_plans = variant.frame_plans;
+    auto render_target_definitions = renderTargetDefinitionsOf(render_graph);
+    auto planning = compiled_pipeline->target_planning;
+    if (discover_placements) for (auto &graph : planning.graphs) {
+        // Discover engine placements before checking the readback contract.
+        // Keep retain's materialization so the usage merge sees the storage
+        // that registration will use, without inventing transfer permissions.
+        for (auto &entry : graph.declarations) {
+            if (entry.key != "retain" || entry.status != PlanningPolicyStatus::adopted || !std::get<bool>(entry.value) ||
+                !findConfigImage(render_graph, entry.target)) continue;
+            const bool materialized = std::any_of(graph.declarations.begin(), graph.declarations.end(), [&](const auto &other) {
+                return other.target == entry.target && other.key == "representation" && other.status == PlanningPolicyStatus::adopted;
+            });
+            if (!materialized) { entry.key = "representation"; entry.value = std::string{"materialized"}; }
+        }
+        std::erase_if(graph.declarations, [](const auto &e) { return e.key == "retain"; });
+    }
     auto physical =
         std::make_unique<
             VulkanRenderCompilerPhysicalPackage>();
@@ -517,10 +556,10 @@ compileDefaultVulkanVariant(
                 backend.runtime_capabilities,
                 std::move(view_execution),
                 std::move(external_depth_export),
-                compiled_pipeline->target_planning,
+                planning,
                 RenderingTargetExternalReaders{
                     .xr_mirror = compiled_pipeline->graph_variant_policy.mirror_output == GraphVariantMirrorOutput::left_eye,
-                    .capture_output = request.capture_output});
+                    .capture_output = request.capture_output}, generation_usage);
     } else {
         physical->target_plan_compilation =
             compileRenderingTargetPlans(
@@ -532,10 +571,10 @@ compileDefaultVulkanVariant(
                 RenderingTargetPlanDeviceFacts{},
                 std::move(view_execution),
                 std::move(external_depth_export),
-                compiled_pipeline->target_planning,
+                planning,
                 RenderingTargetExternalReaders{
                     .xr_mirror = compiled_pipeline->graph_variant_policy.mirror_output == GraphVariantMirrorOutput::left_eye,
-                    .capture_output = request.capture_output});
+                    .capture_output = request.capture_output}, generation_usage);
     }
     for (auto &verification :
          physical->target_plan_compilation
@@ -550,18 +589,7 @@ compileDefaultVulkanVariant(
         targetPlansByName(
             physical->target_plan_compilation);
 
-    return RenderCompilerProgramVariantOutput{
-        .graph_variant = request.graph_variant,
-        .compiled_pipeline =
-            std::move(compiled_pipeline),
-        .ray_tracing_project = input.ray_tracing_project,
-        .frame_plans =
-            std::move(frame_plans),
-        .physical_package = std::move(physical),
-        .render_graph =
-            std::make_shared<const RenderGraphIR>(
-                std::move(render_graph)),
-    };
+    variant.physical_package = std::move(physical);
 }
 
 class DefaultVulkanRenderCompilerProgram final
@@ -640,6 +668,36 @@ class DefaultVulkanRenderCompilerProgram final
             if (request.graph_variant !=
                 RenderPipelineGraphVariant::preview)
                 runtime_variant_composed = true;
+        }
+        const bool readback_policy = std::any_of(output.variants.begin(), output.variants.end(), [](const auto &variant) {
+            if (!variant.compiled_pipeline) return false;
+            for (const auto &graph : variant.compiled_pipeline->target_planning.graphs)
+                for (const auto &entry : graph.declarations)
+                    if (entry.status == PlanningPolicyStatus::adopted && entry.key == "retain" && std::get<bool>(entry.value)) return true;
+            return false;
+        });
+        std::map<std::string, ImageUsage, std::less<>> generation_usage;
+        if (readback_policy) {
+            for (std::size_t i = 0; i < output.variants.size(); ++i) {
+                auto &variant = output.variants[i];
+                if (variant.unavailable || variant.frame_plans.empty()) continue;
+                compileDefaultVulkanPhysical(variant, backend, input.variants[i], {}, true);
+            }
+            // Exactly the resolver used by registration; no parallel usage
+            // formula based on declarations, history or export requests.
+            const auto resources = resolveCompilerGenerationResources(output.variants, backend.outputExtent());
+            for (const auto &image : resources.images)
+                generation_usage.emplace(image.declaration.name, image.usage);
+        }
+        for (std::size_t i = 0; i < output.variants.size(); ++i) {
+            auto &variant = output.variants[i];
+            if (variant.unavailable || variant.frame_plans.empty()) continue;
+            try { compileDefaultVulkanPhysical(variant, backend, input.variants[i], generation_usage); }
+            catch (...) {
+                if (input.variants[i].artifact != RenderCompilerProgramArtifact::data_only ||
+                    input.variants[i].graph_variant != RenderPipelineGraphVariant::preview || !runtime_variant_composed) throw;
+                variant.unavailable = std::current_exception();
+            }
         }
         // P-2a-4b: `input.rendering_config` is the authored document, so a
         // `pelican.graph` root keeps `frame_node_order` in its `rendering`

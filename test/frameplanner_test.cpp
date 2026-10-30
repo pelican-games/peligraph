@@ -1,3 +1,4 @@
+#include "renderer_testaccess.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
 #include "../src/core/renderingpass/framegraphruntime.hpp"
 #include "../src/core/renderingpass/logicalframegraphadapter.hpp"
@@ -3283,4 +3284,5 @@ TEST_CASE("RC-1 get_frame_plan reports what the published generation registered,
             Catch::Matchers::ContainsSubstring("not_registered"));
 }
 
+#include "rc7a_snapshot_test.inc"
 } // namespace Pelican

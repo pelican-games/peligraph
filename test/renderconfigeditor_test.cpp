@@ -14469,6 +14469,7 @@ TEST_CASE("RC-6 B3 B7 RPC accepts wrapped root values over a recipe and restores
 }
 }
 #include "rc6a2_rpc_test.inc"
+#include "rc7a_rpc_test.inc"
 #include "rc6b1_rpc_test.inc"
 
 namespace Pelican {
