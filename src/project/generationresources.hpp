@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <optional>
 #include <span>
 #include <string>
@@ -122,6 +123,8 @@ struct GenerationImage {
 
 struct GenerationResources {
     std::vector<GenerationImage> images;
+    // Why a proposed runtime allocation was split after variant merging.
+    std::map<std::string, std::string, std::less<>> alias_rejections;
     // Sized (a size_from_extent buffer from its image's resolved extent) and
     // held to their size contract.
     std::vector<FrameGraphBufferDefinition> buffers;

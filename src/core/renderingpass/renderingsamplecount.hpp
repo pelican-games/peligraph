@@ -178,7 +178,8 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
         external_depth_export = std::nullopt,
     TargetPlanningPolicy target_planning = {},
     RenderingTargetExternalReaders external_readers = {},
-    const std::map<std::string, ImageUsage, std::less<>> &generation_usage = {});
+    const std::map<std::string, ImageUsage, std::less<>> &generation_usage = {},
+    const std::map<std::string, std::string, std::less<>> &generation_alias_exclusions = {});
 RenderingTargetPlanCompilation compileRenderingTargetPlansForVulkanDevice(
     const RenderGraphIR &render_graph,
     const std::unordered_map<std::string, FramePlan> &frame_plans,
@@ -193,7 +194,8 @@ RenderingTargetPlanCompilation compileRenderingTargetPlansForVulkanDevice(
         external_depth_export = std::nullopt,
     TargetPlanningPolicy target_planning = {},
     RenderingTargetExternalReaders external_readers = {},
-    const std::map<std::string, ImageUsage, std::less<>> &generation_usage = {});
+    const std::map<std::string, ImageUsage, std::less<>> &generation_usage = {},
+    const std::map<std::string, std::string, std::less<>> &generation_alias_exclusions = {});
 
 // RC-3c2a: what the physical plan placed of each render target (one variant,
 // in `render_targets`' order): its sample count, layers, format, storage and

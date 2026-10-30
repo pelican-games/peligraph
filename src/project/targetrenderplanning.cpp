@@ -1458,13 +1458,6 @@ void applyResolvedSampleCounts(
             resolved.samples > 1 &&
             found->representation !=
                 VulkanResourceRepresentation::external;
-        // Runtime aliasing currently owns one resolved single-sample image
-        // per logical resource. A multisample target also needs a distinct
-        // attachment allocation, so keep it out of alias planning until both
-        // surfaces can be lowered as one physical contract.
-        if (resolved.samples > 1) {
-            found->aliasable = false;
-        }
     }
 }
 
@@ -2844,17 +2837,6 @@ CandidateDraft buildCandidateDraft(
             representation ==
                 VulkanResourceRepresentation::
                     materialized_buffer;
-        const auto aliasable =
-            isMaterialized(representation) &&
-            representation !=
-                VulkanResourceRepresentation::external &&
-            resource.pattern.allow_alias &&
-            !resource.pattern.require_store &&
-            !exports_depth &&
-            resource.logical.materialization !=
-                LogicalMaterializationRequirement::external &&
-            resource.uses.widest_read !=
-                LogicalReadFootprintKind::temporal;
         const auto reason =
             exports_depth
                 ? "external depth export requires a materialized, "
@@ -2872,7 +2854,6 @@ CandidateDraft buildCandidateDraft(
                 .widest_read = resource.uses.widest_read,
                 .lifetime = resource.lifetime,
                 .stored = stored,
-                .aliasable = aliasable,
                 .required_physical_features =
                     std::move(required_features),
                 .reason = reason,
@@ -3182,13 +3163,26 @@ bool lifetimesDoNotOverlap(const TargetResourceLifetime &left,
 
 std::vector<PlanningNamePair> deriveLegalAliasCandidates(
     const TargetLoweringGraph &workspace,
-    std::span<const VulkanPhysicalResourcePlan> resources) {
+    std::span<const VulkanPhysicalResourcePlan> resources,
+    std::span<const VulkanPhysicalScopePlan> scopes,
+    const std::map<std::string, ImageUsage, std::less<>> &usage,
+    std::vector<PlanningDecision> *decisions = nullptr) {
     std::vector<PlanningNamePair> result;
     for (std::size_t left = 0; left < resources.size(); ++left) {
         if (!resources[left].aliasable) continue;
         for (std::size_t right = left + 1;
              right < resources.size(); ++right) {
-            if (!resources[right].aliasable ||
+            if (!resources[right].aliasable) continue;
+            const auto explain = [&](std::string reason) {
+                if (decisions) decisions->push_back({"pelican.plan.alias_pair_ineligible@1",
+                    resources[left].logical_resource + "/" + resources[right].logical_resource,
+                    std::move(reason), "RC-7b pairwise allocation contract"});
+            };
+            if (!usage.contains(resources[left].logical_resource) || !usage.contains(resources[right].logical_resource) ||
+                usage.at(resources[left].logical_resource) != usage.at(resources[right].logical_resource)) {
+                explain("effective_usage"); continue;
+            }
+            if (
                 resources[left].representation !=
                     resources[right].representation ||
                 resources[left].format !=
@@ -3212,6 +3206,19 @@ std::vector<PlanningNamePair> deriveLegalAliasCandidates(
                     resources[right].lifetime)) {
                 continue;
             }
+            const auto &earlier = resources[left].lifetime.first_use < resources[right].lifetime.first_use
+                ? resources[left] : resources[right];
+            const auto &later = &earlier == &resources[left] ? resources[right] : resources[left];
+            // The positions are in the adopted physical execution order.
+            std::size_t offset = 0;
+            bool same_scope = false;
+            for (const auto &scope : scopes) {
+                same_scope = same_scope || (earlier.lifetime.last_use >= offset &&
+                    earlier.lifetime.last_use < offset + scope.nodes.size() &&
+                    later.lifetime.first_use >= offset && later.lifetime.first_use < offset + scope.nodes.size());
+                offset += scope.nodes.size();
+            }
+            if (same_scope) { explain("same_scope"); continue; }
             const auto left_logical = std::lower_bound(
                 workspace.resources.begin(),
                 workspace.resources.end(),
@@ -3457,6 +3464,21 @@ std::vector<std::size_t> aliasConflictCauses(const CompiledLogicalRenderGraph &g
         const auto &e = draft.policy[i];
         if (!activePolicy(e)) continue;
         if (e.key == "alias_group" && e.target == other && aliasPolicyKey(e) == aliasPolicyKey(entry)) causes.push_back(i);
+        if (e.key == "scope_join" && std::get<bool>(e.value)) {
+            for (const auto &scope : draft.scopes)
+                if (std::find(scope.nodes.begin(), scope.nodes.end(), e.target) != scope.nodes.end()) {
+                    bool touches_left = false, touches_right = false;
+                    for (const auto &node : graph.nodes) if (std::find(scope.nodes.begin(), scope.nodes.end(), node.name) != scope.nodes.end())
+                        for (const auto &use : node.uses) {
+                            const auto touches = [&](std::string_view name) {
+                                return (use.input_value && use.input_value->resource == name) || (use.output_value && use.output_value->resource == name);
+                            };
+                            touches_left = touches_left || touches(entry.target);
+                            touches_right = touches_right || touches(other);
+                        }
+                    if (touches_left && touches_right) causes.push_back(i);
+                }
+        }
         if (((e.key == "no_alias" || e.key == "retain") && std::get<bool>(e.value)) && (e.target == entry.target || e.target == other)) causes.push_back(i);
         if (e.key == "isolate" && std::get<bool>(e.value))
             for (const auto &node : graph.nodes) if (node.name == e.target)
@@ -3502,7 +3524,55 @@ std::vector<std::size_t> scopeConflictCauses(const CompiledLogicalRenderGraph &g
 
 void applyCandidateAliasPolicy(const CompiledLogicalRenderGraph &graph, const TargetLoweringGraph &workspace,
                                const VulkanTargetPlanRequest &request, CandidateDraft &draft) {
-    const auto legal = deriveLegalAliasCandidates(workspace, draft.resources);
+    // One eligibility decision, after samples, view layouts and scopes have
+    // been selected. Unknown attachment coverage is deliberately unshared.
+    for (auto &resource : draft.resources) {
+        const auto source = std::find_if(workspace.resources.begin(), workspace.resources.end(),
+            [&](const auto &r) { return r.logical.name == resource.logical_resource; });
+        std::string failure;
+        if (request.generation_alias_exclusions.contains(resource.logical_resource))
+            failure = "generation_contract: " + request.generation_alias_exclusions.at(resource.logical_resource);
+        else if (std::find(request.manual_native_resources.begin(), request.manual_native_resources.end(),
+                          resource.logical_resource) != request.manual_native_resources.end()) failure = "native_boundary";
+        else if (!resource.lifetime.retain.empty()) failure = "retained";
+        else if (source == workspace.resources.end() || !source->pattern.allow_alias ||
+                 source->logical.materialization == LogicalMaterializationRequirement::external ||
+                 resource.widest_read == LogicalReadFootprintKind::temporal ||
+                 resource.representation != VulkanResourceRepresentation::materialized_image ||
+                 resource.rasterization_samples != 1 || resource.resolve_required) failure = "ownership_or_samples";
+        else if (!resource.lifetime.used) failure = "unused";
+        else {
+            const auto &first = request.node_order.nodes().at(resource.lifetime.first_use);
+            const auto node = std::find_if(graph.nodes.begin(), graph.nodes.end(), [&](const auto &n) { return n.name == first; });
+            bool read = node == graph.nodes.end();
+            if (node != graph.nodes.end()) for (const auto &use : node->uses)
+                read = read || (use.input_value && use.input_value->resource == resource.logical_resource);
+            bool initialized = false;
+            for (const auto &a : request.automatic_attachments) {
+                if (a.node != first || a.logical_resource != resource.logical_resource ||
+                    a.operations.load_op == AttachmentLoadOp::load) continue;
+                const auto aspect = resource.format ? imageFormatInfo(*resource.format).aspect : ImageAspect::depth_stencil;
+                // AttachmentAspect::depth supplies only depth, never stencil.
+                if ((aspect == ImageAspect::color) != (a.aspect == AttachmentAspect::color) ||
+                    aspect == ImageAspect::depth_stencil || aspect == ImageAspect::stencil) continue;
+                if (!a.subresource) {
+                    initialized = resource.mip_levels == ImageMipLevelCount{} && resource.array_layers == 1;
+                    for (const auto &s : draft.scopes) if (std::find(s.nodes.begin(), s.nodes.end(), first) != s.nodes.end())
+                        initialized = resource.mip_levels == ImageMipLevelCount{} && s.view_count >= resource.array_layers;
+                } else {
+                    const auto &r = *a.subresource;
+                    initialized = r.base_mip_level == 0 && r.base_array_layer == 0 && r.layer_count == resource.array_layers &&
+                        ((resource.mip_levels.mode == ImageMipLevelMode::fixed && r.mip_count_mode == ImageSubresourceMipCountMode::fixed &&
+                          r.level_count == resource.mip_levels.count) || r.mip_count_mode == ImageSubresourceMipCountMode::remaining);
+                }
+            }
+            if (read || !initialized || node == graph.nodes.end() || node->kind != LogicalGraphNodeKind::render)
+                failure = "first_use";
+        }
+        resource.aliasable = failure.empty();
+        if (!failure.empty()) draft.decisions.push_back({"pelican.plan.alias_ineligible@1", resource.logical_resource, failure, "RC-7b image-wide alias eligibility"});
+    }
+    const auto legal = deriveLegalAliasCandidates(workspace, draft.resources, draft.scopes, request.effective_image_usage, &draft.decisions);
     LogicalPlanningOpportunityInput input{.profile = request.profile,
         .node_constraints = request.node_constraints, .resource_constraints = request.resource_constraints,
         .legal_alias_candidates = legal};
@@ -3537,7 +3607,20 @@ void applyCandidateAliasPolicy(const CompiledLogicalRenderGraph &graph, const Ta
             auto &e = draft.policy[i];
             const auto incompatible = std::find_if(members.begin(), members.end(), [&](const auto &m) { return !pairAllowed(m, e.target); });
             if (incompatible != members.end()) {
-                policyConflict(draft, aliasConflictCauses(graph, draft, i, *incompatible), "alias_group members are not pairwise legal");
+                std::string reason = "alias_group members are not pairwise legal";
+                for (const auto &decision : draft.decisions) {
+                    if (decision.id == "pelican.plan.alias_ineligible@1" &&
+                        (decision.subject == e.target || decision.subject == *incompatible)) {
+                        reason += "; alias." + decision.selected + "@1: " + decision.subject;
+                        break;
+                    }
+                    if (decision.id == "pelican.plan.alias_pair_ineligible@1" &&
+                        (decision.subject == e.target + "/" + *incompatible || decision.subject == *incompatible + "/" + e.target)) {
+                        reason += "; alias." + decision.selected + "@1: " + decision.subject;
+                        break;
+                    }
+                }
+                policyConflict(draft, aliasConflictCauses(graph, draft, i, *incompatible), reason);
                 continue;
             }
             for (const auto &m : members) {
@@ -3792,7 +3875,7 @@ void validateVulkanTargetPlanRequirements(const CompiledLogicalRenderGraph &grap
             executable_scopes = false;
             failures.push_back({{"scope", scope.id}, {"reason", "selected rendering scope violates executable attachment contract"}});
         }
-    const auto legal_aliases = deriveLegalAliasCandidates(plan.lowering_graph, plan.resources);
+    const auto legal_aliases = deriveLegalAliasCandidates(plan.lowering_graph, plan.resources, plan.scopes, plan.effective_image_usage);
     for (auto &e : plan.policy) {
         e.satisfied.reset();
         if (!activePolicy(e) || e.strength != PlanningStrength::require) continue;
@@ -4124,6 +4207,8 @@ VulkanTargetPlan compileVulkanTargetPlan(
     VulkanTargetPlan result{
         .retain_reasons = selected_draft.retain_reasons,
         .effective_image_usage = request.effective_image_usage,
+        .generation_alias_exclusions = request.generation_alias_exclusions,
+        .manual_native_resources = request.manual_native_resources,
         .policy = selected_draft.policy,
         .graph = canonical_graph.name,
         .logical_graph_fingerprint =

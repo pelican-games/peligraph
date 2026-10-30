@@ -145,8 +145,10 @@ void RenderTargetLayoutTracker::transition(
     const auto key = layoutKey(rt_id, surface, image_kind);
     forgetRecreatedPersistentImage(rt_container, rt_id, key, image_kind, history_read);
     notePersistentImage(rt_container, rt_id, key, image_kind, history_read);
+    std::optional<AliasTransition> observation;
     if (const auto alias_group =
             rt_container.aliasGroup(rt_id)) {
+        observation = AliasTransition{*alias_group, rt_id, false, {}, {}, {}, {}, {}, new_layout};
         const auto pending =
             alias_groups_requiring_dependency.erase(
                 *alias_group) != 0;
@@ -156,6 +158,8 @@ void RenderTargetLayoutTracker::transition(
         const auto switched =
             !inserted && active->second != key;
         if (pending || switched) {
+            observation->dependency = true;
+            observation->src_stage = observation->dst_stage = vk::PipelineStageFlagBits::eAllCommands;
             vk::MemoryBarrier barrier;
             barrier.srcAccessMask =
                 vk::AccessFlagBits::eMemoryRead |
@@ -163,9 +167,11 @@ void RenderTargetLayoutTracker::transition(
             barrier.dstAccessMask =
                 vk::AccessFlagBits::eMemoryRead |
                 vk::AccessFlagBits::eMemoryWrite;
+            observation->src_access = barrier.srcAccessMask;
+            observation->dst_access = barrier.dstAccessMask;
             cmd_buf.pipelineBarrier(
-                vk::PipelineStageFlagBits::eAllCommands,
-                vk::PipelineStageFlagBits::eAllCommands,
+                observation->src_stage,
+                observation->dst_stage,
                 {}, {barrier}, {}, {});
             if (switched) {
                 layouts[active->second] =
@@ -184,6 +190,10 @@ void RenderTargetLayoutTracker::transition(
                  rt_id, image_kind == RenderTargetImageKind::attachment));
     (void)inserted;
     const auto old_layout = it->second;
+    if (observation && alias_transition_observer) {
+        observation->old_layout = old_layout;
+        alias_transition_observer(*observation);
+    }
     if (old_layout == new_layout) return;
     const auto old_shader_stages =
         shader_access_stages.contains(key)
@@ -337,6 +347,13 @@ void RenderTargetLayoutTracker::assumeLayout(
     }
     layouts[key] = layout;
     shader_access_stages.erase(key);
+}
+
+void RenderTargetLayoutTracker::beginFrame() {
+    for (const auto &[group, resource] : active_alias_resources) {
+        (void)resource;
+        alias_groups_requiring_dependency.insert(group);
+    }
 }
 
 void RenderTargetLayoutTracker::reset() {

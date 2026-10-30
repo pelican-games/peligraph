@@ -441,6 +441,51 @@ Rc5Json rc6WithoutLifetimeChanges(Rc5Json snapshot) {
     return snapshot;
 }
 
+// RC-7b: remove only allocation-derived fields. Explanatory text is checked
+// against the precise change in the former fixed-usage rule before restoring
+// the baseline spelling; representation/ops/usage/lifetimes stay comparable.
+std::pair<Rc5Json, Rc5Json> rc7bComparable(Rc5Json actual, Rc5Json recorded) {
+    for (auto &[name, plan] : actual.at("physical_plans").items()) {
+        auto &baseline = recorded.at("physical_plans").at(name);
+        for (std::size_t i = 0; i < plan.at("resources").size(); ++i) {
+            auto &r = plan.at("resources")[i];
+            const auto &old = baseline.at("resources")[i];
+            REQUIRE(r.at("logical_resource") == old.at("logical_resource"));
+            if (r.at("reason") != old.at("reason")) {
+                const auto former = old.at("reason").get<std::string>();
+                REQUIRE(former.find("alias-safe set") != std::string::npos);
+                const auto expected = r.at("logical_resource") == "display"
+                    ? "logical materialization requirement is required: display-format target is not aliased"
+                    : "arbitrary read requires a materialized resource";
+                REQUIRE(r.at("reason") == expected);
+                for (auto &d : plan.at("decisions"))
+                    if (d.at("id") == "pelican.plan.resource_representation@1" && d.at("subject") == r.at("logical_resource")) {
+                        REQUIRE(d.at("detail") == expected);
+                        d["detail"] = old.at("reason");
+                    }
+                r["reason"] = old.at("reason");
+            }
+        }
+        auto &decisions = plan.at("decisions");
+        decisions.erase(std::remove_if(decisions.begin(), decisions.end(), [](const auto &d) {
+            return d.at("id") == "pelican.plan.alias_ineligible@1" || d.at("id") == "pelican.plan.alias_pair_ineligible@1";
+        }), decisions.end());
+        for (auto *p : {&plan, &baseline}) {
+            p->erase("alias_groups");
+            p->erase("automatic_plan_fingerprint");
+            p->erase("logical_graph_fingerprint");
+            (*p).at("planning_opportunities").erase("alias_candidates");
+            for (auto &r : p->at("resources")) r.erase("aliasable");
+            for (auto &r : p->at("lowering_graph").at("resources")) {
+                r.erase("logical_materialization");
+                r.at("pattern").erase("allow_alias");
+                r.at("pattern").erase("require_store");
+            }
+        }
+    }
+    return {std::move(actual), std::move(recorded)};
+}
+
 TEST_CASE("RC-6 policy-free snapshots match all sixteen fixed RC-5 baselines", "[.][rc6-baseline-compare]") {
     const auto *directory = std::getenv("RC6_BASELINE_DIR");
     REQUIRE(directory != nullptr);
@@ -459,7 +504,8 @@ TEST_CASE("RC-6 policy-free snapshots match all sixteen fixed RC-5 baselines", "
         const auto result = rc5Compile(rc5Document(lit, hdr, extras), xr);
         rc6RequireLifetimes(result, xr);
         rc6RequireRegisteredAllocations(result, recorded);
-        REQUIRE(rc6WithoutLifetimeChanges(rc5Snapshot(result)) == rc6WithoutLifetimeChanges(recorded));
+        const auto comparable = rc7bComparable(rc6WithoutLifetimeChanges(rc5Snapshot(result)), rc6WithoutLifetimeChanges(recorded));
+        REQUIRE(comparable.first == comparable.second);
         ++count;
     }
     REQUIRE(count == 16);
@@ -530,8 +576,29 @@ TEST_CASE("RC-7a F4 unchanged HEAD baseline including fingerprints", "[.][render
         REQUIRE(std::filesystem::is_regular_file(filename));
         const auto expected = Rc5Json::parse(std::ifstream{filename});
         const auto actual = rc5Snapshot(rc5Compile(rc5Document(lit, hdr, extras), xr));
-        CHECK(actual == expected);
+        const auto comparable = rc7bComparable(actual, expected);
+        CHECK(comparable.first == comparable.second);
         ++count;
     }
     CHECK(count == 16);
+}
+
+TEST_CASE("RC-7b B4 semantic fields match sixteen immutable preimplementation snapshots", "[.][rc7b][rc7b-baseline-compare]") {
+    const std::filesystem::path directory{"<作業ディレクトリ>/rc7b_baseline/rc5"};
+    REQUIRE(std::filesystem::is_directory(directory));
+    std::size_t count = 0;
+    Rc5Json differences = Rc5Json::object();
+    for (const bool lit : {false, true}) for (const bool hdr : {false, true})
+    for (const bool extras : {false, true}) for (const bool xr : {false, true}) {
+        const auto filename = rc5Filename(lit, hdr, extras, xr);
+        CAPTURE(filename);
+        const auto expected = Rc5Json::parse(std::ifstream{directory / filename});
+        const auto actual = rc5Snapshot(rc5Compile(rc5Document(lit, hdr, extras), xr));
+        differences[filename] = Rc5Json::diff(expected, actual);
+        const auto comparable = rc7bComparable(actual, expected);
+        CHECK(comparable.first == comparable.second);
+        ++count;
+    }
+    CHECK(count == 16);
+    if (const auto *output = std::getenv("RC7B_DIFF_PATH")) std::ofstream{output} << differences.dump(2);
 }

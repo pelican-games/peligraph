@@ -6316,6 +6316,7 @@ void Renderer::LogicalFrameRecorder::synchronizeTemporalHistories() {
 }
 
 void Renderer::LogicalFrameRecorder::beginFrameResources() {
+    renderer.render_target_layout_tracker.beginFrame();
     modules.frame_resources.beginLogicalFrame(
         view_count,
         static_cast<std::uint32_t>(

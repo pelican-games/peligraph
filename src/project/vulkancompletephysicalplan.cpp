@@ -2497,12 +2497,60 @@ verifyVulkanCompletePhysicalPlanPackage(
         aliases;
     std::set<std::string, std::less<>>
         aliased_resources;
+    // Independently derive legality from compiler provenance and the adopted
+    // package's execution/attachment contracts, never its aliasable claims.
+    const auto verifyAliasMember = [&](const VulkanPhysicalResourcePlan &r) {
+        const auto &name = r.logical_resource;
+        const auto &life = graph_uses.at(name).lifetime;
+        require(std::find(automatic_plan.manual_native_resources.begin(), automatic_plan.manual_native_resources.end(), name) ==
+            automatic_plan.manual_native_resources.end(), "alias.native_boundary@1: " + name);
+        require(!automatic_plan.generation_alias_exclusions.contains(name), "alias.generation_contract@1: " + name);
+        require(life.retain.empty(), "alias.retained@1: " + name);
+        const auto provenance = std::find_if(automatic_plan.lowering_graph.resources.begin(),
+            automatic_plan.lowering_graph.resources.end(), [&](const auto &v) { return v.logical.name == name; });
+        require(provenance != automatic_plan.lowering_graph.resources.end() && provenance->pattern.allow_alias &&
+            r.representation == VulkanResourceRepresentation::materialized_image && r.rasterization_samples == 1 &&
+            !r.resolve_required && life.used, "alias.ownership_or_samples@1: " + name);
+        const auto first = std::find_if(node_order.begin(), node_order.end(), [&](const auto &n) { return n.second == life.first_use; });
+        require(first != node_order.end(), "alias.first_use@1: " + name);
+        const auto node = std::find_if(canonical_graph.nodes.begin(), canonical_graph.nodes.end(), [&](const auto &n) { return n.name == first->first; });
+        bool reads = node == canonical_graph.nodes.end();
+        if (node != canonical_graph.nodes.end()) for (const auto &u : node->uses)
+            reads = reads || (u.input_value && u.input_value->resource == name);
+        bool covers = false;
+        for (const auto &a : package.attachments) {
+            if (a.node != first->first || a.logical_resource != name || a.operations.load_op == AttachmentLoadOp::load) continue;
+            if (!r.format) continue;
+            const auto aspect = imageFormatInfo(*r.format).aspect;
+            if (aspect == ImageAspect::depth_stencil || aspect == ImageAspect::stencil ||
+                ((aspect == ImageAspect::color) != (a.aspect == AttachmentAspect::color))) continue;
+            if (a.subresource) {
+                const auto &range = *a.subresource;
+                covers = range.base_mip_level == 0 && range.base_array_layer == 0 && range.layer_count == r.array_layers &&
+                    (range.mip_count_mode == ImageSubresourceMipCountMode::remaining ||
+                     (r.mip_levels.mode == ImageMipLevelMode::fixed && range.level_count == r.mip_levels.count));
+            } else {
+                for (const auto &s : package.scopes) if (std::find(s.nodes.begin(), s.nodes.end(), first->first) != s.nodes.end())
+                    covers = r.mip_levels == ImageMipLevelCount{} && s.view_count >= r.array_layers;
+            }
+        }
+        require(!reads && covers && node != canonical_graph.nodes.end() && node->kind == LogicalGraphNodeKind::render,
+            "alias.first_use@1: " + name);
+        for (const auto &native : package.native_scopes) if (native.synchronization != VulkanNativeScopeSynchronizationMode::automatic)
+            for (const auto &boundary : native.resources)
+                require(boundary.logical_resource != name, "alias.native_boundary@1: " + name);
+    };
     for (const auto &group : package.alias_groups) {
         require(
             group.resources.size() >= 2,
             "physical alias group '" + group.id +
                 "' needs at least two resources");
         aliases.emplace(group.id, &group);
+        for (const auto &name : group.resources) {
+            const auto found = physical_resources.find(name);
+            require(found != physical_resources.end(), "alias.missing_resource@1: " + name);
+            verifyAliasMember(*found->second);
+        }
         for (std::size_t left = 0;
              left < group.resources.size(); ++left) {
             const auto left_resource =
@@ -2534,13 +2582,30 @@ verifyVulkanCompletePhysicalPlanPackage(
                     "non-aliasable resource: " +
                         group.resources[right]);
                 require(
+                    automatic_plan.effective_image_usage.contains(group.resources[left]) &&
+                    automatic_plan.effective_image_usage.contains(group.resources[right]) &&
+                    automatic_plan.effective_image_usage.at(group.resources[left]) == automatic_plan.effective_image_usage.at(group.resources[right]),
+                    "alias.image_contract@1: " + group.id);
+                const auto &a = graph_uses.at(group.resources[left]).lifetime;
+                const auto &b = graph_uses.at(group.resources[right]).lifetime;
+                const auto &early = a.first_use < b.first_use ? a : b;
+                const auto &late = a.first_use < b.first_use ? b : a;
+                for (const auto &s : package.scopes) {
+                    bool ends = false, starts = false;
+                    for (const auto &n : s.nodes) {
+                        ends = ends || node_order.at(n) == early.last_use;
+                        starts = starts || node_order.at(n) == late.first_use;
+                    }
+                    require(!(ends && starts), "alias.same_scope@1: " + group.id);
+                }
+                require(
                     aliasShapesMatch(
                         *left_resource->second,
                         *right_resource->second) &&
                         !lifetimesOverlap(
                             left_resource->second->lifetime,
                             right_resource->second->lifetime),
-                    "physical alias group has incompatible shapes "
+                    "alias.shape_or_lifetime@1: physical alias group has incompatible shapes "
                     "or overlapping lifetimes: " +
                         group.id);
             }

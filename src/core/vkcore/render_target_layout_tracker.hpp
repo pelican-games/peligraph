@@ -3,6 +3,7 @@
 #include "../renderingpass/renderingpass.hpp"
 #include "util.hpp"
 #include <cstddef>
+#include <functional>
 #include <unordered_map>
 #include <unordered_set>
 #include <vulkan/vulkan.hpp>
@@ -18,6 +19,16 @@ enum class RenderTargetImageKind : std::uint8_t {
 
 class RenderTargetLayoutTracker {
   public:
+    struct AliasTransition {
+        std::uint64_t token;
+        GlobalRenderTargetId resource;
+        bool dependency;
+        vk::PipelineStageFlags src_stage, dst_stage;
+        vk::AccessFlags src_access, dst_access;
+        vk::ImageLayout old_layout, new_layout;
+    };
+    // Observes the arguments of recorded alias dependencies and transitions.
+    std::function<void(const AliasTransition &)> alias_transition_observer;
     void transition(vk::CommandBuffer cmd_buf, RenderTargetContainer &rt_container, VulkanUtils &vk_utils,
                     GlobalRenderTargetId rt_id, vk::ImageLayout new_layout,
                     bool history_read = false,
@@ -49,6 +60,7 @@ class RenderTargetLayoutTracker {
         RenderTargetImageKind image_kind =
             RenderTargetImageKind::resolved);
     void reset();
+    void beginFrame();
     std::size_t memoryDependencyCountForTesting() const noexcept {
         return memory_dependency_count;
     }

@@ -344,6 +344,9 @@ struct VulkanTargetPlanRequest {
     std::vector<ResourcePatternBinding> pattern_bindings;
     TargetResourceRetainReasons retain_reasons;
     std::map<std::string, ImageUsage, std::less<>> effective_image_usage;
+    std::map<std::string, std::string, std::less<>> generation_alias_exclusions;
+    // Provider facts for resources on manual/unchecked NativeScope boundaries.
+    std::vector<std::string> manual_native_resources;
     PlanningProfile profile;
     std::vector<PlanningNodeConstraint> node_constraints;
     std::vector<PlanningResourceConstraint> resource_constraints;
@@ -360,6 +363,8 @@ struct VulkanTargetPlan {
     bool legacy_complete_install = false; // Runtime metadata; never serialized.
     TargetResourceRetainReasons retain_reasons; // Trusted compiler input, not lifetime output.
     std::map<std::string, ImageUsage, std::less<>> effective_image_usage; // Compiler facts; not package claims.
+    std::map<std::string, std::string, std::less<>> generation_alias_exclusions;
+    std::vector<std::string> manual_native_resources;
     std::vector<PlanningPolicyEntry> policy;
     std::string graph;
     std::uint64_t logical_graph_fingerprint = 0;

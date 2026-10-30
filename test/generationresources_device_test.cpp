@@ -111,8 +111,8 @@ Json pass(const std::string &name, const std::vector<std::string> &input, const 
 
 // One chain: <group>1 written (from the scene), read into a mid image, the mid read into
 // <group>2, <group>2 read into an end image. The members (format `format`,
-// the alias-safe usage) do not overlap; the mid and end images carry
-// TRANSFER_SRC, which keeps them out of aliasing.
+// the alias-safe usage) do not overlap. The mid and end images have an
+// explicit no_alias policy below, so this fixture measures only a/b/c pairs.
 void addChain(Json &targets, Json &passes, const std::string &group, const std::string &format,
               bool first_half, bool second_half) {
     const Json kept = Json::array({"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"});
@@ -190,6 +190,8 @@ Registered registerC1(bool with_xr) {
     Json section{{"features", Json::array({"project://features/rc3c2a_flat_only.json"})},
                  {"render_targets", targets},
                  {"rendering_passes", Json::array({Json{{"name", "main"}, {"passes", passes}}})}};
+    for (const auto *name : {"a_mid", "a_end", "b_mid", "b_end", "c_mid", "c_end"})
+        section["target_planning"]["graphs"]["main"]["resources"][name]["no_alias"] = true;
     // The XR variant runs its fullscreen passes with multiview: a measured
     // gain on this device (a profile with its vendor and device id), as the
     // RC-3c1b registration test has it. Its images then hold both views.
@@ -385,6 +387,11 @@ TEST_CASE("RC-3c2a C1: the registration merges the variants' images once, for th
     using Shared = std::vector<std::set<std::string>>;
     CHECK(merged.shared == Shared{{"a1", "a2"}, {"c1", "c2"}});
     CHECK(alone.shared == Shared{{"a1", "a2"}, {"b1", "b2"}, {"c1", "c2"}});
+    for (const auto *run : {&merged, &alone})
+        for (const auto *name : {"a_mid", "a_end", "b_mid", "b_end", "c_mid", "c_end"}) {
+            INFO(name);
+            CHECK_FALSE(group(*run, name).has_value());
+        }
     // 15 images (the output's display image with them): two pairs sharing,
     // 13 allocations; flat alone, three pairs, 12.
     std::set<std::string> names;

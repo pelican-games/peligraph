@@ -15,12 +15,20 @@ VulkanTargetPlan rc6a2Compile(const LogicalTypeRegistry &types, const CompiledLo
         : graph.name == "attachment_contract" || graph.name == "independent_versions"
             ? FramePlanNodeOrder{graph, {"A", "B"}} : fixtureOrder(graph);
     auto bindings = bindingsFor(types, graph);
+    std::map<std::string, ImageUsage, std::less<>> usage;
+    if (graph.name == "alias_lifetimes") {
+        for (const auto &r : graph.resources) usage[r.name] = ImageUsageBit::color_attachment | ImageUsageBit::sampled;
+        if (attachments.empty()) for (const auto &node : graph.nodes) for (const auto &u : node.uses)
+            if (u.output_value && u.intent == LogicalAccessIntent::attachment)
+                attachments.push_back({.node = node.name, .logical_resource = u.output_value->resource,
+                    .operations = PassAttachmentOperations{AttachmentLoadOp::clear, AttachmentStoreOp::store}});
+    }
     if (graph.name == "completed_local_read_scope")
         for (auto &binding : bindings)
             binding.extent = ResourceExtentPlan{.kind = ResourceExtentKind::fixed, .width = 128, .height = 128};
     return compileVulkanTargetPlan(types, graph, topology(tile), providers(), {
         .policy = constraints.declarations, .node_order = order, .endpoint = "device:0",
-        .provider = std::string{kProvider}, .pattern_bindings = std::move(bindings), .profile = profile,
+        .provider = std::string{kProvider}, .pattern_bindings = std::move(bindings), .effective_image_usage = std::move(usage), .profile = profile,
         .node_constraints = constraints.nodes, .resource_constraints = constraints.resources,
         .automatic_attachments = std::move(attachments)});
 }

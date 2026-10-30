@@ -129,8 +129,10 @@ TEST_CASE("RC-7a F2 causal alias retries erase dropped retain lifetime and opera
     const auto plan = compileVulkanTargetPlan(types, graph, topology(false), providers(), {
         .policy = policy.graphs[0].declarations, .node_order = fixtureOrder(graph), .endpoint = "device:0",
         .provider = std::string{kProvider}, .pattern_bindings = bindingsFor(types, graph),
-        .effective_image_usage = {{"temporary_a", ImageUsageBit::transfer_src}},
+        .effective_image_usage = {{"temporary_a", ImageUsageBit::transfer_src}, {"temporary_b", ImageUsageBit::transfer_src}},
         .automatic_attachments = {{.node = "WriteA", .logical_resource = "temporary_a",
+            .operations = PassAttachmentOperations{AttachmentLoadOp::clear, AttachmentStoreOp::dont_care}},
+            {.node = "WriteB", .logical_resource = "temporary_b",
             .operations = PassAttachmentOperations{AttachmentLoadOp::clear, AttachmentStoreOp::dont_care}}}});
     CHECK(rc6a2Entry(plan, "retain").status == PlanningPolicyStatus::infeasible_prefer);
     CHECK(physicalResource(plan, "temporary_a").lifetime.retain.empty());

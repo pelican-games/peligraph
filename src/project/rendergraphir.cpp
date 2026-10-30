@@ -240,8 +240,7 @@ bool isTileLocalAttachmentCandidate(const ImageDeclarationFacts &image) {
 
 bool isRuntimeAliasEligible(const ImageDeclarationFacts &image) {
     return !image.history && !image.has_source && !image.persistent &&
-           image.format_class != "display" &&
-           image.usage == (ImageUsageBit::color_attachment | ImageUsageBit::sampled);
+           image.format_class != "display";
 }
 
 bool nodeHasSamePixelRead(const FrameGraphNodeDefinition &node, std::string_view resource) {

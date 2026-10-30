@@ -83,6 +83,9 @@ DECLARE_MODULE(VulkanManageCore) {
         presentation_quarantine;
 
   public:
+    vk::DeviceSize imageAllocationBytes(const ImageWrapper &image) const {
+        return allocator->getAllocationInfo(image.allocation->get()).size;
+    }
     VulkanManageCore();
     ~VulkanManageCore();
 

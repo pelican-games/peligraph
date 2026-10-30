@@ -591,11 +591,12 @@ TEST_CASE("RC-3c1b IR: tile-local eligibility from the IR and the device facts",
     const auto eligible = renderGraphTileLocalFormats(ir, ir.graphs.at(0), device_formats);
     CHECK(eligible == RenderGraphTileLocalFormats{{"scene_depth", ImageFormat::d32_sfloat}});
     CHECK(materialization(with_device, "scene_depth") == "virtual");
-    CHECK(materialization(with_device, "probe_depth") == "required");
-    CHECK(materialization(with_device, "gbuffer_depth") == "required");
-    // Without the device's support the same image is materialized.
+    CHECK(materialization(with_device, "probe_depth") == "virtual");
+    CHECK(materialization(with_device, "gbuffer_depth") == "virtual");
+    // RC-7b: declaration-level virtualness also permits a materialized alias
+    // candidate. Device support still controls tile-local eligibility above.
     const auto without_device = run(config);
-    CHECK(materialization(without_device, "scene_depth") == "required");
+    CHECK(materialization(without_device, "scene_depth") == "virtual");
 }
 
 TEST_CASE("RC-3c1b IR: multiview candidates follow the authored implementation",

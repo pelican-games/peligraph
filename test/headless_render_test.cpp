@@ -50,6 +50,8 @@
 #include "../src/core/renderingpass/computetask.hpp"
 #include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/core/renderingpass/framegraphruntime.hpp"
+#include "../src/core/renderingpass/viewexecutionscheduler.hpp"
+#include "../src/core/renderingpass/oncescheduler.hpp"
 #include "../src/core/renderingpass/graphtransformregistry.hpp"
 #include "../src/core/renderingpass/rendercompilerprogram.hpp"
 #include "../src/core/renderingpass/renderingpassconfigregistration.hpp"
@@ -93,6 +95,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <set>
@@ -16167,4 +16170,5 @@ vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 i
 #endif
 }
 #include "rc7a_readback_test.inc"
+#include "rc7b_alias_test.inc"
 } // namespace Pelican

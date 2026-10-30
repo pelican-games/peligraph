@@ -25,6 +25,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <algorithm>
+#include <set>
 #include <array>
 #include <cstdlib>
 #include <filesystem>
@@ -3105,10 +3106,13 @@ TEST_CASE("RC-1 the example's render targets at 1920x1080 take 125,776,320 bytes
     // intervals using the very same images/bytes. Allocations do not change.
     std::map<std::string, TargetResourceLifetime> old_lifetimes;
     const auto terminal = plan.lowering_graph.nodes.size() - 1;
+    // The pre-RC-6c blanket tail, fixed independently of RC-7b's expanded
+    // virtual/materialization and runtime pattern flags.
+    const std::set<std::string_view> former_tail{
+        "display", "lit_color", "offscreen_depth", "opaque_color", "opaque_depth", "swapchain"};
     for (const auto &r : plan.lowering_graph.resources) {
         auto lifetime = r.lifetime;
-        if (lifetime.used && (r.logical.materialization == LogicalMaterializationRequirement::required ||
-            r.logical.materialization == LogicalMaterializationRequirement::external || r.pattern.require_store))
+        if (lifetime.used && former_tail.contains(r.logical.name))
             lifetime.last_use = terminal;
         old_lifetimes.emplace(r.logical.name, lifetime);
     }

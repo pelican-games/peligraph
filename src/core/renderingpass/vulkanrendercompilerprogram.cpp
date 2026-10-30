@@ -510,6 +510,7 @@ void compileDefaultVulkanPhysical(RenderCompilerProgramVariantOutput &variant,
     const VulkanRenderCompilerBackendContext &backend,
     const RenderCompilerProgramVariantRequest &request,
     const std::map<std::string, ImageUsage, std::less<>> &generation_usage,
+    const std::map<std::string, std::string, std::less<>> &generation_alias_exclusions,
     bool discover_placements = false) {
     const auto &render_graph = *variant.render_graph;
     const auto &compiled_pipeline = variant.compiled_pipeline;
@@ -528,7 +529,11 @@ void compileDefaultVulkanPhysical(RenderCompilerProgramVariantOutput &variant,
             });
             if (!materialized) { entry.key = "representation"; entry.value = std::string{"materialized"}; }
         }
-        std::erase_if(graph.declarations, [](const auto &e) { return e.key == "retain"; });
+        // Sharing is decided only after the generation's effective usage and
+        // storage are known. A variant-local alias requirement is premature.
+        std::erase_if(graph.declarations, [](const auto &e) {
+            return e.key == "retain" || e.key == "alias_group";
+        });
     }
     auto physical =
         std::make_unique<
@@ -559,7 +564,7 @@ void compileDefaultVulkanPhysical(RenderCompilerProgramVariantOutput &variant,
                 planning,
                 RenderingTargetExternalReaders{
                     .xr_mirror = compiled_pipeline->graph_variant_policy.mirror_output == GraphVariantMirrorOutput::left_eye,
-                    .capture_output = request.capture_output}, generation_usage);
+                    .capture_output = request.capture_output}, generation_usage, generation_alias_exclusions);
     } else {
         physical->target_plan_compilation =
             compileRenderingTargetPlans(
@@ -574,7 +579,7 @@ void compileDefaultVulkanPhysical(RenderCompilerProgramVariantOutput &variant,
                 planning,
                 RenderingTargetExternalReaders{
                     .xr_mirror = compiled_pipeline->graph_variant_policy.mirror_output == GraphVariantMirrorOutput::left_eye,
-                    .capture_output = request.capture_output}, generation_usage);
+                    .capture_output = request.capture_output}, generation_usage, generation_alias_exclusions);
     }
     for (auto &verification :
          physical->target_plan_compilation
@@ -669,19 +674,13 @@ class DefaultVulkanRenderCompilerProgram final
                 RenderPipelineGraphVariant::preview)
                 runtime_variant_composed = true;
         }
-        const bool readback_policy = std::any_of(output.variants.begin(), output.variants.end(), [](const auto &variant) {
-            if (!variant.compiled_pipeline) return false;
-            for (const auto &graph : variant.compiled_pipeline->target_planning.graphs)
-                for (const auto &entry : graph.declarations)
-                    if (entry.status == PlanningPolicyStatus::adopted && entry.key == "retain" && std::get<bool>(entry.value)) return true;
-            return false;
-        });
         std::map<std::string, ImageUsage, std::less<>> generation_usage;
-        if (readback_policy) {
+        std::map<std::string, std::string, std::less<>> generation_alias_exclusions;
+        {
             for (std::size_t i = 0; i < output.variants.size(); ++i) {
                 auto &variant = output.variants[i];
                 if (variant.unavailable || variant.frame_plans.empty()) continue;
-                compileDefaultVulkanPhysical(variant, backend, input.variants[i], {}, true);
+                compileDefaultVulkanPhysical(variant, backend, input.variants[i], {}, {}, true);
             }
             // Exactly the resolver used by registration; no parallel usage
             // formula based on declarations, history or export requests.
@@ -692,11 +691,23 @@ class DefaultVulkanRenderCompilerProgram final
         for (std::size_t i = 0; i < output.variants.size(); ++i) {
             auto &variant = output.variants[i];
             if (variant.unavailable || variant.frame_plans.empty()) continue;
-            try { compileDefaultVulkanPhysical(variant, backend, input.variants[i], generation_usage); }
+            try { compileDefaultVulkanPhysical(variant, backend, input.variants[i], generation_usage, generation_alias_exclusions); }
             catch (...) {
                 if (input.variants[i].artifact != RenderCompilerProgramArtifact::data_only ||
                     input.variants[i].graph_variant != RenderPipelineGraphVariant::preview || !runtime_variant_composed) throw;
                 variant.unavailable = std::current_exception();
+            }
+        }
+        // Agree on the placements proposed with the merged contracts, never
+        // on the provisional placements used to discover those contracts.
+        generation_alias_exclusions = resolveCompilerGenerationResources(
+            output.variants, backend.outputExtent()).alias_rejections;
+        if (!generation_alias_exclusions.empty()) {
+            for (std::size_t i = 0; i < output.variants.size(); ++i) {
+                auto &variant = output.variants[i];
+                if (variant.unavailable || variant.frame_plans.empty()) continue;
+                compileDefaultVulkanPhysical(variant, backend, input.variants[i],
+                    generation_usage, generation_alias_exclusions);
             }
         }
         // P-2a-4b: `input.rendering_config` is the authored document, so a

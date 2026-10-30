@@ -1,6 +1,7 @@
 #include "rendercompilerprogram.hpp"
 #include "passdefinitionfromir.hpp"
 #include "computetaskdefinition.hpp"
+#include "vulkanrendercompilerpackage.hpp"
 #include "../../project/gpudrawsource.hpp"
 #include "../../project/graphcomposition.hpp"
 
@@ -251,6 +252,32 @@ GenerationResources completeGenerationResources(
     const std::function<void(std::string_view, const ResourceCheckRead &)>
         &observe_resource_checks) {
     auto resources = resolveCompilerGenerationResources(variants, output_extent);
+    for (const auto &variant : variants) {
+        const auto *physical = dynamic_cast<const VulkanRenderCompilerPhysicalPackage *>(variant.physical_package.get());
+        if (!physical) continue;
+        // Retries can drop a prefer peer. Check only the final plan's adopted
+        // relationships against the generation's actual placement.
+        for (const auto &[graph, plan] : physical->target_plans) {
+            for (const auto &entry : plan->policy) {
+                if (entry.status != PlanningPolicyStatus::adopted || entry.key != "alias_group" ||
+                    entry.strength != PlanningStrength::require) continue;
+                const auto *image = resources.findImage(entry.target);
+                for (const auto &other : plan->policy) {
+                    if (other.status != PlanningPolicyStatus::adopted || other.key != "alias_group" ||
+                        other.target == entry.target || other.origin.document != entry.origin.document ||
+                        other.value != entry.value) continue;
+                    const auto *peer = resources.findImage(other.target);
+                    if (image && peer && image->alias_group && image->alias_group == peer->alias_group) continue;
+                    const auto rejection = resources.alias_rejections.find(entry.target);
+                    throw GraphRegistryError("target_planning.alias_generation_contract@1",
+                        {{"graph", graph}, {"resource", entry.target}, {"peer", other.target},
+                         {"reason", rejection == resources.alias_rejections.end()
+                             ? "final generation placement does not share required alias group"
+                             : rejection->second}});
+                }
+            }
+        }
+    }
     std::vector<const RenderCompilerProgramVariantOutput *> runtime;
     for (const auto &variant : variants)
         if (variant.physical_package) runtime.push_back(&variant);

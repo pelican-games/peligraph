@@ -147,6 +147,9 @@ struct RendererTestAccess {
         return renderer.render_target_layout_tracker
             .aliasDependencyCountForTesting();
     }
+    static RenderTargetLayoutTracker &imageLayoutTracker(Target &renderer) noexcept {
+        return renderer.render_target_layout_tracker;
+    }
 
     static const std::vector<RenderFrameSnapshot> &
     lastViewSnapshots(const Target &renderer) {

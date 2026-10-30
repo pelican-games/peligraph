@@ -73,11 +73,6 @@ bool isTileLocalAttachmentCandidate(
         declarationFactsOf(definition));
 }
 
-ImageUsage runtimeAliasSafeUsage() {
-    return ImageUsageBit::color_attachment |
-           ImageUsageBit::sampled;
-}
-
 // The declaration's eligibility, and after physical planning the target is
 // still materialized.
 bool isRuntimeAliasCandidate(
@@ -86,15 +81,6 @@ bool isRuntimeAliasCandidate(
                declarationFactsOf(definition)) &&
            definition.storage_mode ==
                RenderTargetStorageMode::materialized;
-}
-
-std::string joinNames(const std::vector<std::string> &names) {
-    std::string result;
-    for (const auto &name : names) {
-        if (!result.empty()) result += ", ";
-        result += name;
-    }
-    return result;
 }
 
 // PO-1: what kept a target out of isRuntimeAliasCandidate, in words the
@@ -122,19 +108,6 @@ std::string runtimeAliasExclusion(
     if (definition.storage_mode !=
         RenderTargetStorageMode::materialized) {
         causes.push_back("storage mode is not materialized");
-    }
-    const auto safe = runtimeAliasSafeUsage();
-    const auto safe_set = "{" + joinNames(imageUsageNames(safe)) + "}";
-    if (const auto extra = definition.usage & ~safe) {
-        const auto names = imageUsageNames(extra);
-        causes.push_back("usage " + joinNames(names) +
-                         (names.size() == 1 ? " is" : " are") +
-                         " outside the alias-safe set " + safe_set);
-    }
-    if (const auto missing = safe & ~definition.usage) {
-        causes.push_back("usage lacks " +
-                         joinNames(imageUsageNames(missing)) +
-                         " of the alias-safe set " + safe_set);
     }
     std::string result;
     for (const auto &cause : causes) {
@@ -1354,7 +1327,8 @@ std::vector<RenderingTargetAliasGroupAssignment>
 mergeRuntimeAliasGroups(
     std::span<
         const std::shared_ptr<const VulkanTargetPlan>>
-        plans) {
+        plans,
+    std::map<std::string, std::string, std::less<>> &rejections) {
     using Group = std::vector<std::string>;
     std::set<Group> candidates;
     for (const auto &plan : plans) {
@@ -1397,6 +1371,8 @@ mergeRuntimeAliasGroups(
                         return resources.contains(member);
                     })) {
                 valid = false;
+                for (const auto &member : candidate)
+                    rejections[member] = "frame graphs do not agree on alias placement: " + plan->graph;
                 break;
             }
 
@@ -1428,6 +1404,8 @@ mergeRuntimeAliasGroups(
             }
             if (!exact_group || conflicting_group) {
                 valid = false;
+                for (const auto &member : candidate)
+                    rejections[member] = "frame graphs do not agree on alias placement: " + plan->graph;
                 break;
             }
         }
@@ -1453,6 +1431,8 @@ mergeRuntimeAliasGroups(
                     return membership_count.at(resource) !=
                            1;
                 })) {
+            for (const auto &member : group)
+                rejections[member] = "frame graphs do not agree on alias placement: overlapping groups";
             continue;
         }
         std::string id = "runtime-alias";
@@ -1523,7 +1503,8 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
         external_depth_export,
     TargetPlanningPolicy target_planning,
     RenderingTargetExternalReaders external_readers,
-    const std::map<std::string, ImageUsage, std::less<>> &generation_usage) {
+    const std::map<std::string, ImageUsage, std::less<>> &generation_usage,
+    const std::map<std::string, std::string, std::less<>> &generation_alias_exclusions) {
     const auto target_by_name =
         renderTargetsByName(render_targets);
     const auto types = makeBuiltinLogicalTypeRegistry();
@@ -1695,6 +1676,7 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                             tile_local_formats),
                     .retain_reasons = renderingTargetRetainReasons(render_graph, render_graph.graphs[index], external_readers),
                     .effective_image_usage = effective_usage,
+                    .generation_alias_exclusions = generation_alias_exclusions,
                     .profile = target_planning.profile,
                     .node_constraints = std::move(node_constraints),
                     .resource_constraints =
@@ -1976,8 +1958,19 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
         [](const auto &left, const auto &right) {
             return left.resource < right.resource;
         });
+    std::map<std::string, std::string, std::less<>> graph_alias_rejections;
     result.alias_group_assignments =
-        mergeRuntimeAliasGroups(result.plans);
+        mergeRuntimeAliasGroups(result.plans, graph_alias_rejections);
+    if (!graph_alias_rejections.empty()) {
+        // Feed the lost placement back through the planner: require gets a
+        // named refusal, prefer retries, and every graph's dump describes the
+        // same unshared allocation that registration will actually create.
+        auto exclusions = generation_alias_exclusions;
+        exclusions.insert(graph_alias_rejections.begin(), graph_alias_rejections.end());
+        return compileRenderingTargetPlans(render_graph, frame_plans, render_targets,
+            policy, swapchain_format, device_facts, view_execution, external_depth_export,
+            std::move(target_planning), external_readers, generation_usage, exclusions);
+    }
     return result;
 }
 
@@ -1996,7 +1989,8 @@ compileRenderingTargetPlansForVulkanDevice(
         external_depth_export,
     TargetPlanningPolicy target_planning,
     RenderingTargetExternalReaders external_readers,
-    const std::map<std::string, ImageUsage, std::less<>> &generation_usage) {
+    const std::map<std::string, ImageUsage, std::less<>> &generation_usage,
+    const std::map<std::string, std::string, std::less<>> &generation_alias_exclusions) {
     const auto features =
         physical_device.getFeatures2<
             vk::PhysicalDeviceFeatures2,
@@ -2075,7 +2069,7 @@ compileRenderingTargetPlansForVulkanDevice(
         },
         std::move(view_execution),
         std::move(external_depth_export),
-        std::move(target_planning), external_readers, generation_usage);
+        std::move(target_planning), external_readers, generation_usage, generation_alias_exclusions);
 }
 
 std::vector<ImagePlacement> imagePlacementsOf(
@@ -2317,8 +2311,16 @@ std::vector<ImagePlacement> imagePlacementsOf(
                 "physical alias group requires at least two render targets: " +
                 group);
         }
-        // An alias candidate keeps its declared usage (the alias-safe set):
-        // no local read and no export adds a bit to it.
+        // Registration creates the generation's merged images. Compare the
+        // compiler's effective contracts, rather than the narrower authored
+        // usage of this variant; the resolver checks the final images again.
+        const auto plannedUsage = [&](const std::string &name) -> std::optional<ImageUsage> {
+            for (const auto &plan : compilation.plans) {
+                const auto found = plan->effective_image_usage.find(name);
+                if (found != plan->effective_image_usage.end()) return found->second;
+            }
+            return std::nullopt;
+        };
         const auto &contract = render_targets[members.front()];
         const auto &contract_placement = placements[members.front()];
         for (const auto index : members) {
@@ -2326,9 +2328,9 @@ std::vector<ImagePlacement> imagePlacementsOf(
             const auto &placement = placements[index];
             if (!isRuntimeAliasEligible(declarationFactsOf(target)) ||
                 placement.storage != RenderTargetStorageMode::materialized ||
-                placement.local_read || placement.external_depth_source ||
+                placement.external_depth_source ||
                 placement.format != contract_placement.format ||
-                target.usage != contract.usage ||
+                !plannedUsage(target.name) || plannedUsage(target.name) != plannedUsage(contract.name) ||
                 target.extent_scale !=
                     contract.extent_scale ||
                 target.fixed_extent !=

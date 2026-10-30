@@ -1,5 +1,6 @@
 #include "../src/devstudio/model/frameplanpolicy.hpp"
 #include "../src/project/graphcomposition.hpp"
+#include "../src/project/generationresources.hpp"
 #include "../src/project/renderpipeline.hpp"
 #include <type_traits>
 #include "../src/project/targetrenderplanning.hpp"
@@ -7,6 +8,7 @@
 #include "../src/project/vulkancompletephysicalplan.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <nlohmann/json.hpp>
 
@@ -67,6 +69,7 @@ TargetTopologySnapshot topology(
     std::vector<std::string> capabilities{
         "pelican.vulkan.graphics@1",
         "pelican.vulkan.sampled_image@1",
+        "pelican.vulkan.storage_buffer@1",
         "pelican.vulkan.transfer_copy@1",
         std::string{kHdrFormatCapability},
         std::string{kDisplayFormatCapability},
@@ -519,6 +522,14 @@ VulkanTargetPlan compile(
     std::vector<VulkanPhysicalAttachmentPlan>
         attachments = {},
     PlanningProfile profile = {}) {
+    std::map<std::string, ImageUsage, std::less<>> usage;
+    if (graph.name == "alias_lifetimes") {
+        for (const auto &r : graph.resources) usage[r.name] = ImageUsageBit::color_attachment | ImageUsageBit::sampled;
+        if (attachments.empty()) for (const auto &node : graph.nodes) for (const auto &u : node.uses)
+            if (u.output_value && u.intent == LogicalAccessIntent::attachment)
+                attachments.push_back({.node = node.name, .logical_resource = u.output_value->resource,
+                    .operations = PassAttachmentOperations{AttachmentLoadOp::clear, AttachmentStoreOp::store}});
+    }
     return compileVulkanTargetPlan(
         types, graph, target, providers(),
         VulkanTargetPlanRequest{
@@ -526,6 +537,7 @@ VulkanTargetPlan compile(
             .endpoint = "device:0",
             .provider = std::string{kProvider},
             .pattern_bindings = std::move(bindings),
+            .effective_image_usage = std::move(usage),
             .profile = profile,
             .sample_count = std::move(sample_count),
             .view_execution = std::move(view_execution),
@@ -1223,10 +1235,18 @@ TEST_CASE(
     const auto graph =
         hybridGraph(types, 4, false, true);
     const auto target = topology(false);
+    std::vector<VulkanPhysicalAttachmentPlan> alias_evidence;
+    std::map<std::string, ImageUsage, std::less<>> alias_usage;
+    for (const auto &r : graph.resources) if (r.name.starts_with("gbuffer_")) {
+        alias_usage[r.name] = ImageUsageBit::color_attachment | ImageUsageBit::sampled;
+        alias_evidence.push_back({.node = "GBuffer", .logical_resource = r.name,
+            .operations = PassAttachmentOperations{AttachmentLoadOp::clear, AttachmentStoreOp::store}});
+    }
     const auto automatic =
-        compile(
-            types, graph, fixtureOrder(graph), target,
-            bindingsFor(types, graph));
+        compileVulkanTargetPlan(types, graph, target, providers(), {
+            .node_order = fixtureOrder(graph), .endpoint = "device:0", .provider = std::string{kProvider},
+            .pattern_bindings = bindingsFor(types, graph), .effective_image_usage = alias_usage,
+            .automatic_attachments = alias_evidence});
     const auto ejected =
         ejectVulkanCompletePhysicalPlanPackage(
             automatic);
@@ -3021,4 +3041,5 @@ TEST_CASE("RC-1 the memory total counts each allocation registration made once a
 #include "rc6a2_target_policy_test.inc"
 #include "rc6b1_target_policy_test.inc"
 #include "rc7a_target_policy_test.inc"
+#include "rc7b_target_policy_test.inc"
 } // namespace Pelican

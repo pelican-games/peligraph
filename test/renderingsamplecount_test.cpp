@@ -1409,7 +1409,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "PO-1 a target kept out of runtime aliasing by its usage names the usage in the plan's reason",
+    "RC-7b differing effective usages prevent runtime aliasing without forcing storage",
     "[target-planning][alias][runtime][po1]") {
     auto display =
         target("display",
@@ -1459,10 +1459,7 @@ TEST_CASE(
                 ImageUsageBit::transfer_src);
     const auto &excluded = *transfer.plans.front();
     REQUIRE(excluded.alias_groups.empty());
-    const std::string expected =
-        "logical materialization requirement is required: usage "
-        "TRANSFER_SRC is outside the alias-safe set "
-        "{COLOR_ATTACHMENT, SAMPLED}";
+    const std::string expected = "arbitrary read requires a materialized resource";
     CHECK(physicalResource(excluded, "temporary_b").reason ==
           expected);
     CHECK(representation_detail(excluded, "temporary_b") ==
@@ -1491,9 +1488,7 @@ TEST_CASE(
                 ImageUsageBit::storage);
     CHECK(physicalResource(*storage.plans.front(), "temporary_b")
               .reason ==
-          "logical materialization requirement is required: usage "
-          "STORAGE, TRANSFER_SRC are outside the alias-safe set "
-          "{COLOR_ATTACHMENT, SAMPLED}");
+          "arbitrary read requires a materialized resource");
 }
 
 TEST_CASE(
@@ -1534,9 +1529,11 @@ TEST_CASE(
                             std::uint32_t>{1};
                     },
             });
-    REQUIRE(
-        compilation.plans.front()
-            ->alias_groups.size() == 1);
+    // Every graph now reports the unshared placement chosen by the merge.
+    for (const auto &plan : compilation.plans) {
+        CHECK(plan->alias_groups.empty());
+        CHECK(vulkanTargetPlanToJson(*plan).at("alias_groups").empty());
+    }
     REQUIRE(
         compilation.alias_group_assignments.empty());
 }
@@ -1579,7 +1576,7 @@ TEST_CASE(
                     },
             });
     REQUIRE(compilation.plans.size() == 2);
-    REQUIRE(compilation.plans.front()->alias_groups.size() == 1);
+    REQUIRE(compilation.plans.front()->alias_groups.empty());
     REQUIRE(compilation.alias_group_assignments.empty());
 
     // Registration allocates what the runtime kept: three images of their
