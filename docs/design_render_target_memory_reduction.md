@@ -1,7 +1,7 @@
 # 不要な render target の削減: 寿命の正確化と区間詰めによるメモリ共有
 
 対象読者: エンジン担当(描画コンパイラ / renderer)。
-ステータス: 改善案メモ(2026-10-16。議論の記録。WP 化・レビュー前)。段 0(計測)は RC-1 で済み(2026-10-23、`631caac21`。§5)。合計の数え方を実際の確保に合わせる RC-1b も済み(`504a6492a`。§5)。
+ステータス: 改善案メモ(2026-10-16。議論の記録。WP 化・レビュー前)。段 0(計測)は RC-1 で済み(2026-10-23、`631caac21`。§5)。合計の数え方を実際の確保に合わせる RC-1b も済み(`504a6492a`。§5)。段 1 の寿命の部分(A)は RC-6c で済み(2026-10-30、`be795c9a5`。[§2 の末尾](#rc6c-lifetime)と §5)。
 前提: マニュアル [第6章 §6.6 target planning](manual/06_rendering.md#target-planning-tree)、
 [design_render_pipeline_extensibility.md](design_render_pipeline_extensibility.md)、
 [v1 開発計画](v1_development_plan.md)「保守上の整理候補」。
@@ -37,6 +37,7 @@
 - 以前この行にあった手計算の 120.0 MiB は、2 つのずれがほぼ打ち消し合った値だった: display を 160×90 で数えた(1080p の実物より 8,236,800 B 少ない)のと、alias の組の 1 枚(8,294,400 B)を引かなかった(多い)。差は 57,600 B。
 - gbuffer 5 枚 + depth = 63 MiB は lighting の後に空く。bloom 鎖 9 枚 = 13 MiB は order 11 から始まるので、全部その跡地に入る大きさ。
 - `opaque_*`(24 MiB)は `forward_transparent`(order 6)しか読まないのに末尾まで生きている。
+  → **RC-6c で変わった**: 表の太字の `29`(`offscreen_depth` / `lit_color` / `opaque_*` の末尾までの寿命)は RC-6c の前の値。今はどれも graph の中の最後の use で終わる([§2 の末尾](#rc6c-lifetime))。表は記録として残す。
 - 物理計画の `reason`: 21 枚中 15 枚が `arbitrary read requires a materialized resource`(sampler 読みなので妥当)。
 - `unread_output` 診断: 0 件(example には無駄な出力は無い)。
 
@@ -54,6 +55,50 @@
 調べること: (b) と snapshot が「フレーム末尾まで」要るのは何のためか(headless の `--render-out` の読み出し、picking の depth、
 Studio / RenderDoc のキャプチャ、外部 depth export)。用途が特定の経路だけなら、その経路が有効なときだけ末尾まで伸ばす
 (opt-in)。example では最大 −24(opaque_*)〜−47 MiB(lit_color / offscreen_depth 含む)の寿命短縮になり、B の効果も上がる。
+
+上の行番号と「強制する」の説明は RC-6c の前の物(この一律の延長のコードは RC-6c で消えた)。
+
+<a id="rc6c-lifetime"></a>
+
+**RC-6c で変わった(2026-10-30、`be795c9a5`)。**仕様は `<作業ディレクトリ>/rc6_spec.md` §6、実装者の報告は `<作業ディレクトリ>/rc6c_report.md`。この段の行番号は `be795c9a5` の物。
+
+- **寿命は graph の中の最後の use まで**。`required` / `external` / `require_store` は寿命を延ばす理由ではなくなった(planner と complete verifier の両方から一律の延長を消した)。
+  **graph の外で読まれる物だけ**、理由(`retain`)を付けて graph の末尾まで延ばす。`first_use` は graph の中の最初の use のまま。frame をまたぐ別の印は作らない。
+- **理由は 7 つ**(ほかの文字列は [`isTargetResourceRetainReason()`](../src/project/targetrenderplanning.cpp#L1587) で断る)。理由は compiler が持つ事実(IR・実際の FrameTarget・
+  解決済みの variant・選んだ depth の元)から作り、package の申告からは作らない。IR から作る所は [`renderingTargetRetainReasons()`](../src/core/renderingpass/renderingsamplecount.cpp#L1478)。
+
+| 理由 | 付く資源(理由を作る所) | graph の外の読み手 |
+|---|---|---|
+| `present` | 予約の出力 `swapchain` を書く use(output_transform を通らずに直接書く pass も、offscreen の出力も) | 実際の FrameTarget(present、[`readbackLastFrameRGBA8()`](../src/core/vkcore/rendertarget.cpp#L86)) |
+| `history` | IR の image の `history` | 二面の初期化と反転([`resetHistory()`](../src/core/renderingpass/rendertargetcontainer.cpp#L1252)) |
+| `persistent` | IR の image の `persistent`(once の結果、`initial` の asset を持つ image を含む)か `source`(画像ファイル由来) | 後の frame([once の要求](../src/project/rendergraphcomposition.cpp#L453)、[source の upload](../src/core/renderingpass/rendertargetcontainer.cpp#L1052)、[initial の読み込み](../src/core/renderingpass/renderingpassconfigregistration.cpp#L943)) |
+| `external_depth_export` | 既存の選択で決まった export の元([足す所](../src/project/targetrenderplanning.cpp#L3819)。選んだ後に寿命を計算し直す) | [`recordExternalDepthExport()` を呼ぶ所](../src/core/vkcore/renderer.cpp#L6763) |
+| `xr_mirror` | 解決済みの variant の `mirror_output` が `left_eye` のときの `display`([渡す所](../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L522)) | [mirror のコピー](../src/core/vkcore/renderer.cpp#L6774)(コピー元が [`display`](../src/core/vkcore/renderer.cpp#L2833)) |
+| `picking` | 実在する picking の pass が color attachment として書く `picking_id` | [picking の有効化](../src/core/vkcore/renderer.cpp#L5724)と [`readPickingPixel()`](../src/core/vkcore/renderer.cpp#L5039) |
+| `capture` | 実際の FrameTarget が capture できる(`capture_available`)flat の variant の `swapchain`([決める所](../src/core/renderingpass/renderingpassconfigregistration.cpp#L984)) | `--render-out`([`captureLastFrameToPng()` を呼ぶ所](../src/core/appflow/loop.cpp#L661))と通常の capture |
+
+- `present` と `capture` は同じ資源に両方付く。capture は要求のたびに計画を変えず、capture できる FrameTarget の最終出力にいつも付ける(報告の判断)。
+  XR mirror のコピー先の中間 image は engine が graph の外で持つ確保のままで、RC-6c の対象外。
+- **理由にしない物**: snapshot(graph の中の use)、cube capture という種類だけ(実際の persistent・実行条件で決まる)、XR が有効なだけ、RenderDoc、preview、ImGui、GPU timing、NativeScope、
+  buffer の CPU readback(test の `readFrameGraphBuffer` など。image の寿命の契約で守られているとは扱わない)。
+- **純粋な関数 1 つを 2 か所で計算し直す**: [`calculateTargetResourceLifetimes()`](../src/project/targetrenderplanning.cpp#L1594) は canonical graph・検査済みの node の順・資源名ごとの理由から
+  資源ごとの `used / first_use / last_use / retain` を出す。使われた資源で理由がある物だけ末尾へ延ばし、理由は辞書順・重複なしにする。使われない資源には理由を付けない。
+  planner([lowering graph を作る所](../src/project/targetrenderplanning.cpp#L1636))と complete verifier([`verifyVulkanCompletePhysicalPlanPackage()` の中](../src/project/vulkancompletephysicalplan.cpp#L1822))が
+  それぞれ自分の入力から計算する。verifier の理由の入力は compiler が持つ `VulkanTargetPlan::retain_reasons`(寿命の出力とは別の欄で、直列化しない)で、package の寿命も自動計画の寿命も写さない。
+  順と coverage の検査は前のまま。
+- **complete package と dump**: complete の resource の `lifetime` に `retain` が入り、parse・serialize・比較の対象になった。`last_use` か `retain` を変えた package は
+  `Vulkan complete physical resource has stale lifetime or read-footprint metadata` で断られる。parser は知らない理由・重複・空の配列・使われない資源の理由を断る
+  ([読む所](../src/project/vulkancompletephysicalplan.cpp#L516))。`get_frame_plan` の `physical_target_plan` の資源と lowering graph の資源の `lifetime.retain` は理由の配列で、理由が無ければ欄が無い。
+  寿命から作る fingerprint に理由も入る([`appendLifetimeFingerprint()`](../src/project/vulkanphysicalfragment.cpp#L301))。寿命が変わった計画の `automatic_plan_fingerprint` は RC-6c の前と違う。
+- **変えなかった物**: alias の適格性・runtime の共有・登録・representation・attachment の load / store・`total_bytes`・peak の定義(閉区間 `[first_use, last_use]` の和)。
+  出荷 7 project と RC-5 の 16 構成で alias の組・登録・ops・候補・representation が変わらないことを test が見る(報告の E3。example の alias は前と同じ `Bloom_Threshold_RT` と `g_emissive` の 1 組)。
+  汎用の planner で `required` かつ alias 可・`require_store` なしの入力だけは寿命が縮んで alias の組が増え得る。増えた組の寿命が重ならないことを test が見る。出荷の構成にこの入力は無い(test)。
+- **example の数字**(1920×1080、test。lowering graph は 23 node): total 125,776,320 B と peak 85,017,600 B(order 3 = `lighting_pass`)は変わらない。縮んだのは後半の生存量で、
+  order 11〜20(bloom 鎖と合成)は 60,134,400〜61,171,200 B → 26,956,800〜27,993,600 B、order 21〜22(`pelican_ui` / `output_transform`)は 58,060,800 → 8,294,400 B。
+  order 21 の差 49,766,400 B は `offscreen_depth`・`lit_color`・`opaque_color`・`opaque_depth` の 4 枚の和(§1 の format と大きさ)と一致する(数字からの推定。資源ごとの内訳は test が見ていない)。**実際の確保は減っていない**(alias を変えていないため)。
+- **RC-7 に残した物**: alias の適格性の拡張、縮んだ寿命による領域の使い回し(§3 の区間詰め)、discard / store の最適化(§4)、実メモリの削減、
+  名前の readback の opt-in(policy の `retain` と、`retain` の無い RT の名前の readback の拒否、test の 144 か所の移行)、使い回した領域の readback の中身の test。
+  RC-6c では alias を変えないので中間の RT の中身は残り、名前の readback は今のまま動く。XR mirror の中間と buffer の readback は、image の保持理由で守られているとは扱わない(報告)。
 
 ## 3. B: alias を区間詰めに一般化する(本丸)
 
@@ -107,7 +152,7 @@ renderer(executePlannedFrameGraph)
 | 段 | 内容 | 規模 | 検証 |
 |---|---|---|---|
 | 0 | 計測: `get_frame_plan` に `memory_summary {total_bytes, peak_live_bytes, peak_node}` と資源ごとの `bytes` を出す。Studio の Frame Plan に表示。**RC-1 で済み(`631caac21`)** | 小 | planner の単体テスト(GPU 不要)。手計算の 120 / 81 MiB と一致 → 実測は 119.95 / 81.08 MiB(合計のずれは §1 の注) |
-| 1 | A: required / require_store の末尾延長の理由を特定し、必要な経路だけ opt-in に | 小〜中 | 物理計画の fixture 差分、golden 不変、headless 読み出し・picking・capture の回帰 |
+| 1 | A: required / require_store の末尾延長の理由を特定し、必要な経路だけ opt-in に。**寿命の意味は RC-6c で済み(`be795c9a5`。graph の外の読み手 7 つを理由に)。実確保の削減と名前の readback の opt-in は RC-7** | 小〜中 | 物理計画の fixture 差分、golden 不変、headless 読み出し・picking・capture の回帰 |
 | 2 | B: 区間詰め alias(planner → runtime → barrier) | 大 | planner 単体(詰め結果の決定性、no_alias、memoryTypeBits 拒否)、GPU gate 全数、`hazard_stress` での揺さぶり、validation layer |
 | 3 | C: dead pass elimination、store 自動 discard | 中 | frame plan の fixture、golden 不変 |
 
@@ -118,6 +163,11 @@ GPU の `hybrid_v1 preset registers and renders a headless frame` に足した a
 
 RC-1b の完了記録(2026-10-23、`504a6492a`。検証は実装者の報告と統合側): codex の RC-1 レビューの数え漏れ(runtime が取り消した複数 graph の alias、計画に出ないが登録が確保する RT、`setRuntimeArrayLayers` の後の arena の古い値)を直した。`memory_summary.total_bytes` は「この計画の image の和」から「公開中の世代の GPU arena に登録された RT 全部を今の metadata で 1 回ずつ(runtime の alias の組 = `aliasGroup(id)` ごとに 1 回)」に変わり、`unused_bytes` / `unused_resources` / `peak_graph` を足した。example の 1920×1080 は 125,776,320 / 85,017,600 のまま。dump の arena の RT の `declared_bytes` は書き出す時点の metadata の値。数えられない計画の image は `frame_plan.memory_unmeasured@1`。非 GPU は触った 6 つの exe の 903/903 緑(`-R "RC-1"` 10/10)。GPU は `get_frame_plan` を呼ぶ 10 本(上の hybrid_v1 を含む)を統合側で実行して緑。
 どの graph も使わない RT が確保されていることを計測で確かめた(`unused_resources` に出る)。その確保の除去は RC-7 の範囲(この記録の時点で台帳に節は無い)。
+
+段 1 の寿命の部分の完了記録(RC-6c、2026-10-30、`be795c9a5`。検証は実装者の報告): 内容は [§2 の末尾](#rc6c-lifetime)。非 GPU 745 件(render_pipeline 501・target planning 46・frameplanner 45・
+Studio の Frame Plan 153)と GPU 5 件(NativeScope 2・complete の順序の拒否と融合の実行 2・XR multiview と depth export 1)が緑。A5 は baseline を記録し直さずに 16 構成が一致
+(寿命の欄と寿命から作る fingerprint だけを除いて比べ、除く前に資源ごとの新しい `last_use` と `retain` を期待値の表で検査)。対照: 共通の関数から `picking` を外すと E1 が赤、
+verifier だけ一律の延長に戻すと正常な package の検証が赤。golden の全画像と GPU・シナリオの全数は統合側(報告の時点で未実施)。
 
 ## 6. 未決(2026-10-17 更新)
 
@@ -136,6 +186,7 @@ RC-1b の完了記録(2026-10-23、`504a6492a`。検証は実装者の報告と�
 残るもの:
 
 - `required` を付けている論理型の既定が末尾までの生存を要求しているか(調べる。変わらず)。
+  → **RC-6c で解けた**: `required` は寿命を延ばす理由にしない。末尾まで生きるのは graph の外の読み手がある資源だけ([§2 の末尾](#rc6c-lifetime))。
 - **ヒープの単位** → MoltenVK は 1.3.0 から MTLHeap が既定なので heap 1 つで素直に動く見込み。Windows は memoryTypeBits ごとに分ける。
   device facts で切り替える形にする。
 - **`alias_reuse` barrier の表現** → 別の表を推す(`FramePlanBarrier` は resource 1 つ。2 つ目の resource のために既存の形を歪めない)。

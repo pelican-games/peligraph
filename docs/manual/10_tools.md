@@ -1165,7 +1165,7 @@ HEAD が動くと configure が再実行される。
 ([登録](../../test/CMakeLists.txt#L3899))、`pelican_gpu_lease_run` 経由の **GPU lane** で走ります —— 実物の窓に
 実物の player が埋まるので `QT_QPA_PLATFORM=offscreen` は掛けません。Studio target と Python 製テストを有効にし、
 Python 3.11 以上を用意します。`uv` は不要です。完全な GPU gate はシナリオの未登録・skip を失敗にするため、
-`SKIP_DEVSTUDIO=OFF` と `PELICAN_PYTHON_TESTS=ON` を指定します。[`run_studio_scenario.cmake`](../../test/run_studio_scenario.cmake#L30) が fixture
+`SKIP_DEVSTUDIO=OFF` と `PELICAN_PYTHON_TESTS=ON` を指定します。[`run_studio_scenario.cmake`](../../test/run_studio_scenario.cmake#L33) が fixture
 `test/fixtures/studio_automation_graph` を temp に 2 つ複製し、Qt を PATH に置いて driver を起動します。
 対象の一覧は [`test/studio_scenarios/`](../../test/studio_scenarios/) が正本です。成果物(`report.json`、
 `studio.log`、スクリーンショット)は `build/test_artifacts/studio_scenarios/<名前>/` に残ります。

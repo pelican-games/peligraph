@@ -351,3 +351,15 @@ develop_v1 の `1e05031d7` / `e17754510`。仕様は `<作業ディレクトリ>
   in every document even after switching presets」)。
 - **A5**: §7.2 の 16 構成の比較は記録し直さず、期待と実際の両方から snapshot の `pins` / `physical_fragments` と dump の廃止した 5 欄だけを除いて比べる。RC-5s の固定 HEAD の stale の test は
   complete package の検査だけを残した(「RC-5s fixed HEAD complete packages are stale」)。
+
+### 7.11 RC-6c(資源の寿命、2026-10-30)
+
+`be795c9a5`(branch `agent/rc6`)。仕様は `<作業ディレクトリ>/rc6_spec.md` §6、報告は `<作業ディレクトリ>/rc6c_report.md`。寿命の意味は [RT メモ §2 の末尾](design_render_target_memory_reduction.md#rc6c-lifetime)。
+レシピの 16 構成に関わる所だけ書く。
+
+- **A5**: §7.2 の 16 構成の比較は記録し直さない。比べる前に、資源名ごとの最後の use の node(例: `lit_color` は `scene_present`、`opaque_color` / `opaque_depth` は
+  `forward_transparent`、G-buffer は `deferred_lighting`)と理由(`swapchain` は `["present"]`、XR の構成の `display` は `["xr_mirror"]`、ほかは無し)を期待値の表で検査し
+  ([表](../test/rc5_recipe_compiler_test.inc#L340))、`automatic_plan_fingerprint` も今の計画から計算し直して照らす。その後で RC-6b2 の除外に加えて
+  `physical_plans.*.automatic_plan_fingerprint` と `physical_plans.*.{resources,lowering_graph.resources}[*].lifetime.{last_use,retain}` だけを除いて比べる。
+  `used`・`first_use`・資源の集合・alias の組・representation・attachment の ops・cost は除かない。16 構成・3203 assertions が緑(報告)。
+- 固定 package の物理値から、登録の placement・generation の image・allocation token・bytes も照らす(報告の E3。alias の組と登録は RC-6c の前と同じ)。

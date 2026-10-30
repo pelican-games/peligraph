@@ -348,6 +348,24 @@
   A5 は記録し直さずに、期待と実際の両方から廃止した欄(snapshot の `pins` / `physical_fragments` と dump の 5 欄)だけを明示して除いて比べる。
 - **確かめた範囲**: 非 GPU の触った family・NativeScope の GPU 2 件・A5 は緑(報告)。GPU・非 GPU・シナリオの全数は統合側(報告の時点で未実施)。
 
+<a id="rc6c-implementation"></a>
+
+**RC-6c で入った物(寿命。2026-10-30、`be795c9a5`、branch `agent/rc6`)。**仕様は `<作業ディレクトリ>/rc6_spec.md` §6、実装者の報告は `<作業ディレクトリ>/rc6c_report.md`。この段の行番号は `be795c9a5` の物。
+寿命の意味と 7 つの理由・example の数字は [RT メモ §2 の末尾](design_render_target_memory_reduction.md#rc6c-lifetime)に書いた。ここには plan の層として変わった所だけを書く。
+
+- **寿命の計算は 1 つの純粋な関数**: [`calculateTargetResourceLifetimes()`](../src/project/targetrenderplanning.cpp#L1594)(入力は canonical graph・検査済みの `FramePlanNodeOrder`・資源名ごとの理由、
+  出力は資源ごとの `used / first_use / last_use / retain`)。planner([`makeTargetLoweringGraph()`](../src/project/targetrenderplanning.cpp#L1625) の中。depth export の元を選んだ後に
+  [計算し直す所](../src/project/targetrenderplanning.cpp#L3820))と complete verifier([その所](../src/project/vulkancompletephysicalplan.cpp#L1822))が、それぞれ自分の入力から計算する。
+  前は 2 か所が別々に first / last を取り、別々に一律の末尾延長をしていた(planner は lowering の資源、verifier は自動計画の lowering の資源を見て延長)。
+- **理由は信頼する入力**: 理由は `VulkanTargetPlanRequest::retain_reasons` で planner に入り、`VulkanTargetPlan::retain_reasons` に残る(寿命の出力とは別の欄で、
+  dump にも package にも書かない)。verifier はこの欄を読み、package の `lifetime` の申告や自動計画の寿命を写さない。
+- **complete package の `lifetime.retain`**: complete の resource の `lifetime` が `retain` を持ち、parse・serialize・比較の対象になった。比べるのは `TargetResourceLifetime` の `==`
+  (`retain` を含む)で、`last_use` か `retain` を変えた package は stale な lifetime として断られる。complete package は NativeScope のための C++ の口のまま(RC-6b2)。
+- **dump**: `physical_target_plan` の `resources[]` と `lowering_graph.resources[]` の `lifetime.retain`(理由が無ければ欄なし)。policy の台帳と違い、理由は fingerprint に入る
+  ([`appendLifetimeFingerprint()`](../src/project/vulkanphysicalfragment.cpp#L301))。A5 は記録し直さず、寿命の欄と `automatic_plan_fingerprint` だけを除いて比べる(除く前に新しい寿命を期待値で検査。報告)。
+- **触らなかった層**: alias の適格性・runtime の共有・登録・representation・attachment の load / store・peak の定義。中間 RT の名前の readback の opt-in(policy の `retain`)は RC-7 に移した
+  (RC-6c では alias を変えないので中身は残る)。
+
 ### 2-4 `declared_bytes` = 0 — 埋める(決定 2026-10-22)
 
 - arena とは: [`RenderPipelineGpuArena`](../src/core/renderingpass/renderpipelinegpuarena.hpp)。**公開中の runtime 世代が所有する
@@ -419,7 +437,7 @@
 |---|---|---|---|
 | 0 | 文書の修正(2-7)、コードマップに 3-1 の「未使用」 | v0 可 | 文書のみ |
 | 1 | 2-4: `declared_bytes` を計測で埋める(RT メモ段 0 と同じ WP)。**RC-1 で済み(`631caac21`)** | v0 可(鍵は増えない) | planner 単体、手計算 120 / 81 MiB と一致 → 実測は 119.95 / 81.08 MiB(RT メモ §1) |
-| 2 | 2-3: 固定ルートの policy 一本化(語彙 → 強度・優先順位 → Pin / Freeze の置換 → package と RPC の削除)。**強度・優先順位は RC-6a1 で済み(`3fa229eba`)。語彙は RC-6a2 で済み(`a99725b5f`)。残りは Pin / Freeze の置換と package・RPC の削除(RC-6b)。Studio の Pin / Freeze の置換は RC-6b1 で済み(`a0367bd23`)。package・RPC の削除は RC-6b2 で済み(`4e21d7d03`)。**3-2 / 3-3: 選ばれなかった候補と 1 node scope を既定で隠す | v1(物理計画 WP。RT メモの区間詰めと同じ場所) | policy → plan の golden、Frame Plan の scenario(Pin / Freeze の置換後) |
+| 2 | 2-3: 固定ルートの policy 一本化(語彙 → 強度・優先順位 → Pin / Freeze の置換 → package と RPC の削除)。**強度・優先順位は RC-6a1 で済み(`3fa229eba`)。語彙は RC-6a2 で済み(`a99725b5f`)。残りは Pin / Freeze の置換と package・RPC の削除(RC-6b)。Studio の Pin / Freeze の置換は RC-6b1 で済み(`a0367bd23`)。package・RPC の削除は RC-6b2 で済み(`4e21d7d03`)。寿命を graph の外の読み手で決める形は RC-6c で済み(`be795c9a5`。2-3 の末尾)。**3-2 / 3-3: 選ばれなかった候補と 1 node scope を既定で隠す | v1(物理計画 WP。RT メモの区間詰めと同じ場所) | policy → plan の golden、Frame Plan の scenario(Pin / Freeze の置換後) |
 | 3 | 2-1: `execution_plan` の削除(上の表)。2-2: `levels` を契約から外す。**RC-2 で済み**(`e15e31bb5`、2026-10-23) | v1 | golden 不変、GPU gate、Studio scenario。RC-2 の実装者の報告では触った家族の非 GPU test 628 / 628 緑。GPU gate と Studio scenario は統合側で回す(この記録の時点で結果は未確認) |
 | 4 | 2-6: 段階 2 を typed 論理 graph に育て、core の JSON parse を消す。2-5 と preset レシピ化に合流 | v1 | 純ロジック test、golden 不変 |
 
