@@ -154,6 +154,19 @@ NodeIR {
 - engine が足す usage(sampled、history の転送、XR の外部 depth)はこの関数の中の 1 箇所の規則。
 - runtime に変わる値(shadow の layers)は静的な制約を記述に持ち、変わった時の検査を runtime に残す。
 - **追補(RC-3c2a、2026-10-25)**: 上の 4 項は実装された(§5 の「RC-3c2a で決まった細部」)。上の形と違う所は 3 つ。(1) 入力の「engine の規則」は引数ではなく、関数の中の [`engineImageUsage`](../src/project/generationresources.hpp#L51) 1 つで、それを物理計画の前の device への問いと、storage を統合した後の最終 usage の 2 時点で使う。(2) 「engine が足す usage(sampled、history の転送、XR の外部 depth)」のうち sampled は engine の規則ではなく、compose が graph image の宣言に足す bit(`requiredImageUsage`)のまま残した(planner の alias の適格性などが宣言の usage を読むため)。engine の規則が足すのは local read の input attachment・外部 depth の transfer_src・transient / tile-local の bit・history の transfer_dst。(3) 資源の検査は「この結果だけを使う」の通りだが、置き場は compiler program の CPU の仕上げ `completeGenerationResources`(`runRenderCompilerProgram` の最後)で、registration はその結果を受け取る。buffer の統合(全欄の一致)と `size_from_extent` の解決もこの関数が行う。
+- **追補(RC-7a、`2d1715cf3`、2026-10-31。名前の readback の約束 `retain`)**: 全体は [棚卸しメモ §2-3 の RC-7a](design_plan_layer_inventory.md#rc7a-implementation) と
+  [RT メモ §2 の末尾の RC-7a](design_render_target_memory_reduction.md#rc7a-readback)。行番号は `2d1715cf3` の物。
+  - **usage は generation、許可は program**: `completeGenerationResources` の前半(variant の IR と配置から `resolveGenerationResources` を呼ぶ所)を
+    [`resolveCompilerGenerationResources`](../src/core/renderingpass/rendercompilerprogram.cpp#L223) に取り出し、登録と、`retain` のある構成の物理計画が同じ resolver の答えを使う
+    ([計画の側](../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L672))。`retain` が成り立つかを見る実効の usage は、この generation 全体の答え(variant の和と engine の規則)。
+    一方、名前の readback を許すかは、読むのに使う snapshot の同じ program の物理計画だけで決まる([`validateTargetReadbackRetention`](../src/project/targetrenderplanning.cpp#L3771)、
+    [呼ぶ所](../src/core/vkcore/renderer.cpp#L5167))。同じ名前の資源が別の graph・variant で `retain` されていても、読む program の計画に理由 `readback`(か `present` / `capture`)が
+    無ければ `render_target.readback_not_retained@1`。program の切り替えと generation の更新の後は、その時の program で判定する(test「RC-7a F1 snapshot program and generation never
+    inherit another readback permission」)。
+  - **全 writer の store**: 採った `retain` の資源は、その資源を書く全部の attachment(mip / layer ごとに書く物を含む)の store が `store` になる。候補の ops と最終の `plan.attachments`
+    の両方で、最終の検証は論理 graph の書き手を数えて行の欠けも断る。attachment の無い書き手(compute・transfer・source 由来)は store の変更が要らない(仕様 §1.2)。
+  - **TRANSFER_SRC**: RC-7a は `retain` のために TRANSFER_SRC を足さない。宣言(compose が copy の読み手に足す `requiredImageUsage` の bit を含む)か engine の規則(外部 depth の
+    export の元)で付いていなければ約束は成り立たない。`retain` の分を自動で足すのは RC-7c。
 
 ### 2.5 pipeline の状態は「所有者ごと」
 

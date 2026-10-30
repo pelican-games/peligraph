@@ -365,6 +365,41 @@
   ([`appendLifetimeFingerprint()`](../src/project/vulkanphysicalfragment.cpp#L301))。A5 は記録し直さず、寿命の欄と `automatic_plan_fingerprint` だけを除いて比べる(除く前に新しい寿命を期待値で検査。報告)。
 - **触らなかった層**: alias の適格性・runtime の共有・登録・representation・attachment の load / store・peak の定義。中間 RT の名前の readback の opt-in(policy の `retain`)は RC-7 に移した
   (RC-6c では alias を変えないので中身は残る)。
+  → RC-7a で入った(下)。
+
+<a id="rc7a-implementation"></a>
+
+**RC-7a で入った物(名前の readback の約束。2026-10-31、`2d1715cf3`、branch `agent/rc7`)。**仕様は `<作業ディレクトリ>/rc7_spec.md` §1、実装者の報告は `<作業ディレクトリ>/rc7a_report.md` と修正の報告 2 本
+(`rc7a_fix_report.md` / `rc7a_fix2_report.md`)。この段の行番号は `2d1715cf3` の物。約束の意味・成り立たない条件・readback の拒否は
+[RT メモ §2 の末尾の RC-7a](design_render_target_memory_reduction.md#rc7a-readback)に書いた。ここには plan の層として変わった所だけを書く。
+
+- **鍵は RC-6a1 の台帳に 1 つ足しただけ**: 資源の `retain`(bool)を [読む所](../src/project/renderpipeline.cpp#L503) が台帳(`PlanningGraphConstraints::declarations`)に入れ、
+  再シリアライズの列挙([その所](../src/project/renderpipeline.cpp#L569))にも足した。優先・absent・結び付け・所有の検査・complete package との同居の拒否は鍵を区別しない既存の道を通る
+  (test「RC-7a F3 retain follows root recipe and part precedence and round trips」「RC-7a F3 retain ownership absence and complete exclusion」「RC-7a F3 replacing a same-name owner does not
+  carry its retain」)。`policy_invalid@1` の入口の条件([`validatePolicyInput()`](../src/project/targetrenderplanning.cpp#L1019))に `retain` の分は無く、external・buffer への `retain` は
+  入口ではなく下の条件で成り立たない(コードの読み)。
+- **候補・再試行ごとの作り直し**: RC-6a2 の候補の lambda の中の `build`([その所](../src/project/targetrenderplanning.cpp#L3895))が、再試行のたびに request の写しから始め、その時に採っている
+  `retain: true` ごとに理由 `readback` と automatic attachment の `store` を足し、寿命を [`calculateTargetResourceLifetimes()`](../src/project/targetrenderplanning.cpp#L1602) で計算し直した
+  workspace の写しで候補を作る。`CandidateDraft` に `retain_reasons` と `attachments` を足し、選んだ候補の分を `VulkanTargetPlan::retain_reasons` と `plan.attachments` にする
+  ([その所](../src/project/targetrenderplanning.cpp#L4125))。だから原因つきの再試行で外れた `prefer` の `retain` は、理由も store も残さない。materialize は `representation` と同じ扱いで、
+  [`materializingPolicy()`](../src/project/targetrenderplanning.cpp#L1040) が `representation` と `retain: true` の両方を真にする(台帳に派生の行は足さない)。alias の組の失敗の原因
+  ([その所](../src/project/targetrenderplanning.cpp#L3460))では `retain: true` が `no_alias: true` と同じ扱いで原因に入る。
+- **実効の usage の出所**: `VulkanTargetPlanRequest::effective_image_usage` と `VulkanTargetPlan::effective_image_usage`(資源名 → `ImageUsage`。header の注記どおり compiler の事実で、
+  dump にも package にも書かない)。`retain: true` があるときは、compiler program が先に全 variant を 1 度計画し、登録の `completeGenerationResources()` と同じ
+  [`resolveCompilerGenerationResources()`](../src/core/renderingpass/rendercompilerprogram.cpp#L223)(RC-7a で `completeGenerationResources()` から取り出した generation の統合)の答えを使う
+  ([その所](../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L672))。variant の宣言の和・history・XR の depth export・storage の分の engine の規則は resolver の中だけにあり、
+  compiler 側に別の式を重ねない(1 回目の修正の報告の 1。XR だけが depth export をする構成で flat の候補も TRANSFER_SRC を持つ test「RC-7a fix generation usage includes XR depth export」)。
+  先の 1 度の計画は `retain` を `representation: materialized` に置き換えて行う(登録の storage に合わせ、transfer の bit は作らない)。`retain` が無ければ先の計画はせず、
+  表は宣言と `engineImageUsage()` から作る([その所](../src/core/renderingpass/renderingsamplecount.cpp#L1626))。planner の中では、選んだ depth export の元に TRANSFER_SRC を足す
+  ([その所](../src/project/targetrenderplanning.cpp#L3883))。alias の適格性と device への問いは今までどおり宣言の usage を読む(2 回目の修正の報告の 1)。
+- **最終の検証が見る物**: [`validateVulkanTargetPlanRequirements()`](../src/project/targetrenderplanning.cpp#L3786) は `policySatisfied()` に `plan.attachments` と `plan.effective_image_usage` を
+  渡す([その所](../src/project/targetrenderplanning.cpp#L3800))。`retain` は [`retainContractFailure()`](../src/project/targetrenderplanning.cpp#L3343) で、資源の表現・format・sample と resolve・
+  usage・寿命(末尾と理由 `readback`)・全部の attachment の書き手の store を、計画の実物から読む。書き手は論理 graph の use から数え(明示の attachment intent の全 node と、automatic intent の
+  render / output_transform の node)、`plan.attachments` に行が無い書き手も破れにする(行を消した計画が素通りしない)。候補の段も同じ関数で判定し、`require` が 3 候補とも成り立たないと
+  `target_planning.retain_unsatisfiable@1`([その所](../src/project/targetrenderplanning.cpp#L3971))。
+- **readback の許可は program の計画**: 許可の判定 [`validateTargetReadbackRetention()`](../src/project/targetrenderplanning.cpp#L3771) は 1 つの `VulkanTargetPlan` だけを見る。generation の
+  usage は variant の和でも、読めるかどうかは読む program の計画で決まる(コードの注記)。
+- **A5 と 16 構成**: `retain` を書かない project は計画が byte 一致(RC-6 の A5 は除外を増やさず、`283aacc05` の 16 構成は fingerprint も含めて一致。報告)。
 
 ### 2-4 `declared_bytes` = 0 — 埋める(決定 2026-10-22)
 
@@ -437,7 +472,7 @@
 |---|---|---|---|
 | 0 | 文書の修正(2-7)、コードマップに 3-1 の「未使用」 | v0 可 | 文書のみ |
 | 1 | 2-4: `declared_bytes` を計測で埋める(RT メモ段 0 と同じ WP)。**RC-1 で済み(`631caac21`)** | v0 可(鍵は増えない) | planner 単体、手計算 120 / 81 MiB と一致 → 実測は 119.95 / 81.08 MiB(RT メモ §1) |
-| 2 | 2-3: 固定ルートの policy 一本化(語彙 → 強度・優先順位 → Pin / Freeze の置換 → package と RPC の削除)。**強度・優先順位は RC-6a1 で済み(`3fa229eba`)。語彙は RC-6a2 で済み(`a99725b5f`)。残りは Pin / Freeze の置換と package・RPC の削除(RC-6b)。Studio の Pin / Freeze の置換は RC-6b1 で済み(`a0367bd23`)。package・RPC の削除は RC-6b2 で済み(`4e21d7d03`)。寿命を graph の外の読み手で決める形は RC-6c で済み(`be795c9a5`。2-3 の末尾)。**3-2 / 3-3: 選ばれなかった候補と 1 node scope を既定で隠す | v1(物理計画 WP。RT メモの区間詰めと同じ場所) | policy → plan の golden、Frame Plan の scenario(Pin / Freeze の置換後) |
+| 2 | 2-3: 固定ルートの policy 一本化(語彙 → 強度・優先順位 → Pin / Freeze の置換 → package と RPC の削除)。**強度・優先順位は RC-6a1 で済み(`3fa229eba`)。語彙は RC-6a2 で済み(`a99725b5f`)。残りは Pin / Freeze の置換と package・RPC の削除(RC-6b)。Studio の Pin / Freeze の置換は RC-6b1 で済み(`a0367bd23`)。package・RPC の削除は RC-6b2 で済み(`4e21d7d03`)。寿命を graph の外の読み手で決める形は RC-6c で済み(`be795c9a5`。2-3 の末尾)。名前の readback の約束の鍵 `retain` は RC-7a で足した(`2d1715cf3`。2-3 の末尾)。**3-2 / 3-3: 選ばれなかった候補と 1 node scope を既定で隠す | v1(物理計画 WP。RT メモの区間詰めと同じ場所) | policy → plan の golden、Frame Plan の scenario(Pin / Freeze の置換後) |
 | 3 | 2-1: `execution_plan` の削除(上の表)。2-2: `levels` を契約から外す。**RC-2 で済み**(`e15e31bb5`、2026-10-23) | v1 | golden 不変、GPU gate、Studio scenario。RC-2 の実装者の報告では触った家族の非 GPU test 628 / 628 緑。GPU gate と Studio scenario は統合側で回す(この記録の時点で結果は未確認) |
 | 4 | 2-6: 段階 2 を typed 論理 graph に育て、core の JSON parse を消す。2-5 と preset レシピ化に合流 | v1 | 純ロジック test、golden 不変 |
 

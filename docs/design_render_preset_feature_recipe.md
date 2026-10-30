@@ -363,3 +363,18 @@ develop_v1 の `1e05031d7` / `e17754510`。仕様は `<作業ディレクトリ>
   `physical_plans.*.automatic_plan_fingerprint` と `physical_plans.*.{resources,lowering_graph.resources}[*].lifetime.{last_use,retain}` だけを除いて比べる。
   `used`・`first_use`・資源の集合・alias の組・representation・attachment の ops・cost は除かない。16 構成・3203 assertions が緑(報告)。
 - 固定 package の物理値から、登録の placement・generation の image・allocation token・bytes も照らす(報告の E3。alias の組と登録は RC-6c の前と同じ)。
+
+### 7.12 RC-7a(名前の readback の約束 `retain`、2026-10-31)
+
+`2d1715cf3`(branch `agent/rc7`)。仕様は `<作業ディレクトリ>/rc7_spec.md` §1、報告は `<作業ディレクトリ>/rc7a_report.md` と修正の報告 2 本。約束の意味は
+[RT メモ §2 の末尾の RC-7a](design_render_target_memory_reduction.md#rc7a-readback)。レシピと部品、16 構成に関わる所だけ書く。
+
+- **書ける所**: 資源の `retain` は §7.8 の 3 つの置き場(root・`@2` のレシピの `config.target_planning`・feature と構造の断片)に書ける。名前の所有の規則・優先(root > レシピ > 部品)・
+  裸の値の強さ(root は `require`、ほかは `prefer`)は §7.8 / §7.9 のまま。test「RC-7a F3 retain follows root recipe and part precedence and round trips」: feature の `retain: true` が
+  `adopted` で読め、root の `false` で `overridden` になって readback が断られる。構造の断片の `true` はレシピの `false` に負ける。
+- **所有と置き換え**: feature が自分の宣言しない名前(例 `lit_color`)に書くと `target_planning.policy_foreign_name@1`。`fragment_overrides` で断片を置き換えると、元の断片の `retain` は
+  置き換え先に移らない(test「RC-7a F3 replacing a same-name owner does not carry its retain」)。
+- **TRANSFER_SRC**: RC-7a では宣言に要る。test の feature は bloom の `Bloom_Threshold_RT` の `usage` に `TRANSFER_SRC` を足してから `retain` を書いている。
+- **16 構成**: `retain` を書かない 16 構成は、`283aacc05` で記録した `<作業ディレクトリ>/rc7_baseline/rc5` と fingerprint を含めて完全一致(test「RC-7a F4 unchanged HEAD baseline including fingerprints」、
+  [その所](../test/rc5_recipe_compiler_test.inc#L522)。`[.]` で手で走らせる)。§7.2 の A5 は RC-6c の除外のまま(除外を増やしていない。報告)。
+- **出荷の文書**: engine の feature・断片・レシピと `projects/` に `retain` を書いた物は無い(検索で 0 件)。

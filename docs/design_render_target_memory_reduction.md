@@ -1,7 +1,7 @@
 # 不要な render target の削減: 寿命の正確化と区間詰めによるメモリ共有
 
 対象読者: エンジン担当(描画コンパイラ / renderer)。
-ステータス: 改善案メモ(2026-10-16。議論の記録。WP 化・レビュー前)。段 0(計測)は RC-1 で済み(2026-10-23、`631caac21`。§5)。合計の数え方を実際の確保に合わせる RC-1b も済み(`504a6492a`。§5)。段 1 の寿命の部分(A)は RC-6c で済み(2026-10-30、`be795c9a5`。[§2 の末尾](#rc6c-lifetime)と §5)。
+ステータス: 改善案メモ(2026-10-16。議論の記録。WP 化・レビュー前)。段 0(計測)は RC-1 で済み(2026-10-23、`631caac21`。§5)。合計の数え方を実際の確保に合わせる RC-1b も済み(`504a6492a`。§5)。段 1 の寿命の部分(A)は RC-6c で済み(2026-10-30、`be795c9a5`。[§2 の末尾](#rc6c-lifetime)と §5)。中間の RT を名前で読む約束(`retain`)は RC-7a で済み(2026-10-31、`2d1715cf3`。[§2 の末尾の RC-7a](#rc7a-readback)と §5)。
 前提: マニュアル [第6章 §6.6 target planning](manual/06_rendering.md#target-planning-tree)、
 [design_render_pipeline_extensibility.md](design_render_pipeline_extensibility.md)、
 [v1 開発計画](v1_development_plan.md)「保守上の整理候補」。
@@ -99,6 +99,54 @@ Studio / RenderDoc のキャプチャ、外部 depth export)。用途が特定�
 - **RC-7 に残した物**: alias の適格性の拡張、縮んだ寿命による領域の使い回し(§3 の区間詰め)、discard / store の最適化(§4)、実メモリの削減、
   名前の readback の opt-in(policy の `retain` と、`retain` の無い RT の名前の readback の拒否、test の 144 か所の移行)、使い回した領域の readback の中身の test。
   RC-6c では alias を変えないので中間の RT の中身は残り、名前の readback は今のまま動く。XR mirror の中間と buffer の readback は、image の保持理由で守られているとは扱わない(報告)。
+  → 名前の readback の opt-in・拒否・test の移行は RC-7a で済んだ(下)。
+
+<a id="rc7a-readback"></a>
+
+**RC-7a で変わった(2026-10-31、`2d1715cf3`。名前の readback の約束)。**仕様は `<作業ディレクトリ>/rc7_spec.md` の冒頭(利用者の決定 7 点。下の §5)と §1、実装者の報告は
+`<作業ディレクトリ>/rc7a_report.md` と修正の報告 2 本(`rc7a_fix_report.md` / `rc7a_fix2_report.md`)。この段の行番号は `2d1715cf3` の物。alias の作り方(アルゴリズム)は変えていない。
+
+- **約束の鍵 `retain`**: `target_planning.graphs.<g>.resources.<r>.retain`。値は bool か `{value, strength}`(RC-6a1 の形)。`retain: true` は「この資源は graph の後に名前で読める」の約束。
+  台帳・出所・優先(root > レシピ > 部品)・所有の検査・結び付け・absent・complete package との同居の拒否は RC-6a1 の道のまま([読む所](../src/project/renderpipeline.cpp#L503)、
+  再シリアライズの鍵の列挙は [その所](../src/project/renderpipeline.cpp#L569))。全体の流れは [棚卸しメモ §2-3 の RC-7a](design_plan_layer_inventory.md#rc7a-implementation)。
+- **寿命の理由 `readback`**: 採った `retain: true` の資源に理由 `readback` を足し、RC-6c の寿命の関数で末尾まで延ばす。上の表の engine の 7 つの理由(compiler が持つ事実から作る)とは
+  別の入力で、policy から来る。理由の一覧([`isTargetResourceRetainReason()`](../src/project/targetrenderplanning.cpp#L1595))は 8 つになった。dump の `lifetime.retain` にも `readback` が出る。
+- **候補ごと・再試行ごとに作り直す**([その所](../src/project/targetrenderplanning.cpp#L3905)): 各候補の各再試行で、その時に採っている `retain: true` から、理由 `readback`・
+  その資源を書く attachment の全部の `store_op: store`・寿命を作り直す。選んだ候補の分が `plan.attachments` と `VulkanTargetPlan::retain_reasons` に残る。表現は派生の
+  `representation: materialized` で、台帳に行を足さず `retain` の行の強さ・出所のまま効く([`materializingPolicy()`](../src/project/targetrenderplanning.cpp#L1040))。原因つきの再試行で
+  `prefer` の `retain` が外れた候補には、理由も store も残らない(test「RC-7a F2 causal alias retries erase dropped retain lifetime and operations」)。
+- **TRANSFER_SRC は RC-7a では宣言に要る**: 利用者の決定 1 は「planner が materialized・store・TRANSFER_SRC を足す」だが、RC-7a は TRANSFER_SRC を足さない(仕様 §1.2 の一時的なずれ)。
+  usage は宣言・variant の和・device への問い・登録で決まり、その道は RC-7c で device facts と一緒に作るので、自動で足すのはそこ。RC-7a では generation の実効の usage
+  (登録と同じ resolver の答え。下の「実効の usage」)に TRANSFER_SRC が無ければ約束は成り立たない。
+- **成り立たない条件**([`retainContractFailure()`](../src/project/targetrenderplanning.cpp#L3343)): 使われる物理 image が無い(宣言だけで graph が使わない image を含む)、
+  materialized の image でない(external と buffer は不可)、format が color か D32 でない、resolve の無い multisample、実効の usage に TRANSFER_SRC が無い、寿命が末尾に届かないか
+  理由 `readback` が無い、attachment の書き手に store でない物か対応する attachment の行の無い物がある。`require` が 3 候補とも成り立たなければ
+  `target_planning.retain_unsatisfiable@1`(`graph`・`resource`・`declaration`・`candidates`。[投げる所](../src/project/targetrenderplanning.cpp#L3978))。`prefer` は `infeasible_prefer` で外れ、
+  その RT の名前の readback は断られる(test「RC-7a F2 unsupported usage rejects require and discards prefer without residue」)。
+- **最終の検証**: [`validateVulkanTargetPlanRequirements()`](../src/project/targetrenderplanning.cpp#L3786) が、採った `require` の `retain` を結果の資源・`plan.attachments`・
+  `plan.effective_image_usage` から同じ条件で確かめ直す。破れは RC-6a2 と同じ `target_planning.requirement_unsatisfied@1`。見る書き手は、明示の attachment intent の全 node と、
+  automatic intent の render / output_transform の node(1 回目の修正の報告の 2。ToneMap → `display_output` の行を消した計画・`dont_care` にした計画を断る test)。
+- **`retain: false`**: 採った `false` は下位の `true` を打ち消すだけ(RC-6a1 の優先)。engine の 7 つの理由は消えない(test「RC-7a F3 false preserves independent engine retention」)。
+- **名前の readback の拒否**: `Renderer::readRenderTargetForTesting()`([検査を呼ぶ所](../src/core/vkcore/renderer.cpp#L5167)。R8 版は委譲)は、読むのに使う snapshot の同じ program の
+  `frame_graph.target_plan` だけを見る([`validateTargetReadbackRetention()`](../src/project/targetrenderplanning.cpp#L3771))。その資源の理由に `readback`・`present`・`capture` の
+  どれかがあれば読める。plan が無い・資源が無い・理由が無ければ `render_target.readback_not_retained@1`(`resource`・`graph`・`reason`)。`persistent` / `picking` / `history` /
+  `xr_mirror` / `external_depth_export` だけでは読めない。別の program・variant や、generation を更新する前の許可は持ち越さない(test「RC-7a F1 snapshot program and generation never
+  inherit another readback permission」)。program が無いときは前と同じ `render-target readback requires a compiled render pipeline` が先(1 回目の修正の報告の 4)。最終出力は今までどおり
+  FrameTarget の readback / capture の道で読み、`retain` は要らない。名前の readback の口は test 用の C++ だけで、RPC には無い(コードの読み)。
+- **実効の usage**: `retain: true` がどこかの variant で採られているときだけ、compiler program が全 variant を 1 度、`retain` を `representation: materialized` に置き換えて
+  (TRANSFER_SRC は足さずに)計画し、登録と同じ resolver [`resolveCompilerGenerationResources()`](../src/core/renderingpass/rendercompilerprogram.cpp#L223) の答えから資源名 → usage を作る
+  ([その所](../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L672))。その表を本計画の各候補と最終の検証に渡す。alias の適格性と device への問いは宣言の usage のまま
+  (2 回目の修正の報告の 1。無関係な transient の image の representation と usage が変わらない GPU の test)。`retain` が無ければ、表は宣言と engine の規則から作り
+  ([その所](../src/core/renderingpass/renderingsamplecount.cpp#L1626))、先の 1 度の計画はしない。
+- **test の移行**: 名前の readback を使う test は、読む資源だけに `retain: true` を compile の前に足す(`TestSupport::retainObserved()`)。Catch の listener が fixture・graph・variant ごとに
+  「採った `retain` の集合 = 成功した readback の集合」を確かめる(成功が 0 回でも、SKIP した実行は除く)。移行した呼び出しは 144 か所(汎用 135・R8 9)。修正の報告の実測は、
+  fixture・graph・variant の組 189、成功した readback 977 回、一意の資源名 105、不一致 0。移行の途中で余分な `retain` が 1 つ見つかり(読まない FP-1 の test が共通の builder の
+  `show_image` を retain していた)、読む PS-1 の fixture だけに移した。
+- **変えなかった物**: `retain` を書かない project の計画。RC-6 の A5(除外は RC-6c のまま)と、`283aacc05` で記録した 16 構成(`<作業ディレクトリ>/rc7_baseline/rc5`)が fingerprint を含めて
+  一致する(test「RC-7a F4 unchanged HEAD baseline including fingerprints」。`[.]` で手で走らせる)。
+- **確かめた範囲**: 統合側で GPU 全数・非 GPU 全数・シナリオ 23 本が緑(既知の環境由来の赤のみ)。既存の SKIP 3 件(画像の基準が無い 2 件と CB-1 の 08)は未検証。
+- **RC-7 に残した物**: TRANSFER_SRC の自動の付け足し(RC-7c)、alias の適格性の拡張(RC-7b)、形の違う区間詰め(RC-7c)、memory の種類ごとの確保(RC-7d)、
+  使われない RT の確保の除去(RC-7e)。段の並びは §5。
 
 ## 3. B: alias を区間詰めに一般化する(本丸)
 
@@ -152,8 +200,8 @@ renderer(executePlannedFrameGraph)
 | 段 | 内容 | 規模 | 検証 |
 |---|---|---|---|
 | 0 | 計測: `get_frame_plan` に `memory_summary {total_bytes, peak_live_bytes, peak_node}` と資源ごとの `bytes` を出す。Studio の Frame Plan に表示。**RC-1 で済み(`631caac21`)** | 小 | planner の単体テスト(GPU 不要)。手計算の 120 / 81 MiB と一致 → 実測は 119.95 / 81.08 MiB(合計のずれは §1 の注) |
-| 1 | A: required / require_store の末尾延長の理由を特定し、必要な経路だけ opt-in に。**寿命の意味は RC-6c で済み(`be795c9a5`。graph の外の読み手 7 つを理由に)。実確保の削減と名前の readback の opt-in は RC-7** | 小〜中 | 物理計画の fixture 差分、golden 不変、headless 読み出し・picking・capture の回帰 |
-| 2 | B: 区間詰め alias(planner → runtime → barrier) | 大 | planner 単体(詰め結果の決定性、no_alias、memoryTypeBits 拒否)、GPU gate 全数、`hazard_stress` での揺さぶり、validation layer |
+| 1 | A: required / require_store の末尾延長の理由を特定し、必要な経路だけ opt-in に。**寿命の意味は RC-6c で済み(`be795c9a5`。graph の外の読み手 7 つを理由に)。名前の readback の opt-in は RC-7a で済み(`2d1715cf3`)。実確保の削減は RC-7b〜7e** | 小〜中 | 物理計画の fixture 差分、golden 不変、headless 読み出し・picking・capture の回帰 |
+| 2 | B: 区間詰め alias(planner → runtime → barrier)。**RC-7b〜7e に分けた(下の「RC-7 の段」)** | 大 | planner 単体(詰め結果の決定性、no_alias、memoryTypeBits 拒否)、GPU gate 全数、`hazard_stress` での揺さぶり、validation layer |
 | 3 | C: dead pass elimination、store 自動 discard | 中 | frame plan の fixture、golden 不変 |
 
 0 と 1 は純ロジック中心。2 は GPU gate 必須(Windows)。
@@ -168,6 +216,28 @@ RC-1b の完了記録(2026-10-23、`504a6492a`。検証は実装者の報告と�
 Studio の Frame Plan 153)と GPU 5 件(NativeScope 2・complete の順序の拒否と融合の実行 2・XR multiview と depth export 1)が緑。A5 は baseline を記録し直さずに 16 構成が一致
 (寿命の欄と寿命から作る fingerprint だけを除いて比べ、除く前に資源ごとの新しい `last_use` と `retain` を期待値の表で検査)。対照: 共通の関数から `picking` を外すと E1 が赤、
 verifier だけ一律の延長に戻すと正常な package の検証が赤。golden の全画像と GPU・シナリオの全数は統合側(報告の時点で未実施)。
+
+<a id="rc7-stages"></a>
+
+**RC-7 の段と利用者の決定(2026-10-30)。**仕様は `<作業ディレクトリ>/rc7_spec.md`(冒頭と §2。RC-7b〜7e は骨組みで、それぞれの前に詰める)。段 1 の残り(実確保の削減)と段 2 を RC-7 として次の順に分けた。
+
+1. **RC-7a** readback の約束(✅ 済み。下の完了記録)。
+2. **RC-7b** 同じ形の共有の条件を広げる(offset 0・既存の barrier のまま。広げた後の画像の契約の互換と frame の境界での使い回しの同期を完了の条件に入れる)。
+3. **RC-7c** 形の違う区間詰め(retain の資源への TRANSFER_SRC の自動の付け足し、device facts の memory requirements、memory の種類ごとの heap と offset、`alias_reuse` の barrier)。
+4. **RC-7d** memory の種類ごと(transient / tile-local を同じ allocator の道へ。lazily allocated は作り物の device facts の CPU test まで)。
+5. **RC-7e** 使われない RT の確保の除去。
+
+利用者の決定(仕様の冒頭の 7 点の要約): (1) `retain: true` は「graph の後に名前で読める」の約束で、planner が materialized・store・TRANSFER_SRC を足す(TRANSFER_SRC は RC-7c から。
+上の RC-7a の節)。成り立たなければ `require` は名前付きの拒否、`prefer` は不採用で readback も拒否。`retain` の無い中間の RT の名前の readback は拒否。test は観測する資源だけに
+`retain` を書く。(2) `retain: false` は下位の readback の指定だけを打ち消し、engine の保持(7 つの理由)は消せない。(3) memory の種類が合わない・facts が不明・dedicated が必須の物は、
+自動の共有をやめて分けた確保に戻す。明示の `require` だけ拒否。(4) graph / variant をまたぐ配置は generation 全体で安全な 1 つにし、共有を外した理由は dump に出す。(5) 使い回しの
+barrier は最初は既存並みに広く、精密化は別の段。(6) dead pass の除去と store の自動 discard は RC-7 の外(§4)、使われない RT の確保の除去は RC-7。(7) 合格は heap / offset の適法性・
+実確保の減少・golden 不変・validation layer の警告なし。
+
+RC-7a の完了記録(2026-10-31、`2d1715cf3`、branch `agent/rc7`。検証は実装者の報告と統合側): 内容は [§2 の末尾の RC-7a](#rc7a-readback)。実装者の報告(2 回目の修正の後)では、
+RC-7a の test 24 件(期待どおりに失敗する対照 1 件と SKIP の対照 1 件を含む)・A5 と F4 の各 16 構成・移行した GPU の test file が緑。対照: 拒否を外すと F1、派生の materialize・store の付け足し・
+`readback` の寿命の理由のどれかを外すと F2 の対応する検査が赤。統合側で GPU 全数・非 GPU 全数・シナリオ 23 本が緑(既知の環境由来の赤のみ)。既存の SKIP 3 件(画像の基準が無い 2 件と
+CB-1 の 08)は未検証。
 
 ## 6. 未決(2026-10-17 更新)
 
