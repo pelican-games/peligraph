@@ -3352,9 +3352,7 @@ struct PlanningNames {
     std::set<std::string, std::less<>> resources;
 };
 
-std::optional<PlanningNames> planningNamesOf(const Json &composed, std::string_view graph) {
-    const auto render_graph =
-        parseRenderGraph(composed, buildPassFieldOwnershipCapabilities());
+std::optional<PlanningNames> planningNamesOf(const RenderGraphIR &render_graph, std::string_view graph) {
     const auto *found = findGraph(render_graph, graph);
     if (found == nullptr) return std::nullopt;
     PlanningNames names;
@@ -3377,6 +3375,10 @@ std::optional<PlanningNames> planningNamesOf(const Json &composed, std::string_v
         }
     }
     return names;
+}
+
+std::optional<PlanningNames> planningNamesOf(const Json &composed, std::string_view graph) {
+    return planningNamesOf(parseRenderGraph(composed, buildPassFieldOwnershipCapabilities()), graph);
 }
 
 } // namespace
@@ -3655,8 +3657,9 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
     auto catalog = OrderedJson::object();
     // Recovery tools still need the declarations when strict IR parsing fails.
     try {
-        for (const auto &graph : parseRenderGraph(resolved.config, buildPassFieldOwnershipCapabilities()).graphs) {
-            const auto names = planningNamesOf(resolved.config, graph.name);
+        const auto render_graph = parseRenderGraph(resolved.config, buildPassFieldOwnershipCapabilities());
+        for (const auto &graph : render_graph.graphs) {
+            const auto names = planningNamesOf(render_graph, graph.name);
             catalog[graph.name]["nodes"] = names->nodes;
             catalog[graph.name]["resources"] = names->resources;
             auto forced = OrderedJson::object();

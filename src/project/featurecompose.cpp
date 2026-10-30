@@ -3513,7 +3513,10 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         if (dependencies.materialized_feature)
             dependencies.materialized_feature(loaded.instance.ref,
                 boundFeatureDocument(std::move(materialized_document), resolved_parameters));
-        planning_owners.emplace(loaded.instance.ref, feature);
+        // Only a policy-bearing owner needs a separate declaration inventory.
+        if (feature.contains("target_planning") || feature.contains("vulkan_plan_pins") ||
+            feature.contains("vulkan_physical_fragments"))
+            planning_owners.emplace(loaded.instance.ref, feature);
         addRenderTargets(
             composed, feature, target_names,
             loaded.name, loaded.instance.ref,
@@ -3732,11 +3735,12 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
             }
             // Ownership includes only integrations selected by the same
             // feature/pass predicates as composition, never required targets.
-            auto &owner = planning_owners.at(provider.reference);
-            for (const auto *key : {"render_targets", "buffers", "passes", "compute_tasks"}) {
-                if (!fragment.contains(key)) continue;
-                if (!owner.contains(key)) owner[key] = nlohmann::json::array();
-                for (const auto &entry : fragment.at(key)) owner[key].push_back(entry);
+            if (const auto owner = planning_owners.find(provider.reference); owner != planning_owners.end()) {
+                for (const auto *key : {"render_targets", "buffers", "passes", "compute_tasks"}) {
+                    if (!fragment.contains(key)) continue;
+                    if (!owner->second.contains(key)) owner->second[key] = nlohmann::json::array();
+                    for (const auto &entry : fragment.at(key)) owner->second[key].push_back(entry);
+                }
             }
             const auto integration_provider =
                 provider.name + "/" +
@@ -3793,6 +3797,15 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     }
     // Bind selected declarations while all original owners still exist.
     // Replacement/inactive only marks identities; it never rebinds names.
+    auto planning_root_bindings = parseTargetPlanningPolicy(composed);
+    const auto has_targets = [](const auto &policy) {
+        return std::any_of(policy.graphs.begin(), policy.graphs.end(),
+            [](const auto &graph) { return !graph.declarations.empty(); });
+    };
+    const bool needs_planning_targets = has_targets(planning_root_bindings) ||
+        std::any_of(planning_sources.begin(), planning_sources.end(),
+            [&](const auto &source) { return has_targets(source.policy); }) ||
+        (common_graph && config.contains("fold_groups"));
     std::vector<PlanningPolicyTarget> planning_targets;
     const auto add_planning_target = [&](PlanningTargetKind kind, const std::string &family,
                                          const std::string &name, bool task = false) {
@@ -3802,17 +3815,18 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         if (std::none_of(planning_targets.begin(), planning_targets.end(), [&](const auto &t) { return t.binding.owner == target.binding.owner; }))
             planning_targets.push_back(std::move(target));
     };
-    for (const auto &family : composed.value("rendering_passes", nlohmann::json::array()))
-        for (const auto &pass : family.at("passes"))
-            add_planning_target(PlanningTargetKind::node, family.at("name"), pass.at("name"));
-    for (const auto &run : lowered_graph.placed_runs) for (const auto &pass : run.passes)
-        add_planning_target(PlanningTargetKind::node, run.family, pass.at("name"));
-    for (const auto &task : composed.value("compute_tasks", nlohmann::json::array()))
-        add_planning_target(PlanningTargetKind::node, {}, task.at("name"), true);
-    for (const auto *key : {"render_targets", "buffers"})
-        for (const auto &resource : composed.value(key, nlohmann::json::array()))
-            add_planning_target(PlanningTargetKind::resource, {}, resource.is_string() ? resource.get<std::string>() : resource.at("name").get<std::string>());
-    auto planning_root_bindings = parseTargetPlanningPolicy(composed);
+    if (needs_planning_targets) {
+        for (const auto &family : composed.value("rendering_passes", nlohmann::json::array()))
+            for (const auto &pass : family.at("passes"))
+                add_planning_target(PlanningTargetKind::node, family.at("name"), pass.at("name"));
+        for (const auto &run : lowered_graph.placed_runs) for (const auto &pass : run.passes)
+            add_planning_target(PlanningTargetKind::node, run.family, pass.at("name"));
+        for (const auto &task : composed.value("compute_tasks", nlohmann::json::array()))
+            add_planning_target(PlanningTargetKind::node, {}, task.at("name"), true);
+        for (const auto *key : {"render_targets", "buffers"})
+            for (const auto &resource : composed.value(key, nlohmann::json::array()))
+                add_planning_target(PlanningTargetKind::resource, {}, resource.is_string() ? resource.get<std::string>() : resource.at("name").get<std::string>());
+    }
     bindPlanningPolicyTargets(planning_root_bindings, planning_targets, dependencies.frame_node_order_suffix);
     for (auto &source : planning_sources)
         bindPlanningPolicyTargets(source.policy, planning_targets, dependencies.frame_node_order_suffix);

@@ -3439,6 +3439,13 @@ void applyCandidateAliasPolicy(const CompiledLogicalRenderGraph &graph, const Ta
         .node_constraints = request.node_constraints, .resource_constraints = request.resource_constraints,
         .legal_alias_candidates = legal};
     draft.opportunities = analyzeLogicalPlanningOpportunities(graph, request.node_order, input);
+    const bool has_alias_groups = std::any_of(draft.policy.begin(), draft.policy.end(), [](const auto &entry) {
+        return activePolicy(entry) && entry.key == "alias_group";
+    });
+    if (!has_alias_groups) {
+        draft.alias_groups = buildAliasGroups(draft.opportunities.alias_candidates);
+        return;
+    }
     // Explicit groups may recover opportunities suppressed by a debug/stress
     // profile, but never bypass no_alias, isolate or physical compatibility.
     input.profile = {};
@@ -3694,6 +3701,7 @@ PhysicalNodeOrder physicalNodeOrderOf(std::span<const VulkanPhysicalScopePlan> s
 
 void validateVulkanTargetPlanRequirements(const CompiledLogicalRenderGraph &graph, VulkanTargetPlan &plan) {
     auto failures = nlohmann::json::array();
+    if (plan.policy.empty()) return;
     bool executable_scopes = true;
     for (const auto &scope : plan.scopes)
         if (hasScopePolicy(plan.policy) && !executableScopeAttachments(scope, plan.resources, plan.attachments)) {
@@ -3806,7 +3814,9 @@ VulkanTargetPlan compileVulkanTargetPlan(
             }
             auto draft = buildCandidateDraft(canonical_graph, workspace, endpoint, tile, transient, input,
                 sample_count_plan ? &*sample_count_plan : nullptr, view_execution, external_depth_export);
-            finishCandidatePolicy(canonical_graph, workspace, input, draft);
+            // Without policy, candidate feasibility and cost do not use alias
+            // analysis. Materialize it once for the selected candidate below.
+            if (!input.policy.empty()) finishCandidatePolicy(canonical_graph, workspace, input, draft);
             applyAttachmentBudget(draft, canonical_graph, endpoint);
             if (!input.policy.empty()) appendPhysicalFailureCauses(canonical_graph, input, endpoint, draft);
             return draft;
@@ -3884,7 +3894,7 @@ VulkanTargetPlan compileVulkanTargetPlan(
     if (policy_preferred) for (auto &d : selection.decisions)
         if (d.id == "pelican.plan.backend_candidate_selected@1") d.detail = "policy preference followed by deterministic cost tuple";
     const auto selected_name = selection.selected_candidate;
-    const auto &selected_draft =
+    auto &selected_draft =
         selected_name == tile_local.name ? tile_local
         : selected_name == transient.name ? transient
                                           : materialized;
@@ -3897,6 +3907,8 @@ VulkanTargetPlan compileVulkanTargetPlan(
             selected_name);
     }
 
+    if (request.policy.empty())
+        finishCandidatePolicy(canonical_graph, workspace, request, selected_draft);
     auto opportunities = selected_draft.opportunities;
     auto alias_groups = selected_draft.alias_groups;
 

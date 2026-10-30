@@ -896,6 +896,10 @@ TargetPlanningPolicy parseTargetPlanningPolicy(const nlohmann::json &config,
 
 PlanningPolicySource collectPartPlanningPolicy(const nlohmann::json &document, PlanningOrigin origin) {
     PlanningPolicySource result{parseTargetPlanningPolicy(document, {}, origin)};
+    // No target declarations need ownership validation (including profile-only policy).
+    if (std::none_of(result.policy.graphs.begin(), result.policy.graphs.end(),
+                     [](const auto &graph) { return !graph.declarations.empty(); }))
+        return result;
     std::set<std::string> nodes, resources;
     const auto names = [](const nlohmann::json &list, auto &out, bool wrapped = false) {
         if (!list.is_array()) return;
