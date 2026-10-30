@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -90,9 +91,20 @@ struct TargetResourceLifetime {
     bool used = false;
     std::size_t first_use = 0;
     std::size_t last_use = 0;
+    std::vector<std::string> retain;
 
     bool operator==(const TargetResourceLifetime &) const = default;
 };
+
+// Compiler facts, never taken from a complete package's lifetime claims.
+using TargetResourceRetainReasons =
+    std::map<std::string, std::vector<std::string>, std::less<>>;
+bool isTargetResourceRetainReason(std::string_view reason);
+std::map<std::string, TargetResourceLifetime, std::less<>>
+calculateTargetResourceLifetimes(
+    const CompiledLogicalRenderGraph &canonical_graph,
+    const FramePlanNodeOrder &node_order,
+    const TargetResourceRetainReasons &retain_reasons);
 
 struct TargetResourceUseSummary {
     bool read = false;
@@ -146,7 +158,8 @@ TargetLoweringGraph makeTargetLoweringGraph(
     const LogicalTypeRegistry &types,
     const CompiledLogicalRenderGraph &canonical_graph,
     std::span<const ResourcePatternBinding> pattern_bindings,
-    const FramePlanNodeOrder &node_order);
+    const FramePlanNodeOrder &node_order,
+    const TargetResourceRetainReasons &retain_reasons = {});
 void lowerTargetExecutionDialect(TargetLoweringGraph &graph);
 void lowerVulkanPhysicalDialect(TargetLoweringGraph &graph);
 void validateTargetLoweringGraphDialect(
@@ -328,6 +341,7 @@ struct VulkanTargetPlanRequest {
     std::string provider;
     std::vector<std::string> required_endpoint_capabilities;
     std::vector<ResourcePatternBinding> pattern_bindings;
+    TargetResourceRetainReasons retain_reasons;
     PlanningProfile profile;
     std::vector<PlanningNodeConstraint> node_constraints;
     std::vector<PlanningResourceConstraint> resource_constraints;
@@ -342,6 +356,7 @@ struct VulkanTargetPlanRequest {
 
 struct VulkanTargetPlan {
     bool legacy_complete_install = false; // Runtime metadata; never serialized.
+    TargetResourceRetainReasons retain_reasons; // Trusted compiler input, not lifetime output.
     std::vector<PlanningPolicyEntry> policy;
     std::string graph;
     std::uint64_t logical_graph_fingerprint = 0;

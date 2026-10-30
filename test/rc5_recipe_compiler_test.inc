@@ -337,6 +337,110 @@ Rc5Json rc6WithoutRemovedPackages(Rc5Json snapshot) {
     return snapshot;
 }
 
+// RC-6c: explicit resource -> final graph-use node table, independent of
+// the lifetime algorithm. Optional feature resources are checked when present;
+// the unchanged resource set is still compared with the fixed baseline.
+void rc6RequireLifetimes(const RenderCompilerProgramResult &result, bool xr) {
+    const std::map<std::string, std::string> last_node{
+        {"display", "output_transform"}, {"swapchain", "output_transform"},
+        {"g_emissive", "deferred_lighting"}, {"gbuffer_albedo", "deferred_lighting"},
+        {"gbuffer_material", "deferred_lighting"}, {"gbuffer_normal", "deferred_lighting"},
+        {"gbuffer_worldpos", "deferred_lighting"}, {"ssao_blur", "deferred_lighting"},
+        {"ssao_output", "ssao_blur_pass"}, {"lit_color", "scene_present"},
+        {"opaque_color", "forward_transparent"}, {"opaque_depth", "forward_transparent"},
+        {"scene_depth", "forward_transparent"}, {"shadow_map", "forward_transparent"},
+        {"scene_ldr_in", "hdr_tonemap"}, {"probe_image", "probe_fill"}};
+    const auto &physical = requireVulkanRenderCompilerPhysicalPackage(*result.variants.at(0).physical_package);
+    for (const auto &[name, plan] : physical.target_plans) {
+        const auto &context = requireVulkanTargetPlanVerificationContext(physical, name);
+        REQUIRE(plan->automatic_plan_fingerprint == vulkanAutomaticTargetPlanFingerprint(context.topology, *plan));
+        const auto &nodes = context.node_order.nodes();
+        const auto check = [&](const std::string &resource, const TargetResourceLifetime &lifetime) {
+            CAPTURE(resource, name);
+            REQUIRE(last_node.contains(resource));
+            const auto node = std::find(nodes.begin(), nodes.end(), last_node.at(resource));
+            REQUIRE(node != nodes.end());
+            REQUIRE(lifetime.used);
+            CHECK(lifetime.last_use == static_cast<std::size_t>(node - nodes.begin()));
+            const auto expected = resource == "swapchain" ? std::vector<std::string>{"present"} :
+                resource == "display" && xr ? std::vector<std::string>{"xr_mirror"} : std::vector<std::string>{};
+            CHECK(lifetime.retain == expected);
+        };
+        for (const auto &r : plan->resources) check(r.logical_resource, r.lifetime);
+        for (const auto &r : plan->lowering_graph.resources) check(r.logical.name, r.lifetime);
+        for (const auto &r : plan->lowering_graph.resources)
+            if (r.logical.materialization == LogicalMaterializationRequirement::required)
+                CHECK_FALSE((r.pattern.allow_alias && !r.pattern.require_store));
+    }
+}
+
+// Compare the inputs of actual GPU allocation with the frozen physical fields,
+// through generation-resource resolution and the registration CPU seam.
+void rc6RequireRegisteredAllocations(const RenderCompilerProgramResult &result, const Rc5Json &recorded) {
+    const auto &variant = result.variants.at(0);
+    const auto &physical = requireVulkanRenderCompilerPhysicalPackage(*variant.physical_package);
+    REQUIRE(physical.target_plans.size() == 1);
+    const auto &frozen = recorded.at("physical_plans").begin().value();
+    const auto package = vulkanCompletePhysicalPlanPackageFromJson(frozen.at("ejectable_complete_physical_plan"));
+    std::map<std::string, const VulkanPhysicalResourcePlan *> by_name;
+    std::map<std::string, std::string> alias;
+    for (const auto &r : package.resources) by_name.emplace(r.logical_resource, &r);
+    for (const auto &g : package.alias_groups) {
+        // Registration names a merged runtime allocation by its members,
+        // independently of the graph-local physical group ID.
+        std::string runtime_id = "runtime-alias";
+        for (const auto &name : g.resources) runtime_id += "/" + name;
+        for (const auto &name : g.resources) alias.emplace(name, runtime_id);
+    }
+    auto expected_placements = physical.image_placements;
+    for (auto &p : expected_placements) {
+        const auto r = by_name.find(p.resource);
+        if (r == by_name.end()) continue; // Unused declarations remain allocated.
+        p.format = *r->second->format;
+        p.samples = r->second->rasterization_samples;
+        p.array_layers = r->second->array_layers;
+        p.storage = r->second->representation == VulkanResourceRepresentation::tile_local_attachment
+            ? RenderTargetStorageMode::tile_local_attachment :
+            r->second->representation == VulkanResourceRepresentation::transient_attachment
+                ? RenderTargetStorageMode::transient_attachment : RenderTargetStorageMode::materialized;
+        p.alias_group = alias.contains(p.resource) ? std::optional{alias.at(p.resource)} : std::nullopt;
+        p.local_read = r->second->representation == VulkanResourceRepresentation::tile_local_attachment;
+        p.external_depth_source = package.external_depth_export && package.external_depth_export->source_resource == p.resource;
+    }
+    CHECK(physical.image_placements == expected_placements);
+    const GenerationResourceVariant frozen_variant{.name = "reference", .render_graph = variant.render_graph.get(),
+        .placements = expected_placements, .runtime_layered_images = runtimeLayeredImagesOf(*variant.compiled_pipeline)};
+    const auto expected = resolveGenerationResources(std::span{&frozen_variant, 1}, {64, 64});
+    REQUIRE(result.generation_resources.images == expected.images);
+    std::vector<RenderTargetDefinition> actual_targets, expected_targets;
+    for (const auto &image : result.generation_resources.images) actual_targets.push_back(renderTargetDefinitionOf(image));
+    for (const auto &image : expected.images) expected_targets.push_back(renderTargetDefinitionOf(image));
+    const auto actual = test_support::registerRenderTargetsWithoutDevice(actual_targets, {64, 64});
+    const auto baseline = test_support::registerRenderTargetsWithoutDevice(expected_targets, {64, 64});
+    REQUIRE(actual.size() == baseline.size());
+    for (std::size_t i = 0; i < actual.size(); ++i) {
+        CHECK(actual[i].metadata.name == baseline[i].metadata.name);
+        CHECK(actual[i].alias_group == baseline[i].alias_group);
+        CHECK(renderTargetBytes(actual[i].metadata) == renderTargetBytes(baseline[i].metadata));
+    }
+}
+
+Rc5Json rc6WithoutLifetimeChanges(Rc5Json snapshot) {
+    snapshot = rc6WithoutRemovedPackages(std::move(snapshot));
+    // Only these exact paths: physical_plans.*.automatic_plan_fingerprint,
+    // physical_plans.*.{resources,lowering_graph.resources}[*].lifetime.{last_use,retain}.
+    // used, first_use, cost, aliases, representations and attachment ops remain.
+    for (auto &[name, plan] : snapshot.at("physical_plans").items()) {
+        plan.erase("automatic_plan_fingerprint");
+        for (auto *resources : {&plan.at("resources"), &plan.at("lowering_graph").at("resources")})
+            for (auto &r : *resources) {
+                r.at("lifetime").erase("last_use");
+                r.at("lifetime").erase("retain");
+            }
+    }
+    return snapshot;
+}
+
 TEST_CASE("RC-6 policy-free snapshots match all sixteen fixed RC-5 baselines", "[.][rc6-baseline-compare]") {
     const auto *directory = std::getenv("RC6_BASELINE_DIR");
     REQUIRE(directory != nullptr);
@@ -352,8 +456,10 @@ TEST_CASE("RC-6 policy-free snapshots match all sixteen fixed RC-5 baselines", "
         std::ifstream input{file};
         REQUIRE(input.good());
         const auto recorded = Rc5Json::parse(input);
-        REQUIRE(rc6WithoutRemovedPackages(rc5Snapshot(rc5Compile(rc5Document(lit, hdr, extras), xr))) ==
-                rc6WithoutRemovedPackages(recorded));
+        const auto result = rc5Compile(rc5Document(lit, hdr, extras), xr);
+        rc6RequireLifetimes(result, xr);
+        rc6RequireRegisteredAllocations(result, recorded);
+        REQUIRE(rc6WithoutLifetimeChanges(rc5Snapshot(result)) == rc6WithoutLifetimeChanges(recorded));
         ++count;
     }
     REQUIRE(count == 16);

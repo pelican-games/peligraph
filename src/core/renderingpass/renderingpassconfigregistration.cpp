@@ -978,6 +978,11 @@ void RegistrationStages::prepare() {
 
     // Keep common authoring intact through preset/feature validation. Runtime
     // availability filters only its derived GPU declarations during composition.
+    auto effective_variant_requests = std::vector<RenderCompilerProgramVariantRequest>{
+        variant_requests.begin(), variant_requests.end()};
+    for (auto &variant : effective_variant_requests)
+        variant.capture_output = variant.graph_variant == RenderPipelineGraphVariant::flat &&
+            dependencies.front().runtime.render_target.caps().compile_facts.capture_available;
     const RenderCompilerProgramInput compiler_input{
         .rendering_config = resolved_rendering_data,
         .source_name =
@@ -996,7 +1001,7 @@ void RegistrationStages::prepare() {
         .subgraph_replacements =
             subgraph_replacement_providers,
         .backend_context = backend_context,
-        .variants = variant_requests,
+        .variants = effective_variant_requests,
         .validate_feature =
             dependencies.front()
                 .options.validate_render_feature,

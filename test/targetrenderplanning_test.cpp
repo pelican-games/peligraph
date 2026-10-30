@@ -2338,6 +2338,13 @@ TEST_CASE("external depth export infers camera depth and keeps it materialized a
     REQUIRE(plan.external_depth_export->array_layers == 2);
     const auto &depth =
         physicalResource(plan, "scene_depth");
+    CHECK(depth.lifetime.retain == std::vector<std::string>{"external_depth_export"});
+    CHECK(depth.lifetime.last_use == 4);
+    const auto without_export = compile(types, graph,
+        FramePlanNodeOrder{graph, {"GBuffer", "Lighting", "Forward", "ToneMap", "ShadowDepth"}},
+        topology(false), bindingsFor(types, graph));
+    CHECK(physicalResource(without_export, "scene_depth").lifetime.last_use == 2);
+    CHECK(physicalResource(without_export, "scene_depth").lifetime.retain.empty());
     REQUIRE(depth.representation ==
             VulkanResourceRepresentation::materialized_image);
     REQUIRE(depth.stored);
@@ -2581,6 +2588,111 @@ TEST_CASE("non-overlapping materialized resource lifetimes become legal alias gr
             mixed_plan.opportunities
                 .alias_candidates.end());
     REQUIRE(mixed_plan.alias_groups.empty());
+}
+
+TEST_CASE("RC-6c E1 reasons retain only used resources beyond their final graph use",
+          "[target-render-planning][rc6c][rc6c-e1]") {
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    auto graph = hybridGraph(types, 3, false);
+    graph.resources.push_back({.name = "unused", .type = sceneLinearHdrV1(types)});
+    const auto order = fixtureOrder(graph);
+    const auto plain = calculateTargetResourceLifetimes(graph, order, {});
+    REQUIRE(plain.at("gbuffer_0").last_use < order.nodes().size() - 1);
+    for (const auto *reason : {"present", "history", "persistent", "external_depth_export", "xr_mirror", "picking", "capture"}) {
+        CAPTURE(reason);
+        const auto retained = calculateTargetResourceLifetimes(graph, order,
+            {{"gbuffer_0", {reason}}, {"unused", {reason}}});
+        CHECK(retained.at("gbuffer_0").retain == std::vector<std::string>{reason});
+        CHECK(retained.at("gbuffer_0").first_use == plain.at("gbuffer_0").first_use);
+        CHECK(retained.at("gbuffer_0").last_use == order.nodes().size() - 1);
+        CHECK_FALSE(retained.at("unused").used);
+        CHECK(retained.at("unused").retain.empty());
+        CHECK(calculateTargetResourceLifetimes(graph, order, {}).at("gbuffer_0") == plain.at("gbuffer_0"));
+    }
+    const auto overlap = calculateTargetResourceLifetimes(graph, order,
+        {{"gbuffer_0", {"persistent", "history", "history"}}});
+    CHECK(overlap.at("gbuffer_0").retain == std::vector<std::string>{"history", "persistent"});
+}
+
+TEST_CASE("RC-6c E2 complete independently verifies shortened lifetimes and retain reasons",
+          "[target-render-planning][rc6c][rc6c-e2][complete]") {
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    auto graph = hybridGraph(types, 3, false);
+    // This required + stored resource used to be extended without a reader.
+    graph.resources.front().materialization = LogicalMaterializationRequirement::required;
+    auto bindings = bindingsFor(types, graph);
+    bindings.front().pattern.require_store = true;
+    const auto order = fixtureOrder(graph);
+    const auto target = topology(false);
+    const auto plan = compileVulkanTargetPlan(types, graph, target, providers(), {
+        .node_order = order, .endpoint = "device:0", .provider = std::string{kProvider},
+        .pattern_bindings = bindings, .retain_reasons = {{"gbuffer_1", {"picking"}}}});
+    REQUIRE(physicalResource(plan, "gbuffer_0").lifetime.last_use == 1);
+    REQUIRE(physicalResource(plan, "gbuffer_1").lifetime.last_use == order.nodes().size() - 1);
+    const auto package = ejectVulkanCompletePhysicalPlanPackage(plan);
+    const auto json = vulkanCompletePhysicalPlanPackageToJson(package);
+    auto parsed = vulkanCompletePhysicalPlanPackageFromJson(json);
+    CHECK(vulkanCompletePhysicalPlanPackageToJson(parsed) == json);
+    REQUIRE_NOTHROW(verifyVulkanCompletePhysicalPlanPackage(graph, target, plan, order, parsed));
+    for (const bool mutate_reason : {false, true}) {
+        CAPTURE(mutate_reason);
+        auto changed = parsed;
+        for (auto &r : changed.resources) {
+            if (r.logical_resource != "gbuffer_1") continue;
+            if (mutate_reason) r.lifetime.retain = {"history"};
+            else r.lifetime.last_use = 1;
+        }
+        CHECK_THROWS_WITH(verifyVulkanCompletePhysicalPlanPackage(graph, target, plan, order, changed),
+            Catch::Matchers::ContainsSubstring("stale lifetime"));
+    }
+    // Absence is preserved in both dump dialects.
+    const auto dump = vulkanTargetPlanToJson(plan);
+    for (const auto &r : dump.at("resources"))
+        CHECK(r.at("lifetime").contains("retain") == (r.at("logical_resource") == "gbuffer_1"));
+    for (const auto &bad : {nlohmann::json::array(), nlohmann::json::array({"unknown"}),
+                            nlohmann::json::array({"picking", "picking"}), nlohmann::json{false}}) {
+        auto malformed = json;
+        malformed["resources"][0]["lifetime"]["retain"] = bad;
+        CHECK_THROWS(vulkanCompletePhysicalPlanPackageFromJson(malformed));
+    }
+}
+
+TEST_CASE("RC-6c E3 required aliasable images without store gain only nonoverlapping aliases",
+          "[target-render-planning][rc6c][rc6c-e3]") {
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    CompiledLogicalRenderGraph graph;
+    graph.name = "alias_lifetimes";
+    graph.resources = {{.name = "a", .type = sceneLinearHdrV1(types), .materialization = LogicalMaterializationRequirement::required},
+                       {.name = "b", .type = sceneLinearHdrV1(types), .materialization = LogicalMaterializationRequirement::required}};
+    LogicalGraphNode wa, ra, wb, rb;
+    wa.name = "WriteA"; ra.name = "ReadA"; wb.name = "WriteB"; rb.name = "ReadB";
+    wb.after = {"ReadA"};
+    addWrite(types, wa, graph.resources[0], 1, "out");
+    addRead(types, ra, graph.resources[0], 1, "in", LogicalReadFootprintKind::same_pixel);
+    addWrite(types, wb, graph.resources[1], 1, "out");
+    addRead(types, rb, graph.resources[1], 1, "in", LogicalReadFootprintKind::same_pixel);
+    graph.nodes = {wa, ra, wb, rb};
+    auto bindings = bindingsFor(types, graph);
+    for (auto &b : bindings) {
+        b.pattern.require_store = false;
+        b.pattern.allow_alias = true;
+    }
+    const auto order = fixtureOrder(graph);
+    const auto plan = compile(types, graph, order, topology(false), bindings);
+    REQUIRE_FALSE(plan.alias_groups.empty());
+    for (const auto &group : plan.alias_groups)
+        for (std::size_t i = 0; i < group.resources.size(); ++i)
+            for (std::size_t j = i + 1; j < group.resources.size(); ++j) {
+                const auto &a = physicalResource(plan, group.resources[i]).lifetime;
+                const auto &b = physicalResource(plan, group.resources[j]).lifetime;
+                CHECK((a.last_use < b.first_use || b.last_use < a.first_use));
+            }
+    TargetResourceRetainReasons old_tail;
+    for (const auto &r : graph.resources) old_tail[r.name] = {"persistent"};
+    const auto previous = compileVulkanTargetPlan(types, graph, topology(false), providers(), {
+        .node_order = order, .endpoint = "device:0", .provider = std::string{kProvider},
+        .pattern_bindings = bindings, .retain_reasons = old_tail});
+    CHECK(previous.alias_groups.empty());
 }
 
 TEST_CASE("target lowering resolves sample counts on physical resources and scopes",

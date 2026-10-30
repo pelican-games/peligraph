@@ -74,6 +74,7 @@ struct RenderCompilerProgramVariantRequest {
         RenderCompilerProgramArtifact::runtime_package;
     bool enable_multiview_runtime = false;
     bool enable_external_depth_export = false;
+    bool capture_output = false; // Actual FrameTarget supports final-output capture.
     // Host-owned logical additions, such as the built-in ImGui graph pass,
     // are applied after authoring resolution and before graph lowering.
     std::function<void(nlohmann::json &)>

@@ -112,6 +112,14 @@ TargetEndpoint renderingTargetRuntimeEndpoint(
     const RenderingTargetPlanDeviceFacts &facts,
     bool enable_tile_local);
 
+struct RenderingTargetExternalReaders {
+    bool xr_mirror = false;
+    bool capture_output = false;
+};
+TargetResourceRetainReasons renderingTargetRetainReasons(
+    const RenderGraphIR &ir, const GraphIR &graph,
+    RenderingTargetExternalReaders readers = {});
+
 // Exact source inputs retained beside an automatic target plan so a
 // delegating backend compiler can verify and install a complete physical
 // replacement without reconstructing private runtime-device facts.
@@ -167,7 +175,8 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
         std::nullopt,
     std::optional<VulkanExternalDepthExportRequest>
         external_depth_export = std::nullopt,
-    TargetPlanningPolicy target_planning = {});
+    TargetPlanningPolicy target_planning = {},
+    RenderingTargetExternalReaders external_readers = {});
 RenderingTargetPlanCompilation compileRenderingTargetPlansForVulkanDevice(
     const RenderGraphIR &render_graph,
     const std::unordered_map<std::string, FramePlan> &frame_plans,
@@ -180,7 +189,8 @@ RenderingTargetPlanCompilation compileRenderingTargetPlansForVulkanDevice(
         std::nullopt,
     std::optional<VulkanExternalDepthExportRequest>
         external_depth_export = std::nullopt,
-    TargetPlanningPolicy target_planning = {});
+    TargetPlanningPolicy target_planning = {},
+    RenderingTargetExternalReaders external_readers = {});
 
 // RC-3c2a: what the physical plan placed of each render target (one variant,
 // in `render_targets`' order): its sample count, layers, format, storage and

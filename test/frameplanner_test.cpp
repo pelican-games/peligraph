@@ -2911,6 +2911,72 @@ TEST_CASE("RC-1 every format a render target can be authored with has a texel si
     CHECK(imageFormatEstimatedTexelBytes(ImageFormat::r32g32b32a32_uint) == 16);
 }
 
+TEST_CASE("RC-6c E3 shipping projects keep allocation eligibility representations and attachment operations",
+          "[frameplanner][rc6c][rc6c-shipping]") {
+    for (const auto *project : {"animgraph_demo", "example", "sprite_demo", "vrm_xr_demo", "posegraph_demo", "raytracing_demo", "pathtrace_demo"}) {
+        CAPTURE(project);
+        const auto root = sourceRoot() / "projects" / project;
+        const auto config = readJson(root / "project.json");
+        const auto relative = config.at("basic_config").at("rendering_config_json").get<std::string>();
+        const auto load = [root](std::string_view ref) {
+            return ref.starts_with("project://") ? readText(root / ref.substr(10)) : loadEngineJsonForWp352(ref);
+        };
+        const auto resolved = resolveRenderPipeline(
+            {.authored_config = readJson(root / relative), .source_name = project},
+            {.runtime_shader_compiler_enabled = true},
+            {.load_feature_json = load, .load_pipeline_json = load,
+             .normalize_config = [](const nlohmann::json &doc, const std::vector<std::string> &features) {
+                 return resolveRenderTargetFormatClassesV2(doc, vk::Format::eB8G8R8A8Srgb, vk::Extent2D{1920, 1080},
+                     std::find(features.begin(), features.end(), "hdr") != features.end());
+             }});
+        const auto pipeline = compileRenderPipeline(resolved);
+        const auto ir = TestSupport::renderGraphOf(resolved.composed_config);
+        const auto targets = Pelican::renderTargetDefinitionsOf(ir);
+        const auto compilation = compileRenderingTargetPlans(ir, TestSupport::framePlanMapOf(ir), targets,
+            pipeline.sample_count_policy, vk::Format::eB8G8R8A8Srgb,
+            {.ray_query = true, .ray_tracing_pipeline = true, .ray_material_bindless = true},
+            std::nullopt, std::nullopt, pipeline.target_planning);
+        REQUIRE_FALSE(compilation.plans.empty());
+        for (const auto &plan : compilation.plans) {
+            CHECK(plan->backend_selection.selected_candidate == "pelican.vulkan.materialized_plan@1");
+            const auto expected_aliases = std::string_view{project} == "example"
+                ? std::vector<VulkanAliasGroupPlan>{{"alias:0", {"Bloom_Threshold_RT", "g_emissive"}}}
+                : std::vector<VulkanAliasGroupPlan>{};
+            CHECK(plan->alias_groups == expected_aliases);
+            for (const auto &r : plan->resources) {
+                CAPTURE(r.logical_resource);
+                CHECK(r.representation == (r.logical_resource == "swapchain" ? VulkanResourceRepresentation::external : VulkanResourceRepresentation::materialized_image));
+                const auto lowering = std::find_if(plan->lowering_graph.resources.begin(), plan->lowering_graph.resources.end(),
+                    [&](const auto &entry) { return entry.logical.name == r.logical_resource; });
+                REQUIRE(lowering != plan->lowering_graph.resources.end());
+                // Every interval shortened from the old rule is ineligible for
+                // runtime sharing. The generic planner exception has its own E3.
+                if (lowering->logical.materialization == LogicalMaterializationRequirement::required || lowering->pattern.require_store)
+                    CHECK_FALSE(r.aliasable);
+            }
+            const auto *graph = findGraph(ir, plan->graph);
+            REQUIRE(graph != nullptr);
+            for (const auto &node : graph->nodes) for (const auto &use : node.uses) {
+                if (!use.operations) continue;
+                const auto a = std::find_if(plan->attachments.begin(), plan->attachments.end(), [&](const auto &entry) {
+                    return entry.node == node.name && entry.logical_resource == use.resource;
+                });
+                REQUIRE(a != plan->attachments.end());
+                CHECK(a->operations.load_op == use.operations->load_op);
+                CHECK(a->operations.store_op == use.operations->store_op);
+            }
+        }
+        const auto registered = test_support::registerRenderTargetsWithoutDevice(
+            test_support::plannedRenderTargets(ir, compilation), {1920, 1080});
+        CHECK(registered.size() == ir.images.size());
+        for (const auto &r : registered) {
+            const bool shared = std::string_view{project} == "example" &&
+                (r.metadata.name == "Bloom_Threshold_RT" || r.metadata.name == "g_emissive");
+            CHECK(r.alias_group == (shared ? std::optional<std::uint64_t>{1} : std::nullopt));
+        }
+    }
+}
+
 TEST_CASE("RC-1 a registered target declares the bytes of the images registration made",
           "[frameplanner][rc1][memory]") {
     // What the GPU arena declares for a render target. A 4x MSAA history
@@ -3033,6 +3099,40 @@ TEST_CASE("RC-1 the example's render targets at 1920x1080 take 125,776,320 bytes
     CHECK(summary.peak_live_bytes == 85'017'600); // 81.08 MiB
     CHECK(summary.peak_order == 3);
     CHECK(summary.peak_node == "lighting_pass");
+
+    // RC-6c E4: compare the former blanket tail against the new closed
+    // intervals using the very same images/bytes. Allocations do not change.
+    std::map<std::string, TargetResourceLifetime> old_lifetimes;
+    const auto terminal = plan.lowering_graph.nodes.size() - 1;
+    for (const auto &r : plan.lowering_graph.resources) {
+        auto lifetime = r.lifetime;
+        if (lifetime.used && (r.logical.materialization == LogicalMaterializationRequirement::required ||
+            r.logical.materialization == LogicalMaterializationRequirement::external || r.pattern.require_store))
+            lifetime.last_use = terminal;
+        old_lifetimes.emplace(r.logical.name, lifetime);
+    }
+    std::size_t reduced = 0;
+    const std::vector<std::pair<std::uint64_t, std::uint64_t>> expected_late{
+        {60'652'800, 27'475'200}, {61'171'200, 27'993'600},
+        {60'782'400, 27'604'800}, {60'912'000, 27'734'400},
+        {60'814'560, 27'636'960}, {60'846'720, 27'669'120},
+        {60'814'560, 27'636'960}, {60'782'400, 27'604'800},
+        {60'652'800, 27'475'200}, {60'134'400, 26'956'800},
+        {58'060'800, 8'294'400}, {58'060'800, 8'294'400}};
+    REQUIRE(expected_late.size() == terminal - plan.lowering_graph.nodes.size() / 2 + 1);
+    for (std::size_t order = plan.lowering_graph.nodes.size() / 2; order <= terminal; ++order) {
+        std::uint64_t before = 0, after = 0;
+        for (std::size_t i = 0; i < plan.resources.size(); ++i) {
+            if (!summary.resource_bytes[i]) continue;
+            const auto live = [order](const auto &l) { return l.used && l.first_use <= order && order <= l.last_use; };
+            if (live(old_lifetimes.at(plan.resources[i].logical_resource))) before += *summary.resource_bytes[i];
+            if (live(plan.resources[i].lifetime)) after += *summary.resource_bytes[i];
+        }
+        INFO("RC-6c E4 order=" << order << " node=" << plan.lowering_graph.nodes[order].logical.name);
+        CHECK(std::pair{before, after} == expected_late.at(order - plan.lowering_graph.nodes.size() / 2));
+        reduced += after < before;
+    }
+    CHECK(reduced > 0);
 }
 
 TEST_CASE("RC-1 get_frame_plan reports what the published generation registered, as it is "

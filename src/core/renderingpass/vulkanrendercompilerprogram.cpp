@@ -517,7 +517,10 @@ compileDefaultVulkanVariant(
                 backend.runtime_capabilities,
                 std::move(view_execution),
                 std::move(external_depth_export),
-                compiled_pipeline->target_planning);
+                compiled_pipeline->target_planning,
+                RenderingTargetExternalReaders{
+                    .xr_mirror = compiled_pipeline->graph_variant_policy.mirror_output == GraphVariantMirrorOutput::left_eye,
+                    .capture_output = request.capture_output});
     } else {
         physical->target_plan_compilation =
             compileRenderingTargetPlans(
@@ -529,7 +532,10 @@ compileDefaultVulkanVariant(
                 RenderingTargetPlanDeviceFacts{},
                 std::move(view_execution),
                 std::move(external_depth_export),
-                compiled_pipeline->target_planning);
+                compiled_pipeline->target_planning,
+                RenderingTargetExternalReaders{
+                    .xr_mirror = compiled_pipeline->graph_variant_policy.mirror_output == GraphVariantMirrorOutput::left_eye,
+                    .capture_output = request.capture_output});
     }
     for (auto &verification :
          physical->target_plan_compilation

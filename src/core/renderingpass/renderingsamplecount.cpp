@@ -1475,6 +1475,41 @@ TargetEndpoint renderingTargetRuntimeEndpoint(
     return makeRuntimeEndpoint(facts, enable_tile_local);
 }
 
+TargetResourceRetainReasons renderingTargetRetainReasons(
+    const RenderGraphIR &ir, const GraphIR &graph,
+    RenderingTargetExternalReaders readers) {
+    TargetResourceRetainReasons result;
+    std::set<std::string, std::less<>> used;
+    for (const auto &node : graph.nodes)
+        for (const auto &use : node.uses) used.insert(use.resource);
+    for (const auto &image : ir.images) {
+        if (!used.contains(image.name)) continue;
+        if (image.history) result[image.name].push_back("history");
+        if (image.persistent || image.source) result[image.name].push_back("persistent");
+    }
+    for (const auto &node : graph.nodes) {
+        for (const auto &use : node.uses) {
+            if (use.access == ResourceUseAccess::read) continue;
+            // The reserved output binding is the real FrameTarget, including
+            // offscreen targets and passes that write it without output_transform.
+            if (use.resource == "swapchain") {
+                result[use.resource].push_back("present");
+                if (readers.capture_output) result[use.resource].push_back("capture");
+            }
+            // Same activation contract as Renderer::LogicalFrameRecorder.
+            if (node.shape == RenderNodeShape::picking && use.resource == "picking_id" &&
+                use.role == ResourceUseRole::color_attachment)
+                result[use.resource].push_back("picking");
+        }
+    }
+    if (readers.xr_mirror && used.contains("display")) result["display"].push_back("xr_mirror");
+    for (auto &[name, reasons] : result) {
+        std::sort(reasons.begin(), reasons.end());
+        reasons.erase(std::unique(reasons.begin(), reasons.end()), reasons.end());
+    }
+    return result;
+}
+
 RenderingTargetPlanCompilation compileRenderingTargetPlans(
     const RenderGraphIR &render_graph,
     const std::unordered_map<std::string, FramePlan> &frame_plans,
@@ -1486,7 +1521,8 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
         view_execution,
     std::optional<VulkanExternalDepthExportRequest>
         external_depth_export,
-    TargetPlanningPolicy target_planning) {
+    TargetPlanningPolicy target_planning,
+    RenderingTargetExternalReaders external_readers) {
     const auto target_by_name =
         renderTargetsByName(render_targets);
     const auto types = makeBuiltinLogicalTypeRegistry();
@@ -1651,6 +1687,7 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                             swapchain_format,
                             transient_formats,
                             tile_local_formats),
+                    .retain_reasons = renderingTargetRetainReasons(render_graph, render_graph.graphs[index], external_readers),
                     .profile = target_planning.profile,
                     .node_constraints = std::move(node_constraints),
                     .resource_constraints =
@@ -1950,7 +1987,8 @@ compileRenderingTargetPlansForVulkanDevice(
         view_execution,
     std::optional<VulkanExternalDepthExportRequest>
         external_depth_export,
-    TargetPlanningPolicy target_planning) {
+    TargetPlanningPolicy target_planning,
+    RenderingTargetExternalReaders external_readers) {
     const auto features =
         physical_device.getFeatures2<
             vk::PhysicalDeviceFeatures2,
@@ -2029,7 +2067,7 @@ compileRenderingTargetPlansForVulkanDevice(
         },
         std::move(view_execution),
         std::move(external_depth_export),
-        std::move(target_planning));
+        std::move(target_planning), external_readers);
 }
 
 std::vector<ImagePlacement> imagePlacementsOf(

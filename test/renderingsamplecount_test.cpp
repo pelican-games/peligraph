@@ -2062,4 +2062,57 @@ TEST_CASE("RC-3d2 upper physical planning requires the graph FramePlan map",
     CHECK(physicalNodeOrderOf(accepted.plans.front()->scopes).nodes == std::vector<std::string>{"draw"});
 }
 
+TEST_CASE("RC-6c E1 compiler facts select history persistent source initial picking mirror and output readers",
+          "[rendering-sample-count][rc6c][rc6c-facts]") {
+    RenderGraphIR ir;
+    ir.images = {{.name = "history", .history = true},
+                 {.name = "once", .persistent = true},
+                 {.name = "initial", .persistent = true, .initial = true},
+                 {.name = "source", .source = ImageSourceDeclaration{.asset = "project://image.png"}},
+                 {.name = "display"}, {.name = "picking_id"}, {.name = "ordinary"},
+                 {.name = "unused", .persistent = true}};
+    NodeIR draw{.name = "draw"};
+    for (const auto *name : {"history", "once", "initial", "source", "display", "ordinary"})
+        draw.uses.push_back({.resource = name, .role = ResourceUseRole::output, .access = ResourceUseAccess::write});
+    NodeIR pick{.name = "pick", .shape = RenderNodeShape::picking,
+        .uses = {{.resource = "picking_id", .role = ResourceUseRole::color_attachment,
+            .access = ResourceUseAccess::write, .operations = PassAttachmentOperations{AttachmentLoadOp::clear, AttachmentStoreOp::store}}}, .after = {"draw"}};
+    NodeIR output{.name = "output", .shape = RenderNodeShape::output_transform,
+        .uses = {{.resource = "swapchain", .role = ResourceUseRole::output, .access = ResourceUseAccess::write}}, .after = {"pick"}};
+    NodeIR tail{.name = "tail", .shape = RenderNodeShape::anchor, .after = {"output"}};
+    ir.graphs = {{.name = "retention", .nodes = {draw, pick, output, tail}}};
+    const auto &graph = ir.graphs.front();
+    const auto logical = toLogicalGraph(ir, graph);
+    const FramePlanNodeOrder order{logical, {"draw", "pick", "output", "tail"}};
+    const auto reasons = renderingTargetRetainReasons(ir, graph, {.xr_mirror = true, .capture_output = true});
+    const TargetResourceRetainReasons expected{{"history", {"history"}}, {"once", {"persistent"}},
+        {"initial", {"persistent"}}, {"source", {"persistent"}}, {"display", {"xr_mirror"}},
+        {"picking_id", {"picking"}}, {"swapchain", {"capture", "present"}}};
+    CHECK(reasons == expected);
+    const auto lifetimes = calculateTargetResourceLifetimes(logical, order, reasons);
+    const auto plain = calculateTargetResourceLifetimes(logical, order, {});
+    for (const auto &[name, retain] : expected) {
+        CAPTURE(name);
+        CHECK(lifetimes.at(name).retain == retain);
+        CHECK(lifetimes.at(name).last_use == 3);
+        CHECK(plain.at(name).last_use < 3);
+    }
+    CHECK(lifetimes.at("ordinary").retain.empty());
+    CHECK(lifetimes.at("ordinary").last_use == 0);
+    auto without = ir;
+    for (auto &image : without.images) { image.history = false; image.persistent = false; image.source.reset(); }
+    without.graphs[0].nodes[1].shape = RenderNodeShape::fullscreen;
+    without.graphs[0].nodes[2].shape = RenderNodeShape::fullscreen;
+    without.graphs[0].nodes[2].uses[0].resource = "ordinary";
+    const auto removed = renderingTargetRetainReasons(without, without.graphs[0]);
+    CHECK(removed.empty());
+    CHECK(calculateTargetResourceLifetimes(logical, order, removed) == plain);
+    CHECK(renderingTargetRetainReasons(ir, graph).at("swapchain") == std::vector<std::string>{"present"});
+    CHECK_FALSE(renderingTargetRetainReasons(ir, graph).contains("display"));
+    auto direct_output = ir;
+    direct_output.graphs[0].nodes[2].shape = RenderNodeShape::fullscreen;
+    CHECK(renderingTargetRetainReasons(direct_output, direct_output.graphs[0]).at("swapchain") ==
+        std::vector<std::string>{"present"});
+}
+
 } // namespace Pelican

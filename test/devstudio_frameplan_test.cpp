@@ -771,6 +771,22 @@ TEST_CASE(
     }
 }
 
+TEST_CASE("RC-6c Frame Plan accepts and preserves lifetime retain in the physical wire",
+          "[devstudio][frame-plan][rc6c][physicaltargetplanwire]") {
+    auto captured = Json::parse(capturedResponse());
+    auto &resources = captured["physical_target_plan"]["resources"];
+    REQUIRE_FALSE(resources.empty());
+    resources[0]["lifetime"]["retain"] = Json::array({"history", "persistent"});
+    const auto &physical = captured.at("physical_target_plan");
+    REQUIRE(Pelican::validatePhysicalTargetPlanWire(&physical).available());
+    const auto model = buildFramePlanModel(captured.dump());
+    REQUIRE(model.physical_plan.available());
+    const auto section = std::find_if(model.physical_plan.wire_sections.begin(), model.physical_plan.wire_sections.end(),
+        [](const auto &s) { return s.name == "resources"; });
+    REQUIRE(section != model.physical_plan.wire_sections.end());
+    CHECK(Json::parse(section->json) == resources);
+}
+
 TEST_CASE(
     "Shipping four-project target corpus remains 22 runtime-resolvable targets",
     "[devstudio][frame-plan][wp315][shipping-regression]") {

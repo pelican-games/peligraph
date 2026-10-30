@@ -21,6 +21,7 @@
 #include "render_graph_root_test_support.hpp"
 #include "../src/project/rasterrayquery.hpp"
 #include "render_graph_ir_test_support.hpp"
+#include "registered_render_targets_test_support.hpp"
 
 #include <functional>
 #include <cstdlib>

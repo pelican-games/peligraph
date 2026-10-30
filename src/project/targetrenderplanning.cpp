@@ -1584,16 +1584,56 @@ std::string_view targetLoweringStageName(TargetLoweringStage stage) {
     throw std::runtime_error("unknown target lowering stage");
 }
 
+bool isTargetResourceRetainReason(std::string_view reason) {
+    return reason == "present" || reason == "history" ||
+        reason == "persistent" || reason == "external_depth_export" ||
+        reason == "xr_mirror" || reason == "picking" || reason == "capture";
+}
+
+std::map<std::string, TargetResourceLifetime, std::less<>>
+calculateTargetResourceLifetimes(
+    const CompiledLogicalRenderGraph &graph,
+    const FramePlanNodeOrder &node_order,
+    const TargetResourceRetainReasons &retain_reasons) {
+    node_order.requireGraph(graph);
+    std::map<std::string, TargetResourceLifetime, std::less<>> result;
+    std::map<std::string, const LogicalGraphNode *, std::less<>> nodes;
+    for (const auto &resource : graph.resources) result.emplace(resource.name, TargetResourceLifetime{});
+    for (const auto &node : graph.nodes) nodes.emplace(node.name, &node);
+    for (std::size_t index = 0; index < node_order.nodes().size(); ++index) {
+        for (const auto &use : nodes.at(node_order.nodes()[index])->uses) {
+            const auto &value = use.input_value ? *use.input_value : *use.output_value;
+            auto &lifetime = result.at(value.resource);
+            if (!lifetime.used) lifetime = {true, index, index};
+            else lifetime.last_use = index;
+        }
+    }
+    for (const auto &[name, reasons] : retain_reasons) {
+        auto &lifetime = result.at(name);
+        for (const auto &reason : reasons)
+            if (!isTargetResourceRetainReason(reason))
+                throw std::runtime_error("unknown resource retain reason: " + reason);
+        if (!lifetime.used || reasons.empty()) continue;
+        lifetime.retain = reasons;
+        std::sort(lifetime.retain.begin(), lifetime.retain.end());
+        lifetime.retain.erase(std::unique(lifetime.retain.begin(), lifetime.retain.end()), lifetime.retain.end());
+        lifetime.last_use = node_order.nodes().size() - 1;
+    }
+    return result;
+}
+
 TargetLoweringGraph makeTargetLoweringGraph(
     const LogicalTypeRegistry &types,
     const CompiledLogicalRenderGraph &canonical_graph,
     std::span<const ResourcePatternBinding> pattern_bindings,
-    const FramePlanNodeOrder &requested_node_order) {
+    const FramePlanNodeOrder &requested_node_order,
+    const TargetResourceRetainReasons &retain_reasons) {
     validateCompiledLogicalRenderGraph(types, canonical_graph);
     const auto patterns = canonicalPatternBindings(
         types, canonical_graph, pattern_bindings);
     requested_node_order.requireGraph(canonical_graph);
     const auto &node_order = requested_node_order.nodes();
+    const auto lifetimes = calculateTargetResourceLifetimes(canonical_graph, requested_node_order, retain_reasons);
 
     std::map<std::string, const LogicalGraphNode *, std::less<>>
         logical_nodes;
@@ -1622,6 +1662,7 @@ TargetLoweringGraph makeTargetLoweringGraph(
     result.resources.reserve(resources.size());
     for (auto &resource : resources) {
         const auto pattern = patterns.find(resource.name);
+        const auto lifetime = lifetimes.at(resource.name);
         result.resources.push_back(TargetLoweringResource{
             .logical = std::move(resource),
             .pattern = pattern->second.pattern,
@@ -1632,6 +1673,7 @@ TargetLoweringGraph makeTargetLoweringGraph(
                 pattern->second.array_layers,
             .dimension =
                 pattern->second.dimension,
+            .lifetime = lifetime,
         });
     }
 
@@ -1648,14 +1690,6 @@ TargetLoweringGraph makeTargetLoweringGraph(
                 use.input_value ? *use.input_value : *use.output_value;
             auto &resource =
                 *lowering_resources.at(value.resource);
-            if (!resource.lifetime.used) {
-                resource.lifetime = {true, node_index, node_index};
-            } else {
-                resource.lifetime.first_use =
-                    std::min(resource.lifetime.first_use, node_index);
-                resource.lifetime.last_use =
-                    std::max(resource.lifetime.last_use, node_index);
-            }
 
             const auto reads =
                 use.access == LogicalAccessMode::read ||
@@ -1697,20 +1731,6 @@ TargetLoweringGraph makeTargetLoweringGraph(
             if (writes &&
                 node.kind == LogicalGraphNodeKind::snapshot_copy) {
                 resource.uses.produced_by_snapshot = true;
-            }
-        }
-    }
-
-    if (!result.nodes.empty()) {
-        const auto terminal = result.nodes.size() - 1;
-        for (auto &resource : result.resources) {
-            if (!resource.lifetime.used) continue;
-            if (resource.logical.materialization ==
-                    LogicalMaterializationRequirement::required ||
-                resource.logical.materialization ==
-                    LogicalMaterializationRequirement::external ||
-                resource.pattern.require_store) {
-                resource.lifetime.last_use = terminal;
             }
         }
     }
@@ -1848,6 +1868,7 @@ nlohmann::ordered_json targetLoweringGraphToJson(
     for (const auto &resource : graph.resources) {
         nlohmann::ordered_json lifetime{
             {"used", resource.lifetime.used}};
+        if (!resource.lifetime.retain.empty()) lifetime["retain"] = resource.lifetime.retain;
         if (resource.lifetime.used) {
             lifetime["first_use"] = resource.lifetime.first_use;
             lifetime["last_use"] = resource.lifetime.last_use;
@@ -3788,12 +3809,17 @@ VulkanTargetPlan compileVulkanTargetPlan(
             canonical_graph, request.node_order, initial_input);
     auto workspace = makeTargetLoweringGraph(
         types, canonical_graph, request.pattern_bindings,
-        request.node_order);
+        request.node_order, request.retain_reasons);
     validatePolicyInput(canonical_graph, request);
     const auto external_depth_export =
         selectExternalDepthExport(
             types, workspace,
             request.external_depth_export);
+    if (external_depth_export) {
+        request.retain_reasons[external_depth_export->source_resource].push_back("external_depth_export");
+        const auto lifetimes = calculateTargetResourceLifetimes(canonical_graph, request.node_order, request.retain_reasons);
+        for (auto &resource : workspace.resources) resource.lifetime = lifetimes.at(resource.logical.name);
+    }
     auto sample_count_plan =
         request.sample_count
             ? std::optional<ResolvedSampleCountPlan>{
@@ -4008,6 +4034,7 @@ VulkanTargetPlan compileVulkanTargetPlan(
     }
 
     VulkanTargetPlan result{
+        .retain_reasons = request.retain_reasons,
         .policy = selected_draft.policy,
         .graph = canonical_graph.name,
         .logical_graph_fingerprint =
@@ -4254,6 +4281,7 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
     for (const auto &resource : plan.resources) {
         nlohmann::ordered_json lifetime{
             {"used", resource.lifetime.used}};
+        if (!resource.lifetime.retain.empty()) lifetime["retain"] = resource.lifetime.retain;
         if (resource.lifetime.used) {
             lifetime["first_use"] =
                 resource.lifetime.first_use;

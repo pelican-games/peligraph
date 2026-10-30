@@ -307,6 +307,10 @@ void appendLifetimeFingerprint(
         fingerprint.appendUnsigned(lifetime.first_use);
         fingerprint.appendUnsigned(lifetime.last_use);
     }
+    if (!lifetime.retain.empty()) {
+        fingerprint.appendUnsigned(lifetime.retain.size());
+        for (const auto &reason : lifetime.retain) fingerprint.appendString(reason);
+    }
 }
 
 void appendExtentFingerprint(

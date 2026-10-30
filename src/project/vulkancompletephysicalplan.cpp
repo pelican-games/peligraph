@@ -436,6 +436,7 @@ nlohmann::ordered_json resourceToJson(
     nlohmann::ordered_json lifetime{
         {"used", resource.lifetime.used},
     };
+    if (!resource.lifetime.retain.empty()) lifetime["retain"] = resource.lifetime.retain;
     if (resource.lifetime.used) {
         lifetime["first_use"] = resource.lifetime.first_use;
         lifetime["last_use"] = resource.lifetime.last_use;
@@ -506,12 +507,20 @@ VulkanPhysicalResourcePlan resourceFromJson(
         lifetime != entry.end() && lifetime->is_object(),
         context + " requires object lifetime");
     requireOnlyKeys(
-        *lifetime, {"used", "first_use", "last_use"},
+        *lifetime, {"used", "first_use", "last_use", "retain"},
         context + " lifetime");
     TargetResourceLifetime parsed_lifetime{
         .used = requireBool(
             *lifetime, "used", context + " lifetime"),
     };
+    if (lifetime->contains("retain")) {
+        parsed_lifetime.retain = requireStrings(*lifetime, "retain", context + " lifetime");
+        require(parsed_lifetime.used && !parsed_lifetime.retain.empty(), context + " retain requires a used lifetime and non-empty reasons");
+        requireUnique(parsed_lifetime.retain, context + " retain");
+        for (const auto &reason : parsed_lifetime.retain)
+            require(isTargetResourceRetainReason(reason), context + " unknown retain reason: " + reason);
+        std::sort(parsed_lifetime.retain.begin(), parsed_lifetime.retain.end());
+    }
     if (parsed_lifetime.used) {
         parsed_lifetime.first_use =
             requireUnsigned<std::size_t>(
@@ -1202,22 +1211,6 @@ deriveUses(
                 summary.transfer_access ||
                 use.intent ==
                     LogicalAccessIntent::transfer;
-            if (!summary.lifetime.used) {
-                summary.lifetime = {
-                    .used = true,
-                    .first_use = order->second,
-                    .last_use = order->second,
-                };
-            } else {
-                summary.lifetime.first_use =
-                    std::min(
-                        summary.lifetime.first_use,
-                        order->second);
-                summary.lifetime.last_use =
-                    std::max(
-                        summary.lifetime.last_use,
-                        order->second);
-            }
         }
     }
     return result;
@@ -1824,29 +1817,12 @@ verifyVulkanCompletePhysicalPlanPackage(
 
     auto graph_uses =
         deriveUses(canonical_graph, node_order);
-    if (!node_order.empty()) {
-        const auto terminal = node_order.size() - 1;
-        for (const auto &lowering :
-             automatic_plan.lowering_graph.resources) {
-            if (lowering.logical.materialization !=
-                    LogicalMaterializationRequirement::
-                        required &&
-                lowering.logical.materialization !=
-                    LogicalMaterializationRequirement::
-                        external &&
-                !lowering.pattern.require_store) {
-                continue;
-            }
-            const auto use =
-                graph_uses.find(
-                    lowering.logical.name);
-            if (use != graph_uses.end() &&
-                use->second.lifetime.used) {
-                use->second.lifetime.last_use =
-                    terminal;
-            }
-        }
-    }
+    std::vector<std::string> ordered_nodes(node_order.size());
+    for (const auto &[name, index] : node_order) ordered_nodes.at(index) = name;
+    const auto lifetimes = calculateTargetResourceLifetimes(
+        canonical_graph, FramePlanNodeOrder{canonical_graph, std::move(ordered_nodes)},
+        automatic_plan.retain_reasons);
+    for (auto &[name, use] : graph_uses) use.lifetime = lifetimes.at(name);
     std::map<std::string,
              const LogicalResourceDesc *, std::less<>>
         logical_resources;
