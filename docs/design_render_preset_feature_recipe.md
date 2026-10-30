@@ -378,3 +378,18 @@ develop_v1 の `1e05031d7` / `e17754510`。仕様は `<作業ディレクトリ>
 - **16 構成**: `retain` を書かない 16 構成は、`283aacc05` で記録した `<作業ディレクトリ>/rc7_baseline/rc5` と fingerprint を含めて完全一致(test「RC-7a F4 unchanged HEAD baseline including fingerprints」、
   [その所](../test/rc5_recipe_compiler_test.inc#L522)。`[.]` で手で走らせる)。§7.2 の A5 は RC-6c の除外のまま(除外を増やしていない。報告)。
 - **出荷の文書**: engine の feature・断片・レシピと `projects/` に `retain` を書いた物は無い(検索で 0 件)。
+
+### 7.13 RC-7b(同じ形の共有の条件を広げる、2026-10-31)
+
+`0091c071c`(branch `agent/rc7b`)。仕様は `<作業ディレクトリ>/rc7_spec.md` §3、報告は `<作業ディレクトリ>/rc7b_report.md` と修正の報告 2 本。条件の意味は
+[RT メモ §2 の末尾の RC-7b](design_render_target_memory_reduction.md#rc7b-sharing)。レシピと部品、16 構成に関わる所だけ書く。行番号は `0091c071c` の物。
+
+- **部品の `alias_group` の照合**: 組が (宣言の出所の document, 組名) で決まる規則(§7.9)は変わらない。登録の前の最終の照合も、最終の物理計画の台帳で採った `require` の行ごとに、
+  `origin.document` と組名が同じ採った行を peer として探す([その所](../src/core/renderingpass/rendercompilerprogram.cpp#L258))。だから feature が書いた組の `require` は、その feature の文書の
+  peer とだけ照らされる(コードの読み)。新しく適格になった depth・`TRANSFER_SRC` 付き・display でない BGRA の資源にも、`no_alias`・`isolate`・`alias_group` の `require` / `prefer` が
+  同じく効く(test「RC-7b B1 B6 identical effective image contracts admit depth transfer and BGRA」)。
+- **16 構成**: 実装前の HEAD `2d1715cf3` で記録した `<作業ディレクトリ>/rc7b_baseline/rc5` と、意味の欄が一致する(test「RC-7b B4 semantic fields match sixteen immutable preimplementation snapshots」、
+  [その所](../test/rc5_recipe_compiler_test.inc#L586)。`[.]` で手で走らせる)。差は共有の派生の欄だけで、組と `alias_candidates` は 16 構成とも変わらない。資源ごとの差は
+  RT メモの「計画の差(B4)」。§7.2 の A5(`[rc6-baseline-compare]`)と §7.12 の F4(`[rc7-baseline-compare]`)も、同じ除外の関数 [`rc7bComparable()`](../test/rc5_recipe_compiler_test.inc#L447)
+  を通して比べる形になった(F4 は fingerprint を含む完全一致ではなくなった。fingerprint は派生の欄の分だけ変わる)。
+- **出荷の文書**: engine の feature・断片・レシピと `projects/` に `alias_group` / `no_alias` を書いた物は無い(`src/core/resources` と `projects/` の検索で 0 件)。

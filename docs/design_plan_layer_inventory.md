@@ -400,6 +400,49 @@
 - **readback の許可は program の計画**: 許可の判定 [`validateTargetReadbackRetention()`](../src/project/targetrenderplanning.cpp#L3771) は 1 つの `VulkanTargetPlan` だけを見る。generation の
   usage は variant の和でも、読めるかどうかは読む program の計画で決まる(コードの注記)。
 - **A5 と 16 構成**: `retain` を書かない project は計画が byte 一致(RC-6 の A5 は除外を増やさず、`283aacc05` の 16 構成は fingerprint も含めて一致。報告)。
+  → RC-7b から A5 と F4 は共有の派生の欄を除いて比べる(下)。
+
+<a id="rc7b-implementation"></a>
+
+**RC-7b で入った物(同じ形の共有の条件を広げる。2026-10-31、`0091c071c`、branch `agent/rc7b`)。**仕様は `<作業ディレクトリ>/rc7_spec.md` §3、実装者の報告は `<作業ディレクトリ>/rc7b_report.md` と修正の報告 2 本
+(`rc7b_fix_report.md` / `rc7b_fix2_report.md`)。この段の行番号は `0091c071c` の物。条件の意味・example が変わらない理由・計画の差は
+[RT メモ §2 の末尾の RC-7b](design_render_target_memory_reduction.md#rc7b-sharing)に書いた。ここには何がどこにあるかだけを書く。
+
+- **planner(`src/project/targetrenderplanning.{hpp,cpp}`)**:
+  - 資源ごとの適格: [`applyCandidateAliasPolicy()`](../src/project/targetrenderplanning.cpp#L3525) の先頭の 1 つのループが `aliasable` を書く唯一の所。理由を `pelican.plan.alias_ineligible@1` の decision にする。
+    `buildCandidateDraft()` の `aliasable` の式(`require_store` を見ていた)と `applyResolvedSampleCounts()` の multisample の代入は消した。
+  - 対ごとの適格: [`deriveLegalAliasCandidates()`](../src/project/targetrenderplanning.cpp#L3164) が scope の列・実効の usage の表・decision の出力先を受け、実効の usage の一致(`effective_usage`)と
+    同じ scope の中の住人の切替(`same_scope`)を前からの形と寿命の検査に足した。最終の検証 [`validateVulkanTargetPlanRequirements()`](../src/project/targetrenderplanning.cpp#L3869) も
+    `plan.scopes` と `plan.effective_image_usage` を渡して同じ関数を呼ぶ。
+  - 組の失敗の原因: [`aliasConflictCauses()`](../src/project/targetrenderplanning.cpp#L3459) が、組の 2 つの資源の両方に触る scope の `scope_join: true` も原因に入れる。組の失敗の文には、
+    最初に当たった不適格の decision を `alias.<条件>@1: <対象>` として足す([その所](../src/project/targetrenderplanning.cpp#L3610))。
+  - 入力の欄: `VulkanTargetPlanRequest` に `generation_alias_exclusions`(資源名 → 外した理由)と `manual_native_resources`
+    ([宣言](../src/project/targetrenderplanning.hpp#L347))。どちらも `VulkanTargetPlan` に写して([その所](../src/project/targetrenderplanning.cpp#L4210))complete の verifier が読む。JSON には書かない。
+    `manual_native_resources` を本番の呼び出しで埋める所は src に無い(grep で確認)。
+- **宣言の入口(`src/project/rendergraphir.cpp`)**: [`isRuntimeAliasEligible()`](../src/project/rendergraphir.cpp#L241) から usage の固定集合を外した。この関数は logical materialization の
+  required / virtual([使う所](../src/project/rendergraphir.cpp#L714))と、core の `isRuntimeAliasCandidate()` を通して runtime pattern の `allow_alias` / `require_store` に効く。
+  core の `runtimeAliasExclusion()`(PO-1 の原因の文)からは usage の 2 つの文と、それを作る `runtimeAliasSafeUsage()` / `joinNames()` を消した。
+- **generation の合意(`src/project/generationresources.{hpp,cpp}`)**: [`resolveGenerationResources()`](../src/project/generationresources.cpp#L97) が `GenerationResources::alias_rejections`
+  ([宣言](../src/project/generationresources.hpp#L127))に共有を外した資源と理由を入れる。variant が合意しない組([その所](../src/project/generationresources.cpp#L201))と、組の中で usage か storage が違う組
+  ([その所](../src/project/generationresources.cpp#L256)。前は `alias_group_invalid@1` の例外)。
+- **graph 間の合意(`src/core/renderingpass/renderingsamplecount.{hpp,cpp}`)**: `mergeRuntimeAliasGroups()`([定義](../src/core/renderingpass/renderingsamplecount.cpp#L1327))が外した資源の理由を返し、
+  [`compileRenderingTargetPlans()`](../src/core/renderingpass/renderingsamplecount.cpp#L1493) が除外に足して自分を呼び直す([その所](../src/core/renderingpass/renderingsamplecount.cpp#L1961))。
+  `compileRenderingTargetPlans()` / `compileRenderingTargetPlansForVulkanDevice()` は末尾に `generation_alias_exclusions`(既定は空)を取る。登録の前の [`imagePlacementsOf()`](../src/core/renderingpass/renderingsamplecount.cpp#L2075)
+  の組の検査は物理計画の実効の usage を比べる([その所](../src/core/renderingpass/renderingsamplecount.cpp#L2314))。
+- **compiler program(`src/core/renderingpass/vulkanrendercompilerprogram.cpp`)**: [`compileDefaultVulkanPhysical()`](../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L509) は除外の表を受け、
+  先の計画(`discover_placements`)では `retain` と `alias_group` を台帳から外す([その所](../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L532))。program の流れは、`retain` の有無によらず
+  先の計画 → generation の usage → 本計画 → 合意の除外があれば計画し直し([その所](../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L678)、[計画し直す所](../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L701))。
+- **最終の `require` の照合(`src/core/renderingpass/rendercompilerprogram.cpp`)**: [`completeGenerationResources()`](../src/core/renderingpass/rendercompilerprogram.cpp#L249) の先頭
+  ([その所](../src/core/renderingpass/rendercompilerprogram.cpp#L258))。最終の物理計画の台帳と最終の `GenerationResources` の組を照らし、`target_planning.alias_generation_contract@1`。
+- **complete package の verifier(`src/project/vulkancompletephysicalplan.cpp`)**: 住人ごとの再計算 `verifyAliasMember`([その所](../src/project/vulkancompletephysicalplan.cpp#L2500))と、対ごとの
+  `alias.image_contract@1` / `alias.same_scope@1`([その所](../src/project/vulkancompletephysicalplan.cpp#L2588))。形と寿命の前からの検査の文の頭に `alias.shape_or_lifetime@1` を付けた。
+- **同期(`src/core/vkcore/render_target_layout_tracker.{hpp,cpp}`)**: [`RenderTargetLayoutTracker::beginFrame()`](../src/core/vkcore/render_target_layout_tracker.cpp#L352)(新規)と、
+  [`transition()`](../src/core/vkcore/render_target_layout_tracker.cpp#L131) の観測(`AliasTransition` / `alias_transition_observer`。[宣言](../src/core/vkcore/render_target_layout_tracker.hpp#L22))。
+  呼ぶのは renderer の `beginFrameResources()`([その所](../src/core/vkcore/renderer.cpp#L6319))。test の口として `VulkanManageCore::imageAllocationBytes()`([その所](../src/core/vkcore/core.hpp#L86))を足した。
+- **test**: `targetrenderplanning_test` が include する [`rc7b_target_policy_test.inc`](../test/rc7b_target_policy_test.inc#L36)、`rendercompilerprogram_test` の
+  [`rc7b_compiler_policy_test.inc`](../test/rc7b_compiler_policy_test.inc#L1)、GPU の `headless_render_test` の [`rc7b_alias_test.inc`](../test/rc7b_alias_test.inc#L29)、
+  `rc5_recipe_compiler_test.inc` の [`rc7bComparable()`](../test/rc5_recipe_compiler_test.inc#L447) と B4([その所](../test/rc5_recipe_compiler_test.inc#L586)。`[.]`)。
+- **触らなかった層**: 配置(offset 0・owner の allocation の共有)、barrier の形(ALL_COMMANDS の memory barrier + UNDEFINED)、container の検査、置き換えの transaction、memory_summary の数え方。
 
 ### 2-4 `declared_bytes` = 0 — 埋める(決定 2026-10-22)
 

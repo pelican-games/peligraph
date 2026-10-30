@@ -167,6 +167,13 @@ NodeIR {
     の両方で、最終の検証は論理 graph の書き手を数えて行の欠けも断る。attachment の無い書き手(compute・transfer・source 由来)は store の変更が要らない(仕様 §1.2)。
   - **TRANSFER_SRC**: RC-7a は `retain` のために TRANSFER_SRC を足さない。宣言(compose が copy の読み手に足す `requiredImageUsage` の bit を含む)か engine の規則(外部 depth の
     export の元)で付いていなければ約束は成り立たない。`retain` の分を自動で足すのは RC-7c。
+- **追補(RC-7b、`0091c071c`、2026-10-31。同じ形の共有の条件を広げる)**: 全体は [RT メモ §2 の末尾の RC-7b](design_render_target_memory_reduction.md#rc7b-sharing) と
+  [棚卸しメモ §2-3 の RC-7b](design_plan_layer_inventory.md#rc7b-implementation)。行番号は `0091c071c` の物。
+  - **宣言の適格から usage を外した**: [`isRuntimeAliasEligible`](../src/project/rendergraphir.cpp#L241) は history・file source・persistent・`display` だけを見る。上の RC-3c2a の追補 (2) の
+    「planner の alias の適格性などが宣言の usage を読む」は、RC-7b から対の usage の一致を実効の usage(generation の resolver の答え)で見る形に変わった。sampled の bit を compose が宣言に足す形は今のまま。
+  - **resolver は例外でなく解除**: [`resolveGenerationResources`](../src/project/generationresources.cpp#L97) の組の検査で、usage か storage の食い違いは `render_graph.alias_group_invalid@1` ではなく
+    組の共有の解除になり、理由が `GenerationResources::alias_rejections` に残る。compiler program は `retain` の有無によらず先に全 variant を計画してこの resolver の答えを取り(RC-7a では
+    `retain` のある構成だけ)、本計画の配置でもう 1 度呼んで、外れた共有の理由を planner に戻して計画し直す。登録と計画が同じ resolver の答えを使う形は RC-7a のまま。
 
 ### 2.5 pipeline の状態は「所有者ごと」
 

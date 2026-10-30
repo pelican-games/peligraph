@@ -1,7 +1,7 @@
 # 不要な render target の削減: 寿命の正確化と区間詰めによるメモリ共有
 
 対象読者: エンジン担当(描画コンパイラ / renderer)。
-ステータス: 改善案メモ(2026-10-16。議論の記録。WP 化・レビュー前)。段 0(計測)は RC-1 で済み(2026-10-23、`631caac21`。§5)。合計の数え方を実際の確保に合わせる RC-1b も済み(`504a6492a`。§5)。段 1 の寿命の部分(A)は RC-6c で済み(2026-10-30、`be795c9a5`。[§2 の末尾](#rc6c-lifetime)と §5)。中間の RT を名前で読む約束(`retain`)は RC-7a で済み(2026-10-31、`2d1715cf3`。[§2 の末尾の RC-7a](#rc7a-readback)と §5)。
+ステータス: 改善案メモ(2026-10-16。議論の記録。WP 化・レビュー前)。段 0(計測)は RC-1 で済み(2026-10-23、`631caac21`。§5)。合計の数え方を実際の確保に合わせる RC-1b も済み(`504a6492a`。§5)。段 1 の寿命の部分(A)は RC-6c で済み(2026-10-30、`be795c9a5`。[§2 の末尾](#rc6c-lifetime)と §5)。中間の RT を名前で読む約束(`retain`)は RC-7a で済み(2026-10-31、`2d1715cf3`。[§2 の末尾の RC-7a](#rc7a-readback)と §5)。同じ形の共有の条件を広げる RC-7b も済み(2026-10-31、`0091c071c`。[§2 の末尾の RC-7b](#rc7b-sharing)と §5)。
 前提: マニュアル [第6章 §6.6 target planning](manual/06_rendering.md#target-planning-tree)、
 [design_render_pipeline_extensibility.md](design_render_pipeline_extensibility.md)、
 [v1 開発計画](v1_development_plan.md)「保守上の整理候補」。
@@ -147,6 +147,91 @@ Studio / RenderDoc のキャプチャ、外部 depth export)。用途が特定�
 - **確かめた範囲**: 統合側で GPU 全数・非 GPU 全数・シナリオ 23 本が緑(既知の環境由来の赤のみ)。既存の SKIP 3 件(画像の基準が無い 2 件と CB-1 の 08)は未検証。
 - **RC-7 に残した物**: TRANSFER_SRC の自動の付け足し(RC-7c)、alias の適格性の拡張(RC-7b)、形の違う区間詰め(RC-7c)、memory の種類ごとの確保(RC-7d)、
   使われない RT の確保の除去(RC-7e)。段の並びは §5。
+  → alias の適格性の拡張は RC-7b で済んだ(下)。
+
+<a id="rc7b-sharing"></a>
+
+**RC-7b で変わった(2026-10-31、`0091c071c`、branch `agent/rc7b`。同じ形の共有の条件を広げる)。**仕様は `<作業ディレクトリ>/rc7_spec.md` の冒頭(利用者の決定 7 点)と §3、実装者の報告は
+`<作業ディレクトリ>/rc7b_report.md` と修正の報告 2 本(`rc7b_fix_report.md` / `rc7b_fix2_report.md`)。この段の行番号は `0091c071c` の物。配置は今のまま offset 0 で、owner の allocation 1 つを
+住人が共有する(`allocAliasingImage()`)。barrier も layout tracker の住人の切替のまま(決定 5)。形・offset・heap・usage の和が違う物の共有は RC-7c。
+
+- **判定は planner の 1 か所**: [`applyCandidateAliasPolicy()`](../src/project/targetrenderplanning.cpp#L3525) の先頭で、sample 数・view layout・scope を決めた後に資源ごとの `aliasable` を決める
+  (前は `buildCandidateDraft()` の式と、`applyResolvedSampleCounts()` の multisample の分の代入の 2 か所。どちらも消した)。宣言の側の入口 [`isRuntimeAliasEligible()`](../src/project/rendergraphir.cpp#L241)
+  からは「usage がちょうど `COLOR_ATTACHMENT | SAMPLED`」の条件を外した(history・file source・persistent・`display` の除外は残る)。物理の `aliasable` と `require_store` の結び付きも外した。
+  外れた資源には dump の `decisions[]` に `pelican.plan.alias_ineligible@1`(`subject` = 資源、`selected` = 下の条件の名前、`detail` = `RC-7b image-wide alias eligibility`)、
+  組めない対には `pelican.plan.alias_pair_ineligible@1`(`subject` = `<a>/<b>`、`selected` = `effective_usage` か `same_scope`)が出る。
+- **適格の条件**(仕様 §3.1 の 1〜7。括弧は `selected` の名前):
+  1. **保持の理由が無い**(`retained`): 寿命の `retain` が空。engine の 7 つの理由と RC-7a の `readback` のどれも採っていない。display / history / persistent / source の除外は今のまま
+     (宣言の入口で pattern の `allow_alias` が偽になり、`ownership_or_samples` で外れる)。
+  2. **旧住人の中身を要らない**(`first_use`): 最初の use の node が render の node で、その node がその資源を入力として読まず、load op が `load` でない automatic attachment としてその資源を書き、
+     その attachment が全 subresource を覆う。覆うとは、subresource の range が無ければ mip が既定(`ImageMipLevelCount{}`)で layer が 1 か scope の `view_count` 以上、range があれば
+     base の mip と layer が 0・layer 数が全部・mip が `remaining` か固定の数が一致。aspect は color と depth だけを数え、depth-stencil と stencil の format は外す(下)。最初が読み・load・
+     compute / transfer の書き込み・一部の range なら外れる。
+  3. **単一 sample の materialized image**(`ownership_or_samples`): pattern の `allow_alias`、logical materialization が external でない、temporal の読みが無い、
+     representation が `materialized_image`、`rasterization_samples = 1`、resolve が無い。使われない資源は `unused`。
+  4. **画像の契約が同じ**(対の `effective_usage`): 対の両方の実効の usage(`VulkanTargetPlanRequest::effective_image_usage`。RC-7a から compiler が渡す generation の usage)が一致すること。
+     表に名前が無い(facts が不明な)対も外す。representation・format・samples・view layout・mip・layer・dimension・extent の一致と寿命の非重複は前からの
+     [`deriveLegalAliasCandidates()`](../src/project/targetrenderplanning.cpp#L3164) の検査のまま。
+  5. **同じ rendering scope の中で住人を切り替えない**(対の `same_scope`): 先の住人の最後の use と後の住人の最初の use が、採った計画の同じ物理 scope に入る対は外す。候補・再試行ごとに
+     scope を決めた後で見る。`alias_group` の組がこれで成り立たないときの原因には、両方の資源に触る scope の `scope_join: true` も入る
+     ([`aliasConflictCauses()`](../src/project/targetrenderplanning.cpp#L3459))ので、`prefer` の join は RC-6a2 の再試行で外れる。
+  6. **manual / unchecked の NativeScope の境界に触れない**(`native_boundary`): planner は `VulkanTargetPlanRequest::manual_native_resources` の名前を外す。本番の呼び出しでこの欄を埋める所は
+     src に無い(grep で確認。test「RC-7b planner excludes provider manual NativeScope boundary facts」が直接埋める)。manual / unchecked の synchronization は complete package の値で(コードの読み)、
+     そちらは verifier が package の NativeScope から断る(下)。
+  7. 寿命の非重複・`no_alias`・`isolate`・profile は今のまま。
+
+  ほかに、generation の合意で外れた資源は `generation_contract: <理由>` で外れる(下)。
+- **depth-stencil を共有しない理由**: attachment の aspect の型 `AttachmentAspect` は color と depth だけで、stencil を表さない(コードの注記「AttachmentAspect::depth supplies only depth, never stencil」)。
+  条件 2 の「format の全 aspect を書く」を depth-stencil では計画から示せないので、depth-stencil と stencil の format は共有しない(実装者の報告の「最初の事実の確認」)。depth だけの
+  `D32_SFLOAT` は共有できる。
+- **variant を統合してから判定する**: compiler program は `retain` の有無によらず、全 variant を先に 1 度計画して(`discover_placements`)generation の実効の usage・storage・配置を集める
+  ([その所](../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L678))。RC-7a ではこの先の計画は `retain` が採られているときだけだった。先の計画では `retain` に加えて `alias_group` の宣言も
+  台帳から外す([その所](../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L532))。variant ごとの宣言の usage で判定すると、統合すれば合法になる組の `require` を先に断ってしまうため
+  (1 回目の修正の報告の 1)。本計画は統合した usage で行い、その配置でもう 1 度 [`resolveCompilerGenerationResources()`](../src/core/renderingpass/rendercompilerprogram.cpp#L224) を呼び、
+  共有を外した資源があれば理由つきの除外(`generation_alias_exclusions`)を渡して全 variant を計画し直す([その所](../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L701))。
+  - generation の resolver([`resolveGenerationResources()`](../src/project/generationresources.cpp#L97))は、組の中で usage か storage が違う組を、前の `render_graph.alias_group_invalid@1` の例外ではなく
+    共有の解除にし、資源ごとの理由を `GenerationResources::alias_rejections` に入れる(`generation image contracts differ: <組>`。variant が組に合意しない組は
+    `generation variants do not agree on alias placement: <組>`)。format・extent・samples・mip・layer・dimension・history の食い違いは今のまま `alias_group_invalid@1`。
+  - 自動の共有と `prefer` は外れ、理由が dump の `pelican.plan.alias_ineligible@1` に出る。`require` は planner の組の検査で成り立たず、3 候補とも不成立で `target_planning.requirement_unsatisfied@1`
+    (候補の失敗の文に `alias.<条件>@1: <資源>` が付く)。test「RC-7b merged usage restores legal variant sharing」(flat では usage が違い XR では同じ 2 variant。統合後は automatic / prefer /
+    require とも共有する)、「RC-7b retain-free variants resolve merged contracts before planner policy」(`retain` を書かない 2 variant の合意と解除)。
+- **graph 間で外れた共有**: 1 つの variant の複数の graph が組に合意しないとき、runtime の組の統合 `mergeRuntimeAliasGroups()` が外した資源に理由
+  (`frame graphs do not agree on alias placement: <graph>` か `…: overlapping groups`)を返し、[`compileRenderingTargetPlans()`](../src/core/renderingpass/renderingsamplecount.cpp#L1961) がそれを除外に足して
+  全 graph を計画し直す。各 graph の `alias_groups`・decision・dump・登録の assignment が同じ非共有の配置を言う(前は登録が非共有なのに最初の graph の計画と dump が共有を表示していた)。
+  `require` は名前付きで断られる(1 回目の修正の報告の 2。test「RC-7b graph overlap releases generation sharing and its policy display」)。
+- **`require` の最終の照合**: 登録の前の仕上げ [`completeGenerationResources()`](../src/core/renderingpass/rendercompilerprogram.cpp#L249) が、各 variant の最終の物理計画の台帳(`plan->policy`)で
+  採った `require` の `alias_group` ごとに、同じ文書・同じ組名で採った peer が最終の `GenerationResources` の同じ alias の組にいるかを見る([その所](../src/core/renderingpass/rendercompilerprogram.cpp#L258))。
+  いなければ `target_planning.alias_generation_contract@1 {graph, resource, peer, reason}`(`reason` は `alias_rejections` の文か `final generation placement does not share required alias group`)。
+  前の照合は「`alias_rejections` に名前があるか」で、提案そのものが消えた場合を見逃した(1 回目の修正の報告の 2)。宣言(`compiled_pipeline` の台帳)でなく最終の計画の台帳を見るのは、
+  再試行で `infeasible_prefer` になった peer を照合から外すため(2 回目の修正の報告。A / C が `require`・B が `prefer` の組で B に `no_alias` か `retain` を書くと、B が外れて A / C だけが共有する。
+  test「RC-7b final generation accepts required sharing after no_alias drops a prefer peer」)。
+- **登録の前の配置の検査**: [`imagePlacementsOf()`](../src/core/renderingpass/renderingsamplecount.cpp#L2314) の組の検査は、宣言の usage ではなく物理計画の実効の usage を比べ、local read の禁止を外した
+  (local read は条件 2 と 5 で planner が見る)。container の検査は変えていない(owner の create info の複製の検査なので depth・transfer・BGRA も同じく通る。報告)。
+- **complete package の verifier**: [`verifyVulkanCompletePhysicalPlanPackage()`](../src/project/vulkancompletephysicalplan.cpp#L1542) は package の `aliasable` を根拠にせず、組の住人ごとに compiler の事実
+  (`automatic_plan` の寿命・`effective_image_usage`・`generation_alias_exclusions`・`manual_native_resources`・lowering の pattern)と package の attachment・scope・NativeScope から条件を計算し直す
+  ([その所](../src/project/vulkancompletephysicalplan.cpp#L2500))。断る文の頭は `alias.native_boundary@1`・`alias.generation_contract@1`・`alias.retained@1`・`alias.ownership_or_samples@1`・
+  `alias.first_use@1`・`alias.missing_resource@1`、対の `alias.image_contract@1`・`alias.same_scope@1`・`alias.shape_or_lifetime@1`。そのために `VulkanTargetPlan` に `generation_alias_exclusions` と
+  `manual_native_resources` を足した(JSON には書かない。grep で確認)。
+- **tracker の frame 先頭の pending**: [`RenderTargetLayoutTracker::beginFrame()`](../src/core/vkcore/render_target_layout_tracker.cpp#L352) が、住人のいる共有の token を全部 pending にする。renderer は
+  `renderLogicalFrame()` の `beginFrameResources()` で frame ごとに 1 回、記録の前に呼ぶ([呼ぶ所](../src/core/vkcore/renderer.cpp#L6319))。[`transition()`](../src/core/vkcore/render_target_layout_tracker.cpp#L131)
+  は pending か住人の切替のとき、ALL_COMMANDS → ALL_COMMANDS・`MEMORY_READ | MEMORY_WRITE` の memory barrier を出し、住人の layout を UNDEFINED にする(前からの形)。前は同じ住人・同じ layout が
+  frame をまたいで続くと barrier が出ず、frame 間の依存が保証されていなかった(報告の「最初の事実の確認」)。新しい token(新しい generation の allocation)は pending に入らないので、最初の access は
+  barrier なしで UNDEFINED から始まる。`reset()` の後の同じ token は前からの pending の道。test の観測口 `alias_transition_observer`(`AliasTransition`)を足した。
+- **生きている generation の更新**: 置き換えの transaction(arena と checkpoint)は変えていない。所有する scope の中の組の結合・分割・解除がこの transaction で通り、遅い失敗で名前・allocation・
+  readback の許可が戻ることを GPU の test で確かめた(§5 の RC-7b の B5)。それ以外の live の契約変更の作り直しは 7b の外(今の拒否のまま)。
+- **example は 1 組のまま**: 1920×1080 の example は `{Bloom_Threshold_RT, g_emissive}` の 1 組・21 枚 20 確保・total 125,776,320 / peak 85,017,600(order 3 `lighting_pass`)のまま。
+  7b で新しく候補に入る `lit_color`・`scene_depth`・`shadow_map` には、同じ契約で寿命の重ならない相手が無い(usage が違うか寿命が重なる)。`opaque_color` / `opaque_depth` は最初が snapshot の
+  transfer の書き込み、`display` は display の除外、`ssao_output` / `ssao_blur` と bloom の各段の対は閉区間の端で重なる(報告の表)。7b は 7c の前提を作る段で、効果は専用の fixture で見る
+  (§5 の B1)。example の確保が減るのは RC-7c(形の違う区間詰め)から。
+- **計画の差(B4)**: 実装前の HEAD `2d1715cf3` で記録した 16 構成(`<作業ディレクトリ>/rc7b_baseline/rc5`)と比べ、意味の欄(実行順・scope・representation・format・samples・attachment の ops・usage・寿命・
+  保持の理由)は一致する。差は共有の派生の欄だけで、固定の除外を外した `lit_color`・`scene_depth`(各 16 構成)・`shadow_map`(8)は logical materialization が required → virtual、
+  runtime pattern の `allow_alias` が false → true、`require_store` が true → false、`aliasable` が false → true。`opaque_color` / `opaque_depth` は pattern が候補の側に変わるが、
+  `aliasable` は false のまま。`reason` の文は 56 か所で変わる(`display` は `logical materialization requirement is required: display-format target is not aliased`、ほかは
+  `arbitrary read requires a materialized resource`)。新しい decision は資源の不適格 64 行と対の `effective_usage` 352 行(30 種の対)。組と `alias_candidates` は 16 構成とも変わらず、
+  fingerprint は派生の欄の分だけ変わる(報告)。比べる test は「RC-7b B4 semantic fields match sixteen immutable preimplementation snapshots」(`[.]`)。RC-6 の A5 と RC-7a の F4 も、同じ除外の関数
+  `rc7bComparable()` を通して比べる形になった(派生の欄だけを除き、`reason` は上の既知の文への対応を確かめてから記録の文に戻す)。
+- **RC-7 に残した物**: 形・offset・heap・usage の和が違う共有と `alias_reuse` の barrier・`retain` の資源への TRANSFER_SRC の自動の付け足し(RC-7c)、memory の種類ごとの確保(RC-7d)、
+  使われない RT の確保の除去(RC-7e)。depth-stencil の共有は 7b の外(どの段で扱うかは未定)。
 
 ## 3. B: alias を区間詰めに一般化する(本丸)
 
@@ -201,7 +286,7 @@ renderer(executePlannedFrameGraph)
 |---|---|---|---|
 | 0 | 計測: `get_frame_plan` に `memory_summary {total_bytes, peak_live_bytes, peak_node}` と資源ごとの `bytes` を出す。Studio の Frame Plan に表示。**RC-1 で済み(`631caac21`)** | 小 | planner の単体テスト(GPU 不要)。手計算の 120 / 81 MiB と一致 → 実測は 119.95 / 81.08 MiB(合計のずれは §1 の注) |
 | 1 | A: required / require_store の末尾延長の理由を特定し、必要な経路だけ opt-in に。**寿命の意味は RC-6c で済み(`be795c9a5`。graph の外の読み手 7 つを理由に)。名前の readback の opt-in は RC-7a で済み(`2d1715cf3`)。実確保の削減は RC-7b〜7e** | 小〜中 | 物理計画の fixture 差分、golden 不変、headless 読み出し・picking・capture の回帰 |
-| 2 | B: 区間詰め alias(planner → runtime → barrier)。**RC-7b〜7e に分けた(下の「RC-7 の段」)** | 大 | planner 単体(詰め結果の決定性、no_alias、memoryTypeBits 拒否)、GPU gate 全数、`hazard_stress` での揺さぶり、validation layer |
+| 2 | B: 区間詰め alias(planner → runtime → barrier)。**RC-7b〜7e に分けた(下の「RC-7 の段」)。同じ形の共有の条件の拡張は RC-7b で済み(`0091c071c`)** | 大 | planner 単体(詰め結果の決定性、no_alias、memoryTypeBits 拒否)、GPU gate 全数、`hazard_stress` での揺さぶり、validation layer |
 | 3 | C: dead pass elimination、store 自動 discard | 中 | frame plan の fixture、golden 不変 |
 
 0 と 1 は純ロジック中心。2 は GPU gate 必須(Windows)。
@@ -222,7 +307,7 @@ verifier だけ一律の延長に戻すと正常な package の検証が赤。go
 **RC-7 の段と利用者の決定(2026-10-30)。**仕様は `<作業ディレクトリ>/rc7_spec.md`(冒頭と §2。RC-7b〜7e は骨組みで、それぞれの前に詰める)。段 1 の残り(実確保の削減)と段 2 を RC-7 として次の順に分けた。
 
 1. **RC-7a** readback の約束(✅ 済み。下の完了記録)。
-2. **RC-7b** 同じ形の共有の条件を広げる(offset 0・既存の barrier のまま。広げた後の画像の契約の互換と frame の境界での使い回しの同期を完了の条件に入れる)。
+2. **RC-7b** 同じ形の共有の条件を広げる(offset 0・既存の barrier のまま。広げた後の画像の契約の互換と frame の境界での使い回しの同期を完了の条件に入れる)(✅ 済み。下の完了記録)。
 3. **RC-7c** 形の違う区間詰め(retain の資源への TRANSFER_SRC の自動の付け足し、device facts の memory requirements、memory の種類ごとの heap と offset、`alias_reuse` の barrier)。
 4. **RC-7d** memory の種類ごと(transient / tile-local を同じ allocator の道へ。lazily allocated は作り物の device facts の CPU test まで)。
 5. **RC-7e** 使われない RT の確保の除去。
@@ -238,6 +323,37 @@ RC-7a の完了記録(2026-10-31、`2d1715cf3`、branch `agent/rc7`。検証は�
 RC-7a の test 24 件(期待どおりに失敗する対照 1 件と SKIP の対照 1 件を含む)・A5 と F4 の各 16 構成・移行した GPU の test file が緑。対照: 拒否を外すと F1、派生の materialize・store の付け足し・
 `readback` の寿命の理由のどれかを外すと F2 の対応する検査が赤。統合側で GPU 全数・非 GPU 全数・シナリオ 23 本が緑(既知の環境由来の赤のみ)。既存の SKIP 3 件(画像の基準が無い 2 件と
 CB-1 の 08)は未検証。
+
+RC-7b の完了記録(2026-10-31、`0091c071c`、branch `agent/rc7b`。検証は実装者の報告と修正の報告 2 本): 内容は [§2 の末尾の RC-7b](#rc7b-sharing)。仕様 §3.4 の受け入れごとに:
+
+- **B1 新しく共有される**: GPU の「RC-7b B1 B2 B3 B5 expanded image sharing survives frames and edits」(`headless_render_test`)が 32×32 の 3 形式(`R8G8B8A8_UNORM` + `TRANSFER_SRC`、
+  display でない `B8G8R8A8_UNORM`、`D32_SFLOAT`)で、各形式の共有される 3 枚が generation の placement の同じ組・同じ allocation・別の VkImage であることを見る。実 allocation は VMA の
+  `getAllocationInfo().size`(test の口 `imageAllocationBytes()`)と allocation の一意数で測り、各形式とも共有なし 3 個 / 12,288 B → 共有 1 個 / 4,096 B(2 個 / 8,192 B 減)。`retain` は
+  寿命の中で写した観測用の出力 2 つだけに付け、共有される資源自身は名前で読まない。CPU: 「RC-7b B1 B6 identical effective image contracts admit depth transfer and BGRA」。
+- **B2 画素**: 観測用の出力が赤 / 緑の RGBA で全画素一致(3 frame の連続 submit の後、reset の後、さらに 2 frame の各 frame、共有の解除の後、失敗の復元の後)。golden の全画像と GPU の全数は
+  統合側(報告の時点で未実施)。
+- **B3 同期**: 同じ GPU の test で a 同じ frame の中の切替、b 3 frame の連続 submit の frame 先頭、c reset の後の pending と新しい generation / token を分けて、d production の view / once の
+  scheduler で住人を記録しない frame を挟む、e 他の住人を記録せず同じ画像・同じ layout の attachment clear を続ける。依存の token・位置・ALL_COMMANDS・`MEMORY_READ | MEMORY_WRITE`・
+  次の画像の oldLayout = UNDEFINED を検査。Khronos の validation と synchronization validation を有効にしたことを assert し、debug messenger が拾った warning / error は 0 件(共有した資源、
+  共有を全部外した 3 frame の対照とも。前からある frame 間の警告も出なかったので、別の WP に切り出す物は無い)。記録は `<作業ディレクトリ>/rc7b_fix2_validation.jsonl`。
+- **B4 計画の差**: §2 の末尾の RC-7b の「計画の差」。A5(`[rc6-baseline-compare]`、3,531 assertions)・F4(`[rc7-baseline-compare]`、466)・B4(`[rc7b-baseline-compare]`、450)の各 16 構成が緑。
+  example の 1 組と total / peak は固定の assert で維持。`frameplanner_test` の example の test は、RC-6c の前の一律の末尾延長を、RC-7b で変わる pattern の欄からでなく当時の資源の集合
+  (`display`・`lit_color`・`offscreen_depth`・`opaque_color`・`opaque_depth`・`swapchain`)を固定して作るようにした(数値の期待は不変)。
+- **B5 編集**: `{a,b,c}` → `{a,c}+{b}` の分割、3 つの独立した allocation への解除、再結合。前の snapshot・ID・画像を保ち、submit と次の置き換えの間に waitIdle を入れない場合も見る。
+  `after_runtime_prepare` の故障の注入で名前の binding・allocation・readback の許可が戻り、shader の欠けで失敗しても公開の snapshot は変わらない。
+- **B6 policy と verifier**: 新しく適格な 3 形式で `no_alias`・`isolate`・`alias_group` の `require` / `prefer` が効く。`retain` を書かない 2 variant の usage / storage の合意(自動と `prefer` は解除、
+  `require` は名前付きの拒否)。complete package の verifier が、保持・最初の use・usage・scope・manual / unchecked の NativeScope・MSAA・resolve・寿命の重なりを壊した package を、
+  fingerprint の不一致の手前の拒否ではなくそれぞれの `alias.*@1` で断る(「RC-7b first-use controls reach the planner and independent verifier」「RC-7b verifier rejects native boundaries samples and
+  overlapping residents」ほか)。
+- **対照**(実装者の報告): 条件 1(8 つの理由ごと)・2(9 入力。planner と verifier の両方で `alias.first_use@1`)・4(不一致と facts 不明)・5・6 と alias の barrier をそれぞれ外す変異で
+  対応する検査が赤、戻して緑。修正の報告 2 本も、修正を外すと新しい test(`[rc7b-fix-variants]`・`[rc7b-fix-graphs]`・`[rc7b-fix-retry]`)が赤。
+- **既存の test の変更**: RC-3c2a C1 の GPU の fixture(`generationresources_device_test`)は、前は `TRANSFER_SRC` で共有から外れていた中と末の 6 枚に明示の `no_alias` を書き、a / b / c の組だけを測る
+  (flat 単独 3 組・12 確保、XR と統合 2 組・13 確保は不変)。`renderingsamplecount_test` の PO-1 の usage の理由の test は「RC-7b differing effective usages prevent runtime aliasing without
+  forcing storage」に変わり、graph 間の統合の 2 件は各 graph の計画と dump が非共有であることを見る形にした。
+- **触った家族**(2 回目の修正の後): project_planning 116 件、render_planning_core 118 件、render_pipeline 514 件(513 緑・既存の SKIP 1 件 `rc5s.fixed_head_packages_unavailable@1`)、
+  RC-3c2a C1 の GPU と RC-7b の GPU が緑。
+- **統合側の gate**(1 回目の修正の後の tree。2 回目の修正は最終の照合の入力 1 か所だけ): GPU 全数 476 中 475 緑(既知の環境由来 `player_arguments_ds1_path` のみ)、非 GPU 全数は既知の 29 件と名前で一致、
+  シナリオ 23 本が緑、A5・F4・B4 一致。既存の SKIP 3 件(画像の基準が無い 2 件と CB-1 の 08)と他の GPU / driver は未検証。
 
 ## 6. 未決(2026-10-17 更新)
 
