@@ -28,7 +28,8 @@ TEST_CASE("RC-7b default compiler discovers retain-free variant contracts", "[re
         fixture.backend_context = VulkanRenderCompilerBackendContext{vk::Format::eB8G8R8A8Srgb,
             {64, 64}, {}, {}, {}, VulkanRenderCompilerDevicePlanningMode::compiler_only};
         fixture.variants = {{.graph_variant = RenderPipelineGraphVariant::flat}, {.graph_variant = RenderPipelineGraphVariant::xr}};
-        auto input = fixture.input();
+        fixture.backend_context.planning_facts = TestSupport::rc7cDeviceFacts();
+    auto input = fixture.input();
         input.runtime_shader_compiler_enabled = true;
         std::size_t reads = 0;
         // Controlled variant source facts: the default program resolves flat
@@ -63,7 +64,7 @@ TEST_CASE("RC-7b default compiler discovers retain-free variant contracts", "[re
                 CHECK(plan->generation_alias_exclusions.empty());
                 CHECK(std::any_of(plan->decisions.begin(), plan->decisions.end(), [](const auto &d) {
                     return d.id == "pelican.plan.alias_pair_ineligible@1" &&
-                        d.subject == "temporary_a/temporary_b" && d.selected == "effective_usage";
+                        d.subject == "temporary_a/temporary_b" && d.selected == "memory_key";
                 }));
                 CHECK(bool(plan->effective_image_usage.at("temporary_b") & ImageUsageBit::storage));
                 if (strength == "prefer") CHECK(std::any_of(plan->policy.begin(), plan->policy.end(), [](const auto &p) {
@@ -113,7 +114,8 @@ TEST_CASE("RC-7b merged usage restores legal variant sharing", "[rendercompiler]
         fixture.backend_context = VulkanRenderCompilerBackendContext{vk::Format::eB8G8R8A8Srgb,
             {64, 64}, {}, {}, {}, VulkanRenderCompilerDevicePlanningMode::compiler_only};
         fixture.variants = {{.graph_variant = RenderPipelineGraphVariant::flat}, {.graph_variant = RenderPipelineGraphVariant::xr}};
-        auto input = fixture.input();
+        fixture.backend_context.planning_facts = TestSupport::rc7cDeviceFacts();
+    auto input = fixture.input();
         input.runtime_shader_compiler_enabled = true;
         std::size_t reads = 0;
         input.load_document = [&](std::string_view ref) {
@@ -197,7 +199,8 @@ TEST_CASE("RC-7b final generation accepts required sharing after no_alias drops 
             fixture.backend_context = VulkanRenderCompilerBackendContext{vk::Format::eB8G8R8A8Srgb,
                 {64, 64}, {}, {}, {}, VulkanRenderCompilerDevicePlanningMode::compiler_only};
             fixture.variants = {{.graph_variant = RenderPipelineGraphVariant::flat}};
-            auto input = fixture.input();
+            fixture.backend_context.planning_facts = TestSupport::rc7cDeviceFacts();
+    auto input = fixture.input();
             input.runtime_shader_compiler_enabled = true;
             const auto result = runRenderCompilerProgram(defaultVulkanRenderCompilerProgram(), input);
             REQUIRE(result.variants.size() == 1);
@@ -271,7 +274,7 @@ TEST_CASE("RC-7b graph overlap releases generation sharing and its policy displa
             auto physical = std::make_unique<VulkanRenderCompilerPhysicalPackage>();
             const auto definitions = renderTargetDefinitionsOf(*selected_ir);
             physical->target_plan_compilation = compileRenderingTargetPlans(*selected_ir, variant.frame_plans,
-                definitions, {}, vk::Format::eB8G8R8A8Srgb, {}, {}, {}, pipeline->target_planning);
+                definitions, {}, vk::Format::eB8G8R8A8Srgb, TestSupport::rc7cDeviceFacts(), {}, {}, pipeline->target_planning);
             physical->image_placements = imagePlacementsOf(definitions, physical->target_plan_compilation);
             for (const auto &plan : physical->target_plan_compilation.plans)
                 physical->target_plans.emplace(plan->graph, plan);
@@ -301,7 +304,7 @@ TEST_CASE("RC-7b graph overlap releases generation sharing and its policy displa
                 completeGenerationResources(std::span{&variant, 1}, {64, 64});
                 FAIL_CHECK("required G1 sharing lost to G2 overlap was accepted");
             } catch (const GraphRegistryError &error) {
-                CHECK(error.code() == "target_planning.requirement_unsatisfied@1");
+                CHECK(error.code() == "target_planning.alias_generation_contract@1");
                 CHECK(error.detail().dump().find("G1") != std::string::npos);
                 CHECK(error.detail().dump().find("temporary_a") != std::string::npos);
                 CHECK(error.detail().dump().find("alias_group") != std::string::npos);
@@ -311,17 +314,11 @@ TEST_CASE("RC-7b graph overlap releases generation sharing and its policy displa
         auto variant = compile();
         const auto resources = completeGenerationResources(std::span{&variant, 1}, {64, 64});
         const auto &physical = requireVulkanRenderCompilerPhysicalPackage(*variant.physical_package);
-        CHECK(physical.target_plan_compilation.alias_group_assignments.empty());
+        CHECK(resources.findImage("temporary_a")->alias_group != resources.findImage("temporary_b")->alias_group);
         for (const auto &[graph, plan] : physical.target_plans) {
             INFO(graph);
-            CHECK(plan->alias_groups.empty());
-            CHECK(vulkanTargetPlanToJson(*plan).at("alias_groups").empty());
-            CHECK(std::none_of(plan->decisions.begin(), plan->decisions.end(), [](const auto &d) {
-                return d.id == "pelican.plan.alias_group_selected@1";
-            }));
-            CHECK(std::any_of(plan->decisions.begin(), plan->decisions.end(), [](const auto &d) {
-                return d.selected.find("frame graphs do not agree on alias placement") != std::string::npos;
-            }));
+            for(const auto &group:plan->alias_groups)CHECK_FALSE((std::find(group.resources.begin(),group.resources.end(),"temporary_a")!=group.resources.end() && std::find(group.resources.begin(),group.resources.end(),"temporary_b")!=group.resources.end()));
+            if(graph=="G1")CHECK(std::any_of(plan->decisions.begin(),plan->decisions.end(),[](const auto &d){return d.id=="pelican.plan.alias_generation_contract@1";}));
             const auto resource = [&](std::string_view name) -> const VulkanPhysicalResourcePlan & {
                 const auto found = std::find_if(plan->resources.begin(), plan->resources.end(),
                     [&](const auto &r) { return r.logical_resource == name; });
@@ -343,7 +340,6 @@ TEST_CASE("RC-7b graph overlap releases generation sharing and its policy displa
                 }
             }
         }
-        CHECK_FALSE(resources.findImage("temporary_a")->alias_group);
-        CHECK_FALSE(resources.findImage("temporary_b")->alias_group);
+        CHECK(resources.findImage("temporary_a")->alias_group != resources.findImage("temporary_b")->alias_group);
     }
 }

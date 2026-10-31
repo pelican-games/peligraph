@@ -1372,6 +1372,7 @@ class GraphCanvasModel {
         std::string name;
         std::string format;
         std::vector<std::string> from_nodes;
+        std::string planned_placement;
     };
     struct PlanAliasGroup {
         std::string id;

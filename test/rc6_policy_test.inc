@@ -16,6 +16,10 @@ bool rc6Aliased(const Rc6Json &plan, const char *a, const char *b) {
     }
     return false;
 }
+bool rc6InRegion(const Rc6Json &plan,const char *name) {
+    for(const auto &region:plan.at("memory_regions"))for(const auto &r:region.at("residents"))if(r.at("resource")==name)return true;
+    return false;
+}
 std::string rc6Refusal(const std::function<void()> &operation) {
     try { operation(); } catch (const GraphRegistryError &e) { return e.code(); }
     return {};
@@ -28,16 +32,16 @@ Rc6Json rc6Row(const Rc6Json &physical, const char *target, const char *kind) {
 }
 }
 
-TEST_CASE("RC-6 B1 B2 feature no_alias changes actual allocation and root false restores it", "[rendercompiler][rc6a1][rc6-b1][rc6-b2]") {
+TEST_CASE("RC-6 B1 B2 feature no_alias changes region admission and root false restores it", "[rendercompiler][rc6a1][rc6-b1][rc6-b2]") {
     auto root = rc5Document(true, true, false);
     root["rendering"]["features"].push_back("project://features/local.json");
     auto feature = Rc6Json::parse(PathResolver{}.loadText("engine://features/bloom.json"));
-    const auto automatic = rc6Physical(rc5Compile(root, false, &feature));
-    REQUIRE(rc6Aliased(automatic, "g_emissive", "Bloom_Threshold_RT"));
+    const auto automatic = rc6Physical(rc5CompileWithFacts(root, false, &feature));
+    REQUIRE(rc6InRegion(automatic, "Bloom_Threshold_RT"));
     REQUIRE_FALSE(automatic.contains("policy"));
     feature["target_planning"] = rc6Policy("resources", "Bloom_Threshold_RT", "no_alias", true);
-    const auto hinted = rc6Physical(rc5Compile(root, false, &feature));
-    REQUIRE_FALSE(rc6Aliased(hinted, "g_emissive", "Bloom_Threshold_RT"));
+    const auto hinted = rc6Physical(rc5CompileWithFacts(root, false, &feature));
+    REQUIRE_FALSE(rc6InRegion(hinted, "Bloom_Threshold_RT"));
     auto row = rc6Row(hinted, "Bloom_Threshold_RT", "part");
     CHECK(row.at("strength") == "prefer");
     CHECK(row.at("status") == "adopted");
@@ -45,8 +49,8 @@ TEST_CASE("RC-6 B1 B2 feature no_alias changes actual allocation and root false 
     CHECK(row.at("origin").at("pointer") == "/target_planning/graphs/main_render/resources/Bloom_Threshold_RT/no_alias");
     CHECK_FALSE(row.contains("satisfied"));
     root["rendering"]["target_planning"] = rc6Policy("resources", "Bloom_Threshold_RT", "no_alias", false);
-    const auto overridden = rc6Physical(rc5Compile(root, false, &feature));
-    REQUIRE(rc6Aliased(overridden, "g_emissive", "Bloom_Threshold_RT"));
+    const auto overridden = rc6Physical(rc5CompileWithFacts(root, false, &feature));
+    REQUIRE(rc6InRegion(overridden, "Bloom_Threshold_RT"));
     CHECK(rc6Row(overridden, "Bloom_Threshold_RT", "part").at("status") == "overridden");
     CHECK(rc6Row(overridden, "Bloom_Threshold_RT", "root").at("value") == false);
     // Policy is observation, not identity, when its result is unchanged.
@@ -64,7 +68,7 @@ TEST_CASE("RC-6 B3 B10 recipe priority and selected fragment provenance", "[rend
     auto root = rc5Document(false, false, false);
     root["rendering"]["pipeline"]["preset"] = "project://recipe.json";
     const auto compile = [&](const Rc6Json &r, const Rc6Json &replacement) {
-        return rc5Compile(r, false, nullptr, {{"recipe.json", recipe}, {"original.json", fragment}, {"replacement.json", replacement}});
+        return rc5CompileWithFacts(r, false, nullptr, {{"recipe.json", recipe}, {"original.json", fragment}, {"replacement.json", replacement}});
     };
     const auto compiled = compile(root, fragment);
     const auto &constraints = compiled.variants.at(0).compiled_pipeline->target_planning.graphs.at(0).nodes;
@@ -94,18 +98,18 @@ TEST_CASE("RC-6 B4 feature cannot constrain a borrowed base resource", "[renderc
     root["rendering"]["features"] = {"project://features/local.json"};
     auto feature = Rc6Json::parse(PathResolver{}.loadText("engine://features/bloom.json"));
     feature["target_planning"] = rc6Policy("resources", "lit_color", "no_alias", true);
-    CHECK(rc6Refusal([&] { rc5Compile(root, false, &feature); }) == "target_planning.policy_foreign_name@1");
+    CHECK(rc6Refusal([&] { rc5CompileWithFacts(root, false, &feature); }) == "target_planning.policy_foreign_name@1");
 }
 
 TEST_CASE("RC-6 B5 engine isolation rejects require and explains discarded prefer", "[rendercompiler][rc6a1][rc6-b5]") {
     auto root = rc5Document(false, false, false);
     root["rendering"]["features"] = {"engine://features/sprite.json"};
-    const auto automatic = rc6Physical(rc5Compile(root, false));
+    const auto automatic = rc6Physical(rc5CompileWithFacts(root, false));
     REQUIRE_FALSE(automatic.contains("policy"));
     root["rendering"]["target_planning"] = rc6Policy("nodes", "sprite_draw", "isolate", {{"value", false}, {"strength", "require"}});
-    CHECK(rc6Refusal([&] { rc5Compile(root, false); }) == "target_planning.policy_conflicts_engine@1");
+    CHECK(rc6Refusal([&] { rc5CompileWithFacts(root, false); }) == "target_planning.policy_conflicts_engine@1");
     root["rendering"]["target_planning"]["graphs"]["main_render"]["nodes"]["sprite_draw"]["isolate"]["strength"] = "prefer";
-    const auto preferred = rc6Physical(rc5Compile(root, false));
+    const auto preferred = rc6Physical(rc5CompileWithFacts(root, false));
     const auto row = rc6Row(preferred, "sprite_draw", "root");
     CHECK(row.at("status") == "engine_forced");
     CHECK_FALSE(row.contains("satisfied"));
@@ -116,7 +120,7 @@ TEST_CASE("RC-6 B6 deleted root target warns and retains its absent declaration"
     auto root = rc5Document(false, false, true);
     root["rendering"]["target_planning"] = rc6Policy("nodes", "probe_fill", "serial", true);
     root["nodes"].erase(root["nodes"].begin() + 1);
-    const auto compiled = rc5Compile(root, false);
+    const auto compiled = rc5CompileWithFacts(root, false);
     const auto &pipeline = *compiled.variants.at(0).compiled_pipeline;
     CHECK(std::any_of(pipeline.diagnostics.begin(), pipeline.diagnostics.end(), [](const auto &d) {
         return d.kind == RenderPipelineDiagnosticKind::planning_name_absent && d.subject == "probe_fill";
@@ -126,14 +130,14 @@ TEST_CASE("RC-6 B6 deleted root target warns and retains its absent declaration"
 
 TEST_CASE("RC-6 B9 policy rejects complete installs", "[rendercompiler][rc6a1][rc6-b9]") {
     auto root = rc5Document(false, false, false);
-    const auto automatic = rc5Compile(root, false);
+    const auto automatic = rc5CompileWithFacts(root, false);
     const auto &physical = requireVulkanRenderCompilerPhysicalPackage(*automatic.variants.at(0).physical_package);
     const auto &plan = *physical.target_plans.at("main_render");
     root["rendering"]["target_planning"] = rc6Policy("nodes", "forward_opaque", "serial", true);
 
 
     SECTION("complete") {
-        auto compiled = rc5Compile(root, false);
+        auto compiled = rc5CompileWithFacts(root, false);
         auto package = requireVulkanRenderCompilerPhysicalPackage(*compiled.variants.at(0).physical_package);
         CHECK(rc6Refusal([&] { installVerifiedVulkanCompletePhysicalPlanPackage(package, "main_render", ejectVulkanCompletePhysicalPlanPackage(plan)); }) ==
             "target_planning.policy_with_legacy_package@1");
@@ -158,7 +162,7 @@ TEST_CASE("RC-6 B3 serial changes physical parallel opportunities and recipe fal
     Rc6Json recipe{{"schema", "pelican.render_pipeline"}, {"version", 2}, {"name", "parallel"},
         {"config", {{"base", Rc6Json::array({{{"family", "main"}, {"fragments", {"project://part.json"}}}})}}}};
     root["rendering"] = {{"pipeline", {{"preset", "project://recipe.json"}}}};
-    const auto compile = [&] { return rc6Physical(rc5Compile(root, false, nullptr,
+    const auto compile = [&] { return rc6Physical(rc5CompileWithFacts(root, false, nullptr,
         {{"recipe.json", recipe}, {"part.json", fragment}}), "main"); };
     const auto automatic = compile();
     REQUIRE(rc6ParallelWith(automatic, "scene"));
@@ -184,7 +188,7 @@ TEST_CASE("RC-6 final XR task names bind root and part policy to the physical pl
         {"dispatch", {{"groups", {1, 1, 1}}}}, {"schedule", "per_frame"}}});
     auto probe = feature["compute_tasks"][0]; probe["name"] = "probe_fill";
     feature["compute_tasks"].push_back(probe);
-    const auto compile = [&] { return rc5Compile(root, true, &feature); };
+    const auto compile = [&] { return rc5CompileWithFacts(root, true, &feature); };
     const auto automatic = rc6Physical(compile(), "main_render#xr");
     REQUIRE(rc6ParallelWith(automatic, "probe_fill#xr"));
     REQUIRE(rc6ParallelWith(automatic, "owned_task#xr"));
@@ -263,7 +267,7 @@ TEST_CASE("RC-6 B6 removed graph is absent before shared resource and task names
     root["rendering"]["pipeline"]["preset"] = "project://with_old.json";
     REQUIRE(copy["config"]["rendering_passes"].back()["name"] == "old");
     copy["config"]["rendering_passes"].erase(copy["config"]["rendering_passes"].end() - 1);
-    const auto compiled = rc5Compile(root, false, &feature, {{"with_old.json", copy}});
+    const auto compiled = rc5CompileWithFacts(root, false, &feature, {{"with_old.json", copy}});
     const auto &ir = *compiled.variants[0].render_graph;
     REQUIRE(std::any_of(ir.buffers.begin(), ir.buffers.end(), [](const auto &r) { return r.name == "A"; }));
     const auto order = framePlanOrder(compiled.variants[0].frame_plans.at("main"));
@@ -291,7 +295,7 @@ TEST_CASE("RC-6 selected integration owns its resources and passes only", "[rend
     integration["fragment"]["passes"] = Rc6Json::array({{{"insert", "before:ldr"}, {"pass", pass}}});
     feature["integrations"] = Rc6Json::array({integration});
     Rc6Json peer{{"schema", "pelican.render_feature"}, {"version", 1}, {"name", "peer"}};
-    const auto compile = [&] { return rc6Physical(rc5Compile(root, false, &feature, {{"peer.json", peer}}), "main"); };
+    const auto compile = [&] { return rc6Physical(rc5CompileWithFacts(root, false, &feature, {{"peer.json", peer}}), "main"); };
     const auto automatic = compile();
     REQUIRE(rc6ParallelWith(automatic, "integrated_pass"));
     feature["target_planning"] = rc6Policy("nodes", "integrated_pass", "serial", true, "main");
@@ -374,15 +378,15 @@ TEST_CASE("RC-6 root final task name wins over another task author name", "[rend
         const auto *graph = xr ? "main_render#xr" : "main_render";
         const auto *other = xr ? "probe_fill#xr#xr" : "probe_fill";
         root["rendering"].erase("target_planning");
-        const auto automatic = rc6Physical(rc5Compile(root, xr, &feature), graph);
+        const auto automatic = rc6Physical(rc5CompileWithFacts(root, xr, &feature), graph);
         REQUIRE(rc6ParallelWith(automatic, "probe_fill#xr"));
         REQUIRE(rc6ParallelWith(automatic, other));
         root["rendering"]["target_planning"] = rc6Policy("nodes", "probe_fill", "serial", true);
-        const auto fallback = rc6Physical(rc5Compile(root, xr, &feature), graph);
+        const auto fallback = rc6Physical(rc5CompileWithFacts(root, xr, &feature), graph);
         CHECK_FALSE(rc6ParallelWith(fallback, xr ? "probe_fill#xr" : "probe_fill"));
         CHECK(rc6ParallelWith(fallback, xr ? "probe_fill#xr#xr" : "probe_fill#xr"));
         root["rendering"]["target_planning"] = rc6Policy("nodes", "probe_fill#xr", "serial", true);
-        const auto result = rc5Compile(root, xr, &feature);
+        const auto result = rc5CompileWithFacts(root, xr, &feature);
         const auto plan = rc6Physical(result, graph);
         CHECK_FALSE(rc6ParallelWith(plan, "probe_fill#xr"));
         CHECK(rc6ParallelWith(plan, other));
@@ -393,7 +397,7 @@ TEST_CASE("RC-6 root final task name wins over another task author name", "[rend
         // A part continues to use its owned author name despite that spelling
         // also being the final name of the first task in XR.
         feature["target_planning"] = rc6Policy("nodes", "probe_fill#xr", "serial", true);
-        const auto part = rc6Physical(rc5Compile(root, xr, &feature), graph);
+        const auto part = rc6Physical(rc5CompileWithFacts(root, xr, &feature), graph);
         CHECK(rc6ParallelWith(part, other) == !xr);
         CHECK(rc6Row(part, xr ? "probe_fill#xr#xr" : "probe_fill#xr", "part").at("status") == (xr ? "adopted" : "overridden"));
         feature.erase("target_planning");
@@ -415,13 +419,13 @@ TEST_CASE("RC-6 fold binds the authored task before flat and XR final names coll
         const auto *selected = xr ? "probe_fill#xr#xr" : "probe_fill#xr";
         const auto *other = xr ? "probe_fill#xr" : "probe_fill";
         root.erase("fold_groups");
-        const auto automatic = rc6Physical(rc5Compile(root, xr), graph);
+        const auto automatic = rc6Physical(rc5CompileWithFacts(root, xr), graph);
         REQUIRE(rc6ParallelWith(automatic, selected));
         REQUIRE(rc6ParallelWith(automatic, other));
         root["fold_groups"]["probe"] = {{"nodes", subjects}, {"folded", {
             {"kind", "decisions"}, {"decisions", {{"serial", Rc6Json::array({{{"node", "probe_fill#xr"}}})}}},
             {"verified", {{"digest", digest}, {"at", "2026-10-28T00:00:00Z"}}}}}};
-        const auto result = rc5Compile(root, xr);
+        const auto result = rc5CompileWithFacts(root, xr);
         const auto plan = rc6Physical(result, graph);
         CHECK_FALSE(rc6ParallelWith(plan, selected));
         CHECK(rc6ParallelWith(plan, other));
@@ -452,11 +456,11 @@ TEST_CASE("RC-6 replaced task keeps old final root policy absent", "[rendercompi
     auto independent = feature["compute_tasks"][0];
     independent["name"] = "independent";
     feature["compute_tasks"].push_back(independent);
-    const auto automatic = rc6Physical(rc5Compile(root, true, &feature), "main_render#xr");
+    const auto automatic = rc6Physical(rc5CompileWithFacts(root, true, &feature), "main_render#xr");
     REQUIRE(rc6ParallelWith(automatic, "probe_fill#xr#xr"));
     root["rendering"]["target_planning"] = rc6Policy("nodes", "probe_fill#xr", "serial", true);
     feature["target_planning"] = rc6Policy("nodes", "probe_fill", "serial", true);
-    const auto result = rc5Compile(root, true, &feature);
+    const auto result = rc5CompileWithFacts(root, true, &feature);
     const auto plan = rc6Physical(result, "main_render#xr");
     CHECK(rc6ParallelWith(plan, "probe_fill#xr#xr"));
     CHECK(plan.at("planning_opportunities").at("parallel_candidates") == automatic.at("planning_opportunities").at("parallel_candidates"));
@@ -482,7 +486,7 @@ TEST_CASE("RC-6 ambiguous final policy name reports owners before IR collision",
         root["nodes"][1]["id"] = name;
         root["rendering"]["target_planning"] = rc6Policy("nodes", name, "serial", true);
         try {
-            rc5Compile(root, true, &feature);
+            rc5CompileWithFacts(root, true, &feature);
             FAIL("ambiguous policy name accepted");
         } catch (const GraphRegistryError &e) {
             CHECK(e.code() == "target_planning.policy_name_ambiguous@1");

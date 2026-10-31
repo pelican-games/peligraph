@@ -6,6 +6,7 @@
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 #include "../src/project/samplecountplanning.hpp"
 #include "render_graph_ir_test_support.hpp"
+#include "rc7c_device_test_facts.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -60,7 +61,7 @@ RenderingTargetPlanDeviceFacts planningDeviceFacts() {
 }
 
 nlohmann::json compileIndependentOpportunityPlan(
-    PlanningProfileKind profile_kind) {
+    PlanningProfileKind profile_kind, bool with_memory_facts = true) {
     using Json = nlohmann::json;
     const Json config{
         {"render_targets",
@@ -94,9 +95,11 @@ nlohmann::json compileIndependentOpportunityPlan(
     };
     const auto graphs = TestSupport::renderGraphOf(config);
     const auto targets = Pelican::test_support::renderTargetDefinitionsOf(config);
+    auto facts=planningDeviceFacts();
+    if(with_memory_facts)facts.image_memory_requirements=TestSupport::rc7cDeviceRequirements;
     const auto compilation = compileRenderingTargetPlans(
         graphs, Pelican::TestSupport::framePlanMapOf(graphs), targets, compileSampleCountPolicy(config),
-        vk::Format::eB8G8R8A8Unorm, planningDeviceFacts(), std::nullopt,
+        vk::Format::eB8G8R8A8Unorm, facts, std::nullopt,
         std::nullopt,
         TargetPlanningPolicy{
             .profile = PlanningProfile{.kind = profile_kind},
@@ -279,6 +282,15 @@ TEST_CASE(
 
     REQUIRE(optimized_plan.at("planning_opportunities") !=
             conservative_plan.at("planning_opportunities"));
+}
+
+TEST_CASE("Planning opportunities without memory facts remain unknown",
+          "[imgui][compiled-plan][rc7c-fix7]") {
+    const auto plan=compileIndependentOpportunityPlan(PlanningProfileKind::optimized,false);
+    const auto opportunities=buildCompiledPlanOpportunities(plan);
+    REQUIRE(opportunities.available);
+    CHECK(findCandidate(opportunities.alias_candidates,"alpha_output","beta_output").adoption==PlanningOpportunityAdoption::unknown);
+    CHECK(plan.at("memory_regions").empty());
 }
 
 TEST_CASE(

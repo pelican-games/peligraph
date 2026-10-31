@@ -1,4 +1,5 @@
 #include "physicaltargetplanwire.hpp"
+#include "targetrenderplanning.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -648,6 +649,10 @@ void validatePlan(const Json &plan,
     (void)validateOpportunityPairs(opportunities, "parallel_candidates",
                                    node_names, "node");
 
+    if (!plan.contains("memory_regions") || !plan.contains("memory_packing"))
+        fail("physical_plan_memory_regions_required", "memory_regions and memory_packing are required");
+    const auto packing = memoryPackingFromJson(plan.at("memory_packing"));
+    for(const auto &r:packing.resources)if(!resource_names.contains(r.resource)){resource_names.insert(r.resource);resource_aliasable.emplace(r.resource,true);}
     const auto &alias_groups =
         requireArray(plan, "alias_groups", "physical_target_plan");
     std::unordered_set<std::string> alias_group_ids;
@@ -687,15 +692,11 @@ void validatePlan(const Json &plan,
         }
         for (std::size_t left = 0; left < members.size(); ++left) {
             for (std::size_t right = left + 1; right < members.size(); ++right) {
+                if(!resource_documents.contains(members[left]) || !resource_documents.contains(members[right]))continue;
                 const auto &left_resource =
                     *resource_documents.at(members[left]);
                 const auto &right_resource =
                     *resource_documents.at(members[right]);
-                if (!aliasContractsMatch(left_resource, right_resource)) {
-                    fail("physical_plan_alias_membership_conflict",
-                         "alias group '" + id +
-                             "' contains incompatible resource contracts");
-                }
                 if (!aliasLifetimesDoNotOverlap(left_resource,
                                                 right_resource)) {
                     fail("physical_plan_alias_membership_conflict",
@@ -705,6 +706,53 @@ void validatePlan(const Json &plan,
             }
         }
     }
+
+    if (!plan.contains("memory_regions") || !plan.contains("memory_packing"))
+        fail("physical_plan_memory_regions_required", "memory_regions and memory_packing are required");
+    const auto regions = memoryRegionsFromJson(plan.at("memory_regions"));
+    std::map<std::string,std::pair<std::uint32_t,MemoryRegionResident>> locations;
+    for (const auto &region : regions) {
+        std::uint64_t end=0,alignment=1;
+        for (const auto &r : region.residents) {
+            if (!r.alignment || r.offset%r.alignment || r.size>UINT64_MAX-r.offset)
+                fail("physical_plan_memory_alignment",r.resource);
+            if (!locations.emplace(r.resource,std::pair{region.region,r}).second)
+                fail("physical_plan_duplicate",r.resource);
+            end=std::max(end,r.offset+r.size); alignment=std::max(alignment,r.alignment);
+        }
+        if (region.size!=end || region.alignment!=alignment) fail("physical_plan_memory_heap_size","region");
+    }
+    for (const auto &[a,b] : packing.forbidden_pairs) if (locations.contains(a) && locations.contains(b)) {
+        const auto &x=locations.at(a), &y=locations.at(b);
+        if (x.first==y.first && x.second.offset<y.second.offset+y.second.size && y.second.offset<x.second.offset+x.second.size)
+            fail("physical_plan_memory_overlap",a+"/"+b);
+    }
+    std::vector<VulkanPhysicalScopePlan> physical_scopes;
+    for(const auto &scope:scopes)physical_scopes.push_back({.nodes=scope.at("nodes").get<std::vector<std::string>>()});
+    const auto lifetime=[](const Json &resource) {
+        const auto &value=resource.at("lifetime");
+        TargetResourceLifetime result{.used=value.at("used").get<bool>()};
+        if(result.used) {
+            result.first_use=value.at("first_use").get<std::size_t>();
+            result.last_use=value.at("last_use").get<std::size_t>();
+        }
+        return result;
+    };
+    for(auto a=locations.begin();a!=locations.end();++a)for(auto b=std::next(a);b!=locations.end();++b) {
+        if(!resource_documents.contains(a->first) || !resource_documents.contains(b->first))continue;
+        const auto &x=a->second,&y=b->second;
+        if(x.first==y.first && x.second.offset<y.second.offset+y.second.size && y.second.offset<x.second.offset+x.second.size &&
+            targetMemoryOverlapForbidden(lifetime(*resource_documents.at(a->first)),lifetime(*resource_documents.at(b->first)),physical_scopes))
+            fail("physical_plan_memory_overlap","memory.overlap@1: "+a->first+"/"+b->first);
+    }
+    const auto sets = [](const auto &groups) {
+        std::set<std::vector<std::string>> result;
+        for (const auto &g : groups) { auto names=g.resources; std::sort(names.begin(),names.end()); result.insert(names); }
+        return result;
+    };
+    std::vector<VulkanAliasGroupPlan> published;
+    for (const auto &g : alias_groups) published.push_back({g.at("id"),g.at("resources").get<std::vector<std::string>>()});
+    if (sets(published)!=sets(memoryRegionAliasGroups(regions))) fail("physical_plan_memory_same_offset","maximal sets differ");
 
     if (const auto resolution = plan.find("resolution_plan");
         resolution != plan.end() && !resolution->is_null()) {
@@ -874,6 +922,9 @@ PlanningOpportunitiesWire readPlanningOpportunitiesWire(
         result.alias_candidates = read_pairs(
             "alias_candidates", [&](std::string_view first,
                                     std::string_view second) {
+                for (const auto &candidate : report.at("alias_candidates"))
+                    if (candidate.at("first").get<std::string>()==first && candidate.at("second").get<std::string>()==second && candidate.value("adoption",std::string{})=="unknown")
+                        return PlanningOpportunityAdoption::unknown;
                 return collection_contains_pair(
                            "alias_groups", "resources", first, second, false)
                            ? PlanningOpportunityAdoption::adopted

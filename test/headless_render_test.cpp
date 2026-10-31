@@ -1,3 +1,6 @@
+#include <atomic>
+#include <condition_variable>
+#include <thread>
 #include "retain_observed_test_support.hpp"
 #include "vrm_xr_demo_fixture.hpp"
 #include "../src/core/animation/vrmapplication.hpp"
@@ -5548,9 +5551,11 @@ TEST_CASE(
             metadata_a.alias_group;
         auto candidate_b = candidate_a;
         candidate_b.name = "alias_b";
-        registerRenderTargetDefinitions(
-            {candidate_a, candidate_b},
-            {32, 32}, targets);
+        auto candidate_memory=std::make_shared<RuntimeTargetMemoryContract>();
+        candidate_memory->inputs.resources={{"alias_a"},{"alias_b"}};
+        candidate_memory->inputs.order={"alias_a","alias_b"};
+        candidate_memory->inputs.same_offset_sets={{"alias_a","alias_b"}};
+        targets.registerMemoryTargets({candidate_a,candidate_b},{32,32},candidate_memory);
         const auto candidate_alias_a =
             targets.getRenderTargetIdByName(
                 "alias_a");
@@ -16171,4 +16176,5 @@ vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 i
 }
 #include "rc7a_readback_test.inc"
 #include "rc7b_alias_test.inc"
+#include "rc7c_renderer_gpu_test.inc"
 } // namespace Pelican

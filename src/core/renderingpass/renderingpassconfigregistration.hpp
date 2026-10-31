@@ -140,6 +140,11 @@ struct RenderingPassConfigRegistrationDependencies {
         // it stands in for any project, with or without a layout). The
         // transaction reads the first variant's.
         bool judge_ray_layout_mode = true;
+        // Runtime-only facts injection: exercises actual repack refusal and the
+        // enclosing generation transaction without depending on a driver change.
+        std::function<ImageMemoryRequirements(std::string_view,vk::Extent2D,ImageMemoryRequirements)>
+            runtime_image_requirements_for_testing;
+
     } options;
 };
 

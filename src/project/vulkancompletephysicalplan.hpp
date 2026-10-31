@@ -89,6 +89,8 @@ struct VulkanCompletePhysicalPlanPackage {
     std::vector<VulkanPhysicalScopePlan> scopes;
     std::vector<VulkanPhysicalAttachmentPlan> attachments;
     std::vector<VulkanAliasGroupPlan> alias_groups;
+    std::vector<PackedMemoryRegion> memory_regions;
+    MemoryPackingInputs memory_packing;
     std::vector<std::string> required_physical_features;
     std::optional<VulkanExternalDepthExportPlan>
         external_depth_export;

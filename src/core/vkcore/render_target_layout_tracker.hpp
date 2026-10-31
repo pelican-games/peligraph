@@ -61,6 +61,7 @@ class RenderTargetLayoutTracker {
             RenderTargetImageKind::resolved);
     void reset();
     void beginFrame();
+    std::size_t frameAliasDependencyCount() const noexcept {return frame_alias_dependency_count;}
     std::size_t memoryDependencyCountForTesting() const noexcept {
         return memory_dependency_count;
     }
@@ -69,6 +70,14 @@ class RenderTargetLayoutTracker {
     }
 
   private:
+    // Every access, including a dependency that keeps the layout, acquires
+    // its physical range before recording the image barrier.
+    void recordAccess(
+        vk::CommandBuffer cmd_buf, RenderTargetContainer &rt_container,
+        VulkanUtils &vk_utils, GlobalRenderTargetId rt_id,
+        vk::ImageLayout new_layout, bool history_read,
+        RenderTargetImageKind image_kind,
+        vk::PipelineStageFlags shader_stages, bool memory_dependency);
     // PS-1: a persistent target's entry names the image it was tracked on.
     // reset() keeps such entries; a lookup that finds a different image (the
     // target was made anew) starts over from the initial layout.
@@ -85,12 +94,16 @@ class RenderTargetLayoutTracker {
     std::unordered_map<std::uint64_t, VkImage> persistent_images;
     std::unordered_map<std::uint64_t, vk::PipelineStageFlags>
         shader_access_stages;
-    std::unordered_map<std::uint64_t, std::uint64_t>
-        active_alias_resources;
-    std::unordered_set<std::uint64_t>
-        alias_groups_requiring_dependency;
+    struct RangeAccess {
+        std::uint64_t region=0, offset=0, size=0, access=0;
+        VkImage image=VK_NULL_HANDLE;
+    };
+    std::unordered_map<std::uint64_t,RangeAccess> alias_ranges;
+    std::unordered_set<std::uint64_t> frame_accessed;
+    std::uint64_t access_serial=0;
     std::size_t memory_dependency_count = 0;
     std::size_t alias_dependency_count = 0;
+    std::size_t frame_alias_dependency_count = 0;
 };
 
 } // namespace Pelican

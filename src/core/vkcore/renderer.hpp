@@ -68,8 +68,9 @@ inline constexpr std::size_t drawnMaterialsListLimit = 256;
 // it (getMetadata, aliasGroup): what get_frame_plan's memory part reads.
 struct RegisteredRenderTargetFacts {
     RenderTargetMetadata metadata;
-    // The allocation it shares with its alias group (the registry's token).
+    // Observation identity of a region allocation; never an allocation input.
     std::optional<std::uint64_t> alias_group;
+    std::vector<std::pair<std::uint64_t,std::uint64_t>> allocations;
 };
 // nullopt for an id that names no live registration.
 using RegisteredRenderTargetLookup =

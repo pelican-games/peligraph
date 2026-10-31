@@ -2941,9 +2941,7 @@ TEST_CASE("RC-6c E3 shipping projects keep allocation eligibility representation
         REQUIRE_FALSE(compilation.plans.empty());
         for (const auto &plan : compilation.plans) {
             CHECK(plan->backend_selection.selected_candidate == "pelican.vulkan.materialized_plan@1");
-            const auto expected_aliases = std::string_view{project} == "example"
-                ? std::vector<VulkanAliasGroupPlan>{{"alias:0", {"Bloom_Threshold_RT", "g_emissive"}}}
-                : std::vector<VulkanAliasGroupPlan>{};
+            const std::vector<VulkanAliasGroupPlan> expected_aliases; // compiler_only: requirements unknown
             CHECK(plan->alias_groups == expected_aliases);
             for (const auto &r : plan->resources) {
                 CAPTURE(r.logical_resource);
@@ -2972,8 +2970,7 @@ TEST_CASE("RC-6c E3 shipping projects keep allocation eligibility representation
             test_support::plannedRenderTargets(ir, compilation), {1920, 1080});
         CHECK(registered.size() == ir.images.size());
         for (const auto &r : registered) {
-            const bool shared = std::string_view{project} == "example" &&
-                (r.metadata.name == "Bloom_Threshold_RT" || r.metadata.name == "g_emissive");
+            const bool shared = false; // No device facts, including the former example pair.
             CHECK(r.alias_group == (shared ? std::optional<std::uint64_t>{1} : std::nullopt));
         }
     }
@@ -3001,7 +2998,7 @@ TEST_CASE("RC-1 a registered target declares the bytes of the images registratio
           }) == 4 * 6 * (256 + 64 + 16 + 4 + 1));
 }
 
-TEST_CASE("RC-1 the example's render targets at 1920x1080 take 125,776,320 bytes, "
+TEST_CASE("RC-1 the example's render targets at 1920x1080 take 134,070,720 bytes, "
           "85,017,600 of them alive at lighting_pass",
           "[frameplanner][rc1][memory]") {
     const auto example = rc1ExamplePlan(1920, 1080);
@@ -3070,9 +3067,7 @@ TEST_CASE("RC-1 the example's render targets at 1920x1080 take 125,776,320 bytes
     // declares no target its graph leaves unused, and its one graph keeps
     // its one alias group: g_emissive's allocation, shared with the bloom
     // threshold, so the 21 images take 20 allocations.
-    REQUIRE(plan.alias_groups.size() == 1);
-    CHECK(plan.alias_groups.front().resources ==
-          std::vector<std::string>{"Bloom_Threshold_RT", "g_emissive"});
+    REQUIRE(plan.alias_groups.empty()); // No facts: 21 separate allocations.
     const auto registered = test_support::registerRenderTargetsWithoutDevice(
         example.registered_targets, {1920, 1080});
     CHECK(registered.size() == expected.size());
@@ -3088,12 +3083,10 @@ TEST_CASE("RC-1 the example's render targets at 1920x1080 take 125,776,320 bytes
         REQUIRE(expected.contains(target.name));
         // Registration makes what the plan counted.
         CHECK(target.bytes == expected.at(target.name));
-        CHECK(target.alias_group.has_value() ==
-              (target.name == "g_emissive" ||
-               target.name == "Bloom_Threshold_RT"));
+        CHECK_FALSE(target.alias_group.has_value()); // compiler_only has no facts.
     }
     const auto total = totalRegisteredTargetMemory(memory);
-    CHECK(total.total_bytes == 125'776'320); // 119.95 MiB
+    CHECK(total.total_bytes == 134'070'720); // 119.95 MiB
     CHECK(total.unused_bytes == 0);
     CHECK(total.unused_resources.empty());
     // lighting_pass (order 3) reads the five G-buffer targets, the depth and
@@ -3246,15 +3239,15 @@ TEST_CASE("RC-1 get_frame_plan reports what the published generation registered,
 
     const auto before = renderer.currentFramePlanJson();
     REQUIRE(before.contains("memory_summary"));
-    // The example's 125,776,320 bytes and the 64x64 R8 target no graph uses,
+    // The example's 134,070,720 bytes and the 64x64 R8 target no graph uses,
     // which registration allocated all the same.
     CHECK(before.at("memory_summary") ==
-          nlohmann::json{{"total_bytes", 125'776'320 + 4'096},
+          nlohmann::json{{"total_bytes", 134'070'720 + 4'096},
                          {"unused_bytes", 4'096},
                          {"unused_resources", nlohmann::json::array({"rc1b_unused"})},
                          {"peak_live_bytes", 85'017'600},
                          {"peak_node", "lighting_pass"},
-                         {"peak_graph", graph_name}});
+                         {"peak_graph", graph_name}, {"payload_bytes",134'070'720}, {"planned_region_bytes",0}, {"planned_region_count",0}, {"actual_placement",nullptr}});
     const auto declared_before = declared(before);
     CHECK(declared_before.size() == registered.size());
     CHECK(declared_before.at("lit_color") == 16'588'800);
@@ -3272,7 +3265,7 @@ TEST_CASE("RC-1 get_frame_plan reports what the published generation registered,
     CHECK(declared_after.at("lit_color") == 2 * 16'588'800);
     CHECK(physical_bytes(after, "lit_color") == 2 * 16'588'800);
     CHECK(after.at("memory_summary").at("total_bytes") ==
-          125'776'320 + 16'588'800 + 3 * 4'096);
+          134'070'720 + 16'588'800 + 3 * 4'096);
     CHECK(after.at("memory_summary").at("unused_bytes") == 3 * 4'096);
     CHECK(after.at("memory_summary").at("peak_live_bytes") ==
           85'017'600 + 16'588'800);

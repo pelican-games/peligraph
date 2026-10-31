@@ -36,5 +36,8 @@ target_sources(pelican_core PRIVATE
     rendertargetmetadataresolver.cpp
     rendertargetnameresolver.cpp
     rendertargetcontainer.cpp
+    rendertargetimagecontract.cpp
+    memoryregionpacking.cpp
+    renderingtargetmemoryfacts.cpp
     vulkanimagevocabulary.cpp
 )

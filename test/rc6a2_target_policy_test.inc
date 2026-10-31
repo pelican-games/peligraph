@@ -28,7 +28,8 @@ VulkanTargetPlan rc6a2Compile(const LogicalTypeRegistry &types, const CompiledLo
             binding.extent = ResourceExtentPlan{.kind = ResourceExtentKind::fixed, .width = 128, .height = 128};
     return compileVulkanTargetPlan(types, graph, topology(tile), providers(), {
         .policy = constraints.declarations, .node_order = order, .endpoint = "device:0",
-        .provider = std::string{kProvider}, .pattern_bindings = std::move(bindings), .effective_image_usage = std::move(usage), .profile = profile,
+        .provider = std::string{kProvider}, .pattern_bindings = std::move(bindings), .effective_image_usage = std::move(usage),
+        .memory_requirements = TestSupport::rc7cMemoryRequirements, .profile = profile,
         .node_constraints = constraints.nodes, .resource_constraints = constraints.resources,
         .automatic_attachments = std::move(attachments)});
 }

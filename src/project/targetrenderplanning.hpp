@@ -8,6 +8,9 @@
 #include "samplecountplanning.hpp"
 #include "targetplanning.hpp"
 #include "vulkanviewplanning.hpp"
+#include "memoryregionpacking.hpp"
+#include <functional>
+#include <memory>
 
 #include <cstddef>
 #include <cstdint>
@@ -344,6 +347,8 @@ struct VulkanTargetPlanRequest {
     std::vector<ResourcePatternBinding> pattern_bindings;
     TargetResourceRetainReasons retain_reasons;
     std::map<std::string, ImageUsage, std::less<>> effective_image_usage;
+    std::function<std::optional<ImageMemoryRequirements>(const VulkanPhysicalResourcePlan &, ImageUsage)> memory_requirements;
+    std::function<bool(const VulkanPhysicalResourcePlan &, ImageUsage)> supports_image_usage;
     std::map<std::string, std::string, std::less<>> generation_alias_exclusions;
     // Provider facts for resources on manual/unchecked NativeScope boundaries.
     std::vector<std::string> manual_native_resources;
@@ -382,6 +387,14 @@ struct VulkanTargetPlan {
     std::vector<VulkanPhysicalScopePlan> scopes;
     std::vector<VulkanPhysicalAttachmentPlan> attachments;
     std::vector<VulkanAliasGroupPlan> alias_groups;
+    std::vector<PackedMemoryRegion> memory_regions;
+    MemoryPackingInputs memory_packing;
+    // Trusted compiler facts, never deserialized from a package.
+    MemoryPackingRequirements memory_requirements;
+    std::function<std::optional<ImageMemoryRequirements>(const VulkanPhysicalResourcePlan &, ImageUsage)> memory_requirements_query;
+    std::vector<std::shared_ptr<const VulkanTargetPlan>> memory_provenance;
+    // Compiler-owned identity of one graph in one variant; never serialized.
+    std::pair<std::string, std::string> memory_provenance_id;
     std::vector<std::string> required_physical_features;
     std::vector<PlanningDecision> decisions;
     std::optional<ResolvedSampleCountPlan> sample_count_plan;
@@ -391,6 +404,25 @@ struct VulkanTargetPlan {
     std::optional<VulkanExternalDepthExportPlan>
         external_depth_export;
 };
+
+// One generation-wide placement. The source plans are compiler provenance;
+// callers install the result in each graph before publishing its fingerprint.
+struct VulkanGenerationMemoryPlan {
+    MemoryPackingInputs inputs;
+    MemoryPackingRequirements requirements;
+    std::vector<PackedMemoryRegion> regions;
+    std::vector<VulkanAliasGroupPlan> alias_groups;
+    std::map<std::string, std::string, std::less<>> exclusions;
+};
+VulkanGenerationMemoryPlan planGenerationMemory(std::span<const std::shared_ptr<const VulkanTargetPlan>> plans);
+std::vector<VulkanAliasGroupPlan> memoryRegionAliasGroups(std::span<const PackedMemoryRegion> regions);
+void updateGenerationAliasPolicy(VulkanTargetPlan &plan);
+bool targetMemoryOverlapForbidden(const TargetResourceLifetime &a, const TargetResourceLifetime &b,
+                                 std::span<const VulkanPhysicalScopePlan> scopes);
+nlohmann::ordered_json memoryPackingToJson(const MemoryPackingInputs &inputs);
+MemoryPackingInputs memoryPackingFromJson(const nlohmann::json &json);
+nlohmann::ordered_json memoryRegionsToJson(std::span<const PackedMemoryRegion> regions);
+std::vector<PackedMemoryRegion> memoryRegionsFromJson(const nlohmann::json &json);
 
 // Named intermediate reads are promises of this program's selected plan.
 void validateTargetReadbackRetention(const VulkanTargetPlan *plan,

@@ -973,6 +973,10 @@ std::string materializationReason(
 
 struct CandidateDraft {
     TargetResourceRetainReasons retain_reasons;
+    std::map<std::string, ImageUsage, std::less<>> effective_image_usage;
+    MemoryPackingInputs memory_packing;
+    MemoryPackingRequirements memory_requirements;
+    std::vector<PackedMemoryRegion> memory_regions;
     std::vector<VulkanPhysicalAttachmentPlan> attachments;
     std::string name;
     std::vector<VulkanPhysicalResourcePlan> resources;
@@ -3178,30 +3182,7 @@ std::vector<PlanningNamePair> deriveLegalAliasCandidates(
                     resources[left].logical_resource + "/" + resources[right].logical_resource,
                     std::move(reason), "RC-7b pairwise allocation contract"});
             };
-            if (!usage.contains(resources[left].logical_resource) || !usage.contains(resources[right].logical_resource) ||
-                usage.at(resources[left].logical_resource) != usage.at(resources[right].logical_resource)) {
-                explain("effective_usage"); continue;
-            }
-            if (
-                resources[left].representation !=
-                    resources[right].representation ||
-                resources[left].format !=
-                    resources[right].format ||
-                resources[left].rasterization_samples !=
-                    resources[right].rasterization_samples ||
-                resources[left].resolve_required !=
-                    resources[right].resolve_required ||
-                resources[left].view_layout !=
-                    resources[right].view_layout ||
-                resources[left].mip_levels !=
-                    resources[right].mip_levels ||
-                resources[left].array_layers !=
-                    resources[right].array_layers ||
-                resources[left].dimension !=
-                    resources[right].dimension ||
-                resources[left].extent !=
-                    resources[right].extent ||
-                !lifetimesDoNotOverlap(
+            if (!lifetimesDoNotOverlap(
                     resources[left].lifetime,
                     resources[right].lifetime)) {
                 continue;
@@ -3236,9 +3217,7 @@ std::vector<PlanningNamePair> deriveLegalAliasCandidates(
                     return entry.logical.name < name;
                 });
             if (left_logical == workspace.resources.end() ||
-                right_logical == workspace.resources.end() ||
-                left_logical->logical.type.constructor !=
-                    right_logical->logical.type.constructor) {
+                right_logical == workspace.resources.end()) {
                 continue;
             }
             result.push_back(PlanningNamePair{
@@ -3530,7 +3509,14 @@ void applyCandidateAliasPolicy(const CompiledLogicalRenderGraph &graph, const Ta
         const auto source = std::find_if(workspace.resources.begin(), workspace.resources.end(),
             [&](const auto &r) { return r.logical.name == resource.logical_resource; });
         std::string failure;
-        if (request.generation_alias_exclusions.contains(resource.logical_resource))
+        for (const auto &c : request.resource_constraints)
+            if (c.resource == resource.logical_resource && bool(c.no_alias)) failure = "no_alias";
+        for (const auto &node : graph.nodes) if (policyFlag(draft.policy, node.name, "isolate"))
+            for (const auto &use : node.uses)
+                if ((use.input_value && use.input_value->resource == resource.logical_resource) ||
+                    (use.output_value && use.output_value->resource == resource.logical_resource)) failure = "isolate";
+        if (!failure.empty()) {}
+        else if (request.generation_alias_exclusions.contains(resource.logical_resource))
             failure = "generation_contract: " + request.generation_alias_exclusions.at(resource.logical_resource);
         else if (std::find(request.manual_native_resources.begin(), request.manual_native_resources.end(),
                           resource.logical_resource) != request.manual_native_resources.end()) failure = "native_boundary";
@@ -3577,11 +3563,58 @@ void applyCandidateAliasPolicy(const CompiledLogicalRenderGraph &graph, const Ta
         .node_constraints = request.node_constraints, .resource_constraints = request.resource_constraints,
         .legal_alias_candidates = legal};
     draft.opportunities = analyzeLogicalPlanningOpportunities(graph, request.node_order, input);
+    for (const auto &r : draft.resources) if (r.format && r.representation != VulkanResourceRepresentation::external && r.representation != VulkanResourceRepresentation::materialized_buffer) {
+        const auto u = request.effective_image_usage.find(r.logical_resource);
+        auto req = request.memory_requirements && u != request.effective_image_usage.end() &&
+            (!request.supports_image_usage || request.supports_image_usage(r,u->second))
+            ? request.memory_requirements(r, u->second) : std::nullopt;
+        draft.memory_requirements[r.logical_resource] = req;
+        if (!req && r.aliasable) draft.decisions.push_back({"pelican.plan.alias_requirements_unknown@1", r.logical_resource,
+            "unknown", "alias.requirements_unknown: 未確定"});
+        else if (req && (req->requires_dedicated || !req->memory_type_bits))
+            draft.decisions.push_back({"pelican.plan.alias_ineligible@1", r.logical_resource,
+                req->requires_dedicated ? "dedicated" : "memory_key", "ordinary allocation required"});
+    }
+    for(const auto &pair:legal) {
+        const auto &a=draft.memory_requirements.at(pair.first),&b=draft.memory_requirements.at(pair.second);
+        if(a && b && a->memory_type_bits!=b->memory_type_bits)draft.decisions.push_back({"pelican.plan.alias_pair_ineligible@1",pair.first+"/"+pair.second,"memory_key","memoryTypeBits must match exactly"});
+    }
+    const auto pack = [&](std::span<const PlanningNamePair> forced) {
+        auto &inputs = draft.memory_packing;
+        if (request.profile.kind == PlanningProfileKind::hazard_stress) inputs.seed = request.profile.seed;
+        for (const auto &r : draft.resources) if (r.aliasable) {
+            const bool explicit_member = std::any_of(draft.policy.begin(), draft.policy.end(), [&](const auto &e) {
+                return activePolicy(e) && e.key == "alias_group" && e.target == r.logical_resource;
+            });
+            if (request.profile.kind == PlanningProfileKind::conservative_debug && !explicit_member) continue;
+            const auto req = draft.memory_requirements.at(r.logical_resource);
+            inputs.resources.push_back({r.logical_resource, req ? req->memory_type_bits : 0});
+            inputs.order.push_back(r.logical_resource);
+        }
+        const auto allowed = [&](std::string a, std::string b) {
+            if (b < a) std::swap(a,b);
+            if (request.profile.kind==PlanningProfileKind::conservative_debug) return std::find(forced.begin(),forced.end(),PlanningNamePair{a,b})!=forced.end();
+            return std::find(legal.begin(), legal.end(), PlanningNamePair{a,b}) != legal.end();
+        };
+        for (std::size_t i=0; i<inputs.resources.size(); ++i) for (std::size_t j=i+1; j<inputs.resources.size(); ++j)
+            if (!allowed(inputs.resources[i].resource, inputs.resources[j].resource))
+                inputs.forbidden_pairs.emplace_back(inputs.resources[i].resource, inputs.resources[j].resource);
+        for (const auto &g : buildAliasGroups(forced)) inputs.same_offset_sets.push_back(g.resources);
+        std::sort(inputs.order.begin(), inputs.order.end(), [&](const auto &a, const auto &b) {
+            const auto *x = findPhysicalResource(draft.resources, a), *y = findPhysicalResource(draft.resources, b);
+            const auto size = [&](const auto &n) { const auto &r = draft.memory_requirements.at(n); return r ? r->size : 0; };
+            if (x->lifetime.first_use != y->lifetime.first_use) return x->lifetime.first_use < y->lifetime.first_use;
+            if (size(a) != size(b)) return size(a) > size(b);
+            return a < b;
+        });
+        draft.memory_regions = packMemoryRegions(inputs, draft.memory_requirements).regions;
+        draft.alias_groups = memoryRegionAliasGroups(draft.memory_regions);
+    };
     const bool has_alias_groups = std::any_of(draft.policy.begin(), draft.policy.end(), [](const auto &entry) {
         return activePolicy(entry) && entry.key == "alias_group";
     });
     if (!has_alias_groups) {
-        draft.alias_groups = buildAliasGroups(draft.opportunities.alias_candidates);
+        pack({});
         return;
     }
     // Explicit groups may recover opportunities suppressed by a debug/stress
@@ -3590,7 +3623,11 @@ void applyCandidateAliasPolicy(const CompiledLogicalRenderGraph &graph, const Ta
     const auto allowed = analyzeLogicalPlanningOpportunities(graph, request.node_order, std::move(input)).alias_candidates;
     const auto pairAllowed = [&](std::string a, std::string b) {
         if (b < a) std::swap(a, b);
-        return std::find(allowed.begin(), allowed.end(), PlanningNamePair{a, b}) != allowed.end();
+        const auto x = draft.memory_requirements.find(a), y = draft.memory_requirements.find(b);
+        return x != draft.memory_requirements.end() && y != draft.memory_requirements.end() && x->second && y->second &&
+            !x->second->requires_dedicated && !y->second->requires_dedicated && x->second->memory_type_bits &&
+            x->second->memory_type_bits == y->second->memory_type_bits &&
+            std::find(allowed.begin(), allowed.end(), PlanningNamePair{a, b}) != allowed.end();
     };
     std::map<PolicyAliasKey, std::vector<std::size_t>> groups;
     for (std::size_t i = 0; i < draft.policy.size(); ++i)
@@ -3605,9 +3642,25 @@ void applyCandidateAliasPolicy(const CompiledLogicalRenderGraph &graph, const Ta
         std::vector<std::string> members;
         for (auto i : indices) {
             auto &e = draft.policy[i];
+            const auto own=draft.memory_requirements.find(e.target);
+            if(own==draft.memory_requirements.end() || !own->second) {
+                policyConflict(draft,{i},"alias.requirements_unknown: " + e.target);
+                continue;
+            }
+            if(own->second->requires_dedicated || !own->second->memory_type_bits) {
+                policyConflict(draft,{i},"alias.dedicated_or_memory_key@1: " + e.target);
+                continue;
+            }
             const auto incompatible = std::find_if(members.begin(), members.end(), [&](const auto &m) { return !pairAllowed(m, e.target); });
             if (incompatible != members.end()) {
                 std::string reason = "alias_group members are not pairwise legal";
+                for (const auto &name : {e.target, *incompatible}) {
+                    const auto req = draft.memory_requirements.find(name);
+                    if (req != draft.memory_requirements.end() && !req->second) reason += "; alias.requirements_unknown: " + name;
+                    else if (req != draft.memory_requirements.end() && req->second && req->second->requires_dedicated) reason += "; alias.dedicated@1: " + name;
+                }
+                if (request.generation_alias_exclusions.contains(e.target) || request.generation_alias_exclusions.contains(*incompatible))
+                    reason += "; target_planning.alias_generation_contract@1";
                 for (const auto &decision : draft.decisions) {
                     if (decision.id == "pelican.plan.alias_ineligible@1" &&
                         (decision.subject == e.target || decision.subject == *incompatible)) {
@@ -3633,10 +3686,7 @@ void applyCandidateAliasPolicy(const CompiledLogicalRenderGraph &graph, const Ta
     }
     // Build the required cliques first, before the automatic greedy grouping
     // can attach one member to a third, incompatible resource.
-    auto selected = forced;
-    for (const auto &pair : draft.opportunities.alias_candidates)
-        if (std::find(selected.begin(), selected.end(), pair) == selected.end()) selected.push_back(pair);
-    draft.alias_groups = buildAliasGroups(selected);
+    pack(forced);
 }
 
 void finishCandidatePolicy(const CompiledLogicalRenderGraph &graph, const TargetLoweringGraph &workspace,
@@ -3648,6 +3698,19 @@ void finishCandidatePolicy(const CompiledLogicalRenderGraph &graph, const Target
         if (!activePolicy(e)) continue;
         // The pairwise group checks above already returned their witnesses.
         if (e.key == "alias_group") continue;
+        if (e.key == "retain" && std::get<bool>(e.value)) {
+            const auto failure=retainContractFailure(e.target,graph,draft.resources,draft.opportunities.node_order,
+                request.automatic_attachments,request.effective_image_usage);
+            if(!failure.empty()) {
+                policyConflict(draft,{i},failure);
+                continue;
+            }
+            const auto *r = findPhysicalResource(draft.resources, e.target);
+            if (request.supports_image_usage && !request.supports_image_usage(*r, request.effective_image_usage.at(e.target))) {
+                policyConflict(draft, {i}, "device does not support retained TRANSFER_SRC usage");
+                continue;
+            }
+        }
         if (policySatisfied(e, graph, draft.name, draft.resources, draft.scopes, draft.alias_groups, draft.opportunities, draft.policy, request.automatic_attachments, request.effective_image_usage)) continue;
         policyConflict(draft, e.key == "scope_join" || e.key == "scope_break"
             ? scopeConflictCauses(graph, draft, i) : std::vector<std::size_t>{i},
@@ -3988,6 +4051,8 @@ VulkanTargetPlan compileVulkanTargetPlan(
             auto candidate_workspace = workspace;
             for (const auto &e : input.policy) {
                 if (!activePolicy(e) || e.key != "retain" || !std::get<bool>(e.value)) continue;
+                input.effective_image_usage[e.target] |= ImageUsageBit::transfer_src;
+                input.effective_image_usage[e.target] &= ~ImageUsage{ImageUsageBit::transient_attachment};
                 input.retain_reasons[e.target].push_back("readback");
                 for (auto &attachment : input.automatic_attachments)
                     if (attachment.logical_resource == e.target) attachment.operations.store_op = AttachmentStoreOp::store;
@@ -4002,6 +4067,7 @@ VulkanTargetPlan compileVulkanTargetPlan(
             applyAttachmentBudget(draft, canonical_graph, endpoint);
             if (!input.policy.empty()) appendPhysicalFailureCauses(canonical_graph, input, endpoint, draft);
             draft.retain_reasons = std::move(input.retain_reasons);
+            draft.effective_image_usage = std::move(input.effective_image_usage);
             draft.attachments = std::move(input.automatic_attachments);
             return draft;
         };
@@ -4056,12 +4122,18 @@ VulkanTargetPlan compileVulkanTargetPlan(
             const bool unsatisfied = std::all_of(probes.begin(), probes.end(), [&](const auto &p) {
                 const auto &draft = draftFor(p.candidate);
                 return !policySatisfied(e, canonical_graph, draft.name, draft.resources, draft.scopes,
-                    draft.alias_groups, draft.opportunities, draft.policy, draft.attachments, request.effective_image_usage);
+                    draft.alias_groups, draft.opportunities, draft.policy, draft.attachments, draft.effective_image_usage) ||
+                    (request.supports_image_usage && !request.supports_image_usage(
+                        *findPhysicalResource(draft.resources, e.target), draft.effective_image_usage.at(e.target)));
             });
             if (unsatisfied) throw GraphRegistryError("target_planning.retain_unsatisfiable@1",
                 {{"graph", canonical_graph.name}, {"resource", e.target}, {"declaration", policyDetail(e,
                     "requires a used materialized single-sample color or D32 transfer source with stored writers")}, {"candidates", reasons}});
         }
+        if (reasons.dump().find("target_planning.alias_generation_contract@1") != std::string::npos)
+            throw GraphRegistryError("target_planning.alias_generation_contract@1", {{"graph", canonical_graph.name}, {"candidates", reasons}});
+        if (reasons.dump().find("alias.requirements_unknown") != std::string::npos)
+            throw GraphRegistryError("alias.requirements_unknown", {{"graph", canonical_graph.name}, {"candidates", reasons}});
         throw GraphRegistryError("target_planning.requirement_unsatisfied@1", {{"graph", canonical_graph.name}, {"candidates", reasons}});
     }
     std::optional<std::string> policy_preferred;
@@ -4206,7 +4278,7 @@ VulkanTargetPlan compileVulkanTargetPlan(
 
     VulkanTargetPlan result{
         .retain_reasons = selected_draft.retain_reasons,
-        .effective_image_usage = request.effective_image_usage,
+        .effective_image_usage = selected_draft.effective_image_usage,
         .generation_alias_exclusions = request.generation_alias_exclusions,
         .manual_native_resources = request.manual_native_resources,
         .policy = selected_draft.policy,
@@ -4227,6 +4299,11 @@ VulkanTargetPlan compileVulkanTargetPlan(
         .attachments =
             std::move(selected_draft.attachments),
         .alias_groups = std::move(alias_groups),
+        .memory_regions = std::move(selected_draft.memory_regions),
+        .memory_packing = std::move(selected_draft.memory_packing),
+        .memory_requirements = std::move(selected_draft.memory_requirements),
+        .memory_requirements_query = request.memory_requirements,
+        .memory_provenance_id = {"",canonical_graph.name},
         .required_physical_features =
             selected_draft.required_features,
         .decisions = std::move(decisions),
@@ -4577,6 +4654,8 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
                 std::move(entry));
         }
     }
+    result["memory_regions"] = memoryRegionsToJson(plan.memory_regions);
+    result["memory_packing"] = memoryPackingToJson(plan.memory_packing);
     result["alias_groups"] =
         nlohmann::ordered_json::array();
     for (const auto &group : plan.alias_groups) {
@@ -4601,7 +4680,190 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
             resolvedSampleCountPlanToJson(
                 *plan.sample_count_plan);
     }
+    for (auto &c : result["planning_opportunities"]["alias_candidates"]) {
+        const auto unknown = [&](const std::string &n) { const auto q=plan.memory_requirements.find(n); return q==plan.memory_requirements.end() || !q->second; };
+        if (unknown(c.at("first").get<std::string>()) || unknown(c.at("second").get<std::string>())) c["adoption"]="unknown";
+    }
     return result;
 }
 
+std::vector<VulkanAliasGroupPlan> memoryRegionAliasGroups(std::span<const PackedMemoryRegion> regions) {
+    std::vector<VulkanAliasGroupPlan> groups;
+    for (const auto &region : regions) {
+        std::map<std::uint64_t, std::vector<std::string>> offsets;
+        for (const auto &r : region.residents) offsets[r.offset].push_back(r.resource);
+        for (auto &[offset, members] : offsets) if (members.size() > 1) {
+            std::sort(members.begin(), members.end());
+            groups.push_back({"alias:" + std::to_string(region.region) + ":" + std::to_string(offset), std::move(members)});
+        }
+    }
+    return groups;
+}
+
+bool targetMemoryOverlapForbidden(const TargetResourceLifetime &a, const TargetResourceLifetime &b,
+                                 std::span<const VulkanPhysicalScopePlan> scopes) {
+    if(!a.used || !b.used)return false;
+    if(!lifetimesDoNotOverlap(a,b))return true;
+    std::size_t offset=0;
+    for(const auto &scope:scopes) {
+        const auto end=offset+scope.nodes.size();
+        if(a.first_use<end && a.last_use>=offset && b.first_use<end && b.last_use>=offset)return true;
+        offset=end;
+    }
+    return false;
+}
+
+void updateGenerationAliasPolicy(VulkanTargetPlan &plan) {
+    // Select against the immutable packing result, then change the ledger once.
+    std::map<std::pair<std::string,std::string>,std::vector<std::size_t>> groups;
+    for(std::size_t i=0;i<plan.policy.size();++i) {
+        const auto &e=plan.policy[i];
+        if(e.key=="alias_group" && e.status==PlanningPolicyStatus::adopted)
+            groups[{e.origin.document,std::get<std::string>(e.value)}].push_back(i);
+    }
+    std::vector<std::size_t> rejected;
+    for(const auto &[key,members]:groups) {
+        std::vector<std::vector<std::size_t>> slots;
+        for(const auto i:members) {
+            const auto &name=plan.policy[i].target;
+            const auto group=std::find_if(plan.alias_groups.begin(),plan.alias_groups.end(),[&](const auto &g){
+                return std::find(g.resources.begin(),g.resources.end(),name)!=g.resources.end();});
+            auto slot=std::find_if(slots.begin(),slots.end(),[&](const auto &s){
+                return group!=plan.alias_groups.end() && std::find(group->resources.begin(),group->resources.end(),plan.policy[s.front()].target)!=group->resources.end();});
+            if(slot==slots.end())slots.push_back({i});else slot->push_back(i);
+        }
+        const auto required=[&](const auto &slot){return std::count_if(slot.begin(),slot.end(),[&](auto i){return plan.policy[i].strength==PlanningStrength::require;});};
+        const auto best=std::max_element(slots.begin(),slots.end(),[&](const auto &a,const auto &b){
+            return std::pair{required(a),a.size()}<std::pair{required(b),b.size()};});
+        for(const auto i:members)if(plan.policy[i].strength==PlanningStrength::prefer &&
+            std::find(best->begin(),best->end(),i)==best->end())rejected.push_back(i);
+    }
+    for(const auto i:rejected) {
+        auto &e=plan.policy[i];e.status=PlanningPolicyStatus::infeasible_prefer;
+        plan.decisions.push_back({"pelican.plan.alias_generation_contract@1",e.target,"not_adopted","generation forbids same offset"});
+    }
+}
+
+VulkanGenerationMemoryPlan planGenerationMemory(std::span<const std::shared_ptr<const VulkanTargetPlan>> plans) {
+    VulkanGenerationMemoryPlan result;
+    std::map<std::string, std::size_t, std::less<>> first;
+    for (const auto &plan : plans) {
+        if (plan->memory_packing.seed) result.inputs.seed = plan->memory_packing.seed;
+        for (const auto &[name, req] : plan->memory_requirements) result.requirements.try_emplace(name,req);
+        for (const auto &r : plan->resources) {
+            const auto &name = r.logical_resource;
+            first.try_emplace(name, r.lifetime.first_use);
+            first[name] = std::min(first[name], r.lifetime.first_use);
+            const auto in = std::find_if(plan->memory_packing.resources.begin(), plan->memory_packing.resources.end(),
+                [&](const auto &v) { return v.resource == name; });
+            if (in == plan->memory_packing.resources.end()) {
+                result.exclusions[name] = "resource is ineligible in graph/variant " + plan->graph;
+                continue;
+            }
+            const auto req = plan->memory_requirements.find(name);
+            const auto value = req == plan->memory_requirements.end() ? std::optional<ImageMemoryRequirements>{} : req->second;
+            const auto [at, inserted] = result.requirements.emplace(name, value);
+            if (!inserted && at->second != value)
+                result.exclusions[name] = "generation image requirements differ across graph/variant " + plan->graph;
+        }
+    }
+    for (const auto &[name, req] : result.requirements) if (!result.exclusions.contains(name)) {
+        result.inputs.resources.push_back({name, req ? req->memory_type_bits : 0});
+        result.inputs.order.push_back(name);
+    }
+    const auto forbidden = [&](std::string a, std::string b) {
+        bool together = false;
+        for (const auto &plan : plans) {
+            const auto *x = findPhysicalResource(plan->resources, a), *y = findPhysicalResource(plan->resources, b);
+            if (!x || !y) continue;
+            together = true;
+            auto pair=std::minmax(a,b);
+            if (std::find(plan->memory_packing.forbidden_pairs.begin(),plan->memory_packing.forbidden_pairs.end(),std::pair<std::string,std::string>{pair.first,pair.second})!=plan->memory_packing.forbidden_pairs.end()) return true;
+            if (targetMemoryOverlapForbidden(x->lifetime,y->lifetime,plan->scopes)) return true;
+        }
+        return !together;
+    };
+    for (std::size_t i=0; i<result.inputs.resources.size(); ++i)
+        for (std::size_t j=i+1; j<result.inputs.resources.size(); ++j) {
+            const auto &a = result.inputs.resources[i].resource, &b = result.inputs.resources[j].resource;
+            if (forbidden(a,b)) result.inputs.forbidden_pairs.emplace_back(a,b);
+        }
+    const auto pairLegal = [&](const std::string &a,const std::string &b) {
+        const auto x=result.requirements.find(a),y=result.requirements.find(b);
+        return !result.exclusions.contains(a) && !result.exclusions.contains(b) && !forbidden(a,b) &&
+            x!=result.requirements.end() && y!=result.requirements.end() && x->second && y->second &&
+            !x->second->requires_dedicated && !y->second->requires_dedicated && x->second->memory_type_bits &&
+            x->second->memory_type_bits==y->second->memory_type_bits;
+    };
+    std::vector<PlanningNamePair> required_pairs, preferred_pairs;
+    std::map<std::pair<std::string,std::string>,std::string> required_graph;
+    for (const auto &plan : plans) for (const auto &set : plan->memory_packing.same_offset_sets) {
+        const auto required = [&](const auto &name) {return std::any_of(plan->policy.begin(),plan->policy.end(),[&](const auto &e){
+            return e.target==name && e.key=="alias_group" && activePolicy(e) && e.strength==PlanningStrength::require;});};
+        for (std::size_t i=0;i<set.size();++i)for(std::size_t j=i+1;j<set.size();++j)
+            { (required(set[i]) && required(set[j]) ? required_pairs : preferred_pairs).push_back({set[i],set[j]});
+              if(required(set[i]) && required(set[j]))required_graph[{set[i],set[j]}]=plan->graph; }
+    }
+    std::map<std::string,std::vector<std::string>,std::less<>> slots;
+    for (const auto &r : result.inputs.resources) slots.emplace(r.resource,std::vector<std::string>{r.resource});
+    const auto merge=[&](const PlanningNamePair &pair,bool required) {
+        auto x=std::find_if(slots.begin(),slots.end(),[&](const auto &s){return std::find(s.second.begin(),s.second.end(),pair.first)!=s.second.end();});
+        auto y=std::find_if(slots.begin(),slots.end(),[&](const auto &s){return std::find(s.second.begin(),s.second.end(),pair.second)!=s.second.end();});
+        bool legal=x!=slots.end() && y!=slots.end();
+        if(legal && x==y)return;
+        if(legal)for(const auto &a:x->second)for(const auto &b:y->second)legal=legal && pairLegal(a,b);
+        if(!legal) {
+            if(required)throw GraphRegistryError("target_planning.alias_generation_contract@1",{{"graph",required_graph[{pair.first,pair.second}]},{"resource",pair.first},{"peer",pair.second},{"reason","alias_group contains a forbidden generation same-offset pair"}});
+            return;
+        }
+        x->second.insert(x->second.end(),y->second.begin(),y->second.end());slots.erase(y);
+    };
+    sortAndUnique(required_pairs);sortAndUnique(preferred_pairs);
+    for(const auto &p:required_pairs)merge(p,true);
+    for(const auto &p:preferred_pairs)merge(p,false);
+    for(auto &[name,members]:slots)if(members.size()>1){std::sort(members.begin(),members.end());result.inputs.same_offset_sets.push_back(members);}
+    std::sort(result.inputs.order.begin(), result.inputs.order.end(), [&](const auto &a, const auto &b) {
+        if (first[a] != first[b]) return first[a] < first[b];
+        const auto size = [&](const auto &n) { const auto &r = result.requirements.at(n); return r ? r->size : 0; };
+        if (size(a) != size(b)) return size(a) > size(b);
+        return a < b;
+    });
+    result.regions = packMemoryRegions(result.inputs, result.requirements).regions;
+    result.alias_groups = memoryRegionAliasGroups(result.regions);
+    return result;
+}
+
+nlohmann::ordered_json memoryPackingToJson(const MemoryPackingInputs &inputs) {
+    auto resources = nlohmann::ordered_json::array();
+    for (const auto &r : inputs.resources) resources.push_back({{"resource",r.resource},{"memory_type_bits",r.memory_type_bits},{"optimal_tiling",r.optimal_tiling}});
+    return {{"resources",resources},{"forbidden_pairs",inputs.forbidden_pairs},{"same_offset_sets",inputs.same_offset_sets},
+        {"order",inputs.order},{"seed",inputs.seed ? nlohmann::ordered_json(*inputs.seed) : nlohmann::ordered_json(nullptr)}};
+}
+MemoryPackingInputs memoryPackingFromJson(const nlohmann::json &j) {
+    MemoryPackingInputs result;
+    for (const auto &r : j.at("resources")) result.resources.push_back({r.at("resource").get<std::string>(),r.at("memory_type_bits").get<std::uint32_t>(),r.at("optimal_tiling").get<bool>()});
+    result.forbidden_pairs = j.at("forbidden_pairs").get<decltype(result.forbidden_pairs)>();
+    result.same_offset_sets = j.at("same_offset_sets").get<decltype(result.same_offset_sets)>();
+    result.order = j.at("order").get<decltype(result.order)>();
+    if (!j.at("seed").is_null()) result.seed = j.at("seed").get<std::uint32_t>();
+    return result;
+}
+nlohmann::ordered_json memoryRegionsToJson(std::span<const PackedMemoryRegion> regions) {
+    auto result = nlohmann::ordered_json::array();
+    for (const auto &r : regions) {
+        auto residents = nlohmann::ordered_json::array();
+        for (const auto &p : r.residents) residents.push_back({{"resource",p.resource},{"offset",p.offset},{"size",p.size},{"alignment",p.alignment}});
+        result.push_back({{"region",r.region},{"memory_type_bits",r.memory_type_bits},{"size",r.size},{"alignment",r.alignment},{"residents",residents}});
+    }
+    return result;
+}
+std::vector<PackedMemoryRegion> memoryRegionsFromJson(const nlohmann::json &j) {
+    std::vector<PackedMemoryRegion> result;
+    for (const auto &r : j) {
+        PackedMemoryRegion region{r.at("region").get<std::uint32_t>(),r.at("memory_type_bits").get<std::uint32_t>(),r.at("size").get<std::uint64_t>(),r.at("alignment").get<std::uint64_t>()};
+        for (const auto &p : r.at("residents")) region.residents.push_back({p.at("resource").get<std::string>(),p.at("offset").get<std::uint64_t>(),p.at("size").get<std::uint64_t>(),p.at("alignment").get<std::uint64_t>()});
+        result.push_back(std::move(region));
+    }
+    return result;
+}
 } // namespace Pelican

@@ -1499,6 +1499,7 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
             physical_validation.reason();
     } else {
         const Json &physical = *physical_plan_json;
+
         model.physical_plan.state = FramePlanPhysicalPlanState::available;
         model.physical_plan.unavailable_reason_code.clear();
         model.physical_plan.unavailable_reason.clear();
@@ -1769,6 +1770,16 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
 
     if (model.physical_plan.available()) {
         const Json &physical = *physical_plan_json;
+        for (const auto &region : physical.at("memory_regions")) for (const auto &resident : region.at("residents")) {
+            const auto name=resident.at("resource").get<std::string>();
+            // Regions describe the whole generation, including other variants.
+            if(std::none_of(physical.at("resources").begin(),physical.at("resources").end(),[&](const auto &r){return r.at("logical_resource")==name;}))continue;
+            auto &resource=resources[name];
+            resource.name=name;
+            resource.planned_region=region.at("region").get<std::uint32_t>();
+            resource.planned_offset=resident.at("offset").get<std::uint64_t>();
+            resource.planned_requirement_bytes=resident.at("size").get<std::uint64_t>();
+        }
         const auto &physical_resources =
             requireArrayField(physical, "resources", "physical_target_plan");
         std::set<std::string, std::less<>> physical_extent_resources;
@@ -1835,6 +1846,8 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
             if (const auto bytes = value.find("bytes");
                 bytes != value.end() && !bytes->is_null())
                 resource.bytes = unsignedInteger(*bytes, context + ".bytes");
+            if(value.contains("payload_bytes")) resource.payload_bytes=unsignedInteger(value.at("payload_bytes"),context+".payload_bytes");
+            if(value.contains("allocation_bytes")) resource.actual_allocation_bytes=unsignedInteger(value.at("allocation_bytes"),context+".allocation_bytes");
             if (const auto extent = value.find("extent");
                 extent != value.end() && !extent->is_null()) {
                 resource.extent = parseExtent(*extent, context + ".extent");
@@ -2075,6 +2088,20 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
                 throw invalid("memory_summary.peak_node must be a string or null");
             }
             summary.peak_node = node->get<std::string>();
+        }
+        if (memory->contains("payload_bytes")) summary.payload_bytes=bytesField("payload_bytes");
+        if (memory->contains("planned_region_bytes")) summary.planned_region_bytes=bytesField("planned_region_bytes");
+        summary.actual_placement_measured=memory->contains("actual_placement") && !memory->at("actual_placement").is_null();
+        if(summary.actual_placement_measured) {
+            const auto &actual=memory->at("actual_placement");
+            for(const auto &region:actual.at("regions")) for(const auto &resident:region.at("residents")) {
+                const auto found=resources.find(resident.at("resource").get<std::string>());
+                if(found==resources.end()) continue; // Other variants and history/attachment surfaces.
+                auto &resource=found->second;
+                resource.actual_memory_type_index=region.at("memoryTypeIndex").get<std::uint32_t>();
+                resource.actual_offset=resident.at("offset").get<std::uint64_t>();
+                if(resident.value("region_bound",false)) resource.actual_region=region.at("region").get<std::uint32_t>();
+            }
         }
         model.memory_summary = std::move(summary);
     }

@@ -5,6 +5,8 @@
 #include "../vkcore/buf.hpp"
 #include "../vkcore/image.hpp"
 #include "rendertargetdefinition.hpp"
+#include "../../project/memoryregionpacking.hpp"
+#include <nlohmann/json.hpp>
 #include "rendertargetmetadata.hpp"
 #include "rendertargetread.hpp"
 #include "vulkanimagevocabulary.hpp"
@@ -25,8 +27,16 @@
 namespace Pelican {
 
 class RenderTargetContainer;
+struct RuntimeTargetMemoryContract {
+    MemoryPackingInputs inputs;
+    std::vector<std::vector<std::string>> required_sets;
+    // Device-facts injection for repack failure/rollback tests. Empty in production.
+    std::function<ImageMemoryRequirements(std::string_view,vk::Extent2D,ImageMemoryRequirements)> requirements_for_testing;
+};
 
 struct RenderTargetResourceSet {
+    vk::Extent2D base_extent;
+    std::uint64_t revision=0;
     std::array<ImageWrapper, 2> images;
     std::array<std::vector<vk::UniqueImageView>, 2>
         image_layer_views;
@@ -96,11 +106,11 @@ DECLARE_MODULE(RenderTargetContainer) {
             ImageResourceDimension::two_d;
         RenderTargetStorageMode storage_mode;
         std::optional<std::string> alias_group;
-        std::optional<std::uint64_t> alias_group_token;
+        std::shared_ptr<const RuntimeTargetMemoryContract> memory_contract;
         // PS-1: RenderTargetDefinition::persistent of the latest
         // registration (a lifetime edit keeps the image).
         bool persistent = false;
-        std::unique_ptr<RenderTargetResourceSet>
+        std::shared_ptr<RenderTargetResourceSet>
             resources;
         // EN-2: a file image's pixels, uploaded whenever its image is
         // created. Such a target is read only and starts each frame in
@@ -112,8 +122,7 @@ DECLARE_MODULE(RenderTargetContainer) {
 
     std::unordered_map<std::string, GlobalRenderTargetId> name_to_id;
     std::vector<GlobalRenderTargetId> registration_order;
-    std::unordered_map<std::uint64_t, GlobalRenderTargetId>
-        alias_group_owners;
+
 
   public:
     struct RegistrationCheckpoint {
@@ -125,16 +134,19 @@ DECLARE_MODULE(RenderTargetContainer) {
     RenderTargetContainer();
     ~RenderTargetContainer();
 
-    // The authored contract travels as one value. Only the frame-time base
-    // extent, the allocator preference, and the alias-group token assigned
-    // by registration are outside the definition.
+    // A prepared image is bound by the generation batch. An empty image uses
+    // the ordinary dedicated-aware allocation path.
     GlobalRenderTargetId registerRenderTarget(
         const RenderTargetDefinition &definition,
         vk::Extent2D base_extent,
         vma::MemoryUsage memUsage,
-        std::optional<std::uint64_t>
-            alias_group_token = std::nullopt);
-    std::uint64_t createAliasGroupToken();
+        ImageWrapper prepared_image = {},
+        std::shared_ptr<const RuntimeTargetMemoryContract> memory_contract = {});
+    void registerMemoryTargets(const std::vector<RenderTargetDefinition> &definitions,
+        vk::Extent2D extent, std::shared_ptr<const RuntimeTargetMemoryContract> contract = {});
+    nlohmann::json actualPlacement(std::span<const GlobalRenderTargetId> ids) const;
+    std::vector<std::shared_ptr<const void>> resourceLeases() const;
+    std::vector<std::pair<std::uint64_t,std::uint64_t>> allocationMeasurements(GlobalRenderTargetId id) const;
     PreparedRenderTargetExtent prepareForExtent(
         vk::Extent2D base_extent) const;
     void publishPreparedExtent(
@@ -195,6 +207,7 @@ DECLARE_MODULE(RenderTargetContainer) {
     // PS-1: the target keeps its contents across frames (lifetime:
     // persistent), so a layout tracker reset must not forget its layout.
     bool persistent(GlobalRenderTargetId id) const;
+    // Observation identity of the actual region allocation, never an input.
     std::optional<std::uint64_t>
     aliasGroup(GlobalRenderTargetId id) const;
     bool sharesAllocation(GlobalRenderTargetId left,
@@ -219,10 +232,8 @@ DECLARE_MODULE(RenderTargetContainer) {
         const std::vector<GlobalRenderTargetId> &ids) noexcept;
 
   private:
-    void rebuildAliasGroupOwners();
     void bumpResourceRevision();
     uint32_t history_frame_index = 0;
-    std::uint64_t next_alias_group_token = 1;
     std::uint64_t resource_revision = 0;
     vk::ResolveModeFlagBits depth_resolve_mode =
         vk::ResolveModeFlagBits::eSampleZero;

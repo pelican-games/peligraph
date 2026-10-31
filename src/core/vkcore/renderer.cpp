@@ -3105,6 +3105,7 @@ struct LogicalFrameSubmissionResources {
     // AS State that owns that handle in the exact same fence-backed lease.
     std::shared_ptr<const void> rt_state;
     std::vector<std::shared_ptr<const RtDescriptorBundle>> rt_bundles;
+    std::vector<std::shared_ptr<const void>> target_resources;
 };
 
 } // namespace
@@ -4473,6 +4474,7 @@ void appendFramePlanMemoryJson(
                 auto memory = registeredRenderTargetMemory(
                     facts.metadata, facts.alias_group,
                     used.contains(id.value));
+                memory.allocations=facts.allocations;
                 bytes_by_handle.emplace(resource.handle, memory.bytes);
                 allocated.push_back(std::move(memory));
             }
@@ -4841,8 +4843,29 @@ nlohmann::json Renderer::currentFramePlanJson() const {
                 return RegisteredRenderTargetFacts{
                     render_targets->getMetadata(id),
                     render_targets->aliasGroup(id),
+                    render_targets->allocationMeasurements(id),
                 };
             });
+        std::vector<GlobalRenderTargetId> measured_ids;
+        std::set<int> measured_handles;
+        if(generation->gpu_arena) for(const auto &scope:generation->gpu_arena->scopes)
+            for(const auto &r:scope.resources) if(r.kind==RenderPipelineGpuResourceKind::render_target && measured_handles.insert(static_cast<int>(r.handle)).second)
+                measured_ids.push_back(GlobalRenderTargetId{static_cast<int>(r.handle)});
+        if(!measured_ids.empty()) {
+            auto actual=render_targets->actualPlacement(measured_ids);
+            result["memory_summary"]["actual_allocation_count"]=actual["allocation_count"];
+            result["memory_summary"]["actual_allocation_bytes"]=actual["allocation_bytes"];
+            result["memory_summary"]["actual_placement"]=std::move(actual);
+            for(auto &resource:result["physical_target_plan"]["resources"]) {
+                const auto name=resource.at("logical_resource").get<std::string>();
+                const auto binding=frame_graph->render_target_bindings.find(name);
+                if(binding==frame_graph->render_target_bindings.end() || !isConcreteRenderTarget(binding->second)) continue;
+                std::set<std::uint64_t> counted; std::uint64_t bytes=0;
+                for(const auto &[identity,size]:render_targets->allocationMeasurements(binding->second))
+                    if(counted.insert(identity).second) bytes+=size;
+                resource["bytes"]=bytes; resource["allocation_bytes"]=bytes;
+            }
+        }
     } else if (cpu_seam_render_targets) {
         appendFramePlanMemoryJson(result, *generation, *program,
                                   cpu_seam_render_targets);
@@ -6636,6 +6659,9 @@ void Renderer::LogicalFrameRecorder::recordOneExecution(
             renderer.internal_render_extent =
                 render_ctx.extent;
         }
+        // The extent publication may have replaced the images after the lease
+        // bundle was created. Retain the resources this recording actually uses.
+        submission_resources->target_resources=modules.render_target_container.resourceLeases();
         // Object, skin, morph, and material-override GPU state is frozen
         // after target acquisition and before the first view records.
         modules.instance_container.triggerUpdate(

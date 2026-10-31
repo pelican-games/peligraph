@@ -2,6 +2,7 @@
 
 #include "frameplanner.hpp"
 #include "rendertargetdefinition.hpp"
+#include "memoryregionpacking.hpp"
 #include "../vkcore/runtimecapabilities.hpp"
 #include "../../project/rendergraphir.hpp"
 #include "../../project/targetrenderplanning.hpp"
@@ -104,7 +105,21 @@ struct RenderingTargetPlanDeviceFacts {
         query_image_format_capability;
     bool transient_attachments = false;
     bool dynamic_rendering_local_read = false;
+    std::function<std::optional<ImageMemoryRequirements>(const vk::ImageCreateInfo &)>
+        image_memory_requirements;
+    struct MemoryType {
+        vk::MemoryPropertyFlags property_flags;
+        std::uint32_t heap_index = 0;
+        bool operator==(const MemoryType &) const = default;
+    };
+    std::vector<MemoryType> memory_types;
+    vk::Extent2D planning_extent{64, 64};
+    std::uint32_t graphics_queue_family = 0;
 };
+
+// device must have maintenance4 enabled and outlive the returned callback.
+RenderingTargetPlanDeviceFacts renderingTargetMemoryDeviceFacts(
+    vk::Device device, vk::PhysicalDevice physical_device);
 
 // Canonical endpoint projection used by target planning and engine tooling
 // that must answer whether a feature's required capabilities are executable
@@ -179,7 +194,8 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
     TargetPlanningPolicy target_planning = {},
     RenderingTargetExternalReaders external_readers = {},
     const std::map<std::string, ImageUsage, std::less<>> &generation_usage = {},
-    const std::map<std::string, std::string, std::less<>> &generation_alias_exclusions = {});
+    const std::map<std::string, std::string, std::less<>> &generation_alias_exclusions = {},
+    const std::map<std::string, std::uint32_t, std::less<>> &generation_array_layers = {});
 RenderingTargetPlanCompilation compileRenderingTargetPlansForVulkanDevice(
     const RenderGraphIR &render_graph,
     const std::unordered_map<std::string, FramePlan> &frame_plans,
@@ -195,7 +211,10 @@ RenderingTargetPlanCompilation compileRenderingTargetPlansForVulkanDevice(
     TargetPlanningPolicy target_planning = {},
     RenderingTargetExternalReaders external_readers = {},
     const std::map<std::string, ImageUsage, std::less<>> &generation_usage = {},
-    const std::map<std::string, std::string, std::less<>> &generation_alias_exclusions = {});
+    const std::map<std::string, std::string, std::less<>> &generation_alias_exclusions = {},
+    vk::Device device = {}, vk::Extent2D planning_extent = {64,64},
+    std::uint32_t graphics_queue_family = 0,
+    const std::map<std::string, std::uint32_t, std::less<>> &generation_array_layers = {});
 
 // RC-3c2a: what the physical plan placed of each render target (one variant,
 // in `render_targets`' order): its sample count, layers, format, storage and

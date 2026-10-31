@@ -129,6 +129,15 @@ RegisteredTargetMemoryTotal totalRegisteredTargetMemory(
     };
     std::map<std::uint64_t, SharedAllocation> shared;
     for (const auto &target : targets) {
+        if(!target.allocations.empty()) {
+            for(const auto &[identity,size]:target.allocations) {
+                auto &allocation=shared[identity];
+                allocation.bytes=std::max(allocation.bytes,size);
+                allocation.used=allocation.used || target.used;
+            }
+            if(!target.used) total.unused_resources.push_back(target.name);
+            continue;
+        }
         std::uint64_t own = target.bytes;
         if (target.alias_group) {
             if (target.alias_shared_bytes > target.bytes) {
@@ -175,6 +184,10 @@ void appendVulkanTargetPlanMemoryJson(
                           ? nlohmann::json(nullptr)
                           : nlohmann::json(summary.peak_node)},
         {"peak_graph", plan.graph},
+        {"payload_bytes", [&] { std::uint64_t total=0; for (const auto &b : summary.resource_bytes) total+=b.value_or(0); return total; }()},
+        {"planned_region_bytes", [&] { std::uint64_t total=0; for (const auto &r : plan.memory_regions) total+=r.size; return total; }()},
+        {"planned_region_count", plan.memory_regions.size()},
+        {"actual_placement", nullptr}, // Step 3 publishes measured bindings here.
     };
     const auto physical = frame_plan.find("physical_target_plan");
     if (physical == frame_plan.end() || !physical->is_object()) return;
@@ -195,6 +208,7 @@ void appendVulkanTargetPlanMemoryJson(
             name->get_ref<const std::string &>());
         if (found != bytes_by_name.end()) {
             resource["bytes"] = found->second;
+            resource["payload_bytes"] = found->second;
         }
     }
 }

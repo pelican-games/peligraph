@@ -26,6 +26,8 @@
 #include "../src/core/renderingpass/framegraphruntime.hpp"
 #include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/core/renderingpass/rendertargetcontainer.hpp"
+#include "../src/core/renderingpass/rendertargetimagecontract.hpp"
+#include "../src/core/renderingpass/renderingsamplecount.hpp"
 #include "../src/core/shader/pipelinefactory.hpp"
 #include "../src/core/shader/shaderlibrary.hpp"
 #include "../src/core/vkcore/core.hpp"
@@ -144,6 +146,7 @@ struct Registered {
     std::vector<std::set<std::string>> shared;
     std::size_t allocations = 0;
     std::uint64_t allocated_bytes = 0;
+    std::uint64_t requirement_bytes = 0;
 };
 
 // One production registration of the C1 document: flat (and the XR variant
@@ -190,8 +193,14 @@ Registered registerC1(bool with_xr) {
     Json section{{"features", Json::array({"project://features/rc3c2a_flat_only.json"})},
                  {"render_targets", targets},
                  {"rendering_passes", Json::array({Json{{"name", "main"}, {"passes", passes}}})}};
-    for (const auto *name : {"a_mid", "a_end", "b_mid", "b_end", "c_mid", "c_end"})
+    // scene remains live while the independent chains run. Keep its ordinary
+    // allocation so only the independent chains enter regions.
+    for (const auto *name : {"scene", "a_mid", "a_end", "b_mid", "b_end", "c_mid", "c_end"})
         section["target_planning"]["graphs"]["main"]["resources"][name]["no_alias"] = true;
+    // Explicit same-offset requests preserve each chain's intended reuse. Their
+    // plan requires a same-offset slot before the new interval packing runs.
+    for(const auto *chain:{"a","b","c"})for(const auto *suffix:{"1","2"})
+        section["target_planning"]["graphs"]["main"]["resources"][std::string{chain}+suffix]["alias_group"]=std::string{"chain_"}+chain;
     // The XR variant runs its fullscreen passes with multiview: a measured
     // gain on this device (a profile with its vendor and device id), as the
     // RC-3c1b registration test has it. Its images then hold both views.
@@ -228,16 +237,22 @@ Registered registerC1(bool with_xr) {
         for (const auto &[name, entry] : result.targets) {
             if (counted.contains(name)) continue;
             std::set<std::string> members{name};
-            auto bytes = renderTargetBytes(entry.metadata);
+            auto bytes = GET_MODULE(VulkanManageCore).imageAllocationBytes(container.getImage(entry.id));
             for (const auto &[other, other_entry] : result.targets) {
                 if (other == name || !container.sharesAllocation(entry.id, other_entry.id)) continue;
                 members.insert(other);
-                bytes = std::max(bytes, renderTargetBytes(other_entry.metadata));
+                bytes = std::max(bytes, GET_MODULE(VulkanManageCore).imageAllocationBytes(container.getImage(other_entry.id)));
             }
             counted.insert(members.begin(), members.end());
             ++result.allocations;
             result.allocated_bytes += bytes;
             if (members.size() > 1) result.shared.push_back(members);
+            std::uint64_t end=0;
+            for(const auto &member:members) {
+                const auto &image=container.getImage(result.targets.at(member).id);
+                end=std::max(end,image.memory_offset+GET_MODULE(VulkanManageCore).imageRequirements(image).size);
+            }
+            result.requirement_bytes+=end;
         }
     };
     std::vector<RenderingPassConfigRegistrationDependencies> runtime;
@@ -259,6 +274,12 @@ Registered registerC1(bool with_xr) {
     } catch (const std::exception &error) {
         result.refusal = error.what();
     }
+    Json placement=Json::array();
+    for(const auto &image:result.resources.images)placement.push_back({{"resource",image.declaration.name},
+        {"group",image.alias_group?Json(*image.alias_group):Json(nullptr)},
+        {"region",image.memory_region?Json(*image.memory_region):Json(nullptr)},
+        {"offset",image.memory_offset},{"layers",image.array_layers},{"format",imageFormatName(image.format)}});
+    std::ofstream{"<作業ディレクトリ>/rc7c3_variant_c1_"+std::string{with_xr?"xr":"flat"}+".json"}<<placement.dump(2);
     return result;
 }
 
@@ -372,38 +393,36 @@ TEST_CASE("RC-3c2a C1: the registration merges the variants' images once, for th
         CHECK(registered(alone, name).array_layers == 1);
     }
     CHECK(registered(merged, "c1").array_layers == 1);
-    // The groups: a stands, b leaves (XR has b1 without b2), c stands (XR has
-    // neither). Flat alone keeps all three.
+    // Same-offset groups survive heterogeneous layer counts. A resource absent
+    // from XR remains constrained by the flat graph where the pair co-occurs.
     const auto group = [&](const Registered &run, const std::string &name) {
         return registered(run, name).alias_group;
     };
     CHECK(group(merged, "a1").has_value());
     CHECK(group(merged, "a1") == group(merged, "a2"));
-    CHECK_FALSE(group(merged, "b1").has_value());
-    CHECK_FALSE(group(merged, "b2").has_value());
+    CHECK(group(merged, "b1").has_value());
+    CHECK(group(merged, "b1")==group(merged, "b2"));
     CHECK(group(merged, "c1") == group(merged, "c2"));
     CHECK(group(alone, "b1").has_value());
     CHECK(group(alone, "b1") == group(alone, "b2"));
     using Shared = std::vector<std::set<std::string>>;
-    CHECK(merged.shared == Shared{{"a1", "a2"}, {"c1", "c2"}});
-    CHECK(alone.shared == Shared{{"a1", "a2"}, {"b1", "b2"}, {"c1", "c2"}});
+    CHECK(merged.shared == Shared{{"a1", "a2", "b1", "b2", "c1", "c2"}});
+    CHECK(alone.shared == Shared{{"a1", "a2", "b1", "b2", "c1", "c2"}});
     for (const auto *run : {&merged, &alone})
         for (const auto *name : {"a_mid", "a_end", "b_mid", "b_end", "c_mid", "c_end"}) {
             INFO(name);
             CHECK_FALSE(group(*run, name).has_value());
         }
-    // 15 images (the output's display image with them): two pairs sharing,
-    // 13 allocations; flat alone, three pairs, 12.
+    // 15 images: six eligible chain images in one VMA region at legal offsets,
+    // nine ordinary allocations. The two layer variants both make ten.
     std::set<std::string> names;
     for (const auto &[name, entry] : merged.targets) names.insert(name);
     CHECK(names == std::set<std::string>{"a1", "a2", "a_end", "a_mid", "b1", "b2", "b_end", "b_mid", "c1",
                                          "c2", "c_end", "c_mid", "depth", "display", "scene"});
-    CHECK(merged.allocations == 13);
-    CHECK(alone.allocations == 12);
-    std::uint64_t expected_bytes = 0;
-    for (const auto &[name, entry] : merged.targets)
-        if (name != "a2" && name != "c2") expected_bytes += renderTargetBytes(entry.metadata);
-    CHECK(merged.allocated_bytes == expected_bytes);
+    CHECK(merged.allocations == 10);
+    CHECK(alone.allocations == 10);
+    CHECK(merged.allocated_bytes == merged.requirement_bytes);
+    CHECK(alone.allocated_bytes == alone.requirement_bytes);
     CHECK(renderTargetBytes(registered(merged, "a1")) == 64u * 64u * 1u * 2u);
     CHECK(renderTargetBytes(registered(merged, "c1")) == 64u * 64u * 4u);
 #else
@@ -494,4 +513,105 @@ TEST_CASE("RC-3c2a C2: a directional shadow target's layers follow the light cou
     CHECK_FALSE(prepareDirectionalShadowRenderTarget(frame_graph, lights, targets));
 }
 
+TEST_CASE("RC-7c maintenance4 production facts equal actual image requirements", "[rc7c][facts][gpu][headless]") {
+    setupLogger();
+    FastModuleContainer modules;
+    Project project;
+    GET_MODULE(EngineLaunchConfig).vulkan_validation = VulkanValidationMode::enabled;
+    startHeadless(project, {64, 64});
+    auto &core = GET_MODULE(VulkanManageCore);
+    const auto facts = renderingTargetMemoryDeviceFacts(core.getDevice(), core.getPhysDevice());
+    REQUIRE(facts.image_memory_requirements);
+    const auto memory = core.getPhysDevice().getMemoryProperties();
+    REQUIRE(facts.memory_types.size() == memory.memoryTypeCount);
+    for (std::uint32_t i = 0; i < memory.memoryTypeCount; ++i) {
+        CHECK(facts.memory_types[i].property_flags == memory.memoryTypes[i].propertyFlags);
+        CHECK(facts.memory_types[i].heap_index == memory.memoryTypes[i].heapIndex);
+    }
+    for (int kind = 0; kind < 5; ++kind) {
+        CAPTURE(kind);
+        RenderTargetDefinition d;
+        d.name = "facts";
+        d.usage = ImageUsageBit::sampled | ImageUsageBit::transfer_dst;
+        d.fixed_extent = ResolvedResourceExtent{32, 32};
+        if (kind == 1) d.format = ImageFormat::r16_sfloat;
+        if (kind == 2) { d.format = ImageFormat::d32_sfloat; d.fixed_extent = ResolvedResourceExtent{17, 35}; }
+        if (kind == 3) { d.dimension = ImageResourceDimension::cube; d.array_layers = 6; }
+        if (kind == 4) { d.alias_group = "alias"; d.mip_levels = {.mode = ImageMipLevelMode::full_chain}; }
+        const auto contract = renderTargetImageContract(d, {64, 64}, core.getGraphicsQueueFamilyIndex());
+        const auto ci = contract.createInfo();
+        const auto planned = facts.image_memory_requirements(ci);
+        REQUIRE(planned);
+        // Unbound real VkImage, exactly the same create info as the callback.
+        const auto image = core.getDevice().createImageUnique(ci);
+        vk::ImageMemoryRequirementsInfo2 query;
+        query.image = image.get();
+        vk::MemoryDedicatedRequirements dedicated;
+        vk::MemoryRequirements2 actual;
+        actual.pNext = &dedicated;
+        core.getDevice().getImageMemoryRequirements2(&query, &actual);
+        const auto &r = actual.memoryRequirements;
+        const ImageMemoryRequirements expected{r.size, r.alignment, r.memoryTypeBits,
+            dedicated.requiresDedicatedAllocation == VK_TRUE,
+            dedicated.prefersDedicatedAllocation == VK_TRUE};
+        CHECK(*planned == expected);
+    }
+
+    SECTION("fixed alias owner stays 64x64 when the relative member base grows to 1024") {
+        auto &targets = GET_MODULE(RenderTargetContainer);
+        RenderTargetDefinition owner;
+        owner.name = "rc7c-fixed-owner";
+        owner.fixed_extent = ResolvedResourceExtent{64, 64};
+        owner.usage = ImageUsageBit::color_attachment | ImageUsageBit::sampled;
+        owner.alias_group = "rc7c-resize";
+        auto member = owner;
+        member.name = "rc7c-relative-member";
+        member.fixed_extent.reset();
+        member.extent_scale = 1;
+        auto contract=std::make_shared<RuntimeTargetMemoryContract>();
+        contract->inputs.resources={{owner.name},{member.name}};
+        contract->inputs.order={owner.name,member.name};
+        contract->inputs.same_offset_sets={{owner.name,member.name}};
+        contract->required_sets={{owner.name,member.name}};
+        targets.registerMemoryTargets({owner,member},{64,64},contract);
+        const auto owner_id=targets.getRenderTargetIdByName(owner.name);
+        const auto member_id=targets.getRenderTargetIdByName(member.name);
+        const auto check = [&](std::uint32_t member_extent) {
+            const auto &a = targets.getImage(owner_id);
+            const auto &b = targets.getImage(member_id);
+            CHECK(a.extent == (vk::Extent3D{64, 64, 1}));
+            CHECK(b.extent == (vk::Extent3D{member_extent,member_extent,1}));
+            CHECK(b.mip_levels == a.mip_levels);
+            CHECK(b.usage == a.usage);
+            CHECK(b.create_flags == a.create_flags);
+            CHECK(b.allocation == a.allocation);
+            CHECK(b.image.get() != a.image.get());
+        };
+        check(64);
+        auto prepared = targets.prepareForExtent({1024, 1024});
+        REQUIRE(prepared.valid());
+        targets.publishPreparedExtent(std::move(prepared));
+        check(1024);
+    }
+
+    SECTION("live relative image with seven fixed mips is reused at base 32x32") {
+        auto &targets = GET_MODULE(RenderTargetContainer);
+        RenderTargetDefinition d;
+        d.name = "rc7c-live-seven-mips";
+        d.extent_scale = 1;
+        d.usage = ImageUsageBit::color_attachment | ImageUsageBit::sampled;
+        d.mip_levels.count = 7;
+        const auto id = targets.registerRenderTarget(d, {64, 64}, vma::MemoryUsage::eGpuOnly);
+        const auto image = targets.getImage(id).image.get();
+        const auto allocation = targets.getImage(id).allocation;
+        CHECK(targets.registerRenderTarget(d, {32, 32}, vma::MemoryUsage::eGpuOnly) == id);
+        CHECK(targets.getImage(id).image.get() == image);
+        CHECK(targets.getImage(id).allocation == allocation);
+        CHECK(targets.getImage(id).extent == (vk::Extent3D{64, 64, 1}));
+        CHECK(targets.getImage(id).mip_levels == 7);
+    }
+}
+
 } // namespace Pelican
+
+#include "rc7c_runtime_gpu_test.inc"

@@ -68,6 +68,8 @@ struct RenderTargetDefinition {
     // the layout tracker resumes from its last layout instead of discarding.
     // Undefined again once the image is made anew (extent, format, rebuild).
     bool persistent = false;
+    std::optional<std::uint32_t> planned_memory_region;
+    std::uint64_t planned_memory_offset = 0;
 };
 
 // Resolves the authored clear value against the target's format. Lives with

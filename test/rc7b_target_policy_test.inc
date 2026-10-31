@@ -4,6 +4,7 @@ struct Rc7bFixture {
     CompiledLogicalRenderGraph graph = rc6a2AliasGraph(types);
     VulkanTargetPlanRequest request{.node_order = fixtureOrder(graph)};
     Rc7bFixture() {
+        request.memory_requirements = TestSupport::rc7cMemoryRequirements;
         request.node_order = fixtureOrder(graph);
         request.endpoint = "device:0";
         request.provider = std::string{kProvider};
@@ -131,7 +132,7 @@ TEST_CASE("RC-7b effective usage mismatches and unknown facts are unshared", "[t
     CHECK(after.alias_groups.empty());
     auto package = ejectVulkanCompletePhysicalPlanPackage(after);
     package.alias_groups = before.alias_groups;
-    CHECK_THROWS_WITH(f.verify(after, package), Catch::Matchers::ContainsSubstring("alias.image_contract@1"));
+    CHECK_THROWS_WITH(f.verify(after, package), Catch::Matchers::ContainsSubstring("memory.same_offset@1"));
 }
 
 TEST_CASE("RC-7b planner excludes provider manual NativeScope boundary facts", "[target-render-planning][rc7b][rc7b-native-control]") {
@@ -159,7 +160,7 @@ TEST_CASE("RC-7b verifier rejects native boundaries samples and overlapping resi
             .resources = {{.logical_resource = "temporary_a", .semantic_type = semanticTypeIdName(f.graph.resources[0].type.semantic),
                 .access = LogicalAccessMode::write, .stages = {"VK_PIPELINE_STAGE_ALL_COMMANDS_BIT"}, .accesses = {"VK_ACCESS_MEMORY_WRITE_BIT"}}}}};
         auto unshared = package; unshared.alias_groups.clear();
-        REQUIRE_NOTHROW(f.verify(plan, unshared));
+        CHECK_THROWS_WITH(f.verify(plan, unshared), Catch::Matchers::ContainsSubstring("alias.native_boundary@1")); // Residents still share the region.
         CHECK_THROWS_WITH(f.verify(plan, package), Catch::Matchers::ContainsSubstring("alias.native_boundary@1"));
     }
     SECTION("unchecked") {
@@ -169,7 +170,7 @@ TEST_CASE("RC-7b verifier rejects native boundaries samples and overlapping resi
             .resources = {{.logical_resource = "temporary_a", .semantic_type = semanticTypeIdName(f.graph.resources[0].type.semantic),
                 .access = LogicalAccessMode::write}}}};
         auto unshared = package; unshared.alias_groups.clear();
-        REQUIRE_NOTHROW(f.verify(plan, unshared));
+        CHECK_THROWS_WITH(f.verify(plan, unshared), Catch::Matchers::ContainsSubstring("alias.native_boundary@1")); // Residents still share the region.
         CHECK_THROWS_WITH(f.verify(plan, package), Catch::Matchers::ContainsSubstring("alias.native_boundary@1"));
     }
     SECTION("resolve") {
@@ -240,7 +241,7 @@ TEST_CASE("RC-7b retain-free variants resolve merged contracts before planner po
             return p.key == "alias_group" && p.status == PlanningPolicyStatus::infeasible_prefer;
         }));
         f.policy(rc6a2Group());
-        rc6a2Refusal([&] { f.run(); }, "target_planning.requirement_unsatisfied@1", "alias_group");
+        rc6a2Refusal([&] { f.run(); }, "target_planning.alias_generation_contract@1", "alias_group");
     }
 }
 

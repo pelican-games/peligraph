@@ -4,9 +4,9 @@ TEST_CASE("RC-6a2 compiler binds new root recipe and part keys through the produ
     root["rendering"]["features"].push_back("project://features/local.json");
     auto feature = Rc6Json::parse(PathResolver{}.loadText("engine://features/bloom.json"));
     auto recipe = Rc6Json::parse(PathResolver{}.loadText("engine://render_pipelines/experimental/hybrid_recipe.json"));
-    const auto compile = [&] { return rc6Physical(rc5Compile(root, false, &feature, {{"recipe.json", recipe}})); };
+    const auto compile = [&] { return rc6Physical(rc5CompileWithFacts(root, false, &feature, {{"recipe.json", recipe}})); };
     const auto automatic = compile();
-    REQUIRE(rc6Aliased(automatic, "g_emissive", "Bloom_Threshold_RT"));
+    REQUIRE(rc6InRegion(automatic, "Bloom_Threshold_RT"));
     REQUIRE_FALSE(automatic.contains("policy"));
     recipe["config"]["target_planning"] = {{"graphs", {{"main_render", {{"backend", {{"value", "transient"}, {"strength", "prefer"}}}}}}}};
     feature["target_planning"] = rc6Policy("resources", "Bloom_Threshold_RT", "representation", "materialized");
@@ -24,13 +24,13 @@ TEST_CASE("RC-6a2 compiler binds new root recipe and part keys through the produ
 TEST_CASE("RC-6a2 engine isolated sprite cannot satisfy a scope join", "[rendercompiler][rc6a2][rc6-c3]") {
     auto root = rc5Document(false, false, false);
     root["rendering"]["features"] = {"engine://features/sprite.json"};
-    const auto automatic = rc6Physical(rc5Compile(root, false));
+    const auto automatic = rc6Physical(rc5CompileWithFacts(root, false));
     REQUIRE(std::any_of(automatic.at("scopes").begin(), automatic.at("scopes").end(), [](const auto &s) {
         return s.at("nodes") == Rc6Json::array({"sprite_draw"});
     }));
     root["rendering"]["target_planning"] = rc6Policy("nodes", "sprite_draw", "scope_join", true);
-    CHECK(rc6Refusal([&] { rc5Compile(root, false); }) == "target_planning.requirement_unsatisfied@1");
+    CHECK(rc6Refusal([&] { rc5CompileWithFacts(root, false); }) == "target_planning.requirement_unsatisfied@1");
     root["rendering"]["target_planning"] = rc6Policy("nodes", "sprite_draw", "scope_join", {{"value", true}, {"strength", "prefer"}});
-    const auto plan = rc6Physical(rc5Compile(root, false));
+    const auto plan = rc6Physical(rc5CompileWithFacts(root, false));
     CHECK(rc6Row(plan, "sprite_draw", "root").at("status") == "infeasible_prefer");
 }

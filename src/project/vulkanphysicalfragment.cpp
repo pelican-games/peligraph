@@ -863,6 +863,8 @@ std::uint64_t vulkanAutomaticTargetPlanFingerprint(
                     depth.view_layout));
             target.appendUnsigned(depth.array_layers);
         });
+    fingerprint.appendString(memoryRegionsToJson(automatic_plan.memory_regions).dump());
+    fingerprint.appendString(memoryPackingToJson(automatic_plan.memory_packing).dump());
     return fingerprint.value();
 }
 

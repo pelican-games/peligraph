@@ -53,13 +53,14 @@ TEST_CASE("RC-7a F2 final verifier independently checks retain contracts", "[tar
     SECTION("reason") { for (auto &r : plan.resources) if (r.logical_resource == "write_only_scratch") r.lifetime.retain.clear(); verify(); }
     SECTION("representation") { for (auto &r : plan.resources) if (r.logical_resource == "write_only_scratch") r.representation = VulkanResourceRepresentation::transient_attachment; verify(); }
 }
-TEST_CASE("RC-7a F2 unsupported usage rejects require and discards prefer without residue", "[target-render-planning][rc7a][rc7-f2]") {
-    rc6a2Refusal([&] { rc7aScratch(true, ImageUsageBit::color_attachment); }, "target_planning.retain_unsatisfiable@1", "write_only_scratch");
-    const auto plan = rc7aScratch(true, ImageUsageBit::color_attachment, PlanningStrength::prefer);
-    CHECK(rc6a2Entry(plan, "retain").status == PlanningPolicyStatus::infeasible_prefer);
-    CHECK(physicalResource(plan, "write_only_scratch").representation == VulkanResourceRepresentation::transient_attachment);
-    CHECK(physicalResource(plan, "write_only_scratch").lifetime.retain.empty());
-    CHECK(plan.attachments[0].operations.store_op == AttachmentStoreOp::dont_care);
+TEST_CASE("RC-7c retained usage adds TRANSFER_SRC before final verification", "[target-render-planning][rc7c][rc7-f2]") {
+    for (const auto strength : {PlanningStrength::require, PlanningStrength::prefer}) {
+        const auto plan=rc7aScratch(true,ImageUsageBit::color_attachment,strength);
+        CHECK(rc6a2Entry(plan,"retain").status==PlanningPolicyStatus::adopted);
+        CHECK(bool(plan.effective_image_usage.at("write_only_scratch") & ImageUsageBit::transfer_src));
+        CHECK(physicalResource(plan,"write_only_scratch").representation==VulkanResourceRepresentation::materialized_image);
+        CHECK(plan.attachments[0].operations.store_op==AttachmentStoreOp::store);
+    }
 }
 TEST_CASE("RC-7a F3 false preserves independent engine retention", "[target-render-planning][rc7a][rc7-f3]") {
     const auto plan = rc7aScratch(false, ImageUsageBit::transfer_src, PlanningStrength::require,
@@ -130,6 +131,7 @@ TEST_CASE("RC-7a F2 causal alias retries erase dropped retain lifetime and opera
         .policy = policy.graphs[0].declarations, .node_order = fixtureOrder(graph), .endpoint = "device:0",
         .provider = std::string{kProvider}, .pattern_bindings = bindingsFor(types, graph),
         .effective_image_usage = {{"temporary_a", ImageUsageBit::transfer_src}, {"temporary_b", ImageUsageBit::transfer_src}},
+        .memory_requirements = TestSupport::rc7cMemoryRequirements,
         .automatic_attachments = {{.node = "WriteA", .logical_resource = "temporary_a",
             .operations = PassAttachmentOperations{AttachmentLoadOp::clear, AttachmentStoreOp::dont_care}},
             {.node = "WriteB", .logical_resource = "temporary_b",

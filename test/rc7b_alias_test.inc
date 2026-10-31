@@ -88,7 +88,7 @@ void main(){ float d=texture(inputTexture,inUV).r; outColor=d<0.5?vec4(1,0,0,1):
         const RenderStrategyRegistrySnapshot strategies;
         const SubgraphReplacementRegistrySnapshot replacements;
         const VulkanRenderCompilerBackendContext backend{vk::Format::eB8G8R8A8Srgb, {32, 32},
-            core.getPhysDevice(), {}, core.getRuntimeCapabilities(), VulkanRenderCompilerDevicePlanningMode::device_required};
+            core.getPhysDevice(), {}, core.getRuntimeCapabilities(), VulkanRenderCompilerDevicePlanningMode::device_required, core.getDevice(), core.getGraphicsQueueFamilyIndex()};
         const std::vector<RenderCompilerProgramVariantRequest> variants{{.graph_variant = RenderPipelineGraphVariant::flat}};
         const auto compiled = runRenderCompilerProgram(defaultVulkanRenderCompilerProgram(), {
             .rendering_config = root, .path_resolver = GET_MODULE(PathResolver), .runtime_shader_compiler_enabled = true,
@@ -153,8 +153,7 @@ void main(){ float d=texture(inputTexture,inUV).r; outColor=d<0.5?vec4(1,0,0,1):
         for (int frame = 0; frame < 3; ++frame) {
             trace.clear(); GET_MODULE(EngineTime).advance(); renderer.render();
             REQUIRE_FALSE(trace.empty());
-            if (frame == 0) { CHECK_FALSE(trace.front().dependency); CHECK(trace.front().old_layout == vk::ImageLayout::eUndefined); }
-            else assert_dependency(trace.front());
+            assert_dependency(trace.front());
             const auto b = std::find_if(trace.begin(), trace.end(), [&](const auto &e) { return e.resource == initial_ids[1]; });
             REQUIRE(b != trace.end()); assert_dependency(*b);
         }
@@ -248,7 +247,7 @@ void main(){ float d=texture(inputTexture,inUV).r; outColor=d<0.5?vec4(1,0,0,1):
         REQUIRE(reload()); trace.clear(); renderer.render();
         REQUIRE(targets.sharesAllocation(ids()[0], ids()[1]));
         CHECK(targets.aliasGroup(ids()[0]) != initial_token);
-        REQUIRE_FALSE(trace.empty()); CHECK_FALSE(trace.front().dependency); CHECK(trace.front().old_layout == vk::ImageLayout::eUndefined);
+        REQUIRE_FALSE(trace.empty()); CHECK(trace.front().dependency); CHECK(trace.front().old_layout == vk::ImageLayout::eUndefined);
         const auto stable = runtime.snapshot(); const auto stable_ids = ids();
         root["rendering"]["target_planning"]["graphs"]["main_render"]["resources"]["alias_b"]["no_alias"] = true;
         root["rendering"]["target_planning"]["graphs"]["main_render"]["resources"]["alias_sink"]["retain"] = false;

@@ -39,14 +39,15 @@ class VulkanRenderCompilerBackendContext final
         VulkanRenderCompilerDevicePlanningMode
             device_planning_mode =
                 VulkanRenderCompilerDevicePlanningMode::
-                    device_required)
+                    device_required,
+        vk::Device device = {}, std::uint32_t graphics_queue_family = 0)
         : output_format{output_format},
           output_extent{output_extent},
           physical_device{physical_device},
           enabled_device_extensions{
               std::move(enabled_device_extensions)},
           runtime_capabilities{runtime_capabilities},
-          device_planning_mode{device_planning_mode} {}
+          device_planning_mode{device_planning_mode}, device{device}, graphics_queue_family{graphics_queue_family} {}
 
     vk::Format output_format =
         vk::Format::eUndefined;
@@ -57,6 +58,10 @@ class VulkanRenderCompilerBackendContext final
     VulkanRuntimeCapabilities runtime_capabilities;
     VulkanRenderCompilerDevicePlanningMode
         device_planning_mode;
+    vk::Device device;
+    std::uint32_t graphics_queue_family = 0;
+    // CPU tests may supply device facts without constructing a Vulkan device.
+    std::optional<RenderingTargetPlanDeviceFacts> planning_facts;
 
     std::string_view backend() const noexcept override {
         return vulkanRenderCompilerBackend;

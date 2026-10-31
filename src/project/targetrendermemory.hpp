@@ -113,6 +113,8 @@ struct RegisteredTargetMemory {
     // Whether a graph's physical plan uses it (or the engine, outside any
     // graph). A target no graph uses is still allocated.
     bool used = true;
+    // Real VMA allocation identities/sizes; empty for a compiler-only estimate.
+    std::vector<std::pair<std::uint64_t,std::uint64_t>> allocations;
 };
 
 struct RegisteredTargetMemoryTotal {

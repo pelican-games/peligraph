@@ -4,6 +4,7 @@
 #include "logicalframegraphadapter.hpp"
 #include "renderingpassjsonhelpers.hpp"
 #include "vulkanimagevocabulary.hpp"
+#include "rendertargetimagecontract.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1055,8 +1056,6 @@ void validateRuntimePhysicalPlan(
                 "runtime physical alias group requires at least two resources: " +
                 group.id);
         }
-        const VulkanPhysicalResourcePlan *contract =
-            nullptr;
         for (const auto &name : group.resources) {
             if (!aliased_resources.insert(name).second) {
                 throw std::runtime_error(
@@ -1080,24 +1079,7 @@ void validateRuntimePhysicalPlan(
                     "runtime physical alias group contains an unsupported resource: " +
                     name);
             }
-            if (contract == nullptr) {
-                contract = &resource;
-                continue;
-            }
-            if (resource.format != contract->format ||
-                resource.view_layout !=
-                    contract->view_layout ||
-                resource.mip_levels !=
-                    contract->mip_levels ||
-                resource.array_layers !=
-                    contract->array_layers ||
-                resource.dimension !=
-                    contract->dimension ||
-                resource.extent != contract->extent) {
-                throw std::runtime_error(
-                    "runtime physical alias group members have incompatible image contracts: " +
-                    group.id);
-            }
+
         }
     }
     for (const auto &resource : plan.resources) {
@@ -1323,130 +1305,6 @@ void validateRuntimePhysicalPlan(
     }
 }
 
-std::vector<RenderingTargetAliasGroupAssignment>
-mergeRuntimeAliasGroups(
-    std::span<
-        const std::shared_ptr<const VulkanTargetPlan>>
-        plans,
-    std::map<std::string, std::string, std::less<>> &rejections) {
-    using Group = std::vector<std::string>;
-    std::set<Group> candidates;
-    for (const auto &plan : plans) {
-        if (plan == nullptr) continue;
-        for (const auto &source : plan->alias_groups) {
-            auto group = source.resources;
-            std::sort(group.begin(), group.end());
-            group.erase(
-                std::unique(group.begin(), group.end()),
-                group.end());
-            if (group.size() >= 2) {
-                candidates.insert(std::move(group));
-            }
-        }
-    }
-
-    std::vector<Group> compatible;
-    for (const auto &candidate : candidates) {
-        bool valid = true;
-        bool observed = false;
-        for (const auto &plan : plans) {
-            if (plan == nullptr) continue;
-            std::set<std::string, std::less<>>
-                resources;
-            for (const auto &resource : plan->resources) {
-                resources.insert(
-                    resource.logical_resource);
-            }
-            const auto any_member =
-                std::any_of(
-                    candidate.begin(), candidate.end(),
-                    [&](const auto &member) {
-                        return resources.contains(member);
-                    });
-            if (!any_member) continue;
-            observed = true;
-            if (!std::all_of(
-                    candidate.begin(), candidate.end(),
-                    [&](const auto &member) {
-                        return resources.contains(member);
-                    })) {
-                valid = false;
-                for (const auto &member : candidate)
-                    rejections[member] = "frame graphs do not agree on alias placement: " + plan->graph;
-                break;
-            }
-
-            bool exact_group = false;
-            bool conflicting_group = false;
-            for (const auto &source :
-                 plan->alias_groups) {
-                auto group = source.resources;
-                std::sort(group.begin(), group.end());
-                group.erase(
-                    std::unique(
-                        group.begin(), group.end()),
-                    group.end());
-                const auto intersects =
-                    std::any_of(
-                        group.begin(), group.end(),
-                        [&](const auto &member) {
-                            return std::binary_search(
-                                candidate.begin(),
-                                candidate.end(),
-                                member);
-                        });
-                if (!intersects) continue;
-                if (group == candidate) {
-                    exact_group = true;
-                } else {
-                    conflicting_group = true;
-                }
-            }
-            if (!exact_group || conflicting_group) {
-                valid = false;
-                for (const auto &member : candidate)
-                    rejections[member] = "frame graphs do not agree on alias placement: " + plan->graph;
-                break;
-            }
-        }
-        if (valid && observed) {
-            compatible.push_back(candidate);
-        }
-    }
-
-    std::map<std::string, std::size_t, std::less<>>
-        membership_count;
-    for (const auto &group : compatible) {
-        for (const auto &resource : group) {
-            ++membership_count[resource];
-        }
-    }
-
-    std::vector<RenderingTargetAliasGroupAssignment>
-        result;
-    for (const auto &group : compatible) {
-        if (std::any_of(
-                group.begin(), group.end(),
-                [&](const auto &resource) {
-                    return membership_count.at(resource) !=
-                           1;
-                })) {
-            for (const auto &member : group)
-                rejections[member] = "frame graphs do not agree on alias placement: overlapping groups";
-            continue;
-        }
-        std::string id = "runtime-alias";
-        for (const auto &resource : group) {
-            id += "/" + resource;
-        }
-        result.push_back({
-            .id = std::move(id),
-            .resources = group,
-        });
-    }
-    return result;
-}
-
 } // namespace
 
 TargetEndpoint renderingTargetRuntimeEndpoint(
@@ -1504,7 +1362,8 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
     TargetPlanningPolicy target_planning,
     RenderingTargetExternalReaders external_readers,
     const std::map<std::string, ImageUsage, std::less<>> &generation_usage,
-    const std::map<std::string, std::string, std::less<>> &generation_alias_exclusions) {
+    const std::map<std::string, std::string, std::less<>> &generation_alias_exclusions,
+    const std::map<std::string, std::uint32_t, std::less<>> &generation_array_layers) {
     const auto target_by_name =
         renderTargetsByName(render_targets);
     const auto types = makeBuiltinLogicalTypeRegistry();
@@ -1676,6 +1535,19 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                             tile_local_formats),
                     .retain_reasons = renderingTargetRetainReasons(render_graph, render_graph.graphs[index], external_readers),
                     .effective_image_usage = effective_usage,
+                    .memory_requirements = [targets=std::vector<RenderTargetDefinition>{render_targets.begin(),render_targets.end()},device_facts,generation_array_layers](const VulkanPhysicalResourcePlan &r, ImageUsage usage) -> std::optional<ImageMemoryRequirements> {
+                        if (!device_facts.image_memory_requirements) return std::nullopt;
+                        auto target = *std::find_if(targets.begin(),targets.end(),[&](const auto &d){return d.name==r.logical_resource;});
+                        target.format = *r.format; target.usage = usage; target.samples = r.rasterization_samples;
+                        target.array_layers = generation_array_layers.contains(r.logical_resource) ? std::max(r.array_layers,generation_array_layers.at(r.logical_resource)) : r.array_layers; target.alias_group = r.aliasable ? std::optional<std::string>{"planned-region"} : std::nullopt;
+                        const auto contract = renderTargetImageContract(target, device_facts.planning_extent, device_facts.graphics_queue_family);
+                        return device_facts.image_memory_requirements(contract.createInfo());
+                    },
+                    .supports_image_usage = [&](const VulkanPhysicalResourcePlan &r, ImageUsage usage) {
+                        auto target = *target_by_name.at(r.logical_resource);
+                        target.usage = usage; target.format = *r.format; target.array_layers = r.array_layers;
+                        return !device_facts.query_image_format_capability || device_facts.query_image_format_capability(target).image_usage_supported;
+                    },
                     .generation_alias_exclusions = generation_alias_exclusions,
                     .profile = target_planning.profile,
                     .node_constraints = std::move(node_constraints),
@@ -1958,9 +1830,38 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
         [](const auto &left, const auto &right) {
             return left.resource < right.resource;
         });
-    std::map<std::string, std::string, std::less<>> graph_alias_rejections;
-    result.alias_group_assignments =
-        mergeRuntimeAliasGroups(result.plans, graph_alias_rejections);
+    // Agree only after candidate retries have selected their retain policies.
+    // The incoming generation usage excludes policy-derived readback bits.
+    auto adopted_usage=effective_usage;
+    for(const auto &p:result.plans)for(const auto &[name,usage]:p->effective_image_usage)adopted_usage[name]|=usage;
+    for(const auto &p:result.plans)for(const auto &r:p->resources)
+        if(r.representation==VulkanResourceRepresentation::materialized_image && adopted_usage.contains(r.logical_resource))
+            adopted_usage[r.logical_resource]&=~ImageUsage{ImageUsageBit::transient_attachment};
+    for(auto &source:result.plans) {
+        auto agreed=std::make_shared<VulkanTargetPlan>(*source);
+        agreed->effective_image_usage=adopted_usage;
+        if(agreed->memory_requirements_query) {
+            const auto query=agreed->memory_requirements_query;
+            agreed->memory_requirements_query=[query,layers=merged_array_layers](const VulkanPhysicalResourcePlan &resource,ImageUsage usage) {
+                auto physical=resource;
+                if(layers.contains(resource.logical_resource))physical.array_layers=std::max(physical.array_layers,layers.at(resource.logical_resource));
+                return query(physical,usage);
+            };
+            for(const auto &r:agreed->resources)if(adopted_usage.contains(r.logical_resource))
+                agreed->memory_requirements[r.logical_resource]=agreed->memory_requirements_query(r,adopted_usage.at(r.logical_resource));
+            for(auto &r:agreed->memory_packing.resources) {
+                const auto req=agreed->memory_requirements.find(r.resource);
+                r.memory_type_bits=req!=agreed->memory_requirements.end() && req->second ? req->second->memory_type_bits : 0;
+            }
+        }
+        source=std::move(agreed);
+    }
+    const auto memory = planGenerationMemory(result.plans);
+    auto graph_alias_rejections = memory.exclusions;
+    std::erase_if(graph_alias_rejections, [&](const auto &e) { return generation_alias_exclusions.contains(e.first) ||
+        std::none_of(result.plans.begin(),result.plans.end(),[&](const auto &p) {
+            return std::any_of(p->memory_packing.resources.begin(),p->memory_packing.resources.end(),[&](const auto &r){return r.resource==e.first;});
+        }); });
     if (!graph_alias_rejections.empty()) {
         // Feed the lost placement back through the planner: require gets a
         // named refusal, prefer retries, and every graph's dump describes the
@@ -1969,7 +1870,22 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
         exclusions.insert(graph_alias_rejections.begin(), graph_alias_rejections.end());
         return compileRenderingTargetPlans(render_graph, frame_plans, render_targets,
             policy, swapchain_format, device_facts, view_execution, external_depth_export,
-            std::move(target_planning), external_readers, generation_usage, exclusions);
+            std::move(target_planning), external_readers, generation_usage, exclusions, generation_array_layers);
+    }
+    for (const auto &g : memory.alias_groups) result.alias_group_assignments.push_back({g.id,g.resources});
+    const auto provenance = result.plans;
+    for (std::size_t i=0; i<result.plans.size(); ++i) {
+        auto plan = std::make_shared<VulkanTargetPlan>(*result.plans[i]);
+        plan->memory_provenance = provenance;
+        plan->memory_packing = memory.inputs; plan->memory_requirements = memory.requirements; plan->memory_regions = memory.regions;
+        plan->alias_groups = memory.alias_groups;
+        std::erase_if(plan->decisions,[](const auto &d){return d.id=="pelican.plan.alias_group_selected@1";});
+        for(const auto &g:memory.alias_groups)plan->decisions.push_back({"pelican.plan.alias_group_selected@1",g.id,"adopted","maximal residents of the same region and offset"});
+        for(const auto &[a,b]:memory.inputs.forbidden_pairs)if(std::find(plan->opportunities.alias_candidates.begin(),plan->opportunities.alias_candidates.end(),PlanningNamePair{a,b})!=plan->opportunities.alias_candidates.end())
+            plan->decisions.push_back({"pelican.plan.alias_generation_contract@1",a+"/"+b,"not_adopted","another graph/variant forbids overlapping ranges"});
+        updateGenerationAliasPolicy(*plan);
+        plan->automatic_plan_fingerprint = vulkanAutomaticTargetPlanFingerprint(result.verification_contexts[i].topology,*plan);
+        result.plans[i] = plan; result.verification_contexts[i].automatic_plan=plan; result.verification_contexts[i].compiled_plan=plan;
     }
     return result;
 }
@@ -1990,7 +1906,9 @@ compileRenderingTargetPlansForVulkanDevice(
     TargetPlanningPolicy target_planning,
     RenderingTargetExternalReaders external_readers,
     const std::map<std::string, ImageUsage, std::less<>> &generation_usage,
-    const std::map<std::string, std::string, std::less<>> &generation_alias_exclusions) {
+    const std::map<std::string, std::string, std::less<>> &generation_alias_exclusions, vk::Device device,
+    vk::Extent2D planning_extent, std::uint32_t graphics_queue_family,
+    const std::map<std::string, std::uint32_t, std::less<>> &generation_array_layers) {
     const auto features =
         physical_device.getFeatures2<
             vk::PhysicalDeviceFeatures2,
@@ -2008,6 +1926,7 @@ compileRenderingTargetPlansForVulkanDevice(
     const auto dynamic_rendering_local_read =
         supportsDynamicRenderingLocalRead(
             physical_device);
+    const auto memory_facts = renderingTargetMemoryDeviceFacts(device, physical_device);
     return compileRenderingTargetPlans(
         render_graph, frame_plans, render_targets, policy, swapchain_format,
         RenderingTargetPlanDeviceFacts{
@@ -2066,10 +1985,14 @@ compileRenderingTargetPlansForVulkanDevice(
             .transient_attachments = true,
             .dynamic_rendering_local_read =
                 dynamic_rendering_local_read,
+            .image_memory_requirements = memory_facts.image_memory_requirements,
+            .memory_types = memory_facts.memory_types,
+            .planning_extent = planning_extent,
+            .graphics_queue_family = graphics_queue_family,
         },
         std::move(view_execution),
         std::move(external_depth_export),
-        std::move(target_planning), external_readers, generation_usage, generation_alias_exclusions);
+        std::move(target_planning), external_readers, generation_usage, generation_alias_exclusions, generation_array_layers);
 }
 
 std::vector<ImagePlacement> imagePlacementsOf(
@@ -2270,6 +2193,13 @@ std::vector<ImagePlacement> imagePlacementsOf(
         }
         placement.local_read =
             local_read_resources.contains(target.name);
+        for (const auto &plan : compilation.plans) {
+            const auto r = std::find_if(plan->resources.begin(),plan->resources.end(),[&](const auto &r){return r.logical_resource==target.name;});
+            if (r != plan->resources.end()) placement.readback = placement.readback ||
+                std::find(r->lifetime.retain.begin(),r->lifetime.retain.end(),"readback")!=r->lifetime.retain.end();
+            for (const auto &region : plan->memory_regions) for (const auto &resident : region.residents)
+                if (resident.resource == target.name) { placement.memory_region=region.region; placement.memory_offset=resident.offset; }
+        }
         if (external_depth_sources.contains(
                 target.name)) {
             if (!(target.usage &
@@ -2298,53 +2228,12 @@ std::vector<ImagePlacement> imagePlacementsOf(
          alias_group_by_resource) {
         const auto target =
             index_by_name.find(resource);
-        if (target == index_by_name.end()) {
-            throw std::runtime_error(
-                "physical alias group references an unknown render target: " +
-                resource);
-        }
+        if (target == index_by_name.end()) continue; // Another variant owns this resident.
         alias_groups[group].push_back(target->second);
     }
     for (auto &[group, members] : alias_groups) {
-        if (members.size() < 2) {
-            throw std::runtime_error(
-                "physical alias group requires at least two render targets: " +
-                group);
-        }
-        // Registration creates the generation's merged images. Compare the
-        // compiler's effective contracts, rather than the narrower authored
-        // usage of this variant; the resolver checks the final images again.
-        const auto plannedUsage = [&](const std::string &name) -> std::optional<ImageUsage> {
-            for (const auto &plan : compilation.plans) {
-                const auto found = plan->effective_image_usage.find(name);
-                if (found != plan->effective_image_usage.end()) return found->second;
-            }
-            return std::nullopt;
-        };
-        const auto &contract = render_targets[members.front()];
-        const auto &contract_placement = placements[members.front()];
+        // A graph/variant may contain only part of a generation-wide set.
         for (const auto index : members) {
-            const auto &target = render_targets[index];
-            const auto &placement = placements[index];
-            if (!isRuntimeAliasEligible(declarationFactsOf(target)) ||
-                placement.storage != RenderTargetStorageMode::materialized ||
-                placement.external_depth_source ||
-                placement.format != contract_placement.format ||
-                !plannedUsage(target.name) || plannedUsage(target.name) != plannedUsage(contract.name) ||
-                target.extent_scale !=
-                    contract.extent_scale ||
-                target.fixed_extent !=
-                    contract.fixed_extent ||
-                placement.samples != contract_placement.samples ||
-                target.mip_levels !=
-                    contract.mip_levels ||
-                placement.array_layers != contract_placement.array_layers ||
-                target.dimension !=
-                    contract.dimension) {
-                throw std::runtime_error(
-                    "physical alias group members have incompatible runtime image contracts: " +
-                    group);
-            }
             placements[index].alias_group = group;
         }
     }

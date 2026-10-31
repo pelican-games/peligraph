@@ -134,6 +134,16 @@ void RenderTargetLayoutTracker::transition(
     vk::ImageLayout new_layout, bool history_read,
     RenderTargetImageKind image_kind,
     vk::PipelineStageFlags shader_stages) {
+    recordAccess(cmd_buf, rt_container, vk_utils, rt_id, new_layout,
+                 history_read, image_kind, shader_stages, false);
+}
+
+void RenderTargetLayoutTracker::recordAccess(
+    vk::CommandBuffer cmd_buf, RenderTargetContainer &rt_container,
+    VulkanUtils &vk_utils, GlobalRenderTargetId rt_id,
+    vk::ImageLayout new_layout, bool history_read,
+    RenderTargetImageKind image_kind,
+    vk::PipelineStageFlags shader_stages, bool memory_dependency) {
     if (isSpecialRenderTarget(rt_id)) return;
     if (image_kind == RenderTargetImageKind::attachment &&
         !rt_container.hasSeparateAttachment(rt_id)) {
@@ -146,44 +156,38 @@ void RenderTargetLayoutTracker::transition(
     forgetRecreatedPersistentImage(rt_container, rt_id, key, image_kind, history_read);
     notePersistentImage(rt_container, rt_id, key, image_kind, history_read);
     std::optional<AliasTransition> observation;
-    if (const auto alias_group =
-            rt_container.aliasGroup(rt_id)) {
-        observation = AliasTransition{*alias_group, rt_id, false, {}, {}, {}, {}, {}, new_layout};
-        const auto pending =
-            alias_groups_requiring_dependency.erase(
-                *alias_group) != 0;
-        auto [active, inserted] =
-            active_alias_resources.try_emplace(
-                *alias_group, key);
-        const auto switched =
-            !inserted && active->second != key;
-        if (pending || switched) {
-            observation->dependency = true;
-            observation->src_stage = observation->dst_stage = vk::PipelineStageFlagBits::eAllCommands;
-            vk::MemoryBarrier barrier;
-            barrier.srcAccessMask =
-                vk::AccessFlagBits::eMemoryRead |
-                vk::AccessFlagBits::eMemoryWrite;
-            barrier.dstAccessMask =
-                vk::AccessFlagBits::eMemoryRead |
-                vk::AccessFlagBits::eMemoryWrite;
-            observation->src_access = barrier.srcAccessMask;
-            observation->dst_access = barrier.dstAccessMask;
-            cmd_buf.pipelineBarrier(
-                observation->src_stage,
-                observation->dst_stage,
-                {}, {barrier}, {}, {});
-            if (switched) {
-                layouts[active->second] =
-                    vk::ImageLayout::eUndefined;
-                shader_access_stages.erase(active->second);
-            }
-            layouts[key] =
-                vk::ImageLayout::eUndefined;
-            shader_access_stages.erase(key);
-            ++alias_dependency_count;
+    const auto &physical_image=image_kind == RenderTargetImageKind::attachment
+        ? rt_container.getAttachmentImage(rt_id,read) : rt_container.getImage(rt_id,read);
+    if (physical_image.region_bound) {
+        const auto region=reinterpret_cast<std::uintptr_t>(physical_image.allocation.get());
+        auto &current=alias_ranges[key];
+        if(current.image!=static_cast<VkImage>(physical_image.image.get())) {
+            current={region,physical_image.memory_offset,physical_image.memory_size,0,static_cast<VkImage>(physical_image.image.get())};
+            frame_accessed.erase(key); layouts.erase(key); shader_access_stages.erase(key);
         }
-        active->second = key;
+        const auto overlaps=[&](const RangeAccess &other) {
+            return current.region==other.region && current.offset<other.offset+other.size && other.offset<current.offset+current.size;
+        };
+        const bool first_access=!frame_accessed.contains(key);
+        bool reacquire=false;
+        for(const auto &[other_key,other]:alias_ranges)
+            if(other_key!=key && overlaps(other) && other.access>current.access) reacquire=true;
+        observation=AliasTransition{region,rt_id,false,{},{},{},{},{},new_layout};
+        if(first_access || reacquire) {
+            observation->dependency=true;
+            observation->src_stage=observation->dst_stage=vk::PipelineStageFlagBits::eAllCommands;
+            observation->src_access=observation->dst_access=vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
+            vk::MemoryBarrier barrier{observation->src_access,observation->dst_access};
+            cmd_buf.pipelineBarrier(observation->src_stage,observation->dst_stage,{}, {barrier},{},{});
+            layouts[key]=vk::ImageLayout::eUndefined; shader_access_stages.erase(key);
+            for(const auto &[other_key,other]:alias_ranges) if(other_key!=key && overlaps(other)) {
+                layouts[other_key]=vk::ImageLayout::eUndefined; shader_access_stages.erase(other_key);
+            }
+            ++alias_dependency_count;
+            ++frame_alias_dependency_count;
+        }
+        current.access=++access_serial;
+        frame_accessed.insert(key);
     }
     auto [it, inserted] = layouts.try_emplace(
         key, rt_container.initialLayout(
@@ -194,7 +198,7 @@ void RenderTargetLayoutTracker::transition(
         observation->old_layout = old_layout;
         alias_transition_observer(*observation);
     }
-    if (old_layout == new_layout) return;
+    if (old_layout == new_layout && !memory_dependency) return;
     const auto old_shader_stages =
         shader_access_stages.contains(key)
             ? shader_access_stages.at(key)
@@ -241,29 +245,13 @@ void RenderTargetLayoutTracker::memoryDependency(
             it = layouts.emplace(key, initial_layout).first;
         }
         const auto layout = it->second;
-        notePersistentImage(rt_container, rt_id, key, kind, history_read);
         if (layout == vk::ImageLayout::eUndefined) {
             if (!require_preceding_access) return;
             throw std::logic_error(
                 "frame graph image dependency has no preceding tracked image access");
         }
-        const auto &image =
-            kind == RenderTargetImageKind::attachment
-                ? rt_container.getAttachmentImage(rt_id, read)
-                : rt_container.getImage(rt_id, read);
-        const auto old_shader_stages =
-            shader_access_stages.contains(key)
-                ? shader_access_stages.at(key)
-                : shader_stages;
-        vk_utils.changeImageLayoutCmd(
-            cmd_buf, image, layout, layout,
-            makeTransitionInfo(layout, layout,
-                               old_shader_stages,
-                               shader_stages));
-        if (layout == vk::ImageLayout::eGeneral ||
-            layout == vk::ImageLayout::eShaderReadOnlyOptimal) {
-            shader_access_stages[key] = shader_stages;
-        }
+        recordAccess(cmd_buf, rt_container, vk_utils, rt_id, layout,
+                     history_read, kind, shader_stages, true);
         ++memory_dependency_count;
     };
 
@@ -331,38 +319,19 @@ void RenderTargetLayoutTracker::assumeLayout(
         layoutKey(rt_id, surface, image_kind);
     forgetRecreatedPersistentImage(rt_container, rt_id, key, image_kind, history_read);
     notePersistentImage(rt_container, rt_id, key, image_kind, history_read);
-    if (const auto alias_group =
-            rt_container.aliasGroup(rt_id)) {
-        alias_groups_requiring_dependency.erase(
-            *alias_group);
-        auto [active, inserted] =
-            active_alias_resources.try_emplace(
-                *alias_group, key);
-        if (!inserted && active->second != key) {
-            layouts[active->second] =
-                vk::ImageLayout::eUndefined;
-            shader_access_stages.erase(active->second);
-        }
-        active->second = key;
-    }
     layouts[key] = layout;
     shader_access_stages.erase(key);
 }
 
 void RenderTargetLayoutTracker::beginFrame() {
-    for (const auto &[group, resource] : active_alias_resources) {
-        (void)resource;
-        alias_groups_requiring_dependency.insert(group);
-    }
+    frame_alias_dependency_count=0;
+    frame_accessed.clear();
 }
 
 void RenderTargetLayoutTracker::reset() {
-    for (const auto &[group, resource] :
-         active_alias_resources) {
-        (void)resource;
-        alias_groups_requiring_dependency.insert(group);
-    }
-    active_alias_resources.clear();
+    frame_accessed.clear();
+    alias_ranges.clear();
+    access_serial=0;
     // PS-1: a persistent target keeps its contents through a reset (a
     // generation commit, a history reset, a view-family change). Its layout
     // stays known; a target made anew is caught by its image on next use.
@@ -380,6 +349,7 @@ void RenderTargetLayoutTracker::reset() {
     shader_access_stages = std::move(kept_stages);
     memory_dependency_count = 0;
     alias_dependency_count = 0;
+    frame_alias_dependency_count = 0;
 }
 
 void RenderTargetLayoutTracker::forgetRecreatedPersistentImage(

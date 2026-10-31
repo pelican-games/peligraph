@@ -22,7 +22,7 @@ Rc5Json rc5Document(bool lit, bool hdr, bool extras) {
 }
 
 RenderCompilerProgramResult rc5Compile(const Rc5Json &root, bool xr, const Rc5Json *local_feature = nullptr,
-    const std::map<std::string, Rc5Json> &documents = {}) {
+    const std::map<std::string, Rc5Json> &documents = {}, bool fake_facts = false, vk::Extent2D extent = {64,64}) {
     ProgramInputFixture fixture;
     fixture.task_project = std::filesystem::temp_directory_path() /
         ("pelican-rc5-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -41,10 +41,17 @@ RenderCompilerProgramResult rc5Compile(const Rc5Json &root, bool xr, const Rc5Js
     fixture.backend_context = VulkanRenderCompilerBackendContext{
         vk::Format::eB8G8R8A8Srgb, vk::Extent2D{64, 64}, {}, {}, {},
         VulkanRenderCompilerDevicePlanningMode::compiler_only};
+    fixture.backend_context.output_extent=extent;
+    if(fake_facts) { fixture.backend_context.planning_facts=TestSupport::rc7cDeviceFacts(); fixture.backend_context.planning_facts->planning_extent=extent; }
     fixture.variants = {{.graph_variant = xr ? RenderPipelineGraphVariant::xr : RenderPipelineGraphVariant::flat}};
     auto input = fixture.input();
     input.runtime_shader_compiler_enabled = true;
     return runRenderCompilerProgram(defaultVulkanRenderCompilerProgram(), input);
+}
+
+RenderCompilerProgramResult rc5CompileWithFacts(const Rc5Json &root,bool xr,const Rc5Json *feature=nullptr,
+    const std::map<std::string,Rc5Json> &documents={}) {
+    return rc5Compile(root,xr,feature,documents,true);
 }
 
 Rc5Json rc5Snapshot(const RenderCompilerProgramResult &result) {
@@ -381,7 +388,10 @@ void rc6RequireRegisteredAllocations(const RenderCompilerProgramResult &result, 
     const auto &physical = requireVulkanRenderCompilerPhysicalPackage(*variant.physical_package);
     REQUIRE(physical.target_plans.size() == 1);
     const auto &frozen = recorded.at("physical_plans").begin().value();
-    const auto package = vulkanCompletePhysicalPlanPackageFromJson(frozen.at("ejectable_complete_physical_plan"));
+    auto legacy = frozen.at("ejectable_complete_physical_plan");
+    legacy["memory_regions"]=Rc5Json::array();
+    legacy["memory_packing"]=memoryPackingToJson({});
+    const auto package = vulkanCompletePhysicalPlanPackageFromJson(legacy);
     std::map<std::string, const VulkanPhysicalResourcePlan *> by_name;
     std::map<std::string, std::string> alias;
     for (const auto &r : package.resources) by_name.emplace(r.logical_resource, &r);
@@ -403,7 +413,7 @@ void rc6RequireRegisteredAllocations(const RenderCompilerProgramResult &result, 
             ? RenderTargetStorageMode::tile_local_attachment :
             r->second->representation == VulkanResourceRepresentation::transient_attachment
                 ? RenderTargetStorageMode::transient_attachment : RenderTargetStorageMode::materialized;
-        p.alias_group = alias.contains(p.resource) ? std::optional{alias.at(p.resource)} : std::nullopt;
+        p.alias_group.reset(); // compiler_only has no requirements, so no sharing.
         p.local_read = r->second->representation == VulkanResourceRepresentation::tile_local_attachment;
         p.external_depth_source = package.external_depth_export && package.external_depth_export->source_resource == p.resource;
     }
@@ -472,9 +482,15 @@ std::pair<Rc5Json, Rc5Json> rc7bComparable(Rc5Json actual, Rc5Json recorded) {
         }), decisions.end());
         for (auto *p : {&plan, &baseline}) {
             p->erase("alias_groups");
+            p->erase("memory_regions");
+            p->erase("memory_packing");
+            auto &placement_decisions=p->at("decisions");
+            placement_decisions.erase(std::remove_if(placement_decisions.begin(),placement_decisions.end(),[](const auto &d){const auto id=d.at("id").template get<std::string>(); return id=="pelican.plan.alias_requirements_unknown@1" || id=="pelican.plan.alias_group_selected@1";}),placement_decisions.end());
             p->erase("automatic_plan_fingerprint");
             p->erase("logical_graph_fingerprint");
             (*p).at("planning_opportunities").erase("alias_candidates");
+            auto &opportunity_decisions=p->at("planning_opportunities").at("decisions");
+            opportunity_decisions.erase(std::remove_if(opportunity_decisions.begin(),opportunity_decisions.end(),[](const auto &d){return d.at("id")=="pelican.plan.alias_stress_candidates@1";}),opportunity_decisions.end());
             for (auto &r : p->at("resources")) r.erase("aliasable");
             for (auto &r : p->at("lowering_graph").at("resources")) {
                 r.erase("logical_materialization");
@@ -601,4 +617,56 @@ TEST_CASE("RC-7b B4 semantic fields match sixteen immutable preimplementation sn
     }
     CHECK(count == 16);
     if (const auto *output = std::getenv("RC7B_DIFF_PATH")) std::ofstream{output} << differences.dump(2);
+}
+
+TEST_CASE("RC-7c C5 sixteen fixed snapshots retain every semantic field", "[.][rc7c-baseline-compare]") {
+    const std::filesystem::path directory{"<作業ディレクトリ>/rc7c_baseline/rc5"};
+    REQUIRE(std::filesystem::is_directory(directory));
+    Rc5Json report=Rc5Json::object();
+    std::size_t count=0;
+    const auto comparable=[](Rc5Json snapshot) {
+        snapshot=rc6WithoutRemovedPackages(std::move(snapshot));
+        for(auto &[name,plan]:snapshot.at("physical_plans").items()) {
+            for(const auto *field:{"memory_regions","memory_packing","alias_groups","automatic_plan_fingerprint"}) plan.erase(field);
+            plan.at("planning_opportunities").erase("alias_candidates");
+            auto &opportunity_decisions=plan.at("planning_opportunities").at("decisions");
+            opportunity_decisions.erase(std::remove_if(opportunity_decisions.begin(),opportunity_decisions.end(),[](const auto &d){return d.at("id")=="pelican.plan.alias_stress_candidates@1";}),opportunity_decisions.end());
+            for(auto &r:plan.at("resources"))r.erase("aliasable");
+            auto &decisions=plan.at("decisions");
+            decisions.erase(std::remove_if(decisions.begin(),decisions.end(),[](const auto &d){const auto id=d.at("id").template get<std::string>();
+                return id=="pelican.plan.alias_group_selected@1" || id=="pelican.plan.alias_requirements_unknown@1" ||
+                    id=="pelican.plan.alias_pair_ineligible@1" || id=="pelican.plan.alias_ineligible@1";}),decisions.end());
+        }
+        return snapshot;
+    };
+    for(const bool lit:{false,true})for(const bool hdr:{false,true})for(const bool extras:{false,true})for(const bool xr:{false,true}) {
+        const auto filename=rc5Filename(lit,hdr,extras,xr);CAPTURE(filename);
+        const auto old=Rc5Json::parse(std::ifstream{directory/filename});
+        const auto now=rc5Snapshot(rc5Compile(rc5Document(lit,hdr,extras),xr));
+        CHECK(comparable(now)==comparable(old));
+        for(const auto &[graph,plan]:now.at("physical_plans").items()) {
+            CHECK(plan.at("alias_groups").empty());CHECK(plan.at("memory_regions").empty());
+            for(const auto &r:plan.at("resources")) {
+                const auto resource=r.at("logical_resource").get<std::string>();
+                bool formerly_shared=false;
+                for(const auto &group:old.at("physical_plans").at(graph).at("alias_groups"))
+                    for(const auto &member:group.at("resources"))formerly_shared=formerly_shared || member==resource;
+                report[filename][graph][resource]={{"previously_shared",formerly_shared},
+                    {"reason",formerly_shared?"requirements unknown: previous sharing removed":"requirements unknown: remains separate"}};
+            }
+        }
+        ++count;
+    }
+    CHECK(count==16);
+    // The bundled example, planned with a deterministic CPU device at 1920x1080.
+    const auto example=Rc5Json::parse(std::ifstream{std::filesystem::path{PELICAN_TEST_SOURCE_DIR}/"projects/example/passes/main_rendering_config.json"});
+    const auto result=rc5Compile(example,false,nullptr,{},true,{1920,1080});
+    const auto &physical=requireVulkanRenderCompilerPhysicalPackage(*result.variants[0].physical_package);
+    for(const auto &[graph,plan]:physical.target_plans) {
+        report["example_1920x1080"][graph]["memory_regions"]=memoryRegionsToJson(plan->memory_regions);
+        for(const auto &region:plan->memory_regions)for(const auto &r:region.residents) {
+            CHECK(r.offset%r.alignment==0);CHECK(r.offset+r.size<=region.size);
+        }
+    }
+    std::ofstream{"<作業ディレクトリ>/rc7c2_c5_details.json"}<<report.dump(2);
 }

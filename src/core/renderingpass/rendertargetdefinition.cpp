@@ -46,6 +46,8 @@ RenderTargetDefinition renderTargetDefinitionOf(const GenerationImage &image) {
     definition.array_layers = image.array_layers;
     definition.storage_mode = image.storage;
     definition.alias_group = image.alias_group;
+    definition.planned_memory_region = image.memory_region;
+    definition.planned_memory_offset = image.memory_offset;
     definition.persistent = image.persistent;
     return definition;
 }

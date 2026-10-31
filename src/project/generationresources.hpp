@@ -42,6 +42,7 @@ struct ImageUsageFacts {
     bool local_read = false;
     // A variant's plan exports the image as the external depth (XR).
     bool external_depth_source = false;
+    bool readback = false;
 };
 
 // The declared bits, INPUT_ATTACHMENT for a local read and TRANSFER_SRC for
@@ -83,6 +84,9 @@ struct ImagePlacement {
     std::optional<std::string> alias_group;
     bool local_read = false;
     bool external_depth_source = false;
+    bool readback = false;
+    std::optional<std::uint32_t> memory_region;
+    std::uint64_t memory_offset = 0;
 
     bool operator==(const ImagePlacement &) const = default;
 };
@@ -117,6 +121,8 @@ struct GenerationImage {
     // runtime resizes it and checks the views against it), so the image is
     // never aliased, never history, 2D and not read from a file.
     bool runtime_array_layers = false;
+    std::optional<std::uint32_t> memory_region;
+    std::uint64_t memory_offset = 0;
 
     bool operator==(const GenerationImage &) const = default;
 };

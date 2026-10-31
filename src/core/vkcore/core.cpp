@@ -625,6 +625,15 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
         throw std::runtime_error(message);
     }
     const auto feature_support = queryDeviceFeatureSupport(phys_device);
+    const auto maintenance4_support = phys_device.getFeatures2<
+        vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceMaintenance4Features>();
+    if (!maintenance4_support.get<vk::PhysicalDeviceMaintenance4Features>().maintenance4) {
+        const std::string message = "vulkan.required_feature_missing@1: maintenance4";
+#if PELICAN_WITH_OPENXR
+        if (use_openxr) throw OpenXr::VulkanBootstrapError(message);
+#endif
+        throw std::runtime_error(message);
+    }
     if (const auto missing =
             firstMissingRequiredVulkanFeature(feature_support.required)) {
 #if PELICAN_WITH_OPENXR
@@ -784,6 +793,7 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
         features,
         vk11features,
         vk12features,
+        vk::PhysicalDeviceMaintenance4Features{VK_TRUE},
         vk::PhysicalDeviceDynamicRenderingFeatures{VK_TRUE}, // necessary for dynamic rendering
         acceleration_structure_features,
         ray_query_features,
@@ -1551,75 +1561,75 @@ ImageWrapper VulkanManageCore::allocImage(vk::Extent3D extent, vk::Format format
         create_info.setQueueFamilyIndices(queue_families);
     }
 
+    auto result = allocImage(create_info, mem_usage, alloc_flags, preferred_memory_flags);
+    result.create_flags = image_flags;
+    return result;
+}
+
+ImageWrapper VulkanManageCore::allocImage(
+    const vk::ImageCreateInfo &create_info, vma::MemoryUsage mem_usage,
+    vma::AllocationCreateFlags alloc_flags, vk::MemoryPropertyFlags preferred_memory_flags) const {
     vma::AllocationCreateInfo alloc_info;
     alloc_info.flags = alloc_flags;
     alloc_info.usage = mem_usage;
-    alloc_info.preferredFlags =
-        preferred_memory_flags;
-
-    // vma-hpp v3.3.0 以降、戻り値は pair<UniqueAllocation, UniqueImage> (allocation が先)
+    alloc_info.preferredFlags = preferred_memory_flags;
     auto [allocation, image] = allocator->createImageUnique(create_info, alloc_info);
-
     return ImageWrapper{
-        .extent = extent,
-        .format = format,
-        .image_type = image_type,
-        .mip_levels = mip_levels,
-        .array_layers = array_layers,
-        .allocation =
-            std::make_shared<vma::UniqueAllocation>(
-                std::move(allocation)),
+        .extent = create_info.extent,
+        .format = create_info.format,
+        .image_type = create_info.imageType,
+        .mip_levels = create_info.mipLevels,
+        .array_layers = create_info.arrayLayers,
+        .allocation = std::make_shared<vma::UniqueAllocation>(std::move(allocation)),
         .image = std::move(image),
-        .samples = samples,
-        .usage = usage,
-        .create_flags = image_flags,
+        .samples = create_info.samples,
+        .usage = create_info.usage,
+        .create_flags = create_info.flags,
     };
 }
 
-ImageWrapper VulkanManageCore::allocAliasingImage(
-    const ImageWrapper &allocation_owner) const {
-    if (allocation_owner.allocation == nullptr ||
-        !*allocation_owner.allocation ||
-        !allocation_owner.image) {
-        throw std::runtime_error(
-            "aliasing image requires a live allocation owner");
-    }
-    if (!(allocation_owner.create_flags &
-          vk::ImageCreateFlagBits::eAlias)) {
-        throw std::runtime_error(
-            "aliasing image allocation owner was not created for aliasing");
-    }
-
-    vk::ImageCreateInfo create_info;
-    create_info.flags = allocation_owner.create_flags;
-    create_info.imageType =
-        allocation_owner.image_type;
-    create_info.format = allocation_owner.format;
-    create_info.extent = allocation_owner.extent;
-    create_info.mipLevels = allocation_owner.mip_levels;
-    create_info.arrayLayers = allocation_owner.array_layers;
-    create_info.samples = allocation_owner.samples;
-    create_info.tiling = vk::ImageTiling::eOptimal;
-    create_info.usage = allocation_owner.usage;
-    create_info.sharingMode = vk::SharingMode::eExclusive;
-    create_info.initialLayout = vk::ImageLayout::eUndefined;
-
-    auto image = allocator->createAliasingImageUnique(
-        allocation_owner.allocation->get(), create_info);
+ImageWrapper VulkanManageCore::createUnboundImage(const vk::ImageCreateInfo &info) const {
+    auto raw = device->createImageUnique(info);
     return ImageWrapper{
-        .extent = allocation_owner.extent,
-        .format = allocation_owner.format,
-        .image_type = allocation_owner.image_type,
-        .mip_levels = allocation_owner.mip_levels,
-        .array_layers = allocation_owner.array_layers,
-        .allocation = allocation_owner.allocation,
-        .image = std::move(image),
-        .samples = allocation_owner.samples,
-        .usage = allocation_owner.usage,
-        .create_flags = allocation_owner.create_flags,
+        .extent = info.extent, .format = info.format, .image_type = info.imageType,
+        .mip_levels = info.mipLevels, .array_layers = info.arrayLayers,
+        .image = vma::UniqueImage{raw.release(), allocator.get()},
+        .samples = info.samples, .usage = info.usage, .create_flags = info.flags,
     };
 }
-
+ImageMemoryRequirements VulkanManageCore::imageRequirements(const ImageWrapper &image) const {
+    vk::ImageMemoryRequirementsInfo2 query;
+    query.image = image.image.get();
+    vk::MemoryDedicatedRequirements dedicated;
+    vk::MemoryRequirements2 actual;
+    actual.pNext = &dedicated;
+    device->getImageMemoryRequirements2(&query, &actual);
+    const auto &r = actual.memoryRequirements;
+    return {r.size, r.alignment, r.memoryTypeBits,
+            dedicated.requiresDedicatedAllocation == VK_TRUE,
+            dedicated.prefersDedicatedAllocation == VK_TRUE};
+}
+std::shared_ptr<vma::UniqueAllocation> VulkanManageCore::allocateImageRegion(
+    const vk::MemoryRequirements &requirements) const {
+    vma::AllocationCreateInfo info;
+    info.usage = vma::MemoryUsage::eUnknown;
+    info.preferredFlags = vk::MemoryPropertyFlagBits::eDeviceLocal;
+    return std::make_shared<vma::UniqueAllocation>(allocator->allocateMemoryUnique(requirements, info));
+}
+void VulkanManageCore::bindImageRegion(ImageWrapper &image,
+    std::shared_ptr<vma::UniqueAllocation> allocation, std::uint64_t offset,
+    const ImageMemoryRequirements &requirements, const std::string &name) const {
+    const auto info = allocator->getAllocationInfo(allocation->get());
+    if (!requirements.alignment || offset % requirements.alignment ||
+        offset > info.size || requirements.size > info.size - offset ||
+        info.memoryType >= 32 || !(requirements.memory_type_bits & (1u << info.memoryType)))
+        throw std::runtime_error("render_target.memory_bind_invalid@1: " + name);
+    allocator->bindImageMemory2(allocation->get(), offset, image.image.get(), nullptr);
+    image.allocation = std::move(allocation);
+    image.memory_offset = offset;
+    image.memory_size = requirements.size;
+    image.region_bound = true;
+}
 void VulkanManageCore::writeImage(const ImageWrapper &dst, const void *src, vk::DeviceSize bytes_num) const {
     if (dst.allocation == nullptr || !*dst.allocation) {
         throw std::runtime_error(

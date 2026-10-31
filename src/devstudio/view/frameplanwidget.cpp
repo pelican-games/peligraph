@@ -4323,6 +4323,12 @@ struct FramePlanWidget::Impl {
                                 byteCount(static_cast<std::size_t>(memory.peak_live_bytes)),
                                 text(memory.peak_node)));
         }
+        if (model->memory_summary) {
+            const auto &memory=*model->memory_summary;
+            if (memory.planned_region_bytes) memory_summary += owner.tr(" / planned regions %1").arg(byteCount(static_cast<std::size_t>(*memory.planned_region_bytes)));
+            if (memory.payload_bytes) memory_summary += owner.tr(" / payload %1").arg(byteCount(static_cast<std::size_t>(*memory.payload_bytes)));
+            memory_summary += memory.actual_placement_measured ? owner.tr(" / actual placement: measured") : owner.tr(" / actual placement: unmeasured");
+        }
         // N-7 rule 2: the line names what was loaded and what is on screen.
         // Generation, the barrier count, physical planning, the response size
         // and the refresh time are facts a reader asks for, not facts that have
@@ -4930,10 +4936,16 @@ struct FramePlanWidget::Impl {
                         lifetimeLabel(resource.lifetime));
             }
             // RC-1: what its images occupy.
-            if (resource.bytes) {
-                addFact(facts, owner.tr("Bytes"),
-                        byteCount(static_cast<std::size_t>(*resource.bytes)));
+            if (resource.planned_region) {
+                addFact(facts, owner.tr("Planned region / offset"), QStringLiteral("%1 / %2").arg(*resource.planned_region).arg(resource.planned_offset));
+                addFact(facts, owner.tr("Planned requirements"),byteCount(static_cast<std::size_t>(resource.planned_requirement_bytes)));
             }
+            addFact(facts, owner.tr("Actual placement"), resource.actual_allocation_bytes
+                ? (resource.actual_region ? owner.tr("Region %1 / offset %2 / memory type %3").arg(*resource.actual_region).arg(resource.actual_offset).arg(resource.actual_memory_type_index.value_or(0))
+                                          : owner.tr("Separate allocation")) : owner.tr("Unmeasured"));
+            if (resource.actual_allocation_bytes) addFact(facts,resource.actual_region ? owner.tr("VMA allocation bytes (shared region)") : owner.tr("VMA allocation bytes"),byteCount(static_cast<std::size_t>(*resource.actual_allocation_bytes)));
+            const auto payload=resource.payload_bytes ? resource.payload_bytes : resource.bytes;
+            if(payload) addFact(facts,owner.tr("Payload bytes"),byteCount(static_cast<std::size_t>(*payload)));
             addFact(facts, owner.tr("Reason"), text(resource.reason));
             // IA-1s, decision 3: the asset it starts from, and its manifest
             // sha256 (the start of it), in the row's facts and its writers'

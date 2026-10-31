@@ -5,6 +5,7 @@
 #include "rendertarget.hpp"
 
 #include <array>
+#include <functional>
 #include <optional>
 #include <vector>
 #include <vulkan/vulkan.hpp>
@@ -12,6 +13,12 @@
 namespace Pelican {
 
 class OffscreenFrameTarget : public IFrameTarget {
+    friend struct test_support::RenderTargetTestAccess;
+    bool defer_wait_for_testing=false;
+    bool window_output_for_testing=false;
+    vk::Semaphore submission_gate_for_testing;
+    std::function<void()> before_begin_for_testing;
+    void completePendingSubmissions();
     vk::Device device;
     std::array<CommandBufWrapper, in_flight_frames_num> render_cmd_bufs;
     GpuSubmissionLeaseSlots<in_flight_frames_num>

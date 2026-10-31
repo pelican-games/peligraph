@@ -143,6 +143,7 @@ OffscreenFrameTarget::OffscreenFrameTarget()
 }
 
 OffscreenFrameTarget::~OffscreenFrameTarget() {
+    completePendingSubmissions();
     frame_cleanup->detach(this);
 }
 
@@ -151,6 +152,7 @@ FrameBeginResult OffscreenFrameTarget::beginFrame(
         runtime_generation,
     GpuSubmissionLease submission_lease,
     FrameBeginMode mode) {
+    if(before_begin_for_testing) {auto callback=std::move(before_begin_for_testing); callback();}
     if (active_frame) {
         throw std::logic_error(
             "offscreen frame target begin called with an unfinished frame");
@@ -300,7 +302,19 @@ FrameSubmitResult OffscreenFrameTarget::submit(
                 vk::ImageLayout::eTransferSrcOptimal;
         }
 
-        cmd_buf.recordEndSubmit();
+        if(submission_gate_for_testing) {
+            cmd_buf.recordEnd();
+            const std::uint64_t value=1;
+            vk::TimelineSemaphoreSubmitInfo timeline;
+            timeline.waitSemaphoreValueCount=1; timeline.pWaitSemaphoreValues=&value;
+            const vk::PipelineStageFlags stage=vk::PipelineStageFlagBits::eAllCommands;
+            const auto command=*cmd_buf;
+            vk::SubmitInfo info;
+            info.pNext=&timeline; info.waitSemaphoreCount=1; info.pWaitSemaphores=&submission_gate_for_testing;
+            info.pWaitDstStageMask=&stage; info.commandBufferCount=1; info.pCommandBuffers=&command;
+            device.resetFences({cmd_buf.getFence()});
+            GET_MODULE(VulkanManageCore).getGraphicsQueue().submit(info,cmd_buf.getFence());
+        } else cmd_buf.recordEndSubmit();
         active_frame->phase =
             ActiveFramePhase::submitted;
         auto lease =
@@ -311,6 +325,7 @@ FrameSubmitResult OffscreenFrameTarget::submit(
                           consumed.runtime_generation)};
         submission_leases.submitted(
             in_flight_frame_index, std::move(lease));
+        if (!defer_wait_for_testing) {
         if (auto result = device.waitForFences(
                 {cmd_buf.getFence()}, VK_TRUE,
                 UINT64_MAX);
@@ -321,6 +336,7 @@ FrameSubmitResult OffscreenFrameTarget::submit(
         }
         submission_leases.complete(
             in_flight_frame_index);
+        }
         active_frame.reset();
         has_rendered_frame = true;
 
@@ -381,7 +397,7 @@ FrameTargetCaps OffscreenFrameTarget::caps() const {
         .compile_facts =
             OutputCompileFacts{
                 .target_kind =
-                    OutputTargetKind::offscreen,
+                    window_output_for_testing ? OutputTargetKind::window : OutputTargetKind::offscreen,
                 .extent = extent,
                 .color_format = color_format,
                 .color_space =
@@ -407,7 +423,16 @@ FrameTargetCaps OffscreenFrameTarget::caps() const {
     };
 }
 
+void OffscreenFrameTarget::completePendingSubmissions() {
+    for(const auto &cmd:render_cmd_bufs) {
+        if(device.waitForFences({cmd.getFence()},VK_TRUE,UINT64_MAX)!=vk::Result::eSuccess)
+            throw std::runtime_error("offscreen submission completion failed");
+    }
+    submission_leases.completeAll();
+}
+
 std::vector<uint8_t> OffscreenFrameTarget::readbackLastFrameRGBA8() {
+    completePendingSubmissions();
     if (!has_rendered_frame) {
         throw std::runtime_error("OffscreenFrameTarget has no rendered frame to read back");
     }

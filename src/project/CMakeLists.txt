@@ -78,6 +78,7 @@ add_library(pelican_project
     shaderresourceport.cpp
     surfaceformat.cpp
     targetplanning.cpp
+    memoryregionpacking.cpp
     targetrenderplanning.cpp
     targetrendermemory.cpp
     vulkancompletephysicalplan.cpp

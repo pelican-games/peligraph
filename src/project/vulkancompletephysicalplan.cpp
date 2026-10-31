@@ -1280,6 +1280,8 @@ ejectVulkanCompletePhysicalPlanPackage(
             .scopes = plan.scopes,
             .attachments = plan.attachments,
             .alias_groups = plan.alias_groups,
+            .memory_regions = plan.memory_regions,
+            .memory_packing = plan.memory_packing,
             .required_physical_features =
                 plan.required_physical_features,
             .external_depth_export =
@@ -1307,6 +1309,8 @@ vulkanCompletePhysicalPlanPackageToJson(
         {"scopes", nlohmann::ordered_json::array()},
         {"attachments", nlohmann::ordered_json::array()},
         {"alias_groups", nlohmann::ordered_json::array()},
+        {"memory_regions", memoryRegionsToJson(package.memory_regions)},
+        {"memory_packing", memoryPackingToJson(package.memory_packing)},
         {"required_physical_features",
          package.required_physical_features},
         {"external_depth_export", nullptr},
@@ -1368,7 +1372,7 @@ vulkanCompletePhysicalPlanPackageFromJson(
          "logical_graph_fingerprint",
          "automatic_plan_fingerprint",
          "backend_candidate", "resources", "scopes",
-         "attachments", "alias_groups",
+         "attachments", "alias_groups", "memory_regions", "memory_packing",
          "required_physical_features",
          "external_depth_export", "native_scopes"},
         context);
@@ -1494,6 +1498,9 @@ vulkanCompletePhysicalPlanPackageFromJson(
     const auto &alias_groups =
         requireArray("alias_groups");
     result.alias_groups.reserve(alias_groups.size());
+    if (!document.contains("memory_regions") || !document.contains("memory_packing")) throw std::runtime_error("complete_physical_plan.memory_regions_required@1" );
+    result.memory_regions = memoryRegionsFromJson(document.at("memory_regions"));
+    result.memory_packing = memoryPackingFromJson(document.at("memory_packing"));
     for (std::size_t index = 0;
          index < alias_groups.size(); ++index) {
         const auto &entry = alias_groups.at(index);
@@ -2540,6 +2547,10 @@ verifyVulkanCompletePhysicalPlanPackage(
             for (const auto &boundary : native.resources)
                 require(boundary.logical_resource != name, "alias.native_boundary@1: " + name);
     };
+    const auto globalMember=[&](const std::string &name){
+        return std::any_of(automatic_plan.memory_provenance.begin(),automatic_plan.memory_provenance.end(),[&](const auto &p){
+            return std::any_of(p->resources.begin(),p->resources.end(),[&](const auto &r){return r.logical_resource==name && r.aliasable;});});
+    };
     for (const auto &group : package.alias_groups) {
         require(
             group.resources.size() >= 2,
@@ -2548,8 +2559,8 @@ verifyVulkanCompletePhysicalPlanPackage(
         aliases.emplace(group.id, &group);
         for (const auto &name : group.resources) {
             const auto found = physical_resources.find(name);
-            require(found != physical_resources.end(), "alias.missing_resource@1: " + name);
-            verifyAliasMember(*found->second);
+            require(found != physical_resources.end() || globalMember(name), "alias.missing_resource@1: " + name);
+            if(found != physical_resources.end()) verifyAliasMember(*found->second);
         }
         for (std::size_t left = 0;
              left < group.resources.size(); ++left) {
@@ -2557,8 +2568,7 @@ verifyVulkanCompletePhysicalPlanPackage(
                 physical_resources.find(
                     group.resources[left]);
             require(
-                left_resource != physical_resources.end() &&
-                    left_resource->second->aliasable,
+                left_resource != physical_resources.end() ? left_resource->second->aliasable : globalMember(group.resources[left]),
                 "physical alias group references a missing or "
                 "non-aliasable resource: " +
                     group.resources[left]);
@@ -2569,23 +2579,18 @@ verifyVulkanCompletePhysicalPlanPackage(
                 "physical resource belongs to more than one alias "
                 "group: " +
                     group.resources[left]);
+            if(left_resource==physical_resources.end())continue;
             for (std::size_t right = left + 1;
                  right < group.resources.size(); ++right) {
                 const auto right_resource =
                     physical_resources.find(
                         group.resources[right]);
                 require(
-                    right_resource !=
-                            physical_resources.end() &&
-                        right_resource->second->aliasable,
+                    right_resource != physical_resources.end() ? right_resource->second->aliasable : globalMember(group.resources[right]),
                     "physical alias group references a missing or "
                     "non-aliasable resource: " +
                         group.resources[right]);
-                require(
-                    automatic_plan.effective_image_usage.contains(group.resources[left]) &&
-                    automatic_plan.effective_image_usage.contains(group.resources[right]) &&
-                    automatic_plan.effective_image_usage.at(group.resources[left]) == automatic_plan.effective_image_usage.at(group.resources[right]),
-                    "alias.image_contract@1: " + group.id);
+                if(right_resource==physical_resources.end())continue;
                 const auto &a = graph_uses.at(group.resources[left]).lifetime;
                 const auto &b = graph_uses.at(group.resources[right]).lifetime;
                 const auto &early = a.first_use < b.first_use ? a : b;
@@ -2599,10 +2604,7 @@ verifyVulkanCompletePhysicalPlanPackage(
                     require(!(ends && starts), "alias.same_scope@1: " + group.id);
                 }
                 require(
-                    aliasShapesMatch(
-                        *left_resource->second,
-                        *right_resource->second) &&
-                        !lifetimesOverlap(
+                    !lifetimesOverlap(
                             left_resource->second->lifetime,
                             right_resource->second->lifetime),
                     "alias.shape_or_lifetime@1: physical alias group has incompatible shapes "
@@ -2611,6 +2613,82 @@ verifyVulkanCompletePhysicalPlanPackage(
             }
         }
     }
+
+    // Reconstruct the immutable contract from compiler-owned graph/variant
+    // provenance. Neither the package's forbidden pairs nor its keys are facts.
+    auto provenance = automatic_plan.memory_provenance;
+    if (provenance.empty()) provenance.push_back(std::make_shared<const VulkanTargetPlan>(automatic_plan));
+    if(automatic_plan.memory_requirements_query)for(auto &source:provenance)if(source->memory_provenance_id==automatic_plan.memory_provenance_id) {
+        auto adopted=std::make_shared<VulkanTargetPlan>(*source);
+        adopted->resources=package.resources;adopted->scopes=package.scopes;
+        for(const auto &r:package.resources)if(r.format && automatic_plan.effective_image_usage.contains(r.logical_resource))
+            adopted->memory_requirements[r.logical_resource]=automatic_plan.memory_requirements_query(r,automatic_plan.effective_image_usage.at(r.logical_resource));
+        for(auto &r:adopted->memory_packing.resources) {
+            const auto req=adopted->memory_requirements.find(r.resource);
+            r.memory_type_bits=req!=adopted->memory_requirements.end() && req->second ? req->second->memory_type_bits : 0;
+        }
+        source=std::move(adopted);
+    }
+    const auto expected_memory = planGenerationMemory(provenance);
+    struct Located { std::uint32_t region; const MemoryRegionResident *resident; };
+    std::map<std::string,Located,std::less<>> locations;
+    std::set<std::uint32_t> region_ids;
+    for (const auto &region : package.memory_regions) {
+        require(region_ids.insert(region.region).second, "memory.region@1: duplicate region");
+        std::uint64_t end = 0, alignment = 1;
+        for (const auto &r : region.residents) {
+            const auto local = physical_resources.find(r.resource);
+            if (local != physical_resources.end()) verifyAliasMember(*local->second);
+            const auto req = expected_memory.requirements.find(r.resource);
+            require(req != expected_memory.requirements.end() && req->second.has_value(), "alias.requirements_unknown: " + r.resource);
+            require(!req->second->requires_dedicated, "memory.dedicated@1: " + r.resource);
+            require(req->second->memory_type_bits && req->second->memory_type_bits == region.memory_type_bits,
+                "memory.key@1: " + r.resource);
+            require(r.alignment == req->second->alignment && r.alignment && r.offset % r.alignment == 0,
+                "memory.alignment@1: " + r.resource);
+            require(r.size == req->second->size && r.size <= std::numeric_limits<std::uint64_t>::max()-r.offset,
+                "memory.heap_size@1: " + r.resource);
+            require(locations.emplace(r.resource,Located{region.region,&r}).second, "memory.region@1: duplicate resident " + r.resource);
+            end=std::max(end,r.offset+r.size); alignment=std::max(alignment,r.alignment);
+        }
+        require(!region.residents.empty() && region.size==end, "memory.heap_size@1: region");
+        require(region.alignment==alignment, "memory.alignment@1: region");
+    }
+    const auto overlaps = [&](const Located &a, const Located &b) {
+        return a.region == b.region && a.resident->offset < b.resident->offset+b.resident->size &&
+            b.resident->offset < a.resident->offset+a.resident->size;
+    };
+    for (const auto &[a,b] : expected_memory.inputs.forbidden_pairs) {
+        if (locations.contains(a) && locations.contains(b))
+            require(!overlaps(locations.at(a),locations.at(b)), "memory.overlap@1: " + a + "/" + b);
+    }
+    for (auto a=locations.begin(); a!=locations.end(); ++a) for (auto b=std::next(a); b!=locations.end(); ++b) {
+        if (!overlaps(a->second,b->second) || !graph_uses.contains(a->first) || !graph_uses.contains(b->first)) continue;
+        const auto &x=graph_uses.at(a->first).lifetime, &y=graph_uses.at(b->first).lifetime;
+        require(!targetMemoryOverlapForbidden(x,y,package.scopes), "memory.overlap@1: " + a->first + "/" + b->first);
+    }
+    for (const auto &set : expected_memory.inputs.same_offset_sets) for (const auto &name : set) {
+        require(locations.contains(name) && locations.contains(set.front()) &&
+            locations.at(name).region==locations.at(set.front()).region &&
+            locations.at(name).resident->offset==locations.at(set.front()).resident->offset, "memory.same_offset@1: " + name);
+    }
+    const auto groupSets = [](const auto &groups) {
+        std::set<std::vector<std::string>> result;
+        for (const auto &g : groups) { auto members=g.resources; std::sort(members.begin(),members.end()); result.insert(std::move(members)); }
+        return result;
+    };
+    require(groupSets(package.alias_groups)==groupSets(memoryRegionAliasGroups(package.memory_regions)), "memory.same_offset@1: maximal alias groups");
+    for(const auto &r:package.memory_packing.resources) {
+        const auto expected=std::find_if(expected_memory.inputs.resources.begin(),expected_memory.inputs.resources.end(),[&](const auto &v){return v.resource==r.resource;});
+        require(expected!=expected_memory.inputs.resources.end(),"memory.inputs@1: unknown packing resource " + r.resource);
+        require(r.memory_type_bits==expected->memory_type_bits,"memory.key@1: input snapshot " + r.resource);
+    }
+    require(package.memory_packing.same_offset_sets==expected_memory.inputs.same_offset_sets,"memory.same_offset@1: adopted input sets differ");
+    require(package.memory_packing == expected_memory.inputs, "memory.inputs@1: compiler provenance differs");
+    std::set<std::string> expected_residents;
+    for (const auto &region : expected_memory.regions) for (const auto &r : region.residents) expected_residents.insert(r.resource);
+    require(expected_residents.size()==locations.size() && std::all_of(locations.begin(),locations.end(),[&](const auto &r){return expected_residents.contains(r.first);}),
+        "memory.region@1: resident coverage differs");
 
     std::set<std::string, std::less<>>
         enabled_extension_set(
@@ -2846,6 +2924,8 @@ VulkanTargetPlan applyVerifiedVulkanCompletePhysicalPlanPackage(
     result.scopes = package.scopes;
     result.attachments = package.attachments;
     result.alias_groups = package.alias_groups;
+    result.memory_regions = package.memory_regions;
+    result.memory_packing = package.memory_packing;
     result.required_physical_features =
         package.required_physical_features;
     result.external_depth_export =
@@ -2873,6 +2953,7 @@ void validateVulkanTargetPlanMatchesCompletePhysicalPackage(
         target_plan.scopes != package.scopes ||
         target_plan.attachments != package.attachments ||
         target_plan.alias_groups != package.alias_groups ||
+        target_plan.memory_regions != package.memory_regions || target_plan.memory_packing != package.memory_packing ||
         target_plan.required_physical_features !=
             package.required_physical_features ||
         target_plan.external_depth_export !=

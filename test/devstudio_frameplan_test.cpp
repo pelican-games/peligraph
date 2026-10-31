@@ -2,6 +2,7 @@
 #include "../src/devstudio/view/taskresourceconnections.hpp"
 #include "frameresolutionwire.hpp"
 #include "physicaltargetplanwire.hpp"
+#include "targetrenderplanning.hpp"
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
 #include "../src/project/renderconfigsection.hpp"
@@ -871,6 +872,8 @@ TEST_CASE(
 
     Json zero_alias = captured;
     zero_alias["physical_target_plan"]["alias_groups"] = Json::array();
+    zero_alias["physical_target_plan"]["memory_regions"] = Json::array();
+    zero_alias["physical_target_plan"]["memory_packing"] = Pelican::memoryPackingToJson({});
     const FramePlanModel available = buildFramePlanModel(zero_alias.dump());
     REQUIRE(available.physical_plan.available());
     REQUIRE(available.physical_plan.unavailable_reason.empty());
@@ -945,16 +948,11 @@ TEST_CASE(
         REQUIRE(unavailable_code(std::move(input)) ==
                 "physical_plan_alias_membership_conflict");
     }
-    SECTION("alias resource contract conflict") {
+    SECTION("different image formats may share a memory key") {
         Json input = captured;
-        for (auto &resource :
-             input["physical_target_plan"]["resources"]) {
-            if (resource["logical_resource"] == "g_emissive") {
-                resource["format"] = "R8_UNORM";
-            }
-        }
-        REQUIRE(unavailable_code(std::move(input)) ==
-                "physical_plan_alias_membership_conflict");
+        for (auto &resource : input["physical_target_plan"]["resources"])
+            if (resource["logical_resource"] == "g_emissive") resource["format"]="R8_UNORM";
+        CHECK(buildFramePlanModel(input.dump()).physical_plan.available());
     }
     SECTION("alias lifetime conflict") {
         Json input = captured;
@@ -1427,4 +1425,16 @@ TEST_CASE("RC-1 the memory summary and a physical image's bytes are read, and a 
     REQUIRE_THROWS_WITH(buildFramePlanModel(input.dump()),
                         ContainsSubstring("memory_summary requires integer field "
                                           "'total_bytes'"));
+}
+
+TEST_CASE("RC-7c Studio projects generation regions onto the current graph resources", "[devstudio][frame-plan][rc7c]") {
+    Json wire=Json::parse(capturedResponse());
+    auto &physical=wire["physical_target_plan"];
+    physical["memory_regions"].push_back({{"region",99},{"memory_type_bits",1},{"size",4096},{"alignment",1},
+        {"residents",Json::array({{{"resource","another_graph_only"},{"offset",0},{"size",4096},{"alignment",1}}})}});
+    physical["memory_packing"]["resources"].push_back({{"resource","another_graph_only"},{"memory_type_bits",1},{"optimal_tiling",true}});
+    physical["memory_packing"]["order"].push_back("another_graph_only");
+    const auto model=buildFramePlanModel(wire.dump());
+    REQUIRE(model.physical_plan.available());
+    CHECK(std::none_of(model.resources.begin(),model.resources.end(),[](const auto &r){return r.name.empty() || r.name=="another_graph_only";}));
 }

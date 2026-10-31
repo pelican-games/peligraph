@@ -1,3 +1,4 @@
+#include "rc7c_test_facts.hpp"
 #include "../src/devstudio/model/frameplanpolicy.hpp"
 #include "../src/project/graphcomposition.hpp"
 #include "../src/project/generationresources.hpp"
@@ -5,6 +6,7 @@
 #include <type_traits>
 #include "../src/project/targetrenderplanning.hpp"
 #include "../src/project/targetrendermemory.hpp"
+#include "../src/project/physicaltargetplanwire.hpp"
 #include "../src/project/vulkancompletephysicalplan.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -538,6 +540,7 @@ VulkanTargetPlan compile(
             .provider = std::string{kProvider},
             .pattern_bindings = std::move(bindings),
             .effective_image_usage = std::move(usage),
+            .memory_requirements = TestSupport::rc7cMemoryRequirements,
             .profile = profile,
             .sample_count = std::move(sample_count),
             .view_execution = std::move(view_execution),
@@ -2960,7 +2963,7 @@ TEST_CASE("RC-1 memory summary counts an alias group once and finds the node mos
                          {"unused_resources", nlohmann::json::array()},
                          {"peak_live_bytes", 1300},
                          {"peak_node", "blur"},
-                         {"peak_graph", "main"}});
+                         {"peak_graph", "main"}, {"payload_bytes",1700}, {"planned_region_bytes",0}, {"planned_region_count",0}, {"actual_placement",nullptr}});
     const auto &resources =
         frame_plan.at("physical_target_plan").at("resources");
     CHECK(resources[0].at("bytes") == 400);
@@ -3038,8 +3041,21 @@ TEST_CASE("RC-1 the memory total counts each allocation registration made once a
                     std::invalid_argument);
 }
 
+
+TEST_CASE("RC-7c measured totals count each region allocation once", "[rc7c][memory]") {
+    const std::vector<RegisteredTargetMemory> measured{
+        {.name="A",.bytes=100,.used=true,.allocations={{1000,1024}}},
+        {.name="B",.bytes=200,.used=false,.allocations={{1000,1024}}},
+        {.name="C",.bytes=50,.used=false,.allocations={{2000,256}}},
+    };
+    const auto total=totalRegisteredTargetMemory(measured);
+    CHECK(total.total_bytes==1280); CHECK(total.unused_bytes==256);
+    CHECK(total.unused_resources==std::vector<std::string>{"B","C"});
+}
+
 #include "rc6a2_target_policy_test.inc"
 #include "rc6b1_target_policy_test.inc"
 #include "rc7a_target_policy_test.inc"
 #include "rc7b_target_policy_test.inc"
+#include "rc7c_target_policy_test.inc"
 } // namespace Pelican

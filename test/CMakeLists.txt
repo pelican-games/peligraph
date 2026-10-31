@@ -3576,6 +3576,7 @@ target_compile_definitions(pelican_test_frameplanner_test PRIVATE
 )
 
 pelican_define_test(renderpipelinetransaction_test GROUP render_planning_core pelican_core)
+pelican_define_test(memoryregionpacking_test GROUP render_planning_core pelican_core)
 pelican_define_test(logicalrendergraph_test GROUP render_planning_core pelican_core)
 # PF-1: the pass-fusion planner over the core's logical shadow graphs.
 pelican_define_test(passfusion_test GROUP render_planning_core pelican_core)
@@ -3650,6 +3651,9 @@ if(MSVC)
     target_compile_options(pelican_test_rendercompilerprogram_test PRIVATE /bigobj)
 endif()
 pelican_define_test(rendercompilerprogram_ir_test GROUP render_pipeline pelican_core)
+if(MSVC)
+  target_compile_options(pelican_test_rendercompilerprogram_ir_test PRIVATE /bigobj)
+endif()
 # RC-3c1b: the production compiler program and the registration on a device.
 pelican_define_test(rendercompilerprogram_device_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 # RC-3c2a: the generation's resource description through the production registration.

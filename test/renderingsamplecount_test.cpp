@@ -1,3 +1,4 @@
+#include "rc7c_device_test_facts.hpp"
 #include "../src/core/renderingpass/renderingsamplecount.hpp"
 #include "../src/core/renderingpass/vulkanrendercompilerpackage.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
@@ -410,6 +411,7 @@ TEST_CASE("rendering sample planning discovers a hybrid attachment component",
         vk::Format::eB8G8R8A8Unorm,
         RenderingTargetPlanDeviceFacts{
             .query_attachment_samples = query,
+            .image_memory_requirements = TestSupport::rc7cDeviceRequirements,
         });
     REQUIRE(assignment(compilation, "albedo").samples == 2);
     REQUIRE(assignment(compilation, "normal").samples == 2);
@@ -477,6 +479,7 @@ TEST_CASE("ray query target requirement is hard and uses the enabled runtime cap
             RenderingTargetPlanDeviceFacts{
                 .ray_query = ray_query,
                 .query_attachment_samples = query,
+                .image_memory_requirements = TestSupport::rc7cDeviceRequirements,
             },
             std::nullopt, std::nullopt, planning);
     };
@@ -534,6 +537,7 @@ TEST_CASE(
             RenderingTargetPlanDeviceFacts{
                 .ray_tracing_pipeline = ray_tracing_pipeline,
                 .query_attachment_samples = query,
+                .image_memory_requirements = TestSupport::rc7cDeviceRequirements,
             },
             std::nullopt, std::nullopt, planning);
     };
@@ -577,6 +581,7 @@ TEST_CASE("rendering target bridge retains automatic attachments and complete ve
                     return std::vector<std::uint32_t>{
                         1, 2, 4};
                 },
+            .image_memory_requirements = TestSupport::rc7cDeviceRequirements,
         };
     const auto automatic =
         compileRenderingTargetPlans(
@@ -670,6 +675,7 @@ TEST_CASE(
                             .max_array_layers = 6,
                         };
                     },
+                .image_memory_requirements = TestSupport::rc7cDeviceRequirements,
             });
     REQUIRE(queried_cube);
     REQUIRE(compilation.plans.size() == 1);
@@ -725,6 +731,7 @@ TEST_CASE(
                     };
                 },
             .transient_attachments = true,
+            .image_memory_requirements = TestSupport::rc7cDeviceRequirements,
         };
 
     const auto transient =
@@ -1210,6 +1217,7 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
         vk::Format::eB8G8R8A8Unorm,
         RenderingTargetPlanDeviceFacts{
             .query_attachment_samples = query,
+            .image_memory_requirements = TestSupport::rc7cDeviceRequirements,
         },
         std::nullopt, std::nullopt, planning);
     REQUIRE(compilation.plans.size() == 1);
@@ -1242,6 +1250,7 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
                 vk::Format::eB8G8R8A8Unorm,
                 RenderingTargetPlanDeviceFacts{
                     .query_attachment_samples = query,
+                    .image_memory_requirements = TestSupport::rc7cDeviceRequirements,
                 },
                 std::nullopt, std::nullopt,
                 unknown_graph);
@@ -1258,6 +1267,7 @@ TEST_CASE("rendering target bridge applies typed graph planning controls",
                 vk::Format::eB8G8R8A8Unorm,
                 RenderingTargetPlanDeviceFacts{
                     .query_attachment_samples = query,
+                    .image_memory_requirements = TestSupport::rc7cDeviceRequirements,
                 },
                 std::nullopt, std::nullopt,
                 unknown_node);
@@ -1294,6 +1304,7 @@ TEST_CASE("exact rendering sample planning reports an added G-buffer target",
                                        : std::vector<std::uint32_t>{
                                              1, 2, 4};
                         },
+                    .image_memory_requirements = TestSupport::rc7cDeviceRequirements,
                 });
         },
         "custom_id (R32_UINT)");
@@ -1323,6 +1334,7 @@ TEST_CASE("explicit target selects its whole attachment component",
                 [](const auto &) {
                     return std::vector<std::uint32_t>{1, 2, 4};
                 },
+            .image_memory_requirements = TestSupport::rc7cDeviceRequirements,
         });
     REQUIRE(assignment(compilation, "albedo").samples == 4);
     REQUIRE(assignment(compilation, "lit").samples == 4);
@@ -1370,6 +1382,7 @@ TEST_CASE(
                         return std::vector<
                             std::uint32_t>{1};
                     },
+                .image_memory_requirements = TestSupport::rc7cDeviceRequirements,
             });
 
     REQUIRE(compilation.plans.size() == 1);
@@ -1409,7 +1422,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "RC-7b differing effective usages prevent runtime aliasing without forcing storage",
+    "RC-7c differing effective usages share when memory keys agree without forcing storage",
     "[target-planning][alias][runtime][po1]") {
     auto display =
         target("display",
@@ -1438,6 +1451,7 @@ TEST_CASE(
                         return std::vector<
                             std::uint32_t>{1};
                     },
+                .image_memory_requirements = TestSupport::rc7cDeviceRequirements,
             });
     };
     const auto representation_detail =
@@ -1458,7 +1472,7 @@ TEST_CASE(
                 ImageUsageBit::sampled |
                 ImageUsageBit::transfer_src);
     const auto &excluded = *transfer.plans.front();
-    REQUIRE(excluded.alias_groups.empty());
+    REQUIRE(excluded.alias_groups.size()==1); // TRANSFER_SRC is not a memory key.
     const std::string expected = "arbitrary read requires a materialized resource";
     CHECK(physicalResource(excluded, "temporary_b").reason ==
           expected);
@@ -1528,19 +1542,20 @@ TEST_CASE(
                         return std::vector<
                             std::uint32_t>{1};
                     },
+                .image_memory_requirements = TestSupport::rc7cDeviceRequirements,
             });
     // Every graph now reports the unshared placement chosen by the merge.
     for (const auto &plan : compilation.plans) {
-        CHECK(plan->alias_groups.empty());
-        CHECK(vulkanTargetPlanToJson(*plan).at("alias_groups").empty());
+        CHECK(plan->alias_groups.size()==1);
+        CHECK(vulkanTargetPlanToJson(*plan).at("alias_groups").size()==1);
     }
     REQUIRE(
-        compilation.alias_group_assignments.empty());
+        compilation.alias_group_assignments.size()==1);
 }
 
 TEST_CASE(
-    "RC-1 when graph variants do not share an alias group, the memory total counts its "
-    "targets as two allocations",
+    "RC-7c a graph with a subset of residents preserves legal generation sharing and counts its "
+    "targets once per allocation",
     "[target-planning][alias][runtime][variant][rc1][memory]") {
     // The input above: the first graph alone could let temporary_a and
     // temporary_b take turns in one allocation; the second reads
@@ -1574,10 +1589,11 @@ TEST_CASE(
                         return std::vector<
                             std::uint32_t>{1};
                     },
+                .image_memory_requirements = TestSupport::rc7cDeviceRequirements,
             });
     REQUIRE(compilation.plans.size() == 2);
-    REQUIRE(compilation.plans.front()->alias_groups.empty());
-    REQUIRE(compilation.alias_group_assignments.empty());
+    REQUIRE(compilation.plans.front()->alias_groups.size()==1);
+    REQUIRE(compilation.alias_group_assignments.size()==1);
 
     // Registration allocates what the runtime kept: three images of their
     // own (64x64 R8G8B8A8, 16,384 bytes each), not two.
@@ -1590,10 +1606,10 @@ TEST_CASE(
     for (const auto &entry : memory) {
         INFO(entry.name);
         CHECK(entry.bytes == 16'384);
-        CHECK_FALSE(entry.alias_group.has_value());
+        CHECK(entry.alias_group.has_value()==(entry.name!="display"));
     }
     const auto total = totalRegisteredTargetMemory(memory);
-    CHECK(total.total_bytes == 3 * 16'384);
+    CHECK(total.total_bytes == 2 * 16'384);
     CHECK(total.unused_bytes == 0);
 }
 
@@ -1640,6 +1656,7 @@ TEST_CASE(
                     [](const auto &) {
                         return std::vector<std::uint32_t>{1};
                     },
+                .image_memory_requirements = TestSupport::rc7cDeviceRequirements,
             });
 
     REQUIRE(compilation.plans.size() == 1);
@@ -1725,6 +1742,7 @@ TEST_CASE(
                             return std::vector<
                                 std::uint32_t>{1};
                         },
+                    .image_memory_requirements = TestSupport::rc7cDeviceRequirements,
                 });
         },
         "scene resolution domain has incompatible physical extents");
@@ -1760,6 +1778,7 @@ TEST_CASE("runtime target adapter carries multiview device facts and typed view 
                 [](const auto &) {
                     return std::vector<std::uint32_t>{1};
                 },
+            .image_memory_requirements = TestSupport::rc7cDeviceRequirements,
         },
         VulkanViewExecutionPlanRequest{
             .view_count = 2,
@@ -1856,6 +1875,7 @@ TEST_CASE("runtime depth export stays disabled when the device format cannot be 
                     [](const auto &) {
                         return false;
                     },
+                .image_memory_requirements = TestSupport::rc7cDeviceRequirements,
             },
             std::nullopt,
             VulkanExternalDepthExportRequest{});
@@ -1914,6 +1934,7 @@ TEST_CASE(
                         return std::vector<
                             std::uint32_t>{1};
                     },
+                .image_memory_requirements = TestSupport::rc7cDeviceRequirements,
             });
     };
     const auto kept = compile(true);

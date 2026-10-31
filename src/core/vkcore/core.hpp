@@ -1,4 +1,5 @@
 #pragma once
+#include "../../project/memoryregionpacking.hpp"
 
 #include "../container.hpp"
 #include "buf.hpp"
@@ -165,8 +166,17 @@ DECLARE_MODULE(VulkanManageCore) {
                             vk::ImageCreateFlags image_flags = {},
                             vk::ImageType image_type =
                                 vk::ImageType::e2D) const;
-    ImageWrapper allocAliasingImage(
-        const ImageWrapper &allocation_owner) const;
+    ImageWrapper allocImage(const vk::ImageCreateInfo &create_info,
+                            vma::MemoryUsage mem_usage, vma::AllocationCreateFlags alloc_flags,
+                            vk::MemoryPropertyFlags preferred_memory_flags = {}) const;
+    ImageWrapper createUnboundImage(const vk::ImageCreateInfo &info) const;
+    ImageMemoryRequirements imageRequirements(const ImageWrapper &image) const;
+    std::shared_ptr<vma::UniqueAllocation> allocateImageRegion(const vk::MemoryRequirements &requirements) const;
+    void bindImageRegion(ImageWrapper &image, std::shared_ptr<vma::UniqueAllocation> allocation,
+        std::uint64_t offset, const ImageMemoryRequirements &requirements, const std::string &name) const;
+    vma::AllocationInfo imageAllocationInfo(const ImageWrapper &image) const {
+        return allocator->getAllocationInfo(image.allocation->get());
+    }
     void writeImage(const ImageWrapper &dst, const void *src, vk::DeviceSize bytes_num) const;
 };
 

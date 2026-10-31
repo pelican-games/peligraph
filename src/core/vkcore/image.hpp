@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <string>
 #include <vk_mem_alloc.hpp>
 
 namespace Pelican {
@@ -18,6 +19,9 @@ struct ImageWrapper {
     vk::SampleCountFlagBits samples = vk::SampleCountFlagBits::e1;
     vk::ImageUsageFlags usage;
     vk::ImageCreateFlags create_flags;
+    std::uint64_t memory_offset = 0, memory_size = 0;
+    bool region_bound = false;
+    std::string memory_rejection;
 };
 
 } // namespace Pelican

@@ -17,6 +17,7 @@ ImageUsage engineImageUsage(const ImageUsageFacts &facts) {
     auto usage = facts.declared;
     if (facts.local_read) usage |= ImageUsageBit::input_attachment;
     if (facts.external_depth_source) usage |= ImageUsageBit::transfer_src;
+    if (facts.readback) usage |= ImageUsageBit::transfer_src;
     switch (facts.storage) {
     case RenderTargetStorageMode::materialized:
         break;
@@ -77,6 +78,7 @@ struct MergedImage {
     bool local_read = false;
     bool external_depth_source = false;
     bool runtime_array_layers = false;
+    bool readback = false;
 };
 
 // The first field two declarations of one buffer differ in.
@@ -137,7 +139,8 @@ GenerationResources resolveGenerationResources(std::span<const GenerationResourc
                                              .placement = placement,
                                              .storage = placement.storage,
                                              .local_read = placement.local_read,
-                                             .external_depth_source = placement.external_depth_source});
+                                             .external_depth_source = placement.external_depth_source,
+                                             .readback = placement.readback});
                 result.variants[v].images.push_back(merged.size() - 1);
                 continue;
             }
@@ -164,6 +167,7 @@ GenerationResources resolveGenerationResources(std::span<const GenerationResourc
             if (entry.storage != placement.storage) entry.storage = RenderTargetStorageMode::materialized;
             entry.local_read = entry.local_read || placement.local_read;
             entry.external_depth_source = entry.external_depth_source || placement.external_depth_source;
+            entry.readback = entry.readback || placement.readback;
             result.variants[v].images.push_back(at->second);
         }
         for (const auto &name : variant.runtime_layered_images)
@@ -189,7 +193,10 @@ GenerationResources resolveGenerationResources(std::span<const GenerationResourc
                 placed_in_group = placed_in_group && found->second.alias_group == group;
             }
             if (present == 0) continue;
-            if (present != members.size() || !placed_in_group) unshared.insert(group);
+            const bool region_placement = std::any_of(members.begin(),members.end(),[&](const auto &name) {
+                const auto at=variant_placed.find(name);return at!=variant_placed.end() && at->second.memory_region.has_value();
+            });
+            if ((!region_placement && present != members.size()) || !placed_in_group) unshared.insert(group);
         }
         // A layer count the runtime changes cannot share an allocation.
         for (const auto &member : members)
@@ -207,11 +214,14 @@ GenerationResources resolveGenerationResources(std::span<const GenerationResourc
         image.storage = *entry.storage;
         image.persistent = entry.declaration.persistent;
         image.runtime_array_layers = entry.runtime_array_layers;
+        image.memory_region = entry.placement.memory_region;
+        image.memory_offset = entry.placement.memory_offset;
         image.usage = engineImageUsage({.declared = entry.declaration.usage,
                                         .history = entry.declaration.history,
                                         .storage = image.storage,
                                         .local_read = entry.local_read,
-                                        .external_depth_source = entry.external_depth_source});
+                                        .external_depth_source = entry.external_depth_source,
+                                        .readback = entry.readback});
         image.extent = resolveResourceExtent(entry.declaration.extent, output_extent);
         // The group the variants placed it in, when that group stands.
         for (const auto &variant_placed : placed) {
@@ -240,6 +250,12 @@ GenerationResources resolveGenerationResources(std::span<const GenerationResourc
         if (members.size() < 2)
             refuse("render_graph.alias_group_invalid@1", {{"group", group}, {"reason", "member_count"}});
         const auto &contract = *members.front();
+        if (contract.memory_region) {
+            for (const auto *member : members)
+                if (member->memory_region != contract.memory_region || member->memory_offset != contract.memory_offset)
+                    refuse("render_graph.alias_group_invalid@1", {{"group",group},{"reason","same_offset"}});
+            continue;
+        }
         for (const auto *member : members) {
             if (member->format != contract.format ||
                 member->declaration.extent != contract.declaration.extent || member->samples != contract.samples ||

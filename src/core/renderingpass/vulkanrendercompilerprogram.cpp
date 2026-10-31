@@ -511,30 +511,15 @@ void compileDefaultVulkanPhysical(RenderCompilerProgramVariantOutput &variant,
     const RenderCompilerProgramVariantRequest &request,
     const std::map<std::string, ImageUsage, std::less<>> &generation_usage,
     const std::map<std::string, std::string, std::less<>> &generation_alias_exclusions,
-    bool discover_placements = false) {
+    bool discover_placements = false,
+    const std::map<std::string,std::uint32_t,std::less<>> &generation_layers = {}) {
     const auto &render_graph = *variant.render_graph;
     const auto &compiled_pipeline = variant.compiled_pipeline;
     const auto &frame_plans = variant.frame_plans;
     auto render_target_definitions = renderTargetDefinitionsOf(render_graph);
     auto planning = compiled_pipeline->target_planning;
-    if (discover_placements) for (auto &graph : planning.graphs) {
-        // Discover engine placements before checking the readback contract.
-        // Keep retain's materialization so the usage merge sees the storage
-        // that registration will use, without inventing transfer permissions.
-        for (auto &entry : graph.declarations) {
-            if (entry.key != "retain" || entry.status != PlanningPolicyStatus::adopted || !std::get<bool>(entry.value) ||
-                !findConfigImage(render_graph, entry.target)) continue;
-            const bool materialized = std::any_of(graph.declarations.begin(), graph.declarations.end(), [&](const auto &other) {
-                return other.target == entry.target && other.key == "representation" && other.status == PlanningPolicyStatus::adopted;
-            });
-            if (!materialized) { entry.key = "representation"; entry.value = std::string{"materialized"}; }
-        }
-        // Sharing is decided only after the generation's effective usage and
-        // storage are known. A variant-local alias requirement is premature.
-        std::erase_if(graph.declarations, [](const auto &e) {
-            return e.key == "retain" || e.key == "alias_group";
-        });
-    }
+    if (discover_placements) for (auto &graph : planning.graphs)
+        std::erase_if(graph.declarations,[](const auto &e){return e.key=="alias_group";});
     auto physical =
         std::make_unique<
             VulkanRenderCompilerPhysicalPackage>();
@@ -564,7 +549,8 @@ void compileDefaultVulkanPhysical(RenderCompilerProgramVariantOutput &variant,
                 planning,
                 RenderingTargetExternalReaders{
                     .xr_mirror = compiled_pipeline->graph_variant_policy.mirror_output == GraphVariantMirrorOutput::left_eye,
-                    .capture_output = request.capture_output}, generation_usage, generation_alias_exclusions);
+                    .capture_output = request.capture_output}, generation_usage, generation_alias_exclusions, backend.device,
+                    backend.output_extent, backend.graphics_queue_family, generation_layers);
     } else {
         physical->target_plan_compilation =
             compileRenderingTargetPlans(
@@ -573,13 +559,13 @@ void compileDefaultVulkanPhysical(RenderCompilerProgramVariantOutput &variant,
                 render_target_definitions,
                 compiled_pipeline->sample_count_policy,
                 backend.output_format,
-                RenderingTargetPlanDeviceFacts{},
+                backend.planning_facts.value_or(RenderingTargetPlanDeviceFacts{}),
                 std::move(view_execution),
                 std::move(external_depth_export),
                 planning,
                 RenderingTargetExternalReaders{
                     .xr_mirror = compiled_pipeline->graph_variant_policy.mirror_output == GraphVariantMirrorOutput::left_eye,
-                    .capture_output = request.capture_output}, generation_usage, generation_alias_exclusions);
+                    .capture_output = request.capture_output}, generation_usage, generation_alias_exclusions, generation_layers);
     }
     for (auto &verification :
          physical->target_plan_compilation
@@ -595,6 +581,25 @@ void compileDefaultVulkanPhysical(RenderCompilerProgramVariantOutput &variant,
             physical->target_plan_compilation);
 
     variant.physical_package = std::move(physical);
+}
+
+// Usage agreement precedes generation packing. Provisional graph-local group
+// IDs are not generation allocation identities and must not enter this merge.
+GenerationResources usageResources(std::span<const RenderCompilerProgramVariantOutput> variants, ResolvedResourceExtent extent,
+    bool include_readback = false) {
+    std::vector<GenerationResourceVariant> inputs;
+    for (const auto &variant : variants) if (variant.physical_package && !variant.unavailable) {
+        const auto placed=variant.physical_package->imagePlacements();
+        GenerationResourceVariant input{.name=std::string{renderPipelineGraphVariantName(variant.graph_variant)},
+            .render_graph=variant.render_graph.get(),.placements={placed.begin(),placed.end()},
+            .runtime_layered_images=runtimeLayeredImagesOf(*variant.compiled_pipeline)};
+        for (auto &p : input.placements) {
+            p.alias_group.reset();p.memory_region.reset();p.memory_offset=0;
+            if(!include_readback)p.readback=false;
+        }
+        inputs.push_back(std::move(input));
+    }
+    return resolveGenerationResources(inputs,extent);
 }
 
 class DefaultVulkanRenderCompilerProgram final
@@ -675,23 +680,28 @@ class DefaultVulkanRenderCompilerProgram final
                 runtime_variant_composed = true;
         }
         std::map<std::string, ImageUsage, std::less<>> generation_usage;
+        std::map<std::string,std::uint32_t,std::less<>> generation_layers;
         std::map<std::string, std::string, std::less<>> generation_alias_exclusions;
+        for(const auto &variant:output.variants)if(variant.compiled_pipeline && !variant.unavailable)
+            for(const auto &name:runtimeLayeredImagesOf(*variant.compiled_pipeline))
+                generation_alias_exclusions.emplace(name,"runtime_array_layers");
         {
             for (std::size_t i = 0; i < output.variants.size(); ++i) {
                 auto &variant = output.variants[i];
                 if (variant.unavailable || variant.frame_plans.empty()) continue;
-                compileDefaultVulkanPhysical(variant, backend, input.variants[i], {}, {}, true);
+                compileDefaultVulkanPhysical(variant, backend, input.variants[i], {}, generation_alias_exclusions, true);
             }
             // Exactly the resolver used by registration; no parallel usage
             // formula based on declarations, history or export requests.
-            const auto resources = resolveCompilerGenerationResources(output.variants, backend.outputExtent());
+            const auto resources = usageResources(output.variants, backend.outputExtent());
             for (const auto &image : resources.images)
-                generation_usage.emplace(image.declaration.name, image.usage);
+                { generation_usage.emplace(image.declaration.name, image.usage); generation_layers.emplace(image.declaration.name,image.array_layers); }
         }
+        for (;;) {
         for (std::size_t i = 0; i < output.variants.size(); ++i) {
             auto &variant = output.variants[i];
             if (variant.unavailable || variant.frame_plans.empty()) continue;
-            try { compileDefaultVulkanPhysical(variant, backend, input.variants[i], generation_usage, generation_alias_exclusions); }
+            try { compileDefaultVulkanPhysical(variant, backend, input.variants[i], generation_usage, generation_alias_exclusions, false, generation_layers); }
             catch (...) {
                 if (input.variants[i].artifact != RenderCompilerProgramArtifact::data_only ||
                     input.variants[i].graph_variant != RenderPipelineGraphVariant::preview || !runtime_variant_composed) throw;
@@ -700,15 +710,71 @@ class DefaultVulkanRenderCompilerProgram final
         }
         // Agree on the placements proposed with the merged contracts, never
         // on the provisional placements used to discover those contracts.
-        generation_alias_exclusions = resolveCompilerGenerationResources(
-            output.variants, backend.outputExtent()).alias_rejections;
-        if (!generation_alias_exclusions.empty()) {
-            for (std::size_t i = 0; i < output.variants.size(); ++i) {
-                auto &variant = output.variants[i];
-                if (variant.unavailable || variant.frame_plans.empty()) continue;
-                compileDefaultVulkanPhysical(variant, backend, input.variants[i],
-                    generation_usage, generation_alias_exclusions);
+        std::vector<std::shared_ptr<const VulkanTargetPlan>> provenance;
+        std::set<std::pair<std::string,std::string>> provenance_ids;
+        for (const auto &variant : output.variants) if (variant.physical_package) {
+            const auto &physical = requireVulkanRenderCompilerPhysicalPackage(*variant.physical_package);
+            for (const auto &plan : physical.target_plan_compilation.plans) {
+                const auto append=[&](const auto &source) {
+                    auto identified=std::make_shared<VulkanTargetPlan>(*source);
+                    identified->memory_provenance_id={std::string{renderPipelineGraphVariantName(variant.graph_variant)},source->graph};
+                    if(provenance_ids.insert(identified->memory_provenance_id).second)provenance.push_back(std::move(identified));
+                };
+                if(plan->memory_provenance.empty())append(plan);
+                else for(const auto &source:plan->memory_provenance)append(source);
             }
+        }
+        std::map<std::string,ImageUsage,std::less<>> adopted_usage;
+        for(const auto &image:usageResources(output.variants,backend.outputExtent(),true).images)
+            adopted_usage.emplace(image.declaration.name,image.usage);
+        for(auto &source:provenance) {
+            auto agreed=std::make_shared<VulkanTargetPlan>(*source);
+            agreed->effective_image_usage=adopted_usage;
+            for(const auto &r:agreed->resources)if(agreed->memory_requirements_query && adopted_usage.contains(r.logical_resource))
+                agreed->memory_requirements[r.logical_resource]=agreed->memory_requirements_query(r,adopted_usage.at(r.logical_resource));
+            for(auto &r:agreed->memory_packing.resources) {
+                const auto req=agreed->memory_requirements.find(r.resource);
+                r.memory_type_bits=req!=agreed->memory_requirements.end() && req->second ? req->second->memory_type_bits : 0;
+            }
+            source=std::move(agreed);
+        }
+        const auto memory = planGenerationMemory(provenance);
+        auto next_exclusions = generation_alias_exclusions;
+        for (const auto &[name,reason] : memory.exclusions) {
+            if (std::any_of(provenance.begin(),provenance.end(),[&](const auto &p) {
+                return std::any_of(p->memory_packing.resources.begin(),p->memory_packing.resources.end(),[&](const auto &r){return r.resource==name;});
+            })) next_exclusions.emplace(name,reason);
+        }
+        std::map<std::string,ImageUsage,std::less<>> next_usage;
+        const auto merged_resources = usageResources(output.variants,backend.outputExtent());
+        for (const auto &image : merged_resources.images) next_usage.emplace(image.declaration.name,image.usage);
+        if (next_usage != generation_usage || next_exclusions != generation_alias_exclusions) {
+            generation_usage=std::move(next_usage); generation_alias_exclusions=std::move(next_exclusions);
+            continue;
+        }
+        for (auto &variant : output.variants) if (variant.physical_package) {
+            auto &physical = *dynamic_cast<VulkanRenderCompilerPhysicalPackage *>(variant.physical_package.get());
+            auto &compilation = physical.target_plan_compilation;
+            compilation.alias_group_assignments.clear();
+            for (const auto &g : memory.alias_groups) compilation.alias_group_assignments.push_back({g.id,g.resources});
+            for (std::size_t i=0; i<compilation.plans.size(); ++i) {
+                auto plan=std::make_shared<VulkanTargetPlan>(*compilation.plans[i]);
+                plan->memory_provenance_id={std::string{renderPipelineGraphVariantName(variant.graph_variant)},plan->graph};
+                plan->memory_provenance=provenance; plan->memory_packing=memory.inputs;
+                plan->effective_image_usage=adopted_usage;
+                plan->memory_requirements=memory.requirements; plan->memory_regions=memory.regions; plan->alias_groups=memory.alias_groups;
+                std::erase_if(plan->decisions,[](const auto &d){return d.id=="pelican.plan.alias_group_selected@1";});
+                for(const auto &g:memory.alias_groups)plan->decisions.push_back({"pelican.plan.alias_group_selected@1",g.id,"adopted","maximal residents of the same region and offset"});
+                for(const auto &[a,b]:memory.inputs.forbidden_pairs)if(std::find(plan->opportunities.alias_candidates.begin(),plan->opportunities.alias_candidates.end(),PlanningNamePair{a,b})!=plan->opportunities.alias_candidates.end())
+                    plan->decisions.push_back({"pelican.plan.alias_generation_contract@1",a+"/"+b,"not_adopted","another graph/variant forbids overlapping ranges"});
+                updateGenerationAliasPolicy(*plan);
+                plan->automatic_plan_fingerprint=vulkanAutomaticTargetPlanFingerprint(compilation.verification_contexts[i].topology,*plan);
+                compilation.plans[i]=plan; compilation.verification_contexts[i].automatic_plan=plan; compilation.verification_contexts[i].compiled_plan=plan;
+                physical.target_plans[plan->graph]=plan;
+            }
+            physical.image_placements=imagePlacementsOf(renderTargetDefinitionsOf(*variant.render_graph),compilation);
+        }
+        break;
         }
         // P-2a-4b: `input.rendering_config` is the authored document, so a
         // `pelican.graph` root keeps `frame_node_order` in its `rendering`

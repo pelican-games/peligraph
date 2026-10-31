@@ -1,4 +1,5 @@
 #include "rendertargetcontainer.hpp"
+#include "rendertargetimagecontract.hpp"
 #include "renderingsamplecount.hpp"
 #include "vulkanimagevocabulary.hpp"
 #include "../../project/targetrenderplanning.hpp"
@@ -24,7 +25,7 @@ namespace Pelican {
 namespace {
 
 struct RetiredRenderTargetResourceBatch {
-    std::vector<std::unique_ptr<RenderTargetResourceSet>>
+    std::vector<std::shared_ptr<RenderTargetResourceSet>>
         targets;
 };
 
@@ -75,32 +76,15 @@ vk::ResolveModeFlagBits selectDepthResolveMode(
     return vk::ResolveModeFlagBits::eNone;
 }
 
-vk::Extent2D resolveRenderTargetExtent(const std::string &name, vk::Extent2D base_extent, float extent_scale,
-                                       std::optional<ResolvedResourceExtent> fixed_extent) {
-    const auto resolved = resolveResourceExtent(
-        fixed_extent
-            ? ResourceExtentPlan{
-                  .kind = ResourceExtentKind::fixed,
-                  .width = fixed_extent->width,
-                  .height = fixed_extent->height,
-              }
-            : ResourceExtentPlan{
-                  .kind = ResourceExtentKind::output_relative,
-                  .scale_x = extent_scale,
-                  .scale_y = extent_scale,
-              },
-        ResolvedResourceExtent{
-            .width = base_extent.width,
-            .height = base_extent.height,
-        });
-    const vk::Extent2D extent{resolved.width, resolved.height};
-
-    if (extent.width == 0 || extent.height == 0) {
-        throw std::runtime_error("Render target extent became zero-sized: " + name);
-    }
-    return extent;
+vk::Extent2D resolveRenderTargetExtent(const std::string &name, vk::Extent2D base_extent,
+    float extent_scale, std::optional<ResolvedResourceExtent> fixed_extent) {
+    RenderTargetDefinition definition;
+    definition.name = name;
+    definition.extent_scale = extent_scale;
+    definition.fixed_extent = fixed_extent;
+    const auto info = renderTargetImageContract(definition, base_extent, 0).image;
+    return {info.extent.width, info.extent.height};
 }
-
 static vk::UniqueImageView createImageView(
     vk::Device device, const ImageWrapper &image,
     vk::ImageViewType view_type,
@@ -238,6 +222,26 @@ void nameAttachmentSurfaces(
     }
 }
 
+RenderTargetImageContract actualImageContract(
+    const ImageWrapper &image, std::optional<std::uint32_t> queue_family = std::nullopt) {
+    RenderTargetImageContract result;
+    result.usage = imageUsageFromVulkan(image.usage);
+    result.queue_family = queue_family;
+    auto &info = result.image;
+    info.flags = image.create_flags;
+    info.imageType = image.image_type;
+    info.format = image.format;
+    info.extent = image.extent;
+    info.mipLevels = image.mip_levels;
+    info.arrayLayers = image.array_layers;
+    info.samples = image.samples;
+    info.tiling = vk::ImageTiling::eOptimal;
+    info.usage = image.usage;
+    info.sharingMode = vk::SharingMode::eExclusive;
+    info.initialLayout = vk::ImageLayout::eUndefined;
+    return result;
+}
+
 ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_extent, float extent_scale,
                                      std::optional<ResolvedResourceExtent> fixed_extent,
                                      ImageFormat image_format, ImageUsage image_usage,
@@ -248,13 +252,25 @@ ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_
                                      std::uint32_t array_layers = 1,
                                      RenderTargetStorageMode storage_mode =
                                          RenderTargetStorageMode::materialized,
-                                     bool aliasable = false,
                                      ImageResourceDimension dimension =
                                          ImageResourceDimension::two_d) {
-    // RC-3a1: the image is where the engine's vocabulary becomes Vulkan's.
-    const auto format = toVulkanFormat(image_format);
-    const auto usage = toVulkanImageUsage(image_usage);
     const auto &vkcore = GET_MODULE(VulkanManageCore);
+    RenderTargetDefinition definition;
+    definition.name = name;
+    definition.extent_scale = extent_scale;
+    definition.fixed_extent = fixed_extent;
+    definition.format = image_format;
+    definition.usage = image_usage;
+    definition.mip_levels = mip_levels;
+    definition.samples = static_cast<std::uint32_t>(samples);
+    definition.array_layers = array_layers;
+    definition.storage_mode = storage_mode;
+    definition.dimension = dimension;
+    const auto contract = renderTargetImageContract(definition, base_extent,
+        vkcore.getGraphicsQueueFamilyIndex(), samples != vk::SampleCountFlagBits::e1);
+    const auto create_info = contract.createInfo();
+    const auto format = create_info.format;
+    const auto usage = create_info.usage;
     const auto features = vkcore.getPhysDevice().getFormatProperties(format).optimalTilingFeatures;
     vk::FormatFeatureFlags required;
     if (usage & vk::ImageUsageFlagBits::eColorAttachment) {
@@ -278,20 +294,6 @@ ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_
     if ((features & required) != required) {
         throw std::runtime_error("Render target format lacks required color capability: " + name);
     }
-    const auto extent = resolveRenderTargetExtent(name, base_extent, extent_scale, fixed_extent);
-    if (dimension ==
-            ImageResourceDimension::cube &&
-        (array_layers != 6 ||
-         extent.width != extent.height)) {
-        throw std::runtime_error(
-            "Cube render target image creation requires a square "
-            "extent and exactly six array layers: " +
-            name);
-    }
-    const auto resolved_mip_levels =
-        resolveImageMipLevels(
-            mip_levels, extent.width,
-            extent.height);
     const auto preferred_memory =
         storage_mode ==
                     RenderTargetStorageMode::
@@ -303,28 +305,43 @@ ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_
                   vk::MemoryPropertyFlagBits::
                       eLazilyAllocated}
             : vk::MemoryPropertyFlags{};
-    const auto allocation_flags =
-        aliasable
-            ? vma::AllocationCreateFlags{
-                  vma::AllocationCreateFlagBits::eCanAlias}
-            : vma::AllocationCreateFlags{};
-    auto image_flags =
-        aliasable
-            ? vk::ImageCreateFlags{
-                  vk::ImageCreateFlagBits::eAlias}
-            : vk::ImageCreateFlags{};
-    if (dimension ==
-        ImageResourceDimension::cube) {
-        image_flags |=
-            vk::ImageCreateFlagBits::
-                eCubeCompatible;
+    return vkcore.allocImage(create_info, memory_usage, {}, preferred_memory);
+}
+
+// Every image contributes its own real requirements before any heap is bound.
+std::map<std::string, ImageWrapper, std::less<>> prepareRegionImages(
+    const std::vector<RenderTargetDefinition> &definitions, vk::Extent2D extent,
+    const RuntimeTargetMemoryContract &contract) {
+    auto &core=GET_MODULE(VulkanManageCore);
+    std::map<std::string, ImageWrapper, std::less<>> images;
+    MemoryPackingRequirements requirements;
+    for(const auto &resource:contract.inputs.resources) {
+        const auto found=std::find_if(definitions.begin(),definitions.end(),[&](const auto &d){return d.name==resource.resource;});
+        if(found==definitions.end()) throw std::runtime_error("render_target.memory_resource_missing@1: "+resource.resource);
+        auto d=*found;
+        d.planned_memory_region=0; // ALIAS_BIT, independently of a same-offset group.
+        const auto ci=renderTargetImageContract(d,extent,core.getGraphicsQueueFamilyIndex());
+        auto image=core.createUnboundImage(ci.createInfo());
+        auto req=core.imageRequirements(image);
+        if(contract.requirements_for_testing) req=contract.requirements_for_testing(d.name,extent,req);
+        requirements.emplace(d.name,req);
+        images.emplace(d.name,std::move(image));
     }
-    return vkcore.allocImage(vk::Extent3D{extent.width, extent.height, 1}, format, usage,
-                             memory_usage, allocation_flags,
-                             VulkanProcessType::graphics,
-                             {}, resolved_mip_levels, samples,
-                             array_layers,
-                             preferred_memory, image_flags);
+    std::map<std::string,std::string,std::less<>> rejections;
+    const auto packed=repackMemoryRegions(contract.inputs,requirements,contract.required_sets,rejections);
+    for(const auto &region:packed.regions) {
+        const auto allocation=core.allocateImageRegion(vk::MemoryRequirements{region.size,region.alignment,region.memory_type_bits});
+        for(const auto &r:region.residents) core.bindImageRegion(images.at(r.resource),allocation,r.offset,*requirements.at(r.resource),r.resource);
+    }
+    // Required dedicated allocations use vmaCreateImage's dedicated-aware path.
+    for(const auto &name:packed.excluded) {
+        auto &image=images.at(name);
+        const auto d=std::find_if(definitions.begin(),definitions.end(),[&](const auto &r){return r.name==name;});
+        const auto ci=renderTargetImageContract(*d,extent,core.getGraphicsQueueFamilyIndex());
+        image=core.allocImage(ci.createInfo(),vma::MemoryUsage::eAutoPreferDevice,{});
+    }
+    for(const auto &[name,reason]:rejections) images.at(name).memory_rejection=reason;
+    return images;
 }
 
 void clearHistoryImages(const std::array<ImageWrapper, 2> &images,
@@ -397,7 +414,7 @@ void uploadSourcePixels(const ImageWrapper &image,
 struct PreparedRenderTargetExtent::Impl {
     struct Entry {
         GlobalRenderTargetId id;
-        std::unique_ptr<RenderTargetResourceSet>
+        std::shared_ptr<RenderTargetResourceSet>
             resources;
     };
 
@@ -450,14 +467,6 @@ void RenderTargetContainer::bumpResourceRevision() {
     ++resource_revision;
 }
 
-std::uint64_t RenderTargetContainer::createAliasGroupToken() {
-    if (next_alias_group_token ==
-        std::numeric_limits<std::uint64_t>::max()) {
-        throw std::overflow_error(
-            "render target alias group token space exhausted");
-    }
-    return next_alias_group_token++;
-}
 
 vk::ClearColorValue physicalRenderTargetHistoryClearColor(
     const RenderTargetDefinition &definition) {
@@ -545,7 +554,8 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
     const RenderTargetDefinition &definition,
     vk::Extent2D base_extent,
     vma::MemoryUsage memUsage,
-    std::optional<std::uint64_t> alias_group_token) {
+    ImageWrapper prepared_image,
+    std::shared_ptr<const RuntimeTargetMemoryContract> memory_contract) {
     // The physical clear value is resolved first so an unrepresentable
     // authored value is reported before any other contract check, as it was
     // when the caller resolved it ahead of the call.
@@ -576,12 +586,6 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
     } else if (mip_levels.count == 0) {
         throw std::runtime_error(
             "Render target mip_levels must be greater than zero: " +
-            name);
-    }
-    if (alias_group.has_value() !=
-        alias_group_token.has_value()) {
-        throw std::runtime_error(
-            "render target alias group name and token must be provided together: " +
             name);
     }
     if (alias_group && alias_group->empty()) {
@@ -680,9 +684,8 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
     if (history && !(usage & ImageUsageBit::color_attachment)) {
         throw std::runtime_error("History render target requires COLOR_ATTACHMENT usage: " + name);
     }
-    usage = engineImageUsage({.declared = usage,
-                              .history = history,
-                              .storage = storage_mode});
+    usage = engineImageUsage({.declared = definition.usage,
+        .history = history, .storage = storage_mode});
     if (alias_group &&
         (history || samples != 1 ||
          storage_mode !=
@@ -733,7 +736,7 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
         // TAA) and therefore request fewer usage bits for the same target.
         // Reusing the already-created superset image is valid. Adding a bit
         // that the physical image was not created with is not.
-        if ((existing.usage & usage) != usage) note("usage expansion");
+
         if (existing.extent_scale != extent_scale) note("extent_scale");
         if (existing.fixed_extent != fixed_extent) note("fixed_extent");
         if (existing.history != history) note("history");
@@ -752,13 +755,22 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
         // a sequential/flat registration. Expanding a live image during a
         // candidate transaction is not failure-atomic, so it remains an
         // explicit restart boundary.
-        if (existing.array_layers < array_layers)
-            note("array_layers expansion");
+
         if (!changed.empty()) {
             throw std::runtime_error(
                 "Render target re-registration changed its physical contract: " +
                 name + " (" + changed + ")");
         }
+        if(memory_contract && (!existing.memory_contract ||
+            existing.memory_contract->inputs!=memory_contract->inputs ||
+            existing.memory_contract->required_sets!=memory_contract->required_sets))
+            throw std::runtime_error("render_target.memory_contract_changed@1: "+name);
+        const auto &live_image = existing.resources->images[0];
+        const auto live_contract = actualImageContract(live_image,
+            GET_MODULE(VulkanManageCore).getGraphicsQueueFamilyIndex());
+        const auto reused_contract = renderTargetImageContract(definition, base_extent,
+            GET_MODULE(VulkanManageCore).getGraphicsQueueFamilyIndex(), false, &live_contract);
+        (void)reused_contract; // The existing image already has exactly this create info.
         // PS-1: a lifetime is not part of the image. Once some registration
         // keeps the contents, the layout tracker keeps tracking them: that
         // is harmless for a transient user and survives a rolled-back
@@ -775,40 +787,6 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
             "multisampled depth render target requires depth resolve support: " +
             name);
     }
-    const InternalRenderTarget *alias_owner = nullptr;
-    if (alias_group_token) {
-        if (const auto owner =
-                alias_group_owners.find(*alias_group_token);
-            owner != alias_group_owners.end()) {
-            alias_owner = &render_targets.get(owner->second);
-            const auto requested_extent =
-                resolveRenderTargetExtent(
-                    name, base_extent, extent_scale,
-                    fixed_extent);
-            const auto &owner_image =
-                alias_owner->resources->images[0];
-            const auto owner_extent =
-                vk::Extent2D{
-                    owner_image.extent.width,
-                    owner_image.extent.height};
-            if (alias_owner->format != format ||
-                alias_owner->usage != usage ||
-                alias_owner->memory_usage != memUsage ||
-                alias_owner->samples != samples ||
-                alias_owner->mip_levels !=
-                    mip_levels ||
-                alias_owner->array_layers != array_layers ||
-                alias_owner->dimension != dimension ||
-                alias_owner->storage_mode != storage_mode ||
-                owner_extent != requested_extent) {
-                throw std::runtime_error(
-                    "render target alias group members have incompatible physical contracts: " +
-                    *alias_group + " (" +
-                    alias_owner->name + ", " + name +
-                    ")");
-            }
-        }
-    }
     registration_order.reserve(registration_order.size() + 1);
     std::array<ImageWrapper, 2> images;
     std::array<std::vector<vk::UniqueImageView>, 2>
@@ -822,19 +800,10 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
         layered_attachment_image_views;
     const uint32_t surface_count = history ? 2u : 1u;
     for (uint32_t i = 0; i < surface_count; ++i) {
-        images[i] =
-            alias_owner != nullptr
-                ? GET_MODULE(VulkanManageCore)
-                          .allocAliasingImage(
-                          alias_owner->resources->images[i])
-                : createRenderTargetImage(
-                      name, base_extent, extent_scale,
-                      fixed_extent, format, usage, memUsage,
-                      mip_levels,
-                      vk::SampleCountFlagBits::e1,
-                      array_layers, storage_mode,
-                      alias_group_token.has_value(),
-                      dimension);
+        images[i] = (i == 0 && prepared_image.image) ? std::move(prepared_image) : createRenderTargetImage(
+            name, base_extent, extent_scale, fixed_extent, format, usage, memUsage,
+            mip_levels, vk::SampleCountFlagBits::e1, array_layers, storage_mode,
+            dimension);
         image_layer_views[i] =
             createSequentialImageViews(device, images[i]);
         layered_image_views[i] =
@@ -848,7 +817,7 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
                 attachment_usage, memUsage,
                 ImageMipLevelCount{}, sample_count,
                 array_layers, storage_mode,
-                false, dimension);
+                dimension);
             attachment_image_layer_views[i] =
                 createSequentialImageViews(
                     device, attachment_images[i]);
@@ -887,11 +856,12 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
         .dimension = dimension,
         .storage_mode = storage_mode,
         .alias_group = alias_group,
-        .alias_group_token = alias_group_token,
+        .memory_contract = std::move(memory_contract),
         .persistent = definition.persistent,
         .resources =
-            std::make_unique<RenderTargetResourceSet>(
+            std::make_shared<RenderTargetResourceSet>(
                 RenderTargetResourceSet{
+                    .base_extent=base_extent, .revision=resource_revision+1,
                     .images = std::move(images),
                     .image_layer_views =
                         std::move(image_layer_views),
@@ -916,15 +886,6 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
                 name);
         }
         registration_order.push_back(id);
-        if (alias_group_token &&
-            alias_owner == nullptr &&
-            !alias_group_owners
-                 .emplace(*alias_group_token, id)
-                 .second) {
-            throw std::runtime_error(
-                "render target alias group owner changed during registration: " +
-                *alias_group);
-        }
         bumpResourceRevision();
     } catch (...) {
         if (const auto found = name_to_id.find(name);
@@ -934,10 +895,106 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
         }
         std::erase(registration_order, id);
         (void)render_targets.extract(id, false);
-        rebuildAliasGroupOwners();
         throw;
     }
     return id;
+}
+
+void RenderTargetContainer::registerMemoryTargets(
+    const std::vector<RenderTargetDefinition> &definitions, vk::Extent2D extent,
+    std::shared_ptr<const RuntimeTargetMemoryContract> contract) {
+    const auto checkpoint=checkpointRegistrations();
+    try {
+        // Resolve live contracts before preparing any new images. In particular,
+        // a live relative image keeps its original extent (and mip chain).
+        std::vector<RenderTargetDefinition> fresh;
+        for(const auto &d:definitions) {
+            const bool member=contract && std::any_of(contract->inputs.resources.begin(),contract->inputs.resources.end(),[&](const auto &r){return r.resource==d.name;});
+            if(name_to_id.contains(d.name))
+                registerRenderTarget(d,extent,vma::MemoryUsage::eAutoPreferDevice,{},member ? contract : nullptr);
+            else fresh.push_back(d);
+        }
+        auto pending=contract ? *contract : RuntimeTargetMemoryContract{};
+        const auto reused=[&](const auto &name){return name_to_id.contains(name);};
+        std::erase_if(pending.inputs.resources,[&](const auto &r){return reused(r.resource);});
+        std::erase_if(pending.inputs.order,reused);
+        std::erase_if(pending.inputs.forbidden_pairs,[&](const auto &p){return reused(p.first)||reused(p.second);});
+        for(auto *sets:{&pending.inputs.same_offset_sets,&pending.required_sets}) {
+            for(auto &set:*sets) std::erase_if(set,reused);
+            std::erase_if(*sets,[](const auto &set){return set.size()<2;});
+        }
+        auto images=contract ? prepareRegionImages(fresh,extent,pending)
+                             : std::map<std::string,ImageWrapper,std::less<>>{};
+        for(const auto &d:fresh) {
+            auto found=images.find(d.name);
+            const bool member=contract && std::any_of(contract->inputs.resources.begin(),contract->inputs.resources.end(),[&](const auto &r){return r.resource==d.name;});
+            registerRenderTarget(d,extent,vma::MemoryUsage::eAutoPreferDevice,
+                found==images.end() ? ImageWrapper{} : std::move(found->second), member ? contract : nullptr);
+        }
+    } catch(...) { rollbackRegistrations(checkpoint); throw; }
+}
+
+std::vector<std::shared_ptr<const void>> RenderTargetContainer::resourceLeases() const {
+    std::vector<std::shared_ptr<const void>> result;
+    for(const auto id:registration_order) result.push_back(render_targets.get(id).resources);
+    return result;
+}
+
+std::vector<std::pair<std::uint64_t,std::uint64_t>> RenderTargetContainer::allocationMeasurements(GlobalRenderTargetId id) const {
+    std::vector<std::pair<std::uint64_t,std::uint64_t>> result;
+    const auto &rt=render_targets.get(id);
+    const auto add=[&](const ImageWrapper &image) {
+        if(image.image && image.allocation) result.emplace_back(
+            reinterpret_cast<std::uintptr_t>(image.allocation.get()),GET_MODULE(VulkanManageCore).imageAllocationBytes(image));
+    };
+    for(std::uint32_t i=0;i<(rt.history?2u:1u);++i) {add(rt.resources->images[i]); add(rt.resources->attachment_images[i]);}
+    return result;
+}
+
+nlohmann::json RenderTargetContainer::actualPlacement(std::span<const GlobalRenderTargetId> ids) const {
+    using Json=nlohmann::json;
+    Json result={{"extent",nullptr},{"revision",resource_revision},{"regions",Json::array()},{"overlaps",Json::array()}};
+    std::map<const void*,std::size_t> regions;
+    std::map<VkDeviceMemory,std::size_t> memory_blocks;
+    result["revision"]=0;
+    auto &core=GET_MODULE(VulkanManageCore);
+    std::uint64_t bytes=0;
+    const auto add=[&](const ImageWrapper &image,const std::string &name) {
+        if(!image.image || !image.allocation) return;
+        const auto info=core.imageAllocationInfo(image);
+        auto [it,inserted]=regions.emplace(image.allocation.get(),regions.size());
+        if(inserted) {
+            bytes+=info.size;
+            const auto block=memory_blocks.try_emplace(static_cast<VkDeviceMemory>(info.deviceMemory),memory_blocks.size()).first->second;
+            result["regions"].push_back({{"region",it->second},{"memoryTypeIndex",info.memoryType},{"device_memory_block",block},
+                {"size",info.size},{"residents",Json::array()}});
+        }
+        const auto req=core.imageRequirements(image);
+        result["regions"][it->second]["residents"].push_back({{"resource",name},{"offset",image.memory_offset},
+            {"size",req.size},{"alignment",req.alignment},{"memory_type_bits",req.memory_type_bits},
+            {"region_bound",image.region_bound},{"rejection",image.memory_rejection.empty()?Json(nullptr):Json(image.memory_rejection)}});
+    };
+    for(const auto id:ids) {
+        const auto &rt=render_targets.get(id);
+        result["extent"]={{"width",rt.resources->base_extent.width},{"height",rt.resources->base_extent.height}};
+        result["revision"]=std::max(result["revision"].get<std::uint64_t>(),rt.resources->revision);
+        for(std::uint32_t surface=0;surface<(rt.history?2u:1u);++surface) {
+            const auto suffix=surface ? "@history" : "";
+            add(rt.resources->images[surface],rt.name+suffix);
+            add(rt.resources->attachment_images[surface],rt.name+suffix+"@attachment");
+        }
+    }
+    for(const auto &region:result["regions"]) {
+        const auto &r=region["residents"];
+        for(std::size_t i=0;i<r.size();++i) for(std::size_t j=i+1;j<r.size();++j) {
+            const auto a=r[i]["offset"].get<std::uint64_t>(), b=r[j]["offset"].get<std::uint64_t>();
+            if(a<b+r[j]["size"].get<std::uint64_t>() && b<a+r[i]["size"].get<std::uint64_t>())
+                result["overlaps"].push_back({{"region",region["region"]},{"left",r[i]["resource"]},{"right",r[j]["resource"]}});
+        }
+    }
+    result["allocation_count"]=regions.size(); result["allocation_bytes"]=bytes;
+    result["device_memory_block_count"]=memory_blocks.size();
+    return result;
 }
 
 PreparedRenderTargetExtent
@@ -955,58 +1012,42 @@ RenderTargetContainer::prepareForExtent(
         prepared_by_id;
     prepared_by_id.reserve(registration_order.size());
 
+    std::map<int, ImageWrapper> region_images;
+    std::map<const RuntimeTargetMemoryContract *, std::vector<GlobalRenderTargetId>> groups;
     for (const auto id : registration_order) {
         const auto &rt = render_targets.get(id);
-        const RenderTargetResourceSet *
-            alias_owner = nullptr;
-        if (rt.alias_group_token) {
-            const auto owner =
-                alias_group_owners.find(
-                    *rt.alias_group_token);
-            if (owner ==
-                alias_group_owners.end()) {
-                throw std::runtime_error(
-                    "render target alias group has no allocation owner: " +
-                    rt.name);
-            }
-            if (owner->second != id) {
-                const auto prepared_owner =
-                    prepared_by_id.find(
-                        owner->second.value);
-                if (prepared_owner ==
-                    prepared_by_id.end()) {
-                    throw std::runtime_error(
-                        "render target alias owner was not prepared before member: " +
-                        rt.name);
-                }
-                alias_owner =
-                    prepared->entries[
-                        prepared_owner->second]
-                        .resources.get();
-            }
+        if (rt.memory_contract) groups[rt.memory_contract.get()].push_back(id);
+    }
+    for (const auto &[contract, ids] : groups) {
+        std::vector<RenderTargetDefinition> definitions;
+        for (const auto id : ids) {
+            const auto &rt = render_targets.get(id);
+            RenderTargetDefinition d;
+            d.name=rt.name; d.extent_scale=rt.extent_scale; d.fixed_extent=rt.fixed_extent;
+            d.format=rt.format; d.usage=rt.usage; d.array_layers=rt.array_layers;
+            d.mip_levels=rt.mip_levels; d.dimension=rt.dimension; d.alias_group=rt.alias_group;
+            definitions.push_back(std::move(d));
         }
+        auto images = prepareRegionImages(definitions, base_extent, *contract);
+        for (const auto id : ids) {
+            const auto found=images.find(render_targets.get(id).name);
+            if(found!=images.end()) region_images.emplace(id.value,std::move(found->second));
+        }
+    }
+    for (const auto id : registration_order) {
+        const auto &rt = render_targets.get(id);
+        auto region_image = region_images.find(id.value);
         auto next =
-            std::make_unique<
+            std::make_shared<
                 RenderTargetResourceSet>();
+        next->base_extent=base_extent;
+        next->revision=resource_revision+1;
         const uint32_t surface_count = rt.history ? 2u : 1u;
         for (uint32_t i = 0; i < surface_count; ++i) {
-            next->images[i] =
-                alias_owner != nullptr
-                    ? GET_MODULE(VulkanManageCore)
-                          .allocAliasingImage(
-                              alias_owner->images[i])
-                    : createRenderTargetImage(
-                          rt.name, base_extent,
-                          rt.extent_scale,
-                          rt.fixed_extent, rt.format,
-                          rt.usage, rt.memory_usage,
-                          rt.mip_levels,
-                          vk::SampleCountFlagBits::e1,
-                          rt.array_layers,
-                          rt.storage_mode,
-                          rt.alias_group_token
-                              .has_value(),
-                          rt.dimension);
+            next->images[i] = (i == 0 && region_image != region_images.end()) ? std::move(region_image->second) : createRenderTargetImage(
+                rt.name, base_extent, rt.extent_scale, rt.fixed_extent, rt.format,
+                rt.usage, rt.memory_usage, rt.mip_levels, vk::SampleCountFlagBits::e1,
+                rt.array_layers, rt.storage_mode, rt.dimension);
             next->image_layer_views[i] =
                 createSequentialImageViews(
                     device, next->images[i]);
@@ -1023,8 +1064,7 @@ RenderTargetContainer::prepareForExtent(
                     rt.format, attachment_usage, rt.memory_usage,
                     ImageMipLevelCount{},
                     toSampleCount(rt.samples), rt.array_layers,
-                    rt.storage_mode, false,
-                    rt.dimension);
+                    rt.storage_mode, rt.dimension);
                 next->attachment_image_layer_views[i] =
                     createSequentialImageViews(
                         device, next->attachment_images[i]);
@@ -1075,7 +1115,7 @@ bool RenderTargetContainer::setRuntimeArrayLayers(
         return false;
     }
     if (target.history || target.alias_group ||
-        target.alias_group_token || target.source_pixels ||
+        target.memory_contract || target.source_pixels ||
         target.dimension !=
             ImageResourceDimension::two_d) {
         throw std::runtime_error(
@@ -1108,15 +1148,16 @@ bool RenderTargetContainer::setRuntimeArrayLayers(
         target.resources->images[0].extent.height,
     };
     auto next =
-        std::make_unique<RenderTargetResourceSet>();
+        std::make_shared<RenderTargetResourceSet>();
+    next->base_extent=target.resources->base_extent;
+    next->revision=resource_revision+1;
     next->images[0] = createRenderTargetImage(
         target.name, current_extent, 1.0f,
         extentFromVulkan(current_extent), target.format,
         target.usage, target.memory_usage,
         target.mip_levels,
         vk::SampleCountFlagBits::e1,
-        array_layers, target.storage_mode,
-        false, target.dimension);
+        array_layers, target.storage_mode, target.dimension);
     next->image_layer_views[0] =
         createSequentialImageViews(
             device, next->images[0]);
@@ -1136,8 +1177,7 @@ bool RenderTargetContainer::setRuntimeArrayLayers(
                 target.memory_usage,
                 ImageMipLevelCount{},
                 toSampleCount(target.samples),
-                array_layers, target.storage_mode,
-                false, target.dimension);
+                array_layers, target.storage_mode, target.dimension);
         next->attachment_image_layer_views[0] =
             createSequentialImageViews(
                 device,
@@ -1249,7 +1289,9 @@ void RenderTargetContainer::publishPreparedExtent(
 }
 
 void RenderTargetContainer::resetHistory() {
-    GET_MODULE(VulkanManageCore).waitIdle();
+    const bool has_history=std::any_of(registration_order.begin(),registration_order.end(),
+        [&](const auto id){return render_targets.get(id).history;});
+    if(has_history) GET_MODULE(VulkanManageCore).waitIdle();
     for (const auto id : registration_order) {
         auto &rt = render_targets.get(id);
         if (rt.history) {
@@ -1579,7 +1621,9 @@ bool RenderTargetContainer::persistent(
 std::optional<std::uint64_t>
 RenderTargetContainer::aliasGroup(
     GlobalRenderTargetId id) const {
-    return render_targets.get(id).alias_group_token;
+    const auto &image = getImage(id);
+    if (!image.region_bound) return std::nullopt;
+    return reinterpret_cast<std::uintptr_t>(image.allocation.get());
 }
 
 bool RenderTargetContainer::sharesAllocation(
@@ -1617,7 +1661,6 @@ void RenderTargetContainer::rollbackRegistrations(
         registration_order.pop_back();
     }
     name_to_id = std::move(checkpoint.name_to_id);
-    rebuildAliasGroupOwners();
     if (changed) bumpResourceRevision();
 }
 
@@ -1671,25 +1714,12 @@ void RenderTargetContainer::retireRegistrations(
         } catch (...) {
         }
     }
-    rebuildAliasGroupOwners();
     if (changed) {
         if (resource_revision ==
             std::numeric_limits<std::uint64_t>::max()) {
             std::terminate();
         }
         ++resource_revision;
-    }
-}
-
-void RenderTargetContainer::rebuildAliasGroupOwners() {
-    alias_group_owners.clear();
-    for (const auto id : registration_order) {
-        if (!render_targets.contains(id)) continue;
-        const auto &target = render_targets.get(id);
-        if (target.alias_group_token) {
-            alias_group_owners.emplace(
-                *target.alias_group_token, id);
-        }
     }
 }
 
@@ -1707,8 +1737,7 @@ std::uint64_t renderTargetBytes(const RenderTargetMetadata &metadata) {
 RegisteredTargetMemory registeredRenderTargetMemory(
     const RenderTargetMetadata &metadata,
     std::optional<std::uint64_t> alias_group, bool used) {
-    // An alias member's images[] are bound to the owner's allocation
-    // (allocAliasingImage); its multisampled attachment image is not.
+    // Metadata-only estimate. Runtime callers attach measured allocations.
     auto single_sample = metadata;
     single_sample.samples = 1;
     return RegisteredTargetMemory{

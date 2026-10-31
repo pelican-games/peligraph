@@ -4580,15 +4580,15 @@
   "skeletal_toon": {
     "final_layouts": [
       {
-        "layout": "shader_read_only_optimal",
+        "layout": "undefined",
         "resource": "Bloom_Downsample_H_0_RT"
       },
       {
-        "layout": "shader_read_only_optimal",
+        "layout": "undefined",
         "resource": "Bloom_Downsample_H_1_RT"
       },
       {
-        "layout": "shader_read_only_optimal",
+        "layout": "undefined",
         "resource": "Bloom_Downsample_H_2_RT"
       },
       {
@@ -4596,7 +4596,7 @@
         "resource": "Bloom_Downsample_H_3_RT"
       },
       {
-        "layout": "shader_read_only_optimal",
+        "layout": "undefined",
         "resource": "Bloom_Threshold_RT"
       },
       {
@@ -4632,11 +4632,11 @@
         "resource": "gbuffer_material"
       },
       {
-        "layout": "shader_read_only_optimal",
+        "layout": "undefined",
         "resource": "gbuffer_normal"
       },
       {
-        "layout": "shader_read_only_optimal",
+        "layout": "undefined",
         "resource": "gbuffer_worldpos"
       },
       {
@@ -12552,15 +12552,15 @@
   "usd0b_static_geometry": {
     "final_layouts": [
       {
-        "layout": "shader_read_only_optimal",
+        "layout": "undefined",
         "resource": "Bloom_Downsample_H_0_RT"
       },
       {
-        "layout": "shader_read_only_optimal",
+        "layout": "undefined",
         "resource": "Bloom_Downsample_H_1_RT"
       },
       {
-        "layout": "shader_read_only_optimal",
+        "layout": "undefined",
         "resource": "Bloom_Downsample_H_2_RT"
       },
       {
@@ -12568,7 +12568,7 @@
         "resource": "Bloom_Downsample_H_3_RT"
       },
       {
-        "layout": "shader_read_only_optimal",
+        "layout": "undefined",
         "resource": "Bloom_Threshold_RT"
       },
       {
@@ -12604,11 +12604,11 @@
         "resource": "gbuffer_material"
       },
       {
-        "layout": "shader_read_only_optimal",
+        "layout": "undefined",
         "resource": "gbuffer_normal"
       },
       {
-        "layout": "shader_read_only_optimal",
+        "layout": "undefined",
         "resource": "gbuffer_worldpos"
       },
       {

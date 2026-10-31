@@ -1,3 +1,4 @@
+#include "rc7c_device_test_facts.hpp"
 #include "retain_observed_test_support.hpp"
 #include "../src/devstudio/model/frameplanpolicy.hpp"
 #include "../src/core/imgui/imguiruntime.hpp"
@@ -2147,6 +2148,7 @@ Fg1Compiled fg1Compile(const nlohmann::json &config) {
         vk::Format::eB8G8R8A8Srgb, vk::Extent2D{64, 64}, {}, {}, {},
         VulkanRenderCompilerDevicePlanningMode::compiler_only};
     fixture.variants = {{.graph_variant = RenderPipelineGraphVariant::flat}};
+    fixture.backend_context.planning_facts=TestSupport::rc7cDeviceFacts();
     auto input = fixture.input();
     input.runtime_shader_compiler_enabled = true;
     const auto output = runRenderCompilerProgram(defaultVulkanRenderCompilerProgram(), input);
@@ -2381,5 +2383,6 @@ namespace Pelican {
 #include "rc6b1_compiler_policy_test.inc"
 #include "rc7a_compiler_policy_test.inc"
 #include "rc7b_compiler_policy_test.inc"
+#include "rc7c_compiler_policy_test.inc"
 #endif
 }

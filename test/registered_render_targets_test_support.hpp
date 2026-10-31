@@ -1,9 +1,8 @@
 #pragma once
 
-// RC-1b: what registerRenderTargetDefinitions makes of a set of render target
-// definitions, for tests that cannot create the RenderTargetContainer (it
-// needs a Vulkan device): each target's metadata as getMetadata reports it
-// and its alias token as aliasGroup does.
+// CPU-only metadata and payload estimates. These tests measure no Vulkan
+// allocations: same-offset plan groups have synthetic identities and runtime
+// actual_placement remains unmeasured. GPU tests inspect the real regions.
 
 #include "../src/core/renderingpass/renderingsamplecount.hpp"
 #include "../src/core/renderingpass/rendertargetdefinition.hpp"
@@ -78,8 +77,9 @@ inline std::vector<FrameGraphBufferDefinition> bufferDefinitionsOf(
 // from 1, as registration hands them out.
 inline std::vector<RegisteredRenderTargetStandIn>
 registerRenderTargetsWithoutDevice(
-    std::span<const RenderTargetDefinition> targets,
+    std::span<const RenderTargetDefinition> planned,
     vk::Extent2D base_extent) {
+    const auto targets=planned;
     std::map<std::string, std::uint64_t, std::less<>> tokens;
     std::vector<RegisteredRenderTargetStandIn> registered;
     registered.reserve(targets.size());

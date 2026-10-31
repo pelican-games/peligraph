@@ -6317,6 +6317,11 @@ void GraphCanvasModel::readPlanLayers(const Json &plan) {
                 if (group.is_object())
                     plan_alias_groups_.push_back({text(group, "id"), planStrings(group, "resources"),
                                                   planStrings(group, "from_nodes")});
+        if (const auto *regions = array(*physical, "memory_regions")) for (const auto &region : *regions)
+            if (const auto *residents = array(region,"residents")) for (const auto &resident : *residents) {
+                const auto found=std::ranges::find(plan_resources_,text(resident,"resource"),&PlanResource::name);
+                if (found!=plan_resources_.end()) found->planned_placement="region " + region.at("region").dump()+" / offset "+resident.at("offset").dump()+" (planned; actual unmeasured)";
+            }
         if (const auto *scopes = array(*physical, "scopes"))
             for (const auto &scope : *scopes)
                 if (scope.is_object())
@@ -6471,6 +6476,7 @@ std::vector<GraphCanvasLayerRow> GraphCanvasModel::bodyLayerRows(std::string_vie
                     std::to_string(origin.element) + "]";
         const auto found = std::ranges::find(plan_resources_, name, &PlanResource::name);
         if (found != plan_resources_.end() && !found->format.empty()) line += dot + found->format;
+        if (found != plan_resources_.end() && !found->planned_placement.empty()) line += dot + found->planned_placement;
         rows.push_back({"L2", "resource", line, {}, name});
     }
     return rows;
@@ -6617,6 +6623,7 @@ std::vector<GraphCanvasLayerRow> GraphCanvasModel::layerRows(std::string_view ca
         if (!meets(resource.from_nodes, nodes)) continue;
         auto line = "resource " + resource.name;
         if (!resource.format.empty()) line += dot + resource.format;
+        if (!resource.planned_placement.empty()) line += dot + resource.planned_placement;
         for (const auto &group : plan_alias_groups_)
             if (listed(group.resources, resource.name)) line += dot + "alias " + group.id;
         rows.push_back({"L2", "resource", line, {}, resource.name});

@@ -451,11 +451,16 @@ struct FramePlanResource {
     std::vector<std::string> from_nodes;
     // IA-1s, decision 3: the asset it starts from; nullopt for none.
     std::optional<FramePlanInitialAsset> initial_asset;
-    // RC-1: physical_target_plan.resources[].bytes, what its images occupy
-    // (every surface, mip and layer, and the multisampled image it renders
-    // into). nullopt for an external image or a buffer, and in a plan from
-    // before RC-1.
+    // Runtime: sizes of the VMA allocations this target references (a shared
+    // region appears on each resident row). Compiler-only: payload estimate.
+    // Aggregate totals deduplicate allocations, rather than summing rows.
     std::optional<std::uint64_t> bytes;
+    std::optional<std::uint64_t> payload_bytes, actual_allocation_bytes;
+    std::optional<std::uint32_t> actual_region, actual_memory_type_index;
+    std::uint64_t actual_offset=0;
+    std::optional<std::uint32_t> planned_region;
+    std::uint64_t planned_offset = 0;
+    std::uint64_t planned_requirement_bytes = 0;
 
     bool operator==(const FramePlanResource &) const = default;
 };
@@ -740,6 +745,9 @@ struct FramePlanMemorySummary {
     std::uint64_t peak_live_bytes = 0;
     // Empty when no image is alive at any node (peak_node null).
     std::string peak_node;
+    std::optional<std::uint64_t> payload_bytes;
+    std::optional<std::uint64_t> planned_region_bytes;
+    bool actual_placement_measured = false;
 
     bool operator==(const FramePlanMemorySummary &) const = default;
 };

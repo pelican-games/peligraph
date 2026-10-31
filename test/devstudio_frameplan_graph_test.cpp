@@ -1,3 +1,4 @@
+#include "rc7c_device_test_facts.hpp"
 #include "graphfoldgroups.hpp"
 #include "frameplanpolicy.hpp"
 #include "enginefailuremodel.hpp"
@@ -221,6 +222,7 @@ Pelican::RenderingTargetPlanDeviceFacts planningDeviceFacts() {
             },
         .transient_attachments = true,
         .dynamic_rendering_local_read = true,
+        .image_memory_requirements = Pelican::TestSupport::rc7cDeviceRequirements,
     };
 }
 
@@ -12907,20 +12909,21 @@ TEST_CASE("RC-1 the Frame Plan says on its status line what the physical plan's 
     // The CPU plan's 160x90: the 21 images with g_emissive's allocation,
     // shared with the bloom threshold, once; lighting_pass holds the five
     // G-buffer targets, the depth, the blurred SSAO and lit_color.
-    CHECK(wire.at("memory_summary") == Json{{"total_bytes", 873200},
-                                            {"unused_bytes", 0},
-                                            {"unused_resources", Json::array()},
-                                            {"peak_live_bytes", 590400},
-                                            {"peak_node", "lighting_pass"},
-                                            {"peak_graph", "main_render"}});
+    const auto &memory=wire.at("memory_summary");
+    CHECK(memory.at("payload_bytes")==930800);
+    CHECK(memory.at("planned_region_bytes")==172032);
+    CHECK(memory.at("planned_region_count")==1);
+    CHECK(memory.at("actual_placement").is_null());
+    CHECK(memory.at("peak_live_bytes")==590400);
 #endif
     EmbeddedViewport viewport;
     FramePlanWidget widget{&viewport};
     widget.receiveResult(QByteArray::fromStdString(wire.dump()));
     QApplication::processEvents();
 #if PELICAN_RUNTIME_SHADER_COMPILER
-    CHECK(framePlanStatus(widget).toolTip().endsWith(
-        QStringLiteral(" · RT 852.7 KiB / peak 576.6 KiB at lighting_pass")));
+    CHECK(framePlanStatus(widget).toolTip().contains(QStringLiteral("planned regions")));
+    CHECK(framePlanStatus(widget).toolTip().contains(QStringLiteral("payload 909.0 KiB")));
+    CHECK(framePlanStatus(widget).toolTip().endsWith(QStringLiteral("actual placement: unmeasured")));
 #else
     CHECK(framePlanStatus(widget).toolTip().contains(QStringLiteral(" · RT ")));
 #endif
@@ -12943,10 +12946,27 @@ TEST_CASE("RC-1 the Frame Plan says on its status line what the physical plan's 
         return QString{};
     };
     // R16G16B16A16_SFLOAT at 160x90.
-    CHECK(fact(QStringLiteral("lit_color"), QStringLiteral("Bytes")) ==
+    CHECK(fact(QStringLiteral("lit_color"), QStringLiteral("Payload bytes")) ==
           QStringLiteral("112.5 KiB"));
     // The swapchain is the presentation engine's: no bytes of the plan.
-    CHECK(fact(QStringLiteral("swapchain"), QStringLiteral("Bytes")).isEmpty());
+    CHECK(fact(QStringLiteral("swapchain"), QStringLiteral("Payload bytes")).isEmpty());
+
+    // Measured heaps supplement the plan; a different actual region never
+    // rewrites the planned offset used by Freeze.
+    const auto planned=fact(QStringLiteral("lit_color"),QStringLiteral("Planned region / offset"));
+    auto measured=wire;
+    measured["memory_summary"]["actual_placement"]={{"extent",{{"width",160},{"height",90}}},{"revision",9},
+        {"regions",Json::array({{{"region",99},{"memoryTypeIndex",1},{"size",1048576},
+            {"residents",Json::array({{{"resource","lit_color"},{"offset",4096},{"size",115200},{"region_bound",true}}})}}})},{"overlaps",Json::array()}};
+    for(auto &r:measured["physical_target_plan"]["resources"]) if(r["logical_resource"]=="lit_color") {
+        r["bytes"]=1048576;r["allocation_bytes"]=1048576;r["payload_bytes"]=115200;
+    }
+    widget.receiveResult(QByteArray::fromStdString(measured.dump()));QApplication::processEvents();
+    CHECK(framePlanStatus(widget).toolTip().endsWith(QStringLiteral("actual placement: measured")));
+    CHECK(fact(QStringLiteral("lit_color"),QStringLiteral("Planned region / offset"))==planned);
+    CHECK(fact(QStringLiteral("lit_color"),QStringLiteral("Actual placement"))==QStringLiteral("Region 99 / offset 4096 / memory type 1"));
+    CHECK(fact(QStringLiteral("lit_color"),QStringLiteral("VMA allocation bytes (shared region)"))==QStringLiteral("1.0 MiB"));
+    CHECK(fact(QStringLiteral("lit_color"),QStringLiteral("Payload bytes"))==QStringLiteral("112.5 KiB"));
 
     // A plan from before RC-1 says nothing of memory.
     Json before = wire;

@@ -1,3 +1,4 @@
+#include "rendertargetimagecontract.hpp"
 #include "../renderer/camera.hpp"
 #include "../renderer/shadowvalidation.hpp"
 #include "renderingpassconfigregistration.hpp"
@@ -857,6 +858,9 @@ void RegistrationStages::prepare() {
                 enabled_device_extensions.begin(),
                 enabled_device_extensions.end()},
             vulkan_core.getRuntimeCapabilities(),
+            VulkanRenderCompilerDevicePlanningMode::device_required,
+            vulkan_core.getDevice(),
+            vulkan_core.getGraphicsQueueFamilyIndex(),
         };
     // The loader admitted a `pelican.graph` root only (MG-2b), so the value
     // and pose partitions always exist.
@@ -1098,6 +1102,8 @@ void RegistrationStages::prepare() {
         dependencies.front().options.observe_generation_resources(
             generation_resources);
     }
+    std::vector<RenderTargetDefinition> generation_definitions;
+    for(const auto &image:generation_resources.images) generation_definitions.push_back(renderTargetDefinitionOf(image));
     // Each variant's images and buffers for its GPU registration. EN-2:
     // every variant's declaration of a file image shares its pixels.
     for (std::size_t index = 0; index < prepared_variants.size(); ++index) {
@@ -1109,8 +1115,7 @@ void RegistrationStages::prepare() {
         std::vector<RenderTargetDefinition> targets;
         targets.reserve(resources.images.size());
         for (const auto image : resources.images) {
-            auto target = renderTargetDefinitionOf(
-                generation_resources.images[image]);
+            auto target = generation_definitions[image];
             if (target.source) {
                 target.source_pixels =
                     image_sources->pixels(*target.source);
@@ -1242,6 +1247,26 @@ void RegistrationStages::registerVariants() {
     program_offsets.reserve(dependencies.size() + 1);
     program_offsets.push_back(0);
     std::set<FrameGraphBufferId> uploaded_attributes;
+    auto memory_contract=std::make_shared<RuntimeTargetMemoryContract>();
+    memory_contract->requirements_for_testing=dependencies.front().options.runtime_image_requirements_for_testing;
+    bool have_inputs=false;
+    for(const auto &variant:prepared_variants) {
+        const auto &physical=requireVulkanRenderCompilerPhysicalPackage(*variant.physical_package);
+        for(const auto &plan:physical.target_plan_compilation.plans) {
+            if(!have_inputs) {memory_contract->inputs=plan->memory_packing; have_inputs=true;}
+            // Same document-local key as the planner's aliasPolicyKey.
+            std::map<std::pair<std::string,std::string>,std::vector<std::string>> required;
+            for(const auto &e:plan->policy) if(e.key=="alias_group" && e.status==PlanningPolicyStatus::adopted &&
+                e.strength==PlanningStrength::require && std::holds_alternative<std::string>(e.value))
+                required[{e.origin.document,std::get<std::string>(e.value)}].push_back(e.target);
+            for(auto &[group,names]:required) if(names.size()>1) memory_contract->required_sets.push_back(std::move(names));
+        }
+    }
+    std::vector<RenderTargetDefinition> all_targets;
+    std::set<std::string> target_names;
+    for(const auto &variant:variant_render_targets) for(const auto &d:variant)
+        if(target_names.insert(d.name).second) all_targets.push_back(d);
+    dependencies.front().render_targets.render_target_container.registerMemoryTargets(all_targets,base_extent,memory_contract);
     for (std::size_t index = 0;
          index < dependencies.size(); ++index) {
         auto variant_programs =
