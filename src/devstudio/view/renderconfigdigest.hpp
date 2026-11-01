@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../guitrace.hpp"
+
 #include <QObject>
 #include <QPointer>
 
@@ -36,6 +38,10 @@ public:
         auto subscribers = subscribers_;
         for (const auto &[context, handler] : subscribers) {
             if (context.isNull() || context.data() == from || !handler) continue;
+            // LT-1: which panel a moved digest sets reading -- the inner span
+            // is named after its class (detail -1). Nothing unless traced.
+            const GuiTraceSpan trace{"digest_subscriber"};
+            const GuiTraceSpan who{GuiTrace::sink ? context->metaObject()->className() : "", -1};
             handler(digest);
         }
         std::erase_if(subscribers_, [](const auto &entry) {
@@ -50,7 +56,12 @@ public:
         if (digest.empty()) return;
         const auto subscribers = commit_subscribers_;
         for (const auto &[context, handler] : subscribers)
-            if (!context.isNull() && handler) handler(digest);
+            if (!context.isNull() && handler) {
+                // LT-1: as in publish.
+                const GuiTraceSpan trace{"digest_commit_subscriber"};
+                const GuiTraceSpan who{GuiTrace::sink ? context->metaObject()->className() : "", -1};
+                handler(digest);
+            }
         std::erase_if(commit_subscribers_, [](const auto &entry) {
             return entry.first.isNull();
         });

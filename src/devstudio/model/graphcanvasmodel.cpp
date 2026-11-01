@@ -1,5 +1,6 @@
 #include "frameplanpolicy.hpp"
 #include "graphcanvasmodel.hpp"
+#include "../guitrace.hpp"
 #include "../../project/rasterpass.hpp"
 
 #include "frameplanmodel.hpp"
@@ -1397,7 +1398,11 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             // Still queued. Nothing on the canvas has changed, so nothing is
             // redrawn: a poll every quarter second must not throw away the
             // drag or the editor the user is in the middle of.
-            if (status == "pending") return;
+            if (status == "pending") {
+                // LT-1: the next ask waits for the poll clock.
+                const GuiTraceSpan trace{"graph_edit_still_pending"};
+                return;
+            }
             ticket_.clear();
             if (status != "committed")
                 throw std::invalid_argument("The graph edit did not commit: " + status);
@@ -1419,6 +1424,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             }
             // PS-1s, decision 2: and what the edit changed besides.
             {
+                const GuiTraceSpan trace{"graph_edit_committed"};
                 auto note = std::exchange(saved_note_, {});
                 edit_notice_ = {InspectorNoticeKind::Success,
                                 note.empty() ? std::string{"Graph change saved."} : std::move(note)};
@@ -2796,6 +2802,7 @@ bool GraphCanvasModel::submitHistory(HistoryAction action, HistoryEntry entry) {
     if (action == HistoryAction::Edit) entry.before_graph = history_graph_;
     pending_history_ = PendingHistory{action, std::move(entry)};
     edit_notice_ = {InspectorNoticeKind::Information, "Saving the graph change..."};
+    const GuiTraceSpan trace{"graph_edit_submitted", double(int(action))};
     if (action == HistoryAction::Edit && historySubmitted) historySubmitted();
     request(RequestKind::Submit, "edit_graph_document", std::move(params));
     return true;

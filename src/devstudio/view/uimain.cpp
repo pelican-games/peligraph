@@ -1,5 +1,6 @@
 #include "uimain.hpp"
 #include "../guitrace.hpp"
+#include "../optrace.hpp"
 #include "mainwindow.hpp"
 #include "studioscreen.hpp"
 #include "../automation/automationserver.hpp"
@@ -35,6 +36,8 @@ int uimain(int argc, char **argv, LaunchOptions options) {
         }
     };
     TracedApplication app(argc, argv);
+    // LT-1: nothing is installed unless PELICAN_STUDIO_OP_TRACE is set.
+    OpTrace::installFromEnvironment();
     QCoreApplication::setOrganizationName(QStringLiteral("Pelican"));
     QCoreApplication::setApplicationName(QStringLiteral("Pelican Studio"));
 

@@ -13,6 +13,7 @@
 #include <cmath>
 #include <QGraphicsItem>
 #include "../src/devstudio/view/nodegraphics.hpp"
+#include "../src/devstudio/optrace.hpp"
 #include <QFile>
 #include <QFileInfo>
 #include <QDir>
@@ -2533,4 +2534,116 @@ TEST_CASE("RV-1 open_project returns promptly while Discard is waiting and for a
     CHECK(elapsed.elapsed() < 1000);
     CHECK(reply.result.toObject().value(QStringLiteral("engine_restarting")).toBool() == pending);
     CHECK(viewport.currentEngineReady() == !pending);
+}
+
+TEST_CASE("LT-1: op_trace keeps GuiTrace spans only when installed, and a drag hands back to it",
+          "[devstudio][automation][lt1]") {
+    using PelicanStudio::GuiTrace;
+    using PelicanStudio::GuiTraceSpan;
+    using PelicanStudio::OpTrace;
+    Fixture fixture;
+    const QByteArray previous = qgetenv("PELICAN_STUDIO_OP_TRACE");
+    const auto restore = qScopeGuard([&] {
+        OpTrace::uninstall();
+        if (previous.isNull()) qunsetenv("PELICAN_STUDIO_OP_TRACE");
+        else qputenv("PELICAN_STUDIO_OP_TRACE", previous);
+    });
+    qunsetenv("PELICAN_STUDIO_OP_TRACE");
+    // Default: nothing installed, nothing to read.
+    OpTrace::installFromEnvironment();
+    CHECK(OpTrace::instance() == nullptr);
+    CHECK(GuiTrace::sink == nullptr);
+    CHECK(GuiTrace::resting_sink == nullptr);
+    const QJsonObject off = fixture.result(QStringLiteral("op_trace"));
+    CHECK_FALSE(off.value(QStringLiteral("enabled")).toBool());
+
+    qputenv("PELICAN_STUDIO_OP_TRACE", "1");
+    OpTrace::installFromEnvironment();
+    REQUIRE(OpTrace::instance() != nullptr);
+    REQUIRE(GuiTrace::sink != nullptr);
+    CHECK(GuiTrace::resting_sink == GuiTrace::sink);
+    { const GuiTraceSpan span{"lt1_before_drag", 7, 9}; }
+
+    // A drag trace takes the sink, forwards to the resting one, gives it back.
+    QGraphicsScene scene;
+    QGraphicsRectItem *node = scene.addRect(0, 0, 10, 10);
+    node->setFlag(QGraphicsItem::ItemIsMovable);
+    {
+        PelicanStudio::NodeDragTrace drag;
+        drag.setEnabled(true);
+        drag.begin(scene, node);
+        CHECK(GuiTrace::sink != GuiTrace::resting_sink);
+        { const GuiTraceSpan span{"lt1_during_drag"}; }
+        drag.stop();
+        CHECK(GuiTrace::sink == GuiTrace::resting_sink);
+    }
+
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid());
+    const QString path = directory.filePath(QStringLiteral("op_trace.jsonl"));
+    const QJsonObject on = fixture.result(QStringLiteral("op_trace"),
+        {{QStringLiteral("path"), path}, {QStringLiteral("clear"), true}});
+    CHECK(on.value(QStringLiteral("enabled")).toBool());
+    CHECK(on.value(QStringLiteral("records")).toInteger() >= 2);
+    QFile file{path};
+    REQUIRE(file.open(QIODevice::ReadOnly));
+    const QByteArray text = file.readAll();
+    CHECK(text.contains("\"s\":\"lt1_before_drag\""));
+    CHECK(text.contains("\"x\":7,\"y\":9"));
+    CHECK(text.contains("\"s\":\"lt1_during_drag\""));
+    for (const QByteArray &line : text.split('\n'))
+        if (!line.isEmpty()) CHECK(QJsonDocument::fromJson(line).isObject());
+    // clear: the next read starts empty.
+    CHECK(fixture.result(QStringLiteral("op_trace")).value(QStringLiteral("records")).toInteger() == 0);
+}
+
+TEST_CASE("LT-1: size_hints names what holds each dock up, and changes nothing",
+          "[devstudio][automation][lt1]") {
+    Fixture fixture;
+    REQUIRE(automationCommandNames().contains(QStringLiteral("size_hints")));
+    REQUIRE(automationCommandNames().contains(QStringLiteral("op_trace")));
+    auto *dock = new QDockWidget(QStringLiteral("Frame Plan"), &fixture.window);
+    dock->setObjectName(QStringLiteral("pelican.testFramePlanDock"));
+    auto *content = new QWidget(dock);
+    auto *layout = new QVBoxLayout(content);
+    auto *tall = new QPushButton(QStringLiteral("tall"), content);
+    tall->setObjectName(QStringLiteral("pelican.testTall"));
+    tall->setMinimumHeight(180);
+    layout->addWidget(tall);
+    // A widget the dock does not show holds nothing up.
+    auto *hidden = new QPushButton(QStringLiteral("hidden"), content);
+    hidden->setObjectName(QStringLiteral("pelican.testHidden"));
+    hidden->setMinimumHeight(900);
+    hidden->hide();
+    dock->setWidget(content);
+    fixture.window.addDockWidget(Qt::BottomDockWidgetArea, dock);
+    QApplication::processEvents();
+    const QSize before = dock->size();
+
+    const QJsonObject hints = fixture.result(QStringLiteral("size_hints"));
+    CHECK(dock->size() == before);
+    QJsonObject found;
+    for (const auto value : hints.value(QStringLiteral("docks")).toArray())
+        if (value.toObject().value(QStringLiteral("object_name")).toString() ==
+            QStringLiteral("pelican.testFramePlanDock"))
+            found = value.toObject();
+    REQUIRE_FALSE(found.isEmpty());
+    CHECK(found.value(QStringLiteral("area")).toString() == QStringLiteral("bottom"));
+    CHECK(found.value(QStringLiteral("minimum_size_hint")).toArray().at(1).toInt() >= 180);
+    const QJsonArray along = found.value(QStringLiteral("largest_along_axis")).toArray();
+    REQUIRE_FALSE(along.isEmpty());
+    // The content holds 180 because of its child; either may lead, the child is in the top 3.
+    bool tall_named = false;
+    for (const auto row : along)
+        tall_named |= row.toObject().value(QStringLiteral("object_name")).toString() ==
+                      QStringLiteral("pelican.testTall");
+    CHECK(tall_named);
+    CHECK(along.size() <= 3);
+    for (const auto row : along)
+        CHECK(row.toObject().value(QStringLiteral("object_name")).toString() !=
+              QStringLiteral("pelican.testHidden"));
+    const QJsonArray chain = found.value(QStringLiteral("chain_along_axis")).toArray();
+    REQUIRE(chain.size() >= 2);
+    CHECK(chain.last().toObject().value(QStringLiteral("object_name")).toString() ==
+          QStringLiteral("pelican.testTall"));
 }

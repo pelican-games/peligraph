@@ -125,6 +125,7 @@ void AutomationServer::handleLine(QLocalSocket *socket, const QByteArray &line) 
     running_command_ = true;
     AutomationReply reply;
     try {
+        const GuiTraceSpan trace{"automation_command"};
         reply = runAutomationCommand(host_, request);
     } catch (const std::exception &failure) {
         reply = AutomationReply::failure(

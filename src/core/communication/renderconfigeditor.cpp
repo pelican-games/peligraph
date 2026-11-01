@@ -1,5 +1,6 @@
 #include "../shader/raygrouplayout.hpp"
 #include "renderconfigeditor.hpp"
+#include "rpctrace.hpp"
 #include "../../project/viewselect.hpp"
 #include "../../project/authoringlowering.hpp"
 #include "../../project/assetsmanifest.hpp"
@@ -2267,6 +2268,7 @@ OrderedJson RenderConfigEditorService::queueRootEdit(
 
     auto candidate = document_;
     try {
+        const RpcTrace::Span trace{"editor_edit_transform"};
         if (auto rejected = transform(candidate)) return *rejected;
     } catch (const RenderConfigSectionUnlocated &error) {
         return rejection("render_config_section_unlocated", error.what(),
@@ -2308,6 +2310,7 @@ OrderedJson RenderConfigEditorService::queueRootEdit(
     // (source_only) has nothing to compose.
     // FR-3: inside edit_batch the batch preflights its last candidate once.
     if (!source_only && !batch_) {
+        const RpcTrace::Span trace{"editor_preflight_variants"};
         if (auto refused = preflightGraphVariants(
                 candidate_set, {{"participant", "pelican.render_pipeline"},
                                 {"method", operation}})) {
@@ -8238,6 +8241,7 @@ bool RenderConfigEditorService::ownsTicket(
 void RenderConfigEditorService::completeCommitTransaction(
     const std::shared_ptr<CommitTransaction> &transaction,
     RenderConfigRuntimeApplyResult applied) noexcept {
+    const RpcTrace::Span trace{"editor_complete_commit"};
     transaction->completion_arrived = true;
     if (inflight_ticket_ == transaction->ticket.id) {
         inflight_ticket_.reset();
@@ -8531,6 +8535,8 @@ void RenderConfigEditorService::commitPending() noexcept {
     if (inflight_ticket_) return;
     // FG-2: a verify that passed queues its mark ahead of the queue below.
     harvestFoldVerifies();
+    // LT-1: only a boundary that has tickets to commit is a stage.
+    const RpcTrace::Span trace{"editor_commit_pending", double(pending_.size()), !pending_.empty()};
     auto queue = std::move(pending_);
     pending_.clear();
     for (auto ticket_iterator = queue.begin();
@@ -8759,9 +8765,12 @@ void RenderConfigEditorService::commitPending() noexcept {
             // synchronous completion cannot race with installing the
             // in-flight ticket after it has already cleared it.
             inflight_ticket_ = transaction->ticket.id;
-            const auto applied = dependencies_.apply_candidate(
-                *transaction->ticket.candidate_documents, source_commit,
-                completion);
+            const auto applied = [&] {
+                const RpcTrace::Span apply_trace{"editor_apply_candidate"};
+                return dependencies_.apply_candidate(
+                    *transaction->ticket.candidate_documents, source_commit,
+                    completion);
+            }();
             if (applied.staged) {
                 if (applied.staged_generation == 0) {
                     completeCommitTransaction(

@@ -409,6 +409,8 @@ qint64 EngineProcess::requestRpc(const QString &method,
     QByteArray bytes = QJsonDocument(request).toJson(QJsonDocument::Compact);
     bytes.push_back('\n');
 
+    // LT-1: the engine's PELICAN_RPC_TRACE line carries the same id.
+    const GuiTraceSpan trace{"rpc_send", double(request_id), double(bytes.size())};
     pending_rpc_requests_.insert(request_id);
     if (process_.write(bytes) != bytes.size()) {
         pending_rpc_requests_.remove(request_id);
@@ -511,6 +513,8 @@ bool EngineProcess::routeRpcResponse(const QByteArray &line) {
     if (!pending_rpc_requests_.remove(request_id)) {
         return false;
     }
+    // LT-1: everything this reply sets off on the GUI thread, by request id.
+    const GuiTraceSpan reply_trace{"rpc_result", double(request_id), double(line.size())};
 
     if (envelope.jsonrpc != "\"2.0\"") {
         emit rpcTransportFailed(

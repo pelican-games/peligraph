@@ -4,6 +4,7 @@
 #include "../view/frameplangraphics.hpp"
 #include "../view/graphcanvaswidget.hpp"
 #include "../view/nodegraphics.hpp"
+#include "../optrace.hpp"
 #include "../viewport/embeddedviewport.hpp"
 #include "../viewport/viewportgeometry.hpp"
 
@@ -23,6 +24,9 @@
 #include <QCryptographicHash>
 #include <QDir>
 #include <QDirIterator>
+#include <QDockWidget>
+#include <QStackedWidget>
+#include <QMainWindow>
 #include <QFile>
 #include <QElapsedTimer>
 #include <QEventLoop>
@@ -1282,6 +1286,157 @@ AutomationReply commandTraceDump(const AutomationHost &host, const QJsonObject &
     return AutomationReply::success(result);
 }
 
+
+// LT-1: the operation trace (optrace.hpp). Reads only: it writes what the
+// trace kept to path and, with clear, forgets it. Without
+// PELICAN_STUDIO_OP_TRACE there is no trace and the reply says so.
+AutomationReply commandOpTrace(const AutomationHost &, const QJsonObject &request) {
+    OpTrace *trace = OpTrace::instance();
+    if (trace == nullptr)
+        return AutomationReply::success(QJsonObject{{QStringLiteral("enabled"), false}});
+    const QString path = request.value(QStringLiteral("path")).toString();
+    const auto kept = static_cast<qint64>(trace->kept());
+    if (!path.isEmpty() && !trace->write(path, request.value(QStringLiteral("clear")).toBool(false)))
+        return AutomationReply::failure(BadRequest, QStringLiteral("op_trace could not write the file"));
+    return AutomationReply::success(QJsonObject{
+        {QStringLiteral("enabled"), true},
+        {QStringLiteral("records"), kept},
+        {QStringLiteral("written_total"), static_cast<qint64>(trace->written())},
+        {QStringLiteral("overflow"), static_cast<qint64>(trace->overflow())},
+        {QStringLiteral("now_ns"), static_cast<qint64>(GuiTrace::now())},
+    });
+}
+
+// LT-1: what holds each dock up. Reads only: per dock its area, sizes and
+// size hints, the docks tabbed with it, and the three descendants with the
+// largest minimumSizeHint along the dock's own axis (height for a top or
+// bottom dock, width for a side one) and along the other. Only what the dock
+// shows counts (a hidden tab page holds nothing up), and nothing inside a
+// scroll area does (a scroll area's floor is its own). `chain_along_axis`
+// (and `chain_across_axis`) follows, from the content down, the shown child
+// with the largest floor along that axis: where its value drops is where the
+// floor comes from; a stacked widget on the way lists its pages' floors.
+AutomationReply commandSizeHints(const AutomationHost &host, const QJsonObject &) {
+    auto *window = qobject_cast<QMainWindow *>(host.window);
+    if (window == nullptr)
+        return AutomationReply::failure(BadRequest, QStringLiteral("size_hints needs the main window"));
+    const auto size = [](const QSize &value) { return QJsonArray{value.width(), value.height()}; };
+    const auto areaName = [](Qt::DockWidgetArea area) {
+        switch (area) {
+        case Qt::LeftDockWidgetArea: return QStringLiteral("left");
+        case Qt::RightDockWidgetArea: return QStringLiteral("right");
+        case Qt::TopDockWidgetArea: return QStringLiteral("top");
+        case Qt::BottomDockWidgetArea: return QStringLiteral("bottom");
+        default: return QStringLiteral("none");
+        }
+    };
+    QJsonArray docks;
+    for (QDockWidget *dock : window->findChildren<QDockWidget *>()) {
+        const Qt::DockWidgetArea area = window->dockWidgetArea(dock);
+        const bool vertical_axis = area == Qt::TopDockWidgetArea || area == Qt::BottomDockWidgetArea;
+        struct Holder { QWidget *widget; QSize hint; QSize minimum; };
+        std::vector<Holder> holders;
+        const auto shownChildren = [dock](QWidget *parent) {
+            std::vector<QWidget *> shown;
+            for (QObject *object : parent->children())
+                if (auto *child = qobject_cast<QWidget *>(object);
+                    child && !child->isWindow() && child->isVisibleTo(dock))
+                    shown.push_back(child);
+            return shown;
+        };
+        const std::function<void(QWidget *)> collect = [&](QWidget *widget) {
+            holders.push_back({widget, widget->minimumSizeHint(), widget->minimumSize()});
+            if (qobject_cast<QAbstractScrollArea *>(widget)) return;
+            for (QWidget *child : shownChildren(widget)) collect(child);
+        };
+        const auto floorOf = [](QWidget *widget, bool by_height) {
+            const QSize hint = widget->minimumSizeHint();
+            const QSize minimum = widget->minimumSize();
+            return std::max(by_height ? hint.height() : hint.width(),
+                            by_height ? minimum.height() : minimum.width());
+        };
+        // A stacked widget's floor is its largest page's, shown or not (a
+        // tab widget's pages): each page is listed where the chain passes one.
+        const auto chainOf = [&](bool by_height) {
+            QJsonArray chain;
+            QWidget *at = dock->widget();
+            for (int depth = 0; at != nullptr && depth < 12; ++depth) {
+                QJsonObject link{
+                    {QStringLiteral("object_name"), at->objectName()},
+                    {QStringLiteral("class"), QString::fromLatin1(at->metaObject()->className())},
+                    {QStringLiteral("floor"), floorOf(at, by_height)}};
+                if (auto *stack = qobject_cast<QStackedWidget *>(at)) {
+                    QJsonArray pages;
+                    for (int index = 0; index < stack->count(); ++index)
+                        if (QWidget *page = stack->widget(index))
+                            pages.push_back(QJsonObject{
+                                {QStringLiteral("object_name"), page->objectName()},
+                                {QStringLiteral("class"), QString::fromLatin1(page->metaObject()->className())},
+                                {QStringLiteral("current"), page == stack->currentWidget()},
+                                {QStringLiteral("floor"), floorOf(page, by_height)}});
+                    link.insert(QStringLiteral("pages"), pages);
+                }
+                chain.push_back(link);
+                if (qobject_cast<QAbstractScrollArea *>(at)) break;
+                QWidget *next = nullptr;
+                for (QWidget *child : shownChildren(at))
+                    if (next == nullptr || floorOf(child, by_height) > floorOf(next, by_height))
+                        next = child;
+                at = next;
+            }
+            return chain;
+        };
+        if (QWidget *content = dock->widget()) collect(content);
+        const auto top = [&](bool by_height) {
+            auto sorted = holders;
+            std::stable_sort(sorted.begin(), sorted.end(), [&](const Holder &a, const Holder &b) {
+                const int av = std::max(by_height ? a.hint.height() : a.hint.width(),
+                                        by_height ? a.minimum.height() : a.minimum.width());
+                const int bv = std::max(by_height ? b.hint.height() : b.hint.width(),
+                                        by_height ? b.minimum.height() : b.minimum.width());
+                return av > bv;
+            });
+            QJsonArray rows;
+            for (std::size_t i = 0; i < sorted.size() && i < 3; ++i)
+                rows.push_back(QJsonObject{
+                    {QStringLiteral("object_name"), sorted[i].widget->objectName()},
+                    {QStringLiteral("class"), QString::fromLatin1(sorted[i].widget->metaObject()->className())},
+                    {QStringLiteral("visible"), sorted[i].widget->isVisible()},
+                    {QStringLiteral("minimum_size_hint"), size(sorted[i].hint)},
+                    {QStringLiteral("minimum_size"), size(sorted[i].minimum)},
+                    {QStringLiteral("size"), size(sorted[i].widget->size())}});
+            return rows;
+        };
+        QJsonArray tabbed;
+        for (QDockWidget *other : window->tabifiedDockWidgets(dock)) tabbed.push_back(other->objectName());
+        docks.push_back(QJsonObject{
+            {QStringLiteral("object_name"), dock->objectName()},
+            {QStringLiteral("title"), dock->windowTitle()},
+            {QStringLiteral("area"), areaName(area)},
+            {QStringLiteral("visible"), dock->isVisible()},
+            {QStringLiteral("floating"), dock->isFloating()},
+            {QStringLiteral("tabified_with"), tabbed},
+            {QStringLiteral("size"), size(dock->size())},
+            {QStringLiteral("minimum_size"), size(dock->minimumSize())},
+            {QStringLiteral("minimum_size_hint"), size(dock->minimumSizeHint())},
+            {QStringLiteral("content_minimum_size_hint"),
+             dock->widget() ? size(dock->widget()->minimumSizeHint()) : QJsonArray{}},
+            {QStringLiteral("largest_along_axis"), top(vertical_axis)},
+            {QStringLiteral("largest_across_axis"), top(!vertical_axis)},
+            {QStringLiteral("chain_along_axis"), chainOf(vertical_axis)},
+            {QStringLiteral("chain_across_axis"), chainOf(!vertical_axis)},
+        });
+    }
+    QJsonObject central;
+    if (QWidget *widget = window->centralWidget())
+        central = QJsonObject{{QStringLiteral("object_name"), widget->objectName()},
+                              {QStringLiteral("size"), size(widget->size())},
+                              {QStringLiteral("minimum_size_hint"), size(widget->minimumSizeHint())}};
+    return AutomationReply::success(QJsonObject{
+        {QStringLiteral("window"), size(window->size())},
+        {QStringLiteral("central"), central},
+        {QStringLiteral("docks"), docks}});
+}
 
 AutomationReply commandDrag(const AutomationHost &host,
                             const QJsonObject &request) {
@@ -2878,6 +3033,7 @@ QStringList automationCommandNames() {
             QStringLiteral("rpc"),          QStringLiteral("open_project"),
             QStringLiteral("screenshot"),   QStringLiteral("viewport_size"),
             QStringLiteral("history"),      QStringLiteral("project_state"),
+            QStringLiteral("op_trace"),     QStringLiteral("size_hints"),
             QStringLiteral("quit")};
 }
 
@@ -2923,6 +3079,8 @@ AutomationReply runAutomationCommand(const AutomationHost &host,
     if (command == QLatin1String("history")) return commandHistory(host, request);
     if (command == QLatin1String("project_state"))
         return commandProjectState(host, request);
+    if (command == QLatin1String("op_trace")) return commandOpTrace(host, request);
+    if (command == QLatin1String("size_hints")) return commandSizeHints(host, request);
     // `quit` is answered by the server: it has to finish writing this reply
     // before the event loop it is running in goes away.
     return AutomationReply::failure(

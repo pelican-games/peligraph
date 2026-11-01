@@ -1,4 +1,5 @@
 #include "graphcanvaswidget.hpp"
+#include "../guitrace.hpp"
 #include "tabeditorder.hpp"
 #include "graphcanvasaudioanalysis.hpp"
 #include "graphcanvascomputefields.hpp"
@@ -1869,6 +1870,11 @@ void GraphCanvasScene::rebuildRoutingIndex() {
 
 
 void GraphCanvasScene::repopulate() {
+    // LT-1: one whole-scene rebuild; graph_scene_items says how many it made.
+    const GuiTraceSpan trace{"graph_scene_repopulate"};
+    const auto count_items = qScopeGuard([this] {
+        if (GuiTrace::sink) { const GuiTraceSpan items_trace{"graph_scene_items", double(items().size())}; }
+    });
     ++rebuild_generation_;
     // An open editor belongs to items that are about to be deleted -- so what
     // it is and what it holds is taken down first, and opened again over the
@@ -1887,6 +1893,7 @@ void GraphCanvasScene::repopulate() {
     const auto previous_node = selected_node_;
     const auto previous_edge = selected_edge_;
     clear();
+    { const GuiTraceSpan mark{"graph_repop_mark", 1}; } // LT-1: the scene emptied; reading the model begins
     zone_content_.clear();
     zone_content_rect_.clear();
     zone_geometry_.clear();
@@ -2178,6 +2185,7 @@ void GraphCanvasScene::repopulate() {
         }))
         flushLayout();
 
+    { const GuiTraceSpan mark{"graph_repop_mark", 2}; } // LT-1: building and measuring each node begins
     // Placement needs the final size of each node, including its socket rows
     // -- and of each zone, including its body.
     std::vector<GraphCanvasDrawing::Node> drawn;
@@ -2379,6 +2387,7 @@ void GraphCanvasScene::repopulate() {
         }
         drawn.push_back(std::move(entry));
     }
+    { const GuiTraceSpan mark{"graph_repop_mark", 3}; } // LT-1: the one placement (layoutNodeGraph) begins
     // GL-1b, decision 1: one placement for the whole root, the Frame Plan's
     // (layoutNodeGraph, columns by the longest path) -- the folded nodes and
     // the lines the plan implies go into it with the graph's own nodes and
@@ -2453,6 +2462,7 @@ void GraphCanvasScene::repopulate() {
             std::move(points));
     }
 
+    { const GuiTraceSpan mark{"graph_repop_mark", 4}; } // LT-1: adding the nodes begins
     const GraphCanvasLayout &root_placement = this->layout(scope);
     // GL-1b: whether the document places any of the graph's nodes. Until it
     // does, the one placement is the whole canvas.
@@ -2524,6 +2534,7 @@ void GraphCanvasScene::repopulate() {
         }
         drawn_nodes.insert(node.id);
     }
+    { const GuiTraceSpan mark{"graph_repop_mark", 5}; } // LT-1: the folded nodes begins
     // GL-1c, decision 1: everything the graph has drawn on the root so far,
     // which no folded node lies on -- each node with what it holds (its
     // sockets, a value's text running past its box) and each zone's whole
@@ -2608,6 +2619,7 @@ void GraphCanvasScene::repopulate() {
         derived_drawn.insert(folded.id);
     }
 
+    { const GuiTraceSpan mark{"graph_repop_mark", 6}; } // LT-1: the lines begins
     for (std::size_t index = 0; index < edges.size(); ++index) {
         const auto &edge = edges[index];
         if (!drawn_nodes.contains(edge.from_node) || !drawn_nodes.contains(edge.to_node)) continue;
@@ -2662,6 +2674,7 @@ void GraphCanvasScene::repopulate() {
                                stub.input ? QStringLiteral("input") : QStringLiteral("output"));
         if (socket != nullptr) drawing.addDomainStub(stub, *socket);
     }
+    { const GuiTraceSpan mark{"graph_repop_mark", 7}; } // LT-1: the bands begins
     // GL-2b, decision 2: under each root node, what its lower layers hold
     // (only what is not the default), and a node the composition switched
     // off drawn faint.
@@ -2720,6 +2733,7 @@ void GraphCanvasScene::repopulate() {
                                moveTie(controls_scope, index, moved);
                            });
     };
+    { const GuiTraceSpan mark{"graph_repop_mark", 8}; } // LT-1: the control points and zone bodies begins
     drawControls(drawing, scope, edges, drawn_nodes);
 
     // LP-4d1: each zone's body, in the frame's item and the definition's own
@@ -2843,6 +2857,7 @@ void GraphCanvasScene::repopulate() {
                    item->data(GraphCanvasToPortRole).toString() == qtext(selected_carry_->to);
         }))
         selected_carry_.reset();
+    { const GuiTraceSpan mark{"graph_repop_mark", 9}; } // LT-1: the selection and the scene's properties begins
     applyEdgeEmphasis();
 
     QStringList trail;
@@ -9050,6 +9065,7 @@ struct GraphCanvasWidget::Impl {
 
     void deliverResult(qint64 request_id, const QByteArray &result_json) {
         const NodeDragTraceSpan trace{scene, "deliver_result"};
+        const GuiTraceSpan op_trace{"graph_deliver_result", double(request_id), double(result_json.size())};
         if (deliverPassEdit(request_id, result_json)) return;
         // GL-5a, decision 5: the root's planning decisions.
         if (folded_pass_fields != nullptr && folded_pass_fields->deliverResult(request_id, result_json)) {
@@ -9229,6 +9245,7 @@ struct GraphCanvasWidget::Impl {
     }
 
     void dispatch() {
+        const GuiTraceSpan trace{"graph_dispatch"};
         for (const auto &request : model.takeRpcRequests()) {
             QString error;
             qint64 transport = 0;
@@ -11128,6 +11145,7 @@ struct GraphCanvasWidget::Impl {
     }
 
     void showDetails() {
+        const GuiTraceSpan trace{"graph_show_details"};
         // Highlight and move the node immediately. Building its editors must
         // not block the press that starts a drag or replace fields mid-gesture.
         if (scene->dragging()) {
@@ -11671,6 +11689,7 @@ void GraphCanvasWidget::refresh() {
 }
 
 void GraphCanvasWidget::poll() {
+    const GuiTraceSpan trace{"graph_poll"};
     impl_->model.poll();
     impl_->dispatch();
 }

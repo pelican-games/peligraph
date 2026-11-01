@@ -8,6 +8,11 @@ struct GuiTrace {
     using Sink = void (*)(void *, const char *, int64_t, int64_t, double, double);
     static inline thread_local Sink sink = nullptr;
     static inline thread_local void *owner = nullptr;
+    // LT-1: the sink a drag trace hands back to when it stops (the operation
+    // trace, optrace.hpp), and forwards to while it records. Null unless
+    // PELICAN_STUDIO_OP_TRACE installed one.
+    static inline thread_local Sink resting_sink = nullptr;
+    static inline thread_local void *resting_owner = nullptr;
     static int64_t now() {
         return std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -15,12 +20,12 @@ struct GuiTrace {
 };
 class GuiTraceSpan {
 public:
-    explicit GuiTraceSpan(const char *stage, double detail = 0)
+    explicit GuiTraceSpan(const char *stage, double detail = 0, double detail2 = 0)
         : sink_(GuiTrace::sink), owner_(GuiTrace::owner), stage_(stage),
-          begin_(sink_ ? GuiTrace::now() : 0), detail_(detail) {}
+          begin_(sink_ ? GuiTrace::now() : 0), detail_(detail), detail2_(detail2) {}
     ~GuiTraceSpan() {
         if (sink_ && GuiTrace::owner == owner_ && GuiTrace::sink == sink_)
-            sink_(owner_, stage_, begin_, GuiTrace::now(), detail_, 0);
+            sink_(owner_, stage_, begin_, GuiTrace::now(), detail_, detail2_);
     }
 private:
     GuiTrace::Sink sink_;
@@ -28,5 +33,6 @@ private:
     const char *stage_;
     int64_t begin_;
     double detail_;
+    double detail2_;
 };
 }

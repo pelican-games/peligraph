@@ -1,6 +1,7 @@
 #include "../watch/userdataguard.hpp"
 #define GLM_ENABLE_EXPERIMENTAL
 #include "rpcserver.hpp"
+#include "rpctrace.hpp"
 #include "editorcommandservice.hpp"
 #include "animationstatus.hpp"
 #include "audiostatus.hpp"
@@ -1160,6 +1161,7 @@ std::string RpcServer::handleLine(std::string_view line) const {
     }
 
     const auto &request = *parsed.request;
+    const RpcTrace::HandlerMark trace{request};
     if (request_gate) {
         if (auto reason = request_gate(request.method)) {
             return serializeJsonRpcError(makeJsonRpcError(

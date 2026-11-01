@@ -217,7 +217,8 @@ void NodeDragTrace::stop() {
     recording_ = false;
     if (auto *graph = dynamic_cast<GraphCanvasScene *>(scene_.data())) graph->drag_trace_active = false;
     if (active_ == this) active_ = nullptr;
-    if (GuiTrace::owner == this) { GuiTrace::sink = nullptr; GuiTrace::owner = nullptr; }
+    // LT-1: hand back to the operation trace, if one rests there (null otherwise).
+    if (GuiTrace::owner == this) { GuiTrace::sink = GuiTrace::resting_sink; GuiTrace::owner = GuiTrace::resting_owner; }
 }
 
 qint64 NodeDragTrace::now() {
@@ -295,6 +296,7 @@ void NodeDragTrace::begin(QGraphicsScene &scene, QGraphicsItem *node) {
     GuiTrace::sink = [](void *owner, const char *stage, int64_t begin, int64_t end, double x, double y) {
         auto *trace = static_cast<NodeDragTrace *>(owner);
         trace->append(stage, begin, end, trace->latestMove(), x, y);
+        if (GuiTrace::resting_sink) GuiTrace::resting_sink(GuiTrace::resting_owner, stage, begin, end, x, y);
     };
 }
 
@@ -477,7 +479,14 @@ bool NodeDragTrace::write(const QString &path) const {
 }
 
 void NodeCanvasView::paintEvent(QPaintEvent *event) {
-    if (!drag_trace_.recording()) { QGraphicsView::paintEvent(event); return; }
+    if (!drag_trace_.recording()) {
+        if (!GuiTrace::sink) { QGraphicsView::paintEvent(event); return; }
+        // LT-1: the operation trace's paint, with the painted area against the viewport's.
+        const GuiTraceSpan trace{"graph_paint", double(event->rect().width()) * event->rect().height(),
+                                 double(viewport()->width()) * viewport()->height()};
+        QGraphicsView::paintEvent(event);
+        return;
+    }
     const qint64 begin = NodeDragTrace::now();
     // Only claim a move if its node intersects the region Qt is painting.
     const QRect node = mapFromScene(drag_trace_.changedBounds()).boundingRect();

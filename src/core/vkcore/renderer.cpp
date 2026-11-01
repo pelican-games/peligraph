@@ -1,5 +1,6 @@
 #include "../watch/userdataguard.hpp"
 #include "renderer.hpp"
+#include "../communication/rpctrace.hpp"
 #include "../renderingpass/rendertargetnameresolver.hpp"
 #include "../userpublic/valuegraph.hpp"
 #include "../renderingpass/graphinputs.hpp"
@@ -3526,6 +3527,8 @@ void Renderer::synchronizeGraphGpuOwnership() {
 
 void Renderer::relowerRenderPipelineForCurrentOutput(
     bool validate_live_materials) {
+    // LT-1: an output change (a resized viewport) rebuilds the targets here.
+    const RpcTrace::Span trace{"output_relower"};
     RenderGraphVariantLoadHooks hooks;
     hooks.validate_live_materials = validate_live_materials;
     auto variants =
@@ -3913,6 +3916,8 @@ Renderer::applyRenderPipelineAuthoringCandidate(
                     if (!transaction->completion_required && new_program != generation.programs.end())
                         transaction->graph_runtime_transfer = GET_MODULE(SceneLoader).prepareGraphRuntimeTransfer(
                             old_graph, new_program->second.frame_graph.value_graph);
+                    // LT-1: the document written to disk.
+                    const RpcTrace::Span commit_trace{"editor_source_commit"};
                     transaction->source_commit();
                 } catch (const std::exception &caught) {
                     transaction->failure = caught.what();
@@ -3935,11 +3940,15 @@ Renderer::applyRenderPipelineAuthoringCandidate(
             transaction->rollback(*this);
         };
 
-        auto variants =
-            loadRenderGraphVariantsFromConfigDataWithStartupFeatureOverlays(
+        // LT-1: the candidate's graphs loaded and compiled (the publish
+        // hooks above run inside it when the generation goes live at once).
+        auto variants = [&] {
+            const RpcTrace::Span load_trace{"editor_load_variants"};
+            return loadRenderGraphVariantsFromConfigDataWithStartupFeatureOverlays(
                 transaction->candidate_documents
                     ->rootDocument().bytes,
                 std::move(hooks));
+        }();
         transaction->variants.emplace(
             std::move(variants));
         transaction->ready = true;
@@ -3956,7 +3965,10 @@ Renderer::applyRenderPipelineAuthoringCandidate(
             result.staged_generation = staged;
             return result;
         }
-        transaction->publish(*this);
+        {
+            const RpcTrace::Span publish_trace{"editor_publish"};
+            transaction->publish(*this);
+        }
         if (!transaction->outcome) {
             throw std::runtime_error(
                 "authored render pipeline publication completion was not observed");

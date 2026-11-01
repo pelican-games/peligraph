@@ -5,6 +5,7 @@
 #include "materialassignwidget.hpp"
 #include "componentaddlist.hpp"
 
+#include "../guitrace.hpp"
 #include "../model/inspectormodel.hpp"
 #include "../viewport/embeddedviewport.hpp"
 
@@ -509,6 +510,8 @@ struct InspectorWidget::Impl {
             &viewport, &EmbeddedViewport::inspectorRpcSucceeded, &owner,
             [this](qint64 transport_request_id,
                    const QByteArray &result_json) {
+                const GuiTraceSpan trace{"inspector_deliver_result", double(transport_request_id),
+                                         double(result_json.size())};
                 if (material_assign->receiveResult(transport_request_id, result_json)) return;
                 const auto graph_pending = graph_transport_requests.find(transport_request_id);
                 if (graph_pending != graph_transport_requests.end()) {

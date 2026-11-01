@@ -1,4 +1,5 @@
 #include "rpcserver.hpp"
+#include "rpctrace.hpp"
 
 #include <atomic>
 #include <deque>
@@ -18,6 +19,8 @@ struct WindowedRpcQueueState {
     const std::size_t capacity;
     mutable std::mutex queue_mutex;
     std::deque<std::string> requests;
+    // LT-1: when each queued line was read; filled only while tracing.
+    std::deque<std::int64_t> received_ns;
     std::mutex output_mutex;
     std::atomic_bool stopping{false};
     std::atomic_bool reader_finished{false};
@@ -61,6 +64,7 @@ void readInputLines(const std::shared_ptr<WindowedRpcQueueState> &state) {
             const std::lock_guard lock{state->queue_mutex};
             if (state->requests.size() < state->capacity) {
                 state->requests.push_back(line);
+                if (RpcTrace::enabled()) state->received_ns.push_back(RpcTrace::now());
                 accepted = true;
             }
         }
@@ -118,13 +122,35 @@ WindowedRpcHost::~WindowedRpcHost() = default;
 
 std::size_t WindowedRpcHost::processFrameBoundary() {
     std::deque<std::string> frame_requests;
+    std::deque<std::int64_t> received_ns;
     {
         const std::lock_guard lock{impl_->state->queue_mutex};
         frame_requests.swap(impl_->state->requests);
+        if (RpcTrace::enabled()) received_ns.swap(impl_->state->received_ns);
     }
 
-    for (const auto &request : frame_requests) {
-        writeResponse(*impl_->state, impl_->handler(request));
+    if (!RpcTrace::enabled()) {
+        for (const auto &request : frame_requests) {
+            writeResponse(*impl_->state, impl_->handler(request));
+        }
+        return frame_requests.size();
+    }
+    // LT-1: the same dispatch, timed (rpctrace.hpp).
+    RpcTrace::RequestTimes times;
+    times.boundary = RpcTrace::now();
+    times.batch_size = frame_requests.size();
+    for (std::size_t index = 0; index < frame_requests.size(); ++index) {
+        const auto &request = frame_requests[index];
+        times.received = index < received_ns.size() ? received_ns[index] : 0;
+        times.dispatched = RpcTrace::now();
+        times.batch_index = index;
+        times.request_bytes = request.size();
+        RpcTrace::handled = {};
+        const auto response = impl_->handler(request);
+        writeResponse(*impl_->state, response);
+        times.written = RpcTrace::now();
+        times.response_bytes = response.size();
+        RpcTrace::writeRequest(times);
     }
     return frame_requests.size();
 }
