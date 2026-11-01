@@ -26,6 +26,8 @@ enum class BindingKind {
     gamepad_button,
     gamepad_axis1,
     gamepad_axis2,
+    touch_region,
+    touch_tap,
     unresolved,
 };
 
@@ -64,10 +66,12 @@ struct ResolvedBinding {
     float deadzone = 0.0f;
     bool invert_x = false;
     bool invert_y = false;
+    std::optional<std::array<float, 4>> region;
     std::uint8_t modifiers = modifier_none;
 };
 
 struct ConsumedControls {
+    std::array<std::uint8_t, touch_id_count> touches{};
     std::array<std::uint8_t, key_code_count> keys{};
     std::array<std::uint8_t, mouse_axis_count> mouse_axes{};
     std::array<std::uint8_t, gamepad_button_count> gamepad_buttons{};
@@ -96,6 +100,7 @@ struct ConsumedControls {
     }
 
     void merge(const ConsumedControls &other) noexcept {
+        for (std::size_t i=0; i<touches.size(); ++i) touches[i] |= other.touches[i];
         for (std::size_t i = 0; i < keys.size(); ++i) {
             keys[i] = static_cast<std::uint8_t>(keys[i] || other.keys[i]);
         }
@@ -376,6 +381,12 @@ ResolvedBinding parseBinding(std::string_view binding_text, InputActionType acti
     ResolvedBinding binding;
     binding.text = std::string{binding_text};
 
+    if (device == "touch") {
+        if (action_type != InputActionType::button || (control != "region" && control != "tap"))
+            throw std::runtime_error("touch binding requires button action and region/tap control" + actionContext(action_name));
+        binding.kind = control == "region" ? BindingKind::touch_region : BindingKind::touch_tap;
+        return binding;
+    }
     if (device == "xr") {
         binding.kind = BindingKind::unresolved;
         return binding;
@@ -746,9 +757,60 @@ BindingSample readGamepadAxisBinding(const ResolvedBinding &binding, const Input
     return sample;
 }
 
+BindingSample readTouchBinding(const ResolvedBinding &binding, const InputSnapshot &snapshot,
+                               const FrameInput *input, const ConsumedControls &consumed) {
+    BindingSample sample;
+    if (!binding.region || !input || !input->pointer_transform.framebufferKnown()) return sample;
+    const auto &transform = input->pointer_transform;
+    const auto inside = [&](float x, float y) {
+        const auto px = windowToFramebufferPx(transform,x,y);
+        const auto &r = *binding.region;
+        const float nx = px.x / transform.framebuffer_width, ny = px.y / transform.framebuffer_height;
+        return nx >= r[0] && ny >= r[1] && nx < r[2] && ny < r[3];
+    };
+    if (binding.kind == BindingKind::touch_tap) {
+        for (const auto &f : snapshot.touch_taps) {
+            if (f.id < 0 || consumed.touches[f.id]) continue;
+            if (inside(f.down_x,f.down_y) && inside(f.x,f.y) &&
+                f.duration <= 0.250 && f.duration >= 0 &&
+                f.distance_sq <= f.slop_px * f.slop_px) {
+                sample.state.pressed = true; sample.any_release = true;
+                sample.consumed.touches[f.id] = 1;
+            }
+        }
+        return sample;
+    }
+    std::array<bool, touch_id_count> members{};
+    std::array<bool, touch_id_count> available{};
+    std::array<bool, touch_id_count> contacting{};
+    for (const auto &f : snapshot.touches) {
+        if (f.id < 0 || consumed.touches[f.id]) continue;
+        available[f.id] = true;
+        contacting[f.id] = f.previous_down;
+        members[f.id] = f.previous_down && inside(f.previous_x,f.previous_y);
+        if (members[f.id] || (f.down && inside(f.x,f.y))) sample.consumed.touches[f.id] = 1;
+    }
+    const auto any = [&] { return std::any_of(members.begin(),members.end(),[](bool v){ return v; }); };
+    // Replay this frame's path from previous positions to retain down/up and
+    // boundary crossings that both occur during one engine frame.
+    for (const auto &e : input->ordered_events) {
+        if (e.type != InputEvent::Type::touch || e.pointer_id < 0 || e.pointer_id >= touch_id_count || !available[e.pointer_id]) continue;
+        const bool before = any();
+        if (e.touch_phase == TouchPhase::down) contacting[e.pointer_id] = true;
+        else if (e.touch_phase == TouchPhase::up || e.touch_phase == TouchPhase::cancel) contacting[e.pointer_id] = false;
+        members[e.pointer_id] = contacting[e.pointer_id] && inside(e.mouse_x,e.mouse_y);
+        const bool after = any();
+        sample.state.pressed |= !before && after;
+        sample.any_release |= before && !after;
+        if (members[e.pointer_id] || (before && !after)) sample.consumed.touches[e.pointer_id] = 1;
+    }
+    sample.state.held = any();
+    return sample;
+}
+
 BindingSample readBinding(const ResolvedBinding &binding, const InputSnapshot &snapshot,
                           const MouseWheelDelta &wheel,
-                          const ConsumedControls &already_consumed, InputActionType action_type) {
+                          const ConsumedControls &already_consumed, InputActionType action_type, const FrameInput *input) {
     switch (binding.kind) {
     case BindingKind::key:
         return readKeyBinding(binding, snapshot, already_consumed, action_type);
@@ -762,6 +824,9 @@ BindingSample readBinding(const ResolvedBinding &binding, const InputSnapshot &s
         return readGamepadAxisBinding(binding, snapshot, already_consumed, false);
     case BindingKind::gamepad_axis2:
         return readGamepadAxisBinding(binding, snapshot, already_consumed, true);
+    case BindingKind::touch_region:
+    case BindingKind::touch_tap:
+        return readTouchBinding(binding, snapshot, input, already_consumed);
     case BindingKind::unresolved:
         return {};
     }
@@ -995,6 +1060,22 @@ InputBindingProfile parseInputProfileJson(const nlohmann::json &document, const 
             throw std::runtime_error("input profile invert_y requires a gamepad axis2 binding for action '" +
                                      parsed.action + "'");
         }
+        const bool touch = resolved.kind == BindingKind::touch_region || resolved.kind == BindingKind::touch_tap;
+        if (entry.contains("region") != touch)
+            throw std::runtime_error("region is required only for touch:region/touch:tap" + actionContext(parsed.action));
+        if (touch) {
+            const auto &r = entry.at("region");
+            if (!r.is_array() || r.size() != 4) throw std::runtime_error("region requires four numbers");
+            std::array<float,4> region;
+            for (std::size_t i=0; i<4; ++i) {
+                if (!r[i].is_number()) throw std::runtime_error("region requires numeric coordinates");
+                region[i] = r[i].get<float>();
+                if (!std::isfinite(region[i]) || region[i] < 0 || region[i] > 1)
+                    throw std::runtime_error("region coordinates must be finite in [0,1]");
+            }
+            if (region[0] >= region[2] || region[1] >= region[3]) throw std::runtime_error("region must have positive area");
+            parsed.binding.region = region;
+        }
         profile.uses_gamepad = profile.uses_gamepad || parsed.binding.text.starts_with("pad:");
         profile.bindings.push_back(std::move(parsed));
     }
@@ -1027,7 +1108,7 @@ namespace {
 
 InputActionFrame evaluateInputActionsImpl(const InputActionMap &map, const InputSnapshot &snapshot,
                                           const MouseWheelDelta &wheel,
-                                          const std::vector<std::string> &action_set_stack) {
+                                          const std::vector<std::string> &action_set_stack, const FrameInput *input = nullptr) {
     InputActionFrame frame;
     for (const auto &set : map.actionSets()) {
         for (const auto &action : set.actions) {
@@ -1058,7 +1139,8 @@ InputActionFrame evaluateInputActionsImpl(const InputActionMap &map, const Input
                 resolved.deadzone = binding.deadzone;
                 resolved.invert_x = binding.invert_x;
                 resolved.invert_y = binding.invert_y;
-                const auto sample = readBinding(resolved, snapshot, wheel, consumed, action.type);
+                resolved.region = binding.region;
+                const auto sample = readBinding(resolved, snapshot, wheel, consumed, action.type, input);
                 mergeSample(action_state, any_release, sample);
                 consumed_by_action.merge(sample.consumed);
             }
@@ -1099,7 +1181,7 @@ InputActionFrame evaluateInputActions(const InputActionMap &map, const InputSnap
 InputActionFrame evaluateInputActions(const InputActionMap &map, const FrameInput &frame_input,
                                       const std::vector<std::string> &action_set_stack) {
     auto frame = evaluateInputActionsImpl(map, frame_input.snapshot, collectMouseWheelDelta(frame_input),
-                                          action_set_stack);
+                                          action_set_stack, &frame_input);
     std::unordered_set<std::string> active_pose_actions;
     for (const auto &set_name : action_set_stack) {
         const auto *set = map.findActionSet(set_name);

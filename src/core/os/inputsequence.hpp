@@ -27,7 +27,9 @@ struct InputSequenceFrame {
 // (--record-input, start_input_record), not as a project document, so the
 // project migration (MG-1) never sees it; the parser reads both versions.
 //
-// v2 (written): the header carries the first frame's pointer transform as
+// v3 (written only when touch is present): touch events carry pointer_id, phase,
+// window x/y and density-derived slop_px. Replay uses frame/fps for tap timing.
+// v2 (written without touch): the header carries the first frame's pointer transform as
 // "content_scale":[x, y] and "framebuffer":[width, height]; a frame whose
 // transform differs from the frame before carries both fields on its marker.
 // v1 (read): no transform; every frame reads as scale 1 with the framebuffer

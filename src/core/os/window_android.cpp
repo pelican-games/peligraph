@@ -1,5 +1,6 @@
 // Android: the Window module over the activity's ANativeWindow.
 #include "window.hpp"
+#include "../../platform/android/inputqueue.hpp"
 #include "../launchconfig.hpp"
 #include "../log.hpp"
 #include "../../platform/android/runtime.hpp"
@@ -51,12 +52,13 @@ Window::Window() : window{nullptr} {
     }
     framebuffer_snapshot = {vk::Extent2D{1280, 720}, 1};
     (void)Android::waitForNativeWindow();
+    Android::setInputReady(true);
     (void)process();
     LOG_INFO(logger, "Android Window: extent={}x{}; ALooper is pumped by android_main",
              framebuffer_snapshot.extent.width, framebuffer_snapshot.extent.height);
 }
 
-Window::~Window() = default;
+Window::~Window() { Android::setInputReady(false); }
 
 FramebufferExtentSnapshot
 Window::framebufferSnapshot() const {
@@ -94,9 +96,11 @@ void *Window::renderDocCaptureHandle() const noexcept {
 bool Window::process() {
     // The glue looper belongs exclusively to android_main. Never poll it on
     // this engine thread: project loading / shader compilation must not stop
-    // lifecycle acknowledgements. Input is deferred to SA1f.
+    // lifecycle acknowledgements.
     Android::processLifecycle();
     if (Android::closeRequested()) return false;
+    auto events = Android::drainInput(internal::gamepadPollingEnabled(), gamepad_poller);
+    input_events.insert(input_events.end(), events.begin(), events.end());
     auto &slot = Android::nativeWindowSlot();
     std::scoped_lock native_lock{slot.mutex};
     // No native-window API after TERM_WINDOW, and no synthetic zero extent.

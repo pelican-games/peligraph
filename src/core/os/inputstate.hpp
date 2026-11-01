@@ -58,7 +58,31 @@ std::string_view gamepadAxisName(GamepadAxis axis) noexcept;
 std::optional<GamepadButton> gamepadButtonFromName(std::string_view name) noexcept;
 std::optional<GamepadAxis> gamepadAxisFromName(std::string_view name) noexcept;
 
+inline constexpr std::size_t touch_count = 10;
+inline constexpr std::size_t touch_id_count = 32;
+enum class TouchPhase : std::uint8_t { down, move, up, cancel };
+std::string_view touchPhaseName(TouchPhase phase) noexcept;
+std::optional<TouchPhase> touchPhaseFromName(std::string_view name) noexcept;
+struct TouchState {
+    std::int32_t id = -1;
+    bool down = false, pushed = false, released = false, cancelled = false;
+    bool previous_down = false;
+    float x = 0, y = 0, previous_x = 0, previous_y = 0, down_x = 0, down_y = 0;
+    float max_distance_sq = 0, slop_px = 8;
+    double down_time = 0;
+    std::uint64_t down_order = 0;
+};
+
+struct TouchTap {
+    std::int32_t id = -1;
+    float down_x = 0, down_y = 0, x = 0, y = 0, distance_sq = 0, slop_px = 8;
+    double duration = 0;
+};
 struct InputSnapshot {
+    // Completed taps remain available even when an id is reused this frame.
+    std::array<TouchTap, touch_count> touch_taps{};
+    std::array<TouchState, touch_count> touches{};
+    double time_seconds = 0;
     std::array<std::uint8_t, key_code_count> down{};
     std::array<std::uint8_t, key_code_count> pushed{};
     std::array<std::uint8_t, key_code_count> released{};
@@ -92,6 +116,7 @@ struct InputEvent {
         character,
         gamepad_button,
         gamepad_axis,
+        touch,
     };
 
     static constexpr std::uint64_t unassigned_sequence = std::numeric_limits<std::uint64_t>::max();
@@ -100,6 +125,8 @@ struct InputEvent {
     Type type = Type::button;
     KeyCode code = KeyCode::Count;
     std::uint8_t pressed = 0;
+    // Android mouse cancellation releases state without a UI click.
+    bool canceled = false;
     float mouse_x = 0.0f;
     float mouse_y = 0.0f;
     float axis_x = 0.0f;
@@ -109,6 +136,11 @@ struct InputEvent {
     GamepadButton pad_button = GamepadButton::Count;
     GamepadAxis pad_axis = GamepadAxis::Count;
     float pad_value = 0.0f;
+
+    std::int32_t pointer_id = -1;
+    TouchPhase touch_phase = TouchPhase::down;
+    float touch_slop_px = 8;
+    static InputEvent touch(std::int32_t id, TouchPhase phase, float x, float y, float slop_px = 8) noexcept;
 
     static InputEvent button(KeyCode code, bool pressed) noexcept;
     static InputEvent cursorMove(float x, float y) noexcept;
@@ -193,6 +225,9 @@ struct CursorModeStatus {
 struct InputConsumptionMask {
     std::array<std::uint8_t, key_code_count> controls{};
     bool pointer_motion = false;
+    std::array<std::uint8_t, touch_id_count> touches{};
+    void consumeTouch(std::int32_t id) noexcept;
+    bool consumesTouch(std::int32_t id) const noexcept;
 
     void consumeControl(KeyCode code) noexcept;
     void consumePointerMotion() noexcept;
@@ -273,6 +308,9 @@ class InputStateCore {
     float mouse_x = 0.0f;
     float mouse_y = 0.0f;
     bool mouse_position_known = false;
+    bool last_pointer_touch = false;
+    std::uint64_t next_touch_order = 0;
+    std::optional<double> next_frame_time;
     bool frame_active = false;
     bool actions_frozen = false;
 
@@ -293,6 +331,8 @@ class InputStateCore {
     void queuePoseSamples(std::vector<InputPoseSample> samples);
     // The transform the next beginFrame converts that frame's cursor with.
     void setPointerTransform(const PointerTransform &transform) noexcept;
+    // Optional deterministic clock for CPU tests / replay; live uses steady_clock.
+    void setFrameTime(double seconds) noexcept;
     void beginFrame();
     void clear();
 
@@ -301,6 +341,7 @@ class InputStateCore {
     const PointerTransform &pointerTransform() const noexcept;
     // The pointer of the current frame, in framebuffer pixels.
     const PointerState &pointer() const noexcept;
+    void consumeTouchForActions(std::int32_t id) noexcept;
     void consumeControlForActions(KeyCode code) noexcept;
     void consumePointerMotionForActions() noexcept;
     void consumePointerForActions() noexcept;
@@ -322,6 +363,8 @@ DECLARE_MODULE(InputState) {
     void queuePoseSample(InputPoseSample sample);
     void queuePoseSamples(std::vector<InputPoseSample> samples);
     void setPointerTransform(const PointerTransform &transform) noexcept;
+    // Optional deterministic clock for CPU tests / replay; live uses steady_clock.
+    void setFrameTime(double seconds) noexcept;
     void beginFrame();
     void clear();
     const InputSnapshot &currentSnapshot() const noexcept;
@@ -336,6 +379,7 @@ DECLARE_MODULE(InputState) {
         cursor.embedded = embedded;
     }
     const CursorModeStatus &cursorMode() const noexcept { return cursor; }
+    void consumeTouchForActions(std::int32_t id) noexcept;
     void consumeControlForActions(KeyCode code) noexcept;
     void consumePointerMotionForActions() noexcept;
     void consumePointerForActions() noexcept;

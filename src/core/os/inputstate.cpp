@@ -4,6 +4,7 @@
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <chrono>
 #include <stdexcept>
 #include <type_traits>
 
@@ -28,6 +29,33 @@ std::size_t countActive(const std::array<std::uint8_t, key_code_count> &values) 
 }
 
 } // namespace
+
+std::string_view touchPhaseName(TouchPhase phase) noexcept {
+    switch (phase) {
+    case TouchPhase::down: return "down";
+    case TouchPhase::move: return "move";
+    case TouchPhase::up: return "up";
+    case TouchPhase::cancel: return "cancel";
+    }
+    return {};
+}
+std::optional<TouchPhase> touchPhaseFromName(std::string_view name) noexcept {
+    for (auto phase : {TouchPhase::down, TouchPhase::move, TouchPhase::up, TouchPhase::cancel})
+        if (touchPhaseName(phase) == name) return phase;
+    return std::nullopt;
+}
+InputEvent InputEvent::touch(std::int32_t id, TouchPhase phase, float x, float y, float slop) noexcept {
+    InputEvent event;
+    event.type = Type::touch; event.pointer_id = id; event.touch_phase = phase;
+    event.mouse_x = x; event.mouse_y = y; event.touch_slop_px = slop;
+    return event;
+}
+void InputConsumptionMask::consumeTouch(std::int32_t id) noexcept {
+    if (id >= 0 && id < touch_id_count) touches[id] = 1;
+}
+bool InputConsumptionMask::consumesTouch(std::int32_t id) const noexcept {
+    return id >= 0 && id < touch_id_count && touches[id] != 0;
+}
 
 std::string_view gamepadButtonName(GamepadButton button) noexcept {
     const auto index = static_cast<std::size_t>(button);
@@ -261,6 +289,8 @@ bool InputConsumptionMask::consumesControl(KeyCode code) const noexcept {
 
 InputSnapshot InputConsumptionMask::apply(const InputSnapshot &source) const noexcept {
     auto result = source;
+    for (auto &finger : result.touches) if (consumesTouch(finger.id)) finger = {};
+    for (auto &tap : result.touch_taps) if (consumesTouch(tap.id)) tap = {};
     for (std::size_t index = 0; index < controls.size(); ++index) {
         if (controls[index] == 0) {
             continue;
@@ -414,6 +444,8 @@ void InputStateCore::queuePoseSamples(std::vector<InputPoseSample> samples) {
     }
 }
 
+void InputStateCore::setFrameTime(double seconds) noexcept { next_frame_time = seconds; }
+void InputState::setFrameTime(double seconds) noexcept { core.setFrameTime(seconds); }
 void InputStateCore::beginFrame() {
     borrow_state->active = false;
     assert(borrow_state->borrowers == 0 && "FrameInput must not be retained across frames");
@@ -429,6 +461,16 @@ void InputStateCore::beginFrame() {
     frame_pose_samples.swap(pending_pose_samples);
 
     InputSnapshot next_snapshot{};
+    next_snapshot.time_seconds = next_frame_time.value_or(
+        std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count());
+    next_frame_time.reset();
+    next_snapshot.touches = snapshot.touches;
+    for (auto &finger : next_snapshot.touches) {
+        if (!finger.down) { finger = {}; continue; }
+        finger.previous_down = finger.down;
+        finger.previous_x = finger.x; finger.previous_y = finger.y;
+        finger.pushed = finger.released = finger.cancelled = false;
+    }
     const bool had_mouse_position = mouse_position_known;
     const float previous_mouse_x = mouse_x;
     const float previous_mouse_y = mouse_y;
@@ -455,15 +497,54 @@ void InputStateCore::beginFrame() {
             break;
         }
         case InputEvent::Type::cursor_move:
+            last_pointer_touch = false;
             saw_mouse_move = true;
             mouse_x = event.mouse_x;
             mouse_y = event.mouse_y;
             mouse_position_known = true;
             break;
         case InputEvent::Type::axis:
+            last_pointer_touch = false;
             axis_delta_x += event.axis_x;
             axis_delta_y += event.axis_y;
             break;
+        case InputEvent::Type::touch: {
+            if (event.pointer_id < 0 || event.pointer_id >= touch_id_count ||
+                !std::isfinite(event.mouse_x) || !std::isfinite(event.mouse_y)) break;
+            auto &fingers = next_snapshot.touches;
+            auto it = std::find_if(fingers.begin(), fingers.end(), [&](const auto &f) { return f.id == event.pointer_id; });
+            if (event.touch_phase == TouchPhase::down) {
+                if (it != fingers.end() && it->down) break;
+                if (it == fingers.end()) it = std::find_if(fingers.begin(), fingers.end(), [](const auto &f) { return f.id < 0; });
+                if (it == fingers.end()) break;
+                const auto before = *it;
+                *it = {};
+                it->previous_down = before.previous_down;
+                it->previous_x = before.previous_x; it->previous_y = before.previous_y;
+                it->released = before.released;
+                it->id = event.pointer_id; it->down = it->pushed = true;
+                it->down_x = event.mouse_x; it->down_y = event.mouse_y;
+                if (!it->previous_down) { it->previous_x = event.mouse_x; it->previous_y = event.mouse_y; }
+                it->down_time = next_snapshot.time_seconds; it->down_order = next_touch_order++;
+                it->slop_px = std::isfinite(event.touch_slop_px) && event.touch_slop_px > 0 ? event.touch_slop_px : 8;
+            }
+            if (it == fingers.end() || (!it->down && event.touch_phase != TouchPhase::down)) break;
+            last_pointer_touch = true;
+            it->x = event.mouse_x; it->y = event.mouse_y;
+            const auto dx = (it->x - it->down_x) * next_pointer_transform.scale_x;
+            const auto dy = (it->y - it->down_y) * next_pointer_transform.scale_y;
+            it->max_distance_sq = std::max(it->max_distance_sq, dx * dx + dy * dy);
+            if (event.touch_phase == TouchPhase::up || event.touch_phase == TouchPhase::cancel) {
+                it->down = false; it->released = true;
+                it->cancelled = event.touch_phase == TouchPhase::cancel;
+                if (!it->cancelled) {
+                    auto tap = std::find_if(next_snapshot.touch_taps.begin(),next_snapshot.touch_taps.end(),[](const auto &t){ return t.id < 0; });
+                    if (tap != next_snapshot.touch_taps.end())
+                        *tap = {it->id,it->down_x,it->down_y,it->x,it->y,it->max_distance_sq,it->slop_px,next_snapshot.time_seconds-it->down_time};
+                }
+            }
+            break;
+        }
         case InputEvent::Type::scroll:
         case InputEvent::Type::character:
             break;
@@ -509,6 +590,12 @@ void InputStateCore::beginFrame() {
     snapshot = next_snapshot;
     frame_pointer_transform = next_pointer_transform;
     frame_pointer = pointerStateFor(frame_pointer_transform, mouse_x, mouse_y, mouse_position_known);
+    if (last_pointer_touch) {
+        const TouchState *primary = nullptr;
+        for (const auto &finger : snapshot.touches)
+            if (finger.down && (!primary || finger.down_order < primary->down_order)) primary = &finger;
+        frame_pointer = primary ? pointerStateFor(frame_pointer_transform, primary->x, primary->y, true) : PointerState{};
+    }
 }
 
 void InputStateCore::setPointerTransform(const PointerTransform &transform) noexcept {
@@ -532,6 +619,8 @@ void InputStateCore::clear() {
     mouse_x = 0.0f;
     mouse_y = 0.0f;
     mouse_position_known = false;
+    last_pointer_touch = false;
+    next_frame_time.reset();
     frame_pointer = {};
     frame_active = false;
     actions_frozen = false;
@@ -553,6 +642,12 @@ const PointerTransform &InputStateCore::pointerTransform() const noexcept {
 const PointerState &InputStateCore::pointer() const noexcept {
     return frame_pointer;
 }
+
+void InputStateCore::consumeTouchForActions(std::int32_t id) noexcept {
+    assert(frame_active && !actions_frozen);
+    consumption_mask.consumeTouch(id);
+}
+void InputState::consumeTouchForActions(std::int32_t id) noexcept { core.consumeTouchForActions(id); }
 
 void InputStateCore::consumeControlForActions(KeyCode code) noexcept {
     assert(frame_active && !actions_frozen && "input controls must be consumed before Actions are frozen");

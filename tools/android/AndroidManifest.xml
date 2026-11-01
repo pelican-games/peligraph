@@ -7,7 +7,7 @@
     <application android:label="Pelican SA1b" android:hasCode="false"
         android:extractNativeLibs="false" android:debuggable="true" android:allowBackup="false">
         <activity android:name="android.app.NativeActivity" android:exported="true"
-            android:screenOrientation="landscape"
+            android:screenOrientation="landscape" android:enableOnBackInvokedCallback="false"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density">
             <meta-data android:name="android.app.lib_name" android:value="pelican_player" />
             <intent-filter>

@@ -48,6 +48,10 @@ RouteFrameResult InputRouter::route(std::span<const UiPointerEvent> events, cons
     RouteFrameResult result;
     std::uint64_t previous = 0;
     bool first = true;
+    // Captures consume the whole frame, even without a motion event.
+    for (const auto &[id, state] : pointers_) if (state.capture) {
+        if (id > 0 && id <= touch_id_count) result.consumed_touches[id - 1] = 1;
+    }
     for (const auto &event : events) {
         if (!first && event.event_seq <= previous) throw std::invalid_argument("UI input event_seq must be strictly increasing");
         first = false; previous = event.event_seq;
@@ -104,7 +108,10 @@ RouteFrameResult InputRouter::route(std::span<const UiPointerEvent> events, cons
             }
             state.hover.reset();
         }
-        if (routed.target || state.capture) result.consumed_pointer = true;
+        if (routed.target || state.capture) {
+            if (event.pointer_id == 0) result.consumed_pointer = true;
+            else if (event.pointer_id <= touch_id_count) result.consumed_touches[event.pointer_id - 1] = 1;
+        }
         if (handler) handler(routed);
         result.events.push_back(std::move(routed));
     }
@@ -113,7 +120,7 @@ RouteFrameResult InputRouter::route(std::span<const UiPointerEvent> events, cons
 
 RouteFrameResult InputRouter::routeFrameInput(const FrameInput &input, const WidgetArena &arena,
                                               std::span<const WidgetId> traversal, const ViewportTransform &viewport,
-                                              const PointerHandler &handler) {
+                                              const PointerHandler &handler, const InputConsumptionMask &mask) {
     std::vector<UiPointerEvent> converted;
     // Cursor events carry window coordinates; the viewport is in framebuffer
     // pixels. The frame's pointer transform is the one conversion the public
@@ -123,8 +130,11 @@ RouteFrameResult InputRouter::routeFrameInput(const FrameInput &input, const Wid
         const auto px = windowToFramebufferPx(input.pointer_transform, window_x, window_y);
         return PointI{static_cast<std::int32_t>(px.x), static_cast<std::int32_t>(px.y)};
     };
+    const bool mouse_blocked = mask.pointer_motion || mask.consumesControl(KeyCode::MouseLeft) ||
+                               mask.consumesControl(KeyCode::MouseRight) || mask.consumesControl(KeyCode::MouseMiddle);
     PointI position = toPx(input.snapshot.mouse_x, input.snapshot.mouse_y);
     for (const auto &event : input.ordered_events) {
+        if (mouse_blocked && event.type != InputEvent::Type::touch) continue;
         UiPointerEvent out{.event_seq = event.event_seq, .pointer_id = 0, .position_px = position};
         if (event.type == InputEvent::Type::cursor_move) {
             position = toPx(event.mouse_x, event.mouse_y);
@@ -132,13 +142,30 @@ RouteFrameResult InputRouter::routeFrameInput(const FrameInput &input, const Wid
             out.kind = PointerKind::Move;
         } else if (event.type == InputEvent::Type::button &&
                    (event.code == KeyCode::MouseLeft || event.code == KeyCode::MouseRight || event.code == KeyCode::MouseMiddle)) {
-            out.kind = event.pressed ? PointerKind::Down : PointerKind::Up;
-            out.button = event.code == KeyCode::MouseLeft ? PointerButton::Left
+            out.kind = event.canceled ? PointerKind::Cancel : event.pressed ? PointerKind::Down : PointerKind::Up;
+            if (!event.canceled) out.button = event.code == KeyCode::MouseLeft ? PointerButton::Left
                        : event.code == KeyCode::MouseRight ? PointerButton::Right : PointerButton::Middle;
+        } else if (event.type == InputEvent::Type::touch) {
+            if (event.pointer_id < 0 || event.pointer_id >= touch_id_count || mask.consumesTouch(event.pointer_id)) continue;
+            out.pointer_id = static_cast<std::uint8_t>(1 + event.pointer_id);
+            out.position_px = toPx(event.mouse_x, event.mouse_y);
+            switch (event.touch_phase) {
+            case TouchPhase::down: out.kind = PointerKind::Down; break;
+            case TouchPhase::move: out.kind = PointerKind::Move; break;
+            case TouchPhase::up: out.kind = PointerKind::Up; break;
+            case TouchPhase::cancel: out.kind = PointerKind::Cancel; break;
+            }
+            if (out.kind != PointerKind::Cancel) out.button = PointerButton::Left;
         } else continue;
         converted.push_back(out);
     }
     return route(converted, arena, traversal, viewport, handler);
+}
+
+bool InputRouter::hasCapture(WidgetId owner) const noexcept {
+    for (const auto &[id,state] : pointers_)
+        if (state.capture && state.capture->owner == owner) return true;
+    return false;
 }
 
 std::optional<RoutedPointerEvent> InputRouter::cancelCapture(std::uint8_t pointer_id, const WidgetArena &arena,

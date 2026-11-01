@@ -867,6 +867,10 @@ std::vector<InputEvent> bindInjectedInputEvents(const std::vector<RpcInputInject
             events.push_back(InputEvent::button(*key, rpc_event.type == RpcInputInjectionEventType::keyDown));
             break;
         }
+        case RpcInputInjectionEventType::touch:
+            events.push_back(InputEvent::touch(rpc_event.pointer_id, *touchPhaseFromName(rpc_event.phase),
+                                              static_cast<float>(rpc_event.x), static_cast<float>(rpc_event.y)));
+            break;
         case RpcInputInjectionEventType::mouseMove:
             // x / y are window coordinates, the ones the OS reports a cursor
             // in, not framebuffer pixels: an injected move is the same event

@@ -36,6 +36,7 @@ void quarantineModulesForProcessExit();
 void setLifecycleHandler(std::function<void()> handler);
 void processLifecycle();
 std::uint64_t acceptedPresentCount();
+bool testInput();
 bool testNoMaintenance();
 bool testZeroAcquireTimeout();
 unsigned testBuildDelayMilliseconds();

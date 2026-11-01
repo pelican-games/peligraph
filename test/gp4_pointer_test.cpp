@@ -184,7 +184,9 @@ TEST_CASE("GP-4 input_seq v2 requires its header transform and v1 carries none",
                                      "\n{\"content_scale\":[2,2],\"frame\":0,\"framebuffer\":[2,2]}\n"),
         Catch::Matchers::ContainsSubstring("needs version 2"));
     REQUIRE_THROWS_WITH(
-        InputSequence::fromJsonLines(R"({"schema":"pelican.input_seq","version":3,"fps":60})"
+        // SA1f made version 3 the touch-carrying format; the first unknown
+        // version is now 4.
+        InputSequence::fromJsonLines(R"({"schema":"pelican.input_seq","version":4,"fps":60})"
                                      "\n{\"frame\":0}\n"),
         "input_seq version is not supported");
 }
@@ -339,4 +341,21 @@ TEST_CASE("GP-4 setCursorMode is recorded for the window and an embedded window 
     CHECK(input.cursorMode().requested == CursorMode::locked);
 }
 
+} // namespace Pelican
+
+namespace Pelican {
+TEST_CASE("SA1f public pointer selects oldest active touch and returns to moved mouse", "[gp4][pointer][sa1f]") {
+    FastModuleContainer modules;
+    auto &input=GET_MODULE(InputState);
+    input.setPointerTransform(pointerTransformFor(200,100,100,50));
+    const GameContext ctx;
+    input.queueEvents({InputEvent::touch(8,TouchPhase::down,10,10),InputEvent::touch(2,TouchPhase::down,30,10)});
+    input.beginFrame(); requirePointer(ctx.input().pointer(),20,20,true);
+    input.queueEvent(InputEvent::touch(2,TouchPhase::move,40,10)); input.beginFrame();
+    requirePointer(ctx.input().pointer(),20,20,true);
+    input.queueEvent(InputEvent::touch(8,TouchPhase::up,10,10)); input.beginFrame();
+    requirePointer(ctx.input().pointer(),80,20,true);
+    input.queueEvent(InputEvent::cursorMove(5,6)); input.beginFrame();
+    requirePointer(ctx.input().pointer(),10,12,true);
+}
 } // namespace Pelican

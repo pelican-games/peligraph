@@ -2531,6 +2531,9 @@ target_compile_definitions(pelican_test_imageloader_test PRIVATE
 )
 endif()
 pelican_define_test(inputstate_test GROUP core_assets_input pelican_core)
+# NDK-free conversion table and touch pipeline also run on Windows.
+pelican_define_test(android_inputmap_test GROUP core_assets_input pelican_core)
+pelican_define_test(touch_input_test GROUP core_assets_input pelican_core)
 pelican_define_test(xractivation_test quill)
 if(PELICAN_WITH_OPENXR)
 pelican_define_test(xrdiscovery_test GROUP core_xr_tools pelican_core pelican_openxr)

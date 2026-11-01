@@ -11,6 +11,9 @@
 #include "../os/inputstate.hpp"
 #include "../userpublic/details/event/registerer.hpp"
 
+#if defined(__ANDROID__)
+#include "../../platform/android/runtime.hpp"
+#endif
 #include <algorithm>
 #include <cmath>
 #include <fstream>
@@ -308,11 +311,17 @@ void UiModule::emitBindings(const DocumentNode &node, std::string_view trigger,
 }
 
 void UiModule::handlePointer(const RoutedPointerEvent &event) {
-    if (std::ranges::find(event.effects, PointerEffect::HoverExit) != event.effects.end() && hovered_widget) {
+#if defined(__ANDROID__)
+    if (Android::testInput())
+        LOG_INFO(logger,"SA1f UI pointer id={} event={} x={} y={} target={} effects={}",
+                 event.input.pointer_id,toString(event.input.kind),event.input.position_px.x,event.input.position_px.y,
+                 event.target.has_value(),event.effects.size());
+#endif
+    if (event.input.pointer_id == 0 && std::ranges::find(event.effects, PointerEffect::HoverExit) != event.effects.end() && hovered_widget) {
         command_buffer.push(SetHovered{*hovered_widget, false});
         hovered_widget.reset();
     }
-    if (std::ranges::find(event.effects, PointerEffect::HoverEnter) != event.effects.end() && event.hover_target) {
+    if (event.input.pointer_id == 0 && std::ranges::find(event.effects, PointerEffect::HoverEnter) != event.effects.end() && event.hover_target) {
         command_buffer.push(SetHovered{*event.hover_target, true});
         hovered_widget = event.hover_target;
     }
@@ -324,7 +333,9 @@ void UiModule::handlePointer(const RoutedPointerEvent &event) {
         switch (effect) {
         case PointerEffect::Capture: command_buffer.push(SetPressed{*event.target, true}); break;
         case PointerEffect::ReleaseCapture:
-        case PointerEffect::Cancel: command_buffer.push(SetPressed{*event.target, false}); break;
+        case PointerEffect::Cancel:
+            command_buffer.push(SetPressed{*event.target, event.input.pointer_id != 0 && input_router.hasCapture(*event.target)});
+            break;
         case PointerEffect::Click: emitBindings(*node, "on_click", event); break;
         case PointerEffect::DragStart: emitBindings(*node, "on_drag_start", event); break;
         case PointerEffect::Drag: emitBindings(*node, "on_drag", event); break;
@@ -339,9 +350,11 @@ RouteFrameResult UiModule::routeFrameInput(Pelican::InputState &input, vk::Exten
     const auto viewport = ViewportTransform::letterboxed(
         {static_cast<std::int32_t>(extent.width), static_cast<std::int32_t>(extent.height)}, ui_scale);
     last_route = input_router.routeFrameInput(input.currentFrameInput(), widget_arena, traversal, viewport,
-                                               [&](const auto &event) { handlePointer(event); });
+                                               [&](const auto &event) { handlePointer(event); }, input.consumptionMask());
     last_commit = commitPending();
     if (last_route.consumed_pointer) input.consumePointerForActions();
+    for (std::size_t id = 0; id < touch_id_count; ++id)
+        if (last_route.consumed_touches[id]) input.consumeTouchForActions(static_cast<std::int32_t>(id));
     return last_route;
 }
 

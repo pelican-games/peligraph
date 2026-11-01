@@ -121,6 +121,7 @@ void feedOrderedInput(const FrameInput &frame_input) {
             break;
         case InputEvent::Type::axis:
         case InputEvent::Type::gamepad_button:
+        case InputEvent::Type::touch: // Touch has its own UI pointers; never synthesize a mouse.
         case InputEvent::Type::gamepad_axis:
             break;
         }

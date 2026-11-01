@@ -33,7 +33,11 @@
 #endif
 #include "../launchconfig.hpp"
 
+#include <algorithm>
 #include <cassert>
+#if defined(__ANDROID__)
+#include "../../platform/android/runtime.hpp"
+#endif
 
 namespace Pelican {
 
@@ -223,13 +227,29 @@ void updateFrameState() {
                     mask.consumesControl(KeyCode::MouseLeft) ||
                     mask.consumesControl(KeyCode::MouseRight) ||
                     mask.consumesControl(KeyCode::MouseMiddle);
-                if (!tool_owns_pointer)
+                const auto &touches = modules.input_state.currentSnapshot().touches;
+                const bool has_touch = std::any_of(touches.begin(), touches.end(), [](const auto &f) { return f.id >= 0; });
+                if (!tool_owns_pointer || has_touch)
                     guardUserData(modules.ui_module->evaluationScope(), [&] {
                         modules.ui_module->routeFrameInput(modules.input_state,
                                                           modules.render_target->getExtent());
                     });
             }
             internal::freezeInputActionsFrame();
+#if defined(__ANDROID__)
+            if (Android::testInput()) {
+                const auto events = modules.input_state.currentFrameInput();
+                if (!events.ordered_events.empty()) {
+                    const auto pointer = game_context.input().pointer();
+                    LOG_INFO(logger,"SA1f pointer() x={} y={} inside={}",pointer.position_px.x,pointer.position_px.y,pointer.inside);
+                }
+                for (const auto name : {"sa1f_kbd", "sa1f_pad", "sa1f_region", "sa1f_tap"}) {
+                    const bool pressed = Actions::isPressed(name), held = Actions::isHeld(name), released = Actions::isReleased(name);
+                    if (pressed || held || released)
+                        LOG_INFO(logger,"SA1f action={} pressed={} held={} released={}",name,pressed,held,released);
+                }
+            }
+#endif
             break;
         case FramePhase::deliver_events:
             if (game_step) internal::dispatchFrozenEvents(game_context);

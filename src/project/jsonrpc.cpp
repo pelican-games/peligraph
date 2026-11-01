@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <utility>
+#include <cmath>
+#include <limits>
 
 namespace Pelican {
 
@@ -79,6 +81,20 @@ RpcInputInjectionEvent parseInjectInputEvent(const nlohmann::json &event_json, s
     }
 
     const auto type = requireStringField(event_json, "type", context);
+    if (type == "touch") {
+        if (!event_json.contains("pointer_id") || !event_json["pointer_id"].is_number_integer())
+            throw JsonRpcInvalidParamsError(context + " touch requires integer pointer_id");
+        const auto id = event_json["pointer_id"].get<std::int64_t>();
+        const auto phase = requireStringField(event_json,"phase",context);
+        const auto x = requireNumberField(event_json,"x",context), y = requireNumberField(event_json,"y",context);
+        if (id < 0 || id >= 32 || (phase != "down" && phase != "move" && phase != "up" && phase != "cancel") ||
+            !std::isfinite(x) || !std::isfinite(y) || std::abs(x)>std::numeric_limits<float>::max() || std::abs(y)>std::numeric_limits<float>::max())
+            throw JsonRpcInvalidParamsError(context + " invalid touch");
+        RpcInputInjectionEvent event;
+        event.type = RpcInputInjectionEventType::touch; event.pointer_id = static_cast<std::int32_t>(id);
+        event.phase = phase; event.x = x; event.y = y;
+        return event;
+    }
     if (type == "key_down" || type == "key_up") {
         return RpcInputInjectionEvent{
             .type = type == "key_down" ? RpcInputInjectionEventType::keyDown : RpcInputInjectionEventType::keyUp,

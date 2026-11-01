@@ -1,6 +1,7 @@
 #include "inputsequence.hpp"
 
 #include <array>
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <limits>
@@ -167,6 +168,13 @@ InputEvent parseEvent(const nlohmann::json &json, std::size_t line) {
                                      " button event requires boolean field 'pressed'");
         }
         event = InputEvent::button(parseKeyCode(json, line), pressed->get<bool>());
+        event.canceled = json.value("canceled",false);
+    } else if (type == "touch") {
+        const auto id = requireUnsigned(json,"pointer_id",line);
+        const auto phase = touchPhaseFromName(json.value("phase",std::string{}));
+        const auto slop = requireFloat(json,"slop_px",line);
+        if (id >= touch_id_count || !phase || slop <= 0) throw std::runtime_error("invalid input_seq touch");
+        event = InputEvent::touch(static_cast<int>(id),*phase,requireFloat(json,"x",line),requireFloat(json,"y",line),slop);
     } else if (type == "cursor_move") {
         event = InputEvent::cursorMove(requireFloat(json, "x", line), requireFloat(json, "y", line));
     } else if (type == "axis") {
@@ -219,6 +227,15 @@ nlohmann::json serializeEvent(const InputEvent &event) {
         json["type"] = "button";
         json["code"] = keyCodeNames[static_cast<std::size_t>(event.code)];
         json["pressed"] = event.pressed != 0;
+        if (event.canceled) json["canceled"] = true;
+        break;
+    case InputEvent::Type::touch:
+        if (event.pointer_id < 0 || event.pointer_id >= touch_id_count || touchPhaseName(event.touch_phase).empty() ||
+            !std::isfinite(event.mouse_x) || !std::isfinite(event.mouse_y) || !std::isfinite(event.touch_slop_px) || event.touch_slop_px <= 0)
+            throw std::runtime_error("cannot record invalid touch");
+        json["type"] = "touch"; json["pointer_id"] = event.pointer_id;
+        json["phase"] = touchPhaseName(event.touch_phase); json["slop_px"] = event.touch_slop_px;
+        json["x"] = event.mouse_x; json["y"] = event.mouse_y;
         break;
     case InputEvent::Type::cursor_move:
         json["type"] = "cursor_move";
@@ -305,7 +322,7 @@ InputSequence InputSequence::fromJsonLines(std::string_view json_lines) {
                 throw std::runtime_error("input_seq schema is not supported");
             }
             const auto version = json.value("version", 0);
-            if (version != inputSequenceVersion && version != inputSequenceLegacyVersion) {
+            if (version != 3 && version != inputSequenceVersion && version != inputSequenceLegacyVersion) {
                 throw std::runtime_error("input_seq version is not supported");
             }
             const auto fps_it = json.find("fps");
@@ -314,7 +331,7 @@ InputSequence InputSequence::fromJsonLines(std::string_view json_lines) {
             }
             parsed = InputSequence{fps_it->get<double>()};
             parsed.source_version = version;
-            if (version == inputSequenceVersion) {
+            if (version >= inputSequenceVersion) {
                 pointer_transform = *parsePointerTransform(json, line_number, true);
             }
             header_read = true;
@@ -342,6 +359,8 @@ InputSequence InputSequence::fromJsonLines(std::string_view json_lines) {
             throw std::runtime_error("input_seq event appears before the first frame marker");
         }
         auto event = parseEvent(json, line_number);
+        if (event.type == InputEvent::Type::touch && parsed.source_version < 3)
+            throw std::runtime_error("input_seq touch requires version 3");
         if (previous_event_seq && event.event_seq <= *previous_event_seq) {
             throw std::runtime_error("input_seq event_seq must be strictly increasing");
         }
@@ -371,11 +390,14 @@ void InputSequence::appendFrame(std::span<const InputEvent> events, const Pointe
 }
 
 std::string InputSequence::toJsonLines() const {
+    const bool has_touch = std::any_of(frame_samples.begin(),frame_samples.end(),[](const auto &f) {
+        return std::any_of(f.events.begin(),f.events.end(),[](const auto &e) { return e.type == InputEvent::Type::touch; });
+    });
     std::ostringstream output;
     nlohmann::json header{{"fps", sequence_fps},
                           {"generator", "pelican2"},
                           {"schema", inputSequenceSchema},
-                          {"version", inputSequenceVersion}};
+                          {"version", has_touch ? 3 : inputSequenceVersion}};
     writePointerTransform(header, frame_samples.empty() ? PointerTransform{}
                                                          : frame_samples.front().pointer_transform);
     output << header.dump() << '\n';
@@ -497,6 +519,7 @@ void InputSequenceRuntime::prepareFrame(InputState &input, const PointerTransfor
         recorded.framebuffer_height = live.framebuffer_height;
     }
     input.setPointerTransform(recorded);
+    input.setFrameTime(static_cast<double>(replay_frame) / sequence.fps());
     const auto &source = sequence.frames()[replay_frame].events;
     std::vector<InputEvent> events{source.begin(), source.end()};
     if (!events.empty()) {

@@ -4,6 +4,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -37,6 +38,7 @@ struct InputActionBinding {
     float deadzone = 0.0f;
     bool invert_x = false;
     bool invert_y = false;
+    std::optional<std::array<float, 4>> region;
 };
 
 struct InputProfileBinding {

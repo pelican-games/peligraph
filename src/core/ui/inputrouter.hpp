@@ -39,6 +39,7 @@ struct RoutedPointerEvent {
 struct RouteFrameResult {
     std::vector<RoutedPointerEvent> events;
     bool consumed_pointer = false;
+    std::array<std::uint8_t, touch_id_count> consumed_touches{};
 };
 
 using PointerHandler = std::function<void(const RoutedPointerEvent &)>;
@@ -50,9 +51,10 @@ class InputRouter {
                            const PointerHandler &handler = {});
     RouteFrameResult routeFrameInput(const FrameInput &input, const WidgetArena &arena,
                                      std::span<const WidgetId> traversal, const ViewportTransform &viewport,
-                                     const PointerHandler &handler = {});
+                                     const PointerHandler &handler = {}, const InputConsumptionMask &mask = {});
     std::optional<RoutedPointerEvent> cancelCapture(std::uint8_t pointer_id, const WidgetArena &arena,
                                                     std::uint64_t event_seq = 0);
+    bool hasCapture(WidgetId owner) const noexcept;
     void reset() noexcept { pointers_.clear(); }
 
   private:

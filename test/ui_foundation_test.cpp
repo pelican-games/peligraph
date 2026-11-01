@@ -386,3 +386,19 @@ TEST_CASE("Semantic fixture three-stage gate executes every coverage witness", "
     REQUIRE(validateSemanticFixtureAll(actual).semanticValid());
     REQUIRE(Json::parse(writeSemanticFixture(actual)) == expected);
 }
+
+TEST_CASE("SA1f two touch captures keep button pressed until both release", "[ui][sa1f]") {
+    const auto json=Json::parse(R"({"schema":"pelican.ui","version":1,"key":"touch_ui",
+      "root":{"id":"root","type":"panel","children":[{"id":"button","type":"button",
+      "layout":{"x":{"mode":"fixed","value":50},"y":{"mode":"fixed","value":50}}}]}})");
+    UiModule module{json}; Pelican::InputState input; input.setPointerTransform({1,1,100,100});
+    input.queueEvents({Pelican::InputEvent::touch(0,Pelican::TouchPhase::down,10,10),Pelican::InputEvent::touch(4,Pelican::TouchPhase::down,20,20)});
+    input.beginFrame(); const auto first=module.routeFrameInput(input,{100,100});
+    REQUIRE(first.consumed_touches[0]); REQUIRE(first.consumed_touches[4]);
+    input.queueEvent(Pelican::InputEvent::touch(0,Pelican::TouchPhase::up,10,10)); input.beginFrame();
+    const auto second=module.routeFrameInput(input,{100,100}); REQUIRE(second.consumed_touches[0]); REQUIRE(second.consumed_touches[4]);
+    REQUIRE(module.arenaForTesting().resolve(module.traversalForTesting()[1])->pressed);
+    input.queueEvent(Pelican::InputEvent::touch(4,Pelican::TouchPhase::cancel,20,20)); input.beginFrame();
+    (void)module.routeFrameInput(input,{100,100});
+    REQUIRE_FALSE(module.arenaForTesting().resolve(module.traversalForTesting()[1])->pressed);
+}

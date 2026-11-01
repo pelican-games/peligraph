@@ -7,7 +7,8 @@ target_sources(pelican_core PRIVATE
 # The Window module has one implementation per platform: GLFW on the desktop,
 # the activity's ANativeWindow on Android (vkcore picks the matching surface).
 if(ANDROID)
-target_sources(pelican_core PRIVATE window_android.cpp)
+target_sources(pelican_core PRIVATE window_android.cpp ../../platform/android/inputqueue.cpp)
+target_include_directories(pelican_core PRIVATE "${ANDROID_NDK}/sources/android/native_app_glue")
 else()
 target_sources(pelican_core PRIVATE window_glfw.cpp)
 endif()

@@ -1,6 +1,7 @@
 // The glue thread pumps events; filesystem, shaderc and engine work stay on
 // the worker so startup cannot stall Android's lifecycle acknowledgements.
 #include "runtime.hpp"
+#include "inputqueue.hpp"
 #include "validationlog.hpp"
 #include "../../core/log.hpp"
 #include <android/asset_manager.h>
@@ -37,6 +38,7 @@ std::atomic<bool> is_paused{true};
 std::atomic<bool> preserve_modules{false};
 std::atomic<std::uint64_t> accepted_presents{0};
 std::function<void()> lifecycle_handler;
+bool test_input = false;
 bool test_no_maintenance = false, test_zero_acquire = false;
 unsigned test_build_delay_ms = 0;
 fs::path pump_log;
@@ -176,8 +178,8 @@ void handleCommand(android_app *app, int32_t command) {
         state.window_ready = true;
         pumpLog("native window published revision=" + std::to_string(slot.revision));
     }
-    if (command == APP_CMD_PAUSE) is_paused.store(true);
-    if (command == APP_CMD_RESUME) is_paused.store(false);
+    if (command == APP_CMD_PAUSE) { is_paused.store(true); Pelican::Android::setInputPaused(true); }
+    if (command == APP_CMD_RESUME) { is_paused.store(false); Pelican::Android::setInputPaused(false); }
     if (command == APP_CMD_TERM_WINDOW) {
         state.window_ready = false;
         const auto start = Clock::now();
@@ -213,6 +215,7 @@ void quarantineModulesForProcessExit() { preserve_modules.store(true); requestSt
 void setLifecycleHandler(std::function<void()> handler) { lifecycle_handler = std::move(handler); }
 void processLifecycle() { if (lifecycle_handler) lifecycle_handler(); }
 std::uint64_t acceptedPresentCount() { return accepted_presents.load(); }
+bool testInput() { return test_input; }
 bool testNoMaintenance() { return test_no_maintenance; }
 bool testZeroAcquireTimeout() { return test_zero_acquire; }
 unsigned testBuildDelayMilliseconds() { return test_build_delay_ms; }
@@ -251,9 +254,11 @@ extern "C" void android_main(android_app *app) {
     PumpState pump;
     app->userData = &pump;
     app->onAppCmd = handleCommand;
+    app->onInputEvent = Pelican::Android::handleInput;
     auto extra_args = intentArguments(app);
     // Explicit, process-local test switches. Never change device settings.
     std::erase_if(extra_args, [](const std::string &arg) {
+        if (arg == "--sa1-test-input") { test_input = true; return true; }
         if (arg == "--sa1-test-no-maintenance") { test_no_maintenance = true; return true; }
         if (arg == "--sa1-test-short-acquire") { test_zero_acquire = true; return true; }
         if (arg == "--sa1-test-build-delay") { test_build_delay_ms = 800; return true; }
