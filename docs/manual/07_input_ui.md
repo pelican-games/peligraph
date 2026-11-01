@@ -237,7 +237,7 @@ pelican_player --project mygame --replay session.jsonl         # リプレイ(�
 - **機械可読スキーマが正**: [../schemas/pelican.ui.schema.json](../schemas/pelican.ui.schema.json)(`additionalProperties: false` の closed schema — 未知フィールドは拒否)。
 - トップレベル: `schema` / `version: 1` / `key`(1〜256 文字)/ `root` 必須、`revision` / `direction`(`"ltr"` のみ)任意。
 - **ウィジェット語彙 6 種**(語彙 = 書ける `type` の値の全集合。これ以外は拒否): `panel` / `image` / `label` / `button` / `gauge` / `stack`。
-- **`gauge` の描画(✅GP-3)**: 左端から伸びる横棒を 1 本描きます。棒の幅は **floor(ゲージの幅 × clamp(`value`, 0, 1))**(UI 単位)で、色は `color`。`color` を省くと既定色 `{96, 200, 120, 255}` になります([visitNodes() の gauge 分岐](../../src/core/ui/module.cpp#L111) / [既定色](../../src/core/ui/document.cpp#L243))。`value` は文書に書けるほか、実行時に `ctx.ui().setValue` と `ui.value` sink で書き換えられます(下の「ゲームコードと共通グラフから UI を書く」)。背景の枠は描かないので、地が要るなら親の `panel` に色を付けます。
+- **`gauge` の描画(✅GP-3)**: 左端から伸びる横棒を 1 本描きます。棒の幅は **floor(ゲージの幅 × clamp(`value`, 0, 1))**(UI 単位)で、色は `color`。`color` を省くと既定色 `{96, 200, 120, 255}` になります([visitNodes() の gauge 分岐](../../src/core/ui/module.cpp#L111) / [既定色](../../src/core/ui/document.cpp#L240))。`value` は文書に書けるほか、実行時に `ctx.ui().setValue` と `ui.value` sink で書き換えられます(下の「ゲームコードと共通グラフから UI を書く」)。背景の枠は描かないので、地が要るなら親の `panel` に色を付けます。
 - 主なプロパティ: 共通 `id`(`^[a-z0-9_]+$`)/ `layout` / `visibility` / `enabled` / `hit_testable` / `layer` / `emit` / `children`。描画系 `sprite`(atlas 参照は `<name>.atlas.json#sprite/<名前>` 形式)/ `color` / `hover_color` / `pressed_color` / `text` / `text_color` / `nine_patch`(panel)。
 - レイアウト: 軸ごとの `mode: fixed|content|fill`(+ min/max/weight)、`anchor_min/max`、`offsets`、`stack`(horizontal/vertical)+ `gap` / `padding` / `align` / `justify`。計算は決定的(binary64 固定)。
   - `mode` は x 軸・y 軸それぞれに書き、その軸の長さの決め方を選びます: **`fixed`** = 書いた `value` をそのまま使う / **`content`** = 中身(子とテキスト・画像)から算出した固有サイズを使う / **`fill`** = 親 `stack` の余りを `weight` の比で分け合う。いずれも `min` / `max` で挟まれます([axisSize()](../../src/core/ui/layout.cpp#L76) と [distribute()](../../src/core/ui/layout.cpp#L93))。`content` の親の下に `fill` の子を置くと循環なので名指しエラーです。
@@ -252,7 +252,7 @@ pelican_player --project mygame --replay session.jsonl         # リプレイ(�
   "emit": { "on_click": { "event": "MenuStart" } } }
 ```
 
-emit のソースには static 値のほか `stable_id` / `drag_delta_ui` / `widget_value` が使えます。それぞれ、イベント payload のそのフィールドに **`stable_id`** = 発火したウィジェットの安定 ID(親からの `親id/子id` パス)、**`drag_delta_ui`** = 直前の位置からのドラッグ移動量 `[x, y]`(UI 座標)、**`widget_value(パス)`** = ウィジェット自身の現在値、を入れます([document.cpp](../../src/core/ui/document.cpp#L196) / [module.cpp](../../src/core/ui/module.cpp#L296))。rpc 経由のクリックとリプレイの決定性は結合テストで担保されています。
+emit のソースには static 値のほか `stable_id` / `drag_delta_ui` / `widget_value` が使えます。それぞれ、イベント payload のそのフィールドに **`stable_id`** = 発火したウィジェットの安定 ID(親からの `親id/子id` パス)、**`drag_delta_ui`** = 直前の位置からのドラッグ移動量 `[x, y]`(UI 座標)、**`widget_value(パス)`** = ウィジェット自身の現在値、を入れます([document.cpp](../../src/core/ui/document.cpp#L193) / [module.cpp](../../src/core/ui/module.cpp#L296))。rpc 経由のクリックとリプレイの決定性は結合テストで担保されています。
 
 ### ゲームコードと共通グラフから UI を書く(✅GP-3)
 
@@ -270,7 +270,7 @@ if (auto r = ui.setText("root/hud/score", "SCORE 120"); !r)
 (void)ui.setVisible("root/hud/pause_hint", false);
 ```
 
-- **path** は root から自分までの `id` を `/` でつないだ文字列で、root の `id` も含みます(root `root` の子 `hud` の子 `score` なら `root/hud/score`)。`id` は兄弟の間でしか一意ではないので、node を区別するのは path です。emit の `stable_id` に入る文字列と同じです([path の組み立て](../../src/core/ui/document.cpp#L234))。
+- **path** は root から自分までの `id` を `/` でつないだ文字列で、root の `id` も含みます(root `root` の子 `hud` の子 `score` なら `root/hud/score`)。`id` は兄弟の間でしか一意ではないので、node を区別するのは path です。emit の `stable_id` に入る文字列と同じです([path の組み立て](../../src/core/ui/document.cpp#L231))。
 - 書ける性質は node の型で決まります。`setText` は `label` / `button`、`setValue` は `gauge`、`setVisible` はすべての node です([uiNodeHasProperty()](../../src/core/ui/module.cpp#L357))。
 - 戻り値は [`UiWriteResult`](../../src/core/userpublic/ui_write.hpp#L39)(`[[nodiscard]]`)です。`ok()` / `operator bool` / `error()` / `errorName()` を持ち、失敗は例外ではなく戻り値で返ります。理由は [`UiWriteError`](../../src/core/userpublic/ui_write.hpp#L10) の 4 つで、複数当てはまるときは**この順で先のもの**を返します。
 

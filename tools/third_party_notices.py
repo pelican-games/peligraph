@@ -341,12 +341,17 @@ def declarations(repo: Path) -> dict[str, dict]:
             comment = tag.group(2).strip().lstrip("#").strip() if tag else ""
             # Only the tag name a comment gives, not the prose after it.
             comment = re.split(r"[(（]", comment, maxsplit=1)[0].strip()
-            result.setdefault(name, {
+            info = result.setdefault(name, {
                 "repository": repository.group(1) if repository else "",
                 "tag": tag.group(1) if tag else "",
                 "tag_comment": comment,
                 "declared_in": [],
-            })["declared_in"].append(path.relative_to(repo).as_posix())
+            })
+            # The Android build files repeat some declarations without the
+            # tag comment; take the comment from whichever declaration has it.
+            if not info["tag_comment"] and comment:
+                info["tag_comment"] = comment
+            info["declared_in"].append(path.relative_to(repo).as_posix())
     return result
 
 

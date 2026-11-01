@@ -56,7 +56,7 @@ CRI と違う形になるのは、作家のツールが Studio の graph その�
 |---|---|---|
 | 正の時計 | timeline(`scene_time`。[`loop.cpp:63`](../src/core/appflow/loop.cpp#L63) の steady_clock)。voice は timeline に追随し、cursor が `tolerance` より離れたら seek([`audio.hpp:59-72`](../src/core/audio/audio.hpp#L59) `VoiceDrive`、AU-1 決定 3) | **音の DAC の時計**。timeline が音に追随。seek で合わせる方式はずれるたびに音が飛ぶ |
 | 出力遅延 | miniaudio の既定。period と遅延を設定も報告もしていない | backend から取る(WASAPI / CoreAudio は報告する)、period を設定できる、ユーザー校正の offset |
-| 入力の時刻 | GLFW の callback([`window.cpp:259`](../src/core/os/window.cpp#L259))を frame ごとに poll([`:375`](../src/core/os/window.cpp#L375))。入力の時刻 = frame の時刻 | frame より細かい時刻。OS のイベント時刻か専用スレッドの標本化を、音の時計に写す |
+| 入力の時刻 | GLFW の callback([`window_glfw.cpp:264`](../src/core/os/window_glfw.cpp#L264))を frame ごとに poll([`:380`](../src/core/os/window_glfw.cpp#L380))。入力の時刻 = frame の時刻 | frame より細かい時刻。OS のイベント時刻か専用スレッドの標本化を、音の時計に写す |
 | 音の発火 | `playSound` は「今」。`VoiceStart.start` は source 秒 | 「device の N サンプル目で」の予約。keysound は前もって queue に |
 | 絵 | in-flight 2 + swapchain で 2〜3 frame の遅延。present 時刻は未計測 | present 時刻の音の時間を予測して描く |
 | 決定性 | offline の fixed step、`mixOffline`、入力の record / replay(`--record-input` / `--replay`) | そのまま強み。入力を音の時刻で記録すれば判定を offline で再現できる |

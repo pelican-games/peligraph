@@ -14,10 +14,10 @@
 
 | 要件 | 内容 |
 |---|---|
-| OS | Windows(開発の主環境)。日本語を含む path の project も開けます(下の「日本語の path」) |
+| OS | Windows(開発の主環境)。日本語を含む path の project も開けます(下の「日本語の path」)。player は Android(arm64-v8a のスマホ)でも動きます(✅SA1、build は Windows の上で NDK を使う。§2.9) |
 | コンパイラ | MSVC、C++20。CI と下の例は Qt の kit `msvc2022_64`(Visual Studio 2022 向け)を使います。CMake は compiler の版を検査せず、動く最低の版は未確認です |
 | CMake | **3.20 以上**([`cmake_minimum_required(VERSION 3.20)`](../../CMakeLists.txt#L1))。ルートの [CMakeLists.txt](../../CMakeLists.txt) が全体を構成 |
-| Vulkan SDK | **1.4.309 以上**。configure が SDK の `vulkan_core.h` の版を読み、古ければ `Vulkan SDK 1.4.309 or newer is required (found <版>)` で止まります([版の検査](../../CMakeLists.txt#L300))。1.4.350 で検証済み。vma-hpp v3.3.0 以降、1.3.x は非対応 |
+| Vulkan SDK | **1.4.309 以上**。configure が SDK の `vulkan_core.h` の版を読み、古ければ `Vulkan SDK 1.4.309 or newer is required (found <版>)` で止まります([版の検査](../../CMakeLists.txt#L312))。1.4.350 で検証済み。vma-hpp v3.3.0 以降、1.3.x は非対応 |
 | GPU | **Vulkan 1.3** と、機能 `multiDrawIndirect` / `drawIndirectFirstInstance` / `shaderDrawParameters` / `dynamicRendering`、窓を出すときは拡張 `VK_KHR_swapchain`(下の「GPU の選び方」)。レイトレーシングの機能は任意です |
 | Qt6 | Pelican Studio(エディタ)用。6.10 以上。**player だけなら不要** |
 | Python | **build にも実行にも要りません**(下の「Git と Python」)。要るのは `PELICAN_WITH_SPIRV_LINK=ON`(既定 OFF)と Python 製テスト(`PELICAN_PYTHON_TESTS`、既定 OFF)だけです |
@@ -30,16 +30,17 @@ vma-hpp が v3.3.0 以降でなければならないのは、SDK 1.4 系で vulk
 vulkan.hpp 側へ委譲して改名の影響を受けなくなったためです([src/core/CMakeLists.txt](../../src/core/CMakeLists.txt#L69) のコメントが理由の正)。
 
 quill / glm / nlohmann_json / argparse / tinyexr / miniaudio などは CMake の
-FetchContent で自動取得されます(各依存は `GIT_REPOSITORY` と `GIT_TAG` で宣言され、ほとんどは commit の hash で固定しています。例 [quill](../../CMakeLists.txt#L82)。JoltPhysics だけは tag `v5.5.0` の指定です([Jolt の宣言](../../CMakeLists.txt#L436)))。shaderc は例外で、Vulkan SDK 同梱版を使います。
+FetchContent で自動取得されます(各依存は `GIT_REPOSITORY` と `GIT_TAG` で宣言され、ほとんどは commit の hash で固定しています。例 [quill](../../CMakeLists.txt#L88)。JoltPhysics だけは tag `v5.5.0` の指定です([Jolt の宣言](../../CMakeLists.txt#L455)))。shaderc は例外で、Vulkan SDK 同梱版を使います(Android の build だけは shaderc・glslang・SPIRV-Tools を pin して source から build します。§2.9)。
 `PELICAN_RUNTIME_SHADER_COMPILER` は「**実行時に GLSL を SPIR-V へコンパイルする shaderc を組み込むか**」の
 CMake フラグです。`ON` の PC 開発ビルドには完全な Vulkan SDK が必要です(無いと configure が名指しで止まります)。
 ホスト PC で事前生成した SPIR-V を消費するモバイル等のターゲットは
 `-DPELICAN_RUNTIME_SHADER_COMPILER=OFF` で shaderc をリンクしません。
+✅SA1 の Android の player はこの形ではなく、端末の上で実行時に compile します(事前生成の SPIR-V を配る B4 は SA1 に入れていない)。
 
-**GPU の選び方(✅DS-1)。**player は Vulkan の物理デバイスを列挙し、API が 1.3 未満のものと、上の表の機能・拡張・queue が揃わないものを外し、残りから discrete GPU(+1000)と graphics / present が同じ queue のもの(+100)を優先して選びます([`selectVulkanPhysicalDevice()`](../../src/core/vkcore/devicefeaturepolicy.cpp#L11)、必須の機能を集める所は [core.cpp](../../src/core/vkcore/core.cpp#L431))。`pelican_player --gpu <index|name>` で列挙の 0 始まりの番号か、デバイス名の完全一致を指定できます([引数](../../src/player/main.cpp#L405))。指定しても必須の検査は飛ばしません。どれも選べなければ `No suitable Vulkan 1.3 GPU. Devices: [0] <名前> (Vulkan 1.x) ...`(`--gpu` を付けたときは `No suitable Vulkan 1.3 GPU for --gpu '<指定>'. Devices: ...`)で止まり、候補の名前と API の版が並びます。player と Studio の exe は NVIDIA / AMD の切り替え用の export(`NvOptimusEnablement` / `AmdPowerXpressRequestHighPerformance`)を持ちます([gpupreference.cpp](../../src/platform/gpupreference.cpp))。OpenXR を使うときは runtime が選んだ GPU に従います。
+**GPU の選び方(✅DS-1)。**player は Vulkan の物理デバイスを列挙し、API が 1.3 未満のものと、上の表の機能・拡張・queue が揃わないものを外し、残りから discrete GPU(+1000)と graphics / present が同じ queue のもの(+100)を優先して選びます([`selectVulkanPhysicalDevice()`](../../src/core/vkcore/devicefeaturepolicy.cpp#L11)、必須の機能を集める所は [core.cpp](../../src/core/vkcore/core.cpp#L457))。`pelican_player --gpu <index|name>` で列挙の 0 始まりの番号か、デバイス名の完全一致を指定できます([引数](../../src/player/main.cpp#L405))。指定しても必須の検査は飛ばしません。どれも選べなければ `No suitable Vulkan 1.3 GPU. Devices: [0] <名前> (Vulkan 1.x) ...`(`--gpu` を付けたときは `No suitable Vulkan 1.3 GPU for --gpu '<指定>'. Devices: ...`)で止まり、候補の名前と API の版が並びます。player と Studio の exe は NVIDIA / AMD の切り替え用の export(`NvOptimusEnablement` / `AmdPowerXpressRequestHighPerformance`)を持ちます([gpupreference.cpp](../../src/platform/gpupreference.cpp))。OpenXR を使うときは runtime が選んだ GPU に従います。
 
 **Git と Python(✅DS-1)。**
-- Python は build に要りません。OpenXR は `KhronosGroup/OpenXR-SDK` の release-1.1.61 を commit で pin しており、この SDK は生成済みの loader と header を含みます([OpenXR の宣言](../../CMakeLists.txt#L278))。Python が要るのは experimental SPIR-V linker(`PELICAN_WITH_SPIRV_LINK=ON`。pinned SPIRV-Tools のコード生成)と Python 製テストだけです。
+- Python は build に要りません。OpenXR は `KhronosGroup/OpenXR-SDK` の release-1.1.61 を commit で pin しており、この SDK は生成済みの loader と header を含みます([OpenXR の宣言](../../CMakeLists.txt#L284))。Python が要るのは experimental SPIR-V linker(`PELICAN_WITH_SPIRV_LINK=ON`。pinned SPIRV-Tools のコード生成)と Python 製テストだけです。
 - source tree に `.git` が無くても configure は通ります。Studio の crash symbol の保存が source の commit を読めないときは `Cannot identify source commit for crash symbols: Git or .git is unavailable; using unknown` の WARNING を出し、commit を `unknown` として続けます([判定](../../cmake/pelican_crash_symbols.cmake#L14))。
 - 依存は FetchContent が Git の repository から取得するので、初回の configure には `git` コマンドとネットワークが要ります。依存を source tree に同梱して Git もネットワークも要らない configure にする作業(DS-1c、`PELICAN_FETCH_DEPENDENCIES` で取得に切り替える形)は公開後に入る予定で、この版にはまだありません。
 
@@ -401,7 +402,7 @@ pelican_player --headless --project mygame --start-time 2.0 --frames 2 --fps 60 
 ```
 
 - 秒はコマンドラインで **1 回だけ frame 番号に量子化**されます(`llround(秒 × fps)`。エンジンには「フレームの間の時刻」が渡りません — [parseStartFrame()](../../src/player/main.cpp#L330))。秒は **3600(1 時間)まで**で、この上限は `--fps` によりません([上限の定数](../../src/player/main.cpp#L328))。
-- **飛ばすのではなく、そこまで回します。** `start_frame − 1` 枚を capture 無しで実行(warm-up)し、**最初に capture される frame が t の frame** です([loop.cpp:441](../../src/core/appflow/loop.cpp#L674))。グラフの時計・ゲームシステムの積分・アニメーションの評価器は時刻から逆算できないので、「その時刻に居た」と言える唯一の方法が全ステップを通ることだからです。`--start-time 0` は通常の run と同一です。
+- **飛ばすのではなく、そこまで回します。** `start_frame − 1` 枚を capture 無しで実行(warm-up)し、**最初に capture される frame が t の frame** です([loop.cpp:441](../../src/core/appflow/loop.cpp#L680))。グラフの時計・ゲームシステムの積分・アニメーションの評価器は時刻から逆算できないので、「その時刻に居た」と言える唯一の方法が全ステップを通ることだからです。`--start-time 0` は通常の run と同一です。
 - 実行時に stderr へ 1 行出ます: `offline: start_time=2 start_frame=120 replay=119 frames=2`。
 - **`--frames` とは併用できます**(枚数の指定)。**併用できないのは** `--rpc` / `--replay` / `--record-input` / `--bake-camera-output` の 4 つで、これらは「どの frame を出すか」を自分で決める経路だからです。
 - 名前付きの拒否は 3 つ: `offline.time_invalid@1`(負・非有限・数でない・3600 秒を超える・丸めた frame 番号やその時刻が有限でない)/ `offline.headless_required@1`(`--headless` 無し)/ `offline.mode_conflict@1`(上の 4 フラグとの併用)。いずれも**コマンドライン解析の時点**で決まり、GPU まで届きません。
@@ -475,6 +476,61 @@ cmake --build ./build --config Debug --target run_studio
 | `Unknown behavior type 'X' on object 'Y'` | シーンの `behavior.type` がゲームロジック DLL に登録されていない。`PELICAN_REGISTER_BEHAVIOR` の登録名と綴りを合わせる([第8章](08_gameplay.md)) |
 | `behavior type 'X' on object 'Y' is pending because the game-logic DLL is unavailable`(WARNING) | DLL 未ロード時は hard error にせず pending として保持する仕様。`-DPELICAN_PROJECT` 付きでビルドするか、F5 でリロードすると解決します |
 | `behavior on object 'X' requires a non-empty string type` | `behavior` コンポーネントに `type`(非空の文字列)が無い、または文字列以外 |
+
+## 2.9 Android で player を動かす
+
+✅SA1(`fc0c09bf6`、2026-11-01)。`pelican_player` を arm64-v8a のスマホの NativeActivity として動かします。
+APK の中の `libpelican_player.so` が `android_main` から入り、project を画面に描きます(Studio は持っていきません)。
+APK は Gradle を使わずに作る **debug 用の 1 種類だけ**です(package `org.pelicanengine.sa1b`、`debuggable="true"`、横向き固定。
+[manifest](../../tools/android/AndroidManifest.xml))。確かめた端末は NX789J(Snapdragon 8 Elite / Adreno 830、Android API 36)の 1 台です。
+
+**手順の正は [`tools/android/README.sa1b.md`](../../tools/android/README.sa1b.md)(build・APK・headless の実行)と
+[`tools/android/README.sa1-lifecycle.md`](../../tools/android/README.sa1-lifecycle.md)(home・消灯と点灯などの lifecycle の確認)です。**
+ここでは要る物と、手順の読み方だけを書きます。どの script も Git Bash で repo の root から実行します。
+
+### 要る物
+
+| 物 | 内容 |
+|---|---|
+| Android NDK | **r27c**。script の既定は `<作業ディレクトリ>/android/android-ndk-r27c`(環境変数 `NDK` で変える)。r27c の libc++ では `std::jthread` に `-fexperimental-library` が要り、[`cmake/pelican_android.cmake`](../../cmake/pelican_android.cmake#L34) が付けます |
+| Android SDK | **platform `android-36`** と **build-tools `36.0.0`**(`aapt2`・`zipalign`・`apksigner`)。既定は `<作業ディレクトリ>/android/sdk`(環境変数 `SDK`)。**SDK の利用規約(license)への同意は利用者が自分で行います**。script は SDK を入れず、規約にも同意しません |
+| JDK | `keytool` と `apksigner.jar` を動かす java。既定は Eclipse Adoptium の jdk-21(環境変数 `JDK`) |
+| Vulkan SDK | host 側の 1.4.309(`VULKAN_SDK`)。engine に埋め込む shader を host の glslang で compile します(desktop と同じ) |
+| Python | shaderc・glslang・SPIRV-Tools の生成器と、APK の asset をまとめる [`sa1_apk.py`](../../tools/android/sa1_apk.py) が使います(環境変数 `PYTHON`) |
+| 依存の source | configure はネットから取りません(`FETCHCONTENT_FULLY_DISCONNECTED=ON`)。quill・glm・vma-hpp などは **desktop の build tree の `_deps`**(環境変数 `DEPS`)を使い、Android だけが要る shaderc(v2025.1)・glslang・SPIRV-Tools(v2025.1)・Vulkan-Headers(vulkan-sdk-1.4.309.0)は、[`cmake/pelican_android.cmake`](../../cmake/pelican_android.cmake#L133) が pin した tag / commit の checkout を `ANDROID_DEPS` に置きます([`sa1_configure.sh`](../../tools/android/sa1_configure.sh#L6) の冒頭のコメントに一覧) |
+| validation layer | Khronos の Android 版 `libVkLayer_khronos_validation.so`(vulkan-sdk-1.4.309.0)。[`sa1_fetch_validation.sh`](../../tools/android/sa1_fetch_validation.sh#L6) が公式の `android-binaries-1.4.309.0.zip` を `ANDROID_DEPS` に取り、zip と `.so` の SHA-256 を `provenance.json` に残します。layer が無いと [`sa1_build_apk.sh`](../../tools/android/sa1_build_apk.sh#L33) は止まります(`ALLOW_MISSING_VALIDATION=1` は APK の構造を見るためだけで、engine は layer が無ければ起動で止まる) |
+| debug keystore | **repo の外**に置きます。既定は `<作業ディレクトリ>/android/debug.keystore`(環境変数 `KEYSTORE`)。無ければ `sa1_build_apk.sh` が `keytool` で作ります([その所](../../tools/android/sa1_build_apk.sh#L43)) |
+| 端末 | arm64-v8a、**Android 13(API 33)以上**([minSdk の検査](../../cmake/pelican_android.cmake#L25))、Vulkan 1.3。`adb` で USB デバッグがつながっていること |
+
+script の既定の path は開発機の物(`<作業ディレクトリ>/...`)なので、自分の環境では上の環境変数で渡してください。
+
+### 流れ
+
+1. **configure**: [`sa1_configure.sh`](../../tools/android/sa1_configure.sh#L27) が `build-android/` を NDK の toolchain、`ANDROID_PLATFORM=android-33`、`ANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON`(16 KB page)で作ります。root の `CMakeLists.txt` は `if(ANDROID)` の道で [`cmake/pelican_android.cmake`](../../cmake/pelican_android.cmake#L38) を読み、IMGUI・OpenXR・RPC・hot reload・RenderDoc・audio・SPIR-V link・intro link・Studio を既定で OFF にします(configure の行の `-D` が勝つ)。Windows の configure は変わりません。
+2. **build**: `ninja -C build-android pelican_player` で `libpelican_player.so` を作ります。
+3. **APK**: [`sa1_build_apk.sh`](../../tools/android/sa1_build_apk.sh#L25) が `PROJECT`(既定 `projects/posegraph_demo`)を assets に入れ(**`.pelican/` は除く**)、`aapt2 link`(min 33 / target 36)、strip した `.so` と validation layer の無圧縮の追加、`zipalign -P 16`、`apksigner` の署名と検証、`llvm-readelf` で自分の `.so` の LOAD が 16 KB(`0x4000`)揃いであることの確認までを行います(validation layer は Khronos の配布が 4 KB 揃いで、debug の APK にだけ入るので記録だけ)。strip する前の `.so` は `ndk-stack` 用に残ります。出力は `OUT`(既定 `build-android/sa1b-apk/pelican-sa1b-debug.apk`)。
+4. **install と起動**: `adb -s <serial> install -r <apk>` → `adb -s <serial> shell am start -n org.pelicanengine.sa1b/android.app.NativeActivity`。
+
+### 起動の引数
+
+player の引数は app が自分で組みます([その所](../../src/platform/android/android_main.cpp#L284)): `--project`(internal storage に展開した project)、`--user-dir`、`--log-file`、そして **`--vulkan-validation on` は固定**です(validation を外した run はこの APK ではできません)。
+足したい引数は intent の string extra `pelican_args` で渡します(`--es pelican_args '"--frames 0 --timing-frames 30"'`)。空白で区切るだけで、引用符は解釈しません([`intentArguments()`](../../src/platform/android/android_main.cpp#L63))。
+
+- 何も渡さなければ窓ありで 600 frame 描いて終わります([既定の `--frames`](../../src/platform/android/android_main.cpp#L304))。`--frames 0` は終わりなし(back で終える)。✅SA1 から、Android の `--frames` と frame の時間は**実際に描けた frame だけ**を数えます(window が無い間・acquire が timeout した周回は数えない)。
+- `--headless` を渡すと INIT_WINDOW を待たずに起動し、960x540 で 3 frame 描いて `files/sa1_posegraph.png` に書きます([その所](../../src/platform/android/android_main.cpp#L289))。
+- `--timing-frames N`(1〜100000、既定 120)は N frame ごとの CPU の時間(p50 / p95 / p99、pacing を含む)を log に出す間隔です。
+
+project の展開は版(全 file の path と中身の hash)が変わった時だけで、`project.stage` に書き終えてから置き換えます。user directory(`files/user`)と pipeline cache(`files/cache/pipeline_cache.bin`、tmp に書いてから rename)は project の外なので残ります。shader cache の版の文字列は Android では `shaderc-v2025.1-android` です(desktop の cache と混ざらない)。
+
+### 端末の serial と log
+
+- **serial を必ず指定します。** `adb` を手で打つときは毎回 `-s <serial>` を付けてください(複数の端末や emulator がつながっていると取り違えます)。runner の script(`sa1_run_device.py`・`sa1_run_windowed.py`・`sa1_run_lifecycle.py`)は serial と `adb` の path を中に固定している(`adb = [..., '-s', '<serial>']`、[例](../../tools/android/sa1_run_lifecycle.py#L28))ので、別の端末ではその行を書き換えます。
+- **`log.tag=S` の端末では file の log を見ます。** 確かめた端末は `getprop log.tag` が `S` で、app が自分の process の閾値を INFO にしても([その所](../../src/platform/android/android_main.cpp#L249))`logcat` の dump は空でした(原因は未確認)。同じ log は app の internal storage にもあります。`adb -s <serial> exec-out run-as org.pelicanengine.sa1b cat files/engine.log`(engine の quill の log。validation の warning / error の累計も最後に出る)、`files/pump.log`(lifecycle の command と surface の解放の ack。quill を通さず毎行 fsync)、`files/stderr.log`、`files/engine-result.txt`(engine の終了コード)。端末の property は変えません。
+- PNG を `exec-out` で取るときは Git Bash の `>` か Python の bytes で受けます(Windows PowerShell 5 の文字列の redirect は壊します)。
+
+### 今できない事
+
+タッチ入力(SA1f。窓の入力は積まない)、音、RPC と Studio からの操作、ImGui、hot reload、game logic の code を持つ project(試していない。未確認)。性能は validation を有効にしたままの値しかありません。窓の向きの扱い(preTransform IDENTITY)と lifecycle の設計は [../design_wsi_epoch_recovery.md](../design_wsi_epoch_recovery.md) §7.1 の SA1 追補、段の計画と残りは [../roadmap_backlog_2026-07.md](../roadmap_backlog_2026-07.md) の「Quest standalone(SA トラック)」です。
 
 ## 関連文書
 

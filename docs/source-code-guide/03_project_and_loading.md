@@ -37,7 +37,7 @@ flowchart LR
 | path参照 | [`ProjectPathResolver`](../../src/project/projectpathresolver.hpp#L130) | [`PathResolver`](../../src/core/loader/pathresolver.hpp#L9)（module寿命、ログ、engine resource注入） |
 | scene | [`normalizeSceneDataJson()`](../../src/project/sceneformat.cpp#L268) | [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L1652) |
 | render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L3211) | [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1716) |
-| JSON-RPC | [`parseJsonRpcRequest()`](../../src/project/jsonrpc.cpp#L148) | [`RpcServer`](../../src/core/communication/rpcserver.hpp#L56) |
+| JSON-RPC | [`parseJsonRpcRequest()`](../../src/project/jsonrpc.cpp#L148) | [`RpcServer`](../../src/core/communication/rpcserver.hpp#L63) |
 | asset manifest | [`parse/generate/verify`](../../src/project/assetsmanifest.hpp#L73) | [`verifyAssetsAtStartup()`](../../src/core/loader/assetsverification.cpp#L148)、結果を持つ module [`AssetsVerification`](../../src/core/loader/assetsverification.hpp#L86)(✅AV-1) |
 | material/surface | [`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L744)、[`parseSurfaceFormat()`](../../src/project/surfaceformat.cpp#L1296) | runtime接続済み（WP116〜117, 122）。`.surface`は [`surfacecompiler`](../../src/core/shader/surfacecompiler.cpp) でGLSL/SPIR-V化されpipelineへ。`.material.json`は [`lowerMaterial()`](../../src/project/materiallowering.hpp#L160) → [`registerReloadableMaterialValuesFile()`](../../src/core/material/materialcontainer.hpp#L374) |
 
@@ -224,7 +224,7 @@ std::variant<
 **日本語の path は process の code page を UTF-8 にして通す(✅JP-1、`0a0e31ac9`)。**MSVC の `std::filesystem::path` と `std::string` の変換は process の ANSI code page(日本語の Windows では 932)で行われ、JSON・tinygltf・Qt は UTF-8 を前提にしています。JP-1 はこの食い違いを変換の 1 つずつではなく、process の code page で揃えました。
 
 - **manifest**: [`cmake/pelican_windows.manifest`](../../cmake/pelican_windows.manifest#L5) は `activeCodePage` を `UTF-8`、`longPathAware` を `true` にします。[`pelican_apply_windows_manifest()`](../../cmake/pelican_windows_manifest.cmake#L3)(ルートの `CMakeLists.txt` が呼ぶ。WIN32 かつ MSVC のときだけ働く)がルートと `src/`・`test/` の下の全部の実行ファイルの target に source として足し、CMake / MSVC がリンカの作る manifest と合わせます(`requestedExecutionLevel` などは残る)。FetchContent の依存の道具には足しません。Windows 10 1903 より前ではこの要素が効きません。
-- **検査**: [`windowsutf8.hpp`](../../src/project/windowsutf8.hpp#L15)(`pelican_project`)の `processUsesUtf8CodePage()` が `GetACP() == CP_UTF8` を見ます。engine は logger の用意のときに 1 回([`log.cpp` の検査](../../src/core/log.cpp#L112))、quill を使わない `pelican_cli` と Studio は `main` の始めに 1 回、UTF-8 でなければ `nonUtf8CodePageWarning` を出します。止めはしません。
+- **検査**: [`windowsutf8.hpp`](../../src/project/windowsutf8.hpp#L15)(`pelican_project`)の `processUsesUtf8CodePage()` が `GetACP() == CP_UTF8` を見ます。engine は logger の用意のときに 1 回([`log.cpp` の検査](../../src/core/log.cpp#L121))、quill を使わない `pelican_cli` と Studio は `main` の始めに 1 回、UTF-8 でなければ `nonUtf8CodePageWarning` を出します。止めはしません。
 - **残っていた変換**: Studio の音と画像の import はコピー先を native の path、参照の文字列を `generic_u8string()` で作り、engine の子 process の stdout / stderr は `fromUtf8` で読みます。asset manifest の小文字化は A〜Z だけを変えます。RPC のエラー応答は不正な UTF-8 を `error_handler_t::replace` で U+FFFD に替えて返し(成功の応答は今までどおり厳密)、後の要求も処理します。
 - test: `jp1_utf8_test`(日本語の名前のファイルの解決・asset manifest・RPC のエラー応答。`PELICAN_WITH_RPC` のとき)と、日本語の project root で player を起こす `jp1_headless_utf8`(GPU)/ `jp1_cli_assetsmanifest`(どちらも Python の test で、Python の test が使えるときだけ登録)。Catch の test の列挙を UTF-8 で読むため、`test/catch_discovery_utf8.cmake.in` から生成した列挙の script を使います。
 
@@ -261,8 +261,8 @@ resource追加には次の三箇所が必要です。
 **build の前提を減らした所(✅DS-1 `0f599f1e5` / DS-1f `93adc95d3`)。**engine resource と build の入口に関わる分だけ書きます(要件の一覧の正は README の Requisites)。
 
 - **SPIR-V は build tree に書く**: [`embed_shader()`](../../src/core/resources/CMakeLists.txt#L7) は glslang の出力を `${CMAKE_CURRENT_BINARY_DIR}/<name>.spv` に書いてから `b_embed` します。source tree に `.spv` はできません。source tree の `.spv` を読んでいた `shader_library_test` は、`PELICAN_TEST_BUILT_RESOURCES`(`${CMAKE_BINARY_DIR}/src/core/resources`)から読みます。
-- **source が Git の checkout でなくてよい**: crash symbol の source の識別([`cmake/pelican_crash_symbols.cmake`](../../cmake/pelican_crash_symbols.cmake#L12))は `find_package(Git QUIET)` で、Git か `.git` が無ければ WARNING を出して commit を `unknown` にし、configure を続けます(ZIP で取った source)。保存先の既定は build tree の `crash-symbols` です。ただし依存は今も `FetchContent_Declare` の `GIT_REPOSITORY` で取る([ルートの `CMakeLists.txt` の最初の依存](../../CMakeLists.txt#L80))ので、初回の configure には `git` とネットワークが要ります。依存を source tree に同梱し、Git での取得を `PELICAN_FETCH_DEPENDENCIES` の明示の opt-in にするのは DS-1c で、公開の後に着地する予定です(この文書の時点では develop にありません)。
-- **Python が要らない**: OpenXR は生成済みの loader の source と header を同梱する `KhronosGroup/OpenXR-SDK` を release-1.1.61 の commit で固定して取り([該当の `FetchContent_Declare`](../../CMakeLists.txt#L276))、Python の生成器を走らせません。Python が要るのは既定 OFF の `PELICAN_WITH_SPIRV_LINK=ON` と Python の test だけです。`cmake_minimum_required` は 3.20 です。
+- **source が Git の checkout でなくてよい**: crash symbol の source の識別([`cmake/pelican_crash_symbols.cmake`](../../cmake/pelican_crash_symbols.cmake#L12))は `find_package(Git QUIET)` で、Git か `.git` が無ければ WARNING を出して commit を `unknown` にし、configure を続けます(ZIP で取った source)。保存先の既定は build tree の `crash-symbols` です。ただし依存は今も `FetchContent_Declare` の `GIT_REPOSITORY` で取る([ルートの `CMakeLists.txt` の最初の依存](../../CMakeLists.txt#L86))ので、初回の configure には `git` とネットワークが要ります。依存を source tree に同梱し、Git での取得を `PELICAN_FETCH_DEPENDENCIES` の明示の opt-in にするのは DS-1c で、公開の後に着地する予定です(この文書の時点では develop にありません)。
+- **Python が要らない**: OpenXR は生成済みの loader の source と header を同梱する `KhronosGroup/OpenXR-SDK` を release-1.1.61 の commit で固定して取り([該当の `FetchContent_Declare`](../../CMakeLists.txt#L282))、Python の生成器を走らせません。Python が要るのは既定 OFF の `PELICAN_WITH_SPIRV_LINK=ON` と Python の test だけです。`cmake_minimum_required` は 3.20 です。
 - **実行ファイルの場所**: player が自分の場所を `argv[0]` から求めていたのをやめ、[`executableDirectory()`](../../src/core/executabledirectory.hpp#L13)(Windows は `GetModuleFileNameW`)を使います。PATH 経由で起動しても game DLL などを見失いません。player の subsystem と MessageBox の扱いは [第9章 §9.24](09_black_magic_and_gotchas.md#924-v0-で足した機構の難所共通グラフpackage節-locatorオフライン時刻) の DS-1f の難所です。
 
 ## 3.4 asset manifestの起動検証
@@ -291,7 +291,7 @@ mutex は 2 つです。`mutex` は状態(store の一覧・結果・`running`)�
 
 test 用の `holdForTesting()` は、worker が `disk` を取った後で止まるように変わりました(本物の照合と同じく store を握ったまま止まる)。PJ-1 の `redeclareStores()` が manifest を書くときは今も待ち、書いている間と照合の終わりを待つ間は frame が止まります。module の破棄は `stop()` で worker を join するので、長い照合の途中で engine を閉じると照合の終わりまで待ちます。拒否は [`AssetsVerificationError`](../../src/core/loader/assetsverification.hpp#L67)(`code()` と `fields()`)で、RPC の側が `data: {error_code, error_fields}` にします。`fields_` は丸括弧で初期化します。波括弧だと nlohmann の json 1 つが要素 1 つの配列になり、RPC の側が object でない `fields()` を `{}` に置き換えてしまうためです(コンストラクタの注記)。
 
-RPC の側は [`internal::configureAssetsVerificationRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1590) で、module は `EngineRpcModules::assets_verification` に `FastModuleContainer::tryGet<AssetsVerification>()` で入ります。module の無い host(in-process の test など)は `get_status` で `not_run`、`verify_assets` / `update_assets_manifest` で `assets_verification_unavailable@1` になります。test は [`assetsverification_test.cpp`](../../test/assetsverification_test.cpp#L162) の AV-1 の 4 本(`RpcServer::processLine` で往復。worker は `holdForTesting()` / `waitForTesting()` で止めて `running` を見る)です。
+RPC の側は [`internal::configureAssetsVerificationRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1577) で、module は `EngineRpcModules::assets_verification` に `FastModuleContainer::tryGet<AssetsVerification>()` で入ります。module の無い host(in-process の test など)は `get_status` で `not_run`、`verify_assets` / `update_assets_manifest` で `assets_verification_unavailable@1` になります。test は [`assetsverification_test.cpp`](../../test/assetsverification_test.cpp#L162) の AV-1 の 4 本(`RpcServer::processLine` で往復。worker は `holdForTesting()` / `waitForTesting()` で止めて `running` を見る)です。
 
 **hash の速さ(✅AH-1、`0f93b5b8`)。**cache が外れた file の hash は [`assetFileSha256()`](../../src/project/assetsmanifest.cpp#L162) で、file を 1 MiB の buffer で読みます。AH-1 はこの関数の中で、Windows では CNG(`BCryptCreateHash(BCRYPT_SHA256_ALG_HANDLE, ...)` / `BCryptHashData` / `BCryptFinishHash`)、それ以外では picosha2 の `hash256_one_by_one` に chunk ごとに渡していました。今は FW-1(`92681afd`)がその計算を [`Sha256Stream`](../../src/project/sha256stream.hpp#L15)(`src/project/sha256stream.cpp`。Windows では BCrypt、それ以外では picosha2)に移し、file watcher と共有しています。
 
@@ -513,7 +513,7 @@ renderer の slot には、frame を挟まない連続の load の道もあり�
 
 末尾の 1 slot は診断用ではなく **outbox 溢れ専用**で、[`reserveEntry()`](../../src/core/loader/effecttransaction.cpp#L119) が 256 件を超えて積めなかった**副作用の**件数を `effect_outbox_full@1` の `dropped` として数え続けます（診断そのものが 256 件を超えた場合は数えずに落ちます。非対称の理由は §5.15）。公開用の文字列と JSON は commit 後に初めて作られます — [`effectErrors()`](../../src/core/loader/scene.cpp#L1817) の呼び出しは `noexcept` の commit tail（`flush` / `finish`）を通過した**後**にあり、そこで固定 slot を sequence 順に並べて [`CommittedWithEffectFailure::EffectError`](../../src/core/loader/sceneload.hpp#L176) へ変換します。
 
-副作用の失敗は例外ではなく [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L174) として `SceneLoadResult` に載り、**扱いは root ごと**です: startup は [`LOG_ERROR`](../../src/core/userpublic/pelican_core.cpp#L164)、pending も [`LOG_ERROR`](../../src/core/loader/scene.cpp#L1887)、rpc の `load_scene` は [`response["effect_errors"]`](../../src/core/communication/rpcserver.cpp#L2074) として JSON で返し（失敗が無ければ空配列）、import は [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L275) にそのまま入れて呼び手へ渡します。いずれも `committed` であることは変わりません（scene は載っている）。
+副作用の失敗は例外ではなく [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L174) として `SceneLoadResult` に載り、**扱いは root ごと**です: startup は [`LOG_ERROR`](../../src/core/userpublic/pelican_core.cpp#L164)、pending も [`LOG_ERROR`](../../src/core/loader/scene.cpp#L1887)、rpc の `load_scene` は [`response["effect_errors"]`](../../src/core/communication/rpcserver.cpp#L2061) として JSON で返し（失敗が無ければ空配列）、import は [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L275) にそのまま入れて呼び手へ渡します。いずれも `committed` であることは変わりません（scene は載っている）。
 
 transient glTF 経路（`load_gltf`）は executor を通らず、従来どおり [`GameObjects::createWithComponents()`](../../src/core/loader/scene.cpp#L2252) の populate callback で作ります（§3.8 の「`load_gltf` はトランザクション」）。
 
@@ -690,7 +690,7 @@ metadata の commit 以降は「失敗しない尾部」です。executor はそ
 
 ## 3.6 即時loadと要求load
 
-- `SceneLoader::load(SceneLoadRequest)`はその場で全sceneを置換（commit まで到達した場合。§3.5 の 3）。production の root は startup（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L177)）/ RPC `load_scene`（[`rpcserver.cpp` 内](../../src/core/communication/rpcserver.cpp#L2060)）/ pending apply / snapshot import（[`importSceneDocument()` からの `Owned` request](../../src/core/loader/basicconfig.cpp#L844)）で、いずれも [`requireSceneLoadCommitted()`](../../src/core/loader/scene.cpp#L502) で `PreCommitFailure` を従来どおりの例外へ戻します。
+- `SceneLoader::load(SceneLoadRequest)`はその場で全sceneを置換（commit まで到達した場合。§3.5 の 3）。production の root は startup（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L177)）/ RPC `load_scene`（[`rpcserver.cpp` 内](../../src/core/communication/rpcserver.cpp#L2047)）/ pending apply / snapshot import（[`importSceneDocument()` からの `Owned` request](../../src/core/loader/basicconfig.cpp#L844)）で、いずれも [`requireSceneLoadCommitted()`](../../src/core/loader/scene.cpp#L502) で `PreCommitFailure` を従来どおりの例外へ戻します。
 - [`requestLoad()`](../../src/core/loader/scene.cpp#L1840) は存在確認後、scene IDだけをpendingへ保存。activate 段の behavior から呼ばれた場合は live ではなく candidate projection に対して存在確認し、要求も candidate 側に積みます（rollback で一緒に捨てる）。
 - [`applyPendingLoad()`](../../src/core/loader/scene.cpp#L1871) はフレームのゲーム更新末尾で、まず前回 commit 分の retirement queue を消費し、apply 時点の committed projection に late-bind した `Borrowed` request で実際にload。
 
@@ -1032,7 +1032,7 @@ parse は IO / デコードのみ、[`validate`](../../src/core/asset/model.cpp#
 
 `retire()`(62 行)はスロットを殺すとき `generations_` を +1 して `free_indices_` に積み、`nextId()` / `publish()` が空き添字を据え置きのまま世代だけ進めて再利用します。`ModelInstanceId` は公開ハンドルとしてユーザーのゲームコードがフレームや(ゲームロジックの)ホットリロードをまたいで保持するので、スロットが別モデルに再利用された後に古いハンドルを渡しても世代不一致で必ず弾かれ、他人のインスタンスを黙って書き換える ABA 事故を防げます。
 
-同じ形はモデル以外にもあります(2026-09-04 追記): [makeLogicalAssetId()](../../src/core/watch/reloadtransaction.cpp#L19) は index と generation を 64bit の上下 32bit へ詰めて 1 つの id にし、[liveRecord()](../../src/core/watch/reloadtransaction.cpp#L77) が世代不一致を stale として弾きます。フレーム側は [IFrameTarget::consumeFrame()](../../src/core/vkcore/frametarget.hpp#L280) が `expected_serial` を突き合わせて、前フレームのトークンで今フレームを終わらせることを防ぎます。index 空間が `uint32` で有限である以上、再利用のたびに世代を進める側にも枯渇検査が要る、というのは共通の注意点です。
+同じ形はモデル以外にもあります(2026-09-04 追記): [makeLogicalAssetId()](../../src/core/watch/reloadtransaction.cpp#L19) は index と generation を 64bit の上下 32bit へ詰めて 1 つの id にし、[liveRecord()](../../src/core/watch/reloadtransaction.cpp#L77) が世代不一致を stale として弾きます。フレーム側は [IFrameTarget::consumeFrame()](../../src/core/vkcore/frametarget.hpp#L282) が `expected_serial` を突き合わせて、前フレームのトークンで今フレームを終わらせることを防ぎます。index 空間が `uint32` で有限である以上、再利用のたびに世代を進める側にも枯渇検査が要る、というのは共通の注意点です。
 
 ## 3.9 その他の純粋形式
 
@@ -1071,7 +1071,7 @@ parse は IO / デコードのみ、[`validate`](../../src/core/asset/model.cpp#
 >   if 1つも凍結しなかった: 比例配分を確定し、余り R を pool[0..R) へ 1px ずつ足して break
 > ```
 >
-> **手がかり**: `weight` はパース時に正であることが保証されている([`document.cpp` 内](../../src/core/ui/document.cpp#L73) の `weight must be positive`)ので、poolが空でない限り `total_weight` は0になりません — `total_weight == 0 ? 0 : …` は防御的な分岐です。`pool` の並びは子の宣言順のまま(`fill` を宣言順に積み、`erase` は順序を保つ)なので、「先頭R要素」は宣言順で先に来る `Fill` の子です。テストは [`ui_foundation_test.cpp` 内](../../test/ui_foundation_test.cpp#L190)「stack layout distributes integer remainder」。
+> **手がかり**: `weight` はパース時に正であることが保証されている([`document.cpp` 内](../../src/core/ui/document.cpp#L72) の `weight must be positive`)ので、poolが空でない限り `total_weight` は0になりません — `total_weight == 0 ? 0 : …` は防御的な分岐です。`pool` の並びは子の宣言順のまま(`fill` を宣言順に積み、`erase` は順序を保つ)なので、「先頭R要素」は宣言順で先に来る `Fill` の子です。テストは [`ui_foundation_test.cpp` 内](../../test/ui_foundation_test.cpp#L199)「stack layout distributes integer remainder」。
 >
 > **不変条件**: 凍結が起きた回は確定せず必ずもう一周する。端数は宣言順の先頭から1pxずつ配る(最後の要素へまとめない)。負の `remaining` をweight除算へ渡さない。
 
@@ -1089,7 +1089,7 @@ parse は IO / デコードのみ、[`validate`](../../src/core/asset/model.cpp#
 > | `checkedFloor` | 非有限 / int64 範囲外 | `overflow_error("UI coordinate exceeds int64")` |
 > | `checkedI32` | int32 範囲外 または \|v\| > 2^24 | `overflow_error("exact float32 integer domain")` |
 >
-> **手がかり**: `#pragma STDC FENV_ACCESS ON` がMSVC以外で立っている([`types.cpp` 内](../../src/core/ui/types.cpp#L10)、[`layout.cpp` 内](../../src/core/ui/layout.cpp#L10))のは、コンパイラに浮動小数点環境を勝手に仮定させないためです。`checkedFloor()` の上限判定が `value >= -static_cast<double>(int64_min)` という書き方なのは、`int64_max` をdoubleで厳密に表せないからです([その判定](../../src/core/ui/types.cpp#L55))。レイアウト側の `edge()`([`edge()`](../../src/core/ui/layout.cpp#L24))はint32範囲しか見ません — 2^24 の検査はpxへ変換する [`uiToPx()`](../../src/core/ui/types.cpp#L101) 側の責任です。テストは [`UI binary64 half-up vectors and viewport edge rounding are normative`](../../test/ui_foundation_test.cpp#L61)「UI binary64 half-up vectors and viewport edge rounding are normative」。
+> **手がかり**: `#pragma STDC FENV_ACCESS ON` がMSVC以外で立っている([`types.cpp` 内](../../src/core/ui/types.cpp#L10)、[`layout.cpp` 内](../../src/core/ui/layout.cpp#L10))のは、コンパイラに浮動小数点環境を勝手に仮定させないためです。`checkedFloor()` の上限判定が `value >= -static_cast<double>(int64_min)` という書き方なのは、`int64_max` をdoubleで厳密に表せないからです([その判定](../../src/core/ui/types.cpp#L55))。レイアウト側の `edge()`([`edge()`](../../src/core/ui/layout.cpp#L24))はint32範囲しか見ません — 2^24 の検査はpxへ変換する [`uiToPx()`](../../src/core/ui/types.cpp#L101) 側の責任です。テストは [`UI binary64 half-up vectors and viewport edge rounding are normative`](../../test/ui_foundation_test.cpp#L70)「UI binary64 half-up vectors and viewport edge rounding are normative」。
 >
 > **不変条件**: 丸めは `floor(x + 0.5)` 固定(`round` 系へ置き換えない)。丸めモードは `FE_TONEAREST`。GPUへ出る座標は `|value| <= 2^24`。
 
@@ -1322,7 +1322,7 @@ manifest から「何から作った file か」と古さを読む [`readDerived
 - POSIX の rename は、delete も共有して開いている handle(コードの注記の例は real-time scanner)があっても置き換えられ、開いている側は古い file を持ち続けます。delete を共有しない handle には今も `ERROR_SHARING_VIOLATION` が返るので、やり直しの loop は残してあります(コードの注記)。
 - 1 回分の試み(`posixReplace()`・`isTransientReplaceError()`・`isUnsupportedInformationClass()`・`systemErrorMessage()`)は、もとは project 文書の transaction(`projectdocumenttransaction.cpp`)の中にあり、AB-2 で namespace `FileReplaceWin32` に移して共有しました。transaction は自分のやり直しの loop(試みの間に digest を確かめ直す)を持ったままです(ヘッダの注記)。
 - 使う所: 音の解析の bake([`bakeAudioAnalysis()` で `FileReplaceLocked` を受ける所](../../src/core/audio/audioanalysis.cpp#L218)。`audio.analysis_failed@1` に `reason: "output_locked"` と `path` を付ける。第5章「音の解析を焼く(AB-1)」)と `pelican_cli image ktx2`([`runKtx2Command()` の置き換え](../../src/devcli/imagecommand.cpp#L110))。
-- 読む側は共有のモードを変えず、開いている時間を短くしました: [`loadKtx2File()`](../../src/core/loader/imageloader.cpp#L102) は読み終えて閉じてから parse し、[AB-2 の `readDerivedAssetStatus()`](../../src/project/audioanalysisformat.cpp#L250) は manifest を閉じてから元の音と出力を hash します。
+- 読む側は共有のモードを変えず、開いている時間を短くしました: [`loadKtx2File()`](../../src/core/loader/imageloader.cpp#L105) は読み終えて閉じてから parse し、[AB-2 の `readDerivedAssetStatus()`](../../src/project/audioanalysisformat.cpp#L250) は manifest を閉じてから元の音と出力を hash します。
 - test: `ab1_audio_analysis_test` の「AB-2 bake_audio_analysis replaces a table a reader held open once it closes, and refuses with output_locked when it never does」(`std::ifstream` で開いたまま bake を始め、300 ms 後に閉じれば committed。Windows では閉じなければ `output_locked`、`FILE_SHARE_DELETE` 付きの handle なら待たずに committed)。
 
 > 🧩 **難所 — `*` は `/` を越えない**([`segmentMatches()`](../../src/project/importrules.cpp#L155) / [`importGlobMatches()`](../../src/project/importrules.cpp#L258))
@@ -1361,11 +1361,11 @@ manifest から「何から作った file か」と古さを読む [`readDerived
 7. 形式パーサ実装とruntime接続済み範囲を混同していないか。
 8. componentを増やすなら、§3.11 のcodec五点セットを揃えたか。
 
-> 🧩 **難所 — ファイルの再走査で監視通知の取りこぼしを防ぐ**([`Impl::reconcile()`](../../src/core/watch/filewatcher.cpp#L685) / [`Impl::scan()`](../../src/core/watch/filewatcher.cpp#L508))
+> 🧩 **難所 — ファイルの再走査で監視通知の取りこぼしを防ぐ**([`Impl::reconcile()`](../../src/core/watch/filewatcher.cpp#L686) / [`Impl::scan()`](../../src/core/watch/filewatcher.cpp#L508))
 >
 > **何をする所か**: 監視対象のstoreを一巡し、各ファイルの size / mtime を前回のinventoryと比べて、違うファイルだけ安定digestを取り(✅FW-1。同じものは digest を持ち越す)、live digestに照らしてreloadを積みます。
 >
-> **素朴に読むと**: `for (;;)` の先頭で `notification_generation` を控え、scan完了後に一致していなければ**もう一周まるごと**やり直す形が、終わらないループに見えます。ここまでするのは、native watchを張る `armAll()` と最初のscanの間、およびscan実行中に届いた変更が、ディスクinventoryの差分だけでは検出できないからです(スキャン済みの位置が後から書き変わります)。generationを前後で比べるのは「スキャン中に通知が来たか」を知る唯一の手段で、来ていれば全体をもう一度走査します(FW-1 からは size / mtime の比較なので、取り直す hash は変わったファイルの分だけです) — 部分再スキャンにしないのは、どのファイルが変わったかを通知が持っていない(overflowもある)からです。`scan()` が [`readStableContentDigest()`](../../src/core/watch/contentdigest.cpp#L129) へ渡すcancelクロージャ([その受け渡し](../../src/core/watch/filewatcher.cpp#L643))は別の理由です。大きいファイルの SHA-256 は時間がかかりうる(FW-1 前は reconcile のたびに全ファイルを hash し、`projects/example` の複写で 1 回約 17〜19 s)のに、その間にreload gateが閉じたりepochが進んだりすれば結果は捨てるしかありません。捕まえた `epoch` と現在を比べて途中で降りることで、gateを閉じる操作(replay開始など)がwatcherスレッドの完了待ちでブロックしなくなります。ループが止まるのは、`stopping` / gate無効 / epoch不一致で `false` を返す出口([早期return](../../src/core/watch/filewatcher.cpp#L495))と、generation一致で `true` を返す出口([正常終了](../../src/core/watch/filewatcher.cpp#L467))の2つがあるためです。
+> **素朴に読むと**: `for (;;)` の先頭で `notification_generation` を控え、scan完了後に一致していなければ**もう一周まるごと**やり直す形が、終わらないループに見えます。ここまでするのは、native watchを張る `armAll()` と最初のscanの間、およびscan実行中に届いた変更が、ディスクinventoryの差分だけでは検出できないからです(スキャン済みの位置が後から書き変わります)。generationを前後で比べるのは「スキャン中に通知が来たか」を知る唯一の手段で、来ていれば全体をもう一度走査します(FW-1 からは size / mtime の比較なので、取り直す hash は変わったファイルの分だけです) — 部分再スキャンにしないのは、どのファイルが変わったかを通知が持っていない(overflowもある)からです。`scan()` が [`readStableContentDigest()`](../../src/core/watch/contentdigest.cpp#L129) へ渡すcancelクロージャ([その受け渡し](../../src/core/watch/filewatcher.cpp#L644))は別の理由です。大きいファイルの SHA-256 は時間がかかりうる(FW-1 前は reconcile のたびに全ファイルを hash し、`projects/example` の複写で 1 回約 17〜19 s)のに、その間にreload gateが閉じたりepochが進んだりすれば結果は捨てるしかありません。捕まえた `epoch` と現在を比べて途中で降りることで、gateを閉じる操作(replay開始など)がwatcherスレッドの完了待ちでブロックしなくなります。ループが止まるのは、`stopping` / gate無効 / epoch不一致で `false` を返す出口([早期return](../../src/core/watch/filewatcher.cpp#L495))と、generation一致で `true` を返す出口([正常終了](../../src/core/watch/filewatcher.cpp#L467))の2つがあるためです。
 >
 > **骨子**:
 > ```text
@@ -1381,17 +1381,17 @@ manifest から「何から作った file か」と古さを読む [`readDerived
 >     # 違えば scan 中に通知が来ている: もう一周(部分ではなく全体)
 > ```
 >
-> **手がかり**: 呼び出し側は「arm → reconcile」の順を守る必要があり、[その呼び出し箇所](../../src/core/watch/filewatcher.cpp#L673) にコメントで `Required transition order: arm, reconcile while still in polling state, then publish watching` と明記されています。`readStableContentDigest()` は書き込み途中のファイルを読むと `retry` を返し、`scan()` は25ms間隔で最大20回まで粘ります([リトライの設定](../../src/core/watch/filewatcher.cpp#L459))。テストは [`filewatcher_test.cpp` 内](../../test/filewatcher_test.cpp#L447)「disabled changes resume through arm-scan barrier exactly once」と [polling fallback 側](../../test/filewatcher_test.cpp#L258)(gate cancellation)。
+> **手がかり**: 呼び出し側は「arm → reconcile」の順を守る必要があり、[その呼び出し箇所](../../src/core/watch/filewatcher.cpp#L674) にコメントで `Required transition order: arm, reconcile while still in polling state, then publish watching` と明記されています。`readStableContentDigest()` は書き込み途中のファイルを読むと `retry` を返し、`scan()` は25ms間隔で最大20回まで粘ります([リトライの設定](../../src/core/watch/filewatcher.cpp#L459))。テストは [`filewatcher_test.cpp` 内](../../test/filewatcher_test.cpp#L447)「disabled changes resume through arm-scan barrier exactly once」と [polling fallback 側](../../test/filewatcher_test.cpp#L258)(gate cancellation)。
 >
 > **不変条件**: generationはscanの**前**に控える。scan中に通知が来たら部分ではなく全体を取り直す。epochが動いたら結果を採用せず `false` で降りる。
 
 **走査を安くした所(✅FW-1、`92681afd`)と、宣言で絞る所(✅HW-1、`c947cef4`)。**どちらも `src/core/watch/filewatcher.cpp` の中です。
 
-- **持ち越しの条件**: inventory の entry は一覧から取った size / mtime と `stat_trusted` を持ち、[`recordFile()`](../../src/core/watch/filewatcher.cpp#L608) は size / mtime / key が同じで `stat_trusted` の entry を読まずに持ち越します。`stat_trusted` が立つのは、mtime が走査の開始から [`settled_after`](../../src/core/watch/filewatcher.cpp#L104)(100 ms)より前で、hash の読んだ handle の size / mtime が一覧と同じときだけです。窓の中のファイルは次の走査でもう一度読みます。NTFS の mtime は連続の書き込みで同じ値になり、窓が無いと「走査の直後に同じ size で書き直した保存」を取りこぼすためです(FW-1 の報告: 連続 200 回の書き込みで異なる mtime は 85 個。仕様書は対策を足さない指示で、ここは設計から外れた判断)。
+- **持ち越しの条件**: inventory の entry は一覧から取った size / mtime と `stat_trusted` を持ち、[`recordFile()`](../../src/core/watch/filewatcher.cpp#L609) は size / mtime / key が同じで `stat_trusted` の entry を読まずに持ち越します。`stat_trusted` が立つのは、mtime が走査の開始から [`settled_after`](../../src/core/watch/filewatcher.cpp#L104)(100 ms)より前で、hash の読んだ handle の size / mtime が一覧と同じときだけです。窓の中のファイルは次の走査でもう一度読みます。NTFS の mtime は連続の書き込みで同じ値になり、窓が無いと「走査の直後に同じ size で書き直した保存」を取りこぼすためです(FW-1 の報告: 連続 200 回の書き込みで異なる mtime は 85 個。仕様書は対策を足さない指示で、ここは設計から外れた判断)。
 - **起動時**: 最初の reconcile は `seed` で走り、settle 済みのファイルは hash せずに digest の空の entry にし、`ContentDigestState::seedLiveUnknown()` で live を未知にします([`SourceDigestState::live_unknown`](../../src/core/watch/contentdigest.hpp#L56))。未知はどの digest とも等しくない([`liveEquals()`](../../src/core/watch/contentdigest.cpp#L141))ので、そのファイルの最初の観測は中身が同じでも `queue_reload` です。消去は `observeMissing()` が未知でも報告します。
 - **`.pelican`**: mount が空の store の深さ 0 の `.pelican` には入りません([`isProjectMetadataName()`](../../src/core/watch/filewatcher.cpp#L63))。native watch の側は、1 回の通知の record が全部無視してよい名前なら走査の理由にしません([`onlyIgnoredRecords()`](../../src/core/watch/filewatcher.cpp#L232))。
 - **path の key**: plain な entry は root の canonical に一覧の相対名を足して key にします(1 ファイルごとに `weakly_canonical` を 5 回呼び、Debug の 3000 ファイルで 1.3 s かかっていた)。symlink / junction とその下だけは従来どおり 1 件ずつ解決します。
-- **数える**: [`WatcherStatus`](../../src/core/watch/filewatcher.hpp#L25) の `scans` / `hashed_files` / `hashed_bytes` は起動からの累計で、`Impl` の `total_*` に足して `status()` が写します。reconcile の終わりに、hash したファイルがあれば(起動後の最初は 0 でも)INFO の `file watcher: scanned … files, hashed … (… MB) in … ms` を出します([出す所](../../src/core/watch/filewatcher.cpp#L756))。
+- **数える**: [`WatcherStatus`](../../src/core/watch/filewatcher.hpp#L25) の `scans` / `hashed_files` / `hashed_bytes` は起動からの累計で、`Impl` の `total_*` に足して `status()` が写します。reconcile の終わりに、hash したファイルがあれば(起動後の最初は 0 でも)INFO の `file watcher: scanned … files, hashed … (… MB) in … ms` を出します([出す所](../../src/core/watch/filewatcher.cpp#L757))。
 - **宣言(HW-1)**: `FileWatcherOptions::watch_paths` が `nullopt` なら全部を見ます。配列なら、constructor が届かない mount の store を外し(空の配列なら全部。[`Impl` の constructor](../../src/core/watch/filewatcher.cpp#L429))、`scan()` は `watchPathReaches()` で届かないフォルダに入らず、[`watchPathCovers()`](../../src/core/watch/filewatcher.cpp#L383) で外のファイルを inventory に入れません。`onlyIgnoredRecords()` は宣言の外の名前も無視してよい名前に数えます。gate の側は [`ReloadGate::updateLocked()`](../../src/core/watch/reloadgate.cpp#L37) で、`WatchDeclaration` が undeclared のときだけ rpc 駆動を閉じる理由にし、empty は `"hot_reload empty"` で閉じます。`--rpc` の下では [`ReloadService::applyFrame()`](../../src/core/watch/reloadservice.cpp#L979) が watcher の要求を `pelican.render_pipeline` の参加者に claim させません(`applyRequests()` の `excluded_participant`。`applyRequestsForTesting()` は誰も外さない)。
 - test: `filewatcher_test` の FW-1 の 7 本(起動時の hash 0 と 1 ファイルの書き換え、同じ中身の再保存、未知の live の状態機械、polling、overflow、`.pelican`、`Sha256Stream`)と HW-1 の 3 本(当たり判定と hash、届かない store、gate)、[`reloadtransaction_test.cpp` 内](../../test/reloadtransaction_test.cpp#L536)「HW-1 a declared watch runs under an RPC driver and never reaches the render pipeline」(本物の watcher thread で `passes/main.json` を書き換え、rpc では render pipeline の名前の fake が 0 回、rpc なしでは 1 回呼ばれる)、GPU の [`texturereload_test.cpp` 内](../../test/texturereload_test.cpp#L240)「HW-1 under an RPC driver the watch reloads a texture in the declared folder and not one outside」。
 
@@ -1414,7 +1414,7 @@ manifest から「何から作った file か」と古さを読む [`readDerived
 > それ以外: queue_reload
 > ```
 >
-> **手がかり**: `observe()` が比較するのは前回の**ディスクinventory**ではなく `live_digest`(= ランタイムへ実際に適用済みの内容)です。[`reconcile()` 内](../../src/core/watch/filewatcher.cpp#L721) のコメントが規範で、「一度失敗した候補は、バイトが同じでも次の保存/reconcileで再び対象になる」ためにこの比較になっています。トークンを置くのは [`FileWatcher::registerSelfWrite()`](../../src/core/watch/filewatcher.cpp#L930) 経由で、`runtime_apply_succeeded` をそのまま持ち回ります。テストは [`filewatcher_test.cpp` 内](../../test/filewatcher_test.cpp#L143)「ContentDigest streams bytes and separates observed live pending and self-write」と [batch commit の検査](../../test/filewatcher_test.cpp#L192)。
+> **手がかり**: `observe()` が比較するのは前回の**ディスクinventory**ではなく `live_digest`(= ランタイムへ実際に適用済みの内容)です。[`reconcile()` 内](../../src/core/watch/filewatcher.cpp#L722) のコメントが規範で、「一度失敗した候補は、バイトが同じでも次の保存/reconcileで再び対象になる」ためにこの比較になっています。トークンを置くのは [`FileWatcher::registerSelfWrite()`](../../src/core/watch/filewatcher.cpp#L931) 経由で、`runtime_apply_succeeded` をそのまま持ち回ります。テストは [`filewatcher_test.cpp` 内](../../test/filewatcher_test.cpp#L143)「ContentDigest streams bytes and separates observed live pending and self-write」と [batch commit の検査](../../test/filewatcher_test.cpp#L192)。
 >
 > **不変条件**: トークンは1回の観測で必ず消える。epochが違うトークンは抑止に使わない。`runtime_applied` がfalseの保存はreloadを積み直す。
 

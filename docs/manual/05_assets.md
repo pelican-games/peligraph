@@ -472,7 +472,7 @@ glob → レシピの中央表(`pelican.import_rules` v1)で一括取り込み�
   - 置き換えは POSIX の意味の rename(`FileRenameInfoEx`。使えない Windows・file system では `MoveFileExW`)です。delete も共有して開いている handle(test は file の見張りの開き方)なら待たずに置き換わり、開いている側は古い中身を読み続けます。`std::ifstream` のように delete を共有しない開き方では、閉じるまでやり直しで待ちます(test: 300 ms 後に閉じると committed)。
   - 2 秒の間ずっと開かれたままなら、下の表の `audio.analysis_failed@1` に `reason: "output_locked"` と `path` が付きます。一時 file は消え、元の表と manifest は書き換わりません(test)。
   - Windows 以外は rename を 1 回だけ試します(やり直しはしません)。
-  - 読む側も開いている時間を短くしました。KTX2 の読み込み([`loadKtx2File()`](../../src/core/loader/imageloader.cpp#L102))は全部読んで閉じてから parse し、古さの判定([AB-2 で manifest を先に閉じる `readDerivedAssetStatus()`](../../src/project/audioanalysisformat.cpp#L250))は manifest を閉じてから元の音と出力を hash します。読む側の開き方(共有のモード)は変えていません。
+  - 読む側も開いている時間を短くしました。KTX2 の読み込み([`loadKtx2File()`](../../src/core/loader/imageloader.cpp#L105))は全部読んで閉じてから parse し、古さの判定([AB-2 で manifest を先に閉じる `readDerivedAssetStatus()`](../../src/project/audioanalysisformat.cpp#L250))は manifest を閉じてから元の音と出力を hash します。読む側の開き方(共有のモード)は変えていません。
   - test: `ab1_audio_analysis_test` の [「AB-2 bake_audio_analysis replaces a table a reader held open once it closes, and refuses with output_locked when it never does」](../../test/ab1_audio_analysis_test.cpp#L363)(非 GPU。閉じれば committed。ここから先は Windows だけ: 閉じなければ `output_locked` で 1.9 秒以上待ち、一時 file が残らず元が無傷、delete も共有する handle なら 1.5 秒未満で committed)。
 
 **読む**: CPU は graph の op `value.sample_table {asset, row, time?}`、GPU は engine の include `pelican_sample_table.glsl` です([第6章](06_rendering.md) §6.18「焼いた音の解析の表を読む」)。

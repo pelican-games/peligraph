@@ -3193,7 +3193,7 @@ stateDiagram-v2
         render・graph・material 等のファイル編集と saveData は Stop で戻らない
     end note
 ```
-根拠: [playmode.cpp:63](../../src/core/appflow/playmode.cpp#L63)、[rpcserver.cpp:2180](../../src/core/communication/rpcserver.cpp#L2185)、[playsession.cpp:18](../../src/core/communication/playsession.cpp#L18)、[editorjournal.cpp:5036](../../src/core/communication/editorjournal.cpp#L5149)、[playstatemodel.cpp:272](../../src/devstudio/model/playstatemodel.cpp#L272)。
+根拠: [playmode.cpp:63](../../src/core/appflow/playmode.cpp#L63)、[rpcserver.cpp:2180](../../src/core/communication/rpcserver.cpp#L2172)、[playsession.cpp:18](../../src/core/communication/playsession.cpp#L18)、[editorjournal.cpp:5036](../../src/core/communication/editorjournal.cpp#L5149)、[playstatemodel.cpp:272](../../src/devstudio/model/playstatemodel.cpp#L272)。
 
 注: 図は scene を読み、edit から始めたセッションです。scene が無い場合は保存するセッションを作りません。最初から playing で起動した場合、最初の Stop は現在の authoring から edit の runtime を作り直します。同じ状態への要求は何も変えず成功します。scene 編集が未確定か preview 中なら Play / Stop は `play_busy`、DLL の再読込が失敗したら Play は始まりません(replay / golden は再読込を省きます)。
 

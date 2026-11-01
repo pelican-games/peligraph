@@ -335,6 +335,68 @@ selected usage、surface transform 等が target compile へ影響しないと�
 state は bool の組ではなく discriminated union とする。`surface_stale` と
 `extent_changed` を別々に latch しない。
 
+<a id="sa1-android-no-surface"></a>
+
+**→ SA1(Android)の追補(`fc0c09bf6`、2026-11-01)**: 上の表と §8.2 は書き換えず、Android で足した物をここに書く。
+仕様は `<作業ディレクトリ>/sa1_spec.md` §4(lifecycle の設計 v2)と §4.7(確認レビューで確定した事。§4.1〜§4.6 より優先)、
+報告は `<作業ディレクトリ>/sa1_4_report.md` と `<作業ディレクトリ>/sa1_4fix_report.md`。行番号は `fc0c09bf6` の物。
+
+- **状態 `no_surface`**: platform が native window を取り消した状態。表に足す 1 行は次のとおり。
+
+  | State | begin の結果 | 許可する遷移 |
+  |---|---|---|
+  | `no_surface` | `unavailable(no_surface)` | 新しい native revision からの surface の作り直し(`preparing_surface`)だけ |
+
+  型は [`WindowOutputNoSurface`](../src/core/vkcore/swapchainrecovery.hpp#L240)、入るのは
+  [`markNoSurface()`](../src/core/vkcore/swapchainrecovery.cpp#L811) で、`device_rebuild_required` と `fatal` は上書きしない。
+  `no_surface` からは通常の swapchain の作り直し(`takePreparationRequest()`)は出ず、
+  [`takeSurfacePreparationRequest()`](../src/core/vkcore/swapchainrecovery.cpp#L662) だけが `preparing_surface` へ進める。
+  準備の失敗は `unavailable_retry` で、retry も surface の準備になる(`test/swapchainrecovery_test.cpp` の
+  「Native surface release resumes only through fresh surface preparation」)。
+  §7.4 の zero extent とは別の状態で、解放のときに framebuffer の snapshot を 0×0 にせず、native window の API も呼ばない
+  (`observeZeroExtent()` は変えていない)。`beginFrame` は `device_rebuild_required` / `fatal` / `no_surface` を zero extent より先に判定する
+  ([その所](../src/core/vkcore/swapchainframetarget.cpp#L2410))。Windows の production の道で `no_surface` に入る呼び出しは無い。
+- **surface の解放の入口(`APP_CMD_TERM_WINDOW`)**: §8.2 の SURFACE_LOST とは別の、同期の入口。
+  pump の thread の [`handleCommand()`](../src/platform/android/android_main.cpp#L155) が native window の slot の mutex の下で
+  revision を取り消し、解放の要求を立て、ack を **3 s** まで待つ(過ぎたら `pump.log` に `TIMEOUT` を書いて停止を要求する)。
+  engine の owner thread は frame の頭(PAUSE 中の 50 ms の待ちの loop でも)で
+  [`serviceNativeRelease()`](../src/core/vkcore/swapchainframetarget.cpp#L942) を走らせる:
+  状態を `no_surface` にし、build worker の完了を **1 s** まで待ち(`vkCreateSwapchainKHR` は止められないため)、
+  完了を publish / defer を通さずに直接受け取り、active / recovery anchor / retired / 記録中の frame / pending_abandonment / build の
+  old epoch・candidate・replacement anchor の epoch を重複なく 1 つの集合にする。集合の acquire / submit / present /
+  superseded present の fence を **全部で 1 s** の締切で待ち(`device.waitIdle()` / `queue.waitIdle()` は使わない)、
+  取得して submit していない image は acquire の完了を確かめてから `vkReleaseSwapchainImagesEXT` で返し、
+  swapchain の子 → swapchain → surface の順に破棄してから ack する。
+  解放の要求が立っている間は WSI の結果を OUT_OF_DATE / SURFACE_LOST の回復に分類せず、新しい準備も始めない
+  (取り消された revision の candidate は [`divertRevokedCompletion()`](../src/core/vkcore/swapchainframetarget.cpp#L930) が解放の集合へ回し、recovery anchor にしない)。
+  maintenance1 による完了の証明が無い・締切までに fence が終わらない・build が締切に間に合わないときは、§9.3 と同じく
+  bundle を quarantine に移し、理由 `presentation_completion_unavailable` で `device_rebuild_required` にする。
+  flat の Android では module graph 全体を process の終わりまで保持し(`Android::quarantineModulesForProcessExit()`)、
+  Activity を finish する。このときも ack は返す(quarantine に移した surface は数から除く)。
+- **surface は revision ごとに数える**: slot([`NativeWindowSlot`](../src/platform/android/runtime.hpp#L16))は
+  native window の参照・単調に増える revision・revision ごとの生きた surface の数と quarantine の数を持つ。
+  factory([`WindowSurfaceFactory::create()`](../src/core/vkcore/windowsurface_android.cpp#L54))は slot の lock の下で revision を確かめ、
+  **作る前に**数を予約し([その所](../src/core/vkcore/windowsurface_android.cpp#L89))、`vkCreateAndroidSurfaceKHR` が失敗したら戻す。
+  取り消された revision なら native API を呼ばずに空を返し、古い revision に surface が残っていれば `NATIVE_WINDOW_IN_USE` で断る。
+  数を減らすのは `vkDestroySurfaceKHR` を呼ぶ wrapper の deleter の直後だけ([`WindowSurfaceHandle::reset()`](../src/core/vkcore/windowsurface_android.cpp#L33)。
+  どの thread で破棄しても数が合う)。ack の条件は「その revision の数が quarantine の数と等しい」。
+  2 回目以降の `INIT_WINDOW` での作り直しは、旧 revision の数が 0 であることを確かめてから §8.2 の fresh surface 以降を行う
+  (oldSwapchain は渡さない。0 でなければ `device_rebuild_required` で、backoff で繰り返さない)。
+  `SurfaceEpoch::native_window_revision`(§5.2)はこの SA1 で Android の実装に入った。
+- **§5.1 の bootstrap の surface**: Android では物理 device・queue の選択と device の作成にしか使わず、device を作った直後に破棄する
+  ([その所](../src/core/vkcore/core.cpp#L1021))。frame target は `takeInitialWindowSurface()` を使わず、上の factory で作る。
+  window が無ければ `no_surface` で始める。bootstrap は window を 1 つの締切(3 s)の中で待ち、待つ間に revision が取り消されたら作り直す
+  ([その所](../src/core/vkcore/core.cpp#L990))。Windows の bootstrap は今までどおり。
+- **上限つきの acquire**: Android の flat は blocking のまま、submit fence・acquire fence の再利用・`vkAcquireNextImageKHR` の待ちに
+  **250 ms** の上限を付け、解放の要求がある間は **16 ms** にする([acquire の所](../src/core/vkcore/swapchainframetarget.cpp#L2534))。
+  `eTimeout` は blocking でも例外にせず、§7.2 の not_ready として frame を飛ばす(`unavailable(acquire_not_ready)`)。
+  端末で有限の timeout に driver が `VK_TIMEOUT` を返すことは試験の口(`--sa1-test-short-acquire`)で確かめた。
+  desktop の待ちは今までどおり `UINT64_MAX`。
+- **swapchain の作成**: Android は preTransform = IDENTITY(回転は compositor に任せる)、presentMode = FIFO に固定する。
+  端末の `currentTransform` が ROTATE_90 なので起動直後に SUBOPTIMAL が返り、swapchain は 1 回だけ作り直される
+  (端末の log では `reason=suboptimal facts_changed=false` が 1 回。facts が同じなので target と pipeline は作り直さず、§7.3 の coalesce で以後は繰り返さない)。
+  代わりに validation が swapchain を作るたびに preTransform の不一致を warning に出す。
+
 ### 7.2 VkResult の分類
 
 acquire、present、surface query、swapchain creation の Vulkan-Hpp 例外を
@@ -739,6 +801,22 @@ pure protocol / live injected gateと区別する。
 - hot reloadとresizeを同frameに起こし、単一root CASまたはstale retry
 - ASan / validation / repeated faultでtoken、epoch、registry leaseのleakなし
 
+<a id="sa1-bounded-release-wait"></a>
+
+**→ SA1(Android)の追補(`fc0c09bf6`、2026-11-01)— 「回復の trace に待ちを出さない」の例外**: 通常の WSI の回復は今までどおり
+非同期の prepare と fence の poll で、`device.waitIdle()` も出さない。例外は **platform が callback の中で同期の解放を求める時だけ**で、
+今あるのは Android の `APP_CMD_TERM_WINDOW` 1 つ(NDK は `onNativeWindowDestroyed` から返った後の window に触れることを禁じるので、
+返る前に surface を全部破棄するのが正しい形。§7.1 の SA1 追補)。このときだけ engine の owner thread で上限つきの待ちを許す:
+pump の ack 待ち **3 s**、build の完了待ち **1 s**、acquire / submit / present / superseded present の fence の待ちは**集合全体で 1 s**。
+待ちごとに時間・結果・epoch・native revision を log に書く(`Android release fence: ...`、`Android release complete: ...`)。
+`device.waitIdle()` / `queue.waitIdle()` はこの例外にも使わない。完了を証明できなければ §9.3 の quarantine と
+`presentation_completion_unavailable` で、同じ device / native window で再試行しない。
+DESTROY の engine の待ちは別に **2 s** で打ち切り、engine が生きたまま `android_main` から return せず `_exit` する
+([その所](../src/platform/android/android_main.cpp#L342))。
+端末(Snapdragon 8 Elite / Adreno 830、`swapchain_maintenance1=true`)では home と復帰の各回で ack まで約 13〜47 ms、
+fence の待ちは 1 本 1.4 ms 以下で全部 Success、validation error 0、`VK_ERROR_NATIVE_WINDOW_IN_USE_KHR` 0 件(`<作業ディレクトリ>/sa1_4fix_report.md`)。
+3 s・1 s・2 s の上限を実際に過ぎる道を端末で注入したことはまだ無い(fault は「完了の証明が無い」の口 `--sa1-test-no-maintenance` で確かめた)。
+
 ### 14.4 XR
 
 - mirror window resize / minimize / surface-lost中もHMD frame countが継続
@@ -752,7 +830,16 @@ pure protocol / live injected gateと区別する。
 
 - Windows: RDP接続/切断、display mode変更、monitor移動、DPI変更
 - Linux: X11 / Waylandでminimize・monitor移動
-- 将来Quest standalone: Android surface lifecycle
+- Android(スマホ、✅SA1 `fc0c09bf6`): surface lifecycle。端末 NX789J(Snapdragon 8 Elite、Android API 36)で、
+  画面の消灯と点灯 ×3 を手動の runner(`tools/android/sa1_run_lifecycle.py --manual-sleep-cycles 3`、手順は
+  `tools/android/README.sa1-lifecycle.md`)で確かめた。利用者が電源ボタンで消灯・点灯・ロック解除をし、runner は adb で操作しない。
+  3 回とも PAUSE → TERM_WINDOW → 解放の ack(43.6 / 86.5 / 59.3 ms、live 0・quarantine 0)→ RESUME → INIT_WINDOW で、
+  native revision は 1 → 4 と毎回 1 進み、復帰後の revision で present が増え、最後の back まで validation error 0・
+  `VK_ERROR_NATIVE_WINDOW_IN_USE_KHR` 0 件・engine の終了 0(証跡は作業場所 `<作業ディレクトリ>/sa1/build-android/sa1e-results/manual-sleep-3/`)。
+  自動の runner(`--case home` / `startup` / `busy` / `back` / `fault` / `recents` / `timeout`)で home と復帰 ×3、起動中の home、
+  作り直し中の home、back、画面分割(TERM_WINDOW の無い resize)、完了の証明が無い道、有限の acquire の timeout も通した。
+  他の端末は未実行。
+- 将来Quest standalone: Android surface lifecycle(未実行。SA2)
 
 未実行platformは「対応済み」とせず、status / reportにgate待ちと明記する。
 

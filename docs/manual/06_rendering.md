@@ -2830,7 +2830,7 @@ RC-7b で外れた理由は次の節の decision に出ます。
 
 - **移行の注意**: RC-7b までは facts の無い compile でも同じ形の組を作っていました。✅RC-7c からは作りません。example の `g_emissive` / `Bloom_Threshold_RT` の組も、compiler_only では別々の確保です(frameplanner の test の example は 21 枚 21 確保・134,070,720 bytes になりました。前の 125,776,320 との差 8,294,400 は 1 組の分)。facts の無い compile で共有を見ていた test は作り物の facts を渡す形に移しました(実装者の報告)。
 
-**device の答えを使う**: engine は device を作るときに Vulkan の `maintenance4` を有効にします。支持しない device では起動が `vulkan.required_feature_missing@1: maintenance4` で止まります([確かめる所](../../src/core/vkcore/core.cpp#L630))。これで、計画の時に `vkGetDeviceImageMemoryRequirements` で照会した size・alignment・`memoryTypeBits`・dedicated が、同じ create info で作る実画像の値と一致します(GPU の test「RC-7c maintenance4 production facts equal actual image requirements」)。照会と登録は同じ 1 つの関数で create info を作ります。
+**device の答えを使う**: engine は device を作るときに Vulkan の `maintenance4` を有効にします。支持しない device では起動が `vulkan.required_feature_missing@1: maintenance4` で止まります([確かめる所](../../src/core/vkcore/core.cpp#L656))。これで、計画の時に `vkGetDeviceImageMemoryRequirements` で照会した size・alignment・`memoryTypeBits`・dedicated が、同じ create info で作る実画像の値と一致します(GPU の test「RC-7c maintenance4 production facts equal actual image requirements」)。照会と登録は同じ 1 つの関数で create info を作ります。
 
 **`retain` と `TRANSFER_SRC`**: ✅RC-7c から、採った `retain: true` の資源には planner が `TRANSFER_SRC` を足します(上の「[名前で読み戻す約束](#target-planning-retain)」)。
 
@@ -2838,7 +2838,7 @@ RC-7b で外れた理由は次の節の decision に出ます。
 
 **実際の配置**: 登録は、region に入る render target の image を memory なしで作り(`VK_IMAGE_CREATE_ALIAS_BIT`)、実画像の requirements を読み、保持した packing の入力で詰め直してから、region ごとに VMA の allocation を 1 つ取り(device local を優先)、各 image をその offset に bind します([詰め直す所](../../src/core/renderingpass/rendertargetcontainer.cpp#L314))。
 
-- bind の前に、offset + size が allocation に収まる・offset が alignment の倍数・VMA の選んだ memory type が `memoryTypeBits` に入る、を確かめ、破れは `render_target.memory_bind_invalid@1: <名前>` です([確かめる所](../../src/core/vkcore/core.cpp#L1619))。計画の誤りなので黙って戻しません。
+- bind の前に、offset + size が allocation に収まる・offset が alignment の倍数・VMA の選んだ memory type が `memoryTypeBits` に入る、を確かめ、破れは `render_target.memory_bind_invalid@1: <名前>` です([確かめる所](../../src/core/vkcore/core.cpp#L1675))。計画の誤りなので黙って戻しません。
 - dedicated の確保が要る image は region に入れず、通常の確保にします。
 - 詰め直しで memory の鍵や dedicated が変わり、自動の共有か `prefer` の組が成り立たなくなれば、その target は理由(`dedicated_or_unknown_requirements`・`memory_key_changed`・`same_offset_memory_key_changed` など)を付けて分かれます。採った `require` の組が成り立たなければ `render_target.alias_repack_unsatisfiable@1` で、登録の transaction を戻します([その所](../../src/project/memoryregionpacking.cpp#L165))。`require` の組は (書いた文書, 組名) で決まります(planner と同じ)。
 - 各 image は region の allocation を共同で持ち、image の後に allocation が壊れます。resize で退いた image と、submit 中の image は、退役の batch と submit の lease が持ち続けます。
@@ -3487,7 +3487,7 @@ asset_data の `materials[]` が指す文書が無い・読めない場合、`--
 
 **pass の宣言漏れは別の code。**material 文書は読めても、その material が必要とする `ray_query: true` を pass が宣言しなければ `material.pass_contract_unmet@1` で pass を名指します。
 
-- **見分け方**: pipeline factory の raster の `ray_query` の拒否だけを型付きの例外 `PassContractRefusal` にしました(`what()` は前と同じ文。[投げる所](../../src/core/shader/pipelinefactory.cpp#L1061))。`MaterialContainer::registerMaterial` が受けて material の名前と、宣言していない material pass を足して投げ直します([足す所](../../src/core/material/materialcontainer.cpp#L914))。起動時の 1 文書ずつの登録はこの型を別に受けます([受ける所(FO-2)](../../src/core/material/projectmaterialasset.cpp#L834))。ほかの拒否(device に ray query が無い、compute task 自身の宣言漏れ、multiview の gl_ViewIndex、material の shader input)は今までどおりです。
+- **見分け方**: pipeline factory の raster の `ray_query` の拒否だけを型付きの例外 `PassContractRefusal` にしました(`what()` は前と同じ文。[投げる所](../../src/core/shader/pipelinefactory.cpp#L1070))。`MaterialContainer::registerMaterial` が受けて material の名前と、宣言していない material pass を足して投げ直します([足す所](../../src/core/material/materialcontainer.cpp#L914))。起動時の 1 文書ずつの登録はこの型を別に受けます([受ける所(FO-2)](../../src/core/material/projectmaterialasset.cpp#L834))。ほかの拒否(device に ray query が無い、compute task 自身の宣言漏れ、multiview の gl_ViewIndex、material の shader input)は今までどおりです。
 - **問題の一覧**: 文書 1 つにつき error が 1 件で、`document` / `document_kind` は **pass を宣言している文書**です。RT6 の fixture(preset の `forward_opaque` が `ray_query` を宣言していない)での実例:
 
   ```json
@@ -3846,7 +3846,7 @@ preview graph の合成規則(すべて起動時に検証されます):
   - `history_read`: `<target>@history` を読む pass(`graph`・`pass`)
   - `history_write`: `writes_history` の pass(`graph`・`pass`)
   - `composition`: それ以外の理由で preview を組めなかった。拒否が名前付き(`GraphRegistryError` か `<code>: <fields>` の形)なら `cause: {code, ...その fields}` が付きます(例: preview だけが断る graph のループの `graph.loop_expression_invalid@1` は `cause: {code: "graph.loop_expression_invalid@1", node: "steps", reason: "not_static"}`。test)
-- **出る所**: `get_status` の `preview`([`get_status` の PV-1 の鍵](../../src/core/communication/rpcserver.cpp#L1680))、`get_frame_plan` の最上位の `preview`([frame plan の PV-1 の鍵](../../src/core/vkcore/renderer.cpp#L4575))、render の編集の committed の結果の `preview`(公開した世代の状態。`reload_render_documents` と `edit_batch` の committed も同じ。[committed に preview を足す所](../../src/core/communication/renderconfigeditor.cpp#L8480))。
+- **出る所**: `get_status` の `preview`([`get_status` の PV-1 の鍵](../../src/core/communication/rpcserver.cpp#L1667))、`get_frame_plan` の最上位の `preview`([frame plan の PV-1 の鍵](../../src/core/vkcore/renderer.cpp#L4575))、render の編集の committed の結果の `preview`(公開した世代の状態。`reload_render_documents` と `edit_batch` の committed も同じ。[committed に preview を足す所](../../src/core/communication/renderconfigeditor.cpp#L8480))。
 - **`render_preview`**: preview が利用できない世代では、capture の中身を読む前に `preview.unavailable@1` で断ります。JSON-RPC の error(`-32000`)の `data` が `{code: "preview.unavailable@1", method: "render_preview", reason: <上の reason>}` です([`checkPreviewAvailable()`](../../src/core/communication/editorpreviewservice.cpp#L134))。
 - **編集**: 編集の preflight は preview を組みません([PV-1 で preview を組まなくなった preflight](../../src/core/renderingpass/previewgraph.cpp#L185))。preview だけが組めない編集も committed になり、`preview` が `available: false` に変わります。逆に history を外す編集で `available: true` に戻ります。
 - **log**: 起動時に、preview が利用できなければ warning を 1 行出します。形は `render preview unavailable (preview.unsupported_authoring@1 feature=history target=accum); normal play continues, render_preview refuses: <message>` で、`target=` は reason に `target` があるときだけです([PV-1 の warning の行](../../src/core/vkcore/renderer_config.cpp#L763))。同じ関数は reload と編集の組み直しでも通るので、そこでも preview が利用できなければ同じ行が出ます(コードの読み。test は起動時の 1 行だけを見ます)。
@@ -4282,7 +4282,7 @@ stderr に `--render-fallback requires --rpc` と usage を出し、終了コー
   `render_pipeline_preflight_failed` で、`message` に例外の文が入ります。
 - 例(BS-1 の test。Blank の root に、buffer の port に `element` の無い `render.compute` の node `sim` を足した):
   `{state: "fallback", root: "passes/main_rendering_config.json", refusal: {code: "graph.port_field_missing@1", node: "sim", port: "data", field: "element", document: "project://passes/main_rendering_config.json", message: "..."}}`。
-- `get_frame_plan` は fallback の間だけ、最上位に同じ `render_pipeline` を持ちます([BS-1 の get_frame_plan に足す所](../../src/core/communication/rpcserver.cpp#L2493))。
+- `get_frame_plan` は fallback の間だけ、最上位に同じ `render_pipeline` を持ちます([BS-1 の get_frame_plan に足す所](../../src/core/communication/rpcserver.cpp#L2480))。
   plan そのものは fallback の世代のものです。project の構成に戻れば鍵は消えます。
 
 **直し方**は 3 つです。どれも、project の構成を publish した時点で fallback が終わります([publish で fallback を終える所](../../src/core/vkcore/renderer.cpp#L183))。
@@ -4321,9 +4321,9 @@ BS-1 の `get_status.render_pipeline.refusal` は起動時の 1 件だけで、h
 
 **読み方**:
 
-- `get_status.problems` は `{revision, count, errors, warnings}` です([get_status に problems を足す所(PB-1)](../../src/core/communication/rpcserver.cpp#L1689))。
+- `get_status.problems` は `{revision, count, errors, warnings}` です([get_status に problems を足す所(PB-1)](../../src/core/communication/rpcserver.cpp#L1676))。
   `revision` は一覧が変わったときだけ増えます(同じ中身で置き換えても増えません。[`ProblemList::replace()`](../../src/core/watch/problemlist.cpp#L295))。client は `revision` が動いたら全部を読み直します。
-- `get_problems {}` → `{revision, problems: [...]}`([`get_problems` の登録](../../src/core/communication/rpcserver.cpp#L1600))。params は空の object だけで、ほかは invalid params です。
+- `get_problems {}` → `{revision, problems: [...]}`([`get_problems` の登録](../../src/core/communication/rpcserver.cpp#L1587))。params は空の object だけで、ほかは invalid params です。
   同じ `id` は 1 件だけ並びます([`ProblemList::problemsJson()`](../../src/core/watch/problemlist.cpp#L327))。`ProblemList` の module が無い host では `{revision: 0, problems: []}` です。
 
 **1 件の形**: `{id, severity, source, code, message, fields, document?, line?, column?, node?, port?, definition?, scope?, document_kind?, at_frame?}`
@@ -5014,7 +5014,7 @@ uint count = pelican_loop_count();
   PELICAN_LOOP_FUNCTIONS(push)
   ```
 
-- **engine が渡す所**: fullscreen / raster の pass([渡す所](../../src/core/renderer/fullscreenpassrenderer.cpp#L55))と compute task([渡す所](../../src/core/renderingpass/computetaskcontainer.cpp#L1989))。pipeline の stage のうち push constant の range が `[112, 120)` を丸ごと含むものを集め([`loopIndexPushStages()`](../../src/core/shader/shaderreflection.cpp#L549))、その stage flags の OR で 1 回 `pushConstants` します([`PipelineFactory::pushLoopIndex()`](../../src/core/shader/pipelinefactory.cpp#L1933))。raster で vertex と fragment の両方が include すれば両方に同じ値が入り、どの stage も宣言していなければ何もしません。
+- **engine が渡す所**: fullscreen / raster の pass([渡す所](../../src/core/renderer/fullscreenpassrenderer.cpp#L55))と compute task([渡す所](../../src/core/renderingpass/computetaskcontainer.cpp#L1989))。pipeline の stage のうち push constant の range が `[112, 120)` を丸ごと含むものを集め([`loopIndexPushStages()`](../../src/core/shader/shaderreflection.cpp#L549))、その stage flags の OR で 1 回 `pushConstants` します([`PipelineFactory::pushLoopIndex()`](../../src/core/shader/pipelinefactory.cpp#L1953))。raster で vertex と fragment の両方が include すれば両方に同じ値が入り、どの stage も宣言していなければ何もしません。
 - **値**: element は展開の `element`(集合の値。並べた後の位置 `index` ではない)、count は展開後の回数(`get_frame_plan` の `loops[].count`)です([回ごとに決める所](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L364))。ループの外の pass と task は element 0・count 1 です。
 - **compile は増えない**: 回の番号は値で define ではないので、同じ shader と同じ設定の回は同じ compile(同じ cache key)を共有します。pipeline は今までどおり pass ごとです。
 - **断るもの**: push constant の range が `[112, 120)` に**一部だけ**重なる宣言(例: offset 100 から 16 byte)は、graphics と compute の pipeline を作るときに `shader.loop_push_overlap@1` `{shader, stage, range: {offset, size}}` で断ります([断る所](../../src/core/shader/shaderreflection.cpp#L560))。編集 RPC の結果では、draw_loop の code と同じく**その code のまま** fields が並びます(下の一覧の注記)。
