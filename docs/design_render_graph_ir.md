@@ -181,6 +181,11 @@ NodeIR {
   - **対の usage の一致は見なくなった**: 上の RC-7b の追補の「対の usage の一致を実効の usage で見る」は、RC-7c から memory の鍵(`memoryTypeBits` の完全一致)に置き換わった。
     usage の違う資源も、鍵が同じで寿命が重ならなければ 1 つの region に入る。resolver は region に置かれた組の住人の region と offset の一致を確かめる
     (違えば `render_graph.alias_group_invalid@1 {reason: "same_offset"}`。[その所](../src/project/generationresources.cpp#L256))。
+- **追補(RC-7d、`c941a8346`、2026-11-01。memory の種類ごと)**: 全体は [RT メモ §2 の末尾の RC-7d](design_render_target_memory_reduction.md#rc7d-memory-kinds) と
+  [棚卸しメモ §2-3 の RC-7d](design_plan_layer_inventory.md#rc7d-implementation)。行番号は `c941a8346` の物。
+  - **resolver の組の検査**: region の無い組の最後の確認から「storage が materialized」の要求を外した。上の RC-7b の追補の「storage の食い違いは解除」はそのまま
+    ([その所](../src/project/generationresources.cpp#L269))。transient / tile-local の資源も、memory の種類が ordinary なら region に入る(種類は IR でなく物理計画と device の memory type で決まる)。
+  - **宣言の適格は変えていない**: [`isRuntimeAliasEligible`](../src/project/rendergraphir.cpp#L241) は今のまま。core の `isRuntimeAliasCandidate()` が足していた storage の条件を外した。
 
 ### 2.5 pipeline の状態は「所有者ごと」
 

@@ -179,6 +179,7 @@ return { std::max(1u, base.width >> mip), std::max(1u, base.height >> mip) };
 タイルベース GPU では、1 つのレンダリングパスの中でしか使わないアタッチメントを DRAM へ書き戻さず、タイルメモリに留めたままにできます。Vulkan ではこれを `VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT` と `VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT` の組で表現します。lazily-allocated メモリは実際には物理メモリが割り当てられないことがあり、アタッチメント以外の用途(サンプリング・コピー・storage)には使えません。デスクトップ GPU にはこのメモリタイプ自体が無いことも多く、その場合は普通のイメージへフォールバックする必要があります。
 
 **このリポジトリでは**: `RenderTargetStorageMode`(`src/core/renderingpass/rendertargetstoragemode.hpp`:10〜14)の `transient_attachment` / `tile_local_attachment` が、確保時に `vk::MemoryPropertyFlagBits::eLazilyAllocated` を **preferred** として渡します(`rendertargetcontainer.cpp` 259〜269 行)。
+→ ✅RC-7d(`c941a8346`)で変わりました。preferred の指定は無くなり、`TRANSIENT_ATTACHMENT` を持つ image の `memoryTypeBits` に LAZILY_ALLOCATED の memory type があれば(device の memory type の一覧で判定)、`VMA_MEMORY_USAGE_GPU_LAZILY_ALLOCATED` の専用の確保にし、取れなければ名前付きの理由で普通の確保に戻ります。LAZILY_ALLOCATED の type が無い device では普通の memory として扱い、共有の条件を満たせば region に入ります([第6章の「memory の種類」](06_rendering_vulkan_shader.md#rc7d-memory-kinds))。
 
 どの resource がそこへ落ちるかを決めるのは物理ターゲット計画で、条件は `tile_local_eligible`(`src/project/targetrenderplanning.cpp`:2173〜2191)にまとまっています — 読みが `same_pixel` であること、書きも読みもあること、attachment アクセスだけであること(storage / transfer / host が混ざらない)、single sample、`require_store` でないこと、など。1 つでも外れれば `materialized` に戻ります。この enum のコメントが「render-target allocator が実際に実装しているモードだけを渡す」ことを明言しており、計画側の表現(`VulkanResourceRepresentation`)とは意図的に別の型になっています。
 

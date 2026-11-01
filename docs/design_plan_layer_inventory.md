@@ -484,6 +484,34 @@
   [`rc7c_runtime_gpu_test.inc`](../test/rc7c_runtime_gpu_test.inc#L147)(`generationresources_device_test` が include)、[`rc7c_renderer_gpu_test.inc`](../test/rc7c_renderer_gpu_test.inc#L87)(`headless_render_test` が include)、
   作り物の facts の [`rc7cMemoryRequirements()`](../test/rc7c_test_facts.hpp#L6) / [`rc7cDeviceRequirements()`](../test/rc7c_device_test_facts.hpp#L6)。C5 は [`rc5_recipe_compiler_test.inc`](../test/rc5_recipe_compiler_test.inc#L622)(`[.]`)。
 
+<a id="rc7d-implementation"></a>
+
+**RC-7d で入った物(memory の種類ごと。2026-11-01、`c941a8346`、branch `agent/rc7d`)。**仕様は `<作業ディレクトリ>/rc7_spec.md` §5、実装者の報告は `rc7d_report.md` と修正の報告 `rc7d_fix_report.md`。
+この段の行番号は `c941a8346` の物。意味・決定・計測は [RT メモ §2 の末尾の RC-7d](design_render_target_memory_reduction.md#rc7d-memory-kinds)。ここには何がどこにあるかだけを書く。
+
+- **種類の関数(project)**: [`imageMemoryKind()`](../src/project/memoryregionpacking.cpp#L9)・`ImageMemoryType`・`ImageMemoryKind`・`imageMemoryKindName()`([宣言](../src/project/memoryregionpacking.hpp#L12))。
+- **planner(`src/project/targetrenderplanning.{hpp,cpp}`)**: `VulkanTargetPlanRequest::memory_types` と `VulkanTargetPlan::memory_types`([宣言](../src/project/targetrenderplanning.hpp#L395))、照会の usage の
+  `plannedUsage`([その所](../src/project/targetrenderplanning.cpp#L3570))と `kindOf`([その所](../src/project/targetrenderplanning.cpp#L3591))、packing の入力からの除外([その所](../src/project/targetrenderplanning.cpp#L3608))、
+  `alias_group` の拒否([その所](../src/project/targetrenderplanning.cpp#L3668)、[`alias.lazy_memory@1` を投げる所](../src/project/targetrenderplanning.cpp#L4163))、JSON の `memory_types` / `image_memory_facts`
+  ([その所](../src/project/targetrenderplanning.cpp#L4688))、generation の除外([その所](../src/project/targetrenderplanning.cpp#L4803))。
+- **compiler(core)**: facts の memory types の写し([その所](../src/core/renderingpass/renderingsamplecount.cpp#L1545))、`isRuntimeAliasCandidate()` と `runtimeAliasExclusion()` から storage の条件を外した
+  ([その所](../src/core/renderingpass/renderingsamplecount.cpp#L79))、runtime pattern の `allow_alias`([その所](../src/core/renderingpass/renderingsamplecount.cpp#L604))、runtime の計画の組の検査([その所](../src/core/renderingpass/renderingsamplecount.cpp#L1068))。
+- **generation の resolver**: region の無い組の materialized の要求を外した([その所](../src/project/generationresources.cpp#L269))。
+- **complete package と wire**: verifier の `checkKind`([その所](../src/project/vulkancompletephysicalplan.cpp#L1858))・`memory.stored@1`([その所](../src/project/vulkancompletephysicalplan.cpp#L2033))・`verifyAliasMember` の
+  representation([その所](../src/project/vulkancompletephysicalplan.cpp#L2532))、wire の住人の検査([その所](../src/project/physicaltargetplanwire.cpp#L717))。
+- **登録と container(core)**: [`allocateRenderTargetImage()`](../src/core/renderingpass/rendertargetcontainer.cpp#L247)(個別の確保の 1 本化と lazy の戻り)、`createRenderTargetImage()` の contract の引数、
+  region から外れた image の確保([その所](../src/core/renderingpass/rendertargetcontainer.cpp#L367))、登録の検査([その所](../src/core/renderingpass/rendertargetcontainer.cpp#L717))、resize の storage mode
+  ([その所](../src/core/renderingpass/rendertargetcontainer.cpp#L1061))、`setRuntimeArrayLayers()` の拒否の範囲([その所](../src/core/renderingpass/rendertargetcontainer.cpp#L1151))、`actualPlacement()` の欄
+  ([その所](../src/core/renderingpass/rendertargetcontainer.cpp#L993))。`ImageWrapper` に `memory_kind` / `memory_fallback` / `allocation_usage` / `allocation_required_flags` / `allocation_dedicated`
+  ([宣言](../src/core/vkcore/image.hpp#L25))。`RuntimeTargetMemoryContract::memory_types_for_testing`([宣言](../src/core/renderingpass/rendertargetcontainer.hpp#L33))と登録の option
+  `runtime_memory_types_for_testing`([宣言](../src/core/renderingpass/renderingpassconfigregistration.hpp#L148)、[写す所](../src/core/renderingpass/renderingpassconfigregistration.cpp#L1252))。
+- **観測(core)**: `RenderTargetLayoutTracker::AliasTransition::inside_rendering`([宣言](../src/core/vkcore/render_target_layout_tracker.hpp#L29))と `setInsideRendering()`、`RenderPassExecutor` の
+  `beginRendering` / `endRendering` の所([その所](../src/core/vkcore/render_pass_executor.cpp#L443))、`endRenderingScope()` の tracker の引数(renderer の [その所](../src/core/vkcore/renderer.cpp#L2341))。
+- **Studio**: `freezeFramePlanPolicy()` の `prefer`([その所](../src/devstudio/model/frameplanpolicy.hpp#L67))。表示の列は足していない。
+- **test**: 新規 [`rc7d_compiler_test.inc`](../test/rc7d_compiler_test.inc#L3)(`rendercompilerprogram_test` が include)、[`rc7d_target_test.inc`](../test/rc7d_target_test.inc#L1)(`targetrenderplanning_test` が include)、
+  [`rc7d_renderer_gpu_test.inc`](../test/rc7d_renderer_gpu_test.inc#L1)(`headless_render_test` が include)、作り物の facts と config の [`rc7d_test_support.hpp`](../test/rc7d_test_support.hpp#L7)。
+  期待を移した物は `rc6a2_target_policy_test.inc`・`generationresources_device_test.cpp`(RC-3c2a C1)・`test/fixtures/renderer_execution_traces.json`、比較の除外は `rc5_recipe_compiler_test.inc`。
+
 ### 2-4 `declared_bytes` = 0 — 埋める(決定 2026-10-22)
 
 - arena とは: [`RenderPipelineGpuArena`](../src/core/renderingpass/renderpipelinegpuarena.hpp)。**公開中の runtime 世代が所有する

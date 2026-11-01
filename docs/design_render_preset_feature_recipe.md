@@ -408,3 +408,13 @@ develop_v1 の `1e05031d7` / `e17754510`。仕様は `<作業ディレクトリ>
   HDR・extras ありは `g_emissive` / `probe_image` と `gbuffer_albedo` / `scene_ldr_in`。bare / lit、flat / XR で共通。実装者の報告)。§7.2 の A5・§7.12 の F4・§7.13 の B4 も、配置の派生の欄だけを
   新しい形で比べるよう移した(意味の欄の除外は増やしていない)。policy の効き方を見る helper は作り物の facts を渡す `rc5CompileWithFacts` に移し、基準の `rc5Compile` は compiler_only のまま。
 - **出荷の文書**: engine の feature・断片・レシピと `projects/` に `alias_group` / `no_alias` / `retain` を書いた物は無い(`src/core/resources` と `projects/` の検索で 0 件)。
+
+### 7.15 RC-7d(memory の種類ごと、2026-11-01)
+
+`c941a8346`(branch `agent/rc7d`)。仕様は `<作業ディレクトリ>/rc7_spec.md` §5、報告は `<作業ディレクトリ>/rc7d_report.md` と修正の報告 `<作業ディレクトリ>/rc7d_fix_report.md`。意味は
+[RT メモ §2 の末尾の RC-7d](design_render_target_memory_reduction.md#rc7d-memory-kinds)。16 構成に関わる所だけ書く。行番号は `c941a8346` の物。
+
+- **16 構成と A5 / F4 / B4**: 物理計画の JSON に足した `memory_types`・`image_memory_facts` を配置の派生の欄として比較から除いた(A5 / F4 / B4 は [`rc7bComparable()`](../test/rc5_recipe_compiler_test.inc#L457)、
+  C5 は [その所](../test/rc5_recipe_compiler_test.inc#L631))。C5 は lowering graph の pattern の `allow_alias`(transient / tile-local の候補でも宣言の適格の答えになった)も除く。意味の欄の除外は増やしていない。
+  C5 は生の差も書き出し、16 構成の資源ごとの差は `<作業ディレクトリ>/rc7d_c5_details.json`(配置の差は着地済みの RC-7c の分を含む。実装者の報告)。4 種とも緑。
+- **Freeze**: Studio の Freeze が transient / tile-local の住人に `alias_group` を `prefer` で書くようになった(§2 の末尾の RC-7d)。レシピと部品が書く `alias_group` の規則(§7.9)は変えていない。

@@ -1,7 +1,7 @@
 # 不要な render target の削減: 寿命の正確化と区間詰めによるメモリ共有
 
 対象読者: エンジン担当(描画コンパイラ / renderer)。
-ステータス: 改善案メモ(2026-10-16。議論の記録。WP 化・レビュー前)。段 0(計測)は RC-1 で済み(2026-10-23、`631caac21`。§5)。合計の数え方を実際の確保に合わせる RC-1b も済み(`504a6492a`。§5)。段 1 の寿命の部分(A)は RC-6c で済み(2026-10-30、`be795c9a5`。[§2 の末尾](#rc6c-lifetime)と §5)。中間の RT を名前で読む約束(`retain`)は RC-7a で済み(2026-10-31、`2d1715cf3`。[§2 の末尾の RC-7a](#rc7a-readback)と §5)。同じ形の共有の条件を広げる RC-7b も済み(2026-10-31、`0091c071c`。[§2 の末尾の RC-7b](#rc7b-sharing)と §5)。形の違う区間詰め RC-7c も済み(2026-10-31、`27a919f4a`。[§2 の末尾の RC-7c](#rc7c-packing)と §5。§3.2 の `alias_reuse` の表は作らない形に変えた)。
+ステータス: 改善案メモ(2026-10-16。議論の記録。WP 化・レビュー前)。段 0(計測)は RC-1 で済み(2026-10-23、`631caac21`。§5)。合計の数え方を実際の確保に合わせる RC-1b も済み(`504a6492a`。§5)。段 1 の寿命の部分(A)は RC-6c で済み(2026-10-30、`be795c9a5`。[§2 の末尾](#rc6c-lifetime)と §5)。中間の RT を名前で読む約束(`retain`)は RC-7a で済み(2026-10-31、`2d1715cf3`。[§2 の末尾の RC-7a](#rc7a-readback)と §5)。同じ形の共有の条件を広げる RC-7b も済み(2026-10-31、`0091c071c`。[§2 の末尾の RC-7b](#rc7b-sharing)と §5)。形の違う区間詰め RC-7c も済み(2026-10-31、`27a919f4a`。[§2 の末尾の RC-7c](#rc7c-packing)と §5。§3.2 の `alias_reuse` の表は作らない形に変えた)。memory の種類ごとの RC-7d も済み(2026-11-01、`c941a8346`。[§2 の末尾の RC-7d](#rc7d-memory-kinds)と §5。本物の lazily allocated memory の確保は未検証)。
 前提: マニュアル [第6章 §6.6 target planning](manual/06_rendering.md#target-planning-tree)、
 [design_render_pipeline_extensibility.md](design_render_pipeline_extensibility.md)、
 [v1 開発計画](v1_development_plan.md)「保守上の整理候補」。
@@ -306,6 +306,51 @@ Studio / RenderDoc のキャプチャ、外部 depth export)。用途が特定�
 - **RC-7 に残した物**: memory の種類ごとの確保(RC-7d。transient / tile-local を同じ allocator の道へ、lazily allocated は作り物の facts の CPU test まで)、使われない RT の確保の除去(RC-7e)。
   depth-stencil の共有は RC-7b のまま外(どの段で扱うかは未定)。未確認: `maintenance4` を支持しない実機での起動の失敗、linear tiling の assert の subprocess の test、overflow の限界値、
   大きさだけで `memoryTypeBits` / dedicated が変わる実機(作り物の facts で道だけ確かめた)、native WSI の実窓の resize(window の道は headless の facts の seam で通した)、lazy memory の実 GPU。
+  → memory の種類ごとの確保は RC-7d で済んだ(下)。lazy memory の実 GPU は RC-7d でも未検証。
+
+<a id="rc7d-memory-kinds"></a>
+
+**RC-7d で変わった(2026-11-01、`c941a8346`、branch `agent/rc7d`。memory の種類ごと)。**仕様は `<作業ディレクトリ>/rc7_spec.md` §5(仕様レビュー 10 件の反映)、実装者の報告は `<作業ディレクトリ>/rc7d_report.md` とレビューの指摘 3 件の修正の報告 `<作業ディレクトリ>/rc7d_fix_report.md`。
+この段の行番号は `c941a8346` の物。ファイルごとの所在は [棚卸しメモ §2-3 の RC-7d](design_plan_layer_inventory.md#rc7d-implementation)、作者向けの形は manual [第6章の「memory の種類」](manual/06_rendering.md#memory-kinds)。
+
+- **変えた挙動**: desktop(LAZILY_ALLOCATED の memory type の無い device)では transient / tile-local の RT も region に入り、実確保が減る。LAZILY_ALLOCATED の type がある device では transient / tile-local は
+  region の外で lazily allocated memory に dedicated で個別に置く。representation の選び方(候補・cost)は変えない。
+- **種類(kind)の規則は 1 つ**([`imageMemoryKind()`](../src/project/memoryregionpacking.cpp#L9)。planner・generation・verifier・wire・runtime が呼ぶ): 最終の usage に `TRANSIENT_ATTACHMENT` の無い image は
+  memory types によらず `ordinary`(Vulkan では TRANSIENT の無い image の bits に LAZILY の type は入らない)。TRANSIENT の image は、requirements の `memoryTypeBits` の中に LAZILY_ALLOCATED を持つ type が
+  1 つでもあれば `lazy`、無ければ `ordinary`。device 名や「tile GPU か」の旗は使わない。memory types が空なら TRANSIENT の image だけ `unknown`(理由 `lazy_kind_unknown`。region に入れない)、
+  materialized は RC-7c のまま。planner は transient / tile-local の候補の usage に TRANSIENT を足してから照会と判定をする(修正の報告の 1。`engineImageUsage()` は tile-local の usage を TRANSIENT 以上に変えるので使わない)。
+- **facts の写し**: `VulkanTargetPlan` に facts の memory type の写し(`memory_types`: property flags と heap index の列)を持たせ、JSON にも `memory_types` と `image_memory_facts {transient, memory_type_bits}` を
+  書く([その所](../src/project/targetrenderplanning.cpp#L4688))。verifier と wire はそこから種類を作り直し、package の自己申告を信じない。wire は `transient` の値に住人の representation(transient / tile-local)を
+  OR してから判定する(修正の報告の 2)。
+- **門を開けた所**: runtime pattern の `allow_alias`(storage の条件を外した。[`isRuntimeAliasCandidate()`](../src/core/renderingpass/renderingsamplecount.cpp#L79))、planner の `applyCandidateAliasPolicy()`、
+  verifier の住人の representation と `aliasable`、generation の resolver の組の検査、登録の container の検査。どれも「materialized」を「materialized、または ordinary の transient / tile-local」に広げた。
+  `stored` を求めるのは materialized の住人だけ。`require_store` の式は変えない。他の適格の条件(samples = 1・resolve なし・history でない・保持の理由なし・最初の use が全 subresource を load なしで書く・
+  manual NativeScope・融合後の禁止の対)はそのまま。stencil を持つ transient は既存の条件で外のまま。安全性は RC-7c の禁止の対から来て、「transient は 1 つの scope に収まる」は仮定しない。
+  transient の候補が materialized に倒れた資源が region に入るのは意図した差。
+- **lazy は region に入れない**: planner の packing の入力([その所](../src/project/targetrenderplanning.cpp#L3608))と `planGenerationMemory()`([その所](../src/project/targetrenderplanning.cpp#L4803))で外し、
+  dump に decision `pelican.plan.alias_ineligible@1` の `lazy_memory` / `lazy_kind_unknown`。`alias_group` の `require` に lazy の資源があれば `alias.lazy_memory@1`([その所](../src/project/targetrenderplanning.cpp#L4163))、
+  種類が分からない住人の `require` は失敗の文 `alias.lazy_kind_unknown@1` の `target_planning.requirement_unsatisfied@1`。`prefer` と自動は理由つきで外す。
+- **verifier と wire**: complete の verifier は住人ごとの検査の最初に種類を見る(`memory.lazy_in_region@1` / `memory.lazy_kind_unknown@1`。`verifyAliasMember` と網羅の検査より前。
+  [その所](../src/project/vulkancompletephysicalplan.cpp#L1858))。`stored` の不一致は `memory.stored@1`。wire も住人の representation・materialized の `stored`・種類を検査する([その所](../src/project/physicaltargetplanwire.cpp#L717))。
+- **runtime の確保**: region の確保(`allocateImageRegion`)は今のままで、ordinary の transient / tile-local もこの道。個別の確保は全部 [`allocateRenderTargetImage()`](../src/core/renderingpass/rendertargetcontainer.cpp#L247)
+  の 1 つ(最初の登録、region から外れた資源、container だけの resize の道、runtime の layer の変更。resize で storage mode を写すようにした)。種類は実画像の requirements の bits・物理 device の memory properties・
+  create info の TRANSIENT から決める(storage mode に頼らない)。lazy は `VMA_MEMORY_USAGE_GPU_LAZILY_ALLOCATED`(仕様では LAZILY の required と dedicated を含む。VMA の振る舞いはこの repo では読んでいない)。
+  vk-hpp の `FeatureNotPresent` → `lazy_type_unavailable`、`OutOfDeviceMemory` → `lazy_allocation_failed` で AutoPreferDevice の個別確保に戻り、他の例外は戻さない。ordinary の個別確保は AutoPreferDevice で
+  preferred の flags なし(RC-7c までの LAZILY の preferred は無くなった)。repack は種類を作り直さない(bits が計画の鍵と違えば今の `memory_key_changed`)。
+- **観測**: `actual_placement` の allocation ごとに、選んだ memory type の property flags・kind・VMA に渡した usage / requiredFlags / dedicated・戻りの理由と、戻った後の実効の usage / requiredFlags / dedicated
+  ([その所](../src/core/renderingpass/rendertargetcontainer.cpp#L993))。lazy の allocation の size は `allocation_bytes` にそのまま足し、commit 量は測らない(`vkGetDeviceMemoryCommitment` は入れない)。
+  `planned_region_bytes` は ordinary の transient / tile-local を含むようになった。rendering の中の取り直しを数えるため、tracker の観測に `inside_rendering` を足した(barrier の出し方は変えていない)。
+  Studio の列は足さない(観測の JSON に出るだけ。表示は後追い)。
+- **test の差し込み口**: 登録の option `runtime_memory_types_for_testing`(`runtime_image_requirements_for_testing` と同じ形)。desktop の GPU で種類を lazy に偽り、本物の VMA が `FeatureNotPresent` を返して戻る道を通す。
+- **Freeze**: transient / tile-local の住人には `alias_group` を `prefer` で書く(materialized は `require` のまま。[その所](../src/devstudio/model/frameplanpolicy.hpp#L67))。desktop で Freeze した project が tiler で
+  `alias.lazy_memory@1` にならないため(モバイルも最終目標)。
+- **example**: transient / tile-local の RT が無いので変わらない(RTX 5080 で 4 allocation・128,286,720 bytes。21 枚全部 materialized で、全資源の契約と offset が RC-7c と一致。実装者の報告)。
+- **計画と登録の差**: RC-3c2a C1 の fixture で、flat の保持されない `depth`(ordinary の transient、1 layer)が region に入り allocation が 10 → 9(XR と合わせた登録の `depth` は 2 layer・export の
+  materialized で region の外、10 のまま)。golden の renderer の trace の `final_layouts` は 15 ケース(`offscreen_depth` 8・`velocity_depth` 7)で `depth_attachment_optimal` → `undefined`(保持されない depth の
+  範囲を後の住人が使い直し、tracker が旧い layout を無効にするため)。node の順・attachment の ops・canonical の frame plan の trace と RGBA8 の 52 hash は不変。hidden compare 4 種(A5 / F4 / B4 / C5)は
+  新しい `memory_types`・`image_memory_facts` と lowering graph の pattern の `allow_alias` を配置の派生の欄として除いた(意味の欄の除外は増やしていない。C5 の資源ごとの差は `<作業ディレクトリ>/rc7d_c5_details.json`)。
+- **RC-7 に残した物**: 使われない RT の確保の除去(RC-7e)。depth-stencil の共有は外のまま。未確認: 本物の lazily allocated memory の確保と commit(手元に tiler が無い)、`OutOfDeviceMemory` での戻りの
+  強制、MoltenVK での種類の判定、他の GPU / driver。
 
 ## 3. B: alias を区間詰めに一般化する(本丸)
 
@@ -362,7 +407,7 @@ renderer(executePlannedFrameGraph)
 |---|---|---|---|
 | 0 | 計測: `get_frame_plan` に `memory_summary {total_bytes, peak_live_bytes, peak_node}` と資源ごとの `bytes` を出す。Studio の Frame Plan に表示。**RC-1 で済み(`631caac21`)** | 小 | planner の単体テスト(GPU 不要)。手計算の 120 / 81 MiB と一致 → 実測は 119.95 / 81.08 MiB(合計のずれは §1 の注) |
 | 1 | A: required / require_store の末尾延長の理由を特定し、必要な経路だけ opt-in に。**寿命の意味は RC-6c で済み(`be795c9a5`。graph の外の読み手 7 つを理由に)。名前の readback の opt-in は RC-7a で済み(`2d1715cf3`)。実確保の削減は RC-7b〜7e** | 小〜中 | 物理計画の fixture 差分、golden 不変、headless 読み出し・picking・capture の回帰 |
-| 2 | B: 区間詰め alias(planner → runtime → barrier)。**RC-7b〜7e に分けた(下の「RC-7 の段」)。同じ形の共有の条件の拡張は RC-7b で済み(`0091c071c`)。形の違う区間詰めは RC-7c で済み(`27a919f4a`。`alias_reuse` の表は作らない)** | 大 | planner 単体(詰め結果の決定性、no_alias、memoryTypeBits 拒否)、GPU gate 全数、`hazard_stress` での揺さぶり、validation layer |
+| 2 | B: 区間詰め alias(planner → runtime → barrier)。**RC-7b〜7e に分けた(下の「RC-7 の段」)。同じ形の共有の条件の拡張は RC-7b で済み(`0091c071c`)。形の違う区間詰めは RC-7c で済み(`27a919f4a`。`alias_reuse` の表は作らない)。memory の種類ごとは RC-7d で済み(`c941a8346`。lazily allocated の実確保は未検証)** | 大 | planner 単体(詰め結果の決定性、no_alias、memoryTypeBits 拒否)、GPU gate 全数、`hazard_stress` での揺さぶり、validation layer |
 | 3 | C: dead pass elimination、store 自動 discard | 中 | frame plan の fixture、golden 不変 |
 
 0 と 1 は純ロジック中心。2 は GPU gate 必須(Windows)。
@@ -385,7 +430,7 @@ verifier だけ一律の延長に戻すと正常な package の検証が赤。go
 1. **RC-7a** readback の約束(✅ 済み。下の完了記録)。
 2. **RC-7b** 同じ形の共有の条件を広げる(offset 0・既存の barrier のまま。広げた後の画像の契約の互換と frame の境界での使い回しの同期を完了の条件に入れる)(✅ 済み。下の完了記録)。
 3. **RC-7c** 形の違う区間詰め(retain の資源への TRANSFER_SRC の自動の付け足し、device facts の memory requirements、memory の種類ごとの heap と offset、`alias_reuse` の barrier)(✅ 済み。下の完了記録。`alias_reuse` の表は作らず、runtime の range の規則にした)。
-4. **RC-7d** memory の種類ごと(transient / tile-local を同じ allocator の道へ。lazily allocated は作り物の device facts の CPU test まで)。
+4. **RC-7d** memory の種類ごと(transient / tile-local を同じ allocator の道へ。lazily allocated は作り物の device facts の CPU test まで)(✅ 済み。下の完了記録。lazily allocated の道は作り物の facts の CPU test と、desktop で種類を偽って戻りを見る GPU test まで)。
 5. **RC-7e** 使われない RT の確保の除去。
 
 利用者の決定(仕様の冒頭の 7 点の要約): (1) `retain: true` は「graph の後に名前で読める」の約束で、planner が materialized・store・TRANSFER_SRC を足す(TRANSFER_SRC は RC-7c から。
@@ -458,6 +503,37 @@ RC-7c の完了記録(2026-10-31、`27a919f4a`、branch `agent/rc7c`。検証は
 - **統合側の gate**: GPU 全数 484 件中、赤は既知の `player_arguments_ds1_path` の 1 件だけ。非 GPU 全数は既知の 29 件だけが赤。シナリオ 23 本中 23 本が緑。基準との比較 A5 / F4 / B4 / C5 が緑。
   未確認: `maintenance4` を支持しない実機、大きさだけで鍵や dedicated が変わる実機、native WSI の実窓の resize、lazy memory の実 GPU、VkDeviceMemory の block の予約量、他の GPU / driver。
 
+RC-7d の完了記録(2026-11-01、`c941a8346`、branch `agent/rc7d`。検証は実装者の報告とレビューの指摘 3 件の修正の報告、統合側の gate): 内容は [§2 の末尾の RC-7d](#rc7d-memory-kinds)。仕様 §5.5 の受け入れごとに:
+
+- **D1 tiler の作り物の facts**(CPU): transient attachment・local read を有効、memory types = {DEVICE_LOCAL, DEVICE_LOCAL | LAZILY}、TRANSIENT の image の bits = 3・他 = 1 の facts で
+  `runRenderCompilerProgram`(2 回の計画を通る道)を回す。`scratch` が transient、`local_source` が tile-local であることを先に assert し、どちらも lazy で region の外(`lazy_memory`)、materialized の
+  region は保たれ、`alias_group` の `require` に lazy の資源で `alias.lazy_memory@1`。memory types が空なら TRANSIENT の image だけ `lazy_kind_unknown`、materialized は共有のまま
+  (「RC-7d D1 D2 compiler derives lazy kind and exact final usage」)。
+- **D2 desktop の作り物の facts**(CPU): LAZILY の type が無く bits が usage によらず同じ facts で、ordinary の `scratch` / `local_source` が materialized と同じ region に入り、同じ scope の
+  `local_source` / `local_output` の range は重ならない。照会の callback で照会を記録し、最後の合意の照会の usage と登録の create info の usage を image ごとに 1 対 1 で照らす(修正の報告の 3。
+  前の「どれかの照会と一致」の検査は、前の段の照会と一致して通ってしまうことを対照で再現した)。
+- **D3 lazy の戻り**(GPU、desktop): `runtime_memory_types_for_testing` で `local_source` の種類を lazy に偽ると、VMA に GPU_LAZILY_ALLOCATED(usage 6・requiredFlags 16・dedicated)を渡し、本物の VMA の
+  `FeatureNotPresent` で AutoPreferDevice(実効の usage 8)に戻り、理由 `lazy_type_unavailable`。選ばれた type の property flags は 1(LAZILY なし)。全画素が正しい(「RC-7d D3 lazy allocation
+  fallback preserves pixels」)。
+- **D4 desktop の実確保**(GPU、NVIDIA GeForce RTX 5080): ordinary の tile-local `local_source`・ordinary の transient `scratch`・materialized の `local_output` の 3 枚が **1 つの allocation の offset
+  0 / 1024 / 2048**(各 1,024 bytes、計 3,072)。3 組とも range が重ならない。複数 frame と resize の後に全画素一致、alias の取り直しの依存 12 件のうち **rendering の中(beginRendering 〜 endRendering)は 0 件**、
+  synchronization validation を含む警告 / エラーは **0 件**(「RC-7d D4 ordinary transient and tile local share disjoint scope ranges」。offset の値は報告の JSON `<作業ディレクトリ>/rc7d_d4.json`)。
+  example(flat・1920×1080)は transient / tile-local が無く、**4 allocation・128,286,720 bytes のまま**(RC-7c と同じ。21 行全部の契約と offset を RC-7c の参照と機械照合。C1 の test に上限の assert を足した)。
+- **D5 verifier と Freeze**(CPU): lazy の住人は他の破損(`aliasable`・`stored`)より先に `memory.lazy_in_region@1`、`stored` の無い materialized の住人は `memory.stored@1`、ordinary の transient の住人は通る。
+  wire は住人の representation から transient を決める(自己申告 `false` でも transient / tile-local は lazy で断り、LAZILY の無い types なら通り、materialized は LAZILY の types でも通る)。Freeze は transient /
+  tile-local に `prefer`、materialized に `require`。
+- **既存の test の変更**: 「RC-6a2 fix2 drops only the causal prefer when require-only baseline is infeasible」は、tile-local の `require` の組が desktop の memory types で通り、memory types が空なら
+  `requirement_unsatisfied@1 / alias_group` で断られる形に移した。RC-3c2a C1(flat の `depth` が region に入り 10 → 9)と golden の renderer の trace(15 ケースの depth の `final_layouts`)は §2 の末尾の RC-7d。
+- **対照**(実装者の報告、各 1 回で赤を確かめて戻す): 種類の判定を外す(lazy を ordinary に)→ D1 が赤、照会の lambda で TRANSIENT を落とす → D2 の usage の一致が赤、lazy の VMA usage を AutoPreferDevice に
+  戻す → D3 の観測が赤、`allow_alias` の門を閉じる → D2 / D4 が赤、取り直しを scope の中に出す → D4 の rendering の中の依存が 9 件(resize の後 12 件)で赤、validation も赤。修正の報告の 3 件(planner の
+  TRANSIENT・wire の representation・D2 の 1 対 1 の照合)も、修正を外すと新しい test が赤。
+- **触った家族**(修正の後): render_planning_core 130・render_pipeline 518(既知の SKIP 1)・project_planning 130、hidden の A5 / F4 / B4 / C5(4,565 assertions)、選んだ GPU 19 件(-j1)が緑。
+  studio_cpu 1,014 は修正の前の実装者の報告で緑。
+- **統合側の gate**: GPU 全数 486 件中、赤は既知の `player_arguments_ds1_path` の 1 件だけ。非 GPU 全数は既知の 29 件だけが赤(修正の後の非 GPU 全数も既知の 29 件だけ)。シナリオ 23 本中 22 本が緑
+  (`view_select_field` は単独で走らせると緑の間欠)。基準との比較 A5 / F4 / B4 / C5 が緑。
+  未確認: **本物の lazily allocated memory の確保と commit**(手元にタイルベースの GPU が無い。D3 は desktop で種類を偽った戻りの道だけ)、`OutOfDeviceMemory` での戻り、VMA が GPU_LAZILY_ALLOCATED で
+  dedicated にすることの読み返し、他の GPU / driver。
+
 ## 6. 未決(2026-10-17 更新)
 
 議論で決まった・動いたもの:
@@ -471,6 +547,7 @@ RC-7c の完了記録(2026-10-31、`27a919f4a`、branch `agent/rc7c`。検証は
   Blender 5.0 が Vulkan を既定にしなかった理由)で、同時最大の VRAM がそのまま体験に効く。
 - **Apple GPU での効き方** → MoltenVK では transient 候補が memoryless texture に落ちるので、A の寿命短縮は alias だけでなく
   transient 判定にも効く。段 1 の価値が増す。
+  → **RC-7d**: transient / tile-local の置き場所は device の memory type(LAZILY_ALLOCATED の有無)で決まり、機種別の分岐は書かない([§2 の末尾の RC-7d](#rc7d-memory-kinds))。MoltenVK での実測はしていない(未確認)。
 
 残るもの:
 
