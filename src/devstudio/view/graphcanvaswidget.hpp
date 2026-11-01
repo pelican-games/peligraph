@@ -371,6 +371,14 @@ nlohmann::json graphCanvasLayoutToJson(const GraphCanvasLayout &layout);
 
 const NodeGraphKinds &graphCanvasKinds();
 
+// GS-1: every line on the scene -- edges with their arrows and element
+// labels, a zone's body-output links, the plan's dashed lines and a pass's
+// input lines -- routed to the ends drawn now. On a published routing index
+// each end is one lookup; without one, the same answers from one snapshot.
+// A rebuild adds its lines first and routes them here once the index holds
+// them, rather than walking every item for each line as it is added.
+void routeGraphCanvasLines(QGraphicsScene &scene);
+
 // What the socket resolver is told about one port's type, read off the
 // catalog the model holds. Separated so the resolution order is testable
 // against a real catalog reply rather than a hand-built fact struct.

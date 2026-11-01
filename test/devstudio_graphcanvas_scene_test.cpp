@@ -18213,3 +18213,281 @@ TEST_CASE("NB-5 a move makes no row picture again; the composite is made again, 
     composite = nb3Frame(scene, PelicanStudio::GraphCanvasStackCompositeItem, hud);
     CHECK(nb3State(composite) == QStringLiteral("ready"));
 }
+
+// --- GS-1. A rebuild adds its lines and routes them once the routing index
+// holds everything it drew: each end of a line is one lookup, not a walk over
+// every item. What is drawn is what the unindexed path draws from the same
+// scene.
+
+namespace {
+
+bool gs1LineKind(const QString &kind) {
+    using namespace PelicanStudio;
+    return kind == QLatin1String{GraphCanvasEdgeItem} ||
+           kind == QLatin1String{GraphCanvasEdgeArrowItem} ||
+           kind == QLatin1String{GraphCanvasEdgeLabelItem} ||
+           kind == QLatin1String{GraphCanvasZoneLinkItem} ||
+           kind == QLatin1String{GraphCanvasDerivedEdgeItem} ||
+           kind == QLatin1String{GraphCanvasPassInputEdgeItem};
+}
+
+// Every line, arrow and element label: what it is, and exactly where it is
+// drawn (the path's elements, the polygon, the position, whether it shows).
+std::vector<std::pair<std::string, std::string>> gs1Lines(QGraphicsScene &scene) {
+    using namespace PelicanStudio;
+    const auto number = [](qreal value) { return QString::number(value, 'g', 17).toStdString(); };
+    std::vector<std::pair<std::string, std::string>> drawn;
+    for (QGraphicsItem *item : scene.items()) {
+        const QString kind = nodeGraphItemKind(*item);
+        if (!gs1LineKind(kind)) continue;
+        QStringList key{kind};
+        for (const int role : {GraphCanvasScopeRole, NodeGraphNameRole, GraphCanvasPortRole,
+                               NodeGraphFromNameRole, GraphCanvasFromPortRole, NodeGraphToNameRole,
+                               GraphCanvasToPortRole, GraphCanvasPassInputRole})
+            key.push_back(item->data(role).toString());
+        std::string where;
+        if (const auto *line = dynamic_cast<const QGraphicsPathItem *>(item)) {
+            const QPainterPath path = line->path();
+            for (int element = 0; element < path.elementCount(); ++element) {
+                const auto at = path.elementAt(element);
+                where += std::to_string(int(at.type)) + ":" + number(at.x) + "," + number(at.y) + " ";
+            }
+        } else if (const auto *head = dynamic_cast<const QGraphicsPolygonItem *>(item)) {
+            for (const QPointF &point : head->polygon())
+                where += number(point.x()) + "," + number(point.y()) + " ";
+        }
+        where += "@" + number(item->pos().x()) + "," + number(item->pos().y());
+        where += item->isVisible() ? " shown" : " hidden";
+        drawn.emplace_back(key.join(QLatin1Char{'|'}).toStdString(), std::move(where));
+    }
+    std::ranges::sort(drawn);
+    return drawn;
+}
+
+// The rebuild drew every line through its ends; with the index taken away,
+// every line is wiped and routed again the unindexed way, and comes out the
+// same, item for item, and the drawing's bounds with it.
+void gs1SameLines(GraphCanvasScene &scene, std::size_t at_least) {
+    using namespace PelicanStudio;
+    REQUIRE(NodeGraphIndex::forScene(scene) != nullptr);
+    const auto drawn = gs1Lines(scene);
+    CHECK(drawn.size() >= at_least);
+    const QRectF bounds = scene.itemsBoundingRect();
+    std::size_t empty = 0;
+    for (QGraphicsItem *item : scene.items()) {
+        const QString kind = nodeGraphItemKind(*item);
+        if (!gs1LineKind(kind)) continue;
+        if (const auto *line = dynamic_cast<const QGraphicsPathItem *>(item); line && line->path().isEmpty())
+            ++empty;
+        if (const auto *head = dynamic_cast<const QGraphicsPolygonItem *>(item); head && head->polygon().isEmpty())
+            ++empty;
+    }
+    CHECK(empty == 0);
+
+    scene.invalidateRoutingIndex();
+    REQUIRE(NodeGraphIndex::forScene(scene) == nullptr);
+    for (QGraphicsItem *item : scene.items()) {
+        const QString kind = nodeGraphItemKind(*item);
+        if (!gs1LineKind(kind)) continue;
+        if (auto *line = dynamic_cast<QGraphicsPathItem *>(item)) line->setPath(QPainterPath{});
+        else if (auto *head = dynamic_cast<QGraphicsPolygonItem *>(item)) head->setPolygon(QPolygonF{});
+        else item->setPos(QPointF{-123456.0, -123456.0});
+    }
+    const auto lookups = nodeGraphUnindexedLookups();
+    routeGraphCanvasLines(scene);
+    CHECK(nodeGraphUnindexedLookups() > lookups);
+    const auto again = gs1Lines(scene);
+    REQUIRE(again.size() == drawn.size());
+    std::string differ;
+    for (std::size_t index = 0; index < drawn.size(); ++index)
+        if (drawn[index] != again[index])
+            differ += drawn[index].first + "\n  rebuilt " + drawn[index].second + "\n  unindexed " +
+                      again[index].second + "\n";
+    INFO(differ);
+    CHECK(differ.empty());
+    CHECK(scene.itemsBoundingRect() == bounds);
+    scene.rebuildRoutingIndex();
+}
+
+std::size_t gs1Count(QGraphicsScene &scene, const char *kind) { return itemsOfKind(scene, kind).size(); }
+
+// LT-1's scale150: the fixture with `count` value.add nodes chained after its
+// clock, each also reading the clock -- two lines a node.
+Json gs1ChainDocument(int count) {
+    auto document = connectedDocument();
+    std::string previous = "clock";
+    for (int k = 1; k <= count; ++k) {
+        const std::string id = "n" + std::to_string(k);
+        document["nodes"].push_back({{"id", id}, {"op", "value.add"},
+                                     {"inputs", {{"a", {{"node", previous}, {"port", "value"}}},
+                                                 {"b", {{"node", "clock"}, {"port", "value"}}}}},
+                                     {"outputs", Json::array({"value"})}});
+        previous = id;
+    }
+    return document;
+}
+
+} // namespace
+
+TEST_CASE("GS-1 a rebuild draws every line as the unindexed path draws it from the same scene",
+          "[devstudio][graph-canvas][scene][gs1]") {
+    (void)application();
+    using namespace PelicanStudio;
+
+    SECTION("the fixture, with a line from a port that has no socket") {
+        GraphCanvasModel model;
+        GraphCanvasScene scene;
+        model.setConnected(true);
+        auto document = connectedDocument();
+        for (auto &node : document.at("nodes"))
+            if (node.at("id") == "left") node["inputs"]["bias"] = {{"node", "clock"}, {"port", "missing"}};
+        answer(model, document, visualCatalog());
+        scene.setModel(&model);
+        REQUIRE(socketItem(scene, QStringLiteral("clock"), QStringLiteral("missing"),
+                           QStringLiteral("output")) == nullptr);
+        auto *socketless = edgeItem(scene, QStringLiteral("clock"), QStringLiteral("missing"),
+                                    QStringLiteral("left"), QStringLiteral("bias"));
+        REQUIRE(socketless != nullptr);
+        CHECK(gs1Count(scene, GraphCanvasEdgeItem) == 2);
+        gs1SameLines(scene, 4);
+    }
+
+    SECTION("a node folded to its heading: its lines end on its anchor") {
+        GraphCanvasModel model;
+        GraphCanvasScene scene;
+        model.setConnected(true);
+        auto document = connectedDocument();
+        document["layout"] = {{"nodes", {{"left", {{"x", 320.0}, {"y", 60.0}, {"view", "minimal"}}}}}};
+        answer(model, document, visualCatalog());
+        scene.setModel(&model);
+        REQUIRE(scene.collapsed("left"));
+        gs1SameLines(scene, 2);
+    }
+
+    SECTION("lanes the automatic placement kept, and a control point the document holds") {
+        for (const bool placed : {false, true}) {
+            GraphCanvasModel model;
+            GraphCanvasScene scene;
+            model.setConnected(true);
+            auto document = flyoverDocument();
+            if (placed)
+                document["layout"] = {{"reroutes", Json::array({{{"edge", {{"node", "gate_a"}, {"port", "a"}}},
+                                                                 {"points", Json::array({Json::array({260.0, 400.0})})}}})}};
+            answer(model, document);
+            scene.setModel(&model);
+            const auto bent = std::ranges::count_if(itemsOfKind(scene, GraphCanvasEdgeItem), [](QGraphicsItem *item) {
+                return !nodeGraphBends(*item).isEmpty();
+            });
+            INFO("placed " << placed);
+            CHECK(bent >= 1);
+            gs1SameLines(scene, 12);
+        }
+    }
+
+    SECTION("a loop's zone: lines into it, its body's lines and its body-output links") {
+        ZoneHarness h;
+        h.open();
+        REQUIRE(h.scene.zones().size() == 1);
+        CHECK(gs1Count(h.scene, GraphCanvasZoneLinkItem) >= 1);
+        gs1SameLines(h.scene, 6);
+    }
+
+    SECTION("a line reading one element of a p[]: dashed, with its label") {
+        auto document = zoneDocument();
+        document["nodes"].push_back({{"id", "other"}, {"op", "graph.loop"},
+                                     {"parameters", {{"over", {{"range", {{"count", 2}}}}},
+                                                     {"branches", Json::array({{{"body", "rest"}}})}}},
+                                     {"inputs", {{"target", {{"node", "a"}, {"port", "value"}}}}},
+                                     {"outputs", Json::array({"out", "out[]"})}});
+        document["nodes"][2]["inputs"]["target"] = {
+            {"node", "other"}, {"port", "out[]"}, {"element", {{"$expr", "element"}}}};
+        ZoneHarness h{document};
+        h.open();
+        REQUIRE(gs1Count(h.scene, GraphCanvasEdgeLabelItem) == 1);
+        gs1SameLines(h.scene, 8);
+    }
+
+    SECTION("folded nodes and the lines the plan implies") {
+        GraphCanvasModel model;
+        GraphCanvasScene scene;
+        openGl1b(model, scene, gl1bRead());
+        REQUIRE(gs1Count(scene, GraphCanvasDerivedEdgeItem) == 3);
+        gs1SameLines(scene, 4);
+    }
+
+    SECTION("a rendering-section pass's input line") {
+        GraphCanvasModel model;
+        GraphCanvasScene scene;
+        openGl1e(model, scene, {"shade__color"});
+        REQUIRE(gs1Count(scene, GraphCanvasPassInputEdgeItem) == 1);
+        gs1SameLines(scene, 3);
+    }
+
+    SECTION("a fold group's frame over the lines it holds") {
+        Ux2Tab tab{false, false, true};
+        tab.widget->model().setDomainShown("value", true);
+        auto read = context(connectedDocument());
+        read["root_schema"] = "pelican.graph";
+        read["source_reference"] = "fixture";
+        tab.answer("get_graph_instances", read);
+        tab.answer("get_fold_groups", Json{{"source_digest", {{"hex", "source-a"}}},
+            {"fold_groups", Json::array({{{"group", "test_group"}, {"nodes", {"clock", "left"}},
+                {"kind", "decisions"}, {"digest", std::string(64, 'a')}, {"state", "unverified"}}})}});
+        (void)ux12aWait([] { return false; }, 350);
+        auto &scene = tab.widget->scene();
+        REQUIRE(gs1Count(scene, GraphCanvasFoldGroupItem) == 1);
+        gs1SameLines(scene, 2);
+    }
+}
+
+TEST_CASE("GS-1 one rebuild of a 150-node chain walks the items a constant number of times, "
+          "however many lines it draws",
+          "[devstudio][graph-canvas][scene][gs1]") {
+    (void)application();
+    using namespace PelicanStudio;
+    for (const bool stubs : {false, true}) {
+        INFO("domain stubs " << stubs);
+        GraphCanvasModel model;
+        GraphCanvasScene scene;
+        model.setConnected(true);
+        auto document = gs1ChainDocument(150);
+        if (stubs) {
+            // A render node reading every tenth node of the chain, its domain
+            // hidden: each line is cut at the shown end, on a stub.
+            for (int k = 10; k <= 150; k += 10)
+                document["nodes"].push_back({{"id", "hidden_" + std::to_string(k)}, {"op", "render.fullscreen"},
+                                             {"parameters", Json::object()},
+                                             {"inputs", {{"gain", {{"node", "n" + std::to_string(k)},
+                                                                   {"port", "value"}}}}},
+                                             {"outputs", Json::array({"color"})}});
+            for (const auto &domain : GraphCanvasModel::domainNames())
+                (void)model.setDomainShown(domain, domain != "render");
+        }
+        answer(model, document);
+        scene.setModel(&model);
+        const auto lines = gs1Count(scene, GraphCanvasEdgeItem);
+        REQUIRE(lines >= 300);
+        // A stub is its pill and the pill's text.
+        if (stubs) REQUIRE(gs1Count(scene, GraphCanvasDomainStubItem) == 30);
+
+        const auto before = nodeGraphUnindexedLookups();
+        scene.repopulate();
+        const auto walked = nodeGraphUnindexedLookups() - before;
+        INFO("lines " << lines << ", unindexed lookups " << walked);
+        CHECK(walked <= 2);
+        CHECK(gs1Count(scene, GraphCanvasEdgeItem) == lines);
+        // Each stub on the socket its line was cut at.
+        for (QGraphicsItem *item : itemsOfKind(scene, GraphCanvasDomainStubItem)) {
+            if (dynamic_cast<QGraphicsPathItem *>(item) == nullptr) continue;
+            QGraphicsItem *socket = socketItem(scene, item->data(NodeGraphNameRole).toString(),
+                                               item->data(GraphCanvasPortRole).toString(),
+                                               QStringLiteral("output"));
+            REQUIRE(socket != nullptr);
+            CHECK(item->parentItem() == socket->parentItem());
+            CHECK(std::abs(item->sceneBoundingRect().center().y() - socket->sceneBoundingRect().center().y()) < 1.0);
+            CHECK(item->sceneBoundingRect().left() > socket->sceneBoundingRect().center().x());
+        }
+        for (QGraphicsItem *item : itemsOfKind(scene, GraphCanvasEdgeArrowItem))
+            CHECK_FALSE(dynamic_cast<QGraphicsPolygonItem *>(item)->polygon().isEmpty());
+    }
+}

@@ -488,6 +488,25 @@ void rerouteGraphCanvasEdges(QGraphicsScene &scene, const std::string &scope,
 
 } // namespace
 
+void routeGraphCanvasLines(QGraphicsScene &scene) {
+    const NodeDragTraceSpan trace{scene, "route_lines"};
+    const NodeGraphLookupScope lookup{scene};
+    for (QGraphicsItem *item : nodeGraphItems(scene)) {
+        const QString kind = nodeGraphItemKind(*item);
+        const bool edge = kind == QLatin1String{GraphCanvasEdgeItem};
+        const bool zone_link = kind == QLatin1String{GraphCanvasZoneLinkItem};
+        const bool derived = kind == QLatin1String{GraphCanvasDerivedEdgeItem};
+        const bool pass_input = kind == QLatin1String{GraphCanvasPassInputEdgeItem};
+        if (!edge && !zone_link && !derived && !pass_input) continue;
+        auto *line = dynamic_cast<QGraphicsPathItem *>(item);
+        if (line == nullptr) continue;
+        if (edge) routeGraphCanvasEdge(scene, *line);
+        else if (zone_link) routeZoneLink(scene, *line);
+        else if (derived) routeDerivedEdge(scene, *line);
+        else routePassInputEdge(scene, *line);
+    }
+}
+
 namespace {
 // One point of the placement, as the document spells it: a pair, because a
 // control point is a place and not a named thing.
@@ -2619,7 +2638,10 @@ void GraphCanvasScene::repopulate() {
         derived_drawn.insert(folded.id);
     }
 
-    { const GuiTraceSpan mark{"graph_repop_mark", 6}; } // LT-1: the lines begins
+    // GS-1: the lines are added here and routed once, after the routing
+    // index holds everything this draw made (mark 10). Routed as each was
+    // added, with no index yet, every end of every line walked every item.
+    { const GuiTraceSpan mark{"graph_repop_mark", 6}; } // LT-1: adding the lines begins
     for (std::size_t index = 0; index < edges.size(); ++index) {
         const auto &edge = edges[index];
         if (!drawn_nodes.contains(edge.from_node) || !drawn_nodes.contains(edge.to_node)) continue;
@@ -2637,10 +2659,9 @@ void GraphCanvasScene::repopulate() {
             for (const LayoutPoint &point : layout.bends[index])
                 bends.push_back(QPointF{point.x, point.y});
         }
-        auto *line = drawing.addEdge(edge, bends);
         // No edge label: the socket rows already name both ends, and a box in
         // the middle of every line repeated them.
-        routeGraphCanvasEdge(*this, *line);
+        drawing.addEdge(edge, bends);
     }
 
     // GL-1, decision 2: the lines the frame plan implies, dashed, read only.
@@ -2654,25 +2675,29 @@ void GraphCanvasScene::repopulate() {
             return pass_line_resources.contains({edge.to, resource});
         });
         if (edge.resources.empty()) continue;
-        routeDerivedEdge(*this, *drawing.addDerivedEdge(edge));
+        drawing.addDerivedEdge(edge);
     }
     for (const auto &line : pass_lines) {
         if (!drawn_end(line.from) || !derived_drawn.contains(line.pass)) continue;
         auto *item = drawing.addPassInputEdge(qtext(line.from), qtext(line.from_port),
                                               qtext(line.pass), qtext(line.resource),
                                               line.input_index);
-        routePassInputEdge(*this, *item);
         if (selected_pass_input_ && selected_pass_input_->pass == line.pass &&
             selected_pass_input_->input_index == line.input_index)
             item->setPen(QPen{currentStudioTheme().canvas.edge_selected, 2.4});
     }
     // Decision 5: where a line to a hidden node is cut, the socket it ends on
-    // says where it goes.
-    for (const auto &stub : model_->domainStubs()) {
-        QGraphicsItem *socket =
-            findSocketOrAnchor(*this, scope_text, qtext(stub.node), qtext(stub.port),
-                               stub.input ? QStringLiteral("input") : QStringLiteral("output"));
-        if (socket != nullptr) drawing.addDomainStub(stub, *socket);
+    // says where it goes. GS-1: the sockets are looked up on an index of what
+    // is drawn so far, taken away again before anything more is added.
+    if (const auto stubs = model_->domainStubs(); !stubs.empty()) {
+        rebuildRoutingIndex();
+        for (const auto &stub : stubs) {
+            QGraphicsItem *socket =
+                findSocketOrAnchor(*this, scope_text, qtext(stub.node), qtext(stub.port),
+                                   stub.input ? QStringLiteral("input") : QStringLiteral("output"));
+            if (socket != nullptr) drawing.addDomainStub(stub, *socket);
+        }
+        routing_index_.invalidate();
     }
     { const GuiTraceSpan mark{"graph_repop_mark", 7}; } // LT-1: the bands begins
     // GL-2b, decision 2: under each root node, what its lower layers hold
@@ -2778,14 +2803,12 @@ void GraphCanvasScene::repopulate() {
         for (const auto &id : plan.boundary) ends.insert(id);
         for (const auto &edge : plan.edges) {
             if (!ends.contains(edge.from_node) || !ends.contains(edge.to_node)) continue;
-            auto *line = inside.addEdge(edge, bendsFor(body, edge));
-            routeGraphCanvasEdge(*this, *line);
+            inside.addEdge(edge, bendsFor(body, edge));
         }
         for (const auto &output : plan.outputs) {
             if (!ends.contains(output.node)) continue;
-            auto *link = inside.addZoneLink(qtext(loop), qtext(output.name), qtext(output.node),
-                                            qtext(output.port));
-            routeZoneLink(*this, *link);
+            inside.addZoneLink(qtext(loop), qtext(output.name), qtext(output.node),
+                               qtext(output.port));
         }
         addLoopElementBands(*this, *model_, inside, qtext(body), true);
         drawControls(inside, body, plan.edges, ends);
@@ -2894,7 +2917,9 @@ void GraphCanvasScene::repopulate() {
                 static_cast<qulonglong>(layout.reversed_edges.size()));
     drawn_from_ = drawnFromNow();
     rebuilding_ = false;
+    { const GuiTraceSpan mark{"graph_repop_mark", 10}; } // GS-1: the index and the lines' routes on it begin
     rebuildRoutingIndex();
+    routeGraphCanvasLines(*this);
     applySceneRectNow();
     // The editor goes back over the thing it was editing. A node or port the
     // draw no longer holds simply has nothing to open over, and the edit ends

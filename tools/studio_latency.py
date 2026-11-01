@@ -764,7 +764,7 @@ def sample_metrics(tr: Traces, t0: float, t_meas: float, t_end: float, operation
         if items:
             m["scene_items_max"] = max(items)
         # The rebuild's phases, from the marks repopulate() leaves at their
-        # starts (graphcanvaswidget.cpp, graph_repop_mark 1..9): phase 0 is
+        # starts (graphcanvaswidget.cpp, graph_repop_mark 1..10): phase 0 is
         # closing the editor and emptying the scene, phase k runs from mark k.
         marks = [r for r in rows if r[0] == "graph_repop_mark"]
         phases: dict[int, float] = collections.defaultdict(float)

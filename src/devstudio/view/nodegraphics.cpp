@@ -562,6 +562,7 @@ namespace {
 // GUI-thread registry; a scene's member removes itself before the scene's
 // QGraphicsItems are destroyed. It never owns those items.
 thread_local QHash<QGraphicsScene *, NodeGraphIndex *> routing_indexes;
+thread_local quint64 unindexed_lookups = 0;
 }
 
 NodeGraphIndex::NodeGraphIndex(QGraphicsScene &scene) : scene_(scene) {
@@ -617,10 +618,13 @@ NodeGraphLookupScope::~NodeGraphLookupScope() { current_ = previous_; }
 
 QList<QGraphicsItem *> nodeGraphItems(QGraphicsScene &scene) {
     if (const auto *index = NodeGraphIndex::forScene(scene)) return index->items();
+    ++unindexed_lookups;
     for (auto *scope = NodeGraphLookupScope::current_; scope != nullptr; scope = scope->previous_)
         if (&scope->scene_ == &scene) return scope->items_;
     return scene.items();
 }
+
+quint64 nodeGraphUnindexedLookups() { return unindexed_lookups; }
 
 QString nodeGraphItemKind(const QGraphicsItem &item) {
     return item.data(NodeGraphItemKindRole).toString();

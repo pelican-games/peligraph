@@ -148,6 +148,10 @@ private:
     static thread_local NodeGraphLookupScope *current_;
 };
 QList<QGraphicsItem *> nodeGraphItems(QGraphicsScene &scene);
+// GS-1: how many times, on this thread, nodeGraphItems was not answered by a
+// published index -- each such lookup walks every item it hands back. A test
+// reads the difference around one rebuild; it is one increment otherwise.
+quint64 nodeGraphUnindexedLookups();
 
 // Every node canvas in Studio -- the Frame Plan and the common graph -- draws
 // the same shapes and reroutes the same way. The identity roles live here so
