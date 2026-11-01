@@ -443,6 +443,46 @@
   [`rc7b_compiler_policy_test.inc`](../test/rc7b_compiler_policy_test.inc#L1)、GPU の `headless_render_test` の [`rc7b_alias_test.inc`](../test/rc7b_alias_test.inc#L29)、
   `rc5_recipe_compiler_test.inc` の [`rc7bComparable()`](../test/rc5_recipe_compiler_test.inc#L447) と B4([その所](../test/rc5_recipe_compiler_test.inc#L586)。`[.]`)。
 - **触らなかった層**: 配置(offset 0・owner の allocation の共有)、barrier の形(ALL_COMMANDS の memory barrier + UNDEFINED)、container の検査、置き換えの transaction、memory_summary の数え方。
+  → 配置・container の検査・memory_summary の数え方は RC-7c で変わった(下)。
+
+<a id="rc7c-implementation"></a>
+
+**RC-7c で入った物(形の違う区間詰め。2026-10-31、`27a919f4a`、branch `agent/rc7c`)。**仕様は `<作業ディレクトリ>/rc7_spec.md` §4・§4.9、実装者の報告は区切り ①②③ ごとに本報告と修正の報告
+(`rc7c1_report.md` / `rc7c1_fix_report.md`、`rc7c2_report.md` / `rc7c2_fix_report.md`、`rc7c3_report.md` / `rc7c3_fix_report.md`)。この段の行番号は `27a919f4a` の物。意味・決定・計測は
+[RT メモ §2 の末尾の RC-7c](design_render_target_memory_reduction.md#rc7c-packing)。ここには何がどこにあるかだけを書く。
+
+- **create info の契約(core、①)**: [`renderTargetImageContract()`](../src/core/renderingpass/rendertargetimagecontract.cpp#L11)(新規 `rendertargetimagecontract.{hpp,cpp}`)。container の初回の登録・resize・live の再利用と、
+  planner の照会が同じ値を使う。
+- **device の facts(core、①)**: [`RenderingTargetPlanDeviceFacts`](../src/core/renderingpass/renderingsamplecount.hpp#L90) の `image_memory_requirements` / `memory_types`、本番の
+  [`renderingTargetMemoryDeviceFacts()`](../src/core/renderingpass/renderingtargetmemoryfacts.cpp#L4)(新規)。`maintenance4` の確認と有効化は `core.cpp`([確認](../src/core/vkcore/core.cpp#L630)、[有効化](../src/core/vkcore/core.cpp#L796))。
+- **packer(project、① → ②)**: [`packMemoryRegions()`](../src/project/memoryregionpacking.cpp#L24) / [`repackMemoryRegions()`](../src/project/memoryregionpacking.cpp#L146)(新規 `src/project/memoryregionpacking.{hpp,cpp}`。
+  core の同名の header は転送だけ)。
+- **planner(`src/project/targetrenderplanning.{hpp,cpp}`、②)**: 候補ごとの照会と decision([その所](../src/project/targetrenderplanning.cpp#L3566))、packing の入力と詰め([その所](../src/project/targetrenderplanning.cpp#L3582))、
+  `retain` の TRANSFER_SRC([その所](../src/project/targetrenderplanning.cpp#L4054))、`alias.requirements_unknown`([その所](../src/project/targetrenderplanning.cpp#L4136))、generation の配置
+  [`planGenerationMemory()`](../src/project/targetrenderplanning.cpp#L4747)・[`updateGenerationAliasPolicy()`](../src/project/targetrenderplanning.cpp#L4716)・[`targetMemoryOverlapForbidden()`](../src/project/targetrenderplanning.cpp#L4703)・
+  [`memoryRegionAliasGroups()`](../src/project/targetrenderplanning.cpp#L4690)、dump の欄([その所](../src/project/targetrenderplanning.cpp#L4657))。`VulkanTargetPlanRequest` に `memory_requirements` / `supports_image_usage`、
+  `VulkanTargetPlan` に `memory_regions` / `memory_packing` と compiler の事実 `memory_requirements` / `memory_requirements_query` / `memory_provenance` / `memory_provenance_id`
+  ([宣言](../src/project/targetrenderplanning.hpp#L390)。事実の欄は JSON に書かない)。
+- **compiler(core、②)**: graph の compiler の generation の配置と計画し直し([`compileRenderingTargetPlans()` の中](../src/core/renderingpass/renderingsamplecount.cpp#L1859))、照会の adapter
+  ([その所](../src/core/renderingpass/renderingsamplecount.cpp#L1538))。program の compiler の `runtime_array_layers` の除外([その所](../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L686))と generation の配置
+  ([その所](../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L741))。`mergeRuntimeAliasGroups()` と `imagePlacementsOf()` の usage の比較は消えた。
+- **generation の resolver(`src/project/generationresources.{hpp,cpp}`、②)**: placement の `memory_region` / `memory_offset` / `readback`。region の組の住人の offset の一致を確かめ、違えば
+  `render_graph.alias_group_invalid@1 {reason: "same_offset"}`([その所](../src/project/generationresources.cpp#L256))。`readback` の資源の登録の usage に TRANSFER_SRC。
+- **complete package と wire(②)**: [`vulkancompletephysicalplan.cpp`](../src/project/vulkancompletephysicalplan.cpp#L2617)(provenance から作り直す検査、`memory_regions_required@1` は [その所](../src/project/vulkancompletephysicalplan.cpp#L1501))、
+  [`physicaltargetplanwire.cpp`](../src/project/physicaltargetplanwire.cpp#L746)(wire の重なりの再構成)、fingerprint(`vulkanphysicalfragment.cpp`)。
+- **登録と container(core、③)**: [`RegistrationStages::registerVariants()`](../src/core/renderingpass/renderingpassconfigregistration.cpp#L1245)(`RuntimeTargetMemoryContract` を作る)、
+  [`registerMemoryTargets()`](../src/core/renderingpass/rendertargetcontainer.cpp#L903)・[`prepareRegionImages()`](../src/core/renderingpass/rendertargetcontainer.cpp#L312)・[`prepareForExtent()`](../src/core/renderingpass/rendertargetcontainer.cpp#L1001)・
+  [`actualPlacement()`](../src/core/renderingpass/rendertargetcontainer.cpp#L954)・[`allocationMeasurements()`](../src/core/renderingpass/rendertargetcontainer.cpp#L943)・[`resourceLeases()`](../src/core/renderingpass/rendertargetcontainer.cpp#L937)。
+  `VulkanManageCore` の [`createUnboundImage()`](../src/core/vkcore/core.cpp#L1591)・[`imageRequirements()`](../src/core/vkcore/core.cpp#L1600)・[`allocateImageRegion()`](../src/core/vkcore/core.cpp#L1612)・
+  [`bindImageRegion()`](../src/core/vkcore/core.cpp#L1619)。`ImageWrapper` に `memory_offset` / `memory_size` / `region_bound` / `memory_rejection`。`allocAliasingImage()` と token の道は消えた。
+- **同期(`src/core/vkcore/render_target_layout_tracker.{hpp,cpp}`、③)**: private の [`recordAccess()`](../src/core/vkcore/render_target_layout_tracker.cpp#L141) に `transition()` と `memoryDependency()` をまとめ、
+  range の表 `alias_ranges` と frame の access の集合を持つ。[`beginFrame()`](../src/core/vkcore/render_target_layout_tracker.cpp#L326) を renderer が frame ごとに呼ぶ([その所](../src/core/vkcore/renderer.cpp#L6342))。
+- **計測(③)**: project の [`totalRegisteredTargetMemory()`](../src/project/targetrendermemory.cpp#L121)(`allocations` があれば一意の allocation ごと)、[`appendVulkanTargetPlanMemoryJson()`](../src/project/targetrendermemory.cpp#L170)
+  (`payload_bytes` / `planned_region_*` / `actual_placement: null`)、renderer の実測の上書き([その所](../src/core/vkcore/renderer.cpp#L4856))、submit の lease([その所](../src/core/vkcore/renderer.cpp#L6664))。
+- **Studio(②③)**: `src/devstudio/model/frameplanmodel.{hpp,cpp}`([読む所](../src/devstudio/model/frameplanmodel.cpp#L2092))、`graphcanvasmodel.{hpp,cpp}`、`frameplanwidget.cpp`([表示](../src/devstudio/view/frameplanwidget.cpp#L4328))。
+- **test**: 新規 [`memoryregionpacking_test.cpp`](../test/memoryregionpacking_test.cpp#L75)、[`rc7c_target_policy_test.inc`](../test/rc7c_target_policy_test.inc#L1)、[`rc7c_compiler_policy_test.inc`](../test/rc7c_compiler_policy_test.inc#L1)、
+  [`rc7c_runtime_gpu_test.inc`](../test/rc7c_runtime_gpu_test.inc#L147)(`generationresources_device_test` が include)、[`rc7c_renderer_gpu_test.inc`](../test/rc7c_renderer_gpu_test.inc#L87)(`headless_render_test` が include)、
+  作り物の facts の [`rc7cMemoryRequirements()`](../test/rc7c_test_facts.hpp#L6) / [`rc7cDeviceRequirements()`](../test/rc7c_device_test_facts.hpp#L6)。C5 は [`rc5_recipe_compiler_test.inc`](../test/rc5_recipe_compiler_test.inc#L622)(`[.]`)。
 
 ### 2-4 `declared_bytes` = 0 — 埋める(決定 2026-10-22)
 

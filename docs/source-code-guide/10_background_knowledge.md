@@ -222,7 +222,7 @@ Vulkan の構造体は `sType` と `pNext` を持ち、拡張機能ぶんの構�
 
 「この GPU がその機能を持つか」は `vkGetPhysicalDeviceFeatures2` に feature 構造体を `pNext` で繋いで問い合わせます。chain 全体が一度に埋まるので、複数の拡張を 1 回で照会できます。重要なのは **照会しただけでは有効にならない**ことで、`vkCreateDevice` の `pNext` に同じ構造体を(true にして)渡して初めて使えます。拡張のエントリポイントは Vulkan のローダに静的リンクされていないことがあるため、`vkGetDeviceProcAddr` で取得し、null なら「その拡張は無い」と判断します(vulkan-hpp では dispatcher に取り込みます)。
 
-**使用場所**: [queryDeviceFeatureSupport()](../../src/core/vkcore/core.cpp#L335)(照会側) / [createLogicalDevice()](../../src/core/vkcore/core.cpp#L600)(有効化側) / [VulkanManageCore::VulkanManageCore()](../../src/core/vkcore/core.cpp#L1027)
+**使用場所**: [queryDeviceFeatureSupport()](../../src/core/vkcore/core.cpp#L335)(照会側) / [createLogicalDevice()](../../src/core/vkcore/core.cpp#L600)(有効化側) / [VulkanManageCore::VulkanManageCore()](../../src/core/vkcore/core.cpp#L1037)
 
 **このコードベースでの注意**: 必須の feature が 1 つでも欠ける物理デバイスは選外にし、optional なもの(dynamic rendering local read など)だけ `unlink()` で落とします。「必須」と「あれば使う」がこの 2 つの経路で分かれています。
 
@@ -230,7 +230,7 @@ Vulkan の構造体は `sType` と `pNext` を持ち、拡張機能ぶんの構�
 
 VMA は Vulkan のメモリタイプ選択とサブアロケーションを引き受ける定番ライブラリ(AMD 製、構造体名 `VmaAllocationCreateInfo`)です。`VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE` は「デバイスローカルを優先しつつ、必要なら他のヒープへ落ちてよい」という意図の宣言で、`VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT` は「CPU からは前へ前へと書くだけで読み返さない」という宣言です。この 2 つを組むと write-combined なホスト可視メモリが選ばれやすくなり、ステージングバッファを別に持たずに直接書けます(読み返すと極端に遅いのが write-combined の性質です)。budget 追跡(`VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT`)や buffer device address(`VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT`)はアロケータ作成時に宣言が要ります。
 
-**使用場所**: [createAllocator()](../../src/core/vkcore/core.cpp#L912) / [createIndexBuf()](../../src/core/model/vertbufcontainer.cpp#L29) / [createVertBuf()](../../src/core/model/vertbufcontainer.cpp#L38)
+**使用場所**: [createAllocator()](../../src/core/vkcore/core.cpp#L922) / [createIndexBuf()](../../src/core/model/vertbufcontainer.cpp#L29) / [createVertBuf()](../../src/core/model/vertbufcontainer.cpp#L38)
 
 ### buffer device address と usage flags
 

@@ -1,7 +1,7 @@
 # 不要な render target の削減: 寿命の正確化と区間詰めによるメモリ共有
 
 対象読者: エンジン担当(描画コンパイラ / renderer)。
-ステータス: 改善案メモ(2026-10-16。議論の記録。WP 化・レビュー前)。段 0(計測)は RC-1 で済み(2026-10-23、`631caac21`。§5)。合計の数え方を実際の確保に合わせる RC-1b も済み(`504a6492a`。§5)。段 1 の寿命の部分(A)は RC-6c で済み(2026-10-30、`be795c9a5`。[§2 の末尾](#rc6c-lifetime)と §5)。中間の RT を名前で読む約束(`retain`)は RC-7a で済み(2026-10-31、`2d1715cf3`。[§2 の末尾の RC-7a](#rc7a-readback)と §5)。同じ形の共有の条件を広げる RC-7b も済み(2026-10-31、`0091c071c`。[§2 の末尾の RC-7b](#rc7b-sharing)と §5)。
+ステータス: 改善案メモ(2026-10-16。議論の記録。WP 化・レビュー前)。段 0(計測)は RC-1 で済み(2026-10-23、`631caac21`。§5)。合計の数え方を実際の確保に合わせる RC-1b も済み(`504a6492a`。§5)。段 1 の寿命の部分(A)は RC-6c で済み(2026-10-30、`be795c9a5`。[§2 の末尾](#rc6c-lifetime)と §5)。中間の RT を名前で読む約束(`retain`)は RC-7a で済み(2026-10-31、`2d1715cf3`。[§2 の末尾の RC-7a](#rc7a-readback)と §5)。同じ形の共有の条件を広げる RC-7b も済み(2026-10-31、`0091c071c`。[§2 の末尾の RC-7b](#rc7b-sharing)と §5)。形の違う区間詰め RC-7c も済み(2026-10-31、`27a919f4a`。[§2 の末尾の RC-7c](#rc7c-packing)と §5。§3.2 の `alias_reuse` の表は作らない形に変えた)。
 前提: マニュアル [第6章 §6.6 target planning](manual/06_rendering.md#target-planning-tree)、
 [design_render_pipeline_extensibility.md](design_render_pipeline_extensibility.md)、
 [v1 開発計画](v1_development_plan.md)「保守上の整理候補」。
@@ -232,6 +232,80 @@ Studio / RenderDoc のキャプチャ、外部 depth export)。用途が特定�
   `rc7bComparable()` を通して比べる形になった(派生の欄だけを除き、`reason` は上の既知の文への対応を確かめてから記録の文に戻す)。
 - **RC-7 に残した物**: 形・offset・heap・usage の和が違う共有と `alias_reuse` の barrier・`retain` の資源への TRANSFER_SRC の自動の付け足し(RC-7c)、memory の種類ごとの確保(RC-7d)、
   使われない RT の確保の除去(RC-7e)。depth-stencil の共有は 7b の外(どの段で扱うかは未定)。
+  → 形・offset・heap の違う共有と TRANSFER_SRC の自動の付け足しは RC-7c で済んだ(下)。`alias_reuse` の barrier の表は作らない形に変えた(下と §3.2)。
+
+<a id="rc7c-packing"></a>
+
+**RC-7c で変わった(2026-10-31、`27a919f4a`、branch `agent/rc7c`。形の違う区間詰め)。**仕様は `<作業ディレクトリ>/rc7_spec.md` §4(仕様レビュー 12 件の反映)と §4.9(確認レビュー 5 件で確定した事)、
+実装者の報告は区切りごとに 2 本(`<作業ディレクトリ>/rc7c1_report.md` / `rc7c1_fix_report.md`、`rc7c2_report.md` / `rc7c2_fix_report.md`、`rc7c3_report.md` / `rc7c3_fix_report.md`)。
+この段の行番号は `27a919f4a` の物。全体の流れは [棚卸しメモ §2-3 の RC-7c](design_plan_layer_inventory.md#rc7c-implementation)。
+
+- **区切り**: ① 契約(create info の関数の 1 本化・`maintenance4`・facts の照会・`packMemoryRegions` と不変の入力)→ ② 計画(planner の出力・合意・TRANSFER_SRC の自動の付け足し・complete / wire /
+  fingerprint・Studio の移行・計測の分け方)→ ③ runtime(実画像での配置・VMA の region と bind・tracker の range 化・resize の 2 つの道・置き換え・復元・heap の寿命)。② の間は「全員の create info が
+  同じで offset 0」の集合だけを旧い token の共有に渡す橋(`legacyAliasTokenDefinitions`)を置き、③ で消した。着地は ③ の後の 1 回(① ② だけでは配置が実確保と食い違うため。仕様 §4.8)。
+- **memory の鍵**: `memoryTypeBits` の値の完全一致(AND は取らない。合わなければ別の region = 決定 3)。RC-7b の条件 4(画像の契約が同じ)はこの鍵に置き換えた。対の候補
+  [`deriveLegalAliasCandidates()`](../src/project/targetrenderplanning.cpp#L3168) は寿命と同じ scope だけを見る。資源ごとの条件 1〜3・5〜7(RC-7b)はそのまま region に入る条件。
+  dedicated が必須(`requiresDedicatedAllocation`)と bits 0 は region に入れず通常の確保。`prefersDedicatedAllocation` だけなら入れる。
+- **requirements は実画像が正**: create info は [`renderTargetImageContract()`](../src/core/renderingpass/rendertargetimagecontract.cpp#L11) の 1 か所で作り、計画の照会と登録が同じ値を使う。
+  計画の照会は `vkGetDeviceImageMemoryRequirements`(+ `VkMemoryDedicatedRequirements`。[その所](../src/core/renderingpass/renderingtargetmemoryfacts.cpp#L4))で、device の作成で `maintenance4` を
+  有効にした([その所](../src/core/vkcore/core.cpp#L796)。支持しなければ `vulkan.required_feature_missing@1: maintenance4`)ので同じ create info の実画像と一致する(GPU の test で 5 通りの create info を照合)。
+  計画の offset は dump と見積もり用で、runtime は実画像の requirements で決め直す。
+- **packing の不変の入力**(planner が generation ごとに作り、登録が持つ): (a) region に入る資源と鍵の snapshot、(b) 重ねてはいけない対、(c) 同じ offset の集合(採った `alias_group` の住人。
+  1 つの slot として置く: size・alignment は住人の最大、禁止の対は住人の和)、(d) 詰める順(first_use 昇順・size 降順・name 昇順、`hazard_stress` の seed で並べ替え)。
+  [`packMemoryRegions()`](../src/project/memoryregionpacking.cpp#L24) は project の層の純関数で、first-fit・offset は slot の alignment の倍数・heap の size は max(offset + size)・heap の alignment は住人の最大・
+  決定的。全 RT は optimal tiling なので bufferImageGranularity は考えない。
+- **禁止の対の定義**(決定 4、generation で 1 つの配置): 2 つの資源を重ねてよいのは、両方が現れる graph が 1 つ以上あり、両方が現れるどの graph・variant でも寿命が重ならず同じ scope に入らない時だけ
+  ([`targetMemoryOverlapForbidden()`](../src/project/targetrenderplanning.cpp#L4703)、[`planGenerationMemory()`](../src/project/targetrenderplanning.cpp#L4747))。一緒に現れる graph が無い対は重ねない(graph の外の時刻の関係は
+  仮定しない)。資源ごとの適格と policy は、その資源が現れる全 graph・全 variant で成り立つことを先に求める(1 つでも外れれば region に入らない)。合意で外れた対の自動 / `prefer` は外して理由を dump に、
+  `require` の集合の中に禁止の対が出たら `target_planning.alias_generation_contract@1`。`prefer` の採否は packing の置いた slot から (文書, 組名) ごとに一括で決める
+  ([`updateGenerationAliasPolicy()`](../src/project/targetrenderplanning.cpp#L4716)。② の修正の報告の 4)。runtime が layer 数を変える shadow の image は packing の前に除外(`runtime_array_layers`。② の修正の報告の 1)。
+- **`alias_groups` = 同じ offset の最大の集合**: plan の `alias_groups` は、同じ region・同じ offset の住人の最大の集合(size が違っても同じ集合。互いに素で一意)。採った `alias_group` の集合はその部分集合。
+  部分的な重なりは出さないので、Studio の Freeze(`alias_groups` の全員に `alias_group: require` を書く)は満たせる `require` だけを書く(確認レビュー 3)。plan の `memory_regions` / `alias_groups` は計画の facts の値で、
+  登録の結果は別に `memory_summary.actual_placement` に出す(確認レビュー 4)。
+- **`alias_reuse` の表は作らない**: 重なりの関係は実画像の size で変わる(resize)ので、計画の時の表は実配置の写しにならない。barrier は下の同期の規則で runtime が出し、実際の重なりは登録の結果に出す。
+  §3.2 の「planner が `alias_reuse` を出す」からの変更(§3.2 に注記した)。
+- **facts が無いとき**(compiler_only・照会が空): 決定 3 どおり自動の共有はしない(RC-7b の同じ形の組も作らない)。候補は dump の `alias_candidates` に `adoption: "unknown"` で出し、資源ごとに
+  `pelican.plan.alias_requirements_unknown@1`。`alias_group: require` は `alias.requirements_unknown` で断る。本番の登録は常に実画像の requirements を持つので、本番の配置は影響されない。
+- **retain の TRANSFER_SRC**: 採った `retain` の資源に planner が TRANSFER_SRC を足す([その所](../src/project/targetrenderplanning.cpp#L4054))。再試行で `prefer` の `retain` を落とせば TRANSFER_SRC・寿命・store も消える。
+  RC-7a の `retain_unsatisfiable@1` は「TRANSFER_SRC が宣言に無い」で断ることが無くなり、device がその format・usage の組で TRANSFER_SRC を支持しない時だけ `require` を断る(`prefer` は不採用)。
+  画像でない資源(buffer)の `retain` は capability の照会の前に断る(② の修正の報告の 2)。最終の verifier の「TRANSFER_SRC が実効の usage にある」検査は残した。
+- **complete package・wire**: package・wire・fingerprint に `memory_regions` と `memory_packing` を足した。verifier は package の配置も禁止の対も自己申告を信じず、compiler の (variant, graph) ごとの provenance
+  から (a)〜(d) を作り直し、`memory.overlap@1`・`memory.alignment@1`・`memory.heap_size@1`・`memory.key@1`・`memory.dedicated@1`・`memory.same_offset@1`・`memory.inputs@1` で断る
+  ([その所](../src/project/vulkancompletephysicalplan.cpp#L2617))。`alias_groups` だけの package は `complete_physical_plan.memory_regions_required@1`。RC-7b の保持・最初の use・NativeScope の検査は維持。
+- **runtime の配置**: 登録は region に入る資源の image を memory なしで作り(ALIAS_BIT)、`vkGetImageMemoryRequirements2` + dedicated で実際の requirements を取り、保持した入力で詰め直し
+  ([`prepareRegionImages()`](../src/core/renderingpass/rendertargetcontainer.cpp#L312))、region ごとに VMA の allocation を 1 つ(heap の size・最大の alignment・鍵の bits、DEVICE_LOCAL を preferred)、
+  `vmaBindImageMemory2(allocation, offset, image)` で bind する。bind の前に offset + size ≤ heap の size・offset が alignment の倍数・選んだ memory type が bits に入る、を確かめ、破れは
+  `render_target.memory_bind_invalid@1`([その所](../src/core/vkcore/core.cpp#L1619))。`allocAliasingImage()`(owner の create info の複製)と offset 0 の token の道は消した。各 image は region の allocation を
+  共同で持ち(image → allocation の順に壊す)、resize の退役の batch と submit の lease が in-flight の image と heap を保つ。
+- **同期**(決定 5、広め): layout は image ごと、再利用の状態は range の重なりで追う(region の単一の住人で追わない)。資源 R の access の前に、R がこの frame で初めての access か、R の前回の access の後に
+  R と range の重なる別の資源が access されたなら、ALL_COMMANDS → ALL_COMMANDS・`MEMORY_READ | MEMORY_WRITE` の memory barrier と R の oldLayout = UNDEFINED。R と重なる資源の記録の layout も
+  UNDEFINED にし、重ならない資源には触れない([`recordAccess()`](../src/core/vkcore/render_target_layout_tracker.cpp#L141))。frame の中の交替・同じ frame の中の再訪・frame の境界・前の住人が走らない frame を
+  同じ規則で覆う。新しい generation の image の最初の access にも frame の最初の barrier が出る(RC-7b の「新しい token は barrier なし」は無くなった)。transition も同じ layout の依存も同じ関数を通す
+  (③ の修正の報告の 3: 前の frame の `GENERAL` を保つ image への compute の最初の access で barrier が出ていなかった)。
+- **resize・置き換え・復元**: resize の 2 つの道(窓は再 compile、XR / test は container だけで作り直す)、generation の置き換え、失敗の復元のどれも、保持した不変の入力と作り直した実画像の requirements から
+  詰め直す。不変なのは資源の識別・禁止の対・採った同じ offset の集合・詰める順で、鍵・region の所属・dedicated は配置のたびに作り直す(確認レビュー 5)。作り直しで自動 / `prefer` の重なりが成り立たなければ
+  理由つきで分け、採った `require` が成り立たなければ `render_target.alias_repack_unsatisfiable@1` で transaction を戻す。`require` の組は (文書, 組名) で決める(③ の修正の報告の 1)。
+- **計測の欄の意味**: `get_frame_plan` の `memory_summary` は、payload(`payload_bytes`。texel × extent の今の式)・計画の見積もり(`planned_region_bytes` / `planned_region_count`。計画の facts の region の和で、
+  region の外の確保は入らない)・実際の確保(`total_bytes` と `actual_allocation_count` / `actual_allocation_bytes`。一意の VMA allocation ごとに size を 1 回。重なる住人の requirements の和ではない)を分けた。
+  `actual_placement {extent, revision, regions, overlaps, …}` は登録の結果で、compiler_only と CPU の代役では `null`(未計測)。VMA の allocation と VkDeviceMemory の block は別の単位で、block の予約量は測っていない。
+  frame ごとの alias の barrier の数は frame plan に載せず tracker の `frameAliasDependencyCount()` で読む(載せると WP366 の frame plan の完全一致が崩れた。③ の修正の報告の 5)。
+- **example の実確保(C1)**: example・flat・1920×1080・NVIDIA GeForce RTX 5080(`driverVersion` 2559967232)で、21 枚の登録が一意の VMA allocation **20 → 4**、bytes **135,299,072 → 128,286,720**
+  (129.03 → 122.34 MiB、7,012,352 減)。参照は RC-7b の HEAD `9cd7bb971` の example の 21 画像の登録の集合(名前・format・extent・mip・layer・usage・samples・dimension)を test に固定し、同じ device で
+  各画像を単独で照会して `g_emissive` / `Bloom_Threshold_RT` の 1 組を 1 回とした値(古い binary の再実行ではない。③ の修正の報告の 4)。数と bytes は別々に assert。4 個の内訳は 18 住人の region 1 つ
+  (計画の見積もりも実際も 92,897,280 bytes、`memoryTypeBits` 3・最大の alignment 1024・VMA の選んだ memoryTypeIndex 1)と region の外の 3 つ(`opaque_color` / `opaque_depth` は最初の use が snapshot の
+  transfer、`display` は display の除外。35,389,440 bytes)。地図 §7.3 の「全 21 枚を 1 heap」の机上値 87,091,200 との差 41,195,520 は、region の外の 3 枚の payload 33,177,600 と、実際の requirements と
+  alignment の差 8,017,920(実装者の報告。driver の内部の tiling / 圧縮の内訳は取っていない)。81 MiB は求めていない(決定 7)。
+- **計画の差(C5)**: 実装前の HEAD の 16 構成(`<作業ディレクトリ>/rc7c_baseline/rc5`、compiler_only・facts なし)と比べ、意味の欄(実行順・scope・representation・format・samples・attachment の ops・usage・寿命・
+  保持の理由)は一致する。変わるのは配置の派生の欄(`alias_groups`・`memory_regions`・`memory_packing`・`alias_candidates` の未確定・memory の集計・fingerprint)だけ。facts が無いので旧い組は全部別の確保に
+  戻る(HDR の `g_emissive` / `scene_ldr_in`、extras ありの `gbuffer_normal` / `probe_image`、両方ありの `g_emissive` / `probe_image` と `gbuffer_albedo` / `scene_ldr_in`。資源ごとの説明は
+  `<作業ディレクトリ>/rc7c2_c5_details.json`)。A5・F4・B4 も配置の派生の欄だけを新しい形で比べるよう移した(意味の欄の除外は増やしていない)。
+- **移行の注意**: facts を渡さない compile(compiler_only)では共有しなくなった。example の `g_emissive` / `Bloom_Threshold_RT` の組も compiler_only では別の確保(`frameplanner_test` の example は
+  21 枚 21 確保・134,070,720 bytes。前の 125,776,320 との差 8,294,400 は旧い 1 組の重複の控除)。共有の効果を見る CPU の test は作り物の facts を注入する形に移し、facts なしの対照は専用の test に分けた。
+  golden の renderer の trace は `skeletal_toon` / `usd0b_static_geometry` の `final_layouts` の 6 資源(`Bloom_Downsample_H_0〜2_RT`・`Bloom_Threshold_RT`・`gbuffer_normal`・`gbuffer_worldpos`。後の住人が実際に range を重ねる物。RC-7b の HEAD との差を fixture で確認)が `shader_read_only_optimal` → `undefined` に変わった(画像と RGBA8 の hash は
+  変えていない)。
+- **RC-7 に残した物**: memory の種類ごとの確保(RC-7d。transient / tile-local を同じ allocator の道へ、lazily allocated は作り物の facts の CPU test まで)、使われない RT の確保の除去(RC-7e)。
+  depth-stencil の共有は RC-7b のまま外(どの段で扱うかは未定)。未確認: `maintenance4` を支持しない実機での起動の失敗、linear tiling の assert の subprocess の test、overflow の限界値、
+  大きさだけで `memoryTypeBits` / dedicated が変わる実機(作り物の facts で道だけ確かめた)、native WSI の実窓の resize(window の道は headless の facts の seam で通した)、lazy memory の実 GPU。
 
 ## 3. B: alias を区間詰めに一般化する(本丸)
 
@@ -241,6 +315,7 @@ Studio / RenderDoc のキャプチャ、外部 depth export)。用途が特定�
 - runtime: [`allocAliasingImage()`](../src/core/vkcore/core.cpp) は owner の `VkImageCreateInfo` をそのまま複製して owner の allocation に bind
   (offset 0、同サイズ)。[`rendertargetcontainer.cpp:710`](../src/core/renderingpass/rendertargetcontainer.cpp#L710) も format / usage / samples / mip の一致を要求。
 - 結果、「大きい gbuffer の跡地に小さい bloom を置く」ができない。
+  → RC-7c で解けた(`allocAliasingImage()` は無くなり、region と offset の配置になった。[§2 の末尾の RC-7c](#rc7c-packing))。
 
 ### 3.2 提案
 
@@ -264,6 +339,7 @@ renderer(executePlannedFrameGraph)
   **「feature は RT の枚数を気にせず宣言してよい」を成立させる手段**でもあり、preset レシピ化([design_render_preset_feature_recipe.md](design_render_preset_feature_recipe.md))と相性がよい。
 - 正しさの難所は barrier。planner が `alias_reuse` を**自動で出す**形にして、手書き barrier ゼロの原則を崩さない。
   frame をまたぐ再利用(frame N の最後の住人 → frame N+1 の最初の住人)も同じ規則で、frame 先頭の layout 遷移に含める。
+- → **RC-7c で変えた(2026-10-31、`27a919f4a`。仕様 §4.3)**: planner は `alias_reuse` の表を出さない。重なりの関係は実画像の size で変わり(resize)、計画の時の表は実際の配置の写しにならないため。planner が出すのは `memory_regions`(計画の facts での region と住人の offset)と packing の不変の入力(region の住人と鍵・重ねてはいけない対・同じ offset の集合・詰める順)で、runtime が実画像の requirements で詰め直し、barrier は「frame の最初の access か、前回の後に range の重なる別の資源が access された」ときの広い barrier + UNDEFINED を runtime の tracker が出す。実際の重なりの関係は登録の結果として `get_frame_plan` の `memory_summary.actual_placement` に出る。手書きの barrier がゼロの原則はそのまま。memoryTypeBits は AND を取らず完全一致を鍵にし、合わなければ拒否ではなく別の region(利用者の決定 3)。bind は `vmaCreateAliasingImage2` ではなく、未 bind の image に `vmaBindImageMemory2(allocation, offset, image)`。詳しくは [§2 の末尾の RC-7c](#rc7c-packing)。
 
 ### 3.3 やらないこと
 
@@ -286,7 +362,7 @@ renderer(executePlannedFrameGraph)
 |---|---|---|---|
 | 0 | 計測: `get_frame_plan` に `memory_summary {total_bytes, peak_live_bytes, peak_node}` と資源ごとの `bytes` を出す。Studio の Frame Plan に表示。**RC-1 で済み(`631caac21`)** | 小 | planner の単体テスト(GPU 不要)。手計算の 120 / 81 MiB と一致 → 実測は 119.95 / 81.08 MiB(合計のずれは §1 の注) |
 | 1 | A: required / require_store の末尾延長の理由を特定し、必要な経路だけ opt-in に。**寿命の意味は RC-6c で済み(`be795c9a5`。graph の外の読み手 7 つを理由に)。名前の readback の opt-in は RC-7a で済み(`2d1715cf3`)。実確保の削減は RC-7b〜7e** | 小〜中 | 物理計画の fixture 差分、golden 不変、headless 読み出し・picking・capture の回帰 |
-| 2 | B: 区間詰め alias(planner → runtime → barrier)。**RC-7b〜7e に分けた(下の「RC-7 の段」)。同じ形の共有の条件の拡張は RC-7b で済み(`0091c071c`)** | 大 | planner 単体(詰め結果の決定性、no_alias、memoryTypeBits 拒否)、GPU gate 全数、`hazard_stress` での揺さぶり、validation layer |
+| 2 | B: 区間詰め alias(planner → runtime → barrier)。**RC-7b〜7e に分けた(下の「RC-7 の段」)。同じ形の共有の条件の拡張は RC-7b で済み(`0091c071c`)。形の違う区間詰めは RC-7c で済み(`27a919f4a`。`alias_reuse` の表は作らない)** | 大 | planner 単体(詰め結果の決定性、no_alias、memoryTypeBits 拒否)、GPU gate 全数、`hazard_stress` での揺さぶり、validation layer |
 | 3 | C: dead pass elimination、store 自動 discard | 中 | frame plan の fixture、golden 不変 |
 
 0 と 1 は純ロジック中心。2 は GPU gate 必須(Windows)。
@@ -308,7 +384,7 @@ verifier だけ一律の延長に戻すと正常な package の検証が赤。go
 
 1. **RC-7a** readback の約束(✅ 済み。下の完了記録)。
 2. **RC-7b** 同じ形の共有の条件を広げる(offset 0・既存の barrier のまま。広げた後の画像の契約の互換と frame の境界での使い回しの同期を完了の条件に入れる)(✅ 済み。下の完了記録)。
-3. **RC-7c** 形の違う区間詰め(retain の資源への TRANSFER_SRC の自動の付け足し、device facts の memory requirements、memory の種類ごとの heap と offset、`alias_reuse` の barrier)。
+3. **RC-7c** 形の違う区間詰め(retain の資源への TRANSFER_SRC の自動の付け足し、device facts の memory requirements、memory の種類ごとの heap と offset、`alias_reuse` の barrier)(✅ 済み。下の完了記録。`alias_reuse` の表は作らず、runtime の range の規則にした)。
 4. **RC-7d** memory の種類ごと(transient / tile-local を同じ allocator の道へ。lazily allocated は作り物の device facts の CPU test まで)。
 5. **RC-7e** 使われない RT の確保の除去。
 
@@ -355,6 +431,33 @@ RC-7b の完了記録(2026-10-31、`0091c071c`、branch `agent/rc7b`。検証は
 - **統合側の gate**(1 回目の修正の後の tree。2 回目の修正は最終の照合の入力 1 か所だけ): GPU 全数 476 中 475 緑(既知の環境由来 `player_arguments_ds1_path` のみ)、非 GPU 全数は既知の 29 件と名前で一致、
   シナリオ 23 本が緑、A5・F4・B4 一致。既存の SKIP 3 件(画像の基準が無い 2 件と CB-1 の 08)と他の GPU / driver は未検証。
 
+RC-7c の完了記録(2026-10-31、`27a919f4a`、branch `agent/rc7c`。検証は区切りごとの実装者の報告と修正の報告、統合側の gate): 内容は [§2 の末尾の RC-7c](#rc7c-packing)。仕様 §4.7 の受け入れごとに:
+
+- **区切り**: ① 契約(create info の 1 本化・`maintenance4`・facts の照会・packer。修正 2 件: alias の住人の作成を owner の実画像の契約から、live の再利用の前に usage だけを取る)→ ② 計画(planner の出力・
+  合意・TRANSFER_SRC・complete / wire / fingerprint・Studio・計測の分け方。修正 7 件: runtime の layer の除外・buffer の `retain`・(variant, graph) の provenance・`prefer` の一括の決定・禁止の判定の共通化と
+  wire の再構成・golden の trace・facts の注入)→ ③ runtime(実画像の配置・region と bind・range の tracker・resize・置き換え・復元・heap の寿命。修正 5 件: `require` の組の鍵に文書・batch で live の image を
+  先に解決・全 access の道を 1 つの関数に・C1 の参照を RC-7b の 21 画像の集合に固定・frame ごとの数を frame plan から外す)。各区切りで wip を commit してレビュー、着地は ③ の後の 1 回。
+- **C1 実確保の減少**: example・flat・1920×1080・NVIDIA GeForce RTX 5080 で、一意の VMA allocation **20 → 4**、bytes **135,299,072 → 128,286,720**(数と bytes を別々に assert)。参照は RC-7b の
+  21 画像の登録の集合を test に固定し、同じ device で照会した値(「RC-7c C1 example actual VMA allocations and bytes beat RC-7b reference」。`opaque_depth` を除いた集合が照合に落ちる対照つき)。
+  payload の机上の値との差は資源ごとに報告(§2 の末尾の RC-7c)。
+- **C2 packing の適法性**(CPU): 禁止の対の range・alignment の倍数・heap の size・同じ offset・seed 0〜7 の再現と適法・形と format の違う 4 資源の部分の重なり・鍵の違いで region が分かれる・dedicated と
+  不明の除外・`require` の slot が first-fit の順に負けない(A[0,0]・X[1,3]・B[2,2])・同じ形では RC-7b の住み分けと同じ・計画の facts と実画像の requirements の一致(GPU、5 通りの create info)。
+- **C3 画素と同期**(GPU): 同じ allocation・別の VkImage・offset の値。同じ frame の交替、同じ frame の中の再訪、frame の境界、前の住人が走らない frame、別 offset で同時に生きる A / B と両方に部分的に
+  重なる C(A / B の layout と画素が壊れない)、未完了の 2 つの submit を host の timeline の gate で保ったままの container の resize・窓の resize(headless の facts の seam)・generation の置き換え・失敗の復元。
+  synchronization validation の warning / error は 0 件(region の memory に関わる物も 0)。
+- **C4 golden**: 画像と RGBA8 の hash は不変。renderer の trace の `final_layouts` だけが 2 ケース × 6 資源で `undefined` に変わった(§2 の末尾の RC-7c の「移行の注意」)。
+- **C5 計画の差**: 16 構成で意味の欄が一致し、配置の派生の欄だけが変わる(「RC-7c C5 sixteen fixed snapshots retain every semantic field」、`[.]`)。作り物の facts の example の住人の表と、
+  今まで不採用だった `prefer` の `retain` の意図した差(`write_only_scratch`)は実装者の報告。
+- **C6 policy・verifier・合意**: `alias_group` の `require` / `prefer` が同じ offset を求める、`no_alias` は region に入らない、一部の graph にだけ現れる資源の適格、graph / variant の合意で外れた対の
+  自動 / `prefer` の解除と `require` の名前付きの拒否、verifier の `memory.*@1` をそれぞれの code で、TRANSFER_SRC の自動の付け足し(宣言が `COLOR_ATTACHMENT` だけの資源の名前の readback が通る GPU、
+  再試行で落ちた `prefer` に残らない CPU、device が支持しない組の拒否)。
+- **対照**(実装者の報告): ① 禁止の range・alignUp・slot 化、② 禁止の range・verifier の鍵の一致・slot 化・generation の照合を最初の graph だけにする、② の修正 7 件、③ frame の最初の規則・取り直しの規則・
+  禁止の対の重なり・bind の前の検査・extent の退役の defer、③ の修正 5 件を、それぞれ 1 つずつ外して対応する test が赤、戻して緑。取り直しの規則の赤は barrier の観測の欠落で、画素と validation での赤は
+  主張していない(報告の明記)。
+- **触った家族**(③ の修正の後): render_planning_core 130・render_pipeline 518(既知の SKIP 1)・project_planning 127、studio_cpu 1,014、hidden の A5 / F4 / B4 / C5(4,565 assertions)、選んだ GPU 17 件が緑。
+- **統合側の gate**: GPU 全数 484 件中、赤は既知の `player_arguments_ds1_path` の 1 件だけ。非 GPU 全数は既知の 29 件だけが赤。シナリオ 23 本中 23 本が緑。基準との比較 A5 / F4 / B4 / C5 が緑。
+  未確認: `maintenance4` を支持しない実機、大きさだけで鍵や dedicated が変わる実機、native WSI の実窓の resize、lazy memory の実 GPU、VkDeviceMemory の block の予約量、他の GPU / driver。
+
 ## 6. 未決(2026-10-17 更新)
 
 議論で決まった・動いたもの:
@@ -375,5 +478,7 @@ RC-7b の完了記録(2026-10-31、`0091c071c`、branch `agent/rc7b`。検証は
   → **RC-6c で解けた**: `required` は寿命を延ばす理由にしない。末尾まで生きるのは graph の外の読み手がある資源だけ([§2 の末尾](#rc6c-lifetime))。
 - **ヒープの単位** → MoltenVK は 1.3.0 から MTLHeap が既定なので heap 1 つで素直に動く見込み。Windows は memoryTypeBits ごとに分ける。
   device facts で切り替える形にする。
+  → **RC-7c**: region は memoryTypeBits の完全一致ごと(device facts の答えで分かれる。機種別の分岐は書かない)。MoltenVK での実測はしていない(未確認)。
 - **`alias_reuse` barrier の表現** → 別の表を推す(`FramePlanBarrier` は resource 1 つ。2 つ目の resource のために既存の形を歪めない)。
+  → **RC-7c で決着**: 表は作らない。barrier は runtime の tracker が range の重なりで出す(§3.2 の注記と [§2 の末尾の RC-7c](#rc7c-packing))。
 - **同じ WP に入るもの** → 物理計画の固定ルートを `target_planning` の policy に一本化する件([棚卸しメモ](design_plan_layer_inventory.md) 2-3、方針決定 2026-10-22)。`no_alias` は既にあり、`alias_group` / `materialize` などを足す語彙は区間詰めの入力と同じ場所。

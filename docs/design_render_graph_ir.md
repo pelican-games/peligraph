@@ -174,6 +174,13 @@ NodeIR {
   - **resolver は例外でなく解除**: [`resolveGenerationResources`](../src/project/generationresources.cpp#L97) の組の検査で、usage か storage の食い違いは `render_graph.alias_group_invalid@1` ではなく
     組の共有の解除になり、理由が `GenerationResources::alias_rejections` に残る。compiler program は `retain` の有無によらず先に全 variant を計画してこの resolver の答えを取り(RC-7a では
     `retain` のある構成だけ)、本計画の配置でもう 1 度呼んで、外れた共有の理由を planner に戻して計画し直す。登録と計画が同じ resolver の答えを使う形は RC-7a のまま。
+- **追補(RC-7c、`27a919f4a`、2026-10-31。形の違う区間詰め)**: 全体は [RT メモ §2 の末尾の RC-7c](design_render_target_memory_reduction.md#rc7c-packing) と
+  [棚卸しメモ §2-3 の RC-7c](design_plan_layer_inventory.md#rc7c-implementation)。行番号は `27a919f4a` の物。
+  - **TRANSFER_SRC の自動の付け足し**: 上の RC-7a の追補の「`retain` の分を自動で足すのは RC-7c」は済んだ。候補を作り直すたびに、採っている `retain: true` の資源の実効の usage に
+    TRANSFER_SRC を足し、transient の bit を外す([その所](../src/project/targetrenderplanning.cpp#L4054))。generation の resolver も `readback` の資源の登録の usage に足す。宣言の usage は書き換えない。
+  - **対の usage の一致は見なくなった**: 上の RC-7b の追補の「対の usage の一致を実効の usage で見る」は、RC-7c から memory の鍵(`memoryTypeBits` の完全一致)に置き換わった。
+    usage の違う資源も、鍵が同じで寿命が重ならなければ 1 つの region に入る。resolver は region に置かれた組の住人の region と offset の一致を確かめる
+    (違えば `render_graph.alias_group_invalid@1 {reason: "same_offset"}`。[その所](../src/project/generationresources.cpp#L256))。
 
 ### 2.5 pipeline の状態は「所有者ごと」
 

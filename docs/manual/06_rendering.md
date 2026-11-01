@@ -248,7 +248,7 @@ editor の RPC から書くときは、`shader_defines`・`snapshots`・`resolve
 
 <a id="variant-resource-merge"></a>
 
-**variant をまたぐ宣言は 1 つにまとめます(✅RC-3c2a)。**flat と xr(§6.13)は同じ名前の render target と buffer を共有し、世代を組むとき(起動・reload・編集の commit)に、GPU に登録する前に 1 つの値にまとめます([まとめる所](../../src/project/generationresources.cpp#L97))。preview は登録しないので入りません。
+**variant をまたぐ宣言は 1 つにまとめます(✅RC-3c2a)。**flat と xr(§6.13)は同じ名前の render target と buffer を共有し、世代を組むとき(起動・reload・編集の commit)に、GPU に登録する前に 1 つの値にまとめます([まとめる所](../../src/project/generationresources.cpp#L99))。preview は登録しないので入りません。
 
 - **render target**: usage は各 variant の宣言の和、`layers` は最大(XR の view の数を含む)、物理計画が variant ごとに選んだ置き方(`materialized_image` / `transient_attachment` / `tile_local_attachment`)が違えば `materialized_image`、`lifetime` はどれかが `persistent` なら `persistent` です。engine が足す usage(tile-local / transient の bit、XR の外部 depth の `TRANSFER_SRC`、history の `TRANSFER_DST`)は、置き方をまとめた後で 1 回だけ決まります(たとえば flat が transient、XR が depth を外へ出す materialized の depth は、`TRANSIENT_ATTACHMENT` の無い materialized になります)。大きさは `extent_scale` × 登録する出力の大きさ(端数は切り捨て)か `width` / `height` です。
 - 物理計画が選んだ format・`mip_levels`・`dimension`・大きさ・sample 数・`history`・`source` が variant で違えば、`render_graph.image_variant_conflict@1 {resource, field, variants}` で断ります(`field` は `format` / `mip_levels` / `dimension` / `extent` / `samples` / `history` / `source`)。
@@ -363,8 +363,8 @@ raster の pass が attachment を描く前にどうするか(load: 前の値を
   | color(ほかの type) | `clear` | `store` |
   | depth(全 type) | `clear` | `dont_care` |
 
-- **物理計画が変える場合**: 上の優先順で決まった値を、物理計画が正当な理由で変えることがあります。`transient_attachment` / `tile_local_attachment` に選ばれた資源の store は `dont_care` になります(作者が `store` を書いていても。[変える所](../../src/project/targetrenderplanning.cpp#L3771)、dump では `discard`)。1 つの scope に融合した pass の color attachment は、最初に書く pass の load と最後に書く pass の store を使います([組み立てる所](../../src/core/renderingpass/renderingpassruntimecompiler.cpp#L916))。✅RC-6b2 の前は physical fragment で手で変えることもできましたが、この道は無くなりました(§6.6「[旧い pin と physical fragment](#legacy-plan-packages-removed)」)。
-- **計画は op を省略できません**: 計画の attachment([`FrameGraphAttachmentDefinition`](../../src/project/frameplan.hpp#L36))と物理計画の attachment([`VulkanPhysicalAttachmentPlan`](../../src/project/targetrenderplanning.hpp#L268))は、解決済みの load と store を 1 欄 `operations` で持ちます。この型([`PassAttachmentOperations`](../../src/project/attachmentoperations.hpp#L32))には既定の値が無いので、op を書かずに作るコードは compile が通りません(RC-3a2 の前は aspect に関係なく `clear` / `store` が初期値でした)。
+- **物理計画が変える場合**: 上の優先順で決まった値を、物理計画が正当な理由で変えることがあります。`transient_attachment` / `tile_local_attachment` に選ばれた資源の store は `dont_care` になります(作者が `store` を書いていても。[変える所](../../src/project/targetrenderplanning.cpp#L3834)、dump では `discard`)。1 つの scope に融合した pass の color attachment は、最初に書く pass の load と最後に書く pass の store を使います([組み立てる所](../../src/core/renderingpass/renderingpassruntimecompiler.cpp#L916))。✅RC-6b2 の前は physical fragment で手で変えることもできましたが、この道は無くなりました(§6.6「[旧い pin と physical fragment](#legacy-plan-packages-removed)」)。
+- **計画は op を省略できません**: 計画の attachment([`FrameGraphAttachmentDefinition`](../../src/project/frameplan.hpp#L36))と物理計画の attachment([`VulkanPhysicalAttachmentPlan`](../../src/project/targetrenderplanning.hpp#L271))は、解決済みの load と store を 1 欄 `operations` で持ちます。この型([`PassAttachmentOperations`](../../src/project/attachmentoperations.hpp#L32))には既定の値が無いので、op を書かずに作るコードは compile が通りません(RC-3a2 の前は aspect に関係なく `clear` / `store` が初期値でした)。
 
 **受ける綴りは入口ごとに違います。**綴りの表は 1 つですが([表](../../src/project/attachmentoperations.cpp#L29))、入口ごとに受ける集合が決まっています。作者の `color_load_op: "discard"` も、物理計画の package の `load_op: "dont_care"` も断られます。
 
@@ -405,7 +405,7 @@ pass・compute task・buffer の宣言は、今までどおり短い書き方(�
 
 ### type 別の要点
 
-- **`material`** — シーン内のモデルを描く material パス。`material_outputs` を省略した従来設定は、既定の 5 枚 G-buffer（または forward の scene color 1 枚）をそのまま使います。この 5 枚の内訳を決めるのはエンジンではなくプロジェクトの config とシェーダで、example では `gbuffer_albedo` / `gbuffer_normal` / `gbuffer_material` / `gbuffer_worldpos` / `g_emissive` です([main_rendering_config.json:135](../../projects/example/passes/main_rendering_config.json#L135))。明示した場合は**順序・枚数・数値型を任意に定義**でき、`material_output_states`でfield別のblend/write-maskも指定できます。固定のエンジン上限はなく、実行デバイスの `maxColorAttachments` と各 format/sample capability が物理上限です。詳しくは §6.7。`material_outputs` を書かない material pass に contract が要求するのは、forward 系(`forward_opaque_v1` / `forward_transparent_v1`)なら color 1 枚(`R16G16B16A16_SFLOAT`)、G-buffer 系(`deferred_geometry_v1` / `legacy_gbuffer_v1`。`material_contract` を省略すると後者)なら color 5 枚(albedo / normal / material / world position / emissive の順。albedo と emissive は HDR の表で `R16G16B16A16_SFLOAT`、SDR の表で `B8G8R8A8_SRGB` —— どちらの表かは 1 枚目の format で決まります —、normal と world position は `R16G16B16A16_SFLOAT`、material は `R8G8B8A8_UNORM`。[G-buffer の SDR / HDR の format 表](../../src/project/materialattachmentformats.hpp#L20))で、どちらも `D32_SFLOAT` の depth 1 枚が必須、swapchain には書けません([material pass の contract ごとの枚数と format を検査する所](../../src/project/generationresources.cpp#L472)。✅RC-3c2a から拒否は `render_graph.material_attachment_invalid@1 {graph, node, reason, …}`。下の「資源の検査の拒否のコード」)。engine が受ける format は、この検査と同じ表から `get_graph_catalog` の `material_pass_contracts`(contract ごとの socket と、通る組)と `material_output_formats`(`material_outputs` の型ごと)で読めます(EL-4。[第13章](13_editor.md) §13.5)。Studio からは Frame Plan の **Add material pass...** で contract を選んで足せ、足りない target をこの format で作れます(G-1、[第13章](13_editor.md) §13.5)。Blank のように root が graph で preset を選ばない project では、Add material pass... は Graph タブの palette になり、pass は graph の `nodes` に自前の image ごと置かれます(target は宣言しません)。form で足りない target を作るのは preset を選ぶ root のときです。
+- **`material`** — シーン内のモデルを描く material パス。`material_outputs` を省略した従来設定は、既定の 5 枚 G-buffer（または forward の scene color 1 枚）をそのまま使います。この 5 枚の内訳を決めるのはエンジンではなくプロジェクトの config とシェーダで、example では `gbuffer_albedo` / `gbuffer_normal` / `gbuffer_material` / `gbuffer_worldpos` / `g_emissive` です([main_rendering_config.json:135](../../projects/example/passes/main_rendering_config.json#L135))。明示した場合は**順序・枚数・数値型を任意に定義**でき、`material_output_states`でfield別のblend/write-maskも指定できます。固定のエンジン上限はなく、実行デバイスの `maxColorAttachments` と各 format/sample capability が物理上限です。詳しくは §6.7。`material_outputs` を書かない material pass に contract が要求するのは、forward 系(`forward_opaque_v1` / `forward_transparent_v1`)なら color 1 枚(`R16G16B16A16_SFLOAT`)、G-buffer 系(`deferred_geometry_v1` / `legacy_gbuffer_v1`。`material_contract` を省略すると後者)なら color 5 枚(albedo / normal / material / world position / emissive の順。albedo と emissive は HDR の表で `R16G16B16A16_SFLOAT`、SDR の表で `B8G8R8A8_SRGB` —— どちらの表かは 1 枚目の format で決まります —、normal と world position は `R16G16B16A16_SFLOAT`、material は `R8G8B8A8_UNORM`。[G-buffer の SDR / HDR の format 表](../../src/project/materialattachmentformats.hpp#L20))で、どちらも `D32_SFLOAT` の depth 1 枚が必須、swapchain には書けません([material pass の contract ごとの枚数と format を検査する所](../../src/project/generationresources.cpp#L488)。✅RC-3c2a から拒否は `render_graph.material_attachment_invalid@1 {graph, node, reason, …}`。下の「資源の検査の拒否のコード」)。engine が受ける format は、この検査と同じ表から `get_graph_catalog` の `material_pass_contracts`(contract ごとの socket と、通る組)と `material_output_formats`(`material_outputs` の型ごと)で読めます(EL-4。[第13章](13_editor.md) §13.5)。Studio からは Frame Plan の **Add material pass...** で contract を選んで足せ、足りない target をこの format で作れます(G-1、[第13章](13_editor.md) §13.5)。Blank のように root が graph で preset を選ばない project では、Add material pass... は Graph タブの palette になり、pass は graph の `nodes` に自前の image ごと置かれます(target は宣言しません)。form で足りない target を作るのは preset を選ぶ root のときです。
 - **`fullscreen`** — 全画面 1 枚描き。`shader: { "vertex": <stem>, "fragment": <stem> }` **必須**(任意で `defines`。VI-1、§6.4 の「pass ごとの `shader.defines`」。`shader` に書ける鍵はこの 3 つだけで、ほかの鍵は ✅RC-3c2b2 から `render_graph.node_field_invalid@1`(`field: "shader.<鍵>"`、`reason: "unknown_field"`)で断られます。前は黙って捨てていました)。必須を見るのは pass を実行の形にする所で、無ければ `render_graph.pass_execution_invalid@1`(`field: "shader.vertex"` / `"shader.fragment"`、`reason: "required"`)です。計画だけを見る道(frame plan の確認など)は shader の無い pass も通します(下の「pass の宣言の拒否のコード」)。`input` の画像は通常 `resource_ports` で名前を付け、fragment shaderからgenerated `pelican_sample_<port>`で読む。**入力枚数にエンジン固定の上限はありません**(WP238b で `Fullscreen pass has too many inputs` の per-pass 拒否を撤去。残った数は descriptor pool のサイズ見積もりで —— WP238b では 8、可変の組の上限と同じ 16([見積もり](../../src/core/fullscreenpass/fullscreenpasscontainer.cpp#L33))—、実上限は選択されたデバイスと pipeline layout が持ちます)。1つのinput resourceへ複数portは割り当てず、mip/layerを変える場合も1 portの`subresource`で選ぶ。raw shaderだけは従来どおりset 1へ配列順でbindする。`uses_light_data: true` と `push_constants`(`"none"` / `"camera_position"` / `"projection_view"`。省略は `none` と `false`)は**互換キー**として受理されますが、GPU への実際の供給元は常に set 0 の FrameUBO / LightUBO です(§6.4)。任意の`raster_state`で1枚のcolor attachmentのblend/write-maskとtopology/cull/front-faceを書けます(省略すると engine の既定の状態で描きます。書いた / 書かないの違いは IR に残ります)。深度状態は受理しません。`input` の数・順・種類は fragment の set 1 の宣言と合わせます(§6.4 の「fullscreen pass の入力と shader の宣言の契約」。Q-14e)。
 - **`raster`** — 汎用ラスタパス。シーンのモデルにも全画面 quad にも依らず、`draw` で描画コマンドを、`raster_state` で固定機能状態を直接宣言します。後述の専用項を参照。
 - **`output_transform`** — リニア → 表示エンコードの終端ノード。**自動付加されるため通常は書きません**(§6.3)。内部契約は`fullscreen`と同じ`raster_state`所有表を共有し、blend/write-mask等を同じ経路で解決します。自動生成される既定ノードは`raster_state`を省略します。
@@ -853,7 +853,7 @@ feature は**パラメータ化**できます。`features` 配列は文字列の
   - **前提**: `render.scalar` は毎フレーム host から float32 の値を buffer に書きます。なので書き込み先は `host_source: "runtime_f32"` で、大きさ(`size`)がその buffer に書く sink の合計(scalar 1 つが 4 byte、`value` の配列が 2〜4 個の数 × 4 byte)と同じでなければなりません([CT-5 の書き込み先の検査 `checkRenderScalarTargets()`](../../src/project/graphpartition.cpp#L277))。
   - `value` の線で繋いだ `render.buffer` / `render.attribute`(入力 edge `value` を持つ resource の node)は、partition が `size: 4` と `host_source: "runtime_f32"` を補います(`element` が `float` 以外、または別の値を書いていれば `scalar-connected buffer requires one runtime float: <id>`。[値の線で繋いだ buffer を補う所](../../src/project/graphpartition.cpp#L416))。なので補われる buffer はこの拒否に当たりません。
   - **graph の中の buffer**(graph の `render.buffer` / `render.attribute`)は、graph の partition の段で断ります。partition は編集でも読み込みでも通ります([partition から呼ぶ所 CT-5](../../src/project/graphpartition.cpp#L450))。`graph.render_scalar_target_incompatible@1` `{node, target, expected: {host_source: "runtime_f32", size?}, actual: {host_source, size?}}` で、`node` はその buffer に書く最初の sink(利用者が書いた sink を `$upload/` の sink より先に選ぶ)、`expected.size` は sink の合計(`value` の形が 2〜4 個の数でない sink があって合計が分からないときは付きません)、`actual.host_source` は書かれていなければ `null` です。partition は `size` を書いていない buffer の大きさを比べません。`render.attribute` の大きさは `count` × 要素の stride です(test)。`element` が float 系でない buffer はこの拒否ではなく今までどおり `graph.render_scalar_type_mismatch@1` です。
-  - **graph の外で宣言された buffer**(feature の `bloom.intensity` など)は、partition では見ず、登録の段(世代を組むとき)で同じ code で断ります。どの sink が書いたかがそこでは分からないので `node` は付きません。`expected` は `{host_source: "runtime_f32", size}`、`actual` は `{host_source, size}` です([CT-5 の登録の段の拒否](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1231))。
+  - **graph の外で宣言された buffer**(feature の `bloom.intensity` など)は、partition では見ず、登録の段(世代を組むとき)で同じ code で断ります。どの sink が書いたかがそこでは分からないので `node` は付きません。`expected` は `{host_source: "runtime_f32", size}`、`actual` は `{host_source, size}` です([CT-5 の登録の段の拒否](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1236))。
   - `graph.` の code なので CT-2 の `document` も付きます(編集の ticket の rejected で確かめています。登録の段の拒否に `document` が付く道は CT-2 の規則のコードの読みで、test はありません)。
   - 例(test。`{"element": "float", "size": 8}` の buffer `data` に `value: [1.0, 2.0]` を書く): `{code: "graph.render_scalar_target_incompatible@1", node: "write", target: "data", expected: {host_source: "runtime_f32", size: 8}, actual: {host_source: null, size: 8}, document: "project://passes/main.json"}`。`size: 16` にすると `expected.size: 8`・`actual.size: 16` で断られ、`host_source: "runtime_f32"`・`size: 8` なら通ります。
   - catalog の `render.scalar` の `target` の `choices_from` にも同じ条件が `where` で載ります(§6.17 の CT-5 の段落)。
@@ -1368,7 +1368,7 @@ Studio 側へ保持できます。
 
 <a id="resource-check-refusal-codes"></a>
 
-**資源の検査の拒否のコード(✅RC-3c2a)。**pass が使う render target の usage・大きさ・sample 数、snapshot の両端、material pass の attachment の検査は、variant をまとめた後の値(上の §6.2 の「variant をまたぐ宣言は 1 つにまとめます」)で、GPU に登録する前に走ります。前は pass を読む所の名前の無い文(`Color output target missing COLOR_ATTACHMENT usage: …`、`Material pass color output format mismatch: …`、`Snapshot copy usage mismatch: …` など)でした。code と fields の一覧は [宣言のコメント](../../src/project/generationresources.hpp#L171) です。
+**資源の検査の拒否のコード(✅RC-3c2a)。**pass が使う render target の usage・大きさ・sample 数、snapshot の両端、material pass の attachment の検査は、variant をまとめた後の値(上の §6.2 の「variant をまたぐ宣言は 1 つにまとめます」)で、GPU に登録する前に走ります。前は pass を読む所の名前の無い文(`Color output target missing COLOR_ATTACHMENT usage: …`、`Material pass color output format mismatch: …`、`Snapshot copy usage mismatch: …` など)でした。code と fields の一覧は [宣言のコメント](../../src/project/generationresources.hpp#L177) です。
 
 | code | いつ | fields |
 |---|---|---|
@@ -1802,7 +1802,7 @@ compute task(RT pipeline の task を含む)の descriptor set は、世代を�
   - `compute.descriptor_budget@1` `{field, count, limit, task}`: 1 つの task の layout が device の上限(`maxDescriptorSetStorageBuffers` / `maxDescriptorSetStorageImages` / `maxDescriptorSetSampledImages` / `maxDescriptorSetSamplers`)を超えたとき、または数が 32 bit を超えたとき([`validateComputeDescriptorLayout()`](../../src/core/renderingpass/computedescriptorbudget.hpp#L63))。この上限は Vulkan では layout ごとのもので、pool の合計には当てません。
   - `compute.descriptor_pool_exhausted@1` `{result: "ErrorOutOfPoolMemory", task, tasks, sets, max_sets}`: 上の数え方で作った pool から取れなかったとき。起きない前提の検査で、黙って続けずに断ります。
 - **断られたときの見え方**: 起動時(最初の世代)なら、`--render-fallback` でない起動は今までどおり致命で、headless の player は非 0 で終わります。走行中の reload や編集なら、前の世代のまま描き続け、Problems に `render.config_apply_failed@1` が 1 件入ります(`reason_code` に上の code、`reason` に元の拒否、`document` は root の文書。[Problems に写す所](../../src/core/watch/problemlist.cpp#L386))。同じ失敗は `get_status.reload.last_error` にも入ります。直して commit すると消えます。
-  - 編集の RPC が検証で断られたとき(node の順の衝突、RT の shader record の ABI など。GPU の準備の途中で走る検査も含みます)は、拒否は答えに返るだけで Problems には入りません(✅CP-1b)。編集で Problems に入るのは、適用の途中の descriptor の失敗(上の 2 つの code)と、device や memory の確保の失敗(`vk::SystemError`・`std::bad_alloc`。code は名前の無い拒否と同じ `render_pipeline_preflight_failed`)だけです([分ける所](../../src/core/vkcore/renderer.cpp#L3811))。reload と起動時の失敗は、拒否の種類に関係なく今までどおり入ります。
+  - 編集の RPC が検証で断られたとき(node の順の衝突、RT の shader record の ABI など。GPU の準備の途中で走る検査も含みます)は、拒否は答えに返るだけで Problems には入りません(✅CP-1b)。編集で Problems に入るのは、適用の途中の descriptor の失敗(上の 2 つの code)と、device や memory の確保の失敗(`vk::SystemError`・`std::bad_alloc`。code は名前の無い拒否と同じ `render_pipeline_preflight_failed`)だけです([分ける所](../../src/core/vkcore/renderer.cpp#L3812))。reload と起動時の失敗は、拒否の種類に関係なく今までどおり入ります。
 
 ### バッファサイズを RT の extent から決める(`size_from_extent`)
 
@@ -2018,7 +2018,7 @@ root の rendering 節の `frame_node_order` は、frame graph ごとに node �
 - 並びの形と名前の拒否も ✅RC-3c1b から名前付きです(前は名前の無い文)。
   - `render_graph.frame_node_order_invalid@1`: `frame_node_order` が object でない(`reason: not_an_object`)、graph の値が配列でない(`not_an_array`)、node が空でない文字列でない(`node_not_a_non_empty_string`)、同じ node を 2 度書いた(`duplicate`、`node` 付き)。読み込みの parse で断ります([parse する所](../../src/project/rendergraphparse.cpp#L1924))。
   - `render_graph.frame_node_order_unknown@1 {graph, node}`: 並びがその graph に無い node を書いた([当てる所](../../src/project/rendergraphir.cpp#L995))。
-  - `render_graph.frame_node_order_unknown@1 {graph}`: 組めたどの variant(flat / XR / preview。unavailable の preview は数えない)の graph にも無い graph の名前を鍵に書いた([全 variant を見る所](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L723))。
+  - `render_graph.frame_node_order_unknown@1 {graph}`: 組めたどの variant(flat / XR / preview。unavailable の preview は数えない)の graph にも無い graph の名前を鍵に書いた([全 variant を見る所](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L789))。
 - 照らす所は compile の `applyFrameNodeOrder()` です。編集だけでなく起動と reload でも同じ code になり、`get_status.render_pipeline.refusal` と問題の一覧に出る。起動と reload の道の test はありません(未確認)。
 - 名前付きの AS の操作(`__scene_acceleration_structure` など)の順も同じ照らし方です。前は「並びは通り、後の planner が `Cycle` で落ちる」でした。今は並びの時点でこの code で断ります(既存の test の 7 か所の期待を変えました)。
 
@@ -2104,11 +2104,11 @@ mount 名も論理パス内に保持)だけです。絶対パスは wire に出�
 Studio と ImGui Plan Viewer は runtime profile 以外を受理しません。
 request-local な preview graph はこの renderer runtime 投影の対象外です。
 
-**同じ世代の `get_frame_plan` は、世代で決まる部分を使い回します。**返り値の形と bytes は変わりません。renderer は返り値を、公開した世代とその program で決まる部分と、呼ぶたびに読む部分に分けます。前者はその世代で最初に呼ばれたときに 1 回だけ組み、以後は写しに後者を足して返します([`framePlanGenerationPartJson()`](../../src/core/vkcore/renderer.cpp#L4224))。
+**同じ世代の `get_frame_plan` は、世代で決まる部分を使い回します。**返り値の形と bytes は変わりません。renderer は返り値を、公開した世代とその program で決まる部分と、呼ぶたびに読む部分に分けます。前者はその世代で最初に呼ばれたときに 1 回だけ組み、以後は写しに後者を足して返します([`framePlanGenerationPartJson()`](../../src/core/vkcore/renderer.cpp#L4225))。
 
 - 世代で決まる部分: `framePlanToJson` の plan(ループ・`diagnostics`・fold の決定を含む)、`gpu_owner_scope`、`window_output`、`gpu_resource_arena`、`physical_target_plan`(と `from_nodes`)、`native_scope_executors`、`sample_count_plan` など。
 - 呼ぶたびに読む部分: `shader_resolution`(source の file が在るかは今の file system)、`preview`、PS-1 の `last_run_*`・MP-1 の `drawn_materials`・LP-3a の draw_loop の要素など frame で変わる node の field、material filter、`runtime_resolution`、照明(`lighting_data_runtime`)、`sprite`、`initial_asset`、RC-1 の `memory_summary` と `physical_target_plan.resources[].bytes`、RC-1b の `gpu_resource_arena` の render target の `declared_bytes`(arena の他の部分は世代で決まる部分。下の「[物理 image の bytes と `memory_summary`](#physical-plan-memory)」)など。
-- 組み直すのは、世代(の object)・世代の番号・rendering pass の id・rendering の root の参照のどれかが変わったときです([FP-1 で組み直しを決める所](../../src/core/vkcore/renderer.cpp#L4542))。
+- 組み直すのは、世代(の object)・世代の番号・rendering pass の id・rendering の root の参照のどれかが変わったときです([FP-1 で組み直しを決める所](../../src/core/vkcore/renderer.cpp#L4544))。
 - commit の記録の計測: Debug の player、約 197 KB の返り値で、往復 190〜222 ms → 68〜84 ms(15 回の中央値、前後を交互に)。前後 6 組の返り値は byte 一致でした。test: `engine_primitives_test` の [「FP-1 get_frame_plan builds its generation's part once and reads a frame's part on every call」](../../test/engine_primitives_test.cpp#L2781)(GPU)。
 
 **`execution_plan` と `levels` は無くなりました(✅RC-2、`e15e31bb5`)。**以前のダンプには、backend 非依存の共通 IR
@@ -2239,9 +2239,9 @@ render / compute / transfer / output / marker のノード本体は provider の
 - 対象が合成の結果に無い root の宣言は、frame plan の `diagnostics` に `{kind: "target_planning.name_absent@1", subject: <名前>, detail: {severity: "warning", graph, name, key}}` を出して捨てます。`require` でも組み直しは止まりません。graph ごと無い場合も同じです。レシピと feature・断片の宣言は warning を出さず、dump に `absent` で残ります(置き換えで消えるのは正常のため)。
 - RPC の `edit_target_planning` は今までどおり、今の合成に無い名前を `target_planning_name_unknown` で断り、消えた名前を `null` で消せます。✅RC-6b1 から、消えた名前の保存済みの葉だけを `null` で消す要求(`{"<名前>": {"scope_break": null}}` など)も受けます(下の「[Studio の Pin / Freeze / Remove と check](#target-planning-studio)」の RPC の緩め)。
 
-**complete install との同居**: graph に作者の宣言(engine 以外。`profile` と `required_capabilities` は数えません)が 1 つでもあり、その graph に complete physical plan を install すると `target_planning.policy_with_legacy_package@1`(`graph`)で断られます([`requireNoLegacyPlanningPolicy()`](../../src/project/targetplanning.cpp#L45)、[install で呼ぶ所](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L1000))。complete package は planner の後で当たって宣言を見ないためです。✅RC-6b2 の前は `vulkan_plan_pins` の pin と `vulkan_physical_fragments` の physical fragment も同じ拒否でしたが、この 2 つは文書の鍵ごと無くなり、書けば `target_planning.legacy_package_removed@1` です(下の「[旧い pin と physical fragment](#legacy-plan-packages-removed)」)。✅RC-6b1 から Studio の Pin this candidate と Freeze this physical plan は root の `target_planning` に書きます。complete package を install した graph では、Studio が送る前に Pin / Freeze を断ります(下の「[Studio の Pin / Freeze / Remove と check](#target-planning-studio)」)。
+**complete install との同居**: graph に作者の宣言(engine 以外。`profile` と `required_capabilities` は数えません)が 1 つでもあり、その graph に complete physical plan を install すると `target_planning.policy_with_legacy_package@1`(`graph`)で断られます([`requireNoLegacyPlanningPolicy()`](../../src/project/targetplanning.cpp#L45)、[install で呼ぶ所](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L1066))。complete package は planner の後で当たって宣言を見ないためです。✅RC-6b2 の前は `vulkan_plan_pins` の pin と `vulkan_physical_fragments` の physical fragment も同じ拒否でしたが、この 2 つは文書の鍵ごと無くなり、書けば `target_planning.legacy_package_removed@1` です(下の「[旧い pin と physical fragment](#legacy-plan-packages-removed)」)。✅RC-6b1 から Studio の Pin this candidate と Freeze this physical plan は root の `target_planning` に書きます。complete package を install した graph では、Studio が送る前に Pin / Freeze を断ります(下の「[Studio の Pin / Freeze / Remove と check](#target-planning-studio)」)。
 
-**dump の `policy`**: `get_frame_plan` の `physical_target_plan` は、その graph に宣言が 1 つでもあるときだけ `policy` の配列を持ちます。宣言が無ければ欄ごとありません([出す所](../../src/project/targetrenderplanning.cpp#L4307))。
+**dump の `policy`**: `get_frame_plan` の `physical_target_plan` は、その graph に宣言が 1 つでもあるときだけ `policy` の配列を持ちます。宣言が無ければ欄ごとありません([出す所](../../src/project/targetrenderplanning.cpp#L4384))。
 
 ```json
 "policy": [
@@ -2259,7 +2259,7 @@ render / compute / transfer / output / marker のノード本体は provider の
 
 - `status` は `adopted`(採った)/ `overridden`(上の出所に負けた)/ `engine_forced`(engine の強制と逆の `prefer` を捨てた)/ `absent`(対象が無い)/ `infeasible_prefer`(✅RC-6a2。満たせない `prefer` を外した)です。`infeasible_prefer` は候補ごとに付き、dump に出るのは選んだ候補での状態です。
 - `origin.pointer` は宣言を書いた文書の中の JSON pointer です。`recipe` の document は preset の参照、pointer は `/config/target_planning/…`、fold の決定は `/fold_groups/<group>/folded/decisions/<field>` です。
-- `satisfied` は採った `require` の行だけが持ちます(`prefer` の行は持ちません)。✅RC-6a2 から、選んだ計画を採ったすべての `require` と照らした結果です([`validateVulkanTargetPlanRequirements()`](../../src/project/targetrenderplanning.cpp#L3869))。1 つでも成り立たなければ組み直しが `target_planning.requirement_unsatisfied@1` で断られるので、組めた計画の dump ではいつも `true` です(コードの読み)。
+- `satisfied` は採った `require` の行だけが持ちます(`prefer` の行は持ちません)。✅RC-6a2 から、選んだ計画を採ったすべての `require` と照らした結果です([`validateVulkanTargetPlanRequirements()`](../../src/project/targetrenderplanning.cpp#L3932))。1 つでも成り立たなければ組み直しが `target_planning.requirement_unsatisfied@1` で断られるので、組めた計画の dump ではいつも `true` です(コードの読み)。
 - graph.instance の scope 由来の engine の `isolate` も台帳に入るので、その graph では `origin.kind: "engine"` の行も出ます(コードの読み)。
 - policy は fingerprint に入りません。宣言を書いても計画が同じなら `logical_graph_fingerprint` も `automatic_plan_fingerprint` も同じです(test)。
 
@@ -2296,6 +2296,7 @@ render / compute / transfer / output / marker のノード本体は provider の
 - `scope_join` は、直前の node と融合できる条件(どちらも rendering の node、view と sample 数が同じ、この node にも直前の scope の node にも `serial` / `isolate` が無い、attachment の契約を満たす、など)がそろわないと成り立ちません。engine が isolate する `sprite_draw` への join も成り立ちません(test)。
 - `alias_group` の組は「書いた文書」と組名で決まります。2 つの feature が同じ組名を書いても別の組で、共有させたいときは root に書きます(test)。組のすべての対が alias してよい(寿命が重ならない、型と大きさが合う、`no_alias` / `isolate` に掛からない)必要があります。`conservative_debug` / `hazard_stress` の profile が間引いた対は、組に書けば共有できます。
   - ✅RC-7b から、組の資源は自動の共有と同じ条件(保持の理由が無い、最初の use が load なしで全体を書く、実効の usage が同じ、同じ scope の中で入れ替わらない、など)も満たす必要があります(§6.6 の末尾の「[自動で共有される render target の条件](#alias-sharing-conditions)」)。
+  - ✅RC-7c から、「型と大きさが合う」「実効の usage が同じ」は「memory の鍵(`memoryTypeBits`)が同じ」に変わり、組は **同じ region の同じ offset** に置かれます(size が違ってもよい)。memory requirements が分からない compile では `require` が `alias.requirements_unknown` で断られます(§6.6 の末尾の「[memory の region と offset](#memory-regions)」)。`conservative_debug` では自動の共有をせず、組に書いた住人だけを region に入れます(コードの読み)。
 - ✅RC-6b1 から、Studio の Pin / Unpin が `backend` を、Freeze が `backend`・`scope_break` / `scope_join`・`alias_group`・`representation` を書き、Remove がこの 5 つを消します(下の「[Studio の Pin / Freeze / Remove と check](#target-planning-studio)」)。
 
 **効き方**:
@@ -2304,10 +2305,10 @@ render / compute / transfer / output / marker のノード本体は provider の
 - `require` が成り立たない候補は不成立です。3 候補とも不成立なら `target_planning.requirement_unsatisfied@1`(`graph`・`candidates: [{candidate, failures: [{id, target, reason}]}]`)で組み直しが断られます。
 - `prefer` が失敗の原因になった候補では、原因の `prefer` を台帳の順で 1 つずつ外して候補を作り直します。外した宣言は dump で `status: "infeasible_prefer"` です。原因に `prefer` が無い失敗(`require` どうしの食い違いや device の制約)は直さず、その候補は不成立です。4 つの鍵の `prefer` も同じ扱いで、例えば `alias_group` の `require` と食い違う `no_alias` の `prefer` は外れます(test)。
 - 成り立つ候補が複数あれば、`prefer` が cost より先に効きます。採ったままの `backend` の `prefer` がある候補が先、次に採ったままの `prefer` が多い候補で、残りは今の cost の順です。だから `"backend": {"value": "materialized", "strength": "prefer"}` は、tile_local の方が安くても materialized を選ばせます(test)。指した候補が成り立たなければ `infeasible_prefer` になって cost の順に戻ります。policy が順位を決めたときの `decisions[]` の `pelican.plan.backend_candidate_selected@1` の detail は `policy preference followed by deterministic cost tuple` です。
-- 最後に、選んだ計画を採ったすべての `require`(4 つの鍵を含む)と 1 回照らします。成り立たない物があれば `target_planning.requirement_unsatisfied@1`(`graph`・`candidate`・`requirements: [...]`)です([`validateVulkanTargetPlanRequirements()`](../../src/project/targetrenderplanning.cpp#L3869))。dump の `satisfied` はこの結果です。
+- 最後に、選んだ計画を採ったすべての `require`(4 つの鍵を含む)と 1 回照らします。成り立たない物があれば `target_planning.requirement_unsatisfied@1`(`graph`・`candidate`・`requirements: [...]`)です([`validateVulkanTargetPlanRequirements()`](../../src/project/targetrenderplanning.cpp#L3932))。dump の `satisfied` はこの結果です。
 - 宣言を 1 つも書かなければ、どれも働かず、計画は前と同じです(16 構成の比較の test)。
 
-**入力の誤り `target_planning.policy_invalid@1`**(`graph`・`target`・`key`・`document`・`pointer`): 先頭の node の `scope_join: true`、同じ node の `scope_break` と `scope_join` が両方 `true`、external の資源・image でない資源への `representation`、feature・構造の断片の `backend`([`validatePolicyInput()`](../../src/project/targetrenderplanning.cpp#L1019))。5 つの鍵の値の形の誤り(型の違い、空の文字列、`backend` の 3 つ以外、`representation` の `"materialized"` 以外、包んだ形の `value` の欠けや `strength` の綴り)も同じ code です。
+**入力の誤り `target_planning.policy_invalid@1`**(`graph`・`target`・`key`・`document`・`pointer`): 先頭の node の `scope_join: true`、同じ node の `scope_break` と `scope_join` が両方 `true`、external の資源・image でない資源への `representation`、feature・構造の断片の `backend`([`validatePolicyInput()`](../../src/project/targetrenderplanning.cpp#L1023))。5 つの鍵の値の形の誤り(型の違い、空の文字列、`backend` の 3 つ以外、`representation` の `"materialized"` 以外、包んだ形の `value` の欠けや `strength` の綴り)も同じ code です。
 
 **RPC**: `edit_target_planning` は `backend` も受けます。送った値を graph の `backend` にそのまま書き、`null` で消します。`backend` だけの要求もできます([backend を書く所](../../src/core/communication/renderconfigeditor.cpp#L5451))。node と資源の新しい鍵は `nodes` / `resources` に書けば送った形のまま保存されます(test)。値の誤りは組み直しで断られます(コードの読み)。
 
@@ -2321,7 +2322,7 @@ RC-6b1 の時点では `vulkan_plan_pins` / `vulkan_physical_fragments` を書�
 
 **書く名前は作者の名前です。**policy は variant(flat / preview / xr)に共通です。
 
-- graph 名は、表示中の variant の compiler が実際に付けた接尾辞だけを外します。`get_frame_plan` の最上位に足した `graph_variant: {name, name_suffix}`(物理計画の外の欄)を読みます([足す所](../../src/core/vkcore/renderer.cpp#L4236)、[外す所 `planningAuthorGraphName()`](../../src/devstudio/model/frameplanpolicy.hpp#L13))。作者が名前に書いた `#xr` などは残ります(test)。
+- graph 名は、表示中の variant の compiler が実際に付けた接尾辞だけを外します。`get_frame_plan` の最上位に足した `graph_variant: {name, name_suffix}`(物理計画の外の欄)を読みます([足す所](../../src/core/vkcore/renderer.cpp#L4237)、[外す所 `planningAuthorGraphName()`](../../src/devstudio/model/frameplanpolicy.hpp#L13))。作者が名前に書いた `#xr` などは残ります(test)。
 - node 名は frame plan の node の `authored_name` です(XR の compute task `probe_fill#xr` なら `probe_fill`)。root の宣言は RC-6a1 の規則(最終名 → 作者名)で各 variant の node に結び付きます。XR で Freeze した policy が flat と XR の両方で同じ計画になります(test「RC-6b1 D2 Freeze XR compute author names bind both flat and XR」)。
 
 **Pin / Unpin**: Pin は root の `graphs.<graph>.backend` に `{"value": "materialized" | "transient" | "tile_local", "strength": "require"}` を書きます。押せるのは Selected か Feasible の候補だけです([`framePlanBackendPinRequest()`](../../src/devstudio/view/frameplanedit.cpp#L2208))。Unpin は `backend: null` です。Studio の「Pinned」の表示は「root に `backend` の宣言がある」ことで、手で書いた `prefer` も Pinned に見えます。
@@ -2347,7 +2348,7 @@ RC-6b1 の時点では `vulkan_plan_pins` / `vulkan_physical_fragments` を書�
 - 物理計画が出ていない(計画が失敗している)ときも押せます(test「RC-6b1 D3 Remove enumerates five root keys even without physical plan」)。
 - `serial` / `isolate` / `fuse` / `no_alias` は残します。Undo は手で書いた形のまま、消す前の文書に戻します(test)。
 
-**complete package を install した graph**: `get_frame_plan` の最上位に `legacy_complete_plan: true`(complete physical plan を install した。物理計画の外の欄。[出す所](../../src/core/vkcore/renderer.cpp#L4312))があるとき、Pin と Freeze は送る前に `This graph has a complete package: Pin / Freeze cannot add policy (target_planning.policy_with_legacy_package@1).` で断ります([断る所](../../src/devstudio/view/frameplanedit.cpp#L2190))。移行の機能はありません。Unpin と Remove はこの検査をしません(コードの読み)。
+**complete package を install した graph**: `get_frame_plan` の最上位に `legacy_complete_plan: true`(complete physical plan を install した。物理計画の外の欄。[出す所](../../src/core/vkcore/renderer.cpp#L4313))があるとき、Pin と Freeze は送る前に `This graph has a complete package: Pin / Freeze cannot add policy (target_planning.policy_with_legacy_package@1).` で断ります([断る所](../../src/devstudio/view/frameplanedit.cpp#L2190))。移行の機能はありません。Unpin と Remove はこの検査をしません(コードの読み)。
 
 - RC-6b1 では文が `This graph has a legacy package: …` で、`planning_catalog` の `legacy_package`(root の `vulkan_plan_pins` / `vulkan_physical_fragments` にその graph か `<graph>#xr` の package がある)と、plan の applied の pin / fragment も見ていました。✅RC-6b2 でこの 2 つは無くなりました(旧い鍵のある文書はそもそも読み込めません。上の「[旧い pin と physical fragment](#legacy-plan-packages-removed)」)。
 
@@ -2370,7 +2371,7 @@ RC-6b1 の時点では `vulkan_plan_pins` / `vulkan_physical_fragments` を書�
 
 **RPC の緩め**: `edit_target_planning` は、合成の結果に無い名前でも、root の文書に保存してある葉を `null` で消す要求を受けます。名前の値が object で、その field がどれも `null`、どれも保存済みの entry にある場合だけです([受ける所](../../src/core/communication/renderconfigeditor.cpp#L5464))。それ以外の、無い名前への書き込みは今までどおり `target_planning_name_unknown` です。
 
-**表示**: Studio の Frame Plan の Physical plan のタブに **Policy** の節が出て、dump の `policy` の行を `<target>.<key>` と行の JSON で並べます([節を作る所](../../src/devstudio/view/frameplanwidget.cpp#L5171))。ImGui の Pelican Compiled Passes も、物理計画の facts に `policy <target>.<key>` の行を足します([足す所](../../src/core/imgui/compiledplanviewer.cpp#L157))。
+**表示**: Studio の Frame Plan の Physical plan のタブに **Policy** の節が出て、dump の `policy` の行を `<target>.<key>` と行の JSON で並べます([節を作る所](../../src/devstudio/view/frameplanwidget.cpp#L5183))。ImGui の Pelican Compiled Passes も、物理計画の facts に `policy <target>.<key>` の行を足します([足す所](../../src/core/imgui/compiledplanviewer.cpp#L157))。
 
 #### 3 つの representation と、その選ばれ方
 
@@ -2393,7 +2394,7 @@ flowchart TB
     D -->|"はい"| E["実行可能候補: pin があれば照合 / なければ policy の prefer → cost 順"]
     E --> F["選択した物理 plan: representation・scope・alias"]
 ```
-根拠: [targetrenderplanning.cpp:2636](../../src/project/targetrenderplanning.cpp#L2677)、[targetrenderplanning.cpp:2897](../../src/project/targetrenderplanning.cpp#L2929)、[targetrenderplanning.cpp:4007](../../src/project/targetrenderplanning.cpp#L3977)、[targetplanning.cpp:91](../../src/project/targetplanning.cpp#L123)。
+根拠: [targetrenderplanning.cpp:2636](../../src/project/targetrenderplanning.cpp#L2681)、[targetrenderplanning.cpp:2897](../../src/project/targetrenderplanning.cpp#L2933)、[targetrenderplanning.cpp:4007](../../src/project/targetrenderplanning.cpp#L4040)、[targetplanning.cpp:91](../../src/project/targetplanning.cpp#L123)。
 
 <a id="physical-plan-scope"></a>
 
@@ -2405,7 +2406,7 @@ flowchart TB
 
 - 前は物理計画が自分で順を選び直していて(依存の無い node は名前の順)、frame plan と物理の順が違う graph がありました。出荷の project では raytracing_demo / pathtrace_demo と Studio の playground_rt の `main_render` が該当し、✅RC-3d2 から `__scene_acceleration_structure` が物理の順でも先頭になりました(frame plan の順は前と同じ)。golden の画像は前とバイト一致です(実装者の報告)。
 - 順を変えたいときは `frame_node_order`(§6.6「[pass の順を指定する](#pass-の順を指定する--frame_node_orderfo-1-a4d7760a)」)で書きます。物理計画の側で並べ替える道はありません(✅RC-6b2 の前の physical fragment も並べ替えは断りました。下の「[旧い pin と physical fragment](#legacy-plan-packages-removed)」)。
-- 別の順を持つ物理計画は、どの道から来ても `render_compiler.physical_order_mismatches_frame_plan@1 {graph, position, reason, expected, actual}` で断ります(`reason` は `duplicate` / `missing` / `extra` / `position` で、この順に優先。[断る所](../../src/project/frameplan.cpp#L525))。照らすのは compiler の共通の仕上げ([その所](../../src/core/renderingpass/rendercompilerprogram.cpp#L330))、complete physical plan の検査([その所](../../src/project/vulkancompletephysicalplan.cpp#L1588))、それを通らない直接の登録([その所](../../src/core/renderingpass/framegraphruntime.cpp#L15))です。差し替えた compiler program が scope を入れ替えた package を返したときもここで断られ、公開中の世代はそのまま残ります(GPU の test「RC-3d2 registration rejects three reordered packages and preserves the published drawing」)。
+- 別の順を持つ物理計画は、どの道から来ても `render_compiler.physical_order_mismatches_frame_plan@1 {graph, position, reason, expected, actual}` で断ります(`reason` は `duplicate` / `missing` / `extra` / `position` で、この順に優先。[断る所](../../src/project/frameplan.cpp#L525))。照らすのは compiler の共通の仕上げ([その所](../../src/core/renderingpass/rendercompilerprogram.cpp#L330))、complete physical plan の検査([その所](../../src/project/vulkancompletephysicalplan.cpp#L1595))、それを通らない直接の登録([その所](../../src/core/renderingpass/framegraphruntime.cpp#L15))です。差し替えた compiler program が scope を入れ替えた package を返したときもここで断られ、公開中の世代はそのまま残ります(GPU の test「RC-3d2 registration rejects three reordered packages and preserves the published drawing」)。
 
 注: `materialized_image` は通常の device-local image として内容を保存し、`transient_attachment` は lazily allocated memory を優先して区間外に内容を残さず最後の Store を Discard にする attachment、`tile_local_attachment` は同じ scope 内の same-pixel read に値を渡す attachment です。transient は write-only、tile-local は read があるため、3 種を段階的に 1 段ずつ落とす関係にはなりません。external 資源・buffer・使わない semantic resource はこの image の三分岐の対象外です。
 
@@ -2415,25 +2416,27 @@ flowchart TB
 
 <a id="physical-plan-memory"></a>
 
-`get_frame_plan` は、render target の image が占める bytes を 3 か所に出します。1 枚の bytes を数える式は planner 側に 1 つで([`targetrendermemory.hpp`](../../src/project/targetrendermemory.hpp#L18))、renderer・GPU arena・Studio はその答えを写すだけです。合計(`total_bytes`)は RC-1b から、計画ではなく runtime が実際に登録したものから数えます。
+`get_frame_plan` は、render target の image が占める bytes を 3 か所に出します。1 枚の bytes を数える式は planner 側に 1 つで([`targetrendermemory.hpp`](../../src/project/targetrendermemory.hpp#L18))、renderer・GPU arena・Studio はその答えを写すだけです。合計(`total_bytes`)は RC-1b から、計画ではなく runtime が実際に登録したものから数えます。✅RC-7c から、本番の合計は実際に取った VMA の allocation の size で数え、texel × extent の式の値(payload)と計画の見積もりは別の欄に出します(§6.6 の末尾の「[memory の region と offset](#memory-regions)」の「計測」)。
 
 - **`physical_target_plan.resources[].bytes`**: その資源の image の bytes。texel の bytes × 幅 × 高さ × layers を mip の全段で足し(段ごとに幅と高さを半分にして切り捨て、1 より小さくしない)、history の target は 2 面分です。MSAA の target は面ごとに、sample する 1 sample の image(mip 込み)と、描き込む samples 倍の image(mip 0 だけ)の 2 枚を数えます([`imageResourceBytes()`](../../src/project/targetrendermemory.cpp#L13))。
   - 付くのは representation が `materialized_image` / `transient_attachment` / `tile_local_attachment` の資源だけです。external(swapchain)と buffer には付きません。
   - texel の大きさは、engine に 1 つの format の性質表の列です([表](../../src/project/imageformat.cpp#L17)。RC-3a1 から。上の「format と usage の表」)。render target の JSON parser が受け付ける format(作者が書ける 45 種)は全部この表に 0 より大きい bytes を持ちます(test で固定しています)。renderer の snapshot の `byte_size` や readback も同じ列を引きます。snapshot が写せる format の集合(12 種)は、この表とは別の決まりのままです。
     - 表は内部の `D32_SFLOAT_S8_UINT` も含めて 46 行で、その bytes は 8 です(Vulkan の texel block の 5 ではなく、実装が置く大きさの見積もり)。
-- **最上位の `memory_summary {total_bytes, unused_bytes, unused_resources, peak_live_bytes, peak_node, peak_graph}`**:
+- **最上位の `memory_summary {total_bytes, unused_bytes, unused_resources, peak_live_bytes, peak_node, peak_graph}`**(✅RC-7c から `payload_bytes`・`planned_region_bytes`・`planned_region_count`・`actual_placement`、本番の登録では `actual_allocation_count`・`actual_allocation_bytes` も):
   - `total_bytes` は、**公開中の世代の GPU arena に登録された render target 全部**を、今の metadata で 1 回ずつ足した和です([`totalRegisteredTargetMemory()`](../../src/project/targetrendermemory.cpp#L121))。どの graph も使わない render target も入ります(登録は render target の定義を全部登録して確保するためです)。
     - alias の組は、runtime の登録が残した組(registry の `aliasGroup(id)`)ごとに 1 回、組の中で最大の住人の 1 sample の image の bytes で数えます。MSAA の住人が描き込む samples 倍の image は住人ごとの確保なので、住人ごとに数えます。複数の graph で runtime が alias を取り消した資源は、計画に組があっても別々の確保として数えます。
     - RC-1 では「この計画の image の和(計画の `alias_groups` の組は 1 回)」でした。graph が 1 本で未使用の render target が無ければ値は同じです(下の example の 125,776,320 は変わりません)。
+    - ✅RC-7c から、本番の登録(GPU)では各 image が参照する VMA の allocation を測り、**一意の allocation ごとに size を 1 回**足します。region の住人は同じ allocation を指すので 1 回です。`unused_bytes` は、allocation の住人が全員使われないときだけその size を数えます([`totalRegisteredTargetMemory()`](../../src/project/targetrendermemory.cpp#L121))。測った値の無い CPU の代役の登録は、今までの式の見積もりのままです。
+    - ✅RC-7c から、本番の dump の資源の行の `bytes` / `allocation_bytes` は、その image が参照する VMA の allocation の size です。region の住人の行は同じ allocation の size を示すので、行を足しても総量になりません。式の値は資源の行の `payload_bytes` に残ります。GPU arena の `declared_bytes` は式の値のままです。
   - `unused_bytes` は `total_bytes` のうち、どの graph の物理計画にも出てこない render target の分です。alias の組の共有分は、住人が 1 つも使われないときだけ入ります。`unused_resources` はその render target の名前(sort 済み)です。OpenXR の mirror の中間 image は graph の外で engine が使うので、使用として扱います。
   - `peak_live_bytes` は、**この graph の計画**の lowering graph の node の順番(order)ごとに、寿命 `[first_use, last_use]` がその order を含む image の bytes を足した和の最大です([`summarizeVulkanTargetPlanMemory()`](../../src/project/targetrendermemory.cpp#L74))。`peak_node` はその最大を最初に取った order の node の名前で、bytes を持つ image が 1 つも無ければ `null` です。`peak_graph` はその計画の graph 名です。`get_frame_plan` は 1 つの graph の dump なので、peak もその graph の分だけで、ほかの graph の peak はその graph の `get_frame_plan` が出します。total だけが世代全体の値です。
   - 物理計画の無い plan には `memory_summary` がありません。
-- **数えられない image は名前付きのエラーです**: 計画の image に runtime の render target の binding が無いとき、または arena や binding が指す id を生きている登録が持っていないとき、renderer は `frame_plan.memory_unmeasured@1: {"resource": <名前>, "reason": "unbound" | "not_registered"}` の文で例外を投げ、一部だけ数えた summary は返しません([投げる所](../../src/core/vkcore/renderer.cpp#L4407))。正しい状態では起きません(runtime の計画の検証が定義の無い image を先に拒否し、登録は定義を全部登録するため)。`get_frame_plan` の RPC のエラーとしての code / data の形は未確認です。
-- **上限として読みます**: transient / tile_local の image も同じ式で満額を数えます(lazily allocated memory に置かれれば、実際の確保はこれより小さいことがあります)。bytes は texel × extent の大きさで、`VkMemoryRequirements.size` の alignment や圧縮のメタデータは含みません。
-- **呼ぶたびに数えます**: renderer は `get_frame_plan` を呼ぶたびに、登録した image の今の metadata(extent・layers・解決済みの mip 数)から数えます([数える所](../../src/core/vkcore/renderer.cpp#L4823))。窓の大きさを変えた後は新しい大きさの値です(上の「プランダンプ」の、呼ぶたびに読む部分)。
+- **数えられない image は名前付きのエラーです**: 計画の image に runtime の render target の binding が無いとき、または arena や binding が指す id を生きている登録が持っていないとき、renderer は `frame_plan.memory_unmeasured@1: {"resource": <名前>, "reason": "unbound" | "not_registered"}` の文で例外を投げ、一部だけ数えた summary は返しません([投げる所](../../src/core/vkcore/renderer.cpp#L4408))。正しい状態では起きません(runtime の計画の検証が定義の無い image を先に拒否し、登録は定義を全部登録するため)。`get_frame_plan` の RPC のエラーとしての code / data の形は未確認です。
+- **上限として読みます**: transient / tile_local の image も同じ式で満額を数えます(lazily allocated memory に置かれれば、実際の確保はこれより小さいことがあります)。bytes は texel × extent の大きさで、`VkMemoryRequirements.size` の alignment や圧縮のメタデータは含みません(✅RC-7c から、本番の `total_bytes` と `actual_*` は実際の allocation の size です。上)。
+- **呼ぶたびに数えます**: renderer は `get_frame_plan` を呼ぶたびに、登録した image の今の metadata(extent・layers・解決済みの mip 数)から数えます([数える所](../../src/core/vkcore/renderer.cpp#L4825))。窓の大きさを変えた後は新しい大きさの値です(上の「プランダンプ」の、呼ぶたびに読む部分)。
 - **GPU arena の `declared_bytes`**: `gpu_resource_arena` の render target の登録も同じ式の bytes を登録時に写します([登録で写す所](../../src/core/renderingpass/renderpipelinegpuarena.cpp#L582))。RC-1b から、dump に出す render target の `declared_bytes` は、書き出す時点の metadata から数え直した値です。登録の後に同じ id のまま image を作り直す経路(window 以外の出力の resize、影の view の数に合わせた layer 数の変更 `setRuntimeArrayLayers()`)の後も今の値になります。arena の構造体が持つ値そのものは登録時のままです(dump だけが今の値)。frame graph buffer は buffer の大きさ、shader bundle・pipeline・pass 系と acceleration structure は 0 です。
-- 例(test、GPU 不要): example を 1920×1080 の出力で計画すると、`total_bytes` は 125,776,320(119.95 MiB。21 枚が alias の 1 組を分け合って 20 の確保)、`unused_bytes` は 0、`peak_live_bytes` は 85,017,600(81.08 MiB)、`peak_node` は `lighting_pass`(order 3。G-buffer 5 枚・`offscreen_depth`・`ssao_blur`・`lit_color` が生きています)。`display` は出力の大きさ(1920×1080)で数えます([test](../../test/frameplanner_test.cpp#L3004))。
-  - どの graph も使わない 64×64 R8 の render target を 1 枚足して登録すると、`total_bytes` は 125,780,416、`unused_bytes` は 4,096、`unused_resources` は `["rc1b_unused"]` です。その後 `lit_color` の layers を 2 にすると、arena の `declared_bytes`・資源の `bytes`・`total_bytes`・`peak_live_bytes` がそろって 16,588,800 増えます([test](../../test/frameplanner_test.cpp#L3143)。renderer の `currentFramePlanJson()` を CPU だけの代役の登録で通します)。
+- 例(test、GPU 不要): example を 1920×1080 の出力で計画すると、`total_bytes` は 125,776,320(119.95 MiB。21 枚が alias の 1 組を分け合って 20 の確保。✅RC-7c からは 134,070,720 = 127.86 MiB、21 確保。この test は facts の無い compiler_only の計画なので共有しません。下の「[facts が無いとき](#memory-regions-without-facts)」)、`unused_bytes` は 0、`peak_live_bytes` は 85,017,600(81.08 MiB)、`peak_node` は `lighting_pass`(order 3。G-buffer 5 枚・`offscreen_depth`・`ssao_blur`・`lit_color` が生きています)。`display` は出力の大きさ(1920×1080)で数えます([test](../../test/frameplanner_test.cpp#L3001))。
+  - どの graph も使わない 64×64 R8 の render target を 1 枚足して登録すると、`total_bytes` は 125,780,416(✅RC-7c からは 134,074,816)、`unused_bytes` は 4,096、`unused_resources` は `["rc1b_unused"]` です。その後 `lit_color` の layers を 2 にすると、arena の `declared_bytes`・資源の `bytes`・`total_bytes`・`peak_live_bytes` がそろって 16,588,800 増えます([test](../../test/frameplanner_test.cpp#L3136)。renderer の `currentFramePlanJson()` を CPU だけの代役の登録で通します)。
   - ✅RC-6c で寿命が graph の中の最後の use までになっても、この example の `total_bytes` と `peak_live_bytes` / `peak_node` は同じです。縮んだのは frame の後半の生存量です(下の「[資源の寿命と `lifetime.retain`](#physical-plan-lifetime)」)。
 
 <a id="physical-plan-lifetime"></a>
@@ -2443,16 +2446,16 @@ flowchart TB
 物理計画の資源の寿命 `lifetime {used, first_use, last_use, retain?}` は、lowering graph の node の順番(order。frame plan の順と同じ)で、その資源を最初と最後に使う node の番号です。✅RC-6c から、`last_use` は **graph の中の最後の use** です。graph の後でも読まれる資源だけが、理由を `retain` に付けて graph の末尾の node まで延びます。`first_use` は理由があっても graph の中の最初の use のままです。
 
 - RC-6c の前は、論理型の `materialization` が `required` / `external` の資源と、snapshot の出力のように store が要る資源を、一律に末尾まで延ばしていました。今はそれだけでは延ばしません。
-- **理由は 7 つ**です。理由は compiler が知っている事実(描画グラフの宣言、実際の FrameTarget、解決済みの variant、選んだ depth の export 元)から付きます([IR から付ける所](../../src/core/renderingpass/renderingsamplecount.cpp#L1458))。
+- **理由は 7 つ**です。理由は compiler が知っている事実(描画グラフの宣言、実際の FrameTarget、解決済みの variant、選んだ depth の export 元)から付きます([IR から付ける所](../../src/core/renderingpass/renderingsamplecount.cpp#L1316))。
 
 | `retain` の値 | 付く資源 | graph の後で読む物 |
 |---|---|---|
 | `present` | 出力 `swapchain` を書く資源(`output_transform` を通らずに出力へ直接書く pass も、offscreen の出力も) | 実際の FrameTarget(画面への present、headless の読み出し) |
 | `history` | `history` の render target | 二面の初期化と、frame ごとの入れ替え |
 | `persistent` | `lifetime: "persistent"` の image(`schedule: "once"` の結果、`initial` の asset から始める image を含む)と、画像ファイルの `source` を持つ image | 後の frame |
-| `external_depth_export` | 外部 depth の export(XR の composition depth)の元に選ばれた depth | graph の後の export の記録([呼ぶ所](../../src/core/vkcore/renderer.cpp#L6767)) |
+| `external_depth_export` | 外部 depth の export(XR の composition depth)の元に選ばれた depth | graph の後の export の記録([呼ぶ所](../../src/core/vkcore/renderer.cpp#L6793)) |
 | `xr_mirror` | XR の variant で mirror が左眼(`mirror_output: left_eye`)のときの `display` | graph の後の mirror の中間 image へのコピー(中間 image は engine の確保で、計画の外) |
-| `picking` | picking の pass が書く `picking_id` | picking の画素の読み出し([`Renderer::readPickingPixel()`](../../src/core/vkcore/renderer.cpp#L5039)) |
+| `picking` | picking の pass が書く `picking_id` | picking の画素の読み出し([`Renderer::readPickingPixel()`](../../src/core/vkcore/renderer.cpp#L5062)) |
 | `capture` | capture できる FrameTarget(flat の variant)の `swapchain` | `--render-out` と capture |
 | `readback`(✅RC-7a) | 作者が `target_planning` で `retain: true` を書き、採られた資源 | 名前での読み出し(下の「[名前で読み戻す約束](#target-planning-retain)」) |
 
@@ -2462,12 +2465,13 @@ flowchart TB
 - 使われない資源(`used: false`)には `retain` が付きません。`retain` は辞書順で重複がありません。
 - **dump**: `get_frame_plan` の `physical_target_plan.resources[].lifetime` と `physical_target_plan.lowering_graph.resources[].lifetime` に、理由がある資源だけ `retain`(文字列の配列)が出ます。理由が無ければ欄がありません(空の配列は出しません)。Studio の Frame Plan は受けた `resources` の JSON を `retain` ごとそのまま保ちます(test「RC-6c Frame Plan accepts and preserves lifetime retain in the physical wire」。Studio のコードは変わっておらず、`retain` の専用の表示はありません)。
 - **fingerprint**: 寿命から作る物理計画の fingerprint に `retain` も入ります([入れる所](../../src/project/vulkanphysicalfragment.cpp#L485))。RC-6c で寿命が縮んだ計画は、`automatic_plan_fingerprint` が RC-6c の前と違います。
-- **planner と検査は同じ関数**: 寿命を出すのは 1 つの関数 [`calculateTargetResourceLifetimes()`](../../src/project/targetrenderplanning.cpp#L1595) で、planner と complete physical plan の検査がそれぞれ自分の入力から計算し直します(下の「complete physical plan は C++ の口だけ」)。
+- **planner と検査は同じ関数**: 寿命を出すのは 1 つの関数 [`calculateTargetResourceLifetimes()`](../../src/project/targetrenderplanning.cpp#L1599) で、planner と complete physical plan の検査がそれぞれ自分の入力から計算し直します(下の「complete physical plan は C++ の口だけ」)。
 - **変わらない物**: alias の組(alias は前と同じ組だけ。runtime の共有・登録も同じ)、representation、attachment の load / store、`total_bytes`、`peak_live_bytes` の定義(閉区間 `[first_use, last_use]` の和)。出荷の 7 project と preset レシピの 16 構成で test が確かめています。
-- **例**(test、GPU 不要): example を 1920×1080 で計画すると(lowering graph は 23 node)、bloom の鎖と合成の order 11〜20 の生存量は 60,134,400〜61,171,200 bytes から 26,956,800〜27,993,600 bytes に、`pelican_ui` と `output_transform`(order 21〜22)は 58,060,800 から 8,294,400 bytes になります([test](../../test/frameplanner_test.cpp#L3105))。**実際に確保するメモリは減りません**(alias を変えていないため)。
+- **例**(test、GPU 不要): example を 1920×1080 で計画すると(lowering graph は 23 node)、bloom の鎖と合成の order 11〜20 の生存量は 60,134,400〜61,171,200 bytes から 26,956,800〜27,993,600 bytes に、`pelican_ui` と `output_transform`(order 21〜22)は 58,060,800 から 8,294,400 bytes になります([test](../../test/frameplanner_test.cpp#L3098))。**実際に確保するメモリは減りません**(alias を変えていないため)。
 - 縮んだ寿命で領域を使い回して実際の確保を減らすことと、中間の render target を名前で読み出すときの明示の opt-in(読み出す資源に `retain` を宣言する形)は RC-7 です。RC-6c では alias を変えないので、中間の render target の中身は今までどおり残り、名前での読み出しも今までどおり動きます。
   - ✅RC-7a で opt-in が入りました。`retain` の無い中間の render target は名前で読めなくなりました(すぐ下)。確保を減らす部分は RC-7b 以降です。
   - ✅RC-7b で同じ形の共有の条件が広がりました(§6.6 の末尾の「[自動で共有される render target の条件](#alias-sharing-conditions)」)。example の確保はまだ変わりません(1 組のまま)。
+  - ✅RC-7c で、寿命の重ならない形の違う render target が 1 つの region の別の offset に置かれ、example の実際の確保が減りました(実機で一意の VMA allocation 20 → 4。§6.6 の末尾の「[自動で共有される render target の条件](#alias-sharing-conditions)」)。
 
 <a id="target-planning-retain"></a>
 
@@ -2497,18 +2501,20 @@ flowchart TB
   - `representation: materialized`。transient / tile-local にして中身を捨てる候補にしません。dump の `policy` には `retain` の行だけが出て、派生の行は増えません。
   - その資源を書く全部の attachment の `store_op: store`(mip / layer ごとに書く pass も全部)。dump の `physical_target_plan.attachments[].store_op` に出ます。
 - **TRANSFER_SRC は自分で書く**: RC-7a では planner が `TRANSFER_SRC` を足しません(足すのは RC-7c の予定)。読む render target の `usage` に `TRANSFER_SRC` を書いてください。見るのは generation 全体の実効の usage(全 variant の和と engine の足す bit)なので、どれか 1 つの variant の宣言にあれば足ります(test)。
-- **成り立たないとき**: 使われる物理 image が無い(宣言だけで graph が使わない image を含む)、external の資源・buffer、format が color か `D32_SFLOAT` でない、resolve の無い multisample、実効の usage に `TRANSFER_SRC` が無い、他の `require` と食い違って materialized にできない、など。
-  - `require` なら組み直しが `target_planning.retain_unsatisfiable@1`(`graph`・`resource`・`declaration`(`reason` を含む)・`candidates`)で断られます([投げる所](../../src/project/targetrenderplanning.cpp#L4061))。
+  - ✅RC-7c から、採った `retain: true` の資源には planner が `TRANSFER_SRC` を足します。宣言の `usage` に書かなくても名前で読めます(GPU の test「RC-7c C3 renderer ranges survive pending submits both resize paths replacement and rollback」の `alias_sink` は宣言が `COLOR_ATTACHMENT` だけ)。足すのは候補・再試行で採っている `retain` の分だけで、再試行で外れた `prefer` の `retain` には `TRANSFER_SRC`・寿命・store が残りません(test「RC-7c C6 dropped retain prefer leaves no transfer usage and device refusal remains」)。登録の usage にも同じ bit が入ります([足す所](../../src/project/targetrenderplanning.cpp#L4054))。
+  - device がその format と usage の組で `TRANSFER_SRC` を支持しなければ、`require` は `target_planning.retain_unsatisfiable@1`、`prefer` は外れます。buffer に書いた `retain` は device に問う前に断られます(test「RC-7c fix buffer retain is rejected before image capability query」)。
+- **成り立たないとき**: 使われる物理 image が無い(宣言だけで graph が使わない image を含む)、external の資源・buffer、format が color か `D32_SFLOAT` でない、resolve の無い multisample、実効の usage に `TRANSFER_SRC` が無い(✅RC-7c からは device が支持しないときだけ)、他の `require` と食い違って materialized にできない、など。
+  - `require` なら組み直しが `target_planning.retain_unsatisfiable@1`(`graph`・`resource`・`declaration`(`reason` を含む)・`candidates`)で断られます([投げる所](../../src/project/targetrenderplanning.cpp#L4129))。
   - `prefer` なら外されて dump の `policy` の行が `status: "infeasible_prefer"` になり、その資源は名前で読めません。理由も store も、外した候補には残りません。
-  - 選んだ計画を最後に照らす検査([`validateVulkanTargetPlanRequirements()`](../../src/project/targetrenderplanning.cpp#L3869))も `retain` の `require` を見直し、破れは `target_planning.requirement_unsatisfied@1` です(上の「[計画の結果を指す鍵](#target-planning-result-keys)」の「効き方」と同じ)。
+  - 選んだ計画を最後に照らす検査([`validateVulkanTargetPlanRequirements()`](../../src/project/targetrenderplanning.cpp#L3932))も `retain` の `require` を見直し、破れは `target_planning.requirement_unsatisfied@1` です(上の「[計画の結果を指す鍵](#target-planning-result-keys)」の「効き方」と同じ)。
 - **`retain: false`**: 下の出所の `retain: true` を打ち消すだけです(例: feature が `retain: true`、root が `retain: false` なら名前で読めない。test)。engine の理由(`present` / `history` / `persistent` / `external_depth_export` / `xr_mirror` / `picking` / `capture`)は消えません。
-- **名前の読み出しの拒否**: 名前で読む口 `Renderer::readRenderTargetForTesting()`(と R8 版)は、読むのに使う program の物理計画で、その資源に理由 `readback`・`present`・`capture` のどれかがあるときだけ読みます([検査](../../src/project/targetrenderplanning.cpp#L3854)、[呼ぶ所](../../src/core/vkcore/renderer.cpp#L5167))。無ければ `render_target.readback_not_retained@1`(`resource`・`graph`・`reason`: `named render-target readback requires retain: true in target_planning`)です。
+- **名前の読み出しの拒否**: 名前で読む口 `Renderer::readRenderTargetForTesting()`(と R8 版)は、読むのに使う program の物理計画で、その資源に理由 `readback`・`present`・`capture` のどれかがあるときだけ読みます([検査](../../src/project/targetrenderplanning.cpp#L3917)、[呼ぶ所](../../src/core/vkcore/renderer.cpp#L5190))。無ければ `render_target.readback_not_retained@1`(`resource`・`graph`・`reason`: `named render-target readback requires retain: true in target_planning`)です。
   - `persistent` や `picking` など engine の理由だけでは読めません。
   - 同じ名前の資源を別の graph・variant で `retain` していても、読む program の計画に無ければ断られます。`retain` を外して reload した後も断られます(test)。
   - 最終出力(FrameTarget の readback、`--render-out`、capture)は今までどおり `retain` なしで読めます。
   - この口は今は C++ の test 用だけで、RPC や CLI から中間の render target を名前で読む道はありません(コードの読み)。
 - **RPC**: `edit_target_planning` の `resources` に `{"<名前>": {"retain": true}}` / `false` / `null`(消す)を送れます。ほかの鍵の編集(`no_alias` など)は `retain` を残し、Undo(`restore_render_documents`)は書く前の文書の bytes に戻ります(test「RC-7a F3 RPC retain true false null and exact Undo preserve other policy」)。Studio の Frame Plan に `retain` の check はありません。Remove が消す 5 つの鍵にも入っていません(コードの読み)。
-- **動いている generation に足すとき**: RPC や reload で `retain` を足して、すでに登録した render target の表現(storage)などが変わる場合は、既存の登録の境界(`Render target re-registration changed its physical contract`。[断る所](../../src/core/renderingpass/rendertargetcontainer.cpp#L759))のままで、新しい境界は作っていません(仕様とコードの読み。この道を通す RC-7a の test は無く、未確認)。作り直しが要る変更は再起動で効きます。
+- **動いている generation に足すとき**: RPC や reload で `retain` を足して、すでに登録した render target の表現(storage)などが変わる場合は、既存の登録の境界(`Render target re-registration changed its physical contract`。[断る所](../../src/core/renderingpass/rendertargetcontainer.cpp#L761))のままで、新しい境界は作っていません(仕様とコードの読み。この道を通す RC-7a の test は無く、未確認)。作り直しが要る変更は再起動で効きます。
 - **書かない project は変わりません**: 計画は前と byte 一致です(preset レシピの 16 構成を fingerprint まで比べる test)。
   - ✅RC-7b の後は、書かない project でも共有の派生の欄(`aliasable` など)と fingerprint が変わります(§6.6 の末尾の「[自動で共有される render target の条件](#alias-sharing-conditions)」)。
 - **共有との関係**(✅RC-7b): `retain: true` を採った資源は、寿命の理由 `readback` を持つので自動の共有(alias)に入りません。同じ資源に `alias_group` も書くと食い違い、RC-6a2 の再試行の規則で原因の `prefer` が外れます(どちらも `require` なら断られます)。
@@ -2595,7 +2601,7 @@ multiview選択時は2-layer image、`viewMask=0b11`、execution count 1とな�
 
 **fingerprint** は「対象の内容から計算した短いハッシュ値」です。`logical_graph_fingerprint` は論理グラフ(パスと資源と依存)から計算され、物理側の指定(`target_planning`)はその計算に入りません。
 
-**logical plan / physical plan(論理プラン / 物理プラン)** — 違いは型の欄で見るのが早く、論理側の 1 リソースは `name` / `type` / materialization の 3 項だけ([LogicalResourceDesc](../../src/project/logicalrendergraph.hpp#L60))、物理側の同じリソースにはそこへ `format` / `rasterization_samples` / `view_layout` / `mip_levels` / `array_layers` / alias 可否が付きます([VulkanPhysicalResourcePlan](../../src/project/targetrenderplanning.hpp#L192))。例えば `format_class: "scene"` は論理側では文字どおり「scene 用の色」でしかなく、実 format(HDR なら `R16G16B16A16_SFLOAT`、SDR なら `B8G8R8A8_SRGB`)を欄として持つのは物理側です([第6章 §6.3](06_rendering.md))。
+**logical plan / physical plan(論理プラン / 物理プラン)** — 違いは型の欄で見るのが早く、論理側の 1 リソースは `name` / `type` / materialization の 3 項だけ([LogicalResourceDesc](../../src/project/logicalrendergraph.hpp#L60))、物理側の同じリソースにはそこへ `format` / `rasterization_samples` / `view_layout` / `mip_levels` / `array_layers` / alias 可否が付きます([VulkanPhysicalResourcePlan](../../src/project/targetrenderplanning.hpp#L195))。例えば `format_class: "scene"` は論理側では文字どおり「scene 用の色」でしかなく、実 format(HDR なら `R16G16B16A16_SFLOAT`、SDR なら `B8G8R8A8_SRGB`)を欄として持つのは物理側です([第6章 §6.3](06_rendering.md))。
 
 <a id="legacy-plan-packages-removed"></a>
 
@@ -2608,7 +2614,7 @@ multiview選択時は2-layer image、`viewMask=0b11`、execution count 1とな�
 | 文書の鍵 `vulkan_plan_pins` | variant(`flat` / `preview` / `xr`)ごとの配列に `get_frame_plan` の `ejectable_pin_package`(schema `pelican.vulkan_target_plan_pins` v1)を貼り、graph の backend candidate を 1 つに固定した |
 | 文書の鍵 `vulkan_physical_fragments` | 同じく `ejectable_physical_fragment`(schema `pelican.vulkan_physical_fragment` v1 / v2 / v3)を編集して貼り、資源の format・表現・scope の分割と融合・alias の組・attachment の load / store を変えた。eject したときの自動計画に fingerprint で縛られた |
 | RPC | `edit_vulkan_plan_pins` と `put_vulkan_physical_fragment`。登録と `edit_batch` の表から消え、送ると JSON-RPC の method not found です(test「RC-6b2 removed planning RPCs are unknown methods」) |
-| `get_frame_plan` の `physical_target_plan` の欄 | `ejectable_pin_package`・`ejectable_physical_fragment`・`applied_pin_package`・`applied_physical_fragment`・`ejectable_complete_physical_plan`。wire の検査([`validatePlan()`](../../src/project/physicaltargetplanwire.cpp#L352))、Studio の model、Plan Viewer からも消えました |
+| `get_frame_plan` の `physical_target_plan` の欄 | `ejectable_pin_package`・`ejectable_physical_fragment`・`applied_pin_package`・`applied_physical_fragment`・`ejectable_complete_physical_plan`。wire の検査([`validatePlan()`](../../src/project/physicaltargetplanwire.cpp#L353))、Studio の model、Plan Viewer からも消えました |
 | 拒否 | `physical_fragment_stale`(fragment を書いた ticket の結果)、`physical_fragment.reorders_frame_plan@1`(順を変えた fragment)、`pin package is stale` / `pinned backend candidate is infeasible` の文 |
 
 **無くなった能力**(どれも project 空間での使用は 0 件でした):
@@ -2631,13 +2637,13 @@ Remove <key> from the document and reload it, then recreate the policy with Stud
 - `edit_rendering_keys` はこの 2 つの鍵を `rendering_key_not_editable` で断ります(書く RPC の表から消えたため。コードの読み)。
 - 鍵の残った project を開いたときの画面の見え方は未確認です。
 
-**complete physical plan は C++ の口だけ**: complete physical plan(engine が見る全ての資源・scope・attachment・alias の組を持つ package。schema `pelican.vulkan_complete_physical_plan` v1)は、NativeScope のために C++ の関数だけが残ります。eject は [`ejectVulkanCompletePhysicalPlanPackage()`](../../src/project/vulkancompletephysicalplan.cpp#L1261)、検査は [`verifyVulkanCompletePhysicalPlanPackage()`](../../src/project/vulkancompletephysicalplan.cpp#L1542)、install は [`installVerifiedVulkanCompletePhysicalPlanPackage()`](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L980) です。
+**complete physical plan は C++ の口だけ**: complete physical plan(engine が見る全ての資源・scope・attachment・alias の組を持つ package。schema `pelican.vulkan_complete_physical_plan` v1)は、NativeScope のために C++ の関数だけが残ります。eject は [`ejectVulkanCompletePhysicalPlanPackage()`](../../src/project/vulkancompletephysicalplan.cpp#L1261)、検査は [`verifyVulkanCompletePhysicalPlanPackage()`](../../src/project/vulkancompletephysicalplan.cpp#L1549)、install は [`installVerifiedVulkanCompletePhysicalPlanPackage()`](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L1046) です。
 
-- dump には出ません(`ejectable_complete_physical_plan` は消えました)。文書の鍵・RPC・Studio の UI もありません。install した graph は、`get_frame_plan` の最上位(物理計画の外)に `legacy_complete_plan: true` が付きます([出す所](../../src/core/vkcore/renderer.cpp#L4312))。
+- dump には出ません(`ejectable_complete_physical_plan` は消えました)。文書の鍵・RPC・Studio の UI もありません。install した graph は、`get_frame_plan` の最上位(物理計画の外)に `legacy_complete_plan: true` が付きます([出す所](../../src/core/vkcore/renderer.cpp#L4313))。
 - install は、検査に使った自動計画と install の時の計画が同じ object であることを確かめ、違えば `Vulkan compiler target plan was modified before complete plan verification` で断ります。作者の `target_planning` の宣言がある graph への install は `target_planning.policy_with_legacy_package@1` です(上の「[宣言の強さと出所](#target-planning-policy)」)。
-- 古い package は、自動計画が変わっていれば `complete_physical_plan.stale_automatic_plan@1 {graph, expected, actual, message}`(`message` は「eject し直す」。[断る所](../../src/project/vulkancompletephysicalplan.cpp#L1579))、論理 graph が変わっていれば `stale for the logical graph` を含む文で断ります(test「RC-6b2 complete stale refusal and install identity survive legacy removal」)。順が frame plan と違えば `render_compiler.physical_order_mismatches_frame_plan@1` です(上の「[物理計画は frame plan の順で走る](#physical-order-follows-frame-plan)」)。
+- 古い package は、自動計画が変わっていれば `complete_physical_plan.stale_automatic_plan@1 {graph, expected, actual, message}`(`message` は「eject し直す」。[断る所](../../src/project/vulkancompletephysicalplan.cpp#L1586))、論理 graph が変わっていれば `stale for the logical graph` を含む文で断ります(test「RC-6b2 complete stale refusal and install identity survive legacy removal」)。順が frame plan と違えば `render_compiler.physical_order_mismatches_frame_plan@1` です(上の「[物理計画は frame plan の順で走る](#physical-order-follows-frame-plan)」)。
 - render target の `format_candidates` で宣言した format を選べるのは、今は complete physical plan だけです(コードの注記)。
-- **寿命の検査(✅RC-6c)**: package の資源の `lifetime` は `retain` を持てます(書き出しも読み込みも)。読み込みは、知らない理由・同じ理由の重複・空の配列・`used: false` の資源の `retain` を断ります([読む所](../../src/project/vulkancompletephysicalplan.cpp#L516))。検査は package の寿命を信じず、planner と同じ関数 `calculateTargetResourceLifetimes()` で、compiler が持つ理由(package の外の事実)から寿命を計算し直して比べます([その所](../../src/project/vulkancompletephysicalplan.cpp#L1822))。`last_use` か `retain` を書き換えた package は `Vulkan complete physical resource has stale lifetime or read-footprint metadata` で断られます(test「RC-6c E2 complete independently verifies shortened lifetimes and retain reasons」)。寿命の意味は上の「[資源の寿命と `lifetime.retain`](#physical-plan-lifetime)」です。
+- **寿命の検査(✅RC-6c)**: package の資源の `lifetime` は `retain` を持てます(書き出しも読み込みも)。読み込みは、知らない理由・同じ理由の重複・空の配列・`used: false` の資源の `retain` を断ります([読む所](../../src/project/vulkancompletephysicalplan.cpp#L516))。検査は package の寿命を信じず、planner と同じ関数 `calculateTargetResourceLifetimes()` で、compiler が持つ理由(package の外の事実)から寿命を計算し直して比べます([その所](../../src/project/vulkancompletephysicalplan.cpp#L1829))。`last_use` か `retain` を書き換えた package は `Vulkan complete physical resource has stale lifetime or read-footprint metadata` で断られます(test「RC-6c E2 complete independently verifies shortened lifetimes and retain reasons」)。寿命の意味は上の「[資源の寿命と `lifetime.retain`](#physical-plan-lifetime)」です。
 
 <a id="v0-physical-fragment-format"></a>
 
@@ -2664,8 +2670,9 @@ allocation共有だけを無効化します。実行時はgroup内でも別々�
 共有します。hot reload candidateはgeneration固有groupなので、旧in-flight imageとは共有しません。
 ✅RC-7b から「usage が同一」は宣言の usage ではなく実効の usage(全 variant の和と engine の足す bit)で比べ、depth・`TRANSFER_SRC` 付きなどの image も
 条件を満たせば共有されます(下の「[自動で共有される render target の条件](#alias-sharing-conditions)」)。
+✅RC-7c から、format・大きさ・usage が同じである必要はなくなり、memory の鍵(`memoryTypeBits`)が同じで寿命の重ならない image が 1 つの region の別の offset に置かれます。group は「同じ region・同じ offset の住人の最大の集合」の意味です(下の「[memory の region と offset](#memory-regions)」)。
 
-**variant をまたぐ alias の組(✅RC-3c2a)。**「合意」は組ごとに決めます([判定](../../src/project/generationresources.cpp#L174))。
+**variant をまたぐ alias の組(✅RC-3c2a)。**「合意」は組ごとに決めます([判定](../../src/project/generationresources.cpp#L178))。
 
 - どの variant も組の全員を持ち、全員をその組に置いた組は残ります。
 - ある variant が組の一部の target だけを持つ(たとえば XR で外れる feature の target が組にいる)か、組の target を組の外に置いた組は、**全員の共有を解除**します(どの target も自分の allocation を持つ)。前は target ごとに比べたので、1 人だけの組が残ることがありました。
@@ -2673,6 +2680,7 @@ allocation共有だけを無効化します。実行時はgroup内でも別々�
 - light の数で層が変わる shadow の image を含む組も解除します。
 - 残った組は 2 人以上で、format・usage・大きさ・sample 数・mip・layer 数・`dimension` が揃い、materialized で history でないことを最後に確かめ、違えば `render_graph.alias_group_invalid@1 {group, reason: "member_count" | "contract", resource?}` です。example の `Bloom_Threshold_RT` と `g_emissive` の共有(21 枚・20 の確保)は変わりません(実装者の報告)。
   - ✅RC-7b から、usage か storage(materialized かどうか)が組の中で違うのは拒否ではなく、組の共有の解除です。外れた理由は計画し直した物理計画の dump に出ます(下の「[自動で共有される render target の条件](#alias-sharing-conditions)」)。format・大きさ・sample 数・mip・layer 数・`dimension`・history の食い違いは今までどおり `alias_group_invalid@1` です。
+  - ✅RC-7c から、region に置かれた組は住人の region と offset が同じであることを確かめ、違えば `alias_group_invalid@1`(`reason: "same_offset"`)です([その所](../../src/project/generationresources.cpp#L256))。example の `Bloom_Threshold_RT` と `g_emissive` は、device の答えのある本番の登録では同じ offset に置かれず(`Bloom_Threshold_RT` は region の offset 0、`g_emissive` は別の offset)、facts の無い compile では共有されません(実装者の報告。下の「[facts が無いとき](#memory-regions-without-facts)」)。
 
 まだ受理しないのは`materialized_image`からtile-localへの攻めた変更(policy の `representation` が受ける値は `materialized` だけ)、
 MSAA・external・異なるattachment集合をまたぐscope融合、node の順を変える reorder(✅RC-3d2 から依存を守るものも。順は `frame_node_order` で書く)、一般の
@@ -2683,10 +2691,10 @@ same-pixel fullscreen/material subsetの`tile_local_attachment`です。alias ru
 color attachment + sampled用途のmaterialized imageだけを対象とし、MSAA、history、depth、
 storage/transfer image、bufferとの混在はまだ受理しません。
 ✅RC-7b から usage の固定の集合は無くなり、depth(depth だけの format)・transfer の usage を持つ image も共有の対象です。MSAA・history・depth-stencil・buffer は今も対象外です
-(下の「[自動で共有される render target の条件](#alias-sharing-conditions)」)。
+(下の「[自動で共有される render target の条件](#alias-sharing-conditions)」)。✅RC-7c から、format や大きさの違う image も 1 つの region に入ります。
 
 **alias から外れた理由。**runtime の alias の候補は、history でなく、format class が `display` でなく、storage mode が materialized で、usage がちょうど `{COLOR_ATTACHMENT, SAMPLED}` の target です。外れた target の理由は `physical_target_plan.resources[].reason`(と `pelican.plan.resource_representation@1` の `detail`)が `logical materialization requirement is required` か `ResourcePattern requires contents to be stored` のとき、その後に `: ` と原因を続けて言います(原因が複数なら `; ` で区切る。
-[原因の文を作る所](../../src/core/renderingpass/renderingsamplecount.cpp#L89)、[理由に続ける所](../../src/project/targetrenderplanning.cpp#L926))。
+[原因の文を作る所](../../src/core/renderingpass/renderingsamplecount.cpp#L90)、[理由に続ける所](../../src/project/targetrenderplanning.cpp#L926))。
 
 | 原因の文 | いつ |
 |---|---|
@@ -2701,31 +2709,35 @@ storage/transfer image、bufferとの混在はまだ受理しません。
 ([入れる所](../../src/project/vulkanphysicalfragment.cpp#L481))、上の 2 つの理由で外れた target を持つ plan では PO-1 の前後で fingerprint の値が変わり、PO-1 より前に eject して
 貼った physical fragment は stale になりました(physical fragment は ✅RC-6b2 で無くなりました。complete physical plan の package も同じく stale です)。
 
-✅RC-7b から、上の表の usage の 2 行(`usage <X> is outside the alias-safe set …` / `usage lacks <X> …`)は出ません。usage の固定の集合が無くなったためです([原因の文を作る所](../../src/core/renderingpass/renderingsamplecount.cpp#L89))。
+✅RC-7b から、上の表の usage の 2 行(`usage <X> is outside the alias-safe set …` / `usage lacks <X> …`)は出ません。usage の固定の集合が無くなったためです([原因の文を作る所](../../src/core/renderingpass/renderingsamplecount.cpp#L90))。
 上の例の `TRANSFER_SRC` を足した target は、test の形(sampled で読まれる target)では `reason` が組める target と同じ `arbitrary read requires a materialized resource` になり、usage の違う相手とは組まれません(test「RC-7b differing effective usages prevent runtime aliasing without forcing storage」)。
 RC-7b で外れた理由は次の節の decision に出ます。
 
 <a id="alias-sharing-conditions"></a>
 
-#### 自動で共有される render target の条件(✅RC-7b)
+#### 自動で共有される render target の条件(✅RC-7b、✅RC-7c)
 
-✅RC-7b(`0091c071c`)から、同じ形の render target がメモリの確保を共有(alias)する条件が広がりました。共有の仕方は今までどおりで、組の中の target は別々の VkImage を持ち、1 つの VMA allocation を offset 0 で共有します。形(format・大きさ)の違う target どうしの共有は RC-7c の予定です。設計は [RT メモ §2 の末尾の RC-7b](../design_render_target_memory_reduction.md#rc7b-sharing) です。
+✅RC-7b(`0091c071c`)から、render target がメモリの確保を共有(alias)する条件が広がりました。✅RC-7c(`27a919f4a`)から、共有は「同じ形の組が 1 つの allocation を offset 0 で分け合う」形ではなくなり、**形(format・大きさ)の違う target も、1 つの memory の region(VMA の allocation 1 つ)の中の別の offset に置かれます**。各 target は自分の VkImage を持ち、寿命の重ならない target どうしだけが range を重ねます(下の「[memory の region と offset](#memory-regions)」)。設計は [RT メモ §2 の末尾の RC-7b](../design_render_target_memory_reduction.md#rc7b-sharing) と [RC-7c](../design_render_target_memory_reduction.md#rc7c-packing) です。
 
-**共有されうる target**: 同じ graph の中で寿命が重ならない target の組で、次をすべて満たす物です。
+**共有されうる target**: 寿命が重ならない target の組で、次をすべて満たす物です。
 
-- **形が同じ**: format・大きさ・sample 数・mip・layer 数・`dimension`・view layout が同じ。
-- **実効の usage が同じ**: 比べるのは宣言の `usage` ではなく、全 variant の和と engine が足す bit(history の転送、XR の外部 depth の export など)を合わせた usage です。宣言が同じでも、別の variant の分が足されて違えば共有しません。
+- **memory の鍵が同じ**(✅RC-7c): device が答えるその image の `memoryTypeBits` が完全に一致すること(AND は取りません。違えば別の region です)。format・大きさ・sample 数・mip・layer 数・`dimension`・usage が違ってもかまいません。RC-7b までは「形が同じ」(format・大きさ・sample 数・mip・layer 数・`dimension`・view layout)と「実効の usage が同じ」(全 variant の和と engine が足す bit を合わせた usage)を求めていました。✅RC-7c ではこの 2 つを memory の鍵に置き換えました([鍵の違う対を記録する所](../../src/project/targetrenderplanning.cpp#L3578))。
+- **device の答えがある**(✅RC-7c): image ごとの memory requirements(size・alignment・`memoryTypeBits`・dedicated)が計画の時に分かること(下の「[facts が無いとき](#memory-regions-without-facts)」)。dedicated の確保が要る image(`requiresDedicatedAllocation`)と `memoryTypeBits` が 0 の image は region に入らず、自分の allocation を持ちます。
 - **普通の 1 sample の image**: materialized の image(transient / tile-local でない)、external(swapchain)でない、1 sample で MSAA の resolve が無い。
 - **中身を残す理由が無い**: `history`・file の `source`・`lifetime: "persistent"`・`format_class: "display"` の target は今までどおり外れます。加えて、物理計画の `lifetime.retain` に理由がある target(`present` / `history` / `persistent` / `external_depth_export` / `xr_mirror` / `picking` / `capture`、と ✅RC-7a の `readback`)も外れます(上の「[資源の寿命と `lifetime.retain`](#physical-plan-lifetime)」)。中間の target を名前で読む test は読む target に `retain` を書くので、その target は共有されません。
 - **最初の use で全体を書く**: その target を最初に使う node が render の pass で、その pass がその target を入力として読まず、`load` でない load op(`clear` か `dont_care`)の attachment として全 mip・全 layer を書くこと。最初の use が読み・`load`・compute や transfer(snapshot の copy など)の書き込み・一部の mip / layer だけの書き込みなら外れます。前の住人の中身は引き継がないので、`dont_care` で書かなかった画素の中身は共有の有無にかかわらず未定義です。
 - **color か depth だけの format**: `D32_SFLOAT` のような depth だけの format は共有できます。stencil を持つ format(depth-stencil・stencil)は、stencil を初期化したことを計画で表せないので共有しません。
 - **同じ rendering scope の中で入れ替わらない**: 先の target の最後の pass と後の target の最初の pass が、採った計画の同じ scope(融合した dynamic rendering の区間。`scope_join` を含む)に入る組は外れます。
+  - ✅RC-7c から、この条件は「1 つの scope の中で、range の重なりうる 2 つの target を両方使わない」になりました。2 つの target の寿命がどちらも同じ scope にかかる組は、寿命の前後によらず重ねません([`targetMemoryOverlapForbidden()`](../../src/project/targetrenderplanning.cpp#L4703))。
+- ✅RC-7c から、target ごとの条件(最初の use・保持の理由・manual の境界・`no_alias`・`isolate` など)は、**その target が現れる全 graph・全 variant**で成り立つ必要があります。1 つの graph でも外れれば、その target は region に入りません。
 - complete physical plan(C++ の口)の manual / unchecked の NativeScope の境界に触れる target は外れます。
 - `no_alias` / `isolate` / profile の間引きは今までどおりです。
 
 今まで usage で外れていた `TRANSFER_SRC` 付きの target(snapshot の copy の元など)や depth の target も、上を満たせば共有されます(GPU の test「RC-7b B1 B2 B3 B5 expanded image sharing survives frames and edits」: 32×32 の `R8G8B8A8_UNORM` + `TRANSFER_SRC`、`format_class` が `display` でない `B8G8R8A8_UNORM` + `TRANSFER_SRC`、`D32_SFLOAT`(`DEPTH_STENCIL_ATTACHMENT` + `SAMPLED`)の各形式で、3 枚が 1 つの allocation(4,096 B)になり、共有しない対照の 3 つ・12,288 B から減る)。
 
 **example は変わりません**: 1920×1080 の example は `Bloom_Threshold_RT` と `g_emissive` の 1 組・21 枚 20 確保・`total_bytes` 125,776,320 のままです(test)。新しく条件に入る `lit_color`・`scene_depth`・`shadow_map` には同じ契約で寿命の重ならない相手が無く、`opaque_color` / `opaque_depth` は最初の use が snapshot の copy、`display` は display の除外で外れます(実装者の報告)。example の確保が減るのは RC-7c からです。
+
+**✅RC-7c の example**: 1920×1080・flat の example を実機(NVIDIA GeForce RTX 5080)で登録すると、21 枚の render target が **一意の VMA allocation 4 個・128,286,720 bytes**(122.34 MiB)になります。比べた参照は、RC-7b の HEAD(`9cd7bb971`)の 21 枚の登録の集合(名前・format・大きさ・mip・layer 数・usage・sample 数・`dimension`)を test に固定し、同じ device で各 image を 1 枚ずつ照会して `g_emissive` / `Bloom_Threshold_RT` の 1 組を 1 回と数えた値で、20 個・135,299,072 bytes(129.03 MiB)です(GPU の test「RC-7c C1 example actual VMA allocations and bytes beat RC-7b reference」。数と bytes を別々に検査します)。4 個の内訳は、18 枚が住む region 1 つ(92,897,280 bytes)と、region の外の `opaque_color` / `opaque_depth`(最初の use が snapshot の copy)・`display`(display の除外)の 3 つ(合わせて 35,389,440 bytes)です(実装者の報告)。bytes は driver が返す requirements の size で、texel × extent の式(payload、134,070,720 bytes)とは違います。VkDeviceMemory の block の予約量は測っていません(未確認)。
 
 **共有を外す**: その target に `no_alias: true` を書きます(Studio の Frame Plan / Graph の No alias の check も同じ)。
 
@@ -2744,26 +2756,89 @@ RC-7b で外れた理由は次の節の decision に出ます。
 | decision の `id` | `subject` | `selected`(外れた条件) |
 |---|---|---|
 | `pelican.plan.alias_ineligible@1` | target の名前 | `retained`(保持の理由)・`first_use`(最初の use で全体を書かない)・`ownership_or_samples`(materialized の 1 sample の image でない、history など)・`unused`・`native_boundary`・`generation_contract: <理由>`(下の variant と graph の合意で外れた) |
-| `pelican.plan.alias_pair_ineligible@1` | `<a>/<b>` | `effective_usage`(実効の usage が違うか分からない)・`same_scope`(同じ scope の中で入れ替わる) |
+| `pelican.plan.alias_pair_ineligible@1` | `<a>/<b>` | `same_scope`(同じ scope の中で入れ替わる)・✅RC-7c の `memory_key`(`memoryTypeBits` が違う。detail は `memoryTypeBits must match exactly`)。RC-7b の `effective_usage` は ✅RC-7c から出ません |
+| `pelican.plan.alias_ineligible@1`(✅RC-7c の分) | target の名前 | `dedicated`(dedicated の確保が要る)・`memory_key`(`memoryTypeBits` が 0)。detail は `ordinary allocation required` |
+| `pelican.plan.alias_requirements_unknown@1`(✅RC-7c) | target の名前 | `unknown`(memory requirements が分からない。detail は `alias.requirements_unknown: 未確定`) |
+| `pelican.plan.alias_generation_contract@1`(✅RC-7c) | target の名前か `<a>/<b>` | `not_adopted`(generation の配置で外れた `prefer`、または別の graph / variant が重なりを禁じた対) |
+| `pelican.plan.alias_group_selected@1` | 組の id(`alias:<region>:<offset>`) | `adopted`(✅RC-7c から detail は `maximal residents of the same region and offset`) |
 
-`detail` は前者が `RC-7b image-wide alias eligibility`、後者が `RC-7b pairwise allocation contract` です([資源ごとに決める所](../../src/project/targetrenderplanning.cpp#L3525)、[組ごとに決める所](../../src/project/targetrenderplanning.cpp#L3164))。
+`detail` は `alias_ineligible@1` が `RC-7b image-wide alias eligibility`、`alias_pair_ineligible@1` の `same_scope` が `RC-7b pairwise allocation contract` です([資源ごとに決める所](../../src/project/targetrenderplanning.cpp#L3504)、[組ごとに決める所](../../src/project/targetrenderplanning.cpp#L3168)、✅RC-7c の [memory の判定](../../src/project/targetrenderplanning.cpp#L3566))。
 
 **variant と graph の合意**: flat と XR のように variant をまたぐ target、同じ variant の複数の graph に出る target は、generation 全体で 1 つの配置にします。
 
 - 共有するかは全 variant の usage を合わせた後で決めます。variant ごとの宣言の usage が違っても、合わせた usage が同じなら共有します(test「RC-7b merged usage restores legal variant sharing」)。
 - 合わせた後に組の中で usage か storage が違う、variant が組に合意しない、graph が組に合意しない、のどれかなら、その組は共有を外し、外した理由(`generation image contracts differ: <組>`・`generation variants do not agree on alias placement: <組>`・`frame graphs do not agree on alias placement: <graph>` など)を付けて計画し直します。各 graph の dump の `alias_groups` と decision は、登録が実際に作る非共有の配置と同じです(test「RC-7b graph overlap releases generation sharing and its policy display」)。
+- ✅RC-7c から、2 つの target を重ねてよいのは、**両方が現れる graph が 1 つ以上あり、両方が現れるどの graph・variant でも寿命が重ならず同じ scope に入らない**ときだけです。一緒に現れる graph が無い対は重ねません(graph の外の時刻の関係は仮定しない)。graph や variant で requirements が違う target は region に入りません(`generation image requirements differ across graph/variant <graph>`)。合意で外れた対の自動の共有と `prefer` は外れ、dump の decision `pelican.plan.alias_generation_contract@1` に出ます([generation の配置を作る所](../../src/project/targetrenderplanning.cpp#L4747))。
+- ✅RC-7c から、light の数で layer が変わる shadow の image(runtime が layer 数を変える image)は、計画の前に generation の除外(理由 `runtime_array_layers`)に入り、region に入りません([その所](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L686))。
 
 **`alias_group` の `require` が断られるとき**: 自動の共有と `prefer` は、条件を満たさなければ黙って外れます(`prefer` は dump で `infeasible_prefer`)。`require` は名前付きで断られます。
 
-- 組の対が上の条件を満たさない(合意で外れた場合を含む): `target_planning.requirement_unsatisfied@1`。候補の失敗の文に `alias.<条件>@1: <対象>`(例 `alias.first_use@1: <名前>`)の形で、最初に当たった条件が付きます([付ける所](../../src/project/targetrenderplanning.cpp#L3610))。
+- 組の対が上の条件を満たさない(合意で外れた場合を含む): `target_planning.requirement_unsatisfied@1`。候補の失敗の文に `alias.<条件>@1: <対象>`(例 `alias.first_use@1: <名前>`)の形で、最初に当たった条件が付きます([付ける所](../../src/project/targetrenderplanning.cpp#L3656))。
 - 登録の前に、最終の物理計画で採った `require` の組が、generation の最終の配置で本当に同じ allocation の組になっているかを照らします。なっていなければ `target_planning.alias_generation_contract@1`(`graph`・`resource`・`peer`・`reason`)です([照らす所](../../src/core/renderingpass/rendercompilerprogram.cpp#L258))。再試行で外れた `prefer` の相手は照らしません(例: A と C が `require`、B が `prefer` の組で B に `no_alias` を書くと、A と C だけが共有して通る。test「RC-7b final generation accepts required sharing after no_alias drops a prefer peer」)。
-- complete physical plan の検査は、package の `aliasable` を信じずに同じ条件を計算し直し、破れた package を `alias.retained@1`・`alias.first_use@1`・`alias.image_contract@1`・`alias.same_scope@1`・`alias.native_boundary@1`・`alias.ownership_or_samples@1`・`alias.shape_or_lifetime@1` などの文で断ります([検査する所](../../src/project/vulkancompletephysicalplan.cpp#L2500))。
+- complete physical plan の検査は、package の `aliasable` を信じずに同じ条件を計算し直し、破れた package を `alias.retained@1`・`alias.first_use@1`・`alias.image_contract@1`・`alias.same_scope@1`・`alias.native_boundary@1`・`alias.ownership_or_samples@1`・`alias.shape_or_lifetime@1` などの文で断ります([検査する所](../../src/project/vulkancompletephysicalplan.cpp#L2507))。
+- ✅RC-7c から、`alias_group` の組は **同じ region の同じ offset** を求めます。packing は採った組を 1 つの slot(size と alignment は住人の最大、禁じる対は住人の和)として先に置くので、first-fit の順に負けません。
+  - 組の target の memory requirements が分からない: `alias.requirements_unknown`(`graph`・`candidates`。code に `@1` は付きません。[投げる所](../../src/project/targetrenderplanning.cpp#L4136))。facts を渡さない compile(下の「[facts が無いとき](#memory-regions-without-facts)」)で `require` を書くとこれです。
+  - 組の target が dedicated の確保を要る・`memoryTypeBits` が 0: 候補の失敗の文に `alias.dedicated_or_memory_key@1: <名前>`。
+  - generation の配置で、`require` の組の中に重ねてはいけない対がある: `target_planning.alias_generation_contract@1`(`reason: "alias_group contains a forbidden generation same-offset pair"`)。
+  - 実画像の requirements で組み直したとき(下の「[実際の配置](#memory-regions-runtime)」)に `require` の組が成り立たない: `render_target.alias_repack_unsatisfiable@1: <名前> / <組の先頭>`。
+- ✅RC-7c から、complete physical plan の検査は package の region・offset・禁じる対・鍵を信じず、compiler が持つ全 graph・全 variant の計画から packing の入力と requirements を作り直して照らします。破れは `memory.overlap@1`(重ねてはいけない対が range で重なる)・`memory.alignment@1`・`memory.heap_size@1`(住人の size か region の size が合わない)・`memory.key@1`・`memory.dedicated@1`・`memory.same_offset@1`(採った組の住人の offset が違う、`alias_groups` が同じ offset の最大の集合でない)・`memory.inputs@1`(packing の入力が compiler の物と違う)・`memory.region@1`(region や住人の重複)・`alias.requirements_unknown` の文です([作り直す所](../../src/project/vulkancompletephysicalplan.cpp#L2617))。`memory_regions` / `memory_packing` の無い(`alias_groups` だけの)package は `complete_physical_plan.memory_regions_required@1` で断ります([その所](../../src/project/vulkancompletephysicalplan.cpp#L1501))。
 
-**同期**: 前の frame で使われた共有の組は、次の frame の最初の access で必ず barrier(全 command の間の memory barrier。その target の layout は UNDEFINED からやり直し)を受けます。同じ target が続けて同じ layout で使われても出ます([frame の始めに印を付ける所](../../src/core/vkcore/render_target_layout_tracker.cpp#L352))。前は同じ target が frame をまたいで続くと barrier が出ませんでした。組の中で target が入れ替わるときの barrier は前からです。新しい generation の組の最初の access は、前の中身が無いので barrier なしで UNDEFINED から始まります。
+**同期**: 前の frame で使われた共有の組は、次の frame の最初の access で必ず barrier(全 command の間の memory barrier。その target の layout は UNDEFINED からやり直し)を受けます。同じ target が続けて同じ layout で使われても出ます([frame の始めに印を付ける所](../../src/core/vkcore/render_target_layout_tracker.cpp#L326))。前は同じ target が frame をまたいで続くと barrier が出ませんでした。組の中で target が入れ替わるときの barrier は前からです。新しい generation の組の最初の access は、前の中身が無いので barrier なしで UNDEFINED から始まります。
+
+- ✅RC-7c から、同期は組でなく **image ごとの layout と、allocation の中の range** で追います。region に置かれた target R の access の前に、(1) R がこの frame で初めての access か、(2) R の前回の access の後に R と range の重なる別の target が access された、のどちらかなら、ALL_COMMANDS → ALL_COMMANDS・`MEMORY_READ | MEMORY_WRITE` の memory barrier を出し、R の layout を UNDEFINED からやり直します。R と range の重なる target の記録した layout も UNDEFINED にし、重ならない target(同じ region の別の offset で同時に生きる target)の layout には触れません([判定と記録をする所](../../src/core/vkcore/render_target_layout_tracker.cpp#L141))。
+- 新しい generation の image の最初の access にも、(1) の barrier が出ます(RC-7b の「新しい組は barrier なし」は ✅RC-7c で無くなりました)。layout を変える transition も、同じ layout のままの依存(compute の `GENERAL` の続きなど)も、同じ 1 つの関数を通ります。
 
 **計画の差**: `target_planning` を書かない project でも、物理計画の共有の派生の欄(`aliasable`、lowering graph の logical materialization の required / virtual、runtime pattern の `allow_alias` / `require_store`)、`reason` の文、上の decision、fingerprint が変わります。実行順・scope・representation・format・attachment の ops・usage・寿命は変わりません(preset レシピの 16 構成を比べる test「RC-7b B4 semantic fields match sixteen immutable preimplementation snapshots」)。
 
+- ✅RC-7c の計画の差: 実装前の HEAD の 16 構成(compiler_only、facts なし)と比べ、実行順・scope・representation・format・samples・attachment の ops・usage・寿命・保持の理由は一致します。変わるのは配置の派生の欄(`alias_groups`・`memory_regions`・`memory_packing`・`alias_candidates` の未確定・memory の集計・fingerprint)だけです(test「RC-7c C5 sixteen fixed snapshots retain every semantic field」、`[.]`)。facts が無いので、前の組(HDR の `g_emissive` / `scene_ldr_in`、extras ありの `gbuffer_normal` / `probe_image` など)は全部別の確保に戻ります(実装者の報告)。
+
 **動いている generation の編集**: reload で組が結合・分割・解除される編集は、今までの generation の置き換えの道で効き、失敗すれば名前・確保・名前の読み出しの許可が前の generation のまま残ります(GPU の test)。
+
+<a id="memory-regions"></a>
+
+#### memory の region と offset(✅RC-7c)
+
+✅RC-7c(`27a919f4a`)から、物理計画は寿命の重ならない render target を **memory の region**(VMA の allocation 1 つ)に区間詰めし、target ごとに offset を決めます。format や大きさが違う target も同じ region に入ります(例: 大きい G-buffer の跡地に bloom の小さい段を置く)。
+
+**計画の出力**: `get_frame_plan` の `physical_target_plan` に 2 つの欄が足されました([出す所](../../src/project/targetrenderplanning.cpp#L4657))。
+
+- `memory_regions`: `[{region, memory_type_bits, size, alignment, residents: [{resource, offset, size, alignment}]}]`。計画の時の device の答え(facts)で詰めた値で、dump と見積もり用です。実際の配置は runtime が実画像で決め直します(下の「[実際の配置](#memory-regions-runtime)」)。
+- `memory_packing`: packing の入力 `{resources: [{resource, memory_type_bits, optimal_tiling}], forbidden_pairs, same_offset_sets, order, seed}`。planner が generation ごとに作り、登録がそのまま持ちます。
+  - `forbidden_pairs`(重ねてはいけない対): 上の「variant と graph の合意」の規則で、一緒に現れるどこかの graph で寿命が重なるか同じ scope に入る対と、一緒に現れる graph が無い対です。
+  - `same_offset_sets`: 採った `alias_group` の住人の集合。
+  - `order`: 詰める順。最初の use の昇順 → requirements の size の降順 → 名前の昇順です。`hazard_stress` の profile では `seed` で並べ替えます。
+  - 詰め方は first-fit です。offset は alignment の倍数、region の size は住人の `offset + size` の最大、region の alignment は住人の最大です。全 render target は optimal tiling なので bufferImageGranularity は考えません([`packMemoryRegions()`](../../src/project/memoryregionpacking.hpp#L60))。
+- `alias_groups`: **同じ region・同じ offset の住人の最大の集合**です(size が違っても同じ集合に入る。id は `alias:<region>:<offset>`)。range が一部だけ重なる住人は `alias_groups` に出ません。Studio の Freeze はこの集合ごとに `alias_group: require` を書くので、満たせる `require` だけを書き、一部の重なりを `require` に変えません。
+- `alias_reuse` の表(前の住人から次の住人への barrier の表)は作りません。重なりの関係は実画像の size で変わる(resize で変わる)ので、計画の表は実際の配置の写しにならないためです。barrier は上の「同期」の規則で runtime が出し、実際の重なりは登録の結果として `memory_summary.actual_placement` に出ます(下)。
+
+<a id="memory-regions-without-facts"></a>
+
+**facts が無いとき**: device を渡さない compile(`compiler_only` の道、memory requirements の照会が空)では、**自動の共有をしません**。region も `alias_groups` も空で、dump の `planning_opportunities.alias_candidates` の対に `adoption: "unknown"` が付き、資源ごとに `pelican.plan.alias_requirements_unknown@1` が出ます。`alias_group` の `require` は `alias.requirements_unknown` で断られます。本番の登録はいつも device の答えを持つので、本番の配置はこれに左右されません。
+
+- **移行の注意**: RC-7b までは facts の無い compile でも同じ形の組を作っていました。✅RC-7c からは作りません。example の `g_emissive` / `Bloom_Threshold_RT` の組も、compiler_only では別々の確保です(frameplanner の test の example は 21 枚 21 確保・134,070,720 bytes になりました。前の 125,776,320 との差 8,294,400 は 1 組の分)。facts の無い compile で共有を見ていた test は作り物の facts を渡す形に移しました(実装者の報告)。
+
+**device の答えを使う**: engine は device を作るときに Vulkan の `maintenance4` を有効にします。支持しない device では起動が `vulkan.required_feature_missing@1: maintenance4` で止まります([確かめる所](../../src/core/vkcore/core.cpp#L630))。これで、計画の時に `vkGetDeviceImageMemoryRequirements` で照会した size・alignment・`memoryTypeBits`・dedicated が、同じ create info で作る実画像の値と一致します(GPU の test「RC-7c maintenance4 production facts equal actual image requirements」)。照会と登録は同じ 1 つの関数で create info を作ります。
+
+**`retain` と `TRANSFER_SRC`**: ✅RC-7c から、採った `retain: true` の資源には planner が `TRANSFER_SRC` を足します(上の「[名前で読み戻す約束](#target-planning-retain)」)。
+
+<a id="memory-regions-runtime"></a>
+
+**実際の配置**: 登録は、region に入る render target の image を memory なしで作り(`VK_IMAGE_CREATE_ALIAS_BIT`)、実画像の requirements を読み、保持した packing の入力で詰め直してから、region ごとに VMA の allocation を 1 つ取り(device local を優先)、各 image をその offset に bind します([詰め直す所](../../src/core/renderingpass/rendertargetcontainer.cpp#L312))。
+
+- bind の前に、offset + size が allocation に収まる・offset が alignment の倍数・VMA の選んだ memory type が `memoryTypeBits` に入る、を確かめ、破れは `render_target.memory_bind_invalid@1: <名前>` です([確かめる所](../../src/core/vkcore/core.cpp#L1619))。計画の誤りなので黙って戻しません。
+- dedicated の確保が要る image は region に入れず、通常の確保にします。
+- 詰め直しで memory の鍵や dedicated が変わり、自動の共有か `prefer` の組が成り立たなくなれば、その target は理由(`dedicated_or_unknown_requirements`・`memory_key_changed`・`same_offset_memory_key_changed` など)を付けて分かれます。採った `require` の組が成り立たなければ `render_target.alias_repack_unsatisfiable@1` で、登録の transaction を戻します([その所](../../src/project/memoryregionpacking.cpp#L156))。`require` の組は (書いた文書, 組名) で決まります(planner と同じ)。
+- 各 image は region の allocation を共同で持ち、image の後に allocation が壊れます。resize で退いた image と、submit 中の image は、退役の batch と submit の lease が持ち続けます。
+- **resize**: 窓の resize(再 compile)と、窓でない出力の resize(container だけで作り直す)の両方で、保持した入力と作り直した実画像の requirements から詰め直します。generation の置き換えと失敗の復元でも同じです(GPU の test「RC-7c C3 renderer ranges survive pending submits both resize paths replacement and rollback」)。実機で大きさだけで鍵や dedicated が変わる device は確かめていません(作り物の facts の test で道を確かめた。実装者の報告)。
+
+**計測**(`get_frame_plan` の `memory_summary`): ✅RC-7c から 3 つの量を分けて出します(上の「[メモリの計測](#physical-plan-memory)」)。
+
+- `payload_bytes`: texel × extent の式(今までの `bytes` の和)。
+- `planned_region_bytes` / `planned_region_count`: 計画の facts で詰めた region の見積もり(region の外の通常の確保は入りません)。
+- `actual_allocation_count` / `actual_allocation_bytes` と `total_bytes`: 本番の登録が実際に取った**一意の VMA allocation** の数と size の和(region は 1 回だけ数え、region の外の image は各自)。`actual_placement` は `{extent, revision, regions: [{region, memoryTypeIndex, device_memory_block, size, residents: [{resource, offset, size, alignment, memory_type_bits, region_bound, rejection}]}], overlaps: [{region, left, right}], allocation_count, allocation_bytes, device_memory_block_count}` です([作る所](../../src/core/renderingpass/rendertargetcontainer.cpp#L954)、[載せる所](../../src/core/vkcore/renderer.cpp#L4856))。実登録の無い道(compiler_only・CPU の代役)では `actual_placement` は `null`(未計測)です。
+- VMA の allocation と VkDeviceMemory の block は別の単位です。`device_memory_block_count` は参照する block の数で、block の予約量は数えません。
+
+Studio の Frame Plan は、計画の region / offset と Freeze の意味をそのまま使い、実際の region / offset / memory type・共有の VMA の bytes・payload を並べて出します。status 行の合計は実際の VMA の総量で、measured / unmeasured を出し分けます(実装者の報告。表示の文言は [その所](../../src/devstudio/view/frameplanwidget.cpp#L4328))。
 
 ## 6.7 マテリアル(M1〜M3.5 = WP58/68/70/76/78/83)
 
@@ -2852,13 +2927,13 @@ void pelican_material_outputs_v1(
 flat / XR variant は同じ route に同一スキーマを要求します。組み直した graph の候補世代が、生きている material を別の
 output schema・format・MSAA(sample 数)・local-read・attachment state で描くことになる場合の扱いは、候補がどこから来たかで違います。
 
-- **ディスクからの読み直し**(file watcher が rendering 文書の変更を拾ったとき。[`Renderer::reloadRenderPipelineFromDisk()`](../../src/core/vkcore/renderer.cpp#L3597)):   ReloadService があると、live の material との照合を外し([`validate_live_materials = false` の所](../../src/core/vkcore/renderer.cpp#L3632))、   公開の直前の hook で、同じ watcher の batch に入った shader・material・model の変更と一緒に、material の shader と pipeline を   候補世代に合わせて作り直してから公開します([`prepareRenderPipelineModelReload` と `applyRenderPipelineCompanionReload` を呼ぶ所](../../src/core/vkcore/renderer.cpp#L3641)、   [作り直しの計画](../../src/core/material/materialgenerationplanner.cpp#L1298))。output schema が変わる material は fragment shader を   新しい schema で compile し直し、format・sample 数・local-read・attachment state が変わる material は pipeline を作り直します。
+- **ディスクからの読み直し**(file watcher が rendering 文書の変更を拾ったとき。[`Renderer::reloadRenderPipelineFromDisk()`](../../src/core/vkcore/renderer.cpp#L3598)):   ReloadService があると、live の material との照合を外し([`validate_live_materials = false` の所](../../src/core/vkcore/renderer.cpp#L3633))、   公開の直前の hook で、同じ watcher の batch に入った shader・material・model の変更と一緒に、material の shader と pipeline を   候補世代に合わせて作り直してから公開します([`prepareRenderPipelineModelReload` と `applyRenderPipelineCompanionReload` を呼ぶ所](../../src/core/vkcore/renderer.cpp#L3642)、   [作り直しの計画](../../src/core/material/materialgenerationplanner.cpp#L1298))。output schema が変わる material は fragment shader を   新しい schema で compile し直し、format・sample 数・local-read・attachment state が変わる material は pipeline を作り直します。
   作り直しのどれかが失敗すると例外で候補世代を捨て、旧世代を保ちます([`ReloadService::applyRenderPipelineCompanionReload()`](../../src/core/watch/reloadservice.cpp#L448))。
   graph と material surface を同じ transaction で組み直す仕組みは、この経路では既に動いています。
   - この経路でも断られるもの: 受け皿の無い route(`material_route_unserved@1`)、1 つの material の route が flat と XR で別の schema や     別の物理の契約になる候補、同じ fragment shader や pipeline を共有する material が両立しない契約を要求する候補。
   - material pass を全部外した文書(下の「受け皿の規則」の再起動の場合)も、この経路では作り直しの計画が例外を投げるので、候補世代を捨てて旧世代を保ちます([`MaterialContainer::prepareRuntimeGenerationReload()` の中で当てる所](../../src/core/material/materialgenerationplanner.cpp#L1306))。この経路には `restart_required` を返す相手がいないので、ディスクの文書は次の起動で読まれます(コードの読み)。watcher の log や問題の一覧にどう出るかは未確認です。
   - ⚠ 作り直しが commit した後で、その後ろの準備(XR の variant が残っているかの確認、model の reload の `preparePublication`)が失敗した     場合に、差し替え済みの material の pipeline が戻るかは確かめていません(未確認)。
-  - ReloadService は Renderer を作るときに必ず作られます([reload の参加者を登録する所](../../src/core/vkcore/renderer.cpp#L3288))。
+  - ReloadService は Renderer を作るときに必ず作られます([reload の参加者を登録する所](../../src/core/vkcore/renderer.cpp#L3289))。
     ReloadService が無い場合の分岐では照合が効き、今までどおり断ります([照合を切り替える所](../../src/core/vkcore/renderer_config.cpp#L683))。
     ただし通常の起動でこの分岐を通る道は見当たりません(コードからの推論)。
   - file watcher が動くのは、窓ありで、`--rpc`・`--replay`・`--strict-assets` のどれも付けない起動だけです     ([gate の条件](../../src/core/watch/reloadgate.cpp#L46)、[headless では読み直しを要求しない所](../../src/player/main.cpp#L531))。
@@ -2866,7 +2941,7 @@ output schema・format・MSAA(sample 数)・local-read・attachment state で描
     project.json に `hot_reload` を宣言すると `--rpc` の下でも watcher は動きますが、`--rpc` の下では watcher の変更は     この経路(`pelican.render_pipeline` の参加者)に届きません([除外する所](../../src/core/watch/reloadservice.cpp#L979))。
     Studio が起こす engine には常に `--rpc` が付くので([Studio の起動引数](../../src/devstudio/viewport/studioplayerarguments.cpp#L90))、     Studio の中の engine はこの経路を通りません。Studio の外でディスクの文書を書き換えたときは、`reload_render_documents`で取り込みます。
     これは下の「編集 RPC の候補」として組み直します([第13章](13_editor.md)の「ディスクで書き換えた render 文書を取り込む」)。
-- **編集 RPC の候補**(`edit_graph_document` など): 照合を外しません([`validate_live_materials = true` の所](../../src/core/vkcore/renderer.cpp#L3860))。
+- **編集 RPC の候補**(`edit_graph_document` など): 照合を外しません([`validate_live_materials = true` の所](../../src/core/vkcore/renderer.cpp#L3861))。
   output schema が変わる候補は断ります。format・MSAA・local-read・attachment state だけが違う候補は、次の段落の RS-1 の扱いです。
 
 編集 RPC の候補では、変わるのが format・MSAA・local-read・attachment state だけで、ほかの検査がすべて通るとき、 editor は断らずに文書を commit し、`restart_required: true` と `restart_reason`(`code: "material_physical_contract_changed"`)を 返します。live の世代はそのままで、engine を起動し直すと commit した文書で組み直します ([第13章](13_editor.md) §13.5 の「live の material が受けられない編集は、書いてから再起動を求めます」)。
@@ -3147,7 +3222,7 @@ rendering 文書の root に `material_route_default` を置くと、automatic �
   `render feature cannot declare material_route_default`)。値が `"auto"` / `"forward"` 以外なら
   `rendering config material_route_default must be "auto" or "forward"` です
   ([`readMaterialRouteDefault()`](../../src/project/renderpipeline.cpp#L701))。合成した config には残りません。
-- **engine は起動時に 1 回だけ読みます**(renderer を作るとき。[起動時の snapshot](../../src/core/vkcore/renderer.cpp#L3169))。
+- **engine は起動時に 1 回だけ読みます**(renderer を作るとき。[起動時の snapshot](../../src/core/vkcore/renderer.cpp#L3170))。
   起動後に文書を書き換えても、編集 RPC で変えても、engine を起動し直すまで効きません。編集 RPC は `restart_required: true` を返し、
   Studio はそれを受けて engine を再起動します([第13章](13_editor.md) §13.5)。renderer を持たない構成(loader や tool の test)では
   `"auto"` と読みます。
@@ -3447,8 +3522,8 @@ RC-5s の前は RT もパスも足さない**純ゲート**で、canonical ancho
 
 - **v0 の `sprite_demo`**(凍結した corpus)は binding を書いていないので、RC-5s の engine では `feature.parameter_target_unknown@1 {feature: "sprite", parameter: "color", target: "lit_color"}` で断られます。直すには上の表の 3 行目と同じ binding と置き場所を手で書きます。移行の step はありません([v0_freeze](../v0_freeze.md))。
 - **資源の計画**: `sprite_draw` は color と depth を IR の read_write の use として持つので、前後の barrier と lifetime が他の pass と同じ道で決まります(test: 前の writer `forward_transparent` からの barrier と、`scene_present` への barrier。[「RC-5s sprite resource uses induce incoming and outgoing barriers」](../../test/rc5s_anchor_removal_test.inc#L117))。
-- **自分の scope**: sprite の描画は `SpriteRenderer` が rendering の begin / end を自分で持つので、`sprite` の pass(と `ui` / `imgui`)はいつも単独の物理 rendering scope になります([単独にする所](../../src/core/renderingpass/renderingsamplecount.cpp#L124))。計画や complete package(✅RC-6b2 の前は physical fragment も)がこれを他の pass と同じ scope に入れていれば `render_graph.scope_implementation_unfusible@1 {graph, node}` です([計画で断る所](../../src/core/renderingpass/renderingsamplecount.cpp#L1731)、[package の install で断る所](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L1024))。
-- **attachment の範囲**: color / depth の use の layer 数が scope の view 数と違う、または MSAA の scope で mip が 0 でないときは `render_graph.sprite_attachment_range_unsupported@1 {graph, node, resource}` です([断る所](../../src/core/renderingpass/renderingsamplecount.cpp#L1721))。
+- **自分の scope**: sprite の描画は `SpriteRenderer` が rendering の begin / end を自分で持つので、`sprite` の pass(と `ui` / `imgui`)はいつも単独の物理 rendering scope になります([単独にする所](../../src/core/renderingpass/renderingsamplecount.cpp#L125))。計画や complete package(✅RC-6b2 の前は physical fragment も)がこれを他の pass と同じ scope に入れていれば `render_graph.scope_implementation_unfusible@1 {graph, node}` です([計画で断る所](../../src/core/renderingpass/renderingsamplecount.cpp#L1603)、[package の install で断る所](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L1090))。
+- **attachment の範囲**: color / depth の use の layer 数が scope の view 数と違う、または MSAA の scope で mip が 0 でないときは `render_graph.sprite_attachment_range_unsupported@1 {graph, node, resource}` です([断る所](../../src/core/renderingpass/renderingsamplecount.cpp#L1593))。
 - **XR・MSAA**: sequential の XR の view / layer、FrameUBO、MSAA の resolve は RC-5s の前の描画と同じ結果にしています(test: 左右で配置と遮る物の違う fixture、MSAA 1x / 4x。`golden_cases_test` の [「RC-5s sprite preserves stereo layers FrameUBO depth and MSAA resolves」](../../test/golden_cases_test.cpp#L11)。本体は [`runRc5sSpriteViews()`](../../test/rc5s_sprite_views_test.inc#L1))。
 - **描く物が無いフレーム**: sprite の command が 0 のフレームでも pass は実行の列に残り、何も描かずに終わります。GPU timing の行は `sprite_draw` の名前で出て、見える sprite が 1 つ以上ある時だけ `body` が supported です(§6.14)。
 - color か depth が具体の target(color は swapchain も可)でない構成は、実行時に `sprite feature requires a scene color and depth attachment for sprite pass` で断られます([sprite の分岐](../../src/core/vkcore/renderer.cpp#L2258))。
@@ -3519,7 +3594,13 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 | `target_planning.name_absent@1`(warning。`diagnostics` の `detail` が `{severity, graph, name, key}`) | ✅RC-6a1。root の `target_planning` の宣言の対象が合成の結果に無い(消した・置き換えた・inactive)。宣言は捨てられ、組み直しは止まらない |
 | `target_planning.policy_invalid@1` `{graph, target, key, document, pointer, …}` | ✅RC-6a2。`target_planning` の新しい鍵の入力の誤り: frame plan の先頭の node の `scope_join: true`、同じ node に `scope_break` と `scope_join` が両方 `true`、external の資源・image でない資源(buffer など)への `representation`、feature・構造の断片の `backend`、値の形の誤り(`backend` の 3 つ以外の値など)(§6.6「[計画の結果を指す鍵](#target-planning-result-keys)」) |
 | `target_planning.requirement_unsatisfied@1` `{graph, candidates}` / `{graph, candidate, requirements}` | ✅RC-6a2。`require` の宣言を満たせない。`candidates` の形は 3 つの候補がどれも成り立たなかった(候補ごとの失敗の理由つき)、`requirements` の形は選んだ計画が最後の照合で宣言と合わなかった。寿命の重なる資源の `alias_group`、`isolate` / `serial` の node や engine が isolate する node(`sprite_draw` など)への `scope_join` など。強さを `prefer` にすれば、満たせないときは外されて dump に `infeasible_prefer` で残る |
-| `target_planning.alias_generation_contract@1` `{graph, resource, peer, reason}` | ✅RC-7b。最終の物理計画で採った `alias_group` の `require` の組が、generation の最終の配置で同じ allocation の組になっていない(variant や graph の合意で共有が外れた、など)。`reason` は外した理由か `final generation placement does not share required alias group`。§6.6 の末尾の「[自動で共有される render target の条件](#alias-sharing-conditions)」 |
+| `target_planning.alias_generation_contract@1` `{graph, resource, peer, reason}` | ✅RC-7b。最終の物理計画で採った `alias_group` の `require` の組が、generation の最終の配置で同じ allocation の組になっていない(variant や graph の合意で共有が外れた、など)。`reason` は外した理由か `final generation placement does not share required alias group`。§6.6 の末尾の「[自動で共有される render target の条件](#alias-sharing-conditions)」 ✅RC-7c から、generation の配置で `require` の組に重ねてはいけない対があるときも同じ code です(`reason: "alias_group contains a forbidden generation same-offset pair"`) |
+| `alias.requirements_unknown` `{graph, candidates}` | ✅RC-7c。`alias_group` の `require` の住人の memory requirements が分からない(device の facts を渡さない compile など)。code に `@1` は付きません。§6.6 の末尾の「[facts が無いとき](#memory-regions-without-facts)」 |
+| `complete_physical_plan.memory_regions_required@1` | ✅RC-7c。complete physical plan の package に `memory_regions` / `memory_packing` が無い(`alias_groups` だけの旧い形) |
+| `memory.overlap@1` / `memory.alignment@1` / `memory.heap_size@1` / `memory.key@1` / `memory.dedicated@1` / `memory.same_offset@1` / `memory.inputs@1` / `memory.region@1`(文の頭) | ✅RC-7c。complete physical plan の検査が、compiler の計画から作り直した packing と package の region・offset が合わない package を断る。§6.6 の末尾の「[`alias_group` の `require` が断られるとき](#alias-sharing-conditions)」 |
+| `render_target.memory_bind_invalid@1: <名前>` | ✅RC-7c。region の allocation に image を bind する前の検査(収まる・alignment の倍数・memory type が `memoryTypeBits` に入る)が破れた。計画の誤り |
+| `render_target.alias_repack_unsatisfiable@1: <名前> / <組の先頭>` | ✅RC-7c。実画像の requirements で詰め直したとき、採った `alias_group` の `require` の組が同じ鍵の region に入れない。登録の transaction は戻る。§6.6 の末尾の「[memory の region と offset](#memory-regions-runtime)」 |
+| `vulkan.required_feature_missing@1: maintenance4` | ✅RC-7c。device が Vulkan の `maintenance4` を支持しない(起動の失敗) |
 | snapshot 系エラー(2 個目・透明後・未定義名) | §6.8 の v1 制限違反。未定義名は `snapshot.after_unknown@1`、旧い anchor 名は `render_graph.canonical_anchor_removed@1`(§6.8「`after` に書ける名前」) |
 | pixel policy の WARN | strict 条件不成立(silent fallback しない方針) |
 | `Shader defines and generated includes require GLSL source, not SPIR-V` | `.spv` しか無い環境で feature(defines)を使った。**生成 include**(`pelican_resource_ports.glsl`)を要るパスも同じ一文で断られます([shaderlibrary.cpp:344](../../src/core/shader/shaderlibrary.cpp#L354)、engine:// 側は [:528](../../src/core/shader/shaderlibrary.cpp#L540)) |
@@ -3633,8 +3714,8 @@ preview graph の合成規則(すべて起動時に検証されます):
 **preview を組めない構成でも通常の再生は起動する。**
 
 - **背景**: 利用者の intro link の比較で見つかりました。`history: true` の render target を root に直書きした project を player で起動すると、通常の再生でも `preview graph '<config>' rejects authored history target 'accum'` で起動できませんでした。通常の起動でも preview の変種を含む family を組み、preview の検査の例外で登録全体が落ちていたためです(仕様書の記述)。
-- **今の扱い**: preview の検査([`validatePreviewConfig()`](../../src/project/graphvariantpolicy.cpp#L314))そのものは変わらず、断る構成を preview で走らせることはしません。断りは [`PreviewUnsupportedAuthoringError`](../../src/project/graphvariantpolicy.hpp#L235) になり、compiler program は preview の変種を組めないとき、それを「利用できない」と記録して flat / xr を今までどおり登録・公開します([PV-1 で preview の失敗を記録する所](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L640)、[登録の段で unavailable の preview を作る所](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1588))。flat / xr が組めない構成は今までどおり失敗です。
-今は `PreviewUnsupportedAuthoringError` は常に「利用できない」と記録し、それ以外の失敗は、同じ呼び出しで runtime の変種(flat / xr)が先に組めた後だけ記録します(下の `composition`)。runtime の変種が組めていなければ、flat と同じように投げます([RG-3 で投げ直す所](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L665))。登録は runtime の変種を先に並べるので(コードの注記)、起動の扱いは変わりません。runtime の変種の無い呼び出しがどこから来るかは未確認です。
+- **今の扱い**: preview の検査([`validatePreviewConfig()`](../../src/project/graphvariantpolicy.cpp#L314))そのものは変わらず、断る構成を preview で走らせることはしません。断りは [`PreviewUnsupportedAuthoringError`](../../src/project/graphvariantpolicy.hpp#L235) になり、compiler program は preview の変種を組めないとき、それを「利用できない」と記録して flat / xr を今までどおり登録・公開します([PV-1 で preview の失敗を記録する所](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L645)、[登録の段で unavailable の preview を作る所](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1613))。flat / xr が組めない構成は今までどおり失敗です。
+今は `PreviewUnsupportedAuthoringError` は常に「利用できない」と記録し、それ以外の失敗は、同じ呼び出しで runtime の変種(flat / xr)が先に組めた後だけ記録します(下の `composition`)。runtime の変種が組めていなければ、flat と同じように投げます([RG-3 で投げ直す所](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L670))。登録は runtime の変種を先に並べるので(コードの注記)、起動の扱いは変わりません。runtime の変種の無い呼び出しがどこから来るかは未確認です。
 - **状態の形**([`previewGraphStatusJson()`](../../src/core/renderingpass/previewgraph.cpp#L112)、reason は [`previewUnsupportedAuthoringReason()`](../../src/core/renderingpass/previewgraph.cpp#L71)): 組めたときは `preview: {available: true}`、組めないときは `preview: {available: false, reason: {code: "preview.unsupported_authoring@1", feature, target?, graph?, pass?, cause?, message}}` です。`message` は断った文そのものです。`feature` は次のどれかです。
   - `history`: `history: true` の render target(`target` に名前)
   - `projection_jitter`: `projection_jitter` の直書き
@@ -3643,7 +3724,7 @@ preview graph の合成規則(すべて起動時に検証されます):
   - `history_read`: `<target>@history` を読む pass(`graph`・`pass`)
   - `history_write`: `writes_history` の pass(`graph`・`pass`)
   - `composition`: それ以外の理由で preview を組めなかった。拒否が名前付き(`GraphRegistryError` か `<code>: <fields>` の形)なら `cause: {code, ...その fields}` が付きます(例: preview だけが断る graph のループの `graph.loop_expression_invalid@1` は `cause: {code: "graph.loop_expression_invalid@1", node: "steps", reason: "not_static"}`。test)
-- **出る所**: `get_status` の `preview`([`get_status` の PV-1 の鍵](../../src/core/communication/rpcserver.cpp#L1680))、`get_frame_plan` の最上位の `preview`([frame plan の PV-1 の鍵](../../src/core/vkcore/renderer.cpp#L4564))、render の編集の committed の結果の `preview`(公開した世代の状態。`reload_render_documents` と `edit_batch` の committed も同じ。[committed に preview を足す所](../../src/core/communication/renderconfigeditor.cpp#L8480))。
+- **出る所**: `get_status` の `preview`([`get_status` の PV-1 の鍵](../../src/core/communication/rpcserver.cpp#L1680))、`get_frame_plan` の最上位の `preview`([frame plan の PV-1 の鍵](../../src/core/vkcore/renderer.cpp#L4566))、render の編集の committed の結果の `preview`(公開した世代の状態。`reload_render_documents` と `edit_batch` の committed も同じ。[committed に preview を足す所](../../src/core/communication/renderconfigeditor.cpp#L8480))。
 - **`render_preview`**: preview が利用できない世代では、capture の中身を読む前に `preview.unavailable@1` で断ります。JSON-RPC の error(`-32000`)の `data` が `{code: "preview.unavailable@1", method: "render_preview", reason: <上の reason>}` です([`checkPreviewAvailable()`](../../src/core/communication/editorpreviewservice.cpp#L134))。
 - **編集**: 編集の preflight は preview を組みません([PV-1 で preview を組まなくなった preflight](../../src/core/renderingpass/previewgraph.cpp#L185))。preview だけが組めない編集も committed になり、`preview` が `available: false` に変わります。逆に history を外す編集で `available: true` に戻ります。
 - **log**: 起動時に、preview が利用できなければ warning を 1 行出します。形は `render preview unavailable (preview.unsupported_authoring@1 feature=history target=accum); normal play continues, render_preview refuses: <message>` で、`target=` は reason に `target` があるときだけです([PV-1 の warning の行](../../src/core/vkcore/renderer_config.cpp#L763))。同じ関数は reload と編集の組み直しでも通るので、そこでも preview が利用できなければ同じ行が出ます(コードの読み。test は起動時の 1 行だけを見ます)。
@@ -3910,7 +3991,7 @@ layout(無し / 有り)× `acceleration_structure` 宣言 × `pelican_ray_instan
 - **render 文書になっています**: root の rendering 節が名指す layout と bindings は、`get_render_documents` に `kind: "ray_group_layout"` / `"ray_bindings"` で並び、`restore_render_documents` で戻せ(作る・消すを含む)、`reload_render_documents` がディスクから読み直します。JSON として読めない layout / bindings も一覧に出るので、restore で直せます。
 - **読む・書く口**: `get_ray_layout {}` が 2 つの文書・layout の名前(ray type / group / miss / record)・binding が選べる material の selector・行に当たらなかった binding を返し、`edit_ray_layout` が文書を丸ごと置き換えます。`edit_ray_layout` は `edit_batch` に入るので、group や miss を足すときは layout とそれを使う task の編集を 1 つの batch で送ります(片方だけでは commit の時に task の parser が断ります)。
 - **新しく作る場所**: root が名指していないとき、`edit_ray_layout` は root の rendering 文書と同じフォルダに `ray_layout.json` / `ray_bindings.json` を作り、root に `project://<そのフォルダ>/ray_layout.json` と書きます(Blank なら `project://passes/ray_layout.json`)。`pathtrace_demo` の裸の `"ray_layout.json"` のような今の綴りはそのまま読みます。
-- **layout の有無が変わる編集は再起動**: 上の mode は起動時に決まるので、layout を足す(外す)候補は、task の parse・shader の compile・RT pipeline の作成・世代の検証が全部通った後で、publish の直前に mode の違いが分かります([mode を判定する所](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1402))。そのとき editor は文書を commit し、live の世代は前のまま、答えは `restart_required: true` と `restart_reason: {code: "ray_layout_mode_changed", from: "none" | "layout", to, message}` です(RS-1 と同じ形)。検査を最後に置くので、task の誤り(layout の形に直していない `legacy_syntax_with_layout@1`、hit group の欠けなど)は先にその code で断られ、何も書かれません。engine を起こし直すと新しい mode で動きます(GPU の test)。起こし直すまでの次の編集も毎回 `committed` と `restart_required` です。
+- **layout の有無が変わる編集は再起動**: 上の mode は起動時に決まるので、layout を足す(外す)候補は、task の parse・shader の compile・RT pipeline の作成・世代の検証が全部通った後で、publish の直前に mode の違いが分かります([mode を判定する所](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1427))。そのとき editor は文書を commit し、live の世代は前のまま、答えは `restart_required: true` と `restart_reason: {code: "ray_layout_mode_changed", from: "none" | "layout", to, message}` です(RS-1 と同じ形)。検査を最後に置くので、task の誤り(layout の形に直していない `legacy_syntax_with_layout@1`、hit group の欠けなど)は先にその code で断られ、何も書かれません。engine を起こし直すと新しい mode で動きます(GPU の test)。起こし直すまでの次の編集も毎回 `committed` と `restart_required` です。
 - **fallback の世代は mode を判定しません**: 登録する root が engine の fallback の形なら、ray layout の mode を判定しません。
 物を置く前に binding を作る、bind した material の最後の物を消す、が断られていました。今は記録だけして、その行は既定の group で描きます([記録する所](../../src/core/shader/raygrouplayout.cpp#L1516))。当たらなかった binding は `get_ray_layout.unresolved_bindings` に出ます。同じ行に 2 つの binding が当たる・同じ形の行が別の group を持つ(`pelican.ray_row_binding_ambiguous@1` など)は今までどおり失敗です。bind した material を使う最後の object を消す scene の編集が通り、その binding が一覧に出ることは RTL-1c の GPU の test が確かめています。
 - **巻き戻りの文に原因が付きます**: staged の世代が最初の frame で巻き戻ったとき、`failure` は `pelican.ray_tracing.generation_rolled_back@1: staged authored render pipeline generation was not published: <frame の例外の文>` です([原因を足す所](../../src/core/vkcore/renderer.cpp#L242))。前は原因の文が残りませんでした。
@@ -4062,11 +4143,11 @@ stderr に `--render-fallback requires --rpc` と usage を出し、終了コー
 - 起動の `--feature-overlay` は重ねます。Studio の editor overlay(gizmo・picking・gpu_timing)が要る module を module の graph が固まる前に作っておき、
   fallback を置き換える project の構成がそれらを有効にできるようにするためです(コードの注記)。BS-1 の test は `engine://features/editor.json` を重ねて起動し、直した構成の reload が通ることを見ます。
 - fallback の間は fallback の JSON を `ProjectBasicConfig` に publish します(出力が変わったときの lowering のやり直しと scene の ray plan は、publish された構成を読むため。
-  [fallback の JSON を publish する所](../../src/core/vkcore/renderer.cpp#L3166))。ディスクの文書には触りません。reload と editor が読むのはディスクの文書です。
+  [fallback の JSON を publish する所](../../src/core/vkcore/renderer.cpp#L3167))。ディスクの文書には触りません。reload と editor が読むのはディスクの文書です。
 - log に error の行 `render pipeline refused at start; running the engine's fallback generation until a fixed configuration is published: <拒否の JSON>` を 1 行書きます
-  ([BS-1 の起動時の error の行](../../src/core/vkcore/renderer.cpp#L3212))。例外を投げないので `Pelican fatal error` の行は出ません(コードの読み)。
+  ([BS-1 の起動時の error の行](../../src/core/vkcore/renderer.cpp#L3213))。例外を投げないので `Pelican fatal error` の行は出ません(コードの読み)。
 
-**断られた理由は `get_status.render_pipeline` で読みます**([`Renderer::renderPipelineStatusJson()`](../../src/core/vkcore/renderer.cpp#L3227))。
+**断られた理由は `get_status.render_pipeline` で読みます**([`Renderer::renderPipelineStatusJson()`](../../src/core/vkcore/renderer.cpp#L3228))。
 
 | 状態 | 形 |
 |---|---|
@@ -4141,10 +4222,10 @@ BS-1 の `get_status.render_pipeline.refusal` は起動時の 1 件だけで、h
 
 | `source` | 入る時 |
 |---|---|
-| `startup` | `--render-fallback` の起動で構成が断られた(BS-1 / BS-1b。[起動時の拒否を一覧に入れる所](../../src/core/vkcore/renderer.cpp#L3158))。material の route を受ける pass が無い起動(下の engine_backlog 23)。material 文書が無い・読めない起動(`--strict-assets` 無し。フラグ `--render-fallback` は要りません) |
-| `hot_reload` | engine 自身の disk からの読み直し(file 監視)が断られた([disk からの読み直しの拒否を入れる所](../../src/core/vkcore/renderer.cpp#L3779))。render 文書は `--rpc` の無い起動だけです(`--rpc` の下では HW-1 で、監視の変更が render pipeline の participant に届きません)。shader は `--rpc` の下でも、監視しているものは入ります |
+| `startup` | `--render-fallback` の起動で構成が断られた(BS-1 / BS-1b。[起動時の拒否を一覧に入れる所](../../src/core/vkcore/renderer.cpp#L3159))。material の route を受ける pass が無い起動(下の engine_backlog 23)。material 文書が無い・読めない起動(`--strict-assets` 無し。フラグ `--render-fallback` は要りません) |
+| `hot_reload` | engine 自身の disk からの読み直し(file 監視)が断られた([disk からの読み直しの拒否を入れる所](../../src/core/vkcore/renderer.cpp#L3780))。render 文書は `--rpc` の無い起動だけです(`--rpc` の下では HW-1 で、監視の変更が render pipeline の participant に届きません)。shader は `--rpc` の下でも、監視しているものは入ります |
 | `reload_rpc` | `reload_render_documents` の拒否(ticket を取らずにすぐ返る拒否も、ticket の結果の拒否も。[`RenderConfigEditorService::noteProblems()`](../../src/core/communication/renderconfigeditor.cpp#L7848))と、`reload_shaders` の失敗 |
-| `edit_rpc` | 編集 RPC(`create_material`・`edit_material`・`bind_material` と、`register_material` の読み直し)が material の文書を書いたのに、それを描く pass が material の使うものを宣言していないので engine がまだ描けない(答えの `applied: "unusable"`)。code は `material.pass_contract_unmet@1` で、engine が取り込むまで載ります([`notePassContractRefusal()`](../../src/core/material/projectmaterialasset.cpp#L1134))。拒否ではないので、下の「入らないもの」の編集 RPC の拒否とは別です。render の編集が検証を通った後、適用の途中で失敗したもの(descriptor の失敗、`vk::SystemError`・`std::bad_alloc`。[`recordRenderPipelineAuthoringFailure()`](../../src/core/vkcore/renderer.cpp#L3802))と、staged の後に戻した編集([rollback で入れる所](../../src/core/vkcore/renderer.cpp#L256))もこの source です(CP-1 / CP-1b) |
+| `edit_rpc` | 編集 RPC(`create_material`・`edit_material`・`bind_material` と、`register_material` の読み直し)が material の文書を書いたのに、それを描く pass が material の使うものを宣言していないので engine がまだ描けない(答えの `applied: "unusable"`)。code は `material.pass_contract_unmet@1` で、engine が取り込むまで載ります([`notePassContractRefusal()`](../../src/core/material/projectmaterialasset.cpp#L1134))。拒否ではないので、下の「入らないもの」の編集 RPC の拒否とは別です。render の編集が検証を通った後、適用の途中で失敗したもの(descriptor の失敗、`vk::SystemError`・`std::bad_alloc`。[`recordRenderPipelineAuthoringFailure()`](../../src/core/vkcore/renderer.cpp#L3803))と、staged の後に戻した編集([rollback で入れる所](../../src/core/vkcore/renderer.cpp#L256))もこの source です(CP-1 / CP-1b) |
 
 入らないもの:
 
@@ -4201,7 +4282,7 @@ root・preset・feature の判定は、記録する時に disk の root と pres
 - editor はこの code を運ぶ code に加え、編集の rejected・reload の拒否・起動時の拒否のどれでも同じ code です。feature の catalog の `unavailable_reason` も同じ文です。
 - graph の拒否ではないので CT-2 の `document` は付かず、一覧の 1 件にも `document` と `document_kind` は付きません(コードの読み)。
 
-**material の route を受ける pass が無い起動(engine_backlog 23)** 今は止めずに material を書き留めて pass 無しとして登録し ([`MaterialStartupUnserved`](../../src/core/material/materialstartupunserved.hpp#L20))、module の graph を固める直前(`Loop::run()` の `prepareRuntimeModuleGraph()` の後)に fallback の世代へ切り替えます ([`Renderer::enterStartupFallbackForUnservedMaterials()`](../../src/core/vkcore/renderer.cpp#L3194))。
+**material の route を受ける pass が無い起動(engine_backlog 23)** 今は止めずに material を書き留めて pass 無しとして登録し ([`MaterialStartupUnserved`](../../src/core/material/materialstartupunserved.hpp#L20))、module の graph を固める直前(`Loop::run()` の `prepareRuntimeModuleGraph()` の後)に fallback の世代へ切り替えます ([`Renderer::enterStartupFallbackForUnservedMaterials()`](../../src/core/vkcore/renderer.cpp#L3195))。
 
 - `get_status.render_pipeline` は `{state: "fallback", refusal: {code: "material_route_unserved@1", rendering_config, unserved: [{route, ...}], message}}` で、message は編集の ticket の拒否と同じ文(`Hint:` を含む)です。
   一覧には `startup`・`document_kind: "root_rendering"` の 1 件が入ります。直した root の `reload_render_documents` で `ready` に戻り、一覧は空になります(test)。
@@ -4812,7 +4893,7 @@ uint count = pelican_loop_count();
   ```
 
 - **engine が渡す所**: fullscreen / raster の pass([渡す所](../../src/core/renderer/fullscreenpassrenderer.cpp#L55))と compute task([渡す所](../../src/core/renderingpass/computetaskcontainer.cpp#L1982))。pipeline の stage のうち push constant の range が `[112, 120)` を丸ごと含むものを集め([`loopIndexPushStages()`](../../src/core/shader/shaderreflection.cpp#L549))、その stage flags の OR で 1 回 `pushConstants` します([`PipelineFactory::pushLoopIndex()`](../../src/core/shader/pipelinefactory.cpp#L1933))。raster で vertex と fragment の両方が include すれば両方に同じ値が入り、どの stage も宣言していなければ何もしません。
-- **値**: element は展開の `element`(集合の値。並べた後の位置 `index` ではない)、count は展開後の回数(`get_frame_plan` の `loops[].count`)です([回ごとに決める所](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L359))。ループの外の pass と task は element 0・count 1 です。
+- **値**: element は展開の `element`(集合の値。並べた後の位置 `index` ではない)、count は展開後の回数(`get_frame_plan` の `loops[].count`)です([回ごとに決める所](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L360))。ループの外の pass と task は element 0・count 1 です。
 - **compile は増えない**: 回の番号は値で define ではないので、同じ shader と同じ設定の回は同じ compile(同じ cache key)を共有します。pipeline は今までどおり pass ごとです。
 - **断るもの**: push constant の range が `[112, 120)` に**一部だけ**重なる宣言(例: offset 100 から 16 byte)は、graphics と compute の pipeline を作るときに `shader.loop_push_overlap@1` `{shader, stage, range: {offset, size}}` で断ります([断る所](../../src/core/shader/shaderreflection.cpp#L560))。編集 RPC の結果では、draw_loop の code と同じく**その code のまま** fields が並びます(下の一覧の注記)。
 - **見える所**: `get_frame_plan` の fullscreen / raster / compute の node と、`get_engine_shaders` の engine の shader の項目に、どれかの stage が `[112, 120)` を宣言していれば `reads_loop_index: true` が付きます(宣言していなければ鍵が無い。[第13章](13_editor.md) §13.5)。
@@ -4849,9 +4930,9 @@ GB-3(Blank から GUI で FFT の海を組んだ試験)で、初期スペクト�
 **`render.image` の `lifetime`**
 
 - `"transient"`(既定。今までの扱い)か `"persistent"`。ほかの値は編集の時点で `render.image lifetime must be persistent or transient: <node>` です([lifetime の検査](../../src/project/graphmodule.cpp#L449))。lowering は値をそのまま render target の宣言へ運び、rendering 節の `render_targets` にも同じ鍵を書けます(§6.2 の表)。
-- persistent の image は 1 枚を保ちます(ping-pong の 2 枚にはしません)。runtime の alias の候補から外れ、`get_frame_plan` の `physical_target_plan.resources[]` で `aliasable: false`、`reason` に `persistent lifetime` が入ります([理由を足す所](../../src/core/renderingpass/renderingsamplecount.cpp#L103))。transient attachment と tile-local の候補にもなりません。
+- persistent の image は 1 枚を保ちます(ping-pong の 2 枚にはしません)。runtime の alias の候補から外れ、`get_frame_plan` の `physical_target_plan.resources[]` で `aliasable: false`、`reason` に `persistent lifetime` が入ります([理由を足す所](../../src/core/renderingpass/renderingsamplecount.cpp#L104))。transient attachment と tile-local の候補にもなりません。
 - ✅RC-6c から、graph の中で使われる persistent の image は物理計画の寿命 `lifetime.retain` に `persistent` が付き、graph の末尾の node まで生きます(後の frame で読むため。§6.6「[資源の寿命と `lifetime.retain`](#physical-plan-lifetime)」)。`initial` の asset から始める image と、画像ファイルの `source` を持つ image も同じです。
-- layout tracker の reset(コードの注記では世代の commit・history の reset・view family の変化)をまたいで、その image の layout を覚えています([`RenderTargetLayoutTracker::reset()`](../../src/core/vkcore/render_target_layout_tracker.cpp#L359))。VkImage が作り直されたら(大きさ・format の変更、組み直し)、次に使う時に UNDEFINED から始めます([`RenderTargetLayoutTracker::forgetRecreatedPersistentImage()`](../../src/core/vkcore/render_target_layout_tracker.cpp#L385))。そのとき中身は未定義です。
+- layout tracker の reset(コードの注記では世代の commit・history の reset・view family の変化)をまたいで、その image の layout を覚えています([`RenderTargetLayoutTracker::reset()`](../../src/core/vkcore/render_target_layout_tracker.cpp#L331))。VkImage が作り直されたら(大きさ・format の変更、組み直し)、次に使う時に UNDEFINED から始めます([`RenderTargetLayoutTracker::forgetRecreatedPersistentImage()`](../../src/core/vkcore/render_target_layout_tracker.cpp#L355))。そのとき中身は未定義です。
 - PS-1 は pass の load op を変えていません。
 - `render.buffer` の `lifetime`(既定は persistent)は今までどおりです。
 
@@ -4861,7 +4942,7 @@ GB-3(Blank から GUI で FFT の海を組んだ試験)で、初期スペクト�
 - rendering 節の JSON の fullscreen / raster の pass にも `schedule` を書けます(field の所有表で受けるのはこの 2 つの type だけ。ほかの値は `render_graph.node_field_invalid@1`(`field: "schedule"`、`reason: "not_per_frame_or_once"`。[断る所](../../src/project/rendergraphparse.cpp#L948)。✅RC-3c2b2 で消えた core の `parsePassSchedule()` の文 `Pass schedule must be per_frame or once: <pass>` は、その前から graph を読む時点の名前付きの拒否が先に出ていた))。compute task の `once` は §6.6 の `schedule` の段落です。
 - compute の once は、走る frame で `per_frame` と同じく view によらず 1 回 dispatch します。fullscreen / raster の once は、走る frame でその family の全 view に描きます。
 - ループの body の pass / task に書くと、展開した全回が once です。
-- once の node は、target planning で自分だけの物理 scope に isolate されます。走らない frame の node は scope を始めないので、走る node と scope(begin・clear・合流)を共有させないためです。書いた `target_planning` に足して効きます([`isolatedNodeConstraints()`](../../src/core/renderingpass/renderingsamplecount.cpp#L124)。✅RC-5s で `onceIsolatedNodeConstraints()` から改名し、`sprite` / `ui` / `imgui` の node も同じく isolate します)。
+- once の node は、target planning で自分だけの物理 scope に isolate されます。走らない frame の node は scope を始めないので、走る node と scope(begin・clear・合流)を共有させないためです。書いた `target_planning` に足して効きます([`isolatedNodeConstraints()`](../../src/core/renderingpass/renderingsamplecount.cpp#L125)。✅RC-5s で `onceIsolatedNodeConstraints()` から改名し、`sprite` / `ui` / `imgui` の node も同じく isolate します)。
 
 **once が走る frame。**毎 frame、host の書き込み(value graph の sink、light)を stage した後で [`planOnceRuns()`](../../src/core/renderingpass/oncescheduler.cpp#L5) が決めます。次のどれかがあれば走り、無ければその node は何も記録しません。上から順に見て、最初に当たったものが理由です。
 
@@ -4922,7 +5003,7 @@ rendering 節に直接書いた once は graph lowering の拒否検査を通り
 
 **lowering。**`initial` のある image の宣言に、lowering は `usage` の `TRANSFER_DST` を足し、`extent_scale` が無ければ `1.0` を入れます(render target の parser が求めるため。固定の `width` / `height` があればそちらが効きます)。`initial` は render target の宣言にそのまま残ります([IA-1 の lowering](../../src/project/rendergraphcomposition.cpp#L883))。compile は、`initial` のある target を frame の pass より前に中身があるものとして扱うので、先に書く pass が無くても pass が読めます([IA-1 で書き手の無い読みを通す所](../../src/project/rendergraphir.cpp#L387))。
 
-**照らし合わせ。**世代を組む段で、公開の前に asset を読み、image と照らし合わせます([IA-1 の asset を読む段](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L943))。拡大縮小と format の変換はしません。合わなければ `graph.image_initial_mismatch@1` `{node, asset, what, expected: {width, height, format}, actual: {width, height, format}}` です。
+**照らし合わせ。**世代を組む段で、公開の前に asset を読み、image と照らし合わせます([IA-1 の asset を読む段](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L947))。拡大縮小と format の変換はしません。合わなければ `graph.image_initial_mismatch@1` `{node, asset, what, expected: {width, height, format}, actual: {width, height, format}}` です。
 
 | `what` | 起きる時 |
 |---|---|
@@ -4934,7 +5015,7 @@ rendering 節に直接書いた once は graph lowering の拒否検査を通り
 - image の `format` が文字列でない(`format_class` など)ときは、大きさだけを比べます(宣言の注記)。
 - 例(test): 64×64 の `R32G32B32A32_SFLOAT` の KTX2 を `R16G16B16A16_SFLOAT` の image に書くと `{"node": "lut", "asset": "assets/lut.ktx2", "what": "format", "expected": {"width": 64, "height": 64, "format": "R16G16B16A16_SFLOAT"}, "actual": {"width": 64, "height": 64, "format": "R32G32B32A32_SFLOAT"}}`。
 
-**copy する時。**image が作られた時と、runtime の世代の最初の frame に、その frame のどの pass よりも前(once の pass より前)に 1 回、asset の level 0 を copy します([`uploadImageInitialAssets()`](../../src/core/vkcore/renderer.cpp#L6858))。
+**copy する時。**image が作られた時と、runtime の世代の最初の frame に、その frame のどの pass よりも前(once の pass より前)に 1 回、asset の level 0 を copy します([`uploadImageInitialAssets()`](../../src/core/vkcore/renderer.cpp#L6884))。
 
 - program と target ごとに、copy した `VkImage`・世代・読んだ asset を覚え、どれかが変わったときにまた copy します。
 - copy は別の submission で、終わるまで待ちます。once の pass が同じ image に書けば、copy の上に書きます。
@@ -4948,15 +5029,15 @@ rendering 節に直接書いた once は graph lowering の拒否検査を通り
 
 **asset だけを書き換えた reload。**
 
-- **比べる相手**: 世代を組む段で asset を読むとき、decode の前に file の中身の sha256 を `assetFileSha256` で記録します([IA-2 で decode の前に hash を取る所](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L953))。decode の前に取るので、間に書き込まれても次の reload では「変わった」と読まれ、「変わっていない」とは読まれません(コードの注記)。`get_frame_plan` の `initial_asset.sha256`(manifest の値)とは別の値です。
+- **比べる相手**: 世代を組む段で asset を読むとき、decode の前に file の中身の sha256 を `assetFileSha256` で記録します([IA-2 で decode の前に hash を取る所](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L957))。decode の前に取るので、間に書き込まれても次の reload では「変わった」と読まれ、「変わっていない」とは読まれません(コードの注記)。`get_frame_plan` の `initial_asset.sha256`(manifest の値)とは別の値です。
 - **比べ方**: `reload_render_documents` は live の世代の program が記録した asset を集め([live の世代の initial の asset を集める所](../../src/core/communication/editorruntimefactory.cpp#L2463))、各 file を読み直して hash し、記録と比べます([IA-2 で asset を比べる所](../../src/core/communication/renderconfigeditor.cpp#L8143))。今読めない file は「変わった」に数えます。
 - **結果**: committed の結果には毎回 `changed_assets: [<asset>...]` が付きます。値は書いた参照のまま(`assets/luts/ltc.ktx2`)、辞書順、重複なしで、空のこともあります。文書も asset も変わらなければ今どおり `no_change: true` で、`changed_assets: []` です。asset だけが変わったときは `changed: []` で `changed_assets` にその asset が出て、`source_digest` は変わりません(editor の文書は変わらないため)。
 - **文書の変更で新しく足した asset**: 比べるのは live の世代がすでに読んだ asset だけなので、文書を書き換えて新しく `initial` に足した asset は `changed_assets` には出ず、その文書が `changed` に出ます(コードの読み)。
 - **合わない asset**: 書き換えた asset が image に合わないときは、ticket が受けられた(`accepted`)後、次の frame の組み直しの段で `graph.image_initial_mismatch@1` の rejected になり(asset を読むのは世代を組む段だけで、ticket を取る前の preflight は読みません。コードの読み)、live の世代は前のまま、画面も前の値のままです(GPU の test。64×64 の 1 成分の KTX2 を RGBA32F の image の asset に上書きして `node` / `asset` / `what: "format"` を見る)。CT-2 の規則で error に `document` も付くはずですが、この test は `document` を確かめていません(未確認)。
 
-**`get_frame_plan`。**`physical_target_plan.resources[]` のうち `initial` を持つ image の要素に `initial_asset: {asset, sha256}` が付きます([IA-1 で `initial_asset` を足す所](../../src/core/vkcore/renderer.cpp#L5007))。`asset` は書いた参照のまま、`sha256` はその file を持つ asset store の `assets.manifest` の値で、manifest に載っていなければ `null` です。object にしてあるのは、後の WP が焼いた元の情報を足せるようにするためです(コードの注記)。
+**`get_frame_plan`。**`physical_target_plan.resources[]` のうち `initial` を持つ image の要素に `initial_asset: {asset, sha256}` が付きます([IA-1 で `initial_asset` を足す所](../../src/core/vkcore/renderer.cpp#L5030))。`asset` は書いた参照のまま、`sha256` はその file を持つ asset store の `assets.manifest` の値で、manifest に載っていなければ `null` です。object にしてあるのは、後の WP が焼いた元の情報を足せるようにするためです(コードの注記)。
 
-asset の隣に `<asset>.import.json` があれば `derived_from: {source, tool: {name, version}}`・`stale`・`stale_reasons` も付きます(`list_derived_assets` と同じ値。[AB-1 で `initial_asset` に足す所](../../src/core/vkcore/renderer.cpp#L5024)。理由の一覧は [第5章](05_assets.md) §5.8「音の解析を焼いた表」)。
+asset の隣に `<asset>.import.json` があれば `derived_from: {source, tool: {name, version}}`・`stale`・`stale_reasons` も付きます(`list_derived_assets` と同じ値。[AB-1 で `initial_asset` に足す所](../../src/core/vkcore/renderer.cpp#L5047)。理由の一覧は [第5章](05_assets.md) §5.8「音の解析を焼いた表」)。
 
 **assets。**manifest は store の中の file を全部数えるので、`initial` の asset もほかの file と同じく manifest と検証の対象です。engine に asset を消すパージはありません。
 

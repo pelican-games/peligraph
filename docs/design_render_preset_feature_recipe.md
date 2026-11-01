@@ -393,3 +393,18 @@ develop_v1 の `1e05031d7` / `e17754510`。仕様は `<作業ディレクトリ>
   RT メモの「計画の差(B4)」。§7.2 の A5(`[rc6-baseline-compare]`)と §7.12 の F4(`[rc7-baseline-compare]`)も、同じ除外の関数 [`rc7bComparable()`](../test/rc5_recipe_compiler_test.inc#L447)
   を通して比べる形になった(F4 は fingerprint を含む完全一致ではなくなった。fingerprint は派生の欄の分だけ変わる)。
 - **出荷の文書**: engine の feature・断片・レシピと `projects/` に `alias_group` / `no_alias` を書いた物は無い(`src/core/resources` と `projects/` の検索で 0 件)。
+
+### 7.14 RC-7c(形の違う区間詰め、2026-10-31)
+
+`27a919f4a`(branch `agent/rc7c`)。仕様は `<作業ディレクトリ>/rc7_spec.md` §4・§4.9、報告は区切りごとに 2 本。意味は
+[RT メモ §2 の末尾の RC-7c](design_render_target_memory_reduction.md#rc7c-packing)。レシピと部品、16 構成に関わる所だけ書く。行番号は `27a919f4a` の物。
+
+- **部品の `alias_group` の照合**: 組が (宣言の出所の document, 組名) で決まる規則(§7.9)は、planner の slot の決定([`updateGenerationAliasPolicy()`](../src/project/targetrenderplanning.cpp#L4716))と
+  runtime の詰め直しの `require` の集合([その所](../src/core/renderingpass/renderingpassconfigregistration.cpp#L1257))の両方で同じ鍵になった。別の文書が同じ組名を書いた `require` は、runtime でも別の組
+  (③ の修正の報告の 1。GPU の test「RC-7c fix1 runtime required groups belong to their declaring documents」)。組は同じ region の同じ offset を求める。
+- **16 構成**: 実装前の HEAD で記録した `<作業ディレクトリ>/rc7c_baseline/rc5`(compiler_only・facts なし)と、意味の欄が一致する(test「RC-7c C5 sixteen fixed snapshots retain every semantic field」、
+  [その所](../test/rc5_recipe_compiler_test.inc#L622)。`[.]` で手で走らせる)。差は配置の派生の欄(`alias_groups`・`memory_regions`・`memory_packing`・`alias_candidates` の未確定・memory の集計・fingerprint)だけで、
+  facts が無いので旧い組は全部別の確保に戻る(LDR・extras なしは元から組なし、HDR・extras なしは `g_emissive` / `scene_ldr_in`、LDR・extras ありは `gbuffer_normal` / `probe_image`、
+  HDR・extras ありは `g_emissive` / `probe_image` と `gbuffer_albedo` / `scene_ldr_in`。bare / lit、flat / XR で共通。実装者の報告)。§7.2 の A5・§7.12 の F4・§7.13 の B4 も、配置の派生の欄だけを
+  新しい形で比べるよう移した(意味の欄の除外は増やしていない)。policy の効き方を見る helper は作り物の facts を渡す `rc5CompileWithFacts` に移し、基準の `rc5Compile` は compiler_only のまま。
+- **出荷の文書**: engine の feature・断片・レシピと `projects/` に `alias_group` / `no_alias` / `retain` を書いた物は無い(`src/core/resources` と `projects/` の検索で 0 件)。

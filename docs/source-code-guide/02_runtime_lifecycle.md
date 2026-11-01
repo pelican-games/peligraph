@@ -95,11 +95,11 @@ sequenceDiagram
 6. `Persistence`からsettingsを読み、audio設定を適用。
 7. ray mode を component 登録前に固定します([`configureRayLayoutModeBeforeComponentRegistration()`](../../src/core/userpublic/pelican_core.cpp#L44))。
    - **決定**: rendering config から ray project を parse し、layout の有無で `RayLayoutRuntimeState` を configure します。形式と旧版の拒否は[第6章の ray layout](../manual/06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v3-と-pelican_ray_instancert3-1--wp374374a377379383)を参照してください。
-   - **検証**: 候補の task parse・shader compile・世代検証後、staging 前に `RayLayoutRuntimeState::validate()` が固定 mode と比較します。fallback 世代は対象外です([登録時の検査](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1402))。
+   - **検証**: 候補の task parse・shader compile・世代検証後、staging 前に `RayLayoutRuntimeState::validate()` が固定 mode と比較します。fallback 世代は対象外です([登録時の検査](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1427))。
    - **登録と失敗**: 固定 mode は次段の `pelican_ray_instance` の登録可否に使います。通常は例外を上位へ送ります。`--render-fallback` の場合は拒否を `RenderPipelineStartupRefusal` に保持し、`LegacyNoLayout` で起動を続けます([catch](../../src/core/userpublic/pelican_core.cpp#L183))。編集時の再起動応答は[第13章の描画編集](../manual/13_editor.md#render-edit-sequence)を参照してください。
 8. [`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L22) で組み込みComponent/Systemを登録。
 9. **[`initializeConfiguredGameLogic()`](../../src/core/gamelogic/gamelogicreload.cpp#L917) でgame DLLをロード**（WP110系列。§2.11）。失敗しても`run()`は続行し、`error_code` と `error_fields` を添えて [`LOG_ERROR`](../../src/core/userpublic/pelican_core.cpp#L164) するだけです。保存された失敗はRPC `status` から読めます（§2.11）。
-10. **`(void)GET_MODULE(Renderer)`**（[この1行](../../src/core/userpublic/pelican_core.cpp#L172)） — render graphの検証と公開を、scene loadのprepareが `ModelAssetContainer` を実体化してmodelをuploadするより**前**に済ませます（WP380a-fix。§3.8）。 ✅BS-1: [`Renderer::Renderer()`](../../src/core/vkcore/renderer.cpp#L3112) は、`--render-fallback` の起動なら、7 番が残した拒否か、自分の `snapshotMaterialRouteDefault()` と `loadRenderGraphVariantsFromConfigWithStartupFeatureOverlays()` が投げた例外を拒否の JSON にし、error の行を書いて、[`renderPipelineFallbackConfigJson()`](../../src/core/vkcore/renderer_config.cpp#L421) の文書を `ProjectBasicConfig` に publish してから、同じ overlay 付きの読み込みでそれを組みます。拒否は `render_pipeline_fallback_refusal` に持ち、project の構成を最初に publish したときに消えます。引数が無ければ例外はそのまま `run()` の catch に届き、致命で終わります(manual 第6章 §6.16)。 ✅PB-1(`a55d1eaf`): constructor は拒否の有無に関わらず [`ProblemList`](../../src/core/watch/problemlist.hpp#L134) の module を作り(module の graph が固まる前に要るため)、fallback に入るときは拒否を `source: "startup"` の 1 件として記録します([`recordRenderPipelineProblem()`](../../src/core/watch/problemlist.cpp#L365))。project の世代で起動した `--render-fallback` の起動では、最後に [`MaterialStartupUnserved`](../../src/core/material/materialstartupunserved.hpp#L20) の `collecting` を立てます。この後、loop に入る前までに登録される material(engine の組み込み material と起動の scene の material)の route を受ける pass が無くても、`material_route_unserved@1` で止まらずにここへ書き留められます(§2.4 の `enterStartupFallbackForUnservedMaterials()`)。
+10. **`(void)GET_MODULE(Renderer)`**（[この1行](../../src/core/userpublic/pelican_core.cpp#L172)） — render graphの検証と公開を、scene loadのprepareが `ModelAssetContainer` を実体化してmodelをuploadするより**前**に済ませます（WP380a-fix。§3.8）。 ✅BS-1: [`Renderer::Renderer()`](../../src/core/vkcore/renderer.cpp#L3113) は、`--render-fallback` の起動なら、7 番が残した拒否か、自分の `snapshotMaterialRouteDefault()` と `loadRenderGraphVariantsFromConfigWithStartupFeatureOverlays()` が投げた例外を拒否の JSON にし、error の行を書いて、[`renderPipelineFallbackConfigJson()`](../../src/core/vkcore/renderer_config.cpp#L421) の文書を `ProjectBasicConfig` に publish してから、同じ overlay 付きの読み込みでそれを組みます。拒否は `render_pipeline_fallback_refusal` に持ち、project の構成を最初に publish したときに消えます。引数が無ければ例外はそのまま `run()` の catch に届き、致命で終わります(manual 第6章 §6.16)。 ✅PB-1(`a55d1eaf`): constructor は拒否の有無に関わらず [`ProblemList`](../../src/core/watch/problemlist.hpp#L134) の module を作り(module の graph が固まる前に要るため)、fallback に入るときは拒否を `source: "startup"` の 1 件として記録します([`recordRenderPipelineProblem()`](../../src/core/watch/problemlist.cpp#L365))。project の世代で起動した `--render-fallback` の起動では、最後に [`MaterialStartupUnserved`](../../src/core/material/materialstartupunserved.hpp#L20) の `collecting` を立てます。この後、loop に入る前までに登録される material(engine の組み込み material と起動の scene の material)の route を受ける pass が無くても、`material_route_unserved@1` で止まらずにここへ書き留められます(§2.4 の `enterStartupFallbackForUnservedMaterials()`)。
 11. **`--start-state edit` なら先に edit にする**（✅PM-1b。[`internal::applyLaunchStartState()`](../../src/core/userpublic/pelican_core.cpp#L174)。`EngineTime` を `edit` にし、behavior の arena を眠らせるので、次の起動 scene は instance の無い behavior で読み込まれる。§2.6）。そのあと `ProjectBasicConfig.defaultSceneId()` のsceneを [`SceneLoadRoot::startup`](../../src/core/userpublic/pelican_core.cpp#L179) の `Borrowed` requestで即時ロード（§3.5 の 3）。`Borrowed` は scene load 要求の2種別のうち「いま commit 済みの projection をそのまま借りて読む」側で、新しい document を持ち込む `Owned`（import 経路）と対です（[`SceneLoadRequest`](../../src/core/loader/sceneload.hpp#L222)）。
 12. `ProjectMaterialAssetContainer` と `ModelAssetContainer` を明示的に生成（並列prepareのcommitを起動スレッドで実施）。
 13. [`watch::ReloadService.setup()`](../../src/core/watch/reloadservice.hpp#L207) でwatcherのlive inventoryを種付け。
@@ -131,7 +131,7 @@ sequenceDiagram
 
 [`FastModuleContainer::get<T>()`](../../src/core/container.hpp#L149) はoptionalが空なら`emplace()`し、破棄関数をstaticな`cleaners`へ積みます。従って、**最初に`GET_MODULE(T)`を呼んだ瞬間がTのconstructor実行時点**です。
 
-例として [`Renderer` のconstructor](../../src/core/vkcore/renderer.cpp#L3112) は [`loadRenderGraphVariantsFromConfig()`](../../src/core/vkcore/renderer_config.cpp#L590) を呼ぶだけに見えますが、その内部で次のmoduleが連鎖的に生成されます。ただし現在は、[`Renderer::prepareRuntimeModules()`](../../src/core/vkcore/renderer.hpp#L392) と [`prepareRuntimeModuleGraph()`](../../src/core/appflow/loop.cpp#L261) により「render前に依存を全解決してから、以後の新規module生成を禁止する（module graphを凍結する）」方式へ変わっています。
+例として [`Renderer` のconstructor](../../src/core/vkcore/renderer.cpp#L3113) は [`loadRenderGraphVariantsFromConfig()`](../../src/core/vkcore/renderer_config.cpp#L590) を呼ぶだけに見えますが、その内部で次のmoduleが連鎖的に生成されます。ただし現在は、[`Renderer::prepareRuntimeModules()`](../../src/core/vkcore/renderer.hpp#L393) と [`prepareRuntimeModuleGraph()`](../../src/core/appflow/loop.cpp#L261) により「render前に依存を全解決してから、以後の新規module生成を禁止する（module graphを凍結する）」方式へ変わっています。
 
 ```mermaid
 flowchart TB
@@ -344,7 +344,7 @@ terminal shutdownはこの前に`FastModuleContainer::beginShutdown()`で新規m
 
 中心は [`Loop::run()`](../../src/core/appflow/loop.cpp#L774) です。loop本体へ入る前に、入力のrecord/replay（[`InputSequenceRuntime`](../../src/core/os/inputsequence.hpp#L61)、[loop.cpp](../../src/core/appflow/loop.cpp#L786)）、replay時のfixed_step切替（[その分岐](../../src/core/appflow/loop.cpp#L785)）、camera bakeの開始（[その呼び出し](../../src/core/appflow/loop.cpp#L797)）、[`prepareRuntimeModuleGraph()`](../../src/core/appflow/loop.cpp#L261) と [`FastModuleContainer::freezeCreation()`](../../src/core/appflow/loop.cpp#L808) が実行されます。
 
-✅PB-1(`a55d1eaf`)から、この 2 つの間で [`Renderer::enterStartupFallbackForUnservedMaterials()`](../../src/core/vkcore/renderer.cpp#L3194) を呼びます([呼ぶ所(PB-1)](../../src/core/appflow/loop.cpp#L802))。
+✅PB-1(`a55d1eaf`)から、この 2 つの間で [`Renderer::enterStartupFallbackForUnservedMaterials()`](../../src/core/vkcore/renderer.cpp#L3195) を呼びます([呼ぶ所(PB-1)](../../src/core/appflow/loop.cpp#L802))。
 `collecting` を倒し、`--render-fallback` の起動で route を受ける pass の無い material が書き留められていれば、`material_route_unserved@1` の拒否を作って一覧に記録し、
 fallback の JSON を publish して組み直し(登録済みの material は fallback と照らさない `validate_live_materials = false`)、fallback の世代で loop に入ります。module の生成は固める前なので、ここで組み直せます。
 
@@ -493,7 +493,7 @@ RPCモードでは通常のfor-loopへ入らず、[`runEngineRpcServer(std::cin,
 
 `engine_time.advance()` の直後に `vulkan_.setCurrentFrameIndex(engine_time_.evaluationIndex())` を呼ぶのは、いまや三経路に一つずつではなく [`FrameStep::advance()`](../../src/core/appflow/loop.cpp#L424) の中の[評価の番号を渡すこの1行](../../src/core/appflow/loop.cpp#L428)だけです(渡すのは game のフレームではなく評価の番号。§2.6。✅PM-1a)。
 
-headless RPC の `step_frame` / `advance_frames` は `FrameStep` を通らず、[`rpcserver.cpp`](../../src/core/communication/rpcserver.cpp#L2097) の中で同じ 2 行を自分で呼びます。三つのドライバはどれもフレームの先頭でこの `advance` を呼ぶので、「ある経路だけ呼び忘れる」形が構造として作れません。これが [`VulkanManageCore`](../../src/core/vkcore/core.hpp#L36) 側の `logical_frame` 軸になり、debug-utilsラベルとGPU timingの計測が同じフレーム番号で並びます。
+headless RPC の `step_frame` / `advance_frames` は `FrameStep` を通らず、[`rpcserver.cpp`](../../src/core/communication/rpcserver.cpp#L2097) の中で同じ 2 行を自分で呼びます。三つのドライバはどれもフレームの先頭でこの `advance` を呼ぶので、「ある経路だけ呼び忘れる」形が構造として作れません。これが [`VulkanManageCore`](../../src/core/vkcore/core.hpp#L37) 側の `logical_frame` 軸になり、debug-utilsラベルとGPU timingの計測が同じフレーム番号で並びます。
 
 ### F11 RenderDocキャプチャ（windowedのflat描画のみ） ✅実装済み
 
@@ -606,7 +606,7 @@ flowchart TB
 | 走る場所 | 誰が | 何のために | 使う state |
 |---|---|---|---|
 | `update_game`（animation） | [`AnimationSystem::updatePoseGraphs()`](../../src/core/ecs/predefined/animationsystem.cpp#L293) | animation 分割の node が今フレーム消費するスカラを集める | [`poseGraphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L154) |
-| `render()` | [`Renderer` の publish](../../src/core/vkcore/renderer.cpp#L6378) | rendering 分割の sink（バッファ、音声、RT値）へ実際に書く | [`graphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L150) |
+| `render()` | [`Renderer` の publish](../../src/core/vkcore/renderer.cpp#L6401) | rendering 分割の sink（バッファ、音声、RT値）へ実際に書く | [`graphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L150) |
 
 **2回評価するのに state を分けているのが要点**です。`value.trigger_clock` のような「前回の評価が何をしたか」に依存する op は state を進めるので、1つの state を共有させると1フレームで2回進んでしまいます。だから `SceneLoader` は同じ文書に対して2つの `EvaluationState` を持ち、グラフ世代の切り替えでも両方を一緒に移送します（片方だけ置いていくと、描画側は走り続けたまま姿勢側のクロックだけが巻き戻ります）。順序は固定で、animation 分割は values 分割の1段後ろに置かれます（[分割の順序](../../src/project/graphpartition.hpp#L10) / [段の定義](../../src/project/graphcomposition.hpp#L260)）。
 
@@ -618,7 +618,7 @@ flowchart TB
 
 `freeze_actions` でImGuiへ入力をルーティングする前に、[`resolveFrameStateModules()`](../../src/core/appflow/framephase.cpp#L81) がゲートの開閉を判定します。ゲートの実体は [`isImGuiRuntimeEnabled(config)`](../../src/core/imgui/imguiruntime.cpp#L9) で、`EngineLaunchConfig` の `headless` / `rpc` / `input_replay` / `golden_mode` / `xr_active` を読むだけの述語です（この関数自身は何も書き換えません）。
 
-ここでの「開いている」はこの述語が真で、そのフレームの `FrameStateModules.imgui_system` に [`GET_MODULE(ImGuiSystem)` が入る](../../src/core/appflow/framephase.cpp#L100)状態、「閉じている」は偽で `imgui_system` が nullptr のまま（= `freeze_actions` の [`routeInputAndBeginFrame()`](../../src/core/appflow/framephase.cpp#L212) が呼ばれず、そのフレームで ImGui フレームが始まらない）状態を指します。開閉が変わるのは、読んでいる側のlaunch configが変わったときです（例: XRのVulkan bootstrapが失敗してflatへ落ちる [`core.cpp` 内](../../src/core/vkcore/core.cpp#L677)）。
+ここでの「開いている」はこの述語が真で、そのフレームの `FrameStateModules.imgui_system` に [`GET_MODULE(ImGuiSystem)` が入る](../../src/core/appflow/framephase.cpp#L100)状態、「閉じている」は偽で `imgui_system` が nullptr のまま（= `freeze_actions` の [`routeInputAndBeginFrame()`](../../src/core/appflow/framephase.cpp#L212) が呼ばれず、そのフレームで ImGui フレームが始まらない）状態を指します。開閉が変わるのは、読んでいる側のlaunch configが変わったときです（例: XRのVulkan bootstrapが失敗してflatへ落ちる [`core.cpp` 内](../../src/core/vkcore/core.cpp#L686)）。
 
 ImGuiゲートが閉じたフレームでは、開始済みのImGuiフレームを [`ImGuiSystem::endFrameIfStarted()`](../../src/core/imgui/imguisystem.hpp#L31) で畳みます（[`framephase.cpp` 内](../../src/core/appflow/framephase.cpp#L85)）。守っている対応関係は「`freeze_actions` の `routeInputAndBeginFrame()` が立てた `frame_started` は、そのフレームの `ImGuiSystem::render()` が必ず倒す」で、ImGuiパスを持たないグラフへ持ち越すと `render()` が呼ばれず、立ったままのフレームへ次の `NewFrame()` が重なります。
 
@@ -719,7 +719,7 @@ ImGuiゲートが閉じたフレームでは、開始済みのImGuiフレーム�
 
 ## 2.8 描画フレーム
 
-状態更新後に [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L7194) が呼ばれます（windowedでは [`renderFlatFrameWithOptionalCapture()`](../../src/core/appflow/loop.cpp#L331) 経由）。WP128以降、`render()`は1-viewのアダプタで、実体は [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L5486) です。
+状態更新後に [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L7177) が呼ばれます（windowedでは [`renderFlatFrameWithOptionalCapture()`](../../src/core/appflow/loop.cpp#L331) 経由）。WP128以降、`render()`は1-viewのアダプタで、実体は [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L5509) です。
 
 1. `DeletionQueue.beginFrame()`で安全になった旧GPU資源を解放。
 2. view数変化・`set_time`・camera不連続を検知してtemporal historyをリセット。
@@ -762,7 +762,7 @@ flat画面では`render()`がactive Cameraを1-view providerとして渡しま�
 
 flat / xr の `RenderingPassId` に対して、preview は**データだけのグラフプログラム**です（[`PreviewGraphProgram`](../../src/core/renderingpass/previewgraph.hpp#L22)）。
 
-- コンパイルは起動時、runtime moduleが凍結される前です。[`loadRenderGraphVariantsFromConfig()`](../../src/core/vkcore/renderer_config.cpp#L590) が flat / xr と同じ 1 回の registration([`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1657))を呼びます。registration は compiler program の preview の variant(data_only)の出力を [`previewGraphProgramOf()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1586) に渡して preview の program を作り、結果を `Renderer` の [`preview_graph_program`](../../src/core/vkcore/renderer.hpp#L225) が保持します。✅RC-3c1b から preview の program を作る道はこの 1 つだけで、前にあった単独の入口 `precompilePreviewGraph()` は消えました。
+- コンパイルは起動時、runtime moduleが凍結される前です。[`loadRenderGraphVariantsFromConfig()`](../../src/core/vkcore/renderer_config.cpp#L590) が flat / xr と同じ 1 回の registration([`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1682))を呼びます。registration は compiler program の preview の variant(data_only)の出力を [`previewGraphProgramOf()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1611) に渡して preview の program を作り、結果を `Renderer` の [`preview_graph_program`](../../src/core/vkcore/renderer.hpp#L226) が保持します。✅RC-3c1b から preview の program を作る道はこの 1 つだけで、前にあった単独の入口 `precompilePreviewGraph()` は消えました。
 - 共有のrender target / pass登録は**意図的に行いません**。ヘッダのコメント通り、`render_preview` がリクエストローカルな資源に対して実行するため、`Renderer::renderLogicalFrame()` には入りません。
 - 実行と隔離キャプチャは [`PreviewExecutor`](../../src/core/vkcore/previewexecutor.hpp#L61) が担当します。
 - ✅PV-1(`a173e70c`)から、preview を組めなくても起動は失敗しません。`preview_graph_program` は `available: false` と理由を持つ空の program になり、flat / xr は通常どおり公開されます。起動の log に warning が 1 行出て、`render_preview` は `preview.unavailable@1` で断ります(第6章「graph variant: flat、`#xr`、preview」の PV-1 の段落)。
