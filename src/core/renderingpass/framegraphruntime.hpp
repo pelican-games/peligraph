@@ -119,6 +119,10 @@ struct CompiledFrameGraphExecution {
     std::vector<CompiledMaterialRouteBinding> material_routes;
     std::unordered_map<std::string, GlobalRenderTargetId>
         render_target_bindings;
+    // RC-7e: the generation's declared render targets it did not register
+    // (no graph uses them): a name lookup that finds none of these refuses
+    // render_target.not_allocated@1.
+    std::set<std::string> unallocated_render_targets;
     std::unordered_map<std::string, FrameGraphBufferId>
         buffer_bindings;
     std::vector<FrameGraphExecutionNode> nodes;
@@ -204,6 +208,7 @@ struct RenderPipelineProgramPreparation {
         native_scopes;
     std::unordered_map<std::string, GlobalRenderTargetId>
         render_target_bindings;
+    std::set<std::string> unallocated_render_targets;
     std::unordered_map<std::string, FrameGraphBufferId>
         buffer_bindings;
     std::optional<RenderingPassId> rendering_pass_id;

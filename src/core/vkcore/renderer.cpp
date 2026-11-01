@@ -1,5 +1,6 @@
 #include "../watch/userdataguard.hpp"
 #include "renderer.hpp"
+#include "../renderingpass/rendertargetnameresolver.hpp"
 #include "../userpublic/valuegraph.hpp"
 #include "../renderingpass/graphinputs.hpp"
 #include "../userpublic/gamecontext.hpp"
@@ -4457,11 +4458,17 @@ void appendFramePlanMemoryJson(
         bound(std::string{OpenXr::xr_mirror_intermediate_name});
 #endif
     }
-    // Every render target the generation registered, once, as it is now.
+    // Every render target the generation registered, once, as it is now, and
+    // (RC-7e) the declared ones it did not register, with the payload
+    // estimated at registration (at that extent, not the current one).
     std::vector<RegisteredTargetMemory> allocated;
+    std::vector<UnallocatedRenderTarget> unallocated_at_registration_extent;
     std::unordered_map<std::int64_t, std::uint64_t> bytes_by_handle;
     if (generation.gpu_arena != nullptr) {
         for (const auto &scope : generation.gpu_arena->scopes) {
+            unallocated_at_registration_extent.insert(unallocated_at_registration_extent.end(),
+                                                      scope.unallocated_render_targets.begin(),
+                                                      scope.unallocated_render_targets.end());
             for (const auto &resource : scope.resources) {
                 if (resource.kind !=
                         RenderPipelineGpuResourceKind::render_target ||
@@ -4507,9 +4514,11 @@ void appendFramePlanMemoryJson(
                 facts_of(binding->second, resource.logical_resource)
                     .metadata);
         });
+    std::sort(unallocated_at_registration_extent.begin(), unallocated_at_registration_extent.end(),
+              [](const auto &left, const auto &right) { return left.name < right.name; });
     appendVulkanTargetPlanMemoryJson(
         result, *frame_graph.target_plan, summary,
-        totalRegisteredTargetMemory(allocated));
+        totalRegisteredTargetMemory(allocated), unallocated_at_registration_extent);
 }
 
 } // namespace
@@ -5073,6 +5082,9 @@ PickingReadbackResult Renderer::readPickingPixel(std::uint32_t x,
 
     const auto target_id =
         boundRenderTarget(program->frame_graph, "picking_id");
+    if (!isConcreteRenderTarget(target_id) &&
+        program->frame_graph.unallocated_render_targets.contains("picking_id"))
+        throwRenderTargetNotAllocated("picking_id");
     const bool has_picking_pass =
         isConcreteRenderTarget(target_id) &&
         std::any_of(
@@ -5344,6 +5356,8 @@ Renderer::xrCompositionDepthFormat() const {
             program->frame_graph
                 .render_target_bindings.end() ||
         !isConcreteRenderTarget(binding->second)) {
+        if (program->frame_graph.unallocated_render_targets.contains(export_plan.source_resource))
+            throwRenderTargetNotAllocated(export_plan.source_resource);
         throw std::runtime_error(
             "XR external depth plan is not bound to a concrete "
             "render target");

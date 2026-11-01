@@ -92,6 +92,18 @@ renderViewFamilyProviderRegistry() {
     return *value;
 }
 
+std::vector<std::string> viewFamilyProviderRenderTargets(
+    const CompiledRenderPipeline &pipeline,
+    const RenderViewFamilyProviderRegistry &providers) {
+    std::set<std::string, std::less<>> names;
+    for (const auto &provider : providers.providers()) {
+        if (!provider.render_targets) continue;
+        for (auto &name : provider.render_targets(pipeline))
+            names.insert(std::move(name));
+    }
+    return {names.begin(), names.end()};
+}
+
 RenderViewFamilies resolveRuntimeRenderViewFamilies(
     const RenderViewFamilies &authored,
     const RenderViewFamilyProviderContext

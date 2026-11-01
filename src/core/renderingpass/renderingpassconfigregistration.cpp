@@ -18,6 +18,7 @@
 #include "../../project/framegraphbufferdefinition.hpp"
 #include "../../project/generationresources.hpp"
 #include "../../project/renderpipeline.hpp"
+#include "../../project/targetrendermemory.hpp"
 #include "../../project/vulkanviewplanning.hpp"
 #include "framegraphruntime.hpp"
 #include "frameplanner.hpp"
@@ -62,6 +63,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <span>
 #include <stdexcept>
 #include <string_view>
@@ -223,7 +225,8 @@ std::vector<CompiledComputeTask> compileComputeTasks(
         std::string,
         std::shared_ptr<const VulkanTargetPlan>>
         &target_plans,
-    RenderingPassConfigRegistrationDependencies &dependencies) {
+    RenderingPassConfigRegistrationDependencies &dependencies,
+    const std::set<std::string> &unallocated_render_targets) {
     std::vector<CompiledComputeTask> compiled;
     compiled.reserve(definitions.size());
     for (const auto &definition : definitions) {
@@ -344,6 +347,7 @@ std::vector<CompiledComputeTask> compileComputeTasks(
                 &dependencies.runtime
                      .shader_defines,
                 ray_tracing_project,
+                &unallocated_render_targets,
             }, true);
         compiled.push_back(CompiledComputeTask{definition, task_id});
     }
@@ -381,6 +385,7 @@ registerPreparedRenderingPassConfigVariant(
     const GenerationResources &resources,
     const std::vector<RenderTargetDefinition> &render_targets,
     const std::vector<FrameGraphBufferDefinition> &buffers,
+    const std::set<std::string> &unallocated_render_targets,
     vk::Extent2D base_extent,
     RenderingPassConfigRegistrationDependencies &dependencies,
     RenderPipelineGpuRegistrationArena &gpu_arena,
@@ -415,7 +420,8 @@ registerPreparedRenderingPassConfigVariant(
             after_frame_graph_buffers);
 
     const RenderTargetNameResolver rt_resolver{
-        dependencies.render_targets.render_target_container};
+        dependencies.render_targets.render_target_container,
+        unallocated_render_targets};
     const RenderTargetMetadataResolver rt_metadata{
         dependencies.render_targets.render_target_container};
     const RenderTargetImageViewResolver rt_views{
@@ -453,7 +459,8 @@ registerPreparedRenderingPassConfigVariant(
             compute_tasks,
             prepared.ray_tracing_project,
             physical.target_plans,
-            dependencies);
+            dependencies,
+            unallocated_render_targets);
     injectGpuRegistrationFault(
         dependencies.options,
         RenderPipelineGpuRegistrationFaultPoint::
@@ -585,6 +592,8 @@ registerPreparedRenderingPassConfigVariant(
                     std::move(native_scopes),
                 .render_target_bindings =
                     render_target_bindings,
+                .unallocated_render_targets =
+                    unallocated_render_targets,
                 .buffer_bindings = buffer_bindings,
             });
     }
@@ -745,6 +754,9 @@ class RegistrationStages {
         variant_render_targets;
     std::vector<std::vector<FrameGraphBufferDefinition>>
         variant_buffers;
+    // RC-7e: the generation's images it does not register.
+    std::vector<UnallocatedRenderTarget> unallocated_render_targets;
+    std::set<std::string> unallocated_render_target_names;
 
     // allocate
     std::optional<std::scoped_lock<std::mutex>>
@@ -1104,6 +1116,17 @@ void RegistrationStages::prepare() {
     }
     std::vector<RenderTargetDefinition> generation_definitions;
     for(const auto &image:generation_resources.images) generation_definitions.push_back(renderTargetDefinitionOf(image));
+    // RC-7e: an image no graph of any runtime variant uses is not
+    // registered (no variant's list has it), and its definition is checked
+    // as registration would. A target the view-family providers look up by
+    // name is used although no node may use it.
+    const auto held_targets = engineHeldRenderTargetNames();
+    unallocated_render_targets = unallocatedRenderTargets(
+        generation_resources, vulkanRuntimeVariantTargetPlans(prepared_variants), held_targets,
+        vulkanRuntimeVariantEngineRenderTargetUses(prepared_variants));
+    for (const auto &target : unallocated_render_targets)
+        unallocated_render_target_names.insert(target.name);
+    std::vector<RenderTargetDefinition> unregistered_targets;
     // Each variant's images and buffers for its GPU registration. EN-2:
     // every variant's declaration of a file image shares its pixels.
     for (std::size_t index = 0; index < prepared_variants.size(); ++index) {
@@ -1120,11 +1143,18 @@ void RegistrationStages::prepare() {
                 target.source_pixels =
                     image_sources->pixels(*target.source);
             }
+            if (unallocated_render_target_names.contains(target.name)) {
+                if (std::none_of(unregistered_targets.begin(), unregistered_targets.end(),
+                                 [&](const auto &other) { return other.name == target.name; }))
+                    unregistered_targets.push_back(std::move(target));
+                continue;
+            }
             targets.push_back(std::move(target));
         }
         variant_render_targets.push_back(std::move(targets));
         variant_buffers.push_back(std::move(buffers));
     }
+    validateUnregisteredRenderTargetDefinitions(unregistered_targets, base_extent);
 }
 
 void RegistrationStages::allocate() {
@@ -1275,6 +1305,7 @@ void RegistrationStages::registerVariants() {
                 prepared_variants[index], compute_task_definitions[index],
                 generation_resources,
                 variant_render_targets[index], variant_buffers[index],
+                unallocated_render_target_names,
                 base_extent,
                 dependencies[index], *gpu_arena,
                 pass_implementation_providers,
@@ -1352,6 +1383,8 @@ RegisteredRenderGraphVariantFamily RegistrationStages::publish() {
         gpu_arena->preparedScope(owner_scope);
     prepared_gpu_scope.ray_tracing_project =
         ray_tracing_project;
+    prepared_gpu_scope.unallocated_render_targets =
+        unallocated_render_targets;
     const bool reflection_requires_ray_query = std::any_of(
         prepared_gpu_scope.resources.begin(),
         prepared_gpu_scope.resources.end(),

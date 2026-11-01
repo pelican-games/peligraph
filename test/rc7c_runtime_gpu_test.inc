@@ -161,6 +161,9 @@ TEST_CASE("RC-7c C1 example actual VMA allocations and bytes beat RC-7b referenc
         .graph_transforms=transforms,.render_strategies=strategies,.subgraph_replacements=replacements,.backend_context=backend,.variants=variants});
     const auto &physical=requireVulkanRenderCompilerPhysicalPackage(*compiled.variants.front().physical_package);
     const auto &plan=*physical.target_plan_compilation.plans.front();
+    // RC-7e E3: the example declares no target its graphs leave unused.
+    CHECK(unallocatedRenderTargets(compiled.generation_resources,vulkanRuntimeVariantTargetPlans(compiled.variants),
+        engineHeldRenderTargetNames()).empty());
     auto contract=std::make_shared<RuntimeTargetMemoryContract>(); contract->inputs=plan.memory_packing;
     std::vector<RenderTargetDefinition> definitions;
     for(const auto &image:compiled.generation_resources.images) definitions.push_back(renderTargetDefinitionOf(image));

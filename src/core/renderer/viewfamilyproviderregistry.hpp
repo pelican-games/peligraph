@@ -72,6 +72,13 @@ struct RenderViewFamilyProviderDefinition {
         const RenderViewFamilies &,
         const RenderViewFamilyProviderContext &)>
         validate;
+    // RC-7e: the render targets build, validate or the family's per-frame
+    // preparation look up by name in a graph's bindings, outside every plan,
+    // for a composed pipeline (none when it lacks the feature or contract
+    // they read). Empty when the provider looks up none.
+    std::function<std::vector<std::string>(
+        const CompiledRenderPipeline &)>
+        render_targets;
 };
 
 // Source-level registry used by engine and optional render-algorithm packages.
@@ -100,6 +107,14 @@ class RenderViewFamilyProviderRegistry {
 
 RenderViewFamilyProviderRegistry &
 renderViewFamilyProviderRegistry();
+
+// RC-7e: what every registered provider's render_targets names for
+// `pipeline`, sorted and unique. Registration counts these as used (U)
+// although no node of a graph may use them.
+std::vector<std::string> viewFamilyProviderRenderTargets(
+    const CompiledRenderPipeline &pipeline,
+    const RenderViewFamilyProviderRegistry &providers =
+        renderViewFamilyProviderRegistry());
 
 enum class RenderViewAxisLengthKind : std::uint8_t {
     // No registered provider declares this axis for the family. An authored

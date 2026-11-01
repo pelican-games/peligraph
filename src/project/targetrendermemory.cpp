@@ -1,10 +1,12 @@
 #include "targetrendermemory.hpp"
+#include "imagesubresource.hpp"
 
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <array>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <utility>
 
@@ -167,10 +169,56 @@ RegisteredTargetMemoryTotal totalRegisteredTargetMemory(
     return total;
 }
 
+std::vector<std::string> engineHeldRenderTargetNames() {
+    return {"display"};
+}
+
+std::vector<UnallocatedRenderTarget> unallocatedRenderTargets(
+    const GenerationResources &resources,
+    std::span<const std::shared_ptr<const VulkanTargetPlan>> plans,
+    std::span<const std::string> held,
+    std::span<const std::string> engine_uses) {
+    std::set<std::string, std::less<>> used{held.begin(), held.end()};
+    used.insert(engine_uses.begin(), engine_uses.end());
+    for (const auto &plan : plans) {
+        if (plan == nullptr) continue;
+        for (const auto &resource : plan->resources)
+            if (vulkanPhysicalResourceIsPlannedImage(resource)) used.insert(resource.logical_resource);
+    }
+    std::vector<UnallocatedRenderTarget> result;
+    for (const auto &image : resources.images) {
+        const auto &declaration = image.declaration;
+        if (used.contains(declaration.name)) continue;
+        result.push_back(UnallocatedRenderTarget{
+            .name = declaration.name,
+            .reason = "unused_in_generation",
+            .payload_bytes = imageResourceBytes(ImageResourceByteShape{
+                .format = image.format,
+                .extent = image.extent,
+                .mip_levels = resolveImageMipLevels(declaration.mip_levels, image.extent.width,
+                                                    image.extent.height),
+                .array_layers = image.array_layers,
+                .samples = image.samples,
+                .surfaces = declaration.history ? 2u : 1u,
+            }),
+        });
+    }
+    std::sort(result.begin(), result.end(),
+              [](const auto &left, const auto &right) { return left.name < right.name; });
+    return result;
+}
+
 void appendVulkanTargetPlanMemoryJson(
     nlohmann::json &frame_plan, const VulkanTargetPlan &plan,
     const VulkanTargetPlanMemorySummary &summary,
-    const RegisteredTargetMemoryTotal &allocation) {
+    const RegisteredTargetMemoryTotal &allocation,
+    std::span<const UnallocatedRenderTarget> unallocated) {
+    // payload_bytes is the estimate made at registration, at the extent the
+    // generation registered at; it is not recomputed at the current extent.
+    auto unallocated_json = nlohmann::json::array();
+    for (const auto &target : unallocated)
+        unallocated_json.push_back({{"name", target.name}, {"reason", target.reason},
+                                    {"payload_bytes", target.payload_bytes}});
     if (summary.resource_bytes.size() != plan.resources.size()) {
         throw std::invalid_argument(
             "memory summary does not describe the plan's resources");
@@ -179,6 +227,7 @@ void appendVulkanTargetPlanMemoryJson(
         {"total_bytes", allocation.total_bytes},
         {"unused_bytes", allocation.unused_bytes},
         {"unused_resources", allocation.unused_resources},
+        {"unallocated_resources", std::move(unallocated_json)},
         {"peak_live_bytes", summary.peak_live_bytes},
         {"peak_node", summary.peak_node.empty()
                           ? nlohmann::json(nullptr)

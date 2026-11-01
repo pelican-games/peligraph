@@ -2,6 +2,10 @@
 #include <condition_variable>
 #include <thread>
 #include "retain_observed_test_support.hpp"
+#include "rc7e_test_support.hpp"
+#include "../src/core/renderingpass/passdefinitionfromir.hpp"
+#include "../src/core/renderingpass/rendertargetnameresolver.hpp"
+#include "../src/core/renderingpass/vulkanrendercompilerpackage.hpp"
 #include "vrm_xr_demo_fixture.hpp"
 #include "../src/core/animation/vrmapplication.hpp"
 #include "skeletal_fixture.hpp"
@@ -16178,4 +16182,5 @@ vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 i
 #include "rc7b_alias_test.inc"
 #include "rc7c_renderer_gpu_test.inc"
 #include "rc7d_renderer_gpu_test.inc"
+#include "rc7e_renderer_gpu_test.inc"
 } // namespace Pelican

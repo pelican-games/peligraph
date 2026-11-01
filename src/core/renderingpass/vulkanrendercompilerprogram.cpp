@@ -1020,6 +1020,31 @@ requireVulkanRenderCompilerPhysicalPackage(
     return *vulkan;
 }
 
+std::vector<std::shared_ptr<const VulkanTargetPlan>>
+vulkanRuntimeVariantTargetPlans(
+    std::span<const RenderCompilerProgramVariantOutput> variants) {
+    std::vector<std::shared_ptr<const VulkanTargetPlan>> plans;
+    for (const auto &variant : variants) {
+        if (variant.physical_package == nullptr) continue;
+        const auto &variant_plans =
+            requireVulkanRenderCompilerPhysicalPackage(*variant.physical_package)
+                .target_plan_compilation.plans;
+        plans.insert(plans.end(), variant_plans.begin(), variant_plans.end());
+    }
+    return plans;
+}
+
+std::vector<std::string> vulkanRuntimeVariantEngineRenderTargetUses(
+    std::span<const RenderCompilerProgramVariantOutput> variants) {
+    std::set<std::string> names;
+    for (const auto &variant : variants) {
+        if (variant.physical_package == nullptr || variant.compiled_pipeline == nullptr) continue;
+        for (auto &name : viewFamilyProviderRenderTargets(*variant.compiled_pipeline))
+            names.insert(std::move(name));
+    }
+    return {names.begin(), names.end()};
+}
+
 const RenderingTargetPlanVerificationContext &
 requireVulkanTargetPlanVerificationContext(
     const VulkanRenderCompilerPhysicalPackage &physical,

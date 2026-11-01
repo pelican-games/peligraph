@@ -2961,6 +2961,7 @@ TEST_CASE("RC-1 memory summary counts an alias group once and finds the node mos
           nlohmann::json{{"total_bytes", 1300},
                          {"unused_bytes", 0},
                          {"unused_resources", nlohmann::json::array()},
+                         {"unallocated_resources", nlohmann::json::array()},
                          {"peak_live_bytes", 1300},
                          {"peak_node", "blur"},
                          {"peak_graph", "main"}, {"payload_bytes",1700}, {"planned_region_bytes",0}, {"planned_region_count",0}, {"actual_placement",nullptr}});

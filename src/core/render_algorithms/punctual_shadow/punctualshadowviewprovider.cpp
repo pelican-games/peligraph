@@ -5,6 +5,7 @@
 #include "../../renderingpass/framegraphruntime.hpp"
 #include "../../renderingpass/renderfeatureparameteraccess.hpp"
 #include "../../renderingpass/rendertargetcontainer.hpp"
+#include "../../renderingpass/rendertargetnameresolver.hpp"
 
 #include <algorithm>
 #include <array>
@@ -22,14 +23,19 @@ constexpr std::array shadow_families{
     ShadowFamily{pointShadowViewFamilyId, "point_shadow", true},
     ShadowFamily{spotShadowViewFamilyId, "spot_shadow", false}};
 
-const CompiledSurfaceResourceContract *findContract(const CompiledFrameGraphExecution &graph,
+const CompiledSurfaceResourceContract *findContract(const CompiledRenderPipeline &pipeline,
                                                     const ShadowFamily &family) {
-    if (!graph.render_pipeline) return nullptr;
-    const auto &contracts = graph.render_pipeline->surface_resource_contracts;
+    const auto &contracts = pipeline.surface_resource_contracts;
     const auto found = std::find_if(contracts.begin(), contracts.end(), [&](const auto &entry) {
         return entry.contract.name == family.contract;
     });
     return found == contracts.end() ? nullptr : &*found;
+}
+
+const CompiledSurfaceResourceContract *findContract(const CompiledFrameGraphExecution &graph,
+                                                    const ShadowFamily &family) {
+    if (!graph.render_pipeline) return nullptr;
+    return findContract(*graph.render_pipeline, family);
 }
 
 std::uint32_t viewCount(const LightContainer &lights, const ShadowFamily &family) {
@@ -44,8 +50,11 @@ std::uint32_t viewCount(const LightContainer &lights, const ShadowFamily &family
 GlobalRenderTargetId targetId(const CompiledFrameGraphExecution &graph,
                               const CompiledSurfaceResourceContract &contract) {
     const auto binding = graph.render_target_bindings.find(contract.resource);
-    if (binding == graph.render_target_bindings.end() || !isConcreteRenderTarget(binding->second))
+    if (binding == graph.render_target_bindings.end() || !isConcreteRenderTarget(binding->second)) {
+        if (graph.unallocated_render_targets.contains(contract.resource))
+            throwRenderTargetNotAllocated(contract.resource);
         throw std::runtime_error("punctual shadow contract requires a concrete depth target");
+    }
     return binding->second;
 }
 
@@ -106,6 +115,12 @@ void registerPunctualShadowViewProviders(RenderViewFamilyProviderRegistry &regis
             },
             .validate = [family](const RenderViewFamilies &families, const RenderViewFamilyProviderContext &context) {
                 validateFamily(families, context, family);
+            },
+            // The contract's target, which targetId (validate and
+            // preparePunctualShadowRenderTargets) looks up by name.
+            .render_targets = [family](const CompiledRenderPipeline &pipeline) {
+                const auto *contract = findContract(pipeline, family);
+                return contract ? std::vector<std::string>{contract->resource} : std::vector<std::string>{};
             }});
     }
 }

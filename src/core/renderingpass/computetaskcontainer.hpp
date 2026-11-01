@@ -16,6 +16,7 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <memory>
+#include <set>
 #include <string>
 #include <type_traits>
 #include <unordered_map>
@@ -111,6 +112,8 @@ struct ComputeTaskRuntimeDependencies {
         *shader_defines = nullptr;
     std::shared_ptr<const RayTracingProjectConfig>
         ray_tracing_project;
+    // RC-7e: the declared render targets the generation did not register.
+    const std::set<std::string> *unallocated_render_targets = nullptr;
 };
 
 struct ResolvedComputeResourceBinding {

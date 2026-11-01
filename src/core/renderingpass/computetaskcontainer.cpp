@@ -2,6 +2,7 @@
 #include "deferredresourceretire.hpp"
 #include "renderingpassjsonhelpers.hpp"
 #include "rendertargetcontainer.hpp"
+#include "rendertargetnameresolver.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../log.hpp"
 #include "../shader/pelican_sets.hpp"
@@ -86,7 +87,8 @@ std::vector<ComputeResourceReference> taskResources(
 ResolvedComputeResourceBinding resolveResource(
     const ComputeResourceReference &resource,
     RenderTargetContainer &render_target_container,
-    FrameGraphResourceContainer &frame_graph_resources) {
+    FrameGraphResourceContainer &frame_graph_resources,
+    const std::set<std::string> *unallocated_render_targets) {
     if (!resource.history_read) {
         const auto buffer =
             frame_graph_resources.getBufferIdByName(resource.name);
@@ -102,6 +104,9 @@ ResolvedComputeResourceBinding resolveResource(
     }
     const auto target =
         render_target_container.getRenderTargetIdByName(resource.name);
+    if (!isConcreteRenderTarget(target) && unallocated_render_targets != nullptr &&
+        unallocated_render_targets->contains(resource.name))
+        throwRenderTargetNotAllocated(resource.name);
     if (!isConcreteRenderTarget(target) ||
         (resource.history_read &&
          !render_target_container.getMetadata(target).history)) {
@@ -121,12 +126,13 @@ ResolvedComputeResourceBinding resolveResource(
 std::vector<ResolvedComputeResourceBinding> resolveTaskResources(
     const ComputeTaskDefinition &definition,
     RenderTargetContainer &render_target_container,
-    FrameGraphResourceContainer &frame_graph_resources) {
+    FrameGraphResourceContainer &frame_graph_resources,
+    const std::set<std::string> *unallocated_render_targets) {
     std::vector<ResolvedComputeResourceBinding> result;
     for (const auto &resource : taskResources(definition)) {
         result.push_back(resolveResource(
             resource, render_target_container,
-            frame_graph_resources));
+            frame_graph_resources, unallocated_render_targets));
     }
     return result;
 }
@@ -1325,7 +1331,8 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
         GET_MODULE(FrameGraphResourceContainer);
     auto resolved_resources = resolveTaskResources(
         definition, render_target_container,
-        frame_graph_resources);
+        frame_graph_resources,
+        dependencies.unallocated_render_targets);
     std::optional<IndirectDispatchRecord>
         indirect_dispatch;
     if (definition.dispatch.indirect) {

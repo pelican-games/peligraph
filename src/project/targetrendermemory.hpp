@@ -1,12 +1,15 @@
 #pragma once
 
+#include "generationresources.hpp"
 #include "targetrenderplanning.hpp"
+#include "unallocatedrendertarget.hpp"
 
 #include <nlohmann/json_fwd.hpp>
 
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -133,9 +136,29 @@ struct RegisteredTargetMemoryTotal {
 RegisteredTargetMemoryTotal totalRegisteredTargetMemory(
     std::span<const RegisteredTargetMemory> targets);
 
+// RC-7e: the render targets registration keeps: the engine names `display`
+// outside every plan (the ImGui initialization, the XR mirror).
+std::vector<std::string> engineHeldRenderTargetNames();
+
+// RC-7e: the generation's images nothing uses (U: none is a planned image of
+// any of `plans`, every runtime variant's final plans, nor named by
+// `engine_uses`, the engine's uses outside every plan,
+// vulkanRuntimeVariantEngineRenderTargetUses) and `held` does not name, in
+// name order, as unused_in_generation with their declared payload at the
+// generation's extent. Registration registers none of them.
+std::vector<UnallocatedRenderTarget> unallocatedRenderTargets(
+    const GenerationResources &resources,
+    std::span<const std::shared_ptr<const VulkanTargetPlan>> plans,
+    std::span<const std::string> held,
+    std::span<const std::string> engine_uses = {});
+
 // get_frame_plan's part: on `frame_plan`, `memory_summary`
 //   {total_bytes, unused_bytes, unused_resources: what `allocation` counted
 //    of the generation's registered targets;
+//    unallocated_resources: [{name, reason, payload_bytes}] the generation
+//    declared and did not register, payload_bytes the estimate at the
+//    extent of its registration (not the current extent, unlike the
+//    registered targets' bytes);
 //    peak_live_bytes, peak_node (null without a peak), peak_graph
 //    (plan.graph): `summary` of this graph's plan}
 // and `bytes` on each physical_target_plan.resources[] entry the summary has
@@ -143,6 +166,7 @@ RegisteredTargetMemoryTotal totalRegisteredTargetMemory(
 void appendVulkanTargetPlanMemoryJson(
     nlohmann::json &frame_plan, const VulkanTargetPlan &plan,
     const VulkanTargetPlanMemorySummary &summary,
-    const RegisteredTargetMemoryTotal &allocation);
+    const RegisteredTargetMemoryTotal &allocation,
+    std::span<const UnallocatedRenderTarget> unallocated = {});
 
 } // namespace Pelican

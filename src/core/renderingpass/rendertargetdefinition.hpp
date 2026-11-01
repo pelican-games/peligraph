@@ -78,6 +78,24 @@ struct RenderTargetDefinition {
 vk::ClearColorValue physicalRenderTargetHistoryClearColor(
     const RenderTargetDefinition &definition);
 
+// RC-7e: the checks RenderTargetContainer::registerRenderTarget makes of a
+// definition before it makes any image, with their messages. Registration
+// also runs them on the definitions it does not register.
+// `dynamic_rendering_local_read`: the device enabled it (read for a
+// tile-local definition only).
+void validateRenderTargetDefinition(
+    const RenderTargetDefinition &definition,
+    vk::Extent2D base_extent,
+    bool dynamic_rendering_local_read);
+
+// RC-7e: the device's optimal-tiling format features an image made with
+// `create_info` (renderTargetImageContract's) needs for its usage; refuses
+// "Render target format lacks required color capability: <name>" without
+// them. Checked before each render target image is made, and by
+// registration for the definitions it does not register.
+void requireRenderTargetFormatFeatures(const std::string &name,
+                                       const vk::ImageCreateInfo &create_info);
+
 // RC-3c2a: the one way a definition is made, from the IR's declaration of a
 // config image (the physical plan's input: single-sample, materialized,
 // unaliased, the declared usage and layers). A fixed image's extent_scale is

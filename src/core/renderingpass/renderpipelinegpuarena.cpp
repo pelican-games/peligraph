@@ -154,6 +154,10 @@ compileRenderPipelineGpuArena(
                 std::move(
                     prepared_scope
                         ->ray_tracing_project),
+            .unallocated_render_targets =
+                std::move(
+                    prepared_scope
+                        ->unallocated_render_targets),
         };
         if (existing != candidate->scopes.end()) {
             *existing = std::move(replacement);

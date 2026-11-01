@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -116,6 +117,19 @@ requireVulkanRenderCompilerPhysicalPackage(
 const VulkanRenderCompilerPhysicalPackage &
 requireVulkanRenderCompilerPhysicalPackage(
     const RenderCompilerBackendPhysicalPackage &package);
+
+// RC-7e: every final target plan of `variants` (the runtime variants a
+// generation registers), in their order.
+std::vector<std::shared_ptr<const VulkanTargetPlan>>
+vulkanRuntimeVariantTargetPlans(
+    std::span<const RenderCompilerProgramVariantOutput> variants);
+
+// RC-7e: the one place the engine's render target uses outside every plan
+// of `variants` (the runtime variants) come from: for each runtime variant's
+// pipeline, what the view-family providers declare
+// (viewFamilyProviderRenderTargets). Registration counts them in U.
+std::vector<std::string> vulkanRuntimeVariantEngineRenderTargetUses(
+    std::span<const RenderCompilerProgramVariantOutput> variants);
 
 const RenderingTargetPlanVerificationContext &
 requireVulkanTargetPlanVerificationContext(

@@ -6,6 +6,7 @@
 #include "../renderingpass/framegraphruntime.hpp"
 #include "../renderingpass/renderfeatureparameteraccess.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
+#include "../renderingpass/rendertargetnameresolver.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -59,6 +60,8 @@ directionalShadowRuntimeContract(
                 .end() ||
         !isConcreteRenderTarget(
             binding->second)) {
+        if (frame_graph.unallocated_render_targets.contains(contract->resource))
+            throwRenderTargetNotAllocated(contract->resource);
         throw std::runtime_error(
             "directional shadow contract is not bound to a concrete "
             "render target");
@@ -435,6 +438,22 @@ void registerDirectionalShadowViewFamilyProvider(
                 buildDirectionalShadowFamily,
             .validate =
                 validateDirectionalShadowFamily,
+            // The contract's target, which directionalShadowRuntimeContract
+            // (build, validate, prepareDirectionalShadowRenderTarget) looks
+            // up by name.
+            .render_targets =
+                [](const CompiledRenderPipeline &pipeline) {
+                    std::vector<std::string> result;
+                    for (const auto &contract :
+                         pipeline.surface_resource_contracts) {
+                        if (contract.contract.name ==
+                            directionalShadowInputContractName) {
+                            result.push_back(contract.resource);
+                            break;
+                        }
+                    }
+                    return result;
+                },
         });
 }
 

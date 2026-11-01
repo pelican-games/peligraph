@@ -5,8 +5,14 @@
 
 namespace Pelican {
 
-RenderTargetNameResolver::RenderTargetNameResolver(const RenderTargetContainer &rt_container)
-    : resolve_target{[&rt_container](const std::string &name) { return rt_container.getRenderTargetIdByName(name); }} {}
+void throwRenderTargetNotAllocated(const std::string &name) {
+    throw std::runtime_error("render_target.not_allocated@1: " + name);
+}
+
+RenderTargetNameResolver::RenderTargetNameResolver(const RenderTargetContainer &rt_container,
+                                                   std::set<std::string> unallocated)
+    : resolve_target{[&rt_container](const std::string &name) { return rt_container.getRenderTargetIdByName(name); }},
+      unallocated_targets{std::move(unallocated)} {}
 
 RenderTargetNameResolver::RenderTargetNameResolver(
     std::function<GlobalRenderTargetId(const std::string &)> resolve_target)

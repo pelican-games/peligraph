@@ -100,6 +100,7 @@ PassDefinition passDefinitionOf(const RenderGraphIR &ir, const GraphIR &graph,
             refuse(graph, node, resourceUseRoleName(use.role), "unknown_image", {{"resource", use.resource}});
         }
         const auto id = names.resolve(use.resource);
+        if (!isConcreteRenderTarget(id) && names.unallocated(use.resource)) throwRenderTargetNotAllocated(use.resource);
         if (!isConcreteRenderTarget(id)) refuse(graph, node, resourceUseRoleName(use.role), "unresolved_image", {{"resource", use.resource}});
         return id;
     };

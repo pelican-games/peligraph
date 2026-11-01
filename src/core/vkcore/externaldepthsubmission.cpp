@@ -1,6 +1,7 @@
 #include "externaldepthsubmission.hpp"
 
 #include "../renderingpass/rendertargetcontainer.hpp"
+#include "../renderingpass/rendertargetnameresolver.hpp"
 #include "../renderingpass/viewexecutionscheduler.hpp"
 #include "render_target_layout_tracker.hpp"
 #include "util.hpp"
@@ -41,6 +42,8 @@ resolveRuntimeExternalDepthExport(
     if (binding ==
             frame_graph.render_target_bindings.end() ||
         !isConcreteRenderTarget(binding->second)) {
+        if (frame_graph.unallocated_render_targets.contains(plan.source_resource))
+            throwRenderTargetNotAllocated(plan.source_resource);
         throw std::runtime_error(
             "external depth export source is not bound to a "
             "concrete render target: " +

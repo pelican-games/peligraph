@@ -306,31 +306,7 @@ ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_
     const auto contract = renderTargetImageContract(definition, base_extent,
         vkcore.getGraphicsQueueFamilyIndex(), samples != vk::SampleCountFlagBits::e1);
     const auto create_info = contract.createInfo();
-    const auto format = create_info.format;
-    const auto usage = create_info.usage;
-    const auto features = vkcore.getPhysDevice().getFormatProperties(format).optimalTilingFeatures;
-    vk::FormatFeatureFlags required;
-    if (usage & vk::ImageUsageFlagBits::eColorAttachment) {
-        required |= vk::FormatFeatureFlagBits::eColorAttachment;
-        if (image_format == ImageFormat::r8g8b8a8_srgb ||
-            image_format == ImageFormat::b8g8r8a8_srgb) {
-            required |= vk::FormatFeatureFlagBits::eColorAttachmentBlend;
-        }
-    }
-    if (usage & vk::ImageUsageFlagBits::eSampled) {
-        // Sampling support and filtering support are separate Vulkan
-        // capabilities. Integer/data targets are commonly sampleable only
-        // with nearest filtering, so the consuming pass validates its
-        // authored sampler instead of imposing linear filtering here.
-        required |= vk::FormatFeatureFlagBits::eSampledImage;
-    }
-    if (usage & vk::ImageUsageFlagBits::eStorage) {
-        required |=
-            vk::FormatFeatureFlagBits::eStorageImage;
-    }
-    if ((features & required) != required) {
-        throw std::runtime_error("Render target format lacks required color capability: " + name);
-    }
+    requireRenderTargetFormatFeatures(name, create_info);
     return allocateRenderTargetImage(name,base_extent,create_info,memory_contract);
 }
 
@@ -576,23 +552,46 @@ vk::ClearColorValue physicalRenderTargetHistoryClearColor(
     return vk::ClearColorValue{floating};
 }
 
-GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
+void requireRenderTargetFormatFeatures(const std::string &name,
+                                       const vk::ImageCreateInfo &create_info) {
+    const auto format = create_info.format;
+    const auto usage = create_info.usage;
+    const auto features = GET_MODULE(VulkanManageCore).getPhysDevice().getFormatProperties(format).optimalTilingFeatures;
+    vk::FormatFeatureFlags required;
+    if (usage & vk::ImageUsageFlagBits::eColorAttachment) {
+        required |= vk::FormatFeatureFlagBits::eColorAttachment;
+        if (format == vk::Format::eR8G8B8A8Srgb ||
+            format == vk::Format::eB8G8R8A8Srgb) {
+            required |= vk::FormatFeatureFlagBits::eColorAttachmentBlend;
+        }
+    }
+    if (usage & vk::ImageUsageFlagBits::eSampled) {
+        // Sampling support and filtering support are separate Vulkan
+        // capabilities. Integer/data targets are commonly sampleable only
+        // with nearest filtering, so the consuming pass validates its
+        // authored sampler instead of imposing linear filtering here.
+        required |= vk::FormatFeatureFlagBits::eSampledImage;
+    }
+    if (usage & vk::ImageUsageFlagBits::eStorage) {
+        required |=
+            vk::FormatFeatureFlagBits::eStorageImage;
+    }
+    if ((features & required) != required) {
+        throw std::runtime_error("Render target format lacks required color capability: " + name);
+    }
+}
+
+void validateRenderTargetDefinition(
     const RenderTargetDefinition &definition,
     vk::Extent2D base_extent,
-    vma::MemoryUsage memUsage,
-    ImageWrapper prepared_image,
-    std::shared_ptr<const RuntimeTargetMemoryContract> memory_contract) {
+    bool dynamic_rendering_local_read) {
     // The physical clear value is resolved first so an unrepresentable
     // authored value is reported before any other contract check, as it was
     // when the caller resolved it ahead of the call.
-    const auto history_clear_color =
-        physicalRenderTargetHistoryClearColor(definition);
+    (void)physicalRenderTargetHistoryClearColor(definition);
     const auto &name = definition.name;
-    const auto &format_class = definition.format_class;
-    const auto &role = definition.role;
     const auto extent_scale = definition.extent_scale;
     const auto &fixed_extent = definition.fixed_extent;
-    const auto format = definition.format;
     // RC-3c2a: a definition of the generation's resource description carries
     // the final usage (engineImageUsage applied); one made directly (the XR
     // mirror, a test) may carry the declared bits only. The checks below take
@@ -695,9 +694,7 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
                 "single-sample: " +
                 name);
         }
-        if (!GET_MODULE(VulkanManageCore)
-                 .getRuntimeCapabilities()
-                 .dynamic_rendering_local_read) {
+        if (!dynamic_rendering_local_read) {
             throw std::runtime_error(
                 "Tile-local render target requires enabled Vulkan "
                 "dynamic rendering local read: " +
@@ -745,6 +742,41 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
                 name);
         }
     }
+}
+
+GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
+    const RenderTargetDefinition &definition,
+    vk::Extent2D base_extent,
+    vma::MemoryUsage memUsage,
+    ImageWrapper prepared_image,
+    std::shared_ptr<const RuntimeTargetMemoryContract> memory_contract) {
+    validateRenderTargetDefinition(
+        definition, base_extent,
+        definition.storage_mode ==
+                RenderTargetStorageMode::tile_local_attachment &&
+            GET_MODULE(VulkanManageCore)
+                .getRuntimeCapabilities()
+                .dynamic_rendering_local_read);
+    const auto history_clear_color =
+        physicalRenderTargetHistoryClearColor(definition);
+    const auto &name = definition.name;
+    const auto &format_class = definition.format_class;
+    const auto &role = definition.role;
+    const auto extent_scale = definition.extent_scale;
+    const auto &fixed_extent = definition.fixed_extent;
+    const auto format = definition.format;
+    const auto history = definition.history;
+    const auto samples = definition.samples;
+    auto mip_levels = definition.mip_levels;
+    if (mip_levels.mode == ImageMipLevelMode::full_chain)
+        mip_levels.count = 1;
+    const auto array_layers = definition.array_layers;
+    const auto storage_mode = definition.storage_mode;
+    const auto &alias_group = definition.alias_group;
+    const auto dimension = definition.dimension;
+    const auto usage = engineImageUsage({.declared = definition.usage,
+        .history = history, .storage = storage_mode});
+    const auto &source_pixels = definition.source_pixels;
 
     // Reuse an existing target when config registration is called more than once.
     if (auto it = name_to_id.find(name); it != name_to_id.end()) {

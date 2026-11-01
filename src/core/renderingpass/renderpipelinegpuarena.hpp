@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../../project/unallocatedrendertarget.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -64,6 +66,8 @@ struct RenderPipelineGpuScopePreparation {
         acceleration_structures;
     std::shared_ptr<const RayTracingProjectConfig>
         ray_tracing_project;
+    // RC-7e: the declared render targets registration did not register.
+    std::vector<UnallocatedRenderTarget> unallocated_render_targets;
 };
 
 struct RenderPipelineGpuResourceScope {
@@ -74,6 +78,7 @@ struct RenderPipelineGpuResourceScope {
         acceleration_structures;
     std::shared_ptr<const RayTracingProjectConfig>
         ray_tracing_project;
+    std::vector<UnallocatedRenderTarget> unallocated_render_targets;
 };
 
 // Adds the request-only static BLAS/TLAS owner to a prepared purgeable scope.

@@ -5,14 +5,35 @@
 #include "../../renderingpass/framegraphruntime.hpp"
 #include "../../renderingpass/renderfeatureparameteraccess.hpp"
 #include "../../renderingpass/rendertargetcontainer.hpp"
+#include "../../renderingpass/rendertargetnameresolver.hpp"
 
 #include <algorithm>
 #include <array>
 #include <optional>
 #include <stdexcept>
+#include <string_view>
 
 namespace Pelican {
 namespace {
+
+// The cube the standard feature captures into, which validateFamily looks
+// up by name (render_targets declares it).
+constexpr std::string_view cubeCaptureColorTarget = "cube_capture_color";
+
+const CompiledRenderFeatureInstance *cubeCaptureFeature(
+    const CompiledRenderPipeline &pipeline) {
+    const auto feature = std::find_if(
+        pipeline.feature_instances.begin(),
+        pipeline.feature_instances.end(),
+        [](const CompiledRenderFeatureInstance
+               &candidate) {
+            return candidate.feature ==
+                   cubeCaptureRenderFeatureName;
+        });
+    return feature == pipeline.feature_instances.end()
+               ? nullptr
+               : &*feature;
+}
 
 std::optional<CubeCaptureViewSettings>
 runtimeSettings(
@@ -21,19 +42,9 @@ runtimeSettings(
     if (!frame_graph.render_pipeline) {
         return std::nullopt;
     }
-    const auto feature = std::find_if(
-        frame_graph.render_pipeline
-            ->feature_instances.begin(),
-        frame_graph.render_pipeline
-            ->feature_instances.end(),
-        [](const CompiledRenderFeatureInstance
-               &candidate) {
-            return candidate.feature ==
-                   cubeCaptureRenderFeatureName;
-        });
-    if (feature ==
-        frame_graph.render_pipeline
-            ->feature_instances.end()) {
+    const auto *feature =
+        cubeCaptureFeature(*frame_graph.render_pipeline);
+    if (feature == nullptr) {
         return std::nullopt;
     }
     return CubeCaptureViewSettings{
@@ -116,10 +127,12 @@ void validateFamily(
     const auto binding =
         context.frame_graph
             .render_target_bindings.find(
-                "cube_capture_color");
+                std::string{cubeCaptureColorTarget});
     if (binding ==
         context.frame_graph
             .render_target_bindings.end()) {
+        if (context.frame_graph.unallocated_render_targets.contains(std::string{cubeCaptureColorTarget}))
+            throwRenderTargetNotAllocated(std::string{cubeCaptureColorTarget});
         throw std::runtime_error(
             "standard cube capture requires render target "
             "'cube_capture_color'");
@@ -164,6 +177,12 @@ void registerStandardCubeCaptureViewProvider(
                 },
             .build = buildFamily,
             .validate = validateFamily,
+            .render_targets =
+                [](const CompiledRenderPipeline &pipeline) {
+                    return cubeCaptureFeature(pipeline) != nullptr
+                               ? std::vector<std::string>{std::string{cubeCaptureColorTarget}}
+                               : std::vector<std::string>{};
+                },
         });
 }
 

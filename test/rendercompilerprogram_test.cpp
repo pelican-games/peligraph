@@ -2388,3 +2388,5 @@ namespace Pelican {
 }
 
 #include "rc7d_compiler_test.inc"
+#include "rc7e_compiler_test.inc"
+#include "rc7d_adreno830_test.inc"

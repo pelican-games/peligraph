@@ -3245,6 +3245,7 @@ TEST_CASE("RC-1 get_frame_plan reports what the published generation registered,
           nlohmann::json{{"total_bytes", 134'070'720 + 4'096},
                          {"unused_bytes", 4'096},
                          {"unused_resources", nlohmann::json::array({"rc1b_unused"})},
+                         {"unallocated_resources", nlohmann::json::array()},
                          {"peak_live_bytes", 85'017'600},
                          {"peak_node", "lighting_pass"},
                          {"peak_graph", graph_name}, {"payload_bytes",134'070'720}, {"planned_region_bytes",0}, {"planned_region_count",0}, {"actual_placement",nullptr}});
