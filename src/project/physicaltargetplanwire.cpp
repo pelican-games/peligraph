@@ -714,6 +714,28 @@ void validatePlan(const Json &plan,
     for (const auto &region : regions) {
         std::uint64_t end=0,alignment=1;
         for (const auto &r : region.residents) {
+            if (resource_documents.contains(r.resource)) {
+                const auto &resource=*resource_documents.at(r.resource);
+                const auto rep=resource.at("representation").get<std::string>();
+                if (rep!="materialized_image" && rep!="transient_attachment" && rep!="tile_local_attachment")
+                    fail("physical_plan_memory_representation",r.resource);
+                if ((rep=="transient_attachment" || rep=="tile_local_attachment") &&
+                    (!plan.contains("image_memory_facts") || !plan.at("image_memory_facts").contains(r.resource)))
+                    fail("physical_plan_memory_kind","memory.lazy_kind_unknown@1: "+r.resource);
+                if (rep=="materialized_image" && !resource.at("stored").get<bool>()) fail("physical_plan_memory_stored","memory.stored@1: "+r.resource);
+            }
+            if (plan.contains("image_memory_facts") && plan.at("image_memory_facts").contains(r.resource)) {
+                std::vector<ImageMemoryType> types;
+                for (const auto &t:plan.at("memory_types")) types.push_back({t.at("property_flags"),t.at("heap_index")});
+                const auto &facts=plan.at("image_memory_facts").at(r.resource);
+                bool transient=facts.at("transient").get<bool>();
+                if (resource_documents.contains(r.resource)) {
+                    const auto rep=resource_documents.at(r.resource)->at("representation").get<std::string>();
+                    transient=transient || rep=="transient_attachment" || rep=="tile_local_attachment";
+                }
+                const auto kind=imageMemoryKind(transient,facts.at("memory_type_bits"),types);
+                if (kind!=ImageMemoryKind::ordinary) fail("physical_plan_memory_kind",std::string{kind==ImageMemoryKind::lazy ? "memory.lazy_in_region@1: " : "memory.lazy_kind_unknown@1: "}+r.resource);
+            }
             if (!r.alignment || r.offset%r.alignment || r.size>UINT64_MAX-r.offset)
                 fail("physical_plan_memory_alignment",r.resource);
             if (!locations.emplace(r.resource,std::pair{region.region,r}).second)

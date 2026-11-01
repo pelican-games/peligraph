@@ -278,7 +278,7 @@ Registered registerC1(bool with_xr) {
     for(const auto &image:result.resources.images)placement.push_back({{"resource",image.declaration.name},
         {"group",image.alias_group?Json(*image.alias_group):Json(nullptr)},
         {"region",image.memory_region?Json(*image.memory_region):Json(nullptr)},
-        {"offset",image.memory_offset},{"layers",image.array_layers},{"format",imageFormatName(image.format)}});
+        {"offset",image.memory_offset},{"storage",static_cast<int>(image.storage)},{"layers",image.array_layers},{"format",imageFormatName(image.format)}});
     std::ofstream{"<作業ディレクトリ>/rc7c3_variant_c1_"+std::string{with_xr?"xr":"flat"}+".json"}<<placement.dump(2);
     return result;
 }
@@ -407,20 +407,20 @@ TEST_CASE("RC-3c2a C1: the registration merges the variants' images once, for th
     CHECK(group(alone, "b1") == group(alone, "b2"));
     using Shared = std::vector<std::set<std::string>>;
     CHECK(merged.shared == Shared{{"a1", "a2", "b1", "b2", "c1", "c2"}});
-    CHECK(alone.shared == Shared{{"a1", "a2", "b1", "b2", "c1", "c2"}});
+    CHECK(alone.shared == Shared{{"a1", "a2", "b1", "b2", "c1", "c2", "depth"}});
     for (const auto *run : {&merged, &alone})
         for (const auto *name : {"a_mid", "a_end", "b_mid", "b_end", "c_mid", "c_end"}) {
             INFO(name);
             CHECK_FALSE(group(*run, name).has_value());
         }
-    // 15 images: six eligible chain images in one VMA region at legal offsets,
-    // nine ordinary allocations. The two layer variants both make ten.
+    // RC-7d: flat's unretained depth joins the six chain images in the region.
+    // XR keeps two layers/export ownership, hence 10 allocations versus flat's 9.
     std::set<std::string> names;
     for (const auto &[name, entry] : merged.targets) names.insert(name);
     CHECK(names == std::set<std::string>{"a1", "a2", "a_end", "a_mid", "b1", "b2", "b_end", "b_mid", "c1",
                                          "c2", "c_end", "c_mid", "depth", "display", "scene"});
     CHECK(merged.allocations == 10);
-    CHECK(alone.allocations == 10);
+    CHECK(alone.allocations == 9);
     CHECK(merged.allocated_bytes == merged.requirement_bytes);
     CHECK(alone.allocated_bytes == alone.requirement_bytes);
     CHECK(renderTargetBytes(registered(merged, "a1")) == 64u * 64u * 1u * 2u);

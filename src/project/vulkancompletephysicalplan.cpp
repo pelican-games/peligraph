@@ -1855,6 +1855,19 @@ verifyVulkanCompletePhysicalPlanPackage(
              const VulkanPhysicalResourcePlan *,
              std::less<>>
         physical_resources;
+    const auto checkKind = [&](const VulkanTargetPlan &source,const std::string &name) {
+        const auto u=source.effective_image_usage.find(name);
+        if (u==source.effective_image_usage.end()) return;
+        const auto q=source.memory_requirements.find(name);
+        const auto kind=imageMemoryKind(bool(u->second & ImageUsageBit::transient_attachment),
+            q!=source.memory_requirements.end() && q->second ? q->second->memory_type_bits : 0,source.memory_types);
+        require(kind!=ImageMemoryKind::lazy,"memory.lazy_in_region@1: "+name);
+        require(kind!=ImageMemoryKind::unknown,"memory.lazy_kind_unknown@1: "+name);
+    };
+    for (const auto &region:package.memory_regions) for (const auto &resident:region.residents) {
+        checkKind(automatic_plan,resident.resource);
+        for (const auto &source:automatic_plan.memory_provenance) checkKind(*source,resident.resource);
+    }
     for (const auto &resource : package.resources) {
         const auto automatic =
             automatic_resources.find(
@@ -2017,15 +2030,16 @@ verifyVulkanCompletePhysicalPlanPackage(
                 VulkanResourceRepresentation::external;
         require(
             resource.stored == expected_stored,
+            "memory.stored@1: " + resource.logical_resource + "; " +
             "Vulkan complete physical resource has inconsistent "
             "stored ownership: " +
                 resource.logical_resource);
         require(
             !resource.aliasable ||
-                (expected_stored &&
-                 resource.representation !=
-                     VulkanResourceRepresentation::external),
-            "only engine-owned materialized resources may alias: " +
+                (resource.representation == VulkanResourceRepresentation::materialized_image ||
+                 resource.representation == VulkanResourceRepresentation::transient_attachment ||
+                 resource.representation == VulkanResourceRepresentation::tile_local_attachment),
+            "only engine-owned image resources may alias: " +
                 resource.logical_resource);
         for (const auto &feature :
              resource.required_physical_features) {
@@ -2516,7 +2530,9 @@ verifyVulkanCompletePhysicalPlanPackage(
         const auto provenance = std::find_if(automatic_plan.lowering_graph.resources.begin(),
             automatic_plan.lowering_graph.resources.end(), [&](const auto &v) { return v.logical.name == name; });
         require(provenance != automatic_plan.lowering_graph.resources.end() && provenance->pattern.allow_alias &&
-            r.representation == VulkanResourceRepresentation::materialized_image && r.rasterization_samples == 1 &&
+            (r.representation == VulkanResourceRepresentation::materialized_image ||
+             r.representation == VulkanResourceRepresentation::transient_attachment ||
+             r.representation == VulkanResourceRepresentation::tile_local_attachment) && r.rasterization_samples == 1 &&
             !r.resolve_required && life.used, "alias.ownership_or_samples@1: " + name);
         const auto first = std::find_if(node_order.begin(), node_order.end(), [&](const auto &n) { return n.second == life.first_use; });
         require(first != node_order.end(), "alias.first_use@1: " + name);

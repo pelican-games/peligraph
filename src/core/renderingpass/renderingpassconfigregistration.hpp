@@ -144,6 +144,8 @@ struct RenderingPassConfigRegistrationDependencies {
         // enclosing generation transaction without depending on a driver change.
         std::function<ImageMemoryRequirements(std::string_view,vk::Extent2D,ImageMemoryRequirements)>
             runtime_image_requirements_for_testing;
+        std::function<std::vector<ImageMemoryType>(std::string_view,vk::Extent2D,std::vector<ImageMemoryType>)>
+            runtime_memory_types_for_testing;
 
     } options;
 };

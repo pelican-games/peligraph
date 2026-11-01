@@ -2338,7 +2338,7 @@ void executePlannedFrameGraph(
                         .endsScopeExecution()) {
                     request.modules.pass_executor
                         .endRenderingScope(
-                            request.render_ctx.cmd_buf);
+                            request.render_ctx.cmd_buf, &request.layout_tracker);
                     rendering_scope_active = false;
                     active_rendering_scope =
                         std::numeric_limits<

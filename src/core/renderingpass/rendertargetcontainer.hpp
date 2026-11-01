@@ -30,6 +30,7 @@ class RenderTargetContainer;
 struct RuntimeTargetMemoryContract {
     MemoryPackingInputs inputs;
     std::vector<std::vector<std::string>> required_sets;
+    std::function<std::vector<ImageMemoryType>(std::string_view,vk::Extent2D,std::vector<ImageMemoryType>)> memory_types_for_testing;
     // Device-facts injection for repack failure/rollback tests. Empty in production.
     std::function<ImageMemoryRequirements(std::string_view,vk::Extent2D,ImageMemoryRequirements)> requirements_for_testing;
 };

@@ -51,7 +51,7 @@ DECLARE_MODULE(RenderPassExecutor) {
     void renderingScopeDependency(
         vk::CommandBuffer cmd_buf) const;
     void endRenderingScope(
-        vk::CommandBuffer cmd_buf) const;
+        vk::CommandBuffer cmd_buf, RenderTargetLayoutTracker *layout_tracker = nullptr) const;
 };
 
 } // namespace Pelican

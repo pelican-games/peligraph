@@ -196,6 +196,7 @@ void RenderTargetLayoutTracker::recordAccess(
     const auto old_layout = it->second;
     if (observation && alias_transition_observer) {
         observation->old_layout = old_layout;
+        observation->inside_rendering = inside_rendering;
         alias_transition_observer(*observation);
     }
     if (old_layout == new_layout && !memory_dependency) return;

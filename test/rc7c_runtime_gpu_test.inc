@@ -206,6 +206,10 @@ TEST_CASE("RC-7c C1 example actual VMA allocations and bytes beat RC-7b referenc
     }
     CHECK(actual.at("allocation_count").get<std::size_t>()<reference_count);
     CHECK(actual.at("allocation_bytes").get<std::uint64_t>()<reference_bytes);
+    CHECK(actual.at("allocation_count").get<std::size_t>()<=4);
+    CHECK(actual.at("allocation_bytes").get<std::uint64_t>()<=128286720);
+    std::ofstream{"<作業ディレクトリ>/rc7d_d4_example.json"}<<Json{{"rc7c_count",4},{"rc7c_bytes",128286720},{"actual",actual},
+        {"resources",rows},{"plan",vulkanTargetPlanToJson(plan)}}.dump(2);
     std::ofstream{"<作業ディレクトリ>/rc7c3_c1_measurements.json"}<<Json{{"reference_count",reference_count},{"reference_bytes",reference_bytes},
         {"payload_bytes",payload_bytes},{"actual",actual},{"resources",rows},{"device",std::string{core.getPhysDevice().getProperties().deviceName.data()}},
         {"driver_version",core.getPhysDevice().getProperties().driverVersion},{"plan",vulkanTargetPlanToJson(plan)}}.dump(2);

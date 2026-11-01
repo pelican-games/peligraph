@@ -266,8 +266,7 @@ GenerationResources resolveGenerationResources(std::span<const GenerationResourc
                 refuse("render_graph.alias_group_invalid@1",
                        {{"group", group}, {"reason", "contract"}, {"resource", member->declaration.name}});
             }
-            if (member->usage != contract.usage || member->storage != contract.storage ||
-                member->storage != RenderTargetStorageMode::materialized) {
+            if (member->usage != contract.usage || member->storage != contract.storage) {
                 for (auto &image : result.images) if (image.alias_group == group) {
                     result.alias_rejections[image.declaration.name] = "generation image contracts differ: " + group;
                     image.alias_group.reset();

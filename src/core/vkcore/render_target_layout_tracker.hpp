@@ -26,6 +26,7 @@ class RenderTargetLayoutTracker {
         vk::PipelineStageFlags src_stage, dst_stage;
         vk::AccessFlags src_access, dst_access;
         vk::ImageLayout old_layout, new_layout;
+        bool inside_rendering = false;
     };
     // Observes the arguments of recorded alias dependencies and transitions.
     std::function<void(const AliasTransition &)> alias_transition_observer;
@@ -59,6 +60,7 @@ class RenderTargetLayoutTracker {
         bool history_read = false,
         RenderTargetImageKind image_kind =
             RenderTargetImageKind::resolved);
+    void setInsideRendering(bool value) noexcept {inside_rendering=value;}
     void reset();
     void beginFrame();
     std::size_t frameAliasDependencyCount() const noexcept {return frame_alias_dependency_count;}
@@ -70,6 +72,7 @@ class RenderTargetLayoutTracker {
     }
 
   private:
+    bool inside_rendering = false;
     // Every access, including a dependency that keeps the layout, acquires
     // its physical range before recording the image barrier.
     void recordAccess(

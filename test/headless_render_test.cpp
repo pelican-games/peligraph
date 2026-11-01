@@ -16177,4 +16177,5 @@ vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 i
 #include "rc7a_readback_test.inc"
 #include "rc7b_alias_test.inc"
 #include "rc7c_renderer_gpu_test.inc"
+#include "rc7d_renderer_gpu_test.inc"
 } // namespace Pelican

@@ -1,5 +1,6 @@
 #pragma once
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <map>
 #include <set>
 #include <string>
@@ -60,7 +61,12 @@ inline nlohmann::json freezeFramePlanPolicy(const nlohmann::json &physical,
         used.insert(name);
         for (const auto &resource : group.at("resources"))
             if (!editable_resources || editable_resources->contains(resource.get<std::string>()))
-                result["resources"][resource.get<std::string>()]["alias_group"] = planningRequire(name);
+            {
+                const auto found=std::find_if(physical.at("resources").begin(),physical.at("resources").end(),[&](const auto &r){return r.at("logical_resource")==resource;});
+                const bool transient=found!=physical.at("resources").end() &&
+                    (found->at("representation")=="transient_attachment" || found->at("representation")=="tile_local_attachment");
+                result["resources"][resource.get<std::string>()]["alias_group"] = {{"value",name},{"strength",transient ? "prefer" : "require"}};
+            }
     }
     for (const auto &resource : physical.at("resources"))
         if (resource.at("representation") == "materialized_image" &&

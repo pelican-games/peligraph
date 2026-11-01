@@ -3524,7 +3524,9 @@ void applyCandidateAliasPolicy(const CompiledLogicalRenderGraph &graph, const Ta
         else if (source == workspace.resources.end() || !source->pattern.allow_alias ||
                  source->logical.materialization == LogicalMaterializationRequirement::external ||
                  resource.widest_read == LogicalReadFootprintKind::temporal ||
-                 resource.representation != VulkanResourceRepresentation::materialized_image ||
+                 (resource.representation != VulkanResourceRepresentation::materialized_image &&
+                  resource.representation != VulkanResourceRepresentation::transient_attachment &&
+                  resource.representation != VulkanResourceRepresentation::tile_local_attachment) ||
                  resource.rasterization_samples != 1 || resource.resolve_required) failure = "ownership_or_samples";
         else if (!resource.lifetime.used) failure = "unused";
         else {
@@ -3563,11 +3565,22 @@ void applyCandidateAliasPolicy(const CompiledLogicalRenderGraph &graph, const Ta
         .node_constraints = request.node_constraints, .resource_constraints = request.resource_constraints,
         .legal_alias_candidates = legal};
     draft.opportunities = analyzeLogicalPlanningOpportunities(graph, request.node_order, input);
-    for (const auto &r : draft.resources) if (r.format && r.representation != VulkanResourceRepresentation::external && r.representation != VulkanResourceRepresentation::materialized_buffer) {
+    // A transient or tile-local candidate is created with TRANSIENT_ATTACHMENT
+    // (engineImageUsage's rule), whatever usage the request carries.
+    const auto plannedUsage = [&](const VulkanPhysicalResourcePlan &r) -> std::optional<ImageUsage> {
         const auto u = request.effective_image_usage.find(r.logical_resource);
-        auto req = request.memory_requirements && u != request.effective_image_usage.end() &&
-            (!request.supports_image_usage || request.supports_image_usage(r,u->second))
-            ? request.memory_requirements(r, u->second) : std::nullopt;
+        if (u == request.effective_image_usage.end()) return std::nullopt;
+        auto usage = u->second;
+        if (r.representation == VulkanResourceRepresentation::transient_attachment ||
+            r.representation == VulkanResourceRepresentation::tile_local_attachment)
+            usage |= ImageUsageBit::transient_attachment;
+        return usage;
+    };
+    for (const auto &r : draft.resources) if (r.format && r.representation != VulkanResourceRepresentation::external && r.representation != VulkanResourceRepresentation::materialized_buffer) {
+        const auto u = plannedUsage(r);
+        auto req = request.memory_requirements && u &&
+            (!request.supports_image_usage || request.supports_image_usage(r,*u))
+            ? request.memory_requirements(r, *u) : std::nullopt;
         draft.memory_requirements[r.logical_resource] = req;
         if (!req && r.aliasable) draft.decisions.push_back({"pelican.plan.alias_requirements_unknown@1", r.logical_resource,
             "unknown", "alias.requirements_unknown: 未確定"});
@@ -3575,6 +3588,16 @@ void applyCandidateAliasPolicy(const CompiledLogicalRenderGraph &graph, const Ta
             draft.decisions.push_back({"pelican.plan.alias_ineligible@1", r.logical_resource,
                 req->requires_dedicated ? "dedicated" : "memory_key", "ordinary allocation required"});
     }
+    const auto kindOf = [&](const std::string &name) {
+        const auto *r=findPhysicalResource(draft.resources,name);
+        const auto u=r ? plannedUsage(*r) : std::nullopt;
+        const auto q=draft.memory_requirements.find(name);
+        return imageMemoryKind(u && bool(*u & ImageUsageBit::transient_attachment),
+            q!=draft.memory_requirements.end() && q->second ? q->second->memory_type_bits : 0,request.memory_types);
+    };
+    for (const auto &r:draft.resources) if (r.aliasable && kindOf(r.logical_resource)!=ImageMemoryKind::ordinary)
+        draft.decisions.push_back({"pelican.plan.alias_ineligible@1",r.logical_resource,
+            kindOf(r.logical_resource)==ImageMemoryKind::lazy ? "lazy_memory" : "lazy_kind_unknown","individual allocation required"});
     for(const auto &pair:legal) {
         const auto &a=draft.memory_requirements.at(pair.first),&b=draft.memory_requirements.at(pair.second);
         if(a && b && a->memory_type_bits!=b->memory_type_bits)draft.decisions.push_back({"pelican.plan.alias_pair_ineligible@1",pair.first+"/"+pair.second,"memory_key","memoryTypeBits must match exactly"});
@@ -3582,7 +3605,7 @@ void applyCandidateAliasPolicy(const CompiledLogicalRenderGraph &graph, const Ta
     const auto pack = [&](std::span<const PlanningNamePair> forced) {
         auto &inputs = draft.memory_packing;
         if (request.profile.kind == PlanningProfileKind::hazard_stress) inputs.seed = request.profile.seed;
-        for (const auto &r : draft.resources) if (r.aliasable) {
+        for (const auto &r : draft.resources) if (r.aliasable && kindOf(r.logical_resource)==ImageMemoryKind::ordinary) {
             const bool explicit_member = std::any_of(draft.policy.begin(), draft.policy.end(), [&](const auto &e) {
                 return activePolicy(e) && e.key == "alias_group" && e.target == r.logical_resource;
             });
@@ -3642,6 +3665,11 @@ void applyCandidateAliasPolicy(const CompiledLogicalRenderGraph &graph, const Ta
         std::vector<std::string> members;
         for (auto i : indices) {
             auto &e = draft.policy[i];
+            const auto kind=kindOf(e.target);
+            if (kind!=ImageMemoryKind::ordinary) {
+                policyConflict(draft,{i},std::string{kind==ImageMemoryKind::lazy ? "alias.lazy_memory@1: " : "alias.lazy_kind_unknown@1: "}+e.target);
+                continue;
+            }
             const auto own=draft.memory_requirements.find(e.target);
             if(own==draft.memory_requirements.end() || !own->second) {
                 policyConflict(draft,{i},"alias.requirements_unknown: " + e.target);
@@ -4132,6 +4160,8 @@ VulkanTargetPlan compileVulkanTargetPlan(
         }
         if (reasons.dump().find("target_planning.alias_generation_contract@1") != std::string::npos)
             throw GraphRegistryError("target_planning.alias_generation_contract@1", {{"graph", canonical_graph.name}, {"candidates", reasons}});
+        if (reasons.dump().find("alias.lazy_memory@1") != std::string::npos)
+            throw GraphRegistryError("alias.lazy_memory@1", {{"graph", canonical_graph.name}, {"candidates", reasons}});
         if (reasons.dump().find("alias.requirements_unknown") != std::string::npos)
             throw GraphRegistryError("alias.requirements_unknown", {{"graph", canonical_graph.name}, {"candidates", reasons}});
         throw GraphRegistryError("target_planning.requirement_unsatisfied@1", {{"graph", canonical_graph.name}, {"candidates", reasons}});
@@ -4302,6 +4332,7 @@ VulkanTargetPlan compileVulkanTargetPlan(
         .memory_regions = std::move(selected_draft.memory_regions),
         .memory_packing = std::move(selected_draft.memory_packing),
         .memory_requirements = std::move(selected_draft.memory_requirements),
+        .memory_types = request.memory_types,
         .memory_requirements_query = request.memory_requirements,
         .memory_provenance_id = {"",canonical_graph.name},
         .required_physical_features =
@@ -4654,6 +4685,14 @@ nlohmann::ordered_json vulkanTargetPlanToJson(
                 std::move(entry));
         }
     }
+    result["memory_types"] = nlohmann::json::array();
+    for(const auto &t:plan.memory_types) result["memory_types"].push_back({{"property_flags",t.property_flags},{"heap_index",t.heap_index}});
+    result["image_memory_facts"] = nlohmann::json::object();
+    for(const auto &[name,q]:plan.memory_requirements) {
+        const auto u=plan.effective_image_usage.find(name);
+        result["image_memory_facts"][name]={{"transient",u!=plan.effective_image_usage.end() && bool(u->second & ImageUsageBit::transient_attachment)},
+            {"memory_type_bits",q ? q->memory_type_bits : 0}};
+    }
     result["memory_regions"] = memoryRegionsToJson(plan.memory_regions);
     result["memory_packing"] = memoryPackingToJson(plan.memory_packing);
     result["alias_groups"] =
@@ -4756,8 +4795,12 @@ VulkanGenerationMemoryPlan planGenerationMemory(std::span<const std::shared_ptr<
             first[name] = std::min(first[name], r.lifetime.first_use);
             const auto in = std::find_if(plan->memory_packing.resources.begin(), plan->memory_packing.resources.end(),
                 [&](const auto &v) { return v.resource == name; });
-            if (in == plan->memory_packing.resources.end()) {
-                result.exclusions[name] = "resource is ineligible in graph/variant " + plan->graph;
+            const auto u=plan->effective_image_usage.find(name);
+            const auto q=plan->memory_requirements.find(name);
+            const auto kind=imageMemoryKind(u!=plan->effective_image_usage.end() && bool(u->second & ImageUsageBit::transient_attachment),
+                q!=plan->memory_requirements.end() && q->second ? q->second->memory_type_bits : 0,plan->memory_types);
+            if (in == plan->memory_packing.resources.end() || kind!=ImageMemoryKind::ordinary) {
+                result.exclusions[name] = kind==ImageMemoryKind::lazy ? "lazy_memory" : kind==ImageMemoryKind::unknown ? "lazy_kind_unknown" : "resource is ineligible in graph/variant " + plan->graph;
                 continue;
             }
             const auto req = plan->memory_requirements.find(name);

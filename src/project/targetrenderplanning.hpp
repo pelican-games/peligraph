@@ -349,6 +349,7 @@ struct VulkanTargetPlanRequest {
     std::map<std::string, ImageUsage, std::less<>> effective_image_usage;
     std::function<std::optional<ImageMemoryRequirements>(const VulkanPhysicalResourcePlan &, ImageUsage)> memory_requirements;
     std::function<bool(const VulkanPhysicalResourcePlan &, ImageUsage)> supports_image_usage;
+    std::vector<ImageMemoryType> memory_types;
     std::map<std::string, std::string, std::less<>> generation_alias_exclusions;
     // Provider facts for resources on manual/unchecked NativeScope boundaries.
     std::vector<std::string> manual_native_resources;
@@ -391,6 +392,7 @@ struct VulkanTargetPlan {
     MemoryPackingInputs memory_packing;
     // Trusted compiler facts, never deserialized from a package.
     MemoryPackingRequirements memory_requirements;
+    std::vector<ImageMemoryType> memory_types;
     std::function<std::optional<ImageMemoryRequirements>(const VulkanPhysicalResourcePlan &, ImageUsage)> memory_requirements_query;
     std::vector<std::shared_ptr<const VulkanTargetPlan>> memory_provenance;
     // Compiler-owned identity of one graph in one variant; never serialized.

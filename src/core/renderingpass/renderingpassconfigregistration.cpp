@@ -1249,6 +1249,7 @@ void RegistrationStages::registerVariants() {
     std::set<FrameGraphBufferId> uploaded_attributes;
     auto memory_contract=std::make_shared<RuntimeTargetMemoryContract>();
     memory_contract->requirements_for_testing=dependencies.front().options.runtime_image_requirements_for_testing;
+    memory_contract->memory_types_for_testing=dependencies.front().options.runtime_memory_types_for_testing;
     bool have_inputs=false;
     for(const auto &variant:prepared_variants) {
         const auto &physical=requireVulkanRenderCompilerPhysicalPackage(*variant.physical_package);

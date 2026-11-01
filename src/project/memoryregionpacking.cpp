@@ -6,6 +6,15 @@
 #include <stdexcept>
 
 namespace Pelican {
+ImageMemoryKind imageMemoryKind(bool transient, std::uint32_t bits,
+                                      const std::vector<ImageMemoryType> &types) {
+    if (!transient) return ImageMemoryKind::ordinary;
+    if (types.empty()) return ImageMemoryKind::unknown;
+    for (std::size_t i=0; i<types.size() && i<32; ++i)
+        if ((bits & (1u<<i)) && (types[i].property_flags & 0x10u)) return ImageMemoryKind::lazy; // RC7D_KIND
+    return ImageMemoryKind::ordinary;
+}
+
 namespace {
 void require(bool condition, const char *message) {
     if (!condition) throw std::runtime_error(message);

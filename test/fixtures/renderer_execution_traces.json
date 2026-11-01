@@ -1227,7 +1227,7 @@
         "resource": "gbuffer_worldpos"
       },
       {
-        "layout": "depth_attachment_optimal",
+        "layout": "undefined",
         "resource": "offscreen_depth"
       },
       {
@@ -1506,7 +1506,7 @@
         "resource": "gbuffer_worldpos"
       },
       {
-        "layout": "depth_attachment_optimal",
+        "layout": "undefined",
         "resource": "offscreen_depth"
       },
       {
@@ -1785,7 +1785,7 @@
         "resource": "gbuffer_worldpos"
       },
       {
-        "layout": "depth_attachment_optimal",
+        "layout": "undefined",
         "resource": "offscreen_depth"
       },
       {
@@ -4016,7 +4016,7 @@
         "resource": "gbuffer_worldpos"
       },
       {
-        "layout": "depth_attachment_optimal",
+        "layout": "undefined",
         "resource": "offscreen_depth"
       },
       {
@@ -4295,7 +4295,7 @@
         "resource": "gbuffer_worldpos"
       },
       {
-        "layout": "depth_attachment_optimal",
+        "layout": "undefined",
         "resource": "offscreen_depth"
       },
       {
@@ -9068,7 +9068,7 @@
         "resource": "velocity"
       },
       {
-        "layout": "depth_attachment_optimal",
+        "layout": "undefined",
         "resource": "velocity_depth"
       }
     ],
@@ -9512,7 +9512,7 @@
         "resource": "velocity"
       },
       {
-        "layout": "depth_attachment_optimal",
+        "layout": "undefined",
         "resource": "velocity_depth"
       }
     ],
@@ -9956,7 +9956,7 @@
         "resource": "velocity"
       },
       {
-        "layout": "depth_attachment_optimal",
+        "layout": "undefined",
         "resource": "velocity_depth"
       }
     ],
@@ -10400,7 +10400,7 @@
         "resource": "velocity"
       },
       {
-        "layout": "depth_attachment_optimal",
+        "layout": "undefined",
         "resource": "velocity_depth"
       }
     ],
@@ -10844,7 +10844,7 @@
         "resource": "velocity"
       },
       {
-        "layout": "depth_attachment_optimal",
+        "layout": "undefined",
         "resource": "velocity_depth"
       }
     ],
@@ -11288,7 +11288,7 @@
         "resource": "velocity"
       },
       {
-        "layout": "depth_attachment_optimal",
+        "layout": "undefined",
         "resource": "velocity_depth"
       }
     ],
@@ -11732,7 +11732,7 @@
         "resource": "velocity"
       },
       {
-        "layout": "depth_attachment_optimal",
+        "layout": "undefined",
         "resource": "velocity_depth"
       }
     ],
@@ -14578,7 +14578,7 @@
         "resource": "gbuffer_worldpos"
       },
       {
-        "layout": "depth_attachment_optimal",
+        "layout": "undefined",
         "resource": "offscreen_depth"
       },
       {
@@ -14857,7 +14857,7 @@
         "resource": "gbuffer_worldpos"
       },
       {
-        "layout": "depth_attachment_optimal",
+        "layout": "undefined",
         "resource": "offscreen_depth"
       },
       {
@@ -15136,7 +15136,7 @@
         "resource": "gbuffer_worldpos"
       },
       {
-        "layout": "depth_attachment_optimal",
+        "layout": "undefined",
         "resource": "offscreen_depth"
       },
       {

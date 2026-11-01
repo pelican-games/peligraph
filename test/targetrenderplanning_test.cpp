@@ -3058,4 +3058,5 @@ TEST_CASE("RC-7c measured totals count each region allocation once", "[rc7c][mem
 #include "rc7a_target_policy_test.inc"
 #include "rc7b_target_policy_test.inc"
 #include "rc7c_target_policy_test.inc"
+#include "rc7d_target_test.inc"
 } // namespace Pelican

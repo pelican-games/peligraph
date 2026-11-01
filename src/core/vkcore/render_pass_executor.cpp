@@ -364,6 +364,7 @@ void RenderPassExecutor::execute(const FrameRenderContext &frame, const Compiled
     }
 
     cmd_buf.beginRendering(render_info);
+    layout_tracker.setInsideRendering(true);
     setDynamicViewportAndScissor(cmd_buf, target_extent);
 
     renderDynamicPassDrawCalls(cmd_buf, pass.pass_id, pass_def, target_extent,
@@ -371,6 +372,7 @@ void RenderPassExecutor::execute(const FrameRenderContext &frame, const Compiled
     recordBodyForTesting(pass, invocation);
 
     cmd_buf.endRendering();
+    layout_tracker.setInsideRendering(false);
 }
 
 void RenderPassExecutor::beginRenderingScope(
@@ -438,6 +440,7 @@ void RenderPassExecutor::beginRenderingScope(
     }
 
     frame.cmd_buf.beginRendering(render_info);
+    layout_tracker.setInsideRendering(true); // RC7D_SCOPE_BEGIN
     setDynamicViewportAndScissor(
         frame.cmd_buf, extent);
 }
@@ -504,8 +507,9 @@ void RenderPassExecutor::renderingScopeDependency(
 }
 
 void RenderPassExecutor::endRenderingScope(
-    vk::CommandBuffer cmd_buf) const {
+    vk::CommandBuffer cmd_buf, RenderTargetLayoutTracker *layout_tracker) const {
     cmd_buf.endRendering();
+    if(layout_tracker) layout_tracker->setInsideRendering(false);
 }
 
 } // namespace Pelican

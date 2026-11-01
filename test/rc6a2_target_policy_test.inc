@@ -6,7 +6,8 @@ Rc6a2Json rc6a2Policy(const CompiledLogicalRenderGraph &graph, Rc6a2Json entries
 VulkanTargetPlan rc6a2Compile(const LogicalTypeRegistry &types, const CompiledLogicalRenderGraph &graph,
                             Rc6a2Json entries = Rc6a2Json::object(), bool tile = true,
                             PlanningProfile profile = {}, std::vector<PlanningPolicyEntry> extra = {},
-                            std::vector<VulkanPhysicalAttachmentPlan> attachments = {}) {
+                            std::vector<VulkanPhysicalAttachmentPlan> attachments = {},
+                            std::vector<ImageMemoryType> memory_types = {}) {
     auto parsed = parseTargetPlanningPolicy(rc6a2Policy(graph, std::move(entries)), {},
         {PlanningOriginKind::root, "project://root.json", "/rendering"});
     auto &constraints = parsed.graphs.at(0);
@@ -29,7 +30,7 @@ VulkanTargetPlan rc6a2Compile(const LogicalTypeRegistry &types, const CompiledLo
     return compileVulkanTargetPlan(types, graph, topology(tile), providers(), {
         .policy = constraints.declarations, .node_order = order, .endpoint = "device:0",
         .provider = std::string{kProvider}, .pattern_bindings = std::move(bindings), .effective_image_usage = std::move(usage),
-        .memory_requirements = TestSupport::rc7cMemoryRequirements, .profile = profile,
+        .memory_requirements = TestSupport::rc7cMemoryRequirements, .memory_types = std::move(memory_types), .profile = profile,
         .node_constraints = constraints.nodes, .resource_constraints = constraints.resources,
         .automatic_attachments = std::move(attachments)});
 }
@@ -337,6 +338,13 @@ TEST_CASE("RC-6a2 fix2 drops only the causal prefer when require-only baseline i
     REQUIRE(physicalResource(automatic, "temporary_a").representation == VulkanResourceRepresentation::tile_local_attachment);
     auto policy = rc6a2Group();
     policy["backend"] = "tile_local";
+    // RC-7d: a tile-local image is TRANSIENT whatever the request's usage says.
+    // On desktop memory types (no LAZILY) it is ordinary and may satisfy the
+    // required group; without memory types its kind is unknown and it may not.
+    const auto tile_alias = rc6a2Compile(types, graph, policy, true, {}, {}, {},
+        {{0x1u /* DEVICE_LOCAL */, 0}});
+    REQUIRE(tile_alias.alias_groups.size() == 1);
+    CHECK(physicalResource(tile_alias, "temporary_a").representation == VulkanResourceRepresentation::tile_local_attachment);
     rc6a2Refusal([&] { rc6a2Compile(types, graph, policy); }, "target_planning.requirement_unsatisfied@1", "alias_group");
     for (const auto *name : {"temporary_a", "temporary_b"})
         policy["resources"][name]["representation"] = {{"value", "materialized"}, {"strength", "prefer"}};

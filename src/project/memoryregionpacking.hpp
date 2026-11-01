@@ -9,6 +9,18 @@
 
 namespace Pelican {
 
+struct ImageMemoryType {
+    std::uint32_t property_flags = 0, heap_index = 0;
+    bool operator==(const ImageMemoryType &) const = default;
+};
+enum class ImageMemoryKind { ordinary, lazy, unknown };
+// Only TRANSIENT_ATTACHMENT images may use Vulkan LAZILY_ALLOCATED (0x10).
+ImageMemoryKind imageMemoryKind(bool transient, std::uint32_t bits,
+                                const std::vector<ImageMemoryType> &types);
+inline const char *imageMemoryKindName(ImageMemoryKind kind) {
+    return kind==ImageMemoryKind::lazy ? "lazy" : kind==ImageMemoryKind::unknown ? "unknown" : "ordinary";
+}
+
 struct ImageMemoryRequirements {
     std::uint64_t size = 0;
     std::uint64_t alignment = 1;

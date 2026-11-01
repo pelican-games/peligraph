@@ -74,14 +74,11 @@ bool isTileLocalAttachmentCandidate(
         declarationFactsOf(definition));
 }
 
-// The declaration's eligibility, and after physical planning the target is
-// still materialized.
+// Storage does not exclude a declaration: final usage and device memory
+// properties decide whether its physical image can enter a region.
 bool isRuntimeAliasCandidate(
     const RenderTargetDefinition &definition) {
-    return isRuntimeAliasEligible(
-               declarationFactsOf(definition)) &&
-           definition.storage_mode ==
-               RenderTargetStorageMode::materialized;
+    return isRuntimeAliasEligible(declarationFactsOf(definition));
 }
 
 // PO-1: what kept a target out of isRuntimeAliasCandidate, in words the
@@ -105,10 +102,6 @@ std::string runtimeAliasExclusion(
     }
     if (definition.format_class == "display") {
         causes.push_back("display-format target is not aliased");
-    }
-    if (definition.storage_mode !=
-        RenderTargetStorageMode::materialized) {
-        causes.push_back("storage mode is not materialized");
     }
     std::string result;
     for (const auto &cause : causes) {
@@ -608,8 +601,7 @@ std::vector<ResourcePatternBinding> runtimePatternBindings(
             false,
             transient,
             tile_local,
-            !transient && !tile_local &&
-                isRuntimeAliasCandidate(
+            isRuntimeAliasCandidate(
                     *target->second));
         pattern.store_reason =
             runtimeAliasExclusion(*target->second);
@@ -1070,9 +1062,11 @@ void validateRuntimePhysicalPlan(
                 !isRuntimeAliasCandidate(
                     *target->second) ||
                 !resource.aliasable ||
-                resource.representation !=
-                    VulkanResourceRepresentation::
-                        materialized_image ||
+                (resource.representation != VulkanResourceRepresentation::materialized_image &&
+                 resource.representation != VulkanResourceRepresentation::transient_attachment &&
+                 resource.representation != VulkanResourceRepresentation::tile_local_attachment) ||
+                imageMemoryKind(bool(plan.effective_image_usage.at(name) & ImageUsageBit::transient_attachment),
+                    plan.memory_requirements.contains(name) && plan.memory_requirements.at(name) ? plan.memory_requirements.at(name)->memory_type_bits : 0,plan.memory_types)!=ImageMemoryKind::ordinary ||
                 resource.rasterization_samples != 1 ||
                 resource.resolve_required) {
                 throw std::runtime_error(
@@ -1548,6 +1542,9 @@ RenderingTargetPlanCompilation compileRenderingTargetPlans(
                         target.usage = usage; target.format = *r.format; target.array_layers = r.array_layers;
                         return !device_facts.query_image_format_capability || device_facts.query_image_format_capability(target).image_usage_supported;
                     },
+                    .memory_types = [&] { std::vector<ImageMemoryType> result;
+                        for (const auto &t:device_facts.memory_types) result.push_back({static_cast<std::uint32_t>(t.property_flags),t.heap_index});
+                        return result; }(),
                     .generation_alias_exclusions = generation_alias_exclusions,
                     .profile = target_planning.profile,
                     .node_constraints = std::move(node_constraints),

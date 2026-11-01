@@ -242,6 +242,42 @@ RenderTargetImageContract actualImageContract(
     return result;
 }
 
+// All individual render target allocations (initial, excluded, resize) use real
+// image requirements and physical memory properties. The seam changes kind only.
+ImageWrapper allocateRenderTargetImage(const std::string &name, vk::Extent2D extent,
+    const vk::ImageCreateInfo &info, const RuntimeTargetMemoryContract *contract) {
+    const auto &core=GET_MODULE(VulkanManageCore);
+    auto unbound=core.createUnboundImage(info);
+    const auto req=core.imageRequirements(unbound);
+    const auto properties=core.getPhysDevice().getMemoryProperties();
+    std::vector<ImageMemoryType> types;
+    for (std::uint32_t i=0;i<properties.memoryTypeCount;++i)
+        types.push_back({static_cast<std::uint32_t>(properties.memoryTypes[i].propertyFlags),properties.memoryTypes[i].heapIndex});
+    if(contract && contract->memory_types_for_testing) types=contract->memory_types_for_testing(name,extent,std::move(types));
+    const auto kind=imageMemoryKind(bool(info.usage & vk::ImageUsageFlagBits::eTransientAttachment),req.memory_type_bits,types);
+    unbound.image.reset();
+    std::string fallback;
+    const auto lazy_usage=vma::MemoryUsage::eGpuLazilyAllocated; // RC7D_LAZY_USAGE
+    if(kind==ImageMemoryKind::lazy) {
+        try {
+            auto image=core.allocImage(info,lazy_usage,{});
+            image.memory_kind="lazy";
+            image.allocation_usage=lazy_usage;
+            image.allocation_required_flags=lazy_usage==vma::MemoryUsage::eGpuLazilyAllocated ? vk::MemoryPropertyFlagBits::eLazilyAllocated : vk::MemoryPropertyFlags{};
+            image.allocation_dedicated=lazy_usage==vma::MemoryUsage::eGpuLazilyAllocated;
+            return image;
+        } catch(const vk::FeatureNotPresentError &) { fallback="lazy_type_unavailable"; }
+          catch(const vk::OutOfDeviceMemoryError &) { fallback="lazy_allocation_failed"; }
+    }
+    auto image=core.allocImage(info,vma::MemoryUsage::eAutoPreferDevice,{});
+    image.memory_kind=imageMemoryKindName(kind);
+    image.allocation_usage=kind==ImageMemoryKind::lazy ? lazy_usage : vma::MemoryUsage::eAutoPreferDevice;
+    image.allocation_required_flags=kind==ImageMemoryKind::lazy ? vk::MemoryPropertyFlagBits::eLazilyAllocated : vk::MemoryPropertyFlags{};
+    image.allocation_dedicated=kind==ImageMemoryKind::lazy && lazy_usage==vma::MemoryUsage::eGpuLazilyAllocated;
+    image.memory_fallback=std::move(fallback);
+    return image;
+}
+
 ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_extent, float extent_scale,
                                      std::optional<ResolvedResourceExtent> fixed_extent,
                                      ImageFormat image_format, ImageUsage image_usage,
@@ -253,7 +289,8 @@ ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_
                                      RenderTargetStorageMode storage_mode =
                                          RenderTargetStorageMode::materialized,
                                      ImageResourceDimension dimension =
-                                         ImageResourceDimension::two_d) {
+                                         ImageResourceDimension::two_d,
+                                     const RuntimeTargetMemoryContract *memory_contract = nullptr) {
     const auto &vkcore = GET_MODULE(VulkanManageCore);
     RenderTargetDefinition definition;
     definition.name = name;
@@ -294,18 +331,7 @@ ImageWrapper createRenderTargetImage(const std::string &name, vk::Extent2D base_
     if ((features & required) != required) {
         throw std::runtime_error("Render target format lacks required color capability: " + name);
     }
-    const auto preferred_memory =
-        storage_mode ==
-                    RenderTargetStorageMode::
-                        transient_attachment ||
-                storage_mode ==
-                    RenderTargetStorageMode::
-                        tile_local_attachment
-            ? vk::MemoryPropertyFlags{
-                  vk::MemoryPropertyFlagBits::
-                      eLazilyAllocated}
-            : vk::MemoryPropertyFlags{};
-    return vkcore.allocImage(create_info, memory_usage, {}, preferred_memory);
+    return allocateRenderTargetImage(name,base_extent,create_info,memory_contract);
 }
 
 // Every image contributes its own real requirements before any heap is bound.
@@ -338,7 +364,7 @@ std::map<std::string, ImageWrapper, std::less<>> prepareRegionImages(
         auto &image=images.at(name);
         const auto d=std::find_if(definitions.begin(),definitions.end(),[&](const auto &r){return r.name==name;});
         const auto ci=renderTargetImageContract(*d,extent,core.getGraphicsQueueFamilyIndex());
-        image=core.allocImage(ci.createInfo(),vma::MemoryUsage::eAutoPreferDevice,{});
+        image=allocateRenderTargetImage(name,extent,ci.createInfo(),&contract);
     }
     for(const auto &[name,reason]:rejections) images.at(name).memory_rejection=reason;
     return images;
@@ -686,12 +712,9 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
     }
     usage = engineImageUsage({.declared = definition.usage,
         .history = history, .storage = storage_mode});
-    if (alias_group &&
-        (history || samples != 1 ||
-         storage_mode !=
-             RenderTargetStorageMode::materialized)) {
+    if (alias_group && (history || samples != 1)) {
         throw std::runtime_error(
-            "aliased render target must be materialized, non-history, and single-sample: " +
+            "aliased render target must be non-history and single-sample: " +
             name);
     }
     const auto &source_pixels = definition.source_pixels;
@@ -803,7 +826,7 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
         images[i] = (i == 0 && prepared_image.image) ? std::move(prepared_image) : createRenderTargetImage(
             name, base_extent, extent_scale, fixed_extent, format, usage, memUsage,
             mip_levels, vk::SampleCountFlagBits::e1, array_layers, storage_mode,
-            dimension);
+            dimension, memory_contract.get());
         image_layer_views[i] =
             createSequentialImageViews(device, images[i]);
         layered_image_views[i] =
@@ -817,7 +840,7 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
                 attachment_usage, memUsage,
                 ImageMipLevelCount{}, sample_count,
                 array_layers, storage_mode,
-                dimension);
+                dimension, memory_contract.get());
             attachment_image_layer_views[i] =
                 createSequentialImageViews(
                     device, attachment_images[i]);
@@ -929,7 +952,8 @@ void RenderTargetContainer::registerMemoryTargets(
             auto found=images.find(d.name);
             const bool member=contract && std::any_of(contract->inputs.resources.begin(),contract->inputs.resources.end(),[&](const auto &r){return r.resource==d.name;});
             registerRenderTarget(d,extent,vma::MemoryUsage::eAutoPreferDevice,
-                found==images.end() ? ImageWrapper{} : std::move(found->second), member ? contract : nullptr);
+                found==images.end() ? ImageWrapper{} : std::move(found->second),
+                member || (contract && contract->memory_types_for_testing) ? contract : nullptr);
         }
     } catch(...) { rollbackRegistrations(checkpoint); throw; }
 }
@@ -967,6 +991,14 @@ nlohmann::json RenderTargetContainer::actualPlacement(std::span<const GlobalRend
             bytes+=info.size;
             const auto block=memory_blocks.try_emplace(static_cast<VkDeviceMemory>(info.deviceMemory),memory_blocks.size()).first->second;
             result["regions"].push_back({{"region",it->second},{"memoryTypeIndex",info.memoryType},{"device_memory_block",block},
+                {"property_flags",static_cast<std::uint32_t>(core.getPhysDevice().getMemoryProperties().memoryTypes[info.memoryType].propertyFlags)},
+                {"kind",image.memory_kind},{"vma_usage",static_cast<std::uint32_t>(image.allocation_usage)},
+                {"vma_required_flags",static_cast<std::uint32_t>(image.allocation_required_flags)},
+                {"vma_dedicated",image.allocation_dedicated},
+                {"fallback_reason",image.memory_fallback.empty()?Json(nullptr):Json(image.memory_fallback)},
+                {"effective_vma_usage",static_cast<std::uint32_t>(image.memory_fallback.empty()?image.allocation_usage:vma::MemoryUsage::eAutoPreferDevice)},
+                {"effective_vma_required_flags",image.memory_fallback.empty()?static_cast<std::uint32_t>(image.allocation_required_flags):0u},
+                {"effective_vma_dedicated",image.memory_fallback.empty() && image.allocation_dedicated},
                 {"size",info.size},{"residents",Json::array()}});
         }
         const auto req=core.imageRequirements(image);
@@ -1026,6 +1058,7 @@ RenderTargetContainer::prepareForExtent(
             d.name=rt.name; d.extent_scale=rt.extent_scale; d.fixed_extent=rt.fixed_extent;
             d.format=rt.format; d.usage=rt.usage; d.array_layers=rt.array_layers;
             d.mip_levels=rt.mip_levels; d.dimension=rt.dimension; d.alias_group=rt.alias_group;
+            d.storage_mode=rt.storage_mode; d.samples=rt.samples;
             definitions.push_back(std::move(d));
         }
         auto images = prepareRegionImages(definitions, base_extent, *contract);
@@ -1047,7 +1080,7 @@ RenderTargetContainer::prepareForExtent(
             next->images[i] = (i == 0 && region_image != region_images.end()) ? std::move(region_image->second) : createRenderTargetImage(
                 rt.name, base_extent, rt.extent_scale, rt.fixed_extent, rt.format,
                 rt.usage, rt.memory_usage, rt.mip_levels, vk::SampleCountFlagBits::e1,
-                rt.array_layers, rt.storage_mode, rt.dimension);
+                rt.array_layers, rt.storage_mode, rt.dimension, rt.memory_contract.get());
             next->image_layer_views[i] =
                 createSequentialImageViews(
                     device, next->images[i]);
@@ -1064,7 +1097,7 @@ RenderTargetContainer::prepareForExtent(
                     rt.format, attachment_usage, rt.memory_usage,
                     ImageMipLevelCount{},
                     toSampleCount(rt.samples), rt.array_layers,
-                    rt.storage_mode, rt.dimension);
+                    rt.storage_mode, rt.dimension, rt.memory_contract.get());
                 next->attachment_image_layer_views[i] =
                     createSequentialImageViews(
                         device, next->attachment_images[i]);
@@ -1115,7 +1148,8 @@ bool RenderTargetContainer::setRuntimeArrayLayers(
         return false;
     }
     if (target.history || target.alias_group ||
-        target.memory_contract || target.source_pixels ||
+        (target.memory_contract && std::any_of(target.memory_contract->inputs.resources.begin(),target.memory_contract->inputs.resources.end(),
+            [&](const auto &r){return r.resource==target.name;})) || target.source_pixels ||
         target.dimension !=
             ImageResourceDimension::two_d) {
         throw std::runtime_error(
@@ -1157,7 +1191,7 @@ bool RenderTargetContainer::setRuntimeArrayLayers(
         target.usage, target.memory_usage,
         target.mip_levels,
         vk::SampleCountFlagBits::e1,
-        array_layers, target.storage_mode, target.dimension);
+        array_layers, target.storage_mode, target.dimension, target.memory_contract.get());
     next->image_layer_views[0] =
         createSequentialImageViews(
             device, next->images[0]);
@@ -1177,7 +1211,7 @@ bool RenderTargetContainer::setRuntimeArrayLayers(
                 target.memory_usage,
                 ImageMipLevelCount{},
                 toSampleCount(target.samples),
-                array_layers, target.storage_mode, target.dimension);
+                array_layers, target.storage_mode, target.dimension, target.memory_contract.get());
         next->attachment_image_layer_views[0] =
             createSequentialImageViews(
                 device,

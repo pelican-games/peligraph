@@ -2386,3 +2386,5 @@ namespace Pelican {
 #include "rc7c_compiler_policy_test.inc"
 #endif
 }
+
+#include "rc7d_compiler_test.inc"

@@ -484,6 +484,7 @@ std::pair<Rc5Json, Rc5Json> rc7bComparable(Rc5Json actual, Rc5Json recorded) {
             p->erase("alias_groups");
             p->erase("memory_regions");
             p->erase("memory_packing");
+            p->erase("memory_types");p->erase("image_memory_facts");
             auto &placement_decisions=p->at("decisions");
             placement_decisions.erase(std::remove_if(placement_decisions.begin(),placement_decisions.end(),[](const auto &d){const auto id=d.at("id").template get<std::string>(); return id=="pelican.plan.alias_requirements_unknown@1" || id=="pelican.plan.alias_group_selected@1";}),placement_decisions.end());
             p->erase("automatic_plan_fingerprint");
@@ -627,11 +628,12 @@ TEST_CASE("RC-7c C5 sixteen fixed snapshots retain every semantic field", "[.][r
     const auto comparable=[](Rc5Json snapshot) {
         snapshot=rc6WithoutRemovedPackages(std::move(snapshot));
         for(auto &[name,plan]:snapshot.at("physical_plans").items()) {
-            for(const auto *field:{"memory_regions","memory_packing","alias_groups","automatic_plan_fingerprint"}) plan.erase(field);
+            for(const auto *field:{"memory_regions","memory_packing","alias_groups","automatic_plan_fingerprint","memory_types","image_memory_facts"}) plan.erase(field);
             plan.at("planning_opportunities").erase("alias_candidates");
             auto &opportunity_decisions=plan.at("planning_opportunities").at("decisions");
             opportunity_decisions.erase(std::remove_if(opportunity_decisions.begin(),opportunity_decisions.end(),[](const auto &d){return d.at("id")=="pelican.plan.alias_stress_candidates@1";}),opportunity_decisions.end());
             for(auto &r:plan.at("resources"))r.erase("aliasable");
+            for(auto &r:plan.at("lowering_graph").at("resources"))r.at("pattern").erase("allow_alias");
             auto &decisions=plan.at("decisions");
             decisions.erase(std::remove_if(decisions.begin(),decisions.end(),[](const auto &d){const auto id=d.at("id").template get<std::string>();
                 return id=="pelican.plan.alias_group_selected@1" || id=="pelican.plan.alias_requirements_unknown@1" ||
@@ -644,6 +646,7 @@ TEST_CASE("RC-7c C5 sixteen fixed snapshots retain every semantic field", "[.][r
         const auto old=Rc5Json::parse(std::ifstream{directory/filename});
         const auto now=rc5Snapshot(rc5Compile(rc5Document(lit,hdr,extras),xr));
         CHECK(comparable(now)==comparable(old));
+        report[filename]["raw_diff"]=Rc5Json::diff(old,now);
         for(const auto &[graph,plan]:now.at("physical_plans").items()) {
             CHECK(plan.at("alias_groups").empty());CHECK(plan.at("memory_regions").empty());
             for(const auto &r:plan.at("resources")) {
@@ -668,5 +671,5 @@ TEST_CASE("RC-7c C5 sixteen fixed snapshots retain every semantic field", "[.][r
             CHECK(r.offset%r.alignment==0);CHECK(r.offset+r.size<=region.size);
         }
     }
-    std::ofstream{"<作業ディレクトリ>/rc7c2_c5_details.json"}<<report.dump(2);
+    std::ofstream{"<作業ディレクトリ>/rc7d_c5_details.json"}<<report.dump(2);
 }

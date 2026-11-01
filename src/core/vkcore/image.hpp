@@ -22,6 +22,10 @@ struct ImageWrapper {
     std::uint64_t memory_offset = 0, memory_size = 0;
     bool region_bound = false;
     std::string memory_rejection;
+    std::string memory_kind = "ordinary", memory_fallback;
+    vma::MemoryUsage allocation_usage = vma::MemoryUsage::eUnknown;
+    vk::MemoryPropertyFlags allocation_required_flags;
+    bool allocation_dedicated = false;
 };
 
 } // namespace Pelican
