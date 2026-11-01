@@ -2,8 +2,15 @@ target_sources(pelican_core PRIVATE
     actionmap.cpp
     inputsequence.cpp
     inputstate.cpp
-    window.cpp
 )
+
+# The Window module has one implementation per platform: GLFW on the desktop,
+# the activity's ANativeWindow on Android (vkcore picks the matching surface).
+if(ANDROID)
+target_sources(pelican_core PRIVATE window_android.cpp)
+else()
+target_sources(pelican_core PRIVATE window_glfw.cpp)
+endif()
 
 if(PLATFORM_DESKTOP)
 FetchContent_Declare(

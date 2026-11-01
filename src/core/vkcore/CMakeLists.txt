@@ -27,6 +27,12 @@ target_sources(pelican_core PRIVATE
     vulkanvalidation.cpp
     vma_impl.cpp
 )
+# The surface over the platform window (see core/os/CMakeLists.txt).
+if(ANDROID)
+target_sources(pelican_core PRIVATE windowsurface_android.cpp)
+else()
+target_sources(pelican_core PRIVATE windowsurface_glfw.cpp)
+endif()
 
 # This translation unit exceeds COFF's 16-bit section count in MSVC Debug.
 set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/renderer.cpp"

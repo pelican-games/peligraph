@@ -571,13 +571,14 @@ struct FileWatcher::Impl {
                     // every file (five weakly_canonical calls) cost 0.44 ms
                     // per file in Debug.
                     auto relative = path.lexically_relative(store.root);
+                    static constexpr std::filesystem::path::value_type dot_dot[] = {'.', '.', 0};
                     const bool plain = link_depth < 0 && !relative.empty() &&
-                                       !relative.native().starts_with(L"..");
+                                       !relative.native().starts_with(dot_dot);
                     if (!plain) relative = std::filesystem::relative(path, store.root, ec);
                     const auto physical = plain ? physicalKeyUnderRoot(root_key, relative)
                                                 : physicalKey(path);
                     if (ec || relative.empty() ||
-                        relative.native().starts_with(L"..")) {
+                        relative.native().starts_with(dot_dot)) {
                         result.unreadable_paths.insert(physical);
                         ec.clear();
                     } else {

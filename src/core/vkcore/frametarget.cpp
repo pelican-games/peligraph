@@ -152,6 +152,7 @@ FrameTargetStatus IFrameTarget::status() const {
 std::string_view frameTargetLifecycleStateName(
     FrameTargetLifecycleState state) noexcept {
     switch (state) {
+    case FrameTargetLifecycleState::no_surface: return "no_surface";
     case FrameTargetLifecycleState::ready:
         return "ready";
     case FrameTargetLifecycleState::preparing:
@@ -179,6 +180,7 @@ std::string_view frameTargetLifecycleStateName(
 std::string_view frameUnavailableReasonName(
     FrameUnavailableReason reason) noexcept {
     switch (reason) {
+    case FrameUnavailableReason::no_surface: return "no_surface";
     case FrameUnavailableReason::none:
         return "none";
     case FrameUnavailableReason::zero_extent:

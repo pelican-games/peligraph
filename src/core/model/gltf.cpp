@@ -154,7 +154,7 @@ GltfBaseColorUvTransform baseColorUvTransform(
     };
     if (!extension->second.IsObject()) return invalid();
     const auto &object =
-        extension->second.Get<tinygltf::Value::Object>();
+        extension->second.template Get<tinygltf::Value::Object>();
     GltfBaseColorUvTransform result;
     result.state = NormalizedAlphaUvTransformState::identity;
     if (const auto *value = objectMember(object, "offset")) {

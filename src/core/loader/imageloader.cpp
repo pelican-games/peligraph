@@ -19,16 +19,19 @@
 #endif
 #endif
 
+// stb_image comes first: its static stbi_zlib_decode_buffer is the one
+// tinyexr's later extern "C" redeclaration names (the reverse order, extern
+// then static, is ill-formed and only MSVC accepts it).
+#define STB_IMAGE_STATIC
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
+
 #if PELICAN_WITH_EXR
     #define TINYEXR_USE_MINIZ 0
     #define TINYEXR_USE_STB_ZLIB 1
     #define TINYEXR_IMPLEMENTATION
     #include <tinyexr.h>
 #endif
-
-#define STB_IMAGE_STATIC
-#define STB_IMAGE_IMPLEMENTATION
-#include <stb_image.h>
 
 namespace Pelican {
 

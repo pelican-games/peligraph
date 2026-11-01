@@ -16,7 +16,11 @@ if(PELICAN_WITH_SPIRV_LINK)
 else()
     target_sources(pelican_core PRIVATE spvlink_stub.cpp)
 endif()
-if(PELICAN_RUNTIME_SHADER_COMPILER)
+if(PELICAN_RUNTIME_SHADER_COMPILER AND ANDROID)
+    # The Android compiler is built from source (cmake/pelican_android.cmake);
+    # its cache entries must never be taken for the desktop SDK's.
+    set(PELICAN_SHADERC_CACHE_VERSION "shaderc-${PELICAN_ANDROID_SHADERC_TAG}-android")
+elseif(PELICAN_RUNTIME_SHADER_COMPILER)
     set(PELICAN_SHADERC_CACHE_VERSION "vulkan-sdk-${Vulkan_VERSION}")
 else()
     set(PELICAN_SHADERC_CACHE_VERSION "disabled")

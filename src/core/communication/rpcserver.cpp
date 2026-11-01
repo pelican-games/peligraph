@@ -1126,19 +1126,6 @@ nlohmann::json openXrStatusJsonForTesting(const OpenXr::XrDiagnosticStatus &stat
 }
 #endif
 
-JsonRpcHandlerError::JsonRpcHandlerError(int code, const std::string &message)
-    : std::runtime_error(message), error_code{code} {}
-
-JsonRpcHandlerError::JsonRpcHandlerError(int code, const std::string &message,
-                                         nlohmann::json data)
-    : std::runtime_error(message), error_code{code}, error_data{std::move(data)} {}
-
-JsonRpcHandlerError::JsonRpcHandlerError(int code, const std::string &message,
-                                         nlohmann::ordered_json data,
-                                         PreserveJsonRpcDataOrder)
-    : std::runtime_error(message), error_code{code},
-      ordered_error_data{std::move(data)} {}
-
 RpcServer::RpcServer(std::istream &input_stream, std::ostream &output_stream)
     : input{input_stream}, output{output_stream} {}
 

@@ -11,11 +11,36 @@ class Window;
 
 using SurfaceEpochId = std::uint64_t;
 
+#if defined(__ANDROID__)
+// Count a surface until *after* vkDestroySurfaceKHR, regardless of which
+// thread destroys it. A quarantined surface remains alive until process exit.
+class WindowSurfaceHandle {
+    vk::UniqueSurfaceKHR surface_;
+    std::uint64_t revision_ = 0;
+    bool quarantined_ = false;
+  public:
+    WindowSurfaceHandle() = default;
+    WindowSurfaceHandle(vk::UniqueSurfaceKHR surface, std::uint64_t revision);
+    WindowSurfaceHandle(WindowSurfaceHandle &&other) noexcept;
+    WindowSurfaceHandle &operator=(WindowSurfaceHandle &&other) noexcept;
+    ~WindowSurfaceHandle();
+    void reset() noexcept;
+    void quarantine();
+    vk::SurfaceKHR get() const noexcept { return surface_.get(); }
+    explicit operator bool() const noexcept { return bool(surface_); }
+};
+#else
+using WindowSurfaceHandle = vk::UniqueSurfaceKHR;
+#endif
 struct PreparedWindowSurface {
-    vk::UniqueSurfaceKHR surface;
+    WindowSurfaceHandle surface;
+#if defined(__ANDROID__)
+    std::uint64_t native_window_revision = 0;
+#endif
 };
 
-// GLFW owns the native window, while the returned Vulkan surface is owned by
+// The platform (GLFW on the desktop, the Android activity) owns the native
+// window, while the returned Vulkan surface is owned by
 // the caller. The factory deliberately keeps no active-surface state so a
 // surface-lost recovery always creates a fresh object.
 class WindowSurfaceFactory {

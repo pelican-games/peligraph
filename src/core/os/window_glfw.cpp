@@ -1,4 +1,5 @@
 #include "window.hpp"
+#include "window_glfw.hpp"
 #include "enginewindowproperty.hpp"
 #include "../launchconfig.hpp"
 #include "../loader/basicconfig.hpp"
@@ -6,6 +7,8 @@
 #include <algorithm>
 #include <optional>
 #include <stdexcept>
+
+#include <GLFW/glfw3.h>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -202,26 +205,28 @@ Window::Window() : window{nullptr} {
         glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_FALSE);
     }
 
+    GLFWwindow *glfw_window = nullptr;
     try {
         const auto create_info = makeWindowCreateInfo(window_size, fullscreen);
-        window = glfwCreateWindow(create_info.width, create_info.height, title.c_str(), create_info.monitor, nullptr);
-        if (window == nullptr) {
+        glfw_window = glfwCreateWindow(create_info.width, create_info.height, title.c_str(), create_info.monitor, nullptr);
+        if (glfw_window == nullptr) {
             throw std::runtime_error("glfwCreateWindow failed");
         }
     } catch (...) {
         glfwTerminate();
         throw;
     }
+    window = nativeWindowOf(glfw_window);
 #ifdef _WIN32
     // EW-1: the mark a host looks for (enginewindowproperty.hpp). GLFW's own
     // hidden helper window never carries it.
-    SetPropW(glfwGetWin32Window(window), engineRenderWindowProperty, reinterpret_cast<HANDLE>(1));
+    SetPropW(glfwGetWin32Window(glfw_window), engineRenderWindowProperty, reinterpret_cast<HANDLE>(1));
 #endif
-    glfwSetWindowUserPointer(window, this);
+    glfwSetWindowUserPointer(glfw_window, this);
     {
         int width = 0;
         int height = 0;
-        glfwGetFramebufferSize(window, &width, &height);
+        glfwGetFramebufferSize(glfw_window, &width, &height);
         framebuffer_snapshot = FramebufferExtentSnapshot{
             .extent =
                 vk::Extent2D{
@@ -233,7 +238,7 @@ Window::Window() : window{nullptr} {
         };
     }
     glfwSetFramebufferSizeCallback(
-        window,
+        glfw_window,
         [](GLFWwindow *native_window, int width,
            int height) {
             auto &self = *static_cast<Window *>(
@@ -256,7 +261,7 @@ Window::Window() : window{nullptr} {
 
     LOG_INFO(logger, "GLFW window initialized");
 
-    glfwSetKeyCallback(window, [](GLFWwindow *window, int key, int scancode, int action, int mods) {
+    glfwSetKeyCallback(glfw_window, [](GLFWwindow *window, int key, int scancode, int action, int mods) {
         (void)scancode;
         (void)mods;
         if (action != GLFW_PRESS && action != GLFW_RELEASE) {
@@ -270,7 +275,7 @@ Window::Window() : window{nullptr} {
 
         thiz->input_events.push_back(InputEvent::button(*code, action == GLFW_PRESS));
     });
-    glfwSetMouseButtonCallback(window, [](GLFWwindow *window, int button, int action, int mods) {
+    glfwSetMouseButtonCallback(glfw_window, [](GLFWwindow *window, int button, int action, int mods) {
         (void)mods;
         if (action != GLFW_PRESS && action != GLFW_RELEASE) {
             return;
@@ -283,17 +288,17 @@ Window::Window() : window{nullptr} {
 
         thiz->input_events.push_back(InputEvent::button(*code, action == GLFW_PRESS));
     });
-    glfwSetCursorPosCallback(window, [](GLFWwindow *window, double xpos, double ypos) {
+    glfwSetCursorPosCallback(glfw_window, [](GLFWwindow *window, double xpos, double ypos) {
         const auto thiz = static_cast<Window *>(glfwGetWindowUserPointer(window));
 
         thiz->input_events.push_back(InputEvent::cursorMove(static_cast<float>(xpos), static_cast<float>(ypos)));
     });
-    glfwSetScrollCallback(window, [](GLFWwindow *window, double xoffset, double yoffset) {
+    glfwSetScrollCallback(glfw_window, [](GLFWwindow *window, double xoffset, double yoffset) {
         const auto thiz = static_cast<Window *>(glfwGetWindowUserPointer(window));
         thiz->input_events.push_back(InputEvent::scroll(static_cast<float>(xoffset),
                                                        static_cast<float>(yoffset)));
     });
-    glfwSetCharCallback(window, [](GLFWwindow *window, unsigned int codepoint) {
+    glfwSetCharCallback(glfw_window, [](GLFWwindow *window, unsigned int codepoint) {
         const auto thiz = static_cast<Window *>(glfwGetWindowUserPointer(window));
         thiz->input_events.push_back(InputEvent::character(codepoint));
     });
@@ -304,12 +309,12 @@ Window::~Window() {
 #ifdef _WIN32
         // An embedding host may have destroyed the window with its own parent
         // already (see process()); there is then no property to remove.
-        const auto native_window = glfwGetWin32Window(window);
+        const auto native_window = glfwGetWin32Window(glfwWindowOf(window));
         if (native_window != nullptr && IsWindow(native_window)) {
             RemovePropW(native_window, engineRenderWindowProperty);
         }
 #endif
-        glfwDestroyWindow(window);
+        glfwDestroyWindow(glfwWindowOf(window));
         window = nullptr;
     }
     glfwTerminate();
@@ -329,7 +334,7 @@ vk::Extent2D Window::framebufferExtent() const {
 vk::Extent2D Window::logicalExtent() const {
     int width = 0;
     int height = 0;
-    glfwGetWindowSize(window, &width, &height);
+    glfwGetWindowSize(glfwWindowOf(window), &width, &height);
     return vk::Extent2D{static_cast<uint32_t>(std::max(width, 0)),
                         static_cast<uint32_t>(std::max(height, 0))};
 }
@@ -346,7 +351,7 @@ CursorModeStatus Window::applyCursorMode(CursorMode requested, bool rpc) {
     bool embedded = false;
 #ifdef _WIN32
     if (rpc) {
-        const auto style = GetWindowLongPtrW(glfwGetWin32Window(window), GWL_STYLE);
+        const auto style = GetWindowLongPtrW(glfwGetWin32Window(glfwWindowOf(window)), GWL_STYLE);
         embedded = (style & WS_CHILD) != 0;
     }
 #else
@@ -357,7 +362,7 @@ CursorModeStatus Window::applyCursorMode(CursorMode requested, bool rpc) {
         const int glfw_mode = effective == CursorMode::locked   ? GLFW_CURSOR_DISABLED
                               : effective == CursorMode::hidden ? GLFW_CURSOR_HIDDEN
                                                                 : GLFW_CURSOR_NORMAL;
-        glfwSetInputMode(window, GLFW_CURSOR, glfw_mode);
+        glfwSetInputMode(glfwWindowOf(window), GLFW_CURSOR, glfw_mode);
         applied_cursor_mode = effective;
     }
     return CursorModeStatus{.requested = requested, .effective = effective, .embedded = embedded};
@@ -365,7 +370,7 @@ CursorModeStatus Window::applyCursorMode(CursorMode requested, bool rpc) {
 
 void *Window::renderDocCaptureHandle() const noexcept {
 #ifdef _WIN32
-    return reinterpret_cast<void *>(glfwGetWin32Window(window));
+    return reinterpret_cast<void *>(glfwGetWin32Window(glfwWindowOf(window)));
 #else
     return nullptr;
 #endif
@@ -377,7 +382,7 @@ bool Window::process() {
     auto gamepad_events = gamepad_poller.poll(source, internal::gamepadPollingEnabled());
     input_events.insert(input_events.end(), gamepad_events.begin(), gamepad_events.end());
 
-    if (glfwWindowShouldClose(window)) return false;
+    if (glfwWindowShouldClose(glfwWindowOf(window))) return false;
 #ifdef _WIN32
     // An embedding host (Studio) can destroy its native parent before the
     // WM_CLOSE it posts reaches this window, and the child window dies with
@@ -385,7 +390,7 @@ bool Window::process() {
     // re-create a surface for the dead window every frame until the host
     // kills the process. A window that no longer exists ends the loop the
     // same way a close does.
-    if (!IsWindow(glfwGetWin32Window(window))) {
+    if (!IsWindow(glfwGetWin32Window(glfwWindowOf(window)))) {
         LOG_INFO(logger, "native window no longer exists; stopping the main loop");
         return false;
     }

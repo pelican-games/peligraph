@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../atomicsharedptr.hpp"
 #include "../handle.hpp"
 #include "assetkey.hpp"
 
@@ -105,7 +106,7 @@ class ResourceRegistry {
 
   private:
     mutable std::mutex write_mutex_;
-    std::atomic<std::shared_ptr<const ResourceRegistryState>> state_;
+    AtomicSharedPtr<const ResourceRegistryState> state_;
 };
 
 struct ResourceReloadError {

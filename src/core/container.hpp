@@ -1,6 +1,9 @@
 #pragma once
 
 #include "./log.hpp"
+#if defined(__ANDROID__)
+#include "../platform/android/runtime.hpp"
+#endif
 #include <algorithm>
 #include <atomic>
 #include <mutex>
@@ -256,6 +259,11 @@ class FastModuleContainer {
     }
 
     ~FastModuleContainer() noexcept {
+#if defined(__ANDROID__)
+        // Unproven presentation (or an uninterruptible driver build) keeps
+        // the entire dependency graph alive. android_main always uses _exit.
+        if (Android::preserveModulesForProcessExit()) return;
+#endif
         std::scoped_lock lock{state_mutex};
         runtime_phase = ModuleRuntimePhase::shutting_down;
         creation_frozen = true;

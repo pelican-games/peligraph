@@ -53,7 +53,7 @@ class PELICAN_API GameObjects {
         using RemainDecoder = IndicesDecoder<index...>::Remain;
     };
     template <class Indices, size_t i> struct IndicesAt {
-        static constexpr size_t value = IndicesAt<Indices::RemainDecoder, i - 1>::value;
+        static constexpr size_t value = IndicesAt<typename Indices::RemainDecoder, i - 1>::value;
     };
     template <class Indices> struct IndicesAt<Indices, 0> {
         static constexpr size_t value = Indices::first;

@@ -41,6 +41,12 @@ include(cmake/pelican_feature_registry.cmake)
 
 # variable definition
 include(cmake/pelican_runtime_layout.cmake)
+# SA1: the Android player build (cmake/pelican_android.cmake). SA0's GPU-free
+# spike below keeps its own path.
+if(ANDROID AND NOT PELICAN_ANDROID_SA0)
+  include(cmake/pelican_android.cmake)
+  pelican_android_feature_defaults()
+endif()
 pelican_declare_feature_options()
 pelican_verify_feature_ledger("${PELICAN_FEATURE_LEDGER_DEFAULT}")
 option(PELICAN_ENABLE_ASAN "Build targets with AddressSanitizer (intended for test builds)" OFF)
@@ -288,7 +294,13 @@ if(PELICAN_WITH_OPENXR)
 endif()
 
 ## vulkan
-find_package(Vulkan REQUIRED)
+if(ANDROID)
+  # Pinned Vulkan-Headers and the device's libvulkan.so; sets the same
+  # Vulkan_* variables as FindVulkan.
+  pelican_android_vulkan()
+else()
+  find_package(Vulkan REQUIRED)
+endif()
 # FindVulkan in the minimum supported CMake predates Vulkan_VERSION.
 file(STRINGS "${Vulkan_INCLUDE_DIRS}/vulkan/vulkan_core.h" pelican_vk_patch
     REGEX "^#define VK_HEADER_VERSION [0-9]+")
@@ -304,9 +316,16 @@ if(pelican_vk_version VERSION_LESS "1.4.309")
     "Install the SDK and set VULKAN_SDK; see README.md.")
 endif()
 
-if(PELICAN_RUNTIME_SHADER_COMPILER)
-  # Runtime compilation belongs to the PC development toolchain. Cross targets
-  # consume host-baked SPIR-V instead of implicitly building shaderc for target.
+if(PELICAN_RUNTIME_SHADER_COMPILER AND ANDROID)
+  # Android compiles shaders at runtime as well: shaderc, glslang and
+  # SPIRV-Tools are pinned to the Vulkan SDK generation the desktop uses and
+  # built from source for the target (cmake/pelican_android.cmake).
+  pelican_android_shaderc()
+endif()
+
+if(PELICAN_RUNTIME_SHADER_COMPILER AND NOT ANDROID)
+  # On the desktop the runtime compiler is the installed Vulkan SDK's
+  # prebuilt shaderc_combined.
   if(NOT Vulkan_FOUND)
     message(FATAL_ERROR
       "PELICAN_RUNTIME_SHADER_COMPILER=ON requires the Vulkan SDK. "
@@ -466,7 +485,10 @@ if(PELICAN_WITH_SPIRV_LINK)
 add_subdirectory(src/spvlink)
 endif()
 add_subdirectory(src/player)
+# pelican_cli is a host tool; the Android build carries only the player.
+if(NOT ANDROID)
 add_subdirectory(src/devcli)
+endif()
 # IL-2: the intro link example (a small Vulkan intro; removed whole when OFF).
 if(PELICAN_WITH_INTRO_LINK)
 add_subdirectory(tools/intro_link/example)

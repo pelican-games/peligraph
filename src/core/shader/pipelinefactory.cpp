@@ -1,5 +1,8 @@
 #include "pipelinefactory.hpp"
 #include "../executabledirectory.hpp"
+#if defined(__ANDROID__)
+#include "../../platform/android/runtime.hpp"
+#endif
 #include <set>
 #include "raygrouplayout.hpp"
 #include "raytracingvalidation.hpp"
@@ -479,7 +482,13 @@ size_t PipelineFactory::DescriptorSetLayoutKeyHash::operator()(const DescriptorS
 
 PipelineFactory::PipelineFactory()
     : device{GET_MODULE(VulkanManageCore).getDevice()}, shader_library{GET_MODULE(ShaderLibrary)},
-      pipeline_cache_path{executableDirectory() / "pipeline_cache.bin"},
+      pipeline_cache_path{
+#if defined(__ANDROID__)
+          Android::pipelineCacheDirectory() / "pipeline_cache.bin"
+#else
+          executableDirectory() / "pipeline_cache.bin"
+#endif
+      },
       pipeline_cache{createPipelineCache(device, pipeline_cache_path)} {}
 
 PipelineFactory::~PipelineFactory() { savePipelineCache(); }
@@ -1358,11 +1367,22 @@ void PipelineFactory::savePipelineCache() noexcept {
 
     try {
         const auto cache_data = device.getPipelineCacheData(pipeline_cache.get());
+#if defined(__ANDROID__)
+        auto temporary = pipeline_cache_path;
+        temporary += ".tmp";
+        std::ofstream file{temporary, std::ios::binary | std::ios::trunc};
+#else
         std::ofstream file{pipeline_cache_path, std::ios::binary | std::ios::trunc};
+#endif
         if (!file.is_open()) {
             return;
         }
         file.write(reinterpret_cast<const char *>(cache_data.data()), static_cast<std::streamsize>(cache_data.size()));
+#if defined(__ANDROID__)
+        file.close();
+        if (!file) return;
+        std::filesystem::rename(temporary, pipeline_cache_path);
+#endif
     } catch (...) {
     }
 }

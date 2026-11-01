@@ -589,8 +589,15 @@ ShaderCompileResult compileGlslUncached(std::string_view source, vk::ShaderStage
     const std::string source_text{source};
     const std::string source_name{name};
     const std::string entry{entry_point};
+#if defined(__ANDROID__)
+    if (Android::closeRequested()) throw std::runtime_error("shader compilation stopped by DESTROY");
+    LOG_INFO(logger, "Android shader compile begin: {}", source_name);
+#endif
     auto result = compiler.CompileGlslToSpv(source_text, toShadercKind(stage), source_name.c_str(), entry.c_str(),
                                             options);
+#if defined(__ANDROID__)
+    LOG_INFO(logger, "Android shader compile end: {}", source_name);
+#endif
 
     ShaderCompileResult output;
     output.log = result.GetErrorMessage();

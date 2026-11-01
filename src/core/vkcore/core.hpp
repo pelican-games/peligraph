@@ -22,6 +22,9 @@
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
+#if defined(__ANDROID__)
+namespace Android { class ValidationLogMessenger; }
+#endif
 
 struct QueueSet {
     uint32_t graphic_queue;
@@ -36,6 +39,9 @@ enum class VulkanProcessType {
 
 DECLARE_MODULE(VulkanManageCore) {
     vk::UniqueInstance instance;
+#if defined(__ANDROID__)
+    std::shared_ptr<Android::ValidationLogMessenger> android_validation_log;
+#endif
     std::optional<PreparedWindowSurface>
         initial_window_surface;
     vk::PhysicalDevice phys_device;

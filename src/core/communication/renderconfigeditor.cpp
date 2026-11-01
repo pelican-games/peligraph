@@ -3579,7 +3579,7 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
                     entry.at("pass").contains("name") &&
                     entry.at("pass").at("name").is_string()) {
                     pass_names.push_back(
-                        entry.at("pass").at("name"));
+                        OrderedJson(entry.at("pass").at("name")));
                 }
             }
         }
@@ -3715,7 +3715,7 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
         declared != resolved.config.end() && declared->is_array())
         for (const auto &entry : *declared)
             if (entry.is_object() && entry.contains("name") && entry.at("name").is_string())
-                acceleration_structures.push_back(entry.at("name"));
+                acceleration_structures.push_back(OrderedJson(entry.at("name")));
     result["acceleration_structures"] = std::move(acceleration_structures);
     // RTL-1b: the names a ray tracing task gives (the catalog's ray_tracing
     // choices): the ray group layout's ray types, groups and misses, read

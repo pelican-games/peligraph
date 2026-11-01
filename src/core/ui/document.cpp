@@ -4,7 +4,6 @@
 #include "../userpublic/details/event/registerer.hpp"
 
 #include <algorithm>
-#include <charconv>
 #include <cmath>
 #include <nlohmann/json.hpp>
 #include <set>
@@ -82,10 +81,8 @@ double decimal(const Json &j, const std::string &path, std::vector<UiError> &err
         error(errors, UiErrorCode::TypeMismatch, path, "expected number");
         return 0;
     }
-    const auto token = j.dump();
-    double value = 0;
-    const auto result = std::from_chars(token.data(), token.data() + token.size(), value, std::chars_format::general);
-    if (result.ec != std::errc{} || result.ptr != token.data() + token.size() || !std::isfinite(value)) {
+    const double value = j.get<double>();
+    if (!std::isfinite(value)) {
         error(errors, UiErrorCode::TypeMismatch, path, "number is not finite binary64");
         return 0;
     }
@@ -131,7 +128,7 @@ bool staticInRange(const PayloadFieldSchema &field, const Json *value) {
     const auto *range = std::get_if<std::pair<double, double>>(&field.range);
     if (range == nullptr) return true;
     auto in = [&](double v) { return std::isfinite(v) && v >= range->first && v <= range->second; };
-    if (value->is_array()) return std::ranges::all_of(*value, [&](const auto &v) { return v.is_number() && in(v.get<double>()); });
+    if (value->is_array()) return std::ranges::all_of(*value, [&](const auto &v) { return v.is_number() && in(v.template get<double>()); });
     return value->is_number() && in(value->get<double>());
 }
 

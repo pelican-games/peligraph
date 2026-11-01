@@ -154,6 +154,12 @@ RuntimeTeardownResult RuntimeTeardownGuard::run() noexcept {
         return result;
     }
     completed = true;
+#if defined(__ANDROID__)
+    // A lifecycle failure retains all GPU dependencies, including objects
+    // owned outside the frame target. The pump finishes the Activity and
+    // exits the process; no idle wait or dependency cleanup is safe here.
+    if (Android::preserveModulesForProcessExit()) return result;
+#endif
     if (mode == RuntimeTeardownMode::terminal_shutdown)
         FastModuleContainer::beginShutdown();
     if (actions) {

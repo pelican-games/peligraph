@@ -10,6 +10,29 @@
 
 using namespace Pelican;
 
+TEST_CASE("Native surface release resumes only through fresh surface preparation", "[wsi][surface]") {
+    WindowOutputRecoveryStateMachine state{1, {}};
+    state.markNoSurface();
+    REQUIRE(state.kind() == WindowOutputStateKind::no_surface);
+    REQUIRE_FALSE(state.takePreparationRequest());
+    const auto request = state.takeSurfacePreparationRequest({});
+    REQUIRE(request);
+    REQUIRE(request->preparation_kind == WindowOutputPreparationKind::surface);
+    REQUIRE(state.kind() == WindowOutputStateKind::preparing_surface);
+    state.preparationFailed(10, 2);
+    REQUIRE(state.kind() == WindowOutputStateKind::unavailable_retry);
+    REQUIRE(state.retryIfDue(12));
+    REQUIRE(state.takeSurfacePreparationRequest({}));
+    state.preparationSucceeded(2, {});
+    REQUIRE(state.kind() == WindowOutputStateKind::ready);
+    state.markDeviceLost();
+    state.markNoSurface();
+    REQUIRE(state.kind() == WindowOutputStateKind::device_rebuild_required);
+    state.markFatal();
+    state.markNoSurface();
+    REQUIRE(state.kind() == WindowOutputStateKind::fatal);
+}
+
 namespace {
 
 SwapchainRecoveryKey key(

@@ -160,6 +160,7 @@ enum class FrameUnavailableReason {
     device_lost,
     device_rebuild_required,
     fatal,
+    no_surface,
 };
 
 enum class FrameTargetLifecycleState {
@@ -171,6 +172,7 @@ enum class FrameTargetLifecycleState {
     surface_lost,
     device_rebuild_required,
     fatal,
+    no_surface,
 };
 
 struct FrameTargetStatus {

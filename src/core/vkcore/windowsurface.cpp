@@ -1,44 +1,15 @@
 #include "windowsurface.hpp"
 
-#include "../log.hpp"
-#include "../os/window.hpp"
-
 #include <algorithm>
-#include <stdexcept>
 #include <vector>
 
 namespace Pelican {
 
+// WindowSurfaceFactory::create() is per platform: windowsurface_glfw.cpp
+// (desktop) and windowsurface_android.cpp.
 WindowSurfaceFactory::WindowSurfaceFactory(
     vk::Instance instance, Window &window) noexcept
     : instance_{instance}, window_{&window} {}
-
-PreparedWindowSurface
-WindowSurfaceFactory::create() const {
-    if (!instance_ || window_ == nullptr ||
-        window_->nativeHandle() == nullptr) {
-        throw std::logic_error(
-            "window surface factory is not initialized");
-    }
-
-    VkSurfaceKHR raw_surface = VK_NULL_HANDLE;
-    const auto result = static_cast<vk::Result>(
-        glfwCreateWindowSurface(
-            static_cast<VkInstance>(instance_),
-            window_->nativeHandle(), nullptr,
-            &raw_surface));
-    if (result != vk::Result::eSuccess) {
-        throw vk::SystemError{
-            vk::make_error_code(result),
-            "glfwCreateWindowSurface"};
-    }
-
-    LOG_INFO(logger, "fresh Vulkan window surface created");
-    return PreparedWindowSurface{
-        .surface = vk::UniqueSurfaceKHR{
-            vk::SurfaceKHR{raw_surface}, instance_},
-    };
-}
 
 SurfaceQueueBinding selectSurfacePresentationQueue(
     std::uint32_t current_presentation_family,

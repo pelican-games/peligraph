@@ -5,8 +5,6 @@
 #include "inputstate.hpp"
 
 #include <vulkan/vulkan.hpp>
-// include order must NOT be swap
-#include <GLFW/glfw3.h>
 
 #include "../container.hpp"
 #include <mutex>
@@ -14,8 +12,12 @@
 
 namespace Pelican {
 
+// The platform's window, never defined: a GLFWwindow on the desktop
+// (window_glfw.cpp) and an ANativeWindow on Android (window_android.cpp).
+struct NativeWindow;
+
 DECLARE_MODULE(Window) {
-    GLFWwindow *window;
+    NativeWindow *window;
     std::vector<InputEvent> input_events;
     GamepadEventPoller gamepad_poller;
     mutable std::mutex framebuffer_snapshot_mutex;
@@ -36,7 +38,7 @@ DECLARE_MODULE(Window) {
     // Call on the main thread; it changes the GLFW mode only when the
     // effective mode changes. Returns what is in effect.
     CursorModeStatus applyCursorMode(CursorMode requested, bool rpc);
-    GLFWwindow *nativeHandle() const noexcept { return window; }
+    NativeWindow *nativeHandle() const noexcept { return window; }
     void *renderDocCaptureHandle() const noexcept;
     std::vector<const char *> getRequiredVulkanInstanceExts();
 

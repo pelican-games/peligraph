@@ -12,6 +12,7 @@
 #include "../os/actionmap.hpp"
 #include "../os/inputstate.hpp"
 #include "../os/window.hpp"
+#include "../os/window_glfw.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/memorydiagnostics.hpp"
@@ -343,7 +344,7 @@ struct ImGuiSystem::Impl {
         ImGui::StyleColorsDark();
         ++public_api_calls;
 
-        if (!ImGui_ImplGlfw_InitForVulkan(window.nativeHandle(), false)) {
+        if (!ImGui_ImplGlfw_InitForVulkan(glfwWindowOf(window), false)) {
             throw std::runtime_error("ImGui GLFW backend initialization failed");
         }
         platform_initialized = true;

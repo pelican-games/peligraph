@@ -8,6 +8,9 @@
 #include <quill/LogMacros.h>
 #include <quill/sinks/ConsoleSink.h>
 #include <quill/sinks/FileSink.h>
+#if defined(__ANDROID__)
+#include "../platform/android/logsink.hpp"
+#endif
 
 #include "../project/windowsutf8.hpp"
 
@@ -82,7 +85,13 @@ void setLogFilePath(std::string path) {
 void setupLogger(bool reserve_stdout_for_protocol) {
     quill::Backend::start();
 
-#ifdef _DEBUG
+#if defined(__ANDROID__)
+    (void)reserve_stdout_for_protocol;
+    auto sink = quill::Frontend::create_or_get_sink<Android::LogSink>("pelican_logcat");
+    logger = quill::Frontend::create_or_get_logger(
+        "pelican", std::vector<std::shared_ptr<quill::Sink>>{
+                       std::move(sink), createFileSinkOrStderr()});
+#elif defined(_DEBUG)
     if (reserve_stdout_for_protocol) {
         logger = quill::Frontend::create_or_get_logger(
             "pelican", createProtocolSinks());

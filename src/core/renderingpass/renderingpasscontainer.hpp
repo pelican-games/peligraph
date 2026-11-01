@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../atomicsharedptr.hpp"
 #include "../container.hpp"
 #include "../resourcecontainer.hpp"
 #include "renderingpass.hpp"
@@ -92,8 +93,7 @@ DECLARE_MODULE(RenderingPassContainer) {
     std::unordered_map<std::string, RenderingPassId> name_to_id;
     std::vector<RenderingPassId> registered_pass_ids;
     std::vector<std::string> enabled_feature_names;
-    std::atomic<
-        std::shared_ptr<const RendererRuntimePublication>>
+    AtomicSharedPtr<const RendererRuntimePublication>
         runtime_publication;
     std::shared_ptr<const RendererRuntimeGeneration>
     preparationGeneration() const noexcept;

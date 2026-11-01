@@ -30,6 +30,15 @@ using namespace Pelican;
 using namespace Pelican::ui;
 using Json = nlohmann::json;
 
+TEST_CASE("UI anchors preserve finite subnormal JSON numbers", "[ui][document]") {
+    const auto input = Json::parse(R"({"schema":"pelican.ui","version":1,"key":"subnormal",
+      "root":{"id":"root","type":"panel","layout":{"anchor_min":[1e-310,0]}}})");
+    const auto parsed = parseUiDocument(input);
+    REQUIRE(parsed);
+    REQUIRE(parsed.document->root.layout.anchor_min_x == input["root"]["layout"]["anchor_min"][0].get<double>());
+    REQUIRE(parsed.document->root.layout.anchor_min_x > 0);
+}
+
 struct Wp93UiClick {
     std::string source;
     std::int32_t amount = 0;

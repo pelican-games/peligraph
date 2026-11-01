@@ -1450,7 +1450,7 @@ EditorProjectionCommand makeUnpackPrefabCommand(
                         "unpack prefab block changed before application");
                 }
                 for (const auto &component : authority) {
-                    components.push_back(component.body);
+                    components.push_back(Json(component.body));
                 }
                 object_json.erase("prefab");
                 return;

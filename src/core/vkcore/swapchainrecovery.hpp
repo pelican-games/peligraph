@@ -180,6 +180,7 @@ enum class WindowOutputStateKind {
     surface_lost,
     device_rebuild_required,
     fatal,
+    no_surface,
 };
 
 enum class WindowOutputPreparationKind {
@@ -236,6 +237,7 @@ struct WindowOutputSurfaceLost {
 struct WindowOutputDeviceRebuildRequired {};
 
 struct WindowOutputFatal {};
+struct WindowOutputNoSurface {};
 
 using WindowOutputState =
     std::variant<WindowOutputReady,
@@ -245,7 +247,8 @@ using WindowOutputState =
                  WindowOutputUnavailableRetry,
                  WindowOutputSurfaceLost,
                  WindowOutputDeviceRebuildRequired,
-                 WindowOutputFatal>;
+                 WindowOutputFatal,
+                 WindowOutputNoSurface>;
 
 struct SwapchainPreparationRequest {
     SwapchainEpochId old_epoch = 0;
@@ -318,6 +321,7 @@ class WindowOutputRecoveryStateMachine {
     void markSurfaceLost(SwapchainEpochId old_epoch);
     void markDeviceLost();
     void markFatal();
+    void markNoSurface();
 };
 
 std::string_view windowOutputStateName(

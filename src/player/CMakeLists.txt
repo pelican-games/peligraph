@@ -1,9 +1,18 @@
 option(PELICAN_PLAYER_GUI_SUBSYSTEM "Build the player without a console window" OFF)
 
 function(pelican_configure_player_target target_name)
-    add_executable(${target_name}
-        "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/main.cpp"
-        "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../platform/gpupreference.cpp")
+    if(ANDROID)
+        # A NativeActivity loads the player as libpelican_player.so and enters
+        # it at android_main (android_native_app_glue).
+        add_library(${target_name} SHARED
+            "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/main.cpp"
+            "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../platform/android/android_main.cpp")
+        pelican_configure_android_player(${target_name})
+    else()
+        add_executable(${target_name}
+            "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/main.cpp"
+            "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../platform/gpupreference.cpp")
+    endif()
     if(WIN32 AND PELICAN_PLAYER_GUI_SUBSYSTEM)
         set_target_properties(${target_name} PROPERTIES WIN32_EXECUTABLE TRUE)
     endif()

@@ -334,7 +334,7 @@ OrderedJson evaluatedScene(const ResolvedScene &document) {
             const auto &node = nodes[index];
             auto components = OrderedJson::array();
             for (const auto &component : node.view->components) {
-                components.push_back(component.effective_json);
+                components.push_back(OrderedJson(component.effective_json));
             }
             auto evaluated = OrderedJson{
                 {"object_id", node.view->authoring_object_id.value},

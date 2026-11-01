@@ -42,6 +42,9 @@
 #include "enginetime.hpp"
 #include "framephase.hpp"
 #include "framerate.hpp"
+#if defined(__ANDROID__)
+#include "../../platform/android/runtime.hpp"
+#endif
 
 #include <filesystem>
 #include <chrono>
@@ -307,6 +310,9 @@ void finishLoopResources(InputSequenceRuntime &input_sequence,
                          RenderDocCapture &renderdoc_capture,
                          TimingFlush timing_flush) {
     renderdoc_capture.beginShutdown();
+#if defined(__ANDROID__)
+    if (Android::preserveModulesForProcessExit()) return;
+#endif
     auto gpu = resolveGpuDrainModules();
     gpu.vulkan.waitIdle();
     if (timing_flush == TimingFlush::flush && render_timing != nullptr)
@@ -735,8 +741,19 @@ void runInteractive(LoopModules &modules, XrRuntime &xr,
     };
 
     while (true) {
+#if defined(__ANDROID__)
+        const auto android_frame_start = Clock::now();
+#endif
         if (!window.process())
             break;
+#if defined(__ANDROID__)
+        if (Android::paused()) {
+            // Window::process serviced release before this sleep. No begin.
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            continue;
+        }
+        const auto android_present_before = Android::acceptedPresentCount();
+#endif
         // GP-4: the cursor mode game code asked for in the frame before.
         const auto cursor = window.applyCursorMode(
             input_state.cursorMode().requested, launch_config.rpc);
@@ -759,12 +776,24 @@ void runInteractive(LoopModules &modules, XrRuntime &xr,
         step.update([&] { update_interactive_state(false); });
         step.render(GraphVariantSelection::renderer_selects,
                     [&] { renderFlatFrameWithOptionalCapture(modules, window); });
+#if defined(__ANDROID__)
+        if (Android::acceptedPresentCount() == android_present_before) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+#endif
         step.record(FramerateWait::adjuster, &framerate_adjuster);
+#if defined(__ANDROID__)
+        Android::recordFrameMilliseconds(elapsedMs(android_frame_start, Clock::now()));
+#endif
 
         if (windowFrameLimitReached()) {
             break;
         }
     }
+#if defined(__ANDROID__)
+    Android::flushFrameTimings();
+#endif
 }
 
 } // namespace

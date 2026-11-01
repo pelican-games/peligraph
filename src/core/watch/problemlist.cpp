@@ -484,7 +484,7 @@ std::string userDataFileVersion(std::string_view reference) {
         const auto path = paths->resolveExistingFile(reference.substr(0, reference.find('#')));
         std::error_code error;
         const auto modified = std::filesystem::last_write_time(path, error);
-        return std::string{reference} + ":" + (error ? "missing" : std::to_string(modified.time_since_epoch().count()));
+        return std::string{reference} + ":" + (error ? "missing" : std::to_string(static_cast<long long>(modified.time_since_epoch().count())));
     } catch (const std::runtime_error &) { return std::string{reference} + ":missing"; }
 }
 bool beginUserData(const UserDataScope &scope) {

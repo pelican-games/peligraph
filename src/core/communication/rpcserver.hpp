@@ -12,6 +12,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <variant>
 
 namespace Pelican {
@@ -41,11 +42,17 @@ class JsonRpcHandlerError : public std::runtime_error {
     std::optional<nlohmann::ordered_json> ordered_error_data;
 
   public:
-    JsonRpcHandlerError(int code, const std::string &message);
-    JsonRpcHandlerError(int code, const std::string &message, nlohmann::json data);
+    // Defined here so builds without PELICAN_WITH_RPC (rpcserver_stub.cpp)
+    // still link the handlers that throw it.
+    JsonRpcHandlerError(int code, const std::string &message)
+        : std::runtime_error(message), error_code{code} {}
+    JsonRpcHandlerError(int code, const std::string &message, nlohmann::json data)
+        : std::runtime_error(message), error_code{code}, error_data{std::move(data)} {}
     JsonRpcHandlerError(int code, const std::string &message,
                         nlohmann::ordered_json data,
-                        PreserveJsonRpcDataOrder);
+                        PreserveJsonRpcDataOrder)
+        : std::runtime_error(message), error_code{code},
+          ordered_error_data{std::move(data)} {}
     int code() const { return error_code; }
     const std::optional<nlohmann::json> &data() const { return error_data; }
     const std::optional<nlohmann::ordered_json> &orderedData() const {

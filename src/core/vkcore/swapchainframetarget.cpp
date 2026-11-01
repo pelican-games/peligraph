@@ -10,6 +10,9 @@
 #include "swapchainrecovery.hpp"
 #include "util.hpp"
 #include "windowsurface.hpp"
+#if defined(__ANDROID__)
+#include "../../platform/android/runtime.hpp"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -337,9 +340,20 @@ SwapchainWithFormat createSwapchain(
             vk::SharingMode::eConcurrent;
         create_info.setQueueFamilyIndices(queue_families);
     }
-    create_info.preTransform =
-        capabilities.currentTransform;
+#if defined(__ANDROID__)
+    if (!(capabilities.supportedTransforms & vk::SurfaceTransformFlagBitsKHR::eIdentity)) {
+        throw std::runtime_error("Android surface does not support IDENTITY preTransform");
+    }
+    create_info.preTransform = vk::SurfaceTransformFlagBitsKHR::eIdentity;
+    create_info.presentMode = vk::PresentModeKHR::eFifo;
+    LOG_INFO(logger, "Android swapchain: extent={}x{} preTransform={} currentTransform={} presentMode={}",
+             selected_extent.width, selected_extent.height,
+             vk::to_string(create_info.preTransform), vk::to_string(capabilities.currentTransform),
+             vk::to_string(create_info.presentMode));
+#else
+    create_info.preTransform = capabilities.currentTransform;
     create_info.presentMode = present_modes.front();
+#endif
     create_info.compositeAlpha =
         chooseCompositeAlpha(
             capabilities.supportedCompositeAlpha);
@@ -477,7 +491,10 @@ constexpr std::uint64_t kPreparationRetryDelayTicks =
 
 struct SurfaceEpoch {
     SurfaceEpochId id = 0;
-    vk::UniqueSurfaceKHR surface;
+    WindowSurfaceHandle surface;
+#if defined(__ANDROID__)
+    std::uint64_t native_window_revision = 0;
+#endif
     vk::Queue presentation_queue;
     std::uint32_t presentation_queue_family =
         VK_QUEUE_FAMILY_IGNORED;
@@ -518,6 +535,10 @@ struct SwapchainEpoch {
     vk::UniqueImageView depth_image_view;
     std::vector<vk::UniqueSemaphore>
         acquire_semaphores;
+#if defined(__ANDROID__)
+    std::vector<vk::UniqueFence> acquire_fences;
+    std::vector<bool> acquire_fence_pending;
+#endif
     std::vector<vk::UniqueSemaphore>
         present_semaphores;
     std::vector<vk::UniqueFence> present_fences;
@@ -533,6 +554,14 @@ struct SwapchainEpoch {
 
     bool pollGpuCompletion() {
         bool all_complete = true;
+#if defined(__ANDROID__)
+        for (std::size_t i = 0; i < acquire_fence_pending.size(); ++i) {
+            if (!acquire_fence_pending[i]) continue;
+            const auto result = device.getFenceStatus(acquire_fences[i].get());
+            if (result == vk::Result::eSuccess) acquire_fence_pending[i] = false;
+            else all_complete = false;
+        }
+#endif
         for (std::size_t slot = 0;
              slot < submission_pending.size();
              ++slot) {
@@ -718,6 +747,10 @@ class SwapchainBuildWorker {
     bool busy() const noexcept {
         return busy_;
     }
+    bool waitCompletionUntil(std::chrono::steady_clock::time_point deadline) {
+        std::unique_lock lock{mutex_};
+        return wakeup_.wait_until(lock, deadline, [&] { return completion_.has_value(); });
+    }
 
     void submit(BuildRequest request) {
         {
@@ -779,6 +812,7 @@ class SwapchainBuildWorker {
                 completion_.emplace(
                     std::move(completion));
             }
+            wakeup_.notify_all();
         }
     }
 
@@ -876,6 +910,150 @@ struct SwapchainFrameTarget::Impl {
 
     SwapchainBuildWorker build_worker;
     FramebufferExtentStability framebuffer_stability;
+#if defined(__ANDROID__)
+    std::uint64_t released_native_revision = 0;
+    SurfaceEpochId last_presented_surface_epoch = 0;
+    bool acquire_timeout_probe_done = false;
+    std::optional<BuildCompletion> native_completion;
+    void startAndroidMaintenance() {
+        build_worker.start([this](BuildCompletion &completion) { runPreparation(completion); });
+        Android::setLifecycleHandler([this] { serviceNativeRelease(); });
+    }
+
+    void presentationCompletionUnavailable() {
+        device_rebuild_reason = SurfaceDeviceRebuildReason::presentation_completion_unavailable;
+        recovery->markDeviceLost();
+        LOG_ERROR(logger, "Android device_rebuild_required reason=presentation_completion_unavailable; finish, process-lifetime quarantine");
+        Android::quarantineModulesForProcessExit();
+    }
+
+    bool divertRevokedCompletion(BuildCompletion &completion) {
+        if (!Android::nativeWindowSlot().release_requested.load(std::memory_order_acquire) &&
+            (!completion.request.surface_epoch || Android::nativeRevisionCurrent(
+                completion.request.surface_epoch->native_window_revision))) return false;
+        native_completion = std::move(completion);
+        if (Android::nativeWindowSlot().release_requested.load(std::memory_order_acquire))
+            serviceNativeRelease();
+        else
+            presentationCompletionUnavailable(); // impossible revision mismatch: no retry anchor
+        return true;
+    }
+
+    void serviceNativeRelease() {
+        auto &slot = Android::nativeWindowSlot();
+        if (!slot.release_requested.load(std::memory_order_acquire)) return;
+        std::uint64_t revision;
+        {
+            std::scoped_lock lock{slot.mutex};
+            revision = slot.release_revision;
+        }
+        if (released_native_revision >= revision) return;
+        recovery->markNoSurface();
+        LOG_INFO(logger, "Android no_surface: release revision={} build_busy={}", revision, build_worker.busy());
+
+        const auto start = std::chrono::steady_clock::now();
+        const auto build_deadline = start + std::chrono::seconds(1);
+        if (build_worker.busy() && !build_worker.waitCompletionUntil(build_deadline)) {
+            // vkCreateSwapchainKHR cannot be interrupted. Retain Impl, the
+            // request on its stack and the complete module graph until _exit.
+            presentationCompletionUnavailable();
+            std::scoped_lock lock{slot.mutex};
+            slot.quarantined[revision] = slot.live[revision];
+            Android::acknowledgeSurfaceReleaseLocked(slot);
+            released_native_revision = revision;
+            LOG_ERROR(logger, "Android build completion deadline: revision={} wait_ms={}", revision,
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+            return;
+        }
+        auto completion = native_completion ? std::move(native_completion) : build_worker.takeCompletion();
+        native_completion.reset(); // never publish/defer
+        std::vector<std::shared_ptr<SwapchainEpoch>> epochs;
+        std::unordered_set<const SwapchainEpoch *> seen;
+        const auto collect = [&](std::shared_ptr<SwapchainEpoch> epoch) {
+            if (epoch && seen.insert(epoch.get()).second) epochs.push_back(std::move(epoch));
+        };
+        collect(active_epoch);
+        collect(recovery_anchor);
+        for (const auto &epoch : retired_epochs) collect(epoch);
+        if (active_frame) {
+            collect(active_frame->epoch);
+            abandonFrameSerial(active_frame->serial);
+        }
+        if (pending_abandonment) collect(pending_abandonment->epoch);
+        if (completion) {
+            collect(completion->request.old_epoch);
+            collect(completion->candidate);
+            collect(completion->replacement_anchor);
+        }
+        const auto fence_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        bool proven = !Android::testNoMaintenance() && maintenance1;
+        const auto wait_fence = [&](vk::Fence fence, const char *kind, SwapchainEpochId epoch, std::size_t index) {
+            const auto before = std::chrono::steady_clock::now();
+            const auto remaining = std::max<std::int64_t>(0, std::chrono::duration_cast<std::chrono::nanoseconds>(fence_deadline - before).count());
+            vk::Result result = vk::Result::eErrorUnknown;
+            try { result = device.waitForFences({fence}, VK_TRUE, static_cast<std::uint64_t>(remaining)); } catch (...) {}
+            LOG_INFO(logger, "Android release fence: revision={} epoch={} kind={} index={} timeout_ns={} wait_ms={} result={}",
+                revision, epoch, kind, index, remaining,
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - before).count(), vk::to_string(result));
+            return result == vk::Result::eSuccess;
+        };
+        for (const auto &epoch : epochs) {
+            for (std::size_t i = 0; i < epoch->acquire_fence_pending.size(); ++i) {
+                if (!epoch->acquire_fence_pending[i]) continue;
+                if (wait_fence(epoch->acquire_fences[i].get(), "acquire", epoch->id, i))
+                    epoch->acquire_fence_pending[i] = false;
+                else proven = false;
+            }
+            for (std::size_t i = 0; i < epoch->submission_pending.size(); ++i) {
+                if (!epoch->submission_pending[i]) continue;
+                if (wait_fence(epoch->command_buffers[i].getFence(), "submit", epoch->id, i)) {
+                    epoch->submission_pending[i] = false;
+                    epoch->submission_leases.complete(i);
+                } else proven = false;
+            }
+            for (std::size_t i = 0; i < epoch->present_fence_pending.size(); ++i) {
+                if (!epoch->present_fence_pending[i]) continue;
+                if (wait_fence(epoch->present_fences[i].get(), "present", epoch->id, i))
+                    epoch->present_fence_pending[i] = false;
+                else proven = false;
+            }
+            for (std::size_t i = 0; i < epoch->superseded_present_fences.size(); ++i)
+                if (!wait_fence(epoch->superseded_present_fences[i].get(), "superseded_present", epoch->id, i)) proven = false;
+        }
+        // Release acquired-but-unsubmitted images only after their acquire
+        // semaphore operation is complete. The acquire fence below proves it.
+        if (pending_abandonment && maintenance1 && proven) {
+            const auto image = pending_abandonment->image_index;
+            vk::ReleaseSwapchainImagesInfoEXT info;
+            info.swapchain = pending_abandonment->epoch->swapchain.swapchain.get();
+            info.imageIndexCount = 1;
+            info.pImageIndices = &image;
+            if (core.releaseSwapchainImages(info) != vk::Result::eSuccess) proven = false;
+        }
+        if (!proven) {
+            for (const auto &epoch : epochs) {
+                core.quarantinePresentationResources(epoch);
+                epoch->surface_epoch->surface.quarantine();
+            }
+            if (completion && completion->request.surface_epoch)
+                completion->request.surface_epoch->surface.quarantine();
+            presentationCompletionUnavailable();
+        }
+        active_epoch.reset();
+        recovery_anchor.reset();
+        retired_epochs.clear();
+        pending_abandonment.reset();
+        completion.reset();
+        epochs.clear(); // swapchain children, swapchains, then tracked surfaces
+        {
+            std::scoped_lock lock{slot.mutex};
+            Android::acknowledgeSurfaceReleaseLocked(slot);
+        }
+        released_native_revision = revision;
+        LOG_INFO(logger, "Android release complete: revision={} proven={} wait_ms={}", revision, proven,
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+    }
+#endif
 
     static void cleanupAbandonedFrame(
         void *owner, std::uint64_t serial) noexcept {
@@ -927,12 +1105,31 @@ struct SwapchainFrameTarget::Impl {
                 "initial window framebuffer has zero extent; "
                 "swapchain bootstrap cannot block the engine loop");
         }
-        auto initial_surface =
-            core.takeInitialWindowSurface();
+#if defined(__ANDROID__)
+        auto initial_surface = std::optional<PreparedWindowSurface>{surface_factory.create()};
+        if (!initial_surface->surface) {
+            published_caps.compile_facts.extent = framebuffer.extent;
+            published_caps.compile_facts.color_format = vk::Format::eR8G8B8A8Srgb;
+            published_caps.compile_facts.selected_usage = vk::ImageUsageFlagBits::eColorAttachment;
+            recovery = std::make_unique<WindowOutputRecoveryStateMachine>(0, requestedRecoveryKey(framebuffer));
+            startAndroidMaintenance();
+            LOG_INFO(logger, "swapchain initialized no_surface (native revision revoked during startup)");
+            return;
+        }
+#else
+        auto initial_surface = core.takeInitialWindowSurface();
+#endif
         if (!initial_surface) {
             throw std::runtime_error(
                 "window frame target requires the one-shot bootstrap surface");
         }
+#if defined(__ANDROID__)
+        const auto initial_binding = querySurfacePresentationQueue(physical_device,
+            initial_surface->surface.get(), current_presentation_queue_family, created_queue_families);
+        if (initial_binding.kind != SurfaceQueueBindingKind::compatible)
+            throw std::runtime_error("Android initial fresh surface requires device_rebuild_required");
+        current_presentation_queue_family = initial_binding.presentation_queue_family;
+#endif
         const auto initial_queue =
             core.createdQueue(
                 current_presentation_queue_family);
@@ -946,6 +1143,9 @@ struct SwapchainFrameTarget::Impl {
             next_surface_epoch_id++;
         initial_surface_epoch->surface =
             std::move(initial_surface->surface);
+#if defined(__ANDROID__)
+        initial_surface_epoch->native_window_revision = initial_surface->native_window_revision;
+#endif
         initial_surface_epoch->presentation_queue =
             *initial_queue;
         initial_surface_epoch
@@ -980,10 +1180,14 @@ struct SwapchainFrameTarget::Impl {
             active_epoch->output_facts.extent.width,
             active_epoch->output_facts.extent.height);
 
+#if defined(__ANDROID__)
+        startAndroidMaintenance();
+#else
         build_worker.start(
             [this](BuildCompletion &completion) {
                 runPreparation(completion);
             });
+#endif
         LOG_INFO(
             logger,
             "swapchain epoch initialized: epoch={} extent={}x{} "
@@ -996,6 +1200,9 @@ struct SwapchainFrameTarget::Impl {
     }
 
     ~Impl() {
+#if defined(__ANDROID__)
+        Android::setLifecycleHandler({});
+#endif
         frame_cleanup->detach(this);
         build_worker.stopAndJoin();
 
@@ -1192,6 +1399,11 @@ struct SwapchainFrameTarget::Impl {
         epoch->acquire_semaphores =
             createSemaphores(
                 device, in_flight_frames_num);
+#if defined(__ANDROID__)
+        for (std::size_t i = 0; i < in_flight_frames_num; ++i)
+            epoch->acquire_fences.push_back(device.createFenceUnique({}));
+        epoch->acquire_fence_pending.assign(in_flight_frames_num, false);
+#endif
         epoch->present_semaphores =
             createSemaphores(
                 device, epoch->images.size());
@@ -1330,6 +1542,10 @@ struct SwapchainFrameTarget::Impl {
     // handed plus the immutable device / factory handles of the target.
     void runPreparation(
         BuildCompletion &completion) {
+#if defined(__ANDROID__)
+        if (const auto delay = Android::testBuildDelayMilliseconds())
+            std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+#endif
         std::shared_ptr<SwapchainEpoch>
             replacement_anchor;
         try {
@@ -1358,6 +1574,10 @@ struct SwapchainFrameTarget::Impl {
                     });
                 auto prepared_surface =
                     surface_factory.create();
+#if defined(__ANDROID__)
+                if (!prepared_surface.surface)
+                    throw std::runtime_error("native window revision revoked during preparation");
+#endif
                 completion.failure_site =
                     WindowWsiCallSite::
                         surface_support_query;
@@ -1406,6 +1626,9 @@ struct SwapchainFrameTarget::Impl {
                     surface_epoch->surface =
                         std::move(
                             prepared_surface.surface);
+#if defined(__ANDROID__)
+                    surface_epoch->native_window_revision = prepared_surface.native_window_revision;
+#endif
                     surface_epoch
                         ->presentation_queue =
                         *queue;
@@ -1565,6 +1788,20 @@ struct SwapchainFrameTarget::Impl {
 
     void launchPendingPreparation(
         FramebufferExtentSnapshot framebuffer) {
+#if defined(__ANDROID__)
+        if (Android::nativeWindowSlot().release_requested.load(std::memory_order_acquire) || Android::closeRequested()) return;
+        if (recovery->kind() == WindowOutputStateKind::no_surface) {
+            auto &slot = Android::nativeWindowSlot();
+            std::scoped_lock lock{slot.mutex};
+            if (!slot.valid || slot.revision <= released_native_revision) return;
+            for (const auto &[revision, count] : slot.live) {
+                if (revision != slot.revision && count != 0) {
+                    presentationCompletionUnavailable();
+                    return;
+                }
+            }
+        }
+#endif
         // All recovery entry points, including acquire/present OUT_OF_DATE,
         // share this gate. No epoch is consumed while dimensions are moving.
         if (build_worker.busy() || !framebufferSettled(framebuffer)) return;
@@ -1595,7 +1832,7 @@ struct SwapchainFrameTarget::Impl {
         auto policy =
             recovery->kind() ==
                     WindowOutputStateKind::
-                        surface_lost
+                        surface_lost || recovery->kind() == WindowOutputStateKind::no_surface
                 ? recovery
                       ->takeSurfacePreparationRequest(
                           requestedRecoveryKey(
@@ -1655,6 +1892,10 @@ struct SwapchainFrameTarget::Impl {
         }
 
         build_worker.submit(std::move(request));
+#if defined(__ANDROID__)
+        LOG_INFO(logger, "Android build worker submitted: kind={} surface_epoch={} busy=true",
+            policy->preparation_kind == WindowOutputPreparationKind::surface ? "surface" : "swapchain", next_surface_epoch_id - 1);
+#endif
     }
 
     void pollRetiredEpochs() {
@@ -1707,6 +1948,9 @@ struct SwapchainFrameTarget::Impl {
     // facts changed.
     bool publishCompletedEpoch(
         BuildCompletion &completion) {
+#if defined(__ANDROID__)
+        if (divertRevokedCompletion(completion)) return false;
+#endif
         if (completion.request.old_epoch !=
             nullptr) {
             retireEpoch(
@@ -1768,6 +2012,9 @@ struct SwapchainFrameTarget::Impl {
     void deferStaleCandidate(
         BuildCompletion &completion,
         FramebufferExtentSnapshot framebuffer) {
+#if defined(__ANDROID__)
+        if (divertRevokedCompletion(completion)) return;
+#endif
         if (completion.request.old_epoch !=
             nullptr) {
             retireEpoch(
@@ -1838,6 +2085,15 @@ struct SwapchainFrameTarget::Impl {
                 completion.request.old_epoch);
         }
         last_wsi_result = completion.failure_result;
+#if defined(__ANDROID__)
+        if (Android::nativeWindowSlot().release_requested.load(std::memory_order_acquire)) return;
+        if (completion.failure_result == vk::Result::eErrorNativeWindowInUseKHR) {
+            LOG_ERROR(logger, "Android native-window binding invariant failed once: {}; device_rebuild_required", completion.error);
+            device_rebuild_reason = SurfaceDeviceRebuildReason::no_presentation_support;
+            recovery->markDeviceLost();
+            return;
+        }
+#endif
         const auto decision =
             decideWindowWsiRecovery(
                 completion.failure_site,
@@ -1945,6 +2201,14 @@ struct SwapchainFrameTarget::Impl {
 
     PumpResult pumpMaintenance(
         FramebufferExtentSnapshot framebuffer) {
+#if defined(__ANDROID__)
+        if (Android::nativeWindowSlot().release_requested.load(std::memory_order_acquire)) {
+            serviceNativeRelease();
+            return {};
+        }
+#endif
+        if (recovery->kind() == WindowOutputStateKind::device_rebuild_required ||
+            recovery->kind() == WindowOutputStateKind::fatal) return {};
         ++maintenance_tick;
         pollRetiredEpochs();
         PumpResult result;
@@ -1952,6 +2216,9 @@ struct SwapchainFrameTarget::Impl {
         auto completion =
             build_worker.takeCompletion();
         if (completion) {
+#if defined(__ANDROID__)
+            if (divertRevokedCompletion(*completion)) return result;
+#endif
             const bool framebuffer_still_matches =
                 framebuffer.extent.width != 0 &&
                 framebuffer.extent.height != 0 &&
@@ -1973,6 +2240,12 @@ struct SwapchainFrameTarget::Impl {
         }
 
         if (build_worker.busy()) return result;
+        if (recovery->kind() == WindowOutputStateKind::device_rebuild_required ||
+            recovery->kind() == WindowOutputStateKind::fatal) return result;
+        if (recovery->kind() == WindowOutputStateKind::no_surface) {
+            launchPendingPreparation(framebuffer);
+            return result;
+        }
 
         if (framebuffer.extent.width == 0 ||
             framebuffer.extent.height == 0) {
@@ -2037,6 +2310,8 @@ struct SwapchainFrameTarget::Impl {
 
     FrameBeginResult unavailableResult() const {
         switch (recovery->kind()) {
+        case WindowOutputStateKind::no_surface:
+            return {.disposition = FrameBeginDisposition::unavailable, .reason = FrameUnavailableReason::no_surface};
         case WindowOutputStateKind::
             suspended_zero_extent:
             return {
@@ -2132,6 +2407,9 @@ struct SwapchainFrameTarget::Impl {
         const bool framebuffer_settled = framebufferSettled(framebuffer);
         const auto pump =
             pumpMaintenance(framebuffer);
+        if (recovery->kind() == WindowOutputStateKind::device_rebuild_required ||
+            recovery->kind() == WindowOutputStateKind::fatal ||
+            recovery->kind() == WindowOutputStateKind::no_surface) return unavailableResult();
         if (framebuffer.extent.width == 0 ||
             framebuffer.extent.height == 0) {
             return {
@@ -2167,15 +2445,60 @@ struct SwapchainFrameTarget::Impl {
         const bool nonblocking =
             mode == FrameBeginMode::nonblocking;
         auto epoch = active_epoch;
+#if defined(__ANDROID__)
+        if (Android::testZeroAcquireTimeout() && !acquire_timeout_probe_done && maintenance1) {
+            // A slow renderer normally leaves free images even for a 1 ns
+            // timeout. Hold available images briefly to exercise the real
+            // driver's finite-timeout return, without injecting a VkResult.
+            acquire_timeout_probe_done = true;
+            struct ProbeResources { std::vector<vk::UniqueFence> fences; };
+            auto probe = std::make_shared<ProbeResources>();
+            std::vector<vk::Fence> pending;
+            std::vector<std::uint32_t> indices;
+            vk::Result result = vk::Result::eSuccess;
+            for (std::size_t i = 0; i <= epoch->images.size(); ++i) {
+                probe->fences.push_back(device.createFenceUnique({}));
+                auto acquired = device.acquireNextImageKHR(epoch->swapchain.swapchain.get(), 1, {}, probe->fences.back().get());
+                result = acquired.result;
+                if (result != vk::Result::eSuccess && result != vk::Result::eSuboptimalKHR) break;
+                pending.push_back(probe->fences.back().get());
+                indices.push_back(acquired.value);
+            }
+            LOG_INFO(logger, "Android finite acquire probe: timeout_ns=1 result={} acquired={}", vk::to_string(result), indices.size());
+            if (!pending.empty() && device.waitForFences(pending, VK_TRUE, 250'000'000) != vk::Result::eSuccess) {
+                core.quarantinePresentationResources(probe);
+                presentationCompletionUnavailable();
+                return unavailableResult();
+            }
+            if (!indices.empty()) {
+                vk::ReleaseSwapchainImagesInfoEXT info;
+                info.swapchain = epoch->swapchain.swapchain.get();
+                info.imageIndexCount = static_cast<std::uint32_t>(indices.size());
+                info.pImageIndices = indices.data();
+                if (core.releaseSwapchainImages(info) != vk::Result::eSuccess) {
+                    presentationCompletionUnavailable();
+                    return unavailableResult();
+                }
+            }
+            if (result == vk::Result::eTimeout || result == vk::Result::eNotReady)
+                return {.disposition = FrameBeginDisposition::unavailable, .reason = FrameUnavailableReason::acquire_not_ready};
+        }
+#endif
         const auto slot = epoch->next_slot;
         const auto &command_buffer =
             epoch->command_buffers[slot];
         const auto fence_result =
             device.waitForFences(
                 {command_buffer.getFence()}, VK_TRUE,
+#if defined(__ANDROID__)
+                nonblocking ? 0 : (Android::nativeWindowSlot().release_requested.load() ? 16'000'000 : 250'000'000));
+        if (fence_result == vk::Result::eTimeout) {
+            LOG_INFO(logger, "Android frame submit fence result=Timeout (bounded blocking wait)");
+#else
                 nonblocking ? 0 : UINT64_MAX);
         if (fence_result == vk::Result::eTimeout &&
             nonblocking) {
+#endif
             return {
                 .disposition =
                     FrameBeginDisposition::unavailable,
@@ -2196,6 +2519,22 @@ struct SwapchainFrameTarget::Impl {
 
         const auto acquire_semaphore =
             epoch->acquire_semaphores[slot].get();
+#if defined(__ANDROID__)
+        if (Android::nativeWindowSlot().release_requested.load(std::memory_order_acquire)) return unavailableResult();
+        if (epoch->acquire_fence_pending[slot]) {
+            const auto result = device.waitForFences({epoch->acquire_fences[slot].get()}, VK_TRUE,
+                Android::nativeWindowSlot().release_requested.load() ? 16'000'000 : 250'000'000);
+            if (result == vk::Result::eTimeout)
+                return {.disposition = FrameBeginDisposition::unavailable, .reason = FrameUnavailableReason::acquire_not_ready};
+            if (result != vk::Result::eSuccess)
+                throw std::runtime_error("failed waiting for Android acquire fence: " + vk::to_string(result));
+        }
+        device.resetFences({epoch->acquire_fences[slot].get()});
+        epoch->acquire_fence_pending[slot] = false;
+        const auto acquire_timeout = nonblocking ? 0ULL : Android::testZeroAcquireTimeout() ? 1ULL :
+            (Android::nativeWindowSlot().release_requested.load() ? 16'000'000ULL : 250'000'000ULL);
+        const auto acquire_start = std::chrono::steady_clock::now();
+#endif
         vk::ResultValue<std::uint32_t> acquired{
             vk::Result::eErrorUnknown, 0};
         {
@@ -2223,10 +2562,14 @@ struct SwapchainFrameTarget::Impl {
                         device.acquireNextImageKHR(
                             epoch->swapchain
                                 .swapchain.get(),
+#if defined(__ANDROID__)
+                            acquire_timeout, acquire_semaphore, epoch->acquire_fences[slot].get());
+#else
                             nonblocking
                                 ? 0
                                 : UINT64_MAX,
                             acquire_semaphore);
+#endif
                 } catch (
                     const vk::SystemError &error) {
                     acquired.result =
@@ -2235,6 +2578,17 @@ struct SwapchainFrameTarget::Impl {
                 }
             }
         }
+#if defined(__ANDROID__)
+        if (acquired.result == vk::Result::eSuccess || acquired.result == vk::Result::eSuboptimalKHR)
+            epoch->acquire_fence_pending[slot] = true;
+        if (acquired.result == vk::Result::eTimeout || Android::nativeWindowSlot().release_requested.load())
+            LOG_INFO(logger, "Android acquire: timeout_ns={} wait_ms={} result={}", acquire_timeout,
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - acquire_start).count(), vk::to_string(acquired.result));
+        if (Android::nativeWindowSlot().release_requested.load(std::memory_order_acquire)) {
+            if (epoch->acquire_fence_pending[slot]) pending_abandonment = PendingAbandonment{epoch, acquired.value};
+            return {.disposition = FrameBeginDisposition::unavailable, .reason = FrameUnavailableReason::no_surface};
+        }
+#endif
         const auto decision =
             decideWindowWsiRecovery(
                 WindowWsiCallSite::acquire,
@@ -2658,6 +3012,28 @@ struct SwapchainFrameTarget::Impl {
                     present_result = *fault;
                 }
             }
+#if defined(__ANDROID__)
+            if (present_result == vk::Result::eSuccess || present_result == vk::Result::eSuboptimalKHR) {
+                Android::recordAcceptedPresent();
+                if (last_presented_surface_epoch != epoch->surface_epoch->id) {
+                    last_presented_surface_epoch = epoch->surface_epoch->id;
+                    LOG_INFO(logger, "Android surface first present: surface_epoch={} native_revision={} result={}",
+                        epoch->surface_epoch->id, epoch->surface_epoch->native_window_revision, vk::to_string(present_result));
+                }
+                const auto accepted = Android::acceptedPresentCount();
+                if (accepted % 30 == 0) {
+                    LOG_INFO(logger, "Android surface present: native_revision={} accepted_count={}",
+                        epoch->surface_epoch->native_window_revision, accepted);
+                }
+            }
+            if (Android::nativeWindowSlot().release_requested.load(std::memory_order_acquire)) {
+                epoch->present_wait_pending[active.image_index] = true;
+                epoch->ever_presented = true;
+                epoch->last_rendered_image = active.image_index;
+                active_frame.reset();
+                return {.disposition = FrameSubmitDisposition::output_stale};
+            }
+#endif
             const auto decision =
                 decideWindowWsiRecovery(
                     WindowWsiCallSite::present,
@@ -2854,6 +3230,10 @@ struct SwapchainFrameTarget::Impl {
                         device_rebuild_reason)},
         };
         switch (recovery->kind()) {
+        case WindowOutputStateKind::no_surface:
+            result.state = FrameTargetLifecycleState::no_surface;
+            result.reason = FrameUnavailableReason::no_surface;
+            break;
         case WindowOutputStateKind::ready:
             result.state =
                 FrameTargetLifecycleState::ready;

@@ -1424,7 +1424,7 @@ EditorProjectionResult materializeEditorProjection(
                                     ? "authored_component"
                                     : "component");
                             const auto stable_name =
-                                authored.at("type").get<std::string>();
+                                authored.at("type").template get<std::string>();
                             if (plan.context.findBehavior(stable_name) ==
                                 nullptr) {
                                 return std::pair{stable_name,
@@ -1693,7 +1693,7 @@ EditorProjectionResult materializeEditorProjection(
                                     operation.attachment_index.value_or(0),
                                 .identity = behaviorIdentity(operation.wire),
                                 .stable_name =
-                                    authored.at("type").get<std::string>(),
+                                    authored.at("type").template get<std::string>(),
                                 .canonical_params =
                                     canonicalBehaviorParams(
                                         authored, operation.object_id),
@@ -1741,7 +1741,7 @@ EditorProjectionResult materializeEditorProjection(
                                 .scene_ordered = true,
                                 .identity = behaviorIdentity(operation.wire),
                                 .stable_name =
-                                    authored.at("type").get<std::string>(),
+                                    authored.at("type").template get<std::string>(),
                                 .canonical_params =
                                     canonicalBehaviorParams(
                                         authored, operation.object_id),

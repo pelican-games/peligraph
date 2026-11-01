@@ -99,9 +99,28 @@ THIRD_PARTY: list[Entry] = [
           use="Linked only with PELICAN_WITH_SPIRV_LINK (off by default) and "
               "in pelican-spv-link. The Vulkan SDK's shaderc_combined, linked "
               "into Release builds, also contains SPIRV-Tools (see the Vulkan "
-              "SDK entry).",
+              "SDK entry). Android builds link it statically through shaderc.",
           license="Apache-2.0",
           texts=[("deps", "LICENSE")]),
+    Entry("shaderc", fetch="shaderc",
+          use="Android builds only (cmake/pelican_android.cmake): built from "
+              "source and statically linked into libpelican_player.so for the "
+              "runtime shader compiler, with glslang and SPIRV-Tools.",
+          license="Apache-2.0",
+          texts=[("deps", "LICENSE")]),
+    Entry("glslang", fetch="glslang",
+          use="Android builds only: built from source and statically linked "
+              "into libpelican_player.so through shaderc.",
+          license="BSD-3-Clause, BSD-2-Clause, MIT and Apache-2.0 for glslang proper; "
+                  "its LICENSE.txt also carries GPL-3.0 with the Bison exception for parts "
+                  "outside glslang proper",
+          texts=[("deps", "LICENSE.txt")]),
+    Entry("Vulkan-Headers", fetch="vulkan_headers",
+          use="Android builds only: Vulkan and Vulkan-Hpp headers used to "
+              "compile against the device's libvulkan.so (header-only; the "
+              "Windows build takes its headers from the Vulkan SDK).",
+          license="Apache-2.0 (files under MIT are also Apache-2.0, per its LICENSE.md)",
+          texts=[("deps", "LICENSE.md")]),
     Entry("SPIRV-Reflect", fetch="spirv_reflect",
           use="Statically linked into pelican_core.",
           license="Apache-2.0",

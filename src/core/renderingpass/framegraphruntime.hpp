@@ -4,6 +4,7 @@
 #include "renderpipelinegpuarena.hpp"
 #include "renderingpass.hpp"
 #include "../../project/targetrenderplanning.hpp"
+#include "../atomicsharedptr.hpp"
 #include "../container.hpp"
 #include "../vkcore/outputcompilefacts.hpp"
 #include <details/ecs/entity.hpp>
@@ -193,8 +194,7 @@ struct RendererRuntimeGeneration {
 };
 
 struct RendererRuntimePublication {
-    std::atomic<
-        std::shared_ptr<const RendererRuntimeGeneration>>
+    AtomicSharedPtr<const RendererRuntimeGeneration>
         active_generation{nullptr};
 };
 

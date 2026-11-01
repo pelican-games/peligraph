@@ -7,6 +7,10 @@
 #include "../launchconfig.hpp"
 #include "../log.hpp"
 #include "../os/window.hpp"
+#if defined(__ANDROID__)
+#include "../../platform/android/validationlog.hpp"
+#include "../../platform/android/runtime.hpp"
+#endif
 #if PELICAN_WITH_OPENXR
 #include "../openxr/openxrdiscovery.hpp"
 #endif
@@ -77,6 +81,9 @@ static bool containsInstanceLayer(
 
 struct VulkanInstanceState {
     vk::UniqueInstance instance;
+#if defined(__ANDROID__)
+    std::shared_ptr<Android::ValidationLogMessenger> android_validation_log;
+#endif
     VulkanValidationStatus validation;
 };
 
@@ -104,6 +111,11 @@ static VulkanInstanceState vulkanCreateInstance(
     if (debug_utils_selection.enabled) {
         exts.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     }
+#if defined(__ANDROID__)
+    if (validation_selection.enabled) {
+        appendUniqueInstanceExtension(exts, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    }
+#endif
     if (!headless &&
         supportsSurfaceMaintenance1InstanceContract()) {
         appendUniqueInstanceExtension(
@@ -122,6 +134,12 @@ static VulkanInstanceState vulkanCreateInstance(
             synchronization_validation);
         create_info.pNext = &validation_features;
     }
+#if defined(__ANDROID__)
+    // Keep validation_features at the head: finalizeVulkanValidationStatus
+    // checks that exact pointer below. The callback also observes bootstrap.
+    const auto android_log_info = Android::validationLogCreateInfo();
+    if (validation_selection.enabled) validation_features.pNext = &android_log_info;
+#endif
 #ifdef __APPLE__
     create_info.flags = vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR;
     exts.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
@@ -132,8 +150,16 @@ static VulkanInstanceState vulkanCreateInstance(
     create_info.setPEnabledLayerNames(layers);
 
     auto instance = vk::createInstanceUnique(create_info);
+#if defined(__ANDROID__)
+    auto android_validation_log = validation_selection.enabled
+        ? std::make_shared<Android::ValidationLogMessenger>(static_cast<VkInstance>(instance.get()))
+        : nullptr;
+#endif
     return {
         .instance = std::move(instance),
+#if defined(__ANDROID__)
+        .android_validation_log = std::move(android_validation_log),
+#endif
         .validation = finalizeVulkanValidationStatus(
             validation_selection,
             containsInstanceLayer(layers, vulkanValidationLayerName),
@@ -934,6 +960,9 @@ static vma::UniqueAllocator createAllocator(vk::PhysicalDevice phys_device, vk::
 
 struct VulkanBootstrapState {
     vk::UniqueInstance instance;
+#if defined(__ANDROID__)
+    std::shared_ptr<Android::ValidationLogMessenger> android_validation_log;
+#endif
     std::optional<PreparedWindowSurface>
         window_surface;
     vk::PhysicalDevice physical_device;
@@ -953,13 +982,26 @@ static VulkanBootstrapState bootstrapFlatVulkan(
     auto instance = vulkanCreateInstance(
         headless, debug_utils_selection, validation_selection);
     result.instance = std::move(instance.instance);
+#if defined(__ANDROID__)
+    result.android_validation_log = std::move(instance.android_validation_log);
+#endif
     result.validation = std::move(instance.validation);
     if (!headless) {
+#if defined(__ANDROID__)
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        do {
+            if (!Android::waitForNativeWindow(deadline))
+                throw std::runtime_error("Android bootstrap window wait expired or DESTROY requested");
+#endif
         result.window_surface =
             WindowSurfaceFactory{
                 result.instance.get(),
                 GET_MODULE(Window)}
                 .create();
+#if defined(__ANDROID__)
+            // TERM_WINDOW may revoke the revision between wait and create.
+        } while (!result.window_surface->surface);
+#endif
     }
     const auto surface =
         result.window_surface
@@ -975,6 +1017,10 @@ static VulkanBootstrapState bootstrapFlatVulkan(
                                         result.memory_budget_enabled,
                                         result.runtime_capabilities,
                                         result.enabled_device_extensions);
+#if defined(__ANDROID__)
+    // Bootstrap owns no swapchain: its surface is needed only for selection.
+    result.window_surface.reset();
+#endif
     return result;
 }
 
@@ -1064,6 +1110,9 @@ VulkanManageCore::VulkanManageCore() {
         headless, debug_utils_selection, validation_selection);
 #endif
     instance = std::move(bootstrap.instance);
+#if defined(__ANDROID__)
+    android_validation_log = std::move(bootstrap.android_validation_log);
+#endif
     initial_window_surface =
         std::move(bootstrap.window_surface);
     phys_device = bootstrap.physical_device;
@@ -1498,8 +1547,15 @@ void VulkanManageCore::writeBuf(const BufferWrapper &dst, const void *src, vk::D
 }
 
 std::vector<uint8_t> VulkanManageCore::readBuf(const BufferWrapper &src, vk::DeviceSize bytes_num) const {
+#if defined(__ANDROID__)
+    // Non-coherent Android staging memory must be mapped before invalidation.
+    // Keep the existing desktop path unchanged in this Android port.
+    const auto mapped = allocator->mapMemory(src.allocation.get());
+    allocator->invalidateAllocation(src.allocation.get(), 0, bytes_num);
+#else
     allocator->invalidateAllocation(src.allocation.get(), 0, bytes_num);
     const auto mapped = allocator->mapMemory(src.allocation.get());
+#endif
     std::vector<uint8_t> bytes(static_cast<size_t>(bytes_num));
     std::memcpy(bytes.data(), mapped, bytes.size());
     allocator->unmapMemory(src.allocation.get());

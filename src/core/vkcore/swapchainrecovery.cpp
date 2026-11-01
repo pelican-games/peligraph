@@ -391,8 +391,12 @@ WindowOutputRecoveryStateMachine::
     : state_{WindowOutputReady{
           initial_epoch, std::move(initial_key)}} {
     if (initial_epoch == 0) {
+#if defined(__ANDROID__)
+        state_ = WindowOutputNoSurface{};
+#else
         throw std::invalid_argument(
             "window output recovery requires a non-zero initial epoch");
+#endif
     }
 }
 
@@ -402,7 +406,9 @@ WindowOutputRecoveryStateMachine::kind() const noexcept {
         [](const auto &value) {
             using State =
                 std::remove_cvref_t<decltype(value)>;
-            if constexpr (
+            if constexpr (std::is_same_v<State, WindowOutputNoSurface>) {
+                return WindowOutputStateKind::no_surface;
+            } else if constexpr (
                 std::is_same_v<State, WindowOutputReady>) {
                 return WindowOutputStateKind::ready;
             } else if constexpr (
@@ -544,6 +550,7 @@ bool WindowOutputRecoveryStateMachine::requestRefresh(
     if (std::holds_alternative<
             WindowOutputDeviceRebuildRequired>(state_) ||
         std::holds_alternative<WindowOutputFatal>(state_) ||
+        std::holds_alternative<WindowOutputNoSurface>(state_) ||
         std::holds_alternative<WindowOutputSurfaceLost>(
             state_)) {
         return false;
@@ -652,6 +659,9 @@ std::optional<SwapchainPreparationRequest>
 WindowOutputRecoveryStateMachine::
     takeSurfacePreparationRequest(
         SwapchainRecoveryKey key) {
+    if (std::holds_alternative<WindowOutputNoSurface>(state_)) {
+        state_ = WindowOutputSurfaceLost{};
+    }
     const auto *lost =
         std::get_if<WindowOutputSurfaceLost>(
             &state_);
@@ -798,10 +808,17 @@ void WindowOutputRecoveryStateMachine::markDeviceLost() {
 void WindowOutputRecoveryStateMachine::markFatal() {
     state_ = WindowOutputFatal{};
 }
+void WindowOutputRecoveryStateMachine::markNoSurface() {
+    if (kind() == WindowOutputStateKind::device_rebuild_required ||
+        kind() == WindowOutputStateKind::fatal) return;
+    state_ = WindowOutputNoSurface{};
+    acknowledged_suboptimal_key_.reset();
+}
 
 std::string_view windowOutputStateName(
     WindowOutputStateKind state) noexcept {
     switch (state) {
+    case WindowOutputStateKind::no_surface: return "no_surface";
     case WindowOutputStateKind::ready: return "ready";
     case WindowOutputStateKind::refresh_pending:
         return "refresh_pending";
