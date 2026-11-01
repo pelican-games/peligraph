@@ -418,3 +418,13 @@ develop_v1 の `1e05031d7` / `e17754510`。仕様は `<作業ディレクトリ>
   C5 は [その所](../test/rc5_recipe_compiler_test.inc#L631))。C5 は lowering graph の pattern の `allow_alias`(transient / tile-local の候補でも宣言の適格の答えになった)も除く。意味の欄の除外は増やしていない。
   C5 は生の差も書き出し、16 構成の資源ごとの差は `<作業ディレクトリ>/rc7d_c5_details.json`(配置の差は着地済みの RC-7c の分を含む。実装者の報告)。4 種とも緑。
 - **Freeze**: Studio の Freeze が transient / tile-local の住人に `alias_group` を `prefer` で書くようになった(§2 の末尾の RC-7d)。レシピと部品が書く `alias_group` の規則(§7.9)は変えていない。
+
+### 7.16 RC-7e(使われない RT の確保の除去、2026-11-01)
+
+`0e5d5b75a`(branch `agent/rc7e` の squash)。仕様は `<作業ディレクトリ>/rc7_spec.md` §6、報告は `<作業ディレクトリ>/rc7e_report.md` と修正の報告 `<作業ディレクトリ>/rc7e_fix_report.md`。意味は
+[RT メモ §2 の末尾の RC-7e](design_render_target_memory_reduction.md#rc7e-unallocated)。16 構成とレシピに関わる所だけ書く。
+
+- **feature が宣言する RT**: feature や部品が宣言した RT のうち、どの runtime variant の plan も view family の provider も使わない物は登録されない(確保されない)。宣言の検査は登録した物と同じ文で行う。
+  「feature は RT の枚数を気にせず宣言してよい」(RT メモ §3.2)の、使われない宣言の分が実確保でも成り立つようになった。ただし provider が名前で引く RT(標準の `cube_capture` の `cube_capture_color`、
+  影の contract の資源)は、node が使わなくても feature や contract があれば確保される。
+- **16 構成と A5 / F4 / B4 / C5**: 計画の側は変えていないので、比較から除く欄は増やしていない(`rc5_recipe_compiler_test.inc` は RC-7e の commit で変わっていない)。統合側の gate で 4 種とも緑。

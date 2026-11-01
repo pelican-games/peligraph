@@ -186,6 +186,11 @@ NodeIR {
   - **resolver の組の検査**: region の無い組の最後の確認から「storage が materialized」の要求を外した。上の RC-7b の追補の「storage の食い違いは解除」はそのまま
     ([その所](../src/project/generationresources.cpp#L269))。transient / tile-local の資源も、memory の種類が ordinary なら region に入る(種類は IR でなく物理計画と device の memory type で決まる)。
   - **宣言の適格は変えていない**: [`isRuntimeAliasEligible`](../src/project/rendergraphir.cpp#L241) は今のまま。core の `isRuntimeAliasCandidate()` が足していた storage の条件を外した。
+- **追補(RC-7e、`0e5d5b75a`、2026-11-01。使われない RT の確保の除去)**: 全体は [RT メモ §2 の末尾の RC-7e](design_render_target_memory_reduction.md#rc7e-unallocated) と
+  [棚卸しメモ §2-3 の RC-7e](design_plan_layer_inventory.md#rc7e-implementation)。行番号は `0e5d5b75a` の物。
+  - **IR と generation の資源の記述は変えていない**: 宣言した image は今までどおり各 graph の logical resource に入り、`GenerationResources` も宣言の全部を持つ。どの runtime variant の plan も
+    view family の provider も使わない宣言を外すのは、登録の準備が variant ごとの登録の列を作る所だけ([その所](../src/core/renderingpass/renderingpassconfigregistration.cpp#L1146))。
+    外した宣言にも登録と同じ定義の検査を行い、名前で引けば `render_target.not_allocated@1`。
 
 ### 2.5 pipeline の状態は「所有者ごと」
 

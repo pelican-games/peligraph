@@ -2553,6 +2553,7 @@ G-4 の時点では、保存していない scene の編集は確認なしにこ
 engine の RC-1 から、`get_frame_plan` は物理計画の image ごとの `bytes` と `memory_summary` を返します(数え方と注意は[第6章](06_rendering.md#physical-plan-memory) §6.6「物理 image の bytes と `memory_summary`」)。Frame Plan はそれを読んで 3 か所に出します。
 
 engine の RC-1b で `total_bytes` の意味が「この計画の image の和」から「公開中の世代が登録した render target 全部の和(どの graph も使わないものも入る)」に変わり、`unused_bytes`・`unused_resources`・`peak_graph` の鍵が増えました。Studio の側は変えていません。新しい 3 つの鍵は表示せず、読む所は知らない鍵を無視するので、RC-1b の engine の plan もそのまま開きます([読む所](../../src/devstudio/model/frameplanmodel.cpp#L2065))。
+✅engine の RC-7e で、どの graph も使わない render target は登録されなくなり(`RT` にも `unused_bytes` にも入らない)、`memory_summary.unallocated_resources` の鍵が増えました。Studio はこの鍵も読まず、表示しません(`src/devstudio` に `unallocated` を読む所は無い。RC-7e で Studio のコードは変わっていません)。
 
 - **status 行の末尾**: ` · RT <total_bytes> / peak <peak_live_bytes> at <peak_node>` を足します([足す所](../../src/devstudio/view/frameplanwidget.cpp#L4310))。`peak_node` が `null` なら ` at <peak_node>` は付きません。大きさの字は KiB / MiB の小数 1 桁です。
   - RC-1b の engine では、`RT` は世代全体の登録の合計、`peak` は開いている graph の計画の値です。どの graph も使わない render target の分(`unused_bytes`)は `RT` に含まれますが、内訳としては出ません。

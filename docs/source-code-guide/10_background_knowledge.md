@@ -161,7 +161,7 @@ return { std::max(1u, base.width >> mip), std::max(1u, base.height >> mip) };
 
 `remaining` をそのまま Vulkan へ渡さず先に解決するのは、キャッシュ鍵として比較するときに「同じ範囲なのに別の鍵」になるのを避けるためで、宣言側の相対表現と物理側の絶対値をこの 1 か所で切り離しています。
 
-同じ「1 枚のイメージを複数の窓から見る」使い分けは render target の外にもあります(2026-09-04 追記): [VulkanXrCompositionGraphics](../../src/core/openxr/openxrcompositiongraphics.cpp#L48) は OpenXR が返す 1 枚の配列イメージから、`layerCount = 2` の 2D array ビューと、レイヤごとの `layerCount = 1` の 2D ビューを両方作ります。[ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetaskcontainer.cpp#L1028) と [MaterialDescriptorBuilder::build()](../../src/core/material/materialdescriptorbuilder.cpp#L442) も、`baseArrayLayer` / `layerCount` を変えたビューで同じイメージの別レイヤを descriptor へ載せます。
+同じ「1 枚のイメージを複数の窓から見る」使い分けは render target の外にもあります(2026-09-04 追記): [VulkanXrCompositionGraphics](../../src/core/openxr/openxrcompositiongraphics.cpp#L48) は OpenXR が返す 1 枚の配列イメージから、`layerCount = 2` の 2D array ビューと、レイヤごとの `layerCount = 1` の 2D ビューを両方作ります。[ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetaskcontainer.cpp#L1034) と [MaterialDescriptorBuilder::build()](../../src/core/material/materialdescriptorbuilder.cpp#L442) も、`baseArrayLayer` / `layerCount` を変えたビューで同じイメージの別レイヤを descriptor へ載せます。
 
 ### mip 数の上限は `floor(log2(max(w,h))) + 1`
 
@@ -180,6 +180,7 @@ return { std::max(1u, base.width >> mip), std::max(1u, base.height >> mip) };
 
 **このリポジトリでは**: `RenderTargetStorageMode`(`src/core/renderingpass/rendertargetstoragemode.hpp`:10〜14)の `transient_attachment` / `tile_local_attachment` が、確保時に `vk::MemoryPropertyFlagBits::eLazilyAllocated` を **preferred** として渡します(`rendertargetcontainer.cpp` 259〜269 行)。
 → ✅RC-7d(`c941a8346`)で変わりました。preferred の指定は無くなり、`TRANSIENT_ATTACHMENT` を持つ image の `memoryTypeBits` に LAZILY_ALLOCATED の memory type があれば(device の memory type の一覧で判定)、`VMA_MEMORY_USAGE_GPU_LAZILY_ALLOCATED` の専用の確保にし、取れなければ名前付きの理由で普通の確保に戻ります。LAZILY_ALLOCATED の type が無い device では普通の memory として扱い、共有の条件を満たせば region に入ります([第6章の「memory の種類」](06_rendering_vulkan_shader.md#rc7d-memory-kinds))。
+→ 実機の例(2026-11-01 の測定。engine とは別の probe): Adreno 830(Snapdragon 8 Elite)の memory type は 9 個で、LAZILY_ALLOCATED を持つのは type 8(DEVICE_LOCAL | LAZILY_ALLOCATED)だけでした。`TRANSIENT_ATTACHMENT` 付きの image の `memoryTypeBits` は 257(type 0 と 8)、付かない image は 1 です。VMA の `VMA_MEMORY_USAGE_GPU_LAZILY_ALLOCATED` は type 8 に dedicated で確保し、`vkGetDeviceMemoryCommitment` の値は確保の後も、CLEAR / DONT_CARE の render pass の前後も 0 bytes でした。値を写した fixture は `test/fixtures/device_facts/adreno830_sm8750.json` です([第6章](06_rendering_vulkan_shader.md#rc7d-memory-kinds)の test の項)。
 
 どの resource がそこへ落ちるかを決めるのは物理ターゲット計画で、条件は `tile_local_eligible`(`src/project/targetrenderplanning.cpp`:2173〜2191)にまとまっています — 読みが `same_pixel` であること、書きも読みもあること、attachment アクセスだけであること(storage / transfer / host が混ざらない)、single sample、`require_store` でないこと、など。1 つでも外れれば `materialized` に戻ります。この enum のコメントが「render-target allocator が実際に実装しているモードだけを渡す」ことを明言しており、計画側の表現(`VulkanResourceRepresentation`)とは意図的に別の型になっています。
 
@@ -197,7 +198,7 @@ return { std::max(1u, base.width >> mip), std::max(1u, base.height >> mip) };
 
 Vulkan のシェーダは資源を `layout(set = S, binding = B)` で受け取ります。CPU 側はその (set, binding) に対して `VkWriteDescriptorSet`(`dstSet` / `dstBinding` / `descriptorType` / バッファまたはイメージの情報)を組んで `vkUpdateDescriptorSets` を呼び、set の形そのものは `VkDescriptorSetLayout` が、確保元は `VkDescriptorPool` が持ちます。**仕様上の位置**は Vulkan 仕様 "Resource Descriptors" 章(HTML 版のアンカー `#VkWriteDescriptorSet` / `#VkDescriptorSetLayoutBinding`)です。GLSL 側の数値と C++ 側の数値が一致しているかをコンパイラは検査しないので、両方から読まれる定数表を 1 つ置いてそれを唯一の出所にする、というのが定型になります。
 
-**使用場所**: [pelican_sets.glsl の binding 定数](../../src/core/resources/shaders/include/pelican_sets.glsl#L9) / [FrameResources::configureViewCount()](../../src/core/renderer/frameresources.cpp#L110)(`writes[0].dstBinding = PELICAN_FRAME_UBO_BINDING` として同じ定数を使う) / [PolygonInstanceContainer::PolygonInstanceContainer()](../../src/core/renderer/polygoninstancecontainer.cpp#L246) / [ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetaskcontainer.cpp#L1028)
+**使用場所**: [pelican_sets.glsl の binding 定数](../../src/core/resources/shaders/include/pelican_sets.glsl#L9) / [FrameResources::configureViewCount()](../../src/core/renderer/frameresources.cpp#L110)(`writes[0].dstBinding = PELICAN_FRAME_UBO_BINDING` として同じ定数を使う) / [PolygonInstanceContainer::PolygonInstanceContainer()](../../src/core/renderer/polygoninstancecontainer.cpp#L246) / [ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetaskcontainer.cpp#L1034)
 
 **このコードベースでの注意**: 定数表は GLSL のヘッダ側にあり、C++ からも同じマクロ名で読まれます。番号を動かすときは、シェーダと C++ の両方が同じヘッダを見ていることが前提です。
 
@@ -211,7 +212,7 @@ Vulkan のシェーダは資源を `layout(set = S, binding = B)` で受け取�
 
 同じイメージでも、シェーダからの触り方によって descriptor type が変わります。読み取りサンプリングは `COMBINED_IMAGE_SAMPLER`(イメージとサンプラを 1 つの descriptor に束ねる)、計算シェーダからの書き込みは `STORAGE_IMAGE`、そしてイメージとサンプラを別々の descriptor(`SAMPLED_IMAGE` + `SAMPLER`)に分ける形の 3 通りが基本です。分離型は「同じ画像を複数のサンプラで引く」「サンプラだけ差し替える」ときに効き、bindless なテクスチャ配列とサンプラ配列を独立に組める代わりに binding が 1 本増えます。**仕様上の位置**は "Descriptor Types" 節(`VK_DESCRIPTOR_TYPE_*` の列挙)です。
 
-**使用場所**: [MaterialContainer::registerMaterial()](../../src/core/material/materialcontainer.cpp#L777)(`split_custom_samplers` のとき `eSampledImage` + `eSampler` の 2 binding へ割る) / [ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetaskcontainer.cpp#L1028)
+**使用場所**: [MaterialContainer::registerMaterial()](../../src/core/material/materialcontainer.cpp#L777)(`split_custom_samplers` のとき `eSampledImage` + `eSampler` の 2 binding へ割る) / [ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetaskcontainer.cpp#L1034)
 
 ### pNext チェーンと vulkan-hpp の StructureChain / unlink
 
@@ -265,7 +266,7 @@ GLSL の uniform ブロックは既定で **std140**、storage ブロックは *
 
 `VkSamplerCreateInfo` の `magFilter` / `minFilter` は拡大・縮小時の補間で、`VK_FILTER_NEAREST` はテクセルをそのまま読み、`VK_FILTER_LINEAR` は近傍を線形補間します。`addressModeU/V/W` は [0,1] の外を引いたときの折り返し方(repeat / clamp to edge / mirror / clamp to border)で、3 軸ぶん独立に指定できますが、3D テクスチャや cube では 3 軸を揃えないと軸ごとに違う挙動になります。`mipmapMode` と `minLod` / `maxLod` は別軸で、mip を持たないイメージでも指定自体は必要です。
 
-**使用場所**: [createSampler()](../../src/core/renderingpass/computetaskcontainer.cpp#L717) / [ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetaskcontainer.cpp#L1028)
+**使用場所**: [createSampler()](../../src/core/renderingpass/computetaskcontainer.cpp#L723) / [ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetaskcontainer.cpp#L1034)
 
 ### レイトレーシング: shader group と SBT(handle size / stride / base alignment)
 
@@ -493,7 +494,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 「途中で失敗したら、それまでの副作用を取り消す」を例外安全に書く定型です。ローカルなガード型のデストラクタに巻き戻し処理を書き、正常系の最後で「もう巻き戻さない」印(commit / dismiss と呼ばれることが多い)を立ててガードを無効化します。こうすると、途中のどの `throw` からでも巻き戻しが走り、成功経路でだけ走りません(`std::scope_exit` / `scope_fail` は C++ 標準ライブラリ拡張の同種の道具です)。ガードに「そもそも何もしていない」状態を表す番兵(世代番号が 0、ハンドルが無効など)を持たせて、staging 前に抜けたときに巻き戻しを飛ばす形もよく使われます。
 
-**使用場所**: [LogicalFrameAbortGuard](../../src/core/vkcore/renderer.cpp#L3050) / [StagedRuntimeRollbackGuard](../../src/core/vkcore/renderer.cpp#L3077) / [ConstructionScope](../../src/core/container.hpp#L174)(構築中スタックの pop を必ず走らせる) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L406)(`catch (...)` で確保済みの範囲を返す)
+**使用場所**: [LogicalFrameAbortGuard](../../src/core/vkcore/renderer.cpp#L3051) / [StagedRuntimeRollbackGuard](../../src/core/vkcore/renderer.cpp#L3078) / [ConstructionScope](../../src/core/container.hpp#L174)(構築中スタックの pop を必ず走らせる) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L406)(`catch (...)` で確保済みの範囲を返す)
 
 ### double-checked locking と acquire / release
 
@@ -1032,7 +1033,7 @@ Jolt 側は `normalizeOr()`(143 行)が `!std::isfinite(length_squared) ||` を 
 
 mip レベル m の寸法は `max(1, n >> m)` です(2 で割ることを右シフトで書いたもの)。`max(1, ...)` が要るのは、一方の辺が先に 1 に達しても mip チェーンは続くためで、これを忘れると 0 サイズのディスパッチや 0 除算になります。
 
-**使用場所**: [extentDerivedBufferBytes()](../../src/project/framegraphbufferdefinition.cpp#L84)(タイル数の切り上げ) / [imageExtentDispatchGroups()](../../src/core/renderingpass/computetaskcontainer.cpp#L631)(`max(1u, dimension >> mip)` の後に切り上げ除算)
+**使用場所**: [extentDerivedBufferBytes()](../../src/project/framegraphbufferdefinition.cpp#L84)(タイル数の切り上げ) / [imageExtentDispatchGroups()](../../src/core/renderingpass/computetaskcontainer.cpp#L637)(`max(1u, dimension >> mip)` の後に切り上げ除算)
 
 ### view 行列の逆行列とカメラの前方軸
 

@@ -511,6 +511,38 @@
 - **test**: 新規 [`rc7d_compiler_test.inc`](../test/rc7d_compiler_test.inc#L3)(`rendercompilerprogram_test` が include)、[`rc7d_target_test.inc`](../test/rc7d_target_test.inc#L1)(`targetrenderplanning_test` が include)、
   [`rc7d_renderer_gpu_test.inc`](../test/rc7d_renderer_gpu_test.inc#L1)(`headless_render_test` が include)、作り物の facts と config の [`rc7d_test_support.hpp`](../test/rc7d_test_support.hpp#L7)。
   期待を移した物は `rc6a2_target_policy_test.inc`・`generationresources_device_test.cpp`(RC-3c2a C1)・`test/fixtures/renderer_execution_traces.json`、比較の除外は `rc5_recipe_compiler_test.inc`。
+- **実機の facts の fixture**(RC-7e の commit `0e5d5b75a` で入った): 実機の Adreno 830 で測った `test/fixtures/device_facts/adreno830_sm8750.json` と、それを読む
+  [`rc7d_adreno830_test.inc`](../test/rc7d_adreno830_test.inc#L32)(`rendercompilerprogram_test` が include)。測った値は [RT メモ §5 の「RC-7d の実機の確認(11-01)」](design_render_target_memory_reduction.md#rc7d-device-check)。
+
+<a id="rc7e-implementation"></a>
+
+**RC-7e で入った物(使われない RT の確保の除去。2026-11-01、`0e5d5b75a`、branch `agent/rc7e`)。**仕様は `<作業ディレクトリ>/rc7_spec.md` §6、実装者の報告は `rc7e_report.md` と修正の報告 `rc7e_fix_report.md`。
+この段の行番号は `0e5d5b75a` の物。意味・決定・計測は [RT メモ §2 の末尾の RC-7e](design_render_target_memory_reduction.md#rc7e-unallocated)。ここには何がどこにあるかだけを書く。
+
+- **除去の集合(project)**: 新しい header の [`UnallocatedRenderTarget`](../src/project/unallocatedrendertarget.hpp#L10)、[`engineHeldRenderTargetNames()`](../src/project/targetrendermemory.cpp#L172)・
+  [`unallocatedRenderTargets()`](../src/project/targetrendermemory.cpp#L176)([宣言](../src/project/targetrendermemory.hpp#L149))、`appendVulkanTargetPlanMemoryJson()` の `unallocated_resources`
+  ([その所](../src/project/targetrendermemory.cpp#L211))。
+- **plan と engine の使用(core)**: [`vulkanRuntimeVariantTargetPlans()`](../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L1024)・
+  [`vulkanRuntimeVariantEngineRenderTargetUses()`](../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L1037)([宣言](../src/core/renderingpass/vulkanrendercompilerpackage.hpp#L124))。
+- **view family の provider**: `RenderViewFamilyProviderDefinition::render_targets`([宣言](../src/core/renderer/viewfamilyproviderregistry.hpp#L81))と
+  [`viewFamilyProviderRenderTargets()`](../src/core/renderer/viewfamilyproviderregistry.cpp#L95)、cube capture([その所](../src/core/render_algorithms/cube_capture/cubecaptureviewprovider.cpp#L180))・
+  point / spot([その所](../src/core/render_algorithms/punctual_shadow/punctualshadowviewprovider.cpp#L121))・directional([その所](../src/core/renderer/directionalshadowviewprovider.cpp#L444))の宣言。
+- **登録(core)**: `RegistrationStages::prepare()` の除去([その所](../src/core/renderingpass/renderingpassconfigregistration.cpp#L1119)、列から飛ばす所 [その所](../src/core/renderingpass/renderingpassconfigregistration.cpp#L1146)、
+  検査を呼ぶ所 [その所](../src/core/renderingpass/renderingpassconfigregistration.cpp#L1157))、`publish()` で scope に入れる所([その所](../src/core/renderingpass/renderingpassconfigregistration.cpp#L1386))、
+  `RenderPipelineGpuScopePreparation` / `RenderPipelineGpuResourceScope` の `unallocated_render_targets`([宣言](../src/core/renderingpass/renderpipelinegpuarena.hpp#L70))。
+- **定義の検査(core)**: [`validateUnregisteredRenderTargetDefinitions()`](../src/core/renderingpass/rendertargetconfigregistration.cpp#L36) と `requireDisplayFormatSupport()`
+  ([その所](../src/core/renderingpass/rendertargetconfigregistration.cpp#L12))、[`validateRenderTargetDefinition()`](../src/core/renderingpass/rendertargetcontainer.cpp#L584)・
+  [`requireRenderTargetFormatFeatures()`](../src/core/renderingpass/rendertargetcontainer.cpp#L555)([宣言](../src/core/renderingpass/rendertargetdefinition.hpp#L86))。
+- **名前で引く道(core)**: [`throwRenderTargetNotAllocated()`](../src/core/renderingpass/rendertargetnameresolver.cpp#L8) と `RenderTargetNameResolver` の集合の引数、
+  `CompiledFrameGraphExecution::unallocated_render_targets`([宣言](../src/core/renderingpass/framegraphruntime.hpp#L125))、`ComputeTaskRuntimeDependencies::unallocated_render_targets`
+  ([宣言](../src/core/renderingpass/computetaskcontainer.hpp#L116))。分岐は passDefinitionOf([その所](../src/core/renderingpass/passdefinitionfromir.cpp#L103))・compute
+  ([その所](../src/core/renderingpass/computetaskcontainer.cpp#L107))・punctual([その所](../src/core/render_algorithms/punctual_shadow/punctualshadowviewprovider.cpp#L54))・directional
+  ([その所](../src/core/renderer/directionalshadowviewprovider.cpp#L63))・cube([その所](../src/core/render_algorithms/cube_capture/cubecaptureviewprovider.cpp#L134))・picking
+  ([その所](../src/core/vkcore/renderer.cpp#L5085))・external depth([その所](../src/core/vkcore/externaldepthsubmission.cpp#L45)、[XR の depth の format](../src/core/vkcore/renderer.cpp#L5359))。
+- **観測(core)**: renderer の `appendFramePlanMemoryJson()` が arena の scope から集める所([その所](../src/core/vkcore/renderer.cpp#L4461))。Studio は変えていない。
+- **test**: 新規 [`rc7e_compiler_test.inc`](../test/rc7e_compiler_test.inc#L36)(`rendercompilerprogram_test` が include)、[`rc7e_renderer_gpu_test.inc`](../test/rc7e_renderer_gpu_test.inc#L3)
+  (`headless_render_test` が include)、fixture の [`rc7e_test_support.hpp`](../test/rc7e_test_support.hpp#L40)。E3 は `rc7c_runtime_gpu_test.inc` の C1 に 1 行、期待を移した物は
+  `frameplanner_test.cpp`・`targetrenderplanning_test.cpp`(`unallocated_resources: []`)。
 
 ### 2-4 `declared_bytes` = 0 — 埋める(決定 2026-10-22)
 
@@ -535,6 +567,8 @@
   (上の作り直しの経路の後も今の値。Studio の bytes 列は dump の値なのでそのまま今の値になる)。arena を直接読む消費者を足すと登録時の値を読む。
   `memory_summary.total_bytes` は計画の和から「公開中の世代の arena に登録された render target 全部(runtime の alias の組ごとに 1 回)」に変わり、
   `unused_bytes` / `unused_resources` / `peak_graph` の鍵が増えた(上の判定の「鍵は増えず」は RC-1 の時点のもの)。
+- **RC-7e(2026-11-01、`0e5d5b75a`)**: どの graph も使わない render target は登録しないので arena にも `total_bytes` にも入らず、`memory_summary.unallocated_resources`(arena の scope が持つ登録の時の一覧)に出る
+  (2-3 の「[RC-7e で入った物](#rc7e-implementation)」)。
 
 ### 2-5 anchor ノードと順序の二重化 — [段メモ](design_render_stage_as_canvas_filter.md) §3.2〜3.3 の通り
 

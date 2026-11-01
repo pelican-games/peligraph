@@ -1,7 +1,7 @@
 # 不要な render target の削減: 寿命の正確化と区間詰めによるメモリ共有
 
 対象読者: エンジン担当(描画コンパイラ / renderer)。
-ステータス: 改善案メモ(2026-10-16。議論の記録。WP 化・レビュー前)。段 0(計測)は RC-1 で済み(2026-10-23、`631caac21`。§5)。合計の数え方を実際の確保に合わせる RC-1b も済み(`504a6492a`。§5)。段 1 の寿命の部分(A)は RC-6c で済み(2026-10-30、`be795c9a5`。[§2 の末尾](#rc6c-lifetime)と §5)。中間の RT を名前で読む約束(`retain`)は RC-7a で済み(2026-10-31、`2d1715cf3`。[§2 の末尾の RC-7a](#rc7a-readback)と §5)。同じ形の共有の条件を広げる RC-7b も済み(2026-10-31、`0091c071c`。[§2 の末尾の RC-7b](#rc7b-sharing)と §5)。形の違う区間詰め RC-7c も済み(2026-10-31、`27a919f4a`。[§2 の末尾の RC-7c](#rc7c-packing)と §5。§3.2 の `alias_reuse` の表は作らない形に変えた)。memory の種類ごとの RC-7d も済み(2026-11-01、`c941a8346`。[§2 の末尾の RC-7d](#rc7d-memory-kinds)と §5。本物の lazily allocated memory の確保は未検証)。
+ステータス: 改善案メモ(2026-10-16。議論の記録。WP 化・レビュー前)。段 0(計測)は RC-1 で済み(2026-10-23、`631caac21`。§5)。合計の数え方を実際の確保に合わせる RC-1b も済み(`504a6492a`。§5)。段 1 の寿命の部分(A)は RC-6c で済み(2026-10-30、`be795c9a5`。[§2 の末尾](#rc6c-lifetime)と §5)。中間の RT を名前で読む約束(`retain`)は RC-7a で済み(2026-10-31、`2d1715cf3`。[§2 の末尾の RC-7a](#rc7a-readback)と §5)。同じ形の共有の条件を広げる RC-7b も済み(2026-10-31、`0091c071c`。[§2 の末尾の RC-7b](#rc7b-sharing)と §5)。形の違う区間詰め RC-7c も済み(2026-10-31、`27a919f4a`。[§2 の末尾の RC-7c](#rc7c-packing)と §5。§3.2 の `alias_reuse` の表は作らない形に変えた)。memory の種類ごとの RC-7d も済み(2026-11-01、`c941a8346`。[§2 の末尾の RC-7d](#rc7d-memory-kinds)と §5。本物の lazily allocated memory の確保は未検証)。使われない RT の確保の除去 RC-7e も済み(2026-11-01、`0e5d5b75a`。[§2 の末尾の RC-7e](#rc7e-unallocated)と §5。これで RC-7 の段は全部済み)。RC-7d の lazily allocated memory は、実機の Adreno 830 で engine とは別の probe が確かめた(§5 の「[RC-7d の実機の確認(11-01)](#rc7d-device-check)」。engine そのものの実機の確保は未確認)。
 前提: マニュアル [第6章 §6.6 target planning](manual/06_rendering.md#target-planning-tree)、
 [design_render_pipeline_extensibility.md](design_render_pipeline_extensibility.md)、
 [v1 開発計画](v1_development_plan.md)「保守上の整理候補」。
@@ -351,6 +351,55 @@ Studio / RenderDoc のキャプチャ、外部 depth export)。用途が特定�
   新しい `memory_types`・`image_memory_facts` と lowering graph の pattern の `allow_alias` を配置の派生の欄として除いた(意味の欄の除外は増やしていない。C5 の資源ごとの差は `<作業ディレクトリ>/rc7d_c5_details.json`)。
 - **RC-7 に残した物**: 使われない RT の確保の除去(RC-7e)。depth-stencil の共有は外のまま。未確認: 本物の lazily allocated memory の確保と commit(手元に tiler が無い)、`OutOfDeviceMemory` での戻りの
   強制、MoltenVK での種類の判定、他の GPU / driver。
+  → 使われない RT の確保の除去は RC-7e で済んだ(下)。本物の lazily allocated memory の確保と commit は、11-01 に実機の Adreno 830 で engine とは別の probe が確かめた
+  (§5 の「[RC-7d の実機の確認(11-01)](#rc7d-device-check)」)。engine そのものを実機で動かした確保は未確認。
+
+<a id="rc7e-unallocated"></a>
+
+**RC-7e で変わった(2026-11-01、`0e5d5b75a`。branch `agent/rc7e` の develop_v1 への squash。使われない RT の確保の除去)。**仕様は `<作業ディレクトリ>/rc7_spec.md` §6(opencode Opus 5.5 の仕様レビュー 9 件の反映)、実装者の報告は
+`<作業ディレクトリ>/rc7e_report.md` と、レビューの指摘 2 件・Adreno 830 の fixture・WP339 の赤 2 件の修正の報告 `<作業ディレクトリ>/rc7e_fix_report.md`。この段の行番号は `0e5d5b75a` の物。ファイルごとの所在は
+[棚卸しメモ §2-3 の RC-7e](design_plan_layer_inventory.md#rc7e-implementation)、作者向けの形は manual [第6章の「使われない render target を確保しない」](manual/06_rendering.md#unallocated-render-targets)。
+
+- **変えた挙動**: generation の中で何も使わない RT を登録しない(VkImage も memory も作らない)。宣言の検査は今のまま全部の宣言に行う。計画の側(物理計画・packing・region・合意・verifier・wire・fingerprint)は
+  変えない。packing の入力には plan に載った資源だけが入るため(仕様 §6.2)。A5 / F4 / B4 / C5 は比較から除く欄を増やさずに緑。
+- **使用の集合 U**([`unallocatedRenderTargets()`](../src/project/targetrendermemory.cpp#L176)): generation の全 runtime variant・全 graph の最終の plan(合意の後)の planned image の名前の和、
+  view family の provider が名前で引く RT、保持の名前の和。登録の準備が preview を取り出した後の runtime variant の列から作るので、preview の variant は入らない。inactive な scope・once・
+  `no_selected_view` の node が使う資源は plan に残るので U に入ったまま(仕様の記述。この形を見る test は無い)。
+- **保持は `display` だけ**([`engineHeldRenderTargetNames()`](../src/project/targetrendermemory.cpp#L172))。根拠は ImGui の初期化と XR の mirror の登録が plan の外で名前で引くこと。history / persistent /
+  source / external / picking は、使われていれば U に入り、使われていなければ engine の理由も付かないので保持しない(利用者の決定 (2) は使われる資源の保持の理由を消せないという意味で、
+  未使用の宣言を守る根拠ではない。仕様 §6.1)。canonical の `output_transform` がどの graph でも `display` を読むので、`display` を使わない plan は実際には作れない(E1 が assert する)。
+- **view family の provider の RT**(修正の報告の C): 最初の実装は provider が名前で引く RT を U に入れず、統合側の gate で WP339 の 2 件が `render_target.not_allocated@1: cube_capture_color` で赤
+  (fixture が feature `cube_capture` の pass を削り、`$capture/cube` の node だけが残る。cube provider の `validateFamily()` が名前で引く)。保持の一覧に名前を足さず、provider の宣言
+  `RenderViewFamilyProviderDefinition::render_targets`([その所](../src/core/renderer/viewfamilyproviderregistry.hpp#L81))から決める形にした: cube は feature `cube_capture` があれば `cube_capture_color`、
+  point / spot は family の contract があれば `contract.resource`、directional は `directional_shadow_input` の contract があれば `contract.resource`、planar reflection は名前で引かないので無し。
+  宣言は node の有無を見ない(shadow の毎 frame の prepare が node の有無に関係なく名前で引くのに合わせた。cube は validate より広い)。plan の外の engine の使用を足す所は
+  [`vulkanRuntimeVariantEngineRenderTargetUses()`](../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L1037) の 1 か所。
+- **除外する所は 1 か所**: 登録の入力の列(`RegistrationStages::prepare()` が `variant_render_targets` を作る所。[その所](../src/core/renderingpass/renderingpassconfigregistration.cpp#L1146))。
+  全 variant の和の登録と variant ごとの登録の両方がこの列を読む(仕様レビューの指摘 1)。GenerationResources・usage の合意・packing の入力・complete の検証・`passDefinitionOf()` の資源の表は
+  宣言の全部を持つ(`size_from_extent` の buffer が未使用の image の大きさに依存するのは今も合法。仕様 §6.2)。
+- **定義の検査は除去した RT にも行う**: 登録が image を作る前の検査を、除去した RT にも同じ base extent・同じ順・同じ文で行う
+  ([`validateUnregisteredRenderTargetDefinitions()`](../src/core/renderingpass/rendertargetconfigregistration.cpp#L36))。display の format の照会 →
+  [`validateRenderTargetDefinition()`](../src/core/renderingpass/rendertargetcontainer.cpp#L584)(`registerRenderTarget()` の確保の前の検査を切り出した物)→
+  [`requireRenderTargetFormatFeatures()`](../src/core/renderingpass/rendertargetcontainer.cpp#L555)(`createRenderTargetImage()` にあった format feature の照会。最初の実装は除去した RT に
+  これを呼んでいなかった。修正の報告の A1)。仕様が例に挙げた「相対 extent の cube の正方形」は parse が先に `cube_requires_fixed_extent` / `cube_requires_square` で断るので登録の検査に届かず、
+  test は登録でしか見ない「SAMPLED の無い history」で代えた(実装者の報告)。
+- **名前で引く道**: `getRenderTargetIdByName()` の番兵は変えない。generation が除去の集合を持ち、名前で引く道の「見つからない」の分岐で、名前が集合にあれば `render_target.not_allocated@1: <name>`
+  にする(passDefinitionOf の `unresolved_image`、compute、punctual / directional の影、cube capture、picking、external depth の 2 か所)。ImGui の `display` の道は変えていない(`display` は外れない)。
+  名前の readback は RC-7a の順のままで、先に `readback_not_retained@1`。
+- **generation・resize・観測**: 除去の集合は generation ごとに作り直す。後の generation で使い始めた RT は、登録が無いので置き換えの道で新しく作る(前の登録の再利用の道に入らない)。
+  使わなくなった RT は新しい generation で登録しない。resize の 2 つの道は `registration_order` だけを作り直す(変えていない)。観測は `get_frame_plan` の
+  `memory_summary.unallocated_resources: [{name, reason: "unused_in_generation", payload_bytes}]`。登録が作り、準備中の generation の GPU arena の scope に持たせて publish と同時に公開し、失敗して戻せば
+  旧い generation の一覧のまま。`payload_bytes` は登録の時の extent での見積もりで、container だけの resize の後も数え直さない(修正の報告の A2 で意味を固定)。`unused_bytes` / `unused_resources` は
+  「確保したが used でない」のまま、`total_bytes` は実際の確保だけ。provider が名前で引くだけの RT は確保されるので `unused_resources` 側に出る(コードの読み。test は無い)。
+- **実測**(NVIDIA GeForce RTX 5080): E2 の 32×32 の fixture(どの graph も使わない `R0` 1 枚と history の `H` 2 面)で、除外しない形(RC-7e の前の挙動。変異で再現)の
+  **6 allocation・28,672 bytes → 3 allocation・16,384 bytes**(`R0`・`H` を宣言しない基準と一致。`unallocated_resources` = `H` 8,192・`R0` 4,096)。example(1920×1080)は除去の対象が無く、
+  **4 allocation・128,286,720 bytes のまま**(RC-7d と同じ)。
+- **仕様と変えた test の形**(実装者の報告): 1 つの config には graph を 1 つしか置けない(graph ごとに `output_transform` が足され、pass 名は config 全体で一意)ので、E1 の「2 variant × 2 graph」は
+  2 variant × 1 graph にし、仕様の R3(同じ variant の g1 では purged・g2 では planned)は作っていない。「先頭の 1 つの plan から U を作る」変異は、variant を XR → flat の順にして flat だけが使う
+  `R1` で捕まえる。`display` を使わない plan は作れないので、保持は plan を渡さない呼び出しで見る。
+- **RC-7 に残した物**: 無し(RC-7a〜7e の全段が済んだ)。depth-stencil の共有は外のまま。未確認: R3 の形、compute・provider・picking・external depth の `not_allocated@1` の分岐の実行
+  (test で通したのは passDefinitionOf だけ。ほかの道の名前は node の use か provider の宣言から来て U に入るので、普段は届かない)、inactive な scope などの資源が U に残ること、
+  provider だけが引く RT が `unused_resources` に出ること、engine そのものでの本物の lazily allocated memory の確保(RC-7d から。下の「RC-7d の実機の確認(11-01)」は別の probe)。
 
 ## 3. B: alias を区間詰めに一般化する(本丸)
 
@@ -400,14 +449,15 @@ renderer(executePlannedFrameGraph)
   既定は color 全 `store`、depth `dont_care`([`passattachmentoperations.cpp:7`](../src/core/renderingpass/passattachmentoperations.cpp#L7))。
 - 宣言だけされて一度も使われない RT は、lifetime.used = false の資源として既に計画から落ちている(確保されない)ことを確認する。
   → RC-1b で確認(§5): 計画には出ないが、runtime の登録は定義を全部登録するので確保されている。
+  → **RC-7e で解けた**: どの runtime variant の plan も view family の provider も使わない RT は登録しない(`display` は保持)。一覧は `memory_summary.unallocated_resources`([§2 の末尾の RC-7e](#rc7e-unallocated))。
 
 ## 5. 段階
 
 | 段 | 内容 | 規模 | 検証 |
 |---|---|---|---|
 | 0 | 計測: `get_frame_plan` に `memory_summary {total_bytes, peak_live_bytes, peak_node}` と資源ごとの `bytes` を出す。Studio の Frame Plan に表示。**RC-1 で済み(`631caac21`)** | 小 | planner の単体テスト(GPU 不要)。手計算の 120 / 81 MiB と一致 → 実測は 119.95 / 81.08 MiB(合計のずれは §1 の注) |
-| 1 | A: required / require_store の末尾延長の理由を特定し、必要な経路だけ opt-in に。**寿命の意味は RC-6c で済み(`be795c9a5`。graph の外の読み手 7 つを理由に)。名前の readback の opt-in は RC-7a で済み(`2d1715cf3`)。実確保の削減は RC-7b〜7e** | 小〜中 | 物理計画の fixture 差分、golden 不変、headless 読み出し・picking・capture の回帰 |
-| 2 | B: 区間詰め alias(planner → runtime → barrier)。**RC-7b〜7e に分けた(下の「RC-7 の段」)。同じ形の共有の条件の拡張は RC-7b で済み(`0091c071c`)。形の違う区間詰めは RC-7c で済み(`27a919f4a`。`alias_reuse` の表は作らない)。memory の種類ごとは RC-7d で済み(`c941a8346`。lazily allocated の実確保は未検証)** | 大 | planner 単体(詰め結果の決定性、no_alias、memoryTypeBits 拒否)、GPU gate 全数、`hazard_stress` での揺さぶり、validation layer |
+| 1 | A: required / require_store の末尾延長の理由を特定し、必要な経路だけ opt-in に。**寿命の意味は RC-6c で済み(`be795c9a5`。graph の外の読み手 7 つを理由に)。名前の readback の opt-in は RC-7a で済み(`2d1715cf3`)。実確保の削減は RC-7b〜7e(RC-7e まで全部済み)** | 小〜中 | 物理計画の fixture 差分、golden 不変、headless 読み出し・picking・capture の回帰 |
+| 2 | B: 区間詰め alias(planner → runtime → barrier)。**RC-7b〜7e に分けた(下の「RC-7 の段」)。同じ形の共有の条件の拡張は RC-7b で済み(`0091c071c`)。形の違う区間詰めは RC-7c で済み(`27a919f4a`。`alias_reuse` の表は作らない)。memory の種類ごとは RC-7d で済み(`c941a8346`。lazily allocated の実確保は未検証)。使われない RT の確保の除去は RC-7e で済み(`0e5d5b75a`)。RC-7 の段は全部済み** | 大 | planner 単体(詰め結果の決定性、no_alias、memoryTypeBits 拒否)、GPU gate 全数、`hazard_stress` での揺さぶり、validation layer |
 | 3 | C: dead pass elimination、store 自動 discard | 中 | frame plan の fixture、golden 不変 |
 
 0 と 1 は純ロジック中心。2 は GPU gate 必須(Windows)。
@@ -431,7 +481,7 @@ verifier だけ一律の延長に戻すと正常な package の検証が赤。go
 2. **RC-7b** 同じ形の共有の条件を広げる(offset 0・既存の barrier のまま。広げた後の画像の契約の互換と frame の境界での使い回しの同期を完了の条件に入れる)(✅ 済み。下の完了記録)。
 3. **RC-7c** 形の違う区間詰め(retain の資源への TRANSFER_SRC の自動の付け足し、device facts の memory requirements、memory の種類ごとの heap と offset、`alias_reuse` の barrier)(✅ 済み。下の完了記録。`alias_reuse` の表は作らず、runtime の range の規則にした)。
 4. **RC-7d** memory の種類ごと(transient / tile-local を同じ allocator の道へ。lazily allocated は作り物の device facts の CPU test まで)(✅ 済み。下の完了記録。lazily allocated の道は作り物の facts の CPU test と、desktop で種類を偽って戻りを見る GPU test まで)。
-5. **RC-7e** 使われない RT の確保の除去。
+5. **RC-7e** 使われない RT の確保の除去(✅ 済み。下の完了記録。これで RC-7 の段は全部 ✅)。
 
 利用者の決定(仕様の冒頭の 7 点の要約): (1) `retain: true` は「graph の後に名前で読める」の約束で、planner が materialized・store・TRANSFER_SRC を足す(TRANSFER_SRC は RC-7c から。
 上の RC-7a の節)。成り立たなければ `require` は名前付きの拒否、`prefer` は不採用で readback も拒否。`retain` の無い中間の RT の名前の readback は拒否。test は観測する資源だけに
@@ -533,6 +583,58 @@ RC-7d の完了記録(2026-11-01、`c941a8346`、branch `agent/rc7d`。検証は
   (`view_select_field` は単独で走らせると緑の間欠)。基準との比較 A5 / F4 / B4 / C5 が緑。
   未確認: **本物の lazily allocated memory の確保と commit**(手元にタイルベースの GPU が無い。D3 は desktop で種類を偽った戻りの道だけ)、`OutOfDeviceMemory` での戻り、VMA が GPU_LAZILY_ALLOCATED で
   dedicated にすることの読み返し、他の GPU / driver。
+
+<a id="rc7d-device-check"></a>
+
+RC-7d の実機の確認(11-01。上の RC-7d の完了記録の「未確認: 本物の lazily allocated memory の確保と commit」への追記で、完了記録そのものは書き換えない): 実機の Snapdragon 8 Elite(SM8750)・
+Adreno (TM) 830・Qualcomm の Adreno Vulkan driver 512.800.72(Vulkan 1.3.284)で、engine とは別の小さな probe(`<作業ディレクトリ>/android/lazy_probe`。NDK r27c で build、VMA 3.3.0 の写しを Vulkan 1.1 に固定、
+memory の種類の規則は `imageMemoryKind()` と同じ)を走らせた。結果は `<作業ディレクトリ>/android/results/adreno830_sm8750_probe.json`。
+
+- **memory type**: 9 個で、LAZILY_ALLOCATED を持つのは **type 8**(property flags 17 = DEVICE_LOCAL | LAZILY_ALLOCATED、heap 0)だけ。
+- **requirements**(1920×1080・1 mip・1 layer・1 sample・optimal): TRANSIENT の 3 種(RGBA8 の COLOR | TRANSIENT、D32 の DEPTH_STENCIL | TRANSIENT、RGBA8 の COLOR | TRANSIENT | INPUT)は
+  `memoryTypeBits` が **257**(type 0 と 8)、size 8,392,704・alignment 4,096・dedicated の要求も希望も無し。materialized(RGBA8 の COLOR | SAMPLED)は bits 1。規則どおり TRANSIENT の 3 種が lazy、
+  materialized が ordinary。
+- **VMA の lazy の確保**: `VMA_MEMORY_USAGE_GPU_LAZILY_ALLOCATED` の確保は 3 種とも成功し、**type 8 に dedicated**(probe は `vmaGetAllocationInfo2` の `dedicatedMemory` で判定。allocation の size も
+  block の size も 8,392,704)。§2 の末尾の RC-7d で「VMA の振る舞いはこの repo では読んでいない」とした dedicated の前提を、この device で確かめた。
+- **commit**: `vkGetDeviceMemoryCommitment` は確保の直後が 3 種とも 0 bytes。color の 2 種(transient・tile-local)は CLEAR / DONT_CARE の render pass を submit して fence を待った前後とも **0 bytes**。
+  depth は確保の直後の値だけ(render pass の試験はしていない)。
+- **fixture と test**: 値を `test/fixtures/device_facts/adreno830_sm8750.json` に写し(probe の JSON の `pelican_device_facts` そのまま。出所は `_comment`)、RC-7e の commit(`0e5d5b75a`)で入った CPU の
+  test「RC-7d D1 Adreno 830 device facts keep transient and tile-local images lazy outside regions」(`test/rc7d_adreno830_test.inc`)が読む。fixture の値を先に assert し、planner がこの facts で
+  `scratch`・`scratch_depth`(transient)と `local_source`(tile-local)を lazy と判定して region の外に置き(`lazy_memory`)、materialized の `A`・`B`・`local_output` は region に入り、lazy の
+  `scratch` を入れた `alias_group` の `require` が `alias.lazy_memory@1`。対照(修正の報告の B): 種類の判定で LAZILY を見ないと 7 件が赤。
+- 未確認: engine(pelican2 そのもの)を tiler の実機で動かした確保・画素・観測の欄、validation layer(probe の時は `validation_layer_available: false`)、repo の build が使う VMA と probe の
+  VMA 3.3.0 が同じ版か(`CMakeLists.txt` は vma-hpp v3.3.0 に触れるが照合していない)、他の tiler / driver、`OutOfDeviceMemory` での戻り。fixture の test は engine が足す `display`(B8G8R8A8_SRGB)にも
+  materialized の値を当てる(display の format の実測は無い)。
+
+RC-7e の完了記録(2026-11-01、`0e5d5b75a`(develop_v1 への squash)、branch `agent/rc7e`。検証は実装者の報告と修正の報告、統合側の gate): 内容は [§2 の末尾の RC-7e](#rc7e-unallocated)。仕様 §6.4 の受け入れごとに:
+
+- **E1**(CPU): flat と XR の 2 variant × 1 graph の fixture(どの graph も使わない `R0`、flat だけが使う `R1`、使われない history の `H`、`display`)で、先に「`R0`・`H` はどの plan にも無い、
+  `R1` は flat の plan だけ、`display` は全 plan」を assert。`unallocatedRenderTargets` の結果は `{H 32,768 B, R0 16,384 B}`(64×64)、plan を渡さなければ `{A, H, R0, R1}`(`display` は保持)、
+  先頭の plan だけなら 3 件。SAMPLED の無い未使用の `H` は除去の対象になり、`validateRenderTargetDefinition()` で登録と同じ `History render target requires SAMPLED usage: H`
+  (「RC-7e E1 the images no runtime plan uses are not allocated」)。対照の test(修正の後): feature `cube_capture` の `$capture/cube` の pass だけがあり `cube_capture_color` をどの node も使わない構成で、
+  engine の使用が `{cube_capture_color}`、それを渡すと除去は `{H, R0}`、plan だけなら `cube_capture_color` も除去、feature が無ければ engine の使用は空
+  (「RC-7e E1 a target only a view-family provider looks up is allocated」)。
+- **E2**(GPU、NVIDIA GeForce RTX 5080、validation 有効): flat と XR を 1 transaction で登録。宣言しない基準と同じ **3 allocation・16,384 bytes**(`total_bytes` も一致)で、除外しない形は 6・28,672。
+  container に `R0`・`H` が無く、program の集合は `{H, R0}`。`R0` を使う graph の pass の定義は除去の集合を持つ resolver で `render_target.not_allocated@1: R0`(集合なしの対照は `unresolved_image`)、
+  名前の readback は `render_target.readback_not_retained@1`。flat・XR(合成のステレオの左目)・flat に戻す・container だけの resize(48×32)・再 compile の resize(64×48)で画素が正しく、一覧と
+  `R0` の不在は変わらず、resize の後も `payload_bytes` は登録の 32×32 の値。`after_runtime_prepare` に失敗を注入した置き換えで snapshot・一覧・`R0` の不在が旧いまま、続けて成功させると `R0` が作られ
+  `A` が外れる(一覧 = `A`, `H`)。SAMPLED の無い `H` と、STORAGE を書いた SRGB の `S`(この GPU の `R8G8B8A8_SRGB` は optimal tiling に STORAGE_IMAGE が無い)が登録の文で断られ、snapshot は
+  変わらない。validation のメッセージ 0 件(synchronization validation が有効であることは assert していない。実装者の報告)。数は `<作業ディレクトリ>/rc7e_e2.json`
+  (「RC-7e E2 registration allocates no target no graph uses」)。
+- **E3**: example(1920×1080)に除去の対象は無く、4 allocation・128,286,720 bytes で RC-7d と同じ(「RC-7c C1 example actual VMA allocations and bytes beat RC-7b reference」に空の assert を足した)。
+- **既存の test の移行**: `memory_summary` を JSON の完全一致で比べる `frameplanner_test` / `targetrenderplanning_test` の「RC-1 …」の 2 本に `unallocated_resources: []` を足しただけ(CPU の代役の
+  登録は除去の道を通らないので、`rc1b_unused` は確保のまま)。値そのものを変えた期待は無い。
+- **対照**(実装者の報告と修正の報告、各 1 回で赤を確かめて戻す): U を先頭の 1 つの plan から作る → E1(`R1` が入る)、U に後の variant を入れない → E1(`R1`)、`display` を保持から外す → E1、
+  除去した RT の定義の検査を飛ばす → E2(SAMPLED の無い `H` が通る)、置き換えで新しく作る道を外す → E2(`render_target.memory_resource_missing@1: R0`)、variant ごとの登録の列で除外しない →
+  E2(6 ≠ 3、28,672 ≠ 16,384)。修正の分は、除去した RT の format feature の照会を外す → E2(`S` が通る)、view family の provider の RT を U に足さない → 新しい E1 の対照と WP339 の 2 件。
+  最初の試行で置換が CRLF の行をまたいで当たらず、変異されないまま緑になった回があり、1 行の置換で回し直した(修正の報告)。
+- **WP339 の赤 2 件**: 統合側の gate で、view family の provider の RT を誤って除去した赤 2 件(`render_target.not_allocated@1: cube_capture_color`)が出た。provider の宣言 `render_targets` を U に
+  足す形に直し(§2 の末尾の RC-7e)、WP339 の 2 件と新しい E1 の対照が緑。
+- **触った家族**(修正の後): render_planning_core 130・render_pipeline 522(既知の SKIP 1。E1 の対照と Adreno 830 の D1 で 2 件増)・project_planning 130、hidden の A5 / F4 / B4 / C5(4,565 assertions)、
+  GPU 55 件(53 緑、既存の理由の SKIP 2)。studio_cpu 1,014 は修正の前の実装者の報告で緑。
+- **統合側の gate**: GPU 全数 487 件中、赤は既知の `player_arguments_ds1_path` の 1 件だけ。非 GPU 全数は既知の 29 件だけが赤。シナリオ 23 本中 23 本が緑。基準との比較 A5 / F4 / B4 / C5 が緑。
+  未確認: 仕様の R3(同じ variant の中で graph によって purged / planned が分かれる資源。今の config は graph を 1 つしか持てない)、compute・provider・picking・external depth の `not_allocated@1` の
+  分岐の実行、inactive な scope などの資源が U に残ること、provider だけが引く RT が `unused_resources` に出ること、OpenXR の実機での道(実装者の報告は統合側に任せた。gate のシナリオ 23 本に XR の実機の道が入るかは確かめていない)。
 
 ## 6. 未決(2026-10-17 更新)
 
