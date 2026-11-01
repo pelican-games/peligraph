@@ -154,7 +154,7 @@ std::string fileMtime(const std::filesystem::path &path, std::error_code &ec) {
     if (ec) {
         return {};
     }
-    return std::to_string(time.time_since_epoch().count());
+    return std::to_string(static_cast<long long>(time.time_since_epoch().count()));
 }
 
 } // namespace

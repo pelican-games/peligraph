@@ -37,7 +37,7 @@ TEST_CASE("RC-7a F2 retain derives materialization store and terminal lifetime",
         [](const auto &v) { return v.at("logical_resource") == "write_only_scratch"; });
     REQUIRE(physical != dump.at("resources").end());
     CHECK(physical->at("representation") == "materialized_image");
-    CHECK(physical->at("lifetime").at("retain") == nlohmann::json::array({"readback"}));
+    CHECK(physical->at("lifetime").at("retain") == nlohmann::ordered_json::array({"readback"}));
 }
 TEST_CASE("RC-7a F2 final verifier independently checks retain contracts", "[target-render-planning][rc7a][rc7-f2]") {
     const auto types = makeBuiltinLogicalTypeRegistry();

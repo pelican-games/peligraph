@@ -342,7 +342,7 @@ TEST_CASE("CV-1b the authoring hook lowers in place, idempotently, and names the
     REQUIRE(std::filesystem::is_regular_file(written));
     const auto first_time = std::filesystem::last_write_time(written);
     Pelican::writeAuthoringGeneratedSources(lowering, root);
-    CHECK(std::filesystem::last_write_time(written) == first_time);
+    CHECK((std::filesystem::last_write_time(written) == first_time));
     std::ifstream in(written, std::ios::binary);
     CHECK(std::string{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()} ==
           lowering.generated_sources.at(1).text);

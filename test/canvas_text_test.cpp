@@ -729,7 +729,7 @@ TEST_CASE("CV-4 the authoring hook reads the font through its context and writes
     CHECK(bytes.starts_with("\x89PNG"));
     const auto first_time = std::filesystem::last_write_time(written);
     Pelican::writeAuthoringGeneratedSources(lowering, root);
-    CHECK(std::filesystem::last_write_time(written) == first_time);
+    CHECK((std::filesystem::last_write_time(written) == first_time));
     std::filesystem::remove_all(root);
 }
 

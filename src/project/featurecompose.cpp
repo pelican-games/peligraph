@@ -3109,7 +3109,7 @@ void appendRequiredCapabilities(
                     required.begin(), required.end(),
                     [&](const auto &entry) {
                         return entry.is_string() &&
-                               entry.get<std::string>() == capability;
+                               entry.template get<std::string>() == capability;
                     })) {
                 required.push_back(capability);
             }

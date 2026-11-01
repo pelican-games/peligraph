@@ -68,6 +68,13 @@ if(PELICAN_ENABLE_ASAN)
   endif()
 endif()
 
+# SA0: the Android NDK spike builds only the GPU-free logic and its tests.
+# Never set on a desktop configure; the rest of this file is skipped when ON.
+if(PELICAN_ANDROID_SA0)
+  include(cmake/pelican_android_sa0.cmake)
+  return()
+endif()
+
 # external dependencies
 ## Logging
 FetchContent_Declare(

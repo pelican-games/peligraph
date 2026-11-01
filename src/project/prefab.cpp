@@ -952,7 +952,7 @@ bool prefabDescriptorActive(const BindableDescriptor &descriptor,
         if (std::none_of(condition.active_values.begin(),
                          condition.active_values.end(),
                          [&](const auto &candidate) {
-                             return candidate == *actual;
+                             return candidate == nlohmann::ordered_json(*actual);
                          })) {
             return false;
         }

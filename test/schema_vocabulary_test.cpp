@@ -370,7 +370,7 @@ TEST_CASE("WP358 value corpus covers all 17 shapes bounds arities and F32 resolu
         const std::string path = "params." + field.name;
         INFO(field.name);
         REQUIRE(Pelican::Schema::resolveValue(field, entry.accepted, path) ==
-                entry.resolved);
+                nlohmann::ordered_json(entry.resolved));
         requireSchemaError(
             [&] {
                 (void)Pelican::Schema::resolveValue(field, entry.rejected,

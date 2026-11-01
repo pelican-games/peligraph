@@ -339,7 +339,7 @@ PassShapeObservation passShapeObservationFromJson(
                 "Input target must be a render target or buffer name");
         }
         auto reference = parsePassShapeInputReference(
-            encoded.get_ref<const std::string &>());
+            encoded.template get_ref<const std::string &>());
         const bool image = std::find(non_image_inputs.begin(),
                                      non_image_inputs.end(),
                                      reference.name) ==
