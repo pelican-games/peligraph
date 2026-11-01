@@ -6,8 +6,9 @@
 
 - 入力システムの四層構造と、**順序付き FrameInput**(WP69)
 - `actions.json`(アクション定義)と `pelican.input_profile`(バインディング)の**分離**(WP91・破壊的変更)
-- ゲームパッド対応と、収録・リプレイ(`pelican.input_seq` v2)
+- ゲームパッド対応と、収録・リプレイ(`pelican.input_seq` v2。タッチを含む記録は v3)
 - ポインタの位置(framebuffer ピクセル)とカーソルのモード(`ctx.input()`、GP-4)
+- Android の入力(キーボード・ゲームパッド・タッチ・ペン・BACK)と、タッチの binding `touch:region` / `touch:tap`(SA1f)
 - 実装済みの UI 基盤 `pelican.ui` v1(ウィジェット・レイアウト・イベント emit)と、ゲームコード(`ctx.ui()`)・共通グラフ(`ui.*` sink)から UI を書く方法(GP-3)
 - テキスト HUD(`debug_text`)の使い方
 
@@ -19,7 +20,7 @@
 
 | 層 | 内容 | 状態 |
 |---|---|---|
-| L0 | GLFW(キーボード+マウス+**ゲームパッド 16 スロット**)、**OpenXR(Touch コントローラ + pose)**、rpc 注入、リプレイ注入 | ✅(WP130/132 で XR も実装) |
+| L0 | GLFW(キーボード+マウス+**ゲームパッド 16 スロット**)、**OpenXR(Touch コントローラ + pose)**、✅SA1f の **Android**(キーボード・ゲームパッド 16 スロット・タッチ・マウス。下の「Android の入力」)、rpc 注入、リプレイ注入 | ✅(WP130/132 で XR も実装) |
 | L1 | **順序付きイベント + スナップショット**(`FrameInput`、WP37→WP69) | ✅ |
 | L2 | アクション層 = `actions.json` + `input_profile`(WP39/91) | ✅ |
 | L3 | `Actions` / `GameContext` / **収録・リプレイ**(WP43/45/89) | ✅ |
@@ -27,7 +28,7 @@
 L1 の要点(✅WP69 で改訂):
 
 - フレーム先頭で入力が**凍結**され、フレーム内で不変(決定性の柱)。
-- `FrameInput` は「順序付きイベント列(`ordered_events` — 全イベントに単調増加の `event_seq` が付き、途中座標・発生順が保持される。`event_seq` は時刻ではなく**通し番号**(`std::uint64_t`。0 から採番し、フレームをまたいでも巻き戻らない — [inputstate.hpp:99](../../src/core/os/inputstate.hpp#L99)))」と「集約スナップショット」の両方を持ちます。**この 2 つは同じフレームの同じ入力を 2 通りに見せたもの**で、重複でも競合でもありません(順番が要るならイベント列、いまの状態が要るならスナップショット)。スナップショット側では従来どおり同一フレームの「押して離す」は pressed / released が両方立ちます。
+- `FrameInput` は「順序付きイベント列(`ordered_events` — 全イベントに単調増加の `event_seq` が付き、途中座標・発生順が保持される。`event_seq` は時刻ではなく**通し番号**(`std::uint64_t`。0 から採番し、フレームをまたいでも巻き戻らない — [inputstate.hpp:99](../../src/core/os/inputstate.hpp#L124)))」と「集約スナップショット」の両方を持ちます。**この 2 つは同じフレームの同じ入力を 2 通りに見せたもの**で、重複でも競合でもありません(順番が要るならイベント列、いまの状態が要るならスナップショット)。スナップショット側では従来どおり同一フレームの「押して離す」は pressed / released が両方立ちます。
 - **入力消費マスク**: ここでいう**消費**は「先に受け取った層がその入力を握り、下の層へ渡さない」ことです。消費の優先順は ImGui → `pelican.ui` → アクション層。UI がポインタを hit / capture したフレームは、そのポインタがアクション層から見えなくなります。
 - ImGui が消費者に入るのは**通常ウィンドウ起動のときだけ**です。headless / rpc / リプレイ / golden に加え、✅WP138 以降は **XR session が active な間もエンジンは ImGui frame を begin しません**(XR グラフに `imgui` パスが無いため。論理フレーム境界でゲートが閉じたときは開始済みフレームを閉じてから外します)。この場合の消費順は `pelican.ui` → アクション層になります([第6章](06_rendering.md) §6.12)。
 - 入力はフレーム内で不変になり、通常ループと RPC の状態更新は[第1章のフレーム順の図](01_overview.md#frame-order)に従います。
@@ -94,7 +95,7 @@ L1 の要点(✅WP69 で改訂):
 }
 ```
 
-- **deadzone**(不感帯)は、スティックの中立付近のふらつきを 0 に落とすしきい値です。軸の大きさ(0〜1 に正規化した値。`pad:*_stick` では 2 軸の長さ)がこの値以下なら 0 とし、超えた分は再び 0〜1 に伸ばし直します([applyDeadzone()](../../src/core/os/actionmap.cpp#L666))。`0.2` は「20% 以下は倒していない扱い」の意味です。
+- **deadzone**(不感帯)は、スティックの中立付近のふらつきを 0 に落とすしきい値です。軸の大きさ(0〜1 に正規化した値。`pad:*_stick` では 2 軸の長さ)がこの値以下なら 0 とし、超えた分は再び 0〜1 に伸ばし直します([applyDeadzone()](../../src/core/os/actionmap.cpp#L677))。`0.2` は「20% 以下は倒していない扱い」の意味です。
 - binding 要素のフィールド: `action` / `binding` + 任意 `deadzone`(数値 [0,1)、pad 軸限定)、`invert_x`(bool、pad 軸なら axis1 / axis2 どちらでも可)/ `invert_y`(bool、axis2 限定)。反転はいずれも deadzone 適用後です。
 - プロファイルの登録と既定は `project.json`: `basic_config.input_profiles`(名前 → ファイルの辞書)と `basic_config.input_profile`(既定名)。
 - 切替は 3 通り: 起動引数 `--input-profile <name>` / rpc `set_input_profile` / ゲームコード `selectInputProfile`。筐体・環境差(アーケード筐体等)は**プロファイルを増やして**表現します。
@@ -114,12 +115,30 @@ L1 の要点(✅WP69 で改訂):
 | `pad:a, b, x, y, left_bumper, right_bumper, back, start, guide, left_thumb, right_thumb, dpad_up/right/down/left` | button / axis1 | ✅ ゲームパッドボタン 15 種 |
 | `pad:left_x, left_y, right_x, right_y, left_trigger, right_trigger` | axis1 | ✅ パッド軸 6 種 |
 | `pad:left_stick` / `pad:right_stick` | axis2 専用 | ✅ スティック合成(radial deadzone) |
+| `touch:region` | button 専用 | ✅SA1f。profile の要素に**必須の属性 `region`** で書いた矩形の中に、指が 1 本でも触れていれば held。空から 1 本以上になったフレームで pressed、全部が出た(離れた・外へ出た)フレームで released。同じフレームの中の押して離すも落としません |
+| `touch:tap` | button 専用 | ✅SA1f。`region` の中で触れて `region` の中で離し、**触れてから離すまで 250 ms 以内**・**動いた距離が触れた点から 8 dp 以内**なら、離したフレームに pressed と released が立ちます(held は立たない) |
 | `xr:/user/hand/<left\|right>/input/...` | 全 type | ✅WP130。**OpenXR**(VR / AR ランタイムの業界標準 API)が定める**実パス形式** —— `/user/hand/left/input/thumbstick` のような、入力を指すスラッシュ区切りの文字列をそのまま書きます(v1 は Touch コントローラのみ。実物は [touch.json](../../projects/example/input/profiles/touch.json))。`xr:/user/hand/` 以外は名指しエラー。flat 起動では未解決として無視されるので、**同じ actions.json / profile が flat でも XR でも通る** |
 
 - アクティブな profile に `pad:` binding が 1 つも無ければゲームパッドは**一切ポーリングされません**(パージ可能原則)。切断時は保持ボタンの release + 軸ゼロが発行されます。マッピングは GLFW 内蔵の SDL_GameControllerDB。
 - 修飾 chord は列挙した修飾キーがすべて押されている間だけ成立し、列挙していない修飾キーは無視します。修飾なし binding の従来の意味は変わらないため、同じ set に `mouse:middle` と `mouse:shift+middle` を別 action として置けば Shift+MMB では両方が成立します。pan / orbit 等の意味上の優先順位は利用側で決めます。
 - profile の版は v1 のままです。field や既存 control の意味を変えず、従来は不正だった control 語彙を加えたためです。parser は引き続き version 1 だけを受理します。詳しい判断理由は[入力アーキテクチャ §2](../design_input_actions.md#wheel--修飾-chord-と-profile-の版wp271)を参照してください。
 - `pose` type は ✅WP132 で実動作になりました(XR 起動時のみ供給 — [第8章](08_gameplay.md) の `actionPose`)。**pose を含む actions.json は `--record-input` / リプレイが名指しで拒否されます**(input_seq の仕様。v2 でも同じ)。カーソルのロックは ✅GP-4 でゲームコードから頼めるようになりました(下の「ポインタとカーソル」)。
+
+#### タッチの binding(✅SA1f)
+
+```json
+"bindings": [
+  { "action": "fire", "binding": "touch:tap",    "region": [0.5, 0.25, 1.0, 1.0] },
+  { "action": "dash", "binding": "touch:region", "region": [0.0, 0.25, 0.5, 1.0] }
+]
+```
+
+- **`region: [x0, y0, x1, y1]`** は framebuffer に対する比(左上が 0、+y が下)です。4 つとも有限の数で 0〜1、`x0 < x1` かつ `y0 < y1`(面積が正)でなければ profile の読み込みで名前付きに断ります。`touch:region` / `touch:tap` には必須で、ほかの binding に書くとエラーです([profile の検査](../../src/core/os/actionmap.cpp#L1063))。左と上の辺は範囲に入り、右と下の辺は入りません([判定](../../src/core/os/actionmap.cpp#L760))。
+- 指の座標はマウスと同じく窓座標で届き、判定の時にそのフレームの換算(下の「ポインタとカーソル」)で framebuffer ピクセルにしてから比にします。framebuffer の大きさが分からないフレームでは、タッチの binding は何も立てません。
+- タッチの binding は button の action だけに書けます(axis1 / axis2 / pose はエラー)。指の位置そのものを値として読む action はありません。位置が要るときは `ctx.input().pointer()` を使います。
+- tap の 250 ms はフレームの時刻で測ります(実行中はエンジンの thread がフレームの頭に読む時計、リプレイでは記録の fps から作った時刻)。8 dp は端末の density で px に直した値で、1 回の接触の間に触れた点から最も離れた距離と比べます(行って戻っても tap になりません)。Android 以外(rpc 注入)の指は 8 px です。
+- 上の set が使った指は、下の set のタッチの binding から見えません(消費は指ごと。§「アクションセットのスタックと消費」)。UI が掴んだ指も見えません(§7.4「ポインタの座標」)。
+- ⚠ **名前の取り違え**: `touch:` はタッチ画面の device の接頭辞です。XR の Touch コントローラ(Oculus Touch)の binding は `xr:/user/hand/...` と書き、例の [touch.json](../../projects/example/input/profiles/touch.json) は profile の**名前**が `touch` なだけなので、両者は衝突しません。
 
 ### アクションセットのスタックと消費
 
@@ -145,11 +164,44 @@ if (pointer.inside) { /* pointer.position_px は framebuffer ピクセル */ }
 ctx.input().setCursorMode(Pelican::CursorMode::locked);   // normal / hidden / locked
 ```
 
-- **`pointer()`** は [`PointerState`](../../src/core/userpublic/userinput.hpp#L143) を返します。位置は framebuffer ピクセル(左上原点、+y が下)で、OS が報告する窓座標を軸ごとに `px = 窓座標 × framebuffer の大きさ ÷ 窓の大きさ` で換算したものです([`pointerTransformFor()`](../../src/core/os/inputstate.cpp#L56))。大きさが 0 の軸は 1 倍、headless は窓が無いので 1 倍で、framebuffer は出力先の大きさです。
-- `inside` は位置が分かっていて(カーソルの event が来ている)、0 ≤ px < framebuffer の大きさのとき true です([`pointerStateFor()`](../../src/core/os/inputstate.cpp#L74))。位置は clamp しません。
-- **`setCursorMode(mode)`** は `normal` / `hidden` / `locked`([`CursorMode`](../../src/core/userpublic/userinput.hpp#L151))。次のフレームで GLFW の窓に反映されます。埋め込みの窓(`--rpc` で起動し、Studio の viewport として `WS_CHILD` にされた窓)では `locked` を `normal` として扱います([`effectiveCursorMode()`](../../src/core/os/inputstate.cpp#L85))。状態は rpc `get_status` の `input.cursor {requested, effective, embedded}` で見えます。
-- 換算するのは**ポインタと UI の入力ルータの 2 か所だけ**です。[`InputSnapshot`](../../src/core/os/inputstate.hpp#L61) と入力 event は窓座標のままで、ImGui も窓座標をそのまま読みます(GP-4 で変えていません)。
+- **`pointer()`** は [`PointerState`](../../src/core/userpublic/userinput.hpp#L143) を返します。位置は framebuffer ピクセル(左上原点、+y が下)で、OS が報告する窓座標を軸ごとに `px = 窓座標 × framebuffer の大きさ ÷ 窓の大きさ` で換算したものです([`pointerTransformFor()`](../../src/core/os/inputstate.cpp#L84))。大きさが 0 の軸は 1 倍、headless は窓が無いので 1 倍で、framebuffer は出力先の大きさです。
+- `inside` は位置が分かっていて(カーソルの event が来ている)、0 ≤ px < framebuffer の大きさのとき true です([`pointerStateFor()`](../../src/core/os/inputstate.cpp#L102))。位置は clamp しません。
+- **`setCursorMode(mode)`** は `normal` / `hidden` / `locked`([`CursorMode`](../../src/core/userpublic/userinput.hpp#L151))。次のフレームで GLFW の窓に反映されます。埋め込みの窓(`--rpc` で起動し、Studio の viewport として `WS_CHILD` にされた窓)では `locked` を `normal` として扱います([`effectiveCursorMode()`](../../src/core/os/inputstate.cpp#L113))。状態は rpc `get_status` の `input.cursor {requested, effective, embedded}` で見えます。
+- **タッチのとき(✅SA1f)**: 最後に動いたポインタの入力がタッチなら、`pointer()` は**いま触れている指のうち最初に触れた指**の位置を返します。その指が離れると次に古い指へ移り、全部離れると `inside = false` です。マウスのカーソルが動く(またはマウスの移動量が届く)とマウスに戻ります([その所](../../src/core/os/inputstate.cpp#L593))。API は変わっていません。
+- 換算するのは**ポインタと UI の入力ルータの 2 か所だけ**です(✅SA1f からタッチの binding の判定も同じ換算を使います)。[`InputSnapshot`](../../src/core/os/inputstate.hpp#L81) と入力 event は窓座標のままで、ImGui も窓座標をそのまま読みます(GP-4 で変えていません)。
 - 画面の点を通る ray(`ctx.render().screenRay`)と使用例、残した穴は [第8章 §8.4「input() と screenRay」](08_gameplay.md) にあります。
+
+<a id="android-input"></a>
+
+### Android の入力(✅SA1f、`bbedafc88`)
+
+Android の player([第2章 §2.9](02_getting_started.md#29-android-で-player-を動かす))は、activity に届く入力を desktop と同じ入力 event にして、同じアクション層へ入れます。**ゲームのコードと actions.json / profile は PC と同じ物が使えます**(タッチの binding を足すだけ)。変換は [`handleInput()`](../../src/platform/android/inputqueue.cpp#L85) が行います。
+
+| 入力 | 扱い |
+|---|---|
+| キーボード | Android の key code を**今ある `KeyCode`** へ写します([表](../../src/platform/android/inputmap.hpp#L13)): A〜Z、0〜9、F1〜F12、矢印、Space、Enter、Escape、Tab、DEL → Backspace、左右の Shift / Ctrl / Alt / Meta(Meta → `left_super` / `right_super`)。`KeyCode` は増やしていないので、表に無いキー(テンキーなど)はエンジンに入れません(app は扱わず system に返します)。押しっぱなしの repeat は捨てます。文字の入力(`character` event)とソフトキーボードは扱いません |
+| ゲームパッド | 端末の機器ごとに、最初に来た順で 16 スロットへ割り当てます。ボタン 15 種は `pad:a` / `b` / `x` / `y`、L1 / R1 → `left_bumper` / `right_bumper`、SELECT → `back`、START → `start`、MODE → `guide`、左右のスティック押し込み、十字キー([表](../../src/platform/android/inputmap.hpp#L38))。軸は **GLFW と同じ値の決め方**です: スティックは左が X / Y、右が Z / RZ で -1〜1(y は下が正)、トリガーは**離していると -1、押し切ると 1**(LTRIGGER と BRAKE、RTRIGGER と GAS の大きい方。[`trigger()`](../../src/platform/android/inputmap.hpp#L55))。十字キーはボタンと HAT 軸のどちらで来ても同じボタンになります。値の決め方が同じなので PC 向けの gamepad の profile をそのまま使えるはずです(実物のパッドでは未確認)。L2 / R2・C / Z のように GLFW に対応の無いボタンは捨てます |
+| タッチ | 指ごとの event(触れた・動いた・離した・取り消し)になります(下の「タッチ」)。マウスの event は作りません |
+| ペン(stylus) | **画面に触れている間だけ、筆圧の無いタッチとして**扱います。筆圧・傾き・浮かせた位置(hover)・サイドボタン・消しゴムは読みません(hover とボタンの event は app が扱わず、system に返します) |
+| マウス | 本物のマウスはマウスとして扱います(カーソルの移動、ボタンは種類を見ず `mouse:left`、ホイール) |
+| BACK | **離した時に activity を終えます**(`ANativeActivity_finish`。[その所](../../src/platform/android/inputqueue.cpp#L89))。BACK を action にする口はありません |
+
+- **BACK の振る舞い**: Android 12 からは root の activity が戻るキーで終わらず背面に回るだけで、この APK の target(API 36)の Android 16 では予測型の戻るのために key の event 自体が届きません(SA1f の仕様レビューの調べ)。そのため manifest で予測型の戻るを切り([`enableOnBackInvokedCallback="false"`](../../tools/android/AndroidManifest.xml#L10))、app が BACK を受けて自分で終えます。終わり方は §2.9 の lifecycle と同じ DESTROY の道です。
+- ゲームパッドのボタンは、押した順・離した順のまま届きます(1 フレームの中で押して離しても落ちません)。profile に `pad:` の binding が無い間はゲームパッドを読みません(desktop と同じ)。読まない間に押されていたボタンは離した扱いになり、読み始めると今の押下の状態に揃います。
+- 一時停止(home など)に入ると、押していたキー・ボタンを全部離し、触れていた指を全部取り消します。入力が溜まりすぎたとき(2048 件)も同じことをして、溜まっていた分を捨てます。エンジンが窓を作る前と一時停止の間の入力は捨てます。
+
+#### タッチ
+
+- 指は Android の pointer id(0〜31)で区別します。アクション層と `pointer()` が持つ指は同時に 10 本までで、11 本目は無視します。1 フレームの中で触れて離した指も、そのフレームでは「触れて離した」として残ります。
+- 座標はマウスのカーソルと同じ**窓座標**です(Android では窓と framebuffer を同じ大きさとして扱うので値も同じ。[その所](../../src/core/os/window_android.cpp#L74))。
+- 指を動かした event に Android がまとめて付ける途中の点(最大 64 個)も順に入れます。64 個を超えたときは、その event の指を全部取り消します(途中を落とした軌跡で tap を成り立たせないため)。
+- タッチは ImGui には渡しません。UI(`pelican.ui`)には指ごとのポインタとして渡ります(§7.4「ポインタの座標」)。
+
+#### 既知の制限
+
+- **ゲームパッドの抜き差しを検出しません**(JNI を使っていないため)。抜いたパッドのスロットは残ります。挿し直して Android が別の device id を付けると、新しいスロットになります(端末では未確認)。抜いた時に押していたボタンは押されたまま残り、`pad:` の binding は全スロットの論理和なので action も押されたままになります。16 スロットを使い切った後のパッドは捨てます。
+- `region` の比は**窓ではなく framebuffer** に対する比です(表示倍率のある PC で rpc から指を入れるときは、窓座標が換算されてから比になります)。リプレイでは記録の framebuffer で比を取るので、画面の大きさの違う機械で再生しても同じ判定になります(タッチを含む記録は v3 で、v3 は framebuffer を必ず持つ。§7.3)。
+- 確かめた端末は NX789J の 1 台で、adb から入れたキー・パッドのボタン・指 1 本・ペンの tap だけです。2 本以上の指、実物のゲームパッドのスティック・トリガー・HAT、実物のキーボード・マウス、抜き差し、一時停止の後の入力の戻りは端末では試していません(指の複数・スロット・軸の値は CPU のテストで確かめています)。
 
 ### 旧形式からの移行(2026-07-10 以前のプロジェクト)
 
@@ -172,20 +224,33 @@ ctx.input().setCursorMode(Pelican::CursorMode::locked);   // normal / hidden / l
 ]}}
 ```
 
-`mouse_move` の `x` / `y` は**窓座標**です(framebuffer ピクセルではありません)。注入した移動は OS からの移動と同じ event になり、`ctx.input().pointer()` と UI の入力ルータがフレームの換算で framebuffer ピクセルにします([注入の受け口](../../src/core/communication/rpcserver.cpp#L870))。headless は 1 倍なので、窓座標とピクセルは同じ値です。
+`mouse_move` の `x` / `y` は**窓座標**です(framebuffer ピクセルではありません)。注入した移動は OS からの移動と同じ event になり、`ctx.input().pointer()` と UI の入力ルータがフレームの換算で framebuffer ピクセルにします([注入の受け口](../../src/core/communication/rpcserver.cpp#L875))。headless は 1 倍なので、窓座標とピクセルは同じ値です。
+
+✅SA1f からタッチの指も注入できます。desktop の headless のテストで Android の端末を使わずにタッチを確かめるための口です(Android の build は RPC を持ちません):
+
+```json
+{"jsonrpc":"2.0","id":4,"method":"inject_input","params":{"events":[
+  {"type":"touch","pointer_id":0,"phase":"down","x":120.0,"y":300.0},
+  {"type":"touch","pointer_id":0,"phase":"up","x":120.0,"y":300.0}
+]}}
+```
+
+- `pointer_id` は 0〜31 の整数、`phase` は `down` / `move` / `up` / `cancel`、`x` / `y` は有限の**窓座標**です。外れた値は invalid params で断ります([検査](../../src/project/jsonrpc.cpp#L84))。
+- tap の動きの上限は 8 px 固定です(注入では density を渡せません)。
 
 ### 収録とリプレイ(✅WP89 = I3)
 
-順序付き入力イベント列を **`pelican.input_seq`(JSONL)** として収録・再生できます。収録は v2 で書き、再生は v2 と v1 を読みます(✅GP-4 で v2)。同一ビルド + プロジェクト + シードで**完全再現**(PNG byte 一致で結合テスト済み)。
+順序付き入力イベント列を **`pelican.input_seq`(JSONL)** として収録・再生できます。収録は v2 で書き、再生は v2 と v1 を読みます(✅GP-4 で v2)。✅SA1f から、**タッチを含む記録だけ v3** で書き、再生は v3・v2・v1 を読みます(下の「v3」)。同一ビルド + プロジェクト + シードで**完全再現**(PNG byte 一致で結合テスト済み)。
 
 ```sh
 pelican_player --project mygame --record-input session.jsonl   # 収録
 pelican_player --project mygame --replay session.jsonl         # リプレイ(ホットリロード自動無効)
 ```
 
-- ファイルはヘッダ行 `{schema, version, fps, generator, content_scale, framebuffer}` + `{"frame":N}` 境界マーカー + イベント行(`button` / `cursor_move` / `axis` / `scroll` / `character` / `pad_button` / `pad_axis`)。
-- **v2 の換算の記録**: ヘッダの `content_scale: [x, y]` と `framebuffer: [幅, 高さ]` が、最初のフレームで窓座標を framebuffer ピクセルへ換算した値です。途中のフレームで換算が変わったら(窓の大きさを変えた、別の倍率の画面へ移したなど)、そのフレームのマーカーにも同じ 2 つを書きます([`toJsonLines()`](../../src/core/os/inputsequence.cpp#L373))。再生はこの記録の換算を使うので、倍率の違う機械で再生しても、`pointer()` と UI が見るピクセルは収録時と同じです([`prepareFrame()`](../../src/core/os/inputsequence.cpp#L487))。
-- **v1 の読み方**: v1 には換算の記録が無いので、全フレームを content scale 1 として読みます(v1 の窓座標は書かれた当時その意味でした)。framebuffer は記録に無いので、再生している機械のものを使います。v1 のマーカーに `content_scale` / `framebuffer` があれば「version 2 が要る」として拒否し、version が 1 と 2 以外なら拒否します([版の検査](../../src/core/os/inputsequence.cpp#L308))。v2 のヘッダでは 2 つとも必須です。
+- ファイルはヘッダ行 `{schema, version, fps, generator, content_scale, framebuffer}` + `{"frame":N}` 境界マーカー + イベント行(`button` / `cursor_move` / `axis` / `scroll` / `character` / `pad_button` / `pad_axis`、v3 は `touch` も)。
+- **v2 の換算の記録**: ヘッダの `content_scale: [x, y]` と `framebuffer: [幅, 高さ]` が、最初のフレームで窓座標を framebuffer ピクセルへ換算した値です。途中のフレームで換算が変わったら(窓の大きさを変えた、別の倍率の画面へ移したなど)、そのフレームのマーカーにも同じ 2 つを書きます([`toJsonLines()`](../../src/core/os/inputsequence.cpp#L392))。再生はこの記録の換算を使うので、倍率の違う機械で再生しても、`pointer()` と UI が見るピクセルは収録時と同じです([`prepareFrame()`](../../src/core/os/inputsequence.cpp#L509))。
+- **v1 の読み方**: v1 には換算の記録が無いので、全フレームを content scale 1 として読みます(v1 の窓座標は書かれた当時その意味でした)。framebuffer は記録に無いので、再生している機械のものを使います。v1 のマーカーに `content_scale` / `framebuffer` があれば「version 2 が要る」として拒否し、version が 1・2・3 以外(4 以降を含む)なら拒否します([版の検査](../../src/core/os/inputsequence.cpp#L325))。v2 と v3 のヘッダでは 2 つとも必須です。
+- **v3(✅SA1f)**: v2 にイベント行 `touch`(`pointer_id`・`phase`・窓座標の `x` / `y`・tap の動きの上限 `slop_px`)を足した版です。記録にタッチが 1 つでもあればヘッダを version 3 にし、無ければ今までどおり version 2 で書きます([その所](../../src/core/os/inputsequence.cpp#L400))。v1 / v2 の記録に `touch` の行があれば「version 3 が要る」として拒否します。再生では tap の時間を記録のフレーム番号 ÷ fps で測ります([その所](../../src/core/os/inputsequence.cpp#L522))。Android のマウスの取り消しは `button` 行の任意の欄 `canceled: true` で残します(版は上げません)。
 - 収録ファイルは `--record-input` / `start_input_record` で指定した場所に書く JSONL で、project の文書ではありません。そのため MG-1 の移行(第3章 §3.13)の対象ではなく、v1 → v2 の移行手順は登録していません。v1 のファイルはそのまま再生できます。
 - rpc からは `start_input_record` / `stop_input_record` / `start_input_replay` / `stop_input_replay`。リプレイ中の `inject_input` は拒否されます。
 - **カメラ焼き出し**: `pelican_cli bake-camera --replay session.jsonl --project mygame` で、リプレイ中のカメラ軌跡を `pelican.transform_seq` v1 として `imports/pelican-camera/<name>/` に着地させられます(pelican.import manifest 付き — DCC への逆輸出)。
@@ -237,7 +302,7 @@ pelican_player --project mygame --replay session.jsonl         # リプレイ(�
 - **機械可読スキーマが正**: [../schemas/pelican.ui.schema.json](../schemas/pelican.ui.schema.json)(`additionalProperties: false` の closed schema — 未知フィールドは拒否)。
 - トップレベル: `schema` / `version: 1` / `key`(1〜256 文字)/ `root` 必須、`revision` / `direction`(`"ltr"` のみ)任意。
 - **ウィジェット語彙 6 種**(語彙 = 書ける `type` の値の全集合。これ以外は拒否): `panel` / `image` / `label` / `button` / `gauge` / `stack`。
-- **`gauge` の描画(✅GP-3)**: 左端から伸びる横棒を 1 本描きます。棒の幅は **floor(ゲージの幅 × clamp(`value`, 0, 1))**(UI 単位)で、色は `color`。`color` を省くと既定色 `{96, 200, 120, 255}` になります([visitNodes() の gauge 分岐](../../src/core/ui/module.cpp#L111) / [既定色](../../src/core/ui/document.cpp#L240))。`value` は文書に書けるほか、実行時に `ctx.ui().setValue` と `ui.value` sink で書き換えられます(下の「ゲームコードと共通グラフから UI を書く」)。背景の枠は描かないので、地が要るなら親の `panel` に色を付けます。
+- **`gauge` の描画(✅GP-3)**: 左端から伸びる横棒を 1 本描きます。棒の幅は **floor(ゲージの幅 × clamp(`value`, 0, 1))**(UI 単位)で、色は `color`。`color` を省くと既定色 `{96, 200, 120, 255}` になります([visitNodes() の gauge 分岐](../../src/core/ui/module.cpp#L114) / [既定色](../../src/core/ui/document.cpp#L240))。`value` は文書に書けるほか、実行時に `ctx.ui().setValue` と `ui.value` sink で書き換えられます(下の「ゲームコードと共通グラフから UI を書く」)。背景の枠は描かないので、地が要るなら親の `panel` に色を付けます。
 - 主なプロパティ: 共通 `id`(`^[a-z0-9_]+$`)/ `layout` / `visibility` / `enabled` / `hit_testable` / `layer` / `emit` / `children`。描画系 `sprite`(atlas 参照は `<name>.atlas.json#sprite/<名前>` 形式)/ `color` / `hover_color` / `pressed_color` / `text` / `text_color` / `nine_patch`(panel)。
 - レイアウト: 軸ごとの `mode: fixed|content|fill`(+ min/max/weight)、`anchor_min/max`、`offsets`、`stack`(horizontal/vertical)+ `gap` / `padding` / `align` / `justify`。計算は決定的(binary64 固定)。
   - `mode` は x 軸・y 軸それぞれに書き、その軸の長さの決め方を選びます: **`fixed`** = 書いた `value` をそのまま使う / **`content`** = 中身(子とテキスト・画像)から算出した固有サイズを使う / **`fill`** = 親 `stack` の余りを `weight` の比で分け合う。いずれも `min` / `max` で挟まれます([axisSize()](../../src/core/ui/layout.cpp#L76) と [distribute()](../../src/core/ui/layout.cpp#L93))。`content` の親の下に `fill` の子を置くと循環なので名指しエラーです。
@@ -252,7 +317,7 @@ pelican_player --project mygame --replay session.jsonl         # リプレイ(�
   "emit": { "on_click": { "event": "MenuStart" } } }
 ```
 
-emit のソースには static 値のほか `stable_id` / `drag_delta_ui` / `widget_value` が使えます。それぞれ、イベント payload のそのフィールドに **`stable_id`** = 発火したウィジェットの安定 ID(親からの `親id/子id` パス)、**`drag_delta_ui`** = 直前の位置からのドラッグ移動量 `[x, y]`(UI 座標)、**`widget_value(パス)`** = ウィジェット自身の現在値、を入れます([document.cpp](../../src/core/ui/document.cpp#L193) / [module.cpp](../../src/core/ui/module.cpp#L296))。rpc 経由のクリックとリプレイの決定性は結合テストで担保されています。
+emit のソースには static 値のほか `stable_id` / `drag_delta_ui` / `widget_value` が使えます。それぞれ、イベント payload のそのフィールドに **`stable_id`** = 発火したウィジェットの安定 ID(親からの `親id/子id` パス)、**`drag_delta_ui`** = 直前の位置からのドラッグ移動量 `[x, y]`(UI 座標)、**`widget_value(パス)`** = ウィジェット自身の現在値、を入れます([document.cpp](../../src/core/ui/document.cpp#L193) / [module.cpp](../../src/core/ui/module.cpp#L299))。rpc 経由のクリックとリプレイの決定性は結合テストで担保されています。
 
 ### ゲームコードと共通グラフから UI を書く(✅GP-3)
 
@@ -271,7 +336,7 @@ if (auto r = ui.setText("root/hud/score", "SCORE 120"); !r)
 ```
 
 - **path** は root から自分までの `id` を `/` でつないだ文字列で、root の `id` も含みます(root `root` の子 `hud` の子 `score` なら `root/hud/score`)。`id` は兄弟の間でしか一意ではないので、node を区別するのは path です。emit の `stable_id` に入る文字列と同じです([path の組み立て](../../src/core/ui/document.cpp#L231))。
-- 書ける性質は node の型で決まります。`setText` は `label` / `button`、`setValue` は `gauge`、`setVisible` はすべての node です([uiNodeHasProperty()](../../src/core/ui/module.cpp#L357))。
+- 書ける性質は node の型で決まります。`setText` は `label` / `button`、`setValue` は `gauge`、`setVisible` はすべての node です([uiNodeHasProperty()](../../src/core/ui/module.cpp#L370))。
 - 戻り値は [`UiWriteResult`](../../src/core/userpublic/ui_write.hpp#L39)(`[[nodiscard]]`)です。`ok()` / `operator bool` / `error()` / `errorName()` を持ち、失敗は例外ではなく戻り値で返ります。理由は [`UiWriteError`](../../src/core/userpublic/ui_write.hpp#L10) の 4 つで、複数当てはまるときは**この順で先のもの**を返します。
 
 | 順 | 名前 | いつ |
@@ -281,8 +346,8 @@ if (auto r = ui.setText("root/hud/score", "SCORE 120"); !r)
 | 3 | `ui.property_mismatch@1` | node の型がその性質を持たない(例: gauge への `setText`)、または `setValue` の値が有限でない |
 | 4 | `ui.sink_conflict@1` | 公開中の rendering config の `ui.*` sink が同じ (path, 性質) を書いている(下記) |
 
-- **書き込みは呼んだ時点で検査され、フレーム境界で適用されます。** 受け付けた書き込みは列に積まれ、そのフレームのゲームコードがすべて走ったあと、描画の前に一度にまとめて入ります([commitFrameWrites() の呼び出し](../../src/core/appflow/framephase.cpp#L283))。断られた書き込みは何も積みません。
-- `setText` で文字列を変えると、`label` / `button` の大きさ(`content` 軸の固有サイズ)を測り直します。測り直すのは固有サイズが文字列から測られた node だけで、`intrinsic_size` を文書に書いた node はそのままです([syncDocumentFromArena()](../../src/core/ui/module.cpp#L407))。
+- **書き込みは呼んだ時点で検査され、フレーム境界で適用されます。** 受け付けた書き込みは列に積まれ、そのフレームのゲームコードがすべて走ったあと、描画の前に一度にまとめて入ります([commitFrameWrites() の呼び出し](../../src/core/appflow/framephase.cpp#L303))。断られた書き込みは何も積みません。
+- `setText` で文字列を変えると、`label` / `button` の大きさ(`content` 軸の固有サイズ)を測り直します。測り直すのは固有サイズが文字列から測られた node だけで、`intrinsic_size` を文書に書いた node はそのままです([syncDocumentFromArena()](../../src/core/ui/module.cpp#L420))。
 - **scene load 中に書いても、load の transaction には入りません。** 公開 API の分類は `nonparticipant.ui-document` で([manifest の行](../../src/core/loader/sceneparticipantmanifest.cpp#L228))、UI 文書は scene の参加者ではないので、load が失敗しても書き込みは次のフレーム境界で入ります。
 
 #### `ui.*` sink — 共通グラフから書く
@@ -307,7 +372,7 @@ graph module **`pelican.ui`**(version 1)は常に登録されます(UI にはビ
 ]
 ```
 
-- sink の値は毎フレーム、グラフの publish の時点で UI へ直接入り、そのフレームの UI パスが描きます([renderer.cpp の ui_writer](../../src/core/vkcore/renderer.cpp#L6423))。
+- sink の値は毎フレーム、グラフの publish の時点で UI へ直接入り、そのフレームの UI パスが描きます([renderer.cpp の ui_writer](../../src/core/vkcore/renderer.cpp#L6435))。
 - **単一 writer の単位は `(文書, path, 性質)`** です。`ui.*` の sink は owner に属さないので、`pose.*` の「owner 単位」とは単位が違います。同じ node でも `value` と `visible` は別の単位です。
 - rendering config を準備する時点で、次の理由で名前付きに断ります(準備で断られた config はどのフレームにも届きません。[validateUiSinks()](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L119)、衝突は [Graph の binding 検査](../../src/core/userpublic/valuegraph.cpp#L711)):
   - `ui.feature_unreferenced@1` — `ui.*` sink を持つ config が `engine://features/ui.json` を参照していない
@@ -318,13 +383,20 @@ graph module **`pelican.ui`**(version 1)は常に登録されます(UI にはビ
 
 #### GP-3 が残した穴
 
-- `setVisible(false)`(と `ui.visible` の 0)で消えるのは**その node 自身の quad だけ**で、子は描かれ続けます(描画の走査が子へ無条件に降りるため。[visitNodes() の子への再帰](../../src/core/ui/module.cpp#L141))。子ごと隠したいときは子にもそれぞれ書きます。
+- `setVisible(false)`(と `ui.visible` の 0)で消えるのは**その node 自身の quad だけ**で、子は描かれ続けます(描画の走査が子へ無条件に降りるため。[visitNodes() の子への再帰](../../src/core/ui/module.cpp#L144))。子ごと隠したいときは子にもそれぞれ書きます。
 - 文書で `visibility: "collapsed"` にした node は、`setVisible(true)` でも描かれません。collapsed の node はレイアウトに載らず([place()](../../src/core/ui/layout.cpp#L142))、描画はレイアウトの無い node を飛ばします。
 - 衝突の検出は**公開済み**の rendering config の sink を見ます。最初の publish より前の `ctx.ui()` の書き込みでは、sink との衝突を検出しません(公開中の世代が無ければ「sink は無い」と答えるため)。
 
 ### ポインタの座標(✅GP-4)
 
-UI の入力ルータは、カーソル event の窓座標を、ポインタ(§7.2「ポインタとカーソル」)と同じフレームの換算で framebuffer ピクセルにしてから hit 判定します([`routeFrameInput()` の換算](../../src/core/ui/inputrouter.cpp#L122))。GP-4 より前は窓座標をそのままピクセルとして扱っていた(表示倍率 1 を仮定していた)ので、倍率が 1 でない画面ではクリックの位置と widget の位置が食い違っていたはずです(差分からの推論。旧挙動の実行では未確認)。リプレイでは記録の換算を使うので、倍率の違う機械で収録したものも同じピクセルで判定されます。ImGui は窓座標のまま読むので変わっていません。
+UI の入力ルータは、カーソル event の窓座標を、ポインタ(§7.2「ポインタとカーソル」)と同じフレームの換算で framebuffer ピクセルにしてから hit 判定します([`routeFrameInput()` の換算](../../src/core/ui/inputrouter.cpp#L129))。GP-4 より前は窓座標をそのままピクセルとして扱っていた(表示倍率 1 を仮定していた)ので、倍率が 1 でない画面ではクリックの位置と widget の位置が食い違っていたはずです(差分からの推論。旧挙動の実行では未確認)。リプレイでは記録の換算を使うので、倍率の違う機械で収録したものも同じピクセルで判定されます。ImGui は窓座標のまま読むので変わっていません。
+
+**タッチの指(✅SA1f)**: 指は 1 本ずつ別のポインタとして UI に入ります。ポインタの番号はマウスが 0、指が **1 + Android の pointer id** です([変換](../../src/core/ui/inputrouter.cpp#L148))。指の触れた・動いた・離した・取り消しが、ポインタの Down / Move / Up / Cancel になります。
+
+- 掴み(capture)は指ごとです。2 本の指で別々の button を押せ、同じ button を 2 本で押したときは最後の指が離れるまで押された見た目のままです([その所](../../src/core/ui/module.cpp#L337))。
+- **UI が掴んだ指は、離す(または取り消す)まで、動かないフレームも含めてアクション層から見えません**([その所](../../src/core/ui/inputrouter.cpp#L51))。widget に当たった指も、そのフレームは見えません。消費は指ごとなので、UI を押している指と別の指はタッチの binding に届きます。
+- 指は hover を作りません(hover の色はマウスだけ)。マウスの event も作らないので、1 回のタッチが UI に 2 回届くことはありません。
+- ImGui などの道具がマウスを使っているフレームでも、指は UI に届きます([その所](../../src/core/appflow/framephase.cpp#L231))。
 
 ### 残っている未実装(明示)
 
@@ -358,12 +430,14 @@ GPU 経路自体は意図的に別のままです(`DebugText` は専用 atlas + 
 |---|---|
 | 入力 L1(順序付き FrameInput + 消費マスク) | ✅ WP37/69 |
 | アクション層 + プロファイル分離 | ✅ WP39/91 |
-| rpc inject_input(ゲームパッド含む) | ✅ WP49/91 |
-| 収録・リプレイ(I3、input_seq + bake-camera) | ✅ WP89(GP-4 で v2 = 換算の記録。v1 も読む) |
+| rpc inject_input(ゲームパッド含む) | ✅ WP49/91(SA1f でタッチも) |
+| 収録・リプレイ(I3、input_seq + bake-camera) | ✅ WP89(GP-4 で v2 = 換算の記録。v1 も読む。SA1f でタッチを含む記録は v3) |
 | ゲームパッド(I4) | ✅ WP91 |
 | OpenXR 入力(Touch action set + pose) | ✅ WP130/132(v1 は Touch のみ・pose の収録は非対応) |
 | ポインタの位置(framebuffer ピクセル)/ カーソルのモード(I4 残件のロックを含む)/ `screenRay` | ✅ GP-4(埋め込みの窓ではロックしない。残した穴は第8章 §8.4) |
 | UI の入力ルータの表示倍率対応 | ✅ GP-4 |
+| Android の入力(キーボード・ゲームパッド・タッチ・ペン・BACK)/ `touch:region`・`touch:tap` / UI の指ごとのポインタ / input_seq v3 | ✅ SA1f(パッドの抜き差しは検出しない。§7.2「Android の入力」) |
+| 仮想スティック・仮想ボタン・ジェスチャ・振動 / feature が action に値を出す口 | 📐(口は SA1g。[roadmap の SA トラック](../roadmap_backlog_2026-07.md)) |
 | pelican.ui v1(U0/U1/U2) | ✅ WP75/87/93(スキン・`ui_scale` は 🚧/📐) |
 | gauge 描画 / ゲーム→UI 更新 API(`ctx.ui()`)/ `ui.value`・`ui.visible` sink | ✅ GP-3(子を連れて隠せない等の穴は §7.4「GP-3 が残した穴」) |
 | ui_overlay.json(旧 images 形式) | ❌ 削除済み(WP87) |

@@ -65,7 +65,7 @@ flowchart LR
 
 class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport修飾されています。game DLL境界を越えて使われるためです。
 
-`GameContext`自体は状態を持ちません。実体は [`updateFrameState()` のローカル変数1個](../../src/core/appflow/framephase.cpp#L197) で、フレームごとに作られてフレームを抜けると消えます（= 自動記憶域。ヒープにも moduleにも置かれていません）。5フェーズの各所へは参照として渡るだけなので、Systemが`GameContext*`を保存しても次フレームには無効になります。
+`GameContext`自体は状態を持ちません。実体は [`updateFrameState()` のローカル変数1個](../../src/core/appflow/framephase.cpp#L201) で、フレームごとに作られてフレームを抜けると消えます（= 自動記憶域。ヒープにも moduleにも置かれていません）。5フェーズの各所へは参照として渡るだけなので、Systemが`GameContext*`を保存しても次フレームには無効になります。
 
 上の表は**通常フレームでの**委譲先です。**scene load transaction** は、scene の読み込みを prepare から finish までの1つの取引として扱う [第3章 §3.5 の 3](03_project_and_loading.md) の executor のことで、「開いている間」はその段の列を実行中という意味です（[用語集](../manual/14_glossary.md#scene-load-transactionシーンロードのトランザクション)）。開いている間（behaviorの `onInit` / `onDestroy` や、component JSON loaderから呼ばれた場合）は、同じAPIの行き先がcandidateやoutboxへ差し替わり、一部は拒否されます。分類とその根拠は §5.15 にまとめてあります。
 
@@ -80,9 +80,9 @@ class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport�
 [[nodiscard]] bool setSpotLightDirection(std::string_view name, vec3 direction) const;
 ```
 
-setterは対象ライトのstructを書き換えるだけです（[`LightContainer::setDirectionalLightDirection()`](../../src/core/light/lightcontainer.cpp#L370)）。GPUへ渡るのはframeごとで、[`updateFrameLights()`](../../src/core/vkcore/renderer.cpp#L555) がその時点の現在値をlight UBOへ詰め、shadow用のview-projectionとsky ambientと併せて `LightContainer::update()` を呼びます。
+setterは対象ライトのstructを書き換えるだけです（[`LightContainer::setDirectionalLightDirection()`](../../src/core/light/lightcontainer.cpp#L370)）。GPUへ渡るのはframeごとで、[`updateFrameLights()`](../../src/core/vkcore/renderer.cpp#L556) がその時点の現在値をlight UBOへ詰め、shadow用のview-projectionとsky ambientと併せて `LightContainer::update()` を呼びます。
 
-ここでの shadow 用 view-projection は、directional shadow の view family に属する各 view（ライト × cascade）の `projection * view` 行列を並べたもので、shading 側が world 座標を shadow map の座標へ写すために使います（組み立ては同関数内の [`view_projections.push_back()`](../../src/core/vkcore/renderer.cpp#L605) の周辺）。ゲームSystemの`update()`から呼べばそのframeの描画に載る、という順序です。
+ここでの shadow 用 view-projection は、directional shadow の view family に属する各 view（ライト × cascade）の `projection * view` 行列を並べたもので、shading 側が world 座標を shadow map の座標へ写すために使います（組み立ては同関数内の [`view_projections.push_back()`](../../src/core/vkcore/renderer.cpp#L606) の周辺）。ゲームSystemの`update()`から呼べばそのframeの描画に載る、という順序です。
 
 > **設計決定:** ライトの時間変化は**ユーザー空間の責務**です。engine側にライト名（`"KeyLight"`など）を見て時刻から値を書き換える経路はありません。[`LightContainer`](../../src/core/light/lightcontainer.hpp) が持つのは現在値の配列と名前→indexのmapだけで、時刻を受け取るAPIも、scene読み込み時の原本値を控える配列もありません。従ってsetterで上書きした値を元へ戻したければ、ユーザーコード側で覚えておく必要があります。実例は [`updateLightAnimation()`](../../projects/example/code/playercontrol.cpp#L31) で、`ctx.time()`から毎フレーム**絶対値を計算して**4本のsetterへ渡しています。移行時の注意は[第9章](09_black_magic_and_gotchas.md)を参照してください。
 
@@ -105,7 +105,7 @@ setterは対象ライトのstructを書き換えるだけです（[`LightContain
 5. PG-1 の `resolvedObjectFeatureRefusal()`（[spawn からの呼び出し](../../src/core/loader/runtimespawn.cpp#L238)。scene load の prepare と editor の `add_component` / `spawn` と同じ判定）、light / camera の拒否、behavior の準備（`prepareResolvedSceneBehaviorAttachments`）。
 6. 展開済みの `ResolvedObject` と behavior を `Request` として積み、ref を返します。
 
-**境界**: [`RuntimeSpawner::applyBoundary()`](../../src/core/loader/runtimespawn.cpp#L353) は [`updateFrameState()` から、game の 1 歩のフレームに 1 回だけ](../../src/core/appflow/framephase.cpp#L196) 呼ばれます(一時停止中の、歩を取らないフレームでは呼ばれない。✅PM-1a)。置き場所は audio の回収・DLL reload の `applyFrame()`・editor の commit queue hook の**後**（これらは scene run を置き換えうる）、`forEachFramePhase` の最初の相（`freeze_events`）の**前**です。
+**境界**: [`RuntimeSpawner::applyBoundary()`](../../src/core/loader/runtimespawn.cpp#L353) は [`updateFrameState()` から、game の 1 歩のフレームに 1 回だけ](../../src/core/appflow/framephase.cpp#L200) 呼ばれます(一時停止中の、歩を取らないフレームでは呼ばれない。✅PM-1a)。置き場所は audio の回収・DLL reload の `applyFrame()`・editor の commit queue hook の**後**（これらは scene run を置き換えうる）、`forEachFramePhase` の最初の相（`freeze_events`）の**前**です。
 
 したがって前のフレームのどこで積んだ要求も、このフレームのゲームコードの全部から見えます。`applyBoundary()` は `ProjectBasicConfig::activeSceneAuthority()` が追跡中の run と違えば、run を切り替えて境界の数を 0 に戻し、別の run の `live` を捨ててから数を 1 進めます。待ち行列は swap して要求順に処理し、run が live でない要求（旧 run のもの、失敗した load 候補のもの）は黙って捨てます。1 件の失敗は `LOG_ERROR` に出して次の要求へ進みます。
 
@@ -324,7 +324,7 @@ C++ の `GameContext::emit(event)` は copy した値をそのまま queue に�
 
 ```mermaid
 flowchart LR
-    OS["GLFW / RPC入力"]
+    OS["GLFW / Android / RPC入力"]
     Events["InputEvent<br/>順序付きevent列"]
     Snapshot["InputSnapshot<br/>1フレーム不変"]
     Actions["InputActionFrame<br/>action set評価"]
@@ -340,19 +340,54 @@ flowchart LR
 
 XRセッション中は **XR action backend** もこの層に入ります。`syncActions()`の結果を`internal::setInputActionBackendFrame()`と`queuePoseSamples()`でInputStateへ流し込みます（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L578)）。
 
-また [`InputSequenceRuntime`](../../src/core/os/inputsequence.hpp#L61) によるrecord/replayが、この層のevent queue境界に挿入されます。record/replayは `--record-input` / `--replay`（[第2章 §2.1](02_runtime_lifecycle.md)）で、記録・再生されるのは**この層の順序付き `InputEvent` 列とフレーム境界のmarker**（GP-4 の v2 からは、窓座標 → framebuffer ピクセルの換算も。下の「pointer の換算とカーソル」）です — 上位のL3 snapshotやL4のAction結果ではありません（再生時はそれらを記録から復元するのではなく、注入した event 列から**同じ手順で作り直します**）。番号合わせの詳細は次の難所にあります。
+また [`InputSequenceRuntime`](../../src/core/os/inputsequence.hpp#L63) によるrecord/replayが、この層のevent queue境界に挿入されます。record/replayは `--record-input` / `--replay`（[第2章 §2.1](02_runtime_lifecycle.md)）で、記録・再生されるのは**この層の順序付き `InputEvent` 列とフレーム境界のmarker**（GP-4 の v2 からは、窓座標 → framebuffer ピクセルの換算も。下の「pointer の換算とカーソル」）です — 上位のL3 snapshotやL4のAction結果ではありません（再生時はそれらを記録から復元するのではなく、注入した event 列から**同じ手順で作り直します**）。番号合わせの詳細は次の難所にあります。
+
+### Android の入力の経路（✅SA1f、`bbedafc88`） {#android-input-path}
+
+Android では GLFW の callback の代わりに、glue の `onInputEvent`（[`android_main()` での登録](../../src/platform/android/android_main.cpp#L257)）が L1 の入口です。経路は「glue の thread で変換して queue に積む → engine の thread で取り出す」の 2 段です（thread の分け方は [第2章の Android の節](02_runtime_lifecycle.md#android-entry)）。
+
+1. **変換（pump の thread）**: [`handleInput()`](../../src/platform/android/inputqueue.cpp#L85) が `AInputEvent` をその場で `InputEvent` にして、mutex 付きの static な queue（[`InputQueue`](../../src/platform/android/inputqueue.cpp#L12)、上限 2048）に積みます。`AInputEvent` は callback の中でしか使えないので、callback を抜けた後に参照する物は残しません。NDK に依存しない表と変換は [`inputmap.hpp`](../../src/platform/android/inputmap.hpp#L2) に分けてあり（[`keyCode()`](../../src/platform/android/inputmap.hpp#L13)・[`padButton()`](../../src/platform/android/inputmap.hpp#L38)・[`padState()`](../../src/platform/android/inputmap.hpp#L58)・[`touchPhase()`](../../src/platform/android/inputmap.hpp#L70)・[`PadSlots`](../../src/platform/android/inputmap.hpp#L81)）、Windows の CPU テストからも build されます。
+2. **取り出し（engine の thread）**: [`Window::process()`](../../src/core/os/window_android.cpp#L96) が lifecycle の処理の後に [`drainInput()`](../../src/platform/android/inputqueue.cpp#L64) を呼び、返った列を `input_events` に足します。その先は desktop と同じで、`InputState` の event queue → `beginFrame()` の snapshot → action map / UI router です。
+
+source ごとの振り分け（`handleInput()` の返り値 1 = handled、0 = system に返す）:
+
+| source | 行き先 |
+|---|---|
+| key で `AKEYCODE_BACK` | 最初に見ます。down も up も handled、up で `ANativeActivity_finish`（[その所](../../src/platform/android/inputqueue.cpp#L89)）。manifest の `enableOnBackInvokedCallback="false"` と組で、DESTROY の道へ入ります |
+| `(source & GAMEPAD) == GAMEPAD` か `(source & JOYSTICK) == JOYSTICK`（[`isPadSource()`](../../src/platform/android/inputmap.hpp#L10)） | ゲームパッド。`deviceId` → slot を先着で 16 まで。key はボタン、motion は軸（下の「ゲームパッド」） |
+| `(source & KEYBOARD) == KEYBOARD` の key | [`keyCode()`](../../src/platform/android/inputmap.hpp#L13) の表にあれば `InputEvent::button`。repeat は捨てて handled、表に無い key は 0 |
+| `source == TOUCHSCREEN` か `source == STYLUS` の motion | `InputEvent::touch`（[その所](../../src/platform/android/inputqueue.cpp#L126)）。stylus は hover・button の action が `touchPhase()` で nullopt になるので 0 を返し、筆圧の軸は読みません |
+| `source == MOUSE` の motion | `cursor_move` + `MouseLeft`（ボタンの種類は見ない）、scroll。CANCEL は `canceled = true` の release（[その所](../../src/platform/android/inputqueue.cpp#L151)） |
+
+ゲームパッドの細部:
+
+- **ボタンは順序付きの event**: `padState()` が key の押下と HAT（±0.5 を閾値に OR）から作った状態を、前の状態と比べて変わったボタンだけ `gamepad_button` event として queue に積みます（[`updatePad()`](../../src/platform/android/inputqueue.cpp#L46)）。状態の差分を frame ごとに取るのではないので、1 frame の中の down → up も落ちません。軸は既存の [`GamepadEventPoller`](../../src/core/os/inputstate.hpp#L173) に任せ、queue 自身が `GamepadStateSource` として最新の軸を返します。ボタンを二重に出さないため、[`read()`](../../src/platform/android/inputqueue.cpp#L23) は buttons を空にして返します。
+- **値の規約は GLFW**: [`trigger()`](../../src/platform/android/inputmap.hpp#L55) は `2 * max(LTRIGGER, BRAKE) - 1`（R は RTRIGGER と GAS）で、休止値は -1。slot を作った時の状態も `padState({}, {})`（トリガー -1）です。stick の y は Android の値をそのまま渡します（下が正で GLFW と同じ）。非有限の値は下限に落とします。
+- **polling の切替の同期**: `drainInput(enabled, ...)` の `enabled` は `internal::gamepadPollingEnabled()`（profile に `pad:` があるか）です。無効の frame と、無効から有効に戻った最初の frame は、queue の `gamepad_button` を捨てて、engine に渡し済みの状態（`delivered`）と「無効なら全部離す / 有効なら今の物理の状態」との差だけを出します。普段の frame は順序付きの event をそのまま渡します。
+- **handled の扱い**: 対応の無い pad の key（`BUTTON_A`〜`BUTTON_MODE` の範囲の C / Z / L2 / R2）、満杯の slot、engine の準備前・一時停止中、repeat はどれも handled で捨てます。handled を返さないと framework の既定で `BUTTON_B` が BACK に変わるためです。
+- 切断の検出は無く（JNI を使わない）、`present` は一度 true になると戻りません。
+
+タッチの細部:
+
+- `touchPhase()` は `DOWN` / `UP` を index 0 に、`POINTER_DOWN` / `POINTER_UP` を action に符号化された index に、`MOVE` / `CANCEL` を全 pointer に当てます。
+- **MOVE の履歴**: `AMotionEvent_getHistorySize()` の途中の点を古い順に先に積み、そのあと今の点を積みます。履歴は最大 64 で、超えたときは全 pointer に `cancel` を足します（[その所](../../src/platform/android/inputqueue.cpp#L131)）。途中を落とした軌跡で tap（動きの上限の判定）が成り立たないようにするためです。
+- tap の動きの上限 `slop_px` は `8 × density / 160`（[`AConfiguration_getDensity()`](../../src/platform/android/inputqueue.cpp#L128)。JNI 不要。density が不明なら 8）で、event ごとに `touch_slop_px` に入れて運びます。
+
+queue の状態: [`setInputReady()`](../../src/platform/android/inputqueue.cpp#L56) は `Window` の constructor / destructor が、[`setInputPaused()`](../../src/platform/android/inputqueue.cpp#L60) は `handleCommand()` の `APP_CMD_PAUSE` / `RESUME` が呼びます。準備前と一時停止中の入力は捨て（handled）、一時停止に入る時と queue が 2048 件で溢れた時は [`neutralize()`](../../src/platform/android/inputqueue.cpp#L29) が溜まった分を捨てて、全 key の release・全 pad ボタンの release・32 個の pointer id 全部の `cancel` を積みます（溢れた時の契機の event も捨てる）。押したまま残る control を作らないためです。character event とソフトキーボードは出しません（NDK に unicode を取る API が無い）。
 
 ### L2: 順序付きInputEvent
 
-[`InputStateCore::queueEvent()`](../../src/core/os/inputstate.cpp#L379) がプロセス内単調増加`event_seq`を付けます。記録済みsequenceを注入する場合は単調性を検証し、勝手に番号を付け替えません。
+[`InputStateCore::queueEvent()`](../../src/core/os/inputstate.cpp#L409) がプロセス内単調増加`event_seq`を付けます。記録済みsequenceを注入する場合は単調性を検証し、勝手に番号を付け替えません。
 
-eventはbutton、cursor move、axis deltaの三種です（[`InputEvent`](../../src/core/os/inputstate.hpp#L86)）。
+eventはbutton、cursor move、axis deltaの三種です（[`InputEvent`](../../src/core/os/inputstate.hpp#L110)）。
 
-> 🧩 **難所 — リプレイ番号の平行移動**([`InputSequenceRuntime::prepareFrame()`](../../src/core/os/inputsequence.cpp#L487))
+✅SA1f で `Type::touch` が enum の末尾に足されました（既存の値は変えていない）。[`InputEvent::touch()`](../../src/core/os/inputstate.cpp#L47) が `pointer_id`（Android の pointer id、0〜31 = `touch_id_count`）・`touch_phase`（down / move / up / cancel）・`touch_slop_px` を入れ、座標は**マウスと同じ `mouse_x` / `mouse_y` の欄に窓座標で**入ります。button の event には `canceled`（既定 false）が足され、Android のマウスの CANCEL だけが true にします（UI router が Click の無い Cancel にする）。touch の枝を足した所は、`beginFrame()`・input_seq の書き出しと読み込み・rpc の注入・UI router・ImGui（[`feedOrderedInput()` の枝](../../src/core/imgui/imguisystem.cpp#L124)。タッチは無視してマウスを作らない）です。`InputEvent` も `InputSnapshot` も trivially copyable・standard layout のままで、[static_assert](../../src/core/os/inputstate.hpp#L282) が守っています（大きさは増えた）。
+
+> 🧩 **難所 — リプレイ番号の平行移動**([`InputSequenceRuntime::prepareFrame()`](../../src/core/os/inputsequence.cpp#L509))
 >
 > **何をする所か**: 記録ファイルの 1 フレーム分の `InputEvent` 列を、実行中の `InputState` の event queue へ注入します。上の「勝手に番号を付け替えません」の裏側で、**番号を合わせているのはこちら側**です。
 >
-> **素朴に読むと**: [`queueEvent()`](../../src/core/os/inputstate.cpp#L379) は注入された `event_seq` が `next_event_seq` 未満なら `recorded input event sequence is not monotonic` を投げます。記録ファイルの生の番号は 0 始まりなので、再生を始める頃には既に window event で `next_event_seq` が進んでおり、そのまま流すと開始と同時に例外です。そこで再生側が「現在の `nextEventSequence()` − 記録の先頭 event の番号」を**最初の非空フレームで一度だけ**求め、以後は全 event に同じ値を足して**平行移動**します。毎フレーム引き直したくなりますが、そうすると記録中の `event_seq` の**間隔**(同フレーム内の前後だけでなく、フレームを跨いだ差)が潰れ、記録の相対順序が保存されません。オーバーフロー検査を `event_seq + offset` で書けないのも読み解きが要ります — 足した瞬間に `std::uint64_t` が巻いて検査自体が無意味になるので、`unassigned_sequence - 1 - offset` を右辺に置く「足す前に足せるか調べる」定石になっています。`unassigned_sequence`(= `uint64` の最大値)は「番号未割り当て」を表す番兵値(sentinel — 取り得ない値を 1 つ予約して「値なし」を表す手法)で、`queueEvent()` 側にも `event_seq == unassigned_sequence - 1` なら `next_event_seq` を番兵へ固定して以後の自動採番を止める枝があり、この上限検査と対になっています。
+> **素朴に読むと**: [`queueEvent()`](../../src/core/os/inputstate.cpp#L409) は注入された `event_seq` が `next_event_seq` 未満なら `recorded input event sequence is not monotonic` を投げます。記録ファイルの生の番号は 0 始まりなので、再生を始める頃には既に window event で `next_event_seq` が進んでおり、そのまま流すと開始と同時に例外です。そこで再生側が「現在の `nextEventSequence()` − 記録の先頭 event の番号」を**最初の非空フレームで一度だけ**求め、以後は全 event に同じ値を足して**平行移動**します。毎フレーム引き直したくなりますが、そうすると記録中の `event_seq` の**間隔**(同フレーム内の前後だけでなく、フレームを跨いだ差)が潰れ、記録の相対順序が保存されません。オーバーフロー検査を `event_seq + offset` で書けないのも読み解きが要ります — 足した瞬間に `std::uint64_t` が巻いて検査自体が無意味になるので、`unassigned_sequence - 1 - offset` を右辺に置く「足す前に足せるか調べる」定石になっています。`unassigned_sequence`(= `uint64` の最大値)は「番号未割り当て」を表す番兵値(sentinel — 取り得ない値を 1 つ予約して「値なし」を表す手法)で、`queueEvent()` 側にも `event_seq == unassigned_sequence - 1` なら `next_event_seq` を番兵へ固定して以後の自動採番を止める枝があり、この上限検査と対になっています。
 >
 > **骨子**:
 > ```text
@@ -371,31 +406,42 @@ eventはbutton、cursor move、axis deltaの三種です（[`InputEvent`](../../
 
 ### L3: InputSnapshot
 
-[`beginFrame()`](../../src/core/os/inputstate.cpp#L417) がpending列を一回処理し、down/pushed/released、mouse position、mouse deltaを生成します。
+[`beginFrame()`](../../src/core/os/inputstate.cpp#L449) がpending列を一回処理し、down/pushed/released、mouse position、mouse deltaを生成します。
 
 - 同一フレーム内のdown→upもevent順からedgeを導出。
 - mouse cursor差分とinjectされたaxis deltaを加算。
 - snapshotはtrivially copyable/standard layout（前者は「memcpyで丸ごと複製・保存してよい型」、後者は「メンバの並びがC構造体と同じで先頭アドレスから素直に読める型」を指すC++の型カテゴリ名です）で、記録・再生しやすい値型。
+- ✅SA1f: **指の一覧**は固定長の `touches`（[`TouchState`](../../src/core/os/inputstate.hpp#L66) × `touch_count` = 10）と、そのフレームに終わった tap の `touch_taps`（[`TouchTap`](../../src/core/os/inputstate.hpp#L76) × 10）、フレームの時刻 `time_seconds` です。
 
-[`FrameInput`](../../src/core/os/inputstate.hpp#L217) はsnapshotに加え、そのフレームのordered event `span`を貸し出します。spanのownerは`InputStateCore`です。次の`beginFrame()`まで保持するとdebug assertになります（[`FrameInputBorrowState`](../../src/core/os/inputstate.hpp#L206)、コメントは [`inputstate.hpp` 内](../../src/core/os/inputstate.hpp#L216)）。
+> 🧩 **難所 — 指の snapshot は「この frame で触れた・離れた指」も持つ**([`beginFrame()` の touch の枝](../../src/core/os/inputstate.cpp#L511))
+>
+> **何をする所か**: 順序付きの touch event から、指ごとの down / pushed / released / cancelled と位置を作ります。
+>
+> **素朴に読むと**: 「今触れている指の一覧」だけ持てばよさそうですが、それだと 1 frame の中で触れて離した指（瞬間の tap）が frame の終わりには消えていて、tap も region の pressed も取りこぼします。そこで frame の頭で前の frame の指を写し（離れた指は空にし、残った指は `previous_down` / `previous_x,y` に今の値を移して edge を落とす）、event を順に当てます。up / cancel でも slot は空にせず `released` を立てたまま残すので、その frame の間は「触れて離した指」として見えます。同じ id が同じ frame で離れてまた触れたときは、down の枝が前の `released` と `previous_*` を引き継いで slot を作り直します。終わった tap は id の再利用で上書きされないよう、up の時点で `touch_taps` に別に写します（時間 = up の frame の時刻 − down の frame の時刻、動き = 接触の間の最大の距離の 2 乗。距離は `scale_x` / `scale_y` を掛けた framebuffer ピクセル）。
+>
+> **手がかり**: 時刻は `setFrameTime()` が渡されていればその値（replay は `replay_frame / fps`、CPU テストは任意）、無ければ `steady_clock` です（[その所](../../src/core/os/inputstate.cpp#L464)）。tap の 250 ms はこの frame の時刻で測るので、分解能は frame です。空きの slot が無い 11 本目の down は捨てます。範囲外の id と非有限の座標の event も捨てます。
+>
+> **不変条件**: slot を up で空にしない（空にするのは次の frame の頭）。tap は `touch_taps` から読み、`touches` の slot から組み立て直さない。
+
+[`FrameInput`](../../src/core/os/inputstate.hpp#L252) はsnapshotに加え、そのフレームのordered event `span`を貸し出します。spanのownerは`InputStateCore`です。次の`beginFrame()`まで保持するとdebug assertになります（[`FrameInputBorrowState`](../../src/core/os/inputstate.hpp#L241)、コメントは [`inputstate.hpp` 内](../../src/core/os/inputstate.hpp#L251)）。
 
 ### L4: Action map
 
-[`parseInputActionsJson()`](../../src/core/os/actionmap.cpp#L885) が`pelican.input_actions` v1を読みます。現対応bindingはkeyboard key/chord、mouse delta/wheel axis、WASD/arrows composite、gamepad（[`gamepad_button` / `gamepad_axis1` / `gamepad_axis2`](../../src/core/os/actionmap.cpp#L26)）などです。プロファイルは `input/profiles/*.json` から選べます（起動オプション`--input-profile`、RPC `set_input_profile`）。
+[`parseInputActionsJson()`](../../src/core/os/actionmap.cpp#L950) が`pelican.input_actions` v1を読みます。現対応bindingはkeyboard key/chord、mouse delta/wheel axis、WASD/arrows composite、gamepad（[`gamepad_button` / `gamepad_axis1` / `gamepad_axis2`](../../src/core/os/actionmap.cpp#L26)）などです。プロファイルは `input/profiles/*.json` から選べます（起動オプション`--input-profile`、RPC `set_input_profile`）。
 
 起動時だけ必要な道具の入力は [`applyInputActionOverlays()`](../../src/project/inputactionoverlay.cpp#L194) で project actions の後ろへ合成します。bundle URI は `EngineLaunchConfig::input_action_overlays` にだけあり、`ProjectBasicConfig` には入りません。project profile は project 定義だけ、overlay profile はその overlay 定義だけを相手に検証してから binding を併合するため、片方の profile がもう片方の action を偶然取り込むこともありません。
 
 action / action set の同名は衝突名を含む例外です。入力 runtime の project-only 読み込みは [`loadInputActionsRuntimeSourceFromProject()`](../../src/core/userpublic/userinput.cpp#L38)、明示的な startup-overlay 経路は [`loadInputActionsRuntimeSourceWithStartupActionOverlays()`](../../src/core/userpublic/userinput.cpp#L52) に分かれています。
 
-action set stackの実体は`std::vector<std::string>`（set名の列）で、[`Actions::pushActionSet` / `popActionSet`](../../src/core/userpublic/userinput.hpp#L182) が`push_back` / `pop_back`する本物のLIFOです（実体は [`InputActionsRuntime::pushSet()`](../../src/core/userpublic/userinput.cpp#L332)）。[`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L1094) はこのvectorを`rbegin()`→`rend()`、つまり**末尾要素から先頭要素へ**走査します。最後にpushしたsetが最初に評価される＝高優先、ということです。上位setが使ったcontrolを`ConsumedControls`へ記録し、下位setでは同じkey/axisを無視します。
+action set stackの実体は`std::vector<std::string>`（set名の列）で、[`Actions::pushActionSet` / `popActionSet`](../../src/core/userpublic/userinput.hpp#L182) が`push_back` / `pop_back`する本物のLIFOです（実体は [`InputActionsRuntime::pushSet()`](../../src/core/userpublic/userinput.cpp#L332)）。[`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L1176) はこのvectorを`rbegin()`→`rend()`、つまり**末尾要素から先頭要素へ**走査します。最後にpushしたsetが最初に評価される＝高優先、ということです。上位setが使ったcontrolを`ConsumedControls`へ記録し、下位setでは同じkey/axisを無視します。
 
-Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`pose`型は実装済みで（WP130/132）、[`InputActionFrame::pose()`](../../src/core/os/actionmap.cpp#L873) は`poses` mapから返し、未サンプルならdefaultの`ActionPose`を返します。XR pose providerがない環境（flat）ではpose sampleが来ないため常にdefaultです。
+Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`pose`型は実装済みで（WP130/132）、[`InputActionFrame::pose()`](../../src/core/os/actionmap.cpp#L938) は`poses` mapから返し、未サンプルならdefaultの`ActionPose`を返します。XR pose providerがない環境（flat）ではpose sampleが来ないため常にdefaultです。
 
-> 🧩 **難所 — 消費は set 単位で効く**([`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L1094))
+> 🧩 **難所 — 消費は set 単位で効く**([`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L1176))
 >
 > **何をする所か**: action set stack を高優先から走査し、各 action の binding を評価します。使われた key / mouse axis / gamepad control を記録して、下位 set が同じ control を二重に読まないようにします。
 >
-> **素朴に読むと**: `ConsumedControls` が `consumed` / `consumed_by_set` / `consumed_by_action` と 3 つあり、なぜ 3 段要るのかがコードからは読めません。鍵は **binding の評価が参照するのは常に `consumed` だけ**という点です(`readBinding(resolved, snapshot, wheel, consumed, action.type)`)。`consumed_by_action` は action を抜けるときに `consumed_by_set` へ、`consumed_by_set` は set を抜けるときに `consumed` へ、と**一段遅れて**合流します。つまり同じ set の中では、どの action も互いの入力を奪えません。おかげで JSON の `actions` 配列を並べ替えても結果が変わらず、決定性が宣言順に依存しません。`consumed_by_action.merge(...)` を `consumed.merge(...)` へ 1 行内側で書き換えると「同じ set の先頭 action が W を食う」挙動になり、順序依存が静かに入ります。その代償として、同一 action に複数 binding があるときは互いを見ないまま [`mergeSample()`](../../src/core/os/actionmap.cpp#L496) で**加算**され、`clampAxis()` で [-1,1] へ丸められます。WASD とスティックを同時に倒して 2.0 が 1.0 に飽和するのは仕様であって取りこぼしではありません。`released` も `any_release && !held` と**全 binding を見た後で**決めるので、どれかを離しても他が押されていれば立ちません。
+> **素朴に読むと**: `ConsumedControls` が `consumed` / `consumed_by_set` / `consumed_by_action` と 3 つあり、なぜ 3 段要るのかがコードからは読めません。鍵は **binding の評価が参照するのは常に `consumed` だけ**という点です(`readBinding(resolved, snapshot, wheel, consumed, action.type)`)。`consumed_by_action` は action を抜けるときに `consumed_by_set` へ、`consumed_by_set` は set を抜けるときに `consumed` へ、と**一段遅れて**合流します。つまり同じ set の中では、どの action も互いの入力を奪えません。おかげで JSON の `actions` 配列を並べ替えても結果が変わらず、決定性が宣言順に依存しません。`consumed_by_action.merge(...)` を `consumed.merge(...)` へ 1 行内側で書き換えると「同じ set の先頭 action が W を食う」挙動になり、順序依存が静かに入ります。その代償として、同一 action に複数 binding があるときは互いを見ないまま [`mergeSample()`](../../src/core/os/actionmap.cpp#L507) で**加算**され、`clampAxis()` で [-1,1] へ丸められます。WASD とスティックを同時に倒して 2.0 が 1.0 に飽和するのは仕様であって取りこぼしではありません。`released` も `any_release && !held` と**全 binding を見た後で**決めるので、どれかを離しても他が押されていれば立ちません。
 >
 > **骨子**:
 > ```text
@@ -415,18 +461,49 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 >
 > **不変条件**: 2 つの `merge` の位置を内側へ動かさない(同一 set 内は互いに非干渉 = 宣言順非依存)。`readBinding()` へ渡すのは `consumed` だけに保つ。同一 action の複数 binding は加算 + clamp であり、先勝ちにしない。`released` は全 binding を見終わってから決める。
 
+### タッチの binding（✅SA1f）
+
+`touch:region` / `touch:tap` は [`parseBinding()` の touch の枝](../../src/core/os/actionmap.cpp#L384) が `BindingKind::touch_region` / `touch_tap` にします（button の action だけ）。矩形は binding の文字列ではなく profile の要素の属性 `region` で、[profile の検査](../../src/core/os/actionmap.cpp#L1063)（deadzone / invert と同じ所）が有限・0〜1・正の面積を確かめて `InputActionBinding::region` に入れます。評価で `parseBinding()` し直す所でも `resolved.region = binding.region` と写します（[その所](../../src/core/os/actionmap.cpp#L1142)。写し忘れると region の無い binding になって何も立たない）。
+
+評価は [`readTouchBinding()`](../../src/core/os/actionmap.cpp#L760) で、snapshot だけでなく **`FrameInput`（その frame の順序付き event と換算）** を受け取ります。そのため `evaluateInputActions(map, FrameInput, stack)` の道だけがタッチを評価し、snapshot だけを受ける overload ではタッチの binding は何も立ちません。framebuffer が不明な frame も同じです。
+
+- **tap**: `touch_taps` の各要素について、down と up の点がどちらも矩形の中、時間が 0〜0.250 s、動きの 2 乗が `slop_px²` 以下なら pressed と `any_release` を立てます（held は立たない）。
+- **region**: 指ごとに「前の frame の終わりに触れていて矩形の中か」から始め、その frame の touch event を順に当て直して、指の和集合が空 → 非空で pressed、非空 → 空で release、終わりの状態を held にします。
+
+> 🧩 **難所 — region は event を当て直す**（[`readTouchBinding()`](../../src/core/os/actionmap.cpp#L760)）
+>
+> **何をする所か**: 矩形の中に触れている指の集まりが、この frame で空から非空になったか・非空から空になったかを決めます。
+>
+> **素朴に読むと**: snapshot の「今触れているか」と「今の位置」で矩形の中かを見れば十分に見えます。それだと 1 frame の中で触れて離した指、矩形を横切った指の出入りを落とします。そこで前の frame の状態（`previous_down` と `previous_x,y`）から、`ordered_events` の touch を 1 つずつ当てて和集合の変化を見ます。接触の状態は event の phase で追い（down で接触、up / cancel で離れる）、**cancel や up の後に同じ指の MOVE が来ても接触には戻しません**（queue の溢れで cancel が入った直後の MOVE で再び押された、という不具合をこの形で直した）。
+>
+> **手がかり**: 消費済み（上の set や UI）の指は snapshot から消えているので `available` が偽になり、event も当てません。テストは `test/touch_input_test.cpp` の "Touch region aggregates fingers crossing bounds same-frame edges and set consumption" と、溢れの後の MOVE は `test/android_inputqueue_test.cpp` の "Android overflow cancel followed by move cannot reactivate region"。
+>
+> **不変条件**: 接触の状態を event の phase だけで変える（MOVE で接触を立てない）。矩形は左上を含み右下を含まない（`nx >= x0 && nx < x1`）。
+
 ### raw inputとAction消費は別
 
-`InputConsumptionMask`はAction用snapshotのkey/mouseだけをzero化します。公開 [`UserInput`](../../src/core/userpublic/userinput.cpp#L389) が読む元snapshotは変更しません。UIなどがActionだけを抑止しつつ、diagnosticがraw inputを見られる構造です。
+`InputConsumptionMask`はAction用snapshotのkey/mouseだけをzero化します（✅SA1f から指ごとの `touches[32]` も持ち、[`apply()`](../../src/core/os/inputstate.cpp#L290) が消費した id の `touches` と `touch_taps` の要素を空にします。action set の間の `ConsumedControls` にも指ごとの `touches` が足されました）。公開 [`UserInput`](../../src/core/userpublic/userinput.cpp#L389) が読む元snapshotは変更しません。UIなどがActionだけを抑止しつつ、diagnosticがraw inputを見られる構造です。
+
+### UI router の指（✅SA1f）
+
+[`InputRouter::routeFrameInput()`](../../src/core/ui/inputrouter.cpp#L121) は touch event を `UiPointerEvent` にして、**`pointer_id = 1 + Android の id`**（マウスは 0）、phase を Down / Move / Up / Cancel に写します（[その所](../../src/core/ui/inputrouter.cpp#L148)）。下の `route()` は以前から pointer_id ごとの capture と Cancel を持っていたので、指ごとの掴みはそれに乗っています。
+
+- **指ごとの消費**: `RouteFrameResult` に `consumed_touches[32]` が足されました。capture 中の指は**その frame に event が無くても**消費に入れ（[その所](../../src/core/ui/inputrouter.cpp#L51)）、event が target に当たった指・capture 中の指も入れます。`UiModule::routeFrameInput()` がそれを `InputState::consumeTouchForActions()` に渡し（[その所](../../src/core/ui/module.cpp#L357)）、アクション用の snapshot からその指が消えます。マウス（id 0）は従来どおり `consumed_pointer` です。
+- **ツールがマウスを持つ frame**: `routeFrameInput()` は呼ぶ側の `InputConsumptionMask` を受け取り、マウスが消費されていればマウスの event だけ飛ばして touch は通します。呼ぶ側の [`updateFrameState()`](../../src/core/appflow/framephase.cpp#L158) も、snapshot に指があれば ImGui がマウスを持っていても router を呼びます（touch が無い Windows の frame は元の条件のまま）。
+- **押された見た目**: `UiModule::handlePointer()` は ReleaseCapture / Cancel で、まだ別の指がその widget を掴んでいれば pressed を外しません（[`hasCapture()`](../../src/core/ui/inputrouter.cpp#L165)）。hover の色は pointer_id 0 の event でだけ動かします（指は hover を作らない）。
+- マウスの `canceled` な button event は Click の無い Cancel になり、capture を外します。
 
 ### pointer の換算とカーソル（GP-4）
 
-`InputEvent` と `InputSnapshot` は**窓座標のまま**です。framebuffer ピクセルへ換算するのは、公開の pointer（`ctx.input().pointer()`）と UI の入力ルータの2か所だけで、ImGui は窓座標を読みます。
+`InputEvent` と `InputSnapshot` は**窓座標のまま**です。framebuffer ピクセルへ換算するのは、公開の pointer（`ctx.input().pointer()`）と UI の入力ルータの2か所だけで、ImGui は窓座標を読みます（✅SA1f からタッチの binding の判定と、tap の動きの距離も同じ換算を使います）。
 
-- 換算は値型 [`PointerTransform`](../../src/core/os/inputstate.hpp#L159)（軸ごとの `scale_x` / `scale_y` と framebuffer の幅・高さ。0×0 は「不明」）です。生きている窓では [`Window::pointerTransform()`](../../src/core/os/window_glfw.cpp#L342) が [`pointerTransformFor()`](../../src/core/os/inputstate.cpp#L56)（framebuffer ÷ 窓の大きさ。どちらかが 0 の軸は 1）で作り、窓の無い headless では [`livePointerTransform()`](../../src/core/appflow/framephase.cpp#L68) が倍率 1・framebuffer = `RenderTarget` の extent にします。
-- `freeze_input` 相で [`InputSequenceRuntime::prepareFrame()`](../../src/core/os/inputsequence.cpp#L487) が次のフレームの換算を `InputState::setPointerTransform()` に渡し、`beginFrame()` がそれをフレームの換算として固定して、[`pointerStateFor()`](../../src/core/os/inputstate.cpp#L74) で `PointerState` を作ります。換算は `FrameInput::pointer_transform` として貸し出され、UI ルータ（[`routeFrameInput()` の換算](../../src/core/ui/inputrouter.cpp#L122)）と収録が同じ値を読みます。
-- 再生中の `prepareFrame()` は、その機械の換算ではなく**記録の換算**を渡します（v1 の記録で framebuffer が不明なときだけ、幅・高さをその機械のものにします）。収録は各フレームの換算を `InputSequenceFrame::pointer_transform` に残し、[`toJsonLines()`](../../src/core/os/inputsequence.cpp#L373) がヘッダと「前のフレームと違うフレームのマーカー」に `content_scale` / `framebuffer` を書きます。v2 のヘッダは2つとも必須、v1 のマーカーにあれば拒否です（[`parsePointerTransform()`](../../src/core/os/inputsequence.cpp#L115)）。`clear()` は換算を消しません（窓の性質であって入力ではないため）。
-- カーソルは `InputState` が `CursorModeStatus{requested, effective, embedded}` を持ちます。`setCursorMode` は `requested` を書くだけで、通常のフレームループが `window.process()` の直後に [`Window::applyCursorMode()`](../../src/core/os/window_glfw.cpp#L348) を呼び、[`effectiveCursorMode()`](../../src/core/os/inputstate.cpp#L85)（埋め込みなら `locked` → `normal`）を GLFW の input mode へ、変わったときだけ適用します（[呼び出し](../../src/core/appflow/loop.cpp#L758)）。埋め込みの判定は `--rpc` かつ窓 style に `WS_CHILD`（Windows だけ）。headless のループはこれを呼ばないので `effective` は既定の `normal` のままです。
+- ✅SA1f: `beginFrame()` は「最後に届いたポインタの入力が touch か」（`last_pointer_touch`。touch の event で真、`cursor_move` と `axis` で偽）を持ち、真なら `frame_pointer` を、触れている指のうち `down_order` が最も小さい指から作ります（[その所](../../src/core/os/inputstate.cpp#L593)）。触れている指が無ければ既定の `PointerState{}`（`inside = false`）です。公開の API は変えていません。
+
+- 換算は値型 [`PointerTransform`](../../src/core/os/inputstate.hpp#L191)（軸ごとの `scale_x` / `scale_y` と framebuffer の幅・高さ。0×0 は「不明」）です。生きている窓では [`Window::pointerTransform()`](../../src/core/os/window_glfw.cpp#L342) が [`pointerTransformFor()`](../../src/core/os/inputstate.cpp#L84)（framebuffer ÷ 窓の大きさ。どちらかが 0 の軸は 1）で作り、窓の無い headless では [`livePointerTransform()`](../../src/core/appflow/framephase.cpp#L72) が倍率 1・framebuffer = `RenderTarget` の extent にします。
+- `freeze_input` 相で [`InputSequenceRuntime::prepareFrame()`](../../src/core/os/inputsequence.cpp#L509) が次のフレームの換算を `InputState::setPointerTransform()` に渡し、`beginFrame()` がそれをフレームの換算として固定して、[`pointerStateFor()`](../../src/core/os/inputstate.cpp#L102) で `PointerState` を作ります。換算は `FrameInput::pointer_transform` として貸し出され、UI ルータ（[`routeFrameInput()` の換算](../../src/core/ui/inputrouter.cpp#L129)）と収録が同じ値を読みます。
+- 再生中の `prepareFrame()` は、その機械の換算ではなく**記録の換算**を渡します（v1 の記録で framebuffer が不明なときだけ、幅・高さをその機械のものにします）。収録は各フレームの換算を `InputSequenceFrame::pointer_transform` に残し、[`toJsonLines()`](../../src/core/os/inputsequence.cpp#L392) がヘッダと「前のフレームと違うフレームのマーカー」に `content_scale` / `framebuffer` を書きます。v2 のヘッダは2つとも必須、v1 のマーカーにあれば拒否です（[`parsePointerTransform()`](../../src/core/os/inputsequence.cpp#L116)）。`clear()` は換算を消しません（窓の性質であって入力ではないため）。
+- ✅SA1f の **v3**: `toJsonLines()` は記録に touch が 1 つでもあればヘッダを version 3 にし（[その所](../../src/core/os/inputsequence.cpp#L400)）、無ければ v2 のままです（既存の v2 の test を変えないため）。読み込みは 1・2・3 を受け（[版の検査](../../src/core/os/inputsequence.cpp#L325)）、v3 も v2 と同じく換算をヘッダで必須にし、v3 未満の記録の touch の行は断ります（[その所](../../src/core/os/inputsequence.cpp#L363)）。touch の行は `pointer_id`・`phase`・`x`・`y`・`slop_px`（正の値が必須）を持ちます。button の `canceled` は true の時だけ書く任意の欄で、版を上げません。再生の `prepareFrame()` は `setFrameTime(replay_frame / fps)` で frame の時刻を渡します（[その所](../../src/core/os/inputsequence.cpp#L522)）。
+- カーソルは `InputState` が `CursorModeStatus{requested, effective, embedded}` を持ちます。`setCursorMode` は `requested` を書くだけで、通常のフレームループが `window.process()` の直後に [`Window::applyCursorMode()`](../../src/core/os/window_glfw.cpp#L348) を呼び、[`effectiveCursorMode()`](../../src/core/os/inputstate.cpp#L113)（埋め込みなら `locked` → `normal`）を GLFW の input mode へ、変わったときだけ適用します（[呼び出し](../../src/core/appflow/loop.cpp#L758)）。埋め込みの判定は `--rpc` かつ窓 style に `WS_CHILD`（Windows だけ）。headless のループはこれを呼ばないので `effective` は既定の `normal` のままです。
 
 ## 5.6 Camera
 
@@ -438,7 +515,7 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 - active camera名
 - optional orbit/follow/fly controller定義
 
-加えて [`discontinuityRevision()`](../../src/core/renderer/camera.hpp#L166) と [`getProjectionSpec()`](../../src/core/renderer/camera.hpp#L171) を公開します。前者はrendererのtemporal reset（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1527)）、後者はXR eye projectionの入力（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L595)）です。
+加えて [`discontinuityRevision()`](../../src/core/renderer/camera.hpp#L166) と [`getProjectionSpec()`](../../src/core/renderer/camera.hpp#L171) を公開します。前者はrendererのtemporal reset（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1528)）、後者はXR eye projectionの入力（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L595)）です。
 
 GP-4 の [`rayThroughPixel()`](../../src/core/renderer/camera.cpp#L435) は、framebuffer ピクセルの位置を projection と view の逆行列（double で計算）で world の ray にします。NDC は `2 × px ÷ viewport − 1` で y を反転せず（平面描画のフレームが NDC を framebuffer へ写す向き。コメントは gizmo の `projectPoint` を参照）、深度 0（near 面）と 1（far 面）の2点を戻して、起点を near 面上の点、方向をその差の正規化にします。公開面は `RenderContext::screenRay()` で、XR 中の拒否と有限性の検査はそちらが持ちます。
 
@@ -822,11 +899,11 @@ busはmaster/bgm/seで、実効音量はmaster×個別busです。設定変更�
 
 **bake の ticket の流れ。**[`bakeAudioAnalysis()` の RPC 側](../../src/core/communication/renderconfigaudioanalysis.cpp#L36)は、engine の thread で引数と settings を見て(settings の拒否と `audio.analysis_busy@1` はここですぐ返す)、`asset` / `out` を `resolve_document_path` で解き、`std::async` の thread に bake を渡します。worker は engine の状態を読みません(コードの注記)。
 
-結果は `AudioAnalysisBakeOutcome`(committed の fields か、拒否の code・message・fields)で返り、`commitPending()` が frame の境界ごとに最初に呼ぶ [`harvestAudioBakes()`](../../src/core/communication/renderconfigaudioanalysis.cpp#L113) が終わったものを `results_` と `completed_` に移します([呼ぶ所 AB-1](../../src/core/communication/renderconfigeditor.cpp#L8530))。render 文書を書かないので、待っている編集の ticket とは関係なく終わります。editor の destructor は走っている bake を待ちます。この file は audio の有無によらず `pelican_core` に入り、`PELICAN_WITH_AUDIO=OFF` の build では `bake_audio_analysis` が settings を見た後に `audio.analysis_unavailable@1` を返すだけになります(`list_derived_assets` は同じに動きます)。
+結果は `AudioAnalysisBakeOutcome`(committed の fields か、拒否の code・message・fields)で返り、`commitPending()` が frame の境界ごとに最初に呼ぶ [`harvestAudioBakes()`](../../src/core/communication/renderconfigaudioanalysis.cpp#L113) が終わったものを `results_` と `completed_` に移します([呼ぶ所 AB-1](../../src/core/communication/renderconfigeditor.cpp#L8534))。render 文書を書かないので、待っている編集の ticket とは関係なく終わります。editor の destructor は走っている bake を待ちます。この file は audio の有無によらず `pelican_core` に入り、`PELICAN_WITH_AUDIO=OFF` の build では `bake_audio_analysis` が settings を見た後に `audio.analysis_unavailable@1` を返すだけになります(`list_derived_assets` は同じに動きます)。
 
 **古さの判定。**[`readDerivedAssetStatus()`](../../src/project/audioanalysisformat.cpp#L250) は manifest の最初の output を asset とし、source と output の file の有無と sha256、`pelican.audio_analysis` の manifest なら版と `settings_sha256` を見ます。sha256 は file の更新時刻と大きさが変わったときだけ計算し直します([`fileSha256()` の cache](../../src/project/audioanalysisformat.cpp#L60)。`get_frame_plan` が呼ばれるたびに派生 asset の全部を見るため、とコードの注記)。
 
-✅AB-2 から、manifest は読み終えて閉じてから source と output を hash します(bake の置き換えが待つのはこの読みの間だけ、とコードの注記)。`get_frame_plan` 側は `Renderer::currentFramePlanJson()` が `initial_asset` の file に [`derivedAssetStatusOf()`](../../src/core/vkcore/renderer.cpp#L5056) を当てます。
+✅AB-2 から、manifest は読み終えて閉じてから source と output を hash します(bake の置き換えが待つのはこの読みの間だけ、とコードの注記)。`get_frame_plan` 側は `Renderer::currentFramePlanJson()` が `initial_asset` の file に [`derivedAssetStatusOf()`](../../src/core/vkcore/renderer.cpp#L5068) を当てます。
 
 **`value.sample_table` の作り。**lowering は `time` の edge が無ければ `<id>/$scene_time` の input node を足し([lowering の AB-1 の分](../../src/core/userpublic/valuegraph.cpp#L224))、`Graph` の構築で `Op::sample_table` の node が表を `loadSampleTable()` で読んで `shared_ptr` で持ちます([構築の AB-1 の分](../../src/core/userpublic/valuegraph.cpp#L507))。評価は memory を読むだけです([評価の AB-1 の分](../../src/core/userpublic/valuegraph.cpp#L927))。
 
@@ -1446,7 +1523,7 @@ outboxのentryは呼び出しごとに1件ではありません。
 - mutator（と `emit`）なのに manifest に分類が無い → `mutator lacks manifest classification`（[その throw](../../tools/public_api_inventory.py#L173)）
 - manifest にあるのに inventory 側で消費されなかった → `runtime manifest API absent from inventory`（[その throw](../../tools/public_api_inventory.py#L180)）
 
-結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L4444)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
+結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L4447)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
 
 ## 5.16 姿勢を駆動する2つの様式 ✅実装済み（AG-1a / AG-1b / AG-2）
 

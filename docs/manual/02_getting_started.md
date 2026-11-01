@@ -513,24 +513,51 @@ script の既定の path は開発機の物(`<作業ディレクトリ>/...`)な
 
 ### 起動の引数
 
-player の引数は app が自分で組みます([その所](../../src/platform/android/android_main.cpp#L284)): `--project`(internal storage に展開した project)、`--user-dir`、`--log-file`、そして **`--vulkan-validation on` は固定**です(validation を外した run はこの APK ではできません)。
-足したい引数は intent の string extra `pelican_args` で渡します(`--es pelican_args '"--frames 0 --timing-frames 30"'`)。空白で区切るだけで、引用符は解釈しません([`intentArguments()`](../../src/platform/android/android_main.cpp#L63))。
+player の引数は app が自分で組みます([その所](../../src/platform/android/android_main.cpp#L289)): `--project`(internal storage に展開した project)、`--user-dir`、`--log-file`、そして **`--vulkan-validation on` は固定**です(validation を外した run はこの APK ではできません)。
+足したい引数は intent の string extra `pelican_args` で渡します(`--es pelican_args '"--frames 0 --timing-frames 30"'`)。空白で区切るだけで、引用符は解釈しません([`intentArguments()`](../../src/platform/android/android_main.cpp#L65))。
 
-- 何も渡さなければ窓ありで 600 frame 描いて終わります([既定の `--frames`](../../src/platform/android/android_main.cpp#L304))。`--frames 0` は終わりなし(back で終える)。✅SA1 から、Android の `--frames` と frame の時間は**実際に描けた frame だけ**を数えます(window が無い間・acquire が timeout した周回は数えない)。
-- `--headless` を渡すと INIT_WINDOW を待たずに起動し、960x540 で 3 frame 描いて `files/sa1_posegraph.png` に書きます([その所](../../src/platform/android/android_main.cpp#L289))。
+- 何も渡さなければ窓ありで 600 frame 描いて終わります([既定の `--frames`](../../src/platform/android/android_main.cpp#L309))。`--frames 0` は終わりなし(back で終える。✅SA1f から BACK は app が受けて、離した時に activity を終えます)。✅SA1 から、Android の `--frames` と frame の時間は**実際に描けた frame だけ**を数えます(window が無い間・acquire が timeout した周回は数えない)。
+- `--headless` を渡すと INIT_WINDOW を待たずに起動し、960x540 で 3 frame 描いて `files/sa1_posegraph.png` に書きます([その所](../../src/platform/android/android_main.cpp#L294))。
 - `--timing-frames N`(1〜100000、既定 120)は N frame ごとの CPU の時間(p50 / p95 / p99、pacing を含む)を log に出す間隔です。
 
 project の展開は版(全 file の path と中身の hash)が変わった時だけで、`project.stage` に書き終えてから置き換えます。user directory(`files/user`)と pipeline cache(`files/cache/pipeline_cache.bin`、tmp に書いてから rename)は project の外なので残ります。shader cache の版の文字列は Android では `shaderc-v2025.1-android` です(desktop の cache と混ざらない)。
 
 ### 端末の serial と log
 
-- **serial を必ず指定します。** `adb` を手で打つときは毎回 `-s <serial>` を付けてください(複数の端末や emulator がつながっていると取り違えます)。runner の script(`sa1_run_device.py`・`sa1_run_windowed.py`・`sa1_run_lifecycle.py`)は serial と `adb` の path を中に固定している(`adb = [..., '-s', '<serial>']`、[例](../../tools/android/sa1_run_lifecycle.py#L28))ので、別の端末ではその行を書き換えます。
-- **`log.tag=S` の端末では file の log を見ます。** 確かめた端末は `getprop log.tag` が `S` で、app が自分の process の閾値を INFO にしても([その所](../../src/platform/android/android_main.cpp#L249))`logcat` の dump は空でした(原因は未確認)。同じ log は app の internal storage にもあります。`adb -s <serial> exec-out run-as org.pelicanengine.sa1b cat files/engine.log`(engine の quill の log。validation の warning / error の累計も最後に出る)、`files/pump.log`(lifecycle の command と surface の解放の ack。quill を通さず毎行 fsync)、`files/stderr.log`、`files/engine-result.txt`(engine の終了コード)。端末の property は変えません。
+- **serial を必ず指定します。** `adb` を手で打つときは毎回 `-s <serial>` を付けてください(複数の端末や emulator がつながっていると取り違えます)。runner の script(`sa1_run_device.py`・`sa1_run_windowed.py`・`sa1_run_lifecycle.py`・✅SA1f の `sa1f_run_device.py`)は serial と `adb` の path を中に固定している(`adb = [..., '-s', '<serial>']`、[例](../../tools/android/sa1_run_lifecycle.py#L28))ので、別の端末ではその行を書き換えます。
+- **`log.tag=S` の端末では file の log を見ます。** 確かめた端末は `getprop log.tag` が `S` で、app が自分の process の閾値を INFO にしても([その所](../../src/platform/android/android_main.cpp#L252))`logcat` の dump は空でした(原因は未確認)。同じ log は app の internal storage にもあります。`adb -s <serial> exec-out run-as org.pelicanengine.sa1b cat files/engine.log`(engine の quill の log。validation の warning / error の累計も最後に出る)、`files/pump.log`(lifecycle の command と surface の解放の ack。quill を通さず毎行 fsync)、`files/stderr.log`、`files/engine-result.txt`(engine の終了コード)。端末の property は変えません。
 - PNG を `exec-out` で取るときは Git Bash の `>` か Python の bytes で受けます(Windows PowerShell 5 の文字列の redirect は壊します)。
+
+### 入力を端末で確かめる(✅SA1f)
+
+✅SA1f(`bbedafc88`、2026-11-02)から、キーボード・ゲームパッド・タッチ・ペンが action map と UI に入り、BACK で app が終わります(何がどう入るかは [第7章「Android の入力」](07_input_ui.md#android-input))。端末での確かめは次の手順で行います。どれも Git Bash で repo の root から実行します(`python` は手元の Python 3)。
+
+1. **fixture を作る**: `python tools/android/sa1f_fixture.py`。[`sa1f_fixture.py`](../../tools/android/sa1f_fixture.py#L6) が `projects/posegraph_demo` を `build-android/sa1f-project` に写し、確かめ用の action 4 つ(`sa1f_kbd` = `kbd:space`、`sa1f_pad` = `pad:a`、`sa1f_region` = 画面の左半分の下 3/4 の `touch:region`、`sa1f_tap` = 右半分の下 3/4 の `touch:tap`)と、button 1 つの UI 文書を足します。元の project は変えません。
+2. **APK を作る**: `PROJECT=build-android/sa1f-project OUT=build-android/sa1f-apk bash tools/android/sa1_build_apk.sh`(`ninja -C build-android pelican_player` の後)。
+3. **端末で走らせる**: `python tools/android/sa1f_run_device.py --apk build-android/sa1f-apk/pelican-sa1b-debug.apk --label <名前>`。
+
+[`sa1f_run_device.py`](../../tools/android/sa1f_run_device.py#L57) は APK を入れ直し、`--frames 0 --sa1-test-input --timing-frames 120` で起動して最初の present を待ち、`adb shell input` で次の順に入れて `files/engine.log` を確かめます。
+
+| 段 | 入れる物 | 確かめる事 |
+|---|---|---|
+| `keyboard-space` | `input keyboard keyevent KEYCODE_SPACE` | `sa1f_kbd` が pressed |
+| `gamepad-a` | `input gamepad keyevent --longpress KEYCODE_BUTTON_A` | `sa1f_pad` が pressed、最後に released |
+| `touch-tap` | 画面の横 75%・縦 65%(左上から)の点の `input tap` | `sa1f_tap` の pressed と released が同じフレーム |
+| `touch-region` | 横 25%・縦 65% の点で 800 ms の定点 `input swipe` | `sa1f_region` の pressed と held、最後に released |
+| `ui-tap` / `ui-hold` | UI の button の上 (200, 210) の tap と 800 ms の定点 swipe | UI のポインタ 1 番の down と up が同じ座標で揃い、掴みと放しがある |
+| `stylus-tap` | `input stylus tap` | `sa1f_tap` がペンでも立つ |
+| 終わり | `input keyevent KEYCODE_BACK` | `engine-result.txt` が `0`、`pump.log` に `DESTROY engine done`、validation が有効で error 0 |
+
+タッチの段ではどれも、`pointer()` が入れた座標を指し、最後に離した後で `inside=false` になることも確かめます。瞬間の tap は 1 フレームの中で触れて離れて途中の `pointer()` が見えないので、tap の後に同じ点で 120 ms の定点 swipe を足しています。
+
+- **`--sa1-test-input`** は app が引数から取り除く確かめ用の switch で、ある時だけ action の値・`pointer()`・UI のポインタの event を `engine.log` に書きます([その所](../../src/platform/android/android_main.cpp#L261))。無い起動では log は増えません。
+- 結果は `build-android/sa1f-results/<名前>/` に、段ごとの `engine.log` / `pump.log`・全 `adb` の引数と終了コード(`commands.json`)・判定(`checks.json`)が残ります。同じ名前のフォルダがあると始めません。端末が lock されていると解除を試みずに止まり、失敗した時は `failure-*` の log を残して app を動かしたままにします。
+- 判定の関数は端末なしで `python tools/android/test_sa1f_run_device.py` が確かめます(adb は呼びません)。
+- serial と `adb` の path は script の中に固定です(上の「端末の serial と log」)。2 本以上の指は `adb shell input` では入れられないので、CPU のテストだけで確かめています。
 
 ### 今できない事
 
-タッチ入力(SA1f。窓の入力は積まない)、音、RPC と Studio からの操作、ImGui、hot reload、game logic の code を持つ project(試していない。未確認)。性能は validation を有効にしたままの値しかありません。窓の向きの扱い(preTransform IDENTITY)と lifecycle の設計は [../design_wsi_epoch_recovery.md](../design_wsi_epoch_recovery.md) §7.1 の SA1 追補、段の計画と残りは [../roadmap_backlog_2026-07.md](../roadmap_backlog_2026-07.md) の「Quest standalone(SA トラック)」です。
+音、RPC と Studio からの操作、ImGui、hot reload、game logic の code を持つ project(試していない。未確認)。入力では、文字の入力とソフトキーボード、ゲームパッドの抜き差しの検出、仮想スティック・仮想ボタン・ジェスチャ・振動(feature が action に値を出す口 SA1g の後)。性能は validation を有効にしたままの値しかありません。窓の向きの扱い(preTransform IDENTITY)と lifecycle の設計は [../design_wsi_epoch_recovery.md](../design_wsi_epoch_recovery.md) §7.1 の SA1 追補、段の計画と残りは [../roadmap_backlog_2026-07.md](../roadmap_backlog_2026-07.md) の「Quest standalone(SA トラック)」です。
 
 ## 関連文書
 

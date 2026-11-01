@@ -147,6 +147,8 @@ Studio と編集 RPC の機能ごとの記録は [Studio の履歴](../history/s
 > **方向決定(Quest standalone = SA トラック・2026-07-17):** MVP は PCVR(Quest Link)のまま、standalone は段階計画として記録: SA0(NDK/clang spike)→ SA1(GLFW 非依存の platform 層)→ SA2(standalone session — XR1〜3 を再利用)→ SA3(性能: multiview + dist-bake 必須級)。今から守る door-keeper 4 件(clang CI smoke / Windows 専用コードのユニット境界 / B3/B4 前提化 / タイル GPU 設計規律)。
 >
 > **進捗(SA0・SA1・2026-11-01):** ✅SA0(`ec7efeeaa`、NDK clang で純ロジックの test を arm64 の端末で実行)と ✅SA1(`fc0c09bf6`、スマホの NativeActivity で `pelican_player` が描く)が着地しました。SA1 の窓は GLFW を Windows に残し、Android だけ android_native_app_glue の上の薄い実装です(XR で窓の無い形は Quest の SA2)。Android の build は shaderc・glslang・SPIRV-Tools を pin して source から build しますが、これは Android の toolchain が明示に選ぶ道([`cmake/pelican_android.cmake`](../../cmake/pelican_android.cmake#L134))で、上の「build 依存の境界」がいう暗黙の fallback ではありません。手順は [第2章 §2.9](02_getting_started.md#29-android-で-player-を動かす)、残りは [../roadmap_backlog_2026-07.md](../roadmap_backlog_2026-07.md) の SA トラック。
+>
+> **進捗(SA1f・2026-11-02):** ✅SA1f(`bbedafc88`)で Android のキーボード・ゲームパッド・タッチ・ペン・BACK が今のアクション層と UI に入りました(タッチの binding `touch:region` / `touch:tap`、`pelican.input_seq` v3。[第7章「Android の入力」](07_input_ui.md#android-input))。feature が action に値を出す口は SA1g として後回しです。
 
 ## 11.3 既知の食い違い(設計文書 vs コード)
 

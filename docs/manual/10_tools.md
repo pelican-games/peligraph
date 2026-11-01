@@ -148,14 +148,14 @@ test は `ew1_engine_window_embedded`([engine_window_embedded.py](../../test/eng
 - batch・notification 非対応。エラーコードは標準 + アプリケーションエラー -32000、RenderDoc capture -32010。ハンドラ内例外は応答に変換されプロセスは落ちません。EOF で正常終了。
 - 1 プロセス 1 クライアント。**ゲーム DLL リロード中は全メソッドがアプリケーションエラーで拒否**されます。
 
-> **設計決定(決定性):** 同一の RPC スクリプトを 2 回実行したとき、応答列は(instance_id を除き)**バイト単位で完全一致**しなければならない。CI で検証済み。`instance_id` だけが除外されるのは、それが RPC エンドポイント生成時に振られる UUID v4 で、起動ごとに必ず変わる値だからです([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L2829))。
+> **設計決定(決定性):** 同一の RPC スクリプトを 2 回実行したとき、応答列は(instance_id を除き)**バイト単位で完全一致**しなければならない。CI で検証済み。`instance_id` だけが除外されるのは、それが RPC エンドポイント生成時に振られる UUID v4 で、起動ごとに必ず変わる値だからです([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L2835))。
 
 ### 基盤メソッド一覧
 
 | メソッド | params | 動作 |
 |---|---|---|
 | `get_status` | `{}` | `{instance_id, ray_tracing:{procedural_oracle, ray_layout_mode}, project_root, scene, scene_source:{...}, frame, time, play:{...}, seed, renderdoc, diagnostics:{renderdoc:{...}, scene_load:{...}}, debug_utils:{...}, vulkan_validation:{layer, available, enabled, synchronization, reason}, gpu_timing:{...}, memory:{...}, window_output:{...}, stores, input:{..., cursor:{requested, effective, embedded}}, reload:{...}, participants:{game_logic:{...}}, sprite:{...}, color:{...}, render:{published_frames}, startup:{...}, modules:{...}, xr:{active, reference_space, floor_semantics, ...}, animation:{available, sinks:[{owner, node, source, cursors:[{clip, time_seconds, normalized_phase}], frame_revision, pose_hash, state?, transition?, root_delta?}]}, audio:{available, backend, fallback_reason?, voices:[{node, state, position_seconds}]}, assets_verification:{state, ...}, preview:{available, reason?}, render_pipeline:{state, root, refusal?}, problems:{revision, count, errors, warnings}}`(`{...}` と略した鍵の形は下の「`get_status` の鍵」。`ray_tracing.ray_layout_mode` は RTL-1b で、このプロセスが起動した ray の layout の mode `"none"` / `"layout"`(まだ決まっていなければ `null`)。layout の有無を変えた編集を commit した後も、起こし直すまで前の値です。[第13章](13_editor.md) §13.5 の「ray の layout と bindings を読み書きする」。`preview` は PV-1 で、単発 preview(`render_preview`)が今の世代で使えるか。使えなければ `reason: {code: "preview.unsupported_authoring@1", feature, target?, graph?, pass?, cause?, message}`。[第6章](06_rendering.md) §6.13 の PV-1 の段落。`render_pipeline` は BS-1 で、project の構成で動いていれば `{state: "ready", root}`、`--render-fallback` の起動で構成が断られて fallback の世代で動いていれば `{state: "fallback", root, refusal: {code, ...fields, document?, message}}`([第6章](06_rendering.md) §6.16)。`problems` は PB-1 で、`get_problems` の一覧の件数。`revision` は一覧が変わったときだけ増える([第6章](06_rendering.md) §6.16 の「engine が持つ今の問題の一覧」)。`assets_verification` は AV-1 で、起動時の asset 検証の要約。形は下の「起動時の asset 検証の結果」。`animation` は AG-3a。animation module の無い build では `{available: false}` だけ。`audio` は AU-1 で、`backend` は `device` / `offline` / `null`、`voices` は CT-1 で graph の `audio.playback` の node ごとの `idle` / `playing` / `paused` と音源の秒、audio を外した build では `{available: false}` だけ。`gpu_timing` の `nodes` は 最後の 1 frame の sample だけで、node ごとの平均は `node_averages`([第6章](06_rendering.md) §6.14)。[第8章](08_gameplay.md) §8.11)※rpc は常に flat 駆動のため `xr.active=true` は rpc からは観測できない |
-| `get_gpu_timing` | `{}` | node ごとの GPU 時間の平均 `{schema: "pelican.gpu_timing_node_averages", version: 1, enabled, supported, reason, window_size: 30, frame_count, nodes: [{logical_frame, graph_variant, view_index, node_ordinal, node_kind, node_name, barriers_ms, body_ms, body_supported, sample_count}]}`([`get_gpu_timing` の登録](../../src/core/communication/rpcserver.cpp#L1871))。`nodes` は窓の最後の 30 論理フレーム(履歴がそれより短ければその数 `frame_count`)の node ごとの平均で、`get_status.gpu_timing.node_averages` と同じ行・同じ値です([第6章](06_rendering.md#gpu-タイミングwp143) §6.14 の「GPU タイミング」)。`gpu_timing` feature が無ければ `{enabled: false, supported: false, reason: "feature_not_enabled", frame_count: 0, nodes: []}`。GPU が graphics queue の timestamp を持たなければ `supported: false`・`reason: "graphics_queue_timestamps_unsupported"`(持てば `"enabled"`) |
+| `get_gpu_timing` | `{}` | node ごとの GPU 時間の平均 `{schema: "pelican.gpu_timing_node_averages", version: 1, enabled, supported, reason, window_size: 30, frame_count, nodes: [{logical_frame, graph_variant, view_index, node_ordinal, node_kind, node_name, barriers_ms, body_ms, body_supported, sample_count}]}`([`get_gpu_timing` の登録](../../src/core/communication/rpcserver.cpp#L1877))。`nodes` は窓の最後の 30 論理フレーム(履歴がそれより短ければその数 `frame_count`)の node ごとの平均で、`get_status.gpu_timing.node_averages` と同じ行・同じ値です([第6章](06_rendering.md#gpu-タイミングwp143) §6.14 の「GPU タイミング」)。`gpu_timing` feature が無ければ `{enabled: false, supported: false, reason: "feature_not_enabled", frame_count: 0, nodes: []}`。GPU が graphics queue の timestamp を持たなければ `supported: false`・`reason: "graphics_queue_timestamps_unsupported"`(持てば `"enabled"`) |
 | `set_seed` | `{seed}`(符号なし整数) | 決定的乱数のシード設定。返り値 `{seed}` |
 | `set_time` | `{t}` | 仮想時刻の直接設定(dt=0)。返り値 `{t, frame}`(`frame` は評価の番号) |
 | `step_frame` | `{}` | headless 専用で、描画のフレームを 1 つ進める(評価の番号が 1 増える)。game が進むのは `playing` のときだけ。窓ありでは `step_frame_windowed` で断る(第 13 章 §13.5) |
@@ -166,7 +166,7 @@ test は `ew1_engine_window_embedded`([engine_window_embedded.py](../../test/eng
 | `capture_gpu` | `{}` | `render_frame` と同じcurrent-time描画を1回だけ**RenderDoc**(GPU に送った描画コマンドを 1 フレーム分丸ごと記録して後から追える外部デバッガ)で captureし、実際に増えたindexのcanonical `.rdc` pathを返す |
 | `capture` | `{path}` | 直近フレームを PNG 保存(sRGB)。応答は `{path, encoding: "srgb", contract: 2}`(`path` は書いたファイルの絶対 path) |
 | `get_frame_plan` | `{}`、または `{loop_elements: {node, offset?, limit?}}`(LP-3b。draw_loop の要素の paging) | フレームプラン JSON(fullscreen / raster pass の node には shader の set 1 の宣言 `pass_inputs` が付く。VI-1 / VI-1b。LP 系からは最上位の `loops[]`、node と resource の `loop_origin`、node の `view_select` / `view_axes` / `no_selected_view` も。shader が `pelican_loop.glsl` の回の番号を読む pass / task の node に `reads_loop_index: true`。`schedule: "once"` の node に `schedule: "once"`・`last_run_generation`・`last_run_frame`(まだ走っていなければ `null`)。`physical_target_plan.resources[]` の `initial: {asset}` を持つ image の要素に `initial_asset: {asset, sha256}`(`sha256` は `assets.manifest` の値、載っていなければ `null`。asset の隣に `.import.json` があれば `derived_from` / `stale` / `stale_reasons` も)。物理計画の image の要素に `bytes`、最上位に `memory_summary {total_bytes, unused_bytes, unused_resources, peak_live_bytes, peak_node, peak_graph}`(RC-1 / RC-1b。数え方は[第 6 章](06_rendering.md#physical-plan-memory) §6.6。RC-7c 以降の欄と、✅RC-7e の登録しなかった render target の `unallocated_resources: [{name, reason, payload_bytes}]` も同じ節)。最上位に `preview: {available, reason?}`(`get_status` の `preview` と同じ形)。fallback の世代の間だけ最上位に `render_pipeline`(`get_status` の `render_pipeline` と同じ形)。形は[第 13 章](13_editor.md) §13.5「ループと分解の RPC」) |
-| `rerun_once` | `{node?}`(PS-1。`node` は空でない文字列。ほかの鍵は `-32602`) | `{scheduled: [<pass / task の名前>...]}`。`schedule: "once"` の node を次の frame で走らせる。`node` を省くと今の frame plan の once の全部、graph の node の id ならその node が作った once、`graph.loop` の id なら全回の once。per_frame の node は `[]`。frame plan に無い名前は `-32602` で `data` が `{code: "node_unknown", node}`([`rerun_once` の登録](../../src/core/communication/rpcserver.cpp#L2496)、[`Renderer::requestOnceRerun()`](../../src/core/vkcore/renderer.cpp#L4173)。走る条件は[第 6 章](06_rendering.md) §6.18「一度だけ走る pass と、frame をまたぐ image」) |
+| `rerun_once` | `{node?}`(PS-1。`node` は空でない文字列。ほかの鍵は `-32602`) | `{scheduled: [<pass / task の名前>...]}`。`schedule: "once"` の node を次の frame で走らせる。`node` を省くと今の frame plan の once の全部、graph の node の id ならその node が作った once、`graph.loop` の id なら全回の once。per_frame の node は `[]`。frame plan に無い名前は `-32602` で `data` が `{code: "node_unknown", node}`([`rerun_once` の登録](../../src/core/communication/rpcserver.cpp#L2502)、[`Renderer::requestOnceRerun()`](../../src/core/vkcore/renderer.cpp#L4185)。走る条件は[第 6 章](06_rendering.md) §6.18「一度だけ走る pass と、frame をまたぐ image」) |
 | `pick_object` | `{x, y}` | 最後に完了した **ID バッファ**(色ではなく「そのピクセルに写っているオブジェクトの ID」を書き出す描画出力。`picking` feature が宣言する `R32_UINT` のレンダーターゲット `picking_id` — [picking.json](../../src/core/resources/features/picking.json))の 1 ピクセルを同期読み出し。`engine://features/picking.json` が必要 |
 | `set_gizmo` | `{selection:GizmoSelection\|null, mode}` | 選択 transform のギズモ表示を設定/解除。`engine://features/gizmo.json` が必要 |
 | `query_gizmo_handle` | `{selection:GizmoSelection, mode, x, y}` | 指定した選択・mode・物理 pixel にある handle を状態なしで問い合わせ。同 feature が必要 |
@@ -178,9 +178,9 @@ test は `ew1_engine_window_embedded`([engine_window_embedded.py](../../test/eng
 | `load_scene` | `{name}` | シーン切替。応答は `{name, committed, effect_errors[]}`(WP380b/380e。commit 後の副作用の失敗は error ではなく result に出ます — [第13章](13_editor.md) §13.13) |
 | `get_runtime_objects` | — | 今の scene で game が spawn した生きている object の一覧。形は [第13章](13_editor.md#spawn-された-object-を読むro-1) §13.5 の「spawn された object を読む」 |
 | `set_camera` | `{name}` | シーン内カメラへ切替。返り値 `{name}` |
-| `raycast` | `{origin, direction, max_distance}`(3 鍵ちょうど) | 最近傍 1 件を `{hit: {name, collider_id, shape_ordinal, distance, position, normal, trigger, one_way}}`、当たらなければ `{hit: null}`([受け口](../../src/core/communication/rpcserver.cpp#L1234))。`PELICAN_WITH_PHYSICS=OFF` の build では `hit: null` ではなく JSON-RPC error(code `-32000`、`data` = `{code: "physics.module_unavailable@1", requirement: "physics", option: "PELICAN_WITH_PHYSICS"}`。PG-2b)。provider が 0 本の build も `-32000`(message は `physics.provider_unavailable@1` の例外文。[第8章](08_gameplay.md) §8.4「機能を外した build」) |
+| `raycast` | `{origin, direction, max_distance}`(3 鍵ちょうど) | 最近傍 1 件を `{hit: {name, collider_id, shape_ordinal, distance, position, normal, trigger, one_way}}`、当たらなければ `{hit: null}`([受け口](../../src/core/communication/rpcserver.cpp#L1240))。`PELICAN_WITH_PHYSICS=OFF` の build では `hit: null` ではなく JSON-RPC error(code `-32000`、`data` = `{code: "physics.module_unavailable@1", requirement: "physics", option: "PELICAN_WITH_PHYSICS"}`。PG-2b)。provider が 0 本の build も `-32000`(message は `physics.provider_unavailable@1` の例外文。[第8章](08_gameplay.md) §8.4「機能を外した build」) |
 | `update_transforms` | `{objects, transforms}` | 次フレーム境界で適用。`rot` は名指し拒否(`rotation`)。返り値 `{queued}`(積んだ更新の数) |
-| `inject_input` | `{events:[...]}` | 入力注入。`key_*` / `mouse_*` / `axis` + **`gamepadButtonDown` / `gamepadUp` / `gamepadAxis`**(リプレイ中は拒否)。`mouse_move` の `x` / `y` は**窓座標**で、OS からの移動と同じ event になる。`ctx.input().pointer()` と UI の入力ルータがフレームの換算で framebuffer ピクセルにする(headless は 1 倍。GP-4、[注入の受け口](../../src/core/communication/rpcserver.cpp#L870))。返り値 `{queued}`(積んだ入力 event の数) |
+| `inject_input` | `{events:[...]}` | 入力注入。`key_*` / `mouse_*` / `axis` + **`gamepadButtonDown` / `gamepadUp` / `gamepadAxis`**(リプレイ中は拒否)。`mouse_move` の `x` / `y` は**窓座標**で、OS からの移動と同じ event になる。`ctx.input().pointer()` と UI の入力ルータがフレームの換算で framebuffer ピクセルにする(headless は 1 倍。GP-4、[注入の受け口](../../src/core/communication/rpcserver.cpp#L875))。返り値 `{queued}`(積んだ入力 event の数) |
 | `inject_event` | `{type, payload}` | 登録済みゲームイベントの emit。payload は EventPayloadSchema で事前検証。返り値 `{queued: 1}`。知らない `type` と payload の検査の失敗は `-32602` |
 | `reload_game_logic` | `{}` | ゲームロジック DLL を即時リロード |
 | `reload_shaders` | — | shader を読み直して公開する。params・返り値・拒否は [第13章](13_editor.md#shader-を読み直させるf-5) §13.5 の「shader を読み直させる」 |
@@ -198,7 +198,7 @@ test は `ew1_engine_window_embedded`([engine_window_embedded.py](../../test/eng
 | `plan_project_migration` | `{}`(省略可) | 前の版の文書を移す計画(dry-run。何も書かない)。`{project_root, required, engine_version, saved_by_engine, documents:[{path, schema, from, to, steps, digest, manual_items}], expected:{<path>: <sha256>}}`(MG-1。[第3章 §3.13](03_project_format.md)) |
 | `apply_project_migration` | `{expected:{<path>: <sha256>}}`(plan が返した `expected` をそのまま) | 移行を 1 つの transaction で適用。応答は plan の形 + `{applied, backup, saved_by_engine_after, restart_required}`。`expected` が今の文書と食い違えば何も書かずに `project.migration_plan_stale@1`。`expected` が無い / オブジェクトでない / 値が文字列でないものは `-32602` |
 
-**`get_status` の鍵**([`get_status` の組み立て](../../src/core/communication/rpcserver.cpp#L1594))。上の表の形で `{...}` と略した鍵と、表の形に無かった鍵の形です。
+**`get_status` の鍵**([`get_status` の組み立て](../../src/core/communication/rpcserver.cpp#L1600))。上の表の形で `{...}` と略した鍵と、表の形に無かった鍵の形です。
 
 | 鍵 | 形 |
 |---|---|
@@ -215,7 +215,7 @@ test は `ew1_engine_window_embedded`([engine_window_embedded.py](../../test/eng
 
 ⚠ `window_output.reason` の名前の表で、`device_lost` の行は `"srgb_shader_unorm"` という文字列を返します([その行](../../src/core/vkcore/frametarget.cpp#L202))。名前の取り違えに見えます(engine 側で確認する事項。この表には `device_lost` の名前を挙げていません)。
 
-**`input.cursor {requested, effective, embedded}`**([組み立て](../../src/core/communication/rpcserver.cpp#L1761)): `requested` はゲームコードが `ctx.input().setCursorMode` で頼んだモード、`effective` は窓に適用したモード(`normal` / `hidden` / `locked`)、`embedded` は窓が別の窓に埋め込まれているか(`--rpc` かつ `WS_CHILD`。Windows だけで判定)。埋め込みでは `locked` を頼んでも `effective` は `normal` です。headless は窓が無いので `effective` は常に `normal`、`embedded` は `false`。
+**`input.cursor {requested, effective, embedded}`**([組み立て](../../src/core/communication/rpcserver.cpp#L1767)): `requested` はゲームコードが `ctx.input().setCursorMode` で頼んだモード、`effective` は窓に適用したモード(`normal` / `hidden` / `locked`)、`embedded` は窓が別の窓に埋め込まれているか(`--rpc` かつ `WS_CHILD`。Windows だけで判定)。埋め込みでは `locked` を頼んでも `effective` は `normal` です。headless は窓が無いので `effective` は常に `normal`、`embedded` は `false`。
 
 `pick_object` の座標は ID バッファ `picking_id` の左上原点で、`x` は右、`y` は下へ増えます。
 両方とも符号なし整数だけを受理し、範囲外は `-32602`、feature 無効または完了済みの
@@ -327,7 +327,7 @@ selection の硬いエラーは `error.data.code` でも判別できます。宣
 
 ### ギズモのドラッグ基底と modal transform
 
-**`query_gizmo_drag_basis {selection, mode, axis}`**([`query_gizmo_drag_basis` の登録](../../src/core/communication/rpcserver.cpp#L2593))は、ドラッグの 1 論理 pixel で値がどれだけ動くかを、状態を変えずに返します。`query_gizmo_handle` と同じく `engine://features/gizmo.json` が要り(無ければ `-32000`)、`selection` と `mode` は `set_gizmo` と同じ形です。鍵はこの 3 つちょうどで、ほかは `-32602` です。
+**`query_gizmo_drag_basis {selection, mode, axis}`**([`query_gizmo_drag_basis` の登録](../../src/core/communication/rpcserver.cpp#L2599))は、ドラッグの 1 論理 pixel で値がどれだけ動くかを、状態を変えずに返します。`query_gizmo_handle` と同じく `engine://features/gizmo.json` が要り(無ければ `-32000`)、`selection` と `mode` は `set_gizmo` と同じ形です。鍵はこの 3 つちょうどで、ほかは `-32602` です。
 
 - `axis` は `"x"` / `"y"` / `"z"` か `null` です。`null`(view の平面に沿った移動)は `mode: "translate"` だけで、ほかの mode では `-32602` です。
 - 応答は `{contract: 1, selection, mode, axis, extent: {width, height}, content_scale, basis}` です。`axis` は送った値のままです。
@@ -335,9 +335,9 @@ selection の硬いエラーは `error.data.code` でも判別できます。宣
 - 求まらないときは `basis: null` です。軸では、その軸の handle がドラッグの向きを持たないとき(`query_gizmo_handle` が `handle: null` を返す潰れた軸と同じ判定)、view の平面では、出力の大きさが 0 か、camera の向きと射影から向きが決まらないときです([軸の基底](../../src/core/renderer/gizmo.cpp#L514)、[view の平面の基底](../../src/core/renderer/gizmo.cpp#L528))。
 - selection の拒否(存在しない transform、`error.data.code` の 5 つの名前)は `query_gizmo_handle` と同じです。
 
-**modal transform の 3 本**は、engine の窓でキー操作が始めた移動・回転・拡縮(modal transform)の状態を外から読み、止め、結果を受け取ったと伝えます([`get_modal_transform`](../../src/core/communication/rpcserver.cpp#L2679)、[`cancel_modal_transform`](../../src/core/communication/rpcserver.cpp#L2691)、[`ack_modal_transform`](../../src/core/communication/rpcserver.cpp#L2715))。gizmo の feature は要りません。
+**modal transform の 3 本**は、engine の窓でキー操作が始めた移動・回転・拡縮(modal transform)の状態を外から読み、止め、結果を受け取ったと伝えます([`get_modal_transform`](../../src/core/communication/rpcserver.cpp#L2685)、[`cancel_modal_transform`](../../src/core/communication/rpcserver.cpp#L2697)、[`ack_modal_transform`](../../src/core/communication/rpcserver.cpp#L2721))。gizmo の feature は要りません。
 
-- **`get_modal_transform {}`**(鍵を書くと `-32602`)→ 状態 `{contract: 1, enabled, revision, phase, operation_id, selection, mode, axis, delta: {translation: [x, y, z], rotation: [x, y, z, w], scale_exponent: [x, y, z]}, reason, bindings: {translate, rotate, scale}}`([状態の形](../../src/core/communication/rpcserver.cpp#L669))。
+- **`get_modal_transform {}`**(鍵を書くと `-32602`)→ 状態 `{contract: 1, enabled, revision, phase, operation_id, selection, mode, axis, delta: {translation: [x, y, z], rotation: [x, y, z, w], scale_exponent: [x, y, z]}, reason, bindings: {translate, rotate, scale}}`([状態の形](../../src/core/communication/rpcserver.cpp#L670))。
   - `phase` は `idle` / `active` / `confirmed` / `cancelled` です。`operation_id` は操作の番号で、無ければ `null`。`selection` は gizmo と同じタグ付きの形、`mode` は `translate` / `rotate` / `scale`、`axis` は `x` / `y` / `z` で、どれも無ければ `null`。`reason` は取り消しの理由で、無ければ `null` です。
   - `revision` は状態が変わるたびに 1 増えます。`enabled` は modal transform の入力が効いているかで、効かなくなると進行中の操作は `reason: "actions_disabled"` で取り消されます([`ModalTransformController::update()`](../../src/core/renderer/modaltransform.cpp#L70))。
   - `bindings` は 3 つの action に割り当てたキーボードのキーのうち最初のものの表示名です(1 文字は大文字、`enter` は `Enter`、`escape` は `Esc`)。キーボードの割り当てが無ければ `null` です。
@@ -384,7 +384,7 @@ selection の硬いエラーは `error.data.code` でも判別できます。宣
 
 ### 起動時の asset 検証の結果
 
-player が起動時に行う assets manifest の照合([第3章](03_project_format.md) §3.4 の「起動時検証」)の結果は、log に出るだけでなく store ごとに engine に残ります([`AssetsVerification`](../../src/core/loader/assetsverification.hpp#L86))。読み方と走らせ直し方は次の 4 つです(handler は [`configureAssetsVerificationRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1472))。
+player が起動時に行う assets manifest の照合([第3章](03_project_format.md) §3.4 の「起動時検証」)の結果は、log に出るだけでなく store ごとに engine に残ります([`AssetsVerification`](../../src/core/loader/assetsverification.hpp#L86))。読み方と走らせ直し方は次の 4 つです(handler は [`configureAssetsVerificationRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1478))。
 
 Studio の **Assets のドック**がこれを見せます: 木の下の 1 行と該当するファイルの行の印(`not_run` では何も出さない)、Details の store ごとの一覧、**Verify again**(`verify_assets`)、store ごとの **Update manifest**(`update_assets_manifest`。書く前に `N files will change in <manifest>.` を見せる)。下の 4 つの拒否もドックでは 1 文になります([第13章](13_editor.md) §13.1 の「Studio の Assets のドック」)。
 
@@ -443,7 +443,7 @@ params は `get_assets_verification` / `verify_assets` が空の object だけ�
 `pelican_cli project migrate` の RPC 版です(流れと名前は [第3章 §3.13](03_project_format.md))。失敗は application error(-32000)で、
 `error.data` が `{error_code, error_fields}`(例: `error_code: "project.migration_plan_stale@1"`、`error_fields: {expected, actual}`)です。
 
-- **ふつうに動いている engine** も 2 つに答えます([登録](../../src/core/communication/rpcserver.cpp#L1884))。移行の要る project はそもそも入口で止まるので、ここに来るのは空の plan(`required: false`)です(動いている間に文書が前の版に戻された場合を除く)。
+- **ふつうに動いている engine** も 2 つに答えます([登録](../../src/core/communication/rpcserver.cpp#L1890))。移行の要る project はそもそも入口で止まるので、ここに来るのは空の plan(`required: false`)です(動いている間に文書が前の版に戻された場合を除く)。
 - **移行専用 endpoint**: `--rpc` の player が開くときの入口で `project.migration_required@1` に当たると、engine を起動せずに
   この 2 method **だけ**に答える JSON-RPC endpoint になります([`runProjectMigrationRpcServer()`](../../src/core/communication/projectmigrationrpc.cpp#L98)、
   [player 側](../../src/player/main.cpp#L780))。ほかの method は application error で、message は入口が出した
@@ -947,7 +947,7 @@ pelican_studio --project <dir> --tab graph     # render-tools dock のタブを�
 pelican_studio --automation <名前>             # test 用の自動化チャネルを開く(Q-1)
 ```
 
-`--tab` が取るのは `frame_plan` / `render_features` / `rendering_settings` / `graph` の 4 つ(`rendering_settings` は RSX から。[第13章](13_editor.md)「Studio の Rendering settings タブ」) ([一覧](../../src/devstudio/view/mainwindow.cpp#L2474))。**未知の名前は window を作る前に console へ 理由を出して終了コード 2** です([検査](../../src/devstudio/main.cpp#L40)) —— window を開いて「たまたま前にあった タブ」を見せると、綴り間違いが成功に見えるためです。`--tab` は `openProject` の**後**に適用されます ([順序](../../src/devstudio/view/uimain.cpp#L89)) —— project を開くとその project のツール配置が復元され、 どのタブが前かが変わるからです。
+`--tab` が取るのは `frame_plan` / `render_features` / `rendering_settings` / `graph` の 4 つ(`rendering_settings` は RSX から。[第13章](13_editor.md)「Studio の Rendering settings タブ」) ([一覧](../../src/devstudio/view/mainwindow.cpp#L2474))。**未知の名前は window を作る前に console へ 理由を出して終了コード 2** です([検査](../../src/devstudio/main.cpp#L40)) —— window を開いて「たまたま前にあった タブ」を見せると、綴り間違いが成功に見えるためです。`--tab` は `openProject` の**後**に適用されます ([順序](../../src/devstudio/view/uimain.cpp#L92)) —— project を開くとその project のツール配置が復元され、 どのタブが前かが変わるからです。
 
 見た目は **View ▸ Theme ▸ Light / Dark** で切り替えます(N-5。CLI の引数ではありません)。選択は QSettings の `studio/theme` に残り、**再起動なしで**窓と 2 つのノードキャンバスに当たります([第13章 §13.5](13_editor.md))。
 
@@ -989,7 +989,7 @@ viewport の左クリックは child client の物理 pixel 座標を `pick_obje
 現在は選択と toolbar の Move / Rotate / Scale モードを `set_gizmo` で player へ送ります。
 
 Inspector の `Add component...` / `Ray geometry...` の下、properties の一覧より**上**には **Attached graphs** グループが
-あります([置き場](../../src/devstudio/view/inspectorwidget.cpp#L311))。選択オブジェクトを owner とする
+あります([置き場](../../src/devstudio/view/inspectorwidget.cpp#L312))。選択オブジェクトを owner とする
 `graph.instance` の一覧と **Attach...** / **Detach** / **Refresh**、選択した instance の **Instance inputs**
 (port ごとに mode / 著作された値 / 実際に使われた値の 3 列)、そして port ごとの 4 導線 ——
 **Control with a curve** / **Connect to another output** / **Open the source** / **Disconnect** です。
@@ -1162,7 +1162,7 @@ HEAD が動くと configure が再実行される。
 - 結合テスト: `test/run_*.cmake` が player / cli を子プロセス起動して検証。例: `run_devcli_assets`/ `run_event_schema_compile`/ `run_dump_lowered_material`/ `run_devcli_gltf_extract`/ `run_spvlink_golden`/ `run_devcli_rules_import`/ `run_devcli_bake_camera` + `run_input_record_replay_headless`/ `run_ui_u2_rpc_replay`など。
 - 統合テスト: [`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake)(ctest 名 `devcli_graph_catalog`。`pelican_cli graph-catalog` の出力を検査し、**さらに `docs/v0_freeze.md` の操作表と突き合わせます** —— 表は `<!-- graph-op-table:begin -->` / `:end` のコメントで区切られていて、誰も比べない写しを 2 つ目の正にしないための仕掛けです)、`package_install_smoke`(X-1。install → カタログ → 描画 → uninstall を実 player で。`gpu` ラベル)、[`run_project_catalog_smoke.cmake`](../../test/run_project_catalog_smoke.cmake)(出荷 project の走査。`project.json` の `requires` が満たせない project は**名前を出して skip** し、player の中で落ちません)。
 - **Studio のシナリオ(Q-1)**: `test/studio_scenarios/*.json` は 1 本が 1 つの ctest `studio_scenario_<名前>` になり
-([登録](../../test/CMakeLists.txt#L3907))、`pelican_gpu_lease_run` 経由の **GPU lane** で走ります —— 実物の窓に
+([登録](../../test/CMakeLists.txt#L3910))、`pelican_gpu_lease_run` 経由の **GPU lane** で走ります —— 実物の窓に
 実物の player が埋まるので `QT_QPA_PLATFORM=offscreen` は掛けません。Studio target と Python 製テストを有効にし、
 Python 3.11 以上を用意します。`uv` は不要です。完全な GPU gate はシナリオの未登録・skip を失敗にするため、
 `SKIP_DEVSTUDIO=OFF` と `PELICAN_PYTHON_TESTS=ON` を指定します。[`run_studio_scenario.cmake`](../../test/run_studio_scenario.cmake#L33) が fixture
