@@ -1399,6 +1399,46 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 
 **読む場所**: [`dropBands()`](../../src/devstudio/view/frameplanwidget.cpp#L612) → [帯を覚える所](../../src/devstudio/view/frameplanwidget.cpp#L3542)。利用者から見た Frame Plan の帯は manual 第15章 §15.6 の「backend の pin と物理計画・再起動」。
 
+### 難所 — Graph の作り直しの中では routing index が無く、線ごとの探索が全 item をなめる(GS-1、`e87c63c7b`)
+
+**素朴に読むと**: socket や node の探索は routing index を引くので、作り直しの中で線を 1 本足すたびに route しても、1 本あたり定数の手間で済む、と読めます。
+
+**実際は**: [`GraphCanvasScene::repopulate()`](../../src/devstudio/view/graphcanvaswidget.cpp#L1890) は最初に `clear()` し、index はそこで無効になって、作り直しの最後の `rebuildRoutingIndex()` まで戻りません。その間の [`nodeGraphItems()`](../../src/devstudio/view/nodegraphics.cpp#L619) は scene の全 item を返すので、線の両端の探索ごとに全 item をなめます。GS-1 の前はこれで作り直しが O(線 × item) になり、LT-1 の計測では 163 node の作り直し 1 回 677 ms のうち 608 ms が線の段でした。
+
+**不変条件**: 作り直しの中では線を足すだけにし、route は全 item を足して index を作った後に [`routeGraphCanvasLines()`](../../src/devstudio/view/graphcanvaswidget.cpp#L490) で 1 回ずつ行うこと。途中で socket が要る物(domain stub)は、その時点の item で仮の index を作ってから引き、足し終えたら無効に戻すこと。
+
+**読む場所**: [`NodeGraphLookupScope`](../../src/devstudio/view/nodegraphics.hpp#L137) → [`routeGraphCanvasLines()`](../../src/devstudio/view/graphcanvaswidget.cpp#L490) → [仮の index を作る所](../../src/devstudio/view/graphcanvaswidget.cpp#L2692)。test は `devstudio_graphcanvas_scene_test` の `[gs1]` で、`nodeGraphUnindexedLookups()` の差が作り直し 1 回で 2 以下であることを見ます。
+
+### 難所 — scene が描かないのに文書ごとに動く欄を比べると、確定のたびに全体を作り直す(GS-2、`5626470ba`)
+
+**素朴に読むと**: `followDocument()` は「前に描いた物と今の読みが同じなら作り直さない」ので、plan や authoring context を丸ごと比べておけば、見かけだけの作り直しは起きない、と読めます。
+
+**実際は**: 確定の後には `get_graph_instances`・`get_frame_plan`・`get_render_authoring_context` の返事が順に届き、それぞれで比べます。plan の pass の `drawn_materials`(最後に描いた frame)と context の `planning_root` / `planning_catalog` は文書が変わるたびに動くのに scene はどれも描かないので、GS-2 の前は確定 1 回で 2〜3 回の全体の作り直しになっていました(163 node では 1 回 70 ms 台)。
+
+**不変条件**: plan や authoring context に scene が描かない欄を足したら、[`GraphCanvasScene::drawnFromNow()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5176) で外すこと。逆に、scene が描く欄を外すと、その欄が変わっても描き直されません(GS-2 の test は偽の engine の plan と context に本当の違いを持たせ、追加した pass の socket と線があることを直接見ています)。zone があるときや描く scope が 1 つでないときは比べずに全体を描く道なので、この直しは効きません。
+
+**読む場所**: [`GraphCanvasScene::followDocument()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5234) → [`GraphCanvasScene::drawnFromNow()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5176)。どの欄が動いたかは trace `graph_follow_diff` の bit で見えます(source guide 第7章 §7.6)。
+
+### 難所 — tab の束の下限は、隠れた page を含む全 page の最大になる(LT-1 / UI-2、`a800dfc3a`)
+
+**素朴に読むと**: dock や tab widget の最小の大きさは、今見えている page の中身で決まる、と読めます。
+
+**実際は**: `QTabWidget` の中の `QStackedWidget` は、見えているかに関係なく全 page の下限の最大を自分の下限にします。UI-2 の前の render-tools の dock は、Graph の tab を見ていても、隠れた Features の page(高さ 327 px)と Frame Plan の行(幅 1181 px)で 1191 × 377 px より小さくできませんでした(LT-1 の `size_hints` の計測)。UI-2 は 4 つを別々の dock にしましたが、`tabifyDockWidget` で束ねた dock も同じく束の全員の最大を下限にします(UI-2 の報告の計測では、隠れた Features で束の高さの下限が 345 px)。
+
+**不変条件**: 下限の大きい panel を、小さい panel と同じ tab widget や dock の束に入れないこと。下限を調べるときは自動化の `size_hints`(見えている子だけを数え、stacked widget は page ごとの下限を並べる)で、何が下限を決めているかを先に見ること。
+
+**読む場所**: [理由のコメント](../../src/devstudio/view/mainwindow.cpp#L679) → [`commandSizeHints()`](../../src/devstudio/automation/automationcommands.cpp#L1319)。
+
+### 難所 — 既定の配置で dock を横に並べてから束ねると、表示中の窓が広がったまま戻らない(UI-2)
+
+**素朴に読むと**: 既定の配置は「全部 `addDockWidget` してから `tabifyDockWidget` で束ねる」でも、束ねた後の大きさは同じになる、と読めます。
+
+**実際は**: 窓が表示中の Layout ▸ Reset to Default では、横に並べた途中の段で下の段の幅が並んだ dock の下限の和になり、窓がその幅まで広がって、束ねた後も戻りません(UI-2 の報告では、分ける前の版でも 1271 → 1394 px、分けた後は 2332 → 3315 px)。
+
+**不変条件**: 束に入れる dock は `addDockWidget` せずに、直接 `tabifyDockWidget` の鎖で入れること。
+
+**読む場所**: [`MainWindow::applyDefaultLayout()`](../../src/devstudio/view/mainwindow.cpp#L4244)(下の段の `tabifyDockWidget` の前のコメント)。test は `devstudio_layoutpreset_test` の「UI-2 the Graph, the Frame Plan, …」で、既定の配置の形を見ます(窓の幅そのものは見ていません)。
+
 ### 難所 — 利用者のデータの例外は Play を止めるが、DLL の reload 中の onInit の例外は reload の失敗のまま(RX-1、`faf9a484b`)
 
 **素朴に読むと**: RX-1 の guard は「frame の中で投げられた例外を捕まえて Problems に出す」ものなので、`try { … } catch (const std::exception &)` で全部を受ければよく、behavior の `onInit` が投げたときも同じ扱いでよい、と読めます。

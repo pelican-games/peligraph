@@ -20,7 +20,7 @@
 | `pelican_player` | exe | `build/dist/<Config>/` | ゲームランタイム。ウィンドウ / ヘッドレス / RPC の 3 モード |
 | `pelican_game_logic` | **DLL**(`PELICAN_PROJECT` 指定時) | player と同ディレクトリ | プロジェクトの `code/` のビルド産物(WP90 で静的リンクから移行) |
 | `pelican_cli` | exe | `build/dist/<Config>/` | 開発 CLI。**エンジン(pelican_core)にリンクしない** |
-| `pelican_studio` | exe(Qt6) | `build/dist/<Config>/` | Widgets エディタ shell + 別 process engine viewport。render-tools dock は **4 タブ**(Frame Plan / Features / Rendering settings / Graph)で、Inspector にグラフ装着欄がある(§10.7) |
+| `pelican_studio` | exe(Qt6) | `build/dist/<Config>/` | Widgets エディタ shell + 別 process engine viewport。render tool は **4 つの dock**(Graph / Frame Plan / Features / Rendering settings。✅UI-2 から。前は 1 つの dock の 4 タブ)で、Inspector にグラフ装着欄がある(§10.7) |
 | `pelican-spv-link` | exe | `build/dist/<Config>/` | `PELICAN_WITH_SPIRV_LINK=ON`時だけ作るexperimental SPIR-V リンカ CLI([第6章](06_rendering.md) §6.7) |
 | `pelican_project` | 静的 lib | build 内 | 解釈レイヤ(JSON パース/検証の純ロジック) |
 | `pelican_core` | 静的 lib | build 内 | エンジン本体。`PELICAN_AUTO_STAGE_SDK=ON` のときだけ archive と公開ヘッダを `build/dist/<Config>/lib/` へコピー |
@@ -931,7 +931,7 @@ behavior paramsをside-decodeします。不適合なら旧DLL/runtimeを一切�
 Studio の panel ごとの操作は [第15章 Studio の操作](15_studio.md) にあります。
 
 **現状 🚧: Qt Widgets の editor shell、別 process engine viewport、Outliner と viewport の
-選択同期、render-tools dock(Frame Plan 9 タブ・Features・Graph・Rendering settings の 4 タブ)、
+選択同期、render tool の 4 つの dock(Graph・Frame Plan(9 タブ)・Features・Rendering settings。✅UI-2)、
 ワークスペース配置の永続化、pass の著作フォーム(fullscreen / material / raster と preset pass の保存)、
 `features[]` とその scalar パラメータの編集・materialize、共通グラフの閲覧と編集、
 Inspector からのグラフ装着まで実装済み。**
@@ -943,11 +943,11 @@ Inspector からのグラフ装着まで実装済み。**
 
 ```sh
 pelican_studio --project <dir>                 # 起動時にこの project を開く
-pelican_studio --project <dir> --tab graph     # render-tools dock のタブを前に出す
+pelican_studio --project <dir> --tab graph     # その render tool の dock を出して前に出す
 pelican_studio --automation <名前>             # test 用の自動化チャネルを開く(Q-1)
 ```
 
-`--tab` が取るのは `frame_plan` / `render_features` / `rendering_settings` / `graph` の 4 つ(`rendering_settings` は RSX から。[第13章](13_editor.md)「Studio の Rendering settings タブ」) ([一覧](../../src/devstudio/view/mainwindow.cpp#L2474))。**未知の名前は window を作る前に console へ 理由を出して終了コード 2** です([検査](../../src/devstudio/main.cpp#L40)) —— window を開いて「たまたま前にあった タブ」を見せると、綴り間違いが成功に見えるためです。`--tab` は `openProject` の**後**に適用されます ([順序](../../src/devstudio/view/uimain.cpp#L92)) —— project を開くとその project のツール配置が復元され、 どのタブが前かが変わるからです。
+`--tab` が取るのは `frame_plan` / `render_features` / `rendering_settings` / `graph` の 4 つ(`rendering_settings` は RSX から。[第13章](13_editor.md)「Studio の Rendering settings タブ」) ([render tool の id の一覧](../../src/devstudio/view/mainwindow.cpp#L2443))。✅UI-2 から 4 つはそれぞれ自分の dock で、`--tab` はその dock を出して前に出します(`MainWindow::showRenderTool()`。名前は前のまま。[第15章](15_studio.md) §15.6 の「render tool の 4 つの dock」)。**未知の名前は window を作る前に console へ 理由を出して終了コード 2** です([render tool の名前の検査](../../src/devstudio/main.cpp#L40)) —— window を開いて「たまたま前にあった dock」を見せると、綴り間違いが成功に見えるためです。`--tab` は `openProject` の**後**に適用されます ([順序](../../src/devstudio/view/uimain.cpp#L92)) —— project を開くとその project のツール配置が復元され、 どの dock が前かが変わるからです。
 
 見た目は **View ▸ Theme ▸ Light / Dark** で切り替えます(N-5。CLI の引数ではありません)。選択は QSettings の `studio/theme` に残り、**再起動なしで**窓と 2 つのノードキャンバスに当たります([第13章 §13.5](13_editor.md))。
 
@@ -993,7 +993,7 @@ Inspector の `Add component...` / `Ray geometry...` の下、properties の一�
 `graph.instance` の一覧と **Attach...** / **Detach** / **Refresh**、選択した instance の **Instance inputs**
 (port ごとに mode / 著作された値 / 実際に使われた値の 3 列)、そして port ごとの 4 導線 ——
 **Control with a curve** / **Connect to another output** / **Open the source** / **Disconnect** です。
-**Open the source** は Graph タブを前に出して該当ノードを選択します。手順と RPC は
+**Open the source** は Graph の dock を前に出して該当ノードを選択します。手順と RPC は
 [第13章](13_editor.md) §13.5「Inspector のグラフ装着」。
 
 Inspectorの各componentにある「Remove component」で、選択objectからcomponentを削除できます。
@@ -1022,10 +1022,13 @@ abort します。handle 以外を押した場合は通常の object pick へ移
 その後にシーンを開き直しても gizmo 編集は残ります。gizmo の描画機能自体は Studio 起動時の editor
 overlay が用意しますが、overlay の feature 一覧を scene や project へ書き戻す経路はありません。
 
-`View > Panels > Frame Plan` の dock(`pelican.framePlanDock`)には **Frame Plan・Features・Graph・Rendering settings の
-4 つのタブ**が同居します(タブ widget の object name は `pelican.renderTools`。
-[構築](../../src/devstudio/view/mainwindow.cpp#L690))。**Graph は新しい dock ではなくこの dock の 3 枚目**です ——
-dock を増やすことは「見失う場所」を増やすことなので、同じレンダー設定を語る 3 つの見方を 1 箇所に置いています。
+**Graph・Frame Plan・Features・Rendering settings は、それぞれ自分の dock です(✅UI-2)** —— `pelican.graphDock` /
+`pelican.framePlanDock`(Frame Plan だけ)/ `pelican.renderFeaturesDock` / `pelican.renderingSettingsDock`
+([4 つの dock を作る所](../../src/devstudio/view/mainwindow.cpp#L713))。前は Frame Plan の dock の中の `QTabWidget`(`pelican.renderTools`)の
+4 つのタブでしたが、Graph はほかの panel へ移る入口なので自分の dock になり、tab widget は隠れた page を含む全 page の下限を
+自分の下限にするので、それも無くなりました。既定の配置は下の段の左に Graph だけ、右に Output・Engine Log・Problems・Frame Plan・
+Pass Editor・Features・Rendering settings のタブの束です(置き方・前に保存した配置・窓の最小の幅は [第15章](15_studio.md) §15.6 の
+「render tool の 4 つの dock」)。
 
 **Frame Plan タブ**は実行中 player の公開 `get_frame_plan` を読む調査面で、**9 枚のタブ**を持ちます ——
 logical graph / passes / resources / physical plan / decisions / backends / barriers / materials / raw JSON。
@@ -1186,6 +1189,7 @@ Python 3.11 以上を用意します。`uv` は不要です。完全な GPU gate
 | [`public_api_inventory.py`](../../tools/public_api_inventory.py) | 公開 context API の exact inventory を生成・照合 |
 | [`doclink.py`](../../tools/doclink.py) | docs 内の `#L<行番号>` リンクを追随させる |
 | [`convert_camera_convention.py`](../../tools/convert_camera_convention.py) | CC-1 より前に書いた project の camera を今の向きの規約へ変換する(`uv run tools/convert_camera_convention.py [--dry-run] [--assume-up X,Y,Z] <project dir>...`。何を書き換えるかは [第3章 §3.13](03_project_format.md) の「camera の向きの規約の変換」) |
+| [`studio_latency.py`](../../tools/studio_latency.py) | Studio の実物の操作を、driver の側と Studio・engine の trace の段に分けて測る(✅LT-1。下の節) |
 
 ### `tools/worktree.sh` — worktree ごとの configure / build / test
 
@@ -1220,6 +1224,36 @@ tools/codex_bg_status.sh <tag> [tail 行数]   # RUNNING か DONE:<exit> と log
 ```
 
 ログと終了状態は `build/.codex_bg/<tag>.log` / `.status`(`CODEX_BG_DIR` で変更可)に置かれます。
+
+### `tools/studio_latency.py` — Studio の操作の段ごとの遅さ(✅LT-1)
+
+node の選択・ドラッグ・接続・値の確定・Undo / Redo・fold・zoom などの Studio の実物の操作を、シナリオの driver(`tools/studio_drive.py`)で繰り返し、
+標本ごとに Studio と engine の trace の段を並べます。測るのは「要求から状態を確かめるまで」と trace の時刻で、画面に出るまでの遅れ(present)でも画素の比較でもありません。
+
+```sh
+uv run tools/studio_latency.py --build-dir build --qt-bin <Qt>/bin --runs 3
+uv run tools/studio_latency.py --build-dir build --qt-bin <Qt>/bin --sections small_edit,scale150
+uv run tools/studio_latency.py --analyze <run の directory>...    # 測り直さずに集計だけやり直す
+uv run tools/studio_latency.py --aggregate <run の directory>...  # 複数の run をまとめる
+```
+
+- **要るもの**: `build/dist/<Config>/` の `pelican_studio.exe` と `pelican_player.exe`(`--config` の既定は `Release`)、`build/test/` の `pelican_gpu_lease_run.exe`。
+  測る時は `--qt-bin` が要ります。節ごとに Studio を 1 回起こし、driver を GPU lease の下で走らせます。`PELICAN_STUDIO_SCREEN` が無ければ `1`(仮想モニタ)を渡します。
+- **trace**: 既定で、Studio に `PELICAN_STUDIO_OP_TRACE=1`、engine に `PELICAN_RPC_TRACE=<節の directory>/engine_trace.jsonl` を渡します。
+  どちらも環境変数が無ければ何も記録しない trace です(Studio の `GuiTrace` の sink と、engine の RPC host と editor の段)。`--no-trace` は両方を切って、trace の重さを比べるためのものです。
+  Studio の記録は自動化の命令 `op_trace` が file に書き、どちらも steady clock の ns なので driver の時刻と同じ軸に並びます。
+- **節**(`--sections`、既定は全部): `small_basic` / `small_edit`(13 node の fixture)、`core_fps30` / `core_cores4` / `core_cores2`(30 fps と、process の affinity で 4 / 2 論理 core に絞った模擬)、
+  `scale10` / `scale50` / `scale150`(value.add の鎖を足した graph)、`example` / `posegraph`、`resize`(viewport の大きさ)、`project_open`、`small_fold`、`docks`(自動化の `size_hints` で dock の下限を読む)。
+  `example` は `projects/example/assets/models` の追跡されていない model が要るので、`--example-assets` で置き場を渡します。
+- **出力**: run ごとに `--out-root`(既定 `out/studio-latency-lt1`)の下に `run-<日時>-r<n>/` を新しく作り、上書きしません。
+  節ごとの directory に `scenario.json`・`report.json`・`driver.log`・`section.json`・trace を、run の directory に操作 × 段の `operation_stages.csv` / `.json` と `environment.json`(revision・作業ツリーの差分の hash・binary の hash・機械)を書きます。
+  `--runs` が 2 以上か `--aggregate` なら `aggregate-<日時>/operation_stages_runs.csv` にまとめます。
+- **確定の後の列**(✅GS-2): `commit_chain_*`(確定の後に Graph 自身が出した `get_graph_instances` → `get_frame_plan` → `get_render_authoring_context` の返事の数・最後の時刻・その間の作り直し)と、
+  `commit_span_*`(次の編集を送るまでの作り直しの数と合計 ms、最初の変化と描き終わりの paint の時刻)。
+- **制限**: 標本の値は Studio の wait(25 ms ごと)や driver の再試行の間隔で量子化されます。共有の機械の他の process は統制しません。
+  `--cpu-cores` は core の数だけを減らし、1 core の速さや cache は模擬しません。
+  ✅UI-2 の後は既定の配置で Graph が初めから見えているので、`graph_tab_switch_show`(Frame Plan を前に出してから Graph を前に出す)は、もうタブを切り替える費用を測っていません。
+- ⚠ LT-1 / GS-1 / GS-2a の計測では、節の終わりの「Studio exits cleanly」が 30 秒で終わらず driver が強制終了する赤が出ています(値は全部取れていて、ほかの step は通る)。原因は未確認です。
 
 ### `tools/public_api_inventory.py` — 公開 API の inventory
 
