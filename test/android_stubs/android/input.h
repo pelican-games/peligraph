@@ -18,7 +18,7 @@ enum {
  AMOTION_EVENT_AXIS_LTRIGGER=17, AMOTION_EVENT_AXIS_RTRIGGER=18, AMOTION_EVENT_AXIS_GAS=22, AMOTION_EVENT_AXIS_BRAKE=23
 };
 struct AInputEvent {
- int source=AINPUT_SOURCE_TOUCHSCREEN, type=AINPUT_EVENT_TYPE_MOTION, action=0, device=77, code=96, repeat=0;
+ int source=AINPUT_SOURCE_TOUCHSCREEN, type=AINPUT_EVENT_TYPE_MOTION, action=0, device=77, code=96, repeat=0, flags=0;
  struct Pointer { int id=0; float x=10,y=10; };
  std::vector<Pointer> pointers{{}};
  std::vector<std::vector<Pointer>> history;
@@ -31,6 +31,7 @@ inline int AKeyEvent_getKeyCode(const AInputEvent *e){return e->code;}
 inline int AKeyEvent_getAction(const AInputEvent *e){return e->action;}
 inline int AKeyEvent_getRepeatCount(const AInputEvent *e){return e->repeat;}
 inline int AMotionEvent_getAction(const AInputEvent *e){return e->action;}
+inline int AMotionEvent_getFlags(const AInputEvent *e){return e->flags;}
 inline std::size_t AMotionEvent_getPointerCount(const AInputEvent *e){return e->pointers.size();}
 inline int AMotionEvent_getPointerId(const AInputEvent *e,std::size_t i){return e->pointers.at(i).id;}
 inline float AMotionEvent_getX(const AInputEvent *e,std::size_t i){return e->pointers.at(i).x;}

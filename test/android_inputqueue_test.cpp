@@ -66,7 +66,32 @@ TEST_CASE("Android stylus contact is touch and hover buttons are unhandled", "[s
   REQUIRE(b.input.currentFrameInput().ordered_events[0].touch_phase==*A::touchPhase(action,0));
  }
  for(int action:{7,9,10,11,12}){e.action=action; REQUIRE(b.send(e)==0);}
- e.type=AINPUT_EVENT_TYPE_KEY; e.code=331; REQUIRE(b.send(e)==0); b.drain(); REQUIRE(b.input.currentFrameInput().ordered_events.empty());
+ // A pen on the touch screen and a Bluetooth pen carry more source bits;
+ // their contacts follow the same phases and hover / buttons stay unhandled.
+ for(int source:{AINPUT_SOURCE_TOUCHSCREEN|AINPUT_SOURCE_STYLUS,0xc002,0xd002}){ e.source=source;
+  const std::pair<int,TouchPhase> steps[]={{0,TouchPhase::down},{2,TouchPhase::move},{3,TouchPhase::cancel},{0,TouchPhase::down},{1,TouchPhase::up}};
+  for(const auto &[action,phase]:steps){ e.action=action; REQUIRE(b.send(e)==1); b.drain();
+   REQUIRE(b.input.currentFrameInput().ordered_events.size()==1);
+   REQUIRE(b.input.currentFrameInput().ordered_events[0].type==InputEvent::Type::touch);
+   REQUIRE(b.input.currentFrameInput().ordered_events[0].touch_phase==phase); }
+  for(int action:{7,8,9,10,11,12}){ e.action=action; REQUIRE(b.send(e)==0); }
+  b.drain(); REQUIRE(b.input.currentFrameInput().ordered_events.empty()); }
+ // The standard stylus keys (primary, secondary, tertiary, tail) are unhandled.
+ e.source=AINPUT_SOURCE_STYLUS; e.type=AINPUT_EVENT_TYPE_KEY;
+ for(int code:{308,309,310,311}) for(int action:{0,1}){ e.code=code; e.action=action; REQUIRE(b.send(e)==0); }
+ b.drain(); REQUIRE(b.input.currentFrameInput().ordered_events.empty());
+}
+TEST_CASE("Android FLAG_CANCELED cancels only the lifted pointer", "[sa1f][pen]") {
+ Boundary b; AInputEvent e; e.source=AINPUT_SOURCE_TOUCHSCREEN|AINPUT_SOURCE_STYLUS;
+ e.pointers={{0,10,10},{1,40,40}};
+ e.action=0; b.send(e); e.action=5 | (1<<8); b.send(e); b.drain();
+ // A rejected palm: POINTER_UP of index 1 with FLAG_CANCELED.
+ e.action=6 | (1<<8); e.flags=0x20; REQUIRE(b.send(e)==1); b.drain();
+ { const auto &events=b.input.currentFrameInput().ordered_events;
+  REQUIRE(events.size()==1); REQUIRE(events[0].pointer_id==1); REQUIRE(events[0].touch_phase==TouchPhase::cancel); }
+ e.flags=0; e.pointers={{0,10,10}}; e.action=1; b.send(e); b.drain();
+ REQUIRE(b.input.currentFrameInput().ordered_events.size()==1);
+ REQUIRE(b.input.currentFrameInput().ordered_events[0].touch_phase==TouchPhase::up);
 }
 TEST_CASE("Android mouse cancel releases state and capture without click", "[sa1f][fix5]") {
  Boundary b; AInputEvent e; e.source=AINPUT_SOURCE_MOUSE;

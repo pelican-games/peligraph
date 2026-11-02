@@ -5,7 +5,8 @@
 #include <mutex>
 namespace Pelican::Android {
 static_assert(AINPUT_SOURCE_KEYBOARD == source_keyboard && AINPUT_SOURCE_GAMEPAD == source_gamepad &&
-              AINPUT_SOURCE_JOYSTICK == source_joystick && AINPUT_SOURCE_TOUCHSCREEN == source_touchscreen && AINPUT_SOURCE_MOUSE == source_mouse);
+              AINPUT_SOURCE_JOYSTICK == source_joystick && AINPUT_SOURCE_TOUCHSCREEN == source_touchscreen && AINPUT_SOURCE_MOUSE == source_mouse &&
+              AINPUT_SOURCE_STYLUS == source_stylus);
 static_assert(AKEYCODE_SPACE == 62 && AKEYCODE_A == 29 && AKEYCODE_0 == 7 && AKEYCODE_F1 == 131);
 
 namespace {
@@ -123,7 +124,7 @@ int32_t handleInput(android_app *app, AInputEvent *event) {
             axis(AMOTION_EVENT_AXIS_HAT_X),axis(AMOTION_EVENT_AXIS_HAT_Y)};
         q.updatePad(*slot); return 1;
     }
-    if(source==source_touchscreen || source==AINPUT_SOURCE_STYLUS) {
+    if(isTouchSource(source)) {
         bool handled=false;
         const auto density=AConfiguration_getDensity(app->config);
         const float slop=8.0f * (density>0 && density<ACONFIGURATION_DENSITY_ANY ? float(density)/160.0f : 1.0f);
@@ -141,7 +142,7 @@ int32_t handleInput(android_app *app, AInputEvent *event) {
                         AMotionEvent_getX(event,i),AMotionEvent_getY(event,i),slop));
         }
         for(std::size_t i=0; i<AMotionEvent_getPointerCount(event); ++i) {
-            if(const auto phase=touchPhase(action,i)) {
+            if(const auto phase=touchPhase(action,i,AMotionEvent_getFlags(event))) {
                 q.push(InputEvent::touch(AMotionEvent_getPointerId(event,i),*phase,
                     AMotionEvent_getX(event,i),AMotionEvent_getY(event,i),slop)); handled=true;
             }

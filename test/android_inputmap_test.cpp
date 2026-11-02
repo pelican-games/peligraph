@@ -16,6 +16,13 @@ TEST_CASE("Android keyboard stable keycode table", "[android_input][sa1f]") {
     REQUIRE_FALSE(A::isPadSource(A::source_keyboard));
     REQUIRE(A::isPadSource(A::source_gamepad)); REQUIRE(A::isPadSource(A::source_joystick));
     REQUIRE(A::isPadSource(A::source_gamepad | A::source_keyboard));
+    REQUIRE(A::isTouchSource(A::source_touchscreen)); REQUIRE(A::isTouchSource(A::source_stylus));
+    REQUIRE(A::isTouchSource(A::source_touchscreen | A::source_stylus));
+    REQUIRE(A::isTouchSource(0xc002)); REQUIRE(A::isTouchSource(0xd002)); // BLUETOOTH_STYLUS, with TOUCHSCREEN
+    REQUIRE(A::isTouchSource(A::source_mouse | A::source_stylus)); // external pen tablet
+    REQUIRE_FALSE(A::isTouchSource(A::source_mouse)); REQUIRE_FALSE(A::isTouchSource(A::source_keyboard));
+    REQUIRE_FALSE(A::isTouchSource(0x100008)); REQUIRE_FALSE(A::isTouchSource(0x20004)); // TOUCHPAD, MOUSE_RELATIVE
+    REQUIRE_FALSE(A::isTouchSource(0x2)); // the pointer class bit alone
 }
 TEST_CASE("Android pad buttons axes GLFW convention and stable slots", "[android_input][sa1f]") {
     const int codes[]={96,97,99,100,102,103,109,108,110,106,107,19,22,20,21};
@@ -48,4 +55,8 @@ TEST_CASE("Android touch action pointer index and cancel phases", "[android_inpu
     REQUIRE(A::touchPhase(5 | (2<<8),2)==TouchPhase::down); REQUIRE_FALSE(A::touchPhase(5 | (2<<8),0));
     REQUIRE(A::touchPhase(6 | (2<<8),2)==TouchPhase::up); REQUIRE_FALSE(A::touchPhase(6 | (2<<8),1));
     REQUIRE_FALSE(A::touchPhase(8,0));
+    // FLAG_CANCELED turns only the lifting pointer's up into a cancel.
+    REQUIRE(A::touchPhase(1,0,0x20)==TouchPhase::cancel); REQUIRE(A::touchPhase(6 | (1<<8),1,0x20)==TouchPhase::cancel);
+    REQUIRE_FALSE(A::touchPhase(6 | (1<<8),0,0x20)); REQUIRE(A::touchPhase(0,0,0x20)==TouchPhase::down);
+    REQUIRE(A::touchPhase(2,0,0x20)==TouchPhase::move);
 }

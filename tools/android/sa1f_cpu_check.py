@@ -37,7 +37,9 @@ if args.expect_red: raise SystemExit(0)
 mutations=[
  ('fix1-polling','src/platform/android/inputqueue.cpp','if (!enabled || !q.polling_enabled) {','if (false) {',['src/platform/android/inputqueue.cpp']),
  ('fix2-contact','src/core/os/actionmap.cpp','members[e.pointer_id] = contacting[e.pointer_id] &&','members[e.pointer_id] = (e.touch_phase == TouchPhase::down || e.touch_phase == TouchPhase::move) &&',['src/core/os/actionmap.cpp']),
- ('fix4-stylus','src/platform/android/inputqueue.cpp',' || source==AINPUT_SOURCE_STYLUS','',['src/platform/android/inputqueue.cpp'])]
+ ('fix4-stylus','src/platform/android/inputmap.hpp',' || (source & source_stylus) == source_stylus','',['src/platform/android/inputqueue.cpp','test/android_inputmap_test.cpp']),
+ ('pen-bits','src/platform/android/inputmap.hpp','return (source & source_touchscreen) == source_touchscreen || (source & source_stylus) == source_stylus;','return source == source_touchscreen || source == source_stylus;',['src/platform/android/inputqueue.cpp','test/android_inputmap_test.cpp']),
+ ('pen-canceled-flag','src/platform/android/inputmap.hpp','(flags & motion_flag_canceled) ? TouchPhase::cancel : TouchPhase::up','TouchPhase::up',['src/platform/android/inputqueue.cpp','test/android_inputmap_test.cpp'])]
 if args.mutations:
     for label,file,before,after,selected in mutations:
         path=root/file; original=path.read_bytes(); text=original.decode('utf-8-sig')

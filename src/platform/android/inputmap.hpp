@@ -6,9 +6,15 @@
 #include <optional>
 namespace Pelican::Android {
 inline constexpr int source_keyboard = 0x101, source_gamepad = 0x401, source_joystick = 0x1000010;
-inline constexpr int source_touchscreen = 0x1002, source_mouse = 0x2002;
+inline constexpr int source_touchscreen = 0x1002, source_mouse = 0x2002, source_stylus = 0x4002;
 constexpr bool isPadSource(int source) noexcept {
     return (source & source_gamepad) == source_gamepad || (source & source_joystick) == source_joystick;
+}
+// A pen on a touch screen may report TOUCHSCREEN | STYLUS and a Bluetooth pen
+// BLUETOOTH_STYLUS (STYLUS plus a bit), so contacts are matched by bits.
+// An external tablet's MOUSE | STYLUS is touch too; the pad path runs first.
+constexpr bool isTouchSource(int source) noexcept {
+    return (source & source_touchscreen) == source_touchscreen || (source & source_stylus) == source_stylus;
 }
 inline std::optional<KeyCode> keyCode(int code) noexcept {
     if (code >= 29 && code <= 54) return static_cast<KeyCode>(int(KeyCode::A) + code - 29);
@@ -67,12 +73,16 @@ inline GamepadState padState(const GamepadState &keys, const PadAxes &axes) noex
 }
 // Android motion actions: POINTER_DOWN/UP applies only to encoded pointer index;
 // MOVE and CANCEL apply to every pointer. Unknown actions remain unhandled.
-inline std::optional<TouchPhase> touchPhase(int action, std::size_t pointer_index) noexcept {
+// MotionEvent.FLAG_CANCELED (API 33, not in the NDK header): an UP or
+// POINTER_UP that cancels its pointer, e.g. a palm the system rejected.
+inline constexpr int motion_flag_canceled = 0x20;
+inline std::optional<TouchPhase> touchPhase(int action, std::size_t pointer_index, int flags = 0) noexcept {
+    const auto up = (flags & motion_flag_canceled) ? TouchPhase::cancel : TouchPhase::up;
     switch (action & 0xff) {
     case 0: return pointer_index == 0 ? std::optional{TouchPhase::down} : std::nullopt;
-    case 1: return pointer_index == 0 ? std::optional{TouchPhase::up} : std::nullopt;
+    case 1: return pointer_index == 0 ? std::optional{up} : std::nullopt;
     case 5: return pointer_index == std::size_t((action >> 8) & 0xff) ? std::optional{TouchPhase::down} : std::nullopt;
-    case 6: return pointer_index == std::size_t((action >> 8) & 0xff) ? std::optional{TouchPhase::up} : std::nullopt;
+    case 6: return pointer_index == std::size_t((action >> 8) & 0xff) ? std::optional{up} : std::nullopt;
     case 2: return TouchPhase::move;
     case 3: return TouchPhase::cancel;
     default: return std::nullopt;
