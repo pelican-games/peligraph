@@ -1483,17 +1483,19 @@ MessageBox も同じ理由で絞ってあります。[`shouldShowPlayerFatalDial
 
 **素朴に読むと**: `onInputEvent` の返り値は「使った event だけ 1」で、使わない物は 0 を返して system に任せればよい、と読めます。
 
-**実際は**: 0 を返すと framework の既定の処理が走り、それが app の挙動を変えます。[`handleInput()`](../../src/platform/android/inputqueue.cpp#L85) はそれを避けるために、**使わずに捨てる event にも 1 を返す**所があります。
+**実際は**: 0 を返すと framework の既定の処理が走り、それが app の挙動を変えます。[`handleInput()`](../../src/platform/android/inputqueue.cpp#L86) はそれを避けるために、**使わずに捨てる event にも 1 を返す**所があります。
 
-- ゲームパッドの key は、GLFW に対応の無いボタン(C / Z / L2 / R2)・満杯の slot・engine の準備前と一時停止中・repeat も 1 です。0 を返すと、未処理の `BUTTON_B` が framework の既定で BACK に変わるためです([その所のコメント](../../src/platform/android/inputqueue.cpp#L100)。端末では試していない)。
+- ゲームパッドの key は、GLFW に対応の無いボタン(C / Z / L2 / R2)・満杯の slot・engine の準備前と一時停止中・repeat も 1 です。0 を返すと、未処理の `BUTTON_B` が framework の既定で BACK に変わるためです([その所のコメント](../../src/platform/android/inputqueue.cpp#L101)。端末では試していない)。
 - BACK は down も up も 1 で、up で app が自分で `ANativeActivity_finish` を呼びます。SA1f の仕様レビューの調べでは、Android 12 以降は root の activity が戻るで終わらず背面に回るだけで、targetSdk 36 の Android 16 では予測型の戻るのために `KEYCODE_BACK` 自体が届きません。そのため manifest の [`enableOnBackInvokedCallback="false"`](../../tools/android/AndroidManifest.xml#L10) と組で使います(片方を外した時の挙動は端末で未確認)。
-- 逆に 0 を返す物は system に戻ります: 表に無いキーボードの key、stylus の hover とサイドボタン、知らない source。
+- 逆に 0 を返す物は system に戻ります: 表に無いキーボードの key、stylus の hover とサイドボタン、知らない source(タッチパッドと `MOUSE_RELATIVE` もここ)。
+- **source は印ごとに見る(✅SA1f-pen、`fcf8c9493`)**: タッチの道は [`isTouchSource()`](../../src/platform/android/inputmap.hpp#L16) が `TOUCHSCREEN` か `STYLUS` の印を全部持つかで決めます。画面の上のペンは `TOUCHSCREEN | STYLUS`、Bluetooth のペンは `BLUETOOTH_STYLUS`(STYLUS に 1 bit 足した値)で来ることがあるので、`source == TOUCHSCREEN || source == STYLUS` の完全一致(SA1f の `bbedafc88` の形)ではこれらが mouse の完全一致にも当たらずに 0 になり、ペンの接触が丸ごと system に戻っていました。外付けのペンタブレットの `MOUSE | STYLUS` もタッチに入ります。pad の判定はその前にあり、マウスは今も `source == MOUSE` の完全一致です。
+- **離した指の取り消しの印**: `FLAG_CANCELED`(`0x20`、API 33)は NDK の header に無いので、[`inputmap.hpp`](../../src/platform/android/inputmap.hpp#L78) の `motion_flag_canceled` が正です。これの付いた `UP` / `POINTER_UP` を `up` のまま通すと、手のひらとして退けられた接触でも tap が成り立ち得ます。
 
 **`AInputEvent` の寿命**: event は callback の中でしか使えないので、変換(履歴の点・density から作る `slop_px` を含む)は callback の中で済ませ、queue には値の `InputEvent` だけを積みます。
 
-**不変条件**: pad の key を 0 で返す道を増やさない。BACK を handled にするなら manifest の opt-out も残す。callback を抜けた後に `AInputEvent` を触らない。
+**不変条件**: pad の key を 0 で返す道を増やさない。BACK を handled にするなら manifest の opt-out も残す。タッチとペンの source を値の完全一致に戻さない。callback を抜けた後に `AInputEvent` を触らない。
 
-**読む場所**: [`handleInput()`](../../src/platform/android/inputqueue.cpp#L85) → [`drainInput()`](../../src/platform/android/inputqueue.cpp#L64)。本文は [第5章「Android の入力の経路」](05_gameplay_and_services.md#android-input-path)。
+**読む場所**: [`handleInput()`](../../src/platform/android/inputqueue.cpp#L86) → [`drainInput()`](../../src/platform/android/inputqueue.cpp#L65)。本文は [第5章「Android の入力の経路」](05_gameplay_and_services.md#android-input-path)。
 
 ---
 

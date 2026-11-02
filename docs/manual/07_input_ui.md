@@ -175,16 +175,16 @@ ctx.input().setCursorMode(Pelican::CursorMode::locked);   // normal / hidden / l
 
 ### Android の入力(✅SA1f、`bbedafc88`)
 
-Android の player([第2章 §2.9](02_getting_started.md#29-android-で-player-を動かす))は、activity に届く入力を desktop と同じ入力 event にして、同じアクション層へ入れます。**ゲームのコードと actions.json / profile は PC と同じ物が使えます**(タッチの binding を足すだけ)。変換は [`handleInput()`](../../src/platform/android/inputqueue.cpp#L85) が行います。
+Android の player([第2章 §2.9](02_getting_started.md#29-android-で-player-を動かす))は、activity に届く入力を desktop と同じ入力 event にして、同じアクション層へ入れます。**ゲームのコードと actions.json / profile は PC と同じ物が使えます**(タッチの binding を足すだけ)。変換は [`handleInput()`](../../src/platform/android/inputqueue.cpp#L86) が行います。
 
 | 入力 | 扱い |
 |---|---|
-| キーボード | Android の key code を**今ある `KeyCode`** へ写します([表](../../src/platform/android/inputmap.hpp#L13)): A〜Z、0〜9、F1〜F12、矢印、Space、Enter、Escape、Tab、DEL → Backspace、左右の Shift / Ctrl / Alt / Meta(Meta → `left_super` / `right_super`)。`KeyCode` は増やしていないので、表に無いキー(テンキーなど)はエンジンに入れません(app は扱わず system に返します)。押しっぱなしの repeat は捨てます。文字の入力(`character` event)とソフトキーボードは扱いません |
-| ゲームパッド | 端末の機器ごとに、最初に来た順で 16 スロットへ割り当てます。ボタン 15 種は `pad:a` / `b` / `x` / `y`、L1 / R1 → `left_bumper` / `right_bumper`、SELECT → `back`、START → `start`、MODE → `guide`、左右のスティック押し込み、十字キー([表](../../src/platform/android/inputmap.hpp#L38))。軸は **GLFW と同じ値の決め方**です: スティックは左が X / Y、右が Z / RZ で -1〜1(y は下が正)、トリガーは**離していると -1、押し切ると 1**(LTRIGGER と BRAKE、RTRIGGER と GAS の大きい方。[`trigger()`](../../src/platform/android/inputmap.hpp#L55))。十字キーはボタンと HAT 軸のどちらで来ても同じボタンになります。値の決め方が同じなので PC 向けの gamepad の profile をそのまま使えるはずです(実物のパッドでは未確認)。L2 / R2・C / Z のように GLFW に対応の無いボタンは捨てます |
+| キーボード | Android の key code を**今ある `KeyCode`** へ写します([表](../../src/platform/android/inputmap.hpp#L19)): A〜Z、0〜9、F1〜F12、矢印、Space、Enter、Escape、Tab、DEL → Backspace、左右の Shift / Ctrl / Alt / Meta(Meta → `left_super` / `right_super`)。`KeyCode` は増やしていないので、表に無いキー(テンキーなど)はエンジンに入れません(app は扱わず system に返します)。押しっぱなしの repeat は捨てます。文字の入力(`character` event)とソフトキーボードは扱いません |
+| ゲームパッド | 端末の機器ごとに、最初に来た順で 16 スロットへ割り当てます。ボタン 15 種は `pad:a` / `b` / `x` / `y`、L1 / R1 → `left_bumper` / `right_bumper`、SELECT → `back`、START → `start`、MODE → `guide`、左右のスティック押し込み、十字キー([表](../../src/platform/android/inputmap.hpp#L44))。軸は **GLFW と同じ値の決め方**です: スティックは左が X / Y、右が Z / RZ で -1〜1(y は下が正)、トリガーは**離していると -1、押し切ると 1**(LTRIGGER と BRAKE、RTRIGGER と GAS の大きい方。[`trigger()`](../../src/platform/android/inputmap.hpp#L61))。十字キーはボタンと HAT 軸のどちらで来ても同じボタンになります。値の決め方が同じなので PC 向けの gamepad の profile をそのまま使えるはずです(実物のパッドでは未確認)。L2 / R2・C / Z のように GLFW に対応の無いボタンは捨てます |
 | タッチ | 指ごとの event(触れた・動いた・離した・取り消し)になります(下の「タッチ」)。マウスの event は作りません |
-| ペン(stylus) | **画面に触れている間だけ、筆圧の無いタッチとして**扱います。筆圧・傾き・浮かせた位置(hover)・サイドボタン・消しゴムは読みません(hover とボタンの event は app が扱わず、system に返します) |
-| マウス | 本物のマウスはマウスとして扱います(カーソルの移動、ボタンは種類を見ず `mouse:left`、ホイール) |
-| BACK | **離した時に activity を終えます**(`ANativeActivity_finish`。[その所](../../src/platform/android/inputqueue.cpp#L89))。BACK を action にする口はありません |
+| ペン(stylus) | **画面に触れている間だけ、筆圧の無いタッチとして**扱います。筆圧・傾き・浮かせた位置(hover)・サイドボタン・消しゴムは読みません(hover とボタンの event は app が扱わず、system に返します)。入力の出どころ(source)は印ごとに見るので([`isTouchSource()`](../../src/platform/android/inputmap.hpp#L16))、画面の上のペン(TOUCHSCREEN と STYLUS の両方の印)、Bluetooth のペン(BLUETOOTH_STYLUS。画面の印が付いていてもいなくても)、外付けのペンタブレット(MOUSE と STYLUS の両方の印)もタッチになります(✅SA1f-pen、`fcf8c9493`) |
+| マウス | 本物のマウスはマウスとして扱います(カーソルの移動、ボタンは種類を見ず `mouse:left`、ホイール)。マウスは出どころが MOUSE ちょうどの時だけで、タッチパッドと相対の移動量のマウス(MOUSE_RELATIVE)はマウスにもタッチにもならず、app は扱いません |
+| BACK | **離した時に activity を終えます**(`ANativeActivity_finish`。[その所](../../src/platform/android/inputqueue.cpp#L90))。BACK を action にする口はありません |
 
 - **BACK の振る舞い**: Android 12 からは root の activity が戻るキーで終わらず背面に回るだけで、この APK の target(API 36)の Android 16 では予測型の戻るのために key の event 自体が届きません(SA1f の仕様レビューの調べ)。そのため manifest で予測型の戻るを切り([`enableOnBackInvokedCallback="false"`](../../tools/android/AndroidManifest.xml#L10))、app が BACK を受けて自分で終えます。終わり方は §2.9 の lifecycle と同じ DESTROY の道です。
 - ゲームパッドのボタンは、押した順・離した順のまま届きます(1 フレームの中で押して離しても落ちません)。profile に `pad:` の binding が無い間はゲームパッドを読みません(desktop と同じ)。読まない間に押されていたボタンは離した扱いになり、読み始めると今の押下の状態に揃います。
@@ -195,6 +195,7 @@ Android の player([第2章 §2.9](02_getting_started.md#29-android-で-player-�
 - 指は Android の pointer id(0〜31)で区別します。アクション層と `pointer()` が持つ指は同時に 10 本までで、11 本目は無視します。1 フレームの中で触れて離した指も、そのフレームでは「触れて離した」として残ります。
 - 座標はマウスのカーソルと同じ**窓座標**です(Android では窓と framebuffer を同じ大きさとして扱うので値も同じ。[その所](../../src/core/os/window_android.cpp#L74))。
 - 指を動かした event に Android がまとめて付ける途中の点(最大 64 個)も順に入れます。64 個を超えたときは、その event の指を全部取り消します(途中を落とした軌跡で tap を成り立たせないため)。
+- 指(またはペン)を離した event に Android が取り消しの印(`FLAG_CANCELED`、Android 13 から)を付けて来たときは、**離した指だけ**を「取り消し」にします(✅SA1f-pen。[その所](../../src/platform/android/inputmap.hpp#L78))。system が手のひらとして退けた接触などで、取り消した指では `touch:tap` が成り立ちません。ほかの指はそのまま続きます。
 - タッチは ImGui には渡しません。UI(`pelican.ui`)には指ごとのポインタとして渡ります(§7.4「ポインタの座標」)。
 
 #### 既知の制限
@@ -202,6 +203,7 @@ Android の player([第2章 §2.9](02_getting_started.md#29-android-で-player-�
 - **ゲームパッドの抜き差しを検出しません**(JNI を使っていないため)。抜いたパッドのスロットは残ります。挿し直して Android が別の device id を付けると、新しいスロットになります(端末では未確認)。抜いた時に押していたボタンは押されたまま残り、`pad:` の binding は全スロットの論理和なので action も押されたままになります。16 スロットを使い切った後のパッドは捨てます。
 - `region` の比は**窓ではなく framebuffer** に対する比です(表示倍率のある PC で rpc から指を入れるときは、窓座標が換算されてから比になります)。リプレイでは記録の framebuffer で比を取るので、画面の大きさの違う機械で再生しても同じ判定になります(タッチを含む記録は v3 で、v3 は framebuffer を必ず持つ。§7.3)。
 - 確かめた端末は NX789J の 1 台で、adb から入れたキー・パッドのボタン・指 1 本・ペンの tap だけです。2 本以上の指、実物のゲームパッドのスティック・トリガー・HAT、実物のキーボード・マウス、抜き差し、一時停止の後の入力の戻りは端末では試していません(指の複数・スロット・軸の値は CPU のテストで確かめています)。
+- ✅SA1f-pen で足した出どころ(画面の上のペン・Bluetooth のペン・外付けのペンタブレット)と、離した event の取り消しの印(`FLAG_CANCELED`)には CPU のテストがあります。実物のペン・ペンタブレット・手のひらの除外での振る舞いは端末で未確認です。
 
 ### 旧形式からの移行(2026-07-10 以前のプロジェクト)
 
@@ -436,7 +438,7 @@ GPU 経路自体は意図的に別のままです(`DebugText` は専用 atlas + 
 | OpenXR 入力(Touch action set + pose) | ✅ WP130/132(v1 は Touch のみ・pose の収録は非対応) |
 | ポインタの位置(framebuffer ピクセル)/ カーソルのモード(I4 残件のロックを含む)/ `screenRay` | ✅ GP-4(埋め込みの窓ではロックしない。残した穴は第8章 §8.4) |
 | UI の入力ルータの表示倍率対応 | ✅ GP-4 |
-| Android の入力(キーボード・ゲームパッド・タッチ・ペン・BACK)/ `touch:region`・`touch:tap` / UI の指ごとのポインタ / input_seq v3 | ✅ SA1f(パッドの抜き差しは検出しない。§7.2「Android の入力」) |
+| Android の入力(キーボード・ゲームパッド・タッチ・ペン・BACK)/ `touch:region`・`touch:tap` / UI の指ごとのポインタ / input_seq v3 | ✅ SA1f(パッドの抜き差しは検出しない。ペンの出どころの判定と離した指の取り消しの印は SA1f-pen。§7.2「Android の入力」) |
 | 仮想スティック・仮想ボタン・ジェスチャ・振動 / feature が action に値を出す口 | 📐(口は SA1g。[roadmap の SA トラック](../roadmap_backlog_2026-07.md)) |
 | pelican.ui v1(U0/U1/U2) | ✅ WP75/87/93(スキン・`ui_scale` は 🚧/📐) |
 | gauge 描画 / ゲーム→UI 更新 API(`ctx.ui()`)/ `ui.value`・`ui.visible` sink | ✅ GP-3(子を連れて隠せない等の穴は §7.4「GP-3 が残した穴」) |

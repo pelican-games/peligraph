@@ -346,23 +346,23 @@ XRセッション中は **XR action backend** もこの層に入ります。`syn
 
 Android では GLFW の callback の代わりに、glue の `onInputEvent`（[`android_main()` での登録](../../src/platform/android/android_main.cpp#L257)）が L1 の入口です。経路は「glue の thread で変換して queue に積む → engine の thread で取り出す」の 2 段です（thread の分け方は [第2章の Android の節](02_runtime_lifecycle.md#android-entry)）。
 
-1. **変換（pump の thread）**: [`handleInput()`](../../src/platform/android/inputqueue.cpp#L85) が `AInputEvent` をその場で `InputEvent` にして、mutex 付きの static な queue（[`InputQueue`](../../src/platform/android/inputqueue.cpp#L12)、上限 2048）に積みます。`AInputEvent` は callback の中でしか使えないので、callback を抜けた後に参照する物は残しません。NDK に依存しない表と変換は [`inputmap.hpp`](../../src/platform/android/inputmap.hpp#L2) に分けてあり（[`keyCode()`](../../src/platform/android/inputmap.hpp#L13)・[`padButton()`](../../src/platform/android/inputmap.hpp#L38)・[`padState()`](../../src/platform/android/inputmap.hpp#L58)・[`touchPhase()`](../../src/platform/android/inputmap.hpp#L70)・[`PadSlots`](../../src/platform/android/inputmap.hpp#L81)）、Windows の CPU テストからも build されます。
-2. **取り出し（engine の thread）**: [`Window::process()`](../../src/core/os/window_android.cpp#L96) が lifecycle の処理の後に [`drainInput()`](../../src/platform/android/inputqueue.cpp#L64) を呼び、返った列を `input_events` に足します。その先は desktop と同じで、`InputState` の event queue → `beginFrame()` の snapshot → action map / UI router です。
+1. **変換（pump の thread）**: [`handleInput()`](../../src/platform/android/inputqueue.cpp#L86) が `AInputEvent` をその場で `InputEvent` にして、mutex 付きの static な queue（[`InputQueue`](../../src/platform/android/inputqueue.cpp#L13)、上限 2048）に積みます。`AInputEvent` は callback の中でしか使えないので、callback を抜けた後に参照する物は残しません。NDK に依存しない表と変換は [`inputmap.hpp`](../../src/platform/android/inputmap.hpp#L2) に分けてあり（[`keyCode()`](../../src/platform/android/inputmap.hpp#L19)・[`padButton()`](../../src/platform/android/inputmap.hpp#L44)・[`padState()`](../../src/platform/android/inputmap.hpp#L64)・[`isTouchSource()`](../../src/platform/android/inputmap.hpp#L16)・[`touchPhase()`](../../src/platform/android/inputmap.hpp#L79)・[`PadSlots`](../../src/platform/android/inputmap.hpp#L91)）、Windows の CPU テストからも build されます。
+2. **取り出し（engine の thread）**: [`Window::process()`](../../src/core/os/window_android.cpp#L96) が lifecycle の処理の後に [`drainInput()`](../../src/platform/android/inputqueue.cpp#L65) を呼び、返った列を `input_events` に足します。その先は desktop と同じで、`InputState` の event queue → `beginFrame()` の snapshot → action map / UI router です。
 
 source ごとの振り分け（`handleInput()` の返り値 1 = handled、0 = system に返す）:
 
 | source | 行き先 |
 |---|---|
-| key で `AKEYCODE_BACK` | 最初に見ます。down も up も handled、up で `ANativeActivity_finish`（[その所](../../src/platform/android/inputqueue.cpp#L89)）。manifest の `enableOnBackInvokedCallback="false"` と組で、DESTROY の道へ入ります |
+| key で `AKEYCODE_BACK` | 最初に見ます。down も up も handled、up で `ANativeActivity_finish`（[その所](../../src/platform/android/inputqueue.cpp#L90)）。manifest の `enableOnBackInvokedCallback="false"` と組で、DESTROY の道へ入ります |
 | `(source & GAMEPAD) == GAMEPAD` か `(source & JOYSTICK) == JOYSTICK`（[`isPadSource()`](../../src/platform/android/inputmap.hpp#L10)） | ゲームパッド。`deviceId` → slot を先着で 16 まで。key はボタン、motion は軸（下の「ゲームパッド」） |
-| `(source & KEYBOARD) == KEYBOARD` の key | [`keyCode()`](../../src/platform/android/inputmap.hpp#L13) の表にあれば `InputEvent::button`。repeat は捨てて handled、表に無い key は 0 |
-| `source == TOUCHSCREEN` か `source == STYLUS` の motion | `InputEvent::touch`（[その所](../../src/platform/android/inputqueue.cpp#L126)）。stylus は hover・button の action が `touchPhase()` で nullopt になるので 0 を返し、筆圧の軸は読みません |
-| `source == MOUSE` の motion | `cursor_move` + `MouseLeft`（ボタンの種類は見ない）、scroll。CANCEL は `canceled = true` の release（[その所](../../src/platform/android/inputqueue.cpp#L151)） |
+| `(source & KEYBOARD) == KEYBOARD` の key | [`keyCode()`](../../src/platform/android/inputmap.hpp#L19) の表にあれば `InputEvent::button`。repeat は捨てて handled、表に無い key は 0 |
+| `(source & TOUCHSCREEN) == TOUCHSCREEN` か `(source & STYLUS) == STYLUS` の motion（[`isTouchSource()`](../../src/platform/android/inputmap.hpp#L16)。✅SA1f-pen、`fcf8c9493`） | `InputEvent::touch`（[その所](../../src/platform/android/inputqueue.cpp#L127)）。印ごとに見るので、`TOUCHSCREEN \| STYLUS`（画面の上のペン）、`BLUETOOTH_STYLUS`（`0xc002`。STYLUS の印を含む）と `TOUCHSCREEN \| BLUETOOTH_STYLUS`、外付けのペンタブレットの `MOUSE \| STYLUS` もここに入ります。pad の判定が先なので、pad の印を持つ source はここに来ません。stylus は hover・button の action が `touchPhase()` で nullopt になるので 0 を返し、筆圧の軸は読みません |
+| `source == MOUSE`（完全一致）の motion | `cursor_move` + `MouseLeft`（ボタンの種類は見ない）、scroll。CANCEL は `canceled = true` の release（[その所](../../src/platform/android/inputqueue.cpp#L152)）。タッチパッド（`TOUCHPAD`、`0x100008`）と相対のマウス（`MOUSE_RELATIVE`、`0x20004`）はどの行にも当たらず 0 です |
 
 ゲームパッドの細部:
 
-- **ボタンは順序付きの event**: `padState()` が key の押下と HAT（±0.5 を閾値に OR）から作った状態を、前の状態と比べて変わったボタンだけ `gamepad_button` event として queue に積みます（[`updatePad()`](../../src/platform/android/inputqueue.cpp#L46)）。状態の差分を frame ごとに取るのではないので、1 frame の中の down → up も落ちません。軸は既存の [`GamepadEventPoller`](../../src/core/os/inputstate.hpp#L173) に任せ、queue 自身が `GamepadStateSource` として最新の軸を返します。ボタンを二重に出さないため、[`read()`](../../src/platform/android/inputqueue.cpp#L23) は buttons を空にして返します。
-- **値の規約は GLFW**: [`trigger()`](../../src/platform/android/inputmap.hpp#L55) は `2 * max(LTRIGGER, BRAKE) - 1`（R は RTRIGGER と GAS）で、休止値は -1。slot を作った時の状態も `padState({}, {})`（トリガー -1）です。stick の y は Android の値をそのまま渡します（下が正で GLFW と同じ）。非有限の値は下限に落とします。
+- **ボタンは順序付きの event**: `padState()` が key の押下と HAT（±0.5 を閾値に OR）から作った状態を、前の状態と比べて変わったボタンだけ `gamepad_button` event として queue に積みます（[`updatePad()`](../../src/platform/android/inputqueue.cpp#L47)）。状態の差分を frame ごとに取るのではないので、1 frame の中の down → up も落ちません。軸は既存の [`GamepadEventPoller`](../../src/core/os/inputstate.hpp#L173) に任せ、queue 自身が `GamepadStateSource` として最新の軸を返します。ボタンを二重に出さないため、[`read()`](../../src/platform/android/inputqueue.cpp#L24) は buttons を空にして返します。
+- **値の規約は GLFW**: [`trigger()`](../../src/platform/android/inputmap.hpp#L61) は `2 * max(LTRIGGER, BRAKE) - 1`（R は RTRIGGER と GAS）で、休止値は -1。slot を作った時の状態も `padState({}, {})`（トリガー -1）です。stick の y は Android の値をそのまま渡します（下が正で GLFW と同じ）。非有限の値は下限に落とします。
 - **polling の切替の同期**: `drainInput(enabled, ...)` の `enabled` は `internal::gamepadPollingEnabled()`（profile に `pad:` があるか）です。無効の frame と、無効から有効に戻った最初の frame は、queue の `gamepad_button` を捨てて、engine に渡し済みの状態（`delivered`）と「無効なら全部離す / 有効なら今の物理の状態」との差だけを出します。普段の frame は順序付きの event をそのまま渡します。
 - **handled の扱い**: 対応の無い pad の key（`BUTTON_A`〜`BUTTON_MODE` の範囲の C / Z / L2 / R2）、満杯の slot、engine の準備前・一時停止中、repeat はどれも handled で捨てます。handled を返さないと framework の既定で `BUTTON_B` が BACK に変わるためです。
 - 切断の検出は無く（JNI を使わない）、`present` は一度 true になると戻りません。
@@ -370,10 +370,11 @@ source ごとの振り分け（`handleInput()` の返り値 1 = handled、0 = sy
 タッチの細部:
 
 - `touchPhase()` は `DOWN` / `UP` を index 0 に、`POINTER_DOWN` / `POINTER_UP` を action に符号化された index に、`MOVE` / `CANCEL` を全 pointer に当てます。
-- **MOVE の履歴**: `AMotionEvent_getHistorySize()` の途中の点を古い順に先に積み、そのあと今の点を積みます。履歴は最大 64 で、超えたときは全 pointer に `cancel` を足します（[その所](../../src/platform/android/inputqueue.cpp#L131)）。途中を落とした軌跡で tap（動きの上限の判定）が成り立たないようにするためです。
-- tap の動きの上限 `slop_px` は `8 × density / 160`（[`AConfiguration_getDensity()`](../../src/platform/android/inputqueue.cpp#L128)。JNI 不要。density が不明なら 8）で、event ごとに `touch_slop_px` に入れて運びます。
+- **離した指の取り消し（✅SA1f-pen）**: 第 3 引数に `AMotionEvent_getFlags()` を渡し、`FLAG_CANCELED`（`0x20`、API 33）が立った `UP` / `POINTER_UP` は、その event が当たる 1 本の指だけ `up` ではなく `cancel` にします（[その所](../../src/platform/android/inputmap.hpp#L78)）。NDK の header にこの定数が無いので `inputmap.hpp` に `motion_flag_canceled` として自前で置いています。`DOWN` / `MOVE` / `CANCEL` は flag を見ません。`cancel` で離れた指は snapshot が tap の候補を作らないので（[tap の候補を作る所](../../src/core/os/inputstate.cpp#L540)）、system が手のひらとして退けた接触で `touch:tap` が成り立ちません。
+- **MOVE の履歴**: `AMotionEvent_getHistorySize()` の途中の点を古い順に先に積み、そのあと今の点を積みます。履歴は最大 64 で、超えたときは全 pointer に `cancel` を足します（[その所](../../src/platform/android/inputqueue.cpp#L132)）。途中を落とした軌跡で tap（動きの上限の判定）が成り立たないようにするためです。
+- tap の動きの上限 `slop_px` は `8 × density / 160`（[`AConfiguration_getDensity()`](../../src/platform/android/inputqueue.cpp#L129)。JNI 不要。density が不明なら 8）で、event ごとに `touch_slop_px` に入れて運びます。
 
-queue の状態: [`setInputReady()`](../../src/platform/android/inputqueue.cpp#L56) は `Window` の constructor / destructor が、[`setInputPaused()`](../../src/platform/android/inputqueue.cpp#L60) は `handleCommand()` の `APP_CMD_PAUSE` / `RESUME` が呼びます。準備前と一時停止中の入力は捨て（handled）、一時停止に入る時と queue が 2048 件で溢れた時は [`neutralize()`](../../src/platform/android/inputqueue.cpp#L29) が溜まった分を捨てて、全 key の release・全 pad ボタンの release・32 個の pointer id 全部の `cancel` を積みます（溢れた時の契機の event も捨てる）。押したまま残る control を作らないためです。character event とソフトキーボードは出しません（NDK に unicode を取る API が無い）。
+queue の状態: [`setInputReady()`](../../src/platform/android/inputqueue.cpp#L57) は `Window` の constructor / destructor が、[`setInputPaused()`](../../src/platform/android/inputqueue.cpp#L61) は `handleCommand()` の `APP_CMD_PAUSE` / `RESUME` が呼びます。準備前と一時停止中の入力は捨て（handled）、一時停止に入る時と queue が 2048 件で溢れた時は [`neutralize()`](../../src/platform/android/inputqueue.cpp#L30) が溜まった分を捨てて、全 key の release・全 pad ボタンの release・32 個の pointer id 全部の `cancel` を積みます（溢れた時の契機の event も捨てる）。押したまま残る control を作らないためです。character event とソフトキーボードは出しません（NDK に unicode を取る API が無い）。
 
 ### L2: 順序付きInputEvent
 
