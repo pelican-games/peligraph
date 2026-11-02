@@ -18491,3 +18491,441 @@ TEST_CASE("GS-1 one rebuild of a 150-node chain walks the items a constant numbe
             CHECK_FALSE(dynamic_cast<QGraphicsPolygonItem *>(item)->polygon().isEmpty());
     }
 }
+
+// --- GS-2. A commit's document comes back first, the plan it asks for
+// after it and the rendering section's context after that, and the scene
+// follows each as it arrives. What only moves in a read without changing
+// what the scene draws -- the frame a material pass last drew in (UX-12c),
+// the context's planning root, catalog and generation -- rebuilds nothing:
+// a value, a line or an Undo of one is drawn once, from its document. A pass
+// added or taken away really changes the plan and the context after it, and
+// those are drawn again when they arrive.
+
+namespace {
+
+// The engine behind the tab: a root document the edits are applied to, and
+// the plan and the context that document makes. The first pass draws
+// materials in a frame that moves with every read; the context carries the
+// document as its planning root, and a generation of its own. Every
+// render.fullscreen the graph holds beside `shade` is a pass of the plan
+// writing an image of its own, which the rendering section's present reads;
+// the context lists that pass in its graph and the image among its render
+// targets, and present's `input` names the image.
+struct Gs2Engine {
+    Json graph{{"schema", "pelican.graph"},
+               {"version", 1},
+               {"definitions", Json::object()},
+               {"outputs", Json::object()},
+               {"rendering", Json::object()},
+               {"layout", Json::object()},
+               {"nodes",
+                Json::array({{{"id", "shade__color"}, {"op", "render.image"},
+                              {"parameters", {{"format", "R8G8B8A8_UNORM"}}},
+                              {"outputs", Json::array({"resource"})}},
+                             {{"id", "shade"}, {"op", "render.fullscreen"},
+                              {"parameters", Json::object()},
+                              {"inputs", {{"color", {{"node", "shade__color"}, {"port", "resource"}}}}},
+                              {"outputs", Json::array({"color"})}},
+                             {{"id", "k1"}, {"op", "value.constant"},
+                              {"parameters", {{"value", 1.0}}},
+                              {"outputs", Json::array({"value"})}},
+                             {{"id", "k2"}, {"op", "value.constant"},
+                              {"parameters", {{"value", 2.0}}},
+                              {"outputs", Json::array({"value"})}},
+                             {{"id", "sum"}, {"op", "value.add"},
+                              {"inputs", {{"a", {{"node", "k1"}, {"port", "value"}}},
+                                          {"b", {{"node", "k1"}, {"port", "value"}}}}},
+                              {"outputs", Json::array({"value"})}}})}};
+    int revision = 0;
+    std::uint64_t frame = 100;
+    int generation = 1;
+    // The rendering section's target planning, as the Frame Plan's Pin
+    // writes it: in the planning root, never on the Graph's canvas.
+    Json policy = Json::object();
+
+    [[nodiscard]] std::string digest() const { return "gs2-" + std::to_string(revision); }
+    // The passes the graph adds to the plan beside `shade`.
+    [[nodiscard]] std::vector<std::string> added() const {
+        std::vector<std::string> passes;
+        for (const auto &node : graph.at("nodes"))
+            if (node.at("op") == "render.fullscreen" && node.at("id") != "shade")
+                passes.push_back(node.at("id").get<std::string>());
+        return passes;
+    }
+    [[nodiscard]] std::vector<std::string> images() const {
+        auto names = added();
+        for (auto &name : names) name += "__color";
+        return names;
+    }
+    [[nodiscard]] Json read() const {
+        auto read = context(graph);
+        read["source_digest"]["hex"] = digest();
+        read["root_schema"] = "pelican.graph";
+        read["source_reference"] = "fixture";
+        return read;
+    }
+    Json plan() {
+        auto plan = gl1ePlan(images());
+        // Every graph pass says what it reads (Q-19 asks again for one that
+        // does not).
+        plan["nodes"][0]["pass_inputs"] = gl1ePassthrough();
+        plan["nodes"][0]["drawn_materials"] = Json::array({{{"id", 7}, {"draws", 3}}});
+        plan["nodes"][0]["drawn_materials_frame"] = frame++;
+        std::size_t order = 2;
+        for (const auto &id : added()) {
+            auto pass = gl1bPass(id, order++, "project", Json::array(), Json::array({id + "__color"}));
+            pass["pass_inputs"] = gl1ePassthrough();
+            plan["nodes"].push_back(std::move(pass));
+            plan["resources"].push_back({{"name", id + "__color"}, {"kind", "image"}});
+        }
+        return plan;
+    }
+    Json authoring() {
+        auto authoring = gl5bAuthoring(images(), images());
+        auto &passes = authoring["graphs"][0]["passes"];
+        for (const auto &id : added())
+            passes.push_back({{"name", id},
+                              {"declaration_index", passes.size()},
+                              {"editable_root_pass", false},
+                              {"declaration",
+                               {{"type", "fullscreen"},
+                                {"output", {{"color", id + "__color"}}},
+                                {"shader", {{"vertex", "engine://fullscreen"},
+                                            {"fragment", "engine://passthrough"}}}}}});
+        authoring["source_digest"]["hex"] = digest();
+        authoring["published_generation"] = generation++;
+        authoring["planning_root"] = {{"nodes", graph.at("nodes")},
+                                      {"rendering", {{"target_planning", policy}}}};
+        auto names = Json::array();
+        for (const auto &node : graph.at("nodes")) names.push_back(node.at("id"));
+        names.push_back(policy.dump());
+        authoring["planning_catalog"] = {{"main_render", {{"nodes", names}}}};
+        return authoring;
+    }
+};
+
+// The Graph tab over that engine, counting the scene's rebuilds.
+struct Gs2Tab {
+    RecordedCapability transport;
+    Gs2Engine engine;
+    std::set<qint64> answered;
+    std::unique_ptr<PelicanStudio::GraphCanvasWidget> widget;
+    int rebuilds = 0;
+
+    Gs2Tab() {
+        auto capability = transport.capability();
+        capability.requestFramePlan = [this](QString *) {
+            transport.calls.push_back({QStringLiteral("get_frame_plan")});
+            return transport.next++;
+        };
+        capability.requestRenderAuthoringContext = [this](QString *) {
+            transport.calls.push_back({QStringLiteral("get_render_authoring_context")});
+            return transport.next++;
+        };
+        widget = std::make_unique<PelicanStudio::GraphCanvasWidget>(capability);
+        widget->resize(1100, 700);
+        widget->show();
+        QCoreApplication::processEvents();
+        // The values are drawn beside the passes.
+        (void)widget->model().setDomainShown("value", true);
+        auto catalog = visualCatalog();
+        for (const char *op : {"render.fullscreen", "render.image"})
+            catalog["modules"][1]["operations"].push_back(
+                {{"op", op}, {"domain", "rendering"}, {"evaluation", "direct"},
+                 {"sink", false}, {"ports", "parameter_dependent"}});
+        answer("get_graph_catalog", catalog);
+        answer("get_graph_instances", engine.read());
+        answer("get_frame_plan", engine.plan());
+        answer("get_render_authoring_context", engine.authoring());
+        auto &scene = widget->scene();
+        scene.repopulated = [this, drawn = std::move(scene.repopulated)] {
+            ++rebuilds;
+            if (drawn) drawn();
+        };
+    }
+
+    // The last call of `method`, answered: it must be one still waiting.
+    void answer(const char *method, const Json &reply) {
+        const qint64 id = transport.idOf(QString::fromLatin1(method));
+        REQUIRE(id != 0);
+        REQUIRE_FALSE(answered.contains(id));
+        answered.insert(id);
+        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+        QCoreApplication::processEvents();
+    }
+
+    // The engine's three reads, answered in its order: the rebuilds each
+    // reply made.
+    std::array<int, 3> reads() {
+        std::array<int, 3> made{};
+        int before = rebuilds;
+        answer("get_graph_instances", engine.read());
+        made[0] = rebuilds - before;
+        before = rebuilds;
+        answer("get_frame_plan", engine.plan());
+        made[1] = rebuilds - before;
+        before = rebuilds;
+        answer("get_render_authoring_context", engine.authoring());
+        made[2] = rebuilds - before;
+        return made;
+    }
+
+    // The edit the model just took goes out, the engine applies and commits
+    // it, and reads() follows.
+    std::array<int, 3> commit() {
+        widget->poll();
+        const auto id = transport.idOf(QStringLiteral("edit_graph_document"));
+        REQUIRE(id != 0);
+        REQUIRE_FALSE(answered.contains(id));
+        const auto ops =
+            Json::parse(transport.calls[static_cast<std::size_t>(id - 1)].body.toStdString());
+        engine.graph = Pelican::editGraphDocument(engine.graph, ops);
+        ++engine.revision;
+        const int before = rebuilds;
+        const auto plans = [this] { return transport.countOf(QStringLiteral("get_frame_plan")); };
+        const auto contexts = [this] {
+            return transport.countOf(QStringLiteral("get_render_authoring_context"));
+        };
+        const int plans_before = plans();
+        const int contexts_before = contexts();
+        answer("edit_graph_document", Json{{"status", "accepted"}, {"ticket", "gs2"}});
+        answer("get_edit_result", Json{{"status", "committed"},
+                                       {"committed", true},
+                                       {"source_digest", {{"hex", engine.digest()}}}});
+        // Nothing is drawn for the commit itself: its document is read next.
+        CHECK(rebuilds == before);
+        const auto made = reads();
+        // The plan and the context once each.
+        CHECK(plans() == plans_before + 1);
+        CHECK(contexts() == contexts_before + 1);
+        return made;
+    }
+
+    [[nodiscard]] GraphCanvasModel &model() { return widget->model(); }
+};
+
+// Every item the scene files under a kind -- the nodes, their rows and
+// bands, the lines, the derived nodes and lines -- with what it shows and
+// exactly where.
+std::vector<std::string> gs2Picture(QGraphicsScene &scene) {
+    using namespace PelicanStudio;
+    const auto number = [](qreal value) { return QString::number(value, 'g', 17).toStdString(); };
+    std::vector<std::string> drawn;
+    for (QGraphicsItem *item : scene.items()) {
+        const QString kind = nodeGraphItemKind(*item);
+        if (kind.isEmpty()) continue;
+        QStringList key{kind};
+        for (const int role : {GraphCanvasScopeRole, NodeGraphNameRole, GraphCanvasPortRole,
+                               NodeGraphFromNameRole, GraphCanvasFromPortRole, NodeGraphToNameRole,
+                               GraphCanvasToPortRole, GraphCanvasPassInputRole,
+                               GraphCanvasValueTextRole})
+            key.push_back(item->data(role).toString());
+        std::string where = key.join(QLatin1Char{'|'}).toStdString();
+        if (const auto *text = dynamic_cast<const QGraphicsSimpleTextItem *>(item))
+            where += " \"" + text->text().toStdString() + "\"";
+        if (const auto *line = dynamic_cast<const QGraphicsPathItem *>(item)) {
+            const QPainterPath path = line->path();
+            for (int element = 0; element < path.elementCount(); ++element) {
+                const auto at = path.elementAt(element);
+                where += " " + number(at.x) + "," + number(at.y);
+            }
+        } else if (const auto *head = dynamic_cast<const QGraphicsPolygonItem *>(item)) {
+            for (const QPointF &point : head->polygon())
+                where += " " + number(point.x()) + "," + number(point.y());
+        }
+        where += " @" + number(item->scenePos().x()) + "," + number(item->scenePos().y());
+        where += item->isVisible() ? " shown" : " hidden";
+        drawn.push_back(std::move(where));
+    }
+    std::ranges::sort(drawn);
+    return drawn;
+}
+
+// What the scene drew is what a rebuild now, from everything the reads
+// left, draws. (It does not say the reads were drawn at all: the checks of
+// what is on the canvas below do.)
+void gs2SameAsRebuiltNow(GraphCanvasScene &scene) {
+    const auto drawn = gs2Picture(scene);
+    REQUIRE_FALSE(drawn.empty());
+    scene.repopulate();
+    const auto again = gs2Picture(scene);
+    std::string differ;
+    for (std::size_t index = 0; index < std::max(drawn.size(), again.size()); ++index) {
+        const auto *left = index < drawn.size() ? &drawn[index] : nullptr;
+        const auto *right = index < again.size() ? &again[index] : nullptr;
+        if (left == nullptr || right == nullptr || *left != *right) {
+            differ += "drawn   " + (left ? *left : std::string{"-"}) + "\nrebuilt " +
+                      (right ? *right : std::string{"-"}) + "\n";
+            break;
+        }
+    }
+    INFO(differ);
+    CHECK(differ.empty());
+}
+
+bool gs2HasNode(QGraphicsScene &scene, const QString &id) {
+    for (QGraphicsItem *item : itemsOfKind(scene, PelicanStudio::GraphCanvasNodeItem))
+        if (item->data(PelicanStudio::NodeGraphNameRole).toString() == id) return true;
+    return false;
+}
+
+// The rendering section's pass the plan lists and no graph node made, drawn
+// as a folded node of its own.
+bool gs2HasFolded(QGraphicsScene &scene, const QString &pass) {
+    for (QGraphicsItem *item : itemsOfKind(scene, PelicanStudio::GraphCanvasNodeItem))
+        if (item->data(PelicanStudio::GraphCanvasDerivedRole).toBool() &&
+            item->data(PelicanStudio::NodeGraphNameRole).toString() == pass)
+            return true;
+    return false;
+}
+
+// present's solid line for the input that names `resource`, and where from.
+QString gs2PresentLineFrom(QGraphicsScene &scene, const QString &resource) {
+    for (QGraphicsItem *line : itemsOfKind(scene, PelicanStudio::GraphCanvasPassInputEdgeItem))
+        if (line->data(PelicanStudio::GraphCanvasToPortRole).toString() == resource &&
+            line->data(PelicanStudio::NodeGraphToNameRole).toString() == QStringLiteral("present"))
+            return line->data(PelicanStudio::NodeGraphFromNameRole).toString();
+    return {};
+}
+
+} // namespace
+
+TEST_CASE("GS-2 a value, a line and an Undo are each drawn in one rebuild, from their document",
+          "[devstudio][graph-canvas][scene][gs2]") {
+    (void)application();
+    Gs2Tab tab;
+    auto &scene = tab.widget->scene();
+    REQUIRE(gs2HasNode(scene, QStringLiteral("sum")));
+    // The document's reply draws it; the plan and the context after it move
+    // only what the scene does not draw.
+    const std::array<int, 3> once_from_the_document{1, 0, 0};
+
+    // A value.
+    REQUIRE(tab.model().setNodeParameter("k1", "value", Json(3.0)));
+    CHECK(tab.commit() == once_from_the_document);
+    CHECK(tab.model().nodeParameters({}, "k1").value("value", 0.0) == 3.0);
+    gs2SameAsRebuiltNow(scene);
+
+    // Its Undo, and the Redo.
+    tab.rebuilds = 0;
+    REQUIRE(tab.model().undo());
+    CHECK(tab.commit() == once_from_the_document);
+    CHECK(tab.model().nodeParameters({}, "k1").value("value", 0.0) == 1.0);
+    gs2SameAsRebuiltNow(scene);
+    tab.rebuilds = 0;
+    REQUIRE(tab.model().redo());
+    CHECK(tab.commit() == once_from_the_document);
+    CHECK(tab.model().nodeParameters({}, "k1").value("value", 0.0) == 3.0);
+    gs2SameAsRebuiltNow(scene);
+
+    // A line.
+    tab.rebuilds = 0;
+    REQUIRE(tab.model().connectInput("sum", "b", "k2", "value"));
+    CHECK(tab.commit() == once_from_the_document);
+    bool drawn = false;
+    for (QGraphicsItem *line : itemsOfKind(scene, PelicanStudio::GraphCanvasEdgeItem))
+        drawn = drawn || (line->data(PelicanStudio::NodeGraphFromNameRole).toString() == "k2" &&
+                          line->data(PelicanStudio::NodeGraphToNameRole).toString() == "sum");
+    CHECK(drawn);
+    gs2SameAsRebuiltNow(scene);
+}
+
+TEST_CASE("GS-2 a pass added or taken away is drawn from its document, and again from the plan "
+          "and the context that change with it",
+          "[devstudio][graph-canvas][scene][gs2]") {
+    (void)application();
+    Gs2Tab tab;
+    auto &scene = tab.widget->scene();
+    const auto pass = QStringLiteral("render_fullscreen");
+    const auto image = QStringLiteral("render_fullscreen__color");
+    REQUIRE(gs2HasFolded(scene, QStringLiteral("present")));
+    REQUIRE(passSocket(scene, QStringLiteral("present"), image) == nullptr);
+    // Each reply really moves what the scene draws: the document the pass
+    // and its image, the plan the pass among its passes and present's reads,
+    // the context present's input (the socket and the solid line to it), its
+    // graph's passes and its render targets. Without the wait GS-2 tried and
+    // took out again, each is drawn as it arrives: three rebuilds, one per
+    // reply (a value, a line or an Undo of one draws once).
+    const std::array<int, 3> each_reply{1, 1, 1};
+    const auto drawn = [&] {
+        CHECK(gs2HasNode(scene, pass));
+        CHECK(gs2HasNode(scene, image));
+        CHECK(gs2HasFolded(scene, QStringLiteral("present")));
+        CHECK(passSocket(scene, QStringLiteral("present"), image) != nullptr);
+        // From the image node (GL-1f), drawn once the context names it.
+        CHECK(gs2PresentLineFrom(scene, image).toStdString() == image.toStdString());
+        gs2SameAsRebuiltNow(scene);
+    };
+
+    // Added: the pass and its image.
+    REQUIRE(tab.model().addNode("render.fullscreen"));
+    CHECK(tab.commit() == each_reply);
+    REQUIRE(tab.engine.added() == std::vector<std::string>{"render_fullscreen"});
+    drawn();
+
+    // Undo takes both away again, and what the plan and the context drew
+    // from them goes with them.
+    tab.rebuilds = 0;
+    REQUIRE(tab.model().undo());
+    CHECK(tab.commit() == each_reply);
+    CHECK_FALSE(gs2HasNode(scene, pass));
+    CHECK_FALSE(gs2HasNode(scene, image));
+    CHECK(gs2HasFolded(scene, QStringLiteral("present")));
+    CHECK(passSocket(scene, QStringLiteral("present"), image) == nullptr);
+    CHECK(gs2PresentLineFrom(scene, image).toStdString().empty());
+    gs2SameAsRebuiltNow(scene);
+
+    // Redo brings them back.
+    tab.rebuilds = 0;
+    REQUIRE(tab.model().redo());
+    CHECK(tab.commit() == each_reply);
+    drawn();
+
+    // Deleted: the pass goes, its image stays as a node of the graph that
+    // nothing writes or present reads.
+    tab.rebuilds = 0;
+    REQUIRE(tab.model().removeNode("render_fullscreen"));
+    CHECK(tab.commit() == each_reply);
+    CHECK(tab.engine.added().empty());
+    CHECK_FALSE(gs2HasNode(scene, pass));
+    CHECK(gs2HasNode(scene, image));
+    CHECK(passSocket(scene, QStringLiteral("present"), image) == nullptr);
+    CHECK(gs2PresentLineFrom(scene, image).toStdString().empty());
+    gs2SameAsRebuiltNow(scene);
+}
+
+TEST_CASE("GS-2 a read that moved only what the scene does not draw rebuilds nothing, and "
+          "another panel's change is drawn as its document arrives",
+          "[devstudio][graph-canvas][scene][gs2]") {
+    (void)application();
+    Gs2Tab tab;
+    auto &scene = tab.widget->scene();
+
+    // The Frame Plan pins the backend: the root's target planning moves, the
+    // Graph's nodes do not. The Graph reads its document, plan and context
+    // again; each differs from the last only in what the scene does not draw.
+    tab.engine.policy = {{"backend", {{"value", "transient"}, {"strength", "require"}}}};
+    ++tab.engine.revision;
+    tab.widget->refresh();
+    CHECK(tab.reads() == std::array<int, 3>{0, 0, 0});
+
+    // Another panel adds a node: drawn as its document arrives.
+    tab.engine.graph["nodes"].push_back({{"id", "k3"}, {"op", "value.constant"},
+                                         {"parameters", {{"value", 4.0}}},
+                                         {"outputs", Json::array({"value"})}});
+    ++tab.engine.revision;
+    tab.widget->refresh();
+    CHECK(tab.reads() == std::array<int, 3>{1, 0, 0});
+    CHECK(gs2HasNode(scene, QStringLiteral("k3")));
+
+    // And so after a commit of the tab's own.
+    REQUIRE(tab.model().setNodeParameter("k1", "value", Json(5.0)));
+    CHECK(tab.commit() == std::array<int, 3>{1, 0, 0});
+    tab.engine.graph["nodes"].push_back({{"id", "k4"}, {"op", "value.constant"},
+                                         {"parameters", {{"value", 6.0}}},
+                                         {"outputs", Json::array({"value"})}});
+    ++tab.engine.revision;
+    tab.widget->refresh();
+    CHECK(tab.reads() == std::array<int, 3>{1, 0, 0});
+    CHECK(gs2HasNode(scene, QStringLiteral("k4")));
+}

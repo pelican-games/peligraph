@@ -5210,6 +5210,9 @@ GraphCanvasScene::DrawnFrom GraphCanvasScene::drawnFromNow() const {
     from.folded = model_->foldedNodes();
     from.derived = model_->derivedEdges();
     from.passes = model_->planPasses();
+    // GS-2: what a pass drew in the last published frame (UX-12c) moves
+    // with every frame, and only the Material fields show it.
+    for (auto &pass : from.passes) pass.drawn_materials.reset();
     from.stubs = model_->domainStubs();
     // The context's version stamps move with every published generation; the
     // passes and inputs it describes are what the scene draws.
@@ -5217,6 +5220,11 @@ GraphCanvasScene::DrawnFrom GraphCanvasScene::drawnFromNow() const {
     if (from.authoring.is_object()) {
         from.authoring.erase("source_digest");
         from.authoring.erase("published_generation");
+        // GS-2: and the root and the names the Frame Plan's Pin / Freeze
+        // read: the root moves with every document, and the scene draws
+        // neither (the Frame Plan leaves them out of its own bands too).
+        from.authoring.erase("planning_root");
+        from.authoring.erase("planning_catalog");
     }
     from.trail = model_->displayTrail();
     from.decomposable = model_->canShowDecomposed();
@@ -5226,12 +5234,38 @@ GraphCanvasScene::DrawnFrom GraphCanvasScene::drawnFromNow() const {
 
 bool GraphCanvasScene::followDocument() {
     if (model_ == nullptr || rebuilding_ || !drawn_from_ || !zones_.empty() || drawn_scopes_.size() != 1) {
+        // GS-2: drawn whole without comparing (bit 13), and why (detail2).
+        if (GuiTrace::sink) {
+            const GuiTraceSpan cause{"graph_follow_diff", double(1 << 13),
+                                     double((model_ == nullptr ? 1 : 0) | (rebuilding_ ? 2 : 0) |
+                                            (!drawn_from_ ? 4 : 0) | (!zones_.empty() ? 8 : 0) |
+                                            (drawn_scopes_.size() != 1 ? 16 : 0))};
+        }
         repopulate();
         return false;
     }
     const NodeDragTraceSpan trace{this, "follow_document"};
     auto now = drawnFromNow();
     const DrawnFrom &drawn = *drawn_from_;
+    // GS-2: which of what the scene draws moved, as bits (a trace only;
+    // nothing is compared for it when no one is tracing).
+    if (GuiTrace::sink) {
+        int moved = 0;
+        moved |= now.scope != drawn.scope ? 1 << 0 : 0;
+        moved |= now.document != drawn.document ? 1 << 1 : 0;
+        moved |= now.layout != drawn.layout ? 1 << 2 : 0;
+        moved |= now.nodes != drawn.nodes ? 1 << 3 : 0;
+        moved |= now.shown != drawn.shown ? 1 << 4 : 0;
+        moved |= now.folded != drawn.folded ? 1 << 5 : 0;
+        moved |= now.derived != drawn.derived ? 1 << 6 : 0;
+        moved |= now.passes != drawn.passes ? 1 << 7 : 0;
+        moved |= now.stubs != drawn.stubs ? 1 << 8 : 0;
+        moved |= now.authoring != drawn.authoring ? 1 << 9 : 0;
+        moved |= now.trail != drawn.trail ? 1 << 10 : 0;
+        moved |= now.decomposable != drawn.decomposable ? 1 << 11 : 0;
+        moved |= now.folded_view || drawn.folded_view ? 1 << 12 : 0;
+        const GuiTraceSpan cause{"graph_follow_diff", double(moved)};
+    }
     const bool same = !now.folded_view && now.scope == drawn.scope && now.document == drawn.document &&
                       now.layout == drawn.layout && now.nodes == drawn.nodes && now.shown == drawn.shown &&
                       now.folded == drawn.folded && now.derived == drawn.derived && now.passes == drawn.passes &&
@@ -11530,8 +11564,15 @@ struct GraphCanvasWidget::Impl {
                 // alone (followDocument), anything else the whole scene. A
                 // placement the scene did not draw is drawn whole: what the
                 // scene draws is its own placement, not the last document's.
-                if (placement_changed) scene->repopulate();
-                else scene->followDocument();
+                if (placement_changed) {
+                    // GS-2: a placement the scene does not draw (bit 14).
+                    if (GuiTrace::sink) {
+                        const GuiTraceSpan cause{"graph_follow_diff", double(1 << 14)};
+                    }
+                    scene->repopulate();
+                } else {
+                    scene->followDocument();
+                }
                 syncScopeControls();
                 syncValueControls();
                 showDetails();

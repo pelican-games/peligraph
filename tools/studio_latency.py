@@ -684,6 +684,93 @@ EDIT_METHODS = {"edit_graph_document", "fold_nodes", "edit_preset_pass", "edit_r
                 "edit_target_planning"}
 
 
+def commit_chain_metrics(tr: Traces, t0: float, t_end: float, committed: float | None) -> dict[str, float]:
+    """GS-2: what one commit made the Graph draw.
+
+    The chain: the Graph's own reads after the commit -- its
+    get_graph_instances, get_frame_plan and get_render_authoring_context, each
+    the first of its method the Graph itself sent (no panel's digest span
+    around it) after the previous one, matched by send order and spans, not by
+    the ids each reply asked for. commit_chain_reads is how many of them came
+    back, commit_chain_end_ms when the last did, and
+    commit_chain_repopulate_count the rebuilds from the commit until that
+    reply had been handled.
+
+    The span (GS-2a): every rebuild from the commit until the later of the
+    chain's end and the input event that sends the next edit
+    (graph_edit_submitted inside its qt_notify) -- no later than the next
+    graph_edit_committed (for a fold, the next get_edit_result reply), and at
+    most 3 s. So a rebuild an open editor or a drag held back past the chain
+    (editor_holds) is the commit's too, even when it runs in the next sample
+    as that sample's editor closes, and so is the chain's own when the next
+    edit went out before it ended; what the next edit's reads draw after both
+    is not. commit_span_first_paint_ms is the end of the first paint after the
+    first of them (the first change on screen), commit_span_last_paint_ms
+    after the last (the picture complete), both from the sample's t0. A fold
+    has no graph_edit_committed: its ticket's reply inside the sample starts
+    it."""
+    out: dict[str, float] = {}
+    rows = tr.window(t0 - 0.002, t0 + 3.0)
+    method = lambda r: (tr.engine_for(r[3], r[1]) or {}).get("method")
+    tickets = lambda rs: [r for r in rs if r[0] == "rpc_result" and method(r) == "get_edit_result"]
+    if committed is None:
+        mine = [r for r in tickets(rows) if t0 <= r[1] <= t_end]
+        if not mine:
+            return out
+        committed = mine[0][1]
+        fold = True
+    else:
+        fold = False
+    whos = [r for r in rows if r[3] == -1 and r[0]]
+    own = [s for s in rows if s[0] == "rpc_send" and s[1] >= committed - 0.0005
+           and not any(w[1] <= s[1] <= w[2] for w in whos)]
+    results = {int(r[3]): r for r in rows if r[0] == "rpc_result"}
+    delivers = [r for r in rows if r[0] == "graph_deliver_result"]
+    after = committed - 0.0005
+    end = handled_end = None
+    for step, name in enumerate(("get_graph_instances", "get_frame_plan", "get_render_authoring_context")):
+        sent = next((s for s in own if s[1] >= after and method(s) == name), None)
+        if sent is None:
+            break
+        reply = results.get(int(sent[3]))
+        if reply is None:
+            break
+        handling = next((d for d in delivers if int(d[3]) == int(sent[3]) and d[1] >= reply[1] - 0.0005), None)
+        end = reply[1]
+        handled_end = handling[2] if handling else reply[2]
+        out["commit_chain_reads"] = step + 1
+        after = sent[1]
+    rebuilds = lambda a, b: [r for r in tr.window(a, b) if r[0] == "graph_scene_repopulate"]
+    if end is not None:
+        out["commit_chain_end_ms"] = (end - t0) * 1000
+        out["commit_chain_repopulate_count"] = len(rebuilds(committed, handled_end + 0.0005))
+    # The span: up to the next commit, and short of it at whichever comes
+    # later, the chain's end or the event that sends the next edit.
+    ahead = tr.window(committed + 0.0005, committed + 3.0)
+    nxt = tickets(ahead) if fold else [r for r in ahead if r[0] == "graph_edit_committed"]
+    span_end = nxt[0][1] if nxt else committed + 3.0
+    sent_next = [r for r in ahead if r[0] == "graph_edit_submitted" and r[1] < span_end]
+    if sent_next:
+        at = sent_next[0][1]
+        events = [r for r in tr.window(at - 1.0, at) if r[0] == "qt_notify" and r[2] >= at]
+        cut = max((r[2] for r in events), default=at)
+        if handled_end is not None:
+            cut = max(cut, handled_end + 0.0005)
+        span_end = min(span_end, cut)
+    repop = rebuilds(committed, span_end)
+    out["commit_span_repopulate_count"] = len(repop)
+    if repop:
+        out["commit_span_repopulate_ms_sum"] = sum((r[2] - r[1]) * 1000 for r in repop)
+        paints = [r for r in tr.window(committed, span_end + 1.0) if r[0] == "graph_paint"]
+        first = next((p for p in paints if p[1] >= repop[0][2]), None)
+        last = next((p for p in paints if p[1] >= repop[-1][2]), None)
+        if first:
+            out["commit_span_first_paint_ms"] = (first[2] - t0) * 1000
+        if last:
+            out["commit_span_last_paint_ms"] = (last[2] - t0) * 1000
+    return out
+
+
 def sample_metrics(tr: Traces, t0: float, t_meas: float, t_end: float, operation: str,
                    extra: dict) -> dict[str, float]:
     m: dict[str, float] = {"driver_total_ms": (t_meas - t0) * 1000}
@@ -775,6 +862,7 @@ def sample_metrics(tr: Traces, t0: float, t_meas: float, t_end: float, operation
                 phases[k] += (t_next - t) * 1000
         for k, v in phases.items():
             m[f"scene_repop_phase{k}_ms_sum"] = v
+    m.update(commit_chain_metrics(tr, t0, t_end, committed))
     paints = [r for r in rows if r[0] == "graph_paint"]
     m["graph_paint_count"] = len(paints)
     m["graph_paint_full_count"] = sum(1 for r in paints if r[4] and r[3] >= 0.9 * r[4])
