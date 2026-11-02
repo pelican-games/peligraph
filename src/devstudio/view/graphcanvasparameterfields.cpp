@@ -201,6 +201,23 @@ std::optional<std::vector<std::string>> taskPortChoices(const Json &schema, cons
     return ports;
 }
 
+// GS-2b: a combo's entries, (label, value), as fillCombo would write them.
+using ComboItems = std::vector<std::pair<QString, QString>>;
+
+// The entries go in only when they are not the ones the combo holds. Emptying
+// a combo and filling it again (its line, its completer, the column's layout)
+// took 2-4 ms each, and a picked render pass's rows were filled twice on
+// every reply the Graph read, whether or not the list had moved.
+void fillComboItems(QComboBox &combo, const ComboItems &items) {
+    bool same = combo.count() == static_cast<int>(items.size());
+    for (int index = 0; same && index < combo.count(); ++index)
+        same = combo.itemText(index) == items[static_cast<std::size_t>(index)].first &&
+               combo.itemData(index).toString() == items[static_cast<std::size_t>(index)].second;
+    if (same) return;
+    combo.clear();
+    for (const auto &[label, value] : items) combo.addItem(label, value);
+}
+
 } // namespace
 
 Json graphParameterDefault(const Json &schema) {
@@ -1200,14 +1217,17 @@ void GraphParameterEditor::fillCombo() {
         // UX-12e, decision 1: the list, and the value as written (in it or not).
         const auto current = set_ && value_.is_string() ? value_.get<std::string>() : std::string{};
         parts.listed = choices;
-        parts.combo->clear();
-        for (const auto &[value, label] : labelled) parts.combo->addItem(qtext(label), qtext(value));
+        ComboItems items;
+        for (const auto &[value, label] : labelled) items.emplace_back(qtext(label), qtext(value));
+        fillComboItems(*parts.combo, items);
         // UX-13b, decision 6: a value of a class with an argument is that
         // class's entry, its argument beside it.
         const auto pattern = current.empty() ? std::nullopt : patternOf(current, nullptr);
         const auto index = parts.combo->findData(qtext(pattern ? textOf(*pattern, "name") : current));
-        parts.combo->setCurrentIndex(index);
-        parts.combo->setEditText(index >= 0 ? parts.combo->itemText(index) : qtext(current));
+        // GS-2b: and the entry and the line move only when the value does.
+        const QString text = index >= 0 ? parts.combo->itemText(index) : qtext(current);
+        if (parts.combo->currentIndex() != index) parts.combo->setCurrentIndex(index);
+        if (parts.combo->currentText() != text) parts.combo->setEditText(text);
         showPattern();
         showMarks();
         return;
@@ -1232,20 +1252,21 @@ void GraphParameterEditor::fillCombo() {
     // A required one shown written takes no "(choose)"; one that had it keeps
     // it while it is on screen, so a pick does not move the rows under it.
     const bool had_placeholder = parts.combo->count() > 0 && parts.combo->itemData(0).toString().isEmpty();
-    parts.combo->clear();
+    ComboItems items;
     // Nothing written: "(none)" -- the engine's default for an entry with one
     // is its own item, marked.
     if (!fallback.is_string()) {
         const bool required = schema_.value("required", false);
-        if (!required) parts.combo->addItem(tr("(none)"), QString{});
+        if (!required) items.emplace_back(tr("(none)"), QString{});
         else if (current.empty() || (had_placeholder && picked_))
-            parts.combo->addItem(tr("(choose)"), QString{});
+            items.emplace_back(tr("(choose)"), QString{});
     }
     for (const auto &choice : choices)
-        parts.combo->addItem(fallback.is_string() && choice == fallback.get<std::string>()
-                                 ? tr("%1 (default)").arg(qtext(choice))
-                                 : qtext(choice),
-                             qtext(choice));
+        items.emplace_back(fallback.is_string() && choice == fallback.get<std::string>()
+                               ? tr("%1 (default)").arg(qtext(choice))
+                               : qtext(choice),
+                           qtext(choice));
+    fillComboItems(*parts.combo, items);
     parts.combo->setCurrentIndex(std::max(0, parts.combo->findData(qtext(current))));
 }
 

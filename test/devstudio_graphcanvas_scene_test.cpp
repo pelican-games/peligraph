@@ -18617,7 +18617,9 @@ struct Gs2Tab {
     std::unique_ptr<PelicanStudio::GraphCanvasWidget> widget;
     int rebuilds = 0;
 
-    Gs2Tab() {
+    // GS-2b: `fullscreen_parameters`, render.fullscreen's table of
+    // parameters in the catalog (none: the pass has no parameter rows).
+    explicit Gs2Tab(const Json &fullscreen_parameters = Json::array()) {
         auto capability = transport.capability();
         capability.requestFramePlan = [this](QString *) {
             transport.calls.push_back({QStringLiteral("get_frame_plan")});
@@ -18634,10 +18636,13 @@ struct Gs2Tab {
         // The values are drawn beside the passes.
         (void)widget->model().setDomainShown("value", true);
         auto catalog = visualCatalog();
-        for (const char *op : {"render.fullscreen", "render.image"})
-            catalog["modules"][1]["operations"].push_back(
-                {{"op", op}, {"domain", "rendering"}, {"evaluation", "direct"},
-                 {"sink", false}, {"ports", "parameter_dependent"}});
+        for (const char *op : {"render.fullscreen", "render.image"}) {
+            Json entry{{"op", op}, {"domain", "rendering"}, {"evaluation", "direct"},
+                       {"sink", false}, {"ports", "parameter_dependent"}};
+            if (std::string_view{op} == "render.fullscreen" && !fullscreen_parameters.empty())
+                entry["parameters"] = fullscreen_parameters;
+            catalog["modules"][1]["operations"].push_back(std::move(entry));
+        }
         answer("get_graph_catalog", catalog);
         answer("get_graph_instances", engine.read());
         answer("get_frame_plan", engine.plan());
@@ -18933,4 +18938,190 @@ TEST_CASE("GS-2 a read that moved only what the scene does not draw rebuilds not
     tab.widget->refresh();
     CHECK(tab.reads() == std::array<int, 3>{1, 0, 0});
     CHECK(gs2HasNode(scene, QStringLiteral("k4")));
+}
+
+// --- GS-2b. The rows of a picked render pass that list from the authoring
+// context (inherit_bindings_from, view_family, ray_query's structure) are
+// combos. Every reply the Graph read -- a commit's document, plan and
+// context, a fold's, another panel's -- showed the picked node again, and
+// each of those rows emptied its combo and filled it once for its value and
+// once for its choices: 2 to 4 ms a combo, some 15 ms a show. A combo is now
+// written only when what it lists or the value it shows moved.
+
+namespace {
+
+// render.fullscreen's rows as the engine's table has them: a pass of the
+// context's graph to take the bindings from, and an enum with a default.
+Json gs2bFullscreenParameters() {
+    return Json::array(
+        {{{"name", "inherit_bindings_from"},
+          {"kind", "string"},
+          {"choices_from",
+           {{"rpc", "get_render_authoring_context"}, {"key", "graphs.passes"}, {"field", "name"}}}},
+         {{"name", "resolution_domain"},
+          {"kind", "enum"},
+          {"default", "unclassified"},
+          {"enum", Json::array({"scene", "output", "independent", "unclassified", "none"})}}});
+}
+
+// Every read the tab still waits for -- the document, the plan, the context,
+// whoever asked -- answered from the engine as it is now, oldest first,
+// until none is left.
+void gs2bSettle(Gs2Tab &tab) {
+    for (bool answered_one = true; answered_one;) {
+        answered_one = false;
+        for (std::size_t index = 0; index < tab.transport.calls.size(); ++index) {
+            const auto id = static_cast<qint64>(index + 1);
+            if (tab.answered.contains(id)) continue;
+            const auto &method = tab.transport.calls[index].method;
+            Json reply;
+            if (method == QStringLiteral("get_graph_instances"))
+                reply = tab.engine.read();
+            else if (method == QStringLiteral("get_frame_plan"))
+                reply = tab.engine.plan();
+            else if (method == QStringLiteral("get_render_authoring_context"))
+                reply = tab.engine.authoring();
+            else
+                continue;
+            tab.answered.insert(id);
+            tab.transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+            QCoreApplication::processEvents();
+            answered_one = true;
+            break;
+        }
+    }
+    tab.widget->poll();
+    QCoreApplication::processEvents();
+}
+
+// The edit the model just took, applied and committed by the engine, and
+// every read after it answered.
+void gs2bCommit(Gs2Tab &tab) {
+    tab.widget->poll();
+    const auto id = tab.transport.idOf(QStringLiteral("edit_graph_document"));
+    REQUIRE(id != 0);
+    REQUIRE_FALSE(tab.answered.contains(id));
+    const auto ops =
+        Json::parse(tab.transport.calls[static_cast<std::size_t>(id - 1)].body.toStdString());
+    tab.engine.graph = Pelican::editGraphDocument(tab.engine.graph, ops);
+    ++tab.engine.revision;
+    tab.answer("edit_graph_document", Json{{"status", "accepted"}, {"ticket", "gs2b"}});
+    tab.answer("get_edit_result", Json{{"status", "committed"},
+                                       {"committed", true},
+                                       {"source_digest", {{"hex", tab.engine.digest()}}}});
+    gs2bSettle(tab);
+}
+
+// Another panel's change: the engine's document moves, and the tab reads it.
+void gs2bElsewhere(Gs2Tab &tab, const std::function<void(Json &nodes)> &change) {
+    change(tab.engine.graph["nodes"]);
+    ++tab.engine.revision;
+    tab.widget->refresh();
+    gs2bSettle(tab);
+}
+
+// How many times a combo's entries were written: each entry put in or taken
+// out, and each reset of its list.
+struct Gs2bWrites {
+    int count = 0;
+    void watch(QComboBox &combo) {
+        auto *model = combo.model();
+        QObject::connect(model, &QAbstractItemModel::rowsInserted, model, [this] { ++count; });
+        QObject::connect(model, &QAbstractItemModel::rowsRemoved, model, [this] { ++count; });
+        QObject::connect(model, &QAbstractItemModel::modelReset, model, [this] { ++count; });
+    }
+};
+
+Json &gs2bNode(Json &nodes, const std::string &id) {
+    for (auto &node : nodes)
+        if (node.at("id") == id) return node;
+    FAIL("no node " << id);
+    return nodes;
+}
+
+} // namespace
+
+TEST_CASE("GS-2b a picked render pass's rows are not written again for replies that move nothing "
+          "they list or show, and show the new value or list when one does",
+          "[devstudio][graph-canvas][scene][gs2][gs2b]") {
+    (void)application();
+    Gs2Tab tab{gs2bFullscreenParameters()};
+    auto &scene = tab.widget->scene();
+    scene.selectNode("shade");
+    QCoreApplication::processEvents();
+    gs2bSettle(tab);
+    REQUIRE(scene.selectedNode() == std::optional<std::string>{"shade"});
+    auto *pass = tab.widget->findChild<QComboBox *>(
+        QStringLiteral("pelican.graphCanvasParameters.inherit_bindings_from"));
+    auto *domain = tab.widget->findChild<QComboBox *>(
+        QStringLiteral("pelican.graphCanvasParameters.resolution_domain"));
+    REQUIRE(pass != nullptr);
+    REQUIRE(domain != nullptr);
+    // (Under More parameters, closed: a pass has fields of its own. The rows
+    // are written all the same.)
+    REQUIRE(pass->isEditable());
+    // The context's graph lists present; shade writes neither row.
+    CHECK(ux2Items(*pass) == QStringList{"present"});
+    CHECK(pass->currentText().isEmpty());
+    CHECK(domain->currentData().toString() == QStringLiteral("unclassified"));
+    Gs2bWrites writes;
+    writes.watch(*pass);
+    writes.watch(*domain);
+
+    // 1. Nothing either row reads moves: the tab's own value on another
+    // node, its Undo, a read that only moves the root's target planning (the
+    // Frame Plan's Pin), another panel's node. Each reply shows shade again;
+    // no row is written.
+    REQUIRE(tab.model().setNodeParameter("k1", "value", Json(3.0)));
+    gs2bCommit(tab);
+    CHECK(writes.count == 0);
+    REQUIRE(tab.model().undo());
+    gs2bCommit(tab);
+    CHECK(writes.count == 0);
+    tab.engine.policy = {{"backend", {{"value", "transient"}, {"strength", "require"}}}};
+    ++tab.engine.revision;
+    tab.widget->refresh();
+    gs2bSettle(tab);
+    CHECK(writes.count == 0);
+    gs2bElsewhere(tab, [](Json &nodes) {
+        nodes.push_back({{"id", "k3"}, {"op", "value.constant"},
+                         {"parameters", {{"value", 4.0}}},
+                         {"outputs", Json::array({"value"})}});
+    });
+    CHECK(writes.count == 0);
+    CHECK(scene.selectedNode() == std::optional<std::string>{"shade"});
+    CHECK(ux2Items(*pass) == QStringList{"present"});
+
+    // 2. shade's own values move -- from another panel, then the tab's own
+    // edits and their Undo: the rows show them.
+    gs2bElsewhere(tab, [](Json &nodes) {
+        gs2bNode(nodes, "shade")["parameters"] = {{"inherit_bindings_from", "present"},
+                                                  {"resolution_domain", "scene"}};
+    });
+    CHECK(pass->currentText() == QStringLiteral("present"));
+    CHECK(domain->currentData().toString() == QStringLiteral("scene"));
+    REQUIRE(tab.model().setNodeParameter("shade", "inherit_bindings_from", Json("elsewhere")));
+    gs2bCommit(tab);
+    CHECK(pass->currentText() == QStringLiteral("elsewhere"));
+    REQUIRE(tab.model().setNodeParameter("shade", "resolution_domain", Json("output")));
+    gs2bCommit(tab);
+    CHECK(domain->currentData().toString() == QStringLiteral("output"));
+    REQUIRE(tab.model().undo());
+    gs2bCommit(tab);
+    CHECK(domain->currentData().toString() == QStringLiteral("scene"));
+    REQUIRE(tab.model().undo());
+    gs2bCommit(tab);
+    CHECK(pass->currentText() == QStringLiteral("present"));
+    CHECK(ux2Items(*pass) == QStringList{"present"});
+
+    // 3. What a row lists moves: another panel adds a pass, which the
+    // context's graph then names.
+    gs2bElsewhere(tab, [](Json &nodes) {
+        nodes.push_back({{"id", "extra"}, {"op", "render.fullscreen"},
+                         {"parameters", Json::object()},
+                         {"outputs", Json::array({"color"})}});
+    });
+    CHECK(scene.selectedNode() == std::optional<std::string>{"shade"});
+    CHECK(ux2Items(*pass) == QStringList{"present", "extra"});
+    CHECK(pass->currentText() == QStringLiteral("present"));
 }
