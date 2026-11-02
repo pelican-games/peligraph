@@ -40,7 +40,6 @@ class QDialog;
 class QPlainTextEdit;
 class QString;
 class QTreeWidget;
-class QTabWidget;
 class QTreeWidgetItem;
 class QTimer;
 class QFrame;
@@ -82,11 +81,13 @@ class MainWindow : public QMainWindow {
     // unsaved edits is asked about first -- Save / Discard / Cancel, the same
     // prompt a project switch shows -- and Cancel leaves the engine running.
     void requestEngineRestart(const QString &reason);
-    // The render-tools tabs, by the id the command line uses. Kept here so the
-    // launcher can reject an unknown name before a window exists.
-    static QStringList renderToolsTabIds();
-    // Bring one of them to the front, showing the dock that holds them.
-    bool showRenderToolsTab(const QString &id);
+    // The render tools -- the Graph, the Frame Plan, Features and Rendering
+    // settings, each a dock of its own (UI-2) -- by the id the command line
+    // uses. Kept here so the launcher can reject an unknown name before a
+    // window exists.
+    static QStringList renderToolIds();
+    // Bring one of them to the front: its dock is shown and raised.
+    bool showRenderTool(const QString &id);
     // The engine viewport this window drives. Read-only handle for the
     // launcher, which hands it to the test-automation channel so a scenario can
     // ask the running engine the same questions the panels ask it.
@@ -126,6 +127,10 @@ class MainWindow : public QMainWindow {
         ProblemsPanelDock,
         // SG-2: the canvas's Layers.
         LayersDock,
+        // UI-2: the render tools that were tabs of the Frame Plan dock.
+        GraphDock,
+        RenderFeaturesDock,
+        RenderingSettingsDock,
         DockCount,
     };
 
@@ -160,7 +165,6 @@ class MainWindow : public QMainWindow {
     // UX-6b: the frame's GPU time, the plan's size and the last edit's
     // before and after, for the Frame Plan and the Graph tab.
     PlanPerfHub *plan_perf_ = nullptr;
-    QTabWidget *render_tabs_ = nullptr;
     FullscreenPassWidget *fullscreen_pass_ = nullptr;
     QMenu *restore_layout_menu_ = nullptr;
     QMenu *delete_layout_menu_ = nullptr;
@@ -308,6 +312,8 @@ class MainWindow : public QMainWindow {
     void updatePlayPresentation();
     // PM-3b: a banner saying render edits stay after Stop, above `panel`.
     QWidget *withRenderBanner(QWidget *panel, const QString &name);
+    // Shows the dock and brings it to the front of its stack.
+    void showDock(DockIndex index);
     // PM-3b: asks whether to end the play session before leaving; `proceed`
     // runs once the engine is back in edit. False when nothing had to be
     // asked.

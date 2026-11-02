@@ -13,13 +13,13 @@
 
 namespace PelicanStudio {
 
-bool isRenderToolsTab(const std::string &name) {
-    return MainWindow::renderToolsTabIds().contains(
+bool isRenderTool(const std::string &name) {
+    return MainWindow::renderToolIds().contains(
         QString::fromStdString(name));
 }
 
-std::string renderToolsTabList() {
-    return MainWindow::renderToolsTabIds()
+std::string renderToolList() {
+    return MainWindow::renderToolIds()
         .join(QStringLiteral(", "))
         .toStdString();
 }
@@ -87,12 +87,12 @@ int uimain(int argc, char **argv, LaunchOptions options) {
     }
 
     // Opening a project restores that project's tool layout, which can change
-    // which render-tools tab is in front. Ask for the tab afterwards, so the
-    // one the command line named is the one the user sees.
+    // which render tool is in front. Ask for the tool afterwards, so the one
+    // the command line named is the one the user sees.
     if (!options.project.empty())
         window.openProject(QString::fromStdString(options.project));
     if (!options.tab.empty())
-        window.showRenderToolsTab(QString::fromStdString(options.tab));
+        window.showRenderTool(QString::fromStdString(options.tab));
     return app.exec();
 }
 

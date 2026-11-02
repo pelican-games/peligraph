@@ -276,7 +276,7 @@
       "expect": "result",
       "command": {
         "cmd": "list",
-        "pattern": "pelican.play.renderBanner.renderTools"
+        "pattern": "pelican.play.renderBanner.graph"
       },
       "path": "widgets[0].visible",
       "value": true,
@@ -481,7 +481,7 @@
       "expect": "result",
       "command": {
         "cmd": "list",
-        "pattern": "pelican.play.renderBanner.renderTools"
+        "pattern": "pelican.play.renderBanner.graph"
       },
       "path": "widgets[0].visible",
       "value": false,
@@ -981,7 +981,7 @@
       "expect": "result",
       "command": {
         "cmd": "list",
-        "pattern": "pelican.play.renderBanner.renderTools"
+        "pattern": "pelican.play.renderBanner.graph"
       },
       "path": "widgets[0].visible",
       "value": true,
@@ -992,7 +992,7 @@
       "expect": "result",
       "command": {
         "cmd": "text",
-        "name": "pelican.play.renderBanner.renderTools"
+        "name": "pelican.play.renderBanner.graph"
       },
       "path": "text",
       "value": "Changes here are written to files and stay after Stop."

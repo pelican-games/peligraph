@@ -1434,6 +1434,9 @@ AutomationReply commandSizeHints(const AutomationHost &host, const QJsonObject &
                               {QStringLiteral("minimum_size_hint"), size(widget->minimumSizeHint())}};
     return AutomationReply::success(QJsonObject{
         {QStringLiteral("window"), size(window->size())},
+        // UI-2: the window's own floor, which the bottom dock area (it spans
+        // the window's width) sets across.
+        {QStringLiteral("window_minimum_size_hint"), size(window->minimumSizeHint())},
         {QStringLiteral("central"), central},
         {QStringLiteral("docks"), docks}});
 }

@@ -3814,7 +3814,7 @@ debounce の間)は、notice が **「Saving the graph change...」** になり�
 | `pelican.fullscreenPass.view.<axis>` / `pelican.computeTasks.view.<axis>` | View の欄の軸の行(✅LP-4b)。選べる軸は combo、実行時に決まる軸は字だけ |
 | `pelican.fullscreenPass.view.<axis>.warning` / `pelican.fullscreenPass.view.<axis>.remove`(Task Editor は `pelican.computeTasks.view.<axis>.…`) | 警告の字(family に無い軸、長さの外の値)/ family に無い軸の Remove(✅LP-4b) |
 | `pelican.computeTasks.notice` | Task Editor の notice の行(✅LP-4a で名前が付いた) |
-| `pelican.view.renderTools.frame_plan` / `.render_features` / `.graph` | View ▸ Render Tools の 3 つのタブを前に出す(✅LP-4c。menu は `pelican.renderToolsMenu`。`action` で発火) |
+| `pelican.view.renderTools.frame_plan` / `.render_features` / `.graph` | View ▸ Render Tools の各 dock を出して前に出す(✅LP-4c、UI-2 からタブでなく dock。`.rendering_settings` も。menu は `pelican.renderToolsMenu`。`action` で発火) |
 | `pelican.graphCanvas.addLoop` / `pelican.graphCanvas.addFullscreenPass` | Graph タブの右クリックの Add loop / Add fullscreen pass(✅LP-4c。`action` で発火) |
 | `pelican.graphCanvas.renameDefinition` / `pelican.graphCanvas.deleteDefinition` | Graph タブの Rename definition… / Delete definition(✅Q-19。`action` で発火すると、今見ている definition か、選んでいるゾーンの body に効く) |
 | `pelican.graphCanvasDefinitionRow` / `pelican.graphCanvasDefinitionCaption` / `pelican.graphCanvasDefinitionName` / `pelican.graphCanvasDefinitionApply` / `pelican.graphCanvasDefinitionCancel` / `pelican.graphCanvasDefinitionLine` | definition の改名・削除の行(✅Q-19): 行全体 / `Rename definition <name> to` などの字 / 新しい名前の欄 / Rename か Delete のボタン / Cancel / 赤い理由の字 |
@@ -4149,7 +4149,7 @@ log が名指す `file:line` は強調されます。notice 行は「shader comp
 元: `docs/manual/15_studio.md:3154`
 
 ````markdown
-**置き場所**: render-tools の dock の 3 枚目のタブ「Rendering settings」(`pelican.renderingSettings`)です([タブを足す所](../../src/devstudio/view/mainwindow.cpp#L638))。**View ▸ Render Tools ▸ Rendering settings**(`pelican.view.renderTools.rendering_settings`)か `--tab rendering_settings` で前に出せます。右上の `?` はこの章の「レンダー設定を編集する」を開きます。
+**置き場所**: 自分の dock「Rendering settings」(`pelican.renderingSettingsDock`、中身は `pelican.renderingSettings`。UI-2 の前は render-tools の dock のタブ)です([dock を作る所](../../src/devstudio/view/mainwindow.cpp#L638))。**View ▸ Render Tools ▸ Rendering settings**(`pelican.view.renderTools.rendering_settings`)か `--tab rendering_settings` で前に出せます。右上の `?` はこの章の「レンダー設定を編集する」を開きます。
 ````
 
 ### 第15章記録177: Studio で RT を組む —— Ray layout の節、hit group の割り当て、Graph の RT の節(✅RTL-2s)
@@ -4615,7 +4615,7 @@ shader の診断、Assets のドック、Frame Plan の致命の行にばらば�
 元: `docs/manual/15_studio.md:3821`
 
 ````markdown
-- **戻らない編集の帯**: セッションがある間、render-tools dock の上(Frame Plan・Features・Graph の 3 タブに共通の 1 本)と
+- **戻らない編集の帯**: セッションがある間、Graph・Frame Plan・Features・Rendering settings の各 dock の上(UI-2 から dock ごとに 1 本)と
   Pass Editor の上に、帯 `Changes here are written to files and stay after Stop.` が出ます。編集を送らなくても、セッションの間は
   出ています。帯の背景は theme の `play.paused_band` です([帯を作る所](../../src/devstudio/view/mainwindow.cpp#L2110))。
   render の編集の Undo(RU-1)は今までどおり効きます。
@@ -4713,7 +4713,7 @@ shader の診断、Assets のドック、Frame Plan の致命の行にばらば�
 | `pelican.playStatus` | status bar の `Edit` / `Playing · frame N` などの行 |
 | `pelican.viewportFrame` | viewport の枠。playing / paused の間は縁が theme の色です(シナリオは左端の画素を見ます) |
 | `pelican.inspectorKeep` / `pelican.inspectorTakeFromGame` | Inspector の Keep のリンク / Take from game |
-| `pelican.play.renderBanner.renderTools` / `pelican.play.renderBanner.passEditor` | 戻らない編集の帯(render-tools dock / Pass Editor) |
+| `pelican.play.renderBanner.graph` / `.framePlan` / `.renderFeatures` / `.renderingSettings` / `pelican.play.renderBanner.passEditor` | 戻らない編集の帯(Graph / Frame Plan / Features / Rendering settings の各 dock / Pass Editor) |
 | `pelican.playSessionPrompt` | 再生を終える確認。`.end` / `.cancel` |
 | `pelican.outliner::row#<name> (runtime)` | Outliner の runtime の行 |
 | `pelican.inspectorRuntime` | Inspector の読むだけの枠。`.position` / `.rotation` / `.scale` / `.worldPosition` |

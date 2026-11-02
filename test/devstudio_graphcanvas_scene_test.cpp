@@ -3357,6 +3357,11 @@ TEST_CASE("Q-12 Open in Graph switches to the Graph tab and picks the node in it
     tabs.resize(900, 600);
     tabs.show();
     QCoreApplication::processEvents();
+    // UI-2: the window brings the Graph's dock forward; here, its tab.
+    const auto open_in_graph = [&](const QString &scope, const QString &node, const QString &instance) {
+        return PelicanStudio::openGraphNode(*graph, scope, node, instance,
+                                            [&] { tabs.setCurrentWidget(graph); });
+    };
 
     const auto deliver = [&](const QString &method, const Json &reply) {
         const qint64 id = transport.idOf(method);
@@ -3397,8 +3402,8 @@ TEST_CASE("Q-12 Open in Graph switches to the Graph tab and picks the node in it
     };
 
     SECTION("a node inside a root instance") {
-        REQUIRE(PelicanStudio::openGraphNodeInTabs(
-            tabs, *graph, QStringLiteral("gain_curve"), QStringLiteral("sum"),
+        REQUIRE(open_in_graph(
+            QStringLiteral("gain_curve"), QStringLiteral("sum"),
             QStringLiteral("left")));
         CHECK(tabs.currentWidget() == graph);
         CHECK(model.currentScope() == "gain_curve");
@@ -3410,8 +3415,8 @@ TEST_CASE("Q-12 Open in Graph switches to the Graph tab and picks the node in it
     }
 
     SECTION("a node two instances down: the trail runs through both") {
-        REQUIRE(PelicanStudio::openGraphNodeInTabs(
-            tabs, *graph, QStringLiteral("gain_curve"), QStringLiteral("buffer"),
+        REQUIRE(open_in_graph(
+            QStringLiteral("gain_curve"), QStringLiteral("buffer"),
             QStringLiteral("wrap/inner")));
         CHECK(tabs.currentWidget() == graph);
         CHECK(model.breadcrumb() ==
@@ -3423,8 +3428,8 @@ TEST_CASE("Q-12 Open in Graph switches to the Graph tab and picks the node in it
     }
 
     SECTION("a node of the root document") {
-        REQUIRE(PelicanStudio::openGraphNodeInTabs(
-            tabs, *graph, QStringLiteral("root"), QStringLiteral("clock"), {}));
+        REQUIRE(open_in_graph(
+            QStringLiteral("root"), QStringLiteral("clock"), {}));
         CHECK(tabs.currentWidget() == graph);
         CHECK(model.currentScope().empty());
         REQUIRE(scene.selectedNode().has_value());
@@ -3433,8 +3438,8 @@ TEST_CASE("Q-12 Open in Graph switches to the Graph tab and picks the node in it
     }
 
     SECTION("an instance path that does not lead there opens the scope itself") {
-        REQUIRE(PelicanStudio::openGraphNodeInTabs(
-            tabs, *graph, QStringLiteral("gain_curve"), QStringLiteral("sum"),
+        REQUIRE(open_in_graph(
+            QStringLiteral("gain_curve"), QStringLiteral("sum"),
             QStringLiteral("gone")));
         CHECK(model.breadcrumb() == std::vector<std::string>{"", "gain_curve"});
         REQUIRE(scene.selectedNode().has_value());
@@ -3442,11 +3447,11 @@ TEST_CASE("Q-12 Open in Graph switches to the Graph tab and picks the node in it
     }
 
     SECTION("a node the document does not hold changes nothing") {
-        CHECK_FALSE(PelicanStudio::openGraphNodeInTabs(
-            tabs, *graph, QStringLiteral("gain_curve"), QStringLiteral("step"),
+        CHECK_FALSE(open_in_graph(
+            QStringLiteral("gain_curve"), QStringLiteral("step"),
             QStringLiteral("left")));
-        CHECK_FALSE(PelicanStudio::openGraphNodeInTabs(
-            tabs, *graph, QStringLiteral("smooth"), QStringLiteral("sum"),
+        CHECK_FALSE(open_in_graph(
+            QStringLiteral("smooth"), QStringLiteral("sum"),
             QStringLiteral("left")));
         CHECK(tabs.currentWidget() == frame_plan);
         CHECK(model.currentScope().empty());

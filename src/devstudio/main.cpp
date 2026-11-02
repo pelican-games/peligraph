@@ -15,8 +15,8 @@ int main(int argc, char *argv[]) {
     program.add_argument("--tab")
         .default_value(std::string{})
         .metavar("name")
-        .help("bring one render-tools tab to the front: " +
-              PelicanStudio::renderToolsTabList());
+        .help("bring one render tool (its dock) to the front: " +
+              PelicanStudio::renderToolList());
     program.add_argument("--automation")
         .default_value(std::string{})
         .metavar("name")
@@ -37,9 +37,9 @@ int main(int argc, char *argv[]) {
     options.automation = program.get<std::string>("--automation");
     // A misspelled tab has to fail on the console. Opening the window and
     // showing whatever happened to be in front would look like it worked.
-    if (!options.tab.empty() && !PelicanStudio::isRenderToolsTab(options.tab)) {
+    if (!options.tab.empty() && !PelicanStudio::isRenderTool(options.tab)) {
         std::cerr << "pelican_studio: unknown --tab \"" << options.tab
-                  << "\"; expected one of " << PelicanStudio::renderToolsTabList()
+                  << "\"; expected one of " << PelicanStudio::renderToolList()
                   << std::endl;
         return 2;
     }

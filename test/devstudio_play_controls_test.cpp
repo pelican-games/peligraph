@@ -965,21 +965,33 @@ TEST_CASE("PM-3b Save waits for Stop, and the render panels say their edits stay
     Rig rig{true, editEngine};
     REQUIRE(rig.pumpUntil([&] { return rig.line() == QStringLiteral("Edit"); }));
     QAction &save = *rig.window.save_scene_action_;
-    const QLabel *tools = namedLabel(rig, "pelican.play.renderBanner.renderTools");
-    const QLabel *pass = namedLabel(rig, "pelican.play.renderBanner.passEditor");
-    REQUIRE(tools != nullptr);
-    REQUIRE(pass != nullptr);
+    // UI-2: each render tool's dock has its own banner, as the Pass Editor has.
+    std::vector<const QLabel *> banners;
+    for (const char *name : {"pelican.play.renderBanner.graph", "pelican.play.renderBanner.framePlan",
+                             "pelican.play.renderBanner.renderFeatures",
+                             "pelican.play.renderBanner.renderingSettings",
+                             "pelican.play.renderBanner.passEditor"}) {
+        INFO(name);
+        const QLabel *banner = namedLabel(rig, name);
+        REQUIRE(banner != nullptr);
+        banners.push_back(banner);
+    }
+    const auto all_hidden = [&] {
+        return std::all_of(banners.begin(), banners.end(), [](const QLabel *banner) { return banner->isHidden(); });
+    };
+    const auto none_hidden = [&] {
+        return std::none_of(banners.begin(), banners.end(), [](const QLabel *banner) { return banner->isHidden(); });
+    };
     CHECK(save.isEnabled());
-    CHECK(tools->isHidden());
-    CHECK(pass->isHidden());
+    CHECK(all_hidden());
 
     rig.controls.playAction()->trigger();
     REQUIRE(rig.pumpUntil([&] { return rig.controls.model().session(); }));
     CHECK_FALSE(save.isEnabled());
     CHECK(save.toolTip().contains(QStringLiteral("play_session_active")));
-    CHECK_FALSE(tools->isHidden());
-    CHECK_FALSE(pass->isHidden());
-    CHECK(tools->text() == QStringLiteral("Changes here are written to files and stay after Stop."));
+    CHECK(none_hidden());
+    for (const QLabel *banner : banners)
+        CHECK(banner->text() == QStringLiteral("Changes here are written to files and stay after Stop."));
     save.trigger();
     rig.pumpFor(50);
     CHECK(rig.engine.saves == 0);
@@ -992,8 +1004,7 @@ TEST_CASE("PM-3b Save waits for Stop, and the render panels say their edits stay
     rig.controls.playAction()->trigger();
     REQUIRE(rig.pumpUntil([&] { return rig.line() == QStringLiteral("Edit"); }));
     CHECK(save.isEnabled());
-    CHECK(tools->isHidden());
-    CHECK(pass->isHidden());
+    CHECK(all_hidden());
 }
 
 TEST_CASE("PM-3b View: Game | Editor while paused or in edit, not while playing",

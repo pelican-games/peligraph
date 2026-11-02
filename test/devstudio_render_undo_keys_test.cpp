@@ -370,7 +370,7 @@ TEST_CASE("RU-1 Ctrl+Z is the render history's in the Frame Plan and the Pass Ed
     CHECK(undo_button.toolTip() == QStringLiteral("Undo Edit pass present"));
 
     // The Frame Plan: the render history, all the way to its restore.
-    REQUIRE(rig.window.showRenderToolsTab(QStringLiteral("frame_plan")));
+    REQUIRE(rig.window.showRenderTool(QStringLiteral("frame_plan")));
     // The canvas takes no focus without a plan (this engine has none); the
     // panel's Refresh button is as much inside the Frame Plan.
     auto &frame_plan_refresh = rig.named<QPushButton>("pelican.framePlanRefresh");
@@ -398,7 +398,7 @@ TEST_CASE("RU-1 Ctrl+Z is the render history's in the Frame Plan and the Pass Ed
     CHECK(rig.render_undos == undos);
 
     // The Graph tab: the key goes to its canvas, whose own history takes it.
-    REQUIRE(rig.window.showRenderToolsTab(QStringLiteral("graph")));
+    REQUIRE(rig.window.showRenderTool(QStringLiteral("graph")));
     auto &graph_view = rig.named<QGraphicsView>("pelican.graphCanvasView");
     KeySpy graph_keys;
     graph_view.installEventFilter(&graph_keys);
@@ -433,7 +433,7 @@ TEST_CASE("RU-1 Ctrl+Z is the render history's in the Frame Plan and the Pass Ed
 TEST_CASE("RT-A MainWindow Attachment commit publishes through production wiring and rereads Graph", "[devstudio][rta][widget]") {
     Rig rig;
     rig.engine.attachments = true;
-    REQUIRE(rig.window.showRenderToolsTab(QStringLiteral("graph")));
+    REQUIRE(rig.window.showRenderTool(QStringLiteral("graph")));
     rig.window.graph_canvas_->refresh();
     REQUIRE(rig.pumpUntil([&] { return rig.window.graph_canvas_->model().digest() == std::string(64, 'a'); }));
     CHECK(rig.window.render_digest_->current() == std::string(64, 'a'));

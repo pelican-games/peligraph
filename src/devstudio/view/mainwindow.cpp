@@ -353,10 +353,8 @@ void MainWindow::createWorkspace() {
                 if (render_reload_) render_reload_->reloadNow();
             },
             .open_graph = [this](const QString &node) {
-                if (graph_canvas_ == nullptr || render_tabs_ == nullptr) return;
-                docks_[FramePlanDock]->show();
-                docks_[FramePlanDock]->raise();
-                render_tabs_->setCurrentWidget(graph_canvas_);
+                if (graph_canvas_ == nullptr || docks_[GraphDock] == nullptr) return;
+                showDock(GraphDock);
                 graph_canvas_->revealNodeWhenPresent(node);
             },
             .open_file = [this](const QString &document) {
@@ -678,26 +676,18 @@ void MainWindow::createWorkspace() {
     connect(problems_count_, &QPushButton::clicked, this, [this] { showProblems(); });
     statusBar()->addPermanentWidget(problems_count_);
     render_fallback_->setSeeProblems(true);
-    auto *render_tabs = new QTabWidget(this);
-    render_tabs_ = render_tabs;
-    render_tabs->setObjectName(
-        QStringLiteral("pelican.renderTools"));
-    frame_plan_ = new FramePlanWidget(viewport_, render_tabs);
-    render_features_ = new RenderFeaturesWidget(
-        viewport_, render_tabs);
+    // UI-2: the render tools are four docks, not the tabs of one. The Graph
+    // is the entrance to nearly everything, so it is a panel of its own
+    // rather than a page under the Frame Plan; and a tab widget is as large
+    // as its largest page, shown or not, so each dock now asks only for what
+    // it holds.
+    frame_plan_ = new FramePlanWidget(viewport_, this);
+    render_features_ = new RenderFeaturesWidget(viewport_, this);
     graph_canvas_ = new GraphCanvasWidget(
-        graphCanvasReadCapability(*viewport_), render_tabs);
-    render_tabs->addTab(frame_plan_, tr("Frame Plan"));
-    render_tabs->addTab(render_features_, tr("Features"));
-    // The common graph is a tab of the render tools too, not a new dock:
-    // one more dock would be a new place to lose, and this is a read-only view
-    // of the same render configuration the other two tabs already describe.
-    render_tabs->addTab(graph_canvas_, tr("Graph"));
+        graphCanvasReadCapability(*viewport_), this);
     // RSX, decision 3: the rendering section's keys no other panel writes.
-    // Last, so the tabs before it keep their places (and Ctrl+Tab its steps).
-    rendering_settings_ = new RenderingSettingsWidget(viewport_, render_tabs);
-    render_tabs->addTab(rendering_settings_, tr("Rendering settings"));
-    // RTL-2s: the ray group layout, a section of the same tab.
+    rendering_settings_ = new RenderingSettingsWidget(viewport_, this);
+    // RTL-2s: the ray group layout, a section of the Rendering settings.
     ray_layout_ = new RayLayoutWidget(viewport_, rendering_settings_);
     rendering_settings_->addSection(ray_layout_);
     ray_layout_->setEngineRestartAction([this](const QString &reason) { requestEngineRestart(reason); });
@@ -719,9 +709,19 @@ void MainWindow::createWorkspace() {
     ray_layout_->setShaderHistoryAction([this](std::vector<RenderEditHistory::FileChange> files) {
         if (render_history_) render_history_->attachFiles(std::move(files));
     });
+    // PM-3b: each of them says, while the game runs, that its edits stay.
+    docks_[GraphDock] = makeDock(
+        this, tr("Graph"), QStringLiteral("pelican.graphDock"),
+        withRenderBanner(graph_canvas_, QStringLiteral("graph")));
     docks_[FramePlanDock] = makeDock(
         this, tr("Frame Plan"), QStringLiteral("pelican.framePlanDock"),
-        withRenderBanner(render_tabs, QStringLiteral("renderTools")));
+        withRenderBanner(frame_plan_, QStringLiteral("framePlan")));
+    docks_[RenderFeaturesDock] = makeDock(
+        this, tr("Features"), QStringLiteral("pelican.renderFeaturesDock"),
+        withRenderBanner(render_features_, QStringLiteral("renderFeatures")));
+    docks_[RenderingSettingsDock] = makeDock(
+        this, tr("Rendering settings"), QStringLiteral("pelican.renderingSettingsDock"),
+        withRenderBanner(rendering_settings_, QStringLiteral("renderingSettings")));
     fullscreen_pass_ = new FullscreenPassWidget(
         framePlanReadCapability(*viewport_),
         renderPassAuthoringCapability(*viewport_), this);
@@ -814,42 +814,32 @@ void MainWindow::createWorkspace() {
     // "Open the source" in the Inspector lands on the same node in the Graph
     // tab: the producer it names is a root node of the common graph.
     inspector_->setGraphSourceRevealAction(
-        [this, render_tabs](const QString &node, const QString &) {
-            docks_[FramePlanDock]->show();
-            docks_[FramePlanDock]->raise();
-            render_tabs->setCurrentWidget(graph_canvas_);
+        [this](const QString &node, const QString &) {
+            showDock(GraphDock);
             graph_canvas_->revealNode(node);
         });
     // Q-12. "Open in Graph" on a task a render.compute node made -- from the
     // Frame Plan's right-click and from the Task Editor -- lands on that node
     // in the Graph tab, in the scope and instance MG-3b's graph_node names.
-    const auto open_graph_node = [this, render_tabs](const QString &scope,
-                                                     const QString &node,
-                                                     const QString &instance) {
-        if (!openGraphNodeInTabs(*render_tabs, *graph_canvas_, scope, node,
-                                 instance))
-            return false;
-        docks_[FramePlanDock]->show();
-        docks_[FramePlanDock]->raise();
-        return true;
+    const auto open_graph_node = [this](const QString &scope,
+                                        const QString &node,
+                                        const QString &instance) {
+        return openGraphNode(*graph_canvas_, scope, node, instance,
+                             [this] { showDock(GraphDock); });
     };
     frame_plan_->setGraphNodeOpenAction(open_graph_node);
     // LP-4c, decision 10: a pass a loop expanded opens the body node it
     // copies, entered through its loop.
     frame_plan_->setGraphLoopNodeOpenAction(
-        [this, render_tabs](const QString &loop, qint64 element, const QString &node) {
+        [this](const QString &loop, qint64 element, const QString &node) {
             if (!graph_canvas_->revealLoopOrigin(loop, element, node)) return false;
-            render_tabs->setCurrentWidget(graph_canvas_);
-            docks_[FramePlanDock]->show();
-            docks_[FramePlanDock]->raise();
+            showDock(GraphDock);
             return true;
         });
     // LP-4d2, decision 5: a zone's Show in Frame Plan brings the Frame Plan
     // forward with the loop's copies picked.
-    graph_canvas_->setFramePlanLoopAction([this, render_tabs](const QString &loop) {
-        render_tabs->setCurrentWidget(frame_plan_);
-        docks_[FramePlanDock]->show();
-        docks_[FramePlanDock]->raise();
+    graph_canvas_->setFramePlanLoopAction([this](const QString &loop) {
+        showDock(FramePlanDock);
         frame_plan_->showLoopGroup(loop);
         return true;
     });
@@ -880,43 +870,37 @@ void MainWindow::createWorkspace() {
     graph_canvas_->setEngineRestartAction([this](const QString &reason) { requestEngineRestart(reason); });
     // LP-4e: a decomposed material pass is edited as its loop, so the Graph
     // tab comes to the front with that loop selected.
-    frame_plan_->setLoopDecomposedAction([this, render_tabs](const QString &loop) {
-        render_tabs->setCurrentWidget(graph_canvas_);
-        docks_[FramePlanDock]->show();
-        docks_[FramePlanDock]->raise();
+    frame_plan_->setLoopDecomposedAction([this](const QString &loop) {
+        showDock(GraphDock);
         graph_canvas_->revealNodeWhenPresent(loop);
     });
     // LP-4f2: a feature replaced by its loop version is edited as that loop,
     // so the Graph tab comes to the front with it selected -- as LP-4e's
     // decompose does. The Frame Plan's right-click on a feature's group asks
     // the Features tab, which owns the feature list and the request.
-    render_features_->setLoopVersionAppliedAction([this, render_tabs](const QString &loop) {
-        render_tabs->setCurrentWidget(graph_canvas_);
-        docks_[FramePlanDock]->show();
-        docks_[FramePlanDock]->raise();
+    render_features_->setLoopVersionAppliedAction([this](const QString &loop) {
+        showDock(GraphDock);
         graph_canvas_->revealNodeWhenPresent(loop);
     });
     frame_plan_->setLoopVersionActions(
         [this](const QString &feature) { return render_features_->loopVersionOffered(feature); },
-        [this, render_tabs](const QString &feature) {
-            render_tabs->setCurrentWidget(render_features_);
+        [this](const QString &feature) {
+            showDock(RenderFeaturesDock);
             render_features_->replaceWithLoopVersion(feature);
         });
     render_features_->setGraphNodeOpenAction(open_graph_node);
     // UX-12b, decision 2: a feature refused for a pass the pipeline lacks
     // ("Place Deferred lighting first") places that pass on the Graph tab,
     // its New... open on the template of that name (UX-5b's path).
-    render_features_->setPlaceInsertionAnchorAction([this, render_tabs](const QString &anchor) {
-        render_tabs->setCurrentWidget(graph_canvas_);
+    render_features_->setPlaceInsertionAnchorAction([this](const QString &anchor) {
+        showDock(GraphDock);
         return graph_canvas_->placeNamedFullscreenPass(anchor);
     });
     // GL-1, decision 6: the Frame Plan's Open in Graph on any other pass
     // selects the node it is drawn under on the Graph canvas.
-    frame_plan_->setGraphPassOpenAction([this, render_tabs](const QString &pass) {
-        render_tabs->setCurrentWidget(graph_canvas_);
+    frame_plan_->setGraphPassOpenAction([this](const QString &pass) {
         if (!graph_canvas_->revealPlanPass(pass)) return false;
-        docks_[FramePlanDock]->show();
-        docks_[FramePlanDock]->raise();
+        showDock(GraphDock);
         return true;
     });
     // GL-5c, decision 3: Edit pass / Edit task and a double-click open what
@@ -927,68 +911,56 @@ void MainWindow::createWorkspace() {
     // pass / fullscreen pass / compute task is the Graph's palette, on its op.
     // A root the Graph tab has read and found not to be a graph keeps the
     // Frame Plan's own forms.
-    frame_plan_->setGraphPlaceAction([this, render_tabs](const QString &op) {
+    frame_plan_->setGraphPlaceAction([this](const QString &op) {
         const GraphCanvasModel &model = graph_canvas_->model();
         if (model.contextReceived() && !model.graphRoot()) return false;
-        render_tabs->setCurrentWidget(graph_canvas_);
-        docks_[FramePlanDock]->show();
-        docks_[FramePlanDock]->raise();
+        showDock(GraphDock);
         graph_canvas_->placeFromPalette(op);
         return true;
     });
     // GL-5f, decision 1: the Pass Editor's New pass on a root that selects no
     // preset (the widget checks config_kind) is the Graph's render.fullscreen,
     // as the Frame Plan's Add fullscreen pass above is.
-    fullscreen_pass_->setGraphPlaceAction([this, render_tabs](const QString &op) {
+    fullscreen_pass_->setGraphPlaceAction([this](const QString &op) {
         const GraphCanvasModel &model = graph_canvas_->model();
         if (model.contextReceived() && !model.graphRoot()) return false;
-        render_tabs->setCurrentWidget(graph_canvas_);
-        docks_[FramePlanDock]->show();
-        docks_[FramePlanDock]->raise();
+        showDock(GraphDock);
         graph_canvas_->placeFromPalette(op);
         return true;
     });
     // GL-2b, decision 3: a pass row of the Graph tab's Layers section picks
     // that plan node in the Frame Plan.
-    graph_canvas_->setFramePlanNodeAction([this, render_tabs](const QString &node) {
-        render_tabs->setCurrentWidget(frame_plan_);
-        docks_[FramePlanDock]->show();
-        docks_[FramePlanDock]->raise();
+    graph_canvas_->setFramePlanNodeAction([this](const QString &node) {
+        showDock(FramePlanDock);
         frame_plan_->showPlanNode(node);
     });
     // UX-11, decision 4: a material pass's Materials drawn row picks the
     // Frame Plan's Materials rows of that pass.
-    graph_canvas_->setFramePlanMaterialsAction([this, render_tabs](const QString &pass) {
-        render_tabs->setCurrentWidget(frame_plan_);
-        docks_[FramePlanDock]->show();
-        docks_[FramePlanDock]->raise();
+    graph_canvas_->setFramePlanMaterialsAction([this](const QString &pass) {
+        showDock(FramePlanDock);
         frame_plan_->showMaterialRoutes(pass);
     });
     // Decision 4: "Expand to edit…" inside a folded view runs the flow that
     // already exists for it, with its confirmation.
     graph_canvas_->setFoldedExpandActions(
-        [this, render_tabs](const QString &graph, const QString &pass) {
-            render_tabs->setCurrentWidget(frame_plan_);
+        [this](const QString &graph, const QString &pass) {
+            showDock(FramePlanDock);
             frame_plan_->decomposeMaterialPass(graph, pass);
         },
-        [this, render_tabs](const QString &feature) {
-            render_tabs->setCurrentWidget(render_features_);
+        [this](const QString &feature) {
+            showDock(RenderFeaturesDock);
             render_features_->replaceWithLoopVersion(feature);
         });
     // RTL-2s, decision 4: the Inspector's Assign hit group... opens the Ray
     // layout section on that material's row.
-    inspector_->setAssignHitGroupAction([this, render_tabs](const QString &material) {
-        docks_[FramePlanDock]->show();
-        docks_[FramePlanDock]->raise();
-        render_tabs->setCurrentWidget(rendering_settings_);
+    inspector_->setAssignHitGroupAction([this](const QString &material) {
+        showDock(RenderingSettingsDock);
         ray_layout_->revealMaterial(material);
     });
     // RTL-2s-c (RTL-2s decision 5): Add component's Ray geometry without a
     // ray layout opens the section that enables one.
-    inspector_->setEnableHitGroupsAction([this, render_tabs] {
-        docks_[FramePlanDock]->show();
-        docks_[FramePlanDock]->raise();
-        render_tabs->setCurrentWidget(rendering_settings_);
+    inspector_->setEnableHitGroupsAction([this] {
+        showDock(RenderingSettingsDock);
         ray_layout_->revealEnable();
     });
     // GL-5d, decisions 1 and 2: the Graph's Order… / Fix sockets / Make
@@ -1063,10 +1035,8 @@ void MainWindow::createWorkspace() {
         edits.edit_task = [this](const QString &task) { render_features_->editComputeTask(task); };
         graph_canvas_->setFramePlanEdits(std::move(edits));
     }
-    inspector_->setRayGroupAction([this, render_tabs](const QString &group) {
-        docks_[FramePlanDock]->show();
-        docks_[FramePlanDock]->raise();
-        render_tabs->setCurrentWidget(frame_plan_);
+    inspector_->setRayGroupAction([this](const QString &group) {
+        showDock(FramePlanDock);
         frame_plan_->openTasksForHitGroup(group);
     });
     frame_plan_->setTaskConnectionAction([this](const QString &task, const QStringList &outputs) {
@@ -1155,10 +1125,8 @@ void MainWindow::createWorkspace() {
             docks_[FullscreenPassDock]->show();
             docks_[FullscreenPassDock]->raise();
         });
-    frame_plan_->setTaskInsertAction([this, render_tabs] {
-        docks_[FramePlanDock]->show();
-        docks_[FramePlanDock]->raise();
-        render_tabs->setCurrentWidget(render_features_);
+    frame_plan_->setTaskInsertAction([this] {
+        showDock(RenderFeaturesDock);
     });
     connect(viewport_, &EmbeddedViewport::engineOutputReceived, this,
             [this](const QString &output) { appendEngineOutput(output); });
@@ -1663,7 +1631,7 @@ void MainWindow::createRenderReload() {
     graph_canvas_->setReloadFromDiskAction(reload_from_disk_action_);
     // RTL-2s b: a ray tracing task's Enable hit groups… opens the Rendering
     // settings, where the Ray layout is (RTL-2s a).
-    graph_canvas_->setOpenRayLayout([this] { (void)showRenderToolsTab(QStringLiteral("rendering_settings")); });
+    graph_canvas_->setOpenRayLayout([this] { (void)showRenderTool(QStringLiteral("rendering_settings")); });
     // RTL-2s-c: and its Callable records... the Render Features' Records dialog.
     graph_canvas_->setOpenCallableRecords([this] {
         if (auto *open = render_features_->findChild<QPushButton *>(
@@ -1688,7 +1656,7 @@ void MainWindow::openProblem(const ProblemRow &row) {
         row.node.empty() ? QString{} : QLatin1Char('"') + text(row.node) + QLatin1Char('"');
     switch (row.place) {
     case Place::GraphNode: {
-        if (graph_canvas_ == nullptr || !showRenderToolsTab(QStringLiteral("graph"))) return;
+        if (graph_canvas_ == nullptr || !showRenderTool(QStringLiteral("graph"))) return;
         // RTL-2s b, decision 3: a ray tracing task's refusal is marked on
         // its node, the place its fields name red in its fields.
         if (row.definition.empty() && !rayTracingRefusalDescription(nlohmann::json{{"code", row.code}}).empty()) {
@@ -1746,10 +1714,10 @@ void MainWindow::openProblem(const ProblemRow &row) {
             statusBar()->showMessage(tr("The Assets dock does not show %1.").arg(document), 8000);
         return;
     case Place::RenderingSettings:
-        (void)showRenderToolsTab(QStringLiteral("rendering_settings"));
+        (void)showRenderTool(QStringLiteral("rendering_settings"));
         return;
     case Place::Features:
-        (void)showRenderToolsTab(QStringLiteral("render_features"));
+        (void)showRenderTool(QStringLiteral("render_features"));
         return;
     case Place::GraphPass:
         openPlanPassOnGraph(text(row.pass));
@@ -1789,7 +1757,7 @@ void MainWindow::openProblem(const ProblemRow &row) {
 void MainWindow::openPlanPassOnGraph(const QString &pass) {
     // RTL-3s, decision 8 (engine FO-2): the pass a material needs more of --
     // the node that made it, or its preset's / feature's folded pass.
-    if (graph_canvas_ == nullptr || pass.isEmpty() || !showRenderToolsTab(QStringLiteral("graph"))) return;
+    if (graph_canvas_ == nullptr || pass.isEmpty() || !showRenderTool(QStringLiteral("graph"))) return;
     if (graph_canvas_->revealPlanPass(pass)) return;
     if (graph_canvas_->canRevealGraphNode(QStringLiteral("root"), pass)) {
         (void)graph_canvas_->revealGraphNode(QStringLiteral("root"), pass, {});
@@ -1974,22 +1942,23 @@ void MainWindow::createMenus() {
                 QStringLiteral("pelican.view.panels.") + leaf);
         panels_menu->addAction(toggle);
     }
-    // LP-4c: which tab of the render tools is in front, as named entries --
+    // LP-4c: a render tool brought to the front, as named entries --
     // `pelican.view.renderTools.graph` and the like -- so a scenario that
-    // edits in the Graph tab can look at what the Frame Plan made of it.
+    // edits in the Graph can look at what the Frame Plan made of it. UI-2:
+    // each shows and raises its own dock (Panels only shows or hides it).
     QMenu *render_tools_menu = view_menu->addMenu(tr("&Render Tools"));
     render_tools_menu->setObjectName(QStringLiteral("pelican.renderToolsMenu"));
-    const std::pair<QString, QString> render_tool_tabs[] = {
+    const std::pair<QString, QString> render_tools[] = {
         {QStringLiteral("frame_plan"), tr("&Frame Plan")},
         {QStringLiteral("render_features"), tr("F&eatures")},
         {QStringLiteral("rendering_settings"), tr("&Rendering settings")},
         {QStringLiteral("graph"), tr("&Graph")},
     };
-    for (const auto &[id, label] : render_tool_tabs) {
-        QAction *show_tab = render_tools_menu->addAction(label);
-        show_tab->setObjectName(QStringLiteral("pelican.view.renderTools.") + id);
-        connect(show_tab, &QAction::triggered, this,
-                [this, id = id]() { showRenderToolsTab(id); });
+    for (const auto &[id, label] : render_tools) {
+        QAction *show_tool = render_tools_menu->addAction(label);
+        show_tool->setObjectName(QStringLiteral("pelican.view.renderTools.") + id);
+        connect(show_tool, &QAction::triggered, this,
+                [this, id = id]() { showRenderTool(id); });
     }
     // HW-2s: the Assets dock brought to the front -- it shares a tab with
     // Project and the Outliner, and Panels only shows or hides it.
@@ -2471,22 +2440,25 @@ void MainWindow::updatePlayPresentation() {
     }
 }
 
-QStringList MainWindow::renderToolsTabIds() {
+QStringList MainWindow::renderToolIds() {
     return {QStringLiteral("frame_plan"), QStringLiteral("render_features"),
             QStringLiteral("rendering_settings"), QStringLiteral("graph")};
 }
 
-bool MainWindow::showRenderToolsTab(const QString &id) {
-    QWidget *tab = nullptr;
-    if (id == QLatin1String{"frame_plan"}) tab = frame_plan_;
-    else if (id == QLatin1String{"render_features"}) tab = render_features_;
-    else if (id == QLatin1String{"rendering_settings"}) tab = rendering_settings_;
-    else if (id == QLatin1String{"graph"}) tab = graph_canvas_;
-    if (tab == nullptr || render_tabs_ == nullptr) return false;
-    docks_[FramePlanDock]->show();
-    docks_[FramePlanDock]->raise();
-    render_tabs_->setCurrentWidget(tab);
+bool MainWindow::showRenderTool(const QString &id) {
+    DockIndex index = DockCount;
+    if (id == QLatin1String{"frame_plan"}) index = FramePlanDock;
+    else if (id == QLatin1String{"render_features"}) index = RenderFeaturesDock;
+    else if (id == QLatin1String{"rendering_settings"}) index = RenderingSettingsDock;
+    else if (id == QLatin1String{"graph"}) index = GraphDock;
+    if (index == DockCount || docks_[index] == nullptr) return false;
+    showDock(index);
     return true;
+}
+
+void MainWindow::showDock(DockIndex index) {
+    docks_[index]->show();
+    docks_[index]->raise();
 }
 
 void MainWindow::chooseProject() {
@@ -4289,16 +4261,20 @@ void MainWindow::applyDefaultLayout() {
 
     addDockWidget(Qt::RightDockWidgetArea, docks_[InspectorDock]);
     splitDockWidget(docks_[InspectorDock], docks_[LayersDock], Qt::Vertical);
-    addDockWidget(Qt::BottomDockWidgetArea, docks_[OutputDock]);
-    addDockWidget(Qt::BottomDockWidgetArea, docks_[EngineLogDock]);
-    addDockWidget(Qt::BottomDockWidgetArea, docks_[FramePlanDock]);
-    addDockWidget(Qt::BottomDockWidgetArea, docks_[FullscreenPassDock]);
-    // PB-1s: Problems is the tab after the Engine Log.
-    addDockWidget(Qt::BottomDockWidgetArea, docks_[ProblemsPanelDock]);
+    // UI-2: the Graph alone on the bottom's left, the hub the other panels
+    // are reached from; on its right one stack of the rest.
+    addDockWidget(Qt::BottomDockWidgetArea, docks_[GraphDock]);
+    splitDockWidget(docks_[GraphDock], docks_[OutputDock], Qt::Horizontal);
+    // Each straight into the stack: added side by side first, the row of
+    // them is as wide as all their floors together, and a shown window
+    // grows to it and stays that wide after they are stacked.
     tabifyDockWidget(docks_[OutputDock], docks_[EngineLogDock]);
+    // PB-1s: Problems is the tab after the Engine Log.
     tabifyDockWidget(docks_[EngineLogDock], docks_[ProblemsPanelDock]);
     tabifyDockWidget(docks_[ProblemsPanelDock], docks_[FramePlanDock]);
     tabifyDockWidget(docks_[FramePlanDock], docks_[FullscreenPassDock]);
+    tabifyDockWidget(docks_[FullscreenPassDock], docks_[RenderFeaturesDock]);
+    tabifyDockWidget(docks_[RenderFeaturesDock], docks_[RenderingSettingsDock]);
     docks_[FramePlanDock]->raise();
     resizeDocks({docks_[ProjectDock], docks_[InspectorDock]}, {280, 320}, Qt::Horizontal);
     // SG-2: the Layers under the Inspector, tall enough for a few rows and
@@ -4306,6 +4282,11 @@ void MainWindow::applyDefaultLayout() {
     resizeDocks({docks_[InspectorDock], docks_[LayersDock]}, {360, 300}, Qt::Vertical);
     resizeDocks({docks_[FullscreenPassDock]}, {320}, Qt::Vertical);
     resize(1280, 800);
+    // UI-2: about six tenths of the bottom for the Graph, of the width the
+    // window has (the docks set its floor, and none is made smaller than
+    // what it holds asks for).
+    const int bottom = std::max(width(), minimumSizeHint().width());
+    resizeDocks({docks_[GraphDock], docks_[OutputDock]}, {bottom * 6 / 10, bottom * 4 / 10}, Qt::Horizontal);
 }
 
 } // namespace PelicanStudio

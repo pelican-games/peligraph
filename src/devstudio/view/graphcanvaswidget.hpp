@@ -27,7 +27,6 @@
 
 class QAction;
 class QMenu;
-class QTabWidget;
 class QTimer;
 class QGraphicsLineItem;
 class QGraphicsSceneContextMenuEvent;
@@ -1260,7 +1259,7 @@ class GraphCanvasScene final : public QGraphicsScene {
                     const std::string &output);
 };
 
-// The Graph tab of the render tools dock.
+// The Graph: the render tools' common graph, a dock of its own (UI-2).
 class GraphCanvasWidget final : public QWidget {
     struct Impl;
     std::unique_ptr<Impl> impl_;
@@ -1524,11 +1523,11 @@ class GraphCanvasWidget final : public QWidget {
 // everything on screen by half of it (the zone under the hand slid away).
 void configureGraphCanvasView(NodeCanvasView &view);
 
-// Q-12. "Open in Graph": reveal the node, and only when it is there make the
-// Graph tab the current one of `tabs`. A node the Graph tab cannot show
-// leaves the tab the user was on, where the caller says why.
-bool openGraphNodeInTabs(QTabWidget &tabs, GraphCanvasWidget &graph,
-                         const QString &scope, const QString &node,
-                         const QString &instance);
+// Q-12. "Open in Graph": reveal the node, and only when it is there bring
+// the Graph forward (`show_graph`; UI-2: its dock) first. A node the Graph
+// cannot show leaves the panel the user was on, where the caller says why.
+bool openGraphNode(GraphCanvasWidget &graph, const QString &scope,
+                   const QString &node, const QString &instance,
+                   const std::function<void()> &show_graph);
 
 } // namespace PelicanStudio

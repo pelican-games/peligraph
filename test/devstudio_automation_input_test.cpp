@@ -2394,9 +2394,11 @@ TEST_CASE("KB-1 T1 T2 scene shortcut routes by focus and labels the Edit menu", 
     }
     for (const char *tab : {"frame_plan", "graph"}) {
         INFO(tab);
-        REQUIRE(rig.window.showRenderToolsTab(QString::fromLatin1(tab)));
-        rig.window.render_tabs_->currentWidget()->setFocusPolicy(Qt::StrongFocus);
-        rig.window.render_tabs_->currentWidget()->setFocus();
+        REQUIRE(rig.window.showRenderTool(QString::fromLatin1(tab)));
+        QWidget *panel = std::string{tab} == "graph" ? static_cast<QWidget *>(rig.window.graph_canvas_)
+                                                     : static_cast<QWidget *>(rig.window.frame_plan_);
+        panel->setFocusPolicy(Qt::StrongFocus);
+        panel->setFocus();
         QApplication::processEvents();
         CHECK_FALSE(rig.window.inspector_->undoAction()->isEnabled());
         CHECK_FALSE(rig.window.inspector_->redoAction()->isEnabled());

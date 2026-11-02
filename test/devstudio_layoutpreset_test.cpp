@@ -79,6 +79,13 @@ QDockWidget *addDock(
     return dock;
 }
 
+// UI-2: the dock a panel is shown in.
+QDockWidget *dockHolding(QWidget *widget) {
+    for (QWidget *at = widget; at != nullptr; at = at->parentWidget())
+        if (auto *dock = qobject_cast<QDockWidget *>(at)) return dock;
+    return nullptr;
+}
+
 } // namespace
 
 TEST_CASE("Devstudio layout presets round-trip named versioned state", "[devstudio][layout]") {
@@ -219,19 +226,20 @@ TEST_CASE("Saved devstudio layouts remain restorable as later docks are added",
     REQUIRE(current_window.dockWidgetArea(problems) != Qt::NoDockWidgetArea);
 
     const auto docks = current_window.findChildren<QDockWidget *>();
-    // HW-2s / MT-1s / PB-1s's three and SG-2's Layers (eleven).
-    REQUIRE(docks.size() == 11);
+    // HW-2s / MT-1s / PB-1s's three, SG-2's Layers and UI-2's Graph,
+    // Features and Rendering settings (fourteen).
+    REQUIRE(docks.size() == 14);
     QSet<QString> object_names;
     for (const QDockWidget *current : docks) {
         REQUIRE_FALSE(current->objectName().isEmpty());
         object_names.insert(current->objectName());
     }
-    REQUIRE(object_names.size() == 11);
+    REQUIRE(object_names.size() == 14);
 
     auto *panels = current_window.findChild<QMenu *>(
         QStringLiteral("pelican.panelsMenu"));
     REQUIRE(panels != nullptr);
-    REQUIRE(panels->actions().size() == 11);
+    REQUIRE(panels->actions().size() == 14);
 }
 
 TEST_CASE("Devstudio restores the last panel layout at startup with an unsaved default control",
@@ -298,7 +306,7 @@ TEST_CASE("Devstudio restores the last panel layout at startup with an unsaved d
     REQUIRE(fallback_window.dockWidgetArea(project) ==
             Qt::LeftDockWidgetArea);
     const auto docks = fallback_window.findChildren<QDockWidget *>();
-    REQUIRE(docks.size() == 11);
+    REQUIRE(docks.size() == 14);
     for (const QDockWidget *dock : docks) {
         REQUIRE(fallback_window.dockWidgetArea(
                     const_cast<QDockWidget *>(dock)) !=
@@ -365,6 +373,171 @@ TEST_CASE("F-7 opening and closing the Pass Editor leaves the viewport its "
     CHECK(std::abs(after - before) <= 2);
     // Opening it is not a reason to shrink the viewport to a strip either.
     CHECK(open > before / 2);
+}
+
+TEST_CASE("UI-2 the Graph, the Frame Plan, Features and Rendering settings are docks of their own",
+          "[devstudio][layout][ui2]") {
+    QApplication &app = application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    app.processEvents();
+    const auto dock = [&window](const char *name) {
+        auto *result = window.findChild<QDockWidget *>(QString::fromLatin1(name));
+        REQUIRE(result != nullptr);
+        return result;
+    };
+    QDockWidget *graph = dock("pelican.graphDock");
+    QDockWidget *frame_plan = dock("pelican.framePlanDock");
+    QDockWidget *features = dock("pelican.renderFeaturesDock");
+    QDockWidget *rendering_settings = dock("pelican.renderingSettingsDock");
+    QDockWidget *output = dock("pelican.outputDock");
+
+    // Each panel sits in its own dock; no tab widget holds them together.
+    const auto panel = [&window](const char *name) {
+        auto *result = window.findChild<QWidget *>(QString::fromLatin1(name));
+        REQUIRE(result != nullptr);
+        return result;
+    };
+    CHECK(dockHolding(panel("pelican.graphCanvas")) == graph);
+    CHECK(dockHolding(panel("pelican.framePlan")) == frame_plan);
+    CHECK(dockHolding(panel("pelican.renderFeatures")) == features);
+    CHECK(dockHolding(panel("pelican.renderingSettings")) == rendering_settings);
+    CHECK(window.findChild<QTabWidget *>(QStringLiteral("pelican.renderTools")) == nullptr);
+    // Every dock carries the banner that says render edits stay after Stop.
+    for (const char *name : {"pelican.play.renderBanner.graph", "pelican.play.renderBanner.framePlan",
+                             "pelican.play.renderBanner.renderFeatures",
+                             "pelican.play.renderBanner.renderingSettings"}) {
+        INFO(name);
+        CHECK(window.findChild<QLabel *>(QString::fromLatin1(name)) != nullptr);
+    }
+
+    // The default layout: the Graph alone on the bottom's left, on screen;
+    // the others in one stack with Output on its right.
+    CHECK(window.dockWidgetArea(graph) == Qt::BottomDockWidgetArea);
+    CHECK(graph->isVisible());
+    CHECK(window.tabifiedDockWidgets(graph).isEmpty());
+    CHECK_FALSE(window.tabifiedDockWidgets(output).contains(graph));
+    const auto stack = window.tabifiedDockWidgets(output);
+    for (QDockWidget *member : {dock("pelican.engineLogDock"), dock("pelican.problemsDock"), frame_plan,
+                                dock("pelican.fullscreenPassDock"), features, rendering_settings}) {
+        INFO(member->objectName().toStdString());
+        CHECK(stack.contains(member));
+    }
+    CHECK(frame_plan->isVisible());
+    // Side by side: the Graph left of the stack's front tab (a tab behind it
+    // is moved out of the window, so its geometry says nothing).
+    CHECK(graph->geometry().right() < frame_plan->geometry().left());
+
+    // View > Render Tools and --tab bring the dock forward, from hidden or
+    // from behind another tab of its stack.
+    const std::pair<const char *, QDockWidget *> tools[] = {
+        {"graph", graph},
+        {"frame_plan", frame_plan},
+        {"render_features", features},
+        {"rendering_settings", rendering_settings},
+    };
+    for (const auto &[id, target] : tools) {
+        INFO(id);
+        auto *entry = window.findChild<QAction *>(QStringLiteral("pelican.view.renderTools.") +
+                                                  QString::fromLatin1(id));
+        REQUIRE(entry != nullptr);
+        for (const auto &tool : tools) tool.second->hide();
+        output->raise();
+        app.processEvents();
+        REQUIRE_FALSE(target->isVisible());
+        entry->trigger();
+        app.processEvents();
+        CHECK(target->isVisible());
+        CHECK_FALSE(target->visibleRegion().isEmpty());
+        CHECK(window.rect().contains(target->geometry()));
+
+        for (const auto &tool : tools) tool.second->hide();
+        output->raise();
+        app.processEvents();
+        REQUIRE(window.showRenderTool(QString::fromLatin1(id)));
+        app.processEvents();
+        CHECK(target->isVisible());
+        CHECK_FALSE(target->visibleRegion().isEmpty());
+        CHECK(window.rect().contains(target->geometry()));
+    }
+    CHECK_FALSE(window.showRenderTool(QStringLiteral("render_tools")));
+}
+
+TEST_CASE("UI-2 a panel layout saved before the split still shows the Graph dock",
+          "[devstudio][layout][compatibility][ui2]") {
+    QApplication &app = application();
+    // The window of the version before UI-2: eleven docks, the Graph a tab of
+    // the Frame Plan dock, the bottom docks in one stack.
+    QMainWindow legacy;
+    const auto add = [&legacy](const char *name, Qt::DockWidgetArea area) {
+        return addDock(legacy, QString::fromLatin1(name), area);
+    };
+    QDockWidget *project = add("pelican.projectDock", Qt::LeftDockWidgetArea);
+    QDockWidget *outliner = add("pelican.outlinerDock", Qt::LeftDockWidgetArea);
+    QDockWidget *assets = add("pelican.assetsDock", Qt::LeftDockWidgetArea);
+    QDockWidget *materials = add("pelican.materialsDock", Qt::LeftDockWidgetArea);
+    legacy.tabifyDockWidget(project, outliner);
+    legacy.tabifyDockWidget(project, assets);
+    legacy.tabifyDockWidget(assets, materials);
+    QDockWidget *inspector = add("pelican.inspectorDock", Qt::RightDockWidgetArea);
+    QDockWidget *layers = new QDockWidget(&legacy);
+    layers->setObjectName(QStringLiteral("pelican.layersDock"));
+    layers->setWidget(new QWidget(layers));
+    legacy.splitDockWidget(inspector, layers, Qt::Vertical);
+    QDockWidget *output = add("pelican.outputDock", Qt::BottomDockWidgetArea);
+    QDockWidget *engine_log = add("pelican.engineLogDock", Qt::BottomDockWidgetArea);
+    QDockWidget *problems = add("pelican.problemsDock", Qt::BottomDockWidgetArea);
+    QDockWidget *frame_plan = add("pelican.framePlanDock", Qt::BottomDockWidgetArea);
+    QDockWidget *pass_editor = add("pelican.fullscreenPassDock", Qt::BottomDockWidgetArea);
+    legacy.tabifyDockWidget(output, engine_log);
+    legacy.tabifyDockWidget(engine_log, problems);
+    legacy.tabifyDockWidget(problems, frame_plan);
+    legacy.tabifyDockWidget(frame_plan, pass_editor);
+    legacy.resize(1280, 800);
+    legacy.show();
+    app.processEvents();
+    frame_plan->raise();
+    app.processEvents();
+    const QByteArray state = legacy.saveState(LayoutPresetManager::WindowStateVersion);
+    REQUIRE_FALSE(state.isEmpty());
+    const QByteArray geometry = legacy.saveGeometry();
+    legacy.hide();
+
+    // Saved as the last session, which the next window restores at start.
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    LayoutPresetManager manager(QDir(config.path()).filePath(QStringLiteral("layouts")));
+    REQUIRE(manager.savePreset(QStringLiteral("Last panel session"), {geometry, state}));
+
+    PelicanStudio::MainWindow window{config.path()};
+    REQUIRE(window.statusBar()->currentMessage().contains(QStringLiteral("restored")));
+    REQUIRE_FALSE(window.statusBar()->currentMessage().contains(QStringLiteral("default")));
+    window.show();
+    app.processEvents();
+    const auto dock = [&window](const char *name) {
+        auto *result = window.findChild<QDockWidget *>(QString::fromLatin1(name));
+        REQUIRE(result != nullptr);
+        return result;
+    };
+    // What the state knew came back: the Frame Plan in the bottom stack.
+    CHECK(window.tabifiedDockWidgets(dock("pelican.outputDock")).contains(dock("pelican.framePlanDock")));
+    // The Graph, which it did not know, is on screen in the window.
+    QDockWidget *graph = dock("pelican.graphDock");
+    CHECK(window.dockWidgetArea(graph) != Qt::NoDockWidgetArea);
+    CHECK_FALSE(graph->isFloating());
+    CHECK(graph->isVisible());
+    CHECK_FALSE(graph->visibleRegion().isEmpty());
+    CHECK(window.rect().contains(graph->geometry()));
+    // And the other two new docks have a place to be shown in.
+    for (const char *name : {"pelican.renderFeaturesDock", "pelican.renderingSettingsDock"}) {
+        INFO(name);
+        QDockWidget *added = dock(name);
+        CHECK(window.dockWidgetArea(added) != Qt::NoDockWidgetArea);
+        CHECK_FALSE(added->isFloating());
+        CHECK_FALSE(added->isHidden());
+    }
 }
 
 TEST_CASE("Frame Plan tool layouts restore movable tabs and splitter state independently",

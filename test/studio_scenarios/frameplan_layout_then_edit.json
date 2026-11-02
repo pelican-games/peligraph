@@ -33,19 +33,12 @@
       "value": 0
     },
     {
-      "label": "Ctrl+Tab to the Features tab",
-      "cmd": "key",
-      "name": "pelican.renderTools",
-      "sequence": "Ctrl+Tab"
+      "label": "bring the Graph forward (UI-2: its own dock)",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
     },
     {
-      "label": "and on to the Graph tab",
-      "cmd": "key",
-      "name": "pelican.renderTools",
-      "sequence": "Ctrl+Tab"
-    },
-    {
-      "label": "the Graph tab draws the root's instance",
+      "label": "the Graph draws the root's instance",
       "cmd": "wait",
       "name": "pelican.graphCanvasView::graph_node#left",
       "visible": true,
@@ -76,16 +69,9 @@
       "retry_ms": 60000
     },
     {
-      "label": "Ctrl+Tab on to Rendering settings (RSX put it last)",
-      "cmd": "key",
-      "name": "pelican.renderTools",
-      "sequence": "Ctrl+Tab"
-    },
-    {
-      "label": "and Ctrl+Tab back round to the Frame Plan",
-      "cmd": "key",
-      "name": "pelican.renderTools",
-      "sequence": "Ctrl+Tab"
+      "label": "bring the Frame Plan forward again",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
     },
     {
       "label": "the Frame Plan is in front again",

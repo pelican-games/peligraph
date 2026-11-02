@@ -230,7 +230,7 @@ struct Rig {
         REQUIRE(viewport.process_.waitForStarted(5000));
         window.resize(1400, 900);
         window.show();
-        REQUIRE(window.showRenderToolsTab(QStringLiteral("graph")));
+        REQUIRE(window.showRenderTool(QStringLiteral("graph")));
         viewport.rpc_ready_ = true;
         emit viewport.engineRpcBecameAvailable();
         named<QCheckBox>("pelican.graphCanvasShow.value").setChecked(true);

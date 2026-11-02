@@ -83,7 +83,6 @@
 #include <QSpinBox>
 #include <QScrollArea>
 #include <QSplitter>
-#include <QTabWidget>
 #include <QStringList>
 #include <QTimer>
 #include <QToolButton>
@@ -12056,12 +12055,12 @@ void configureGraphCanvasView(NodeCanvasView &view) {
     view.setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
 }
 
-bool openGraphNodeInTabs(QTabWidget &tabs, GraphCanvasWidget &graph,
-                         const QString &scope, const QString &node,
-                         const QString &instance) {
+bool openGraphNode(GraphCanvasWidget &graph, const QString &scope,
+                   const QString &node, const QString &instance,
+                   const std::function<void()> &show_graph) {
     if (!graph.canRevealGraphNode(scope, node)) return false;
-    // The tab first, so the view the node is centred in is the one on screen.
-    tabs.setCurrentWidget(&graph);
+    // The Graph first, so the view the node is centred in is the one on screen.
+    if (show_graph) show_graph();
     return graph.revealGraphNode(scope, node, instance);
 }
 
