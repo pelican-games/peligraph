@@ -7415,6 +7415,24 @@ private:
 constexpr std::string_view passRunsAfterHint =
     " \xE2\x80\x94 the graph pass that draws it runs after this pass";
 
+// GS-UAF1 test seam: the closeEditor connection below reports here only once
+// the widget's destructor has started, so a test can see that a callback still
+// ran after the Impl was freed without needing AddressSanitizer. The counter
+// is reset (with the flag) at the start of each test.
+namespace {
+bool graphCanvasTeardownDyingForTest = false;
+int graphCanvasTeardownCountForTest = 0;
+} // namespace
+
+int graphCanvasTeardownCallbacksForTest() {
+    return graphCanvasTeardownCountForTest;
+}
+
+void resetGraphCanvasTeardownCallbacksForTest() {
+    graphCanvasTeardownDyingForTest = false;
+    graphCanvasTeardownCountForTest = 0;
+}
+
 struct GraphCanvasWidget::Impl {
     GraphCanvasWidget &view;
     GraphCanvasReadCapability graph;
@@ -7734,6 +7752,13 @@ struct GraphCanvasWidget::Impl {
     std::uint64_t rendered_report = std::numeric_limits<std::uint64_t>::max();
     std::uint64_t rendered_placement = std::numeric_limits<std::uint64_t>::max();
 
+    // GS-UAF1: the context of every connection and queued call whose lambda
+    // reads this Impl but whose sender can outlive it (the widget itself, one
+    // of its children, a delegate, or the viewport). Declared last, so it is
+    // destroyed first and those connections are already gone when the QWidget
+    // base destructor tears down the children.
+    QObject guard;
+
     explicit Impl(GraphCanvasWidget &owner, GraphCanvasReadCapability capability)
         : view{owner}, graph{std::move(capability)} {
         // Only requests leaving this tab reserve its order. The shared
@@ -7765,13 +7790,13 @@ struct GraphCanvasWidget::Impl {
         poll_timer->setObjectName(
             QStringLiteral("pelican.graphCanvasPollTimer"));
         poll_timer->setInterval(250);
-        QObject::connect(poll_timer, &QTimer::timeout, &view,
+        QObject::connect(poll_timer, &QTimer::timeout, &guard,
                          [this] { view.poll(); });
         poll_timer->start();
         details_timer = new QTimer(&view);
         details_timer->setSingleShot(true);
         details_timer->setInterval(16);
-        QObject::connect(details_timer, &QTimer::timeout, &view, [this] {
+        QObject::connect(details_timer, &QTimer::timeout, &guard, [this] {
             if (scene->dragging()) { details_timer->start(); return; }
             showDetails();
         });
@@ -7816,7 +7841,7 @@ struct GraphCanvasWidget::Impl {
             box->setChecked(model.domainShown(domain));
             controls->addWidget(box);
             domain_boxes.emplace_back(domain, box);
-            QObject::connect(box, &QCheckBox::toggled, &view, [this, domain](bool on) {
+            QObject::connect(box, &QCheckBox::toggled, &guard, [this, domain](bool on) {
                 if (!model.setDomainShown(domain, on)) return;
                 dispatch();
             });
@@ -7894,30 +7919,30 @@ struct GraphCanvasWidget::Impl {
         definition_layout->addWidget(definition_line);
         layout->addWidget(definition_row);
         definition_row->hide();
-        QObject::connect(definition_name, &QLineEdit::textChanged, &view,
+        QObject::connect(definition_name, &QLineEdit::textChanged, &guard,
                          [this] { validateDefinitionRow(); });
-        QObject::connect(definition_name, &QLineEdit::returnPressed, &view,
+        QObject::connect(definition_name, &QLineEdit::returnPressed, &guard,
                          [this] { applyDefinitionRow(); });
-        QObject::connect(definition_apply, &QPushButton::clicked, &view,
+        QObject::connect(definition_apply, &QPushButton::clicked, &guard,
                          [this] { applyDefinitionRow(); });
-        QObject::connect(definition_cancel, &QPushButton::clicked, &view,
+        QObject::connect(definition_cancel, &QPushButton::clicked, &guard,
                          [this] { closeDefinitionRow(); });
         auto *definition_escape = new QAction(definition_name);
         definition_escape->setShortcut(QKeySequence{Qt::Key_Escape});
         definition_escape->setShortcutContext(Qt::WidgetShortcut);
         definition_name->addAction(definition_escape);
-        QObject::connect(definition_escape, &QAction::triggered, &view,
+        QObject::connect(definition_escape, &QAction::triggered, &guard,
                          [this] { closeDefinitionRow(); });
         // The Scope combo and the breadcrumb offer them for the definition
         // they show, on a right-click.
         scopes->setContextMenuPolicy(Qt::CustomContextMenu);
-        QObject::connect(scopes, &QWidget::customContextMenuRequested, &view,
+        QObject::connect(scopes, &QWidget::customContextMenuRequested, &guard,
                          [this](const QPoint &at) {
                              definitionMenu(scopes->currentData().toString().toStdString(),
                                             scopes->mapToGlobal(at));
                          });
         breadcrumb->setContextMenuPolicy(Qt::CustomContextMenu);
-        QObject::connect(breadcrumb, &QWidget::customContextMenuRequested, &view,
+        QObject::connect(breadcrumb, &QWidget::customContextMenuRequested, &guard,
                          [this](const QPoint &at) {
                              definitionMenu(model.currentScope(), breadcrumb->mapToGlobal(at));
                          });
@@ -7947,7 +7972,7 @@ struct GraphCanvasWidget::Impl {
             "ports of the same name keep their lines"));
         update_ports->hide();
         layout->addWidget(update_ports, 0, Qt::AlignLeft);
-        QObject::connect(update_ports, &QPushButton::clicked, &view, [this] {
+        QObject::connect(update_ports, &QPushButton::clicked, &guard, [this] {
             if (model.updateComputePorts()) dispatch();
             else synchronize();
         });
@@ -7960,7 +7985,7 @@ struct GraphCanvasWidget::Impl {
             "Make the buffer a runtime_f32 one as large as the render.scalar sinks writing it, in one edit"));
         fix_scalar_target->hide();
         layout->addWidget(fix_scalar_target, 0, Qt::AlignLeft);
-        QObject::connect(fix_scalar_target, &QPushButton::clicked, &view, [this] {
+        QObject::connect(fix_scalar_target, &QPushButton::clicked, &guard, [this] {
             if (model.fixScalarTarget()) dispatch();
             else synchronize();
         });
@@ -7968,14 +7993,14 @@ struct GraphCanvasWidget::Impl {
         compute_watch_settle = new QTimer(&view);
         compute_watch_settle->setSingleShot(true);
         compute_watch_settle->setInterval(200);
-        QObject::connect(compute_watch, &QFileSystemWatcher::fileChanged, &view,
+        QObject::connect(compute_watch, &QFileSystemWatcher::fileChanged, &guard,
                          [this](const QString &path) {
                              // An editor that replaces the file drops it from the watch.
                              if (!compute_watch->files().contains(path) && QFileInfo::exists(path))
                                  compute_watch->addPath(path);
                              compute_watch_settle->start();
                          });
-        QObject::connect(compute_watch_settle, &QTimer::timeout, &view, [this] {
+        QObject::connect(compute_watch_settle, &QTimer::timeout, &guard, [this] {
             model.refreshComputeShaderInterfaces();
             dispatch();
         });
@@ -8003,14 +8028,14 @@ struct GraphCanvasWidget::Impl {
         diagnostics_list->setTextInteractionFlags(Qt::TextSelectableByMouse);
         diagnostics_list->hide();
         layout->addWidget(diagnostics_list);
-        QObject::connect(diagnostics_toggle, &QPushButton::toggled, &view,
+        QObject::connect(diagnostics_toggle, &QPushButton::toggled, &guard,
                          [this](bool) { syncDiagnostics(); });
         expand_action = new QAction(QObject::tr("Expand to edit…"), &view);
         expand_action->setObjectName(QStringLiteral("pelican.graphCanvas.expandToEdit"));
         expand_action->setEnabled(false);
         view.addAction(expand_action);
-        QObject::connect(expand_action, &QAction::triggered, &view, [this] { expandToEdit(); });
-        QObject::connect(folded_notice, &QLabel::linkActivated, &view,
+        QObject::connect(expand_action, &QAction::triggered, &guard, [this] { expandToEdit(); });
+        QObject::connect(folded_notice, &QLabel::linkActivated, &guard,
                          [this](const QString &) { expand_action->trigger(); });
         expand_action->setToolTip(QObject::tr(
             "Decompose into loop… (the Frame Plan's) on a material pass, Replace with loop "
@@ -8028,8 +8053,8 @@ struct GraphCanvasWidget::Impl {
             view.addAction(action);
             // From the event loop: a dialog or a confirmation may open, and
             // the menu that fired it is still dispatching.
-            QObject::connect(action, &QAction::triggered, &view, [this, invoke] {
-                QMetaObject::invokeMethod(&view, [this, invoke] { (this->*invoke)(); },
+            QObject::connect(action, &QAction::triggered, &guard, [this, invoke] {
+                QMetaObject::invokeMethod(&guard, [this, invoke] { (this->*invoke)(); },
                                           Qt::QueuedConnection);
             });
             return action;
@@ -8124,7 +8149,7 @@ struct GraphCanvasWidget::Impl {
             QObject::connect(button, &QPushButton::clicked, action, &QAction::trigger);
             QObject::connect(action, &QAction::changed, button,
                              [button, action] { button->setEnabled(action->isEnabled()); });
-            QObject::connect(action, &QAction::triggered, &view, invoke);
+            QObject::connect(action, &QAction::triggered, &guard, invoke);
             action->setEnabled(false);
             return action;
         };
@@ -8141,7 +8166,7 @@ struct GraphCanvasWidget::Impl {
         auto_layout_action->setObjectName(
             QStringLiteral("pelican.graphCanvas.autoLayout"));
         view.addAction(auto_layout_action);
-        QObject::connect(auto_layout_action, &QAction::triggered, &view,
+        QObject::connect(auto_layout_action, &QAction::triggered, &guard,
                          [this] { scene->autoLayout(); });
         fit_view_action = new QAction(QObject::tr("Fit view"), &view);
         fit_view_action->setObjectName(
@@ -8153,7 +8178,7 @@ struct GraphCanvasWidget::Impl {
         // the keyboard, so the shortcut cannot take a keystroke off an editor.
         fit_view_action->setShortcutContext(Qt::WidgetShortcut);
         view.addAction(fit_view_action);
-        QObject::connect(fit_view_action, &QAction::triggered, &view,
+        QObject::connect(fit_view_action, &QAction::triggered, &guard,
                          [this] { canvas->fitView(); });
         // UX-1, decision 5: both stand in the row too, after Undo and Redo --
         // the right-click menu was the only way to them. The buttons fire
@@ -8178,7 +8203,7 @@ struct GraphCanvasWidget::Impl {
             QObject::tr("Run every pass that runs once again on the next frame"));
         recompute_once_action->setEnabled(false);
         view.addAction(recompute_once_action);
-        QObject::connect(recompute_once_action, &QAction::triggered, &view, [this] {
+        QObject::connect(recompute_once_action, &QAction::triggered, &guard, [this] {
             if (model.rerunOnce({}, {})) dispatch();
         });
         {
@@ -8188,7 +8213,7 @@ struct GraphCanvasWidget::Impl {
             controls->insertWidget(controls->count() - 1, button);
             QObject::connect(button, &QPushButton::clicked, recompute_once_action,
                              &QAction::trigger);
-            QObject::connect(recompute_once_action, &QAction::changed, button, [this, button] {
+            QObject::connect(recompute_once_action, &QAction::changed, &guard, [this, button] {
                 button->setEnabled(recompute_once_action->isEnabled());
                 button->setVisible(recompute_once_action->isEnabled());
             });
@@ -8200,13 +8225,13 @@ struct GraphCanvasWidget::Impl {
             QStringLiteral("pelican.graphCanvas.tieTogether"));
         tie_action->setEnabled(false);
         view.addAction(tie_action);
-        QObject::connect(tie_action, &QAction::triggered, &view,
+        QObject::connect(tie_action, &QAction::triggered, &guard,
                          [this] { scene->tieSelection(); });
         untie_action = new QAction(QObject::tr("Untie"), &view);
         untie_action->setObjectName(QStringLiteral("pelican.graphCanvas.untie"));
         untie_action->setEnabled(false);
         view.addAction(untie_action);
-        QObject::connect(untie_action, &QAction::triggered, &view,
+        QObject::connect(untie_action, &QAction::triggered, &guard,
                          [this] { scene->untieSelection(); });
         scene->setMenuActions(auto_layout_action, fit_view_action, tie_action,
                               untie_action);
@@ -8218,7 +8243,7 @@ struct GraphCanvasWidget::Impl {
             auto *action = new QAction(name, &view);
             action->setObjectName(QStringLiteral("pelican.graphCanvas.view.") + name);
             view.addAction(action);
-            QObject::connect(action, &QAction::triggered, &view,
+            QObject::connect(action, &QAction::triggered, &guard,
                              [this, node_view] { (void)scene->setPickedNodeViews(node_view); });
         }
         // LP-4c. "Add loop" puts a loop in the root over a new, empty body
@@ -8230,14 +8255,14 @@ struct GraphCanvasWidget::Impl {
         add_loop_action = new QAction(QObject::tr("Add loop"), &view);
         add_loop_action->setObjectName(QStringLiteral("pelican.graphCanvas.addLoop"));
         view.addAction(add_loop_action);
-        QObject::connect(add_loop_action, &QAction::triggered, &view, [this] {
+        QObject::connect(add_loop_action, &QAction::triggered, &guard, [this] {
             scene->addLoop({}, model.suggestDefinitionName());
         });
         add_fullscreen_action = new QAction(QObject::tr("Add fullscreen pass"), &view);
         add_fullscreen_action->setObjectName(
             QStringLiteral("pelican.graphCanvas.addFullscreenPass"));
         view.addAction(add_fullscreen_action);
-        QObject::connect(add_fullscreen_action, &QAction::triggered, &view, [this] {
+        QObject::connect(add_fullscreen_action, &QAction::triggered, &guard, [this] {
             scene->addFromPalette("render.fullscreen");
         });
         scene->setAddActions(add_loop_action, add_fullscreen_action);
@@ -8252,7 +8277,7 @@ struct GraphCanvasWidget::Impl {
         new_definition_action->setToolTip(
             QObject::tr("An empty definition of its own, to fill and attach as an instance"));
         view.addAction(new_definition_action);
-        QObject::connect(new_definition_action, &QAction::triggered, &view,
+        QObject::connect(new_definition_action, &QAction::triggered, &guard,
                          [this] { openNewDefinitionRow(); });
         scene->setNewDefinitionAction(new_definition_action);
         // Q-19, decision 4. Named, like the additions: fired by name they
@@ -8263,14 +8288,14 @@ struct GraphCanvasWidget::Impl {
             QStringLiteral("pelican.graphCanvas.renameDefinition"));
         rename_definition_action->setEnabled(false);
         view.addAction(rename_definition_action);
-        QObject::connect(rename_definition_action, &QAction::triggered, &view,
+        QObject::connect(rename_definition_action, &QAction::triggered, &guard,
                          [this] { openDefinitionRow(false); });
         delete_definition_action = new QAction(QObject::tr("Delete definition"), &view);
         delete_definition_action->setObjectName(
             QStringLiteral("pelican.graphCanvas.deleteDefinition"));
         delete_definition_action->setEnabled(false);
         view.addAction(delete_definition_action);
-        QObject::connect(delete_definition_action, &QAction::triggered, &view,
+        QObject::connect(delete_definition_action, &QAction::triggered, &guard,
                          [this] { openDefinitionRow(true); });
         scene->setDefinitionActions(
             rename_definition_action, delete_definition_action,
@@ -8354,7 +8379,7 @@ struct GraphCanvasWidget::Impl {
                                       QString{what}.replace(QLatin1Char(':'), QLatin1Char('.')));
                 view.addAction(action);
                 menu->addAction(action);
-                QObject::connect(action, &QAction::triggered, &view, [this, what] {
+                QObject::connect(action, &QAction::triggered, &guard, [this, what] {
                     // Fired by name, the menu may still be open.
                     layer_menu->hide();
                     (void)scene->addLayer(what.toStdString());
@@ -8374,7 +8399,7 @@ struct GraphCanvasWidget::Impl {
                 action->setObjectName(QStringLiteral("pelican.graphCanvas.layerAdd.adjustment.") + qtext(kind));
                 view.addAction(action);
                 adjustments->addAction(action);
-                QObject::connect(action, &QAction::triggered, &view, [this, op = choice.op] {
+                QObject::connect(action, &QAction::triggered, &guard, [this, op = choice.op] {
                     layer_menu->hide();
                     (void)scene->addLayer("adjustment:" + op);
                 });
@@ -8463,14 +8488,14 @@ struct GraphCanvasWidget::Impl {
         layers->setToolTip(QObject::tr("Read only. Click a pass to pick it in the Frame Plan."));
         layers->hide();
         side_layout->addWidget(layers, 1);
-        QObject::connect(layers_toggle, &QPushButton::toggled, &view,
+        QObject::connect(layers_toggle, &QPushButton::toggled, &guard,
                          [this](bool) { syncLayers(); });
         // GL-5f, decision 4: the heading's right-click holds the whole
         // graph's decisions, rows or not.
         layers_toggle->setContextMenuPolicy(Qt::CustomContextMenu);
-        QObject::connect(layers_toggle, &QWidget::customContextMenuRequested, &view,
+        QObject::connect(layers_toggle, &QWidget::customContextMenuRequested, &guard,
                          [this](const QPoint &at) { layersHeadingMenu(at); });
-        QObject::connect(layers, &QTreeWidget::itemClicked, &view,
+        QObject::connect(layers, &QTreeWidget::itemClicked, &guard,
                          [this](QTreeWidgetItem *item, int) {
                              if (item == nullptr || !frame_plan_node_action) return;
                              const auto node = item->data(0, Qt::UserRole).toString();
@@ -8486,8 +8511,8 @@ struct GraphCanvasWidget::Impl {
             action->setObjectName(QString::fromLatin1(name));
             action->setToolTip(tip);
             view.addAction(action);
-            QObject::connect(action, &QAction::triggered, &view, [this, run] {
-                QMetaObject::invokeMethod(&view, [this, run] { (this->*run)(); },
+            QObject::connect(action, &QAction::triggered, &guard, [this, run] {
+                QMetaObject::invokeMethod(&guard, [this, run] { (this->*run)(); },
                                           Qt::QueuedConnection);
             });
             return action;
@@ -8515,9 +8540,9 @@ struct GraphCanvasWidget::Impl {
                         "the Physical plan's Remove TRANSFER_SRC."),
             &Impl::removeLayersTransferSource);
         layers->setContextMenuPolicy(Qt::CustomContextMenu);
-        QObject::connect(layers, &QWidget::customContextMenuRequested, &view,
+        QObject::connect(layers, &QWidget::customContextMenuRequested, &guard,
                          [this](const QPoint &at) { layersMenu(at); });
-        QObject::connect(layers, &QTreeWidget::currentItemChanged, &view,
+        QObject::connect(layers, &QTreeWidget::currentItemChanged, &guard,
                          [this] { syncLayersActions(); });
         auto *label_row = new QHBoxLayout;
         auto *label_caption = new QLabel(QObject::tr("Label"), side);
@@ -8609,10 +8634,10 @@ struct GraphCanvasWidget::Impl {
             target->setAcceptDrops(true);
             target->installEventFilter(sound_drop);
         }
-        QObject::connect(audio_import, &QPushButton::clicked, &view, [this] {
+        QObject::connect(audio_import, &QPushButton::clicked, &guard, [this] {
             chooseSounds();
         });
-        QObject::connect(audio_bake, &QPushButton::clicked, &view, [this] {
+        QObject::connect(audio_bake, &QPushButton::clicked, &guard, [this] {
             if (analysis) analysis->chooseBake(audio_asset->currentText().trimmed().toStdString());
         });
         audio_layout->addRow(caption(QObject::tr("Bus")), audio_bus);
@@ -8625,7 +8650,7 @@ struct GraphCanvasWidget::Impl {
                 // From the event loop: the scope change rebuilds the fields
                 // the press came from.
                 QMetaObject::invokeMethod(
-                    &view, [this, loop] {
+                    &guard, [this, loop] {
                         scene->enterNode(loop);
                         dispatch();
                     },
@@ -8702,9 +8727,9 @@ struct GraphCanvasWidget::Impl {
         // the one place the raw document is written; the fields above are
         // what is picked. Only a parameter's value opens, on a double-click.
         details->setEditTriggers(QAbstractItemView::NoEditTriggers);
-        QObject::connect(details, &QTreeWidget::itemDoubleClicked, &view,
+        QObject::connect(details, &QTreeWidget::itemDoubleClicked, &guard,
                          [this](QTreeWidgetItem *item, int) { beginParameterEdit(item); });
-        QObject::connect(details, &QTreeWidget::itemChanged, &view,
+        QObject::connect(details, &QTreeWidget::itemChanged, &guard,
                          [this](QTreeWidgetItem *item, int column) {
                              if (item == nullptr || item != editing_parameter || column != 1) return;
                              editing_parameter = nullptr;
@@ -8713,11 +8738,17 @@ struct GraphCanvasWidget::Impl {
                              // Not from inside the tree's own signal: the
                              // edit redraws the details, item included.
                              QMetaObject::invokeMethod(
-                                 &view, [this, key, text] { commitParameterText(key, text); },
+                                 &guard, [this, key, text] { commitParameterText(key, text); },
                                  Qt::QueuedConnection);
                          });
-        QObject::connect(details->itemDelegate(), &QAbstractItemDelegate::closeEditor, &view,
-                         [this] { editing_parameter = nullptr; });
+        QObject::connect(details->itemDelegate(), &QAbstractItemDelegate::closeEditor, &guard,
+                         [this] {
+                             // GS-UAF1 test seam: this runs from the tree's
+                             // QWidget destructor, after the Impl is gone.
+                             if (graphCanvasTeardownDyingForTest)
+                                 ++graphCanvasTeardownCountForTest;
+                             editing_parameter = nullptr;
+                         });
         side_layout->addWidget(details, 1);
         // Last in the column, so its coming and going moves no field.
         side_layout->addWidget(plan_notes);
@@ -8770,12 +8801,12 @@ struct GraphCanvasWidget::Impl {
         timeline_layout->addWidget(timeline);
         timeline_panel->hide();
         layout->addWidget(timeline_panel);
-        QObject::connect(timeline_toggle, &QPushButton::toggled, &view,
+        QObject::connect(timeline_toggle, &QPushButton::toggled, &guard,
                          [this](bool open) {
                              timeline_panel->setVisible(open);
                              synchronizeTimeline();
                          });
-        QObject::connect(live, &QCheckBox::toggled, &view, [this](bool on) {
+        QObject::connect(live, &QCheckBox::toggled, &guard, [this](bool on) {
             model.setLive(on);
             dispatch();
         });
@@ -8841,7 +8872,7 @@ struct GraphCanvasWidget::Impl {
         // from inside a drag and from inside a rebuild.
         scene->gestureEnded = [this] {
             if (!synchronize_after_drag) return;
-            QTimer::singleShot(0, &view, [this] {
+            QTimer::singleShot(0, &guard, [this] {
                 if (scene->dragging()) return;
                 synchronize();
             });
@@ -8879,7 +8910,7 @@ struct GraphCanvasWidget::Impl {
                                               const std::string &port) {
             openPerIteration(node, port);
         };
-        QObject::connect(loop_branch, &QComboBox::currentIndexChanged, &view,
+        QObject::connect(loop_branch, &QComboBox::currentIndexChanged, &guard,
                          [this](int index) {
                              if (index < 0) return;
                              const auto branch = static_cast<std::size_t>(
@@ -8912,14 +8943,14 @@ struct GraphCanvasWidget::Impl {
             dispatch();
         };
 
-        QObject::connect(refresh, &QPushButton::clicked, &view, [this] {
+        QObject::connect(refresh, &QPushButton::clicked, &guard, [this] {
             model.refresh();
             dispatch();
             // AB-1s, decision 4: a sound changed on disk moves no document.
             readDerivedIfMoved(true);
         });
         QObject::connect(
-            scopes, &QComboBox::currentIndexChanged, &view, [this](int index) {
+            scopes, &QComboBox::currentIndexChanged, &guard, [this](int index) {
                 if (index < 0) return;
                 const auto scope =
                     scopes->itemData(index).toString().toStdString();
@@ -8932,7 +8963,7 @@ struct GraphCanvasWidget::Impl {
                 showDetails();
             });
         QObject::connect(
-            value_instances, &QComboBox::currentIndexChanged, &view,
+            value_instances, &QComboBox::currentIndexChanged, &guard,
             [this](int index) {
                 if (index < 0) return;
                 model.watchInstance(
@@ -8948,31 +8979,31 @@ struct GraphCanvasWidget::Impl {
                                    label_edit->text().toStdString()))
                 dispatch();
         };
-        QObject::connect(apply_label, &QPushButton::clicked, &view, rename);
-        QObject::connect(label_edit, &QLineEdit::returnPressed, &view, rename);
+        QObject::connect(apply_label, &QPushButton::clicked, &guard, rename);
+        QObject::connect(label_edit, &QLineEdit::returnPressed, &guard, rename);
         // GL-1d: the palette is a modal dialog; opened from the event loop,
         // as the menu's Add node... opens it, the click that asked for it
         // has finished (and a scenario's click has its reply).
-        QObject::connect(add_node, &QPushButton::clicked, &view, [this] {
-            QMetaObject::invokeMethod(&view, [this] { openPalette(); },
+        QObject::connect(add_node, &QPushButton::clicked, &guard, [this] {
+            QMetaObject::invokeMethod(&guard, [this] { openPalette(); },
                                       Qt::QueuedConnection);
         });
         // Picking from the list and pressing Enter on a typed path are the
         // two ways the field is finished; each sends one set_node_parameters.
-        QObject::connect(ui_node, &QComboBox::activated, &view,
+        QObject::connect(ui_node, &QComboBox::activated, &guard,
                          [this](int index) { commitUiNode(ui_node->itemText(index)); });
-        QObject::connect(ui_node->lineEdit(), &QLineEdit::returnPressed, &view,
+        QObject::connect(ui_node->lineEdit(), &QLineEdit::returnPressed, &guard,
                          [this] { commitUiNode(ui_node->currentText()); });
         // Q-10: the same two ways for the sound; bus and wrap are only picked.
-        QObject::connect(audio_asset, &QComboBox::activated, &view, [this](int index) {
+        QObject::connect(audio_asset, &QComboBox::activated, &guard, [this](int index) {
             commitAudio("asset", audio_asset->itemText(index));
         });
-        QObject::connect(audio_asset->lineEdit(), &QLineEdit::returnPressed, &view,
+        QObject::connect(audio_asset->lineEdit(), &QLineEdit::returnPressed, &guard,
                          [this] { commitAudio("asset", audio_asset->currentText()); });
-        QObject::connect(audio_bus, &QComboBox::activated, &view, [this](int index) {
+        QObject::connect(audio_bus, &QComboBox::activated, &guard, [this](int index) {
             commitAudio("bus", audio_bus->itemText(index));
         });
-        QObject::connect(audio_wrap, &QComboBox::activated, &view, [this](int index) {
+        QObject::connect(audio_wrap, &QComboBox::activated, &guard, [this](int index) {
             commitAudio("wrap", audio_wrap->itemText(index));
         });
 
@@ -8980,15 +9011,15 @@ struct GraphCanvasWidget::Impl {
         // the widget's pointer to this Impl is still null. Every handler works
         // on the Impl directly, never back through the half-built widget.
         if (graph.result)
-            graph.result(&view, [this](qint64 id, const QByteArray &json) {
+            graph.result(&guard, [this](qint64 id, const QByteArray &json) {
                 deliverResult(id, json);
             });
         if (graph.failure)
-            graph.failure(&view, [this](qint64 id, const QString &message) {
+            graph.failure(&guard, [this](qint64 id, const QString &message) {
                 deliverFailure(id, message);
             });
         if (graph.ready)
-            graph.ready(&view, [this](bool available, const QString &) {
+            graph.ready(&guard, [this](bool available, const QString &) {
                 if (!available) {
                     if (pending_reveal_failed) pending_reveal.clear();
                     pending_reveal_failed = {};
@@ -9314,7 +9345,7 @@ struct GraphCanvasWidget::Impl {
             return {};
         });
         // Cancel (or the window closed) before OK: nothing was made.
-        QObject::connect(new_target_form, &QDialog::rejected, &view, [this] {
+        QObject::connect(new_target_form, &QDialog::rejected, &guard, [this] {
             if (new_target_sent.empty()) newTargetDone({});
         });
         return *new_target_form;
@@ -10011,7 +10042,7 @@ struct GraphCanvasWidget::Impl {
                 return true;
             }
             if (status == "pending") {
-                QTimer::singleShot(25, &view, [this] { requestPassTicket(); });
+                QTimer::singleShot(25, &guard, [this] { requestPassTicket(); });
                 return true;
             }
             pass_ticket.clear();
@@ -10352,7 +10383,7 @@ struct GraphCanvasWidget::Impl {
         // UX-12e, decision 5: the palette again, inside, on the op it was for.
         if (palette_after_scope && palette_after_scope->first == entered) {
             palette_filter_next = palette_after_scope->second;
-            QMetaObject::invokeMethod(&view, [this] { openPalette(); }, Qt::QueuedConnection);
+            QMetaObject::invokeMethod(&guard, [this] { openPalette(); }, Qt::QueuedConnection);
         }
         palette_after_scope.reset();
         return true;
@@ -11235,7 +11266,7 @@ struct GraphCanvasWidget::Impl {
         dialog->setNameFilter(QObject::tr("Sounds (*.wav *.ogg *.WAV *.OGG)"));
         if (auto *name = dialog->findChild<QLineEdit *>(QStringLiteral("fileNameEdit")))
             name->setObjectName(QStringLiteral("pelican.audioImportDialog.fileName"));
-        QObject::connect(dialog, &QFileDialog::filesSelected, &view, [this](const QStringList &picked) {
+        QObject::connect(dialog, &QFileDialog::filesSelected, &guard, [this](const QStringList &picked) {
             std::vector<std::filesystem::path> files;
             for (const auto &file : picked) files.emplace_back(file.toStdWString());
             importSounds(files);
@@ -11515,9 +11546,9 @@ struct GraphCanvasWidget::Impl {
         cell_layout->addWidget(button);
         cell->setAttribute(Qt::WA_TranslucentBackground);
         list.setItemWidget(&row, cell);
-        QObject::connect(button, &QToolButton::clicked, dialog, [this, dialog, op] {
+        QObject::connect(button, &QToolButton::clicked, &guard, [this, dialog, op] {
             dialog->reject();
-            QMetaObject::invokeMethod(&view, [this, op] { newDefinitionFor(op); }, Qt::QueuedConnection);
+            QMetaObject::invokeMethod(&guard, [this, op] { newDefinitionFor(op); }, Qt::QueuedConnection);
         });
     }
 
@@ -11842,7 +11873,7 @@ struct GraphCanvasWidget::Impl {
         // GL-5b: the note follows New render target… being picked.
         QObject::connect(targets, &QComboBox::currentIndexChanged, dialog,
                          [syncDefinition] { syncDefinition(); });
-        QObject::connect(compute_new, &QPushButton::clicked, dialog,
+        QObject::connect(compute_new, &QPushButton::clicked, &guard,
                          [this, compute_shader, seed_note, syncDefinition] {
                              RayTracingTemplateWrite written;
                              QString failure;
@@ -11898,7 +11929,7 @@ struct GraphCanvasWidget::Impl {
         // in hand kept.
         auto *engine_shaders_arrive = new QTimer{dialog};
         engine_shaders_arrive->setInterval(200);
-        QObject::connect(engine_shaders_arrive, &QTimer::timeout, dialog,
+        QObject::connect(engine_shaders_arrive, &QTimer::timeout, &guard,
                          [this, list, reload, syncDefinition,
                           seen = model.engineShadersRevision()]() mutable {
                              if (model.engineShadersRevision() == seen) return;
@@ -11917,7 +11948,7 @@ struct GraphCanvasWidget::Impl {
         // UX-9, decision 3: what was picked is read as the palette closes and
         // added from the event loop, after it has gone.
         QObject::connect(
-            dialog, &QDialog::finished, &view,
+            dialog, &QDialog::finished, &guard,
             [this, scope, list, definitions, new_definition_data, new_name, contracts, targets,
              snapshot_after, compute_shader, element, attribute_domain, count](int result) {
                 // GL-5c: only the palette placeFromPalette opened picks what it placed.
@@ -11932,7 +11963,7 @@ struct GraphCanvasWidget::Impl {
                     scene->clearPaletteScope();
                     const auto op = row->data(Qt::UserRole).toString().toStdString();
                     QMetaObject::invokeMethod(
-                        &view, [this, op] { newDefinitionFor(op); }, Qt::QueuedConnection);
+                        &guard, [this, op] { newDefinitionFor(op); }, Qt::QueuedConnection);
                     return;
                 }
                 PaletteChoice choice;
@@ -11952,7 +11983,7 @@ struct GraphCanvasWidget::Impl {
                 if (choice.op == "render.target_ref" &&
                     targets->currentData().toString() == QLatin1String{kPaletteNewTarget}) {
                     QMetaObject::invokeMethod(
-                        &view,
+                        &guard,
                         [this, scope, kind = besideMaterialPassTargetKind(scope)] {
                             newTargetReference(scope, kind);
                         },
@@ -11980,7 +12011,7 @@ struct GraphCanvasWidget::Impl {
                             attribute_domain->currentData().toString().toStdString();
                 }
                 QMetaObject::invokeMethod(
-                    &view, [this, choice = std::move(choice)] { askRequired(choice); },
+                    &guard, [this, choice = std::move(choice)] { askRequired(choice); },
                     Qt::QueuedConnection);
             });
         dialog->open();
@@ -11999,7 +12030,7 @@ struct GraphCanvasWidget::Impl {
         }
         auto *ask = new GraphCanvasRequiredDialog{model, choice.scope, choice.op, &view, project_root};
         ask->setAttribute(Qt::WA_DeleteOnClose);
-        QObject::connect(ask, &QDialog::finished, &view,
+        QObject::connect(ask, &QDialog::finished, &guard,
                          [this, ask, choice = std::move(choice)](int result) mutable {
                              if (result != QDialog::Accepted) {
                                  scene->clearPaletteScope();
@@ -12011,7 +12042,7 @@ struct GraphCanvasWidget::Impl {
                              for (const auto &[key, value] : chosen.items())
                                  choice.seed[key] = value;
                              QMetaObject::invokeMethod(
-                                 &view,
+                                 &guard,
                                  [this, choice = std::move(choice)]() mutable {
                                      placeWhenEditable(std::move(choice));
                                  },
@@ -12106,7 +12137,7 @@ struct GraphCanvasWidget::Impl {
         scene->setPaletteScope({});
         palette_filter_next = op;
         reveal_palette_placement = true;
-        QMetaObject::invokeMethod(&view, [this] { openPalette(); }, Qt::QueuedConnection);
+        QMetaObject::invokeMethod(&guard, [this] { openPalette(); }, Qt::QueuedConnection);
     }
 
     void showDetails() {
@@ -12637,7 +12668,10 @@ GraphCanvasWidget::GraphCanvasWidget(GraphCanvasReadCapability graph,
     });
 }
 
-GraphCanvasWidget::~GraphCanvasWidget() { setEngineShaderListRequester({}); }
+GraphCanvasWidget::~GraphCanvasWidget() {
+    graphCanvasTeardownDyingForTest = true;
+    setEngineShaderListRequester({});
+}
 
 void GraphCanvasWidget::setPerfLines(const QString &summary, const QString &delta) {
     impl_->perf_summary->setText(summary);

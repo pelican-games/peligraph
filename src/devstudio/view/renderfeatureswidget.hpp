@@ -90,4 +90,10 @@ class RenderFeaturesWidget final : public QWidget {
     void renderConfigCommitted();
 };
 
+// GS-UAF1 test seam: how many feature-parameter dialog destroyed callbacks
+// reached the panel after its destructor had started. A test opens the dialog,
+// destroys the panel, and requires this to stay zero. Not used in production.
+int renderFeaturesTeardownCallbacksForTest();
+void resetRenderFeaturesTeardownCallbacksForTest();
+
 } // namespace PelicanStudio

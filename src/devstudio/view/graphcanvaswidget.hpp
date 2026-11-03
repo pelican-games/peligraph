@@ -1666,6 +1666,12 @@ class GraphCanvasWidget final : public QWidget {
     QWidget *canvasLayersPanel();
 };
 
+// GS-UAF1 test seam: how many closeEditor callbacks reached the panel after
+// its destructor had started. A test opens an in-place parameter editor,
+// destroys the widget, and requires this to stay zero. Not used in production.
+int graphCanvasTeardownCallbacksForTest();
+void resetGraphCanvasTeardownCallbacksForTest();
+
 // How the Graph tab's view is set up: a press on empty canvas draws a
 // rubber band, and -- UX-1, decision 2 -- both scroll bars are always shown.
 // A scene rect that grew under a drag made one appear; the viewport shrank

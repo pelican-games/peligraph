@@ -21486,3 +21486,50 @@ TEST_CASE("GS-3b3a a reply is classified before it is drawn: root, body, chrome,
               body_before);
     }
 }
+
+// ---- GS-UAF1 ----
+// The parameter editor of the details tree is an item-delegate editor owned by
+// the canvas's children. Destroying the panel with it open used to run the
+// delegate's closeEditor lambda after the Impl it writes into was freed.
+TEST_CASE("GS-UAF1 destroying the graph panel with a details parameter editor open does not "
+          "reach the freed canvas",
+          "[devstudio][graph-canvas][scene][uaf1]") {
+    (void)application();
+    PelicanStudio::resetGraphCanvasTeardownCallbacksForTest();
+    Ux2Tab tab{true};
+    tab.read(ux2Document(ux2Image()), "uaf1-0");
+    tab.answer("get_graph_catalog", ux2Catalog());
+    tab.widget->scene().selectNode("shade__color");
+    QCoreApplication::processEvents();
+    // The image fields ask for the vocabulary themselves.
+    tab.widget->poll();
+    REQUIRE(tab.reads("get_render_authoring_context") == 1);
+    tab.answer("get_render_authoring_context", ux2Authoring());
+    tab.widget->poll();
+    auto *details =
+        tab.widget->findChild<QTreeWidget *>(QStringLiteral("pelican.graphCanvasDetails"));
+    REQUIRE(details != nullptr);
+    // The first parameter row under "parameters": a JSON value the tree edits
+    // in place (the port table has rows of the same names but no editor).
+    QTreeWidgetItem *parameter = nullptr;
+    const auto groups =
+        details->findItems(QStringLiteral("parameters"), Qt::MatchExactly | Qt::MatchRecursive);
+    for (const auto *group : groups) {
+        if (group->parent() != nullptr || group->childCount() == 0) continue;
+        parameter = group->child(0);
+        break;
+    }
+    REQUIRE(parameter != nullptr);
+    REQUIRE_FALSE(parameter->data(1, Qt::UserRole).toString().isEmpty());
+    Q_EMIT details->itemDoubleClicked(parameter, 1);
+    QCoreApplication::processEvents();
+    // The delegate's in-place editor: a line edit inside the tree's viewport.
+    auto *editor = details->viewport()->findChild<QLineEdit *>();
+    REQUIRE(editor != nullptr);
+    REQUIRE(editor->isVisible());
+    // Destroying the panel destroys the delegate editor from the QWidget base
+    // destructor, after impl_ has gone.
+    tab.widget.reset();
+    CHECK(PelicanStudio::graphCanvasTeardownCallbacksForTest() == 0);
+    PelicanStudio::resetGraphCanvasTeardownCallbacksForTest();
+}

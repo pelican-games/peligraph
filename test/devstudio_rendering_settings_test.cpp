@@ -2048,4 +2048,36 @@ TEST_CASE("RC5b Render Features materializes and reverts one base fragment", "[d
     refresh(RootC, false);
     CHECK(rows.item(0)->text().contains("Following"));
 }
+
+// ---- GS-UAF1 ----
+// The feature-parameter dialog is a child of the panel. Destroying the panel
+// with it open used to run the dialog's destroyed lambda after the Impl it
+// reads was freed.
+TEST_CASE("GS-UAF1 destroying the render features panel with its parameter dialog open does "
+          "not reach the freed panel",
+          "[devstudio][ux10][render-features][widget][uaf1]") {
+    (void)application();
+    resetRenderFeaturesTeardownCallbacksForTest();
+    Transport engine;
+    auto digest = std::make_shared<RenderConfigDigest>();
+    auto features = std::make_unique<RenderFeaturesWidget>(&engine.viewport);
+    features->setRenderConfigDigest(digest);
+    uxFeaturesRead(engine, RootA, Json::object());
+    auto &list = required<QListWidget>(*features, "pelican.renderFeatures.current");
+    REQUIRE(list.count() == 1);
+    list.setCurrentRow(0);
+    QApplication::processEvents();
+    auto &open = required<QPushButton>(*features, "pelican.renderFeatures.parameters");
+    REQUIRE(open.isEnabled());
+    open.click();
+    QApplication::processEvents();
+    auto *dialog = features->findChild<QDialog *>(QStringLiteral("pelican.featureParameters"));
+    REQUIRE(dialog != nullptr);
+    REQUIRE(dialog->isVisible());
+    // Destroying the panel deletes the dialog from the QWidget base
+    // destructor, after impl_ has gone.
+    features.reset();
+    CHECK(renderFeaturesTeardownCallbacksForTest() == 0);
+    resetRenderFeaturesTeardownCallbacksForTest();
+}
 } // namespace PelicanStudio

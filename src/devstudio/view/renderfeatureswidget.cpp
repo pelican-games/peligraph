@@ -2155,6 +2155,24 @@ if (const auto completion = completeEdit(outcome.result, restart);
 
 } // namespace
 
+// GS-UAF1 test seam: the feature-parameter dialog's destroyed callback
+// reports here only once the panel's destructor has started, so a test can see
+// that it ran after the Impl was freed without needing AddressSanitizer. The
+// counter is reset (with the flag) at the start of each test.
+namespace {
+bool renderFeaturesTeardownDyingForTest = false;
+int renderFeaturesTeardownCountForTest = 0;
+} // namespace
+
+int renderFeaturesTeardownCallbacksForTest() {
+    return renderFeaturesTeardownCountForTest;
+}
+
+void resetRenderFeaturesTeardownCallbacksForTest() {
+    renderFeaturesTeardownDyingForTest = false;
+    renderFeaturesTeardownCountForTest = 0;
+}
+
 struct RenderFeaturesWidget::Impl {
     enum class RequestKind {
         CanEdit,
@@ -2348,6 +2366,13 @@ struct RenderFeaturesWidget::Impl {
     };
     std::optional<TargetsEdit> chain;
 
+    // GS-UAF1: the context of every connection whose lambda reads this Impl
+    // but whose sender can outlive it (the panel, one of its children, or the
+    // viewport). Declared last, so it is destroyed first and those connections
+    // are already gone when the QWidget base destructor tears down the child
+    // dialogs.
+    QObject guard;
+
     // A commit the engine runs only after a restart: the window restarts it
     // (asking about unsaved scene edits first), and the panel says so. The
     // line goes up after the call, so it is what stays while the engine
@@ -2399,9 +2424,9 @@ struct RenderFeaturesWidget::Impl {
         fragment_layout->addLayout(fragment_actions);
         fragment_section->hide();
         layout->addWidget(fragment_section, 1);
-        QObject::connect(fragments, &QListWidget::itemSelectionChanged, &owner, [this] { updateControls(); });
-        QObject::connect(materialize_fragment, &QPushButton::clicked, &owner, [this] { materializeFragment(); });
-        QObject::connect(revert_fragment, &QPushButton::clicked, &owner, [this] { revertFragment(); });
+        QObject::connect(fragments, &QListWidget::itemSelectionChanged, &guard, [this] { updateControls(); });
+        QObject::connect(materialize_fragment, &QPushButton::clicked, &guard, [this] { materializeFragment(); });
+        QObject::connect(revert_fragment, &QPushButton::clicked, &guard, [this] { revertFragment(); });
         current = new QListWidget(&owner);
         current->setObjectName(
             QStringLiteral("pelican.renderFeatures.current"));
@@ -2419,11 +2444,11 @@ struct RenderFeaturesWidget::Impl {
         parameters = new QPushButton(owner.tr("Parameters"), &owner);
         parameters->setObjectName("pelican.renderFeatures.parameters");
         remove_row->addWidget(parameters);
-        QObject::connect(parameters, &QPushButton::clicked, &owner, [this] { editParameters(); });
+        QObject::connect(parameters, &QPushButton::clicked, &guard, [this] { editParameters(); });
         materialize = new QPushButton(owner.tr("Make editable"), &owner);
         materialize->setObjectName("pelican.renderFeatures.materialize");
         remove_row->addWidget(materialize);
-        QObject::connect(materialize, &QPushButton::clicked, &owner, [this] { stageMaterialize(); });
+        QObject::connect(materialize, &QPushButton::clicked, &guard, [this] { stageMaterialize(); });
         // LP-4f2. A feature the engine ships a decomposed graph for offers it
         // on its row: the button under the list and the row's right-click
         // fire the same named action.
@@ -2431,7 +2456,7 @@ struct RenderFeaturesWidget::Impl {
         replace_action->setObjectName(
             QStringLiteral("pelican.renderFeatures.replaceWithLoopVersion"));
         owner.addAction(replace_action);
-        QObject::connect(replace_action, &QAction::triggered, &owner, [this] {
+        QObject::connect(replace_action, &QAction::triggered, &guard, [this] {
             auto *item = current->currentItem();
             if (item == nullptr) {
                 showError(owner.tr("Select the feature to replace first."));
@@ -2445,7 +2470,7 @@ struct RenderFeaturesWidget::Impl {
         remove_row->addWidget(replace);
         QObject::connect(replace, &QPushButton::clicked, replace_action, &QAction::trigger);
         current->setContextMenuPolicy(Qt::CustomContextMenu);
-        QObject::connect(current, &QWidget::customContextMenuRequested, &owner,
+        QObject::connect(current, &QWidget::customContextMenuRequested, &guard,
                          [this](const QPoint &point) {
                              auto *item = current->itemAt(point);
                              if (item == nullptr) return;
@@ -2539,7 +2564,7 @@ struct RenderFeaturesWidget::Impl {
         offer_row->addStretch();
         layout->addWidget(offers);
         hideOffers();
-        QObject::connect(add_with_targets, &QPushButton::clicked, &owner, [this] {
+        QObject::connect(add_with_targets, &QPushButton::clicked, &guard, [this] {
             const auto reference = offered_reference;
             const auto name = offered_name;
             const auto extra = offered_target;
@@ -2550,8 +2575,8 @@ struct RenderFeaturesWidget::Impl {
             staged.reset();
             readForTargets(reference, name, false, extra, writer ? writer_target : std::nullopt, writer);
         });
-        QObject::connect(writer_choice, &QComboBox::currentIndexChanged, &owner, [this] { writerPicked(); });
-        QObject::connect(write_from, &QPushButton::clicked, &owner, [this] {
+        QObject::connect(writer_choice, &QComboBox::currentIndexChanged, &guard, [this] { writerPicked(); });
+        QObject::connect(write_from, &QPushButton::clicked, &guard, [this] {
             const auto reference = offered_reference;
             const auto name = offered_name;
             const auto writer_target = offered_writer_target;
@@ -2561,9 +2586,9 @@ struct RenderFeaturesWidget::Impl {
             staged.reset();
             readForTargets(reference, name, false, std::nullopt, writer_target, writer);
         });
-        QObject::connect(show_target, &QPushButton::clicked, &owner, [this] { startShow(); });
-        QObject::connect(place_anchor, &QPushButton::clicked, &owner, [this] { placeAnchor(); });
-        QObject::connect(fix_target_ref, &QPushButton::clicked, &owner, [this] { startFix(); });
+        QObject::connect(show_target, &QPushButton::clicked, &guard, [this] { startShow(); });
+        QObject::connect(place_anchor, &QPushButton::clicked, &guard, [this] { placeAnchor(); });
+        QObject::connect(fix_target_ref, &QPushButton::clicked, &guard, [this] { startFix(); });
 
         auto *actions = new QHBoxLayout;
         refresh = new QPushButton(owner.tr("Refresh"), &owner);
@@ -2576,7 +2601,7 @@ struct RenderFeaturesWidget::Impl {
         auto *procedural_assets = new QPushButton(owner.tr("Assets"), &owner);
         procedural_assets->setObjectName(QStringLiteral("pelican.renderFeatures.proceduralAssets"));
         actions->addWidget(procedural_assets);
-        QObject::connect(procedural_assets, &QPushButton::clicked, &owner, [this] {
+        QObject::connect(procedural_assets, &QPushButton::clicked, &guard, [this] {
             auto *dialog = new ProceduralAssetDialog(viewport, &owner, [this] {
                 requestRefresh();
                 emit owner.renderConfigCommitted();
@@ -2586,11 +2611,11 @@ struct RenderFeaturesWidget::Impl {
         auto *tasks = new QPushButton(owner.tr("Tasks"), &owner);
         tasks->setObjectName(QStringLiteral("pelican.renderFeatures.tasks"));
         actions->addWidget(tasks);
-        QObject::connect(tasks, &QPushButton::clicked, &owner, [this] { owner.editComputeTask({}); });
+        QObject::connect(tasks, &QPushButton::clicked, &guard, [this] { owner.editComputeTask({}); });
         auto *fork_preset = new QPushButton(owner.tr("Fork"), &owner);
         fork_preset->setObjectName(QStringLiteral("pelican.renderFeatures.forkPreset"));
         actions->addWidget(fork_preset);
-        QObject::connect(fork_preset, &QPushButton::clicked, &owner, [this] {
+        QObject::connect(fork_preset, &QPushButton::clicked, &guard, [this] {
             auto *dialog = new PresetEditDialog(viewport, &owner, [this](const std::string &digest) { requestRefresh(QString::fromStdString(digest)); });
             dialog->setRenderConfigDigest(digest_hub);
             dialog->setEngineRestartAction(restartAction());
@@ -2600,7 +2625,7 @@ struct RenderFeaturesWidget::Impl {
         auto *region_replacements = new QPushButton(owner.tr("Regions"), &owner);
         region_replacements->setObjectName(QStringLiteral("pelican.renderFeatures.regionReplacements"));
         actions->addWidget(region_replacements);
-        QObject::connect(region_replacements, &QPushButton::clicked, &owner, [this] {
+        QObject::connect(region_replacements, &QPushButton::clicked, &guard, [this] {
             auto *dialog = new PresetEditDialog(viewport, &owner, [this](const std::string &digest) {
                 requestRefresh(QString::fromStdString(digest));
                 emit owner.renderConfigCommitted();
@@ -2615,7 +2640,7 @@ struct RenderFeaturesWidget::Impl {
         // RTL-2s-c: the Graph's ray tracing section opens this one too.
         callable_records->setObjectName(QStringLiteral("pelican.renderFeatures.callableRecords"));
         actions->addWidget(callable_records);
-        QObject::connect(callable_records, &QPushButton::clicked, &owner, [this] {
+        QObject::connect(callable_records, &QPushButton::clicked, &guard, [this] {
             auto *dialog = new CallableRecordsDialog(viewport, &owner);
             dialog->setRenderConfigDigest(digest_hub);
             dialog->setEngineRestartAction(restartAction());
@@ -2624,7 +2649,7 @@ struct RenderFeaturesWidget::Impl {
         });
         scene_as->setObjectName(QStringLiteral("pelican.renderFeatures.sceneAccelerationStructures"));
         actions->addWidget(scene_as);
-        QObject::connect(scene_as, &QPushButton::clicked, &owner, [this] {
+        QObject::connect(scene_as, &QPushButton::clicked, &guard, [this] {
             auto *dialog = new SceneAccelerationStructuresDialog(viewport, &owner);
             dialog->setRenderConfigDigest(digest_hub);
             dialog->setEngineRestartAction(restartAction());
@@ -2639,33 +2664,33 @@ struct RenderFeaturesWidget::Impl {
         result_poll->setInterval(40);
         live_timer = new QTimer(&owner);
         live_timer->setSingleShot(true);
-        QObject::connect(live_timer, &QTimer::timeout, &owner, [this] { flushLiveParameters(); });
+        QObject::connect(live_timer, &QTimer::timeout, &guard, [this] { flushLiveParameters(); });
 
         QObject::connect(
-            refresh, &QPushButton::clicked, &owner,
+            refresh, &QPushButton::clicked, &guard,
             [this] { requestRefresh(); });
         QObject::connect(
-            add, &QPushButton::clicked, &owner,
+            add, &QPushButton::clicked, &guard,
             [this] { stageAdd(); });
         QObject::connect(
-            remove, &QPushButton::clicked, &owner,
+            remove, &QPushButton::clicked, &guard,
             [this] { stageRemove(); });
         QObject::connect(
-            apply, &QPushButton::clicked, &owner,
+            apply, &QPushButton::clicked, &guard,
             [this] { submit(); });
         QObject::connect(
             current, &QListWidget::itemSelectionChanged,
-            &owner, [this] { updateControls(); });
+            &guard, [this] { updateControls(); });
         QObject::connect(
             catalog, &QTreeWidget::itemSelectionChanged,
-            &owner, [this] { updateControls(); });
+            &guard, [this] { updateControls(); });
         QObject::connect(
-            result_poll, &QTimer::timeout, &owner,
+            result_poll, &QTimer::timeout, &guard,
             [this] { requestResult(); });
         QObject::connect(
             &viewport,
             &EmbeddedViewport::engineRpcBecameAvailable,
-            &owner, [this] {
+            &guard, [this] {
                 pending.clear();
                 refresh_digest.clear();
                 refresh_complete = false;
@@ -2676,7 +2701,7 @@ struct RenderFeaturesWidget::Impl {
         QObject::connect(
             &viewport,
             &EmbeddedViewport::engineRpcBecameUnavailable,
-            &owner, [this](const QString &message) {
+            &guard, [this](const QString &message) {
                 pending.clear();
                 refresh_digest.clear();
                 refresh_complete = false;
@@ -2690,7 +2715,7 @@ struct RenderFeaturesWidget::Impl {
         QObject::connect(
             &viewport,
             &EmbeddedViewport::inspectorRpcSucceeded,
-            &owner,
+            &guard,
             [this](qint64 request_id,
                    const QByteArray &result_json) {
                 receiveSuccess(request_id, result_json);
@@ -2698,7 +2723,7 @@ struct RenderFeaturesWidget::Impl {
         QObject::connect(
             &viewport,
             &EmbeddedViewport::inspectorRpcFailed,
-            &owner,
+            &guard,
             [this](qint64 request_id,
                    const QString &message) {
                 receiveFailure(request_id, message);
@@ -3576,7 +3601,15 @@ struct RenderFeaturesWidget::Impl {
         layout->addWidget(buttons);
         QObject::connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::close);
         // A change still gathering when the dialog closes is sent all the same.
-        QObject::connect(dialog, &QObject::destroyed, &owner, [this, form] {
+        // GS-UAF1: destroying the whole panel drops this connection with the
+        // guard before the QWidget base destructor deletes the dialog, so a
+        // change still inside the debounce window is not flushed then. Closed
+        // on its own, the dialog still flushes it here.
+        QObject::connect(dialog, &QObject::destroyed, &guard, [this, form] {
+            // GS-UAF1 test seam: this runs from the panel's QWidget
+            // destructor, after the Impl is gone.
+            if (renderFeaturesTeardownDyingForTest)
+                ++renderFeaturesTeardownCountForTest;
             // Another feature's parameters may be open by now.
             if (live.form != form) return;
             live.form = nullptr;
@@ -3904,7 +3937,7 @@ struct RenderFeaturesWidget::Impl {
         // UX-9: window-modal open(), not exec(), so the click returns and the
         // choice is handled from the event loop; the destination is read
         // before the dialog closes (it deletes itself on close).
-        QObject::connect(buttons, &QDialogButtonBox::accepted, &owner, [this, row, base, preset, dialog, destination] {
+        QObject::connect(buttons, &QDialogButtonBox::accepted, &guard, [this, row, base, preset, dialog, destination] {
             const auto reference = destination->text();
             dialog->accept();
             if (source_digest != base || !can_edit || !have_current) {
@@ -4323,7 +4356,7 @@ struct RenderFeaturesWidget::Impl {
         const auto scope =
             item->data(InstanceRole).toJsonObject().value("scope").toString("root");
         const auto template_reference = QString::fromStdString(info->reference);
-        QObject::connect(prompt, &QMessageBox::buttonClicked, &owner,
+        QObject::connect(prompt, &QMessageBox::buttonClicked, &guard,
                          [this, accept, feature, scope, template_reference](QAbstractButton *button) {
                              if (button != accept) {
                                  showInformation(owner.tr("%1 is left as it is.")
@@ -4451,7 +4484,9 @@ RenderFeaturesWidget::RenderFeaturesWidget(
     impl_ = std::make_unique<Impl>(*this, *viewport);
 }
 
-RenderFeaturesWidget::~RenderFeaturesWidget() = default;
+RenderFeaturesWidget::~RenderFeaturesWidget() {
+    renderFeaturesTeardownDyingForTest = true;
+}
 
 void RenderFeaturesWidget::editComputeTask(const QString &name) {
     editComputeTaskConnection(name, {});
