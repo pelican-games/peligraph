@@ -3,6 +3,7 @@
 #include "../model/graphcanvaslayerstack.hpp"
 #include "../model/graphcanvasmodel.hpp"
 #include "frameplanedit.hpp"
+#include "graphcanvasdrawing.hpp"
 #include "graphcanvasreadcapability.hpp"
 #include "graphcanvasthumbnails.hpp"
 #include "nodegraphics.hpp"
@@ -23,6 +24,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -1106,6 +1108,57 @@ class GraphCanvasScene final : public QGraphicsScene {
     // A row of `stack` takes an edit: the model can take one, or the stack's
     // own shape is in the air (and the stack is not read only).
     [[nodiscard]] bool layerEditable(const std::string &scope, const std::string &stack) const;
+    // GS-3b1, a: the root's loops repopulate() draws as zones -- each loop
+    // and the body its tab shows, in the order of the root's nodes (a body
+    // two loops run is the first open one's) -- and the loops folded into
+    // their node. Reads the model and the canvas's placement; writes nothing.
+    struct ZonePick {
+        std::string loop;
+        std::string body;
+        friend bool operator==(const ZonePick &, const ZonePick &) = default;
+    };
+    struct ZonePicks {
+        std::vector<ZonePick> zones;
+        std::set<std::string> folded;
+    };
+    // `shown` the filter's word on each of `nodes` (none: all are drawn).
+    [[nodiscard]] ZonePicks pickZones(const std::string &scope, const std::vector<GraphCanvasNode> &nodes,
+                                      const std::vector<bool> &shown = {}) const;
+    // GS-3b1, b: what the frame of the zone of `node` (a root loop running
+    // `body`, whose graph.input ids are `boundary` and whose outputs are
+    // `outputs`) is drawn with besides its body, `entry` the loop's node as
+    // prepared. Writes nothing.
+    [[nodiscard]] GraphCanvasDrawing::ZoneChrome zoneChrome(const GraphCanvasNode &node, const std::string &body,
+                                                            const std::vector<std::string> &boundary,
+                                                            const std::vector<GraphCanvasBodyOutput> &outputs,
+                                                            const GraphCanvasDrawing::Node &entry) const;
+    // GS-3b1: one zone as the root draws it, for followDocument -- what its
+    // frame and its body are drawn from (owned values only).
+    struct ZoneDrawn {
+        std::string loop;
+        std::string body;
+        // The body's nodes (its graph.input boundary among them) and edges,
+        // as the model reads them, and the filter's word on each node.
+        std::vector<GraphCanvasNode> nodes;
+        std::vector<bool> shown;
+        std::vector<GraphCanvasEdge> edges;
+        // The document's placement of the body, and the session's place of
+        // each body node the canvas's placement does not place.
+        nlohmann::json layout;
+        std::map<std::string, QPointF, std::less<>> session;
+        std::vector<GraphCanvasBodyOutput> outputs;
+        GraphCanvasDrawing::ZoneChrome chrome;
+        // The fonts the frame is measured with (layoutZone).
+        QString metrics;
+        // The band under each body node (LC-1s, PS-1s), in the order of nodes.
+        std::vector<QString> bands;
+        // The frame is a root node: its GL-2b band and opacity.
+        QString frame_band;
+        qreal frame_opacity = 1.0;
+        // A canvas.stack or a card in the body: drawn from state no field
+        // here says (the shape in the air, the pictures), never compared.
+        bool pictures = false;
+    };
     // What the last full draw was drawn from, for followDocument: the
     // document (the stacks' `layers` aside), the scope's nodes as the model
     // reads them with their reports, and what the plan adds around them.
@@ -1129,9 +1182,26 @@ class GraphCanvasScene final : public QGraphicsScene {
         // GS-3a: the scope's edges as the model reads them (the document
         // holds them too; this is what the drawing is made from).
         std::vector<GraphCanvasEdge> edges;
+        // GS-3b1: the band and the opacity of each node drawn at the top of
+        // the scope (GL-2b's on the root, graph nodes and folded nodes; LC-1s's
+        // in a loop's body), by id: read from the plan's barriers, notes and
+        // deactivations, which no other field holds.
+        std::vector<std::tuple<std::string, QString, qreal>> bands;
+        // GS-3b1: the root's zones, in the order pickZones finds them.
+        std::vector<ZoneDrawn> zones;
     };
     std::optional<DrawnFrom> drawn_from_;
     [[nodiscard]] DrawnFrom drawnFromNow() const;
+    // GS-3b1: which of the zones' fields differ (graph_follow_diff's bits 15
+    // to 20), 0 when they are the same.
+    [[nodiscard]] static int zonesMoved(const DrawnFrom &now, const DrawnFrom &drawn);
+    // GS-3b1: why a scene with zones is drawn whole without comparing, with
+    // `now` (graph_follow_diff bit 13's detail2), 0 when it can be compared.
+    [[nodiscard]] int zonesUncomparable(const DrawnFrom &now) const;
+    // GS-3b1: where the session puts each node of `body` (of `nodes`) the
+    // canvas's placement does not place -- what repopulate() places it at.
+    [[nodiscard]] std::map<std::string, QPointF, std::less<>>
+    zoneSessionPlaces(const std::string &body, const std::vector<GraphCanvasNode> &nodes) const;
     // GL-1e: a solid line from what a rendering-section pass's input names
     // to that input. GS-3a: worked out by one function for repopulate() and
     // for the check of a partial redraw, which compares it with the lines

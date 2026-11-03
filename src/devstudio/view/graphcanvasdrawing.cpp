@@ -1003,6 +1003,19 @@ constexpr qreal ZoneTabBoldSlack = 1.12;
 
 } // namespace
 
+bool operator==(const ZoneRow &a, const ZoneRow &b) {
+    // What addZone's socket draws a loop's own row with (its shape, size and
+    // colours, the label and type it names in its tooltip, the port).
+    const auto drawnSame = [](const Row &x, const Row &y) {
+        return x.port == y.port && x.label == y.label && x.type == y.type &&
+               x.style.shape == y.style.shape && x.style.fill == y.style.fill &&
+               x.style.outline == y.style.outline && x.style.size == y.style.size &&
+               x.style.outline_width == y.style.outline_width;
+    };
+    return a.outer == b.outer && a.inner == b.inner && a.label == b.label &&
+           drawnSame(a.outer_row, b.outer_row);
+}
+
 void layoutZone(Zone &zone, const QFontMetricsF &heading_metrics,
                 const QFontMetricsF &row_metrics) {
     const qreal header =

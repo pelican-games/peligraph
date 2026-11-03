@@ -4147,6 +4147,85 @@ struct ZoneHarness {
         scene.repopulate();
         return ops;
     }
+
+    // GS-3b1: the Graph tab's following of the model (GraphCanvasWidget's
+    // poll): a read that moved only the placement keeps the scene when the
+    // scene already draws it (followDocumentPlacement), a placement it does
+    // not draw is drawn whole, anything else goes to followDocument.
+    std::uint64_t followed_content = 0;
+    std::uint64_t followed_report = 0;
+    std::uint64_t followed_placement = 0;
+    void followed() {
+        followed_content = model.contentRevision();
+        followed_report = model.reportRevision();
+        followed_placement = model.placementRevision();
+    }
+    void follow() {
+        const bool content = followed_content != model.contentRevision();
+        const bool report = followed_report != model.reportRevision();
+        const bool placement = followed_placement != model.placementRevision();
+        if (!content && !report && !placement) return;
+        followed();
+        if (!content && !report && scene.followDocumentPlacement()) return;
+        if (placement) scene.repopulate();
+        else (void)scene.followDocument();
+    }
+    // Every read in the outbox answered by itself and followed, as the tab
+    // follows each reply as it arrives, until none is left; returns the
+    // edits found there.
+    std::vector<PelicanStudio::InspectorRpcRequest> settle() {
+        std::vector<PelicanStudio::InspectorRpcRequest> edits;
+        for (int round = 0; round < 16; ++round) {
+            auto requests = model.takeRpcRequests();
+            if (requests.empty()) break;
+            for (const auto &request : requests) {
+                sent.push_back(request.method);
+                if (request.method == "get_graph_instances") {
+                    model.receiveRpcResult(request.request_id, snapshot().dump());
+                } else if (request.method == "get_graph_catalog") {
+                    model.receiveRpcResult(request.request_id, catalog.dump());
+                } else if (request.method == "get_frame_plan") {
+                    auto reply = plan;
+                    reply["loops"] = loops;
+                    model.receiveRpcResult(request.request_id, reply.dump());
+                } else {
+                    if (request.method == "edit_graph_document") edits.push_back(request);
+                    continue;
+                }
+                follow();
+            }
+        }
+        return edits;
+    }
+    // commit(), with the reads followed as the tab follows them instead of
+    // a rebuild after them.
+    Json commitFollowing() {
+        const auto edits = settle();
+        REQUIRE(edits.size() == 1);
+        const auto &submit = edits.front();
+        REQUIRE(submit.params.at("base_source_digest") == digest());
+        const Json ops = submit.params.at("ops");
+        Json edited = Pelican::editGraphDocument(document, ops);
+        model.receiveRpcResult(submit.request_id,
+                               Json{{"status", "accepted"}, {"ticket", "zone-edit"}}.dump());
+        for (const auto &request : model.takeRpcRequests()) {
+            if (request.method != "get_edit_result") continue;
+            document = std::move(edited);
+            ++generation;
+            model.receiveRpcResult(request.request_id,
+                                   Json{{"status", "committed"}, {"committed", true},
+                                        {"source_digest", {{"hex", digest()}}}}
+                                       .dump());
+        }
+        (void)settle();
+        return ops;
+    }
+    // Another panel's reading of the same engine: the document and the plan
+    // read again, each followed.
+    void readAgain() {
+        model.refresh();
+        (void)settle();
+    }
 };
 
 QGraphicsItem *scopedNode(QGraphicsScene &scene, const QString &scope, const QString &name) {
@@ -19160,6 +19239,7 @@ struct Gs3aTrace {
     struct Span {
         std::string stage;
         double detail = 0.0;
+        double detail2 = 0.0;
     };
     std::vector<Span> spans;
     GuiTrace::Sink saved_sink = GuiTrace::sink;
@@ -19175,8 +19255,8 @@ struct Gs3aTrace {
     }
     Gs3aTrace(const Gs3aTrace &) = delete;
     Gs3aTrace &operator=(const Gs3aTrace &) = delete;
-    static void record(void *owner, const char *stage, int64_t, int64_t, double detail, double) {
-        static_cast<Gs3aTrace *>(owner)->spans.push_back({stage, detail});
+    static void record(void *owner, const char *stage, int64_t, int64_t, double detail, double detail2) {
+        static_cast<Gs3aTrace *>(owner)->spans.push_back({stage, detail, detail2});
     }
     [[nodiscard]] int count(std::string_view stage) const {
         return static_cast<int>(
@@ -19241,9 +19321,18 @@ std::vector<std::string> gs3aPicture(QGraphicsScene &scene) {
                                GraphCanvasSocketDirectionRole, GraphCanvasSocketKeyRole,
                                GraphCanvasBoundPortRole, GraphCanvasNodeViewRole, GraphCanvasColumnRole,
                                GraphCanvasLabelRole, GraphCanvasOpRole, GraphCanvasSinkRole,
-                               GraphCanvasThumbnailDigestRole})
+                               GraphCanvasThumbnailDigestRole,
+                               // GS-3b1: and what a zone's parts say -- the body
+                               // an item is drawn in, a socket's type and shape,
+                               // a tab's branch, a carry's warning and lane, the
+                               // frame's definition and the edge each part keeps to.
+                               GraphCanvasZoneScopeRole, GraphCanvasPortTypeRole,
+                               GraphCanvasSocketShapeRole, GraphCanvasBranchRole, GraphCanvasRefusalRole,
+                               GraphCanvasControlIndexRole, GraphCanvasDefinitionRole,
+                               GraphCanvasZoneAnchorRole})
             key.push_back(item->data(role).toString());
         std::string where = key.join(QLatin1Char{'|'}).toStdString();
+        where += " tip \"" + item->toolTip().toStdString() + "\"";
         if (const auto *text = dynamic_cast<const QGraphicsSimpleTextItem *>(item))
             where += " \"" + text->text().toStdString() + "\"";
         if (const auto *line = dynamic_cast<const QGraphicsPathItem *>(item)) {
@@ -19782,4 +19871,545 @@ TEST_CASE("GS-3a a stack's layers moved draw it and the stack that holds it as a
     CHECK(heldBy(QStringLiteral("outer")).empty());
     CHECK_FALSE(heldBy(QStringLiteral("screen")).empty());
     CHECK(gs3aMarks(h.scene).size() < marks.size());
+}
+
+// --- GS-3b1. A root that draws a loop's zone compares what the zone is drawn
+// from too -- which loops are zones and in what order, each body's nodes,
+// lines, outputs and placement, the frame's words, tabs, rows, carries and
+// bottom line, the bands in the body and on the frame -- so a reply that
+// draws nothing new rebuilds nothing, as one over a root without zones. A
+// reply that moves any of it is drawn whole, as before; so is a scene whose
+// zones are not the ones the root picks now, or whose bodies hold a stack or
+// a picture.
+
+namespace {
+
+// graph_follow_diff's bits (graphcanvaswidget.cpp followDocument).
+enum Gs3bMoved : int {
+    gs3b_document = 1 << 1,
+    gs3b_nodes = 1 << 3,
+    gs3b_passes = 1 << 7,
+    gs3b_unchecked = 1 << 13,
+    gs3b_picks = 1 << 15,
+    gs3b_body = 1 << 16,
+    gs3b_chrome = 1 << 17,
+    gs3b_body_bands = 1 << 18,
+    gs3b_frame_band = 1 << 19,
+    gs3b_stack = 1 << 20,
+    gs3b_bands = 1 << 21,
+};
+
+// What followDocument found moved, reply by reply.
+std::vector<int> gs3bFollows(const Gs3aTrace &trace) {
+    std::vector<int> found;
+    for (const auto &span : trace.spans)
+        if (span.stage == "graph_follow_diff") found.push_back(static_cast<int>(span.detail));
+    return found;
+}
+
+// Everything it found moved, together.
+int gs3bMoved(const Gs3aTrace &trace) {
+    int moved = 0;
+    for (const int bits : gs3bFollows(trace)) moved |= bits;
+    return moved;
+}
+
+// Why a scene was drawn whole without comparing (bit 13's detail2), together.
+int gs3bUnchecked(const Gs3aTrace &trace) {
+    int why = 0;
+    for (const auto &span : trace.spans)
+        if (span.stage == "graph_follow_diff" && (static_cast<int>(span.detail) & gs3b_unchecked))
+            why |= static_cast<int>(span.detail2);
+    return why;
+}
+
+// The harness open with its plan and reports read and drawn, and the tab's
+// following of the model begun from there.
+void gs3bOpen(ZoneHarness &h) {
+    h.open();
+    (void)h.answerReads();
+    (void)h.answerReads();
+    h.scene.repopulate();
+    h.followed();
+}
+
+// `change` (to the harness's document, plan or reports), read again as
+// another panel's read brings it: drawn whole exactly once, for exactly the
+// fields `moved` (graph_follow_diff), and the scene is then what a rebuild
+// from the same model draws.
+void gs3bDrawnOnce(ZoneHarness &h, const std::function<void()> &change, int moved) {
+    Gs3aTrace trace;
+    Gs3aCounts counts{h.scene};
+    change();
+    ++h.generation;
+    h.readAgain();
+    CHECK(counts.rebuilds == 1);
+    CHECK(gs3bMoved(trace) == moved);
+    gs3aSameAsRebuilt(h.scene);
+    h.scene.repopulated = nullptr;
+    h.scene.nodesRedrawn = nullptr;
+}
+
+// A body `steps_body` (a boundary input `t`, a constant `c` and their sum
+// `s`, the body's output `out`) and a loop `steps` over two of it reading
+// k1, in the GS-2 engine's graph beside its values and passes.
+void gs3bZoneInTab(Gs2Tab &tab) {
+    auto &graph = tab.engine.graph;
+    graph["definitions"]["steps_body"] = {
+        {"nodes", Json::array({{{"id", "t"}, {"op", "graph.input"}, {"default", 0.0}},
+                               {{"id", "c"}, {"op", "value.constant"}, {"parameters", {{"value", 2.0}}},
+                                {"outputs", Json::array({"value"})}},
+                               {{"id", "s"}, {"op", "value.add"},
+                                {"inputs", {{"a", {{"node", "t"}, {"port", "value"}}},
+                                            {"b", {{"node", "c"}, {"port", "value"}}}}},
+                                {"outputs", Json::array({"value"})}}})},
+        {"outputs", {{"out", {{"node", "s"}, {"port", "value"}}}}}};
+    graph["nodes"].push_back({{"id", "steps"}, {"op", "graph.loop"},
+                              {"parameters", {{"over", {{"range", {{"count", 2}}}}},
+                                              {"branches", Json::array({{{"body", "steps_body"}}})}}},
+                              {"inputs", {{"t", {{"node", "k1"}, {"port", "value"}}}}},
+                              {"outputs", Json::array({"out", "out[]"})}});
+    ++tab.engine.revision;
+    tab.widget->refresh();
+    gs2bSettle(tab);
+}
+
+// zoneDocument() as an expand loop the plan reports two copies of.
+Json gs3bExpandReport(int count = 2) {
+    return Json::array({{{"node", "steps"}, {"tier", "expand"}, {"count", count},
+                         {"elements", Json::array({{{"element", 0}, {"index", 0}, {"branch", 0}},
+                                                   {{"element", 1}, {"index", 1}, {"branch", 1}}})},
+                         {"unmatched_branches", Json::array()}}});
+}
+
+// zoneDocument() as a draw_loop: `if m#a` runs first, the else rest.
+Json gs3bDrawDocument() {
+    auto document = zoneDocument();
+    document["nodes"][2]["parameters"] = {
+        {"over", {{"draw_items", {{"contract", "forward_opaque_v1"}}}}},
+        {"branches", Json::array({{{"when", {{"material", "m#a"}}}, {"body", "first"}}, {{"body", "rest"}}})}};
+    return document;
+}
+
+// Its report: three materials, `m#a` the if's, the other two the else's.
+Json gs3bDrawReport() {
+    return Json::array({{{"node", "steps"}, {"tier", "draw_loop"}, {"count", 3}, {"total", 3},
+                         {"elements", Json::array({{{"element", "m#a"}, {"index", 0}, {"branch", 0}},
+                                                   {{"element", "m#b"}, {"index", 1}, {"branch", 1}},
+                                                   {{"element", "m#c"}, {"index", 2}, {"branch", 1}}})},
+                         {"unmatched_branches", Json::array()}}});
+}
+
+QString gs3bText(QGraphicsScene &scene, const char *kind, const QString &name, const QString &port) {
+    auto *text = dynamic_cast<QGraphicsSimpleTextItem *>(scopedItem(scene, kind, QString{}, name, port));
+    return text == nullptr ? QString{} : text->text();
+}
+
+// The body bands under body nodes, by node.
+std::map<QString, QString> gs3bBodyBands(QGraphicsScene &scene, const QString &body) {
+    std::map<QString, QString> bands;
+    for (QGraphicsItem *item : itemsOfKind(scene, PelicanStudio::GraphCanvasLayerBandItem))
+        if (item->data(PelicanStudio::GraphCanvasZoneScopeRole).toString() == body)
+            if (auto *text = dynamic_cast<QGraphicsSimpleTextItem *>(item))
+                bands[item->data(PelicanStudio::NodeGraphNameRole).toString()] = text->text();
+    return bands;
+}
+
+// Every frame and line of the scene drawn, in the scene's own order, so
+// that a later rebuild shows up: the items' identities.
+std::vector<const QGraphicsItem *> gs3bItems(QGraphicsScene &scene) {
+    std::vector<const QGraphicsItem *> items;
+    for (QGraphicsItem *item : scene.items())
+        if (!PelicanStudio::nodeGraphItemKind(*item).isEmpty()) items.push_back(item);
+    return items;
+}
+
+// Lets the event loop run for `ms`: a zero timer, a 60 ms retry.
+void gs3bWait(int ms) {
+    QElapsedTimer waited;
+    waited.start();
+    while (waited.elapsed() < ms) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+        QThread::msleep(2);
+    }
+    QCoreApplication::processEvents();
+}
+
+} // namespace
+
+TEST_CASE("GS-3b1 a reply that draws nothing new over a zone rebuilds nothing, and the scene is "
+          "what a rebuild from the same model draws",
+          "[devstudio][graph-canvas][scene][gs3b1]") {
+    (void)application();
+
+    SECTION("the Graph tab: read again, a root value and a body value committed") {
+        Gs2Tab tab;
+        auto &scene = tab.widget->scene();
+        gs3bZoneInTab(tab);
+        REQUIRE(scene.zones() == std::map<std::string, std::string>{{"steps", "steps_body"}});
+        REQUIRE(scopedNode(scene, QStringLiteral("steps_body"), QStringLiteral("s")) != nullptr);
+        Gs3aTrace trace;
+        // The document, the plan and the context read again: each moves only
+        // what the scene does not draw (the frame a pass last drew in, the
+        // context's generation).
+        tab.rebuilds = 0;
+        tab.widget->refresh();
+        gs2bSettle(tab);
+        CHECK(tab.rebuilds == 0);
+        CHECK(gs3bFollows(trace).size() >= 3);
+        CHECK(gs3bMoved(trace) == 0);
+        gs3aSameAsRebuilt(scene);
+        // A value of the root and one of the body: their document is drawn
+        // whole (a zone is never drawn in part yet), the plan and the context
+        // after it draw nothing.
+        const std::array<int, 3> once_from_the_document{1, 0, 0};
+        tab.rebuilds = 0;
+        REQUIRE(tab.model().setNodeParameter("k1", "value", Json(3.0)));
+        CHECK(tab.commit() == once_from_the_document);
+        gs3aSameAsRebuilt(scene);
+        tab.rebuilds = 0;
+        REQUIRE(tab.model().setNodeParameter("steps_body", "c", "value", Json(4.0)));
+        CHECK(tab.commit() == once_from_the_document);
+        gs3aSameAsRebuilt(scene);
+    }
+
+    SECTION("two zones over the plan's view axis and a count") {
+        ZoneHarness h{lp4f1Document()};
+        h.plan = lp4f1Plan();
+        gs3bOpen(h);
+        REQUIRE(h.scene.zones().size() == 2);
+        REQUIRE(scopedItem(h.scene, PelicanStudio::GraphCanvasZoneLabelItem, QString{},
+                           QStringLiteral("faces_loop"), QStringLiteral("axis0")) != nullptr);
+        Gs3aTrace trace;
+        Gs3aCounts counts{h.scene};
+        h.readAgain();
+        h.readAgain();
+        CHECK(counts.rebuilds == 0);
+        CHECK(gs3bFollows(trace).size() >= 4);
+        CHECK(gs3bMoved(trace) == 0);
+        gs3aSameAsRebuilt(h.scene);
+    }
+
+    SECTION("a draw_loop's tabs, the materials it drew") {
+        ZoneHarness h{gs3bDrawDocument()};
+        h.loops = gs3bDrawReport();
+        gs3bOpen(h);
+        REQUIRE(zoneTabs(h.scene).size() == 2);
+        Gs3aTrace trace;
+        Gs3aCounts counts{h.scene};
+        h.readAgain();
+        CHECK(counts.rebuilds == 0);
+        CHECK(gs3bMoved(trace) == 0);
+        gs3aSameAsRebuilt(h.scene);
+    }
+}
+
+TEST_CASE("GS-3b1 a reply that moves only what a zone is drawn from draws the whole scene once",
+          "[devstudio][graph-canvas][scene][gs3b1]") {
+    (void)application();
+
+    SECTION("a: the names of a view axis's views (the count and the badge as they were)") {
+        ZoneHarness h{lp4f1Document()};
+        h.plan = lp4f1Plan();
+        gs3bOpen(h);
+        REQUIRE(gs3bText(h.scene, PelicanStudio::GraphCanvasZoneLabelItem, QStringLiteral("faces_loop"),
+                         QStringLiteral("axis0")) == QStringLiteral("+X"));
+        const auto badge = lp4f1Node(h.model, {}, "faces_loop").badge;
+        gs3bDrawnOnce(h, [&] {
+            for (auto &node : h.plan["nodes"])
+                for (auto &axis : node["view_axes"])
+                    if (axis.at("axis") == "face")
+                        axis["labels"] = Json::array({"px", "nx", "py", "ny", "pz", "nz"});
+        }, gs3b_chrome);
+        CHECK(gs3bText(h.scene, PelicanStudio::GraphCanvasZoneLabelItem, QStringLiteral("faces_loop"),
+                       QStringLiteral("axis0")) == QStringLiteral("px"));
+        CHECK(lp4f1Node(h.model, {}, "faces_loop").badge == badge);
+    }
+
+    SECTION("b: a draw_loop's tabs alone (its materials, its count and total as they were)") {
+        ZoneHarness h{gs3bDrawDocument()};
+        h.loops = gs3bDrawReport();
+        gs3bOpen(h);
+        REQUIRE(zoneTabs(h.scene)[0].second == QStringLiteral("if m#a (1)"));
+        gs3bDrawnOnce(h, [&] { h.loops[0]["elements"][1]["branch"] = 0; }, gs3b_chrome);
+        CHECK(zoneTabs(h.scene)[0].second == QStringLiteral("if m#a (2)"));
+        CHECK(zoneTabs(h.scene)[1].second == QStringLiteral("else (1)"));
+    }
+
+    SECTION("c: how many materials a draw_loop drew (its count, so its badge, as it was)") {
+        ZoneHarness h{gs3bDrawDocument()};
+        h.loops = gs3bDrawReport();
+        gs3bOpen(h);
+        REQUIRE(gs3bText(h.scene, PelicanStudio::GraphCanvasZoneLabelItem, QStringLiteral("steps"),
+                         QStringLiteral("expansion")) == QStringLiteral("3 materials"));
+        gs3bDrawnOnce(h, [&] { h.loops[0]["total"] = 4; }, gs3b_chrome);
+        CHECK(gs3bText(h.scene, PelicanStudio::GraphCanvasZoneLabelItem, QStringLiteral("steps"),
+                       QStringLiteral("expansion")) == QStringLiteral("4 materials"));
+        CHECK(gs3bText(h.scene, PelicanStudio::GraphCanvasZoneLabelItem, QStringLiteral("steps"),
+                       QStringLiteral("stage")) == QStringLiteral("draw_loop 4 materials"));
+    }
+
+    SECTION("d: the copies the plan made (the loop's badge says the count too)") {
+        ZoneHarness h;
+        h.loops = gs3bExpandReport(2);
+        gs3bOpen(h);
+        REQUIRE(gs3bText(h.scene, PelicanStudio::GraphCanvasZoneLabelItem, QStringLiteral("steps"),
+                         QStringLiteral("expansion")) == QStringLiteral("×2 copies"));
+        gs3bDrawnOnce(h, [&] { h.loops = gs3bExpandReport(3); }, gs3b_nodes | gs3b_chrome);
+        CHECK(gs3bText(h.scene, PelicanStudio::GraphCanvasZoneLabelItem, QStringLiteral("steps"),
+                       QStringLiteral("expansion")) == QStringLiteral("×3 copies"));
+    }
+
+    SECTION("e: another loop runs the body (the root's document moves with it)") {
+        ZoneHarness h;
+        gs3bOpen(h);
+        REQUIRE(gs3bText(h.scene, PelicanStudio::GraphCanvasZoneLabelItem, QStringLiteral("steps"),
+                         QStringLiteral("shared")).isEmpty());
+        gs3bDrawnOnce(h, [&] {
+            auto again = h.document["nodes"][2];
+            again["id"] = "again";
+            again["parameters"]["branches"] = Json::array({{{"body", "first"}}});
+            h.document["nodes"].push_back(std::move(again));
+        }, gs3b_document | gs3b_nodes | (1 << 4) | gs3b_chrome | gs3b_bands);
+        CHECK(gs3bText(h.scene, PelicanStudio::GraphCanvasZoneLabelItem, QStringLiteral("steps"),
+                       QStringLiteral("shared")) == QStringLiteral("shared (2 users)"));
+    }
+
+    SECTION("f: a body node's band (the plan's passes say it)") {
+        ZoneHarness h;
+        const auto plan = [](bool reads) {
+            return Json{{"nodes", Json::array({{{"name", "steps/0/sum"}, {"kind", "render"},
+                                                {"loop_origin", {{"loop", "steps"}, {"node", "sum"}, {"element", 0}}},
+                                                {"reads_loop_index", reads}}})}};
+        };
+        h.plan = plan(false);
+        gs3bOpen(h);
+        REQUIRE(gs3bBodyBands(h.scene, QStringLiteral("first")).empty());
+        gs3bDrawnOnce(h, [&] { h.plan = plan(true); }, gs3b_passes | gs3b_body_bands);
+        CHECK(gs3bBodyBands(h.scene, QStringLiteral("first")) ==
+              std::map<QString, QString>{{QStringLiteral("sum"), QStringLiteral("reads element")}});
+    }
+
+    SECTION("g: the frame faint, and a root node faint, for a composition that switched them off") {
+        ZoneHarness h;
+        gs3bOpen(h);
+        QGraphicsItem *frame = scopedNode(h.scene, QString{}, QStringLiteral("steps"));
+        REQUIRE(frame->opacity() == 1.0);
+        gs3bDrawnOnce(h, [&] {
+            h.plan["deactivated_graph_nodes"] =
+                Json::array({{{"node", "steps"}, {"feature", "fx"}, {"reason", "off"}}});
+        }, gs3b_frame_band | gs3b_bands);
+        CHECK(scopedNode(h.scene, QString{}, QStringLiteral("steps"))->opacity() == 0.45);
+        // A node of the root that is no zone: what no field held before.
+        gs3bDrawnOnce(h, [&] {
+            h.plan["deactivated_graph_nodes"] =
+                Json::array({{{"node", "steps"}, {"feature", "fx"}, {"reason", "off"}},
+                             {{"node", "curve"}, {"feature", "fx"}, {"reason", "off"}}});
+        }, gs3b_bands);
+        CHECK(scopedNode(h.scene, QString{}, QStringLiteral("curve"))->opacity() == 0.45);
+    }
+
+    SECTION("h: a body node's value, a body line and a body output (the document moves with them)") {
+        ZoneHarness h;
+        gs3bOpen(h);
+        gs3bDrawnOnce(h, [&] { h.document["definitions"]["first"]["nodes"][1]["parameters"]["value"] = 7.0; },
+                      gs3b_document | gs3b_body);
+        gs3bDrawnOnce(h, [&] {
+            h.document["definitions"]["first"]["nodes"][2]["inputs"]["b"] = {{"node", "target"}, {"port", "value"}};
+        }, gs3b_document | gs3b_body);
+        gs3bDrawnOnce(h, [&] { h.document["definitions"]["first"]["outputs"]["more"] = {{"node", "a"}, {"port", "value"}}; },
+                      gs3b_document | gs3b_body | gs3b_chrome);
+    }
+
+    SECTION("h: the body's placement, from elsewhere (the canvas has nothing in the air)") {
+        ZoneHarness h;
+        gs3bOpen(h);
+        Gs3aTrace trace;
+        Gs3aCounts counts{h.scene};
+        h.document["definitions"]["first"]["layout"] = {{"nodes", {{"sum", {{"x", 400.0}, {"y", 300.0}}}}}};
+        ++h.generation;
+        h.readAgain();
+        // A read that moved only a placement the scene does not draw.
+        CHECK(counts.rebuilds == 1);
+        CHECK(scopedNode(h.scene, QStringLiteral("first"), QStringLiteral("sum"))->pos() == QPointF{400.0, 300.0});
+        gs3aSameAsRebuilt(h.scene);
+    }
+
+    SECTION("i: a node added to the body, placed by the session (the document moves with it)") {
+        ZoneHarness h;
+        gs3bOpen(h);
+        Gs3aTrace trace;
+        Gs3aCounts counts{h.scene};
+        REQUIRE(h.scene.addFromPalette(std::string{"first"}, "value.constant", std::string{}));
+        (void)h.commitFollowing();
+        CHECK(counts.rebuilds >= 1);
+        CHECK((gs3bMoved(trace) & (gs3b_document | gs3b_body)) == (gs3b_document | gs3b_body));
+        gs3aSameAsRebuilt(h.scene);
+    }
+}
+
+TEST_CASE("GS-3b1 a body two loops run is drawn in the first open one's zone, and compared there",
+          "[devstudio][graph-canvas][scene][gs3b1]") {
+    (void)application();
+    // `early` runs `first` too, before `steps`, and is folded into its node.
+    auto document = zoneDocument(true);
+    auto early = document["nodes"][2];
+    early["id"] = "early";
+    document["nodes"].insert(document["nodes"].begin(), std::move(early));
+    document["layout"] = {{"nodes", {{"early", {{"x", 0.0}, {"y", 0.0}, {"view", "minimal"}}}}}};
+    ZoneHarness h{document};
+    gs3bOpen(h);
+    REQUIRE(h.scene.zones() == std::map<std::string, std::string>{{"steps", "first"}});
+    {
+        Gs3aTrace trace;
+        Gs3aCounts counts{h.scene};
+        h.readAgain();
+        CHECK(counts.rebuilds == 0);
+        CHECK(gs3bMoved(trace) == 0);
+        gs3aSameAsRebuilt(h.scene);
+    }
+    // Opened, `early` takes the body: drawn again as before.
+    Gs3aCounts counts{h.scene};
+    h.scene.setCollapsed("", "early", false);
+    CHECK(counts.rebuilds >= 1);
+    CHECK(h.scene.zones() == std::map<std::string, std::string>{{"early", "first"}});
+    h.scene.flushLayout();
+    (void)h.commitFollowing();
+    gs3aSameAsRebuilt(h.scene);
+    // And compared there.
+    Gs3aTrace trace;
+    counts.rebuilds = 0;
+    h.readAgain();
+    CHECK(counts.rebuilds == 0);
+    CHECK(gs3bMoved(trace) == 0);
+}
+
+TEST_CASE("GS-3b1 a stack's layers moved beside a zone draw the whole scene, not the stack alone",
+          "[devstudio][graph-canvas][scene][gs3b1][nb5]") {
+    (void)application();
+    auto document = zoneDocument(true);
+    const auto canvas = nb2bDocument();
+    for (const auto &node : canvas.at("nodes")) document["nodes"].push_back(node);
+    ZoneHarness h{document};
+    nb2bOpen(h);
+    h.followed();
+    REQUIRE(h.scene.zones() == std::map<std::string, std::string>{{"steps", "first"}});
+    REQUIRE(nodeItem(h.scene, QStringLiteral("hud")) != nullptr);
+    const auto marks = gs3aMark(h.scene, {});
+    gs3bDrawnOnce(h, [&] { gs3aNode(h.document["nodes"], "hud")["parameters"]["layers"][0]["name"] = "Back"; },
+                  gs3b_stack);
+    // Drawn whole: not one item of the last draw is left.
+    CHECK(gs3aMarks(h.scene).empty());
+    CHECK(marks.size() > 20);
+}
+
+TEST_CASE("GS-3b1 a zone whose body holds a stack is drawn whole without comparing, as before",
+          "[devstudio][graph-canvas][scene][gs3b1]") {
+    (void)application();
+    auto document = zoneDocument(true);
+    auto &body = document["definitions"]["first"]["nodes"];
+    body.push_back(nb2bShape("bg", "shape.rect"));
+    body.push_back(nb2bFill("bg_fill", "bg"));
+    body.push_back({{"id", "hud"}, {"op", "canvas.stack"},
+                    {"parameters", {{"size", Json::array({1280, 720})},
+                                    {"layers", Json::array({{{"input", "bg_fill"}, {"name", "Background"}}})}}},
+                    {"inputs", {{"bg_fill", {{"node", "bg_fill"}, {"port", "layer"}}}}},
+                    {"outputs", Json::array({"layer"})}});
+    ZoneHarness h{document};
+    nb2bOpen(h);
+    h.followed();
+    REQUIRE(scopedNode(h.scene, QStringLiteral("first"), QStringLiteral("hud")) != nullptr);
+    Gs3aTrace trace;
+    Gs3aCounts counts{h.scene};
+    h.readAgain();
+    CHECK(counts.rebuilds >= 1);
+    CHECK(gs3bUnchecked(trace) == 32);
+}
+
+TEST_CASE("GS-3b1 a body node dragged: the read that places it draws nothing, the frame is drawn "
+          "round it once, and a later reply draws nothing",
+          "[devstudio][graph-canvas][scene][gs3b1][ux1]") {
+    (void)application();
+    ZoneHarness h;
+    gs3bOpen(h);
+    UxView shown{h.scene};
+    auto &view = shown.view;
+    QGraphicsItem *node = scopedNode(h.scene, QStringLiteral("first"), QStringLiteral("sum"));
+    REQUIRE(node != nullptr);
+    Gs3aCounts counts{h.scene};
+    const QPointF heading{node->boundingRect().width() / 2.0, 6.0};
+    const QPoint grip = onView(view, node->mapToScene(heading));
+    // Up and left past the body's origin: the frame grows that way.
+    const QPoint delta{-90, -70};
+    viewMouse(view, QEvent::MouseButtonPress, grip, Qt::LeftButton, Qt::LeftButton);
+    for (int step = 1; step <= 6; ++step) {
+        viewMouse(view, QEvent::MouseMove, grip + delta * step / 6, Qt::NoButton, Qt::LeftButton);
+        // While the hand is down, the refit only waits.
+        gs3bWait(70);
+    }
+    CHECK(counts.rebuilds == 0);
+    viewMouse(view, QEvent::MouseButtonRelease, grip + delta, Qt::LeftButton, Qt::NoButton);
+    // The zero timer, the 60 ms retry: the frame drawn round the body once.
+    gs3bWait(200);
+    CHECK(counts.rebuilds == 1);
+    gs3aSameAsRebuilt(h.scene);
+    counts.rebuilds = 0;
+    const auto items = gs3bItems(h.scene);
+    gs3bWait(200);
+    CHECK(counts.rebuilds == 0);
+    CHECK(gs3bItems(h.scene) == items);
+    // (i) The placement sent, committed and read: the scene already draws it.
+    Gs3aTrace trace;
+    h.scene.flushLayout();
+    const auto ops = h.commitFollowing();
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0].at("op") == "set_layout");
+    CHECK(ops[0].at("scope") == "first");
+    CHECK(counts.rebuilds == 0);
+    // A reply after it draws nothing either: the body's placement is the
+    // document's now, as far as followDocument compares.
+    h.readAgain();
+    CHECK(counts.rebuilds == 0);
+    CHECK(gs3bMoved(trace) == 0);
+    // (ii) And what is drawn is what a rebuild draws.
+    gs3aSameAsRebuilt(h.scene);
+    node = scopedNode(h.scene, QStringLiteral("first"), QStringLiteral("sum"));
+    REQUIRE(node != nullptr);
+    const QPoint at = onView(view, node->mapToScene(heading));
+    CHECK(std::abs(at.x() - (grip + delta).x()) <= 2);
+    CHECK(std::abs(at.y() - (grip + delta).y()) <= 2);
+}
+
+TEST_CASE("GS-3b1 a picked carry stays picked over a reply that draws nothing; one that takes the "
+          "carry away draws the whole scene and lets it go",
+          "[devstudio][graph-canvas][scene][gs3b1]") {
+    (void)application();
+    auto document = zoneDocument(true);
+    document["nodes"][2]["parameters"]["carry"] = Json::array({{{"from", "out"}, {"to", "target"}}});
+    ZoneHarness h{document};
+    gs3bOpen(h);
+    QGraphicsItem *carry = scopedItem(h.scene, PelicanStudio::GraphCanvasZoneCarryItem, QString{},
+                                      QStringLiteral("steps"));
+    REQUIRE(carry != nullptr);
+    h.scene.selectCarry("steps", "out", "target");
+    REQUIRE(h.scene.selectedCarry().has_value());
+    {
+        Gs3aTrace trace;
+        Gs3aCounts counts{h.scene};
+        h.readAgain();
+        CHECK(counts.rebuilds == 0);
+        CHECK(gs3bMoved(trace) == 0);
+        CHECK(h.scene.selectedCarry().has_value());
+        auto *arrow = dynamic_cast<QGraphicsPathItem *>(scopedItem(
+            h.scene, PelicanStudio::GraphCanvasZoneCarryItem, QString{}, QStringLiteral("steps")));
+        REQUIRE(arrow != nullptr);
+        CHECK(arrow->pen().widthF() == 3.0);
+        gs3aSameAsRebuilt(h.scene);
+    }
+    // j: the carry taken away elsewhere.
+    gs3bDrawnOnce(h, [&] { h.document["nodes"][2]["parameters"].erase("carry"); },
+                  gs3b_document | gs3b_nodes | gs3b_chrome);
+    CHECK_FALSE(h.scene.selectedCarry().has_value());
+    CHECK(scopedItem(h.scene, PelicanStudio::GraphCanvasZoneCarryItem, QString{}, QStringLiteral("steps")) ==
+          nullptr);
 }

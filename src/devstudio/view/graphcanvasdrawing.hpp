@@ -207,6 +207,11 @@ struct ZoneRow {
     QString inner;
     QString label;
     Row outer_row;
+
+    // GS-3b1: the same row as the frame draws it -- the names, and of the
+    // loop's own row what its socket on the frame is drawn from (its port,
+    // label, type and style; its value and its links are not drawn there).
+    friend bool operator==(const ZoneRow &a, const ZoneRow &b);
 };
 
 struct ZoneTab {
@@ -222,6 +227,8 @@ struct ZoneTab {
     // Why a press on the tab would change nothing (a body the document does
     // not define); the tab is drawn faint and says so in its tooltip.
     QString reason;
+
+    friend bool operator==(const ZoneTab &, const ZoneTab &) = default;
 };
 
 // LP-4d2, decision 3: one pair of the loop's `carry`, drawn as an arrow
@@ -234,6 +241,8 @@ struct ZoneCarry {
     bool unbound = false;
     QString warning;
     bool selected = false;
+
+    friend bool operator==(const ZoneCarry &, const ZoneCarry &) = default;
 };
 
 // What the frame is drawn around besides its body: the body's origin in the
@@ -247,9 +256,12 @@ struct ZoneFrameMetrics {
     qreal footer = 0.0;
 };
 
-struct Zone {
-    // The loop, drawn the way its node is: heading, badge, sockets.
-    Node node;
+// What a frame is drawn with besides its loop's node and its body: the words
+// on it, its tabs, its edge rows, the carries and the bottom line. GS-3b1:
+// worked out by one function (GraphCanvasScene::zoneChrome) for the draw and
+// for followDocument, which compares it to tell a reply that draws nothing
+// new; owned values only.
+struct ZoneChrome {
     QString definition;
     QString stage;
     QString shared;
@@ -269,6 +281,13 @@ struct Zone {
     // draw_loop. Empty before a report.
     QString expansion;
     bool frame_plan_button = false;
+
+    friend bool operator==(const ZoneChrome &, const ZoneChrome &) = default;
+};
+
+struct Zone : ZoneChrome {
+    // The loop, drawn the way its node is: heading, badge, sockets.
+    Node node;
     // The body's extent in its own coordinates (null for an empty body).
     QRectF content;
     // Computed by layoutZone: the frame in the item's coordinates (its

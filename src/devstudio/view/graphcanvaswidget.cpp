@@ -1239,7 +1239,44 @@ bool GraphCanvasScene::followDocumentPlacement() {
     }
     // NB-5: the placement the scene draws is the document's now, as far as
     // followDocument is to compare.
-    if (follows && drawn_from_ && drawn_from_->scope == scope) drawn_from_->layout = model_->scopeLayout(scope);
+    if (follows && drawn_from_ && drawn_from_->scope == scope) {
+        drawn_from_->layout = model_->scopeLayout(scope);
+        // GS-3b1: and so is each zone's body's -- all of them together, once
+        // every drawn scope followed, and only when the zones drawn are the
+        // ones the root picks now (else followDocument draws them whole).
+        auto &zones = drawn_from_->zones;
+        if (!zones.empty()) {
+            const auto nodes = model_->nodes(scope);
+            std::vector<bool> shown;
+            shown.reserve(nodes.size());
+            for (const auto &node : nodes) shown.push_back(model_->nodeShown(scope, node));
+            const auto picks = pickZones(scope, nodes, shown);
+            const bool same_zones =
+                std::ranges::equal(picks.zones, zones,
+                                   [](const ZonePick &pick, const ZoneDrawn &zone) {
+                                       return pick.loop == zone.loop && pick.body == zone.body;
+                                   }) &&
+                std::ranges::equal(std::next(drawn_scopes_.begin()), drawn_scopes_.end(), zones.begin(),
+                                   zones.end(), {}, {}, &ZoneDrawn::body);
+            if (same_zones)
+                for (auto &zone : zones) {
+                    zone.layout = model_->scopeLayout(zone.body);
+                    zone.session = zoneSessionPlaces(zone.body, zone.nodes);
+                    // A body's placement is a member of its definition, so
+                    // the document compared holds it too: that member alone
+                    // follows (the rest of the document is followDocument's).
+                    auto &definitions = drawn_from_->document["definitions"];
+                    const auto &read = model_->documentDefinitions();
+                    if (!definitions.is_object() || !definitions.contains(zone.body) ||
+                        !definitions[zone.body].is_object() || !read.is_object() || !read.contains(zone.body))
+                        continue;
+                    auto &definition = definitions[zone.body];
+                    const auto &now = read.at(zone.body);
+                    if (now.is_object() && now.contains("layout")) definition["layout"] = now.at("layout");
+                    else definition.erase("layout");
+                }
+        }
+    }
     return follows;
 }
 
@@ -1824,6 +1861,12 @@ void GraphCanvasScene::refreshLayerBands() {
             drawing.addLayerBand(*item, name, text);
         }
     }
+    // GS-3b1: the bands on screen are the model's now; what followDocument
+    // compares with says so.
+    if (drawn_from_ && drawn_from_->scope.empty() && !drawn_from_->folded_view) {
+        for (auto &entry : drawn_from_->bands) std::get<1>(entry) = layerBandText(std::get<0>(entry));
+        for (auto &zone : drawn_from_->zones) zone.frame_band = layerBandText(zone.loop);
+    }
 }
 
 void GraphCanvasScene::clear() {
@@ -2039,6 +2082,219 @@ GraphCanvasScene::LinkedOutputs GraphCanvasScene::scopeLinkedOutputs(const std::
     return linked;
 }
 
+// GS-3b1, a: LP-4d1's plan of the zones, as repopulate() made it inline.
+// Only the root draws zones. A body is drawn once, in the first loop whose
+// zone is open: a loop with no body is no zone, a body an earlier zone took is
+// drawn there, and a folded loop is its node and takes no body.
+GraphCanvasScene::ZonePicks GraphCanvasScene::pickZones(const std::string &scope,
+                                                        const std::vector<GraphCanvasNode> &nodes,
+                                                        const std::vector<bool> &shown) const {
+    ZonePicks picks;
+    if (model_ == nullptr || !scope.empty()) return picks;
+    std::set<std::string> claimed;
+    for (std::size_t index = 0; index < nodes.size(); ++index) {
+        const auto &node = nodes[index];
+        if (!node.loop || (index < shown.size() && !shown[index])) continue;
+        auto body = model_->loopZoneBody(node.id);
+        if (body.empty() || claimed.contains(body)) continue;
+        if (collapsed(scope, node.id)) {
+            picks.folded.insert(node.id);
+            continue;
+        }
+        claimed.insert(body);
+        picks.zones.push_back({node.id, std::move(body)});
+    }
+    return picks;
+}
+
+// GS-3b1, b: the chrome repopulate() drew inline (LP-4d1 .. LP-4f1), moved
+// here unchanged so followDocument can compare it.
+GraphCanvasDrawing::ZoneChrome GraphCanvasScene::zoneChrome(const GraphCanvasNode &node, const std::string &body,
+                                                            const std::vector<std::string> &boundary,
+                                                            const std::vector<GraphCanvasBodyOutput> &outputs,
+                                                            const GraphCanvasDrawing::Node &entry) const {
+    const auto loop = model_->loop(node.id);
+    GraphCanvasDrawing::ZoneChrome zone;
+    zone.definition = qtext(body);
+    if (loop && loop->reported) {
+        zone.stage = loop->reported_tier == "draw_loop"
+                         ? QObject::tr("draw_loop %1 materials")
+                               .arg(static_cast<qulonglong>(
+                                   loop->reported_total > 0
+                                       ? loop->reported_total
+                                       : static_cast<std::size_t>(std::max<std::int64_t>(
+                                             loop->reported_count, 0))))
+                         : QStringLiteral("%1 ×%2")
+                               .arg(qtext(loop->reported_tier))
+                               .arg(loop->reported_count);
+    } else {
+        zone.stage = QObject::tr("loop");
+    }
+    // LP-4f1, decision 3: a loop over a view axis says how many views
+    // and along which axis -- `×6 (face)` -- and, with one branch,
+    // names the views where the tabs would be.
+    if (loop && !loop->view_family.empty()) {
+        const auto count = loop->reported ? std::optional<std::int64_t>{loop->reported_count}
+                                          : loop->known_count;
+        zone.stage = count ? QObject::tr("×%1 (%2)").arg(*count).arg(qtext(loop->view_axis))
+                           : QObject::tr("loop (%1)").arg(qtext(loop->view_axis));
+        if (loop->branches.size() <= 1 && loop->known_count && *loop->known_count > 0 &&
+            *loop->known_count <= 32)
+            for (std::int64_t element = 0; element < *loop->known_count; ++element) {
+                const auto &labels = loop->view_axis_info ? loop->view_axis_info->labels
+                                                          : std::vector<std::string>{};
+                zone.axis_labels.push_back(
+                    static_cast<std::size_t>(element) < labels.size()
+                        ? qtext(labels[static_cast<std::size_t>(element)])
+                        : QString::number(element));
+            }
+    }
+    const auto uses = model_->definitionUseCount(body);
+    if (uses > 1)
+        zone.shared = QObject::tr("shared (%1 users)").arg(static_cast<qulonglong>(uses));
+    const bool draw_loop_report =
+        loop && loop->reported && loop->reported_tier == "draw_loop";
+    if (loop && loop->branches.size() > 1) {
+        const std::size_t shown = model_->loopBranch(node.id);
+        const auto defined = model_->scopes();
+        for (std::size_t index = 0; index < loop->branches.size(); ++index) {
+            const auto &branch = loop->branches[index];
+            const bool last = index + 1 == loop->branches.size();
+            GraphCanvasDrawing::ZoneTab tab;
+            tab.text = last ? QObject::tr("else")
+                            : (index == 0 ? QObject::tr("if %1") : QObject::tr("elif %1"))
+                                  .arg(zoneCondition(branch));
+            // LP-4d2, decision 5: a draw_loop's tab says how many of
+            // the materials it drew.
+            if (draw_loop_report)
+                tab.text += QStringLiteral(" (%1)").arg(
+                    static_cast<qulonglong>(branch.matched_materials.size()));
+            tab.branch = index;
+            tab.runs = !branch.nothing && !branch.body.empty();
+            tab.current = tab.runs && index == shown;
+            // UX-1, decision 4: a body another branch runs too is
+            // said on the tab (the else's first), and a body the
+            // document does not define is why a press does nothing.
+            if (tab.runs) {
+                for (std::size_t other = loop->branches.size(); other-- > 0;) {
+                    const auto &sibling = loop->branches[other];
+                    if (other == index || sibling.nothing || sibling.body != branch.body)
+                        continue;
+                    tab.shared_with = other + 1 == loop->branches.size()
+                                          ? QObject::tr("else")
+                                          : QObject::tr("branch %1").arg(
+                                                static_cast<qulonglong>(other));
+                    break;
+                }
+                if (std::ranges::none_of(defined, [&](const GraphCanvasScope &known) {
+                        return !known.root && known.id == branch.body;
+                    }))
+                    tab.reason = QObject::tr("This branch runs %1, which the document "
+                                             "does not define")
+                                     .arg(qtext(branch.body));
+            }
+            zone.tabs.push_back(std::move(tab));
+        }
+    }
+    // The left edge: the loop's inputs and the body's boundary, by
+    // name; the right edge: the body's outputs and the p / p[] the
+    // loop declares from them.
+    const auto outer_input = [&](const std::string &port) {
+        return std::ranges::find(entry.inputs, qtext(port), &GraphCanvasDrawing::Row::port);
+    };
+    std::vector<std::string> input_names;
+    for (const auto &port : node.inputs) input_names.push_back(port.port);
+    for (const auto &id : boundary)
+        if (std::ranges::find(input_names, id) == input_names.end()) input_names.push_back(id);
+    for (const auto &name : input_names) {
+        GraphCanvasDrawing::ZoneRow row;
+        row.label = qtext(name);
+        if (const auto outer = outer_input(name); outer != entry.inputs.end()) {
+            row.outer = qtext(name);
+            row.outer_row = *outer;
+        }
+        if (std::ranges::find(boundary, name) != boundary.end())
+            row.inner = qtext(name);
+        zone.inputs.push_back(std::move(row));
+    }
+    const auto outer_output = [&](const std::string &port) {
+        return std::ranges::find(entry.outputs, qtext(port), &GraphCanvasDrawing::Row::port);
+    };
+    std::set<std::string> placed_outputs;
+    for (const auto &output : outputs) {
+        GraphCanvasDrawing::ZoneRow row;
+        row.label = qtext(output.name);
+        row.inner = qtext(output.name);
+        if (const auto outer = outer_output(output.name); outer != entry.outputs.end()) {
+            row.outer = qtext(output.name);
+            row.outer_row = *outer;
+            placed_outputs.insert(output.name);
+        }
+        zone.outputs.push_back(std::move(row));
+        const auto each = output.name + "[]";
+        if (const auto outer = outer_output(each); outer != entry.outputs.end()) {
+            GraphCanvasDrawing::ZoneRow bundle;
+            bundle.label = outer->label;
+            bundle.outer = qtext(each);
+            bundle.outer_row = *outer;
+            placed_outputs.insert(each);
+            zone.outputs.push_back(std::move(bundle));
+        }
+    }
+    for (const auto &output : node.outputs) {
+        if (placed_outputs.contains(output.port)) continue;
+        const auto outer = outer_output(output.port);
+        if (outer == entry.outputs.end()) continue;
+        GraphCanvasDrawing::ZoneRow row;
+        row.label = outer->label;
+        row.outer = qtext(output.port);
+        row.outer_row = *outer;
+        zone.outputs.push_back(std::move(row));
+    }
+    // LP-4d2. The edges' empty slots, for a document that can be
+    // edited (decisions 1, 2); the carry's arrows (decision 3); and
+    // what the loop became, along the bottom (decision 5).
+    zone.edge_slots = !model_->digest().empty() && !model_->foldedView();
+    if (loop) {
+        for (const auto &carry : loop->carry) {
+            GraphCanvasDrawing::ZoneCarry drawn_carry;
+            drawn_carry.from = qtext(carry.from);
+            drawn_carry.to = qtext(carry.to);
+            drawn_carry.unbound = carry.to_unbound;
+            // The Loop fields' warning, word for word.
+            if (carry.to_unbound)
+                drawn_carry.warning =
+                    GraphCanvasLoopFields::tr(
+                        "%1 has no loop input: connect one for the first element to "
+                        "start from.")
+                        .arg(qtext(carry.to));
+            drawn_carry.selected =
+                selected_carry_ && selected_carry_->loop == node.id &&
+                selected_carry_->from == carry.from && selected_carry_->to == carry.to;
+            zone.carries.push_back(std::move(drawn_carry));
+        }
+        if (draw_loop_report && model_->foldedView() && loop->reported_total == 0 &&
+            loop->reported_count <= 0) {
+            // GL-1, decision 3: a material pass's inside, with no
+            // count the plan resolved -- the stage, and no number.
+            zone.stage = QObject::tr("draw_loop");
+        } else if (draw_loop_report) {
+            const auto materials = loop->reported_total > 0
+                                       ? loop->reported_total
+                                       : static_cast<std::size_t>(std::max<std::int64_t>(
+                                             loop->reported_count, 0));
+            zone.expansion = materials == 1
+                                 ? QObject::tr("1 material")
+                                 : QObject::tr("%1 materials")
+                                       .arg(static_cast<qulonglong>(materials));
+        } else if (loop->reported) {
+            zone.expansion = QObject::tr("×%1 copies").arg(loop->reported_count);
+            zone.frame_plan_button = true;
+        }
+    }
+    return zone;
+}
+
 void GraphCanvasScene::repopulate() {
     // LT-1: one whole-scene rebuild; graph_scene_items says how many it made.
     const GuiTraceSpan trace{"graph_scene_repopulate"};
@@ -2177,18 +2433,12 @@ void GraphCanvasScene::repopulate() {
     // GS-3a: what a partial redraw compares its own with.
     drawn_pass_lines_ = pass_lines;
     drawn_linked_ = scope_linked;
-    if (scope.empty()) {
-        std::set<std::string> claimed;
-        for (const auto &node : nodes) {
-            if (!node.loop) continue;
-            const auto body = model_->loopZoneBody(node.id);
-            if (body.empty() || claimed.contains(body)) continue;
-            if (collapsed(scope, node.id)) {
-                folded_zones.insert(node.id);
-                continue;
-            }
-            claimed.insert(body);
-            ZonePlan &plan = plans[node.id];
+    // GS-3b1: which loops are zones is pickZones' (followDocument compares it).
+    {
+        auto picks = pickZones(scope, nodes);
+        folded_zones = std::move(picks.folded);
+        for (const auto &[loop, body] : picks.zones) {
+            ZonePlan &plan = plans[loop];
             plan.body = body;
             drawn_scopes_.push_back(body);
             loadLayout(body);
@@ -2254,186 +2504,10 @@ void GraphCanvasScene::repopulate() {
             linkedOf(scope_linked, node.id));
         entry.zone_folded = zone_folded;
         if (const auto plan = plans.find(node.id); plan != plans.end()) {
-            const auto loop = model_->loop(node.id);
             GraphCanvasDrawing::Zone zone;
+            static_cast<GraphCanvasDrawing::ZoneChrome &>(zone) = zoneChrome(
+                node, plan->second.body, plan->second.boundary, plan->second.outputs, entry);
             zone.node = entry;
-            zone.definition = qtext(plan->second.body);
-            if (loop && loop->reported) {
-                zone.stage = loop->reported_tier == "draw_loop"
-                                 ? QObject::tr("draw_loop %1 materials")
-                                       .arg(static_cast<qulonglong>(
-                                           loop->reported_total > 0
-                                               ? loop->reported_total
-                                               : static_cast<std::size_t>(std::max<std::int64_t>(
-                                                     loop->reported_count, 0))))
-                                 : QStringLiteral("%1 ×%2")
-                                       .arg(qtext(loop->reported_tier))
-                                       .arg(loop->reported_count);
-            } else {
-                zone.stage = QObject::tr("loop");
-            }
-            // LP-4f1, decision 3: a loop over a view axis says how many views
-            // and along which axis -- `×6 (face)` -- and, with one branch,
-            // names the views where the tabs would be.
-            if (loop && !loop->view_family.empty()) {
-                const auto count = loop->reported ? std::optional<std::int64_t>{loop->reported_count}
-                                                  : loop->known_count;
-                zone.stage = count ? QObject::tr("×%1 (%2)").arg(*count).arg(qtext(loop->view_axis))
-                                   : QObject::tr("loop (%1)").arg(qtext(loop->view_axis));
-                if (loop->branches.size() <= 1 && loop->known_count && *loop->known_count > 0 &&
-                    *loop->known_count <= 32)
-                    for (std::int64_t element = 0; element < *loop->known_count; ++element) {
-                        const auto &labels = loop->view_axis_info ? loop->view_axis_info->labels
-                                                                  : std::vector<std::string>{};
-                        zone.axis_labels.push_back(
-                            static_cast<std::size_t>(element) < labels.size()
-                                ? qtext(labels[static_cast<std::size_t>(element)])
-                                : QString::number(element));
-                    }
-            }
-            const auto uses = model_->definitionUseCount(plan->second.body);
-            if (uses > 1)
-                zone.shared = QObject::tr("shared (%1 users)").arg(static_cast<qulonglong>(uses));
-            const bool draw_loop_report =
-                loop && loop->reported && loop->reported_tier == "draw_loop";
-            if (loop && loop->branches.size() > 1) {
-                const std::size_t shown = model_->loopBranch(node.id);
-                const auto defined = model_->scopes();
-                for (std::size_t index = 0; index < loop->branches.size(); ++index) {
-                    const auto &branch = loop->branches[index];
-                    const bool last = index + 1 == loop->branches.size();
-                    GraphCanvasDrawing::ZoneTab tab;
-                    tab.text = last ? QObject::tr("else")
-                                    : (index == 0 ? QObject::tr("if %1") : QObject::tr("elif %1"))
-                                          .arg(zoneCondition(branch));
-                    // LP-4d2, decision 5: a draw_loop's tab says how many of
-                    // the materials it drew.
-                    if (draw_loop_report)
-                        tab.text += QStringLiteral(" (%1)").arg(
-                            static_cast<qulonglong>(branch.matched_materials.size()));
-                    tab.branch = index;
-                    tab.runs = !branch.nothing && !branch.body.empty();
-                    tab.current = tab.runs && index == shown;
-                    // UX-1, decision 4: a body another branch runs too is
-                    // said on the tab (the else's first), and a body the
-                    // document does not define is why a press does nothing.
-                    if (tab.runs) {
-                        for (std::size_t other = loop->branches.size(); other-- > 0;) {
-                            const auto &sibling = loop->branches[other];
-                            if (other == index || sibling.nothing || sibling.body != branch.body)
-                                continue;
-                            tab.shared_with = other + 1 == loop->branches.size()
-                                                  ? QObject::tr("else")
-                                                  : QObject::tr("branch %1").arg(
-                                                        static_cast<qulonglong>(other));
-                            break;
-                        }
-                        if (std::ranges::none_of(defined, [&](const GraphCanvasScope &known) {
-                                return !known.root && known.id == branch.body;
-                            }))
-                            tab.reason = QObject::tr("This branch runs %1, which the document "
-                                                     "does not define")
-                                             .arg(qtext(branch.body));
-                    }
-                    zone.tabs.push_back(std::move(tab));
-                }
-            }
-            // The left edge: the loop's inputs and the body's boundary, by
-            // name; the right edge: the body's outputs and the p / p[] the
-            // loop declares from them.
-            const auto outer_input = [&](const std::string &port) {
-                return std::ranges::find(entry.inputs, qtext(port), &GraphCanvasDrawing::Row::port);
-            };
-            std::vector<std::string> input_names;
-            for (const auto &port : node.inputs) input_names.push_back(port.port);
-            for (const auto &id : plan->second.boundary)
-                if (std::ranges::find(input_names, id) == input_names.end()) input_names.push_back(id);
-            for (const auto &name : input_names) {
-                GraphCanvasDrawing::ZoneRow row;
-                row.label = qtext(name);
-                if (const auto outer = outer_input(name); outer != entry.inputs.end()) {
-                    row.outer = qtext(name);
-                    row.outer_row = *outer;
-                }
-                if (std::ranges::find(plan->second.boundary, name) != plan->second.boundary.end())
-                    row.inner = qtext(name);
-                zone.inputs.push_back(std::move(row));
-            }
-            const auto outer_output = [&](const std::string &port) {
-                return std::ranges::find(entry.outputs, qtext(port), &GraphCanvasDrawing::Row::port);
-            };
-            std::set<std::string> placed_outputs;
-            for (const auto &output : plan->second.outputs) {
-                GraphCanvasDrawing::ZoneRow row;
-                row.label = qtext(output.name);
-                row.inner = qtext(output.name);
-                if (const auto outer = outer_output(output.name); outer != entry.outputs.end()) {
-                    row.outer = qtext(output.name);
-                    row.outer_row = *outer;
-                    placed_outputs.insert(output.name);
-                }
-                zone.outputs.push_back(std::move(row));
-                const auto each = output.name + "[]";
-                if (const auto outer = outer_output(each); outer != entry.outputs.end()) {
-                    GraphCanvasDrawing::ZoneRow bundle;
-                    bundle.label = outer->label;
-                    bundle.outer = qtext(each);
-                    bundle.outer_row = *outer;
-                    placed_outputs.insert(each);
-                    zone.outputs.push_back(std::move(bundle));
-                }
-            }
-            for (const auto &output : node.outputs) {
-                if (placed_outputs.contains(output.port)) continue;
-                const auto outer = outer_output(output.port);
-                if (outer == entry.outputs.end()) continue;
-                GraphCanvasDrawing::ZoneRow row;
-                row.label = outer->label;
-                row.outer = qtext(output.port);
-                row.outer_row = *outer;
-                zone.outputs.push_back(std::move(row));
-            }
-            // LP-4d2. The edges' empty slots, for a document that can be
-            // edited (decisions 1, 2); the carry's arrows (decision 3); and
-            // what the loop became, along the bottom (decision 5).
-            zone.edge_slots = !model_->digest().empty() && !model_->foldedView();
-            if (loop) {
-                for (const auto &carry : loop->carry) {
-                    GraphCanvasDrawing::ZoneCarry drawn_carry;
-                    drawn_carry.from = qtext(carry.from);
-                    drawn_carry.to = qtext(carry.to);
-                    drawn_carry.unbound = carry.to_unbound;
-                    // The Loop fields' warning, word for word.
-                    if (carry.to_unbound)
-                        drawn_carry.warning =
-                            GraphCanvasLoopFields::tr(
-                                "%1 has no loop input: connect one for the first element to "
-                                "start from.")
-                                .arg(qtext(carry.to));
-                    drawn_carry.selected =
-                        selected_carry_ && selected_carry_->loop == node.id &&
-                        selected_carry_->from == carry.from && selected_carry_->to == carry.to;
-                    zone.carries.push_back(std::move(drawn_carry));
-                }
-                if (draw_loop_report && model_->foldedView() && loop->reported_total == 0 &&
-                    loop->reported_count <= 0) {
-                    // GL-1, decision 3: a material pass's inside, with no
-                    // count the plan resolved -- the stage, and no number.
-                    zone.stage = QObject::tr("draw_loop");
-                } else if (draw_loop_report) {
-                    const auto materials = loop->reported_total > 0
-                                               ? loop->reported_total
-                                               : static_cast<std::size_t>(std::max<std::int64_t>(
-                                                     loop->reported_count, 0));
-                    zone.expansion = materials == 1
-                                         ? QObject::tr("1 material")
-                                         : QObject::tr("%1 materials")
-                                               .arg(static_cast<qulonglong>(materials));
-                } else if (loop->reported) {
-                    zone.expansion = QObject::tr("×%1 copies").arg(loop->reported_count);
-                    zone.frame_plan_button = true;
-                }
-            }
             zone.content = plan->second.content;
             GraphCanvasDrawing::layoutZone(zone, drawing.headingMetrics(), drawing.rowMetrics());
             entry.width = zone.node.width;
@@ -3075,6 +3149,12 @@ void GraphCanvasScene::selectCarry(const std::string &loop, const std::string &f
         pen.setWidthF(picked ? 3.0 : 1.8);
         arrow->setPen(pen);
     }
+    // GS-3b1: every carry is drawn picked or not as this pick says, so what
+    // followDocument compares with says so too.
+    if (drawn_from_)
+        for (auto &zone : drawn_from_->zones)
+            for (auto &carry : zone.chrome.carries)
+                carry.selected = zone.loop == loop && carry.from == qtext(from) && carry.to == qtext(to);
     applyEdgeEmphasis();
     if (selectionChanged) selectionChanged();
 }
@@ -5219,6 +5299,8 @@ bool GraphCanvasScene::redrawStackNode(const std::string &scope, const std::stri
 }
 
 GraphCanvasScene::DrawnFrom GraphCanvasScene::drawnFromNow() const {
+    // GS-3b1: what reading it costs (studio_latency.py's drawn_from columns).
+    const GuiTraceSpan trace{"graph_drawn_from"};
     DrawnFrom from;
     from.scope = model_->currentScope();
     // The stacks' `layers` of the scope on screen aside: what followDocument
@@ -5274,24 +5356,151 @@ GraphCanvasScene::DrawnFrom GraphCanvasScene::drawnFromNow() const {
     from.decomposable = model_->canShowDecomposed();
     from.folded_view = model_->foldedView();
     from.edges = model_->edges(from.scope);
+    // GS-3b1: the bands and the opacity repopulate() gives the nodes at the
+    // top of the scope (its mark 7: the root's graph nodes, zones and folded
+    // nodes; LC-1s's inside a loop's body). The plan's barriers, notes and
+    // deactivations they say are in no other field.
+    if (!from.folded_view) {
+        if (from.scope.empty()) {
+            const auto add = [&](const std::string &id) {
+                from.bands.emplace_back(id, layerBandText(id), nodeOpacity(from.scope, id));
+            };
+            for (std::size_t index = 0; index < from.nodes.size(); ++index)
+                if (from.shown[index]) add(from.nodes[index].id);
+            for (const auto &folded : from.folded) add(folded.id);
+        } else if (model_->isLoopBodyScope(from.scope)) {
+            for (const auto &node : from.nodes)
+                from.bands.emplace_back(node.id, loopElementBandText(*model_, from.scope, node.id), 1.0);
+        }
+    }
+    // GS-3b1: each zone the root draws -- its frame from pickZones' and
+    // zoneChrome's functions, as repopulate() draws it, and its body from
+    // what repopulate() reads (it is placed and measured from these).
+    const auto picks = pickZones(from.scope, from.nodes, from.shown);
+    if (!picks.zones.empty()) {
+        // Only the loop's node is prepared (its rows); nothing is drawn.
+        const GraphCanvasDrawing::Builder drawing{const_cast<GraphCanvasScene &>(*this), QString{}};
+        const QString metrics = QStringLiteral("%1|%2|%3 %4|%5 %6")
+                                    .arg(drawing.labelFont().toString(), drawing.detailFont().toString())
+                                    .arg(drawing.headingMetrics().height())
+                                    .arg(drawing.headingMetrics().averageCharWidth())
+                                    .arg(drawing.rowMetrics().height())
+                                    .arg(drawing.rowMetrics().averageCharWidth());
+        for (const auto &[loop, body] : picks.zones) {
+            ZoneDrawn zone;
+            zone.loop = loop;
+            zone.body = body;
+            zone.nodes = model_->nodes(body);
+            std::vector<std::string> boundary;
+            for (const auto &node : zone.nodes) {
+                zone.shown.push_back(model_->nodeShown(body, node));
+                if (node.op == "graph.input") {
+                    boundary.push_back(node.id);
+                    continue;
+                }
+                if (node.op == "canvas.stack" || graphCanvasCardOperation(node.op)) zone.pictures = true;
+                zone.bands.push_back(loopElementBandText(*model_, body, node.id));
+            }
+            zone.edges = model_->edges(body);
+            zone.layout = model_->scopeLayout(body);
+            zone.session = zoneSessionPlaces(body, zone.nodes);
+            zone.outputs = model_->bodyOutputs(body);
+            if (const auto found = std::ranges::find(from.nodes, loop, &GraphCanvasNode::id);
+                found != from.nodes.end())
+                zone.chrome = zoneChrome(*found, body, boundary, zone.outputs,
+                                         drawing.prepareNode(*model_, *found, nodeView(from.scope, loop)));
+            zone.metrics = metrics;
+            zone.frame_band = nodeBandText(from.scope, loop);
+            zone.frame_opacity = nodeOpacity(from.scope, loop);
+            from.zones.push_back(std::move(zone));
+        }
+    }
     return from;
 }
 
+std::map<std::string, QPointF, std::less<>>
+GraphCanvasScene::zoneSessionPlaces(const std::string &body, const std::vector<GraphCanvasNode> &nodes) const {
+    std::map<std::string, QPointF, std::less<>> places;
+    const GraphCanvasLayout &placed = layout(body);
+    for (const auto &node : nodes) {
+        if (node.op == "graph.input" || placed.nodes.contains(node.id)) continue;
+        if (const auto kept = session_node_positions_.find({body, node.id}); kept != session_node_positions_.end())
+            places.emplace(node.id, kept->second);
+    }
+    return places;
+}
+
+int GraphCanvasScene::zonesMoved(const DrawnFrom &now, const DrawnFrom &drawn) {
+    const auto sameEdges = [](const std::vector<GraphCanvasEdge> &a, const std::vector<GraphCanvasEdge> &b) {
+        return std::ranges::equal(a, b, [](const GraphCanvasEdge &x, const GraphCanvasEdge &y) {
+            return x.from_node == y.from_node && x.from_port == y.from_port && x.to_node == y.to_node &&
+                   x.to_port == y.to_port && x.element == y.element;
+        });
+    };
+    const auto sameOutputs = [](const std::vector<GraphCanvasBodyOutput> &a,
+                                const std::vector<GraphCanvasBodyOutput> &b) {
+        return std::ranges::equal(a, b, [](const GraphCanvasBodyOutput &x, const GraphCanvasBodyOutput &y) {
+            return x.name == y.name && x.node == y.node && x.port == y.port;
+        });
+    };
+    int moved = 0;
+    if (now.zones.size() != drawn.zones.size()) return 1 << 15;
+    for (std::size_t index = 0; index < now.zones.size(); ++index) {
+        const ZoneDrawn &a = now.zones[index];
+        const ZoneDrawn &b = drawn.zones[index];
+        if (a.loop != b.loop || a.body != b.body) moved |= 1 << 15;
+        if (a.nodes != b.nodes || a.shown != b.shown || !sameEdges(a.edges, b.edges) || a.layout != b.layout ||
+            a.session != b.session || !sameOutputs(a.outputs, b.outputs) || a.pictures != b.pictures)
+            moved |= 1 << 16;
+        if (a.chrome != b.chrome || a.metrics != b.metrics) moved |= 1 << 17;
+        if (a.bands != b.bands) moved |= 1 << 18;
+        if (a.frame_band != b.frame_band || a.frame_opacity != b.frame_opacity) moved |= 1 << 19;
+    }
+    return moved;
+}
+
+int GraphCanvasScene::zonesUncomparable(const DrawnFrom &now) const {
+    int why = 0;
+    // The bodies drawn after the scope on screen, in the order drawn: the
+    // zones pickZones finds now, in that order -- or the scene is not the
+    // one these fields can describe.
+    std::vector<std::string> bodies;
+    for (const auto &zone : now.zones) bodies.push_back(zone.body);
+    if (drawn_scopes_.empty() ||
+        !std::ranges::equal(std::next(drawn_scopes_.begin()), drawn_scopes_.end(), bodies.begin(), bodies.end()))
+        why |= 16;
+    // A stack's shape in the air and the pictures in a body are no field's.
+    const auto pictures = [](const ZoneDrawn &zone) { return zone.pictures; };
+    if (std::ranges::any_of(now.zones, pictures) ||
+        (drawn_from_ && std::ranges::any_of(drawn_from_->zones, pictures)))
+        why |= 32;
+    return why;
+}
+
 bool GraphCanvasScene::followDocument() {
-    if (model_ == nullptr || rebuilding_ || !drawn_from_ || !zones_.empty() || drawn_scopes_.size() != 1) {
+    if (model_ == nullptr || rebuilding_ || !drawn_from_) {
         // GS-2: drawn whole without comparing (bit 13), and why (detail2).
         if (GuiTrace::sink) {
             const GuiTraceSpan cause{"graph_follow_diff", double(1 << 13),
                                      double((model_ == nullptr ? 1 : 0) | (rebuilding_ ? 2 : 0) |
-                                            (!drawn_from_ ? 4 : 0) | (!zones_.empty() ? 8 : 0) |
-                                            (drawn_scopes_.size() != 1 ? 16 : 0))};
+                                            (!drawn_from_ ? 4 : 0))};
         }
         repopulate();
         return false;
     }
     const NodeDragTraceSpan trace{this, "follow_document"};
     auto now = drawnFromNow();
+    // GS-3b1: a scene whose zones are not the ones the root picks now, or
+    // whose bodies hold a stack or a picture, is drawn whole without
+    // comparing (bit 13; detail2 16 and 32 say which).
+    if (const int why = zonesUncomparable(now); why != 0) {
+        if (GuiTrace::sink) { const GuiTraceSpan cause{"graph_follow_diff", double(1 << 13), double(why)}; }
+        repopulate();
+        return false;
+    }
     const DrawnFrom &drawn = *drawn_from_;
+    // GS-3b1: the zones' fields (bits 15 to 19).
+    const int zones_moved = zonesMoved(now, drawn);
     // GS-2: which of what the scene draws moved, as bits (a trace only;
     // nothing is compared for it when no one is tracing).
     if (GuiTrace::sink) {
@@ -5309,14 +5518,25 @@ bool GraphCanvasScene::followDocument() {
         moved |= now.trail != drawn.trail ? 1 << 10 : 0;
         moved |= now.decomposable != drawn.decomposable ? 1 << 11 : 0;
         moved |= now.folded_view || drawn.folded_view ? 1 << 12 : 0;
+        moved |= zones_moved;
+        // GS-3b1: a stack that moved beside a zone (drawn whole below), and
+        // the bands and opacity of the nodes at the top of the scope.
+        moved |= !now.zones.empty() && now.stacks != drawn.stacks ? 1 << 20 : 0;
+        moved |= now.bands != drawn.bands ? 1 << 21 : 0;
         const GuiTraceSpan cause{"graph_follow_diff", double(moved)};
     }
     const bool same = !now.folded_view && now.scope == drawn.scope && now.document == drawn.document &&
                       now.layout == drawn.layout && now.nodes == drawn.nodes && now.shown == drawn.shown &&
                       now.folded == drawn.folded && now.derived == drawn.derived && now.passes == drawn.passes &&
                       now.stubs == drawn.stubs && now.authoring == drawn.authoring && now.trail == drawn.trail &&
-                      now.decomposable == drawn.decomposable && now.folded_view == drawn.folded_view;
+                      now.decomposable == drawn.decomposable && now.folded_view == drawn.folded_view &&
+                      now.bands == drawn.bands && zones_moved == 0;
     if (!same) {
+        // GS-3b1: a zone that draws anything else is the whole scene's.
+        if (zones_moved != 0) {
+            repopulate();
+            return false;
+        }
         // GS-3a: only values of nodes, drawn inside those nodes alone.
         switch (redrawChangedNodes(now)) {
         case NodeRedraw::redrawn:
@@ -5331,6 +5551,13 @@ bool GraphCanvasScene::followDocument() {
     // Only the stacks' `layers` (or nothing at all) moved.
     followLayerShape();
     now = drawnFromNow();
+    // GS-3b1: beside a zone a stack is not drawn by itself (redrawStackNode
+    // draws the root's only, and a zone's frame is measured round its body):
+    // a stack that moved there is the whole scene's.
+    if (!now.zones.empty() && now.stacks != drawn.stacks) {
+        repopulate();
+        return false;
+    }
     std::set<std::string, std::less<>> changed;
     for (const auto &[id, state] : now.stacks)
         if (const auto before = drawn.stacks.find(id); before == drawn.stacks.end() || before->second != state)

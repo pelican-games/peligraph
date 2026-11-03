@@ -900,6 +900,35 @@ def sample_metrics(tr: Traces, t0: float, t_meas: float, t_end: float, operation
         if hits:
             m[f"scene_redraw_refused_bit{bit}_count"] = hits
     m["scene_redraw_deferred_count"] = sum(1 for r in rows if r[0] == "graph_redraw_deferred")
+    # GS-2 / GS-3b1: what followDocument found moved, one graph_follow_diff
+    # per reply it followed (graphcanvaswidget.cpp): bits 0 scope to 12 folded
+    # view as GS-2 lists them; 13 drawn whole without comparing, its detail2
+    # saying why (1 no model, 2 rebuilding, 4 nothing drawn yet, 16 the zones
+    # drawn are not the ones the root picks now, 32 a zone's body holds a
+    # stack or a picture); 14 a placement the scene does not draw (the tab);
+    # and GS-3b1's: 15 which loops are zones, 16 a body's nodes, lines,
+    # outputs or placement, 17 a frame's words, tabs, rows, carries or bottom
+    # line, 18 a body node's band, 19 the frame's band or opacity, 20 a stack
+    # moved beside a zone, 21 the band or opacity of a node at the top of the
+    # scope. follow_diff_same_count: the replies that drew nothing new.
+    follows = [(int(r[3]), int(r[4])) for r in rows if r[0] == "graph_follow_diff"]
+    m["follow_diff_count"] = len(follows)
+    m["follow_diff_same_count"] = sum(1 for bits, _ in follows if bits == 0)
+    for bit in range(22):
+        hits = sum(1 for bits, _ in follows if bits & (1 << bit))
+        if hits:
+            m[f"follow_diff_bit{bit}_count"] = hits
+    for why in (1, 2, 4, 16, 32):
+        hits = sum(1 for bits, detail in follows if bits & (1 << 13) and detail & why)
+        if hits:
+            m[f"follow_unchecked_why{why}_count"] = hits
+    # GS-3b1: reading what the scene is drawn from (drawnFromNow), which the
+    # zones make longer: in followDocument and at the end of each rebuild.
+    drawn_from = [r for r in rows if r[0] == "graph_drawn_from"]
+    if drawn_from:
+        m["drawn_from_count"] = len(drawn_from)
+        m["drawn_from_ms_sum"] = sum((r[2] - r[1]) * 1000 for r in drawn_from)
+        m["drawn_from_ms_max"] = max((r[2] - r[1]) * 1000 for r in drawn_from)
     m.update(commit_chain_metrics(tr, t0, t_end, committed))
     paints = [r for r in rows if r[0] == "graph_paint"]
     m["graph_paint_count"] = len(paints)
