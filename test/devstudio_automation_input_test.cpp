@@ -2193,6 +2193,118 @@ TEST_CASE("FX-8 an unpressable named endpoint refuses before a panned drag",
     CHECK(fixture.canvas->mouse.isEmpty());
 }
 
+// GS-3a: a node whose values alone moved is drawn again in place -- its item
+// kept, its children made again. A scenario that named one of them before
+// names the same thing after: the same names, as many of each, each found
+// where it was and saying what it said (the value that moved, its new one).
+TEST_CASE("GS-3a a node drawn again in place answers to the same automation names, each on the same thing",
+          "[devstudio][automation][gs3a]") {
+    (void)application();
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    QMainWindow window;
+    auto *view = new PelicanStudio::NodeCanvasView(&scene, &window);
+    view->setObjectName(QStringLiteral("pelican.graphCanvasView"));
+    view->setScene(&scene);
+    window.setCentralWidget(view);
+    window.resize(900, 450);
+    window.show();
+    // `m` has two stored inputs (two labels, two pills, two sockets) and a
+    // heading of two texts (its id and its operation) under one name.
+    Json nodes = Json::array(
+        {{{"id", "k"}, {"op", "value.constant"}, {"parameters", {{"value", 1.0}}},
+          {"outputs", Json::array({"value"})}},
+         {{"id", "m"}, {"op", "value.multiply"}, {"parameters", {{"a", 2.0}, {"b", 3.0}}},
+          {"outputs", Json::array({"value"})}},
+         {{"id", "s"}, {"op", "value.add"},
+          {"inputs", {{"a", {{"node", "m"}, {"port", "value"}}}, {"b", {{"node", "k"}, {"port", "value"}}}}},
+          {"outputs", Json::array({"value"})}}});
+    int generation = 0;
+    const auto answerRead = [&] {
+        Json read{{"nodes", nodes}, {"definitions", Json::object()}, {"layout", Json::object()},
+                  {"instances", Json::array()}, {"root_schema", "pelican.graph"},
+                  {"source_reference", "fixture"}};
+        read["source_digest"]["hex"] = "gs3a-" + std::to_string(generation);
+        for (const auto &pending : model.takeRpcRequests())
+            if (pending.method == "get_graph_instances") model.receiveRpcResult(pending.request_id, read.dump());
+    };
+    model.setConnected(true);
+    answerRead();
+    scene.setModel(&model);
+    QApplication::processEvents();
+    int rebuilds = 0;
+    std::vector<std::vector<std::string>> redrawn;
+    scene.repopulated = [&] { ++rebuilds; };
+    scene.nodesRedrawn = [&](const std::vector<std::string> &ids) { redrawn.push_back(ids); };
+
+    AutomationHost host;
+    host.window = &window;
+    const QString prefix = QStringLiteral("pelican.graphCanvasView::");
+    // Every name `list` publishes for m's items, with what each says and where.
+    const auto listed = [&] {
+        const auto reply = runAutomationCommand(host, request(QStringLiteral("list"), {{"pattern", "#m"}}));
+        REQUIRE(reply.ok);
+        std::map<QString, std::vector<std::pair<QString, QString>>> named;
+        for (const auto &value : reply.result.toObject().value(QStringLiteral("widgets")).toArray()) {
+            const auto entry = value.toObject();
+            const QString name = entry.value(QStringLiteral("name")).toString();
+            if (!name.startsWith(prefix) || !(name.endsWith(QStringLiteral("#m")) || name.contains(QStringLiteral("#m/"))))
+                continue;
+            const auto centre = entry.value(QStringLiteral("scene")).toArray();
+            named[name].emplace_back(entry.value(QStringLiteral("text")).toString(),
+                                     QStringLiteral("%1,%2").arg(centre[0].toDouble()).arg(centre[1].toDouble()));
+        }
+        for (auto &[name, items] : named) std::ranges::sort(items);
+        return named;
+    };
+    // What `text` finds for each name: the one item the name resolves to.
+    const auto resolved = [&](const std::map<QString, std::vector<std::pair<QString, QString>>> &named) {
+        std::map<QString, QString> said;
+        for (const auto &[name, items] : named) {
+            (void)items;
+            const auto reply = runAutomationCommand(host, request(QStringLiteral("text"), {{"name", name}}));
+            REQUIRE(reply.ok);
+            said[name] = reply.result.toObject().value(QStringLiteral("text")).toString();
+        }
+        return said;
+    };
+    const auto before = listed();
+    const QString heading = prefix + QStringLiteral("graph_node_label#m");
+    QStringList names;
+    for (const auto &[name, items] : before) names.push_back(name + QStringLiteral(" x") + QString::number(items.size()));
+    INFO(names.join(QStringLiteral(" ; ")).toStdString());
+    REQUIRE(before.contains(heading));
+    REQUIRE(before.at(heading).size() >= 2);
+    const QString pill_b = prefix + QStringLiteral("graph_value_pill#m/b");
+    REQUIRE(before.contains(pill_b));
+    const auto said_before = resolved(before);
+
+    // Another panel stores m's b: the document is read again and followed.
+    nodes[1]["parameters"]["b"] = 4.0;
+    ++generation;
+    model.refresh();
+    answerRead();
+    (void)scene.followDocument();
+    QApplication::processEvents();
+    CHECK(rebuilds == 0);
+    CHECK(redrawn == std::vector<std::vector<std::string>>{{"m"}});
+
+    const auto after = listed();
+    const auto said_after = resolved(after);
+    REQUIRE(after.size() == before.size());
+    for (const auto &[name, items] : before) {
+        INFO(name.toStdString());
+        REQUIRE(after.contains(name));
+        CHECK(after.at(name).size() == items.size());
+        if (name.startsWith(pill_b)) {
+            CHECK(said_after.at(name).contains(QStringLiteral("4")));
+            continue;
+        }
+        CHECK(after.at(name) == items);
+        CHECK(said_after.at(name) == said_before.at(name));
+    }
+}
+
 namespace {
 
 // Production MainWindow, InspectorModel and RPC transport. The small engine

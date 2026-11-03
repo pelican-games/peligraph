@@ -708,7 +708,12 @@ def commit_chain_metrics(tr: Traces, t0: float, t_end: float, committed: float |
     first of them (the first change on screen), commit_span_last_paint_ms
     after the last (the picture complete), both from the sample's t0. A fold
     has no graph_edit_committed: its ticket's reply inside the sample starts
-    it."""
+    it.
+
+    GS-3a: a partial redraw (graph_scene_redraw_node, the nodes whose values
+    alone moved drawn again in place) is counted beside the rebuilds --
+    commit_chain_redraw_count, commit_span_redraw_count and _ms_sum -- and the
+    two paints are of the first and the last of either."""
     out: dict[str, float] = {}
     rows = tr.window(t0 - 0.002, t0 + 3.0)
     method = lambda r: (tr.engine_for(r[3], r[1]) or {}).get("method")
@@ -741,9 +746,11 @@ def commit_chain_metrics(tr: Traces, t0: float, t_end: float, committed: float |
         out["commit_chain_reads"] = step + 1
         after = sent[1]
     rebuilds = lambda a, b: [r for r in tr.window(a, b) if r[0] == "graph_scene_repopulate"]
+    redraws = lambda a, b: [r for r in tr.window(a, b) if r[0] == "graph_scene_redraw_node"]
     if end is not None:
         out["commit_chain_end_ms"] = (end - t0) * 1000
         out["commit_chain_repopulate_count"] = len(rebuilds(committed, handled_end + 0.0005))
+        out["commit_chain_redraw_count"] = len(redraws(committed, handled_end + 0.0005))
     # The span: up to the next commit, and short of it at whichever comes
     # later, the chain's end or the event that sends the next edit.
     ahead = tr.window(committed + 0.0005, committed + 3.0)
@@ -761,9 +768,15 @@ def commit_chain_metrics(tr: Traces, t0: float, t_end: float, committed: float |
     out["commit_span_repopulate_count"] = len(repop)
     if repop:
         out["commit_span_repopulate_ms_sum"] = sum((r[2] - r[1]) * 1000 for r in repop)
+    partial = redraws(committed, span_end)
+    out["commit_span_redraw_count"] = len(partial)
+    if partial:
+        out["commit_span_redraw_ms_sum"] = sum((r[2] - r[1]) * 1000 for r in partial)
+    drawn = sorted(repop + partial, key=lambda r: r[2])
+    if drawn:
         paints = [r for r in tr.window(committed, span_end + 1.0) if r[0] == "graph_paint"]
-        first = next((p for p in paints if p[1] >= repop[0][2]), None)
-        last = next((p for p in paints if p[1] >= repop[-1][2]), None)
+        first = next((p for p in paints if p[1] >= drawn[0][2]), None)
+        last = next((p for p in paints if p[1] >= drawn[-1][2]), None)
         if first:
             out["commit_span_first_paint_ms"] = (first[2] - t0) * 1000
         if last:
@@ -862,6 +875,31 @@ def sample_metrics(tr: Traces, t0: float, t_meas: float, t_end: float, operation
                 phases[k] += (t_next - t) * 1000
         for k, v in phases.items():
             m[f"scene_repop_phase{k}_ms_sum"] = v
+    # GS-3a: the partial redraws (graphcanvaswidget.cpp redrawChangedNodes):
+    # how many, how many nodes, their stages -- the check (also run by the
+    # ones that were refused), the bodies, the routing index, the lines --
+    # and why one was not made (graph_redraw_refused, one bit per condition:
+    # 0 other parts, 1 node order, 2 edges, 3 a field besides the values,
+    # 4 zone, 5 a picture reads it, 6 pass lines / linked outputs, 7 no item,
+    # 8 size, 9 another node's band, 10 a folded node's room, 11 folded view).
+    partial = [r for r in rows if r[0] == "graph_scene_redraw_node"]
+    m["scene_redraw_node_count"] = len(partial)
+    if partial:
+        m["scene_redraw_nodes_sum"] = sum(r[3] for r in partial)
+        m["scene_redraw_node_ms_sum"] = sum((r[2] - r[1]) * 1000 for r in partial)
+        m["scene_redraw_node_ms_max"] = max((r[2] - r[1]) * 1000 for r in partial)
+    for stage, key in (("graph_redraw_check", "check"), ("graph_redraw_children", "children"),
+                       ("graph_redraw_index", "index"), ("graph_redraw_lines", "lines")):
+        spans = [r for r in rows if r[0] == stage]
+        if spans:
+            m[f"scene_redraw_{key}_ms_sum"] = sum((r[2] - r[1]) * 1000 for r in spans)
+    refused = [int(r[3]) for r in rows if r[0] == "graph_redraw_refused"]
+    m["scene_redraw_refused_count"] = len(refused)
+    for bit in range(12):
+        hits = sum(1 for why in refused if why & (1 << bit))
+        if hits:
+            m[f"scene_redraw_refused_bit{bit}_count"] = hits
+    m["scene_redraw_deferred_count"] = sum(1 for r in rows if r[0] == "graph_redraw_deferred")
     m.update(commit_chain_metrics(tr, t0, t_end, committed))
     paints = [r for r in rows if r[0] == "graph_paint"]
     m["graph_paint_count"] = len(paints)

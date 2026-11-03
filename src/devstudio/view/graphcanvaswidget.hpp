@@ -20,6 +20,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -409,6 +410,13 @@ class GraphCanvasScene final : public QGraphicsScene {
     // bodies are drawn again in place and the lines into them follow; the
     // rest of the scene is kept. Anything else is repopulate(). True when
     // only the stacks were drawn.
+    //
+    // GS-3a: and when only node values moved (parameters, a port's value
+    // and where it came from) and what they move is drawn inside those
+    // nodes alone -- same size, nothing else that reads them -- those nodes'
+    // bodies are drawn again in place (their items kept) and the lines on
+    // them follow. A node a hand or an editor is on waits until it lets go.
+    // True for that too.
     bool followDocument();
     void clear();
     void rebuildRoutingIndex();
@@ -444,6 +452,9 @@ class GraphCanvasScene final : public QGraphicsScene {
     // The scene finished drawing a scope. The view needs this to know when a
     // scope it has never shown is on screen, so it can fit it.
     std::function<void()> repopulated;
+    // GS-3a: followDocument drew these nodes' bodies again in place, and
+    // nothing else (the scope did not change).
+    std::function<void(const std::vector<std::string> &nodes)> nodesRedrawn;
     std::function<void()> gestureEnded;
     std::function<void()> geometryChanged;
     bool drag_trace_active = false;
@@ -1115,9 +1126,54 @@ class GraphCanvasScene final : public QGraphicsScene {
         std::map<std::string, nlohmann::json, std::less<>> stacks;
         bool decomposable = false;
         bool folded_view = false;
+        // GS-3a: the scope's edges as the model reads them (the document
+        // holds them too; this is what the drawing is made from).
+        std::vector<GraphCanvasEdge> edges;
     };
     std::optional<DrawnFrom> drawn_from_;
     [[nodiscard]] DrawnFrom drawnFromNow() const;
+    // GL-1e: a solid line from what a rendering-section pass's input names
+    // to that input. GS-3a: worked out by one function for repopulate() and
+    // for the check of a partial redraw, which compares it with the lines
+    // the scene draws (drawn_pass_lines_).
+    struct PassLine {
+        std::string from;
+        std::string from_port;
+        std::string pass;
+        std::string resource;
+        std::size_t input_index = 0;
+        bool operator==(const PassLine &) const = default;
+    };
+    struct PassLines {
+        std::vector<PassLine> lines;
+        std::set<std::pair<std::string, std::string>> resources;
+    };
+    // `nodes` the scope's drawn nodes; each folded pass that takes lines is
+    // given its input sockets (`takes_lines`, `input_sockets`).
+    [[nodiscard]] PassLines passLines(const std::string &scope, const std::vector<GraphCanvasNode> &nodes,
+                                      std::vector<GraphCanvasFoldedNode> &folded_nodes) const;
+    // NB-1: the outputs something is drawn from (an edge, a pass line), by node.
+    using LinkedOutputs = std::map<std::string, std::set<std::string, std::less<>>, std::less<>>;
+    [[nodiscard]] LinkedOutputs scopeLinkedOutputs(const std::string &scope,
+                                                   const std::vector<PassLine> &pass_lines) const;
+    std::vector<PassLine> drawn_pass_lines_;
+    LinkedOutputs drawn_linked_;
+    // What each graph node held (foldedRoom) when the last whole draw placed
+    // the folded nodes clear of it, by id.
+    std::map<std::string, QRectF, std::less<>> drawn_rooms_;
+    // GS-3a. The nodes whose values alone moved, drawn again in place, or
+    // why not: the first condition that failed is the trace's bit
+    // (graph_redraw_refused), and a node under a hand waits (deferred).
+    enum class NodeRedraw { redrawn, deferred, refused };
+    NodeRedraw redrawChangedNodes(DrawnFrom &now);
+    // What GL-2b's band under a drawn node says (LC-1s's inside a loop's
+    // body), and the opacity the composition gives it.
+    [[nodiscard]] QString nodeBandText(const std::string &scope, const std::string &id) const;
+    [[nodiscard]] qreal nodeOpacity(const std::string &scope, const std::string &id) const;
+    // A partial redraw that waited for a hand or an editor: followDocument
+    // again once it lets go.
+    bool follow_after_gesture_ = false;
+    void followAfterGesture();
     std::optional<PassInputPick> selected_pass_input_;
     TabEditOrder *edit_order_ = nullptr;
     // The builders' inputs, from the model: the authoring context parsed

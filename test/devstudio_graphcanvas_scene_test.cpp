@@ -16,6 +16,7 @@
 #include "graphcanvasrenderfields.hpp"
 #include "graphcanvasvaluefields.hpp"
 #include "graphcanvaswidget.hpp"
+#include "../guitrace.hpp"
 #include "graphcanvasdrawing.hpp"
 #include "graphcanvasfoldgroups.hpp"
 #include "rendertargetform.hpp"
@@ -18547,6 +18548,8 @@ struct Gs2Engine {
     // The rendering section's target planning, as the Frame Plan's Pin
     // writes it: in the planning root, never on the Graph's canvas.
     Json policy = Json::object();
+    // GS-3a: what present's `input` names beside the added passes' images.
+    std::vector<std::string> present_reads;
 
     [[nodiscard]] std::string digest() const { return "gs2-" + std::to_string(revision); }
     // The passes the graph adds to the plan beside `shade`.
@@ -18586,7 +18589,9 @@ struct Gs2Engine {
         return plan;
     }
     Json authoring() {
-        auto authoring = gl5bAuthoring(images(), images());
+        auto reads = images();
+        reads.insert(reads.end(), present_reads.begin(), present_reads.end());
+        auto authoring = gl5bAuthoring(images(), reads);
         auto &passes = authoring["graphs"][0]["passes"];
         for (const auto &id : added())
             passes.push_back({{"name", id},
@@ -18609,17 +18614,25 @@ struct Gs2Engine {
     }
 };
 
-// The Graph tab over that engine, counting the scene's rebuilds.
+// The Graph tab over that engine, counting the scene's rebuilds -- and
+// (GS-3a) its partial redraws, which draw a reply as a rebuild would.
 struct Gs2Tab {
     RecordedCapability transport;
     Gs2Engine engine;
     std::set<qint64> answered;
     std::unique_ptr<PelicanStudio::GraphCanvasWidget> widget;
     int rebuilds = 0;
+    int redraws = 0;
+    std::vector<std::vector<std::string>> redrawn;
+
+    [[nodiscard]] int draws() const { return rebuilds + redraws; }
 
     // GS-2b: `fullscreen_parameters`, render.fullscreen's table of
     // parameters in the catalog (none: the pass has no parameter rows).
-    explicit Gs2Tab(const Json &fullscreen_parameters = Json::array()) {
+    // GS-3a: `extra_nodes` in the root beside the fixture's.
+    explicit Gs2Tab(const Json &fullscreen_parameters = Json::array(),
+                    const Json &extra_nodes = Json::array()) {
+        for (const auto &node : extra_nodes) engine.graph["nodes"].push_back(node);
         auto capability = transport.capability();
         capability.requestFramePlan = [this](QString *) {
             transport.calls.push_back({QStringLiteral("get_frame_plan")});
@@ -18652,6 +18665,10 @@ struct Gs2Tab {
             ++rebuilds;
             if (drawn) drawn();
         };
+        scene.nodesRedrawn = [this](const std::vector<std::string> &nodes) {
+            ++redraws;
+            redrawn.push_back(nodes);
+        };
     }
 
     // The last call of `method`, answered: it must be one still waiting.
@@ -18664,19 +18681,19 @@ struct Gs2Tab {
         QCoreApplication::processEvents();
     }
 
-    // The engine's three reads, answered in its order: the rebuilds each
-    // reply made.
+    // The engine's three reads, answered in its order: what each reply
+    // drew, a rebuild or (GS-3a) a partial redraw.
     std::array<int, 3> reads() {
         std::array<int, 3> made{};
-        int before = rebuilds;
+        int before = draws();
         answer("get_graph_instances", engine.read());
-        made[0] = rebuilds - before;
-        before = rebuilds;
+        made[0] = draws() - before;
+        before = draws();
         answer("get_frame_plan", engine.plan());
-        made[1] = rebuilds - before;
-        before = rebuilds;
+        made[1] = draws() - before;
+        before = draws();
         answer("get_render_authoring_context", engine.authoring());
-        made[2] = rebuilds - before;
+        made[2] = draws() - before;
         return made;
     }
 
@@ -18691,7 +18708,7 @@ struct Gs2Tab {
             Json::parse(transport.calls[static_cast<std::size_t>(id - 1)].body.toStdString());
         engine.graph = Pelican::editGraphDocument(engine.graph, ops);
         ++engine.revision;
-        const int before = rebuilds;
+        const int before = draws();
         const auto plans = [this] { return transport.countOf(QStringLiteral("get_frame_plan")); };
         const auto contexts = [this] {
             return transport.countOf(QStringLiteral("get_render_authoring_context"));
@@ -18703,7 +18720,7 @@ struct Gs2Tab {
                                        {"committed", true},
                                        {"source_digest", {{"hex", engine.digest()}}}});
         // Nothing is drawn for the commit itself: its document is read next.
-        CHECK(rebuilds == before);
+        CHECK(draws() == before);
         const auto made = reads();
         // The plan and the context once each.
         CHECK(plans() == plans_before + 1);
@@ -19124,4 +19141,645 @@ TEST_CASE("GS-2b a picked render pass's rows are not written again for replies t
     CHECK(scene.selectedNode() == std::optional<std::string>{"shade"});
     CHECK(ux2Items(*pass) == QStringList{"present", "extra"});
     CHECK(pass->currentText() == QStringLiteral("present"));
+}
+
+// --- GS-3a. A reply that moved only the values of some nodes (a parameter,
+// what a port shows and where that came from), when nothing those values are
+// drawn in lies outside those nodes, draws only those nodes again: their
+// items stay, their children are drawn again, the lines on them follow. A
+// value that moves anything else -- a size, the placement, a line, another
+// node's picture or heading, what a folded node keeps clear of -- is the
+// whole scene's, as before.
+
+namespace {
+
+using PelicanStudio::GuiTrace;
+
+// The spans one stretch of the scene's work left (GuiTrace), by stage.
+struct Gs3aTrace {
+    struct Span {
+        std::string stage;
+        double detail = 0.0;
+    };
+    std::vector<Span> spans;
+    GuiTrace::Sink saved_sink = GuiTrace::sink;
+    void *saved_owner = GuiTrace::owner;
+
+    Gs3aTrace() {
+        GuiTrace::sink = &Gs3aTrace::record;
+        GuiTrace::owner = this;
+    }
+    ~Gs3aTrace() {
+        GuiTrace::sink = saved_sink;
+        GuiTrace::owner = saved_owner;
+    }
+    Gs3aTrace(const Gs3aTrace &) = delete;
+    Gs3aTrace &operator=(const Gs3aTrace &) = delete;
+    static void record(void *owner, const char *stage, int64_t, int64_t, double detail, double) {
+        static_cast<Gs3aTrace *>(owner)->spans.push_back({stage, detail});
+    }
+    [[nodiscard]] int count(std::string_view stage) const {
+        return static_cast<int>(
+            std::ranges::count_if(spans, [&](const Span &span) { return span.stage == stage; }));
+    }
+    // Why the partial redraws were refused: the bits of every refusal.
+    [[nodiscard]] int refused() const {
+        int bits = 0;
+        for (const auto &span : spans)
+            if (span.stage == "graph_redraw_refused") bits |= static_cast<int>(span.detail);
+        return bits;
+    }
+};
+
+// graph_redraw_refused's bits (graphcanvaswidget.cpp redrawChangedNodes).
+enum Gs3aWhy : int {
+    gs3a_other_parts = 1 << 0,
+    gs3a_structure = 1 << 3,
+    gs3a_pictures = 1 << 5,
+    gs3a_pass_lines = 1 << 6,
+    gs3a_size = 1 << 8,
+    gs3a_folded_room = 1 << 10,
+};
+
+// The scene's own counts: whole rebuilds and partial redraws (and which nodes).
+struct Gs3aCounts {
+    int rebuilds = 0;
+    std::vector<std::vector<std::string>> redrawn;
+    explicit Gs3aCounts(PelicanStudio::GraphCanvasScene &scene) {
+        scene.repopulated = [this] { ++rebuilds; };
+        scene.nodesRedrawn = [this](const std::vector<std::string> &nodes) { redrawn.push_back(nodes); };
+    }
+};
+
+// A value.multiply reading k1 on `a`, its `b` stored (a pill).
+Json gs3aMultiply(const std::string &id, double b) {
+    return {{"id", id}, {"op", "value.multiply"},
+            {"inputs", {{"a", {{"node", "k1"}, {"port", "value"}}}}},
+            {"parameters", {{"b", b}}},
+            {"outputs", Json::array({"value"})}};
+}
+
+// Every item the scene files under a kind, as the eye and the hand meet it:
+// what it is and whose (kind, scope, node, port, the ends of a line, a
+// socket's side and key, the view, the column), what it shows (text, value,
+// picture), exactly where and how large, how it is painted (pen, brush,
+// opacity, z, visible) and whether it is picked. The scene's picked node too.
+std::vector<std::string> gs3aPicture(QGraphicsScene &scene) {
+    using namespace PelicanStudio;
+    const auto number = [](qreal value) { return QString::number(value, 'g', 12).toStdString(); };
+    const auto rect = [&](const QRectF &r) {
+        return number(r.x()) + "," + number(r.y()) + "," + number(r.width()) + "x" + number(r.height());
+    };
+    std::vector<std::string> drawn;
+    for (QGraphicsItem *item : scene.items()) {
+        const QString kind = nodeGraphItemKind(*item);
+        if (kind.isEmpty()) continue;
+        QStringList key{kind};
+        for (const int role : {GraphCanvasScopeRole, NodeGraphNameRole, GraphCanvasPortRole,
+                               NodeGraphFromNameRole, GraphCanvasFromPortRole, NodeGraphToNameRole,
+                               GraphCanvasToPortRole, GraphCanvasPassInputRole, GraphCanvasValueTextRole,
+                               GraphCanvasSocketDirectionRole, GraphCanvasSocketKeyRole,
+                               GraphCanvasBoundPortRole, GraphCanvasNodeViewRole, GraphCanvasColumnRole,
+                               GraphCanvasLabelRole, GraphCanvasOpRole, GraphCanvasSinkRole,
+                               GraphCanvasThumbnailDigestRole})
+            key.push_back(item->data(role).toString());
+        std::string where = key.join(QLatin1Char{'|'}).toStdString();
+        if (const auto *text = dynamic_cast<const QGraphicsSimpleTextItem *>(item))
+            where += " \"" + text->text().toStdString() + "\"";
+        if (const auto *line = dynamic_cast<const QGraphicsPathItem *>(item)) {
+            const QPainterPath path = line->path();
+            for (int element = 0; element < path.elementCount(); ++element) {
+                const auto at = path.elementAt(element);
+                where += " " + number(at.x) + "," + number(at.y);
+            }
+        } else if (const auto *head = dynamic_cast<const QGraphicsPolygonItem *>(item)) {
+            for (const QPointF &point : head->polygon()) where += " " + number(point.x()) + "," + number(point.y());
+        }
+        if (const auto *shape = dynamic_cast<const QAbstractGraphicsShapeItem *>(item)) {
+            where += " pen " + shape->pen().color().name(QColor::HexArgb).toStdString() + "/" +
+                     number(shape->pen().widthF()) + "/" + std::to_string(int(shape->pen().style()));
+            where += " brush " + shape->brush().color().name(QColor::HexArgb).toStdString();
+        }
+        where += " @" + number(item->scenePos().x()) + "," + number(item->scenePos().y());
+        where += " in " + rect(item->sceneBoundingRect());
+        where += " opacity " + number(item->effectiveOpacity()) + " z " + number(item->zValue());
+        where += item->isVisible() ? " shown" : " hidden";
+        where += item->isSelected() ? " picked" : "";
+        drawn.push_back(std::move(where));
+    }
+    drawn.push_back("selected node " + scene.property("pelicanGraphSelectedNode").toString().toStdString());
+    std::ranges::sort(drawn);
+    return drawn;
+}
+
+// What the scene drew is what a whole rebuild draws now from the same model.
+void gs3aSameAsRebuilt(GraphCanvasScene &scene) {
+    const auto drawn = gs3aPicture(scene);
+    REQUIRE(drawn.size() > 1);
+    scene.repopulate();
+    const auto again = gs3aPicture(scene);
+    std::vector<std::string> only_drawn;
+    std::vector<std::string> only_again;
+    std::ranges::set_difference(drawn, again, std::back_inserter(only_drawn));
+    std::ranges::set_difference(again, drawn, std::back_inserter(only_again));
+    std::string differ;
+    for (std::size_t index = 0; index < std::min<std::size_t>(only_drawn.size(), 6); ++index)
+        differ += "drawn   " + only_drawn[index] + "\n";
+    for (std::size_t index = 0; index < std::min<std::size_t>(only_again.size(), 6); ++index)
+        differ += "rebuilt " + only_again[index] + "\n";
+    INFO(differ);
+    CHECK(only_drawn.empty());
+    CHECK(only_again.empty());
+}
+
+// A mark of the test's own on every item that does not belong to one of
+// `except` (the node's item and what it holds): a number each, so an item
+// deleted and another made at the same address does not pass for it.
+constexpr int Gs3aMarkRole = Qt::UserRole + 9301;
+
+QGraphicsItem *gs3aOwner(QGraphicsItem *item) {
+    while (item->parentItem() != nullptr) item = item->parentItem();
+    return item;
+}
+
+std::set<int> gs3aMark(QGraphicsScene &scene, const std::set<QString> &except) {
+    std::set<int> marks;
+    int next = 1;
+    for (QGraphicsItem *item : scene.items()) {
+        if (PelicanStudio::nodeGraphItemKind(*item).isEmpty()) continue;
+        QGraphicsItem *owner = gs3aOwner(item);
+        if (except.contains(owner->data(PelicanStudio::NodeGraphNameRole).toString()) &&
+            PelicanStudio::nodeGraphItemKind(*owner) == QLatin1String{PelicanStudio::GraphCanvasNodeItem} &&
+            !owner->data(PelicanStudio::GraphCanvasDerivedRole).toBool())
+            continue;
+        item->setData(Gs3aMarkRole, next);
+        marks.insert(next++);
+    }
+    return marks;
+}
+
+std::set<int> gs3aMarks(QGraphicsScene &scene) {
+    std::set<int> marks;
+    for (QGraphicsItem *item : scene.items())
+        if (item->data(Gs3aMarkRole).isValid()) marks.insert(item->data(Gs3aMarkRole).toInt());
+    return marks;
+}
+
+QString gs3aPill(QGraphicsScene &scene, const QString &node, const QString &port) {
+    QGraphicsItem *pill = pillItem(scene, node, port);
+    return pill == nullptr ? QString{} : pill->data(PelicanStudio::GraphCanvasValueTextRole).toString();
+}
+
+QSizeF gs3aSize(QGraphicsScene &scene, const QString &node) {
+    auto *item = dynamic_cast<QGraphicsPathItem *>(nodeItem(scene, node));
+    REQUIRE(item != nullptr);
+    return item->path().boundingRect().size();
+}
+
+QGraphicsPathItem *gs3aEdge(QGraphicsScene &scene, const QString &from, const QString &to, const QString &port) {
+    for (QGraphicsItem *item : itemsOfKind(scene, PelicanStudio::GraphCanvasEdgeItem))
+        if (item->data(PelicanStudio::NodeGraphFromNameRole).toString() == from &&
+            item->data(PelicanStudio::NodeGraphToNameRole).toString() == to &&
+            item->data(PelicanStudio::GraphCanvasToPortRole).toString() == port)
+            return dynamic_cast<QGraphicsPathItem *>(item);
+    return nullptr;
+}
+
+QPointF gs3aLineEnd(const QGraphicsPathItem &line) { return line.mapToScene(line.path().pointAtPercent(1.0)); }
+QPointF gs3aLineStart(const QGraphicsPathItem &line) { return line.mapToScene(line.path().pointAtPercent(0.0)); }
+
+// Another panel's change to the harness's document, read and followed.
+void gs3aElsewhere(ZoneHarness &h, const std::function<void(Json &nodes)> &change) {
+    change(h.document["nodes"]);
+    ++h.generation;
+    h.model.refresh();
+    h.answerReads();
+    (void)h.scene.followDocument();
+}
+
+Json &gs3aNode(Json &nodes, const std::string &id) {
+    for (auto &node : nodes)
+        if (node.at("id") == id) return node;
+    FAIL("no node " << id);
+    return nodes;
+}
+
+} // namespace
+
+TEST_CASE("GS-3a a value committed on one node draws that node again in place with its new value, "
+          "and keeps every other item",
+          "[devstudio][graph-canvas][scene][gs3a]") {
+    (void)application();
+    Gs2Tab tab{Json::array(), Json::array({gs3aMultiply("m", 2.0)})};
+    auto &scene = tab.widget->scene();
+    REQUIRE(nodeItem(scene, QStringLiteral("m")) != nullptr);
+    CHECK(gs3aPill(scene, QStringLiteral("m"), QStringLiteral("b")) == QStringLiteral("2.0"));
+    const auto marks = gs3aMark(scene, {QStringLiteral("m")});
+    REQUIRE(marks.size() > 20);
+    // The node's own item stays as well (its children are drawn again).
+    nodeItem(scene, QStringLiteral("m"))->setData(Gs3aMarkRole, -1);
+    const auto size = gs3aSize(scene, QStringLiteral("m"));
+
+    Gs3aTrace trace;
+    REQUIRE(tab.model().setNodeParameter("m", "b", Json(3.0)));
+    // The document's reply draws it; the plan and the context draw nothing.
+    CHECK(tab.commit() == std::array<int, 3>{1, 0, 0});
+    CHECK(tab.rebuilds == 0);
+    REQUIRE(tab.redrawn.size() == 1);
+    CHECK(tab.redrawn.front() == std::vector<std::string>{"m"});
+    CHECK(trace.count("graph_scene_repopulate") == 0);
+    CHECK(trace.count("graph_scene_redraw_node") == 1);
+    CHECK(gs3aPill(scene, QStringLiteral("m"), QStringLiteral("b")) == QStringLiteral("3.0"));
+    CHECK(gs3aSize(scene, QStringLiteral("m")) == size);
+    auto kept = marks;
+    kept.insert(-1);
+    CHECK(gs3aMarks(scene) == kept);
+    gs3aSameAsRebuilt(scene);
+
+    // Its Undo, the same way.
+    tab.rebuilds = 0;
+    tab.redrawn.clear();
+    REQUIRE(tab.model().undo());
+    CHECK(tab.commit() == std::array<int, 3>{1, 0, 0});
+    CHECK(tab.rebuilds == 0);
+    CHECK(tab.redrawn == std::vector<std::vector<std::string>>{{"m"}});
+    CHECK(gs3aPill(scene, QStringLiteral("m"), QStringLiteral("b")) == QStringLiteral("2.0"));
+    gs3aSameAsRebuilt(scene);
+}
+
+TEST_CASE("GS-3a a value that moves anything outside its node draws the whole scene",
+          "[devstudio][graph-canvas][scene][gs3a]") {
+    (void)application();
+
+    SECTION("a wider row: the node's size") {
+        Gs2Tab tab{Json::array(), Json::array({gs3aMultiply("m", 2.0)})};
+        auto &scene = tab.widget->scene();
+        const auto before = gs3aSize(scene, QStringLiteral("m"));
+        Gs3aTrace trace;
+        tab.rebuilds = 0;
+        REQUIRE(tab.model().setNodeParameter("m", "b", Json("a stored value a good deal longer than the row")));
+        CHECK(tab.commit() == std::array<int, 3>{1, 0, 0});
+        CHECK(gs3aSize(scene, QStringLiteral("m")).width() > before.width());
+        CHECK(tab.rebuilds == 1);
+        CHECK(tab.redrawn.empty());
+        CHECK(trace.refused() == gs3a_size);
+    }
+
+    SECTION("a sink, the same size: the last column") {
+        GraphCanvasModel model;
+        GraphCanvasScene scene;
+        model.setConnected(true);
+        const auto document = gs1ChainDocument(3);
+        answer(model, document, visualCatalog());
+        scene.setModel(&model);
+        REQUIRE(nodeItem(scene, QStringLiteral("n2")) != nullptr);
+        const auto before = gs3aSize(scene, QStringLiteral("n2"));
+        Gs3aCounts counts{scene};
+        auto catalog = visualCatalog();
+        for (auto &operation : catalog["modules"][0]["operations"])
+            if (operation.at("op") == "value.add") operation["sink"] = true;
+        model.setConnected(false);
+        model.setConnected(true);
+        answer(model, document, catalog);
+        Gs3aTrace trace;
+        (void)scene.followDocument();
+        CHECK(counts.rebuilds == 1);
+        CHECK(counts.redrawn.empty());
+        CHECK(trace.refused() == gs3a_structure);
+        CHECK(gs3aSize(scene, QStringLiteral("n2")) == before);
+        CHECK(nodeItem(scene, QStringLiteral("n2"))->data(PelicanStudio::GraphCanvasSinkRole).toBool());
+    }
+
+    SECTION("a node a canvas.stack's row reads: the stack's rows") {
+        ZoneHarness h{nb2bDocument()};
+        nb2bOpen(h);
+        REQUIRE(nodeItem(h.scene, QStringLiteral("pulse")) != nullptr);
+        Gs3aCounts counts{h.scene};
+        Gs3aTrace trace;
+        // `pulse` drives the Dot row's opacity; the row names it.
+        gs3aElsewhere(h, [](Json &nodes) { gs3aNode(nodes, "pulse")["parameters"]["value"] = 0.25; });
+        CHECK(counts.rebuilds == 1);
+        CHECK(counts.redrawn.empty());
+        CHECK(trace.refused() == gs3a_pictures);
+    }
+
+    SECTION("the source of a pass's line: render.target_ref's name") {
+        Gs2Tab tab{Json::array(),
+                   Json::array({{{"id", "ref"}, {"op", "render.target_ref"},
+                                 {"parameters", {{"name", "other_cxlor"}}},
+                                 {"outputs", Json::array({"resource"})}}})};
+        auto &scene = tab.widget->scene();
+        // present reads other_color, which no pass writes.
+        tab.engine.present_reads = {"other_color"};
+        ++tab.engine.revision;
+        tab.widget->refresh();
+        gs2bSettle(tab);
+        REQUIRE(passSocket(scene, QStringLiteral("present"), QStringLiteral("other_color")) != nullptr);
+        REQUIRE(gs2PresentLineFrom(scene, QStringLiteral("other_color")).isEmpty());
+        const auto before = gs3aSize(scene, QStringLiteral("ref"));
+        tab.rebuilds = 0;
+        Gs3aTrace trace;
+        // The passes, what the plan implies and the context are as they were;
+        // the line to present's input is ref's now.
+        gs2bElsewhere(tab, [](Json &nodes) { gs2bNode(nodes, "ref")["parameters"]["name"] = "other_color"; });
+        CHECK(gs2PresentLineFrom(scene, QStringLiteral("other_color")) == QStringLiteral("ref"));
+        CHECK(gs3aSize(scene, QStringLiteral("ref")) == before);
+        CHECK(tab.rebuilds == 1);
+        CHECK(tab.redrawn.empty());
+        CHECK(trace.refused() == gs3a_pass_lines);
+    }
+
+    SECTION("a folded node beside it, the same size, its text running further past its edge") {
+        // A filter's card with a long heading: it is as wide as a node gets,
+        // and its number ("Blur 4 px") is drawn past its right edge.
+        Gs2Tab tab{Json::array(),
+                   Json::array({{{"id", "blur"}, {"op", "filter.blur"},
+                                 {"label", "a blur with a heading long enough to fill the node"},
+                                 {"parameters", {{"radius", 4}}},
+                                 {"outputs", Json::array({"layer"})}}})};
+        auto &scene = tab.widget->scene();
+        (void)tab.model().setDomainShown("canvas", true);
+        scene.repopulate();
+        REQUIRE(gs2HasFolded(scene, QStringLiteral("present")));
+        REQUIRE(nodeItem(scene, QStringLiteral("blur")) != nullptr);
+        const auto before = gs3aSize(scene, QStringLiteral("blur"));
+        REQUIRE(before.width() == PelicanStudio::GraphCanvasNodeMaximumWidth);
+        const auto room = [&] {
+            QGraphicsItem *item = nodeItem(scene, QStringLiteral("blur"));
+            return item->sceneBoundingRect().united(item->mapRectToScene(item->childrenBoundingRect()));
+        };
+        const QRectF room_before = room();
+        tab.rebuilds = 0;
+        Gs3aTrace trace;
+        REQUIRE(tab.model().setNodeParameter("blur", "radius", Json(40000000)));
+        CHECK(tab.commit() == std::array<int, 3>{1, 0, 0});
+        CHECK(gs3aSize(scene, QStringLiteral("blur")) == before);
+        CHECK(room().width() > room_before.width());
+        CHECK(tab.rebuilds == 1);
+        CHECK(tab.redrawn.empty());
+        CHECK(trace.refused() == gs3a_folded_room);
+    }
+
+    SECTION("a node dragged since the scene was drawn whole, folded nodes beside it") {
+        // The drag is kept for the session; nothing is drawn whole for it,
+        // so the folded nodes were placed clear of where k2 was.
+        Gs2Tab tab{Json::array(), Json::array({gs3aMultiply("m", 2.0)})};
+        auto &scene = tab.widget->scene();
+        REQUIRE(gs2HasFolded(scene, QStringLiteral("present")));
+        nodeItem(scene, QStringLiteral("k2"))->moveBy(0.0, 400.0);
+        QCoreApplication::processEvents();
+        tab.rebuilds = 0;
+        Gs3aTrace trace;
+        gs2bElsewhere(tab, [](Json &nodes) { gs2bNode(nodes, "m")["parameters"]["b"] = 3.0; });
+        CHECK(gs3aPill(scene, QStringLiteral("m"), QStringLiteral("b")) == QStringLiteral("3.0"));
+        CHECK(tab.rebuilds == 1);
+        CHECK(tab.redrawn.empty());
+        CHECK(trace.refused() == gs3a_folded_room);
+    }
+}
+
+TEST_CASE("GS-3a two nodes moved and one of them cannot be drawn alone: neither is, the whole "
+          "scene is; a stack that cannot be drawn alone is the whole scene's too",
+          "[devstudio][graph-canvas][scene][gs3a]") {
+    (void)application();
+
+    SECTION("two values, one of them wider") {
+        Gs2Tab tab{Json::array(), Json::array({gs3aMultiply("m", 2.0), gs3aMultiply("w", 2.0)})};
+        auto &scene = tab.widget->scene();
+        tab.rebuilds = 0;
+        Gs3aTrace trace;
+        gs2bElsewhere(tab, [](Json &nodes) {
+            gs2bNode(nodes, "m")["parameters"]["b"] = 3.0;
+            gs2bNode(nodes, "w")["parameters"]["b"] = "a stored value a good deal longer than the row";
+        });
+        CHECK(tab.rebuilds == 1);
+        CHECK(tab.redrawn.empty());
+        CHECK(trace.refused() == gs3a_size);
+        // Nothing was drawn again before the whole scene was.
+        CHECK(trace.count("graph_redraw_children") == 0);
+        CHECK(gs3aPill(scene, QStringLiteral("m"), QStringLiteral("b")) == QStringLiteral("3.0"));
+    }
+
+    SECTION("a stack the filter hides: its layers moved, it is drawn nowhere by itself") {
+        ZoneHarness h{nb2bDocument()};
+        nb2bOpen(h);
+        REQUIRE(nodeItem(h.scene, QStringLiteral("hud")) != nullptr);
+        (void)h.model.setDomainShown("canvas", false);
+        h.scene.repopulate();
+        REQUIRE(nodeItem(h.scene, QStringLiteral("hud")) == nullptr);
+        Gs3aCounts counts{h.scene};
+        gs3aElsewhere(h, [](Json &nodes) { gs3aNode(nodes, "hud")["parameters"]["layers"][0]["name"] = "Back"; });
+        CHECK(counts.rebuilds == 1);
+        // What the scene was drawn from moved with it: the same document
+        // again draws nothing.
+        (void)h.scene.followDocument();
+        CHECK(counts.rebuilds == 1);
+    }
+}
+
+TEST_CASE("GS-3a a node under the hand is drawn again once it is let go, and what the hand did "
+          "happens once",
+          "[devstudio][graph-canvas][scene][gs3a]") {
+    (void)application();
+    Gs2Tab tab{Json::array(), Json::array({gs3aMultiply("m", 2.0)})};
+    auto &scene = tab.widget->scene();
+    QGraphicsItem *from = socketItem(scene, QStringLiteral("m"), QStringLiteral("value"), QStringLiteral("output"));
+    REQUIRE(from != nullptr);
+    from->setData(Gs3aMarkRole, 7);
+    const auto edits = [&] { return tab.transport.countOf(QStringLiteral("edit_graph_document")); };
+    const int edits_before = edits();
+    // A line drawn from m's output: the canvas lights where it can land.
+    sceneMouse(scene, QEvent::GraphicsSceneMousePress, centreOf(from));
+    REQUIRE(scene.dragging());
+    // Another panel changes m's value, and the scene is asked to follow
+    // while the line is still held.
+    gs2bNode(tab.engine.graph["nodes"], "m")["parameters"]["b"] = 3.0;
+    ++tab.engine.revision;
+    tab.widget->refresh();
+    gs2bSettle(tab);
+    tab.rebuilds = 0;
+    (void)scene.followDocument();
+    CHECK(tab.rebuilds == 0);
+    CHECK(tab.redrawn.empty());
+    // The socket the line is drawn from is the one it was.
+    REQUIRE(gs3aMarks(scene).contains(7));
+    CHECK(gs3aPill(scene, QStringLiteral("m"), QStringLiteral("b")) == QStringLiteral("2.0"));
+    // Let go on sum's `b`: one connection.
+    QGraphicsItem *to = socketItem(scene, QStringLiteral("sum"), QStringLiteral("b"), QStringLiteral("input"));
+    REQUIRE(to != nullptr);
+    sceneMouse(scene, QEvent::GraphicsSceneMouseMove, centreOf(to));
+    sceneMouse(scene, QEvent::GraphicsSceneMouseRelease, centreOf(to));
+    QCoreApplication::processEvents();
+    tab.widget->poll();
+    QCoreApplication::processEvents();
+    CHECK_FALSE(scene.dragging());
+    CHECK(edits() == edits_before + 1);
+    // And then m is drawn again, alone.
+    CHECK(tab.rebuilds == 0);
+    CHECK(tab.redrawn == std::vector<std::vector<std::string>>{{"m"}});
+    CHECK(gs3aPill(scene, QStringLiteral("m"), QStringLiteral("b")) == QStringLiteral("3.0"));
+}
+
+TEST_CASE("GS-3a the lines on a node drawn again end on its sockets and follow it; what was picked "
+          "stays picked",
+          "[devstudio][graph-canvas][scene][gs3a]") {
+    (void)application();
+    auto reading = gs3aMultiply("n", 2.0);
+    reading["inputs"]["a"] = {{"node", "m"}, {"port", "value"}};
+    Gs2Tab tab{Json::array(), Json::array({gs3aMultiply("m", 2.0), reading})};
+    auto &scene = tab.widget->scene();
+    // A line into m and one out of it.
+    const auto ends = [&] {
+        QGraphicsPathItem *into = gs3aEdge(scene, QStringLiteral("k1"), QStringLiteral("m"), QStringLiteral("a"));
+        QGraphicsPathItem *out = gs3aEdge(scene, QStringLiteral("m"), QStringLiteral("n"), QStringLiteral("a"));
+        REQUIRE(into != nullptr);
+        REQUIRE(out != nullptr);
+        QGraphicsItem *a = socketItem(scene, QStringLiteral("m"), QStringLiteral("a"), QStringLiteral("input"));
+        QGraphicsItem *value =
+            socketItem(scene, QStringLiteral("m"), QStringLiteral("value"), QStringLiteral("output"));
+        REQUIRE(a != nullptr);
+        REQUIRE(value != nullptr);
+        CHECK(near(gs3aLineEnd(*into), centreOf(a)));
+        CHECK(near(gs3aLineStart(*out), centreOf(value)));
+        return std::pair{into, out};
+    };
+    (void)ends();
+
+    SECTION("the node picked") {
+        scene.selectNode("m");
+        tab.redrawn.clear();
+        gs2bElsewhere(tab, [](Json &nodes) { gs2bNode(nodes, "m")["parameters"]["b"] = 3.0; });
+        REQUIRE(tab.redrawn == std::vector<std::vector<std::string>>{{"m"}});
+        CHECK(scene.selectedNode() == std::optional<std::string>{"m"});
+        const auto [into, out] = ends();
+        // The lines on the picked node are the loud ones.
+        CHECK(into->pen().widthF() == 2.2);
+        CHECK(out->pen().widthF() == 2.2);
+        gs3aSameAsRebuilt(scene);
+        // Drawn again once more and then dragged: the lines follow its new
+        // sockets (the routing index holds the sockets drawn again).
+        tab.redrawn.clear();
+        gs2bElsewhere(tab, [](Json &nodes) { gs2bNode(nodes, "m")["parameters"]["b"] = 4.0; });
+        REQUIRE(tab.redrawn == std::vector<std::vector<std::string>>{{"m"}});
+        nodeItem(scene, QStringLiteral("m"))->moveBy(40.0, 30.0);
+        QCoreApplication::processEvents();
+        (void)ends();
+    }
+
+    SECTION("the line into it picked") {
+        scene.selectEdge(PelicanStudio::GraphCanvasEdge{"k1", "value", "m", "a"}, false);
+        tab.redrawn.clear();
+        gs2bElsewhere(tab, [](Json &nodes) { gs2bNode(nodes, "m")["parameters"]["b"] = 3.0; });
+        REQUIRE(tab.redrawn == std::vector<std::vector<std::string>>{{"m"}});
+        REQUIRE(scene.selectedEdges().size() == 1);
+        CHECK(scene.selectedEdges().front().to_node == "m");
+        const auto [into, out] = ends();
+        CHECK(into->pen().widthF() == 3.0);
+        gs3aSameAsRebuilt(scene);
+    }
+}
+
+TEST_CASE("GS-3a a node drawn again keeps its band and the cut ends of lines on it",
+          "[devstudio][graph-canvas][scene][gs3a]") {
+    (void)application();
+
+    SECTION("the band under it") {
+        Gs2Tab tab{Json::array(), Json::array({gs3aMultiply("m", 2.0)})};
+        auto &scene = tab.widget->scene();
+        const auto voice = QString::fromUtf8("playing \xC2\xB7 1.0 s");
+        scene.setVoiceBands({{"m", voice.toStdString()}});
+        REQUIRE(kindItem(scene, PelicanStudio::GraphCanvasLayerBandItem, QStringLiteral("m")) != nullptr);
+        REQUIRE(tab.model().setNodeParameter("m", "b", Json(3.0)));
+        CHECK(tab.commit() == std::array<int, 3>{1, 0, 0});
+        CHECK(tab.redrawn == std::vector<std::vector<std::string>>{{"m"}});
+        auto *band = dynamic_cast<QGraphicsSimpleTextItem *>(
+            kindItem(scene, PelicanStudio::GraphCanvasLayerBandItem, QStringLiteral("m")));
+        REQUIRE(band != nullptr);
+        CHECK(band->text() == voice);
+        gs3aSameAsRebuilt(scene);
+    }
+
+    SECTION("a line to a hidden domain, cut on its socket") {
+        GraphCanvasModel model;
+        GraphCanvasScene scene;
+        model.setConnected(true);
+        auto document = gs1ChainDocument(3);
+        for (auto &node : document["nodes"])
+            if (node.at("id") == "n2") node["parameters"] = {{"c", 1.0}};
+        document["nodes"].push_back({{"id", "hidden"}, {"op", "render.fullscreen"},
+                                     {"parameters", Json::object()},
+                                     {"inputs", {{"gain", {{"node", "n2"}, {"port", "value"}}}}},
+                                     {"outputs", Json::array({"color"})}});
+        for (const auto &domain : GraphCanvasModel::domainNames())
+            (void)model.setDomainShown(domain, domain != "render");
+        answer(model, document);
+        scene.setModel(&model);
+        REQUIRE(kindItem(scene, PelicanStudio::GraphCanvasDomainStubItem, QStringLiteral("n2")) != nullptr);
+        Gs3aCounts counts{scene};
+        for (auto &node : document["nodes"])
+            if (node.at("id") == "n2") node["parameters"]["c"] = 2.0;
+        model.refresh();
+        answer(model, document);
+        (void)scene.followDocument();
+        CHECK(counts.rebuilds == 0);
+        CHECK(counts.redrawn == std::vector<std::vector<std::string>>{{"n2"}});
+        CHECK(gs3aPill(scene, QStringLiteral("n2"), QStringLiteral("c")) == QStringLiteral("2.0"));
+        REQUIRE(kindItem(scene, PelicanStudio::GraphCanvasDomainStubItem, QStringLiteral("n2")) != nullptr);
+        gs3aSameAsRebuilt(scene);
+    }
+}
+
+TEST_CASE("GS-3a a stack's layers moved draw it and the stack that holds it as a group again, "
+          "each in its item, as before",
+          "[devstudio][graph-canvas][scene][gs3a][nb5]") {
+    (void)application();
+    // `outer` holds `inner` as its one layer (a group).
+    Json document{{"schema", "pelican.graph"}, {"version", 1}, {"outputs", Json::object()},
+                  {"definitions", Json::object()},
+                  {"nodes", Json::array({
+                      nb2bShape("r", "shape.rect"), nb2bFill("r_fill", "r"),
+                      {{"id", "inner"}, {"op", "canvas.stack"},
+                       {"parameters", {{"size", Json::array({320, 180})},
+                                       {"layers", Json::array({{{"input", "r_fill"}, {"name", "R"}}})}}},
+                       {"inputs", {{"r_fill", {{"node", "r_fill"}, {"port", "layer"}}}}},
+                       {"outputs", Json::array({"layer"})}},
+                      {{"id", "outer"}, {"op", "canvas.stack"},
+                       {"parameters", {{"size", Json::array({1280, 720})},
+                                       {"layers", Json::array({{{"input", "inner"}, {"name", "Group"}}})}}},
+                       {"inputs", {{"inner", {{"node", "inner"}, {"port", "layer"}}}}},
+                       {"outputs", Json::array({"layer"})}},
+                      {{"id", "screen"}, {"op", "canvas.output"},
+                       {"inputs", {{"layer", {{"node", "outer"}, {"port", "layer"}}}}},
+                       {"outputs", Json::array({"image"})}}})}};
+    ZoneHarness h{document};
+    nb2bOpen(h);
+    REQUIRE(nodeItem(h.scene, QStringLiteral("outer")) != nullptr);
+    REQUIRE(nodeItem(h.scene, QStringLiteral("inner")) != nullptr);
+    // Every item marked: the nodes' own items, and what each holds.
+    const auto marks = gs3aMark(h.scene, {});
+    const auto markOf = [&](const QString &node) {
+        return nodeItem(h.scene, node)->data(Gs3aMarkRole).toInt();
+    };
+    const int outer = markOf(QStringLiteral("outer"));
+    const int inner = markOf(QStringLiteral("inner"));
+    const int screen = markOf(QStringLiteral("screen"));
+    const auto heldBy = [&](const QString &node) {
+        std::set<int> held;
+        for (QGraphicsItem *child : nodeItem(h.scene, node)->childItems())
+            if (child->data(Gs3aMarkRole).isValid()) held.insert(child->data(Gs3aMarkRole).toInt());
+        return held;
+    };
+    REQUIRE_FALSE(heldBy(QStringLiteral("outer")).empty());
+    REQUIRE_FALSE(heldBy(QStringLiteral("screen")).empty());
+    Gs3aCounts counts{h.scene};
+    gs3aElsewhere(h, [](Json &nodes) { gs3aNode(nodes, "inner")["parameters"]["layers"][0]["name"] = "R2"; });
+    CHECK(counts.rebuilds == 0);
+    // Both stacks are drawn again in their items; another node is not.
+    CHECK(markOf(QStringLiteral("outer")) == outer);
+    CHECK(markOf(QStringLiteral("inner")) == inner);
+    CHECK(markOf(QStringLiteral("screen")) == screen);
+    CHECK(heldBy(QStringLiteral("inner")).empty());
+    CHECK(heldBy(QStringLiteral("outer")).empty());
+    CHECK_FALSE(heldBy(QStringLiteral("screen")).empty());
+    CHECK(gs3aMarks(h.scene).size() < marks.size());
 }

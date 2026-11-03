@@ -1669,6 +1669,18 @@ QString scheduleBand(const GraphCanvasModel &model, const std::string &scope,
     return {};
 }
 
+// What the band under one node of a loop's body says (GS-3a: a partial redraw
+// draws it again for its own nodes).
+QString loopElementBandText(const GraphCanvasModel &model, const std::string &scope,
+                            const std::string &id) {
+    QStringList parts;
+    if (model.loopElementRead(scope, id) == GraphCanvasLoopElementRead::in_loop)
+        parts.push_back(QObject::tr("reads element"));
+    if (const auto band = scheduleBand(model, scope, id); !band.isEmpty())
+        parts.push_back(band);
+    return parts.join(QStringLiteral(" · "));
+}
+
 void addLoopElementBands(QGraphicsScene &scene, const GraphCanvasModel &model,
                          GraphCanvasDrawing::Builder &drawing, const QString &scope,
                          bool zone) {
@@ -1679,12 +1691,8 @@ void addLoopElementBands(QGraphicsScene &scene, const GraphCanvasModel &model,
         if (item->data(GraphCanvasScopeRole).toString() != scope) continue;
         if (item->data(GraphCanvasZoneScopeRole).toString().isEmpty() == zone) continue;
         const auto id = item->data(NodeGraphNameRole).toString().toStdString();
-        QStringList parts;
-        if (model.loopElementRead(scope.toStdString(), id) == GraphCanvasLoopElementRead::in_loop)
-            parts.push_back(QObject::tr("reads element"));
-        if (const auto band = scheduleBand(model, scope.toStdString(), id); !band.isEmpty())
-            parts.push_back(band);
-        if (!parts.isEmpty()) bands.emplace_back(item, parts.join(QStringLiteral(" · ")));
+        if (const QString text = loopElementBandText(model, scope.toStdString(), id); !text.isEmpty())
+            bands.emplace_back(item, text);
     }
     for (const auto &[item, text] : bands)
         drawing.addLayerBand(*item, item->data(NodeGraphNameRole).toString(), text);
@@ -1887,96 +1895,11 @@ void GraphCanvasScene::rebuildRoutingIndex() {
 }
 
 
-void GraphCanvasScene::repopulate() {
-    // LT-1: one whole-scene rebuild; graph_scene_items says how many it made.
-    const GuiTraceSpan trace{"graph_scene_repopulate"};
-    const auto count_items = qScopeGuard([this] {
-        if (GuiTrace::sink) { const GuiTraceSpan items_trace{"graph_scene_items", double(items().size())}; }
-    });
-    ++rebuild_generation_;
-    // An open editor belongs to items that are about to be deleted -- so what
-    // it is and what it holds is taken down first, and opened again over the
-    // items this draw produces. A refresh, a theme switch or an observation
-    // reply arriving mid-edit is not a reason to throw away what somebody is
-    // in the middle of typing.
-    const auto carried = rebuilding_ ? std::nullopt : carryInlineEdit();
-    rebuilding_ = true;
-    closeEditor();
-    clearPendingConnection();
-    // NB-2b: a row held by the mouse is let go of: its items are deleted.
-    layer_drag_.reset();
-    hideLayerDropLine();
-    // A refresh is not a deselection: the node the user is working on stays
-    // selected as long as the document still holds it (N-1's recorded hole).
-    const auto previous_node = selected_node_;
-    const auto previous_edge = selected_edge_;
-    clear();
-    { const GuiTraceSpan mark{"graph_repop_mark", 1}; } // LT-1: the scene emptied; reading the model begins
-    zone_content_.clear();
-    zone_content_rect_.clear();
-    zone_geometry_.clear();
-    zones_.clear();
-    drawn_scopes_.clear();
-    selected_node_.reset();
-    selected_edge_.reset();
-    setProperty("pelicanGraphScope", QVariant{});
-    setProperty("pelicanGraphBreadcrumb", QVariant{});
-    setProperty("pelicanGraphNodeCount", QVariant{});
-    setProperty("pelicanGraphEdgeCount", QVariant{});
-    setProperty("pelicanGraphNotice", QVariant{});
-    setProperty("pelicanGraphZoneCount", QVariant{});
-    if (model_ == nullptr) {
-        drawn_from_.reset();
-        rebuilding_ = false;
-        return;
-    }
-    // NB-5: a shape the document now says (or refused) is not drawn ahead.
-    followLayerShape();
-    pruneSessionPositions();
-    // A placement sent for a scope this draw may not hold has caught up once
-    // the document says what was sent.
-    for (auto &[placed_scope, placed] : placements_)
-        if (placed.dirty && !placed.sent.is_null() &&
-            model_->scopeLayout(placed_scope) == placed.sent)
-            placed.dirty = false;
-
-    const std::string scope = model_->currentScope();
-    // N-6: what the document says about where this scope was drawn. It is read
-    // before the nodes so the placement can answer for them; the session table
-    // under it only speaks for a node the document has never placed.
-    drawn_scopes_.push_back(scope);
-    loadLayout(scope);
-    pruneLayout(scope);
-    const QString scope_text = qtext(scope);
-    auto nodes = model_->nodes(scope);
-    auto edges = model_->edges(scope);
-    // GL-1, decision 5: the root draws the domains the filter holds; a line
-    // to a node it hides is cut at the shown end (the stubs, below).
-    if (scope.empty()) {
-        std::set<std::string, std::less<>> hidden;
-        for (const auto &node : nodes)
-            if (!model_->nodeShown(scope, node)) hidden.insert(node.id);
-        std::erase_if(nodes, [&](const GraphCanvasNode &node) { return hidden.contains(node.id); });
-        std::erase_if(edges, [&](const GraphCanvasEdge &edge) {
-            return hidden.contains(edge.from_node) || hidden.contains(edge.to_node);
-        });
-    }
-    // Decision 1: and, left of them, what no graph node made, folded.
-    auto folded_nodes = model_->foldedNodes();
+GraphCanvasScene::PassLines GraphCanvasScene::passLines(const std::string &scope,
+                                                        const std::vector<GraphCanvasNode> &nodes,
+                                                        std::vector<GraphCanvasFoldedNode> &folded_nodes) const {
+    PassLines found;
     const auto derived_edges = model_->derivedEdges();
-    // GL-1e, decisions 1 and 2: a pass of the rendering section takes lines.
-    // Its sockets are its `input` (and `+ input` when its shader takes more),
-    // and each item of it is a solid line from what it names -- in place of
-    // the dashed one the plan implies for that resource.
-    struct PassLine {
-        std::string from;
-        std::string from_port;
-        std::string pass;
-        std::string resource;
-        std::size_t input_index = 0;
-    };
-    std::vector<PassLine> pass_lines;
-    std::set<std::pair<std::string, std::string>> pass_line_resources;
     if (scope.empty() && !model_->foldedView()) {
         // The root node a resource is named by: its output hands it on.
         std::map<std::string, std::string, std::less<>> resource_nodes;
@@ -2086,11 +2009,124 @@ void GraphCanvasScene::repopulate() {
                         }
                 }
                 if (line.from.empty()) continue;
-                pass_line_resources.emplace(folded.id, socket.resource);
-                pass_lines.push_back(std::move(line));
+                found.resources.emplace(folded.id, socket.resource);
+                found.lines.push_back(std::move(line));
             }
         }
     }
+    return found;
+}
+
+// GL-1c: what a graph node draws that a folded node is placed clear of -- the
+// node with what it holds (its sockets, a value's text running past its box)
+// but not GL-2b's band, which is drawn after the folded nodes are placed.
+// GS-3a: a partial redraw holds each node to the one the last whole draw
+// placed the folded nodes by (drawn_rooms_).
+static QRectF foldedRoom(const QGraphicsItem &item) {
+    QRectF held;
+    for (const QGraphicsItem *child : item.childItems()) {
+        if (nodeGraphItemKind(*child) == QLatin1String{GraphCanvasLayerBandItem}) continue;
+        held |= child->mapRectToParent(child->boundingRect() | child->childrenBoundingRect());
+    }
+    return item.sceneBoundingRect().united(item.mapRectToScene(held));
+}
+
+GraphCanvasScene::LinkedOutputs GraphCanvasScene::scopeLinkedOutputs(const std::string &scope,
+                                                                     const std::vector<PassLine> &pass_lines) const {
+    LinkedOutputs linked;
+    for (const auto &edge : model_->edges(scope)) linked[edge.from_node].insert(edge.from_port);
+    for (const auto &line : pass_lines) linked[line.from].insert(line.from_port);
+    return linked;
+}
+
+void GraphCanvasScene::repopulate() {
+    // LT-1: one whole-scene rebuild; graph_scene_items says how many it made.
+    const GuiTraceSpan trace{"graph_scene_repopulate"};
+    const auto count_items = qScopeGuard([this] {
+        if (GuiTrace::sink) { const GuiTraceSpan items_trace{"graph_scene_items", double(items().size())}; }
+    });
+    ++rebuild_generation_;
+    // GS-3a: a partial redraw waiting for a hand is overtaken by this one.
+    follow_after_gesture_ = false;
+    // An open editor belongs to items that are about to be deleted -- so what
+    // it is and what it holds is taken down first, and opened again over the
+    // items this draw produces. A refresh, a theme switch or an observation
+    // reply arriving mid-edit is not a reason to throw away what somebody is
+    // in the middle of typing.
+    const auto carried = rebuilding_ ? std::nullopt : carryInlineEdit();
+    rebuilding_ = true;
+    closeEditor();
+    clearPendingConnection();
+    // NB-2b: a row held by the mouse is let go of: its items are deleted.
+    layer_drag_.reset();
+    hideLayerDropLine();
+    // A refresh is not a deselection: the node the user is working on stays
+    // selected as long as the document still holds it (N-1's recorded hole).
+    const auto previous_node = selected_node_;
+    const auto previous_edge = selected_edge_;
+    clear();
+    { const GuiTraceSpan mark{"graph_repop_mark", 1}; } // LT-1: the scene emptied; reading the model begins
+    zone_content_.clear();
+    zone_content_rect_.clear();
+    zone_geometry_.clear();
+    zones_.clear();
+    drawn_scopes_.clear();
+    selected_node_.reset();
+    selected_edge_.reset();
+    setProperty("pelicanGraphScope", QVariant{});
+    setProperty("pelicanGraphBreadcrumb", QVariant{});
+    setProperty("pelicanGraphNodeCount", QVariant{});
+    setProperty("pelicanGraphEdgeCount", QVariant{});
+    setProperty("pelicanGraphNotice", QVariant{});
+    setProperty("pelicanGraphZoneCount", QVariant{});
+    if (model_ == nullptr) {
+        drawn_from_.reset();
+        rebuilding_ = false;
+        return;
+    }
+    // NB-5: a shape the document now says (or refused) is not drawn ahead.
+    followLayerShape();
+    pruneSessionPositions();
+    // A placement sent for a scope this draw may not hold has caught up once
+    // the document says what was sent.
+    for (auto &[placed_scope, placed] : placements_)
+        if (placed.dirty && !placed.sent.is_null() &&
+            model_->scopeLayout(placed_scope) == placed.sent)
+            placed.dirty = false;
+
+    const std::string scope = model_->currentScope();
+    // N-6: what the document says about where this scope was drawn. It is read
+    // before the nodes so the placement can answer for them; the session table
+    // under it only speaks for a node the document has never placed.
+    drawn_scopes_.push_back(scope);
+    loadLayout(scope);
+    pruneLayout(scope);
+    const QString scope_text = qtext(scope);
+    auto nodes = model_->nodes(scope);
+    auto edges = model_->edges(scope);
+    // GL-1, decision 5: the root draws the domains the filter holds; a line
+    // to a node it hides is cut at the shown end (the stubs, below).
+    if (scope.empty()) {
+        std::set<std::string, std::less<>> hidden;
+        for (const auto &node : nodes)
+            if (!model_->nodeShown(scope, node)) hidden.insert(node.id);
+        std::erase_if(nodes, [&](const GraphCanvasNode &node) { return hidden.contains(node.id); });
+        std::erase_if(edges, [&](const GraphCanvasEdge &edge) {
+            return hidden.contains(edge.from_node) || hidden.contains(edge.to_node);
+        });
+    }
+    // Decision 1: and, left of them, what no graph node made, folded.
+    auto folded_nodes = model_->foldedNodes();
+    const auto derived_edges = model_->derivedEdges();
+    // GL-1e, decisions 1 and 2 (passLines): a pass of the rendering section takes lines.
+    // Its sockets are its `input` (and `+ input` when its shader takes more),
+    // and each item of it is a solid line from what it names -- in place of
+    // the dashed one the plan implies for that resource.
+    // GS-3a: worked out by passLines(), which the check of a partial redraw
+    // runs too.
+    auto found_lines = passLines(scope, nodes, folded_nodes);
+    const auto &pass_lines = found_lines.lines;
+    const auto &pass_line_resources = found_lines.resources;
 
     // Decision 3: the breadcrumb names the folded steps too, and a feature's
     // fold has its decomposed version's button under it.
@@ -2126,7 +2162,6 @@ void GraphCanvasScene::repopulate() {
     // an edge (one to a hidden domain ends on a stub there), a rendering-
     // section pass's input, a zone's body output. A compact node keeps their
     // rows, as it keeps the inputs an edge ends on.
-    using LinkedOutputs = std::map<std::string, std::set<std::string, std::less<>>, std::less<>>;
     const auto linkedOutputs = [](const std::vector<GraphCanvasEdge> &all) {
         LinkedOutputs linked;
         for (const auto &edge : all) linked[edge.from_node].insert(edge.from_port);
@@ -2138,8 +2173,10 @@ void GraphCanvasScene::repopulate() {
         const auto found = linked.find(id);
         return found == linked.end() ? none : found->second;
     };
-    auto scope_linked = linkedOutputs(model_->edges(scope));
-    for (const auto &line : pass_lines) scope_linked[line.from].insert(line.from_port);
+    auto scope_linked = scopeLinkedOutputs(scope, pass_lines);
+    // GS-3a: what a partial redraw compares its own with.
+    drawn_pass_lines_ = pass_lines;
+    drawn_linked_ = scope_linked;
     if (scope.empty()) {
         std::set<std::string> claimed;
         for (const auto &node : nodes) {
@@ -2559,6 +2596,7 @@ void GraphCanvasScene::repopulate() {
     // frame (heading, edge rows, the carries' arrows, the bottom row).
     std::optional<QRectF> graph_bounds;
     std::vector<QRectF> graph_boxes;
+    drawn_rooms_.clear();
     for (QGraphicsItem *item : items()) {
         if (item->parentItem() != nullptr ||
             nodeGraphItemKind(*item) != QLatin1String{GraphCanvasNodeItem})
@@ -2567,6 +2605,7 @@ void GraphCanvasScene::repopulate() {
             item->sceneBoundingRect().united(item->mapRectToScene(item->childrenBoundingRect()));
         graph_bounds = graph_bounds ? graph_bounds->united(drawn_box) : drawn_box;
         graph_boxes.push_back(drawn_box);
+        drawn_rooms_[item->data(NodeGraphNameRole).toString().toStdString()] = foldedRoom(*item);
     }
 
     // GL-1b, decision 1: a folded node sits where the one placement put it --
@@ -3903,6 +3942,8 @@ void GraphCanvasScene::mouseMoveEvent(QGraphicsSceneMouseEvent *event) {
 }
 
 void GraphCanvasScene::mouseReleaseEvent(QGraphicsSceneMouseEvent *event) {
+    // GS-3a: a node drawn again partly waited for the hand on it.
+    const auto follow = qScopeGuard([this] { followAfterGesture(); });
     if (layer_drag_) {
         event->accept();
         finishLayerDrag(event->scenePos());
@@ -4216,6 +4257,10 @@ void GraphCanvasScene::restoreInlineEdit(const CarriedInlineEdit &carried) {
 
 void GraphCanvasScene::closeEditor() {
     if (!editor_) return;
+    // GS-3a: and for the editor on it.
+    const auto follow = qScopeGuard([this] {
+        if (!rebuilding_) followAfterGesture();
+    });
     auto editor = std::move(editor_);
     if (editor->widget != nullptr && editor->filter)
         editor->widget->removeEventFilter(editor->filter.get());
@@ -5228,6 +5273,7 @@ GraphCanvasScene::DrawnFrom GraphCanvasScene::drawnFromNow() const {
     from.trail = model_->displayTrail();
     from.decomposable = model_->canShowDecomposed();
     from.folded_view = model_->foldedView();
+    from.edges = model_->edges(from.scope);
     return from;
 }
 
@@ -5271,6 +5317,14 @@ bool GraphCanvasScene::followDocument() {
                       now.stubs == drawn.stubs && now.authoring == drawn.authoring && now.trail == drawn.trail &&
                       now.decomposable == drawn.decomposable && now.folded_view == drawn.folded_view;
     if (!same) {
+        // GS-3a: only values of nodes, drawn inside those nodes alone.
+        switch (redrawChangedNodes(now)) {
+        case NodeRedraw::redrawn:
+        case NodeRedraw::deferred:
+            setProperty("pelicanGraphNotice", qtext(model_->notice().message));
+            return true;
+        case NodeRedraw::refused: break;
+        }
         repopulate();
         return false;
     }
@@ -5296,10 +5350,326 @@ bool GraphCanvasScene::followDocument() {
                 }
         }
     }
+    // GS-3a: what was drawn from moves on once every stack is drawn again; a
+    // stack that could not be (not drawn by itself) is the whole scene's.
+    for (const auto &id : changed)
+        if (!redrawStackNode(now.scope, id)) {
+            repopulate();
+            return false;
+        }
     drawn_from_ = std::move(now);
-    for (const auto &id : changed) (void)redrawStackNode(drawn_from_->scope, id);
     setProperty("pelicanGraphNotice", qtext(model_->notice().message));
     return true;
+}
+
+QString GraphCanvasScene::nodeBandText(const std::string &scope, const std::string &id) const {
+    if (model_ == nullptr || model_->foldedView()) return {};
+    if (scope.empty()) return layerBandText(id);
+    if (!model_->isLoopBodyScope(scope)) return {};
+    return loopElementBandText(*model_, scope, id);
+}
+
+qreal GraphCanvasScene::nodeOpacity(const std::string &scope, const std::string &id) const {
+    if (model_ == nullptr || !scope.empty() || model_->foldedView()) return 1.0;
+    return model_->deactivatedNode(id) != nullptr ? 0.45 : 1.0;
+}
+
+void GraphCanvasScene::followAfterGesture() {
+    if (!follow_after_gesture_) return;
+    // From the event loop: the release (or the editor's close) is still
+    // being dispatched to the items it would draw again.
+    // A hand still down waits for its own release; an editor still on a
+    // node it would draw again makes it wait once more (redrawChangedNodes).
+    QTimer::singleShot(0, this, [this] {
+        if (!follow_after_gesture_ || rebuilding_ || dragging()) return;
+        follow_after_gesture_ = false;
+        (void)followDocument();
+    });
+}
+
+GraphCanvasScene::NodeRedraw GraphCanvasScene::redrawChangedNodes(DrawnFrom &now) {
+    const DrawnFrom &drawn = *drawn_from_;
+    // Why a partial redraw was not made: the first condition that failed,
+    // as a bit of graph_redraw_refused (studio_latency.py lists them).
+    enum : int {
+        other_parts = 1 << 0,   // anything but the scope's nodes moved
+        node_order = 1 << 1,    // a node came, went or moved in the order
+        edges_moved = 1 << 2,   // the scope's edges
+        structure = 1 << 3,     // a field of a node other than its values
+        zone = 1 << 4,          // a loop's zone, now or after it
+        pictures = 1 << 5,      // a canvas.stack's rows or a card's picture read it
+        pass_lines = 1 << 6,    // a rendering-section pass's lines or the outputs lines leave
+        no_item = 1 << 7,       // the node is not drawn by itself
+        size = 1 << 8,          // the node's prepared size
+        bands = 1 << 9,         // another node's band or opacity
+        folded_room = 1 << 10,  // what a folded node keeps clear of moved (since the last whole draw, or by this one)
+        folded_view = 1 << 11,  // a folded (feature) view
+    };
+    const auto refuse = [](int why) {
+        if (GuiTrace::sink) { const GuiTraceSpan cause{"graph_redraw_refused", double(why)}; }
+        return NodeRedraw::refused;
+    };
+    std::optional<GuiTraceSpan> check_trace;
+    check_trace.emplace("graph_redraw_check");
+    if (now.folded_view || drawn.folded_view) return refuse(folded_view);
+    if (now.scope != drawn.scope || now.layout != drawn.layout || now.shown != drawn.shown ||
+        now.folded != drawn.folded || now.derived != drawn.derived || now.passes != drawn.passes ||
+        now.stubs != drawn.stubs || now.authoring != drawn.authoring || now.trail != drawn.trail ||
+        now.decomposable != drawn.decomposable || now.stacks != drawn.stacks)
+        return refuse(other_parts);
+    if (now.nodes.size() != drawn.nodes.size()) return refuse(node_order);
+    const std::string &scope = now.scope;
+    // 1. The nodes that moved, in the same order as before.
+    std::set<std::string, std::less<>> changed;
+    for (std::size_t index = 0; index < now.nodes.size(); ++index) {
+        if (now.nodes[index].id != drawn.nodes[index].id) return refuse(node_order);
+        if (now.nodes[index] != drawn.nodes[index]) changed.insert(now.nodes[index].id);
+    }
+    if (changed.empty()) return refuse(other_parts);
+    const auto sameEdge = [](const GraphCanvasEdge &a, const GraphCanvasEdge &b) {
+        return a.from_node == b.from_node && a.from_port == b.from_port && a.to_node == b.to_node &&
+               a.to_port == b.to_port && a.element == b.element;
+    };
+    if (!std::ranges::equal(now.edges, drawn.edges, sameEdge)) return refuse(edges_moved);
+    // The document outside those nodes' parameters.
+    const auto withoutParameters = [&](nlohmann::json document) {
+        nlohmann::json *list = nullptr;
+        if (scope.empty()) {
+            if (document.contains("nodes")) list = &document["nodes"];
+        } else if (auto &definitions = document["definitions"]; definitions.is_object() &&
+                                                                 definitions.contains(scope) &&
+                                                                 definitions[scope].is_object() &&
+                                                                 definitions[scope].contains("nodes")) {
+            list = &definitions[scope]["nodes"];
+        }
+        if (list != nullptr && list->is_array())
+            for (auto &node : *list)
+                if (node.is_object() && node.contains("id") && node.at("id").is_string() &&
+                    changed.contains(node.at("id").get<std::string>()))
+                    node.erase("parameters");
+        return document;
+    };
+    if (now.document != drawn.document && withoutParameters(now.document) != withoutParameters(drawn.document))
+        return refuse(other_parts);
+    // 2. Of a node that moved, only the values: its parameters, and what each
+    // port shows and where that came from. Everything else -- its id, op,
+    // heading, the refusal on it, sink, badge, loop, the ports' names, order
+    // and lines, the shader's sockets -- is as it was.
+    const auto valuesAside = [](GraphCanvasNode node) {
+        node.parameters = nlohmann::json{};
+        for (auto &port : node.inputs) {
+            port.has_parameter = false;
+            port.parameter = nlohmann::json{};
+            port.has_value = false;
+            port.value = 0;
+            port.value_source.clear();
+            port.value_connected_node.clear();
+            port.value_connected_port.clear();
+        }
+        for (auto &output : node.outputs) {
+            output.has_value = false;
+            output.value = 0;
+        }
+        return node;
+    };
+    for (std::size_t index = 0; index < now.nodes.size(); ++index)
+        if (changed.contains(now.nodes[index].id) &&
+            valuesAside(now.nodes[index]) != valuesAside(drawn.nodes[index]))
+            return refuse(structure);
+    // 3. No zone: none drawn (followDocument's guard), none a changed node
+    // makes, and none the plan of the zones (repopulate) would make now.
+    for (const auto &node : now.nodes) {
+        if (!node.loop) continue;
+        if (changed.contains(node.id)) return refuse(zone);
+        if (scope.empty() && !model_->loopZoneBody(node.id).empty() && !collapsed(scope, node.id))
+            return refuse(zone);
+    }
+    // 4. Nothing else draws what they hold: no node they lead to through the
+    // scope's lines draws a picture -- a canvas.stack's rows (and the
+    // headings it names: the source, mask and opacity of a row are lines
+    // into it) or a card's.
+    {
+        std::map<std::string, std::vector<std::string>, std::less<>> next;
+        for (const auto &edge : now.edges) next[edge.from_node].push_back(edge.to_node);
+        std::set<std::string, std::less<>> reached;
+        std::vector<std::string> open{changed.begin(), changed.end()};
+        while (!open.empty()) {
+            const auto id = std::move(open.back());
+            open.pop_back();
+            const auto found = next.find(id);
+            if (found == next.end()) continue;
+            for (const auto &to : found->second)
+                if (reached.insert(to).second) open.push_back(to);
+        }
+        for (const auto &node : now.nodes)
+            if (reached.contains(node.id) && !changed.contains(node.id) &&
+                (node.op == "canvas.stack" || graphCanvasCardOperation(node.op)))
+                return refuse(pictures);
+    }
+    // The nodes as repopulate() draws them (the root without the domains the
+    // filter hides).
+    auto nodes = model_->nodes(scope);
+    if (scope.empty())
+        std::erase_if(nodes, [&](const GraphCanvasNode &node) { return !model_->nodeShown(scope, node); });
+    // 5. The lines into the rendering section's passes, and the outputs a
+    // line leaves (a compact node keeps their rows), as drawn.
+    auto folded_nodes = model_->foldedNodes();
+    const auto lines = passLines(scope, nodes, folded_nodes);
+    const auto linked = scopeLinkedOutputs(scope, lines.lines);
+    if (lines.lines != drawn_pass_lines_ || linked != drawn_linked_) return refuse(pass_lines);
+    // Each drawn node of the scope by its id (a folded node is not one); and
+    // every other node keeps its band and its opacity: what they say is read
+    // from the model, not from the node.
+    const QString scope_text = qtext(scope);
+    std::map<std::string, QGraphicsPathItem *, std::less<>> items_of;
+    for (QGraphicsItem *item : items()) {
+        if (item->parentItem() != nullptr || nodeGraphItemKind(*item) != QLatin1String{GraphCanvasNodeItem} ||
+            item->data(GraphCanvasScopeRole).toString() != scope_text)
+            continue;
+        const auto id = item->data(NodeGraphNameRole).toString().toStdString();
+        const bool derived = item->data(GraphCanvasDerivedRole).toBool();
+        if (!derived)
+            if (auto *path = dynamic_cast<QGraphicsPathItem *>(item)) items_of.emplace(id, path);
+        if (!item->data(GraphCanvasZoneScopeRole).toString().isEmpty()) continue;
+        if (changed.contains(id) && !derived) continue;
+        QString band;
+        for (const QGraphicsItem *child : item->childItems())
+            if (nodeGraphItemKind(*child) == QLatin1String{GraphCanvasLayerBandItem})
+                if (const auto *text = dynamic_cast<const QGraphicsSimpleTextItem *>(child)) band = text->text();
+        if (band != nodeBandText(scope, id) || item->opacity() != nodeOpacity(scope, id)) return refuse(bands);
+    }
+    // 6. Not under a hand, a line being drawn, a row being dragged or an
+    // editor: their items would go (and a lit socket is drawn larger than
+    // it is). It waits for them to let go, and is decided then.
+    const auto heldHere = [&](const QGraphicsItem *item) {
+        for (; item != nullptr; item = item->parentItem())
+            if (item->parentItem() == nullptr) {
+                const auto found = items_of.find(item->data(NodeGraphNameRole).toString().toStdString());
+                return found != items_of.end() && found->second == item && changed.contains(found->first);
+            }
+        return false;
+    };
+    const bool held =
+        heldHere(mouseGrabberItem()) || heldHere(snap_target_) ||
+        std::ranges::any_of(lit_sockets_, [&](const LitSocket &lit) { return heldHere(lit.item); }) ||
+        (pending_connection_ && pending_connection_->scope == scope && changed.contains(pending_connection_->node)) ||
+        (layer_drag_ && layer_drag_->scope == scope && changed.contains(layer_drag_->stack)) ||
+        (editor_ && editor_->scope == scope && changed.contains(editor_->node));
+    if (held) {
+        follow_after_gesture_ = true;
+        if (GuiTrace::sink) { const GuiTraceSpan waited{"graph_redraw_deferred", double(changed.size())}; }
+        return NodeRedraw::deferred;
+    }
+    GraphCanvasDrawing::Builder drawing{*this, scope_text};
+    if (picked_layer_) drawing.setPickedLayer(picked_layer_->scope, picked_layer_->stack, picked_layer_->input);
+    drawing.setThumbnails(thumbnails_.get());
+    drawing.setOpenRows([this](const std::string &row_scope, const std::string &stack, const std::string &input) {
+        return layerRowOpen(row_scope, stack, input);
+    });
+    if (layer_shape_) drawing.setLayerShape(layer_shape_->scope, layer_shape_->stack, layer_shape_->parameters);
+    static const std::set<std::string, std::less<>> none;
+    struct Redraw {
+        QGraphicsPathItem *item = nullptr;
+        GraphCanvasDrawing::Node entry;
+    };
+    // 7. With folded nodes beside them, every other node is where the last
+    // whole draw placed the folded nodes clear of it: a node dragged since
+    // (its new place kept for the session, the document's read followed
+    // without a draw) is the whole draw's to place them clear of again.
+    if (!now.folded.empty()) {
+        if (drawn_rooms_.size() != items_of.size()) return refuse(folded_room);
+        for (const auto &[id, item] : items_of) {
+            if (changed.contains(id)) continue;
+            const auto room = drawn_rooms_.find(id);
+            if (room == drawn_rooms_.end() || room->second != foldedRoom(*item)) return refuse(folded_room);
+        }
+    }
+    std::vector<Redraw> redraws;
+    for (const auto &node : nodes) {
+        if (!changed.contains(node.id)) continue;
+        const auto found = items_of.find(node.id);
+        // 8. Drawn by itself, at the root of the scene (not in a zone).
+        if (found == items_of.end() || !found->second->data(GraphCanvasZoneScopeRole).toString().isEmpty())
+            return refuse(no_item);
+        const auto linked_found = linked.find(node.id);
+        auto entry = drawing.prepareNode(*model_, node, nodeView(scope, node.id),
+                                         linked_found == linked.end() ? none : linked_found->second);
+        // 9. The size the placement placed it at.
+        if (found->second->path().boundingRect().size() != QSizeF{entry.width, entry.height})
+            return refuse(size);
+        redraws.push_back({found->second, std::move(entry)});
+    }
+    // A changed node the filter hides is drawn nowhere: nothing to draw again.
+    check_trace.reset();
+    if (redraws.empty()) {
+        // Only nodes the filter hides moved: nothing on the canvas shows them.
+        follow_after_gesture_ = false;
+        drawn_from_ = std::move(now);
+        return NodeRedraw::redrawn;
+    }
+
+    // The bodies, drawn again in their items: nothing above refused, so
+    // nothing below goes back to the whole scene but what only a drawn body
+    // can say (10).
+    // graph_scene_redraw_node is the whole of it, said once it is done (a
+    // redraw that 10 sends to the whole scene is that scene's rebuild).
+    const std::int64_t began = GuiTrace::sink ? GuiTrace::now() : 0;
+    ++rebuild_generation_;
+    rebuilding_ = true;
+    routing_index_.invalidate();
+    {
+        const GuiTraceSpan children_trace{"graph_redraw_children", double(redraws.size())};
+        for (auto &redraw : redraws) {
+            drawing.redrawNode(*redraw.item, redraw.entry);
+            const auto &id = redraw.entry.node->id;
+            redraw.item->setOpacity(nodeOpacity(scope, id));
+            if (const QString band = nodeBandText(scope, id); !band.isEmpty())
+                drawing.addLayerBand(*redraw.item, qtext(id), band);
+        }
+    }
+    rebuilding_ = false;
+    // 10. And each node drawn again holds what it held: its rows and a
+    // value's text running past its box among it.
+    if (!now.folded.empty())
+        for (const auto &redraw : redraws)
+            if (const auto room = drawn_rooms_.find(redraw.entry.node->id);
+                room == drawn_rooms_.end() || foldedRoom(*redraw.item) != room->second)
+                return refuse(folded_room); // drawn whole by followDocument
+    {
+        const GuiTraceSpan index_trace{"graph_redraw_index"};
+        rebuildRoutingIndex();
+    }
+    {
+        const GuiTraceSpan lines_trace{"graph_redraw_lines"};
+        const auto stubs = model_->domainStubs();
+        for (const auto &redraw : redraws) {
+            const auto &id = redraw.entry.node->id;
+            // Decision 5: the cut ends of lines to hidden domains, on its sockets.
+            for (const auto &stub : stubs) {
+                if (stub.node != id) continue;
+                if (QGraphicsItem *socket = findSocketOrAnchor(*this, scope_text, qtext(stub.node), qtext(stub.port),
+                                                               stub.input ? QStringLiteral("input")
+                                                                          : QStringLiteral("output")))
+                    drawing.addDomainStub(stub, *socket);
+            }
+            // Its edges, and on the root the plan's lines and the passes' own.
+            rerouteGraphCanvasEdges(*this, scope, id);
+        }
+    }
+    applyEdgeEmphasis();
+    std::vector<std::string> ids;
+    ids.reserve(redraws.size());
+    for (const auto &redraw : redraws) ids.push_back(redraw.entry.node->id);
+    follow_after_gesture_ = false;
+    drawn_pass_lines_ = lines.lines;
+    drawn_linked_ = linked;
+    drawn_from_ = std::move(now);
+    scheduleSceneRectUpdate();
+    if (geometryChanged) geometryChanged();
+    if (GuiTrace::sink)
+        GuiTrace::sink(GuiTrace::owner, "graph_scene_redraw_node", began, GuiTrace::now(), double(ids.size()), 0.0);
+    if (nodesRedrawn) nodesRedrawn(ids);
+    return NodeRedraw::redrawn;
 }
 
 bool GraphCanvasScene::addLayer(const std::string &what) {
