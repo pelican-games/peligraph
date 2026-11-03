@@ -160,14 +160,14 @@ GltfBaseColorUvTransform baseColorUvTransform(
     if (const auto *value = objectMember(object, "offset")) {
         const auto offset = valueVec2(value);
         if (!offset) return invalid();
-        result.offset = {static_cast<float>((*offset)[0]),
-                         static_cast<float>((*offset)[1])};
+        result.offset = glm::vec2{static_cast<float>((*offset)[0]),
+                                  static_cast<float>((*offset)[1])};
     }
     if (const auto *value = objectMember(object, "scale")) {
         const auto scale = valueVec2(value);
         if (!scale) return invalid();
-        result.scale = {static_cast<float>((*scale)[0]),
-                        static_cast<float>((*scale)[1])};
+        result.scale = glm::vec2{static_cast<float>((*scale)[0]),
+                                 static_cast<float>((*scale)[1])};
     }
     if (const auto *value = objectMember(object, "rotation")) {
         const auto rotation = valueNumber(value);

@@ -4,6 +4,7 @@
 #include <components/localtransform.hpp>
 #include "export.hpp"
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <iostream>
@@ -32,9 +33,11 @@ class PELICAN_API GameObjects {
   private:
     template <ComponentId... id> struct ComponentIdHolder {
         template <class T> using Append = ComponentIdHolder<id..., ComponentIdByType<T>::value>;
+        // A static in a constexpr function is C++23 (MSVC accepts it in C++20,
+        // GCC does not); the array lives in the holder instead.
+        static constexpr std::array<ComponentId, sizeof...(id)> ids_storage{id...};
         constexpr static std::span<const ComponentId> ids() {
-            static constexpr ComponentId _ids[] = {id...};
-            return std::span<const ComponentId>{_ids, sizeof...(id)};
+            return std::span<const ComponentId>{ids_storage.data(), sizeof...(id)};
         }
         static constexpr size_t len = sizeof...(id);
     };

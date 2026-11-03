@@ -1187,7 +1187,7 @@ RayQueryAccelerationStructureScope::recordFrame(
     std::span<const SceneAccelerationStructureDefinition> named_definitions,
     bool triangle_world_space, bool procedural_world_space) {
     const auto &capabilities = vkcore.getRuntimeCapabilities();
-    if (!capabilities.ray_query ||
+    if ((!capabilities.ray_query && !capabilities.ray_tracing_pipeline) ||
         !capabilities.acceleration_structure ||
         !capabilities.buffer_device_address ||
         capabilities

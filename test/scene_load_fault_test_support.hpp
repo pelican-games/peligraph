@@ -11,6 +11,7 @@
 namespace Pelican {
 class VertBufContainer;
 class MaterialContainer;
+class SceneLoader;
 }
 
 namespace Pelican::test_support {

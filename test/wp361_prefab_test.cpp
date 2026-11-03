@@ -4639,7 +4639,7 @@ TEST_CASE("WP372b transition validation binds entries to their component source"
     auto &authored_object =
         authored_raw["scenes"]["main"]["objects"][0];
     for (const auto &component : authority) {
-        authored_object["components"].push_back(component.body);
+        authored_object["components"].push_back(Json(component.body));
     }
     authored_object.erase("prefab");
     auto authored_document = AuthoringSceneAuthority::stage(

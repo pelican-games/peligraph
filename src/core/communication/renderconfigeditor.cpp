@@ -2463,7 +2463,7 @@ OrderedJson RenderConfigEditorService::editBatch(const Json &params) {
             }
         }
     } restore{*this, document_, managed_documents_, pending_.size()};
-    batch_.emplace();
+    batch_ = BatchOverlay{};
 
     std::vector<Ticket> tickets;
     for (std::size_t index = 0; index < calls.size(); ++index) {

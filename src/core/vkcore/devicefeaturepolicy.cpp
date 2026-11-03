@@ -23,8 +23,11 @@ std::size_t selectVulkanPhysicalDevice(std::span<const VulkanDeviceCandidate> de
         if (device.api_version < VK_API_VERSION_1_3 || !device.suitable) continue;
         if (!override_device.empty() && override_device != std::to_string(i) &&
             override_device != device.name) continue;
+        // LX-1: a Linux node lists Mesa's CPU device (llvmpipe) next to the
+        // GPU; a CPU implementation is chosen only when nothing else qualifies.
         const int score = (device.type == vk::PhysicalDeviceType::eDiscreteGpu ? 1000 : 0) +
-                          (device.unified_queue ? 100 : 0);
+                          (device.unified_queue ? 100 : 0) +
+                          (device.type == vk::PhysicalDeviceType::eCpu ? 0 : 50);
         if (score > best_score) { selected = i; best_score = score; }
     }
     if (!selected) throw std::runtime_error(diagnostic);
@@ -64,14 +67,18 @@ RayQueryDeviceSelection selectRayQueryDeviceFeatures(
         support.max_per_stage_descriptor_sampled_images >= 1024 &&
         support.max_per_stage_resources >= 1026;
 
-    const auto ray_query_enabled =
+    // The acceleration structure and its dependencies are one set; ray query
+    // and the ray tracing pipeline are two consumers of it. LX-1: a device
+    // with the pipeline but without ray query (the Linux node's H100) still gets the
+    // set and the pipeline; ray query stays off and is refused by name.
+    const auto acceleration_structure_enabled =
         support.acceleration_structure_feature &&
-        support.ray_query_feature &&
         support.buffer_device_address_feature &&
         support.acceleration_structure_extension &&
-        support.ray_query_extension &&
         support.deferred_host_operations_extension;
-    if (!ray_query_enabled) return result;
+    if (!acceleration_structure_enabled) return result;
+    const auto ray_query_enabled =
+        support.ray_query_feature && support.ray_query_extension;
 
     const auto ray_tracing_pipeline_enabled =
         support.ray_tracing_pipeline_feature &&
@@ -79,19 +86,22 @@ RayQueryDeviceSelection selectRayQueryDeviceFeatures(
         support.shader_group_handle_size != 0 &&
         support.shader_group_base_alignment != 0 &&
         support.shader_group_handle_alignment != 0;
+    if (!ray_query_enabled && !ray_tracing_pipeline_enabled) return result;
 
     std::vector<std::string> extensions{
         VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
-        VK_KHR_RAY_QUERY_EXTENSION_NAME,
-        VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
     };
+    if (ray_query_enabled) {
+        extensions.emplace_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+    }
+    extensions.emplace_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
     if (ray_tracing_pipeline_enabled) {
         extensions.emplace_back(
             VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
     }
 
     result.acceleration_structure = true;
-    result.ray_query = true;
+    result.ray_query = ray_query_enabled;
     result.buffer_device_address = true;
     result.ray_tracing_pipeline = ray_tracing_pipeline_enabled;
     result.ray_tracing_indirect =

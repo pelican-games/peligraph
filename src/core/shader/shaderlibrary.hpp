@@ -134,31 +134,39 @@ std::string shaderStemCandidateReference(std::string_view stem, ShaderStage stag
 std::optional<ResolvedRef> existingShaderStemCandidate(ResolvedRef resolved, std::string_view candidate_ref,
                                                        std::vector<std::string> *tried = nullptr);
 
+// The reload recipes sit outside ShaderLibrary: a nested class with default
+// member initializers is not default-constructible until the enclosing class
+// is complete, which (with libstdc++) disables the default constructor of the
+// std::variant that ReloadUnit holds and so the vector::resize of reload
+// units. ShaderLibrary keeps them under their old names below.
+struct ShaderLibraryFileReloadRecipe {
+    std::filesystem::path path;
+    ShaderStage expected_stage = ShaderStage::vertex;
+    std::string diagnostic_uri;
+    std::vector<std::string> defines;
+    std::vector<std::pair<std::string, std::string>>
+        virtual_includes;
+};
+struct ShaderLibrarySurfaceReloadRecipe {
+    std::filesystem::path path;
+    watch::AssetKey source;
+    std::string source_name;
+    SurfacePass pass = SurfacePass::main;
+    std::vector<std::string> defines;
+    std::optional<MaterialOutputSchema>
+        material_output_schema;
+    // Generated and engine-owned surfaces have no reloadable file, but
+    // their compiler recipe must still be available when a render-graph
+    // ABI change requires regeneration.
+    std::optional<SurfaceFormatDocument>
+        embedded_surface;
+};
+
 DECLARE_MODULE(ShaderLibrary) {
     friend class PipelineFactory;
 
-    struct FileReloadRecipe {
-        std::filesystem::path path;
-        ShaderStage expected_stage = ShaderStage::vertex;
-        std::string diagnostic_uri;
-        std::vector<std::string> defines;
-        std::vector<std::pair<std::string, std::string>>
-            virtual_includes;
-    };
-    struct SurfaceReloadRecipe {
-        std::filesystem::path path;
-        watch::AssetKey source;
-        std::string source_name;
-        SurfacePass pass = SurfacePass::main;
-        std::vector<std::string> defines;
-        std::optional<MaterialOutputSchema>
-            material_output_schema;
-        // Generated and engine-owned surfaces have no reloadable file, but
-        // their compiler recipe must still be available when a render-graph
-        // ABI change requires regeneration.
-        std::optional<SurfaceFormatDocument>
-            embedded_surface;
-    };
+    using FileReloadRecipe = ShaderLibraryFileReloadRecipe;
+    using SurfaceReloadRecipe = ShaderLibrarySurfaceReloadRecipe;
     struct ReloadUnit {
         std::variant<FileReloadRecipe, SurfaceReloadRecipe> recipe;
         std::vector<ShaderBundleId> bundle_ids;

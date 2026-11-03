@@ -620,7 +620,12 @@ static vk::PhysicalDevice pickPhysicalDevice(vk::Instance instance, vk::SurfaceK
         }
         candidates.push_back(std::move(candidate));
     }
-    return phys_devices[selectVulkanPhysicalDevice(candidates, GET_MODULE(EngineLaunchConfig).gpu)];
+    const auto choice_index =
+        selectVulkanPhysicalDevice(candidates, GET_MODULE(EngineLaunchConfig).gpu);
+    LOG_INFO(logger, "vulkan physical device: {} ({} of {})",
+             std::string{phys_devices[choice_index].getProperties().deviceName.data()},
+             choice_index, phys_devices.size());
+    return phys_devices[choice_index];
 }
 
 static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, const QueueSet &queues_info,
@@ -831,10 +836,12 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
         create_info_chain
             .unlink<vk::PhysicalDeviceDynamicRenderingLocalReadFeaturesKHR>();
     }
-    if (!ray_query_selection.ray_query) {
+    if (!ray_query_selection.acceleration_structure) {
         create_info_chain
             .unlink<
                 vk::PhysicalDeviceAccelerationStructureFeaturesKHR>();
+    }
+    if (!ray_query_selection.ray_query) {
         create_info_chain
             .unlink<vk::PhysicalDeviceRayQueryFeaturesKHR>();
     }
@@ -1166,7 +1173,7 @@ VulkanManageCore::VulkanManageCore() {
                 "vkReleaseSwapchainImagesEXT is unavailable");
         }
     }
-    if (runtime_capabilities.ray_query) {
+    if (runtime_capabilities.acceleration_structure) {
         const auto raw_device =
             static_cast<VkDevice>(device.get());
         const auto load = [&](const char *name) {
@@ -1198,7 +1205,7 @@ VulkanManageCore::VulkanManageCore() {
             get_acceleration_structure_device_address == nullptr ||
             cmd_build_acceleration_structures == nullptr) {
             throw std::runtime_error(
-                "Vulkan ray query was enabled but acceleration "
+                "Vulkan acceleration structures were enabled but acceleration "
                 "structure device command entry points are unavailable");
         }
         acceleration_structure_dispatch = {

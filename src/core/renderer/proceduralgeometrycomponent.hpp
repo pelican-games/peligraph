@@ -16,6 +16,7 @@ struct ProceduralGeometryComponent {
     bool operator==(const ProceduralGeometryComponent &) const = default;
 };
 
-DECLARE_COMPONENT(ProceduralGeometryComponent, 20);
-
 } // namespace Pelican
+
+// From the global namespace: see components/predefined.hpp.
+DECLARE_COMPONENT(Pelican::ProceduralGeometryComponent, 20);

@@ -40,7 +40,9 @@
 #define NOMINMAX
 #include <Windows.h>
 #else
+#include <cerrno>
 #include <dlfcn.h>
+#include <signal.h>
 #include <unistd.h>
 #endif
 

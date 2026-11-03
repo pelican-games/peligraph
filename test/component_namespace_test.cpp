@@ -32,7 +32,13 @@
 namespace Pelican {
 
 struct Wp379PolicyProbeComponent {};
-DECLARE_COMPONENT(Wp379PolicyProbeComponent, 63);
+} // namespace Pelican
+
+// From the global namespace: GCC rejects the macro's qualified
+// specialisation inside namespace Pelican (see components/predefined.hpp).
+DECLARE_COMPONENT(Pelican::Wp379PolicyProbeComponent, 63);
+
+namespace Pelican {
 
 namespace {
 

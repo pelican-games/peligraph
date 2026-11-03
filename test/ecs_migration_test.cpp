@@ -174,8 +174,14 @@ struct BindingAdapter final : ECSArchetypeMigrationAdapter {
 
 } // namespace
 
-DECLARE_COMPONENT(MigrationMoveOnlyComponent, 50);
-DECLARE_COMPONENT(MigrationAddedComponent, 51);
+} // namespace Pelican
+
+// From the global namespace: GCC rejects the macro's qualified
+// specialisation inside namespace Pelican (see components/predefined.hpp).
+DECLARE_COMPONENT(Pelican::MigrationMoveOnlyComponent, 50);
+DECLARE_COMPONENT(Pelican::MigrationAddedComponent, 51);
+
+namespace Pelican {
 
 namespace {
 

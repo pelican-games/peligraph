@@ -6890,7 +6890,7 @@ TEST_CASE(
     REQUIRE(std::ranges::none_of(
         renderingSectionOf(root).at("features"), [&](const auto &feature) {
             return feature.is_string() &&
-                   feature.get<std::string>() == manual_reference;
+                   feature.template get<std::string>() == manual_reference;
         }));
     REQUIRE(std::ranges::none_of(
         runtime.frame_plan.at("nodes"), [&](const auto &node) {
@@ -7110,7 +7110,7 @@ TEST_CASE(
     REQUIRE(std::ranges::any_of(
         renderingSectionOf(root).at("features"), [&](const auto &feature) {
             return feature.is_string() &&
-                   feature.get<std::string>() == alias;
+                   feature.template get<std::string>() == alias;
         }));
 
     remove = service->removeAuthoredPass(

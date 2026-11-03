@@ -33,7 +33,13 @@ struct Wp375FooComponent {
                            const Wp375FooComponent &) = default;
 };
 
-DECLARE_COMPONENT(Wp375FooComponent, 62);
+} // namespace Pelican
+
+// From the global namespace: GCC rejects the macro's qualified
+// specialisation inside namespace Pelican (see components/predefined.hpp).
+DECLARE_COMPONENT(Pelican::Wp375FooComponent, 62);
+
+namespace Pelican {
 
 namespace {
 

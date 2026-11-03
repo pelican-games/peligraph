@@ -1,3 +1,5 @@
+# Policies of a -P script: see cmake/verify_feature_registry.cmake.
+cmake_minimum_required(VERSION 3.20)
 if(NOT DEFINED TEST_BINARY_DIR)
     message(FATAL_ERROR "TEST_BINARY_DIR is required")
 endif()

@@ -24,7 +24,9 @@ if(DEFINED SKIP_TEST)
 endif()
 include(CTest)
 
-if(WIN32)
+# Desktop = a platform with GLFW (windowed player, input). Linux counts too (LX-1): a
+# headless run never initialises GLFW, so it needs no display.
+if(WIN32 OR (UNIX AND NOT APPLE AND NOT ANDROID))
 set(PLATFORM_DESKTOP TRUE)
 endif()
 
@@ -336,8 +338,15 @@ if(PELICAN_RUNTIME_SHADER_COMPILER AND NOT ANDROID)
   set(PELICAN_VULKAN_SDK_LIB_DIR "")
   set(PELICAN_VULKAN_SDK_BIN_DIR "")
   if(DEFINED ENV{VULKAN_SDK})
-    set(PELICAN_VULKAN_SDK_LIB_DIR "$ENV{VULKAN_SDK}/Lib")
-    set(PELICAN_VULKAN_SDK_BIN_DIR "$ENV{VULKAN_SDK}/Bin")
+    # The Windows SDK spells its directories Lib / Bin; the Linux tarball's
+    # x86_64 tree uses lib / bin (a case-sensitive file system tells them apart).
+    if(WIN32)
+      set(PELICAN_VULKAN_SDK_LIB_DIR "$ENV{VULKAN_SDK}/Lib")
+      set(PELICAN_VULKAN_SDK_BIN_DIR "$ENV{VULKAN_SDK}/Bin")
+    else()
+      set(PELICAN_VULKAN_SDK_LIB_DIR "$ENV{VULKAN_SDK}/lib")
+      set(PELICAN_VULKAN_SDK_BIN_DIR "$ENV{VULKAN_SDK}/bin")
+    endif()
   endif()
 
   find_library(PELICAN_SHADERC_COMBINED_RELEASE
@@ -413,6 +422,24 @@ if(PELICAN_RUNTIME_SHADER_COMPILER AND NOT ANDROID)
     )
   else()
     target_link_libraries(pelican_shaderc INTERFACE pelican_shaderc_sdk_release)
+  endif()
+  if(NOT MSVC)
+    # Some distributions ship a shaderc_combined.a that does not bundle glslang
+    # and SPIRV-Tools (Debian / Ubuntu). Link them explicitly when they exist;
+    # against the Vulkan SDK's truly combined archive they resolve nothing.
+    set(pelican_shaderc_extra_libs "")
+    foreach(name IN ITEMS SPIRV glslang MachineIndependent GenericCodeGen
+                          OSDependent glslang-default-resource-limits
+                          SPIRV-Tools-opt SPIRV-Tools)
+      find_library(PELICAN_SHADERC_DEP_${name} NAMES ${name}
+        HINTS ${PELICAN_VULKAN_SDK_LIB_DIR} $ENV{VULKAN_SDK}/lib)
+      if(PELICAN_SHADERC_DEP_${name})
+        list(APPEND pelican_shaderc_extra_libs ${PELICAN_SHADERC_DEP_${name}})
+      endif()
+    endforeach()
+    if(pelican_shaderc_extra_libs)
+      target_link_libraries(pelican_shaderc INTERFACE ${pelican_shaderc_extra_libs})
+    endif()
   endif()
 
   function(pelican_copy_shaderc_runtime target_name)

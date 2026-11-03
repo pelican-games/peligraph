@@ -116,9 +116,32 @@ using Json = nlohmann::json;
 using RayTracingRt31Fixture::accelerationDeclaration;
 using RayTracingRt31Fixture::layoutRoot;
 
+// Defined here, not beside the WP380 fixture tests: the WP386a participant
+// test uses them too, and the WP380 fixture (a Windows game DLL) is not built
+// on Linux, which compiled the definitions out.
 std::string_view wp380MutationId(std::string_view owner,
-                                 std::string_view field);
-void requireWp380CommittedPhaseTrace(const SceneLoadCommitted &committed);
+                                 std::string_view field) {
+    const auto result = test_support::manifestMutationId(owner, field);
+    if (result.empty()) {
+        throw std::logic_error("WP380 manifest mutation row is missing");
+    }
+    return result;
+}
+
+void requireWp380CommittedPhaseTrace(const SceneLoadCommitted &committed) {
+    constexpr std::array expected{
+        SceneLoadPhase::prepare,
+        SceneLoadPhase::early_publish,
+        SceneLoadPhase::publish,
+        SceneLoadPhase::activate,
+        SceneLoadPhase::commit_metadata,
+        SceneLoadPhase::retire,
+        SceneLoadPhase::flush,
+        SceneLoadPhase::finish,
+    };
+    REQUIRE(std::ranges::equal(committed.phase_trace.view(), expected));
+    REQUIRE_FALSE(committed.phase_trace.overflow);
+}
 
 class Wp374aProjectRoot {
   public:
@@ -5248,23 +5271,6 @@ void requireWp380Observed(const Wp380Probe &actual,
             expected.pending_request_issued);
 }
 
-void requireWp380CommittedPhaseTrace(const SceneLoadCommitted &committed) {
-    constexpr std::array expected{
-        SceneLoadPhase::prepare,
-        SceneLoadPhase::early_publish,
-        SceneLoadPhase::publish,
-        SceneLoadPhase::activate,
-        SceneLoadPhase::commit_metadata,
-        SceneLoadPhase::retire,
-        SceneLoadPhase::flush,
-        SceneLoadPhase::finish,
-    };
-    REQUIRE(std::ranges::equal(committed.phase_trace.view(), expected));
-    REQUIRE_FALSE(committed.phase_trace.overflow);
-}
-
-
-
 TEST_CASE(
     "WP380d empty scene commits the complete executor trace without overflow",
     "[WP380d][transaction][trace][gpu]") {
@@ -5299,15 +5305,6 @@ TEST_CASE(
     requireWp380CommittedPhaseTrace(*committed);
     REQUIRE(loader.currentScene() == "empty");
     loader.drainRetirementQueue();
-}
-
-std::string_view wp380MutationId(std::string_view owner,
-                                 std::string_view field) {
-    const auto result = test_support::manifestMutationId(owner, field);
-    if (result.empty()) {
-        throw std::logic_error("WP380 manifest mutation row is missing");
-    }
-    return result;
 }
 
 bool wp380HasLiveTransformX(float expected) {

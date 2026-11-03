@@ -38,11 +38,12 @@ struct alignas(64) BenchmarkOverAlignedComponent {
     std::array<std::uint64_t, 8> values{};
 };
 
-DECLARE_COMPONENT(BenchmarkPodComponent, 10);
-DECLARE_COMPONENT(BenchmarkStringComponent, 11);
-DECLARE_COMPONENT(BenchmarkOverAlignedComponent, 12);
-
 } // namespace Pelican
+
+// From the global namespace: see components/predefined.hpp.
+DECLARE_COMPONENT(Pelican::BenchmarkPodComponent, 10);
+DECLARE_COMPONENT(Pelican::BenchmarkStringComponent, 11);
+DECLARE_COMPONENT(Pelican::BenchmarkOverAlignedComponent, 12);
 
 namespace {
 

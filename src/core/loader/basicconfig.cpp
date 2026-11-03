@@ -41,7 +41,9 @@ namespace {
 struct JsonHelper {
     const nlohmann::json _json;
 
-    JsonHelper(std::string_view str) : _json{nlohmann::json::parse(str)} {}
+    // Parentheses: json{x} is [x] under GCC / Clang (initializer-list
+    // constructor first); MSVC copies x.
+    JsonHelper(std::string_view str) : _json(nlohmann::json::parse(str)) {}
 
     std::optional<nlohmann::json> getVal(const std::string_view path, const nlohmann::json &json) const {
         const auto d_pos = path.find('/');

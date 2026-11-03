@@ -118,6 +118,44 @@ TEST_CASE("ray query bootstrap stays optional and enables its dependency set ato
             VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME));
     }
 
+    SECTION("a ray tracing pipeline without ray query keeps the acceleration structure") {
+        // LX-1: the Linux node's H100 advertises the pipeline but not ray query.
+        RayQueryDeviceSupport supported{
+            .acceleration_structure_feature = true,
+            .ray_query_feature = false,
+            .buffer_device_address_feature = true,
+            .acceleration_structure_extension = true,
+            .ray_query_extension = false,
+            .deferred_host_operations_extension = true,
+            .ray_tracing_pipeline_feature = true,
+            .ray_tracing_pipeline_extension = true,
+            .min_acceleration_structure_scratch_offset_alignment =
+                128,
+            .shader_group_handle_size = 32,
+            .shader_group_base_alignment = 64,
+            .shader_group_handle_alignment = 32,
+        };
+        const auto selection =
+            selectRayQueryDeviceFeatures(supported);
+        CHECK(selection.acceleration_structure);
+        CHECK(selection.buffer_device_address);
+        CHECK(selection.ray_tracing_pipeline);
+        CHECK_FALSE(selection.ray_query);
+        CHECK_FALSE(hasExtension(
+            selection, VK_KHR_RAY_QUERY_EXTENSION_NAME));
+        CHECK(selection.device_extensions ==
+              std::vector<std::string>{
+                  VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
+                  VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
+                  VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME});
+        // Control: without the pipeline either, nothing is enabled.
+        supported.shader_group_handle_alignment = 0;
+        const auto neither = selectRayQueryDeviceFeatures(supported);
+        CHECK_FALSE(neither.acceleration_structure);
+        CHECK_FALSE(neither.buffer_device_address);
+        CHECK(neither.device_extensions.empty());
+    }
+
     SECTION("an incomplete ray tracing pipeline contract stays disabled") {
         const RayQueryDeviceSupport supported{
             .acceleration_structure_feature = true,

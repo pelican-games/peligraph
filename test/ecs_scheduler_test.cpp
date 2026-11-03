@@ -56,7 +56,13 @@ internal::ECSSystemGraphNode graphNode(
 
 } // namespace
 
-DECLARE_COMPONENT(SchedulerProbeComponent, 49);
+} // namespace Pelican
+
+// From the global namespace: GCC rejects the macro's qualified
+// specialisation inside namespace Pelican (see components/predefined.hpp).
+DECLARE_COMPONENT(Pelican::SchedulerProbeComponent, 49);
+
+namespace Pelican {
 
 namespace {
 

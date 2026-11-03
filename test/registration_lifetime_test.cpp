@@ -67,11 +67,17 @@ std::vector<internal::BehaviorEventHandlerRegistration> behaviorEventDependency(
 
 } // namespace
 
-DECLARE_COMPONENT(TokenComponent, 52);
-DECLARE_COMPONENT(ValidLimitComponent, 60);
-DECLARE_COMPONENT(DuplicateIdComponent, 60);
-DECLARE_COMPONENT(DuplicateNameComponent, 61);
-DECLARE_COMPONENT(OverLimitComponent, 64);
+} // namespace Pelican
+
+// From the global namespace: GCC rejects the macro's qualified
+// specialisation inside namespace Pelican (see components/predefined.hpp).
+DECLARE_COMPONENT(Pelican::TokenComponent, 52);
+DECLARE_COMPONENT(Pelican::ValidLimitComponent, 60);
+DECLARE_COMPONENT(Pelican::DuplicateIdComponent, 60);
+DECLARE_COMPONENT(Pelican::DuplicateNameComponent, 61);
+DECLARE_COMPONENT(Pelican::OverLimitComponent, 64);
+
+namespace Pelican {
 
 TEST_CASE("Registration tokens drive deterministic owner purge",
           "[registration][token][owner]") {

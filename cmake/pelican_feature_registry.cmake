@@ -1,5 +1,10 @@
 include_guard(GLOBAL)
 
+# The functions below use IN_LIST. A -P script that includes this file starts
+# with CMP0057 unset, which before CMake 4 is OLD (LX-1: CMake 3.28 on Linux);
+# a function keeps the policies of its definition, so set it here.
+cmake_policy(SET CMP0057 NEW)
+
 include(CMakeDependentOption)
 
 # Keep configure-time validation independent of the implementation history.

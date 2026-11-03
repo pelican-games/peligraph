@@ -1969,8 +1969,10 @@ endif()
 # build); the lifecycle half is made from a game DLL against the SDK this
 # test executable exports, as gp1_object_ref_test does.
 pelican_define_test(gp2_spawn_gate_test GROUP core_foundation pelican_core)
-pelican_define_test(gp2_spawn_test pelican_core glm)
+# Every case in gp2_spawn_test needs the game-DLL fixture below; without it
+# (non-Windows) the executable has no tests and discovery reports NOT_BUILT.
 if(WIN32 AND COMMAND pelican_configure_game_logic_target)
+  pelican_define_test(gp2_spawn_test pelican_core glm)
   set_target_properties(pelican_test_gp2_spawn_test PROPERTIES
     ENABLE_EXPORTS TRUE)
   if(MSVC)
@@ -4199,8 +4201,11 @@ if(NOT "${PELICAN_TEST_PROJECTS_DIR}" STREQUAL "")
     endforeach()
 endif()
 
-add_dependencies(pelican_test_png_nonuniform_check
-    ${pelican_catalog_game_logic_targets})
+# An empty list is an argument count error before CMake 3.29 (the Linux node's 3.28).
+if(pelican_catalog_game_logic_targets)
+    add_dependencies(pelican_test_png_nonuniform_check
+        ${pelican_catalog_game_logic_targets})
+endif()
 if(TARGET pelican_test_studio_player_arguments)
     add_dependencies(pelican_test_png_nonuniform_check
         pelican_test_studio_player_arguments)

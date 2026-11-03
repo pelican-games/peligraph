@@ -1365,7 +1365,7 @@ TEST_CASE(
             candidate.at("input").end(),
             [](const auto &input) {
                 return input.is_string() &&
-                       input.get<std::string>() ==
+                       input.template get<std::string>() ==
                            "rt_shadow_mask";
             }));
     }

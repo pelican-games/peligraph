@@ -49,7 +49,8 @@ float busValue(const AudioBusSettings &settings, std::string_view bus) {
 PreparedEffectTransaction::PreparedEffectTransaction(
     Persistence &persistence, SceneLoader &loader)
     : persistence_{&persistence}, loader_{&loader},
-      game_settings_shadow_{persistence.gameSettings()},
+      // Parentheses: json{x} is [x] under GCC / Clang, a copy under MSVC.
+      game_settings_shadow_(persistence.gameSettings()),
       audio_shadow_{persistence.audioBusSettings()} {
     entries_.reserve(sceneEffectCapacity);
 #if PELICAN_WITH_AUDIO

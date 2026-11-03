@@ -164,15 +164,21 @@ struct ModelViewGpuInstanceCanary {
 
 } // namespace
 
-DECLARE_COMPONENT(TrivialValueComponent, 40);
-DECLARE_COMPONENT(LifecycleCanary, 41);
-DECLARE_COMPONENT(InitFirstComponent, 42);
-DECLARE_COMPONENT(InitFaultComponent, 43);
-DECLARE_COMPONENT(ReentrantComponent, 44);
-DECLARE_COMPONENT(MoveOnlyComponent, 45);
-DECLARE_COMPONENT(TeardownComponent, 46);
-DECLARE_COMPONENT(ModelViewGpuInstanceCanary, 47);
-DECLARE_COMPONENT(PrepareProbeComponent, 48);
+} // namespace Pelican
+
+// From the global namespace: GCC rejects the macro's qualified
+// specialisation inside namespace Pelican (see components/predefined.hpp).
+DECLARE_COMPONENT(Pelican::TrivialValueComponent, 40);
+DECLARE_COMPONENT(Pelican::LifecycleCanary, 41);
+DECLARE_COMPONENT(Pelican::InitFirstComponent, 42);
+DECLARE_COMPONENT(Pelican::InitFaultComponent, 43);
+DECLARE_COMPONENT(Pelican::ReentrantComponent, 44);
+DECLARE_COMPONENT(Pelican::MoveOnlyComponent, 45);
+DECLARE_COMPONENT(Pelican::TeardownComponent, 46);
+DECLARE_COMPONENT(Pelican::ModelViewGpuInstanceCanary, 47);
+DECLARE_COMPONENT(Pelican::PrepareProbeComponent, 48);
+
+namespace Pelican {
 
 DECLARE_MODULE(TeardownMarker) {
   public:
