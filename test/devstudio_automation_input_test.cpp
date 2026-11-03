@@ -2252,7 +2252,7 @@ TEST_CASE("GS-3a a node drawn again in place answers to the same automation name
     int rebuilds = 0;
     std::vector<std::vector<std::string>> redrawn;
     scene.repopulated = [&] { ++rebuilds; };
-    scene.nodesRedrawn = [&](const std::vector<std::string> &ids) { redrawn.push_back(ids); };
+    scene.nodesRedrawn = [&](const std::string &, const std::vector<std::string> &ids) { redrawn.push_back(ids); };
 
     AutomationHost host;
     host.window = &window;
@@ -2380,7 +2380,7 @@ TEST_CASE("GS-3b2 beside a zone, a node drawn again in place leaves the zone's a
     int rebuilds = 0;
     std::vector<std::vector<std::string>> redrawn;
     scene.repopulated = [&] { ++rebuilds; };
-    scene.nodesRedrawn = [&](const std::vector<std::string> &ids) { redrawn.push_back(ids); };
+    scene.nodesRedrawn = [&](const std::string &, const std::vector<std::string> &ids) { redrawn.push_back(ids); };
 
     AutomationHost host;
     host.window = &window;

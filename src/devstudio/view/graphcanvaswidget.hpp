@@ -458,7 +458,7 @@ class GraphCanvasScene final : public QGraphicsScene {
     std::function<void()> repopulated;
     // GS-3a: followDocument drew these nodes' bodies again in place, and
     // nothing else (the scope did not change).
-    std::function<void(const std::vector<std::string> &nodes)> nodesRedrawn;
+    std::function<void(const std::string &scope, const std::vector<std::string> &nodes)> nodesRedrawn;
     // GS-3b3a: what redrawChangedNodes made of the reply it was given, before
     // it did anything with it (a test only hook).
     enum class RedrawClass { root, body, chrome, mixed, other };
@@ -932,6 +932,14 @@ class GraphCanvasScene final : public QGraphicsScene {
         qreal footer = 0.0;
         QRectF frame;
     };
+    // GS-3b3b: the exact geometry a body's nodes and its frame were drawn
+    // at, so a body redrawn in place can prove the whole draw would put its
+    // frame and every node exactly there (and draw only the changed nodes).
+    struct ZoneDrawnGeometry {
+        std::map<std::string, std::pair<QPointF, QRectF>, std::less<>> nodes;
+        QRectF frame;
+        QRectF frame_path;
+    };
     struct InlineEditor;
     // An open in-place editor, said in terms that outlive the items it sits
     // on. A rebuild deletes every item, the proxy included, so the editor is
@@ -1004,6 +1012,9 @@ class GraphCanvasScene final : public QGraphicsScene {
     std::map<std::string, QGraphicsItem *> zone_content_;
     std::map<std::string, QRectF> zone_content_rect_;
     std::map<std::string, ZoneGeometry> zone_geometry_;
+    // GS-3b3b: what the last whole draw made of each body's nodes and frame
+    // (values, not items), for a partial redraw's preflight.
+    std::map<std::string, ZoneDrawnGeometry, std::less<>> zone_drawn_;
     std::optional<CarryPick> selected_carry_;
     bool zone_refit_queued_ = false;
     // Which scope the canvas menu was opened over, while it is open, and the
@@ -1400,6 +1411,13 @@ class GraphCanvasScene final : public QGraphicsScene {
     // A body node moved: the frame is drawn again around it once the hand
     // lets go.
     void scheduleZoneRefit();
+    // GS-3b3b: prepare every non-boundary node of a body the way repopulate()
+    // draws it (one linked-outputs set for the body), for the whole draw and a
+    // body redrawn in place alike.
+    std::vector<GraphCanvasDrawing::Node> prepareBodyNodes(
+        GraphCanvasDrawing::Builder &drawing, const std::string &body,
+        const std::vector<GraphCanvasNode> &nodes, const std::vector<GraphCanvasEdge> &edges,
+        const std::vector<GraphCanvasBodyOutput> &outputs) const;
     // LP-4d2, decision 7: and follows it while the hand is still on it --
     // the frame's items are moved, nothing is drawn again.
     void refitZoneLive(const std::string &body);
