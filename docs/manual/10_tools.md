@@ -1250,10 +1250,19 @@ uv run tools/studio_latency.py --aggregate <run の directory>...  # 複数の r
   `--runs` が 2 以上か `--aggregate` なら `aggregate-<日時>/operation_stages_runs.csv` にまとめます。
 - **確定の後の列**(✅GS-2): `commit_chain_*`(確定の後に Graph 自身が出した `get_graph_instances` → `get_frame_plan` → `get_render_authoring_context` の返事の数・最後の時刻・その間の作り直し)と、
   `commit_span_*`(次の編集を送るまでの作り直しの数と合計 ms、最初の変化と描き終わりの paint の時刻)。
+  ✅GS-3a から、作り直しの横に部分の描き直し(値だけが動いた node をその場で描き直すこと。[第15章](15_studio.md) §15.7 の「確定の後の Graph の描き直し」)も数え、`commit_chain_redraw_count`・`commit_span_redraw_count`・`commit_span_redraw_ms_sum` を出します。
+  最初の変化と描き終わりの paint は、作り直しと部分の描き直しのどちらでも、最初と最後の物の後の paint です。
+- **部分の描き直しの列**(✅GS-3a、標本ごと): `scene_redraw_node_count`(回数)・`scene_redraw_nodes_sum`(描き直した node の数)・`scene_redraw_node_ms_sum` / `_ms_max`、
+  段ごとの `scene_redraw_check_ms_sum`(描き直せるかの検査。断った回の検査も入る)・`scene_redraw_children_ms_sum`(node の中身)・`scene_redraw_index_ms_sum`(線の探索の表)・`scene_redraw_lines_ms_sum`(線の引き直し)、
+  断った回数 `scene_redraw_refused_count` と理由の bit ごとの `scene_redraw_refused_bit<n>_count`(0 node 以外の何か、1 node の数か並び、2 線、3 値以外の欄、4 loop の zone、5 絵を描く node が読む、6 pass の線、7 node が単独で描かれていない、8 寸法、9 ほかの node の帯、10 folded node の避ける範囲、11 folded view)、
+  手や editor が離れるのを待った回数 `scene_redraw_deferred_count`。
+  ✅GS-3b2 から bit 4 の中の理由 `scene_redraw_refused_zone_why<n>_count`(1 zone の描く物も一緒に動いた、2 動いた node が loop、4 動いた node から線を辿ると loop に届く)。
+- **比べた欄の列**(✅GS-3b1): Graph が返事を受けて前の描画と比べた回数 `follow_diff_count`、何も動かなかった回数 `follow_diff_same_count`、動いた欄の bit ごとの `follow_diff_bit<n>_count`(0〜21。bit の意味は source guide 第7章 §7.6)、
+  比べずに全体を描いた理由ごとの `follow_unchecked_why<n>_count`(1 / 2 / 4 / 16 / 32)、描いた元を読む時間 `drawn_from_count` / `drawn_from_ms_sum` / `drawn_from_ms_max`。
 - **制限**: 標本の値は Studio の wait(25 ms ごと)や driver の再試行の間隔で量子化されます。共有の機械の他の process は統制しません。
   `--cpu-cores` は core の数だけを減らし、1 core の速さや cache は模擬しません。
   ✅UI-2 の後は既定の配置で Graph が初めから見えているので、`graph_tab_switch_show`(Frame Plan を前に出してから Graph を前に出す)は、もうタブを切り替える費用を測っていません。
-- ⚠ LT-1 / GS-1 / GS-2a の計測では、節の終わりの「Studio exits cleanly」が 30 秒で終わらず driver が強制終了する赤が出ています(値は全部取れていて、ほかの step は通る)。原因は未確認です。
+- ⚠ LT-1 / GS-1 / GS-2a / GS-2b / GS-3a / GS-3b1 / GS-3b2 の計測では、節の終わりの「Studio exits cleanly」が 30 秒で終わらず driver が強制終了する赤が出ています(値は全部取れていて、ほかの step は通る)。原因は未確認です。
 
 ### `tools/public_api_inventory.py` — 公開 API の inventory
 
