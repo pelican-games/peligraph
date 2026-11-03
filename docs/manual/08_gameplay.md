@@ -433,7 +433,7 @@ void update(Pelican::GameContext &ctx) {
 
 - `normal` はカーソルを見せ、`hidden` は窓の上にあるときだけ隠し、`locked` は隠して窓の中に閉じ込め、移動量を制限なしで報告します(GLFW の disabled cursor)。
 - 反映は**次のフレーム**です。通常のフレームループが窓の event を処理した直後に、前のフレームで頼まれたモードを窓へ適用します([`applyCursorMode()` の呼び出し](../../src/core/appflow/loop.cpp#L758))。
-- 別の窓に埋め込まれた窓(`--rpc` で起動し、Studio の viewport として `WS_CHILD` にされた窓)では、`locked` を `normal` として扱います。ロックすると Studio 側のカーソルまで奪うためです([`Window::applyCursorMode()`](../../src/core/os/window_glfw.cpp#L348))。`hidden` はそのまま効きます。埋め込みの判定は Windows でだけ行います。
+- 別の窓に埋め込まれた窓(`--rpc` で起動し、Studio の viewport として `WS_CHILD` にされた窓)では、`locked` を `normal` として扱います。ロックすると Studio 側のカーソルまで奪うためです([`Window::applyCursorMode()`](../../src/core/os/window_glfw.cpp#L355))。`hidden` はそのまま効きます。埋め込みの判定は Windows でだけ行います。
 - 頼んだモードと効いているモードは rpc `get_status` の `input.cursor {requested, effective, embedded}` で見えます([第10章](10_tools.md))。headless には窓が無いので、頼んでも `effective` は `normal` のままです。
 - scene load の途中に頼んでも load の transaction には入りません。分類は `nonparticipant.window-cursor` で([manifest の行](../../src/core/loader/sceneparticipantmanifest.cpp#L234))、load の成否に関係なく次のフレームで適用されます。
 

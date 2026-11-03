@@ -533,7 +533,7 @@ headless / RPC / golden / replay では XR は決定的に off です([`xrForced
 - queue 容量 [`64`](../../src/core/communication/rpcserver.hpp#L194) を超えると即座に `-32000` / `data.reason == "busy"` が返ります。この応答は **reader スレッドから** 出るため、engine スレッドの応答と行が混ざり得ます。順序保証は JSON-RPC の `id` に依存してください。
 - reader スレッドは `std::istream` にキャンセル手段がないため、ブロックしたまま `detach()` されることがあります。テストで `WindowedRpcHost` を使い捨てるときは入力ストリームを閉じて `readerFinished()` を待ってください。本番は process 寿命の `std::cin` 前提です。
 
-### [`Window::process()`](../../src/core/os/window_glfw.cpp#L379) — close flag が立たないまま窓が消える {#reading-note-065}
+### [`Window::process()`](../../src/core/os/window_glfw.cpp#L388) — close flag が立たないまま窓が消える {#reading-note-065}
 
 Studio に埋め込まれた player の窓は Studio の窓の子で、Studio が先に親を壊すと子も一緒に消えます。Studio が送った `WM_CLOSE` が届く前に窓が消えると GLFW は close flag を立てないので、`glfwWindowShouldClose()` だけを見る loop は回り続け、swapchain が消えた窓に surface を毎 frame 作り直そうとします(`ErrorSurfaceLostKHR` が数十行出て、Studio に kill されるまで続いた)。Windows では `IsWindow()` で窓の実在も見て、無ければ close と同じく loop を終えます。配布確認([`run_distribution_check.py`](../../test/ci/run_distribution_check.py#L180))は Studio 終了時に生きていた player の log で surface lost の数を数え、3 以下であることを確かめます(外すと 168〜172)。
 

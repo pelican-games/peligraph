@@ -41,7 +41,7 @@
 | `--feature-overlay <uri>` | なし | `pelican.render_feature_overlay` v1 の feature bundle(= `schema` / `version` / `name` / `features` だけを持つ小さな JSON。`features` の各要素は feature 参照文字列か `{ref, parameters}` — [renderfeatureoverlay.cpp](../../src/project/renderfeatureoverlay.cpp#L17))を**この起動だけ**重ねる。公開 CLI なので Studio 以外の profiler 等も利用可能 |
 | `--headless` | off | ウィンドウなし実行(時刻は固定ステップになる) |
 | `--rpc` | off | stdio JSON-RPC モード。**`--headless` は不要です**: ヘッドレスでは stdin を読み切るまでブロッキング、**ウィンドウモードではフレーム境界処理 + 有界キュー(既定 64 件)**。溢れると `busy` エラーを即返します。※`--rpc` を付けると ImGui UI は無効([第13章](13_editor.md)) |
-| `--embedded` | off | 別 process の窓に埋め込まれる前提で起動する(EW-1、[引数](../../src/player/main.cpp#L362))。render 窓を `GLFW_VISIBLE` / `GLFW_FOCUSED` / `GLFW_FOCUS_ON_SHOW` = `GLFW_FALSE` で作る(非表示・focus 無し。見せるのは埋め込む側 — [window_glfw.cpp](../../src/core/os/window_glfw.cpp#L202))。project の `basic_config.fullscreen` が true でも無視して `basic_config.window_size` の窓で作り、log に `--embedded: the project's fullscreen setting is ignored; the window is created windowed` を 1 行出す。この引数を読むのは窓の作成だけで、時刻や game の動きは通常の窓あり起動と同じ。`--headless` との併用は引数の誤り(stderr に `--embedded cannot be combined with --headless` と usage、終了コード -1 — [併用の拒否](../../src/player/main.cpp#L495))。Studio が viewport の engine に渡す。窓の目印は下の段落 |
+| `--embedded` | off | 別 process の窓に埋め込まれる前提で起動する(EW-1、[引数](../../src/player/main.cpp#L362))。render 窓を `GLFW_VISIBLE` / `GLFW_FOCUSED` / `GLFW_FOCUS_ON_SHOW` = `GLFW_FALSE` で作る(非表示・focus 無し。見せるのは埋め込む側 — [window_glfw.cpp](../../src/core/os/window_glfw.cpp#L206))。project の `basic_config.fullscreen` が true でも無視して `basic_config.window_size` の窓で作り、log に `--embedded: the project's fullscreen setting is ignored; the window is created windowed` を 1 行出す。この引数を読むのは窓の作成だけで、時刻や game の動きは通常の窓あり起動と同じ。`--headless` との併用は引数の誤り(stderr に `--embedded cannot be combined with --headless` と usage、終了コード -1 — [併用の拒否](../../src/player/main.cpp#L495))。Studio が viewport の engine に渡す。窓の目印は下の段落 |
 | `--render-fallback` | off | `--rpc` と一緒に使う(BS-1、[`--render-fallback` の引数の定義](../../src/player/main.cpp#L369))。起動時に rendering の構成が組めなくても終わらず、engine 内蔵の一色の fallback の世代で動き、理由を `get_status.render_pipeline` で言い、`reload_render_documents` か render の編集で直した構成を受け取る。`--rpc` が無ければ引数の誤り(stderr に `--render-fallback requires --rpc` と usage、終了コード -1)。付けない起動では、構成が組めなければ今までどおり致命(終了コード 1)。Studio は 起こす engine にいつも付ける(§10.7 の Studio の所有する引数)。詳細は [第6章](06_rendering.md) §6.16 の「起動時に組めない構成と `--render-fallback`」と [第13章](13_editor.md) §13.5 |
 | `--frames <n>` | 3 | ヘッドレスのフレーム数。**0 = 無制限** |
 | `--size WxH` | 1280x720 | ヘッドレスの描画サイズ |
@@ -130,9 +130,9 @@ free-camera preset は overlay 側を選ぶため、両者は併用できます�
 通常起動の 120 枚目と同じ画です(`--start-time 0` は通常起動と同一)。
 指定できる秒は 3600 までです。replay は実際に frame を描いて回すので、巨大な時刻は replay の前に断ります([上限の定数とコメント](../../src/player/main.cpp#L328))。
 
-**render 窓の目印(EW-1、Windows)**: 窓あり起動の render 窓には、`--embedded` の有無に関係なく常に Win32 の窓 property `PelicanEngineRenderWindow`(値 1)が付きます。窓を作った直後に `SetPropW` で付け([付ける所](../../src/core/os/window_glfw.cpp#L223))、窓を壊す前に `RemovePropW` で外します([外す所](../../src/core/os/window_glfw.cpp#L314)。埋め込む側が親ごと窓を壊した後なら外すものは無い)。名前の定数は [`Pelican::engineRenderWindowProperty`](../../src/core/os/enginewindowproperty.hpp#L15) で、engine の型に依らない header だけのファイルなので、engine を link しない埋め込み側も include できます。
+**render 窓の目印(EW-1、Windows)**: 窓あり起動の render 窓には、`--embedded` の有無に関係なく常に Win32 の窓 property `PelicanEngineRenderWindow`(値 1)が付きます。窓を作った直後に `SetPropW` で付け([付ける所](../../src/core/os/window_glfw.cpp#L227))、窓を壊す前に `RemovePropW` で外します([外す所](../../src/core/os/window_glfw.cpp#L321)。埋め込む側が親ごと窓を壊した後なら外すものは無い)。名前の定数は [`Pelican::engineRenderWindowProperty`](../../src/core/os/enginewindowproperty.hpp#L15) で、engine の型に依らない header だけのファイルなので、engine を link しない埋め込み側も include できます。
 
-埋め込む側は「その process の、owner の無い top-level 窓で、この property を持つもの」を、見えているかどうかを問わず探します(`--embedded` の窓は非表示で作られるため。GLFW の helper 窓には property が付きません)。Studio がこの規則で窓を探す仕組みは [第13章](13_editor.md) の「engine の窓は Studio の外に出ません」の段落を見てください。なお `get_status` の `input.cursor.embedded`(§10.3)はこの引数を見ず、`--rpc` の窓が `WS_CHILD` にされているかで決まります([判定](../../src/core/os/window_glfw.cpp#L353))。
+埋め込む側は「その process の、owner の無い top-level 窓で、この property を持つもの」を、見えているかどうかを問わず探します(`--embedded` の窓は非表示で作られるため。GLFW の helper 窓には property が付きません)。Studio がこの規則で窓を探す仕組みは [第13章](13_editor.md) の「engine の窓は Studio の外に出ません」の段落を見てください。なお `get_status` の `input.cursor.embedded`(§10.3)はこの引数を見ず、`--rpc` の窓が `WS_CHILD` にされているかで決まります([判定](../../src/core/os/window_glfw.cpp#L360))。
 
 test は `ew1_engine_window_embedded`([engine_window_embedded.py](../../test/engine_window_embedded.py)。Windows かつ `PELICAN_WITH_RPC` の build の GPU test): `--embedded --headless` が断られること、fullscreen を指定した project を `--embedded` で開くと property 付きの窓がちょうど 1 つあり、player の top-level 窓はどれも見えず、client 領域が `window_size` の大きさで、非表示のまま frame が進み、`ShowWindow` の後も同じ窓で frame が進み、log に上の 1 行があること、`--embedded` 無しでは同じ property 付きの窓が見えていることを見ます。
 
@@ -974,7 +974,7 @@ build/dist/Debug/pelican_studio.exe
 
 player のログは **project ごと**に `<project>/.pelican/logs/player.log` へ出ます。Studio が `--log-file` を付けて起動し、ファイルは起動のたびに切り詰められます。`PELICAN_STUDIO_PLAYER_ARGUMENTS` に自分で `--log-file` を書いた場合はそれが優先され、Studio は付け足しません。
 
-Studio が viewport の窓を先に壊した場合、player の main loop は Win32 の窓が無いことを検知して終了します([Window::process()](../../src/core/os/window_glfw.cpp#L379))。
+Studio が viewport の窓を先に壊した場合、player の main loop は Win32 の窓が無いことを検知して終了します([Window::process()](../../src/core/os/window_glfw.cpp#L388))。
 
 `--free-camera [blender|unity]`、`--feature-overlay`、`--input-action-overlay` は Studio 固有機能ではなく、いずれも同じ
 `pelican_player` の公開引数です。したがって素の player や profiler からも同じ起動時 overlay を

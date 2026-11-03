@@ -1031,7 +1031,7 @@ game DLL 境界の v2 record は「凍結」と書かれていますが、実際
 
 **答え**: 一括 multiview と片目ごとの sequential 描画に対応するため、array view と layer view を持ちます。 → [第6章 §6.15 の本文](06_rendering_vulkan_shader.md#reading-note-064)。
 
-#### [`Window::process()`](../../src/core/os/window_glfw.cpp#L379) — close flag が立たないまま窓が消える
+#### [`Window::process()`](../../src/core/os/window_glfw.cpp#L388) — close flag が立たないまま窓が消える
 
 **分からなくなること**: close を待つだけの main loop に、なぜ窓の存在確認があるのか。
 
