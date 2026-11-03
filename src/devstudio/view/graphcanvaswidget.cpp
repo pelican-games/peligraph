@@ -5446,19 +5446,46 @@ GraphCanvasScene::zoneSessionPlaces(const std::string &body, const std::vector<G
     return places;
 }
 
+// GS-3b3a: the lines of two drawings of one scope (or body) are the same;
+// `GraphCanvasEdge` has no operator==.
+static bool sameCanvasEdges(const std::vector<GraphCanvasEdge> &a, const std::vector<GraphCanvasEdge> &b) {
+    return std::ranges::equal(a, b, [](const GraphCanvasEdge &x, const GraphCanvasEdge &y) {
+        return x.from_node == y.from_node && x.from_port == y.from_port && x.to_node == y.to_node &&
+               x.to_port == y.to_port && x.element == y.element;
+    });
+}
+
+// GS-3b3a: the outputs of two drawings of one body are the same.
+static bool sameCanvasOutputs(const std::vector<GraphCanvasBodyOutput> &a,
+                              const std::vector<GraphCanvasBodyOutput> &b) {
+    return std::ranges::equal(a, b, [](const GraphCanvasBodyOutput &x, const GraphCanvasBodyOutput &y) {
+        return x.name == y.name && x.node == y.node && x.port == y.port;
+    });
+}
+
+// GS-3a: a node after taking away what a partial redraw may change: its
+// parameters, and what each port shows and where that came from.
+static GraphCanvasNode valuesAside(GraphCanvasNode node) {
+    node.parameters = nlohmann::json{};
+    for (auto &port : node.inputs) {
+        port.has_parameter = false;
+        port.parameter = nlohmann::json{};
+        port.has_value = false;
+        port.value = 0;
+        port.value_source.clear();
+        port.value_connected_node.clear();
+        port.value_connected_port.clear();
+    }
+    for (auto &output : node.outputs) {
+        output.has_value = false;
+        output.value = 0;
+    }
+    return node;
+}
+
 int GraphCanvasScene::zonesMoved(const DrawnFrom &now, const DrawnFrom &drawn) {
-    const auto sameEdges = [](const std::vector<GraphCanvasEdge> &a, const std::vector<GraphCanvasEdge> &b) {
-        return std::ranges::equal(a, b, [](const GraphCanvasEdge &x, const GraphCanvasEdge &y) {
-            return x.from_node == y.from_node && x.from_port == y.from_port && x.to_node == y.to_node &&
-                   x.to_port == y.to_port && x.element == y.element;
-        });
-    };
-    const auto sameOutputs = [](const std::vector<GraphCanvasBodyOutput> &a,
-                                const std::vector<GraphCanvasBodyOutput> &b) {
-        return std::ranges::equal(a, b, [](const GraphCanvasBodyOutput &x, const GraphCanvasBodyOutput &y) {
-            return x.name == y.name && x.node == y.node && x.port == y.port;
-        });
-    };
+    const auto sameEdges = sameCanvasEdges;
+    const auto sameOutputs = sameCanvasOutputs;
     int moved = 0;
     if (now.zones.size() != drawn.zones.size()) return 1 << 15;
     for (std::size_t index = 0; index < now.zones.size(); ++index) {
@@ -5627,6 +5654,265 @@ void GraphCanvasScene::followAfterGesture() {
     });
 }
 
+GraphCanvasScene::RedrawChange GraphCanvasScene::classifyRedraw(const DrawnFrom &now,
+                                                               const DrawnFrom &drawn) const {
+    RedrawChange result;
+    // The nodes whose own GraphCanvasNode moved: same ids and order, else
+    // both nodes of a pair that is not one node.
+    const auto changedFromNodes = [](const std::vector<GraphCanvasNode> &a,
+                                     const std::vector<GraphCanvasNode> &b) {
+        std::set<std::string, std::less<>> ids;
+        const std::size_t count = std::max(a.size(), b.size());
+        for (std::size_t index = 0; index < count; ++index) {
+            const bool has_a = index < a.size();
+            const bool has_b = index < b.size();
+            if (has_a && has_b && a[index].id == b[index].id) {
+                if (a[index] != b[index]) ids.insert(a[index].id);
+            } else {
+                if (has_a) ids.insert(a[index].id);
+                if (has_b) ids.insert(b[index].id);
+            }
+        }
+        return ids;
+    };
+    const auto nodeObjects = [](const nlohmann::json &list) {
+        std::map<std::string, nlohmann::json, std::less<>> objects;
+        if (!list.is_array()) return objects;
+        for (const auto &node : list)
+            if (node.is_object() && node.contains("id") && node.at("id").is_string())
+                objects[node.at("id").get<std::string>()] = node;
+        return objects;
+    };
+    const auto addDocumentChanges = [&](const nlohmann::json &a, const nlohmann::json &b,
+                                        std::set<std::string, std::less<>> &ids) {
+        const auto left = nodeObjects(a);
+        const auto right = nodeObjects(b);
+        for (const auto &[id, node] : left) {
+            const auto found = right.find(id);
+            if (found == right.end() || found->second != node) ids.insert(id);
+        }
+        for (const auto &[id, node] : right)
+            if (!left.contains(id)) ids.insert(id);
+    };
+    const auto rootNodes = [](const nlohmann::json &document) -> nlohmann::json {
+        if (!document.is_object()) return nlohmann::json::array();
+        const auto found = document.find("nodes");
+        return found != document.end() && found->is_array() ? *found : nlohmann::json::array();
+    };
+    const auto definitionNodes = [](const nlohmann::json &document,
+                                    const std::string &body) -> nlohmann::json {
+        if (!document.is_object()) return nlohmann::json::array();
+        const auto definitions = document.find("definitions");
+        if (definitions == document.end() || !definitions->is_object()) return nlohmann::json::array();
+        const auto definition = definitions->find(body);
+        if (definition == definitions->end() || !definition->is_object()) return nlohmann::json::array();
+        const auto found = definition->find("nodes");
+        return found != definition->end() && found->is_array() ? *found : nlohmann::json::array();
+    };
+    // The root's changed nodes: the model's nodes and the document's objects
+    // (a graph.input's `default` is in the document only).
+    std::set<std::string, std::less<>> root_changed = changedFromNodes(now.nodes, drawn.nodes);
+    addDocumentChanges(rootNodes(now.document), rootNodes(drawn.document), root_changed);
+    result.nodes = root_changed;
+
+    bool picks_same = now.zones.size() == drawn.zones.size();
+    if (picks_same)
+        for (std::size_t index = 0; index < now.zones.size(); ++index)
+            if (now.zones[index].loop != drawn.zones[index].loop ||
+                now.zones[index].body != drawn.zones[index].body) {
+                picks_same = false;
+                break;
+            }
+
+    // Each zone's changed body nodes, and which of its fields hold a body
+    // difference (which must be drawn in the body) or a chrome difference.
+    std::vector<std::set<std::string, std::less<>>> zone_changed(now.zones.size());
+    std::vector<bool> zone_body(now.zones.size(), false);
+    std::vector<bool> zone_chrome(now.zones.size(), false);
+    bool pictures_differ = false;
+    if (picks_same) {
+        for (std::size_t index = 0; index < now.zones.size(); ++index) {
+            const ZoneDrawn &a = now.zones[index];
+            const ZoneDrawn &b = drawn.zones[index];
+            std::set<std::string, std::less<>>& ids = zone_changed[index];
+            ids = changedFromNodes(a.nodes, b.nodes);
+            addDocumentChanges(definitionNodes(now.document, a.body), definitionNodes(drawn.document, a.body), ids);
+            result.nodes.insert(ids.begin(), ids.end());
+            zone_body[index] = a.nodes != b.nodes || a.shown != b.shown ||
+                               !sameCanvasEdges(a.edges, b.edges) || a.layout != b.layout ||
+                               a.session != b.session || a.bands != b.bands;
+            zone_chrome[index] = !sameCanvasOutputs(a.outputs, b.outputs) || a.chrome != b.chrome ||
+                                 a.metrics != b.metrics || a.frame_band != b.frame_band ||
+                                 a.frame_opacity != b.frame_opacity;
+            pictures_differ = pictures_differ || a.pictures != b.pictures;
+        }
+    }
+
+    // What no body may be drawn again for: the root's own drawing, a new pick,
+    // a picture, the document outside the changed nodes' parameters.
+    const bool root_other =
+        now.scope != drawn.scope || !sameCanvasEdges(now.edges, drawn.edges) || now.layout != drawn.layout ||
+        now.shown != drawn.shown || now.folded != drawn.folded || now.derived != drawn.derived ||
+        now.passes != drawn.passes || now.stubs != drawn.stubs || now.authoring != drawn.authoring ||
+        now.trail != drawn.trail || now.stacks != drawn.stacks ||
+        now.decomposable != drawn.decomposable || now.folded_view != drawn.folded_view ||
+        now.bands != drawn.bands;
+    if (!picks_same || root_other || pictures_differ) return result;
+
+    const auto withoutChangedParameters = [&](const DrawnFrom &from) {
+        nlohmann::json document = from.document;
+        if (!document.is_object()) return document;
+        if (auto nodes = document.find("nodes"); nodes != document.end() && nodes->is_array())
+            for (auto &node : *nodes)
+                if (node.is_object() && node.contains("id") && node.at("id").is_string() &&
+                    root_changed.contains(node.at("id").get<std::string>()))
+                    node.erase("parameters");
+        auto definitions = document.find("definitions");
+        if (definitions == document.end() || !definitions->is_object()) return document;
+        for (std::size_t index = 0; index < from.zones.size(); ++index) {
+            auto definition = definitions->find(from.zones[index].body);
+            if (definition == definitions->end() || !definition->is_object()) continue;
+            auto nodes = definition->find("nodes");
+            if (nodes == definition->end() || !nodes->is_array()) continue;
+            for (auto &node : *nodes)
+                if (node.is_object() && node.contains("id") && node.at("id").is_string() &&
+                    zone_changed[index].contains(node.at("id").get<std::string>()))
+                    node.erase("parameters");
+        }
+        return document;
+    };
+    if (withoutChangedParameters(now) != withoutChangedParameters(drawn)) return result;
+
+    // A changed node is no body's boundary: its `default` is not a parameter.
+    for (std::size_t index = 0; index < now.zones.size(); ++index) {
+        const auto boundary_changed = [&](const std::vector<GraphCanvasNode> &nodes) {
+            return std::ranges::any_of(nodes, [&](const GraphCanvasNode &node) {
+                return node.op == "graph.input" && zone_changed[index].contains(node.id);
+            });
+        };
+        if (boundary_changed(now.zones[index].nodes) || boundary_changed(drawn.zones[index].nodes)) return result;
+    }
+
+    // A changed body run by two or more root loops, or by a loop that can run
+    // more than one body (loopZoneBody() shows only the selected one), is no
+    // one zone's.
+    for (std::size_t index = 0; index < now.zones.size(); ++index) {
+        if (zone_changed[index].empty()) continue;
+        const std::string &target = now.zones[index].body;
+        std::size_t runs = 0;
+        bool many_bodies = false;
+        for (const GraphCanvasNode &node : now.nodes) {
+            if (!node.loop) continue;
+            const auto loop = model_->loop(node.id);
+            if (!loop) continue;
+            std::set<std::string, std::less<>> bodies;
+            for (const auto &branch : loop->branches)
+                if (!branch.body.empty()) bodies.insert(branch.body);
+            if (!loop->body.empty()) bodies.insert(loop->body);
+            if (!bodies.contains(target)) continue;
+            ++runs;
+            if (bodies.size() > 1) many_bodies = true;
+        }
+        if (runs >= 2 || many_bodies) return result;
+    }
+
+    // Where the difference is, in the terms a partial redraw can draw: the
+    // root's nodes, each zone's body (one place each), the chrome around any
+    // zone. More than one place is mixed.
+    const bool root_part = now.nodes != drawn.nodes;
+    std::size_t body_zones = 0;
+    std::size_t body_zone = 0;
+    for (std::size_t index = 0; index < zone_body.size(); ++index)
+        if (zone_body[index]) {
+            ++body_zones;
+            body_zone = index;
+        }
+    const bool chrome_part = std::ranges::any_of(zone_chrome, [](bool moved) { return moved; });
+    const std::size_t places = (root_part ? 1u : 0u) + body_zones + (chrome_part ? 1u : 0u);
+    if (places > 1) {
+        result.kind = RedrawClass::mixed;
+        return result;
+    }
+    if (root_part) {
+        result.kind = RedrawClass::root;
+        result.nodes = root_changed;
+        return result;
+    }
+    if (chrome_part) {
+        result.kind = RedrawClass::chrome;
+        result.nodes.clear();
+        return result;
+    }
+    if (body_zones == 0) return result;
+
+    // One body's values, and nothing else: its nodes in the same order, each
+    // changed node equal aside from its values, its frame and everything
+    // around it as it was, and its bands moved only under a changed node.
+    const ZoneDrawn &a = now.zones[body_zone];
+    const ZoneDrawn &b = drawn.zones[body_zone];
+    const auto &ids = zone_changed[body_zone];
+    bool body_valid = !ids.empty() && root_changed.empty();
+    if (a.nodes.size() != b.nodes.size()) body_valid = false;
+    if (body_valid)
+        for (std::size_t index = 0; index < a.nodes.size(); ++index) {
+            if (a.nodes[index].id != b.nodes[index].id) {
+                body_valid = false;
+                break;
+            }
+            if (ids.contains(a.nodes[index].id)) {
+                if (valuesAside(a.nodes[index]) != valuesAside(b.nodes[index])) {
+                    body_valid = false;
+                    break;
+                }
+            } else if (a.nodes[index] != b.nodes[index]) {
+                body_valid = false;
+                break;
+            }
+        }
+    if (body_valid)
+        body_valid = a.shown == b.shown && sameCanvasEdges(a.edges, b.edges) && a.layout == b.layout &&
+                     a.session == b.session && sameCanvasOutputs(a.outputs, b.outputs) &&
+                     a.chrome == b.chrome && a.metrics == b.metrics && a.frame_band == b.frame_band &&
+                     a.frame_opacity == b.frame_opacity;
+    std::vector<std::string> band_ids;
+    for (const GraphCanvasNode &node : a.nodes)
+        if (node.op != "graph.input") band_ids.push_back(node.id);
+    if (body_valid &&
+        (a.bands.size() != band_ids.size() || b.bands.size() != band_ids.size()))
+        body_valid = false;
+    if (body_valid)
+        for (std::size_t index = 0; index < band_ids.size(); ++index)
+            if (a.bands[index] != b.bands[index] && !ids.contains(band_ids[index])) {
+                body_valid = false;
+                break;
+            }
+    // Every other zone is exactly as it was.
+    if (body_valid)
+        for (std::size_t index = 0; index < now.zones.size(); ++index) {
+            if (index == body_zone) continue;
+            const ZoneDrawn &other_now = now.zones[index];
+            const ZoneDrawn &other_drawn = drawn.zones[index];
+            if (other_now.loop != other_drawn.loop || other_now.body != other_drawn.body ||
+                other_now.nodes != other_drawn.nodes || other_now.shown != other_drawn.shown ||
+                !sameCanvasEdges(other_now.edges, other_drawn.edges) ||
+                other_now.layout != other_drawn.layout || other_now.session != other_drawn.session ||
+                !sameCanvasOutputs(other_now.outputs, other_drawn.outputs) ||
+                other_now.chrome != other_drawn.chrome || other_now.metrics != other_drawn.metrics ||
+                other_now.bands != other_drawn.bands || other_now.frame_band != other_drawn.frame_band ||
+                other_now.frame_opacity != other_drawn.frame_opacity ||
+                other_now.pictures != other_drawn.pictures) {
+                body_valid = false;
+                break;
+            }
+        }
+    if (!body_valid) return result;
+    result.kind = RedrawClass::body;
+    result.zone = body_zone;
+    result.has_zone = true;
+    result.nodes = ids;
+    return result;
+}
+
 GraphCanvasScene::NodeRedraw GraphCanvasScene::redrawChangedNodes(DrawnFrom &now, const int zones_moved) {
     const DrawnFrom &drawn = *drawn_from_;
     // Why a partial redraw was not made: the first condition that failed,
@@ -5644,11 +5930,22 @@ GraphCanvasScene::NodeRedraw GraphCanvasScene::redrawChangedNodes(DrawnFrom &now
         bands = 1 << 9,         // another node's band or opacity
         folded_room = 1 << 10,  // what a folded node keeps clear of moved (since the last whole draw, or by this one)
         folded_view = 1 << 11,  // a folded (feature) view
+        body = 1 << 12,         // GS-3b3a: only a body's values moved; not drawn in place yet
     };
     const auto refuse = [](int why) {
         if (GuiTrace::sink) { const GuiTraceSpan cause{"graph_redraw_refused", double(why)}; }
         return NodeRedraw::refused;
     };
+    // GS-3b3a: what this reply changed, before any of the checks below:
+    // exactly one of the root's nodes, one body's values, the chrome, or
+    // several places; `other` is no partial redraw's. A body's is named and
+    // refused for now.
+    const RedrawChange change = classifyRedraw(now, drawn);
+    if (redrawClassified) redrawClassified(change.kind);
+    if (change.kind == RedrawClass::body) {
+        if (GuiTrace::sink) { const GuiTraceSpan cause{"graph_redraw_refused", double(body), 1.0}; }
+        return NodeRedraw::refused;
+    }
     std::optional<GuiTraceSpan> check_trace;
     check_trace.emplace("graph_redraw_check");
     if (now.folded_view || drawn.folded_view) return refuse(folded_view);
@@ -5695,26 +5992,10 @@ GraphCanvasScene::NodeRedraw GraphCanvasScene::redrawChangedNodes(DrawnFrom &now
     // port shows and where that came from. Everything else -- its id, op,
     // heading, the refusal on it, sink, badge, loop, the ports' names, order
     // and lines, the shader's sockets -- is as it was.
-    const auto valuesAside = [](GraphCanvasNode node) {
-        node.parameters = nlohmann::json{};
-        for (auto &port : node.inputs) {
-            port.has_parameter = false;
-            port.parameter = nlohmann::json{};
-            port.has_value = false;
-            port.value = 0;
-            port.value_source.clear();
-            port.value_connected_node.clear();
-            port.value_connected_port.clear();
-        }
-        for (auto &output : node.outputs) {
-            output.has_value = false;
-            output.value = 0;
-        }
-        return node;
-    };
+    const auto valuesAsideNode = [](GraphCanvasNode node) { return valuesAside(std::move(node)); };
     for (std::size_t index = 0; index < now.nodes.size(); ++index)
         if (changed.contains(now.nodes[index].id) &&
-            valuesAside(now.nodes[index]) != valuesAside(drawn.nodes[index]))
+            valuesAsideNode(now.nodes[index]) != valuesAsideNode(drawn.nodes[index]))
             return refuse(structure);
     // What the changed nodes lead to through the scope's lines (3 and 4).
     std::set<std::string, std::less<>> reached;

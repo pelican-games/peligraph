@@ -4084,6 +4084,9 @@ struct ZoneHarness {
     Json plan = Json::object();
     // LP-4f2: the operation catalog.
     Json catalog = visualCatalog();
+    // GS-3b3a: get_render_authoring_context, when a test gives one (empty:
+    // the harness leaves that read unanswered, as it always did).
+    Json authoring = Json::object();
     // LP-4f3: every read the model sent, by method, in order.
     std::vector<std::string> sent;
 
@@ -4111,6 +4114,8 @@ struct ZoneHarness {
                 reply["loops"] = loops;
                 model.receiveRpcResult(request.request_id, reply.dump());
             }
+            else if (request.method == "get_render_authoring_context" && !authoring.empty())
+                model.receiveRpcResult(request.request_id, authoring.dump());
             else if (request.method == "edit_graph_document")
                 edits.push_back(request);
         }
@@ -21172,4 +21177,312 @@ TEST_CASE("GS-3c0 one value commit calls rebuildRoutingIndex exactly as on the b
     CHECK(trace.count("graph_redraw_index") ==
           static_cast<int>(kGs3c0BaseRebuildsPerValueCommit));
     CHECK(scene.routingIndexRebuilds() - before == kGs3c0BaseRebuildsPerValueCommit);
+}
+
+// --- GS-3b3a: what a reply changed, before redrawChangedNodes acts on it.
+
+namespace {
+
+constexpr int gs3b3a_other_parts = 1 << 0;
+constexpr int gs3b3a_body = 1 << 12;
+
+struct Gs3b3aResult {
+    PelicanStudio::GraphCanvasScene::RedrawClass kind =
+        PelicanStudio::GraphCanvasScene::RedrawClass::other;
+    bool classified = false;
+    int rebuilds = 0;
+    std::vector<std::vector<std::string>> redrawn;
+    int refused = 0;
+    int body_detail2 = 0;
+    int moved = 0;
+};
+
+// Body node `id` reading the boundary and showing a stored `b` (a pill), so
+// a changed body value has something the eye can see in its own node.
+Json gs3b3aBodyMultiply(const char *id, double b) {
+    return {{"id", id},
+            {"op", "value.multiply"},
+            {"inputs", {{"a", {{"node", "target"}, {"port", "value"}}}}},
+            {"parameters", {{"b", b}}},
+            {"outputs", Json::array({"value"})}};
+}
+
+QString gs3b3aPill(QGraphicsScene &scene, const QString &scope, const QString &node,
+                   const QString &port) {
+    // A body's parts carry their scope but not the node name (only the node
+    // itself does), so look through the node's own children.
+    const QGraphicsItem *owner = scopedNode(scene, scope, node);
+    if (owner == nullptr) return {};
+    for (const QGraphicsItem *child : owner->childItems()) {
+        if (child->data(PelicanStudio::NodeGraphItemKindRole).toString() !=
+            QLatin1String{PelicanStudio::GraphCanvasValuePillItem})
+            continue;
+        if (child->data(PelicanStudio::GraphCanvasPortRole).toString() != port) continue;
+        const QString text = child->data(PelicanStudio::GraphCanvasValueTextRole).toString();
+        if (!text.isEmpty()) return text;
+    }
+    return {};
+}
+
+std::vector<std::tuple<std::string, std::string, std::string, std::string, std::string>>
+gs3b3aEdges(const std::vector<PelicanStudio::GraphCanvasEdge> &edges) {
+    std::vector<std::tuple<std::string, std::string, std::string, std::string, std::string>> keys;
+    for (const auto &edge : edges)
+        keys.emplace_back(edge.from_node, edge.from_port, edge.to_node, edge.to_port, edge.element);
+    return keys;
+}
+
+// One follow of `change`, capturing the classifier's answer and what the
+// redraw path did with it.
+Gs3b3aResult gs3b3aFollow(ZoneHarness &h, const std::function<void()> &change) {
+    Gs3aTrace trace;
+    Gs3aCounts counts{h.scene};
+    Gs3b3aResult result;
+    h.scene.redrawClassified = [&](PelicanStudio::GraphCanvasScene::RedrawClass kind) {
+        result.kind = kind;
+        result.classified = true;
+    };
+    gs3b2Elsewhere(h, change);
+    result.rebuilds = counts.rebuilds;
+    result.redrawn = counts.redrawn;
+    result.refused = trace.refused();
+    result.moved = gs3bMoved(trace);
+    for (const auto &span : trace.spans)
+        if (span.stage == "graph_redraw_refused" && (static_cast<int>(span.detail) & gs3b3a_body))
+            result.body_detail2 = static_cast<int>(span.detail2);
+    h.scene.repopulated = nullptr;
+    h.scene.nodesRedrawn = nullptr;
+    h.scene.redrawClassified = nullptr;
+    return result;
+}
+
+void gs3b3aOpened(ZoneHarness &h) {
+    gs3bOpen(h);
+    REQUIRE(h.scene.zones().size() == 1);
+}
+
+} // namespace
+
+TEST_CASE("GS-3b3a a reply is classified before it is drawn: root, body, chrome, mixed, other",
+          "[devstudio][graph-canvas][scene][gs3b3a]") {
+    (void)application();
+
+    SECTION("a: one body node's value is the body's, and is refused for now") {
+        ZoneHarness h{gs3b2Document()};
+        h.document["definitions"]["first"]["nodes"][1] = gs3b3aBodyMultiply("a", 2.0);
+        gs3b3aOpened(h);
+        const QString before = gs3b3aPill(h.scene, QStringLiteral("first"), QStringLiteral("a"),
+                                          QStringLiteral("b"));
+        REQUIRE_FALSE(before.isEmpty());
+        const Gs3b3aResult result = gs3b3aFollow(h, [&] {
+            h.document["definitions"]["first"]["nodes"][1]["parameters"]["b"] = 6.0;
+        });
+        CHECK(result.classified);
+        CHECK(result.kind == PelicanStudio::GraphCanvasScene::RedrawClass::body);
+        CHECK(result.rebuilds == 1);
+        CHECK(result.redrawn.empty());
+        CHECK(result.refused == gs3b3a_body);
+        CHECK(result.body_detail2 == 1);
+        CHECK((result.moved & gs3b_body) != 0);
+        const QString after = gs3b3aPill(h.scene, QStringLiteral("first"), QStringLiteral("a"),
+                                         QStringLiteral("b"));
+        CHECK(after != before);
+        CHECK(after == QStringLiteral("6.0"));
+        gs3aSameAsRebuilt(h.scene);
+    }
+
+    SECTION("b: one root node's value is the root's, drawn in place") {
+        ZoneHarness h{gs3b2Document()};
+        gs3b3aOpened(h);
+        const QString before = gs3aPill(h.scene, QStringLiteral("m"), QStringLiteral("b"));
+        REQUIRE_FALSE(before.isEmpty());
+        const Gs3b3aResult result = gs3b3aFollow(h, [&] {
+            h.document["nodes"][3]["parameters"]["b"] = 3.0;
+        });
+        CHECK(result.classified);
+        CHECK(result.kind == PelicanStudio::GraphCanvasScene::RedrawClass::root);
+        CHECK(result.rebuilds == 0);
+        CHECK(result.redrawn == std::vector<std::vector<std::string>>{{"m"}});
+        CHECK(result.refused == 0);
+        CHECK(gs3aPill(h.scene, QStringLiteral("m"), QStringLiteral("b")) != before);
+        CHECK(gs3aPill(h.scene, QStringLiteral("m"), QStringLiteral("b")) == QStringLiteral("3.0"));
+    }
+
+    SECTION("c: a body a second loop also names is no one zone's") {
+        ZoneHarness h{zoneDocument(true)};
+        Json second = h.document["nodes"][2];
+        second["id"] = "steps2";
+        second["parameters"]["branches"] = Json::array({{{"body", "rest"}}, {{"body", "first"}}});
+        h.document["definitions"]["first"]["nodes"][1] = gs3b3aBodyMultiply("a", 2.0);
+        h.document["nodes"].push_back(std::move(second));
+        gs3bOpen(h);
+        REQUIRE(h.scene.zones().size() == 2);
+        CHECK(h.scene.zones().at("steps") == "first");
+        CHECK(h.scene.zones().at("steps2") == "rest");
+        const QString before = gs3b3aPill(h.scene, QStringLiteral("first"), QStringLiteral("a"),
+                                          QStringLiteral("b"));
+        const Gs3b3aResult result = gs3b3aFollow(h, [&] {
+            h.document["definitions"]["first"]["nodes"][1]["parameters"]["b"] = 6.0;
+        });
+        CHECK(result.classified);
+        CHECK(result.kind == PelicanStudio::GraphCanvasScene::RedrawClass::other);
+        CHECK(result.rebuilds == 1);
+        CHECK(result.refused == gs3b3a_other_parts);
+        CHECK(gs3b3aPill(h.scene, QStringLiteral("first"), QStringLiteral("a"), QStringLiteral("b")) !=
+              before);
+        CHECK(gs3b3aPill(h.scene, QStringLiteral("first"), QStringLiteral("a"), QStringLiteral("b")) ==
+              QStringLiteral("6.0"));
+    }
+
+    SECTION("d: a root value and a body value arriving together are mixed") {
+        ZoneHarness h{gs3b2Document()};
+        h.document["definitions"]["first"]["nodes"][1] = gs3b3aBodyMultiply("a", 2.0);
+        gs3b3aOpened(h);
+        const QString root_before = gs3aPill(h.scene, QStringLiteral("m"), QStringLiteral("b"));
+        const QString body_before =
+            gs3b3aPill(h.scene, QStringLiteral("first"), QStringLiteral("a"), QStringLiteral("b"));
+        REQUIRE_FALSE(root_before.isEmpty());
+        REQUIRE_FALSE(body_before.isEmpty());
+        const Gs3b3aResult result = gs3b3aFollow(h, [&] {
+            h.document["nodes"][3]["parameters"]["b"] = 3.0;
+            h.document["definitions"]["first"]["nodes"][1]["parameters"]["b"] = 6.0;
+        });
+        CHECK(result.classified);
+        CHECK(result.kind == PelicanStudio::GraphCanvasScene::RedrawClass::mixed);
+        CHECK(result.rebuilds == 1);
+        CHECK(result.refused == gs3b3a_other_parts);
+        CHECK(gs3aPill(h.scene, QStringLiteral("m"), QStringLiteral("b")) != root_before);
+        CHECK(gs3b3aPill(h.scene, QStringLiteral("first"), QStringLiteral("a"), QStringLiteral("b")) !=
+              body_before);
+        CHECK(gs3aPill(h.scene, QStringLiteral("m"), QStringLiteral("b")) == QStringLiteral("3.0"));
+        CHECK(gs3b3aPill(h.scene, QStringLiteral("first"), QStringLiteral("a"), QStringLiteral("b")) ==
+              QStringLiteral("6.0"));
+    }
+
+    SECTION("e: two bodies' values arriving together are mixed") {
+        ZoneHarness h{zoneDocument(true)};
+        Json second = h.document["nodes"][2];
+        second["id"] = "steps2";
+        second["parameters"]["branches"] = Json::array({{{"body", "rest"}}});
+        h.document["definitions"]["first"]["nodes"][1] = gs3b3aBodyMultiply("a", 2.0);
+        h.document["definitions"]["rest"]["nodes"][1] = gs3b3aBodyMultiply("c", 4.0);
+        h.document["nodes"].push_back(std::move(second));
+        gs3bOpen(h);
+        REQUIRE(h.scene.zones().size() == 2);
+        CHECK(h.scene.zones().at("steps") == "first");
+        CHECK(h.scene.zones().at("steps2") == "rest");
+        const QString first_before =
+            gs3b3aPill(h.scene, QStringLiteral("first"), QStringLiteral("a"), QStringLiteral("b"));
+        const QString rest_before =
+            gs3b3aPill(h.scene, QStringLiteral("rest"), QStringLiteral("c"), QStringLiteral("b"));
+        REQUIRE_FALSE(first_before.isEmpty());
+        REQUIRE_FALSE(rest_before.isEmpty());
+        const Gs3b3aResult result = gs3b3aFollow(h, [&] {
+            h.document["definitions"]["first"]["nodes"][1]["parameters"]["b"] = 6.0;
+            h.document["definitions"]["rest"]["nodes"][1]["parameters"]["b"] = 7.0;
+        });
+        CHECK(result.classified);
+        CHECK(result.kind == PelicanStudio::GraphCanvasScene::RedrawClass::mixed);
+        CHECK(result.rebuilds == 1);
+        CHECK(result.refused == gs3b3a_other_parts);
+        CHECK(gs3b3aPill(h.scene, QStringLiteral("first"), QStringLiteral("a"), QStringLiteral("b")) !=
+              first_before);
+        CHECK(gs3b3aPill(h.scene, QStringLiteral("rest"), QStringLiteral("c"), QStringLiteral("b")) !=
+              rest_before);
+    }
+
+    SECTION("f: a body's graph.input default is outside its parameters, so other") {
+        ZoneHarness h{gs3b2Document()};
+        gs3b3aOpened(h);
+        REQUIRE(h.document["definitions"]["first"]["nodes"][0]["default"] == 0.0);
+        const Gs3b3aResult result = gs3b3aFollow(h, [&] {
+            h.document["definitions"]["first"]["nodes"][0]["default"] = 1.0;
+        });
+        CHECK(h.document["definitions"]["first"]["nodes"][0]["default"] == 1.0);
+        CHECK(result.classified);
+        CHECK(result.kind == PelicanStudio::GraphCanvasScene::RedrawClass::other);
+        CHECK(result.rebuilds == 1);
+        CHECK(result.refused == gs3b3a_other_parts);
+        CHECK((result.moved & gs3b_document) != 0);
+    }
+
+    SECTION("g: only a zone's chrome moved, with no changed node at all") {
+        ZoneHarness h{gs3bDrawDocument()};
+        h.loops = gs3bDrawReport();
+        gs3bOpen(h);
+        const QString before = gs3bText(h.scene, PelicanStudio::GraphCanvasZoneLabelItem,
+                                        QStringLiteral("steps"), QStringLiteral("stage"));
+        REQUIRE(before == QStringLiteral("draw_loop 3 materials"));
+        const Gs3b3aResult result = gs3b3aFollow(h, [&] { h.loops[0]["total"] = 4; });
+        CHECK(result.classified);
+        CHECK(result.kind == PelicanStudio::GraphCanvasScene::RedrawClass::chrome);
+        CHECK(result.rebuilds == 1);
+        CHECK(result.redrawn.empty());
+        CHECK(result.refused == gs3b3a_other_parts);
+        CHECK((result.moved & gs3b_chrome) != 0);
+        CHECK(result.moved == gs3b_chrome);
+        CHECK(gs3bText(h.scene, PelicanStudio::GraphCanvasZoneLabelItem, QStringLiteral("steps"),
+                       QStringLiteral("stage")) != before);
+        CHECK(gs3bText(h.scene, PelicanStudio::GraphCanvasZoneLabelItem, QStringLiteral("steps"),
+                       QStringLiteral("stage")) == QStringLiteral("draw_loop 4 materials"));
+    }
+
+    SECTION("h: a body value beside an authoring change is other") {
+        ZoneHarness h{gs3b2Document()};
+        h.document["definitions"]["first"]["nodes"][1] = gs3b3aBodyMultiply("a", 2.0);
+        h.authoring = Json{{"graphs", Json::array()}};
+        h.model.setConnected(true);
+        h.model.readRenderAuthoringAgain();
+        (void)h.answerReads();
+        gs3b3aOpened(h);
+        REQUIRE(h.model.renderAuthoringContext() == h.authoring);
+        const QString body_before =
+            gs3b3aPill(h.scene, QStringLiteral("first"), QStringLiteral("a"), QStringLiteral("b"));
+        REQUIRE_FALSE(body_before.isEmpty());
+        h.authoring["gs3b3a"] = 1;
+        h.model.readRenderAuthoringAgain();
+        const Gs3b3aResult result = gs3b3aFollow(h, [&] {
+            h.document["definitions"]["first"]["nodes"][1]["parameters"]["b"] = 6.0;
+        });
+        CHECK(result.classified);
+        CHECK(result.kind == PelicanStudio::GraphCanvasScene::RedrawClass::other);
+        CHECK(result.rebuilds == 1);
+        CHECK(result.refused == gs3b3a_other_parts);
+        CHECK((result.moved & (1 << 9)) != 0);
+        CHECK(gs3b3aPill(h.scene, QStringLiteral("first"), QStringLiteral("a"), QStringLiteral("b")) !=
+              body_before);
+    }
+
+    SECTION("i: a body value that reaches a root node through a loop output is still the body's") {
+        ZoneHarness h{zoneDocument(true)};
+        h.document["definitions"]["first"]["nodes"][1] = gs3b3aBodyMultiply("a", 2.0);
+        h.document["nodes"].push_back(
+            {{"id", "sink"}, {"op", "value.multiply"},
+             {"inputs", {{"a", {{"node", "steps"}, {"port", "out"}}}}},
+             {"parameters", {{"b", 2.0}}}, {"outputs", Json::array({"value"})}});
+        gs3b3aOpened(h);
+        const auto nodes_before = h.model.nodes({});
+        const auto edges_before = gs3b3aEdges(h.model.edges({}));
+        const QString body_before =
+            gs3b3aPill(h.scene, QStringLiteral("first"), QStringLiteral("a"), QStringLiteral("b"));
+        REQUIRE_FALSE(body_before.isEmpty());
+        const Gs3b3aResult result = gs3b3aFollow(h, [&] {
+            h.document["definitions"]["first"]["nodes"][1]["parameters"]["b"] = 6.0;
+        });
+        CHECK(result.classified);
+        CHECK(result.kind == PelicanStudio::GraphCanvasScene::RedrawClass::body);
+        CHECK(result.rebuilds == 1);
+        CHECK(result.redrawn.empty());
+        CHECK(result.refused == gs3b3a_body);
+        CHECK(result.body_detail2 == 1);
+        CHECK(h.model.nodes({}) == nodes_before);
+        CHECK(gs3b3aEdges(h.model.edges({})) == edges_before);
+        constexpr int root_fields = (1 << 0) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6) |
+                                    (1 << 7) | (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11) |
+                                    (1 << 12) | (1 << 21) | gs3b_picks | gs3b_chrome;
+        CHECK((result.moved & root_fields) == 0);
+        CHECK((result.moved & (gs3b_document | gs3b_body)) == (gs3b_document | gs3b_body));
+        CHECK(gs3b3aPill(h.scene, QStringLiteral("first"), QStringLiteral("a"), QStringLiteral("b")) !=
+              body_before);
+    }
 }

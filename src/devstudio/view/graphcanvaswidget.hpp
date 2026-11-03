@@ -459,6 +459,10 @@ class GraphCanvasScene final : public QGraphicsScene {
     // GS-3a: followDocument drew these nodes' bodies again in place, and
     // nothing else (the scope did not change).
     std::function<void(const std::vector<std::string> &nodes)> nodesRedrawn;
+    // GS-3b3a: what redrawChangedNodes made of the reply it was given, before
+    // it did anything with it (a test only hook).
+    enum class RedrawClass { root, body, chrome, mixed, other };
+    std::function<void(RedrawClass)> redrawClassified;
     std::function<void()> gestureEnded;
     std::function<void()> geometryChanged;
     bool drag_trace_active = false;
@@ -1194,6 +1198,17 @@ class GraphCanvasScene final : public QGraphicsScene {
     };
     std::optional<DrawnFrom> drawn_from_;
     [[nodiscard]] DrawnFrom drawnFromNow() const;
+    // GS-3b3a: what moved between two draughts of the root scene -- exactly
+    // one of root, body (with the zone it is), chrome, or several places
+    // (mixed); `other` when the difference is one a body cannot be drawn
+    // again for. Writes nothing.
+    struct RedrawChange {
+        RedrawClass kind = RedrawClass::other;
+        std::set<std::string, std::less<>> nodes;
+        std::size_t zone = 0;
+        bool has_zone = false;
+    };
+    [[nodiscard]] RedrawChange classifyRedraw(const DrawnFrom &now, const DrawnFrom &drawn) const;
     // GS-3b1: which of the zones' fields differ (graph_follow_diff's bits 15
     // to 20), 0 when they are the same.
     [[nodiscard]] static int zonesMoved(const DrawnFrom &now, const DrawnFrom &drawn);
