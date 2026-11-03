@@ -20,6 +20,7 @@
 #include "renderedithistory.hpp"
 #include "renderfeatureswidget.hpp"
 #include "renderingsettingswidget.hpp"
+#include "panelshown.hpp"
 #include "raylayoutwidget.hpp"
 #include "raylayoutmodel.hpp"
 
@@ -35,14 +36,17 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
+#include <QDockWidget>
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QJsonDocument>
 #include <QSlider>
 #include <QToolButton>
 #include <QLabel>
+#include <QEvent>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMainWindow>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QStringList>
@@ -61,6 +65,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <array>
 #include <deque>
 #include <memory>
 #include <optional>
@@ -86,6 +92,8 @@ QApplication &application() {
 const std::string RootA(64, 'a');
 const std::string RootB(64, 'b');
 const std::string RootC(64, 'c');
+const std::string RootD(64, 'd');
+const std::string RootE(64, 'e');
 const std::string BloomFeature = "engine://features/bloom.json";
 
 // The process that takes the panels' requests, and the answers to them.
@@ -2080,4 +2088,1013 @@ TEST_CASE("GS-UAF1 destroying the render features panel with its parameter dialo
     CHECK(renderFeaturesTeardownCallbacksForTest() == 0);
     resetRenderFeaturesTeardownCallbacksForTest();
 }
+
+// --- RP-1a1: the RPCs a widget sends, and the fake engine's answers.
+struct RpcCall {
+    qint64 id = 0;
+    std::string method;
+    Json params;
+};
+
+struct RpcLog {
+    std::vector<RpcCall> calls;
+
+    void watch(EmbeddedViewport &viewport) {
+        viewport.setRpcObserver(
+            {{},
+             [this](qint64 id, const QString &method, const QJsonObject &params) {
+                 calls.push_back(
+                     {id, method.toStdString(),
+                      Json::parse(QJsonDocument{params}.toJson(QJsonDocument::Compact).toStdString())});
+             }});
+    }
+
+    std::optional<RpcCall> take(const std::string &method) {
+        for (auto found = calls.begin(); found != calls.end(); ++found) {
+            if (found->method != method) continue;
+            auto call = std::move(*found);
+            calls.erase(found);
+            return call;
+        }
+        return std::nullopt;
+    }
+
+    std::vector<RpcCall> take_all() { return std::exchange(calls, {}); }
+
+    void clear() { calls.clear(); }
+};
+
+int countMethod(const std::vector<RpcCall> &calls, const std::string &method) {
+    return static_cast<int>(std::count_if(calls.begin(), calls.end(),
+                                          [&](const RpcCall &call) { return call.method == method; }));
+}
+
+void requireOnly(const std::vector<RpcCall> &calls, std::initializer_list<std::string> methods) {
+    REQUIRE(calls.size() == methods.size());
+    for (const auto &method : methods) {
+        INFO("method " << method);
+        CHECK(countMethod(calls, method) == 1);
+    }
+}
+
+void reply(Transport &engine, const RpcCall &call, const Json &result) {
+    emit engine.viewport.inspectorRpcSucceeded(call.id,
+                                               QByteArray::fromStdString(result.dump()));
+    QApplication::processEvents();
+}
+
+void failReply(Transport &engine, const RpcCall &call, const QString &message = QStringLiteral("engine failed")) {
+    emit engine.viewport.inspectorRpcFailed(call.id, message);
+    QApplication::processEvents();
+}
+
+struct SettingsCalls {
+    RpcCall root;
+    RpcCall providers;
+    RpcCall context;
+};
+
+void requireOnly(const SettingsCalls &calls, std::initializer_list<std::string> methods) {
+    requireOnly(std::vector<RpcCall>{calls.root, calls.providers, calls.context}, methods);
+}
+
+SettingsCalls takeSettings(RpcLog &log) {
+    auto root = log.take("get_render_documents");
+    auto providers = log.take("get_registered_providers");
+    auto context = log.take("get_render_authoring_context");
+    REQUIRE(root);
+    REQUIRE(providers);
+    REQUIRE(context);
+    return {std::move(*root), std::move(*providers), std::move(*context)};
+}
+
+void answerSettings(Transport &engine, const SettingsCalls &calls, const std::string &digest,
+                    const Json &rendering = Json::object(),
+                    const Json &providers = Json::object()) {
+    reply(engine, calls.providers, providers);
+    reply(engine, calls.context, {{"snapshot_after_candidates", Json::array()}});
+    reply(engine, calls.root, rootDocuments(digest, rendering));
+}
+
+void settleSettingsVisible(Transport &engine, RpcLog &log, const std::string &digest,
+                           const Json &rendering = Json::object()) {
+    answerSettings(engine, takeSettings(log), digest, rendering);
+    log.clear();
+}
+
+struct RayCalls {
+    RpcCall layout;
+    RpcCall documents;
+};
+
+void requireOnly(const RayCalls &calls, std::initializer_list<std::string> methods) {
+    requireOnly(std::vector<RpcCall>{calls.layout, calls.documents}, methods);
+}
+
+RayCalls takeRay(RpcLog &log) {
+    auto layout = log.take("get_ray_layout");
+    auto documents = log.take("get_render_documents");
+    REQUIRE(layout);
+    REQUIRE(documents);
+    return {std::move(*layout), std::move(*documents)};
+}
+
+Json rayLayoutAnswer(const std::string &digest, const Json &layout,
+                     const Json &materials = Json::array()) {
+    Json answer{{"source_digest", {{"hex", digest}}},
+                {"mode", layout.is_null() ? "none" : "layout"},
+                {"layout", layout.is_null()
+                               ? Json(nullptr)
+                               : Json{{"reference", "project://passes/ray_layout.json"},
+                                      {"digest", digest},
+                                      {"document", layout}}},
+                {"bindings", nullptr},
+                {"selectable_materials", materials},
+                {"selectable_procedural_assets", Json::array()}};
+    return answer;
+}
+
+void answerRay(Transport &engine, const RayCalls &calls, const std::string &digest,
+               const Json &layout, const Json &materials = Json::array()) {
+    reply(engine, calls.documents, {{"documents", Json::array()}});
+    reply(engine, calls.layout, rayLayoutAnswer(digest, layout, materials));
+}
+
+// Ray's showEvent always reads, so a Ray widget shown while its first read is
+// in flight asks for one more read when that first one lands. Settle both.
+void settleRayVisible(Transport &engine, RpcLog &log, const std::string &digest,
+                      const Json &layout, const Json &materials = Json::array()) {
+    answerRay(engine, takeRay(log), digest, layout, materials);
+    answerRay(engine, takeRay(log), digest, layout, materials);
+    log.clear();
+}
+
+// A settings read is three RPCs; a nested Ray section adds its two.
+void answerNested(Transport &engine, std::vector<RpcCall> calls, const std::string &digest,
+                  const Json &layout) {
+    for (const auto &call : calls) {
+        if (call.method == "get_registered_providers")
+            reply(engine, call, Json::object());
+        else if (call.method == "get_render_authoring_context")
+            reply(engine, call, {{"snapshot_after_candidates", Json::array()}});
+        else if (call.method == "get_ray_layout")
+            reply(engine, call, rayLayoutAnswer(digest, layout));
+        else if (call.method == "get_render_documents")
+            reply(engine, call, rootDocuments(digest, Json::object()));
+        else
+            FAIL("unexpected RPC " << call.method);
+    }
+}
+
+bool hasFocus(QWidget &widget) {
+    return widget.hasFocus() || QApplication::focusWidget() == &widget;
+}
+
+
+class ShowCounter final : public QObject {
+  public:
+    int count = 0;
+
+    bool eventFilter(QObject *, QEvent *event) override {
+        if (event->type() == QEvent::Show) ++count;
+        return false;
+    }
+};
+
+TEST_CASE("RP-1a1 a: a hidden Rendering settings panel does not read a moved digest, and reads it once when shown",
+          "[devstudio][rp1a1][rendering-settings][widget]") {
+    Transport engine;
+    RpcLog log;
+    log.watch(engine.viewport);
+    auto hub = std::make_shared<RenderConfigDigest>();
+    RenderingSettingsWidget settings{&engine.viewport};
+    settings.setRenderConfigDigest(hub);
+    settings.show();
+    QApplication::processEvents();
+    settleSettingsVisible(engine, log, RootA, {{"draw_sort", DefaultDrawSort}});
+
+    settings.hide();
+    QApplication::processEvents();
+    hub->publish(RootB);
+    QApplication::processEvents();
+    CHECK(log.calls.empty());
+
+    settings.show();
+    QApplication::processEvents();
+    const auto calls = takeSettings(log);
+    requireOnly(calls, {"get_render_documents", "get_registered_providers",
+                        "get_render_authoring_context"});
+    answerSettings(engine, calls, RootB, {{"draw_sort", DefaultDrawSort}});
+    CHECK(log.calls.empty());
+}
+
+TEST_CASE("RP-1a1 a: a hidden Ray layout widget does not read a moved digest, and reads it once when shown",
+          "[devstudio][rp1a1][ray-layout][widget]") {
+    Transport engine;
+    RpcLog log;
+    log.watch(engine.viewport);
+    auto hub = std::make_shared<RenderConfigDigest>();
+    RayLayoutWidget ray{&engine.viewport};
+    ray.setRenderConfigDigest(hub);
+    ray.show();
+    QApplication::processEvents();
+    settleRayVisible(engine, log, RootA, defaultRayLayout());
+
+    ray.hide();
+    QApplication::processEvents();
+    hub->publish(RootB);
+    QApplication::processEvents();
+    CHECK(log.calls.empty());
+
+    ray.show();
+    QApplication::processEvents();
+    const auto calls = takeRay(log);
+    requireOnly(calls, {"get_ray_layout", "get_render_documents"});
+    answerRay(engine, calls, RootB, defaultRayLayout());
+    CHECK(log.calls.empty());
+}
+
+TEST_CASE("RP-1a1 b: three moved digests while hidden make one read when the panel is shown",
+          "[devstudio][rp1a1][rendering-settings][widget]") {
+    Transport engine;
+    RpcLog log;
+    log.watch(engine.viewport);
+    auto hub = std::make_shared<RenderConfigDigest>();
+    RenderingSettingsWidget settings{&engine.viewport};
+    settings.setRenderConfigDigest(hub);
+    settings.show();
+    QApplication::processEvents();
+    settleSettingsVisible(engine, log, RootA);
+    settings.hide();
+    QApplication::processEvents();
+
+    hub->publish(RootB);
+    hub->publish(RootC);
+    hub->publish(RootD);
+    QApplication::processEvents();
+    CHECK(log.calls.empty());
+
+    settings.show();
+    QApplication::processEvents();
+    const auto calls = takeSettings(log);
+    requireOnly(calls, {"get_render_documents", "get_registered_providers",
+                        "get_render_authoring_context"});
+    answerSettings(engine, calls, RootD);
+    CHECK(log.calls.empty());
+}
+
+TEST_CASE("RP-1a1 b: three moved digests while hidden make one Ray read when the widget is shown",
+          "[devstudio][rp1a1][ray-layout][widget]") {
+    Transport engine;
+    RpcLog log;
+    log.watch(engine.viewport);
+    auto hub = std::make_shared<RenderConfigDigest>();
+    RayLayoutWidget ray{&engine.viewport};
+    ray.setRenderConfigDigest(hub);
+    ray.show();
+    QApplication::processEvents();
+    settleRayVisible(engine, log, RootA, defaultRayLayout());
+    ray.hide();
+    QApplication::processEvents();
+
+    hub->publish(RootB);
+    hub->publish(RootC);
+    hub->publish(RootD);
+    QApplication::processEvents();
+    CHECK(log.calls.empty());
+
+    ray.show();
+    QApplication::processEvents();
+    const auto calls = takeRay(log);
+    requireOnly(calls, {"get_ray_layout", "get_render_documents"});
+    answerRay(engine, calls, RootD, defaultRayLayout());
+    CHECK(log.calls.empty());
+}
+
+TEST_CASE("RP-1a1 c: a visible Rendering settings panel reads at once, and Refresh still reads while hidden",
+          "[devstudio][rp1a1][rendering-settings][widget]") {
+    Transport engine;
+    RpcLog log;
+    log.watch(engine.viewport);
+    auto hub = std::make_shared<RenderConfigDigest>();
+    RenderingSettingsWidget settings{&engine.viewport};
+    settings.setRenderConfigDigest(hub);
+    settings.show();
+    QApplication::processEvents();
+    settleSettingsVisible(engine, log, RootA);
+
+    hub->publish(RootB);
+    QApplication::processEvents();
+    auto calls = takeSettings(log);
+    requireOnly(calls, {"get_render_documents", "get_registered_providers",
+                        "get_render_authoring_context"});
+    answerSettings(engine, calls, RootB);
+    CHECK(log.calls.empty());
+
+    settings.hide();
+    QApplication::processEvents();
+    settings.refresh();
+    QApplication::processEvents();
+    calls = takeSettings(log);
+    requireOnly(calls, {"get_render_documents", "get_registered_providers",
+                        "get_render_authoring_context"});
+    answerSettings(engine, calls, RootC);
+    CHECK(log.calls.empty());
+}
+
+TEST_CASE("RP-1a1 c: a visible Ray layout widget reads at once, and Refresh still reads while hidden",
+          "[devstudio][rp1a1][ray-layout][widget]") {
+    Transport engine;
+    RpcLog log;
+    log.watch(engine.viewport);
+    auto hub = std::make_shared<RenderConfigDigest>();
+    RayLayoutWidget ray{&engine.viewport};
+    ray.setRenderConfigDigest(hub);
+    ray.show();
+    QApplication::processEvents();
+    settleRayVisible(engine, log, RootA, defaultRayLayout());
+
+    hub->publish(RootB);
+    QApplication::processEvents();
+    auto calls = takeRay(log);
+    requireOnly(calls, {"get_ray_layout", "get_render_documents"});
+    answerRay(engine, calls, RootB, defaultRayLayout());
+    CHECK(log.calls.empty());
+
+    ray.hide();
+    QApplication::processEvents();
+    ray.refresh();
+    QApplication::processEvents();
+    calls = takeRay(log);
+    requireOnly(calls, {"get_ray_layout", "get_render_documents"});
+    answerRay(engine, calls, RootC, defaultRayLayout());
+    CHECK(log.calls.empty());
+}
+
+TEST_CASE("RP-1a1 d: replies that land while Rendering settings is hidden do not read; showing reads once",
+          "[devstudio][rp1a1][rendering-settings][widget]") {
+    Transport engine;
+    RpcLog log;
+    log.watch(engine.viewport);
+    auto hub = std::make_shared<RenderConfigDigest>();
+    RenderingSettingsWidget settings{&engine.viewport};
+    settings.setRenderConfigDigest(hub);
+    settings.show();
+    QApplication::processEvents();
+    settleSettingsVisible(engine, log, RootA);
+
+    hub->publish(RootC);
+    QApplication::processEvents();
+    const auto old = takeSettings(log);
+    settings.hide();
+    QApplication::processEvents();
+    hub->publish(RootB);
+    QApplication::processEvents();
+    CHECK(log.calls.empty());
+
+    answerSettings(engine, old, RootC);
+    CHECK(log.calls.empty());
+
+    settings.show();
+    QApplication::processEvents();
+    auto calls = takeSettings(log);
+    requireOnly(calls, {"get_render_documents", "get_registered_providers",
+                        "get_render_authoring_context"});
+    answerSettings(engine, calls, RootB);
+    CHECK(log.calls.empty());
+
+    // Showing before the in-flight replies land still reads once, after them.
+    hub->publish(RootC);
+    QApplication::processEvents();
+    const auto in_flight = takeSettings(log);
+    settings.hide();
+    QApplication::processEvents();
+    hub->publish(RootA);
+    settings.show();
+    QApplication::processEvents();
+    CHECK(log.calls.empty());
+    answerSettings(engine, in_flight, RootC);
+    calls = takeSettings(log);
+    requireOnly(calls, {"get_render_documents", "get_registered_providers",
+                        "get_render_authoring_context"});
+    answerSettings(engine, calls, RootA);
+    CHECK(log.calls.empty());
+}
+
+TEST_CASE("RP-1a1 d: replies that land while Ray layout is hidden do not read; showing reads once",
+          "[devstudio][rp1a1][ray-layout][widget]") {
+    Transport engine;
+    RpcLog log;
+    log.watch(engine.viewport);
+    auto hub = std::make_shared<RenderConfigDigest>();
+    RayLayoutWidget ray{&engine.viewport};
+    ray.setRenderConfigDigest(hub);
+    ray.show();
+    QApplication::processEvents();
+    settleRayVisible(engine, log, RootA, defaultRayLayout());
+
+    hub->publish(RootC);
+    QApplication::processEvents();
+    const auto old = takeRay(log);
+    ray.hide();
+    QApplication::processEvents();
+    hub->publish(RootB);
+    QApplication::processEvents();
+    CHECK(log.calls.empty());
+
+    answerRay(engine, old, RootC, defaultRayLayout());
+    CHECK(log.calls.empty());
+
+    ray.show();
+    QApplication::processEvents();
+    auto calls = takeRay(log);
+    requireOnly(calls, {"get_ray_layout", "get_render_documents"});
+    answerRay(engine, calls, RootB, defaultRayLayout());
+    CHECK(log.calls.empty());
+
+    // Showing before the in-flight replies land still reads once, after them.
+    hub->publish(RootC);
+    QApplication::processEvents();
+    const auto in_flight = takeRay(log);
+    ray.hide();
+    QApplication::processEvents();
+    hub->publish(RootA);
+    ray.show();
+    QApplication::processEvents();
+    CHECK(log.calls.empty());
+    answerRay(engine, in_flight, RootC, defaultRayLayout());
+    calls = takeRay(log);
+    requireOnly(calls, {"get_ray_layout", "get_render_documents"});
+    answerRay(engine, calls, RootA, defaultRayLayout());
+    CHECK(log.calls.empty());
+}
+
+
+
+TEST_CASE("RP-1a1 e: a non-selected tabified dock is not shown; selecting its tab reads once",
+          "[devstudio][rp1a1][rendering-settings][widget][docks]") {
+    Transport engine;
+    RpcLog log;
+    log.watch(engine.viewport);
+    auto hub = std::make_shared<RenderConfigDigest>();
+
+    QMainWindow window;
+    window.setCentralWidget(new QWidget(&window));
+    auto *first = new QDockWidget(QStringLiteral("First"), &window);
+    auto *second = new QDockWidget(QStringLiteral("Rendering settings"), &window);
+    auto *settings = new RenderingSettingsWidget(&engine.viewport, second);
+    settings->setRenderConfigDigest(hub);
+    second->setWidget(settings);
+    window.addDockWidget(Qt::LeftDockWidgetArea, first);
+    window.addDockWidget(Qt::LeftDockWidgetArea, second);
+    window.tabifyDockWidget(first, second);
+    window.resize(1100, 800);
+    window.show();
+    second->raise();
+    QApplication::processEvents();
+
+    settleSettingsVisible(engine, log, RootA, {{"draw_sort", DefaultDrawSort}});
+    log.clear();
+    ShowCounter shows;
+    settings->installEventFilter(&shows);
+
+    // Initialization while the panel's own tab is selected: the dock is
+    // visible and its visible region is not empty.
+    PanelShown selected_probe{*settings, [] {}};
+    CHECK(selected_probe.isShown());
+
+    // The other tab is selected. Qt keeps the content isVisible() == true,
+    // but the dock's visibilityChanged value turns false. A digest that moves
+    // now sends nothing.
+    first->raise();
+    QApplication::processEvents();
+    CHECK(settings->isVisible());
+    PanelShown hidden_probe{*settings, [] {}};
+    CHECK_FALSE(hidden_probe.isShown());
+    CHECK(shows.count == 0);
+    hub->publish(RootB);
+    QApplication::processEvents();
+    CHECK(log.calls.empty());
+
+    // Selecting the panel's tab turns the dock value true and reads once.
+    second->raise();
+    QApplication::processEvents();
+    CHECK(settings->isVisible());
+    CHECK(selected_probe.isShown());
+    CHECK(hidden_probe.isShown());
+    CHECK(shows.count == 0);
+    auto calls = takeSettings(log);
+    requireOnly(calls, {"get_render_documents", "get_registered_providers",
+                        "get_render_authoring_context"});
+    answerSettings(engine, calls, RootB, {{"draw_sort", DefaultDrawSort}});
+    CHECK(log.calls.empty());
+
+    // Closing its dock hides it; reopening and selecting it shows it again.
+    second->close();
+    QApplication::processEvents();
+    CHECK_FALSE(settings->isVisible());
+    hub->publish(RootC);
+    QApplication::processEvents();
+    CHECK(log.calls.empty());
+    second->show();
+    second->raise();
+    QApplication::processEvents();
+    CHECK(settings->isVisible());
+    calls = takeSettings(log);
+    requireOnly(calls, {"get_render_documents", "get_registered_providers",
+                        "get_render_authoring_context"});
+    answerSettings(engine, calls, RootC, {{"draw_sort", DefaultDrawSort}});
+    CHECK(log.calls.empty());
+
+    // Floating is shown too: a digest that moves now reads at once.
+    second->setFloating(true);
+    second->show();
+    second->raise();
+    QApplication::processEvents();
+    CHECK(settings->isVisible());
+    log.clear();
+    hub->publish(RootD);
+    QApplication::processEvents();
+    calls = takeSettings(log);
+    requireOnly(calls, {"get_render_documents", "get_registered_providers",
+                        "get_render_authoring_context"});
+    answerSettings(engine, calls, RootD, {{"draw_sort", DefaultDrawSort}});
+    CHECK(log.calls.empty());
+}
+
+TEST_CASE("RP-1a1 e: without a dock, plain isVisible still drives the panel",
+          "[devstudio][rp1a1][rendering-settings][widget][no-dock]") {
+    Transport engine;
+    RpcLog log;
+    log.watch(engine.viewport);
+    auto hub = std::make_shared<RenderConfigDigest>();
+    RenderingSettingsWidget settings{&engine.viewport};
+    settings.setRenderConfigDigest(hub);
+    settings.show();
+    QApplication::processEvents();
+    settleSettingsVisible(engine, log, RootA, {{"draw_sort", DefaultDrawSort}});
+
+    settings.hide();
+    QApplication::processEvents();
+    hub->publish(RootB);
+    QApplication::processEvents();
+    CHECK(log.calls.empty());
+
+    settings.show();
+    QApplication::processEvents();
+    const auto calls = takeSettings(log);
+    requireOnly(calls, {"get_render_documents", "get_registered_providers",
+                        "get_render_authoring_context"});
+    answerSettings(engine, calls, RootB, {{"draw_sort", DefaultDrawSort}});
+    CHECK(log.calls.empty());
+}
+
+
+TEST_CASE("RP-1a1 e: a tabified dock holding both Rendering settings and its Ray section reads only when selected",
+          "[devstudio][rp1a1][rendering-settings][ray-layout][widget][docks]") {
+    Transport engine;
+    RpcLog log;
+    log.watch(engine.viewport);
+    auto hub = std::make_shared<RenderConfigDigest>();
+
+    QMainWindow window;
+    window.setCentralWidget(new QWidget(&window));
+    auto *first = new QDockWidget(QStringLiteral("First"), &window);
+    auto *second = new QDockWidget(QStringLiteral("Rendering settings"), &window);
+    auto *settings = new RenderingSettingsWidget(&engine.viewport, second);
+    auto *ray = new RayLayoutWidget(&engine.viewport);
+    settings->setRenderConfigDigest(hub);
+    ray->setRenderConfigDigest(hub);
+    settings->addSection(ray);
+    second->setWidget(settings);
+    window.addDockWidget(Qt::LeftDockWidgetArea, first);
+    window.addDockWidget(Qt::LeftDockWidgetArea, second);
+    window.tabifyDockWidget(first, second);
+    window.resize(1100, 800);
+    window.show();
+    second->raise();
+    QApplication::processEvents();
+
+    // The first settings read is three RPCs and Ray's first read is two.
+    // Ray's own show asks for one more while the first is in flight.
+    auto initial = log.take_all();
+    REQUIRE(initial.size() == 5);
+    CHECK(countMethod(initial, "get_render_documents") == 2);
+    CHECK(countMethod(initial, "get_registered_providers") == 1);
+    CHECK(countMethod(initial, "get_render_authoring_context") == 1);
+    CHECK(countMethod(initial, "get_ray_layout") == 1);
+    answerNested(engine, std::move(initial), RootA, defaultRayLayout());
+    auto follow = log.take_all();
+    REQUIRE(follow.size() == 2);
+    answerNested(engine, std::move(follow), RootA, defaultRayLayout());
+    CHECK(log.calls.empty());
+
+    ShowCounter settings_shows;
+    ShowCounter ray_shows;
+    settings->installEventFilter(&settings_shows);
+    ray->installEventFilter(&ray_shows);
+
+    // Qt keeps both contents isVisible() == true in a non-selected tab, and
+    // sends no Show; only the dock's visibilityChanged value turns false.
+    first->raise();
+    QApplication::processEvents();
+    CHECK(settings->isVisible());
+    CHECK(ray->isVisible());
+    CHECK(settings_shows.count == 0);
+    CHECK(ray_shows.count == 0);
+    hub->publish(RootB);
+    QApplication::processEvents();
+    CHECK(log.calls.empty());
+
+    second->raise();
+    QApplication::processEvents();
+    CHECK(settings->isVisible());
+    CHECK(ray->isVisible());
+    CHECK(settings_shows.count == 0);
+    CHECK(ray_shows.count == 0);
+    const auto calls = log.take_all();
+    REQUIRE(calls.size() == 5);
+    CHECK(countMethod(calls, "get_render_documents") == 2);
+    CHECK(countMethod(calls, "get_registered_providers") == 1);
+    CHECK(countMethod(calls, "get_render_authoring_context") == 1);
+    CHECK(countMethod(calls, "get_ray_layout") == 1);
+    answerNested(engine, calls, RootB, defaultRayLayout());
+    CHECK(log.calls.empty());
+
+    // Closing and reopening the dock hides and shows the whole section.
+    second->close();
+    QApplication::processEvents();
+    CHECK_FALSE(settings->isVisible());
+    CHECK_FALSE(ray->isVisible());
+    hub->publish(RootC);
+    QApplication::processEvents();
+    CHECK(log.calls.empty());
+    second->show();
+    second->raise();
+    QApplication::processEvents();
+    CHECK(settings->isVisible());
+    CHECK(ray->isVisible());
+    auto reopened = log.take_all();
+    REQUIRE(reopened.size() == 5);
+    answerNested(engine, std::move(reopened), RootC, defaultRayLayout());
+    CHECK(log.calls.empty());
+
+    // Floating is shown too.
+    second->setFloating(true);
+    second->show();
+    second->raise();
+    QApplication::processEvents();
+    CHECK(settings->isVisible());
+    CHECK(ray->isVisible());
+    // Floating can make the dock visibility turn false and true again; Ray
+    // reads once for that show transition, before the digest below moves.
+    auto floating_show = log.take_all();
+    if (!floating_show.empty()) {
+        REQUIRE(floating_show.size() == 2);
+        answerNested(engine, std::move(floating_show), RootC, defaultRayLayout());
+    }
+    log.clear();
+    hub->publish(RootD);
+    QApplication::processEvents();
+    auto floating = log.take_all();
+    REQUIRE(floating.size() == 5);
+    answerNested(engine, std::move(floating), RootD, defaultRayLayout());
+    CHECK(log.calls.empty());
+}
+
+
+TEST_CASE("RP-1a1 f: Ray material and enable reveals wait for a shown, complete read",
+          "[devstudio][rp1a1][ray-layout][widget]") {
+    Transport engine;
+    RpcLog log;
+    log.watch(engine.viewport);
+    auto hub = std::make_shared<RenderConfigDigest>();
+    RayLayoutWidget ray{&engine.viewport};
+    ray.setRenderConfigDigest(hub);
+    const Json materials = Json::array(
+        {{{"name", "M"}, {"label", "M"}, {"selector", {{"document", "materials/M.material.json"}}}}});
+    auto &notice = required<QLabel>(ray, "pelican.rayLayout.notice");
+    auto &enable = required<QPushButton>(ray, "pelican.rayLayout.enable");
+
+    // The first read was started while the widget was still hidden. Fail it;
+    // no immediate retry. A material reveal now must not read while hidden.
+    auto failed = takeRay(log);
+    failReply(engine, failed.layout);
+    reply(engine, failed.documents, {{"documents", Json::array()}});
+    QTest::qWait(100);
+    CHECK(log.calls.empty());
+    notice.clear();
+    ray.revealMaterial("M");
+    CHECK(log.calls.empty());
+    CHECK(notice.text().isEmpty());
+
+    // Showing reads once; the pending reveal lands on that answer.
+    ray.show();
+    ray.activateWindow();
+    REQUIRE(QTest::qWaitForWindowActive(&ray));
+    CHECK(QApplication::activeWindow() == &ray);
+    auto calls = takeRay(log);
+    answerRay(engine, calls, RootA, defaultRayLayout(), materials);
+    CHECK(log.calls.empty());
+    CHECK(notice.text().contains("Pick the hit group of M"));
+    QTest::qWait(100);
+    auto &combo = required<QComboBox>(ray, "pelican.rayLayout.assign.M.group");
+    CHECK(combo.isVisible());
+    CHECK(combo.isEnabled());
+    CHECK(hasFocus(combo));
+
+    // A reveal during a visible read waits for that read, not the old rows.
+    notice.clear();
+    hub->publish(RootB);
+    QApplication::processEvents();
+    auto in_flight = takeRay(log);
+    ray.revealMaterial("M");
+    CHECK(log.calls.empty());
+    CHECK(notice.text().isEmpty());
+    answerRay(engine, in_flight, RootB, defaultRayLayout(), materials);
+    CHECK(log.calls.empty());
+    CHECK(notice.text().contains("Pick the hit group of M"));
+    QTest::qWait(100);
+    CHECK(hasFocus(required<QComboBox>(ray, "pelican.rayLayout.assign.M.group")));
+
+    // A null layout shows Enable hit groups. Enable while hidden: no read,
+    // no reveal. Its show reads, then reveals the button.
+    notice.clear();
+    hub->publish(RootC);
+    QApplication::processEvents();
+    calls = takeRay(log);
+    answerRay(engine, calls, RootC, Json(nullptr));
+    REQUIRE(enable.isVisible());
+    ray.hide();
+    QApplication::processEvents();
+    CHECK_FALSE(ray.isVisible());
+    notice.clear();
+    ray.revealEnable();
+    CHECK(log.calls.empty());
+    CHECK(notice.text().isEmpty());
+    ray.show();
+    ray.activateWindow();
+    REQUIRE(QTest::qWaitForWindowActive(&ray));
+    CHECK(ray.isVisible());
+    CHECK(enable.isVisible());
+    calls = takeRay(log);
+    answerRay(engine, calls, RootC, Json(nullptr));
+    CHECK(log.calls.empty());
+    CHECK(notice.text().contains("Enable hit groups gives the project a ray layout"));
+
+    // Enable during a read that lands while hidden waits for the next show.
+    notice.clear();
+    hub->publish(RootD);
+    QApplication::processEvents();
+    in_flight = takeRay(log);
+    ray.revealEnable();
+    CHECK(log.calls.empty());
+    ray.hide();
+    QApplication::processEvents();
+    answerRay(engine, in_flight, RootD, Json(nullptr));
+    CHECK(notice.text().isEmpty());
+    CHECK(log.calls.empty());
+    ray.show();
+    ray.activateWindow();
+    REQUIRE(QTest::qWaitForWindowActive(&ray));
+    calls = takeRay(log);
+    answerRay(engine, calls, RootD, Json(nullptr));
+    CHECK(log.calls.empty());
+    CHECK(notice.text().contains("Enable hit groups gives the project a ray layout"));
+}
+
+
+TEST_CASE("RP-1a1 g: an external modification is read again and the queued edit is resent once",
+          "[devstudio][rp1a1][rendering-settings][widget]") {
+    Transport engine;
+    RpcLog log;
+    log.watch(engine.viewport);
+    auto hub = std::make_shared<RenderConfigDigest>();
+    RenderingSettingsWidget settings{&engine.viewport};
+    settings.setRenderConfigDigest(hub);
+    settings.show();
+    QApplication::processEvents();
+    settleSettingsVisible(engine, log, RootA);
+    auto &resolver = required<QComboBox>(settings, "pelican.renderingSettings.resolver_version");
+    REQUIRE(resolver.count() > 1);
+    resolver.setCurrentIndex(1);
+    const auto value = Json::parse(resolver.currentData().toString().toStdString());
+    auto edit = log.take("edit_rendering_keys");
+    REQUIRE(edit);
+    CHECK(edit->params == Json{{"base_source_digest", RootA},
+                                     {"set", {{"resolver_version", value}}}});
+    reply(engine, *edit, {{"status", "rejected"}, {"committed", false},
+                          {"error", {{"code", "external_modification"}, {"message", "moved"}}}});
+
+    // The panel reads the new root before resending the change.
+    auto calls = takeSettings(log);
+    requireOnly(calls, {"get_render_documents", "get_registered_providers",
+                        "get_render_authoring_context"});
+    CHECK(log.calls.empty());
+    answerSettings(engine, calls, RootB, {{"resolver_version", value}});
+    auto resent = log.take("edit_rendering_keys");
+    REQUIRE(resent);
+    CHECK(log.calls.empty());
+    CHECK(resent->params == Json{{"base_source_digest", RootB},
+                                       {"set", {{"resolver_version", value}}}});
+    reply(engine, *resent, {{"status", "accepted"}, {"ticket", "stale-edit"}});
+    auto poll = log.take("get_edit_result");
+    REQUIRE(poll);
+    reply(engine, *poll, liveCommit(RootC));
+    calls = takeSettings(log);
+    requireOnly(calls, {"get_render_documents", "get_registered_providers",
+                        "get_render_authoring_context"});
+    answerSettings(engine, calls, RootC, {{"resolver_version", value}});
+    CHECK(log.calls.empty());
+    CHECK(hub->current() == RootC);
+    CHECK_FALSE(log.take("edit_rendering_keys"));
+}
+
+TEST_CASE("RP-1a1 h: a failed settings root read does not retry until the panel is shown again",
+          "[devstudio][rp1a1][rendering-settings][widget]") {
+    Transport engine;
+    RpcLog log;
+    log.watch(engine.viewport);
+    auto hub = std::make_shared<RenderConfigDigest>();
+    RenderingSettingsWidget settings{&engine.viewport};
+    settings.setRenderConfigDigest(hub);
+    settings.show();
+    QApplication::processEvents();
+    settleSettingsVisible(engine, log, RootA);
+
+    hub->publish(RootB);
+    QApplication::processEvents();
+    auto calls = takeSettings(log);
+    reply(engine, calls.providers, Json::object());
+    reply(engine, calls.context, {{"snapshot_after_candidates", Json::array()}});
+    failReply(engine, calls.root);
+    QTest::qWait(100);
+    CHECK(log.calls.empty());
+
+    settings.hide();
+    QApplication::processEvents();
+    settings.show();
+    QApplication::processEvents();
+    calls = takeSettings(log);
+    requireOnly(calls, {"get_render_documents", "get_registered_providers",
+                        "get_render_authoring_context"});
+    answerSettings(engine, calls, RootC);
+    CHECK(log.calls.empty());
+    CHECK(hub->current() == RootC);
+}
+
+TEST_CASE("RP-1a1 h: a failed Ray layout read does not retry until the widget is shown again",
+          "[devstudio][rp1a1][ray-layout][widget]") {
+    Transport engine;
+    RpcLog log;
+    log.watch(engine.viewport);
+    auto hub = std::make_shared<RenderConfigDigest>();
+    RayLayoutWidget ray{&engine.viewport};
+    ray.setRenderConfigDigest(hub);
+    ray.show();
+    QApplication::processEvents();
+    settleRayVisible(engine, log, RootA, defaultRayLayout());
+
+    hub->publish(RootB);
+    QApplication::processEvents();
+    auto calls = takeRay(log);
+    failReply(engine, calls.layout);
+    reply(engine, calls.documents, {{"documents", Json::array()}});
+    QTest::qWait(100);
+    CHECK(log.calls.empty());
+
+    ray.hide();
+    QApplication::processEvents();
+    ray.show();
+    QApplication::processEvents();
+    calls = takeRay(log);
+    requireOnly(calls, {"get_ray_layout", "get_render_documents"});
+    answerRay(engine, calls, RootC, defaultRayLayout());
+    CHECK(log.calls.empty());
+}
+
+TEST_CASE("RP-1a1 i: three in-flight settings replies in any order defer one hidden read to the show",
+          "[devstudio][rp1a1][rendering-settings][widget]") {
+    const int variant = GENERATE(0, 1, 2, 3, 4, 5);
+    const std::array<std::array<int, 3>, 6> orders{{
+        {{0, 1, 2}}, {{0, 2, 1}}, {{1, 0, 2}}, {{1, 2, 0}}, {{2, 0, 1}}, {{2, 1, 0}},
+    }};
+    Transport engine;
+    RpcLog log;
+    log.watch(engine.viewport);
+    auto hub = std::make_shared<RenderConfigDigest>();
+    RenderingSettingsWidget settings{&engine.viewport};
+    settings.setRenderConfigDigest(hub);
+    settings.show();
+    QApplication::processEvents();
+    settleSettingsVisible(engine, log, RootA);
+
+    hub->publish(RootB);
+    QApplication::processEvents();
+    const auto calls = takeSettings(log);
+    requireOnly(calls, {"get_render_documents", "get_registered_providers",
+                        "get_render_authoring_context"});
+    settings.hide();
+    QApplication::processEvents();
+    hub->publish(RootC);
+    QApplication::processEvents();
+    CHECK(log.calls.empty());
+
+    std::array<RpcCall, 3> pending{calls.root, calls.providers, calls.context};
+    for (const int which : orders.at(variant)) {
+        if (which == 0)
+            reply(engine, pending[0], rootDocuments(RootB, Json::object()));
+        else if (which == 1)
+            reply(engine, pending[1], Json::object());
+        else
+            reply(engine, pending[2], {{"snapshot_after_candidates", Json::array()}});
+        CHECK(log.calls.empty());
+    }
+    CHECK(log.calls.empty());
+
+    settings.show();
+    QApplication::processEvents();
+    auto reread = takeSettings(log);
+    requireOnly(reread, {"get_render_documents", "get_registered_providers",
+                         "get_render_authoring_context"});
+    answerSettings(engine, reread, RootC);
+    CHECK(log.calls.empty());
+    CHECK(hub->current() == RootC);
+}
+
+
+TEST_CASE("RP-1a1 f: stale Ray replies do not reveal, and the latest read reveals once",
+          "[devstudio][rp1a1][ray-layout][widget]") {
+    Transport engine;
+    RpcLog log;
+    log.watch(engine.viewport);
+    auto hub = std::make_shared<RenderConfigDigest>();
+    QWidget host;
+    host.resize(900, 700);
+    RayLayoutWidget ray{&engine.viewport, &host};
+    ray.setRenderConfigDigest(hub);
+    const Json layout = defaultRayLayout();
+    const Json without_m = Json::array(
+        {{{"name", "N"}, {"label", "N"}, {"selector", {{"document", "materials/N.material.json"}}}}});
+    const Json with_m = Json::array(
+        {{{"name", "N"}, {"label", "N"}, {"selector", {{"document", "materials/N.material.json"}}}},
+         {{"name", "M"}, {"label", "M"}, {"selector", {{"document", "materials/M.material.json"}}}}});
+    auto &notice = required<QLabel>(ray, "pelican.rayLayout.notice");
+    auto &enable = required<QPushButton>(ray, "pelican.rayLayout.enable");
+
+    host.show();
+    host.activateWindow();
+    REQUIRE(QTest::qWaitForWindowActive(&host));
+    settleRayVisible(engine, log, RootA, layout, without_m);
+
+    // Read A' is in flight; hiding and publishing B, then showing, starts no
+    // second read (read_again), and reveal M waits for A' rather than acting
+    // on A's rows.
+    ray.refresh();
+    QApplication::processEvents();
+    auto stale = takeRay(log);
+    ray.hide();
+    QApplication::processEvents();
+    hub->publish(RootB);
+    QApplication::processEvents();
+    ray.show();
+    QApplication::processEvents();
+    ray.revealMaterial("M");
+    CHECK(log.calls.empty());
+    answerRay(engine, stale, RootA, layout, without_m);
+    auto latest = takeRay(log);
+    CHECK_FALSE(notice.text().contains("is not a material"));
+    CHECK(ray.findChild<QComboBox *>(QStringLiteral("pelican.rayLayout.assign.M.group")) == nullptr);
+    answerRay(engine, latest, RootB, layout, with_m);
+    QTest::qWait(100);
+    auto &combo = required<QComboBox>(ray, "pelican.rayLayout.assign.M.group");
+    CHECK(hasFocus(combo));
+    CHECK(log.calls.empty());
+
+    // The same sequence for Enable hit groups: A'' in flight, hide, publish a
+    // null layout, show, then reveal. A'' must not reveal from B's rows; the
+    // null layout does, once.
+    notice.clear();
+    ray.refresh();
+    QApplication::processEvents();
+    auto stale_enable = takeRay(log);
+    ray.hide();
+    QApplication::processEvents();
+    hub->publish(RootC);
+    QApplication::processEvents();
+    ray.show();
+    QApplication::processEvents();
+    ray.revealEnable();
+    CHECK(log.calls.empty());
+    answerRay(engine, stale_enable, RootB, layout, with_m);
+    auto null_layout = takeRay(log);
+    CHECK_FALSE(notice.text().contains("Enable hit groups gives the project a ray layout"));
+    CHECK_FALSE(enable.isVisible());
+    answerRay(engine, null_layout, RootC, Json(nullptr));
+    QTest::qWait(100);
+    CHECK(notice.text().contains("Enable hit groups gives the project a ray layout"));
+    CHECK(enable.isVisible());
+    CHECK(log.calls.empty());
+}
+
 } // namespace PelicanStudio

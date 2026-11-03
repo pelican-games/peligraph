@@ -2,6 +2,7 @@
 #include "rendereditticketclient.hpp"
 
 #include "panelhelp.hpp"
+#include "panelshown.hpp"
 #include "renderconfigdigest.hpp"
 #include "featurerefusalfix.hpp"
 #include "rendereditcompletion.hpp"
@@ -23,6 +24,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QShowEvent>
 #include <QTimer>
 #include <QVBoxLayout>
 
@@ -277,6 +279,9 @@ struct RenderingSettingsWidget::Impl {
     RenderingSettingsWidget &owner;
     EmbeddedViewport &viewport;
     RenderEditTicketClient client;
+    // RP-1a1 follow-up 1: shown through the enclosing dock's last
+    // visibilityChanged value, not QWidget::isVisible() alone.
+    PanelShown shown;
     std::shared_ptr<RenderConfigDigest> digest_hub;
     std::function<void(const QString &)> engine_restart_action;
     bool restart_asked = false;
@@ -368,7 +373,8 @@ struct RenderingSettingsWidget::Impl {
     bool filling = false;
 
     Impl(RenderingSettingsWidget &widget, EmbeddedViewport &embedded)
-        : owner{widget}, viewport{embedded}, client{embedded, &widget} {
+        : owner{widget}, viewport{embedded}, client{embedded, &widget},
+          shown{owner, [this] { followWhenIdle(); }} {
         owner.setObjectName(QStringLiteral("pelican.renderingSettings"));
         owner.setFont(studioPanelFont());
         auto *outer = new QVBoxLayout(&owner);
@@ -695,11 +701,20 @@ struct RenderingSettingsWidget::Impl {
     bool send(Request kind, const QString &method, const Json &params) {
         bool sent = false;
         if (kind == Request::Submit) sent = client.submit(method, params);
-        else sent = client.read(method, params, [this](const auto &response) {
-            consumeRead(response);
-            followWhenIdle();
-            controls();
-        });
+        else sent = client.read(
+            method, params,
+            [this](const auto &response) {
+                consumeRead(response);
+                followWhenIdle();
+                controls();
+            },
+            [this](const QString &error) {
+                // RP-1a1: a failed required read waits for the next show or
+                // refresh; it does not spin against an engine that refuses it.
+                showError(error);
+                read_when_idle = true;
+                controls();
+            });
         controls();
         return sent;
     }
@@ -723,7 +738,6 @@ struct RenderingSettingsWidget::Impl {
 
     // UX-12b, decision 3: where this pipeline takes a snapshot after.
     void askSnapshotCandidates() {
-        if (context_request != 0) return;
         QString error;
         context_request = viewport.requestRpc(QStringLiteral("get_render_authoring_context"),
                                               QJsonObject{}, &error);
@@ -741,7 +755,6 @@ struct RenderingSettingsWidget::Impl {
     // UX-10, decision 7: the providers the combos offer, read again with the
     // root (never kept across a game reload).
     void askProviders() {
-        if (providers_request != 0) return;
         QString error;
         providers_request = viewport.requestRpc(QStringLiteral("get_registered_providers"),
                                                 QJsonObject{}, &error);
@@ -1613,12 +1626,17 @@ struct RenderingSettingsWidget::Impl {
     }
 
     void followWhenIdle() {
-        if (!busy() && read_when_idle) read(false);
+        if (!busy() && read_when_idle && shown.isShown()) read(false);
     }
 
     // Another panel read or committed the document at `moved`.
     void documentMoved(const std::string &moved) {
+        shown.locateDock();
         if (moved == digest) return;
+        if (!shown.isShown()) {
+            read_when_idle = true;
+            return;
+        }
         if (busy()) {
             read_when_idle = true;
             return;
@@ -1635,6 +1653,11 @@ RenderingSettingsWidget::RenderingSettingsWidget(EmbeddedViewport *viewport, QWi
 }
 
 RenderingSettingsWidget::~RenderingSettingsWidget() = default;
+
+void RenderingSettingsWidget::showEvent(QShowEvent *event) {
+    QWidget::showEvent(event);
+    impl_->shown.becameShown();
+}
 
 void RenderingSettingsWidget::setRenderConfigDigest(std::shared_ptr<RenderConfigDigest> digest) {
     impl_->client.setRenderConfigDigest(digest);

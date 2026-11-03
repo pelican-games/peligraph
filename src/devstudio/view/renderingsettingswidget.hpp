@@ -8,6 +8,7 @@
 #include <vector>
 
 class QAction;
+class QShowEvent;
 class QString;
 
 namespace PelicanStudio {
@@ -83,6 +84,9 @@ class RenderingSettingsWidget final : public QWidget {
     // RTL-2s: a section of its own under the keys (the Ray layout), in the
     // same scrolled column.
     void addSection(QWidget *section);
+
+  protected:
+    void showEvent(QShowEvent *event) override;
 };
 
 } // namespace PelicanStudio

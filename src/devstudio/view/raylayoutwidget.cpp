@@ -3,6 +3,7 @@
 #include "rendereditticketclient.hpp"
 
 #include "panelhelp.hpp"
+#include "panelshown.hpp"
 #include "inspectormodel.hpp"
 #include "raylayoutmodel.hpp"
 #include "renderconfigdigest.hpp"
@@ -134,6 +135,9 @@ struct RayLayoutWidget::Impl {
     RayLayoutWidget &owner;
     EmbeddedViewport &viewport;
     RenderEditTicketClient client;
+    // RP-1a1 follow-up 1: shown through the enclosing dock's last
+    // visibilityChanged value, not QWidget::isVisible() alone.
+    PanelShown shown;
     std::shared_ptr<RenderConfigDigest> digest_hub;
     std::function<void(const QString &)> engine_restart_action;
     std::function<void(const QString &)> show_document_action;
@@ -168,8 +172,11 @@ struct RayLayoutWidget::Impl {
     std::optional<RayLayoutRead> submitted_from;
     // Decision 7: the reads before the edits that rewrote procedural records.
     QString pending_reveal;
+    bool pending_reveal_enable = false;
 
-    Impl(RayLayoutWidget &widget, EmbeddedViewport &embedded) : owner{widget}, viewport{embedded}, client{embedded, &widget} {
+    Impl(RayLayoutWidget &widget, EmbeddedViewport &embedded)
+        : owner{widget}, viewport{embedded}, client{embedded, &widget},
+          shown{owner, [this] { read(); }} {
         owner.setObjectName(QStringLiteral("pelican.rayLayout"));
         owner.setFont(studioPanelFont());
         auto *layout = new QVBoxLayout(&owner);
@@ -292,7 +299,15 @@ struct RayLayoutWidget::Impl {
         QString error;
         layout_request = viewport.requestRpc(QStringLiteral("get_ray_layout"), QJsonObject{}, &error);
         documents_request = viewport.requestRpc(QStringLiteral("get_render_documents"), QJsonObject{}, &error);
-        if (layout_request == 0 || documents_request == 0) showError(error);
+        if (layout_request == 0 || documents_request == 0) {
+            // RP-1a1: a failed required read waits for the next show or
+            // refresh. A send that did succeed is ignored by its old id.
+            layout_request = documents_request = 0;
+            layout_answer.reset();
+            documents_answer.reset();
+            read_again = true;
+            showError(error);
+        }
     }
 
     void readArrived() {
@@ -302,11 +317,14 @@ struct RayLayoutWidget::Impl {
         layout_answer.reset();
         documents_answer.reset();
         fill();
-        if (!pending_reveal.isEmpty()) {
-            const auto material = std::exchange(pending_reveal, QString{});
-            owner.revealMaterial(material);
+        if (!read_again && shown.isShown()) {
+            if (!pending_reveal.isEmpty()) {
+                const auto material = std::exchange(pending_reveal, QString{});
+                owner.revealMaterial(material);
+            }
+            if (std::exchange(pending_reveal_enable, false)) owner.revealEnable();
         }
-        if (read_again) read();
+        if (read_again && shown.isShown()) read();
     }
 
     // --- Sending a plan.
@@ -440,9 +458,12 @@ struct RayLayoutWidget::Impl {
     void fail(qint64 id, const QString &message) {
         if (id == 0) return;
         if (id == layout_request || id == documents_request) {
+            // RP-1a1: re-arm the required read, but do not retry it in the
+            // same turn; the next show or refresh starts it.
             layout_request = documents_request = 0;
             layout_answer.reset();
             documents_answer.reset();
+            read_again = true;
             showError(message);
             return;
         }
@@ -998,7 +1019,9 @@ struct RayLayoutWidget::Impl {
     }
 
     void documentMoved(const std::string &) {
-        if (owner.isVisible() || read_state) read();
+        shown.locateDock();
+        if (shown.isShown()) read();
+        else read_again = true;
     }
 };
 
@@ -1040,7 +1063,13 @@ void RayLayoutWidget::revealMaterial(const QString &material) {
     auto &impl = *impl_;
     if (!impl.read_state) {
         impl.pending_reveal = material;
-        impl.read();
+        // As any other read: a hidden panel waits for its show transition.
+        if (impl.shown.isShown()) impl.read();
+        return;
+    }
+    if (!impl.shown.isShown() || impl.layout_request != 0 || impl.documents_request != 0 ||
+        impl.read_again) {
+        impl.pending_reveal = material;
         return;
     }
     if (!impl.read_state->layout.usable()) {
@@ -1072,10 +1101,15 @@ void RayLayoutWidget::refresh() { impl_->read(); }
 
 void RayLayoutWidget::showEvent(QShowEvent *event) {
     QWidget::showEvent(event);
-    if (!event->spontaneous()) impl_->read();
+    if (!event->spontaneous()) impl_->shown.becameShown();
 }
 
 void RayLayoutWidget::revealEnable() {
+    if (!impl_->shown.isShown() || impl_->layout_request != 0 || impl_->documents_request != 0 ||
+        impl_->read_again) {
+        impl_->pending_reveal_enable = true;
+        return;
+    }
     auto *button = impl_->enable_button;
     for (QWidget *parent = parentWidget(); parent != nullptr; parent = parent->parentWidget())
         if (auto *scroll = qobject_cast<QScrollArea *>(parent)) {
