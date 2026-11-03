@@ -22360,3 +22360,51 @@ TEST_CASE("GS-3b3b one body value is drawn in its body, in place",
         }
     }
 }
+
+// ---- GS-3z ----
+// A partial redraw paints the visible view before the reply handler returns:
+// a reply handled in the same turn of the event loop (the Frame Plan's plan,
+// ~40 ms to read) no longer runs before the redraw is on screen.
+namespace {
+struct Gs3zPaints final : QObject {
+    int paints = 0;
+    bool eventFilter(QObject *, QEvent *event) override {
+        if (event->type() == QEvent::Paint) ++paints;
+        return false;
+    }
+};
+} // namespace
+
+TEST_CASE("GS-3z a partial redraw is painted before the reply that drew it returns",
+          "[devstudio][graph-canvas][scene][gs3z]") {
+    (void)application();
+    Gs2Tab tab{Json::array(), Json::array({gs3aMultiply("m", 2.0)})};
+    auto &scene = tab.widget->scene();
+    REQUIRE(nodeItem(scene, QStringLiteral("m")) != nullptr);
+    REQUIRE_FALSE(scene.views().isEmpty());
+    Gs3zPaints paints;
+    for (QGraphicsView *view : scene.views()) {
+        REQUIRE(view->isVisible());
+        view->viewport()->installEventFilter(&paints);
+    }
+    QCoreApplication::processEvents();
+    // What the view had painted when the scene said it redrew the node: the
+    // paint is part of the redraw, not left to the event loop.
+    std::vector<int> painted_at_redraw;
+    scene.nodesRedrawn = [&](const std::string &, const std::vector<std::string> &nodes) {
+        painted_at_redraw.push_back(paints.paints);
+        tab.redrawn.push_back(nodes);
+    };
+    // Counted from the moment the reply reaches the redraw: nothing but the
+    // redraw can paint between that and nodesRedrawn.
+    scene.redrawClassified = [&](PelicanStudio::GraphCanvasScene::RedrawClass) { paints.paints = 0; };
+    REQUIRE(tab.model().setNodeParameter("m", "b", Json(3.0)));
+    (void)tab.commit(); // its counts come from the hook replaced above
+    CHECK(tab.rebuilds == 0);
+    REQUIRE(painted_at_redraw.size() == 1);
+    CHECK(painted_at_redraw.front() >= 1);
+    CHECK(gs3aPill(scene, QStringLiteral("m"), QStringLiteral("b")) == QStringLiteral("3.0"));
+    for (QGraphicsView *view : scene.views()) view->viewport()->removeEventFilter(&paints);
+    scene.nodesRedrawn = nullptr;
+    scene.redrawClassified = nullptr;
+}

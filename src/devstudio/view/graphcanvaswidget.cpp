@@ -5197,6 +5197,15 @@ bool GraphCanvasScene::layerShapePending(const std::string &scope, const std::st
     return layer_shape_ && layer_shape_->scope == scope && layer_shape_->stack == stack;
 }
 
+// GS-3z: a partial redraw is on screen before the next reply is handled. A
+// reply that arrives in the same turn of the event loop (the Frame Plan's
+// get_frame_plan, ~40 ms to read) would otherwise run before the paint the
+// redraw scheduled, and the change would show that much later.
+void GraphCanvasScene::paintPartialRedrawNow() {
+    for (QGraphicsView *view : views())
+        if (view->isVisible()) view->viewport()->repaint();
+}
+
 void GraphCanvasScene::drawLayerShape(const std::string &scope, const std::string &stack) {
     const auto draw = [this, scope, stack] {
         if (!redrawStackNode(scope, stack)) repopulate();
@@ -6249,6 +6258,7 @@ GraphCanvasScene::NodeRedraw GraphCanvasScene::redrawChangedNodes(DrawnFrom &now
         if (GuiTrace::sink)
             GuiTrace::sink(GuiTrace::owner, "graph_scene_redraw_node", began, GuiTrace::now(),
                            double(ids.size()), 1.0);
+        paintPartialRedrawNow();
         if (nodesRedrawn) nodesRedrawn(body_scope, ids);
         return NodeRedraw::redrawn;
     }
@@ -6510,6 +6520,7 @@ GraphCanvasScene::NodeRedraw GraphCanvasScene::redrawChangedNodes(DrawnFrom &now
     if (geometryChanged) geometryChanged();
     if (GuiTrace::sink)
         GuiTrace::sink(GuiTrace::owner, "graph_scene_redraw_node", began, GuiTrace::now(), double(ids.size()), 0.0);
+    paintPartialRedrawNow();
     if (nodesRedrawn) nodesRedrawn(scope, ids);
     return NodeRedraw::redrawn;
 }
