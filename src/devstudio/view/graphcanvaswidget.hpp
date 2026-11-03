@@ -424,6 +424,8 @@ class GraphCanvasScene final : public QGraphicsScene {
     void rebuildRoutingIndex();
     void invalidateRoutingIndex() { routing_index_.invalidate(); }
     quint64 routingGeneration() const { return routing_index_.generation(); }
+    // GS-3c0: test-only; how many times rebuildRoutingIndex() has been called.
+    [[nodiscard]] quint64 routingIndexRebuilds() const { return routing_index_rebuilds_; }
     // UX-6b, decision 2: each plan node's GPU time (get_status gpu_timing,
     // by plan node name). A root node's band says the sum of its passes';
     // the bands on screen change in place, nothing else is drawn again.
@@ -1236,6 +1238,8 @@ class GraphCanvasScene final : public QGraphicsScene {
     // why not: the first condition that failed is the trace's bit
     // (graph_redraw_refused), and a node under a hand waits (deferred).
     enum class NodeRedraw { redrawn, deferred, refused };
+    // GS-3c0: register one item, as rebuildRoutingIndex()'s loop does.
+    void indexItem(QGraphicsItem &item);
     // GS-3b2: `zones_moved` is zonesMoved(now, *drawn_from_): a zone that
     // draws anything else refuses it (condition 3).
     NodeRedraw redrawChangedNodes(DrawnFrom &now, int zones_moved);
@@ -1310,6 +1314,8 @@ class GraphCanvasScene final : public QGraphicsScene {
     // the document does not place).
     void holdRootPlaces(const std::string &root);
     NodeGraphIndex routing_index_{*this};
+    // GS-3c0: test-only; counts rebuildRoutingIndex() calls.
+    quint64 routing_index_rebuilds_ = 0;
     void scheduleSceneRectUpdate();
     void applySceneRectNow(bool grow_only = false);
     void clearControlSelection();

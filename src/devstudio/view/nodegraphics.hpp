@@ -101,6 +101,29 @@ private:
 };
 
 
+// GS-3c0: test-only, order-stable copy of what the routing index holds. The
+// identities and connections are sorted by key (each connection list keeps
+// its stored order); `items` keeps the order publish() was given. `valid` and
+// `generation` copy the index's own. Production code never takes one.
+struct NodeGraphIndexSnapshot {
+    std::vector<std::pair<QStringList, QGraphicsItem *>> identities;
+    std::vector<std::pair<QStringList, QList<QGraphicsItem *>>> connections;
+    QList<QGraphicsItem *> items;
+    bool valid = false;
+    quint64 generation = 0;
+
+    // GS-3c0: what a rebuild must preserve (identities, connections, items and
+    // validity) without the generation invalidate() always advances.
+    [[nodiscard]] bool sameContents(const NodeGraphIndexSnapshot &other) const;
+    // ... and everything, generation too.
+    [[nodiscard]] bool sameExact(const NodeGraphIndexSnapshot &other) const;
+};
+
+// The empty string when the two snapshots are identical; otherwise the first
+// difference, named by its key or position. Tests only.
+QString nodeGraphIndexSnapshotDifference(const NodeGraphIndexSnapshot &left,
+                                         const NodeGraphIndexSnapshot &right);
+
 // Scene-owned routing identity index. Owners invalidate before a structural
 // edit and publish a complete index afterwards; geometry never invalidates it.
 // Scenes without an index (e.g. Frame Plan) keep the shared linear fallback.
@@ -119,6 +142,8 @@ public:
     [[nodiscard]] QList<QGraphicsItem *> connected(const QStringList &key) const;
     [[nodiscard]] const QList<QGraphicsItem *> &items() const { return items_; }
     [[nodiscard]] quint64 generation() const { return generation_; }
+    // GS-3c0: test-only; production code must not call it.
+    [[nodiscard]] NodeGraphIndexSnapshot snapshot() const;
     void touch(QGraphicsItem &item);
     QRectF takeChangedBounds();
 private:

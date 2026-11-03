@@ -1875,6 +1875,7 @@ void GraphCanvasScene::clear() {
 }
 
 void GraphCanvasScene::rebuildRoutingIndex() {
+    ++routing_index_rebuilds_;
     routing_index_.invalidate();
     QList<QGraphicsItem *> all;
     for (QGraphicsItem *item : items()) {
@@ -1887,54 +1888,59 @@ void GraphCanvasScene::rebuildRoutingIndex() {
             kind != GraphCanvasZoneLinkItem && kind != GraphCanvasZoneLabelItem &&
             kind != GraphCanvasFoldLinkItem) continue;
         all.push_back(item);
-        const QString scope = item->data(GraphCanvasScopeRole).toString();
-        const QString name = item->data(NodeGraphNameRole).toString();
-        const QString port = item->data(GraphCanvasPortRole).toString();
-        const QString direction = item->data(GraphCanvasSocketDirectionRole).toString();
-        const QString from = item->data(NodeGraphFromNameRole).toString();
-        const QString to = item->data(NodeGraphToNameRole).toString();
-        routing_index_.insert({"node", kind, scope, name}, item);
-        if (kind == QLatin1String{GraphCanvasEdgeArrowItem})
-            routing_index_.insert({"artifact", kind, scope, from,
-                                   item->data(GraphCanvasFromPortRole).toString(), to,
-                                   item->data(GraphCanvasToPortRole).toString()}, item);
-        else
-            routing_index_.insert({"artifact", kind, scope, from, to}, item);
-        if (kind == QLatin1String{GraphCanvasSocketItem}) {
-            routing_index_.insert({"socket", scope, name, port, direction}, item);
-            const QString bound = item->data(GraphCanvasBoundPortRole).toString();
-            if (!bound.isEmpty()) routing_index_.insert({"socket", scope, name, bound, direction}, item);
-        }
-        if (kind == QLatin1String{GraphCanvasZoneSocketItem})
-            routing_index_.insert({"zone_socket", name, port}, item);
-        if (kind == QLatin1String{GraphCanvasEdgeLabelItem})
-            routing_index_.insert({"edge_label", scope, name, port}, item);
-        if (item->data(GraphCanvasZoneScopeRole).toString().isEmpty()) {
-            if (kind == QLatin1String{GraphCanvasNodeItem})
-                routing_index_.insert({"root_node", scope, name}, item, true);
-            if (kind == QLatin1String{GraphCanvasDerivedSocketItem}) {
-                routing_index_.insert({"derived_socket", scope, name, port, direction}, item);
-                if (direction != QLatin1String{"output"} && item->data(GraphCanvasPassInputRole).isValid())
-                    routing_index_.insert({"pass_input", scope, name,
-                        QString::number(item->data(GraphCanvasPassInputRole).toLongLong())}, item, true);
-            }
-            if ((kind == QLatin1String{GraphCanvasDerivedSocketItem} || kind == QLatin1String{GraphCanvasSocketItem}) &&
-                direction == QLatin1String{"output"} && !port.isEmpty())
-                routing_index_.insert({"pass_output", scope, name, port}, item, true);
-        }
-        const bool derived = kind == QLatin1String{GraphCanvasDerivedEdgeItem} ||
-                             kind == QLatin1String{GraphCanvasPassInputEdgeItem};
-        if (derived) {
-            routing_index_.connect({"derived", from}, item);
-            if (from != to) routing_index_.connect({"derived", to}, item);
-        }
-        if (kind == QLatin1String{GraphCanvasEdgeItem} || kind == QLatin1String{GraphCanvasZoneLinkItem}) {
-            routing_index_.connect({"edge", scope, from}, item);
-            if (from != to && kind != QLatin1String{GraphCanvasZoneLinkItem})
-                routing_index_.connect({"edge", scope, to}, item);
-        }
+        indexItem(*item);
     }
     routing_index_.publish(all);
+}
+
+void GraphCanvasScene::indexItem(QGraphicsItem &item) {
+    const QString kind = nodeGraphItemKind(item);
+    const QString scope = item.data(GraphCanvasScopeRole).toString();
+    const QString name = item.data(NodeGraphNameRole).toString();
+    const QString port = item.data(GraphCanvasPortRole).toString();
+    const QString direction = item.data(GraphCanvasSocketDirectionRole).toString();
+    const QString from = item.data(NodeGraphFromNameRole).toString();
+    const QString to = item.data(NodeGraphToNameRole).toString();
+    routing_index_.insert({"node", kind, scope, name}, &item);
+    if (kind == QLatin1String{GraphCanvasEdgeArrowItem})
+        routing_index_.insert({"artifact", kind, scope, from,
+                               item.data(GraphCanvasFromPortRole).toString(), to,
+                               item.data(GraphCanvasToPortRole).toString()}, &item);
+    else
+        routing_index_.insert({"artifact", kind, scope, from, to}, &item);
+    if (kind == QLatin1String{GraphCanvasSocketItem}) {
+        routing_index_.insert({"socket", scope, name, port, direction}, &item);
+        const QString bound = item.data(GraphCanvasBoundPortRole).toString();
+        if (!bound.isEmpty()) routing_index_.insert({"socket", scope, name, bound, direction}, &item);
+    }
+    if (kind == QLatin1String{GraphCanvasZoneSocketItem})
+        routing_index_.insert({"zone_socket", name, port}, &item);
+    if (kind == QLatin1String{GraphCanvasEdgeLabelItem})
+        routing_index_.insert({"edge_label", scope, name, port}, &item);
+    if (item.data(GraphCanvasZoneScopeRole).toString().isEmpty()) {
+        if (kind == QLatin1String{GraphCanvasNodeItem})
+            routing_index_.insert({"root_node", scope, name}, &item, true);
+        if (kind == QLatin1String{GraphCanvasDerivedSocketItem}) {
+            routing_index_.insert({"derived_socket", scope, name, port, direction}, &item);
+            if (direction != QLatin1String{"output"} && item.data(GraphCanvasPassInputRole).isValid())
+                routing_index_.insert({"pass_input", scope, name,
+                    QString::number(item.data(GraphCanvasPassInputRole).toLongLong())}, &item, true);
+        }
+        if ((kind == QLatin1String{GraphCanvasDerivedSocketItem} || kind == QLatin1String{GraphCanvasSocketItem}) &&
+            direction == QLatin1String{"output"} && !port.isEmpty())
+            routing_index_.insert({"pass_output", scope, name, port}, &item, true);
+    }
+    const bool derived = kind == QLatin1String{GraphCanvasDerivedEdgeItem} ||
+                         kind == QLatin1String{GraphCanvasPassInputEdgeItem};
+    if (derived) {
+        routing_index_.connect({"derived", from}, &item);
+        if (from != to) routing_index_.connect({"derived", to}, &item);
+    }
+    if (kind == QLatin1String{GraphCanvasEdgeItem} || kind == QLatin1String{GraphCanvasZoneLinkItem}) {
+        routing_index_.connect({"edge", scope, from}, &item);
+        if (from != to && kind != QLatin1String{GraphCanvasZoneLinkItem})
+            routing_index_.connect({"edge", scope, to}, &item);
+    }
 }
 
 

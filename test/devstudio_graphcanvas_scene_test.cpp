@@ -20904,3 +20904,272 @@ TEST_CASE("GS-3b2 after a root value is drawn again beside a zone, the routing i
     REQUIRE(link != nullptr);
     CHECK(near(gs3aLineStart(*link), centreOf(sum_out)));
 }
+
+// --- GS-3c0. The routing index's item loop as a helper of its own: a rebuild
+// must leave exactly the identities, connection lists and published items it
+// had, and one value commit must call it once. The test-only snapshot and
+// difference function are in nodegraphics.hpp.
+namespace {
+
+using PelicanStudio::GraphCanvasScene;
+using PelicanStudio::NodeGraphIndex;
+using PelicanStudio::NodeGraphIndexSnapshot;
+
+QString gs3c0KeyText(const QStringList &key) {
+    return QStringLiteral("[") + key.join(QStringLiteral(", ")) + QStringLiteral("]");
+}
+
+QString gs3c0ItemText(const QGraphicsItem *item) {
+    if (item == nullptr) return QStringLiteral("null");
+    QString text = item->data(PelicanStudio::NodeGraphItemKindRole).toString() +
+                   QLatin1Char{'|'} + item->data(PelicanStudio::GraphCanvasScopeRole).toString() +
+                   QLatin1Char{'|'} + item->data(PelicanStudio::NodeGraphNameRole).toString() +
+                   QLatin1Char{'|'} + item->data(PelicanStudio::GraphCanvasPortRole).toString() +
+                   QLatin1Char{'|'} +
+                   item->data(PelicanStudio::GraphCanvasSocketDirectionRole).toString();
+    if (const auto *simple = dynamic_cast<const QGraphicsSimpleTextItem *>(item))
+        text += QStringLiteral(" text=\"") + simple->text() + QLatin1Char{'"'};
+    return text;
+}
+
+// Every scene item whose kind is `kind`, under the key rebuildRoutingIndex()
+// stores it by (the zone-socket key has no scope).
+std::map<QStringList, std::vector<QGraphicsItem *>> gs3c0Candidates(GraphCanvasScene &scene,
+                                                                    const QString &kind) {
+    std::map<QStringList, std::vector<QGraphicsItem *>> found;
+    for (QGraphicsItem *item : scene.items()) {
+        if (PelicanStudio::nodeGraphItemKind(*item) != kind) continue;
+        // The index key for a zone socket drops the kind and the scope.
+        found[{"zone_socket", item->data(PelicanStudio::NodeGraphNameRole).toString(),
+               item->data(PelicanStudio::GraphCanvasPortRole).toString()}].push_back(item);
+    }
+    return found;
+}
+
+// The connections rebuildRoutingIndex() must make, read independently from
+// the scene's own order.
+std::map<QStringList, std::vector<QGraphicsItem *>> gs3c0Connections(GraphCanvasScene &scene) {
+    using namespace PelicanStudio;
+    std::map<QStringList, std::vector<QGraphicsItem *>> found;
+    for (QGraphicsItem *item : scene.items()) {
+        const QString kind = nodeGraphItemKind(*item);
+        const QString scope = item->data(GraphCanvasScopeRole).toString();
+        const QString from = item->data(NodeGraphFromNameRole).toString();
+        const QString to = item->data(NodeGraphToNameRole).toString();
+        if (kind == QLatin1String{GraphCanvasDerivedEdgeItem} ||
+            kind == QLatin1String{GraphCanvasPassInputEdgeItem}) {
+            found[{"derived", from}].push_back(item);
+            if (from != to) found[{"derived", to}].push_back(item);
+        }
+        if (kind == QLatin1String{GraphCanvasEdgeItem} ||
+            kind == QLatin1String{GraphCanvasZoneLinkItem}) {
+            found[{"edge", scope, from}].push_back(item);
+            if (from != to && kind != QLatin1String{GraphCanvasZoneLinkItem})
+                found[{"edge", scope, to}].push_back(item);
+        }
+    }
+    return found;
+}
+
+QString gs3c0DuplicateReport(const std::map<QStringList, std::vector<QGraphicsItem *>> &candidates,
+                             const std::function<bool(const QStringList &)> &wanted) {
+    QString report;
+    for (const auto &[key, items] : candidates) {
+        if (items.size() < 2 || !wanted(key)) continue;
+        report += gs3c0KeyText(key) + QStringLiteral(" x%1:").arg(items.size());
+        for (const QGraphicsItem *item : items)
+            report += QStringLiteral(" {") + gs3c0ItemText(item) + QLatin1Char{'}'};
+        report += QLatin1Char{'\n'};
+    }
+    return report;
+}
+
+QGraphicsPathItem *gs3c0Add(GraphCanvasScene &scene, const char *kind, const QString &name,
+                        const QString &scope = {}, const QString &port = {},
+                        const QString &direction = {}, const QVariant &pass_input = {}) {
+    auto *item = new QGraphicsPathItem;
+    item->setData(PelicanStudio::NodeGraphItemKindRole, QString::fromLatin1(kind));
+    item->setData(PelicanStudio::NodeGraphNameRole, name);
+    item->setData(PelicanStudio::GraphCanvasScopeRole, scope);
+    item->setData(PelicanStudio::GraphCanvasPortRole, port);
+    item->setData(PelicanStudio::GraphCanvasSocketDirectionRole, direction);
+    item->setData(PelicanStudio::GraphCanvasPassInputRole, pass_input);
+    scene.addItem(item);
+    return item;
+}
+
+} // namespace
+
+TEST_CASE("GS-3c0 a full redraw of a graph with a loop zone rebuilds the same routing index",
+          "[devstudio][graph-canvas][scene][gs3c0]") {
+    (void)application();
+    ZoneHarness h;
+    h.open();
+    // Establish the index from the scene as opened, then rebuild it again.
+    h.scene.rebuildRoutingIndex();
+    auto *index = NodeGraphIndex::forScene(h.scene);
+    REQUIRE(index != nullptr);
+    REQUIRE_FALSE(index->items().empty());
+    REQUIRE_FALSE(itemsOfKind(h.scene, PelicanStudio::GraphCanvasZoneItem).empty());
+    REQUIRE_FALSE(itemsOfKind(h.scene, PelicanStudio::GraphCanvasZoneSocketItem).empty());
+
+    const auto before = index->snapshot();
+    const auto calls = h.scene.routingIndexRebuilds();
+    h.scene.rebuildRoutingIndex();
+    CHECK(h.scene.routingIndexRebuilds() == calls + 1);
+    const auto after = index->snapshot();
+    // invalidate() advances the generation; the content must not move.
+    CHECK(after.generation == before.generation + 1);
+    CHECK(before.sameContents(after));
+    CHECK_FALSE(before.sameExact(after));
+    CHECK(after.items == before.items);
+    CHECK(nodeGraphIndexSnapshotDifference(before, before).isEmpty());
+    CHECK(nodeGraphIndexSnapshotDifference(before, after)
+              .startsWith(QStringLiteral("generation")));
+}
+
+TEST_CASE("GS-3c0 a zone's + socket is registered twice under one key and the first item wins",
+          "[devstudio][graph-canvas][scene][gs3c0]") {
+    (void)application();
+    ZoneHarness h;
+    h.open();
+    h.scene.rebuildRoutingIndex();
+    auto *index = NodeGraphIndex::forScene(h.scene);
+    REQUIRE(index != nullptr);
+
+    const auto candidates =
+        gs3c0Candidates(h.scene, QString::fromLatin1(PelicanStudio::GraphCanvasZoneSocketItem));
+    const QString report = gs3c0DuplicateReport(candidates, [](const QStringList &key) {
+        return key.size() == 3 && key.at(0) == QStringLiteral("zone_socket");
+    });
+    INFO(report.toStdString());
+    // The `+` slot and its text are both tagged as the same zone socket; at
+    // least one such key has two candidates. Take the order Qt gives us.
+    QStringList key;
+    for (const auto &[candidate_key, items] : candidates) {
+        if (items.size() < 2) continue;
+        if (key.isEmpty() || candidate_key.at(2) == QStringLiteral("in:+")) key = candidate_key;
+        if (candidate_key.at(2) == QStringLiteral("in:+")) break;
+    }
+    REQUIRE_FALSE(key.isEmpty());
+    const auto &items = candidates.at(key);
+    REQUIRE(items.size() >= 2);
+    const QGraphicsItem *winner = index->find(key);
+    INFO(("key " + gs3c0KeyText(key) + " winner " + gs3c0ItemText(winner)).toStdString());
+    CHECK(winner != nullptr);
+    // A last=false key is first-wins, in scene.items() order; node graph
+    // connections keep that same order.
+    CHECK(winner == items.front());
+    CHECK(winner != items.back());
+    CHECK(index->connected(key).isEmpty());
+
+    // Rebuild what connections the scene implies, independently, and compare
+    // every list in order.
+    bool repeated = false;
+    for (const auto &[connection_key, connection_items] : gs3c0Connections(h.scene)) {
+        QList<QGraphicsItem *> expected;
+        for (QGraphicsItem *item : connection_items) expected.push_back(item);
+        CHECK(index->connected(connection_key) == expected);
+        if (connection_items.size() > 1) repeated = true;
+    }
+    INFO("a connection key with more than one item: " << repeated);
+
+    // No existing fixture is known to hold two candidates for a last=true
+    // key, so build the smallest scene that does: root_node, pass_input and
+    // pass_output each get two items, and two edges share one connection key.
+    GraphCanvasScene scene;
+    (void)gs3c0Add(scene, PelicanStudio::GraphCanvasNodeItem, QStringLiteral("dup_root"));
+    (void)gs3c0Add(scene, PelicanStudio::GraphCanvasNodeItem, QStringLiteral("dup_root"));
+    (void)gs3c0Add(scene, PelicanStudio::GraphCanvasDerivedSocketItem,
+                  QStringLiteral("dup_pass_in"), {}, QStringLiteral("value"),
+                  QStringLiteral("input"), 7);
+    (void)gs3c0Add(scene, PelicanStudio::GraphCanvasDerivedSocketItem,
+                  QStringLiteral("dup_pass_in"), {}, QStringLiteral("value"),
+                  QStringLiteral("input"), 7);
+    (void)gs3c0Add(scene, PelicanStudio::GraphCanvasSocketItem,
+                  QStringLiteral("dup_pass_out"), {}, QStringLiteral("out"),
+                  QStringLiteral("output"));
+    (void)gs3c0Add(scene, PelicanStudio::GraphCanvasSocketItem,
+                  QStringLiteral("dup_pass_out"), {}, QStringLiteral("out"),
+                  QStringLiteral("output"));
+    auto *edge_first = gs3c0Add(scene, PelicanStudio::GraphCanvasEdgeItem, {});
+    auto *edge_second = gs3c0Add(scene, PelicanStudio::GraphCanvasEdgeItem, {});
+    for (QGraphicsPathItem *edge : {edge_first, edge_second}) {
+        edge->setData(PelicanStudio::GraphCanvasScopeRole, QString{});
+        edge->setData(PelicanStudio::NodeGraphFromNameRole, QStringLiteral("dup_from"));
+        edge->setData(PelicanStudio::NodeGraphToNameRole, QStringLiteral("dup_to"));
+    }
+    scene.rebuildRoutingIndex();
+    auto *synthetic_index = NodeGraphIndex::forScene(scene);
+    REQUIRE(synthetic_index != nullptr);
+
+    const auto collect = [&scene](const char *kind, const QString &name) {
+        std::vector<QGraphicsItem *> found;
+        for (QGraphicsItem *item : scene.items())
+            if (PelicanStudio::nodeGraphItemKind(*item) == QLatin1String{kind} &&
+                item->data(PelicanStudio::NodeGraphNameRole).toString() == name)
+                found.push_back(item);
+        return found;
+    };
+    const auto root_items = collect(PelicanStudio::GraphCanvasNodeItem, QStringLiteral("dup_root"));
+    REQUIRE(root_items.size() == 2);
+    CHECK(synthetic_index->find({"root_node", "", "dup_root"}) == root_items.back());
+    const auto pass_in_items =
+        collect(PelicanStudio::GraphCanvasDerivedSocketItem, QStringLiteral("dup_pass_in"));
+    REQUIRE(pass_in_items.size() == 2);
+    CHECK(synthetic_index->find({"pass_input", "", "dup_pass_in", "7"}) ==
+          pass_in_items.back());
+    const auto pass_out_items =
+        collect(PelicanStudio::GraphCanvasSocketItem, QStringLiteral("dup_pass_out"));
+    REQUIRE(pass_out_items.size() == 2);
+    CHECK(synthetic_index->find({"pass_output", "", "dup_pass_out", "out"}) ==
+          pass_out_items.back());
+
+    QList<QGraphicsItem *> expected_edges;
+    for (QGraphicsItem *item : scene.items())
+        if (PelicanStudio::nodeGraphItemKind(*item) ==
+            QLatin1String{PelicanStudio::GraphCanvasEdgeItem})
+            expected_edges.push_back(item);
+    REQUIRE(expected_edges.size() == 2);
+    CHECK(synthetic_index->connected({"edge", "", "dup_from"}) == expected_edges);
+}
+
+TEST_CASE("GS-3c0 a partial value redraw leaves the routing index a full rebuild would",
+          "[devstudio][graph-canvas][scene][gs3c0]") {
+    (void)application();
+    Gs2Tab tab{Json::array(), Json::array({gs3aMultiply("m", 2.0)})};
+    auto &scene = tab.widget->scene();
+    REQUIRE(tab.model().setNodeParameter("m", "b", Json(3.0)));
+    CHECK(tab.commit() == std::array<int, 3>{1, 0, 0});
+    // The GS-3a path, not a whole rebuild.
+    CHECK(tab.rebuilds == 0);
+    REQUIRE(tab.redrawn == std::vector<std::vector<std::string>>{{"m"}});
+    auto *index = NodeGraphIndex::forScene(scene);
+    REQUIRE(index != nullptr);
+
+    const auto before = index->snapshot();
+    const auto calls = scene.routingIndexRebuilds();
+    scene.rebuildRoutingIndex();
+    CHECK(scene.routingIndexRebuilds() == calls + 1);
+    const auto after = index->snapshot();
+    CHECK(before.sameContents(after));
+    CHECK(after.generation == before.generation + 1);
+    CHECK_FALSE(before.sameExact(after));
+}
+
+TEST_CASE("GS-3c0 one value commit calls rebuildRoutingIndex exactly as on the base commit",
+          "[devstudio][graph-canvas][scene][gs3c0]") {
+    (void)application();
+    Gs2Tab tab{Json::array(), Json::array({gs3aMultiply("m", 2.0)})};
+    auto &scene = tab.widget->scene();
+    // Measured on the base commit, 628d974d4, with the pre-existing
+    // graph_redraw_index span: one value commit rebuilds the index once.
+    constexpr quint64 kGs3c0BaseRebuildsPerValueCommit = 1;
+    const auto before = scene.routingIndexRebuilds();
+    Gs3aTrace trace;
+    REQUIRE(tab.model().setNodeParameter("m", "b", Json(3.0)));
+    CHECK(tab.commit() == std::array<int, 3>{1, 0, 0});
+    CHECK(trace.count("graph_redraw_index") ==
+          static_cast<int>(kGs3c0BaseRebuildsPerValueCommit));
+    CHECK(scene.routingIndexRebuilds() - before == kGs3c0BaseRebuildsPerValueCommit);
+}

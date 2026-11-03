@@ -597,6 +597,111 @@ void NodeGraphIndex::connect(const QStringList &key, QGraphicsItem *item) {
 QList<QGraphicsItem *> NodeGraphIndex::connected(const QStringList &key) const {
     return connections_.value(key);
 }
+NodeGraphIndexSnapshot NodeGraphIndex::snapshot() const {
+    NodeGraphIndexSnapshot found;
+    found.identities.reserve(identities_.size());
+    for (auto it = identities_.cbegin(); it != identities_.cend(); ++it)
+        found.identities.emplace_back(it.key(), it.value());
+    std::sort(found.identities.begin(), found.identities.end(),
+              [](const auto &left, const auto &right) { return left.first < right.first; });
+    found.connections.reserve(connections_.size());
+    for (auto it = connections_.cbegin(); it != connections_.cend(); ++it)
+        found.connections.emplace_back(it.key(), it.value());
+    std::sort(found.connections.begin(), found.connections.end(),
+              [](const auto &left, const auto &right) { return left.first < right.first; });
+    found.items = items_;
+    found.valid = valid_;
+    found.generation = generation_;
+    return found;
+}
+
+namespace {
+
+QString snapshotKeyText(const QStringList &key) {
+    return QStringLiteral("[") + key.join(QStringLiteral(", ")) + QStringLiteral("]");
+}
+
+QString snapshotItemText(const QGraphicsItem *item) {
+    return item == nullptr ? QStringLiteral("null")
+                           : QStringLiteral("0x%1").arg(reinterpret_cast<quintptr>(item), 0, 16);
+}
+
+QString snapshotContentsDifference(const NodeGraphIndexSnapshot &left,
+                                   const NodeGraphIndexSnapshot &right) {
+    if (left.valid != right.valid)
+        return QStringLiteral("valid %1 != %2").arg(left.valid).arg(right.valid);
+    if (left.items.size() != right.items.size())
+        return QStringLiteral("items size %1 != %2").arg(left.items.size()).arg(right.items.size());
+    for (qsizetype index = 0; index < left.items.size(); ++index)
+        if (left.items[index] != right.items[index])
+            return QStringLiteral("items[%1] %2 != %3")
+                .arg(index)
+                .arg(snapshotItemText(left.items[index]))
+                .arg(snapshotItemText(right.items[index]));
+    if (left.identities.size() != right.identities.size())
+        return QStringLiteral("identities size %1 != %2")
+            .arg(left.identities.size())
+            .arg(right.identities.size());
+    for (std::size_t index = 0; index < left.identities.size(); ++index) {
+        const auto &mine = left.identities[index];
+        const auto &theirs = right.identities[index];
+        if (mine.first != theirs.first)
+            return QStringLiteral("identities[%1] key %2 != %3")
+                .arg(index)
+                .arg(snapshotKeyText(mine.first), snapshotKeyText(theirs.first));
+        if (mine.second != theirs.second)
+            return QStringLiteral("identities[%1] %2: %3 != %4")
+                .arg(index)
+                .arg(snapshotKeyText(mine.first))
+                .arg(snapshotItemText(mine.second))
+                .arg(snapshotItemText(theirs.second));
+    }
+    if (left.connections.size() != right.connections.size())
+        return QStringLiteral("connections size %1 != %2")
+            .arg(left.connections.size())
+            .arg(right.connections.size());
+    for (std::size_t index = 0; index < left.connections.size(); ++index) {
+        const auto &mine = left.connections[index];
+        const auto &theirs = right.connections[index];
+        if (mine.first != theirs.first)
+            return QStringLiteral("connections[%1] key %2 != %3")
+                .arg(index)
+                .arg(snapshotKeyText(mine.first), snapshotKeyText(theirs.first));
+        if (mine.second.size() != theirs.second.size())
+            return QStringLiteral("connections %1 size %2 != %3")
+                .arg(snapshotKeyText(mine.first))
+                .arg(mine.second.size())
+                .arg(theirs.second.size());
+        for (qsizetype item = 0; item < mine.second.size(); ++item)
+            if (mine.second[item] != theirs.second[item])
+                return QStringLiteral("connections %1[%2] %3 != %4")
+                    .arg(snapshotKeyText(mine.first))
+                    .arg(item)
+                    .arg(snapshotItemText(mine.second[item]))
+                    .arg(snapshotItemText(theirs.second[item]));
+    }
+    return {};
+}
+
+} // namespace
+
+bool NodeGraphIndexSnapshot::sameContents(const NodeGraphIndexSnapshot &other) const {
+    return snapshotContentsDifference(*this, other).isEmpty();
+}
+
+bool NodeGraphIndexSnapshot::sameExact(const NodeGraphIndexSnapshot &other) const {
+    return sameContents(other) && generation == other.generation;
+}
+
+QString nodeGraphIndexSnapshotDifference(const NodeGraphIndexSnapshot &left,
+                                         const NodeGraphIndexSnapshot &right) {
+    const QString contents = snapshotContentsDifference(left, right);
+    if (!contents.isEmpty()) return contents;
+    if (left.generation != right.generation)
+        return QStringLiteral("generation %1 != %2").arg(left.generation).arg(right.generation);
+    return {};
+}
+
 void NodeGraphIndex::touch(QGraphicsItem &item) {
     const QRectF bounds = item.sceneBoundingRect().united(item.mapRectToScene(item.childrenBoundingRect()));
     changed_bounds_ = changed_bounds_.isNull() ? bounds : changed_bounds_.united(bounds);
