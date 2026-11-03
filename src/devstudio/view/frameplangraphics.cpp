@@ -2,6 +2,7 @@
 
 #include "inlineediteventfilter.hpp"
 #include "nodelayout.hpp"
+#include "studiocommands.hpp"
 #include "studiotheme.hpp"
 
 #include <QAction>
@@ -4696,21 +4697,19 @@ void FramePlanGraphicsScene::mouseDoubleClickEvent(
 }
 
 void FramePlanGraphicsScene::keyPressEvent(QKeyEvent *event) {
-    if (event->key() == Qt::Key_Escape && editingInline()) {
+    if (studioKeyMatches("frameplan.escape", *event) && editingInline()) {
         event->accept();
         cancelInlineEdit();
         return;
     }
-    if (event->key() == Qt::Key_Escape && cancelConnectionGesture()) {
+    if (studioKeyMatches("frameplan.escape", *event) && cancelConnectionGesture()) {
         event->accept();
         return;
     }
     // N-8. Delete cuts the picked edge, or removes the picked node. The edge
     // comes first: it is the smaller of the two, and it is what the user just
     // clicked on.
-    if ((event->key() == Qt::Key_Delete ||
-         event->key() == Qt::Key_Backspace) &&
-        !editingInline()) {
+    if (studioKeyMatches("frameplan.delete", *event) && !editingInline()) {
         if (selected_edge_ && selected_edge_->input_index &&
             socketCutRequested) {
             // VI-3a: the edge ends on one input; that input goes.
@@ -4771,7 +4770,7 @@ void FramePlanGraphicsScene::keyPressEvent(QKeyEvent *event) {
             return;
         }
     }
-    if (event->key() == Qt::Key_Escape && current_group_scope_) {
+    if (studioKeyMatches("frameplan.escape", *event) && current_group_scope_) {
         event->accept();
         QMetaObject::invokeMethod(
             this, [this] { leaveGroup(); }, Qt::QueuedConnection);

@@ -3,6 +3,7 @@
 #include <QAbstractEventDispatcher>
 
 #include "studiotheme.hpp"
+#include "studiocommands.hpp"
 #include "graphcanvaswidget.hpp"
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -1346,8 +1347,7 @@ void NodeCanvasView::finishDragTrace(quint64 generation) {
 void NodeCanvasView::keyPressEvent(QKeyEvent *event) {
     // An open in-place editor owns the keyboard: "F" is a letter there.
     const bool editing = scene() != nullptr && scene()->focusItem() != nullptr;
-    if (!editing && event->key() == Qt::Key_F &&
-        event->modifiers() == Qt::NoModifier) {
+    if (!editing && studioKeyMatches(fit_command_, *event)) {
         fitView();
         event->accept();
         return;

@@ -5,6 +5,8 @@
 #include <QKeyEvent>
 #include <QObject>
 
+#include "studiocommands.hpp"
+
 #include <functional>
 #include <utility>
 
@@ -23,12 +25,12 @@ class InlineEditEventFilter final : public QObject {
   protected:
     bool eventFilter(QObject *watched, QEvent *event) override {
         if (event->type() == QEvent::KeyPress) {
-            const auto key = static_cast<QKeyEvent *>(event)->key();
-            if (key == Qt::Key_Escape) {
+            const auto *key_event = static_cast<QKeyEvent *>(event);
+            if (studioKeyMatches("inline.cancel", *key_event)) {
                 finish(false);
                 return true;
             }
-            if (key == Qt::Key_Return || key == Qt::Key_Enter) {
+            if (studioKeyMatches("inline.commit", *key_event)) {
                 finish(true);
                 return true;
             }

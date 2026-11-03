@@ -26,6 +26,7 @@
 #include "rendereditcompletion.hpp"
 #include "runtimeoutliner.hpp"
 #include "studiotheme.hpp"
+#include "studiocommands.hpp"
 #include "../viewport/embeddedviewport.hpp"
 
 #include <QApplication>
@@ -1479,10 +1480,14 @@ void MainWindow::createRenderHistory(QWidget *pass_editor) {
     render_undo_action_ = new QAction(tr("Undo Render Edit"), this);
     render_undo_action_->setObjectName(QStringLiteral("pelican.edit.undoRenderEdit"));
     render_undo_action_->setShortcut(QKeySequence::Undo);
+    setCommandHelp(*render_undo_action_, "rendering.undo", CommandSurface::Rendering,
+                   tr("Undo rendering edit"));
     render_redo_action_ = new QAction(tr("Redo Render Edit"), this);
     render_redo_action_->setObjectName(QStringLiteral("pelican.edit.redoRenderEdit"));
     render_redo_action_->setShortcuts(
         {QKeySequence{Qt::CTRL | Qt::Key_Y}, QKeySequence{Qt::CTRL | Qt::SHIFT | Qt::Key_Z}});
+    setCommandHelp(*render_redo_action_, "rendering.redo", CommandSurface::Rendering,
+                   tr("Redo rendering edit"));
     // The keys belong to the panel that holds the focus: these panels and
     // what is inside them. A text field inside takes Ctrl+Z for its own text
     // first (it claims the key before any shortcut); the Graph tab and the
@@ -1853,6 +1858,8 @@ void MainWindow::createMenus() {
         QStringLiteral("pelican.file.newProject"));
     new_project_action->setShortcut(QKeySequence::New);
     new_project_action->setShortcutContext(Qt::WindowShortcut);
+    setCommandHelp(*new_project_action, "file.new", CommandSurface::Window,
+                   tr("New Project"));
     connect(new_project_action, &QAction::triggered, this,
             [this]() { chooseNewProject(); });
     QAction *open_project_action = file_menu->addAction(tr("&Open Project..."));
@@ -1860,12 +1867,16 @@ void MainWindow::createMenus() {
         QStringLiteral("pelican.file.openProject"));
     open_project_action->setShortcut(QKeySequence::Open);
     open_project_action->setShortcutContext(Qt::WindowShortcut);
+    setCommandHelp(*open_project_action, "file.open", CommandSurface::Window,
+                   tr("Open Project"));
     connect(open_project_action, &QAction::triggered, this,
             [this]() { chooseProject(); });
     QAction *save_scene_action = file_menu->addAction(tr("&Save Scene"));
     save_scene_action_ = save_scene_action;
     save_scene_action->setObjectName(QStringLiteral("pelican.file.saveScene"));
     save_scene_action->setShortcut(QKeySequence::Save);
+    setCommandHelp(*save_scene_action, "file.save", CommandSurface::Window,
+                   tr("Save Scene (stop Play first)"));
     connect(save_scene_action, &QAction::triggered, this, [this] {
         // PM-3b (12.4): the scene waits for Stop to be saved.
         if (play_controls_ && play_controls_->model().session()) {
@@ -2128,26 +2139,11 @@ void MainWindow::showKeyboardShortcuts() {
     table->setHorizontalHeaderLabels({tr("Surface"), tr("Shortcut"), tr("Command")});
     table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     table->verticalHeader()->hide();
-    const QStringList rows[] = {
-        {"Scene: Viewport, Outliner, Inspector, Problems, Play bar", "Ctrl+Z", "Undo scene edit"},
-        {"Scene", "Ctrl+Y / Ctrl+Shift+Z", "Redo scene edit"},
-        {"Scene (selected object)", "Delete / Ctrl+D", "Delete / Duplicate object"},
-        {"Text fields / inline editors", "Ctrl+Z / Delete", "Undo text / Delete text"},
-        {"Rendering: Frame Plan, Pass Editor, Features, Settings", "Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z", "Undo / Redo rendering edit"},
-        {"Graph tab", "Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z", "Undo / Redo graph edit"},
-        {"Materials / Assets", "Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z", "Undo / Redo dock edit"},
-        {"Window", "Ctrl+N / Ctrl+O", "New Project / Open Project"},
-        {"Window", "Ctrl+S", "Save Scene (stop Play first)"},
-        {"Window (outside text fields)", "Ctrl+P", "Play / Stop"},
-        {"Window (outside text fields)", "Ctrl+Shift+P / Ctrl+Alt+P", "Pause / Step"},
-        {"Graph / Frame Plan", "Delete / Backspace", "Delete selected nodes or connections"},
-        {"Graph / Frame Plan", "F", "Fit view"},
-        {"Graph / Frame Plan / active edit", "Escape", "Leave nested view / Cancel edit"},
-    };
+    const std::vector<std::array<QString, 3>> rows = studioShortcutRows(*this);
     for (const auto &row : rows) {
         const int index = table->rowCount();
         table->insertRow(index);
-        for (int column = 0; column < row.size(); ++column)
+        for (int column = 0; column < 3; ++column)
             table->setItem(index, column, new QTableWidgetItem(row[column]));
     }
     table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);

@@ -1,4 +1,5 @@
 #include "graphcanvaswidget.hpp"
+#include "studiocommands.hpp"
 #include "../guitrace.hpp"
 #include "tabeditorder.hpp"
 #include "graphcanvasaudioanalysis.hpp"
@@ -4972,24 +4973,24 @@ void GraphCanvasScene::keyPressEvent(QKeyEvent *event) {
     // NB-5: no Undo, Redo or Delete while a stack's edit is in the air (the
     // canvas is enabled for that stack's rows only); an editor types on.
     if (model_ != nullptr && model_->busy() && layerEditInFlight() && !editingInline() &&
-        (event->matches(QKeySequence::Undo) || event->matches(QKeySequence::Redo) ||
-         event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace)) {
+        (studioKeyMatches("graph.undo", *event) || studioKeyMatches("graph.redo", *event) ||
+         studioKeyMatches("graph.delete", *event))) {
         event->accept();
         return;
     }
     // Text widgets keep their own Undo stack. Only a canvas gesture belongs
     // to graph history, and a drag must finish saving before it can be undone.
-    if (!editingInline() && event->matches(QKeySequence::Undo)) {
+    if (!editingInline() && studioKeyMatches("graph.undo", *event)) {
         undoEdit();
         event->accept();
         return;
     }
-    if (!editingInline() && event->matches(QKeySequence::Redo)) {
+    if (!editingInline() && studioKeyMatches("graph.redo", *event)) {
         redoEdit();
         event->accept();
         return;
     }
-    if (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace) {
+    if (studioKeyMatches("graph.delete", *event)) {
         // A control point is placement, not document: removing one sends a
         // `set_layout` when the wait runs out, and no graph edit at all.
         // GL-1e: a picked line into a rendering-section pass.

@@ -1,4 +1,5 @@
 #include "outlinertree.hpp"
+#include "studiocommands.hpp"
 
 #include <QAbstractItemView>
 #include <QAction>
@@ -71,10 +72,14 @@ OutlinerTree::OutlinerTree(QWidget *parent) : QTreeWidget(parent) {
     duplicate_->setObjectName(QStringLiteral("pelican.outliner.duplicate"));
     duplicate_->setShortcut(QKeySequence{Qt::CTRL | Qt::Key_D});
     duplicate_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    setCommandHelp(*duplicate_, "scene.duplicate", CommandSurface::Scene,
+                   tr("Duplicate selected object"));
     delete_ = new QAction(tr("Delete"), this);
     delete_->setObjectName(QStringLiteral("pelican.outliner.delete"));
     delete_->setShortcut(QKeySequence{QKeySequence::Delete});
     delete_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+    setCommandHelp(*delete_, "scene.delete", CommandSurface::Scene,
+                   tr("Delete selected object"));
     setEditRefusal({});
     addAction(duplicate_);
     addAction(delete_);

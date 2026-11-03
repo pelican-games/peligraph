@@ -1,6 +1,7 @@
 #include "assetsdock.hpp"
 
 #include "panelhelp.hpp"
+#include "studiocommands.hpp"
 #include "studiotheme.hpp"
 
 #include <QAction>
@@ -146,6 +147,8 @@ struct AssetsDock::Impl {
         undo_action->setObjectName(QStringLiteral("pelican.assets.undo"));
         undo_action->setShortcut(QKeySequence::Undo);
         undo_action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+        setCommandHelp(*undo_action, "assets.undo", CommandSurface::Assets,
+                       owner.tr("Undo asset edit"));
         owner.addAction(undo_action);
         QObject::connect(undo_action, &QAction::triggered, &owner, [this] { session.undo(); });
         remove_model_action = new QAction(owner.tr("Remove from project\xE2\x80\xA6"), &owner);

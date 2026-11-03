@@ -1,4 +1,5 @@
 #include "inspectorwidget.hpp"
+#include "studiocommands.hpp"
 
 #include "panelhelp.hpp"
 #include "graphattachmentwidget.hpp"
@@ -460,6 +461,11 @@ struct InspectorWidget::Impl {
             action->setObjectName(QString::fromLatin1(name));
             (button == undo_button ? undo_action : redo_action) = action;
             action->setShortcuts(keys);
+            setCommandHelp(*action,
+                           button == undo_button ? "scene.undo" : "scene.redo",
+                           CommandSurface::Scene,
+                           button == undo_button ? owner.tr("Undo scene edit")
+                                                 : owner.tr("Redo scene edit"));
             action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
             owner.addAction(action);
             QPushButton *target = button;

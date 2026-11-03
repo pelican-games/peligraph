@@ -30,6 +30,8 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QDialog>
+#include <QKeyEvent>
 #include <QLineEdit>
 #include <QLineF>
 #include <QGraphicsScene>
@@ -48,6 +50,7 @@
 #include <QElapsedTimer>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QShortcut>
 #include <QString>
 #include <QStringList>
 #include <QTest>
@@ -58,6 +61,10 @@
 #include <QWheelEvent>
 #include <QWidget>
 
+#include <algorithm>
+#include <array>
+#include <cstring>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -78,6 +85,7 @@
 #define private public
 #include "mainwindow.hpp"
 #undef private
+#include "studiocommands.hpp"
 
 namespace {
 
@@ -2898,4 +2906,384 @@ TEST_CASE("LT-1: size_hints names what holds each dock up, and changes nothing",
     REQUIRE(chain.size() >= 2);
     CHECK(chain.last().toObject().value(QStringLiteral("object_name")).toString() ==
           QStringLiteral("pelican.testTall"));
+}
+
+namespace {
+
+using ShortcutRow = std::array<QString, 3>;
+
+// The test's own copy of the Help display: NativeText, with the two names Qt
+// abbreviates on this platform spelled out the way the table always has.
+QString shownKey(const QKeySequence &key) {
+    QString text = key.toString(QKeySequence::NativeText);
+    if (text == QLatin1String("Del")) return QStringLiteral("Delete");
+    if (text == QLatin1String("Esc")) return QStringLiteral("Escape");
+    return text;
+}
+
+QString shownKeys(const QList<QKeySequence> &keys) {
+    QStringList texts;
+    for (const QKeySequence &key : keys) {
+        if (key.isEmpty()) continue;
+        const QString text = shownKey(key);
+        if (!texts.contains(text)) texts.push_back(text);
+    }
+    return texts.join(QStringLiteral(" / "));
+}
+
+QStringList objectKeys(const QObject *object) {
+    QStringList keys;
+    if (const auto *action = qobject_cast<const QAction *>(object)) {
+        for (const QKeySequence &key : action->shortcuts())
+            keys.push_back(key.toString(QKeySequence::PortableText));
+    } else if (const auto *shortcut = qobject_cast<const QShortcut *>(object)) {
+        for (const QKeySequence &key : shortcut->keys())
+            keys.push_back(key.toString(QKeySequence::PortableText));
+    }
+    return keys;
+}
+
+} // namespace
+
+TEST_CASE("KM-1a the Help rows are exactly the command declarations",
+          "[devstudio][automation_input][shortcut][km1a]") {
+    application();
+    QTemporaryDir config;
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    window.activateWindow();
+
+    // A second unrelated top-level window. The table is rooted at the main
+    // window; a walk of QApplication::topLevelWidgets() would pick this up.
+    QWidget unrelated;
+    unrelated.setObjectName(QStringLiteral("km1a.unrelatedWindow"));
+    auto *outside = new QAction(QStringLiteral("Outside the main window"), &unrelated);
+    outside->setObjectName(QStringLiteral("km1a.outsideAction"));
+    outside->setShortcut(QKeySequence{Qt::CTRL | Qt::Key_F9});
+    PelicanStudio::setCommandHelp(*outside, "km1a.outside",
+                                  PelicanStudio::CommandSurface::Window,
+                                  QStringLiteral("Outside the main window"));
+    unrelated.addAction(outside);
+    unrelated.show();
+
+    const QString W = QStringLiteral("Window");
+    const QString S =
+        QStringLiteral("Scene: Viewport, Outliner, Inspector, Problems, Play bar");
+    const QString R =
+        QStringLiteral("Rendering: Frame Plan, Pass Editor, Features, Settings");
+    const QString G = QStringLiteral("Graph tab");
+    const QString FP = QStringLiteral("Frame Plan");
+    const QString GF = QStringLiteral("Graph / Frame Plan");
+    const QString M = QStringLiteral("Materials");
+    const QString A = QStringLiteral("Assets");
+    const QString T = QStringLiteral("Text fields / inline editors");
+
+    const std::vector<ShortcutRow> expected = {
+        {W, shownKeys({QKeySequence(QKeySequence::New)}), QStringLiteral("New Project")},
+        {W, shownKeys({QKeySequence(QKeySequence::Open)}), QStringLiteral("Open Project")},
+        {W, shownKeys({QKeySequence{Qt::CTRL | Qt::SHIFT | Qt::Key_P}}),
+         QStringLiteral("Pause (outside text fields)")},
+        {W, shownKeys({QKeySequence{Qt::CTRL | Qt::Key_P}}),
+         QStringLiteral("Play / Stop (outside text fields)")},
+        {W, shownKeys({QKeySequence(QKeySequence::Save)}),
+         QStringLiteral("Save Scene (stop Play first)")},
+        {W, shownKeys({QKeySequence{Qt::CTRL | Qt::ALT | Qt::Key_P}}),
+         QStringLiteral("Step (outside text fields)")},
+        {S, shownKeys({QKeySequence(QKeySequence::Delete)}),
+         QStringLiteral("Delete selected object")},
+        {S, shownKeys({QKeySequence{Qt::CTRL | Qt::Key_D}}),
+         QStringLiteral("Duplicate selected object")},
+        {S,
+         shownKeys({QKeySequence{Qt::CTRL | Qt::Key_Y},
+                    QKeySequence{Qt::CTRL | Qt::SHIFT | Qt::Key_Z}}),
+         QStringLiteral("Redo scene edit")},
+        {S, shownKeys({QKeySequence(QKeySequence::Undo)}),
+         QStringLiteral("Undo scene edit")},
+        {R,
+         shownKeys({QKeySequence{Qt::CTRL | Qt::Key_Y},
+                    QKeySequence{Qt::CTRL | Qt::SHIFT | Qt::Key_Z}}),
+         QStringLiteral("Redo rendering edit")},
+        {R, shownKeys({QKeySequence(QKeySequence::Undo)}),
+         QStringLiteral("Undo rendering edit")},
+        {G, QStringLiteral("Ctrl + click"), QStringLiteral("Add to selection")},
+        {G,
+         shownKeys({QKeySequence(Qt::Key_Delete), QKeySequence(Qt::Key_Backspace)}),
+         QStringLiteral("Delete selected")},
+        {G, QStringLiteral("Double-click an edge"), QStringLiteral("Insert a reroute")},
+        {G, shownKeys({QKeySequence(Qt::Key_F)}), QStringLiteral("Fit view")},
+        {G, QStringLiteral("Shift + drag a curve key"),
+         QStringLiteral("Move the key in time only")},
+        {G, QStringLiteral("Ctrl + drag a curve key"),
+         QStringLiteral("Move the key in value only")},
+        {G, shownKeys(QKeySequence::keyBindings(QKeySequence::Redo)),
+         QStringLiteral("Redo graph edit")},
+        {G, shownKeys(QKeySequence::keyBindings(QKeySequence::Undo)),
+         QStringLiteral("Undo graph edit")},
+        {FP, shownKeys({QKeySequence(Qt::Key_Escape)}),
+         QStringLiteral("Cancel edit / leave group")},
+        {FP,
+         shownKeys({QKeySequence(Qt::Key_Delete), QKeySequence(Qt::Key_Backspace)}),
+         QStringLiteral("Delete selected")},
+        {FP, QStringLiteral("Double-click a resource"),
+         QStringLiteral("Edit the resource")},
+        {FP, shownKeys({QKeySequence(Qt::Key_F)}), QStringLiteral("Fit view")},
+        {GF, QStringLiteral("Middle button drag"), QStringLiteral("Pan")},
+        {GF, QStringLiteral("Space + drag"), QStringLiteral("Pan")},
+        {GF, QStringLiteral("Wheel"), QStringLiteral("Zoom")},
+        {M, shownKeys({QKeySequence(QKeySequence::Undo)}),
+         QStringLiteral("Undo material edit")},
+        {A, shownKeys({QKeySequence(QKeySequence::Undo)}),
+         QStringLiteral("Undo asset edit")},
+        {T, shownKeys({QKeySequence(Qt::Key_Escape)}),
+         QStringLiteral("Cancel inline edit")},
+        {T,
+         shownKeys({QKeySequence(Qt::Key_Return), QKeySequence(Qt::Key_Enter)}),
+         QStringLiteral("Commit inline edit")},
+    };
+
+    const auto rows = PelicanStudio::studioShortcutRows(window);
+    REQUIRE(rows.size() == expected.size());
+
+    // studioShortcutRows sorts by CommandSurface's numeric order, then title,
+    // then shown shortcut. Rank the label through the enum, not the alphabet.
+    const auto surface_rank = [](const QString &label) {
+        for (int index = 0; index <= static_cast<int>(PelicanStudio::CommandSurface::TextEntry);
+             ++index) {
+            const auto surface = static_cast<PelicanStudio::CommandSurface>(index);
+            if (label == QString::fromLatin1(PelicanStudio::commandSurfaceLabel(surface)))
+                return index;
+        }
+        return static_cast<int>(PelicanStudio::CommandSurface::TextEntry) + 1;
+    };
+    const auto less = [&surface_rank](const ShortcutRow &left, const ShortcutRow &right) {
+        const int left_surface = surface_rank(left[0]);
+        const int right_surface = surface_rank(right[0]);
+        if (left_surface != right_surface) return left_surface < right_surface;
+        if (left[2] != right[2]) return left[2] < right[2];
+        return left[1] < right[1];
+    };
+    auto actual_sorted = rows;
+    auto expected_sorted = expected;
+    std::sort(actual_sorted.begin(), actual_sorted.end(), less);
+    std::sort(expected_sorted.begin(), expected_sorted.end(), less);
+    for (std::size_t index = 0; index < expected_sorted.size(); ++index) {
+        INFO("row " << index);
+        CHECK(actual_sorted[index][0] == expected_sorted[index][0]);
+        CHECK(actual_sorted[index][1] == expected_sorted[index][1]);
+        CHECK(actual_sorted[index][2] == expected_sorted[index][2]);
+    }
+    // studioShortcutRows promises this order: surface, title, then shortcut.
+    for (std::size_t index = 1; index < rows.size(); ++index) {
+        INFO("row " << index);
+        CHECK_FALSE(less(rows[index], rows[index - 1]));
+    }
+
+    // The Help menu's action, as a user opens it (showKeyboardShortcuts is private).
+    auto *help_action = window.findChild<QAction *>(QStringLiteral("pelican.help.shortcuts"));
+    REQUIRE(help_action != nullptr);
+    help_action->trigger();
+    QApplication::processEvents();
+    auto *dialog =
+        window.findChild<QDialog *>(QStringLiteral("pelican.help.shortcutsDialog"));
+    REQUIRE(dialog != nullptr);
+    auto *table =
+        dialog->findChild<QTableWidget *>(QStringLiteral("pelican.help.shortcutsTable"));
+    REQUIRE(table != nullptr);
+    REQUIRE(table->columnCount() == 3);
+    REQUIRE(table->rowCount() == static_cast<int>(rows.size()));
+    for (int row = 0; row < table->rowCount(); ++row) {
+        for (int column = 0; column < 3; ++column) {
+            const auto *item = table->item(row, column);
+            REQUIRE(item != nullptr);
+            INFO("table row " << row << " column " << column);
+            CHECK(item->text() == rows[static_cast<std::size_t>(row)]
+                                         [static_cast<std::size_t>(column)]);
+        }
+    }
+    dialog->reject();
+}
+
+TEST_CASE("KM-1a every named keyed object declares a command or is allow-listed",
+          "[devstudio][automation_input][shortcut][km1a]") {
+    application();
+    QTemporaryDir config;
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    window.activateWindow();
+
+    std::set<QObject *> seen;
+    std::vector<QObject *> objects;
+    const auto add = [&](QObject *object) {
+        if (object != nullptr && seen.insert(object).second) objects.push_back(object);
+    };
+    for (QObject *object : window.findChildren<QObject *>()) add(object);
+    for (QAction *action : window.actions()) add(action);
+    for (QWidget *widget : window.findChildren<QWidget *>()) {
+        for (QAction *action : widget->actions()) add(action);
+    }
+
+    // Step 2's four exceptions: display / automation entries whose key is
+    // handled by the scene or the view.
+    const std::set<QString> allowed = {
+        QStringLiteral("pelican.graphCanvas.undo"),
+        QStringLiteral("pelican.graphCanvas.redo"),
+        QStringLiteral("pelican.graphCanvas.fitView"),
+        QStringLiteral("pelican.framePlan.fitView"),
+    };
+
+    for (QObject *object : objects) {
+        const QString name = object->objectName();
+        const QStringList keys = objectKeys(object);
+        const bool keyed = std::any_of(keys.begin(), keys.end(),
+                                       [](const QString &key) { return !key.isEmpty(); });
+        const bool tagged = object->property("pelican.command.id").isValid();
+        if (!name.isEmpty() && keyed) {
+            INFO(name.toStdString());
+            CHECK((tagged || allowed.count(name) == 1));
+        }
+        if (tagged) {
+            INFO(name.toStdString());
+            CHECK(keyed);
+            CHECK_FALSE(object->property("pelican.command.title").toString().isEmpty());
+            CHECK(object->property("pelican.command.surface").isValid());
+        }
+    }
+}
+
+TEST_CASE("KM-1a the drift the old table showed is gone",
+          "[devstudio][automation_input][shortcut][km1a]") {
+    application();
+    QTemporaryDir config;
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    window.activateWindow();
+
+    int materials = 0, assets = 0, graph = 0;
+    for (const auto &row : PelicanStudio::studioShortcutRows(window)) {
+        if (row[0] == QLatin1String("Materials")) {
+            ++materials;
+            CHECK_FALSE(row[2].contains(QStringLiteral("Redo"), Qt::CaseInsensitive));
+        } else if (row[0] == QLatin1String("Assets")) {
+            ++assets;
+            CHECK_FALSE(row[2].contains(QStringLiteral("Redo"), Qt::CaseInsensitive));
+        } else if (row[0] == QLatin1String("Graph tab")) {
+            ++graph;
+            CHECK_FALSE(row[2].contains(QStringLiteral("Leave nested view"),
+                                        Qt::CaseInsensitive));
+        }
+    }
+    CHECK(materials > 0);
+    CHECK(assets > 0);
+    CHECK(graph > 0);
+}
+
+TEST_CASE("KM-1a KB-1 T5's names are still in the generated table",
+          "[devstudio][automation_input][shortcut][km1a]") {
+    application();
+    QTemporaryDir config;
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    window.activateWindow();
+    AutomationHost host;
+    host.window = &window;
+    const auto reply =
+        runAutomationCommand(host, request("action", {{"name", "pelican.help.shortcuts"}}));
+    REQUIRE(reply.ok);
+    auto *dialog =
+        window.findChild<QDialog *>(QStringLiteral("pelican.help.shortcutsDialog"));
+    REQUIRE(dialog);
+    auto *table =
+        dialog->findChild<QTableWidget *>(QStringLiteral("pelican.help.shortcutsTable"));
+    REQUIRE(table);
+    for (const auto *key : {"Ctrl+Z", "Ctrl+S", "Ctrl+P", "Delete", "Ctrl+D", "F",
+                            "Escape"}) {
+        bool found = false;
+        for (int row = 0; row < table->rowCount(); ++row)
+            found |= table->item(row, 1)->text().contains(QString::fromLatin1(key));
+        INFO(key);
+        CHECK(found);
+    }
+    dialog->reject();
+}
+
+TEST_CASE("KM-1a key predicates match the expressions they replaced",
+          "[devstudio][automation_input][shortcut][km1a]") {
+    application();
+
+    // The reference is today's expression at each named site, copied here:
+    // graph undo/redo/delete  graphcanvaswidget.cpp:4976, 4983, 4988, 4993
+    // fit (both views)        nodegraphics.cpp:1335
+    // frame plan Escape       frameplangraphics.cpp:4700, 4705, 4773
+    // frame plan delete       frameplangraphics.cpp:4712
+    // inline cancel / commit  inlineediteventfilter.hpp:29, 33
+    const auto reference = [](const char *id, const QKeyEvent &event) {
+        if (std::strcmp(id, "graph.undo") == 0) return event.matches(QKeySequence::Undo);
+        if (std::strcmp(id, "graph.redo") == 0) return event.matches(QKeySequence::Redo);
+        if (std::strcmp(id, "graph.delete") == 0)
+            return event.key() == Qt::Key_Delete || event.key() == Qt::Key_Backspace;
+        if (std::strcmp(id, "graph.fit") == 0)
+            return event.key() == Qt::Key_F && event.modifiers() == Qt::NoModifier;
+        if (std::strcmp(id, "frameplan.fit") == 0)
+            return event.key() == Qt::Key_F && event.modifiers() == Qt::NoModifier;
+        if (std::strcmp(id, "frameplan.delete") == 0)
+            return event.key() == Qt::Key_Delete || event.key() == Qt::Key_Backspace;
+        if (std::strcmp(id, "frameplan.escape") == 0)
+            return event.key() == Qt::Key_Escape;
+        if (std::strcmp(id, "inline.cancel") == 0) return event.key() == Qt::Key_Escape;
+        if (std::strcmp(id, "inline.commit") == 0)
+            return event.key() == Qt::Key_Return || event.key() == Qt::Key_Enter;
+        return false;
+    };
+
+    const std::vector<Qt::Key> keys = {
+        Qt::Key_Delete, Qt::Key_Backspace, Qt::Key_Escape, Qt::Key_Return, Qt::Key_Enter,
+        Qt::Key_F,      Qt::Key_Z,         Qt::Key_Y,      Qt::Key_Space,  Qt::Key_A};
+    const std::vector<Qt::KeyboardModifiers> modifiers = {
+        Qt::NoModifier,
+        Qt::ControlModifier,
+        Qt::ShiftModifier,
+        Qt::AltModifier,
+        Qt::MetaModifier,
+        Qt::ControlModifier | Qt::ShiftModifier,
+        Qt::ControlModifier | Qt::AltModifier,
+        Qt::AltModifier | Qt::ShiftModifier,
+        Qt::KeypadModifier,
+        Qt::ControlModifier | Qt::KeypadModifier,
+    };
+
+    for (const auto &declared : PelicanStudio::studioKeys()) {
+        for (Qt::Key key : keys) {
+            for (Qt::KeyboardModifiers mods : modifiers) {
+                for (bool repeat : {false, true}) {
+                    const QKeyEvent event(QEvent::KeyPress, key, mods, QString(), repeat);
+                    INFO(declared.id << " key=" << static_cast<int>(key)
+                                     << " mods=" << static_cast<int>(mods)
+                                     << " repeat=" << repeat);
+                    CHECK(PelicanStudio::studioKeyMatches(declared.id, event) ==
+                          reference(declared.id, event));
+                }
+            }
+        }
+    }
+
+    // Every platform binding of Undo / Redo, delivered as an event. This is
+    // where a fixed Redo list breaks: Linux also binds Alt+Shift+Backspace and
+    // the Redo media key, which a {Ctrl+Y, Ctrl+Shift+Z} list does not know.
+    for (QKeySequence::StandardKey standard :
+         {QKeySequence::Undo, QKeySequence::Redo}) {
+        const char *id = standard == QKeySequence::Undo ? "graph.undo" : "graph.redo";
+        for (const QKeySequence &sequence : QKeySequence::keyBindings(standard)) {
+            if (sequence.isEmpty()) continue;
+            const QKeyEvent event(QEvent::KeyPress, sequence[0].key(),
+                                  sequence[0].keyboardModifiers());
+            INFO(id << " binding "
+                    << sequence.toString(QKeySequence::PortableText).toStdString());
+            CHECK(PelicanStudio::studioKeyMatches(id, event) == event.matches(standard));
+        }
+    }
+
+#ifdef NDEBUG
+    CHECK_FALSE(PelicanStudio::studioKeyMatches(
+        "km1a.unknown", QKeyEvent(QEvent::KeyPress, Qt::Key_A, Qt::NoModifier)));
+#endif
 }

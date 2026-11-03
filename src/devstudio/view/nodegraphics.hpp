@@ -365,6 +365,9 @@ class NodeCanvasView : public QGraphicsView {
 
     // Put the whole content on screen, within the zoom clamp.
     void fitView();
+    // The Help table names this view's Fit command; the default is the Graph
+    // tab, and the Frame Plan names itself.
+    void setFitCommand(const char *command) { fit_command_ = command; }
     NodeDragTrace &dragTrace() { return drag_trace_; }
     static constexpr int DragDurationMs = 2000, DragIntervalMs = 8, DragHoldMs = 0;
     static constexpr int DragDeltaX = 200, DragDeltaY = 60;
@@ -445,6 +448,7 @@ class NodeCanvasView : public QGraphicsView {
     bool scope_known_ = false;
     bool panning_ = false;
     bool space_held_ = false;
+    const char *fit_command_ = "graph.fit";
     QPoint pan_origin_;
     Qt::MouseButton pan_button_ = Qt::NoButton;
     DragMode pan_previous_mode_ = QGraphicsView::NoDrag;

@@ -2,6 +2,7 @@
 
 #include "graphcanvastagpicker.hpp"
 #include "panelhelp.hpp"
+#include "studiocommands.hpp"
 #include "studiotheme.hpp"
 
 #include "../model/renderfallback.hpp"
@@ -255,6 +256,8 @@ struct MaterialsDock::Impl {
         undo_action->setObjectName(QStringLiteral("pelican.materials.undo"));
         undo_action->setShortcut(QKeySequence::Undo);
         undo_action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+        setCommandHelp(*undo_action, "materials.undo", CommandSurface::Materials,
+                       owner.tr("Undo material edit"));
         owner.addAction(undo_action);
         QObject::connect(undo_action, &QAction::triggered, &owner, [this] { session.undo(); });
 

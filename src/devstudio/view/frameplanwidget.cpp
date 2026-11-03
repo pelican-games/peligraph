@@ -6,6 +6,7 @@
 #include "shaderinputcontract.hpp"
 #include "jsonrpcrequest.hpp"
 #include "panelhelp.hpp"
+#include "studiocommands.hpp"
 #include "../model/frameplanmodel.hpp"
 #include "../viewport/embeddedviewport.hpp"
 #include "projectformat.hpp"
@@ -1074,6 +1075,7 @@ struct FramePlanWidget::Impl {
         logical_scene->placementChanged = [this] { writePlacement(); };
         logical = new FramePlanGraphicsView(logical_scene, logical_splitter);
         logical->setObjectName(QStringLiteral("pelican.framePlanLogicalView"));
+        logical->setFitCommand("frameplan.fit");
         logical->setToolTip(owner.tr("Shift-drag: connect resources"));
         logical->setRenderHint(QPainter::Antialiasing, true);
         logical->setDragMode(QGraphicsView::RubberBandDrag);
@@ -1286,6 +1288,8 @@ struct FramePlanWidget::Impl {
             QStringLiteral("pelican.framePlanLeaveGroup"));
         leave_group->setShortcut(QKeySequence{Qt::Key_Escape});
         leave_group->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+        setCommandHelp(*leave_group, "frameplan.escape", CommandSurface::FramePlan,
+                       owner.tr("Cancel edit / leave group"));
         owner.addAction(leave_group);
         QObject::connect(leave_group, &QAction::triggered, &owner,
                          [this] {
