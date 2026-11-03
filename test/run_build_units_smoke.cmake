@@ -1225,6 +1225,37 @@ function(run_animation_smoke)
     clean_successful_build("${animation_build_dir}")
 endfunction()
 
+# CV-1: OFF compiles none of the canvas module or its lowering, and
+# canvas-lower says the build left it out.
+function(verify_canvas_absent build_dir)
+    file(GLOB_RECURSE build_metadata LIST_DIRECTORIES false
+        "${build_dir}/build.ninja"
+        "${build_dir}/*.vcxproj"
+        "${build_dir}/*DependInfo.cmake"
+        "${build_dir}/compile_commands.json"
+    )
+    foreach(metadata IN LISTS build_metadata)
+        file(READ "${metadata}" contents)
+        if(contents MATCHES "src[/\\\\]project[/\\\\]canvas")
+            message(FATAL_ERROR "PELICAN_WITH_CANVAS=OFF still compiles canvas sources: ${metadata}")
+        endif()
+    endforeach()
+endfunction()
+
+function(run_canvas_smoke)
+    configure_and_build("canvas" "PELICAN_WITH_CANVAS" canvas_build_dir)
+    verify_canvas_absent("${canvas_build_dir}")
+    find_built_executable("${canvas_build_dir}" "pelican_cli" canvas_cli)
+    set(canvas_project "${ARTIFACT_ROOT}/canvas_project")
+    write_empty_project("${canvas_project}")
+    expect_disabled_error(
+        "canvas_lower_cli"
+        "PELICAN_WITH_CANVAS"
+        "${canvas_cli}" canvas-lower --project "${canvas_project}" --out "${ARTIFACT_ROOT}/canvas_lowered"
+    )
+    clean_successful_build("${canvas_build_dir}")
+endfunction()
+
 function(run_rpc_smoke)
     configure_and_build("rpc" "PELICAN_WITH_RPC" rpc_build_dir)
     find_built_executable("${rpc_build_dir}" "pelican_player" rpc_player)
@@ -1421,6 +1452,10 @@ function(run_registered_feature_smoke feature_name)
     elseif(feature_name STREQUAL "PELICAN_WITH_ANIMATION")
         if(NOT dry_run)
             run_animation_smoke()
+        endif()
+    elseif(feature_name STREQUAL "PELICAN_WITH_CANVAS")
+        if(NOT dry_run)
+            run_canvas_smoke()
         endif()
     elseif(feature_name STREQUAL "PELICAN_WITH_SEQPLAYER")
         if(NOT dry_run)

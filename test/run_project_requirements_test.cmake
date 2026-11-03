@@ -9,7 +9,7 @@ set(PELICAN_WITH_ANIMATION OFF)
 # PG-1: the CMake side reads the same rows as the runtime. Every option the
 # table names must be configured for pelican_project_requirement_arguments;
 # only animation is varied below, the rest stand ON as in the baseline.
-set(expected_requirement_names animation audio physics xr vat seqplayer)
+set(expected_requirement_names animation audio canvas physics xr vat seqplayer)
 if(NOT PELICAN_PROJECT_REQUIREMENT_NAMES STREQUAL expected_requirement_names)
     message(FATAL_ERROR "requirement rows drifted: ${PELICAN_PROJECT_REQUIREMENT_NAMES}")
 endif()

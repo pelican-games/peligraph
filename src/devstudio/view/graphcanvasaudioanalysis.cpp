@@ -214,7 +214,7 @@ GraphCanvasAudioAnalysis::GraphCanvasAudioAnalysis(GraphCanvasReadCapability &gr
     again_->hide();
     bake_row_->hide();
     QObject::connect(again_, &QPushButton::clicked, &owner_, [this] {
-        if (!sent_.is_null() && !running()) bake(Json{sent_});
+        if (!sent_.is_null() && !running()) bake(sent_);
     });
     QObject::connect(use_in_graph_, &QPushButton::clicked, &owner_, [this] {
         if (baked_ && hooks_.useInGraph) hooks_.useInGraph(*baked_);

@@ -256,7 +256,7 @@ std::vector<FramePlanLoop> optionalLoops(const Json &root) {
         loop.node = requireStringField(value, "node", context);
         loop.tier = optionalStringField(value, "tier", context);
         loop.count = static_cast<std::size_t>(
-            unsignedInteger(value.value("count", Json{0}), context + ".count"));
+            unsignedInteger(value.value("count", Json(0)), context + ".count"));
         if (const auto elements = value.find("elements");
             elements != value.end() && !elements->is_null()) {
             if (!elements->is_array()) throw invalid(context + ".elements must be an array");
@@ -275,9 +275,9 @@ std::vector<FramePlanLoop> optionalLoops(const Json &root) {
                 loop.elements.push_back(FramePlanLoopElement{
                     material ? std::int64_t{0} : element->get<std::int64_t>(),
                     static_cast<std::size_t>(unsignedInteger(
-                        entry.value("index", Json{0}), element_context + ".index")),
+                        entry.value("index", Json(0)), element_context + ".index")),
                     static_cast<std::size_t>(unsignedInteger(
-                        entry.value("branch", Json{0}), element_context + ".branch")),
+                        entry.value("branch", Json(0)), element_context + ".branch")),
                     material ? element->get<std::string>() : std::string{},
                     entry.value("vertex_modes", std::vector<std::string>{})});
             }

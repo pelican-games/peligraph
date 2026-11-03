@@ -7,7 +7,7 @@
 namespace Pelican {
 
 template <class T, class Base> struct BasicHandle {
-    Base value;
+    Base value{};
     operator Base() const { return value; }
     bool operator==(BasicHandle o) const { return value == o.value; }
     bool operator!=(BasicHandle o) const { return value != o.value; }
