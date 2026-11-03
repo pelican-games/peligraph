@@ -4354,7 +4354,10 @@ void GraphCanvasScene::closeEditor() {
     if (editor->proxy != nullptr) {
         removeItem(editor->proxy);
         // The editor is often closed from inside its own event handler, so it
-        // outlives this call by one trip through the event loop.
+        // outlives this call by one trip through the event loop. Hand it to the
+        // scene as a QObject child too, so teardown before that trip does not
+        // leak the proxy and its still-visible embedded widget.
+        editor->proxy->setParent(this);
         editor->proxy->deleteLater();
     }
 }

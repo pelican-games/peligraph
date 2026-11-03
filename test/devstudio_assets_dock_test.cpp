@@ -738,8 +738,8 @@ TEST_CASE("FO-1s decision 4: Update manifest refused while a check runs says so 
         QJsonObject{{QStringLiteral("error_code"), QStringLiteral("assets_verification_running@1")},
                     {QStringLiteral("error_fields"), QJsonObject{{QStringLiteral("store"), QStringLiteral("main")}}}}));
     CHECK(dock.noticeLine()->text() ==
-          QStringLiteral("The verification of main is running \xE2\x80\x94 try again once it is done "
-                         "(assets_verification_running@1)."));
+          QString::fromUtf8("The verification of main is running \xE2\x80\x94 try again once it is done "
+                           "(assets_verification_running@1)."));
     CHECK(dock.noticeLine()->isVisible());
 
     // engine FO-1 / EB-1: the composed image's and buffer's keys.

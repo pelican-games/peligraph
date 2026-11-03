@@ -270,7 +270,11 @@ int lower(const fs::path &project_dir, const fs::path &out_dir, CanvasLoweringPo
             for (const auto &asset : canvasDocumentAssets(authored))
                 if (std::string_view{asset}.starts_with(project_scheme)) canvas_files.insert(asset);
             const auto plan = planCanvasFlatten(authored, read_asset);
-            for (const auto &diagnostic : plan.diagnostics) entry.diagnostics.push_back(diagnostic);
+            // GCC sees both the json and the ordered_json object value_type
+            // overloads of push_back through basic_json's conversion
+            // operators; name the target element type.
+            for (const auto &diagnostic : plan.diagnostics)
+                entry.diagnostics.push_back(OrderedJson(diagnostic));
             auto folded = authored;
             if (!plan.runs.empty() && !painter) {
                 entry.diagnostics.push_back({{"code", "canvas.flatten_skipped"},
@@ -351,7 +355,8 @@ int lower(const fs::path &project_dir, const fs::path &out_dir, CanvasLoweringPo
             report["outputs"].push_back(std::move(row));
         }
         for (const auto &diagnostic : entry.diagnostics) report["diagnostics"].push_back(diagnostic);
-        for (const auto &diagnostic : lowering.diagnostics) report["diagnostics"].push_back(diagnostic);
+        for (const auto &diagnostic : lowering.diagnostics)
+            report["diagnostics"].push_back(OrderedJson(diagnostic));
         for (const auto &run : entry.runs) {
             OrderedJson row{{"output", run.output}};
             if (!run.scope.empty()) row["scope"] = run.scope;

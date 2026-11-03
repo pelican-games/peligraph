@@ -1787,7 +1787,7 @@ TEST_CASE("MR-1s decision 1: Save in Show the document takes a document refused 
     REQUIRE(engine.asked("register_material"));
     REQUIRE(dialog);
     CHECK(dialog->isVisible());
-    CHECK(notice->text() == QStringLiteral("Saved; the engine takes materials/paint.material.json in\xE2\x80\xA6"));
+    CHECK(notice->text() == QString::fromUtf8("Saved; the engine takes materials/paint.material.json in\xE2\x80\xA6"));
     CHECK_FALSE(save->isEnabled());
 
     // Still not read: the parser's sentence, at its line and column, in the
@@ -1955,7 +1955,7 @@ TEST_CASE("MR-1s decision 3: a registered document the engine's watch refused af
     CHECK(dock.noticeLine()->text() ==
           QStringLiteral("Saved materials/paint.material.json; the engine's watch takes it in."));
     CHECK(notice->text() ==
-          QStringLiteral("Saved; the engine's watch reads materials/paint.material.json again\xE2\x80\xA6"));
+          QString::fromUtf8("Saved; the engine's watch reads materials/paint.material.json again\xE2\x80\xA6"));
 
     // The watch refused it again, elsewhere: said in the window.
     dock.observeProblems(problemsOf({staleProblem(6)}));
@@ -2395,8 +2395,8 @@ TEST_CASE("EB-6s decision 5: a scene object's own material no registered materia
     rows.session().setScope(MaterialAssignSession::Scope::Model);
     auto *missing = named<QLabel>(rows, QStringLiteral("pelican.inspectorMaterialMissing"));
     CHECK(missing->isVisibleTo(&rows));
-    CHECK(missing->text().contains(QStringLiteral("query is not registered \xE2\x80\x94 drawing "
-                                                  "pelican.primitive.default")));
+    CHECK(missing->text().contains(QString::fromUtf8("query is not registered \xE2\x80\x94 drawing "
+                                                     "pelican.primitive.default")));
 
     // The Materials dock's bindings of Cube.
     QTemporaryDir temporary;
@@ -2411,9 +2411,9 @@ TEST_CASE("EB-6s decision 5: a scene object's own material no registered materia
     answer(dock, engine, "list_materials", queryListed("unusable"));
     answer(dock, engine, "get_material_bindings", bindings);
     CHECK(named<QLabel>(dock, QStringLiteral("pelican.materials.model.notice"))->text() ==
-          QStringLiteral("query is not registered \xE2\x80\x94 drawing pelican.primitive.default"));
+          QString::fromUtf8("query is not registered \xE2\x80\x94 drawing pelican.primitive.default"));
     CHECK(named<QComboBox>(dock, QStringLiteral("pelican.materials.model.choice"))->currentText() ==
-          QStringLiteral("query (not registered \xE2\x80\x94 drawing pelican.primitive.default)"));
+          QString::fromUtf8("query (not registered \xE2\x80\x94 drawing pelican.primitive.default)"));
 }
 
 TEST_CASE("EB-6s decision 6: a material's problem (source edit_rpc) is not taken for a refused render "

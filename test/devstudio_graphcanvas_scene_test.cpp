@@ -19553,25 +19553,32 @@ TEST_CASE("GS-3a a value that moves anything outside its node draws the whole sc
     }
 
     SECTION("the source of a pass's line: render.target_ref's name") {
+        // Both names are longer than a node can grow, so the node's width is
+        // pinned at GraphCanvasNodeMaximumWidth on either side of the change.
+        // A shorter pair would let the font's x and o widths move the node,
+        // and this section is about the line, not about the text metrics.
+        const std::string missing = "other_cxlor_" + std::string(80, 'x');
+        const std::string present = "other_color_" + std::string(80, 'x');
         Gs2Tab tab{Json::array(),
                    Json::array({{{"id", "ref"}, {"op", "render.target_ref"},
-                                 {"parameters", {{"name", "other_cxlor"}}},
+                                 {"parameters", {{"name", missing}}},
                                  {"outputs", Json::array({"resource"})}}})};
         auto &scene = tab.widget->scene();
-        // present reads other_color, which no pass writes.
-        tab.engine.present_reads = {"other_color"};
+        // present reads present, which no pass writes.
+        tab.engine.present_reads = {present};
         ++tab.engine.revision;
         tab.widget->refresh();
         gs2bSettle(tab);
-        REQUIRE(passSocket(scene, QStringLiteral("present"), QStringLiteral("other_color")) != nullptr);
-        REQUIRE(gs2PresentLineFrom(scene, QStringLiteral("other_color")).isEmpty());
+        REQUIRE(passSocket(scene, QStringLiteral("present"),
+                          QString::fromStdString(present)) != nullptr);
+        REQUIRE(gs2PresentLineFrom(scene, QString::fromStdString(present)).isEmpty());
         const auto before = gs3aSize(scene, QStringLiteral("ref"));
         tab.rebuilds = 0;
         Gs3aTrace trace;
         // The passes, what the plan implies and the context are as they were;
         // the line to present's input is ref's now.
-        gs2bElsewhere(tab, [](Json &nodes) { gs2bNode(nodes, "ref")["parameters"]["name"] = "other_color"; });
-        CHECK(gs2PresentLineFrom(scene, QStringLiteral("other_color")) == QStringLiteral("ref"));
+        gs2bElsewhere(tab, [&](Json &nodes) { gs2bNode(nodes, "ref")["parameters"]["name"] = present; });
+        CHECK(gs2PresentLineFrom(scene, QString::fromStdString(present)) == QStringLiteral("ref"));
         CHECK(gs3aSize(scene, QStringLiteral("ref")) == before);
         CHECK(tab.rebuilds == 1);
         CHECK(tab.redrawn.empty());
@@ -20709,13 +20716,20 @@ TEST_CASE("GS-3b2 beside folded nodes, a root value next to a zone is drawn agai
     // A body value whose text runs long, and the plan says the body's sum
     // reads its element (a band under it).
     gs3aNode(document["definitions"]["first"]["nodes"], "a")["parameters"]["value"] = 123456789.125;
-    SECTION("a long pill and a band") {}
+    // Each run has an assertion of its own: ctest passes -w NoAssertions to
+    // Catch2, which reports a section that holds none as a failure even when
+    // the rest of the test asserts plenty.
+    SECTION("a long pill and a band") {
+        CHECK(gs3aNode(document["definitions"]["first"]["nodes"], "a")
+                  ["parameters"]["value"] == 123456789.125);
+    }
     SECTION("and a body line through a control point below and left of the body's nodes") {
         // The frame is drawn round the body's nodes, not its lines: the line
         // and its control point reach past it.
         document["definitions"]["first"]["layout"] = {
             {"reroutes", Json::array({{{"edge", {{"node", "sum"}, {"port", "b"}}},
                                        {"points", Json::array({Json::array({-160.0, 520.0})})}}})}};
+        CHECK(document["definitions"]["first"]["layout"]["reroutes"].size() == 1);
     }
     auto plan = gl1bPlan();
     plan["nodes"].push_back({{"name", "steps/0/sum"}, {"kind", "render"},

@@ -372,7 +372,7 @@ TEST_CASE("GL-4a Verify from a group's heading runs verify_fold, holds the group
     auto *state = dynamic_cast<QGraphicsSimpleTextItem *>(
         itemOf(scene, GraphCanvasFoldStateItem, QStringLiteral("fold_1")));
     REQUIRE(state != nullptr);
-    CHECK(state->text().startsWith(QStringLiteral("verifying\xE2\x80\xA6 (")));
+    CHECK(state->text().startsWith(QString::fromUtf8("verifying\xE2\x80\xA6 (")));
     CHECK(itemOf(scene, GraphCanvasFoldVerifyItem, QStringLiteral("fold_1")) == nullptr);
     auto *add = widget.findChild<QPushButton *>(QStringLiteral("pelican.graphCanvasFold.isolate.add"));
     REQUIRE(add != nullptr);

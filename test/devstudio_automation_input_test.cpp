@@ -1507,7 +1507,16 @@ TEST_CASE("FX-1 fold scenario waits for the automatic plan read before Refresh",
     int clicks = 0;
     QObject::connect(fixture.button, &QPushButton::clicked, &fixture.window,
                      [&] { ++clicks; });
-    QFile scenario{QFileInfo(QString::fromUtf8(__FILE__)).dir().filePath(
+    // CTest runs the tests with the build tree as the working directory, and
+    // a ccache base directory can rewrite __FILE__ to a relative path. The
+    // source directory is a compile definition and names the fixture
+    // wherever the executable is run from.
+#if defined(QT_TESTCASE_SOURCEDIR)
+    const QDir scenario_source{QString::fromUtf8(QT_TESTCASE_SOURCEDIR)};
+#else
+    const QDir scenario_source{QFileInfo(QString::fromUtf8(__FILE__)).dir()};
+#endif
+    QFile scenario{scenario_source.filePath(
         QStringLiteral("studio_scenarios/graph_fold_decisions.json"))};
     REQUIRE(scenario.open(QIODevice::ReadOnly));
     const auto steps = QJsonDocument::fromJson(scenario.readAll()).object()

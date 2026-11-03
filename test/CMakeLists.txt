@@ -199,6 +199,11 @@ if(WIN32 AND source_name STREQUAL "devstudio_viewport_test")
   # These GPU-free cases attach a real Win32 fixture window. The offscreen
   # plugin has no native window handle, so it cannot exercise that contract.
   list(APPEND discovery_properties ENVIRONMENT "QT_QPA_PLATFORM=windows")
+elseif(UNIX AND source_name STREQUAL "devstudio_viewport_test")
+  # The same cases are GPU-free off Windows. Their target is declared QT (not
+  # QT_OFFSCREEN) because of the Win32 branch above, so name the offscreen
+  # platform here: ctest must not need an X display for a studio_cpu test.
+  list(APPEND discovery_properties ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()
 if(PELICAN_TEST_GOLDEN OR
    source_name STREQUAL "debugtext_ui_compat_test")
@@ -587,7 +592,11 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   )
   # nodegraphics carries the socket default table, so a target that compiles it
   # needs the same embedded resource the application links.
+  # nodegraphics also dynamic_casts a scene to GraphCanvasScene. GCC's Itanium
+  # ABI puts that type's RTTI in graphcanvaswidget.cpp, so link the production
+  # view library that defines it; MSVC emits the descriptor locally.
   target_link_libraries(pelican_test_devstudio_frameplan_graph_test PRIVATE
+    pelican_studio_view
     pelican_studio_resources)
   target_include_directories(pelican_test_devstudio_frameplan_graph_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devstudio/view

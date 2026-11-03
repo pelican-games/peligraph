@@ -4310,6 +4310,12 @@ void FramePlanGraphicsScene::closeInlineEditor() {
         }
     }
     removeItem(editor->proxy);
+    // removeItem() hands ownership back to this scene, but deleteLater() only
+    // runs if an event loop reaches it. A scene torn down first (a test, or a
+    // window closed in the same turn) would otherwise leak the proxy and its
+    // still-visible embedded line edit. Parent it to the scene so teardown
+    // reclaims it even when the deferred delete never arrives.
+    editor->proxy->setParent(this);
     editor->proxy->deleteLater();
     QMetaObject::invokeMethod(this, [this] {
         if (!editingInline() && !dragging() && gestureEnded) gestureEnded();

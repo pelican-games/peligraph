@@ -517,7 +517,12 @@ TEST_CASE("PM-3a Pause sends paused, pressing it again sends playing, and the li
     CHECK(rig.bandStyle().contains(playing_band));
 
     rig.pause().trigger();
-    REQUIRE(rig.pumpUntil([&] { return rig.line().startsWith(QStringLiteral("Paused")); }));
+    // The pause answer names the state, not the frame; the frame arrives with
+    // the reading that follows it. Waiting only for the "Paused" prefix caught
+    // the line before that reading and compared the previous frame.
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.line() == shown("Paused", rig.engine.game_frame);
+    }));
     REQUIRE(rig.sent() == 1);
     CHECK(rig.last() == Json{{"method", "set_play_state"}, {"params", {{"state", "paused"}}}});
     // The frame the game stopped on, read after the pause -- not the

@@ -473,7 +473,7 @@ TEST_CASE("DL-2 unrelated RPC bytes bypass parsing and owned replies update stat
     int completions = 0;
     client.completed = [&](const auto &outcome) {
         CHECK(outcome.kind == Kind::Committed);
-        CHECK(outcome.result.at("published_generation").get<std::uint64_t>() == 9007199254740993ULL);
+        CHECK(outcome.result.at("published_generation").template get<std::uint64_t>() == 9007199254740993ULL);
         ++completions;
     };
     RayLayoutWidget ray{&viewport};
