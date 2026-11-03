@@ -40,4 +40,11 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(glfw)
 
 target_link_libraries(pelican_core PRIVATE glfw)
+
+# The GLFW X11 backend is the only Linux window system this build exposes to
+# the engine. Expose its native XID where the backend was actually compiled
+# (Wayland-only builds keep the null native handle).
+if(UNIX AND NOT APPLE AND GLFW_BUILD_X11)
+  target_compile_definitions(pelican_core PRIVATE PELICAN_WINDOW_X11)
+endif()
 endif()

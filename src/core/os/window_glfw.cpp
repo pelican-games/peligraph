@@ -16,6 +16,10 @@
 #endif
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
+#elif defined(PELICAN_WINDOW_X11)
+#include <cstdint>
+#define GLFW_EXPOSE_NATIVE_X11
+#include <GLFW/glfw3native.h>
 #endif
 
 namespace Pelican {
@@ -260,6 +264,9 @@ Window::Window() : window{nullptr} {
         });
 
     LOG_INFO(logger, "GLFW window initialized");
+#if defined(PELICAN_WINDOW_X11)
+    LOG_INFO(logger, "GLFW X11 native window: {:#x}", static_cast<std::uintptr_t>(glfwGetX11Window(glfw_window)));
+#endif
 
     glfwSetKeyCallback(glfw_window, [](GLFWwindow *window, int key, int scancode, int action, int mods) {
         (void)scancode;
@@ -371,6 +378,8 @@ CursorModeStatus Window::applyCursorMode(CursorMode requested, bool rpc) {
 void *Window::renderDocCaptureHandle() const noexcept {
 #ifdef _WIN32
     return reinterpret_cast<void *>(glfwGetWin32Window(glfwWindowOf(window)));
+#elif defined(PELICAN_WINDOW_X11)
+    return reinterpret_cast<void *>(static_cast<std::uintptr_t>(glfwGetX11Window(glfwWindowOf(window))));
 #else
     return nullptr;
 #endif
