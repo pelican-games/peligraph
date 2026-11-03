@@ -14,7 +14,7 @@
 
 | 要件 | 内容 |
 |---|---|
-| OS | Windows(開発の主環境)。日本語を含む path の project も開けます(下の「日本語の path」)。player は Android(arm64-v8a のスマホ)でも動きます(✅SA1、build は Windows の上で NDK を使う。§2.9) |
+| OS | Windows(開発の主環境)。Linux は headless の player(GCC 14、§2.2「Linux でビルドする」)。日本語を含む path の project も開けます(下の「日本語の path」)。player は Android(arm64-v8a のスマホ)でも動きます(✅SA1、build は Windows の上で NDK を使う。§2.9) |
 | コンパイラ | MSVC、C++20。CI と下の例は Qt の kit `msvc2022_64`(Visual Studio 2022 向け)を使います。CMake は compiler の版を検査せず、動く最低の版は未確認です |
 | CMake | **3.20 以上**([`cmake_minimum_required(VERSION 3.20)`](../../CMakeLists.txt#L1))。ルートの [CMakeLists.txt](../../CMakeLists.txt) が全体を構成 |
 | Vulkan SDK | **1.4.309 以上**。configure が SDK の `vulkan_core.h` の版を読み、古ければ `Vulkan SDK 1.4.309 or newer is required (found <版>)` で止まります([版の検査](../../CMakeLists.txt#L314))。1.4.350 で検証済み。vma-hpp v3.3.0 以降、1.3.x は非対応 |
@@ -37,7 +37,7 @@ CMake フラグです。`ON` の PC 開発ビルドには完全な Vulkan SDK �
 `-DPELICAN_RUNTIME_SHADER_COMPILER=OFF` で shaderc をリンクしません。
 ✅SA1 の Android の player はこの形ではなく、端末の上で実行時に compile します(事前生成の SPIR-V を配る B4 は SA1 に入れていない)。
 
-**GPU の選び方(✅DS-1)。**player は Vulkan の物理デバイスを列挙し、API が 1.3 未満のものと、上の表の機能・拡張・queue が揃わないものを外し、残りから discrete GPU(+1000)と graphics / present が同じ queue のもの(+100)を優先して選びます([`selectVulkanPhysicalDevice()`](../../src/core/vkcore/devicefeaturepolicy.cpp#L11)、必須の機能を集める所は [core.cpp](../../src/core/vkcore/core.cpp#L457))。`pelican_player --gpu <index|name>` で列挙の 0 始まりの番号か、デバイス名の完全一致を指定できます([引数](../../src/player/main.cpp#L405))。指定しても必須の検査は飛ばしません。どれも選べなければ `No suitable Vulkan 1.3 GPU. Devices: [0] <名前> (Vulkan 1.x) ...`(`--gpu` を付けたときは `No suitable Vulkan 1.3 GPU for --gpu '<指定>'. Devices: ...`)で止まり、候補の名前と API の版が並びます。player と Studio の exe は NVIDIA / AMD の切り替え用の export(`NvOptimusEnablement` / `AmdPowerXpressRequestHighPerformance`)を持ちます([gpupreference.cpp](../../src/platform/gpupreference.cpp))。OpenXR を使うときは runtime が選んだ GPU に従います。
+**GPU の選び方(✅DS-1)。**player は Vulkan の物理デバイスを列挙し、API が 1.3 未満のものと、上の表の機能・拡張・queue が揃わないものを外し、残りから discrete GPU(+1000)と graphics / present が同じ queue のもの(+100)と CPU 実装(llvmpipe など)でないもの(+50)を優先して選びます([`selectVulkanPhysicalDevice()`](../../src/core/vkcore/devicefeaturepolicy.cpp#L11)、必須の機能を集める所は [core.cpp](../../src/core/vkcore/core.cpp#L457))。`pelican_player --gpu <index|name>` で列挙の 0 始まりの番号か、デバイス名の完全一致を指定できます([引数](../../src/player/main.cpp#L405))。指定しても必須の検査は飛ばしません。どれも選べなければ `No suitable Vulkan 1.3 GPU. Devices: [0] <名前> (Vulkan 1.x) ...`(`--gpu` を付けたときは `No suitable Vulkan 1.3 GPU for --gpu '<指定>'. Devices: ...`)で止まり、候補の名前と API の版が並びます。player と Studio の exe は NVIDIA / AMD の切り替え用の export(`NvOptimusEnablement` / `AmdPowerXpressRequestHighPerformance`)を持ちます([gpupreference.cpp](../../src/platform/gpupreference.cpp))。OpenXR を使うときは runtime が選んだ GPU に従います。
 
 **Git と Python(✅DS-1)。**
 - Python は build に要りません。OpenXR は `KhronosGroup/OpenXR-SDK` の release-1.1.61 を commit で pin しており、この SDK は生成済みの loader と header を含みます([OpenXR の宣言](../../CMakeLists.txt#L286))。Python が要るのは experimental SPIR-V linker(`PELICAN_WITH_SPIRV_LINK=ON`。pinned SPIRV-Tools のコード生成)と Python 製テストだけです。
@@ -124,6 +124,34 @@ cmake --install build-dist --config Release --component Runtime --prefix "$PWD/b
 - **起動に失敗したときの見え方。**エラーの文は常に stderr に出ます。console も標準出力の接続も無い手起動(エクスプローラからの double-click など)のときだけ、同じ文を `Pelican` の題の message box でも出します。`--headless` / `--rpc` / `--embedded`、環境変数 `PELICAN_NO_MESSAGEBOX=1`、console や pipe・ファイルへの出力があるときは出しません([判定](../../src/core/playerdiagnostics.hpp#L16))。GUI の exe でも `--console` で親の console に繋げます。
 - `PELICAN_PLAYER_GUI_SUBSYSTEM` の既定は OFF(開発と test の build は console の exe)です([option](../../src/player/CMakeLists.txt#L1))。
 - 出荷物を install した場所・別の作業ディレクトリ・日本語の path で通しで起動する確認は、v0 の全数 gate の配布の項目で行う予定で、この文書の時点では未確認です。
+
+### Linux でビルドする(player の headless)✅LX-0
+
+Linux では `pelican_player` の headless 実行(`--headless`、`--headless --rpc`)を対象にします。Studio(Qt)と
+OpenXR は外します。検証した環境は Linux の計算ノード(RHEL 9.4、`module load gcc/14.2.0 cmake/3.28.3 ninja`、
+LunarG Vulkan SDK 1.4.309.0 の Linux tarball、NVIDIA H100)で、clang でも compile と link が通ります。
+
+```sh
+export VULKAN_SDK=<展開先>/1.4.309.0/x86_64      # tarball の x86_64(lib / bin は小文字)
+export CC=$(command -v gcc) CXX=$(command -v g++)  # GCC 14 を明示する
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DSKIP_DEVSTUDIO=ON -DBUILD_TESTING=OFF -DPELICAN_PYTHON_TESTS=OFF \
+  -DPELICAN_WITH_OPENXR=OFF -DPELICAN_WITH_SPIRV_LINK=OFF -DPELICAN_RUNTIME_SHADER_COMPILER=ON
+cmake --build build --target pelican_player          # build/dist/Release/pelican_player
+build/dist/Release/pelican_player --headless --project projects/pathtrace_demo --frames 30 --render-out out.png
+```
+
+- `CC` / `CXX` を明示しないと、この環境では module を読んでも CMake が `/usr/bin/c++`(GCC 11)を拾います。
+- GLFW の Wayland / X11 は、`wayland-scanner` や X11 の開発ヘッダが無ければその backend を外して続けます
+  (configure にその旨の行が出ます)。headless は GLFW を初期化しないので表示は要りません。
+- 物理デバイスは GPU を優先し、Mesa の CPU 実装(llvmpipe)は他に無いときだけ選びます。選ばれた名前はログの
+  `vulkan physical device: <name>` に出ます。
+- ray query の無い GPU(H100 は `VK_KHR_ray_tracing_pipeline` だけ)でも acceleration structure と ray tracing
+  pipeline は有効になり、path tracer は動きます。ray query を要求する feature は名指しで断られます(落ちません)。
+  ray query のある GPU(RTX など)の挙動は変わりません([選び方](../../src/core/vkcore/devicefeaturepolicy.cpp#L71))。
+- ゲームの component は global の名前空間で `DECLARE_COMPONENT(MyComponent, 61)` と書きます(第4章)。
+  `namespace` の中での宣言は MSVC は通しますが GCC は通しません。
+- Studio・game logic の DLL・test 全体の Linux 対応は続きの WP(LX-2 以降)です。
 
 ### 機能ユニット(PELICAN_WITH_*)
 

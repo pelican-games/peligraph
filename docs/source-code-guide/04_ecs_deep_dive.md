@@ -44,7 +44,7 @@ C++の型名は実行時には残らないので、ECSは型ごとに**整数の
 DECLARE_COMPONENT(型, 数値ID)
 ```
 
-組み込みIDは [`components/predefined.hpp`](../../src/core/userpublic/components/predefined.hpp#L13) にあります。
+組み込みIDは [`components/predefined.hpp`](../../src/core/userpublic/components/predefined.hpp#L22) にあります。
 
 | ID | 型 | scene名 | 用途 |
 |---:|---|---|---|
