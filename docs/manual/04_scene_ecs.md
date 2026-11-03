@@ -449,13 +449,13 @@ flowchart TD
 | `playSound` / `stopSound` / `setBusVolume` | 音は鳴らず、voice slot だけ予約。flush で実際に再生 |
 | `setGameSettings` / `saveSettings` / `saveData` | shadow に書き、ディスクへは flush で atomic 書き込み |
 
-**読み取りは自分の書き込みを見ます。** ロード中の `isPlaying(h)` は「さっき staging した `playSound` のハンドル」に true を返し、その後 `stopSound` すれば false。`loadData(slot)` は staging 済みの `saveData` の中身をそのまま返し、`listSaves()` にも staging 済みスロットが並びます — ただし**まだ書いていないので `timestamp` は 0**([listSaves](../../src/core/loader/effecttransaction.cpp#L409))。`gameSettings()` も同じく shadow を返します。
+**読み取りは自分の書き込みを見ます。** ロード中の `isPlaying(h)` は「さっき staging した `playSound` のハンドル」に true を返し、その後 `stopSound` すれば false。`loadData(slot)` は staging 済みの `saveData` の中身をそのまま返し、`listSaves()` にも staging 済みスロットが並びます — ただし**まだ書いていないので `timestamp` は 0**([listSaves](../../src/core/loader/effecttransaction.cpp#L410))。`gameSettings()` も同じく shadow を返します。
 
-**構造変更(mutation = entity の生成・削除・localtransform の書き換え)の直接呼び出しは名前付きで拒否されます。** トランザクション中に behavior のコールバック**外**から `GameObjects::create` / `remove` / `setLocalTransform` を呼ぶと、その呼び出し自体が [`SceneTransactionMutationRejected{api: ...}`](../../src/core/userpublic/gameobjects.hpp#L20)(`std::logic_error` の派生。`api` にはねられた API 名が入ります)を投げます([gameobjects.cpp](../../src/core/userpublic/gameobjects.cpp#L14) が入口ごとに判定。`removeAll` は behavior のコールバック中でも拒否)。踏むのは主に、ゲーム DLL のコンポーネント JSON ローダから ECS を触ろうとしたときです。
+**構造変更(mutation = entity の生成・削除・localtransform の書き換え)の直接呼び出しは名前付きで拒否されます。** トランザクション中に behavior のコールバック**外**から `GameObjects::create` / `remove` / `setLocalTransform` を呼ぶと、その呼び出し自体が [`SceneTransactionMutationRejected{api: ...}`](../../src/core/userpublic/gameobjects.hpp#L21)(`std::logic_error` の派生。`api` にはねられた API 名が入ります)を投げます([gameobjects.cpp](../../src/core/userpublic/gameobjects.cpp#L14) が入口ごとに判定。`removeAll` は behavior のコールバック中でも拒否)。踏むのは主に、ゲーム DLL のコンポーネント JSON ローダから ECS を触ろうとしたときです。
 
 ### 旧シーンの onDestroy が見えるもの
 
-retire 中の `onDestroy` は「自分の最終状態」を読めます。entity はもう unpublish されていますが、`ctx.localTransform(self)` / `ctx.spriteView(self)` は**破棄トークンが持つスナップショット**を返します([retiredComponent](../../src/core/loader/effecttransaction.cpp#L464))。書き込み側(`setLocalTransform` / `setSpriteView` / `setSpriteTexture`)は throw せず **false** を返し、`SceneRetiredObjectMutationRejected` として `effect_errors` に積まれます([rejectRetiredMutation](../../src/core/loader/effecttransaction.cpp#L475))。
+retire 中の `onDestroy` は「自分の最終状態」を読めます。entity はもう unpublish されていますが、`ctx.localTransform(self)` / `ctx.spriteView(self)` は**破棄トークンが持つスナップショット**を返します([retiredComponent](../../src/core/loader/effecttransaction.cpp#L465))。書き込み側(`setLocalTransform` / `setSpriteView` / `setSpriteTexture`)は throw せず **false** を返し、`SceneRetiredObjectMutationRejected` として `effect_errors` に積まれます([rejectRetiredMutation](../../src/core/loader/effecttransaction.cpp#L476))。
 
 - `onDestroy` は `noexcept` なので、この段の fallible API(`playSound` / `saveData` など)は**例外を投げずに `effect_errors` へ**回されます。呼び出し側のゲームコードは戻り値だけ見ればよく、握りつぶしではなく記録されます。
 - retire 中の `loadScene(name)` は、**commit 済みのシーン集合**に対して解決されます([requestLoadDuringRetire](../../src/core/loader/scene.cpp#L1857))。旧シーンにしか無い名前を書くと `scene not found in committed projection: X` になり、`scene_retire_load_rejected@1` として記録されます。
@@ -465,7 +465,7 @@ retire 中の `onDestroy` は「自分の最終状態」を読めます。entity
 flush で音やディスク書き込みが失敗しても、**シーンは新しいまま**です。この結果は [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L174) として返り、rpc の `load_scene` は例外ではなく `{"name": ..., "committed": true, "effect_errors": [...]}` を返します([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L2045))。`effect_errors` の各要素は `{api, error_code, error_fields, phase}` で、`api` は `playSound` / `saveData` などの公開 API 名、`phase` は `activate` / `destroy` / `flush` のどれかです。
 
 - 「シーンは切り替わらなかった」= commit 前の失敗は従来どおり**例外**です。両者を混同しないでください。
-- staging できる作用は 256 件までです。257 件目からは**控えに積まれず、実行もされません**(`playSound` は無効なハンドルを返します)。捨てた件数だけが `effect_outbox_full@1{dropped: N}` という 1 件のエラーにまとめて記録されます([reserveEntry](../../src/core/loader/effecttransaction.cpp#L119))。
+- staging できる作用は 256 件までです。257 件目からは**控えに積まれず、実行もされません**(`playSound` は無効なハンドルを返します)。捨てた件数だけが `effect_outbox_full@1{dropped: N}` という 1 件のエラーにまとめて記録されます([reserveEntry](../../src/core/loader/effecttransaction.cpp#L120))。
 
 ### シーン遷移(✅・WP52)
 

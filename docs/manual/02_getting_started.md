@@ -17,7 +17,7 @@
 | OS | Windows(開発の主環境)。日本語を含む path の project も開けます(下の「日本語の path」)。player は Android(arm64-v8a のスマホ)でも動きます(✅SA1、build は Windows の上で NDK を使う。§2.9) |
 | コンパイラ | MSVC、C++20。CI と下の例は Qt の kit `msvc2022_64`(Visual Studio 2022 向け)を使います。CMake は compiler の版を検査せず、動く最低の版は未確認です |
 | CMake | **3.20 以上**([`cmake_minimum_required(VERSION 3.20)`](../../CMakeLists.txt#L1))。ルートの [CMakeLists.txt](../../CMakeLists.txt) が全体を構成 |
-| Vulkan SDK | **1.4.309 以上**。configure が SDK の `vulkan_core.h` の版を読み、古ければ `Vulkan SDK 1.4.309 or newer is required (found <版>)` で止まります([版の検査](../../CMakeLists.txt#L312))。1.4.350 で検証済み。vma-hpp v3.3.0 以降、1.3.x は非対応 |
+| Vulkan SDK | **1.4.309 以上**。configure が SDK の `vulkan_core.h` の版を読み、古ければ `Vulkan SDK 1.4.309 or newer is required (found <版>)` で止まります([版の検査](../../CMakeLists.txt#L314))。1.4.350 で検証済み。vma-hpp v3.3.0 以降、1.3.x は非対応 |
 | GPU | **Vulkan 1.3** と、機能 `multiDrawIndirect` / `drawIndirectFirstInstance` / `shaderDrawParameters` / `dynamicRendering`、窓を出すときは拡張 `VK_KHR_swapchain`(下の「GPU の選び方」)。レイトレーシングの機能は任意です |
 | Qt6 | Pelican Studio(エディタ)用。6.10 以上。**player だけなら不要** |
 | Python | **build にも実行にも要りません**(下の「Git と Python」)。要るのは `PELICAN_WITH_SPIRV_LINK=ON`(既定 OFF)と Python 製テスト(`PELICAN_PYTHON_TESTS`、既定 OFF)だけです |
@@ -30,7 +30,7 @@ vma-hpp が v3.3.0 以降でなければならないのは、SDK 1.4 系で vulk
 vulkan.hpp 側へ委譲して改名の影響を受けなくなったためです([src/core/CMakeLists.txt](../../src/core/CMakeLists.txt#L69) のコメントが理由の正)。
 
 quill / glm / nlohmann_json / argparse / tinyexr / miniaudio などは CMake の
-FetchContent で自動取得されます(各依存は `GIT_REPOSITORY` と `GIT_TAG` で宣言され、ほとんどは commit の hash で固定しています。例 [quill](../../CMakeLists.txt#L88)。JoltPhysics だけは tag `v5.5.0` の指定です([Jolt の宣言](../../CMakeLists.txt#L455)))。shaderc は例外で、Vulkan SDK 同梱版を使います(Android の build だけは shaderc・glslang・SPIRV-Tools を pin して source から build します。§2.9)。
+FetchContent で自動取得されます(各依存は `GIT_REPOSITORY` と `GIT_TAG` で宣言され、ほとんどは commit の hash で固定しています。例 [quill](../../CMakeLists.txt#L90)。JoltPhysics だけは tag `v5.5.0` の指定です([Jolt の宣言](../../CMakeLists.txt#L482)))。shaderc は例外で、Vulkan SDK 同梱版を使います(Android の build だけは shaderc・glslang・SPIRV-Tools を pin して source から build します。§2.9)。
 `PELICAN_RUNTIME_SHADER_COMPILER` は「**実行時に GLSL を SPIR-V へコンパイルする shaderc を組み込むか**」の
 CMake フラグです。`ON` の PC 開発ビルドには完全な Vulkan SDK が必要です(無いと configure が名指しで止まります)。
 ホスト PC で事前生成した SPIR-V を消費するモバイル等のターゲットは
@@ -40,7 +40,7 @@ CMake フラグです。`ON` の PC 開発ビルドには完全な Vulkan SDK �
 **GPU の選び方(✅DS-1)。**player は Vulkan の物理デバイスを列挙し、API が 1.3 未満のものと、上の表の機能・拡張・queue が揃わないものを外し、残りから discrete GPU(+1000)と graphics / present が同じ queue のもの(+100)を優先して選びます([`selectVulkanPhysicalDevice()`](../../src/core/vkcore/devicefeaturepolicy.cpp#L11)、必須の機能を集める所は [core.cpp](../../src/core/vkcore/core.cpp#L457))。`pelican_player --gpu <index|name>` で列挙の 0 始まりの番号か、デバイス名の完全一致を指定できます([引数](../../src/player/main.cpp#L405))。指定しても必須の検査は飛ばしません。どれも選べなければ `No suitable Vulkan 1.3 GPU. Devices: [0] <名前> (Vulkan 1.x) ...`(`--gpu` を付けたときは `No suitable Vulkan 1.3 GPU for --gpu '<指定>'. Devices: ...`)で止まり、候補の名前と API の版が並びます。player と Studio の exe は NVIDIA / AMD の切り替え用の export(`NvOptimusEnablement` / `AmdPowerXpressRequestHighPerformance`)を持ちます([gpupreference.cpp](../../src/platform/gpupreference.cpp))。OpenXR を使うときは runtime が選んだ GPU に従います。
 
 **Git と Python(✅DS-1)。**
-- Python は build に要りません。OpenXR は `KhronosGroup/OpenXR-SDK` の release-1.1.61 を commit で pin しており、この SDK は生成済みの loader と header を含みます([OpenXR の宣言](../../CMakeLists.txt#L284))。Python が要るのは experimental SPIR-V linker(`PELICAN_WITH_SPIRV_LINK=ON`。pinned SPIRV-Tools のコード生成)と Python 製テストだけです。
+- Python は build に要りません。OpenXR は `KhronosGroup/OpenXR-SDK` の release-1.1.61 を commit で pin しており、この SDK は生成済みの loader と header を含みます([OpenXR の宣言](../../CMakeLists.txt#L286))。Python が要るのは experimental SPIR-V linker(`PELICAN_WITH_SPIRV_LINK=ON`。pinned SPIRV-Tools のコード生成)と Python 製テストだけです。
 - source tree に `.git` が無くても configure は通ります。Studio の crash symbol の保存が source の commit を読めないときは `Cannot identify source commit for crash symbols: Git or .git is unavailable; using unknown` の WARNING を出し、commit を `unknown` として続けます([判定](../../cmake/pelican_crash_symbols.cmake#L14))。
 - 依存は FetchContent が Git の repository から取得するので、初回の configure には `git` コマンドとネットワークが要ります。依存を source tree に同梱して Git もネットワークも要らない configure にする作業(DS-1c、`PELICAN_FETCH_DEPENDENCIES` で取得に切り替える形)は公開後に入る予定で、この版にはまだありません。
 
@@ -135,8 +135,8 @@ cmake --install build-dist --config Release --component Runtime --prefix "$PWD/b
 | `PELICAN_WITH_SEQPLAYER` | `pelican.transform_seq` 再生 |
 | `PELICAN_WITH_VAT` | `pelican.vat`(GLB)再生 |
 | `PELICAN_WITH_EXR` | EXR 読み込み |
-| `PELICAN_WITH_AUDIO` | 音の再生(WAV / Ogg Vorbis、se / bgm バス。miniaudio と同梱の stb_vorbis はこの中だけで有効)。⚠️ feature registry の DESCRIPTION は「WAV sound-effect」のまま([pelican_feature_registry.cmake](../../cmake/pelican_feature_registry.cmake#L122)) |
-| `PELICAN_WITH_ANIMATION` | スケルタルアニメーションの評価器と `pelican.pose` グラフ module(✅AG-1a。[pelican_feature_registry.cmake:146](../../cmake/pelican_feature_registry.cmake#L149)、`SMOKE_ID animation`) |
+| `PELICAN_WITH_AUDIO` | 音の再生(WAV / Ogg Vorbis、se / bgm バス。miniaudio と同梱の stb_vorbis はこの中だけで有効)。⚠️ feature registry の DESCRIPTION は「WAV sound-effect」のまま([pelican_feature_registry.cmake](../../cmake/pelican_feature_registry.cmake#L127)) |
+| `PELICAN_WITH_ANIMATION` | スケルタルアニメーションの評価器と `pelican.pose` グラフ module(✅AG-1a。[pelican_feature_registry.cmake:146](../../cmake/pelican_feature_registry.cmake#L154)、`SMOKE_ID animation`) |
 | `PELICAN_WITH_IMGUI` | ImGui 開発者 UI(F1 トグル・Plan Viewer)。配布では dist-config が常時 OFF([第10章](10_tools.md)) |
 | `PELICAN_WITH_OPENXR` | OpenXR(PCVR)ランタイム。開発既定 ON・**配布は `dist-config --with openxr` を指定した時だけ ON** |
 | `PELICAN_WITH_RENDERDOC` | 注入済みRenderDocの受動検出とF11/RPC capture。binary/import libraryはリンクせず、配布では常にOFF |

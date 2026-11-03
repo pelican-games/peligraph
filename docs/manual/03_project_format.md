@@ -229,7 +229,7 @@ Studio は engine を `--rpc` で起こし、`--rpc` の engine は宣言が無�
 
 `camera` は glTF のカメラ定義と同形です。`type` は `"perspective"`(既定)か `"orthographic"` のみ。perspective は `yfov`(**ラジアン**)/`znear`/`zfar` 必須・`aspect` 任意、orthographic は `xmag`/`ymag`/`znear`/`zfar` 必須です。
 
-**`camera.up` は受け付けません。** camera の向きは glTF と同じ規約になり、回転なしの camera は −Z を向き、up は transform の回転の +Y です(world の上は常に +Y。[第6章 §6.1](06_rendering.md) の「座標の規約」)。`up` を書いた project.json は、どの値でも(配列でなくても)次の名前で開けません。検査は envelope の `schema` / `version` の検査の直後です([project.json で断る所](../../src/project/projectformat.cpp#L250)。project.json 以外の経路で渡った config も [`rejectRemovedCameraUp()`](../../src/core/loader/basicconfig.cpp#L247) が同じ名前で断ります):
+**`camera.up` は受け付けません。** camera の向きは glTF と同じ規約になり、回転なしの camera は −Z を向き、up は transform の回転の +Y です(world の上は常に +Y。[第6章 §6.1](06_rendering.md) の「座標の規約」)。`up` を書いた project.json は、どの値でも(配列でなくても)次の名前で開けません。検査は envelope の `schema` / `version` の検査の直後です([project.json で断る所](../../src/project/projectformat.cpp#L250)。project.json 以外の経路で渡った config も [`rejectRemovedCameraUp()`](../../src/core/loader/basicconfig.cpp#L249) が同じ名前で断ります):
 
 ```
 project.camera_up_removed@1: project.json basic_config.camera.up was removed: the camera convention changed (a camera looks along -Z of its rotation, its up is the rotation's +Y and the world's up is +Y). Convert the project with `uv run tools/convert_camera_convention.py <project dir>`, which removes the key and turns its cameras to look the way they did

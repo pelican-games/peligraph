@@ -404,13 +404,13 @@ game DLL 境界の v2 record は「凍結」と書かれていますが、実際
 
 **答え**: active と done を分ける DFS により、共有親と循環を区別します。 → [第3章 §3.5 の本文](03_project_and_loading.md#reading-note-003)。
 
-#### [`ProjectBasicConfig::saveSceneDocument()`](../../src/core/loader/basicconfig.cpp#L935) — 複数の注入点と baseline 再検証
+#### [`ProjectBasicConfig::saveSceneDocument()`](../../src/core/loader/basicconfig.cpp#L937) — 複数の注入点と baseline 再検証
 
 **分からなくなること**: baseline を取ったのに、置換直前でもう一度検証するのはなぜか。
 
 **答え**: baseline は scene bytes と prefab read-set を一体で固定し、置換直前に再検証します。 → [第3章 §3.5 の本文](03_project_and_loading.md#reading-note-004)。
 
-#### [`ProjectBasicConfig::publishSceneDocument()`](../../src/core/loader/basicconfig.cpp#L716) — revision と resolver generation が進む条件
+#### [`ProjectBasicConfig::publishSceneDocument()`](../../src/core/loader/basicconfig.cpp#L718) — revision と resolver generation が進む条件
 
 **分からなくなること**: revision と resolver generation がいつ進むのか(prepare で進むのか、publish で進むのか)。
 
@@ -438,13 +438,13 @@ game DLL 境界の v2 record は「凍結」と書かれていますが、実際
 | [`loadColliderComponent()`](../../src/core/loader/scene.cpp#L287) | `runtime_codec` の null 検査 | なぜ `logic_error` なのか | resolver が具体 component に codec を必ず付ける契約なので、null は authoring の誤りではなく内部不整合。同関数の `ResolutionFailureException` 経路(= 作者の誤り)と行き先を分けている |
 | [`loadTransientGltf()`](../../src/core/loader/scene.cpp#L2183) | 二重予約と `owns_resources` | なぜ 2 回予約するのか | ハッシュノードとバケット成長を**パース・GPU staging より前**に確保し(コメントが明言)、entity 生成後の公開が確保できない = transaction を割れないようにする。容量拒否は副作用の無い [`inspect()`(WP110)](../../src/core/loader/scene.cpp#L2222) + `preflightModelInstance` で先に行う |
 | [`displayObjectName()`](../../src/core/loader/scene.cpp#L277) | 診断用の表示名 | 常に `<unnamed>` に見える | 空のときだけ `<unnamed>` を返す 1 行。identity ではなく**表示**なので、同一性の判定に使わない |
-| [`scenePersistenceBaseline()`](../../src/core/loader/basicconfig.cpp#L361) | prefab closure と read-set | baseline が何の複合か | scene ファイルの digest + resolve が実際に読んだ prefab 集合(name/path/digest)。registry に無い prefab が closure にあれば `logic_error` |
+| [`scenePersistenceBaseline()`](../../src/core/loader/basicconfig.cpp#L363) | prefab closure と read-set | baseline が何の複合か | scene ファイルの digest + resolve が実際に読んだ prefab 集合(name/path/digest)。registry に無い prefab が closure にあれば `logic_error` |
 | [`SceneMetadataState`](../../src/core/loader/basicconfig.hpp#L106) | 3 本の番号の役割分担 | revision / generation / object_id の違い | revision = authoring document の改訂、resolver generation = 解決結果の世代(読み手のキャッシュ無効化)、next_authoring_object_id = 宣言 ID の払い出し高水位(scene をまたいで再利用しない) |
-| [`temporaryScenePath()`](../../src/core/loader/basicconfig.cpp#L428) | atomic カウンタ + nonce | 2 系統ある理由 | atomic は同一プロセス内の連続 save、steady_clock nonce は別プロセス・再起動・前回の残骸 tmp。保存先と同じ親ディレクトリに置くので `EXDEV` を踏まない |
-| [`JsonLoader` の CLI / project / default 3 層](../../src/core/loader/basicconfig.cpp#L64) と [prefab_registry 構築](../../src/core/loader/basicconfig.cpp#L624) | 設定のフォールスルー | 初期化順序の根拠 | 優先順位は実装どおり(CLI > project > default)。**順序をその形にした理由はコードにも文書にも無く、未執筆** |
-| [`importSceneDocument()`](../../src/core/loader/basicconfig.cpp#L792) | import のトランザクション意味論 | schema version 1/2 の扱い | **未執筆**(§9.23.10 の gate 順序と対で読む必要がある) |
-| [`CallbackPhase`](../../src/core/loader/effecttransaction.hpp#L29) と [destroy 相で診断を積む catch(`playSound()` の例)](../../src/core/loader/effecttransaction.cpp#L163) | activate / destroy / flush | destroy でだけ再送出しない理由 | destroy の呼び出し元は `noexcept` かつ**既に commit 済みで rollback 不能**なので、throw は terminate か中途半端な破棄にしかならない。固定長診断へ落として `CommittedWithEffectFailure` として報告する |
-| [`busValue()`](../../src/core/loader/effecttransaction.cpp#L36) / [`effectErrors`](../../src/core/loader/effecttransaction.cpp#L678) | const 版の copy、ErrorFields 分岐 | 何を分けているのか | **未執筆**(根拠がコードにない) |
+| [`temporaryScenePath()`](../../src/core/loader/basicconfig.cpp#L430) | atomic カウンタ + nonce | 2 系統ある理由 | atomic は同一プロセス内の連続 save、steady_clock nonce は別プロセス・再起動・前回の残骸 tmp。保存先と同じ親ディレクトリに置くので `EXDEV` を踏まない |
+| [`JsonLoader` の CLI / project / default 3 層](../../src/core/loader/basicconfig.cpp#L66) と [prefab_registry 構築](../../src/core/loader/basicconfig.cpp#L626) | 設定のフォールスルー | 初期化順序の根拠 | 優先順位は実装どおり(CLI > project > default)。**順序をその形にした理由はコードにも文書にも無く、未執筆** |
+| [`importSceneDocument()`](../../src/core/loader/basicconfig.cpp#L794) | import のトランザクション意味論 | schema version 1/2 の扱い | **未執筆**(§9.23.10 の gate 順序と対で読む必要がある) |
+| [`CallbackPhase`](../../src/core/loader/effecttransaction.hpp#L29) と [destroy 相で診断を積む catch(`playSound()` の例)](../../src/core/loader/effecttransaction.cpp#L164) | activate / destroy / flush | destroy でだけ再送出しない理由 | destroy の呼び出し元は `noexcept` かつ**既に commit 済みで rollback 不能**なので、throw は terminate か中途半端な破棄にしかならない。固定長診断へ落として `CommittedWithEffectFailure` として報告する |
+| [`busValue()`](../../src/core/loader/effecttransaction.cpp#L36) / [`effectErrors`](../../src/core/loader/effecttransaction.cpp#L679) | const 版の copy、ErrorFields 分岐 | 何を分けているのか | **未執筆**(根拠がコードにない) |
 
 ### 9.23.2 resolver / componentcodec / prefab
 
@@ -994,10 +994,10 @@ game DLL 境界の v2 record は「凍結」と書かれていますが、実際
 
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
-| [`createLogicalDevice()` の StructureChain](../../src/core/vkcore/core.cpp#L626) と [`unlink<T>()` の呼び出し](../../src/core/vkcore/core.cpp#L832) | feature 構造体の動的削除 | 削除の判定基準 | 全 feature 構造体を一度チェーンに組み、実行時に**「その機能が物理デバイスでサポートされ、かつ有効化選択されたか」**で使わないものだけ `unlink<T>()` する。未サポート機能の構造体を渡して device 作成が失敗するのを避けるため |
+| [`createLogicalDevice()` の StructureChain](../../src/core/vkcore/core.cpp#L631) と [`unlink<T>()` の呼び出し](../../src/core/vkcore/core.cpp#L837) | feature 構造体の動的削除 | 削除の判定基準 | 全 feature 構造体を一度チェーンに組み、実行時に**「その機能が物理デバイスでサポートされ、かつ有効化選択されたか」**で使わないものだけ `unlink<T>()` する。未サポート機能の構造体を渡して device 作成が失敗するのを避けるため |
 | [`pickQueues()`](../../src/core/vkcore/core.cpp#L254) | フォールバック優先順位 | 順序の理由 | 非 headless では ①graphics+present+compute を満たす単一 family、②graphics+present、③present だけ、の順。**1 family で済めばキュー跨ぎの所有権移転やセマフォ同期が不要**なので最優先 |
-| [`selectVulkanPhysicalDevice()` の score](../../src/core/vkcore/devicefeaturepolicy.cpp#L26) | スコアの加点 | 1000 / 100 という値の根拠 | ✅DS-1 から `pickPhysicalDevice()` は候補を集めるだけで、選ぶのはこの関数。discrete GPU に +1000、headless か `graphic_queue == presentation_queue`(`unified_queue`)に +100 で、外付けの GPU が統合 GPU より先に選ばれる。同一 family なら swapchain image のキューファミリ所有権移転が要らず有利だから +100。Vulkan 1.3 未満と必須の拡張・機能の欠けは score ではなく `continue` で除外し、`--gpu <index|name>` はそれ以外の候補を外す(要件を欠く GPU は指定しても選ばない)。**数値そのものの根拠は未執筆** |
-| [`VulkanManageCore()` の関数ポインタ初期化](../../src/core/vkcore/core.cpp#L1083) | 拡張関数の条件付き解決 | null チェック後に throw する理由 | Vulkan 拡張の関数ポインタ解決という前提知識(→ [第10章](10_background_knowledge.md)) |
+| [`selectVulkanPhysicalDevice()` の score](../../src/core/vkcore/devicefeaturepolicy.cpp#L28) | スコアの加点 | 1000 / 100 という値の根拠 | ✅DS-1 から `pickPhysicalDevice()` は候補を集めるだけで、選ぶのはこの関数。discrete GPU に +1000、headless か `graphic_queue == presentation_queue`(`unified_queue`)に +100 で、外付けの GPU が統合 GPU より先に選ばれる。同一 family なら swapchain image のキューファミリ所有権移転が要らず有利だから +100。Vulkan 1.3 未満と必須の拡張・機能の欠けは score ではなく `continue` で除外し、`--gpu <index|name>` はそれ以外の候補を外す(要件を欠く GPU は指定しても選ばない)。**数値そのものの根拠は未執筆** |
+| [`VulkanManageCore()` の関数ポインタ初期化](../../src/core/vkcore/core.cpp#L1090) | 拡張関数の条件付き解決 | null チェック後に throw する理由 | Vulkan 拡張の関数ポインタ解決という前提知識(→ [第10章](10_background_knowledge.md)) |
 
 ### 9.23.14 swapchain / OpenXR
 
@@ -1080,7 +1080,7 @@ game DLL 境界の v2 record は「凍結」と書かれていますが、実際
 
 ### 9.23.16 game DLL / schema
 
-#### [`reloadTransaction()`](../../src/core/gamelogic/gamelogicreload.cpp#L584) — previous_unloaded と rollback の分岐
+#### [`reloadTransaction()`](../../src/core/gamelogic/gamelogicreload.cpp#L586) — previous_unloaded と rollback の分岐
 
 **分からなくなること**: rollback の 2 分岐と、例外メッセージを退避してから unload する理由。
 
@@ -1120,15 +1120,15 @@ game DLL 境界の v2 record は「凍結」と書かれていますが、実際
 
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
-| [ロック検出と debounce のコメント](../../src/core/gamelogic/gamelogicreload.cpp#L774) | source_busy_retries | 失敗と pending の別 | ビルドは DLL をその場で truncate → 書き戻すことがあるので、まずサイズ / 更新時刻の同一サンプルを 2 回取って debounce し、次に `FILE_SHARE_READ` のみで開いてライタを排除してからシャドウコピーを取る。`ERROR_SHARING_VIOLATION` / `ERROR_LOCK_VIOLATION` は**失敗ではなく pending 扱い**で、retries が 3 回に達したときだけ `source_busy` |
-| [`makeShadowCopy()`](../../src/core/gamelogic/gamelogicreload.cpp#L373) / [`sweepStaleShadowDirectories()`](../../src/core/gamelogic/gamelogicreload.cpp#L335) | シャドウコピーの規約 | ディレクトリ名の意味 | シャドウ先は `<source_dir>/.pelican-hot-reload/<PID>/` で、**PID をディレクトリ名にすることで同一 DLL を複数プロセスが同時にホットリロードしても衝突しない**。PDB があれば同名で併走コピーする(失敗は警告のみ)。掃除は「名前を PID としてパースでき、その PID が生存していない」ものだけ削除 |
+| [ロック検出と debounce のコメント](../../src/core/gamelogic/gamelogicreload.cpp#L776) | source_busy_retries | 失敗と pending の別 | ビルドは DLL をその場で truncate → 書き戻すことがあるので、まずサイズ / 更新時刻の同一サンプルを 2 回取って debounce し、次に `FILE_SHARE_READ` のみで開いてライタを排除してからシャドウコピーを取る。`ERROR_SHARING_VIOLATION` / `ERROR_LOCK_VIOLATION` は**失敗ではなく pending 扱い**で、retries が 3 回に達したときだけ `source_busy` |
+| [`makeShadowCopy()`](../../src/core/gamelogic/gamelogicreload.cpp#L375) / [`sweepStaleShadowDirectories()`](../../src/core/gamelogic/gamelogicreload.cpp#L337) | シャドウコピーの規約 | ディレクトリ名の意味 | シャドウ先は `<source_dir>/.pelican-hot-reload/<PID>/` で、**PID をディレクトリ名にすることで同一 DLL を複数プロセスが同時にホットリロードしても衝突しない**。PDB があれば同名で併走コピーする(失敗は警告のみ)。掃除は「名前を PID としてパースでき、その PID が生存していない」ものだけ削除 |
 | [`validateBehaviorReloadSources()`](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L85) | schema_changed_without_version_bump | 何を比べているか | `schema_version` が同じなのに `params_schema_fingerprint` が違えば**「バージョンを上げずにスキーマを変えた」**として拒否(同一版で表現が変わると既存 canonical params の解釈が壊れる)。version が上がっている場合は authored の生 `source_params` を candidate の `canonicalize_params` に通す。指紋そのものは[第5章「スキーマの構造をハッシュ値で識別する」](05_gameplay_and_services.md) |
 | [`sceneBehaviorAttachmentSeq()`](../../src/core/gamelogic/behaviorarena.cpp#L74) / [`refreshSceneAttachmentSequence()`](../../src/core/gamelogic/behaviorarena.cpp#L457) | seq の符号化と再計算 | scene_ordered のときだけ再計算する理由 | seq は「シーン内の出現順」をそのまま単調な 64bit キーにする符号化。**scene_ordered でない(ランタイム生成の)attachment は自分の識別子由来の seq を持ち、シーンの index 変化に追随してはいけない** |
 | [attach 時の component_index シフト](../../src/core/gamelogic/behaviorarena.cpp#L1371) / [`reused` に載っているかの判定](../../src/core/gamelogic/behaviorarena.cpp#L1446) | 挿入 / 削除時の詰め替え | ずらさないと何が起きるか | component_index は同一 entity 内の並び順そのものなので、attach で挿入位置以降を +1、remove で以降を −1 してから seq を再計算しないと**実体とずれて衝突する**([公開時に seq 重複チェックがある](../../src/core/gamelogic/behaviorarena.cpp#L809))。所有権は「`reused` に載っている attachment のインスタンスは既存アリーナ側が持つ」モデル |
 | [detached 配列との交換](../../src/core/gamelogic/behaviorarena.cpp#L474) / [`transferRuntime`](../../src/core/gamelogic/behaviorarena.cpp#L332) | publish/rollback の実体 | 所有権の移り方 | → §9.22「三段トランザクション」を behavior arena で実現したもの。詳細は**未執筆** |
 | [5 種の編集の事前/事後条件](../../src/core/gamelogic/behaviorarena.cpp#L1308) / [pending/active の組み合わせ](../../src/core/gamelogic/behaviorarena.cpp#L942) | 条件表 | 各編集の前提 | 上記 identity 三層と activation_delay から従う。**個別の条件表は未執筆** |
 | [`BehaviorCallbackScope`](../../src/core/gamelogic/behaviorarena.cpp#L23) | callback_owner の切り替え | 何を追跡するか | 「今どの DLL 世代のコードが走っているか」を追跡して、リロード時に古い owner のインスタンスを先に破棄できるようにするため。詳細は**未執筆** |
-| [候補 DLL の検証](../../src/core/gamelogic/gamelogicreload.cpp#L466) / [Windows 固有の import 診断](../../src/core/gamelogic/gamelogicreload.cpp#L404) / [active の有無での分岐](../../src/core/gamelogic/gamelogicreload.cpp#L497) | ロード前の関門 | 入口の全体像 | 上記 `diagnoseGameLogicImports` と reloadTransaction の入口。詳細は**未執筆** |
+| [候補 DLL の検証](../../src/core/gamelogic/gamelogicreload.cpp#L468) / [Windows 固有の import 診断](../../src/core/gamelogic/gamelogicreload.cpp#L406) / [active の有無での分岐](../../src/core/gamelogic/gamelogicreload.cpp#L499) | ロード前の関門 | 入口の全体像 | 上記 `diagnoseGameLogicImports` と reloadTransaction の入口。詳細は**未執筆** |
 | [`appendThunkImports()`](../../src/core/gamelogic/gamelogicimports.cpp#L306) | ordinal_flag と終端判定 | PE の読み方 | PE Import Table の仕様そのもの(→ [第10章](10_background_knowledge.md)) |
 | [`recursive()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L160) | Flags / List で true | v2/v3 分岐の判定 | v3 の記述子は所有型の再帰ツリーで、**Flags と List はフラットな V2 `StructFieldSchema` では表現できない唯一のタグ**(語彙と行 struct という子構造を持つ)。`recursive()` はそれらを部分木に含むかを返す |
 | [`schemaNodeFingerprint()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L1042) | 指紋が JSON dump そのもの | hash にしない理由 | 用途は schema 同一性の厳密比較で、**正準 JSON dump は全順序かつ自己記述的なので、不一致時にどのフィールドが変わったかをそのまま diff でき、ハッシュ衝突を仮定する必要もない** |
@@ -1487,7 +1487,7 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 - **印**: 利用者のデータの不正だけを [`UserDataError`](../../src/core/userpublic/userdataerror.hpp#L6)(`std::runtime_error` の派生)で投げ、[`guardUserData()`](../../src/core/watch/userdataguard.hpp#L31) はこの型だけを受けます。engine の内部の不変条件や GPU の失敗は元の型のまま guard を抜け、今までどおり致命の境界に届きます(`std::exception` まで広げると、壊れた engine を動かし続けることになる)。受けた scope は [`failUserData()`](../../src/core/watch/problemlist.cpp#L500) が Problems の `runtime.user_data@1` を 1 行にし、[`beginUserData()`](../../src/core/watch/problemlist.cpp#L490) が同じデータの版の間はその scope を飛ばし、版が変われば行を消してもう一度試します。
 - **ゲームの DLL の callback**: DLL の中の例外は印を持てないので、[`guardUserCode()`](../../src/core/watch/userdataguard.hpp#L43) は callback の境界でだけ `std::exception` を利用者のコードの不正と見なし、behavior 名を付けた `UserDataError` に変え、[`requestUserCodeStop()`](../../src/core/watch/problemlist.cpp#L521)(Play 中だけ印を立てる)を呼びます。[`invokeUpdate()`](../../src/core/gamelogic/behaviorarena.cpp#L901)・event・登録 system がこれを通ります。止めるのは frame の境目で、[`finishUserCodeStop()`](../../src/core/watch/problemlist.cpp#L530)([`updateFrameState()` の中、game code を走らせる phase の後で呼ぶ所](../../src/core/appflow/framephase.cpp#L304))が、RPC のある engine では `set_play_state` と同じ Stop の処理(`rpcserver.cpp` が `user_code_stop_handler` に入れる)を、RPC の無い engine では `edit` への切り替え(`internal::changePlayState`)を走らせます。behavior の Problems は Stop の後も残り、直すか外すと消えます。
 - **`onInit`(Play の開始)**: [`invokeInit()`](../../src/core/gamelogic/behaviorarena.cpp#L873) は Problems に記録して Stop を頼んでから、`UserDataError` を投げ直します。activation の transaction の逆順の破棄と遅延した変更の rollback をそのまま使うためです。`set_play_state` は rollback された遷移を受けて `edit` を返し([RPC の catch](../../src/core/communication/rpcserver.cpp#L2320))、起動時の失敗は scene を dormant で読み直して editor を使える状態で残します([起動の catch](../../src/core/userpublic/pelican_core.cpp#L184))。
-- **`onInit`(DLL の reload の中)**: [`isGameLogicReloadInProgress()`](../../src/core/gamelogic/gamelogicreload.cpp#L887) が真なら、`invokeInit()` は [guard を通さずに元の例外を投げます](../../src/core/gamelogic/behaviorarena.cpp#L881)。候補の activation と rollback は reload の transaction の持ち物で(WP162 の契約)、reload は失敗し、旧い DLL の runtime が動き続けます。ここで Problems の行や Stop の要求を残すと、戻った runtime を止めてしまいます(RX-1 の fix の commit の注記)。
+- **`onInit`(DLL の reload の中)**: [`isGameLogicReloadInProgress()`](../../src/core/gamelogic/gamelogicreload.cpp#L889) が真なら、`invokeInit()` は [guard を通さずに元の例外を投げます](../../src/core/gamelogic/behaviorarena.cpp#L881)。候補の activation と rollback は reload の transaction の持ち物で(WP162 の契約)、reload は失敗し、旧い DLL の runtime が動き続けます。ここで Problems の行や Stop の要求を残すと、戻った runtime を止めてしまいます(RX-1 の fix の commit の注記)。
 
 **不変条件**: guard が受けるのは `UserDataError` だけ(`std::exception` への変換は DLL の callback の境界だけ)。Stop は frame の境目で 1 回。reload の transaction の中の `onInit` は guard を通さない。
 
@@ -1526,7 +1526,7 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 **実際は**: v0 を閉じる段で、製品を変えずに揺れる test が 2 つ残っています。
 
 - **`studio_scenario_gui_build_optimize`**: step「the frame's GPU time went up」(scenario の最後ではなく、この後に Features tab の step が続く)は、Multisampling を 4 にした後の `get_status` の `gpu_timing.logical_frame_averages[0].average_total_ms` が、Multisampling を変える前の `[count3]` の step で覚えた値(`ms_count3`)より大きいことを `op: gt` で見ます([その step](../../test/studio_scenarios/gui_build_optimize.json#L500)、[覚える step](../../test/studio_scenarios/gui_build_optimize.json#L459))。平均は engine の履歴の窓([`gpu_timing_history_capacity` = 120](../../src/core/vkcore/rendertiming.hpp#L18))の上で取るので、差が小さいと測り方の揺れで逆になります(RX-1 の W1 で 0.218 ms と 0.226 ms の比較が赤。統合側の記録)。NVIDIA の driver が起動の直後の shader を数秒から十数秒後に最適化した code へ差し替える、という統合側の観察がありますが、この step の揺れの原因かは未確認です(コードからは確かめられない)。scenario の側で幅を持たせるか比べ方を変えるのが残りの仕事です。
-- **`wp380c_production_has_no_fault_setter_symbol`**: production の archive(`pelican_core` / `pelican_project`)の全部の symbol を `dumpbin` で調べる test で([定義](../../test/CMakeLists.txt#L2733))、通った回で 75〜150 秒ほどかかり(上限を 300 秒にした再実行で 203 秒の回もある)、`-j16` の全数の中では 120 秒の上限を越えることがあります(単独で 300 秒でも越えた回あり。どれも各 WP の報告の数字)。test の定義は LABELS だけで TIMEOUT を持たないので、上限は gate の `ctest --timeout` です。assertion の失敗は出ていません。
+- **`wp380c_production_has_no_fault_setter_symbol`**: production の archive(`pelican_core` / `pelican_project`)の全部の symbol を `dumpbin` で調べる test で([定義](../../test/CMakeLists.txt#L2735))、通った回で 75〜150 秒ほどかかり(上限を 300 秒にした再実行で 203 秒の回もある)、`-j16` の全数の中では 120 秒の上限を越えることがあります(単独で 300 秒でも越えた回あり。どれも各 WP の報告の数字)。test の定義は LABELS だけで TIMEOUT を持たないので、上限は gate の `ctest --timeout` です。assertion の失敗は出ていません。
 
 **不変条件**: この 2 つが赤のときは、単独で流し直してから製品を疑う。揺れを「既知」とするのは記録のある間だけで、記録は `docs/v0_freeze.md` §6.1 にあります。
 

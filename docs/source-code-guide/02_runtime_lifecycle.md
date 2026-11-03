@@ -98,7 +98,7 @@ sequenceDiagram
    - **検証**: 候補の task parse・shader compile・世代検証後、staging 前に `RayLayoutRuntimeState::validate()` が固定 mode と比較します。fallback 世代は対象外です([登録時の検査](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1461))。
    - **登録と失敗**: 固定 mode は次段の `pelican_ray_instance` の登録可否に使います。通常は例外を上位へ送ります。`--render-fallback` の場合は拒否を `RenderPipelineStartupRefusal` に保持し、`LegacyNoLayout` で起動を続けます([catch](../../src/core/userpublic/pelican_core.cpp#L183))。編集時の再起動応答は[第13章の描画編集](../manual/13_editor.md#render-edit-sequence)を参照してください。
 8. [`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L22) で組み込みComponent/Systemを登録。
-9. **[`initializeConfiguredGameLogic()`](../../src/core/gamelogic/gamelogicreload.cpp#L917) でgame DLLをロード**（WP110系列。§2.11）。失敗しても`run()`は続行し、`error_code` と `error_fields` を添えて [`LOG_ERROR`](../../src/core/userpublic/pelican_core.cpp#L164) するだけです。保存された失敗はRPC `status` から読めます（§2.11）。
+9. **[`initializeConfiguredGameLogic()`](../../src/core/gamelogic/gamelogicreload.cpp#L919) でgame DLLをロード**（WP110系列。§2.11）。失敗しても`run()`は続行し、`error_code` と `error_fields` を添えて [`LOG_ERROR`](../../src/core/userpublic/pelican_core.cpp#L164) するだけです。保存された失敗はRPC `status` から読めます（§2.11）。
 10. **`(void)GET_MODULE(Renderer)`**（[この1行](../../src/core/userpublic/pelican_core.cpp#L172)） — render graphの検証と公開を、scene loadのprepareが `ModelAssetContainer` を実体化してmodelをuploadするより**前**に済ませます（WP380a-fix。§3.8）。 ✅BS-1: [`Renderer::Renderer()`](../../src/core/vkcore/renderer.cpp#L3115) は、`--render-fallback` の起動なら、7 番が残した拒否か、自分の `snapshotMaterialRouteDefault()` と `loadRenderGraphVariantsFromConfigWithStartupFeatureOverlays()` が投げた例外を拒否の JSON にし、error の行を書いて、[`renderPipelineFallbackConfigJson()`](../../src/core/vkcore/renderer_config.cpp#L421) の文書を `ProjectBasicConfig` に publish してから、同じ overlay 付きの読み込みでそれを組みます。拒否は `render_pipeline_fallback_refusal` に持ち、project の構成を最初に publish したときに消えます。引数が無ければ例外はそのまま `run()` の catch に届き、致命で終わります(manual 第6章 §6.16)。 ✅PB-1(`a55d1eaf`): constructor は拒否の有無に関わらず [`ProblemList`](../../src/core/watch/problemlist.hpp#L134) の module を作り(module の graph が固まる前に要るため)、fallback に入るときは拒否を `source: "startup"` の 1 件として記録します([`recordRenderPipelineProblem()`](../../src/core/watch/problemlist.cpp#L365))。project の世代で起動した `--render-fallback` の起動では、最後に [`MaterialStartupUnserved`](../../src/core/material/materialstartupunserved.hpp#L20) の `collecting` を立てます。この後、loop に入る前までに登録される material(engine の組み込み material と起動の scene の material)の route を受ける pass が無くても、`material_route_unserved@1` で止まらずにここへ書き留められます(§2.4 の `enterStartupFallbackForUnservedMaterials()`)。
 11. **`--start-state edit` なら先に edit にする**（✅PM-1b。[`internal::applyLaunchStartState()`](../../src/core/userpublic/pelican_core.cpp#L174)。`EngineTime` を `edit` にし、behavior の arena を眠らせるので、次の起動 scene は instance の無い behavior で読み込まれる。§2.6）。そのあと `ProjectBasicConfig.defaultSceneId()` のsceneを [`SceneLoadRoot::startup`](../../src/core/userpublic/pelican_core.cpp#L179) の `Borrowed` requestで即時ロード（§3.5 の 3）。`Borrowed` は scene load 要求の2種別のうち「いま commit 済みの projection をそのまま借りて読む」側で、新しい document を持ち込む `Owned`（import 経路）と対です（[`SceneLoadRequest`](../../src/core/loader/sceneload.hpp#L222)）。
 12. `ProjectMaterialAssetContainer` と `ModelAssetContainer` を明示的に生成（並列prepareのcommitを起動スレッドで実施）。
@@ -108,7 +108,7 @@ sequenceDiagram
 16. [`internal::runTerminalShutdown(teardown)`](../../src/core/userpublic/pelican_core.cpp#L235) — `teardown.run()` でruntime資源を順序付き解放し、続けて `shutdownConfiguredGameLogic()`。
 17. 関数を抜けるとmodule containerがmoduleを生成逆順に破棄。
 
-16番はtry-catchの**外**にあります（[呼び出し箇所](../../src/core/userpublic/pelican_core.cpp#L235)）。この2手を [`terminalshutdown.hpp`](../../src/core/terminalshutdown.hpp#L10) の `noexcept` 関数1本にまとめてあるのはWP379aで、ヘッダのコメントが規範です — playerとlifecycleの受け入れテストが**同じ終了順序**を共有します（テスト側の呼び出しは [`raytracing_rt3_1_production_test.cpp` 内](../../test/raytracing_rt3_1_production_test.cpp#L4585)）。順序が2箇所に書かれていれば、テストだけが正しい順で終わる状態を作れてしまいます。
+16番はtry-catchの**外**にあります（[呼び出し箇所](../../src/core/userpublic/pelican_core.cpp#L235)）。この2手を [`terminalshutdown.hpp`](../../src/core/terminalshutdown.hpp#L10) の `noexcept` 関数1本にまとめてあるのはWP379aで、ヘッダのコメントが規範です — playerとlifecycleの受け入れテストが**同じ終了順序**を共有します（テスト側の呼び出しは [`raytracing_rt3_1_production_test.cpp` 内](../../test/raytracing_rt3_1_production_test.cpp#L4608)）。順序が2箇所に書かれていれば、テストだけが正しい順で終わる状態を作れてしまいます。
 
 `RuntimeTeardownGuard` は関数冒頭（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L105)）で `RuntimeTeardownMode::terminal_shutdown` として作られ、`FastModuleContainer::beginShutdown()` はguardの外ではなく [`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp#L149) の内部で、8段階の解放へ入る直前に呼ばれます（[`teardown.cpp` 内](../../src/core/appflow/teardown.cpp#L164)）。したがって初期化途中で例外が出ても、同じ「新規module生成を閉じてから順序解放」という経路を通ります。
 
@@ -609,7 +609,7 @@ flowchart TB
 
 - **始める(`edit` → `playing` / `paused`)**: [`requireNoPendingSceneEdit()`](../../src/core/communication/rpcserver.cpp#L985) が受け付けたまま commit されていない ticket と開いた preview を `play_busy` で断る → game logic の DLL を読んでいれば、[replay / golden の driver でないとき](../../src/core/communication/rpcserver.cpp#L2206)に reload する(reload service があれば `applyRuntimeNow`。失敗はその code で断り、セッションは始まらない)→ 今の scene があれば [`PlaySession::begin()`](../../src/core/communication/playsession.cpp#L18) が authoring の文書・`currentSceneId()`・editor の [`snapshotHistory()`](../../src/core/communication/editorjournal.cpp#L5132)(journal・last_writers・undo / redo の stack)と、そのときの journal の長さを取る → `changePlayState()` の作り直し。作り直しが投げたら `discard()` で捨てる
 - **再生中**: 記録は別に持たず、[`PlaySession::recordedEdits()`](../../src/core/communication/playsession.cpp#L32) が journal の起点より後を毎回読みます。`undo` / `redo` の項目は `source_transaction_id` が記録の行を指せばその行を消し、指さなければ自分を積みます。`get_status.play` の `session` / `recorded_edits` はこれです。[`refuseDuringPlaySession()`](../../src/core/communication/rpcserver.cpp#L1032) を `load_scene` が自分で、`save_scene` / `import_scene_snapshot` が editor の RPC の hook `refuse_during_play_session` から呼び、`play_session_active` で断ります
-- **終える(→ `edit`)**: `keep` の形を読み([`parsePlaySessionKeep()`](../../src/core/communication/rpcserver.cpp#L1004))、`play_busy`、[`PlaySession::keptRecords()`](../../src/core/communication/playsession.cpp#L55) が記録に無い transaction_id を `play_keep_unknown_transaction` で断る → [セッションを終える所](../../src/core/communication/rpcserver.cpp#L2260)で `changePlayState()` を呼び、渡す関数の中で preview を中止し、[`Audio::stopAll()`](../../src/core/audio/audio.cpp#L1031) で音を全部止め、セッションがあれば保存した scene を [`ProjectBasicConfig::prepareRestoredSceneMetadata()`](../../src/core/loader/basicconfig.cpp#L895) の token で `SceneLoadRoot::rpc` の読み込みにかける(無ければ PM-1b のとおり今の authoring から作り直す)→ [`restoreHistory()`](../../src/core/communication/editorjournal.cpp#L5141) で履歴を戻す → `keep` があれば [`replayJournalRecords()`](../../src/core/communication/editorjournal.cpp#L5149) で当て直し、`not_kept` と `kept_transaction_id` を返す
+- **終える(→ `edit`)**: `keep` の形を読み([`parsePlaySessionKeep()`](../../src/core/communication/rpcserver.cpp#L1004))、`play_busy`、[`PlaySession::keptRecords()`](../../src/core/communication/playsession.cpp#L55) が記録に無い transaction_id を `play_keep_unknown_transaction` で断る → [セッションを終える所](../../src/core/communication/rpcserver.cpp#L2260)で `changePlayState()` を呼び、渡す関数の中で preview を中止し、[`Audio::stopAll()`](../../src/core/audio/audio.cpp#L1031) で音を全部止め、セッションがあれば保存した scene を [`ProjectBasicConfig::prepareRestoredSceneMetadata()`](../../src/core/loader/basicconfig.cpp#L897) の token で `SceneLoadRoot::rpc` の読み込みにかける(無ければ PM-1b のとおり今の authoring から作り直す)→ [`restoreHistory()`](../../src/core/communication/editorjournal.cpp#L5141) で履歴を戻す → `keep` があれば [`replayJournalRecords()`](../../src/core/communication/editorjournal.cpp#L5149) で当て直し、`not_kept` と `kept_transaction_id` を返す
 - 順が設計([design_play_mode.md](../design_play_mode.md) §6.3)と違い、runtime を作ってから履歴を戻して当て直します。当て直しは editor の edit と同じく runtime の射影まで通るので、戻した authoring から作った `edit` の runtime が先に要るためです
 - `--start-state` を省いた起動の最初の `playing` にはセッションが無いので、最初の Stop は作り直すだけです。scene の無い engine もセッションを作りません
 
@@ -634,7 +634,7 @@ flowchart TB
 
 `freeze_actions` でImGuiへ入力をルーティングする前に、[`resolveFrameStateModules()`](../../src/core/appflow/framephase.cpp#L85) がゲートの開閉を判定します。ゲートの実体は [`isImGuiRuntimeEnabled(config)`](../../src/core/imgui/imguiruntime.cpp#L9) で、`EngineLaunchConfig` の `headless` / `rpc` / `input_replay` / `golden_mode` / `xr_active` を読むだけの述語です（この関数自身は何も書き換えません）。
 
-ここでの「開いている」はこの述語が真で、そのフレームの `FrameStateModules.imgui_system` に [`GET_MODULE(ImGuiSystem)` が入る](../../src/core/appflow/framephase.cpp#L104)状態、「閉じている」は偽で `imgui_system` が nullptr のまま（= `freeze_actions` の [`routeInputAndBeginFrame()`](../../src/core/appflow/framephase.cpp#L216) が呼ばれず、そのフレームで ImGui フレームが始まらない）状態を指します。開閉が変わるのは、読んでいる側のlaunch configが変わったときです（例: XRのVulkan bootstrapが失敗してflatへ落ちる [`core.cpp` 内](../../src/core/vkcore/core.cpp#L712)）。
+ここでの「開いている」はこの述語が真で、そのフレームの `FrameStateModules.imgui_system` に [`GET_MODULE(ImGuiSystem)` が入る](../../src/core/appflow/framephase.cpp#L104)状態、「閉じている」は偽で `imgui_system` が nullptr のまま（= `freeze_actions` の [`routeInputAndBeginFrame()`](../../src/core/appflow/framephase.cpp#L216) が呼ばれず、そのフレームで ImGui フレームが始まらない）状態を指します。開閉が変わるのは、読んでいる側のlaunch configが変わったときです（例: XRのVulkan bootstrapが失敗してflatへ落ちる [`core.cpp` 内](../../src/core/vkcore/core.cpp#L717)）。
 
 ImGuiゲートが閉じたフレームでは、開始済みのImGuiフレームを [`ImGuiSystem::endFrameIfStarted()`](../../src/core/imgui/imguisystem.hpp#L31) で畳みます（[`framephase.cpp` 内](../../src/core/appflow/framephase.cpp#L89)）。守っている対応関係は「`freeze_actions` の `routeInputAndBeginFrame()` が立てた `frame_started` は、そのフレームの `ImGuiSystem::render()` が必ず倒す」で、ImGuiパスを持たないグラフへ持ち越すと `render()` が呼ばれず、立ったままのフレームへ次の `NewFrame()` が重なります。
 
@@ -811,7 +811,7 @@ game DLL側でこれを**必ず**importさせるのが [`gamelogic_entry.cpp`](.
 
 ### ロード前のraw import診断（Windowsのみ）
 
-[`loadCopy()`](../../src/core/gamelogic/gamelogicreload.cpp#L405) は `LoadLibraryW` を呼ぶ**前**に [`diagnoseGameLogicImports(path, currentExecutableName(), gameLogicAbiVersion)`](../../src/core/gamelogic/gamelogicreload.cpp#L408) を通します。読むのは [`readGameLogicImports()`](../../src/core/gamelogic/gamelogicimports.cpp#L516) で、imageをmapせず、importしたモジュールも辿らず、PEのimport directory（index 1）とdelay-import directory（index 13）だけを `std::ifstream` で読みます。
+[`loadCopy()`](../../src/core/gamelogic/gamelogicreload.cpp#L407) は `LoadLibraryW` を呼ぶ**前**に [`diagnoseGameLogicImports(path, currentExecutableName(), gameLogicAbiVersion)`](../../src/core/gamelogic/gamelogicreload.cpp#L410) を通します。読むのは [`readGameLogicImports()`](../../src/core/gamelogic/gamelogicimports.cpp#L516) で、imageをmapせず、importしたモジュールも辿らず、PEのimport directory（index 1）とdelay-import directory（index 13）だけを `std::ifstream` で読みます。
 
 作業量の上限はPE形式の制限ではなく**パーサの自衛**です（[先頭の3定数](../../src/core/gamelogic/gamelogicimports.cpp#L24)。4 つ目の `maxImportStringBytes` だけは [`readCString()`](../../src/core/gamelogic/gamelogicimports.cpp#L77) の中のローカル定数です）。
 
@@ -833,13 +833,13 @@ maxImportStringBytes = 4096     # readCString() の 1 文字列上限
 
 ### shadow copyはpidごとのディレクトリ
 
-[`initialize()`](../../src/core/gamelogic/gamelogicreload.cpp#L497) が決めるshadow directoryは `<DLLの親ディレクトリ>/.pelican-hot-reload/<pid>` です（[その組み立て](../../src/core/gamelogic/gamelogicreload.cpp#L500)）。pidを挟むので、同じDLLを複数プロセスが同時に開いてもコピー名が衝突しません。
+[`initialize()`](../../src/core/gamelogic/gamelogicreload.cpp#L499) が決めるshadow directoryは `<DLLの親ディレクトリ>/.pelican-hot-reload/<pid>` です（[その組み立て](../../src/core/gamelogic/gamelogicreload.cpp#L502)）。pidを挟むので、同じDLLを複数プロセスが同時に開いてもコピー名が衝突しません。
 
-directoryを決めた直後に [`sweepStaleShadowDirectories()`](../../src/core/gamelogic/gamelogicreload.cpp#L335) が親を1階層だけ走査し、**名前が10進数として完全にparseでき、かつそのpidが生きていない**ディレクトリを `remove_all` します（[判定](../../src/core/gamelogic/gamelogicreload.cpp#L348)）。数字以外の名前や生存プロセスのdirectoryには触りません。親directoryがまだ無い場合は「`makeShadowCopy()` が遅延生成する」というコメント付きで黙って戻ります。
+directoryを決めた直後に [`sweepStaleShadowDirectories()`](../../src/core/gamelogic/gamelogicreload.cpp#L337) が親を1階層だけ走査し、**名前が10進数として完全にparseでき、かつそのpidが生きていない**ディレクトリを `remove_all` します（[判定](../../src/core/gamelogic/gamelogicreload.cpp#L350)）。数字以外の名前や生存プロセスのdirectoryには触りません。親directoryがまだ無い場合は「`makeShadowCopy()` が遅延生成する」というコメント付きで黙って戻ります。
 
-コピー名は [`makeShadowCopy(purpose)`](../../src/core/gamelogic/gamelogicreload.cpp#L373) が `<stem>_<purpose>_<copy_sequence><拡張子>` で作ります。`purpose` は `"initial"` か `"candidate"`、`copy_sequence` は単調増加なので、現行DLLと候補DLLが必ず別パスになります（同じパスならOSは同じ `HMODULE` を返し、2世代を同時に持てません。[第10章](10_background_knowledge.md)）。`.pdb` も追随しますが、そちらの失敗はwarningどまりです。
+コピー名は [`makeShadowCopy(purpose)`](../../src/core/gamelogic/gamelogicreload.cpp#L375) が `<stem>_<purpose>_<copy_sequence><拡張子>` で作ります。`purpose` は `"initial"` か `"candidate"`、`copy_sequence` は単調増加なので、現行DLLと候補DLLが必ず別パスになります（同じパスならOSは同じ `HMODULE` を返し、2世代を同時に持てません。[第10章](10_background_knowledge.md)）。`.pdb` も追随しますが、そちらの失敗はwarningどまりです。
 
-正常終了では [`shutdown()`](../../src/core/gamelogic/gamelogicreload.cpp#L843) がロード済みコピーを消したうえで、**自分のpid directoryを丸ごと**削除します。
+正常終了では [`shutdown()`](../../src/core/gamelogic/gamelogicreload.cpp#L845) がロード済みコピーを消したうえで、**自分のpid directoryを丸ごと**削除します。
 
 ### 自動pollは「2回一致 → read lease → busyなら保留」
 
@@ -873,7 +873,7 @@ sequenceDiagram
         end
     end
 ```
-根拠: [`gamelogicreload.cpp:742`](../../src/core/gamelogic/gamelogicreload.cpp#L742)（poll）、[`gamelogicreload.cpp:584`](../../src/core/gamelogic/gamelogicreload.cpp#L584)（transaction）、[`gamelogicreload.cpp:405`](../../src/core/gamelogic/gamelogicreload.cpp#L405)（診断とロード）、[`gamelogicreload.cpp:897`](../../src/core/gamelogic/gamelogicreload.cpp#L897)（再構築）。
+根拠: [`gamelogicreload.cpp:742`](../../src/core/gamelogic/gamelogicreload.cpp#L744)（poll）、[`gamelogicreload.cpp:584`](../../src/core/gamelogic/gamelogicreload.cpp#L586)（transaction）、[`gamelogicreload.cpp:405`](../../src/core/gamelogic/gamelogicreload.cpp#L407)（診断とロード）、[`gamelogicreload.cpp:897`](../../src/core/gamelogic/gamelogicreload.cpp#L899)（再構築）。
 
 **注**: 指紋は `(last_write_time, file_size)` で、既に観測済みなら何もせず、変化の 1 回目は settling に置きます。Windows は write share を許さない read lease を保持して再検査し、変われば再び待ちます。busy は pending のまま 3 回目から `game_logic_source_busy@1`（path / retries）を公開し、writer が閉じれば次の poll で再試行してその診断を消します。busy 以外の open 失敗は `game_logic_unavailable@1` です。`force` はこの安定待ち・lease の分岐を通りません。
 
@@ -883,7 +883,7 @@ pollを駆動するのはreload serviceのruntime participant `game_logic` で�
 
 ### 起動時の失敗はRPC `status` まで運ばれる
 
-`initializeConfiguredGameLogic()` が `false` を返しても `run()` は続きます（§2.1 の 9番）。失敗の内容は `GameLogicReloader` に保存され、[`configuredGameLogicStatus()`](../../src/core/gamelogic/gamelogicreload.cpp#L951) から読めます。RPC `status` の `participants.game_logic`（[組み立て箇所](../../src/core/communication/rpcserver.cpp#L1779)）を作るのは [`gameLogicParticipantRpcStatus()`](../../src/core/communication/rpcserver.cpp#L1285) で、規則はコメントが規範です。
+`initializeConfiguredGameLogic()` が `false` を返しても `run()` は続きます（§2.1 の 9番）。失敗の内容は `GameLogicReloader` に保存され、[`configuredGameLogicStatus()`](../../src/core/gamelogic/gamelogicreload.cpp#L953) から読めます。RPC `status` の `participants.game_logic`（[組み立て箇所](../../src/core/communication/rpcserver.cpp#L1779)）を作るのは [`gameLogicParticipantRpcStatus()`](../../src/core/communication/rpcserver.cpp#L1285) で、規則はコメントが規範です。
 
 - reload serviceのruntime participant行があり、その `attempted` が0でない（= 一度は走った）なら、その行をそのまま返す。
 - participantが**まだ一度も試されていない**（`attempted == 0`）場合に限り、保存済みの起動時失敗（`status.error_code`）を優先する。

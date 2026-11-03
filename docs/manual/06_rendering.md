@@ -2830,7 +2830,7 @@ RC-7b で外れた理由は次の節の decision に出ます。
 
 - **移行の注意**: RC-7b までは facts の無い compile でも同じ形の組を作っていました。✅RC-7c からは作りません。example の `g_emissive` / `Bloom_Threshold_RT` の組も、compiler_only では別々の確保です(frameplanner の test の example は 21 枚 21 確保・134,070,720 bytes になりました。前の 125,776,320 との差 8,294,400 は 1 組の分)。facts の無い compile で共有を見ていた test は作り物の facts を渡す形に移しました(実装者の報告)。
 
-**device の答えを使う**: engine は device を作るときに Vulkan の `maintenance4` を有効にします。支持しない device では起動が `vulkan.required_feature_missing@1: maintenance4` で止まります([確かめる所](../../src/core/vkcore/core.cpp#L656))。これで、計画の時に `vkGetDeviceImageMemoryRequirements` で照会した size・alignment・`memoryTypeBits`・dedicated が、同じ create info で作る実画像の値と一致します(GPU の test「RC-7c maintenance4 production facts equal actual image requirements」)。照会と登録は同じ 1 つの関数で create info を作ります。
+**device の答えを使う**: engine は device を作るときに Vulkan の `maintenance4` を有効にします。支持しない device では起動が `vulkan.required_feature_missing@1: maintenance4` で止まります([確かめる所](../../src/core/vkcore/core.cpp#L661))。これで、計画の時に `vkGetDeviceImageMemoryRequirements` で照会した size・alignment・`memoryTypeBits`・dedicated が、同じ create info で作る実画像の値と一致します(GPU の test「RC-7c maintenance4 production facts equal actual image requirements」)。照会と登録は同じ 1 つの関数で create info を作ります。
 
 **`retain` と `TRANSFER_SRC`**: ✅RC-7c から、採った `retain: true` の資源には planner が `TRANSFER_SRC` を足します(上の「[名前で読み戻す約束](#target-planning-retain)」)。
 
@@ -2838,7 +2838,7 @@ RC-7b で外れた理由は次の節の decision に出ます。
 
 **実際の配置**: 登録は、region に入る render target の image を memory なしで作り(`VK_IMAGE_CREATE_ALIAS_BIT`)、実画像の requirements を読み、保持した packing の入力で詰め直してから、region ごとに VMA の allocation を 1 つ取り(device local を優先)、各 image をその offset に bind します([詰め直す所](../../src/core/renderingpass/rendertargetcontainer.cpp#L314))。
 
-- bind の前に、offset + size が allocation に収まる・offset が alignment の倍数・VMA の選んだ memory type が `memoryTypeBits` に入る、を確かめ、破れは `render_target.memory_bind_invalid@1: <名前>` です([確かめる所](../../src/core/vkcore/core.cpp#L1675))。計画の誤りなので黙って戻しません。
+- bind の前に、offset + size が allocation に収まる・offset が alignment の倍数・VMA の選んだ memory type が `memoryTypeBits` に入る、を確かめ、破れは `render_target.memory_bind_invalid@1: <名前>` です([確かめる所](../../src/core/vkcore/core.cpp#L1682))。計画の誤りなので黙って戻しません。
 - dedicated の確保が要る image は region に入れず、通常の確保にします。
 - 詰め直しで memory の鍵や dedicated が変わり、自動の共有か `prefer` の組が成り立たなくなれば、その target は理由(`dedicated_or_unknown_requirements`・`memory_key_changed`・`same_offset_memory_key_changed` など)を付けて分かれます。採った `require` の組が成り立たなければ `render_target.alias_repack_unsatisfiable@1` で、登録の transaction を戻します([その所](../../src/project/memoryregionpacking.cpp#L165))。`require` の組は (書いた文書, 組名) で決まります(planner と同じ)。
 - 各 image は region の allocation を共同で持ち、image の後に allocation が壊れます。resize で退いた image と、submit 中の image は、退役の batch と submit の lease が持ち続けます。

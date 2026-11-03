@@ -218,13 +218,13 @@ Vulkan のシェーダは資源を `layout(set = S, binding = B)` で受け取�
 
 Vulkan の構造体は `sType` と `pNext` を持ち、拡張機能ぶんの構造体を `pNext` で数珠つなぎにして 1 回の呼び出しに載せます。vulkan-hpp の `vk::StructureChain<A, B, C>` はこの連結を型で表現したもので、`get<B>()` で要素を取り出し、`unlink<B>()` で**実行時に**その要素を鎖から外せます(`relink<B>()` で戻せます)。外すことは「その機能を要求しない」という意味になるので、拡張の無い環境で同じコードを通す常套手段です。逆に鎖へ残したまま非対応のデバイスへ渡すと、検証レイヤに叱られるか、そのまま失敗します。
 
-**使用場所**: [createLogicalDevice()](../../src/core/vkcore/core.cpp#L626)(feature 構造体を chain に積み、非対応なら `unlink()`) / [PipelineFactory::createGraphicsPipeline()](../../src/core/shader/pipelinefactory.cpp#L565) / [FrameResources::FramePublication](../../src/core/renderer/frameresources.cpp#L403)(descriptor write の `pNext` に acceleration structure 情報を足す)
+**使用場所**: [createLogicalDevice()](../../src/core/vkcore/core.cpp#L631)(feature 構造体を chain に積み、非対応なら `unlink()`) / [PipelineFactory::createGraphicsPipeline()](../../src/core/shader/pipelinefactory.cpp#L565) / [FrameResources::FramePublication](../../src/core/renderer/frameresources.cpp#L403)(descriptor write の `pNext` に acceleration structure 情報を足す)
 
 ### 機能照会(getFeatures2 の chain)と拡張関数の動的解決
 
 「この GPU がその機能を持つか」は `vkGetPhysicalDeviceFeatures2` に feature 構造体を `pNext` で繋いで問い合わせます。chain 全体が一度に埋まるので、複数の拡張を 1 回で照会できます。重要なのは **照会しただけでは有効にならない**ことで、`vkCreateDevice` の `pNext` に同じ構造体を(true にして)渡して初めて使えます。拡張のエントリポイントは Vulkan のローダに静的リンクされていないことがあるため、`vkGetDeviceProcAddr` で取得し、null なら「その拡張は無い」と判断します(vulkan-hpp では dispatcher に取り込みます)。
 
-**使用場所**: [queryDeviceFeatureSupport()](../../src/core/vkcore/core.cpp#L361)(照会側) / [createLogicalDevice()](../../src/core/vkcore/core.cpp#L626)(有効化側) / [VulkanManageCore::VulkanManageCore()](../../src/core/vkcore/core.cpp#L1083)
+**使用場所**: [queryDeviceFeatureSupport()](../../src/core/vkcore/core.cpp#L361)(照会側) / [createLogicalDevice()](../../src/core/vkcore/core.cpp#L631)(有効化側) / [VulkanManageCore::VulkanManageCore()](../../src/core/vkcore/core.cpp#L1090)
 
 **このコードベースでの注意**: 必須の feature が 1 つでも欠ける物理デバイスは選外にし、optional なもの(dynamic rendering local read など)だけ `unlink()` で落とします。「必須」と「あれば使う」がこの 2 つの経路で分かれています。
 
@@ -232,7 +232,7 @@ Vulkan の構造体は `sType` と `pNext` を持ち、拡張機能ぶんの構�
 
 VMA は Vulkan のメモリタイプ選択とサブアロケーションを引き受ける定番ライブラリ(AMD 製、構造体名 `VmaAllocationCreateInfo`)です。`VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE` は「デバイスローカルを優先しつつ、必要なら他のヒープへ落ちてよい」という意図の宣言で、`VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT` は「CPU からは前へ前へと書くだけで読み返さない」という宣言です。この 2 つを組むと write-combined なホスト可視メモリが選ばれやすくなり、ステージングバッファを別に持たずに直接書けます(読み返すと極端に遅いのが write-combined の性質です)。budget 追跡(`VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT`)や buffer device address(`VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT`)はアロケータ作成時に宣言が要ります。
 
-**使用場所**: [createAllocator()](../../src/core/vkcore/core.cpp#L948) / [createIndexBuf()](../../src/core/model/vertbufcontainer.cpp#L29) / [createVertBuf()](../../src/core/model/vertbufcontainer.cpp#L38)
+**使用場所**: [createAllocator()](../../src/core/vkcore/core.cpp#L955) / [createIndexBuf()](../../src/core/model/vertbufcontainer.cpp#L29) / [createVertBuf()](../../src/core/model/vertbufcontainer.cpp#L38)
 
 ### buffer device address と usage flags
 
@@ -530,7 +530,7 @@ GPU 資源のように「今すぐには壊せない」ものを溜める破棄�
 
 C++ のムーブは、移動元を「有効だが未規定の状態」にします。標準ライブラリの型なら破棄と再代入は必ず安全ですが、それ以外に何が保証されるかは型ごとの契約です。自前のトークン型では、この未規定さを**能動的に使う**ことがあります — ムーブされた側を「もう commit してはいけない」印にして、二重コミットを型の側で潰す、という書き方です。読む側から見ると「ムーブしたあとに何もしていないのに状態が変わる」ように見えるので、契約がコメントか名前に書かれていないと読めません。
 
-**使用場所**: [ProjectBasicConfig::importSceneDocument()](../../src/core/loader/basicconfig.cpp#L792)(トークンを move して以降を無効化する)
+**使用場所**: [ProjectBasicConfig::importSceneDocument()](../../src/core/loader/basicconfig.cpp#L794)(トークンを move して以降を無効化する)
 
 ### 型消去: std::any と any_cast
 
@@ -712,7 +712,7 @@ Windows の実行イメージ(PE)は先頭に DOS スタブ、続いて `PE\0\0`
 
 POSIX と違い、Windows ではファイルを開くときに「他のプロセスに何を許すか」を `CreateFileW` の `dwShareMode` で宣言します。`FILE_SHARE_READ` だけを渡すと「他プロセスの読みは許すが、書きと削除は許さない」という意味になり、逆に**自分が開いている間に他プロセスが書こうとすると失敗する**ようにもなります。ビルド中の DLL のように書き手がいるファイルを開こうとすると `ERROR_SHARING_VIOLATION`(32)か `ERROR_LOCK_VIOLATION`(33)が返るので、この 2 つを「まだ書き込み中だから少し待って再試行」の合図として使えます。ハンドルを開けたこと自体が短時間のロックになるため、判定用に開いたハンドルは RAII で確実に閉じます。
 
-**使用場所**: [SourceReadLease](../../src/core/gamelogic/gamelogicreload.cpp#L202)(`FILE_SHARE_READ` のみで開き、デストラクタで `CloseHandle`) / [sourceWriterIsActive()](../../src/core/gamelogic/gamelogicreload.cpp#L230)(2 つのエラーコードを「書き手が生きている」と解釈)
+**使用場所**: [SourceReadLease](../../src/core/gamelogic/gamelogicreload.cpp#L204)(`FILE_SHARE_READ` のみで開き、デストラクタで `CloseHandle`) / [sourceWriterIsActive()](../../src/core/gamelogic/gamelogicreload.cpp#L232)(2 つのエラーコードを「書き手が生きている」と解釈)
 
 **このコードベースでの注意**: 定数名は `ERROR_SHARING_VIOLATION` / `ERROR_LOCK_VIOLATION` です(`FILE_LOCK_VIOLATION` という名前の定数はありません)。再試行の回数は `sourceBusyRetryLimit` で 3 回に制限されています。
 
@@ -720,13 +720,13 @@ POSIX と違い、Windows ではファイルを開くときに「他のプロセ
 
 「その PID のプロセスがまだ生きているか」は、OS ごとに別の API になり、しかも**エラーが必ずしも「居ない」を意味しません**。POSIX の `kill(pid, 0)` はシグナルを送らずに存在確認だけを行い、`0` なら存在、`errno == EPERM`(権限が無い)も**存在する**の意味です。Windows の `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, ...)` は他ユーザーのプロセスに対して `ERROR_ACCESS_DENIED` を返しますが、これも存在の証拠です。したがって両方とも「アクセス拒否は生存扱い、見つからないときだけ死亡扱い」に倒すのが安全側です。PID の型も `DWORD` と `pid_t` で違うので、跨いで持ち回るときは `std::uint64_t` のような共通表現に正規化します。
 
-**使用場所**: [processIsAlive()](../../src/core/gamelogic/gamelogicreload.cpp#L238) / [currentProcessId()](../../src/core/gamelogic/gamelogicreload.cpp#L182)
+**使用場所**: [processIsAlive()](../../src/core/gamelogic/gamelogicreload.cpp#L240) / [currentProcessId()](../../src/core/gamelogic/gamelogicreload.cpp#L184)
 
 ### 動的ライブラリのエラー取得(GetLastError と dlerror)
 
 `LoadLibraryW` / `GetProcAddress` が失敗したときの理由は Windows では `GetLastError()` の数値コードで、POSIX の `dlopen` / `dlsym` では `dlerror()` の文字列で得ます。両者の性質はかなり違い、`GetLastError()` はスレッドごとの「直前の失敗コード」で成功時にクリアされるとは限らない一方、`dlerror()` は**読み出すとクリアされる**ので 2 回目は null が返ります(そのため戻り値を必ず一度だけ保存します)。また `GetLastError()` から得たメッセージ文字列はマシンのロケールに従うため、そのまま JSON や UTF-8 のログへ載せるとエンコーディングが混ざります。数値コードだけを載せて文字列は自前で組む、という割り切りがよく使われます。
 
-**使用場所**: [platformLoadError()](../../src/core/gamelogic/gamelogicreload.cpp#L165)(Windows は数値コードから英文を組み、POSIX は `dlerror()` の文字列を 1 度だけ読む)
+**使用場所**: [platformLoadError()](../../src/core/gamelogic/gamelogicreload.cpp#L167)(Windows は数値コードから英文を組み、POSIX は `dlerror()` の文字列を 1 度だけ読む)
 
 ### std::filesystem の canonical / weakly_canonical とルート名
 

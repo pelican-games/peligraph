@@ -8660,7 +8660,7 @@
     "docs/source-code-guide/08_class_interface_index.md|../../src/core/userpublic/components/animation.hpp|`AnimationComponent`": "struct AnimationComponent {",
     "docs/source-code-guide/08_class_interface_index.md|../../src/core/userpublic/components/localtransform.hpp|`LocalTransformComponent`": "struct LocalTransformComponent {",
     "docs/source-code-guide/08_class_interface_index.md|../../src/core/userpublic/components/modelview.hpp|`SimpleModelViewComponent`": "struct SimpleModelViewComponent {",
-    "docs/source-code-guide/08_class_interface_index.md|../../src/core/userpublic/components/predefined.hpp|`DECLARE_COMPONENT(RayInstanceComponent, 19)`": "DECLARE_COMPONENT(RayInstanceComponent, 19);",
+    "docs/source-code-guide/08_class_interface_index.md|../../src/core/userpublic/components/predefined.hpp|`DECLARE_COMPONENT(RayInstanceComponent, 19)`": "DECLARE_COMPONENT(Pelican::TransformComponent, 1);",
     "docs/source-code-guide/08_class_interface_index.md|../../src/core/userpublic/components/rayinstance.hpp|`RayAccelerationStructureCanonicalDefaults`": "struct RayAccelerationStructureCanonicalDefaults {",
     "docs/source-code-guide/08_class_interface_index.md|../../src/core/userpublic/components/rayinstance.hpp|`RayInstanceComponent`": "struct RayInstanceComponent {",
     "docs/source-code-guide/08_class_interface_index.md|../../src/core/userpublic/components/spriteview.hpp|`SpriteViewComponent`": "struct SpriteViewComponent {",
