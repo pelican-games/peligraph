@@ -5,6 +5,14 @@
   "description": "SG-2: picture layers and a PSD's conversion on a 2D canvas, from File > New Project > Blank with the Layers dock only. With no canvas in the document the dock offers + Canvas alone, which places a canvas.output and its 1280 x 720 stack in one edit and puts the output's image on present's inputs (the edit_preset_pass the drag onto present's + input sends). + Image copies a picture (the PSD fixture's 64 x 32 composite, opaque) into assets/canvas and makes it a canvas.image layer of its pixels at the canvas's middle; + Rect puts a rectangle on top, wider than the picture; the rectangle's clip mark clips it to the picture, after which the viewport beside the picture shows the empty canvas again while its middle keeps the rectangle's colour. Import PSD output reads the repository's psd-canvas fixture (canvas.graph.json, layers/, masks/): the files are copied into imports/psd_fixture, the definition is added, and its instance is the top layer, named PSD: fixture, drawn at the canvas's top left; the dot, the card and the squares of the fixture's reference show there. Open group shows the PSD's own layers, read only. Typed: the project folder and name, and the two file names in Qt's file dialogs (as the sound import's scenario does).",
   "tab": "frame_plan",
   "probe_no_automation": false,
+  "invariants": {
+    "undo_exempt": [
+      {"path": "file:assets/canvas/reference.png", "reason": "+ Image copies the picture into assets/canvas (SG-2); as with Import Sound, Model from file and an image's Import..., Undo takes back the graph edit, not the copied file"},
+      {"path": "file:imports/psd_fixture/canvas.graph.json", "reason": "Import PSD output copies the conversion into imports/psd_fixture (SG-2); Undo takes back the definition and its layer, not the copied files"},
+      {"path": "file:imports/psd_fixture/layers/*.png", "reason": "Import PSD output copies the conversion's layer images into imports/psd_fixture/layers (SG-2); Undo takes back the definition and its layer, not the copied files"},
+      {"path": "file:imports/psd_fixture/masks/*.png", "reason": "Import PSD output copies the conversion's masks into imports/psd_fixture/masks (SG-2); Undo takes back the definition and its layer, not the copied files"}
+    ]
+  },
   "steps": [
     {"label": "the fixture's engine is up", "cmd": "wait_engine", "timeout_ms": 180000},
     {"label": "File > New Project...", "cmd": "action", "name": "pelican.file.newProject"},

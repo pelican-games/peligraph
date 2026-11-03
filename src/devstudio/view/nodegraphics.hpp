@@ -401,6 +401,7 @@ class NodeCanvasView : public QGraphicsView {
     void drawBackground(QPainter *painter, const QRectF &rect) override;
     // A theme switch changes the ground the cached background pixmap holds.
     void changeEvent(QEvent *event) override;
+    bool viewportEvent(QEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
@@ -417,6 +418,9 @@ class NodeCanvasView : public QGraphicsView {
     };
 
     void applyZoom(qreal requested);
+    // The wheel's zoom, for wheelEvent and for a disabled canvas (CZ-1).
+    // False when the event carries no vertical delta.
+    bool zoomByWheel(QWheelEvent *event);
     void publishZoom(qreal scale, const QString &boundary);
     void rememberScope();
     void finishDragTrace(quint64 generation);

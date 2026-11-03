@@ -12899,6 +12899,44 @@ TEST_CASE("FX-9 Escape during a deferred socket drag cancels without sending",
     CHECK(view.isEnabled());
 }
 
+// CZ-1: canvas_zoom_pan's wheel landed while the first reads still held the
+// canvas off, and QWidget dropped it. Zooming is looking, not editing.
+TEST_CASE("CZ-1 the wheel zooms a canvas that waits on a read, and nothing else gets through",
+          "[devstudio][frame-plan][fx9][zoom][cz1]") {
+    application();
+    Fx9CanvasFixture f;
+    f.open();
+    auto &view = logicalView(f.widget);
+    const auto [start, end] = f.endpoints();
+    f.widget.refresh();
+    QApplication::processEvents();
+    REQUIRE_FALSE(view.isEnabled());
+    QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, start);
+    QTest::mouseMove(view.viewport(), (start + end) / 2, 1);
+    QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, end);
+    QApplication::processEvents();
+    CHECK(f.recorder.submits == 0);
+    const qreal before = view.transform().m11();
+    REQUIRE(before < NodeCanvasView::DefaultMaximumZoom);
+    const QPoint cursor = view.viewport()->rect().center();
+    QWheelEvent wheel{QPointF{cursor}, view.viewport()->mapToGlobal(QPointF{cursor}), QPoint{},
+                      QPoint{0, 240}, Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false};
+    QApplication::sendEvent(view.viewport(), &wheel);
+    QApplication::processEvents();
+    CHECK_FALSE(view.isEnabled());
+    const qreal zoomed = view.transform().m11();
+    REQUIRE(zoomed > before);
+    CHECK(std::abs(view.property("pelicanZoomScale").toDouble() - zoomed) < 1e-9);
+    // The read ends on the same scope: the canvas opens at the zoom it was given.
+    f.planReply();
+    f.contextReply();
+    f.taskReply();
+    QApplication::processEvents();
+    CHECK(view.isEnabled());
+    CHECK(std::abs(view.transform().m11() - zoomed) < 1e-9);
+    CHECK(f.recorder.submits == 0);
+}
+
 TEST_CASE("RC-1 the Frame Plan says on its status line what the physical plan's images "
           "take and where most of them are alive, and each image's bytes",
           "[devstudio][frame-plan][rc1][memory]") {

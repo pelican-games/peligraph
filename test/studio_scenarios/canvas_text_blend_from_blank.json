@@ -5,6 +5,11 @@
   "description": "SG-3: text, a blend mode and an adjustment layer on a 2D canvas, from File > New Project > Blank with the Layers dock only. + Canvas places a canvas.output and its 1280 x 720 stack and puts the output's image on present's inputs; + Rect puts a rectangle at the middle and Color: Red repaints it. + Text... opens the text dialog: the text is typed, the font is the system's Arial (the face CV-4's tests draw with; this scenario's prepare script copies it into the run's incoming/ folder, the repository holding no font), brought in with Import font..., which copies it into the project's assets/fonts, and the size is picked from the list (288). OK adds a shape.text centred on the canvas's middle, its white fill and a layer on top in one edit, and the H's left stem, over the rectangle, turns white. Its blend set to Multiply in the picked row's fields, white times red is the rectangle's red again. + Adjustment > Invert puts a canvas.backdrop under a filter.invert above the text: the rectangle's red, under the text and beside it, turns to its inverse; Delete takes the adjustment away and the red is back. A corner of the canvas stays empty throughout. Typed: the project folder and name, the text and the font's file name in Qt's file dialog (as the sound import's scenario does).",
   "tab": "frame_plan",
   "probe_no_automation": false,
+  "invariants": {
+    "undo_exempt": [
+      {"path": "file:assets/fonts/arial.ttf", "reason": "Import font... copies the font into assets/fonts (SG-3); as with Import Sound, Model from file and an image's Import..., Undo takes back the text layer, not the copied file"}
+    ]
+  },
   "steps": [
     {"label": "the fixture's engine is up", "cmd": "wait_engine", "timeout_ms": 180000},
     {"label": "File > New Project...", "cmd": "action", "name": "pelican.file.newProject"},

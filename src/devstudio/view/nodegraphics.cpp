@@ -1110,6 +1110,19 @@ void NodeCanvasView::drawBackground(QPainter *painter, const QRectF &rect) {
     painter->drawLines(grid_lines_);
 }
 
+// CZ-1. A canvas waiting on a read is switched off -- the Frame Plan's FX-9
+// guard while a plan, authoring or edit request is out, the Graph tab's busy
+// model -- so that no edit starts from a context about to be replaced. Looking
+// around is not an edit, but QWidget::event drops the wheel of a disabled
+// widget before wheelEvent sees it: the Frame Plan's first reads keep the
+// canvas off for seconds after the plan is on screen, and a wheel then did
+// nothing. The zoom is taken here; every other input still waits.
+bool NodeCanvasView::viewportEvent(QEvent *event) {
+    if (event != nullptr && event->type() == QEvent::Wheel && !isEnabled())
+        return zoomByWheel(static_cast<QWheelEvent *>(event));
+    return QGraphicsView::viewportEvent(event);
+}
+
 void NodeCanvasView::changeEvent(QEvent *event) {
     QGraphicsView::changeEvent(event);
     if (event == nullptr) return;
@@ -1147,16 +1160,18 @@ void NodeCanvasView::applyZoom(qreal requested) {
     publishZoom(bounded, boundary);
 }
 
-void NodeCanvasView::wheelEvent(QWheelEvent *event) {
+bool NodeCanvasView::zoomByWheel(QWheelEvent *event) {
     int delta = event->angleDelta().y();
     if (delta == 0) delta = event->pixelDelta().y();
-    if (delta == 0) {
-        QGraphicsView::wheelEvent(event);
-        return;
-    }
+    if (delta == 0) return false;
     applyZoom(transform().m11() *
               std::pow(1.0015, static_cast<qreal>(delta)));
     event->accept();
+    return true;
+}
+
+void NodeCanvasView::wheelEvent(QWheelEvent *event) {
+    if (!zoomByWheel(event)) QGraphicsView::wheelEvent(event);
 }
 
 void NodeCanvasView::growPanRoom() {
