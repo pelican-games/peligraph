@@ -20413,3 +20413,480 @@ TEST_CASE("GS-3b1 a picked carry stays picked over a reply that draws nothing; o
     CHECK(scopedItem(h.scene, PelicanStudio::GraphCanvasZoneCarryItem, QString{}, QStringLiteral("steps")) ==
           nullptr);
 }
+
+// --- GS-3b2. A value of a root node a zone takes nothing from is drawn again
+// in that node alone, beside the zone: no zone's field moved with it, it is no
+// loop, and it leads through the root's lines to no loop (a zone's, or one
+// drawn as a node). The frame, the body, the zone's lines and the carry are
+// the items they were. Anything else is the whole scene's, as before, and
+// graph_redraw_refused's bit 4 says why in its detail2.
+
+namespace {
+
+// graph_redraw_refused bit 4's detail2 (graphcanvaswidget.cpp redrawChangedNodes, 3).
+enum Gs3b2Why : int {
+    gs3b2_zone = 1 << 4,
+    gs3b2_fields = 1,
+    gs3b2_loop_changed = 2,
+    gs3b2_loop_reached = 4,
+};
+
+// Why the zone refused, together.
+int gs3b2ZoneWhy(const Gs3aTrace &trace) {
+    int why = 0;
+    for (const auto &span : trace.spans)
+        if (span.stage == "graph_redraw_refused" && (static_cast<int>(span.detail) & gs3b2_zone))
+            why |= static_cast<int>(span.detail2);
+    return why;
+}
+
+// A multiply `id` reading nothing, its b stored (a pill).
+Json gs3b2Multiply(const std::string &id, double b) {
+    return {{"id", id}, {"op", "value.multiply"}, {"parameters", {{"b", b}}},
+            {"outputs", Json::array({"value"})}};
+}
+
+// zoneDocument(true) with the loop's carry, and beside the zone on the root
+// `m`, a multiply nothing reads and that reads nothing.
+Json gs3b2Document() {
+    auto document = zoneDocument(true);
+    document["nodes"][2]["parameters"]["carry"] = Json::array({{{"from", "out"}, {"to", "target"}}});
+    document["nodes"].push_back(gs3b2Multiply("m", 2.0));
+    return document;
+}
+
+// Another panel's change to the harness's document (and plan, reports), all
+// of it read before the scene follows once: the tab follows what it finds.
+void gs3b2Elsewhere(ZoneHarness &h, const std::function<void()> &change) {
+    change();
+    ++h.generation;
+    h.model.refresh();
+    // The document's reply asks for the plan: answered too before following.
+    for (int round = 0; round < 4; ++round) (void)h.answerReads();
+    (void)h.scene.followDocument();
+}
+
+// `change` read and followed: the whole scene drawn once, refused by the
+// zone for `why` alone (no other condition), and the scene is what a rebuild
+// from the same model draws.
+void gs3b2Refused(ZoneHarness &h, const std::function<void()> &change, int why) {
+    Gs3aTrace trace;
+    Gs3aCounts counts{h.scene};
+    gs3b2Elsewhere(h, change);
+    CHECK(counts.rebuilds == 1);
+    CHECK(counts.redrawn.empty());
+    CHECK(trace.refused() == gs3b2_zone);
+    CHECK(gs3b2ZoneWhy(trace) == why);
+    h.scene.repopulated = nullptr;
+    h.scene.nodesRedrawn = nullptr;
+    gs3aSameAsRebuilt(h.scene);
+}
+
+// The zone's parts that are not root nodes' children: the frame, a body
+// node, its line, the zone's link and the carry. Marked by kind and name.
+std::map<std::string, QGraphicsItem *> gs3b2ZoneParts(QGraphicsScene &scene) {
+    std::map<std::string, QGraphicsItem *> parts;
+    parts["frame"] = scopedNode(scene, QString{}, QStringLiteral("steps"));
+    parts["body node"] = scopedNode(scene, QStringLiteral("first"), QStringLiteral("sum"));
+    parts["body line"] = scopedEdge(scene, QStringLiteral("first"), QStringLiteral("a"), QStringLiteral("value"),
+                                    QStringLiteral("sum"), QStringLiteral("b"));
+    const auto links = itemsOfKind(scene, PelicanStudio::GraphCanvasZoneLinkItem);
+    parts["zone link"] = links.size() == 1 ? links.front() : nullptr;
+    parts["carry"] = scopedItem(scene, PelicanStudio::GraphCanvasZoneCarryItem, QString{}, QStringLiteral("steps"));
+    parts["outer socket"] = scopedItem(scene, PelicanStudio::GraphCanvasSocketItem, QString{},
+                                       QStringLiteral("steps"), QStringLiteral("target"), QStringLiteral("input"));
+    parts["inner socket"] = scopedItem(scene, PelicanStudio::GraphCanvasSocketItem, QStringLiteral("first"),
+                                       QStringLiteral("target"), QStringLiteral("value"), QStringLiteral("output"));
+    return parts;
+}
+
+constexpr int Gs3b2PartRole = Qt::UserRole + 9302;
+
+// Each part marked with its own name.
+void gs3b2MarkParts(QGraphicsScene &scene) {
+    for (const auto &[name, item] : gs3b2ZoneParts(scene)) {
+        INFO(name);
+        REQUIRE(item != nullptr);
+        item->setData(Gs3b2PartRole, QString::fromStdString(name));
+    }
+}
+
+// Each part is the item marked with its name (none made again).
+void gs3b2PartsKept(QGraphicsScene &scene) {
+    for (const auto &[name, item] : gs3b2ZoneParts(scene)) {
+        INFO(name);
+        REQUIRE(item != nullptr);
+        CHECK(item->data(Gs3b2PartRole).toString() == QString::fromStdString(name));
+    }
+}
+
+// m's b stored from the canvas and committed, the reads after it followed as
+// the tab follows them: m drawn again alone, nothing drawn whole.
+void gs3b2CommitM(ZoneHarness &h, double b) {
+    Gs3aTrace trace;
+    Gs3aCounts counts{h.scene};
+    REQUIRE(h.model.setNodeParameter("m", "b", Json(b)));
+    (void)h.commitFollowing();
+    INFO("refused " << trace.refused() << " zone " << gs3b2ZoneWhy(trace));
+    CHECK(counts.rebuilds == 0);
+    CHECK(counts.redrawn == std::vector<std::vector<std::string>>{{"m"}});
+    CHECK(trace.count("graph_scene_redraw_node") == 1);
+    h.scene.repopulated = nullptr;
+    h.scene.nodesRedrawn = nullptr;
+}
+
+} // namespace
+
+TEST_CASE("GS-3b2 a root value beside a zone is drawn again in its node alone, and the zone's "
+          "items are the ones they were",
+          "[devstudio][graph-canvas][scene][gs3b2]") {
+    (void)application();
+    ZoneHarness h{gs3b2Document()};
+    gs3bOpen(h);
+    REQUIRE(h.scene.zones() == std::map<std::string, std::string>{{"steps", "first"}});
+    CHECK(gs3aPill(h.scene, QStringLiteral("m"), QStringLiteral("b")) == QStringLiteral("2.0"));
+    gs3b2MarkParts(h.scene);
+    const auto marks = gs3aMark(h.scene, {QStringLiteral("m")});
+    REQUIRE(marks.size() > 30);
+    scopedNode(h.scene, QString{}, QStringLiteral("m"))->setData(Gs3aMarkRole, -1);
+    const auto size = gs3aSize(h.scene, QStringLiteral("m"));
+
+    gs3b2CommitM(h, 3.0);
+    CHECK(gs3aPill(h.scene, QStringLiteral("m"), QStringLiteral("b")) == QStringLiteral("3.0"));
+    CHECK(gs3aSize(h.scene, QStringLiteral("m")) == size);
+    auto kept = marks;
+    kept.insert(-1);
+    CHECK(gs3aMarks(h.scene) == kept);
+    gs3b2PartsKept(h.scene);
+    gs3aSameAsRebuilt(h.scene);
+
+    // Its Undo, the same way.
+    gs3b2MarkParts(h.scene);
+    {
+        Gs3aTrace trace;
+        Gs3aCounts counts{h.scene};
+        REQUIRE(h.model.canUndo());
+        h.scene.undoEdit();
+        (void)h.commitFollowing();
+        CHECK(counts.rebuilds == 0);
+        CHECK(counts.redrawn == std::vector<std::vector<std::string>>{{"m"}});
+        h.scene.repopulated = nullptr;
+        h.scene.nodesRedrawn = nullptr;
+    }
+    CHECK(gs3aPill(h.scene, QStringLiteral("m"), QStringLiteral("b")) == QStringLiteral("2.0"));
+    gs3b2PartsKept(h.scene);
+    gs3aSameAsRebuilt(h.scene);
+}
+
+TEST_CASE("GS-3b2 a value a zone takes something from is the whole scene's, refused for that alone",
+          "[devstudio][graph-canvas][scene][gs3b2]") {
+    (void)application();
+
+    SECTION("a: a node whose line goes into the loop") {
+        ZoneHarness h{gs3b2Document()};
+        gs3bOpen(h);
+        // `a` feeds the loop's target; the loop shows nothing of its value.
+        gs3b2Refused(h, [&] { gs3aNode(h.document["nodes"], "a")["parameters"]["value"] = 6.0; },
+                     gs3b2_loop_reached);
+    }
+
+    SECTION("b: a node two lines up from the loop, the one between them showing nothing new") {
+        auto document = gs3b2Document();
+        document["nodes"].push_back({{"id", "x"}, {"op", "value.constant"}, {"parameters", {{"value", 1.0}}},
+                                     {"outputs", Json::array({"value"})}});
+        document["nodes"].push_back({{"id", "mid"}, {"op", "value.add"},
+                                     {"inputs", {{"a", {{"node", "x"}, {"port", "value"}}}}},
+                                     {"parameters", {{"b", 1.0}}},
+                                     {"outputs", Json::array({"value"})}});
+        document["nodes"][2]["inputs"]["target"] = {{"node", "mid"}, {"port", "value"}};
+        ZoneHarness h{document};
+        gs3bOpen(h);
+        const auto mid = lp4f1Node(h.model, {}, "mid");
+        gs3b2Refused(h, [&] { gs3aNode(h.document["nodes"], "x")["parameters"]["value"] = 4.0; },
+                     gs3b2_loop_reached);
+        // The node between is as it was: only x moved (no loop among them).
+        CHECK(lp4f1Node(h.model, {}, "mid") == mid);
+    }
+
+    SECTION("c: the loop's own parameter") {
+        ZoneHarness h{gs3b2Document()};
+        gs3bOpen(h);
+        gs3b2Refused(h, [&] { h.document["nodes"][2]["parameters"]["over"]["range"]["count"] = 3; },
+                     gs3b2_loop_changed);
+    }
+
+    SECTION("d: a loop drawn as its node (folded) that a node's line goes into") {
+        auto document = gs3b2Document();
+        auto early = document["nodes"][2];
+        early["id"] = "early";
+        early["inputs"]["target"] = {{"node", "x"}, {"port", "value"}};
+        early["parameters"].erase("carry");
+        document["nodes"].push_back(std::move(early));
+        document["nodes"].push_back({{"id", "x"}, {"op", "value.constant"}, {"parameters", {{"value", 1.0}}},
+                                     {"outputs", Json::array({"value"})}});
+        document["layout"] = {{"nodes", {{"early", {{"x", -400.0}, {"y", 0.0}, {"view", "minimal"}}}}}};
+        ZoneHarness h{document};
+        gs3bOpen(h);
+        REQUIRE(h.scene.zones() == std::map<std::string, std::string>{{"steps", "first"}});
+        REQUIRE(scopedNode(h.scene, QString{}, QStringLiteral("early")) != nullptr);
+        gs3b2Refused(h, [&] { gs3aNode(h.document["nodes"], "x")["parameters"]["value"] = 4.0; },
+                     gs3b2_loop_reached);
+    }
+
+    SECTION("e: the zone's words move in the same follow as the value (the report with the document)") {
+        auto document = gs3bDrawDocument();
+        document["nodes"].push_back(gs3b2Multiply("m", 2.0));
+        ZoneHarness h{document};
+        h.loops = gs3bDrawReport();
+        gs3bOpen(h);
+        REQUIRE(gs3bText(h.scene, PelicanStudio::GraphCanvasZoneLabelItem, QStringLiteral("steps"),
+                         QStringLiteral("expansion")) == QStringLiteral("3 materials"));
+        gs3b2Refused(h, [&] {
+            gs3aNode(h.document["nodes"], "m")["parameters"]["b"] = 3.0;
+            h.loops[0]["total"] = 4;
+        }, gs3b2_fields);
+        CHECK(gs3bText(h.scene, PelicanStudio::GraphCanvasZoneLabelItem, QStringLiteral("steps"),
+                       QStringLiteral("expansion")) == QStringLiteral("4 materials"));
+        CHECK(gs3aPill(h.scene, QStringLiteral("m"), QStringLiteral("b")) == QStringLiteral("3.0"));
+    }
+}
+
+TEST_CASE("GS-3b2 a node the zone's output goes into is drawn again alone, and the line from the "
+          "frame ends on its new socket",
+          "[devstudio][graph-canvas][scene][gs3b2]") {
+    (void)application();
+    auto document = gs3b2Document();
+    auto after = gs3b2Multiply("after", 2.0);
+    after["inputs"]["a"] = {{"node", "steps"}, {"port", "out"}};
+    document["nodes"].push_back(std::move(after));
+    ZoneHarness h{document};
+    gs3bOpen(h);
+    const auto ends = [&] {
+        auto *line = dynamic_cast<QGraphicsPathItem *>(scopedEdge(
+            h.scene, QString{}, QStringLiteral("steps"), QStringLiteral("out"), QStringLiteral("after"),
+            QStringLiteral("a")));
+        REQUIRE(line != nullptr);
+        QGraphicsItem *out = scopedItem(h.scene, PelicanStudio::GraphCanvasSocketItem, QString{},
+                                        QStringLiteral("steps"), QStringLiteral("out"), QStringLiteral("output"));
+        QGraphicsItem *into = scopedItem(h.scene, PelicanStudio::GraphCanvasSocketItem, QString{},
+                                         QStringLiteral("after"), QStringLiteral("a"), QStringLiteral("input"));
+        REQUIRE(out != nullptr);
+        REQUIRE(into != nullptr);
+        CHECK(near(gs3aLineStart(*line), centreOf(out)));
+        CHECK(near(gs3aLineEnd(*line), centreOf(into)));
+        return std::pair{out, into};
+    };
+    const auto [out_before, into_before] = ends();
+    out_before->setData(Gs3aMarkRole, 11);
+    into_before->setData(Gs3aMarkRole, 12);
+    Gs3aTrace trace;
+    Gs3aCounts counts{h.scene};
+    gs3b2Elsewhere(h, [&] { gs3aNode(h.document["nodes"], "after")["parameters"]["b"] = 3.0; });
+    INFO("refused " << trace.refused() << " zone " << gs3b2ZoneWhy(trace));
+    CHECK(counts.rebuilds == 0);
+    REQUIRE(counts.redrawn == std::vector<std::vector<std::string>>{{"after"}});
+    const auto [out, into] = ends();
+    // The frame's socket is the one it was; after's is new.
+    CHECK(out->data(Gs3aMarkRole).toInt() == 11);
+    CHECK_FALSE(into->data(Gs3aMarkRole).isValid());
+    // Followed once more, then the node dragged: the line follows its socket.
+    counts.redrawn.clear();
+    gs3b2Elsewhere(h, [&] { gs3aNode(h.document["nodes"], "after")["parameters"]["b"] = 4.0; });
+    REQUIRE(counts.redrawn == std::vector<std::vector<std::string>>{{"after"}});
+    scopedNode(h.scene, QString{}, QStringLiteral("after"))->moveBy(40.0, 30.0);
+    QCoreApplication::processEvents();
+    (void)ends();
+    h.scene.repopulated = nullptr;
+    h.scene.nodesRedrawn = nullptr;
+    gs3aSameAsRebuilt(h.scene);
+}
+
+TEST_CASE("GS-3b2 beside folded nodes, a root value next to a zone is drawn again alone, the body's "
+          "long pill, bands and lines with it",
+          "[devstudio][graph-canvas][scene][gs3b2]") {
+    (void)application();
+    auto document = gs3b2Document();
+    // A body value whose text runs long, and the plan says the body's sum
+    // reads its element (a band under it).
+    gs3aNode(document["definitions"]["first"]["nodes"], "a")["parameters"]["value"] = 123456789.125;
+    SECTION("a long pill and a band") {}
+    SECTION("and a body line through a control point below and left of the body's nodes") {
+        // The frame is drawn round the body's nodes, not its lines: the line
+        // and its control point reach past it.
+        document["definitions"]["first"]["layout"] = {
+            {"reroutes", Json::array({{{"edge", {{"node", "sum"}, {"port", "b"}}},
+                                       {"points", Json::array({Json::array({-160.0, 520.0})})}}})}};
+    }
+    auto plan = gl1bPlan();
+    plan["nodes"].push_back({{"name", "steps/0/sum"}, {"kind", "render"},
+                             {"loop_origin", {{"loop", "steps"}, {"node", "sum"}, {"element", 0}}},
+                             {"reads_loop_index", true}});
+    ZoneHarness h{document};
+    h.plan = plan;
+    gs3bOpen(h);
+    REQUIRE(itemsOfKind(h.scene, PelicanStudio::GraphCanvasNodeItem).size() > 4);
+    std::size_t folded = 0;
+    for (QGraphicsItem *item : itemsOfKind(h.scene, PelicanStudio::GraphCanvasNodeItem))
+        if (item->data(PelicanStudio::GraphCanvasDerivedRole).toBool()) ++folded;
+    REQUIRE(folded >= 2);
+    REQUIRE(gs3bBodyBands(h.scene, QStringLiteral("first")) ==
+            std::map<QString, QString>{{QStringLiteral("sum"), QStringLiteral("reads element")}});
+    gs3b2MarkParts(h.scene);
+    gs3b2CommitM(h, 3.0);
+    gs3b2PartsKept(h.scene);
+    gs3aSameAsRebuilt(h.scene);
+    // And once more after a whole draw.
+    gs3b2CommitM(h, 4.0);
+    gs3aSameAsRebuilt(h.scene);
+}
+
+TEST_CASE("GS-3b2 a body node under the hand: a root value beside the zone is drawn again, the "
+          "node held is the one it was, and the drag it began happens once",
+          "[devstudio][graph-canvas][scene][gs3b2]") {
+    (void)application();
+    ZoneHarness h{gs3b2Document()};
+    gs3bOpen(h);
+    gs3b2MarkParts(h.scene);
+    QGraphicsItem *sum = scopedNode(h.scene, QStringLiteral("first"), QStringLiteral("sum"));
+    REQUIRE(sum != nullptr);
+    const QPointF grip = headingOf(sum);
+    const QPointF from = sum->pos();
+    sceneMouse(h.scene, QEvent::GraphicsSceneMousePress, grip);
+    REQUIRE(h.scene.mouseGrabberItem() != nullptr);
+    Gs3aTrace trace;
+    Gs3aCounts counts{h.scene};
+    gs3b2Elsewhere(h, [&] { gs3aNode(h.document["nodes"], "m")["parameters"]["b"] = 3.0; });
+    INFO("refused " << trace.refused() << " zone " << gs3b2ZoneWhy(trace));
+    CHECK(counts.rebuilds == 0);
+    CHECK(counts.redrawn == std::vector<std::vector<std::string>>{{"m"}});
+    CHECK(trace.count("graph_redraw_deferred") == 0);
+    gs3b2PartsKept(h.scene);
+    CHECK(scopedNode(h.scene, QStringLiteral("first"), QStringLiteral("sum")) == sum);
+    CHECK(gs3aPill(h.scene, QStringLiteral("m"), QStringLiteral("b")) == QStringLiteral("3.0"));
+    // The drag the press began: the node goes where the hand takes it, and
+    // one placement is sent for it, in the body.
+    sceneMouse(h.scene, QEvent::GraphicsSceneMouseMove, grip + QPointF{20.0, 15.0});
+    sceneMouse(h.scene, QEvent::GraphicsSceneMouseMove, grip + QPointF{40.0, 30.0});
+    sceneMouse(h.scene, QEvent::GraphicsSceneMouseRelease, grip + QPointF{40.0, 30.0});
+    CHECK(h.scene.mouseGrabberItem() == nullptr);
+    // (The frame may be drawn round the body again by now: the node read again.)
+    sum = scopedNode(h.scene, QStringLiteral("first"), QStringLiteral("sum"));
+    REQUIRE(sum != nullptr);
+    CHECK(near(sum->pos(), from + QPointF{40.0, 30.0}));
+    h.scene.repopulated = nullptr;
+    h.scene.nodesRedrawn = nullptr;
+    h.scene.flushLayout();
+    const auto edits = h.answerReads();
+    REQUIRE(edits.size() == 1);
+    const Json ops = edits.front().params.at("ops");
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0].at("op") == "set_layout");
+    CHECK(ops[0].at("scope") == "first");
+    CHECK(ops[0].at("layout").at("nodes").at("sum") ==
+          Json{{"x", from.x() + 40.0}, {"y", from.y() + 30.0}});
+}
+
+TEST_CASE("GS-3b2 a root value beside a zone while its refit waits: drawn alone, then the frame is "
+          "drawn round the body once and nothing after",
+          "[devstudio][graph-canvas][scene][gs3b2][ux1]") {
+    (void)application();
+    ZoneHarness h{gs3b2Document()};
+    gs3bOpen(h);
+    UxView shown{h.scene};
+    auto &view = shown.view;
+    QGraphicsItem *node = scopedNode(h.scene, QStringLiteral("first"), QStringLiteral("sum"));
+    REQUIRE(node != nullptr);
+    Gs3aTrace trace;
+    Gs3aCounts counts{h.scene};
+    const QPointF heading{node->boundingRect().width() / 2.0, 6.0};
+    const QPoint grip = onView(view, node->mapToScene(heading));
+    // Up and left past the body's origin: the frame grows that way, and is
+    // drawn round the body again once the hand lets go (the refit).
+    const QPoint delta{-90, -70};
+    viewDrag(view, grip, grip + delta);
+    // The refit's timer has not run: nothing drawn whole yet.
+    REQUIRE(counts.rebuilds == 0);
+    gs3b2Elsewhere(h, [&] { gs3aNode(h.document["nodes"], "m")["parameters"]["b"] = 3.0; });
+    INFO("refused " << trace.refused() << " zone " << gs3b2ZoneWhy(trace));
+    CHECK(counts.rebuilds == 0);
+    CHECK(counts.redrawn == std::vector<std::vector<std::string>>{{"m"}});
+    // The zero timer, the 60 ms retry: the frame drawn round the body once.
+    gs3bWait(200);
+    CHECK(counts.rebuilds == 1);
+    CHECK(gs3aPill(h.scene, QStringLiteral("m"), QStringLiteral("b")) == QStringLiteral("3.0"));
+    h.scene.repopulated = nullptr;
+    h.scene.nodesRedrawn = nullptr;
+    gs3aSameAsRebuilt(h.scene);
+    Gs3aCounts later{h.scene};
+    const auto items = gs3bItems(h.scene);
+    gs3bWait(200);
+    CHECK(later.rebuilds == 0);
+    CHECK(later.redrawn.empty());
+    CHECK(gs3bItems(h.scene) == items);
+    node = scopedNode(h.scene, QStringLiteral("first"), QStringLiteral("sum"));
+    REQUIRE(node != nullptr);
+    const QPoint at = onView(view, node->mapToScene(heading));
+    CHECK(std::abs(at.x() - (grip + delta).x()) <= 2);
+    CHECK(std::abs(at.y() - (grip + delta).y()) <= 2);
+}
+
+TEST_CASE("GS-3b2 after a root value is drawn again beside a zone, the routing index holds the zone's "
+          "sockets and lines, and a line is drawn inside it",
+          "[devstudio][graph-canvas][scene][gs3b2]") {
+    (void)application();
+    ZoneHarness h{gs3b2Document()};
+    gs3bOpen(h);
+    gs3b2CommitM(h, 3.0);
+    auto *index = PelicanStudio::NodeGraphIndex::forScene(h.scene);
+    REQUIRE(index != nullptr);
+    const auto socket = [&](const QString &scope, const QString &node, const QString &port,
+                            const QString &direction) {
+        QGraphicsItem *drawn = scopedItem(h.scene, PelicanStudio::GraphCanvasSocketItem, scope, node, port, direction);
+        INFO(scope.toStdString() << " " << node.toStdString() << " " << port.toStdString());
+        REQUIRE(drawn != nullptr);
+        CHECK(index->find({"socket", scope, node, port, direction}) == drawn);
+        return drawn;
+    };
+    // The frame's outer socket (the root's), the boundary's inner socket and
+    // a body node's (the body's, inside the zone).
+    QGraphicsItem *outer = socket(QString{}, QStringLiteral("steps"), QStringLiteral("target"), QStringLiteral("input"));
+    CHECK(outer->data(PelicanStudio::GraphCanvasZoneScopeRole).toString().isEmpty());
+    QGraphicsItem *boundary = socket(QStringLiteral("first"), QStringLiteral("target"), QStringLiteral("value"),
+                                     QStringLiteral("output"));
+    QGraphicsItem *sum_a = socket(QStringLiteral("first"), QStringLiteral("sum"), QStringLiteral("a"),
+                                  QStringLiteral("input"));
+    QGraphicsItem *sum_b = socket(QStringLiteral("first"), QStringLiteral("sum"), QStringLiteral("b"),
+                                  QStringLiteral("input"));
+    QGraphicsItem *sum_out = socket(QStringLiteral("first"), QStringLiteral("sum"), QStringLiteral("value"),
+                                    QStringLiteral("output"));
+    CHECK(sum_a->data(PelicanStudio::GraphCanvasZoneScopeRole).toString() == QStringLiteral("first"));
+    // The zone's link: the body's, from the node that makes the output.
+    const auto links = itemsOfKind(h.scene, PelicanStudio::GraphCanvasZoneLinkItem);
+    REQUIRE(links.size() == 1);
+    CHECK(links.front()->data(PelicanStudio::GraphCanvasScopeRole).toString() == QStringLiteral("first"));
+    CHECK(index->connected({"edge", QStringLiteral("first"), QStringLiteral("sum")}).contains(links.front()));
+    CHECK(index->find({"zone_socket", QStringLiteral("steps"), QStringLiteral("out:out")}) ==
+          scopedItem(h.scene, PelicanStudio::GraphCanvasZoneSocketItem, QString{}, QStringLiteral("steps"),
+                     QStringLiteral("out:out")));
+    // A line drawn from the boundary to the body's sum: one edit, the body's.
+    drag(h.scene, centreOf(boundary), centreOf(sum_b));
+    const auto edits = h.answerReads();
+    REQUIRE(edits.size() == 1);
+    const Json ops = edits.front().params.at("ops");
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0] == Json{{"op", "set_input"}, {"scope", "first"}, {"node", "sum"}, {"port", "b"},
+                         {"source", {{"node", "target"}, {"port", "value"}}}});
+    // The body node moved: its lines and the zone's link follow it through
+    // the index (rerouteGraphCanvasEdges, as the move happens).
+    QGraphicsItem *sum = scopedNode(h.scene, QStringLiteral("first"), QStringLiteral("sum"));
+    REQUIRE(sum != nullptr);
+    sum->moveBy(20.0, 10.0);
+    auto *into = dynamic_cast<QGraphicsPathItem *>(scopedEdge(h.scene, QStringLiteral("first"),
+        QStringLiteral("target"), QStringLiteral("value"), QStringLiteral("sum"), QStringLiteral("a")));
+    REQUIRE(into != nullptr);
+    CHECK(near(gs3aLineStart(*into), centreOf(boundary)));
+    CHECK(near(gs3aLineEnd(*into), centreOf(sum_a)));
+    auto *link = dynamic_cast<QGraphicsPathItem *>(links.front());
+    REQUIRE(link != nullptr);
+    CHECK(near(gs3aLineStart(*link), centreOf(sum_out)));
+}

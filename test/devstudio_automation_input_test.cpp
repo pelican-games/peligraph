@@ -2305,6 +2305,135 @@ TEST_CASE("GS-3a a node drawn again in place answers to the same automation name
     }
 }
 
+// GS-3b2: a root value beside a loop's zone is drawn again in its node alone.
+// The zone's items are not drawn again; the routing index is made again
+// over all of them. The names a scenario uses for the zone's sockets, its
+// body's nodes and lines answer as before, each on the same thing, and a
+// line drawn by name between two of them is the body's edit.
+TEST_CASE("GS-3b2 beside a zone, a node drawn again in place leaves the zone's automation names on the same things",
+          "[devstudio][automation][gs3b2]") {
+    (void)application();
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    QMainWindow window;
+    auto *view = new PelicanStudio::NodeCanvasView(&scene, &window);
+    view->setObjectName(QStringLiteral("pelican.graphCanvasView"));
+    view->setScene(&scene);
+    window.setCentralWidget(view);
+    window.resize(1200, 700);
+    window.show();
+    // The root: `m` beside a loop `steps` over `first` (a boundary `target`,
+    // a constant `a` and their sum, the body's output `out`).
+    Json nodes = Json::array(
+        {{{"id", "m"}, {"op", "value.multiply"}, {"parameters", {{"b", 3.0}}},
+          {"outputs", Json::array({"value"})}},
+         {{"id", "steps"}, {"op", "graph.loop"},
+          {"parameters", {{"over", {{"range", {{"count", 2}}}}}, {"branches", Json::array({{{"body", "first"}}})}}},
+          {"outputs", Json::array({"out", "out[]"})}}});
+    const Json definitions{
+        {"first",
+         {{"nodes", Json::array({{{"id", "target"}, {"op", "graph.input"}, {"default", 0.0}},
+                                 {{"id", "a"}, {"op", "value.constant"}, {"parameters", {{"value", 1.0}}},
+                                  {"outputs", Json::array({"value"})}},
+                                 {{"id", "sum"}, {"op", "value.add"},
+                                  {"inputs", {{"a", {{"node", "target"}, {"port", "value"}}},
+                                              {"b", {{"node", "a"}, {"port", "value"}}}}},
+                                  {"outputs", Json::array({"value"})}}})},
+          {"outputs", {{"out", {{"node", "sum"}, {"port", "value"}}}}}}}};
+    int generation = 0;
+    std::vector<PelicanStudio::InspectorRpcRequest> edits;
+    const auto answerRead = [&] {
+        Json read{{"nodes", nodes}, {"definitions", definitions}, {"layout", Json::object()},
+                  {"instances", Json::array()}, {"root_schema", "pelican.graph"},
+                  {"source_reference", "fixture"}};
+        read["source_digest"]["hex"] = "gs3b2-" + std::to_string(generation);
+        for (const auto &pending : model.takeRpcRequests()) {
+            if (pending.method == "get_graph_instances") model.receiveRpcResult(pending.request_id, read.dump());
+            else if (pending.method == "get_frame_plan") model.receiveRpcResult(pending.request_id, Json::object().dump());
+            else if (pending.method == "edit_graph_document") edits.push_back(pending);
+        }
+    };
+    model.setConnected(true);
+    answerRead();
+    scene.setModel(&model);
+    answerRead();
+    scene.repopulate();
+    QApplication::processEvents();
+    REQUIRE(scene.zones() == std::map<std::string, std::string>{{"steps", "first"}});
+    int rebuilds = 0;
+    std::vector<std::vector<std::string>> redrawn;
+    scene.repopulated = [&] { ++rebuilds; };
+    scene.nodesRedrawn = [&](const std::vector<std::string> &ids) { redrawn.push_back(ids); };
+
+    AutomationHost host;
+    host.window = &window;
+    const QString prefix = QStringLiteral("pelican.graphCanvasView::");
+    // Every name `list` publishes for the zone's items (the frame's and the
+    // body's), with what each says and where.
+    const auto listed = [&] {
+        const auto reply = runAutomationCommand(host, request(QStringLiteral("list"), {{"pattern", "graph"}}));
+        REQUIRE(reply.ok);
+        std::map<QString, std::vector<std::pair<QString, QString>>> named;
+        for (const auto &value : reply.result.toObject().value(QStringLiteral("widgets")).toArray()) {
+            const auto entry = value.toObject();
+            const QString name = entry.value(QStringLiteral("name")).toString();
+            if (!name.startsWith(prefix) ||
+                !(name.contains(QStringLiteral("#steps")) || name.contains(QStringLiteral("#first/"))))
+                continue;
+            const auto centre = entry.value(QStringLiteral("scene")).toArray();
+            named[name].emplace_back(entry.value(QStringLiteral("text")).toString(),
+                                     QStringLiteral("%1,%2").arg(centre[0].toDouble()).arg(centre[1].toDouble()));
+        }
+        for (auto &[name, items] : named) std::ranges::sort(items);
+        return named;
+    };
+    const auto resolved = [&](const std::map<QString, std::vector<std::pair<QString, QString>>> &named) {
+        std::map<QString, QString> said;
+        for (const auto &[name, items] : named) {
+            (void)items;
+            const auto reply = runAutomationCommand(host, request(QStringLiteral("text"), {{"name", name}}));
+            REQUIRE(reply.ok);
+            said[name] = reply.result.toObject().value(QStringLiteral("text")).toString();
+        }
+        return said;
+    };
+    const auto before = listed();
+    QStringList names;
+    for (const auto &[name, items] : before) names.push_back(name + QStringLiteral(" x") + QString::number(items.size()));
+    INFO(names.join(QStringLiteral(" ; ")).toStdString());
+    const QString boundary = prefix + QStringLiteral("graph_socket#first/target/value");
+    const QString sum_b = prefix + QStringLiteral("graph_socket#first/sum/b");
+    REQUIRE(before.contains(boundary));
+    REQUIRE(before.contains(sum_b));
+    REQUIRE(before.contains(prefix + QStringLiteral("graph_socket#steps/out")));
+    const auto said_before = resolved(before);
+
+    // Another panel stores m's b: read again and followed.
+    nodes[0]["parameters"]["b"] = 4.0;
+    ++generation;
+    model.refresh();
+    answerRead();
+    (void)scene.followDocument();
+    QApplication::processEvents();
+    CHECK(rebuilds == 0);
+    CHECK(redrawn == std::vector<std::vector<std::string>>{{"m"}});
+
+    const auto after = listed();
+    CHECK(after == before);
+    CHECK(resolved(after) == said_before);
+    // A line drawn by name from the boundary to sum's b: the body's edit.
+    REQUIRE(edits.empty());
+    const auto reply = runAutomationCommand(host, request(QStringLiteral("drag"), {{"from", boundary}, {"to", sum_b}}));
+    INFO(describe(reply).toStdString());
+    REQUIRE(reply.ok);
+    answerRead();
+    REQUIRE(edits.size() == 1);
+    const Json ops = edits.front().params.at("ops");
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0] == Json{{"op", "set_input"}, {"scope", "first"}, {"node", "sum"}, {"port", "b"},
+                         {"source", {{"node", "target"}, {"port", "value"}}}});
+}
+
 namespace {
 
 // Production MainWindow, InspectorModel and RPC transport. The small engine

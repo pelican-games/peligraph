@@ -899,6 +899,14 @@ def sample_metrics(tr: Traces, t0: float, t_meas: float, t_end: float, operation
         hits = sum(1 for why in refused if why & (1 << bit))
         if hits:
             m[f"scene_redraw_refused_bit{bit}_count"] = hits
+    # GS-3b2: why the zone refused (bit 4's detail2): 1 a zone's fields moved
+    # with the values, 2 a loop is a changed node, 4 a changed node leads to
+    # a loop through the scope's lines.
+    zone_refused = [int(r[4]) for r in rows if r[0] == "graph_redraw_refused" and int(r[3]) & (1 << 4)]
+    for why in (1, 2, 4):
+        hits = sum(1 for detail in zone_refused if detail & why)
+        if hits:
+            m[f"scene_redraw_refused_zone_why{why}_count"] = hits
     m["scene_redraw_deferred_count"] = sum(1 for r in rows if r[0] == "graph_redraw_deferred")
     # GS-2 / GS-3b1: what followDocument found moved, one graph_follow_diff
     # per reply it followed (graphcanvaswidget.cpp): bits 0 scope to 12 folded

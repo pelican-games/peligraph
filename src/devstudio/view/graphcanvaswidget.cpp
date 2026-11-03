@@ -3037,6 +3037,13 @@ void GraphCanvasScene::repopulate() {
     // draw no longer holds simply has nothing to open over, and the edit ends
     // there -- the one case where a rebuild may take it away.
     if (carried) restoreInlineEdit(*carried);
+    // GS-3b2: a zone's frame holds its body (the body's nodes, lines, control
+    // points and bands, drawn after the folded nodes were placed, and the
+    // lines routed only now): what a partial redraw beside it compares its
+    // frame with is what the frame holds at the end of the whole draw. The
+    // folded nodes are placed as they were (by graph_boxes above).
+    for (const auto &[loop, content] : zone_bodies)
+        drawn_rooms_[loop] = foldedRoom(*content->parentItem());
     if (repopulated) repopulated();
 }
 
@@ -5532,13 +5539,10 @@ bool GraphCanvasScene::followDocument() {
                       now.decomposable == drawn.decomposable && now.folded_view == drawn.folded_view &&
                       now.bands == drawn.bands && zones_moved == 0;
     if (!same) {
-        // GS-3b1: a zone that draws anything else is the whole scene's.
-        if (zones_moved != 0) {
-            repopulate();
-            return false;
-        }
         // GS-3a: only values of nodes, drawn inside those nodes alone.
-        switch (redrawChangedNodes(now)) {
+        // GS-3b2: a zone that draws anything else is the whole scene's
+        // (redrawChangedNodes refuses it, condition 3).
+        switch (redrawChangedNodes(now, zones_moved)) {
         case NodeRedraw::redrawn:
         case NodeRedraw::deferred:
             setProperty("pelicanGraphNotice", qtext(model_->notice().message));
@@ -5614,7 +5618,7 @@ void GraphCanvasScene::followAfterGesture() {
     });
 }
 
-GraphCanvasScene::NodeRedraw GraphCanvasScene::redrawChangedNodes(DrawnFrom &now) {
+GraphCanvasScene::NodeRedraw GraphCanvasScene::redrawChangedNodes(DrawnFrom &now, const int zones_moved) {
     const DrawnFrom &drawn = *drawn_from_;
     // Why a partial redraw was not made: the first condition that failed,
     // as a bit of graph_redraw_refused (studio_latency.py lists them).
@@ -5703,22 +5707,11 @@ GraphCanvasScene::NodeRedraw GraphCanvasScene::redrawChangedNodes(DrawnFrom &now
         if (changed.contains(now.nodes[index].id) &&
             valuesAside(now.nodes[index]) != valuesAside(drawn.nodes[index]))
             return refuse(structure);
-    // 3. No zone: none drawn (followDocument's guard), none a changed node
-    // makes, and none the plan of the zones (repopulate) would make now.
-    for (const auto &node : now.nodes) {
-        if (!node.loop) continue;
-        if (changed.contains(node.id)) return refuse(zone);
-        if (scope.empty() && !model_->loopZoneBody(node.id).empty() && !collapsed(scope, node.id))
-            return refuse(zone);
-    }
-    // 4. Nothing else draws what they hold: no node they lead to through the
-    // scope's lines draws a picture -- a canvas.stack's rows (and the
-    // headings it names: the source, mask and opacity of a row are lines
-    // into it) or a card's.
+    // What the changed nodes lead to through the scope's lines (3 and 4).
+    std::set<std::string, std::less<>> reached;
     {
         std::map<std::string, std::vector<std::string>, std::less<>> next;
         for (const auto &edge : now.edges) next[edge.from_node].push_back(edge.to_node);
-        std::set<std::string, std::less<>> reached;
         std::vector<std::string> open{changed.begin(), changed.end()};
         while (!open.empty()) {
             const auto id = std::move(open.back());
@@ -5728,6 +5721,32 @@ GraphCanvasScene::NodeRedraw GraphCanvasScene::redrawChangedNodes(DrawnFrom &now
             for (const auto &to : found->second)
                 if (reached.insert(to).second) open.push_back(to);
         }
+    }
+    // 3. GS-3b2: no zone takes anything from them. Why, as the refusal's
+    // detail2: 1 a zone's fields (zonesMoved: which loops are zones, their
+    // bodies, frames' words, bands) moved too, 2 a loop is a changed node,
+    // 4 a changed node leads to a loop through the scope's lines. A loop is
+    // any graph.loop: a zone's, or one drawn as a node (folded, or running
+    // a body an earlier zone took). With no loop on the scope this is what
+    // it was: no zone is drawn or planned (1 compares the plan of the zones,
+    // pickZones, now and as drawn), none changed, none reached.
+    {
+        enum : int { zone_fields = 1, zone_loop_changed = 2, zone_loop_reached = 4 };
+        const auto refuseZone = [](int why) {
+            if (GuiTrace::sink) { const GuiTraceSpan cause{"graph_redraw_refused", double(zone), double(why)}; }
+            return NodeRedraw::refused;
+        };
+        if (zones_moved != 0) return refuseZone(zone_fields);
+        for (const auto &node : now.nodes)
+            if (node.loop && changed.contains(node.id)) return refuseZone(zone_loop_changed);
+        for (const auto &node : now.nodes)
+            if (node.loop && reached.contains(node.id)) return refuseZone(zone_loop_reached);
+    }
+    // 4. Nothing else draws what they hold: no node they lead to through the
+    // scope's lines draws a picture -- a canvas.stack's rows (and the
+    // headings it names: the source, mask and opacity of a row are lines
+    // into it) or a card's.
+    {
         for (const auto &node : now.nodes)
             if (reached.contains(node.id) && !changed.contains(node.id) &&
                 (node.op == "canvas.stack" || graphCanvasCardOperation(node.op)))

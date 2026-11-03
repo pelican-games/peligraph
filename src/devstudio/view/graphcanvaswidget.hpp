@@ -1229,13 +1229,16 @@ class GraphCanvasScene final : public QGraphicsScene {
     std::vector<PassLine> drawn_pass_lines_;
     LinkedOutputs drawn_linked_;
     // What each graph node held (foldedRoom) when the last whole draw placed
-    // the folded nodes clear of it, by id.
+    // the folded nodes clear of it, by id. GS-3b2: a zone's frame, what it
+    // holds at the end of that draw (its body is drawn after the folded nodes).
     std::map<std::string, QRectF, std::less<>> drawn_rooms_;
     // GS-3a. The nodes whose values alone moved, drawn again in place, or
     // why not: the first condition that failed is the trace's bit
     // (graph_redraw_refused), and a node under a hand waits (deferred).
     enum class NodeRedraw { redrawn, deferred, refused };
-    NodeRedraw redrawChangedNodes(DrawnFrom &now);
+    // GS-3b2: `zones_moved` is zonesMoved(now, *drawn_from_): a zone that
+    // draws anything else refuses it (condition 3).
+    NodeRedraw redrawChangedNodes(DrawnFrom &now, int zones_moved);
     // What GL-2b's band under a drawn node says (LC-1s's inside a loop's
     // body), and the opacity the composition gives it.
     [[nodiscard]] QString nodeBandText(const std::string &scope, const std::string &id) const;
