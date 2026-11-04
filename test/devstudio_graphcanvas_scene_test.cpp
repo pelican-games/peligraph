@@ -19,6 +19,8 @@
 #include "graphcanvaslayerspanel.hpp"
 #include "../guitrace.hpp"
 #include "graphcanvasdrawing.hpp"
+#include "graphcanvascurve.hpp"
+#include "graphcanvascurvegeometry.hpp"
 #include "graphcanvasfoldgroups.hpp"
 #include "rendertargetform.hpp"
 #include "renderedithistory.hpp"
@@ -106,6 +108,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <set>
@@ -23220,7 +23223,7 @@ bool parameterOp(const std::string &op) {
 
 const char *parameterKey(const std::string &op) {
     if (op == "value.constant") return "value";
-    if (op == "value.curve") return "time";
+    if (op == "value.curve") return "keys";
     if (op == "value.multiply") return "b";
     if (op == "value.add") return "b";
     return nullptr;
@@ -23240,6 +23243,18 @@ struct Proposal {
     std::string kind;
     std::string target;
 };
+
+// A curve edits its last key's value, never the top-level `time` field (the
+// strict parser refuses that, and the fixture must stay drawable).
+bool curveParameterEdit(const Json &in, Json &out, double value) {
+    out = in.is_object() ? in : Json::object();
+    Json keys = out.value("keys", Json::array());
+    if (!keys.is_array() || keys.empty() || !keys.back().is_object()) return false;
+    keys.back()["value"] = value;
+    out["keys"] = std::move(keys);
+    out.erase("time");
+    return true;
+}
 
 Json parameterOps(const NodeRef &ref, const Json &parameters) {
     return Json::array({Json{{"op", "set_node_parameters"},
@@ -23274,7 +23289,17 @@ std::optional<Proposal> proposal(Rng &rng, const Json &document, bool zone) {
         const double current = parameters.contains(key) && parameters.at(key).is_number()
                                    ? parameters.at(key).get<double>()
                                    : 0.0;
-        parameters[key] = differentValue(rng, current);
+        if (ref.op == "value.curve") {
+            double last = 0.0;
+            if (parameters.contains("keys") && parameters.at("keys").is_array() &&
+                !parameters.at("keys").empty() &&
+                parameters.at("keys").back().is_object())
+                last = parameters.at("keys").back().value("value", 0.0);
+            if (!curveParameterEdit(parameters, parameters, differentValue(rng, last)))
+                return std::nullopt;
+        } else {
+            parameters[key] = differentValue(rng, current);
+        }
         return Proposal{parameterOps(ref, parameters), "value", ref.scope + "/" + ref.id};
     }
     if (roll < loop_end) {
@@ -23417,10 +23442,19 @@ std::optional<Proposal> fallbackProposal(const Json &document) {
         Json parameters = ref.parameters.is_object() ? ref.parameters : Json::object();
         const char *key = parameterKey(ref.op);
         if (key == nullptr) continue;
-        const double value = parameters.value(key, Json(0.0)).is_number()
-                                 ? parameters.value(key, Json(0.0)).get<double>()
-                                 : 0.0;
-        parameters[key] = value + 1.0;
+        if (ref.op == "value.curve") {
+            double last = 0.0;
+            if (parameters.contains("keys") && parameters.at("keys").is_array() &&
+                !parameters.at("keys").empty() &&
+                parameters.at("keys").back().is_object())
+                last = parameters.at("keys").back().value("value", 0.0);
+            if (!curveParameterEdit(parameters, parameters, last + 1.0)) continue;
+        } else {
+            const double value = parameters.value(key, Json(0.0)).is_number()
+                                     ? parameters.value(key, Json(0.0)).get<double>()
+                                     : 0.0;
+            parameters[key] = value + 1.0;
+        }
         return Proposal{parameterOps(ref, parameters), "value", ref.scope + "/" + ref.id};
     }
     return std::nullopt;
@@ -23768,14 +23802,16 @@ Json rootFuzzDocument() {
         return Json{{"id", id}, {"op", "value.constant"},
                     {"parameters", {{"value", value}}}, {"outputs", Json::array({"value"})}};
     };
-    const auto curve = [](const char *id, double time) {
+    const auto curve = [](const char *id) {
         return Json{{"id", id}, {"op", "value.curve"},
-                    {"parameters", {{"time", time}}}, {"outputs", Json::array({"value"})}};
+                    {"parameters", {{"keys", Json::array({{{"time", 0.0}, {"value", 0.0}},
+                                                          {{"time", 1.0}, {"value", 1.0}}})}}},
+                    {"outputs", Json::array({"value"})}};
     };
     return Json{{"schema", "pelican.graph"}, {"version", 1}, {"outputs", Json::object()},
                 {"definitions", Json::object()},
                 {"nodes", Json::array(
-                             {constant("k1", 4.0), curve("curve", 0.25),
+                             {constant("k1", 4.0), curve("curve"),
                               {{"id", "mul"}, {"op", "value.multiply"},
                                {"inputs", {{"a", {{"node", "k1"}, {"port", "value"}}},
                                            {"b", {{"node", "curve"}, {"port", "value"}}}}},
@@ -23805,6 +23841,10 @@ struct Totals {
     std::size_t partial = 0;
     std::size_t rebuilt = 0;
     std::size_t skipped = 0;
+    // SDK-2a: the curve node's committed key edits, and how each refreshed.
+    std::size_t curve_steps = 0;
+    std::size_t curve_partial = 0;
+    std::size_t curve_rebuilt = 0;
     std::size_t differing_steps = 0;
     std::size_t differences = 0;
     // Why the partial path did not run, by graph_redraw_refused bits.
@@ -23839,6 +23879,8 @@ void printTotals(const Totals &totals) {
                 "skipped=%zu differing-steps=%zu differences=%zu\n",
                 totals.seeds, totals.steps, totals.partial, percent, totals.rebuilt, totals.skipped,
                 totals.differing_steps, totals.differences);
+    std::printf("GS-FUZZ1 curve: commits=%zu partial=%zu rebuilt=%zu\n", totals.curve_steps,
+                totals.curve_partial, totals.curve_rebuilt);
     std::printf("GS-FUZZ1 classes:");
     if (totals.classes.empty()) std::printf(" none");
     for (const auto &[kind, count] : totals.classes)
@@ -23929,6 +23971,11 @@ TEST_CASE("GS-FUZZ1 seeded random edits leave the partial draw what a full rebui
             ++totals.steps;
             if (partial) ++totals.partial;
             else ++totals.rebuilt;
+            if (chosen->target.ends_with("/curve")) {
+                ++totals.curve_steps;
+                if (partial) ++totals.curve_partial;
+                else ++totals.curve_rebuilt;
+            }
             ++totals.refusals[refused];
 
             const auto differences = fuzz1::compare(first, rebuilt);
@@ -24956,6 +25003,13 @@ private:
             if (count == current) count = 1 + (count % 7);
             over["range"] = Json{{"count", count}};
             parameters["over"] = std::move(over);
+        } else if (ref.op == "value.curve") {
+            Json keys = parameters.value("keys", Json::array());
+            if (!keys.is_array() || keys.empty() || !keys.back().is_object())
+                return skipped("the curve has no last key");
+            const double current = keys.back().value("value", 0.0);
+            keys.back()["value"] = differentValue(rng_, current);
+            parameters["keys"] = std::move(keys);
         } else {
             const char *key = parameterKey(ref.op);
             if (key == nullptr) return skipped("not a value node");
@@ -27450,4 +27504,621 @@ TEST_CASE("OSC-3a a live input's current value reaches its band while Live is on
     REQUIRE(band != nullptr);
     CHECK(band->data(PelicanStudio::GraphCanvasValueTextRole).toString() ==
           QStringLiteral("3.5"));
+}
+
+// --- SDK-2a: the fixed-size curve plot on an open value.curve node.
+
+namespace {
+
+using Sdk2aCurve = PelicanStudio::GraphCanvasCurveKey;
+namespace Sdk2aGeometry = PelicanStudio::GraphCanvasCurveGeometry;
+
+Json sdk2aLinearKeys(double last_time, double last_value) {
+    return Json::array({{{"time", 0.0}, {"value", 0.0}},
+                        {{"time", last_time}, {"value", last_value}}});
+}
+
+Json sdk2aNodes(const Json &keys) {
+    return Json::array(
+        // Before the first key, so changing a key's value does not change
+        // the output: the redraw has to come from the keys themselves.
+        {{{"id", "curve_time"}, {"op", "value.constant"},
+          {"parameters", {{"value", -1.0}}}, {"outputs", Json::array({"value"})}},
+         {{"id", "curve"}, {"op", "value.curve"},
+          {"inputs", {{"time", {{"node", "curve_time"}, {"port", "value"}}}}},
+          {"parameters", {{"keys", keys}}}, {"outputs", Json::array({"value"})}}});
+}
+
+Json sdk2aDocument(const Json &keys, const Json &layout = Json::object()) {
+    return {{"schema", "pelican.graph"},
+            {"version", 1},
+            {"outputs", Json::object()},
+            {"definitions", Json::object()},
+            {"layout", layout},
+            {"nodes",
+             Json::array(
+                 {{{"id", "clock"}, {"op", "value.input"},
+                   {"parameters", {{"name", "scene_time"}}},
+                   {"outputs", Json::array({"value"})}},
+                  {{"id", "curve"}, {"op", "value.curve"},
+                   {"inputs", {{"time", {{"node", "clock"}, {"port", "value"}}}}},
+                   {"parameters", {{"keys", keys}}},
+                   {"outputs", Json::array({"value"})}}})}};
+}
+
+QGraphicsPathItem *sdk2aPart(QGraphicsScene &scene, const QString &node, const char *kind) {
+    for (QGraphicsItem *item : itemsOfKind(scene, kind))
+        if (item->data(PelicanStudio::NodeGraphNameRole).toString() == node)
+            return dynamic_cast<QGraphicsPathItem *>(item);
+    return nullptr;
+}
+
+QRectF sdk2aPlotBox(const QGraphicsItem &node) {
+    const auto *path = dynamic_cast<const QGraphicsPathItem *>(&node);
+    REQUIRE(path != nullptr);
+    const QRectF box = path->path().boundingRect();
+    return QRectF{10.0, box.height() - PelicanStudio::GraphCanvasCurvePlotHeight -
+                            PelicanStudio::GraphCanvasSectionPadding,
+                  std::max(1.0, box.width() - 2.0 * PelicanStudio::GraphCanvasCurvePlotMargin),
+                  PelicanStudio::GraphCanvasCurvePlotHeight};
+}
+
+std::vector<QPointF> sdk2aCurvePoints(QGraphicsScene &scene, const QString &node) {
+    auto *part = sdk2aPart(scene, node, PelicanStudio::GraphCanvasCurvePlotItem);
+    REQUIRE(part != nullptr);
+    std::vector<QPointF> points;
+    const QPainterPath path = part->path();
+    for (int index = 0; index < path.elementCount(); ++index) {
+        const auto element = path.elementAt(index);
+        points.emplace_back(element.x, element.y);
+    }
+    return points;
+}
+
+int sdk2aKeyMarks(QGraphicsScene &scene, const QString &node) {
+    auto *part = sdk2aPart(scene, node, PelicanStudio::GraphCanvasCurveKeysItem);
+    if (part == nullptr) return 0;
+    int marks = 0;
+    const QPainterPath path = part->path();
+    for (int index = 0; index < path.elementCount(); ++index)
+        if (path.elementAt(index).type == QPainterPath::MoveToElement) ++marks;
+    return marks;
+}
+
+} // namespace
+
+TEST_CASE("SDK-2a a: curve keys parse as the engine's ScalarCurve does, and a refusal is nullopt",
+          "[devstudio][graph-canvas][scene][sdk2a]") {
+    using PelicanStudio::curveKeysFromParameters;
+    using PelicanStudio::sampleCurve;
+
+    SECTION("the engine's defaults, and the exact sample of each interpolation") {
+        const auto keys = curveKeysFromParameters(
+            Json{{"keys", Json::array({{{"time", 0.0}, {"value", 0.0},
+                                       {"interpolation", "step"}},
+                                       {{"time", 1.0}, {"value", 10.0},
+                                       {"interpolation", "step"}},
+                                       {{"time", 2.0}, {"value", 20.0}}})}});
+        REQUIRE(keys.has_value());
+        REQUIRE(keys->size() == 3);
+        CHECK(keys->at(0).interpolation == "step");
+        CHECK(PelicanStudio::curveOutTangent(keys->at(0)) == 0.0);
+        CHECK(sampleCurve(*keys, -1.0) == 0.0);
+        // The engine's upper_bound moves past the exact key: a step at its
+        // own time is already the new key's value.
+        CHECK(sampleCurve(*keys, 0.0) == 0.0);
+        CHECK(sampleCurve(*keys, 0.5) == 0.0);
+        CHECK(sampleCurve(*keys, 1.0) == 10.0);
+        CHECK(sampleCurve(*keys, 1.5) == 10.0);
+        CHECK(sampleCurve(*keys, 2.0) == 20.0);
+        CHECK(sampleCurve(*keys, 3.0) == 20.0);
+    }
+
+    SECTION("linear is lerp and cubic is the engine's Hermite through the tangents") {
+        const auto linear = curveKeysFromParameters(Json::parse(R"({"keys":[
+            {"time":0,"value":0},{"time":2,"value":4}]})"));
+        REQUIRE(linear.has_value());
+        CHECK(sampleCurve(*linear, 1.0) == 2.0);
+
+        const auto cubic = curveKeysFromParameters(Json::parse(R"({"keys":[
+            {"time":0,"value":0,"interpolation":"cubic","out_tangent":2},
+            {"time":1,"value":1,"in_tangent":-1,"interpolation":"cubic"}]})"));
+        REQUIRE(cubic.has_value());
+        CHECK(PelicanStudio::curveOutTangent(cubic->at(0)) == 2.0);
+        CHECK(PelicanStudio::curveInTangent(cubic->at(1)) == -1.0);
+        CHECK(std::abs(sampleCurve(*cubic, 0.5) - 0.875) < 1e-15);
+        CHECK(sampleCurve(*cubic, 0.0) == 0.0);
+        CHECK(sampleCurve(*cubic, 1.0) == 1.0);
+    }
+
+    SECTION("a curve the engine refuses is unusable whole, never a partial curve") {
+        const std::vector<Json> refused{
+            Json::object(),
+            Json{{"keys", Json::array()}},
+            Json{{"keys", 3}},
+            Json{{"keys", Json::array({3})}},
+            Json{{"keys", Json::array({{{"value", 1.0}}})}},
+            Json{{"keys", Json::array({{{"time", 0.0}}})}},
+            Json{{"keys", Json::array({{{"time", "0"}, {"value", 1.0}}})}},
+            Json{{"keys", Json::array({{{"time", 0.0}, {"value", "1"}}})}},
+            Json{{"keys", Json::array({{{"time", std::numeric_limits<double>::quiet_NaN()},
+                                       {"value", 1.0}}})}},
+            Json{{"keys", Json::array({{{"time", 0.0},
+                                       {"value", std::numeric_limits<double>::infinity()}}})}},
+            Json{{"keys", Json::array({{{"time", 0.0}, {"value", 1.0},
+                                       {"interpolation", "smooth"}}})}},
+            Json{{"keys", Json::array({{{"time", 0.0}, {"value", 1.0},
+                                       {"interpolation", 2}}})}},
+            Json{{"keys", Json::array({{{"time", 0.0}, {"value", 1.0},
+                                       {"in_tangent", "fast"}}})}},
+            Json{{"keys", Json::array({{{"time", 0.0}, {"value", 1.0}, {"extra", 2}}})}},
+            Json{{"keys", Json::array({{{"time", 2.0}, {"value", 1.0}},
+                                       {{"time", 1.0}, {"value", 2.0}}})}},
+            Json{{"keys", Json::array({{{"time", 1.0}, {"value", 1.0}},
+                                       {{"time", 1.0}, {"value", 2.0}}})}},
+        };
+        for (const Json &parameters : refused) {
+            INFO(parameters.dump());
+            CHECK_FALSE(curveKeysFromParameters(parameters).has_value());
+        }
+        CHECK_FALSE(curveKeysFromParameters(Json::array()).has_value());
+        CHECK_FALSE(curveKeysFromParameters(Json::object({{"keys", nullptr}})).has_value());
+    }
+}
+
+TEST_CASE("SDK-2a b: the frame is the drawn range, padded; a cubic's overshoot grows it",
+          "[devstudio][graph-canvas][scene][sdk2a]") {
+    using namespace PelicanStudio;
+    const auto linear = curveKeysFromParameters(Json{{"keys", sdk2aLinearKeys(10.0, 100.0)}});
+    REQUIRE(linear.has_value());
+    const QRectF frame = Sdk2aGeometry::curveFrame(*linear);
+    CHECK(std::abs(frame.left() - (-0.8)) < 1e-12);
+    CHECK(std::abs(frame.top() - (-12.0)) < 1e-12);
+    CHECK(std::abs(frame.width() - 11.6) < 1e-12);
+    CHECK(std::abs(frame.height() - 124.0) < 1e-12);
+    // The stated construction: QRectF(t0, v0, t1 - t0, v1 - v0).
+    CHECK(frame == QRectF{-0.8, -12.0, 11.6, 124.0});
+
+    const auto one = curveKeysFromParameters(Json{{"keys", Json::array({{{"time", 5.0}, {"value", 7.0}}})}});
+    REQUIRE(one.has_value());
+    CHECK(Sdk2aGeometry::curveFrame(*one) == QRectF{4.42, 6.38, 1.16, 1.24});
+
+    // 0 at both ends, tangents +10 at the start and -10 at the end: the
+    // Hermite arches to 2.5 at t=0.5. A frame from the keys alone (0 .. 0
+    // padded to +-0.5) would clip it; the extrema put the frame at -0.3 ..
+    // 2.8.
+    const auto cubic = curveKeysFromParameters(Json::parse(R"({"keys":[
+        {"time":0,"value":0,"interpolation":"cubic","out_tangent":10},
+        {"time":1,"value":0,"interpolation":"cubic","in_tangent":-10}]})"));
+    REQUIRE(cubic.has_value());
+    const QRectF overshoot = Sdk2aGeometry::curveFrame(*cubic);
+    CHECK(std::abs(overshoot.top() - (-0.3)) < 1e-12);
+    CHECK(std::abs(overshoot.bottom() - 2.8) < 1e-12);
+    // The same tangent magnitudes with the signs swapped dip instead.
+    const auto dip = curveKeysFromParameters(Json::parse(R"({"keys":[
+        {"time":0,"value":0,"interpolation":"cubic","out_tangent":-10},
+        {"time":1,"value":0,"interpolation":"cubic","in_tangent":10}]})"));
+    REQUIRE(dip.has_value());
+    const QRectF dipped = Sdk2aGeometry::curveFrame(*dip);
+    CHECK(std::abs(dipped.top() - (-2.8)) < 1e-12);
+    CHECK(std::abs(dipped.bottom() - 0.3) < 1e-12);
+}
+
+TEST_CASE("SDK-2a c: paths walk the keys once: linear, step at the next key's x, cubic sampled",
+          "[devstudio][graph-canvas][scene][sdk2a]") {
+    using namespace PelicanStudio;
+
+    SECTION("linear: four points, from the held value at the left to the held value at the right") {
+        const auto keys = curveKeysFromParameters(Json{{"keys", sdk2aLinearKeys(10.0, 100.0)}});
+        REQUIRE(keys.has_value());
+        const QRectF frame = Sdk2aGeometry::curveFrame(*keys);
+        const QRectF plot{10.0, 81.0, 300.0, 72.0};
+        const auto paths = Sdk2aGeometry::curvePaths(*keys, frame, plot);
+        REQUIRE(paths.curve.elementCount() == 4);
+        const double first_y = plot.bottom() - plot.height() * (0.0 - frame.top()) / frame.height();
+        const double last_y = plot.bottom() - plot.height() * (100.0 - frame.top()) / frame.height();
+        const double first_x = plot.left() + plot.width() * (0.0 - frame.left()) / frame.width();
+        const double last_x = plot.left() + plot.width() * (10.0 - frame.left()) / frame.width();
+        CHECK(paths.curve.elementAt(0).type == QPainterPath::MoveToElement);
+        CHECK(paths.curve.elementAt(0).x == plot.left());
+        CHECK(paths.curve.elementAt(0).y == first_y);
+        CHECK(paths.curve.elementAt(1).x == first_x);
+        CHECK(paths.curve.elementAt(1).y == first_y);
+        CHECK(paths.curve.elementAt(2).x == last_x);
+        CHECK(paths.curve.elementAt(2).y == last_y);
+        CHECK(paths.curve.elementAt(3).x == plot.right());
+        CHECK(paths.curve.elementAt(3).y == last_y);
+    }
+
+    SECTION("step: horizontal to the next key, then vertical at that key's x") {
+        const auto keys = curveKeysFromParameters(Json::parse(R"({"keys":[
+            {"time":0,"value":0,"interpolation":"step"},
+            {"time":2,"value":10,"interpolation":"step"}]})"));
+        REQUIRE(keys.has_value());
+        const QRectF frame = Sdk2aGeometry::curveFrame(*keys);
+        const QRectF plot{0.0, 0.0, 232.0, 124.0};
+        const auto paths = Sdk2aGeometry::curvePaths(*keys, frame, plot);
+        REQUIRE(paths.curve.elementCount() == 5);
+        const double x0 = plot.left() + plot.width() * (0.0 - frame.left()) / frame.width();
+        const double x1 = plot.left() + plot.width() * (2.0 - frame.left()) / frame.width();
+        const double y0 = plot.bottom() - plot.height() * (0.0 - frame.top()) / frame.height();
+        const double y1 = plot.bottom() - plot.height() * (10.0 - frame.top()) / frame.height();
+        CHECK(paths.curve.elementAt(0).y == y0);
+        CHECK(paths.curve.elementAt(1).x == x0);
+        CHECK(paths.curve.elementAt(2).x == x1);
+        CHECK(paths.curve.elementAt(2).y == y0);
+        CHECK(paths.curve.elementAt(3).x == x1);
+        CHECK(paths.curve.elementAt(3).y == y1);
+        CHECK(std::abs(paths.curve.elementAt(4).x - plot.right()) < 1e-9);
+        CHECK(paths.curve.elementAt(4).y == y1);
+    }
+
+    SECTION("cubic: more than two samples per segment, each where the engine samples it") {
+        const auto keys = curveKeysFromParameters(Json::parse(R"({"keys":[
+            {"time":0,"value":0,"interpolation":"cubic","out_tangent":10},
+            {"time":1,"value":0,"interpolation":"cubic","in_tangent":-10}]})"));
+        REQUIRE(keys.has_value());
+        const QRectF frame = Sdk2aGeometry::curveFrame(*keys);
+        const QRectF plot{0.0, 0.0, 64.0, 64.0};
+        const auto paths = Sdk2aGeometry::curvePaths(*keys, frame, plot);
+        CHECK(paths.curve.elementCount() > 20);
+        // Every sampled point between the keys is the engine's sample at its
+        // x's time; the first and last lie outside the keys, held level.
+        for (int index = 1; index + 1 < paths.curve.elementCount(); ++index) {
+            const auto point = paths.curve.elementAt(index);
+            const double time =
+                frame.left() + (point.x - plot.left()) / plot.width() * frame.width();
+            const double value =
+                frame.top() + (plot.bottom() - point.y) / plot.height() * frame.height();
+            CHECK(std::abs(value - sampleCurve(*keys, time)) < 1e-9);
+        }
+        const auto mid = paths.curve.elementAt(paths.curve.elementCount() / 2);
+        const double mid_value =
+            frame.top() + (plot.bottom() - mid.y) / plot.height() * frame.height();
+        CHECK(std::abs(mid_value - 2.5) < 1e-9);
+        bool overshoots = false;
+        for (int index = 0; index < paths.curve.elementCount(); ++index) {
+            const auto point = paths.curve.elementAt(index);
+            const double value =
+                frame.top() + (plot.bottom() - point.y) / plot.height() * frame.height();
+            if (value > 0.5 || value < -0.5) overshoots = true;
+        }
+        CHECK(overshoots);
+    }
+
+    SECTION("the key marks are circles at every key") {
+        const auto keys = curveKeysFromParameters(Json{{"keys", sdk2aLinearKeys(10.0, 100.0)}});
+        REQUIRE(keys.has_value());
+        const auto paths = Sdk2aGeometry::curvePaths(*keys, Sdk2aGeometry::curveFrame(*keys),
+                                                      QRectF{0.0, 0.0, 100.0, 100.0});
+        int moves = 0;
+        for (int index = 0; index < paths.keys.elementCount(); ++index)
+            if (paths.keys.elementAt(index).type == QPainterPath::MoveToElement) ++moves;
+        CHECK(moves == 2);
+        CHECK_FALSE(paths.keys.isEmpty());
+    }
+}
+
+TEST_CASE("SDK-2a d: the open plot is fixed at 72 px and only the open view has one",
+          "[devstudio][graph-canvas][scene][sdk2a]") {
+    (void)application();
+    Ux2Tab one{false};
+    one.widget->model().setDomainShown("value", true);
+    one.read(sdk2aDocument(sdk2aLinearKeys(1.0, 1.0)), "sdk2a-d-one");
+    one.answer("get_graph_catalog", visualCatalog());
+    auto &scene_one = one.widget->scene();
+    auto *open = nodeItem(scene_one, QStringLiteral("curve"));
+    REQUIRE(open != nullptr);
+    const qreal open_height = static_cast<QGraphicsPathItem *>(open)->path().boundingRect().height();
+    CHECK(open_height == 167.0);
+    CHECK(sdk2aPart(scene_one, QStringLiteral("curve"),
+                    PelicanStudio::GraphCanvasCurveFrameItem) != nullptr);
+    CHECK(sdk2aPart(scene_one, QStringLiteral("curve"),
+                    PelicanStudio::GraphCanvasCurvePlotItem) != nullptr);
+    CHECK(sdk2aPart(scene_one, QStringLiteral("curve"),
+                    PelicanStudio::GraphCanvasCurveKeysItem) != nullptr);
+    CHECK(sdk2aKeyMarks(scene_one, QStringLiteral("curve")) == 2);
+    CHECK(sdk2aPart(scene_one, QStringLiteral("curve"),
+                    PelicanStudio::GraphCanvasCurveFrameItem)
+              ->path()
+              .boundingRect() == sdk2aPlotBox(*open));
+
+    // The same node with fifty keys: the same height, the same plot, more marks.
+    Json many = Json::array();
+    for (int index = 0; index < 50; ++index)
+        many.push_back({{"time", index / 49.0}, {"value", double(index % 7)}});
+    Ux2Tab fifty{false};
+    fifty.widget->model().setDomainShown("value", true);
+    fifty.read(sdk2aDocument(many), "sdk2a-d-fifty");
+    fifty.answer("get_graph_catalog", visualCatalog());
+    auto &scene_fifty = fifty.widget->scene();
+    auto *open_fifty = nodeItem(scene_fifty, QStringLiteral("curve"));
+    REQUIRE(open_fifty != nullptr);
+    CHECK(static_cast<QGraphicsPathItem *>(open_fifty)->path().boundingRect().height() == open_height);
+    CHECK(sdk2aPlotBox(*open_fifty) == sdk2aPlotBox(*open));
+    CHECK(sdk2aKeyMarks(scene_fifty, QStringLiteral("curve")) == 50);
+
+    REQUIRE(scene_one.setNodeView({}, "curve", PelicanStudio::GraphCanvasNodeView::compact));
+    QCoreApplication::processEvents();
+    auto *compact = nodeItem(scene_one, QStringLiteral("curve"));
+    REQUIRE(compact != nullptr);
+    // The curve's time input is the only linked row: heading, two paddings,
+    // one row. No plot, no parts.
+    CHECK(static_cast<QGraphicsPathItem *>(compact)->path().boundingRect().height() ==
+          PelicanStudio::GraphCanvasHeaderHeight + 2.0 * PelicanStudio::GraphCanvasSectionPadding +
+              PelicanStudio::GraphCanvasSocketRowHeight);
+    CHECK(sdk2aPart(scene_one, QStringLiteral("curve"),
+                    PelicanStudio::GraphCanvasCurveFrameItem) == nullptr);
+    CHECK(sdk2aPart(scene_one, QStringLiteral("curve"),
+                    PelicanStudio::GraphCanvasCurvePlotItem) == nullptr);
+    CHECK(sdk2aPart(scene_one, QStringLiteral("curve"),
+                    PelicanStudio::GraphCanvasCurveKeysItem) == nullptr);
+
+    REQUIRE(scene_one.setNodeView({}, "curve", PelicanStudio::GraphCanvasNodeView::minimal));
+    QCoreApplication::processEvents();
+    auto *minimal = nodeItem(scene_one, QStringLiteral("curve"));
+    REQUIRE(minimal != nullptr);
+    CHECK(static_cast<QGraphicsPathItem *>(minimal)->path().boundingRect().height() == PelicanStudio::GraphCanvasHeaderHeight);
+    CHECK(sdk2aPart(scene_one, QStringLiteral("curve"),
+                    PelicanStudio::GraphCanvasCurvePlotItem) == nullptr);
+}
+
+TEST_CASE("SDK-2a e: an open node draws its plot at the frame and path the large curve draws",
+          "[devstudio][graph-canvas][scene][sdk2a]") {
+    (void)application();
+    Gs2Tab tab{Json::array(), sdk2aNodes(sdk2aLinearKeys(10.0, 100.0))};
+    auto &scene = tab.widget->scene();
+    auto *node = nodeItem(scene, QStringLiteral("curve"));
+    REQUIRE(node != nullptr);
+    const QRectF plot = sdk2aPlotBox(*node);
+    CHECK(plot.width() > 1.0);
+    CHECK(plot.height() == 72.0);
+    CHECK(plot.left() == 10.0);
+    CHECK(plot.top() + 72.0 + 7.0 == static_cast<QGraphicsPathItem *>(node)->path().boundingRect().height());
+
+    auto *frame = sdk2aPart(scene, QStringLiteral("curve"),
+                            PelicanStudio::GraphCanvasCurveFrameItem);
+    REQUIRE(frame != nullptr);
+    CHECK(frame->path().boundingRect() == plot);
+    CHECK(frame->acceptedMouseButtons() == Qt::NoButton);
+
+    const auto keys = PelicanStudio::curveKeysFromParameters(Json{{"keys", sdk2aLinearKeys(10.0, 100.0)}});
+    REQUIRE(keys.has_value());
+    const QRectF expected_frame = Sdk2aGeometry::curveFrame(*keys);
+    CHECK(expected_frame == QRectF{-0.8, -12.0, 11.6, 124.0});
+    const auto points = sdk2aCurvePoints(scene, QStringLiteral("curve"));
+    REQUIRE(points.size() == 4);
+    const double first_y = plot.bottom() - plot.height() * (0.0 - expected_frame.top()) /
+                                                expected_frame.height();
+    const double last_y = plot.bottom() - plot.height() * (100.0 - expected_frame.top()) /
+                                               expected_frame.height();
+    CHECK(std::abs(points.front().y() - first_y) < 1e-9);
+    CHECK(std::abs(points.at(1).y() - first_y) < 1e-9);
+    CHECK(std::abs(points.at(2).y() - last_y) < 1e-9);
+    CHECK(std::abs(points.back().y() - last_y) < 1e-9);
+    CHECK(points.front().x() == plot.left());
+    CHECK(points.back().x() == plot.right());
+    // A golden for the default column: the frame's first key at t=0 maps
+    // inward from the plot's left edge by the pad's share.
+    CHECK(std::abs(points.at(1).x() -
+                   (plot.left() + plot.width() * (0.8 / 11.6))) < 1e-9);
+    CHECK(std::abs(points.at(2).x() -
+                   (plot.left() + plot.width() * (10.8 / 11.6))) < 1e-9);
+
+    auto *curve = sdk2aPart(scene, QStringLiteral("curve"),
+                            PelicanStudio::GraphCanvasCurvePlotItem);
+    auto *marks = sdk2aPart(scene, QStringLiteral("curve"),
+                            PelicanStudio::GraphCanvasCurveKeysItem);
+    REQUIRE(curve != nullptr);
+    REQUIRE(marks != nullptr);
+    CHECK(curve->acceptedMouseButtons() == Qt::NoButton);
+    CHECK(marks->acceptedMouseButtons() == Qt::NoButton);
+    CHECK(curve->pen().isCosmetic());
+    CHECK(sdk2aKeyMarks(scene, QStringLiteral("curve")) == 2);
+}
+
+TEST_CASE("SDK-2a f: a commit of the keys redraws the node into an identical rebuild",
+          "[devstudio][graph-canvas][scene][sdk2a]") {
+    (void)application();
+    Gs2Tab tab{Json::array(), sdk2aNodes(sdk2aLinearKeys(10.0, 100.0))};
+    auto &scene = tab.widget->scene();
+    REQUIRE(nodeItem(scene, QStringLiteral("curve")) != nullptr);
+    const auto before = gs3aPicture(scene);
+    const auto points_before = sdk2aCurvePoints(scene, QStringLiteral("curve"));
+    REQUIRE(points_before.size() == 4);
+
+    tab.rebuilds = 0;
+    tab.redraws = 0;
+    tab.redrawn.clear();
+    // A two-key linear curve is affine: 0 .. 100 and 0 .. 50 draw exactly the
+    // same path and frame. The redraw digest still has to notice the keys
+    // changed -- it hashes their contents, not the path pointer or rect -- and
+    // the rebuilt scene must agree that nothing visible moved.
+    REQUIRE(tab.model().setNodeParameter("curve", "keys", sdk2aLinearKeys(10.0, 50.0)));
+    CHECK(tab.commit() == std::array<int, 3>{1, 0, 0});
+    CHECK(tab.rebuilds == 0);
+    CHECK(tab.redraws == 1);
+    REQUIRE(tab.redrawn.size() == 1);
+    CHECK(tab.redrawn.front() == std::vector<std::string>{"curve"});
+    CHECK(sdk2aCurvePoints(scene, QStringLiteral("curve")) == points_before);
+    CHECK(gs3aPicture(scene) == before);
+    gs3aSameAsRebuilt(scene);
+
+    // A step is not affine: the ink changes, and the redraw shows it.
+    const Json stepped = Json::array({{{"time", 0.0}, {"value", 0.0},
+                                       {"interpolation", "step"}},
+                                      {{"time", 10.0}, {"value", 50.0}}});
+    tab.rebuilds = 0;
+    tab.redraws = 0;
+    tab.redrawn.clear();
+    REQUIRE(tab.model().setNodeParameter("curve", "keys", stepped));
+    CHECK(tab.commit() == std::array<int, 3>{1, 0, 0});
+    CHECK(tab.rebuilds == 0);
+    CHECK(tab.redraws == 1);
+    const auto points_step = sdk2aCurvePoints(scene, QStringLiteral("curve"));
+    REQUIRE(points_step.size() == 5);
+    CHECK(points_step.at(2).y() != points_before.at(2).y());
+    CHECK(points_step.at(2).x() == points_before.at(2).x());
+    CHECK(gs3aPicture(scene) != before);
+    gs3aSameAsRebuilt(scene);
+
+    // A malformed key list draws the frame only, and still redraws on commit.
+    tab.rebuilds = 0;
+    tab.redraws = 0;
+    REQUIRE(tab.model().setNodeParameter("curve", "keys", Json::array({{{"time", 0.0}}})));
+    CHECK(tab.commit() == std::array<int, 3>{1, 0, 0});
+    CHECK(tab.redraws == 1);
+    CHECK(sdk2aPart(scene, QStringLiteral("curve"),
+                    PelicanStudio::GraphCanvasCurveFrameItem) != nullptr);
+    CHECK(sdk2aPart(scene, QStringLiteral("curve"),
+                    PelicanStudio::GraphCanvasCurvePlotItem) == nullptr);
+    gs3aSameAsRebuilt(scene);
+}
+
+TEST_CASE("SDK-2a g: the plot takes no mouse buttons; a drag on it moves the node",
+          "[devstudio][graph-canvas][scene][sdk2a]") {
+    (void)application();
+    Gs2Tab tab{Json::array(), sdk2aNodes(sdk2aLinearKeys(10.0, 100.0))};
+    auto &scene = tab.widget->scene();
+    auto *node = nodeItem(scene, QStringLiteral("curve"));
+    REQUIRE(node != nullptr);
+    const QRectF plot = sdk2aPlotBox(*node);
+    const QPointF local = plot.center();
+    const QPointF scene_point = node->mapToScene(local);
+    const QPointF before = node->pos();
+
+    for (const char *kind : {PelicanStudio::GraphCanvasCurveFrameItem,
+                             PelicanStudio::GraphCanvasCurvePlotItem,
+                             PelicanStudio::GraphCanvasCurveKeysItem}) {
+        auto *part = sdk2aPart(scene, QStringLiteral("curve"), kind);
+        REQUIRE(part != nullptr);
+        CHECK(part->acceptedMouseButtons() == Qt::NoButton);
+    }
+    drag(scene, scene_point, scene_point + QPointF{30.0, 20.0});
+    auto *moved = nodeItem(scene, QStringLiteral("curve"));
+    REQUIRE(moved != nullptr);
+    CHECK(moved->pos() == before + QPointF{30.0, 20.0});
+    CHECK(scene.property("pelicanGraphSelectedNode").toString() == QStringLiteral("curve"));
+
+    // A plot click alone is a selection, not an edit and not a plot grab.
+    const QPointF placed = moved->pos();
+    click(scene, moved->mapToScene(local));
+    CHECK(nodeItem(scene, QStringLiteral("curve"))->pos() == placed);
+    CHECK(scene.property("pelicanGraphSelectedNode").toString() == QStringLiteral("curve"));
+}
+
+TEST_CASE("SDK-2a h: saved positions stay; automatic placement reserves the taller node",
+          "[devstudio][graph-canvas][scene][sdk2a]") {
+    (void)application();
+    SECTION("manual positions never move, even when the plot now overlaps the next node") {
+        Ux2Tab tab{false};
+        tab.widget->model().setDomainShown("value", true);
+        Json nodes = sdk2aDocument(sdk2aLinearKeys(10.0, 100.0)).at("nodes");
+        nodes.push_back({{"id", "below"}, {"op", "value.add"},
+                         {"inputs", {{"a", {{"node", "clock"}, {"port", "value"}}},
+                                     {"b", {{"node", "clock"}, {"port", "value"}}}}},
+                         {"outputs", Json::array({"value"})}});
+        const Json layout{
+            {"nodes", {{"curve", {{"x", 100.0}, {"y", 100.0}}},
+                       {"below", {{"x", 100.0}, {"y", 193.0}}}}}};
+        auto document = sdk2aDocument(sdk2aLinearKeys(10.0, 100.0), layout);
+        document["nodes"] = std::move(nodes);
+        tab.read(document, "sdk2a-h-saved");
+        tab.answer("get_graph_catalog", visualCatalog());
+        auto &scene = tab.widget->scene();
+        auto *curve = nodeItem(scene, QStringLiteral("curve"));
+        auto *below = nodeItem(scene, QStringLiteral("below"));
+        REQUIRE(curve != nullptr);
+        REQUIRE(below != nullptr);
+        CHECK(curve->pos() == QPointF{100.0, 100.0});
+        CHECK(below->pos() == QPointF{100.0, 193.0});
+        // The open curve is 167 tall, so its plot reaches past 193: the old
+        // 88 px body would have stopped short. The page keeps both places.
+        CHECK(static_cast<QGraphicsPathItem *>(curve)->path().boundingRect().height() == 167.0);
+        CHECK(curve->sceneBoundingRect().bottom() > below->sceneBoundingRect().top());
+        CHECK(curve->sceneBoundingRect().intersects(below->sceneBoundingRect()));
+    }
+
+    SECTION("automatic placement leaves room for the 167 px node") {
+        Ux2Tab tab{false};
+        tab.widget->model().setDomainShown("value", true);
+        tab.read(sdk2aDocument(sdk2aLinearKeys(10.0, 100.0)), "sdk2a-h-auto");
+        tab.answer("get_graph_catalog", visualCatalog());
+        auto &scene = tab.widget->scene();
+        auto *curve = nodeItem(scene, QStringLiteral("curve"));
+        auto *clock = nodeItem(scene, QStringLiteral("clock"));
+        REQUIRE(curve != nullptr);
+        REQUIRE(clock != nullptr);
+        CHECK(static_cast<QGraphicsPathItem *>(curve)->path().boundingRect().height() == 167.0);
+        CHECK_FALSE(curve->sceneBoundingRect().intersects(clock->sceneBoundingRect()));
+    }
+}
+
+TEST_CASE("SDK-2a i: the picture reads the new parts' paths, pen and visibility",
+          "[devstudio][graph-canvas][scene][sdk2a]") {
+    (void)application();
+    Ux2Tab tab{false};
+    tab.widget->model().setDomainShown("value", true);
+    tab.read(sdk2aDocument(sdk2aLinearKeys(10.0, 100.0)), "sdk2a-i");
+    tab.answer("get_graph_catalog", visualCatalog());
+    auto &scene = tab.widget->scene();
+    auto *curve = sdk2aPart(scene, QStringLiteral("curve"),
+                            PelicanStudio::GraphCanvasCurvePlotItem);
+    auto *frame = sdk2aPart(scene, QStringLiteral("curve"),
+                            PelicanStudio::GraphCanvasCurveFrameItem);
+    REQUIRE(curve != nullptr);
+    REQUIRE(frame != nullptr);
+    // Each new part's own line, not only the node's scene rect: the picture
+    // must read every kind's path, pen and visibility. A picture that skipped
+    // a kind would leave that line empty (or unchanged) while the node's rect
+    // still moved for another reason.
+    const auto line_of = [&](const char *kind) {
+        const std::string prefix = std::string{kind} + "|";
+        for (const auto &entry : gs3aPicture(scene))
+            if (entry.starts_with(prefix)) return entry;
+        return std::string{};
+    };
+    struct Part {
+        const char *kind;
+        QGraphicsPathItem *item;
+    };
+    const std::array<Part, 3> parts{{
+        {PelicanStudio::GraphCanvasCurvePlotItem, curve},
+        {PelicanStudio::GraphCanvasCurveKeysItem,
+         sdk2aPart(scene, QStringLiteral("curve"), PelicanStudio::GraphCanvasCurveKeysItem)},
+        {PelicanStudio::GraphCanvasCurveFrameItem, frame},
+    }};
+    const auto before = gs3aPicture(scene);
+    for (const auto &part : parts) {
+        INFO(part.kind);
+        REQUIRE(part.item != nullptr);
+        const std::string original_line = line_of(part.kind);
+        REQUIRE_FALSE(original_line.empty());
+        const QPainterPath original = part.item->path();
+        const QPen pen = part.item->pen();
+
+        part.item->setVisible(false);
+        CHECK(gs3aPicture(scene) != before);
+        CHECK(line_of(part.kind) != original_line);
+        part.item->setVisible(true);
+        CHECK(gs3aPicture(scene) == before);
+        CHECK(line_of(part.kind) == original_line);
+
+        part.item->setPath(original.translated(1.0, 0.0));
+        CHECK(gs3aPicture(scene) != before);
+        CHECK(line_of(part.kind) != original_line);
+        part.item->setPath(original);
+        CHECK(gs3aPicture(scene) == before);
+        CHECK(line_of(part.kind) == original_line);
+
+        QPen changed = pen;
+        changed.setColor(Qt::red);
+        part.item->setPen(changed);
+        CHECK(gs3aPicture(scene) != before);
+        CHECK(line_of(part.kind) != original_line);
+        part.item->setPen(pen);
+        CHECK(gs3aPicture(scene) == before);
+        CHECK(line_of(part.kind) == original_line);
+    }
+    CHECK(gs3aPicture(scene) == before);
 }

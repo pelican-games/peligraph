@@ -621,6 +621,9 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   target_sources(pelican_test_devstudio_graphcanvas_scene_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvaswidget.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasdrawing.cpp
+    # SDK-2a: a value.curve's plot body and shared frame/path.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvascurvegeometry.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvascurvebody.cpp
     # NB-2b: a canvas.stack node's body.
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasstackbody.cpp
     # NB-3: the canvas nodes' pictures.
@@ -695,6 +698,9 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   target_sources(pelican_test_devstudio_graph_fold_scene_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvaswidget.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasdrawing.cpp
+    # SDK-2a: a value.curve's plot body and shared frame/path.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvascurvegeometry.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvascurvebody.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasstackbody.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasthumbnails.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasloopfields.cpp

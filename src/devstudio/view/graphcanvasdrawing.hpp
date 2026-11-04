@@ -216,6 +216,10 @@ class NodeBody {
 // the heading and the picture, the lines on one point a side. A filter says
 // its one number beside its heading (graphCanvasFilterSummary).
 [[nodiscard]] const NodeBody &cardNodeBody();
+// SDK-2a (graphcanvascurvebody.cpp): a value.curve's body. Open: the default
+// rows and a fixed 72 px plot of its keys, under them. Compact/minimal: the
+// default body's rows or heading, no plot.
+[[nodiscard]] const NodeBody &curveNodeBody();
 // The card's picture section: the 64 px frame and its margin above and below.
 inline constexpr qreal CardPictureSize = 64.0;
 inline constexpr qreal CardPictureMargin = 6.0;

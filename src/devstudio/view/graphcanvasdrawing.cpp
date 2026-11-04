@@ -543,6 +543,8 @@ const NodeBody &cardNodeBody() {
 
 const NodeBody &nodeBodyFor(std::string_view op) {
     if (op == "canvas.stack") return layerStackNodeBody();
+    // SDK-2a: an open value.curve draws its fixed-size plot below the rows.
+    if (op == "value.curve") return curveNodeBody();
     // NB-3: the canvas sources and filters (not a shape: it is not painted yet).
     if (graphCanvasCardOperation(op)) return cardNodeBody();
     return defaultNodeBody();

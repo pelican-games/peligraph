@@ -42,15 +42,7 @@ class GraphCanvasCurveGraph final : public QWidget {
     void mouseReleaseEvent(QMouseEvent *event) override;
 
   private:
-    struct Frame {
-        double t0 = 0;
-        double t1 = 1;
-        double v0 = 0;
-        double v1 = 1;
-    };
-    [[nodiscard]] Frame frameOf(const std::vector<GraphCanvasCurveKey> &keys) const;
     [[nodiscard]] QRectF plot() const;
-    [[nodiscard]] QPointF pointOf(const Frame &frame, double time, double value) const;
 
     Commit commit_;
     std::vector<GraphCanvasCurveKey> keys_;
@@ -60,7 +52,7 @@ class GraphCanvasCurveGraph final : public QWidget {
     // and which key.
     std::optional<std::size_t> dragging_;
     std::vector<GraphCanvasCurveKey> pressed_keys_;
-    Frame pressed_frame_;
+    QRectF pressed_frame_;
 };
 
 // UX-8, decisions 2, 4, 5 and 12 (b): the value side of the Graph tab's

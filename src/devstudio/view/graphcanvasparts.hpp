@@ -229,6 +229,12 @@ inline constexpr auto GraphCanvasStackMaskSourceItem = "graph_stack_mask_source"
 // GraphCanvasThumbnailStateRole (graphcanvasthumbnails.hpp).
 inline constexpr auto GraphCanvasCardThumbItem = "graph_card_thumb";
 inline constexpr auto GraphCanvasCardValueItem = "graph_card_value";
+// SDK-2a: an open value.curve's fixed-size plot. `graph_curve_plot` is the
+// curve itself, `graph_curve_keys` its key marks, `graph_curve_frame` the
+// plot's frame. None takes a press: dragging one moves the node.
+inline constexpr auto GraphCanvasCurvePlotItem = "graph_curve_plot";
+inline constexpr auto GraphCanvasCurveKeysItem = "graph_curve_keys";
+inline constexpr auto GraphCanvasCurveFrameItem = "graph_curve_frame";
 
 // The node is a heading band over two socket sections, so its height follows
 // its port count rather than a constant. The numbers are here so the scene
@@ -241,6 +247,11 @@ inline constexpr qreal GraphCanvasNodeMaximumWidth = 340.0;
 inline constexpr qreal GraphCanvasHeaderHeight = 32.0;
 inline constexpr qreal GraphCanvasSocketRowHeight = 21.0;
 inline constexpr qreal GraphCanvasSectionPadding = 7.0;
+// SDK-2a: the fixed plot under an open value.curve's rows, and its side
+// margin. Only `open` adds the 72 px and the section padding; compact and
+// minimal keep the default body's height and draw no plot.
+inline constexpr qreal GraphCanvasCurvePlotHeight = 72.0;
+inline constexpr qreal GraphCanvasCurvePlotMargin = 10.0;
 inline constexpr qreal GraphCanvasSocketSize = 11.0;
 inline constexpr qreal GraphCanvasNodeCornerRadius = 8.0;
 // N-6. A reroute is drawn as a dot this wide. A tie is a bar of this width,

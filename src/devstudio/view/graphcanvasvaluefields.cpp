@@ -1,5 +1,6 @@
 #include "graphcanvasvaluefields.hpp"
 
+#include "graphcanvascurvegeometry.hpp"
 #include "studiotheme.hpp"
 
 #include <QApplication>
@@ -49,31 +50,6 @@ QDoubleSpinBox *numberSpin(QWidget *parent, const QString &name, double low, dou
     return spin;
 }
 
-// The value a curve has at `time`, drawn as the engine samples it: linear,
-// a step's own value, a cubic segment through its tangents.
-double drawnValue(const std::vector<GraphCanvasCurveKey> &keys, double time) {
-    if (keys.empty()) return 0.0;
-    if (time <= keys.front().time) return keys.front().value;
-    if (time >= keys.back().time) return keys.back().value;
-    for (std::size_t index = 1; index < keys.size(); ++index) {
-        const auto &a = keys[index - 1];
-        const auto &b = keys[index];
-        if (time > b.time) continue;
-        const double width = b.time - a.time;
-        const double t = width > 0.0 ? (time - a.time) / width : 0.0;
-        if (a.interpolation == "step") return a.value;
-        if (a.interpolation == "cubic") {
-            const double out = a.rest.is_object() ? a.rest.value("out_tangent", 0.0) : 0.0;
-            const double in = b.rest.is_object() ? b.rest.value("in_tangent", 0.0) : 0.0;
-            const double t2 = t * t;
-            const double t3 = t2 * t;
-            return (2 * t3 - 3 * t2 + 1) * a.value + (t3 - 2 * t2 + t) * width * out +
-                   (-2 * t3 + 3 * t2) * b.value + (t3 - t2) * width * in;
-        }
-        return a.value + (b.value - a.value) * t;
-    }
-    return keys.back().value;
-}
 } // namespace
 
 // --- The small curve.
@@ -99,45 +75,12 @@ QRectF GraphCanvasCurveGraph::plot() const {
     return QRectF{8.0, 8.0, std::max(1.0, width() - 16.0), std::max(1.0, height() - 16.0)};
 }
 
-GraphCanvasCurveGraph::Frame
-GraphCanvasCurveGraph::frameOf(const std::vector<GraphCanvasCurveKey> &keys) const {
-    Frame frame;
-    if (keys.empty()) return frame;
-    frame.t0 = keys.front().time;
-    frame.t1 = keys.back().time;
-    frame.v0 = frame.v1 = keys.front().value;
-    for (const auto &key : keys) {
-        frame.v0 = std::min(frame.v0, key.value);
-        frame.v1 = std::max(frame.v1, key.value);
-    }
-    if (!(frame.t1 > frame.t0)) {
-        frame.t0 -= 0.5;
-        frame.t1 += 0.5;
-    }
-    if (!(frame.v1 > frame.v0)) {
-        frame.v0 -= 0.5;
-        frame.v1 += 0.5;
-    }
-    // A margin, so a key at an end can still be grabbed and moved past it.
-    const double pad_t = (frame.t1 - frame.t0) * 0.08;
-    const double pad_v = (frame.v1 - frame.v0) * 0.12;
-    frame.t0 -= pad_t;
-    frame.t1 += pad_t;
-    frame.v0 -= pad_v;
-    frame.v1 += pad_v;
-    return frame;
-}
-
-QPointF GraphCanvasCurveGraph::pointOf(const Frame &frame, double time, double value) const {
-    const auto box = plot();
-    return QPointF{box.left() + box.width() * (time - frame.t0) / (frame.t1 - frame.t0),
-                   box.bottom() - box.height() * (value - frame.v0) / (frame.v1 - frame.v0)};
-}
-
 QPointF GraphCanvasCurveGraph::keyPoint(std::size_t index) const {
     if (index >= keys_.size()) return {};
-    const auto frame = dragging_ ? pressed_frame_ : frameOf(keys_);
-    return pointOf(frame, keys_[index].time, keys_[index].value);
+    const auto frame = dragging_ ? pressed_frame_
+                                 : GraphCanvasCurveGeometry::curveFrame(keys_);
+    return GraphCanvasCurveGeometry::curvePoint(frame, plot(), keys_[index].time,
+                                                keys_[index].value);
 }
 
 void GraphCanvasCurveGraph::paintEvent(QPaintEvent *) {
@@ -152,29 +95,26 @@ void GraphCanvasCurveGraph::paintEvent(QPaintEvent *) {
         painter.drawText(rect(), Qt::AlignCenter, tr("No keys"));
         return;
     }
-    const auto frame = dragging_ ? pressed_frame_ : frameOf(keys_);
+    const auto frame = dragging_ ? pressed_frame_
+                                 : GraphCanvasCurveGeometry::curveFrame(keys_);
     const auto box = plot();
     // The zero line, when it is inside.
-    if (frame.v0 < 0.0 && frame.v1 > 0.0) {
+    if (frame.top() < 0.0 && frame.bottom() > 0.0) {
         painter.setPen(QPen{theme.canvas.node_border, 1.0, Qt::DotLine});
-        const auto y = pointOf(frame, frame.t0, 0.0).y();
+        const auto y =
+            GraphCanvasCurveGeometry::curvePoint(frame, box, frame.left(), 0.0).y();
         painter.drawLine(QPointF{box.left(), y}, QPointF{box.right(), y});
     }
-    QPainterPath path;
-    constexpr int steps = 96;
-    for (int step = 0; step <= steps; ++step) {
-        const double time = frame.t0 + (frame.t1 - frame.t0) * step / steps;
-        const auto at = pointOf(frame, time, drawnValue(keys_, time));
-        if (step == 0) path.moveTo(at);
-        else path.lineTo(at);
-    }
+    const auto paths = GraphCanvasCurveGeometry::curvePaths(keys_, frame, box);
     painter.setPen(QPen{theme.domainTint(QStringLiteral("values")), 1.8});
-    painter.drawPath(path);
-    for (std::size_t index = 0; index < keys_.size(); ++index) {
-        const auto at = pointOf(frame, keys_[index].time, keys_[index].value);
-        painter.setPen(QPen{theme.canvas.node_border, 1.0});
-        painter.setBrush(dragging_ == index ? theme.domainTint(QStringLiteral("rendering"))
-                                            : theme.domainTint(QStringLiteral("values")));
+    painter.drawPath(paths.curve);
+    painter.setPen(QPen{theme.canvas.node_border, 1.0});
+    painter.setBrush(theme.domainTint(QStringLiteral("values")));
+    painter.drawPath(paths.keys);
+    if (dragging_ && *dragging_ < keys_.size()) {
+        const auto at = GraphCanvasCurveGeometry::curvePoint(
+            frame, box, keys_[*dragging_].time, keys_[*dragging_].value);
+        painter.setBrush(theme.domainTint(QStringLiteral("rendering")));
         painter.drawEllipse(at, 4.5, 4.5);
     }
 }
@@ -184,11 +124,12 @@ void GraphCanvasCurveGraph::mousePressEvent(QMouseEvent *event) {
         QWidget::mousePressEvent(event);
         return;
     }
-    const auto frame = frameOf(keys_);
+    const auto frame = GraphCanvasCurveGeometry::curveFrame(keys_);
     std::optional<std::size_t> nearest;
     double best = 10.0;
     for (std::size_t index = 0; index < keys_.size(); ++index) {
-        const auto at = pointOf(frame, keys_[index].time, keys_[index].value);
+        const auto at = GraphCanvasCurveGeometry::curvePoint(frame, plot(), keys_[index].time,
+                                                             keys_[index].value);
         const double distance = std::hypot(at.x() - event->position().x(),
                                            at.y() - event->position().y());
         if (distance <= best) {
@@ -211,8 +152,8 @@ void GraphCanvasCurveGraph::mouseMoveEvent(QMouseEvent *event) {
     }
     const auto box = plot();
     const auto &frame = pressed_frame_;
-    double time = frame.t0 + (frame.t1 - frame.t0) * (event->position().x() - box.left()) / box.width();
-    double value = frame.v0 + (frame.v1 - frame.v0) * (box.bottom() - event->position().y()) / box.height();
+    double time = frame.left() + frame.width() * (event->position().x() - box.left()) / box.width();
+    double value = frame.top() + frame.height() * (box.bottom() - event->position().y()) / box.height();
     const auto &held = pressed_keys_[*dragging_];
     if (event->modifiers().testFlag(Qt::ShiftModifier)) value = held.value;
     if (event->modifiers().testFlag(Qt::ControlModifier)) time = held.time;

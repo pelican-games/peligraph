@@ -5,6 +5,8 @@
 
 #include "graphcanvasmodel.hpp"
 
+#include "graphcanvascurve.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -27,25 +29,6 @@ std::string textOf(const Json &value, const char *key) {
 
 std::string tokenOf(std::string_view scope) {
     return scope.empty() ? std::string{"root"} : std::string{scope};
-}
-
-// The value a curve has at `time`, as the engine samples it (linear between
-// keys, the step's own value, the ends held). A cubic segment is read as
-// linear here: the new key only has to land somewhere reasonable.
-double sampleCurve(const std::vector<GraphCanvasCurveKey> &keys, double time) {
-    if (keys.empty()) return 0.0;
-    if (time <= keys.front().time) return keys.front().value;
-    if (time >= keys.back().time) return keys.back().value;
-    for (std::size_t index = 1; index < keys.size(); ++index) {
-        const auto &a = keys[index - 1];
-        const auto &b = keys[index];
-        if (time > b.time) continue;
-        if (a.interpolation == "step") return a.value;
-        const double width = b.time - a.time;
-        const double t = width > 0.0 ? (time - a.time) / width : 0.0;
-        return a.value + (b.value - a.value) * t;
-    }
-    return keys.back().value;
 }
 
 bool isBufferOp(std::string_view op) {
@@ -130,30 +113,14 @@ const std::vector<std::string> &GraphCanvasModel::curveInterpolations() {
 
 std::vector<GraphCanvasCurveKey> GraphCanvasModel::curveKeys(std::string_view scope,
                                                              std::string_view node) const {
-    std::vector<GraphCanvasCurveKey> keys;
     const auto *found = findNode(scope, node);
-    if (found == nullptr || textOf(*found, "op") != "value.curve") return keys;
+    if (found == nullptr || textOf(*found, "op") != "value.curve")
+        return {};
+    // SDK-2a: one reading of the keys, shared with the node body and the
+    // large curve, and the engine's strictness (curve.cpp).
     const auto parameters = found->value("parameters", Json::object());
-    const auto authored = parameters.is_object() ? parameters.value("keys", Json{}) : Json{};
-    if (!authored.is_array()) return keys;
-    for (const auto &entry : authored) {
-        if (!entry.is_object()) return {};
-        const auto time = entry.find("time");
-        const auto value = entry.find("value");
-        if (time == entry.end() || !time->is_number() || value == entry.end() ||
-            !value->is_number())
-            return {};
-        GraphCanvasCurveKey key;
-        key.time = time->get<double>();
-        key.value = value->get<double>();
-        const auto interpolation = textOf(entry, "interpolation");
-        if (!interpolation.empty()) key.interpolation = interpolation;
-        for (const auto &[name, member] : entry.items())
-            if (name != "time" && name != "value" && name != "interpolation")
-                key.rest[name] = member;
-        keys.push_back(std::move(key));
-    }
-    return keys;
+    auto keys = curveKeysFromParameters(parameters);
+    return keys ? std::move(*keys) : std::vector<GraphCanvasCurveKey>{};
 }
 
 std::string GraphCanvasModel::curveKeysRefusal(const std::vector<GraphCanvasCurveKey> &keys) {

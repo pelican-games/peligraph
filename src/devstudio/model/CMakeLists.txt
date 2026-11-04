@@ -20,6 +20,8 @@ add_library(pelican_studio_inspector_model STATIC
     graphcanvasmodel.hpp
     # UX-8: a curve's keys, a playback's fields, buffer ports, packed scalars.
     graphcanvasvalues.cpp
+    # SDK-2a: the one strict reading of a value.curve's keys and its sampler.
+    graphcanvascurve.cpp
     # AB-1s: baked analysis tables -- read from the project, placed for a
     # shader, read again after a Re-bake.
     audioanalysistables.cpp

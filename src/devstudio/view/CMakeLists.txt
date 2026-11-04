@@ -89,6 +89,11 @@ add_library(pelican_studio_view STATIC
     graphcanvasdrawing.hpp
     # SDK-1b: the drawing constants a body names without the widget.
     graphcanvasparts.hpp
+    # SDK-2a: a value.curve's fixed-size plot and the frame/path it shares
+    # with the large curve in the node fields.
+    graphcanvascurvegeometry.cpp
+    graphcanvascurvegeometry.hpp
+    graphcanvascurvebody.cpp
     # NB-2b: a canvas.stack node's body (its layer rows).
     graphcanvasstackbody.cpp
     # NB-3: the canvas nodes' pictures, made off the UI thread.
