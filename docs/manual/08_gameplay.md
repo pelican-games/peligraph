@@ -230,7 +230,7 @@ engine は RPC の `set_play_state` で一時停止でき、`advance_frames` で
 | 同上を `onInit` の中で呼ぶ | `PELICAN_WITH_AUDIO=OFF` | `playSound` / `stopSound` / `setBusVolume` / `busVolume` / `isPlaying` は同じ例外を投げる。`setSoundVolume` / `setSoundPitch` / `setSoundPaused` は build を見る前に `false` を返す(ロード中は ON の build でも `false`) |
 | 同上を `onDestroy` の中で呼ぶ | `PELICAN_WITH_AUDIO=OFF` | 9 本とも例外にならず、空で答える: 無効な `SoundHandle` / `false` / `0.0` / `soundState` は `nullopt`(✅PG-2b。[`soundState` の包み](../../src/core/userpublic/gamecontext.cpp#L673))。拒否は記録に残る: scene のロード/破棄トランザクションの中ではロード結果の `effect_errors` に `build_feature_disabled@1`(`phase` は `destroy`)、トランザクションの無い `onDestroy`(プレイ中の object 削除、ゲーム DLL の解放、`deactivateAll`)では engine log に `build_feature_disabled@1 in a destruction callback: …`。トランザクションの中の `setSoundVolume` / `setSoundPitch` / `setSoundPaused` は、ON の build と同じく build を見る前に `false` を返すので何も記録されない |
 | `ctx.physics()` の 5 本を `onDestroy` の中で呼ぶ | `PELICAN_WITH_PHYSICS=OFF`、または provider が 0 本 | 例外にならず、空で答える: `raycastAll` / `overlapAll` / `shapeCastAll` は空の配列、`raycastClosest` / `shapeCastClosest` は `nullopt`(✅PG-2b)。これは「何にも当たらなかった」と同じ答えで、見分けられるのは記録だけです。記録は audio と同じ場所(トランザクションの中なら `effect_errors`、無ければ engine log)に、`build_feature_disabled@1` か `physics.provider_unavailable@1` で残る |
-| `ctx.physics()` の 5 本 | `PELICAN_WITH_PHYSICS=OFF` | `BuildFeatureCallDisabledError`。`code()` = `build_feature_disabled@1`、`feature()` = `"PELICAN_WITH_PHYSICS"`。rpc の `raycast` は JSON-RPC の error(code `-32000`、`data` = `{code: "physics.module_unavailable@1", requirement: "physics", option: "PELICAN_WITH_PHYSICS"}`。✅PG-2b。[受け口](../../src/core/communication/rpcserver.cpp#L1241)) |
+| `ctx.physics()` の 5 本 | `PELICAN_WITH_PHYSICS=OFF` | `BuildFeatureCallDisabledError`。`code()` = `build_feature_disabled@1`、`feature()` = `"PELICAN_WITH_PHYSICS"`。rpc の `raycast` は JSON-RPC の error(code `-32000`、`data` = `{code: "physics.module_unavailable@1", requirement: "physics", option: "PELICAN_WITH_PHYSICS"}`。✅PG-2b。[受け口](../../src/core/communication/rpcserver.cpp#L1244)) |
 | `ctx.physics()` の 5 本 | `PELICAN_WITH_PHYSICS=ON` で provider が 0 本(`PELICAN_WITH_BUILTIN_PHYSICS` と `PELICAN_WITH_JOLT_PHYSICS` が両方 OFF) | ゲーム DLL がそのクエリの provider を登録していなければ [`phys::ProviderUnavailableError`](../../src/core/phys/physquery.hpp#L102) を投げる。`code()` = `physics.provider_unavailable@1`。空の結果(「何にも当たらなかった」)は返さない。rpc の `raycast` も同じ場合は JSON-RPC の error(code `-32000`、message はこの例外の `what()`)を返す |
 | `ctx.animation().setParameter` / `forceState` | `PELICAN_WITH_ANIMATION=OFF` | 例外ではなく `Animation::Status::not_found`。シーンのロード/破棄トランザクションの中では、ON の build と同じく `phase_order_error` |
 
@@ -353,7 +353,7 @@ PELICAN_REGISTER_SYSTEM(Gun, 100);
 **フレーム境界の規則**
 
 - 要求は**呼んだ時点で検査して展開**します。prefab はシーンのロードと同じ ResolvedScene の経路で展開するので、prefab・parameter・build の機能の検査もロードと同じ答えになります。例えば `PELICAN_WITH_PHYSICS=OFF` の build で collider を持つ prefab を spawn すると、ロードと同じ `physics.module_unavailable@1` で拒否されます([検査の呼び出し](../../src/core/loader/runtimespawn.cpp#L238))。拒否されたときは何も積まれません。
-- **object ができるのは次のフレーム境界**です。境界はフレームの先頭、ゲームコードより前にあります([`updateFrameState()` の中の境界の呼び出し](../../src/core/appflow/framephase.cpp#L200)。イベント配送・ECS・ゲームシステムより前)。behavior のコールバックの中から呼んでも外から呼んでも同じ境界です。一時停止中のフレームは境界を通らないので、着地は再開か `advance_frames` の 1 歩のフレームです(✅PM-1a)。
+- **object ができるのは次のフレーム境界**です。境界はフレームの先頭、ゲームコードより前にあります([`updateFrameState()` の中の境界の呼び出し](../../src/core/appflow/framephase.cpp#L203)。イベント配送・ECS・ゲームシステムより前)。behavior のコールバックの中から呼んでも外から呼んでも同じ境界です。一時停止中のフレームは境界を通らないので、着地は再開か `advance_frames` の 1 歩のフレームです(✅PM-1a)。
 - 境界より前に `materialize` / `worldTransform` を呼ぶと `object.not_materialized@1` です。境界の後のフレームでは、そのフレームのゲームコードの全部から見えます。
 - 1 つの境界の中では、要求を**呼んだ順**に実行します。spawn と destroy も混ぜて呼んだ順です。まだ実体化していない spawn を destroy すると、同じ境界で作ってから消します(`onInit` の後に `onDestroy`)。
 - 境界で起きること: ECS の entity と描画のインスタンスを作り、collider(と model の衝突 mesh)を物理に `runtime_only` で登録し、最後に behavior を付けて `onInit` を呼びます。`onInit` が例外を投げたら、**その spawn だけ**を巻き戻します(init 済みの behavior に `onDestroy`、entity・collider・描画を戻す)。ほかの spawn とシーンには影響しません。失敗は engine log に `runtime spawn of boundary … failed: …` と出て、ref はずっと `object.not_materialized@1` のままです。
@@ -423,7 +423,7 @@ void update(Pelican::GameContext &ctx) {
 **`pointer()`**([`PointerState`](../../src/core/userpublic/userinput.hpp#L143) = `{position_px, inside}`)
 
 - 位置は **framebuffer ピクセル**です。原点は framebuffer の左上、+x が右、+y が下で、ピクセル (i, j) は [i, i+1) × [j, j+1) を覆います。
-- OS はカーソルを窓座標で報告します。それを軸ごとに `px = 窓座標 × framebuffer の大きさ ÷ 窓の大きさ` で換算します([`pointerTransformFor()`](../../src/core/os/inputstate.cpp#L84))。表示倍率 200% の画面なら、窓座標 (10, 20) はピクセル (20, 40) です。窓の大きさが 0 の軸(最小化など)は 1 倍です。headless では窓が無いので 1 倍で、framebuffer は出力先の大きさです([`livePointerTransform()`](../../src/core/appflow/framephase.cpp#L72))。
+- OS はカーソルを窓座標で報告します。それを軸ごとに `px = 窓座標 × framebuffer の大きさ ÷ 窓の大きさ` で換算します([`pointerTransformFor()`](../../src/core/os/inputstate.cpp#L84))。表示倍率 200% の画面なら、窓座標 (10, 20) はピクセル (20, 40) です。窓の大きさが 0 の軸(最小化など)は 1 倍です。headless では窓が無いので 1 倍で、framebuffer は出力先の大きさです([`livePointerTransform()`](../../src/core/appflow/framephase.cpp#L74))。
 - `inside` は、位置が分かっていて(入力を最後に clear してからカーソルの event が来ている)、かつ 0 ≤ px < framebuffer の大きさのとき true です([`pointerStateFor()`](../../src/core/os/inputstate.cpp#L102))。最初のカーソル event までは `position_px` は (0, 0) で `inside` は false です。
 - 位置は clamp せず、どのアクションとも合成しません。ロック中のカーソルや、窓の外で捕まえたカーソルは framebuffer の外の位置を返しえます。
 - **ポインタはアクションではありません。** アクションの axis2 は [-1, 1] に clamp され、同じアクションの binding どうしで足し合わされる(第7章 §7.2)ので、ピクセルの位置を運べないためです。
@@ -778,7 +778,7 @@ if (auto hit = ctx.physics().shapeCastClosest(player, {0, -4, 0})) {
 - **プロバイダの選択はビルド時**です: `PELICAN_WITH_BUILTIN_PHYSICS`(既定 ON)/ `PELICAN_WITH_JOLT_PHYSICS`(既定 OFF。両方 ON なら Jolt が勝つ)。project.json や実行時の切替はありません。クエリ契約(順序・タイブレーク)はプロバイダによらずエンジン側が所有するため、通常は意識不要です。ゲーム DLL から capability 単位で provider をオーバーレイする上級拡張点(`physics/abi_v2.hpp` — raycast だけ独自実装し残りはフォールバック、等)もあります。
 - transform 追従は現行では毎フレーム再収集(BVH = bounding volume hierarchy、形状を包む箱を木に組んで判定候補を絞る加速構造。それを持たないという意味 — 計測してから見直す方針)。capsule の軸はローカル Y、box は OBB(回転対応)です。
 - `debug_draw` feature を rendering config で参照していると collider のワイヤフレームが描画されます([第6章](06_rendering.md))。
-- rpc の query は `raycast`([受け口](../../src/core/communication/rpcserver.cpp#L1241)。`origin` / `direction` / `max_distance` を受けて最近傍 1 件を返す)だけです。provider が 0 本のビルドと `PELICAN_WITH_PHYSICS=OFF` のビルド(✅PG-2b)では、この `raycast` も「当たらなかった」ではなく JSON-RPC の error を返します(§8.4「機能を外した build」)。
+- rpc の query は `raycast`([受け口](../../src/core/communication/rpcserver.cpp#L1244)。`origin` / `direction` / `max_distance` を受けて最近傍 1 件を返す)だけです。provider が 0 本のビルドと `PELICAN_WITH_PHYSICS=OFF` のビルド(✅PG-2b)では、この `raycast` も「当たらなかった」ではなく JSON-RPC の error を返します(§8.4「機能を外した build」)。
 - 📐未実装: rpc の overlap / shapeCast、メッシュコライダ/BVH、剛体シミュレーション。
 
 ### 8.7.1 side-scroller controller(WP109)

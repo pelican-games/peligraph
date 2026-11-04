@@ -29,6 +29,7 @@
 | `assets/models/`, `assets/textures/`, `assets/audio/` | バイナリアセット置き場(規約) | asset_data.json 等から相対参照 |
 | `passes/*.json` | レンダリングパイプライン定義(rendering config。`pelican.graph` root、下記) | `basic_config.rendering_config_json` |
 | `input/actions.json` | 入力アクション定義 | `basic_config.input_actions_json` |
+| `live/inputs.json`(場所は任意) | live inputs の宣言(`pelican.live_inputs` v1。OSC-1a) | `basic_config.live_inputs_json` |
 | `input/profiles/*.json` | バインディングプロファイル | `basic_config.input_profiles` |
 | `ui/*.json` | UI ドキュメント(pelican.ui v1) | `basic_config.ui_config_json` |
 | `code/` | C++ ゲームコード | CMake `-DPELICAN_PROJECT` |
@@ -50,7 +51,7 @@
 
 v0 より前のエンジンは、commit の決定を別ファイル `committed` ではなく `manifest.json` の `"status": "committed"` に書いていました。この形で残ったディレクトリは**もう読みません**。起動時の復旧と、この transaction を使う commit(rendering config の編集と `project migrate` の apply)のどれも `render_config.legacy_transaction_dir@1` で止まり、ディレクトリには手を付けません([判定](../../src/project/projectdocumenttransaction.cpp#L405))。
 
-- 起動時(`pelican_player` が project.json を持つ project を開くとき): MG-1 から、parser より前の入口(§3.13)が同じ復旧を先に走らせます。stderr に `render_config.legacy_transaction_dir@1: {"message":"…","path":"…"}` が 1 行出て、player は exit 1 で終わります([入口の catch](../../src/player/main.cpp#L792))。この経路はコードを読んで確かめたもので、実行では未確認です。
+- 起動時(`pelican_player` が project.json を持つ project を開くとき): MG-1 から、parser より前の入口(§3.13)が同じ復旧を先に走らせます。stderr に `render_config.legacy_transaction_dir@1: {"message":"…","path":"…"}` が 1 行出て、player は exit 1 で終わります([入口の catch](../../src/player/main.cpp#L793))。この経路はコードを読んで確かめたもので、実行では未確認です。
 - 起動時(入口を通らずに `PelicanCore::run()` の復旧に届いたとき): ログに `Pelican fatal error : render_config.legacy_transaction_dir@1: {"message":"…","path":"…"}` が出て、起動はそこで終わります。
 - `project migrate` の apply: 先頭で同じ復旧を走らせるので、同じ名前で止まります(CLI は stderr に出して -1)。`--dry-run`(plan)は復旧を走らせません。
 - 編集の commit 時: ticket の結果は `committed: false` で、`error.code` がこの名前、`error.path` がディレクトリのパスです。文書は書き換わりません。
@@ -222,6 +223,7 @@ Studio は engine を `--rpc` で起こし、`--rpc` の engine は宣言が無�
 | `default_rendering_pass` | string | `"main_render"` | rendering config 内で使う `rendering_passes[].name`(graph root では `rendering.rendering_passes[].name`) |
 | `ui_config_json` | 参照 | `"ui/ui_overlay.json"` | UI ドキュメント(pelican.ui)への参照 |
 | `input_actions_json` | 参照 | **既定なし(任意)** | 入力アクション定義。未指定ならアクション層は未構成 |
+| `live_inputs_json` | 参照 | **既定なし(任意)** | live inputs の宣言(✅OSC-1a — [第7章](07_input_ui.md#live-inputs))。未指定なら live input の無い project |
 | `input_profiles` | object | — | バインディングプロファイルの辞書(名前 → ファイル参照。✅WP91 — [第7章](07_input_ui.md)) |
 | `input_profile` | string | — | 既定プロファイル名 |
 | `sprite` | object | `{"pixels_per_unit": 100.0}` | 2D スプライトの寸法変換係数(✅WP106 — [第6章](06_rendering.md) §6.9) |
@@ -804,7 +806,7 @@ RPC [`import_render_feature{base_source_digest, source_dir, destination_referenc
    | `project.migration_step_cycle@1` | `to_version <= from_version` |
    | `project.migration_step_gap@1` | `to_version > from_version + 1`(1 版ずつしか上げられない) |
 
-2. **検出(開く前の入口)**: `pelican_player` は project.json を持つ project を開くとき、**parser が文書を読む前に 1 か所だけ**入口を通ります([`requireProjectMigrationNotRequired()`](../../src/project/projectmigration.cpp#L563)、呼ぶのは [main.cpp](../../src/player/main.cpp#L767) の `parseProjectEnvelopeText` の手前)。Studio が起動する player(`--rpc`)も同じ入口を通ります。入口はまず、落ちたプロセスが残した transaction を復旧し(§3.1 の `.pelican/render-authoring.transaction/`)、次に project root の下の `*.json` を全部歩いて、**最上位の `schema`(文字列)と `version`(整数)だけ**を SAX で生のまま読みます。`.` で始まるディレクトリ(`.pelican` / `.git` など)と symlink のディレクトリには入りません。オブジェクトでない JSON や、`schema` / `version` を持たない JSON は文書として数えません。登録された手順の `from` に当たる文書が 1 本でもあれば、parser に渡さず次の名前で止めます:
+2. **検出(開く前の入口)**: `pelican_player` は project.json を持つ project を開くとき、**parser が文書を読む前に 1 か所だけ**入口を通ります([`requireProjectMigrationNotRequired()`](../../src/project/projectmigration.cpp#L563)、呼ぶのは [main.cpp](../../src/player/main.cpp#L768) の `parseProjectEnvelopeText` の手前)。Studio が起動する player(`--rpc`)も同じ入口を通ります。入口はまず、落ちたプロセスが残した transaction を復旧し(§3.1 の `.pelican/render-authoring.transaction/`)、次に project root の下の `*.json` を全部歩いて、**最上位の `schema`(文字列)と `version`(整数)だけ**を SAX で生のまま読みます。`.` で始まるディレクトリ(`.pelican` / `.git` など)と symlink のディレクトリには入りません。オブジェクトでない JSON や、`schema` / `version` を持たない JSON は文書として数えません。登録された手順の `from` に当たる文書が 1 本でもあれば、parser に渡さず次の名前で止めます:
 
    ```
    project.migration_required@1: {"documents":[{"path":"scenes/main.scene.json","schema":"pelican.scene","from":2,"to":3}]}

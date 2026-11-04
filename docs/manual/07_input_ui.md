@@ -7,6 +7,7 @@
 - 入力システムの四層構造と、**順序付き FrameInput**(WP69)
 - `actions.json`(アクション定義)と `pelican.input_profile`(バインディング)の**分離**(WP91・破壊的変更)
 - ゲームパッド対応と、収録・リプレイ(`pelican.input_seq` v2。タッチを含む記録は v3)
+- 外から graph へ値を渡す live inputs(`basic_config.live_inputs_json`、`value.input` の `live:<名前>`、RPC `set_live_input`。OSC-1a)
 - ポインタの位置(framebuffer ピクセル)とカーソルのモード(`ctx.input()`、GP-4)
 - Android の入力(キーボード・ゲームパッド・タッチ・ペン・BACK)と、タッチの binding `touch:region` / `touch:tap`(SA1f)
 - 実装済みの UI 基盤 `pelican.ui` v1(ウィジェット・レイアウト・イベント emit)と、ゲームコード(`ctx.ui()`)・共通グラフ(`ui.*` sink)から UI を書く方法(GP-3)
@@ -226,7 +227,7 @@ Android の player([第2章 §2.9](02_getting_started.md#29-android-で-player-�
 ]}}
 ```
 
-`mouse_move` の `x` / `y` は**窓座標**です(framebuffer ピクセルではありません)。注入した移動は OS からの移動と同じ event になり、`ctx.input().pointer()` と UI の入力ルータがフレームの換算で framebuffer ピクセルにします([注入の受け口](../../src/core/communication/rpcserver.cpp#L875))。headless は 1 倍なので、窓座標とピクセルは同じ値です。
+`mouse_move` の `x` / `y` は**窓座標**です(framebuffer ピクセルではありません)。注入した移動は OS からの移動と同じ event になり、`ctx.input().pointer()` と UI の入力ルータがフレームの換算で framebuffer ピクセルにします([注入の受け口](../../src/core/communication/rpcserver.cpp#L878))。headless は 1 倍なので、窓座標とピクセルは同じ値です。
 
 ✅SA1f からタッチの指も注入できます。desktop の headless のテストで Android の端末を使わずにタッチを確かめるための口です(Android の build は RPC を持ちません):
 
@@ -256,6 +257,118 @@ pelican_player --project mygame --replay session.jsonl         # リプレイ(�
 - 収録ファイルは `--record-input` / `start_input_record` で指定した場所に書く JSONL で、project の文書ではありません。そのため MG-1 の移行(第3章 §3.13)の対象ではなく、v1 → v2 の移行手順は登録していません。v1 のファイルはそのまま再生できます。
 - rpc からは `start_input_record` / `stop_input_record` / `start_input_replay` / `stop_input_replay`。リプレイ中の `inject_input` は拒否されます。
 - **カメラ焼き出し**: `pelican_cli bake-camera --replay session.jsonl --project mygame` で、リプレイ中のカメラ軌跡を `pelican.transform_seq` v1 として `imports/pelican-camera/<name>/` に着地させられます(pelican.import manifest 付き — DCC への逆輸出)。
+
+<a id="live-inputs"></a>
+
+### live inputs —— 外から graph へ値を渡す(✅OSC-1a、`5c1dc7720`)
+
+project が名前を宣言した値を、graph が `value.input` で読み、外から JSON-RPC で書きます([`LiveInputs`](../../src/core/os/liveinputs.hpp#L51))。値は文書に書きません。起動するたびに宣言の既定値から始まります。
+
+今の口は既存の JSON-RPC だけです。OSC などの network の受信はまだありません。Studio にも、値を見る・動かす画面はまだありません(`src/devstudio` に 2 つの RPC の呼び出しがありません)。
+
+#### 宣言する
+
+`basic_config.live_inputs_json` に宣言の文書を指します。キーが無ければ live input の無い project です([読む所](../../src/core/loader/basicconfig.cpp#L685))。
+
+```json
+{
+  "schema": "pelican.live_inputs",
+  "version": 1,
+  "inputs": [
+    {"name": "phase", "type": "float", "default": 0.0, "min": 0.0, "max": 4.0},
+    {"name": "steps", "type": "int", "default": 1, "min": 0, "max": 8},
+    {"name": "enabled", "type": "bool", "default": false}
+  ]
+}
+```
+
+- `name`: `[a-z][a-z0-9_]*`。同じ名前を 2 回書けません。
+- `type`: `float` / `int` / `bool`。`trigger` はまだ断ります(`live_input.trigger_unsupported@1`)。
+- `default`: 必須です。`float` は有限の数、`int` は int32 の範囲の JSON の整数、`bool` は JSON の真偽値です。`min` / `max` の中でなければなりません。
+- `min` / `max`: 任意です。`bool` には書けません。
+- 宣言は実行の間変わりません。文書を書き換えたら起動し直します(宣言を読み直す [`reloadDeclaration()`](../../src/core/os/liveinputs.cpp#L243) を呼ぶ所が今はありません)。
+- 宣言が不正なときに起動がどう見えるかは確かめていません(未確認)。例外は [`LiveInputs` の constructor](../../src/core/os/liveinputs.cpp#L217) から出ます。
+
+#### graph から読む
+
+`value.input` の `name` に `live:<名前>` と書きます。frame の graph と、animation の system が評価する graph のどちらからも読めます(両方が [`collectGraphInputs()`](../../src/core/renderingpass/graphinputs.cpp#L83) を通ります)。
+
+```json
+{"id": "clock", "op": "value.input", "parameters": {"name": "live:phase"}, "inputs": {}, "outputs": ["value"]}
+```
+
+- graph が受け取るのは数です。`int` は整数の値、`bool` は 0 / 1 です。
+- 宣言に無い名前は `live_input.unknown@1` で断ります。`live:` の付かない知らない名前は今までどおり `unbound frame graph input: <名前>` です。
+- once の pass は、live input から作った値を読めません(`graph.once_reads_per_frame@1`。[第6章](06_rendering.md) §6.18)。値は frame ごとに変わる物として数えます。
+- 時計としては数えません。`events` を繋いだ `audio.playback` の `time` が見る時計の集合に `live:` は入りません([数える所](../../src/core/userpublic/valuegraph.cpp#L205))。
+- catalog の `input_names` に `live:` の名前は出ません。Studio の palette の `value.input` の combo は `input_names` から作るので、選べません。graph の文書に書きます。Studio の詳細欄で打てるかは確かめていません(未確認)。
+
+#### 外から書く
+
+```json
+{"jsonrpc":"2.0","id":7,"method":"set_live_input","params":{"values":{"phase":0.25,"steps":99}}}
+```
+
+返事は `{"accepted": 2, "applies_at_frame": <評価の番号 + 1>}` です([`set_live_input` の登録](../../src/core/communication/rpcserver.cpp#L1944))。
+
+- **全部か無しか**: 全部の名前と値を検査してから受けます。1 つでも悪ければ、どの値も変わりません。
+- **型**: `float` は有限の数、`int` は int32 の範囲の JSON の整数(`1.5` は断ります)、`bool` は JSON の真偽値(`1` は断ります)です。外れると `live_input.type@1`、知らない名前は `live_input.unknown@1` です。
+- **範囲**: 宣言の `min` / `max` の外の値は断らず、端に寄せて `clamped: true` にします。
+- **効くのは次の frame**: 値は `freeze_input` の相で 1 回だけ固まり、その frame の graph の評価は全部同じ値を読みます([固める所](../../src/core/appflow/framephase.cpp#L219))。受けた値は `get_live_inputs` にも次の frame まで出ません。
+  - `step_frame` は固めます(一時停止中も。test があります)。`render_frame` はこの相を通らないので、固めません([`render_frame` の登録](../../src/core/communication/rpcserver.cpp#L2503))。
+  - test は headless だけです。窓ありの engine での振る舞いは確かめていません(未確認)。
+
+`get_live_inputs`(`{}`)は今の frame の値を返します([登録](../../src/core/communication/rpcserver.cpp#L1967))。
+
+```json
+{"inputs": [{"name": "phase", "type": "float", "value": 0.25, "default": 0.0,
+             "source": "rpc", "changed_frame": 12, "clamped": false}],
+ "dropped_during_replay": 0}
+```
+
+- `value` / `default` は宣言の型の JSON です。
+- `source` は、受けた値がまだ固まっていなければ `default`、固まった後は `rpc` です。
+- `changed_frame` は値が最後に変わった frame の評価の番号です(変わっていなければ 0)。同じ値を送り直しても変わりません。
+- `dropped_during_replay` の読み方は下の「収録・リプレイ・offline」です。
+
+`set_live_input` が断るときの error は `-32000` で、`message` の先頭が code です(`data` は付きません)。`values` が無い、または object でなければ `-32602` です。
+
+#### 収録・リプレイ・offline
+
+`pelican.input_seq` の記録は live input の値を持ちません。そのため、graph が live input を読むと、同じ絵を作り直せない出力を断ります。宣言があるだけなら断りません(test があります)。
+
+| 道 | 振る舞い |
+|---|---|
+| `--start-time`(0 も)・`--replay`・`--bake-camera-output` | graph が読んだ所で `offline.live_input_unrecorded@1: rendering graph reads live:<名前>`([検査](../../src/core/renderingpass/graphinputs.cpp#L46)) |
+| `start_input_replay` | engine がそれまでに live input を読む graph を見ていれば、同じ code で断る([その所](../../src/core/communication/rpcserver.cpp#L2039))。一度見ると、graph から消しても起動し直すまで断ります(コードの読みから) |
+| `--record-input`・`start_input_record` | 断りません。収録はできますが、その記録を同じ project で再生しようとすると上で断られます(コードの読みから) |
+| `--frames` だけの headless | 断りません。RPC が無ければ既定値のままです(コードの読みから) |
+
+graph が読まない宣言だけの project ではリプレイが動きます。その間の値は次のとおりです。
+
+- リプレイの始めに、受けていた値を捨てて全部を既定値に戻します。終わりにも既定値に戻します(前の値は戻りません)。
+- リプレイ中の `set_live_input` は `live_input.replay@1` で断ります。
+- `dropped_during_replay` は、今の RPC の道ではふつう 0 のままです。RPC の登録が engine のリプレイの状態を見て先に断り、数えないためです。増えるのは、リプレイが終わった後、次の frame で固まるまでの間に送った回だけで、次の frame で 0 に戻ります(コードの読みから)。
+
+#### 名前付きの拒否
+
+| code | いつ |
+|---|---|
+| `live_input.schema@1` | 宣言が JSON でない、root が object でない、`schema` が `pelican.live_inputs` でない |
+| `live_input.version@1` | `version` が整数の 1 でない(`1.0` も) |
+| `live_input.inputs@1` | `inputs` が配列でない |
+| `live_input.declaration@1` | `inputs` の要素が object でない |
+| `live_input.name@1` | 名前が無い・文字列でない・形が違う |
+| `live_input.duplicate@1` | 同じ名前を 2 回 |
+| `live_input.type@1` | 宣言の `type` が無い・知らない型 / 送った値の型が違う |
+| `live_input.trigger_unsupported@1` | 宣言の `type` が `trigger` |
+| `live_input.default_required@1` | `default` が無い |
+| `live_input.default_type@1` | `default` の型が違う |
+| `live_input.range@1` | `bool` に範囲、`min` / `max` の型が違う、`min` が `max` より大きい |
+| `live_input.default_range@1` | `default` が範囲の外 |
+| `live_input.unknown@1` | 送った名前、または graph が読む `live:` の名前が宣言に無い |
+| `live_input.replay@1` | リプレイ中の `set_live_input` |
+| `offline.live_input_unrecorded@1` | 上の表の道 |
 
 ## 7.4 UI — pelican.ui v1(✅WP75/87/93)
 
@@ -348,7 +461,7 @@ if (auto r = ui.setText("root/hud/score", "SCORE 120"); !r)
 | 3 | `ui.property_mismatch@1` | node の型がその性質を持たない(例: gauge への `setText`)、または `setValue` の値が有限でない |
 | 4 | `ui.sink_conflict@1` | 公開中の rendering config の `ui.*` sink が同じ (path, 性質) を書いている(下記) |
 
-- **書き込みは呼んだ時点で検査され、フレーム境界で適用されます。** 受け付けた書き込みは列に積まれ、そのフレームのゲームコードがすべて走ったあと、描画の前に一度にまとめて入ります([commitFrameWrites() の呼び出し](../../src/core/appflow/framephase.cpp#L303))。断られた書き込みは何も積みません。
+- **書き込みは呼んだ時点で検査され、フレーム境界で適用されます。** 受け付けた書き込みは列に積まれ、そのフレームのゲームコードがすべて走ったあと、描画の前に一度にまとめて入ります([commitFrameWrites() の呼び出し](../../src/core/appflow/framephase.cpp#L312))。断られた書き込みは何も積みません。
 - `setText` で文字列を変えると、`label` / `button` の大きさ(`content` 軸の固有サイズ)を測り直します。測り直すのは固有サイズが文字列から測られた node だけで、`intrinsic_size` を文書に書いた node はそのままです([syncDocumentFromArena()](../../src/core/ui/module.cpp#L420))。
 - **scene load 中に書いても、load の transaction には入りません。** 公開 API の分類は `nonparticipant.ui-document` で([manifest の行](../../src/core/loader/sceneparticipantmanifest.cpp#L228))、UI 文書は scene の参加者ではないので、load が失敗しても書き込みは次のフレーム境界で入ります。
 
@@ -398,7 +511,7 @@ UI の入力ルータは、カーソル event の窓座標を、ポインタ(§7
 - 掴み(capture)は指ごとです。2 本の指で別々の button を押せ、同じ button を 2 本で押したときは最後の指が離れるまで押された見た目のままです([その所](../../src/core/ui/module.cpp#L337))。
 - **UI が掴んだ指は、離す(または取り消す)まで、動かないフレームも含めてアクション層から見えません**([その所](../../src/core/ui/inputrouter.cpp#L51))。widget に当たった指も、そのフレームは見えません。消費は指ごとなので、UI を押している指と別の指はタッチの binding に届きます。
 - 指は hover を作りません(hover の色はマウスだけ)。マウスの event も作らないので、1 回のタッチが UI に 2 回届くことはありません。
-- ImGui などの道具がマウスを使っているフレームでも、指は UI に届きます([その所](../../src/core/appflow/framephase.cpp#L231))。
+- ImGui などの道具がマウスを使っているフレームでも、指は UI に届きます([その所](../../src/core/appflow/framephase.cpp#L240))。
 
 ### 残っている未実装(明示)
 
@@ -434,6 +547,7 @@ GPU 経路自体は意図的に別のままです(`DebugText` は専用 atlas + 
 | アクション層 + プロファイル分離 | ✅ WP39/91 |
 | rpc inject_input(ゲームパッド含む) | ✅ WP49/91(SA1f でタッチも) |
 | 収録・リプレイ(I3、input_seq + bake-camera) | ✅ WP89(GP-4 で v2 = 換算の記録。v1 も読む。SA1f でタッチを含む記録は v3) |
+| live inputs(宣言・`value.input` の `live:<名前>`・`set_live_input` / `get_live_inputs`) | ✅ OSC-1a(口は JSON-RPC だけ。network の受信は無い。`trigger` は断る) |
 | ゲームパッド(I4) | ✅ WP91 |
 | OpenXR 入力(Touch action set + pose) | ✅ WP130/132(v1 は Touch のみ・pose の収録は非対応) |
 | ポインタの位置(framebuffer ピクセル)/ カーソルのモード(I4 残件のロックを含む)/ `screenRay` | ✅ GP-4(埋め込みの窓ではロックしない。残した穴は第8章 §8.4) |

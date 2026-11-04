@@ -52,7 +52,7 @@ flowchart LR
 
 `project.json` のschema/version/`engine_min_version`ゲートは、まず [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L311) が検証します。`--ignore-engine-version`で継続する場合も純粋層はログを出さずwarning文字列を返し、engine adapterだけがそれをquillへ渡します。検証規則の正本はこの関数だけで、`basicconfig.cpp`やdevcliに写しはありません。`engine_min_version` が新しすぎるときの拒否は MG-1 から `project.engine_too_old@1` という名前で始まります（[`projectEngineTooOldCode`](../../src/project/projectformat.hpp#L19)）。
 
-player ではこの parse の**前**に、MG-1 の入口 [`requireProjectMigrationNotRequired()`](../../src/project/projectmigration.cpp#L563) が 1 回だけ走ります（[呼ぶ場所](../../src/player/main.cpp#L767)）。落ちたプロセスが残した project 文書の transaction を復旧してから、project root の下の `*.json` の最上位の `schema` / `version` を parser を通さずに読み、登録された移行手順の `from` に当たる文書があれば `project.migration_required@1` で止めます。parser の version 検査より前に置くのは、project.json 自身の版が上がったときも「知らない版」ではなく「移行が要る」で止めるためです。v0 の登録表は空で、そのときは root を歩きもしません。流れ全体は [manual 第3章 §3.13](../manual/03_project_format.md) にあります。
+player ではこの parse の**前**に、MG-1 の入口 [`requireProjectMigrationNotRequired()`](../../src/project/projectmigration.cpp#L563) が 1 回だけ走ります（[呼ぶ場所](../../src/player/main.cpp#L768)）。落ちたプロセスが残した project 文書の transaction を復旧してから、project root の下の `*.json` の最上位の `schema` / `version` を parser を通さずに読み、登録された移行手順の `from` に当たる文書があれば `project.migration_required@1` で止めます。parser の version 検査より前に置くのは、project.json 自身の版が上がったときも「知らない版」ではなく「移行が要る」で止めるためです。v0 の登録表は空で、そのときは root を歩きもしません。流れ全体は [manual 第3章 §3.13](../manual/03_project_format.md) にあります。
 
 [`ProjectEnvelope`](../../src/project/projectformat.hpp#L39) が持つのは `name` / `engine_min_version` / `saved_by_engine` / `requirements` / `basic_config` / `asset_stores` / `hot_reload` / `prefabs` の8つです(`hot_reload` は HW-1 で増えた。下の箇条)。`saved_by_engine`（MG-1）は最後に project.json を書いたエンジンの版の**記録**で、何の判定にも使いません（文字列でなければ無視します）。このうち `requirements` は P-2b で入った **`requires`** キーで（`requires` はC++のキーワードなのでフィールド名だけずらしてあります）、「このプロジェクトが無いと動かないビルド機能」を宣言します。
 
@@ -77,7 +77,7 @@ player ではこの parse の**前**に、MG-1 の入口 [`requireProjectMigrati
 
 各fieldはこの順で最初に見つかった値が採用されます（[`JsonLoader::getVal()`](../../src/core/loader/basicconfig.cpp#L74)）。JSON object全体をdeep mergeするのではなく、必要fieldをpath単位で問い合わせる方式です。
 
-構築時にwindow、framerate、seed、camera、各データファイル参照を値として取り込みます。その後、assets/rendering/UI/input JSON本文はgetterの初回呼び出し時に読み、`mutable optional<string>`へcacheします（[basicconfig.hpp](../../src/core/loader/basicconfig.hpp#L125)）。
+構築時にwindow、framerate、seed、camera、各データファイル参照を値として取り込みます。その後、assets/rendering/UI/input JSON本文はgetterの初回呼び出し時に読み、`mutable optional<string>`へcacheします（[basicconfig.hpp](../../src/core/loader/basicconfig.hpp#L126)）。
 
 ### sceneだけはcacheではなくdocument
 
@@ -85,7 +85,7 @@ sceneは単なる文字列cacheから、**[`SceneProjectionState`](../../src/cor
 
 格上げされたのがsceneだけなのは、編集の有無で必要な機能が違うからです。assets/rendering/UI/inputのJSONは読み取り専用で、cacheの役目は「二度目以降のファイル読みを省く」ことだけです。一方sceneはセッション中に書き換えられ、(a) ディスクへの書き戻し（本節の `saveSceneDocument()`）、(b) 改訂番号による競合検出（§3.12 のCAS）、(c) renameや並べ替えに耐えるobject単位の安定identity（§3.12 の `AuthoringObjectId`）を必要とします。`std::optional<std::string>` にはこの三つを置く場所がありません。
 
-保持しているのは、scene に関する metadata を 1 つにまとめた [`SceneMetadataState`](../../src/core/loader/basicconfig.hpp#L106) です（WP380a）。
+保持しているのは、scene に関する metadata を 1 つにまとめた [`SceneMetadataState`](../../src/core/loader/basicconfig.hpp#L107) です（WP380a）。
 
 ```cpp
 struct SceneMetadataState {
@@ -108,13 +108,13 @@ mutable SceneMetadataState scene_metadata;
 
 1 struct にまとまっているのは、scene load の commit がこの struct の **1 回の `noexcept` swap** だからです（[`SceneMetadataState::swap()`](../../src/core/loader/basicconfig.cpp#L507) / [`MetadataCommitToken::commit()`](../../src/core/loader/basicconfig.cpp#L585)）。
 
-document だけ、projection だけ、current scene だけを個別に公開する経路は production には無く（[`MetadataCommitToken`](../../src/core/loader/sceneload.hpp#L195) の `Impl` は `ProjectBasicConfig` の private）、candidate は [`prepareBorrowedSceneMetadata()`](../../src/core/loader/basicconfig.cpp#L590)（committed projection をそのまま使う root）か [`prepareImportedSceneMetadata()`](../../src/core/loader/basicconfig.cpp#L603)（snapshot import）か [`prepareRestoredSceneMetadata()`](../../src/core/loader/basicconfig.cpp#L897)（再生のセッションの Stop。✅PM-2。下の注）が token として作り、§3.5 の scene executor が commit します。
+document だけ、projection だけ、current scene だけを個別に公開する経路は production には無く（[`MetadataCommitToken`](../../src/core/loader/sceneload.hpp#L195) の `Impl` は `ProjectBasicConfig` の private）、candidate は [`prepareBorrowedSceneMetadata()`](../../src/core/loader/basicconfig.cpp#L590)（committed projection をそのまま使う root）か [`prepareImportedSceneMetadata()`](../../src/core/loader/basicconfig.cpp#L603)（snapshot import）か [`prepareRestoredSceneMetadata()`](../../src/core/loader/basicconfig.cpp#L903)（再生のセッションの Stop。✅PM-2。下の注）が token として作り、§3.5 の scene executor が commit します。
 
 失敗した token は捨てられるだけで、live の `scene_metadata` には触れません。「1 段の swap である」ことは台帳側の executor 仕様がそのまま定めていて、WP380a の完了記録は phase 列を `prepare → early_publish → noexcept candidate publish → activate → metadata commit(1 struct の noexcept swap)→ retire(次フレーム queue)→ outbox flush` と書いています（[`docs/implementation_plan.md`](../implementation_plan.md) の WP380a 完了記録）。
 
 コード側も同じことを言っており、分割公開は fault injector 専用の反実仮想として `Production can publish only SceneMetadataState as a whole through commit().` とコメントされています（[分割公開の反実仮想に付いたコメント](../../src/core/loader/basicconfig.cpp#L568)）。代入ではなく swap なので、commit 後は旧 state が token 側へ移り、旧 projection の破棄は commit 点の中ではなく token の寿命末で起きます（[`swap()` の本体](../../src/core/loader/basicconfig.cpp#L507) は member ごとの `std::swap` だけです）。
 
-そのため [`sceneDataJson()`](../../src/core/loader/basicconfig.cpp#L1037) は**生ファイル文字列を返しません**。
+そのため [`sceneDataJson()`](../../src/core/loader/basicconfig.cpp#L1043) は**生ファイル文字列を返しません**。
 
 ```cpp
 std::string ProjectBasicConfig::sceneDataJson() const {
@@ -124,18 +124,18 @@ std::string ProjectBasicConfig::sceneDataJson() const {
 
 返るのはauthoring authorityによるsemantic encodeです。scene を **resolve する**とは、作者が書いた authoring document に prefab の展開と省略値の補完を施し、読み手が場合分けなしに読める不変の形（[`ResolvedScene`](../../src/core/loader/resolvedscene.hpp#L268)）へ畳むことです — 「scene の読み手に影響する authored な省略は、この不変 projection を prepare する時点で全て埋める」がヘッダのコメントの言い分です（[`ResolvedSceneDefaults` の上のコメント](../../src/core/loader/componentcodec.hpp#L212)）。各componentが authored か生成物かは [`ResolvedComponentOrigin`](../../src/core/loader/resolvedscene.hpp#L173) に残ります。
 
-なお [用語集](../manual/14_glossary.md#解決resolve) の「解決(resolve)」は**path参照**をファイルの絶対パスへ確定させる別の用法で、§3.3 の話です。同じ動詞が2つの層で使われています。runtimeの読者はraw JSONではなく [`resolvedScene()`](../../src/core/loader/basicconfig.cpp#L770) を読み、両者とrevision / resolver generationは同じ `SceneProjectionState` から公開されます。読み書きのAPIは次の通りです。
+なお [用語集](../manual/14_glossary.md#解決resolve) の「解決(resolve)」は**path参照**をファイルの絶対パスへ確定させる別の用法で、§3.3 の話です。同じ動詞が2つの層で使われています。runtimeの読者はraw JSONではなく [`resolvedScene()`](../../src/core/loader/basicconfig.cpp#L776) を読み、両者とrevision / resolver generationは同じ `SceneProjectionState` から公開されます。読み書きのAPIは次の通りです。
 
 | API | 宣言 | 役割 |
 |---|---|---|
-| `sceneProjectionState()` | [`sceneProjectionState()`](../../src/core/loader/basicconfig.cpp#L774) | authoring / resolved / revision / generation のpairを取得（初回は遅延load） |
-| `sceneDocument()` / `resolvedScene()` | [`sceneDocument()`](../../src/core/loader/basicconfig.cpp#L766) / [`resolvedScene()`](../../src/core/loader/basicconfig.cpp#L770) | 同じpairのauthoring側 / resolved側を取得 |
-| `updateSceneDocument()` | [`updateSceneDocument()`](../../src/core/loader/basicconfig.cpp#L785) | scene（v2）バイト列をprepareしてpairで差し替え |
-| `invalidateSceneDocument()` | [`invalidateSceneDocument()`](../../src/core/loader/basicconfig.cpp#L789) | pairを破棄し、次回の再構築を強制 |
-| `importSceneDocument()` | [`importSceneDocument()`](../../src/core/loader/basicconfig.cpp#L794) | 外部由来のバイト列を取り込み、新しい `SceneRevision` を返す |
-| `saveSceneDocument()` | [`saveSceneDocument()`](../../src/core/loader/basicconfig.cpp#L937) | ディスクへ書き戻し、pairを公開し、`SceneSaveResult`（revision / digest / byte数）を返す |
+| `sceneProjectionState()` | [`sceneProjectionState()`](../../src/core/loader/basicconfig.cpp#L780) | authoring / resolved / revision / generation のpairを取得（初回は遅延load） |
+| `sceneDocument()` / `resolvedScene()` | [`sceneDocument()`](../../src/core/loader/basicconfig.cpp#L772) / [`resolvedScene()`](../../src/core/loader/basicconfig.cpp#L776) | 同じpairのauthoring側 / resolved側を取得 |
+| `updateSceneDocument()` | [`updateSceneDocument()`](../../src/core/loader/basicconfig.cpp#L791) | scene（v2）バイト列をprepareしてpairで差し替え |
+| `invalidateSceneDocument()` | [`invalidateSceneDocument()`](../../src/core/loader/basicconfig.cpp#L795) | pairを破棄し、次回の再構築を強制 |
+| `importSceneDocument()` | [`importSceneDocument()`](../../src/core/loader/basicconfig.cpp#L800) | 外部由来のバイト列を取り込み、新しい `SceneRevision` を返す |
+| `saveSceneDocument()` | [`saveSceneDocument()`](../../src/core/loader/basicconfig.cpp#L943) | ディスクへ書き戻し、pairを公開し、`SceneSaveResult`（revision / digest / byte数）を返す |
 
-**再生のセッションの Stop の token(✅PM-2)。**[`prepareRestoredSceneMetadata(saved)`](../../src/core/loader/basicconfig.cpp#L897) は、Play のときに覚えた `AuthoringSceneDocument` を §3.12 の [`restagedAuthoring()`](../../src/core/loader/authoringscenedocument.cpp#L441) で出し直し(中身と `AuthoringObjectId` は保存時のまま、`SceneRevision` は `next_scene_revision`、次の `AuthoringObjectId` は保存時と今の大きい方)、今の defaults・prefab registry・bindable provider で resolver を prepare して candidate にします。
+**再生のセッションの Stop の token(✅PM-2)。**[`prepareRestoredSceneMetadata(saved)`](../../src/core/loader/basicconfig.cpp#L903) は、Play のときに覚えた `AuthoringSceneDocument` を §3.12 の [`restagedAuthoring()`](../../src/core/loader/authoringscenedocument.cpp#L441) で出し直し(中身と `AuthoringObjectId` は保存時のまま、`SceneRevision` は `next_scene_revision`、次の `AuthoringObjectId` は保存時と今の大きい方)、今の defaults・prefab registry・bindable provider で resolver を prepare して candidate にします。
 
 `prepareImportedSceneMetadata()` の candidate との違いは、ディスクの基準(persistence baseline)の digest と provider を今のまま残すことです(セッションの間は `save_scene` を断るので、ファイルはセッションの始めのまま)。RPC の `set_play_state` はこの token を `SceneLoadRequest::owned` に載せ、保存した scene の id で読み込みます。commit までは何も公開されず、読み込みが新しい authority を与えるので、その epoch が editor の gate を閉じます(authority は保存も復元もしません)。
 
@@ -145,11 +145,11 @@ std::string ProjectBasicConfig::sceneDataJson() const {
 
 > **設計決定:** 保存経路の中断点を実装内部の分岐ではなくenumとして公開することで、「どの中断点でもディスク上のsceneが壊れない」という性質をテストから網羅的に叩けます。列挙名がそのまま保存手順の段階名になっています。
 
-> 🧩 **難所 — 保存のTOCTOU窓**([`saveSceneDocument()`](../../src/core/loader/basicconfig.cpp#L937))
+> 🧩 **難所 — 保存のTOCTOU窓**([`saveSceneDocument()`](../../src/core/loader/basicconfig.cpp#L943))
 >
 > **何をする所か**: 編集済み文書を一時ファイル経由でディスクへ書き戻し、原子的に置換してから、メモリ側の文書とbaseline digestを差し替えます。TOCTOU と「一時ファイル + rename による原子的置換」の一般的な背景は [第10章 §10.4](10_background_knowledge.md) にあります。
 >
-> **素朴に読むと**: digest比較が **2回** あるのが冗長に見えます。しかしdigest比較が言えるのは「**比較したその瞬間まで**外部変更が無かった」ことだけで、比較を過ぎてから外部が書いた分については何も保証しません。1回目([`disk_digest` の検査](../../src/core/loader/basicconfig.cpp#L968))は一時ファイルを書く**前**にあるので、これだけにすると一時ファイルの書き込み・読み戻し・意味検証にかかる時間がまるごと TOCTOU 窓(time-of-check to time-of-use の略 — 検査した時点と実際に使う時点がずれるせいで生まれる、その間に外部が書き換えられる隙間)になり、保存処理はその間に外部エディタが書いた内容を、気付かないまま上書きしてしまいます。2回目([置換直前の `stableDiskDigest` 検査](../../src/core/loader/basicconfig.cpp#L1019))は置換の直前に置かれていて、窓を実務上無視できる幅まで縮めるためのものです(WP362 からは比較相手が `save_baseline.scene_digest_sha256` —— scene digest と prefab read-set を一体で凍結した不可分 baseline の一部 —— になりました)。もう一つ見落としやすいのが末尾の順序で、ファイル置換([`replaceSceneFileAtomically()` の呼び出し](../../src/core/loader/basicconfig.cpp#L1027))の **後** に [`publishPreparedSceneState(next_state)`](../../src/core/loader/basicconfig.cpp#L754) と [`*scene_metadata.persistence_baseline = std::move(next_baseline)`](../../src/core/loader/basicconfig.cpp#L1033) が来ます(置換の後にあるのは3回目の比較ではありません。baseline を保存したバイト列の digest と prefab read-set へ**更新**する操作です)。この区間を確保・decode・I/Oなしの無throwにしてあり、逆順にすると「置換に失敗したのにメモリ側だけ新しいrevision」が作れてしまいます。pair 公開が `noexcept` の [`publishPreparedSceneState()`](../../src/core/loader/basicconfig.cpp#L754)(中身は `SceneProjectionState` の `swap` と `next_*` カウンタの代入)で、baseline の更新が `ScenePersistenceBaseline`(`std::string` + `std::vector`)丸ごとの **move 代入**なのも同じ理由で、どちらもバッファを移すだけで新しい確保を伴いません(WP380a 前は `scene_baseline_digest->swap()` でした。§3.2 の `SceneMetadataState` に統合された今は optional の中身への move 代入です)。
+> **素朴に読むと**: digest比較が **2回** あるのが冗長に見えます。しかしdigest比較が言えるのは「**比較したその瞬間まで**外部変更が無かった」ことだけで、比較を過ぎてから外部が書いた分については何も保証しません。1回目([`disk_digest` の検査](../../src/core/loader/basicconfig.cpp#L974))は一時ファイルを書く**前**にあるので、これだけにすると一時ファイルの書き込み・読み戻し・意味検証にかかる時間がまるごと TOCTOU 窓(time-of-check to time-of-use の略 — 検査した時点と実際に使う時点がずれるせいで生まれる、その間に外部が書き換えられる隙間)になり、保存処理はその間に外部エディタが書いた内容を、気付かないまま上書きしてしまいます。2回目([置換直前の `stableDiskDigest` 検査](../../src/core/loader/basicconfig.cpp#L1025))は置換の直前に置かれていて、窓を実務上無視できる幅まで縮めるためのものです(WP362 からは比較相手が `save_baseline.scene_digest_sha256` —— scene digest と prefab read-set を一体で凍結した不可分 baseline の一部 —— になりました)。もう一つ見落としやすいのが末尾の順序で、ファイル置換([`replaceSceneFileAtomically()` の呼び出し](../../src/core/loader/basicconfig.cpp#L1033))の **後** に [`publishPreparedSceneState(next_state)`](../../src/core/loader/basicconfig.cpp#L760) と [`*scene_metadata.persistence_baseline = std::move(next_baseline)`](../../src/core/loader/basicconfig.cpp#L1039) が来ます(置換の後にあるのは3回目の比較ではありません。baseline を保存したバイト列の digest と prefab read-set へ**更新**する操作です)。この区間を確保・decode・I/Oなしの無throwにしてあり、逆順にすると「置換に失敗したのにメモリ側だけ新しいrevision」が作れてしまいます。pair 公開が `noexcept` の [`publishPreparedSceneState()`](../../src/core/loader/basicconfig.cpp#L760)(中身は `SceneProjectionState` の `swap` と `next_*` カウンタの代入)で、baseline の更新が `ScenePersistenceBaseline`(`std::string` + `std::vector`)丸ごとの **move 代入**なのも同じ理由で、どちらもバッファを移すだけで新しい確保を伴いません(WP380a 前は `scene_baseline_digest->swap()` でした。§3.2 の `SceneMetadataState` に統合された今は optional の中身への move 代入です)。
 >
 > **骨子**:
 > ```mermaid
@@ -171,7 +171,7 @@ std::string ProjectBasicConfig::sceneDataJson() const {
 >
 > - **準備の順序**: `next_document = AuthoringSceneAuthority::stage(...)`、続いて `next_state = ResolvedSceneResolver::prepare(next_document, generation, defaults)`。
 >
-> **手がかり**: 上の `SceneSaveFaultPoint` 6値がそのまま手順の段名で、2回目のdigest検査は `AfterCachePrepare` と `BeforeReplace` の**間**にあります。[`stableDiskDigest()`](../../src/core/loader/basicconfig.cpp#L343) が `watch::readStableContentDigest()` を使うのは、「書き込み途中のファイルを読んだ」状態(`retry`)を成功と混同しないためです。一時ファイルは `TemporarySceneFile` のデストラクタが必ず消すので、どの中断点でthrowしてもゴミが残りません。[`importSceneDocument()`](../../src/core/loader/basicconfig.cpp#L794) は逆に「失敗しうる間は live に触らない」側の作りで、candidate を `MetadataCommitToken` に包んで §3.5 の scene executor へ渡し、commit された場合だけ同じ `SceneMetadataState::swap()` で公開されます（reload が失敗すれば token が捨てられるだけで、戻す作業そのものがありません）。対にして読むと早いです。テストは [`sceneformat_test.cpp` 内](../../test/sceneformat_test.cpp#L699)「SAVE0 is failure-atomic at every prepare point」。
+> **手がかり**: 上の `SceneSaveFaultPoint` 6値がそのまま手順の段名で、2回目のdigest検査は `AfterCachePrepare` と `BeforeReplace` の**間**にあります。[`stableDiskDigest()`](../../src/core/loader/basicconfig.cpp#L343) が `watch::readStableContentDigest()` を使うのは、「書き込み途中のファイルを読んだ」状態(`retry`)を成功と混同しないためです。一時ファイルは `TemporarySceneFile` のデストラクタが必ず消すので、どの中断点でthrowしてもゴミが残りません。[`importSceneDocument()`](../../src/core/loader/basicconfig.cpp#L800) は逆に「失敗しうる間は live に触らない」側の作りで、candidate を `MetadataCommitToken` に包んで §3.5 の scene executor へ渡し、commit された場合だけ同じ `SceneMetadataState::swap()` で公開されます（reload が失敗すれば token が捨てられるだけで、戻す作業そのものがありません）。対にして読むと早いです。テストは [`sceneformat_test.cpp` 内](../../test/sceneformat_test.cpp#L699)「SAVE0 is failure-atomic at every prepare point」。
 >
 > **不変条件**: 直列化は1回だけ(以降の全段が同じバイト列を消費する)。ファイル置換より後にthrowしうる処理を置かない。baseline digestの更新はファイル置換と同一の無throw区間で行う。
 
@@ -186,7 +186,7 @@ std::string ProjectBasicConfig::sceneDataJson() const {
 
 - **記録**: RPC を持つ engine は material 文書の RPC を登録するときに [`enableProjectDocumentJournal()`](../../src/project/projectdocumenttransaction.cpp#L1048) を呼び([呼ぶ所](../../src/core/communication/materialdocumentrpc.cpp#L2699))、以後 `commitProjectDocuments()` の候補に [`withDocumentJournal()`](../../src/project/projectdocumenttransaction.cpp#L1006) が `.pelican/document_journal/manifest.json` を足して同じ transaction で書きます。文書ごとに最初の `before`(bytes の hex。無ければ null)だけを残し、`digest` は書くたびに書いた bytes の SHA-256(消したなら null)にします。`.pelican/` の下と、bytes の変わらない置換は記録しません。
 - **戻す**: [`revertProjectDocumentsToBaseline()`](../../src/project/projectdocumenttransaction.cpp#L1072) は、今の bytes の digest が journal の `digest` と同じ文書だけを `before` に戻し(null なら消す)、違う文書は `conflicts` に入れて残します。戻した後の状態が新しい基準点で、journal も同じ transaction で消します。RPC は `mark_document_baseline` / `get_document_journal` / `revert_documents_to_baseline`([登録](../../src/core/communication/materialdocumentrpc.cpp#L2700))。
-- **Studio の側の古い答え**(RV-1 の fix round): 確認の窓・Save の待ち・journal の要求は世代を持ち、[`MainWindow::invalidateDocumentOperations()`](../../src/devstudio/view/mainwindow.cpp#L2781) が project の切り替え・engine の起こし直し・承認した終了の時点で世代を進めます。前の engine の答えや閉じた窓の `finished` は、世代が違えば何もしません(以前は前の答えの後から RevertRecovery / RevertClose が走り得た)。自動化の `open_project`([`commandOpenProject`](../../src/devstudio/automation/automationcommands.cpp#L2601))は確認の答えも新しい engine も待たずにすぐ返り、切り替えが待っていれば `engine_restarting: true` を返します(以前は最大 20 秒待ってから false を返し得た)。
+- **Studio の側の古い答え**(RV-1 の fix round): 確認の窓・Save の待ち・journal の要求は世代を持ち、[`MainWindow::invalidateDocumentOperations()`](../../src/devstudio/view/mainwindow.cpp#L2928) が project の切り替え・engine の起こし直し・承認した終了の時点で世代を進めます。前の engine の答えや閉じた窓の `finished` は、世代が違えば何もしません(以前は前の答えの後から RevertRecovery / RevertClose が走り得た)。自動化の `open_project`([`commandOpenProject`](../../src/devstudio/automation/automationcommands.cpp#L2601))は確認の答えも新しい engine も待たずにすぐ返り、切り替えが待っていれば `engine_restarting: true` を返します(以前は最大 20 秒待ってから false を返し得た)。
 
 ### 一時ファイル + rename による原子的置換の使用箇所 {#background-usage-11}
 
@@ -267,7 +267,7 @@ resource追加には次の三箇所が必要です。
 
 ## 3.4 asset manifestの起動検証
 
-playerはcore起動前に module [`AssetsVerification`](../../src/core/loader/assetsverification.hpp#L86) の [`verifyAtStartup()`](../../src/core/loader/assetsverification.cpp#L175) を呼びます([呼び出し](../../src/player/main.cpp#L818)。✅AV-1 から。それまでは自由関数 `verifyAssetsAtStartup()` を直接呼んでいました)。
+playerはcore起動前に module [`AssetsVerification`](../../src/core/loader/assetsverification.hpp#L86) の [`verifyAtStartup()`](../../src/core/loader/assetsverification.cpp#L175) を呼びます([呼び出し](../../src/player/main.cpp#L819)。✅AV-1 から。それまでは自由関数 `verifyAssetsAtStartup()` を直接呼んでいました)。
 
 `verifyAtStartup()` は store の一覧・hash cache の path・strict を覚えてから、今も残る [`verifyAssetsAtStartup()`](../../src/core/loader/assetsverification.cpp#L148)(中身は無名名前空間の `verifyAssetStores(..., log = true)`)を呼び、store ごとの結果 [`AssetStoreVerification`](../../src/core/loader/assetsverification.hpp#L27)(`StartupAssetsVerificationSummary::results`)を `Record {verified_at, stores}` として持ちます。log の行と strict の判定は AV-1 の前と同じです。純粋な実作業は [`verifyAssetsManifest()`](../../src/project/assetsmanifest.cpp#L574) です。
 
@@ -291,7 +291,7 @@ mutex は 2 つです。`mutex` は状態(store の一覧・結果・`running`)�
 
 test 用の `holdForTesting()` は、worker が `disk` を取った後で止まるように変わりました(本物の照合と同じく store を握ったまま止まる)。PJ-1 の `redeclareStores()` が manifest を書くときは今も待ち、書いている間と照合の終わりを待つ間は frame が止まります。module の破棄は `stop()` で worker を join するので、長い照合の途中で engine を閉じると照合の終わりまで待ちます。拒否は [`AssetsVerificationError`](../../src/core/loader/assetsverification.hpp#L67)(`code()` と `fields()`)で、RPC の側が `data: {error_code, error_fields}` にします。`fields_` は丸括弧で初期化します。波括弧だと nlohmann の json 1 つが要素 1 つの配列になり、RPC の側が object でない `fields()` を `{}` に置き換えてしまうためです(コンストラクタの注記)。
 
-RPC の側は [`internal::configureAssetsVerificationRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1583) で、module は `EngineRpcModules::assets_verification` に `FastModuleContainer::tryGet<AssetsVerification>()` で入ります。module の無い host(in-process の test など)は `get_status` で `not_run`、`verify_assets` / `update_assets_manifest` で `assets_verification_unavailable@1` になります。test は [`assetsverification_test.cpp`](../../test/assetsverification_test.cpp#L162) の AV-1 の 4 本(`RpcServer::processLine` で往復。worker は `holdForTesting()` / `waitForTesting()` で止めて `running` を見る)です。
+RPC の側は [`internal::configureAssetsVerificationRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1586) で、module は `EngineRpcModules::assets_verification` に `FastModuleContainer::tryGet<AssetsVerification>()` で入ります。module の無い host(in-process の test など)は `get_status` で `not_run`、`verify_assets` / `update_assets_manifest` で `assets_verification_unavailable@1` になります。test は [`assetsverification_test.cpp`](../../test/assetsverification_test.cpp#L162) の AV-1 の 4 本(`RpcServer::processLine` で往復。worker は `holdForTesting()` / `waitForTesting()` で止めて `running` を見る)です。
 
 **hash の速さ(✅AH-1、`0f93b5b8`)。**cache が外れた file の hash は [`assetFileSha256()`](../../src/project/assetsmanifest.cpp#L162) で、file を 1 MiB の buffer で読みます。AH-1 はこの関数の中で、Windows では CNG(`BCryptCreateHash(BCRYPT_SHA256_ALG_HANDLE, ...)` / `BCryptHashData` / `BCryptFinishHash`)、それ以外では picosha2 の `hash256_one_by_one` に chunk ごとに渡していました。今は FW-1(`92681afd`)がその計算を [`Sha256Stream`](../../src/project/sha256stream.hpp#L15)(`src/project/sha256stream.cpp`。Windows では BCrypt、それ以外では picosha2)に移し、file watcher と共有しています。
 
@@ -513,7 +513,7 @@ renderer の slot には、frame を挟まない連続の load の道もあり�
 
 末尾の 1 slot は診断用ではなく **outbox 溢れ専用**で、[`reserveEntry()`](../../src/core/loader/effecttransaction.cpp#L120) が 256 件を超えて積めなかった**副作用の**件数を `effect_outbox_full@1` の `dropped` として数え続けます（診断そのものが 256 件を超えた場合は数えずに落ちます。非対称の理由は §5.15）。公開用の文字列と JSON は commit 後に初めて作られます — [`effectErrors()`](../../src/core/loader/scene.cpp#L1817) の呼び出しは `noexcept` の commit tail（`flush` / `finish`）を通過した**後**にあり、そこで固定 slot を sequence 順に並べて [`CommittedWithEffectFailure::EffectError`](../../src/core/loader/sceneload.hpp#L176) へ変換します。
 
-副作用の失敗は例外ではなく [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L174) として `SceneLoadResult` に載り、**扱いは root ごと**です: startup は [`LOG_ERROR`](../../src/core/userpublic/pelican_core.cpp#L164)、pending も [`LOG_ERROR`](../../src/core/loader/scene.cpp#L1887)、rpc の `load_scene` は [`response["effect_errors"]`](../../src/core/communication/rpcserver.cpp#L2067) として JSON で返し（失敗が無ければ空配列）、import は [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L275) にそのまま入れて呼び手へ渡します。いずれも `committed` であることは変わりません（scene は載っている）。
+副作用の失敗は例外ではなく [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L174) として `SceneLoadResult` に載り、**扱いは root ごと**です: startup は [`LOG_ERROR`](../../src/core/userpublic/pelican_core.cpp#L164)、pending も [`LOG_ERROR`](../../src/core/loader/scene.cpp#L1887)、rpc の `load_scene` は [`response["effect_errors"]`](../../src/core/communication/rpcserver.cpp#L2137) として JSON で返し（失敗が無ければ空配列）、import は [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L275) にそのまま入れて呼び手へ渡します。いずれも `committed` であることは変わりません（scene は載っている）。
 
 transient glTF 経路（`load_gltf`）は executor を通らず、従来どおり [`GameObjects::createWithComponents()`](../../src/core/loader/scene.cpp#L2252) の populate callback で作ります（§3.8 の「`load_gltf` はトランザクション」）。
 
@@ -614,7 +614,7 @@ activate 段で behavior が `emit` したものも同じ outbox に入り、`Sc
 > | `pelican_core` | 上の test TU をソースに含めない |
 > | `ctest wp380c_...` | `dumpbin /symbols` で「入っていないこと」を検査 |
 >
-> **手がかり**: それを機械で確かめるのが [`wp380c_production_has_no_fault_setter_symbol`](../../test/CMakeLists.txt#L2765) で、検査は3種類あります。(1) `dumpbin /symbols` の出力に `SceneLoadFaultInjectorForTesting`（およびmodel release側の3つ）が現れないこと（[その `string(FIND)`](../../test/run_wp380c_no_production_fault_setter.cmake#L29)）。(2) test-onlyのTUが `pelican_core` の `SOURCES` に混ざっていないこと（[SOURCES 内の TU 照合](../../test/run_wp380c_no_production_fault_setter.cmake#L37)）。(3) productionヘッダ側に `set...ForTesting(...) {` という**定義**が書かれていないこと — 正規表現で本体つき定義を探します（[production header の列挙](../../test/run_wp380c_no_production_fault_setter.cmake#L87)）。3番目があるのは、ヘッダにinline定義を1行書くだけで(1)も(2)もすり抜けられるからです。この検査はWindows（`dumpbin` がある構成）限定です。
+> **手がかり**: それを機械で確かめるのが [`wp380c_production_has_no_fault_setter_symbol`](../../test/CMakeLists.txt#L2776) で、検査は3種類あります。(1) `dumpbin /symbols` の出力に `SceneLoadFaultInjectorForTesting`（およびmodel release側の3つ）が現れないこと（[その `string(FIND)`](../../test/run_wp380c_no_production_fault_setter.cmake#L29)）。(2) test-onlyのTUが `pelican_core` の `SOURCES` に混ざっていないこと（[SOURCES 内の TU 照合](../../test/run_wp380c_no_production_fault_setter.cmake#L37)）。(3) productionヘッダ側に `set...ForTesting(...) {` という**定義**が書かれていないこと — 正規表現で本体つき定義を探します（[production header の列挙](../../test/run_wp380c_no_production_fault_setter.cmake#L87)）。3番目があるのは、ヘッダにinline定義を1行書くだけで(1)も(2)もすり抜けられるからです。この検査はWindows（`dumpbin` がある構成）限定です。
 >
 > **不変条件**: setterの定義をヘッダへ書かない（inlineでも）。test-onlyのTUを `pelican_core` のソースへ足さない。`default_fault_injector_for_testing` の既定値をnullptr以外にしない。
 
@@ -676,13 +676,13 @@ metadata の commit 以降は「失敗しない尾部」です。executor はそ
 
 白灰黒 DFS です。done は再計算を省くメモ化で、active への再入が循環。active と done を分けないと「親を共有する複数の子」を循環と誤報します。歩く機構は `resolveParentOrder()` 1 つで、scene load([scene.cpp の呼び出し](../../src/core/loader/scene.cpp#L1360))・編集 transaction・preview が同じ template を使い、**誰を起点にするか(participant filter)と、循環 / 不在親で何を投げるかだけが呼び手ごと**です。scene load では循環・未知親・曖昧親が parse 段で既に弾かれているので、ここでの active への再入は内部不整合として `logic_error` です(投影は early_publish 内、entity 生成・親リンク後・behavior の `onInit` より前)。parse 段側の DFS は[第3章「3値のDFSが名前を出す」](03_project_and_loading.md)が本体です。
 
-### [`ProjectBasicConfig::saveSceneDocument()`](../../src/core/loader/basicconfig.cpp#L937) — 複数の注入点と baseline 再検証 {#reading-note-004}
+### [`ProjectBasicConfig::saveSceneDocument()`](../../src/core/loader/basicconfig.cpp#L943) — 複数の注入点と baseline 再検証 {#reading-note-004}
 
-[第3章「保存のTOCTOU窓」](03_project_and_loading.md)が本体です。1 点だけ補うと、[919 行のコメント](../../src/core/loader/basicconfig.cpp#L943)が baseline を「scene bytes + prefab read-set」の 1 つの不変物として固定すると明言しており、注入点は各区間の外部変更をテストで作るためのものです。
+[第3章「保存のTOCTOU窓」](03_project_and_loading.md)が本体です。1 点だけ補うと、[919 行のコメント](../../src/core/loader/basicconfig.cpp#L949)が baseline を「scene bytes + prefab read-set」の 1 つの不変物として固定すると明言しており、注入点は各区間の外部変更をテストで作るためのものです。
 
-### [`ProjectBasicConfig::publishSceneDocument()`](../../src/core/loader/basicconfig.cpp#L718) — revision と resolver generation が進む条件 {#reading-note-005}
+### [`ProjectBasicConfig::publishSceneDocument()`](../../src/core/loader/basicconfig.cpp#L724) — revision と resolver generation が進む条件 {#reading-note-005}
 
-**公開 1 回につき 1 進みます**。prepare しただけでは進みません。不変式は「公開した projection の値 + 1 に揃っている」ことで、初回公開はこの関数の中で [`++scene_metadata.next_scene_revision`](../../src/core/loader/basicconfig.cpp#L743) が、2 回目以降は [`publishPreparedSceneState()`](../../src/core/loader/basicconfig.cpp#L754) が `revision + 1` / `generation + 1` を代入して揃えます。上限到達は[関数先頭の 2 つの `overflow_error`](../../src/core/loader/basicconfig.cpp#L719) が公開自体を止めます。lazy init 側の入口は [`sceneProjectionState()`](../../src/core/loader/basicconfig.cpp#L774) です。
+**公開 1 回につき 1 進みます**。prepare しただけでは進みません。不変式は「公開した projection の値 + 1 に揃っている」ことで、初回公開はこの関数の中で [`++scene_metadata.next_scene_revision`](../../src/core/loader/basicconfig.cpp#L749) が、2 回目以降は [`publishPreparedSceneState()`](../../src/core/loader/basicconfig.cpp#L760) が `revision + 1` / `generation + 1` を代入して揃えます。上限到達は[関数先頭の 2 つの `overflow_error`](../../src/core/loader/basicconfig.cpp#L725) が公開自体を止めます。lazy init 側の入口は [`sceneProjectionState()`](../../src/core/loader/basicconfig.cpp#L780) です。
 
 ### [`PreparedEffectTransaction::errors_`](../../src/core/loader/effecttransaction.hpp#L142) — なぜ capacity + 1 か {#reading-note-006}
 
@@ -690,13 +690,13 @@ metadata の commit 以降は「失敗しない尾部」です。executor はそ
 
 ## 3.6 即時loadと要求load
 
-- `SceneLoader::load(SceneLoadRequest)`はその場で全sceneを置換（commit まで到達した場合。§3.5 の 3）。production の root は startup（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L177)）/ RPC `load_scene`（[`rpcserver.cpp` 内](../../src/core/communication/rpcserver.cpp#L2053)）/ pending apply / snapshot import（[`importSceneDocument()` からの `Owned` request](../../src/core/loader/basicconfig.cpp#L846)）で、いずれも [`requireSceneLoadCommitted()`](../../src/core/loader/scene.cpp#L502) で `PreCommitFailure` を従来どおりの例外へ戻します。
+- `SceneLoader::load(SceneLoadRequest)`はその場で全sceneを置換（commit まで到達した場合。§3.5 の 3）。production の root は startup（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L177)）/ RPC `load_scene`（[`rpcserver.cpp` 内](../../src/core/communication/rpcserver.cpp#L2123)）/ pending apply / snapshot import（[`importSceneDocument()` からの `Owned` request](../../src/core/loader/basicconfig.cpp#L852)）で、いずれも [`requireSceneLoadCommitted()`](../../src/core/loader/scene.cpp#L502) で `PreCommitFailure` を従来どおりの例外へ戻します。
 - [`requestLoad()`](../../src/core/loader/scene.cpp#L1840) は存在確認後、scene IDだけをpendingへ保存。activate 段の behavior から呼ばれた場合は live ではなく candidate projection に対して存在確認し、要求も candidate 側に積みます（rollback で一緒に捨てる）。
 - [`applyPendingLoad()`](../../src/core/loader/scene.cpp#L1871) はフレームのゲーム更新末尾で、まず前回 commit 分の retirement queue を消費し、apply 時点の committed projection に late-bind した `Borrowed` request で実際にload。
 
 `GameContext::loadScene()`はrequest型です。RPCの`load_scene`は即時loadです。この違いは、ゲームSystem update中にECS全削除が起きないようにするためです。
 
-rootは列挙型として名前を持ちます（[`SceneLoadRoot`](../../src/core/loader/sceneload.hpp#L82)）。`unspecified` を除く4値がそのまま §3.5 の 7 の `production_root` 行に対応します。以前は import が snapshot schema version で `import_unversioned`（SnapshotV1）と `import_versioned` に割れていましたが、MG-2b で SnapshotV1 が撤去され、[`importSceneDocument()`](../../src/core/loader/basicconfig.cpp#L794) は常に [`import_versioned`](../../src/core/loader/basicconfig.cpp#L847) で request を作ります。
+rootは列挙型として名前を持ちます（[`SceneLoadRoot`](../../src/core/loader/sceneload.hpp#L82)）。`unspecified` を除く4値がそのまま §3.5 の 7 の `production_root` 行に対応します。以前は import が snapshot schema version で `import_unversioned`（SnapshotV1）と `import_versioned` に割れていましたが、MG-2b で SnapshotV1 が撤去され、[`importSceneDocument()`](../../src/core/loader/basicconfig.cpp#L800) は常に [`import_versioned`](../../src/core/loader/basicconfig.cpp#L853) で request を作ります。
 
 結果の扱いもrootごとに違います。startup / RPC / pending / import はいずれも [`requireSceneLoadCommitted()`](../../src/core/loader/sceneload.hpp#L295) を通して `PreCommitFailure` だけを例外へ戻しますが（ヘッダのコメントが規範 — 「pre-commit失敗は従来どおりthrow、commit済みのeffect失敗は成功なので呼び手へ返す」）、`CommittedWithEffectFailure` の運び方は分かれます。importは [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L275) が `revision` と `load_result` を**組で**返すので、呼び手は「revisionは進んだが副作用が失敗した」を1つの値として受け取れます。`SceneRevision` への暗黙変換演算子があるため、revisionだけ見ていた既存の呼び手はそのまま動きます。startup と pending は `LOG_ERROR`、RPCは `effect_errors` 配列でJSONに載せます（§3.5 の 3）。
 
@@ -1196,7 +1196,7 @@ test: `renderconfigeditor_test` の [「FR-3 a feature's target that no pass wri
 
 FR-1 / FR-2 の `featurecompose_test` は、宣言だけでなく前の pass の `output.depth` を `scene_depth` にして通す形に書き換えました(FR-1 の test は、宣言と target_ref だけでは候補が空の `feature.required_target_unwritten@1` になることも見ます)。RPC の `edit_batch` は第7章の編集系の表です。
 
-test: `featurecompose_test` の [「FR-1 a feature names the targets it leaves to the pipeline and is refused by name without one」](../../test/featurecompose_test.cpp#L10127)・[「FR-1 a snapshot after a name the pipeline lacks is refused with the names it takes」](../../test/featurecompose_test.cpp#L10239)・[「FR-1 a target_ref whose type contradicts its target is told the type to write」](../../test/featurecompose_test.cpp#L10283)・[「FR-2 a feature inserted after a pass the pipeline lacks is refused with the names it takes」](../../test/featurecompose_test.cpp#L10325)。
+test: `featurecompose_test` の [「FR-1 a feature names the targets it leaves to the pipeline and is refused by name without one」](../../test/featurecompose_test.cpp#L10147)・[「FR-1 a snapshot after a name the pipeline lacks is refused with the names it takes」](../../test/featurecompose_test.cpp#L10259)・[「FR-1 a target_ref whose type contradicts its target is told the type to write」](../../test/featurecompose_test.cpp#L10303)・[「FR-2 a feature inserted after a pass the pipeline lacks is refused with the names it takes」](../../test/featurecompose_test.cpp#L10345)。
 
 RPC の道は `renderconfigeditor_test` の FR-1 / FR-2 の 2 本です。
 

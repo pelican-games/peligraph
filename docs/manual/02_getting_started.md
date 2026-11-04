@@ -120,7 +120,7 @@ cmake --install build-dist --config Release --component Runtime --prefix "$PWD/b
 | `PELICAN_PROJECT` | project の `code/` を `pelican_game_logic.dll` として build し、`Runtime` component として player と同じ `bin/` に install します |
 | install の後 | `package/bin/` に player・game DLL・MSVC の再頒布 runtime が入ります。project 本体(`project.json` と、それが指すファイル)は自分でコピーします |
 
-- **player は自分の場所を基準にします。**game DLL は exe の隣を探し([DLL の場所](../../src/player/main.cpp#L714))、`--project` を省くと exe の隣の `project.json` を開きます(§2.3 の「暗黙プロジェクト」。WARN の 1 行が出ます)。exe の場所は `GetModuleFileNameW` から取るので、PATH から名前だけで起動しても、別の作業ディレクトリから起動しても同じです([`executableDirectory()`](../../src/core/executabledirectory.hpp#L13))。相対の `--project` は作業ディレクトリ基準です(§2.3)。
+- **player は自分の場所を基準にします。**game DLL は exe の隣を探し([DLL の場所](../../src/player/main.cpp#L715))、`--project` を省くと exe の隣の `project.json` を開きます(§2.3 の「暗黙プロジェクト」。WARN の 1 行が出ます)。exe の場所は `GetModuleFileNameW` から取るので、PATH から名前だけで起動しても、別の作業ディレクトリから起動しても同じです([`executableDirectory()`](../../src/core/executabledirectory.hpp#L13))。相対の `--project` は作業ディレクトリ基準です(§2.3)。
 - **起動に失敗したときの見え方。**エラーの文は常に stderr に出ます。console も標準出力の接続も無い手起動(エクスプローラからの double-click など)のときだけ、同じ文を `Pelican` の題の message box でも出します。`--headless` / `--rpc` / `--embedded`、環境変数 `PELICAN_NO_MESSAGEBOX=1`、console や pipe・ファイルへの出力があるときは出しません([判定](../../src/core/playerdiagnostics.hpp#L16))。GUI の exe でも `--console` で親の console に繋げます。
 - `PELICAN_PLAYER_GUI_SUBSYSTEM` の既定は OFF(開発と test の build は console の exe)です([option](../../src/player/CMakeLists.txt#L1))。
 - 出荷物を install した場所・別の作業ディレクトリ・日本語の path で通しで起動する確認は、v0 の全数 gate の配布の項目で行う予定で、この文書の時点では未確認です。
@@ -434,6 +434,7 @@ pelican_player --headless --project mygame --start-time 2.0 --frames 2 --fps 60 
 - 実行時に stderr へ 1 行出ます: `offline: start_time=2 start_frame=120 replay=119 frames=2`。
 - **`--frames` とは併用できます**(枚数の指定)。**併用できないのは** `--rpc` / `--replay` / `--record-input` / `--bake-camera-output` の 4 つで、これらは「どの frame を出すか」を自分で決める経路だからです。
 - 名前付きの拒否は 3 つ: `offline.time_invalid@1`(負・非有限・数でない・3600 秒を超える・丸めた frame 番号やその時刻が有限でない)/ `offline.headless_required@1`(`--headless` 無し)/ `offline.mode_conflict@1`(上の 4 フラグとの併用)。いずれも**コマンドライン解析の時点**で決まり、GPU まで届きません。
+- graph が live input を読む project では `--start-time` が `offline.live_input_unrecorded@1` で断られます(✅OSC-1a。`--start-time 0` も同じです)。これはコマンドライン解析ではなく graph を読む所で決まります([第7章](07_input_ui.md#live-inputs))。
 
 さらに `--rpc --headless` で JSON-RPC による外部制御モードになります([第10章](10_tools.md))。
 

@@ -266,7 +266,7 @@ behavior コールバック実行中 / DLL リロード中の追加ゲートは 
 
 ### 6. 編集コミットはフレーム境界に 1 点だけ
 
-[`invokeEditorCommitQueueHook()`](../../src/core/appflow/framephase.cpp#L152) が reload 公開の後・`freeze_events` の直前に走ります。フックは **単一所有**で、2 回目の [`installEditorCommitQueueHook()`](../../src/core/appflow/framephase.hpp#L40) は `false` を返します。未設置なら zero-state no-op で、モジュールを作りません。
+[`invokeEditorCommitQueueHook()`](../../src/core/appflow/framephase.cpp#L155) が reload 公開の後・`freeze_events` の直前に走ります。フックは **単一所有**で、2 回目の [`installEditorCommitQueueHook()`](../../src/core/appflow/framephase.hpp#L40) は `false` を返します。未設置なら zero-state no-op で、モジュールを作りません。
 
 ### 7. 保存拒否の理由コード
 
@@ -404,13 +404,13 @@ game DLL 境界の v2 record は「凍結」と書かれていますが、実際
 
 **答え**: active と done を分ける DFS により、共有親と循環を区別します。 → [第3章 §3.5 の本文](03_project_and_loading.md#reading-note-003)。
 
-#### [`ProjectBasicConfig::saveSceneDocument()`](../../src/core/loader/basicconfig.cpp#L937) — 複数の注入点と baseline 再検証
+#### [`ProjectBasicConfig::saveSceneDocument()`](../../src/core/loader/basicconfig.cpp#L943) — 複数の注入点と baseline 再検証
 
 **分からなくなること**: baseline を取ったのに、置換直前でもう一度検証するのはなぜか。
 
 **答え**: baseline は scene bytes と prefab read-set を一体で固定し、置換直前に再検証します。 → [第3章 §3.5 の本文](03_project_and_loading.md#reading-note-004)。
 
-#### [`ProjectBasicConfig::publishSceneDocument()`](../../src/core/loader/basicconfig.cpp#L718) — revision と resolver generation が進む条件
+#### [`ProjectBasicConfig::publishSceneDocument()`](../../src/core/loader/basicconfig.cpp#L724) — revision と resolver generation が進む条件
 
 **分からなくなること**: revision と resolver generation がいつ進むのか(prepare で進むのか、publish で進むのか)。
 
@@ -439,10 +439,10 @@ game DLL 境界の v2 record は「凍結」と書かれていますが、実際
 | [`loadTransientGltf()`](../../src/core/loader/scene.cpp#L2183) | 二重予約と `owns_resources` | なぜ 2 回予約するのか | ハッシュノードとバケット成長を**パース・GPU staging より前**に確保し(コメントが明言)、entity 生成後の公開が確保できない = transaction を割れないようにする。容量拒否は副作用の無い [`inspect()`(WP110)](../../src/core/loader/scene.cpp#L2222) + `preflightModelInstance` で先に行う |
 | [`displayObjectName()`](../../src/core/loader/scene.cpp#L277) | 診断用の表示名 | 常に `<unnamed>` に見える | 空のときだけ `<unnamed>` を返す 1 行。identity ではなく**表示**なので、同一性の判定に使わない |
 | [`scenePersistenceBaseline()`](../../src/core/loader/basicconfig.cpp#L363) | prefab closure と read-set | baseline が何の複合か | scene ファイルの digest + resolve が実際に読んだ prefab 集合(name/path/digest)。registry に無い prefab が closure にあれば `logic_error` |
-| [`SceneMetadataState`](../../src/core/loader/basicconfig.hpp#L106) | 3 本の番号の役割分担 | revision / generation / object_id の違い | revision = authoring document の改訂、resolver generation = 解決結果の世代(読み手のキャッシュ無効化)、next_authoring_object_id = 宣言 ID の払い出し高水位(scene をまたいで再利用しない) |
+| [`SceneMetadataState`](../../src/core/loader/basicconfig.hpp#L107) | 3 本の番号の役割分担 | revision / generation / object_id の違い | revision = authoring document の改訂、resolver generation = 解決結果の世代(読み手のキャッシュ無効化)、next_authoring_object_id = 宣言 ID の払い出し高水位(scene をまたいで再利用しない) |
 | [`temporaryScenePath()`](../../src/core/loader/basicconfig.cpp#L430) | atomic カウンタ + nonce | 2 系統ある理由 | atomic は同一プロセス内の連続 save、steady_clock nonce は別プロセス・再起動・前回の残骸 tmp。保存先と同じ親ディレクトリに置くので `EXDEV` を踏まない |
 | [`JsonLoader` の CLI / project / default 3 層](../../src/core/loader/basicconfig.cpp#L66) と [prefab_registry 構築](../../src/core/loader/basicconfig.cpp#L626) | 設定のフォールスルー | 初期化順序の根拠 | 優先順位は実装どおり(CLI > project > default)。**順序をその形にした理由はコードにも文書にも無く、未執筆** |
-| [`importSceneDocument()`](../../src/core/loader/basicconfig.cpp#L794) | import のトランザクション意味論 | schema version 1/2 の扱い | **未執筆**(§9.23.10 の gate 順序と対で読む必要がある) |
+| [`importSceneDocument()`](../../src/core/loader/basicconfig.cpp#L800) | import のトランザクション意味論 | schema version 1/2 の扱い | **未執筆**(§9.23.10 の gate 順序と対で読む必要がある) |
 | [`CallbackPhase`](../../src/core/loader/effecttransaction.hpp#L29) と [destroy 相で診断を積む catch(`playSound()` の例)](../../src/core/loader/effecttransaction.cpp#L164) | activate / destroy / flush | destroy でだけ再送出しない理由 | destroy の呼び出し元は `noexcept` かつ**既に commit 済みで rollback 不能**なので、throw は terminate か中途半端な破棄にしかならない。固定長診断へ落として `CommittedWithEffectFailure` として報告する |
 | [`busValue()`](../../src/core/loader/effecttransaction.cpp#L36) / [`effectErrors`](../../src/core/loader/effecttransaction.cpp#L679) | const 版の copy、ErrorFields 分岐 | 何を分けているのか | **未執筆**(根拠がコードにない) |
 
@@ -930,19 +930,19 @@ game DLL 境界の v2 record は「凍結」と書かれていますが、実際
 
 ### 9.23.11 RPC
 
-#### [`gameLogicParticipantRpcStatus()` による participant 照会](../../src/core/communication/rpcserver.cpp#L1285) — 参加者名の正
+#### [`gameLogicParticipantRpcStatus()` による participant 照会](../../src/core/communication/rpcserver.cpp#L1288) — 参加者名の正
 
 **分からなくなること**: 参加者名の文字列が何なのか(`"game_logic_reload"` に見える資料がある)。
 
 **答え**: game logic の participant 名は ReloadService の定数が正です。 → [第2章 §2.11 の本文](02_runtime_lifecycle.md#reading-note-055)。
 
-#### [`SceneLoadResult` の受け取り](../../src/core/communication/rpcserver.cpp#L2050) — 状態機械
+#### [`SceneLoadResult` の受け取り](../../src/core/communication/rpcserver.cpp#L2120) — 状態機械
 
 **分からなくなること**: 「失敗したのに committed:true」が起きる理由。
 
 **答え**: pre-commit failure だけを例外に戻し、commit 後の effect failure は公開成功として返します。 → [第7章 §7.7 の本文](07_tools_rpc_tests.md#reading-note-056)。
 
-#### [`parseGizmoSelection()`](../../src/core/communication/rpcserver.cpp#L523) — 2 つの identity を受ける理由
+#### [`parseGizmoSelection()`](../../src/core/communication/rpcserver.cpp#L526) — 2 つの identity を受ける理由
 
 **分からなくなること**: なぜギズモの選択だけ 2 形式あるのか。
 
@@ -950,16 +950,16 @@ game DLL 境界の v2 record は「凍結」と書かれていますが、実際
 
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
-| [リロード中の一律拒否](../../src/core/communication/rpcserver.cpp#L1561) | `isGameLogicReloadInProgress()` | なぜ全メソッドか | DLL のシンボル・system 登録・behavior 実体が**差し替え途中**で、この状態でハンドラを走らせると無効化されたコードやハンドルを触るため。拒否は transport の中ではなく、[`configureEngineRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1549) が [`RpcServer::setRequestGate()`](../../src/core/communication/rpcserver.cpp#L1153) で差し込む述語になり、`RpcServer` は [parse 後・dispatch 前に gate を 1 回引く](../../src/core/communication/rpcserver.cpp#L1169)だけです |
-| [before_apply / after_apply フックの登録](../../src/core/communication/rpcserver.cpp#L1569) | リロードの前後フック | 2 つで何を挟むか | `before_apply` でプレビューリースを強制中断して未確定編集をコミット済み状態に戻し、`after_apply` で `pending_transforms.clear()` により**旧 DLL 世代のエンティティを指す未フラッシュ transform を破棄**する |
-| [`"resolution_error"` の再帰探索](../../src/core/communication/editorrpchandlers.cpp#L50) | 結果 JSON の走査 | 何を見ているか | どこかに `"resolution_error"` キーがあるかだけを見る。**含まれる場合はキー順序が意味を持つ**ため `nlohmann::json` への変換(順序喪失)を避け、`ordered_json` のまま手組みで dump する分岐に入る。走査は `RpcServer` から editor 側へ移り、`embedsResolutionError` は [`setOrderedHandler()` に渡す順序ポリシー](../../src/core/communication/editorrpchandlers.cpp#L88)として登録されます。transport は [ポリシーが真を返した応答だけ](../../src/core/communication/rpcserver.cpp#L1186)を ordered dump に回し、キー名は知りません |
-| [`isR7Identifier()`](../../src/core/communication/rpcserver.cpp#L261) | "R7" の由来 | R7 とは何か | **外部ツール契約の要求番号 R7**(`docs/external_tools_requirements.md`)「オブジェクト / ジョイント名は `[a-zA-Z0-9_]` のみ」の実装。`docs/design_scene_format.md` と `docs/manual/04_scene_ecs.md` も同じ R7 を参照 |
-| [`RpcServer::run()` の CRLF 除去](../../src/core/communication/rpcserver.cpp#L1227) | framing 契約 | なぜ `\r` を落とすか | 「1 行 = 1 JSON-RPC メッセージ、区切りは `\n`」で、CRLF 出力の相手から来た行末 `\r` を落とすことで Windows クライアントでも同じ契約が成立する。応答は常に `'\n'` 終端 + flush |
-| [逆引き](../../src/core/communication/rpcserver.cpp#L420) / [名前からの変換](../../src/core/communication/rpcserver.cpp#L752) | model_instance → object_id → authoring_object_id | 橋渡しの規則 | 上記 2 つの identity の橋渡し。詳細は**未執筆** |
+| [リロード中の一律拒否](../../src/core/communication/rpcserver.cpp#L1564) | `isGameLogicReloadInProgress()` | なぜ全メソッドか | DLL のシンボル・system 登録・behavior 実体が**差し替え途中**で、この状態でハンドラを走らせると無効化されたコードやハンドルを触るため。拒否は transport の中ではなく、[`configureEngineRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1552) が [`RpcServer::setRequestGate()`](../../src/core/communication/rpcserver.cpp#L1156) で差し込む述語になり、`RpcServer` は [parse 後・dispatch 前に gate を 1 回引く](../../src/core/communication/rpcserver.cpp#L1172)だけです |
+| [before_apply / after_apply フックの登録](../../src/core/communication/rpcserver.cpp#L1572) | リロードの前後フック | 2 つで何を挟むか | `before_apply` でプレビューリースを強制中断して未確定編集をコミット済み状態に戻し、`after_apply` で `pending_transforms.clear()` により**旧 DLL 世代のエンティティを指す未フラッシュ transform を破棄**する |
+| [`"resolution_error"` の再帰探索](../../src/core/communication/editorrpchandlers.cpp#L50) | 結果 JSON の走査 | 何を見ているか | どこかに `"resolution_error"` キーがあるかだけを見る。**含まれる場合はキー順序が意味を持つ**ため `nlohmann::json` への変換(順序喪失)を避け、`ordered_json` のまま手組みで dump する分岐に入る。走査は `RpcServer` から editor 側へ移り、`embedsResolutionError` は [`setOrderedHandler()` に渡す順序ポリシー](../../src/core/communication/editorrpchandlers.cpp#L88)として登録されます。transport は [ポリシーが真を返した応答だけ](../../src/core/communication/rpcserver.cpp#L1189)を ordered dump に回し、キー名は知りません |
+| [`isR7Identifier()`](../../src/core/communication/rpcserver.cpp#L262) | "R7" の由来 | R7 とは何か | **外部ツール契約の要求番号 R7**(`docs/external_tools_requirements.md`)「オブジェクト / ジョイント名は `[a-zA-Z0-9_]` のみ」の実装。`docs/design_scene_format.md` と `docs/manual/04_scene_ecs.md` も同じ R7 を参照 |
+| [`RpcServer::run()` の CRLF 除去](../../src/core/communication/rpcserver.cpp#L1230) | framing 契約 | なぜ `\r` を落とすか | 「1 行 = 1 JSON-RPC メッセージ、区切りは `\n`」で、CRLF 出力の相手から来た行末 `\r` を落とすことで Windows クライアントでも同じ契約が成立する。応答は常に `'\n'` 終端 + flush |
+| [逆引き](../../src/core/communication/rpcserver.cpp#L423) / [名前からの変換](../../src/core/communication/rpcserver.cpp#L755) | model_instance → object_id → authoring_object_id | 橋渡しの規則 | 上記 2 つの identity の橋渡し。詳細は**未執筆** |
 | [`ResolutionFailureException`](../../src/core/loader/resolutionresult.hpp#L177) | `failure()` の中身 | 何を表すか | **未執筆**(§9.23.2 の resolver 失敗形式と対) |
-| [`kbd:` プレフィックス](../../src/core/communication/rpcserver.cpp#L643) | binding 表示 | modal transform との関係 | **未執筆**(根拠がコードにない) |
-| [OpenXR inactive スキーマ](../../src/core/communication/rpcserver.cpp#L109) / [診断](../../src/core/communication/rpcserver.cpp#L1685) | 診断 JSON | スキーマの安定性契約 | **未執筆**(→ §9.23.18) |
-| [frame index と continuous time](../../src/core/communication/rpcserver.cpp#L934) / [replay 開始](../../src/core/communication/rpcserver.cpp#L1980) | どちらが真か、設定順序 | 真の時刻源 | **未執筆**(根拠がコードにない) |
+| [`kbd:` プレフィックス](../../src/core/communication/rpcserver.cpp#L646) | binding 表示 | modal transform との関係 | **未執筆**(根拠がコードにない) |
+| [OpenXR inactive スキーマ](../../src/core/communication/rpcserver.cpp#L110) / [診断](../../src/core/communication/rpcserver.cpp#L1688) | 診断 JSON | スキーマの安定性契約 | **未執筆**(→ §9.23.18) |
+| [frame index と continuous time](../../src/core/communication/rpcserver.cpp#L937) / [replay 開始](../../src/core/communication/rpcserver.cpp#L2050) | どちらが真か、設定順序 | 真の時刻源 | **未執筆**(根拠がコードにない) |
 
 ### 9.23.12 reload / watch
 
@@ -1403,11 +1403,11 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 
 **素朴に読むと**: socket や node の探索は routing index を引くので、作り直しの中で線を 1 本足すたびに route しても、1 本あたり定数の手間で済む、と読めます。
 
-**実際は**: [`GraphCanvasScene::repopulate()`](../../src/devstudio/view/graphcanvaswidget.cpp#L2333) は最初に `clear()` し、index はそこで無効になって、作り直しの最後の `rebuildRoutingIndex()` まで戻りません。その間の [`nodeGraphItems()`](../../src/devstudio/view/nodegraphics.cpp#L725) は scene の全 item を返すので、線の両端の探索ごとに全 item をなめます。GS-1 の前はこれで作り直しが O(線 × item) になり、LT-1 の計測では 163 node の作り直し 1 回 677 ms のうち 608 ms が線の段でした。
+**実際は**: [`GraphCanvasScene::repopulate()`](../../src/devstudio/view/graphcanvaswidget.cpp#L2344) は最初に `clear()` し、index はそこで無効になって、作り直しの最後の `rebuildRoutingIndex()` まで戻りません。その間の [`nodeGraphItems()`](../../src/devstudio/view/nodegraphics.cpp#L725) は scene の全 item を返すので、線の両端の探索ごとに全 item をなめます。GS-1 の前はこれで作り直しが O(線 × item) になり、LT-1 の計測では 163 node の作り直し 1 回 677 ms のうち 608 ms が線の段でした。
 
 **不変条件**: 作り直しの中では線を足すだけにし、route は全 item を足して index を作った後に [`routeGraphCanvasLines()`](../../src/devstudio/view/graphcanvaswidget.cpp#L491) で 1 回ずつ行うこと。途中で socket が要る物(domain stub)は、その時点の item で仮の index を作ってから引き、足し終えたら無効に戻すこと。
 
-**読む場所**: [`NodeGraphLookupScope`](../../src/devstudio/view/nodegraphics.hpp#L162) → [`routeGraphCanvasLines()`](../../src/devstudio/view/graphcanvaswidget.cpp#L491) → [仮の index を作る所](../../src/devstudio/view/graphcanvaswidget.cpp#L2835)。test は `devstudio_graphcanvas_scene_test` の `[gs1]` で、`nodeGraphUnindexedLookups()` の差が作り直し 1 回で 2 以下であることを見ます。
+**読む場所**: [`NodeGraphLookupScope`](../../src/devstudio/view/nodegraphics.hpp#L162) → [`routeGraphCanvasLines()`](../../src/devstudio/view/graphcanvaswidget.cpp#L491) → [仮の index を作る所](../../src/devstudio/view/graphcanvaswidget.cpp#L2841)。test は `devstudio_graphcanvas_scene_test` の `[gs1]` で、`nodeGraphUnindexedLookups()` の差が作り直し 1 回で 2 以下であることを見ます。
 
 ### 難所 — scene が描かないのに文書ごとに動く欄を比べると、確定のたびに全体を作り直す(GS-2、`5626470ba`)
 
@@ -1415,13 +1415,13 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 
 **実際は**: 確定の後には `get_graph_instances`・`get_frame_plan`・`get_render_authoring_context` の返事が順に届き、それぞれで比べます。plan の pass の `drawn_materials`(最後に描いた frame)と context の `planning_root` / `planning_catalog` は文書が変わるたびに動くのに scene はどれも描かないので、GS-2 の前は確定 1 回で 2〜3 回の全体の作り直しになっていました(163 node では 1 回 70 ms 台)。
 
-**不変条件**: plan や authoring context に scene が描かない欄を足したら、[`GraphCanvasScene::drawnFromNow()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5366) で外すこと。逆に、scene が描く欄を外すと、その欄が変わっても描き直されません(GS-2 の test は偽の engine の plan と context に本当の違いを持たせ、追加した pass の socket と線があることを直接見ています)。GS-2 の時点では zone があるときや描く scope が 1 つでないときは比べずに全体を描く道で、この直しは効きませんでした(✅GS-3b1 から zone のある root も比べます。下の GS-3b1 の難所)。
+**不変条件**: plan や authoring context に scene が描かない欄を足したら、[`GraphCanvasScene::drawnFromNow()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5455) で外すこと。逆に、scene が描く欄を外すと、その欄が変わっても描き直されません(GS-2 の test は偽の engine の plan と context に本当の違いを持たせ、追加した pass の socket と線があることを直接見ています)。GS-2 の時点では zone があるときや描く scope が 1 つでないときは比べずに全体を描く道で、この直しは効きませんでした(✅GS-3b1 から zone のある root も比べます。下の GS-3b1 の難所)。
 
-**読む場所**: [`GraphCanvasScene::followDocument()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5572) → [`GraphCanvasScene::drawnFromNow()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5366)。どの欄が動いたかは trace `graph_follow_diff` の bit で見えます(source guide 第7章 §7.6)。
+**読む場所**: [`GraphCanvasScene::followDocument()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5661) → [`GraphCanvasScene::drawnFromNow()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5455)。どの欄が動いたかは trace `graph_follow_diff` の bit で見えます(source guide 第7章 §7.6)。
 
 ### 難所 — 部分の描き直しの条件は、どれを弱めても全体の作り直しと違う絵が残る(GS-3a、`ec2a869e7`)
 
-**素朴に読むと**: 値だけが動いた node は中身を描き直せば済むので、[`GraphCanvasScene::redrawChangedNodes()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5965) の長い条件の列は保守的すぎ、いくつか外しても同じ絵になる、と読めます。
+**素朴に読むと**: 値だけが動いた node は中身を描き直せば済むので、[`GraphCanvasScene::redrawChangedNodes()`](../../src/devstudio/view/graphcanvaswidget.cpp#L6054) の長い条件の列は保守的すぎ、いくつか外しても同じ絵になる、と読めます。
 
 **実際は**: 条件はそれぞれ、部分の道では描き直されない物を守っています。動いた node の下流の `canvas.stack` や card は、上流の値で行や thumbnail が変わるのに部分の道では描き直されません(bit 5)。寸法が変わると placement の位置と合わなくなります(bit 8)。folded node のある scope で、前の全体の描画の後に node を drag した場合は、drag の後の placement の読みが scene をそのまま残すので、folded node の置き直しは次の全体の描画まで起きません。GS-3a の報告では、この検査(bit 10、`drawn_rooms_`)の無い版で 163 node の multi drag の 10 回目に folded node が node に重なったまま残り、press が folded node に当たって計測が落ちました。光った socket は大きく描かれるので、延期の検査を寸法と範囲の検査の後ろに置くと、押している間は範囲の検査が必ず落ちて全体の作り直しが押している item を壊します。
 
@@ -1429,24 +1429,24 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 - 条件は item に触る前に全部検査し、外れたら何も描かずに断ること。途中まで描いてから全体に落ちてよいのは、描いた後でしか分からない範囲の検査(bit 10)だけです。
 - `drawn_from_`・`drawn_pass_lines_`・`drawn_linked_` は描き直しが全部通った後で最後に進めること。stack の道も同じで、`redrawStackNode()` が 1 つでも false なら `repopulate()` すること(GS-3a の前は先に `drawn_from_` を進めて失敗を捨てていた)。
 - 延期の検査は寸法・範囲の検査より前に置くこと。延期のときは `drawn_from_` を進めないこと。
-- pass の線と linked outputs は `repopulate()` と同じ [`passLines()`](../../src/devstudio/view/graphcanvaswidget.cpp#L1955) / [`scopeLinkedOutputs()`](../../src/devstudio/view/graphcanvaswidget.cpp#L2091) で計算して比べること。
+- pass の線と linked outputs は `repopulate()` と同じ [`passLines()`](../../src/devstudio/view/graphcanvaswidget.cpp#L1966) / [`scopeLinkedOutputs()`](../../src/devstudio/view/graphcanvaswidget.cpp#L2102) で計算して比べること。
 - `graph_scene_redraw_node` は成功の後に出すこと(後の検査で全体に落ちた回を部分に数えない)。
 
-**読む場所**: [`GraphCanvasScene::followDocument()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5572) → [`GraphCanvasScene::redrawChangedNodes()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5965) → [延期する所](../../src/devstudio/view/graphcanvaswidget.cpp#L6208) → [`drawn_rooms_` を記録する所](../../src/devstudio/view/graphcanvaswidget.cpp#L2704)。test は `devstudio_graphcanvas_scene_test` の `[gs3a]` で、部分の描き直しの後の scene を同じ model で `repopulate()` した scene と論理 item で比べます(`gs3aSameAsRebuilt`)。GS-3a の報告では、線の引き直し・強調・index の早めの無効化の 3 つは外しても test が緑のまま(条件の下では結果が変わらない保険)です。
+**読む場所**: [`GraphCanvasScene::followDocument()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5661) → [`GraphCanvasScene::redrawChangedNodes()`](../../src/devstudio/view/graphcanvaswidget.cpp#L6054) → [延期する所](../../src/devstudio/view/graphcanvaswidget.cpp#L6289) → [`drawn_rooms_` を記録する所](../../src/devstudio/view/graphcanvaswidget.cpp#L2710)。test は `devstudio_graphcanvas_scene_test` の `[gs3a]` で、部分の描き直しの後の scene を同じ model で `repopulate()` した scene と論理 item で比べます(`gs3aSameAsRebuilt`)。GS-3a の報告では、線の引き直し・強調・index の早めの無効化の 3 つは外しても test が緑のまま(条件の下では結果が変わらない保険)です。
 
 ### 難所 — zone の比べる値は、`repopulate()` が描くのと同じ関数で作らないと、描いた物と比べた物がずれる(GS-3b1、`59677a98c`)
 
 **素朴に読むと**: zone の frame の飾り(stage・tab・行・carry・×N copies など)を比べるなら、`drawnFromNow()` の中で同じ値を読み直せば足りる、と読めます。
 
-**実際は**: 飾りは frame plan の report・root の node・placement から、`repopulate()` の中で多くの規則を通って作られていました。GS-3b1 は zone の選定を [`pickZones()`](../../src/devstudio/view/graphcanvaswidget.cpp#L2103)、飾りを [`zoneChrome()`](../../src/devstudio/view/graphcanvaswidget.cpp#L2126) に 1 行も変えずに移し、`repopulate()` と `drawnFromNow()` の両方がこれを呼びます。別に書くと、片方だけを直したときに「描いた物は変わったのに比べる値は同じ」になり、古い絵が残ります(GS-3b1 の変異で、axis label・tab の文字・stage を比較から外すと全体 0 回で論理 item が不一致)。
+**実際は**: 飾りは frame plan の report・root の node・placement から、`repopulate()` の中で多くの規則を通って作られていました。GS-3b1 は zone の選定を [`pickZones()`](../../src/devstudio/view/graphcanvaswidget.cpp#L2114)、飾りを [`zoneChrome()`](../../src/devstudio/view/graphcanvaswidget.cpp#L2137) に 1 行も変えずに移し、`repopulate()` と `drawnFromNow()` の両方がこれを呼びます。別に書くと、片方だけを直したときに「描いた物は変わったのに比べる値は同じ」になり、古い絵が残ります(GS-3b1 の変異で、axis label・tab の文字・stage を比較から外すと全体 0 回で論理 item が不一致)。
 
 **不変条件**:
 - zone の飾りや選定の規則を変えるときは `pickZones()` / `zoneChrome()` の中で変えること。比べる値(`ZoneChrome`)は所有した値だけにすること(`Zone::node` のような生ポインタ入りの値は入れない)。
-- 比べない scene を残すこと: 描いた body の並びが今の `pickZones` と違う(detail2 16)、今か前の zone の body に `canvas.stack` か card がある(detail2 32。shape in the air と絵はどの欄にも無い)ときは、[`zonesUncomparable()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5554) で比べずに全体を描く。zone があって stacks が動いたら `redrawStackNode()` に入らずに全体を描く。
-- 描いた item をその場で書き換えたら、`drawn_from_` も揃えること。`refreshLayerBands()` の帯([揃える所](../../src/devstudio/view/graphcanvaswidget.cpp#L1872))、`selectCarry()` の carry の pen([揃える所](../../src/devstudio/view/graphcanvaswidget.cpp#L3205))がそうで、揃えないと GPU 時間が動くたび・carry を選んだ後の何でもない返事のたびに全体を作り直します。逆に選択が外れる側(`selectNode` など)は pen を戻さず、次の返事で全体になる(安全な側)。
-- body の placement は definition の中の member なので、[`followDocumentPlacement()`](../../src/devstudio/view/graphcanvaswidget.cpp#L1205) で zone の layout を進めるときは `drawn_from_->document` の `definitions[body].layout` も進めること([その所](../../src/devstudio/view/graphcanvaswidget.cpp#L1245))。進めないと body の drag の後の返事が document の差(bit 1)で必ず全体に落ちます。
+- 比べない scene を残すこと: 描いた body の並びが今の `pickZones` と違う(detail2 16)、今か前の zone の body に `canvas.stack` か card がある(detail2 32。shape in the air と絵はどの欄にも無い)ときは、[`zonesUncomparable()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5643) で比べずに全体を描く。zone があって stacks が動いたら `redrawStackNode()` に入らずに全体を描く。
+- 描いた item をその場で書き換えたら、`drawn_from_` も揃えること。`refreshLayerBands()` の帯([揃える所](../../src/devstudio/view/graphcanvaswidget.cpp#L1883))、`selectCarry()` の carry の pen([揃える所](../../src/devstudio/view/graphcanvaswidget.cpp#L3211))がそうで、揃えないと GPU 時間が動くたび・carry を選んだ後の何でもない返事のたびに全体を作り直します。逆に選択が外れる側(`selectNode` など)は pen を戻さず、次の返事で全体になる(安全な側)。
+- body の placement は definition の中の member なので、[`followDocumentPlacement()`](../../src/devstudio/view/graphcanvaswidget.cpp#L1216) で zone の layout を進めるときは `drawn_from_->document` の `definitions[body].layout` も進めること([その所](../../src/devstudio/view/graphcanvaswidget.cpp#L1256))。進めないと body の drag の後の返事が document の差(bit 1)で必ず全体に落ちます。
 
-**読む場所**: [`GraphCanvasScene::drawnFromNow()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5366) → [`GraphCanvasScene::zonesMoved()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5535) → [`ZoneDrawn`](../../src/devstudio/view/graphcanvaswidget.hpp#L1154)。test は `[gs3b1]` で、目的の欄だけが動く返事では `graph_follow_diff` の bit がそれ 1 つだけであることを見ます。
+**読む場所**: [`GraphCanvasScene::drawnFromNow()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5455) → [`GraphCanvasScene::zonesMoved()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5624) → [`ZoneDrawn`](../../src/devstudio/view/graphcanvaswidget.hpp#L1173)。test は `[gs3b1]` で、目的の欄だけが動く返事では `graph_follow_diff` の bit がそれ 1 つだけであることを見ます。
 
 ### 難所 — frame の room は、body を描き終えた後でないと部分の道と食い違う(GS-3b2、`94de43902`)
 
@@ -1454,9 +1454,9 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 
 **実際は**: zone の body の node・線・制御点・帯は folded node を置いた後に描かれ、body の線は `routeGraphCanvasLines()` まで経路が空です。frame は body の node の箱を囲んで作られるので、body の線の制御点が frame の外にあると、全体の描画の終わりの frame の範囲が記録と違い、zone の横の root の値の部分の描き直しが**毎回** bit 10 で断っていました(GS-3b2 の報告の変異で再現)。body の長い pill や帯だけでは食い違いませんでした。
 
-**不変条件**: zone の frame の room は `repopulate()` の最後(線の route と inline editor の復元の後、`repopulated` の前)で記録し直すこと([記録し直す所](../../src/devstudio/view/graphcanvaswidget.cpp#L3086))。folded node の置き場所を決める `graph_boxes` はこれと別で、変えないこと。部分の道は frame と body に触らないので、全体の描画の後に frame や body が動けば(drag・refit)room が変わり、今までどおり断ります。条件 3(zone の欄・loop が動いた・loop に届く)も弱めないこと: zone の欄の比較は `followDocument()` から [条件 3](../../src/devstudio/view/graphcanvaswidget.cpp#L6332) の中へ移したので、ここを外すと部分の道に入って古い飾りが残ります(GS-3b2 の変異 m3_1 で `3 materials` が残った)。
+**不変条件**: zone の frame の room は `repopulate()` の最後(線の route と inline editor の復元の後、`repopulated` の前)で記録し直すこと([記録し直す所](../../src/devstudio/view/graphcanvaswidget.cpp#L3092))。folded node の置き場所を決める `graph_boxes` はこれと別で、変えないこと。部分の道は frame と body に触らないので、全体の描画の後に frame や body が動けば(drag・refit)room が変わり、今までどおり断ります。条件 3(zone の欄・loop が動いた・loop に届く)も弱めないこと: zone の欄の比較は `followDocument()` から [条件 3](../../src/devstudio/view/graphcanvaswidget.cpp#L6413) の中へ移したので、ここを外すと部分の道に入って古い飾りが残ります(GS-3b2 の変異 m3_1 で `3 materials` が残った)。
 
-**読む場所**: [記録し直す所](../../src/devstudio/view/graphcanvaswidget.cpp#L3086) → [条件 3](../../src/devstudio/view/graphcanvaswidget.cpp#L6332)。⚠ domain stub の付く graph node は stub が folded node を置いた後に付くので、folded node のある scope では範囲が記録と食い違い、部分の道は bit 10 で断り続けます(GS-3a からの性質で、直していません)。
+**読む場所**: [記録し直す所](../../src/devstudio/view/graphcanvaswidget.cpp#L3092) → [条件 3](../../src/devstudio/view/graphcanvaswidget.cpp#L6413)。⚠ domain stub の付く graph node は stub が folded node を置いた後に付くので、folded node のある scope では範囲が記録と食い違い、部分の道は bit 10 で断り続けます(GS-3a からの性質で、直していません)。
 
 ### 難所 — zone の body の値をその場で描き直すには、全体の描画が置く場所と同じだと先に示す(GS-3b3b、`07d7aed91`)
 
@@ -1465,12 +1465,12 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 **実際は**: body の node は frame の中に置かれ、frame は body の node の準備した大きさと置いた位置から全体の描画が計算します。body の道は frame・carry・制御点を描き直さないので、値で node の大きさが変わる・前の全体の描画の後に node や frame が動いた・frame の描き直しが予約されている、のどれかがあると、全体の描画とは違う絵が残ります。node の準備も root と body で linked outputs が違います(body は body の線と body の出力から作る。GS-3b3b の test の d は、root と body に同じ名前の node を置き、高さが違うことを確かめています)。
 
 **不変条件**:
-- body の道は、全体の描画が記録した値(`zone_drawn_`。body の node の位置と path の範囲、frame、frame の path の範囲)と今の item が同じで、動いた node を準備した大きさが今の item と同じときだけ描くこと。値は全体の描画が body を描き終えた所で記録すること([body の形を記録する所](../../src/devstudio/view/graphcanvaswidget.cpp#L2958))。
-- body の node の準備は [`prepareBodyNodes()`](../../src/devstudio/view/graphcanvaswidget.cpp#L2312)、帯は [`loopElementBandForItem()`](../../src/devstudio/view/graphcanvaswidget.cpp#L1725) を、全体の描画と body の道の両方で使うこと。別に書くと、片方だけを直したときに絵がずれます。
+- body の道は、全体の描画が記録した値(`zone_drawn_`。body の node の位置と path の範囲、frame、frame の path の範囲)と今の item が同じで、動いた node を準備した大きさが今の item と同じときだけ描くこと。値は全体の描画が body を描き終えた所で記録すること([body の形を記録する所](../../src/devstudio/view/graphcanvaswidget.cpp#L2964))。
+- body の node の準備は [`prepareBodyNodes()`](../../src/devstudio/view/graphcanvaswidget.cpp#L2323)、帯は [`loopElementBandForItem()`](../../src/devstudio/view/graphcanvaswidget.cpp#L1736) を、全体の描画と body の道の両方で使うこと。別に書くと、片方だけを直したときに絵がずれます。
 - 条件は item に触る前に全部検べること(検べる順は 4 → 2 → 3 → 5 → 6、押さえた node の延期はその後)。
-- `canvas.stack` か card を持つ body は body の道に来ません。zone の `pictures` が立ち、[`zonesUncomparable()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5554) が比べずに全体を描くためです。body の道の条件 3 にある stack と card の検査は、この前提が崩れたときの保険です。body の中の loop は条件 3 で断ります。
+- `canvas.stack` か card を持つ body は body の道に来ません。zone の `pictures` が立ち、[`zonesUncomparable()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5643) が比べずに全体を描くためです。body の道の条件 3 にある stack と card の検査は、この前提が崩れたときの保険です。body の中の loop は条件 3 で断ります。
 
-**読む場所**: [`GraphCanvasScene::classifyRedraw()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5706) → [body の道](../../src/devstudio/view/graphcanvaswidget.cpp#L5994)。test は `[gs3b3b]` で、部分の描き直しの後の scene を作り直した scene と比べます。
+**読む場所**: [`GraphCanvasScene::classifyRedraw()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5795) → [body の道](../../src/devstudio/view/graphcanvaswidget.cpp#L6083)。test は `[gs3b3b]` で、部分の描き直しの後の scene を作り直した scene と比べます。
 
 ### 難所 — 部分の描き直しは paint を予約するだけでは、同じ event loop の次の返事の後に画面に出る(GS-3z、`476d9b33d`)
 
@@ -1478,9 +1478,9 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 
 **実際は**: item を変えると paint は予約されるだけです。確定の後は Graph の文書の返事と Frame Plan の `get_frame_plan` の返事が続けて届き、同じ event loop の 1 回の中で処理されると、plan の返事(読むのに約 40 ms)が予約された paint より先に走ります。部分の描き直しが 1.5 ms でも、画面に出るのはその後でした。
 
-**不変条件**: 部分の描き直しが成功したら、`nodesRedrawn` の前に [`paintPartialRedrawNow()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5204) で見えている view をその場で描くこと(root の道と body の道の両方)。
+**不変条件**: 部分の描き直しが成功したら、`nodesRedrawn` の前に [`paintPartialRedrawNow()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5210) で見えている view をその場で描くこと(root の道と body の道の両方)。
 
-**読む場所**: [`paintPartialRedrawNow()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5204)。test は `[gs3z]` で、返事が描き直しに届いてから `nodesRedrawn` までの paint の数を数えます(repaint が無いと 0)。
+**読む場所**: [`paintPartialRedrawNow()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5210)。test は `[gs3z]` で、返事が描き直しに届いてから `nodesRedrawn` までの paint の数を数えます(repaint が無いと 0)。
 
 ### 難所 — tab の束の dock の中身は、選ばれていなくても isVisible() が真で、選んでも showEvent が来ない(RP-1a1、`152acef21`)
 
@@ -1499,11 +1499,11 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 **実際は**: `~GraphCanvasWidget()` の本体が終わると `impl_`(`std::unique_ptr`)が消え、その後で `QWidget` の base の destructor が子の widget(詳細欄の editor、Features の Parameters の dialog)を消します。子が消えるときの `closeEditor` や `destroyed` は、context の widget の `QObject` 部分がまだ生きているので届き、lambda が解放済みの Impl を読みます(GS-ASAN1 が見つけた 2 件)。上の FX-4 の難所(Impl が `QWidget` の base より先に消える)と同じ順の問題です。FX-4 の Inspector は destructor の最初で子から自分への接続を外す形で、GS-UAF1 の 2 つの panel は接続の context を guard にする形です。
 
 **不変条件**:
-- lambda が Impl を読み、送り手が Impl より長く生きうる(widget 自身・その子・delegate・viewport)connection と queued call は、Impl の `QObject guard` を context にすること([Graph の guard](../../src/devstudio/view/graphcanvaswidget.cpp#L8231)、[Features の guard](../../src/devstudio/view/renderfeatureswidget.cpp#L2374))。
+- lambda が Impl を読み、送り手が Impl より長く生きうる(widget 自身・その子・delegate・viewport)connection と queued call は、Impl の `QObject guard` を context にすること([Graph の guard](../../src/devstudio/view/graphcanvaswidget.cpp#L8273)、[Features の guard](../../src/devstudio/view/renderfeatureswidget.cpp#L2386))。
 - guard は Impl の最後のメンバに置くこと。メンバは宣言の逆の順に消えるので、最後のメンバは最初に消え、ほかのメンバを消している間にはもう connection がありません。
 - その結果、Features の Parameters の dialog の、まだ送っていない(150 ms でまとめている)変更は、panel ごと消すときは捨てられます。dialog だけを閉じたときは今までどおり送ります。
 
-**読む場所**: [Graph の guard](../../src/devstudio/view/graphcanvaswidget.cpp#L8231) → [詳細欄の `closeEditor`](../../src/devstudio/view/graphcanvaswidget.cpp#L9215) → [Features の dialog の `destroyed`](../../src/devstudio/view/renderfeatureswidget.cpp#L3608)。test は `[uaf1]` の 2 本で、destructor が始まった後に走った callback を test 用の数え口で数えます(ASan が無くても赤になる)。
+**読む場所**: [Graph の guard](../../src/devstudio/view/graphcanvaswidget.cpp#L8273) → [詳細欄の `closeEditor`](../../src/devstudio/view/graphcanvaswidget.cpp#L9257) → [Features の dialog の `destroyed`](../../src/devstudio/view/renderfeatureswidget.cpp#L3646)。test は `[uaf1]` の 2 本で、destructor が始まった後に走った callback を test 用の数え口で数えます(ASan が無くても赤になる)。
 
 ### 難所 — test で `#define private public` をして private なメンバ関数を呼ぶと、MSVC では link できない
 
@@ -1513,7 +1513,7 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 
 **不変条件**: 新しい test から private なメンバ関数を呼ばないこと。public な関数、action、既にある test 用の読み口を使うか、GS-UAF1 の数え口のような test 用の free function を header に足すこと。
 
-**読む場所**: [KM-1a の test の Help の action](../../test/devstudio_automation_input_test.cpp#L3096)、[Graph の数え口](../../src/devstudio/view/graphcanvaswidget.hpp#L1695)。
+**読む場所**: [KM-1a の test の Help の action](../../test/devstudio_automation_input_test.cpp#L3107)、[Graph の数え口](../../src/devstudio/view/graphcanvaswidget.hpp#L1714)。
 
 ### 難所 — zone の frame が同じでも、最小の幅が違えば stage の文字はその場で書き換えられない。どちらになるかは font で変わる(GS-3b4a、`3a5410578`)
 
@@ -1522,10 +1522,10 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 **実際は**: zone の frame は、見出し(題・stage・shared)や tab の行などの中で一番広い物で決まる最小の幅と、body の content の大きさから計算されます。stage が広くなると、frame は content で決まっていて同じでも、最小の幅は変わることがあります。GS-3b4a の道は frame だけでなく、計算し直した origin・最小の幅と高さ・footer・frame の全部が記録と同じことを求め、違えば bit 13 の detail2 2 で断ります(test の b は、frame が同じで最小の幅だけが違う長い stage で断ることを確かめます)。どの行が最小の幅を決めるかは platform の font で変わるので、test の a2 の同じ確定が、test のコメントでは Linux の font でその場、Windows の font で全体になります。
 
 **不変条件**:
-- stage の道は、`repopulate()` と同じ関数(loop の node の準備・`zoneChrome()`・`layoutZone()`)と描画の font の metrics で zone の形を計算し直し、記録(`zone_geometry_`)と全部の値が同じときだけ描くこと([比べる所](../../src/devstudio/view/graphcanvaswidget.cpp#L6621))。
+- stage の道は、`repopulate()` と同じ関数(loop の node の準備・`zoneChrome()`・`layoutZone()`)と描画の font の metrics で zone の形を計算し直し、記録(`zone_geometry_`)と全部の値が同じときだけ描くこと([比べる所](../../src/devstudio/view/graphcanvaswidget.cpp#L6663))。
 - font で結果が分かれる case の test は、両方の結果を受け入れて、どちらでも作り直した scene と同じことを確かめること(a2 の形)。片方の platform の結果だけを assert すると、もう一方の platform で赤になります。幅の変わらない例(同じ桁数の数字)の case は、どの platform でもその場の道を通ります(a の形)。
 
-**読む場所**: [`GraphCanvasScene::redrawZoneChrome()`](../../src/devstudio/view/graphcanvaswidget.cpp#L6529) → [比べる所](../../src/devstudio/view/graphcanvaswidget.cpp#L6621)。test は `[gs3b4a]` です(source guide 第7章 §7.6)。
+**読む場所**: [`GraphCanvasScene::redrawZoneChrome()`](../../src/devstudio/view/graphcanvaswidget.cpp#L6571) → [比べる所](../../src/devstudio/view/graphcanvaswidget.cpp#L6663)。test は `[gs3b4a]` です(source guide 第7章 §7.6)。
 
 ### 難所 — keymap の衝突を 1 項目ずつ順に決めると、入れ替えが通らず、JSON の順で結果が変わる(KM-2a、`c4c268b0c`)
 
@@ -1535,10 +1535,10 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 
 **不変条件**:
 - 全部の項目を当ててから、キーごとに持ち主の集合を作ること。持ち主が 1 つか、全員が既定でそのキーを分け合っていた(Ctrl+Z の 4 つの Undo など)なら通すこと。
-- それ以外は、そのキーの持ち主のうち keymap で変えた command を全部既定に戻し、変わらなくなるまで数え直すこと([繰り返す所](../../src/devstudio/view/mainwindow.cpp#L2334))。戻すのは変えた側だけで、既定のままの command は動かしません。
-- event の中で手で見るキー(`studioKeys()`)は action を持たないので、[`handHandledKeys()`](../../src/devstudio/view/mainwindow.cpp#L192) で固定の持ち主として数えに入れること。入れないと、`F` や `Escape` を別の command に取らせてしまいます。
+- それ以外は、そのキーの持ち主のうち keymap で変えた command を全部既定に戻し、変わらなくなるまで数え直すこと([繰り返す所](../../src/devstudio/view/mainwindow.cpp#L426))。戻すのは変えた側だけで、既定のままの command は動かしません。
+- event の中で手で見るキー(`studioKeys()`)は action を持たないので、[`handHandledKeys()`](../../src/devstudio/view/mainwindow.cpp#L194) で固定の持ち主として数えに入れること。入れないと、`F` や `Escape` を別の command に取らせてしまいます。
 
-**読む場所**: [`MainWindow::applyUserKeymap()`](../../src/devstudio/view/mainwindow.cpp#L2209)。test は `[km2a]` の入れ替え・鎖・同じ新しいキー・手で見るキーの case です。
+**読む場所**: [`MainWindow::applyUserKeymap()`](../../src/devstudio/view/mainwindow.cpp#L2497)。test は `[km2a]` の入れ替え・鎖・同じ新しいキー・手で見るキーの case です。
 
 ### 難所 — engine の窓が focus を持つ間は、Qt の shortcut は効かず、決まった 8 つのキーしか渡らない(KM-2a、`c4c268b0c`)
 
@@ -1548,7 +1548,7 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 
 **不変条件**: engine の窓からも効かせたい command に、見張るキーの外のキーを既定で付けないこと。付けるなら `StudioShortcutKeys` にキーを足すこと(一覧は `quint32` の bit で持つので、32 個までです)。engine の窓から渡す command は `setCommandHelp()` の `viewport_order` で決まり、最初に合った 1 つだけが動くので、順は前の手書きの一覧と同じに保つこと。
 
-**読む場所**: [`StudioShortcutKeys`](../../src/devstudio/viewport/nativewindowhost.hpp#L33) → [engine の窓のキーを受ける所](../../src/devstudio/view/mainwindow.cpp#L337)。
+**読む場所**: [`StudioShortcutKeys`](../../src/devstudio/viewport/nativewindowhost.hpp#L33) → [engine の窓のキーを受ける所](../../src/devstudio/view/mainwindow.cpp#L565)。
 
 ### 難所 — 共有の digest の「自分の知らせは自分に来ない」は、subscribe の context と publish の `from` が同じ object のときだけ(RP-1a2、`b0d5b75ea`)
 
@@ -1567,7 +1567,7 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 
 **不変条件**: 下限の大きい panel を、小さい panel と同じ tab widget や dock の束に入れないこと。下限を調べるときは自動化の `size_hints`(見えている子だけを数え、stacked widget は page ごとの下限を並べる)で、何が下限を決めているかを先に見ること。
 
-**読む場所**: [理由のコメント](../../src/devstudio/view/mainwindow.cpp#L764) → [`commandSizeHints()`](../../src/devstudio/automation/automationcommands.cpp#L1319)。
+**読む場所**: [理由のコメント](../../src/devstudio/view/mainwindow.cpp#L1043) → [`commandSizeHints()`](../../src/devstudio/automation/automationcommands.cpp#L1319)。
 
 ### 難所 — 既定の配置で dock を横に並べてから束ねると、表示中の窓が広がったまま戻らない(UI-2)
 
@@ -1577,7 +1577,7 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 
 **不変条件**: 束に入れる dock は `addDockWidget` せずに、直接 `tabifyDockWidget` の鎖で入れること。
 
-**読む場所**: [`MainWindow::applyDefaultLayout()`](../../src/devstudio/view/mainwindow.cpp#L4493)(下の段の `tabifyDockWidget` の前のコメント)。test は `devstudio_layoutpreset_test` の「UI-2 the Graph, the Frame Plan, …」で、既定の配置の形を見ます(窓の幅そのものは見ていません)。
+**読む場所**: [`MainWindow::applyDefaultLayout()`](../../src/devstudio/view/mainwindow.cpp#L4640)(下の段の `tabifyDockWidget` の前のコメント)。test は `devstudio_layoutpreset_test` の「UI-2 the Graph, the Frame Plan, …」で、既定の配置の形を見ます(窓の幅そのものは見ていません)。
 
 ### 難所 — 利用者のデータの例外は Play を止めるが、DLL の reload 中の onInit の例外は reload の失敗のまま(RX-1、`faf9a484b`)
 
@@ -1586,8 +1586,8 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 **実際は**: 受けるのは印の付いた例外だけで、`onInit` には 2 つの扱いがあります。
 
 - **印**: 利用者のデータの不正だけを [`UserDataError`](../../src/core/userpublic/userdataerror.hpp#L6)(`std::runtime_error` の派生)で投げ、[`guardUserData()`](../../src/core/watch/userdataguard.hpp#L31) はこの型だけを受けます。engine の内部の不変条件や GPU の失敗は元の型のまま guard を抜け、今までどおり致命の境界に届きます(`std::exception` まで広げると、壊れた engine を動かし続けることになる)。受けた scope は [`failUserData()`](../../src/core/watch/problemlist.cpp#L500) が Problems の `runtime.user_data@1` を 1 行にし、[`beginUserData()`](../../src/core/watch/problemlist.cpp#L490) が同じデータの版の間はその scope を飛ばし、版が変われば行を消してもう一度試します。
-- **ゲームの DLL の callback**: DLL の中の例外は印を持てないので、[`guardUserCode()`](../../src/core/watch/userdataguard.hpp#L43) は callback の境界でだけ `std::exception` を利用者のコードの不正と見なし、behavior 名を付けた `UserDataError` に変え、[`requestUserCodeStop()`](../../src/core/watch/problemlist.cpp#L521)(Play 中だけ印を立てる)を呼びます。[`invokeUpdate()`](../../src/core/gamelogic/behaviorarena.cpp#L901)・event・登録 system がこれを通ります。止めるのは frame の境目で、[`finishUserCodeStop()`](../../src/core/watch/problemlist.cpp#L530)([`updateFrameState()` の中、game code を走らせる phase の後で呼ぶ所](../../src/core/appflow/framephase.cpp#L304))が、RPC のある engine では `set_play_state` と同じ Stop の処理(`rpcserver.cpp` が `user_code_stop_handler` に入れる)を、RPC の無い engine では `edit` への切り替え(`internal::changePlayState`)を走らせます。behavior の Problems は Stop の後も残り、直すか外すと消えます。
-- **`onInit`(Play の開始)**: [`invokeInit()`](../../src/core/gamelogic/behaviorarena.cpp#L873) は Problems に記録して Stop を頼んでから、`UserDataError` を投げ直します。activation の transaction の逆順の破棄と遅延した変更の rollback をそのまま使うためです。`set_play_state` は rollback された遷移を受けて `edit` を返し([RPC の catch](../../src/core/communication/rpcserver.cpp#L2320))、起動時の失敗は scene を dormant で読み直して editor を使える状態で残します([起動の catch](../../src/core/userpublic/pelican_core.cpp#L184))。
+- **ゲームの DLL の callback**: DLL の中の例外は印を持てないので、[`guardUserCode()`](../../src/core/watch/userdataguard.hpp#L43) は callback の境界でだけ `std::exception` を利用者のコードの不正と見なし、behavior 名を付けた `UserDataError` に変え、[`requestUserCodeStop()`](../../src/core/watch/problemlist.cpp#L521)(Play 中だけ印を立てる)を呼びます。[`invokeUpdate()`](../../src/core/gamelogic/behaviorarena.cpp#L901)・event・登録 system がこれを通ります。止めるのは frame の境目で、[`finishUserCodeStop()`](../../src/core/watch/problemlist.cpp#L530)([`updateFrameState()` の中、game code を走らせる phase の後で呼ぶ所](../../src/core/appflow/framephase.cpp#L313))が、RPC のある engine では `set_play_state` と同じ Stop の処理(`rpcserver.cpp` が `user_code_stop_handler` に入れる)を、RPC の無い engine では `edit` への切り替え(`internal::changePlayState`)を走らせます。behavior の Problems は Stop の後も残り、直すか外すと消えます。
+- **`onInit`(Play の開始)**: [`invokeInit()`](../../src/core/gamelogic/behaviorarena.cpp#L873) は Problems に記録して Stop を頼んでから、`UserDataError` を投げ直します。activation の transaction の逆順の破棄と遅延した変更の rollback をそのまま使うためです。`set_play_state` は rollback された遷移を受けて `edit` を返し([RPC の catch](../../src/core/communication/rpcserver.cpp#L2390))、起動時の失敗は scene を dormant で読み直して editor を使える状態で残します([起動の catch](../../src/core/userpublic/pelican_core.cpp#L184))。
 - **`onInit`(DLL の reload の中)**: [`isGameLogicReloadInProgress()`](../../src/core/gamelogic/gamelogicreload.cpp#L889) が真なら、`invokeInit()` は [guard を通さずに元の例外を投げます](../../src/core/gamelogic/behaviorarena.cpp#L881)。候補の activation と rollback は reload の transaction の持ち物で(WP162 の契約)、reload は失敗し、旧い DLL の runtime が動き続けます。ここで Problems の行や Stop の要求を残すと、戻った runtime を止めてしまいます(RX-1 の fix の commit の注記)。
 
 **不変条件**: guard が受けるのは `UserDataError` だけ(`std::exception` への変換は DLL の callback の境界だけ)。Stop は frame の境目で 1 回。reload の transaction の中の `onInit` は guard を通さない。
@@ -1627,7 +1627,7 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 **実際は**: v0 を閉じる段で、製品を変えずに揺れる test が 2 つ残っています。
 
 - **`studio_scenario_gui_build_optimize`**: step「the frame's GPU time went up」(scenario の最後ではなく、この後に Features tab の step が続く)は、Multisampling を 4 にした後の `get_status` の `gpu_timing.logical_frame_averages[0].average_total_ms` が、Multisampling を変える前の `[count3]` の step で覚えた値(`ms_count3`)より大きいことを `op: gt` で見ます([その step](../../test/studio_scenarios/gui_build_optimize.json#L500)、[覚える step](../../test/studio_scenarios/gui_build_optimize.json#L459))。平均は engine の履歴の窓([`gpu_timing_history_capacity` = 120](../../src/core/vkcore/rendertiming.hpp#L18))の上で取るので、差が小さいと測り方の揺れで逆になります(RX-1 の W1 で 0.218 ms と 0.226 ms の比較が赤。統合側の記録)。NVIDIA の driver が起動の直後の shader を数秒から十数秒後に最適化した code へ差し替える、という統合側の観察がありますが、この step の揺れの原因かは未確認です(コードからは確かめられない)。scenario の側で幅を持たせるか比べ方を変えるのが残りの仕事です。
-- **`wp380c_production_has_no_fault_setter_symbol`**: production の archive(`pelican_core` / `pelican_project`)の全部の symbol を `dumpbin` で調べる test で([定義](../../test/CMakeLists.txt#L2744))、通った回で 75〜150 秒ほどかかり(上限を 300 秒にした再実行で 203 秒の回もある)、`-j16` の全数の中では 120 秒の上限を越えることがあります(単独で 300 秒でも越えた回あり。どれも各 WP の報告の数字)。test の定義は LABELS だけで TIMEOUT を持たないので、上限は gate の `ctest --timeout` です。assertion の失敗は出ていません。
+- **`wp380c_production_has_no_fault_setter_symbol`**: production の archive(`pelican_core` / `pelican_project`)の全部の symbol を `dumpbin` で調べる test で([定義](../../test/CMakeLists.txt#L2755))、通った回で 75〜150 秒ほどかかり(上限を 300 秒にした再実行で 203 秒の回もある)、`-j16` の全数の中では 120 秒の上限を越えることがあります(単独で 300 秒でも越えた回あり。どれも各 WP の報告の数字)。test の定義は LABELS だけで TIMEOUT を持たないので、上限は gate の `ctest --timeout` です。assertion の失敗は出ていません。
 
 **不変条件**: この 2 つが赤のときは、単独で流し直してから製品を疑う。揺れを「既知」とするのは記録のある間だけで、記録は `docs/v0_freeze.md` §6.1 にあります。
 
@@ -1676,6 +1676,49 @@ MessageBox も同じ理由で絞ってあります。[`shouldShowPlayerFatalDial
 **不変条件**: pad の key を 0 で返す道を増やさない。BACK を handled にするなら manifest の opt-out も残す。タッチとペンの source を値の完全一致に戻さない。callback を抜けた後に `AInputEvent` を触らない。
 
 **読む場所**: [`handleInput()`](../../src/platform/android/inputqueue.cpp#L86) → [`drainInput()`](../../src/platform/android/inputqueue.cpp#L65)。本文は [第5章「Android の入力の経路」](05_gameplay_and_services.md#android-input-path)。
+
+### 難所 — keymap の既定は、最初の keymap を当てる前に object ごとに取る(KM-2b、`dfd489696`)
+
+**素朴に読むと**: 「既定のキー」は dialog を開いたときに action から読めばよい、command ごとに 1 つのキーの列を持てばよい、と読めます。
+
+**実際は**: dialog を開く頃には、action のキーは `keymap.json` を当てた後の物です。それを既定にすると、変えたキーが「既定」になり、Reset to default が効かず、次の保存の差も消えます。同じ id の object が複数あるとき、command ごとに集めたキーを全部の object に当てると、object が持っていなかったキーまで持たせてしまいます。
+
+**不変条件**:
+- [`captureKeymapDefaults()`](../../src/devstudio/view/mainwindow.cpp#L607) は `applyUserKeymap()` より前に 1 回だけ呼ぶこと([constructor の所](../../src/devstudio/view/mainwindow.cpp#L602))。
+- 項目を当てない object は、[`applyKeymapPlan()`](../../src/devstudio/view/mainwindow.cpp#L478) で `KeymapObjectState::defaults`(その object 自身のキー)に戻すこと。
+- 差と衝突の判定は `keymapCommandDefaults()` の command ごとの既定で行うこと。キーの無い command(`edit.keymap`)も空の列で入れます。入れないと変えられません。
+
+**読む場所**: [`keymapObjectStates()`](../../src/devstudio/view/mainwindow.cpp#L498) → [`keymapCommandDefaults()`](../../src/devstudio/view/mainwindow.cpp#L516) → [`KeymapDialog::overrides()`](../../src/devstudio/view/keymapdialog.cpp#L352)。
+
+### 難所 — `start_frames` だけを見ると `--start-time 0` が offline に見えない(OSC-1a、`5c1dc7720`)
+
+**素朴に読むと**: `--start-time` を付けた起動は `EngineLaunchConfig::start_frames` が正の値なので、それを見れば offline と分かる、と読めます。
+
+**実際は**: `--start-time 0` の `start_frames` は 0 で、付けない起動と同じ値です。それでも「この時刻の frame を出す」起動で、記録に無い live input の既定値を読んだ絵を黙って出してしまいます。そのため [`start_time_explicit`](../../src/core/launchconfig.hpp#L97) を足し、[コマンドラインの解析の所](../../src/player/main.cpp#L678)で立てます。
+
+**不変条件**: 「この起動は決定的な出力か」を増やすときは [`offlineLaunchReadsNoLiveInputs()`](../../src/core/renderingpass/graphinputs.cpp#L30) に足すこと。検査は [`checkLiveInputReads()`](../../src/core/renderingpass/graphinputs.cpp#L46) で、読み込みと評価の両方の道が通ります。宣言があるだけの project は断りません。
+
+**読む場所**: [第5章「live inputs」](05_gameplay_and_services.md#live-inputs)。test は [「OSC-1a liveinputs deterministic offline output that reads a live input is refused」](../../test/liveinputs_test.cpp#L243)(`--start-time 0` にあたる `start_time_explicit` で見る)。
+
+### 難所 — 失敗した追いつきを完了の処理から読み直すと、残りの返事の数だけ読み直す(RP-1a3、`a91e77963`)
+
+**素朴に読むと**: Features の `followWhenIdle()` は読みの完了のたびに呼ばれるので、読みが失敗して `refresh_when_idle` を立てておけば、すぐ次の完了で読み直せて都合がよい、と読めます。
+
+**実際は**: Features の 1 回の読みは 4 本の request です。engine が失敗を返している間に、残りの返事の完了から読み直すと、読みを繰り返します。test は、見えている panel で 1 本が失敗した後、残り 3 本の返事で読みが始まらないことを見ます。
+
+**不変条件**: 動いた文書に追いつく読みの失敗は [`refreshFailed()`](../../src/devstudio/view/renderfeatureswidget.cpp#L2785) が `refresh_failed_from_move` を立て、[`followWhenIdle()`](../../src/devstudio/view/renderfeatureswidget.cpp#L4152) は `from_visibility` が真のとき(panel が見えた瞬間)だけ読み直すこと。`from_move` が偽の読み(Refresh)の失敗では印を立てないこと。
+
+**読む場所**: [「RP-1a3 c: a catch-up read that fails is not retried by its remaining replies, …」](../../test/devstudio_rendering_settings_test.cpp#L3348)。
+
+### 難所 — stack の行を開くと大きさが変わる。その場で描けるかは、全部の node に位置があるかで決まる(SDK-1a、`1e102f417`)
+
+**素朴に読むと**: `canvas.stack` の行の開閉は、その node の中身だけの変化なので、いつでもその node だけを描き直せばよい、と読めます。
+
+**実際は**: 全体の描画は、位置を持たない node を今の大きさから置き直します。大きさが変わった stack をその場で描くと、全体の描画なら動くはずの隣の node が動きません。次の全体の描画で初めて動いて見えます。全部の root の node に保存か session の位置があれば、全体の描画も誰も動かさないので、その場の描画と同じ結果です。
+
+**不変条件**: [大きさの比較と位置の検査](../../src/devstudio/view/graphcanvaswidget.cpp#L5386)は、item に触る前に済ませること。`redrawStackNode()` が false を返したときは何も変わっていないこと(呼び手は `repopulate()` に進みます)。三角を押している間は item が消えるので、[event loop から描く](../../src/devstudio/view/graphcanvaswidget.cpp#L880)こと。
+
+**読む場所**: [`GraphCanvasScene::redrawStackNode()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5350)。test は [「SDK-1a an unplaced root node refuses the stack's redraw before anything is drawn」](../../test/devstudio_graphcanvas_scene_test.cpp#L25910)。
 
 ---
 

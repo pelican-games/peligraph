@@ -65,7 +65,7 @@ flowchart LR
 
 class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport修飾されています。game DLL境界を越えて使われるためです。
 
-`GameContext`自体は状態を持ちません。実体は [`updateFrameState()` のローカル変数1個](../../src/core/appflow/framephase.cpp#L201) で、フレームごとに作られてフレームを抜けると消えます（= 自動記憶域。ヒープにも moduleにも置かれていません）。5フェーズの各所へは参照として渡るだけなので、Systemが`GameContext*`を保存しても次フレームには無効になります。
+`GameContext`自体は状態を持ちません。実体は [`updateFrameState()` のローカル変数1個](../../src/core/appflow/framephase.cpp#L204) で、フレームごとに作られてフレームを抜けると消えます（= 自動記憶域。ヒープにも moduleにも置かれていません）。5フェーズの各所へは参照として渡るだけなので、Systemが`GameContext*`を保存しても次フレームには無効になります。
 
 上の表は**通常フレームでの**委譲先です。**scene load transaction** は、scene の読み込みを prepare から finish までの1つの取引として扱う [第3章 §3.5 の 3](03_project_and_loading.md) の executor のことで、「開いている間」はその段の列を実行中という意味です（[用語集](../manual/14_glossary.md#scene-load-transactionシーンロードのトランザクション)）。開いている間（behaviorの `onInit` / `onDestroy` や、component JSON loaderから呼ばれた場合）は、同じAPIの行き先がcandidateやoutboxへ差し替わり、一部は拒否されます。分類とその根拠は §5.15 にまとめてあります。
 
@@ -105,7 +105,7 @@ setterは対象ライトのstructを書き換えるだけです（[`LightContain
 5. PG-1 の `resolvedObjectFeatureRefusal()`（[spawn からの呼び出し](../../src/core/loader/runtimespawn.cpp#L238)。scene load の prepare と editor の `add_component` / `spawn` と同じ判定）、light / camera の拒否、behavior の準備（`prepareResolvedSceneBehaviorAttachments`）。
 6. 展開済みの `ResolvedObject` と behavior を `Request` として積み、ref を返します。
 
-**境界**: [`RuntimeSpawner::applyBoundary()`](../../src/core/loader/runtimespawn.cpp#L353) は [`updateFrameState()` から、game の 1 歩のフレームに 1 回だけ](../../src/core/appflow/framephase.cpp#L200) 呼ばれます(一時停止中の、歩を取らないフレームでは呼ばれない。✅PM-1a)。置き場所は audio の回収・DLL reload の `applyFrame()`・editor の commit queue hook の**後**（これらは scene run を置き換えうる）、`forEachFramePhase` の最初の相（`freeze_events`）の**前**です。
+**境界**: [`RuntimeSpawner::applyBoundary()`](../../src/core/loader/runtimespawn.cpp#L353) は [`updateFrameState()` から、game の 1 歩のフレームに 1 回だけ](../../src/core/appflow/framephase.cpp#L203) 呼ばれます(一時停止中の、歩を取らないフレームでは呼ばれない。✅PM-1a)。置き場所は audio の回収・DLL reload の `applyFrame()`・editor の commit queue hook の**後**（これらは scene run を置き換えうる）、`forEachFramePhase` の最初の相（`freeze_events`）の**前**です。
 
 したがって前のフレームのどこで積んだ要求も、このフレームのゲームコードの全部から見えます。`applyBoundary()` は `ProjectBasicConfig::activeSceneAuthority()` が追跡中の run と違えば、run を切り替えて境界の数を 0 に戻し、別の run の `live` を捨ててから数を 1 進めます。待ち行列は swap して要求順に処理し、run が live でない要求（旧 run のもの、失敗した load 候補のもの）は黙って捨てます。1 件の失敗は `LOG_ERROR` に出して次の要求へ進みます。
 
@@ -490,7 +490,7 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 [`InputRouter::routeFrameInput()`](../../src/core/ui/inputrouter.cpp#L121) は touch event を `UiPointerEvent` にして、**`pointer_id = 1 + Android の id`**（マウスは 0）、phase を Down / Move / Up / Cancel に写します（[その所](../../src/core/ui/inputrouter.cpp#L148)）。下の `route()` は以前から pointer_id ごとの capture と Cancel を持っていたので、指ごとの掴みはそれに乗っています。
 
 - **指ごとの消費**: `RouteFrameResult` に `consumed_touches[32]` が足されました。capture 中の指は**その frame に event が無くても**消費に入れ（[その所](../../src/core/ui/inputrouter.cpp#L51)）、event が target に当たった指・capture 中の指も入れます。`UiModule::routeFrameInput()` がそれを `InputState::consumeTouchForActions()` に渡し（[その所](../../src/core/ui/module.cpp#L357)）、アクション用の snapshot からその指が消えます。マウス（id 0）は従来どおり `consumed_pointer` です。
-- **ツールがマウスを持つ frame**: `routeFrameInput()` は呼ぶ側の `InputConsumptionMask` を受け取り、マウスが消費されていればマウスの event だけ飛ばして touch は通します。呼ぶ側の [`updateFrameState()`](../../src/core/appflow/framephase.cpp#L158) も、snapshot に指があれば ImGui がマウスを持っていても router を呼びます（touch が無い Windows の frame は元の条件のまま）。
+- **ツールがマウスを持つ frame**: `routeFrameInput()` は呼ぶ側の `InputConsumptionMask` を受け取り、マウスが消費されていればマウスの event だけ飛ばして touch は通します。呼ぶ側の [`updateFrameState()`](../../src/core/appflow/framephase.cpp#L161) も、snapshot に指があれば ImGui がマウスを持っていても router を呼びます（touch が無い Windows の frame は元の条件のまま）。
 - **押された見た目**: `UiModule::handlePointer()` は ReleaseCapture / Cancel で、まだ別の指がその widget を掴んでいれば pressed を外しません（[`hasCapture()`](../../src/core/ui/inputrouter.cpp#L165)）。hover の色は pointer_id 0 の event でだけ動かします（指は hover を作らない）。
 - マウスの `canceled` な button event は Click の無い Cancel になり、capture を外します。
 
@@ -500,11 +500,36 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 
 - ✅SA1f: `beginFrame()` は「最後に届いたポインタの入力が touch か」（`last_pointer_touch`。touch の event で真、`cursor_move` と `axis` で偽）を持ち、真なら `frame_pointer` を、触れている指のうち `down_order` が最も小さい指から作ります（[その所](../../src/core/os/inputstate.cpp#L593)）。触れている指が無ければ既定の `PointerState{}`（`inside = false`）です。公開の API は変えていません。
 
-- 換算は値型 [`PointerTransform`](../../src/core/os/inputstate.hpp#L191)（軸ごとの `scale_x` / `scale_y` と framebuffer の幅・高さ。0×0 は「不明」）です。生きている窓では [`Window::pointerTransform()`](../../src/core/os/window_glfw.cpp#L349) が [`pointerTransformFor()`](../../src/core/os/inputstate.cpp#L84)（framebuffer ÷ 窓の大きさ。どちらかが 0 の軸は 1）で作り、窓の無い headless では [`livePointerTransform()`](../../src/core/appflow/framephase.cpp#L72) が倍率 1・framebuffer = `RenderTarget` の extent にします。
+- 換算は値型 [`PointerTransform`](../../src/core/os/inputstate.hpp#L191)（軸ごとの `scale_x` / `scale_y` と framebuffer の幅・高さ。0×0 は「不明」）です。生きている窓では [`Window::pointerTransform()`](../../src/core/os/window_glfw.cpp#L349) が [`pointerTransformFor()`](../../src/core/os/inputstate.cpp#L84)（framebuffer ÷ 窓の大きさ。どちらかが 0 の軸は 1）で作り、窓の無い headless では [`livePointerTransform()`](../../src/core/appflow/framephase.cpp#L74) が倍率 1・framebuffer = `RenderTarget` の extent にします。
 - `freeze_input` 相で [`InputSequenceRuntime::prepareFrame()`](../../src/core/os/inputsequence.cpp#L509) が次のフレームの換算を `InputState::setPointerTransform()` に渡し、`beginFrame()` がそれをフレームの換算として固定して、[`pointerStateFor()`](../../src/core/os/inputstate.cpp#L102) で `PointerState` を作ります。換算は `FrameInput::pointer_transform` として貸し出され、UI ルータ（[`routeFrameInput()` の換算](../../src/core/ui/inputrouter.cpp#L129)）と収録が同じ値を読みます。
 - 再生中の `prepareFrame()` は、その機械の換算ではなく**記録の換算**を渡します（v1 の記録で framebuffer が不明なときだけ、幅・高さをその機械のものにします）。収録は各フレームの換算を `InputSequenceFrame::pointer_transform` に残し、[`toJsonLines()`](../../src/core/os/inputsequence.cpp#L392) がヘッダと「前のフレームと違うフレームのマーカー」に `content_scale` / `framebuffer` を書きます。v2 のヘッダは2つとも必須、v1 のマーカーにあれば拒否です（[`parsePointerTransform()`](../../src/core/os/inputsequence.cpp#L116)）。`clear()` は換算を消しません（窓の性質であって入力ではないため）。
 - ✅SA1f の **v3**: `toJsonLines()` は記録に touch が 1 つでもあればヘッダを version 3 にし（[その所](../../src/core/os/inputsequence.cpp#L400)）、無ければ v2 のままです（既存の v2 の test を変えないため）。読み込みは 1・2・3 を受け（[版の検査](../../src/core/os/inputsequence.cpp#L325)）、v3 も v2 と同じく換算をヘッダで必須にし、v3 未満の記録の touch の行は断ります（[その所](../../src/core/os/inputsequence.cpp#L363)）。touch の行は `pointer_id`・`phase`・`x`・`y`・`slop_px`（正の値が必須）を持ちます。button の `canceled` は true の時だけ書く任意の欄で、版を上げません。再生の `prepareFrame()` は `setFrameTime(replay_frame / fps)` で frame の時刻を渡します（[その所](../../src/core/os/inputsequence.cpp#L522)）。
 - カーソルは `InputState` が `CursorModeStatus{requested, effective, embedded}` を持ちます。`setCursorMode` は `requested` を書くだけで、通常のフレームループが `window.process()` の直後に [`Window::applyCursorMode()`](../../src/core/os/window_glfw.cpp#L355) を呼び、[`effectiveCursorMode()`](../../src/core/os/inputstate.cpp#L113)（埋め込みなら `locked` → `normal`）を GLFW の input mode へ、変わったときだけ適用します（[呼び出し](../../src/core/appflow/loop.cpp#L758)）。埋め込みの判定は `--rpc` かつ窓 style に `WS_CHILD`（Windows だけ）。headless のループはこれを呼ばないので `effective` は既定の `normal` のままです。
+
+### live inputs（✅OSC-1a、`5c1dc7720`） {#live-inputs}
+
+project が宣言した値を graph が `value.input` の `live:<名前>` で読み、JSON-RPC で外から書きます。利用者向けの形と拒否の表は manual [第7章 §7.3](../manual/07_input_ui.md#live-inputs) です。socket はありません。transport は既存の JSON-RPC の endpoint だけで、OSC の受信はまだありません。Studio の側にも呼び手がありません。
+
+- **持ち主**: module [`LiveInputs`](../../src/core/os/liveinputs.hpp#L51) です。宣言 `specs_`、受けて固まっていない `pending_`、frame の値 `runtime_` を 1 つの mutex の下に持ちます。文書には触りません。
+- **宣言**: `basic_config.live_inputs_json` の参照を `ProjectBasicConfig` が持ち([読む所](../../src/core/loader/basicconfig.cpp#L685))、[`liveInputsJson()`](../../src/core/loader/basicconfig.cpp#L1115) が `PathResolver` で読みます。[`parseDeclaration()`](../../src/core/os/liveinputs.cpp#L80) は [`LiveInputs` の constructor](../../src/core/os/liveinputs.cpp#L217) から呼ばれ、不正なら `live_input.*` の例外です。[`reloadDeclaration()`](../../src/core/os/liveinputs.cpp#L243) は定義だけで、`src` に呼び手がありません(test は [`setDeclarationJson()`](../../src/core/os/liveinputs.cpp#L251) を使います)。
+- **書く**: [`stageValues()`](../../src/core/os/liveinputs.cpp#L272) は全部の名前と値を検査してから `pending_` に入れます。範囲の外は [`clampTo()`](../../src/core/os/liveinputs.cpp#L182) で寄せて印を付けます。
+- **固める**: [`freeze_input` の相](../../src/core/appflow/framephase.cpp#L219)で `InputState::beginFrame()` の直後、`recordFrame()` の前に [`freeze()`](../../src/core/os/liveinputs.cpp#L327) を呼び、`pending_` を `runtime_` に移します。値が違うときだけ `changed_frame` を `EngineTime::evaluationIndex()` にします。
+  - RPC は `pending_` だけを書くので、同じ frame の graph の評価(frame の graph と animation)は同じ値を読みます。
+  - `render_frame` の handler は相を通らないので固まりません([登録](../../src/core/communication/rpcserver.cpp#L2503))。`step_frame` は通ります。
+- **読む**: [`collectGraphInputs()`](../../src/core/renderingpass/graphinputs.cpp#L83) が [`frozenInputs()`](../../src/core/os/liveinputs.cpp#L363) の `live:<名前>` を入力に足します。呼び手は `Renderer` と animation の system です。
+- **検査**: [`validateGraphInputs()`](../../src/core/renderingpass/graphinputs.cpp#L61) と `collectGraphInputs()` が [`checkLiveInputReads()`](../../src/core/renderingpass/graphinputs.cpp#L46) を呼びます。宣言に無い名前は `live_input.unknown@1`、読むことを [`noteGraphReadsLive()`](../../src/core/os/liveinputs.cpp#L391) に記録し、offline の起動なら `offline.live_input_unrecorded@1` です。宣言があるだけの project は断りません。
+  - offline の判定 [`offlineLaunchReadsNoLiveInputs()`](../../src/core/renderingpass/graphinputs.cpp#L30) は `EngineLaunchConfig` の `start_time_explicit`・`start_frames`・`camera_bake_output`・`input_replay`・`input_replay_path` を見ます。`input_replay` は RPC の `start_input_replay` でも立ちます。
+  - `--record-input` は見ません。記録は live の値を持たないので、その記録の再生が断られます(コードの読みから)。
+- **frame ごとに変わる物、時計ではない物**: `live:` の名前は [`graphFrameInputNames()`](../../src/project/graphmodule.cpp#L994)(catalog の `input_names` の元)に入れていません。
+  - once の検査は表の代わりに [`graphInputVariesPerFrame()`](../../src/project/graphmodule.cpp#L1007) を使い、`live:` を per-frame と数えます([その所](../../src/project/rendergraphcomposition.cpp#L560))。
+  - `ValueGraph` の時計の集合は `time` / `scene_time` / `audio_time` のままです([その所](../../src/core/userpublic/valuegraph.cpp#L205))。
+- **RPC**: [登録 `set_live_input`](../../src/core/communication/rpcserver.cpp#L1944) と [登録 `get_live_inputs`](../../src/core/communication/rpcserver.cpp#L1967)。`start_input_replay` は `graphReadsLive()` で断ります([開始の検査](../../src/core/communication/rpcserver.cpp#L2039))。
+- ⚠ `graph_reads_live_` を下げる所はありません(`installDeclaration()` も下げません)。一度 live を読む graph を見た engine は、graph から消しても起動し直すまで `start_input_replay` を断ります(コードの読みから)。
+- ⚠ OSC-1a の commit の本文は「リプレイ中に受けた値は捨てて数える」と言いますが、今の RPC の道はそうなりません(コードの読みから)。
+  - `set_live_input` の handler は `InputSequenceRuntime::isReplaying()` を見て先に `live_input.replay@1` で断るので、`stageValues()` に届かず数えません([その所](../../src/core/communication/rpcserver.cpp#L1945))。
+  - `stageValues()` の中の [同じ拒否](../../src/core/os/liveinputs.cpp#L276) に届くのは、リプレイが終わった後、次の `freeze()` までの間だけです。そこで 1 増え、次の `freeze()` が 0 に戻します。
+  - `freeze()` の [`dropped_during_replay_ += pending_.size()`](../../src/core/os/liveinputs.cpp#L336) は、`replaying_` の間は `stageValues()` が断り、移った frame で `pending_` を消すので、足す物がありません。
+- test: `liveinputs_test`([「OSC-1a liveinputs declaration names valid live inputs …」](../../test/liveinputs_test.cpp#L73) から 4 本。宣言の拒否、受けと固めと clamp とリプレイ、graph の評価、offline の拒否)と、GPU の `liveinputs_rpc_test`([「OSC-1a liveinputs RPC stages a typed live value …」](../../test/liveinputs_rpc_test.cpp#L150)。`posegraph_demo` の clock を `live:phase` にして、一時停止中の `step_frame` で `pose_hash` が変わる。`PELICAN_WITH_ANIMATION` の build だけ)、`featurecompose_test` の [PS-1 の section](../../test/featurecompose_test.cpp#L9893)(`graph.once_reads_per_frame@1`)。窓ありの engine の test はありません。
 
 ## 5.6 Camera
 
@@ -1524,7 +1549,7 @@ outboxのentryは呼び出しごとに1件ではありません。
 - mutator（と `emit`）なのに manifest に分類が無い → `mutator lacks manifest classification`（[その throw](../../tools/public_api_inventory.py#L173)）
 - manifest にあるのに inventory 側で消費されなかった → `runtime manifest API absent from inventory`（[その throw](../../tools/public_api_inventory.py#L180)）
 
-結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L4461)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
+結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L4472)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
 
 ## 5.16 姿勢を駆動する2つの様式 ✅実装済み（AG-1a / AG-1b / AG-2）
 
