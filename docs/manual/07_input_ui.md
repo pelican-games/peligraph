@@ -7,7 +7,7 @@
 - 入力システムの四層構造と、**順序付き FrameInput**(WP69)
 - `actions.json`(アクション定義)と `pelican.input_profile`(バインディング)の**分離**(WP91・破壊的変更)
 - ゲームパッド対応と、収録・リプレイ(`pelican.input_seq` v2。タッチを含む記録は v3)
-- 外から graph へ値を渡す live inputs(`basic_config.live_inputs_json`、`value.input` の `live:<名前>`、RPC `set_live_input`。OSC-1a)
+- 外から graph へ値を渡す live inputs(`basic_config.live_inputs_json`、`value.input` の `live:<名前>`、RPC `set_live_input`。OSC-1a)と、OSC の UDP 受信(input profile の `live`、player の `--osc-port`。OSC-2a / OSC-2b)
 - ポインタの位置(framebuffer ピクセル)とカーソルのモード(`ctx.input()`、GP-4)
 - Android の入力(キーボード・ゲームパッド・タッチ・ペン・BACK)と、タッチの binding `touch:region` / `touch:tap`(SA1f)
 - 実装済みの UI 基盤 `pelican.ui` v1(ウィジェット・レイアウト・イベント emit)と、ゲームコード(`ctx.ui()`)・共通グラフ(`ui.*` sink)から UI を書く方法(GP-3)
@@ -67,6 +67,8 @@ L1 の要点(✅WP69 で改訂):
 | `bindings` | **書いたらエラー**(profile へ) |
 
 ### pelican.input_profile — バインディング(✅WP91)
+
+profile には、OSC の address を live input に結ぶ任意の `live` の表も書けます(✅OSC-2a。[§7.3「OSC で受ける」](#live-inputs-osc))。
 
 実物([../../projects/sprite_demo/input/keyboard.json](../../projects/sprite_demo/input/keyboard.json) 全文):
 
@@ -227,7 +229,7 @@ Android の player([第2章 §2.9](02_getting_started.md#29-android-で-player-�
 ]}}
 ```
 
-`mouse_move` の `x` / `y` は**窓座標**です(framebuffer ピクセルではありません)。注入した移動は OS からの移動と同じ event になり、`ctx.input().pointer()` と UI の入力ルータがフレームの換算で framebuffer ピクセルにします([注入の受け口](../../src/core/communication/rpcserver.cpp#L878))。headless は 1 倍なので、窓座標とピクセルは同じ値です。
+`mouse_move` の `x` / `y` は**窓座標**です(framebuffer ピクセルではありません)。注入した移動は OS からの移動と同じ event になり、`ctx.input().pointer()` と UI の入力ルータがフレームの換算で framebuffer ピクセルにします([注入の受け口](../../src/core/communication/rpcserver.cpp#L890))。headless は 1 倍なので、窓座標とピクセルは同じ値です。
 
 ✅SA1f からタッチの指も注入できます。desktop の headless のテストで Android の端末を使わずにタッチを確かめるための口です(Android の build は RPC を持ちません):
 
@@ -260,11 +262,16 @@ pelican_player --project mygame --replay session.jsonl         # リプレイ(�
 
 <a id="live-inputs"></a>
 
-### live inputs —— 外から graph へ値を渡す(✅OSC-1a、`5c1dc7720`)
+### live inputs —— 外から graph へ値を渡す(✅OSC-1a、`5c1dc7720`。OSC は ✅OSC-2a、✅OSC-2b)
 
-project が名前を宣言した値を、graph が `value.input` で読み、外から JSON-RPC で書きます([`LiveInputs`](../../src/core/os/liveinputs.hpp#L51))。値は文書に書きません。起動するたびに宣言の既定値から始まります。
+project が名前を宣言した値を、graph が `value.input` で読み、外から書きます([`LiveInputs`](../../src/core/os/liveinputs.hpp#L79))。値は文書に書きません。起動するたびに宣言の既定値から始まります。
 
-今の口は既存の JSON-RPC だけです。OSC などの network の受信はまだありません。Studio にも、値を見る・動かす画面はまだありません(`src/devstudio` に 2 つの RPC の呼び出しがありません)。
+外から書く口は 2 つです。
+
+- JSON-RPC の `set_live_input`(下の「外から書く」)
+- player の option で開く OSC の UDP 受信(下の「[OSC で受ける](#live-inputs-osc)」)
+
+Studio は `get_live_inputs` を読みます。Graph の dialog で `live:<名前>` を選べ、Live で値が見えます(✅OSC-3a。[第15章](15_studio.md) §15.6)。値を動かす画面と、受信の状態を見る画面はまだありません(`src/devstudio` に `set_live_input` の呼び出しがありません)。
 
 #### 宣言する
 
@@ -286,8 +293,8 @@ project が名前を宣言した値を、graph が `value.input` で読み、外
 - `type`: `float` / `int` / `bool`。`trigger` はまだ断ります(`live_input.trigger_unsupported@1`)。
 - `default`: 必須です。`float` は有限の数、`int` は int32 の範囲の JSON の整数、`bool` は JSON の真偽値です。`min` / `max` の中でなければなりません。
 - `min` / `max`: 任意です。`bool` には書けません。
-- 宣言は実行の間変わりません。文書を書き換えたら起動し直します(宣言を読み直す [`reloadDeclaration()`](../../src/core/os/liveinputs.cpp#L243) を呼ぶ所が今はありません)。
-- 宣言が不正なときに起動がどう見えるかは確かめていません(未確認)。例外は [`LiveInputs` の constructor](../../src/core/os/liveinputs.cpp#L217) から出ます。
+- 宣言は実行の間変わりません。文書を書き換えたら起動し直します(宣言を読み直す [`reloadDeclaration()`](../../src/core/os/liveinputs.cpp#L253) を呼ぶ所が今はありません)。
+- 宣言が不正なときに起動がどう見えるかは確かめていません(未確認)。例外は [`LiveInputs` の constructor](../../src/core/os/liveinputs.cpp#L227) から出ます。
 
 #### graph から読む
 
@@ -301,7 +308,7 @@ project が名前を宣言した値を、graph が `value.input` で読み、外
 - 宣言に無い名前は `live_input.unknown@1` で断ります。`live:` の付かない知らない名前は今までどおり `unbound frame graph input: <名前>` です。
 - once の pass は、live input から作った値を読めません(`graph.once_reads_per_frame@1`。[第6章](06_rendering.md) §6.18)。値は frame ごとに変わる物として数えます。
 - 時計としては数えません。`events` を繋いだ `audio.playback` の `time` が見る時計の集合に `live:` は入りません([数える所](../../src/core/userpublic/valuegraph.cpp#L205))。
-- catalog の `input_names` に `live:` の名前は出ません。Studio の palette の `value.input` の combo は `input_names` から作るので、選べません。graph の文書に書きます。Studio の詳細欄で打てるかは確かめていません(未確認)。
+- catalog の `input_names` に `live:` の名前は出ません。Studio の palette で `value.input` を置く dialog は、`get_live_inputs` の宣言を `live:<名前>` として catalog の名前の後ろに足します(✅OSC-3a)。Studio の詳細欄で打てるかは確かめていません(未確認)。
 
 #### 外から書く
 
@@ -309,16 +316,16 @@ project が名前を宣言した値を、graph が `value.input` で読み、外
 {"jsonrpc":"2.0","id":7,"method":"set_live_input","params":{"values":{"phase":0.25,"steps":99}}}
 ```
 
-返事は `{"accepted": 2, "applies_at_frame": <評価の番号 + 1>}` です([`set_live_input` の登録](../../src/core/communication/rpcserver.cpp#L1944))。
+返事は `{"accepted": 2, "applies_at_frame": <評価の番号 + 1>}` です([`set_live_input` の登録](../../src/core/communication/rpcserver.cpp#L1956))。
 
 - **全部か無しか**: 全部の名前と値を検査してから受けます。1 つでも悪ければ、どの値も変わりません。
 - **型**: `float` は有限の数、`int` は int32 の範囲の JSON の整数(`1.5` は断ります)、`bool` は JSON の真偽値(`1` は断ります)です。外れると `live_input.type@1`、知らない名前は `live_input.unknown@1` です。
 - **範囲**: 宣言の `min` / `max` の外の値は断らず、端に寄せて `clamped: true` にします。
 - **効くのは次の frame**: 値は `freeze_input` の相で 1 回だけ固まり、その frame の graph の評価は全部同じ値を読みます([固める所](../../src/core/appflow/framephase.cpp#L219))。受けた値は `get_live_inputs` にも次の frame まで出ません。
-  - `step_frame` は固めます(一時停止中も。test があります)。`render_frame` はこの相を通らないので、固めません([`render_frame` の登録](../../src/core/communication/rpcserver.cpp#L2503))。
+  - `step_frame` は固めます(一時停止中も。test があります)。`render_frame` はこの相を通らないので、固めません([`render_frame` の登録](../../src/core/communication/rpcserver.cpp#L2521))。
   - test は headless だけです。窓ありの engine での振る舞いは確かめていません(未確認)。
 
-`get_live_inputs`(`{}`)は今の frame の値を返します([登録](../../src/core/communication/rpcserver.cpp#L1967))。
+`get_live_inputs`(`{}`)は今の frame の値を返します([登録](../../src/core/communication/rpcserver.cpp#L1979))。
 
 ```json
 {"inputs": [{"name": "phase", "type": "float", "value": 0.25, "default": 0.0,
@@ -327,11 +334,176 @@ project が名前を宣言した値を、graph が `value.input` で読み、外
 ```
 
 - `value` / `default` は宣言の型の JSON です。
-- `source` は、受けた値がまだ固まっていなければ `default`、固まった後は `rpc` です。
+- `source` は、今の frame の値を書いた口です。`default`(まだ何も固まっていない)、`rpc`、`osc`(✅OSC-2a)のどれかです。口だけが変わって値が同じなら `changed_frame` は動きません([型の注記](../../src/core/os/liveinputs.hpp#L34))。
 - `changed_frame` は値が最後に変わった frame の評価の番号です(変わっていなければ 0)。同じ値を送り直しても変わりません。
 - `dropped_during_replay` の読み方は下の「収録・リプレイ・offline」です。
+- `osc` は `PELICAN_WITH_OSC` の build だけに付きます(✅OSC-2a。中身は下の「[OSC で受ける](#live-inputs-osc)」)。
 
 `set_live_input` が断るときの error は `-32000` で、`message` の先頭が code です(`data` は付きません)。`values` が無い、または object でなければ `-32602` です。
+
+<a id="live-inputs-osc"></a>
+
+#### OSC で受ける(✅OSC-2a `05807d418`、✅OSC-2b `cfa14cf7d`)
+
+OSC 1.0 の packet を UDP で受け、input profile の `live` の表で live input に写します。graph の側は RPC のときと同じで、`value.input` の `live:<名前>` を読むだけです。graph は OSC の address を知りません。
+
+受信を開くのは player の option だけです。`--osc-port` が無ければ socket も thread も作りません。project の文書からは開けません(`.pelican/local.json` も使いません)。Studio が起動する engine に option を渡す口はまだありません(`src/devstudio` に `--osc-` の文字がありません)。
+
+**一通りの使い方**: 次の手順は実装と test の形から書いたものです。この JSON のままで起動して確かめてはいません(コードの読みから)。同じ流れは GPU の test [「OSC-2b a headless player listens on the option-configured UDP port …」](../../test/liveinputs_rpc_test.cpp#L339) が通します。この test は option の文字列を `parseOscListenerConfig()` に渡して launch config に入れるので、`pelican_player` の引数の解析は通りません(player で確かめているのは、断る側の option の組み合わせです)。
+
+1. 口を宣言します(`input/live_inputs.json`。場所は任意)。
+
+   ```json
+   {
+     "schema": "pelican.live_inputs",
+     "version": 1,
+     "inputs": [
+       {"name": "intensity", "type": "float", "default": 0.0, "min": 0.0, "max": 1.0},
+       {"name": "steps", "type": "int", "default": 1, "min": 0, "max": 8},
+       {"name": "enabled", "type": "bool", "default": false}
+     ]
+   }
+   ```
+
+2. address を profile の `live` で結びます(`input/profiles/live.json`)。
+
+   ```json
+   {
+     "schema": "pelican.input_profile",
+     "version": 1,
+     "name": "live",
+     "bindings": [],
+     "live": [
+       {"address": "/1/fader1", "input": "intensity", "map": {"from": [0, 127], "to": [0, 1]}},
+       {"address": "/steps", "input": "steps"},
+       {"address": "/enabled", "input": "enabled"}
+     ]
+   }
+   ```
+
+3. `project.json` から指します。`input_actions_json` と `input_profile` も要ります。
+
+   ```json
+   "basic_config": {
+     "input_actions_json": "input/actions.json",
+     "live_inputs_json": "input/live_inputs.json",
+     "input_profiles": {"live": "input/profiles/live.json"},
+     "input_profile": "live"
+   }
+   ```
+
+   action を使わない project の `input/actions.json` は `{"schema": "pelican.input_actions", "version": 1, "action_sets": []}` で足ります(上の test がこの形です)。
+
+   ⚠ `input_actions_json` が無いと、profile を読みません。`live` の表は入らず、検査もされず、エラーも出ません([その分岐](../../src/core/userpublic/userinput.cpp#L211))。`input_profile` が無くて `--input-profile` も無いときも表は空です([その分岐](../../src/core/userpublic/userinput.cpp#L311))。どちらも、届いた message は `osc.unbound` に数えられるだけです(コードの読みから)。
+
+4. graph の node で読みます。出力 `value` を、ほかの node の入力へ繋ぎます。
+
+   ```json
+   {"id": "fader", "op": "value.input", "parameters": {"name": "live:intensity"}, "inputs": {}, "outputs": ["value"]}
+   ```
+
+5. option を付けて起動します。`--rpc` は下の確認に使うためのものです。
+
+   ```text
+   pelican_player --project mygame --rpc --osc-port 9000
+   ```
+
+   controller が別の機械にあるときは、受ける interface と送り元を指定します。
+
+   ```text
+   pelican_player --project mygame --rpc --osc-port 9000 --osc-interface 0.0.0.0 --osc-allow 192.168.1.20
+   ```
+
+6. 送って確かめます。手元で試すだけなら、Python の標準 library で 1 message を送れます(`,f` は big-endian の float、文字列は NUL で 4 byte 境界まで詰めます)。
+
+   ```python
+   import socket, struct
+   packet = b"/1/fader1\0\0\0" + b",f\0\0" + struct.pack(">f", 63.5)
+   socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(packet, ("127.0.0.1", 9000))
+   ```
+
+   次の frame から、`get_live_inputs` の `intensity` が `source: "osc"` で 0.5 になります(63.5 / 127)。
+
+**option**([定義](../../src/player/main.cpp#L456)):
+
+| option | 既定 | 意味 |
+|---|---|---|
+| `--osc-port <0..65535>` | なし | この UDP port で受ける。無ければ受けない。`0` は OS が空いている port を選び、実際の番号は `get_live_inputs` の `osc.listener.port` に出る |
+| `--osc-interface <ipv4>` | `127.0.0.1` | bind する IPv4 の interface。`0.0.0.0` は全 IPv4 interface。host 名は書けない。`--osc-port` が要る |
+| `--osc-allow <ipv4[,ipv4...]>` | なし(全部受ける) | 受ける送信元の IPv4。`--osc-port` が要る。空・host 名・末尾のカンマは断る |
+
+option の誤りは起動時に `osc.config_invalid@1` で止まります。bind の失敗では engine は止まらず、別の port にも替えません。`osc.listener.state` が `failed` になり、`error` に `osc.bind_failed@1: ...` が入り、stderr にも出ます。Windows では `SO_EXCLUSIVEADDRUSE` を付けるので、使用中の port は失敗します([その所](../../src/core/osc/osclistener.cpp#L366))。
+
+**ネットワークについて**:
+
+- `--osc-allow` は送信元 IPv4 の完全一致の filter で、**認証ではありません**。UDP は送信元を偽装でき、同じ機械の別 process からも送れます。
+- **信頼できる LAN で使ってください。**`--osc-interface 0.0.0.0` は全 IPv4 interface で受けます。loopback でない interface を `--osc-allow` なしで開くと、log に警告が 1 行出ます([その所](../../src/core/osc/osclistener.cpp#L453))。
+- **Windows Firewall は engine が変えません。**許可が要るなら自分で設定します。
+- `osc.listener.state` の `listening` は bind に成功したという意味で、packet が届く保証ではありません。
+
+届かないときの見方:
+
+| 見える物 | 読み方 |
+|---|---|
+| `state: "off"` | `--osc-port` を付けていない |
+| `state: "failed"` | `error` の理由(port が使用中など) |
+| `state: "listening"` で `received` が増えない | engine まで届いていない(送り先の IP と port、interface、ファイアウォール) |
+| `sender_not_allowed` が増える | 届いたが `--osc-allow` で捨てた |
+| `unbound` が増える | 今の profile の `live` に無い address。上の ⚠ も見る |
+| `dropped` のどれかが増える | 下の表の理由で捨てた |
+
+**`live` の表**([読む所](../../src/core/osc/oscbindings.cpp#L56)):
+
+- 要素のキーは `address`・`input`・`map` だけです。知らないキーは断ります。
+- `address` は `/` で始まる完全一致で、印字できる ASCII だけです。`* ? [ ] { }` は書けません。同じ address を 2 回は書けません。
+- `input` は宣言にある名前です。複数の address を同じ口に結ぶのは断りません(コードの読みから)。
+- `map` は任意で、`from` と `to` の 2 つの数の配列です。`to[0] + (値 - from[0]) / (from[1] - from[0]) * (to[1] - to[0])` で写します。`from` の両端が同じなら断ります。逆向きの範囲は使えます。`from` の外の値はそのまま外へ延びるので、宣言の `min` / `max` で止めます(`clamped: true`)。`bool` の口には書けません。
+- 使うのは今の profile の表だけです。`set_input_profile` で替えると表も替わり、`live` の無い profile では表が空になります。`--input-action-overlay` の profile に `live` があれば `osc.binding_invalid@1` です。
+
+**値の写し方**([`OscInput::convert`](../../src/core/osc/oscinput.cpp#L75)): 使うのは最初の引数だけで、残りは捨てます。
+
+| 口の型 | 受ける引数 | 値 |
+|---|---|---|
+| `float` | 数(`f` `d` `i` `h` `c` `r` `m` `t`) | `map` の後、有限なら受ける。`min` / `max` の外は端に寄せる |
+| `int` | 同じ | `map` の後に四捨五入し(`-1.5` は `-2`)、int32 に入れば受ける。`min` / `max` の外は端に寄せる |
+| `bool` | `T` / `F`、または数(0 でなければ真) | 0 / 1 |
+
+`float` と `int` の口に `T` / `F` は入りません(`unsupported_type`)。
+
+**固まる時**: RPC と同じで、次の frame の `freeze_input` の相です。1 つの packet の値は 1 つの lock で一緒に受けるので、packet の途中に RPC の書き込みは入りません([`stageBatch()`](../../src/core/os/liveinputs.cpp#L358))。同じ口に frame の間に何度届いても、RPC と OSC を合わせて最後に受けた値が固まります(test があります)。届かなくなっても最後の値を保ちます(コードの読みから)。
+
+**`get_live_inputs` の `osc`**([`snapshotJson()`](../../src/core/osc/oscinput.cpp#L250)、`listener` は [`statusJson()`](../../src/core/osc/osclistener.cpp#L486)):
+
+```json
+{"received": 3, "applied": 3, "unbound": 0,
+ "dropped": {"malformed": 0, "limit": 0, "future_timetag": 0, "nested_bundle": 0,
+             "unsupported_type": 0, "argument_count": 0, "non_finite": 0,
+             "pattern_unsupported": 0, "out_of_range": 0, "replay": 0},
+ "recent": [{"sequence": 1, "address": "/1/fader1", "input": "intensity", "bound": true,
+             "reason": "", "sender": "127.0.0.1:53124"}],
+ "listener": {"state": "listening", "interface": "127.0.0.1", "port": 9000, "error": "",
+              "sender_not_allowed": 0, "receive_errors": 0}}
+```
+
+- `received` は packet の数、`applied` と `unbound` と `dropped` は(下の「packet ごと」を除いて)message の数です。`--osc-allow` で捨てた packet は `received` に入りません。
+- `recent` は最新の 64 件の message です。`reason` は受けた物なら空で、捨てた物は `dropped` のキーの名前か `unbound` です。packet ごと捨てた物は入りません。値は入りません。
+
+| `dropped` のキー | 捨てる物 | 理由 |
+|---|---|---|
+| `malformed` | packet ごと | 構造が壊れている(長さが 4 の倍数でない、文字列の padding、bundle の要素の長さ、型タグの無い message など)。bundle のどこかが壊れていれば全部を捨てる |
+| `limit` | packet ごと | 65535 byte・bundle の要素 256 個・引数 64 個・入れ子 8 段を超えた([上限](../../src/core/osc/oscparser.hpp#L13)) |
+| `future_timetag` | packet ごと | timetag が未来の bundle。予定の実行はしない |
+| `nested_bundle` | その要素 | bundle の中の bundle。ほかの要素は受ける |
+| `pattern_unsupported` | その message | address に `* ? [ ] { }` がある |
+| `unsupported_type` | その message | 文字列・blob・`N`・`I` など、上の表に無い引数 |
+| `argument_count` | その message | 引数が無い |
+| `non_finite` | その message | NaN / Inf(`map` の結果も見る) |
+| `out_of_range` | その message | `int` の口で int32 に入らない |
+| `replay` | その message | リプレイ中 |
+
+**build**: `PELICAN_WITH_OSC` は既定 ON です([登録](../../cmake/pelican_feature_registry.cmake#L154))。OFF の build では `--osc-*` と profile の `live` が `osc.module_unavailable@1` で断られ、`get_live_inputs` に `osc` が付きません。project は `requires: ["osc"]` で宣言できます([第3章](03_project_format.md))。
+
+まだ無いもの: `trigger` の型、address の wildcard、bundle の timetag の予定実行、2 個以上の引数の扱い、IPv6、Studio から option を渡す口と learn。
 
 #### 収録・リプレイ・offline
 
@@ -340,15 +512,16 @@ project が名前を宣言した値を、graph が `value.input` で読み、外
 | 道 | 振る舞い |
 |---|---|
 | `--start-time`(0 も)・`--replay`・`--bake-camera-output` | graph が読んだ所で `offline.live_input_unrecorded@1: rendering graph reads live:<名前>`([検査](../../src/core/renderingpass/graphinputs.cpp#L46)) |
-| `start_input_replay` | engine がそれまでに live input を読む graph を見ていれば、同じ code で断る([その所](../../src/core/communication/rpcserver.cpp#L2039))。一度見ると、graph から消しても起動し直すまで断ります(コードの読みから) |
+| `start_input_replay` | engine がそれまでに live input を読む graph を見ていれば、同じ code で断る([その所](../../src/core/communication/rpcserver.cpp#L2057))。一度見ると、graph から消しても起動し直すまで断ります(コードの読みから) |
 | `--record-input`・`start_input_record` | 断りません。収録はできますが、その記録を同じ project で再生しようとすると上で断られます(コードの読みから) |
-| `--frames` だけの headless | 断りません。RPC が無ければ既定値のままです(コードの読みから) |
+| `--frames` だけの headless | 断りません。RPC も `--osc-port` も無ければ既定値のままです(コードの読みから) |
 
 graph が読まない宣言だけの project ではリプレイが動きます。その間の値は次のとおりです。
 
 - リプレイの始めに、受けていた値を捨てて全部を既定値に戻します。終わりにも既定値に戻します(前の値は戻りません)。
 - リプレイ中の `set_live_input` は `live_input.replay@1` で断ります。
-- `dropped_during_replay` は、今の RPC の道ではふつう 0 のままです。RPC の登録が engine のリプレイの状態を見て先に断り、数えないためです。増えるのは、リプレイが終わった後、次の frame で固まるまでの間に送った回だけで、次の frame で 0 に戻ります(コードの読みから)。
+- リプレイ中に OSC で届いた値は捨てて数えます。`dropped_during_replay` と `osc.dropped.replay` が増えます(✅OSC-2a。[数える所](../../src/core/os/liveinputs.cpp#L358))。OS が溜めていた packet は、リプレイが終わった後に受けることがあります([注記](../../src/core/osc/osclistener.hpp#L34))。
+- RPC の道では `dropped_during_replay` はふつう 0 のままです。RPC の登録が engine のリプレイの状態を見て先に断り、数えないためです。RPC で増えるのは、リプレイが終わった後、次の frame で固まるまでの間に送った回だけで、次の frame で 0 に戻ります(コードの読みから)。
 
 #### 名前付きの拒否
 
@@ -369,6 +542,11 @@ graph が読まない宣言だけの project ではリプレイが動きます�
 | `live_input.unknown@1` | 送った名前、または graph が読む `live:` の名前が宣言に無い |
 | `live_input.replay@1` | リプレイ中の `set_live_input` |
 | `offline.live_input_unrecorded@1` | 上の表の道 |
+| `osc.binding_invalid@1` | profile の `live` の形が違う(配列でない、知らないキー、`address` や `input` が無い、address の形、宣言に無い `input`、`bool` に `map`、`map` の形、`from` の両端が同じ、同じ address を 2 回)、overlay の profile に `live` がある |
+| `osc.config_invalid@1` | `--osc-port` の値、`--osc-interface` の形、`--osc-allow` の形、`--osc-port` なしの `--osc-interface` / `--osc-allow` |
+| `osc.bind_failed@1` | socket を作れない・bind できない・受信の thread を作れない。engine は動き続ける(`osc.listener.error`) |
+| `osc.receive_failed@1` | 受信のエラーが 100 回続いた。受信だけが止まる(`osc.listener.error`) |
+| `osc.module_unavailable@1` | `PELICAN_WITH_OSC=OFF` の build で `--osc-*`、profile の `live`、`requires: ["osc"]` |
 
 ## 7.4 UI — pelican.ui v1(✅WP75/87/93)
 
@@ -547,7 +725,8 @@ GPU 経路自体は意図的に別のままです(`DebugText` は専用 atlas + 
 | アクション層 + プロファイル分離 | ✅ WP39/91 |
 | rpc inject_input(ゲームパッド含む) | ✅ WP49/91(SA1f でタッチも) |
 | 収録・リプレイ(I3、input_seq + bake-camera) | ✅ WP89(GP-4 で v2 = 換算の記録。v1 も読む。SA1f でタッチを含む記録は v3) |
-| live inputs(宣言・`value.input` の `live:<名前>`・`set_live_input` / `get_live_inputs`) | ✅ OSC-1a(口は JSON-RPC だけ。network の受信は無い。`trigger` は断る) |
+| live inputs(宣言・`value.input` の `live:<名前>`・`set_live_input` / `get_live_inputs`) | ✅ OSC-1a(`trigger` は断る) |
+| live inputs の OSC の受信(profile の `live`・`--osc-port` / `--osc-interface` / `--osc-allow`・`get_live_inputs.osc`) | ✅ OSC-2a / OSC-2b(Studio から option を渡す口と learn は無い) |
 | ゲームパッド(I4) | ✅ WP91 |
 | OpenXR 入力(Touch action set + pose) | ✅ WP130/132(v1 は Touch のみ・pose の収録は非対応) |
 | ポインタの位置(framebuffer ピクセル)/ カーソルのモード(I4 残件のロックを含む)/ `screenRay` | ✅ GP-4(埋め込みの窓ではロックしない。残した穴は第8章 §8.4) |

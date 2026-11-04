@@ -23,11 +23,11 @@
 | Python | **build にも実行にも要りません**(下の「Git と Python」)。要るのは `PELICAN_WITH_SPIRV_LINK=ON`(既定 OFF)と Python 製テスト(`PELICAN_PYTHON_TESTS`、既定 OFF)だけです |
 | Git | source tree が Git の checkout である必要はありません(ZIP で落としても configure できます)。ただし依存の取得に `git` コマンドとネットワークが要ります(下の「Git と Python」) |
 
-この表とこの下に出る外部名を 1 行ずつ: **GLSL**(OpenGL Shading Language)は本リポジトリでシェーダを書くソース言語、**SPIR-V** は Vulkan が実際に読むシェーダの中間バイナリ形式([用語集](14_glossary.md#spir-v--spir-v-reflection))、**shaderc** はその GLSL を SPIR-V へ変換するコンパイラライブラリ([shadercompiler.cpp](../../src/core/shader/shadercompiler.cpp#L25))、**vma-hpp** は GPU メモリ確保ライブラリ VulkanMemoryAllocator の C++ バインディング([VulkanMemoryAllocator-Hpp](../../src/core/CMakeLists.txt#L75))です。
+この表とこの下に出る外部名を 1 行ずつ: **GLSL**(OpenGL Shading Language)は本リポジトリでシェーダを書くソース言語、**SPIR-V** は Vulkan が実際に読むシェーダの中間バイナリ形式([用語集](14_glossary.md#spir-v--spir-v-reflection))、**shaderc** はその GLSL を SPIR-V へ変換するコンパイラライブラリ([shadercompiler.cpp](../../src/core/shader/shadercompiler.cpp#L25))、**vma-hpp** は GPU メモリ確保ライブラリ VulkanMemoryAllocator の C++ バインディング([VulkanMemoryAllocator-Hpp](../../src/core/CMakeLists.txt#L79))です。
 
 vma-hpp が v3.3.0 以降でなければならないのは、SDK 1.4 系で vulkan.hpp の例外クラスが
 改名され(`ValidationFailedEXTError` → `ValidationFailedError`)、その版から vma-hpp が例外送出を
-vulkan.hpp 側へ委譲して改名の影響を受けなくなったためです([src/core/CMakeLists.txt](../../src/core/CMakeLists.txt#L69) のコメントが理由の正)。
+vulkan.hpp 側へ委譲して改名の影響を受けなくなったためです([src/core/CMakeLists.txt](../../src/core/CMakeLists.txt#L73) のコメントが理由の正)。
 
 quill / glm / nlohmann_json / argparse / tinyexr / miniaudio などは CMake の
 FetchContent で自動取得されます(各依存は `GIT_REPOSITORY` と `GIT_TAG` で宣言され、ほとんどは commit の hash で固定しています。例 [quill](../../CMakeLists.txt#L90)。JoltPhysics だけは tag `v5.5.0` の指定です([Jolt の宣言](../../CMakeLists.txt#L482)))。shaderc は例外で、Vulkan SDK 同梱版を使います(Android の build だけは shaderc・glslang・SPIRV-Tools を pin して source から build します。§2.9)。
@@ -120,7 +120,7 @@ cmake --install build-dist --config Release --component Runtime --prefix "$PWD/b
 | `PELICAN_PROJECT` | project の `code/` を `pelican_game_logic.dll` として build し、`Runtime` component として player と同じ `bin/` に install します |
 | install の後 | `package/bin/` に player・game DLL・MSVC の再頒布 runtime が入ります。project 本体(`project.json` と、それが指すファイル)は自分でコピーします |
 
-- **player は自分の場所を基準にします。**game DLL は exe の隣を探し([DLL の場所](../../src/player/main.cpp#L715))、`--project` を省くと exe の隣の `project.json` を開きます(§2.3 の「暗黙プロジェクト」。WARN の 1 行が出ます)。exe の場所は `GetModuleFileNameW` から取るので、PATH から名前だけで起動しても、別の作業ディレクトリから起動しても同じです([`executableDirectory()`](../../src/core/executabledirectory.hpp#L13))。相対の `--project` は作業ディレクトリ基準です(§2.3)。
+- **player は自分の場所を基準にします。**game DLL は exe の隣を探し([DLL の場所](../../src/player/main.cpp#L758))、`--project` を省くと exe の隣の `project.json` を開きます(§2.3 の「暗黙プロジェクト」。WARN の 1 行が出ます)。exe の場所は `GetModuleFileNameW` から取るので、PATH から名前だけで起動しても、別の作業ディレクトリから起動しても同じです([`executableDirectory()`](../../src/core/executabledirectory.hpp#L13))。相対の `--project` は作業ディレクトリ基準です(§2.3)。
 - **起動に失敗したときの見え方。**エラーの文は常に stderr に出ます。console も標準出力の接続も無い手起動(エクスプローラからの double-click など)のときだけ、同じ文を `Pelican` の題の message box でも出します。`--headless` / `--rpc` / `--embedded`、環境変数 `PELICAN_NO_MESSAGEBOX=1`、console や pipe・ファイルへの出力があるときは出しません([判定](../../src/core/playerdiagnostics.hpp#L16))。GUI の exe でも `--console` で親の console に繋げます。
 - `PELICAN_PLAYER_GUI_SUBSYSTEM` の既定は OFF(開発と test の build は console の exe)です([option](../../src/player/CMakeLists.txt#L1))。
 - 出荷物を install した場所・別の作業ディレクトリ・日本語の path で通しで起動する確認は、v0 の全数 gate の配布の項目で行う予定で、この文書の時点では未確認です。
@@ -160,11 +160,12 @@ build/dist/Release/pelican_player --headless --project projects/pathtrace_demo -
 | オプション | 内容 |
 |---|---|
 | `PELICAN_WITH_RPC` | stdio JSON-RPC 制御サーバ |
+| `PELICAN_WITH_OSC` | OSC 1.0 の packet を live inputs へ渡す解釈と UDP の受信(✅OSC-2a / OSC-2b。[第7章](07_input_ui.md#live-inputs-osc)) |
 | `PELICAN_WITH_SEQPLAYER` | `pelican.transform_seq` 再生 |
 | `PELICAN_WITH_VAT` | `pelican.vat`(GLB)再生 |
 | `PELICAN_WITH_EXR` | EXR 読み込み |
 | `PELICAN_WITH_AUDIO` | 音の再生(WAV / Ogg Vorbis、se / bgm バス。miniaudio と同梱の stb_vorbis はこの中だけで有効)。⚠️ feature registry の DESCRIPTION は「WAV sound-effect」のまま([pelican_feature_registry.cmake](../../cmake/pelican_feature_registry.cmake#L127)) |
-| `PELICAN_WITH_ANIMATION` | スケルタルアニメーションの評価器と `pelican.pose` グラフ module(✅AG-1a。[pelican_feature_registry.cmake:146](../../cmake/pelican_feature_registry.cmake#L154)、`SMOKE_ID animation`) |
+| `PELICAN_WITH_ANIMATION` | スケルタルアニメーションの評価器と `pelican.pose` グラフ module(✅AG-1a。[pelican_feature_registry.cmake:146](../../cmake/pelican_feature_registry.cmake#L161)、`SMOKE_ID animation`) |
 | `PELICAN_WITH_IMGUI` | ImGui 開発者 UI(F1 トグル・Plan Viewer)。配布では dist-config が常時 OFF([第10章](10_tools.md)) |
 | `PELICAN_WITH_OPENXR` | OpenXR(PCVR)ランタイム。開発既定 ON・**配布は `dist-config --with openxr` を指定した時だけ ON** |
 | `PELICAN_WITH_RENDERDOC` | 注入済みRenderDocの受動検出とF11/RPC capture。binary/import libraryはリンクせず、配布では常にOFF |
@@ -430,7 +431,7 @@ pelican_player --headless --project mygame --start-time 2.0 --frames 2 --fps 60 
 ```
 
 - 秒はコマンドラインで **1 回だけ frame 番号に量子化**されます(`llround(秒 × fps)`。エンジンには「フレームの間の時刻」が渡りません — [parseStartFrame()](../../src/player/main.cpp#L330))。秒は **3600(1 時間)まで**で、この上限は `--fps` によりません([上限の定数](../../src/player/main.cpp#L328))。
-- **飛ばすのではなく、そこまで回します。** `start_frame − 1` 枚を capture 無しで実行(warm-up)し、**最初に capture される frame が t の frame** です([loop.cpp:441](../../src/core/appflow/loop.cpp#L680))。グラフの時計・ゲームシステムの積分・アニメーションの評価器は時刻から逆算できないので、「その時刻に居た」と言える唯一の方法が全ステップを通ることだからです。`--start-time 0` は通常の run と同一です。
+- **飛ばすのではなく、そこまで回します。** `start_frame − 1` 枚を capture 無しで実行(warm-up)し、**最初に capture される frame が t の frame** です([loop.cpp:441](../../src/core/appflow/loop.cpp#L683))。グラフの時計・ゲームシステムの積分・アニメーションの評価器は時刻から逆算できないので、「その時刻に居た」と言える唯一の方法が全ステップを通ることだからです。`--start-time 0` は通常の run と同一です。
 - 実行時に stderr へ 1 行出ます: `offline: start_time=2 start_frame=120 replay=119 frames=2`。
 - **`--frames` とは併用できます**(枚数の指定)。**併用できないのは** `--rpc` / `--replay` / `--record-input` / `--bake-camera-output` の 4 つで、これらは「どの frame を出すか」を自分で決める経路だからです。
 - 名前付きの拒否は 3 つ: `offline.time_invalid@1`(負・非有限・数でない・3600 秒を超える・丸めた frame 番号やその時刻が有限でない)/ `offline.headless_required@1`(`--headless` 無し)/ `offline.mode_conflict@1`(上の 4 フラグとの併用)。いずれも**コマンドライン解析の時点**で決まり、GPU まで届きません。

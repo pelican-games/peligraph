@@ -2371,7 +2371,7 @@ RC-6b1 の時点では `vulkan_plan_pins` / `vulkan_physical_fragments` を書�
 
 **RPC の緩め**: `edit_target_planning` は、合成の結果に無い名前でも、root の文書に保存してある葉を `null` で消す要求を受けます。名前の値が object で、その field がどれも `null`、どれも保存済みの entry にある場合だけです([受ける所](../../src/core/communication/renderconfigeditor.cpp#L5467))。それ以外の、無い名前への書き込みは今までどおり `target_planning_name_unknown` です。
 
-**表示**: Studio の Frame Plan の Physical plan のタブに **Policy** の節が出て、dump の `policy` の行を `<target>.<key>` と行の JSON で並べます([節を作る所](../../src/devstudio/view/frameplanwidget.cpp#L5228))。ImGui の Pelican Compiled Passes も、物理計画の facts に `policy <target>.<key>` の行を足します([足す所](../../src/core/imgui/compiledplanviewer.cpp#L157))。
+**表示**: Studio の Frame Plan の Physical plan のタブに **Policy** の節が出て、dump の `policy` の行を `<target>.<key>` と行の JSON で並べます([節を作る所](../../src/devstudio/view/frameplanwidget.cpp#L5400))。ImGui の Pelican Compiled Passes も、物理計画の facts に `policy <target>.<key>` の行を足します([足す所](../../src/core/imgui/compiledplanviewer.cpp#L157))。
 
 #### 3 つの representation と、その選ばれ方
 
@@ -2852,7 +2852,7 @@ RC-7b で外れた理由は次の節の decision に出ます。
 - VMA の allocation と VkDeviceMemory の block は別の単位です。`device_memory_block_count` は参照する block の数で、block の予約量は数えません。
 - ✅RC-7e の `unallocated_resources`: 登録しなかった render target と、その登録の時の extent での payload の見積もり。上の 3 つの量のどれにも入りません(上の「[メモリの計測](#physical-plan-memory)」と下の「[使われない render target を確保しない](#unallocated-render-targets)」)。
 
-Studio の Frame Plan は、計画の region / offset と Freeze の意味をそのまま使い、実際の region / offset / memory type・共有の VMA の bytes・payload を並べて出します。status 行の合計は実際の VMA の総量で、measured / unmeasured を出し分けます(実装者の報告。表示の文言は [その所](../../src/devstudio/view/frameplanwidget.cpp#L4373))。
+Studio の Frame Plan は、計画の region / offset と Freeze の意味をそのまま使い、実際の region / offset / memory type・共有の VMA の bytes・payload を並べて出します。status 行の合計は実際の VMA の総量で、measured / unmeasured を出し分けます(実装者の報告。表示の文言は [その所](../../src/devstudio/view/frameplanwidget.cpp#L4545))。
 
 <a id="memory-kinds"></a>
 
@@ -3051,7 +3051,7 @@ output schema・format・MSAA(sample 数)・local-read・attachment state で描
   - ReloadService は Renderer を作るときに必ず作られます([reload の参加者を登録する所](../../src/core/vkcore/renderer.cpp#L3291))。
     ReloadService が無い場合の分岐では照合が効き、今までどおり断ります([照合を切り替える所](../../src/core/vkcore/renderer_config.cpp#L683))。
     ただし通常の起動でこの分岐を通る道は見当たりません(コードからの推論)。
-  - file watcher が動くのは、窓ありで、`--rpc`・`--replay`・`--strict-assets` のどれも付けない起動だけです     ([gate の条件](../../src/core/watch/reloadgate.cpp#L46)、[headless では読み直しを要求しない所](../../src/player/main.cpp#L531))。
+  - file watcher が動くのは、窓ありで、`--rpc`・`--replay`・`--strict-assets` のどれも付けない起動だけです     ([gate の条件](../../src/core/watch/reloadgate.cpp#L46)、[headless では読み直しを要求しない所](../../src/player/main.cpp#L545))。
     `PELICAN_WITH_HOT_RELOAD=OFF` の build(配布 build)では起動のしかたに関係なく動きません([第10章](10_tools.md) §10.5)。
     project.json に `hot_reload` を宣言すると `--rpc` の下でも watcher は動きますが、`--rpc` の下では watcher の変更は     この経路(`pelican.render_pipeline` の参加者)に届きません([除外する所](../../src/core/watch/reloadservice.cpp#L979))。
     Studio が起こす engine には常に `--rpc` が付くので([Studio の起動引数](../../src/devstudio/viewport/studioplayerarguments.cpp#L90))、     Studio の中の engine はこの経路を通りません。Studio の外でディスクの文書を書き換えたときは、`reload_render_documents`で取り込みます。
@@ -3846,7 +3846,7 @@ preview graph の合成規則(すべて起動時に検証されます):
   - `history_read`: `<target>@history` を読む pass(`graph`・`pass`)
   - `history_write`: `writes_history` の pass(`graph`・`pass`)
   - `composition`: それ以外の理由で preview を組めなかった。拒否が名前付き(`GraphRegistryError` か `<code>: <fields>` の形)なら `cause: {code, ...その fields}` が付きます(例: preview だけが断る graph のループの `graph.loop_expression_invalid@1` は `cause: {code: "graph.loop_expression_invalid@1", node: "steps", reason: "not_static"}`。test)
-- **出る所**: `get_status` の `preview`([`get_status` の PV-1 の鍵](../../src/core/communication/rpcserver.cpp#L1676))、`get_frame_plan` の最上位の `preview`([frame plan の PV-1 の鍵](../../src/core/vkcore/renderer.cpp#L4587))、render の編集の committed の結果の `preview`(公開した世代の状態。`reload_render_documents` と `edit_batch` の committed も同じ。[committed に preview を足す所](../../src/core/communication/renderconfigeditor.cpp#L8484))。
+- **出る所**: `get_status` の `preview`([`get_status` の PV-1 の鍵](../../src/core/communication/rpcserver.cpp#L1688))、`get_frame_plan` の最上位の `preview`([frame plan の PV-1 の鍵](../../src/core/vkcore/renderer.cpp#L4587))、render の編集の committed の結果の `preview`(公開した世代の状態。`reload_render_documents` と `edit_batch` の committed も同じ。[committed に preview を足す所](../../src/core/communication/renderconfigeditor.cpp#L8484))。
 - **`render_preview`**: preview が利用できない世代では、capture の中身を読む前に `preview.unavailable@1` で断ります。JSON-RPC の error(`-32000`)の `data` が `{code: "preview.unavailable@1", method: "render_preview", reason: <上の reason>}` です([`checkPreviewAvailable()`](../../src/core/communication/editorpreviewservice.cpp#L134))。
 - **編集**: 編集の preflight は preview を組みません([PV-1 で preview を組まなくなった preflight](../../src/core/renderingpass/previewgraph.cpp#L185))。preview だけが組めない編集も committed になり、`preview` が `available: false` に変わります。逆に history を外す編集で `available: true` に戻ります。
 - **log**: 起動時に、preview が利用できなければ warning を 1 行出します。形は `render preview unavailable (preview.unsupported_authoring@1 feature=history target=accum); normal play continues, render_preview refuses: <message>` で、`target=` は reason に `target` があるときだけです([PV-1 の warning の行](../../src/core/vkcore/renderer_config.cpp#L763))。同じ関数は reload と編集の組み直しでも通るので、そこでも preview が利用できなければ同じ行が出ます(コードの読み。test は起動時の 1 行だけを見ます)。
@@ -4253,7 +4253,7 @@ rendering の構成が起動時に組めないとき(graph の名前付きの拒
 | `--rpc --render-fallback` | 終了せず、**engine 内蔵の fallback の世代**で動き続けます。直した構成を RPC で受け取ると、その世代に替わります |
 
 `--render-fallback` には `--rpc` が要ります(理由を読み、直した構成を送れるのは RPC の client だけなので。コードの注記)。`--rpc` が無ければ引数の誤りで、
-stderr に `--render-fallback requires --rpc` と usage を出し、終了コード -1 です([BS-1 の `--rpc` を求める所](../../src/player/main.cpp#L502))。
+stderr に `--render-fallback requires --rpc` と usage を出し、終了コード -1 です([BS-1 の `--rpc` を求める所](../../src/player/main.cpp#L516))。
 
 **fallback の世代**([`renderPipelineFallbackConfigJson()`](../../src/core/vkcore/renderer_config.cpp#L421))は、project の文書を何も読まない `pelican.graph` root 1 つです。
 
@@ -4282,7 +4282,7 @@ stderr に `--render-fallback requires --rpc` と usage を出し、終了コー
   `render_pipeline_preflight_failed` で、`message` に例外の文が入ります。
 - 例(BS-1 の test。Blank の root に、buffer の port に `element` の無い `render.compute` の node `sim` を足した):
   `{state: "fallback", root: "passes/main_rendering_config.json", refusal: {code: "graph.port_field_missing@1", node: "sim", port: "data", field: "element", document: "project://passes/main_rendering_config.json", message: "..."}}`。
-- `get_frame_plan` は fallback の間だけ、最上位に同じ `render_pipeline` を持ちます([BS-1 の get_frame_plan に足す所](../../src/core/communication/rpcserver.cpp#L2556))。
+- `get_frame_plan` は fallback の間だけ、最上位に同じ `render_pipeline` を持ちます([BS-1 の get_frame_plan に足す所](../../src/core/communication/rpcserver.cpp#L2574))。
   plan そのものは fallback の世代のものです。project の構成に戻れば鍵は消えます。
 
 **直し方**は 3 つです。どれも、project の構成を publish した時点で fallback が終わります([publish で fallback を終える所](../../src/core/vkcore/renderer.cpp#L184))。
@@ -4321,9 +4321,9 @@ BS-1 の `get_status.render_pipeline.refusal` は起動時の 1 件だけで、h
 
 **読み方**:
 
-- `get_status.problems` は `{revision, count, errors, warnings}` です([get_status に problems を足す所(PB-1)](../../src/core/communication/rpcserver.cpp#L1685))。
+- `get_status.problems` は `{revision, count, errors, warnings}` です([get_status に problems を足す所(PB-1)](../../src/core/communication/rpcserver.cpp#L1697))。
   `revision` は一覧が変わったときだけ増えます(同じ中身で置き換えても増えません。[`ProblemList::replace()`](../../src/core/watch/problemlist.cpp#L295))。client は `revision` が動いたら全部を読み直します。
-- `get_problems {}` → `{revision, problems: [...]}`([`get_problems` の登録](../../src/core/communication/rpcserver.cpp#L1596))。params は空の object だけで、ほかは invalid params です。
+- `get_problems {}` → `{revision, problems: [...]}`([`get_problems` の登録](../../src/core/communication/rpcserver.cpp#L1608))。params は空の object だけで、ほかは invalid params です。
   同じ `id` は 1 件だけ並びます([`ProblemList::problemsJson()`](../../src/core/watch/problemlist.cpp#L327))。`ProblemList` の module が無い host では `{revision: 0, problems: []}` です。
 
 **1 件の形**: `{id, severity, source, code, message, fields, document?, line?, column?, node?, port?, definition?, scope?, document_kind?, at_frame?}`
@@ -4493,7 +4493,7 @@ op は **module** が登録します。登録済み module はエンジンに最
 
 `render.shadow_depth` / `render.snapshot_copy` の `outputs` には書いた socket と同名の出力 port が `{"port": "depth", "type_from_input": "depth"}` の形で載ります(`type` の鍵は無く、型はその名前の入力 socket に入る edge の型。[載せる所](../../src/project/graphmodule.cpp#L671))。`render.material_pass` も出力 port を持ちますが、port が node の parameters から決まるので catalog は `parameter_dependent` のままです(§6.18)。
 
-`pose.state_machine` は包む文書に従ってポートが増えますが、`pose` 出力を宣言しているので catalog の `ports` は **`declared`** です —— 増えた入力ポートは解決後にしか見えません。Studio のキャンバスもこのフィールドで分岐します([graphcanvasmodel.cpp:434](../../src/devstudio/model/graphcanvasmodel.cpp#L2059))。
+`pose.state_machine` は包む文書に従ってポートが増えますが、`pose` 出力を宣言しているので catalog の `ports` は **`declared`** です —— 増えた入力ポートは解決後にしか見えません。Studio のキャンバスもこのフィールドで分岐します([graphcanvasmodel.cpp:434](../../src/devstudio/model/graphcanvasmodel.cpp#L2136))。
 
 ### op 一覧
 

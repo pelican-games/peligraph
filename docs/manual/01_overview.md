@@ -87,7 +87,7 @@ update_game の順序:
 4. SeqPlayer。
 5. applyPendingLoad。
 
-根拠: [framephase.hpp:17](../../src/core/appflow/framephase.hpp#L17)、[framephase.cpp:152](../../src/core/appflow/framephase.cpp#L161)、[loop.cpp:710](../../src/core/appflow/loop.cpp#L718)、[loop.cpp:756](../../src/core/appflow/loop.cpp#L775)。
+根拠: [framephase.hpp:17](../../src/core/appflow/framephase.hpp#L17)、[framephase.cpp:152](../../src/core/appflow/framephase.cpp#L161)、[loop.cpp:710](../../src/core/appflow/loop.cpp#L721)、[loop.cpp:756](../../src/core/appflow/loop.cpp#L778)。
 
 注: `updateFrameState` は時刻 advance と render を含みません。headless の固定フレームと RPC `step_frame` も同じ状態更新順ですが、図の窓あり RPC pump は通りません。edit / paused ではイベント凍結・配送と通常のゲーム処理・pending scene load を飛ばし、入力・editor 用システム・停止時刻の Animation / seq / Graph・描画は続きます(paused の明示的な step はゲーム処理を進めます)。Animation は有効な build のみ、UI 書込確定後の camera bake 記録は該当機能がある場合のみです。
 

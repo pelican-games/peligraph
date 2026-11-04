@@ -338,7 +338,7 @@ flowchart LR
 
 [`Window`](../../src/core/os/window.hpp#L19) がGLFW callbackを`InputEvent`へ変換します。RPCの`inject_input`も同じ`InputState.queueEvents()`へ合流するため、下流は入力源を区別しません。
 
-XRセッション中は **XR action backend** もこの層に入ります。`syncActions()`の結果を`internal::setInputActionBackendFrame()`と`queuePoseSamples()`でInputStateへ流し込みます（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L578)）。
+XRセッション中は **XR action backend** もこの層に入ります。`syncActions()`の結果を`internal::setInputActionBackendFrame()`と`queuePoseSamples()`でInputStateへ流し込みます（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L581)）。
 
 また [`InputSequenceRuntime`](../../src/core/os/inputsequence.hpp#L63) によるrecord/replayが、この層のevent queue境界に挿入されます。record/replayは `--record-input` / `--replay`（[第2章 §2.1](02_runtime_lifecycle.md)）で、記録・再生されるのは**この層の順序付き `InputEvent` 列とフレーム境界のmarker**（GP-4 の v2 からは、窓座標 → framebuffer ピクセルの換算も。下の「pointer の換算とカーソル」）です — 上位のL3 snapshotやL4のAction結果ではありません（再生時はそれらを記録から復元するのではなく、注入した event 列から**同じ手順で作り直します**）。番号合わせの詳細は次の難所にあります。
 
@@ -432,9 +432,9 @@ eventはbutton、cursor move、axis deltaの三種です（[`InputEvent`](../../
 
 起動時だけ必要な道具の入力は [`applyInputActionOverlays()`](../../src/project/inputactionoverlay.cpp#L194) で project actions の後ろへ合成します。bundle URI は `EngineLaunchConfig::input_action_overlays` にだけあり、`ProjectBasicConfig` には入りません。project profile は project 定義だけ、overlay profile はその overlay 定義だけを相手に検証してから binding を併合するため、片方の profile がもう片方の action を偶然取り込むこともありません。
 
-action / action set の同名は衝突名を含む例外です。入力 runtime の project-only 読み込みは [`loadInputActionsRuntimeSourceFromProject()`](../../src/core/userpublic/userinput.cpp#L38)、明示的な startup-overlay 経路は [`loadInputActionsRuntimeSourceWithStartupActionOverlays()`](../../src/core/userpublic/userinput.cpp#L52) に分かれています。
+action / action set の同名は衝突名を含む例外です。入力 runtime の project-only 読み込みは [`loadInputActionsRuntimeSourceFromProject()`](../../src/core/userpublic/userinput.cpp#L45)、明示的な startup-overlay 経路は [`loadInputActionsRuntimeSourceWithStartupActionOverlays()`](../../src/core/userpublic/userinput.cpp#L59) に分かれています。
 
-action set stackの実体は`std::vector<std::string>`（set名の列）で、[`Actions::pushActionSet` / `popActionSet`](../../src/core/userpublic/userinput.hpp#L182) が`push_back` / `pop_back`する本物のLIFOです（実体は [`InputActionsRuntime::pushSet()`](../../src/core/userpublic/userinput.cpp#L332)）。[`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L1176) はこのvectorを`rbegin()`→`rend()`、つまり**末尾要素から先頭要素へ**走査します。最後にpushしたsetが最初に評価される＝高優先、ということです。上位setが使ったcontrolを`ConsumedControls`へ記録し、下位setでは同じkey/axisを無視します。
+action set stackの実体は`std::vector<std::string>`（set名の列）で、[`Actions::pushActionSet` / `popActionSet`](../../src/core/userpublic/userinput.hpp#L182) が`push_back` / `pop_back`する本物のLIFOです（実体は [`InputActionsRuntime::pushSet()`](../../src/core/userpublic/userinput.cpp#L391)）。[`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L1176) はこのvectorを`rbegin()`→`rend()`、つまり**末尾要素から先頭要素へ**走査します。最後にpushしたsetが最初に評価される＝高優先、ということです。上位setが使ったcontrolを`ConsumedControls`へ記録し、下位setでは同じkey/axisを無視します。
 
 Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`pose`型は実装済みで（WP130/132）、[`InputActionFrame::pose()`](../../src/core/os/actionmap.cpp#L938) は`poses` mapから返し、未サンプルならdefaultの`ActionPose`を返します。XR pose providerがない環境（flat）ではpose sampleが来ないため常にdefaultです。
 
@@ -483,7 +483,7 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 
 ### raw inputとAction消費は別
 
-`InputConsumptionMask`はAction用snapshotのkey/mouseだけをzero化します（✅SA1f から指ごとの `touches[32]` も持ち、[`apply()`](../../src/core/os/inputstate.cpp#L290) が消費した id の `touches` と `touch_taps` の要素を空にします。action set の間の `ConsumedControls` にも指ごとの `touches` が足されました）。公開 [`UserInput`](../../src/core/userpublic/userinput.cpp#L389) が読む元snapshotは変更しません。UIなどがActionだけを抑止しつつ、diagnosticがraw inputを見られる構造です。
+`InputConsumptionMask`はAction用snapshotのkey/mouseだけをzero化します（✅SA1f から指ごとの `touches[32]` も持ち、[`apply()`](../../src/core/os/inputstate.cpp#L290) が消費した id の `touches` と `touch_taps` の要素を空にします。action set の間の `ConsumedControls` にも指ごとの `touches` が足されました）。公開 [`UserInput`](../../src/core/userpublic/userinput.cpp#L448) が読む元snapshotは変更しません。UIなどがActionだけを抑止しつつ、diagnosticがraw inputを見られる構造です。
 
 ### UI router の指（✅SA1f）
 
@@ -504,32 +504,58 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 - `freeze_input` 相で [`InputSequenceRuntime::prepareFrame()`](../../src/core/os/inputsequence.cpp#L509) が次のフレームの換算を `InputState::setPointerTransform()` に渡し、`beginFrame()` がそれをフレームの換算として固定して、[`pointerStateFor()`](../../src/core/os/inputstate.cpp#L102) で `PointerState` を作ります。換算は `FrameInput::pointer_transform` として貸し出され、UI ルータ（[`routeFrameInput()` の換算](../../src/core/ui/inputrouter.cpp#L129)）と収録が同じ値を読みます。
 - 再生中の `prepareFrame()` は、その機械の換算ではなく**記録の換算**を渡します（v1 の記録で framebuffer が不明なときだけ、幅・高さをその機械のものにします）。収録は各フレームの換算を `InputSequenceFrame::pointer_transform` に残し、[`toJsonLines()`](../../src/core/os/inputsequence.cpp#L392) がヘッダと「前のフレームと違うフレームのマーカー」に `content_scale` / `framebuffer` を書きます。v2 のヘッダは2つとも必須、v1 のマーカーにあれば拒否です（[`parsePointerTransform()`](../../src/core/os/inputsequence.cpp#L116)）。`clear()` は換算を消しません（窓の性質であって入力ではないため）。
 - ✅SA1f の **v3**: `toJsonLines()` は記録に touch が 1 つでもあればヘッダを version 3 にし（[その所](../../src/core/os/inputsequence.cpp#L400)）、無ければ v2 のままです（既存の v2 の test を変えないため）。読み込みは 1・2・3 を受け（[版の検査](../../src/core/os/inputsequence.cpp#L325)）、v3 も v2 と同じく換算をヘッダで必須にし、v3 未満の記録の touch の行は断ります（[その所](../../src/core/os/inputsequence.cpp#L363)）。touch の行は `pointer_id`・`phase`・`x`・`y`・`slop_px`（正の値が必須）を持ちます。button の `canceled` は true の時だけ書く任意の欄で、版を上げません。再生の `prepareFrame()` は `setFrameTime(replay_frame / fps)` で frame の時刻を渡します（[その所](../../src/core/os/inputsequence.cpp#L522)）。
-- カーソルは `InputState` が `CursorModeStatus{requested, effective, embedded}` を持ちます。`setCursorMode` は `requested` を書くだけで、通常のフレームループが `window.process()` の直後に [`Window::applyCursorMode()`](../../src/core/os/window_glfw.cpp#L355) を呼び、[`effectiveCursorMode()`](../../src/core/os/inputstate.cpp#L113)（埋め込みなら `locked` → `normal`）を GLFW の input mode へ、変わったときだけ適用します（[呼び出し](../../src/core/appflow/loop.cpp#L758)）。埋め込みの判定は `--rpc` かつ窓 style に `WS_CHILD`（Windows だけ）。headless のループはこれを呼ばないので `effective` は既定の `normal` のままです。
+- カーソルは `InputState` が `CursorModeStatus{requested, effective, embedded}` を持ちます。`setCursorMode` は `requested` を書くだけで、通常のフレームループが `window.process()` の直後に [`Window::applyCursorMode()`](../../src/core/os/window_glfw.cpp#L355) を呼び、[`effectiveCursorMode()`](../../src/core/os/inputstate.cpp#L113)（埋め込みなら `locked` → `normal`）を GLFW の input mode へ、変わったときだけ適用します（[呼び出し](../../src/core/appflow/loop.cpp#L761)）。埋め込みの判定は `--rpc` かつ窓 style に `WS_CHILD`（Windows だけ）。headless のループはこれを呼ばないので `effective` は既定の `normal` のままです。
 
 ### live inputs（✅OSC-1a、`5c1dc7720`） {#live-inputs}
 
-project が宣言した値を graph が `value.input` の `live:<名前>` で読み、JSON-RPC で外から書きます。利用者向けの形と拒否の表は manual [第7章 §7.3](../manual/07_input_ui.md#live-inputs) です。socket はありません。transport は既存の JSON-RPC の endpoint だけで、OSC の受信はまだありません。Studio の側にも呼び手がありません。
+project が宣言した値を graph が `value.input` の `live:<名前>` で読み、外から書きます。利用者向けの形と拒否の表は manual [第7章 §7.3](../manual/07_input_ui.md#live-inputs) です。書く口は JSON-RPC の `set_live_input` と、下の [OSC の受信](#osc-input) です。Studio は `get_live_inputs` を読むだけで(✅OSC-3a。[第7章](07_tools_rpc_tests.md))、`set_live_input` の呼び手はありません。
 
-- **持ち主**: module [`LiveInputs`](../../src/core/os/liveinputs.hpp#L51) です。宣言 `specs_`、受けて固まっていない `pending_`、frame の値 `runtime_` を 1 つの mutex の下に持ちます。文書には触りません。
-- **宣言**: `basic_config.live_inputs_json` の参照を `ProjectBasicConfig` が持ち([読む所](../../src/core/loader/basicconfig.cpp#L685))、[`liveInputsJson()`](../../src/core/loader/basicconfig.cpp#L1115) が `PathResolver` で読みます。[`parseDeclaration()`](../../src/core/os/liveinputs.cpp#L80) は [`LiveInputs` の constructor](../../src/core/os/liveinputs.cpp#L217) から呼ばれ、不正なら `live_input.*` の例外です。[`reloadDeclaration()`](../../src/core/os/liveinputs.cpp#L243) は定義だけで、`src` に呼び手がありません(test は [`setDeclarationJson()`](../../src/core/os/liveinputs.cpp#L251) を使います)。
-- **書く**: [`stageValues()`](../../src/core/os/liveinputs.cpp#L272) は全部の名前と値を検査してから `pending_` に入れます。範囲の外は [`clampTo()`](../../src/core/os/liveinputs.cpp#L182) で寄せて印を付けます。
-- **固める**: [`freeze_input` の相](../../src/core/appflow/framephase.cpp#L219)で `InputState::beginFrame()` の直後、`recordFrame()` の前に [`freeze()`](../../src/core/os/liveinputs.cpp#L327) を呼び、`pending_` を `runtime_` に移します。値が違うときだけ `changed_frame` を `EngineTime::evaluationIndex()` にします。
+- **持ち主**: module [`LiveInputs`](../../src/core/os/liveinputs.hpp#L79) です。宣言 `specs_`、受けて固まっていない `pending_`、frame の値 `runtime_` を 1 つの mutex の下に持ちます。文書には触りません。
+- **宣言**: `basic_config.live_inputs_json` の参照を `ProjectBasicConfig` が持ち([読む所](../../src/core/loader/basicconfig.cpp#L685))、[`liveInputsJson()`](../../src/core/loader/basicconfig.cpp#L1115) が `PathResolver` で読みます。[`parseDeclaration()`](../../src/core/os/liveinputs.cpp#L80) は [`LiveInputs` の constructor](../../src/core/os/liveinputs.cpp#L227) から呼ばれ、不正なら `live_input.*` の例外です。[`reloadDeclaration()`](../../src/core/os/liveinputs.cpp#L253) は定義だけで、`src` に呼び手がありません(test は [`setDeclarationJson()`](../../src/core/os/liveinputs.cpp#L261) を使います)。
+- **書く**: [`stageValues()`](../../src/core/os/liveinputs.cpp#L304) は全部の名前と値を検査してから `pending_` に入れます。範囲の外は [`clampTo()`](../../src/core/os/liveinputs.cpp#L182) で寄せて印を付けます。
+  - ✅OSC-2a: OSC の道は [`stageBatch()`](../../src/core/os/liveinputs.cpp#L358) です。1 packet の値を 1 つの lock で検査して `pending_` に入れます。リプレイ中と知らない名前でも例外を投げず、`LiveStageResult` の `replay` / `invalid` で返します。値の検査と寄せは `stageValues()` と同じ `normalizeValue()` です。`pending_` は値と一緒に `LiveInputSource`(`rpc` / `osc`)を持ち、freeze で `runtime_` に移します。
+- **固める**: [`freeze_input` の相](../../src/core/appflow/framephase.cpp#L219)で `InputState::beginFrame()` の直後、`recordFrame()` の前に [`freeze()`](../../src/core/os/liveinputs.cpp#L394) を呼び、`pending_` を `runtime_` に移します。値が違うときだけ `changed_frame` を `EngineTime::evaluationIndex()` にします。
   - RPC は `pending_` だけを書くので、同じ frame の graph の評価(frame の graph と animation)は同じ値を読みます。
-  - `render_frame` の handler は相を通らないので固まりません([登録](../../src/core/communication/rpcserver.cpp#L2503))。`step_frame` は通ります。
-- **読む**: [`collectGraphInputs()`](../../src/core/renderingpass/graphinputs.cpp#L83) が [`frozenInputs()`](../../src/core/os/liveinputs.cpp#L363) の `live:<名前>` を入力に足します。呼び手は `Renderer` と animation の system です。
-- **検査**: [`validateGraphInputs()`](../../src/core/renderingpass/graphinputs.cpp#L61) と `collectGraphInputs()` が [`checkLiveInputReads()`](../../src/core/renderingpass/graphinputs.cpp#L46) を呼びます。宣言に無い名前は `live_input.unknown@1`、読むことを [`noteGraphReadsLive()`](../../src/core/os/liveinputs.cpp#L391) に記録し、offline の起動なら `offline.live_input_unrecorded@1` です。宣言があるだけの project は断りません。
+  - `render_frame` の handler は相を通らないので固まりません([登録](../../src/core/communication/rpcserver.cpp#L2521))。`step_frame` は通ります。
+- **読む**: [`collectGraphInputs()`](../../src/core/renderingpass/graphinputs.cpp#L83) が [`frozenInputs()`](../../src/core/os/liveinputs.cpp#L430) の `live:<名前>` を入力に足します。呼び手は `Renderer` と animation の system です。
+- **検査**: [`validateGraphInputs()`](../../src/core/renderingpass/graphinputs.cpp#L61) と `collectGraphInputs()` が [`checkLiveInputReads()`](../../src/core/renderingpass/graphinputs.cpp#L46) を呼びます。宣言に無い名前は `live_input.unknown@1`、読むことを [`noteGraphReadsLive()`](../../src/core/os/liveinputs.cpp#L458) に記録し、offline の起動なら `offline.live_input_unrecorded@1` です。宣言があるだけの project は断りません。
   - offline の判定 [`offlineLaunchReadsNoLiveInputs()`](../../src/core/renderingpass/graphinputs.cpp#L30) は `EngineLaunchConfig` の `start_time_explicit`・`start_frames`・`camera_bake_output`・`input_replay`・`input_replay_path` を見ます。`input_replay` は RPC の `start_input_replay` でも立ちます。
   - `--record-input` は見ません。記録は live の値を持たないので、その記録の再生が断られます(コードの読みから)。
 - **frame ごとに変わる物、時計ではない物**: `live:` の名前は [`graphFrameInputNames()`](../../src/project/graphmodule.cpp#L994)(catalog の `input_names` の元)に入れていません。
   - once の検査は表の代わりに [`graphInputVariesPerFrame()`](../../src/project/graphmodule.cpp#L1007) を使い、`live:` を per-frame と数えます([その所](../../src/project/rendergraphcomposition.cpp#L560))。
   - `ValueGraph` の時計の集合は `time` / `scene_time` / `audio_time` のままです([その所](../../src/core/userpublic/valuegraph.cpp#L205))。
-- **RPC**: [登録 `set_live_input`](../../src/core/communication/rpcserver.cpp#L1944) と [登録 `get_live_inputs`](../../src/core/communication/rpcserver.cpp#L1967)。`start_input_replay` は `graphReadsLive()` で断ります([開始の検査](../../src/core/communication/rpcserver.cpp#L2039))。
+- **RPC**: [登録 `set_live_input`](../../src/core/communication/rpcserver.cpp#L1956) と [登録 `get_live_inputs`](../../src/core/communication/rpcserver.cpp#L1979)。`start_input_replay` は `graphReadsLive()` で断ります([開始の検査](../../src/core/communication/rpcserver.cpp#L2057))。
 - ⚠ `graph_reads_live_` を下げる所はありません(`installDeclaration()` も下げません)。一度 live を読む graph を見た engine は、graph から消しても起動し直すまで `start_input_replay` を断ります(コードの読みから)。
 - ⚠ OSC-1a の commit の本文は「リプレイ中に受けた値は捨てて数える」と言いますが、今の RPC の道はそうなりません(コードの読みから)。
-  - `set_live_input` の handler は `InputSequenceRuntime::isReplaying()` を見て先に `live_input.replay@1` で断るので、`stageValues()` に届かず数えません([その所](../../src/core/communication/rpcserver.cpp#L1945))。
-  - `stageValues()` の中の [同じ拒否](../../src/core/os/liveinputs.cpp#L276) に届くのは、リプレイが終わった後、次の `freeze()` までの間だけです。そこで 1 増え、次の `freeze()` が 0 に戻します。
-  - `freeze()` の [`dropped_during_replay_ += pending_.size()`](../../src/core/os/liveinputs.cpp#L336) は、`replaying_` の間は `stageValues()` が断り、移った frame で `pending_` を消すので、足す物がありません。
-- test: `liveinputs_test`([「OSC-1a liveinputs declaration names valid live inputs …」](../../test/liveinputs_test.cpp#L73) から 4 本。宣言の拒否、受けと固めと clamp とリプレイ、graph の評価、offline の拒否)と、GPU の `liveinputs_rpc_test`([「OSC-1a liveinputs RPC stages a typed live value …」](../../test/liveinputs_rpc_test.cpp#L150)。`posegraph_demo` の clock を `live:phase` にして、一時停止中の `step_frame` で `pose_hash` が変わる。`PELICAN_WITH_ANIMATION` の build だけ)、`featurecompose_test` の [PS-1 の section](../../test/featurecompose_test.cpp#L9893)(`graph.once_reads_per_frame@1`)。窓ありの engine の test はありません。
+  - `set_live_input` の handler は `InputSequenceRuntime::isReplaying()` を見て先に `live_input.replay@1` で断るので、`stageValues()` に届かず数えません([その所](../../src/core/communication/rpcserver.cpp#L1944))。
+  - `stageValues()` の中の [同じ拒否](../../src/core/os/liveinputs.cpp#L308) に届くのは、リプレイが終わった後、次の `freeze()` までの間だけです。そこで 1 増え、次の `freeze()` が 0 に戻します。
+  - `freeze()` の [`dropped_during_replay_ += pending_.size()`](../../src/core/os/liveinputs.cpp#L403) は、`replaying_` の間は `stageValues()` が断り、移った frame で `pending_` を消すので、足す物がありません。
+  - ✅OSC-2a: OSC の道はこの話の外です。`stageBatch()` は `replaying_` の間、update の数だけ `dropped_during_replay_` を増やします。
+- test: `liveinputs_test`([「OSC-1a liveinputs declaration names valid live inputs …」](../../test/liveinputs_test.cpp#L74) から 4 本。宣言の拒否、受けと固めと clamp とリプレイ、graph の評価、offline の拒否)と、GPU の `liveinputs_rpc_test`([「OSC-1a liveinputs RPC stages a typed live value …」](../../test/liveinputs_rpc_test.cpp#L241)。`posegraph_demo` の clock を `live:phase` にして、一時停止中の `step_frame` で `pose_hash` が変わる。`PELICAN_WITH_ANIMATION` の build だけ)、`featurecompose_test` の [PS-1 の section](../../test/featurecompose_test.cpp#L9893)(`graph.once_reads_per_frame@1`)。窓ありの engine の test はありません。
+
+### OSC の受信（✅OSC-2a `05807d418`、✅OSC-2b `cfa14cf7d`） {#osc-input}
+
+OSC 1.0 の UDP packet を live input の値にします。利用者向けの形、counter の表、ネットワークの注意は manual [第7章](../manual/07_input_ui.md#live-inputs-osc) です。流れは `recvfrom` → [`OscInput::receive()`](../../src/core/osc/oscinput.cpp#L114) → [`parsePacket()`](../../src/core/osc/oscparser.cpp#L294) → 表で解決 → [`stageBatch()`](../../src/core/os/liveinputs.cpp#L358) → 次の [`freeze()`](../../src/core/os/liveinputs.cpp#L394) です。
+
+- **解析**: [`parsePacket()`](../../src/core/osc/oscparser.cpp#L294) は先に全体の構造を検査してから decode します。構造の壊れはどの要素でも packet ごと捨てます(`PacketDrop`)。構造が正しければ、非対応の要素だけを捨てます(`MessageReject`)。bad input では例外を投げません。上限は [`max_packet_bytes` など](../../src/core/osc/oscparser.hpp#L13) です。未来の timetag の判定は top level の bundle だけです。
+- **結び付けの表**: [`parseOscBindings()`](../../src/core/osc/oscbindings.cpp#L56) が profile の文書の `live` を読み、`LiveInputs::declarations()` と照らします。`InputActionsRuntime` の constructor が `parseInputProfileString()` の直後に [呼びます](../../src/core/userpublic/userinput.cpp#L241)。例外なら profile のどちらの半分も入りません。
+  - 表を入れるのは [`applyOscBindings()`](../../src/core/userpublic/userinput.cpp#L155) で、`rebuildActionMap()` が profile を選ぶたびに呼びます。overlay の profile の `live` は [断ります](../../src/core/userpublic/userinput.cpp#L265)。
+  - ⚠ `input_actions_json` が無い project は constructor が [先に戻る](../../src/core/userpublic/userinput.cpp#L211) ので、profile を読まず `live` の検査もしません(第9章の難所)。
+- **`OscInput`**: [module](../../src/core/osc/oscinput.hpp#L26) です。解析は lock の外です。表の解決と `stageBatch()` は 1 つの mutex の中で、lock の順は `OscInput` → `LiveInputs` です。profile の切り替えも同じ mutex なので、1 packet の途中で表が替わりません。[`convert()`](../../src/core/osc/oscinput.cpp#L75) が引数を口の型へ写します。使うのは最初の引数だけです。`map` の結果も有限かを見ます。例外は `catch (...)` で止めます(engine の thread でない所から呼ばれるため)。
+  - `snapshotJson()` が counter と最新 64 件の `recent` を 1 つの lock で返します。
+- **`OscListener`**: [module](../../src/core/osc/osclistener.hpp#L34) で、socket 1 つと thread 1 つです。構成は [`OscListenerConfig`](../../src/core/osc/osclistenerconfig.hpp#L14) で、[`EngineLaunchConfig::osc_listener`](../../src/core/launchconfig.hpp#L118) にあり、player の [option](../../src/player/main.cpp#L456) だけが埋めます([解析](../../src/core/osc/osclistenerconfig.cpp#L66))。
+  - 起動は [`prepareOscListener()`](../../src/core/userpublic/userinput.cpp#L514) で、[`prepareRuntimeModuleGraph()`](../../src/core/appflow/loop.cpp#L264) から呼ばれます。option が無くても module は作るので、`state: "off"` を返せます。constructor は `OscInput` を先に作ります(worker の thread が module を最初に作らないため)。
+  - [`start()`](../../src/core/osc/osclistener.cpp#L265) は Windows で `SO_EXCLUSIVEADDRUSE`(`SO_REUSEADDR` は使わない)を付けて bind し、`getsockname` で実際の port を取り、thread を起こします。失敗は例外にせず `state: "failed"` と `osc.bind_failed@1` で、engine は動き続けます。設定の誤りだけ `osc.config_invalid@1` の例外です。
+  - [worker](../../src/core/osc/osclistener.cpp#L185) は 100 ms ごとに止める印を見ます。受信のエラーが 100 回続くと `osc.receive_failed@1` で終わります。`--osc-allow` の照合は [`recvfrom` の直後](../../src/core/osc/osclistener.cpp#L239) で、外れた packet は `sender_not_allowed` だけを増やします。
+  - [`osclistener.hpp` の注記](../../src/core/osc/osclistener.hpp#L34) のとおり、約束するのは有界な memory で、flood への耐性ではありません。リプレイ中に OS が溜めた packet はリプレイの後に受けることがあります。
+- **RPC**: [`get_live_inputs`](../../src/core/communication/rpcserver.cpp#L1979) が `osc` を足し、その中に [`listener`](../../src/core/communication/rpcserver.cpp#L2015) を入れます。
+- **project の文書から開かない理由**: 設計の初稿は `.pelican/local.json` でしたが、project の下の file は他人の zip に入り得るので、port を開く根拠にしないことにしました(`<作業ディレクトリ>/design_notes/osc_live_input_design_2026-11-04.md` の「OSC-2b の見直し」)。実装に `local.json` を読む所はありません。
+- **OFF**: `src/core/CMakeLists.txt` は `PELICAN_WITH_OSC` のときだけ `src/core/osc` を足します。`run_osc_smoke` は OFF の build に object が無いことと player が link できることを見ます。`requires` の語は [`projectrequirements.def`](../../src/project/projectrequirements.def#L14) です。
+- ⚠ 実装と文章のずれ(コードの読みから):
+  - OSC-2a の commit の本文の `osc:/address` は今の形ではありません。実装は `{address, input, map}` です。設計メモの `binding` と `smooth` のキーは `osc.binding_invalid@1` で断られます。
+  - 同じ本文の「f, i, T and F」より受ける型は広く、`numericArgument()` は `d` `h` `t` `c` `r` `m` も数として受けます。
+  - 設計メモは「argument は 1 個だけ、2 個以上は断る」と書きますが、実装は最初の 1 個を使います(test が見ています)。
+- test: `osc_input_test`([解析から](../../test/osc_input_test.cpp#L184) 10 本。解析、表の検査、写し方、counter とリプレイ、OSC と RPC の後勝ち、profile の切り替え、並行、seed 固定の fuzz)、`osc_listener_test`([option の検査から](../../test/osc_listener_test.cpp#L225) 8 本。loopback の実 socket)、`osc_off_test`([OFF の build](../../test/osc_off_test.cpp#L71))。GPU の `liveinputs_rpc_test` の [「OSC-2b a headless player listens …」](../../test/liveinputs_rpc_test.cpp#L339) は packet から `get_live_inputs` までを通しますが、option の文字列を `parseOscListenerConfig()` に渡して launch config へ入れるので、player の引数の解析は通りません。player の option は ctest の `osc_listener_cli_*` が断る側だけを見ます。
 
 ## 5.6 Camera
 
@@ -541,7 +567,7 @@ project が宣言した値を graph が `value.input` の `live:<名前>` で読
 - active camera名
 - optional orbit/follow/fly controller定義
 
-加えて [`discontinuityRevision()`](../../src/core/renderer/camera.hpp#L166) と [`getProjectionSpec()`](../../src/core/renderer/camera.hpp#L171) を公開します。前者はrendererのtemporal reset（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1528)）、後者はXR eye projectionの入力（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L595)）です。
+加えて [`discontinuityRevision()`](../../src/core/renderer/camera.hpp#L166) と [`getProjectionSpec()`](../../src/core/renderer/camera.hpp#L171) を公開します。前者はrendererのtemporal reset（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1528)）、後者はXR eye projectionの入力（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L598)）です。
 
 GP-4 の [`rayThroughPixel()`](../../src/core/renderer/camera.cpp#L435) は、framebuffer ピクセルの位置を projection と view の逆行列（double で計算）で world の ray にします。NDC は `2 × px ÷ viewport − 1` で y を反転せず（平面描画のフレームが NDC を framebuffer へ写す向き。コメントは gizmo の `projectPoint` を参照）、深度 0（near 面）と 1（far 面）の2点を戻して、起点を near 面上の点、方向をその差の正規化にします。公開面は `RenderContext::screenRay()` で、XR 中の拒否と有限性の検査はそちらが持ちます。
 
@@ -1549,7 +1575,7 @@ outboxのentryは呼び出しごとに1件ではありません。
 - mutator（と `emit`）なのに manifest に分類が無い → `mutator lacks manifest classification`（[その throw](../../tools/public_api_inventory.py#L173)）
 - manifest にあるのに inventory 側で消費されなかった → `runtime manifest API absent from inventory`（[その throw](../../tools/public_api_inventory.py#L180)）
 
-結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L4472)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
+結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L4518)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
 
 ## 5.16 姿勢を駆動する2つの様式 ✅実装済み（AG-1a / AG-1b / AG-2）
 

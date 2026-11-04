@@ -420,7 +420,7 @@ pelican_player --project mygame --headless --rpc
 
 **解決に失敗したコンポーネントも消えません。** authored / generated のどちらの直下にも `resolution_error` が付き、`get_components` は**成功応答のまま**それを返します ([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L1825))。形は 2 通りで、 typed な違反は `{code, path(RFC6901), fields, message}`、まだ typed 化していない旧分岐は `{legacy_branch_id, message}` です(正は [`resolutionFailureJson()`](../../src/core/loader/resolutionresult.hpp#L115))。
 
-**`resolution_error` を含む応答はキー順が保存されます** —— editor 側のハンドラが「応答木のどこかに `resolution_error` があるか」を見る述語 `embedsResolutionError` を登録時に添え ([editorrpchandlers.cpp](../../src/core/communication/editorrpchandlers.cpp#L50))、`RpcServer` はその述語が真を返した応答だけを ordered JSON で直列化するためです([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1189))。
+**`resolution_error` を含む応答はキー順が保存されます** —— editor 側のハンドラが「応答木のどこかに `resolution_error` があるか」を見る述語 `embedsResolutionError` を登録時に添え ([editorrpchandlers.cpp](../../src/core/communication/editorrpchandlers.cpp#L50))、`RpcServer` はその述語が真を返した応答だけを ordered JSON で直列化するためです([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1201))。
 
 ### 一覧だけを読む `scene_outline`
 
@@ -563,7 +563,7 @@ preview の **lease** は、1セッションで1 actor が保持する編集範�
 | メソッド | params | 返すもの | 拒否 |
 |---|---|---|---|
 | `set_play_state` | `{state: "edit" \| "playing" \| "paused", keep?}` | `{state, previous}`(`keep` を書いた Stop は下の「再生のセッション」) | 上の表と同じ。`keep` と PM-2 の拒否は下の「再生のセッション」 |
-| `set_view_camera` | `{camera: "editor" \| "game"}`(鍵は `camera` だけ) | `{camera, previous}`。同じ view への指示は何も変えずに成功 | `playing` では `-32000` の `play_state_mismatch`(`data` に `state` と `required: ["edit", "paused"]`)/ editor camera の無い起動で `"editor"` は `-32000` の `view_camera_unavailable`(`data` に `camera`)/ それ以外の値や鍵は `-32602`([`set_view_camera` の handler](../../src/core/communication/rpcserver.cpp#L2406)) |
+| `set_view_camera` | `{camera: "editor" \| "game"}`(鍵は `camera` だけ) | `{camera, previous}`。同じ view への指示は何も変えずに成功 | `playing` では `-32000` の `play_state_mismatch`(`data` に `state` と `required: ["edit", "paused"]`)/ editor camera の無い起動で `"editor"` は `-32000` の `view_camera_unavailable`(`data` に `camera`)/ それ以外の値や鍵は `-32602`([`set_view_camera` の handler](../../src/core/communication/rpcserver.cpp#L2424)) |
 
 **`edit` で何が効くか。**
 
@@ -592,7 +592,7 @@ preview の **lease** は、1セッションで1 actor が保持する編集範�
 
 ### 再生のセッション
 
-`edit` から `playing` / `paused` へ移ると**再生のセッション**が始まり、`edit` へ戻るとセッションが終わって scene が再生の前に戻ります(設計は [design_play_mode.md](../design_play_mode.md) §6・§7。実体は [`set_play_state` の handler](../../src/core/communication/rpcserver.cpp#L2197) と [`PlaySession`](../../src/core/communication/playsession.hpp#L51))。Studio の Play / Stop と Keep は PM-3b です(§13.1「Studio で game を再生・停止する」)。
+`edit` から `playing` / `paused` へ移ると**再生のセッション**が始まり、`edit` へ戻るとセッションが終わって scene が再生の前に戻ります(設計は [design_play_mode.md](../design_play_mode.md) §6・§7。実体は [`set_play_state` の handler](../../src/core/communication/rpcserver.cpp#L2215) と [`PlaySession`](../../src/core/communication/playsession.hpp#L51))。Studio の Play / Stop と Keep は PM-3b です(§13.1「Studio で game を再生・停止する」)。
 
 Play / Pause / Step / Stop の遷移とセッション保存は[第15章の状態図と注](15_studio.md#play-state-map)を参照してください。
 
@@ -625,7 +625,7 @@ Stop で戻る範囲・戻らないもの・セッションの無い起動は[�
 
 ### spawn された object を読む
 
-`get_runtime_objects {}` は、今の scene で game が spawn した生きている object を、spawn された順(boundary、その中の index の順)に返します([handler](../../src/core/communication/rpcserver.cpp#L1381))。authoring の object は `scene_tree` / `get_components` で読み、spawn された object はこちらで読みます。field を足すと `-32602` です。
+`get_runtime_objects {}` は、今の scene で game が spawn した生きている object を、spawn された順(boundary、その中の index の順)に返します([handler](../../src/core/communication/rpcserver.cpp#L1393))。authoring の object は `scene_tree` / `get_components` で読み、spawn された object はこちらで読みます。field を足すと `-32602` です。
 
 ```json
 {"objects": [{"name": "spawn:2.0", "entity": {"index": 7, "generation": 1},
@@ -652,7 +652,7 @@ Stop で戻る範囲・戻らないもの・セッションの無い起動は[�
 **file watch の gate は開けません。**`--rpc` で動く engine(Studio が起こす engine はすべてそう)は、reload gate が
 `rpc driver` を理由に閉じていて、shader file を保存しても自分では読み直しません。`reload_shaders` はそれを開けずに、
 **頼まれたその 1 回だけ** shader の runtime participant を当てます(`reload_game_logic` と同じ形。
-[handler](../../src/core/communication/rpcserver.cpp#L1381))。閉じた gate を越えるのは明示の要求だけで、
+[handler](../../src/core/communication/rpcserver.cpp#L1393))。閉じた gate を越えるのは明示の要求だけで、
 replay と `--strict-assets` の engine は今までどおり断ります([越えてよいかの判定](../../src/core/watch/reloadservice.cpp#L728) /
 [`ReloadGate::explicitShaderReloadRefusal()`](../../src/core/watch/reloadgate.cpp#L66))。file watch の poll の経路は `--rpc` の下で
 今までどおり何もしません。
@@ -679,7 +679,7 @@ replay と `--strict-assets` の engine は今までどおり断ります([越�
 
 - **`reload_shaders` の答え**: 読み直し自体は公開されたので `committed: true` のままで(意味は変えていません。shader library は
   compile できた新しい shader を持ち、断られていない pipeline はそれで描きます)、`refused_passes` に断った pass が並びます
-  ([答えを組む所](../../src/core/communication/rpcserver.cpp#L1422))。要素は `{pass, fragment, reason, shader_input_mismatch, declarations}`
+  ([答えを組む所](../../src/core/communication/rpcserver.cpp#L1434))。要素は `{pass, fragment, reason, shader_input_mismatch, declarations}`
   で、`reason` は下の拒否と同じ message、`shader_input_mismatch` は編集の拒否と同じ形(同じ関数で組みます)、`declarations` は
   **断られた新しい shader** の宣言 `[{binding, type, name, variadic}]` です([形](../../src/core/fullscreenpass/shaderinputmismatchjson.cpp#L48))。
   `committed: false` の答え(何も変わっていない)には `refused_passes` は付きません。
@@ -1311,7 +1311,7 @@ commit し、`get_frame_plan` で各 material が名前で選んだ分岐に入�
 - **stage の集め方**: shader library が stem の参照を読むときと同じ候補(stage ごとに source と `.spv`)を同じ検査で探します([`shaderStemCandidateReference()` / `existingShaderStemCandidate()`](../../src/core/shader/shaderlibrary.cpp#L557))。runtime compiler の無い build では、`.spv` の無い stage は出ません。どの stage の file も無ければ、worker を待たずに `{status: "failed", reference, error: "shader_not_found"}` です。
 - **stage の失敗**: compile も反映もできない stage は、答えは `ready` のまま、その要素に `reflection_error`(compile の log)が入ります。log の中の機械の絶対パスは file の参照(`project://shaders/<file>`)に置き換えます([置き換える所](../../src/core/communication/engineauthoringlists.cpp#L190))。test では `project://shaders/el5_broken.frag:3: ...` の形です。`failed` になるのは worker の中の例外のときです。
 - **include**: project の file は、その file の directory、`<その directory>/shaders/include`、engine の資源(`<名前>` と `shaders/include/<名前>`)の順に解決します([`ShaderCompiler::compileFile()`](../../src/core/shader/shadercompiler.cpp#L768)、include の解決は [`resolveInclude()`](../../src/core/shader/shadercompiler.cpp#L105))。pass の `ports` から生成される `pelican_resource_ports.glsl` を include する shader は、この順のとおり、project の側に同名の file が無ければ engine 同梱の空の include で compile されます(`get_engine_shaders` と同じ。要素の `resource_port_include: true`)。
-- **worker**: 反映は自分専用の worker thread が 1 本で行い、依頼の順に 1 つずつ処理します。compiler は `get_engine_shaders` と同じ [`ShaderCompiler::detached()`](../../src/core/shader/shadercompiler.hpp#L91) の別の instance で、frame の側の shader library と project の cache には触らず、disk と engine の資源を読むだけです([`ShaderInterfaceReflection`](../../src/core/communication/engineauthoringlists.cpp#L476))。worker は最初の依頼で始まり、engine の RPC の endpoint が閉じるときに `get_engine_shaders` の worker と一緒に止めて join します([止める所](../../src/core/communication/rpcserver.cpp#L2920))。止めるのは stage 1 つごとの区切りで、出来上がった答えは残し、待ち行列と作りかけは捨てます。まだ始まっていない同じ reference の依頼は、新しい依頼で置き換わります(待ち行列の最後に入り直します)。
+- **worker**: 反映は自分専用の worker thread が 1 本で行い、依頼の順に 1 つずつ処理します。compiler は `get_engine_shaders` と同じ [`ShaderCompiler::detached()`](../../src/core/shader/shadercompiler.hpp#L91) の別の instance で、frame の側の shader library と project の cache には触らず、disk と engine の資源を読むだけです([`ShaderInterfaceReflection`](../../src/core/communication/engineauthoringlists.cpp#L476))。worker は最初の依頼で始まり、engine の RPC の endpoint が閉じるときに `get_engine_shaders` の worker と一緒に止めて join します([止める所](../../src/core/communication/rpcserver.cpp#L2938))。止めるのは stage 1 つごとの区切りで、出来上がった答えは残し、待ち行列と作りかけは捨てます。まだ始まっていない同じ reference の依頼は、新しい依頼で置き換わります(待ち行列の最後に入り直します)。
 - **作り直し**: 答えは reference ごとに、stem の各 stage の file の中身の SHA-256 を key に持ちます。呼ぶたびに RPC の thread で file を読んで key を作り直し、変わっていれば新しく作らせて `building` を返します。**include の変更は追いません。**include を書き換えたら `refresh: true` で呼びます(持っている答えを使わずに作り直します)。
 - **`engine://` の reference**: `get_engine_shaders` の一覧の、その stem の要素をそのまま返します(一覧が作りかけなら `building`。`refresh` は効きません。一覧に無い stem は `shader_not_found`)。
 - **制限**: shader interface の取得は rendering 節の `shader_defines` を compile に渡しません。define で port が変わる shader では、pass が実際に使う形と異なり得ます。
@@ -1587,7 +1587,7 @@ RS-1 からは、**それが唯一の拒否のときだけ**、editor は文書�
   ([RS-1 の restart_reason を載せる所](../../src/core/communication/renderconfigeditor.cpp#L8500))。
 - `set_layout` だけの `edit_graph_document`(N-6。runtime に行かない)は対象外です。`material_route_default` を付けたものは runtime に行くので対象です。
 - Studio がこの結果を受けて engine を起動し直す流れは、[Studio のノードキャンバス](15_studio.md#studio-のノードキャンバスgraph-タブ)の   「engine の再起動が要る graph の編集」にあります。
-- ディスクからの読み直しとの関係: [`Renderer::reloadRenderPipelineFromDisk()`](../../src/core/vkcore/renderer.cpp#L3602) は live の material の照合を   外し([`validate_live_materials = false` の所](../../src/core/vkcore/renderer.cpp#L3637))、同じ transaction の中で material の shader と pipeline を   作り直してから公開し、作り直しが失敗すれば候補世代ごと捨てて旧世代を保ちます([第6章 §6.7](06_rendering.md) の   「任意 G-buffer / material output ABI・attachment state」)。RS-1 が commit した文書を、その engine 自身の file watcher が拾うことは   ありません。RS-1 の editor は `--rpc` で起こした engine の中でだけ動き([RPC を受け始める所](../../src/core/appflow/loop.cpp#L709))、   `--rpc` の engine では watcher の gate が閉じているためです([gate の条件](../../src/core/watch/reloadgate.cpp#L46))。`hot_reload` を宣言して   gate が開いていても、`--rpc` の下では watcher の変更は render pipeline の参加者に届きません。同じ project を   `--rpc` 無しの窓ありで開いている別の engine があれば、その watcher がファイルを拾い、ディスクの経路で組み直しを試みます   (この道を端から端まで通す test は見当たりません。未確認)。
+- ディスクからの読み直しとの関係: [`Renderer::reloadRenderPipelineFromDisk()`](../../src/core/vkcore/renderer.cpp#L3602) は live の material の照合を   外し([`validate_live_materials = false` の所](../../src/core/vkcore/renderer.cpp#L3637))、同じ transaction の中で material の shader と pipeline を   作り直してから公開し、作り直しが失敗すれば候補世代ごと捨てて旧世代を保ちます([第6章 §6.7](06_rendering.md) の   「任意 G-buffer / material output ABI・attachment state」)。RS-1 が commit した文書を、その engine 自身の file watcher が拾うことは   ありません。RS-1 の editor は `--rpc` で起こした engine の中でだけ動き([RPC を受け始める所](../../src/core/appflow/loop.cpp#L712))、   `--rpc` の engine では watcher の gate が閉じているためです([gate の条件](../../src/core/watch/reloadgate.cpp#L46))。`hot_reload` を宣言して   gate が開いていても、`--rpc` の下では watcher の変更は render pipeline の参加者に届きません。同じ project を   `--rpc` 無しの窓ありで開いている別の engine があれば、その watcher がファイルを拾い、ディスクの経路で組み直しを試みます   (この道を端から端まで通す test は見当たりません。未確認)。
 - `--rpc` の engine(Studio の engine)に、ディスクで書き換えた render 文書を取り込ませる道は `reload_render_documents`です。file watcher の   経路ではなく編集 RPC の候補として組み直すので、live の material の物理の契約だけが変わる文書は、上の RS-1 と同じく commit して `restart_required` になります   (コードの読み。test はこの道を通していません。§13.5 の「ループと分解の RPC」の「ディスクで書き換えた render 文書を取り込む」)。
 - 編集 RPC の経路でもディスクの経路と同じ作り直しを使い、起動し直さずにその場で載せる案は採りません。起動し直しのままです   。
 - MC-1: Blank(`hdr` feature 無し)の live の material は、G-buffer の互換の表のうち SDR の表(albedo / emissive が `B8G8R8A8_SRGB`)を持ちます。
@@ -2230,7 +2230,7 @@ UX-12d でこの取り消しの編集は外しました。断られた `edit_bat
   - `feature.required_target_missing@1`: **Add with targets**(名指された target を、catalog の `required_targets` に足して扱います)。
   - `feature.insertion_anchor_missing@1`(FR-2 の無い engine では、文の `insert anchor was not found: <anchor>`): **Place <名前> in the Graph**。
   - `graph.target_ref_type_mismatch@1` に `expected` があれば: **Fix: make <target_ref> <形> <種類>( (<N> layers))**(`pelican.renderFeatures.fixTargetRef`)。`<形>` は topology が `two_d_array` なら `2D array`、`cube` なら `cube`、無ければ `2D` です(例: `Fix: make shadow_map_ref 2D array depth (3 layers)`。[ボタンの字 `targetRefTypeFixLabel()`](../../src/devstudio/model/featurerefusalfix.hpp#L99))。押すと `get_graph_instances` を読み、その target_ref の `parameters.type` を `expected.type` に替えた `replace_node` を 1 回の `edit_graph_document` で送ります(root を先に、無ければ definition の body を探す)。断られたのが Parameters の変更(`set_parameters`)だったなら、続けてそれをもう一度送ります。通れば `<target_ref> takes the type the engine expects.` です。
-- **Place <名前> in the Graph**: Graph の dock を前に出し、root に id が anchor の `render.fullscreen` を足して(あれば選ぶだけ)選び、その Pass の欄の New… を、anchor と同じ名前の雛形(あれば)を選んだ状態で開きます(UX-5b の New… と同じ道。[Graph に名前付きの pass を置く `GraphCanvasWidget::placeNamedFullscreenPass()`](../../src/devstudio/view/graphcanvaswidget.cpp#L13308))。Graph が保存や読み直しの最中なら、編集できるようになってから置きます。Render Features の notice は `<anchor> is placed in the Graph: create its shader there, then add the feature again.` です。Create は人が押し、feature はもう一度 Add します。
+- **Place <名前> in the Graph**: Graph の dock を前に出し、root に id が anchor の `render.fullscreen` を足して(あれば選ぶだけ)選び、その Pass の欄の New… を、anchor と同じ名前の雛形(あれば)を選んだ状態で開きます(UX-5b の New… と同じ道。[Graph に名前付きの pass を置く `GraphCanvasWidget::placeNamedFullscreenPass()`](../../src/devstudio/view/graphcanvaswidget.cpp#L13470))。Graph が保存や読み直しの最中なら、編集できるようになってから置きます。Render Features の notice は `<anchor> is placed in the Graph: create its shader there, then add the feature again.` です。Create は人が押し、feature はもう一度 Add します。
 engine の FR-3と、それを使う Studio の UX-12d(。下の節)で、どちらも committed になります。シナリオ `gui_settings_choose` は、この 2 つの拒否を待つ形から、最後まで通して画素を見る形に書き直しました。
 Add with targets で、target(`lit_color` / `scene_depth`)と target_ref は入るものの、feature の追加が `Pass input target is not produced as an earlier output: scene_depth` で断られ、パネルが足したものを戻していました。宣言しただけで誰も書かない `scene_depth` は、`sky_background` が読めません(この graph の material pass は depth を自分の image に書いています)。Add with targets は `render_material_pass.depth` を `scene_depth_ref` に繋ぐ op を同じ `edit_batch` に入れるので通ります。
 lighting の pass が 2D の depth の入力を宣言していて、engine は型を今の shadow map(cascade 1 の 2D)と照らすので、型の書き換えと `cascade_count` の変更は、どちらを先に送っても単独では通りません。Fix は target_ref の型・lighting の pass の port の型・`cascade_count` の変更を 1 本の `edit_batch` で送るので通ります。
@@ -2244,7 +2244,7 @@ lighting の pass が 2D の depth の入力を宣言していて、engine は�
   - 通れば `Added <feature> with the render targets it needs; <node>.<port> writes <target>.` です(書き手が無ければ UX-12b と同じ `Added <feature> with the render targets it needs.`)。
   - 断られた batch の拒否に `batch_index` があれば、notice は `<feature> was refused at <段>: <拒否の文>` です。`<段>` は `declaring the render targets` / `the Graph's target references`(書き手があれば `the Graph's target references and <target>'s writer`)/ `adding the feature` です([batch の拒否に段の名前を足す `chainRefused()`](../../src/devstudio/view/renderfeatureswidget.cpp#L3220))。続けて、その拒否が名指す直し方のボタンを UX-12b と同じ規則で出します。
 - **断られた後の Write … from …**: `feature.required_target_unwritten@1` で断られると(Apply が送った add でも)、notice は `<feature> reads <target>, which no pass writes before it. Write it from <node>.<port>.` です(候補が 2 つ以上なら `Write it from one of the passes below.`。[拒否の文 `requiredTargetUnwrittenLine()`](../../src/devstudio/model/featurerefusalfix.hpp#L143))。`writer_candidates` のうち `node` のあるもの(root の graph の node が作った pass)だけを **Write <target> from <node>.<port>**(`pelican.renderFeatures.writeFrom`。2 つ以上なら前に combo `pelican.renderFeatures.writer`)にします。rendering 節の pass は graph の編集で繋ぎ替えられないので出しません。押すと、繋ぎ替えの `edit_graph_document` と feature の `add` を、上と同じ形の 1 本の `edit_batch` で送ります([拒否から書き手のボタンを出す所](../../src/devstudio/view/renderfeatureswidget.cpp#L3306))。
-- **Graph の notice**: Graph タブで同じ拒否を受けたときも、notice は frame planner の文ではなくこの code の 1 文です([Graph の notice で FR-3 の code の文を使う所](../../src/devstudio/view/graphcanvaswidget.cpp#L9686))。
+- **Graph の notice**: Graph タブで同じ拒否を受けたときも、notice は frame planner の文ではなくこの code の 1 文です([Graph の notice で FR-3 の code の文を使う所](../../src/devstudio/view/graphcanvaswidget.cpp#L9808))。
 - **見えない target を画面に出す —— Connect <target> to <present>**: feature を足した後(Add with targets が通った後と、Apply の add が再起動せずに通った後)、その feature の catalog の項目に `required_targets` があれば、authoring context と Graph を読み直し、feature の pass が color に書く target のうち、同じ graph のどの pass も読まないものを探します([見せる手順を作る `showTargetPlan()`](../../src/devstudio/model/featurerefusalfix.hpp#L191))。あれば notice の末尾に `<feature> draws into <target>, which nothing reads. Connect it to <present> to see it.` が付き、**Connect <target> to <present>**(`pelican.renderFeatures.showTarget`)が出ます。`<present>` は、同じ graph で display か swapchain に書き、root か fork した preset で入力を編集できる pass です。
   - 押すと 2 つの編集を作ります。1 つ目は、feature の pass の挿入先(`insertion` の anchor)が root の graph の node で、target の target_ref があれば、その node の color の出力を target_ref に繋ぐ `edit_graph_document` の ops(上の繋ぎ替えと同じ op。型を書き換えるのは legacy の型のときだけ)。2 つ目は、present の最初の入力を target に替える `edit_preset_pass` です。
   - UX-13d(。engine の FR-4 で `edit_preset_pass` が `edit_batch` に入った後)からは、graph の op があれば `[edit_graph_document, edit_preset_pass]` の順の 1 本の `edit_batch`(ticket 1 つ)で送り、graph の op が無ければ `edit_preset_pass` だけを送ります([UX-13d で present の編集を送る `sendShow()`](../../src/devstudio/view/renderfeatureswidget.cpp#L3505))。batch の `base_source_digest` は手順を作るときに読んだ root の digest で、`edit_preset_pass` の preset(か feature)の digest も batch の前に読んだ値のままです(コードの注記。engine の規則は上の「project の preset と feature を書き換える編集」)。
@@ -2350,7 +2350,7 @@ edit / remove を送ったときの `compute_task_not_editable` は変わりま�
 - **Frame Plan**: その task への接続・切断、dispatch、Delete がこの文で止まり、dispatch の帯も出ません。status 行は 90 文字で最初の
   1 文までなので、**status 行には前半の 1 文だけ**が出て、code を含む全文は status 行の tooltip にあります
   ([1 行にする規則 `oneLine()`](../../src/devstudio/view/panelhelp.hpp#L132))。rendering 文書の reference は authoring context の
-  `source_reference` から取ります([root の reference を入れる所](../../src/devstudio/view/frameplanwidget.cpp#L2205))。
+  `source_reference` から取ります([root の reference を入れる所](../../src/devstudio/view/frameplanwidget.cpp#L2274))。
 - **Task Editor**(Render Features の Tasks... / Frame Plan の Edit task...): root の task を選ぶと、下の notice に全文(code まで)が出て、
   宣言欄は読み取り専用、**Apply task**・**Delete task**・接続表・dispatch フォームは押せません([Task Editor の錠](../../src/devstudio/view/renderfeatureswidget.cpp#L523))。
   送る中身(add / edit / 断り)は [`computeTaskEditorRequest()`](../../src/devstudio/view/frameplanedit.cpp#L1168) が決めます。
@@ -2360,18 +2360,18 @@ edit / remove を送ったときの `compute_task_not_editable` は変わりま�
 **graph node が作った task は「Graph タブで編集」と言い、その node へ移れます。**Studio は task の錠を **origin を先に読んで** 決めます([錠の順](../../src/devstudio/view/frameplanedit.cpp#L1118)): `origin` が `"graph_node"` → root(`origin` が `"root"`、または `origin` が無く上の判定に当たる)→ 読み取り専用(`editable: false`)→ 編集できる。Frame Plan の drag・帯・Delete も Task Editor の Apply も、この 1 つの関数を通ります。graph node の task には、root の文ではなく engine の `read_only_reason` がそのまま出ます: `This task is made by a render.compute node in the graph. Edit the node in the Graph tab.`
 
 - **Frame Plan**: その task への接続・切断、dispatch、Delete はこの文で止まり、dispatch の帯も出ません。**status 行にはこの 2 文が丸ごと**   出ます(`oneLine()` は最初の 1 文で切るので、断りに status 行用の 1 行を別に持たせています。[status 行用の 1 行](../../src/devstudio/view/frameplanedit.hpp#L32))。
-  tooltip は `<task>: <上の文> Right-click the task and choose Open in Graph.` です。その task の上で右クリックすると、メニューの先頭に   **Open in Graph** が出ます([右クリックに足す所](../../src/devstudio/view/frameplangraphics.cpp#L3980))。すべての node の上に出ます(✅RC-5s の前は anchor の node を除いていました。今は anchor の node がありません)。graph の node が作っていない pass では、Graph タブの畳んだ node を選びます(下の「graph の外から来た pass を畳んだ node で見る」)。Passes / Resources / Physical plan / Decisions / Backends / Barriers のタブの行の右クリックにも出ます(下の「Frame Plan の表の行から開く」)。
+  tooltip は `<task>: <上の文> Right-click the task and choose Open in Graph.` です。その task の上で右クリックすると、メニューの先頭に   **Open in Graph** が出ます([右クリックに足す所](../../src/devstudio/view/frameplangraphics.cpp#L3984))。すべての node の上に出ます(✅RC-5s の前は anchor の node を除いていました。今は anchor の node がありません)。graph の node が作っていない pass では、Graph タブの畳んだ node を選びます(下の「graph の外から来た pass を畳んだ node で見る」)。Passes / Resources / Physical plan / Decisions / Backends / Barriers のタブの行の右クリックにも出ます(下の「Frame Plan の表の行から開く」)。
 - **Task Editor**: graph node の task を選ぶと、notice に上の文が出て、その横に **Open in Graph** ボタンが出ます(既存の task で
   `graph_node` を持つ行を選んだときだけ見えます)。宣言欄と Apply task などは root の task と同じく止まります。
-- Frame Plan で graph node の task を選んで **Edit task** を押すか行をダブルクリックすると、Task Editor ではなく Open in Graph と同じ道で Graph タブのその node が選ばれます([Edit task の分岐](../../src/devstudio/view/frameplanwidget.cpp#L809))。graph node の無い task は今までどおり Task Editor です(下の「graph root では Frame Plan の Add を Graph の palette に」)。
-- **Open in Graph** は Graph の dock を前に出し、`graph_node` の scope を開いて node を選び、view の中央に置きます([node を見せる所](../../src/devstudio/view/graphcanvaswidget.cpp#L13368))。
+- Frame Plan で graph node の task を選んで **Edit task** を押すか行をダブルクリックすると、Task Editor ではなく Open in Graph と同じ道で Graph タブのその node が選ばれます([Edit task の分岐](../../src/devstudio/view/frameplanwidget.cpp#L850))。graph node の無い task は今までどおり Task Editor です(下の「graph root では Frame Plan の Add を Graph の palette に」)。
+- **Open in Graph** は Graph の dock を前に出し、`graph_node` の scope を開いて node を選び、view の中央に置きます([node を見せる所](../../src/devstudio/view/graphcanvaswidget.cpp#L13530))。
   `instance` があれば root から 1 段ずつその instance へ降ります(instance をダブルクリックして降りるのと同じ)ので、パンくずと
   `Values from:` がその instance に合います。2 段下(`wrap/inner` など)では、パンくずが 2 つの definition を通り、`Values from:` は
   root の instance(`wrap`)です。path が scope に届かないときは scope を直接開き、path の最初の instance が `Values from:` の一覧に
   あればそれを選びます。
 - Graph タブがまだその node を持っていない(文書を読んでいない、または古い)ときは、Graph の dock を前に出さず何も変えずに
   `The Graph tab has no node <node> in <scope> yet: refresh it.`(root scope は `the root`)を、Frame Plan では status 行、Task Editor では
-  notice に出します([`openGraphNode()`](../../src/devstudio/view/graphcanvaswidget.cpp#L13512)。node を見せられると分かってから、呼び手が渡した「Graph を前に出す」関数を呼びます。✅UI-2 の前はここで tab を切り替えていました)。
+  notice に出します([`openGraphNode()`](../../src/devstudio/view/graphcanvaswidget.cpp#L13684)。node を見せられると分かってから、呼び手が渡した「Graph を前に出す」関数を呼びます。✅UI-2 の前はここで tab を切り替えていました)。
 - **制限**: `root` という名前の definition は root scope と見分けられません。
 
 
@@ -2430,15 +2430,15 @@ port名と型・アクセス等は保持するため、groups_from/rays_fromのp
 **Frame Plan のノードも共通グラフと同じ見た目になっています。**見出し帯に pass 名と種別、その下に GPU 計時の 1 行、 続けて**書く target の行(右端にソケット)と読む resource の行(左端にソケット)**が並びます ([組み立て](../../src/devstudio/view/frameplangraphics.cpp#L1153))。ソケットの形は resource の種類で、 `frame_plan.image`(丸)/ `frame_plan.buffer`(四角)/ `frame_plan.acceleration_structure`(菱形)/ `frame_plan.swapchain`(六角)/ `frame_plan.history`(縁の太い丸)を [既定表の frame_plan.* 5 entry](../../src/devstudio/resources/graph_socket_styles.json#L28) が持ちます —— **Graph タブと同じ表・同じ解決順**です([種類の判定](../../src/devstudio/view/frameplangraphics.cpp#L2167))。
 
 辺は**ソケット中心からソケット中心**へ引かれ、対応するソケットを持たない辺(折り畳んだグループ、境界の stub)だけがノード矩形へ落ちます([配線](../../src/devstudio/view/frameplangraphics.cpp#L286))。
-辺のラベルは消えて tooltip になり、ノードを選ぶと触れていない辺が薄くなります ([不透明度](../../src/devstudio/view/frameplangraphics.cpp#L4801))。
+辺のラベルは消えて tooltip になり、ノードを選ぶと触れていない辺が薄くなります ([不透明度](../../src/devstudio/view/frameplangraphics.cpp#L4805))。
 
-**辺は plan の `barriers` です(✅RC-2)。**以前は plan の `execution_plan` の依存から引いていたので、資源を渡さない順序だけの辺(明示の `after` / `before` / `snapshot_after`。灰色の破線で、ラベルは `order only: explicit_after` など)と、ラベルの `same-pixel attachment` がありました。RC-2 で execution plan が無くなり、辺は barrier から作り(同じ 2 つの間の barrier は 1 本に束ねます。[`dependencyRecords()`](../../src/devstudio/view/frameplangraphics.cpp#L413))、`after` だけでつないだ 2 つの node の間には辺を描きません(順は node の `order` で見ます)。ラベルの印で残るのは physical plan から出る `absorbed in fused scope` です。region の凸の判定、畳んだグループに出入りする辺、境界の stub、部分木の列も barrier だけで決まります。test: `devstudio_frameplan_graph_test` の [「WP347 production edges are the plan's barriers and show fused absorption」](../../test/devstudio_frameplan_graph_test.cpp#L2988)(`after` だけの組に辺が無いことを見ます)。
+**辺は plan の `barriers` です(✅RC-2)。**以前は plan の `execution_plan` の依存から引いていたので、資源を渡さない順序だけの辺(明示の `after` / `before` / `snapshot_after`。灰色の破線で、ラベルは `order only: explicit_after` など)と、ラベルの `same-pixel attachment` がありました。RC-2 で execution plan が無くなり、辺は barrier から作り(同じ 2 つの間の barrier は 1 本に束ねます。[`dependencyRecords()`](../../src/devstudio/view/frameplangraphics.cpp#L413))、`after` だけでつないだ 2 つの node の間には辺を描きません(順は node の `order` で見ます)。ラベルの印で残るのは physical plan から出る `absorbed in fused scope` です。region の凸の判定、畳んだグループに出入りする辺、境界の stub、部分木の列も barrier だけで決まります。test: `devstudio_frameplan_graph_test` の [「WP347 production edges are the plan's barriers and show fused absorption」](../../test/devstudio_frameplan_graph_test.cpp#L2989)(`after` だけの組に辺が無いことを見ます)。
 
-**操作・RPC・model は変わっていません** —— ソケットはノード item の子なので、**Shift＋左ドラッグ**はソケットから 始めてもノードの本体から始めても同じ接続になります([起点の解決](../../src/devstudio/view/frameplangraphics.cpp#L4143))。
+**操作・RPC・model は変わっていません** —— ソケットはノード item の子なので、**Shift＋左ドラッグ**はソケットから 始めてもノードの本体から始めても同じ接続になります([起点の解決](../../src/devstudio/view/frameplangraphics.cpp#L4147))。
 行の並びは resource の**名前順**で宣言順ではなく、長い名前は中略されます(幅の上限 [`FramePlanNodeMaximumWidth = 360`](../../src/devstudio/view/frameplangraphics.hpp#L165)。全名は同じ行の ソケットの tooltip に `<resource> : <型>` として出ます)。shader が入力を宣言している fullscreen / raster pass の入力の行は、 名前順ではなく宣言の binding の順です(§13.5「Studio のノードキャンバス」の「ソケットは shader の宣言から出ます」)。
 
 Frame Planの **Order...**(`pelican.framePlanOrderNodes`。以前の表示は Order nodes...)で現在のgraphのノードをUp/Downで並べ、Applyで保存できます。
-✅RC-5s から、ダイアログは `__anchor_` で始まる名前を並べず、保存もしません。engine の `get_frame_node_order` が返した保存済みの並びに古い `__anchor_*` があっても、ダイアログに読む時点で除きます([並びに出す名前](../../src/devstudio/view/frameplanwidget.cpp#L3661)、[保存済みの並びから除く所](../../src/devstudio/view/renderfeatureswidget.cpp#L243))。Order の編集を Undo / Redo で戻すときも、戻す文書の `frame_node_order` から `__anchor_*` を除いて送ります(Order の編集の entry だけ。[除く所](../../src/devstudio/model/renderedithistory.cpp#L22))。engine は保存済みの `__anchor_*` を読み飛ばして warning を出します([第6章](06_rendering.md) §6.6)。test: `devstudio_task_editor_digest_test` の [「RC-5s Order Apply and reopening save only concrete node names」](../../test/devstudio_task_editor_digest_test.cpp#L754)、`devstudio_render_history_test` の [「RC-5s Order Undo and Redo never restore removed anchor names」](../../test/devstudio_render_history_test.cpp#L192)。
+✅RC-5s から、ダイアログは `__anchor_` で始まる名前を並べず、保存もしません。engine の `get_frame_node_order` が返した保存済みの並びに古い `__anchor_*` があっても、ダイアログに読む時点で除きます([並びに出す名前](../../src/devstudio/view/frameplanwidget.cpp#L3730)、[保存済みの並びから除く所](../../src/devstudio/view/renderfeatureswidget.cpp#L243))。Order の編集を Undo / Redo で戻すときも、戻す文書の `frame_node_order` から `__anchor_*` を除いて送ります(Order の編集の entry だけ。[除く所](../../src/devstudio/model/renderedithistory.cpp#L22))。engine は保存済みの `__anchor_*` を読み飛ばして warning を出します([第6章](06_rendering.md) §6.6)。test: `devstudio_task_editor_digest_test` の [「RC-5s Order Apply and reopening save only concrete node names」](../../test/devstudio_task_editor_digest_test.cpp#L754)、`devstudio_render_history_test` の [「RC-5s Order Undo and Redo never restore removed anchor names」](../../test/devstudio_render_history_test.cpp#L192)。
 データ依存とAS構築の必要順序は維持され、矛盾する並べ替えは拒否されます。
 ✅RC-3d2 から、ここで決めた順がそのまま物理計画の scope の順と実行の順です。物理計画の順を変える道はこれだけです([第6章](06_rendering.md#physical-order-follows-frame-plan)。✅RC-6b2 の前の physical fragment も順は変えられませんでした)。
 root の rendering 節の pass どうしも、依存が無ければ入れ替えられます。
@@ -2576,16 +2576,16 @@ op の形が壊れているだけのもの(`ops` が配列でない、`source` �
 - **scene journal とは別の履歴です。**Graph タブは成功した直近100操作を保持し、   Undo / Redo ボタンとキャンバスの Ctrl+Z / Ctrl+Y（または Ctrl+Shift+Z）で逆編集・再編集を送ります。
   保存済み文書の digest が別の編集で変わった場合は履歴を破棄します。engine の再起動(Studio から見れば再接続)では破棄しません。
   Studio 自身の Render Undo / Redo の commit については、その commit が返した digest に一致し、Graph の nodes と definitions が変わらない場合に限り Graph の履歴を保ちます。例えば render target の宣言を戻してから、Graph の参照 node を Redo できます。外部変更、Graph 自体の変更、別 project への切り替えはこの例外に入りません。
-  再接続の後に読んだ文書の digest が履歴を作った文書と同じなら Undo / Redo はそのまま効き、違えば破棄します([`GraphCanvasModel::clearContext()`](../../src/devstudio/model/graphcanvasmodel.cpp#L674))。
-  別の project を開くと、digest が同じでも破棄します([`GraphCanvasModel::forgetHistory()`](../../src/devstudio/model/graphcanvasmodel.cpp#L2829))。送信中だった編集は engine と一緒に捨てます。
+  再接続の後に読んだ文書の digest が履歴を作った文書と同じなら Undo / Redo はそのまま効き、違えば破棄します([`GraphCanvasModel::clearContext()`](../../src/devstudio/model/graphcanvasmodel.cpp#L684))。
+  別の project を開くと、digest が同じでも破棄します([`GraphCanvasModel::forgetHistory()`](../../src/devstudio/model/graphcanvasmodel.cpp#L2906))。送信中だった編集は engine と一緒に捨てます。
   接続が切れている間は Undo / Redo を押せません。
   palette で forward_opaque の material pass を足し、ops と一緒に `material_route_default: "forward"` を送った履歴項目(第15章の「forward の route の既定を一緒に送ります」)は、
-  送る前に `get_graph_instances` で読んだ root の書かれた値(無ければ `null`)を覚えます([覚える所](../../src/devstudio/model/graphcanvasmodel.cpp#L3717))。
-  その Undo は、pass を消す逆の ops とその値を**1 つの `edit_graph_document`** で送ります([Undo と Redo で送る値を選ぶ所](../../src/devstudio/model/graphcanvasmodel.cpp#L2797))。
+  送る前に `get_graph_instances` で読んだ root の書かれた値(無ければ `null`)を覚えます([覚える所](../../src/devstudio/model/graphcanvasmodel.cpp#L3794))。
+  その Undo は、pass を消す逆の ops とその値を**1 つの `edit_graph_document`** で送ります([Undo と Redo で送る値を選ぶ所](../../src/devstudio/model/graphcanvasmodel.cpp#L2874))。
   元が不在なら `null` で member を消し、元の値があればその値を書き戻します。forward から不在・`"auto"` へ戻る Undo は 1 回の ticket・1 回の再起動です。
   Redo は `"forward"` を付けて入れ直します。
   ほかに既定を書く Studio の入口(**Add material pass...** の form の `add_authored_pass`、Rendering settings の `set_material_route_default`)は render の編集の履歴(文書の snapshot)に入るので([記録する method の一覧](../../src/devstudio/model/renderedithistory.cpp#L50))、そちらの Undo は文書ごと既定を戻します。
-  test: `devstudio_graphcanvas_scene_test` の [「UD-3 Graph widget sends a null route inverse and distinguishes an absent parameter」](../../test/devstudio_graphcanvas_scene_test.cpp#L5801)(足すときは `"forward"`、Undo は `null`(省略ではない)、Redo は `"forward"`、route に関係しない編集は param 無し)。
+  test: `devstudio_graphcanvas_scene_test` の [「UD-3 Graph widget sends a null route inverse and distinguishes an absent parameter」](../../test/devstudio_graphcanvas_scene_test.cpp#L5825)(足すときは `"forward"`、Undo は `null`(省略ではない)、Redo は `"forward"`、route に関係しない編集は param 無し)。
   シーン・Features・Pass Editorを横断する統一Undoではありません。RPCからも同じ編集opを使えます。
 - `base_source_digest` の照合は[所有節](#digest-cas)に従い、不一致なら何も書きません。
 - **1 操作 = 1 op 列 = 1 チケット**。同じフレームに 2 本目を投げても、後から来た方が CAS で落ちます。
@@ -2824,7 +2824,7 @@ fallbackの editor が組めないディスクの版を持つのと同じ持ち�
 client が読むもの・送るものは次のとおりです。
 
 - **状態**: `get_status.render_pipeline` が `{state: "ready", root}` か `{state: "fallback", root, refusal: {code, ...fields, document?, message}}` です
-  ([BS-1 の get_status に足す所](../../src/core/communication/rpcserver.cpp#L1682))。`refusal` は編集の rejected の `error` と同じ形で、graph の拒否には CT-2 の `document` が付きます。
+  ([BS-1 の get_status に足す所](../../src/core/communication/rpcserver.cpp#L1694))。`refusal` は編集の rejected の `error` と同じ形で、graph の拒否には CT-2 の `document` が付きます。
   `root` は project.json の書き方のままの参照です。`--render-fallback` を付けない起動でも、`get_status.render_pipeline` は `{state: "ready", root}` で出ます(コードの読み)。
   `get_frame_plan` は fallback の間だけ、最上位に同じ `render_pipeline` を持ちます。
   ✅RC-3e1 から、`refusal` は `pipeline_stage` と `document_digest`(起動時に読んだ root の bytes の digest)も持ちます(下の「変種と組み直しの拒否の形」の「拒否の段と文書の digest」)。
@@ -2926,8 +2926,8 @@ client が読むもの(要点):
 ### Inspector のグラフ装着
 
 Inspector の `Add component...` / `Ray geometry...` の下、**properties の scroll 領域より上**に
-**Attached graphs** グループがあります([置き場](../../src/devstudio/view/inspectorwidget.cpp#L313)。
-properties は [:219](../../src/devstudio/view/inspectorwidget.cpp#L425) の `pelican.inspectorProperties` です)。
+**Attached graphs** グループがあります([置き場](../../src/devstudio/view/inspectorwidget.cpp#L334)。
+properties は [:219](../../src/devstudio/view/inspectorwidget.cpp#L455) の `pelican.inspectorProperties` です)。
 選択中のオブジェクトを owner とする `graph.instance` の一覧と、**Attach...** / **Detach** / **Refresh** です。
 
 **装着する**: **Attach...** で `Attach graph` ダイアログが開きます。`Definition` で definition を選ぶと、
@@ -2951,7 +2951,7 @@ properties は [:219](../../src/devstudio/view/inspectorwidget.cpp#L425) の `pe
 1. **Control with a curve** —— 前節のノード集合を作って繋ぎます(`edit_graph_document`)。
 2. **Connect to another output** —— `Connect input` ダイアログで別ノードの出力を選び、**Connect** で `set_input`。
 3. **Open the source** —— Graph の dock を前に出し、その producer を選択します
-   ([繋ぎ込み](../../src/devstudio/view/mainwindow.cpp#L1180))。接続されていない port で押すと
+   ([繋ぎ込み](../../src/devstudio/view/mainwindow.cpp#L1248))。接続されていない port で押すと
    「これは開ける供給元を持たない、保存された値だ」と notice が出ます。
 4. **Disconnect** —— `set_input{null}`。**mode が `connected` のときだけ押せます**
    ([有効化](../../src/devstudio/view/graphattachmentwidget.cpp#L265))。他の 3 つは常に押せます。
@@ -3164,7 +3164,7 @@ scene のロードは 1 つのトランザクションになっています([第
 ### `get_status.participants.game_logic` の `error_code` / `error_fields`
 
 `get_status` に `participants.game_logic` が入りました。**まだ 1 度も reload を試していない
-起動直後でも、startup の初期化失敗がここに出ます**([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1288))。
+起動直後でも、startup の初期化失敗がここに出ます**([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1300))。
 
 - 試行済みなら `reload.runtime.game_logic` の内容(`configured` / `loaded` / `reloading` /
   `pending` / `source_busy_retries` / `generation` / `systems` / `source` / `loaded_copy` /

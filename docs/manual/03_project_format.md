@@ -30,7 +30,7 @@
 | `passes/*.json` | レンダリングパイプライン定義(rendering config。`pelican.graph` root、下記) | `basic_config.rendering_config_json` |
 | `input/actions.json` | 入力アクション定義 | `basic_config.input_actions_json` |
 | `live/inputs.json`(場所は任意) | live inputs の宣言(`pelican.live_inputs` v1。OSC-1a) | `basic_config.live_inputs_json` |
-| `input/profiles/*.json` | バインディングプロファイル | `basic_config.input_profiles` |
+| `input/profiles/*.json` | バインディングプロファイル(OSC の address を live input に結ぶ `live` の表も書ける。✅OSC-2a) | `basic_config.input_profiles` |
 | `ui/*.json` | UI ドキュメント(pelican.ui v1) | `basic_config.ui_config_json` |
 | `code/` | C++ ゲームコード | CMake `-DPELICAN_PROJECT` |
 | `imports/`(規約) | 外部ツールの納品物+manifest | `pelican_cli import` の入力 |
@@ -51,7 +51,7 @@
 
 v0 より前のエンジンは、commit の決定を別ファイル `committed` ではなく `manifest.json` の `"status": "committed"` に書いていました。この形で残ったディレクトリは**もう読みません**。起動時の復旧と、この transaction を使う commit(rendering config の編集と `project migrate` の apply)のどれも `render_config.legacy_transaction_dir@1` で止まり、ディレクトリには手を付けません([判定](../../src/project/projectdocumenttransaction.cpp#L405))。
 
-- 起動時(`pelican_player` が project.json を持つ project を開くとき): MG-1 から、parser より前の入口(§3.13)が同じ復旧を先に走らせます。stderr に `render_config.legacy_transaction_dir@1: {"message":"…","path":"…"}` が 1 行出て、player は exit 1 で終わります([入口の catch](../../src/player/main.cpp#L793))。この経路はコードを読んで確かめたもので、実行では未確認です。
+- 起動時(`pelican_player` が project.json を持つ project を開くとき): MG-1 から、parser より前の入口(§3.13)が同じ復旧を先に走らせます。stderr に `render_config.legacy_transaction_dir@1: {"message":"…","path":"…"}` が 1 行出て、player は exit 1 で終わります([入口の catch](../../src/player/main.cpp#L788))。この経路はコードを読んで確かめたもので、実行では未確認です。
 - 起動時(入口を通らずに `PelicanCore::run()` の復旧に届いたとき): ログに `Pelican fatal error : render_config.legacy_transaction_dir@1: {"message":"…","path":"…"}` が出て、起動はそこで終わります。
 - `project migrate` の apply: 先頭で同じ復旧を走らせるので、同じ名前で止まります(CLI は stderr に出して -1)。`--dry-run`(plan)は復旧を走らせません。
 - 編集の commit 時: ticket の結果は `committed: false` で、`error.code` がこの名前、`error.path` がディレクトリのパスです。文書は書き換わりません。
@@ -129,16 +129,18 @@ pelican の JSON は先頭 2 キー `schema` / `version` で「どの形式の�
   "requires": ["animation"] }
 ```
 
-語彙は次の 6 語です(✅PG-1 で `animation` 以外の 5 語が入りました)。行の正本は `src/project/projectrequirements.def` の 1 ファイルで、C++ 側の表・CMake 側のコーパス選別・コンポーネントの `required_feature`・package の `requires.capabilities` の検査が同じ行を読みます。
+語彙は次の 8 語です(✅PG-1 で `animation` 以外の 5 語が入り、その後 `canvas` と ✅OSC-2a の `osc` が足されました)。行の正本は `src/project/projectrequirements.def` の 1 ファイルで、C++ 側の表・CMake 側のコーパス選別・コンポーネントの `required_feature`・package の `requires.capabilities` の検査が同じ行を読みます。
 
 | 語 | 指すビルドオプション | そのオプションを OFF にしたビルドで開くと |
 |---|---|---|
 | `animation` | `PELICAN_WITH_ANIMATION` | `animation.module_unavailable@1` |
 | `audio` | `PELICAN_WITH_AUDIO` | `audio.module_unavailable@1` |
+| `canvas` | `PELICAN_WITH_CANVAS` | `canvas.module_unavailable@1` |
 | `physics` | `PELICAN_WITH_PHYSICS`(物理クエリサービスと collider world) | `physics.module_unavailable@1` |
 | `xr` | `PELICAN_WITH_OPENXR` | `xr.module_unavailable@1` |
 | `vat` | `PELICAN_WITH_VAT` | `vat.module_unavailable@1` |
 | `seqplayer` | `PELICAN_WITH_SEQPLAYER` | `seqplayer.module_unavailable@1` |
+| `osc` | `PELICAN_WITH_OSC`(OSC の解釈と UDP の受信。[第7章](07_input_ui.md#live-inputs-osc)) | `osc.module_unavailable@1` |
 
 物理 provider の選択(`PELICAN_WITH_BUILTIN_PHYSICS` / `PELICAN_WITH_JOLT_PHYSICS`)は語彙にありません。`physics` が指すのはクエリサービスの有無だけです。
 
@@ -146,9 +148,9 @@ pelican の JSON は先頭 2 キー `schema` / `version` で「どの形式の�
 
 | 事項 | 中身 |
 |---|---|
-| 語彙 | **ビルド機能ユニットのレジストリに載っている名前**です。各語が指すオプションは上の表のとおりです([第2章 §2.2](02_getting_started.md))。今日の表は 6 行([projectformat.cpp:80](../../src/project/projectformat.cpp#L81) が `.def` を展開)で、`knownProjectRequirements()` がその一覧を返します |
+| 語彙 | **ビルド機能ユニットのレジストリに載っている名前**です。各語が指すオプションは上の表のとおりです([第2章 §2.2](02_getting_started.md))。今日の表は 8 行([projectformat.cpp:80](../../src/project/projectformat.cpp#L81) が `.def` を展開)で、`knownProjectRequirements()` がその一覧を返します |
 | 検証の時 | **parse 時**。[parseProjectRequirements()](../../src/project/projectformat.cpp#L119)が配列であること・非空文字列であること・表にある名前であることを見ます |
-| 未知の名前 | `project.requires_unknown@1: project.json requires 'network', which this engine does not know; known requirements: animation, audio, physics, xr, vat, seqplayer` —— **既知の一覧を添えて**拒否します(一覧の順は `.def` の行の順) |
+| 未知の名前 | `project.requires_unknown@1: project.json requires 'network', which this engine does not know; known requirements: animation, audio, canvas, physics, xr, vat, seqplayer, osc` —— **既知の一覧を添えて**拒否します(一覧の順は `.def` の行の順) |
 | 満たせないビルド | 名前は新設せず、その語の `<語>.module_unavailable@1` を出します([projectformat.cpp:181](../../src/project/projectformat.cpp#L264))。例: `physics.module_unavailable@1: this build has PELICAN_WITH_PHYSICS=OFF, so project.json's requires: ["physics"] cannot be satisfied`。全要素が既知語かを先に確かめてから、最初に満たせない語を報告します。`pelican_player` はこれを捕まえて 1 行表示して exit 1 します |
 | コーパス側 | **プロジェクト群を順に調べるテスト・スモークも同じ値を読みます**。満たせない要求を持つプロジェクトは失敗ではなく**名前付きの skip**(`skip posegraph_demo: requires animation (PELICAN_WITH_ANIMATION=OFF)`)になります。`PELICAN_WITH_ANIMATION=OFF` build では `animation` を宣言した 3 つ分の行と、必要なら `skip editor lane: …`、最後に件数の要約が出ます([第2章 §2.2](02_getting_started.md))。`PELICAN_WITH_PHYSICS=OFF` build では `sprite_demo` が同じ形で飛ばされます |
 | 宣言しなくても止まるもの | `requires` はプロジェクトを開く時点の前倒しです。宣言が無くても、機能を外したビルドでその機能のコンポーネントを持つオブジェクトは、シーンロードの prepare と、エディタの `add_component` / `spawn` で同じ `<語>.module_unavailable@1` になります(今日対応付けがあるのは `collider` → `physics`、`animation` → `animation`。[第4章 §4.3](04_scene_ecs.md)) |
@@ -806,7 +808,7 @@ RPC [`import_render_feature{base_source_digest, source_dir, destination_referenc
    | `project.migration_step_cycle@1` | `to_version <= from_version` |
    | `project.migration_step_gap@1` | `to_version > from_version + 1`(1 版ずつしか上げられない) |
 
-2. **検出(開く前の入口)**: `pelican_player` は project.json を持つ project を開くとき、**parser が文書を読む前に 1 か所だけ**入口を通ります([`requireProjectMigrationNotRequired()`](../../src/project/projectmigration.cpp#L563)、呼ぶのは [main.cpp](../../src/player/main.cpp#L768) の `parseProjectEnvelopeText` の手前)。Studio が起動する player(`--rpc`)も同じ入口を通ります。入口はまず、落ちたプロセスが残した transaction を復旧し(§3.1 の `.pelican/render-authoring.transaction/`)、次に project root の下の `*.json` を全部歩いて、**最上位の `schema`(文字列)と `version`(整数)だけ**を SAX で生のまま読みます。`.` で始まるディレクトリ(`.pelican` / `.git` など)と symlink のディレクトリには入りません。オブジェクトでない JSON や、`schema` / `version` を持たない JSON は文書として数えません。登録された手順の `from` に当たる文書が 1 本でもあれば、parser に渡さず次の名前で止めます:
+2. **検出(開く前の入口)**: `pelican_player` は project.json を持つ project を開くとき、**parser が文書を読む前に 1 か所だけ**入口を通ります([`requireProjectMigrationNotRequired()`](../../src/project/projectmigration.cpp#L563)、呼ぶのは [main.cpp](../../src/player/main.cpp#L811) の `parseProjectEnvelopeText` の手前)。Studio が起動する player(`--rpc`)も同じ入口を通ります。入口はまず、落ちたプロセスが残した transaction を復旧し(§3.1 の `.pelican/render-authoring.transaction/`)、次に project root の下の `*.json` を全部歩いて、**最上位の `schema`(文字列)と `version`(整数)だけ**を SAX で生のまま読みます。`.` で始まるディレクトリ(`.pelican` / `.git` など)と symlink のディレクトリには入りません。オブジェクトでない JSON や、`schema` / `version` を持たない JSON は文書として数えません。登録された手順の `from` に当たる文書が 1 本でもあれば、parser に渡さず次の名前で止めます:
 
    ```
    project.migration_required@1: {"documents":[{"path":"scenes/main.scene.json","schema":"pelican.scene","from":2,"to":3}]}

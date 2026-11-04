@@ -52,7 +52,7 @@ flowchart LR
 
 `project.json` のschema/version/`engine_min_version`ゲートは、まず [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L311) が検証します。`--ignore-engine-version`で継続する場合も純粋層はログを出さずwarning文字列を返し、engine adapterだけがそれをquillへ渡します。検証規則の正本はこの関数だけで、`basicconfig.cpp`やdevcliに写しはありません。`engine_min_version` が新しすぎるときの拒否は MG-1 から `project.engine_too_old@1` という名前で始まります（[`projectEngineTooOldCode`](../../src/project/projectformat.hpp#L19)）。
 
-player ではこの parse の**前**に、MG-1 の入口 [`requireProjectMigrationNotRequired()`](../../src/project/projectmigration.cpp#L563) が 1 回だけ走ります（[呼ぶ場所](../../src/player/main.cpp#L768)）。落ちたプロセスが残した project 文書の transaction を復旧してから、project root の下の `*.json` の最上位の `schema` / `version` を parser を通さずに読み、登録された移行手順の `from` に当たる文書があれば `project.migration_required@1` で止めます。parser の version 検査より前に置くのは、project.json 自身の版が上がったときも「知らない版」ではなく「移行が要る」で止めるためです。v0 の登録表は空で、そのときは root を歩きもしません。流れ全体は [manual 第3章 §3.13](../manual/03_project_format.md) にあります。
+player ではこの parse の**前**に、MG-1 の入口 [`requireProjectMigrationNotRequired()`](../../src/project/projectmigration.cpp#L563) が 1 回だけ走ります（[呼ぶ場所](../../src/player/main.cpp#L811)）。落ちたプロセスが残した project 文書の transaction を復旧してから、project root の下の `*.json` の最上位の `schema` / `version` を parser を通さずに読み、登録された移行手順の `from` に当たる文書があれば `project.migration_required@1` で止めます。parser の version 検査より前に置くのは、project.json 自身の版が上がったときも「知らない版」ではなく「移行が要る」で止めるためです。v0 の登録表は空で、そのときは root を歩きもしません。流れ全体は [manual 第3章 §3.13](../manual/03_project_format.md) にあります。
 
 [`ProjectEnvelope`](../../src/project/projectformat.hpp#L39) が持つのは `name` / `engine_min_version` / `saved_by_engine` / `requirements` / `basic_config` / `asset_stores` / `hot_reload` / `prefabs` の8つです(`hot_reload` は HW-1 で増えた。下の箇条)。`saved_by_engine`（MG-1）は最後に project.json を書いたエンジンの版の**記録**で、何の判定にも使いません（文字列でなければ無視します）。このうち `requirements` は P-2b で入った **`requires`** キーで（`requires` はC++のキーワードなのでフィールド名だけずらしてあります）、「このプロジェクトが無いと動かないビルド機能」を宣言します。
 
@@ -186,7 +186,7 @@ std::string ProjectBasicConfig::sceneDataJson() const {
 
 - **記録**: RPC を持つ engine は material 文書の RPC を登録するときに [`enableProjectDocumentJournal()`](../../src/project/projectdocumenttransaction.cpp#L1048) を呼び([呼ぶ所](../../src/core/communication/materialdocumentrpc.cpp#L2699))、以後 `commitProjectDocuments()` の候補に [`withDocumentJournal()`](../../src/project/projectdocumenttransaction.cpp#L1006) が `.pelican/document_journal/manifest.json` を足して同じ transaction で書きます。文書ごとに最初の `before`(bytes の hex。無ければ null)だけを残し、`digest` は書くたびに書いた bytes の SHA-256(消したなら null)にします。`.pelican/` の下と、bytes の変わらない置換は記録しません。
 - **戻す**: [`revertProjectDocumentsToBaseline()`](../../src/project/projectdocumenttransaction.cpp#L1072) は、今の bytes の digest が journal の `digest` と同じ文書だけを `before` に戻し(null なら消す)、違う文書は `conflicts` に入れて残します。戻した後の状態が新しい基準点で、journal も同じ transaction で消します。RPC は `mark_document_baseline` / `get_document_journal` / `revert_documents_to_baseline`([登録](../../src/core/communication/materialdocumentrpc.cpp#L2700))。
-- **Studio の側の古い答え**(RV-1 の fix round): 確認の窓・Save の待ち・journal の要求は世代を持ち、[`MainWindow::invalidateDocumentOperations()`](../../src/devstudio/view/mainwindow.cpp#L2928) が project の切り替え・engine の起こし直し・承認した終了の時点で世代を進めます。前の engine の答えや閉じた窓の `finished` は、世代が違えば何もしません(以前は前の答えの後から RevertRecovery / RevertClose が走り得た)。自動化の `open_project`([`commandOpenProject`](../../src/devstudio/automation/automationcommands.cpp#L2601))は確認の答えも新しい engine も待たずにすぐ返り、切り替えが待っていれば `engine_restarting: true` を返します(以前は最大 20 秒待ってから false を返し得た)。
+- **Studio の側の古い答え**(RV-1 の fix round): 確認の窓・Save の待ち・journal の要求は世代を持ち、[`MainWindow::invalidateDocumentOperations()`](../../src/devstudio/view/mainwindow.cpp#L3007) が project の切り替え・engine の起こし直し・承認した終了の時点で世代を進めます。前の engine の答えや閉じた窓の `finished` は、世代が違えば何もしません(以前は前の答えの後から RevertRecovery / RevertClose が走り得た)。自動化の `open_project`([`commandOpenProject`](../../src/devstudio/automation/automationcommands.cpp#L2601))は確認の答えも新しい engine も待たずにすぐ返り、切り替えが待っていれば `engine_restarting: true` を返します(以前は最大 20 秒待ってから false を返し得た)。
 
 ### 一時ファイル + rename による原子的置換の使用箇所 {#background-usage-11}
 
@@ -267,7 +267,7 @@ resource追加には次の三箇所が必要です。
 
 ## 3.4 asset manifestの起動検証
 
-playerはcore起動前に module [`AssetsVerification`](../../src/core/loader/assetsverification.hpp#L86) の [`verifyAtStartup()`](../../src/core/loader/assetsverification.cpp#L175) を呼びます([呼び出し](../../src/player/main.cpp#L819)。✅AV-1 から。それまでは自由関数 `verifyAssetsAtStartup()` を直接呼んでいました)。
+playerはcore起動前に module [`AssetsVerification`](../../src/core/loader/assetsverification.hpp#L86) の [`verifyAtStartup()`](../../src/core/loader/assetsverification.cpp#L175) を呼びます([呼び出し](../../src/player/main.cpp#L862)。✅AV-1 から。それまでは自由関数 `verifyAssetsAtStartup()` を直接呼んでいました)。
 
 `verifyAtStartup()` は store の一覧・hash cache の path・strict を覚えてから、今も残る [`verifyAssetsAtStartup()`](../../src/core/loader/assetsverification.cpp#L148)(中身は無名名前空間の `verifyAssetStores(..., log = true)`)を呼び、store ごとの結果 [`AssetStoreVerification`](../../src/core/loader/assetsverification.hpp#L27)(`StartupAssetsVerificationSummary::results`)を `Record {verified_at, stores}` として持ちます。log の行と strict の判定は AV-1 の前と同じです。純粋な実作業は [`verifyAssetsManifest()`](../../src/project/assetsmanifest.cpp#L574) です。
 
@@ -291,7 +291,7 @@ mutex は 2 つです。`mutex` は状態(store の一覧・結果・`running`)�
 
 test 用の `holdForTesting()` は、worker が `disk` を取った後で止まるように変わりました(本物の照合と同じく store を握ったまま止まる)。PJ-1 の `redeclareStores()` が manifest を書くときは今も待ち、書いている間と照合の終わりを待つ間は frame が止まります。module の破棄は `stop()` で worker を join するので、長い照合の途中で engine を閉じると照合の終わりまで待ちます。拒否は [`AssetsVerificationError`](../../src/core/loader/assetsverification.hpp#L67)(`code()` と `fields()`)で、RPC の側が `data: {error_code, error_fields}` にします。`fields_` は丸括弧で初期化します。波括弧だと nlohmann の json 1 つが要素 1 つの配列になり、RPC の側が object でない `fields()` を `{}` に置き換えてしまうためです(コンストラクタの注記)。
 
-RPC の側は [`internal::configureAssetsVerificationRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1586) で、module は `EngineRpcModules::assets_verification` に `FastModuleContainer::tryGet<AssetsVerification>()` で入ります。module の無い host(in-process の test など)は `get_status` で `not_run`、`verify_assets` / `update_assets_manifest` で `assets_verification_unavailable@1` になります。test は [`assetsverification_test.cpp`](../../test/assetsverification_test.cpp#L162) の AV-1 の 4 本(`RpcServer::processLine` で往復。worker は `holdForTesting()` / `waitForTesting()` で止めて `running` を見る)です。
+RPC の側は [`internal::configureAssetsVerificationRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1598) で、module は `EngineRpcModules::assets_verification` に `FastModuleContainer::tryGet<AssetsVerification>()` で入ります。module の無い host(in-process の test など)は `get_status` で `not_run`、`verify_assets` / `update_assets_manifest` で `assets_verification_unavailable@1` になります。test は [`assetsverification_test.cpp`](../../test/assetsverification_test.cpp#L162) の AV-1 の 4 本(`RpcServer::processLine` で往復。worker は `holdForTesting()` / `waitForTesting()` で止めて `running` を見る)です。
 
 **hash の速さ(✅AH-1、`0f93b5b8`)。**cache が外れた file の hash は [`assetFileSha256()`](../../src/project/assetsmanifest.cpp#L162) で、file を 1 MiB の buffer で読みます。AH-1 はこの関数の中で、Windows では CNG(`BCryptCreateHash(BCRYPT_SHA256_ALG_HANDLE, ...)` / `BCryptHashData` / `BCryptFinishHash`)、それ以外では picosha2 の `hash256_one_by_one` に chunk ごとに渡していました。今は FW-1(`92681afd`)がその計算を [`Sha256Stream`](../../src/project/sha256stream.hpp#L15)(`src/project/sha256stream.cpp`。Windows では BCrypt、それ以外では picosha2)に移し、file watcher と共有しています。
 
@@ -513,7 +513,7 @@ renderer の slot には、frame を挟まない連続の load の道もあり�
 
 末尾の 1 slot は診断用ではなく **outbox 溢れ専用**で、[`reserveEntry()`](../../src/core/loader/effecttransaction.cpp#L120) が 256 件を超えて積めなかった**副作用の**件数を `effect_outbox_full@1` の `dropped` として数え続けます（診断そのものが 256 件を超えた場合は数えずに落ちます。非対称の理由は §5.15）。公開用の文字列と JSON は commit 後に初めて作られます — [`effectErrors()`](../../src/core/loader/scene.cpp#L1817) の呼び出しは `noexcept` の commit tail（`flush` / `finish`）を通過した**後**にあり、そこで固定 slot を sequence 順に並べて [`CommittedWithEffectFailure::EffectError`](../../src/core/loader/sceneload.hpp#L176) へ変換します。
 
-副作用の失敗は例外ではなく [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L174) として `SceneLoadResult` に載り、**扱いは root ごと**です: startup は [`LOG_ERROR`](../../src/core/userpublic/pelican_core.cpp#L164)、pending も [`LOG_ERROR`](../../src/core/loader/scene.cpp#L1887)、rpc の `load_scene` は [`response["effect_errors"]`](../../src/core/communication/rpcserver.cpp#L2137) として JSON で返し（失敗が無ければ空配列）、import は [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L275) にそのまま入れて呼び手へ渡します。いずれも `committed` であることは変わりません（scene は載っている）。
+副作用の失敗は例外ではなく [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L174) として `SceneLoadResult` に載り、**扱いは root ごと**です: startup は [`LOG_ERROR`](../../src/core/userpublic/pelican_core.cpp#L164)、pending も [`LOG_ERROR`](../../src/core/loader/scene.cpp#L1887)、rpc の `load_scene` は [`response["effect_errors"]`](../../src/core/communication/rpcserver.cpp#L2155) として JSON で返し（失敗が無ければ空配列）、import は [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L275) にそのまま入れて呼び手へ渡します。いずれも `committed` であることは変わりません（scene は載っている）。
 
 transient glTF 経路（`load_gltf`）は executor を通らず、従来どおり [`GameObjects::createWithComponents()`](../../src/core/loader/scene.cpp#L2252) の populate callback で作ります（§3.8 の「`load_gltf` はトランザクション」）。
 
@@ -614,7 +614,7 @@ activate 段で behavior が `emit` したものも同じ outbox に入り、`Sc
 > | `pelican_core` | 上の test TU をソースに含めない |
 > | `ctest wp380c_...` | `dumpbin /symbols` で「入っていないこと」を検査 |
 >
-> **手がかり**: それを機械で確かめるのが [`wp380c_production_has_no_fault_setter_symbol`](../../test/CMakeLists.txt#L2776) で、検査は3種類あります。(1) `dumpbin /symbols` の出力に `SceneLoadFaultInjectorForTesting`（およびmodel release側の3つ）が現れないこと（[その `string(FIND)`](../../test/run_wp380c_no_production_fault_setter.cmake#L29)）。(2) test-onlyのTUが `pelican_core` の `SOURCES` に混ざっていないこと（[SOURCES 内の TU 照合](../../test/run_wp380c_no_production_fault_setter.cmake#L37)）。(3) productionヘッダ側に `set...ForTesting(...) {` という**定義**が書かれていないこと — 正規表現で本体つき定義を探します（[production header の列挙](../../test/run_wp380c_no_production_fault_setter.cmake#L87)）。3番目があるのは、ヘッダにinline定義を1行書くだけで(1)も(2)もすり抜けられるからです。この検査はWindows（`dumpbin` がある構成）限定です。
+> **手がかり**: それを機械で確かめるのが [`wp380c_production_has_no_fault_setter_symbol`](../../test/CMakeLists.txt#L2822) で、検査は3種類あります。(1) `dumpbin /symbols` の出力に `SceneLoadFaultInjectorForTesting`（およびmodel release側の3つ）が現れないこと（[その `string(FIND)`](../../test/run_wp380c_no_production_fault_setter.cmake#L29)）。(2) test-onlyのTUが `pelican_core` の `SOURCES` に混ざっていないこと（[SOURCES 内の TU 照合](../../test/run_wp380c_no_production_fault_setter.cmake#L37)）。(3) productionヘッダ側に `set...ForTesting(...) {` という**定義**が書かれていないこと — 正規表現で本体つき定義を探します（[production header の列挙](../../test/run_wp380c_no_production_fault_setter.cmake#L87)）。3番目があるのは、ヘッダにinline定義を1行書くだけで(1)も(2)もすり抜けられるからです。この検査はWindows（`dumpbin` がある構成）限定です。
 >
 > **不変条件**: setterの定義をヘッダへ書かない（inlineでも）。test-onlyのTUを `pelican_core` のソースへ足さない。`default_fault_injector_for_testing` の既定値をnullptr以外にしない。
 
@@ -690,7 +690,7 @@ metadata の commit 以降は「失敗しない尾部」です。executor はそ
 
 ## 3.6 即時loadと要求load
 
-- `SceneLoader::load(SceneLoadRequest)`はその場で全sceneを置換（commit まで到達した場合。§3.5 の 3）。production の root は startup（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L177)）/ RPC `load_scene`（[`rpcserver.cpp` 内](../../src/core/communication/rpcserver.cpp#L2123)）/ pending apply / snapshot import（[`importSceneDocument()` からの `Owned` request](../../src/core/loader/basicconfig.cpp#L852)）で、いずれも [`requireSceneLoadCommitted()`](../../src/core/loader/scene.cpp#L502) で `PreCommitFailure` を従来どおりの例外へ戻します。
+- `SceneLoader::load(SceneLoadRequest)`はその場で全sceneを置換（commit まで到達した場合。§3.5 の 3）。production の root は startup（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L177)）/ RPC `load_scene`（[`rpcserver.cpp` 内](../../src/core/communication/rpcserver.cpp#L2141)）/ pending apply / snapshot import（[`importSceneDocument()` からの `Owned` request](../../src/core/loader/basicconfig.cpp#L852)）で、いずれも [`requireSceneLoadCommitted()`](../../src/core/loader/scene.cpp#L502) で `PreCommitFailure` を従来どおりの例外へ戻します。
 - [`requestLoad()`](../../src/core/loader/scene.cpp#L1840) は存在確認後、scene IDだけをpendingへ保存。activate 段の behavior から呼ばれた場合は live ではなく candidate projection に対して存在確認し、要求も candidate 側に積みます（rollback で一緒に捨てる）。
 - [`applyPendingLoad()`](../../src/core/loader/scene.cpp#L1871) はフレームのゲーム更新末尾で、まず前回 commit 分の retirement queue を消費し、apply 時点の committed projection に late-bind した `Borrowed` request で実際にload。
 
