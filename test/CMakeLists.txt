@@ -363,12 +363,13 @@ add_test(
 if(TARGET pelican_studio_layout)
   # Qt imported targets are directory-scoped; make the layout library and
   # compatibility test dependencies visible in this sibling directory.
-  find_package(Qt6 REQUIRED COMPONENTS Core Widgets)
+  find_package(Qt6 REQUIRED COMPONENTS Core Test Widgets)
   pelican_define_test(devstudio_layoutpreset_test QT QT_OFFSCREEN
     pelican_studio_layout
     pelican_studio_view
     pelican_studio_viewport
     Qt6::Core
+    Qt6::Test
     Qt6::Widgets)
 endif()
 

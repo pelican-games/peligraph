@@ -1,4 +1,5 @@
 #include "layoutpreset.hpp"
+#include "docktitlebar.hpp"
 #include "embeddedviewport.hpp"
 #include "frameplanwidget.hpp"
 #include "graphcanvaswidget.hpp"
@@ -23,21 +24,28 @@
 #include <QPoint>
 #include <QLayout>
 #include <QLabel>
+#include <QIcon>
 #include <QLineEdit>
 #include <QMainWindow>
 #include <QMenu>
-#include <QPushButton>
 #include <QMessageBox>
+#include <QMouseEvent>
+#include <QPushButton>
 #include <QSet>
 #include <QRect>
 #include <QSettings>
+#include <QShortcut>
+#include <QSignalSpy>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStatusBar>
+#include <QStyle>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTemporaryDir>
+#include <QTest>
 #include <QTimer>
+#include <QToolButton>
 #include <QWidget>
 
 #include <cstdlib>
@@ -1470,4 +1478,383 @@ TEST_CASE("UI-1a refresh, undo, fit view and filter still act from the split row
     graph_refresh->click();
     settle(app);
     CHECK(graph_refresh->isVisible());
+}
+
+namespace {
+
+QDockWidget *namedDock(QWidget &root, const char *name) {
+    auto *dock = root.findChild<QDockWidget *>(QString::fromLatin1(name));
+    REQUIRE(dock != nullptr);
+    return dock;
+}
+
+PelicanStudio::DockTitleBar *titleBarOf(QDockWidget *dock) {
+    auto *bar = qobject_cast<PelicanStudio::DockTitleBar *>(dock->titleBarWidget());
+    REQUIRE(bar != nullptr);
+    return bar;
+}
+
+QToolButton *dockButton(QDockWidget *dock, const char *suffix) {
+    auto *button = dock->findChild<QToolButton *>(
+        dock->objectName() + QLatin1Char('.') + QString::fromLatin1(suffix));
+    REQUIRE(button != nullptr);
+    return button;
+}
+
+void floatDock(QApplication &app, QDockWidget *dock) {
+    dock->setFloating(true);
+    if (!dock->isVisible()) dock->show();
+    QTest::qWait(50);
+    settle(app);
+}
+
+// The offscreen platform can crash while destroying a main window that still
+// owns a floating top-level dock. No DK-1 assertion needs the window to go
+// away in that state, so put every dock back before the window's destructor.
+class DockCleanup final {
+public:
+    DockCleanup(QMainWindow &window, QApplication &app) : window_(window), app_(app) {}
+    ~DockCleanup() {
+        for (QDockWidget *dock : window_.findChildren<QDockWidget *>()) {
+            if (dock->isFloating() || dock->window() != &window_) dock->setFloating(false);
+        }
+        settle(app_);
+    }
+    DockCleanup(const DockCleanup &) = delete;
+    DockCleanup &operator=(const DockCleanup &) = delete;
+
+private:
+    QMainWindow &window_;
+    QApplication &app_;
+};
+
+} // namespace
+
+TEST_CASE("DK-1 every dock has a title bar whose buttons and title follow the dock",
+          "[devstudio][layout][dk1]") {
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    settle(application());
+
+    const QList<QDockWidget *> docks = window.findChildren<QDockWidget *>();
+    REQUIRE(docks.size() >= 14);
+    for (QDockWidget *dock : docks) {
+        INFO("dock " << dock->objectName().toStdString());
+        REQUIRE_FALSE(dock->objectName().isEmpty());
+        auto *bar = titleBarOf(dock);
+        CHECK(bar->isVisible() == dock->isVisible());
+        const int title_height =
+            window.style()->pixelMetric(QStyle::PM_TitleBarHeight, nullptr, bar);
+        CHECK(bar->minimumHeight() == title_height);
+        CHECK(bar->maximumHeight() == title_height);
+        if (bar->isVisible()) CHECK(bar->height() == title_height);
+        CHECK(bar->titleLabel()->text() == dock->windowTitle());
+        for (const char *suffix : {"maximize", "float", "close"}) {
+            auto *button = dockButton(dock, suffix);
+            CHECK(button->parentWidget() == bar);
+            CHECK_FALSE(button->icon().isNull());
+        }
+    }
+
+    auto *project = namedDock(window, "pelican.projectDock");
+    auto *bar = titleBarOf(project);
+    project->setWindowTitle(QStringLiteral("Renamed project"));
+    settle(application());
+    CHECK(bar->titleLabel()->text() == QStringLiteral("Renamed project"));
+    CHECK(project->windowTitle() == QStringLiteral("Renamed project"));
+}
+
+TEST_CASE("DK-1 maximize is hidden when docked and disabled for a floating group",
+          "[devstudio][layout][dk1]") {
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    settle(application());
+    DockCleanup cleanup{window, application()};
+
+    auto *inspector = namedDock(window, "pelican.inspectorDock");
+    auto *maximize = dockButton(inspector, "maximize");
+    CHECK(inspector->titleBarWidget() == titleBarOf(inspector));
+    CHECK(inspector->isFloating() == false);
+    CHECK(maximize->isHidden());
+    CHECK_FALSE(inspector->titleBarWidget()->isHidden());
+
+    floatDock(application(), inspector);
+    REQUIRE(inspector->isFloating());
+    CHECK_FALSE(maximize->isHidden());
+    CHECK(maximize->isVisible());
+    CHECK(maximize->isEnabled());
+
+    // A dock that is not top level and whose window is not a QMainWindow is
+    // how a floating tab group presents itself to the title bar. Driving a
+    // real drag into QDockWidgetGroupWindow here leaves the offscreen plugin
+    // with a backing store that crashes when MainWindow is destroyed, so use
+    // the same parent/window shape directly. The button logic below is the
+    // one a real group gets; the drag itself stays QDockWidget's.
+    QWidget group_host;
+    group_host.resize(320, 220);
+    auto *group_dock = new QDockWidget(QStringLiteral("Grouped"), &group_host);
+    group_dock->setObjectName(QStringLiteral("test.groupDock"));
+    group_dock->setWidget(new QLabel(QStringLiteral("grouped")));
+    group_dock->setTitleBarWidget(new PelicanStudio::DockTitleBar(group_dock));
+    group_host.show();
+    settle(application());
+
+    CHECK_FALSE(group_dock->isWindow());
+    CHECK(group_dock->window() == &group_host);
+    auto *group_bar = titleBarOf(group_dock);
+    REQUIRE(group_bar != nullptr);
+    auto *group_maximize = group_bar->maximizeButton();
+    CHECK_FALSE(group_maximize->isHidden());
+    CHECK_FALSE(group_maximize->isEnabled());
+    CHECK(group_maximize->toolTip().contains(QStringLiteral("single floating")));
+}
+
+TEST_CASE("DK-1 maximize and restore a floating dock with its geometry",
+          "[devstudio][layout][dk1]") {
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    settle(application());
+    DockCleanup cleanup{window, application()};
+
+    auto *inspector = namedDock(window, "pelican.inspectorDock");
+    floatDock(application(), inspector);
+    REQUIRE(inspector->isFloating());
+    auto *maximize = dockButton(inspector, "maximize");
+    REQUIRE(maximize->isVisible());
+    REQUIRE(maximize->isEnabled());
+    const QRect normal_geometry = inspector->geometry();
+    const QIcon normal_icon = maximize->icon();
+
+    maximize->click();
+    QTest::qWait(50);
+    settle(application());
+    CHECK(inspector->isMaximized());
+    CHECK(maximize->toolTip() == QStringLiteral("Restore"));
+    CHECK(maximize->icon().cacheKey() != normal_icon.cacheKey());
+
+    maximize->click();
+    QTest::qWait(50);
+    settle(application());
+    CHECK_FALSE(inspector->isMaximized());
+    CHECK(maximize->toolTip() == QStringLiteral("Maximize"));
+    CHECK(inspector->geometry() == normal_geometry);
+}
+
+TEST_CASE("DK-1 a maximized dock returns normal before it docks again",
+          "[devstudio][layout][dk1]") {
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    settle(application());
+    DockCleanup cleanup{window, application()};
+
+    auto *inspector = namedDock(window, "pelican.inspectorDock");
+    floatDock(application(), inspector);
+    REQUIRE(inspector->isFloating());
+    auto *maximize = dockButton(inspector, "maximize");
+    auto *float_button = dockButton(inspector, "float");
+    const QSize normal_size = inspector->size();
+
+    maximize->click();
+    QTest::qWait(50);
+    settle(application());
+    REQUIRE(inspector->isMaximized());
+    const QSize maximized_size = inspector->size();
+    REQUIRE(maximized_size != normal_size);
+
+    float_button->click();
+    QTest::qWait(50);
+    settle(application());
+    CHECK_FALSE(inspector->isFloating());
+    CHECK_FALSE(inspector->isMaximized());
+    CHECK(qobject_cast<QMainWindow *>(inspector->window()) == &window);
+    CHECK(inspector->isVisible());
+    CHECK(window.rect().contains(inspector->geometry()));
+
+    // The maximized size must not be the size the next float comes back at.
+    float_button->click();
+    QTest::qWait(50);
+    settle(application());
+    CHECK(inspector->isFloating());
+    CHECK(inspector->size() != maximized_size);
+    CHECK(inspector->size() == normal_size);
+}
+
+TEST_CASE("DK-1 save and restore keep a floating dock and Reset docks it",
+          "[devstudio][layout][dk1]") {
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    settle(application());
+    DockCleanup cleanup{window, application()};
+
+    auto *inspector = namedDock(window, "pelican.inspectorDock");
+    floatDock(application(), inspector);
+    REQUIRE(inspector->isFloating());
+
+    const QByteArray state =
+        window.saveState(PelicanStudio::LayoutPresetManager::WindowStateVersion);
+    REQUIRE_FALSE(state.isEmpty());
+    inspector->setFloating(false);
+    window.addDockWidget(Qt::RightDockWidgetArea, inspector);
+    settle(application());
+    REQUIRE_FALSE(inspector->isFloating());
+    REQUIRE(window.restoreState(
+        state, PelicanStudio::LayoutPresetManager::WindowStateVersion));
+    QTest::qWait(50);
+    settle(application());
+
+    CHECK(inspector->isFloating());
+    CHECK(inspector->isVisible());
+    auto *bar = titleBarOf(inspector);
+    CHECK(bar->isVisible());
+    CHECK_FALSE(bar->maximizeButton()->isHidden());
+    CHECK(bar->maximizeButton()->isEnabled());
+
+    auto *reset = window.findChild<QAction *>(QStringLiteral("pelican.layout.resetDefault"));
+    REQUIRE(reset != nullptr);
+    reset->trigger();
+    QTest::qWait(50);
+    settle(application());
+    CHECK_FALSE(inspector->isFloating());
+    CHECK(window.dockWidgetArea(inspector) == Qt::RightDockWidgetArea);
+    CHECK(inspector->isVisible());
+    CHECK(titleBarOf(inspector) == bar);
+    CHECK(bar->maximizeButton()->isHidden());
+}
+
+TEST_CASE("DK-1 a main window shortcut still arrives while a floating dock is active",
+          "[devstudio][layout][dk1]") {
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    window.activateWindow();
+    REQUIRE(QTest::qWaitForWindowActive(&window));
+    settle(application());
+    DockCleanup cleanup{window, application()};
+
+    auto *inspector = namedDock(window, "pelican.inspectorDock");
+    floatDock(application(), inspector);
+    REQUIRE(inspector->isFloating());
+
+    auto *play = window.findChild<QAction *>(QStringLiteral("pelican.play.play"));
+    REQUIRE(play != nullptr);
+    play->setEnabled(false); // The shortcut is the subject; do not start Play.
+    auto *shortcut = window.findChild<QShortcut *>(QStringLiteral("pelican.play.playKey"));
+    REQUIRE(shortcut != nullptr);
+    CHECK(shortcut->context() == Qt::WindowShortcut);
+    QSignalSpy activated{shortcut, &QShortcut::activated};
+
+    inspector->raise();
+    inspector->activateWindow();
+    if (!QTest::qWaitForWindowActive(inspector)) {
+        WARN("DK-1: this platform cannot activate a floating tool window; "
+             "the shortcut route is covered on Windows");
+        return;
+    }
+    QTest::keyClick(inspector, Qt::Key_P, Qt::ControlModifier);
+    QTest::qWait(50);
+    settle(application());
+    CHECK(activated.count() == 1);
+}
+
+TEST_CASE("DK-1 a press on the title bar is ignored and reaches the dock",
+          "[devstudio][layout][dk1]") {
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    settle(application());
+
+    auto *inspector = namedDock(window, "pelican.inspectorDock");
+    auto *bar = titleBarOf(inspector);
+    struct PressWatcher final : QObject {
+        int presses = 0;
+        bool eventFilter(QObject *, QEvent *event) override {
+            if (event->type() == QEvent::MouseButtonPress) ++presses;
+            return false;
+        }
+    } watcher;
+    inspector->installEventFilter(&watcher);
+
+    const QPoint local{4, bar->height() / 2};
+    QTest::mousePress(bar, Qt::LeftButton, Qt::NoModifier, local);
+    QTest::mouseRelease(bar, Qt::LeftButton, Qt::NoModifier, local);
+    settle(application());
+    inspector->removeEventFilter(&watcher);
+    CHECK(watcher.presses >= 1);
+
+    // A bar on its own has no dock parent to take an ignored event: accepted
+    // false here is exactly the flag QDockWidget's drag path depends on.
+    PelicanStudio::DockTitleBar standalone(inspector);
+    standalone.setParent(nullptr);
+    standalone.resize(200, bar->height());
+    QMouseEvent press(QEvent::MouseButtonPress, QPointF(4, 12), QPointF(4, 12),
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(&standalone, &press);
+    CHECK_FALSE(press.isAccepted());
+}
+
+TEST_CASE("DK-1 a drag from maximized restores the normal window before moving",
+          "[devstudio][layout][dk1]") {
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    settle(application());
+    DockCleanup cleanup{window, application()};
+
+    auto *inspector = namedDock(window, "pelican.inspectorDock");
+    floatDock(application(), inspector);
+    REQUIRE(inspector->isFloating());
+    auto *bar = titleBarOf(inspector);
+    const QSize normal_size = inspector->size();
+    auto *maximize = dockButton(inspector, "maximize");
+    maximize->click();
+    QTest::qWait(50);
+    settle(application());
+    REQUIRE(inspector->isMaximized());
+    REQUIRE(inspector->size() != normal_size);
+
+    const QPoint local{bar->width() / 2, bar->height() / 2};
+    QTest::mousePress(bar, Qt::LeftButton, Qt::NoModifier, local);
+    QTest::qWait(30);
+    CHECK(inspector->isMaximized());
+
+    QTest::mouseMove(bar, local + QPoint(30, 15));
+    QTest::qWait(50);
+    settle(application());
+    CHECK_FALSE(inspector->isMaximized());
+    CHECK(inspector->size() == normal_size);
+    QTest::mouseRelease(bar, Qt::LeftButton, Qt::NoModifier, local + QPoint(30, 15));
+    QTest::qWait(50);
+    settle(application());
+
+    auto *float_button = dockButton(inspector, "float");
+    float_button->click();
+    QTest::qWait(50);
+    settle(application());
+    CHECK_FALSE(inspector->isFloating());
+    float_button->click();
+    QTest::qWait(50);
+    settle(application());
+    CHECK(inspector->isFloating());
+    CHECK(inspector->size() == normal_size);
 }

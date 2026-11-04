@@ -1,6 +1,8 @@
 add_library(pelican_studio_view STATIC
     uimain.cpp
     mainwindow.cpp
+    docktitlebar.cpp
+    docktitlebar.hpp
     keymapdialog.cpp
     keymapdialog.hpp
     frameplanwidget.cpp

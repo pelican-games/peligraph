@@ -1,5 +1,6 @@
 #include "graphattachmentwidget.hpp"
 #include "mainwindow.hpp"
+#include "docktitlebar.hpp"
 #include "assetsdock.hpp"
 #include "materialsdock.hpp"
 #include "frameplaneditcapability.hpp"
@@ -244,6 +245,9 @@ QDockWidget *makeDock(
     dock->setFeatures(
         QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetFloatable);
     dock->setWidget(contents);
+    // DK-1: a Qt::Tool dock has no platform maximize button. The title bar
+    // supplies one, and ignores presses so QDockWidget still drags and docks.
+    dock->setTitleBarWidget(new DockTitleBar(dock));
     return dock;
 }
 
@@ -4791,8 +4795,11 @@ QString MainWindow::restoreLastToolLayout() {
 
 void MainWindow::applyDefaultLayout() {
     for (QDockWidget *dock : docks_) {
-        removeDockWidget(dock);
+        // A dock restored as a floating top-level window only leaves that
+        // state while it is still in the layout; removeDockWidget first and
+        // setFloating(false) is ignored, so dock it before taking it out.
         dock->setFloating(false);
+        removeDockWidget(dock);
         dock->show();
     }
 
