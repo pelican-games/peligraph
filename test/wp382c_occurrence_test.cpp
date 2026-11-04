@@ -49,7 +49,7 @@ TEST_CASE("occurrence_id_v1 excludes all registration and source indices",
     REQUIRE_FALSE(first.error);
     REQUIRE(first.occurrence_id.size() == 32);
     INFO("occurrence_id_v1=" << first.occurrence_id);
-    REQUIRE(first.occurrence_id == "64cec198825dbfead84c8c436d12784a");
+    REQUIRE(first.occurrence_id == "f75fd05dae391e2c061ec91cc08ed21c");
 
     // Asset-table reordering, insertion of an unrelated leading GLB node,
     // and primitive-array reordering alter only diagnostic indices. None are
@@ -83,7 +83,7 @@ TEST_CASE("occurrence_id_v1 drives node identity from extras.id over the name pa
     REQUIRE_FALSE(explicit_id.error);
     REQUIRE(explicit_id.occurrence_id.size() == 32);
     INFO("explicit occurrence_id_v1=" << explicit_id.occurrence_id);
-    REQUIRE(explicit_id.occurrence_id == "d0a62a050f00204877b6103933ef98d4");
+    REQUIRE(explicit_id.occurrence_id == "83144449b4236268e0ff98bbb9828563");
 
     // Tag 2 is a different encoding of the same node, so the two ids differ.
     REQUIRE(explicit_id.occurrence_id !=
@@ -108,7 +108,7 @@ TEST_CASE("occurrence_id_v1 drives node identity from extras.id over the name pa
     REQUIRE_FALSE(primitive_explicit.error);
     INFO("explicit primitive occurrence_id_v1="
          << primitive_explicit.occurrence_id);
-    REQUIRE(primitive_explicit.occurrence_id == "5f03f05ddd660e0867ce4c3e67aa4668");
+    REQUIRE(primitive_explicit.occurrence_id == "d17a253e7ac3a2356bcb1609cb428c79");
     REQUIRE(primitive_explicit.occurrence_id != explicit_id.occurrence_id);
     auto primitive_other = primitive_authored;
     primitive_other.primitive_explicit_id = "prim-b";

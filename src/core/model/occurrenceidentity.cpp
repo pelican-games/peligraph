@@ -151,12 +151,18 @@ std::optional<std::string> occurrenceNfcUtf8(
     std::wstring wide(static_cast<std::size_t>(wide_count), L'\0');
     MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(),
                         static_cast<int>(value.size()), wide.data(), wide_count);
-    const int normalized_count = NormalizeString(
+    // The size query returns an estimate (12 for "Root"); only the second
+    // call's result is the normalized length. Keeping the estimate hashed
+    // trailing NULs and gave Windows ids that no other platform produces.
+    const int estimated_count = NormalizeString(
         NormalizationC, wide.data(), wide_count, nullptr, 0);
+    if (estimated_count <= 0) { error.reason = "nfc"; return std::nullopt; }
+    std::wstring normalized(static_cast<std::size_t>(estimated_count), L'\0');
+    const int normalized_count = NormalizeString(
+        NormalizationC, wide.data(), wide_count, normalized.data(),
+        estimated_count);
     if (normalized_count <= 0) { error.reason = "nfc"; return std::nullopt; }
-    std::wstring normalized(static_cast<std::size_t>(normalized_count), L'\0');
-    NormalizeString(NormalizationC, wide.data(), wide_count,
-                    normalized.data(), normalized_count);
+    normalized.resize(static_cast<std::size_t>(normalized_count));
     const int utf8_count = WideCharToMultiByte(
         CP_UTF8, WC_ERR_INVALID_CHARS, normalized.data(), normalized_count,
         nullptr, 0, nullptr, nullptr);
