@@ -1499,6 +1499,19 @@ class GraphCanvasWidget final : public QWidget {
     // change the frame plan (anything but a placement), when the engine says
     // it committed: the owner has the Frame Plan read the plan again.
     void setPlanCommitAction(std::function<void()> action);
+    // RP-1b. The same commit, with the plan generation it belongs to: the
+    // commit revision the Graph model has reached and the engine session
+    // that served it. The Frame Plan waits for that generation's full plan
+    // rather than reading one itself.
+    void setPlanCommitAction(
+        std::function<void(std::uint64_t commit_revision, std::uint64_t engine_epoch)> action);
+    // RP-1b. Each full get_frame_plan reply this widget's Graph model reads,
+    // handed over at the end of the reply's handling -- after the Graph
+    // swallowed the document and the scene from it -- with the generation the
+    // read was sent for. The bytes are the transport's own.
+    void setFullPlanObserver(
+        std::function<void(const QByteArray &bytes, std::uint64_t commit_revision,
+                           std::uint64_t engine_epoch)> observer);
     // GL-1e / RU-1: the render edit history's Undo and Redo (the window's).
     // A pass's input edit sent from this tab is taken back by the tab's own
     // Undo through them, as by the Frame Plan's.

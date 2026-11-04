@@ -30,6 +30,8 @@
 #include "studiocommands.hpp"
 #include "../viewport/embeddedviewport.hpp"
 
+#include <cstdint>
+
 #include <QApplication>
 #include <QDialogButtonBox>
 #include <QHeaderView>
@@ -1212,7 +1214,18 @@ void MainWindow::createWorkspace() {
     // through the shared digest: that moves on every placement too -- the
     // Frame Plan's own node positions are the Graph tab's set_layout -- and
     // would read the whole plan again after each drag.
-    graph_canvas_->setPlanCommitAction([this] { frame_plan_->planChangedByCommit(); });
+    graph_canvas_->setPlanCommitAction(
+        [this](std::uint64_t commit_revision, std::uint64_t engine_epoch) {
+            frame_plan_->planChangedByCommit(commit_revision, engine_epoch);
+        });
+    // RP-1b: the plan the Graph model read for that commit is the Frame
+    // Plan's too; it adopts those exact bytes after the Graph has handled the
+    // reply, instead of sending a second get_frame_plan.
+    graph_canvas_->setFullPlanObserver(
+        [this](const QByteArray &bytes, std::uint64_t commit_revision,
+               std::uint64_t engine_epoch) {
+            frame_plan_->takePlanReply(bytes, commit_revision, engine_epoch);
+        });
     // UX-6a, decision 2: one sender of reload_shaders, the Frame Plan's
     // follower, for the shader files either tab's passes read; after a
     // reload the Graph reads its sockets again, in front or not.

@@ -52,6 +52,19 @@ class FramePlanWidget final : public QWidget {
     // after a read already in flight, which may predate the commit -- or
     // when next shown.
     void planChangedByCommit();
+    // RP-1b. The same commit, named by the plan generation it produced. In
+    // view with no own read in flight, the panel waits for the Graph model's
+    // full plan reply for that generation (or for a later commit's, when one
+    // comes first) instead of reading the plan a second time. Hidden, it
+    // reads when next shown, as planChangedByCommit does.
+    void planChangedByCommit(std::uint64_t commit_revision,
+                             std::uint64_t engine_epoch);
+    // RP-1b. The Graph model's full plan reply, handed over at the end of the
+    // reply's handling. Adopted only while this panel waits for that
+    // generation; otherwise (or if it is not a complete plan) ignored.
+    void takePlanReply(const QByteArray &result_json,
+                       std::uint64_t commit_revision,
+                       std::uint64_t engine_epoch);
     // Q-18. What asks the engine for the plan (get_frame_plan). The embedded
     // viewport's RPC unless named here; a test names one to count the reads,
     // and hands the replies in through the viewport's inspectorRpcSucceeded.

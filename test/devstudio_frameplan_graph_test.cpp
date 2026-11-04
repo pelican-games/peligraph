@@ -123,6 +123,7 @@ TEST_CASE("Studio RPC preserves record values or refuses lossy integer transport
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstdint>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -13455,6 +13456,180 @@ TEST_CASE("RP-1a2 d: a Frame Plan behind a dock tab leaves the Raw JSON tab alon
     CHECK_FALSE(raw->toPlainText().isEmpty());
     REQUIRE(Json::parse(raw->toPlainText().toStdString()) == moved);
 }
+// --- RP-1b. After a Graph commit the Graph tab reads the full plan once. The
+// Frame Plan waits for the Graph model's own reply and adopts those exact
+// bytes, so the two panels read one plan, not two.
+QStringList framePlanSnapshot(FramePlanWidget &widget) {
+    QStringList lines;
+    for (auto *tree : widget.findChildren<QTreeWidget *>()) {
+        lines << QStringLiteral("tree:") + tree->objectName();
+        for (QTreeWidgetItemIterator it(tree); *it != nullptr; ++it) {
+            QString row;
+            for (int column = 0; column < (*it)->columnCount(); ++column) {
+                if (column != 0) row += QChar(0x1f);
+                row += (*it)->text(column);
+            }
+            lines << row;
+        }
+    }
+    return lines;
+}
+
+TEST_CASE("RP-1b a shown commit adopts the Graph's plan after the Graph handled it, never reading "
+          "its own copy",
+          "[devstudio][frame-plan][rp1b]") {
+    application();
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    std::vector<qint64> reads;
+    qint64 next = 9200;
+    widget.setPlanRequest([&](QString *) {
+        reads.push_back(next);
+        return next++;
+    });
+    widget.resize(900, 600);
+    widget.show();
+    QApplication::processEvents();
+    REQUIRE(reads.empty());
+
+    const QByteArray plan = QByteArray::fromStdString(mixedEditingWire().dump());
+    bool ran = false;
+    widget.planChangedByCommit(1, 1);
+    // A queued action waits for the Graph's plan; it does not make the panel
+    // read a plan of its own beside it.
+    widget.whenRead([&] { ran = true; });
+    QApplication::processEvents();
+    CHECK(reads.empty());
+    CHECK_FALSE(ran);
+
+    // A reply from before the commit, or from another engine session, is not
+    // this plan. Nor is a plan that is not complete.
+    widget.takePlanReply(plan, 1, 0);
+    widget.takePlanReply(plan, 0, 1);
+    widget.takePlanReply(QByteArrayLiteral("{}"), 1, 1);
+    QApplication::processEvents();
+    CHECK(reads.empty());
+    CHECK_FALSE(ran);
+
+    widget.takePlanReply(plan, 1, 1);
+    QApplication::processEvents();
+    CHECK(reads.empty());
+    CHECK(ran);
+
+    // The adopted path and the direct path build the same panel.
+    FramePlanWidget direct{&viewport};
+    direct.resize(900, 600);
+    direct.show();
+    direct.receiveResult(plan);
+    QApplication::processEvents();
+    CHECK(targetSelector(widget).count() == targetSelector(direct).count());
+    CHECK(targetSelector(widget).currentText() == targetSelector(direct).currentText());
+    CHECK(framePlanSnapshot(widget) == framePlanSnapshot(direct));
+    CHECK(framePlanStatus(widget).text() == framePlanStatus(direct).text());
+    CHECK(reads.empty());
+}
+
+TEST_CASE("RP-1b a hidden panel ignores the Graph's plan and catches up once when shown",
+          "[devstudio][frame-plan][rp1b]") {
+    application();
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    std::vector<qint64> reads;
+    qint64 next = 9300;
+    widget.setPlanRequest([&](QString *) {
+        reads.push_back(next);
+        return next++;
+    });
+    const QByteArray plan = QByteArray::fromStdString(mixedEditingWire().dump());
+    REQUIRE_FALSE(widget.isVisible());
+    widget.planChangedByCommit(1, 1);
+    QApplication::processEvents();
+    CHECK(reads.empty());
+    // The Graph handled it, but a panel nobody can see does not adopt it and
+    // has nothing to redraw.
+    widget.takePlanReply(plan, 1, 1);
+    QApplication::processEvents();
+    CHECK(reads.empty());
+
+    widget.resize(900, 600);
+    widget.show();
+    QApplication::processEvents();
+    REQUIRE(reads.size() == 1);
+    Q_EMIT viewport.inspectorRpcSucceeded(reads.front(), plan);
+    QApplication::processEvents();
+    CHECK(reads.size() == 1);
+    CHECK_FALSE(framePlanStatus(widget).text().isEmpty());
+}
+
+TEST_CASE("RP-1b a lost Graph reply falls back to one own read, and the late plan is ignored",
+          "[devstudio][frame-plan][rp1b]") {
+    application();
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    std::vector<qint64> reads;
+    qint64 next = 9400;
+    widget.setPlanRequest([&](QString *) {
+        reads.push_back(next);
+        return next++;
+    });
+    widget.resize(900, 600);
+    widget.show();
+    QApplication::processEvents();
+    REQUIRE(reads.empty());
+
+    bool ran = false;
+    widget.planChangedByCommit(1, 1);
+    widget.whenRead([&] { ran = true; });
+    QApplication::processEvents();
+    CHECK(reads.empty());
+    CHECK_FALSE(ran);
+    REQUIRE(waitUntil([&] { return reads.size() == 1; }, 3000));
+    const QByteArray plan = QByteArray::fromStdString(mixedEditingWire().dump());
+    widget.takePlanReply(plan, 1, 1);
+    QApplication::processEvents();
+    CHECK(reads.size() == 1);
+    CHECK_FALSE(ran);
+    Q_EMIT viewport.inspectorRpcSucceeded(reads.front(), plan);
+    QApplication::processEvents();
+    CHECK(reads.size() == 1);
+    CHECK(ran);
+    CHECK_FALSE(framePlanStatus(widget).text().isEmpty());
+}
+
+TEST_CASE("RP-1b a commit during the panel's own read is read after it, never adopted",
+          "[devstudio][frame-plan][rp1b]") {
+    application();
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    std::vector<qint64> reads;
+    qint64 next = 9500;
+    widget.setPlanRequest([&](QString *) {
+        reads.push_back(next);
+        return next++;
+    });
+    widget.resize(900, 600);
+    widget.show();
+    QApplication::processEvents();
+    // A read the panel sent before the commit; it may predate the commit.
+    widget.refresh();
+    QApplication::processEvents();
+    REQUIRE(reads.size() == 1);
+    widget.planChangedByCommit(1, 1);
+    QApplication::processEvents();
+    CHECK(reads.size() == 1);
+    const QByteArray plan = QByteArray::fromStdString(mixedEditingWire().dump());
+    widget.takePlanReply(plan, 1, 1);
+    QApplication::processEvents();
+    CHECK(reads.size() == 1);
+
+    Q_EMIT viewport.inspectorRpcSucceeded(reads.front(), plan);
+    QApplication::processEvents();
+    REQUIRE(reads.size() == 2);
+    Q_EMIT viewport.inspectorRpcSucceeded(reads.back(), plan);
+    QApplication::processEvents();
+    CHECK(reads.size() == 2);
+}
+
 } // namespace PelicanStudio
 
 #include "rc6b1_studio_test.inc"

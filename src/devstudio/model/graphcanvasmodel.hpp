@@ -1014,6 +1014,17 @@ struct GraphCanvasCurveKey {
 // It only ever asks for the three reads the canvas can justify:
 // get_graph_instances, get_graph_catalog and get_graph_values.
 class GraphCanvasModel {
+  public:
+    // RP-1b: one complete plan reply and the generation it answers. `bytes` is
+    // the transport's own JSON, not a re-serialisation: the Frame Plan reads
+    // the same plan the Graph model just read.
+    struct FullPlanReply {
+        std::string bytes;
+        std::uint64_t commit_revision = 0;
+        std::uint64_t engine_epoch = 0;
+    };
+
+  private:
     enum class RequestKind : std::uint8_t {
         Context,
         Catalog,
@@ -1045,9 +1056,21 @@ class GraphCanvasModel {
     struct PendingRequest {
         std::uint64_t id = 0;
         RequestKind kind = RequestKind::Context;
+        // RP-1b: the plan generation a Loops read was sent for. The full-plan
+        // reply is handed on with exactly the commit it answers and the engine
+        // session that served it, so a Frame Plan waiting for one commit can
+        // never adopt another's (or an earlier engine's) plan.
+        std::uint64_t plan_commit_revision = 0;
+        std::uint64_t engine_epoch = 0;
+        // RP-1b: the document's full-plan read, not a retry, a recompute
+        // follow or a drawn-material follow. Only the full plan is handed to
+        // the Frame Plan; the follow-up reads are the Graph's own.
+        bool full_plan = false;
     };
 
     bool connected_ = false;
+    // RP-1b: incremented when a disconnected model connects to an engine.
+    std::uint64_t engine_epoch_ = 0;
     std::uint64_t next_request_ = 1;
     std::vector<InspectorRpcRequest> requests_;
     // The document read and the reports run on separate slots: asking for
@@ -1205,6 +1228,11 @@ class GraphCanvasModel {
     // before, because it was built from the nodes the old revision held.
     std::optional<nlohmann::json> layout_retry_;
     bool layout_retrying_ = false;
+    // RP-1b: a full get_frame_plan reply, exactly as the engine sent it,
+    // held until the widget has finished handling that reply. The model does
+    // not hand it to the Frame Plan itself: GraphCanvasWidget drains this
+    // after the Graph's document and selection have absorbed the same reply.
+    std::optional<FullPlanReply> full_plan_reply_;
     // Q-18. Whether the edit in flight is a placement only (see
     // planCommitRevision()), and whether a commit that was not is still
     // waiting for the document read after it -- which then reads the frame
@@ -1492,7 +1520,8 @@ class GraphCanvasModel {
     [[nodiscard]] nlohmann::json loopParameters(std::string_view id) const;
 
     void request(RequestKind kind, std::string method, nlohmann::json params);
-    void read(RequestKind kind, std::string method, nlohmann::json params);
+    void read(RequestKind kind, std::string method, nlohmann::json params,
+              bool full_plan = false);
     // Take the pending read this id belongs to, if any. A reply whose slot has
     // already been replaced by a newer question of the same kind is dropped.
     std::optional<PendingRequest> takeRead(std::uint64_t id);
@@ -1786,6 +1815,13 @@ class GraphCanvasModel {
     // owner compares it before and after a reply to tell the other panels
     // that show the plan to read it again.
     auto planCommitRevision() const noexcept { return plan_commit_revision_; }
+    // RP-1b. Which engine session the model is reading from. The commit
+    // revision alone cannot tell a restart apart: a new engine starts its
+    // counter again, so a plan reply belongs to (commit_revision, epoch).
+    auto engineEpoch() const noexcept { return engine_epoch_; }
+    // The full-plan reply waiting for the widget's end of this transport
+    // reply, if any. Taking it consumes it.
+    [[nodiscard]] std::optional<FullPlanReply> takeFullPlanReply();
     // GL-1b, decision 2. An edit committed with `restart_required: true` (the
     // engine could not apply it live -- RS-1's `restart_reason` says why):
     // the document is written, and the engine has to start again to run it.

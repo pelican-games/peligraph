@@ -5746,13 +5746,23 @@ struct Q18Tab {
     RecordedCapability transport;
     std::unique_ptr<PelicanStudio::GraphCanvasWidget> widget;
     int told = 0;
+    // RP-1b: empty-params get_frame_plan reads, as opposed to loop pages.
+    int plan_reads = 0;
+    int loop_page_reads = 0;
 
     Q18Tab() {
         auto capability = transport.capability();
         capability.requestFramePlan = [this](QString *) {
+            ++plan_reads;
             transport.calls.push_back({QStringLiteral("get_frame_plan")});
             return transport.next++;
         };
+        capability.requestLoopElements =
+            [this](const QString &node, qint64, qint64, QString *) {
+                ++loop_page_reads;
+                transport.calls.push_back({QStringLiteral("get_frame_plan"), node});
+                return transport.next++;
+            };
         widget = std::make_unique<PelicanStudio::GraphCanvasWidget>(capability);
         widget->setPlanCommitAction([this] { ++told; });
         widget->resize(1100, 700);
@@ -5928,6 +5938,173 @@ TEST_CASE("Q-18 a Graph tab commit reads the plan again and tells the owner; a p
     REQUIRE(tab.reads("get_frame_plan") == before_count + 1);
     tab.answer(QStringLiteral("get_frame_plan"), q18Plan(4));
     CHECK(tab.expansion() == QStringLiteral("×4 copies"));
+}
+
+// RP-1b: the model holds the exact reply until the widget has finished
+// handling it, and a new engine session invalidates what was held.
+TEST_CASE("RP-1b the Graph model holds the plan bytes with the generation that asked for them",
+          "[devstudio][graph-canvas][scene][rp1b]") {
+    (void)application();
+    GraphCanvasModel model;
+    model.setConnected(true);
+    const auto first_epoch = model.engineEpoch();
+    REQUIRE(first_epoch != 0);
+    const auto model_plan_request = [&] {
+        qint64 id = 0;
+        for (const auto &request : model.takeRpcRequests())
+            if (request.method == "get_frame_plan" && request.params.empty()) id = request.request_id;
+        return id;
+    };
+    answer(model, fixtureDocument());
+    const qint64 first_read = model_plan_request();
+    REQUIRE(first_read != 0);
+    const Json plan{{"schema", "pelican.frame_plan"}, {"version", 1},
+                    {"graph", "main_render"}, {"loops", Json::array()},
+                    {"nodes", Json::array()}, {"barriers", Json::array()},
+                    {"diagnostics", Json::array()}};
+    model.receiveRpcResult(first_read, plan.dump());
+    const auto held = model.takeFullPlanReply();
+    REQUIRE(held);
+    CHECK(held->bytes == plan.dump());
+    CHECK(held->commit_revision == model.planCommitRevision());
+    CHECK(held->engine_epoch == first_epoch);
+    CHECK_FALSE(model.takeFullPlanReply());
+
+    // A new engine session has its own epoch, and a reply held when the
+    // previous one went away is not handed to the new one.
+    model.setConnected(false);
+    model.setConnected(true);
+    const auto second_epoch = model.engineEpoch();
+    CHECK(second_epoch > first_epoch);
+    CHECK_FALSE(model.takeFullPlanReply());
+    answer(model, fixtureDocument());
+    const qint64 second_read = model_plan_request();
+    REQUIRE(second_read != 0);
+    model.receiveRpcResult(second_read, plan.dump());
+    model.setConnected(false);
+    CHECK_FALSE(model.takeFullPlanReply());
+
+    model.setConnected(true);
+    const auto third_epoch = model.engineEpoch();
+    CHECK(third_epoch > second_epoch);
+    answer(model, fixtureDocument());
+    const qint64 third_read = model_plan_request();
+    REQUIRE(third_read != 0);
+    model.receiveRpcResult(third_read, plan.dump());
+    const auto fresh = model.takeFullPlanReply();
+    REQUIRE(fresh);
+    CHECK(fresh->engine_epoch == third_epoch);
+}
+
+// RP-1b: the Graph model's full plan reply is handed over at the end of that
+// reply's handling, with the commit generation the read was sent for. The
+// Frame Plan adopts those bytes instead of sending its own read.
+TEST_CASE("RP-1b a Graph commit's plan reply is handed on with its generation after the Graph "
+          "handled it",
+          "[devstudio][graph-canvas][scene][rp1b]") {
+    (void)application();
+    Q18Tab tab;
+    struct Observed {
+        QByteArray bytes;
+        std::uint64_t revision = 0;
+        std::uint64_t epoch = 0;
+        QString expansion;
+    };
+    std::vector<Observed> observed;
+    tab.widget->setFullPlanObserver(
+        [&](const QByteArray &bytes, std::uint64_t revision, std::uint64_t epoch) {
+            observed.push_back({bytes, revision, epoch, tab.expansion()});
+        });
+    struct Told {
+        std::uint64_t revision = 0;
+        std::uint64_t epoch = 0;
+    };
+    std::vector<Told> told;
+    tab.widget->setPlanCommitAction(
+        [&](std::uint64_t revision, std::uint64_t epoch) {
+            told.push_back({revision, epoch});
+        });
+
+    auto document = zoneDocument();
+    tab.answer(QStringLiteral("get_graph_instances"), q18Context(document, "rp1b-0"));
+    tab.answer(QStringLiteral("get_graph_catalog"), visualCatalog());
+    REQUIRE(tab.plan_reads == 1);
+    const QByteArray opened = QByteArray::fromStdString(q18Plan(2).dump());
+    tab.answer(QStringLiteral("get_frame_plan"), q18Plan(2));
+    REQUIRE(observed.size() == 1);
+    CHECK(observed.front().bytes == opened);
+    CHECK(observed.front().revision == 0);
+    CHECK(observed.front().epoch == tab.widget->model().engineEpoch());
+    CHECK(observed.front().epoch != 0);
+    CHECK(observed.front().expansion == QStringLiteral("×2 copies"));
+
+    // A count edit that commits: the owner is told the commit's generation,
+    // and the Graph's next document read sends exactly one empty-params plan
+    // read -- no second read is asked for here.
+    tab.widget->scene().selectNode("steps");
+    QCoreApplication::processEvents();
+    auto *count = tab.field<QSpinBox>("pelican.graphCanvasLoop.count");
+    count->setValue(3);
+    Q_EMIT count->editingFinished();
+    QCoreApplication::processEvents();
+    REQUIRE(tab.reads("edit_graph_document") == 1);
+    tab.answer(QStringLiteral("edit_graph_document"),
+               Json{{"status", "accepted"}, {"ticket", "rp1b"}});
+    tab.answer(QStringLiteral("get_edit_result"),
+               Json{{"status", "committed"}, {"committed", true},
+                    {"source_digest", {{"hex", "rp1b-1"}}}});
+    REQUIRE(told.size() == 1);
+    CHECK(told.front().revision == 1);
+    CHECK(told.front().epoch == observed.front().epoch);
+    CHECK(tab.plan_reads == 1);
+
+    document = withCount(document, 3);
+    tab.answer(QStringLiteral("get_graph_instances"), q18Context(document, "rp1b-1"));
+    REQUIRE(tab.plan_reads == 2);
+    const QByteArray committed = QByteArray::fromStdString(q18Plan(3).dump());
+    tab.answer(QStringLiteral("get_frame_plan"), q18Plan(3));
+    REQUIRE(observed.size() == 2);
+    CHECK(observed.back().bytes == committed);
+    CHECK(observed.back().revision == 1);
+    CHECK(observed.back().epoch == told.front().epoch);
+    // The Graph had absorbed this reply before the bytes were handed on.
+    CHECK(observed.back().expansion == QStringLiteral("×3 copies"));
+    CHECK(tab.plan_reads == 2);
+}
+
+// RP-1b: a loop page is a second get_frame_plan reply, but it is not a full
+// plan. It is handled by the Graph alone; the Frame Plan is never handed it.
+TEST_CASE("RP-1b a loop page reply is not handed on as a full plan",
+          "[devstudio][graph-canvas][scene][rp1b]") {
+    (void)application();
+    Q18Tab tab;
+    int observed = 0;
+    tab.widget->setFullPlanObserver(
+        [&](const QByteArray &, std::uint64_t, std::uint64_t) { ++observed; });
+    auto document = zoneDocument();
+    tab.answer(QStringLiteral("get_graph_instances"), q18Context(document, "rp1b-page-0"));
+    tab.answer(QStringLiteral("get_graph_catalog"), visualCatalog());
+    REQUIRE(tab.plan_reads == 1);
+    Json paged = q18Plan(1);
+    paged["loops"][0]["tier"] = "draw_loop";
+    paged["loops"][0]["total"] = 2;
+    tab.answer(QStringLiteral("get_frame_plan"), paged);
+    // The full plan is handed on once, and the Graph asks for its next page.
+    CHECK(observed == 1);
+    REQUIRE(tab.loop_page_reads == 1);
+    CHECK(tab.plan_reads == 1);
+    Json page;
+    page["loops"] = Json::array();
+    Json page_loop;
+    page_loop["node"] = "steps";
+    page_loop["offset"] = 1;
+    page_loop["total"] = 2;
+    page_loop["elements"] = Json::array({{{"element", 1}, {"index", 1}, {"branch", 1}}});
+    page["loops"].push_back(page_loop);
+    tab.answer(QStringLiteral("get_frame_plan"), page);
+    CHECK(observed == 1);
+    CHECK(tab.loop_page_reads == 1);
+    CHECK(tab.plan_reads == 1);
 }
 
 TEST_CASE("Q-18 the Draw fields are off while an edit is in flight, and a refused choice goes back",

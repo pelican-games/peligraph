@@ -8178,6 +8178,10 @@ struct GraphCanvasWidget::Impl {
     // Q-18: who is told that an edit of this tab committed and the plan may
     // have changed with it, and the last commit they were told of.
     std::function<void()> plan_commit_action;
+    // RP-1b: the same commit with the plan generation, and who takes a full
+    // plan reply after the Graph has finished handling it.
+    std::function<void(std::uint64_t, std::uint64_t)> plan_commit_generation_action;
+    std::function<void(const QByteArray &, std::uint64_t, std::uint64_t)> full_plan_observer;
     // UX-6a, decision 2: who follows the project shader files the render
     // passes read, and the set last handed to it.
     using ShaderSources = std::map<std::string, std::vector<std::filesystem::path>, std::less<>>;
@@ -10614,6 +10618,18 @@ struct GraphCanvasWidget::Impl {
         readDerivedIfMoved(false);
         syncStale();
         restartEngineIfAsked();
+        // RP-1b: the Graph model held this plan reply back so the document
+        // and the scene above absorbed the same answer first. Hand it on now,
+        // at the very end of the reply's handling.
+        publishFullPlanReply();
+    }
+
+    void publishFullPlanReply() {
+        const auto reply = model.takeFullPlanReply();
+        if (!reply || !full_plan_observer) return;
+        const QByteArray bytes(reply->bytes.data(),
+                               static_cast<int>(reply->bytes.size()));
+        full_plan_observer(bytes, reply->commit_revision, reply->engine_epoch);
     }
 
     // GL-1b, decision 2: the commit is written; the engine starts again to
@@ -10634,7 +10650,10 @@ struct GraphCanvasWidget::Impl {
     void tellPlanCommit() {
         if (model.planCommitRevision() == told_plan_commit) return;
         told_plan_commit = model.planCommitRevision();
-        if (plan_commit_action) plan_commit_action();
+        if (plan_commit_generation_action)
+            plan_commit_generation_action(model.planCommitRevision(), model.engineEpoch());
+        else if (plan_commit_action)
+            plan_commit_action();
     }
 
     // UX-12b, decision 2: a fullscreen pass named `id` in the root (added,
@@ -13481,6 +13500,16 @@ void GraphCanvasWidget::setFramePlanLoopAction(std::function<bool(const QString 
 
 void GraphCanvasWidget::setPlanCommitAction(std::function<void()> action) {
     impl_->plan_commit_action = std::move(action);
+}
+
+void GraphCanvasWidget::setPlanCommitAction(
+    std::function<void(std::uint64_t, std::uint64_t)> action) {
+    impl_->plan_commit_generation_action = std::move(action);
+}
+
+void GraphCanvasWidget::setFullPlanObserver(
+    std::function<void(const QByteArray &, std::uint64_t, std::uint64_t)> observer) {
+    impl_->full_plan_observer = std::move(observer);
 }
 
 void GraphCanvasWidget::setRenderHistoryActions(QAction *undo, QAction *redo) {

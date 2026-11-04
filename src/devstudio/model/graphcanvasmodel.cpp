@@ -651,14 +651,19 @@ void GraphCanvasModel::request(RequestKind kind, std::string method, Json params
     requests_.push_back({id, std::move(method), std::move(params)});
 }
 
-void GraphCanvasModel::read(RequestKind kind, std::string method, Json params) {
+void GraphCanvasModel::read(RequestKind kind, std::string method, Json params,
+                            bool full_plan) {
     const auto id = next_request_++;
     // One slot per kind. Asking again replaces the slot, so the older answer
     // is dropped when it arrives rather than overwriting the newer one.
     std::erase_if(reads_, [kind](const PendingRequest &pending) {
         return pending.kind == kind;
     });
-    reads_.push_back(PendingRequest{id, kind});
+    // RP-1b: record the generation for the plan read at the moment it is
+    // sent -- before the commit that caused it can advance any counter, and
+    // before a restart can change the engine.
+    reads_.push_back(
+        PendingRequest{id, kind, plan_commit_revision_, engine_epoch_, full_plan});
     requests_.push_back({id, std::move(method), std::move(params)});
 }
 
@@ -669,6 +674,11 @@ GraphCanvasModel::takeRead(std::uint64_t id) {
     const auto pending = *found;
     reads_.erase(found);
     return pending;
+}
+
+std::optional<GraphCanvasModel::FullPlanReply>
+GraphCanvasModel::takeFullPlanReply() {
+    return std::exchange(full_plan_reply_, std::nullopt);
 }
 
 void GraphCanvasModel::clearContext() {
@@ -704,6 +714,7 @@ void GraphCanvasModel::clearContext() {
     plan_author_graph_.clear();
     plan_retry_budget_ = 0;
     plan_retry_wanted_ = false;
+    full_plan_reply_.reset();
     committed_renames_.clear();
     refusal_marks_.clear();
     parameter_refusal_.reset();
@@ -744,6 +755,11 @@ void GraphCanvasModel::setConnected(bool connected) {
     // about to lose.
     leaveFolded();
     connected_ = connected;
+    // RP-1b: a new engine session. A commit revision from the old one may
+    // be the same number, so a Frame Plan waiting across a restart must not
+    // adopt the first plan the new engine reads.
+    if (connected) ++engine_epoch_;
+    full_plan_reply_.reset();
     templates_requested_ = false;
     templates_ = Json::object();
     pending_.reset();
@@ -864,7 +880,7 @@ void GraphCanvasModel::requestLoopReports() {
         plan_retry_wanted_ = false;
         return;
     }
-    read(RequestKind::Loops, "get_frame_plan", Json::object());
+    read(RequestKind::Loops, "get_frame_plan", Json::object(), true);
 }
 
 void GraphCanvasModel::requestNextLoopPage() {
@@ -1153,6 +1169,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                     }
                     plan_retry_wanted_ = plan_retry_budget_ > 0 &&
                                          (planMissesRenderNode() || plan_passes_.empty());
+                    full_plan_reply_.reset();
                     return;
                 }
                 if (pending.kind == RequestKind::LoopPage) {
@@ -1188,6 +1205,14 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                 loop_page_node_.clear();
                 requestNextLoopPage();
                 ++report_revision_;
+                // RP-1b: hold the document's full plan -- not a retry or a
+                // follow read -- until the widget's handling of this same
+                // transport reply has finished. The generation is the one
+                // recorded when the read was sent.
+                if (pending.full_plan)
+                    full_plan_reply_ = FullPlanReply{std::string{json},
+                                                     pending.plan_commit_revision,
+                                                     pending.engine_epoch};
                 return;
             }
             if (pending.kind == RequestKind::LoopPage) {

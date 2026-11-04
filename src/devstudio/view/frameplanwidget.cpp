@@ -542,6 +542,15 @@ struct FramePlanWidget::Impl {
     // commit; out of view, when the panel is next shown.
     bool plan_stale = false;
     bool plan_reread = false;
+    // RP-1b. The Graph tab's commit this panel is waiting to hear the plan
+    // for: the model's full get_frame_plan reply, adopted when it arrives,
+    // or a single own read when it does not. The generation is the commit
+    // revision and engine epoch recorded when the Graph sent its read.
+    bool awaiting_graph_plan = false;
+    std::uint64_t plan_wait_revision = 0;
+    std::uint64_t plan_wait_epoch = 0;
+    QTimer *plan_wait_timer = nullptr;
+    static constexpr int plan_wait_timeout_ms = 1500;
     // What asks for the plan: the viewport's RPC, unless setPlanRequest
     // named another (a test counts the reads there).
     std::function<qint64(QString *error)> plan_request;
@@ -749,6 +758,13 @@ struct FramePlanWidget::Impl {
                           GpuTimingPollIntervalMs);
         QObject::connect(gpu_timing_poll, &QTimer::timeout, &owner,
                          [this] { requestGpuTiming(); });
+        plan_wait_timer = new QTimer(&owner);
+        plan_wait_timer->setObjectName(
+            QStringLiteral("pelican.framePlanWaitTimer"));
+        plan_wait_timer->setSingleShot(true);
+        plan_wait_timer->setInterval(plan_wait_timeout_ms);
+        QObject::connect(plan_wait_timer, &QTimer::timeout, &owner,
+                         [this] { planWaitTimedOut(); });
 
         auto *toolbar = new QHBoxLayout;
         toolbar_row = toolbar;
@@ -1508,6 +1524,7 @@ struct FramePlanWidget::Impl {
                          });
         QObject::connect(&viewport, &EmbeddedViewport::engineRpcBecameAvailable,
                          &owner, [this] {
+                             cancelPlanWait();
                              pending_request = 0;
                              unpublished_plan_retries = 0;
                              pending_gpu_timing_request = 0;
@@ -1651,6 +1668,7 @@ struct FramePlanWidget::Impl {
 
     void showUnavailable(const QString &reason) {
         commit_notice.clear();
+        cancelPlanWait();
         pending_request = 0;
         plan_reread = false;
         pending_gpu_timing_request = 0;
@@ -1684,6 +1702,7 @@ struct FramePlanWidget::Impl {
     }
 
     void showEngineFailure(const QString &fatal_error_line) {
+        cancelPlanWait();
         pending_request = 0;
         plan_reread = false;
         pending_gpu_timing_request = 0;
@@ -3676,7 +3695,9 @@ struct FramePlanWidget::Impl {
     void whenRead(std::function<void()> action, std::function<void(const QString &)> said,
                   bool tasks = false) {
         when_read.push_back({std::move(action), std::move(said), tasks});
-        if (planReadable()) readPlanAgain();
+        // RP-1b: the Graph's plan is the read this wait is for; asking for
+        // one of our own would make the reply a second, redundant read.
+        if (!awaiting_graph_plan && planReadable()) readPlanAgain();
         if (pending_authoring_request != 0) authoring_reread = true;
         else requestAuthoringContext(true);
         // GL-5f, decision 2: the task catalog, read only while shown otherwise.
@@ -3691,7 +3712,8 @@ struct FramePlanWidget::Impl {
     // Once neither read is on its way.
     void runWhenRead() {
         if (when_read.empty() || pending_request != 0 || plan_reread ||
-            pending_authoring_request != 0 || authoring_reread)
+            awaiting_graph_plan || pending_authoring_request != 0 ||
+            authoring_reread)
             return;
         // GL-5f, decision 2.
         if ((pending_task_request != 0 || task_reread) &&
@@ -3885,6 +3907,10 @@ struct FramePlanWidget::Impl {
     // panel is next shown. Without an engine there is nothing to read; the
     // engine coming back reads the plan anyway.
     void planChangedByCommit() {
+        // Q-18's caller reads as it always did. Another panel's commit is a
+        // new generation too, so a plan this panel was waiting on from the
+        // Graph tab is no longer the newest one.
+        cancelPlanWait();
         if (!planReadable()) return;
         if (!shown.isShown()) {
             plan_stale = true;
@@ -3893,7 +3919,90 @@ struct FramePlanWidget::Impl {
         readPlanAgain();
     }
 
+    void planChangedByCommit(std::uint64_t commit_revision,
+                             std::uint64_t engine_epoch) {
+        if (!planReadable()) {
+            cancelPlanWait();
+            return;
+        }
+        if (!shown.isShown()) {
+            cancelPlanWait();
+            plan_stale = true;
+            return;
+        }
+        if (pending_request != 0) {
+            // Our own read is already in flight and may predate the commit;
+            // the one read after it is today's path.
+            cancelPlanWait();
+            plan_reread = true;
+            return;
+        }
+        if (awaiting_graph_plan && plan_wait_epoch == engine_epoch &&
+            commit_revision <= plan_wait_revision) {
+            // Already waiting for this generation, or for a later commit
+            // that subsumes it.
+            return;
+        }
+        // In view with nothing being read: the Graph model's read of the
+        // plan is already on its way for this commit. Wait for it rather
+        // than sending a second.
+        plan_stale = false;
+        awaiting_graph_plan = true;
+        plan_wait_revision = commit_revision;
+        plan_wait_epoch = engine_epoch;
+        if (plan_wait_timer) plan_wait_timer->start(plan_wait_timeout_ms);
+    }
+
+    void cancelPlanWait() {
+        if (plan_wait_timer) plan_wait_timer->stop();
+        awaiting_graph_plan = false;
+        plan_wait_revision = 0;
+        plan_wait_epoch = 0;
+    }
+
+    void planWaitTimedOut() {
+        if (!awaiting_graph_plan) return;
+        if (!shown.isShown() || !planReadable()) {
+            cancelPlanWait();
+            plan_stale = true;
+            return;
+        }
+        // The Graph's reply never came (or was not a complete plan). Read
+        // it here, once; a late reply then finds no wait to complete.
+        cancelPlanWait();
+        readPlanAgain();
+    }
+
+    void takePlanReply(const QByteArray &result_json,
+                       std::uint64_t commit_revision,
+                       std::uint64_t engine_epoch) {
+        if (!awaiting_graph_plan || pending_request != 0) return;
+        if (engine_epoch != plan_wait_epoch ||
+            commit_revision < plan_wait_revision)
+            return;
+        // A plan that cannot be built is not this wait's answer: keep
+        // waiting for a complete one (the fallback still bounds the wait).
+        if (!consumeResult(result_json, false)) return;
+        cancelPlanWait();
+        unpublished_plan_retries = 0;
+        plan_stale = false;
+        finishPlanRead();
+    }
+
+    // What follows either a plan read of this panel's own or one adopted
+    // from the Graph model, once pending_request has been settled.
+    void finishPlanRead() {
+        // Q-18: a commit landed while this read was out; it may predate it.
+        if (std::exchange(plan_reread, false)) {
+            requestRefresh();
+            return;
+        }
+        // GL-5d: the Graph's action that waited for this read.
+        runWhenRead();
+    }
+
     void readPlanAgain() {
+        cancelPlanWait();
         if (pending_request != 0) {
             plan_reread = true;
             return;
@@ -3903,6 +4012,9 @@ struct FramePlanWidget::Impl {
 
     void requestRefresh() {
         const auto finished = qScopeGuard([this] { updateCanvasEnabled(); });
+        // RP-1b: an explicit read is this panel's own; a Graph plan still
+        // to come must not be adopted over it.
+        cancelPlanWait();
         if (pending_request != 0) {
             return;
         }
@@ -3953,7 +4065,15 @@ struct FramePlanWidget::Impl {
     // RP-1a2: the body of hideEvent, after the base class. Called once per
     // shown -> hidden transition, whichever of hideEvent, the Hide event and
     // the dock's visibilityChanged arrived last.
-    void wentOutOfView() { updateGpuTimingPoll(); }
+    void wentOutOfView() {
+        // RP-1b: a plan that arrives while out of view is not shown, and
+        // adopting it would leave no catch-up read. The next show reads once.
+        if (awaiting_graph_plan) {
+            cancelPlanWait();
+            plan_stale = true;
+        }
+        updateGpuTimingPoll();
+    }
 
     void updateGpuTimingPoll() {
         if (gpu_timing_reportable && viewport.rpcReady() &&
@@ -4072,11 +4192,8 @@ struct FramePlanWidget::Impl {
         }
         pending_request = 0;
         unpublished_plan_retries = 0;
-        owner.receiveResult(result_json);
-        // Q-18: a commit landed while this read was out; it may predate it.
-        if (std::exchange(plan_reread, false)) requestRefresh();
-        // GL-5d: the Graph's action that waited for this read.
-        runWhenRead();
+        (void)consumeResult(result_json);
+        finishPlanRead();
     }
 
     void consumeGpuTimingResult(const QByteArray &result_json) {
@@ -4098,7 +4215,10 @@ struct FramePlanWidget::Impl {
         }
     }
 
-    void consumeResult(const QByteArray &result_json) {
+    // Returns false when the reply was not a complete plan this panel could
+    // display (RP-1b's adoption keeps waiting on one). The Graph's own-reply
+    // path still reports the failure, as before.
+    bool consumeResult(const QByteArray &result_json, bool report_failure = true) {
         try {
             const bool had_model = model.has_value();
             const std::string previous_graph =
@@ -4162,7 +4282,7 @@ struct FramePlanWidget::Impl {
             // (get_frame_plan carries render_pipeline while it lasts). There
             // is nothing of the project's to edit in it, so its documents are
             // not read for editing either.
-            if (showRenderFallback(result_json)) return;
+            if (showRenderFallback(result_json)) return true;
             requestAuthoringContext();
             requestTaskAuthoring();
             followShaderSources();
@@ -4171,8 +4291,10 @@ struct FramePlanWidget::Impl {
                 owner.openTasksForHitGroup(group);
             }
             showRequestedLoopGroup();
+            return true;
         } catch (const std::exception &error) {
-            showFailure(QString::fromUtf8(error.what()));
+            if (report_failure) showFailure(QString::fromUtf8(error.what()));
+            return false;
         }
     }
 
@@ -5524,6 +5646,8 @@ void FramePlanWidget::receiveGpuTimingResult(
 
 void FramePlanWidget::setProjectRoot(
     const std::filesystem::path &project_root) {
+    // RP-1b: another project is another engine's plan.
+    impl_->cancelPlanWait();
     const auto project_file = project_root / "project.json";
     std::ifstream input{project_file, std::ios::binary};
     if (!input) {
@@ -5545,6 +5669,17 @@ void FramePlanWidget::setProjectRoot(
 void FramePlanWidget::refresh() { impl_->requestRefresh(); }
 
 void FramePlanWidget::planChangedByCommit() { impl_->planChangedByCommit(); }
+
+void FramePlanWidget::planChangedByCommit(std::uint64_t commit_revision,
+                                          std::uint64_t engine_epoch) {
+    impl_->planChangedByCommit(commit_revision, engine_epoch);
+}
+
+void FramePlanWidget::takePlanReply(const QByteArray &result_json,
+                                    std::uint64_t commit_revision,
+                                    std::uint64_t engine_epoch) {
+    impl_->takePlanReply(result_json, commit_revision, engine_epoch);
+}
 
 void FramePlanWidget::setPlanRequest(std::function<qint64(QString *error)> request) {
     impl_->plan_request = std::move(request);
