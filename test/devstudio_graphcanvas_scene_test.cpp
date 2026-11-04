@@ -29010,3 +29010,44 @@ TEST_CASE("GC-1 a reply that arrives while the hand is down waits for the gestur
     CHECK_FALSE(gc1EdgeVisible(scene, QStringLiteral("gain"), QStringLiteral("value"),
                                QStringLiteral("sum"), QStringLiteral("a")));
 }
+
+TEST_CASE("GC-1 a cut the engine refuses draws its line again",
+          "[devstudio][graph-canvas][scene][gc1]") {
+    (void)application();
+    ZoneHarness h{gc1BodyDocument()};
+    gc1OpenBody(h);
+    auto &scene = h.scene;
+    QGraphicsItem *input = socketOf(scene, QStringLiteral("gain_curve"), "sum", "a", "input");
+    REQUIRE(input != nullptr);
+    QGraphicsPathItem *old = edgeItem(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                                      QStringLiteral("sum"), QStringLiteral("a"));
+    REQUIRE(old != nullptr);
+    const QPointF at = centreOf(input);
+    const QPointF empty = gc1EmptyPoint(scene, at, 60.0);
+    sceneMouse(scene, QEvent::GraphicsSceneMousePress, at);
+    sceneMouse(scene, QEvent::GraphicsSceneMouseMove, empty);
+    sceneMouse(scene, QEvent::GraphicsSceneMouseRelease, empty);
+    // In the air: the line stays hidden, and an early settle changes nothing.
+    CHECK_FALSE(old->isVisible());
+    REQUIRE(h.model.busy());
+    scene.settleLiftedCut();
+    CHECK_FALSE(old->isVisible());
+    bool refused = false;
+    for (const auto &request : h.model.takeRpcRequests()) {
+        if (request.method != "edit_graph_document") continue;
+        h.model.receiveRpcResult(
+            request.request_id,
+            Json{{"status", "rejected"}, {"committed", false},
+                 {"error", {{"code", "invalid_graph_document"},
+                            {"message", "unconnected graph input: left/sum.a"}}}}.dump());
+        refused = true;
+    }
+    REQUIRE(refused);
+    h.answerReads();
+    REQUIRE_FALSE(h.model.busy());
+    scene.settleLiftedCut();
+    QGraphicsPathItem *line = edgeItem(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                                       QStringLiteral("sum"), QStringLiteral("a"));
+    REQUIRE(line != nullptr);
+    CHECK(line->isVisible());
+}

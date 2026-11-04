@@ -288,6 +288,8 @@ class GraphCanvasScene final : public QGraphicsScene {
     // Bundle what is picked -- reroutes, edges, or both -- into one tie, in the
     // order they run now. Needs two distinct edges; anything less is not a
     // bundle, and is refused rather than silently making a tie of one.
+    // GC-1: called when the model has answered; a refused cut draws its line again.
+    void settleLiftedCut();
     bool tieSelection();
     // The other way: every slot of the picked tie becomes a reroute of its own.
     bool untieSelection();
@@ -1153,6 +1155,7 @@ class GraphCanvasScene final : public QGraphicsScene {
     void hideLiftedEdges(const LiftedInput &lifted);
     void showLiftedEdges(const LiftedInput &lifted);
     void rehideLiftedEdges();
+    std::optional<LiftedInput> cut_awaiting_;
     // UX-1, decision 1. What letting the line go over `item` would do -- the
     // one judgement both the drop and the lit sockets use. Empty when the
     // item takes no line from this connection.

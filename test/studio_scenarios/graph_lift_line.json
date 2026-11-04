@@ -16,32 +16,17 @@
     {"label": "the definition names its three nodes", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "definitions.gain_curve.layout.nodes.$len", "value": 3},
     {"label": "fit, so both ends of the drag are on screen", "cmd": "action", "name": "pelican.graphCanvas.fitView"},
 
+    {"label": "lift the connected a by its socket and let it go on empty canvas", "cmd": "drag", "from": {"name": "pelican.graphCanvasView::graph_socket#sum/in:a"}, "to": {"name": "pelican.graphCanvasView::graph_socket#sum/in:a", "point": [2, 2]}, "steps": 12},
+    {"label": "the engine refuses: a is a required input", "cmd": "wait", "name": "pelican.graphCanvasNotice", "contains": "unconnected graph input", "timeout_ms": 60000},
+    {"label": "the document still says a is gain", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "definitions.gain_curve.nodes[2].inputs.a.node", "value": "gain"},
+    {"label": "the canvas is not stuck: fit works", "cmd": "action", "name": "pelican.graphCanvas.fitView"},
+    {"label": "the lifted line is drawn again", "cmd": "wait", "name": "pelican.graphCanvasView::graph_edge#gain->sum", "visible": true, "timeout_ms": 30000},
+    {"label": "a picture of the body after the refusal", "expect": "screenshot", "path": "graph_lift_line_refused.png"},
     {"label": "a line from bias's value onto sum's a, which already has gain's line", "cmd": "drag", "from": {"name": "pelican.graphCanvasView::graph_socket#bias/out:value"}, "to": {"name": "pelican.graphCanvasView::graph_socket#sum/in:a"}, "steps": 8},
     {"label": "the ordinary connection was saved", "cmd": "wait", "name": "pelican.graphCanvasNotice", "text": "Graph change saved.", "timeout_ms": 60000},
     {"label": "the document says a is bias now", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "definitions.gain_curve.nodes[2].inputs.a.node", "value": "bias", "retry_ms": 60000},
 
     {"label": "fit again after the connection", "cmd": "action", "name": "pelican.graphCanvas.fitView"},
-    {"label": "lift the connected a by its socket and let it go on empty canvas -- the canvas's top-left corner is in the fit margin", "cmd": "drag", "from": {"name": "pelican.graphCanvasView::graph_socket#sum/in:a"}, "to": {"name": "pelican.graphCanvasView", "point": [2, 2]}, "steps": 12},
-    {"label": "the cut was saved as one edit", "cmd": "wait", "name": "pelican.graphCanvasNotice", "text": "Graph change saved.", "timeout_ms": 60000},
-    {"label": "the line into a is gone", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "definitions.gain_curve.nodes[2].inputs.a", "value": null, "retry_ms": 60000},
-    {"label": "the line into a is not drawn", "cmd": "wait", "name": "pelican.graphCanvasView::graph_edge#gain->sum", "missing": true, "timeout_ms": 30000},
-
-    {"label": "Undo is offered", "cmd": "wait", "name": "pelican.graphCanvas.undoButton", "enabled": true, "timeout_ms": 30000},
-    {"label": "Undo the cut", "cmd": "action", "name": "pelican.graphCanvas.undo"},
-    {"label": "the undo was saved", "cmd": "wait", "name": "pelican.graphCanvasNotice", "text": "Graph change saved.", "timeout_ms": 60000},
-    {"label": "the line into a is gain's again", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "definitions.gain_curve.nodes[2].inputs.a.node", "value": "gain", "retry_ms": 60000},
-    {"label": "and it is drawn again", "cmd": "wait", "name": "pelican.graphCanvasView::graph_edge#gain->sum", "visible": true, "timeout_ms": 30000},
-
-    {"label": "fit again", "cmd": "action", "name": "pelican.graphCanvas.fitView"},
-    {"label": "lift another connected input, b", "cmd": "drag", "from": {"name": "pelican.graphCanvasView::graph_socket#sum/in:b"}, "to": {"name": "pelican.graphCanvasView", "point": [2, 2]}, "steps": 12},
-    {"label": "the second cut was saved", "cmd": "wait", "name": "pelican.graphCanvasNotice", "text": "Graph change saved.", "timeout_ms": 60000},
-    {"label": "b has no line", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "definitions.gain_curve.nodes[2].inputs.b", "value": null, "retry_ms": 60000},
-    {"label": "a still has its line", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "definitions.gain_curve.nodes[2].inputs.a.node", "value": "gain"},
-    {"label": "Undo is offered again", "cmd": "wait", "name": "pelican.graphCanvas.undoButton", "enabled": true, "timeout_ms": 30000},
-    {"label": "Undo the second cut", "cmd": "action", "name": "pelican.graphCanvas.undo"},
-    {"label": "the second undo was saved", "cmd": "wait", "name": "pelican.graphCanvasNotice", "text": "Graph change saved.", "timeout_ms": 60000},
-    {"label": "b has bias's line again", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "definitions.gain_curve.nodes[2].inputs.b.node", "value": "bias", "retry_ms": 60000},
-    {"label": "fit, and a picture of the two lines that came back", "cmd": "action", "name": "pelican.graphCanvas.fitView"},
     {"label": "a picture of the body", "expect": "screenshot", "path": "graph_lift_line.png"}
   ]
 }

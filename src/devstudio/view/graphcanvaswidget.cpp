@@ -3595,6 +3595,16 @@ void GraphCanvasScene::showLiftedEdges(const LiftedInput &lifted) {
         if (liftedEdgePart(*item, lifted)) item->setVisible(true);
 }
 
+void GraphCanvasScene::settleLiftedCut() {
+    // The line stays hidden while its edit is in the air. An edit the engine
+    // refuses leaves the document, and so the items, as they were: nothing
+    // redraws, and the line has to come back here. After an accepted edit the
+    // terms find no item, so this does nothing.
+    if (!cut_awaiting_ || model_ == nullptr || model_->busy()) return;
+    showLiftedEdges(*cut_awaiting_);
+    cut_awaiting_.reset();
+}
+
 void GraphCanvasScene::rehideLiftedEdges() {
     if (pending_connection_ && pending_connection_->lifted)
         hideLiftedEdges(*pending_connection_->lifted);
@@ -4031,6 +4041,7 @@ void GraphCanvasScene::finishLiftedConnection(const QPointF &position) {
         const bool submitted = model_->submitEdit(std::move(ops));
         afterEdit(submitted);
         if (!submitted) showLiftedEdges(lifted);
+        else cut_awaiting_ = lifted;
         return;
     }
     const auto target_node = target->data(NodeGraphNameRole).toString().toStdString();
@@ -4093,6 +4104,7 @@ void GraphCanvasScene::finishLiftedConnection(const QPointF &position) {
     const bool submitted = model_->submitEdit(std::move(ops));
     afterEdit(submitted);
     if (!submitted) showLiftedEdges(lifted);
+    else cut_awaiting_ = lifted;
 }
 
 void GraphCanvasScene::finishConnection(const QPointF &position) {
@@ -13497,6 +13509,7 @@ struct GraphCanvasWidget::Impl {
         // NB-5: except for the rows of a stack whose own edit is in the air,
         // which take the next gesture at once (the scene turns the rest away).
         canvas->setEnabled(!model.busy() || scene->layerEditInFlight());
+        scene->settleLiftedCut();
         const NodeDragTraceSpan heavy_trace{scene, "synchronize_heavy"};
         // GL-3a: the fold groups follow the document the tab holds.
         if (folds) folds->follow();
