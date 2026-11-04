@@ -2701,7 +2701,7 @@ struct FramePlanWidget::Impl {
             // Q-13: every other panel learns the revision this commit made.
             if (digest_hub)
                 digest_hub->publishCommitted(response.value("source_digest", Json::object())
-                                                .value("hex", std::string{}), &owner);
+                                                .value("hex", std::string{}), &shown); // RP-1a2: the subscription's context
             status->setStyleSheet({});
             if (submitted_method == "edit_render_targets" && !pending_material_pass)
                 pending_target_selection = submitted_target;

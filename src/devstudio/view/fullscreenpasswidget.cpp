@@ -3172,7 +3172,7 @@ struct FullscreenPassWidget::Impl {
                 if (digest_hub)
                     digest_hub->publishCommitted(response.value("source_digest", Json::object())
                                             .value("hex", std::string{}),
-                                        &owner);
+                                        &shown); // RP-1a2: the subscription's context
                 // RSX, decision 1: written, but the engine runs it only after
                 // a restart. The window restarts it; the form is read from the
                 // engine that comes back.
