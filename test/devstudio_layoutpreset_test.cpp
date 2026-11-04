@@ -104,6 +104,24 @@ QDockWidget *dockHolding(QWidget *widget) {
     return nullptr;
 }
 
+// OSC-3c: which tab of the Output stack is current, by its title. The title
+// is what Qt's dock tab bar shows; comparing it before and after a restore
+// says the saved selection was kept.
+QString currentOutputTab(QMainWindow &window) {
+    for (QTabBar *bar : window.findChildren<QTabBar *>()) {
+        bool has_output = false;
+        for (int tab = 0; tab < bar->count(); ++tab) {
+            if (bar->tabText(tab) == QStringLiteral("Output")) {
+                has_output = true;
+                break;
+            }
+        }
+        if (has_output && bar->currentIndex() >= 0)
+            return bar->tabText(bar->currentIndex());
+    }
+    return {};
+}
+
 } // namespace
 
 TEST_CASE("Devstudio layout presets round-trip named versioned state", "[devstudio][layout]") {
@@ -154,6 +172,9 @@ TEST_CASE("Saved devstudio layouts remain restorable as later docks are added",
     QDockWidget *legacy_inspector = addDock(
         six_dock_window, QStringLiteral("pelican.inspectorDock"),
         Qt::RightDockWidgetArea);
+    legacy_project->setWindowTitle(QStringLiteral("Project"));
+    legacy_outliner->setWindowTitle(QStringLiteral("Outliner"));
+    legacy_inspector->setWindowTitle(QStringLiteral("Inspector"));
     QDockWidget *legacy_output = addDock(
         six_dock_window, QStringLiteral("pelican.outputDock"),
         Qt::BottomDockWidgetArea);
@@ -163,11 +184,20 @@ TEST_CASE("Saved devstudio layouts remain restorable as later docks are added",
     QDockWidget *legacy_frame_plan = addDock(
         six_dock_window, QStringLiteral("pelican.framePlanDock"),
         Qt::BottomDockWidgetArea);
+    legacy_output->setWindowTitle(QStringLiteral("Output"));
+    legacy_engine_log->setWindowTitle(QStringLiteral("Engine Log"));
+    legacy_frame_plan->setWindowTitle(QStringLiteral("Frame Plan"));
     six_dock_window.tabifyDockWidget(legacy_project, legacy_outliner);
     six_dock_window.tabifyDockWidget(legacy_output, legacy_engine_log);
     six_dock_window.tabifyDockWidget(legacy_engine_log,
                                     legacy_frame_plan);
     legacy_inspector->hide();
+    six_dock_window.show();
+    application().processEvents();
+    legacy_frame_plan->raise();
+    application().processEvents();
+    const QString legacy_tab = currentOutputTab(six_dock_window);
+    REQUIRE_FALSE(legacy_tab.isEmpty());
 
     const QByteArray six_dock_state =
         six_dock_window.saveState(
@@ -203,6 +233,8 @@ TEST_CASE("Saved devstudio layouts remain restorable as later docks are added",
     QDockWidget *materials = dock("pelican.materialsDock");
     // PB-1s: and Problems.
     QDockWidget *problems = dock("pelican.problemsDock");
+    // OSC-3c: and Live Inputs, likewise added late.
+    QDockWidget *live_inputs = dock("pelican.liveInputsDock");
 
     bool default_applied = false;
     QString error;
@@ -237,6 +269,14 @@ TEST_CASE("Saved devstudio layouts remain restorable as later docks are added",
     REQUIRE_FALSE(output->isHidden());
     REQUIRE_FALSE(engine_log->isHidden());
     REQUIRE_FALSE(frame_plan->isHidden());
+    // OSC-3c added its tab last; the six-dock state still selects the same
+    // tab it selected before the new tab existed.
+    current_window.show();
+    application().processEvents();
+    REQUIRE(currentOutputTab(current_window) == legacy_tab);
+    CHECK(currentOutputTab(current_window) != QStringLiteral("Live Inputs"));
+    CHECK(live_inputs->visibleRegion().isEmpty());
+    REQUIRE(current_window.tabifiedDockWidgets(output).contains(live_inputs));
     REQUIRE(current_window.dockWidgetArea(fullscreen_pass) !=
             Qt::NoDockWidgetArea);
     REQUIRE(current_window.dockWidgetArea(assets) != Qt::NoDockWidgetArea);
@@ -244,20 +284,20 @@ TEST_CASE("Saved devstudio layouts remain restorable as later docks are added",
     REQUIRE(current_window.dockWidgetArea(problems) != Qt::NoDockWidgetArea);
 
     const auto docks = current_window.findChildren<QDockWidget *>();
-    // HW-2s / MT-1s / PB-1s's three, SG-2's Layers and UI-2's Graph,
-    // Features and Rendering settings (fourteen).
-    REQUIRE(docks.size() == 14);
+    // HW-2s / MT-1s / PB-1s's three, SG-2's Layers, UI-2's Graph,
+    // Features and Rendering settings, and OSC-3c's Live Inputs (fifteen).
+    REQUIRE(docks.size() == 15);
     QSet<QString> object_names;
     for (const QDockWidget *current : docks) {
         REQUIRE_FALSE(current->objectName().isEmpty());
         object_names.insert(current->objectName());
     }
-    REQUIRE(object_names.size() == 14);
+    REQUIRE(object_names.size() == 15);
 
     auto *panels = current_window.findChild<QMenu *>(
         QStringLiteral("pelican.panelsMenu"));
     REQUIRE(panels != nullptr);
-    REQUIRE(panels->actions().size() == 14);
+    REQUIRE(panels->actions().size() == 15);
 }
 
 TEST_CASE("Devstudio restores the last panel layout at startup with an unsaved default control",
@@ -324,7 +364,7 @@ TEST_CASE("Devstudio restores the last panel layout at startup with an unsaved d
     REQUIRE(fallback_window.dockWidgetArea(project) ==
             Qt::LeftDockWidgetArea);
     const auto docks = fallback_window.findChildren<QDockWidget *>();
-    REQUIRE(docks.size() == 14);
+    REQUIRE(docks.size() == 15);
     for (const QDockWidget *dock : docks) {
         REQUIRE(fallback_window.dockWidgetArea(
                     const_cast<QDockWidget *>(dock)) !=
@@ -438,12 +478,16 @@ TEST_CASE("UI-2 the Graph, the Frame Plan, Features and Rendering settings are d
     CHECK(window.tabifiedDockWidgets(graph).isEmpty());
     CHECK_FALSE(window.tabifiedDockWidgets(output).contains(graph));
     const auto stack = window.tabifiedDockWidgets(output);
+    QDockWidget *live_inputs = dock("pelican.liveInputsDock");
     for (QDockWidget *member : {dock("pelican.engineLogDock"), dock("pelican.problemsDock"), frame_plan,
-                                dock("pelican.fullscreenPassDock"), features, rendering_settings}) {
+                                dock("pelican.fullscreenPassDock"), features, rendering_settings,
+                                live_inputs}) {
         INFO(member->objectName().toStdString());
         CHECK(stack.contains(member));
     }
-    CHECK(frame_plan->isVisible());
+    // The new tab is last and is not selected: the Frame Plan still is.
+    CHECK_FALSE(frame_plan->visibleRegion().isEmpty());
+    CHECK(live_inputs->visibleRegion().isEmpty());
     // Side by side: the Graph left of the stack's front tab (a tab behind it
     // is moved out of the window, so its geometry says nothing).
     CHECK(graph->geometry().right() < frame_plan->geometry().left());
@@ -543,6 +587,11 @@ TEST_CASE("UI-2 a panel layout saved before the split still shows the Graph dock
     CHECK(window.tabifiedDockWidgets(dock("pelican.outputDock")).contains(dock("pelican.framePlanDock")));
     // The Graph, which it did not know, is on screen in the window.
     QDockWidget *graph = dock("pelican.graphDock");
+    QDockWidget *live_inputs = dock("pelican.liveInputsDock");
+    // The saved state's selected tab, the Frame Plan, is still selected after
+    // Studio adds the Live Inputs tab last.
+    CHECK_FALSE(dock("pelican.framePlanDock")->visibleRegion().isEmpty());
+    CHECK(live_inputs->visibleRegion().isEmpty());
     CHECK(window.dockWidgetArea(graph) != Qt::NoDockWidgetArea);
     CHECK_FALSE(graph->isFloating());
     CHECK(graph->isVisible());

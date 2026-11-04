@@ -21,13 +21,18 @@ class QLabel;
 class QPushButton;
 class QTimer;
 
+#include "studiooscsettings.hpp"
+
 namespace PelicanStudio {
 
 class SelectionModel;
 struct OutlinerObjectKey;
 
-QStringList studioPlayerArguments(QStringList configured,
-                                  const QString &project_root);
+QStringList studioPlayerArguments(
+    QStringList configured,
+    const QString &project_root,
+    const StudioOscSettings &osc = {},
+    bool osc_supported = studioBuildHasOsc());
 // PM-3b: why the engine does not start in edit, when the configured arguments
 // keep it from doing so; empty otherwise.
 QString studioPlayerStartStateNotice(QStringList configured,
@@ -41,6 +46,11 @@ class EmbeddedViewport final : public QWidget {
     ~EmbeddedViewport() override;
 
     void openProject(const QString &project_root);
+    // OSC-3c: the user's listener settings, read by MainWindow from the one
+    // per-user settings file, used when this viewport starts the engine.
+    void setStudioOscSettings(const StudioOscSettings &settings) {
+        studio_osc_settings_ = settings;
+    }
     void finishEmbeddedWindowResize();
     // G-4. Stops the running engine and starts it again on the same project,
     // for a committed setting the engine reads only at start. The editor gate
@@ -212,6 +222,7 @@ class EmbeddedViewport final : public QWidget {
     int engine_load_timeout_ms_ = EngineLoadTimeoutMs;
     QSize last_requested_extent_;
     QString project_root_;
+    StudioOscSettings studio_osc_settings_;
     QSet<qint64> pending_pick_requests_;
     // PM-3a: the get_status requests in flight, whoever sent them.
     QSet<qint64> status_requests_;

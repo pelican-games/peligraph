@@ -1072,6 +1072,19 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     Qt6::Widgets
   )
 
+  # OSC-3c: the Live Inputs dock -- the engine's declared inputs, the OSC
+  # listener, recent traffic and its rate, the per-user settings, and Apply --
+  # on the real widget with the test answering through its hooks.
+  pelican_define_test(devstudio_liveinputs_dock_test QT QT_OFFSCREEN
+    pelican_studio_view
+    pelican_studio_viewport
+    pelican_project
+    pelican_core
+    Qt6::Core
+    Qt6::Test
+    Qt6::Widgets
+  )
+
   # PM-3c: the Outliner's rows for what the running game spawned, and the
   # Inspector's read-only view of one, on the real window over the real RPC
   # transport, with the test answering as an RO-1 engine.

@@ -20,7 +20,9 @@ bool isFlag(std::string_view argument, std::string_view flag) {
 } // namespace
 
 StudioPlayerLaunch studioPlayerLaunch(std::vector<std::string> configured,
-                                      const std::string &project_root) {
+                                      const std::string &project_root,
+                                      const StudioOscSettings &osc,
+                                      bool osc_supported) {
     std::vector<std::string> additional;
     additional.reserve(configured.size());
     bool has_editor_transform_preset = false;
@@ -127,14 +129,26 @@ StudioPlayerLaunch studioPlayerLaunch(std::vector<std::string> configured,
                      " in PELICAN_STUDIO_PLAYER_ARGUMENTS runs the game from its first frame.";
         }
     }
+    // OSC-3c: the listener is the user's, not the project's. Configured OSC
+    // options win as a whole, so settings never add one when the environment
+    // already names any of the three; and an OSC-less build adds none.
+    if (osc_supported && osc.enabled &&
+        !studioOscOptionsFromEnvironment(configured) &&
+        validateStudioOscSettings(osc).isEmpty()) {
+        for (const QString &argument : studioOscPlayerArguments(osc)) {
+            arguments.push_back(argument.toStdString());
+        }
+    }
     arguments.insert(arguments.end(), additional.begin(), additional.end());
     return {.arguments = std::move(arguments), .start_state_notice = std::move(notice)};
 }
 
 std::vector<std::string> studioPlayerArgumentStrings(
     std::vector<std::string> configured,
-    const std::string &project_root) {
-    return studioPlayerLaunch(std::move(configured), project_root).arguments;
+    const std::string &project_root,
+    const StudioOscSettings &osc,
+    bool osc_supported) {
+    return studioPlayerLaunch(std::move(configured), project_root, osc, osc_supported).arguments;
 }
 
 } // namespace PelicanStudio

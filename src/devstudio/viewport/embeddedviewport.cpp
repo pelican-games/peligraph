@@ -147,7 +147,9 @@ QString awarenessName(int awareness) {
 } // namespace
 
 QStringList studioPlayerArguments(QStringList configured,
-                                  const QString &project_root) {
+                                  const QString &project_root,
+                                  const StudioOscSettings &osc,
+                                  bool osc_supported) {
     std::vector<std::string> configured_strings;
     configured_strings.reserve(static_cast<std::size_t>(configured.size()));
     for (const auto &argument : configured) {
@@ -160,7 +162,9 @@ QStringList studioPlayerArguments(QStringList configured,
     const auto generated = studioPlayerArgumentStrings(
         std::move(configured_strings),
         std::string{project_utf8.constData(),
-                    static_cast<std::size_t>(project_utf8.size())});
+                    static_cast<std::size_t>(project_utf8.size())},
+        osc,
+        osc_supported);
     QStringList arguments;
     arguments.reserve(static_cast<qsizetype>(generated.size()));
     for (const auto &argument : generated) {
@@ -514,7 +518,8 @@ EngineProcessLaunch EmbeddedViewport::launchCommand() const {
             configured_arguments.isEmpty()
                 ? QStringList{}
                 : QProcess::splitCommand(configured_arguments),
-            project_root_),
+            project_root_,
+            studio_osc_settings_),
         .working_directory = QFileInfo(program).absolutePath(),
     };
 }

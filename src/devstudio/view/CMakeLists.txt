@@ -167,6 +167,8 @@ add_library(pelican_studio_view STATIC
     # PB-1s: the Problems dock.
     problemsdock.cpp
     problemsdock.hpp
+    liveinputsdock.cpp
+    liveinputsdock.hpp
     studioscreen.cpp
     studioscreen.hpp
 )

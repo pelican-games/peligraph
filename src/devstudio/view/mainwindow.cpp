@@ -10,6 +10,7 @@
 #include "graphcanvaswidget.hpp"
 #include "inspectorwidget.hpp"
 #include "keymapdialog.hpp"
+#include "liveinputsdock.hpp"
 #include "outlinertree.hpp"
 #include "../model/inspectormodel.hpp"
 #include "../model/outlineredit.hpp"
@@ -31,6 +32,7 @@
 #include "studiotheme.hpp"
 #include "studiocommands.hpp"
 #include "../viewport/embeddedviewport.hpp"
+#include "../viewport/studiooscsettings.hpp"
 
 #include <cstdint>
 
@@ -59,6 +61,9 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QProcess>
+#include <QSettings>
+#include <QTabBar>
 #include <QJsonParseError>
 #include <QJsonValue>
 #include <QKeySequence>
@@ -567,6 +572,11 @@ MainWindow::MainWindow(const QString &application_config_directory)
         QMainWindow::GroupedDragging);
     setDockNestingEnabled(true);
     setTabPosition(Qt::AllDockWidgetAreas, QTabWidget::North);
+    // OSC-3c: the listener choices are this user's, in this config directory,
+    // for every project.  A project cannot switch a listener on.
+    user_settings_ = std::make_unique<QSettings>(
+        QDir(application_config_directory_).filePath(QStringLiteral("studio.ini")),
+        QSettings::IniFormat);
 
     // The theme is the person's taste, like a panel layout: it is stored
     // beside the window and applied before anything is drawn, so a Studio
@@ -726,6 +736,9 @@ void MainWindow::createWorkspace() {
     workspace_layout->setStretch(3, 0);
     viewport_ = new EmbeddedViewport(workspace);
     viewport_->bindSelectionModel(&selection_model_);
+    if (user_settings_)
+        viewport_->setStudioOscSettings(
+            StudioOscSettingsStore(*user_settings_).load());
     workspace->setHole(viewport_);
     // BS-1s, decisions 2-4: above the viewport while the engine draws its
     // placeholder because the rendering setup was refused at start. Its
@@ -1080,6 +1093,29 @@ void MainWindow::createWorkspace() {
     problems_dock_->setObjectName(QStringLiteral("pelican.problemsPanel"));
     docks_[ProblemsPanelDock] =
         makeDock(this, tr("Problems"), QStringLiteral("pelican.problemsDock"), problems_dock_);
+    // OSC-3c: the user's live inputs and listener.  Unlike the other panels
+    // this one is off by default and is never part of a project.
+    live_inputs_dock_ = new LiveInputsDock(
+        LiveInputsDock::Hooks{
+            .send = [this](const QString &method, const QJsonObject &params,
+                           QString *error) { return viewport_->requestRpc(method, params, error); },
+            .engine_identity = [this] { return engine_generation_; },
+            .restart = [this](const QString &reason) { requestEngineRestart(reason); },
+            .applied = [this](const StudioOscSettings &settings) {
+                viewport_->setStudioOscSettings(settings);
+            },
+            .configured_arguments = [] {
+                const QString configured =
+                    qEnvironmentVariable("PELICAN_STUDIO_PLAYER_ARGUMENTS");
+                return configured.isEmpty() ? QStringList{}
+                                            : QProcess::splitCommand(configured);
+            },
+        },
+        *user_settings_, this);
+    live_inputs_dock_->setObjectName(QStringLiteral("pelican.liveInputsPanel"));
+    docks_[LiveInputsPanelDock] = makeDock(
+        this, tr("Live Inputs"), QStringLiteral("pelican.liveInputsDock"),
+        live_inputs_dock_);
     // Decision 4: the count on the status bar; a click brings Problems forward.
     problems_count_ = new QPushButton(this);
     problems_count_->setObjectName(QStringLiteral("pelican.problemsCount"));
@@ -1667,8 +1703,10 @@ void MainWindow::createWorkspace() {
                 dispatchGizmoModel();
                 // RL-1s: what this engine composes is what is watched.
                 if (render_reload_) render_reload_->engineReady();
+                ++engine_generation_;
                 assets_dock_->engineAvailable();
                 materials_dock_->engineAvailable();
+                live_inputs_dock_->engineAvailable();
                 problems_dock_->engineAvailable();
                 // MI-1s, decision 4: which files are registered models.
                 requestRegisteredModels();
@@ -1687,8 +1725,10 @@ void MainWindow::createWorkspace() {
                 if (render_history_) render_history_->abandonInFlight();
                 if (render_reload_) render_reload_->engineGone();
                 render_fallback_->engineGone();
+                ++engine_generation_;
                 assets_dock_->engineUnavailable();
                 materials_dock_->engineUnavailable();
+                live_inputs_dock_->engineUnavailable();
                 problems_dock_->engineUnavailable();
                 // MI-1s: what was asked went with the engine; a restart
                 // waited for is under way (or the project changed).
@@ -1747,6 +1787,8 @@ void MainWindow::createWorkspace() {
                     model_registration_->receiveResult(request_id, result.is_discarded() ? nlohmann::json{} : result);
                     return;
                 }
+                // OSC-3c: declared inputs, listener, recent traffic.
+                if (live_inputs_dock_->receiveResult(request_id, result_json)) return;
                 // PB-1s: the engine's list of problems.
                 if (problems_dock_->receiveResult(request_id, result_json)) return;
                 // PM-3a: Pause, Step and the reads that follow them.
@@ -1837,6 +1879,7 @@ void MainWindow::createWorkspace() {
                     pending_models_request_ = 0;
                     return;
                 }
+                if (live_inputs_dock_->receiveFailure(request_id, message)) return;
                 if (problems_dock_->receiveFailure(request_id, message)) return;
                 if (play_controls_ &&
                     play_controls_->receiveFailure(request_id, message))
@@ -2454,6 +2497,13 @@ void MainWindow::createMenus() {
     QAction *show_problems = view_menu->addAction(tr("P&roblems"));
     show_problems->setObjectName(QStringLiteral("pelican.view.problems"));
     connect(show_problems, &QAction::triggered, this, [this] { showProblems(); });
+    // OSC-3c: the user's live inputs.
+    QAction *show_live_inputs = view_menu->addAction(tr("&Live Inputs"));
+    show_live_inputs->setObjectName(QStringLiteral("pelican.view.liveInputs"));
+    connect(show_live_inputs, &QAction::triggered, this, [this] {
+        docks_[LiveInputsPanelDock]->show();
+        docks_[LiveInputsPanelDock]->raise();
+    });
 
     QMenu *layout_menu = menuBar()->addMenu(tr("&Layout"));
     layout_menu->setObjectName(QStringLiteral("pelican.layoutMenu"));
@@ -2930,6 +2980,7 @@ bool MainWindow::showRenderTool(const QString &id) {
     else if (id == QLatin1String{"render_features"}) index = RenderFeaturesDock;
     else if (id == QLatin1String{"rendering_settings"}) index = RenderingSettingsDock;
     else if (id == QLatin1String{"graph"}) index = GraphDock;
+    else if (id == QLatin1String{"live_inputs"}) index = LiveInputsPanelDock;
     if (index == DockCount || docks_[index] == nullptr) return false;
     showDock(index);
     return true;
@@ -2983,6 +3034,7 @@ void MainWindow::requestEngineRestart(const QString &reason) {
         render_features_->engineRestartDeclined(declined);
         rendering_settings_->engineRestartDeclined(declined);
         ray_layout_->engineRestartDeclined(declined);
+        live_inputs_dock_->engineRestartDeclined(declined);
         return;
     }
     // Set first: with nothing unsaved the restart happens inside this call.
@@ -3253,6 +3305,7 @@ void MainWindow::cancelNavigation(const QString &message) {
         render_features_->engineRestartDeclined(declined);
         rendering_settings_->engineRestartDeclined(declined);
         ray_layout_->engineRestartDeclined(declined);
+        live_inputs_dock_->engineRestartDeclined(declined);
         return;
     }
     if (!message.isEmpty()) statusBar()->showMessage(message, 8000);
@@ -4793,6 +4846,85 @@ QString MainWindow::restoreLastToolLayout() {
         .arg(lastToolLayoutName());
 }
 
+bool MainWindow::restoreState(const QByteArray &state, int version) {
+    const bool restored = QMainWindow::restoreState(state, version);
+    if (restored) repairLiveInputsTabAfterRestore();
+    return restored;
+}
+
+void MainWindow::repairLiveInputsTabAfterRestore() {
+    // OSC-3c: a state from before this tab keeps the new dock out of the
+    // bottom stack, in a group of its own or on screen beside it.  Put it
+    // back after the last tab that state knew, and leave the saved state's
+    // current tab current.  Qt can only establish a tab once the window is
+    // shown, so a restore before then waits for the first show.
+    if (docks_[LiveInputsPanelDock] == nullptr || docks_[OutputDock] == nullptr)
+        return;
+    const QList<QDockWidget *> stack =
+        tabifiedDockWidgets(docks_[OutputDock]);
+    if (stack.contains(docks_[LiveInputsPanelDock])) return;
+
+    QString current_title;
+    for (QTabBar *bar : findChildren<QTabBar *>()) {
+        bool has_output = false;
+        for (int tab = 0; tab < bar->count(); ++tab) {
+            if (bar->tabText(tab) == docks_[OutputDock]->windowTitle()) {
+                has_output = true;
+                break;
+            }
+        }
+        if (has_output && bar->currentIndex() >= 0)
+            current_title = bar->tabText(bar->currentIndex());
+    }
+    DockIndex anchor = OutputDock;
+    for (const DockIndex candidate : {RenderingSettingsDock, RenderFeaturesDock,
+                                      FullscreenPassDock, FramePlanDock,
+                                      ProblemsPanelDock, EngineLogDock}) {
+        if (stack.contains(docks_[candidate])) {
+            anchor = candidate;
+            break;
+        }
+    }
+    if (isVisible()) {
+        placeLiveInputsTab(anchor, current_title);
+    } else {
+        pending_live_tab_anchor_ = docks_[anchor];
+        pending_live_tab_current_ = current_title;
+    }
+}
+
+void MainWindow::showEvent(QShowEvent *event) {
+    QMainWindow::showEvent(event);
+    if (pending_live_tab_anchor_ != nullptr) {
+        QDockWidget *anchor = pending_live_tab_anchor_;
+        const QString current_title = pending_live_tab_current_;
+        pending_live_tab_anchor_ = nullptr;
+        pending_live_tab_current_.clear();
+        for (DockIndex index = ProjectDock; index < DockCount;
+             index = static_cast<DockIndex>(index + 1)) {
+            if (docks_[index] == anchor) {
+                placeLiveInputsTab(index, current_title);
+                break;
+            }
+        }
+    }
+}
+
+void MainWindow::placeLiveInputsTab(DockIndex anchor, const QString &current_title) {
+    if (docks_[LiveInputsPanelDock] == nullptr) return;
+    tabifyDockWidget(docks_[anchor], docks_[LiveInputsPanelDock]);
+    // A dock the saved state never knew can be hidden; it belongs in the
+    // stack, just not selected.
+    docks_[LiveInputsPanelDock]->show();
+    if (current_title.isEmpty()) return;
+    for (QDockWidget *member : tabifiedDockWidgets(docks_[OutputDock])) {
+        if (member->windowTitle() == current_title) {
+            member->raise();
+            return;
+        }
+    }
+}
+
 void MainWindow::applyDefaultLayout() {
     for (QDockWidget *dock : docks_) {
         // A dock restored as a floating top-level window only leaves that
@@ -4830,6 +4962,9 @@ void MainWindow::applyDefaultLayout() {
     tabifyDockWidget(docks_[FramePlanDock], docks_[FullscreenPassDock]);
     tabifyDockWidget(docks_[FullscreenPassDock], docks_[RenderFeaturesDock]);
     tabifyDockWidget(docks_[RenderFeaturesDock], docks_[RenderingSettingsDock]);
+    // OSC-3c: last, so an older saved state that never knew it leaves the tab
+    // it had current alone.
+    tabifyDockWidget(docks_[RenderingSettingsDock], docks_[LiveInputsPanelDock]);
     docks_[FramePlanDock]->raise();
     resizeDocks({docks_[ProjectDock], docks_[InspectorDock]}, {280, 320}, Qt::Horizontal);
     // SG-2: the Layers under the Inspector, tall enough for a few rows and

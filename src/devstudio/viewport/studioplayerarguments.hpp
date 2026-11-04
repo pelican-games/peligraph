@@ -1,5 +1,7 @@
 #pragma once
 
+#include "studiooscsettings.hpp"
+
 #include <string>
 #include <vector>
 
@@ -16,11 +18,16 @@ struct StudioPlayerLaunch {
     std::string start_state_notice;
 };
 
-StudioPlayerLaunch studioPlayerLaunch(std::vector<std::string> configured,
-                                      const std::string &project_root);
+StudioPlayerLaunch studioPlayerLaunch(
+    std::vector<std::string> configured,
+    const std::string &project_root,
+    const StudioOscSettings &osc = {},
+    bool osc_supported = studioBuildHasOsc());
 
 std::vector<std::string> studioPlayerArgumentStrings(
     std::vector<std::string> configured,
-    const std::string &project_root);
+    const std::string &project_root,
+    const StudioOscSettings &osc = {},
+    bool osc_supported = studioBuildHasOsc());
 
 } // namespace PelicanStudio

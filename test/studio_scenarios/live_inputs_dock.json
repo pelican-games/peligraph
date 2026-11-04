@@ -1,0 +1,106 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "live_inputs_dock",
+  "description": "OSC-3c: View > Live Inputs brings the dock forward. The user's OSC listener is off in a fresh profile; turning it on with port 0 and Apply saves the per-user setting and restarts the engine with --osc-port, and the dock reports the port the operating system chose. Turning it off and applying restarts without a listener, and the dock says so. The table and the listener line are the engine's answer, never a local guess.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "start from the default layout",
+      "cmd": "action",
+      "name": "pelican.layout.resetDefault"
+    },
+    {
+      "label": "View > Live Inputs",
+      "cmd": "action",
+      "name": "pelican.view.liveInputs"
+    },
+    {
+      "label": "the dock is on screen",
+      "cmd": "wait",
+      "name": "pelican.liveInputsPanel",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the engine is running and its listener is off",
+      "cmd": "wait",
+      "name": "pelican.liveInputs.listener",
+      "text": "off",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the declared inputs are the engine's, not a placeholder",
+      "cmd": "wait",
+      "name": "pelican.liveInputs.table",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "Listen for OSC",
+      "cmd": "click",
+      "name": "pelican.liveInputs.enabled"
+    },
+    {
+      "label": "the port is 0, so the operating system chooses",
+      "cmd": "type",
+      "name": "pelican.liveInputs.port",
+      "text": "0"
+    },
+    {
+      "label": "Apply is ready",
+      "cmd": "wait",
+      "name": "pelican.liveInputs.apply",
+      "enabled": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "Apply saves and restarts the engine",
+      "cmd": "click",
+      "name": "pelican.liveInputs.apply"
+    },
+    {
+      "label": "the new engine's listener reports the port it bound",
+      "cmd": "wait",
+      "name": "pelican.liveInputs.listener",
+      "contains": "listening on 127.0.0.1:",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the setting is this user's, in every project",
+      "expect": "text_equals",
+      "name": "pelican.liveInputs.scope",
+      "value": "For this user, in every project."
+    },
+    {
+      "label": "Listen for OSC off",
+      "cmd": "click",
+      "name": "pelican.liveInputs.enabled"
+    },
+    {
+      "label": "Apply is ready again",
+      "cmd": "wait",
+      "name": "pelican.liveInputs.apply",
+      "enabled": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "Apply restarts without a listener",
+      "cmd": "click",
+      "name": "pelican.liveInputs.apply"
+    },
+    {
+      "label": "the dock reports the new engine's listener off",
+      "cmd": "wait",
+      "name": "pelican.liveInputs.listener",
+      "text": "off",
+      "timeout_ms": 180000
+    }
+  ]
+}

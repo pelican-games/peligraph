@@ -19,6 +19,7 @@
 #include <QMainWindow>
 #include <QPoint>
 #include <QPointer>
+#include <QSettings>
 #include <QStringList>
 
 #include <array>
@@ -42,6 +43,7 @@ class QMenu;
 class QMessageBox;
 class QDialog;
 class QPlainTextEdit;
+class QSettings;
 class QString;
 class QTreeWidget;
 class QTreeWidgetItem;
@@ -72,6 +74,7 @@ class RenderingSettingsWidget;
 class RayLayoutWidget;
 class RuntimeOutliner;
 class KeymapDialog;
+class LiveInputsDock;
 enum class AddObjectKind : std::uint8_t;
 struct SceneEditOutcome;
 enum class SceneEditKind : std::uint8_t;
@@ -180,8 +183,13 @@ class MainWindow : public QMainWindow {
     // make the final commit fail without depending on directory permissions.
     void setKeymapFileWriter(KeymapFileWriter writer);
 
+    // OSC-3c: restoring an older saved state must also keep the Live Inputs
+    // tab in the bottom stack without making it current.
+    bool restoreState(const QByteArray &state, int version);
+
   protected:
     void closeEvent(QCloseEvent *event) override;
+    void showEvent(QShowEvent *event) override;
     bool nativeEvent(const QByteArray &event_type, void *message, qintptr *result) override;
 
   private:
@@ -207,10 +215,19 @@ class MainWindow : public QMainWindow {
         GraphDock,
         RenderFeaturesDock,
         RenderingSettingsDock,
+        // OSC-3c: the last tab of the bottom stack.
+        LiveInputsPanelDock,
         DockCount,
     };
 
     QString application_config_directory_;
+    // The per-user Studio settings.  OSC-3c keeps the listener choices here,
+    // never in a project.
+    std::unique_ptr<QSettings> user_settings_;
+    // OSC-3c: a tab that a pre-OSC saved layout did not know is attached once
+    // the window is shown, where Qt can establish the tab.
+    QDockWidget *pending_live_tab_anchor_ = nullptr;
+    QString pending_live_tab_current_;
     LayoutPresetManager layout_presets_;
     std::optional<ToolLayoutPresetManager> tool_layout_presets_;
     // KM-2b: captured once, before the first keymap application.  The dialog
@@ -228,11 +245,16 @@ class MainWindow : public QMainWindow {
     // PB-1s: what is wrong with the project now, and its count on the
     // status bar (a click brings the dock forward).
     ProblemsDock *problems_dock_ = nullptr;
+    // OSC-3c: declared live inputs, listener state, traffic and the user settings.
+    LiveInputsDock *live_inputs_dock_ = nullptr;
     QPushButton *problems_count_ = nullptr;
     OutlinerTree *outliner_ = nullptr;
     // Q-7: one line under the Outliner for what became of an Add object.
     QLabel *outliner_notice_ = nullptr;
     EmbeddedViewport *viewport_ = nullptr;
+    // OSC-3c: every engine start gets a new generation, so a slow reply from
+    // the engine that was stopped cannot be mistaken for the new one.
+    qint64 engine_generation_ = 0;
     // MG-1: shown instead of the viewport while the project being opened was
     // written by an earlier engine.
     ProjectMigrationWidget *migration_panel_ = nullptr;
@@ -537,6 +559,8 @@ class MainWindow : public QMainWindow {
     void saveLastToolLayout();
     QString restoreLastToolLayout();
     void applyDefaultLayout();
+    void repairLiveInputsTabAfterRestore();
+    void placeLiveInputsTab(DockIndex anchor, const QString &current_title);
     // Last member: disconnect focus/native callbacks and cancel queued updates
     // before QWidget tears down children (which can itself emit focusChanged).
     QObject scene_shortcut_context_;
