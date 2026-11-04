@@ -13633,3 +13633,2856 @@ TEST_CASE("RP-1b a commit during the panel's own read is read after it, never ad
 } // namespace PelicanStudio
 
 #include "rc6b1_studio_test.inc"
+
+// ---- FP-FUZZ1 begin ----
+// Seeded random-combination fuzzing for the Frame Plan canvas.  The fuzzer
+// drives the real widget and scene through only the gestures a user can make,
+// answers every RPC through EmbeddedViewport's signal, and checks the scene
+// against an independently maintained plan after each gesture.  It is a test
+// failure when a reply never arrives: a missing reply is never a timeout.
+
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <random>
+
+#include <QDockWidget>
+#include <QMainWindow>
+
+namespace PelicanStudio {
+namespace {
+
+QGraphicsScene &fuzzScene(FramePlanWidget &widget) { return scene(widget); }
+
+using FuzzJson = nlohmann::json;
+
+constexpr std::array<std::string_view, 4> FuzzNodes{
+    "wp343_mixed_a", "wp343_mixed_b", "wp343_mixed_c", "wp343_mixed_d"};
+constexpr std::string_view FuzzTarget = "wp343_mixed_d_output";
+constexpr std::string_view FuzzRegionKey = "region:wp343.mixed";
+constexpr std::string_view FuzzFeatureKey =
+    "feature:wp343_mixed_membership";
+constexpr std::string_view FuzzLegacyPrefix = "legacy.";
+
+std::string fuzzGroupStateId(const std::string &graph,
+                             const std::string &key) {
+    const auto field = [](const std::string &value) {
+        return std::to_string(value.size()) + ":" + value;
+    };
+    return "group-state-v1:" + field(graph) + field(key);
+}
+
+bool fuzzLegacyRegion(const std::string &region) {
+    return region.starts_with(FuzzLegacyPrefix);
+}
+
+struct FuzzGroupModel {
+    std::string key;
+    std::string id;
+    std::vector<std::string> members;
+};
+
+std::vector<FuzzGroupModel> fuzzGroups(const FramePlanModel &model) {
+    std::map<std::string, std::vector<std::string>, std::less<>> members;
+    if (!model.physical_plan.loweringGraphAvailable()) return {};
+    for (const auto &node : model.nodes) {
+        if (node.loop_origin) {
+            members["loop:" + node.loop_origin->loop].push_back(node.name);
+            continue;
+        }
+        const auto lowering = std::ranges::find(
+            model.physical_plan.lowering_nodes, node.name,
+            &FramePlanLoweringNode::name);
+        if (lowering == model.physical_plan.lowering_nodes.end()) continue;
+        std::vector<std::string> regions;
+        for (const auto &region : lowering->regions)
+            if (!fuzzLegacyRegion(region)) regions.push_back(region);
+        std::ranges::sort(regions);
+        if (regions.size() > 1) continue; // ambiguous: no group
+        if (regions.size() == 1) {
+            members["region:" + regions.front()].push_back(node.name);
+        } else if (!node.provider_feature.empty()) {
+            members["feature:" + node.provider_feature].push_back(node.name);
+        }
+    }
+    std::vector<FuzzGroupModel> groups;
+    for (auto &[key, names] : members) {
+        if (names.size() < 2) continue;
+        std::ranges::sort(names);
+        groups.push_back(FuzzGroupModel{
+            key, fuzzGroupStateId(model.graph, key), std::move(names)});
+    }
+    return groups;
+}
+
+const FuzzGroupModel *fuzzGroupById(const std::vector<FuzzGroupModel> &groups,
+                                    const QString &id) {
+    const auto found = std::ranges::find_if(
+        groups, [&](const FuzzGroupModel &group) {
+            return group.id == id.toStdString();
+        });
+    return found == groups.end() ? nullptr : &*found;
+}
+
+std::set<std::string, std::less<>> fuzzVisibleNodeNames(
+    const FramePlanModel &model, const std::string &target, int depth) {
+    std::set<std::string, std::less<>> visible;
+    if (depth <= 0) return visible;
+    std::set<std::string, std::less<>> visited_resources{target};
+    std::set<std::string, std::less<>> resource_frontier{target};
+    for (int step = 0; step < depth && !resource_frontier.empty(); ++step) {
+        std::vector<const FramePlanNode *> frontier;
+        for (const auto &node : model.nodes) {
+            const auto touches = [&](const std::vector<std::string> &values) {
+                return std::ranges::any_of(values, [&](const std::string &value) {
+                    return resource_frontier.contains(value);
+                });
+            };
+            if ((touches(node.reads) || touches(node.writes)) &&
+                !visible.contains(node.name))
+                frontier.push_back(&node);
+        }
+        std::set<std::string, std::less<>> next;
+        for (const FramePlanNode *node : frontier) {
+            visible.insert(node->name);
+            next.insert(node->reads.begin(), node->reads.end());
+            next.insert(node->writes.begin(), node->writes.end());
+        }
+        for (const auto &resource : visited_resources) next.erase(resource);
+        visited_resources.insert(next.begin(), next.end());
+        resource_frontier = std::move(next);
+    }
+    return visible;
+}
+
+struct FuzzState {
+    FuzzJson wire;
+    FuzzJson context;
+    FuzzJson catalog;
+    bool operator==(const FuzzState &other) const {
+        return wire == other.wire && context == other.context &&
+               catalog == other.catalog;
+    }
+};
+
+struct FuzzCoverageEntry {
+    int attempted = 0;
+    int dispatched = 0;
+    int effective = 0;
+    int no_op = 0;
+    int skipped = 0;
+    int unsupported = 0;
+};
+
+enum class FuzzKind {
+    SelectNode,
+    SelectResource,
+    SelectEdge,
+    Delete,
+    Backspace,
+    Escape,
+    EnterGroup,
+    LeaveGroup,
+    ConnectionSocket,
+    ConnectionNode,
+    ConnectionEmpty,
+    ConnectionCancel,
+    DragNode,
+    InlineCommit,
+    InlineCancel,
+    Undo,
+    Redo,
+    Refresh,
+    ExternalCommit,
+    Hide,
+    Show,
+    Count,
+};
+
+constexpr std::size_t FuzzKindCount =
+    static_cast<std::size_t>(FuzzKind::Count);
+
+const char *fuzzKindName(FuzzKind kind) {
+    switch (kind) {
+    case FuzzKind::SelectNode: return "select_node";
+    case FuzzKind::SelectResource: return "select_resource";
+    case FuzzKind::SelectEdge: return "select_edge";
+    case FuzzKind::Delete: return "delete";
+    case FuzzKind::Backspace: return "backspace";
+    case FuzzKind::Escape: return "escape";
+    case FuzzKind::EnterGroup: return "enter_group";
+    case FuzzKind::LeaveGroup: return "leave_group";
+    case FuzzKind::ConnectionSocket: return "connection_socket";
+    case FuzzKind::ConnectionNode: return "connection_node";
+    case FuzzKind::ConnectionEmpty: return "connection_empty";
+    case FuzzKind::ConnectionCancel: return "connection_cancel";
+    case FuzzKind::DragNode: return "drag_node";
+    case FuzzKind::InlineCommit: return "inline_commit";
+    case FuzzKind::InlineCancel: return "inline_cancel";
+    case FuzzKind::Undo: return "undo";
+    case FuzzKind::Redo: return "redo";
+    case FuzzKind::Refresh: return "refresh";
+    case FuzzKind::ExternalCommit: return "external_commit";
+    case FuzzKind::Hide: return "hide";
+    case FuzzKind::Show: return "show";
+    case FuzzKind::Count: break;
+    }
+    return "unknown";
+}
+
+struct FuzzAction {
+    FuzzKind kind = FuzzKind::SelectNode;
+    std::string node;
+    std::string resource;
+    std::string target;
+    std::string field;
+    std::string value;
+    int input_index = -1;
+};
+
+class FuzzWarnings {
+  public:
+    FuzzWarnings() {
+        REQUIRE(active_ == nullptr);
+        active_ = this;
+        previous_ = qInstallMessageHandler(&FuzzWarnings::handle);
+    }
+    ~FuzzWarnings() {
+        qInstallMessageHandler(previous_);
+        active_ = nullptr;
+    }
+    FuzzWarnings(const FuzzWarnings &) = delete;
+    FuzzWarnings &operator=(const FuzzWarnings &) = delete;
+
+    bool forbidden() const {
+        return std::ranges::any_of(messages_, [](const QString &message) {
+            return message.contains(QStringLiteral("QGraphicsScene::removeItem")) ||
+                   message.contains(QStringLiteral("deleted while")) ||
+                   message.contains(QStringLiteral("QObject::"));
+        });
+    }
+    QString joined() const { return messages_.join(QStringLiteral(" | ")); }
+    void clear() { messages_.clear(); }
+
+  private:
+    static void handle(QtMsgType type, const QMessageLogContext &context,
+                       const QString &message) {
+        if (active_ != nullptr) active_->messages_.push_back(message);
+        if (active_ != nullptr && active_->previous_ != nullptr)
+            active_->previous_(type, context, message);
+    }
+
+    static inline FuzzWarnings *active_ = nullptr;
+    QtMessageHandler previous_ = nullptr;
+    QStringList messages_;
+};
+
+struct FuzzEngine {
+    EmbeddedViewport *viewport = nullptr;
+    FramePlanWidget *widget = nullptr;
+
+    FuzzJson wire;
+    FuzzJson context;
+    FuzzJson catalog;
+    FuzzJson initial_wire;
+    std::string graph;
+
+    qint64 next_id = 7000;
+    qint64 plan_id = 0;
+    qint64 context_id = 0;
+    qint64 task_id = 0;
+    qint64 submit_id = 0;
+    qint64 ticket_id = 0;
+    qint64 plan_reread_id = 0;
+    qint64 edit_signal_id = 0;
+
+    std::string submit_method;
+    FuzzJson submit_params;
+    std::string pending_delete_node;
+    std::string pending_ticket;
+    std::string ticket_method;
+    FuzzJson ticket_params;
+
+    std::vector<FuzzState> undo;
+    std::vector<FuzzState> redo;
+    std::optional<FuzzState> history_expectation;
+    bool history_check_active = false;
+    int history_events = 0;
+    int content_commits = 0;
+    int external_commits = 0;
+    int plan_reads = 0;
+    int context_reads = 0;
+    int task_reads = 0;
+    int submits = 0;
+    int commits = 0;
+    int stale_replies = 0;
+
+    std::string last_external_format;
+    std::string prior_external_format;
+
+    QAction *undo_action = nullptr;
+    QAction *redo_action = nullptr;
+
+    void attach(EmbeddedViewport &transport, FramePlanWidget &owner,
+                QAction *undoAction, QAction *redoAction) {
+        viewport = &transport;
+        widget = &owner;
+        undo_action = undoAction;
+        redo_action = redoAction;
+    }
+
+    void reset(FuzzJson value, FuzzJson authoring, FuzzJson task_catalog) {
+        wire = std::move(value);
+        initial_wire = wire;
+        context = std::move(authoring);
+        catalog = std::move(task_catalog);
+        graph = wire.at("graph").get<std::string>();
+        undo.clear();
+        redo.clear();
+        history_expectation.reset();
+        history_check_active = false;
+        plan_id = context_id = task_id = submit_id = ticket_id =
+            plan_reread_id = 0;
+        pending_ticket.clear();
+        pending_delete_node.clear();
+        submit_method.clear();
+        submit_params = FuzzJson::object();
+        ticket_method.clear();
+        ticket_params = FuzzJson::object();
+        last_external_format.clear();
+        prior_external_format.clear();
+        syncHistory();
+    }
+
+    FuzzState state() const { return FuzzState{wire, context, catalog}; }
+
+    void restore(const FuzzState &value) {
+        wire = value.wire;
+        context = value.context;
+        catalog = value.catalog;
+        if (widget != nullptr) widget->refresh();
+    }
+
+    void syncHistory() {
+        if (undo_action != nullptr) undo_action->setEnabled(!undo.empty());
+        if (redo_action != nullptr) redo_action->setEnabled(!redo.empty());
+    }
+
+    bool undoAvailable() const { return !undo.empty(); }
+    bool redoAvailable() const { return !redo.empty(); }
+
+    bool undoStep() {
+        if (undo.empty()) return false;
+        redo.push_back(state());
+        FuzzState target = undo.back();
+        undo.pop_back();
+        restore(target);
+        history_expectation = target;
+        history_check_active = true;
+        ++history_events;
+        syncHistory();
+        return true;
+    }
+
+    bool redoStep() {
+        if (redo.empty()) return false;
+        undo.push_back(state());
+        FuzzState target = redo.back();
+        redo.pop_back();
+        restore(target);
+        history_expectation = target;
+        history_check_active = true;
+        ++history_events;
+        syncHistory();
+        return true;
+    }
+
+    // A fault the I-3 self-check can reach: restore a state that is not the
+    // one the independent history says this undo should produce.
+    void injectWrongUndo() {
+        if (undo.empty()) return;
+        FuzzState target = undo.back();
+        target.wire["nodes"].push_back(Json{{"name", "wp343_mixed_forged"},
+                                            {"kind", "fullscreen"}});
+        restore(target);
+        history_expectation = target;
+        history_check_active = true;
+    }
+
+    // An external edit is a commit from another panel: it changes the plan,
+    // is not this canvas's undo entry, and clears both stacks.
+    void externalCommit(bool mutate_format) {
+        ++external_commits;
+        prior_external_format = currentFormat();
+        if (mutate_format) {
+            const std::string next =
+                currentFormat() == "R16G16B16A16_SFLOAT"
+                    ? "R32G32B32A32_SFLOAT"
+                    : "R16G16B16A16_SFLOAT";
+            setFormat(next);
+            last_external_format = next;
+        } else {
+            // The plan's barriers are derived from the node reads. An external
+            // commit that changes a read has to leave both sides consistent or
+            // the synthetic reply is not a plan any engine could send.
+            if (!wire.contains("barriers") || !wire["barriers"].is_array())
+                wire["barriers"] = FuzzJson::array();
+            for (auto &node : wire.at("nodes")) {
+                if (node.value("name", std::string{}) != "wp343_mixed_d")
+                    continue;
+                auto reads = node.value("reads", FuzzJson::array());
+                std::string changed;
+                const bool adding = reads.empty();
+                if (adding) {
+                    changed = "wp343_mixed_c_output";
+                    reads.push_back(changed);
+                } else {
+                    changed = reads.front().get<std::string>();
+                    reads.erase(reads.begin());
+                }
+                node["reads"] = reads;
+                auto &barriers = wire["barriers"];
+                barriers.erase(
+                    std::remove_if(barriers.begin(), barriers.end(),
+                                   [&](const FuzzJson &barrier) {
+                                       return barrier.value("to", std::string{}) ==
+                                                  "wp343_mixed_d" &&
+                                              barrier.value("resource",
+                                                            std::string{}) ==
+                                                  changed;
+                                   }),
+                    barriers.end());
+                if (!adding) continue;
+                std::string writer;
+                for (const auto &candidate : wire.at("nodes")) {
+                    const auto writes = candidate.value(
+                        "writes", FuzzJson::array());
+                    if (std::find(writes.begin(), writes.end(), changed) != writes.end()) {
+                        writer = candidate.value("name", std::string{});
+                        break;
+                    }
+                }
+                if (!writer.empty()) {
+                    barriers.push_back(FuzzJson{
+                        {"from", writer},
+                        {"kind", "read_after_write"},
+                        {"resource", changed},
+                        {"to", "wp343_mixed_d"},
+                    });
+                }
+            }
+            last_external_format = currentFormat();
+        }
+        undo.clear();
+        redo.clear();
+        syncHistory();
+        widget->planChangedByCommit();
+    }
+
+    std::string currentFormat() const {
+        for (const auto &resource : wire.value("resources", FuzzJson::array()))
+            if (resource.value("name", std::string{}) == FuzzTarget)
+                return resource.value("format", std::string{});
+        return {};
+    }
+
+    void setFormat(const std::string &format) {
+        for (auto &resource : wire["resources"])
+            if (resource.value("name", std::string{}) == FuzzTarget)
+                resource["format"] = format;
+        auto &physical = wire["physical_target_plan"]["resources"];
+        for (auto &resource : physical) {
+            if (resource.value("name", std::string{}) == FuzzTarget ||
+                resource.value("logical_resource", std::string{}) == FuzzTarget)
+                resource["format"] = format;
+        }
+    }
+
+    FramePlanEditCapability capability() {
+        FramePlanEditCapability edit;
+        edit.ready = [](QObject *, FramePlanEditCapability::ReadyHandler handler) {
+            handler(true, QString{});
+        };
+        edit.requestAuthoringContext = [this](QString *) {
+            context_id = next_id++;
+            ++context_reads;
+            return context_id;
+        };
+        edit.requestTaskAuthoring = [this](QString *) {
+            task_id = next_id++;
+            ++task_reads;
+            return task_id;
+        };
+        const auto submit = [this](const char *method, const QJsonObject &params,
+                                   QString *) -> qint64 {
+            submit_method = method;
+            submit_params = Json::parse(
+                QJsonDocument(params).toJson().toStdString());
+            ++submits;
+            pending_ticket = "fuzz-ticket-" + std::to_string(next_id);
+            pending_delete_node.clear();
+            return submit_id = next_id++;
+        };
+        edit.editPresetPass = [this, submit](const QJsonObject &params,
+                                             QString *error) {
+            return submit("edit_preset_pass", params, error);
+        };
+        edit.removeAuthoredPass = [this, submit](const QJsonObject &params,
+                                                 QString *error) {
+            return submit("remove_authored_pass", params, error);
+        };
+        edit.editComputeTask = [this, submit](const QJsonObject &params,
+                                              QString *error) {
+            return submit("edit_compute_task", params, error);
+        };
+        edit.removeComputeTask = [this, submit](const QJsonObject &params,
+                                                QString *error) {
+            return submit("remove_compute_task", params, error);
+        };
+        edit.editRenderTargets = [this, submit](const QJsonObject &params,
+                                                QString *error) {
+            return submit("edit_render_targets", params, error);
+        };
+        edit.addAuthoredPass = [this, submit](const QJsonObject &params,
+                                              QString *error) {
+            return submit("add_authored_pass", params, error);
+        };
+        edit.decomposeMaterialPass = [this, submit](const QJsonObject &params,
+                                                    QString *error) {
+            return submit("decompose_material_pass", params, error);
+        };
+        edit.editTargetPlanning = [this, submit](const QJsonObject &params,
+                                                 QString *error) {
+            return submit("edit_target_planning", params, error);
+        };
+        edit.requestRootDocument = [this](const QString &, QString *) {
+            return next_id++;
+        };
+        edit.requestEditResult = [this](const QString &ticket, QString *) {
+            pending_ticket = ticket.toStdString();
+            return ticket_id = next_id++;
+        };
+        edit.result = [this](QObject *, FramePlanEditCapability::ResultHandler handler) {
+            result_handler = std::move(handler);
+        };
+        edit.failure = [this](QObject *, FramePlanEditCapability::FailureHandler handler) {
+            failure_handler = std::move(handler);
+        };
+        return edit;
+    }
+
+    FramePlanEditCapability::ResultHandler result_handler;
+    FramePlanEditCapability::FailureHandler failure_handler;
+
+    qint64 enqueuePlan() {
+        plan_id = next_id++;
+        ++plan_reads;
+        return plan_id;
+    }
+
+    void deliver(qint64 id, const FuzzJson &payload, bool edit = false) {
+        if (viewport == nullptr || id == 0) return;
+        edit_signal_id = edit ? id : 0;
+        Q_EMIT viewport->inspectorRpcSucceeded(
+            id, QByteArray::fromStdString(payload.dump()));
+        edit_signal_id = 0;
+    }
+
+    bool consumeEditSignal(qint64 id, const QByteArray &bytes) {
+        if (id == 0 || id != edit_signal_id || !result_handler) return false;
+        result_handler(id, bytes);
+        return true;
+    }
+
+    bool processSubmit() {
+        if (submit_id == 0 || pending_ticket.empty()) return false;
+        const qint64 id = submit_id;
+        submit_id = 0;
+        deliver(id, FuzzJson{{"status", "accepted"},
+                             {"ticket", pending_ticket}}, true);
+        ++commits;
+        return true;
+    }
+
+    bool processTicket() {
+        if (ticket_id == 0) return false;
+        const qint64 id = ticket_id;
+        ticket_id = 0;
+        if (pending_ticket.empty()) {
+            deliver(id, FuzzJson{{"status", "failed"},
+                                 {"message", "no pending ticket"}}, true);
+            return true;
+        }
+        const std::string ticket = pending_ticket;
+        pending_ticket.clear();
+        ticket_method = submit_method;
+        ticket_params = submit_params;
+        const FuzzState before = state();
+        applyEdit(ticket_method, ticket_params, ticket);
+        if (state() != before) {
+            undo.push_back(before);
+            redo.clear();
+            ++content_commits;
+        }
+        syncHistory();
+        deliver(id, FuzzJson{{"status", "committed"}, {"committed", true}}, true);
+        return true;
+    }
+
+    void drainOneTurn() {
+        for (int guard = 0; guard < 40; ++guard) {
+            QApplication::processEvents();
+            bool sent = false;
+            if (plan_id != 0) {
+                const qint64 id = plan_id;
+                plan_id = 0;
+                deliver(id, wire);
+                sent = true;
+            }
+            if (context_id != 0) {
+                const qint64 id = context_id;
+                context_id = 0;
+                deliver(id, context, true);
+                sent = true;
+            }
+            if (task_id != 0) {
+                const qint64 id = task_id;
+                task_id = 0;
+                deliver(id, catalog, true);
+                sent = true;
+            }
+            if (processSubmit()) sent = true;
+            if (processTicket()) sent = true;
+            if (!sent) break;
+        }
+    }
+
+    // Settle every reply the widget can be waiting for.  A queue that stays
+    // non-empty is a failure, never a timeout.
+    void drain(const char *context_label = "fuzz action") {
+        for (int turn = 0; turn < 12; ++turn) {
+            drainOneTurn();
+            QApplication::processEvents();
+            if (plan_id == 0 && context_id == 0 && task_id == 0 &&
+                submit_id == 0 && ticket_id == 0)
+                return;
+        }
+        FAIL("Frame Plan reply did not settle after " << context_label
+             << ": pending plan=" << plan_id << " context=" << context_id
+             << " task=" << task_id << " submit=" << submit_id
+             << " ticket=" << ticket_id);
+    }
+
+    void applyEdit(const std::string &method, const FuzzJson &params,
+                   const std::string &) {
+        if (method == "edit_preset_pass") {
+            const std::string name = params.value("pass_name", std::string{});
+            auto *node = findNode(name);
+            if (node == nullptr) return;
+            if (params.contains("input")) {
+                (*node)["reads"] = params.at("input");
+                reconcileBarriers(name);
+            }
+            if (params.contains("shader"))
+                (*node)["shader"] = params.at("shader");
+            if (params.contains("output"))
+                (*node)["writes"] = outputValues(params.at("output"));
+            updateDeclaration(name, params);
+            return;
+        }
+        if (method == "edit_compute_task") {
+            const std::string task_name =
+                params.value("task_name", std::string{});
+            for (auto &node : wire["nodes"]) {
+                if (node.value("authored_name", std::string{}) != task_name)
+                    continue;
+                const auto &task = params.at("task");
+                if (task.contains("reads")) {
+                    node["reads"] = task.at("reads");
+                    reconcileBarriers(node.value("name", std::string{}));
+                }
+                if (task.contains("shader"))
+                    node["shader"] = task.at("shader");
+                if (task.contains("dispatch"))
+                    node["dispatch"] = task.at("dispatch");
+                break;
+            }
+            for (auto &task : catalog.value("tasks", FuzzJson::array())) {
+                if (task.value("authored_name", std::string{}) == task_name)
+                    task["declaration"] = params.at("task");
+            }
+            return;
+        }
+        if (method == "remove_authored_pass") {
+            std::string victim = pending_delete_node;
+            if (victim.empty()) {
+                const std::string reference = params.value(
+                    "fragment_reference", std::string{});
+                for (const auto &node : wire["nodes"]) {
+                    if (node.value("provider_reference", std::string{}) ==
+                        reference) {
+                        victim = node.value("name", std::string{});
+                        break;
+                    }
+                }
+            }
+            removeNode(victim);
+            return;
+        }
+        if (method == "remove_compute_task") {
+            const std::string task_name =
+                params.value("task_name", std::string{});
+            for (const auto &node : wire["nodes"]) {
+                if (node.value("authored_name", std::string{}) == task_name) {
+                    removeNode(node.value("name", std::string{}));
+                    break;
+                }
+            }
+            return;
+        }
+        // Render target forms and add/decompose/planning are not part of this
+        // driver's reachable gesture set; their replies still settle.
+    }
+
+    // A plan reply carries barriers derived from node reads.  Keep the
+    // synthetic engine equally consistent whenever an edit changes an input.
+    void reconcileBarriers(const std::string &name) {
+        if (!wire.contains("nodes") || !wire["nodes"].is_array()) return;
+        FuzzJson *node = findNode(name);
+        if (node == nullptr) return;
+        auto reads = node->value("reads", FuzzJson::array());
+        std::vector<std::string> wanted;
+        for (const auto &value : reads)
+            if (value.is_string()) wanted.push_back(value.get<std::string>());
+        if (!wire.contains("barriers") || !wire["barriers"].is_array())
+            wire["barriers"] = FuzzJson::array();
+        auto &barriers = wire["barriers"];
+        barriers.erase(
+            std::remove_if(
+                barriers.begin(), barriers.end(),
+                [&](const FuzzJson &barrier) {
+                    if (barrier.value("to", std::string{}) != name) return false;
+                    const std::string resource =
+                        barrier.value("resource", std::string{});
+                    return std::find(wanted.begin(), wanted.end(), resource) ==
+                           wanted.end();
+                }),
+            barriers.end());
+        for (const auto &resource : wanted) {
+            const bool present = std::any_of(
+                barriers.begin(), barriers.end(), [&](const FuzzJson &barrier) {
+                    return barrier.value("to", std::string{}) == name &&
+                           barrier.value("resource", std::string{}) == resource;
+                });
+            if (present) continue;
+            std::string writer;
+            for (const auto &candidate : wire["nodes"]) {
+                const auto writes =
+                    candidate.value("writes", FuzzJson::array());
+                if (std::find(writes.begin(), writes.end(), resource) !=
+                    writes.end()) {
+                    writer = candidate.value("name", std::string{});
+                    break;
+                }
+            }
+            barriers.push_back(FuzzJson{{"from", writer},
+                                        {"kind", "read_after_write"},
+                                        {"resource", resource},
+                                        {"to", name}});
+        }
+    }
+
+    FuzzJson *findNode(const std::string &name) {
+        for (auto &node : wire["nodes"])
+            if (node.value("name", std::string{}) == name) return &node;
+        return nullptr;
+    }
+
+    static FuzzJson outputValues(const FuzzJson &output) {
+        if (output.is_string()) return FuzzJson::array({output});
+        if (output.is_array()) return output;
+        if (output.is_object() && output.contains("color")) {
+            const auto &color = output.at("color");
+            if (color.is_string()) return FuzzJson::array({color});
+            if (color.is_array()) return color;
+        }
+        return FuzzJson::array();
+    }
+
+    void updateDeclaration(const std::string &name, const FuzzJson &params) {
+        for (auto &pass : context["passes"]) {
+            if (pass.value("name", std::string{}) != name) continue;
+            for (const auto *declaration :
+                 {"declaration", "preset_declaration", "editable_declaration"}) {
+                if (!pass.contains(declaration)) continue;
+                auto &row = pass[declaration];
+                for (const auto *field : {"input", "output", "shader"})
+                    if (params.contains(field)) row[field] = params.at(field);
+            }
+            return;
+        }
+    }
+
+    void removeNode(const std::string &name) {
+        if (name.empty()) return;
+        if (!wire.contains("nodes") || !wire["nodes"].is_array()) return;
+        auto &nodes = wire["nodes"];
+        nodes.erase(
+            std::remove_if(nodes.begin(), nodes.end(), [&](const FuzzJson &node) {
+                return node.value("name", std::string{}) == name;
+            }),
+            nodes.end());
+        auto &plan = wire["physical_target_plan"];
+        if (!plan.is_object()) plan = FuzzJson::object();
+        auto &lowering = plan["lowering_nodes"];
+        if (!lowering.is_array()) lowering = FuzzJson::array();
+        lowering.erase(
+            std::remove_if(lowering.begin(), lowering.end(),
+                           [&](const FuzzJson &node) {
+                               return node.value("name", std::string{}) == name;
+                           }),
+            lowering.end());
+        auto &barriers = wire["barriers"];
+        if (!barriers.is_array()) barriers = FuzzJson::array();
+        barriers.erase(
+            std::remove_if(barriers.begin(), barriers.end(),
+                           [&](const FuzzJson &barrier) {
+                               return barrier.value("from", std::string{}) == name ||
+                                      barrier.value("to", std::string{}) == name;
+                           }),
+            barriers.end());
+        for (auto &node : wire["nodes"]) {
+            auto reads = node.value("reads", FuzzJson::array());
+            if (!reads.is_array()) reads = FuzzJson::array();
+            for (auto &read : reads) {
+                if (read == name + "_output") read = "";
+            }
+            reads.erase(std::remove(reads.begin(), reads.end(), ""),
+                        reads.end());
+            node["reads"] = reads;
+        }
+        for (auto &pass : context["passes"]) {
+            if (pass.value("name", std::string{}) == name) {
+                pass["removed"] = true;
+            }
+        }
+    }
+
+    int effectiveNodeCount() const {
+        return static_cast<int>(wire["nodes"].size());
+    }
+
+    bool hasFreeConnection(const FramePlanModel &model, std::string *source,
+                           std::string *target) const {
+        const auto visible = fuzzVisibleNodeNames(model, std::string{FuzzTarget}, 64);
+        for (const auto &from : model.nodes) {
+            if (!visible.contains(from.name)) continue;
+            for (const auto &to : model.nodes) {
+                if (&from == &to || !visible.contains(to.name)) continue;
+                for (const auto &written : from.writes) {
+                    if (std::ranges::find(to.reads, written) != to.reads.end())
+                        continue;
+                    if (to.kind == "compute" || to.kind == "fullscreen") {
+                        *source = from.name;
+                        *target = to.name;
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+};
+
+QString itemText(QGraphicsItem *item);
+
+// Compares an independently built model with what is actually on the canvas.
+// It never asks the widget to refresh or rebuild: a checker that repairs the
+// state it measures cannot catch a missed refresh.
+struct FuzzChecker {
+    FramePlanWidget &widget;
+    FramePlanGraphicsScene &scene;
+    FuzzEngine &engine;
+    QString failure;
+
+    bool fail(const QString &message) {
+        if (failure.isEmpty()) failure = message;
+        return false;
+    }
+
+    std::optional<FramePlanModel> modelFor(const FuzzJson &wire) {
+        try {
+            return buildFramePlanModel(wire.dump());
+        } catch (const std::exception &error) {
+            fail(QStringLiteral("model build threw: %1")
+                     .arg(QString::fromUtf8(error.what())));
+            return std::nullopt;
+        }
+    }
+
+    std::set<std::string, std::less<>> actualNames(const char *kind) {
+        std::set<std::string, std::less<>> names;
+        for (QGraphicsItem *item : itemsOfKind(scene, kind)) {
+            const QString name = item->data(FramePlanNameRole).toString();
+            if (!name.isEmpty()) names.insert(name.toStdString());
+        }
+        return names;
+    }
+
+    std::set<std::string, std::less<>> expectedItemNames(
+        const FramePlanModel &model, const std::vector<FuzzGroupModel> &groups) {
+        const int depth = subtreeDepth(widget).value();
+        auto visible = fuzzVisibleNodeNames(model, std::string{FuzzTarget}, depth);
+        const QString scope = fuzzScene(widget).property(
+            "pelicanCurrentGroupScope").toString();
+        if (const FuzzGroupModel *group =
+                fuzzGroupById(groups, scope)) {
+            // Entering a group is an explicit scope choice: the canvas draws
+            // the group's members even when the current target's subtree no
+            // longer reaches them (for example after an external commit).
+            std::set<std::string, std::less<>> open;
+            for (const auto &member : group->members)
+                open.insert(member);
+            return open;
+        }
+        const QStringList collapsed = fuzzScene(widget).property(
+            "pelicanCollapsedGroups").toStringList();
+        std::set<std::string, std::less<>> names;
+        for (const auto &group : groups) {
+            const bool folded =
+                collapsed.contains(QString::fromStdString(group.id));
+            if (!folded) continue;
+            const bool any_visible = std::ranges::any_of(
+                group.members, [&](const std::string &member) {
+                    return visible.contains(member);
+                });
+            if (!any_visible) continue;
+            for (const auto &member : group.members) visible.erase(member);
+        }
+        names.insert(visible.begin(), visible.end());
+        return names;
+    }
+
+    bool checkGroupState(const std::vector<FuzzGroupModel> &groups) {
+        const QStringList collapsed =
+            fuzzScene(widget).property("pelicanCollapsedGroups").toStringList();
+        for (const auto &id : collapsed) {
+            if (fuzzGroupById(groups, id) == nullptr)
+                return fail(QStringLiteral(
+                    "collapsed group %1 is not a current collapsible group")
+                    .arg(id));
+        }
+        const QString scope =
+            fuzzScene(widget).property("pelicanCurrentGroupScope").toString();
+        if (!scope.isEmpty() && fuzzGroupById(groups, scope) == nullptr)
+            return fail(QStringLiteral(
+                "current group scope %1 is not a current group").arg(scope));
+        return true;
+    }
+
+    bool checkI1() {
+        // A hidden panel deliberately does not consume plan updates; its
+        // content is checked when showEvent re-reads the latest plan (I6).
+        if (!widget.isVisible()) return true;
+        auto model = modelFor(engine.wire);
+        if (!model) return false;
+        const auto groups = fuzzGroups(*model);
+        if (!checkGroupState(groups)) return false;
+
+        const std::string target =
+            fuzzScene(widget).property("pelicanTarget").toString().toStdString();
+        if (!target.empty()) {
+            bool found = false;
+            for (const auto &resource : model->resources)
+                if (resource.name == target) found = true;
+            if (!found)
+                return fail(QStringLiteral(
+                    "selected target %1 is not in the current plan")
+                    .arg(QString::fromStdString(target)));
+        }
+
+        const int records = fuzzScene(widget).property("pelicanNodeRecordCount").toInt();
+        if (records != static_cast<int>(model->nodes.size()))
+            return fail(QStringLiteral(
+                "pelicanNodeRecordCount %1 != model node count %2")
+                .arg(records)
+                .arg(static_cast<qulonglong>(model->nodes.size())));
+
+        const auto expected = expectedItemNames(*model, groups);
+        const auto visible = fuzzVisibleNodeNames(
+            *model, std::string{FuzzTarget}, subtreeDepth(widget).value());
+        auto actual = actualNames(FramePlanNodeItem);
+        const QString scope = fuzzScene(widget).property(
+            "pelicanCurrentGroupScope").toString();
+        for (const auto &name : expected)
+            if (!actual.contains(name))
+                return fail(QStringLiteral(
+                    "current model node %1 is not drawn")
+                    .arg(QString::fromStdString(name)));
+        for (const auto &name : actual) {
+            if (expected.contains(name)) continue;
+            QStringList expected_list;
+            for (const auto &value : expected)
+                expected_list.push_back(QString::fromStdString(value));
+            QStringList actual_list;
+            for (const auto &value : actual)
+                actual_list.push_back(QString::fromStdString(value));
+            QString member_text;
+            if (const FuzzGroupModel *group =
+                    fuzzGroupById(groups, scope)) {
+                member_text = QString::fromStdString(group->key) + "[" +
+                    QString::fromStdString(group->id) + "] members=";
+                for (const auto &member : group->members)
+                    member_text += QString::fromStdString(member) + ",";
+            }
+            return fail(QStringLiteral(
+                "scene draws node %1 that is not in the current model "
+                "or scope scope=%2 %3 expected=%4 actual=%5")
+                .arg(QString::fromStdString(name), scope,
+                     member_text,
+                     expected_list.join(QStringLiteral(",")),
+                     actual_list.join(QStringLiteral(","))));
+        }
+        const QStringList collapsed = fuzzScene(widget).property(
+            "pelicanCollapsedGroups").toStringList();
+        std::map<QString, int> drawn_groups;
+        for (QGraphicsItem *item : itemsOfKind(scene, FramePlanGroupItem)) {
+            const QString id =
+                item->data(FramePlanGroupIdRole).toString();
+            const FuzzGroupModel *group =
+                fuzzGroupById(groups, id);
+            if (group == nullptr)
+                return fail(QStringLiteral(
+                    "scene draws group %1 that is not a current group")
+                    .arg(id));
+            if (!scope.isEmpty())
+                return fail(QStringLiteral(
+                    "scene draws group %1 inside group scope %2")
+                    .arg(id, scope));
+            if (!collapsed.contains(id))
+                return fail(QStringLiteral(
+                    "scene draws unfolded group %1").arg(id));
+            ++drawn_groups[id];
+            if (drawn_groups[id] > 1)
+                return fail(QStringLiteral(
+                    "scene draws group %1 more than once").arg(id));
+        }
+        if (!scope.isEmpty() && !drawn_groups.empty())
+            return fail(QStringLiteral(
+                "group scope %1 still draws group items").arg(scope));
+        for (const auto &group : groups) {
+            if (!collapsed.contains(QString::fromStdString(group.id)))
+                continue;
+            const bool any_visible = std::ranges::any_of(
+                group.members, [&](const std::string &member) {
+                    return visible.contains(member);
+                });
+            const auto found = drawn_groups.find(
+                QString::fromStdString(group.id));
+            const int drawn =
+                found == drawn_groups.end() ? 0 : found->second;
+            if (any_visible && scope.isEmpty() && drawn != 1)
+                return fail(QStringLiteral(
+                    "collapsed current group %1 is not drawn")
+                    .arg(QString::fromStdString(group.id)));
+        }
+        for (QGraphicsItem *item : itemsOfKind(scene, FramePlanGroupItem)) {
+            const QString id =
+                item->data(FramePlanGroupIdRole).toString();
+            const auto *group = fuzzGroupById(groups, id);
+            if (group == nullptr)
+                return fail(QStringLiteral(
+                    "drawn group %1 is not a current group").arg(id));
+            const QStringList members =
+                item->data(FramePlanMembersRole).toStringList();
+            QStringList expected_members;
+            for (const auto &member : group->members)
+                expected_members << QString::fromStdString(member);
+            if (members != expected_members)
+                return fail(QStringLiteral(
+                    "drawn group %1 carries stale members").arg(id));
+        }
+
+        for (const auto &node : model->nodes) {
+            if (!expected.contains(node.name)) continue;
+            if (!visible.contains(node.name)) continue;
+            QGraphicsItem *item = nodeItem(scene, node.name);
+            if (item == nullptr) continue;
+            const QString text = itemText(item);
+            for (const auto &read : node.reads) {
+                if (read.empty()) continue;
+                if (!text.contains(QString::fromStdString(read)))
+                    return fail(QStringLiteral(
+                        "scene node %1 does not show current read %2")
+                        .arg(QString::fromStdString(node.name),
+                             QString::fromStdString(read)));
+            }
+        }
+
+        auto resources = actualNames(FramePlanResourceNodeItem);
+        if (scope.isEmpty()) {
+            if (target.empty())
+                return fail(QStringLiteral("no target is selected"));
+            if (!resources.contains(target))
+                return fail(QStringLiteral(
+                    "root is missing the target resource item %1")
+                    .arg(QString::fromStdString(target)));
+            for (const auto &name : resources)
+                if (name != target)
+                    return fail(QStringLiteral(
+                        "root draws unexpected loose resource %1")
+                        .arg(QString::fromStdString(name)));
+        } else if (!resources.empty()) {
+            return fail(QStringLiteral(
+                "group scope %1 draws resource items").arg(scope));
+        }
+
+        // Every edge names a current node and current resources, and every
+        // resource is declared by the target node either now or as history.
+        for (QGraphicsItem *item : itemsOfKind(scene, FramePlanEdgeItem)) {
+            const QString to = item->data(FramePlanToNameRole).toString();
+            const QString from = item->data(FramePlanFromNameRole).toString();
+            if (to.isEmpty() ||
+                to.startsWith(QStringLiteral("__pelican_boundary__:")) ||
+                to.startsWith(QStringLiteral("__pelican_group__:")))
+                continue;
+            const auto node = std::ranges::find(
+                model->nodes, to.toStdString(), &FramePlanNode::name);
+            if (node == model->nodes.end())
+                return fail(QStringLiteral(
+                    "edge targets node %1 missing from the current model")
+                    .arg(to));
+            if (!from.isEmpty() && from != "__pelican_target__" &&
+                !from.startsWith(QStringLiteral("__pelican_group__:")) &&
+                !from.startsWith(QStringLiteral("__pelican_boundary__:"))) {
+                const auto source = std::ranges::find(
+                    model->nodes, from.toStdString(), &FramePlanNode::name);
+                if (source == model->nodes.end())
+                    return fail(QStringLiteral(
+                        "edge starts at node %1 missing from the current model")
+                        .arg(from));
+            }
+            const auto resources =
+                item->data(FramePlanResourcesRole).toStringList();
+            for (const auto &resource : resources) {
+                const std::string name = resource.toStdString();
+                bool declared =
+                    std::ranges::find(node->reads, name) != node->reads.end() ||
+                    std::ranges::find(node->history_reads, name) !=
+                        node->history_reads.end();
+                if (!declared)
+                    return fail(QStringLiteral(
+                        "edge %1 -> %2 carries undeclared resource %3")
+                        .arg(from, to, resource));
+            }
+        }
+        return true;
+    }
+
+    bool checkI2() {
+        auto model = modelFor(engine.wire);
+        if (!model) return false;
+        const auto groups = fuzzGroups(*model);
+        const auto visible = fuzzVisibleNodeNames(
+            *model, std::string{FuzzTarget}, subtreeDepth(widget).value());
+        const auto selected = scene.selectedNode();
+        if (selected) {
+            if (std::ranges::find(model->nodes, selected->name,
+                                  &FramePlanNode::name) == model->nodes.end())
+                return fail(QStringLiteral(
+                    "selected node %1 is not in the current model")
+                    .arg(QString::fromStdString(selected->name)));
+        }
+        for (const auto &key : scene.selectedNodes()) {
+            if (std::ranges::find(model->nodes, key.name,
+                                  &FramePlanNode::name) == model->nodes.end())
+                return fail(QStringLiteral(
+                    "selected node %1 is not in the current model")
+                    .arg(QString::fromStdString(key.name)));
+        }
+        if (const auto edge = scene.selectedEdge();
+            edge.has_value() &&
+            !QString::fromStdString(edge->to_node)
+                 .startsWith(QStringLiteral("__pelican_"))) {
+            const auto node = std::ranges::find(
+                model->nodes, edge->to_node, &FramePlanNode::name);
+            if (node == model->nodes.end())
+                return fail(QStringLiteral(
+                    "selected edge targets node %1 missing from the model")
+                    .arg(QString::fromStdString(edge->to_node)));
+            for (const auto &resource : edge->resources) {
+                const bool declared =
+                    std::ranges::find(node->reads, resource) !=
+                        node->reads.end() ||
+                    std::ranges::find(node->history_reads, resource) !=
+                        node->history_reads.end();
+                if (!declared)
+                    return fail(QStringLiteral(
+                        "selected edge carries resource %1 not read by %2")
+                        .arg(QString::fromStdString(resource),
+                             QString::fromStdString(edge->to_node)));
+                bool drawn = false;
+                for (QGraphicsItem *item :
+                     itemsOfKind(scene, FramePlanEdgeItem)) {
+                    if (item->data(FramePlanToNameRole).toString() ==
+                            QString::fromStdString(edge->to_node) &&
+                        item->data(FramePlanResourcesRole)
+                            .toStringList()
+                            .contains(QString::fromStdString(resource))) {
+                        drawn = true;
+                        break;
+                    }
+                }
+                if (!drawn)
+                    return fail(QStringLiteral(
+                        "selected edge to %1 resource %2 has no drawn edge "
+                        "item")
+                        .arg(QString::fromStdString(edge->to_node),
+                             QString::fromStdString(resource)));
+            }
+        }
+        if (const auto resource = scene.selectedResource()) {
+            if (std::ranges::find(model->resources, resource->name,
+                                  &FramePlanResource::name) ==
+                model->resources.end())
+                return fail(QStringLiteral(
+                    "selected resource %1 is not in the current model")
+                    .arg(QString::fromStdString(resource->name)));
+        }
+        const QString picked =
+            fuzzScene(widget).property("pelicanPickedResource").toString();
+        if (!picked.isEmpty() &&
+            std::ranges::find(model->resources, picked.toStdString(),
+                              &FramePlanResource::name) ==
+                model->resources.end())
+            return fail(QStringLiteral(
+                "picked resource %1 is not in the current model").arg(picked));
+
+        // Selection is not allowed to point at an item the scene no longer
+        // contains, whatever the model says.
+        const auto items = scene.items();
+        const auto inScene = [&](QGraphicsItem *item) {
+            return item != nullptr && items.contains(item);
+        };
+        if (const auto selected_now = scene.selectedNode()) {
+            if (QGraphicsItem *item = nodeItem(scene, selected_now->name);
+                item != nullptr && !inScene(item))
+                return fail(QStringLiteral(
+                    "selected node %1 is a stale scene item")
+                    .arg(QString::fromStdString(selected_now->name)));
+        }
+        Q_UNUSED(visible);
+        Q_UNUSED(groups);
+        return true;
+    }
+
+    bool checkI3() {
+        if (!engine.history_check_active) return true;
+        engine.history_check_active = false;
+        if (!engine.history_expectation)
+            return fail(QStringLiteral("history event without an expectation"));
+        if (engine.state() != *engine.history_expectation)
+            return fail(QStringLiteral(
+                "Undo/Redo did not produce the independently expected state"));
+        auto model = modelFor(engine.wire);
+        if (!model) return false;
+        // The scene must show the expected content, not merely the expected
+        // names: a reads-only undo with unchanged names must still refresh.
+        const auto visible = fuzzVisibleNodeNames(
+            *model, std::string{FuzzTarget}, subtreeDepth(widget).value());
+        for (const auto &node : model->nodes) {
+            if (!visible.contains(node.name)) continue;
+            QGraphicsItem *item = nodeItem(scene, node.name);
+            if (item == nullptr) continue;
+            const QString text = itemText(item);
+            for (const auto &read : node.reads) {
+                if (read.empty()) continue;
+                if (!text.contains(QString::fromStdString(read)))
+                    return fail(QStringLiteral(
+                        "scene node %1 does not show expected read %2 after "
+                        "Undo/Redo").arg(QString::fromStdString(node.name),
+                                         QString::fromStdString(read)));
+            }
+        }
+        return true;
+    }
+
+    bool checkI4(const FuzzState &before, int submits_before) {
+        if (engine.submits != submits_before)
+            return fail(QStringLiteral(
+                "Escape dispatched an edit request"));
+        if (engine.state() != before)
+            return fail(QStringLiteral(
+                "Escape changed the engine's plan/authoring state"));
+        return true;
+    }
+
+    bool checkI6() {
+        if (!widget.isVisible() || engine.external_commits == 0) return true;
+        if (!fuzzScene(widget).property("pelicanCurrentGroupScope").toString().isEmpty())
+            return true; // the resource node is not drawn in a group scope
+        auto model = modelFor(engine.wire);
+        if (!model) return false;
+        const std::string target =
+            fuzzScene(widget).property("pelicanTarget").toString().toStdString();
+        const auto resource =
+            std::ranges::find(model->resources, target,
+                              &FramePlanResource::name);
+        if (resource == model->resources.end())
+            return fail(QStringLiteral(
+                "shown panel's target %1 is not in the latest plan")
+                .arg(QString::fromStdString(target)));
+        QGraphicsItem *item = nullptr;
+        for (QGraphicsItem *candidate :
+             itemsOfKind(scene, FramePlanResourceNodeItem)) {
+            if (candidate->data(FramePlanNameRole).toString().toStdString() ==
+                target) {
+                item = candidate;
+                break;
+            }
+        }
+        if (item == nullptr)
+            return fail(QStringLiteral(
+                "shown panel has no resource item for %1")
+                .arg(QString::fromStdString(target)));
+        const QString text = itemText(item);
+        if (!text.contains(QString::fromStdString(resource->format)))
+            return fail(QStringLiteral(
+                "shown panel shows stale target format: item text %1 does "
+                "not contain latest %2").arg(text,
+                QString::fromStdString(resource->format)));
+        return true;
+    }
+
+    bool checkI5(const FuzzWarnings &warnings) {
+        if (warnings.forbidden())
+            return fail(QStringLiteral("forbidden Qt warning: %1")
+                            .arg(warnings.joined()));
+        return true;
+    }
+
+    bool checkAll(const FuzzWarnings &warnings) {
+        failure.clear();
+        (void)checkI1();
+        (void)checkI2();
+        (void)checkI3();
+        (void)checkI5(warnings);
+        (void)checkI6();
+        return failure.isEmpty();
+    }
+};
+
+QString itemText(QGraphicsItem *item) {
+    QString text;
+    if (item == nullptr) return text;
+    if (auto *simple = dynamic_cast<QGraphicsSimpleTextItem *>(item))
+        text += simple->text() + QLatin1Char('\n');
+    for (QGraphicsItem *child : item->childItems()) text += itemText(child);
+    return text;
+}
+
+} // namespace
+} // namespace PelicanStudio
+// ---- FP-FUZZ1 part 1 end ----
+
+namespace PelicanStudio {
+namespace {
+
+struct FuzzFixture;
+
+struct FuzzFixture {
+    std::uint64_t seed = 0;
+    std::mt19937_64 rng;
+    // Constructed before the widget so no Qt warning can escape the
+    // fixture's lifetime, and forwards to the previous handler.
+    FuzzWarnings warnings;
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    QAction undo_action;
+    QAction redo_action;
+    FuzzEngine engine;
+    std::array<FuzzCoverageEntry, FuzzKindCount> coverage{};
+    std::vector<FuzzAction> action_log;
+    std::string failure;
+    int step = 0;
+    bool group_entered = false;
+    bool undo_done = false;
+    bool want_commit = false;
+    bool committed_since_history = false;
+    bool inline_tried = false;
+    int group_pairs = 0;
+    int undo_round_trips = 0;
+
+    explicit FuzzFixture(std::uint64_t seed_value)
+        : seed(seed_value), rng(seed_value) {}
+
+    bool open() {
+        FuzzJson wire = mixedEditingWire();
+        const std::string graph = wire.at("graph").get<std::string>();
+        FuzzJson context = mixedAuthoringContext(graph);
+        context["planning_root"] = FuzzJson::object();
+        context["planning_catalog"][graph]["nodes"] = FuzzJson::array();
+        for (const auto &node : wire.at("nodes"))
+            context["planning_catalog"][graph]["nodes"].push_back(
+                node.value("authored_name",
+                           node.at("name").get<std::string>()));
+        engine.reset(std::move(wire), std::move(context),
+                     authoredTaskCatalog());
+
+        widget.resize(1400, 900);
+        undo_action.setText(QStringLiteral("Undo"));
+        undo_action.setObjectName(QStringLiteral("pelican.framePlan.fuzz.undo"));
+        redo_action.setText(QStringLiteral("Redo"));
+        redo_action.setObjectName(QStringLiteral("pelican.framePlan.fuzz.redo"));
+        widget.setRenderHistoryActions(&undo_action, &redo_action);
+        engine.attach(viewport, widget, &undo_action, &redo_action);
+        widget.setEditCapability(engine.capability());
+        QObject::connect(&viewport, &EmbeddedViewport::inspectorRpcSucceeded,
+                         &viewport, [this](qint64 id, const QByteArray &bytes) {
+                             engine.consumeEditSignal(id, bytes);
+                         });
+        widget.setPlanRequest([this](QString *) { return engine.enqueuePlan(); });
+        QObject::connect(&undo_action, &QAction::triggered, &widget, [this] {
+            if (engine.undoStep()) {
+                undo_done = true;
+                committed_since_history = true;
+            }
+        });
+        QObject::connect(&redo_action, &QAction::triggered, &widget, [this] {
+            if (engine.redoStep()) {
+                undo_done = false;
+                want_commit = gateEffective(FuzzKind::ConnectionNode) < 30;
+            }
+        });
+        widget.show();
+        QApplication::processEvents();
+
+        widget.receiveResult(QByteArray::fromStdString(engine.wire.dump()));
+        QApplication::processEvents();
+        engine.drain("initial unsolicited plan");
+        targetSelector(widget).setCurrentText(QString::fromStdString(
+            std::string{FuzzTarget}));
+        subtreeDepth(widget).setValue(64);
+        for (int settle = 0; settle < 6; ++settle) {
+            QApplication::processEvents();
+            engine.drain("initial authoring context");
+        }
+        return fuzzScene(widget).property("pelicanNodeRecordCount").toInt() > 0;
+    }
+
+    FramePlanGraphicsScene &logical() {
+        return dynamic_cast<FramePlanGraphicsScene &>(scene(widget));
+    }
+
+    FuzzCoverageEntry *global_coverage = nullptr;
+
+    FuzzCoverageEntry &cover(FuzzKind kind) {
+        return coverage[static_cast<std::size_t>(kind)];
+    }
+
+    int gateDispatched(FuzzKind kind) const {
+        int total = coverage[static_cast<std::size_t>(kind)].dispatched;
+        if (global_coverage != nullptr)
+            total += global_coverage[static_cast<std::size_t>(kind)].dispatched;
+        return total;
+    }
+
+    int localDispatched(FuzzKind kind) const {
+        return coverage[static_cast<std::size_t>(kind)].dispatched;
+    }
+    int localEffective(FuzzKind kind) const {
+        return coverage[static_cast<std::size_t>(kind)].effective;
+    }
+    int gateEffective(FuzzKind kind) const {
+        int total = coverage[static_cast<std::size_t>(kind)].effective;
+        if (global_coverage != nullptr)
+            total += global_coverage[static_cast<std::size_t>(kind)].effective;
+        return total;
+    }
+
+    void failNow(const QString &message) {
+        if (failure.empty()) failure = message.toStdString();
+    }
+
+    bool runChecks(const char *label) {
+        FuzzChecker checker{widget, logical(), engine};
+        if (!checker.checkAll(warnings)) {
+            Q_UNUSED(label);
+            failNow(checker.failure);
+            return false;
+        }
+        return true;
+    }
+
+    static QString describe(const FuzzAction &action) {
+        QString text = QString::fromLatin1(fuzzKindName(action.kind));
+        if (!action.node.empty())
+            text += QStringLiteral(" node=%1").arg(
+                QString::fromStdString(action.node));
+        if (!action.resource.empty())
+            text += QStringLiteral(" resource=%1").arg(
+                QString::fromStdString(action.resource));
+        if (!action.target.empty())
+            text += QStringLiteral(" target=%1").arg(
+                QString::fromStdString(action.target));
+        if (!action.field.empty())
+            text += QStringLiteral(" field=%1").arg(
+                QString::fromStdString(action.field));
+        return text;
+    }
+
+    std::vector<std::string> visibleNodeNames() {
+        std::vector<std::string> names;
+        for (QGraphicsItem *item : itemsOfKind(logical(), FramePlanNodeItem)) {
+            const QString name = item->data(FramePlanNameRole).toString();
+            if (!name.isEmpty()) names.push_back(name.toStdString());
+        }
+        return names;
+    }
+
+    std::vector<QGraphicsItem *> visibleNodeItems() {
+        std::vector<QGraphicsItem *> items;
+        for (QGraphicsItem *item : itemsOfKind(logical(), FramePlanNodeItem))
+            if (!item->data(FramePlanNameRole).toString().isEmpty())
+                items.push_back(item);
+        return items;
+    }
+
+    std::vector<QGraphicsItem *> edgeItems() {
+        return itemsOfKind(logical(), FramePlanEdgeItem);
+    }
+
+    std::vector<std::string> collapsedGroupIds() {
+        std::vector<std::string> ids;
+        for (const auto &id : fuzzScene(widget).property(
+                 "pelicanCollapsedGroups").toStringList())
+            ids.push_back(id.toStdString());
+        return ids;
+    }
+
+    std::string currentScope() {
+        return fuzzScene(widget).property("pelicanCurrentGroupScope")
+            .toString().toStdString();
+    }
+
+    std::vector<FuzzGroupModel> currentGroups() {
+        auto model = buildFramePlanModel(engine.wire.dump());
+        return fuzzGroups(model);
+    }
+
+    QGraphicsItem *nodeItemFor(const std::string &name) {
+        return nodeItem(logical(), std::string_view{name});
+    }
+
+    QGraphicsItem *outputSocket(const std::string &node) {
+        return socketItem(logical(), QString::fromStdString(node),
+                          QString::fromStdString(node + "_output"),
+                          QStringLiteral("output"));
+    }
+
+    bool clickItem(QGraphicsItem *item) {
+        if (item == nullptr || !item->isVisible()) return false;
+        auto &view = logicalView(widget);
+        const QRectF rect = item->sceneBoundingRect();
+        view.fitInView(rect.adjusted(-220, -180, 220, 180),
+                       Qt::KeepAspectRatio);
+        QApplication::processEvents();
+        const QPoint at = view.mapFromScene(rect.center());
+        if (!view.viewport()->rect().contains(at)) return false;
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier,
+                          at);
+        QApplication::processEvents();
+        return true;
+    }
+
+    void cancelEscape() {
+        auto *escape = widget.findChild<QAction *>(
+            QStringLiteral("pelican.framePlanLeaveGroup"));
+        if (escape != nullptr) {
+            escape->trigger();
+        } else {
+            auto &view = logicalView(widget);
+            view.setFocus();
+            QTest::keyClick(&view, Qt::Key_Escape);
+        }
+        QApplication::processEvents();
+    }
+
+    bool dragSocketToScenePoint(const std::string &node,
+                                const std::string &resource,
+                                const QString &direction,
+                                QPointF destination, bool cancel) {
+        QGraphicsItem *socket = socketItem(
+            logical(), QString::fromStdString(node),
+            QString::fromStdString(resource), direction);
+        if (socket == nullptr || !socket->isVisible()) return false;
+        auto &view = logicalView(widget);
+        const QRectF span = socket->sceneBoundingRect()
+                                .united(QRectF{destination, QSizeF{1, 1}})
+                                .adjusted(-80, -80, 80, 80);
+        view.fitInView(span, Qt::KeepAspectRatio);
+        QApplication::processEvents();
+        const QPoint start =
+            view.mapFromScene(socket->sceneBoundingRect().center());
+        const QPoint end = view.mapFromScene(destination);
+        if (!view.viewport()->rect().contains(start) ||
+            !view.viewport()->rect().contains(end))
+            return false;
+        QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier,
+                          start);
+        if (view.itemAt(start) != nullptr)
+        if (view.itemAt(end) != nullptr)
+        QTest::mouseMove(view.viewport(), (start + end) / 2, 1);
+        if (cancel) cancelEscape();
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier,
+                            end);
+        QApplication::processEvents();
+        return true;
+    }
+
+    bool dragSocketToEmpty(const std::string &node,
+                           const std::string &resource, bool cancel) {
+        QGraphicsItem *socket = socketItem(
+            logical(), QString::fromStdString(node),
+            QString::fromStdString(resource), QStringLiteral("output"));
+        if (socket == nullptr || !socket->isVisible()) return false;
+        auto &view = logicalView(widget);
+        view.fitInView(socket->sceneBoundingRect().adjusted(-500, -300,
+                                                            500, 300),
+                       Qt::KeepAspectRatio);
+        QApplication::processEvents();
+        const QPoint start =
+            view.mapFromScene(socket->sceneBoundingRect().center());
+        const QPoint end{view.viewport()->rect().right() - 5,
+                         view.viewport()->rect().bottom() - 5};
+        if (!view.viewport()->rect().contains(start)) return false;
+        QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier,
+                          start);
+        QTest::mouseMove(view.viewport(), (start + end) / 2, 1);
+        if (cancel) cancelEscape();
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier,
+                            end);
+        QApplication::processEvents();
+        return true;
+    }
+
+    std::optional<std::pair<std::string, std::string>> freeConnection() {
+        auto model = buildFramePlanModel(engine.wire.dump());
+        const auto visible = fuzzVisibleNodeNames(model, std::string{FuzzTarget},
+                                                  64);
+        auto connectable = [](const FramePlanNode &node) {
+            return node.kind == "compute" || node.kind == "fullscreen" ||
+                   node.kind == "render";
+        };
+        auto usable = [&](const FramePlanNode &from,
+                          const FramePlanNode &to) {
+            if (&from == &to || from.writes.empty() ||
+                !connectable(to))
+                return false;
+            if (std::ranges::find(to.reads, from.writes.front()) !=
+                to.reads.end())
+                return false;
+            for (const auto &written : from.writes) {
+                if (std::ranges::find(to.reads, written) == to.reads.end())
+                    return true;
+            }
+            return false;
+        };
+        // The authored preset pass accepts an input from any earlier output;
+        // it is the one target whose drop is known to commit an edit.
+        const auto to = std::ranges::find(model.nodes, std::string{"wp343_mixed_a"},
+                                          &FramePlanNode::name);
+        if (to != model.nodes.end()) {
+            const auto from = std::ranges::find(
+                model.nodes, std::string{"wp343_mixed_d"},
+                &FramePlanNode::name);
+            if (from != model.nodes.end() && usable(*from, *to))
+                return std::pair{from->name, to->name};
+        }
+        for (const auto &from : model.nodes) {
+            if (!visible.contains(from.name)) continue;
+            for (const auto &to : model.nodes)
+                if (usable(from, to))
+                    return std::pair{from.name, to.name};
+        }
+        return std::nullopt;
+    }
+
+    std::string chooseVisibleNode() {
+        auto names = visibleNodeNames();
+        if (names.empty()) return {};
+        return names.at(rng() % names.size());
+    }
+
+    std::string nodeWithBand(const std::string &field) {
+        for (const auto &name : visibleNodeNames()) {
+            QGraphicsItem *band = bandItem(
+                logical(), QString::fromStdString(name),
+                QString::fromStdString(field));
+            if (band != nullptr && band->isVisible())
+                return name;
+        }
+        return {};
+    }
+
+    FuzzAction chooseAction();
+    void perform(const FuzzAction &action);
+};
+
+FuzzAction FuzzFixture::chooseAction() {
+    FuzzAction action;
+    if (!widget.isVisible()) {
+        // Leave the panel hidden long enough for an external commit to land,
+        // then show it and let I6 compare the visible content with the plan.
+        action.kind = engine.external_commits < 2
+                          ? FuzzKind::ExternalCommit
+                          : FuzzKind::Show;
+        return action;
+    }
+    if (group_entered) {
+        action.kind = FuzzKind::LeaveGroup;
+        return action;
+    }
+    if (undo_done && engine.redoAvailable()) {
+        action.kind = FuzzKind::Redo;
+        return action;
+    }
+
+    // The socket, empty-space and cancel gestures are inexpensive but need a
+    // real source with an output socket.  Quotas are per seed so every seed
+    // contributes before the aggregate minimum is reached.
+    if (gateDispatched(FuzzKind::ConnectionSocket) < 50 &&
+        localDispatched(FuzzKind::ConnectionSocket) < 1) {
+        auto model = buildFramePlanModel(engine.wire.dump());
+        const auto to = std::ranges::find(model.nodes, std::string{"wp343_mixed_d"},
+                                          &FramePlanNode::name);
+        if (to != model.nodes.end()) {
+            for (const auto &read : to->reads) {
+                const auto from = std::ranges::find_if(
+                    model.nodes, [&](const FramePlanNode &node) {
+                        return std::ranges::find(node.writes, read) !=
+                               node.writes.end();
+                    });
+                if (from == model.nodes.end()) continue;
+                if (outputSocket(from->name) == nullptr) continue;
+                if (socketItem(logical(), QString::fromStdString(to->name),
+                               QString::fromStdString(read),
+                               QStringLiteral("input")) == nullptr)
+                    continue;
+                action.kind = FuzzKind::ConnectionSocket;
+                action.node = from->name;
+                action.target = to->name;
+                action.resource = read;
+                return action;
+            }
+        }
+    }
+    if (gateDispatched(FuzzKind::ConnectionEmpty) < 50 &&
+        localDispatched(FuzzKind::ConnectionEmpty) < 1) {
+        for (const auto &name : visibleNodeNames()) {
+            if (outputSocket(name) == nullptr) continue;
+            action.kind = FuzzKind::ConnectionEmpty;
+            action.node = name;
+            action.resource = name + "_output";
+            return action;
+        }
+    }
+    if (gateDispatched(FuzzKind::ConnectionCancel) < 50 &&
+        localDispatched(FuzzKind::ConnectionCancel) < 1) {
+        for (const auto &name : visibleNodeNames()) {
+            if (outputSocket(name) == nullptr) continue;
+            action.kind = FuzzKind::ConnectionCancel;
+            action.node = name;
+            action.resource = name + "_output";
+            return action;
+        }
+    }
+    if (gateEffective(FuzzKind::ConnectionNode) < 50 &&
+        localEffective(FuzzKind::ConnectionNode) < 1) {
+        if (const auto pair = freeConnection()) {
+            action.kind = FuzzKind::ConnectionNode;
+            action.node = pair->first;
+            action.target = pair->second;
+            return action;
+        }
+    }
+
+    // Undo/Redo are only chosen on behalf of a transaction the oracle has
+    // recorded.  This yields the canonical D0 -> E -> D1 -> Undo -> D0 ->
+    // Redo -> D1 sequence, and no standalone random history action.
+    if (gateEffective(FuzzKind::Undo) < 70 &&
+        localEffective(FuzzKind::Undo) < 1 && engine.undoAvailable()) {
+        action.kind = FuzzKind::Undo;
+        return action;
+    }
+    if (gateEffective(FuzzKind::EnterGroup) < 50 &&
+        localEffective(FuzzKind::EnterGroup) < 1 &&
+        currentScope().empty()) {
+        const auto groups = currentGroups();
+        if (!groups.empty()) {
+            action.kind = FuzzKind::EnterGroup;
+            action.target = groups.at(rng() % groups.size()).id;
+            return action;
+        }
+    }
+    if (!inline_tried && gateEffective(FuzzKind::InlineCommit) < 70) {
+        inline_tried = true;
+        const std::string node = nodeWithBand("shader.fragment");
+        if (!node.empty()) {
+            action.kind = FuzzKind::InlineCommit;
+            action.node = node;
+            action.field = "shader.fragment";
+            return action;
+        }
+    }
+
+    // Spread the remaining actions over the least-exercised kinds.  The
+    // aggregate gate rejects any kind that never became dispatchable.
+    const auto names = visibleNodeNames();
+    const auto canRun = [&](FuzzKind kind) {
+        switch (kind) {
+        case FuzzKind::SelectEdge:
+        case FuzzKind::ConnectionSocket:
+        case FuzzKind::ConnectionNode:
+        case FuzzKind::ConnectionEmpty:
+        case FuzzKind::ConnectionCancel:
+            return false;
+        case FuzzKind::SelectNode:
+            return !names.empty();
+        case FuzzKind::SelectResource:
+            for (QGraphicsItem *item :
+                 itemsOfKind(logical(), FramePlanResourceNodeItem))
+                if (item->data(FramePlanNameRole).toString().toStdString() ==
+                    std::string{FuzzTarget})
+                    return true;
+            return false;
+        case FuzzKind::Undo:
+            return engine.undoAvailable();
+        case FuzzKind::Redo:
+            return engine.redoAvailable();
+        case FuzzKind::EnterGroup:
+            return currentScope().empty() && !currentGroups().empty();
+        case FuzzKind::LeaveGroup:
+            return !currentScope().empty();
+        case FuzzKind::Show:
+            return !widget.isVisible();
+        case FuzzKind::Delete:
+        case FuzzKind::Backspace:
+            // Keep destructive coverage to one attempt per seed here: the
+            // deterministic prefix cases own the detailed delete/priority
+            // matrix, while the long driver still has to leave a graph with
+            // edge items for the mandatory edge-selection coverage.
+            return localDispatched(kind) < 1;
+        case FuzzKind::Hide:
+            return widget.isVisible();
+        case FuzzKind::DragNode:
+            return !visibleNodeItems().empty();
+        case FuzzKind::InlineCommit:
+        case FuzzKind::InlineCancel:
+            return !nodeWithBand("shader.fragment").empty();
+        default:
+            return true;
+        }
+    };
+    std::vector<std::size_t> candidates;
+    int least = std::numeric_limits<int>::max();
+    for (std::size_t index = 0; index < FuzzKindCount; ++index) {
+        const auto kind = static_cast<FuzzKind>(index);
+        if (!canRun(kind)) continue;
+        const int value = gateDispatched(kind);
+        if (value < least) {
+            least = value;
+            candidates.clear();
+        }
+        if (value == least) candidates.push_back(index);
+    }
+    if (candidates.empty()) {
+        action.kind = names.empty() ? FuzzKind::Refresh
+                                    : FuzzKind::SelectNode;
+        action.node = chooseVisibleNode();
+        return action;
+    }
+    std::ranges::shuffle(candidates, rng);
+    action.kind = static_cast<FuzzKind>(candidates.front());
+    action.node = chooseVisibleNode();
+    if (action.kind == FuzzKind::InlineCommit ||
+        action.kind == FuzzKind::InlineCancel) {
+        action.field = "shader.fragment";
+        const std::string node = nodeWithBand(action.field);
+        if (!node.empty()) action.node = node;
+    }
+    return action;
+}
+
+void FuzzFixture::perform(const FuzzAction &chosen) {
+    FuzzAction action = chosen;
+    auto &entry = cover(action.kind);
+    ++entry.attempted;
+    ++step;
+    action_log.push_back(action);
+    engine.submit_method.clear();
+    engine.pending_delete_node.clear();
+    const int submits_before = engine.submits;
+    const int commits_before = engine.content_commits;
+    const int plans_before = engine.plan_reads;
+    const FuzzState before = engine.state();
+    // A stray inline editor from an earlier action would eat a canvas key.
+    if (logical().editingInline() && action.kind != FuzzKind::InlineCancel &&
+        action.kind != FuzzKind::InlineCommit)
+        logical().cancelInlineEdit();
+
+    switch (action.kind) {
+    case FuzzKind::SelectNode: {
+        if (action.node.empty()) action.node = chooseVisibleNode();
+        if (action.node.empty()) { ++entry.skipped; return; }
+        ++entry.dispatched;
+        const bool picked = logical().selectPlanNode(
+            FramePlanNodeKey{engine.graph, action.node});
+        if (picked) ++entry.effective;
+        else ++entry.no_op;
+        break;
+    }
+    case FuzzKind::SelectResource: {
+        QGraphicsItem *item = nullptr;
+        for (QGraphicsItem *candidate :
+             itemsOfKind(logical(), FramePlanResourceNodeItem)) {
+            if (candidate->data(FramePlanNameRole).toString().toStdString() ==
+                std::string{FuzzTarget}) {
+                item = candidate;
+                break;
+            }
+        }
+        if (item == nullptr) { ++entry.skipped; return; }
+        ++entry.dispatched;
+        clickItem(item);
+        if (logical().selectedResource() &&
+            logical().selectedResource()->name == FuzzTarget)
+            ++entry.effective;
+        else
+            ++entry.no_op;
+        break;
+    }
+    case FuzzKind::SelectEdge: {
+        auto items = edgeItems();
+        if (items.empty()) {
+            ++entry.skipped;
+            return;
+        }
+        QGraphicsItem *item = items.at(rng() % items.size());
+        const QString to = item->data(FramePlanToNameRole).toString();
+        const auto resources =
+            item->data(FramePlanResourcesRole).toStringList();
+        const int input_index =
+            item->data(FramePlanInputIndexRole).isValid()
+                ? item->data(FramePlanInputIndexRole).toInt()
+                : -1;
+        if (to.isEmpty() || resources.isEmpty()) { ++entry.skipped; return; }
+        ++entry.dispatched;
+        FramePlanEdgeSelection edge;
+        edge.graph = engine.graph;
+        edge.to_node = to.toStdString();
+        for (const auto &resource : resources)
+            edge.resources.push_back(resource.toStdString());
+        edge.input_index = input_index >= 0
+                               ? std::optional<std::size_t>(
+                                     static_cast<std::size_t>(input_index))
+                               : std::nullopt;
+        logical().selectEdge(edge);
+        if (logical().selectedEdge()) ++entry.effective;
+        else ++entry.no_op;
+        break;
+    }
+    case FuzzKind::Delete:
+    case FuzzKind::Backspace: {
+        auto &view = logicalView(widget);
+        view.setFocus();
+        ++entry.dispatched;
+        const int key = action.kind == FuzzKind::Delete ? Qt::Key_Delete
+                                                        : Qt::Key_Backspace;
+        const auto selected = logical().selectedNode();
+        QTest::keyClick(&view, static_cast<Qt::Key>(key));
+        QApplication::processEvents();
+        if (engine.submit_method == "remove_authored_pass" ||
+            engine.submit_method == "remove_compute_task") {
+            if (selected) engine.pending_delete_node = selected->name;
+        }
+        if (engine.submit_method == "remove_authored_pass" ||
+            engine.submit_method == "remove_compute_task")
+            ++entry.effective;
+        else
+            ++entry.no_op;
+        break;
+    }
+    case FuzzKind::Escape: {
+        ++entry.dispatched;
+        cancelEscape();
+        FuzzChecker checker{widget, logical(), engine};
+        if (!checker.checkI4(before, submits_before)) failNow(checker.failure);
+        if (logical().editingInline() ||
+            currentScope().empty())
+            ++entry.no_op;
+        else
+            ++entry.effective;
+        break;
+    }
+    case FuzzKind::EnterGroup: {
+        const auto groups = currentGroups();
+        if (groups.empty() || !currentScope().empty()) {
+            ++entry.skipped;
+            return;
+        }
+        auto *group = fuzzGroupById(
+            groups, QString::fromStdString(action.target));
+        if (group == nullptr) group = &groups.at(rng() % groups.size());
+        ++entry.dispatched;
+        const auto collapsed = collapsedGroupIds();
+        if (std::ranges::find(collapsed, group->id) == collapsed.end())
+            logical().collapseGroup(QString::fromStdString(group->id));
+        const bool entered =
+            logical().enterGroup(QString::fromStdString(group->id));
+        if (entered) {
+            ++entry.effective;
+            group_entered = true;
+        } else {
+            ++entry.no_op;
+        }
+        break;
+    }
+    case FuzzKind::LeaveGroup: {
+        if (currentScope().empty()) { ++entry.skipped; return; }
+        ++entry.dispatched;
+        const bool left = logical().leaveGroup();
+        if (left) {
+            ++entry.effective;
+            if (group_entered) ++group_pairs;
+            group_entered = false;
+        } else {
+            ++entry.no_op;
+        }
+        break;
+    }
+    case FuzzKind::ConnectionSocket: {
+        if (action.node.empty()) action.node = "wp343_mixed_c";
+        if (action.target.empty()) action.target = "wp343_mixed_d";
+        if (action.resource.empty()) action.resource = action.node + "_output";
+        QGraphicsItem *source_socket = outputSocket(action.node);
+        QGraphicsItem *destination = socketItem(
+            logical(), QString::fromStdString(action.target),
+            QString::fromStdString(action.resource),
+            QStringLiteral("input"));
+        if (source_socket == nullptr || destination == nullptr) {
+            ++entry.skipped;
+            return;
+        }
+        ++entry.dispatched;
+        dragSocketToScenePoint(action.node, action.resource,
+                               QStringLiteral("output"),
+                               destination->sceneBoundingRect().center(), false);
+        // A valid socket gesture may be refused by production without an
+        // edit; either way the gesture itself was performed.
+        if (engine.submits != submits_before) ++entry.effective;
+        else ++entry.no_op;
+        break;
+    }
+    case FuzzKind::ConnectionNode: {
+        QGraphicsItem *target = nodeItemFor(action.target);
+        if (target == nullptr) {
+            if (const auto pair = freeConnection()) action = FuzzAction{FuzzKind::ConnectionNode, pair->first, std::string{}, pair->second};
+            else { ++entry.skipped; return; }
+        }
+        QGraphicsItem *source_socket = outputSocket(action.node);
+        target = nodeItemFor(action.target);
+        if (source_socket == nullptr || target == nullptr) {
+            ++entry.skipped;
+            return;
+        }
+        ++entry.dispatched;
+        const QPointF body = target->sceneBoundingRect().center();
+        dragSocketToScenePoint(action.node, action.node + "_output",
+                               QStringLiteral("output"), body, false);
+        if (engine.submits != submits_before) ++entry.effective;
+        else ++entry.no_op;
+        break;
+    }
+    case FuzzKind::ConnectionEmpty: {
+        if (action.node.empty()) action.node = chooseVisibleNode();
+        const std::string source = action.node;
+        if (outputSocket(source) == nullptr) { ++entry.skipped; return; }
+        ++entry.dispatched;
+        dragSocketToEmpty(source, source + "_output", false);
+        if (engine.submits == submits_before) {
+            ++entry.effective;
+        } else {
+            ++entry.no_op;
+        }
+        break;
+    }
+    case FuzzKind::ConnectionCancel: {
+        if (action.node.empty()) action.node = chooseVisibleNode();
+        const std::string source = action.node;
+        if (outputSocket(source) == nullptr) { ++entry.skipped; return; }
+        ++entry.dispatched;
+        dragSocketToEmpty(source, source + "_output", true);
+        FuzzChecker checker{widget, logical(), engine};
+        if (!checker.checkI4(before, submits_before)) failNow(checker.failure);
+        if (engine.submits == submits_before) {
+            ++entry.effective;
+        } else {
+            ++entry.no_op;
+        }
+        break;
+    }
+    case FuzzKind::DragNode: {
+        auto items = visibleNodeItems();
+        if (items.empty()) { ++entry.skipped; return; }
+        QGraphicsItem *item = items.at(rng() % items.size());
+        auto &view = logicalView(widget);
+        view.fitInView(item->sceneBoundingRect().adjusted(-300, -200, 300, 200),
+                       Qt::KeepAspectRatio);
+        QApplication::processEvents();
+        const QRectF rect = item->sceneBoundingRect();
+        const QPoint start = view.mapFromScene(
+            QPointF{rect.left() + 18, rect.top() + 10});
+        const QPoint end = start + QPoint{48, 32};
+        if (!view.viewport()->rect().contains(start) ||
+            !view.viewport()->rect().contains(end)) {
+            ++entry.skipped;
+            return;
+        }
+        ++entry.dispatched;
+        const QPointF before_pos = item->pos();
+        QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier,
+                          start);
+        QTest::mouseMove(view.viewport(), (start + end) / 2, 1);
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier,
+                            end);
+        QApplication::processEvents();
+        if (item->pos() != before_pos) ++entry.effective;
+        else ++entry.no_op;
+        break;
+    }
+    case FuzzKind::InlineCommit:
+    case FuzzKind::InlineCancel: {
+        if (action.node.empty()) action.node = "wp343_mixed_a";
+        if (action.field.empty()) action.field = "shader.fragment";
+        QGraphicsItem *band = bandItem(
+            logical(), QString::fromStdString(action.node),
+            QString::fromStdString(action.field));
+        if (band == nullptr) {
+            logical().selectPlanNode(FramePlanNodeKey{engine.graph, action.node});
+            band = bandItem(logical(), QString::fromStdString(action.node),
+                            QString::fromStdString(action.field));
+        }
+        if (band == nullptr || !band->isVisible()) { ++entry.skipped; return; }
+        auto &view = logicalView(widget);
+        view.fitInView(band->sceneBoundingRect().adjusted(-220, -160, 220, 160),
+                       Qt::KeepAspectRatio);
+        QApplication::processEvents();
+        const QPoint at = view.mapFromScene(band->sceneBoundingRect().center());
+        if (!view.viewport()->rect().contains(at)) { ++entry.skipped; return; }
+        ++entry.dispatched;
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, at);
+        QApplication::processEvents();
+        if (!logical().editingInline()) { ++entry.no_op; break; }
+        logical().setInlineEditText(
+            QStringLiteral("project://shaders/fuzz_%1.frag")
+                .arg(static_cast<qulonglong>(seed + step)));
+        if (action.kind == FuzzKind::InlineCancel) {
+            cancelEscape();
+            FuzzChecker checker{widget, logical(), engine};
+            if (!checker.checkI4(before, submits_before))
+                failNow(checker.failure);
+            if (!logical().editingInline() &&
+                engine.submits == submits_before)
+                ++entry.effective;
+            else
+                ++entry.no_op;
+        } else {
+            QWidget *editor = inlineEditorWidget(logical());
+            if (editor == nullptr) { ++entry.no_op; break; }
+            typeKey(editor, Qt::Key_Return);
+            if (engine.submits != submits_before) ++entry.effective;
+            else ++entry.no_op;
+        }
+        break;
+    }
+    case FuzzKind::Undo: {
+        if (!engine.undoAvailable()) { ++entry.skipped; return; }
+        ++entry.dispatched;
+        const std::size_t undo_before_action = engine.undo.size();
+        undo_action.trigger();
+        if (engine.undo.size() < undo_before_action) ++entry.effective;
+        else ++entry.no_op;
+        break;
+    }
+    case FuzzKind::Redo: {
+        if (!engine.redoAvailable()) { ++entry.skipped; return; }
+        ++entry.dispatched;
+        const std::size_t redo_before_action = engine.redo.size();
+        redo_action.trigger();
+        if (engine.redo.size() < redo_before_action) {
+            ++entry.effective;
+            ++undo_round_trips;
+        } else {
+            ++entry.no_op;
+        }
+        break;
+    }
+    case FuzzKind::Refresh: {
+        ++entry.dispatched;
+        widget.refresh();
+        if (engine.plan_reads > plans_before) ++entry.effective;
+        else ++entry.no_op;
+        break;
+    }
+    case FuzzKind::ExternalCommit: {
+        ++entry.dispatched;
+        engine.externalCommit((step % 2) == 0);
+        ++entry.effective;
+        if (!widget.isVisible())
+            committed_since_history = true;
+        break;
+    }
+    case FuzzKind::Hide: {
+        if (!widget.isVisible()) { ++entry.skipped; return; }
+        ++entry.dispatched;
+        widget.hide();
+        QApplication::processEvents();
+        if (!widget.isVisible()) ++entry.effective;
+        else ++entry.no_op;
+        break;
+    }
+    case FuzzKind::Show: {
+        if (widget.isVisible()) { ++entry.skipped; return; }
+        ++entry.dispatched;
+        widget.show();
+        ++entry.effective;
+        break;
+    }
+    case FuzzKind::Count:
+        break;
+    }
+
+    engine.drain(describe(action).toUtf8().constData());
+    if (action.kind == FuzzKind::LeaveGroup && group_entered) {
+        group_entered = false;
+    }
+    if (!runChecks(describe(action).toUtf8().constData()) && failure.empty())
+        failNow(QStringLiteral("invariant failure"));
+    if (step % 4 == 0)
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+}
+
+void fuzzReportFailure(const FuzzFixture &fixture, const char *task) {
+    QString details;
+    details += QStringLiteral("seed=%1 step=%2\n")
+                   .arg(static_cast<qulonglong>(fixture.seed))
+                   .arg(fixture.step);
+    details += QStringLiteral("action=%1\n")
+                   .arg(FuzzFixture::describe(
+                       fixture.action_log.empty()
+                           ? FuzzAction{}
+                           : fixture.action_log.back()));
+    details += QStringLiteral("failure=%1\n")
+                   .arg(QString::fromStdString(fixture.failure));
+    details += QStringLiteral("coverage:\n");
+    for (std::size_t index = 0; index < FuzzKindCount; ++index) {
+        const auto &entry = fixture.coverage[index];
+        details += QStringLiteral("%1 attempted=%2 dispatched=%3 effective=%4 "
+                                  "no_op=%5 skipped=%6 unsupported=%7\n")
+                       .arg(QString::fromLatin1(fuzzKindName(
+                           static_cast<FuzzKind>(index))))
+                       .arg(entry.attempted)
+                       .arg(entry.dispatched)
+                       .arg(entry.effective)
+                       .arg(entry.no_op)
+                       .arg(entry.skipped)
+                       .arg(entry.unsupported);
+    }
+    details += QStringLiteral("actions:\n");
+    for (const auto &action : fixture.action_log)
+        details += FuzzFixture::describe(action) + QLatin1Char('\n');
+    const std::string marker{"FP-FUZZ1 FAILURE "};
+    std::string report = details.toStdString();
+    report += "replies: every delivered reply settled through "
+              "inspectorRpcSucceeded; missing reply = failure\n";
+    if (const QByteArray findings = qgetenv("PG_FINDINGS");
+        !findings.isEmpty()) {
+        const std::filesystem::path path =
+            std::filesystem::path{findings.constData()} /
+            (std::string{task} + "-1.md");
+        std::ofstream out{path};
+        out << "# " << task << " finding 1\n\n" << report;
+    }
+    FAIL(details.toStdString());
+}
+
+struct FuzzAggregate {
+    std::array<FuzzCoverageEntry, FuzzKindCount> coverage{};
+    int content_commits = 0;
+    int undo_round_trips = 0;
+    int group_pairs = 0;
+    int connection_socket = 0;
+    int connection_empty = 0;
+    int connection_cancel = 0;
+    int connection_node = 0;
+    int seeds = 0;
+};
+
+void fuzzRunSeed(std::uint64_t seed, int steps, FuzzAggregate *aggregate) {
+    FuzzFixture fixture{seed};
+    fixture.global_coverage =
+        aggregate != nullptr ? aggregate->coverage.data() : nullptr;
+    if (!fixture.open()) FAIL("initial Frame Plan did not settle");
+    // Pick an edge as an isolated, settled action so the mandatory
+    // edge-selection coverage does not depend on whether random deletions
+    // happened to leave any lines.  The public canvas refresh rebuilds the
+    // graph and clears the selection before the random sequence begins.
+    if (steps > 0) {
+        FuzzAction edge;
+        edge.kind = FuzzKind::SelectEdge;
+        fixture.perform(edge);
+        if (!fixture.failure.empty())
+            fuzzReportFailure(fixture, "fp-fuzz1");
+        fixture.logical().resetGraph();
+        fixture.widget.refresh();
+        fixture.engine.drain("edge coverage reset");
+        if (!fixture.runChecks("edge coverage reset") &&
+            fixture.failure.empty())
+            fixture.failNow(QStringLiteral("invariant failure"));
+    }
+    for (int index = 0; index < steps - 1; ++index) {
+        const FuzzAction action = fixture.chooseAction();
+        fixture.perform(action);
+        if (!fixture.failure.empty())
+            fuzzReportFailure(fixture, "fp-fuzz1");
+    }
+    if (aggregate == nullptr) return;
+    for (std::size_t index = 0; index < FuzzKindCount; ++index) {
+        aggregate->coverage[index].attempted +=
+            fixture.coverage[index].attempted;
+        aggregate->coverage[index].dispatched +=
+            fixture.coverage[index].dispatched;
+        aggregate->coverage[index].effective +=
+            fixture.coverage[index].effective;
+        aggregate->coverage[index].no_op += fixture.coverage[index].no_op;
+        aggregate->coverage[index].skipped += fixture.coverage[index].skipped;
+        aggregate->coverage[index].unsupported +=
+            fixture.coverage[index].unsupported;
+    }
+    aggregate->content_commits += fixture.engine.content_commits;
+    aggregate->undo_round_trips += fixture.undo_round_trips;
+    aggregate->group_pairs += fixture.group_pairs;
+    aggregate->connection_socket +=
+        fixture.coverage[static_cast<std::size_t>(
+            FuzzKind::ConnectionSocket)].dispatched;
+    aggregate->connection_empty +=
+        fixture.coverage[static_cast<std::size_t>(
+            FuzzKind::ConnectionEmpty)].dispatched;
+    aggregate->connection_cancel +=
+        fixture.coverage[static_cast<std::size_t>(
+            FuzzKind::ConnectionCancel)].dispatched;
+    aggregate->connection_node +=
+        fixture.coverage[static_cast<std::size_t>(
+            FuzzKind::ConnectionNode)].effective;
+    ++aggregate->seeds;
+}
+
+void checkFuzzAggregate(const FuzzAggregate &aggregate) {
+    for (std::size_t index = 0; index < FuzzKindCount; ++index) {
+        const auto kind = static_cast<FuzzKind>(index);
+        const auto &entry = aggregate.coverage[index];
+        INFO("kind=" << fuzzKindName(kind)
+                     << " attempted=" << entry.attempted
+                     << " dispatched=" << entry.dispatched
+                     << " effective=" << entry.effective
+                     << " no_op=" << entry.no_op
+                     << " skipped=" << entry.skipped
+                     << " unsupported=" << entry.unsupported);
+        CHECK(entry.dispatched >= 50);
+    }
+    INFO("content_commits=" << aggregate.content_commits
+                            << " undo_round_trips="
+                            << aggregate.undo_round_trips);
+    CHECK(aggregate.content_commits >= 50);
+    CHECK(aggregate.undo_round_trips >= 50);
+    INFO("group_pairs=" << aggregate.group_pairs);
+    CHECK(aggregate.group_pairs >= 30);
+    INFO("socket=" << aggregate.connection_socket
+                   << " empty=" << aggregate.connection_empty
+                   << " cancel=" << aggregate.connection_cancel
+                   << " node=" << aggregate.connection_node);
+    CHECK(aggregate.connection_socket >= 30);
+    CHECK(aggregate.connection_empty >= 30);
+    CHECK(aggregate.connection_cancel >= 30);
+    CHECK(aggregate.connection_node >= 30);
+    if (qEnvironmentVariableIsSet("PG_FUZZ1_REPORT")) {
+        std::fprintf(stderr,
+                     "FP-FUZZ1 REPORT seeds=%d commits=%d undo=%d groups=%d "
+                     "socket=%d empty=%d cancel=%d node=%d\n",
+                     aggregate.seeds, aggregate.content_commits,
+                     aggregate.undo_round_trips, aggregate.group_pairs,
+                     aggregate.connection_socket, aggregate.connection_empty,
+                     aggregate.connection_cancel, aggregate.connection_node);
+        for (std::size_t index = 0; index < FuzzKindCount; ++index) {
+            const auto &entry = aggregate.coverage[index];
+            std::fprintf(stderr,
+                         "FP-FUZZ1 COVER %s attempted=%d dispatched=%d "
+                         "effective=%d no_op=%d skipped=%d unsupported=%d\n",
+                         fuzzKindName(static_cast<FuzzKind>(index)),
+                         entry.attempted, entry.dispatched, entry.effective,
+                         entry.no_op, entry.skipped, entry.unsupported);
+        }
+    }
+}
+
+void fuzzPerform(FuzzFixture &fixture, FuzzKind kind,
+                 const std::string &node = {},
+                 const std::string &target = {},
+                 const std::string &field = {}) {
+    FuzzAction action;
+    action.kind = kind;
+    action.node = node;
+    action.target = target;
+    action.field = field;
+    fixture.perform(action);
+    INFO("action=" << FuzzFixture::describe(action).toStdString());
+    INFO("failure=" << fixture.failure);
+    REQUIRE(fixture.failure.empty());
+}
+
+QGraphicsItem *fuzzEdgeTo(FramePlanGraphicsScene &scene,
+                          const std::string &to) {
+    for (QGraphicsItem *item : itemsOfKind(scene, FramePlanEdgeItem))
+        if (item->data(FramePlanToNameRole).toString().toStdString() == to)
+            return item;
+    return nullptr;
+}
+
+FramePlanEdgeSelection fuzzSelectionFor(QGraphicsItem *item,
+                                        const std::string &graph) {
+    FramePlanEdgeSelection edge;
+    edge.graph = graph;
+    edge.to_node =
+        item->data(FramePlanToNameRole).toString().toStdString();
+    for (const auto &resource :
+         item->data(FramePlanResourcesRole).toStringList())
+        edge.resources.push_back(resource.toStdString());
+    if (item->data(FramePlanInputIndexRole).isValid()) {
+        const int index = item->data(FramePlanInputIndexRole).toInt();
+        if (index >= 0)
+            edge.input_index =
+                static_cast<std::size_t>(index);
+    }
+    return edge;
+}
+
+bool fuzzWireNodeHasRead(const FuzzJson &wire, const std::string &node,
+                         const std::string &resource) {
+    for (const auto &candidate : wire.value("nodes", FuzzJson::array()))
+        if (candidate.value("name", std::string{}) == node)
+            for (const auto &read : candidate.value("reads", FuzzJson::array()))
+                if (read.is_string() &&
+                    read.get<std::string>() == resource)
+                    return true;
+    return false;
+}
+
+TEST_CASE("FP-FUZZ1 selected edge after external content commit",
+          "[fp-fuzz1]") {
+    application();
+    FuzzFixture fixture{109};
+    REQUIRE(fixture.open());
+    QGraphicsItem *line = fuzzEdgeTo(fixture.logical(), "wp343_mixed_d");
+    REQUIRE(line != nullptr);
+    const FramePlanEdgeSelection edge =
+        fuzzSelectionFor(line, fixture.engine.graph);
+    fixture.logical().selectEdge(edge);
+    REQUIRE(fixture.logical().selectedEdge().has_value());
+    // The external commit removes d's current input and its barrier.
+    fixture.engine.externalCommit(false);
+    fixture.engine.drain("external commit with a selected edge");
+    QApplication::processEvents();
+    fixture.engine.drain("external commit deferred until gesture end");
+    const bool resource_gone =
+        !fuzzWireNodeHasRead(fixture.engine.wire, "wp343_mixed_d",
+                             "wp343_mixed_c_output");
+    REQUIRE(resource_gone);
+    const auto now = fixture.logical().selectedEdge();
+    INFO("selected edge after redraw="
+         << (now.has_value() ? now->to_node : std::string("<none>")));
+    CHECK_FALSE(now.has_value());
+}
+
+TEST_CASE("FP-FUZZ1 planted fault self-checks", "[fp-fuzz1-selfcheck]") {
+    application();
+
+    SECTION("I1 catches an item with no current model element") {
+        FuzzFixture fixture{201};
+        REQUIRE(fixture.open());
+        const FuzzJson saved = fixture.engine.wire;
+        FuzzJson *node = fixture.engine.findNode("wp343_mixed_d");
+        REQUIRE(node != nullptr);
+        (*node)["name"] = "wp343_mixed_renamed";
+        FuzzChecker checker{fixture.widget, fixture.logical(), fixture.engine};
+        INFO("failure=" << checker.failure.toStdString());
+        CHECK_FALSE(checker.checkI1());
+        CHECK_FALSE(checker.failure.isEmpty());
+        fixture.engine.wire = saved;
+        CHECK(checker.checkI1());
+    }
+
+    SECTION("I2 catches a selected edge whose resource disappeared") {
+        FuzzFixture fixture{202};
+        REQUIRE(fixture.open());
+        QGraphicsItem *line = fuzzEdgeTo(fixture.logical(), "wp343_mixed_b");
+        REQUIRE(line != nullptr);
+        FramePlanEdgeSelection edge =
+            fuzzSelectionFor(line, fixture.engine.graph);
+        REQUIRE(!edge.resources.empty());
+        // Cut by resource list: this is the path a line with a grouped edge
+        // takes when it has no single binding index.
+        edge.input_index.reset();
+        edge.resources = {"wp343_mixed_a_output"};
+        fixture.logical().selectEdge(edge);
+        REQUIRE(fixture.logical().selectedEdge().has_value());
+        const FuzzJson saved = fixture.engine.wire;
+        FuzzJson *node = fixture.engine.findNode("wp343_mixed_b");
+        REQUIRE(node != nullptr);
+        for (const auto &resource : edge.resources) {
+            auto &reads = (*node)["reads"];
+            reads.erase(std::remove(reads.begin(), reads.end(),
+                                    FuzzJson(resource)),
+                        reads.end());
+        }
+        fixture.engine.reconcileBarriers("wp343_mixed_b");
+        FuzzChecker checker{fixture.widget, fixture.logical(), fixture.engine};
+        INFO("failure=" << checker.failure.toStdString());
+        CHECK_FALSE(checker.checkI2());
+        CHECK_FALSE(checker.failure.isEmpty());
+        fixture.engine.wire = saved;
+        CHECK(checker.checkI2());
+    }
+
+    SECTION("I3 catches a wrong independent history expectation") {
+        FuzzFixture fixture{203};
+        REQUIRE(fixture.open());
+        fixture.engine.history_expectation = fixture.engine.state();
+        FuzzJson *node = fixture.engine.findNode("wp343_mixed_d");
+        REQUIRE(node != nullptr);
+        (*node)["name"] = "wp343_mixed_wrong_history";
+        fixture.engine.history_check_active = true;
+        FuzzChecker checker{fixture.widget, fixture.logical(), fixture.engine};
+        INFO("failure=" << checker.failure.toStdString());
+        CHECK_FALSE(checker.checkI3());
+        CHECK_FALSE(checker.failure.isEmpty());
+        fixture.engine.history_check_active = false;
+        fixture.engine.history_expectation.reset();
+        CHECK(checker.checkI3());
+    }
+
+    SECTION("I4 catches a submit attributed to Escape") {
+        FuzzFixture fixture{204};
+        REQUIRE(fixture.open());
+        const FuzzState before = fixture.engine.state();
+        const int submits = fixture.engine.submits;
+        fixture.engine.submits += 1;
+        FuzzChecker checker{fixture.widget, fixture.logical(), fixture.engine};
+        INFO("failure=" << checker.failure.toStdString());
+        CHECK_FALSE(checker.checkI4(before, submits));
+        CHECK_FALSE(checker.failure.isEmpty());
+        fixture.engine.submits = submits;
+        CHECK(checker.checkI4(before, submits));
+    }
+
+    SECTION("I5 catches a forbidden Qt warning") {
+        FuzzFixture fixture{205};
+        REQUIRE(fixture.open());
+        qWarning("QGraphicsScene::removeItem: item planted by self-check");
+        FuzzChecker checker{fixture.widget, fixture.logical(), fixture.engine};
+        INFO("failure=" << checker.failure.toStdString());
+        CHECK_FALSE(checker.checkI5(fixture.warnings));
+        CHECK_FALSE(checker.failure.isEmpty());
+        fixture.warnings.clear();
+        CHECK(checker.checkI5(fixture.warnings));
+    }
+
+    SECTION("I6 catches a stale target format after an external commit") {
+        FuzzFixture fixture{206};
+        REQUIRE(fixture.open());
+        // A hidden panel defers the update; showing it must read the latest
+        // plan. Then change the plan again without a read to plant a stale
+        // canvas that checkI6 has to see.
+        fixture.widget.hide();
+        fixture.engine.externalCommit(true);
+        QApplication::processEvents();
+        fixture.widget.show();
+        QApplication::processEvents();
+        fixture.engine.drain("self-check show after external format");
+        FuzzChecker checker{fixture.widget, fixture.logical(), fixture.engine};
+        CHECK(checker.checkI6());
+        const FuzzJson displayed = fixture.engine.wire;
+        fixture.engine.setFormat("R64G64B64A64_SFLOAT");
+        INFO("failure=" << checker.failure.toStdString());
+        CHECK_FALSE(checker.checkI6());
+        CHECK_FALSE(checker.failure.isEmpty());
+        fixture.engine.wire = displayed;
+        CHECK(checker.checkAll(fixture.warnings));
+    }
+}
+
+TEST_CASE("FP-FUZZ1 deterministic prefixes", "[fp-fuzz1-prefix]") {
+    application();
+
+    SECTION("line delete, Undo, Redo") {
+        FuzzFixture fixture{101};
+        REQUIRE(fixture.open());
+        // The task's own declaration must agree with the line that is about to
+        // be cut, exactly as it does in the editor that produced the line.
+        fixture.engine.catalog["tasks"][0]["declaration"]["reads"] =
+            FuzzJson::array({"wp343_mixed_a_output"});
+        fixture.widget.refreshAuthoringContext();
+        fixture.engine.drain("catalog for line deletion");
+        QGraphicsItem *line = fuzzEdgeTo(fixture.logical(), "wp343_mixed_b");
+        REQUIRE(line != nullptr);
+        FramePlanEdgeSelection edge =
+            fuzzSelectionFor(line, fixture.engine.graph);
+        REQUIRE(!edge.resources.empty());
+        edge.input_index.reset();
+        edge.resources = {"wp343_mixed_a_output"};
+        fixture.logical().selectEdge(edge);
+        REQUIRE(fixture.logical().selectedEdge().has_value());
+        const auto to = edge.to_node;
+        const auto resources = edge.resources;
+        const int commits = fixture.engine.content_commits;
+        const int submits = fixture.engine.submits;
+        fuzzPerform(fixture, FuzzKind::Delete);
+        INFO("submits=" << submits << " -> " << fixture.engine.submits
+             << " method=" << fixture.engine.submit_method
+             << " commits=" << commits << " -> "
+             << fixture.engine.content_commits);
+        CHECK(fixture.engine.submits == submits + 1);
+        CHECK(fixture.engine.content_commits == commits + 1);
+        for (const auto &resource : resources)
+            CHECK_FALSE(fuzzWireNodeHasRead(fixture.engine.wire, to, resource));
+        fuzzPerform(fixture, FuzzKind::Undo);
+        for (const auto &resource : resources)
+            CHECK(fuzzWireNodeHasRead(fixture.engine.wire, to, resource));
+        fuzzPerform(fixture, FuzzKind::Redo);
+        for (const auto &resource : resources)
+            CHECK_FALSE(fuzzWireNodeHasRead(fixture.engine.wire, to, resource));
+    }
+
+    SECTION("node delete and Backspace priority") {
+        FuzzFixture fixture{102};
+        REQUIRE(fixture.open());
+        fuzzPerform(fixture, FuzzKind::SelectNode, "wp343_mixed_b");
+        REQUIRE(fixture.logical().selectedNode().has_value());
+        const int commits = fixture.engine.content_commits;
+        fuzzPerform(fixture, FuzzKind::Backspace);
+        CHECK(fixture.engine.content_commits == commits + 1);
+        CHECK(nodeItem(fixture.logical(), "wp343_mixed_b") == nullptr);
+        fuzzPerform(fixture, FuzzKind::Undo);
+        CHECK(nodeItem(fixture.logical(), "wp343_mixed_b") != nullptr);
+        fuzzPerform(fixture, FuzzKind::Redo);
+        CHECK(nodeItem(fixture.logical(), "wp343_mixed_b") == nullptr);
+    }
+
+    SECTION("a picked resource does not let Delete remove a node") {
+        FuzzFixture fixture{103};
+        REQUIRE(fixture.open());
+        fuzzPerform(fixture, FuzzKind::SelectResource);
+        REQUIRE(fixture.logical().selectedResource().has_value());
+        const int submits = fixture.engine.submits;
+        fuzzPerform(fixture, FuzzKind::Delete);
+        CHECK(fixture.engine.submits == submits);
+        CHECK(nodeItem(fixture.logical(), "wp343_mixed_b") != nullptr);
+    }
+
+    SECTION("group edit, leave, Undo, re-entry") {
+        FuzzFixture fixture{104};
+        REQUIRE(fixture.open());
+        const auto groups = fixture.currentGroups();
+        std::string group_id;
+        for (const auto &group : groups)
+            if (std::ranges::find(group.members, std::string{"wp343_mixed_a"}) !=
+                group.members.end()) {
+                group_id = group.id;
+                break;
+            }
+        REQUIRE(!group_id.empty());
+        fuzzPerform(fixture, FuzzKind::EnterGroup, {}, group_id);
+        CHECK(fixture.currentScope() == group_id);
+        const auto node = fixture.nodeWithBand("shader.fragment");
+        REQUIRE(!node.empty());
+        fuzzPerform(fixture, FuzzKind::InlineCommit, node);
+        fuzzPerform(fixture, FuzzKind::LeaveGroup);
+        CHECK(fixture.currentScope().empty());
+        fuzzPerform(fixture, FuzzKind::Undo);
+        fuzzPerform(fixture, FuzzKind::EnterGroup, {}, group_id);
+        CHECK(fixture.currentScope() == group_id);
+    }
+
+    SECTION("Escape cancels a connection gesture and sends no edit") {
+        FuzzFixture fixture{105};
+        REQUIRE(fixture.open());
+        fuzzPerform(fixture, FuzzKind::ConnectionCancel);
+        CHECK(fixture.engine.submits == 0);
+        CHECK(fixture.engine.content_commits == 0);
+        fuzzPerform(fixture, FuzzKind::Escape);
+        CHECK(fixture.engine.submits == 0);
+        CHECK(fixture.engine.content_commits == 0);
+    }
+
+    SECTION("hidden panel shows an externally committed plan") {
+        FuzzFixture fixture{106};
+        REQUIRE(fixture.open());
+        fuzzPerform(fixture, FuzzKind::Hide);
+        REQUIRE(!fixture.widget.isVisible());
+        fixture.engine.externalCommit(false);
+        fixture.engine.drain("hidden external commit");
+        CHECK(!fixture.widget.isVisible());
+        fuzzPerform(fixture, FuzzKind::Show);
+        CHECK(fixture.widget.isVisible());
+        CHECK_FALSE(fuzzWireNodeHasRead(
+            fixture.engine.wire, "wp343_mixed_d", "wp343_mixed_c_output"));
+        CHECK((fuzzEdgeTo(fixture.logical(), "wp343_mixed_d") == nullptr ||
+               std::ranges::none_of(
+                   itemsOfKind(fixture.logical(), FramePlanEdgeItem),
+                   [](QGraphicsItem *item) {
+                       return item->data(FramePlanToNameRole).toString() ==
+                                  QStringLiteral("wp343_mixed_d") &&
+                              item->data(FramePlanResourcesRole)
+                                  .toStringList()
+                                  .contains(
+                                      QStringLiteral("wp343_mixed_c_output"));
+                   })));
+    }
+
+    SECTION("inline edit survives Refresh and an external commit") {
+        FuzzFixture fixture{107};
+        REQUIRE(fixture.open());
+        fuzzPerform(fixture, FuzzKind::SelectNode, "wp343_mixed_a");
+        QGraphicsItem *band = bandItem(fixture.logical(), "wp343_mixed_a",
+                                       "shader.fragment");
+        REQUIRE(band != nullptr);
+        auto &view = logicalView(fixture.widget);
+        view.fitInView(band->sceneBoundingRect().adjusted(-220, -160, 220, 160),
+                       Qt::KeepAspectRatio);
+        QApplication::processEvents();
+        const QPoint at = view.mapFromScene(band->sceneBoundingRect().center());
+        REQUIRE(view.viewport()->rect().contains(at));
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, at);
+        QApplication::processEvents();
+        QApplication::processEvents();
+        REQUIRE(fixture.logical().editingInline());
+        const QString typed = QStringLiteral("project://shaders/prefix.frag");
+        fixture.logical().setInlineEditText(typed);
+        const int submits = fixture.engine.submits;
+        const int reads = fixture.engine.plan_reads;
+        fixture.widget.refresh();
+        fixture.engine.drain("refresh under inline editor");
+        QApplication::processEvents();
+        fixture.engine.drain("refresh deferred until gesture end");
+        // A refresh is allowed to fetch the plan, but it must not tear the live
+        // editor down (that would either commit a draft nobody confirmed or
+        // lose it). The same holds for a content-changing external commit.
+        CHECK(fixture.engine.plan_reads > reads);
+        CHECK(fixture.logical().editingInline());
+        QLineEdit *editor = inlineEditorWidget(fixture.logical());
+        REQUIRE(editor != nullptr);
+        CHECK(editor->text() == typed);
+        fixture.engine.externalCommit(false);
+        fixture.engine.drain("external commit under inline editor");
+        QApplication::processEvents();
+        fixture.engine.drain("external commit deferred until gesture end");
+        CHECK(fixture.engine.submits == submits);
+        // The external commit redraws the graph; the proxy editor cannot
+        // survive that redraw and is closed without being committed.
+        CHECK_FALSE(fixture.logical().editingInline());
+        CHECK(inlineEditorWidget(fixture.logical()) == nullptr);
+        // The draft was never sent, and the redraw left a usable canvas.
+        CHECK(fixture.engine.submits == submits);
+        CHECK(nodeItem(fixture.logical(), "wp343_mixed_d") != nullptr);
+    }
+
+    SECTION("connect, then Refresh keeps the committed edge") {
+        FuzzFixture fixture{108};
+        REQUIRE(fixture.open());
+        fuzzPerform(fixture, FuzzKind::ConnectionNode, "wp343_mixed_d",
+                    "wp343_mixed_a");
+        CHECK(fixture.engine.content_commits == 1);
+        CHECK(fuzzWireNodeHasRead(fixture.engine.wire, "wp343_mixed_a",
+                                  "wp343_mixed_d_output"));
+        fuzzPerform(fixture, FuzzKind::Refresh);
+        CHECK(fuzzWireNodeHasRead(fixture.engine.wire, "wp343_mixed_a",
+                                  "wp343_mixed_d_output"));
+        CHECK(fuzzEdgeTo(fixture.logical(), "wp343_mixed_a") != nullptr);
+    }
+
+    SECTION("tabified dock visibility transition re-reads the plan") {
+        FuzzFixture fixture{109};
+        REQUIRE(fixture.open());
+        QMainWindow window;
+        auto *plan_dock = new QDockWidget(QStringLiteral("plan"), &window);
+        auto *other_dock = new QDockWidget(QStringLiteral("other"), &window);
+        window.addDockWidget(Qt::LeftDockWidgetArea, plan_dock);
+        window.addDockWidget(Qt::LeftDockWidgetArea, other_dock);
+        window.tabifyDockWidget(plan_dock, other_dock);
+        plan_dock->setWidget(&fixture.widget);
+        window.show();
+        other_dock->show();
+        other_dock->raise();
+        plan_dock->hide();
+        QApplication::processEvents();
+        REQUIRE(!fixture.widget.isVisible());
+        fixture.engine.externalCommit(true);
+        fixture.engine.drain("hidden tabified external commit");
+        plan_dock->show();
+        plan_dock->raise();
+        QApplication::processEvents();
+        fixture.engine.drain("tabified dock show");
+        REQUIRE(fixture.widget.isVisible());
+        FuzzChecker checker{fixture.widget, fixture.logical(), fixture.engine};
+        INFO("failure=" << checker.failure.toStdString());
+        CHECK(checker.checkAll(fixture.warnings));
+        plan_dock->setWidget(nullptr);
+        fixture.widget.setParent(nullptr);
+    }
+}
+
+TEST_CASE("FP-FUZZ1 seeded random canvas operations", "[fp-fuzz1-short]") {
+    application();
+    FuzzAggregate aggregate;
+    for (std::uint64_t seed = 0; seed < 20; ++seed)
+        fuzzRunSeed(seed, 20, &aggregate);
+    INFO("short seeds=" << aggregate.seeds);
+    CHECK(aggregate.seeds == 20);
+}
+
+TEST_CASE("FP-FUZZ1 long seeded canvas operations",
+          "[fp-fuzz1-long][.]") {
+    application();
+    bool ok = false;
+    const int env_seed0 = qEnvironmentVariableIntValue("FP_FUZZ1_SEED0", &ok);
+    const std::uint64_t seed0 = ok && env_seed0 >= 0
+                                    ? static_cast<std::uint64_t>(env_seed0)
+                                    : 0;
+    const int env_seeds = qEnvironmentVariableIntValue("FP_FUZZ1_SEEDS", &ok);
+    const int seeds = ok && env_seeds > 0 ? env_seeds : 200;
+    const int env_steps = qEnvironmentVariableIntValue("FP_FUZZ1_STEPS", &ok);
+    const int steps = ok && env_steps > 0 ? env_steps : 30;
+    FuzzAggregate aggregate;
+    for (int index = 0; index < seeds; ++index)
+        fuzzRunSeed(seed0 + static_cast<std::uint64_t>(index), steps,
+                    &aggregate);
+    INFO("long seed0=" << seed0 << " seeds=" << aggregate.seeds
+                       << " steps=" << steps);
+    checkFuzzAggregate(aggregate);
+}
+
+} // namespace
+} // namespace PelicanStudio
+// ---- FP-FUZZ1 part 2 end ----
+
+// ---- FP-FUZZ1 end ----

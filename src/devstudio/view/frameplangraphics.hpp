@@ -557,7 +557,8 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     void applyResourcePick();
     std::optional<FramePlanNodeKey> context_node_;
     void clearConnectionGesture();
-    void applyEdgeSelection();
+    // Whether an edge on screen is the picked one.
+    bool applyEdgeSelection();
     void closeInlineEditor();
     // The two halves of carrying an editor across a redraw.
     [[nodiscard]] std::optional<CarriedInlineEdit> carryInlineEdit() const;

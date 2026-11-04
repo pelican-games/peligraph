@@ -3457,10 +3457,11 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
     rebuilding_ = false;
     applyEdgeEmphasis();
     // N-8: the picked edge is still picked after a redraw, unless the graph it
-    // was in is no longer the one on screen.
+    // was in is no longer the one on screen, or the redraw has no such edge: a
+    // stale pick would let Delete act on an input that is gone or has moved.
     if (selected_edge_ && selected_edge_->graph != model.graph)
         selected_edge_.reset();
-    applyEdgeSelection();
+    if (!applyEdgeSelection()) selected_edge_.reset();
 
     setProperty("pelicanGraph", qtext(model.graph));
     setProperty("pelicanTarget",
@@ -3852,7 +3853,8 @@ std::map<std::string, QPointF> FramePlanGraphicsScene::placement(
 
 // The picked edge is drawn heavier; nothing else about it changes, because the
 // colour of a frame-plan edge already says what the dependency is.
-void FramePlanGraphicsScene::applyEdgeSelection() {
+bool FramePlanGraphicsScene::applyEdgeSelection() {
+    bool found = false;
     for (QGraphicsItem *item : items()) {
         if (itemKind(*item) != QLatin1String{FramePlanEdgeItem}) continue;
         auto *edge = dynamic_cast<QGraphicsPathItem *>(item);
@@ -3873,6 +3875,7 @@ void FramePlanGraphicsScene::applyEdgeSelection() {
                 selected_edge_->to_node &&
             resources == selected_edge_->resources &&
             input_index == selected_edge_->input_index;
+        found = found || picked;
         const bool already = edge->data(FramePlanEdgePickedRole).toBool();
         if (picked == already) continue;
         QPen pen = edge->pen();
@@ -3881,6 +3884,7 @@ void FramePlanGraphicsScene::applyEdgeSelection() {
         edge->setPen(pen);
         edge->setData(FramePlanEdgePickedRole, picked);
     }
+    return found;
 }
 
 void FramePlanGraphicsScene::selectEdge(const FramePlanEdgeSelection &edge) {
