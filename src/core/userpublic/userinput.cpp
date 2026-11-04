@@ -8,6 +8,7 @@
 #if PELICAN_WITH_OSC
 #include "../osc/oscbindings.hpp"
 #include "../osc/oscinput.hpp"
+#include "../osc/osclistener.hpp"
 #endif
 #include "../../project/inputactionoverlay.hpp"
 
@@ -508,6 +509,21 @@ namespace internal {
 
 void prepareInputActionsRuntime() {
     (void)GET_MODULE(InputActionsRuntime);
+}
+
+void prepareOscListener() {
+#if PELICAN_WITH_OSC
+    auto &listener = GET_MODULE(OscListener);
+    const auto &launch = GET_MODULE(EngineLaunchConfig);
+    if (launch.osc_listener.has_value()) {
+        // start() reports a bind or thread failure through statusJson and
+        // returns false: the engine keeps running.  Configuration errors throw
+        // osc.config_invalid@1 and are fatal at startup.
+        (void)listener.start(*launch.osc_listener);
+    }
+#else
+    // The OFF build has no listener; the player refuses the options earlier.
+#endif
 }
 
 void freezeInputActionsFrame() {

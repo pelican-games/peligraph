@@ -6,6 +6,9 @@
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/log.hpp"
+#include "../src/core/osc/osclistener.hpp"
+#include "../src/core/osc/osclistenerconfig.hpp"
+#include "../src/core/userpublic/userinput.hpp"
 #include "vulkan_test_support.hpp"
 
 #include <catch2/catch_approx.hpp>
@@ -18,9 +21,24 @@
 #include <fstream>
 #include <iterator>
 #include <nlohmann/json.hpp>
+#include <bit>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <vector>
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 #ifndef PELICAN_TEST_SOURCE_DIR
 #define PELICAN_TEST_SOURCE_DIR "."
@@ -65,7 +83,25 @@ std::filesystem::path copyLiveProject(const TempDir &dir) {
 
     auto project = Json::parse(readFile(root / "project.json"));
     project["basic_config"]["live_inputs_json"] = "live/inputs.json";
+    project["basic_config"]["input_actions_json"] = "live/actions.json";
+    project["basic_config"]["input_profiles"] = Json{{"live", "live/profile.json"}};
+    project["basic_config"]["input_profile"] = "live";
     writeFile(root / "project.json", project.dump(2));
+
+    writeFile(root / "live" / "actions.json", Json{
+        {"schema", "pelican.input_actions"},
+        {"version", 1},
+        {"action_sets", Json::array()},
+    }.dump(2));
+    writeFile(root / "live" / "profile.json", Json{
+        {"schema", "pelican.input_profile"},
+        {"version", 1},
+        {"name", "live"},
+        {"bindings", Json::array()},
+        {"live", Json::array({
+            {{"address", "/phase"}, {"input", "phase"}},
+        })},
+    }.dump(2));
 
     writeFile(root / "live" / "inputs.json", Json{
         {"schema", "pelican.live_inputs"},
@@ -143,6 +179,61 @@ const Json &firstSink(const Json &status) {
     REQUIRE(animation.at("available") == true);
     REQUIRE_FALSE(animation.at("sinks").empty());
     return animation.at("sinks").at(0);
+}
+
+#if defined(_WIN32)
+struct WinsockScope {
+    WinsockScope() {
+        WSADATA data{};
+        ok = ::WSAStartup(MAKEWORD(2, 2), &data) == 0;
+    }
+    ~WinsockScope() {
+        if (ok) ::WSACleanup();
+    }
+    bool ok = false;
+};
+#endif
+
+bool sendOscPhase(std::uint16_t port, float value) {
+#if defined(_WIN32)
+    static WinsockScope winsock;
+    if (!winsock.ok) return false;
+#endif
+#if defined(_WIN32)
+    const auto socket_handle = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (socket_handle == INVALID_SOCKET) return false;
+#else
+    const int socket_handle = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (socket_handle < 0) return false;
+#endif
+
+    std::vector<std::uint8_t> bytes{'/', 'p', 'h', 'a', 's', 'e', 0, 0,
+                                    ',', 'f', 0, 0};
+    const auto bits = std::bit_cast<std::uint32_t>(value);
+    bytes.push_back(static_cast<std::uint8_t>(bits >> 24));
+    bytes.push_back(static_cast<std::uint8_t>(bits >> 16));
+    bytes.push_back(static_cast<std::uint8_t>(bits >> 8));
+    bytes.push_back(static_cast<std::uint8_t>(bits));
+
+    sockaddr_in destination{};
+    destination.sin_family = AF_INET;
+    destination.sin_port = htons(port);
+    destination.sin_addr.s_addr = htonl(0x7f000001u);
+#if defined(_WIN32)
+    const int sent =
+        ::sendto(socket_handle, reinterpret_cast<const char *>(bytes.data()),
+                 static_cast<int>(bytes.size()), 0,
+                 reinterpret_cast<const sockaddr *>(&destination),
+                 sizeof(destination));
+    ::closesocket(socket_handle);
+#else
+    const auto sent =
+        ::sendto(socket_handle, bytes.data(), bytes.size(), 0,
+                 reinterpret_cast<const sockaddr *>(&destination),
+                 sizeof(destination));
+    ::close(socket_handle);
+#endif
+    return sent >= 0 && static_cast<std::size_t>(sent) == bytes.size();
 }
 
 } // namespace
@@ -243,6 +334,68 @@ TEST_CASE("OSC-1a liveinputs RPC stages a typed live value, freezes it next fram
                                   {{"path", (dir.root / "recording.pelican").generic_string()}});
     REQUIRE_THAT(replay.at("message").get<std::string>(),
                  ContainsSubstring("offline.live_input_unrecorded@1"));
+}
+
+TEST_CASE("OSC-2b a headless player listens on the option-configured UDP port and freezes packets",
+          "[osc2b][osc][liveinputs][rpc][gpu]") {
+    setupLogger(true);
+    const TempDir dir{std::filesystem::temp_directory_path() /
+                      ("pelican_osc2b_rpc_" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))};
+    const auto root = copyLiveProject(dir);
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+
+    // Project declarations must exist before input profiles are parsed: the
+    // live binding names an input and is validated against the declaration.
+    internal::prepareInputActionsRuntime();
+    internal::prepareOscListener();
+    auto &listener = GET_MODULE(OscListener);
+    REQUIRE(listener.statusJson().at("state").get<std::string>() == "off");
+    REQUIRE_FALSE(listener.socketOpen());
+
+    // Exactly what --osc-port 0 (with the default interface and no filter)
+    // hands the engine after option parsing.
+    const auto config =
+        parseOscListenerConfig("0", "127.0.0.1", std::nullopt);
+    REQUIRE(config.allow.empty());
+    GET_MODULE(EngineLaunchConfig).osc_listener = config;
+    internal::prepareOscListener();
+    REQUIRE(listener.statusJson().at("state").get<std::string>() ==
+            "listening");
+    const auto port = listener.statusJson().at("port").get<std::uint16_t>();
+    REQUIRE(port != 0);
+
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("render_frame");
+
+    auto snapshot = rpc.result("get_live_inputs");
+    REQUIRE(snapshot.at("osc").at("listener").at("state").get<std::string>() ==
+            "listening");
+    REQUIRE(snapshot.at("osc").at("listener").at("port").get<std::uint16_t>() ==
+            port);
+    REQUIRE(inputNamed(snapshot, "phase").at("value") == Catch::Approx(0.0));
+
+    REQUIRE(sendOscPhase(port, 0.625f));
+
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds{30};
+    double phase = 0.0;
+    while (std::chrono::steady_clock::now() < deadline) {
+        (void)rpc.result("step_frame");
+        snapshot = rpc.result("get_live_inputs");
+        phase = inputNamed(snapshot, "phase").at("value").get<double>();
+        if (phase == Catch::Approx(0.625)) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
+    REQUIRE(phase == Catch::Approx(0.625));
+    REQUIRE(inputNamed(snapshot, "phase").at("source").get<std::string>() ==
+            "osc");
+    REQUIRE(snapshot.at("osc").at("received").get<std::uint64_t>() >= 1);
+    REQUIRE(snapshot.at("osc").at("listener").at("sender_not_allowed")
+                .get<std::uint64_t>() == 0);
 }
 
 } // namespace Pelican

@@ -2,6 +2,7 @@
 
 #include "./audio/audiobackendkind.hpp"
 #include "./container.hpp"
+#include "./osc/osclistenerconfig.hpp"
 
 #include <array>
 #include <cstdint>
@@ -112,6 +113,9 @@ DECLARE_MODULE(EngineLaunchConfig) {
     std::optional<std::filesystem::path> input_record;
     std::optional<std::filesystem::path> input_replay_path;
     std::optional<std::string> input_profile;
+    // OSC-2b: the process-wide UDP listener. Absent means no socket is opened.
+    // Configured only by player options, never by the project file.
+    std::optional<OscListenerConfig> osc_listener;
     std::optional<EngineLaunchFreeCamera> free_camera;
     std::optional<std::filesystem::path> camera_bake_output;
     std::optional<std::filesystem::path> play_seq;

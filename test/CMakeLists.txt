@@ -1936,9 +1936,42 @@ pelican_define_test(liveinputs_test pelican_core)
 if(PELICAN_WITH_OSC)
 # OSC-2a: packet parsing, profile live bindings, and the receive/freeze path.
 pelican_define_test(osc_input_test pelican_core)
+# OSC-2b: UDP transport. The cases use loopback sockets and a 30 s poll
+# bound; the CTest timeout is deliberately larger than the in-test bounds.
+pelican_define_test(osc_listener_test NO_DISCOVERY pelican_core)
+add_test(NAME osc_listener COMMAND pelican_test_osc_listener_test "[osc2b]")
+set_tests_properties(osc_listener PROPERTIES LABELS cpu TIMEOUT 120)
+# OSC-2b: the player's option layer, not just the parser, must name bad
+# combinations.  These fail before a project or a window is opened.
+if(TARGET pelican_player)
+  add_test(NAME osc_listener_cli_requires_port
+    COMMAND pelican_player --headless --osc-interface 127.0.0.1)
+  set_tests_properties(osc_listener_cli_requires_port PROPERTIES
+    LABELS cpu TIMEOUT 30
+    PASS_REGULAR_EXPRESSION "osc.config_invalid@1")
+  add_test(NAME osc_listener_cli_bad_port
+    COMMAND pelican_player --headless --osc-port 99999)
+  set_tests_properties(osc_listener_cli_bad_port PROPERTIES
+    LABELS cpu TIMEOUT 30
+    PASS_REGULAR_EXPRESSION "osc.config_invalid@1")
+endif()
 else()
 # OSC-2a: the OFF build must refuse any live key through the real load path.
 pelican_define_test(osc_off_test pelican_core)
+# OSC-2b: this build must name the unavailable module instead of ignoring
+# the option. The player parses options before touching a project.
+if(TARGET pelican_player)
+  add_test(NAME osc_listener_off_cli
+    COMMAND pelican_player --headless --osc-port 9000)
+  set_tests_properties(osc_listener_off_cli PROPERTIES
+    LABELS cpu TIMEOUT 30
+    PASS_REGULAR_EXPRESSION "osc.module_unavailable@1")
+  add_test(NAME osc_listener_off_cli_interface
+    COMMAND pelican_player --headless --osc-interface 127.0.0.1)
+  set_tests_properties(osc_listener_off_cli_interface PROPERTIES
+    LABELS cpu TIMEOUT 30
+    PASS_REGULAR_EXPRESSION "osc.module_unavailable@1")
+endif()
 endif()
 # CV-1: the catalog lists pelican.canvas in the builds that carry it.
 target_compile_definitions(pelican_test_curve_test PRIVATE

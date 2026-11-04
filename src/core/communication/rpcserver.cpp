@@ -42,6 +42,7 @@
 #include "../os/liveinputs.hpp"
 #if PELICAN_WITH_OSC
 #include "../osc/oscinput.hpp"
+#include "../osc/osclistener.hpp"
 #endif
 #include "../os/actionmap.hpp"
 #include "../os/inputstate.hpp"
@@ -385,6 +386,7 @@ struct EngineRpcModules {
     ProblemList &problems;
 #if PELICAN_WITH_OSC
     OscInput &osc_input;
+    OscListener &osc_listener;
 #endif
 };
 
@@ -425,6 +427,7 @@ EngineRpcModules resolveEngineRpcModules() {
         GET_MODULE(ProblemList),
 #if PELICAN_WITH_OSC
         GET_MODULE(OscInput),
+        GET_MODULE(OscListener),
 #endif
     };
 }
@@ -2008,7 +2011,9 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             {"dropped_during_replay", modules.live_inputs.droppedDuringReplay()},
         };
 #if PELICAN_WITH_OSC
-        result["osc"] = modules.osc_input.snapshotJson();
+        auto osc = modules.osc_input.snapshotJson();
+        osc["listener"] = modules.osc_listener.statusJson();
+        result["osc"] = std::move(osc);
 #endif
         return result;
     });

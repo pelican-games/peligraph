@@ -191,6 +191,12 @@ namespace internal {
 // is frozen. Public Actions calls remain lightweight service lookups afterward.
 void prepareInputActionsRuntime();
 
+// OSC-2b composition-root hook: construct the listener (so its state is
+// observable even when off) and bind the process-wide endpoint once when the
+// launch named --osc-port.  A bind or thread failure is non-fatal; the
+// listener reports state=failed and the engine runs on.
+void prepareOscListener();
+
 // Phase 3 of the frame contract. Later Actions queries read this frozen frame
 // instead of re-evaluating the bindings.
 void freezeInputActionsFrame();

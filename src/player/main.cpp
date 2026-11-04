@@ -451,6 +451,20 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         .default_value(std::string{})
         .metavar("name")
         .help("override the project's active input binding profile");
+    // OSC-2b: process-wide UDP listener. Port 0 asks the OS for a free port;
+    // the actual endpoint is reported in get_live_inputs.osc.listener.
+    program.add_argument("--osc-port")
+        .default_value(std::string{})
+        .metavar("0..65535")
+        .help("listen for OSC over UDP on this port (0 chooses a free port)");
+    program.add_argument("--osc-interface")
+        .default_value(std::string{"127.0.0.1"})
+        .metavar("ipv4")
+        .help("IPv4 interface for --osc-port (default 127.0.0.1; 0.0.0.0 is all IPv4)");
+    program.add_argument("--osc-allow")
+        .default_value(std::string{})
+        .metavar("ipv4[,ipv4...]")
+        .help("accept OSC only from these exact sender IPv4 addresses (a filter, not authentication)");
     program.add_argument("--editor-transform")
         .nargs(argparse::nargs_pattern::optional)
         .default_value(std::string{Pelican::editorTransformInputPresetName(
@@ -608,6 +622,35 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         if (!input_profile.empty()) {
             config.input_profile = input_profile;
         }
+        const bool osc_port_used = program.is_used("--osc-port");
+        const bool osc_interface_used = program.is_used("--osc-interface");
+        const bool osc_allow_used = program.is_used("--osc-allow");
+#if !PELICAN_WITH_OSC
+        if (osc_port_used || osc_interface_used || osc_allow_used) {
+            throw std::runtime_error(
+                "osc.module_unavailable@1: OSC input is unavailable in this "
+                "build");
+        }
+#else
+        if (!osc_port_used && (osc_interface_used || osc_allow_used)) {
+            throw std::runtime_error(
+                "osc.config_invalid@1: --osc-interface and --osc-allow "
+                "require --osc-port");
+        }
+        if (osc_port_used) {
+            // Keep the option text alive for the parse call; an optional
+            // string_view must not outlive the get<std::string>() temporary.
+            std::optional<std::string> allow_text;
+            if (osc_allow_used) {
+                allow_text = program.get<std::string>("--osc-allow");
+            }
+            std::optional<std::string_view> allow;
+            if (allow_text.has_value()) allow = *allow_text;
+            config.osc_listener = Pelican::parseOscListenerConfig(
+                program.get<std::string>("--osc-port"),
+                program.get<std::string>("--osc-interface"), allow);
+        }
+#endif
         if (program.is_used("--free-camera")) {
             const auto preset =
                 parseFreeCameraPreset(program.get<std::string>("--free-camera"));

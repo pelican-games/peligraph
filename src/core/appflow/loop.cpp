@@ -266,6 +266,9 @@ void prepareRuntimeModuleGraph(LoopModules &modules) {
     // facades may keep using GET_MODULE, but only as reads after this point.
     prepareFrameStateModules();
     internal::prepareInputActionsRuntime();
+    // OSC-2b: after the profile load above has installed the live bindings, so
+    // an early datagram can only be staged and applied on the next freeze.
+    internal::prepareOscListener();
     modules.renderer.prepareRuntimeModules();
 
     // Public GameContext services are legal at any point in game code, so
