@@ -12,25 +12,6 @@ namespace {
 constexpr std::size_t recent_capacity = 64;
 constexpr std::uint64_t ntp_unix_offset_seconds = 2208988800ULL;
 
-bool numericArgument(const Osc::Argument &argument, double &value) {
-    switch (argument.tag) {
-    case 'i':
-    case 'h':
-    case 't':
-    case 'c':
-    case 'r':
-    case 'm':
-        value = static_cast<double>(argument.integer);
-        return true;
-    case 'f':
-    case 'd':
-        value = argument.number;
-        return true;
-    default:
-        return false;
-    }
-}
-
 double applyMap(const Osc::OscBindingMap &map, double value) {
     const double t = (value - map.from[0]) / (map.from[1] - map.from[0]);
     return map.to[0] + t * (map.to[1] - map.to[0]);
@@ -75,27 +56,40 @@ void OscInput::setBindings(const std::vector<Osc::OscBinding> &bindings) {
 OscInput::Convert OscInput::convert(const Binding &binding,
                                     const Osc::Message &message,
                                     double &value) {
-    if (message.arguments.empty()) return Convert::argument_count;
+    // OSC-2c: a live binding consumes exactly one argument.  OSC messages
+    // with no argument or with several arguments are ambiguous, so the whole
+    // message is dropped rather than silently reading the first one.
+    if (message.arguments.size() != 1) return Convert::argument_count;
     const auto &argument = message.arguments.front();
-    if (argument.tag == 's' || argument.tag == 'b' || argument.tag == 'N' ||
-        argument.tag == 'I')
+
+    // Only the interoperable scalar tags apply.  The parser still validates
+    // the payload structure of d/h/t/c/r/m (and s/b/N/I), but this engine has
+    // no typed destination for them, so they are dropped as unsupported.
+    switch (argument.tag) {
+    case 'f':
+        value = argument.number;
+        break;
+    case 'i':
+        value = static_cast<double>(argument.integer);
+        break;
+    case 'T':
+    case 'F':
+        if (binding.input_type != LiveInputType::boolean)
+            return Convert::unsupported_type;
+        value = argument.boolean ? 1.0 : 0.0;
+        return Convert::ok;
+    default:
         return Convert::unsupported_type;
+    }
 
     if (binding.input_type == LiveInputType::boolean) {
-        if (argument.tag == 'T' || argument.tag == 'F') {
-            value = argument.boolean ? 1.0 : 0.0;
-            return Convert::ok;
-        }
         // A bool accepts a numeric argument as non-zero true, but the profile
         // parser refuses a linear map on a bool input.
-        if (!numericArgument(argument, value))
-            return Convert::unsupported_type;
         if (!std::isfinite(value)) return Convert::non_finite;
         value = value != 0.0 ? 1.0 : 0.0;
         return Convert::ok;
     }
 
-    if (!numericArgument(argument, value)) return Convert::unsupported_type;
     if (binding.has_map) value = applyMap(binding.map, value);
     if (!std::isfinite(value)) return Convert::non_finite;
 
@@ -261,6 +255,7 @@ nlohmann::json OscInput::snapshotJson() const {
         });
     }
     return {
+        {"bindings", bindings_.size()},
         {"received", counters_.received},
         {"applied", counters_.applied},
         {"unbound", counters_.unbound},

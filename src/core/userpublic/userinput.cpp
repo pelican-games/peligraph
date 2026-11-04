@@ -152,6 +152,22 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
         }
     }
 
+    void loadProfileOscBindings(const std::string &name,
+                                const nlohmann::json &document) {
+#if PELICAN_WITH_OSC
+        osc_profiles.emplace(
+            name,
+            Osc::parseOscBindings(document,
+                                  GET_MODULE(LiveInputs).declarations()));
+#else
+        if (document.contains("live")) {
+            throw std::runtime_error(
+                "osc.module_unavailable@1: input profile '" + name +
+                "' declares live bindings but this build has OSC disabled");
+        }
+#endif
+    }
+
     void applyOscBindings(const InputBindingProfile *project_profile) {
 #if PELICAN_WITH_OSC
         if (project_profile == nullptr) {
@@ -170,6 +186,17 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
     }
 
     void rebuildActionMap(const InputBindingProfile *project_profile) {
+        if (!action_definitions) {
+            action_map.reset();
+            if (project_profile != nullptr) {
+                active_profile = project_profile->name;
+            } else {
+                active_profile.reset();
+            }
+            frozen_generation = std::numeric_limits<std::uint64_t>::max();
+            applyOscBindings(project_profile);
+            return;
+        }
         if (project_profile == nullptr && fixed_overlay_profiles.empty()) {
             action_map = action_definitions;
             active_profile.reset();
@@ -209,6 +236,43 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
         auto source =
             loadInputActionsRuntimeSourceWithStartupActionOverlays();
         if (!source.effective_actions_json) {
+            // A project may select an input profile purely to carry live OSC
+            // bindings.  Such a profile has no action bindings, so it is
+            // validated against an empty action map and still goes through the
+            // same envelope, name, and live-binding checks.
+            if (source.project_profile_jsons.empty()) return;
+            const auto empty_definitions = parseInputActionsString(
+                R"({"schema":"pelican.input_actions","version":1,"action_sets":[]})");
+            for (const auto &[name, profile_json] :
+                 source.project_profile_jsons) {
+                const auto profile_document =
+                    nlohmann::json::parse(profile_json);
+                if (profile_document.is_object() &&
+                    profile_document.contains("bindings") &&
+                    profile_document["bindings"].is_array() &&
+                    !profile_document["bindings"].empty()) {
+                    throw std::runtime_error(
+                        "input.profile_requires_actions@1: input profile '" +
+                        name +
+                        "' declares action bindings but this project has no "
+                        "input_actions_json");
+                }
+                auto profile =
+                    parseInputProfileString(profile_json, empty_definitions);
+                if (profile.name != name) {
+                    throw std::runtime_error(
+                        "input profile key '" + name +
+                        "' does not match document name '" + profile.name +
+                        "'");
+                }
+                loadProfileOscBindings(name, profile_document);
+                profiles.emplace(name, std::move(profile));
+            }
+            if (source.selected_project_profile) {
+                selectProfile(*source.selected_project_profile);
+            } else {
+                rebuildActionMap(nullptr);
+            }
             return;
         }
 
@@ -235,19 +299,8 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
                         "' does not match document name '" + profile.name +
                         "'");
                 }
-#if PELICAN_WITH_OSC
-                const auto profile_document = nlohmann::json::parse(profile_json);
-                osc_profiles.emplace(
-                    name, Osc::parseOscBindings(
-                              profile_document,
-                              GET_MODULE(LiveInputs).declarations()));
-#else
-                if (nlohmann::json::parse(profile_json).contains("live")) {
-                    throw std::runtime_error(
-                        "osc.module_unavailable@1: input profile '" + name +
-                        "' declares live bindings but this build has OSC disabled");
-                }
-#endif
+                loadProfileOscBindings(
+                    name, nlohmann::json::parse(profile_json));
                 profiles.emplace(name, std::move(profile));
             }
         }

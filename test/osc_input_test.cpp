@@ -1,4 +1,5 @@
 #include "../src/core/container.hpp"
+#include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/log.hpp"
@@ -441,8 +442,8 @@ TEST_CASE("OSC-2a bindings validate addresses, live names, maps and unknown keys
     }
 }
 
-TEST_CASE("OSC-2a receive converts only the first argument, applies maps and clamps",
-          "[osc2a][osc][receive]") {
+TEST_CASE("OSC-2c receive takes exactly one f/i/T/F argument and drops the rest",
+          "[osc2c][osc][receive]") {
     auto &live = GET_MODULE(LiveInputs);
     live.setDeclarationJson(liveDeclaration);
     live.freeze(false, 1);
@@ -473,57 +474,109 @@ TEST_CASE("OSC-2a receive converts only the first argument, applies maps and cla
     REQUIRE(snapshot[0].value == Catch::Approx(0.5));
     REQUIRE(snapshot[0].source == LiveInputSource::osc);
 
-    // Only the first argument counts.
+    // Exactly one argument: a second argument makes the message ambiguous,
+    // so nothing is consumed and the stamped value does not move.
     osc.receive(makeMessage("/level", ",ff", {f32(0.2f), f32(0.9f)}), ntp(1001));
     live.freeze(false, 3);
-    REQUIRE(live.snapshot()[0].value == Catch::Approx(0.2));
+    REQUIRE(live.snapshot()[0].value == Catch::Approx(0.5));
+    REQUIRE(osc.snapshotJson().at("dropped").at("argument_count") == 1);
+
+    // No argument is equally ambiguous.
+    osc.receive(makeMessage("/level", ",", {}), ntp(1002));
+    live.freeze(false, 4);
+    REQUIRE(live.snapshot()[0].value == Catch::Approx(0.5));
+    REQUIRE(osc.snapshotJson().at("dropped").at("argument_count") == 2);
+
+    // d/h/t/c/r/m are structurally parsed but have no live destination here.
+    const std::vector<std::pair<std::string, Bytes>> unsupported = {
+        {"d", f64(0.75)},
+        {"h", i64(7)},
+        {"t", i64(8)},
+        {"c", i32(65)},
+        {"r", i32(0x11223344)},
+        {"m", i32(0x0090337f)},
+    };
+    std::uint64_t now = 1100;
+    for (const auto &[tag, payload] : unsupported) {
+        osc.receive(makeMessage("/level", "," + tag, {payload}), ntp(now++));
+    }
+    live.freeze(false, 4);
+    REQUIRE(live.snapshot()[0].value == Catch::Approx(0.5));
+    REQUIRE(osc.snapshotJson().at("dropped").at("unsupported_type") == 6);
+
+    // One unsupported element does not discard the rest of the bundle.
+    osc.receive(makeBundle(ntp(999),
+                           {makeMessage("/level", ",d", {f64(0.9)}),
+                            makeMessage("/level", ",f", {f32(0.3f)})}),
+                ntp(now++));
+    live.freeze(false, 5);
+    REQUIRE(live.snapshot()[0].value == Catch::Approx(0.3));
+
+    // The structural walk still consumes the d payload, so a truncated
+    // argument after it is malformed rather than silently accepted.
+    auto truncated = makeMessage("/level", ",di", {f64(0.5), i32(1)});
+    truncated.resize(truncated.size() - 4);
+    REQUIRE(parse(truncated).drop == Osc::PacketDrop::malformed);
 
     // Reversed and non-unit ranges are legal; clamp still applies afterwards.
-    osc.receive(makeMessage("/mapped", ",f", {f32(-0.5f)}), ntp(1002));
-    live.freeze(false, 4);
+    osc.receive(makeMessage("/mapped", ",f", {f32(-0.5f)}), ntp(now++));
+    live.freeze(false, 6);
     REQUIRE(live.snapshot()[1].value == Catch::Approx(25.0));
 
     // -1.5 goes through round, then int32 range, then the declared clamp.
-    osc.receive(makeMessage("/signed", ",f", {f32(-1.5f)}), ntp(1003));
-    live.freeze(false, 5);
+    osc.receive(makeMessage("/signed", ",f", {f32(-1.5f)}), ntp(now++));
+    live.freeze(false, 7);
     REQUIRE(live.snapshot()[2].value == Catch::Approx(-2.0));
 
-    osc.receive(makeMessage("/count", ",i", {i32(99)}), ntp(1004));
-    live.freeze(false, 6);
+    osc.receive(makeMessage("/count", ",i", {i32(99)}), ntp(now++));
+    live.freeze(false, 8);
     snapshot = live.snapshot();
     REQUIRE(snapshot[3].value == Catch::Approx(10.0));
     REQUIRE(snapshot[3].clamped);
 
-    osc.receive(makeMessage("/enabled", ",T"), ntp(1005));
-    live.freeze(false, 7);
+    osc.receive(makeMessage("/enabled", ",T"), ntp(now++));
+    live.freeze(false, 9);
     REQUIRE(live.snapshot()[4].value == Catch::Approx(1.0));
 
-    osc.receive(makeMessage("/enabled", ",i", {i32(2)}), ntp(1006));
-    live.freeze(false, 8);
+    osc.receive(makeMessage("/enabled", ",i", {i32(2)}), ntp(now++));
+    live.freeze(false, 10);
     REQUIRE(live.snapshot()[4].value == Catch::Approx(1.0));
-    osc.receive(makeMessage("/enabled", ",F"), ntp(1007));
-    live.freeze(false, 9);
+    osc.receive(makeMessage("/enabled", ",F"), ntp(now++));
+    live.freeze(false, 11);
     REQUIRE(live.snapshot()[4].value == Catch::Approx(0.0));
 
-    // Out-of-int32 and non-finite values never reach the live input.
+    // T/F are only meaningful for a bool binding.
+    osc.receive(makeMessage("/level", ",T"), ntp(now++));
+    // A 64-bit integer is outside the accepted tag set, not merely out of
+    // int32 range, and never reaches the live input.
     osc.receive(makeMessage("/signed", ",h", {i64(std::int64_t{1} << 40)}),
-                ntp(1008));
+                ntp(now++));
     osc.receive(makeMessage("/level", ",f",
                             {f32(std::numeric_limits<float>::quiet_NaN())}),
-                ntp(1009));
+                ntp(now++));
     // A finite receiver value can still map out of double range; the mapped
     // result is re-checked after extrapolation.
-    osc.receive(makeMessage("/overflow", ",f", {f32(0.5f)}), ntp(1010));
-    live.freeze(false, 10);
+    osc.receive(makeMessage("/overflow", ",f", {f32(0.5f)}), ntp(now++));
+    // A finite float can still be too large for an int32 live input.
+    osc.receive(makeMessage("/count", ",f", {f32(3.0e38f)}), ntp(now++));
+    // Bool inputs still refuse a non-finite numeric argument rather than
+    // turning NaN into true.
+    osc.receive(makeMessage("/enabled", ",f",
+                            {f32(std::numeric_limits<float>::quiet_NaN())}),
+                ntp(now++));
+    live.freeze(false, 12);
     REQUIRE(live.snapshot()[2].value == Catch::Approx(-2.0));
-    REQUIRE(live.snapshot()[0].value == Catch::Approx(0.2));
+    REQUIRE(live.snapshot()[0].value == Catch::Approx(0.3));
     REQUIRE(live.snapshot()[1].value == Catch::Approx(25.0));
+    REQUIRE(live.snapshot()[4].value == Catch::Approx(0.0));
 
     const auto counters = osc.snapshotJson();
-    REQUIRE(counters.at("received") == 11);
+    REQUIRE(counters.at("received") == 22);
     REQUIRE(counters.at("applied") == 8);
+    REQUIRE(counters.at("dropped").at("argument_count") == 2);
+    REQUIRE(counters.at("dropped").at("unsupported_type") == 9);
     REQUIRE(counters.at("dropped").at("out_of_range") == 1);
-    REQUIRE(counters.at("dropped").at("non_finite") == 2);
+    REQUIRE(counters.at("dropped").at("non_finite") == 3);
 }
 
 TEST_CASE("OSC-2a counters, recent records and replay are observable as one snapshot",
@@ -661,6 +714,98 @@ TEST_CASE("OSC-2a profile loading applies live bindings and a profile without li
     REQUIRE(GET_MODULE(LiveInputs).snapshot()[0].value ==
             Catch::Approx(0.25));
     REQUIRE(readText(sandbox.root / "project.json") == project_bytes);
+}
+
+TEST_CASE("OSC-2c a project without actions still loads and selects live profiles",
+          "[osc2c][osc][profile]") {
+    ensureLogger();
+    Sandbox sandbox;
+    writeText(sandbox.root / "input" / "live.json", liveDeclaration);
+    writeText(sandbox.root / "input" / "profiles" / "live.json",
+              R"({"schema":"pelican.input_profile","version":1,"name":"live","bindings":[],"live":[{"address":"/level","input":"level"}]})");
+    writeText(sandbox.root / "input" / "profiles" / "plain.json",
+              R"({"schema":"pelican.input_profile","version":1,"name":"plain","bindings":[]})");
+    const auto project = Json{
+        {"schema", "pelican.project"},
+        {"version", 1},
+        {"name", "osc-no-actions"},
+        {"engine_min_version", "0.1.0"},
+        {"basic_config",
+         {{"live_inputs_json", "input/live.json"},
+          {"input_profiles",
+           {{"live", "input/profiles/live.json"},
+            {"plain", "input/profiles/plain.json"}}},
+          {"input_profile", "plain"}}},
+    };
+    const auto project_bytes = project.dump();
+    writeText(sandbox.root / "project.json", project_bytes);
+
+    FastModuleContainer modules;
+    GET_MODULE(PathResolver).setup(sandbox.root, false);
+    GET_MODULE(ProjectSource).setProjectData(project_bytes);
+    // --input-profile overrides the project's default selection.
+    GET_MODULE(EngineLaunchConfig).input_profile = "live";
+
+    // No action document means no action map, but the live-only profile is
+    // still a real profile with a real OSC table.
+    REQUIRE_FALSE(Actions::isConfigured());
+    REQUIRE(internal::activeInputProfile() ==
+            std::optional<std::string>{"live"});
+    auto &osc = GET_MODULE(OscInput);
+    REQUIRE(osc.snapshotJson().at("bindings") == 1);
+
+    osc.receive(makeMessage("/level", ",f", {f32(0.5f)}), ntp(1000));
+    GET_MODULE(LiveInputs).freeze(false, 2);
+    REQUIRE(GET_MODULE(LiveInputs).snapshot()[0].value == Catch::Approx(0.5));
+
+    // A profile without a live member still switches and clears the table.
+    internal::selectInputProfile("plain");
+    REQUIRE(internal::activeInputProfile() ==
+            std::optional<std::string>{"plain"});
+    REQUIRE(osc.snapshotJson().at("bindings") == 0);
+    const auto before_switch = GET_MODULE(LiveInputs).snapshot()[0].value;
+    osc.receive(makeMessage("/level", ",f", {f32(0.9f)}), ntp(1001));
+    GET_MODULE(LiveInputs).freeze(false, 3);
+    REQUIRE(GET_MODULE(LiveInputs).snapshot()[0].value ==
+            Catch::Approx(before_switch));
+    REQUIRE(osc.snapshotJson().at("recent").back().at("reason") == "unbound");
+
+    // set_input_profile / --input-profile can select the live-only profile.
+    internal::selectInputProfile("live");
+    REQUIRE(osc.snapshotJson().at("bindings") == 1);
+    osc.receive(makeMessage("/level", ",f", {f32(0.25f)}), ntp(1002));
+    GET_MODULE(LiveInputs).freeze(false, 4);
+    REQUIRE(GET_MODULE(LiveInputs).snapshot()[0].value == Catch::Approx(0.25));
+    REQUIRE(readText(sandbox.root / "project.json") == project_bytes);
+}
+
+TEST_CASE("OSC-2c a profile with action bindings needs the action document",
+          "[osc2c][osc][profile][negative]") {
+    ensureLogger();
+    Sandbox sandbox;
+    writeText(sandbox.root / "input" / "live.json", liveDeclaration);
+    writeText(sandbox.root / "input" / "profiles" / "needsactions.json",
+              R"({"schema":"pelican.input_profile","version":1,"name":"needsactions","bindings":[{"action":"jump","binding":"kbd:space"}],"live":[]})");
+    const auto project = Json{
+        {"schema", "pelican.project"},
+        {"version", 1},
+        {"name", "osc-requires-actions"},
+        {"engine_min_version", "0.1.0"},
+        {"basic_config",
+         {{"live_inputs_json", "input/live.json"},
+          {"input_profiles",
+           {{"needsactions", "input/profiles/needsactions.json"}}},
+          {"input_profile", "needsactions"}}},
+    };
+    const auto project_bytes = project.dump();
+
+    FastModuleContainer modules;
+    GET_MODULE(PathResolver).setup(sandbox.root, false);
+    GET_MODULE(ProjectSource).setProjectData(project_bytes);
+    REQUIRE_THROWS_WITH(
+        Actions::isConfigured(),
+        StartsWith("input.profile_requires_actions@1: input profile "
+                   "'needsactions'"));
 }
 
 TEST_CASE("OSC-2a a bad live table is refused before either half of the profile applies",

@@ -104,3 +104,28 @@ TEST_CASE("OSC-2a OFF still loads a project profile without a live key",
     REQUIRE(internal::activeInputProfile() ==
             std::optional<std::string>{"main"});
 }
+
+TEST_CASE("OSC-2c OFF refuses a live profile even without an action document",
+          "[osc2c][osc][off]") {
+    ensureLogger();
+    Sandbox sandbox;
+    writeText(sandbox.root / "input" / "profiles" / "live.json",
+              R"({"schema":"pelican.input_profile","version":1,"name":"liveonly","bindings":[],"live":[{"address":"/level","input":"level"}]})");
+    const auto project = nlohmann::json{
+        {"schema", "pelican.project"},
+        {"version", 1},
+        {"name", "osc-off-no-actions"},
+        {"engine_min_version", "0.1.0"},
+        {"basic_config",
+         {{"input_profiles", {{"liveonly", "input/profiles/live.json"}}},
+          {"input_profile", "liveonly"}}},
+    };
+    const auto bytes = project.dump();
+
+    FastModuleContainer modules;
+    GET_MODULE(PathResolver).setup(sandbox.root, false);
+    GET_MODULE(ProjectSource).setProjectData(bytes);
+    REQUIRE_THROWS_WITH(
+        Actions::isConfigured(),
+        StartsWith("osc.module_unavailable@1: input profile 'liveonly'"));
+}

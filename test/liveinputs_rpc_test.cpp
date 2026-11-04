@@ -25,6 +25,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -32,11 +33,17 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <winsock2.h>
+#include <windows.h>
 #include <ws2tcpip.h>
 #else
 #include <arpa/inet.h>
+#include <cerrno>
+#include <csignal>
+#include <fcntl.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -72,7 +79,8 @@ struct TempDir {
 // posegraph_demo, with its animation clock driven by a declared live input
 // instead of scene_time, so the published pose is a visible function of the
 // frozen snapshot.
-std::filesystem::path copyLiveProject(const TempDir &dir) {
+std::filesystem::path copyLiveProject(const TempDir &dir,
+                                      bool with_actions = true) {
     const auto shipped = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" / "posegraph_demo";
     const auto root = dir.root / "live_posegraph_demo";
     std::filesystem::create_directories(root);
@@ -83,9 +91,17 @@ std::filesystem::path copyLiveProject(const TempDir &dir) {
 
     auto project = Json::parse(readFile(root / "project.json"));
     project["basic_config"]["live_inputs_json"] = "live/inputs.json";
-    project["basic_config"]["input_actions_json"] = "live/actions.json";
-    project["basic_config"]["input_profiles"] = Json{{"live", "live/profile.json"}};
-    project["basic_config"]["input_profile"] = "live";
+    if (with_actions)
+        project["basic_config"]["input_actions_json"] = "live/actions.json";
+    else
+        project["basic_config"].erase("input_actions_json");
+    project["basic_config"]["input_profiles"] =
+        Json{{"live", "live/profile.json"}, {"plain", "live/plain.json"}};
+    // The no-actions child test passes --input-profile live explicitly, so
+    // make the project default a profile without live bindings.  Existing
+    // action-based tests keep the project default as before.
+    project["basic_config"]["input_profile"] =
+        with_actions ? "live" : "plain";
     writeFile(root / "project.json", project.dump(2));
 
     writeFile(root / "live" / "actions.json", Json{
@@ -101,6 +117,12 @@ std::filesystem::path copyLiveProject(const TempDir &dir) {
         {"live", Json::array({
             {{"address", "/phase"}, {"input", "phase"}},
         })},
+    }.dump(2));
+    writeFile(root / "live" / "plain.json", Json{
+        {"schema", "pelican.input_profile"},
+        {"version", 1},
+        {"name", "plain"},
+        {"bindings", Json::array()},
     }.dump(2));
 
     writeFile(root / "live" / "inputs.json", Json{
@@ -194,6 +216,247 @@ struct WinsockScope {
 };
 #endif
 
+#if defined(PELICAN_OSC2C_PLAYER)
+// Drives the real pelican_player executable over its stdin/stdout JSON-RPC
+// transport.  The OSC port is chosen by the player from --osc-port 0; nothing
+// in this test injects a parsed listener config into the engine.
+class PlayerProcess {
+  public:
+    explicit PlayerProcess(const std::filesystem::path &project) {
+#if defined(_WIN32)
+        SECURITY_ATTRIBUTES attributes{};
+        attributes.nLength = sizeof(attributes);
+        attributes.bInheritHandle = TRUE;
+        if (!::CreatePipe(&stdin_read_, &stdin_write_, &attributes, 0) ||
+            !::CreatePipe(&stdout_read_, &stdout_write_, &attributes, 0)) {
+            throw std::runtime_error("CreatePipe failed");
+        }
+        ::SetHandleInformation(stdin_write_, HANDLE_FLAG_INHERIT, 0);
+        ::SetHandleInformation(stdout_read_, HANDLE_FLAG_INHERIT, 0);
+        const auto log_path =
+            (std::filesystem::temp_directory_path() /
+             ("pelican_osc2c_player_" +
+              std::to_string(std::chrono::steady_clock::now()
+                                 .time_since_epoch()
+                                 .count()) +
+              ".log"));
+        log_ = ::CreateFileW(log_path.wstring().c_str(), GENERIC_WRITE,
+                             FILE_SHARE_READ, &attributes, CREATE_ALWAYS,
+                             FILE_ATTRIBUTE_NORMAL, nullptr);
+
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        startup.dwFlags = STARTF_USESTDHANDLES;
+        startup.hStdInput = stdin_read_;
+        startup.hStdOutput = stdout_write_;
+        startup.hStdError = log_ != INVALID_HANDLE_VALUE ? log_ : stdout_write_;
+
+        std::wstring command =
+            L"\"" +
+            std::filesystem::path{PELICAN_OSC2C_PLAYER}.wstring() +
+            L"\" --rpc --headless --size 64x64 --osc-port 0 --input-profile live --project \"" +
+            project.wstring() + L"\"";
+        if (!::CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE,
+                              CREATE_NO_WINDOW, nullptr, nullptr, &startup,
+                              &process_)) {
+            throw std::runtime_error("CreateProcessW failed");
+        }
+        ::CloseHandle(stdin_read_);
+        stdin_read_ = INVALID_HANDLE_VALUE;
+        ::CloseHandle(stdout_write_);
+        stdout_write_ = INVALID_HANDLE_VALUE;
+#else
+        int input_pipe[2]{};
+        int output_pipe[2]{};
+        if (::pipe(input_pipe) != 0 || ::pipe(output_pipe) != 0)
+            throw std::runtime_error("pipe failed");
+        const auto project_string = project.string();
+        pid_ = ::fork();
+        if (pid_ == 0) {
+            (void)::dup2(input_pipe[0], STDIN_FILENO);
+            (void)::dup2(output_pipe[1], STDOUT_FILENO);
+            const auto log_path =
+                (std::filesystem::temp_directory_path() /
+                 ("pelican_osc2c_player_" +
+                  std::to_string(std::chrono::steady_clock::now()
+                                     .time_since_epoch()
+                                     .count()) +
+                  ".log"));
+            const int log_fd = ::open(log_path.c_str(),
+                                      O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (log_fd >= 0) {
+                (void)::dup2(log_fd, STDERR_FILENO);
+                (void)::close(log_fd);
+            }
+            (void)::close(input_pipe[1]);
+            (void)::close(output_pipe[0]);
+            ::execl(PELICAN_OSC2C_PLAYER, PELICAN_OSC2C_PLAYER, "--rpc",
+                    "--headless", "--size", "64x64", "--osc-port", "0",
+                    "--input-profile", "live", "--project",
+                    project_string.c_str(), static_cast<char *>(nullptr));
+            ::_exit(127);
+        }
+        (void)::close(input_pipe[0]);
+        (void)::close(output_pipe[1]);
+        write_fd_ = input_pipe[1];
+        read_fd_ = output_pipe[0];
+#endif
+    }
+
+    PlayerProcess(const PlayerProcess &) = delete;
+    PlayerProcess &operator=(const PlayerProcess &) = delete;
+
+    ~PlayerProcess() {
+#if defined(_WIN32)
+        if (stdin_write_ != INVALID_HANDLE_VALUE) {
+            ::CloseHandle(stdin_write_);
+            stdin_write_ = INVALID_HANDLE_VALUE;
+        }
+        if (process_.hProcess != nullptr) {
+            if (::WaitForSingleObject(process_.hProcess, 10000) ==
+                WAIT_TIMEOUT) {
+                (void)::TerminateProcess(process_.hProcess, 1);
+            }
+            ::CloseHandle(process_.hThread);
+            ::CloseHandle(process_.hProcess);
+        }
+        if (stdout_read_ != INVALID_HANDLE_VALUE)
+            ::CloseHandle(stdout_read_);
+        if (log_ != INVALID_HANDLE_VALUE) ::CloseHandle(log_);
+#else
+        if (write_fd_ >= 0) {
+            (void)::close(write_fd_);
+            write_fd_ = -1;
+        }
+        if (pid_ > 0) {
+            bool exited = false;
+            for (int i = 0; i < 100; ++i) {
+                int status = 0;
+                if (::waitpid(pid_, &status, WNOHANG) == pid_) {
+                    exited = true;
+                    break;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds{100});
+            }
+            if (!exited) {
+                (void)::kill(pid_, SIGTERM);
+                (void)::waitpid(pid_, nullptr, 0);
+            }
+        }
+        if (read_fd_ >= 0) (void)::close(read_fd_);
+#endif
+    }
+
+    Json call(std::string_view method, Json params = Json::object()) {
+        const auto id = ++next_id_;
+        writeLine(
+            Json{{"jsonrpc", "2.0"}, {"id", id}, {"method", method},
+                 {"params", std::move(params)}}
+                .dump());
+        for (;;) {
+            const auto line = readLine();
+            if (line.empty())
+                throw std::runtime_error("player closed its RPC output");
+            const auto response = Json::parse(line);
+            if (response.value("id", 0) == id) return response;
+        }
+    }
+
+    Json result(std::string_view method, Json params = Json::object()) {
+        const auto response = call(method, std::move(params));
+        INFO(response.dump(2));
+        REQUIRE(response.contains("result"));
+        return response.at("result");
+    }
+
+  private:
+    void writeLine(const std::string &line) {
+        const std::string payload = line + "\n";
+#if defined(_WIN32)
+        std::size_t offset = 0;
+        while (offset < payload.size()) {
+            DWORD written = 0;
+            const auto chunk = static_cast<DWORD>(payload.size() - offset);
+            if (!::WriteFile(stdin_write_, payload.data() + offset, chunk,
+                             &written, nullptr) ||
+                written == 0)
+                throw std::runtime_error("player stdin write failed");
+            offset += written;
+        }
+#else
+        std::size_t offset = 0;
+        while (offset < payload.size()) {
+            const auto written =
+                ::write(write_fd_, payload.data() + offset,
+                        payload.size() - offset);
+            if (written < 0) {
+                if (errno == EINTR) continue;
+                throw std::runtime_error("player stdin write failed");
+            }
+            offset += static_cast<std::size_t>(written);
+        }
+#endif
+    }
+
+    std::string readLine() {
+        std::string line;
+        for (;;) {
+            char byte = 0;
+#if defined(_WIN32)
+            const auto deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::seconds{180};
+            for (;;) {
+                DWORD available = 0;
+                if (!::PeekNamedPipe(stdout_read_, nullptr, 0, nullptr,
+                                     &available, nullptr))
+                    return {};
+                if (available > 0) break;
+                if (::WaitForSingleObject(process_.hProcess, 0) ==
+                    WAIT_OBJECT_0)
+                    return {};
+                if (std::chrono::steady_clock::now() >= deadline)
+                    throw std::runtime_error("player RPC response timeout");
+                std::this_thread::sleep_for(std::chrono::milliseconds{10});
+            }
+            DWORD read = 0;
+            if (!::ReadFile(stdout_read_, &byte, 1, &read, nullptr) ||
+                read == 0)
+                return {};
+#else
+            struct pollfd poll_fd {
+                read_fd_, POLLIN, 0
+            };
+            const int ready = ::poll(&poll_fd, 1, 180000);
+            if (ready <= 0)
+                throw std::runtime_error("player RPC response timeout");
+            const auto read = ::read(read_fd_, &byte, 1);
+            if (read == 0) return {};
+            if (read < 0) {
+                if (errno == EINTR) continue;
+                throw std::runtime_error("player stdout read failed");
+            }
+#endif
+            if (byte == '\n') return line;
+            line.push_back(byte);
+        }
+    }
+
+    std::uint64_t next_id_ = 4200;
+#if defined(_WIN32)
+    HANDLE stdin_read_ = INVALID_HANDLE_VALUE;
+    HANDLE stdin_write_ = INVALID_HANDLE_VALUE;
+    HANDLE stdout_read_ = INVALID_HANDLE_VALUE;
+    HANDLE stdout_write_ = INVALID_HANDLE_VALUE;
+    HANDLE log_ = INVALID_HANDLE_VALUE;
+    PROCESS_INFORMATION process_{};
+#else
+    int read_fd_ = -1;
+    int write_fd_ = -1;
+    pid_t pid_ = -1;
+#endif
+};
+#endif
+
 bool sendOscPhase(std::uint16_t port, float value) {
 #if defined(_WIN32)
     static WinsockScope winsock;
@@ -255,6 +518,7 @@ TEST_CASE("OSC-1a liveinputs RPC stages a typed live value, freezes it next fram
     // The project declaration is the source, with declared defaults and types.
     auto snapshot = rpc.result("get_live_inputs");
     REQUIRE(snapshot.at("dropped_during_replay") == 0);
+    REQUIRE(snapshot.at("osc").at("bindings") == 1);
     auto phase = inputNamed(snapshot, "phase");
     REQUIRE(phase.at("type") == "float");
     REQUIRE(phase.at("value") == Catch::Approx(0.0));
@@ -376,6 +640,7 @@ TEST_CASE("OSC-2b a headless player listens on the option-configured UDP port an
             "listening");
     REQUIRE(snapshot.at("osc").at("listener").at("port").get<std::uint16_t>() ==
             port);
+    REQUIRE(snapshot.at("osc").at("bindings") == 1);
     REQUIRE(inputNamed(snapshot, "phase").at("value") == Catch::Approx(0.0));
 
     REQUIRE(sendOscPhase(port, 0.625f));
@@ -397,5 +662,76 @@ TEST_CASE("OSC-2b a headless player listens on the option-configured UDP port an
     REQUIRE(snapshot.at("osc").at("listener").at("sender_not_allowed")
                 .get<std::uint64_t>() == 0);
 }
+
+#if defined(PELICAN_OSC2C_PLAYER)
+TEST_CASE("OSC-2c the real --osc-port option listens and freezes a packet",
+          "[osc2c][osc][liveinputs][rpc][gpu]") {
+    setupLogger(true);
+    const TempDir dir{std::filesystem::temp_directory_path() /
+                      ("pelican_osc2c_rpc_" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))};
+    // No input_actions_json: the live-only profile still loads, and the real
+    // --input-profile option selects it in the child player.
+    const auto root = copyLiveProject(dir, false);
+    PlayerProcess player{root};
+
+    (void)player.result("load_scene", {{"name", "default_scene"}});
+    (void)player.result("render_frame");
+
+    auto snapshot = player.result("get_live_inputs");
+    const auto listener = snapshot.at("osc").at("listener");
+    REQUIRE(listener.at("state").get<std::string>() == "listening");
+    const auto port = listener.at("port").get<std::uint16_t>();
+    REQUIRE(port != 0);
+    REQUIRE(snapshot.at("osc").at("bindings") == 1);
+    REQUIRE(inputNamed(snapshot, "phase").at("value") == Catch::Approx(0.0));
+
+    // Nothing was injected into the engine: --osc-port 0 selected this port
+    // and the default loopback listener accepted the datagram.
+    REQUIRE(sendOscPhase(port, 0.625f));
+
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds{30};
+    double phase = 0.0;
+    while (std::chrono::steady_clock::now() < deadline) {
+        (void)player.result("step_frame");
+        snapshot = player.result("get_live_inputs");
+        phase = inputNamed(snapshot, "phase").at("value").get<double>();
+        if (phase == Catch::Approx(0.625)) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
+    REQUIRE(phase == Catch::Approx(0.625));
+    REQUIRE(inputNamed(snapshot, "phase").at("source").get<std::string>() ==
+            "osc");
+    REQUIRE(snapshot.at("osc").at("received").get<std::uint64_t>() >= 1);
+
+    // A profile without live declarations reports zero bindings, and packets
+    // no longer reach the live input.
+    REQUIRE(player.result("set_input_profile", {{"name", "plain"}}).at("name") ==
+            "plain");
+    snapshot = player.result("get_live_inputs");
+    REQUIRE(snapshot.at("osc").at("bindings") == 0);
+    REQUIRE(sendOscPhase(port, 0.875f));
+    (void)player.result("step_frame");
+    snapshot = player.result("get_live_inputs");
+    REQUIRE(inputNamed(snapshot, "phase").at("value") == Catch::Approx(0.625));
+
+    // Selecting the live-only profile again restores the table.
+    REQUIRE(player.result("set_input_profile", {{"name", "live"}}).at("name") ==
+            "live");
+    REQUIRE(player.result("get_live_inputs").at("osc").at("bindings") == 1);
+    REQUIRE(sendOscPhase(port, 0.375f));
+    const auto second_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds{30};
+    while (std::chrono::steady_clock::now() < second_deadline) {
+        (void)player.result("step_frame");
+        snapshot = player.result("get_live_inputs");
+        phase = inputNamed(snapshot, "phase").at("value").get<double>();
+        if (phase == Catch::Approx(0.375)) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
+    REQUIRE(phase == Catch::Approx(0.375));
+}
+#endif
 
 } // namespace Pelican

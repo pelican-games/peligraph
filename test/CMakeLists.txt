@@ -2529,6 +2529,13 @@ if(PELICAN_WITH_ANIMATION)
 pelican_define_test(liveinputs_rpc_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 target_compile_definitions(pelican_test_liveinputs_rpc_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+if(TARGET pelican_player)
+  # OSC-2c drives the real executable so the --osc-port option path is tested
+  # rather than an injected listener config.
+  target_compile_definitions(pelican_test_liveinputs_rpc_test PRIVATE
+      PELICAN_OSC2C_PLAYER="$<TARGET_FILE:pelican_player>")
+  add_dependencies(pelican_test_liveinputs_rpc_test pelican_player)
+endif()
 target_link_libraries(pelican_test_liveinputs_rpc_test PRIVATE pelican_shaderc)
 if(COMMAND pelican_copy_shaderc_runtime)
     pelican_copy_test_shaderc_runtime(pelican_test_liveinputs_rpc_test)
