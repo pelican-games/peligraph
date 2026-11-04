@@ -213,7 +213,7 @@ TEST_CASE("RC-6 final XR task names bind root and part policy to the physical pl
         CHECK(rc6Row(restored, "owned_task#xr", "part").at("status") == "overridden");
     }
 #else
-    FAIL("XR build required for RC-6 final-name regression");
+    SKIP("XR build required for RC-6 final-name regression");
 #endif
 }
 
@@ -403,7 +403,7 @@ TEST_CASE("RC-6 root final task name wins over another task author name", "[rend
         feature.erase("target_planning");
     }
 #else
-    FAIL("XR build required for RC-6 final-name collision regression");
+    SKIP("XR build required for RC-6 final-name collision regression");
 #endif
 }
 
@@ -442,7 +442,7 @@ TEST_CASE("RC-6 fold binds the authored task before flat and XR final names coll
         CHECK(entry->binding->owner == "task/probe_fill#xr");
     }
 #else
-    FAIL("XR build required for RC-6 fold collision regression");
+    SKIP("XR build required for RC-6 fold collision regression");
 #endif
 }
 
@@ -471,7 +471,7 @@ TEST_CASE("RC-6 replaced task keeps old final root policy absent", "[rendercompi
             d.detail_fields.at("name") == "probe_fill#xr" && d.detail_fields.at("key") == "serial";
     }) == 1);
 #else
-    FAIL("XR build required for RC-6 replacement regression");
+    SKIP("XR build required for RC-6 replacement regression");
 #endif
 }
 
@@ -496,6 +496,6 @@ TEST_CASE("RC-6 ambiguous final policy name reports owners before IR collision",
         }
     }
 #else
-    FAIL("XR build required for RC-6 ambiguity regression");
+    SKIP("XR build required for RC-6 ambiguity regression");
 #endif
 }

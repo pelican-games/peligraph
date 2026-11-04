@@ -709,12 +709,16 @@ TEST_CASE("FW-1 Sha256Stream, assetFileSha256 and the watcher digest equal picos
 //   reconcile with no change, and (c) the bytes the watcher hashed.
 TEST_CASE("FileWatcher bench on the example project", "[.][bench][fw1]") {
     std::string corpus;
+#ifdef _WIN32
     {
         char *value = nullptr;
         std::size_t size = 0;
         if (_dupenv_s(&value, &size, "PELICAN_TEST_PROJECTS_DIR") == 0 && value != nullptr) corpus = value;
         std::free(value);
     }
+#else
+    if (const char *value = std::getenv("PELICAN_TEST_PROJECTS_DIR")) corpus = value;
+#endif
     if (corpus.empty() || !std::filesystem::exists(std::filesystem::path{corpus} / "example" / "project.json")) {
         SKIP("PELICAN_TEST_PROJECTS_DIR/example is not available");
     }

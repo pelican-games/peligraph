@@ -786,7 +786,7 @@ TEST_CASE(
     const auto parent_manifest =
         readJson(fixture_directory / "parent_manifest.json");
     CHECK(fixture.at("source_commit") ==
-          "b9f16ae600931020deb06dab2b7adc9d50152428");
+          "ec659eb9409d0ef019ac4e046341912b5398bc08");
     REQUIRE(parent_manifest.at("schema") ==
             "pelican.wp364.parent_manifest");
     REQUIRE(parent_manifest.at("version") == 3);

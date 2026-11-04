@@ -1,8 +1,8 @@
 WP364 immutable parent baseline provenance
 
-source_commit: b9f16ae600931020deb06dab2b7adc9d50152428
-source_commit_subject: docs: settle the five choices the spec was still leaving to whoever typed first
-source_commit_time: 2026-08-30T12:25:57+09:00
+source_commit: ec659eb9409d0ef019ac4e046341912b5398bc08
+source_commit_subject: PM-3a test: a refused step is checked against the refusal's own words once they are shown, not against whatever the status bar holds first (it can still show the startup "No saved panel layout" message; GS-ASAN1 saw that race on Linux)
+source_commit_time: 2026-11-04T10:15:12+09:00
 
 This commit is the implementation-free HEAD named before any WP364 source or
 test edit.  It is not HEAD^ of the eventual worktree.
@@ -86,3 +86,19 @@ sprite_demo assets.json, passes/main.json (1765 -> 1914), scene.json;
 vrm_xr_demo asset_data.json, passes/main.json (1597 -> 1746), scene.json.
 No file was added or removed, and no cache key and no frame plan projection
 changed.
+
+2026-11-04 integration amendment: RC-5s (commits 1e05031d7 and e17754510)
+removed the canonical __anchor_* frame-plan nodes and rewrote the shipped
+example / sprite_demo sources. The baseline and manifest are re-frozen at
+ec659eb94 (the integration base, not current output): the frame-plan
+projection drops __anchor_sprite, __anchor_post_main, __anchor_tonemap,
+__anchor_post_ldr, __anchor_pelican_ui, __anchor_debug_draw,
+__anchor_debug_text and __anchor_imgui, and rt_shadow_mask_pipeline moves
+from declaration_index 19 / order 18 to 11 / 10; example
+passes/main_rendering_config.json is 7426 bytes
+(aa5b3c2cb72e569ef0cb8eedbe3eb53fadcbb8bd4de54f1b57cea16943bfa815);
+sprite_demo passes/main.json is 3479 bytes
+(22fee5e134eee6ab83dcccd182c1e3a512f4733aa10439d5e1bc1585aafc478c);
+sprite_demo/features/sprite.json is added at 1379 bytes
+(496a81cbf2b0f8bec4f4d875f7cbc50509ed48fb7275c1eac036adbf72b06ac7), and
+sprite_demo's tracked_file_count becomes 16. No other entry changed.

@@ -1594,7 +1594,8 @@ TEST_CASE("VF-2 the reported reference is the one VF-1 refuses against",
           second.at("family_extent"));
     CHECK_FALSE(lpva2Node(plan_json, "present").contains("family_extent"));
     // A raw plan (no compiled pipeline) has no reference to report.
-    for (const auto &node : framePlanToJson(plan, nullptr).at("nodes")) {
+    const auto raw_plan_json = framePlanToJson(plan, nullptr);
+    for (const auto &node : raw_plan_json.at("nodes")) {
         CHECK_FALSE(node.contains("family_extent"));
     }
     // The refusal of a pass that disagrees names the same reference.

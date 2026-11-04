@@ -1,7 +1,7 @@
 {
  "schema": "pelican.wp364.parent_manifest",
  "version": 3,
- "source_commit": "b9f16ae600931020deb06dab2b7adc9d50152428",
+ "source_commit": "ec659eb9409d0ef019ac4e046341912b5398bc08",
  "note": "blob_sha256 hashes the git blob (LF). Test must normalize working-tree CRLF->LF for eol==lf entries before hashing; compare eol==binary raw.",
  "projects": {
   "animgraph_demo": {
@@ -219,8 +219,8 @@
     {
      "path": "projects/example/passes/main_rendering_config.json",
      "eol": "lf",
-     "blob_sha256": "d52b322bcf64547f000664c6a84bee43bb2e5a26451525b0662ffdbacda378ac",
-     "blob_bytes": 5981
+     "blob_sha256": "aa5b3c2cb72e569ef0cb8eedbe3eb53fadcbb8bd4de54f1b57cea16943bfa815",
+     "blob_bytes": 7426
     },
     {
      "path": "projects/example/project.json",
@@ -261,7 +261,7 @@
    ]
   },
   "sprite_demo": {
-   "tracked_file_count": 15,
+   "tracked_file_count": 16,
    "files": [
     {
      "path": "projects/sprite_demo/README.md",
@@ -306,6 +306,12 @@
      "blob_bytes": 4168
     },
     {
+     "path": "projects/sprite_demo/features/sprite.json",
+     "eol": "lf",
+     "blob_sha256": "496a81cbf2b0f8bec4f4d875f7cbc50509ed48fb7275c1eac036adbf72b06ac7",
+     "blob_bytes": 1379
+    },
+    {
      "path": "projects/sprite_demo/input/actions.json",
      "eol": "lf",
      "blob_sha256": "28f4415436c9d7cfac0bd3d591043dac66c0c4c3432e9f7c8e7014950a8ae64f",
@@ -320,8 +326,8 @@
     {
      "path": "projects/sprite_demo/passes/main.json",
      "eol": "lf",
-     "blob_sha256": "cdec64c426818992b6ffc2da42d0dcb5ed72c4c66ee297a54d7303e5913299f9",
-     "blob_bytes": 1914
+     "blob_sha256": "22fee5e134eee6ab83dcccd182c1e3a512f4733aa10439d5e1bc1585aafc478c",
+     "blob_bytes": 3479
     },
     {
      "path": "projects/sprite_demo/project.json",

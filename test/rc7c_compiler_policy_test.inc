@@ -144,6 +144,7 @@ TEST_CASE("RC-7c fix generation preserves packed prefer slot in both compilers",
         for(const auto &p:result.plans)if(p->graph=="G1")check(*p);
     }
     SECTION("program compiler") {
+#if PELICAN_WITH_OPENXR
         // Each variant has one graph. XR's reordered C spans both A and B,
         // exercising the program-wide update after each graph compiled alone.
         auto single=config;single["rendering_passes"].erase(single["rendering_passes"].begin()+1);
@@ -164,5 +165,8 @@ TEST_CASE("RC-7c fix generation preserves packed prefer slot in both compilers",
         auto input=fixture.input();input.runtime_shader_compiler_enabled=true;
         const auto result=runRenderCompilerProgram(defaultVulkanRenderCompilerProgram(),input);
         check(*requireVulkanRenderCompilerPhysicalPackage(*result.variants[0].physical_package).target_plans.at("G1"));
+#else
+        SKIP("the program compiler needs both flat and XR variants");
+#endif
     }
 }

@@ -1,7 +1,7 @@
 {
   "schema": "pelican.wp364.parent_baseline",
   "version": 1,
-  "source_commit": "b9f16ae600931020deb06dab2b7adc9d50152428",
+  "source_commit": "ec659eb9409d0ef019ac4e046341912b5398bc08",
   "embedded_spirv_sha256": {
     "rt_shadow_mask.frag.spv": "7ed6df45d81170bc5050c98d4fbad94c8a17eed3cc66987f5a02d6dd8b9f8345",
     "rt_shadow_mask_pipeline.rgen.spv": "f6967e61f84fccb5840e836325dbe5aef43e68d5f13303794d54468e1e2e4a24",
@@ -28,15 +28,7 @@
       "__snapshot_opaque_color",
       "__snapshot_opaque_depth",
       "forward_transparent",
-      "__anchor_sprite",
-      "__anchor_post_main",
-      "__anchor_tonemap",
-      "__anchor_post_ldr",
       "scene_present",
-      "__anchor_pelican_ui",
-      "__anchor_debug_draw",
-      "__anchor_debug_text",
-      "__anchor_imgui",
       "rt_shadow_mask_pipeline",
       "output_transform"
     ],
@@ -52,10 +44,10 @@
         "writes": ["rt_shadow_mask"]
       },
       {
-        "declaration_index": 19,
+        "declaration_index": 11,
         "kind": "compute",
         "name": "rt_shadow_mask_pipeline",
-        "order": 18,
+        "order": 10,
         "reads": ["gbuffer_worldpos", "gbuffer_normal"],
         "reads_history": [],
         "view_axes": [],
