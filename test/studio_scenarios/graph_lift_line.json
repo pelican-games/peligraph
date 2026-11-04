@@ -27,6 +27,10 @@
     {"label": "the document says a is bias now", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "definitions.gain_curve.nodes[2].inputs.a.node", "value": "bias", "retry_ms": 60000},
 
     {"label": "fit again after the connection", "cmd": "action", "name": "pelican.graphCanvas.fitView"},
+    {"label": "lift a again, now bias's line, and let it go on empty canvas", "cmd": "drag", "from": {"name": "pelican.graphCanvasView::graph_socket#sum/in:a"}, "to": {"name": "pelican.graphCanvasView::graph_socket#sum/in:a", "point": [2, 2]}, "steps": 12},
+    {"label": "refused again", "cmd": "wait", "name": "pelican.graphCanvasNotice", "contains": "unconnected graph input", "timeout_ms": 60000},
+    {"label": "still bias", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "definitions.gain_curve.nodes[2].inputs.a.node", "value": "bias"},
+    {"label": "a picture after the second refusal", "expect": "screenshot", "path": "graph_lift_line_refused2.png"},
     {"label": "a picture of the body", "expect": "screenshot", "path": "graph_lift_line.png"}
   ]
 }
