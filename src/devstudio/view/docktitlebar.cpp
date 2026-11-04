@@ -8,6 +8,9 @@
 #include <QMainWindow>
 #include <QMouseEvent>
 #include <QStyle>
+#include <QPainter>
+#include <QPixmap>
+#include <QPen>
 #include <QToolButton>
 
 namespace PelicanStudio {
@@ -29,6 +32,23 @@ QToolButton *makeTitleButton(
     button->setToolTip(tooltip);
     button->setAccessibleName(tooltip);
     return button;
+}
+
+// The style's SP_TitleBarMaxButton is drawn dark for a light caption, and is
+// close to invisible on this dark bar, so this one glyph follows the palette.
+QIcon maximizeIcon(const QWidget *widget) {
+    const qreal ratio = widget->devicePixelRatioF();
+    QPixmap pixmap(QSize(16, 16) * ratio);
+    pixmap.setDevicePixelRatio(ratio);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    QColor color = widget->palette().color(QPalette::WindowText);
+    color.setAlphaF(0.65);
+    painter.setPen(QPen(color, 1.0));
+    painter.drawRect(QRectF(2.5, 3.5, 11.0, 9.0));
+    painter.fillRect(QRectF(2.0, 3.0, 12.0, 2.0), color);
+    painter.end();
+    return QIcon(pixmap);
 }
 
 } // namespace
@@ -118,7 +138,7 @@ void DockTitleBar::syncButtons() {
         maximize_->setToolTip(
             group ? tr("Only a single floating panel can be maximized") : tr("Maximize"));
         maximize_->setAccessibleName(maximize_->toolTip());
-        maximize_->setIcon(style()->standardIcon(QStyle::SP_TitleBarMaxButton, nullptr, this));
+        maximize_->setIcon(maximizeIcon(this));
     }
 
     const bool floating = dock_->isFloating() || group;

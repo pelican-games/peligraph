@@ -1907,3 +1907,36 @@ TEST_CASE("DK-1 a drag from maximized restores the normal window before moving",
     CHECK(inspector->isFloating());
     CHECK(inspector->size() == normal_size);
 }
+
+TEST_CASE("DK-1 the maximize glyph stands out from the bar it sits on",
+          "[devstudio][layout][dk1]") {
+    (void)application();
+    QMainWindow window;
+    QPalette dark;
+    dark.setColor(QPalette::Window, QColor(43, 49, 56));
+    dark.setColor(QPalette::WindowText, QColor(230, 230, 230));
+    // A floating dock is a window, and a window takes the application's palette.
+    const QPalette saved = QApplication::palette();
+    QApplication::setPalette(dark);
+    auto *dock = new QDockWidget(QStringLiteral("Panel"), &window);
+    dock->setObjectName(QStringLiteral("dk1.icon"));
+    auto *bar = new PelicanStudio::DockTitleBar(dock);
+    dock->setTitleBarWidget(bar);
+    window.addDockWidget(Qt::LeftDockWidgetArea, dock);
+    window.show();
+    dock->setFloating(true);
+    application().processEvents();
+    auto *maximize = dock->findChild<QToolButton *>(QStringLiteral("dk1.icon.maximize"));
+    REQUIRE(maximize != nullptr);
+    REQUIRE(maximize->isEnabled());
+    const QImage image = maximize->icon().pixmap(QSize(16, 16)).toImage().convertToFormat(QImage::Format_ARGB32);
+    int visible = 0;
+    for (int y = 0; y < image.height(); ++y) {
+        for (int x = 0; x < image.width(); ++x) {
+            const QColor pixel = image.pixelColor(x, y);
+            if (pixel.alpha() > 100 && pixel.lightness() > 150) ++visible;
+        }
+    }
+    QApplication::setPalette(saved);
+    CHECK(visible >= 20);
+}
