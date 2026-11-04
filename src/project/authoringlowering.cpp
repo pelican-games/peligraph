@@ -2,7 +2,10 @@
 
 #if PELICAN_WITH_CANVAS
 #include "canvas/canvaslowering.hpp"
+#endif
 #include "renderingjsonnormalize.hpp"
+#if PELICAN_WITH_VIDEO_OUTPUT
+#include "output/outputlowering.hpp"
 #endif
 
 #include <fstream>
@@ -148,6 +151,16 @@ AuthoringLowering lowerAuthoringDocument(const nlohmann::json &authored_document
 #else
     (void)context;
     result.document = graph_document;
+#endif
+#if PELICAN_WITH_VIDEO_OUTPUT
+    // VO-1a: after canvas, because a canvas node may be the pass whose output
+    // a sink names. The root document is still the lowered one; the authored
+    // argument is const and stays untouched.
+    auto output = lowerOutputNodes(result.document);
+    result.reports["output"] = std::move(output.report);
+    result.output_sinks = std::move(output.sinks);
+    result.changed = result.changed || output.changed;
+    result.document = std::move(output.document);
 #endif
     return result;
 }

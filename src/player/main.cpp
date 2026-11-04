@@ -53,6 +53,34 @@ uint32_t parsePositiveUint(const std::string &value, const std::string &name) {
     return static_cast<uint32_t>(parsed_value);
 }
 
+std::uint64_t parsePositiveUint64(const std::string &value, const std::string &name) {
+    // std::stoull accepts a leading sign and throws out_of_range; the output
+    // limits are a decimal count, so refuse both as the same launch error.
+    if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos) {
+        throw std::runtime_error(name + " must be a positive integer");
+    }
+    try {
+        size_t parsed_chars = 0;
+        const auto parsed_value = std::stoull(value, &parsed_chars, 10);
+        if (parsed_chars != value.size() || parsed_value == 0) {
+            throw std::runtime_error(name + " must be a positive integer");
+        }
+        return parsed_value;
+    } catch (const std::runtime_error &) {
+        throw;
+    } catch (const std::exception &) {
+        throw std::runtime_error(name + " must be a positive integer");
+    }
+}
+
+uint32_t parseOutputFrameLimit(const std::string &value) {
+    const auto parsed_value = parsePositiveUint64(value, "--output-max-frames");
+    if (parsed_value > (std::numeric_limits<uint32_t>::max)()) {
+        throw std::runtime_error("--output-max-frames is too large");
+    }
+    return static_cast<uint32_t>(parsed_value);
+}
+
 vk::Extent2D parseExtent(const std::string &value) {
     const auto separator = value.find_first_of("xX");
     if (separator == std::string::npos || separator == 0 || separator == value.size() - 1) {
@@ -396,6 +424,18 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
               std::to_string(kMaxOfflineStartSeconds) + "; nearest frame)");
     program.add_argument("--size").default_value(std::string{"1280x720"}).metavar("WxH").help("headless render size");
     program.add_argument("--render-out").default_value(std::string{}).metavar("path").help("render output path");
+    program.add_argument("--output-dir")
+        .default_value(std::string{})
+        .metavar("dir")
+        .help("existing directory for output.file sinks (default: sinks inactive)");
+    program.add_argument("--output-max-frames")
+        .default_value(std::string{"1000"})
+        .metavar("n")
+        .help("files one output sink writes before it finishes (default: 1000)");
+    program.add_argument("--output-max-bytes")
+        .default_value(std::string{"4294967296"})
+        .metavar("bytes")
+        .help("bytes all output sinks write before they finish (default: 4294967296)");
     program.add_argument("--log-file")
         .default_value(std::string{})
         .metavar("path")
@@ -591,6 +631,21 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         const auto render_out = program.get<std::string>("--render-out");
         if (!render_out.empty()) {
             config.render_out = std::filesystem::path{render_out};
+        }
+        config.output_max_frames = parseOutputFrameLimit(
+            program.get<std::string>("--output-max-frames"));
+        config.output_max_bytes = parsePositiveUint64(
+            program.get<std::string>("--output-max-bytes"), "--output-max-bytes");
+        const auto output_dir = program.get<std::string>("--output-dir");
+        if (!output_dir.empty()) {
+            const std::filesystem::path path{output_dir};
+            std::error_code directory_error;
+            if (!std::filesystem::is_directory(path, directory_error)) {
+                throw std::runtime_error(
+                    "output.dir_missing@1: --output-dir must be an existing directory: " +
+                    path.string());
+            }
+            config.output_dir = path;
         }
         config.dump_frame_plan = program.get<bool>("--dump-frame-plan");
         config.gpu = program.get<std::string>("--gpu");

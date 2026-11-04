@@ -84,6 +84,15 @@ DECLARE_MODULE(EngineLaunchConfig) {
     uint32_t headless_frames = 3;
     bool headless_frames_explicit = false;
     std::optional<std::filesystem::path> render_out;
+    // VO-1a: the existing directory the document's output.file sinks write
+    // raw frames into. Absent means no sink is active, although the lowered
+    // document still retains their targets for the report's cost.
+    std::optional<std::filesystem::path> output_dir;
+    // Per sink; a sink that reaches it becomes finished.
+    std::uint32_t output_max_frames = 1000;
+    // Across every sink of the run; a write that would pass it leaves the sink
+    // finished and writes no file.
+    std::uint64_t output_max_bytes = 4ull * 1024ull * 1024ull * 1024ull;
     // Offline output. The fixed-step frame the run's first capture belongs to,
     // counted from 1; 0 means the run starts at the beginning as it always did.
     // The command line names a time in seconds and the parser quantizes it to

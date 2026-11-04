@@ -5,6 +5,9 @@
 #include "renderingpass.hpp"
 #include "../../project/renderpipeline.hpp"
 #include "../../project/targetrenderplanning.hpp"
+#if PELICAN_WITH_VIDEO_OUTPUT
+#include "../output/outputsinktable.hpp"
+#endif
 
 #include <cstdint>
 #include <functional>
@@ -158,6 +161,11 @@ struct RenderingPassConfigRegistrationResult {
         target_plans;
     std::shared_ptr<const ResolvedSampleCountPlan> sample_count_plan;
     std::uint64_t runtime_generation = 0;
+#if PELICAN_WITH_VIDEO_OUTPUT
+    // VO-1a: the sink table of this candidate, installed only when the
+    // generation it belongs to is published.
+    std::shared_ptr<const OutputSinkTable> output_sinks;
+#endif
 };
 
 struct RenderGraphVariantFamilyRegistrationResult {

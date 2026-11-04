@@ -12,3 +12,4 @@ PELICAN_PROJECT_REQUIREMENT("xr", PELICAN_WITH_OPENXR, "xr.module_unavailable@1"
 PELICAN_PROJECT_REQUIREMENT("vat", PELICAN_WITH_VAT, "vat.module_unavailable@1")
 PELICAN_PROJECT_REQUIREMENT("seqplayer", PELICAN_WITH_SEQPLAYER, "seqplayer.module_unavailable@1")
 PELICAN_PROJECT_REQUIREMENT("osc", PELICAN_WITH_OSC, "osc.module_unavailable@1")
+PELICAN_PROJECT_REQUIREMENT("output", PELICAN_WITH_VIDEO_OUTPUT, "output.module_unavailable@1")

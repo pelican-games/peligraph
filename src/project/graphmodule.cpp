@@ -11,6 +11,9 @@
 #if PELICAN_WITH_CANVAS
 #include "canvas/canvasmodule.hpp"
 #endif
+#if PELICAN_WITH_VIDEO_OUTPUT
+#include "output/outputmodule.hpp"
+#endif
 
 #include <algorithm>
 #include <cstdint>
@@ -982,6 +985,11 @@ GraphModuleRegistry makeBuiltinGraphModuleRegistry() {
     // build without the module refuses a document naming one as
     // graph.operation_unregistered@1.
     registerCanvasGraphModule(registry);
+#endif
+#if PELICAN_WITH_VIDEO_OUTPUT
+    // VO-1a: removable in the same sense. lowerAuthoringDocument removes the
+    // sink before composition, so it never becomes a render node.
+    registerOutputGraphModule(registry);
 #endif
     return registry;
 }

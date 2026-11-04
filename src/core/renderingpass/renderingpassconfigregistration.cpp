@@ -8,6 +8,10 @@
 #include "../model/gltf.hpp"
 #include "../model/skeletalanimation.hpp"
 #include "../../project/authoringlowering.hpp"
+#if PELICAN_WITH_VIDEO_OUTPUT
+#include "../../project/output/outputplanning.hpp"
+#include "../output/outputsinks.hpp"
+#endif
 #include "../../project/graphpartition.hpp"
 #include "../loader/scene.hpp"
 #if PELICAN_WITH_AUDIO
@@ -704,6 +708,12 @@ class RegistrationStages {
     // Cross-generation buffer handover, generation preparation, and the
     // single publication (or ray-joint staging) that commits the arena.
     RegisteredRenderGraphVariantFamily publish();
+#if PELICAN_WITH_VIDEO_OUTPUT
+    void setOutputSinkTable(
+        std::shared_ptr<const OutputSinkTable> table) {
+        output_sink_table = std::move(table);
+    }
+#endif
 
   private:
     void attachProgramGraphState(
@@ -776,6 +786,11 @@ class RegistrationStages {
         program_preparations;
     std::optional<std::vector<std::string>>
         enabled_feature_names;
+#if PELICAN_WITH_VIDEO_OUTPUT
+    // VO-1a: the candidate's sink table, installed with this exact
+    // generation in publish().
+    std::shared_ptr<const OutputSinkTable> output_sink_table;
+#endif
 };
 
 void RegistrationStages::prepare() {
@@ -1430,6 +1445,23 @@ RegisteredRenderGraphVariantFamily RegistrationStages::publish() {
         injectRayTracingJointTransactionPoint(
             RayTracingJointTransactionPoint::after_pipeline);
     }
+#if PELICAN_WITH_VIDEO_OUTPUT
+    // Last-writer is a property of the plan this candidate compiled, so it is
+    // decided here and stored in the table the runtime reads. A refused sink
+    // still appears in get_status and writes nothing. The plans still live in
+    // program_preparations: prepareGeneration consumes the vector.
+    if (output_sink_table) {
+        auto validated =
+            std::make_shared<OutputSinkTable>(*output_sink_table);
+        for (const auto &program : program_preparations) {
+            if (program.target_plan != nullptr) {
+                validateOutputSinkWriters(*validated,
+                                          *program.target_plan);
+            }
+        }
+        output_sink_table = std::move(validated);
+    }
+#endif
     auto prepared_generation =
         first.frame_graph_runtime.prepareGeneration(
             std::move(program_preparations),
@@ -1492,6 +1524,24 @@ RegisteredRenderGraphVariantFamily RegistrationStages::publish() {
                     .after_rollback_prepared_generation;
         }
     }
+#if PELICAN_WITH_VIDEO_OUTPUT
+    // The table becomes current with the generation it was compiled for. A
+    // failed or rolled-back candidate never reaches this callback and leaves
+    // the old table in place. Staging a ray-joint candidate defers the same
+    // callback to its later publication.
+    auto previous_publication = std::move(coordinated_publication);
+    coordinated_publication =
+        [table = output_sink_table,
+         previous = std::move(previous_publication)](
+            const RendererRuntimeGeneration &generation) {
+            if (previous) previous(generation);
+            if (auto *sinks =
+                    FastModuleContainer::tryGet<OutputSinks>()) {
+                sinks->install(table);
+            }
+        };
+#endif
+
     const auto &ids =
         prepared_generation.renderingPassIds();
     for (std::size_t index = 0;
@@ -1505,6 +1555,9 @@ RegisteredRenderGraphVariantFamily RegistrationStages::publish() {
                     program_offsets[index + 1]));
         results[index].runtime_generation =
             prepared_generation.generation();
+#if PELICAN_WITH_VIDEO_OUTPUT
+        results[index].output_sinks = output_sink_table;
+#endif
     }
     first.pass_container.bindRuntimePublication(
         first.frame_graph_runtime.publicationState());
@@ -1553,7 +1606,7 @@ registerRenderingPassConfigVariantsData(
     // CV-4: a lowering reads project files (a shape.text's font) through the
     // project's paths.
     const auto &paths = dependencies.front().runtime.path_resolver;
-    const auto lowering = lowerAuthoringDocument(
+    auto lowering = lowerAuthoringDocument(
         rendering_pass_data,
         projectFileLoweringContext(
             [&paths](std::string_view reference) -> std::optional<std::filesystem::path> {
@@ -1570,6 +1623,11 @@ registerRenderingPassConfigVariantsData(
     RegistrationStages stages{
         lowering.document, base_extent, dependencies,
         variant_requests};
+#if PELICAN_WITH_VIDEO_OUTPUT
+    stages.setOutputSinkTable(
+        std::make_shared<const OutputSinkTable>(
+            std::move(lowering.output_sinks)));
+#endif
     stages.prepare();
     stages.allocate();
     stages.registerVariants();

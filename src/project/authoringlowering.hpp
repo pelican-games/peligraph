@@ -10,6 +10,10 @@
 #include <string_view>
 #include <vector>
 
+#if PELICAN_WITH_VIDEO_OUTPUT
+#include "../core/output/outputsinktable.hpp"
+#endif
+
 namespace Pelican {
 
 // CV-1b: the one hook the engine calls on an authored rendering graph
@@ -63,6 +67,11 @@ struct AuthoringLowering {
     // document, for the editor to show (get_authoring_lowering). A build
     // without any lowering reports {}.
     nlohmann::json reports = nlohmann::json::object();
+#if PELICAN_WITH_VIDEO_OUTPUT
+    // VO-1a: internal rows of reports["output"], including the concrete
+    // producer used for the compile-time last-writer check.
+    OutputSinkTable output_sinks;
+#endif
 };
 
 AuthoringLowering lowerAuthoringDocument(const nlohmann::json &graph_document,

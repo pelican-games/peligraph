@@ -1430,6 +1430,52 @@ function(run_jolt_physics_smoke)
     clean_successful_build("${physics_jolt_build_dir}")
 endfunction()
 
+# VO-1a: the contrast build compiles none of the output module or its
+# lowerings, and a project whose `requires` names it is refused by name.
+function(verify_video_output_absent build_dir)
+    file(GLOB_RECURSE build_metadata LIST_DIRECTORIES false
+        "${build_dir}/build.ninja"
+        "${build_dir}/*.vcxproj"
+        "${build_dir}/*DependInfo.cmake"
+        "${build_dir}/compile_commands.json"
+    )
+    foreach(metadata IN LISTS build_metadata)
+        file(READ "${metadata}" contents)
+        if(contents MATCHES "src[/\\]core[/\\]output[/\\]" OR
+           contents MATCHES "src[/\\]project[/\\]output[/\\]")
+            message(FATAL_ERROR
+                "PELICAN_WITH_VIDEO_OUTPUT=OFF still compiles output sources: ${metadata}")
+        endif()
+    endforeach()
+
+    file(GLOB_RECURSE artifacts LIST_DIRECTORIES false "${build_dir}/*")
+    foreach(artifact IN LISTS artifacts)
+        get_filename_component(name "${artifact}" NAME)
+        string(TOLOWER "${name}" lower_name)
+        if(lower_name MATCHES "^(outputsinks|outputfile|outputlowering|outputmodule|outputplanning|outputsinktable)[.](obj|o)$")
+            message(FATAL_ERROR
+                "PELICAN_WITH_VIDEO_OUTPUT=OFF emitted an output object: ${artifact}")
+        endif()
+    endforeach()
+endfunction()
+
+function(run_video_output_smoke)
+    configure_and_build(
+        "video_output"
+        "PELICAN_WITH_VIDEO_OUTPUT"
+        video_output_build_dir)
+    verify_video_output_absent("${video_output_build_dir}")
+    find_built_executable("${video_output_build_dir}" "pelican_player" video_output_player)
+    set(video_output_project "${ARTIFACT_ROOT}/video_output_requires_project")
+    write_requires_project("${video_output_project}" output)
+    expect_named_error(
+        "video_output_requires"
+        "output.module_unavailable@1"
+        "${video_output_player}" --headless --project "${video_output_project}" --frames 1 --size 64x64
+    )
+    clean_successful_build("${video_output_build_dir}")
+endfunction()
+
 function(run_registered_feature_smoke feature_name)
     set(dry_run FALSE)
     if(PELICAN_BUILD_UNIT_SMOKE_PARSE_ONLY)
@@ -1471,6 +1517,10 @@ function(run_registered_feature_smoke feature_name)
     elseif(feature_name STREQUAL "PELICAN_WITH_CANVAS")
         if(NOT dry_run)
             run_canvas_smoke()
+        endif()
+    elseif(feature_name STREQUAL "PELICAN_WITH_VIDEO_OUTPUT")
+        if(NOT dry_run)
+            run_video_output_smoke()
         endif()
     elseif(feature_name STREQUAL "PELICAN_WITH_SEQPLAYER")
         if(NOT dry_run)

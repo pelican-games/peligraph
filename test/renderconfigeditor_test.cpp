@@ -1330,6 +1330,10 @@ TEST_CASE("instance inputs change supply atomically and report what was drawn",
         // CV-1: and pelican.canvas by the builds that carry the 2D module.
         CHECK(containsName(namespaces, "pelican.canvas") == static_cast<bool>(PELICAN_WITH_CANVAS));
         expected_modules += PELICAN_WITH_CANVAS ? 1 : 0;
+        // VO-1a: and pelican.output only when the video-output module is built.
+        CHECK(containsName(namespaces, "pelican.output") ==
+              static_cast<bool>(PELICAN_WITH_VIDEO_OUTPUT));
+        expected_modules += PELICAN_WITH_VIDEO_OUTPUT ? 1 : 0;
         CHECK(namespaces.size() == expected_modules);
     }
 }

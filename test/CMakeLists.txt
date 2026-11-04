@@ -3592,6 +3592,7 @@ add_test(
         -DWITH_ANIMATION=$<BOOL:${PELICAN_WITH_ANIMATION}>
         -DWITH_AUDIO=$<BOOL:${PELICAN_WITH_AUDIO}>
         -DWITH_CANVAS=$<BOOL:${PELICAN_WITH_CANVAS}>
+        -DWITH_VIDEO_OUTPUT=$<BOOL:${PELICAN_WITH_VIDEO_OUTPUT}>
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_graph_catalog.cmake
 )
 
@@ -4059,6 +4060,11 @@ target_link_libraries(pelican_test_png_nonuniform_check PRIVATE stb)
 
 # CV-1: the pelican.canvas lowering (non-GPU), and a lowered blank project run
 # by the player, its frames held against the CPU reference.
+if(PELICAN_WITH_VIDEO_OUTPUT)
+    # VO-1a: output.file lowering and the plan-time last-writer rule.
+    pelican_define_test(output_lowering_test pelican_project pelican_core)
+endif()
+
 if(PELICAN_WITH_CANVAS)
     pelican_define_test(canvas_lowering_test pelican_project)
     # CV-2a: image layers, masks, clips, groups and blend spaces.
@@ -4348,6 +4354,14 @@ if(PELICAN_WITH_RPC AND WIN32)
     target_compile_definitions(pelican_test_rtl1b_ray_layout_restart_test PRIVATE
         PELICAN_RTL1B_PLAYER="$<TARGET_FILE:pelican_player>")
     add_dependencies(pelican_test_rtl1b_ray_layout_restart_test pelican_player)
+endif()
+
+if(PELICAN_WITH_RPC AND PELICAN_WITH_VIDEO_OUTPUT)
+    # VO-1a: output.file through a real headless --rpc player.
+    pelican_define_test(vo1a_output_runtime_test GPU pelican_project)
+    target_compile_definitions(pelican_test_vo1a_output_runtime_test PRIVATE
+        PELICAN_VO1A_PLAYER="$<TARGET_FILE:pelican_player>")
+    add_dependencies(pelican_test_vo1a_output_runtime_test pelican_player)
 endif()
 
 add_test(

@@ -172,6 +172,13 @@ pelican_register_feature(
   SMOKE_ID canvas
 )
 pelican_register_feature(
+  NAME PELICAN_WITH_VIDEO_OUTPUT
+  DESCRIPTION "Enable the pelican.output graph module and raw render-target capture"
+  BASELINE ON
+  CONTRAST OFF
+  SMOKE_ID video-output
+)
+pelican_register_feature(
   NAME PELICAN_WITH_SEQPLAYER
   DESCRIPTION "Enable transform sequence playback"
   BASELINE ON

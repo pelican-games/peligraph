@@ -87,6 +87,9 @@
 #include "../imgui/imguiruntime.hpp"
 #include "../imgui/imguisystem.hpp"
 #endif
+#if PELICAN_WITH_VIDEO_OUTPUT
+#include "../output/outputsinks.hpp"
+#endif
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -3113,6 +3116,13 @@ struct LogicalFrameSubmissionResources {
 } // namespace
 
 Renderer::Renderer() {
+#if PELICAN_WITH_VIDEO_OUTPUT
+    // VO-1a: the start's rendering-pass publication, just below, installs the
+    // sink table through the OutputSinks module. Creation is frozen after the
+    // loop's composition, so the module has to exist before that publication;
+    // the later construction points are only reads.
+    (void)GET_MODULE(OutputSinks);
+#endif
     auto &config = GET_MODULE(ProjectBasicConfig);
     // BS-1: under --render-fallback a refusal of the project's rendering
     // configuration (met here, or already by the startup preflight) starts
@@ -5211,11 +5221,21 @@ RenderTargetReadback Renderer::readRenderTargetForTesting(
         throw std::runtime_error(
             "render-target readback requires a compiled render pipeline");
     }
-    validateTargetReadbackRetention(program->frame_graph.target_plan.get(), name,
-        program->frame_graph.target_plan ? program->frame_graph.target_plan->graph : "<no plan>");
+    return *readRenderTargetSubresource(
+        *program, name, authored_range, false, false);
+}
+
+std::optional<RenderTargetReadback> Renderer::readRenderTargetSubresource(
+    const CompiledRenderProgram &program,
+    std::string_view name,
+    const ImageSubresourceRange &authored_range,
+    bool for_output_sink,
+    bool empty_is_skip) {
+    validateTargetReadbackRetention(program.frame_graph.target_plan.get(), name,
+        program.frame_graph.target_plan ? program.frame_graph.target_plan->graph : "<no plan>");
     const auto target_id =
         boundRenderTarget(
-            program->frame_graph, std::string{name});
+            program.frame_graph, std::string{name});
     if (!isConcreteRenderTarget(target_id)) {
         throw std::runtime_error(
             "render-target readback target is not active: " +
@@ -5264,10 +5284,28 @@ RenderTargetReadback Renderer::readRenderTargetForTesting(
             "render-target readback has an invalid byte size: " +
             std::string{name});
     }
+    if (for_output_sink) {
+        if (metadata.format != ImageFormat::r8g8b8a8_unorm &&
+            metadata.format != ImageFormat::r8g8b8a8_srgb &&
+            metadata.format != ImageFormat::b8g8r8a8_unorm &&
+            metadata.format != ImageFormat::b8g8r8a8_srgb) {
+            throw std::runtime_error(
+                "output.format_unsupported@1: output sink requires RGBA8 or BGRA8: " +
+                std::string{name});
+        }
+        if (metadata.array_layers != 1 || range.base_mip_level != 0 ||
+            range.level_count != 1 || range.base_array_layer != 0 ||
+            range.layer_count != 1) {
+            throw std::runtime_error(
+                "output.layout_unsupported@1: output sink reads layer 0, mip 0 only: " +
+                std::string{name});
+        }
+    }
     const auto previous_layout =
         render_target_layout_tracker.currentLayout(
             target_id, false, &targets);
     if (previous_layout == vk::ImageLayout::eUndefined) {
+        if (empty_is_skip) return std::nullopt;
         throw std::runtime_error(
             "render-target readback target has no completed contents: " +
             std::string{name});
@@ -5314,6 +5352,69 @@ RenderTargetReadback Renderer::readRenderTargetForTesting(
     };
 }
 
+#if PELICAN_WITH_VIDEO_OUTPUT
+OutputReadResult Renderer::readOutputRenderTargetForSink(
+    std::string_view name, std::string_view graph) {
+    const auto generation =
+        GET_MODULE(FrameGraphRuntimeContainer).snapshot();
+    if (generation == nullptr) return {};
+    // Only the program this frame ran may be read. A generation can carry
+    // variants for other views; their targets are not what this frame
+    // published, so a sink whose graph is not the active plan's graph is
+    // inactive for this frame.
+    const CompiledRenderProgram *program =
+        generation->find(current_rendering_pass_id);
+    if (program == nullptr || program->frame_graph.target_plan == nullptr ||
+        !outputSinkGraphMatches(graph, program->frame_graph.target_plan->graph)) {
+        return {};
+    }
+    const auto &plan = *program->frame_graph.target_plan;
+    const auto resource = std::find_if(
+        plan.resources.begin(), plan.resources.end(),
+        [&](const auto &entry) { return entry.logical_resource == name; });
+    if (resource == plan.resources.end()) return {};
+    // A resource present in the plan need not be active in this variant's
+    // bindings (the graph may not execute it on this view). That is not a
+    // read failure: skip the frame and say inactive.
+    const auto target_id =
+        boundRenderTarget(program->frame_graph, std::string{name});
+    if (!isConcreteRenderTarget(target_id)) return {};
+    // Refusals the target's declaration already decides are reported by name
+    // without attempting a copy. An external target gets the same treatment as
+    // a graph image here, because its effective format is only known now.
+    auto &targets = GET_MODULE(RenderTargetContainer);
+    const auto metadata = targets.getMetadata(target_id);
+    if (targets.getImage(target_id).samples != vk::SampleCountFlagBits::e1) {
+        return {.status = OutputReadStatus::refused,
+                .error = "output.layout_unsupported@1: target " +
+                         std::string{name} + " is multisampled"};
+    }
+    if (!outputFileFormat(toVulkanFormat(metadata.format))) {
+        return {.status = OutputReadStatus::refused,
+                .error = "output.format_unsupported@1: " +
+                         vk::to_string(toVulkanFormat(metadata.format))};
+    }
+    if (metadata.array_layers != 1 || metadata.mip_levels != 1) {
+        return {.status = OutputReadStatus::refused,
+                .error = "output.layout_unsupported@1: target " +
+                         std::string{name} + " is not one layer and one mip"};
+    }
+    const auto readback = readRenderTargetSubresource(
+        *program, name,
+        ImageSubresourceRange{.base_mip_level = 0,
+                              .level_count = 1,
+                              .base_array_layer = 0,
+                              .layer_count = 1},
+        true, true);
+    if (!readback) return {.status = OutputReadStatus::no_contents};
+    return {
+        .status = OutputReadStatus::ready,
+        .extent = readback->extent,
+        .format = readback->format,
+        .bytes = std::move(readback->bytes),
+    };
+}
+#endif
 R8RenderTargetReadback Renderer::readR8RenderTargetForTesting(
     std::string_view name) {
     // The selected range is always one layer, so it cannot speak for the
@@ -7180,6 +7281,11 @@ void Renderer::renderLogicalFrame(
     recorder.recordExecutions();
     recorder.submitFrame();
     recorder.publishFrame();
+#if PELICAN_WITH_VIDEO_OUTPUT
+    // VO-1a: the frame is fully rendered and published, but histories have
+    // not advanced; sinks read the same published targets.
+    GET_MODULE(OutputSinks).captureFrame(*this);
+#endif
     recorder.retainOnceRuns();
     recorder.retainNoSelectedViewNodes();
     recorder.retainDrawnMaterials();

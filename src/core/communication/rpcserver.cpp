@@ -35,6 +35,9 @@
 #include "../gamelogic/gamelogicimports.hpp"
 #include "../gamelogic/behaviorarena.hpp"
 #include "../launchconfig.hpp"
+#if PELICAN_WITH_VIDEO_OUTPUT
+#include "../output/outputsinks.hpp"
+#endif
 #include "../material/materialcontainer.hpp"
 #include "../light/lightcontainer.hpp"
 #include "../model/vertbufcontainer.hpp"
@@ -1634,6 +1637,17 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
         const auto &vulkan_validation =
             modules.vulkan.getVulkanValidationStatus();
         const auto renderdoc = modules.renderdoc_capture.status();
+#if PELICAN_WITH_VIDEO_OUTPUT
+        nlohmann::json output_sinks_status{
+            {"active", false},
+            {"sinks", nlohmann::json::array()},
+            {"frames_skipped_inactive", 0},
+            {"frames_skipped_no_contents", 0}};
+        if (const auto *sinks =
+                FastModuleContainer::tryGet<OutputSinks>()) {
+            output_sinks_status = sinks->status();
+        }
+#endif
         const auto *render_timing = FastModuleContainer::tryGet<RenderTiming>();
         auto gpu_timing = render_timing != nullptr
                               ? render_timing->statusJson()
@@ -1692,6 +1706,9 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             // start ({state: "fallback", refusal: {code, ...fields,
             // message}}), with the rendering root's reference.
             {"render_pipeline", modules.renderer.renderPipelineStatusJson()},
+#if PELICAN_WITH_VIDEO_OUTPUT
+            {"output", std::move(output_sinks_status)},
+#endif
             // PB-1: {revision, count, errors, warnings} of get_problems'
             // list; a client reads the list again when revision moves.
             {"problems", problemListStatusJson(FastModuleContainer::tryGet<ProblemList>())},

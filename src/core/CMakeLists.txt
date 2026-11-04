@@ -19,6 +19,7 @@ target_compile_definitions(pelican_core PUBLIC
   PELICAN_WITH_RENDERDOC=$<BOOL:${PELICAN_WITH_RENDERDOC}>
   PELICAN_WITH_HOT_RELOAD=$<BOOL:${PELICAN_WITH_HOT_RELOAD}>
   PELICAN_WITH_STANDARD_RENDER_ALGORITHMS=$<BOOL:${PELICAN_WITH_STANDARD_RENDER_ALGORITHMS}>
+  PELICAN_WITH_VIDEO_OUTPUT=$<BOOL:${PELICAN_WITH_VIDEO_OUTPUT}>
 )
 target_compile_definitions(pelican_core PRIVATE
   PELICAN_WITH_BUILTIN_PHYSICS=$<BOOL:${PELICAN_WITH_BUILTIN_PHYSICS}>
@@ -62,6 +63,9 @@ add_subdirectory(ui)
 add_subdirectory(gamelogic)
 if(PELICAN_WITH_OPENXR)
 add_subdirectory(openxr)
+endif()
+if(PELICAN_WITH_VIDEO_OUTPUT)
+add_subdirectory(output)
 endif()
 
 add_subdirectory(userpublic)

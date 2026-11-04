@@ -101,9 +101,19 @@ target_compile_definitions(pelican_project PUBLIC
     PELICAN_WITH_SEQPLAYER=$<BOOL:${PELICAN_WITH_SEQPLAYER}>
     PELICAN_WITH_CANVAS=$<BOOL:${PELICAN_WITH_CANVAS}>
     PELICAN_WITH_OSC=$<BOOL:${PELICAN_WITH_OSC}>
+    PELICAN_WITH_VIDEO_OUTPUT=$<BOOL:${PELICAN_WITH_VIDEO_OUTPUT}>
 )
 if(PELICAN_WITH_ANIMATION)
 target_sources(pelican_project PRIVATE posegraphmodule.cpp)
+endif()
+# pelican.output: the removable graph sink and its authoring lowering; an OFF
+# build compiles none of it.
+if(PELICAN_WITH_VIDEO_OUTPUT)
+target_sources(pelican_project PRIVATE
+    output/outputmodule.cpp
+    output/outputlowering.cpp
+    output/outputplanning.cpp
+)
 endif()
 # The canvas module and its lowering; an OFF build compiles none of it.
 if(PELICAN_WITH_CANVAS)

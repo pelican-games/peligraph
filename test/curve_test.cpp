@@ -14,6 +14,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <functional>
 #include <iostream>
@@ -1140,6 +1141,10 @@ TEST_CASE("one operation has exactly one registering module",
 #if PELICAN_WITH_AUDIO
     expected.insert(expected.begin(), "pelican.audio");
 #endif
+#if PELICAN_WITH_VIDEO_OUTPUT
+    expected.push_back("pelican.output");
+#endif
+    std::sort(expected.begin(), expected.end());
     REQUIRE(namespaces == expected);
 }
 

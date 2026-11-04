@@ -8,6 +8,9 @@
 #include "../renderer/viewfamily.hpp"
 #include "render_target_layout_tracker.hpp"
 #include "rendertarget.hpp"
+#if PELICAN_WITH_VIDEO_OUTPUT
+#include "../output/outputreadback.hpp"
+#endif
 #include "../../project/imagesubresource.hpp"
 #include "../../project/renderconfigdocument.hpp"
 #include <details/ecs/entity.hpp>
@@ -28,8 +31,10 @@
 #include <vector>
 
 namespace Pelican {
+class OutputSinks;
 
 struct RenderPipelineReloadState;
+struct CompiledRenderProgram;
 struct RenderPipelinePublicationTransaction;
 struct RenderImageInitialAsset;
 struct RenderPipelineAuthoringApplyResult {
@@ -321,9 +326,27 @@ DECLARE_MODULE(Renderer) {
         std::span<const watch::ReloadRequest>
             companion_requests = {}) noexcept;
 
+    // The part of readRenderTargetForTesting the output sink shares: the
+    // retention/active/single-sample checks, layout transition, copy and
+    // readback. `empty_is_skip` is the sink's no-contents frame; the test
+    // method keeps its established throw.
+    friend class OutputSinks;
+    std::optional<RenderTargetReadback> readRenderTargetSubresource(
+        const CompiledRenderProgram &program,
+        std::string_view name,
+        const ImageSubresourceRange &range,
+        bool for_output_sink,
+        bool empty_is_skip);
     RenderTargetReadback readRenderTargetForTesting(
         std::string_view name,
         const ImageSubresourceRange &range);
+#if PELICAN_WITH_VIDEO_OUTPUT
+    // VO-1a: reads a sink's named target from the published generation whose
+    // target-plan graph is the sink's graph. No graph match, or a target the
+    // plan does not contain, is inactive; an unlaid-out target is no_contents.
+    OutputReadResult readOutputRenderTargetForSink(
+        std::string_view name, std::string_view graph);
+#endif
     R8RenderTargetReadback readR8RenderTargetForTesting(
         std::string_view name);
     std::vector<std::string> currentFramePlanOrderForTesting() const;
