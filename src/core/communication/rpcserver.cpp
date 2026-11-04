@@ -39,6 +39,7 @@
 #include "../light/lightcontainer.hpp"
 #include "../model/vertbufcontainer.hpp"
 #include "../os/inputsequence.hpp"
+#include "../os/liveinputs.hpp"
 #include "../os/actionmap.hpp"
 #include "../os/inputstate.hpp"
 #include "../os/window.hpp"
@@ -360,6 +361,7 @@ struct EngineRpcModules {
     StartupMetrics &startup_metrics;
     InputSequenceRuntime &input_sequence;
     InputState &input_state;
+    LiveInputs &live_inputs;
     EngineLaunchConfig &launch_config;
     watch::ReloadGate &reload_gate;
     watch::ReloadService *reload_service;
@@ -398,6 +400,7 @@ EngineRpcModules resolveEngineRpcModules() {
         GET_MODULE(StartupMetrics),
         GET_MODULE(InputSequenceRuntime),
         GET_MODULE(InputState),
+        GET_MODULE(LiveInputs),
         GET_MODULE(EngineLaunchConfig),
         GET_MODULE(watch::ReloadGate),
         FastModuleContainer::tryGet<watch::ReloadService>(),
@@ -1938,6 +1941,65 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
         };
     });
 
+    server.setHandler("set_live_input", [&modules](const nlohmann::json &params) {
+        if (modules.input_sequence.isReplaying()) {
+            throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError,
+                                      "live_input.replay@1: set_live_input cannot be combined with start_input_replay");
+        }
+        try {
+            requireObjectParams(params, "set_live_input");
+            if (!params.contains("values") || !params.at("values").is_object()) {
+                throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams,
+                                          "set_live_input params requires object field 'values'");
+            }
+            const auto accepted = modules.live_inputs.stageValues(params.at("values"));
+            return nlohmann::json{
+                {"accepted", accepted},
+                {"applies_at_frame", modules.engine_time.evaluationIndex() + 1},
+            };
+        } catch (const JsonRpcHandlerError &) {
+            throw;
+        } catch (const std::exception &error) {
+            throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError, error.what());
+        }
+    });
+
+    server.setHandler("get_live_inputs", [&modules](const nlohmann::json &params) {
+        requireObjectParams(params, "get_live_inputs");
+        auto inputs = nlohmann::json::array();
+        for (const auto &input : modules.live_inputs.snapshot()) {
+            nlohmann::json value;
+            nlohmann::json default_value;
+            switch (input.spec.type) {
+            case LiveInputType::floating:
+                value = input.value;
+                default_value = input.spec.default_value;
+                break;
+            case LiveInputType::integer:
+                value = static_cast<std::int64_t>(std::llround(input.value));
+                default_value = static_cast<std::int64_t>(std::llround(input.spec.default_value));
+                break;
+            case LiveInputType::boolean:
+                value = input.value != 0.0;
+                default_value = input.spec.default_value != 0.0;
+                break;
+            }
+            inputs.push_back(nlohmann::json{
+                {"name", input.spec.name},
+                {"type", liveInputTypeName(input.spec.type)},
+                {"value", std::move(value)},
+                {"default", std::move(default_value)},
+                {"source", input.from_rpc ? "rpc" : "default"},
+                {"changed_frame", input.changed_frame},
+                {"clamped", input.clamped},
+            });
+        }
+        return nlohmann::json{
+            {"inputs", std::move(inputs)},
+            {"dropped_during_replay", modules.live_inputs.droppedDuringReplay()},
+        };
+    });
+
     server.setHandler("start_input_record", [&modules](const nlohmann::json &params) {
         refuseInputSequenceInEditLaunch("start_input_record");
         const auto path = absoluteCapturePath(requireStringParam(params, "path", "start_input_record"));
@@ -1970,6 +2032,14 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             if (modules.input_state.pendingEventCount() != 0) {
                 throw std::runtime_error(
                     "start_input_replay cannot begin while inject_input events are pending");
+            }
+            // OSC-1a: a recording can carry injected input, not a live value.
+            // A project whose graph reads one cannot be replayed to the same
+            // output, so refuse rather than silently freeze the default.
+            if (modules.live_inputs.graphReadsLive()) {
+                throw std::runtime_error(
+                    "offline.live_input_unrecorded@1: rendering graph reads " +
+                    modules.live_inputs.firstLiveRead());
             }
             const auto pose_action_names = internal::poseInputActionNames();
             modules.input_sequence.startReplay(path, pose_action_names);

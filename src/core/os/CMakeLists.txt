@@ -2,6 +2,7 @@ target_sources(pelican_core PRIVATE
     actionmap.cpp
     inputsequence.cpp
     inputstate.cpp
+    liveinputs.cpp
 )
 
 # The Window module has one implementation per platform: GLFW on the desktop,

@@ -23,6 +23,7 @@
 #include "../src/core/loader/ktx2.hpp"
 #include "../src/core/renderer/viewfamilyproviderregistry.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
+#include "../src/core/os/liveinputs.hpp"
 #include "../src/core/renderingpass/graphtransformregistry.hpp"
 #include "../src/core/renderingpass/renderstrategyregistry.hpp"
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
@@ -9888,6 +9889,25 @@ TEST_CASE("PS-1 a once node that writes a transient resource or reads one that c
             CHECK(code == "graph.once_reads_per_frame@1");
             CHECK(fields == Json{{"node", "h0"}, {"input", "level"}});
         }
+    }
+    SECTION("a once pass reads a buffer the value graph derives from a live input") {
+        // OSC-1a: a declared live input is frozen once per frame, so a graph
+        // input fed from one changes every frame exactly as a clock does.
+        GET_MODULE(LiveInputs).setDeclarationJson(R"({
+            "schema": "pelican.live_inputs", "version": 1,
+            "inputs": [{"name": "ps1_level", "type": "float", "default": 0.0}]
+        })");
+        auto document = ps1Graph();
+        auto &value = ps1Node(document, "level_value");
+        value["op"] = "value.input";
+        value["parameters"] = {{"name", "live:ps1_level"}};
+        const auto [code, fields] = lp0aRefusal(document);
+        CHECK(code == "graph.once_reads_per_frame@1");
+        CHECK(fields == Json{{"node", "h0"}, {"input", "level"}});
+        // Control: a constant still lets the once pass run.
+        ps1Node(document, "level_value")["parameters"] = {{"value", 0.25}};
+        ps1Node(document, "level_value")["op"] = "value.constant";
+        CHECK_NOTHROW(lp0aCompose(document));
     }
     SECTION("a schedule or lifetime the engine does not know is refused when edited") {
         auto document = ps1Graph();

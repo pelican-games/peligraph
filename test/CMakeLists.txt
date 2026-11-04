@@ -1931,6 +1931,8 @@ else()
 pelican_define_test(animation_off_scene_test GROUP core_foundation pelican_core)
 endif()
 pelican_define_test(curve_test GROUP core_foundation pelican_core)
+# OSC-1a: declared live inputs, the frame freeze, and graph read validation.
+pelican_define_test(liveinputs_test pelican_core)
 # CV-1: the catalog lists pelican.canvas in the builds that carry it.
 target_compile_definitions(pelican_test_curve_test PRIVATE
     PELICAN_WITH_CANVAS=$<BOOL:${PELICAN_WITH_CANVAS}>)
@@ -2476,6 +2478,15 @@ endif()
 # PM-1a: playing <-> paused, advance_frames and the evaluation index over the
 # headless RPC, with the shipped posegraph_demo as the animated scene.
 if(PELICAN_WITH_ANIMATION)
+# OSC-1a: live input values over the headless RPC, and the published pose they
+# drive in a project graph.
+pelican_define_test(liveinputs_rpc_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
+target_compile_definitions(pelican_test_liveinputs_rpc_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_link_libraries(pelican_test_liveinputs_rpc_test PRIVATE pelican_shaderc)
+if(COMMAND pelican_copy_shaderc_runtime)
+    pelican_copy_test_shaderc_runtime(pelican_test_liveinputs_rpc_test)
+endif()
 pelican_define_test(pm1a_play_state_rpc_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 target_compile_definitions(pelican_test_pm1a_play_state_rpc_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")

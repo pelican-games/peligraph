@@ -74,6 +74,12 @@ struct GraphFrameInputName {
     std::string_view description;
 };
 const std::vector<GraphFrameInputName> &graphFrameInputNames();
+// OSC-1a: whether a value.input name changes every frame the graph is
+// evaluated. The frame's clocks do; a declared live input does too (it is
+// frozen once per frame). Used where a consumer must know that a buffer is
+// not once-stable. The audio clock's dependency propagation in ValueGraph is
+// deliberately not part of this predicate.
+bool graphInputVariesPerFrame(std::string_view name);
 
 // pelican.value, pelican.audio, pelican.render and pelican.ui: the operations the engine
 // itself brings. Nothing here is special-cased by the graph; a module added

@@ -11,6 +11,7 @@
 #include "../loader/scene.hpp"
 #include "../os/inputstate.hpp"
 #include "../os/inputsequence.hpp"
+#include "../os/liveinputs.hpp"
 #include "../os/window.hpp"
 #include "../ui/module.hpp"
 #include "../vkcore/rendertarget.hpp"
@@ -53,6 +54,7 @@ struct FrameStateModules {
 #endif
     InputSequenceRuntime &input_sequence;
     InputState &input_state;
+    LiveInputs &live_inputs;
     ui::UiModule *ui_module;
     RenderTarget *render_target;
 #if PELICAN_WITH_IMGUI
@@ -112,6 +114,7 @@ FrameStateModules resolveFrameStateModules() {
 #endif
         GET_MODULE(InputSequenceRuntime),
         GET_MODULE(InputState),
+        GET_MODULE(LiveInputs),
         ui_module,
         render_target,
 #if PELICAN_WITH_IMGUI
@@ -209,6 +212,12 @@ void updateFrameState() {
         case FramePhase::freeze_input:
             modules.input_sequence.prepareFrame(modules.input_state, livePointerTransform());
             modules.input_state.beginFrame();
+            // OSC-1a: the same boundary freezes the live-input snapshot. RPC
+            // writes only the pending table, so every graph evaluation of this
+            // frame reads one value, and a value set after this point applies
+            // at the next frame.
+            modules.live_inputs.freeze(modules.input_sequence.isReplaying(),
+                                       modules.engine_time.evaluationIndex());
             modules.input_sequence.recordFrame(modules.input_state.currentFrameInput());
             break;
         case FramePhase::freeze_actions:

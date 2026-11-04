@@ -682,6 +682,12 @@ ProjectBasicConfig::ProjectBasicConfig() {
         }
         input_actions_json_ref = input_actions_ref->get<std::string>();
     }
+    if (const auto live_inputs_ref = loader.getOptionalVal("basic_config/live_inputs_json")) {
+        if (!live_inputs_ref->is_string()) {
+            throw std::runtime_error("basic_config.live_inputs_json must be a string");
+        }
+        live_inputs_json_ref = live_inputs_ref->get<std::string>();
+    }
     if (const auto profiles = loader.getOptionalVal("basic_config/input_profiles")) {
         if (!profiles->is_object()) {
             throw std::runtime_error("basic_config.input_profiles must be an object");
@@ -1104,6 +1110,16 @@ std::optional<std::string> ProjectBasicConfig::inputActionsJson() const {
         input_actions_json = GET_MODULE(PathResolver).loadText(*input_actions_json_ref);
     }
     return input_actions_json;
+}
+
+std::optional<std::string> ProjectBasicConfig::liveInputsJson() const {
+    if (!live_inputs_json_ref) {
+        return std::nullopt;
+    }
+    if (!live_inputs_json) {
+        live_inputs_json = GET_MODULE(PathResolver).loadText(*live_inputs_json_ref);
+    }
+    return live_inputs_json;
 }
 
 std::unordered_map<std::string, std::string> ProjectBasicConfig::inputProfileJsons() const {

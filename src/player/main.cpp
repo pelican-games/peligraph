@@ -675,6 +675,7 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
                 throw std::runtime_error(
                     std::string{"offline.mode_conflict@1: --start-time cannot be combined with "} + flag);
             }
+            config.start_time_explicit = true;
             config.start_frames = parseStartFrame(start_time, config.fps);
         }
 

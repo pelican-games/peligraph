@@ -554,10 +554,10 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
                     const auto &upstream = *found->second;
                     if (upstream.at("op") == "value.input") {
                         const auto name = upstream.value("parameters", Json::object()).value("name", std::string{});
-                        // AT-1b: and the audio clock (AT-1's audio_time) moves every frame too.
-                        if (name == "time" || name == "delta_time" || name == "scene_time" ||
-                            name == "audio_time")
-                            return true;
+                        // AT-1b: and the audio clock (AT-1's audio_time) moves
+                        // every frame too. OSC-1a: a declared live input is
+                        // frozen once per frame, so it is not once-stable.
+                        if (graphInputVariesPerFrame(name)) return true;
                     }
                     const auto upstream_inputs = upstream.value("inputs", Json::object());
                     if (!upstream_inputs.is_object()) continue;

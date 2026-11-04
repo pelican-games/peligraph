@@ -1004,6 +1004,13 @@ const std::vector<GraphFrameInputName> &graphFrameInputNames() {
     return names;
 }
 
+bool graphInputVariesPerFrame(std::string_view name) {
+    if (name.starts_with("live:")) return true;
+    for (const auto &input : graphFrameInputNames())
+        if (input.name == name) return true;
+    return false;
+}
+
 std::vector<std::string> renderMaterialPassColorPorts(const nlohmann::json &parameters) {
     if (const auto outputs = parameters.find("material_outputs"); outputs != parameters.end()) {
         std::vector<std::string> ports;

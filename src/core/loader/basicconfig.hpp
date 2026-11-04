@@ -99,6 +99,7 @@ DECLARE_MODULE(ProjectBasicConfig) {
     std::string default_rendering_pass;
     std::string ui_config_json_ref;
     std::optional<std::string> input_actions_json_ref;
+    std::optional<std::string> live_inputs_json_ref;
     std::unordered_map<std::string, std::string> input_profile_json_refs;
     std::optional<std::string> default_input_profile;
     bool project_source = false;
@@ -129,6 +130,7 @@ DECLARE_MODULE(ProjectBasicConfig) {
     mutable std::optional<MaterialRouteDefault> material_route_default;
     mutable std::optional<std::string> ui_config_json;
     mutable std::optional<std::string> input_actions_json;
+    mutable std::optional<std::string> live_inputs_json;
     mutable std::unordered_map<std::string, std::string> input_profile_jsons;
 
     void publishSceneDocument(std::string_view scene_v1_bytes) const;
@@ -204,6 +206,9 @@ DECLARE_MODULE(ProjectBasicConfig) {
     std::string uiConfigJson() const;
     const std::string &uiConfigReference() const noexcept { return ui_config_json_ref; }
     std::optional<std::string> inputActionsJson() const;
+    // OSC-1a: the optional live-input declaration document. Absent means a
+    // project with no live inputs.
+    std::optional<std::string> liveInputsJson() const;
     std::unordered_map<std::string, std::string> inputProfileJsons() const;
     std::optional<std::string> defaultInputProfile() const;
     bool usesProjectSource() const { return project_source; }

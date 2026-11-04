@@ -92,6 +92,9 @@ DECLARE_MODULE(EngineLaunchConfig) {
     // graph clocks, game systems, animation components -- is not a function of
     // the clock alone.
     std::uint64_t start_frames = 0;
+    // --start-time was given (even time 0): this run's first output frame was
+    // named by the command line, so it is an offline deterministic launch.
+    bool start_time_explicit = false;
     double fps = 60.0;
     bool shader_hot_reload = true;
     bool allow_absolute_paths = false;
