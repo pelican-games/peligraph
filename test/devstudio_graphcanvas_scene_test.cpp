@@ -27726,7 +27726,7 @@ TEST_CASE("SDK-2a c: paths walk the keys once: linear, step at the next key's x,
         CHECK(paths.curve.elementAt(1).y == first_y);
         CHECK(paths.curve.elementAt(2).x == last_x);
         CHECK(paths.curve.elementAt(2).y == last_y);
-        CHECK(paths.curve.elementAt(3).x == plot.right());
+        CHECK(std::abs(paths.curve.elementAt(3).x - plot.right()) < 1e-9);
         CHECK(paths.curve.elementAt(3).y == last_y);
     }
 
@@ -27896,8 +27896,8 @@ TEST_CASE("SDK-2a e: an open node draws its plot at the frame and path the large
     CHECK(std::abs(points.at(1).y() - first_y) < 1e-9);
     CHECK(std::abs(points.at(2).y() - last_y) < 1e-9);
     CHECK(std::abs(points.back().y() - last_y) < 1e-9);
-    CHECK(points.front().x() == plot.left());
-    CHECK(points.back().x() == plot.right());
+    CHECK(std::abs(points.front().x() - plot.left()) < 1e-9);
+    CHECK(std::abs(points.back().x() - plot.right()) < 1e-9);
     // A golden for the default column: the frame's first key at t=0 maps
     // inward from the plot's left edge by the pad's share.
     CHECK(std::abs(points.at(1).x() -

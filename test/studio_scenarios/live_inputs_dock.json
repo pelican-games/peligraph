@@ -45,7 +45,8 @@
     {
       "label": "Listen for OSC",
       "cmd": "click",
-      "name": "pelican.liveInputs.enabled"
+      "name": "pelican.liveInputs.enabled",
+      "point": [8, 10]
     },
     {
       "label": "the port is 0, so the operating system chooses",
@@ -81,7 +82,8 @@
     {
       "label": "Listen for OSC off",
       "cmd": "click",
-      "name": "pelican.liveInputs.enabled"
+      "name": "pelican.liveInputs.enabled",
+      "point": [8, 10]
     },
     {
       "label": "Apply is ready again",

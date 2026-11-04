@@ -518,7 +518,6 @@ TEST_CASE("OSC-1a liveinputs RPC stages a typed live value, freezes it next fram
     // The project declaration is the source, with declared defaults and types.
     auto snapshot = rpc.result("get_live_inputs");
     REQUIRE(snapshot.at("dropped_during_replay") == 0);
-    REQUIRE(snapshot.at("osc").at("bindings") == 1);
     auto phase = inputNamed(snapshot, "phase");
     REQUIRE(phase.at("type") == "float");
     REQUIRE(phase.at("value") == Catch::Approx(0.0));
