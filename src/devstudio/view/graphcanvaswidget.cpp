@@ -65,7 +65,10 @@
 #include <QGraphicsView>
 #include <QHBoxLayout>
 #include <QHash>
+#include <QDebug>
+#include <QJsonDocument>
 #include <QJsonObject>
+#include <QSet>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QMenu>
@@ -8302,6 +8305,9 @@ struct GraphCanvasWidget::Impl {
     QTimer *poll_timer = nullptr;
     QTimer *details_timer = nullptr;
     QHash<qint64, quint64> transport_requests;
+    // OSC-3a: the transport ids that asked get_live_inputs, for the one
+    // diagnostic a refused live-input read gets.
+    QSet<qint64> live_input_requests;
     bool synchronize_after_drag = false;
 
     std::uint64_t rendered_content = std::numeric_limits<std::uint64_t>::max();
@@ -10638,6 +10644,16 @@ struct GraphCanvasWidget::Impl {
         if (found == transport_requests.end()) return;
         const auto model_id = found.value();
         transport_requests.erase(found);
+        if (live_input_requests.remove(request_id)) {
+            QJsonParseError parse_error{};
+            const auto document = QJsonDocument::fromJson(result_json, &parse_error);
+            if (parse_error.error != QJsonParseError::NoError)
+                qDebug() << "get_live_inputs returned a reply that is not JSON:"
+                         << parse_error.errorString();
+            else if (document.isObject() && document.object().contains(QStringLiteral("error")))
+                qDebug() << "get_live_inputs failed:"
+                         << document.object().value(QStringLiteral("error"));
+        }
         model.receiveRpcResult(
             model_id,
             std::string_view(result_json.constData(),
@@ -10805,6 +10821,8 @@ struct GraphCanvasWidget::Impl {
         if (found == transport_requests.end()) return;
         const auto model_id = found.value();
         transport_requests.erase(found);
+        if (live_input_requests.remove(request_id))
+            qDebug() << "get_live_inputs failed:" << message;
         model.receiveRpcFailure(model_id, message.toStdString());
         revealPending();
         followDocument();
@@ -10820,6 +10838,8 @@ struct GraphCanvasWidget::Impl {
                 transport = graph.requestGraphInstances(&error);
             else if (request.method == "get_graph_catalog" && graph.requestGraphCatalog)
                 transport = graph.requestGraphCatalog(&error);
+            else if (request.method == "get_live_inputs" && graph.requestLiveInputs)
+                transport = graph.requestLiveInputs(&error);
             else if (request.method == "get_graph_values" && graph.requestGraphValues)
                 transport = graph.requestGraphValues(
                     qtext(request.params.value("instance", std::string{})), &error);
@@ -10876,9 +10896,14 @@ struct GraphCanvasWidget::Impl {
                             .arg(qtext(request.method));
             if (transport != 0) {
                 transport_requests.insert(transport, request.request_id);
+                if (request.method == "get_live_inputs")
+                    live_input_requests.insert(transport);
             }
-            else
+            else {
+                if (request.method == "get_live_inputs")
+                    qDebug() << "Could not ask for live inputs:" << error;
                 model.receiveRpcFailure(request.request_id, error.toStdString());
+            }
         }
         synchronize();
     }

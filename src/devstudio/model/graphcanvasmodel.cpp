@@ -773,6 +773,10 @@ void GraphCanvasModel::setConnected(bool connected) {
     requests_.clear();
     catalog_requested_ = false;
     catalog_received_ = false;
+    // OSC-3a: the live inputs are the engine process's, and a new process
+    // may declare others. A reply still in the air is dropped with reads_.
+    live_inputs_.clear();
+    live_inputs_requested_ = false;
     vocabulary_asked_ = false;
     // UX-5b: the engine's shader list is its binary's; one that arrived
     // stays, one that did not is asked again when a list is opened.
@@ -796,6 +800,7 @@ void GraphCanvasModel::setConnected(bool connected) {
     clearContext();
     refresh();
     requestCatalog();
+    requestLiveInputs();
 }
 
 void GraphCanvasModel::refresh() {
@@ -818,6 +823,14 @@ void GraphCanvasModel::requestCatalog() {
     if (!connected_ || catalog_requested_) return;
     catalog_requested_ = true;
     read(RequestKind::Catalog, "get_graph_catalog", Json::object());
+}
+
+void GraphCanvasModel::requestLiveInputs() {
+    // OSC-3a: one ask per connection. A failed ask is not retried here:
+    // an engine without the method would be asked on every poll.
+    if (!connected_ || live_inputs_requested_) return;
+    live_inputs_requested_ = true;
+    read(RequestKind::LiveInputs, "get_live_inputs", Json::object());
 }
 
 void GraphCanvasModel::requestValues() {
@@ -1072,6 +1085,13 @@ void GraphCanvasModel::receiveRpcFailure(std::uint64_t id, std::string message) 
         // rendering section's passes then take no lines.
         // UX-5b: nor is one without get_engine_shaders: the lists stay the
         // fixed ones.
+        // OSC-3a: nor is one without get_live_inputs: the dialog then offers
+        // the catalog's names, as it did before. The ask is not repeated on
+        // this connection.
+        if (kind == RequestKind::LiveInputs) {
+            live_inputs_.clear();
+            return;
+        }
         if (kind == RequestKind::Loops || kind == RequestKind::Templates ||
             kind == RequestKind::Authoring || kind == RequestKind::EngineShaders ||
             kind == RequestKind::RayLayout)
@@ -1153,6 +1173,13 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                                         response.is_object() &&
                                         text(response, "status") == "failed";
             if (response.contains("error") && !shaders_failed) {
+                if (pending.kind == RequestKind::LiveInputs) {
+                    // A malformed or refused answer leaves the dialog as it
+                    // was, and says nothing about an engine feature the user
+                    // did not ask for.
+                    live_inputs_.clear();
+                    return;
+                }
                 if (pending.kind == RequestKind::Templates ||
                     pending.kind == RequestKind::Authoring ||
                     pending.kind == RequestKind::EngineShaders ||
@@ -1286,7 +1313,28 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                 ++report_revision_;
                 return;
             }
-            if (pending.kind == RequestKind::Catalog) {
+            if (pending.kind == RequestKind::LiveInputs) {
+                // OSC-3a: only well-formed floats, ints and bools are listed.
+                // An entry of any other shape is skipped rather than failing
+                // the whole answer; a trigger is never listed by the engine.
+                std::vector<GraphCanvasLiveInput> inputs;
+                const Json *listed = nullptr;
+                if (response.is_object()) {
+                    const auto found = response.find("inputs");
+                    if (found != response.end()) listed = &*found;
+                }
+                if (listed && listed->is_array()) {
+                    for (const auto &entry : *listed) {
+                        if (!entry.is_object()) continue;
+                        const auto name = text(entry, "name");
+                        const auto type = text(entry, "type");
+                        if (name.empty() || type.empty()) continue;
+                        if (type != "float" && type != "int" && type != "bool") continue;
+                        inputs.push_back(GraphCanvasLiveInput{name, type});
+                    }
+                }
+                live_inputs_ = std::move(inputs);
+            } else if (pending.kind == RequestKind::Catalog) {
                 auto operations = Json::object();
                 auto types = Json::object();
                 for (const auto &module : response.value("modules", Json::array())) {
@@ -1344,6 +1392,10 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             if (pending.kind == RequestKind::LoopPage) {
                 loop_pages_done_.insert(std::exchange(loop_page_node_, {}));
                 requestNextLoopPage();
+                return;
+            }
+            if (pending.kind == RequestKind::LiveInputs) {
+                live_inputs_.clear();
                 return;
             }
             if (pending.kind == RequestKind::Catalog) catalog_requested_ = false;

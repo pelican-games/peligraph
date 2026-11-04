@@ -125,10 +125,23 @@ Json catalog() {
                            true)})}}})}};
 }
 
+// OSC-3a: the catalog's value.input names, in an order that tells the
+// mandatory "scene_time first" rule from the catalog's own order.
+Json liveCatalog(const Json &names = Json::array({"time", "scene_time"})) {
+    auto reply = catalog();
+    for (auto &module : reply.at("modules"))
+        for (auto &operation : module.at("operations"))
+            if (operation.at("op") == "value.input")
+                operation["input_names"] = names;
+    return reply;
+}
+
 struct Harness {
     GraphCanvasModel model;
     // What get_graph_catalog answers on open().
     Json catalog_reply = catalog();
+    // OSC-3a: what get_live_inputs answers on open().
+    Json live_reply = Json{{"inputs", Json::array()}};
 
     PelicanStudio::InspectorRpcRequest take(std::string_view method) {
         auto requests = model.takeRpcRequests();
@@ -144,12 +157,14 @@ struct Harness {
     void open(const Json &document = context(), bool with_catalog = true) {
         model.setConnected(true);
         auto requests = model.takeRpcRequests();
-        REQUIRE(requests.size() == 2);
+        REQUIRE(requests.size() == 3);
         for (const auto &request : requests) {
             if (request.method == "get_graph_instances")
                 model.receiveRpcResult(request.request_id, document.dump());
             else if (request.method == "get_graph_catalog" && with_catalog)
                 model.receiveRpcResult(request.request_id, catalog_reply.dump());
+            else if (request.method == "get_live_inputs")
+                model.receiveRpcResult(request.request_id, live_reply.dump());
         }
     }
     const GraphCanvasNode &node(const std::string &id) {
@@ -791,13 +806,16 @@ TEST_CASE("The graph canvas polls only for the catalog, Live, or an edit ticket"
     // slots -- the clock is not what fetches them.
     h.model.setConnected(true);
     auto requests = h.model.takeRpcRequests();
-    REQUIRE(requests.size() == 2);
+    REQUIRE(requests.size() == 3);
     std::uint64_t catalog_request = 0;
     for (const auto &request : requests) {
         if (request.method == "get_graph_instances")
             h.model.receiveRpcResult(request.request_id, context().dump());
         else if (request.method == "get_graph_catalog")
             catalog_request = request.request_id;
+        else if (request.method == "get_live_inputs")
+            h.model.receiveRpcResult(request.request_id,
+                                     Json{{"inputs", Json::array()}}.dump());
     }
     REQUIRE(catalog_request != 0);
 
@@ -5115,4 +5133,212 @@ TEST_CASE("SDF-1 a depth image is told by the format table's aspect, not by the 
     // A D and a digit is not enough: the table does not know this name.
     CHECK_FALSE(GraphCanvasModel::depthFormat("D9_NOT_A_FORMAT"));
     CHECK_FALSE(GraphCanvasModel::depthFormat(""));
+}
+
+// OSC-3a: Studio offers the engine's declared live inputs beside the catalog's
+// value.input names, through the same list both scopes read.
+TEST_CASE("OSC-3a a live-input reply extends value.input's names after the catalog's, "
+          "with scene_time first",
+          "[studio][graph-canvas][osc3a]") {
+    Harness h;
+    h.catalog_reply = liveCatalog();
+    h.live_reply = Json{{"inputs", Json::array({
+        {{"name", "a"}, {"type", "float"}, {"value", 1.5}, {"source", "osc"}},
+        {{"name", "b"}, {"type", "int"}, {"value", 2}, {"source", "osc"}}})}};
+    h.open();
+
+    CHECK(h.model.valueInputNamesFor() ==
+          std::vector<std::string>{"scene_time", "time", "live:a", "live:b"});
+    REQUIRE(h.model.liveInputs().size() == 2);
+    CHECK(h.model.liveInputs()[0] ==
+          PelicanStudio::GraphCanvasLiveInput{"a", "float"});
+    CHECK(h.model.liveInputs()[1] ==
+          PelicanStudio::GraphCanvasLiveInput{"b", "int"});
+
+    // A duplicate in the catalog and in the reply is one name.
+    SECTION("the catalog and the reply each list a name twice") {
+        Harness duplicate;
+        duplicate.catalog_reply = liveCatalog(Json::array({"time", "scene_time", "time"}));
+        duplicate.live_reply = Json{{"inputs", Json::array({
+            {{"name", "a"}, {"type", "float"}},
+            {{"name", "a"}, {"type", "float"}},
+            {{"name", "b"}, {"type", "bool"}}})}};
+        duplicate.open();
+        CHECK(duplicate.model.valueInputNamesFor() ==
+              std::vector<std::string>{"scene_time", "time", "live:a", "live:b"});
+        // The model keeps the reply in reply order; the list is what dedupes.
+        CHECK(duplicate.model.liveInputs().size() == 3);
+    }
+}
+
+// OSC-3a, correction 2: a shape the engine did not mean is skipped, never an
+// exception out of the reply handler.
+TEST_CASE("OSC-3a a malformed live-input reply is skipped element by element",
+          "[studio][graph-canvas][osc3a]") {
+    const auto opened = [](const Json &reply) {
+        auto h = std::make_unique<Harness>();
+        h->catalog_reply = liveCatalog();
+        h->live_reply = reply;
+        h->open();
+        return h;
+    };
+    for (const auto &bad : std::vector<Json>{
+             Json{{"inputs", Json::object()}},
+             Json::object(),
+             Json::array(),
+             Json{{"inputs", Json::array({3, "a", Json::object(),
+                                          {{"name", 7}, {"type", "float"}},
+                                          {{"name", "bad"}, {"type", "trigger"}},
+                                          {{"name", "vec"}, {"type", "vec2"}},
+                                          {{"name", "ok"}, {"type", "bool"}}})}}}) {
+        INFO(bad.dump());
+        std::unique_ptr<Harness> h;
+        CHECK_NOTHROW(h = opened(bad));
+        REQUIRE(h != nullptr);
+        // A reply with no inputs array at all is malformed as a whole; the
+        // one with an array skips its bad elements and keeps `ok`.
+        const bool has_array = bad.is_object() && bad.contains("inputs") &&
+                               bad.at("inputs").is_array();
+        CHECK(h->model.valueInputNamesFor() ==
+              (has_array ? std::vector<std::string>{"scene_time", "time", "live:ok"}
+                         : std::vector<std::string>{"scene_time", "time"}));
+        CHECK(h->model.liveInputs() ==
+              (has_array
+                   ? std::vector<PelicanStudio::GraphCanvasLiveInput>{{"ok", "bool"}}
+                   : std::vector<PelicanStudio::GraphCanvasLiveInput>{}));
+    }
+}
+
+TEST_CASE("OSC-3a a failed live-input read keeps the catalog's names, says nothing, "
+          "and asks once per connection",
+          "[studio][graph-canvas][osc3a]") {
+    const auto openWithoutAnsweringLive = [](Harness &h) {
+        h.catalog_reply = liveCatalog();
+        h.model.setConnected(true);
+        auto requests = h.model.takeRpcRequests();
+        REQUIRE(requests.size() == 3);
+        std::uint64_t live = 0;
+        for (const auto &request : requests) {
+            if (request.method == "get_graph_instances")
+                h.model.receiveRpcResult(request.request_id, context().dump());
+            else if (request.method == "get_graph_catalog")
+                h.model.receiveRpcResult(request.request_id, h.catalog_reply.dump());
+            else if (request.method == "get_live_inputs")
+                live = request.request_id;
+        }
+        REQUIRE(live != 0);
+        return live;
+    };
+    const auto noLiveRead = [](GraphCanvasModel &model) {
+        return std::ranges::none_of(model.takeRpcRequests(), [](const auto &request) {
+            return request.method == "get_live_inputs";
+        });
+    };
+
+    Harness failed;
+    const auto failed_live = openWithoutAnsweringLive(failed);
+    failed.model.receiveRpcFailure(failed_live, "the engine has no get_live_inputs");
+    CHECK(failed.model.valueInputNamesFor() ==
+          std::vector<std::string>{"scene_time", "time"});
+    CHECK(failed.model.liveInputs().empty());
+    CHECK(failed.model.notice().kind == PelicanStudio::InspectorNoticeKind::None);
+    CHECK(noLiveRead(failed.model));
+    failed.model.poll();
+    CHECK(noLiveRead(failed.model));
+
+    Harness errored;
+    const auto errored_live = openWithoutAnsweringLive(errored);
+    errored.model.receiveRpcResult(
+        errored_live,
+        Json{{"error", {{"code", -32601}, {"message", "Method not found"}}}}.dump());
+    CHECK(errored.model.valueInputNamesFor() ==
+          std::vector<std::string>{"scene_time", "time"});
+    CHECK(errored.model.liveInputs().empty());
+    CHECK(errored.model.notice().kind == PelicanStudio::InspectorNoticeKind::None);
+    CHECK(noLiveRead(errored.model));
+}
+
+// OSC-3a, correction 5 and test a's reconnect: a new connection reads again,
+// and a late reply from the old one is not a reply to this one.
+TEST_CASE("OSC-3a a new connection reads the live inputs again and an old reply is dropped",
+          "[studio][graph-canvas][osc3a]") {
+    Harness h;
+    h.catalog_reply = liveCatalog();
+    h.live_reply = Json{{"inputs", Json::array({{{"name", "a"}, {"type", "float"}}})}};
+    h.open();
+    CHECK(h.model.valueInputNamesFor() ==
+          std::vector<std::string>{"scene_time", "time", "live:a"});
+
+    h.model.setConnected(false);
+    h.model.setConnected(true);
+    auto requests = h.model.takeRpcRequests();
+    REQUIRE(requests.size() == 3);
+    std::uint64_t old_live = 0;
+    std::uint64_t new_live = 0;
+    for (const auto &request : requests) {
+        if (request.method == "get_graph_instances")
+            h.model.receiveRpcResult(request.request_id, context().dump());
+        else if (request.method == "get_graph_catalog")
+            h.model.receiveRpcResult(request.request_id, h.catalog_reply.dump());
+        else if (request.method == "get_live_inputs")
+            new_live = request.request_id;
+    }
+    REQUIRE(new_live != 0);
+    h.model.receiveRpcResult(
+        new_live,
+        Json{{"inputs", Json::array({{{"name", "b"}, {"type", "int"}}})}}.dump());
+    CHECK(h.model.valueInputNamesFor() ==
+          std::vector<std::string>{"scene_time", "time", "live:b"});
+    // The reply the old connection still had in flight names `live:a`; it
+    // must not put it back.
+    h.model.receiveRpcResult(
+        old_live,
+        Json{{"inputs", Json::array({{{"name", "a"}, {"type", "float"}}})}}.dump());
+    CHECK(h.model.valueInputNamesFor() ==
+          std::vector<std::string>{"scene_time", "time", "live:b"});
+    CHECK(h.model.liveInputs() ==
+          std::vector<PelicanStudio::GraphCanvasLiveInput>{{"b", "int"}});
+}
+
+// OSC-3a test b: the live names are in one tail for both return paths, so the
+// reply order against the catalog's does not change the list, and the
+// fallback (no catalog) carries them too.
+TEST_CASE("OSC-3a a live-input reply before or after the catalog reads the same, "
+          "and the no-catalog fallback lists them",
+          "[studio][graph-canvas][osc3a]") {
+    Harness h;
+    // The fallback's own three names, so answering the catalog does not change
+    // anything but the source of the same list.
+    h.catalog_reply = liveCatalog(
+        Json::array({"scene_time", "time", "delta_time"}));
+    h.model.setConnected(true);
+    auto requests = h.model.takeRpcRequests();
+    REQUIRE(requests.size() == 3);
+    std::uint64_t catalog_request = 0;
+    std::uint64_t live_request = 0;
+    for (const auto &request : requests) {
+        if (request.method == "get_graph_instances")
+            h.model.receiveRpcResult(request.request_id, context().dump());
+        else if (request.method == "get_graph_catalog")
+            catalog_request = request.request_id;
+        else if (request.method == "get_live_inputs")
+            live_request = request.request_id;
+    }
+    REQUIRE(catalog_request != 0);
+    REQUIRE(live_request != 0);
+    // Live first: the fallback, with the live names appended.
+    h.model.receiveRpcResult(
+        live_request,
+        Json{{"inputs", Json::array({{{"name", "a"}, {"type", "float"}}})}}.dump());
+    const std::vector<std::string> expected{"scene_time", "time", "delta_time", "live:a"};
+    CHECK(h.model.valueInputNamesFor() == expected);
+    // Then the catalog: the same list, not a catalog list that lost them.
+    h.model.receiveRpcResult(catalog_request, h.catalog_reply.dump());
+    CHECK(h.model.valueInputNamesFor() == expected);
+
+    // No catalog at all is the same fallback path.
+    Harness none;
+    none.live_reply = Json{{"inputs", Json::array({{{"name", "a"}, {"type", "float"}}})}};
+    none.open(context(), false);
+    CHECK(none.model.valueInputNamesFor() == expected);
 }

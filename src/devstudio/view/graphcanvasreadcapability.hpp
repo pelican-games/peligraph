@@ -45,6 +45,10 @@ struct GraphCanvasReadCapability {
     std::function<void(QObject *context, ReadyHandler handler)> ready;
     std::function<qint64(QString *error)> requestGraphInstances;
     std::function<qint64(QString *error)> requestGraphCatalog;
+    // OSC-3a: get_live_inputs, the declared live inputs value.input offers.
+    // Asked once alongside the catalog; an engine without it answers nothing
+    // and the dialog keeps the catalog's names.
+    std::function<qint64(QString *error)> requestLiveInputs;
     std::function<qint64(const QString &instance, QString *error)>
         requestGraphValues;
     // AG-3a's node values. An empty instance is the root scope's question,

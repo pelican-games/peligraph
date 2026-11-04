@@ -2483,10 +2483,21 @@ GraphCanvasRequiredDialog::GraphCanvasRequiredDialog(const GraphCanvasModel &mod
         QWidget *field = nullptr;
         if (required.kind == "input") {
             auto *combo = new QComboBox(this);
-            for (const auto &name : model.valueInputNamesFor())
+            const auto names = model.valueInputNamesFor();
+            for (const auto &name : names)
                 combo->addItem(qtext(name), qtext(name));
-            combo->setToolTip(tr("The value the engine hands the graph each frame: "
-                                 "scene_time from the scene's start, time, delta_time."));
+            // OSC-3a: the sentence is about the names in this list. Without a
+            // declared live input the tooltip is the one it always was.
+            const bool has_live = std::ranges::any_of(names, [](const std::string &name) {
+                return name.starts_with("live:");
+            });
+            auto tooltip = tr("The value the engine hands the graph each frame: "
+                              "scene_time from the scene's start, time, delta_time.");
+            if (has_live)
+                tooltip += QStringLiteral(" ") +
+                           tr("Live inputs are set from outside while the engine is running, "
+                              "including in edit mode.");
+            combo->setToolTip(tooltip);
             field = combo;
         } else if (required.kind == "buffer") {
             // A buffer of the graph's, or a new name typed in.

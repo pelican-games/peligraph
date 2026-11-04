@@ -257,6 +257,9 @@ void answer(GraphCanvasModel &model, const Json &document,
             model.receiveRpcResult(request.request_id, context(document).dump());
         else if (request.method == "get_graph_catalog")
             model.receiveRpcResult(request.request_id, catalog.dump());
+        else if (request.method == "get_live_inputs")
+            model.receiveRpcResult(request.request_id,
+                                   Json{{"inputs", Json::array()}}.dump());
     }
 }
 
@@ -2359,6 +2362,9 @@ struct RecordedCapability {
         seam.requestGraphCatalog = [note](QString *) {
             return note(QStringLiteral("get_graph_catalog"));
         };
+        seam.requestLiveInputs = [note](QString *) {
+            return note(QStringLiteral("get_live_inputs"));
+        };
         seam.requestGraphValues = [note](const QString &instance, QString *) {
             return note(QStringLiteral("get_graph_values"), instance);
         };
@@ -4114,6 +4120,9 @@ struct ZoneHarness {
                 model.receiveRpcResult(request.request_id, snapshot().dump());
             else if (request.method == "get_graph_catalog")
                 model.receiveRpcResult(request.request_id, catalog.dump());
+            else if (request.method == "get_live_inputs")
+                model.receiveRpcResult(request.request_id,
+                                       Json{{"inputs", Json::array()}}.dump());
             else if (request.method == "get_frame_plan") {
                 auto reply = plan;
                 reply["loops"] = loops;
@@ -27133,4 +27142,122 @@ TEST_CASE("SDK-1b: opacity is sent 300 ms after the last change, and a waiting c
         CHECK(sdk1bOpacity(tab, 1)->value() == 80);
         CHECK_FALSE(sdk1bWaitFor([&] { return tab.reads("edit_graph_document") > 1; }, 450));
     }
+}
+
+// OSC-3a test c: the required-parameter dialog lists the live names the model
+// was told about, and the one it picks travels into the edit as `live:<name>`.
+// The output socket stays the engine's `value.input` type (scalar), not the
+// declared live float/int/bool, which is only the RPC value's type.
+TEST_CASE("OSC-3a the value.input dialog lists a live input and places it by name",
+          "[devstudio][graph-canvas][scene][osc3a]") {
+    (void)application();
+    Ux2Tab tab{false};
+    auto document = ux2Document();
+    tab.read(document, "osc3a-c-0");
+    auto catalog = ux2Catalog();
+    for (auto &module : catalog.at("modules"))
+        for (auto &operation : module.at("operations"))
+            if (operation.at("op") == "value.input") {
+                operation["parameters"] =
+                    Json::array({{{"name", "name"}, {"kind", "string"}, {"required", true}}});
+                operation["input_names"] =
+                    Json::array({{{"name", "scene_time"}}, {{"name", "time"}}});
+            }
+    tab.answer("get_graph_catalog", catalog);
+    auto &model = tab.widget->model();
+    // The combo is filled when the dialog opens: before the live reply it has
+    // the catalog's names and no live one, and its tooltip is the old one.
+    {
+        PelicanStudio::GraphCanvasRequiredDialog before{model, {}, "value.input"};
+        auto *before_name = before.findChild<QComboBox *>(
+            QStringLiteral("pelican.graphCanvasRequired.name"));
+        REQUIRE(before_name != nullptr);
+        CHECK(before_name->findText(QStringLiteral("live:a")) < 0);
+        CHECK_FALSE(before_name->toolTip().contains(QStringLiteral("Live inputs are set")));
+    }
+    tab.answer("get_live_inputs",
+               Json{{"inputs", Json::array({{{"name", "a"}, {"type", "float"}}})}});
+    CHECK(model.valueInputNamesFor() ==
+          std::vector<std::string>{"scene_time", "time", "live:a"});
+
+    PelicanStudio::GraphCanvasRequiredDialog ask{model, {}, "value.input"};
+    REQUIRE(ask.asks());
+    auto *name = ask.findChild<QComboBox *>(
+        QStringLiteral("pelican.graphCanvasRequired.name"));
+    REQUIRE(name != nullptr);
+    CHECK(name->findText(QStringLiteral("live:a")) >= 0);
+    CHECK(name->toolTip().contains(QStringLiteral(
+        "Live inputs are set from outside while the engine is running, "
+        "including in edit mode.")));
+    name->setCurrentIndex(name->findText(QStringLiteral("live:a")));
+    CHECK(ask.parameters() == Json{{"name", "live:a"}});
+
+    // The dialog's seed is what placeChoice hands the scene; this is the same
+    // add-node op a typed JSON name went through before.
+    REQUIRE(tab.widget->scene().addFromPalette({}, "value.input", {}, ask.seed()));
+    QCoreApplication::processEvents();
+    const auto ops = ux7Ops(tab, 1);
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0].at("op") == "add_node");
+    CHECK(ops[0].at("node").at("parameters").at("name") == "live:a");
+
+    auto placed = document;
+    placed["nodes"].push_back(ops[0].at("node"));
+    tab.commit(placed, "osc3a-c-1");
+    const auto nodes = model.nodes();
+    const auto found = std::ranges::find(nodes, std::string{"value_input"},
+                                         &PelicanStudio::GraphCanvasNode::id);
+    REQUIRE(found != nodes.end());
+    REQUIRE(found->outputs.size() == 1);
+    CHECK(found->outputs[0].port == "value");
+    CHECK(found->outputs[0].type == "pelican.value.scalar@1");
+}
+
+// OSC-3a test d: with Live on, the root's node observation is asked for and
+// its answer draws a live input's value through the band the node already has.
+TEST_CASE("OSC-3a a live input's current value reaches its band while Live is on",
+          "[devstudio][graph-canvas][scene][osc3a]") {
+    (void)application();
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    scene.setModel(&model);
+    auto document = fixtureDocument();
+    document["nodes"].push_back({{"id", "live_a"}, {"op", "value.input"},
+                                 {"parameters", {{"name", "live:a"}}},
+                                 {"outputs", Json::array({"value"})}});
+    model.setConnected(true);
+    answer(model, document, visualCatalog());
+    model.setLive(true);
+    model.poll();
+
+    std::uint64_t status_request = 0;
+    std::uint64_t values_request = 0;
+    Json values_params;
+    for (const auto &request : model.takeRpcRequests()) {
+        if (request.method == "get_status")
+            status_request = request.request_id;
+        else if (request.method == "get_graph_node_values") {
+            values_request = request.request_id;
+            values_params = request.params;
+        }
+    }
+    REQUIRE(status_request != 0);
+    REQUIRE(values_request != 0);
+    // The root is the empty question (as the existing Live path already
+    // sends), and it is the root whose live node is reported below.
+    CHECK(values_params == Json::object());
+    model.receiveRpcResult(
+        status_request,
+        Json{{"time", 0.25}, {"frame", 1}, {"animation", {{"available", false}}}}.dump());
+    model.receiveRpcResult(
+        values_request,
+        ag3bNodeValues("", Json::array({ag3bReportedNode(
+                               "live_a", "live_a", {{"value", 3.5}})}))
+            .dump());
+    scene.repopulate();
+    QGraphicsItem *band = bandItem(scene, QStringLiteral("live_a"),
+                                   QStringLiteral("value"));
+    REQUIRE(band != nullptr);
+    CHECK(band->data(PelicanStudio::GraphCanvasValueTextRole).toString() ==
+          QStringLiteral("3.5"));
 }

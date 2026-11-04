@@ -839,21 +839,33 @@ std::vector<std::string> GraphCanvasModel::operationInputPorts(std::string_view 
 }
 
 std::vector<std::string> GraphCanvasModel::valueInputNamesFor() const {
+    std::vector<std::string> names;
     const auto *contract = operation("value.input");
     const auto listed = contract != nullptr ? contract->find("input_names") : Json::const_iterator{};
-    if (contract == nullptr || listed == contract->end() || !listed->is_array())
-        return valueInputNames();
-    std::vector<std::string> names;
-    for (const auto &entry : *listed) {
-        const auto name = entry.is_object() ? textOf(entry, "name")
-                          : entry.is_string() ? entry.get<std::string>()
-                                              : std::string{};
-        if (!name.empty()) names.push_back(name);
+    if (contract != nullptr && listed != contract->end() && listed->is_array()) {
+        for (const auto &entry : *listed) {
+            const auto name = entry.is_object() ? textOf(entry, "name")
+                              : entry.is_string() ? entry.get<std::string>()
+                                                  : std::string{};
+            if (!name.empty()) names.push_back(name);
+        }
     }
-    // The scene clock first, as the table Studio kept did: it is the one Play,
-    // Pause and the Timeline move, which is what a curve is placed against.
-    std::ranges::stable_partition(names, [](const std::string &name) { return name == "scene_time"; });
-    return names.empty() ? valueInputNames() : names;
+    // No catalog (an older engine) still gets the fixed names the table had.
+    if (names.empty()) names = valueInputNames();
+    // OSC-3a: the engine's declared live inputs follow the catalog's names,
+    // whether or not the listener is on -- they are placeable either way.
+    for (const auto &live : live_inputs_)
+        names.push_back("live:" + live.name);
+    // One list for both paths: a name repeated across the two sources is
+    // offered once, and the scene clock stays first.
+    std::vector<std::string> unique;
+    for (auto &name : names)
+        if (std::ranges::find(unique, name) == unique.end())
+            unique.push_back(std::move(name));
+    std::ranges::stable_partition(unique, [](const std::string &name) {
+        return name == "scene_time";
+    });
+    return unique;
 }
 
 // --- Decision 9: sounds copied into the project.

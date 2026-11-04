@@ -1,0 +1,105 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "live_input_node_from_graph",
+  "description": "OSC-3a: a project declares one live input, a. The value.input dialog lists live:a beside the catalog's clock names; choosing it and pressing OK places a value.input whose parameters.name is exactly live:a, and the engine holds it. The scenario needs a real engine and Studio; the CPU tests cover the model and the dialog without one.",
+  "tab": "graph",
+  "probe_no_automation": true,
+  "steps": [
+    {
+      "label": "the embedded engine answers editor RPC",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the Graph tab can edit the project's document",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "timeout_ms": 120000,
+      "enabled": true
+    },
+    {
+      "label": "value inputs are value nodes; show them",
+      "cmd": "click",
+      "name": "pelican.graphCanvasShow.value"
+    },
+    {
+      "label": "Add opens the palette",
+      "cmd": "click",
+      "name": "pelican.graphCanvasAddNode"
+    },
+    {
+      "label": "the palette is on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "timeout_ms": 20000,
+      "visible": true
+    },
+    {
+      "label": "the filter: value.input",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "value.input"
+    },
+    {
+      "label": "Enter in the filter chooses it",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
+    },
+    {
+      "label": "the required-parameter dialog asks for the name",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasRequired",
+      "timeout_ms": 20000,
+      "visible": true
+    },
+    {
+      "label": "OSC-3a: the declared live input is in the name combo",
+      "cmd": "select",
+      "name": "pelican.graphCanvasRequired.name",
+      "text": "live:a"
+    },
+    {
+      "label": "OK is offered",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasRequired.ok",
+      "timeout_ms": 10000,
+      "enabled": true
+    },
+    {
+      "label": "OK places the node",
+      "cmd": "click",
+      "name": "pelican.graphCanvasRequired.ok"
+    },
+    {
+      "label": "the dialog closed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasRequired",
+      "timeout_ms": 20000,
+      "missing": true
+    },
+    {
+      "label": "the canvas drew the new value.input",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#value_input",
+      "timeout_ms": 60000,
+      "visible": true
+    },
+    {
+      "label": "the engine's document holds parameters.name exactly live:a",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[2].parameters.name",
+      "value": "live:a",
+      "retry_ms": 60000
+    },
+    {
+      "label": "a picture of the node and the dialog's result",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "live_input_node_from_graph_canvas.png"
+    }
+  ]
+}

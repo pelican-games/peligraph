@@ -1006,6 +1006,16 @@ struct GraphCanvasCurveKey {
     bool operator==(const GraphCanvasCurveKey &) const = default;
 };
 
+// OSC-3a: one live input the engine declared, in the order get_live_inputs
+// listed it. `type` is the engine's "float", "int" or "bool"; the value a
+// value.input node outputs is the catalog's scalar type, not this one.
+struct GraphCanvasLiveInput {
+    std::string name;
+    std::string type;
+
+    bool operator==(const GraphCanvasLiveInput &) const = default;
+};
+
 // Reads the common graph for a read-only node canvas. Qt-independent, in the
 // same request/read two-slot shape as GraphAttachmentModel: the caller drains
 // takeRpcRequests(), sends them over whatever transport it has, and feeds the
@@ -1052,6 +1062,9 @@ class GraphCanvasModel {
         // RTL-2s-c: get_ray_layout, read after a context that names a ray
         // layout (the Ray tracing section's names and the templates').
         RayLayout,
+        // OSC-3a: get_live_inputs, the declared live inputs a value.input
+        // dialog offers. Asked once alongside the catalog.
+        LiveInputs,
     };
     struct PendingRequest {
         std::uint64_t id = 0;
@@ -1108,6 +1121,10 @@ class GraphCanvasModel {
 
     bool catalog_requested_ = false;
     bool catalog_received_ = false;
+    // OSC-3a: get_live_inputs' declared inputs, in reply order. Empty when
+    // the engine has none, is too old to answer, or answered badly.
+    std::vector<GraphCanvasLiveInput> live_inputs_;
+    bool live_inputs_requested_ = false;
     // op -> catalog entry, flattened across modules.
     nlohmann::json operations_ = nlohmann::json::object();
     // semantic type id -> type schema, flattened the same way. The sockets are
@@ -1614,6 +1631,7 @@ class GraphCanvasModel {
                !(pending_ && pending_->kind == RequestKind::Context);
     }
     void requestCatalog();
+    void requestLiveInputs();
     // Which root instance the values overlay follows. Idempotent: reselecting
     // the same instance must not throw away what is already shown.
     void watchInstance(std::string instance);
@@ -3018,6 +3036,11 @@ class GraphCanvasModel {
     // names value.input takes, from the catalog's `input_names`.
     [[nodiscard]] std::vector<RequiredParameter> requiredParametersFor(std::string_view op) const;
     [[nodiscard]] std::vector<std::string> valueInputNamesFor() const;
+    // OSC-3a: what get_live_inputs answered, in its order. Empty before the
+    // reply and after one this engine could not give.
+    [[nodiscard]] const std::vector<GraphCanvasLiveInput> &liveInputs() const noexcept {
+        return live_inputs_;
+    }
 
     // --- UX-12a (engine CT-3): a node's fields from the catalog's table.
 
