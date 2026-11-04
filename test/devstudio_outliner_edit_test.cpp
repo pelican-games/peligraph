@@ -27,12 +27,18 @@
 #include "../src/devstudio/viewport/nativewindowhost.hpp"
 #include "../src/devstudio/viewport/viewportgeometry.hpp"
 #include "outlinertree.hpp"
+#include "graphcanvaswidget.hpp"
+#include "inspectorwidget.hpp"
+#include <QDockWidget>
 
 #include <QAction>
 #include <QApplication>
 #include <QByteArray>
 #include <QCursor>
 #include <QElapsedTimer>
+#include <QGraphicsScene>
+#include <QGraphicsSceneMouseEvent>
+#include <QGraphicsView>
 #include <QHash>
 #include <QJsonValue>
 #include <QLabel>
@@ -41,10 +47,12 @@
 #include <QMouseEvent>
 #include <QPoint>
 #include <QPointer>
+#include <QSignalSpy>
 #include <QPushButton>
 #include <QSet>
 #include <QStringList>
 #include <QTest>
+#include <QTimer>
 #include <QTreeWidgetItemIterator>
 #include <QWidget>
 
@@ -113,6 +121,12 @@ class FakeEngine {
     // UX-13c: false is an engine from before scene_outline, which refuses it
     // as an unknown method (-32601).
     bool knows_scene_outline = true;
+    // HUB-1a: whether the graph document still holds blur. A delete and its
+    // Undo move it; no outside reload does.
+    bool graph_node_exists = true;
+    // HUB-1a: a definition body the Graph can descend into, for the scope
+    // change that must not move the shared selection either.
+    bool graph_body_scope = false;
     // Every request the window sent, in order, and the size in bytes of each
     // scene_outline / scene_tree answer.
     std::vector<std::pair<std::string, Json>> asked;
@@ -164,6 +178,28 @@ class FakeEngine {
     std::deque<Json> pending_;
     std::map<std::string, Json> edits_;
     int next_ticket_ = 1;
+    // HUB-1a: the graph document's own history, so a delete and its Undo are
+    // real edits through the Graph model rather than a reload from outside.
+    std::map<std::string, Json> graph_edits_;
+    std::string graph_digest_ = "hub1a";
+    int graph_generation_ = 0;
+    int next_graph_ticket_ = 1;
+
+    void applyGraphOps(const Json &ops) {
+        for (const auto &op : ops) {
+            if (!op.is_object()) continue;
+            const std::string kind = op.value("op", std::string{});
+            std::string id;
+            if (op.contains("node") && op.at("node").is_string())
+                id = op.at("node").get<std::string>();
+            else if (op.contains("node") && op.at("node").is_object())
+                id = op.at("node").value("id", std::string{});
+            if (id != "blur") continue;
+            if (kind == "remove_node") graph_node_exists = false;
+            else if (kind == "add_node" || kind == "insert_node") graph_node_exists = true;
+        }
+        graph_digest_ = "hub1a-" + std::to_string(++graph_generation_);
+    }
 
     void receive(const QString &text) {
         buffer_ += text;
@@ -286,7 +322,43 @@ class FakeEngine {
         if (method == "scene_outline") return sceneOutline(params);
         if (method == "get_scene_revision")
             return Json{{"scene_revision", revision}, {"preview_epoch", 0}};
+        if (method == "get_document_journal")
+            return Json{{"dirty", false}, {"changes", Json::array()}};
         if (method == "list_assets") return Json{{"assets", Json::array()}};
+        // HUB-1a: the Graph tab's smallest readable document. The window's
+        // Graph page only asks the model for the node a press named, so the
+        // rest of the engine's graph surface is irrelevant here.
+        if (method == "get_graph_instances") {
+            auto nodes = Json::array();
+            if (graph_node_exists) {
+                nodes.push_back({{"id", "blur"},
+                                 {"op", "value.add"},
+                                 {"parameters", Json::object()}});
+            }
+            // HUB-1a: a second node the page must not follow. It is what the
+            // Graph tab has selected while the hub still names blur.
+            nodes.push_back({{"id", "sharpen"},
+                             {"op", "value.multiply"},
+                             {"parameters", Json::object()}});
+            Json definitions = Json::object();
+            if (graph_body_scope) {
+                definitions["gain_curve"] = {
+                    {"nodes", Json::array({{{"id", "gain"},
+                                            {"op", "value.add"},
+                                            {"parameters", Json::object()}}})},
+                    {"outputs", Json::object()}};
+            }
+            return Json{{"source_digest", {{"hex", graph_digest_}}},
+                        {"instances", Json::array()},
+                        {"nodes", std::move(nodes)},
+                        {"definitions", std::move(definitions)},
+                        {"layout", Json::object()}};
+        }
+        if (method == "get_graph_catalog")
+            return Json{{"schema", "pelican.graph_catalog"}, {"version", 1},
+                        {"modules", Json::array()}};
+        if (method == "get_graph_templates")
+            return Json{{"templates", Json::array()}};
         if (method == "get_components") {
             const auto id = params.at("authoring_object_id").get<std::uint64_t>();
             const Json transform{{"pos", Json::array({0.0, 0.0, 0.0})},
@@ -316,9 +388,21 @@ class FakeEngine {
             edits_[ticket] = params.at("operations");
             return Json{{"status", "accepted"}, {"ticket", ticket}};
         }
+        if (method == "edit_graph_document") {
+            const std::string ticket = "graph:" + std::to_string(next_graph_ticket_++);
+            graph_edits_[ticket] = params.at("ops");
+            return Json{{"status", "accepted"}, {"ticket", ticket}};
+        }
         if (method == "get_edit_result") {
+            const std::string ticket = params.at("ticket").get<std::string>();
+            if (const auto graph = graph_edits_.find(ticket); graph != graph_edits_.end()) {
+                applyGraphOps(graph->second);
+                return Json{{"status", "committed"},
+                            {"committed_revision", ++revision},
+                            {"source_digest", {{"hex", graph_digest_}}}};
+            }
             Json created = Json::array();
-            for (const auto &operation : edits_.at(params.at("ticket").get<std::string>()))
+            for (const auto &operation : edits_.at(ticket))
                 for (auto &entry : apply(operation)) created.push_back(std::move(entry));
             return Json{{"status", "committed"},
                         {"committed_revision", ++revision},
@@ -452,6 +536,26 @@ struct Rig {
         }));
         // Let the Inspector read the object, so the session is idle again.
         pumpFor(150);
+    }
+
+    // HUB-1a: the engine's graph document is read by the window's own model;
+    // this names a node exactly as a Graph press would, then waits for the
+    // coalesced Inspector refresh.
+    void loadGraphDocument() {
+        window.graph_canvas_->model().refresh();
+        pumpFor(100);
+    }
+
+    GraphNodeRef graphNode(const std::string &id = "blur") const {
+        return GraphNodeRef{.scope = "", .id = id};
+    }
+
+    void showGraphNode(const std::string &id = "blur") {
+        loadGraphDocument();
+        const GraphNodeRef ref = graphNode(id);
+        REQUIRE(window.graph_canvas_->nodeView(ref).found);
+        window.selection_hub_.pickedGraphNode(ref);
+        REQUIRE(pumpUntil([&] { return window.inspector_->showsGraphNode(); }));
     }
 
     // The tree's own drag, as the automation channel sends it: a press, moves
@@ -699,6 +803,417 @@ TEST_CASE("UX-13c an engine without scene_outline is read with scene_tree, asked
     CHECK(rig.asked("scene_outline") == 2);
     CHECK(rig.asked("scene_outline", Json::object()) == 1);
     CHECK(rig.asked("scene_outline", Json{{"scene_id", "main"}}) == 1);
+}
+
+
+TEST_CASE("HUB-1a a real Outliner rebuild leaves the Graph front standing",
+          "[devstudio][outliner][hub1a]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.showGraphNode();
+    REQUIRE(rig.window.selection_hub_.front() == SelectionFront::graph_node);
+    REQUIRE(rig.window.inspector_->showsGraphNode());
+
+    // Trigger the window's own populateOutliner() through its timer, not a
+    // test double: the rebuild replaces every row and restores the current
+    // one, and none of that is a user pick. Data members are the only thing
+    // this test reaches into; the refresh itself stays a signal away.
+    QTreeWidgetItem *before = rig.row("Cube");
+    REQUIRE(before != nullptr);
+    // The revision moves because a new object is declared: a poll that only
+    // moved the number would leave the same outline, and the window would
+    // rightly keep the rows it has.
+    rig.engine.objects.push_back({200, "Added", ""});
+    ++rig.engine.revision;
+    rig.window.outliner_refresh_timer_->setInterval(0);
+    rig.window.outliner_refresh_timer_->start();
+    REQUIRE(rig.pumpUntil([&] { return rig.row("Added") != nullptr; }));
+    CHECK(rig.row("Cube") != before);
+    rig.window.outliner_refresh_timer_->setInterval(250);
+    rig.pumpFor(100);
+    CHECK(rig.window.selection_hub_.front() == SelectionFront::graph_node);
+    CHECK(rig.window.inspector_->showsGraphNode());
+    CHECK(rig.window.selection_hub_.intent() >= 1);
+}
+
+TEST_CASE("HUB-1a a real mouse press on the current row is a scene entrance",
+          "[devstudio][outliner][hub1a]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.showGraphNode();
+    QTreeWidgetItem *cube = rig.row("Cube");
+    REQUIRE(cube != nullptr);
+    REQUIRE(rig.outliner.currentItem() == cube);
+
+    // No currentItemChanged for a row that is already current: itemPressed is
+    // what makes this press count.
+    QTest::mouseClick(rig.outliner.viewport(), Qt::LeftButton, {},
+                      rig.outliner.visualItemRect(cube).center());
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.window.selection_hub_.front() == SelectionFront::scene;
+    }));
+    CHECK_FALSE(rig.window.inspector_->showsGraphNode());
+}
+
+TEST_CASE("HUB-1a a keyboard move in the Outliner is a scene entrance",
+          "[devstudio][outliner][hub1a]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.showGraphNode();
+    rig.outliner.setFocus();
+    QTest::keyClick(&rig.outliner, Qt::Key_Down);
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.window.selection_hub_.front() == SelectionFront::scene;
+    }));
+    CHECK_FALSE(rig.window.inspector_->showsGraphNode());
+}
+
+TEST_CASE("HUB-1a Back to the scene is the Inspector's own entrance",
+          "[devstudio][outliner][inspector][hub1a]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.showGraphNode();
+    auto *back = rig.window.inspector_->findChild<QPushButton *>(
+        QStringLiteral("pelican.inspectorGraph.backToScene"));
+    REQUIRE(back != nullptr);
+    CHECK(back->text() == QStringLiteral("Back to Cube"));
+    back->click();
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.window.selection_hub_.front() == SelectionFront::scene;
+    }));
+    CHECK_FALSE(rig.window.inspector_->showsGraphNode());
+}
+
+TEST_CASE("HUB-1a a node that goes away keeps the Graph page until it returns",
+          "[devstudio][outliner][graph][hub1a]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.showGraphNode();
+    const auto missing = [&]() -> QLabel * {
+        return rig.window.inspector_->findChild<QLabel *>(
+            QStringLiteral("pelican.inspectorGraph.noLongerInDocument"));
+    };
+    CHECK(missing() == nullptr);
+
+    // The Graph's own delete, through the same model call its Delete action
+    // makes. The front is not the Graph's to move: the page stays and says
+    // the node it follows is gone.
+    auto &model = rig.window.graph_canvas_->model();
+    REQUIRE(rig.pumpUntil([&] { return model.canEdit(); }, 1000));
+    REQUIRE(model.removeNode("blur"));
+    REQUIRE(rig.pumpUntil([&] { return missing() != nullptr && missing()->isVisible(); }));
+    CHECK(rig.window.selection_hub_.front() == SelectionFront::graph_node);
+    CHECK(rig.window.inspector_->showsGraphNode());
+    CHECK_FALSE(rig.window.graph_canvas_->nodeView(rig.graphNode()).found);
+
+    // And its Undo restores the node under the same graph page.
+    REQUIRE(rig.pumpUntil([&] { return model.canUndo(); }));
+    REQUIRE(model.undo());
+    REQUIRE(rig.pumpUntil([&] { return missing() == nullptr; }));
+    CHECK(rig.window.selection_hub_.front() == SelectionFront::graph_node);
+    CHECK(rig.window.inspector_->showsGraphNode());
+    CHECK(rig.window.graph_canvas_->nodeView(rig.graphNode()).found);
+}
+
+TEST_CASE("HUB-1a an Inspector tab that is behind builds nothing until it is shown",
+          "[devstudio][inspector][hub1a]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.loadGraphDocument();
+    QDockWidget *inspector_dock = rig.window.docks_[MainWindow::InspectorDock];
+    REQUIRE(inspector_dock != nullptr);
+    inspector_dock->hide();
+    QApplication::processEvents();
+
+    rig.window.selection_hub_.pickedGraphNode(rig.graphNode());
+    rig.pumpFor(100);
+    CHECK_FALSE(rig.window.inspector_->showsGraphNode());
+
+    inspector_dock->show();
+    inspector_dock->raise();
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.window.inspector_->showsGraphNode();
+    }));
+    CHECK(rig.window.inspector_->findChild<QLabel *>(
+              QStringLiteral("pelican.inspectorGraph.op"))
+              ->text()
+              .contains(QStringLiteral("value.add")));
+}
+
+TEST_CASE("HUB-1a a runtime view does not survive a Graph round trip",
+          "[devstudio][inspector][hub1a]") {
+    Rig rig;
+    RuntimeObject runtime;
+    runtime.name = "Spawned";
+    rig.window.inspector_->showRuntimeObject(runtime);
+    CHECK(rig.window.inspector_->showsRuntimeObject());
+
+    rig.showGraphNode();
+    CHECK(rig.window.selection_hub_.front() == SelectionFront::graph_node);
+    CHECK(rig.window.inspector_->showsGraphNode());
+    CHECK(rig.window.inspector_->showsRuntimeObject());
+
+    auto *back = rig.window.inspector_->findChild<QPushButton *>(
+        QStringLiteral("pelican.inspectorGraph.backToScene"));
+    REQUIRE(back != nullptr);
+    back->click();
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.window.selection_hub_.front() == SelectionFront::scene;
+    }));
+    CHECK_FALSE(rig.window.inspector_->showsGraphNode());
+    CHECK_FALSE(rig.window.inspector_->showsRuntimeObject());
+}
+
+
+TEST_CASE("HUB-1a a reveal from the Graph is not a user pick",
+          "[devstudio][outliner][graph][hub1a]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.loadGraphDocument();
+    REQUIRE(rig.window.graph_canvas_->nodeView(rig.graphNode()).found);
+
+    // This is the Graph's own reveal entry point, the same one another panel's
+    // Open in Graph calls. It changes the Graph's selection and builds its
+    // editors, but nobody picked a node there.
+    REQUIRE(rig.window.graph_canvas_->revealGraphNode(
+        QStringLiteral(""), QStringLiteral("blur"), QStringLiteral("")));
+    rig.pumpFor(150);
+    CHECK(rig.window.selection_hub_.front() == SelectionFront::scene);
+    CHECK_FALSE(rig.window.inspector_->showsGraphNode());
+}
+
+TEST_CASE("HUB-1a rapid Graph picks build the page once in an event-loop turn",
+          "[devstudio][outliner][inspector][hub1a]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.loadGraphDocument();
+    QSignalSpy fired(rig.window.inspector_refresh_timer_, &QTimer::timeout);
+    CHECK_FALSE(rig.window.inspector_->showsGraphNode());
+
+    for (int index = 0; index < 5; ++index)
+        rig.window.selection_hub_.pickedGraphNode(rig.graphNode());
+    CHECK(fired.count() == 0);
+    // Being picked five times builds nothing by itself: the page waits for
+    // the event loop, so a press never pays for it.
+    CHECK_FALSE(rig.window.inspector_->showsGraphNode());
+
+    REQUIRE(rig.pumpUntil([&] { return rig.window.inspector_->showsGraphNode(); }));
+    CHECK(fired.count() == 1);
+    CHECK(rig.window.inspector_->findChild<QLabel *>(
+              QStringLiteral("pelican.inspectorGraph.id"))
+              ->text() == QStringLiteral("blur"));
+}
+
+TEST_CASE("HUB-1a a real Graph press moves the front but keeps the scene selection",
+          "[devstudio][outliner][graph][hub1a]") {
+    Rig rig;
+    rig.select("Cube");
+    REQUIRE(rig.window.selection_model_.selected());
+    const OutlinerObjectKey cube = *rig.window.selection_model_.selected();
+    rig.loadGraphDocument();
+
+    auto *canvas = rig.window.graph_canvas_;
+    // The tab follows the document by default through its Render domain;
+    // this fake's two nodes are value nodes. Showing Value is a user's own
+    // filter, not a selection.
+    CHECK(canvas->model().setDomainShown("value", true));
+    canvas->refresh();
+    QApplication::processEvents();
+
+    QGraphicsItem *blur = nullptr;
+    for (QGraphicsItem *item : canvas->scene().items()) {
+        if (item->data(NodeGraphItemKindRole).toString() ==
+                QLatin1String{GraphCanvasNodeItem} &&
+            item->data(NodeGraphNameRole).toString() == QStringLiteral("blur")) {
+            blur = item;
+            break;
+        }
+    }
+    REQUIRE(blur != nullptr);
+
+    // The scene's own press path: this is what the canvas dispatches when a
+    // hand lands on a node, and where the owner's observer is called.
+    const auto press = [&](const QPointF &position) {
+        QGraphicsSceneMouseEvent event{QEvent::GraphicsSceneMousePress};
+        event.setScenePos(position);
+        event.setButton(Qt::LeftButton);
+        event.setButtons(Qt::LeftButton);
+        QApplication::sendEvent(&canvas->scene(), &event);
+        QGraphicsSceneMouseEvent release{QEvent::GraphicsSceneMouseRelease};
+        release.setScenePos(position);
+        release.setButton(Qt::LeftButton);
+        QApplication::sendEvent(&canvas->scene(), &release);
+        QApplication::processEvents();
+    };
+    press(blur->sceneBoundingRect().center());
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.window.selection_hub_.front() == SelectionFront::graph_node;
+    }));
+
+    // The Graph press is the Inspector's business, not the scene's: the
+    // Outliner row and the scene selection stay on Cube.
+    CHECK(rig.window.selection_model_.selected() == cube);
+    CHECK(rig.outliner.currentItem() == rig.row("Cube"));
+
+    // An empty part of the canvas is the scene entrance, and still not a
+    // reason to change the scene selection.
+    press(canvas->scene().sceneRect().topLeft() + QPointF(4.0, 4.0));
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.window.selection_hub_.front() == SelectionFront::scene;
+    }));
+    CHECK(rig.window.selection_model_.selected() == cube);
+    CHECK(rig.outliner.currentItem() == rig.row("Cube"));
+}
+
+TEST_CASE("HUB-1a a viewport pick after a later Graph intent keeps the Graph page",
+          "[devstudio][outliner][viewport][hub1a]") {
+    Rig rig;
+    rig.select("Cube");
+    REQUIRE(rig.window.selection_hub_.front() == SelectionFront::scene);
+
+    // The pick the transport would be waiting on. The window records the
+    // intent it began under; here that is the scene front it starts from.
+    const auto token = rig.window.selection_model_.beginViewportPick();
+    const std::uint64_t pick_intent = rig.window.selection_hub_.intent();
+    constexpr qint64 request_id = 4242;
+    rig.window.pending_pick_tokens_.insert(request_id, token);
+    rig.window.pending_pick_intents_.insert(request_id, pick_intent);
+
+    // Before it lands, the user presses a Graph node. That is the later
+    // intent, and the page follows it.
+    rig.loadGraphDocument();
+    rig.window.selection_hub_.pickedGraphNode(rig.graphNode());
+    REQUIRE(rig.pumpUntil([&] { return rig.window.inspector_->showsGraphNode(); }));
+
+    // The scene result still lands -- on Camera -- but it does not move the
+    // Inspector's front back to the scene.
+    const QByteArray result = QByteArrayLiteral(
+        R"json({"contract":1,"hit":{"scene_id":"main","declaration_index":0}})json");
+    emit rig.viewport.pickObjectSucceeded(request_id, result);
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.window.selection_model_.selected() &&
+               rig.window.selection_model_.selected()->declaration_index == 0;
+    }));
+    CHECK(rig.window.selection_hub_.front() == SelectionFront::graph_node);
+    REQUIRE(rig.pumpUntil([&] {
+        auto *id = rig.window.inspector_->findChild<QLabel *>(
+            QStringLiteral("pelican.inspectorGraph.id"));
+        return id != nullptr && id->isVisible();
+    }));
+    CHECK(rig.window.inspector_->findChild<QLabel *>(
+              QStringLiteral("pelican.inspectorGraph.id"))
+              ->text() == QStringLiteral("blur"));
+}
+
+TEST_CASE("HUB-1a a viewport pick with no later intent lands on the scene even unchanged",
+          "[devstudio][outliner][viewport][hub1a]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.showGraphNode();
+    REQUIRE(rig.window.selection_hub_.front() == SelectionFront::graph_node);
+
+    // Cube is already selected: the scene answer changes nothing, but it is
+    // still an answer to the user's viewport click, with no later intent.
+    const auto token = rig.window.selection_model_.beginViewportPick();
+    const std::uint64_t pick_intent = rig.window.selection_hub_.intent();
+    constexpr qint64 request_id = 4243;
+    rig.window.pending_pick_tokens_.insert(request_id, token);
+    rig.window.pending_pick_intents_.insert(request_id, pick_intent);
+
+    const QByteArray result = QByteArrayLiteral(
+        R"json({"contract":1,"hit":{"scene_id":"main","declaration_index":1}})json");
+    emit rig.viewport.pickObjectSucceeded(request_id, result);
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.window.selection_hub_.front() == SelectionFront::scene;
+    }));
+    CHECK_FALSE(rig.window.inspector_->showsGraphNode());
+    REQUIRE(rig.window.selection_model_.selected());
+    CHECK(rig.window.selection_model_.selected()->declaration_index == 1);
+    CHECK(rig.window.pending_pick_intents_.isEmpty());
+}
+
+TEST_CASE("HUB-1a the page follows the hub's node, not the Graph's current selection",
+          "[devstudio][graph][inspector][hub1a]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.loadGraphDocument();
+    const GraphNodeRef blur = rig.graphNode("blur");
+    REQUIRE(rig.window.graph_canvas_->nodeView(blur).found);
+
+    // The hub names blur; the Graph tab is looking at sharpen. No press is
+    // involved in either, so the page must be built from the hub's ref.
+    rig.window.selection_hub_.pickedGraphNode(blur);
+    rig.window.graph_canvas_->scene().selectNode("", "sharpen");
+    REQUIRE(rig.pumpUntil([&] { return rig.window.inspector_->showsGraphNode(); }));
+    CHECK(rig.window.inspector_->findChild<QLabel *>(
+              QStringLiteral("pelican.inspectorGraph.id"))
+              ->text() == QStringLiteral("blur"));
+    // The rest of the page is the hub node's too: blur adds, sharpen
+    // multiplies. A page built from the tab's selection would say multiply.
+    CHECK(rig.window.inspector_->findChild<QLabel *>(
+              QStringLiteral("pelican.inspectorGraph.op"))
+              ->text().contains(QStringLiteral("value.add")));
+}
+
+TEST_CASE("HUB-1a a Graph scope change leaves the hub's page standing",
+          "[devstudio][graph][inspector][hub1a]") {
+    Rig rig;
+    rig.select("Cube");
+    // The document has a body the canvas can enter; entering it is a change
+    // of the Graph's own view, not a pick.
+    rig.engine.graph_body_scope = true;
+    rig.showGraphNode();
+    REQUIRE(rig.window.selection_hub_.front() == SelectionFront::graph_node);
+
+    auto &model = rig.window.graph_canvas_->model();
+    // The first graph read raced this setup at window construction. Read the
+    // document again now that the body exists, and wait for the canvas to
+    // hold it: entering it is a change of the Graph's own view only.
+    rig.window.graph_canvas_->refresh();
+    REQUIRE(rig.pumpUntil([&] {
+        const auto scopes = model.scopes();
+        return std::ranges::any_of(scopes, [](const auto &scope) {
+            return scope.id == "gain_curve";
+        });
+    }));
+    REQUIRE(model.selectScope("gain_curve"));
+    rig.pumpFor(100);
+    CHECK(model.currentScope() == "gain_curve");
+    CHECK(rig.window.selection_hub_.front() == SelectionFront::graph_node);
+    CHECK(rig.window.inspector_->showsGraphNode());
+    CHECK(rig.window.inspector_->findChild<QLabel *>(
+              QStringLiteral("pelican.inspectorGraph.id"))
+              ->text() == QStringLiteral("blur"));
+}
+
+TEST_CASE("HUB-1a a project switch drops the Graph page and an in-flight pick",
+          "[devstudio][outliner][graph][hub1a]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.showGraphNode();
+    REQUIRE(rig.window.selection_hub_.front() == SelectionFront::graph_node);
+    // A viewport pick from the old project is in the air.
+    rig.window.pending_pick_intents_.insert(73, rig.window.selection_hub_.intent());
+
+    ProjectSandbox other;
+    other.write("project.json", R"json({
+  "schema":"pelican.project","version":1,"name":"other",
+  "basic_config":{"scene_data_json":"scenes/main.scene.json"}
+})json");
+    rig.window.openProject(QString::fromStdWString(other.root.wstring()));
+    const auto on_other_project = [&] {
+        std::error_code error;
+        return rig.window.project_model_ &&
+               std::filesystem::equivalent(rig.window.project_model_->projectRoot(),
+                                           other.root, error) &&
+               !error;
+    };
+    REQUIRE(rig.pumpUntil(on_other_project, 10000));
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.window.selection_hub_.front() == SelectionFront::scene;
+    }));
+    CHECK_FALSE(rig.window.inspector_->showsGraphNode());
+    CHECK(rig.window.pending_pick_intents_.isEmpty());
 }
 
 } // namespace PelicanStudio

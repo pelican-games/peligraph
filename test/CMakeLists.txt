@@ -880,6 +880,12 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   add_dependencies(pelican_test_devstudio_inspector_widget_test
     pelican_test_process_fixture_child)
 
+  # HUB-1a: the shared selection model's front, node and intent semantics.
+  pelican_define_test(devstudio_selection_hub_test QT QT_OFFSCREEN
+    pelican_studio_outliner
+    Qt6::Core
+  )
+
   # Q-15: the Task Editor on real widgets over the real RPC transport, with
   # the test answering for the engine: it tells the other panels the digest
   # it read, and reads again (keeping its draft) when another panel commits.

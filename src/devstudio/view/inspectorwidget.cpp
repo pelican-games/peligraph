@@ -44,6 +44,8 @@
 #include <QSizePolicy>
 #include <QTimer>
 #include <QTableWidget>
+#include <QTreeWidget>
+#include <QTreeWidgetItem>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -96,6 +98,17 @@ QString runtimeNumbers(const std::optional<std::array<double, N>> &values) {
     return parts.join(QStringLiteral(", "));
 }
 
+QString compactJsonText(const nlohmann::json &value) {
+    return QString::fromStdString(value.dump());
+}
+
+void clearLayout(QLayout &layout) {
+    while (QLayoutItem *item = layout.takeAt(0)) {
+        delete item->widget();
+        delete item;
+    }
+}
+
 } // namespace
 
 struct InspectorWidget::Impl {
@@ -144,6 +157,14 @@ struct InspectorWidget::Impl {
     QLabel *runtime_world_position = nullptr;
     bool runtime_shown = false;
     QScrollArea *scroll = nullptr;
+    // HUB-1a: the read-only Graph page, and the scene side it replaces.
+    QWidget *graph_page = nullptr;
+    QVBoxLayout *graph_layout = nullptr;
+    bool graph_front = false;
+    QString scene_label_text;
+    bool scene_has_selection = false;
+    std::function<void()> back_to_scene_action;
+    std::function<void(const GraphNodeRef &)> open_in_graph_action;
     QPushButton *refresh_button = nullptr;
     QPushButton *add_component_button = nullptr;
     QPushButton *ray_occurrences_button = nullptr;
@@ -394,6 +415,15 @@ struct InspectorWidget::Impl {
         keep_button->hide();
         notice_row->addWidget(keep_button);
         layout->addLayout(notice_row);
+        // HUB-1a: the read-only Graph page. Built empty; a node fills it only
+        // when the window has a settled pick and the tab is on screen.
+        graph_page = new QWidget(&owner);
+        graph_page->setObjectName(QStringLiteral("pelican.inspectorGraphPage"));
+        graph_layout = new QVBoxLayout(graph_page);
+        graph_layout->setContentsMargins(2, 2, 2, 2);
+        graph_layout->setSpacing(6);
+        // Visibility belongs to applyPage(); the constructor ends with it.
+        layout->addWidget(graph_page);
         QObject::connect(keep_button, &QPushButton::clicked, &owner, [this] {
             const auto &transaction = model.noticeTransaction();
             if (transaction.empty() || !play.keep) return;
@@ -418,7 +448,7 @@ struct InspectorWidget::Impl {
         // In the fields' place, and taking the room they had: its rows at
         // the top, not floated down the panel.
         runtime_form->setFormAlignment(Qt::AlignLeft | Qt::AlignTop);
-        runtime_box->hide();
+        // Visibility belongs to applyPage(); the constructor ends with it.
         layout->addWidget(runtime_box, 1);
 
         scroll = new QScrollArea(&owner);
@@ -605,6 +635,7 @@ struct InspectorWidget::Impl {
         pending_timer->start();
         watch_timer->start();
         rebuildProperties();
+        applyPage();
         synchronize();
         if (viewport.rpcReady()) {
             graph_attachments->setConnected(true);
@@ -621,24 +652,45 @@ struct InspectorWidget::Impl {
 
     void setSelection(std::optional<OutlinerObjectKey> selection,
                       const QString &display_text) {
+        scene_label_text = display_text;
+        scene_has_selection = selection.has_value();
+        // The fields come back under the scene, but the label is written by
+        // applyPage(): while the Graph page is up it still shows the scene
+        // selection the page went there from.
         showRuntimeView(false);
-        selection_label->setText(display_text);
         model.selectObject(std::move(selection));
         synchronize();
         dispatchRequests();
     }
 
+    // HUB-1a: the one place the page's visibility is decided. The scene side
+    // (fields, Add component, Ray geometry, attachments, materials) and the
+    // runtime box are alternatives under it; the Graph page is one too, and
+    // keeps the scene's selection label above it.
+    void applyPage() {
+        const bool graph = graph_front;
+        graph_page->setVisible(graph);
+        scroll->setVisible(!graph && !runtime_shown);
+        runtime_box->setVisible(!graph && runtime_shown);
+        add_component_button->setVisible(!graph && !runtime_shown);
+        ray_occurrences_button->setVisible(!graph && !runtime_shown);
+        graph_attachments->setVisible(!graph && !runtime_shown);
+        material_assign->setVisible(!graph && !runtime_shown);
+        if (!graph) {
+            selection_label->setText(scene_label_text.isEmpty() ? owner.tr("None")
+                                                                 : scene_label_text);
+        }
+    }
+
     // PM-3c. The read-only view takes the fields' place: nothing that edits,
-    // adds or attaches is on screen while it is.
+    // adds or attaches is on screen while it is. Even an early return puts
+    // the page back through applyPage().
     void showRuntimeView(bool shown) {
-        if (runtime_shown == shown) return;
-        runtime_shown = shown;
-        runtime_box->setVisible(shown);
-        scroll->setVisible(!shown);
-        add_component_button->setVisible(!shown);
-        ray_occurrences_button->setVisible(!shown);
-        graph_attachments->setVisible(!shown);
-        if (shown) material_assign->setSubject({});
+        if (runtime_shown != shown) {
+            runtime_shown = shown;
+            if (shown) material_assign->setSubject({});
+        }
+        applyPage();
     }
 
     void showRuntimeObject(const RuntimeObject &object) {
@@ -653,7 +705,8 @@ struct InspectorWidget::Impl {
         if (!object.prefab.empty())
             text += QLatin1Char('\n') + owner.tr("spawned from %1 while the game runs")
                                             .arg(QString::fromStdString(object.prefab));
-        selection_label->setText(text);
+        scene_label_text = text;
+        scene_has_selection = false;
         const RuntimeObjectTrs none;
         const RuntimeObjectTrs &local = object.local ? *object.local : none;
         runtime_position->setText(runtimeNumbers(local.pos));
@@ -661,7 +714,146 @@ struct InspectorWidget::Impl {
         runtime_scale->setText(runtimeNumbers(local.scale));
         runtime_world_position->setText(runtimeNumbers(object.world ? object.world->pos
                                                                      : none.pos));
+        applyPage();
     }
+
+    void showSceneSide() {
+        graph_front = false;
+        // A runtime object is not a scene subject: coming back from the Graph
+        // page goes to the declared selection, not to the spawned object that
+        // happened to be shown before the page.
+        runtime_shown = false;
+        applyPage();
+        // The scene's subjects (materials, attachments, the gizmo's binding)
+        // are read again: a runtime object must not stay as the subject.
+        synchronize();
+        dispatchRequests();
+    }
+
+    [[nodiscard]] bool showsGraphNode() const noexcept { return graph_front; }
+
+    QString backToSceneText() const {
+        if (!scene_has_selection) return owner.tr("Back");
+        const QString name = oneLine(scene_label_text);
+        return name.isEmpty() ? owner.tr("Back") : owner.tr("Back to %1").arg(name);
+    }
+
+    QTreeWidget *makeGraphTree(const QString &name, const QStringList &headers) {
+        auto *tree = new QTreeWidget(graph_page);
+        tree->setObjectName(name);
+        tree->setColumnCount(headers.size());
+        tree->setHeaderLabels(headers);
+        tree->setRootIsDecorated(false);
+        tree->setUniformRowHeights(true);
+        tree->setAlternatingRowColors(true);
+        tree->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        tree->setSelectionMode(QAbstractItemView::SingleSelection);
+        tree->header()->setStretchLastSection(true);
+        tree->setMaximumHeight(180);
+        return tree;
+    }
+
+    static void addGraphRow(QTreeWidget &tree, const QStringList &cells) {
+        auto *item = new QTreeWidgetItem(&tree);
+        for (int column = 0; column < cells.size(); ++column)
+            item->setText(column, cells[column]);
+    }
+
+    void showGraphNode(const InspectorGraphNodeView &view) {
+        graph_front = true;
+        clearLayout(*graph_layout);
+        auto *back = new QPushButton(backToSceneText(), graph_page);
+        back->setObjectName(QStringLiteral("pelican.inspectorGraph.backToScene"));
+        QObject::connect(back, &QPushButton::clicked, &owner, [this] {
+            if (back_to_scene_action) back_to_scene_action();
+        });
+        graph_layout->addWidget(back);
+
+        const QString heading = QString::fromStdString(
+            view.heading.empty() ? view.ref.id : view.heading);
+        auto *heading_label = plainLabel(heading, graph_page);
+        heading_label->setObjectName(QStringLiteral("pelican.inspectorGraph.heading"));
+        graph_layout->addWidget(heading_label);
+        auto *op = plainLabel(QString::fromStdString(view.op), graph_page);
+        op->setObjectName(QStringLiteral("pelican.inspectorGraph.op"));
+        graph_layout->addWidget(op);
+        auto *id = plainLabel(QString::fromStdString(view.ref.id), graph_page);
+        id->setObjectName(QStringLiteral("pelican.inspectorGraph.id"));
+        graph_layout->addWidget(id);
+
+        auto *open = new QPushButton(owner.tr("Open in Graph"), graph_page);
+        open->setObjectName(QStringLiteral("pelican.inspectorGraph.openInGraph"));
+        open->setEnabled(view.found);
+        QObject::connect(open, &QPushButton::clicked, &owner, [this] {
+            if (open_in_graph_action) open_in_graph_action(graph_ref);
+        });
+        graph_ref = view.ref;
+
+        if (!view.found) {
+            auto *gone = plainLabel(owner.tr("This node is no longer in the document."),
+                                    graph_page);
+            gone->setObjectName(QStringLiteral("pelican.inspectorGraph.noLongerInDocument"));
+            graph_layout->addWidget(gone);
+            graph_layout->addWidget(open);
+            graph_layout->addStretch();
+            applyPage();
+            return;
+        }
+
+        inspectorGraphSectionFor(view.op).fill(*graph_page, view);
+
+        auto *parameters_label = plainLabel(owner.tr("Parameters"), graph_page);
+        parameters_label->setObjectName(
+            QStringLiteral("pelican.inspectorGraph.parametersLabel"));
+        graph_layout->addWidget(parameters_label);
+        auto *parameters = makeGraphTree(
+            QStringLiteral("pelican.inspectorGraph.parameters"),
+            {owner.tr("Name"), owner.tr("Value")});
+        if (view.parameters.is_object())
+            for (const auto &[name, value] : view.parameters.items())
+                addGraphRow(*parameters,
+                            {QString::fromStdString(name), compactJsonText(value)});
+        graph_layout->addWidget(parameters);
+
+        auto *inputs_label = plainLabel(owner.tr("Inputs"), graph_page);
+        inputs_label->setObjectName(QStringLiteral("pelican.inspectorGraph.inputsLabel"));
+        graph_layout->addWidget(inputs_label);
+        auto *inputs = makeGraphTree(
+            QStringLiteral("pelican.inspectorGraph.inputs"),
+            {owner.tr("Port"), owner.tr("Type"), owner.tr("Value")});
+        for (const InspectorGraphInput &port : view.inputs) {
+            QString value;
+            if (port.connected)
+                value = owner.tr("from %1").arg(QString::fromStdString(port.source));
+            else if (port.has_parameter)
+                value = compactJsonText(port.parameter);
+            addGraphRow(*inputs, {QString::fromStdString(port.port),
+                                  QString::fromStdString(port.type), value});
+        }
+        graph_layout->addWidget(inputs);
+
+        auto *outputs_label = plainLabel(owner.tr("Outputs"), graph_page);
+        outputs_label->setObjectName(QStringLiteral("pelican.inspectorGraph.outputsLabel"));
+        graph_layout->addWidget(outputs_label);
+        auto *outputs = makeGraphTree(
+            QStringLiteral("pelican.inspectorGraph.outputs"),
+            {owner.tr("Port"), owner.tr("Type"), owner.tr("Value")});
+        for (const InspectorGraphOutput &port : view.outputs) {
+            QString value;
+            if (port.has_value) {
+                value = QString::number(port.value, 'g', 6);
+                if (port.bundle) value += owner.tr(" (bundle)");
+            }
+            addGraphRow(*outputs, {QString::fromStdString(port.port),
+                                   QString::fromStdString(port.type), value});
+        }
+        graph_layout->addWidget(outputs);
+        graph_layout->addWidget(open);
+        graph_layout->addStretch();
+        applyPage();
+    }
+
+    GraphNodeRef graph_ref;
 
     std::optional<GizmoTransformBinding> gizmoTransformBinding() const {
         if (model.refreshBlocked() || model.busy() || !model.snapshot()) {
@@ -2796,6 +2988,25 @@ void InspectorWidget::setSelection(
     std::optional<OutlinerObjectKey> selection,
     const QString &display_text) {
     impl_->setSelection(std::move(selection), display_text);
+}
+
+void InspectorWidget::showGraphNode(const InspectorGraphNodeView &view) {
+    impl_->showGraphNode(view);
+}
+
+void InspectorWidget::showSceneSide() { impl_->showSceneSide(); }
+
+bool InspectorWidget::showsGraphNode() const noexcept {
+    return impl_->showsGraphNode();
+}
+
+void InspectorWidget::setBackToSceneAction(std::function<void()> action) {
+    impl_->back_to_scene_action = std::move(action);
+}
+
+void InspectorWidget::setOpenInGraphAction(
+    std::function<void(const GraphNodeRef &)> action) {
+    impl_->open_in_graph_action = std::move(action);
 }
 
 void InspectorWidget::showRuntimeObject(const RuntimeObject &object) {

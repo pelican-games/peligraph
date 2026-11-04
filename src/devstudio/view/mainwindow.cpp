@@ -14,6 +14,7 @@
 #include "../model/outlineredit.hpp"
 #include "newprojectdialog.hpp"
 #include "panelhelp.hpp"
+#include "panelshown.hpp"
 #include "playcontrols.hpp"
 #include "problemsdock.hpp"
 #include "projectmigrationwidget.hpp"
@@ -122,6 +123,21 @@ namespace {
 // watch nothing happen.
 constexpr int OutlinerRefreshMinimumIntervalMs = 250;
 constexpr int OutlinerRefreshMaximumIntervalMs = 2000;
+
+// HUB-1a: an Outliner current row that the program changed is not a pick.
+class BoolFlagGuard {
+  public:
+    explicit BoolFlagGuard(bool &flag) : flag_{&flag}, previous_{flag} {
+        *flag_ = true;
+    }
+    ~BoolFlagGuard() { *flag_ = previous_; }
+    BoolFlagGuard(const BoolFlagGuard &) = delete;
+    BoolFlagGuard &operator=(const BoolFlagGuard &) = delete;
+
+  private:
+    bool *flag_;
+    bool previous_;
+};
 
 const QString &lastPanelLayoutName() {
     static const QString name = QStringLiteral("Last panel session");
@@ -882,7 +898,7 @@ void MainWindow::createWorkspace() {
                         statusBar()->showMessage(tr("The Outliner has no object named %1.").arg(object), 8000);
                         return;
                     }
-                    outliner_->setCurrentItem(rows.front());
+                    selectOutlinerRowProgrammatically(rows.front());
                     outliner_->scrollToItem(rows.front());
                 },
             .reveal_document =
@@ -911,7 +927,20 @@ void MainWindow::createWorkspace() {
     outliner_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     connect(outliner_, &QTreeWidget::currentItemChanged, this,
             [this](QTreeWidgetItem *current, QTreeWidgetItem *) {
+                // HUB-1a: a rebuild or another panel's reveal changes the
+                // current row without the user picking it.
+                if (outliner_rebuilding_) return;
                 selectOutlinerItem(current);
+                selection_hub_.pickedSceneObject();
+            });
+    // A real mouse press on the row that is already current raises no
+    // currentItemChanged, but it is still the user picking it.
+    connect(outliner_, &QTreeWidget::itemPressed, this,
+            [this](QTreeWidgetItem *item, int) {
+                if (outliner_rebuilding_ || item == nullptr) return;
+                if (item != outliner_->currentItem()) return;
+                selectOutlinerItem(item);
+                selection_hub_.pickedSceneObject();
             });
     // OL-1: Duplicate (Ctrl+D), Delete (Del) and a row dragged onto another.
     connect(outliner_->duplicateAction(), &QAction::triggered, this,
@@ -984,6 +1013,21 @@ void MainWindow::createWorkspace() {
     docks_[InspectorDock] = makeDock(this, tr("Inspector"),
                                      QStringLiteral("pelican.inspectorDock"),
                                      inspector_);
+    // HUB-1a: the page follows the hub, one coalesced refresh at a time. A
+    // hub change only schedules; a press never builds the page.
+    inspector_refresh_timer_ = new QTimer(this);
+    inspector_refresh_timer_->setSingleShot(true);
+    inspector_refresh_timer_->setInterval(0);
+    connect(inspector_refresh_timer_, &QTimer::timeout, this,
+            [this] { refreshInspectorPageNow(); });
+    inspector_shown_ = std::make_unique<PanelShown>(*inspector_, [this] {
+        // A page that changed while the tab was behind is built once, when
+        // it comes to the front, from the latest state.
+        if (inspector_dirty_) scheduleInspectorRefresh();
+    });
+    selection_hub_.setChanged([this] { scheduleInspectorRefresh(); });
+    inspector_->setBackToSceneAction(
+        [this] { selection_hub_.pickedSceneObject(); });
     // PM-3c: the objects the running game spawned, as greyed "(runtime)"
     // rows of the Outliner, shown read-only in the Inspector.
     runtime_outliner_ = new RuntimeOutliner(*viewport_, *outliner_,
@@ -1051,6 +1095,28 @@ void MainWindow::createWorkspace() {
     render_features_ = new RenderFeaturesWidget(viewport_, this);
     graph_canvas_ = new GraphCanvasWidget(
         graphCanvasReadCapability(*viewport_), this);
+    // HUB-1a: a Graph press is a user intent only while the scene handles the
+    // press; nullopt is the Graph's empty canvas, edge or control point.
+    graph_canvas_->setNodePickObserver(
+        [this](std::optional<GraphNodeRef> node) {
+            if (node)
+                selection_hub_.pickedGraphNode(std::move(*node));
+            else
+                selection_hub_.pickedSceneObject();
+        });
+    // The tab's own editors follow its selection first; only then does the
+    // Inspector page read the hub again. This only schedules.
+    graph_canvas_->setNodeShownObserver([this] {
+        if (selection_hub_.front() == SelectionFront::graph_node)
+            scheduleInspectorRefresh();
+    });
+    inspector_->setOpenInGraphAction([this](const GraphNodeRef &node) {
+        graph_canvas_->revealGraphNode(QString::fromStdString(node.scope),
+                                       QString::fromStdString(node.id),
+                                       QString::fromStdString(node.instance));
+        docks_[GraphDock]->show();
+        docks_[GraphDock]->raise();
+    });
     // RSX, decision 3: the rendering section's keys no other panel writes.
     rendering_settings_ = new RenderingSettingsWidget(viewport_, this);
     // RTL-2s: the ray group layout, a section of the Rendering settings.
@@ -2124,7 +2190,7 @@ void MainWindow::openProblem(const ProblemRow &row) {
         docks_[OutlinerDock]->show();
         docks_[InspectorDock]->show();
         docks_[InspectorDock]->raise();
-        outliner_->setCurrentItem(found);
+        selectOutlinerRowProgrammatically(found);
         outliner_->scrollToItem(found);
         if (inspector_ != nullptr) inspector_->revealMaterialRows();
         return;
@@ -3241,6 +3307,10 @@ void MainWindow::openProjectNow(const QString &path) {
         pending_spawn_name_.reset();
         pending_created_selection_.reset();
         pending_outliner_edit_.reset();
+        // HUB-1a: a node id is not a node across projects, and a pick still
+        // in flight belongs to the project being left.
+        selection_hub_.reset();
+        pending_pick_intents_.clear();
         endGizmoSessionForProjectSwitch(opened_project.projectRoot());
         // RU-1: nothing in the render history is about the next project.
         if (render_history_) render_history_->clear();
@@ -3331,6 +3401,10 @@ void MainWindow::leaveCurrentProject(
     pending_spawn_name_.reset();
     pending_created_selection_.reset();
     pending_outliner_edit_.reset();
+    // HUB-1a: the next project starts on the scene side, and a viewport pick
+    // still in flight from this one lands nowhere.
+    selection_hub_.reset();
+    pending_pick_intents_.clear();
     endGizmoSessionForProjectSwitch(next_project_root);
     if (render_history_) render_history_->clear();
     if (render_reload_) render_reload_->open({});
@@ -3340,7 +3414,7 @@ void MainWindow::leaveCurrentProject(
     project_model_.reset();
     tool_layout_presets_.reset();
     {
-        const QSignalBlocker block_outliner{outliner_};
+        const BoolFlagGuard not_a_pick{outliner_rebuilding_};
         outliner_->clear();
     }
     project_list_->clear();
@@ -3359,7 +3433,10 @@ void MainWindow::setShaderSourceOpenAction(
 }
 
 void MainWindow::populateOutliner() {
-    const QSignalBlocker block_outliner{outliner_};
+    // The rebuild moves the current row; that is not a user pick. Without the
+    // signal blocker the currentItemChanged still arrives, and the guard says
+    // to ignore it.
+    const BoolFlagGuard not_a_pick{outliner_rebuilding_};
     project_list_->clear();
     const auto &model = *project_model_;
     if (model.projectName()) {
@@ -3968,6 +4045,9 @@ void MainWindow::runtimeObjectsChanged() {
 }
 
 void MainWindow::beginViewportPick(const QPoint &pixel_position) {
+    // HUB-1a: a pick is a scene entrance only if the user's intent is the
+    // same when it returns. A Graph or Outliner press meanwhile wins.
+    const std::uint64_t pick_intent = selection_hub_.intent();
     const ViewportPickToken token = selection_model_.beginViewportPick();
     QString error;
     const qint64 request_id = viewport_->pickObject(pixel_position, &error);
@@ -3980,6 +4060,7 @@ void MainWindow::beginViewportPick(const QPoint &pixel_position) {
         return;
     }
     pending_pick_tokens_.insert(request_id, token);
+    pending_pick_intents_.insert(request_id, pick_intent);
 }
 
 void MainWindow::completeViewportPick(qint64 request_id,
@@ -3990,6 +4071,11 @@ void MainWindow::completeViewportPick(qint64 request_id,
     }
     const ViewportPickToken token = pending.value();
     pending_pick_tokens_.erase(pending);
+    const auto pending_intent = pending_pick_intents_.find(request_id);
+    const bool have_intent = pending_intent != pending_pick_intents_.end();
+    const std::uint64_t pick_intent =
+        have_intent ? pending_intent.value() : 0;
+    if (have_intent) pending_pick_intents_.erase(pending_intent);
 
     const SelectionUpdate update = selection_model_.completeViewportPick(
         token,
@@ -4008,6 +4094,10 @@ void MainWindow::completeViewportPick(qint64 request_id,
     runtime_outliner_->model().clearSelection();
     viewport_->setPickingNotice({});
     refreshSelectionViews();
+    // The scene result lands either way; the Inspector's front moves only
+    // when no later user intent arrived while the pick was in flight.
+    if (have_intent && pick_intent == selection_hub_.intent())
+        selection_hub_.pickedSceneObject();
 }
 
 void MainWindow::failViewportPick(qint64 request_id,
@@ -4018,6 +4108,7 @@ void MainWindow::failViewportPick(qint64 request_id,
     }
     const ViewportPickToken token = pending.value();
     pending_pick_tokens_.erase(pending);
+    pending_pick_intents_.remove(request_id);
 
     const SelectionUpdate update =
         selection_model_.failViewportPick(token, message.toStdString());
@@ -4227,6 +4318,54 @@ void MainWindow::presentGizmoNotice() {
         appendEngineOutput(tr("[Studio gizmo] %1\n").arg(message));
         statusBar()->showMessage(message, 8000);
     }
+}
+
+void MainWindow::scheduleInspectorRefresh() {
+    if (inspector_refresh_timer_ == nullptr) return;
+    inspector_dirty_ = true;
+    // One page build per event-loop turn, however many intents arrive first.
+    if (!inspector_refresh_timer_->isActive()) inspector_refresh_timer_->start();
+}
+
+void MainWindow::refreshInspectorPageNow() {
+    // A tab behind another builds nothing: it becomes dirty, and the tab's
+    // becoming-shown schedules the one build.
+    if (inspector_shown_ != nullptr && !inspector_shown_->isShown()) {
+        inspector_dirty_ = true;
+        return;
+    }
+    // The Graph reads the hub in showDetails; its press is still in flight.
+    if (selection_hub_.front() == SelectionFront::graph_node &&
+        graph_canvas_ != nullptr && graph_canvas_->dragging()) {
+        return;
+    }
+    inspector_dirty_ = false;
+    applyInspectorPage();
+}
+
+void MainWindow::applyInspectorPage() {
+    if (selection_hub_.front() == SelectionFront::graph_node &&
+        selection_hub_.graphNode() && graph_canvas_ != nullptr) {
+        // HUB-1a: from the hub's ref, not the Graph's current selection.
+        inspector_->showGraphNode(
+            graph_canvas_->nodeView(*selection_hub_.graphNode()));
+        return;
+    }
+    // Leaving the Graph page for the scene. An ordinary scene pick while the
+    // scene side is already up changes only the fields, through
+    // refreshSelectionViews(); it must not throw away a runtime row's
+    // read-only view.
+    if (inspector_->showsGraphNode()) inspector_->showSceneSide();
+}
+
+void MainWindow::selectOutlinerRowProgrammatically(QTreeWidgetItem *item) {
+    {
+        const BoolFlagGuard not_a_pick{outliner_rebuilding_};
+        outliner_->setCurrentItem(item);
+    }
+    // The reveal still selects what it revealed, but as a scene selection,
+    // not as a user intent that moves the Inspector's front.
+    if (item != nullptr) selectOutlinerItem(item);
 }
 
 void MainWindow::refreshSelectionViews() {

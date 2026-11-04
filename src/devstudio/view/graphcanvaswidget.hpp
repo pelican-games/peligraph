@@ -2,7 +2,9 @@
 
 #include "../model/graphcanvaslayerstack.hpp"
 #include "../model/graphcanvasmodel.hpp"
+#include "../model/selectionhub.hpp"
 #include "frameplanedit.hpp"
+#include "inspectorgraphsections.hpp"
 #include "graphcanvasdrawing.hpp"
 #include "graphcanvasreadcapability.hpp"
 #include "graphcanvasthumbnails.hpp"
@@ -894,8 +896,18 @@ class GraphCanvasScene final : public QGraphicsScene {
     // picked instead).
     void clearPicks();
 
+    // HUB-1a: the press report. Inside a press selectNode records the pick;
+    // the press's scope guard hands it, or nullopt, to the observer once.
+    void setNodePickObserver(
+        std::function<void(std::optional<GraphNodeRef>)> observer) {
+        node_pick_observer_ = std::move(observer);
+    }
+    [[nodiscard]] bool handlingPress() const noexcept { return handling_press_; }
+
   protected:
     bool handling_press_ = false;
+    std::optional<GraphNodeRef> press_pick_;
+    std::function<void(std::optional<GraphNodeRef>)> node_pick_observer_;
     void mousePressEvent(QGraphicsSceneMouseEvent *event) override;
     void mouseMoveEvent(QGraphicsSceneMouseEvent *event) override;
     void mouseReleaseEvent(QGraphicsSceneMouseEvent *event) override;
@@ -1717,6 +1729,24 @@ class GraphCanvasWidget final : public QWidget {
 
     GraphCanvasModel &model();
     GraphCanvasScene &scene();
+    // HUB-1a: what the Inspector's read-only page shows of `node`, read off
+    // the document this tab holds for that node's scope -- not off whatever
+    // the Graph happens to have selected now. A node the document no longer
+    // has answers found == false and keeps the ref.
+    [[nodiscard]] InspectorGraphNodeView nodeView(const GraphNodeRef &node) const;
+    // HUB-1a: one report for each press the scene handles, at the press's
+    // end: the node that press picked, or nullopt for empty canvas, an edge,
+    // a control point, a zone control and the like. Reveals, rebuilds, Undo,
+    // scope changes and edits never report.
+    void setNodePickObserver(
+        std::function<void(std::optional<GraphNodeRef>)> observer);
+    // HUB-1a: the end of each showDetails(), after the tab's own editors
+    // follow the Graph's selection. The window only schedules its Inspector
+    // refresh; it never builds a page here.
+    void setNodeShownObserver(std::function<void()> observer);
+    // Whether a press, a connection, a bundle drag or an item grab is in the
+    // air. The Inspector's page waits for it.
+    [[nodiscard]] bool dragging() const;
     // SG-2: the Layers dock's contents (the window docks it).
     QWidget *canvasLayersPanel();
 };

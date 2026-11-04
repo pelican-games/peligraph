@@ -26383,3 +26383,81 @@ TEST_CASE("SDK-1a the document's answer after an in-place shape keeps the next f
     CHECK_FALSE(scene.layerShapePending("", "hud"));
     CHECK(nb2bLayers(h.document, "hud").contains(card));
 }
+
+TEST_CASE("HUB-1a a Graph node is reported only by the press that picked it",
+          "[devstudio][graph-canvas][scene][hub1a]") {
+    (void)application();
+    RecordedCapability transport;
+    PelicanStudio::GraphCanvasWidget widget{transport.capability()};
+    widget.resize(900, 600);
+    widget.show();
+    QCoreApplication::processEvents();
+
+    const auto answerRpc = [&](const QString &method, const Json &reply) {
+        const qint64 id = transport.idOf(method);
+        REQUIRE(id != 0);
+        REQUIRE(transport.deliver);
+        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+    };
+    answerRpc(QStringLiteral("get_graph_instances"),
+              context(connectedDocument()));
+    answerRpc(QStringLiteral("get_graph_catalog"), visualCatalog());
+    QCoreApplication::processEvents();
+
+    std::vector<std::optional<PelicanStudio::GraphNodeRef>> picks;
+    widget.setNodePickObserver(
+        [&](std::optional<PelicanStudio::GraphNodeRef> pick) {
+            picks.push_back(std::move(pick));
+        });
+    // Answering a read, rebuilding and revealing are not picks.
+    QCoreApplication::processEvents();
+    CHECK(picks.empty());
+
+    QGraphicsItem *left = nodeItem(widget.scene(), QStringLiteral("left"));
+    REQUIRE(left != nullptr);
+    click(widget.scene(), left->sceneBoundingRect().center());
+    REQUIRE(picks.size() == 1);
+    REQUIRE(picks.front().has_value());
+    CHECK(picks.front()->scope.empty());
+    CHECK(picks.front()->id == "left");
+
+    // The same node pressed again is still a user intent.
+    click(widget.scene(), left->sceneBoundingRect().center());
+    REQUIRE(picks.size() == 2);
+    REQUIRE(picks.back().has_value());
+    CHECK(picks.back()->id == "left");
+
+    // An empty part of the canvas is the scene entrance.
+    click(widget.scene(), QPointF{-2000.0, -2000.0});
+    REQUIRE(picks.size() == 3);
+    CHECK_FALSE(picks.back().has_value());
+
+    // Reveal moves the canvas into the body but must not move the shared
+    // selection, and neither does the rebuild that follows it.
+    const std::size_t before_reveal = picks.size();
+    REQUIRE(widget.revealGraphNode(QStringLiteral("gain_curve"),
+                                   QStringLiteral("sum"),
+                                   QStringLiteral("left")));
+    QCoreApplication::processEvents();
+    REQUIRE(picks.size() == before_reveal);
+
+    // A body node press reports the body's scope and the instance that
+    // reached it, so Open in Graph can reopen the same view.
+    QGraphicsItem *sum = nodeItem(widget.scene(), QStringLiteral("sum"));
+    REQUIRE(sum != nullptr);
+    click(widget.scene(), sum->sceneBoundingRect().center());
+    REQUIRE(picks.size() == before_reveal + 1);
+    REQUIRE(picks.back().has_value());
+    CHECK(picks.back()->scope == "gain_curve");
+    CHECK(picks.back()->id == "sum");
+    CHECK(picks.back()->instance == "left");
+
+    // An edge is not a node: the page must not pretend it is.
+    QGraphicsPathItem *edge = edgeItem(widget.scene(), QStringLiteral("gain"),
+                                       QStringLiteral("value"), QStringLiteral("sum"),
+                                       QStringLiteral("a"));
+    REQUIRE(edge != nullptr);
+    click(widget.scene(), edge->path().pointAtPercent(0.5));
+    REQUIRE(picks.size() == before_reveal + 2);
+    CHECK_FALSE(picks.back().has_value());
+}

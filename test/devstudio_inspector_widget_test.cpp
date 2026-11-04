@@ -851,3 +851,138 @@ TEST_CASE("An unchanged Inspector notice does not repolish the idle UI",
     CHECK(counter.changes == 0);
 }
 } // namespace PelicanStudio
+
+namespace PelicanStudio {
+
+TEST_CASE("HUB-1a the Inspector's Graph page replaces the fields and comes back",
+          "[devstudio][inspector][hub1a]") {
+    Rig rig;
+    InspectorWidget &inspector = *rig.inspector;
+    int back = 0;
+    inspector.setBackToSceneAction([&] { ++back; });
+
+    InspectorGraphNodeView found;
+    found.ref = GraphNodeRef{.scope = "", .id = "blur"};
+    found.found = true;
+    found.heading = "Blur";
+    found.op = "render.blur";
+    found.domain = "render";
+    found.evaluation = "frame";
+    found.parameters = Json{{"radius", 2.0}};
+    found.inputs.push_back(InspectorGraphInput{
+        .port = "source", .type = "image", .connected = true,
+        .source = "scene.color"});
+    found.outputs.push_back(
+        InspectorGraphOutput{.port = "image", .type = "image", .has_value = true,
+                             .value = 3.0});
+
+    inspector.showGraphNode(found);
+    QApplication::processEvents();
+    CHECK(inspector.showsGraphNode());
+    auto *page =
+        inspector.findChild<QWidget *>(QStringLiteral("pelican.inspectorGraphPage"));
+    auto *scroll = inspector.findChild<QWidget *>(
+        QStringLiteral("pelican.inspectorProperties"));
+    auto *back_button = inspector.findChild<QPushButton *>(
+        QStringLiteral("pelican.inspectorGraph.backToScene"));
+    auto *open = inspector.findChild<QPushButton *>(
+        QStringLiteral("pelican.inspectorGraph.openInGraph"));
+    REQUIRE(page != nullptr);
+    REQUIRE(scroll != nullptr);
+    REQUIRE(back_button != nullptr);
+    REQUIRE(open != nullptr);
+    CHECK(page->isVisible());
+    CHECK_FALSE(scroll->isVisible());
+    CHECK(open->isEnabled());
+    CHECK(back_button->text() == QStringLiteral("Back to Plane"));
+    auto *op_label = inspector.findChild<QLabel *>(
+        QStringLiteral("pelican.inspectorGraph.op"));
+    REQUIRE(op_label != nullptr);
+    CHECK(op_label->text().contains(QStringLiteral("render.blur")));
+
+    // A node that went away keeps the page and says so; it does not fall back
+    // to the scene on its own.
+    InspectorGraphNodeView gone = found;
+    gone.found = false;
+    inspector.showGraphNode(gone);
+    QApplication::processEvents();
+    CHECK(inspector.showsGraphNode());
+    CHECK(page->isVisible());
+    // The page was rebuilt, so every child pointer has to be read again.
+    auto *missing = inspector.findChild<QLabel *>(
+        QStringLiteral("pelican.inspectorGraph.noLongerInDocument"));
+    auto *gone_open = inspector.findChild<QPushButton *>(
+        QStringLiteral("pelican.inspectorGraph.openInGraph"));
+    auto *gone_back = inspector.findChild<QPushButton *>(
+        QStringLiteral("pelican.inspectorGraph.backToScene"));
+    REQUIRE(missing != nullptr);
+    REQUIRE(gone_open != nullptr);
+    REQUIRE(gone_back != nullptr);
+    CHECK(missing->isVisible());
+    CHECK_FALSE(gone_open->isEnabled());
+
+    // Back is the user's scene entrance and the page goes down.
+    gone_back->click();
+    CHECK(back == 1);
+
+    inspector.showSceneSide();
+    CHECK_FALSE(inspector.showsGraphNode());
+    CHECK_FALSE(page->isVisible());
+    CHECK(scroll->isVisible());
+    CHECK(gone_back->text() == QStringLiteral("Back to Plane"));
+}
+
+TEST_CASE("HUB-1a a scene label made under the Graph page waits for the page to go",
+          "[devstudio][inspector][hub1a]") {
+    Rig rig;
+    auto *label = rig.inspector->findChild<QLabel *>(
+        QStringLiteral("pelican.inspectorSelection"));
+    REQUIRE(label != nullptr);
+    REQUIRE(label->text() == QStringLiteral("Plane"));
+
+    InspectorGraphNodeView node;
+    node.ref = GraphNodeRef{.scope = "", .id = "sum"};
+    node.found = true;
+    node.heading = "Sum";
+    node.op = "graph.sum";
+    rig.inspector->showGraphNode(node);
+    CHECK(label->text() == QStringLiteral("Plane"));
+
+    // The scene side stores the new text, but the Graph page is what is on
+    // screen: only applyPage() writes the label, and only once the page goes.
+    rig.inspector->setSelection(
+        OutlinerObjectKey{.scene_id = "main", .declaration_index = 2},
+        QStringLiteral("Cube"));
+    CHECK(label->text() == QStringLiteral("Plane"));
+    rig.inspector->showSceneSide();
+    CHECK(label->text() == QStringLiteral("Cube"));
+}
+
+TEST_CASE("HUB-1a a typed field keeps its text while the Graph page is up",
+          "[devstudio][inspector][hub1a]") {
+    Rig rig;
+    auto *field = rig.field("pelican.inspectorVector.transform.pos.1");
+    REQUIRE(field != nullptr);
+    auto *edit = field->findChild<QLineEdit *>();
+    REQUIRE(edit != nullptr);
+    edit->setText(QStringLiteral("12.500"));
+    REQUIRE(edit->text() == QStringLiteral("12.500"));
+
+    InspectorGraphNodeView node;
+    node.ref = GraphNodeRef{.scope = "", .id = "sum"};
+    node.found = true;
+    node.heading = "Sum";
+    node.op = "graph.sum";
+    rig.inspector->showGraphNode(node);
+    CHECK_FALSE(field->isVisible());
+    rig.inspector->showSceneSide();
+    CHECK(field->isVisible());
+    // The page round trip does not destroy or rebuild the field in place.
+    auto *same_edit = field->findChild<QLineEdit *>();
+    CHECK(same_edit == edit);
+    // The spin box normalises the text it shows to its own decimals; the
+    // value the person typed is still there, not the object's old 2.0.
+    CHECK(edit->text().toDouble() == 12.5);
+}
+
+} // namespace PelicanStudio

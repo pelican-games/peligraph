@@ -3400,6 +3400,16 @@ void GraphCanvasScene::selectNode(const std::string &scope, const std::string &i
     selected_carry_.reset();
     enterSelectionScope(scope);
     selected_node_ = id;
+    if (handling_press_) {
+        const std::string normalized = graphNodeScopeId(scope);
+        press_pick_ = GraphNodeRef{
+            .scope = normalized,
+            .id = id,
+            .instance = normalized.empty() || model_ == nullptr
+                            ? std::string{}
+                            : model_->watchedInstance(),
+        };
+    }
     selected_edge_.reset();
     selected_edges_.clear();
     clearControlSelection();
@@ -3832,7 +3842,15 @@ void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
         return;
     }
     handling_press_ = true;
-    const auto pressed = qScopeGuard([this] { handling_press_ = false; });
+    press_pick_.reset();
+    const auto pressed = qScopeGuard([this] {
+        // One report for the whole press, at its end. A press that picked no
+        // node (empty canvas, an edge, a control point, a zone control) says
+        // so even when the base scene changed its item selection.
+        auto pick = std::exchange(press_pick_, std::nullopt);
+        if (node_pick_observer_) node_pick_observer_(std::move(pick));
+        handling_press_ = false;
+    });
     // GL-3a: a fold group's heading, its toggle and its folded node -- not
     // under a node drawn over them.
     if (foldItemPressed)
@@ -8182,6 +8200,8 @@ struct GraphCanvasWidget::Impl {
     // plan reply after the Graph has finished handling it.
     std::function<void(std::uint64_t, std::uint64_t)> plan_commit_generation_action;
     std::function<void(const QByteArray &, std::uint64_t, std::uint64_t)> full_plan_observer;
+    // HUB-1a: the end of each showDetails(), for the Inspector's refresh.
+    std::function<void()> node_shown_observer;
     // UX-6a, decision 2: who follows the project shader files the render
     // passes read, and the set last handed to it.
     using ShaderSources = std::map<std::string, std::vector<std::filesystem::path>, std::less<>>;
@@ -12674,6 +12694,12 @@ struct GraphCanvasWidget::Impl {
 
     void showDetails() {
         const GuiTraceSpan trace{"graph_show_details"};
+        // HUB-1a: the page's refresh follows the end of every details build,
+        // including the deferred one a drag starts. Only a schedule; the
+        // window never builds a page here.
+        const auto pageShown = qScopeGuard([this] {
+            if (node_shown_observer) node_shown_observer();
+        });
         // Highlight and move the node immediately. Building its editors must
         // not block the press that starts a drag or replace fields mid-gesture.
         if (scene->dragging()) {
@@ -13804,6 +13830,57 @@ bool GraphCanvasWidget::removeImageTransferSource(const QString &resource, const
 
 GraphCanvasModel &GraphCanvasWidget::model() { return impl_->model; }
 GraphCanvasScene &GraphCanvasWidget::scene() { return *impl_->scene; }
+
+InspectorGraphNodeView GraphCanvasWidget::nodeView(const GraphNodeRef &node) const {
+    InspectorGraphNodeView view;
+    view.ref = node;
+    view.ref.scope = graphNodeScopeId(node.scope);
+    const auto nodes = impl_->model.nodes(view.ref.scope);
+    const auto found = std::ranges::find(nodes, view.ref.id, &GraphCanvasNode::id);
+    if (found == nodes.end()) return view;
+    view.found = true;
+    view.heading = found->heading();
+    view.op = found->op;
+    view.domain = found->domain;
+    view.evaluation = found->evaluation;
+    view.definition = found->definition;
+    view.sink = found->sink;
+    view.parameters = found->parameters;
+    view.inputs.reserve(found->inputs.size());
+    for (const GraphCanvasPort &port : found->inputs) {
+        view.inputs.push_back(InspectorGraphInput{
+            .port = port.port,
+            .type = port.type,
+            .connected = port.connected,
+            .source = port.connected ? port.source_node + "." + port.source_port : std::string{},
+            .has_parameter = port.has_parameter,
+            .parameter = port.parameter,
+        });
+    }
+    view.outputs.reserve(found->outputs.size());
+    for (const GraphCanvasOutput &port : found->outputs) {
+        view.outputs.push_back(InspectorGraphOutput{
+            .port = port.port,
+            .type = port.type,
+            .has_value = port.has_value,
+            .value = port.value,
+            .bundle = port.bundle,
+        });
+    }
+    return view;
+}
+
+void GraphCanvasWidget::setNodePickObserver(
+    std::function<void(std::optional<GraphNodeRef>)> observer) {
+    impl_->scene->setNodePickObserver(std::move(observer));
+}
+
+void GraphCanvasWidget::setNodeShownObserver(std::function<void()> observer) {
+    impl_->node_shown_observer = std::move(observer);
+}
+
+bool GraphCanvasWidget::dragging() const { return impl_->scene->dragging(); }
+
 QWidget *GraphCanvasWidget::canvasLayersPanel() { return impl_->canvas_layers; }
 
 } // namespace PelicanStudio

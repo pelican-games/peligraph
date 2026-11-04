@@ -1,0 +1,103 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "hub_graph_node_inspector",
+  "description": "HUB-1a through the GUI: a scene pick names the object the Inspector returns to, a Graph node press shows that node read-only on the Inspector's Graph page, and Back to <object> is a scene pick again.",
+  "tab": "graph",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the canvas has drawn the fixture's graph",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#left",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "pick Anchor in the Outliner: the scene side's selection label",
+      "cmd": "select",
+      "name": "pelican.outliner",
+      "text": "Anchor"
+    },
+    {
+      "label": "the Inspector holds Anchor",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "Anchor\n",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "press the graph instance: the Graph side of the shared selection",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#left"
+    },
+    {
+      "label": "the Inspector shows the pressed node read-only",
+      "cmd": "wait",
+      "name": "pelican.inspectorGraph.id",
+      "text": "left",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the node's operation is the instance operation",
+      "cmd": "wait",
+      "name": "pelican.inspectorGraph.op",
+      "text": "graph.instance",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "its stored parameters are a table",
+      "cmd": "wait",
+      "name": "pelican.inspectorGraph.parameters",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "nothing edits from this page",
+      "cmd": "wait",
+      "name": "pelican.inspectorProperties",
+      "visible": false,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the page names the scene the press came from",
+      "cmd": "wait",
+      "name": "pelican.inspectorGraph.backToScene",
+      "text": "Back to Anchor",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "a picture of the Inspector's Graph page for the report",
+      "expect": "screenshot",
+      "name": "pelican.inspector",
+      "path": "hub_graph_node_inspector_page.png"
+    },
+    {
+      "label": "Back is a scene pick: the page goes down",
+      "cmd": "click",
+      "name": "pelican.inspectorGraph.backToScene"
+    },
+    {
+      "label": "the Inspector is the scene side again",
+      "cmd": "wait",
+      "name": "pelican.inspectorGraphPage",
+      "timeout_ms": 30000,
+      "visible": false
+    },
+    {
+      "label": "and holds the scene selection it returned to",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "Anchor\n",
+      "timeout_ms": 30000
+    }
+  ]
+}

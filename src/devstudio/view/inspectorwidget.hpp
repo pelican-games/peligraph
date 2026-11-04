@@ -4,6 +4,8 @@
 #include "../model/inspectormodel.hpp"
 #include "../model/project.hpp"
 #include "../model/runtimeobjects.hpp"
+#include "../model/selectionhub.hpp"
+#include "inspectorgraphsections.hpp"
 
 #include <QWidget>
 
@@ -31,6 +33,20 @@ class InspectorWidget final : public QWidget {
 
     void setSelection(std::optional<OutlinerObjectKey> selection,
                       const QString &display_text);
+    // HUB-1a: the Inspector's read-only Graph page. The window calls this
+    // once the hub is on a graph node and no press is in the air; the page
+    // follows `view.ref`, not the Graph tab's current selection. A node the
+    // document no longer holds keeps the page (found == false).
+    void showGraphNode(const InspectorGraphNodeView &view);
+    // The hub moved back to the scene: the fields are the page again, and
+    // their values are read once more. Nothing typed is thrown away.
+    void showSceneSide();
+    [[nodiscard]] bool showsGraphNode() const noexcept;
+    // The page's Back to scene button: the window turns it into the same
+    // user intent an Outliner pick is.
+    void setBackToSceneAction(std::function<void()> action);
+    // The page's Open in Graph button, with the node the page follows.
+    void setOpenInGraphAction(std::function<void(const GraphNodeRef &)> action);
     // PM-3c: an object the running game spawned, read-only: its runtime
     // Transform and the prefab it came from, and no field to edit. Called
     // again with each new reading; setSelection leaves it.

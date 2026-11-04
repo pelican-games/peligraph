@@ -71,6 +71,8 @@ add_library(pelican_studio_view STATIC
     renderdocumentwatcher.hpp
     inspectorwidget.cpp
     inspectorwidget.hpp
+    inspectorgraphsections.cpp
+    inspectorgraphsections.hpp
     outlinertree.cpp
     outlinertree.hpp
     runtimeoutliner.cpp

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "layoutpreset.hpp"
+#include "panelshown.hpp"
 #include "renderdocumentwatcher.hpp"
 #include "toollayoutpreset.hpp"
 #include "../model/gizmomodel.hpp"
@@ -9,6 +10,7 @@
 #include "../model/renderdocumentreload.hpp"
 #include "../model/renderedithistory.hpp"
 #include "../model/selection.hpp"
+#include "../model/selectionhub.hpp"
 #include "../viewport/enginelogbuffer.hpp"
 
 #include <QByteArray>
@@ -255,6 +257,17 @@ class MainWindow : public QMainWindow {
     EngineLogBuffer engine_log_buffer_;
     std::optional<ProjectOutlinerModel> project_model_;
     SelectionModel selection_model_;
+    // HUB-1a: what the Inspector follows. Only user intent moves it: the
+    // Outliner, a viewport pick, a Graph press and Back to scene.
+    SelectionHub selection_hub_;
+    QTimer *inspector_refresh_timer_ = nullptr;
+    std::unique_ptr<PanelShown> inspector_shown_;
+    bool inspector_dirty_ = false;
+    // Set while the Outliner is rebuilt or a panel reveals a row: the
+    // currentItemChanged that follows is not the user picking.
+    bool outliner_rebuilding_ = false;
+    // HUB-1a: the hub intent a viewport pick began under.
+    QHash<qint64, std::uint64_t> pending_pick_intents_;
     GizmoModel gizmo_model_;
     std::array<QAction *, 3> gizmo_mode_actions_{};
     QTimer *modal_transform_timer_ = nullptr;
@@ -502,6 +515,12 @@ class MainWindow : public QMainWindow {
     void updateGizmoToolbar();
     void presentGizmoNotice();
     void refreshSelectionViews();
+    // HUB-1a: one coalesced page build, and the Outliner's non-user current
+    // row changes (a rebuild, a reveal from another panel).
+    void applyInspectorPage();
+    void scheduleInspectorRefresh();
+    void refreshInspectorPageNow();
+    void selectOutlinerRowProgrammatically(QTreeWidgetItem *item);
     void presentPickingFailure(const QString &message);
     void appendEngineOutput(const QString &output);
     void refreshLayoutMenus();
