@@ -489,30 +489,42 @@ bool KeymapDialog::saveAndApply() {
             keys.push_back(key.toString(QKeySequence::PortableText));
         bindings.insert(entry.id, keys);
     }
-    QJsonObject root;
-    root.insert(QStringLiteral("version"), 1);
-    root.insert(QStringLiteral("bindings"), bindings);
-    const QByteArray bytes = QJsonDocument(root).toJson(QJsonDocument::Indented);
     const QString path =
         QDir(window_.application_config_directory_)
             .filePath(QStringLiteral("keymap.json"));
-
-    QString error;
-    if (QFileInfo::exists(path)) {
+    const bool had_file = QFileInfo::exists(path);
+    QByteArray previous;
+    if (had_file) {
         QFile current(path);
         if (!current.open(QIODevice::ReadOnly)) {
             showSaveError(current.errorString());
             return false;
         }
-        const QByteArray previous = current.readAll();
-        current.close();
-        // The backup is committed first.  If it fails nothing has been
-        // replaced, and the dialog leaves the live keys as they were.
-        if (!window_.writeKeymapFile(path + QStringLiteral(".bak"), previous,
-                                     &error)) {
-            showSaveError(error);
-            return false;
-        }
+        previous = current.readAll();
+    }
+    // A command this build has no row for (a newer Studio's, say) is not the
+    // dialog's to remove: its entry stays in the file as it was.
+    const QJsonObject on_disk = QJsonDocument::fromJson(previous)
+                                    .object()
+                                    .value(QStringLiteral("bindings"))
+                                    .toObject();
+    for (auto entry = on_disk.begin(); entry != on_disk.end(); ++entry) {
+        const bool has_row = std::any_of(rows_.begin(), rows_.end(), [&](const Row &row) {
+            return row.id == entry.key();
+        });
+        if (!has_row) bindings.insert(entry.key(), entry.value());
+    }
+    QJsonObject root;
+    root.insert(QStringLiteral("version"), 1);
+    root.insert(QStringLiteral("bindings"), bindings);
+    const QByteArray bytes = QJsonDocument(root).toJson(QJsonDocument::Indented);
+
+    QString error;
+    // The backup is committed first.  If it fails nothing has been replaced,
+    // and the dialog leaves the live keys as they were.
+    if (had_file && !window_.writeKeymapFile(path + QStringLiteral(".bak"), previous, &error)) {
+        showSaveError(error);
+        return false;
     }
     // The old keymap.json is still there until this commit.  If it fails the
     // file is untouched, and the live keys below are not reached.

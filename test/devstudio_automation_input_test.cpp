@@ -4509,3 +4509,38 @@ TEST_CASE("KM-2b the real atomic writer keeps the old file when its commit fails
     SKIP("RLIMIT_FSIZE atomicity probe is Unix-only");
 #endif
 }
+
+TEST_CASE("KM-2c the dialog keeps a command this build has no row for",
+          "[devstudio][automation_input][shortcut][km2c]") {
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    const QString path = QDir(config.path()).filePath(QStringLiteral("keymap.json"));
+    {
+        QFile file(path);
+        REQUIRE(file.open(QIODevice::WriteOnly));
+        file.write(R"({"version":1,"bindings":{"later.command":["Ctrl+Alt+9"]}})");
+    }
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    window.activateWindow();
+    REQUIRE(QTest::qWaitForWindowActive(&window));
+    QDialog *dialog = openKeymapDialog(window);
+    REQUIRE(dialog != nullptr);
+    auto *table = dialog->findChild<QTableWidget *>(QStringLiteral("pelican.keymap.table"));
+    REQUIRE(table != nullptr);
+    auto *editor = keymapEditor(table, QStringLiteral("file.save"));
+    REQUIRE(editor != nullptr);
+    recordKey(editor, Qt::Key_S, Qt::ControlModifier | Qt::ShiftModifier);
+    auto *ok = keymapButton(dialog, QStringLiteral("pelican.keymap.ok"));
+    REQUIRE(ok != nullptr);
+    REQUIRE(ok->isEnabled());
+    ok->click();
+    QTest::qWait(20);
+
+    const QJsonObject bindings = readKeymapJson(path).value(QStringLiteral("bindings")).toObject();
+    CHECK(bindings.contains(QStringLiteral("file.save")));
+    const QJsonArray kept = bindings.value(QStringLiteral("later.command")).toArray();
+    REQUIRE(kept.size() == 1);
+    CHECK(kept.at(0).toString() == QStringLiteral("Ctrl+Alt+9"));
+}
