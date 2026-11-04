@@ -1381,23 +1381,23 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 
 **素朴に読むと**: 子の widget の signal から親の lambda への接続は、QObject が破棄のときに自動で外すので、destructor は `= default` でよい、と読めます。
 
-**実際は**: `std::unique_ptr<Impl>` のメンバは、派生クラスの destructor の本体が終わった直後、`QWidget::~QWidget()` より先に消えます。その後の `QWidget::~QWidget()` が窓を閉じて焦点を外すので、焦点を持っていた欄(`QLineEdit` など)が `editingFinished` を出し、消えた Impl や binding を捕まえた lambda が走ります。QObject の自動の切断はその後なので間に合いません。Inspector では、数値・文字の欄の binding(`NumericBinding` / `TextBinding`)を Impl が持っています。対策は destructor の最初で、子から自分への接続を全部外すことです([`InspectorWidget::~InspectorWidget()`](../../src/devstudio/view/inspectorwidget.cpp#L2731)。event filter も外す)。
+**実際は**: `std::unique_ptr<Impl>` のメンバは、派生クラスの destructor の本体が終わった直後、`QWidget::~QWidget()` より先に消えます。その後の `QWidget::~QWidget()` が窓を閉じて焦点を外すので、焦点を持っていた欄(`QLineEdit` など)が `editingFinished` を出し、消えた Impl や binding を捕まえた lambda が走ります。QObject の自動の切断はその後なので間に合いません。Inspector では、数値・文字の欄の binding(`NumericBinding` / `TextBinding`)を Impl が持っています。対策は destructor の最初で、子から自分への接続を全部外すことです([`InspectorWidget::~InspectorWidget()`](../../src/devstudio/view/inspectorwidget.cpp#L2732)。event filter も外す)。
 
 [`GraphAttachmentWidget::~GraphAttachmentWidget()`](../../src/devstudio/view/graphattachmentwidget.cpp#L392)(入力 port の欄)と [`MaterialAssignWidget::~MaterialAssignWidget()`](../../src/devstudio/view/materialassignwidget.cpp#L356) も同じ形です。test は `test/devstudio_inspector_widget_test.cpp` にあり、焦点のある欄・書きかけの欄・書きかけの入力 port を持つ widget を壊して、遅れた編集が送られないことを見ます。
 
 **不変条件**: 子の欄の signal を、Impl やその中の binding を捕まえた lambda に繋ぐ widget は、destructor を `= default` にしないこと。destructor の最初で `findChildren<QObject *>()` の各子から `this` への接続を外します。
 
-**読む場所**: [`InspectorWidget::~InspectorWidget()`](../../src/devstudio/view/inspectorwidget.cpp#L2731) → [`GraphAttachmentWidget::~GraphAttachmentWidget()`](../../src/devstudio/view/graphattachmentwidget.cpp#L392)。
+**読む場所**: [`InspectorWidget::~InspectorWidget()`](../../src/devstudio/view/inspectorwidget.cpp#L2732) → [`GraphAttachmentWidget::~GraphAttachmentWidget()`](../../src/devstudio/view/graphattachmentwidget.cpp#L392)。
 
 ### 難所 — `setItemWidget` で行に置いた widget を `delete` で直接消すと、view の editor に残る(FX-8)
 
 **素朴に読むと**: `QTreeWidget::setItemWidget()` で行に置いた widget は普通の子 widget なので、`delete` すれば view からも外れる、と読めます。
 
-**実際は**: `setItemWidget` は view の index widget(view が editor として持つ一覧)に登録します。widget を `delete` しても、その一覧の項目は残ります。次に木を `clear()` すると選択が変わって view が layout をやり直し、一覧に残った解放済みの widget を読みます。Frame Plan では、Backends と Physical plan の木の先頭に置く帯(band)がこれに当たり、Pin の後に plan を読み直すと Studio が 0xC0000005 で落ちていました。今は帯ごとに置いた木を覚えておき([帯を覚える所](../../src/devstudio/view/frameplanwidget.cpp#L3546))、消す前に `removeItemWidget()` で木に手放させてから `delete` します([`dropBands()`](../../src/devstudio/view/frameplanwidget.cpp#L613))。木を作り直す前に帯を消す順([`populate()` の中で呼ぶ所](../../src/devstudio/view/frameplanwidget.cpp#L4218))は今までどおりです。
+**実際は**: `setItemWidget` は view の index widget(view が editor として持つ一覧)に登録します。widget を `delete` しても、その一覧の項目は残ります。次に木を `clear()` すると選択が変わって view が layout をやり直し、一覧に残った解放済みの widget を読みます。Frame Plan では、Backends と Physical plan の木の先頭に置く帯(band)がこれに当たり、Pin の後に plan を読み直すと Studio が 0xC0000005 で落ちていました。今は帯ごとに置いた木を覚えておき([帯を覚える所](../../src/devstudio/view/frameplanwidget.cpp#L3555))、消す前に `removeItemWidget()` で木に手放させてから `delete` します([`dropBands()`](../../src/devstudio/view/frameplanwidget.cpp#L614))。木を作り直す前に帯を消す順([`populate()` の中で呼ぶ所](../../src/devstudio/view/frameplanwidget.cpp#L4259))は今までどおりです。
 
 **不変条件**: `setItemWidget` で置いた widget は、`removeItemWidget()` で view に外させてから消すこと。木を `clear()` するより前に外しておくこと。
 
-**読む場所**: [`dropBands()`](../../src/devstudio/view/frameplanwidget.cpp#L613) → [帯を覚える所](../../src/devstudio/view/frameplanwidget.cpp#L3546)。利用者から見た Frame Plan の帯は manual 第15章 §15.6 の「backend の pin と物理計画・再起動」。
+**読む場所**: [`dropBands()`](../../src/devstudio/view/frameplanwidget.cpp#L614) → [帯を覚える所](../../src/devstudio/view/frameplanwidget.cpp#L3555)。利用者から見た Frame Plan の帯は manual 第15章 §15.6 の「backend の pin と物理計画・再起動」。
 
 ### 難所 — Graph の作り直しの中では routing index が無く、線ごとの探索が全 item をなめる(GS-1、`e87c63c7b`)
 
@@ -1454,9 +1454,9 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 
 **実際は**: zone の body の node・線・制御点・帯は folded node を置いた後に描かれ、body の線は `routeGraphCanvasLines()` まで経路が空です。frame は body の node の箱を囲んで作られるので、body の線の制御点が frame の外にあると、全体の描画の終わりの frame の範囲が記録と違い、zone の横の root の値の部分の描き直しが**毎回** bit 10 で断っていました(GS-3b2 の報告の変異で再現)。body の長い pill や帯だけでは食い違いませんでした。
 
-**不変条件**: zone の frame の room は `repopulate()` の最後(線の route と inline editor の復元の後、`repopulated` の前)で記録し直すこと([記録し直す所](../../src/devstudio/view/graphcanvaswidget.cpp#L3086))。folded node の置き場所を決める `graph_boxes` はこれと別で、変えないこと。部分の道は frame と body に触らないので、全体の描画の後に frame や body が動けば(drag・refit)room が変わり、今までどおり断ります。条件 3(zone の欄・loop が動いた・loop に届く)も弱めないこと: zone の欄の比較は `followDocument()` から [条件 3](../../src/devstudio/view/graphcanvaswidget.cpp#L6331) の中へ移したので、ここを外すと部分の道に入って古い飾りが残ります(GS-3b2 の変異 m3_1 で `3 materials` が残った)。
+**不変条件**: zone の frame の room は `repopulate()` の最後(線の route と inline editor の復元の後、`repopulated` の前)で記録し直すこと([記録し直す所](../../src/devstudio/view/graphcanvaswidget.cpp#L3086))。folded node の置き場所を決める `graph_boxes` はこれと別で、変えないこと。部分の道は frame と body に触らないので、全体の描画の後に frame や body が動けば(drag・refit)room が変わり、今までどおり断ります。条件 3(zone の欄・loop が動いた・loop に届く)も弱めないこと: zone の欄の比較は `followDocument()` から [条件 3](../../src/devstudio/view/graphcanvaswidget.cpp#L6332) の中へ移したので、ここを外すと部分の道に入って古い飾りが残ります(GS-3b2 の変異 m3_1 で `3 materials` が残った)。
 
-**読む場所**: [記録し直す所](../../src/devstudio/view/graphcanvaswidget.cpp#L3086) → [条件 3](../../src/devstudio/view/graphcanvaswidget.cpp#L6331)。⚠ domain stub の付く graph node は stub が folded node を置いた後に付くので、folded node のある scope では範囲が記録と食い違い、部分の道は bit 10 で断り続けます(GS-3a からの性質で、直していません)。
+**読む場所**: [記録し直す所](../../src/devstudio/view/graphcanvaswidget.cpp#L3086) → [条件 3](../../src/devstudio/view/graphcanvaswidget.cpp#L6332)。⚠ domain stub の付く graph node は stub が folded node を置いた後に付くので、folded node のある scope では範囲が記録と食い違い、部分の道は bit 10 で断り続けます(GS-3a からの性質で、直していません)。
 
 ### 難所 — zone の body の値をその場で描き直すには、全体の描画が置く場所と同じだと先に示す(GS-3b3b、`07d7aed91`)
 
@@ -1499,11 +1499,11 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 **実際は**: `~GraphCanvasWidget()` の本体が終わると `impl_`(`std::unique_ptr`)が消え、その後で `QWidget` の base の destructor が子の widget(詳細欄の editor、Features の Parameters の dialog)を消します。子が消えるときの `closeEditor` や `destroyed` は、context の widget の `QObject` 部分がまだ生きているので届き、lambda が解放済みの Impl を読みます(GS-ASAN1 が見つけた 2 件)。上の FX-4 の難所(Impl が `QWidget` の base より先に消える)と同じ順の問題です。FX-4 の Inspector は destructor の最初で子から自分への接続を外す形で、GS-UAF1 の 2 つの panel は接続の context を guard にする形です。
 
 **不変条件**:
-- lambda が Impl を読み、送り手が Impl より長く生きうる(widget 自身・その子・delegate・viewport)connection と queued call は、Impl の `QObject guard` を context にすること([Graph の guard](../../src/devstudio/view/graphcanvaswidget.cpp#L8076)、[Features の guard](../../src/devstudio/view/renderfeatureswidget.cpp#L2374))。
+- lambda が Impl を読み、送り手が Impl より長く生きうる(widget 自身・その子・delegate・viewport)connection と queued call は、Impl の `QObject guard` を context にすること([Graph の guard](../../src/devstudio/view/graphcanvaswidget.cpp#L8231)、[Features の guard](../../src/devstudio/view/renderfeatureswidget.cpp#L2374))。
 - guard は Impl の最後のメンバに置くこと。メンバは宣言の逆の順に消えるので、最後のメンバは最初に消え、ほかのメンバを消している間にはもう connection がありません。
 - その結果、Features の Parameters の dialog の、まだ送っていない(150 ms でまとめている)変更は、panel ごと消すときは捨てられます。dialog だけを閉じたときは今までどおり送ります。
 
-**読む場所**: [Graph の guard](../../src/devstudio/view/graphcanvaswidget.cpp#L8076) → [詳細欄の `closeEditor`](../../src/devstudio/view/graphcanvaswidget.cpp#L9060) → [Features の dialog の `destroyed`](../../src/devstudio/view/renderfeatureswidget.cpp#L3608)。test は `[uaf1]` の 2 本で、destructor が始まった後に走った callback を test 用の数え口で数えます(ASan が無くても赤になる)。
+**読む場所**: [Graph の guard](../../src/devstudio/view/graphcanvaswidget.cpp#L8231) → [詳細欄の `closeEditor`](../../src/devstudio/view/graphcanvaswidget.cpp#L9215) → [Features の dialog の `destroyed`](../../src/devstudio/view/renderfeatureswidget.cpp#L3608)。test は `[uaf1]` の 2 本で、destructor が始まった後に走った callback を test 用の数え口で数えます(ASan が無くても赤になる)。
 
 ### 難所 — test で `#define private public` をして private なメンバ関数を呼ぶと、MSVC では link できない
 
@@ -1513,7 +1513,52 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 
 **不変条件**: 新しい test から private なメンバ関数を呼ばないこと。public な関数、action、既にある test 用の読み口を使うか、GS-UAF1 の数え口のような test 用の free function を header に足すこと。
 
-**読む場所**: [KM-1a の test の Help の action](../../test/devstudio_automation_input_test.cpp#L3081)、[Graph の数え口](../../src/devstudio/view/graphcanvaswidget.hpp#L1692)。
+**読む場所**: [KM-1a の test の Help の action](../../test/devstudio_automation_input_test.cpp#L3096)、[Graph の数え口](../../src/devstudio/view/graphcanvaswidget.hpp#L1695)。
+
+### 難所 — zone の frame が同じでも、最小の幅が違えば stage の文字はその場で書き換えられない。どちらになるかは font で変わる(GS-3b4a、`3a5410578`)
+
+**素朴に読むと**: stage の文字だけが変わった返事は、文字を書き換えて右端に揃え直せば済み、frame の大きさが前と同じなら全体の描画と同じ絵になる、と読めます。
+
+**実際は**: zone の frame は、見出し(題・stage・shared)や tab の行などの中で一番広い物で決まる最小の幅と、body の content の大きさから計算されます。stage が広くなると、frame は content で決まっていて同じでも、最小の幅は変わることがあります。GS-3b4a の道は frame だけでなく、計算し直した origin・最小の幅と高さ・footer・frame の全部が記録と同じことを求め、違えば bit 13 の detail2 2 で断ります(test の b は、frame が同じで最小の幅だけが違う長い stage で断ることを確かめます)。どの行が最小の幅を決めるかは platform の font で変わるので、test の a2 の同じ確定が、test のコメントでは Linux の font でその場、Windows の font で全体になります。
+
+**不変条件**:
+- stage の道は、`repopulate()` と同じ関数(loop の node の準備・`zoneChrome()`・`layoutZone()`)と描画の font の metrics で zone の形を計算し直し、記録(`zone_geometry_`)と全部の値が同じときだけ描くこと([比べる所](../../src/devstudio/view/graphcanvaswidget.cpp#L6621))。
+- font で結果が分かれる case の test は、両方の結果を受け入れて、どちらでも作り直した scene と同じことを確かめること(a2 の形)。片方の platform の結果だけを assert すると、もう一方の platform で赤になります。幅の変わらない例(同じ桁数の数字)の case は、どの platform でもその場の道を通ります(a の形)。
+
+**読む場所**: [`GraphCanvasScene::redrawZoneChrome()`](../../src/devstudio/view/graphcanvaswidget.cpp#L6529) → [比べる所](../../src/devstudio/view/graphcanvaswidget.cpp#L6621)。test は `[gs3b4a]` です(source guide 第7章 §7.6)。
+
+### 難所 — keymap の衝突を 1 項目ずつ順に決めると、入れ替えが通らず、JSON の順で結果が変わる(KM-2a、`c4c268b0c`)
+
+**素朴に読むと**: keymap の項目を 1 つずつ当て、当てるたびに「そのキーを今ほかの command が持っているか」を見れば、衝突を防げる、と読めます。
+
+**実際は**: 2 つの command のキーの入れ替え(`file.new` を Ctrl+O、`file.open` を Ctrl+N)は、先に当てた方が、まだ前のキーを持つもう一方と必ず衝突します。順に決めると入れ替えは通らず、鎖(A を B のキーへ、B を空いたキーへ)が通るかは JSON の項目の順で変わります。KM-2a は設計の review で、全部の項目を一度に当ててから決める形に直されました。
+
+**不変条件**:
+- 全部の項目を当ててから、キーごとに持ち主の集合を作ること。持ち主が 1 つか、全員が既定でそのキーを分け合っていた(Ctrl+Z の 4 つの Undo など)なら通すこと。
+- それ以外は、そのキーの持ち主のうち keymap で変えた command を全部既定に戻し、変わらなくなるまで数え直すこと([繰り返す所](../../src/devstudio/view/mainwindow.cpp#L2334))。戻すのは変えた側だけで、既定のままの command は動かしません。
+- event の中で手で見るキー(`studioKeys()`)は action を持たないので、[`handHandledKeys()`](../../src/devstudio/view/mainwindow.cpp#L192) で固定の持ち主として数えに入れること。入れないと、`F` や `Escape` を別の command に取らせてしまいます。
+
+**読む場所**: [`MainWindow::applyUserKeymap()`](../../src/devstudio/view/mainwindow.cpp#L2209)。test は `[km2a]` の入れ替え・鎖・同じ新しいキー・手で見るキーの case です。
+
+### 難所 — engine の窓が focus を持つ間は、Qt の shortcut は効かず、決まった 8 つのキーしか渡らない(KM-2a、`c4c268b0c`)
+
+**素朴に読むと**: keymap で command のキーを変えれば、Studio のどこに focus があっても新しいキーで効く、と読めます。
+
+**実際は**: engine の窓は別 process の窓で、そこに keyboard の focus があると Qt の key event は Studio に来ません。Studio は 5 ms ごとの poll で `GetAsyncKeyState` を読み、[`StudioShortcutKeys`](../../src/devstudio/viewport/nativewindowhost.hpp#L33) の 8 つのキー(Z・Y・D・Delete・N・O・S・P)が押された瞬間だけ、1 つのキーと modifier として知らせます。keymap でこの外のキーや 2 打のキーにした command は、Studio の窓では効きますが、engine の窓の間は黙って効きません。KM-2a は渡す command を登録から決めるようにしましたが、見張るキーの一覧は変えていません。
+
+**不変条件**: engine の窓からも効かせたい command に、見張るキーの外のキーを既定で付けないこと。付けるなら `StudioShortcutKeys` にキーを足すこと(一覧は `quint32` の bit で持つので、32 個までです)。engine の窓から渡す command は `setCommandHelp()` の `viewport_order` で決まり、最初に合った 1 つだけが動くので、順は前の手書きの一覧と同じに保つこと。
+
+**読む場所**: [`StudioShortcutKeys`](../../src/devstudio/viewport/nativewindowhost.hpp#L33) → [engine の窓のキーを受ける所](../../src/devstudio/view/mainwindow.cpp#L337)。
+
+### 難所 — 共有の digest の「自分の知らせは自分に来ない」は、subscribe の context と publish の `from` が同じ object のときだけ(RP-1a2、`b0d5b75ea`)
+
+**素朴に読むと**: panel が共有の digest に publish するとき、`from` に自分の widget を渡せば、自分の読みや確定の知らせは自分に来ない、と読めます。
+
+**実際は**: [`RenderConfigDigest::publish()`](../../src/devstudio/view/renderconfigdigest.hpp#L35) が飛ばすのは、subscribe したときの context の pointer が `from` と同じ subscriber だけです。RP-1a2 は Frame Plan と Pass Editor の subscribe の context を widget から Impl の `PanelShown` に替えました(Impl が消える途中で publish が届かないように)。`publish()` の `from` も `&shown` にしたのは着地のときの直しで、実装の版は widget のままでした。⚠ 確定の後の `publishCommitted()` は今も `from` に widget を渡しているので、コードの読みでは、2 つの panel は自分の確定の知らせを受けます(第7章 §7.6 の RP-1a2 の節。test と trace では確かめていません)。
+
+**不変条件**: subscribe の context を替えたら、同じ panel の `publish()` と `publishCommitted()` の `from` を全部同じ object に替えること。context は Impl の最後のメンバに置き、Impl のほかのメンバより先に消えるようにすること。
+
+**読む場所**: [`RenderConfigDigest::publish()`](../../src/devstudio/view/renderconfigdigest.hpp#L35) → [Frame Plan の subscribe](../../src/devstudio/view/frameplanwidget.cpp#L5871) → [Pass Editor の subscribe](../../src/devstudio/view/fullscreenpasswidget.cpp#L3915)。
 ### 難所 — tab の束の下限は、隠れた page を含む全 page の最大になる(LT-1 / UI-2、`a800dfc3a`)
 
 **素朴に読むと**: dock や tab widget の最小の大きさは、今見えている page の中身で決まる、と読めます。
@@ -1522,7 +1567,7 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 
 **不変条件**: 下限の大きい panel を、小さい panel と同じ tab widget や dock の束に入れないこと。下限を調べるときは自動化の `size_hints`(見えている子だけを数え、stacked widget は page ごとの下限を並べる)で、何が下限を決めているかを先に見ること。
 
-**読む場所**: [理由のコメント](../../src/devstudio/view/mainwindow.cpp#L680) → [`commandSizeHints()`](../../src/devstudio/automation/automationcommands.cpp#L1319)。
+**読む場所**: [理由のコメント](../../src/devstudio/view/mainwindow.cpp#L764) → [`commandSizeHints()`](../../src/devstudio/automation/automationcommands.cpp#L1319)。
 
 ### 難所 — 既定の配置で dock を横に並べてから束ねると、表示中の窓が広がったまま戻らない(UI-2)
 
@@ -1532,7 +1577,7 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 
 **不変条件**: 束に入れる dock は `addDockWidget` せずに、直接 `tabifyDockWidget` の鎖で入れること。
 
-**読む場所**: [`MainWindow::applyDefaultLayout()`](../../src/devstudio/view/mainwindow.cpp#L4240)(下の段の `tabifyDockWidget` の前のコメント)。test は `devstudio_layoutpreset_test` の「UI-2 the Graph, the Frame Plan, …」で、既定の配置の形を見ます(窓の幅そのものは見ていません)。
+**読む場所**: [`MainWindow::applyDefaultLayout()`](../../src/devstudio/view/mainwindow.cpp#L4493)(下の段の `tabifyDockWidget` の前のコメント)。test は `devstudio_layoutpreset_test` の「UI-2 the Graph, the Frame Plan, …」で、既定の配置の形を見ます(窓の幅そのものは見ていません)。
 
 ### 難所 — 利用者のデータの例外は Play を止めるが、DLL の reload 中の onInit の例外は reload の失敗のまま(RX-1、`faf9a484b`)
 
