@@ -25786,3 +25786,423 @@ TEST_CASE("GS-FUZZ3: long body-heavy random edits keep the scene invariants",
 }
 
 // ---- GS-FUZZ3 end ----
+
+// --- SDK-1a: one in-place redraw for a Graph root node.
+
+namespace {
+
+// Every root node of `document` placed, so a whole draw would move nothing.
+Json sdk1aPlaced(Json document) {
+    Json positions = Json::object();
+    std::size_t index = 0;
+    // Wide enough that the 1280x720 stack at the first place covers no
+    // other node: a press on it must reach it.
+    for (const auto &node : document.at("nodes"))
+        positions[node.at("id")] = {{"x", 100.0 + 2400.0 * static_cast<double>(index % 3)},
+                                    {"y", 100.0 + 1400.0 * static_cast<double>(index / 3)}};
+    document["layout"] = {{"nodes", std::move(positions)}};
+    return document;
+}
+
+// The root stack `hud`'s triangle, pressed but not released.
+void sdk1aPressTriangle(GraphCanvasScene &scene, const QString &stack, const QString &input) {
+    QGraphicsItem *triangle = nb2bPart(scene, PelicanStudio::GraphCanvasStackExpandItem, stack, input);
+    REQUIRE(triangle != nullptr);
+    QGraphicsSceneMouseEvent press{QEvent::GraphicsSceneMousePress};
+    press.setScenePos(centreOf(triangle));
+    press.setButton(Qt::LeftButton);
+    press.setButtons(Qt::LeftButton);
+    QApplication::sendEvent(&scene, &press);
+}
+
+void sdk1aReleaseTriangle(GraphCanvasScene &scene, const QString &stack, const QString &input) {
+    QGraphicsItem *triangle = nb2bPart(scene, PelicanStudio::GraphCanvasStackExpandItem, stack, input);
+    REQUIRE(triangle != nullptr);
+    QGraphicsSceneMouseEvent release{QEvent::GraphicsSceneMouseRelease};
+    release.setScenePos(centreOf(triangle));
+    release.setButton(Qt::LeftButton);
+    QApplication::sendEvent(&scene, &release);
+}
+
+} // namespace
+
+TEST_CASE("SDK-1a a stack's row opens and closes in place when every root node is placed",
+          "[devstudio][graph-canvas][scene][sdk1a]") {
+    (void)application();
+    ZoneHarness h{sdk1aPlaced(nb2bDocument())};
+    nb2bOpen(h);
+    auto &scene = h.scene;
+    const QString hud = QStringLiteral("hud");
+    const QRectF hud_before = nodeItem(scene, hud)->sceneBoundingRect();
+    const qreal closed_height = nodeHeight(scene, hud);
+    // Every root node's item, at the place the whole draw gave it: a stack
+    // redraw may not make, destroy or move one of these.
+    std::map<QString, QGraphicsItem *> items;
+    std::map<QString, QPointF> places;
+    for (const auto &node : h.model.nodes("")) {
+        const QString id = QString::fromStdString(node.id);
+        QGraphicsItem *item = nodeItem(scene, id);
+        REQUIRE(item != nullptr);
+        items[id] = item;
+        places[id] = item->scenePos();
+    }
+    // A picked row is a selection the stack's own redraw must keep too.
+    nb2bClick(scene, centreOf(nb2bPart(scene, PelicanStudio::GraphCanvasStackRowItem, hud,
+                                       QStringLiteral("card_fill"))));
+    REQUIRE(scene.pickedLayer().has_value());
+    const auto picked = scene.pickedLayer();
+
+    // Open: the stack is drawn again in its own item; every other item and
+    // every place is the one the whole draw gave it.
+    Gs3aCounts open_counts{scene};
+    Gs3aTrace open_trace;
+    const auto open_marks = gs3aMark(scene, {hud});
+    REQUIRE(open_marks.size() > 20);
+    REQUIRE(scene.setLayerRowOpen("", "hud", "card_fill", true));
+    CHECK(open_counts.rebuilds == 0);
+    CHECK(open_trace.count("graph_redraw_index") == 1);
+    CHECK(open_trace.count("graph_redraw_lines") == 1);
+    CHECK(open_trace.count("graph_scene_repopulate") == 0);
+    CHECK(nodeHeight(scene, hud) > closed_height + PelicanStudio::GraphCanvasDrawing::LayerStageLineHeight);
+    CHECK(nodeItem(scene, hud) == items.at(hud));
+    CHECK(nodeItem(scene, hud)->sceneBoundingRect().topLeft() == hud_before.topLeft());
+    for (const auto &[id, item] : items) {
+        CHECK(nodeItem(scene, id) == item);
+        CHECK(item->scenePos() == places.at(id));
+    }
+    CHECK(gs3aMarks(scene) == open_marks);
+    REQUIRE(scene.pickedLayer().has_value());
+    CHECK(scene.pickedLayer()->input == picked->input);
+    scene.flushLayout();
+    QCoreApplication::processEvents();
+    CHECK(open_counts.rebuilds == 0);
+
+    // The open row is the document's (the session's) layout, not a detail of
+    // the item: a whole draw keeps it open, and keeps every place.
+    scene.repopulate();
+    CHECK(nodeHeight(scene, hud) > closed_height + PelicanStudio::GraphCanvasDrawing::LayerStageLineHeight);
+    for (const auto &[id, item] : items) {
+        CHECK(nodeItem(scene, id) != nullptr);
+        CHECK(nodeItem(scene, id)->scenePos() == places.at(id));
+    }
+
+    // Close: the same item and places, in the other direction.
+    Gs3aCounts close_counts{scene};
+    Gs3aTrace close_trace;
+    const auto close_marks = gs3aMark(scene, {hud});
+    REQUIRE(scene.setLayerRowOpen("", "hud", "card_fill", false));
+    CHECK(close_counts.rebuilds == 0);
+    CHECK(close_trace.count("graph_redraw_index") == 1);
+    CHECK(close_trace.count("graph_redraw_lines") == 1);
+    CHECK(close_trace.count("graph_scene_repopulate") == 0);
+    CHECK(nodeHeight(scene, hud) == closed_height);
+    CHECK(nodeItem(scene, hud)->sceneBoundingRect().topLeft() == hud_before.topLeft());
+    for (const auto &[id, item] : items) {
+        (void)item;
+        QGraphicsItem *drawn = nodeItem(scene, id);
+        REQUIRE(drawn != nullptr);
+        CHECK(drawn->scenePos() == places.at(id));
+    }
+    CHECK(gs3aMarks(scene) == close_marks);
+    gs3aSameAsRebuilt(scene);
+}
+
+TEST_CASE("SDK-1a an unplaced root node refuses the stack's redraw before anything is drawn",
+          "[devstudio][graph-canvas][scene][sdk1a]") {
+    (void)application();
+    ZoneHarness h{nb2bDocument()};
+    nb2bOpen(h);
+    auto &scene = h.scene;
+    // A node added after the whole draw, with no place in the document and
+    // no place the session has stored: opening a row makes the stack taller,
+    // and nothing may move this node but a whole draw.
+    h.document["nodes"].push_back(nb2bShape("late", "shape.rect"));
+    ++h.generation;
+    h.model.refresh();
+    (void)h.answerReads();
+    REQUIRE(std::ranges::any_of(h.model.nodes(""),
+                                [](const auto &node) { return node.id == "late"; }));
+    Gs3aCounts counts{scene};
+    Gs3aTrace trace;
+    const auto marks = gs3aMark(scene, {});
+    REQUIRE_FALSE(marks.empty());
+    REQUIRE(scene.setLayerRowOpen("", "hud", "card_fill", true));
+    CHECK(counts.rebuilds == 1);
+    CHECK(trace.count("graph_scene_repopulate") == 1);
+    CHECK(gs3aMarks(scene).empty());
+    gs3aSameAsRebuilt(scene);
+}
+
+TEST_CASE("SDK-1a a loop zone or a folded node refuses the stack's redraw",
+          "[devstudio][graph-canvas][scene][sdk1a]") {
+    (void)application();
+
+    SECTION("a loop zone beside the stack") {
+        auto document = zoneDocument(true);
+        const auto canvas = nb2bDocument();
+        for (const auto &node : canvas.at("nodes")) document["nodes"].push_back(node);
+        ZoneHarness h{std::move(document)};
+        nb2bOpen(h);
+        REQUIRE_FALSE(h.scene.zones().empty());
+        Gs3aCounts counts{h.scene};
+        Gs3aTrace trace;
+        const auto marks = gs3aMark(h.scene, {});
+        REQUIRE(h.scene.setLayerRowOpen("", "hud", "card_fill", true));
+        CHECK(counts.rebuilds == 1);
+        CHECK(trace.count("graph_scene_repopulate") == 1);
+        CHECK(gs3aMarks(h.scene).empty());
+        gs3aSameAsRebuilt(h.scene);
+    }
+
+    SECTION("a folded render pass, and no zone") {
+        auto document = nb2bDocument();
+        const auto read = gl1bRead();
+        for (const auto &node : read.at("nodes")) document["nodes"].push_back(node);
+        ZoneHarness h{std::move(document)};
+        h.plan = gl1bPlan();
+        h.open();
+        (void)h.answerReads();
+        (void)h.model.setDomainShown("canvas", true);
+        h.scene.repopulate();
+        REQUIRE(h.scene.zones().empty());
+        REQUIRE_FALSE(h.model.foldedNodes().empty());
+        Gs3aCounts counts{h.scene};
+        Gs3aTrace trace;
+        const auto marks = gs3aMark(h.scene, {});
+        REQUIRE(h.scene.setLayerRowOpen("", "hud", "card_fill", true));
+        CHECK(counts.rebuilds == 1);
+        CHECK(trace.count("graph_scene_repopulate") == 1);
+        CHECK(gs3aMarks(h.scene).empty());
+        gs3aSameAsRebuilt(h.scene);
+    }
+}
+
+TEST_CASE("SDK-1a a stack beside a pass line no graph edge carries redraws in place",
+          "[devstudio][graph-canvas][scene][sdk1a]") {
+    (void)application();
+    // A root graph with a stack whose colour is a render.image, and the
+    // rendering section's present pass reading another image. The line from
+    // that image to present is a pass-input line the plan implies: it is in
+    // the whole draw's linked set, and no graph edge carries it.
+    auto document = gl1eRead();
+    document["schema"] = "pelican.graph";
+    document["version"] = 1;
+    document["outputs"] = Json::object();
+    for (auto &node : document["nodes"]) {
+        if (node.at("id") != "shade") continue;
+        node = {{"id", "shade"},
+                {"op", "canvas.stack"},
+                {"parameters", {{"size", {320, 180}},
+                                {"layers", Json::array({{{"input", "shade__color"},
+                                                          {"name", "Color"}}})}}},
+                {"inputs", {{"shade__color", {{"node", "shade__source"}, {"port", "resource"}}},
+                            {"color", {{"node", "shade__source"}, {"port", "resource"}}}}},
+                {"outputs", Json::array({"color"})}};
+    }
+    document["nodes"].push_back({{"id", "shade__source"},
+                                 {"op", "render.image"},
+                                 {"parameters", {{"format", "R8G8B8A8_UNORM"}}},
+                                 {"outputs", Json::array({"resource"})}});
+    // The stack and its colour are placed, and the stack's only row is
+    // already open: the whole draw gives the row and the pass line, and the
+    // layer edit need not open it (a row toggle writes the placement, which
+    // would keep the model busy for the edit).
+    document["layout"] = {{"nodes",
+                           {{"shade", {{"x", 100.0}, {"y", 100.0},
+                                        {"open_rows", Json::array({"shade__color"})}}},
+                            {"shade__color", {{"x", 1000.0}, {"y", 100.0}}},
+                            {"shade__source", {{"x", 1000.0}, {"y", 300.0}}}}}};
+    ZoneHarness h{std::move(document)};
+    h.plan = gl1ePlan({"shade__color"});
+    h.authoring = gl1eAuthoring({"shade__color"});
+    h.authoring["source_digest"] = {{"hex", h.digest()}};
+    h.open();
+    (void)h.answerReads();
+    (void)h.model.setDomainShown("canvas", true);
+    h.scene.repopulate();
+    // The plan asks for the rendering section's authoring when the scene
+    // draws its project pass; answer that and draw again.
+    (void)h.answerReads();
+    h.scene.repopulate();
+    // The authoring answer asks for what the section reads; drain it before
+    // the stack is edited.
+    for (int round = 0; round < 4; ++round) (void)h.answerReads();
+    auto &scene = h.scene;
+    const QString hud = QStringLiteral("shade");
+    REQUIRE(nodeItem(scene, hud) != nullptr);
+    REQUIRE(nb2bRows(scene, hud).size() == 1);
+    // The linked set the whole draw kept holds the pass-input line: an
+    // edges-only set would not, and the in-place redraw must know that.
+    const auto pass_lines = itemsOfKind(scene, PelicanStudio::GraphCanvasPassInputEdgeItem);
+    REQUIRE(pass_lines.size() == 1);
+    CHECK(pass_lines.front()->data(PelicanStudio::NodeGraphFromNameRole).toString() ==
+          QStringLiteral("shade__color"));
+    CHECK(pass_lines.front()->data(PelicanStudio::NodeGraphToNameRole).toString() ==
+          QStringLiteral("present"));
+    // Type the open row's opacity: one NB-5 layer edit, drawn again in place
+    // with the pass-input line in its linked set.
+    const qreal opened_height = nodeHeight(scene, hud);
+    const QPointF place = nodeItem(scene, hud)->scenePos();
+    REQUIRE(scene.beginLayerOpacityEdit("", hud.toStdString(), "shade__color"));
+    scene.setInlineEditText(QStringLiteral("50"));
+    Gs3aCounts counts{scene};
+    Gs3aTrace trace;
+    typeKey(editorWidget(scene), Qt::Key_Return);
+    REQUIRE_FALSE(scene.editingInline());
+    CHECK(counts.rebuilds == 0);
+    CHECK(trace.count("graph_scene_repopulate") == 0);
+    CHECK(scene.layerShapePending("", hud.toStdString()));
+    CHECK((nodeItem(scene, hud) == nullptr || nodeItem(scene, hud)->scenePos() == place));
+    CHECK(itemsOfKind(scene, PelicanStudio::GraphCanvasPassInputEdgeItem).size() == 1);
+    const auto answer = nb5Answer(h);
+    CHECK(answer.light);
+    CHECK(counts.rebuilds == 0);
+    CHECK(trace.count("graph_scene_repopulate") == 0);
+    CHECK_FALSE(scene.layerShapePending("", hud.toStdString()));
+    CHECK(nodeHeight(scene, hud) == opened_height);
+    CHECK(nodeItem(scene, hud)->scenePos() == place);
+    CHECK(itemsOfKind(scene, PelicanStudio::GraphCanvasPassInputEdgeItem).size() == 1);
+    // Its rows, sockets and places are the whole draw's for the same document.
+    scene.clearSelection();
+    gs3aSameAsRebuilt(scene);
+    CHECK(itemsOfKind(scene, PelicanStudio::GraphCanvasPassInputEdgeItem).size() == 1);
+    CHECK(nb2bLayers(h.document, "shade").size() == 1);
+}
+
+TEST_CASE("SDK-1a a stack drawn again in place keeps the opacity a whole draw gives it",
+          "[devstudio][graph-canvas][scene][sdk1a]") {
+    (void)application();
+    ZoneHarness h{sdk1aPlaced(nb2bDocument())};
+    h.plan = {{"deactivated_graph_nodes",
+               Json::array({{{"node", "hud"}, {"feature", "fx"}, {"reason", "off"}}})}};
+    h.open();
+    (void)h.answerReads();
+    (void)h.model.setDomainShown("canvas", true);
+    h.scene.repopulate();
+    auto &scene = h.scene;
+    REQUIRE(h.model.deactivatedNode("hud") != nullptr);
+    auto *hud = nodeItem(scene, QStringLiteral("hud"));
+    REQUIRE(hud != nullptr);
+    REQUIRE(hud->opacity() == 0.45);
+    // The item is the same one a whole draw made; an in-place redraw has to
+    // set its opacity back rather than leave a stale value on it.
+    hud->setOpacity(0.1);
+    Gs3aCounts counts{scene};
+    Gs3aTrace trace;
+    const auto marks = gs3aMark(scene, {QStringLiteral("hud")});
+    QGraphicsItem *eye = nb2bPart(scene, PelicanStudio::GraphCanvasStackEyeItem,
+                                  QStringLiteral("hud"), QStringLiteral("card_fill"));
+    REQUIRE(eye != nullptr);
+    nb2bClick(scene, centreOf(eye));
+    CHECK(counts.rebuilds == 0);
+    CHECK(trace.count("graph_scene_repopulate") == 0);
+    CHECK(h.scene.layerShapePending("", "hud"));
+    const auto answer = nb5Answer(h);
+    CHECK(answer.light);
+    CHECK(counts.rebuilds == 0);
+    CHECK(trace.count("graph_scene_repopulate") == 0);
+    CHECK(nodeItem(scene, QStringLiteral("hud"))->opacity() == 0.45);
+    CHECK(gs3aMarks(scene) == marks);
+    // The press picked the stack; a whole draw starts unpicked.
+    scene.clearSelection();
+    gs3aSameAsRebuilt(scene);
+    CHECK(nodeItem(scene, QStringLiteral("hud"))->opacity() == 0.45);
+}
+
+TEST_CASE("SDK-1a a triangle pressed draws its row from the event loop, in place",
+          "[devstudio][graph-canvas][scene][sdk1a]") {
+    (void)application();
+    ZoneHarness h{sdk1aPlaced(nb2bDocument())};
+    nb2bOpen(h);
+    auto &scene = h.scene;
+    const QString hud = QStringLiteral("hud");
+    const qreal closed_height = nodeHeight(scene, hud);
+    Gs3aCounts counts{scene};
+    Gs3aTrace trace;
+    const auto marks = gs3aMark(scene, {hud});
+    sdk1aPressTriangle(scene, hud, QStringLiteral("card_fill"));
+    // The press queued the drawing: the old rows are still what is drawn.
+    CHECK(counts.rebuilds == 0);
+    CHECK(nodeHeight(scene, hud) == closed_height);
+    CHECK(gs3aMarks(scene) == marks);
+    // Nothing of the row's opening has gone out while the hand is down.
+    CHECK(h.model.canEdit());
+    sdk1aReleaseTriangle(scene, hud, QStringLiteral("card_fill"));
+    QCoreApplication::processEvents();
+    CHECK(counts.rebuilds == 0);
+    CHECK(trace.count("graph_scene_repopulate") == 0);
+    CHECK(nodeHeight(scene, hud) > closed_height);
+    CHECK(gs3aMarks(scene) == marks);
+    // The press picked the stack; a whole draw starts unpicked.
+    scene.clearSelection();
+    gs3aSameAsRebuilt(scene);
+}
+
+TEST_CASE("SDK-1a a layer deleted ahead of the document draws its line away and hides it",
+          "[devstudio][graph-canvas][scene][sdk1a]") {
+    (void)application();
+    ZoneHarness h{sdk1aPlaced(nb2bDocument())};
+    nb2bOpen(h);
+    auto &scene = h.scene;
+    const QString hud = QStringLiteral("hud");
+    const QString dot = QStringLiteral("dot_fill");
+    QGraphicsPathItem *line = gs3aEdge(scene, dot, hud, dot);
+    REQUIRE(line != nullptr);
+    REQUIRE(line->isVisible());
+    REQUIRE(nodeItem(scene, hud) != nullptr);
+    // Pick the row and delete it: the layer is drawn away before the engine
+    // answers, and the old line has no socket to end on meanwhile.
+    nb2bClick(scene, centreOf(nb2bPart(scene, PelicanStudio::GraphCanvasStackRowItem, hud, dot)));
+    REQUIRE(scene.pickedLayer().has_value());
+    Gs3aCounts counts{scene};
+    Gs3aTrace trace;
+    const auto marks = gs3aMark(scene, {hud});
+    REQUIRE(scene.deletePickedLayer());
+    CHECK(counts.rebuilds == 0);
+    CHECK(trace.count("graph_scene_repopulate") == 0);
+    CHECK(h.scene.layerShapePending("", "hud"));
+    CHECK(nb2bPart(scene, PelicanStudio::GraphCanvasStackRowItem, hud, dot) == nullptr);
+    QGraphicsPathItem *hidden = gs3aEdge(scene, dot, hud, dot);
+    REQUIRE(hidden != nullptr);
+    CHECK_FALSE(hidden->isVisible());
+    CHECK(gs3aMarks(scene) == marks);
+    // The document still has the layer; only the drawing ahead of it has
+    // removed the row and hidden the line into its socket.
+    CHECK(nb2bLayers(h.document, "hud").contains("dot_fill"));
+}
+TEST_CASE("SDK-1a the document's answer after an in-place shape keeps the next follow from a whole draw",
+          "[devstudio][graph-canvas][scene][sdk1a]") {
+    (void)application();
+    ZoneHarness h{sdk1aPlaced(nb2bDocument())};
+    nb2bOpen(h);
+    auto &scene = h.scene;
+    const QString hud = QStringLiteral("hud");
+    const QString card = QStringLiteral("card_fill");
+    // A name, in place: the shape the engine is asked to keep.
+    REQUIRE(scene.beginLayerNameEdit("", "hud", "card_fill"));
+    scene.setInlineEditText(QStringLiteral("Front card"));
+    REQUIRE(scene.commitInlineEdit());
+    CHECK(scene.layerShapePending("", "hud"));
+    REQUIRE(nb2bLayers(h.document, "hud").contains(card));
+    // The answer commits exactly the shape drawn ahead: followDocument has
+    // nothing to draw again, and with the stack's drawn parameters kept it
+    // stays the stack-only path instead of a whole draw.
+    Gs3aCounts counts{scene};
+    Gs3aTrace trace;
+    // While the shape is still in the air, a follow compares what it draws
+    // with the stack's drawn parameters and has nothing to route again.
+    REQUIRE(h.model.busy());
+    CHECK(scene.followDocument());
+    CHECK(trace.count("graph_redraw_index") == 0);
+    CHECK(trace.count("graph_redraw_lines") == 0);
+    CHECK(scene.layerShapePending("", "hud"));
+    // The answer commits exactly the shape drawn ahead: followDocument has
+    // nothing to draw again, and with the stack's drawn parameters kept it
+    // stays the stack-only path instead of a whole draw.
+    (void)nb5Answer(h);
+    CHECK(counts.rebuilds == 0);
+    CHECK(trace.count("graph_scene_repopulate") == 0);
+    CHECK(counts.redrawn.empty());
+    CHECK_FALSE(scene.layerShapePending("", "hud"));
+    CHECK(nb2bLayers(h.document, "hud").contains(card));
+}

@@ -1116,6 +1116,25 @@ class GraphCanvasScene final : public QGraphicsScene {
     // The stack's body drawn again where it stands (false: it is not a node
     // of the scope on screen, and nothing was drawn).
     bool redrawStackNode(const std::string &scope, const std::string &stack);
+    // SDK-1a: the four Builder setter groups every draw shares (picked layer,
+    // thumbnails, open rows, layer shape). setContainer stays at its caller.
+    void configureBuilder(GraphCanvasDrawing::Builder &drawing) const;
+    // SDK-1a: one node, drawn again in its own item. The prepared entry
+    // borrows the node pointer, so the caller's node vector stays alive for
+    // the draw (it is synchronous).
+    struct RootRedraw {
+        QGraphicsPathItem *item = nullptr;
+        GraphCanvasDrawing::Node entry;
+    };
+    // SDK-1a: the two shared steps of an in-place redraw, run synchronously
+    // and storing nothing. drawNodesInPlace sets rebuilding_, invalidates the
+    // routing index, draws each entry in its item, sets its opacity and its
+    // band; routeRedrawnNodes rebuilds the index, puts the domain stubs on
+    // each node's sockets and reroutes its lines.
+    void drawNodesInPlace(GraphCanvasDrawing::Builder &drawing, const std::string &scope,
+                          std::vector<RootRedraw> &redraws);
+    void routeRedrawnNodes(GraphCanvasDrawing::Builder &drawing, const std::string &scope,
+                           const std::vector<std::string> &ids);
     // The shape just made drawn: now, or -- under a press -- from the event
     // loop; the whole scene when the stack is not drawn by itself.
     void drawLayerShape(const std::string &scope, const std::string &stack);
