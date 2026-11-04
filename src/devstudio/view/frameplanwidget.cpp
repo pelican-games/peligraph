@@ -88,6 +88,23 @@ constexpr int GpuTimingPollIntervalMs = 1000;
 // UX-6b, decision 2: under this zoom a node's GPU time is its tooltip.
 constexpr qreal GpuTimingReadableScale = 0.6;
 
+// UI-1a: Fusion gives a plain button an 80 px minimum width. The control
+// rows only need the text plus a little padding, and the extra 30-40 px per
+// button is what kept the window floor above the desktop budget.
+void makeCompactButton(QPushButton *button) {
+    button->setStyleSheet(QStringLiteral("padding: 0px 4px;"));
+}
+
+// UI-1a: a label whose whole text can be longer than the row it sits in. The
+// layout may clip it (QSizePolicy::Ignored), so the tooltip and the accessible
+// description keep the words that are not on screen. QLabel has no
+// textChanged, so every path that writes one of these labels calls this.
+void setClippedLabelText(QLabel *label, const QString &text) {
+    label->setText(text);
+    label->setToolTip(text);
+    label->setAccessibleDescription(text);
+}
+
 std::size_t gpuTimingCount(const QJsonObject &object,
                            const QString &field) {
     const QJsonValue value = object.value(field);
@@ -766,10 +783,17 @@ struct FramePlanWidget::Impl {
         QObject::connect(plan_wait_timer, &QTimer::timeout, &owner,
                          [this] { planWaitTimedOut(); });
 
+        // UI-1a: two rows. Row 1 is refreshing, history and choosing what the
+        // plan shows; row 2 is the actions about the plan itself. The one row
+        // of everything made the tab's floor wider than the window budget.
         auto *toolbar = new QHBoxLayout;
+        toolbar->setObjectName(QStringLiteral("toolbar_row"));
         toolbar_row = toolbar;
+        auto *toolbar_tools = new QHBoxLayout;
+        toolbar_tools->setObjectName(QStringLiteral("frame_plan_tools_row"));
         refresh = new QPushButton(owner.tr("Refresh"), &owner);
         refresh->setObjectName(QStringLiteral("pelican.framePlanRefresh"));
+        makeCompactButton(refresh);
         refresh->setToolTip(owner.tr(
             "Fetch get_frame_plan once. The multi-thousand-line response is "
             "not polled every frame because transfer, parsing, and rebuilding "
@@ -787,6 +811,9 @@ struct FramePlanWidget::Impl {
         target->setObjectName(QStringLiteral("pelican.framePlanTarget"));
         target->setInsertPolicy(QComboBox::NoInsert);
         target->setMinimumContentsLength(18);
+        // UI-1a: a long target name clips the combo rather than setting the
+        // row's floor.
+        target->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
         target->setToolTip(owner.tr(
             "Whole frame shows every pass, and every declared target no pass "
             "writes as a node of its own. Choose one logical render target "
@@ -814,12 +841,10 @@ struct FramePlanWidget::Impl {
         order_nodes->setToolTip(owner.tr(
             "The order of the plan's nodes (data dependencies still decide). The same as "
             "Order… on a pass of the rendering section in the Graph."));
-        toolbar->addWidget(order_nodes);
         QObject::connect(order_nodes, &QPushButton::clicked, &owner, [this] { orderNodes(); });
         auto *edit_task = new QPushButton(owner.tr("Edit task"), &owner);
         edit_task->setObjectName(QStringLiteral("pelican.framePlanEditTask"));
         edit_task_button = edit_task;
-        toolbar->addWidget(edit_task);
         QObject::connect(edit_task, &QPushButton::clicked, &owner, [this] {
             const auto &selected = logical_scene->selectedNode();
             // GL-5c, decision 3: a task a render.compute node made is the
@@ -839,7 +864,6 @@ struct FramePlanWidget::Impl {
         auto *edit_pass = new QPushButton(owner.tr("Edit pass"), &owner);
         edit_pass->setObjectName(QStringLiteral("pelican.framePlanEditPresetPass"));
         edit_pass_button = edit_pass;
-        toolbar->addWidget(edit_pass);
         QObject::connect(edit_pass, &QPushButton::clicked, &owner, [this] {
             const auto &selected = logical_scene->selectedNode();
             // GL-5c, decision 3: a pass the Graph edits opens there.
@@ -858,38 +882,64 @@ struct FramePlanWidget::Impl {
             "Declare a render target. The same form as the Graph's New render target… (a "
             "render.target_ref's combo); a double-click on a resource edits it, as Edit "
             "target… on its reference in the Graph does."));
-        toolbar->addWidget(new_target);
         auto *new_material_pass =
             new QPushButton(owner.tr("Add material pass..."), &owner);
         new_material_pass->setObjectName(
             QStringLiteral("pelican.framePlanAddMaterialPass"));
         add_material_button = new_material_pass;
-        toolbar->addWidget(new_material_pass);
-        toolbar->addWidget(makePanelHelpButton(
+        auto *help = makePanelHelpButton(
             &owner, "pelican.framePlan.help", ManualFramePlanAnchor,
             owner.tr("Shift-drag: connect resources. The snapshot updates "
                      "only when the engine connects or Refresh is pressed; "
-                     "it is not polled per frame.")));
+                     "it is not polled per frame."));
+        toolbar->addWidget(help);
         layout->addLayout(toolbar);
+
+        // UI-1a: Row 2. The stretch comes last, so the five actions stay on
+        // the left where the one row had them; the order is the one the
+        // design names.
+        toolbar_tools->addWidget(new_material_pass);
+        toolbar_tools->addWidget(order_nodes);
+        toolbar_tools->addWidget(edit_task);
+        toolbar_tools->addWidget(edit_pass);
+        toolbar_tools->addWidget(new_target);
+        toolbar_tools->addStretch(1);
+        layout->addLayout(toolbar_tools);
+
+        // UI-1a: tab order follows the rows. Undo and Redo are spliced between
+        // Refresh and Filter by setRenderHistoryActions, where they are made.
+        QWidget::setTabOrder(refresh, filter);
+        QWidget::setTabOrder(filter, target);
+        QWidget::setTabOrder(target, depth);
+        QWidget::setTabOrder(depth, help);
+        QWidget::setTabOrder(help, new_material_pass);
+        QWidget::setTabOrder(new_material_pass, order_nodes);
+        QWidget::setTabOrder(order_nodes, edit_task);
+        QWidget::setTabOrder(edit_task, edit_pass);
+        QWidget::setTabOrder(edit_pass, new_target);
 
         status = new QLabel(&owner);
         status->setObjectName(QStringLiteral("pelican.framePlanStatus"));
         status->setTextInteractionFlags(Qt::TextSelectableByMouse);
         applyPanelNoticeStyle(status);
+        // UI-1a: the notice can be a whole refusal. It clips, and its whole
+        // text is its tooltip (setPanelNotice).
+        status->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
         status->hide();
         // Q-13: the status row, and Reload beside it for the one refusal a
         // second try did not get past.
         auto *status_row = new QHBoxLayout;
+        status_row->setObjectName(QStringLiteral("frame_plan_status_row"));
         status_row->setContentsMargins(0, 0, 0, 0);
         status_row->addWidget(status, 1);
         perf_summary = new QLabel(&owner);
         perf_summary->setObjectName(QStringLiteral("pelican.framePlanPerf"));
         perf_summary->setFont(studioSmallFont());
         perf_summary->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        perf_summary->setToolTip(owner.tr(
-            "The frame's GPU time (get_status, the average over the engine's window) and the "
-            "frame plan's passes, barriers and alias groups"));
-        status_row->addWidget(perf_summary);
+        // UI-1a: a long plan line clips; its whole text is its tooltip and
+        // accessible description (setPerfLines).
+        perf_summary->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        status_row->addWidget(perf_summary, 1);
         perf_delta = new QLabel(&owner);
         perf_delta->setObjectName(QStringLiteral("pelican.framePlanPerfDelta"));
         perf_delta->setFont(studioSmallFont());
@@ -5700,9 +5750,8 @@ void FramePlanWidget::setShadersReloadedAction(std::function<void()> reloaded) {
 }
 
 void FramePlanWidget::setPerfLines(const QString &summary, const QString &delta) {
-    impl_->perf_summary->setText(summary);
-    impl_->perf_delta->setText(delta);
-    if (!delta.isEmpty()) impl_->perf_delta->setToolTip(delta);
+    setClippedLabelText(impl_->perf_summary, summary);
+    setClippedLabelText(impl_->perf_delta, delta);
 }
 
 void FramePlanWidget::setDropTransferSourceAction(DropTransferSourceAction action) {
@@ -5969,13 +6018,19 @@ void FramePlanWidget::setRenderHistoryActions(QAction *undo, QAction *redo) {
     // The buttons: after Refresh, each firing its action and following its
     // enabled state and its tooltip (the item the next press is about).
     int index = impl_->toolbar_row->indexOf(impl_->refresh) + 1;
+    // UI-1a: Undo and Redo join Row 1 between Refresh and Filter. Splice them
+    // into the tab order the row was built with.
+    QWidget *tab_previous = impl_->refresh;
     for (const auto &entry :
          {std::tuple{undo, tr("Undo"), QStringLiteral("pelican.framePlan.undoButton")},
           std::tuple{redo, tr("Redo"), QStringLiteral("pelican.framePlan.redoButton")}}) {
         QAction *action = std::get<0>(entry);
         auto *button = new QPushButton(std::get<1>(entry), this);
         button->setObjectName(std::get<2>(entry));
+        makeCompactButton(button);
         impl_->toolbar_row->insertWidget(index++, button);
+        QWidget::setTabOrder(tab_previous, button);
+        tab_previous = button;
         const auto follow = [button, action] {
             button->setEnabled(action->isEnabled());
             button->setToolTip(action->toolTip());
@@ -5984,6 +6039,7 @@ void FramePlanWidget::setRenderHistoryActions(QAction *undo, QAction *redo) {
         connect(action, &QAction::changed, button, follow);
         connect(button, &QPushButton::clicked, action, &QAction::trigger);
     }
+    QWidget::setTabOrder(tab_previous, impl_->filter);
 }
 
 void FramePlanWidget::showRenderHistoryLine(const QString &line) {

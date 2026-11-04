@@ -5174,7 +5174,8 @@ TEST_CASE(
     (void)application();
     EmbeddedViewport viewport;
     FramePlanWidget widget{&viewport};
-    widget.resize(900, 640);
+    // UI-1a: the row minimum no longer widens this; F must fit above the zoom floor.
+    widget.resize(2000, 800);
     widget.show();
     widget.receiveResult(QByteArray::fromStdString(
         capturedRuntimeFramePlan().dump()));

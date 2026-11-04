@@ -118,6 +118,23 @@ QString qtext(const std::string &value) {
     return QString::fromStdString(value);
 }
 
+// UI-1a: Fusion gives a plain button an 80 px minimum width. The control
+// rows only need the text plus a little padding, and the extra 30-40 px per
+// button is what kept the window floor above the desktop budget.
+void makeCompactButton(QPushButton *button) {
+    button->setStyleSheet(QStringLiteral("padding: 0px 4px;"));
+}
+
+// UI-1a: a label whose whole text can be longer than the row it sits in. The
+// layout may clip it (QSizePolicy::Ignored), so the tooltip and the accessible
+// description keep the words that are not on screen. QLabel has no
+// textChanged, so every path that writes one of these labels calls this.
+void setClippedLabelText(QLabel *label, const QString &text) {
+    label->setText(text);
+    label->setToolTip(text);
+    label->setAccessibleDescription(text);
+}
+
 using GraphCanvasDrawing::numberText;
 using GraphCanvasDrawing::portSummary;
 
@@ -8367,52 +8384,51 @@ struct GraphCanvasWidget::Impl {
         auto *layout = new QVBoxLayout(&view);
         layout->setContentsMargins(6, 6, 6, 6);
 
-        auto *controls = new QHBoxLayout;
-        controls->addWidget(new QLabel(QObject::tr("Scope:"), &view));
+        // UI-1a: two rows. The one row of everything made the Graph's own
+        // floor wider than a 1536-pixel desktop; row 1 names the scope and the
+        // values, row 2 shows and moves the canvas. The layouts are named so
+        // the layout test can say which row a control is on, and the tab order
+        // is set below, once Undo and Redo exist.
+        auto *controls_top = new QHBoxLayout;
+        controls_top->setObjectName(QStringLiteral("controls_top"));
+        auto *controls_tools = new QHBoxLayout;
+        controls_tools->setObjectName(QStringLiteral("controls_tools"));
+
+        controls_top->addWidget(new QLabel(QObject::tr("Scope:"), &view));
         scopes = new QComboBox(&view);
         scopes->setObjectName(QStringLiteral("pelican.graphCanvasScope"));
-        controls->addWidget(scopes);
+        // UI-1a: a long definition name must clip, not decide the row's floor.
+        scopes->setMinimumContentsLength(12);
+        scopes->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        controls_top->addWidget(scopes);
         breadcrumb = new QLabel(&view);
         breadcrumb->setObjectName(QStringLiteral("pelican.graphCanvasBreadcrumb"));
-        controls->addWidget(breadcrumb);
+        // UI-1a: the trail can be five nested scopes long. It clips (the whole
+        // text is its tooltip), but keeps a small width of its own so a narrow
+        // window still shows where the canvas is.
+        breadcrumb->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        // UI-1a: the breadcrumb is the row's stretch item, so it gets all the
+        // width above the floor; at the floor it only has to stay in the row.
+        breadcrumb->setMinimumWidth(16);
+        controls_top->addWidget(breadcrumb, 1);
         // LP-4c, decision 5: inside a loop's body, which branch's body it is.
         loop_branch = new QComboBox(&view);
         loop_branch->setObjectName(QStringLiteral("pelican.graphCanvasLoopBranch"));
         loop_branch->setToolTip(QObject::tr("The branch of the loop whose body is shown"));
         loop_branch->hide();
-        controls->addWidget(loop_branch);
+        controls_top->addWidget(loop_branch);
         shared_mark = new QLabel(&view);
         shared_mark->setObjectName(QStringLiteral("pelican.graphCanvasShared"));
         shared_mark->setStyleSheet(QStringLiteral("color: #b9770e;"));
         shared_mark->hide();
-        controls->addWidget(shared_mark);
-        // GL-1, decision 5: which domains the root canvas draws. Render only
-        // to begin with; session state, never written to the document.
-        for (const auto &domain : GraphCanvasModel::domainNames())
-            if (domain != "render") model.setDomainShown(domain, false);
-        // NB-1 (design_node_bodies 2.6): a document opened with canvas nodes
-        // shows Canvas too, rather than cutting them to `← canvas (N)`.
-        model.followCanvasDomainOfDocument();
-        controls->addWidget(new QLabel(QObject::tr("Show:"), &view));
-        for (const auto &domain : GraphCanvasModel::domainNames()) {
-            const QString label = domain == "ui" ? QStringLiteral("UI")
-                                                 : qtext(domain).left(1).toUpper() + qtext(domain).mid(1);
-            auto *box = new QCheckBox(label, &view);
-            box->setObjectName(QStringLiteral("pelican.graphCanvasShow.") + qtext(domain));
-            box->setToolTip(QObject::tr("Draw the root's %1 nodes").arg(qtext(domain)));
-            box->setChecked(model.domainShown(domain));
-            controls->addWidget(box);
-            domain_boxes.emplace_back(domain, box);
-            QObject::connect(box, &QCheckBox::toggled, &guard, [this, domain](bool on) {
-                if (!model.setDomainShown(domain, on)) return;
-                dispatch();
-            });
-        }
-        controls->addStretch(1);
-        controls->addWidget(new QLabel(QObject::tr("Values from:"), &view));
+        controls_top->addWidget(shared_mark);
+        controls_top->addWidget(new QLabel(QObject::tr("Values from:"), &view));
         value_instances = new QComboBox(&view);
         value_instances->setObjectName(QStringLiteral("pelican.graphCanvasValues"));
-        controls->addWidget(value_instances);
+        // UI-1a: as the Scope combo: a long live input name does not set the row.
+        value_instances->setMinimumContentsLength(12);
+        value_instances->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        controls_top->addWidget(value_instances);
         // Live is the switch between "the overlay follows the document" and
         // "the overlay follows the running engine". It reads on the report
         // slots, so a number that is moving cannot delay or cancel an edit.
@@ -8420,11 +8436,39 @@ struct GraphCanvasWidget::Impl {
         live->setObjectName(QStringLiteral("pelican.graphCanvasLive"));
         live->setToolTip(QObject::tr(
             "Re-read the node values four times a second while the engine runs."));
-        controls->addWidget(live);
+        controls_top->addWidget(live);
         refresh = new QPushButton(QObject::tr("Refresh"), &view);
         refresh->setObjectName(QStringLiteral("pelican.graphCanvasRefresh"));
-        controls->addWidget(refresh);
-        layout->addLayout(controls);
+        makeCompactButton(refresh);
+        controls_top->addWidget(refresh);
+        layout->addLayout(controls_top);
+
+        // GL-1, decision 5: which domains the root canvas draws. Render only
+        // to begin with; session state, never written to the document.
+        for (const auto &domain : GraphCanvasModel::domainNames())
+            if (domain != "render") model.setDomainShown(domain, false);
+        // NB-1 (design_node_bodies 2.6): a document opened with canvas nodes
+        // shows Canvas too, rather than cutting them to `← canvas (N)`.
+        model.followCanvasDomainOfDocument();
+        controls_tools->addWidget(new QLabel(QObject::tr("Show:"), &view));
+        for (const auto &domain : GraphCanvasModel::domainNames()) {
+            const QString label = domain == "ui" ? QStringLiteral("UI")
+                                                 : qtext(domain).left(1).toUpper() + qtext(domain).mid(1);
+            auto *box = new QCheckBox(label, &view);
+            box->setObjectName(QStringLiteral("pelican.graphCanvasShow.") + qtext(domain));
+            box->setToolTip(QObject::tr("Draw the root's %1 nodes").arg(qtext(domain)));
+            box->setChecked(model.domainShown(domain));
+            controls_tools->addWidget(box);
+            domain_boxes.emplace_back(domain, box);
+            QObject::connect(box, &QCheckBox::toggled, &guard, [this, domain](bool on) {
+                if (!model.setDomainShown(domain, on)) return;
+                dispatch();
+            });
+        }
+        // The stretch comes before Auto layout / Fit view / Recompute once,
+        // which are inserted after it below and so sit at the row's right.
+        controls_tools->addStretch(1);
+        layout->addLayout(controls_tools);
         // UX-6b, decisions 1 and 3: one line each, read only. The row keeps
         // its height whatever it says, and a long line is cut rather than
         // widening the tab: a line arriving mid-drag must not move the canvas
@@ -8437,10 +8481,10 @@ struct GraphCanvasWidget::Impl {
         perf_summary->setObjectName(QStringLiteral("pelican.graphCanvasPerf"));
         perf_summary->setFont(studioSmallFont());
         perf_summary->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        perf_summary->setToolTip(QObject::tr(
-            "The frame's GPU time (get_status, the average over the engine's window) and the "
-            "frame plan's passes, barriers and alias groups"));
-        perf_row->addWidget(perf_summary);
+        // UI-1a: the summary can be a long plan line. It clips, and its whole
+        // text is its tooltip and accessible description (setPerfLines).
+        perf_summary->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        perf_row->addWidget(perf_summary, 1);
         perf_delta = new QLabel(&view);
         perf_delta->setObjectName(QStringLiteral("pelican.graphCanvasPerfDelta"));
         perf_delta->setFont(studioSmallFont());
@@ -8707,7 +8751,10 @@ struct GraphCanvasWidget::Impl {
             view.addAction(action);
             auto *button = new QPushButton(label, &view);
             button->setObjectName(name + QStringLiteral("Button"));
-            controls->insertWidget(controls->count() - 1, button);
+            makeCompactButton(button);
+            // UI-1a: Undo and Redo keep their place before Refresh, at the end
+            // of Row 1.
+            controls_top->insertWidget(controls_top->indexOf(refresh), button);
             QObject::connect(button, &QPushButton::clicked, action, &QAction::trigger);
             QObject::connect(action, &QAction::changed, button,
                              [button, action] { button->setEnabled(action->isEnabled()); });
@@ -8751,7 +8798,7 @@ struct GraphCanvasWidget::Impl {
             button->setToolTip(action == auto_layout_action
                                    ? QObject::tr("Place this scope's nodes again")
                                    : QObject::tr("Show the whole graph (F)"));
-            controls->insertWidget(controls->count() - 1, button);
+            controls_tools->addWidget(button);
             QObject::connect(button, &QPushButton::clicked, action, &QAction::trigger);
             QObject::connect(action, &QAction::changed, button,
                              [button, action] { button->setEnabled(action->isEnabled()); });
@@ -8772,7 +8819,7 @@ struct GraphCanvasWidget::Impl {
             auto *button = new QPushButton(QObject::tr("Recompute once"), &view);
             button->setObjectName(recompute_once_action->objectName() + QStringLiteral("Button"));
             button->setToolTip(recompute_once_action->toolTip());
-            controls->insertWidget(controls->count() - 1, button);
+            controls_tools->addWidget(button);
             QObject::connect(button, &QPushButton::clicked, recompute_once_action,
                              &QAction::trigger);
             QObject::connect(recompute_once_action, &QAction::changed, &guard, [this, button] {
@@ -8781,6 +8828,32 @@ struct GraphCanvasWidget::Impl {
             });
             button->setEnabled(false);
             button->setVisible(false);
+        }
+        // UI-1a: the tab order follows the rows' visual order: Row 1, then
+        // Row 2. Labels are not focusable and are skipped; every focusable
+        // control here is named, so the layout test can walk this same chain.
+        {
+            QWidget *previous = scopes;
+            const auto next = [&previous](QWidget *widget) {
+                if (widget == nullptr) return;
+                QWidget::setTabOrder(previous, widget);
+                previous = widget;
+            };
+            next(loop_branch);
+            next(value_instances);
+            next(live);
+            next(view.findChild<QPushButton *>(
+                QStringLiteral("pelican.graphCanvas.undoButton")));
+            next(view.findChild<QPushButton *>(
+                QStringLiteral("pelican.graphCanvas.redoButton")));
+            next(refresh);
+            for (const auto &entry : domain_boxes) next(entry.second);
+            next(view.findChild<QPushButton *>(
+                QStringLiteral("pelican.graphCanvas.autoLayoutButton")));
+            next(view.findChild<QPushButton *>(
+                QStringLiteral("pelican.graphCanvas.fitViewButton")));
+            next(view.findChild<QPushButton *>(
+                QStringLiteral("pelican.graphCanvas.recomputeOnceButton")));
         }
         tie_action = new QAction(QObject::tr("Tie together"), &view);
         tie_action->setObjectName(
@@ -11088,7 +11161,7 @@ struct GraphCanvasWidget::Impl {
         scopes->setCurrentIndex(index < 0 ? 0 : index);
         QStringList trail;
         for (const auto &step : model.displayTrail()) trail.push_back(qtext(step));
-        breadcrumb->setText(trail.join(QStringLiteral(" / ")));
+        setClippedLabelText(breadcrumb, trail.join(QStringLiteral(" / ")));
         syncLoopBranch();
         syncDomainFilter();
     }
@@ -13276,7 +13349,7 @@ GraphCanvasWidget::~GraphCanvasWidget() {
 }
 
 void GraphCanvasWidget::setPerfLines(const QString &summary, const QString &delta) {
-    impl_->perf_summary->setText(summary);
+    setClippedLabelText(impl_->perf_summary, summary);
     impl_->perf_delta->setText(delta);
     if (!delta.isEmpty()) impl_->perf_delta->setToolTip(delta);
 }

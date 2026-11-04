@@ -8814,7 +8814,7 @@ TEST_CASE("UX-1 Add branch gives the branch a body of its own, and the chosen ta
 }
 
 // Decision 5: the two entries the canvas menu had to itself.
-TEST_CASE("UX-1 Auto layout and Fit view stand in the Graph tab's row beside Undo and Redo",
+TEST_CASE("UX-1 Auto layout and Fit view stand in the Graph tab's tools row, below Undo and Redo",
           "[devstudio][graph-canvas][scene][ux1]") {
     (void)application();
     RecordedCapability transport;
@@ -8843,10 +8843,12 @@ TEST_CASE("UX-1 Auto layout and Fit view stand in the Graph tab's row beside Und
     REQUIRE(fit != nullptr);
     CHECK(arrange->text() == QStringLiteral("Auto layout"));
     CHECK(fit->text() == QStringLiteral("Fit view"));
-    // In the row, after Redo.
-    CHECK(std::abs(arrange->geometry().center().y() - undo->geometry().center().y()) <= 2);
-    CHECK(arrange->x() > redo->x());
+    // UI-1a: the two view actions moved to the second row, after the Show
+    // boxes; Undo and Redo stay on the first. Both keep their order in the row.
+    CHECK(arrange->geometry().center().y() > undo->geometry().center().y());
+    CHECK(std::abs(arrange->geometry().center().y() - fit->geometry().center().y()) <= 2);
     CHECK(fit->x() > arrange->x());
+    CHECK(std::abs(redo->geometry().center().y() - undo->geometry().center().y()) <= 2);
 
     // The menu's own actions.
     auto *arrange_action = widget.findChild<QAction *>(QStringLiteral("pelican.graphCanvas.autoLayout"));
