@@ -1933,6 +1933,13 @@ endif()
 pelican_define_test(curve_test GROUP core_foundation pelican_core)
 # OSC-1a: declared live inputs, the frame freeze, and graph read validation.
 pelican_define_test(liveinputs_test pelican_core)
+if(PELICAN_WITH_OSC)
+# OSC-2a: packet parsing, profile live bindings, and the receive/freeze path.
+pelican_define_test(osc_input_test pelican_core)
+else()
+# OSC-2a: the OFF build must refuse any live key through the real load path.
+pelican_define_test(osc_off_test pelican_core)
+endif()
 # CV-1: the catalog lists pelican.canvas in the builds that carry it.
 target_compile_definitions(pelican_test_curve_test PRIVATE
     PELICAN_WITH_CANVAS=$<BOOL:${PELICAN_WITH_CANVAS}>)

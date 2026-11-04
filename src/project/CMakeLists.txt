@@ -100,6 +100,7 @@ target_compile_definitions(pelican_project PUBLIC
     PELICAN_WITH_VAT=$<BOOL:${PELICAN_WITH_VAT}>
     PELICAN_WITH_SEQPLAYER=$<BOOL:${PELICAN_WITH_SEQPLAYER}>
     PELICAN_WITH_CANVAS=$<BOOL:${PELICAN_WITH_CANVAS}>
+    PELICAN_WITH_OSC=$<BOOL:${PELICAN_WITH_OSC}>
 )
 if(PELICAN_WITH_ANIMATION)
 target_sources(pelican_project PRIVATE posegraphmodule.cpp)

@@ -192,12 +192,13 @@ double clampTo(const LiveInputSpec &spec, double value, bool &clamped) {
     return value;
 }
 
-LiveInputSnapshot snapshotOf(const LiveInputSpec &spec, double value, bool from_rpc,
-                             std::uint64_t changed_frame, bool clamped) {
+LiveInputSnapshot snapshotOf(const LiveInputSpec &spec, double value,
+                             LiveInputSource source, std::uint64_t changed_frame,
+                             bool clamped) {
     LiveInputSnapshot snapshot;
     snapshot.spec = spec;
     snapshot.value = value;
-    snapshot.from_rpc = from_rpc;
+    snapshot.source = source;
     snapshot.changed_frame = changed_frame;
     snapshot.clamped = clamped;
     return snapshot;
@@ -212,6 +213,15 @@ std::string_view liveInputTypeName(LiveInputType type) noexcept {
     case LiveInputType::boolean: return "bool";
     }
     return "float";
+}
+
+std::string_view liveInputSourceName(LiveInputSource source) noexcept {
+    switch (source) {
+    case LiveInputSource::none: return "default";
+    case LiveInputSource::rpc: return "rpc";
+    case LiveInputSource::osc: return "osc";
+    }
+    return "default";
 }
 
 LiveInputs::LiveInputs() {
@@ -269,6 +279,28 @@ std::vector<LiveInputSpec> LiveInputs::declarations() const {
     return specs_;
 }
 
+bool LiveInputs::normalizeValue(const LiveInputSpec &spec, double value,
+                                StagedWrite &out) {
+    if (!std::isfinite(value)) return false;
+    switch (spec.type) {
+    case LiveInputType::floating:
+        break;
+    case LiveInputType::integer:
+        // A batch value is normally already rounded by the producer; an
+        // arbitrary double must not be quietly truncated here.
+        if (std::trunc(value) != value) return false;
+        if (value < static_cast<double>(std::numeric_limits<std::int32_t>::min()) ||
+            value > static_cast<double>(std::numeric_limits<std::int32_t>::max()))
+            return false;
+        break;
+    case LiveInputType::boolean:
+        if (value != 0.0 && value != 1.0) return false;
+        break;
+    }
+    out.value = clampTo(spec, value, out.clamped);
+    return true;
+}
+
 std::size_t LiveInputs::stageValues(const nlohmann::json &values) {
     std::scoped_lock lock{mutex_};
     if (replaying_) {
@@ -278,12 +310,7 @@ std::size_t LiveInputs::stageValues(const nlohmann::json &values) {
     }
     if (!values.is_object())
         refuse("live_input.type@1", "values must be an object of input names");
-    struct Staged {
-        std::size_t index = 0;
-        double value = 0.0;
-        bool clamped = false;
-    };
-    std::vector<Staged> staged;
+    std::vector<StagedWrite> staged;
     staged.reserve(values.size());
     for (const auto &[name, value] : values.items()) {
         const auto found = indices_.find(name);
@@ -291,7 +318,6 @@ std::size_t LiveInputs::stageValues(const nlohmann::json &values) {
             refuse("live_input.unknown@1", "no live input named '" + name + "'");
         const auto &spec = specs_[found->second];
         double staged_value = 0.0;
-        bool clamped = false;
         switch (spec.type) {
         case LiveInputType::floating:
             if (!value.is_number() || !std::isfinite(value.get<double>()))
@@ -314,14 +340,55 @@ std::size_t LiveInputs::stageValues(const nlohmann::json &values) {
             staged_value = value.get<bool>() ? 1.0 : 0.0;
             break;
         }
-        staged_value = clampTo(spec, staged_value, clamped);
-        staged.push_back({found->second, staged_value, clamped});
+        StagedWrite entry;
+        entry.index = found->second;
+        entry.source = LiveInputSource::rpc;
+        if (!normalizeValue(spec, staged_value, entry))
+            refuse("live_input.type@1", "live input '" + name + "' value is invalid");
+        staged.push_back(entry);
     }
     // Atomic commit: every name and value was valid before this point.
     for (const auto &entry : staged) {
-        pending_[specs_[entry.index].name] = Pending{entry.value, entry.clamped};
+        pending_[specs_[entry.index].name] =
+            Pending{entry.value, entry.clamped, entry.source};
     }
     return staged.size();
+}
+
+LiveStageResult LiveInputs::stageBatch(std::span<const LiveInputUpdate> updates,
+                                       LiveInputSource source) {
+    LiveStageResult result;
+    std::scoped_lock lock{mutex_};
+    if (replaying_) {
+        result.replay = updates.size();
+        dropped_during_replay_ += updates.size();
+        return result;
+    }
+    std::vector<StagedWrite> staged;
+    staged.reserve(updates.size());
+    for (const auto &update : updates) {
+        const auto found = indices_.find(update.name);
+        if (found == indices_.end()) {
+            ++result.invalid;
+            continue;
+        }
+        StagedWrite entry;
+        entry.index = found->second;
+        entry.source = source;
+        if (!normalizeValue(specs_[found->second], update.value, entry)) {
+            ++result.invalid;
+            continue;
+        }
+        staged.push_back(entry);
+    }
+    // Commit in order under the same lock that validated, so a whole packet
+    // lands as one batch and no other writer can interleave.
+    for (const auto &entry : staged) {
+        pending_[specs_[entry.index].name] =
+            Pending{entry.value, entry.clamped, entry.source};
+    }
+    result.applied = staged.size();
+    return result;
 }
 
 void LiveInputs::freeze(bool replaying, std::uint64_t frame) {
@@ -345,7 +412,7 @@ void LiveInputs::freeze(bool replaying, std::uint64_t frame) {
             runtime.value = pending.value;
             runtime.changed_frame = frame;
         }
-        runtime.from_rpc = true;
+        runtime.source = pending.source;
         runtime.clamped = pending.clamped;
     }
     pending_.clear();
@@ -354,7 +421,7 @@ void LiveInputs::freeze(bool replaying, std::uint64_t frame) {
 void LiveInputs::resetFrozenLocked() {
     for (auto &runtime : runtime_) {
         runtime.value = runtime.spec.default_value;
-        runtime.from_rpc = false;
+        runtime.source = LiveInputSource::none;
         runtime.changed_frame = 0;
         runtime.clamped = false;
     }
@@ -373,7 +440,7 @@ std::vector<LiveInputSnapshot> LiveInputs::snapshot() const {
     std::vector<LiveInputSnapshot> snapshots;
     snapshots.reserve(runtime_.size());
     for (const auto &runtime : runtime_)
-        snapshots.push_back(snapshotOf(runtime.spec, runtime.value, runtime.from_rpc,
+        snapshots.push_back(snapshotOf(runtime.spec, runtime.value, runtime.source,
                                        runtime.changed_frame, runtime.clamped));
     return snapshots;
 }

@@ -18,6 +18,7 @@
 | `PELICAN_WITH_VAT` | `ON` | `OFF` | — |
 | `PELICAN_WITH_EXR` | `ON` | `OFF` | — |
 | `PELICAN_WITH_RPC` | `ON` | `OFF` | — |
+| `PELICAN_WITH_OSC` | `ON` | `OFF` | — |
 | `PELICAN_WITH_ANIMATION` | `ON` | `OFF` | — |
 | `PELICAN_WITH_CANVAS` | `ON` | `OFF` | — |
 | `PELICAN_WITH_SEQPLAYER` | `ON` | `OFF` | — |

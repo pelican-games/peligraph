@@ -5,6 +5,10 @@
 #include "../launchconfig.hpp"
 #include "../os/actionmap.hpp"
 #include "../os/inputstate.hpp"
+#if PELICAN_WITH_OSC
+#include "../osc/oscbindings.hpp"
+#include "../osc/oscinput.hpp"
+#endif
 #include "../../project/inputactionoverlay.hpp"
 
 #include <algorithm>
@@ -13,6 +17,8 @@
 #include <stdexcept>
 #include <utility>
 #include <unordered_map>
+
+#include <nlohmann/json.hpp>
 
 namespace Pelican {
 
@@ -74,6 +80,9 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
     std::optional<InputActionMap> action_definitions;
     std::optional<InputActionMap> action_map;
     std::unordered_map<std::string, InputBindingProfile> profiles;
+#if PELICAN_WITH_OSC
+    std::unordered_map<std::string, std::vector<Osc::OscBinding>> osc_profiles;
+#endif
     std::vector<InputBindingProfile> fixed_overlay_profiles;
     std::optional<std::string> active_profile;
     std::vector<std::string> action_set_stack;
@@ -142,11 +151,29 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
         }
     }
 
+    void applyOscBindings(const InputBindingProfile *project_profile) {
+#if PELICAN_WITH_OSC
+        if (project_profile == nullptr) {
+            GET_MODULE(OscInput).setBindings({});
+            return;
+        }
+        const auto it = osc_profiles.find(project_profile->name);
+        if (it == osc_profiles.end()) {
+            GET_MODULE(OscInput).setBindings({});
+        } else {
+            GET_MODULE(OscInput).setBindings(it->second);
+        }
+#else
+        (void)project_profile;
+#endif
+    }
+
     void rebuildActionMap(const InputBindingProfile *project_profile) {
         if (project_profile == nullptr && fixed_overlay_profiles.empty()) {
             action_map = action_definitions;
             active_profile.reset();
             frozen_generation = std::numeric_limits<std::uint64_t>::max();
+            applyOscBindings(nullptr);
             return;
         }
 
@@ -173,6 +200,7 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
         }
         action_map = applyInputProfile(*action_definitions, effective);
         frozen_generation = std::numeric_limits<std::uint64_t>::max();
+        applyOscBindings(project_profile);
     }
 
   public:
@@ -206,6 +234,19 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
                         "' does not match document name '" + profile.name +
                         "'");
                 }
+#if PELICAN_WITH_OSC
+                const auto profile_document = nlohmann::json::parse(profile_json);
+                osc_profiles.emplace(
+                    name, Osc::parseOscBindings(
+                              profile_document,
+                              GET_MODULE(LiveInputs).declarations()));
+#else
+                if (nlohmann::json::parse(profile_json).contains("live")) {
+                    throw std::runtime_error(
+                        "osc.module_unavailable@1: input profile '" + name +
+                        "' declares live bindings but this build has OSC disabled");
+                }
+#endif
                 profiles.emplace(name, std::move(profile));
             }
         }
@@ -215,10 +256,27 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
                 parseInputActionsString(overlay.actions_json);
             if (overlay.profile_json) {
                 try {
+                    const auto overlay_document =
+                        nlohmann::json::parse(*overlay.profile_json);
+                    if (overlay_document.contains("live")) {
+#if PELICAN_WITH_OSC
+                        throw std::runtime_error(
+                            "osc.binding_invalid@1: live bindings are only "
+                            "allowed in project input profiles");
+#else
+                        throw std::runtime_error(
+                            "osc.module_unavailable@1: input action overlay '" +
+                            overlay.reference +
+                            "' declares live bindings but this build has OSC "
+                            "disabled");
+#endif
+                    }
                     fixed_overlay_profiles.push_back(
                         parseInputProfileString(*overlay.profile_json,
                                                 overlay_definitions));
                 } catch (const std::exception &error) {
+                    const std::string_view message{error.what()};
+                    if (message.starts_with("osc.")) throw;
                     throw std::runtime_error(
                         "input action overlay '" + overlay.reference +
                         "' profile is invalid: " + error.what());

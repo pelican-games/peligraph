@@ -8,6 +8,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <array>
 #include <initializer_list>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
@@ -149,7 +150,7 @@ TEST_CASE("OSC-1a liveinputs staging is typed, atomic, clamped, and only freeze 
     live.freeze(false, 10);
     auto snapshot = live.snapshot();
     REQUIRE(snapshot.at(0).value == Catch::Approx(0.5));
-    REQUIRE(snapshot.at(0).from_rpc);
+    REQUIRE(snapshot.at(0).source == LiveInputSource::rpc);
     REQUIRE(snapshot.at(0).changed_frame == 10);
 
     // The same value again is accepted but did not change the frame.
@@ -184,6 +185,38 @@ TEST_CASE("OSC-1a liveinputs staging is typed, atomic, clamped, and only freeze 
     REQUIRE(snapshot.at(1).value == Catch::Approx(10));
     REQUIRE(snapshot.at(1).clamped);
     REQUIRE(snapshot.at(2).value == Catch::Approx(1));
+
+    // OSC-2a: a batch shares the same one-lock all-or-nothing path and records
+    // where the value came from.
+    const std::array<LiveInputUpdate, 2> batch_updates{
+        LiveInputUpdate{"intensity", 0.4}, LiveInputUpdate{"count", 3.0}};
+    const auto batch = live.stageBatch(batch_updates, LiveInputSource::osc);
+    REQUIRE(batch.applied == 2);
+    REQUIRE(batch.invalid == 0);
+    live.freeze(false, 15);
+    snapshot = live.snapshot();
+    REQUIRE(snapshot.at(0).source == LiveInputSource::osc);
+    REQUIRE(snapshot.at(0).value == Catch::Approx(0.4));
+    REQUIRE(snapshot.at(1).value == Catch::Approx(3));
+    REQUIRE(snapshot.at(1).changed_frame == 15);
+
+    // An unknown name rejects only itself here; stageBatch never throws, and
+    // the valid neighbour still commits under the same lock.
+    const std::array<LiveInputUpdate, 2> mixed_updates{
+        LiveInputUpdate{"intensity", 0.9}, LiveInputUpdate{"missing", 1}};
+    const auto mixed_batch = live.stageBatch(mixed_updates, LiveInputSource::osc);
+    REQUIRE(mixed_batch.applied == 1);
+    REQUIRE(mixed_batch.invalid == 1);
+    live.freeze(false, 16);
+    REQUIRE(live.snapshot().at(0).value == Catch::Approx(0.9));
+
+    // The RPC path stays all-or-nothing: the valid half of a refused call
+    // never reaches the frozen snapshot.
+    REQUIRE_THROWS_WITH(live.stageValues({{"intensity", 0.1}, {"missing", 1}}),
+                        StartsWith("live_input.unknown@1:"));
+    live.freeze(false, 17);
+    REQUIRE(live.snapshot().at(0).value == Catch::Approx(0.9));
+    REQUIRE(live.snapshot().at(0).source == LiveInputSource::osc);
 
     // Replay discards pending writes and freezes the defaults; a live write
     // during replay is refused and counted.

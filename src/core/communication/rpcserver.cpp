@@ -40,6 +40,9 @@
 #include "../model/vertbufcontainer.hpp"
 #include "../os/inputsequence.hpp"
 #include "../os/liveinputs.hpp"
+#if PELICAN_WITH_OSC
+#include "../osc/oscinput.hpp"
+#endif
 #include "../os/actionmap.hpp"
 #include "../os/inputstate.hpp"
 #include "../os/window.hpp"
@@ -380,6 +383,9 @@ struct EngineRpcModules {
     // ran it.
     AssetsVerification *assets_verification;
     ProblemList &problems;
+#if PELICAN_WITH_OSC
+    OscInput &osc_input;
+#endif
 };
 
 EngineRpcModules resolveEngineRpcModules() {
@@ -417,6 +423,9 @@ EngineRpcModules resolveEngineRpcModules() {
         GET_MODULE(RuntimeSpawner),
         FastModuleContainer::tryGet<AssetsVerification>(),
         GET_MODULE(ProblemList),
+#if PELICAN_WITH_OSC
+        GET_MODULE(OscInput),
+#endif
     };
 }
 
@@ -1989,15 +1998,19 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
                 {"type", liveInputTypeName(input.spec.type)},
                 {"value", std::move(value)},
                 {"default", std::move(default_value)},
-                {"source", input.from_rpc ? "rpc" : "default"},
+                {"source", liveInputSourceName(input.source)},
                 {"changed_frame", input.changed_frame},
                 {"clamped", input.clamped},
             });
         }
-        return nlohmann::json{
+        nlohmann::json result{
             {"inputs", std::move(inputs)},
             {"dropped_during_replay", modules.live_inputs.droppedDuringReplay()},
         };
+#if PELICAN_WITH_OSC
+        result["osc"] = modules.osc_input.snapshotJson();
+#endif
+        return result;
     });
 
     server.setHandler("start_input_record", [&modules](const nlohmann::json &params) {

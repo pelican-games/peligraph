@@ -151,6 +151,13 @@ pelican_register_feature(
   SMOKE_ID rpc
 )
 pelican_register_feature(
+  NAME PELICAN_WITH_OSC
+  DESCRIPTION "Enable OSC 1.0 packet input through profile live bindings"
+  BASELINE ON
+  CONTRAST OFF
+  SMOKE_ID osc
+)
+pelican_register_feature(
   NAME PELICAN_WITH_ANIMATION
   DESCRIPTION "Enable the skeletal animation evaluator and the pelican.pose graph module"
   BASELINE ON
