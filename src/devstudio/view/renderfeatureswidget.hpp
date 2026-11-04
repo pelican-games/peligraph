@@ -12,6 +12,7 @@
 
 class QAction;
 class QByteArray;
+class QShowEvent;
 class QString;
 
 namespace PelicanStudio {
@@ -85,6 +86,10 @@ class RenderFeaturesWidget final : public QWidget {
     // why and reads the list from the engine that stays.
     void setEngineRestartAction(std::function<void(const QString &reason)> action);
     void engineRestartDeclined(const QString &message);
+
+  protected:
+    // RP-1a3: a hidden panel reads a moved document when it comes on screen.
+    void showEvent(QShowEvent *event) override;
 
   signals:
     void renderConfigCommitted();

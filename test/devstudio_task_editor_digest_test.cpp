@@ -794,6 +794,11 @@ TEST_CASE("RT-A dialog unconfirmed recovery coalesces one feature refresh per co
     const int kind = GENERATE(0, 1, 2); // FrameNodeOrder, ComputeTask, Preset.
     INFO("hub=" << hub << " dialog=" << kind);
     Rig rig{hub};
+    // RP-1a3: a hidden Features panel no longer reads when another panel
+    // moves the document; this test is about the shown panel coalescing those
+    // reads.
+    rig.features->show();
+    QApplication::processEvents();
     const std::vector<std::string> methods{"can_edit", "get_render_features", "list_render_features", "get_graph_templates"};
     const auto refresh = [&](const std::string &digest) {
         rig.answer(rig.take("can_edit"), {{"can_edit", true}});

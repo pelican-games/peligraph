@@ -47,6 +47,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMainWindow>
+#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QStringList>
@@ -106,6 +107,22 @@ struct Transport {
     Transport() {
         QObject::connect(&viewport, &EmbeddedViewport::engineStandardErrorReceived,
                          [this](const QString &text) { receive(text); });
+        QString error;
+        REQUIRE(viewport.process_.start(
+            {QString::fromUtf8(PELICAN_PROCESS_FIXTURE_PATH), {QStringLiteral("rpc-hold")}, {}},
+            &error));
+        REQUIRE(viewport.process_.waitForStarted(5000));
+        viewport.rpc_ready_ = true;
+    }
+
+    void restart() {
+        if (viewport.process_.isRunning()) {
+            viewport.process_.kill();
+            REQUIRE(viewport.process_.waitForFinished(5000));
+        }
+        QApplication::processEvents();
+        buffer.clear();
+        pending.clear();
         QString error;
         REQUIRE(viewport.process_.start(
             {QString::fromUtf8(PELICAN_PROCESS_FIXTURE_PATH), {QStringLiteral("rpc-hold")}, {}},
@@ -574,6 +591,10 @@ TEST_CASE("UX-10 decision 1: a feature's parameters are fields made from its sch
     auto digest = std::make_shared<RenderConfigDigest>();
     RenderFeaturesWidget features{&engine.viewport};
     features.setRenderConfigDigest(digest);
+    // RP-1a3: a hidden Features panel no longer reads when another panel
+    // moves the document; this edit flow keeps it on screen.
+    features.show();
+    QApplication::processEvents();
     uxFeaturesRead(engine, RootA, Json::object());
     auto &list = required<QListWidget>(features, "pelican.renderFeatures.current");
     REQUIRE(list.count() == 1);
@@ -3095,6 +3116,593 @@ TEST_CASE("RP-1a1 f: stale Ray replies do not reveal, and the latest read reveal
     CHECK(notice.text().contains("Enable hit groups gives the project a ray layout"));
     CHECK(enable.isVisible());
     CHECK(log.calls.empty());
+}
+
+// --- RP-1a3: the four RPCs one Features read sends, and their answers.
+struct FeaturesCalls {
+    RpcCall can_edit;
+    RpcCall current;
+    RpcCall catalog;
+    RpcCall templates;
+};
+
+void requireOnly(const FeaturesCalls &calls, std::initializer_list<std::string> methods) {
+    requireOnly(std::vector<RpcCall>{calls.can_edit, calls.current, calls.catalog, calls.templates},
+                methods);
+}
+
+FeaturesCalls takeFeatures(RpcLog &log) {
+    auto can_edit = log.take("can_edit");
+    auto current = log.take("get_render_features");
+    auto catalog = log.take("list_render_features");
+    auto templates = log.take("get_graph_templates");
+    REQUIRE(can_edit);
+    REQUIRE(current);
+    REQUIRE(catalog);
+    REQUIRE(templates);
+    return {std::move(*can_edit), std::move(*current), std::move(*catalog),
+            std::move(*templates)};
+}
+
+void requireFeaturesRefresh(const FeaturesCalls &calls) {
+    requireOnly(calls, {"can_edit", "get_render_features", "list_render_features",
+                        "get_graph_templates"});
+}
+
+Json bloomInstance(const std::string &digest) {
+    return {{"index", 0},
+            {"reference", BloomFeature},
+            {"parameters", Json::object()},
+            {"editable", false},
+            {"removable", true},
+            {"scope", "root"},
+            {"source_reference", "passes/main.json"},
+            {"source_digest", {{"hex", digest}}}};
+}
+
+Json bloomInstances(const std::string &digest) {
+    return Json::array({bloomInstance(digest)});
+}
+
+Json bloomCatalog() {
+    return Json::array({{{"name", "bloom"}, {"reference", BloomFeature}, {"available", true}}});
+}
+
+Json loopTemplates() {
+    return Json::array({{{"reference", "engine://templates/bloom_loop.json"},
+                         {"title", "Bloom loop"},
+                         {"decomposes", {{"feature", BloomFeature}, {"remove_feature", true}}}},
+                        {"document", {{"nodes", Json::array()}}}});
+}
+
+void answerFeatures(Transport &engine, const FeaturesCalls &calls, const std::string &digest,
+                    const Json &instances = Json::array(),
+                    const Json &catalog = Json::array(),
+                    const Json &templates = Json::array()) {
+    reply(engine, calls.can_edit, {{"can_edit", true}});
+    reply(engine, calls.current,
+          {{"source_reference", "passes/main.json"},
+           {"source_digest", {{"hex", digest}}},
+           {"feature_instances", instances}});
+    reply(engine, calls.catalog, {{"features", catalog}});
+    reply(engine, calls.templates, {{"templates", templates}});
+}
+
+// The initial read (or any visible read), answered and out of the log.
+void settleFeatures(Transport &engine, RpcLog &log, const std::string &digest,
+                    const Json &instances = Json::array(),
+                    const Json &catalog = Json::array(),
+                    const Json &templates = Json::array()) {
+    const auto calls = takeFeatures(log);
+    requireFeaturesRefresh(calls);
+    CHECK(log.calls.empty());
+    answerFeatures(engine, calls, digest, instances, catalog, templates);
+    log.clear();
+}
+
+Json externalModification() {
+    return {{"status", "rejected"},
+            {"committed", false},
+            {"error", {{"code", "external_modification"},
+                       {"message", "the rendering document moved"}}}};
+}
+
+void acceptReplace(RenderFeaturesWidget &features) {
+    auto *prompt = features.findChild<QMessageBox *>(
+        QStringLiteral("pelican.renderFeatures.replaceConfirm"));
+    REQUIRE(prompt != nullptr);
+    required<QPushButton>(*prompt, "pelican.renderFeatures.replaceConfirm.ok").click();
+    QApplication::processEvents();
+}
+
+TEST_CASE("RP-1a3 a: a hidden Features panel does not read a moved digest, and reads it once "
+          "when shown",
+          "[devstudio][rp1a3][render-features][widget]") {
+    Transport engine;
+    RpcLog log;
+    log.watch(engine.viewport);
+    auto hub = std::make_shared<RenderConfigDigest>();
+    RenderFeaturesWidget features{&engine.viewport};
+    features.setRenderConfigDigest(hub);
+    features.show();
+    QApplication::processEvents();
+    settleFeatures(engine, log, RootA);
+
+    features.hide();
+    QApplication::processEvents();
+    hub->publish(RootB);
+    QApplication::processEvents();
+    CHECK(log.calls.empty());
+
+    features.show();
+    QApplication::processEvents();
+    REQUIRE(log.calls.size() == 4);
+    const auto calls = takeFeatures(log);
+    requireFeaturesRefresh(calls);
+    CHECK(log.calls.empty());
+    answerFeatures(engine, calls, RootB);
+    CHECK(log.calls.empty());
+    CHECK(hub->current() == RootB);
+}
+
+TEST_CASE("RP-1a3 a: a visible Features panel reads a moved digest at once, and its own "
+          "notification does not read again",
+          "[devstudio][rp1a3][render-features][widget]") {
+    Transport engine;
+    RpcLog log;
+    log.watch(engine.viewport);
+    auto hub = std::make_shared<RenderConfigDigest>();
+    RenderFeaturesWidget features{&engine.viewport};
+    features.setRenderConfigDigest(hub);
+    features.show();
+    QApplication::processEvents();
+    settleFeatures(engine, log, RootA);
+
+    hub->publish(RootB);
+    QApplication::processEvents();
+    const auto calls = takeFeatures(log);
+    requireFeaturesRefresh(calls);
+    CHECK(log.calls.empty());
+    answerFeatures(engine, calls, RootB);
+    // consumeCurrent publishes the revision it read; the owner's own publish
+    // is not a move it follows.
+    CHECK(log.calls.empty());
+    CHECK(hub->current() == RootB);
+}
+
+TEST_CASE("RP-1a3 b: a Features panel put in a dock after it was shown is hidden while its tab "
+          "is not selected, and reads when selected, reopened, or floated",
+          "[devstudio][rp1a3][render-features][widget][docks]") {
+    Transport engine;
+    RpcLog log;
+    log.watch(engine.viewport);
+    auto hub = std::make_shared<RenderConfigDigest>();
+    auto feature_owner = std::make_unique<RenderFeaturesWidget>(&engine.viewport);
+    RenderFeaturesWidget &features = *feature_owner;
+    features.setRenderConfigDigest(hub);
+    features.show();
+    QApplication::processEvents();
+    settleFeatures(engine, log, RootA);
+
+    // A real dock assigned after the panel was shown: PanelShown's late-dock
+    // catch-up finds it, and the non-selected tab reads as hidden.
+    QMainWindow window;
+    window.setCentralWidget(new QWidget(&window));
+    auto *first = new QDockWidget(QStringLiteral("First"), &window);
+    auto *second = new QDockWidget(QStringLiteral("Features"), &window);
+    second->setWidget(&features);
+    feature_owner.release(); // the dock owns it now
+    window.addDockWidget(Qt::LeftDockWidgetArea, first);
+    window.addDockWidget(Qt::LeftDockWidgetArea, second);
+    window.tabifyDockWidget(first, second);
+    window.resize(900, 700);
+    window.show();
+    first->raise();
+    QApplication::processEvents();
+    CHECK(features.isVisible());
+    CHECK(log.calls.empty());
+    hub->publish(RootB);
+    QApplication::processEvents();
+    CHECK(log.calls.empty());
+
+    second->raise();
+    QApplication::processEvents();
+    CHECK(features.isVisible());
+    auto calls = takeFeatures(log);
+    requireFeaturesRefresh(calls);
+    answerFeatures(engine, calls, RootB);
+    CHECK(log.calls.empty());
+
+    // Closing its dock hides it; reopening and selecting it shows it again.
+    second->close();
+    QApplication::processEvents();
+    CHECK_FALSE(features.isVisible());
+    hub->publish(RootC);
+    QApplication::processEvents();
+    CHECK(log.calls.empty());
+    second->show();
+    second->raise();
+    QApplication::processEvents();
+    CHECK(features.isVisible());
+    calls = takeFeatures(log);
+    requireFeaturesRefresh(calls);
+    answerFeatures(engine, calls, RootC);
+    CHECK(log.calls.empty());
+
+    // Floating is shown too: a digest that moves now reads at once.
+    second->setFloating(true);
+    second->show();
+    second->raise();
+    QApplication::processEvents();
+    CHECK(features.isVisible());
+    log.clear();
+    hub->publish(RootD);
+    QApplication::processEvents();
+    calls = takeFeatures(log);
+    requireFeaturesRefresh(calls);
+    answerFeatures(engine, calls, RootD);
+    CHECK(log.calls.empty());
+    CHECK(hub->current() == RootD);
+}
+
+TEST_CASE("RP-1a3 c: a catch-up read that fails is not retried by its remaining replies, and "
+          "showing the panel again reads once",
+          "[devstudio][rp1a3][render-features][widget]") {
+    Transport engine;
+    RpcLog log;
+    log.watch(engine.viewport);
+    auto hub = std::make_shared<RenderConfigDigest>();
+    RenderFeaturesWidget features{&engine.viewport};
+    features.setRenderConfigDigest(hub);
+    features.show();
+    QApplication::processEvents();
+    settleFeatures(engine, log, RootA);
+
+    hub->publish(RootB);
+    QApplication::processEvents();
+    auto calls = takeFeatures(log);
+    requireFeaturesRefresh(calls);
+    failReply(engine, calls.can_edit);
+    QTest::qWait(50);
+    CHECK(log.calls.empty());
+
+    // The other three replies land: the failed generation must not start a
+    // read from them.
+    reply(engine, calls.current,
+          {{"source_reference", "passes/main.json"},
+           {"source_digest", {{"hex", RootB}}},
+           {"feature_instances", Json::array()}});
+    reply(engine, calls.catalog, {{"features", Json::array()}});
+    reply(engine, calls.templates, {{"templates", Json::array()}});
+    QTest::qWait(100);
+    CHECK(log.calls.empty());
+
+    features.hide();
+    QApplication::processEvents();
+    features.show();
+    QApplication::processEvents();
+    REQUIRE(log.calls.size() == 4);
+    calls = takeFeatures(log);
+    requireFeaturesRefresh(calls);
+    answerFeatures(engine, calls, RootC);
+    CHECK(log.calls.empty());
+    CHECK(hub->current() == RootC);
+}
+
+TEST_CASE("RP-1a3 d: a digest that moves while hidden during a visible read makes exactly one "
+          "read when shown",
+          "[devstudio][rp1a3][render-features][widget]") {
+    Transport engine;
+    RpcLog log;
+    log.watch(engine.viewport);
+    auto hub = std::make_shared<RenderConfigDigest>();
+    RenderFeaturesWidget features{&engine.viewport};
+    features.setRenderConfigDigest(hub);
+    features.show();
+    QApplication::processEvents();
+    settleFeatures(engine, log, RootA);
+
+    hub->publish(RootB);
+    QApplication::processEvents();
+    const auto in_flight = takeFeatures(log);
+    requireFeaturesRefresh(in_flight);
+    features.hide();
+    QApplication::processEvents();
+    hub->publish(RootC);
+    QApplication::processEvents();
+    CHECK(log.calls.empty());
+
+    // The visible read answers while hidden; it must not start the deferred
+    // C read (followWhenIdle sees the hidden panel).
+    answerFeatures(engine, in_flight, RootB);
+    QTest::qWait(50);
+    CHECK(log.calls.empty());
+
+    features.show();
+    QApplication::processEvents();
+    REQUIRE(log.calls.size() == 4);
+    const auto calls = takeFeatures(log);
+    requireFeaturesRefresh(calls);
+    CHECK(log.calls.empty());
+    answerFeatures(engine, calls, RootC);
+    CHECK(log.calls.empty());
+    CHECK(hub->current() == RootC);
+}
+
+TEST_CASE("RP-1a3 e: a catch-up the RPC connection refuses keeps the deferred read, which the "
+          "next showing sends",
+          "[devstudio][rp1a3][render-features][widget]") {
+    Transport engine;
+    RpcLog log;
+    log.watch(engine.viewport);
+    auto hub = std::make_shared<RenderConfigDigest>();
+    RenderFeaturesWidget features{&engine.viewport};
+    features.setRenderConfigDigest(hub);
+    features.show();
+    QApplication::processEvents();
+    settleFeatures(engine, log, RootA);
+
+    features.hide();
+    QApplication::processEvents();
+    hub->publish(RootB);
+    QApplication::processEvents();
+    CHECK(log.calls.empty());
+
+    engine.viewport.rpc_ready_ = false;
+    features.show();
+    QApplication::processEvents();
+    CHECK(log.calls.empty());
+
+    engine.viewport.rpc_ready_ = true;
+    features.hide();
+    QApplication::processEvents();
+    features.show();
+    QApplication::processEvents();
+    REQUIRE(log.calls.size() == 4);
+    const auto calls = takeFeatures(log);
+    requireFeaturesRefresh(calls);
+    answerFeatures(engine, calls, RootC);
+    CHECK(log.calls.empty());
+    CHECK(hub->current() == RootC);
+
+    // The same deferred read, this time a send the transport refuses: the
+    // child is gone while the viewport still reports RPC ready, so every
+    // request returns no id. The catch-up stays pending, and the next showing
+    // sends it once the transport works again.
+    features.hide();
+    QApplication::processEvents();
+    hub->publish(RootD);
+    QApplication::processEvents();
+    CHECK(log.calls.empty());
+
+    engine.viewport.process_.kill();
+    REQUIRE(engine.viewport.process_.waitForFinished(5000));
+    QApplication::processEvents();
+    engine.viewport.rpc_ready_ = true;
+    features.show();
+    QApplication::processEvents();
+    REQUIRE(log.calls.size() == 4);
+    for (const auto &call : log.calls) CHECK(call.id == 0);
+    log.clear();
+
+    engine.restart();
+    features.hide();
+    QApplication::processEvents();
+    features.show();
+    QApplication::processEvents();
+    REQUIRE(log.calls.size() == 4);
+    const auto after_write = takeFeatures(log);
+    requireFeaturesRefresh(after_write);
+    answerFeatures(engine, after_write, RootE);
+    CHECK(log.calls.empty());
+    CHECK(hub->current() == RootE);
+}
+
+TEST_CASE("RP-1a3 f: a hidden panel's refused loop-version edit reads the moved document and "
+          "sends the edit once more",
+          "[devstudio][rp1a3][render-features][widget][loop-version]") {
+    Transport engine;
+    RpcLog log;
+    log.watch(engine.viewport);
+    auto hub = std::make_shared<RenderConfigDigest>();
+    RenderFeaturesWidget features{&engine.viewport};
+    features.setRenderConfigDigest(hub);
+    settleFeatures(engine, log, RootA, bloomInstances(RootA), bloomCatalog(), loopTemplates());
+    CHECK_FALSE(features.isVisible());
+
+    // The panel is stale while hidden: the hub has moved to B, it still holds A.
+    hub->publish(RootB);
+    QApplication::processEvents();
+    CHECK(log.calls.empty());
+    features.replaceWithLoopVersion(QString::fromStdString(BloomFeature));
+    QApplication::processEvents();
+    acceptReplace(features);
+    auto sent = log.take("apply_graph_template");
+    REQUIRE(sent);
+    CHECK(sent->params.at("base_source_digest") == RootA);
+    reply(engine, *sent, externalModification());
+    QApplication::processEvents();
+
+    // The refusal reads B even though the panel is hidden.
+    auto calls = takeFeatures(log);
+    requireFeaturesRefresh(calls);
+    CHECK(log.calls.empty());
+    answerFeatures(engine, calls, RootB, bloomInstances(RootB), bloomCatalog(), loopTemplates());
+
+    // The staged edit survives that read and is re-sent against B, once.
+    auto resent = log.take("apply_graph_template");
+    REQUIRE(resent);
+    CHECK(resent->params.at("base_source_digest") == RootB);
+    CHECK_FALSE(log.take("apply_graph_template"));
+    // It is still the pending edit until the engine takes it.
+    const auto offered = features.loopVersionOffered(QString::fromStdString(BloomFeature));
+    REQUIRE(offered.has_value());
+    CHECK_FALSE(offered->isEmpty());
+
+    reply(engine, *resent, {{"status", "accepted"}, {"ticket", "loop-retry"}});
+    auto poll = log.take("get_edit_result");
+    REQUIRE(poll);
+    reply(engine, *poll, liveCommit(RootC));
+    auto after = takeFeatures(log);
+    requireFeaturesRefresh(after);
+    answerFeatures(engine, after, RootC, bloomInstances(RootC), bloomCatalog(), loopTemplates());
+    CHECK(log.calls.empty());
+    CHECK(hub->current() == RootC);
+    CHECK_FALSE(log.take("apply_graph_template"));
+}
+
+TEST_CASE("RP-1a3 g: an edit refused for A, a read of B, then C published: B's replies are "
+          "ignored and the edit is re-sent once against C",
+          "[devstudio][rp1a3][render-features][widget][loop-version]") {
+    Transport engine;
+    RpcLog log;
+    log.watch(engine.viewport);
+    auto hub = std::make_shared<RenderConfigDigest>();
+    RenderFeaturesWidget features{&engine.viewport};
+    features.setRenderConfigDigest(hub);
+    features.show();
+    QApplication::processEvents();
+    settleFeatures(engine, log, RootA, bloomInstances(RootA), bloomCatalog(), loopTemplates());
+
+    features.replaceWithLoopVersion(QString::fromStdString(BloomFeature));
+    QApplication::processEvents();
+    acceptReplace(features);
+    auto sent = log.take("apply_graph_template");
+    REQUIRE(sent);
+    CHECK(sent->params.at("base_source_digest") == RootA);
+
+    // A's edit is refused after the panel is hidden; the refusal reads B.
+    features.hide();
+    QApplication::processEvents();
+    reply(engine, *sent, externalModification());
+    QApplication::processEvents();
+    auto read_b = takeFeatures(log);
+    requireFeaturesRefresh(read_b);
+    CHECK(log.calls.empty());
+
+    // C moves the document before B answers. The waiting retry reads it at
+    // once, even though the panel is hidden.
+    hub->publish(RootC);
+    QApplication::processEvents();
+    auto read_c = takeFeatures(log);
+    requireFeaturesRefresh(read_c);
+    CHECK(log.calls.empty());
+    CHECK(hub->current() == RootC);
+
+    // B's late replies are a stale generation: no re-send, no extra read.
+    answerFeatures(engine, read_b, RootB, bloomInstances(RootB), bloomCatalog(), loopTemplates());
+    QTest::qWait(50);
+    CHECK(log.calls.empty());
+
+    // C answers: exactly one re-send, based on C.
+    answerFeatures(engine, read_c, RootC, bloomInstances(RootC), bloomCatalog(), loopTemplates());
+    auto resent = log.take("apply_graph_template");
+    REQUIRE(resent);
+    CHECK(resent->params.at("base_source_digest") == RootC);
+    CHECK_FALSE(log.take("apply_graph_template"));
+    CHECK_FALSE(log.take("edit_render_features"));
+
+    reply(engine, *resent, {{"status", "accepted"}, {"ticket", "loop-race"}});
+    auto poll = log.take("get_edit_result");
+    REQUIRE(poll);
+    reply(engine, *poll, liveCommit(RootD));
+    auto after = takeFeatures(log);
+    requireFeaturesRefresh(after);
+    answerFeatures(engine, after, RootD, bloomInstances(RootD), bloomCatalog(), loopTemplates());
+    CHECK(log.calls.empty());
+    CHECK(hub->current() == RootD);
+    CHECK_FALSE(log.take("apply_graph_template"));
+}
+
+TEST_CASE("RP-1a3 h: a digest move during an edit is caught up after the ticket clears, even "
+          "though the commit starts its own read",
+          "[devstudio][rp1a3][render-features][widget][loop-version]") {
+    Transport engine;
+    RpcLog log;
+    log.watch(engine.viewport);
+    auto hub = std::make_shared<RenderConfigDigest>();
+    RenderFeaturesWidget features{&engine.viewport};
+    features.setRenderConfigDigest(hub);
+    features.show();
+    QApplication::processEvents();
+    settleFeatures(engine, log, RootA, bloomInstances(RootA), bloomCatalog(), loopTemplates());
+
+    features.replaceWithLoopVersion(QString::fromStdString(BloomFeature));
+    QApplication::processEvents();
+    acceptReplace(features);
+    auto sent = log.take("apply_graph_template");
+    REQUIRE(sent);
+    reply(engine, *sent, {{"status", "accepted"}, {"ticket", "loop-active"}});
+    auto poll = log.take("get_edit_result");
+    REQUIRE(poll);
+
+    // The ticket is active: the move is remembered, not read now.
+    hub->publish(RootB);
+    QApplication::processEvents();
+    CHECK(log.calls.empty());
+
+    reply(engine, *poll, liveCommit(RootB));
+    QApplication::processEvents();
+    // The commit's own read, then the remembered digest's catch-up: the
+    // normal refresh is not a substitute for the deferred one.
+    REQUIRE(log.calls.size() == 8);
+    const auto normal = takeFeatures(log);
+    requireFeaturesRefresh(normal);
+    REQUIRE(log.calls.size() == 4);
+    const auto catch_up = takeFeatures(log);
+    requireFeaturesRefresh(catch_up);
+
+    // The normal read's replies are stale; they change nothing and start no
+    // further read.
+    answerFeatures(engine, normal, RootB, bloomInstances(RootB), bloomCatalog(),
+                   loopTemplates());
+    CHECK(log.calls.empty());
+
+    answerFeatures(engine, catch_up, RootB, bloomInstances(RootB), bloomCatalog(),
+                   loopTemplates());
+    CHECK(log.calls.empty());
+    CHECK(hub->current() == RootB);
+}
+
+TEST_CASE("RP-1a3 i: a digest that moves during the initial hidden read is remembered, and "
+          "read once when shown",
+          "[devstudio][rp1a3][render-features][widget]") {
+    Transport engine;
+    RpcLog log;
+    log.watch(engine.viewport);
+    auto hub = std::make_shared<RenderConfigDigest>();
+    RenderFeaturesWidget features{&engine.viewport};
+    features.setRenderConfigDigest(hub);
+    // The constructor's initial read is in flight; the panel is hidden.
+    auto initial = takeFeatures(log);
+    reply(engine, initial.can_edit, {{"can_edit", true}});
+    reply(engine, initial.current,
+          {{"source_reference", "passes/main.json"},
+           {"source_digest", {{"hex", RootA}}},
+           {"feature_instances", Json::array()}});
+    QApplication::processEvents();
+    CHECK_FALSE(features.isVisible());
+
+    // Once the current reply named A, the move to B is known and kept, even
+    // though the catalog and template replies of the initial read are still
+    // outstanding.
+    hub->publish(RootB);
+    QApplication::processEvents();
+    CHECK(log.calls.empty());
+    reply(engine, initial.catalog, {{"features", Json::array()}});
+    reply(engine, initial.templates, {{"templates", Json::array()}});
+    QTest::qWait(50);
+    CHECK(log.calls.empty());
+
+    features.show();
+    QApplication::processEvents();
+    REQUIRE(log.calls.size() == 4);
+    const auto calls = takeFeatures(log);
+    requireFeaturesRefresh(calls);
+    CHECK(log.calls.empty());
+    answerFeatures(engine, calls, RootB);
+    CHECK(log.calls.empty());
+    CHECK(hub->current() == RootB);
 }
 
 } // namespace PelicanStudio

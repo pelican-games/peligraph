@@ -6,6 +6,7 @@
 #include "fullscreenshadertemplate.hpp"
 #include "frameplanedit.hpp"
 #include "panelhelp.hpp"
+#include "panelshown.hpp"
 #include "renderconfigdigest.hpp"
 #include "rendereditcompletion.hpp"
 #include "proceduralassetdialog.hpp"
@@ -25,6 +26,7 @@
 #include <QCheckBox>
 #include <QDialogButtonBox>
 #include <QScrollArea>
+#include <QShowEvent>
 #include <QFormLayout>
 #include <nlohmann/json.hpp>
 #include <QLineEdit>
@@ -2289,6 +2291,16 @@ struct RenderFeaturesWidget::Impl {
     bool submitted_retried = false;
     bool retrying = false;
     bool retry_pending = false;
+    // RP-1a3: whether the panel is on screen. A digest move while it is not
+    // is remembered (`refresh_when_idle`) and read once it is shown, so a
+    // hidden Features tab does not read the engine after every commit.
+    // Declared after the state its callback reads and before `guard`.
+    PanelShown shown{owner, [this] { followWhenIdle(true); }};
+    // The current refresh was started to catch up with a moved document (a
+    // digest notification, or the retry after a refusal). A failure of that
+    // read leaves the catch-up pending instead of retrying from its handler.
+    bool refresh_from_move = false;
+    bool refresh_failed_from_move = false;
     // --- RSX, decision 1: the main window's engine restart, and whether this
     // panel (or an editor it opened) asked for the one on the way.
     EngineRestartAction engine_restart_action;
@@ -2767,6 +2779,17 @@ struct RenderFeaturesWidget::Impl {
         setPanelNotice(notice, line, line);
     }
 
+    // A read of this panel's four requests failed. A read started to catch up
+    // with a moved document keeps the catch-up pending: it is read again once
+    // the panel is next shown, not from the completion that failed.
+    void refreshFailed() {
+        refresh_failed = true;
+        if (refresh_from_move) {
+            refresh_when_idle = true;
+            refresh_failed_from_move = true;
+        }
+    }
+
     qint64 request(RequestKind kind, const QString &method,
                    const QJsonObject &params,
                    quint64 generation = 0) {
@@ -2774,7 +2797,7 @@ struct RenderFeaturesWidget::Impl {
         const auto id = viewport.requestRpc(
             method, params, &error);
         if (id == 0) {
-            if (generation != 0) refresh_failed = true;
+            if (generation != 0) refreshFailed();
             showError(error);
             return 0;
         }
@@ -2800,8 +2823,13 @@ struct RenderFeaturesWidget::Impl {
         }
     }
 
-    void requestRefresh(const QString &digest = {}) {
+    void requestRefresh(const QString &digest = {}, bool from_move = false) {
         if (!viewport.rpcReady()) {
+            // A read started to catch up with a digest move records that fact
+            // before anything can fail, so a refused send leaves the catch-up
+            // pending.
+            refresh_from_move = from_move;
+            refreshFailed();
             showError(owner.tr(
                 "The engine RPC connection is not ready."));
             return;
@@ -2809,9 +2837,19 @@ struct RenderFeaturesWidget::Impl {
         // Explicit Refresh and domain retries (no digest) still read again.
         // A hub notification and its completion callback name the same revision.
         if (!digest.isEmpty() && digest == refresh_digest &&
-            (refreshInFlight() || refresh_complete)) return;
+            (refreshInFlight() || refresh_complete)) {
+            // The read already running is the catch-up the move asked for.
+            if (from_move && refreshInFlight()) refresh_from_move = true;
+            return;
+        }
+        // A read started to catch up with a digest move records that fact
+        // before anything can fail, so a reply that fails leaves the catch-up
+        // pending. A duplicate request does not change what started the read
+        // already in flight.
+        refresh_from_move = from_move;
         refresh_digest = digest;
         refresh_complete = refresh_failed = false;
+        refresh_failed_from_move = false;
         ++refresh_generation;
         have_current = false;
         have_catalog = false;
@@ -3773,7 +3811,7 @@ struct RenderFeaturesWidget::Impl {
         const auto decoded = decodeObject(
             result_json, &error);
         if (!decoded) {
-            if (request.refresh_generation != 0) refresh_failed = true;
+            if (request.refresh_generation != 0) refreshFailed();
             showError(error);
             updateControls();
             return;
@@ -3869,7 +3907,7 @@ struct RenderFeaturesWidget::Impl {
         const auto kind = found->kind;
         pending.erase(found);
         if (generation != 0 && generation != refresh_generation) return;
-        if (generation != 0) refresh_failed = true;
+        if (generation != 0) refreshFailed();
         // LP-4f2: an engine without get_graph_templates offers no loop
         // version; the panel is otherwise as it was.
         if (kind == RequestKind::Templates) {
@@ -4012,7 +4050,7 @@ struct RenderFeaturesWidget::Impl {
         const auto decoded = decodeObject(
             result_json, &error);
         if (!decoded) {
-            refresh_failed = true;
+            refreshFailed();
             showError(error);
             updateControls();
             return;
@@ -4093,19 +4131,34 @@ struct RenderFeaturesWidget::Impl {
         if (source_digest.isEmpty() ||
             source_digest == QString::fromStdString(digest))
             return;
+        // RP-1a3: a hidden panel does not read. The move is remembered and
+        // read once it is shown. A retry waiting for the document is read
+        // whether the panel is shown or not: nothing else would move it.
+        shown.locateDock();
+        if (!retry_pending && !shown.isShown()) {
+            refresh_when_idle = true;
+            return;
+        }
         if (!active_ticket.isEmpty() || submitting()) {
             refresh_when_idle = true;
             return;
         }
-        requestRefresh(QString::fromStdString(digest));
+        requestRefresh(QString::fromStdString(digest), true);
     }
 
-    void followWhenIdle() {
+    // `from_visibility` is true when PanelShown says the panel just came on
+    // screen. A read that failed after a moved document is not retried from
+    // the completion that failed, only from that transition.
+    void followWhenIdle(bool from_visibility = false) {
         if (!refresh_when_idle || !active_ticket.isEmpty() || submitting() ||
-            retry_pending)
+            !shown.isShown())
             return;
+        // A retry read still in flight finishes it (consumeCurrent resumes the
+        // edit). One whose send failed has none, so the read is started again.
+        if (retry_pending && refreshInFlight()) return;
+        if (refresh_failed_from_move && !from_visibility) return;
         refresh_when_idle = false;
-        requestRefresh();
+        requestRefresh({}, true);
     }
 
     // The engine refused the edit because the document moved since this
@@ -4127,12 +4180,20 @@ struct RenderFeaturesWidget::Impl {
         retry_pending = true;
         showInformation(owner.tr("The document changed since this panel read "
                                  "it; reading it again..."));
-        requestRefresh();
+        // RP-1a3: this read is not suppressed by a hidden panel.
+        requestRefresh({}, true);
         return true;
     }
 
     void resumeRetry() {
         if (!retry_pending || !have_current) return;
+        // A digest move started another read after this one. Read that
+        // revision first; the edit is re-sent once, against what arrives.
+        if (digest_hub && !source_digest.isEmpty() &&
+            digest_hub->current() != source_digest.toStdString()) {
+            requestRefresh(QString::fromStdString(digest_hub->current()), true);
+            return;
+        }
         retry_pending = false;
         auto again = std::exchange(submitted_staged, std::nullopt);
         if (!again) return;
@@ -4488,6 +4549,11 @@ RenderFeaturesWidget::~RenderFeaturesWidget() {
     renderFeaturesTeardownDyingForTest = true;
 }
 
+void RenderFeaturesWidget::showEvent(QShowEvent *event) {
+    QWidget::showEvent(event);
+    impl_->shown.becameShown();
+}
+
 void RenderFeaturesWidget::editComputeTask(const QString &name) {
     editComputeTaskConnection(name, {});
 }
@@ -4525,10 +4591,15 @@ void RenderFeaturesWidget::receiveCatalogResult(
 void RenderFeaturesWidget::setRenderConfigDigest(
     std::shared_ptr<RenderConfigDigest> digest) {
     impl_->digest_hub = std::move(digest);
-    if (impl_->digest_hub)
-        impl_->digest_hub->subscribe(this, [impl = impl_.get()](const std::string &moved) {
-            impl->documentMoved(moved);
+    if (impl_->digest_hub) {
+        // The subscription's context is the widget (publish(digest, &owner)
+        // must not tell this panel its own news); the handler only runs while
+        // the Impl's guard lives, so a notification cannot reach freed state.
+        const QPointer<QObject> guard = &impl_->guard;
+        impl_->digest_hub->subscribe(this, [impl = impl_.get(), guard](const std::string &moved) {
+            if (guard) impl->documentMoved(moved);
         });
+    }
 }
 
 void RenderFeaturesWidget::setRenderHistoryActions(const QList<QAction *> &actions) {
