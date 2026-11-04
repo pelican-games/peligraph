@@ -895,10 +895,23 @@ def sample_metrics(tr: Traces, t0: float, t_meas: float, t_end: float, operation
             m[f"scene_redraw_{key}_ms_sum"] = sum((r[2] - r[1]) * 1000 for r in spans)
     refused = [int(r[3]) for r in rows if r[0] == "graph_redraw_refused"]
     m["scene_redraw_refused_count"] = len(refused)
-    for bit in range(12):
+    for bit in range(14):
         hits = sum(1 for why in refused if why & (1 << bit))
         if hits:
             m[f"scene_redraw_refused_bit{bit}_count"] = hits
+    # GS-3b3b / GS-3b4a: bit 12 (a body's values) and bit 13 (a zone's stage
+    # text) say why in detail2, one value per refusal (not bits).
+    for bit in (12, 13):
+        details = [int(r[4]) for r in rows
+                   if r[0] == "graph_redraw_refused" and int(r[3]) & (1 << bit)]
+        for detail in sorted(set(details)):
+            m[f"scene_redraw_refused_bit{bit}_detail{detail}_count"] = details.count(detail)
+    # GS-3b3b / GS-3b4a: which path drew in place (graph_scene_redraw_node's
+    # detail2: 0 root, 1 a zone's body, 2 a zone's stage text).
+    for kind, name in ((0, "root"), (1, "body"), (2, "chrome")):
+        hits = sum(1 for r in partial if len(r) > 4 and int(r[4]) == kind)
+        if hits:
+            m[f"scene_redraw_node_{name}_count"] = hits
     # GS-3b2: why the zone refused (bit 4's detail2): 1 a zone's fields moved
     # with the values, 2 a loop is a changed node, 4 a changed node leads to
     # a loop through the scope's lines.

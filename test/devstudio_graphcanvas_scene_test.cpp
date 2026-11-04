@@ -21198,6 +21198,7 @@ struct Gs3b3aResult {
     std::vector<std::vector<std::string>> redrawn;
     int refused = 0;
     int body_detail2 = 0;
+    int chrome_detail2 = 0;
     int moved = 0;
 };
 
@@ -21254,6 +21255,9 @@ Gs3b3aResult gs3b3aFollow(ZoneHarness &h, const std::function<void()> &change) {
     for (const auto &span : trace.spans)
         if (span.stage == "graph_redraw_refused" && (static_cast<int>(span.detail) & gs3b3a_body))
             result.body_detail2 = static_cast<int>(span.detail2);
+    for (const auto &span : trace.spans)
+        if (span.stage == "graph_redraw_refused" && (static_cast<int>(span.detail) & (1 << 13)))
+            result.chrome_detail2 = static_cast<int>(span.detail2);
     h.scene.repopulated = nullptr;
     h.scene.nodesRedrawn = nullptr;
     h.scene.redrawClassified = nullptr;
@@ -21263,6 +21267,154 @@ Gs3b3aResult gs3b3aFollow(ZoneHarness &h, const std::function<void()> &change) {
 void gs3b3aOpened(ZoneHarness &h) {
     gs3bOpen(h);
     REQUIRE(h.scene.zones().size() == 1);
+}
+
+
+// --- GS-3b4a: a zone's stage alone, drawn where it hangs.
+
+// A frame plan whose one view family lists `axis` with `length` views and no
+// names: over 32 views a loop shows no axis labels, so its chrome's only
+// field that names the views is the stage.
+Json gs3b4aPlan(const std::string &axis, std::int64_t length) {
+    const Json view_axis{{"axis", axis},
+                         {"length", length},
+                         {"runtime", false},
+                         {"labels", Json::array()}};
+    // GL-2b: the pass is the root node `present`'s, so it is not a folded
+    // node of the rendering section -- the root has none here.
+    const Json origin{{"graph", ""}, {"node", "present"}, {"definition", ""},
+                      {"instance_path", ""}, {"loop", ""}};
+    const Json pass{{"name", "present"},
+                    {"kind", "render"},
+                    {"view_family", "$capture/cube"},
+                    {"origin", origin},
+                    {"view_axes", Json::array({view_axis})}};
+    return Json{{"nodes", Json::array({pass})}, {"resources", Json::array()}};
+}
+
+// zoneDocument()'s `first` body under one loop over a view axis, with a root
+// `a` it takes as `target`. The plan's axis length is what the stage says;
+// changing that length changes no node, no parameter and no other chrome
+// field.
+Json gs3b4aSingleViewDocument(const std::string &axis) {
+    Json document = zoneDocument(true);
+    document["definitions"]["first"]["nodes"][1] = gs3b3aBodyMultiply("a", 2.0);
+    Json root_a = document["nodes"][0];
+    const Json steps{
+        {"id", "steps"},
+        {"op", "graph.loop"},
+        {"parameters",
+         {{"over", {{"view_axis", {{"family", "$capture/cube"}, {"axis", axis}}}}},
+          {"branches", Json::array({{{"body", "first"}}})}}},
+        {"inputs", {{"target", {{"node", "a"}, {"port", "value"}}}}},
+        {"outputs", Json::array()}};
+    document["nodes"] = Json::array({std::move(root_a), steps});
+    return document;
+}
+
+// Two loops over one body: `steps` over the view axis, `again` over a count.
+// Both zones are drawn `shared (2 users)`, and only `steps`' stage names the
+// axis.
+Json gs3b4aViewDocument() {
+    Json document = zoneDocument(true);
+    const Json pass{
+        {"id", "pass"},
+        {"op", "render.fullscreen"},
+        {"parameters",
+         {{"shader", {{"vertex", "engine://fullscreen"},
+                      {"fragment", "engine://passthrough"}}}}},
+        {"outputs", Json::array({"color"})}};
+    document["definitions"] = Json{
+        {"faces", {{"nodes", Json::array({pass})}, {"outputs", Json::object()}}}};
+    const Json steps{
+        {"id", "steps"},
+        {"op", "graph.loop"},
+        {"parameters",
+         {{"over", {{"view_axis", {{"family", "$capture/cube"}, {"axis", "face"}}}}},
+          {"branches", Json::array({{{"body", "faces"}}})}}},
+        {"outputs", Json::array()}};
+    const Json again{
+        {"id", "again"},
+        {"op", "graph.loop"},
+        {"parameters", {{"over", {{"range", {{"count", 2}}}}},
+                        {"branches", Json::array({{{"body", "faces"}}})}}},
+        {"outputs", Json::array()}};
+    document["nodes"] = Json::array({steps, again});
+    return document;
+}
+
+// Every kind of item, by pointer, as it is at the moment of the call. The
+// test marks them first, so an item deleted and made again at the same
+// address does not pass for the one that was there.
+constexpr int gs3b4aMarkRole = Qt::UserRole + 9311;
+
+void gs3b4aMarkItems(QGraphicsScene &scene) {
+    int next = 1;
+    for (QGraphicsItem *item : scene.items())
+        if (!PelicanStudio::nodeGraphItemKind(*item).isEmpty())
+            item->setData(gs3b4aMarkRole, next++);
+}
+
+std::map<QGraphicsItem *, QString> gs3b4aSnapshot(QGraphicsScene &scene) {
+    using namespace PelicanStudio;
+    const auto number = [](qreal value) { return QString::number(value, 'g', 17); };
+    const auto rect = [&](const QRectF &r) {
+        return number(r.x()) + "," + number(r.y()) + "," + number(r.width()) + "x" +
+               number(r.height());
+    };
+    std::map<QGraphicsItem *, QString> items;
+    for (QGraphicsItem *item : scene.items()) {
+        const QString kind = nodeGraphItemKind(*item);
+        if (kind.isEmpty()) continue;
+        QStringList key{kind, item->data(gs3b4aMarkRole).toString()};
+        for (const int role : {GraphCanvasScopeRole, NodeGraphNameRole, GraphCanvasPortRole,
+                               NodeGraphFromNameRole, GraphCanvasFromPortRole, NodeGraphToNameRole,
+                               GraphCanvasToPortRole, GraphCanvasPassInputRole,
+                               GraphCanvasValueTextRole, GraphCanvasSocketDirectionRole,
+                               GraphCanvasSocketKeyRole, GraphCanvasBoundPortRole,
+                               GraphCanvasNodeViewRole, GraphCanvasColumnRole, GraphCanvasLabelRole,
+                               GraphCanvasOpRole, GraphCanvasSinkRole, GraphCanvasThumbnailDigestRole,
+                               GraphCanvasZoneScopeRole, GraphCanvasPortTypeRole,
+                               GraphCanvasSocketShapeRole, GraphCanvasBranchRole,
+                               GraphCanvasRefusalRole, GraphCanvasControlIndexRole,
+                               GraphCanvasDefinitionRole, GraphCanvasZoneAnchorRole})
+            key.push_back(item->data(role).toString());
+        QString state = key.join(QLatin1Char{'|'});
+        state += " parent " +
+                 QString::number(reinterpret_cast<quintptr>(item->parentItem()), 16);
+        state += " tip \"" + item->toolTip() + "\"";
+        if (const auto *text = dynamic_cast<const QGraphicsSimpleTextItem *>(item))
+            state += " \"" + text->text() + "\"";
+        if (const auto *line = dynamic_cast<const QGraphicsPathItem *>(item)) {
+            const QPainterPath path = line->path();
+            for (int element = 0; element < path.elementCount(); ++element) {
+                const auto at = path.elementAt(element);
+                state += " " + number(at.x) + "," + number(at.y);
+            }
+        } else if (const auto *head = dynamic_cast<const QGraphicsPolygonItem *>(item)) {
+            for (const QPointF &point : head->polygon())
+                state += " " + number(point.x()) + "," + number(point.y());
+        }
+        if (const auto *shape = dynamic_cast<const QAbstractGraphicsShapeItem *>(item)) {
+            state += " pen " + shape->pen().color().name(QColor::HexArgb) + "/" +
+                     number(shape->pen().widthF()) + "/" +
+                     QString::number(static_cast<int>(shape->pen().style()));
+            state += " brush " + shape->brush().color().name(QColor::HexArgb);
+        }
+        state += " @" + number(item->scenePos().x()) + "," + number(item->scenePos().y());
+        state += " in " + rect(item->sceneBoundingRect());
+        state += " opacity " + number(item->effectiveOpacity()) + " z " + number(item->zValue());
+        state += item->isVisible() ? " shown" : " hidden";
+        state += item->isSelected() ? " picked" : "";
+        items.emplace(item, std::move(state));
+    }
+    return items;
+}
+
+QGraphicsSimpleTextItem *gs3b4aLabel(QGraphicsScene &scene, const QString &loop,
+                                     const QString &port) {
+    return dynamic_cast<QGraphicsSimpleTextItem *>(scopedItem(
+        scene, PelicanStudio::GraphCanvasZoneLabelItem, QString{}, loop, port));
 }
 
 } // namespace
@@ -21410,25 +21562,29 @@ TEST_CASE("GS-3b3a a reply is classified before it is drawn: root, body, chrome,
         CHECK((result.moved & gs3b_document) != 0);
     }
 
-    SECTION("g: only a zone's chrome moved, with no changed node at all") {
-        ZoneHarness h{gs3bDrawDocument()};
-        h.loops = gs3bDrawReport();
+    SECTION("g: only a zone's stage moved, with no changed node at all, is drawn in place") {
+        // A view axis's length is in the plan, not the document: changing it
+        // names a new count in the stage, while the loop's badge (a report
+        // says nothing) and every other chrome field stay as they were.
+        ZoneHarness h{gs3b4aSingleViewDocument("face")};
+        h.plan = gs3b4aPlan("face", 33);
         gs3bOpen(h);
         const QString before = gs3bText(h.scene, PelicanStudio::GraphCanvasZoneLabelItem,
                                         QStringLiteral("steps"), QStringLiteral("stage"));
-        REQUIRE(before == QStringLiteral("draw_loop 3 materials"));
-        const Gs3b3aResult result = gs3b3aFollow(h, [&] { h.loops[0]["total"] = 4; });
+        REQUIRE(before == QStringLiteral("×33 (face)"));
+        const Gs3b3aResult result = gs3b3aFollow(
+            h, [&] { h.plan["nodes"][0]["view_axes"][0]["length"] = 34; });
         CHECK(result.classified);
         CHECK(result.kind == PelicanStudio::GraphCanvasScene::RedrawClass::chrome);
-        CHECK(result.rebuilds == 1);
+        CHECK(result.rebuilds == 0);
         CHECK(result.redrawn.empty());
-        CHECK(result.refused == gs3b3a_other_parts);
+        CHECK(result.refused == 0);
+        CHECK(result.chrome_detail2 == 0);
         CHECK((result.moved & gs3b_chrome) != 0);
         CHECK(result.moved == gs3b_chrome);
         CHECK(gs3bText(h.scene, PelicanStudio::GraphCanvasZoneLabelItem, QStringLiteral("steps"),
-                       QStringLiteral("stage")) != before);
-        CHECK(gs3bText(h.scene, PelicanStudio::GraphCanvasZoneLabelItem, QStringLiteral("steps"),
-                       QStringLiteral("stage")) == QStringLiteral("draw_loop 4 materials"));
+                       QStringLiteral("stage")) == QStringLiteral("×34 (face)"));
+        gs3aSameAsRebuilt(h.scene);
     }
 
     SECTION("h: a body value beside an authoring change is other") {
@@ -22334,8 +22490,10 @@ TEST_CASE("GS-3b3b one body value is drawn in its body, in place",
             CHECK(result.classified);
             CHECK(result.kind == PelicanStudio::GraphCanvasScene::RedrawClass::chrome);
             CHECK(result.rebuilds == 1);
-            CHECK(result.refused == gs3b3a_other_parts);
-            CHECK(result.refusal_detail2 == 0);
+            // A draw_loop's total names both the stage and the expansion
+            // (`4 materials`), so it is chrome, not a stage-only reply.
+            CHECK(result.refused == (1 << 13));
+            CHECK(result.refusal_detail2 == 1);
         }
         {
             INFO("gs3b3a fixture h");
@@ -22358,6 +22516,373 @@ TEST_CASE("GS-3b3b one body value is drawn in its body, in place",
             CHECK(result.refused == gs3b3a_other_parts);
             CHECK(result.refusal_detail2 == 0);
         }
+    }
+}
+
+
+// ---- GS-3b4a ----
+namespace {
+
+QGraphicsRectItem *gs3b4aContent(QGraphicsItem *frame) {
+    if (frame == nullptr) return nullptr;
+    for (QGraphicsItem *child : frame->childItems())
+        if (PelicanStudio::nodeGraphItemKind(*child) ==
+            QLatin1String{PelicanStudio::GraphCanvasZoneItem})
+            return dynamic_cast<QGraphicsRectItem *>(child);
+    return nullptr;
+}
+
+// The items of `before` are all still there, with the same mark and exactly
+// what they showed and where, except the stage and shared labels the path is
+// allowed to move (only their own state may differ).
+void gs3b4aKept(const std::map<QGraphicsItem *, QString> &before,
+                const std::map<QGraphicsItem *, QString> &after, QGraphicsItem *stage,
+                QGraphicsItem *shared) {
+    REQUIRE(after.size() == before.size());
+    for (const auto &[item, state] : before) {
+        REQUIRE(after.contains(item));
+        if (item != stage && item != shared) CHECK(after.at(item) == state);
+    }
+}
+
+} // namespace
+
+TEST_CASE("GS-3b4a a zone's stage alone is drawn where it hangs, without a rebuild",
+          "[devstudio][graph-canvas][scene][gs3b4a]") {
+    (void)application();
+
+    SECTION("a: the stage and the shared label beside it, with every other item kept") {
+        ZoneHarness h{gs3b4aViewDocument()};
+        h.plan = gs3b4aPlan("face", 33);
+        gs3bOpen(h);
+        // Two loops over one body draw one zone, whose body both run: its
+        // heading carries `shared (2 users)` beside the stage.
+        REQUIRE(h.scene.zones().size() == 1);
+        QGraphicsSimpleTextItem *stage = gs3b4aLabel(h.scene, QStringLiteral("steps"),
+                                                      QStringLiteral("stage"));
+        QGraphicsSimpleTextItem *shared = gs3b4aLabel(h.scene, QStringLiteral("steps"),
+                                                       QStringLiteral("shared"));
+        REQUIRE(stage != nullptr);
+        REQUIRE(shared != nullptr);
+        REQUIRE(stage->text() == QStringLiteral("×33 (face)"));
+        REQUIRE(shared->text() == QStringLiteral("shared (2 users)"));
+        REQUIRE(stage->parentItem() == shared->parentItem());
+        auto *frame = dynamic_cast<QGraphicsPathItem *>(
+            scopedNode(h.scene, QString{}, QStringLiteral("steps")));
+        REQUIRE(frame != nullptr);
+        QGraphicsRectItem *content = gs3b4aContent(frame);
+        REQUIRE(content != nullptr);
+        const QPointF stage_at = stage->pos();
+        const QPointF shared_at = shared->pos();
+        const QPainterPath frame_path = frame->path();
+        const QRectF content_rect = content->rect();
+        const QPointF frame_at = frame->pos();
+        gs3b4aMarkItems(h.scene);
+        const auto before = gs3b4aSnapshot(h.scene);
+
+        const Gs3b3aResult result = gs3b3aFollow(
+            h, [&] { h.plan["nodes"][0]["view_axes"][0]["length"] = 44; });
+        CHECK(result.classified);
+        CHECK(result.kind == PelicanStudio::GraphCanvasScene::RedrawClass::chrome);
+        CHECK(result.rebuilds == 0);
+        CHECK(result.redrawn.empty());
+        CHECK(result.refused == 0);
+        CHECK(result.chrome_detail2 == 0);
+        CHECK(result.moved == gs3b_chrome);
+
+        QGraphicsSimpleTextItem *stage_after = gs3b4aLabel(
+            h.scene, QStringLiteral("steps"), QStringLiteral("stage"));
+        QGraphicsSimpleTextItem *shared_after = gs3b4aLabel(
+            h.scene, QStringLiteral("steps"), QStringLiteral("shared"));
+        REQUIRE(stage_after == stage);
+        REQUIRE(shared_after == shared);
+        CHECK(stage_after->text() == QStringLiteral("×44 (face)"));
+        CHECK(shared_after->text() == QStringLiteral("shared (2 users)"));
+        // Same digit count: the stage keeps its width with any font (tabular
+        // digits), so the in-place path is taken on every platform; section a2
+        // widens it.
+        CHECK(stage_after->pos().y() == stage_at.y());
+        CHECK(shared_after->pos().y() == shared_at.y());
+        CHECK(stage_after->parentItem() == shared_after->parentItem());
+        const auto after = gs3b4aSnapshot(h.scene);
+        gs3b4aKept(before, after, stage_after, shared_after);
+
+        CHECK(dynamic_cast<QGraphicsPathItem *>(
+                  scopedNode(h.scene, QString{}, QStringLiteral("steps"))) == frame);
+        CHECK(frame->pos() == frame_at);
+        CHECK(frame->path() == frame_path);
+        CHECK(gs3b4aContent(frame) == content);
+        CHECK(content->rect() == content_rect);
+
+        // The whole draw puts the stage and the shared label at the same x.
+        const QPointF stage_whole_at = stage_after->pos();
+        const QPointF shared_whole_at = shared_after->pos();
+        gs3aSameAsRebuilt(h.scene);
+        QGraphicsSimpleTextItem *rebuilt_stage = gs3b4aLabel(
+            h.scene, QStringLiteral("steps"), QStringLiteral("stage"));
+        QGraphicsSimpleTextItem *rebuilt_shared = gs3b4aLabel(
+            h.scene, QStringLiteral("steps"), QStringLiteral("shared"));
+        REQUIRE(rebuilt_stage != nullptr);
+        REQUIRE(rebuilt_shared != nullptr);
+        CHECK(rebuilt_stage->text() == QStringLiteral("×44 (face)"));
+        CHECK(rebuilt_stage->pos() == stage_whole_at);
+        CHECK(rebuilt_shared->pos() == shared_whole_at);
+    }
+
+    SECTION("a2: a wider stage: in place where the font keeps min_width, else refused for it; both equal a whole draw") {
+        ZoneHarness h{gs3b4aViewDocument()};
+        h.plan = gs3b4aPlan("face", 33);
+        gs3bOpen(h);
+        QGraphicsSimpleTextItem *stage = gs3b4aLabel(h.scene, QStringLiteral("steps"), QStringLiteral("stage"));
+        QGraphicsSimpleTextItem *shared = gs3b4aLabel(h.scene, QStringLiteral("steps"), QStringLiteral("shared"));
+        REQUIRE(stage != nullptr);
+        REQUIRE(shared != nullptr);
+        const QPointF shared_at = shared->pos();
+        const Gs3b3aResult result = gs3b3aFollow(
+            h, [&] { h.plan["nodes"][0]["view_axes"][0]["length"] = 100; });
+        CHECK(result.kind == PelicanStudio::GraphCanvasScene::RedrawClass::chrome);
+        // Whether the heading (title + stage + shared) or another row sets the
+        // frame's min_width depends on the platform's font: on Linux's the
+        // stage widens in place, on Windows' it outgrows the tab row.
+        if (result.refused == 0) {
+            CHECK(result.rebuilds == 0);
+            QGraphicsSimpleTextItem *shared_after =
+                gs3b4aLabel(h.scene, QStringLiteral("steps"), QStringLiteral("shared"));
+            REQUIRE(shared_after == shared);
+            CHECK(shared_after->pos().x() != shared_at.x());
+        } else {
+            CHECK(result.refused == (1 << 13));
+            CHECK(result.chrome_detail2 == 2);
+            CHECK(result.rebuilds == 1);
+        }
+        const QPointF stage_now = gs3b4aLabel(h.scene, QStringLiteral("steps"), QStringLiteral("stage"))->pos();
+        const QPointF shared_now = gs3b4aLabel(h.scene, QStringLiteral("steps"), QStringLiteral("shared"))->pos();
+        gs3aSameAsRebuilt(h.scene);
+        CHECK(gs3b4aLabel(h.scene, QStringLiteral("steps"), QStringLiteral("stage"))->pos() == stage_now);
+        CHECK(gs3b4aLabel(h.scene, QStringLiteral("steps"), QStringLiteral("shared"))->pos() == shared_now);
+        CHECK(gs3b4aLabel(h.scene, QStringLiteral("steps"), QStringLiteral("stage"))->text() ==
+              QStringLiteral("×100 (face)"));
+    }
+
+    SECTION("b: a longer stage that changes min_width, but not the frame, is refused for its "
+            "geometry alone") {
+        const std::string axis(80, 'a');
+        ZoneHarness h{gs3b4aSingleViewDocument(axis)};
+        h.plan = gs3b4aPlan(axis, 33);
+        h.document["definitions"]["first"]["layout"] =
+            Json{{"nodes", {{"sum", {{"x", 1600.0}, {"y", 0.0}}}}}};
+        gs3bOpen(h);
+        REQUIRE(h.scene.zones().size() == 1);
+        QGraphicsSimpleTextItem *stage = gs3b4aLabel(h.scene, QStringLiteral("steps"),
+                                                      QStringLiteral("stage"));
+        REQUIRE(stage != nullptr);
+        const QString old_stage = stage->text();
+        REQUIRE(old_stage == QStringLiteral("×33 (%1)").arg(QString::fromStdString(axis)));
+        auto *frame = dynamic_cast<QGraphicsPathItem *>(
+            scopedNode(h.scene, QString{}, QStringLiteral("steps")));
+        REQUIRE(frame != nullptr);
+        const qreal old_width = frame->path().boundingRect().width();
+        const QPainterPath old_path = frame->path();
+
+        const Gs3b3aResult result = gs3b3aFollow(h, [&] {
+            h.plan["nodes"][0]["view_axes"][0]["length"] =
+                std::numeric_limits<std::int64_t>::max();
+        });
+        CHECK(result.classified);
+        CHECK(result.kind == PelicanStudio::GraphCanvasScene::RedrawClass::chrome);
+        CHECK(result.rebuilds == 1);
+        CHECK(result.redrawn.empty());
+        CHECK(result.refused == (1 << 13));
+        CHECK(result.chrome_detail2 == 2);
+        CHECK(result.moved == gs3b_chrome);
+        auto *rebuilt_frame = dynamic_cast<QGraphicsPathItem *>(
+            scopedNode(h.scene, QString{}, QStringLiteral("steps")));
+        REQUIRE(rebuilt_frame != nullptr);
+        CHECK(rebuilt_frame->path() == old_path);
+        CHECK(rebuilt_frame->path().boundingRect().width() == old_width);
+        QGraphicsSimpleTextItem *rebuilt_stage = gs3b4aLabel(
+            h.scene, QStringLiteral("steps"), QStringLiteral("stage"));
+        REQUIRE(rebuilt_stage != nullptr);
+        const QString new_stage = rebuilt_stage->text();
+        CHECK(new_stage != old_stage);
+
+        // The stage really is what changed min_width: same content, same
+        // heading, same everything else, and two measured widths, one frame.
+        PelicanStudio::GraphCanvasDrawing::Builder builder{h.scene, QString{}};
+        const auto nodes = h.model.nodes("");
+        const auto loop = std::ranges::find(nodes, std::string{"steps"},
+                                            &PelicanStudio::GraphCanvasNode::id);
+        REQUIRE(loop != nodes.end());
+        const qreal content_width =
+            old_width - 2.0 * PelicanStudio::GraphCanvasZoneContentLeft;
+        REQUIRE(content_width > 0.0);
+        const auto measured = [&](const QString &text) {
+            PelicanStudio::GraphCanvasDrawing::Zone zone;
+            zone.node.node = &*loop;
+            zone.definition = QStringLiteral("first");
+            zone.stage = text;
+            zone.content = QRectF{0.0, 0.0, content_width, 100.0};
+            PelicanStudio::GraphCanvasDrawing::layoutZone(
+                zone, builder.headingMetrics(), builder.rowMetrics());
+            return zone;
+        };
+        const auto old_zone = measured(old_stage);
+        const auto new_zone = measured(new_stage);
+        CHECK(old_zone.metrics.min_width != new_zone.metrics.min_width);
+        CHECK(old_zone.frame == new_zone.frame);
+        gs3aSameAsRebuilt(h.scene);
+    }
+
+    SECTION("c: a tab moved, with the stage as it was, is refused for the other chrome") {
+        ZoneHarness h{gs3bDrawDocument()};
+        h.loops = gs3bDrawReport();
+        gs3bOpen(h);
+        REQUIRE(h.scene.zones().size() == 1);
+        const QString stage_before = gs3bText(
+            h.scene, PelicanStudio::GraphCanvasZoneLabelItem, QStringLiteral("steps"),
+            QStringLiteral("stage"));
+        REQUIRE(stage_before == QStringLiteral("draw_loop 3 materials"));
+        const auto tabs_before = zoneTabs(h.scene);
+        REQUIRE(tabs_before.size() == 2);
+        auto *frame = dynamic_cast<QGraphicsPathItem *>(
+            scopedNode(h.scene, QString{}, QStringLiteral("steps")));
+        REQUIRE(frame != nullptr);
+        const QPainterPath path_before = frame->path();
+
+        const Gs3b3aResult result = gs3b3aFollow(
+            h, [&] { h.loops[0]["elements"][1]["branch"] = 0; });
+        CHECK(result.classified);
+        CHECK(result.kind == PelicanStudio::GraphCanvasScene::RedrawClass::chrome);
+        CHECK(result.rebuilds == 1);
+        CHECK(result.redrawn.empty());
+        CHECK(result.refused == (1 << 13));
+        CHECK(result.chrome_detail2 == 1);
+        CHECK(result.moved == gs3b_chrome);
+        CHECK(gs3bText(h.scene, PelicanStudio::GraphCanvasZoneLabelItem,
+                       QStringLiteral("steps"), QStringLiteral("stage")) == stage_before);
+        CHECK(zoneTabs(h.scene) != tabs_before);
+        auto *rebuilt_frame = dynamic_cast<QGraphicsPathItem *>(
+            scopedNode(h.scene, QString{}, QStringLiteral("steps")));
+        REQUIRE(rebuilt_frame != nullptr);
+        CHECK(rebuilt_frame->path() == path_before);
+        gs3aSameAsRebuilt(h.scene);
+    }
+
+    SECTION("d: a refit already queued is the reason, with the stage as the only other change") {
+        ZoneHarness h{gs3b4aSingleViewDocument("face")};
+        h.plan = gs3b4aPlan("face", 33);
+        gs3bOpen(h);
+        REQUIRE(h.scene.zones().size() == 1);
+        QGraphicsItem *sum = scopedNode(h.scene, QStringLiteral("first"), QStringLiteral("sum"));
+        REQUIRE(sum != nullptr);
+        const QPointF at = sum->pos();
+        // Inside the frame's body: the frame is unchanged, but the refit
+        // timer is now waiting.
+        sum->setPos(at + QPointF{3.0, 0.0});
+        sum->setPos(at);
+        auto *frame = dynamic_cast<QGraphicsPathItem *>(
+            scopedNode(h.scene, QString{}, QStringLiteral("steps")));
+        REQUIRE(frame != nullptr);
+        const QPainterPath path_before = frame->path();
+        const Gs3b3aResult result = gs3b3aFollow(
+            h, [&] { h.plan["nodes"][0]["view_axes"][0]["length"] = 34; });
+        CHECK(result.classified);
+        CHECK(result.kind == PelicanStudio::GraphCanvasScene::RedrawClass::chrome);
+        CHECK(result.rebuilds == 1);
+        CHECK(result.redrawn.empty());
+        CHECK(result.refused == (1 << 13));
+        CHECK(result.chrome_detail2 == 4);
+        CHECK(result.moved == gs3b_chrome);
+        CHECK(gs3bText(h.scene, PelicanStudio::GraphCanvasZoneLabelItem,
+                       QStringLiteral("steps"), QStringLiteral("stage")) ==
+              QStringLiteral("×34 (face)"));
+        auto *rebuilt_frame = dynamic_cast<QGraphicsPathItem *>(
+            scopedNode(h.scene, QString{}, QStringLiteral("steps")));
+        REQUIRE(rebuilt_frame != nullptr);
+        CHECK(rebuilt_frame->path() == path_before);
+        gs3bWait(20);
+        gs3aSameAsRebuilt(h.scene);
+    }
+
+    SECTION("e: A, B, C each in place, the same stage item all the way") {
+        ZoneHarness h{gs3b4aSingleViewDocument("face")};
+        h.plan = gs3b4aPlan("face", 33);
+        gs3bOpen(h);
+        REQUIRE(h.scene.zones().size() == 1);
+        QGraphicsSimpleTextItem *stage = gs3b4aLabel(h.scene, QStringLiteral("steps"),
+                                                      QStringLiteral("stage"));
+        REQUIRE(stage != nullptr);
+        REQUIRE(stage->text() == QStringLiteral("×33 (face)"));
+        for (const std::int64_t length : {std::int64_t{100}, std::int64_t{1000}}) {
+            const Gs3b3aResult result = gs3b3aFollow(
+                h, [&] { h.plan["nodes"][0]["view_axes"][0]["length"] = length; });
+            CHECK(result.classified);
+            CHECK(result.kind == PelicanStudio::GraphCanvasScene::RedrawClass::chrome);
+            CHECK(result.rebuilds == 0);
+            CHECK(result.redrawn.empty());
+            CHECK(result.refused == 0);
+            CHECK(result.chrome_detail2 == 0);
+            CHECK(result.moved == gs3b_chrome);
+            CHECK(gs3b4aLabel(h.scene, QStringLiteral("steps"), QStringLiteral("stage")) == stage);
+            CHECK(stage->text() == QStringLiteral("×%1 (face)").arg(length));
+        }
+        gs3aSameAsRebuilt(h.scene);
+    }
+
+    SECTION("f: after the stage was drawn in place, GS-3b3b's body redraw is still whole") {
+        ZoneHarness h{gs3b4aSingleViewDocument("face")};
+        h.plan = gs3b4aPlan("face", 33);
+        gs3bOpen(h);
+        REQUIRE(h.scene.zones().size() == 1);
+        const Gs3b3aResult stage_result = gs3b3aFollow(
+            h, [&] { h.plan["nodes"][0]["view_axes"][0]["length"] = 100; });
+        CHECK(stage_result.kind == PelicanStudio::GraphCanvasScene::RedrawClass::chrome);
+        CHECK(stage_result.rebuilds == 0);
+        REQUIRE(gs3b3aPill(h.scene, QStringLiteral("first"), QStringLiteral("a"),
+                           QStringLiteral("b")) == QStringLiteral("2.0"));
+        QGraphicsSimpleTextItem *stage = gs3b4aLabel(h.scene, QStringLiteral("steps"),
+                                                      QStringLiteral("stage"));
+        REQUIRE(stage != nullptr);
+        const Gs3b3aResult body_result = gs3b3aFollow(h, [&] {
+            h.document["definitions"]["first"]["nodes"][1]["parameters"]["b"] = 6.0;
+        });
+        CHECK(body_result.classified);
+        CHECK(body_result.kind == PelicanStudio::GraphCanvasScene::RedrawClass::body);
+        CHECK(body_result.body_detail2 == 0);
+        CHECK(body_result.rebuilds == 0);
+        CHECK(body_result.redrawn == std::vector<std::vector<std::string>>{{"a"}});
+        CHECK(body_result.refused == 0);
+        CHECK(gs3b3aPill(h.scene, QStringLiteral("first"), QStringLiteral("a"),
+                         QStringLiteral("b")) == QStringLiteral("6.0"));
+        CHECK(gs3b4aLabel(h.scene, QStringLiteral("steps"), QStringLiteral("stage")) == stage);
+        CHECK(stage->text() == QStringLiteral("×100 (face)"));
+        gs3aSameAsRebuilt(h.scene);
+    }
+
+    SECTION("g: a reply that moves a root node as well as the stage is not this path") {
+        ZoneHarness h{gs3bDrawDocument()};
+        h.loops = gs3bDrawReport();
+        gs3bOpen(h);
+        REQUIRE(h.scene.zones().size() == 1);
+        const Gs3b3aResult result = gs3b3aFollow(h, [&] {
+            h.document["nodes"][0]["parameters"]["value"] = 6.0;
+            h.loops[0]["total"] = 4;
+        });
+        CHECK(result.classified);
+        CHECK(result.kind == PelicanStudio::GraphCanvasScene::RedrawClass::mixed);
+        CHECK(result.kind != PelicanStudio::GraphCanvasScene::RedrawClass::chrome);
+        CHECK(result.rebuilds == 1);
+        CHECK(result.redrawn.empty());
+        CHECK(result.refused != 0);
+        CHECK((result.refused & (1 << 13)) == 0);
+        CHECK(result.chrome_detail2 == 0);
+        CHECK((result.moved & gs3b_nodes) != 0);
+        CHECK((result.moved & gs3b_chrome) != 0);
+        CHECK(result.moved != gs3b_chrome);
+        CHECK(gs3bText(h.scene, PelicanStudio::GraphCanvasZoneLabelItem,
+                       QStringLiteral("steps"), QStringLiteral("stage")) ==
+              QStringLiteral("draw_loop 4 materials"));
+        gs3aSameAsRebuilt(h.scene);
     }
 }
 

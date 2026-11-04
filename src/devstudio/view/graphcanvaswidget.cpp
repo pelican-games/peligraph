@@ -5979,7 +5979,7 @@ GraphCanvasScene::NodeRedraw GraphCanvasScene::redrawChangedNodes(DrawnFrom &now
         bands = 1 << 9,         // another node's band or opacity
         folded_room = 1 << 10,  // what a folded node keeps clear of moved (since the last whole draw, or by this one)
         folded_view = 1 << 11,  // a folded (feature) view
-        body = 1 << 12,         // GS-3b3a: only a body's values moved; not drawn in place yet
+        body = 1 << 12,         // GS-3b3a / 3b3b: a body's values; drawn in place unless detail2 2-6 says why not
     };
     const auto refuse = [](int why) {
         if (GuiTrace::sink) { const GuiTraceSpan cause{"graph_redraw_refused", double(why)}; }
@@ -6262,6 +6262,7 @@ GraphCanvasScene::NodeRedraw GraphCanvasScene::redrawChangedNodes(DrawnFrom &now
         if (nodesRedrawn) nodesRedrawn(body_scope, ids);
         return NodeRedraw::redrawn;
     }
+    if (change.kind == RedrawClass::chrome) return redrawZoneChrome(now, change);
     std::optional<GuiTraceSpan> check_trace;
     check_trace.emplace("graph_redraw_check");
     if (now.folded_view || drawn.folded_view) return refuse(folded_view);
@@ -6522,6 +6523,160 @@ GraphCanvasScene::NodeRedraw GraphCanvasScene::redrawChangedNodes(DrawnFrom &now
         GuiTrace::sink(GuiTrace::owner, "graph_scene_redraw_node", began, GuiTrace::now(), double(ids.size()), 0.0);
     paintPartialRedrawNow();
     if (nodesRedrawn) nodesRedrawn(scope, ids);
+    return NodeRedraw::redrawn;
+}
+
+GraphCanvasScene::NodeRedraw GraphCanvasScene::redrawZoneChrome(DrawnFrom &now, const RedrawChange &change) {
+    const DrawnFrom &drawn = *drawn_from_;
+    // Why the stage text was not drawn in place: the first condition that
+    // failed, as detail2 of graph_redraw_refused with the chrome bit.
+    enum : int { chrome = 1 << 13 };
+    const auto refuseChrome = [](int why) {
+        if (GuiTrace::sink) {
+            const GuiTraceSpan cause{"graph_redraw_refused", double(chrome), double(why)};
+        }
+        return NodeRedraw::refused;
+    };
+    if (change.kind != RedrawClass::chrome) return refuseChrome(1);
+
+    // 1. The target zone's stage is the only difference between the two
+    // draughts. Everything else -- the root's own fields, the document, every
+    // other zone and every other field of this one -- must be identical.
+    if (now.scope != drawn.scope || now.document != drawn.document ||
+        now.layout != drawn.layout || now.nodes != drawn.nodes ||
+        now.folded != drawn.folded || now.derived != drawn.derived ||
+        now.passes != drawn.passes || now.stubs != drawn.stubs ||
+        now.authoring != drawn.authoring || now.shown != drawn.shown ||
+        now.trail != drawn.trail || now.stacks != drawn.stacks ||
+        now.decomposable != drawn.decomposable || now.folded_view != drawn.folded_view ||
+        !sameCanvasEdges(now.edges, drawn.edges) || now.bands != drawn.bands ||
+        now.zones.size() != drawn.zones.size())
+        return refuseChrome(1);
+    const auto sameChromeExceptStage = [](const GraphCanvasDrawing::ZoneChrome &a,
+                                          const GraphCanvasDrawing::ZoneChrome &b) {
+        return a.definition == b.definition && a.shared == b.shared && a.tabs == b.tabs &&
+               a.axis_labels == b.axis_labels && a.inputs == b.inputs &&
+               a.outputs == b.outputs && a.edge_slots == b.edge_slots &&
+               a.carries == b.carries && a.expansion == b.expansion &&
+               a.frame_plan_button == b.frame_plan_button;
+    };
+    std::optional<std::size_t> target;
+    for (std::size_t index = 0; index < now.zones.size(); ++index) {
+        const ZoneDrawn &a = now.zones[index];
+        const ZoneDrawn &b = drawn.zones[index];
+        if (a.loop != b.loop || a.body != b.body || a.nodes != b.nodes ||
+            a.shown != b.shown || !sameCanvasEdges(a.edges, b.edges) ||
+            a.layout != b.layout || a.session != b.session ||
+            !sameCanvasOutputs(a.outputs, b.outputs) || a.metrics != b.metrics ||
+            a.bands != b.bands || a.frame_band != b.frame_band ||
+            a.frame_opacity != b.frame_opacity || a.pictures != b.pictures)
+            return refuseChrome(1);
+        if (a.chrome == b.chrome) continue;
+        if (target || !sameChromeExceptStage(a.chrome, b.chrome) ||
+            a.chrome.stage == b.chrome.stage)
+            return refuseChrome(1);
+        target = index;
+    }
+    if (!target) return refuseChrome(1);
+
+    const ZoneDrawn &zone_now = now.zones[*target];
+    const ZoneDrawn &zone_drawn = drawn.zones[*target];
+    const std::string &body = zone_now.body;
+    const auto content_found = zone_content_.find(body);
+    const auto geometry_found = zone_geometry_.find(body);
+    const auto drawn_found = zone_drawn_.find(body);
+    const auto content_rect_found = zone_content_rect_.find(body);
+    if (content_found == zone_content_.end() || content_found->second == nullptr ||
+        content_found->second->scene() != this || geometry_found == zone_geometry_.end() ||
+        drawn_found == zone_drawn_.end() || content_rect_found == zone_content_rect_.end())
+        return refuseChrome(3);
+    QGraphicsItem *const content = content_found->second;
+    auto *const frame = dynamic_cast<QGraphicsPathItem *>(content->parentItem());
+    if (frame == nullptr || frame->scene() != this ||
+        frame->path().boundingRect() != drawn_found->second.frame_path)
+        return refuseChrome(3);
+
+    // 2. Recomputed with the new stage, the zone's least geometry must be the
+    // geometry the whole draw recorded -- not merely the same final frame.
+    const auto loop_node = std::ranges::find(now.nodes, zone_now.loop, &GraphCanvasNode::id);
+    if (loop_node == now.nodes.end()) return refuseChrome(1);
+    std::vector<std::string> boundary;
+    for (const GraphCanvasNode &node : zone_now.nodes)
+        if (node.op == "graph.input") boundary.push_back(node.id);
+    GraphCanvasDrawing::Builder drawing{*this, QString{}};
+    static const std::set<std::string, std::less<>> none;
+    const auto linked_found = drawn_linked_.find(zone_now.loop);
+    const auto entry = drawing.prepareNode(
+        *model_, *loop_node, nodeView(now.scope, zone_now.loop),
+        linked_found == drawn_linked_.end() ? none : linked_found->second);
+    GraphCanvasDrawing::Zone zone;
+    static_cast<GraphCanvasDrawing::ZoneChrome &>(zone) =
+        zoneChrome(*loop_node, body, boundary, zone_now.outputs, entry);
+    zone.node = entry;
+    zone.content = content_rect_found->second;
+    GraphCanvasDrawing::layoutZone(zone, drawing.headingMetrics(), drawing.rowMetrics());
+    if (static_cast<const GraphCanvasDrawing::ZoneChrome &>(zone) != zone_now.chrome)
+        return refuseChrome(1);
+    const ZoneGeometry &geometry = geometry_found->second;
+    if (zone.origin != geometry.origin || zone.metrics.min_width != geometry.min_width ||
+        zone.metrics.min_height != geometry.min_height ||
+        zone.metrics.footer != geometry.footer ||
+        GraphCanvasDrawing::zoneFrame(zone.metrics, zone.content) != geometry.frame)
+        return refuseChrome(2);
+
+    // 3. The band still holds exactly the labels the last whole draw made,
+    // as its direct children, and the frame is still the one recorded.
+    QGraphicsItem *band = nullptr;
+    for (QGraphicsItem *child : frame->childItems()) {
+        if (nodeGraphItemKind(*child) != QLatin1String{GraphCanvasNodeHeaderItem} ||
+            !child->data(GraphCanvasHeadingRole).toBool())
+            continue;
+        if (band != nullptr) return refuseChrome(3);
+        band = child;
+    }
+    if (band == nullptr) return refuseChrome(3);
+    QGraphicsSimpleTextItem *stage_item = nullptr;
+    QGraphicsSimpleTextItem *shared_item = nullptr;
+    for (QGraphicsItem *child : band->childItems()) {
+        if (nodeGraphItemKind(*child) != QLatin1String{GraphCanvasZoneLabelItem}) continue;
+        auto *const label = dynamic_cast<QGraphicsSimpleTextItem *>(child);
+        if (label == nullptr) return refuseChrome(3);
+        const QString role = label->data(GraphCanvasPortRole).toString();
+        if (role == QLatin1String{"stage"}) {
+            if (stage_item != nullptr) return refuseChrome(3);
+            stage_item = label;
+        } else if (role == QLatin1String{"shared"}) {
+            if (shared_item != nullptr) return refuseChrome(3);
+            shared_item = label;
+        } else {
+            return refuseChrome(3);
+        }
+    }
+    if (stage_item == nullptr || stage_item->text() != zone_drawn.chrome.stage) return refuseChrome(3);
+    if (shared_item != nullptr && shared_item->text() != zone_drawn.chrome.shared) return refuseChrome(3);
+    if (shared_item == nullptr && !zone_drawn.chrome.shared.isEmpty()) return refuseChrome(3);
+    if (shared_item != nullptr && zone_drawn.chrome.shared.isEmpty()) return refuseChrome(3);
+
+    // 4. No queued refit: the frame is being drawn again around this body.
+    if (zone_refit_queued_) return refuseChrome(4);
+
+    // 5. Draw the words where the whole draw would put them, using the same
+    // metrics, and only there.
+    const std::int64_t began = GuiTrace::sink ? GuiTrace::now() : 0;
+    const qreal stage_x = geometry.frame.width() - 10.0 -
+                          drawing.rowMetrics().horizontalAdvance(zone_now.chrome.stage);
+    stage_item->setText(zone_now.chrome.stage);
+    stage_item->setPos(stage_x, stage_item->pos().y());
+    if (shared_item != nullptr) {
+        const qreal shared_x = stage_x - 14.0 -
+                               drawing.rowMetrics().horizontalAdvance(zone_now.chrome.shared);
+        shared_item->setPos(shared_x, shared_item->pos().y());
+    }
+    follow_after_gesture_ = false;
+    drawn_from_ = std::move(now);
+    paintPartialRedrawNow();
+    if (GuiTrace::sink)
+        GuiTrace::sink(GuiTrace::owner, "graph_scene_redraw_node", began, GuiTrace::now(), 0.0, 2.0);
     return NodeRedraw::redrawn;
 }
 

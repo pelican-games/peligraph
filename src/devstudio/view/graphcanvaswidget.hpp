@@ -1269,6 +1269,9 @@ class GraphCanvasScene final : public QGraphicsScene {
     // GS-3b2: `zones_moved` is zonesMoved(now, *drawn_from_): a zone that
     // draws anything else refuses it (condition 3).
     NodeRedraw redrawChangedNodes(DrawnFrom &now, int zones_moved);
+    // GS-3b4a: a reply whose only new thing is one zone's stage text draws
+    // that text where it hangs, without rebuilding the scene.
+    NodeRedraw redrawZoneChrome(DrawnFrom &now, const RedrawChange &change);
     // GS-3z: paints the visible views now, after a partial redraw.
     void paintPartialRedrawNow();
     // What GL-2b's band under a drawn node says (LC-1s's inside a loop's
