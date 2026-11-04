@@ -25,7 +25,11 @@ struct NativeViewportDiagnostics {
     int child_dpi_awareness = -1;
 };
 
-// Studio shortcuts must also cross the separately hosted engine window.
+// Studio shortcuts must also cross the separately hosted engine window.  Only
+// single-stroke keys from this set cross: the poll below sees one key and its
+// modifiers, so a multi-stroke sequence can never match here.  A command bound
+// to a key outside this set still works in Studio, just not while the engine
+// viewport holds the keyboard (KM-2a).
 inline constexpr std::array<int, 8> StudioShortcutKeys{
     Qt::Key_Z, Qt::Key_Y, Qt::Key_D, Qt::Key_Delete,
     Qt::Key_N, Qt::Key_O, Qt::Key_S, Qt::Key_P};

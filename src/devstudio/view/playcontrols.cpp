@@ -122,13 +122,13 @@ PlayControls::PlayControls(QToolBar &band, QWidget &window, QWidget &status_pare
     };
     play_key_ = key("Ctrl+P", "pelican.play.playKey");
     setCommandHelp(*play_key_, "play.toggle", CommandSurface::Window,
-                   tr("Play / Stop (outside text fields)"));
+                   tr("Play / Stop (outside text fields)"), 8);
     pause_key_ = key("Ctrl+Shift+P", "pelican.play.pauseKey");
     setCommandHelp(*pause_key_, "play.pause", CommandSurface::Window,
-                   tr("Pause (outside text fields)"));
+                   tr("Pause (outside text fields)"), 9);
     step_key_ = key("Ctrl+Alt+P", "pelican.play.stepKey");
     setCommandHelp(*step_key_, "play.step", CommandSurface::Window,
-                   tr("Step (outside text fields)"));
+                   tr("Step (outside text fields)"), 10);
     status_ = new QLabel(&status_parent);
     status_->setObjectName(QStringLiteral("pelican.playStatus"));
     // 12.1: play_busy. The line says why; this sends the same thing again once

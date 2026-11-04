@@ -465,7 +465,8 @@ struct InspectorWidget::Impl {
                            button == undo_button ? "scene.undo" : "scene.redo",
                            CommandSurface::Scene,
                            button == undo_button ? owner.tr("Undo scene edit")
-                                                 : owner.tr("Redo scene edit"));
+                                                 : owner.tr("Redo scene edit"),
+                           button == undo_button ? 1 : 2);
             action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
             owner.addAction(action);
             QPushButton *target = button;

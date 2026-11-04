@@ -73,13 +73,13 @@ OutlinerTree::OutlinerTree(QWidget *parent) : QTreeWidget(parent) {
     duplicate_->setShortcut(QKeySequence{Qt::CTRL | Qt::Key_D});
     duplicate_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
     setCommandHelp(*duplicate_, "scene.duplicate", CommandSurface::Scene,
-                   tr("Duplicate selected object"));
+                   tr("Duplicate selected object"), 4);
     delete_ = new QAction(tr("Delete"), this);
     delete_->setObjectName(QStringLiteral("pelican.outliner.delete"));
     delete_->setShortcut(QKeySequence{QKeySequence::Delete});
     delete_->setShortcutContext(Qt::WidgetWithChildrenShortcut);
     setCommandHelp(*delete_, "scene.delete", CommandSurface::Scene,
-                   tr("Delete selected object"));
+                   tr("Delete selected object"), 3);
     setEditRefusal({});
     addAction(duplicate_);
     addAction(delete_);

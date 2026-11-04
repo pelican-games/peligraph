@@ -306,6 +306,9 @@ class MainWindow : public QMainWindow {
     void showProblems();
     void createMenus();
     bool sceneFocusGroup() const;
+    // KM-2a: read `<application_config_directory>/keymap.json` once and apply
+    // its per-command shortcuts over the ones the commands were made with.
+    void applyUserKeymap();
     void updateSceneShortcuts();
     void showKeyboardShortcuts();
     void createPlayControls(QToolBar *band);

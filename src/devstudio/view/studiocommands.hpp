@@ -62,11 +62,16 @@ inline const char *commandSurfaceLabel(CommandSurface surface) {
 // Stamp the machine-readable description on the object that really handles the
 // command (an action or a shortcut).  The help table reads these properties
 // back; the handler's branch body never learns that they exist.
+// `viewport_order` is this command's position in the handler that forwards a
+// key from the engine's own window; 0 means the command is not forwarded.  An
+// int, not a bool, because the old hand-written list ran these commands in a
+// fixed order and the first match wins (KM-2a).
 inline void setCommandHelp(QObject &object, const char *id, CommandSurface surface,
-                           const QString &title) {
+                           const QString &title, int viewport_order = 0) {
     object.setProperty("pelican.command.id", QString::fromLatin1(id));
     object.setProperty("pelican.command.surface", static_cast<int>(surface));
     object.setProperty("pelican.command.title", title);
+    object.setProperty("pelican.command.viewport", viewport_order);
 }
 
 enum class KeyMatch {

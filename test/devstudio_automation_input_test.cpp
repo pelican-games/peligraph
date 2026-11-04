@@ -51,6 +51,7 @@
 #include <QPushButton>
 #include <QScrollBar>
 #include <QShortcut>
+#include <QSignalSpy>
 #include <QString>
 #include <QStringList>
 #include <QTest>
@@ -2465,10 +2466,23 @@ struct FixtureChildExit {
     ~FixtureChildExit() { finish(); }
 };
 
+// KM-2a: the fixture's config directory, with a keymap.json already written
+// before MainWindow reads it.  An empty `contents` leaves the file missing.
+struct KeymapFile {
+    KeymapFile(const QString &directory, const QString &contents) {
+        if (contents.isEmpty()) return;
+        QFile file{QDir(directory).filePath(QStringLiteral("keymap.json"))};
+        REQUIRE(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        const QByteArray bytes = contents.toUtf8();
+        REQUIRE(file.write(bytes) == bytes.size());
+    }
+};
+
 struct SceneShortcutRig {
     using Json = nlohmann::json;
     QApplication &app = application();
     QTemporaryDir config;
+    KeymapFile keymap;
     PelicanStudio::MainWindow window{config.path()};
     PelicanStudio::EmbeddedViewport &viewport = *window.engineViewport();
     Json objects = Json::array({{{"name", "Cube"}, {"id", 41}, {"x", 1.0}}});
@@ -2480,7 +2494,8 @@ struct SceneShortcutRig {
     // Also closes stdin if a REQUIRE aborts construction.
     FixtureChildExit exit_child{viewport.process_};
 
-    SceneShortcutRig() {
+    explicit SceneShortcutRig(const QString &keymap_contents = QString())
+        : keymap(config.path(), keymap_contents) {
         window.resize(1280, 800);
         window.show();
         window.activateWindow();
@@ -3286,4 +3301,449 @@ TEST_CASE("KM-1a key predicates match the expressions they replaced",
     CHECK_FALSE(PelicanStudio::studioKeyMatches(
         "km1a.unknown", QKeyEvent(QEvent::KeyPress, Qt::Key_A, Qt::NoModifier)));
 #endif
+}
+namespace {
+
+thread_local QStringList *keymap_warning_sink = nullptr;
+QtMessageHandler keymap_previous_handler = nullptr;
+
+void captureKeymapWarnings(QtMsgType type, const QMessageLogContext &context,
+                           const QString &text) {
+    if (keymap_warning_sink != nullptr) keymap_warning_sink->push_back(text);
+    if (keymap_previous_handler != nullptr)
+        keymap_previous_handler(type, context, text);
+}
+
+// KM-2a: the loader warns through qWarning, one line per skipped entry or file.
+struct KeymapWarnings {
+    QStringList messages;
+    QtMessageHandler previous;
+    KeymapWarnings() {
+        previous = qInstallMessageHandler(captureKeymapWarnings);
+        keymap_previous_handler = previous;
+        keymap_warning_sink = &messages;
+    }
+    ~KeymapWarnings() {
+        keymap_warning_sink = nullptr;
+        keymap_previous_handler = nullptr;
+        qInstallMessageHandler(previous);
+    }
+    QStringList keymapMessages() const {
+        QStringList lines;
+        for (const QString &message : messages)
+            if (message.contains(QStringLiteral("keymap"))) lines.push_back(message);
+        return lines;
+    }
+    int countFor(const QString &id) const {
+        int count = 0;
+        for (const QString &message : keymapMessages())
+            if (message.contains(id)) ++count;
+        return count;
+    }
+};
+
+QString portable(const QKeySequence &key) {
+    return key.toString(QKeySequence::PortableText);
+}
+
+QString parsePortable(const char *text) {
+    return portable(QKeySequence::fromString(QString::fromLatin1(text),
+                                             QKeySequence::PortableText));
+}
+
+QStringList portableKeys(const QList<QKeySequence> &keys) {
+    QStringList result;
+    for (const QKeySequence &key : keys) result.push_back(portable(key));
+    return result;
+}
+
+QAction *commandAction(QWidget &window, const char *name) {
+    return window.findChild<QAction *>(QString::fromLatin1(name));
+}
+
+QShortcut *commandShortcut(QWidget &window, const char *name) {
+    return window.findChild<QShortcut *>(QString::fromLatin1(name));
+}
+
+QString keymapJson(const QString &bindings) {
+    return QStringLiteral("{\"version\":1,\"bindings\":%1}").arg(bindings);
+}
+
+void sendWindowKey(PelicanStudio::MainWindow &window, const char *sequence) {
+    PelicanStudio::AutomationHost host;
+    host.window = &window;
+    const auto reply = PelicanStudio::runAutomationCommand(
+        host, request(QStringLiteral("key"),
+                      {{QStringLiteral("name"), QStringLiteral("pelican.viewportHost")},
+                       {QStringLiteral("sequence"), QString::fromLatin1(sequence)},
+                       {QStringLiteral("route"), QStringLiteral("window")}}));
+    INFO(describe(reply).toStdString());
+    REQUIRE(reply.ok);
+    QApplication::processEvents();
+}
+
+} // namespace
+
+TEST_CASE("KM-2a a keymap rebinds a window command and the Help row follows",
+          "[devstudio][automation_input][shortcut][km2a]") {
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    const KeymapFile keymap{
+        config.path(), keymapJson(QStringLiteral("{\"file.save\":[\"Ctrl+Shift+S\"]}"))};
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    window.activateWindow();
+    REQUIRE(QTest::qWaitForWindowActive(&window));
+
+    auto *save = commandAction(window, "pelican.file.saveScene");
+    REQUIRE(save != nullptr);
+    CHECK(portableKeys(save->shortcuts()) ==
+          QStringList{parsePortable("Ctrl+Shift+S")});
+    QSignalSpy triggered{save, &QAction::triggered};
+    sendWindowKey(window, "Ctrl+S");
+    CHECK(triggered.count() == 0);
+    sendWindowKey(window, "Ctrl+Shift+S");
+    CHECK(triggered.count() == 1);
+
+    bool row_found = false;
+    for (const auto &row : PelicanStudio::studioShortcutRows(window)) {
+        if (row[2] != QStringLiteral("Save Scene (stop Play first)")) continue;
+        row_found = true;
+        CHECK(row[1] == shownKey(QKeySequence::fromString(
+                              QStringLiteral("Ctrl+Shift+S"),
+                              QKeySequence::PortableText)));
+    }
+    CHECK(row_found);
+}
+
+TEST_CASE("KM-2a an empty list unbinds a command but keeps its Help row",
+          "[devstudio][automation_input][shortcut][km2a]") {
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    const KeymapFile keymap{
+        config.path(), keymapJson(QStringLiteral("{\"scene.duplicate\":[]}"))};
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    window.activateWindow();
+    REQUIRE(QTest::qWaitForWindowActive(&window));
+
+    auto *duplicate = commandAction(window, "pelican.outliner.duplicate");
+    REQUIRE(duplicate != nullptr);
+    CHECK(duplicate->shortcuts().isEmpty());
+    CHECK(objectKeys(duplicate).isEmpty());
+
+    bool row_found = false;
+    for (const auto &row : PelicanStudio::studioShortcutRows(window)) {
+        if (row[2] != QStringLiteral("Duplicate selected object")) continue;
+        row_found = true;
+        CHECK(row[1].isEmpty());
+    }
+    CHECK(row_found);
+}
+
+TEST_CASE("KM-2a a rebound scene undo forwards from the engine viewport",
+          "[devstudio][automation_input][shortcut][km2a]") {
+    SceneShortcutRig rig{
+        keymapJson(QStringLiteral("{\"scene.undo\":[\"Ctrl+Alt+Z\"]}"))};
+    auto *undo = rig.window.inspector_->undoAction();
+    REQUIRE(undo != nullptr);
+    rig.move();
+    REQUIRE(undo->isEnabled());
+    CHECK(portableKeys(undo->shortcuts()) ==
+          QStringList{parsePortable("Ctrl+Alt+Z")});
+
+    const int before = rig.undo_calls;
+    rig.viewport.engine_input_active_ = true;
+    emit rig.viewport.engineInputActiveChanged(true);
+    QSignalSpy triggered{undo, &QAction::triggered};
+    emit rig.viewport.studioShortcutPressed(Qt::Key_Z, Qt::ControlModifier);
+    QApplication::processEvents();
+    CHECK(triggered.count() == 0);
+    CHECK(rig.undo_calls == before);
+
+    emit rig.viewport.studioShortcutPressed(Qt::Key_Z,
+                                            Qt::ControlModifier | Qt::AltModifier);
+    rig.await([&] {
+        return rig.undo_calls == before + 1 && !rig.window.inspector_->sceneEditPending();
+    });
+    CHECK(triggered.count() == 1);
+
+    // Play still crosses the same path: it is the QShortcut half of the registry.
+    auto *play_shortcut = commandShortcut(rig.window, "pelican.play.playKey");
+    REQUIRE(play_shortcut != nullptr);
+    QSignalSpy activated{play_shortcut, &QShortcut::activated};
+    emit rig.viewport.studioShortcutPressed(Qt::Key_P, Qt::ControlModifier);
+    QApplication::processEvents();
+    CHECK(activated.count() == 1);
+    rig.viewport.engine_input_active_ = false;
+}
+
+TEST_CASE("KM-2a a rebound play shortcut forwards from the engine viewport",
+          "[devstudio][automation_input][shortcut][km2a]") {
+    SceneShortcutRig rig{keymapJson(
+        QStringLiteral("{\"play.toggle\":[\"Ctrl+Alt+Shift+P\"]}"))};
+    auto *play_shortcut = commandShortcut(rig.window, "pelican.play.playKey");
+    REQUIRE(play_shortcut != nullptr);
+    CHECK(portableKeys(play_shortcut->keys()) ==
+          QStringList{parsePortable("Ctrl+Alt+Shift+P")});
+
+    rig.viewport.engine_input_active_ = true;
+    emit rig.viewport.engineInputActiveChanged(true);
+    QSignalSpy activated{play_shortcut, &QShortcut::activated};
+    emit rig.viewport.studioShortcutPressed(Qt::Key_P, Qt::ControlModifier);
+    QApplication::processEvents();
+    CHECK(activated.count() == 0);
+
+    emit rig.viewport.studioShortcutPressed(
+        Qt::Key_P, Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier);
+    QApplication::processEvents();
+    CHECK(activated.count() == 1);
+    rig.viewport.engine_input_active_ = false;
+}
+
+TEST_CASE("KM-2a validation warns once per bad entry and applies the rest",
+          "[devstudio][automation_input][shortcut][km2a]") {
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    KeymapWarnings warnings;
+    const KeymapFile keymap{config.path(), keymapJson(QStringLiteral(
+        "{\"file.save\":[\"Ctrl+Shift+S\"],"
+        "\"no.such.command\":[\"Ctrl+K\"],"
+        "\"file.open\":[\"not a key\"],"
+        "\"graph.delete\":[\"Ctrl+G\"],"
+        "\"scene.duplicate\":\"Ctrl+D\","
+        "\"scene.delete\":[17]}"))};
+    PelicanStudio::MainWindow window{config.path()};
+
+    auto *save = commandAction(window, "pelican.file.saveScene");
+    auto *open = commandAction(window, "pelican.file.openProject");
+    auto *duplicate = commandAction(window, "pelican.outliner.duplicate");
+    auto *delete_action = commandAction(window, "pelican.outliner.delete");
+    REQUIRE(save != nullptr);
+    REQUIRE(open != nullptr);
+    REQUIRE(duplicate != nullptr);
+    REQUIRE(delete_action != nullptr);
+    CHECK(portableKeys(save->shortcuts()) ==
+          QStringList{parsePortable("Ctrl+Shift+S")});
+    CHECK(portableKeys(open->shortcuts()) == QStringList{parsePortable("Ctrl+O")});
+    CHECK(portableKeys(duplicate->shortcuts()) ==
+          QStringList{parsePortable("Ctrl+D")});
+    CHECK(portableKeys(delete_action->shortcuts()) ==
+          QStringList{portable(QKeySequence(QKeySequence::Delete))});
+
+    CHECK(warnings.keymapMessages().size() == 5);
+    CHECK(warnings.countFor(QStringLiteral("no.such.command")) == 1);
+    CHECK(warnings.countFor(QStringLiteral("file.open")) == 1);
+    CHECK(warnings.countFor(QStringLiteral("graph.delete")) == 1);
+    CHECK(warnings.countFor(QStringLiteral("scene.duplicate")) == 1);
+    CHECK(warnings.countFor(QStringLiteral("scene.delete")) == 1);
+    CHECK(warnings.countFor(QStringLiteral("file.save")) == 0);
+}
+
+TEST_CASE("KM-2a malformed JSON skips the whole file with one warning",
+          "[devstudio][automation_input][shortcut][km2a]") {
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    KeymapWarnings warnings;
+    const KeymapFile keymap{
+        config.path(), QStringLiteral("{\"version\":1,\"bindings\":")};
+    PelicanStudio::MainWindow window{config.path()};
+
+    auto *save = commandAction(window, "pelican.file.saveScene");
+    REQUIRE(save != nullptr);
+    CHECK(portableKeys(save->shortcuts()) == QStringList{parsePortable("Ctrl+S")});
+    CHECK(warnings.keymapMessages().size() == 1);
+    CHECK(warnings.keymapMessages().front().contains(config.path()));
+}
+
+TEST_CASE("KM-2a a version other than 1 skips the whole file with one warning",
+          "[devstudio][automation_input][shortcut][km2a]") {
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    KeymapWarnings warnings;
+    const KeymapFile keymap{
+        config.path(),
+        QStringLiteral(
+            "{\"version\":2,\"bindings\":{\"file.save\":[\"Ctrl+Shift+S\"]}}")};
+    PelicanStudio::MainWindow window{config.path()};
+
+    auto *save = commandAction(window, "pelican.file.saveScene");
+    REQUIRE(save != nullptr);
+    CHECK(portableKeys(save->shortcuts()) == QStringList{parsePortable("Ctrl+S")});
+    CHECK(warnings.keymapMessages().size() == 1);
+    CHECK(warnings.keymapMessages().front().contains(config.path()));
+}
+
+TEST_CASE("KM-2a a keymap conflict keeps both commands at their defaults",
+          "[devstudio][automation_input][shortcut][km2a]") {
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    KeymapWarnings warnings;
+    const KeymapFile keymap{
+        config.path(), keymapJson(QStringLiteral("{\"scene.delete\":[\"Ctrl+D\"]}"))};
+    PelicanStudio::MainWindow window{config.path()};
+
+    auto *delete_action = commandAction(window, "pelican.outliner.delete");
+    auto *duplicate = commandAction(window, "pelican.outliner.duplicate");
+    REQUIRE(delete_action != nullptr);
+    REQUIRE(duplicate != nullptr);
+    CHECK(portableKeys(delete_action->shortcuts()) ==
+          QStringList{portable(QKeySequence(QKeySequence::Delete))});
+    CHECK(portableKeys(duplicate->shortcuts()) ==
+          QStringList{parsePortable("Ctrl+D")});
+    CHECK(warnings.keymapMessages().size() == 1);
+    CHECK(warnings.countFor(QStringLiteral("scene.delete")) == 1);
+}
+
+TEST_CASE("KM-2a a cross-surface conflict with a play shortcut is rejected",
+          "[devstudio][automation_input][shortcut][km2a]") {
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    KeymapWarnings warnings;
+    const KeymapFile keymap{
+        config.path(), keymapJson(QStringLiteral("{\"play.toggle\":[\"Ctrl+D\"]}"))};
+    PelicanStudio::MainWindow window{config.path()};
+
+    auto *play = commandShortcut(window, "pelican.play.playKey");
+    auto *duplicate = commandAction(window, "pelican.outliner.duplicate");
+    REQUIRE(play != nullptr);
+    REQUIRE(duplicate != nullptr);
+    CHECK(portableKeys(play->keys()) == QStringList{parsePortable("Ctrl+P")});
+    CHECK(portableKeys(duplicate->shortcuts()) ==
+          QStringList{parsePortable("Ctrl+D")});
+    CHECK(warnings.keymapMessages().size() == 1);
+    CHECK(warnings.countFor(QStringLiteral("play.toggle")) == 1);
+}
+
+TEST_CASE("KM-2a a swap of two commands' keys is accepted",
+          "[devstudio][automation_input][shortcut][km2a]") {
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    KeymapWarnings warnings;
+    const KeymapFile keymap{config.path(),
+                            keymapJson(QStringLiteral("{\"file.new\":[\"Ctrl+O\"],"
+                                                      "\"file.open\":[\"Ctrl+N\"]}"))};
+    PelicanStudio::MainWindow window{config.path()};
+
+    auto *new_project = commandAction(window, "pelican.file.newProject");
+    auto *open_project = commandAction(window, "pelican.file.openProject");
+    REQUIRE(new_project != nullptr);
+    REQUIRE(open_project != nullptr);
+    CHECK(portableKeys(new_project->shortcuts()) ==
+          QStringList{parsePortable("Ctrl+O")});
+    CHECK(portableKeys(open_project->shortcuts()) ==
+          QStringList{parsePortable("Ctrl+N")});
+    CHECK(warnings.keymapMessages().isEmpty());
+}
+
+TEST_CASE("KM-2a a chain of overrides is accepted when its end is a free key",
+          "[devstudio][automation_input][shortcut][km2a]") {
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    KeymapWarnings warnings;
+    const KeymapFile keymap{
+        config.path(),
+        keymapJson(QStringLiteral("{\"file.new\":[\"Ctrl+O\"],"
+                                  "\"file.open\":[\"Ctrl+S\"],"
+                                  "\"file.save\":[\"Ctrl+Alt+S\"]}"))};
+    PelicanStudio::MainWindow window{config.path()};
+
+    auto *new_project = commandAction(window, "pelican.file.newProject");
+    auto *open_project = commandAction(window, "pelican.file.openProject");
+    auto *save = commandAction(window, "pelican.file.saveScene");
+    REQUIRE(new_project != nullptr);
+    REQUIRE(open_project != nullptr);
+    REQUIRE(save != nullptr);
+    CHECK(portableKeys(new_project->shortcuts()) ==
+          QStringList{parsePortable("Ctrl+O")});
+    CHECK(portableKeys(open_project->shortcuts()) ==
+          QStringList{parsePortable("Ctrl+S")});
+    CHECK(portableKeys(save->shortcuts()) ==
+          QStringList{parsePortable("Ctrl+Alt+S")});
+    CHECK(warnings.keymapMessages().isEmpty());
+}
+
+TEST_CASE("KM-2a two overrides colliding on one new key are both rejected",
+          "[devstudio][automation_input][shortcut][km2a]") {
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    KeymapWarnings warnings;
+    const KeymapFile keymap{config.path(),
+                            keymapJson(QStringLiteral(
+                                "{\"scene.delete\":[\"Ctrl+Alt+K\"],"
+                                "\"scene.duplicate\":[\"Ctrl+Alt+K\"]}"))};
+    PelicanStudio::MainWindow window{config.path()};
+
+    auto *delete_action = commandAction(window, "pelican.outliner.delete");
+    auto *duplicate = commandAction(window, "pelican.outliner.duplicate");
+    REQUIRE(delete_action != nullptr);
+    REQUIRE(duplicate != nullptr);
+    CHECK(portableKeys(delete_action->shortcuts()) ==
+          QStringList{portable(QKeySequence(QKeySequence::Delete))});
+    CHECK(portableKeys(duplicate->shortcuts()) ==
+          QStringList{parsePortable("Ctrl+D")});
+    CHECK(warnings.keymapMessages().size() == 2);
+    CHECK(warnings.countFor(QStringLiteral("scene.delete")) == 1);
+    CHECK(warnings.countFor(QStringLiteral("scene.duplicate")) == 1);
+}
+
+TEST_CASE("KM-2a an override onto a hand-handled key is rejected",
+          "[devstudio][automation_input][shortcut][km2a]") {
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    KeymapWarnings warnings;
+    const KeymapFile keymap{
+        config.path(), keymapJson(QStringLiteral("{\"file.save\":[\"F\"]}"))};
+    PelicanStudio::MainWindow window{config.path()};
+
+    auto *save = commandAction(window, "pelican.file.saveScene");
+    REQUIRE(save != nullptr);
+    CHECK(portableKeys(save->shortcuts()) == QStringList{parsePortable("Ctrl+S")});
+    CHECK(warnings.keymapMessages().size() == 1);
+    CHECK(warnings.countFor(QStringLiteral("file.save")) == 1);
+}
+
+TEST_CASE("KM-2a a missing keymap leaves every shortcut at its default",
+          "[devstudio][automation_input][shortcut][km2a]") {
+    application();
+    QTemporaryDir first, second;
+    REQUIRE(first.isValid());
+    REQUIRE(second.isValid());
+    CHECK_FALSE(QFileInfo::exists(
+        QDir(first.path()).filePath(QStringLiteral("keymap.json"))));
+    PelicanStudio::MainWindow with_missing{first.path()};
+    PelicanStudio::MainWindow baseline{second.path()};
+
+    auto *save = commandAction(with_missing, "pelican.file.saveScene");
+    auto *play = commandShortcut(with_missing, "pelican.play.playKey");
+    auto *undo = with_missing.inspector_->undoAction();
+    auto *duplicate = commandAction(with_missing, "pelican.outliner.duplicate");
+    REQUIRE(save != nullptr);
+    REQUIRE(play != nullptr);
+    REQUIRE(undo != nullptr);
+    REQUIRE(duplicate != nullptr);
+    CHECK(portableKeys(save->shortcuts()) == QStringList{parsePortable("Ctrl+S")});
+    CHECK(portableKeys(play->keys()) == QStringList{parsePortable("Ctrl+P")});
+    CHECK(portableKeys(undo->shortcuts()) == QStringList{parsePortable("Ctrl+Z")});
+    CHECK(portableKeys(duplicate->shortcuts()) ==
+          QStringList{parsePortable("Ctrl+D")});
+
+    const auto rows = PelicanStudio::studioShortcutRows(with_missing);
+    const auto baseline_rows = PelicanStudio::studioShortcutRows(baseline);
+    REQUIRE(rows.size() == baseline_rows.size());
+    for (std::size_t index = 0; index < rows.size(); ++index) {
+        INFO("row " << index);
+        CHECK(rows[index] == baseline_rows[index]);
+    }
 }
