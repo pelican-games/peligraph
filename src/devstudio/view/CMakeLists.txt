@@ -1,6 +1,8 @@
 add_library(pelican_studio_view STATIC
     uimain.cpp
     mainwindow.cpp
+    keymapdialog.cpp
+    keymapdialog.hpp
     frameplanwidget.cpp
     frameplanwidget.hpp
     frameplangraphics.cpp

@@ -32,7 +32,10 @@
 #include <QApplication>
 #include <QDialog>
 #include <QKeyEvent>
+#include <QKeySequenceEdit>
+#include <QLabel>
 #include <QLineEdit>
+#include <QPointer>
 #include <QLineF>
 #include <QGraphicsScene>
 #include <QGraphicsView>
@@ -49,6 +52,7 @@
 #include <QDockWidget>
 #include <QElapsedTimer>
 #include <QPushButton>
+#include <QSaveFile>
 #include <QScrollBar>
 #include <QShortcut>
 #include <QSignalSpy>
@@ -61,6 +65,11 @@
 #include <QTreeWidgetItem>
 #include <QWheelEvent>
 #include <QWidget>
+
+#ifdef Q_OS_UNIX
+#include <csignal>
+#include <sys/resource.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -81,6 +90,7 @@
 #include <QDialog>
 #include <QFileDialog>
 #include <QTableWidget>
+#include <QToolButton>
 #include <QToolBar>
 #include <deque>
 #define private public
@@ -2994,6 +3004,7 @@ TEST_CASE("KM-1a the Help rows are exactly the command declarations",
     const QString T = QStringLiteral("Text fields / inline editors");
 
     const std::vector<ShortcutRow> expected = {
+        {W, QString{}, QStringLiteral("Keyboard Shortcuts...")},
         {W, shownKeys({QKeySequence(QKeySequence::New)}), QStringLiteral("New Project")},
         {W, shownKeys({QKeySequence(QKeySequence::Open)}), QStringLiteral("Open Project")},
         {W, shownKeys({QKeySequence{Qt::CTRL | Qt::SHIFT | Qt::Key_P}}),
@@ -3158,7 +3169,8 @@ TEST_CASE("KM-1a every named keyed object declares a command or is allow-listed"
         }
         if (tagged) {
             INFO(name.toStdString());
-            CHECK(keyed);
+            // KM-2b: the dialog's own command has no default key; it can be given one.
+            if (name != QStringLiteral("pelican.edit.keymap")) CHECK(keyed);
             CHECK_FALSE(object->property("pelican.command.title").toString().isEmpty());
             CHECK(object->property("pelican.command.surface").isValid());
         }
@@ -3380,6 +3392,88 @@ void sendWindowKey(PelicanStudio::MainWindow &window, const char *sequence) {
     INFO(describe(reply).toStdString());
     REQUIRE(reply.ok);
     QApplication::processEvents();
+}
+
+// KM-2b: the dialog is opened by the Edit menu's action, the same way a person
+// reaches it.  These helpers only use the public object names the work package
+// mandates; no private MainWindow method is called.
+QDialog *openKeymapDialog(PelicanStudio::MainWindow &window,
+                          bool expect_no_shortcut = true) {
+    auto *action = window.findChild<QAction *>(
+        QStringLiteral("pelican.edit.keymap"));
+    REQUIRE(action != nullptr);
+    if (expect_no_shortcut) CHECK(action->shortcuts().isEmpty());
+    action->trigger();
+    QApplication::processEvents();
+    for (QWidget *widget : QApplication::topLevelWidgets()) {
+        auto *dialog = qobject_cast<QDialog *>(widget);
+        if (dialog != nullptr && dialog->isVisible() &&
+            dialog->objectName() == QStringLiteral("pelican.keymap.dialog"))
+            return dialog;
+    }
+    return nullptr;
+}
+
+void closeKeymapDialog(QDialog *dialog) {
+    if (dialog != nullptr && dialog->isVisible()) dialog->reject();
+    QApplication::processEvents();
+}
+
+int keymapRow(QTableWidget *table, const QString &id) {
+    for (int row = 0; row < table->rowCount(); ++row) {
+        QWidget *cell = table->cellWidget(row, 2);
+        if (cell == nullptr) continue;
+        if (cell->findChild<QWidget *>(
+                QStringLiteral("pelican.keymap.add.") + id) != nullptr ||
+            cell->findChild<QLabel *>(
+                QStringLiteral("pelican.keymap.fixedNote.") + id) != nullptr)
+            return row;
+    }
+    return -1;
+}
+
+QKeySequenceEdit *keymapEditor(QTableWidget *table, const QString &id) {
+    return table->findChild<QKeySequenceEdit *>(
+        QStringLiteral("pelican.keymap.edit.") + id);
+}
+
+QPushButton *keymapButton(QDialog *dialog, const QString &name) {
+    return dialog->findChild<QPushButton *>(name);
+}
+
+QLabel *keymapReason(QTableWidget *table, const QString &id) {
+    const int row = keymapRow(table, id);
+    if (row < 0) return nullptr;
+    QWidget *cell = table->cellWidget(row, 2);
+    return cell != nullptr ? cell->findChild<QLabel *>(
+                                 QStringLiteral("pelican.keymap.reason.") + id)
+                           : nullptr;
+}
+
+void recordKey(QKeySequenceEdit *editor, int key,
+               Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+    REQUIRE(editor != nullptr);
+    editor->clear();
+    editor->setFocus();
+    QTest::keyClick(editor, static_cast<Qt::Key>(key), modifiers);
+    QTest::qWait(1300);
+}
+
+void recordChord(QKeySequenceEdit *editor, int first, int second) {
+    REQUIRE(editor != nullptr);
+    editor->clear();
+    editor->setFocus();
+    QTest::keyClick(editor, static_cast<Qt::Key>(first), Qt::ControlModifier);
+    QTest::keyClick(editor, static_cast<Qt::Key>(second), Qt::ControlModifier);
+    QTest::qWait(1300);
+}
+
+QJsonObject readKeymapJson(const QString &path) {
+    QFile file(path);
+    REQUIRE(file.open(QIODevice::ReadOnly));
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll());
+    REQUIRE(document.isObject());
+    return document.object();
 }
 
 } // namespace
@@ -3746,4 +3840,672 @@ TEST_CASE("KM-2a a missing keymap leaves every shortcut at its default",
         INFO("row " << index);
         CHECK(rows[index] == baseline_rows[index]);
     }
+}
+
+TEST_CASE("KM-2b the split loader reproduces fixed start-up results",
+          "[devstudio][automation_input][shortcut][km2b]") {
+    application();
+    struct Case {
+        const char *name;
+        const char *json;
+        QStringList save;
+        QStringList duplicate;
+        int warnings;
+    };
+    const std::vector<Case> cases = {
+        {"missing", "", {parsePortable("Ctrl+S")}, {parsePortable("Ctrl+D")}, 0},
+        {"two overrides", R"({"version":1,"bindings":{"file.save":["Ctrl+Shift+S"],"scene.duplicate":["Ctrl+Alt+D"]}})",
+         {parsePortable("Ctrl+Shift+S")}, {parsePortable("Ctrl+Alt+D")}, 0},
+        {"two bindings", R"({"version":1,"bindings":{"file.save":["Ctrl+Shift+S","Ctrl+Alt+S"]}})",
+         {parsePortable("Ctrl+Shift+S"), parsePortable("Ctrl+Alt+S")},
+         {parsePortable("Ctrl+D")}, 0},
+        {"clear", R"({"version":1,"bindings":{"file.save":[]}})", {}, {parsePortable("Ctrl+D")}, 0},
+        {"no version", R"({"bindings":{"file.save":["Ctrl+Shift+S"]}})",
+         {parsePortable("Ctrl+S")}, {parsePortable("Ctrl+D")}, 1},
+        {"wrong version", R"({"version":2,"bindings":{"file.save":["Ctrl+Shift+S"]}})",
+         {parsePortable("Ctrl+S")}, {parsePortable("Ctrl+D")}, 1},
+        {"not an object", R"(["file.save"])", {parsePortable("Ctrl+S")},
+         {parsePortable("Ctrl+D")}, 1},
+        {"malformed", R"({"version":1,)", {parsePortable("Ctrl+S")},
+         {parsePortable("Ctrl+D")}, 1},
+        {"unknown command", R"({"version":1,"bindings":{"no.such.command":["Ctrl+Shift+S"]}})",
+         {parsePortable("Ctrl+S")}, {parsePortable("Ctrl+D")}, 1},
+        {"unknown command, bad value",
+         R"({"version":1,"bindings":{"no.such.command":"Ctrl+Shift+S"}})",
+         {parsePortable("Ctrl+S")}, {parsePortable("Ctrl+D")}, 1},
+        {"unknown command, unusable key",
+         R"({"version":1,"bindings":{"no.such.command":["NotAKey"]}})",
+         {parsePortable("Ctrl+S")}, {parsePortable("Ctrl+D")}, 1},
+        {"non-array", R"({"version":1,"bindings":{"file.save":"Ctrl+Shift+S"}})",
+         {parsePortable("Ctrl+S")}, {parsePortable("Ctrl+D")}, 1},
+        {"unusable key", R"({"version":1,"bindings":{"file.save":["NotAKey"]}})",
+         {parsePortable("Ctrl+S")}, {parsePortable("Ctrl+D")}, 1},
+    };
+    for (const Case &test : cases) {
+        DYNAMIC_SECTION(test.name) {
+            QTemporaryDir config;
+            REQUIRE(config.isValid());
+            const KeymapFile file{config.path(), QString::fromUtf8(test.json)};
+            KeymapWarnings warnings;
+            PelicanStudio::MainWindow window{config.path()};
+            auto *save = commandAction(window, "pelican.file.saveScene");
+            auto *duplicate = commandAction(window, "pelican.outliner.duplicate");
+            REQUIRE(save != nullptr);
+            REQUIRE(duplicate != nullptr);
+            INFO("case " << test.name);
+            CHECK(portableKeys(save->shortcuts()) == test.save);
+            CHECK(portableKeys(duplicate->shortcuts()) == test.duplicate);
+            CHECK(warnings.keymapMessages().size() == test.warnings);
+        }
+    }
+
+    SECTION("parseKeymap keeps the parsed list and reports one warning per bad entry") {
+        const auto parsed = PelicanStudio::parseKeymap(QByteArray(
+            R"({"version":1,"bindings":{"file.save":["Ctrl+Shift+S"],"scene.delete":"Ctrl+X"}})"));
+        CHECK_FALSE(parsed.error.has_value());
+        REQUIRE(parsed.entries.size() == 1);
+        CHECK(parsed.entries.front().id == QStringLiteral("file.save"));
+        CHECK(portableKeys(parsed.entries.front().keys) ==
+              QStringList{parsePortable("Ctrl+Shift+S")});
+        REQUIRE(parsed.warnings.size() == 1);
+        CHECK(parsed.warnings.front().contains("scene.delete"));
+    }
+}
+
+TEST_CASE("KM-2b a dialog rebind survives a restart and backs up the previous file",
+          "[devstudio][automation_input][shortcut][km2b]") {
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    const QString path = QDir(config.path()).filePath(QStringLiteral("keymap.json"));
+    const QString backup = path + QStringLiteral(".bak");
+    {
+        PelicanStudio::MainWindow window{config.path()};
+        window.show();
+        window.activateWindow();
+        REQUIRE(QTest::qWaitForWindowActive(&window));
+        QDialog *dialog = openKeymapDialog(window);
+        REQUIRE(dialog != nullptr);
+        auto *table = dialog->findChild<QTableWidget *>(
+            QStringLiteral("pelican.keymap.table"));
+        REQUIRE(table != nullptr);
+        auto *editor = keymapEditor(table, QStringLiteral("file.save"));
+        REQUIRE(editor != nullptr);
+        recordKey(editor, Qt::Key_S, Qt::ControlModifier | Qt::ShiftModifier);
+        CHECK(portable(editor->keySequence()) == QStringLiteral("Ctrl+Shift+S"));
+        auto *add_menu = dialog->findChild<QToolButton *>(
+            QStringLiteral("pelican.keymap.add.edit.keymap"));
+        REQUIRE(add_menu != nullptr);
+        add_menu->click();
+        QTest::qWait(20);
+        auto *menu_editor =
+            keymapEditor(table, QStringLiteral("edit.keymap"));
+        REQUIRE(menu_editor != nullptr);
+        recordKey(menu_editor, Qt::Key_K,
+                  Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier);
+        auto *ok = keymapButton(dialog, QStringLiteral("pelican.keymap.ok"));
+        REQUIRE(ok != nullptr);
+        CHECK(ok->isEnabled());
+        QPointer<QDialog> dialog_pointer(dialog);
+        ok->click();
+        QTest::qWait(20);
+        CHECK((dialog_pointer.isNull() || !dialog_pointer->isVisible()));
+
+        auto *save = commandAction(window, "pelican.file.saveScene");
+        REQUIRE(save != nullptr);
+        CHECK(portableKeys(save->shortcuts()) ==
+              QStringList{parsePortable("Ctrl+Shift+S")});
+        CHECK(QFileInfo::exists(path));
+        CHECK_FALSE(QFileInfo::exists(backup));
+        const QJsonObject first = readKeymapJson(path);
+        CHECK(first.value(QStringLiteral("version")).toInt() == 1);
+        const QJsonArray first_keys =
+            first.value(QStringLiteral("bindings")).toObject()
+                .value(QStringLiteral("file.save")).toArray();
+        REQUIRE(first_keys.size() == 1);
+        CHECK(first_keys.at(0).toString() == QStringLiteral("Ctrl+Shift+S"));
+        const QJsonArray first_menu_keys =
+            first.value(QStringLiteral("bindings")).toObject()
+                .value(QStringLiteral("edit.keymap")).toArray();
+        REQUIRE(first_menu_keys.size() == 1);
+        CHECK(first_menu_keys.at(0).toString() ==
+              QStringLiteral("Ctrl+Alt+Shift+K"));
+
+        dialog = openKeymapDialog(window, false);
+        REQUIRE(dialog != nullptr);
+        table = dialog->findChild<QTableWidget *>(
+            QStringLiteral("pelican.keymap.table"));
+        REQUIRE(table != nullptr);
+        editor = keymapEditor(table, QStringLiteral("file.save"));
+        REQUIRE(editor != nullptr);
+        recordKey(editor, Qt::Key_S, Qt::ControlModifier | Qt::AltModifier);
+        ok = keymapButton(dialog, QStringLiteral("pelican.keymap.ok"));
+        REQUIRE(ok != nullptr);
+        ok->click();
+        QTest::qWait(20);
+        CHECK(QFileInfo::exists(backup));
+        const QJsonArray backup_keys =
+            readKeymapJson(backup).value(QStringLiteral("bindings")).toObject()
+                .value(QStringLiteral("file.save")).toArray();
+        REQUIRE(backup_keys.size() == 1);
+        CHECK(backup_keys.at(0).toString() == QStringLiteral("Ctrl+Shift+S"));
+    }
+
+    PelicanStudio::MainWindow restarted{config.path()};
+    auto *save = commandAction(restarted, "pelican.file.saveScene");
+    REQUIRE(save != nullptr);
+    CHECK(portableKeys(save->shortcuts()) ==
+          QStringList{parsePortable("Ctrl+Alt+S")});
+    auto *menu = commandAction(restarted, "pelican.edit.keymap");
+    REQUIRE(menu != nullptr);
+    CHECK(portableKeys(menu->shortcuts()) ==
+          QStringList{parsePortable("Ctrl+Alt+Shift+K")});
+}
+
+TEST_CASE("KM-2b a recorder conflict is rejected, explained in red, and never saved",
+          "[devstudio][automation_input][shortcut][km2b]") {
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    const QString path = QDir(config.path()).filePath(QStringLiteral("keymap.json"));
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    window.activateWindow();
+    REQUIRE(QTest::qWaitForWindowActive(&window));
+    QDialog *dialog = openKeymapDialog(window);
+    REQUIRE(dialog != nullptr);
+    auto *table = dialog->findChild<QTableWidget *>(
+        QStringLiteral("pelican.keymap.table"));
+    REQUIRE(table != nullptr);
+    auto *editor = keymapEditor(table, QStringLiteral("scene.delete"));
+    REQUIRE(editor != nullptr);
+    recordKey(editor, Qt::Key_D, Qt::ControlModifier);
+    CHECK(portable(editor->keySequence()) == QStringLiteral("Ctrl+D"));
+
+    auto *reason = keymapReason(table, QStringLiteral("scene.delete"));
+    REQUIRE(reason != nullptr);
+    CHECK(reason->text().contains(QStringLiteral("Ctrl+D")));
+    CHECK(reason->text().contains(QStringLiteral("scene.duplicate")));
+    CHECK(reason->palette().color(QPalette::WindowText).red() > 0);
+    auto *ok = keymapButton(dialog, QStringLiteral("pelican.keymap.ok"));
+    REQUIRE(ok != nullptr);
+    CHECK_FALSE(ok->isEnabled());
+    ok->click();
+    QTest::qWait(20);
+    CHECK_FALSE(QFileInfo::exists(path));
+
+    auto *remove = commandAction(window, "pelican.outliner.delete");
+    auto *duplicate = commandAction(window, "pelican.outliner.duplicate");
+    REQUIRE(remove != nullptr);
+    REQUIRE(duplicate != nullptr);
+    CHECK(portableKeys(remove->shortcuts()) ==
+          QStringList{portable(QKeySequence(QKeySequence::Delete))});
+    CHECK(portableKeys(duplicate->shortcuts()) ==
+          QStringList{parsePortable("Ctrl+D")});
+    closeKeymapDialog(dialog);
+}
+
+TEST_CASE("KM-2b Clear, Reset and Reset all update the pending binding list",
+          "[devstudio][automation_input][shortcut][km2b]") {
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    window.activateWindow();
+    REQUIRE(QTest::qWaitForWindowActive(&window));
+    QDialog *dialog = openKeymapDialog(window);
+    REQUIRE(dialog != nullptr);
+    auto *table = dialog->findChild<QTableWidget *>(
+        QStringLiteral("pelican.keymap.table"));
+    REQUIRE(table != nullptr);
+
+    auto *clear = keymapButton(dialog, QStringLiteral("pelican.keymap.clear.file.save"));
+    REQUIRE(clear != nullptr);
+    clear->click();
+    QTest::qWait(30);
+    CHECK(keymapEditor(table, QStringLiteral("file.save")) == nullptr);
+    CHECK(keymapRow(table, QStringLiteral("file.save")) >= 0);
+
+    auto *reset = keymapButton(dialog, QStringLiteral("pelican.keymap.reset.file.save"));
+    REQUIRE(reset != nullptr);
+    reset->click();
+    QTest::qWait(30);
+    auto *editor = keymapEditor(table, QStringLiteral("file.save"));
+    REQUIRE(editor != nullptr);
+    CHECK(portable(editor->keySequence()) == QStringLiteral("Ctrl+S"));
+
+    recordKey(editor, Qt::Key_S,
+              Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier);
+    auto *duplicate_editor = keymapEditor(table, QStringLiteral("scene.duplicate"));
+    REQUIRE(duplicate_editor != nullptr);
+    recordKey(duplicate_editor, Qt::Key_D,
+              Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier);
+
+    auto *reset_all = keymapButton(dialog, QStringLiteral("pelican.keymap.resetAll"));
+    REQUIRE(reset_all != nullptr);
+    reset_all->click();
+    QTest::qWait(40);
+    editor = keymapEditor(table, QStringLiteral("file.save"));
+    duplicate_editor = keymapEditor(table, QStringLiteral("scene.duplicate"));
+    REQUIRE(editor != nullptr);
+    REQUIRE(duplicate_editor != nullptr);
+    CHECK(portable(editor->keySequence()) == QStringLiteral("Ctrl+S"));
+    CHECK(portable(duplicate_editor->keySequence()) == QStringLiteral("Ctrl+D"));
+
+    auto *ok = keymapButton(dialog, QStringLiteral("pelican.keymap.ok"));
+    REQUIRE(ok != nullptr);
+    ok->click();
+    QTest::qWait(20);
+    const QString path = QDir(config.path()).filePath(QStringLiteral("keymap.json"));
+    const QJsonObject root = readKeymapJson(path);
+    CHECK(root.value(QStringLiteral("bindings")).toObject().isEmpty());
+}
+
+TEST_CASE("KM-2b clearing is an empty array, an omitted override restores defaults",
+          "[devstudio][automation_input][shortcut][km2b]") {
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    const QString path = QDir(config.path()).filePath(QStringLiteral("keymap.json"));
+    {
+        PelicanStudio::MainWindow window{config.path()};
+        window.show();
+        window.activateWindow();
+        REQUIRE(QTest::qWaitForWindowActive(&window));
+        QDialog *dialog = openKeymapDialog(window);
+        REQUIRE(dialog != nullptr);
+        auto *clear = keymapButton(dialog, QStringLiteral("pelican.keymap.clear.file.save"));
+        REQUIRE(clear != nullptr);
+        clear->click();
+        QTest::qWait(30);
+        auto *ok = keymapButton(dialog, QStringLiteral("pelican.keymap.ok"));
+        REQUIRE(ok != nullptr);
+        ok->click();
+        QTest::qWait(20);
+        auto *save = commandAction(window, "pelican.file.saveScene");
+        REQUIRE(save != nullptr);
+        CHECK(save->shortcuts().isEmpty());
+        const QJsonArray keys =
+            readKeymapJson(path).value(QStringLiteral("bindings")).toObject()
+                .value(QStringLiteral("file.save")).toArray();
+        CHECK(keys.isEmpty());
+    }
+
+    {
+        PelicanStudio::MainWindow restarted{config.path()};
+        auto *save = commandAction(restarted, "pelican.file.saveScene");
+        REQUIRE(save != nullptr);
+        CHECK(save->shortcuts().isEmpty());
+
+        restarted.show();
+        restarted.activateWindow();
+        REQUIRE(QTest::qWaitForWindowActive(&restarted));
+        QDialog *dialog = openKeymapDialog(restarted);
+        REQUIRE(dialog != nullptr);
+        auto *table = dialog->findChild<QTableWidget *>(
+            QStringLiteral("pelican.keymap.table"));
+        REQUIRE(table != nullptr);
+        CHECK(keymapEditor(table, QStringLiteral("file.save")) == nullptr);
+        auto *reset = keymapButton(dialog, QStringLiteral("pelican.keymap.reset.file.save"));
+        REQUIRE(reset != nullptr);
+        reset->click();
+        QTest::qWait(30);
+        auto *editor = keymapEditor(table, QStringLiteral("file.save"));
+        REQUIRE(editor != nullptr);
+        CHECK(portable(editor->keySequence()) == QStringLiteral("Ctrl+S"));
+        auto *ok = keymapButton(dialog, QStringLiteral("pelican.keymap.ok"));
+        REQUIRE(ok != nullptr);
+        ok->click();
+        QTest::qWait(20);
+        CHECK(portableKeys(save->shortcuts()) ==
+              QStringList{parsePortable("Ctrl+S")});
+        CHECK(readKeymapJson(path)
+                  .value(QStringLiteral("bindings"))
+                  .toObject()
+                  .isEmpty());
+    }
+}
+
+TEST_CASE("KM-2b Cancel keeps the live keys and writes no file",
+          "[devstudio][automation_input][shortcut][km2b]") {
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    const QString path = QDir(config.path()).filePath(QStringLiteral("keymap.json"));
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    window.activateWindow();
+    REQUIRE(QTest::qWaitForWindowActive(&window));
+    QDialog *dialog = openKeymapDialog(window);
+    REQUIRE(dialog != nullptr);
+    auto *table = dialog->findChild<QTableWidget *>(
+        QStringLiteral("pelican.keymap.table"));
+    REQUIRE(table != nullptr);
+    auto *editor = keymapEditor(table, QStringLiteral("file.save"));
+    REQUIRE(editor != nullptr);
+    recordKey(editor, Qt::Key_S,
+              Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier);
+    auto *cancel = keymapButton(dialog, QStringLiteral("pelican.keymap.cancel"));
+    REQUIRE(cancel != nullptr);
+    cancel->click();
+    QTest::qWait(20);
+    auto *save = commandAction(window, "pelican.file.saveScene");
+    REQUIRE(save != nullptr);
+    CHECK(portableKeys(save->shortcuts()) ==
+          QStringList{parsePortable("Ctrl+S")});
+    CHECK_FALSE(QFileInfo::exists(path));
+
+    dialog = openKeymapDialog(window);
+    REQUIRE(dialog != nullptr);
+    table = dialog->findChild<QTableWidget *>(
+        QStringLiteral("pelican.keymap.table"));
+    REQUIRE(table != nullptr);
+    editor = keymapEditor(table, QStringLiteral("file.save"));
+    REQUIRE(editor != nullptr);
+    CHECK(portable(editor->keySequence()) == QStringLiteral("Ctrl+S"));
+    closeKeymapDialog(dialog);
+}
+
+TEST_CASE("KM-2b hand-handled rows are read-only and marked fixed",
+          "[devstudio][automation_input][shortcut][km2b]") {
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    window.activateWindow();
+    REQUIRE(QTest::qWaitForWindowActive(&window));
+    QDialog *dialog = openKeymapDialog(window);
+    REQUIRE(dialog != nullptr);
+
+    auto *note = dialog->findChild<QLabel *>(
+        QStringLiteral("pelican.keymap.fixedNote.frameplan.escape"));
+    REQUIRE(note != nullptr);
+    CHECK(note->text() == QStringLiteral("fixed"));
+    CHECK(dialog->findChild<QKeySequenceEdit *>(
+              QStringLiteral("pelican.keymap.edit.frameplan.escape")) == nullptr);
+    CHECK(dialog->findChild<QPushButton *>(
+              QStringLiteral("pelican.keymap.reset.frameplan.escape")) == nullptr);
+    CHECK(dialog->findChild<QPushButton *>(
+              QStringLiteral("pelican.keymap.clear.frameplan.escape")) == nullptr);
+    auto *table = dialog->findChild<QTableWidget *>(
+        QStringLiteral("pelican.keymap.table"));
+    REQUIRE(table != nullptr);
+    const int row = keymapRow(table, QStringLiteral("frameplan.escape"));
+    REQUIRE(row >= 0);
+    REQUIRE(table->item(row, 3) != nullptr);
+    CHECK(table->item(row, 3)->text()
+          == QKeySequence(Qt::Key_Escape).toString(QKeySequence::NativeText));
+    closeKeymapDialog(dialog);
+}
+
+TEST_CASE("KM-2b a failed final commit leaves keymap.json and the live keys alone",
+          "[devstudio][automation_input][shortcut][km2b]") {
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    const QString path = QDir(config.path()).filePath(QStringLiteral("keymap.json"));
+    const QString backup = path + QStringLiteral(".bak");
+    const QString initial = keymapJson(
+        QStringLiteral("{\"file.save\":[\"Ctrl+Alt+S\"]}"));
+    {
+        QFile file(path);
+        REQUIRE(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        const QByteArray bytes = initial.toUtf8();
+        REQUIRE(file.write(bytes) == bytes.size());
+    }
+    QByteArray before;
+    {
+        QFile file(path);
+        REQUIRE(file.open(QIODevice::ReadOnly));
+        before = file.readAll();
+    }
+
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    window.activateWindow();
+    REQUIRE(QTest::qWaitForWindowActive(&window));
+    auto *save = commandAction(window, "pelican.file.saveScene");
+    REQUIRE(save != nullptr);
+    CHECK(portableKeys(save->shortcuts()) ==
+          QStringList{parsePortable("Ctrl+Alt+S")});
+
+    QStringList writes;
+    window.setKeymapFileWriter(
+        [&writes](const QString &write_path, const QByteArray &bytes,
+                  QString *error) {
+            writes.push_back(write_path);
+            if (write_path.endsWith(QStringLiteral("keymap.json"))) {
+                if (error != nullptr) *error = QStringLiteral("injected failure");
+                return false;
+            }
+            QSaveFile file(write_path);
+            file.setDirectWriteFallback(false);
+            if (!file.open(QIODevice::WriteOnly)) {
+                if (error != nullptr) *error = file.errorString();
+                return false;
+            }
+            if (file.write(bytes) != bytes.size()) {
+                if (error != nullptr) *error = file.errorString();
+                file.cancelWriting();
+                return false;
+            }
+            if (!file.commit()) {
+                if (error != nullptr) *error = file.errorString();
+                return false;
+            }
+            return true;
+        });
+
+    QDialog *dialog = openKeymapDialog(window);
+    REQUIRE(dialog != nullptr);
+    auto *table = dialog->findChild<QTableWidget *>(
+        QStringLiteral("pelican.keymap.table"));
+    REQUIRE(table != nullptr);
+    auto *editor = keymapEditor(table, QStringLiteral("file.save"));
+    REQUIRE(editor != nullptr);
+    recordKey(editor, Qt::Key_S,
+              Qt::ControlModifier | Qt::ShiftModifier | Qt::AltModifier);
+    auto *ok = keymapButton(dialog, QStringLiteral("pelican.keymap.ok"));
+    REQUIRE(ok != nullptr);
+    QPointer<QDialog> dialog_pointer(dialog);
+    ok->click();
+    QTest::qWait(20);
+
+    CHECK_FALSE(dialog_pointer.isNull());
+    CHECK((dialog_pointer != nullptr && dialog_pointer->isVisible()));
+    auto *error = dialog_pointer != nullptr
+                      ? dialog_pointer->findChild<QLabel *>(
+                            QStringLiteral("pelican.keymap.error"))
+                      : nullptr;
+    CHECK(error != nullptr);
+    if (error != nullptr) {
+        CHECK(error->isVisible());
+        CHECK(error->text().contains(QStringLiteral("injected failure")));
+    }
+    CHECK(writes.size() == 2);
+    CHECK(writes.front().endsWith(QStringLiteral("keymap.json.bak")));
+    CHECK(writes.back() == path);
+    CHECK(portableKeys(save->shortcuts()) ==
+          QStringList{parsePortable("Ctrl+Alt+S")});
+
+    QByteArray after;
+    {
+        QFile file(path);
+        REQUIRE(file.open(QIODevice::ReadOnly));
+        after = file.readAll();
+    }
+    CHECK(after == before);
+    QByteArray backed_up;
+    {
+        QFile file(backup);
+        REQUIRE(file.open(QIODevice::ReadOnly));
+        backed_up = file.readAll();
+    }
+    CHECK(backed_up == before);
+    closeKeymapDialog(dialog_pointer);
+}
+
+TEST_CASE("KM-2b recorders keep special keys, ignore focus loss, and take chords",
+          "[devstudio][automation_input][shortcut][km2b]") {
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    const QString path = QDir(config.path()).filePath(QStringLiteral("keymap.json"));
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    window.activateWindow();
+    REQUIRE(QTest::qWaitForWindowActive(&window));
+    QDialog *dialog = openKeymapDialog(window);
+    REQUIRE(dialog != nullptr);
+    auto *table = dialog->findChild<QTableWidget *>(
+        QStringLiteral("pelican.keymap.table"));
+    REQUIRE(table != nullptr);
+
+    auto resetRow = [&] {
+        auto *reset = keymapButton(
+            dialog, QStringLiteral("pelican.keymap.reset.scene.duplicate"));
+        REQUIRE(reset != nullptr);
+        reset->click();
+        QTest::qWait(30);
+    };
+    auto *editor = keymapEditor(table, QStringLiteral("scene.duplicate"));
+    REQUIRE(editor != nullptr);
+
+    recordKey(editor, Qt::Key_Escape);
+    CHECK(portable(editor->keySequence()) == QStringLiteral("Esc"));
+    resetRow();
+    editor = keymapEditor(table, QStringLiteral("scene.duplicate"));
+    REQUIRE(editor != nullptr);
+    CHECK(portable(editor->keySequence()) == QStringLiteral("Ctrl+D"));
+
+    recordKey(editor, Qt::Key_Enter);
+    CHECK(portable(editor->keySequence()) == QStringLiteral("Enter"));
+    recordKey(editor, Qt::Key_Return);
+    CHECK(portable(editor->keySequence()) == QStringLiteral("Return"));
+
+    // Tab leaves the recorder rather than becoming a binding.  Focus loss
+    // reports the old sequence (or an empty one) and must keep the entry.
+    editor->setFocus();
+    QTest::keyClick(editor, Qt::Key_Tab);
+    QTest::qWait(1300);
+    CHECK(portable(editor->keySequence()) == QStringLiteral("Return"));
+
+    // A modifier-only press is not a binding either.
+    QTest::keyPress(editor, Qt::Key_Shift, Qt::ShiftModifier);
+    QTest::keyRelease(editor, Qt::Key_Shift, Qt::NoModifier);
+    QTest::qWait(1300);
+    CHECK(portable(editor->keySequence()) == QStringLiteral("Return"));
+
+    recordChord(editor, Qt::Key_K, Qt::Key_C);
+    CHECK(editor->keySequence().count() == 2);
+    CHECK(portable(editor->keySequence()) == QStringLiteral("Ctrl+K, Ctrl+C"));
+
+    auto *ok = keymapButton(dialog, QStringLiteral("pelican.keymap.ok"));
+    REQUIRE(ok != nullptr);
+    CHECK(ok->isEnabled());
+    ok->click();
+    QTest::qWait(20);
+    auto *duplicate = commandAction(window, "pelican.outliner.duplicate");
+    REQUIRE(duplicate != nullptr);
+    REQUIRE(duplicate->shortcuts().size() == 1);
+    CHECK(duplicate->shortcuts().front().count() == 2);
+    CHECK(portableKeys(duplicate->shortcuts()) ==
+          QStringList{parsePortable("Ctrl+K, Ctrl+C")});
+    const QJsonArray saved =
+        readKeymapJson(path).value(QStringLiteral("bindings")).toObject()
+            .value(QStringLiteral("scene.duplicate")).toArray();
+    REQUIRE(saved.size() == 1);
+    CHECK(saved.at(0).toString() == QStringLiteral("Ctrl+K, Ctrl+C"));
+}
+
+TEST_CASE("KM-2b the real atomic writer keeps the old file when its commit fails",
+          "[devstudio][automation_input][shortcut][km2b]") {
+#ifdef Q_OS_UNIX
+    application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    const QString path = QDir(config.path()).filePath(QStringLiteral("keymap.json"));
+    const QString backup = path + QStringLiteral(".bak");
+    const QByteArray before =
+        keymapJson(QStringLiteral("{\"file.save\":[\"Ctrl+Alt+S\"]}")).toUtf8();
+    {
+        QFile file(path);
+        REQUIRE(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        REQUIRE(file.write(before) == before.size());
+    }
+
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    window.activateWindow();
+    REQUIRE(QTest::qWaitForWindowActive(&window));
+    auto *save = commandAction(window, "pelican.file.saveScene");
+    REQUIRE(save != nullptr);
+    CHECK(portableKeys(save->shortcuts()) ==
+          QStringList{parsePortable("Ctrl+Alt+S")});
+    QDialog *dialog = openKeymapDialog(window);
+    REQUIRE(dialog != nullptr);
+    auto *table = dialog->findChild<QTableWidget *>(
+        QStringLiteral("pelican.keymap.table"));
+    REQUIRE(table != nullptr);
+    auto *editor = keymapEditor(table, QStringLiteral("file.save"));
+    REQUIRE(editor != nullptr);
+    recordKey(editor, Qt::Key_S,
+              Qt::ControlModifier | Qt::ShiftModifier | Qt::AltModifier);
+    auto *ok = keymapButton(dialog, QStringLiteral("pelican.keymap.ok"));
+    REQUIRE(ok != nullptr);
+    CHECK(ok->isEnabled());
+    QPointer<QDialog> dialog_pointer(dialog);
+
+    struct rlimit old_limit {};
+    REQUIRE(getrlimit(RLIMIT_FSIZE, &old_limit) == 0);
+    struct sigaction old_action {};
+    struct sigaction ignore {};
+    ignore.sa_handler = SIG_IGN;
+    sigemptyset(&ignore.sa_mask);
+    REQUIRE(sigaction(SIGXFSZ, &ignore, &old_action) == 0);
+    struct rlimit limit = old_limit;
+    // The backup is the old 53-byte file and fits; the new indented JSON is
+    // longer than 80 bytes, so only the final commit fails.
+    limit.rlim_cur = 80;
+    REQUIRE(setrlimit(RLIMIT_FSIZE, &limit) == 0);
+    ok->click();
+    const int restore_limit = setrlimit(RLIMIT_FSIZE, &old_limit);
+    const int restore_signal = sigaction(SIGXFSZ, &old_action, nullptr);
+    QTest::qWait(20);
+    REQUIRE(restore_limit == 0);
+    REQUIRE(restore_signal == 0);
+
+    CHECK_FALSE(dialog_pointer.isNull());
+    CHECK((dialog_pointer != nullptr && dialog_pointer->isVisible()));
+    auto *error = dialog_pointer != nullptr
+                      ? dialog_pointer->findChild<QLabel *>(
+                            QStringLiteral("pelican.keymap.error"))
+                      : nullptr;
+    CHECK(error != nullptr);
+    if (error != nullptr) {
+        CHECK(error->isVisible());
+        CHECK_FALSE(error->text().isEmpty());
+    }
+    CHECK(portableKeys(save->shortcuts()) ==
+          QStringList{parsePortable("Ctrl+Alt+S")});
+    QByteArray after;
+    {
+        QFile file(path);
+        REQUIRE(file.open(QIODevice::ReadOnly));
+        after = file.readAll();
+    }
+    CHECK(after == before);
+    QByteArray backed_up;
+    {
+        QFile file(backup);
+        REQUIRE(file.open(QIODevice::ReadOnly));
+        backed_up = file.readAll();
+    }
+    CHECK(backed_up == before);
+    closeKeymapDialog(dialog_pointer);
+#else
+    SKIP("RLIMIT_FSIZE atomicity probe is Unix-only");
+#endif
 }

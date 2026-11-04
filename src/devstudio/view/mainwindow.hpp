@@ -13,9 +13,11 @@
 
 #include <QByteArray>
 #include <QHash>
+#include <QKeySequence>
 #include <QMainWindow>
 #include <QPoint>
 #include <QPointer>
+#include <QStringList>
 
 #include <array>
 #include <cstdint>
@@ -67,9 +69,76 @@ class RenderFallbackNotice;
 class RenderingSettingsWidget;
 class RayLayoutWidget;
 class RuntimeOutliner;
+class KeymapDialog;
 enum class AddObjectKind : std::uint8_t;
 struct SceneEditOutcome;
 enum class SceneEditKind : std::uint8_t;
+
+// KM-2b: the keymap split into parts the start-up path and the dialog share.
+// parseKeymap and planKeymap are pure: they read bytes / a pending command
+// state and return what would happen, including the same warnings KM-2a
+// printed.  applyKeymapPlan is the only part that touches widgets.
+struct KeymapEntry {
+    QString id;
+    QList<QKeySequence> keys;
+    // Set by parseKeymap when the raw value could not be turned into a key
+    // list.  planKeymap reports it after checking that the command is known,
+    // which keeps the warnings identical to KM-2a's one-pass loader.
+    QString parse_warning;
+};
+
+struct KeymapFile {
+    // Well-formed entries, in file order.
+    std::vector<KeymapEntry> entries;
+    // Every entry, including malformed ones, in file order.  The startup
+    // loader passes this to planKeymap so a bad entry for an unknown command
+    // reports only the unknown-command warning.
+    std::vector<KeymapEntry> scanned;
+    // Entry-level warnings, already prefixed with "keymap:".
+    QStringList warnings;
+    // A malformed file; the caller prefixes the path (KM-2a's message).
+    std::optional<QString> error;
+};
+
+struct KeymapRejection {
+    QStringList keys;
+    QStringList holders;
+    QString reason;
+};
+
+using KeymapDefaults = std::map<QString, QList<QKeySequence>>;
+
+struct KeymapPlan {
+    // Only overridden commands the plan accepts, with their whole key list.
+    // An id absent here keeps, or returns to, its original per-object default.
+    KeymapDefaults accepted;
+    std::map<QString, KeymapRejection> rejected;
+    QStringList warnings;
+};
+
+struct KeymapObjectState {
+    QObject *object = nullptr;
+    QString id;
+    // This object's own factory keys, not the command's aggregated keys.
+    QList<QKeySequence> defaults;
+};
+
+KeymapFile parseKeymap(const QByteArray &bytes);
+KeymapPlan planKeymap(const KeymapDefaults &defaults,
+                      const KeymapDefaults &fixed_holders,
+                      const std::vector<KeymapEntry> &overrides);
+void applyKeymapPlan(const std::vector<KeymapObjectState> &objects,
+                     const KeymapPlan &plan);
+
+// Capture the command objects and the keys they have now.  MainWindow calls
+// this once in its constructor, before applyUserKeymap, and keeps the result
+// for the window's lifetime: a later rebind must not become a "default".
+std::vector<KeymapObjectState> keymapObjectStates(QWidget &main_window);
+KeymapDefaults keymapCommandDefaults(const std::vector<KeymapObjectState> &objects);
+KeymapDefaults keymapFixedKeys();
+
+using KeymapFileWriter =
+    std::function<bool(const QString &path, const QByteArray &bytes, QString *error)>;
 
 class MainWindow : public QMainWindow {
   public:
@@ -105,12 +174,17 @@ class MainWindow : public QMainWindow {
     // run, at once. A person closing the window is still asked; a scenario's
     // shutdown is no person, and the prompt nobody answered held it 30 s.
     void stopPlayThen(std::function<void()> then);
+    // KM-2b: the atomic writer the keymap dialog uses.  A test replaces it to
+    // make the final commit fail without depending on directory permissions.
+    void setKeymapFileWriter(KeymapFileWriter writer);
 
   protected:
     void closeEvent(QCloseEvent *event) override;
     bool nativeEvent(const QByteArray &event_type, void *message, qintptr *result) override;
 
   private:
+    friend class KeymapDialog;
+
     enum DockIndex {
         ProjectDock,
         OutlinerDock,
@@ -137,6 +211,12 @@ class MainWindow : public QMainWindow {
     QString application_config_directory_;
     LayoutPresetManager layout_presets_;
     std::optional<ToolLayoutPresetManager> tool_layout_presets_;
+    // KM-2b: captured once, before the first keymap application.  The dialog
+    // edits and saves from these, never from the keys a keymap left behind.
+    std::vector<KeymapObjectState> keymap_objects_;
+    KeymapDefaults keymap_defaults_;
+    KeymapDefaults keymap_fixed_keys_;
+    KeymapFileWriter keymap_file_writer_;
     std::array<QDockWidget *, DockCount> docks_{};
     QListWidget *project_list_ = nullptr;
     // HW-2s / AV-1s: the asset folders, their watch and the contents check.
@@ -309,6 +389,12 @@ class MainWindow : public QMainWindow {
     // KM-2a: read `<application_config_directory>/keymap.json` once and apply
     // its per-command shortcuts over the ones the commands were made with.
     void applyUserKeymap();
+    // KM-2b: snapshot the commands' own keys.  Called before applyUserKeymap
+    // so a rebound command still knows the key it was made with.
+    void captureKeymapDefaults();
+    void showKeymapDialog();
+    bool writeKeymapFile(const QString &path, const QByteArray &bytes,
+                         QString *error) const;
     void updateSceneShortcuts();
     void showKeyboardShortcuts();
     void createPlayControls(QToolBar *band);

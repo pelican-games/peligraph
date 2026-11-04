@@ -8,6 +8,7 @@
 #include "fullscreenshadertemplate.hpp"
 #include "graphcanvaswidget.hpp"
 #include "inspectorwidget.hpp"
+#include "keymapdialog.hpp"
 #include "outlinertree.hpp"
 #include "../model/inspectormodel.hpp"
 #include "../model/outlineredit.hpp"
@@ -68,6 +69,7 @@
 #include <QRegion>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QSaveFile>
 #include <QScopeGuard>
 #include <QShortcut>
 #include <QScrollArea>
@@ -299,6 +301,232 @@ class PlayTintFrame final : public QFrame {
 
 } // namespace
 
+KeymapFile parseKeymap(const QByteArray &bytes) {
+    KeymapFile result;
+    QJsonParseError parse_error{};
+    const QJsonDocument document = QJsonDocument::fromJson(bytes, &parse_error);
+    if (parse_error.error != QJsonParseError::NoError) {
+        result.error = QStringLiteral("malformed JSON: %1")
+                           .arg(parse_error.errorString());
+        return result;
+    }
+    if (!document.isObject()) {
+        result.error = QStringLiteral("the top-level value is not an object");
+        return result;
+    }
+    const QJsonObject root = document.object();
+    const QJsonValue version = root.value(QStringLiteral("version"));
+    if (!version.isDouble() || version.toDouble() != 1.0) {
+        result.error = QStringLiteral("version must be 1");
+        return result;
+    }
+    const QJsonValue bindings_value = root.value(QStringLiteral("bindings"));
+    if (bindings_value.isUndefined()) return result;
+    if (!bindings_value.isObject()) {
+        result.error = QStringLiteral("bindings must be an object");
+        return result;
+    }
+
+    const QJsonObject bindings = bindings_value.toObject();
+    for (auto entry = bindings.begin(); entry != bindings.end(); ++entry) {
+        KeymapEntry parsed_entry;
+        parsed_entry.id = entry.key();
+        if (!entry.value().isArray()) {
+            parsed_entry.parse_warning =
+                QStringLiteral("keymap: command %1: bindings value is not an "
+                               "array; entry skipped")
+                    .arg(parsed_entry.id);
+            result.warnings << parsed_entry.parse_warning;
+            result.scanned.push_back(std::move(parsed_entry));
+            continue;
+        }
+        bool valid = true;
+        for (const QJsonValue &value : entry.value().toArray()) {
+            if (!value.isString()) {
+                parsed_entry.parse_warning =
+                    QStringLiteral("keymap: command %1: a key is not a "
+                                   "string; entry skipped")
+                        .arg(parsed_entry.id);
+                valid = false;
+                break;
+            }
+            const std::optional<QKeySequence> parsed =
+                parseKeymapSequence(value.toString());
+            if (!parsed) {
+                parsed_entry.parse_warning =
+                    QStringLiteral("keymap: command %1: %2 is not a usable "
+                                   "key; entry skipped")
+                        .arg(parsed_entry.id, value.toString());
+                valid = false;
+                break;
+            }
+            parsed_entry.keys.push_back(*parsed);
+        }
+        if (!valid) {
+            result.warnings << parsed_entry.parse_warning;
+            result.scanned.push_back(std::move(parsed_entry));
+            continue;
+        }
+        result.entries.push_back(parsed_entry);
+        result.scanned.push_back(std::move(parsed_entry));
+    }
+    return result;
+}
+
+KeymapPlan planKeymap(const KeymapDefaults &defaults,
+                      const KeymapDefaults &fixed_holders,
+                      const std::vector<KeymapEntry> &overrides) {
+    KeymapPlan plan;
+    struct State {
+        QList<QKeySequence> defaults;
+        QList<QKeySequence> keys;
+        bool overridden = false;
+        bool rejected = false;
+    };
+    std::map<QString, State> states;
+    for (const auto &[id, keys] : defaults) {
+        State &state = states[id];
+        state.defaults = keys;
+        state.keys = keys;
+    }
+    for (const KeymapEntry &entry : overrides) {
+        auto state = states.find(entry.id);
+        if (state == states.end()) {
+            plan.warnings << QStringLiteral(
+                                 "keymap: command %1 is unknown or not "
+                                 "rebindable; entry skipped")
+                                 .arg(entry.id);
+            continue;
+        }
+        // The old one-pass loader checked whether a command was rebindable
+        // before it looked at the value.  Keeping that order is why parseKeymap
+        // defers malformed-entry warnings to this point.
+        if (!entry.parse_warning.isEmpty()) {
+            plan.warnings << entry.parse_warning;
+            continue;
+        }
+        state->second.keys = entry.keys;
+        state->second.overridden = true;
+        state->second.rejected = false;
+    }
+
+    // Same rule as KM-2a: a key may keep several holders only when those
+    // holders already shared it in the factory defaults (Ctrl+Z is the scene's,
+    // rendering's, materials' and assets' undo).  Otherwise every overridden
+    // command on that key is rejected, its whole entry is dropped, and the map
+    // is recomputed -- so swaps and chains work and JSON order does not matter.
+    std::map<QString, std::set<QString>> default_holders;
+    for (const auto &[id, state] : states)
+        for (const QKeySequence &key : state.defaults)
+            default_holders[keySequenceText(key)].insert(id);
+    for (const auto &[id, keys] : fixed_holders)
+        for (const QKeySequence &key : keys)
+            default_holders[keySequenceText(key)].insert(id);
+
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        std::map<QString, std::set<QString>> holders;
+        for (const auto &[id, state] : states)
+            for (const QKeySequence &key : state.keys)
+                holders[keySequenceText(key)].insert(id);
+        for (const auto &[id, keys] : fixed_holders)
+            for (const QKeySequence &key : keys)
+                holders[keySequenceText(key)].insert(id);
+        for (const auto &[key, ids] : holders) {
+            if (ids.size() <= 1) continue;
+            const auto defaults_for_key = default_holders.find(key);
+            const bool shared_by_default =
+                defaults_for_key != default_holders.end() &&
+                std::all_of(ids.begin(), ids.end(),
+                            [&defaults_for_key](const QString &id) {
+                                return defaults_for_key->second.contains(id);
+                            });
+            if (shared_by_default) continue;
+            for (const QString &id : ids) {
+                auto state = states.find(id);
+                if (state == states.end() || !state->second.overridden ||
+                    state->second.rejected)
+                    continue;
+                state->second.rejected = true;
+                state->second.keys = state->second.defaults;
+                plan.warnings << QStringLiteral(
+                                     "keymap: command %1: key %2 conflicts; "
+                                     "entry skipped")
+                                     .arg(id, key);
+                KeymapRejection &rejection = plan.rejected[id];
+                rejection.keys.push_back(key);
+                QStringList other_holders;
+                for (const QString &holder : ids)
+                    if (holder != id) other_holders.push_back(holder);
+                rejection.holders = other_holders;
+                rejection.reason =
+                    QStringLiteral("%1 is already used by %2")
+                        .arg(key, other_holders.join(QStringLiteral(", ")));
+                changed = true;
+            }
+        }
+    }
+
+    for (const auto &[id, state] : states) {
+        if (!state.overridden || state.rejected) continue;
+        plan.accepted[id] = state.keys;
+    }
+    return plan;
+}
+
+void applyKeymapPlan(const std::vector<KeymapObjectState> &objects,
+                     const KeymapPlan &plan) {
+    for (const KeymapObjectState &state : objects) {
+        QList<QKeySequence> keys = state.defaults;
+        const auto accepted = plan.accepted.find(state.id);
+        if (accepted != plan.accepted.end()) keys = accepted->second;
+        if (auto *action = qobject_cast<QAction *>(state.object))
+            action->setShortcuts(keys);
+        else if (auto *shortcut = qobject_cast<QShortcut *>(state.object))
+            shortcut->setKeys(keys);
+    }
+}
+
+KeymapDefaults keymapFixedKeys() {
+    KeymapDefaults fixed;
+    for (const StudioKey &key : studioKeys())
+        fixed[QString::fromLatin1(key.id)] = handHandledKeys(key);
+    return fixed;
+}
+
+std::vector<KeymapObjectState> keymapObjectStates(QWidget &main_window) {
+    const KeymapDefaults fixed = keymapFixedKeys();
+    std::vector<KeymapObjectState> states;
+    for (QObject *object : studioCommandObjects(main_window)) {
+        const QString id = object->property("pelican.command.id").toString();
+        if (id.isEmpty() || fixed.contains(id)) continue;
+        KeymapObjectState state;
+        state.object = object;
+        state.id = id;
+        for (const QKeySequence &key : commandObjectKeys(object)) {
+            if (!key.isEmpty() && !state.defaults.contains(key))
+                state.defaults.push_back(key);
+        }
+        states.push_back(std::move(state));
+    }
+    return states;
+}
+
+KeymapDefaults keymapCommandDefaults(
+    const std::vector<KeymapObjectState> &objects) {
+    KeymapDefaults defaults;
+    for (const KeymapObjectState &state : objects) {
+        // Keep commands whose factory binding is empty (the menu's Keyboard
+        // Shortcuts command is one): they are rebindable too, and an empty
+        // list is the default that an override is compared against.
+        QList<QKeySequence> &keys = defaults[state.id];
+        for (const QKeySequence &key : state.defaults)
+            if (!key.isEmpty() && !keys.contains(key)) keys.push_back(key);
+    }
+    return defaults;
+}
+
 MainWindow::MainWindow() : MainWindow(applicationConfigDirectory()) {}
 
 MainWindow::MainWindow(const QString &application_config_directory)
@@ -367,10 +595,61 @@ MainWindow::MainWindow(const QString &application_config_directory)
             }
         }
     });
-    // Every command exists by now; apply the person's overrides once, before
-    // the first context update reads the shortcuts.
+    // Every command exists by now; remember the keys they were made with
+    // before the person's stored overrides can change anything.  The dialog's
+    // "Reset to default" and an omitted override both return here, even when
+    // keymap.json does not exist.
+    captureKeymapDefaults();
     applyUserKeymap();
     updateSceneShortcuts();
+}
+
+void MainWindow::captureKeymapDefaults() {
+    keymap_objects_ = keymapObjectStates(*this);
+    keymap_defaults_ = keymapCommandDefaults(keymap_objects_);
+    keymap_fixed_keys_ = keymapFixedKeys();
+}
+
+void MainWindow::setKeymapFileWriter(KeymapFileWriter writer) {
+    keymap_file_writer_ = std::move(writer);
+}
+
+bool MainWindow::writeKeymapFile(const QString &path, const QByteArray &bytes,
+                                 QString *error) const {
+    if (keymap_file_writer_)
+        return keymap_file_writer_(path, bytes, error);
+
+    QSaveFile file(path);
+    // Never fall back to a truncate-and-write path: a failed commit must leave
+    // the previous file exactly as it was (and, in the dialog, the live keys).
+    file.setDirectWriteFallback(false);
+    if (!file.open(QIODevice::WriteOnly)) {
+        if (error != nullptr) *error = file.errorString();
+        return false;
+    }
+    if (file.write(bytes) != bytes.size()) {
+        if (error != nullptr) *error = file.errorString();
+        file.cancelWriting();
+        return false;
+    }
+    if (!file.commit()) {
+        if (error != nullptr) *error = file.errorString();
+        return false;
+    }
+    return true;
+}
+
+void MainWindow::showKeymapDialog() {
+    if (auto *existing = findChild<KeymapDialog *>(
+            QStringLiteral("pelican.keymap.dialog"))) {
+        existing->show();
+        existing->raise();
+        existing->activateWindow();
+        return;
+    }
+    auto *dialog = new KeymapDialog(*this, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->open();
 }
 
 bool MainWindow::nativeEvent(const QByteArray &event_type, void *message, qintptr *result) {
@@ -2017,6 +2296,15 @@ void MainWindow::createMenus() {
     }
     edit_menu->addAction(render_undo_action_);
     edit_menu->addAction(render_redo_action_);
+    edit_menu->addSeparator();
+    // KM-2b: the dialog that edits keymap.json.  It has no shortcut of its
+    // own: the dialog must stay reachable while a rebind is being tried.
+    QAction *keymap_action = edit_menu->addAction(tr("&Keyboard Shortcuts..."));
+    keymap_action->setObjectName(QStringLiteral("pelican.edit.keymap"));
+    setCommandHelp(*keymap_action, "edit.keymap", CommandSurface::Window,
+                   tr("Keyboard Shortcuts..."));
+    connect(keymap_action, &QAction::triggered, this,
+            [this] { showKeymapDialog(); });
 
     QMenu *view_menu = menuBar()->addMenu(tr("&View"));
     view_menu->setObjectName(QStringLiteral("pelican.viewMenu"));
@@ -2218,161 +2506,20 @@ void MainWindow::applyUserKeymap() {
     }
     const QByteArray bytes = file.readAll();
     file.close();
-    QJsonParseError parse_error{};
-    const QJsonDocument document = QJsonDocument::fromJson(bytes, &parse_error);
-    if (parse_error.error != QJsonParseError::NoError) {
-        qWarning().noquote() << "keymap" << path
-                             << ": malformed JSON:" << parse_error.errorString();
+
+    const KeymapFile parsed = parseKeymap(bytes);
+    if (parsed.error) {
+        qWarning().noquote() << "keymap" << path << ":" << *parsed.error;
         return;
     }
-    if (!document.isObject()) {
-        qWarning().noquote() << "keymap" << path
-                             << ": the top-level value is not an object";
-        return;
-    }
-    const QJsonObject root = document.object();
-    const QJsonValue version = root.value(QStringLiteral("version"));
-    if (!version.isDouble() || version.toDouble() != 1.0) {
-        qWarning().noquote() << "keymap" << path << ": version must be 1";
-        return;
-    }
-    const QJsonValue bindings_value = root.value(QStringLiteral("bindings"));
-    if (bindings_value.isUndefined()) return;
-    if (!bindings_value.isObject()) {
-        qWarning().noquote() << "keymap" << path << ": bindings must be an object";
-        return;
-    }
-
-    std::map<QString, std::vector<QObject *>> objects_by_id;
-    for (QObject *object : studioCommandObjects(*this)) {
-        const QString id = object->property("pelican.command.id").toString();
-        if (!id.isEmpty()) objects_by_id[id].push_back(object);
-    }
-
-    // The ids `studioKeys()` handles by hand are not rebindable yet (KM-2a),
-    // but their keys are fixed holders in the conflict check.
-    std::set<QString> hand_ids;
-    std::map<QString, QList<QKeySequence>> hand_keys;
-    for (const StudioKey &key : studioKeys()) {
-        const QString id = QString::fromLatin1(key.id);
-        hand_ids.insert(id);
-        hand_keys[id] = handHandledKeys(key);
-    }
-
-    struct State {
-        QList<QKeySequence> defaults;
-        QList<QKeySequence> keys;
-        bool overridden = false;
-        bool rejected = false;
-    };
-    std::map<QString, State> states;
-    for (const auto &[id, objects] : objects_by_id) {
-        if (hand_ids.contains(id)) continue;
-        State &state = states[id];
-        for (QObject *object : objects) {
-            for (const QKeySequence &key : commandObjectKeys(object)) {
-                if (!key.isEmpty() && !state.defaults.contains(key))
-                    state.defaults.push_back(key);
-            }
-        }
-        state.keys = state.defaults;
-    }
-
-    const QJsonObject bindings = bindings_value.toObject();
-    for (auto entry = bindings.begin(); entry != bindings.end(); ++entry) {
-        const QString id = entry.key();
-        if (!states.contains(id)) {
-            qWarning().noquote() << "keymap: command" << id
-                                 << "is unknown or not rebindable; entry skipped";
-            continue;
-        }
-        if (!entry.value().isArray()) {
-            qWarning().noquote() << "keymap: command" << id
-                                 << ": bindings value is not an array; entry skipped";
-            continue;
-        }
-        QList<QKeySequence> keys;
-        bool valid = true;
-        for (const QJsonValue &value : entry.value().toArray()) {
-            if (!value.isString()) {
-                qWarning().noquote() << "keymap: command" << id
-                                     << ": a key is not a string; entry skipped";
-                valid = false;
-                break;
-            }
-            const std::optional<QKeySequence> parsed =
-                parseKeymapSequence(value.toString());
-            if (!parsed) {
-                qWarning().noquote() << "keymap: command" << id << ":"
-                                     << value.toString()
-                                     << "is not a usable key; entry skipped";
-                valid = false;
-                break;
-            }
-            keys.push_back(*parsed);
-        }
-        if (!valid) continue;
-        states[id].keys = keys;
-        states[id].overridden = true;
-    }
-
-    // Correction from the design review: all overrides are taken at once and
-    // the keys are checked together with the defaults and the hand-handled
-    // keys.  A key may keep several holders only when those holders already
-    // shared it in the defaults (Ctrl+Z is the scene's, rendering's,
-    // materials' and assets' undo).  Otherwise every overridden command on
-    // that key is rejected, its whole entry is dropped, and the map is
-    // recomputed -- so swaps and chains work and JSON order does not matter.
-    std::map<QString, std::set<QString>> default_holders;
-    for (const auto &[id, state] : states)
-        for (const QKeySequence &key : state.defaults)
-            default_holders[keySequenceText(key)].insert(id);
-    for (const auto &[id, keys] : hand_keys)
-        for (const QKeySequence &key : keys)
-            default_holders[keySequenceText(key)].insert(id);
-
-    bool changed = true;
-    while (changed) {
-        changed = false;
-        std::map<QString, std::set<QString>> holders;
-        for (const auto &[id, state] : states)
-            for (const QKeySequence &key : state.keys)
-                holders[keySequenceText(key)].insert(id);
-        for (const auto &[id, keys] : hand_keys)
-            for (const QKeySequence &key : keys)
-                holders[keySequenceText(key)].insert(id);
-        for (const auto &[key, ids] : holders) {
-            if (ids.size() <= 1) continue;
-            const auto defaults = default_holders.find(key);
-            const bool shared_by_default =
-                defaults != default_holders.end() &&
-                std::all_of(ids.begin(), ids.end(), [&defaults](const QString &id) {
-                    return defaults->second.contains(id);
-                });
-            if (shared_by_default) continue;
-            for (const QString &id : ids) {
-                auto state = states.find(id);
-                if (state == states.end() || !state->second.overridden ||
-                    state->second.rejected)
-                    continue;
-                state->second.rejected = true;
-                state->second.keys = state->second.defaults;
-                qWarning().noquote() << "keymap: command" << id << ": key" << key
-                                     << "conflicts; entry skipped";
-                changed = true;
-            }
-        }
-    }
-
-    for (const auto &[id, state] : states) {
-        if (!state.overridden || state.rejected) continue;
-        for (QObject *object : objects_by_id[id]) {
-            if (auto *action = qobject_cast<QAction *>(object))
-                action->setShortcuts(state.keys);
-            else if (auto *shortcut = qobject_cast<QShortcut *>(object))
-                shortcut->setKeys(state.keys);
-        }
-    }
+    // planKeymap re-checks malformed entries after the rebindable-command
+    // check, so report its warnings rather than the parse-time list.  This is
+    // the same one-warning-per-skipped-entry order KM-2a used.
+    const KeymapPlan plan =
+        planKeymap(keymap_defaults_, keymap_fixed_keys_, parsed.scanned);
+    for (const QString &warning : plan.warnings)
+        qWarning().noquote() << warning;
+    applyKeymapPlan(keymap_objects_, plan);
 }
 
 void MainWindow::updateSceneShortcuts() {
