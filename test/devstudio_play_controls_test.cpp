@@ -604,7 +604,11 @@ TEST_CASE("PM-3a nothing can be pressed while an answer is awaited, and a refusa
                                   {"required", "paused"}};
     const auto reads = rig.engine.status_reads;
     rig.step().trigger();
-    REQUIRE(rig.pumpUntil([&] { return !rig.window.statusBar()->currentMessage().isEmpty(); }));
+    // The status bar may still hold the startup message ("No saved panel layout ..."): wait for
+    // the refusal's own words, not for any message (GS-ASAN1 saw the old one compared).
+    const QString refusal = QStringLiteral("The game is playing; this works only while it is paused "
+                                           "(play_state_mismatch).");
+    REQUIRE(rig.pumpUntil([&] { return rig.window.statusBar()->currentMessage() == refusal; }));
     CHECK(rig.window.statusBar()->currentMessage() ==
           QStringLiteral("The game is playing; this works only while it is paused "
                          "(play_state_mismatch)."));
