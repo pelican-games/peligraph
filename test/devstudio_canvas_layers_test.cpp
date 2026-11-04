@@ -1,6 +1,7 @@
 // SG-1: pelican.canvas in the Graph tab, without Qt -- a canvas.stack's
 // sockets, the Layers panel's rows against the document's `layers`, and the
 // op lists its gestures send (one edit each).
+#include "graphcanvaslayertool.hpp"
 #include "graphcanvaslayerstack.hpp"
 #include "graphcanvasmodel.hpp"
 
@@ -947,4 +948,49 @@ TEST_CASE("NB-2a: a row says its opacity port, where its > goes, and whether tha
     // The mask's port and its line, as the row already says.
     CHECK(rows[3].mask == "card_mask");
     CHECK(rows[3].mask_source.empty());
+}
+
+TEST_CASE("SDK-1b: one stack tool decides where a layer goes, and which layer the ops added",
+          "[studio][canvas][sdk1b]") {
+    const auto nodes = document();
+    const LayerStackTool no_pick{nodes, "", "hud", ""};
+    CHECK_FALSE(no_pick.above().has_value());
+    // The picked row is the index in `layers` (bottom first), not the row order.
+    for (const auto &[picked, expected] :
+         std::vector<std::pair<std::string, std::optional<std::size_t>>>{
+             {"rect_1", 0}, {"ellipse_1", 2}, {"group_1", 3}, {"gone", std::nullopt}}) {
+        INFO(picked);
+        CHECK(LayerStackTool{nodes, "", "hud", picked}.above() == expected);
+    }
+
+    const LayerStackTool card{nodes, "", "hud", "ellipse_1"};
+    for (const std::string what : {"rect", "ellipse", "group"}) {
+        const auto expected = what == "group"
+                                  ? graphCanvasAddGroupLayerOps(nodes, "", "hud", 2)
+                                  : graphCanvasAddShapeLayerOps(nodes, "", "hud", what, 2);
+        CHECK(card.addOps(what) == expected);
+        CHECK(card.addOpsAt(what, std::nullopt) ==
+              (what == "group" ? graphCanvasAddGroupLayerOps(nodes, "", "hud", std::nullopt)
+                               : graphCanvasAddShapeLayerOps(nodes, "", "hud", what, std::nullopt)));
+    }
+    const auto adjustment = "adjustment:" + graphCanvasAdjustmentChoices().front().op;
+    CHECK(card.addOps(adjustment) ==
+          graphCanvasAddAdjustmentLayerOps(nodes, "", "hud", 2, graphCanvasAdjustmentChoices().front().op));
+    CHECK(card.addOps("text").empty());
+    CHECK(card.addOps("image").empty());
+    CHECK(card.addOps("adjustment:not.a.filter").empty());
+
+    const auto added = card.addOps("rect");
+    const auto input = card.addedBy(added);
+    REQUIRE_FALSE(input.empty());
+    const auto rows = graphCanvasLayerRows(nodes, "hud");
+    CHECK(std::ranges::find(rows, input, &GraphCanvasStackRow::input) == rows.end());
+    CHECK(card.addedBy(graphCanvasSetLayerOps(nodes, "", "hud", 0, "name", "Renamed")).empty());
+    Json elsewhere = Json::array();
+    elsewhere.push_back(Json{{"op", "set_node_parameters"},
+                             {"scope", "/elsewhere"},
+                             {"node", "other"},
+                             {"parameters", {{"layers", Json::array({{{"input", "new"}}})}}}});
+    CHECK(card.addedBy(elsewhere).empty());
+    CHECK(card.addedBy(Json::array()).empty());
 }

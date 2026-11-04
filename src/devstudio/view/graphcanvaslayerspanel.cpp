@@ -2,6 +2,7 @@
 
 #include "../model/graphcanvasimport.hpp"
 #include "../model/graphcanvasmodel.hpp"
+#include "../model/graphcanvaslayertool.hpp"
 #include "graphcanvasdrawing.hpp"
 #include "studiotheme.hpp"
 
@@ -35,6 +36,7 @@
 #include <QSpinBox>
 #include <QStackedWidget>
 #include <QToolButton>
+#include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
 
@@ -238,17 +240,20 @@ GraphCanvasLayersPanel::GraphCanvasLayersPanel(GraphCanvasModel &model, std::fun
     rows_layout_->setContentsMargins(0, 0, 0, 0);
     rows_layout_->setSpacing(2);
     body->addWidget(rows_);
-    empty_ = caption(tr("No layer yet: + Rect, + Ellipse or + Image adds one on top."), body_);
+    empty_ = caption(tr("No layer yet: + Rect, + Ellipse or + Image adds one."), body_);
     empty_->setObjectName(named("empty"));
     body->addWidget(empty_);
 
     auto *adds = new QHBoxLayout;
     adds->setContentsMargins(0, 0, 0, 0);
     add_rect_ = button(body_, tr("+ Rect"), "addRect",
-                       tr("A filled rectangle at the middle of the canvas, a quarter of its size, on top"));
+                       tr("A filled rectangle at the middle of the canvas, a quarter of its size, just "
+                          "above the picked layer (on top with none picked)"));
     add_ellipse_ = button(body_, tr("+ Ellipse"), "addEllipse",
-                          tr("A filled ellipse at the middle of the canvas, a quarter of its size, on top"));
-    add_group_ = button(body_, tr("+ Group"), "addGroup", tr("An empty stack of its own, on top"));
+                          tr("A filled ellipse at the middle of the canvas, a quarter of its size, just "
+                             "above the picked layer (on top with none picked)"));
+    add_group_ = button(body_, tr("+ Group"), "addGroup",
+                        tr("An empty stack of its own, just above the picked layer (on top with none picked)"));
     add_stroke_ = button(body_, tr("+ Stroke"), "addStroke",
                          tr("An outline of the picked layer's shape, just above it"));
     for (auto *each : {add_rect_, add_ellipse_, add_group_, add_stroke_}) adds->addWidget(each);
@@ -257,9 +262,9 @@ GraphCanvasLayersPanel::GraphCanvasLayersPanel(GraphCanvasModel &model, std::fun
     auto *files = new QHBoxLayout;
     files->setContentsMargins(0, 0, 0, 0);
     add_image_ = button(body_, tr("+ Image\xE2\x80\xA6"), "addImage",
-                        tr("Pictures (PNG, JPG) copied into the project's assets/canvas, each a layer on top at "
-                           "the middle of the canvas (a name already there gets _2). Dropping them here does "
-                           "the same."));
+                        tr("Pictures (PNG, JPG) copied into the project's assets/canvas, each a layer just "
+                           "above the picked layer (on top with none picked), at the middle of the canvas (a "
+                           "name already there gets _2). Dropping them here does the same."));
     import_output_ = button(body_, tr("Import PSD output\xE2\x80\xA6"), "importPsdOutput",
                             tr("A psd-canvas conversion (its canvas.graph.json): copied into the project's "
                                "imports/, and its layers as one group on top"));
@@ -273,7 +278,8 @@ GraphCanvasLayersPanel::GraphCanvasLayersPanel(GraphCanvasModel &model, std::fun
     auto *more = new QHBoxLayout;
     more->setContentsMargins(0, 0, 0, 0);
     add_text_ = button(body_, tr("+ Text\xE2\x80\xA6"), "addText",
-                       tr("Text in a font of the project's, white, at the middle of the canvas, on top"));
+                       tr("Text in a font of the project's, white, at the middle of the canvas, just above "
+                          "the picked layer (on top with none picked)"));
     more->addWidget(add_text_);
     add_adjustment_ = new QToolButton(body_);
     add_adjustment_->setObjectName(named("addAdjustment"));
@@ -282,14 +288,12 @@ GraphCanvasLayersPanel::GraphCanvasLayersPanel(GraphCanvasModel &model, std::fun
                                    "just above the picked layer"));
     add_adjustment_->setPopupMode(QToolButton::InstantPopup);
     add_adjustment_->setMenu(filterMenu("addAdjustment", graphCanvasAdjustmentChoices(), [this](const std::string &op) {
-        const auto row = pickedRow();
-        commit(graphCanvasAddAdjustmentLayerOps(model_.nodes(scope_), scope_, stack_,
-                                                row ? std::optional<std::size_t>{row->index} : std::nullopt, op));
+        addLayer("adjustment:" + op);
     }));
     more->addWidget(add_adjustment_);
     more->addStretch(1);
     body->addLayout(more);
-    connect(add_text_, &QPushButton::clicked, this, [this] { openTextDialog(); });
+    connect(add_text_, &QPushButton::clicked, this, [this] { openTextDialog(pickedAbove()); });
     auto *moves = new QHBoxLayout;
     moves->setContentsMargins(0, 0, 0, 0);
     delete_ = button(body_, tr("Delete"), "delete",
@@ -315,6 +319,7 @@ GraphCanvasLayersPanel::GraphCanvasLayersPanel(GraphCanvasModel &model, std::fun
     });
     connect(stacks_, &QComboBox::currentIndexChanged, this, [this](int index) {
         if (loading_ || index < 0) return;
+        dropOpacity();
         trail_.clear();
         read_only_ = false;
         scope_.clear();
@@ -326,6 +331,7 @@ GraphCanvasLayersPanel::GraphCanvasLayersPanel(GraphCanvasModel &model, std::fun
         if (trail_.empty()) return;
         const auto place = trail_.back();
         trail_.pop_back();
+        dropOpacity();
         scope_ = place.scope;
         stack_ = place.stack;
         read_only_ = place.read_only;
@@ -333,20 +339,14 @@ GraphCanvasLayersPanel::GraphCanvasLayersPanel(GraphCanvasModel &model, std::fun
         note_->hide();
         reload(true);
     });
-    connect(add_rect_, &QPushButton::clicked, this, [this] {
-        commit(graphCanvasAddShapeLayerOps(model_.nodes(scope_), scope_, stack_, "rect"));
-    });
-    connect(add_ellipse_, &QPushButton::clicked, this, [this] {
-        commit(graphCanvasAddShapeLayerOps(model_.nodes(scope_), scope_, stack_, "ellipse"));
-    });
-    connect(add_group_, &QPushButton::clicked, this, [this] {
-        commit(graphCanvasAddGroupLayerOps(model_.nodes(scope_), scope_, stack_));
-    });
+    connect(add_rect_, &QPushButton::clicked, this, [this] { addLayer("rect"); });
+    connect(add_ellipse_, &QPushButton::clicked, this, [this] { addLayer("ellipse"); });
+    connect(add_group_, &QPushButton::clicked, this, [this] { addLayer("group"); });
     connect(add_stroke_, &QPushButton::clicked, this, [this] {
         if (const auto row = pickedRow())
             commit(graphCanvasAddStrokeLayerOps(model_.nodes(scope_), scope_, stack_, row->index));
     });
-    connect(add_image_, &QPushButton::clicked, this, [this] { chooseImages(false); });
+    connect(add_image_, &QPushButton::clicked, this, [this] { chooseImages(false, pickedAbove()); });
     connect(import_output_, &QPushButton::clicked, this, [this] {
         chooseFile(tr("Import PSD output"), QStringLiteral("pelican.canvasPsdOutputDialog"),
                    tr("psd-canvas output (canvas.graph.json *.json)"), [this](const QStringList &picked) {
@@ -657,6 +657,7 @@ GraphCanvasLayersPanel::GraphCanvasLayersPanel(GraphCanvasModel &model, std::fun
         const auto row = pickedRow();
         if (!row) return;
         if (row->kind == "group") {
+            dropOpacity();
             trail_.push_back({scope_, stack_, read_only_});
             stack_ = row->source;
             picked_.clear();
@@ -669,6 +670,7 @@ GraphCanvasLayersPanel::GraphCanvasLayersPanel(GraphCanvasModel &model, std::fun
                 say(tr("%1 holds no canvas.stack to show.").arg(qtext(row->definition)));
                 return;
             }
+            dropOpacity();
             trail_.push_back({scope_, stack_, read_only_});
             scope_ = row->definition;
             stack_ = inside;
@@ -705,8 +707,20 @@ GraphCanvasLayersPanel::GraphCanvasLayersPanel(GraphCanvasModel &model, std::fun
     layout->addWidget(import_list_);
     connect(imports_, &QPushButton::toggled, import_list_, &QWidget::setVisible);
     layout->addStretch(1);
+    // SDK-1b: one waiting opacity edit, sent 300 ms after the last change.
+    // An undo inside that window does not cancel it: the send follows, which
+    // is what the box last showed.
+    opacity_timer_ = new QTimer(this);
+    opacity_timer_->setSingleShot(true);
+    opacity_timer_->setInterval(300);
+    connect(opacity_timer_, &QTimer::timeout, this, [this] {
+        if (loading_) return;
+        flushOpacity();
+    });
     reload(true);
 }
+
+GraphCanvasLayersPanel::~GraphCanvasLayersPanel() { dropOpacity(); }
 
 void GraphCanvasLayersPanel::showSelection(const std::string &scope,
                                            const std::optional<std::string> &node) {
@@ -727,6 +741,7 @@ void GraphCanvasLayersPanel::showSelection(const std::string &scope,
                 if (each.index == *row) picked_ = each.input;
         } else if (const auto stack = graphCanvasStackFor(nodes, *node); !stack.empty()) {
             if (stack != stack_ || scope != scope_) {
+                dropOpacity();
                 picked_.clear();
                 trail_.clear();
                 read_only_ = false;
@@ -752,6 +767,7 @@ void GraphCanvasLayersPanel::settleStack() {
         stack != nullptr && stack->op == "canvas.stack")
         return;
     // Gone (or never set): the first canvas of the root.
+    dropOpacity();
     trail_.clear();
     read_only_ = false;
     scope_.clear();
@@ -800,9 +816,46 @@ void GraphCanvasLayersPanel::reload(bool force) {
         shown_stack_ = stack_;
         rebuildRows();
     }
+    // A read can answer an edit the rows already draw (a refused opacity
+    // change leaves the same rows): the controls, not only the rows, say what
+    // the document now holds. A waiting value is put back below.
+    const bool was_loading = loading_;
+    loading_ = true;
     for (std::size_t index = 0; index < row_widgets_.size() && index < shown_rows_.size(); ++index) {
-        const QSignalBlocker block{row_widgets_[index].pick};
-        row_widgets_[index].pick->setChecked(shown_rows_[index].input == picked_);
+        auto &widgets = row_widgets_[index];
+        const auto &row = shown_rows_[index];
+        {
+            const QSignalBlocker block{widgets.pick};
+            widgets.pick->setChecked(row.input == picked_);
+        }
+        {
+            const QSignalBlocker block{widgets.visible};
+            widgets.visible->setChecked(row.visible);
+        }
+        {
+            const QSignalBlocker block{widgets.opacity};
+            widgets.opacity->setValue(static_cast<int>(std::lround(row.opacity * 100.0)));
+        }
+    }
+    loading_ = was_loading;
+    // A same-context reload leaves a waiting opacity where it was: the box
+    // goes on showing the value the user typed and the timer keeps running.
+    // Set under loading_ so the programmatic value is not taken for an edit.
+    if (opacity_pending_) {
+        if (opacity_pending_->scope != scope_ || opacity_pending_->stack != stack_) dropOpacity();
+        else {
+            std::size_t shown = 0;
+            while (shown < shown_rows_.size() && shown < row_widgets_.size() &&
+                   shown_rows_[shown].input != opacity_pending_->input)
+                ++shown;
+            if (shown == shown_rows_.size() || shown == row_widgets_.size()) dropOpacity();
+            else {
+                const bool was_loading = loading_;
+                loading_ = true;
+                row_widgets_[shown].opacity->setValue(opacity_pending_->percent);
+                loading_ = was_loading;
+            }
+        }
     }
     empty_->setVisible(shown_rows_.empty());
     loadFields();
@@ -904,7 +957,7 @@ void GraphCanvasLayersPanel::rebuildRows() {
         widgets.opacity->setKeyboardTracking(false);
         widgets.opacity->setValue(static_cast<int>(std::lround(row.opacity * 100.0)));
         widgets.opacity->setToolTip(row.opacity_driven ? tr("A value line drives it.")
-                                                       : tr("The layer's opacity"));
+                                                       : tr("The layer's opacity (sent 300 ms after the last change)"));
         line->addWidget(widgets.opacity);
         rows_layout_->addWidget(widgets.row);
         const auto input = row.input;
@@ -929,10 +982,22 @@ void GraphCanvasLayersPanel::rebuildRows() {
             commit(graphCanvasSetLayerOps(model_.nodes(scope_), scope_, stack_, index, "name",
                                           name->text().trimmed().toStdString()));
         });
-        connect(widgets.opacity, &QSpinBox::valueChanged, this, [this, index](int percent) {
+        // SDK-1b: the box fires per keystroke. Keep the value and the row by
+        // input, and send once 300 ms after the last one (or on Enter/focus
+        // lost) so the model is not asked to save every digit on the way.
+        connect(widgets.opacity, &QSpinBox::valueChanged, this, [this, input](int percent) {
             if (loading_) return;
-            commit(graphCanvasSetLayerOps(model_.nodes(scope_), scope_, stack_, index, "opacity",
-                                          percent / 100.0));
+            // A change to another row first sends the row that was waiting;
+            // one box cannot hold two layer positions.
+            if (opacity_pending_ && (opacity_pending_->scope != scope_ || opacity_pending_->stack != stack_ ||
+                                     opacity_pending_->input != input))
+                flushOpacity();
+            opacity_pending_ = OpacityPending{scope_, stack_, input, percent};
+            opacity_timer_->start();
+        });
+        connect(widgets.opacity, &QSpinBox::editingFinished, this, [this] {
+            if (loading_) return;
+            flushOpacity();
         });
         row_widgets_.push_back(widgets);
     }
@@ -942,6 +1007,49 @@ std::optional<GraphCanvasStackRow> GraphCanvasLayersPanel::pickedRow() const {
     const auto found = std::ranges::find(shown_rows_, picked_, &GraphCanvasStackRow::input);
     if (picked_.empty() || found == shown_rows_.end()) return std::nullopt;
     return *found;
+}
+
+std::optional<std::size_t> GraphCanvasLayersPanel::pickedAbove() const {
+    if (const auto row = pickedRow()) return row->index;
+    return std::nullopt;
+}
+
+void GraphCanvasLayersPanel::addLayer(const std::string &what) {
+    const LayerStackTool tool(model_.nodes(scope_), scope_, stack_, picked_);
+    auto ops = tool.addOps(what);
+    if (ops.empty()) return;
+    const auto added = tool.addedBy(ops);
+    commit(std::move(ops), added);
+}
+
+void GraphCanvasLayersPanel::flushOpacity() {
+    if (!opacity_pending_) return;
+    // A context change forgets the value before it changes the context; if
+    // one still names another stack, it must not edit this one.
+    if (opacity_pending_->scope != scope_ || opacity_pending_->stack != stack_) {
+        dropOpacity();
+        return;
+    }
+    if (!model_.canEdit()) {
+        // The last edit is still out: the waiting change keeps its box and
+        // tries again, rather than being dropped as refused.
+        opacity_timer_->start();
+        return;
+    }
+    const auto pending = *opacity_pending_;
+    opacity_pending_.reset();
+    const auto nodes = model_.nodes(pending.scope);
+    const auto rows = graphCanvasLayerRows(nodes, pending.stack);
+    const auto row = std::ranges::find(rows, pending.input, &GraphCanvasStackRow::input);
+    // Gone from the stack (deleted meanwhile): there is nothing to set.
+    if (row == rows.end()) return;
+    commit(graphCanvasSetLayerOps(nodes, pending.scope, pending.stack, row->index, "opacity",
+                                  pending.percent / 100.0));
+}
+
+void GraphCanvasLayersPanel::dropOpacity() {
+    opacity_pending_.reset();
+    if (opacity_timer_ != nullptr) opacity_timer_->stop();
 }
 
 void GraphCanvasLayersPanel::pickRow(const std::string &input, bool tell) {
@@ -1150,8 +1258,16 @@ void GraphCanvasLayersPanel::say(const QString &line) {
     note_->setVisible(!line.isEmpty());
 }
 
-void GraphCanvasLayersPanel::commit(Json ops) {
+void GraphCanvasLayersPanel::commit(Json ops, std::optional<std::string> added_by_tool) {
     if (ops.empty()) return;
+    // An opacity edit is still waiting: send it (it was the user's last
+    // change), then tell the caller to make its own edit again. Sending both
+    // would put them in one turn and the second would meet the busy model.
+    if (opacity_pending_) {
+        flushOpacity();
+        say(tr("The last change is still being saved; try again."));
+        return;
+    }
     if (read_only_) {
         say(tr("These are an imported PSD's layers: they are read only here. Change the PSD and import it "
                "again."));
@@ -1159,15 +1275,21 @@ void GraphCanvasLayersPanel::commit(Json ops) {
         return;
     }
     // The layer a gesture puts on this stack is the one picked next: the
-    // input its new `layers` holds that the stack's did not.
+    // input its new `layers` holds that the stack's did not. A tool that
+    // built the ops from one snapshot says which; otherwise the rows here
+    // are the ones it was built from too.
     std::string added;
-    const auto before = graphCanvasLayerRows(model_.nodes(scope_), stack_);
-    for (const auto &op : ops)
-        if (op.value("op", std::string{}) == "set_node_parameters" && op.value("node", std::string{}) == stack_)
-            for (const auto &element : op["parameters"].value("layers", Json::array()))
-                if (const auto input = element.value("input", std::string{});
-                    !input.empty() && std::ranges::find(before, input, &GraphCanvasStackRow::input) == before.end())
-                    added = input;
+    if (added_by_tool) added = std::move(*added_by_tool);
+    else {
+        const auto before = graphCanvasLayerRows(model_.nodes(scope_), stack_);
+        for (const auto &op : ops)
+            if (op.value("op", std::string{}) == "set_node_parameters" && op.value("node", std::string{}) == stack_)
+                for (const auto &element : op["parameters"].value("layers", Json::array()))
+                    if (const auto input = element.value("input", std::string{});
+                        !input.empty() &&
+                        std::ranges::find(before, input, &GraphCanvasStackRow::input) == before.end())
+                        added = input;
+    }
     const bool sent = model_.submitEdit(std::move(ops));
     if (sent) {
         note_->hide();
@@ -1240,6 +1362,7 @@ void GraphCanvasLayersPanel::pickLayer(const std::string &scope, const std::stri
     if (scope != scope_ || stack != stack_) {
         // The node's stack: shown from where it is, as a pick in the Graph
         // shows it (a group's own stack too).
+        dropOpacity();
         trail_.clear();
         read_only_ = GraphCanvasDrawing::layerScopeReadOnly(model_, scope);
         scope_ = scope;
@@ -1265,7 +1388,7 @@ void GraphCanvasLayersPanel::addImages(const std::vector<std::filesystem::path> 
     if (files.empty() || stack_.empty()) return;
     const auto root = projectRoot ? projectRoot() : std::filesystem::path{};
     const auto imported = importCanvasImages(root, files);
-    // One edit for them all, each on top of the one before.
+    // One edit for them all, each just above the one before it.
     auto nodes = model_.nodes(scope_);
     Json ops = Json::array();
     std::string error = imported.error;
@@ -1354,6 +1477,7 @@ void GraphCanvasLayersPanel::importPsdOutput(const std::filesystem::path &graph_
         applyLocally(nodes, ops);
         for (auto &op : graphCanvasImportDefinitionOps(nodes, {}, new_stack, name, definition, label))
             ops.push_back(std::move(op));
+        dropOpacity();
         trail_.clear();
         read_only_ = false;
         scope_.clear();
@@ -1413,7 +1537,7 @@ void GraphCanvasLayersPanel::dropEvent(QDropEvent *event) {
     const auto files = pictures(event->mimeData());
     if (files.empty()) return QWidget::dropEvent(event);
     event->acceptProposedAction();
-    addImages(files);
+    addImages(files, pickedAbove());
 }
 
 // --- SG-3: text, adjustment layers and filters, 3D.

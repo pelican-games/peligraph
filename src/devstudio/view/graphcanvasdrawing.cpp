@@ -1,7 +1,6 @@
 #include "graphcanvasdrawing.hpp"
 
 #include "graphcanvasthumbnails.hpp"
-#include "graphcanvaswidget.hpp"
 #include "studiotheme.hpp"
 
 #include <QBrush>
@@ -155,16 +154,18 @@ Builder::Builder(QGraphicsScene &scene, QString scope)
       heading_font_{drawingFont(-0.5, true)},
       heading_metrics_{heading_font_}, row_metrics_{detail_font_} {}
 
-void Builder::setPickedLayer(std::string scope, std::string stack, std::string input) {
-    picked_layer_scope_ = std::move(scope);
-    picked_layer_stack_ = std::move(stack);
-    picked_layer_input_ = std::move(input);
+BodyState Builder::bodyState(const std::string &scope, const GraphCanvasNode &node) const {
+    return body_state_ ? body_state_(scope, node) : BodyState{};
 }
 
-void Builder::setLayerShape(std::string scope, std::string stack, nlohmann::json parameters) {
-    layer_shape_scope_ = std::move(scope);
-    layer_shape_stack_ = std::move(stack);
-    layer_shape_parameters_ = std::move(parameters);
+const LayerStackData *layerStackData(const Node &entry) {
+    return dynamic_cast<const LayerStackData *>(entry.body_data.get());
+}
+
+bool Builder::layerScopeReadOnlyCached(const GraphCanvasModel &model, const std::string &scope) const {
+    const auto found = read_only_scopes_.find(scope);
+    if (found != read_only_scopes_.end()) return found->second;
+    return read_only_scopes_.emplace(scope, layerScopeReadOnly(model, scope)).first->second;
 }
 
 Node Builder::prepareNode(const GraphCanvasModel &model, const GraphCanvasNode &node,
@@ -173,46 +174,10 @@ Node Builder::prepareNode(const GraphCanvasModel &model, const GraphCanvasNode &
                           const std::optional<std::string> &scope) const {
     Node entry;
     entry.node = &node;
-    // NB-2b: a stack's rows, as the Layers dock reads them.
-    if (node.op == "canvas.stack") {
-        const std::string node_scope = scope ? *scope : scope_text_.toStdString();
-        auto nodes = model.nodes(node_scope);
-        // NB-5: a shape in the air is drawn for the rows, not the document's.
-        if (!layer_shape_stack_.empty() && node_scope == layer_shape_scope_ && node.id == layer_shape_stack_)
-            if (const auto found = std::ranges::find(nodes, node.id, &GraphCanvasNode::id); found != nodes.end()) {
-                found->parameters = layer_shape_parameters_;
-                entry.layers_pending = true;
-            }
-        auto read_only = read_only_scopes_.find(node_scope);
-        if (read_only == read_only_scopes_.end())
-            read_only = read_only_scopes_.emplace(node_scope, layerScopeReadOnly(model, node_scope)).first;
-        entry.layers_read_only = read_only->second;
-        const auto &blends = graphCanvasBlendChoices();
-        for (auto &row : graphCanvasLayerRows(nodes, node.id)) {
-            LayerLine line;
-            if (row.blend != "normal") {
-                const auto choice = std::ranges::find(blends, row.blend, &GraphCanvasBlendChoice::name);
-                line.blend = qtext(choice != blends.end() ? choice->label : row.blend);
-            }
-            line.enters = (row.kind == "group" && !row.source.empty()) ||
-                          (row.kind == "import" && !row.definition.empty());
-            // NB-2c: the open rows, and the nodes the stage names.
-            line.open = open_rows_ && open_rows_(node_scope, node.id, row.input);
-            const auto heading_of = [&](const std::string &id) {
-                const auto found = std::ranges::find(nodes, id, &GraphCanvasNode::id);
-                return found == nodes.end() ? qtext(id) : qtext(found->heading());
-            };
-            const auto opacity_port = graphCanvasLayerOpacityPort(row.input);
-            if (const auto port = std::ranges::find(node.inputs, opacity_port, &GraphCanvasPort::port);
-                port != node.inputs.end() && port->connected)
-                line.opacity_from = heading_of(port->source_node);
-            if (!row.mask_source.empty()) line.mask_from = heading_of(row.mask_source);
-            line.row = std::move(row);
-            entry.layers.push_back(std::move(line));
-        }
-        if (node_scope == picked_layer_scope_ && node.id == picked_layer_stack_)
-            entry.picked_layer = qtext(picked_layer_input_);
-    }
+    entry.body = &nodeBodyFor(node.op);
+    // SDK-1b: the body prepares what it draws (a stack its rows), reading the
+    // canvas's UI state once per node. It must not read entry.view, set below.
+    entry.body->prepare(entry, *this, model, node, scope ? *scope : scope_text_.toStdString());
     for (const auto &output : node.outputs) {
         entry.outputs.push_back(Row{
             qtext(output.port),
@@ -264,7 +229,6 @@ Node Builder::prepareNode(const GraphCanvasModel &model, const GraphCanvasNode &
                          14.0);
     entry.width = width;
     entry.view = view;
-    entry.body = &nodeBodyFor(node.op);
     entry.body->measure(entry, *this);
     return entry;
 }

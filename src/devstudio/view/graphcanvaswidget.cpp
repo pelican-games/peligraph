@@ -8,6 +8,7 @@
 #include "graphcanvasfoldedpassfields.hpp"
 #include "graphcanvasfoldgroups.hpp"
 #include "graphcanvaslayerspanel.hpp"
+#include "../model/graphcanvaslayertool.hpp"
 #include "graphcanvasloopfields.hpp"
 #include "graphcanvasmaterialfields.hpp"
 #include "materialpassedit.hpp"
@@ -2918,7 +2919,6 @@ void GraphCanvasScene::repopulate() {
         GraphCanvasDrawing::Builder inside{*this, qtext(body)};
         inside.setContainer(content);
         inside.setThumbnails(thumbnails_.get());
-        if (layer_shape_) inside.setLayerShape(layer_shape_->scope, layer_shape_->stack, layer_shape_->parameters);
         std::set<std::string, std::less<>> ends;
         for (const auto &entry : plan.drawn) {
             const auto key = std::pair{body, entry.node->id};
@@ -5173,7 +5173,8 @@ std::optional<GraphCanvasScene::LayerTarget> GraphCanvasScene::layerTarget() con
     return target;
 }
 
-bool GraphCanvasScene::submitLayerOps(const std::string &scope, const std::string &stack, nlohmann::json ops) {
+bool GraphCanvasScene::submitLayerOps(const std::string &scope, const std::string &stack, nlohmann::json ops,
+                                      std::optional<std::string> added_by_tool) {
     if (model_ == nullptr || ops.empty()) return false;
     // NB-5: the stack's parameters as the gesture leaves them, when it sets
     // them -- drawn now, before the engine has said anything.
@@ -5193,14 +5194,20 @@ bool GraphCanvasScene::submitLayerOps(const std::string &scope, const std::strin
     }
     // The layer a gesture puts on this stack is the one picked next: the
     // input its new `layers` holds that the stack's did not (the dock's rule).
+    // A tool that built the ops from one snapshot says which it is, so the
+    // answer cannot come from rows that have moved on since.
     std::string added;
-    const auto before = graphCanvasLayerRows(layerNodes(scope), stack);
-    for (const auto &op : ops)
-        if (op.value("op", std::string{}) == "set_node_parameters" && op.value("node", std::string{}) == stack)
-            for (const auto &element : op["parameters"].value("layers", nlohmann::json::array()))
-                if (const auto input = element.value("input", std::string{});
-                    !input.empty() && std::ranges::find(before, input, &GraphCanvasStackRow::input) == before.end())
-                    added = input;
+    if (added_by_tool) added = std::move(*added_by_tool);
+    else {
+        const auto before = graphCanvasLayerRows(layerNodes(scope), stack);
+        for (const auto &op : ops)
+            if (op.value("op", std::string{}) == "set_node_parameters" && op.value("node", std::string{}) == stack)
+                for (const auto &element : op["parameters"].value("layers", nlohmann::json::array()))
+                    if (const auto input = element.value("input", std::string{});
+                        !input.empty() &&
+                        std::ranges::find(before, input, &GraphCanvasStackRow::input) == before.end())
+                        added = input;
+    }
     const auto previous = layer_shape_;
     if (shape) layer_shape_ = LayerShape{scope, stack, *shape, *shape, !parameters_only};
     const bool submitted = model_->submitEdit(std::move(ops));
@@ -5316,12 +5323,25 @@ void GraphCanvasScene::sendWaitingLayerShape() {
 }
 
 void GraphCanvasScene::configureBuilder(GraphCanvasDrawing::Builder &drawing) const {
-    if (picked_layer_) drawing.setPickedLayer(picked_layer_->scope, picked_layer_->stack, picked_layer_->input);
     drawing.setThumbnails(thumbnails_.get());
-    drawing.setOpenRows([this](const std::string &row_scope, const std::string &stack, const std::string &input) {
-        return layerRowOpen(row_scope, stack, input);
+    // SDK-1b: a body reads the canvas's UI state through one call per prepare.
+    drawing.setBodyState([this](const std::string &row_scope, const GraphCanvasNode &node) {
+        return bodyStateOf(row_scope, node);
     });
-    if (layer_shape_) drawing.setLayerShape(layer_shape_->scope, layer_shape_->stack, layer_shape_->parameters);
+}
+
+GraphCanvasDrawing::BodyState GraphCanvasScene::bodyStateOf(const std::string &scope,
+                                                            const GraphCanvasNode &node) const {
+    GraphCanvasDrawing::BodyState state;
+    if (picked_layer_ && picked_layer_->scope == scope && picked_layer_->stack == node.id)
+        state.picked_layer = picked_layer_->input;
+    if (layer_shape_ && layer_shape_->scope == scope && layer_shape_->stack == node.id)
+        state.layer_shape_parameters = layer_shape_->parameters;
+    // The folded view's rows are the session's; the rest is the layout's, as
+    // layerRowOpen says.
+    for (const auto &row : graphCanvasLayerRows(layerNodes(scope), node.id))
+        if (layerRowOpen(scope, node.id, row.input)) state.open_rows.insert(row.input);
+    return state;
 }
 
 void GraphCanvasScene::drawNodesInPlace(GraphCanvasDrawing::Builder &drawing, const std::string &scope,
@@ -6743,23 +6763,22 @@ GraphCanvasScene::NodeRedraw GraphCanvasScene::redrawZoneChrome(DrawnFrom &now, 
 bool GraphCanvasScene::addLayer(const std::string &what) {
     const auto target = layerTarget();
     if (!target || model_ == nullptr || !model_->canEdit()) return false;
-    const auto nodes = layerNodes(target->scope);
-    if (what == "rect" || what == "ellipse")
-        return submitLayerOps(target->scope, target->stack,
-                              graphCanvasAddShapeLayerOps(nodes, target->scope, target->stack, what, target->above));
-    if (what == "group")
-        return submitLayerOps(target->scope, target->stack,
-                              graphCanvasAddGroupLayerOps(nodes, target->scope, target->stack, target->above));
-    if (what.starts_with("adjustment:"))
-        return submitLayerOps(target->scope, target->stack,
-                              graphCanvasAddAdjustmentLayerOps(nodes, target->scope, target->stack, target->above,
-                                                               std::string_view{what}.substr(11)));
     if (what == "text" || what == "image") {
         if (!layerDialogRequested) return false;
         layerDialogRequested(what, target->scope, target->stack, target->above);
         return true;
     }
-    return false;
+    // SDK-1b: the ops and the layer picked next come from one snapshot of
+    // the rows (which may hold a shape this gesture has not sent yet).
+    const std::string picked = picked_layer_ && picked_layer_->scope == target->scope &&
+                                       picked_layer_->stack == target->stack
+                                   ? picked_layer_->input
+                                   : std::string{};
+    const LayerStackTool tool(layerNodes(target->scope), target->scope, target->stack, picked);
+    auto ops = tool.addOps(what);
+    if (ops.empty()) return false;
+    const std::string added = tool.addedBy(ops);
+    return submitLayerOps(target->scope, target->stack, std::move(ops), added);
 }
 
 bool GraphCanvasScene::addLayerFilter(const std::string &scope, const std::string &stack, const std::string &input,

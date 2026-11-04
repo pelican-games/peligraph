@@ -3,6 +3,7 @@
 #include "../model/graphcanvaslayerstack.hpp"
 #include "../model/graphcanvasmodel.hpp"
 #include "../model/graphcanvasthumbnail.hpp"
+#include "graphcanvasparts.hpp"
 #include "nodegraphics.hpp"
 #include "nodelayout.hpp"
 
@@ -17,6 +18,7 @@
 
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -27,8 +29,12 @@ namespace PelicanStudio {
 struct StudioTheme;
 class GraphCanvasThumbnails;
 class GraphCanvasThumbnailFrame;
-struct GraphCanvasEdgeKey;
-struct GraphCanvasTie;
+
+// What the socket resolver is told about one port's type, read off the
+// catalog the model holds. Separated so the resolution order is testable
+// against a real catalog reply rather than a hand-built fact struct.
+SocketTypeFacts graphCanvasSocketFacts(const GraphCanvasModel &model,
+                                       const std::string &type);
 
 // Internal drawing helpers. The scene owns document/session state and all
 // item callbacks; this module only measures rows and creates their Qt items.
@@ -94,6 +100,39 @@ struct LayerLine {
     QString mask_from;
 };
 
+// SDK-1b: what a body owns for one prepared node. A body that has nothing to
+// prepare leaves `Node::body_data` null, so the common node allocates nothing.
+// The data is a value snapshot: it borrows no node, no model and no UI state.
+struct NodeBodyData {
+    NodeBodyData() = default;
+    NodeBodyData(const NodeBodyData &) = delete;
+    NodeBodyData &operator=(const NodeBodyData &) = delete;
+    virtual ~NodeBodyData() = default;
+};
+
+// The prepared data of a canvas.stack's body: the rows top first, whether its
+// scope is an imported canvas (read only), the input of the row picked, and
+// whether the rows are a shape held in the air (NB-5). Values only.
+struct LayerStackData : NodeBodyData {
+    std::vector<LayerLine> rows;
+    bool read_only = false;
+    std::string picked_layer;
+    bool pending = false;
+};
+
+// SDK-1b: the UI state a body reads when it prepares -- which row of a stack
+// is picked, the shape a hold in the air hands its rows, and which rows are
+// open. The scene reads it once per prepare; a body never fetches per row.
+struct BodyState {
+    // The row picked on this stack, by input (empty: none).
+    std::string picked_layer;
+    // The rows open, by input, from the folded session or the layout.
+    std::set<std::string, std::less<>> open_rows;
+    // The stack's parameters while a shape is held over it (NB-5), no value
+    // when no shape is held for this stack.
+    std::optional<nlohmann::json> layer_shape_parameters;
+};
+
 // Borrowed from the model's node snapshot for the duration of one rebuild.
 // No graphics item or callback retains this drawing data.
 struct Node {
@@ -109,18 +148,16 @@ struct Node {
     // LP-4d1: a root loop whose zone is folded: drawn as its node, sockets
     // and all, with the triangle that opens the zone again.
     bool zone_folded = false;
-    // NB-2b: a canvas.stack's layers (top first), whether its scope is an
-    // imported canvas (read only), and the input of the row picked in it.
-    std::vector<LayerLine> layers;
-    bool layers_read_only = false;
-    QString picked_layer;
-    // NB-5: the rows are a shape the engine has not answered for yet (the
-    // small mark on the band).
-    bool layers_pending = false;
+    // SDK-1b: what the body prepared for this node (none: the body had
+    // nothing to prepare). A canvas.stack's is a LayerStackData.
+    std::shared_ptr<const NodeBodyData> body_data;
 
     // The heading alone: the old folded node.
     [[nodiscard]] bool minimal() const noexcept { return view == GraphCanvasNodeView::minimal; }
 };
+
+// SDK-1b: the data a stack's body prepared for `entry`; null for another body.
+[[nodiscard]] const LayerStackData *layerStackData(const Node &entry);
 
 class Builder;
 
@@ -145,6 +182,11 @@ class NodeBody {
     NodeBody(const NodeBody &) = delete;
     NodeBody &operator=(const NodeBody &) = delete;
     virtual ~NodeBody() = default;
+    // SDK-1b: prepares what the body draws from the document and the canvas's
+    // UI state (Builder::bodyState, once), into entry.body_data. The default
+    // body has nothing to prepare. Never reads entry.view: it is set after.
+    virtual void prepare(Node &entry, const Builder &builder, const GraphCanvasModel &model,
+                         const GraphCanvasNode &node, const std::string &scope) const {}
     // Given the width the heading needs (entry.width, at least the minimum),
     // sets the node's width and height for entry.view, and each row's
     // `height` and `shown`.
@@ -332,16 +374,14 @@ class Builder {
                      GraphCanvasNodeView view,
                      const std::set<std::string, std::less<>> &linked_outputs = {},
                      const std::optional<std::string> &scope = std::nullopt) const;
-    // NB-2b: the layer row picked on the canvas (its stack's scope and id,
-    // and the layer's input), drawn picked.
-    void setPickedLayer(std::string scope, std::string stack, std::string input);
-    // NB-5: a stack drawn with the parameters a gesture left it, ahead of the
-    // document (the scene's shape in the air); its rows are read from them.
-    void setLayerShape(std::string scope, std::string stack, nlohmann::json parameters);
-    // NB-2c: whether a stack's row is open (scope, stack, layer input); none
-    // draws every row closed.
-    using OpenRows = std::function<bool(const std::string &, const std::string &, const std::string &)>;
-    void setOpenRows(OpenRows open_rows) { open_rows_ = std::move(open_rows); }
+    // SDK-1b: the canvas's UI state, read once per prepare (the scene's
+    // picked row, held shape and open rows for this node). None: empty state.
+    using BodyStateFn = std::function<BodyState(const std::string &, const GraphCanvasNode &)>;
+    void setBodyState(BodyStateFn state) { body_state_ = std::move(state); }
+    [[nodiscard]] BodyState bodyState(const std::string &scope, const GraphCanvasNode &node) const;
+    // Whether the scope is an imported canvas (read only), cached per Builder.
+    [[nodiscard]] bool layerScopeReadOnlyCached(const GraphCanvasModel &model,
+                                                const std::string &scope) const;
     // LP-4d1: draw inside a zone's body item instead of at the top of the
     // scene. Positions are then the body's own, and every item carries the
     // definition in GraphCanvasZoneScopeRole.
@@ -435,19 +475,11 @@ class Builder {
     QFont heading_font_;
     QFontMetricsF heading_metrics_;
     QFontMetricsF row_metrics_;
-    // NB-2b.
-    std::string picked_layer_scope_;
-    std::string picked_layer_stack_;
-    std::string picked_layer_input_;
+    // SDK-1b: the scene's UI state; none leaves every body at its defaults.
+    BodyStateFn body_state_;
     mutable std::map<std::string, bool, std::less<>> read_only_scopes_;
-    // NB-2c.
-    OpenRows open_rows_;
     // NB-3.
     GraphCanvasThumbnails *thumbnails_ = nullptr;
-    // NB-5.
-    std::string layer_shape_scope_;
-    std::string layer_shape_stack_;
-    nlohmann::json layer_shape_parameters_;
 };
 
 } // namespace GraphCanvasDrawing

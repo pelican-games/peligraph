@@ -31,6 +31,8 @@ add_library(pelican_studio_inspector_model STATIC
     # SG-1: pelican.canvas -- a stack's sockets and the Layers panel's edits.
     graphcanvaslayerstack.cpp
     graphcanvaslayerstack.hpp
+    graphcanvaslayertool.cpp
+    graphcanvaslayertool.hpp
     # NB-3: the canvas nodes' pictures, drawn by the CPU reference.
     graphcanvasthumbnail.cpp
     graphcanvasthumbnail.hpp

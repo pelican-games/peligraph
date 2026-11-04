@@ -16,6 +16,7 @@
 #include "graphcanvasrenderfields.hpp"
 #include "graphcanvasvaluefields.hpp"
 #include "graphcanvaswidget.hpp"
+#include "graphcanvaslayerspanel.hpp"
 #include "../guitrace.hpp"
 #include "graphcanvasdrawing.hpp"
 #include "graphcanvasfoldgroups.hpp"
@@ -44,6 +45,8 @@
 #include <QColor>
 #include <QCoreApplication>
 #include <QDialog>
+#include <QDragEnterEvent>
+#include <QDropEvent>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFocusEvent>
@@ -86,6 +89,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
+#include <QMimeData>
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QWidget>
@@ -93,6 +97,7 @@
 #include <QString>
 #include <QStringList>
 #include <QTimer>
+#include <QUrl>
 
 #include <algorithm>
 #include <chrono>
@@ -9134,6 +9139,13 @@ struct Ux2Tab {
         REQUIRE(ops.size() == 1);
         CHECK(ops[0].at("op") == "set_node_parameters");
         return ops[0];
+    }
+    // Every op of the last edit, for the gestures that send more than one.
+    [[nodiscard]] Json sentOps(int count) const {
+        REQUIRE(reads("edit_graph_document") == count);
+        return Json::parse(transport.calls[static_cast<std::size_t>(
+                                               transport.idOf(QStringLiteral("edit_graph_document")) - 1)]
+                                .body.toStdString());
     }
     template <typename T> T *field(const char *name) {
         auto *found = widget->findChild<T *>(QString::fromLatin1(name));
@@ -26460,4 +26472,665 @@ TEST_CASE("HUB-1a a Graph node is reported only by the press that picked it",
     click(widget.scene(), edge->path().pointAtPercent(0.5));
     REQUIRE(picks.size() == before_reveal + 2);
     CHECK_FALSE(picks.back().has_value());
+}
+
+// --- SDK-1b: prepared layer-stack data, one BodyState, one stack tool.
+
+namespace {
+
+bool sdk1bWaitFor(const std::function<bool()> &done, int milliseconds = 2000) {
+    QElapsedTimer elapsed;
+    elapsed.start();
+    while (!done() && elapsed.elapsed() < milliseconds) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        QThread::msleep(2);
+    }
+    QCoreApplication::processEvents();
+    return done();
+}
+
+void sdk1bFlushDeletes() {
+    // A rebuilt dock's old row widgets are hidden and deleted later; findChild
+    // must not hand back one of them.
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QCoreApplication::processEvents();
+}
+
+QPushButton *sdk1bDockPick(Ux2Tab &tab, int row) {
+    auto *pick = tab.field<QPushButton>(("pelican.canvasLayers.row" + std::to_string(row) + ".pick").c_str());
+    REQUIRE(pick != nullptr);
+    pick->click();
+    QCoreApplication::processEvents();
+    return pick;
+}
+
+QSpinBox *sdk1bOpacity(Ux2Tab &tab, int row) {
+    auto *spin = tab.field<QSpinBox>(("pelican.canvasLayers.row" + std::to_string(row) + ".opacity").c_str());
+    REQUIRE(spin != nullptr);
+    return spin;
+}
+
+Json sdk1bLayer(const Json &op, const std::string &input) {
+    for (const auto &layer : op.at("parameters").at("layers"))
+        if (layer.value("input", std::string{}) == input) return layer;
+    FAIL("the stack parameters do not hold " << input);
+    return Json::object();
+}
+
+bool sdk1bSameLayerLines(const std::vector<PelicanStudio::GraphCanvasDrawing::LayerLine> &left,
+                         const std::vector<PelicanStudio::GraphCanvasDrawing::LayerLine> &right) {
+    if (left.size() != right.size()) return false;
+    for (std::size_t index = 0; index < left.size(); ++index)
+        if (!(left[index].row == right[index].row) || left[index].blend != right[index].blend ||
+            left[index].enters != right[index].enters || left[index].open != right[index].open ||
+            left[index].opacity_from != right[index].opacity_from ||
+            left[index].mask_from != right[index].mask_from)
+            return false;
+    return true;
+}
+
+Json sdk1bPushStack(Json document, const char *definition, const char *stack, const char *layer_input,
+                    const char *source, const char *source_port) {
+    Json node{{"id", stack}, {"op", "canvas.stack"},
+              {"parameters", {{"size", Json::array({640, 360})},
+                              {"layers", Json::array({{{"input", layer_input}, {"name", "Inner"}}})}}},
+              {"inputs", {{layer_input, {{"node", source}, {"port", source_port}}}}},
+              {"outputs", Json::array({"layer"})}};
+    document["definitions"][definition]["nodes"].push_back(std::move(node));
+    return document;
+}
+
+} // namespace
+
+TEST_CASE("SDK-1b: a canvas.stack's rows are prepared values, and the state they come from is read "
+          "once for the scope prepare is given",
+          "[devstudio][graph-canvas][scene][sdk1b]") {
+    (void)application();
+    // A stack inside a zone: its scope is the definition, not the tab's root.
+    Json document = sdk1bPushStack(zoneDocument(), "first", "inner_hud", "a", "a", "value");
+    ZoneHarness h{std::move(document)};
+    nb2bOpen(h);
+    auto nodes = h.model.nodes("first");
+    const auto found = std::ranges::find(nodes, std::string{"inner_hud"}, &PelicanStudio::GraphCanvasNode::id);
+    REQUIRE(found != nodes.end());
+    const auto &inner = *found;
+
+    // `prepare` reads the UI state once, with the scope it was given. A root
+    // body is not a layer stack and allocates nothing.
+    QGraphicsScene plain;
+    PelicanStudio::GraphCanvasDrawing::Builder builder{plain, QStringLiteral("wrong-scope")};
+    int calls = 0;
+    std::string asked;
+    builder.setBodyState([&](const std::string &scope, const PelicanStudio::GraphCanvasNode &) {
+        ++calls;
+        asked = scope;
+        PelicanStudio::GraphCanvasDrawing::BodyState state;
+        if (scope == "first") {
+            state.picked_layer = "a";
+            state.open_rows.insert("a");
+        }
+        return state;
+    });
+    auto entry = builder.prepareNode(h.model, inner, PelicanStudio::GraphCanvasNodeView::open, {},
+                                     std::string{"first"});
+    const auto *data = PelicanStudio::GraphCanvasDrawing::layerStackData(entry);
+    REQUIRE(data != nullptr);
+    CHECK(calls == 1);
+    CHECK(asked == "first");
+    CHECK(data->picked_layer == "a");
+    REQUIRE(data->rows.size() == 1);
+    CHECK(data->rows.front().row.input == "a");
+    CHECK_FALSE(data->read_only);
+    CHECK_FALSE(data->pending);
+
+    // Contents, not node addresses: preparing the same entry from the same
+    // values again gives the same data, in the same one scene.
+    const auto again = builder.prepareNode(h.model, inner, PelicanStudio::GraphCanvasNodeView::open, {},
+                                           std::string{"first"});
+    const auto *twice = PelicanStudio::GraphCanvasDrawing::layerStackData(again);
+    REQUIRE(twice != nullptr);
+    CHECK(calls == 2);
+    CHECK(twice->rows.size() == data->rows.size());
+    CHECK(sdk1bSameLayerLines(twice->rows, data->rows));
+    CHECK(twice->picked_layer == data->picked_layer);
+    CHECK(twice->read_only == data->read_only);
+    CHECK(twice->pending == data->pending);
+
+    auto root_nodes = h.model.nodes({});
+    const auto *root_node = &root_nodes.front();
+    for (const auto &candidate : root_nodes)
+        if (candidate.id == "steps") root_node = &candidate;
+    const auto root_entry = builder.prepareNode(h.model, *root_node,
+                                                PelicanStudio::GraphCanvasNodeView::open);
+    CHECK(root_entry.body_data == nullptr);
+    CHECK(PelicanStudio::GraphCanvasDrawing::layerStackData(root_entry) == nullptr);
+
+    // The scene's state keeps the folded-session/layout split: the pick, the
+    // open row and the held shape all reach prepared data.
+    h.scene.setPickedLayer("first", "inner_hud", "a");
+    auto state = h.scene.bodyStateOf("first", inner);
+    CHECK(state.picked_layer == "a");
+    CHECK(state.open_rows.empty());
+    CHECK_FALSE(state.layer_shape_parameters.has_value());
+
+    REQUIRE(h.scene.setLayerRowOpen("first", "inner_hud", "a", true));
+    state = h.scene.bodyStateOf("first", inner);
+    CHECK(state.open_rows.contains("a"));
+    auto opened = builder.prepareNode(h.model, inner, PelicanStudio::GraphCanvasNodeView::open, {},
+                                      std::string{"first"});
+    REQUIRE(PelicanStudio::GraphCanvasDrawing::layerStackData(opened) != nullptr);
+    CHECK(PelicanStudio::GraphCanvasDrawing::layerStackData(opened)->rows.front().open);
+    h.commit();
+
+    REQUIRE(h.scene.beginLayerNameEdit("first", "inner_hud", "a"));
+    h.scene.setInlineEditText(QStringLiteral("Held"));
+    REQUIRE(h.scene.commitInlineEdit());
+    state = h.scene.bodyStateOf("first", inner);
+    REQUIRE(state.layer_shape_parameters.has_value());
+    CHECK((*state.layer_shape_parameters)["layers"][0]["name"] == "Held");
+    CHECK(h.scene.layerShapePending("first", "inner_hud"));
+
+    // The held shape and the pending row are prepared values too -- preparing
+    // does not read a node's view or hold a pointer into the scene.
+    builder.setBodyState([&](const std::string &scope, const PelicanStudio::GraphCanvasNode &node) {
+        return h.scene.bodyStateOf(scope, node);
+    });
+    const auto held = builder.prepareNode(h.model, inner, PelicanStudio::GraphCanvasNodeView::open, {},
+                                          std::string{"first"});
+    const auto *held_data = PelicanStudio::GraphCanvasDrawing::layerStackData(held);
+    REQUIRE(held_data != nullptr);
+    REQUIRE(held_data->rows.size() == 1);
+    CHECK(held_data->rows.front().row.name == "Held");
+    CHECK(held_data->picked_layer == "a");
+    CHECK(held_data->pending);
+    h.commit();
+}
+
+TEST_CASE("SDK-1b: the dock's add buttons build the node's + ops at the picked row, and the new "
+          "layer is picked",
+          "[devstudio][graph-canvas][scene][sdk1b]") {
+    (void)application();
+    for (const auto &[what, button, action] :
+         std::vector<std::tuple<const char *, const char *, const char *>>{
+             {"rect", "pelican.canvasLayers.addRect", "pelican.graphCanvas.layerAdd.rect"},
+             {"ellipse", "pelican.canvasLayers.addEllipse", "pelican.graphCanvas.layerAdd.ellipse"},
+             {"group", "pelican.canvasLayers.addGroup", "pelican.graphCanvas.layerAdd.group"}}) {
+        INFO(what);
+        // The dock, Card picked (row 1, its index 1 in `layers`).
+        Ux2Tab dock{false};
+        dock.read(nb2bDocument(), "sdk1b-c-dock");
+        sdk1bDockPick(dock, 1);
+        dock.field<QPushButton>(button)->click();
+        QCoreApplication::processEvents();
+        const auto dock_ops = dock.sentOps(1);
+
+        // The node's +, the same pick, the same op list.
+        Ux2Tab node{false};
+        node.read(nb2bDocument(), "sdk1b-c-node");
+        auto &scene = node.widget->scene();
+        nb2bClick(scene, centreOf(nb2bPart(scene, PelicanStudio::GraphCanvasStackRowItem,
+                                           QStringLiteral("hud"), QStringLiteral("card_fill"))));
+        REQUIRE(scene.layerTarget().has_value());
+        auto *menu_action = node.widget->findChild<QAction *>(QString::fromLatin1(action));
+        REQUIRE(menu_action != nullptr);
+        menu_action->trigger();
+        QCoreApplication::processEvents();
+        CHECK(dock_ops == node.sentOps(1));
+    }
+
+    // Card picked, Bottom (Background) taken in the dock: no confusion with
+    // the row numbers -- the layer goes directly above Background, and is
+    // picked when the edit comes back.
+    Ux2Tab above{false};
+    above.read(nb2bDocument(), "sdk1b-c-above");
+    sdk1bDockPick(above, 2);
+    above.field<QPushButton>("pelican.canvasLayers.addRect")->click();
+    QCoreApplication::processEvents();
+    const auto ops = above.sentOps(1);
+    const auto stack_at = std::ranges::find_if(ops, [](const Json &op) {
+        return op.value("op", std::string{}) == "set_node_parameters" &&
+               op.value("node", std::string{}) == "hud";
+    });
+    REQUIRE(stack_at != ops.end());
+    const auto &layers = (*stack_at)["parameters"]["layers"];
+    REQUIRE(layers.size() == 4);
+    CHECK(layers[0]["input"] == "bg_fill");
+    CHECK(layers[2]["input"] == "card_fill");
+    CHECK(layers[3]["input"] == "dot_fill");
+    const auto added = layers[1]["input"].get<std::string>();
+    CHECK(added != "bg_fill");
+    CHECK(added != "card_fill");
+    CHECK(added != "dot_fill");
+    Json edited = Pelican::editGraphDocument(nb2bDocument(), ops);
+    above.commit(edited, "sdk1b-c-committed");
+    above.widget->poll();
+    sdk1bFlushDeletes();
+    CHECK(above.field<QPushButton>("pelican.canvasLayers.row2.pick")->isChecked());
+    CHECK_FALSE(above.field<QPushButton>("pelican.canvasLayers.row3.pick")->isChecked());
+    CHECK(nb2bRows(above.widget->scene(), "hud")[2]->data(PelicanStudio::GraphCanvasPortRole).toString() ==
+          QString::fromStdString(added));
+
+    // No pick: the layer goes on top, and is picked there.
+    Ux2Tab top{false};
+    top.read(nb2bDocument(), "sdk1b-c-top");
+    top.field<QPushButton>("pelican.canvasLayers.addRect")->click();
+    QCoreApplication::processEvents();
+    const auto top_ops = top.sentOps(1);
+    const auto top_stack = std::ranges::find_if(top_ops, [](const Json &op) {
+        return op.value("op", std::string{}) == "set_node_parameters" &&
+               op.value("node", std::string{}) == "hud";
+    });
+    REQUIRE(top_stack != top_ops.end());
+    const auto &top_layers = (*top_stack)["parameters"]["layers"];
+    REQUIRE(top_layers.size() == 4);
+    const auto top_added = top_layers[3]["input"].get<std::string>();
+    top.commit(Pelican::editGraphDocument(nb2bDocument(), top_ops), "sdk1b-c-top-committed");
+    top.widget->poll();
+    sdk1bFlushDeletes();
+    CHECK(top.field<QPushButton>("pelican.canvasLayers.row0.pick")->isChecked());
+    CHECK(nb2bRows(top.widget->scene(), "hud")[0]->data(PelicanStudio::GraphCanvasPortRole).toString() ==
+          QString::fromStdString(top_added));
+}
+
+TEST_CASE("SDK-1b: Text and Image put their layer above the picked row, a group edits its own stack, "
+          "and the node's + keeps the row it passed",
+          "[devstudio][graph-canvas][scene][sdk1b]") {
+    (void)application();
+
+    SECTION("Text from the dock, and from the node's explicit row") {
+        QTemporaryDir project;
+        REQUIRE(project.isValid());
+        REQUIRE(QDir(project.path()).mkpath(QStringLiteral("assets/fonts")));
+        QFile font{project.filePath(QStringLiteral("assets/fonts/test.ttf"))};
+        REQUIRE(font.open(QIODevice::WriteOnly));
+        font.write("font");
+        font.close();
+
+        Ux2Tab tab{false};
+        tab.widget->setProjectRoot(std::filesystem::path{project.path().toStdString()});
+        tab.read(nb2bDocument(), "sdk1b-d-text");
+        sdk1bDockPick(tab, 1);
+
+        tab.field<QPushButton>("pelican.canvasLayers.addText")->click();
+        QCoreApplication::processEvents();
+        auto *dialog = tab.widget->findChild<QDialog *>(QStringLiteral("pelican.canvasTextDialog"));
+        REQUIRE(dialog != nullptr);
+        auto *text = dialog->findChild<QLineEdit *>(QStringLiteral("pelican.canvasTextDialog.text"));
+        auto *font_combo = dialog->findChild<QComboBox *>(QStringLiteral("pelican.canvasTextDialog.font"));
+        auto *ok = dialog->findChild<QPushButton *>(QStringLiteral("pelican.canvasTextDialog.ok"));
+        REQUIRE(text != nullptr);
+        REQUIRE(font_combo != nullptr);
+        REQUIRE(ok != nullptr);
+        REQUIRE(font_combo->count() > 0);
+        text->setText(QStringLiteral("Hello"));
+        REQUIRE(ok->isEnabled());
+        ok->click();
+        QCoreApplication::processEvents();
+
+        const auto text_ops = tab.sentOps(1);
+        const auto stack_op = std::ranges::find_if(text_ops, [](const Json &op) {
+            return op.value("op", std::string{}) == "set_node_parameters" &&
+                   op.value("node", std::string{}) == "hud";
+        });
+        REQUIRE(stack_op != text_ops.end());
+        const auto &layers = (*stack_op)["parameters"]["layers"];
+        REQUIRE(layers.size() == 4);
+        CHECK(layers[2]["name"] == "Hello");
+        CHECK(layers[3]["input"] == "dot_fill");
+        const auto text_input = layers[2]["input"].get<std::string>();
+        tab.commit(Pelican::editGraphDocument(nb2bDocument(), text_ops), "sdk1b-d-text-committed");
+        tab.widget->poll();
+        sdk1bFlushDeletes();
+        CHECK(tab.field<QPushButton>("pelican.canvasLayers.row1.pick")->isChecked());
+        REQUIRE(tab.widget->scene().pickedLayer().has_value());
+        CHECK(tab.widget->scene().pickedLayer()->input == text_input);
+
+        // The node's + is given its own above the picked row, not the dock's
+        // current pick: pick `dot` on the body, then add Text.
+        sdk1bDockPick(tab, 1);
+        tab.widget->scene().setPickedLayer({}, "hud", "dot_fill");
+        auto *action = tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvas.layerAdd.text"));
+        REQUIRE(action != nullptr);
+        action->trigger();
+        QCoreApplication::processEvents();
+        dialog = tab.widget->findChild<QDialog *>(QStringLiteral("pelican.canvasTextDialog"));
+        REQUIRE(dialog != nullptr);
+        text = dialog->findChild<QLineEdit *>(QStringLiteral("pelican.canvasTextDialog.text"));
+        font_combo = dialog->findChild<QComboBox *>(QStringLiteral("pelican.canvasTextDialog.font"));
+        ok = dialog->findChild<QPushButton *>(QStringLiteral("pelican.canvasTextDialog.ok"));
+        REQUIRE(text != nullptr);
+        REQUIRE(font_combo != nullptr);
+        REQUIRE(ok != nullptr);
+        REQUIRE(font_combo->count() > 0);
+        text->setText(QStringLiteral("After dot"));
+        REQUIRE(ok->isEnabled());
+        ok->click();
+        QCoreApplication::processEvents();
+        const auto node_ops = tab.sentOps(2);
+        const auto node_stack_op = std::ranges::find_if(node_ops, [](const Json &op) {
+            return op.value("op", std::string{}) == "set_node_parameters" &&
+                   op.value("node", std::string{}) == "hud";
+        });
+        REQUIRE(node_stack_op != node_ops.end());
+        const auto &node_layers = (*node_stack_op)["parameters"]["layers"];
+        REQUIRE(node_layers.size() == 5);
+        CHECK(node_layers[3]["input"] == "dot_fill");
+        CHECK(node_layers[4]["name"] == "After dot");
+        tab.commit(Pelican::editGraphDocument(nb2bDocument(), node_ops), "sdk1b-d-node-text-committed");
+        tab.widget->poll();
+        sdk1bFlushDeletes();
+        CHECK(tab.field<QPushButton>("pelican.canvasLayers.row0.pick")->isChecked());
+    }
+
+    SECTION("Two dropped images land side by side, above the picked row") {
+        QTemporaryDir project;
+        REQUIRE(project.isValid());
+        const auto first = project.filePath(QStringLiteral("first.png"));
+        const auto second = project.filePath(QStringLiteral("second.png"));
+        QImage pixels{4, 4, QImage::Format_ARGB32};
+        pixels.fill(Qt::red);
+        REQUIRE(pixels.save(first));
+        REQUIRE(pixels.save(second));
+
+        Ux2Tab tab{false};
+        tab.widget->setProjectRoot(std::filesystem::path{project.path().toStdString()});
+        tab.read(nb2bDocument(), "sdk1b-d-images");
+        sdk1bDockPick(tab, 1);
+
+        auto *panel = dynamic_cast<PelicanStudio::GraphCanvasLayersPanel *>(tab.widget->canvasLayersPanel());
+        REQUIRE(panel != nullptr);
+        // A drop is delivered to a shown widget; the dock sits under panels
+        // this tab leaves hidden until their tab is current.
+        for (QWidget *shown = panel; shown != nullptr; shown = shown->parentWidget()) shown->show();
+        QCoreApplication::processEvents();
+        REQUIRE(panel->isVisible());
+        QMimeData mime;
+        mime.setUrls({QUrl::fromLocalFile(first), QUrl::fromLocalFile(second)});
+        QDragEnterEvent enter{QPoint(12, 12), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier};
+        QCoreApplication::sendEvent(panel, &enter);
+        QDropEvent drop{QPointF(12, 12), Qt::CopyAction, &mime, Qt::LeftButton, Qt::NoModifier};
+        REQUIRE(QCoreApplication::sendEvent(panel, &drop));
+        CHECK(drop.isAccepted());
+        QCoreApplication::processEvents();
+
+        const auto ops = tab.sentOps(1);
+        // Each picture is added from the stack the one before left: the last
+        // set_node_parameters is the stack with both.
+        auto stack_op = ops.end();
+        for (auto it = ops.begin(); it != ops.end(); ++it)
+            if (it->value("op", std::string{}) == "set_node_parameters" &&
+                it->value("node", std::string{}) == "hud")
+                stack_op = it;
+        REQUIRE(stack_op != ops.end());
+        const auto &layers = (*stack_op)["parameters"]["layers"];
+        REQUIRE(layers.size() == 5);
+        CHECK(layers[2]["name"] == "first");
+        CHECK(layers[3]["name"] == "second");
+        CHECK(layers[4]["input"] == "dot_fill");
+        CHECK(layers[2]["input"] != layers[3]["input"]);
+        const auto second_input = layers[3]["input"].get<std::string>();
+        tab.commit(Pelican::editGraphDocument(nb2bDocument(), ops), "sdk1b-d-images-committed");
+        tab.widget->poll();
+        sdk1bFlushDeletes();
+        // Top first: dot, second, first, card, background; the later picture
+        // is picked, as the second gesture's added layer.
+        CHECK(tab.field<QPushButton>("pelican.canvasLayers.row1.pick")->isChecked());
+        CHECK_FALSE(tab.field<QPushButton>("pelican.canvasLayers.row2.pick")->isChecked());
+        REQUIRE(tab.widget->scene().pickedLayer().has_value());
+        CHECK(tab.widget->scene().pickedLayer()->input == second_input);
+    }
+
+    SECTION("Opening a group and adding there edits the group's own stack") {
+        Ux2Tab tab{false};
+        tab.read(nb2bDocument(), "sdk1b-d-group");
+        sdk1bDockPick(tab, 1);
+        tab.field<QPushButton>("pelican.canvasLayers.addGroup")->click();
+        QCoreApplication::processEvents();
+        const auto group_ops = tab.sentOps(1);
+        const auto after_group = Pelican::editGraphDocument(nb2bDocument(), group_ops);
+        tab.commit(after_group, "sdk1b-d-group-committed");
+        tab.widget->poll();
+        sdk1bFlushDeletes();
+
+        auto *open = tab.field<QPushButton>("pelican.canvasLayers.openGroup");
+        CHECK_FALSE(open->isHidden());
+        open->click();
+        QCoreApplication::processEvents();
+        sdk1bFlushDeletes();
+        tab.field<QPushButton>("pelican.canvasLayers.addRect")->click();
+        QCoreApplication::processEvents();
+        const auto rect_ops = tab.sentOps(2);
+        const auto stack_op = std::ranges::find_if(rect_ops, [](const Json &op) {
+            return op.value("op", std::string{}) == "set_node_parameters" &&
+                   op.value("node", std::string{}).starts_with("group");
+        });
+        REQUIRE(stack_op != rect_ops.end());
+        const auto &layers = (*stack_op)["parameters"]["layers"];
+        REQUIRE(layers.size() == 1);
+        const auto added = layers.at(0).at("input").get<std::string>();
+        // The group stack is in the root scope even after opening it. An
+        // add_node op's `node` is the node object, not a node id.
+        const auto node = std::ranges::find_if(rect_ops, [&](const Json &op) {
+            return op.value("op", std::string{}) == "add_node" && op["node"].is_object() &&
+                   op["node"].value("id", std::string{}) == added;
+        });
+        REQUIRE(node != rect_ops.end());
+        CHECK(node->value("scope", std::string{}) == "root");
+        tab.commit(Pelican::editGraphDocument(after_group, rect_ops), "sdk1b-d-group-rect-committed");
+        tab.widget->poll();
+        sdk1bFlushDeletes();
+        CHECK(tab.field<QPushButton>("pelican.canvasLayers.row0.pick")->isChecked());
+        REQUIRE(tab.widget->scene().pickedLayer().has_value());
+        CHECK(tab.widget->scene().pickedLayer()->scope == "");
+        CHECK(tab.widget->scene().pickedLayer()->input == added);
+    }
+}
+
+TEST_CASE("SDK-1b: opacity is sent 300 ms after the last change, and a waiting change survives a "
+          "read but not another row or stack",
+          "[devstudio][graph-canvas][scene][sdk1b]") {
+    (void)application();
+
+    SECTION("five steps wait, Enter sends at once, and another edit asks again") {
+        Ux2Tab tab{false};
+        Json current = nb2bDocument();
+        tab.read(current, "sdk1b-e-1");
+        sdk1bDockPick(tab, 1);
+        auto *spin = sdk1bOpacity(tab, 1);
+        REQUIRE(spin->value() == 80);
+        for (int step = 0; step < 5; ++step) spin->stepUp();
+        CHECK(spin->value() == 85);
+        CHECK(tab.reads("edit_graph_document") == 0);
+        REQUIRE(sdk1bWaitFor([&] { return tab.reads("edit_graph_document") == 1; }));
+        const auto first = tab.sent(1);
+        CHECK(sdk1bLayer(first, "card_fill").value("opacity", 1.0) == 0.85);
+        current = Pelican::editGraphDocument(current, Json::array({first}));
+        tab.commit(current, "sdk1b-e-1-sent");
+        tab.widget->poll();
+        sdk1bFlushDeletes();
+        CHECK(sdk1bOpacity(tab, 1)->value() == 85);
+
+        // Enter/focus lost (editingFinished) sends without waiting.
+        spin = sdk1bOpacity(tab, 1);
+        spin->setValue(90);
+        CHECK(tab.reads("edit_graph_document") == 1);
+        Q_EMIT spin->editingFinished();
+        QCoreApplication::processEvents();
+        REQUIRE(tab.reads("edit_graph_document") == 2);
+        const auto second = tab.sent(2);
+        CHECK(sdk1bLayer(second, "card_fill").value("opacity", 1.0) == 0.90);
+        // The timer that the change started is harmless once the value is sent.
+        CHECK_FALSE(sdk1bWaitFor([&] { return tab.reads("edit_graph_document") > 2; }, 450));
+        current = Pelican::editGraphDocument(current, Json::array({second}));
+        tab.commit(current, "sdk1b-e-1-edited");
+        tab.widget->poll();
+        sdk1bFlushDeletes();
+    }
+
+    SECTION("another row's edit sends the waiting opacity and refuses the caller's op") {
+        Ux2Tab tab{false};
+        Json current = nb2bDocument();
+        tab.read(current, "sdk1b-e-2");
+        sdk1bDockPick(tab, 1);
+        auto *spin = sdk1bOpacity(tab, 1);
+        spin->setValue(87);
+        auto *visible = tab.field<QCheckBox>("pelican.canvasLayers.row1.visible");
+        auto *picked_row = tab.field<QPushButton>("pelican.canvasLayers.row1.pick");
+        REQUIRE(visible->isChecked());
+        visible->click();
+        CHECK_FALSE(visible->isChecked());
+        QCoreApplication::processEvents();
+
+        // The opacity was the user's earlier change: it goes, the eye does
+        // not, and the notice says why.
+        REQUIRE(tab.reads("edit_graph_document") == 1);
+        const auto opacity = tab.sent(1);
+        CHECK(sdk1bLayer(opacity, "card_fill").value("opacity", 1.0) == 0.87);
+        auto *note = tab.field<QLabel>("pelican.canvasLayers.note");
+        CHECK(note->text() == QStringLiteral("The last change is still being saved; try again."));
+        CHECK_FALSE(note->isHidden());
+        // It says so and returns: the caller's op did not also reach the
+        // model, so nothing reloads the rows the click was made on.
+        sdk1bFlushDeletes();
+        CHECK(tab.field<QPushButton>("pelican.canvasLayers.row1.pick") == picked_row);
+        current = Pelican::editGraphDocument(current, Json::array({opacity}));
+        tab.commit(current, "sdk1b-e-2-sent");
+        tab.widget->poll();
+        sdk1bFlushDeletes();
+        CHECK(tab.field<QCheckBox>("pelican.canvasLayers.row1.visible")->isChecked());
+    }
+
+    SECTION("a same-context read keeps the box and one send; a deleted row sends nothing") {
+        Ux2Tab tab{false};
+        Json current = nb2bDocument();
+        tab.read(current, "sdk1b-e-3");
+        sdk1bDockPick(tab, 1);
+        auto *spin = sdk1bOpacity(tab, 1);
+        spin->setValue(88);
+        CHECK(tab.reads("edit_graph_document") == 0);
+
+        // Another panel's edit in the same stack read back: the rows are
+        // rebuilt, the waiting value is put back in its box, and the timer
+        // alone sends it.
+        Json other = nb2bDocument();
+        auto &other_nodes = other["nodes"];
+        const auto other_stack = std::ranges::find(other_nodes, std::string{"hud"},
+                                                   [](const Json &node) { return node.value("id", std::string{}); });
+        REQUIRE(other_stack != other_nodes.end());
+        for (auto &layer : (*other_stack)["parameters"]["layers"])
+            if (layer.value("input", std::string{}) == "dot_fill") layer["visible"] = false;
+        tab.widget->refresh();
+        tab.widget->poll();
+        tab.read(other, "sdk1b-e-3-other");
+        tab.widget->poll();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        auto *restored = sdk1bOpacity(tab, 1);
+        CHECK(restored->value() == 88);
+        CHECK(tab.reads("edit_graph_document") == 0);
+        REQUIRE(sdk1bWaitFor([&] { return tab.reads("edit_graph_document") == 1; }));
+        const auto opacity = tab.sent(1);
+        CHECK(sdk1bLayer(opacity, "card_fill").value("opacity", 1.0) == 0.88);
+        current = Pelican::editGraphDocument(other, Json::array({opacity}));
+        tab.commit(current, "sdk1b-e-3-sent");
+        tab.widget->poll();
+        sdk1bFlushDeletes();
+
+        // The row is deleted by another edit before the timer fires: there is
+        // no row to set, and no edit either.
+        spin = sdk1bOpacity(tab, 1);
+        spin->setValue(89);
+        Json removed = current;
+        auto &nodes = removed["nodes"];
+        const auto stack = std::ranges::find(nodes, std::string{"hud"},
+                                             [](const Json &node) { return node.value("id", std::string{}); });
+        REQUIRE(stack != nodes.end());
+        auto &layers = (*stack)["parameters"]["layers"];
+        layers.erase(std::remove_if(layers.begin(), layers.end(), [](const Json &layer) {
+                         return layer.value("input", std::string{}) == "card_fill";
+                     }),
+                     layers.end());
+        tab.widget->refresh();
+        tab.widget->poll();
+        tab.read(removed, "sdk1b-e-3-removed");
+        tab.widget->poll();
+        sdk1bFlushDeletes();
+        CHECK(tab.reads("edit_graph_document") == 1);
+        CHECK_FALSE(sdk1bWaitFor([&] { return tab.reads("edit_graph_document") > 1; }, 450));
+    }
+
+    SECTION("a same-named row in another stack drops the waiting value before the context changes") {
+        // The other stack's row has the same input name: only the context,
+        // not the name, says which stack the value belonged to.
+        Json current = sdk1bPushStack(nb2bDocument(), "first", "other", "card_fill", "bg_fill", "layer");
+        Ux2Tab tab{false};
+        tab.read(current, "sdk1b-e-4");
+        sdk1bDockPick(tab, 1);
+        auto *spin = sdk1bOpacity(tab, 1);
+        spin->setValue(89);
+        CHECK(tab.reads("edit_graph_document") == 0);
+        auto *panel = dynamic_cast<PelicanStudio::GraphCanvasLayersPanel *>(tab.widget->canvasLayersPanel());
+        REQUIRE(panel != nullptr);
+        panel->pickLayer({}, "other", "card_fill");
+        QCoreApplication::processEvents();
+        sdk1bFlushDeletes();
+        CHECK(tab.reads("edit_graph_document") == 0);
+        CHECK_FALSE(sdk1bWaitFor([&] { return tab.reads("edit_graph_document") > 0; }, 450));
+    }
+
+    SECTION("a busy model keeps the waiting value, then sends it after the first edit") {
+        Ux2Tab tab{false};
+        Json current = nb2bDocument();
+        tab.read(current, "sdk1b-e-5");
+        sdk1bDockPick(tab, 1);
+        auto *visible = tab.field<QCheckBox>("pelican.canvasLayers.row1.visible");
+        visible->click();
+        QCoreApplication::processEvents();
+        REQUIRE(tab.reads("edit_graph_document") == 1);
+        const auto visible_ops = tab.sentOps(1);
+        current = Pelican::editGraphDocument(current, visible_ops);
+
+        auto *spin = sdk1bOpacity(tab, 1);
+        spin->setValue(85);
+        CHECK(tab.reads("edit_graph_document") == 1);
+        // The timer tries while the eye is still out and starts again; the
+        // value stays in its box.
+        CHECK_FALSE(sdk1bWaitFor([&] { return tab.reads("edit_graph_document") > 1; }, 450));
+        CHECK(sdk1bOpacity(tab, 1)->value() == 85);
+
+        tab.answer("edit_graph_document", Json{{"status", "accepted"}, {"ticket", "sdk1b-e-5"}});
+        tab.answer("get_edit_result", Json{{"status", "committed"}, {"committed", true},
+                                           {"source_digest", {{"hex", "sdk1b-e-5-sent"}}}});
+        tab.read(current, "sdk1b-e-5-sent");
+        REQUIRE(sdk1bWaitFor([&] { return tab.reads("edit_graph_document") == 2; }));
+        const auto opacity = tab.sent(2);
+        CHECK(sdk1bLayer(opacity, "card_fill").value("opacity", 1.0) == 0.85);
+        current = Pelican::editGraphDocument(current, Json::array({opacity}));
+        tab.commit(current, "sdk1b-e-5-opacity");
+        tab.widget->poll();
+        sdk1bFlushDeletes();
+        CHECK(sdk1bOpacity(tab, 1)->value() == 85);
+    }
+
+    SECTION("a refused edit does not retry the waiting value") {
+        Ux2Tab tab{false};
+        Json current = nb2bDocument();
+        tab.read(current, "sdk1b-e-6");
+        sdk1bDockPick(tab, 1);
+        auto *spin = sdk1bOpacity(tab, 1);
+        spin->setValue(70);
+        REQUIRE(sdk1bWaitFor([&] { return tab.reads("edit_graph_document") == 1; }));
+        tab.answer("edit_graph_document", Json{{"status", "accepted"}, {"ticket", "sdk1b-e-6"}});
+        tab.answer("get_edit_result", Json{{"status", "rejected"},
+                                           {"committed", false},
+                                           {"error", {{"message", "no opacity today"}}}});
+        tab.widget->refresh();
+        tab.widget->poll();
+        tab.read(nb2bDocument(), "sdk1b-e-6-read");
+        tab.widget->poll();
+        sdk1bFlushDeletes();
+        // The box says what the document says, and the timer does not send
+        // the same refused value again.
+        CHECK(sdk1bOpacity(tab, 1)->value() == 80);
+        CHECK_FALSE(sdk1bWaitFor([&] { return tab.reads("edit_graph_document") > 1; }, 450));
+    }
 }

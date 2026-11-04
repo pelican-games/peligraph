@@ -22,6 +22,7 @@ class QPlainTextEdit;
 class QPushButton;
 class QStackedWidget;
 class QSpinBox;
+class QTimer;
 class QToolButton;
 class QVBoxLayout;
 
@@ -90,6 +91,7 @@ class GraphCanvasLayersPanel final : public QWidget {
   public:
     GraphCanvasLayersPanel(GraphCanvasModel &model, std::function<void()> submitted,
                            QWidget *parent = nullptr);
+    ~GraphCanvasLayersPanel() override;
     // The node picked in the Graph (none: nothing picked) in `scope`.
     void showSelection(const std::string &scope, const std::optional<std::string> &node);
     void followEditable();
@@ -149,13 +151,33 @@ class GraphCanvasLayersPanel final : public QWidget {
         std::string stack;
         bool read_only = false;
     };
+    // SDK-1b: an opacity edit waits 300 ms -- the spin's valueChanged fires
+    // per keystroke -- and is sent once with the row's current place. The
+    // row is kept by input, not index, so a reload that rebuilds the rows
+    // (or an undo before the send) still finds it.
+    struct OpacityPending {
+        std::string scope;
+        std::string stack;
+        std::string input;
+        int percent = 0;
+    };
     void reload(bool force);
     void rebuildRows();
     void loadFields();
     void pickRow(const std::string &input, bool tell);
     [[nodiscard]] std::optional<GraphCanvasStackRow> pickedRow() const;
+    // The place a new layer goes: above the picked row, else on top.
+    [[nodiscard]] std::optional<std::size_t> pickedAbove() const;
     // `ops` sent as one edit; a layer they put on the stack is picked next.
-    void commit(nlohmann::json ops);
+    // `added` names it when the caller built the ops from one snapshot.
+    void commit(nlohmann::json ops, std::optional<std::string> added = std::nullopt);
+    // The + menu's ops, built and named from one snapshot of the rows.
+    void addLayer(const std::string &what);
+    // Sends the waiting opacity now; the timer and the box's editingFinished
+    // call it, and commit does before refusing the caller's ops.
+    void flushOpacity();
+    // Forgets a waiting opacity, and the timer with it: a context change.
+    void dropOpacity();
     void commitParameter(const std::string &node, const std::string &key,
                          const nlohmann::json &value);
     void commitTransform();
@@ -199,6 +221,8 @@ class GraphCanvasLayersPanel final : public QWidget {
     // NB-2b: what rowShown said last (scope, stack, input).
     std::optional<std::array<std::string, 3>> told_row_;
     bool loading_ = false;
+    std::optional<OpacityPending> opacity_pending_;
+    QTimer *opacity_timer_ = nullptr;
     bool transform_open_ = false;
     std::string transform_row_;
     double size_ratio_ = 1.0;

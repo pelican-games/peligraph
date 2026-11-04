@@ -16,7 +16,6 @@
 #include "graphcanvasdrawing.hpp"
 
 #include "graphcanvasthumbnails.hpp"
-#include "graphcanvaswidget.hpp"
 #include "studiotheme.hpp"
 
 #include <QBrush>
@@ -63,6 +62,12 @@ constexpr qreal ExtraSocketScale = 0.72;
 const Row *rowFor(const std::vector<Row> &rows, const QString &port) {
     const auto found = std::ranges::find(rows, port, &Row::port);
     return found == rows.end() ? nullptr : &*found;
+}
+
+// SDK-1b: the data the stack's body prepared for an entry (a canvas.stack's
+// body, so its Node always holds this kind).
+const LayerStackData &layerData(const Node &entry) {
+    return *static_cast<const LayerStackData *>(entry.body_data.get());
 }
 
 // The sockets one row draws: its layer's, and `<input>.opacity` and the mask
@@ -159,8 +164,8 @@ void tagRowPart(const Builder &builder, QGraphicsItem &part, const Node &entry, 
     part.setData(GraphCanvasPortRole, qtext(line.row.input));
     part.setData(GraphCanvasLayerIndexRole, static_cast<qulonglong>(line.row.index));
     part.setData(GraphCanvasLayerVisibleRole, line.row.visible);
-    part.setData(GraphCanvasLayerPickedRole, entry.picked_layer == qtext(line.row.input));
-    part.setData(GraphCanvasLayerReadOnlyRole, entry.layers_read_only);
+    part.setData(GraphCanvasLayerPickedRole, layerData(entry).picked_layer == qtext(line.row.input));
+    part.setData(GraphCanvasLayerReadOnlyRole, layerData(entry).read_only);
 }
 
 QColor pickedFill(const StudioTheme &theme) {
@@ -174,11 +179,11 @@ QGraphicsRectItem *addRowArea(const Builder &builder, QGraphicsItem &item, const
                               const LayerLine &line, const QRectF &area) {
     auto *row = new QGraphicsRectItem(area, &item);
     row->setPen(Qt::NoPen);
-    const bool picked = entry.picked_layer == qtext(line.row.input);
+    const bool picked = layerData(entry).picked_layer == qtext(line.row.input);
     row->setBrush(picked ? QBrush{pickedFill(builder.theme())} : QBrush{QColor{0, 0, 0, 0}});
     QString tip = QObject::tr("%1 (%2, input %3)")
                       .arg(qtext(line.row.name), qtext(graphCanvasLayerKindText(line.row)), qtext(line.row.input));
-    if (entry.layers_read_only) tip += QObject::tr(" -- an imported canvas: read only");
+    if (layerData(entry).read_only) tip += QObject::tr(" -- an imported canvas: read only");
     row->setToolTip(tip);
     tagRowPart(builder, *row, entry, line, GraphCanvasStackRowItem);
     return row;
@@ -223,7 +228,7 @@ void addEye(const Builder &builder, QGraphicsItem &item, const Node &entry, cons
     area->setPos(centre);
     area->setPen(Qt::NoPen);
     area->setBrush(QColor{0, 0, 0, 0});
-    area->setToolTip(entry.layers_read_only ? QObject::tr("Shown or hidden (an imported canvas: read only)")
+    area->setToolTip(layerData(entry).read_only ? QObject::tr("Shown or hidden (an imported canvas: read only)")
                      : line.row.visible    ? QObject::tr("Shown: click to hide the layer")
                                            : QObject::tr("Hidden: click to show the layer"));
     tagRowPart(builder, *area, entry, line, GraphCanvasStackEyeItem);
@@ -244,7 +249,7 @@ void addEye(const Builder &builder, QGraphicsItem &item, const Node &entry, cons
         slash->setPen(QPen{theme.canvas.dim_text, 1.2});
         tagRowPart(builder, *slash, entry, line, GraphCanvasStackEyeItem);
     }
-    if (entry.layers_read_only) area->setOpacity(0.6);
+    if (layerData(entry).read_only) area->setOpacity(0.6);
 }
 
 // NB-3: the layer alone, drawn as its own stack would draw it (32 px).
@@ -268,10 +273,10 @@ void addName(const Builder &builder, QGraphicsItem &item, const Node &entry, con
                               ? metrics.elidedText(full, Qt::ElideRight, std::max<qreal>(room, 12.0))
                               : full;
     QColor colour = builder.theme().canvas.heading_text;
-    if (!line.row.visible || entry.layers_read_only) colour.setAlphaF(0.55F);
+    if (!line.row.visible || layerData(entry).read_only) colour.setAlphaF(0.55F);
     auto *name = addText(builder, item, shown, colour);
     name->setPos(left, centre_y - metrics.height() / 2.0);
-    name->setToolTip(entry.layers_read_only ? full : QObject::tr("%1 (double-click to rename)").arg(full));
+    name->setToolTip(layerData(entry).read_only ? full : QObject::tr("%1 (double-click to rename)").arg(full));
     tagRowPart(builder, *name, entry, line, GraphCanvasStackNameItem);
     name->setData(GraphCanvasLabelRole, full);
 }
@@ -362,7 +367,7 @@ void addStage(Builder &builder, QGraphicsItem &item, const Node &entry, const La
         track->setPos(FieldLeft, centre_y - FieldHeight / 2.0);
         track->setBrush(theme.canvas.pill_bg);
         track->setPen(QPen{theme.canvas.node_border, 0.8});
-        track->setToolTip(entry.layers_read_only
+        track->setToolTip(layerData(entry).read_only
                               ? QObject::tr("Opacity %1 (an imported canvas: read only)")
                                     .arg(percentText(line.row.opacity))
                               : QObject::tr("Opacity %1: drag sideways to change it, double-click to type it")
@@ -381,7 +386,7 @@ void addStage(Builder &builder, QGraphicsItem &item, const Node &entry, const La
                      (FieldHeight - metrics.height()) / 2.0);
         tagRowPart(builder, *text, entry, line, GraphCanvasStackOpacityFieldItem);
         text->setData(GraphCanvasValueTextRole, text->text());
-        if (entry.layers_read_only) track->setOpacity(0.6);
+        if (layerData(entry).read_only) track->setOpacity(0.6);
     }
 
     // Mask: the layer's mask input, the line into it or none.
@@ -400,12 +405,52 @@ void addStage(Builder &builder, QGraphicsItem &item, const Node &entry, const La
 
 class LayerStackNodeBody final : public NodeBody {
   public:
+    void prepare(Node &entry, const Builder &builder, const GraphCanvasModel &model,
+                 const GraphCanvasNode &node, const std::string &scope) const override {
+        // SDK-1b: the canvas's UI state is fetched once, here; the data keeps
+        // values only, so nothing holds a node or the scene's state after.
+        const auto state = builder.bodyState(scope, node);
+        auto data = std::make_shared<LayerStackData>();
+        data->read_only = builder.layerScopeReadOnlyCached(model, scope);
+        data->picked_layer = state.picked_layer;
+        // NB-5: a shape in the air is drawn for the rows, not the document's.
+        data->pending = state.layer_shape_parameters.has_value();
+        auto nodes = model.nodes(scope);
+        if (state.layer_shape_parameters)
+            if (const auto found = std::ranges::find(nodes, node.id, &GraphCanvasNode::id); found != nodes.end())
+                found->parameters = *state.layer_shape_parameters;
+        const auto &blends = graphCanvasBlendChoices();
+        for (auto &row : graphCanvasLayerRows(nodes, node.id)) {
+            LayerLine line;
+            if (row.blend != "normal") {
+                const auto choice = std::ranges::find(blends, row.blend, &GraphCanvasBlendChoice::name);
+                line.blend = qtext(choice != blends.end() ? choice->label : row.blend);
+            }
+            line.enters = (row.kind == "group" && !row.source.empty()) ||
+                          (row.kind == "import" && !row.definition.empty());
+            // NB-2c: the open rows, and the nodes the stage names.
+            line.open = std::ranges::find(state.open_rows, row.input) != state.open_rows.end();
+            const auto heading_of = [&](const std::string &id) {
+                const auto found = std::ranges::find(nodes, id, &GraphCanvasNode::id);
+                return found == nodes.end() ? qtext(id) : qtext(found->heading());
+            };
+            const auto opacity_port = graphCanvasLayerOpacityPort(row.input);
+            if (const auto port = std::ranges::find(node.inputs, opacity_port, &GraphCanvasPort::port);
+                port != node.inputs.end() && port->connected)
+                line.opacity_from = heading_of(port->source_node);
+            if (!row.mask_source.empty()) line.mask_from = heading_of(row.mask_source);
+            line.row = std::move(row);
+            data->rows.push_back(std::move(line));
+        }
+        entry.body_data = std::move(data);
+    }
+
     void measure(Node &entry, const Builder &builder) const override {
         const QFontMetricsF &metrics = builder.rowMetrics();
         qreal width = std::max(entry.width, StackMinimumWidth);
         for (const auto &row : entry.outputs)
             width = std::max(width, 14.0 + CompositeSize + 16.0 + metrics.horizontalAdvance(row.label) + 22.0);
-        for (const auto &line : entry.layers)
+        for (const auto &line : layerData(entry).rows)
             width = std::max(width, NameLeft + metrics.horizontalAdvance(qtext(line.row.name)) + 12.0 +
                                         marksWidth(line, metrics) + 12.0);
         entry.width = std::min(width, GraphCanvasNodeMaximumWidth);
@@ -420,13 +465,13 @@ class LayerStackNodeBody final : public NodeBody {
         switch (entry.view) {
         case GraphCanvasNodeView::open: {
             qreal rows = 0.0;
-            for (const auto &line : entry.layers) rows += openRowHeight(entry, line);
+            for (const auto &line : layerData(entry).rows) rows += openRowHeight(entry, line);
             entry.height = GraphCanvasHeaderHeight + compositeHeight(entry) + rows + BandHeight + BottomPadding;
             break;
         }
         case GraphCanvasNodeView::compact: {
             qreal rows = 0.0;
-            for (const auto &line : entry.layers) rows += slimRowHeight(entry, line);
+            for (const auto &line : layerData(entry).rows) rows += slimRowHeight(entry, line);
             entry.height = GraphCanvasHeaderHeight + compositeHeight(entry) + rows + GraphCanvasSectionPadding;
             break;
         }
@@ -442,7 +487,7 @@ class LayerStackNodeBody final : public NodeBody {
         const QFontMetricsF &metrics = builder.rowMetrics();
         // NB-5: on the band, left of the operation's name, while the engine
         // has not answered for the rows drawn.
-        if (entry.layers_pending) {
+        if (layerData(entry).pending) {
             const QString op = qtext(entry.node->badge.empty() ? entry.node->op : entry.node->badge);
             const QString dots = QString::fromUtf8("\xE2\x8B\xAF");
             auto *mark = addText(builder, item, dots, theme.canvas.heading_text);
@@ -491,7 +536,7 @@ class LayerStackNodeBody final : public NodeBody {
         line_under->setPen(QPen{rule, 0.8});
 
         if (entry.view == GraphCanvasNodeView::compact) {
-            for (const auto &line : entry.layers) {
+            for (const auto &line : layerData(entry).rows) {
                 const qreal height = slimRowHeight(entry, line);
                 addRowArea(builder, item, entry, line, QRectF{0.0, top, width, height});
                 const qreal centre_y = top + LayerSlimRowHeight / 2.0;
@@ -504,7 +549,7 @@ class LayerStackNodeBody final : public NodeBody {
 
         // Open: the rows, top first.
         rule.setAlphaF(0.45F);
-        for (const auto &line : entry.layers) {
+        for (const auto &line : layerData(entry).rows) {
             const qreal row_height = openRowHeight(entry, line);
             addRowArea(builder, item, entry, line, QRectF{0.0, top, width, row_height});
             const auto sockets = socketsOf(entry, line);
@@ -539,7 +584,7 @@ class LayerStackNodeBody final : public NodeBody {
         // The band: + ▾, the bin, `+ layer` (a line dropped on it is a layer
         // on top) and the note that says which way the rows overlap.
         const qreal centre_y = top + BandHeight / 2.0;
-        if (!entry.layers_read_only) {
+        if (!layerData(entry).read_only) {
             if (const Row *add = rowFor(entry.inputs, qtext(std::string{graphCanvasStackAddPort})))
                 builder.addSocket(item, entry, *add, QPointF{0.0, centre_y}, "input");
             const auto button = [&](qreal left, qreal button_width, const char *kind, const QString &tip,
@@ -560,8 +605,8 @@ class LayerStackNodeBody final : public NodeBody {
             plus->setPos((34.0 - metrics.horizontalAdvance(plus->text())) / 2.0, (18.0 - metrics.height()) / 2.0);
             builder.tagPart(*plus, entry, GraphCanvasStackAddItem);
             const bool picked =
-                !entry.picked_layer.isEmpty() && std::ranges::any_of(entry.layers, [&](const LayerLine &line) {
-                    return qtext(line.row.input) == entry.picked_layer;
+                !layerData(entry).picked_layer.empty() && std::ranges::any_of(layerData(entry).rows, [&](const LayerLine &line) {
+                    return qtext(line.row.input) == layerData(entry).picked_layer;
                 });
             auto *bin = button(54.0, 22.0, GraphCanvasStackDeleteItem,
                                picked ? QObject::tr("Delete the picked layer (Delete)")
@@ -586,7 +631,7 @@ class LayerStackNodeBody final : public NodeBody {
         auto *said = addText(builder, item, note, theme.canvas.dim_text);
         said->setOpacity(0.8);
         said->setPos(width - 10.0 - metrics.horizontalAdvance(note), centre_y - metrics.height() / 2.0);
-        said->setToolTip(entry.layers_read_only
+        said->setToolTip(layerData(entry).read_only
                              ? QObject::tr("A row is drawn over the rows under it. An imported canvas: read only.")
                              : QObject::tr("A row is drawn over the rows under it."));
         builder.tagPart(*said, entry, GraphCanvasStackNoteItem);
