@@ -26937,8 +26937,8 @@ TEST_CASE("SDK-1b: Text and Image put their layer above the picked row, a group 
     }
 }
 
-TEST_CASE("SDK-1b: opacity is sent 300 ms after the last change, and a waiting change survives a "
-          "read but not another row or stack",
+TEST_CASE("SDK-1b: opacity is sent 300 ms after the last change, and waiting changes survive a "
+          "read, queue by input, and drop on a context change",
           "[devstudio][graph-canvas][scene][sdk1b]") {
     (void)application();
 
@@ -27143,6 +27143,194 @@ TEST_CASE("SDK-1b: opacity is sent 300 ms after the last change, and a waiting c
         // the same refused value again.
         CHECK(sdk1bOpacity(tab, 1)->value() == 80);
         CHECK_FALSE(sdk1bWaitFor([&] { return tab.reads("edit_graph_document") > 1; }, 450));
+    }
+}
+
+TEST_CASE("SDK-1b-FX1: a second row changed while an opacity waits is queued, not lost",
+          "[devstudio][graph-canvas][scene][sdk1b][sdk1bfx1]") {
+    (void)application();
+
+    SECTION("a: busy, row A then row B changed -- A is sent first, then B, each with its value") {
+        Ux2Tab tab{false};
+        Json current = nb2bDocument();
+        tab.read(current, "sdk1bfx1-a-read");
+        sdk1bDockPick(tab, 1);
+        auto *visible = tab.field<QCheckBox>("pelican.canvasLayers.row1.visible");
+        visible->click();
+        QCoreApplication::processEvents();
+        REQUIRE(tab.reads("edit_graph_document") == 1);
+        current = Pelican::editGraphDocument(current, tab.sentOps(1));
+
+        auto *card = sdk1bOpacity(tab, 1);
+        auto *background = sdk1bOpacity(tab, 2);
+        REQUIRE(card->value() == 80);
+        REQUIRE(background->value() == 100);
+        card->setValue(85);
+        background->setValue(40);
+        CHECK(tab.reads("edit_graph_document") == 1);
+        // The timer retries while the eye is still out, and neither value goes.
+        CHECK_FALSE(sdk1bWaitFor([&] { return tab.reads("edit_graph_document") > 1; }, 450));
+        CHECK(sdk1bOpacity(tab, 1)->value() == 85);
+        CHECK(sdk1bOpacity(tab, 2)->value() == 40);
+
+        tab.answer("edit_graph_document", Json{{"status", "accepted"}, {"ticket", "sdk1bfx1-a-busy"}});
+        tab.answer("get_edit_result", Json{{"status", "committed"}, {"committed", true},
+                                           {"source_digest", {{"hex", "sdk1bfx1-a-busy-sent"}}}});
+        tab.read(current, "sdk1bfx1-a-free");
+        REQUIRE(sdk1bWaitFor([&] { return tab.reads("edit_graph_document") == 2; }));
+        const auto first = tab.sent(2);
+        CHECK(sdk1bLayer(first, "card_fill").value("opacity", 1.0) == 0.85);
+        CHECK(sdk1bLayer(first, "bg_fill").value("opacity", 1.0) == 1.0);
+        current = Pelican::editGraphDocument(current, Json::array({first}));
+        tab.commit(current, "sdk1bfx1-a-first");
+        tab.widget->poll();
+        sdk1bFlushDeletes();
+
+        REQUIRE(sdk1bWaitFor([&] { return tab.reads("edit_graph_document") == 3; }));
+        const auto second = tab.sent(3);
+        CHECK(sdk1bLayer(second, "bg_fill").value("opacity", 1.0) == 0.40);
+        CHECK(sdk1bLayer(second, "card_fill").value("opacity", 1.0) == 0.85);
+        current = Pelican::editGraphDocument(current, Json::array({second}));
+        tab.commit(current, "sdk1bfx1-a-second");
+        CHECK_FALSE(sdk1bWaitFor([&] { return tab.reads("edit_graph_document") > 3; }, 450));
+    }
+
+    SECTION("b: not busy, the same two changes wait -- both go, one at a time, in order") {
+        Ux2Tab tab{false};
+        Json current = nb2bDocument();
+        tab.read(current, "sdk1bfx1-b-read");
+        sdk1bDockPick(tab, 1);
+        auto *card = sdk1bOpacity(tab, 1);
+        auto *background = sdk1bOpacity(tab, 2);
+        card->setValue(85);
+        background->setValue(40);
+        CHECK(tab.reads("edit_graph_document") == 0);
+        REQUIRE(sdk1bWaitFor([&] { return tab.reads("edit_graph_document") == 1; }));
+        const auto first = tab.sent(1);
+        CHECK(sdk1bLayer(first, "card_fill").value("opacity", 1.0) == 0.85);
+        CHECK(sdk1bLayer(first, "bg_fill").value("opacity", 1.0) == 1.0);
+        // Nothing else was sent with it: the second entry is still waiting.
+        CHECK(tab.reads("edit_graph_document") == 1);
+        current = Pelican::editGraphDocument(current, Json::array({first}));
+        tab.commit(current, "sdk1bfx1-b-first");
+        tab.widget->poll();
+        sdk1bFlushDeletes();
+
+        REQUIRE(sdk1bWaitFor([&] { return tab.reads("edit_graph_document") == 2; }));
+        const auto second = tab.sent(2);
+        CHECK(sdk1bLayer(second, "bg_fill").value("opacity", 1.0) == 0.40);
+        CHECK(sdk1bLayer(second, "card_fill").value("opacity", 1.0) == 0.85);
+        current = Pelican::editGraphDocument(current, Json::array({second}));
+        tab.commit(current, "sdk1bfx1-b-second");
+        CHECK_FALSE(sdk1bWaitFor([&] { return tab.reads("edit_graph_document") > 2; }, 450));
+    }
+
+    SECTION("c: A changed twice while waiting -- one send with the last value, in A's place") {
+        Ux2Tab tab{false};
+        Json current = nb2bDocument();
+        tab.read(current, "sdk1bfx1-c-read");
+        sdk1bDockPick(tab, 1);
+        auto *card = sdk1bOpacity(tab, 1);
+        auto *background = sdk1bOpacity(tab, 2);
+        card->setValue(85);
+        background->setValue(40);
+        card->setValue(90);
+        CHECK(tab.reads("edit_graph_document") == 0);
+        REQUIRE(sdk1bWaitFor([&] { return tab.reads("edit_graph_document") == 1; }));
+        const auto first = tab.sent(1);
+        // A keeps its first place and carries the last value, once.
+        CHECK(sdk1bLayer(first, "card_fill").value("opacity", 1.0) == 0.90);
+        CHECK(sdk1bLayer(first, "bg_fill").value("opacity", 1.0) == 1.0);
+        current = Pelican::editGraphDocument(current, Json::array({first}));
+        tab.commit(current, "sdk1bfx1-c-first");
+        tab.widget->poll();
+        sdk1bFlushDeletes();
+
+        REQUIRE(sdk1bWaitFor([&] { return tab.reads("edit_graph_document") == 2; }));
+        const auto second = tab.sent(2);
+        CHECK(sdk1bLayer(second, "bg_fill").value("opacity", 1.0) == 0.40);
+        CHECK(sdk1bLayer(second, "card_fill").value("opacity", 1.0) == 0.90);
+        current = Pelican::editGraphDocument(current, Json::array({second}));
+        tab.commit(current, "sdk1bfx1-c-second");
+        CHECK_FALSE(sdk1bWaitFor([&] { return tab.reads("edit_graph_document") > 2; }, 450));
+    }
+
+    SECTION("d: a same-context reload puts both pending values back in their boxes") {
+        Ux2Tab tab{false};
+        Json current = nb2bDocument();
+        tab.read(current, "sdk1bfx1-d-read");
+        sdk1bDockPick(tab, 1);
+        sdk1bOpacity(tab, 1)->setValue(85);
+        sdk1bOpacity(tab, 2)->setValue(40);
+        CHECK(tab.reads("edit_graph_document") == 0);
+
+        Json other = current;
+        auto &other_nodes = other["nodes"];
+        const auto other_stack = std::ranges::find(other_nodes, std::string{"hud"},
+                                                   [](const Json &node) { return node.value("id", std::string{}); });
+        REQUIRE(other_stack != other_nodes.end());
+        for (auto &layer : (*other_stack)["parameters"]["layers"])
+            if (layer.value("input", std::string{}) == "dot_fill") layer["visible"] = false;
+        tab.widget->refresh();
+        tab.widget->poll();
+        tab.read(other, "sdk1bfx1-d-other");
+        tab.widget->poll();
+        sdk1bFlushDeletes();
+        CHECK(tab.reads("edit_graph_document") == 0);
+        CHECK(sdk1bOpacity(tab, 1)->value() == 85);
+        CHECK(sdk1bOpacity(tab, 2)->value() == 40);
+    }
+
+    SECTION("e: a row deleted while waiting is dropped; the other entry is sent") {
+        Ux2Tab tab{false};
+        Json current = nb2bDocument();
+        tab.read(current, "sdk1bfx1-e-read");
+        sdk1bDockPick(tab, 1);
+        sdk1bOpacity(tab, 1)->setValue(85);
+        sdk1bOpacity(tab, 2)->setValue(40);
+        CHECK(tab.reads("edit_graph_document") == 0);
+
+        Json removed = current;
+        auto &nodes = removed["nodes"];
+        const auto stack = std::ranges::find(nodes, std::string{"hud"},
+                                             [](const Json &node) { return node.value("id", std::string{}); });
+        REQUIRE(stack != nodes.end());
+        auto &layers = (*stack)["parameters"]["layers"];
+        layers.erase(std::remove_if(layers.begin(), layers.end(), [](const Json &layer) {
+                         return layer.value("input", std::string{}) == "card_fill";
+                     }),
+                     layers.end());
+        tab.widget->refresh();
+        tab.widget->poll();
+        tab.read(removed, "sdk1bfx1-e-removed");
+        tab.widget->poll();
+        sdk1bFlushDeletes();
+
+        REQUIRE(sdk1bWaitFor([&] { return tab.reads("edit_graph_document") == 1; }));
+        const auto sent = tab.sent(1);
+        // Card's entry is gone with its row; Background's value still goes.
+        CHECK(sdk1bLayer(sent, "bg_fill").value("opacity", 1.0) == 0.40);
+        CHECK(sent.at("parameters").at("layers").size() == 2);
+        current = Pelican::editGraphDocument(removed, Json::array({sent}));
+        tab.commit(current, "sdk1bfx1-e-sent");
+        CHECK_FALSE(sdk1bWaitFor([&] { return tab.reads("edit_graph_document") > 1; }, 450));
+    }
+
+    SECTION("f: a context change sends nothing") {
+        Json current = sdk1bPushStack(nb2bDocument(), "first", "other", "card_fill", "bg_fill", "layer");
+        Ux2Tab tab{false};
+        tab.read(current, "sdk1bfx1-f-read");
+        sdk1bDockPick(tab, 1);
+        sdk1bOpacity(tab, 1)->setValue(85);
+        sdk1bOpacity(tab, 2)->setValue(40);
+        CHECK(tab.reads("edit_graph_document") == 0);
+        auto *panel = dynamic_cast<PelicanStudio::GraphCanvasLayersPanel *>(tab.widget->canvasLayersPanel());
+        REQUIRE(panel != nullptr);
+        panel->pickLayer({}, "other", "card_fill");
+        QCoreApplication::processEvents();
+        sdk1bFlushDeletes();
+        CHECK(tab.reads("edit_graph_document") == 0);
+        CHECK_FALSE(sdk1bWaitFor([&] { return tab.reads("edit_graph_document") > 0; }, 450));
     }
 }
 

@@ -707,9 +707,9 @@ GraphCanvasLayersPanel::GraphCanvasLayersPanel(GraphCanvasModel &model, std::fun
     layout->addWidget(import_list_);
     connect(imports_, &QPushButton::toggled, import_list_, &QWidget::setVisible);
     layout->addStretch(1);
-    // SDK-1b: one waiting opacity edit, sent 300 ms after the last change.
-    // An undo inside that window does not cancel it: the send follows, which
-    // is what the box last showed.
+    // SDK-1b: the waiting opacity edits, sent one at a time 300 ms after the
+    // last change. An undo inside that window does not cancel them: the sends
+    // follow, which is what the boxes last showed.
     opacity_timer_ = new QTimer(this);
     opacity_timer_->setSingleShot(true);
     opacity_timer_->setInterval(300);
@@ -838,23 +838,24 @@ void GraphCanvasLayersPanel::reload(bool force) {
         }
     }
     loading_ = was_loading;
-    // A same-context reload leaves a waiting opacity where it was: the box
-    // goes on showing the value the user typed and the timer keeps running.
-    // Set under loading_ so the programmatic value is not taken for an edit.
-    if (opacity_pending_) {
-        if (opacity_pending_->scope != scope_ || opacity_pending_->stack != stack_) dropOpacity();
+    // A same-context reload leaves every waiting opacity where it was: each
+    // box goes on showing the value the user typed and the timer keeps
+    // running. Set under loading_ so the programmatic value is not taken for
+    // an edit. A row that is gone is not put back; flush drops its entry.
+    if (!opacity_pending_.empty()) {
+        if (opacity_scope_ != scope_ || opacity_stack_ != stack_) dropOpacity();
         else {
-            std::size_t shown = 0;
-            while (shown < shown_rows_.size() && shown < row_widgets_.size() &&
-                   shown_rows_[shown].input != opacity_pending_->input)
-                ++shown;
-            if (shown == shown_rows_.size() || shown == row_widgets_.size()) dropOpacity();
-            else {
-                const bool was_loading = loading_;
-                loading_ = true;
-                row_widgets_[shown].opacity->setValue(opacity_pending_->percent);
-                loading_ = was_loading;
+            const bool was_loading = loading_;
+            loading_ = true;
+            for (const auto &pending : opacity_pending_) {
+                std::size_t shown = 0;
+                while (shown < shown_rows_.size() && shown < row_widgets_.size() &&
+                       shown_rows_[shown].input != pending.input)
+                    ++shown;
+                if (shown < shown_rows_.size() && shown < row_widgets_.size())
+                    row_widgets_[shown].opacity->setValue(pending.percent);
             }
+            loading_ = was_loading;
         }
     }
     empty_->setVisible(shown_rows_.empty());
@@ -982,17 +983,19 @@ void GraphCanvasLayersPanel::rebuildRows() {
             commit(graphCanvasSetLayerOps(model_.nodes(scope_), scope_, stack_, index, "name",
                                           name->text().trimmed().toStdString()));
         });
-        // SDK-1b: the box fires per keystroke. Keep the value and the row by
-        // input, and send once 300 ms after the last one (or on Enter/focus
-        // lost) so the model is not asked to save every digit on the way.
+        // SDK-1b: the box fires per arrow or wheel step, and at the end of
+        // typing (keyboard tracking is off). Keep one value per input, and
+        // send 300 ms after the last change (or on Enter/focus lost) one at a
+        // time so the model is not asked to save every step on the way.
         connect(widgets.opacity, &QSpinBox::valueChanged, this, [this, input](int percent) {
             if (loading_) return;
-            // A change to another row first sends the row that was waiting;
-            // one box cannot hold two layer positions.
-            if (opacity_pending_ && (opacity_pending_->scope != scope_ || opacity_pending_->stack != stack_ ||
-                                     opacity_pending_->input != input))
-                flushOpacity();
-            opacity_pending_ = OpacityPending{scope_, stack_, input, percent};
+            // A change to another row joins the list; it does not send the
+            // earlier one, whose box must keep its value until it goes.
+            const auto found = std::ranges::find(opacity_pending_, input, &OpacityPending::input);
+            if (found != opacity_pending_.end()) found->percent = percent;
+            else opacity_pending_.push_back(OpacityPending{input, percent});
+            opacity_scope_ = scope_;
+            opacity_stack_ = stack_;
             opacity_timer_->start();
         });
         connect(widgets.opacity, &QSpinBox::editingFinished, this, [this] {
@@ -1023,32 +1026,44 @@ void GraphCanvasLayersPanel::addLayer(const std::string &what) {
 }
 
 void GraphCanvasLayersPanel::flushOpacity() {
-    if (!opacity_pending_) return;
-    // A context change forgets the value before it changes the context; if
-    // one still names another stack, it must not edit this one.
-    if (opacity_pending_->scope != scope_ || opacity_pending_->stack != stack_) {
+    if (opacity_pending_.empty()) return;
+    // A context change forgets the values before it changes the context; if
+    // they still name another stack, they must not edit this one.
+    if (opacity_scope_ != scope_ || opacity_stack_ != stack_) {
         dropOpacity();
         return;
     }
     if (!model_.canEdit()) {
-        // The last edit is still out: the waiting change keeps its box and
-        // tries again, rather than being dropped as refused.
+        // The last edit is still out: the waiting changes keep their boxes
+        // and try again, rather than being dropped as refused.
         opacity_timer_->start();
         return;
     }
-    const auto pending = *opacity_pending_;
-    opacity_pending_.reset();
-    const auto nodes = model_.nodes(pending.scope);
-    const auto rows = graphCanvasLayerRows(nodes, pending.stack);
-    const auto row = std::ranges::find(rows, pending.input, &GraphCanvasStackRow::input);
-    // Gone from the stack (deleted meanwhile): there is nothing to set.
-    if (row == rows.end()) return;
-    commit(graphCanvasSetLayerOps(nodes, pending.scope, pending.stack, row->index, "opacity",
-                                  pending.percent / 100.0));
+    // One at a time: resolve the first entry's row now, and send it. If its
+    // row is gone (deleted meanwhile), drop just that entry and go on to the
+    // next one.
+    while (!opacity_pending_.empty()) {
+        const auto pending = opacity_pending_.front();
+        opacity_pending_.erase(opacity_pending_.begin());
+        const auto nodes = model_.nodes(opacity_scope_);
+        const auto rows = graphCanvasLayerRows(nodes, opacity_stack_);
+        const auto row = std::ranges::find(rows, pending.input, &GraphCanvasStackRow::input);
+        if (row == rows.end()) continue;
+        // The commit is the opacity's own: the entries still waiting must not
+        // make it flush itself again -- they go with the timer, one by one.
+        opacity_sending_ = true;
+        commit(graphCanvasSetLayerOps(nodes, opacity_scope_, opacity_stack_, row->index, "opacity",
+                                      pending.percent / 100.0));
+        opacity_sending_ = false;
+        break;
+    }
+    if (!opacity_pending_.empty()) opacity_timer_->start();
 }
 
 void GraphCanvasLayersPanel::dropOpacity() {
-    opacity_pending_.reset();
+    opacity_pending_.clear();
+    opacity_scope_.clear();
+    opacity_stack_.clear();
     if (opacity_timer_ != nullptr) opacity_timer_->stop();
 }
 
@@ -1260,10 +1275,11 @@ void GraphCanvasLayersPanel::say(const QString &line) {
 
 void GraphCanvasLayersPanel::commit(Json ops, std::optional<std::string> added_by_tool) {
     if (ops.empty()) return;
-    // An opacity edit is still waiting: send it (it was the user's last
-    // change), then tell the caller to make its own edit again. Sending both
-    // would put them in one turn and the second would meet the busy model.
-    if (opacity_pending_) {
+    // An opacity edit is still waiting: send the first one (it was the
+    // user's last change), then tell the caller to make its own edit again.
+    // Sending both would put them in one turn and the second would meet the
+    // busy model. The rest of the waiting list follows on the timer.
+    if (!opacity_pending_.empty() && !opacity_sending_) {
         flushOpacity();
         say(tr("The last change is still being saved; try again."));
         return;

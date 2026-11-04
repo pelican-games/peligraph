@@ -152,12 +152,13 @@ class GraphCanvasLayersPanel final : public QWidget {
         bool read_only = false;
     };
     // SDK-1b: an opacity edit waits 300 ms -- the spin's valueChanged fires
-    // per keystroke -- and is sent once with the row's current place. The
-    // row is kept by input, not index, so a reload that rebuilds the rows
-    // (or an undo before the send) still finds it.
+    // per arrow or wheel step, and at the end of typing -- and is sent one at
+    // a time with the row's current place. One entry per input, so a second
+    // row's change is not lost; a later change of the same input replaces its
+    // value and keeps its place. The row is kept by input, not index, so a
+    // reload that rebuilds the rows (or an undo before the send) still finds
+    // it.
     struct OpacityPending {
-        std::string scope;
-        std::string stack;
         std::string input;
         int percent = 0;
     };
@@ -173,10 +174,11 @@ class GraphCanvasLayersPanel final : public QWidget {
     void commit(nlohmann::json ops, std::optional<std::string> added = std::nullopt);
     // The + menu's ops, built and named from one snapshot of the rows.
     void addLayer(const std::string &what);
-    // Sends the waiting opacity now; the timer and the box's editingFinished
-    // call it, and commit does before refusing the caller's ops.
+    // Sends the first waiting opacity now, and starts the timer for the rest;
+    // the timer and the box's editingFinished call it, and commit does before
+    // refusing the caller's ops.
     void flushOpacity();
-    // Forgets a waiting opacity, and the timer with it: a context change.
+    // Forgets the waiting opacities, and the timer with it: a context change.
     void dropOpacity();
     void commitParameter(const std::string &node, const std::string &key,
                          const nlohmann::json &value);
@@ -221,7 +223,11 @@ class GraphCanvasLayersPanel final : public QWidget {
     // NB-2b: what rowShown said last (scope, stack, input).
     std::optional<std::array<std::string, 3>> told_row_;
     bool loading_ = false;
-    std::optional<OpacityPending> opacity_pending_;
+    // The place the waiting opacity entries belong to; one entry per input.
+    std::string opacity_scope_;
+    std::string opacity_stack_;
+    std::vector<OpacityPending> opacity_pending_;
+    bool opacity_sending_ = false;
     QTimer *opacity_timer_ = nullptr;
     bool transform_open_ = false;
     std::string transform_row_;
