@@ -1929,6 +1929,18 @@ class GraphCanvasModel {
                       const std::string &source_port);
     bool disconnectInput(std::string_view scope, const std::string &node,
                          const std::string &port);
+    // GC-1: the same two edits as the operations they send. Pure: they do not
+    // submit and do not change the document; a refusal the line can be told
+    // about is put in `refusal`, the rest are silent like the gestures.
+    [[nodiscard]] nlohmann::json connectInputOps(std::string_view scope,
+                                                 const std::string &node,
+                                                 const std::string &port,
+                                                 const std::string &source_node,
+                                                 const std::string &source_port,
+                                                 std::string *refusal = nullptr) const;
+    [[nodiscard]] nlohmann::json disconnectInputOps(std::string_view scope,
+                                                    const std::string &node,
+                                                    const std::string &port) const;
     bool setNodeParameter(std::string_view scope, const std::string &node,
                           const std::string &key, const nlohmann::json &value);
     bool removeNode(std::string_view scope, const std::string &node);

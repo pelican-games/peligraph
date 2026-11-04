@@ -3493,7 +3493,12 @@ void GraphCanvasScene::afterEdit(bool submitted) {
 }
 
 void GraphCanvasScene::clearPendingConnection() {
+    // GC-1: a lifted line's edge was hidden, not removed. Putting the line
+    // back is putting every part of it back; the terms find it again even
+    // when a redraw replaced the items under the hand.
+    const auto lifted = pending_connection_ ? pending_connection_->lifted : std::nullopt;
     pending_connection_.reset();
+    if (lifted) showLiftedEdges(*lifted);
     // UX-1: the sockets go back to how they were drawn. Called before every
     // redraw deletes them, so the pointers are still the scene's.
     for (const LitSocket &lit : lit_sockets_) {
@@ -3525,6 +3530,29 @@ void GraphCanvasScene::beginConnection(const QGraphicsItem &socket) {
     pending.socket_key = socket.data(GraphCanvasSocketKeyRole).toString().toStdString();
     pending.origin = socket.sceneBoundingRect().center();
     pending.from_folded = nodeGraphItemKind(socket) == QLatin1String{GraphCanvasDerivedSocketItem};
+    // GC-1: a press on an input that already stands on a line may be the
+    // start of lifting it, but it may equally be a click. Nothing is drawn,
+    // lit or sent until the hand travels past the slop (liftPendingInput).
+    if (!pending.from_output && model_ != nullptr) {
+        const auto drawn = model_->nodes(pending.scope);
+        const auto owner = std::ranges::find(drawn, pending.node, &GraphCanvasNode::id);
+        if (owner != drawn.end() && owner->op != "canvas.stack") {
+            const auto input = std::ranges::find(owner->inputs, pending.port,
+                                                 &GraphCanvasPort::port);
+            bool connected = input != owner->inputs.end() && input->connected;
+            if (!connected && !pending.socket_key.empty()) {
+                const auto named = std::ranges::find_if(owner->input_sockets, [&](const auto &each) {
+                    return each.key() == pending.socket_key;
+                });
+                connected = named != owner->input_sockets.end() && named->connected();
+            }
+            if (connected) {
+                pending.lift_candidate = true;
+                pending_connection_ = std::move(pending);
+                return;
+            }
+        }
+    }
     pending_connection_ = std::move(pending);
     pending_edge_ = new QGraphicsPathItem;
     addItem(pending_edge_);
@@ -3540,6 +3568,117 @@ void GraphCanvasScene::beginConnection(const QGraphicsItem &socket) {
         curveGeometryBetween(pending_connection_->origin,
                              pending_connection_->origin).path);
     lightDropTargets(&socket);
+}
+
+bool GraphCanvasScene::liftedEdgePart(const QGraphicsItem &item,
+                                      const LiftedInput &lifted) const {
+    const QString kind = nodeGraphItemKind(item);
+    if (item.data(GraphCanvasScopeRole).toString() != qtext(lifted.scope)) return false;
+    if (kind == QLatin1String{GraphCanvasEdgeItem} ||
+        kind == QLatin1String{GraphCanvasEdgeArrowItem}) {
+        return item.data(NodeGraphToNameRole).toString() == qtext(lifted.to_node) &&
+               item.data(GraphCanvasToPortRole).toString() == qtext(lifted.to_port);
+    }
+    // The `[n]` label names only the input end; it has no to-port role.
+    return kind == QLatin1String{GraphCanvasEdgeLabelItem} &&
+           item.data(NodeGraphNameRole).toString() == qtext(lifted.to_node) &&
+           item.data(GraphCanvasPortRole).toString() == qtext(lifted.to_port);
+}
+
+void GraphCanvasScene::hideLiftedEdges(const LiftedInput &lifted) {
+    for (QGraphicsItem *item : items())
+        if (liftedEdgePart(*item, lifted)) item->setVisible(false);
+}
+
+void GraphCanvasScene::showLiftedEdges(const LiftedInput &lifted) {
+    for (QGraphicsItem *item : items())
+        if (liftedEdgePart(*item, lifted)) item->setVisible(true);
+}
+
+void GraphCanvasScene::rehideLiftedEdges() {
+    if (pending_connection_ && pending_connection_->lifted)
+        hideLiftedEdges(*pending_connection_->lifted);
+}
+
+void GraphCanvasScene::liftPendingInput() {
+    if (!pending_connection_ || !pending_connection_->lift_candidate ||
+        pending_connection_->lifted || model_ == nullptr)
+        return;
+    auto &pending = *pending_connection_;
+    const auto drawn = model_->nodes(pending.scope);
+    const auto owner = std::ranges::find(drawn, pending.node, &GraphCanvasNode::id);
+    if (owner == drawn.end()) return;
+    const auto input = std::ranges::find(owner->inputs, pending.port, &GraphCanvasPort::port);
+    // A numbered socket is drawn from `input_sockets`, not the declared
+    // `inputs`: find the line by the key the press was on, and take the port
+    // it lives on now (an earlier port may have been renumbered).
+    std::string lifted_port = pending.port;
+    std::string lifted_source_node;
+    std::string lifted_source_port;
+    bool found = false;
+    if (input != owner->inputs.end() && input->connected) {
+        lifted_port = input->port;
+        lifted_source_node = input->source_node;
+        lifted_source_port = input->source_port;
+        found = true;
+    } else if (!pending.socket_key.empty()) {
+        const auto named = std::ranges::find_if(owner->input_sockets, [&](const auto &each) {
+            return each.key() == pending.socket_key;
+        });
+        if (named != owner->input_sockets.end() && named->connected()) {
+            lifted_port = named->port;
+            lifted_source_node = named->source_node;
+            lifted_source_port = named->source_port;
+            found = true;
+        }
+    }
+    if (!found) return;
+    LiftedInput lifted;
+    lifted.scope = pending.scope;
+    lifted.to_node = pending.node;
+    lifted.to_port = lifted_port;
+    lifted.socket_key = pending.socket_key;
+    lifted.source_node = lifted_source_node;
+    lifted.source_port = lifted_source_port;
+    // The dashed reach starts at the output the line came from, not at the
+    // input under the hand -- that is the line being carried.
+    if (QGraphicsItem *source = findSocketOrAnchor(*this, qtext(lifted.scope),
+                                                   qtext(lifted.source_node),
+                                                   qtext(lifted.source_port),
+                                                   QStringLiteral("output")))
+        pending.origin = source->sceneBoundingRect().center();
+    pending.lifted = lifted;
+    pending.from_output = true;
+    pending.from_folded = false;
+    pending.carry_loop.clear();
+    // The gesture is now a line from the output, not a numbered input any
+    // more. The key stays in `lifted` for finding and cutting the old line;
+    // clearing it here makes the lit targets the ones an output would light.
+    pending.socket_key.clear();
+    pending.node = lifted.source_node;
+    pending.port = lifted.source_port;
+    hideLiftedEdges(lifted);
+    pending_edge_ = new QGraphicsPathItem;
+    addItem(pending_edge_);
+    pending_edge_->setZValue(4.0);
+    pending_edge_->setPen(QPen{currentStudioTheme().canvas.edge_selected, 1.8,
+                               Qt::DashLine});
+    pending_edge_->setData(NodeGraphItemKindRole,
+                           QString::fromLatin1(GraphCanvasPendingEdgeItem));
+    pending_edge_->setData(NodeGraphNameRole, qtext(lifted.source_node));
+    pending_edge_->setData(GraphCanvasPortRole, qtext(lifted.source_port));
+    // GC-1: the lifted line is a straight, unrerouted reach from the output
+    // to the hand. The document's bends and ties are not carried with it:
+    // they stay where they are, and the server decides them again after a
+    // drop, exactly as it does for a new line.
+    QPainterPath pending_path{pending.origin};
+    pending_path.lineTo(pending.origin);
+    pending_edge_->setPath(pending_path);
+    QGraphicsItem *source = findSocketOrAnchor(*this, qtext(lifted.scope),
+                                               qtext(lifted.source_node),
+                                               qtext(lifted.source_port),
+                                               QStringLiteral("output"));
+    lightDropTargets(source);
 }
 
 void GraphCanvasScene::lightDropTargets(const QGraphicsItem *origin) {
@@ -3579,7 +3718,7 @@ void GraphCanvasScene::followCursor(const QPointF &at) {
     // NB-2b: between two rows of a stack, a line from an output goes in
     // there -- the rows' own sockets do not draw it to themselves.
     auto gap = pending_connection_->from_output && pending_connection_->carry_loop.empty() &&
-                       !pending_connection_->from_folded
+                       !pending_connection_->from_folded && !pending_connection_->lifted
                    ? lineGapAt(at)
                    : std::nullopt;
     if (gap && (gap->scope != pending_connection_->scope || gap->stack == pending_connection_->node ||
@@ -3614,9 +3753,17 @@ void GraphCanvasScene::followCursor(const QPointF &at) {
     }
     const QPointF end = nearest != nullptr ? nearest->centre : gap ? gap->line.p1() : at;
     const bool from_output = pending_connection_->from_output;
-    pending_edge_->setPath(curveGeometryBetween(from_output ? pending_connection_->origin : end,
-                                                from_output ? end : pending_connection_->origin)
-                               .path);
+    const QPointF start = from_output ? pending_connection_->origin : end;
+    const QPointF tip = from_output ? end : pending_connection_->origin;
+    if (pending_connection_->lifted) {
+        // A lifted input keeps the straight reach its press drew; only a new
+        // line gets the normal pending curve.
+        QPainterPath path{start};
+        path.lineTo(tip);
+        pending_edge_->setPath(path);
+        return;
+    }
+    pending_edge_->setPath(curveGeometryBetween(start, tip).path);
 }
 
 std::function<void()> GraphCanvasScene::dropAction(const PendingConnection &pending,
@@ -3767,9 +3914,217 @@ std::function<void()> GraphCanvasScene::dropAction(const PendingConnection &pend
     };
 }
 
+void GraphCanvasScene::finishLiftedConnection(const QPointF &position) {
+    if (!pending_connection_ || !pending_connection_->lifted || model_ == nullptr) {
+        clearPendingConnection();
+        return;
+    }
+    const auto pending = *pending_connection_;
+    auto lifted = *pending.lifted;
+    const auto say = [this](std::string message) {
+        model_->setEditNotice({InspectorNoticeKind::Error, std::move(message)});
+        if (noticeChanged) noticeChanged();
+    };
+    // The line may have moved under the hand -- by an Undo, another panel, or
+    // a reply that came while this one was held. What this gesture cuts or
+    // reconnects is the document's line, so it has to still be the one the
+    // press lifted.
+    const auto drawn = model_->nodes(lifted.scope);
+    const auto owner = std::ranges::find(drawn, lifted.to_node, &GraphCanvasNode::id);
+    bool still = false;
+    if (owner != drawn.end()) {
+        if (!lifted.socket_key.empty()) {
+            const auto named = std::ranges::find_if(owner->input_sockets, [&](const auto &each) {
+                return each.key() == lifted.socket_key;
+            });
+            if (named != owner->input_sockets.end() && named->connected()) {
+                // A numbered socket keeps its key when an earlier port is
+                // renumbered; the port it lives on is read again here.
+                lifted.to_port = named->port;
+                still = named->source_node == lifted.source_node &&
+                        named->source_port == lifted.source_port;
+            }
+        } else {
+            const auto input = std::ranges::find(owner->inputs, lifted.to_port,
+                                                 &GraphCanvasPort::port);
+            still = input != owner->inputs.end() && input->connected &&
+                    input->source_node == lifted.source_node &&
+                    input->source_port == lifted.source_port;
+        }
+    }
+    if (!still) {
+        clearPendingConnection();
+        say("The line into " + lifted.to_node + "." + lifted.to_port +
+            " changed while it was being lifted. Nothing was changed.");
+        return;
+    }
+    // A lifted line lands on an input of its own scope only. A zone socket, a
+    // folded row, an output, a node's body or another scope is a target that
+    // does not take it -- not empty space, so it is not a cut either.
+    QGraphicsItem *target = nullptr;
+    bool invalid_socket = false;
+    bool other_item = false;
+    const auto consider = [&](QGraphicsItem *item, bool under) {
+        if (item == nullptr || !item->isVisible() || item == pending_edge_) return;
+        const QString kind = nodeGraphItemKind(*item);
+        if (kind == QLatin1String{GraphCanvasPendingEdgeItem}) return;
+        if (kind == QLatin1String{GraphCanvasZoneSocketItem} ||
+            kind == QLatin1String{GraphCanvasDerivedSocketItem}) {
+            invalid_socket = true;
+            return;
+        }
+        if (kind != QLatin1String{GraphCanvasSocketItem}) {
+            // The body a socket is drawn on is not the socket, but under a
+            // valid one it is what that socket sits on. Anything else under
+            // the hand is a place the carried line does not land.
+            if (under) other_item = true;
+            return;
+        }
+        // The `+` drawn on an empty slot is the slot's; the slot answers.
+        if (item->parentItem() != nullptr &&
+            nodeGraphItemKind(*item->parentItem()) == kind)
+            return;
+        if (item->data(GraphCanvasSocketDirectionRole).toString() !=
+            QLatin1String{"input"}) {
+            invalid_socket = true;
+            return;
+        }
+        const auto scope = itemScope(*item);
+        const auto node = item->data(NodeGraphNameRole).toString().toStdString();
+        const auto key = item->data(GraphCanvasSocketKeyRole).toString().toStdString();
+        if (scope != lifted.scope || model_->nodeOperation(scope, node) == "canvas.stack" ||
+            (item->data(GraphCanvasPortRole).toString().isEmpty() && key.empty())) {
+            invalid_socket = true;
+            return;
+        }
+        if (target == nullptr) target = item;
+    };
+    // A socket in reach is the one the hand aimed at, as it is for a line
+    // from an output (UX-1); otherwise what is under the release decides.
+    bool snapped = false;
+    if (snap_target_ != nullptr) {
+        consider(snap_target_, false);
+        snapped = target != nullptr && !invalid_socket;
+        if (!snapped) {
+            target = nullptr;
+            invalid_socket = false;
+        }
+    }
+    if (!snapped)
+        for (QGraphicsItem *item : items(position)) consider(item, true);
+    // A stack's row gap is a layer insertion for a line from an output, but a
+    // lifted input is not a layer line: it goes back or nowhere.
+    if (!target && !invalid_socket && lineGapAt(position)) invalid_socket = true;
+    if (invalid_socket || (target == nullptr && other_item)) {
+        clearPendingConnection();
+        return;
+    }
+    if (target == nullptr) {
+        // Empty space: the cut the gesture has always made, one edit.
+        auto ops = model_->disconnectInputOps(lifted.scope, lifted.to_node, lifted.to_port);
+        if (ops.empty()) {
+            clearPendingConnection();
+            return;
+        }
+        pending_connection_->lifted.reset();
+        clearPendingConnection();
+        const bool submitted = model_->submitEdit(std::move(ops));
+        afterEdit(submitted);
+        if (!submitted) showLiftedEdges(lifted);
+        return;
+    }
+    const auto target_node = target->data(NodeGraphNameRole).toString().toStdString();
+    const auto target_port = target->data(GraphCanvasPortRole).toString().toStdString();
+    const auto target_key = target->data(GraphCanvasSocketKeyRole).toString().toStdString();
+    const bool same = target_node == lifted.to_node &&
+                      (!lifted.socket_key.empty() && !target_key.empty()
+                           ? target_key == lifted.socket_key
+                           : target_port == lifted.to_port);
+    if (same) {
+        clearPendingConnection();
+        return;
+    }
+    // Q-19: a numbered socket is addressed by its key, and removing one port
+    // renumbers the ports after it. Moving a numbered line onto another
+    // numbered socket of the same node would make the target's number move
+    // under the edit; it is refused by name instead.
+    if (!lifted.socket_key.empty() && !target_key.empty() &&
+        target_node == lifted.to_node) {
+        clearPendingConnection();
+        say(target_node +
+            " numbers its shader inputs: moving one numbered line onto another "
+            "would renumber both. Drag it to another node instead.");
+        return;
+    }
+    // A lifted line has no visible line of its own while it is carried: a
+    // silent refusal would look like the gesture did nothing. The normal
+    // canvas leaves a socket the type does not take unlit; here the name is
+    // said while the old line comes back.
+    if (target_key.empty() &&
+        !model_->canConnect(lifted.scope, lifted.source_node, lifted.source_port,
+                            target_node, target_port)) {
+        clearPendingConnection();
+        say("The line from " + lifted.source_node + "." + lifted.source_port +
+            " cannot land on " + target_node + "." + target_port +
+            ": the two sockets do not take the same type.");
+        return;
+    }
+    auto ops = model_->disconnectInputOps(lifted.scope, lifted.to_node, lifted.to_port);
+    if (ops.empty()) {
+        clearPendingConnection();
+        return;
+    }
+    std::string refusal;
+    auto connect = !target_key.empty()
+                       ? model_->socketConnectOps(lifted.scope, target_node, target_key,
+                                                  lifted.source_node, lifted.source_port,
+                                                  &refusal)
+                       : model_->connectInputOps(lifted.scope, target_node, target_port,
+                                                 lifted.source_node, lifted.source_port,
+                                                 &refusal);
+    if (connect.empty()) {
+        clearPendingConnection();
+        if (!refusal.empty()) say(std::move(refusal));
+        return;
+    }
+    for (auto &op : connect) ops.push_back(std::move(op));
+    pending_connection_->lifted.reset();
+    clearPendingConnection();
+    const bool submitted = model_->submitEdit(std::move(ops));
+    afterEdit(submitted);
+    if (!submitted) showLiftedEdges(lifted);
+}
+
 void GraphCanvasScene::finishConnection(const QPointF &position) {
     if (!pending_connection_ || model_ == nullptr) {
         clearPendingConnection();
+        return;
+    }
+    // GC-1: first, before the branches below treat the carried line as a new
+    // one from an output -- on empty space that would do nothing, and on a
+    // socket only half of the reconnect.
+    if (pending_connection_->lifted) {
+        finishLiftedConnection(position);
+        return;
+    }
+    if (pending_connection_->lift_candidate) {
+        // The hand never travelled past the slop: a click on a connected
+        // input. It selects (the press did that) and cuts nothing.
+        const auto pending = *pending_connection_;
+        clearPendingConnection();
+        if (pending.carry_loop.empty() && !pending.socket_key.empty())
+            for (QGraphicsItem *item : items(position)) {
+                if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasSocketItem} ||
+                    item->data(GraphCanvasSocketDirectionRole).toString() !=
+                        QLatin1String{"input"} ||
+                    item->data(NodeGraphNameRole).toString().toStdString() != pending.node ||
+                    itemScope(*item) != pending.scope ||
+                    item->data(GraphCanvasSocketKeyRole).toString().toStdString() !=
+                        pending.socket_key)
+                    continue;
+                (void)clickInputSocket(pending.scope, pending.node, pending.socket_key, false);
+                break;
+            }
         return;
     }
     const auto pending = *pending_connection_;
@@ -3793,7 +4148,8 @@ void GraphCanvasScene::finishConnection(const QPointF &position) {
         }
     // NB-2b: let go between two rows of a stack, a line from a layer output
     // is a layer at that place (graphCanvasInsertLayerOps), one edit.
-    if (pending.from_output && pending.carry_loop.empty() && !pending.from_folded)
+    if (pending.from_output && pending.carry_loop.empty() && !pending.from_folded &&
+        !pending.lifted)
         if (const auto gap = lineGapAt(position); gap && gap->scope == pending.scope) {
             const auto nodes = layerNodes(gap->scope);
             if (pending.node != gap->stack &&
@@ -4016,6 +4372,7 @@ void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
                 event->accept();
                 selectNode(scope, item->data(NodeGraphNameRole).toString().toStdString());
                 beginConnection(*item);
+                if (pending_connection_) pending_connection_->lift_press = event->scenePos();
                 return;
             }
             // NB-2b: a row of a stack's body, its eye, name, marks, + ▾ and
@@ -4036,6 +4393,7 @@ void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
                 !item->data(GraphCanvasPortRole).toString().isEmpty()) {
                 event->accept();
                 beginConnection(*item);
+                if (pending_connection_) pending_connection_->lift_press = event->scenePos();
                 return;
             }
             if (kind == QLatin1String{GraphCanvasValuePillItem}) {
@@ -4105,6 +4463,32 @@ void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
 }
 
 void GraphCanvasScene::mouseMoveEvent(QGraphicsSceneMouseEvent *event) {
+    rehideLiftedEdges();
+    // GC-1: a press on a connected input has not lifted anything yet. The
+    // slop is four pixels on screen, so the scene distance it takes follows
+    // the zoom: eight scene units at 50%, two at 200%.
+    if (pending_connection_ && pending_connection_->lift_candidate &&
+        !pending_connection_->lifted) {
+        // The slop is four pixels in the view, not in the document: map both
+        // ends through the view's transform so zoom, rotation and a viewport
+        // that is not square all count the distance a hand actually sees.
+        QPointF moved = event->scenePos() - pending_connection_->lift_press;
+        if (!views().isEmpty()) {
+            const QTransform transform = views().front()->viewportTransform();
+            moved = transform.map(event->scenePos()) -
+                    transform.map(pending_connection_->lift_press);
+        }
+        if (QLineF{QPointF{}, moved}.length() <= 4.0) {
+            event->accept();
+            return;
+        }
+        liftPendingInput();
+        if (pending_connection_ && pending_edge_ != nullptr) {
+            event->accept();
+            followCursor(event->scenePos());
+            return;
+        }
+    }
     if (pending_connection_ && pending_edge_ != nullptr) {
         event->accept();
         followCursor(event->scenePos());
@@ -5053,6 +5437,14 @@ bool GraphCanvasScene::deleteSelection() {
 }
 
 void GraphCanvasScene::keyPressEvent(QKeyEvent *event) {
+    // GC-1: a line in the hand is the scene's, and Escape puts it back. This
+    // is before the shortcuts below so a pending line is never mistaken for
+    // history while nothing else on the canvas has a claim on Escape.
+    if (event->key() == Qt::Key_Escape && pending_connection_) {
+        clearPendingConnection();
+        event->accept();
+        return;
+    }
     // NB-5: no Undo, Redo or Delete while a stack's edit is in the air (the
     // canvas is enabled for that stack's rows only); an editor types on.
     if (model_ != nullptr && model_->busy() && layerEditInFlight() && !editingInline() &&
@@ -5292,6 +5684,8 @@ std::vector<GraphCanvasNode> GraphCanvasScene::layerNodes(const std::string &sco
 }
 
 void GraphCanvasScene::followLayerShape() {
+    const auto keep_lifted_hidden =
+        qScopeGuard([this] { rehideLiftedEdges(); });
     if (!layer_shape_ || model_ == nullptr || model_->busy()) return;
     const auto nodes = model_->nodes(layer_shape_->scope);
     const auto found = std::ranges::find(nodes, layer_shape_->stack, &GraphCanvasNode::id);
@@ -5406,6 +5800,8 @@ void GraphCanvasScene::routeRedrawnNodes(GraphCanvasDrawing::Builder &drawing, c
 }
 
 bool GraphCanvasScene::redrawStackNode(const std::string &scope, const std::string &stack) {
+    const auto keep_lifted_hidden =
+        qScopeGuard([this] { rehideLiftedEdges(); });
     if (model_ == nullptr || rebuilding_ || model_->foldedView() || model_->currentScope() != scope) return false;
     auto *item = dynamic_cast<QGraphicsPathItem *>(findNodeItem(*this, graphCanvasKinds(), qtext(scope), qtext(stack)));
     // A zone's body is drawn inside its frame: the whole draw follows it.
@@ -5717,6 +6113,8 @@ int GraphCanvasScene::zonesUncomparable(const DrawnFrom &now) const {
 }
 
 bool GraphCanvasScene::followDocument() {
+    const auto keep_lifted_hidden =
+        qScopeGuard([this] { rehideLiftedEdges(); });
     if (model_ == nullptr || rebuilding_ || !drawn_from_) {
         // GS-2: drawn whole without comparing (bit 13), and why (detail2).
         if (GuiTrace::sink) {
@@ -6110,6 +6508,8 @@ GraphCanvasScene::RedrawChange GraphCanvasScene::classifyRedraw(const DrawnFrom 
 }
 
 GraphCanvasScene::NodeRedraw GraphCanvasScene::redrawChangedNodes(DrawnFrom &now, const int zones_moved) {
+    const auto keep_lifted_hidden =
+        qScopeGuard([this] { rehideLiftedEdges(); });
     const DrawnFrom &drawn = *drawn_from_;
     // Why a partial redraw was not made: the first condition that failed,
     // as a bit of graph_redraw_refused (studio_latency.py lists them).

@@ -28122,3 +28122,891 @@ TEST_CASE("SDK-2a i: the picture reads the new parts' paths, pen and visibility"
     }
     CHECK(gs3aPicture(scene) == before);
 }
+
+// --- GC-1: a press on a line's input picks the line up.
+
+namespace {
+
+// The instance body the lift cases use: `gain` and `bias` feed `sum`, `sum`
+// feeds `buffer`.  It is the smallest graph with two inputs on one node and a
+// typed sink input at hand.
+Json gc1BodyDocument() {
+    return fixtureDocument();
+}
+
+void gc1OpenBody(ZoneHarness &h) {
+    h.open();
+    REQUIRE(h.model.enterInstance("left"));
+    h.scene.repopulate();
+    REQUIRE(nodeItem(h.scene, QStringLiteral("sum")) != nullptr);
+}
+
+Json gc1DisconnectedInput(const char *scope, const char *node, const char *port) {
+    return {{"op", "set_input"}, {"scope", scope}, {"node", node}, {"port", port},
+            {"source", nullptr}};
+}
+
+bool gc1EdgeVisible(GraphCanvasScene &scene, const QString &from, const QString &from_port,
+                    const QString &to, const QString &to_port) {
+    QGraphicsPathItem *line = edgeItem(scene, from, from_port, to, to_port);
+    return line != nullptr && line->isVisible();
+}
+
+// A place with nothing drawn on it: not a node, socket, label or a line.  The
+// release paths distinguish empty space from an invalid target by exactly that
+// question, so the helper asks the scene's own answer.
+QPointF gc1EmptyPoint(GraphCanvasScene &scene, const QPointF &from,
+                      qreal minimum = 40.0) {
+    constexpr int Steps = 24;
+    for (const qreal radius : {minimum, minimum + 30.0, minimum + 70.0,
+                               minimum + 120.0, minimum + 180.0, minimum + 240.0}) {
+        for (int step = 0; step < Steps; ++step) {
+            const QPointF at =
+                from + QLineF::fromPolar(radius, 15.0 * step).p2();
+            bool clear = true;
+            for (QGraphicsItem *item : scene.items(at)) {
+                if (!item->isVisible()) continue;
+                if (PelicanStudio::nodeGraphItemKind(*item) ==
+                    QLatin1String{PelicanStudio::GraphCanvasPendingEdgeItem})
+                    continue;
+                clear = false;
+                break;
+            }
+            if (clear) return at;
+        }
+    }
+    FAIL("no empty canvas point near " << from.x() << ", " << from.y());
+    return {};
+}
+
+Json gc1TypedCatalog() {
+    Json catalog = visualCatalog();
+    for (auto &module : catalog["modules"]) {
+        if (module.value("namespace", std::string{}) != "pelican.render") continue;
+        module["operations"].push_back(declaredOperation(
+            "render.view", "rendering",
+            Json::array({declaredInput("target", "pelican.render.storage_buffer@1")}),
+            Json::array({declaredOutput("resource", "pelican.render.storage_buffer@1")})));
+    }
+    return catalog;
+}
+
+// `sum.a` is a scalar input; `view.target` is a storage buffer.  The source is
+// `gain.value`, which no buffer input takes.
+Json gc1TypedBodyDocument() {
+    Json document = fixtureDocument();
+    document["definitions"]["gain_curve"]["nodes"].push_back(
+        {{"id", "view"}, {"op", "render.view"},
+         {"inputs", {{"target", {{"node", "buffer"}, {"port", "resource"}}}}},
+         {"outputs", Json::array({"resource"})}});
+    return document;
+}
+
+// A body whose `sum` is drawn as its heading, so its inputs are one anchor.
+Json gc1FoldedBodyDocument() {
+    Json document = fixtureDocument();
+    document["definitions"]["gain_curve"]["layout"] = {
+        {"nodes", {{"sum", {{"x", 420.0}, {"y", 120.0}, {"view", "minimal"}}}}}};
+    return document;
+}
+
+// Q-19's body with two numbered inputs on `pass`, both reading the boundary's
+// value: the pair the numbered-port policy is about.
+Json gc1NumberedBodyDocument() {
+    Json document = q19ZoneDocument();
+    Json &pass = document["definitions"]["body"]["nodes"].at(2);
+    REQUIRE(pass.at("id") == "pass");
+    pass["parameters"]["ports"] = {{"target", q19ReadPort(0)},
+                                   {"second", q19ReadPort(1)}};
+    pass["inputs"] = {{"target", {{"node", "target"}, {"port", "value"}}},
+                      {"second", {{"node", "target"}, {"port", "value"}}}};
+    return document;
+}
+
+Json gc1NumberedPlan() {
+    Json plan = q19ZonePlan();
+    for (auto &node : plan["nodes"])
+        node["pass_inputs"]["variadic_range"] = {{"first", 0}, {"max", 8}};
+    return plan;
+}
+
+} // namespace
+
+TEST_CASE("GC-1 a press on a connected input is not a lift until the hand travels",
+          "[devstudio][graph-canvas][scene][gc1]") {
+    (void)application();
+
+    SECTION("a click does not move, hide or send anything, even one pixel on") {
+        ZoneHarness h{gc1BodyDocument()};
+        gc1OpenBody(h);
+        auto &scene = h.scene;
+        QGraphicsItem *input = socketOf(scene, QStringLiteral("gain_curve"),
+                                        "sum", "a", "input");
+        REQUIRE(input != nullptr);
+        QGraphicsPathItem *old =
+            edgeItem(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                     QStringLiteral("sum"), QStringLiteral("a"));
+        REQUIRE(old != nullptr);
+        REQUIRE(old->isVisible());
+        const QPointF at = centreOf(input);
+
+        // The press itself: selection is allowed, a lift is not.
+        sceneMouse(scene, QEvent::GraphicsSceneMousePress, at);
+        CHECK(pendingLine(scene) == nullptr);
+        CHECK(old->isVisible());
+        // One scene unit, far inside the four-view-pixel slop.  A canvas that
+        // lifted on the press or on the first move has hidden the old line by
+        // here; the click must not.
+        sceneMouse(scene, QEvent::GraphicsSceneMouseMove, at + QPointF{1.0, 0.0});
+        CHECK(pendingLine(scene) == nullptr);
+        CHECK(old->isVisible());
+        sceneMouse(scene, QEvent::GraphicsSceneMouseRelease, at + QPointF{1.0, 0.0});
+        CHECK(pendingLine(scene) == nullptr);
+        CHECK(old->isVisible());
+        requireNoEdit(h.model);
+    }
+
+    SECTION("past the slop the old line is hidden and a dashed line runs from its output") {
+        ZoneHarness h{gc1BodyDocument()};
+        gc1OpenBody(h);
+        auto &scene = h.scene;
+        QGraphicsItem *input = socketOf(scene, QStringLiteral("gain_curve"),
+                                        "sum", "a", "input");
+        QGraphicsItem *source = socketOf(scene, QStringLiteral("gain_curve"),
+                                         "gain", "value", "output");
+        REQUIRE(input != nullptr);
+        REQUIRE(source != nullptr);
+        QGraphicsPathItem *old =
+            edgeItem(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                     QStringLiteral("sum"), QStringLiteral("a"));
+        REQUIRE(old != nullptr);
+        const QPointF at = centreOf(input);
+        const QPointF first = gc1EmptyPoint(scene, at, 55.0);
+        const QPointF second = gc1EmptyPoint(scene, first, 45.0);
+
+        sceneMouse(scene, QEvent::GraphicsSceneMousePress, at);
+        sceneMouse(scene, QEvent::GraphicsSceneMouseMove, first);
+        QGraphicsPathItem *line = pendingLine(scene);
+        REQUIRE(line != nullptr);
+        CHECK_FALSE(old->isVisible());
+        CHECK(scene.dragging());
+        // The socket the line came from is a target too: letting go here puts
+        // it back. It is lit like any input a line from this output can land
+        // on, not refused.
+        CHECK(input->scale() > 1.0);
+        // The reach starts at the output, not at the input under the hand.
+        CHECK(near(line->mapToScene(line->path().pointAtPercent(0.0)),
+                   centreOf(source)));
+        CHECK(near(lineEnd(scene), first));
+        // The lifted line is straight, not the curved preview a new line gets.
+        CHECK(near(line->mapToScene(line->path().pointAtPercent(0.5)),
+                   (centreOf(source) + first) / 2.0));
+        sceneMouse(scene, QEvent::GraphicsSceneMouseMove, second);
+        REQUIRE(pendingLine(scene) == line);
+        CHECK(near(lineEnd(scene), second));
+
+        // Letting go on the input it came from puts it back and sends nothing.
+        sceneMouse(scene, QEvent::GraphicsSceneMouseRelease, at);
+        CHECK(pendingLine(scene) == nullptr);
+        CHECK(old->isVisible());
+        requireNoEdit(h.model);
+    }
+
+    SECTION("let go on empty space: the cut, one edit and one Undo") {
+        ZoneHarness h{gc1BodyDocument()};
+        gc1OpenBody(h);
+        auto &scene = h.scene;
+        QGraphicsItem *input = socketOf(scene, QStringLiteral("gain_curve"),
+                                        "sum", "a", "input");
+        REQUIRE(input != nullptr);
+        const QPointF at = centreOf(input);
+        const QPointF empty = gc1EmptyPoint(scene, at, 60.0);
+        sceneMouse(scene, QEvent::GraphicsSceneMousePress, at);
+        sceneMouse(scene, QEvent::GraphicsSceneMouseMove, empty);
+        sceneMouse(scene, QEvent::GraphicsSceneMouseRelease, empty);
+
+        const Json ops = h.commit();
+        CHECK(ops == Json::array({gc1DisconnectedInput("gain_curve", "sum", "a")}));
+        const auto &sum =
+            h.document.at("definitions").at("gain_curve").at("nodes").at(2);
+        REQUIRE(sum.at("id") == "sum");
+        CHECK_FALSE(sum.at("inputs").contains("a"));
+        CHECK(sum.at("inputs").at("b").at("node") == "bias");
+        REQUIRE(h.model.canUndo());
+        scene.undoEdit();
+        h.commit();
+        CHECK(gc1EdgeVisible(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                             QStringLiteral("sum"), QStringLiteral("a")));
+    }
+
+    SECTION("let go on the same socket: no edit, the old line visible again") {
+        ZoneHarness h{gc1BodyDocument()};
+        gc1OpenBody(h);
+        auto &scene = h.scene;
+        QGraphicsItem *input = socketOf(scene, QStringLiteral("gain_curve"),
+                                        "sum", "a", "input");
+        REQUIRE(input != nullptr);
+        const QPointF at = centreOf(input);
+        const QPointF empty = gc1EmptyPoint(scene, at, 60.0);
+        sceneMouse(scene, QEvent::GraphicsSceneMousePress, at);
+        sceneMouse(scene, QEvent::GraphicsSceneMouseMove, empty);
+        sceneMouse(scene, QEvent::GraphicsSceneMouseMove, at);
+        CHECK(pendingLine(scene) != nullptr);
+        sceneMouse(scene, QEvent::GraphicsSceneMouseRelease, at);
+        CHECK(pendingLine(scene) == nullptr);
+        CHECK(gc1EdgeVisible(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                             QStringLiteral("sum"), QStringLiteral("a")));
+        requireNoEdit(h.model);
+    }
+
+    SECTION("Escape puts a lifted line back and cancels a new connection") {
+        ZoneHarness h{gc1BodyDocument()};
+        gc1OpenBody(h);
+        auto &scene = h.scene;
+        QGraphicsItem *input = socketOf(scene, QStringLiteral("gain_curve"),
+                                        "sum", "a", "input");
+        REQUIRE(input != nullptr);
+        const QPointF empty = gc1EmptyPoint(scene, centreOf(input), 60.0);
+        sceneMouse(scene, QEvent::GraphicsSceneMousePress, centreOf(input));
+        sceneMouse(scene, QEvent::GraphicsSceneMouseMove, empty);
+        REQUIRE(pendingLine(scene) != nullptr);
+        pressKey(scene, Qt::Key_Escape);
+        CHECK(pendingLine(scene) == nullptr);
+        CHECK(gc1EdgeVisible(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                             QStringLiteral("sum"), QStringLiteral("a")));
+        requireNoEdit(h.model);
+
+        // A new connection from an output is cancelled the same way, with no
+        // edit: Escape on a pending gesture is not the panel or view Escape.
+        QGraphicsItem *output = socketOf(scene, QStringLiteral("gain_curve"),
+                                         "gain", "value", "output");
+        REQUIRE(output != nullptr);
+        sceneMouse(scene, QEvent::GraphicsSceneMousePress, centreOf(output));
+        REQUIRE(pendingLine(scene) != nullptr);
+        sceneMouse(scene, QEvent::GraphicsSceneMouseMove, empty);
+        REQUIRE(pendingLine(scene) != nullptr);
+        pressKey(scene, Qt::Key_Escape);
+        CHECK(pendingLine(scene) == nullptr);
+        requireNoEdit(h.model);
+    }
+
+    SECTION("reconnect to another input: one edit, one Undo, and a type says no") {
+        {
+            ZoneHarness h{gc1BodyDocument()};
+            gc1OpenBody(h);
+            auto &scene = h.scene;
+            QGraphicsItem *from = socketOf(scene, QStringLiteral("gain_curve"),
+                                           "sum", "a", "input");
+            QGraphicsItem *to = socketOf(scene, QStringLiteral("gain_curve"),
+                                         "sum", "b", "input");
+            REQUIRE(from != nullptr);
+            REQUIRE(to != nullptr);
+            sceneMouse(scene, QEvent::GraphicsSceneMousePress, centreOf(from));
+            sceneMouse(scene, QEvent::GraphicsSceneMouseMove, centreOf(to));
+            REQUIRE(pendingLine(scene) != nullptr);
+            CHECK_FALSE(gc1EdgeVisible(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                                       QStringLiteral("sum"), QStringLiteral("a")));
+            // The occupant is replaced only when the hand lets go; until then
+            // its line is still what the document says.
+            CHECK(gc1EdgeVisible(scene, QStringLiteral("bias"), QStringLiteral("value"),
+                                 QStringLiteral("sum"), QStringLiteral("b")));
+            sceneMouse(scene, QEvent::GraphicsSceneMouseRelease, centreOf(to));
+
+            const Json ops = h.commit();
+            REQUIRE(ops.size() == 2);
+            CHECK(ops.at(0) == gc1DisconnectedInput("gain_curve", "sum", "a"));
+            CHECK(ops.at(1) ==
+                  Json{{"op", "set_input"}, {"scope", "gain_curve"}, {"node", "sum"},
+                       {"port", "b"},
+                       {"source", {{"node", "gain"}, {"port", "value"}}}});
+            const auto &sum =
+                h.document.at("definitions").at("gain_curve").at("nodes").at(2);
+            REQUIRE(sum.at("id") == "sum");
+            CHECK_FALSE(sum.at("inputs").contains("a"));
+            CHECK(sum.at("inputs").at("b").at("node") == "gain");
+            REQUIRE(h.model.canUndo());
+            scene.undoEdit();
+            h.commit();
+            const auto &back =
+                h.document.at("definitions").at("gain_curve").at("nodes").at(2);
+            REQUIRE(back.at("id") == "sum");
+            CHECK(back.at("inputs").at("a").at("node") == "gain");
+            CHECK(back.at("inputs").at("b").at("node") == "bias");
+            CHECK(gc1EdgeVisible(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                                 QStringLiteral("sum"), QStringLiteral("a")));
+            CHECK(gc1EdgeVisible(scene, QStringLiteral("bias"), QStringLiteral("value"),
+                                 QStringLiteral("sum"), QStringLiteral("b")));
+        }
+
+        {
+            ZoneHarness h{gc1TypedBodyDocument()};
+            h.catalog = gc1TypedCatalog();
+            gc1OpenBody(h);
+            auto &scene = h.scene;
+            QGraphicsItem *from = socketOf(scene, QStringLiteral("gain_curve"),
+                                           "sum", "a", "input");
+            QGraphicsItem *typed = socketOf(scene, QStringLiteral("gain_curve"),
+                                            "view", "target", "input");
+            REQUIRE(from != nullptr);
+            REQUIRE(typed != nullptr);
+            sceneMouse(scene, QEvent::GraphicsSceneMousePress, centreOf(from));
+            sceneMouse(scene, QEvent::GraphicsSceneMouseMove, centreOf(typed));
+            sceneMouse(scene, QEvent::GraphicsSceneMouseRelease, centreOf(typed));
+            requireNoEdit(h.model);
+            CHECK(h.model.editNotice().kind ==
+                  PelicanStudio::InspectorNoticeKind::Error);
+            CHECK(std::string{h.model.editNotice().message}.find(
+                      "cannot land on view.target") != std::string::npos);
+            CHECK(gc1EdgeVisible(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                                 QStringLiteral("sum"), QStringLiteral("a")));
+            CHECK(pendingLine(scene) == nullptr);
+        }
+    }
+}
+
+TEST_CASE("GC-1 a lifted value, a buffer input, a zone body and a bent edge all cut the same way",
+          "[devstudio][graph-canvas][scene][gc1]") {
+    (void)application();
+
+    SECTION("a buffer's scalar `value` input is still a line and still lifts") {
+        ZoneHarness h{gc1BodyDocument()};
+        gc1OpenBody(h);
+        auto &scene = h.scene;
+        QGraphicsItem *input = socketOf(scene, QStringLiteral("gain_curve"),
+                                        "buffer", "value", "input");
+        REQUIRE(input != nullptr);
+        CHECK(gc1EdgeVisible(scene, QStringLiteral("sum"), QStringLiteral("value"),
+                             QStringLiteral("buffer"), QStringLiteral("value")));
+        const QPointF empty = gc1EmptyPoint(scene, centreOf(input), 55.0);
+        sceneMouse(scene, QEvent::GraphicsSceneMousePress, centreOf(input));
+        sceneMouse(scene, QEvent::GraphicsSceneMouseMove, empty);
+        CHECK_FALSE(gc1EdgeVisible(scene, QStringLiteral("sum"), QStringLiteral("value"),
+                                   QStringLiteral("buffer"), QStringLiteral("value")));
+        sceneMouse(scene, QEvent::GraphicsSceneMouseRelease, empty);
+        const Json ops = h.commit();
+        CHECK(ops == Json::array({gc1DisconnectedInput("gain_curve", "buffer", "value")}));
+        const auto &buffer =
+            h.document.at("definitions").at("gain_curve").at("nodes").at(3);
+        CHECK((!buffer.contains("inputs") || !buffer.at("inputs").contains("value")));
+        scene.undoEdit();
+        h.commit();
+        CHECK(gc1EdgeVisible(scene, QStringLiteral("sum"), QStringLiteral("value"),
+                             QStringLiteral("buffer"), QStringLiteral("value")));
+    }
+
+    SECTION("an edge in a loop body lifts in its own scope") {
+        ZoneHarness h{zoneDocument()};
+        h.open();
+        REQUIRE(h.model.selectScope("first"));
+        h.scene.repopulate();
+        auto &scene = h.scene;
+        QGraphicsItem *input = socketOf(scene, QStringLiteral("first"),
+                                        "sum", "a", "input");
+        REQUIRE(input != nullptr);
+        REQUIRE(gc1EdgeVisible(scene, QStringLiteral("target"), QStringLiteral("value"),
+                               QStringLiteral("sum"), QStringLiteral("a")));
+        const QPointF empty = gc1EmptyPoint(scene, centreOf(input), 55.0);
+        sceneMouse(scene, QEvent::GraphicsSceneMousePress, centreOf(input));
+        sceneMouse(scene, QEvent::GraphicsSceneMouseMove, empty);
+        CHECK_FALSE(gc1EdgeVisible(scene, QStringLiteral("target"), QStringLiteral("value"),
+                                   QStringLiteral("sum"), QStringLiteral("a")));
+        sceneMouse(scene, QEvent::GraphicsSceneMouseRelease, empty);
+        const Json ops = h.commit();
+        CHECK(ops == Json::array({gc1DisconnectedInput("first", "sum", "a")}));
+        CHECK_FALSE(h.document.at("definitions").at("first").at("nodes").at(2)
+                        .at("inputs").contains("a"));
+        scene.undoEdit();
+        h.commit();
+        CHECK(gc1EdgeVisible(scene, QStringLiteral("target"), QStringLiteral("value"),
+                             QStringLiteral("sum"), QStringLiteral("a")));
+    }
+
+    SECTION("an edge drawn through a reroute lifts, cuts and is restored by Undo") {
+        ZoneHarness h{gc1BodyDocument()};
+        gc1OpenBody(h);
+        auto &scene = h.scene;
+        QGraphicsPathItem *line =
+            edgeItem(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                     QStringLiteral("sum"), QStringLiteral("a"));
+        REQUIRE(line != nullptr);
+        REQUIRE(scene.insertReroute(
+            PelicanStudio::GraphCanvasEdge{"gain", "value", "sum", "a"},
+            line->path().pointAtPercent(0.5)));
+        REQUIRE(scene.layout().reroutes.size() == 1);
+        // Keep the bend in the document first: the lift is about the line, not
+        // about a placement edit waiting in the outbox.
+        scene.flushLayout();
+        (void)h.commit();
+        line = edgeItem(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                        QStringLiteral("sum"), QStringLiteral("a"));
+        REQUIRE(line != nullptr);
+        REQUIRE(scene.layout().reroutes.size() == 1);
+        QGraphicsItem *input = socketOf(scene, QStringLiteral("gain_curve"),
+                                        "sum", "a", "input");
+        const QPointF empty = gc1EmptyPoint(scene, centreOf(input), 55.0);
+        sceneMouse(scene, QEvent::GraphicsSceneMousePress, centreOf(input));
+        sceneMouse(scene, QEvent::GraphicsSceneMouseMove, empty);
+        CHECK_FALSE(line->isVisible());
+        sceneMouse(scene, QEvent::GraphicsSceneMouseRelease, empty);
+        const Json ops = h.commit();
+        CHECK(ops == Json::array({gc1DisconnectedInput("gain_curve", "sum", "a")}));
+        CHECK(h.document.at("definitions").at("gain_curve").at("layout")
+                  .at("reroutes").empty());
+        scene.undoEdit();
+        h.commit();
+        CHECK(gc1EdgeVisible(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                             QStringLiteral("sum"), QStringLiteral("a")));
+        CHECK(scene.layout().reroutes.size() == 1);
+    }
+
+    SECTION("a reconnect takes both bent lines and Undo gives both bends back") {
+        ZoneHarness h{gc1BodyDocument()};
+        gc1OpenBody(h);
+        auto &scene = h.scene;
+        const auto bend = [&](const char *from, const char *from_port, const char *to,
+                              const char *to_port, double at) {
+            QGraphicsPathItem *line = edgeItem(scene, QString::fromLatin1(from),
+                                               QString::fromLatin1(from_port),
+                                               QString::fromLatin1(to),
+                                               QString::fromLatin1(to_port));
+            REQUIRE(line != nullptr);
+            return scene.insertReroute(
+                PelicanStudio::GraphCanvasEdge{from, from_port, to, to_port},
+                line->path().pointAtPercent(at));
+        };
+        REQUIRE(bend("gain", "value", "sum", "a", 0.35));
+        REQUIRE(bend("bias", "value", "sum", "b", 0.65));
+        scene.flushLayout();
+        (void)h.commit();
+        REQUIRE(scene.layout().reroutes.size() == 2);
+        REQUIRE(h.document.at("definitions").at("gain_curve").at("layout")
+                    .at("reroutes").size() == 2);
+
+        QGraphicsItem *from = socketOf(scene, QStringLiteral("gain_curve"),
+                                       "sum", "a", "input");
+        QGraphicsItem *to = socketOf(scene, QStringLiteral("gain_curve"),
+                                     "sum", "b", "input");
+        REQUIRE(from != nullptr);
+        REQUIRE(to != nullptr);
+        sceneMouse(scene, QEvent::GraphicsSceneMousePress, centreOf(from));
+        sceneMouse(scene, QEvent::GraphicsSceneMouseMove, centreOf(to));
+        sceneMouse(scene, QEvent::GraphicsSceneMouseRelease, centreOf(to));
+        const Json ops = h.commit();
+        CHECK(ops == Json::array(
+                         {gc1DisconnectedInput("gain_curve", "sum", "a"),
+                          {{"op", "set_input"}, {"scope", "gain_curve"}, {"node", "sum"},
+                           {"port", "b"},
+                           {"source", {{"node", "gain"}, {"port", "value"}}}}}));
+        // The engine drops the placement of the line that is no longer there;
+        // the target's bend stays on the target's line.
+        const auto &reroutes = h.document.at("definitions").at("gain_curve")
+                                   .at("layout").at("reroutes");
+        REQUIRE(reroutes.size() == 1);
+        CHECK(reroutes.at(0).at("edge").at("node") == "sum");
+        CHECK(reroutes.at(0).at("edge").at("port") == "b");
+        CHECK_FALSE(gc1EdgeVisible(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                                   QStringLiteral("sum"), QStringLiteral("a")));
+        CHECK(gc1EdgeVisible(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                             QStringLiteral("sum"), QStringLiteral("b")));
+        REQUIRE(h.model.canUndo());
+        scene.undoEdit();
+        h.commit();
+        // Both lines and both bends are the state before the one edit.
+        CHECK(scene.layout().reroutes.size() == 2);
+        CHECK(gc1EdgeVisible(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                             QStringLiteral("sum"), QStringLiteral("a")));
+        CHECK(gc1EdgeVisible(scene, QStringLiteral("bias"), QStringLiteral("value"),
+                             QStringLiteral("sum"), QStringLiteral("b")));
+    }
+
+    SECTION("a reconnect from a tied line leaves one Undo that restores the tie") {
+        ZoneHarness h{gc1BodyDocument()};
+        gc1OpenBody(h);
+        auto &scene = h.scene;
+        scene.selectEdge(
+            PelicanStudio::GraphCanvasEdge{"gain", "value", "sum", "a"}, false);
+        scene.selectEdge(
+            PelicanStudio::GraphCanvasEdge{"bias", "value", "sum", "b"}, true);
+        REQUIRE(scene.selectedEdges().size() == 2);
+        REQUIRE(scene.tieSelection());
+        scene.flushLayout();
+        (void)h.commit();
+        REQUIRE(scene.layout().ties.size() == 1);
+        REQUIRE(scene.layout().ties.front().edges.size() == 2);
+
+        QGraphicsItem *from = socketOf(scene, QStringLiteral("gain_curve"),
+                                       "sum", "a", "input");
+        QGraphicsItem *to = socketOf(scene, QStringLiteral("gain_curve"),
+                                     "sum", "b", "input");
+        REQUIRE(from != nullptr);
+        REQUIRE(to != nullptr);
+        sceneMouse(scene, QEvent::GraphicsSceneMousePress, centreOf(from));
+        sceneMouse(scene, QEvent::GraphicsSceneMouseMove, centreOf(to));
+        sceneMouse(scene, QEvent::GraphicsSceneMouseRelease, centreOf(to));
+        const Json ops = h.commit();
+        REQUIRE(ops.size() == 2);
+        // Taking one of two tied lines away leaves the survivor as a reroute,
+        // exactly as the ordinary reconnect does.
+        CHECK(scene.layout().ties.empty());
+        REQUIRE(scene.layout().reroutes.size() == 1);
+        CHECK(scene.layout().reroutes.front().edge.node == "sum");
+        CHECK(scene.layout().reroutes.front().edge.port == "b");
+        REQUIRE(h.model.canUndo());
+        scene.undoEdit();
+        h.commit();
+        // One Undo puts both lines and their bundle back.
+        REQUIRE(scene.layout().ties.size() == 1);
+        CHECK(scene.layout().ties.front().edges.size() == 2);
+        CHECK(gc1EdgeVisible(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                             QStringLiteral("sum"), QStringLiteral("a")));
+        CHECK(gc1EdgeVisible(scene, QStringLiteral("bias"), QStringLiteral("value"),
+                             QStringLiteral("sum"), QStringLiteral("b")));
+    }
+}
+
+TEST_CASE("GC-1 moving one numbered line onto another of the same pass is refused by name",
+          "[devstudio][graph-canvas][scene][gc1]") {
+    (void)application();
+    ZoneHarness h{gc1NumberedBodyDocument()};
+    addRenderOperations(h);
+    h.loops = q19ZoneLoops();
+    h.plan = gc1NumberedPlan();
+    h.open();
+    h.answerReads();
+    h.scene.repopulate();
+    auto &scene = h.scene;
+    const QString body = QStringLiteral("body");
+    QGraphicsItem *first = socketOf(scene, body, "pass", "in@0", "input");
+    QGraphicsItem *second = socketOf(scene, body, "pass", "in@1", "input");
+    REQUIRE(first != nullptr);
+    REQUIRE(second != nullptr);
+    REQUIRE(gc1EdgeVisible(scene, QStringLiteral("target"), QStringLiteral("value"),
+                           QStringLiteral("pass"), QStringLiteral("target")));
+    REQUIRE(gc1EdgeVisible(scene, QStringLiteral("target"), QStringLiteral("value"),
+                           QStringLiteral("pass"), QStringLiteral("second")));
+
+    sceneMouse(scene, QEvent::GraphicsSceneMousePress, centreOf(first));
+    sceneMouse(scene, QEvent::GraphicsSceneMouseMove, centreOf(second));
+    CHECK(pendingLine(scene) != nullptr);
+    CHECK_FALSE(gc1EdgeVisible(scene, QStringLiteral("target"), QStringLiteral("value"),
+                               QStringLiteral("pass"), QStringLiteral("target")));
+    sceneMouse(scene, QEvent::GraphicsSceneMouseRelease, centreOf(second));
+    requireNoEdit(h.model);
+    CHECK(pendingLine(scene) == nullptr);
+    CHECK(h.model.editNotice().kind == PelicanStudio::InspectorNoticeKind::Error);
+    CHECK(std::string{h.model.editNotice().message}.find(
+              "numbers its shader inputs") != std::string::npos);
+    CHECK(gc1EdgeVisible(scene, QStringLiteral("target"), QStringLiteral("value"),
+                         QStringLiteral("pass"), QStringLiteral("target")));
+    CHECK(gc1EdgeVisible(scene, QStringLiteral("target"), QStringLiteral("value"),
+                         QStringLiteral("pass"), QStringLiteral("second")));
+}
+
+TEST_CASE("GC-1 the slop is measured on the screen, not the document",
+          "[devstudio][graph-canvas][scene][gc1]") {
+    (void)application();
+
+    SECTION("at 50% four scene units is two pixels: it does not lift; ten does") {
+        ZoneHarness h{gc1BodyDocument()};
+        gc1OpenBody(h);
+        auto &scene = h.scene;
+        QGraphicsView view{&scene};
+        view.resize(800, 600);
+        view.scale(0.5, 0.5);
+        QGraphicsItem *input = socketOf(scene, QStringLiteral("gain_curve"),
+                                        "sum", "a", "input");
+        REQUIRE(input != nullptr);
+        const QPointF at = centreOf(input);
+        sceneMouse(scene, QEvent::GraphicsSceneMousePress, at);
+        sceneMouse(scene, QEvent::GraphicsSceneMouseMove, at + QPointF{8.0, 0.0});
+        CHECK(pendingLine(scene) == nullptr);
+        CHECK(gc1EdgeVisible(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                             QStringLiteral("sum"), QStringLiteral("a")));
+        sceneMouse(scene, QEvent::GraphicsSceneMouseMove, at + QPointF{10.0, 0.0});
+        CHECK(pendingLine(scene) != nullptr);
+        CHECK_FALSE(gc1EdgeVisible(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                                   QStringLiteral("sum"), QStringLiteral("a")));
+        sceneMouse(scene, QEvent::GraphicsSceneMouseRelease, at);
+        requireNoEdit(h.model);
+    }
+
+    SECTION("at 200% two scene units is four pixels: it does not lift; three does") {
+        ZoneHarness h{gc1BodyDocument()};
+        gc1OpenBody(h);
+        auto &scene = h.scene;
+        QGraphicsView view{&scene};
+        view.resize(800, 600);
+        view.scale(2.0, 2.0);
+        QGraphicsItem *input = socketOf(scene, QStringLiteral("gain_curve"),
+                                        "sum", "a", "input");
+        REQUIRE(input != nullptr);
+        const QPointF at = centreOf(input);
+        sceneMouse(scene, QEvent::GraphicsSceneMousePress, at);
+        sceneMouse(scene, QEvent::GraphicsSceneMouseMove, at + QPointF{2.0, 0.0});
+        CHECK(pendingLine(scene) == nullptr);
+        sceneMouse(scene, QEvent::GraphicsSceneMouseMove, at + QPointF{3.0, 0.0});
+        CHECK(pendingLine(scene) != nullptr);
+        CHECK_FALSE(gc1EdgeVisible(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                                   QStringLiteral("sum"), QStringLiteral("a")));
+        sceneMouse(scene, QEvent::GraphicsSceneMouseRelease, at);
+        requireNoEdit(h.model);
+    }
+}
+
+TEST_CASE("GC-1 a redraw under the hand, another scope and a full repopulate",
+          "[devstudio][graph-canvas][scene][gc1]") {
+    (void)application();
+
+    SECTION("a repopulate that is not held by the widget cancels the lift, line and all") {
+        ZoneHarness h{gc1BodyDocument()};
+        gc1OpenBody(h);
+        auto &scene = h.scene;
+        QGraphicsItem *input = socketOf(scene, QStringLiteral("gain_curve"),
+                                        "sum", "a", "input");
+        const QPointF empty = gc1EmptyPoint(scene, centreOf(input), 55.0);
+        sceneMouse(scene, QEvent::GraphicsSceneMousePress, centreOf(input));
+        sceneMouse(scene, QEvent::GraphicsSceneMouseMove, empty);
+        REQUIRE(pendingLine(scene) != nullptr);
+        scene.repopulate();
+        CHECK(pendingLine(scene) == nullptr);
+        CHECK(gc1EdgeVisible(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                             QStringLiteral("sum"), QStringLiteral("a")));
+        requireNoEdit(h.model);
+    }
+
+    SECTION("a value redrawn under the hand keeps the old line hidden") {
+        ZoneHarness h{gc1BodyDocument()};
+        h.document["definitions"]["gain_curve"]["nodes"].push_back(
+            {{"id", "offset"}, {"op", "value.constant"},
+             {"parameters", {{"value", 1.0}}}, {"outputs", Json::array({"value"})}});
+        gc1OpenBody(h);
+        auto &scene = h.scene;
+        QGraphicsItem *input = socketOf(scene, QStringLiteral("gain_curve"),
+                                        "sum", "a", "input");
+        REQUIRE(input != nullptr);
+        const QPointF empty = gc1EmptyPoint(scene, centreOf(input), 55.0);
+        sceneMouse(scene, QEvent::GraphicsSceneMousePress, centreOf(input));
+        sceneMouse(scene, QEvent::GraphicsSceneMouseMove, empty);
+        REQUIRE(pendingLine(scene) != nullptr);
+        REQUIRE_FALSE(gc1EdgeVisible(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                                     QStringLiteral("sum"), QStringLiteral("a")));
+
+        // Another panel changes one node's value: the body is drawn in place,
+        // not rebuilt, and the hand's line is still its own.
+        h.document["definitions"]["gain_curve"]["nodes"].back()["parameters"]["value"] =
+            9.0;
+        ++h.generation;
+        h.model.refresh();
+        h.answerReads();
+        CHECK(scene.followDocument());
+        CHECK(scene.dragging());
+        CHECK(pendingLine(scene) != nullptr);
+        CHECK_FALSE(gc1EdgeVisible(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                                   QStringLiteral("sum"), QStringLiteral("a")));
+
+        // A redraw that loses the hidden flag must put it back: make the old
+        // line visible as a rebuild would, then follow once more.
+        QGraphicsPathItem *old =
+            edgeItem(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                     QStringLiteral("sum"), QStringLiteral("a"));
+        REQUIRE(old != nullptr);
+        old->setVisible(true);
+        CHECK(scene.followDocument());
+        CHECK(pendingLine(scene) != nullptr);
+        CHECK_FALSE(gc1EdgeVisible(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                                   QStringLiteral("sum"), QStringLiteral("a")));
+
+        // And the gesture still lands: the same socket puts it back.
+        sceneMouse(scene, QEvent::GraphicsSceneMouseRelease, centreOf(input));
+        CHECK(pendingLine(scene) == nullptr);
+        CHECK(gc1EdgeVisible(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                             QStringLiteral("sum"), QStringLiteral("a")));
+        requireNoEdit(h.model);
+    }
+
+    SECTION("an input in another scope is a target that does not take the line") {
+        ZoneHarness h{zoneDocument()};
+        h.open();
+        auto &scene = h.scene;
+        REQUIRE(scene.zones().contains("steps"));
+        QGraphicsItem *from = socketOf(scene, QStringLiteral("first"),
+                                       "sum", "a", "input");
+        QGraphicsItem *to = socketOf(scene, QString{}, "steps", "target", "input");
+        REQUIRE(from != nullptr);
+        REQUIRE(to != nullptr);
+        sceneMouse(scene, QEvent::GraphicsSceneMousePress, centreOf(from));
+        sceneMouse(scene, QEvent::GraphicsSceneMouseMove, centreOf(to));
+        CHECK_FALSE(gc1EdgeVisible(scene, QStringLiteral("target"),
+                                   QStringLiteral("value"), QStringLiteral("sum"),
+                                   QStringLiteral("a")));
+        sceneMouse(scene, QEvent::GraphicsSceneMouseRelease, centreOf(to));
+        CHECK(pendingLine(scene) == nullptr);
+        CHECK(gc1EdgeVisible(scene, QStringLiteral("target"),
+                             QStringLiteral("value"), QStringLiteral("sum"),
+                             QStringLiteral("a")));
+        requireNoEdit(h.model);
+    }
+}
+
+TEST_CASE("GC-1 pass lines, stack row sockets, folded anchors and outputs keep their gestures",
+          "[devstudio][graph-canvas][scene][gc1]") {
+    (void)application();
+
+    SECTION("a connected pass input is still a click, not a lift") {
+        GraphCanvasModel model;
+        GraphCanvasScene scene;
+        openGl1e(model, scene, {"shade__color"});
+        QGraphicsItem *connected =
+            passSocket(scene, QStringLiteral("present"), QStringLiteral("shade__color"));
+        REQUIRE(connected != nullptr);
+        const auto lines = itemsOfKind(scene, PelicanStudio::GraphCanvasPassInputEdgeItem);
+        REQUIRE(lines.size() == 1);
+        click(scene, centreOf(connected));
+        CHECK(pendingLine(scene) == nullptr);
+        CHECK(lines.front()->isVisible());
+        requireNoEdit(model);
+
+        // A press that travels is no more a line than the click was.  A
+        // pass's input is a Frame Plan connection, not a graph edge the
+        // canvas may lift away.
+        const QPointF empty = gc1EmptyPoint(scene, centreOf(connected), 50.0);
+        sceneMouse(scene, QEvent::GraphicsSceneMousePress, centreOf(connected));
+        CHECK(pendingLine(scene) == nullptr);
+        sceneMouse(scene, QEvent::GraphicsSceneMouseMove, empty);
+        CHECK(pendingLine(scene) == nullptr);
+        CHECK(lines.front()->isVisible());
+        sceneMouse(scene, QEvent::GraphicsSceneMouseRelease, empty);
+        CHECK(pendingLine(scene) == nullptr);
+        CHECK(lines.front()->isVisible());
+        requireNoEdit(model);
+    }
+
+    SECTION("a stack layer socket still starts a new connection and never lifts its line") {
+        ZoneHarness h{nb2bDocument()};
+        nb2bOpen(h);
+        auto &scene = h.scene;
+        QGraphicsItem *socket = socketItem(scene, QStringLiteral("hud"),
+                                           QStringLiteral("bg_fill"),
+                                           QStringLiteral("input"));
+        REQUIRE(socket != nullptr);
+        REQUIRE(gc1EdgeVisible(scene, QStringLiteral("bg_fill"), QStringLiteral("layer"),
+                               QStringLiteral("hud"), QStringLiteral("bg_fill")));
+        sceneMouse(scene, QEvent::GraphicsSceneMousePress, centreOf(socket));
+        CHECK(pendingLine(scene) != nullptr);
+        CHECK(gc1EdgeVisible(scene, QStringLiteral("bg_fill"), QStringLiteral("layer"),
+                             QStringLiteral("hud"), QStringLiteral("bg_fill")));
+        pressKey(scene, Qt::Key_Escape);
+        CHECK(pendingLine(scene) == nullptr);
+        CHECK(gc1EdgeVisible(scene, QStringLiteral("bg_fill"), QStringLiteral("layer"),
+                             QStringLiteral("hud"), QStringLiteral("bg_fill")));
+        requireNoEdit(h.model);
+    }
+
+    SECTION("a lifted line let go in a stack's row gap is not a layer insertion") {
+        ZoneHarness h{nb2bDocument()};
+        h.document["nodes"].push_back(
+            {{"id", "lift"}, {"op", "value.add"},
+             {"inputs", {{"a", {{"node", "pulse"}, {"port", "value"}}}}},
+             {"outputs", Json::array({"value"})}});
+        nb2bOpen(h);
+        auto &scene = h.scene;
+        QGraphicsItem *input =
+            socketOf(scene, QString{}, "lift", "a", "input");
+        REQUIRE(input != nullptr);
+        REQUIRE(gc1EdgeVisible(scene, QStringLiteral("pulse"), QStringLiteral("value"),
+                               QStringLiteral("lift"), QStringLiteral("a")));
+        const auto rows = nb2bRows(scene, QStringLiteral("hud"));
+        REQUIRE(rows.size() == 3);
+        const QRectF top = rows[0]->sceneBoundingRect();
+        const QPointF gap{top.left() + 40.0, top.bottom() + 1.0};
+        sceneMouse(scene, QEvent::GraphicsSceneMousePress, centreOf(input));
+        sceneMouse(scene, QEvent::GraphicsSceneMouseMove, gap);
+        REQUIRE(pendingLine(scene) != nullptr);
+        CHECK_FALSE(gc1EdgeVisible(scene, QStringLiteral("pulse"), QStringLiteral("value"),
+                                   QStringLiteral("lift"), QStringLiteral("a")));
+        sceneMouse(scene, QEvent::GraphicsSceneMouseRelease, gap);
+        CHECK(pendingLine(scene) == nullptr);
+        requireNoEdit(h.model);
+        // The line is a line, not a layer's insertion: it comes back and the
+        // stack still has the three layers it had.
+        CHECK(gc1EdgeVisible(scene, QStringLiteral("pulse"), QStringLiteral("value"),
+                             QStringLiteral("lift"), QStringLiteral("a")));
+        CHECK(nb2bLayers(h.document, "hud") ==
+              QStringList{QStringLiteral("bg_fill"), QStringLiteral("card_fill"),
+                          QStringLiteral("dot_fill")});
+    }
+
+    SECTION("a folded anchor starts no connection at all") {
+        ZoneHarness h{gc1FoldedBodyDocument()};
+        gc1OpenBody(h);
+        auto &scene = h.scene;
+        REQUIRE(scene.collapsed("gain_curve", "sum"));
+        QGraphicsItem *anchor = socketItem(scene, QStringLiteral("sum"), QString{},
+                                           QStringLiteral("input"));
+        REQUIRE(anchor != nullptr);
+        const QPointF empty = gc1EmptyPoint(scene, centreOf(anchor), 50.0);
+        sceneMouse(scene, QEvent::GraphicsSceneMousePress, centreOf(anchor));
+        CHECK(pendingLine(scene) == nullptr);
+        sceneMouse(scene, QEvent::GraphicsSceneMouseMove, empty);
+        CHECK(pendingLine(scene) == nullptr);
+        sceneMouse(scene, QEvent::GraphicsSceneMouseRelease, empty);
+        CHECK(pendingLine(scene) == nullptr);
+        requireNoEdit(h.model);
+    }
+
+    SECTION("an output still draws a new line and lets go on nothing without an edit") {
+        ZoneHarness h{gc1BodyDocument()};
+        gc1OpenBody(h);
+        auto &scene = h.scene;
+        QGraphicsItem *output = socketOf(scene, QStringLiteral("gain_curve"),
+                                         "gain", "value", "output");
+        REQUIRE(output != nullptr);
+        const QPointF empty = gc1EmptyPoint(scene, centreOf(output), 55.0);
+        sceneMouse(scene, QEvent::GraphicsSceneMousePress, centreOf(output));
+        REQUIRE(pendingLine(scene) != nullptr);
+        CHECK(gc1EdgeVisible(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                             QStringLiteral("sum"), QStringLiteral("a")));
+        sceneMouse(scene, QEvent::GraphicsSceneMouseMove, empty);
+        sceneMouse(scene, QEvent::GraphicsSceneMouseRelease, empty);
+        CHECK(pendingLine(scene) == nullptr);
+        CHECK(gc1EdgeVisible(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                             QStringLiteral("sum"), QStringLiteral("a")));
+        requireNoEdit(h.model);
+    }
+}
+
+TEST_CASE("GC-1 a reply that arrives while the hand is down waits for the gesture",
+          "[devstudio][graph-canvas][scene][gc1][widget]") {
+    (void)application();
+    Ux2Tab tab{false};
+    auto document = gc1BodyDocument();
+    tab.read(document, "gc1-w0");
+    REQUIRE(tab.widget->model().enterInstance("left"));
+    auto &scene = tab.widget->scene();
+    scene.repopulate();
+    QGraphicsItem *input = socketOf(scene, QStringLiteral("gain_curve"),
+                                    "sum", "a", "input");
+    REQUIRE(input != nullptr);
+    const QPointF empty = gc1EmptyPoint(scene, centreOf(input), 55.0);
+    sceneMouse(scene, QEvent::GraphicsSceneMousePress, centreOf(input));
+    sceneMouse(scene, QEvent::GraphicsSceneMouseMove, empty);
+    REQUIRE(pendingLine(scene) != nullptr);
+    REQUIRE_FALSE(gc1EdgeVisible(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                                 QStringLiteral("sum"), QStringLiteral("a")));
+    // The reply goes to the tab, not to a fresh scene: its synchronize sees
+    // the gesture and holds the read back.
+    tab.read(document, "gc1-w1");
+    CHECK(scene.dragging());
+    CHECK(pendingLine(scene) != nullptr);
+    CHECK_FALSE(gc1EdgeVisible(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                               QStringLiteral("sum"), QStringLiteral("a")));
+    sceneMouse(scene, QEvent::GraphicsSceneMouseRelease, empty);
+    CHECK(pendingLine(scene) == nullptr);
+    REQUIRE(tab.reads("edit_graph_document") == 1);
+    const Json ops = tab.sentOps(1);
+    CHECK(ops == Json::array({gc1DisconnectedInput("gain_curve", "sum", "a")}));
+    const Json cut = Pelican::editGraphDocument(document, ops);
+    tab.commit(cut, "gc1-w2");
+    CHECK_FALSE(gc1EdgeVisible(scene, QStringLiteral("gain"), QStringLiteral("value"),
+                               QStringLiteral("sum"), QStringLiteral("a")));
+}

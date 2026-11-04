@@ -3024,12 +3024,26 @@ bool GraphCanvasModel::connectInput(const std::string &node, const std::string &
 bool GraphCanvasModel::connectInput(std::string_view scope, const std::string &node,
                                     const std::string &port, const std::string &source_node,
                                     const std::string &source_port) {
-    if (!canEdit()) return false;
-    if (!canConnect(scope, source_node, source_port, node, port)) return false;
+    std::string refusal;
+    auto ops = connectInputOps(scope, node, port, source_node, source_port, &refusal);
+    if (ops.empty()) {
+        if (!refusal.empty())
+            edit_notice_ = {InspectorNoticeKind::Error, std::move(refusal)};
+        return false;
+    }
+    return submitOps(std::move(ops));
+}
+
+Json GraphCanvasModel::connectInputOps(std::string_view scope, const std::string &node,
+                                       const std::string &port, const std::string &source_node,
+                                       const std::string &source_port,
+                                       std::string *refusal) const {
+    if (!canEdit()) return Json::array();
+    if (!canConnect(scope, source_node, source_port, node, port)) return Json::array();
     // SG-1: a line on a stack's `+ layer` is a layer on top -- an element
     // of `layers` and its line, one edit.
     if (port == graphCanvasStackAddPort)
-        return submitOps(graphCanvasConnectLayerOps(nodes(scope), scope, node, source_node, source_port));
+        return graphCanvasConnectLayerOps(nodes(scope), scope, node, source_node, source_port);
     // EL-5s, decision 1: a compute node's empty socket (a sampled image its
     // shader declares) is declared as the line lands, in the same edit.
     if (const auto open = computeOpenSockets(scope, node); std::ranges::find(open, port) != open.end()) {
@@ -3040,11 +3054,11 @@ bool GraphCanvasModel::connectInput(std::string_view scope, const std::string &n
                  {"access", "read"},
                  {"binding", "sampled"},
                  {"sampling", Json{{"filter", "nearest"}, {"address", "clamp_to_edge"}}}};
-        return submitOps(Json::array(
+        return Json::array(
             {Json{{"op", "set_node_parameters"}, {"scope", scopeToken(scope)}, {"node", node},
                   {"parameters", std::move(parameters)}},
              Json{{"op", "set_input"}, {"scope", scopeToken(scope)}, {"node", node}, {"port", port},
-                  {"source", Json{{"node", source_node}, {"port", source_port}}}}}));
+                  {"source", Json{{"node", source_node}, {"port", source_port}}}}});
     }
     Json ops = Json::array();
     // UX-8, decision 1: a buffer fed by a value is one runtime float
@@ -3056,11 +3070,12 @@ bool GraphCanvasModel::connectInput(std::string_view scope, const std::string &n
         auto parameters = nodeParameters(scope, node);
         const auto element = parameters.is_object() ? text(parameters, "element") : std::string{};
         if (element != "float") {
-            edit_notice_ = {InspectorNoticeKind::Error,
-                            node + " holds " + (element.empty() ? std::string{"no element"} : element) +
-                                ": a value's line writes one float. For two to four numbers, "
-                                "write them with a render.scalar."};
-            return false;
+            if (refusal != nullptr)
+                *refusal =
+                    node + " holds " + (element.empty() ? std::string{"no element"} : element) +
+                    ": a value's line writes one float. For two to four numbers, "
+                    "write them with a render.scalar.";
+            return Json::array();
         }
         if (text(*target, "op") == "render.buffer" && parameters.value("size", Json{}) != Json(4)) {
             parameters["size"] = 4;
@@ -3071,7 +3086,7 @@ bool GraphCanvasModel::connectInput(std::string_view scope, const std::string &n
     ops.push_back(Json{
         {"op", "set_input"}, {"scope", scopeToken(scope)}, {"node", node}, {"port", port},
         {"source", Json{{"node", source_node}, {"port", source_port}}}});
-    return submitOps(std::move(ops));
+    return ops;
 }
 
 bool GraphCanvasModel::disconnectInput(const std::string &node, const std::string &port) {
@@ -3080,15 +3095,22 @@ bool GraphCanvasModel::disconnectInput(const std::string &node, const std::strin
 
 bool GraphCanvasModel::disconnectInput(std::string_view scope, const std::string &node,
                                        const std::string &port) {
-    if (!canEdit() || findNode(scope, node) == nullptr) return false;
+    auto ops = disconnectInputOps(scope, node, port);
+    if (ops.empty()) return false;
+    return submitOps(std::move(ops));
+}
+
+Json GraphCanvasModel::disconnectInputOps(std::string_view scope, const std::string &node,
+                                          const std::string &port) const {
+    if (!canEdit() || findNode(scope, node) == nullptr) return Json::array();
     // SG-1: a stack's layer is its line; taking the line away takes the
     // layer (one with no line is refused, canvas.layer_input_missing@1).
     if (auto ops = graphCanvasDisconnectLayerOps(nodes(scope), scope, node, port); !ops.empty())
-        return submitOps(std::move(ops));
+        return ops;
     // Q-19, decision 2: a numbered port is its line; taking the line away
     // takes the port, and the ones after it move down a number.
     if (auto ops = removeInputPortOps(scope, node, port); !ops.empty())
-        return submitOps(std::move(ops));
+        return ops;
     // UX-8, decision 2: so is a pass's named buffer port -- a port with no
     // line is not one the engine binds.
     if (const auto buffers = bufferPorts(scope, node);
@@ -3096,15 +3118,15 @@ bool GraphCanvasModel::disconnectInput(std::string_view scope, const std::string
         std::ranges::find(buffers, port) != buffers.end()) {
         auto parameters = nodeParameters(scope, node);
         parameters["ports"].erase(port);
-        return submitOps(Json::array(
+        return Json::array(
             {Json{{"op", "set_input"}, {"scope", scopeToken(scope)}, {"node", node}, {"port", port},
                   {"source", nullptr}},
              Json{{"op", "set_node_parameters"}, {"scope", scopeToken(scope)}, {"node", node},
-                  {"parameters", std::move(parameters)}}}));
+                  {"parameters", std::move(parameters)}}});
     }
-    return submitOps(Json::array({Json{
+    return Json::array({Json{
         {"op", "set_input"}, {"scope", scopeToken(scope)}, {"node", node}, {"port", port},
-        {"source", nullptr}}}));
+        {"source", nullptr}}});
 }
 
 bool GraphCanvasModel::setNodeParameter(const std::string &node, const std::string &key,

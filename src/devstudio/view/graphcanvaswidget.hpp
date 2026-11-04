@@ -635,6 +635,17 @@ class GraphCanvasScene final : public QGraphicsScene {
     void keyPressEvent(QKeyEvent *event) override;
 
   private:
+    // GC-1: a connected input that a press lifted. The edge stays where it
+    // was drawn and is hidden for the length of the drag; these are the terms
+    // that find it again -- never the items, which a redraw may replace.
+    struct LiftedInput {
+        std::string scope;
+        std::string to_node;
+        std::string to_port;
+        std::string socket_key;
+        std::string source_node;
+        std::string source_port;
+    };
     // One socket grabbed and not yet dropped. A drag that starts on an input
     // and ends nowhere is how an edge is cut.
     struct PendingConnection {
@@ -643,6 +654,12 @@ class GraphCanvasScene final : public QGraphicsScene {
         std::string port;
         bool from_output = true;
         QPointF origin;
+        // GC-1: the press was on a connected input, and until it travels past
+        // the slop there is no drag at all -- a click. `lifted` is set the
+        // moment the slop is passed and is what the drop branches on.
+        bool lift_candidate = false;
+        QPointF lift_press;
+        std::optional<LiftedInput> lifted;
         // LP-4d2, decision 3: a line from a body output's inside end on a
         // zone's right edge, which lands on a boundary input as a carry.
         std::string carry_loop;
@@ -1125,6 +1142,17 @@ class GraphCanvasScene final : public QGraphicsScene {
     void beginConnection(const QGraphicsItem &socket);
     void finishConnection(const QPointF &position);
     void clearPendingConnection();
+    // GC-1: turn the pressed connected input into a lifted line, hide the
+    // edge it stood on, and draw the dashed reach from the source output.
+    void liftPendingInput();
+    // GC-1: the drop of a lifted line, in its own terms -- the hit-testing a
+    // normal connection does would take a zone or a layer gap.
+    void finishLiftedConnection(const QPointF &position);
+    [[nodiscard]] bool liftedEdgePart(const QGraphicsItem &item,
+                                      const LiftedInput &lifted) const;
+    void hideLiftedEdges(const LiftedInput &lifted);
+    void showLiftedEdges(const LiftedInput &lifted);
+    void rehideLiftedEdges();
     // UX-1, decision 1. What letting the line go over `item` would do -- the
     // one judgement both the drop and the lit sockets use. Empty when the
     // item takes no line from this connection.
