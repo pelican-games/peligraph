@@ -22408,3 +22408,2856 @@ TEST_CASE("GS-3z a partial redraw is painted before the reply that drew it retur
     scene.nodesRedrawn = nullptr;
     scene.redrawClassified = nullptr;
 }
+
+// ---- GS-FUZZ1 begin ----
+#include <cstdio>
+#include <cstdint>
+#include <iterator>
+#include <optional>
+
+namespace {
+
+// GS-FUZZ1: a seeded random edit driver and a pointer-free picture of the
+// scene, to find where the partial redraw (GS-3a/GS-3b2) draws something
+// different from a full rebuild from the same model. Every difference is
+// reported; the minimized ones are the [!mayfail] cases below.
+namespace fuzz1 {
+
+// Deterministic xorshift; no <random> so the driver is the same on every
+// standard library.
+struct Rng {
+    std::uint64_t state;
+    explicit Rng(std::uint64_t seed)
+        : state(seed == 0 ? 0x9e3779b97f4a7c15ull : seed * 0x9e3779b97f4a7c15ull + 1) {}
+    std::uint64_t next() {
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        return state * 2685821657736338717ull;
+    }
+    std::size_t below(std::size_t n) { return n == 0 ? 0 : static_cast<std::size_t>(next() % n); }
+    double unit() { return static_cast<double>(next() >> 11) * (1.0 / 9007199254740992.0); }
+    bool chance(double p) { return unit() < p; }
+};
+
+std::string scopeToken(const std::string &scope) { return scope.empty() ? "root" : scope; }
+
+const Json &nodeList(const Json &document, const std::string &scope) {
+    static const Json none = Json::array();
+    if (scope.empty()) {
+        const auto found = document.find("nodes");
+        return found != document.end() && found->is_array() ? *found : none;
+    }
+    const auto definitions = document.find("definitions");
+    if (definitions == document.end() || !definitions->is_object()) return none;
+    const auto body = definitions->find(scope);
+    if (body == definitions->end() || !body->is_object()) return none;
+    const auto nodes = body->find("nodes");
+    return nodes != body->end() && nodes->is_array() ? *nodes : none;
+}
+
+std::vector<std::string> scopesOf(const Json &document) {
+    std::vector<std::string> scopes{""};
+    const auto definitions = document.find("definitions");
+    if (definitions != document.end() && definitions->is_object())
+        for (const auto &[name, body] : definitions->items())
+            if (body.is_object()) scopes.push_back(name);
+    return scopes;
+}
+
+struct NodeRef {
+    std::string scope;
+    std::string id;
+    std::string op;
+    Json parameters;
+};
+
+std::vector<NodeRef> nodeRefs(const Json &document) {
+    std::vector<NodeRef> refs;
+    for (const std::string &scope : scopesOf(document)) {
+        for (const Json &node : nodeList(document, scope)) {
+            if (!node.is_object()) continue;
+            NodeRef ref;
+            ref.scope = scope;
+            ref.id = node.value("id", std::string{});
+            ref.op = node.value("op", std::string{});
+            ref.parameters = node.value("parameters", Json::object());
+            if (!ref.id.empty()) refs.push_back(std::move(ref));
+        }
+    }
+    return refs;
+}
+
+bool parameterOp(const std::string &op) {
+    return op == "value.constant" || op == "value.curve" || op == "value.multiply" ||
+           op == "value.add";
+}
+
+const char *parameterKey(const std::string &op) {
+    if (op == "value.constant") return "value";
+    if (op == "value.curve") return "time";
+    if (op == "value.multiply") return "b";
+    if (op == "value.add") return "b";
+    return nullptr;
+}
+
+// A value the node does not already hold, so every proposal is a real change.
+double differentValue(Rng &rng, double current) {
+    static const double choices[] = {-7.5, -2.0, -0.5, 0.0, 0.5, 1.0, 2.0,
+                                     3.5, 6.0, 11.0, 24.0, 101.5, 1234.0};
+    double value = choices[rng.below(std::size(choices))];
+    if (std::abs(value - current) < 1e-12) value += 1.0;
+    return value;
+}
+
+struct Proposal {
+    Json ops;
+    std::string kind;
+    std::string target;
+};
+
+Json parameterOps(const NodeRef &ref, const Json &parameters) {
+    return Json::array({Json{{"op", "set_node_parameters"},
+                             {"scope", scopeToken(ref.scope)},
+                             {"node", ref.id},
+                             {"parameters", parameters}}});
+}
+
+std::optional<Proposal> proposal(Rng &rng, const Json &document, bool zone) {
+    const auto refs = nodeRefs(document);
+    const double roll = rng.unit();
+    // Mostly values: on the root they are what the partial path was built
+    // for; in a loop body and on the loop itself they are the cases the zone
+    // condition has to refuse. A zone document spends 60% on the root's
+    // values, 15% in a body, 10% on the loop, 15% on lines and additions.
+    // A root-only document spends 75% on values.
+    const double root_end = zone ? 0.60 : 0.75;
+    const double body_end = zone ? 0.75 : root_end;
+    const double loop_end = zone ? 0.85 : body_end;
+    const double lines_end = zone ? 0.94 : 0.90;
+
+    if (roll < root_end || (roll >= root_end && roll < body_end && zone)) {
+        const bool body = roll >= root_end;
+        std::vector<NodeRef> values;
+        for (const auto &ref : refs)
+            if (parameterOp(ref.op) && (ref.scope.empty() != body)) values.push_back(ref);
+        if (values.empty()) return std::nullopt;
+        const NodeRef &ref = values[rng.below(values.size())];
+        Json parameters = ref.parameters.is_object() ? ref.parameters : Json::object();
+        const char *key = parameterKey(ref.op);
+        if (key == nullptr) return std::nullopt;
+        const double current = parameters.contains(key) && parameters.at(key).is_number()
+                                   ? parameters.at(key).get<double>()
+                                   : 0.0;
+        parameters[key] = differentValue(rng, current);
+        return Proposal{parameterOps(ref, parameters), "value", ref.scope + "/" + ref.id};
+    }
+    if (roll < loop_end) {
+        std::vector<NodeRef> loops;
+        for (const auto &ref : refs)
+            if (ref.op == "graph.loop" && ref.scope.empty()) loops.push_back(ref);
+        if (loops.empty()) return std::nullopt;
+        const NodeRef &ref = loops[rng.below(loops.size())];
+        Json parameters = ref.parameters.is_object() ? ref.parameters : Json::object();
+        const auto count = static_cast<std::int64_t>(1 + rng.below(7));
+        Json over = parameters.value("over", Json::object());
+        if (!over.is_object()) over = Json::object();
+        over["range"] = Json{{"count", count}};
+        parameters["over"] = std::move(over);
+        return Proposal{parameterOps(ref, parameters), "loop", "root/" + ref.id};
+    }
+    if (roll < lines_end) {
+        // A line, either away from a port that has one or onto a port that
+        // takes a value. The engine's check decides what is legal; a refused
+        // proposal is simply retried with the next random one.
+        struct Wire {
+            std::string scope;
+            std::string node;
+            std::string port;
+            std::string source;
+            std::string source_port;
+        };
+        std::vector<Wire> wires;
+        std::vector<Wire> empties;
+        for (const std::string &scope : scopesOf(document)) {
+            const Json &nodes = nodeList(document, scope);
+            for (const Json &node : nodes) {
+                if (!node.is_object()) continue;
+                const std::string id = node.value("id", std::string{});
+                const std::string op = node.value("op", std::string{});
+                if (id.empty() || op == "graph.loop" && !scope.empty()) continue;
+                const Json inputs = node.value("inputs", Json::object());
+                if (inputs.is_object()) {
+                    for (const auto &[port, source] : inputs.items()) {
+                        if (!source.is_object()) continue;
+                        const std::string from = source.value("node", std::string{});
+                        if (from.empty()) continue;
+                        wires.push_back({scope, id, port, from,
+                                         source.value("port", std::string{"value"})});
+                    }
+                }
+                std::vector<std::string> ports;
+                if (op == "value.add" || op == "value.multiply") ports = {"a", "b"};
+                else if (op == "value.curve") ports = {"time"};
+                else if (op == "graph.loop" && scope.empty()) ports = {"target"};
+                for (const std::string &port : ports)
+                    if (!inputs.is_object() || !inputs.contains(port) ||
+                        !inputs.at(port).is_object())
+                        empties.push_back({scope, id, port, {}, {}});
+            }
+        }
+        if (rng.chance(0.35) && !wires.empty()) {
+            const Wire &wire = wires[rng.below(wires.size())];
+            return Proposal{Json::array({Json{{"op", "set_input"},
+                                              {"scope", scopeToken(wire.scope)},
+                                              {"node", wire.node},
+                                              {"port", wire.port},
+                                              {"source", nullptr}}}),
+                            "disconnect", wire.scope + "/" + wire.node + "." + wire.port};
+        }
+        if (empties.empty()) return std::nullopt;
+        struct Source {
+            std::string scope;
+            std::string node;
+            std::string port;
+        };
+        std::vector<Source> sources;
+        for (const std::string &scope : scopesOf(document)) {
+            for (const Json &node : nodeList(document, scope)) {
+                if (!node.is_object()) continue;
+                const std::string id = node.value("id", std::string{});
+                const std::string op = node.value("op", std::string{});
+                const Json outputs = node.value("outputs", Json::array());
+                bool value = op == "graph.input";
+                for (const Json &port : outputs)
+                    if (port.is_string() && port.get<std::string>() == "value") value = true;
+                if (value) sources.push_back({scope, id, "value"});
+            }
+        }
+        if (sources.empty()) return std::nullopt;
+        const Wire &wire = empties[rng.below(empties.size())];
+        std::vector<Source> same_scope;
+        for (const auto &source : sources)
+            if (source.scope == wire.scope && source.node != wire.node) same_scope.push_back(source);
+        if (same_scope.empty()) return std::nullopt;
+        const Source &source = same_scope[rng.below(same_scope.size())];
+        return Proposal{Json::array({Json{{"op", "set_input"},
+                                          {"scope", scopeToken(wire.scope)},
+                                          {"node", wire.node},
+                                          {"port", wire.port},
+                                          {"source", Json{{"node", source.node},
+                                                          {"port", source.port}}}}}),
+                        "connect", wire.scope + "/" + wire.node + "." + wire.port};
+    }
+    // A node, added or taken away: the one the order and the items must
+    // follow, and what a partial redraw must refuse.
+    const std::string scope = zone ? (rng.chance(0.5) ? "" : scopesOf(document).back())
+                                   : "";
+    if (rng.chance(0.55)) {
+        const std::string id = "fz" + std::to_string(rng.next());
+        Json node = {{"id", id},
+                     {"op", "value.constant"},
+                     {"parameters", {{"value", differentValue(rng, 0.0)}}},
+                     {"outputs", Json::array({"value"})}};
+        return Proposal{Json::array({Json{{"op", "add_node"},
+                                          {"scope", scopeToken(scope)},
+                                          {"node", std::move(node)}}}),
+                        "add", scope + "/" + id};
+    }
+    std::vector<NodeRef> candidates;
+    for (const auto &ref : refs)
+        if (ref.scope == scope && ref.op != "graph.input" && ref.op != "graph.loop")
+            candidates.push_back(ref);
+    if (candidates.empty()) return std::nullopt;
+    const NodeRef &ref = candidates[rng.below(candidates.size())];
+    return Proposal{Json::array({Json{{"op", "remove_node"},
+                                      {"scope", scopeToken(ref.scope)},
+                                      {"node", ref.id}}}),
+                    "remove", ref.scope + "/" + ref.id};
+}
+
+bool submitIfLegal(ZoneHarness &harness, const Json &ops) {
+    try {
+        (void)Pelican::editGraphDocument(harness.document, ops);
+    } catch (...) {
+        return false;
+    }
+    return harness.model.submitEdit(ops);
+}
+
+// A guaranteed edit if the random proposals were all refused by the engine.
+std::optional<Proposal> fallbackProposal(const Json &document) {
+    for (const auto &ref : nodeRefs(document)) {
+        if (!ref.scope.empty() || !parameterOp(ref.op)) continue;
+        Json parameters = ref.parameters.is_object() ? ref.parameters : Json::object();
+        const char *key = parameterKey(ref.op);
+        if (key == nullptr) continue;
+        const double value = parameters.value(key, Json(0.0)).is_number()
+                                 ? parameters.value(key, Json(0.0)).get<double>()
+                                 : 0.0;
+        parameters[key] = value + 1.0;
+        return Proposal{parameterOps(ref, parameters), "value", ref.scope + "/" + ref.id};
+    }
+    return std::nullopt;
+}
+
+bool addConstant(ZoneHarness &harness, const std::string &scope, Json &ops) {
+    ops = harness.model.addNodeOpsIn(scope, "value.constant");
+    return !ops.empty();
+}
+
+// One scene item, without a pointer in anything compared: the data the
+// routing index reads, what the eye reads (text, place, size, visibility,
+// z), and its position in items().
+struct ItemView {
+    QString id;
+    QString cls;
+    QString kind;
+    QString scope;
+    QString name;
+    QString port;
+    QString direction;
+    QString from;
+    QString to;
+    QString from_port;
+    QString to_port;
+    QString pass_input;
+    QString bound_port;
+    QString zone_scope;
+    QString text;
+    bool visible = false;
+    qint64 x = 0;
+    qint64 y = 0;
+    qint64 w = 0;
+    qint64 h = 0;
+    qint64 z = 0;
+};
+
+qint64 centi(qreal value) { return static_cast<qint64>(std::llround(value * 100.0)); }
+qint64 milli(qreal value) { return static_cast<qint64>(std::llround(value * 1000.0)); }
+
+QString classOf(const QGraphicsItem *item) {
+    if (dynamic_cast<const QGraphicsSimpleTextItem *>(item) != nullptr) return QStringLiteral("text");
+    if (dynamic_cast<const QGraphicsPathItem *>(item) != nullptr) return QStringLiteral("path");
+    if (dynamic_cast<const QGraphicsPolygonItem *>(item) != nullptr) return QStringLiteral("polygon");
+    return QStringLiteral("other");
+}
+
+QString textOf(const QGraphicsItem *item) {
+    if (const auto *text = dynamic_cast<const QGraphicsSimpleTextItem *>(item))
+        return text->text();
+    return {};
+}
+
+QString baseIdentity(const QGraphicsItem &item, const QString &cls) {
+    using namespace PelicanStudio;
+    QStringList parts{cls};
+    for (const int role : {NodeGraphItemKindRole, GraphCanvasScopeRole, NodeGraphNameRole,
+                           GraphCanvasPortRole, GraphCanvasSocketDirectionRole,
+                           NodeGraphFromNameRole, GraphCanvasFromPortRole, NodeGraphToNameRole,
+                           GraphCanvasToPortRole, GraphCanvasPassInputRole,
+                           GraphCanvasBoundPortRole, GraphCanvasZoneScopeRole})
+        parts << item.data(role).toString();
+    return parts.join(QStringLiteral("\x1f"));
+}
+
+QString identityOf(QGraphicsItem *item, QHash<QGraphicsItem *, QString> &known,
+                   QHash<QString, int> &seen) {
+    if (const auto found = known.constFind(item); found != known.constEnd()) return *found;
+    QString base = baseIdentity(*item, classOf(item));
+    if (QGraphicsItem *parent = item->parentItem()) base = identityOf(parent, known, seen) + QStringLiteral("\x1e") + base;
+    const QString id = base + QStringLiteral("\x1f") + QString::number(seen[base]++);
+    known.insert(item, id);
+    return id;
+}
+
+struct Signature {
+    std::vector<ItemView> items;
+    QStringList order;
+    std::map<QString, QString> find;
+    std::map<QString, QStringList> connected;
+    bool index_valid = false;
+};
+
+QString keyText(const QStringList &key) { return key.join(QStringLiteral("\x1f")); }
+
+Signature signatureOf(GraphCanvasScene &scene, bool with_text = true) {
+    using namespace PelicanStudio;
+    Signature signature;
+    QHash<QGraphicsItem *, QString> known;
+    QHash<QString, int> seen;
+    QHash<QGraphicsItem *, QString> by_pointer;
+    const auto all = scene.items();
+    for (QGraphicsItem *item : all) {
+        ItemView view;
+        view.id = identityOf(item, known, seen);
+        view.cls = classOf(item);
+        view.kind = item->data(NodeGraphItemKindRole).toString();
+        view.scope = item->data(GraphCanvasScopeRole).toString();
+        view.name = item->data(NodeGraphNameRole).toString();
+        view.port = item->data(GraphCanvasPortRole).toString();
+        view.direction = item->data(GraphCanvasSocketDirectionRole).toString();
+        view.from = item->data(NodeGraphFromNameRole).toString();
+        view.to = item->data(NodeGraphToNameRole).toString();
+        view.from_port = item->data(GraphCanvasFromPortRole).toString();
+        view.to_port = item->data(GraphCanvasToPortRole).toString();
+        view.pass_input = item->data(GraphCanvasPassInputRole).toString();
+        view.bound_port = item->data(GraphCanvasBoundPortRole).toString();
+        view.zone_scope = item->data(GraphCanvasZoneScopeRole).toString();
+        view.text = with_text ? textOf(item) : QString{};
+        view.visible = item->isVisible();
+        const QPointF at = item->scenePos();
+        view.x = centi(at.x());
+        view.y = centi(at.y());
+        const QRectF rect = item->sceneBoundingRect();
+        view.w = centi(rect.width());
+        view.h = centi(rect.height());
+        view.z = milli(item->zValue());
+        by_pointer.insert(item, view.id);
+        signature.order << view.id;
+        signature.items.push_back(std::move(view));
+    }
+    if (auto *index = NodeGraphIndex::forScene(scene)) {
+        const auto snapshot = index->snapshot();
+        signature.index_valid = snapshot.valid;
+        for (const auto &[key, item] : snapshot.identities)
+            signature.find.insert_or_assign(keyText(key),
+                                            by_pointer.value(item, QStringLiteral("<not drawn>")));
+        for (const auto &[key, items] : snapshot.connections) {
+            QStringList ids;
+            for (QGraphicsItem *item : items)
+                ids << by_pointer.value(item, QStringLiteral("<not drawn>"));
+            signature.connected.insert_or_assign(keyText(key), std::move(ids));
+        }
+    }
+    return signature;
+}
+
+QString describe(const ItemView &item) {
+    QString text = item.cls;
+    if (!item.kind.isEmpty()) text += " " + item.kind;
+    if (!item.scope.isEmpty()) text += " scope=" + item.scope;
+    if (!item.name.isEmpty()) text += " name=" + item.name;
+    if (!item.port.isEmpty()) text += " port=" + item.port;
+    if (!item.direction.isEmpty()) text += " " + item.direction;
+    if (!item.from.isEmpty()) text += " " + item.from;
+    if (!item.from_port.isEmpty()) text += "." + item.from_port;
+    if (!item.to.isEmpty()) text += "->" + item.to;
+    if (!item.to_port.isEmpty()) text += "." + item.to_port;
+    if (!item.zone_scope.isEmpty()) text += " zone=" + item.zone_scope;
+    if (!item.text.isEmpty()) text += " \"" + item.text + "\"";
+    return text;
+}
+
+QString signedText(qint64 value) { return QString::number(value); }
+
+struct Difference {
+    QString kind;
+    QString site;
+    QString detail;
+};
+
+struct CompareOptions {
+    bool text = true;
+};
+
+std::vector<Difference> compare(const Signature &partial, const Signature &rebuilt,
+                                CompareOptions options = {}) {
+    std::vector<Difference> differences;
+    std::map<QString, const ItemView *> left;
+    std::map<QString, const ItemView *> right;
+    for (const ItemView &item : partial.items) left[item.id] = &item;
+    for (const ItemView &item : rebuilt.items) right[item.id] = &item;
+
+    for (const auto &[id, item] : left) {
+        if (right.contains(id)) continue;
+        differences.push_back({QStringLiteral("extra"), id,
+                               QStringLiteral("only the partial scene has it: ") + describe(*item)});
+    }
+    for (const auto &[id, item] : right) {
+        if (left.contains(id)) continue;
+        differences.push_back({QStringLiteral("missing"), id,
+                               QStringLiteral("only the rebuilt scene has it: ") + describe(*item)});
+    }
+    for (const auto &[id, a] : left) {
+        const auto found = right.find(id);
+        if (found == right.end()) continue;
+        const ItemView &b = *found->second;
+        if (a->x != b.x)
+            differences.push_back({QStringLiteral("geometry"), id + QStringLiteral(" x"),
+                                   describe(*a) + QStringLiteral(": ") + signedText(a->x) +
+                                       QStringLiteral(" vs ") + signedText(b.x)});
+        if (a->y != b.y)
+            differences.push_back({QStringLiteral("geometry"), id + QStringLiteral(" y"),
+                                   describe(*a) + QStringLiteral(": ") + signedText(a->y) +
+                                       QStringLiteral(" vs ") + signedText(b.y)});
+        if (a->w != b.w)
+            differences.push_back({QStringLiteral("geometry"), id + QStringLiteral(" w"),
+                                   describe(*a) + QStringLiteral(": ") + signedText(a->w) +
+                                       QStringLiteral(" vs ") + signedText(b.w)});
+        if (a->h != b.h)
+            differences.push_back({QStringLiteral("geometry"), id + QStringLiteral(" h"),
+                                   describe(*a) + QStringLiteral(": ") + signedText(a->h) +
+                                       QStringLiteral(" vs ") + signedText(b.h)});
+        if (options.text && a->text != b.text)
+            differences.push_back({QStringLiteral("text"), id,
+                                   describe(*a) + QStringLiteral(": \"") + a->text +
+                                       QStringLiteral("\" vs \"") + b.text + QStringLiteral("\"")});
+        if (a->visible != b.visible)
+            differences.push_back({QStringLiteral("visibility"), id,
+                                   describe(*a) + (a->visible ? QStringLiteral(": shown vs hidden")
+                                                              : QStringLiteral(": hidden vs shown"))});
+        if (a->z != b.z)
+            differences.push_back({QStringLiteral("order-only"), id + QStringLiteral(" z"),
+                                   describe(*a) + QStringLiteral(": z ") + signedText(a->z) +
+                                       QStringLiteral(" vs ") + signedText(b.z)});
+    }
+    // A different sequence of the very same items is still a different scene:
+    // items() is the order the routing index and the eye take.
+    bool same_items = partial.items.size() == rebuilt.items.size();
+    if (same_items)
+        for (const ItemView &item : partial.items)
+            if (!right.contains(item.id)) {
+                same_items = false;
+                break;
+            }
+    if (same_items && partial.order != rebuilt.order) {
+        for (std::size_t index = 0; index < partial.order.size(); ++index)
+            if (partial.order[index] != rebuilt.order[index]) {
+                differences.push_back({QStringLiteral("order-only"), QStringLiteral("items"),
+                                       QStringLiteral("items() first differs at %1: %2 vs %3")
+                                           .arg(index)
+                                           .arg(partial.order[index], rebuilt.order[index])});
+                break;
+            }
+    }
+    if (partial.index_valid != rebuilt.index_valid)
+        differences.push_back({QStringLiteral("index"), QStringLiteral("valid"),
+                               QStringLiteral("valid %1 vs %2")
+                                   .arg(partial.index_valid ? QStringLiteral("yes") : QStringLiteral("no"),
+                                        rebuilt.index_valid ? QStringLiteral("yes") : QStringLiteral("no"))});
+    for (const auto &[key, winner] : partial.find) {
+        const auto found = rebuilt.find.find(key);
+        if (found == rebuilt.find.end())
+            differences.push_back({QStringLiteral("index"), QStringLiteral("find:") + key,
+                                   QStringLiteral("key only the partial index has; its winner is ") +
+                                       winner});
+        else if (found->second != winner)
+            differences.push_back({QStringLiteral("index"), QStringLiteral("find:") + key,
+                                   QStringLiteral("winner ") + winner + QStringLiteral(" vs ") +
+                                       found->second});
+    }
+    for (const auto &[key, winner] : rebuilt.find)
+        if (!partial.find.contains(key))
+            differences.push_back({QStringLiteral("index"), QStringLiteral("find:") + key,
+                                   QStringLiteral("key only the rebuilt index has; its winner is ") +
+                                       winner});
+    for (const auto &[key, list] : partial.connected) {
+        const auto found = rebuilt.connected.find(key);
+        if (found == rebuilt.connected.end())
+            differences.push_back({QStringLiteral("index"), QStringLiteral("connected:") + key,
+                                   QStringLiteral("key only the partial index has; ") +
+                                       QString::number(list.size()) + QStringLiteral(" connection(s)")});
+        else if (found->second != list)
+            differences.push_back({QStringLiteral("index"), QStringLiteral("connected:") + key,
+                                   QStringLiteral("%1 vs %2 connection(s)")
+                                       .arg(list.size())
+                                       .arg(found->second.size())});
+    }
+    for (const auto &[key, list] : rebuilt.connected)
+        if (!partial.connected.contains(key))
+            differences.push_back({QStringLiteral("index"), QStringLiteral("connected:") + key,
+                                   QStringLiteral("key only the rebuilt index has; ") +
+                                       QString::number(list.size()) + QStringLiteral(" connection(s)")});
+    return differences;
+}
+
+// The loop's body as the root draws it: the two-branch zoneDocument, plus a
+// standalone root multiply (`m`) whose value edits take the partial path.
+Json zoneFuzzDocument() {
+    Json document = zoneDocument(false);
+    document["nodes"].push_back({{"id", "m"},
+                                 {"op", "value.multiply"},
+                                 {"parameters", {{"b", 2.0}}},
+                                 {"outputs", Json::array({"value"})}});
+    return document;
+}
+
+// GS-FUZZ3: gs3b2Document (one loop branch, so `first` is the body the root
+// can redraw partly) with two standalone value nodes in that body. They reach
+// no body output, so a body value edit has both cases the mix asks for: `a`
+// and `sum` reach the body's `out`, `idle` and `spare` feed nothing.
+Json bodyFuzzDocument() {
+    Json document = gs3b2Document();
+    Json &nodes = document["definitions"]["first"]["nodes"];
+    nodes.push_back({{"id", "idle"},
+                     {"op", "value.constant"},
+                     {"parameters", {{"value", 0.5}}},
+                     {"outputs", Json::array({"value"})}});
+    nodes.push_back({{"id", "spare"},
+                     {"op", "value.constant"},
+                     {"parameters", {{"value", 3.0}}},
+                     {"outputs", Json::array({"value"})}});
+    return document;
+}
+
+// Whether a node of `body` feeds one of the body's outputs, directly or
+// through its inputs: in `first`, `a` -> `sum` -> out, while `idle` and
+// `spare` feed nothing. Iterates to a fixed point; body graphs are small.
+bool bodyReachesOutput(const Json &document, const std::string &body,
+                       const std::string &id) {
+    const Json definitions = document.value("definitions", Json::object());
+    if (!definitions.is_object() || !definitions.contains(body)) return false;
+    const Json definition = definitions.at(body);
+    std::set<std::string, std::less<>> reaching;
+    const Json outputs = definition.value("outputs", Json::object());
+    for (const auto &[port, source] : outputs.items()) {
+        if (!source.is_object()) continue;
+        const std::string node = source.value("node", std::string{});
+        if (!node.empty()) reaching.insert(node);
+    }
+    for (bool grew = true; grew;) {
+        grew = false;
+        for (const Json &node : definition.value("nodes", Json::array())) {
+            if (!node.is_object()) continue;
+            const std::string node_id = node.value("id", std::string{});
+            if (node_id.empty() || reaching.contains(node_id)) continue;
+            const Json inputs = node.value("inputs", Json::object());
+            for (const auto &[port, source] : inputs.items()) {
+                if (!source.is_object()) continue;
+                if (reaching.contains(source.value("node", std::string{}))) {
+                    reaching.insert(node_id);
+                    grew = true;
+                    break;
+                }
+            }
+        }
+    }
+    return reaching.contains(id);
+}
+
+// A root-only graph with a chain of values and one typed consumer, so a
+// value edit reaches more than one line and the index has a varied key set.
+Json rootFuzzDocument() {
+    const auto constant = [](const char *id, double value) {
+        return Json{{"id", id}, {"op", "value.constant"},
+                    {"parameters", {{"value", value}}}, {"outputs", Json::array({"value"})}};
+    };
+    const auto curve = [](const char *id, double time) {
+        return Json{{"id", id}, {"op", "value.curve"},
+                    {"parameters", {{"time", time}}}, {"outputs", Json::array({"value"})}};
+    };
+    return Json{{"schema", "pelican.graph"}, {"version", 1}, {"outputs", Json::object()},
+                {"definitions", Json::object()},
+                {"nodes", Json::array(
+                             {constant("k1", 4.0), curve("curve", 0.25),
+                              {{"id", "mul"}, {"op", "value.multiply"},
+                               {"inputs", {{"a", {{"node", "k1"}, {"port", "value"}}},
+                                           {"b", {{"node", "curve"}, {"port", "value"}}}}},
+                               {"parameters", {{"b", 2.0}}},
+                               {"outputs", Json::array({"value"})}},
+                              {{"id", "add"}, {"op", "value.add"},
+                               {"inputs", {{"a", {{"node", "mul"}, {"port", "value"}}}}},
+                               {"parameters", {{"b", 2.5}}},
+                               {"outputs", Json::array({"value"})}},
+                              {{"id", "mul2"}, {"op", "value.multiply"},
+                               {"inputs", {{"a", {{"node", "add"}, {"port", "value"}}}}},
+                               {"parameters", {{"b", 3.0}}},
+                               {"outputs", Json::array({"value"})}}})}};
+}
+
+std::size_t environmentCount(const char *name, std::size_t fallback) {
+    const char *text = std::getenv(name);
+    if (text == nullptr || *text == '\0') return fallback;
+    char *end = nullptr;
+    const unsigned long long value = std::strtoull(text, &end, 10);
+    return end == text ? fallback : static_cast<std::size_t>(value);
+}
+
+struct Totals {
+    std::size_t seeds = 0;
+    std::size_t steps = 0;
+    std::size_t partial = 0;
+    std::size_t rebuilt = 0;
+    std::size_t skipped = 0;
+    std::size_t differing_steps = 0;
+    std::size_t differences = 0;
+    // Why the partial path did not run, by graph_redraw_refused bits.
+    std::map<int, std::size_t> refusals;
+    std::map<QString, std::size_t> classes;
+    std::map<QString, std::size_t> groups;
+    std::map<QString, QString> first_detail;
+    std::map<QString, QString> first_context;
+};
+
+void recordDifferences(Totals &totals, const std::vector<Difference> &differences,
+                       const QString &context) {
+    if (differences.empty()) return;
+    ++totals.differing_steps;
+    totals.differences += differences.size();
+    for (const Difference &difference : differences) {
+        ++totals.classes[difference.kind];
+        const QString group = difference.kind + QStringLiteral("|") + difference.site;
+        ++totals.groups[group];
+        if (!totals.first_detail.contains(group)) {
+            totals.first_detail[group] = difference.detail;
+            totals.first_context[group] = context;
+        }
+    }
+}
+
+void printTotals(const Totals &totals) {
+    const double percent = totals.steps == 0 ? 0.0
+                                             : 100.0 * static_cast<double>(totals.partial) /
+                                                   static_cast<double>(totals.steps);
+    std::printf("\nGS-FUZZ1 summary: seeds=%zu steps=%zu partial=%zu (%.1f%%) rebuilt=%zu "
+                "skipped=%zu differing-steps=%zu differences=%zu\n",
+                totals.seeds, totals.steps, totals.partial, percent, totals.rebuilt, totals.skipped,
+                totals.differing_steps, totals.differences);
+    std::printf("GS-FUZZ1 classes:");
+    if (totals.classes.empty()) std::printf(" none");
+    for (const auto &[kind, count] : totals.classes)
+        std::printf(" %s=%zu", kind.toStdString().c_str(), count);
+    std::printf("\n");
+    std::printf("GS-FUZZ1 refusals:");
+    if (totals.refusals.empty()) std::printf(" none");
+    for (const auto &[bits, count] : totals.refusals)
+        std::printf(" 0x%x=%zu", bits, count);
+    std::printf("\n");
+    for (const auto &[group, count] : totals.groups) {
+        const auto split = group.indexOf(QLatin1Char{'|'});
+        const QString kind = group.left(split);
+        const QString site = group.mid(split + 1);
+        std::printf("GS-FUZZ1 group %s site=%s count=%zu\n", kind.toStdString().c_str(),
+                    site.toStdString().c_str(), count);
+        std::printf("  first: %s\n", totals.first_context.at(group).toStdString().c_str());
+        std::printf("  detail: %s\n", totals.first_detail.at(group).toStdString().c_str());
+    }
+}
+
+} // namespace fuzz1
+
+} // namespace
+
+TEST_CASE("GS-FUZZ1 seeded random edits leave the partial draw what a full rebuild draws",
+          "[devstudio][graph-canvas][scene][gs-fuzz1][.]") {
+    using namespace PelicanStudio;
+    (void)application();
+    const std::size_t seeds = fuzz1::environmentCount("GS_FUZZ1_SEEDS", 200);
+    const std::size_t steps = fuzz1::environmentCount("GS_FUZZ1_STEPS", 30);
+    const bool verbose = std::getenv("GS_FUZZ1_VERBOSE") != nullptr;
+    const bool control = std::getenv("GS_FUZZ1_CONTROL") != nullptr;
+    const std::size_t verbose_limit =
+        fuzz1::environmentCount("GS_FUZZ1_VERBOSE_LIMIT", 200);
+    fuzz1::Totals totals;
+    std::size_t verbose_count = 0;
+
+    for (std::size_t seed = 1; seed <= seeds; ++seed) {
+        ++totals.seeds;
+        const bool zone = seed % 2 == 0;
+        const Json document = zone ? fuzz1::zoneFuzzDocument() : fuzz1::rootFuzzDocument();
+        ZoneHarness harness{document};
+        gs3bOpen(harness);
+        fuzz1::Rng rng(seed);
+        for (std::size_t step = 1; step <= steps; ++step) {
+            std::optional<fuzz1::Proposal> chosen;
+            for (int attempt = 0; attempt < 40 && !chosen; ++attempt) {
+                auto proposed = fuzz1::proposal(rng, harness.document, zone);
+                if (!proposed) continue;
+                if (!fuzz1::submitIfLegal(harness, proposed->ops)) continue;
+                chosen = std::move(proposed);
+            }
+            if (!chosen) {
+                // The engine refused forty proposals in a row: add a value
+                // node if a scope is there, else change a root value.
+                Json ops;
+                const std::string scope = zone ? "" : "";
+                if (fuzz1::addConstant(harness, scope, ops) &&
+                    fuzz1::submitIfLegal(harness, ops)) {
+                    chosen = fuzz1::Proposal{ops, "add", scope + "/value.constant"};
+                } else if (auto fallback = fuzz1::fallbackProposal(harness.document)) {
+                    if (fuzz1::submitIfLegal(harness, fallback->ops))
+                        chosen = std::move(fallback);
+                }
+            }
+            if (!chosen) {
+                ++totals.skipped;
+                continue;
+            }
+
+            Gs3aTrace trace;
+            Gs3aCounts counts{harness.scene};
+            harness.commitFollowing();
+            const bool partial = !counts.redrawn.empty();
+            const int refused = trace.refused();
+            const std::vector<std::vector<std::string>> redrawn = counts.redrawn;
+
+            fuzz1::Signature first = fuzz1::signatureOf(harness.scene);
+            if (control) {
+                // A control: draw whole from the same model, twice. Any
+                // difference here is the full path's own, not the partial's.
+                harness.scene.repopulate();
+                first = fuzz1::signatureOf(harness.scene);
+            }
+            harness.scene.repopulate();
+            const fuzz1::Signature rebuilt = fuzz1::signatureOf(harness.scene);
+            ++totals.steps;
+            if (partial) ++totals.partial;
+            else ++totals.rebuilt;
+            ++totals.refusals[refused];
+
+            const auto differences = fuzz1::compare(first, rebuilt);
+            if (differences.empty()) continue;
+            QString context =
+                QStringLiteral("seed=%1 step=%2 fixture=%3 partial=%4 refused=0x%5 ops=%6 redrawn=%7")
+                    .arg(static_cast<qulonglong>(seed))
+                    .arg(static_cast<qulonglong>(step))
+                    .arg(zone ? QStringLiteral("zone") : QStringLiteral("root"))
+                    .arg(partial ? QStringLiteral("yes") : QStringLiteral("no"))
+                    .arg(refused, 0, 16)
+                    .arg(QString::fromStdString(chosen->ops.dump()))
+                    .arg(static_cast<qulonglong>(redrawn.size()));
+            fuzz1::recordDifferences(totals, differences, context);
+            if (verbose && verbose_count < verbose_limit) {
+                ++verbose_count;
+                std::printf("GS-FUZZ1 DIFF %s\n", context.toStdString().c_str());
+                for (const auto &difference : differences)
+                    std::printf("  %s %s\n", difference.kind.toStdString().c_str(),
+                                difference.detail.toStdString().c_str());
+            }
+        }
+    }
+    fuzz1::printTotals(totals);
+    // The task's floor: the driver must spend at least 30% of its steps on the
+    // partial path, or the mix is not the one being measured.
+    CHECK(totals.partial * 10 >= totals.steps * 3);
+}
+
+TEST_CASE("GS-FUZZ1 the comparison catches a planted text difference",
+          "[devstudio][graph-canvas][scene][gs-fuzz1]") {
+    using namespace PelicanStudio;
+    (void)application();
+    ZoneHarness harness{fuzz1::rootFuzzDocument()};
+    gs3bOpen(harness);
+    // The partial path, for one value: a multiply's stored `b`.
+    REQUIRE(harness.model.setNodeParameter("mul", "b", Json(4.0)));
+    harness.commitFollowing();
+    QGraphicsSimpleTextItem *planted = nullptr;
+    for (QGraphicsItem *item : harness.scene.items())
+        if (auto *text = dynamic_cast<QGraphicsSimpleTextItem *>(item))
+            if (!text->text().isEmpty()) {
+                planted = text;
+                break;
+            }
+    REQUIRE(planted != nullptr);
+    planted->setText(QStringLiteral("gs-fuzz1 planted text"));
+    // The same scene, with text in the signature and with the signature
+    // ignoring it. The planted text must be caught as a text difference in
+    // the first and not appear at all in the second.
+    const fuzz1::Signature partial = fuzz1::signatureOf(harness.scene);
+    const fuzz1::Signature partial_blind = fuzz1::signatureOf(harness.scene, false);
+    harness.scene.repopulate();
+    const fuzz1::Signature rebuilt = fuzz1::signatureOf(harness.scene);
+    const fuzz1::Signature rebuilt_blind = fuzz1::signatureOf(harness.scene, false);
+
+    const auto caught = fuzz1::compare(partial, rebuilt);
+    std::size_t text_differences = 0;
+    for (const auto &difference : caught)
+        if (difference.kind == QLatin1String{"text"}) ++text_differences;
+    CHECK(text_differences > 0);
+
+    const auto missed = fuzz1::compare(partial_blind, rebuilt_blind);
+    std::size_t blind_text_differences = 0;
+    for (const auto &difference : missed)
+        if (difference.kind == QLatin1String{"text"}) ++blind_text_differences;
+    CHECK(blind_text_differences == 0);
+}
+
+// ---- GS-FUZZ1 end ----
+// ---- GS-FUZZ2 begin ----
+#include <array>
+#include <mutex>
+
+namespace {
+namespace fuzz2 {
+
+using namespace fuzz1;
+using fuzz1::Rng;
+
+// One action of a seed's trail, kept so a failure can be replayed and shrunk.
+struct Step {
+    std::string kind;
+    std::string detail;
+    std::string outcome;
+};
+
+struct Failure {
+    std::string invariant;
+    int seed = 0;
+    std::size_t action = 0;
+    std::string message;
+    std::vector<Step> trail;
+};
+
+struct ActionCount {
+    std::size_t attempted = 0;
+    std::size_t performed = 0;
+    std::size_t skipped = 0;
+    std::size_t noop = 0;
+};
+
+struct Stats {
+    std::map<std::string, ActionCount> by_kind;
+    std::size_t replies = 0;
+    std::size_t whole_actions = 0;
+    std::size_t partial_actions = 0;
+    std::size_t refusals = 0;
+    std::size_t settle_failures = 0;
+    std::size_t scope_failures = 0;
+    std::size_t i1_runs = 0;
+    std::size_t i1_failures = 0;
+    std::size_t i2_checks = 0;
+    std::size_t i2_roundtrips = 0;
+    std::size_t i2_failures = 0;
+    std::size_t i3_runs = 0;
+    std::size_t i3_failures = 0;
+    std::size_t i4_runs = 0;
+    std::size_t i4_failures = 0;
+    std::size_t i5_runs = 0;
+    std::size_t i5_failures = 0;
+    std::array<std::size_t, 6> sequence_runs{};
+    std::array<std::size_t, 6> sequence_completed{};
+};
+
+std::string trailText(const std::vector<Step> &trail, std::size_t limit = 80) {
+    std::string text;
+    const std::size_t first = trail.size() > limit ? trail.size() - limit : 0;
+    for (std::size_t index = first; index < trail.size(); ++index) {
+        if (!text.empty()) text += " | ";
+        text += trail[index].kind;
+        if (!trail[index].detail.empty()) text += "(" + trail[index].detail + ")";
+        if (!trail[index].outcome.empty()) text += "=" + trail[index].outcome;
+    }
+    return text;
+}
+
+void recordFailure(Stats &stats, std::vector<Failure> &failures,
+                   const std::string &invariant, int seed, std::size_t action,
+                   const std::vector<Step> &trail, const std::string &message) {
+    Failure failure{invariant, seed, action, message, trail};
+    if (failures.size() < 512) failures.push_back(std::move(failure));
+    if (invariant == "I1") ++stats.i1_failures;
+    else if (invariant == "I2") ++stats.i2_failures;
+    else if (invariant == "I3") ++stats.i3_failures;
+    else if (invariant == "I4") ++stats.i4_failures;
+    else if (invariant == "I5") ++stats.i5_failures;
+    else if (invariant == "settle") ++stats.settle_failures;
+    else if (invariant == "scope") ++stats.scope_failures;
+}
+
+// ---- I5: the Qt messages the scene must never make ----
+
+std::mutex warning_mutex;
+std::vector<std::string> warning_hits;
+QtMessageHandler previous_handler = nullptr;
+bool capture_warnings = false;
+int warning_seed = 0;
+int warning_action = 0;
+const char *warning_phase = "dut";
+
+bool isTargetWarning(const QString &text) {
+    if (text.contains(QLatin1String{"QGraphicsScene::removeItem: item"}) &&
+        text.contains(QLatin1String{"scene is different"}))
+        return true;
+    // The exact Qt wording varies ("QObject: Cannot create children..." is
+    // not ours); the deletion-during-teardown one says "deleted while".
+    return text.contains(QLatin1String{"QObject:"}) &&
+           text.contains(QLatin1String{"deleted while"});
+}
+
+void warningHandler(QtMsgType type, const QMessageLogContext &context, const QString &text) {
+    if (capture_warnings && isTargetWarning(text)) {
+        std::lock_guard<std::mutex> lock{warning_mutex};
+        warning_hits.push_back("seed=" + std::to_string(warning_seed) + " action=" +
+                               std::to_string(warning_action) + " phase=" + warning_phase +
+                               " text=" + text.toStdString());
+    }
+    if (previous_handler != nullptr) previous_handler(type, context, text);
+}
+
+std::size_t warningCount() {
+    std::lock_guard<std::mutex> lock{warning_mutex};
+    return warning_hits.size();
+}
+
+std::vector<std::string> warningsSince(std::size_t first) {
+    std::lock_guard<std::mutex> lock{warning_mutex};
+    if (first >= warning_hits.size()) return {};
+    return {warning_hits.begin() + static_cast<std::ptrdiff_t>(first), warning_hits.end()};
+}
+
+// Installed before the fixture is built and left until it is destroyed: a
+// warning from a scene's teardown is still the scene's.
+struct WarningScope {
+    std::size_t first = 0;
+    explicit WarningScope(int seed) : first(warningCount()) {
+        warning_seed = seed;
+        previous_handler = qInstallMessageHandler(&warningHandler);
+        capture_warnings = true;
+    }
+    ~WarningScope() {
+        capture_warnings = false;
+        qInstallMessageHandler(previous_handler);
+        previous_handler = nullptr;
+    }
+    WarningScope(const WarningScope &) = delete;
+    WarningScope &operator=(const WarningScope &) = delete;
+};
+
+// Oracle drawing is not the DUT's drawing: its warnings are not I5's.
+struct IgnoreWarnings {
+    bool saved = capture_warnings;
+    IgnoreWarnings() { capture_warnings = false; }
+    ~IgnoreWarnings() { capture_warnings = saved; }
+    IgnoreWarnings(const IgnoreWarnings &) = delete;
+    IgnoreWarnings &operator=(const IgnoreWarnings &) = delete;
+};
+
+// ---- the invariants' predicates, shared with the self-checks ----
+// I2: after Undo the document must be the document before the edit. The
+// self-check hands this the *same* document (Undo skipped) and wants a
+// report, so equality is the failure.
+std::optional<std::string> i2DocumentMismatch(const Json &edited, const Json &undone) {
+    if (edited.dump() == undone.dump()) return std::nullopt;
+    return std::string{"the document after Undo is not the document before the edit"};
+}
+
+// I3: a picked node or edge must name an item that is in items(). It never
+// follows the selection's pointer.
+struct SelectionView {
+    std::string scope;
+    std::optional<std::string> node;
+    std::vector<PelicanStudio::GraphCanvasEdge> edges;
+};
+
+std::optional<std::string> selectionMismatch(const SelectionView &selection,
+                                             const QList<QGraphicsItem *> &items) {
+    using namespace PelicanStudio;
+    if (selection.node) {
+        // The pick names its scope, and a boundary node in a loop body is
+        // drawn as a socket when the root draws that body in a zone. What the
+        // pick must name is an item, not one particular kind of item.
+        const QString scope = QString::fromStdString(selection.scope);
+        const QString name = QString::fromStdString(*selection.node);
+        bool found = false;
+        for (QGraphicsItem *item : items) {
+            const QString kind = item->data(NodeGraphItemKindRole).toString();
+            if (kind != QLatin1String{GraphCanvasNodeItem} &&
+                kind != QLatin1String{GraphCanvasSocketItem} &&
+                kind != QLatin1String{GraphCanvasZoneSocketItem} &&
+                kind != QLatin1String{GraphCanvasDerivedSocketItem})
+                continue;
+            if (item->data(GraphCanvasScopeRole).toString() == scope &&
+                item->data(NodeGraphNameRole).toString() == name) {
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+            return "selected node " + *selection.node + " names no node or socket item in items()";
+    }
+    for (const GraphCanvasEdge &edge : selection.edges) {
+        bool found = false;
+        for (QGraphicsItem *item : items) {
+            if (item->data(NodeGraphItemKindRole).toString() != QLatin1String{GraphCanvasEdgeItem})
+                continue;
+            if (item->data(GraphCanvasScopeRole).toString() ==
+                    QString::fromStdString(selection.scope) &&
+                item->data(NodeGraphFromNameRole).toString() ==
+                    QString::fromStdString(edge.from_node) &&
+                item->data(GraphCanvasFromPortRole).toString() ==
+                    QString::fromStdString(edge.from_port) &&
+                item->data(NodeGraphToNameRole).toString() ==
+                    QString::fromStdString(edge.to_node) &&
+                item->data(GraphCanvasToPortRole).toString() ==
+                    QString::fromStdString(edge.to_port)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+            return "selected edge " + edge.from_node + "." + edge.from_port + "->" +
+                   edge.to_node + "." + edge.to_port +
+                   " names no graph edge item in items()";
+    }
+    return std::nullopt;
+}
+
+// I4: the index half of the signature, with the items and their order left
+// out (I1 compares those).
+std::vector<Difference> indexDifferences(fuzz1::Signature dut, fuzz1::Signature whole) {
+    dut.items.clear();
+    dut.order.clear();
+    whole.items.clear();
+    whole.order.clear();
+    return fuzz1::compare(dut, whole);
+}
+
+QString describeDifference(const fuzz1::Difference &difference) {
+    return difference.kind + QStringLiteral(": ") + difference.detail;
+}
+
+// ---- the driver's small wire/ref vocabulary ----
+
+struct Wire {
+    std::string scope;
+    std::string node;
+    std::string port;
+    std::string from;
+    std::string from_port;
+};
+
+struct EmptyPort {
+    std::string scope;
+    std::string node;
+    std::string port;
+};
+
+struct ValueSource {
+    std::string scope;
+    std::string node;
+    std::string port;
+};
+
+std::vector<Wire> connectedWires(const Json &document) {
+    std::vector<Wire> wires;
+    for (const std::string &scope : scopesOf(document)) {
+        for (const Json &node : nodeList(document, scope)) {
+            if (!node.is_object()) continue;
+            const std::string id = node.value("id", std::string{});
+            const Json inputs = node.value("inputs", Json::object());
+            if (id.empty() || !inputs.is_object()) continue;
+            for (const auto &[port, source] : inputs.items()) {
+                if (!source.is_object()) continue;
+                const std::string from = source.value("node", std::string{});
+                if (from.empty()) continue;
+                wires.push_back({scope, id, port, from,
+                                 source.value("port", std::string{"value"})});
+            }
+        }
+    }
+    return wires;
+}
+
+std::vector<EmptyPort> emptyPorts(const Json &document) {
+    std::vector<EmptyPort> ports;
+    for (const std::string &scope : scopesOf(document)) {
+        for (const Json &node : nodeList(document, scope)) {
+            if (!node.is_object()) continue;
+            const std::string id = node.value("id", std::string{});
+            const std::string op = node.value("op", std::string{});
+            if (id.empty()) continue;
+            if (op == "graph.loop" && !scope.empty()) continue;
+            const Json inputs = node.value("inputs", Json::object());
+            std::vector<std::string> names;
+            if (op == "value.add" || op == "value.multiply") names = {"a", "b"};
+            else if (op == "value.curve") names = {"time"};
+            else if (op == "graph.loop" && scope.empty()) names = {"target"};
+            for (const std::string &port : names)
+                if (!inputs.is_object() || !inputs.contains(port) ||
+                    !inputs.at(port).is_object())
+                    ports.push_back({scope, id, port});
+        }
+    }
+    return ports;
+}
+
+std::vector<ValueSource> valueSources(const Json &document) {
+    std::vector<ValueSource> sources;
+    for (const std::string &scope : scopesOf(document)) {
+        for (const Json &node : nodeList(document, scope)) {
+            if (!node.is_object()) continue;
+            const std::string id = node.value("id", std::string{});
+            const std::string op = node.value("op", std::string{});
+            if (id.empty()) continue;
+            bool value = op == "graph.input";
+            for (const Json &port : node.value("outputs", Json::array()))
+                if (port.is_string() && port.get<std::string>() == "value") value = true;
+            if (value) sources.push_back({scope, id, "value"});
+        }
+    }
+    return sources;
+}
+
+std::vector<NodeRef> parameterNodes(const Json &document, bool body) {
+    std::vector<NodeRef> refs;
+    for (const NodeRef &ref : nodeRefs(document))
+        if (parameterOp(ref.op) && (ref.scope.empty() != body)) refs.push_back(ref);
+    return refs;
+}
+
+std::vector<NodeRef> removableNodes(const Json &document) {
+    std::vector<NodeRef> refs;
+    for (const NodeRef &ref : nodeRefs(document))
+        if (ref.op != "graph.input" && ref.op != "graph.loop") refs.push_back(ref);
+    return refs;
+}
+
+std::optional<NodeRef> findNode(const Json &document, const std::string &scope,
+                                const std::string &id) {
+    for (const std::string &each : scopesOf(document))
+        if (each == scope)
+            for (const Json &node : nodeList(document, each))
+                if (node.is_object() && node.value("id", std::string{}) == id) {
+                    NodeRef ref;
+                    ref.scope = each;
+                    ref.id = id;
+                    ref.op = node.value("op", std::string{});
+                    ref.parameters = node.value("parameters", Json::object());
+                    return ref;
+                }
+    return std::nullopt;
+}
+
+std::size_t branchIndexOf(const Json &document, const std::string &loop,
+                          const std::string &body) {
+    for (const Json &node : nodeList(document, std::string{})) {
+        if (!node.is_object() || node.value("id", std::string{}) != loop) continue;
+        const Json parameters = node.value("parameters", Json::object());
+        if (!parameters.is_object()) return 0;
+        const Json branches = parameters.value("branches", Json::array());
+        if (!branches.is_array()) return 0;
+        for (std::size_t index = 0; index < branches.size(); ++index)
+            if (branches[index].is_object() &&
+                branches[index].value("body", std::string{}) == body)
+                return index;
+    }
+    return 0;
+}
+
+// GS-FUZZ3: the same Driver, with the body-heavy action mix.
+enum class Mix { fuzz2, body_fuzz3 };
+
+class Driver {
+public:
+    Driver(int seed, std::size_t random_steps, Stats &stats,
+           std::vector<Failure> &failures, bool verbose, Mix mix = Mix::fuzz2)
+        : h_(mix == Mix::body_fuzz3 ? bodyFuzzDocument() : zoneFuzzDocument()),
+          rng_(static_cast<std::uint64_t>(seed)), seed_(seed),
+          random_steps_(random_steps), stats_(stats), failures_(failures), verbose_(verbose),
+          mix_(mix) {
+        gs3bOpen(h_);
+        h_.scene.repopulated = [this] { ++rebuilds_; };
+        h_.scene.nodesRedrawn = [this](const std::string &, const std::vector<std::string> &) {
+            ++redraws_;
+        };
+        states_.push_back(h_.document.dump());
+        history_body_.push_back(false);
+        cursor_ = 0;
+        last_notice_ = h_.model.editNotice().message;
+    }
+
+    void run() {
+        for (int index = 0; index < 6 && mix_ == Mix::fuzz2 && !fatal_; ++index) {
+            const int which = (index + seed_) % 6;
+            ++stats_.sequence_runs[static_cast<std::size_t>(which)];
+            const bool done = runSequence(which);
+            if (done) ++stats_.sequence_completed[static_cast<std::size_t>(which)];
+        }
+        for (std::size_t step = 0; step < random_steps_ && !fatal_; ++step) {
+            std::vector<std::pair<std::string, double>> possible;
+            for (const auto &[kind, weight] : weights())
+                if (available(kind)) possible.push_back({kind, weight});
+            if (possible.empty()) {
+                fail("driver", "no random action is possible in this state");
+                break;
+            }
+            double total = 0.0;
+            for (const auto &entry : possible) total += entry.second;
+            double roll = rng_.unit() * total;
+            std::string chosen = possible.back().first;
+            for (const auto &entry : possible) {
+                roll -= entry.second;
+                if (roll <= 0.0) {
+                    chosen = entry.first;
+                    break;
+                }
+            }
+            runRandom(chosen);
+        }
+    }
+
+    [[nodiscard]] bool failed() const noexcept { return fatal_; }
+
+private:
+    struct Outcome {
+        bool performed = false;
+        bool skipped = false;
+        bool noop = false;
+        std::string note;
+    };
+
+    [[nodiscard]] const std::map<std::string, double> &weights() const {
+        static const std::map<std::string, double> fuzz2_table = [] {
+            const double value = 25.0 / 3.0;
+            const double structure = 20.0 / 4.0;
+            const double undo = 10.0;
+            const double scope = 25.0 / 5.0;
+            const double selection = 10.0 / 3.0;
+            return std::map<std::string, double>{
+                {"value_root", value},   {"value_body", value}, {"value_loop", value},
+                {"add_node", structure}, {"remove_node", structure},
+                {"connect", structure},  {"disconnect", structure},
+                {"undo", undo},          {"redo", undo},
+                {"enter_scope", scope},  {"leave_scope", scope},
+                {"fold", scope},         {"unfold", scope},
+                {"drag", scope},         {"select_node", selection},
+                {"select_edge", selection}, {"read_again", selection},
+            };
+        }();
+        // GS-FUZZ3: 40% body values (half reaching a body output, half not),
+        // 10% root values, 15% Undo/Redo of body edits, 10% a body drag then
+        // a body value edit, 5% select a body node then edit it, 5% enter or
+        // leave a body scope, 10% structure inside the body, 5% read again.
+        static const std::map<std::string, double> fuzz3_table{
+            {"value_body_reaches", 20.0}, {"value_body_plain", 20.0},
+            {"value_root", 10.0},         {"undo_body", 7.5},
+            {"redo_body", 7.5},           {"drag_body_edit", 10.0},
+            {"select_body_edit", 5.0},    {"enter_scope", 2.5},
+            {"leave_scope", 2.5},         {"body_add", 2.5},
+            {"body_remove", 2.5},         {"body_connect", 2.5},
+            {"body_disconnect", 2.5},     {"read_again", 5.0},
+        };
+        return mix_ == Mix::body_fuzz3 ? fuzz3_table : fuzz2_table;
+    }
+
+    template <typename Fn>
+    Outcome action(const std::string &kind, const std::string &detail, Fn fn) {
+        current_kind_ = kind;
+        current_detail_ = detail;
+        current_outcome_ = {};
+        ActionCount &count = stats_.by_kind[kind];
+        ++count.attempted;
+        rebuilds_ = 0;
+        redraws_ = 0;
+        const std::size_t sent_before = h_.sent.size();
+        const std::size_t warnings_before = warningCount();
+        warning_seed = seed_;
+        warning_action = static_cast<int>(trail_.size() + 1);
+        warning_phase = "dut";
+
+        Outcome outcome;
+        if (fatal_) {
+            outcome.skipped = true;
+            outcome.note = "a previous action failed";
+        } else {
+            outcome = fn();
+            finishAfterAction(outcome, sent_before, warnings_before);
+        }
+
+        const bool got_reply = h_.sent.size() > sent_before;
+        stats_.replies += got_reply ? h_.sent.size() - sent_before : 0;
+        if (outcome.performed) ++count.performed;
+        else if (outcome.noop) ++count.noop;
+        else ++count.skipped;
+        if (got_reply || outcome.performed) {
+            if (rebuilds_ > 0) ++stats_.whole_actions;
+            if (redraws_ > 0) ++stats_.partial_actions;
+        }
+        trail_.push_back({kind, detail,
+                          outcome.performed ? "performed"
+                                             : (outcome.noop ? "no-op" : "skipped")});
+        current_kind_.clear();
+        current_detail_.clear();
+        return outcome;
+    }
+
+    void finishAfterAction(Outcome &outcome, std::size_t sent_before,
+                           std::size_t warnings_before) {
+        QCoreApplication::processEvents();
+        auto leftovers = h_.settle();
+        if (!leftovers.empty()) {
+            fail("settle", "an action left a second edit_graph_document in the outbox");
+            fatal_ = true;
+            outcome.performed = false;
+            outcome.skipped = true;
+            return;
+        }
+        auto pending = h_.model.takeRpcRequests();
+        if (!pending.empty()) {
+            std::string methods;
+            for (const auto &request : pending) {
+                if (!methods.empty()) methods += ",";
+                methods += request.method;
+            }
+            fail("settle", "the model still has requests after the action: " + methods);
+            fatal_ = true;
+            outcome.performed = false;
+            outcome.skipped = true;
+            return;
+        }
+        if (h_.model.busy()) {
+            fail("settle", "the model is still busy after the action");
+            fatal_ = true;
+            outcome.performed = false;
+            outcome.skipped = true;
+            return;
+        }
+
+        const auto &notice = h_.model.editNotice();
+        if (notice.kind == PelicanStudio::InspectorNoticeKind::Error &&
+            notice.message != last_notice_)
+            ++stats_.refusals;
+        last_notice_ = notice.message;
+
+        checkScope();
+        checkSelection();
+        checkWarnings(warnings_before);
+
+        const bool got_reply = h_.sent.size() > sent_before;
+        if (got_reply && outcome.performed && !fatal_) checkOracle();
+    }
+
+    void checkScope() {
+        const std::string scope = h_.model.currentScope();
+        const QString expected =
+            scope.empty() ? QStringLiteral("root") : QString::fromStdString(scope);
+        const QString drawn = h_.scene.property("pelicanGraphScope").toString();
+        if (drawn != expected)
+            fail("scope", "scene draws scope '" + drawn.toStdString() +
+                              "' while the model is in '" + expected.toStdString() + "'");
+    }
+
+    void checkSelection() {
+        ++stats_.i3_runs;
+        SelectionView selection;
+        selection.scope = h_.scene.selectedScope();
+        selection.node = h_.scene.selectedNode();
+        selection.edges = h_.scene.selectedEdges();
+        const auto mismatch = selectionMismatch(selection, h_.scene.items());
+        if (mismatch) fail("I3", *mismatch);
+    }
+
+    void checkWarnings(std::size_t first) {
+        ++stats_.i5_runs;
+        for (const std::string &hit : warningsSince(first)) fail("I5", hit);
+    }
+
+    void checkOracle() {
+        const fuzz1::Signature dut = fuzz1::signatureOf(h_.scene);
+        ZoneHarness oracle{zoneFuzzDocument()};
+        IgnoreWarnings ignore;
+        std::string why;
+        ++stats_.i1_runs;
+        ++stats_.i4_runs;
+        if (!buildOracle(oracle, why)) {
+            fail("I1", "could not build the independent oracle: " + why);
+            return;
+        }
+        const fuzz1::Signature whole = fuzz1::signatureOf(oracle.scene);
+        const auto differences = fuzz1::compare(dut, whole);
+        if (!differences.empty()) {
+            std::string detail;
+            for (std::size_t index = 0; index < differences.size() && index < 4; ++index) {
+                if (!detail.empty()) detail += " || ";
+                detail += describeDifference(differences[index]).toStdString();
+            }
+            fail("I1", "partial drawing differs from the oracle whole drawing: " + detail);
+        }
+        const auto index_only = indexDifferences(dut, whole);
+        if (!index_only.empty()) {
+            std::string detail;
+            for (std::size_t index = 0; index < index_only.size() && index < 4; ++index) {
+                if (!detail.empty()) detail += " || ";
+                detail += describeDifference(index_only[index]).toStdString();
+            }
+            fail("I4", "routing index differs from the oracle: " + detail);
+        }
+    }
+
+    bool buildOracle(ZoneHarness &oracle, std::string &why) {
+        oracle.document = h_.document;
+        oracle.generation = h_.generation;
+        oracle.loops = h_.loops;
+        oracle.plan = h_.plan;
+        oracle.catalog = h_.catalog;
+        oracle.authoring = h_.authoring;
+        // A node the document has never placed lives in the scene's session
+        // table, not in the document. The whole drawing must use the same
+        // place, or it would auto-layout the node somewhere else. Mirror only
+        // the missing entries; a document place is what the document says.
+        for (QGraphicsItem *item : h_.scene.items()) {
+            if (PelicanStudio::nodeGraphItemKind(*item) !=
+                QLatin1String{PelicanStudio::GraphCanvasNodeItem})
+                continue;
+            const std::string scope =
+                item->data(PelicanStudio::GraphCanvasScopeRole).toString().toStdString();
+            const std::string id =
+                item->data(PelicanStudio::NodeGraphNameRole).toString().toStdString();
+            if (id.empty()) continue;
+            Json &layout = scope.empty()
+                               ? oracle.document["layout"]
+                               : oracle.document["definitions"][scope]["layout"];
+            if (!layout.is_object()) layout = Json::object();
+            if (!layout.contains("nodes") || !layout["nodes"].is_object())
+                layout["nodes"] = Json::object();
+            Json &nodes = layout["nodes"];
+            if (nodes.contains(id)) continue;
+            nodes[id] = Json{{"x", item->x()}, {"y", item->y()}};
+            const QString view =
+                item->data(PelicanStudio::GraphCanvasNodeViewRole).toString();
+            if (!view.isEmpty()) nodes[id]["view"] = view.toStdString();
+        }
+        gs3bOpen(oracle);
+
+        const std::string scope = h_.model.currentScope();
+        if (oracle.model.currentScope() != scope) {
+            if (!oracle.model.selectScope(scope)) {
+                why = "selectScope('" + scope + "') was refused";
+                return false;
+            }
+            (void)oracle.settle();
+        }
+        oracle.scene.repopulate();
+        if (scope.empty()) {
+            for (const auto &[loop, body] : h_.scene.zones()) {
+                const std::size_t branch = branchIndexOf(oracle.document, loop, body);
+                if (!oracle.scene.showLoopBranch(loop, branch)) {
+                    why = "showLoopBranch('" + loop + "', " + std::to_string(branch) +
+                          ") was refused";
+                    return false;
+                }
+                (void)oracle.settle();
+            }
+        }
+        auto edits = oracle.settle();
+        if (!edits.empty()) {
+            why = "the oracle sent an edit while drawing";
+            return false;
+        }
+        auto pending = oracle.model.takeRpcRequests();
+        if (!pending.empty()) {
+            why = "the oracle still has requests";
+            return false;
+        }
+        if (oracle.model.busy()) {
+            why = "the oracle model is busy";
+            return false;
+        }
+        if (oracle.model.currentScope() != scope) {
+            why = "the oracle ended in another scope";
+            return false;
+        }
+        return true;
+    }
+
+    void fail(const std::string &invariant, const std::string &message) {
+        auto trail = trail_;
+        if (!current_kind_.empty())
+            trail.push_back({current_kind_, current_detail_, "attempted"});
+        recordFailure(stats_, failures_, invariant, seed_, trail.size(), trail, message);
+        if (verbose_)
+            std::printf("GS-FUZZ2 FAIL %s seed=%d action=%zu: %s\n  trail: %s\n",
+                        invariant.c_str(), seed_, trail.size(), message.c_str(),
+                        trailText(trail).c_str());
+    }
+
+    bool submit(const Json &ops) {
+        try {
+            (void)Pelican::editGraphDocument(h_.document, ops);
+        } catch (...) {
+            return false;
+        }
+        return h_.model.submitEdit(ops);
+    }
+
+    Outcome commitEdit(const std::string &kind, const std::string &detail,
+                       bool record_history = true) {
+        Outcome outcome;
+        auto edits = h_.settle();
+        if (edits.empty()) {
+            outcome.skipped = true;
+            outcome.note = "no edit was sent";
+            return outcome;
+        }
+        if (edits.size() != 1) {
+            fail("settle", "expected one edit_graph_document, got " +
+                               std::to_string(edits.size()));
+            fatal_ = true;
+            outcome.skipped = true;
+            return outcome;
+        }
+        const auto &request = edits.front();
+        const std::string base =
+            request.params.value("base_source_digest", std::string{});
+        if (base != h_.digest()) {
+            fail("settle", "edit_graph_document base digest '" + base +
+                               "' is not the model's '" + h_.digest() + "'");
+            fatal_ = true;
+            outcome.skipped = true;
+            return outcome;
+        }
+        const Json ops = request.params.at("ops");
+        Json edited;
+        try {
+            edited = Pelican::editGraphDocument(h_.document, ops);
+        } catch (const std::exception &error) {
+            fail("edit", std::string{"the model sent ops the engine refuses: "} + error.what());
+            fatal_ = true;
+            outcome.skipped = true;
+            return outcome;
+        }
+        try {
+            h_.model.receiveRpcResult(
+                request.request_id,
+                Json{{"status", "accepted"},
+                     {"ticket", "gs-fuzz2-" + std::to_string(seed_) + "-" +
+                                    std::to_string(ticket_++)}}
+                    .dump());
+        } catch (const std::exception &error) {
+            fail("edit", std::string{"the submit reply was refused: "} + error.what());
+            fatal_ = true;
+            outcome.skipped = true;
+            return outcome;
+        }
+
+        bool committed = false;
+        for (const auto &poll : h_.model.takeRpcRequests()) {
+            if (poll.method != "get_edit_result") {
+                fail("edit", "after accepting the edit the model asked for " + poll.method);
+                fatal_ = true;
+                break;
+            }
+            h_.sent.push_back(poll.method);
+            if (committed) {
+                fail("edit", "the model asked for get_edit_result twice");
+                fatal_ = true;
+                break;
+            }
+            h_.document = edited;
+            ++h_.generation;
+            committed = true;
+            try {
+                h_.model.receiveRpcResult(
+                    poll.request_id,
+                    Json{{"status", "committed"},
+                         {"committed", true},
+                         {"source_digest", {{"hex", h_.digest()}}}}
+                        .dump());
+            } catch (const std::exception &error) {
+                fail("edit", std::string{"the commit reply was refused: "} + error.what());
+                fatal_ = true;
+                break;
+            }
+        }
+        if (!committed) {
+            fail("edit", "the model never asked for the edit result");
+            fatal_ = true;
+            outcome.skipped = true;
+            return outcome;
+        }
+        auto leftovers = h_.settle();
+        if (!leftovers.empty()) {
+            fail("edit", "a second edit was sent after the commit");
+            fatal_ = true;
+        }
+        if (h_.model.busy()) {
+            fail("edit", "the model is busy after the commit");
+            fatal_ = true;
+        }
+        if (record_history && !fatal_) {
+            if (states_.size() > cursor_ + 1) states_.resize(cursor_ + 1);
+            states_.push_back(h_.document.dump());
+            if (history_body_.size() > cursor_ + 1) history_body_.resize(cursor_ + 1);
+            history_body_.push_back(bodyEditKind(kind));
+            cursor_ = states_.size() - 1;
+        }
+        outcome.performed = !fatal_;
+        if (!outcome.performed) outcome.skipped = true;
+        return outcome;
+    }
+
+    Outcome undoAction(bool redo) {
+        Outcome outcome;
+        const bool possible = redo ? h_.model.canRedo() : h_.model.canUndo();
+        if (!possible) {
+            outcome.skipped = true;
+            outcome.note = redo ? "no redo" : "no undo";
+            return outcome;
+        }
+        if ((!redo && cursor_ == 0) || (redo && cursor_ + 1 >= states_.size())) {
+            fail("I2", std::string{"the model can "} + (redo ? "redo" : "undo") +
+                           " but the independent history has no state for it");
+            fatal_ = true;
+            outcome.skipped = true;
+            return outcome;
+        }
+        const std::size_t expected_index = redo ? cursor_ + 1 : cursor_ - 1;
+        const std::string expected = states_[expected_index];
+        if (redo) h_.scene.redoEdit();
+        else h_.scene.undoEdit();
+        outcome = commitEdit(redo ? "redo" : "undo", redo ? "history" : "history", false);
+        if (!outcome.performed || fatal_) return outcome;
+        ++stats_.i2_checks;
+        if (auto mismatch = i2DocumentMismatch(Json::parse(expected), h_.document)) {
+            fail("I2", *mismatch);
+            fatal_ = true;
+            return outcome;
+        }
+        cursor_ = expected_index;
+        return outcome;
+    }
+
+    // ---- GS-FUZZ3: the body the root draws, and what can be done in it ----
+    // Only a root drawing of a zone can take the body partial path, so body
+    // actions are offered only at the root and only for the body the scene
+    // shows (`first` in this fixture).
+    [[nodiscard]] std::string zoneBodyScope() const {
+        if (!h_.model.currentScope().empty()) return {};
+        const auto &zones = h_.scene.zones();
+        return zones.empty() ? std::string{} : zones.begin()->second;
+    }
+
+    [[nodiscard]] std::vector<NodeRef> bodyValueNodes(bool reaches) const {
+        std::vector<NodeRef> refs;
+        const std::string body = zoneBodyScope();
+        if (body.empty()) return refs;
+        for (const NodeRef &ref : parameterNodes(h_.document, true))
+            if (ref.scope == body &&
+                bodyReachesOutput(h_.document, body, ref.id) == reaches)
+                refs.push_back(ref);
+        return refs;
+    }
+
+    [[nodiscard]] std::vector<std::pair<std::string, std::string>> drawnBodyNodes() const {
+        std::vector<std::pair<std::string, std::string>> nodes;
+        const std::string body = zoneBodyScope();
+        if (body.empty()) return nodes;
+        for (const auto &[scope, id] : drawnNodes())
+            if (scope == body) nodes.push_back({scope, id});
+        return nodes;
+    }
+
+    [[nodiscard]] std::vector<Wire> bodyWires() const {
+        std::vector<Wire> wires;
+        const std::string body = zoneBodyScope();
+        if (body.empty()) return wires;
+        for (const Wire &wire : connectedWires(h_.document))
+            if (wire.scope == body) wires.push_back(wire);
+        return wires;
+    }
+
+    [[nodiscard]] std::vector<EmptyPort> bodyEmptyPorts() const {
+        std::vector<EmptyPort> ports;
+        const std::string body = zoneBodyScope();
+        if (body.empty()) return ports;
+        for (const EmptyPort &port : emptyPorts(h_.document))
+            if (port.scope == body) ports.push_back(port);
+        return ports;
+    }
+
+    [[nodiscard]] std::vector<ValueSource> bodyValueSources() const {
+        std::vector<ValueSource> sources;
+        const std::string body = zoneBodyScope();
+        if (body.empty()) return sources;
+        for (const ValueSource &source : valueSources(h_.document))
+            if (source.scope == body) sources.push_back(source);
+        return sources;
+    }
+
+    [[nodiscard]] std::vector<NodeRef> bodyRemovableNodes() const {
+        std::vector<NodeRef> refs;
+        const std::string body = zoneBodyScope();
+        if (body.empty()) return refs;
+        for (const NodeRef &ref : removableNodes(h_.document))
+            if (ref.scope == body) refs.push_back(ref);
+        return refs;
+    }
+
+    static bool bodyEditKind(const std::string &kind) {
+        return kind == "value_body_reaches" || kind == "value_body_plain" ||
+               kind == "body_add" || kind == "body_remove" || kind == "body_connect" ||
+               kind == "body_disconnect";
+    }
+
+    // GS-FUZZ3: the mix's composed body actions. The drag or the pick is one
+    // gesture; the value edit that follows is the action under test.
+    Outcome dragBodyThenEdit() {
+        const std::string body = zoneBodyScope();
+        const auto nodes = drawnBodyNodes();
+        if (body.empty() || nodes.empty()) return skipped("no body node is drawn");
+        const auto &[scope, id] = nodes[rng_.below(nodes.size())];
+        (void)scope;
+        (void)id;
+        const Outcome drag = dragAction(
+            [&](const std::string &each, const std::string &) { return each == body; });
+        if (!drag.performed || fatal_) return drag;
+        const bool reaches = rng_.chance(0.5);
+        const auto refs = bodyValueNodes(reaches);
+        if (refs.empty()) return performed("dragged a body node; no body value is left");
+        const NodeRef &ref = refs[rng_.below(refs.size())];
+        return valueEdit(ref.scope, ref.id,
+                         reaches ? "value_body_reaches" : "value_body_plain", false);
+    }
+
+    Outcome selectBodyThenEdit() {
+        const auto refs = bodyValueNodes(rng_.chance(0.5));
+        if (refs.empty()) return skipped("no body value is drawn");
+        const NodeRef &ref = refs[rng_.below(refs.size())];
+        const bool reaches = bodyReachesOutput(h_.document, ref.scope, ref.id);
+        h_.scene.selectNode(ref.scope, ref.id);
+        QCoreApplication::processEvents();
+        if (!h_.scene.selectedNode() || *h_.scene.selectedNode() != ref.id ||
+            h_.scene.selectedScope() != ref.scope)
+            return skipped("the body node did not pick");
+        return valueEdit(ref.scope, ref.id,
+                         reaches ? "value_body_reaches" : "value_body_plain", false);
+    }
+
+    Outcome valueEdit(const std::string &scope, const std::string &id,
+                      const std::string &kind, bool loop) {
+        const std::optional<NodeRef> found = findNode(h_.document, scope, id);
+        if (!found) return skipped("the node is gone");
+        const NodeRef ref = *found;
+        Json parameters = ref.parameters.is_object() ? ref.parameters : Json::object();
+        if (loop) {
+            if (ref.op != "graph.loop") return skipped("not a loop");
+            Json over = parameters.value("over", Json::object());
+            if (!over.is_object()) over = Json::object();
+            std::int64_t current = 0;
+            if (over.contains("range") && over.at("range").is_object())
+                current = over.at("range").value("count", std::int64_t{0});
+            std::int64_t count = 1 + static_cast<std::int64_t>(rng_.below(7));
+            if (count == current) count = 1 + (count % 7);
+            over["range"] = Json{{"count", count}};
+            parameters["over"] = std::move(over);
+        } else {
+            const char *key = parameterKey(ref.op);
+            if (key == nullptr) return skipped("not a value node");
+            const double current = parameters.contains(key) && parameters.at(key).is_number()
+                                       ? parameters.at(key).get<double>()
+                                       : 0.0;
+            parameters[key] = differentValue(rng_, current);
+        }
+        if (!submit(parameterOps(ref, parameters))) return skipped("the engine refuses it");
+        return commitEdit(kind, scopeToken(scope) + "/" + id);
+    }
+
+    Outcome addNode(const std::string &scope, const std::string &id,
+                    const std::string &kind) {
+        Json node = {{"id", id},
+                     {"op", "value.constant"},
+                     {"parameters", {{"value", differentValue(rng_, 0.0)}}},
+                     {"outputs", Json::array({"value"})}};
+        Json ops = Json::array({Json{{"op", "add_node"},
+                                     {"scope", scopeToken(scope)},
+                                     {"node", std::move(node)}}});
+        if (!submit(ops)) return skipped("the engine refuses the node");
+        return commitEdit(kind, scopeToken(scope) + "/" + id);
+    }
+
+    Outcome removeNode(const std::string &scope, const std::string &id,
+                       const std::string &kind = "remove_node") {
+        Json ops = Json::array({Json{{"op", "remove_node"},
+                                     {"scope", scopeToken(scope)},
+                                     {"node", id}}});
+        if (!submit(ops)) return skipped("the engine refuses the removal");
+        return commitEdit(kind, scopeToken(scope) + "/" + id);
+    }
+
+    Outcome connectSpecific(const std::string &scope, const std::string &node,
+                            const std::string &port, const std::string &from,
+                            const std::string &from_port,
+                            const std::string &kind = "connect") {
+        Json ops = Json::array({Json{
+            {"op", "set_input"},
+            {"scope", scopeToken(scope)},
+            {"node", node},
+            {"port", port},
+            {"source", Json{{"node", from}, {"port", from_port}}}}});
+        if (!submit(ops)) return skipped("the engine refuses the line");
+        return commitEdit(kind, scopeToken(scope) + "/" + node + "." + port);
+    }
+
+    Outcome disconnectSpecific(const Wire &wire,
+                               const std::string &kind = "disconnect") {
+        Json ops = Json::array({Json{{"op", "set_input"},
+                                     {"scope", scopeToken(wire.scope)},
+                                     {"node", wire.node},
+                                     {"port", wire.port},
+                                     {"source", nullptr}}});
+        if (!submit(ops)) return skipped("the engine refuses the cut");
+        return commitEdit(kind, scopeToken(wire.scope) + "/" + wire.node + "." + wire.port);
+    }
+
+    Outcome foldSpecific(const std::string &scope, const std::string &id, bool folded) {
+        const bool changed = h_.scene.setNodeViews(
+            scope, {id}, folded ? PelicanStudio::GraphCanvasNodeView::minimal
+                                : PelicanStudio::GraphCanvasNodeView::open);
+        if (!changed) return skipped("the node already has that view");
+        return commitEdit(folded ? "fold" : "unfold", scopeToken(scope) + "/" + id);
+    }
+
+    Outcome enterSpecific(const std::string &id) {
+        const std::string before = h_.model.currentScope();
+        h_.scene.enterNode(id);
+        QCoreApplication::processEvents();
+        if (h_.model.currentScope() == before) return skipped("the node did not open");
+        return performed("entered " + id);
+    }
+
+    Outcome leaveSpecific() {
+        const std::string before = h_.model.currentScope();
+        const auto crumbs = itemsOfKind(h_.scene, PelicanStudio::GraphCanvasBreadcrumbItem);
+        if (crumbs.empty()) return skipped("there is no breadcrumb");
+        click(h_.scene, centreOf(crumbs.front()));
+        QCoreApplication::processEvents();
+        if (h_.model.currentScope() == before) return skipped("the breadcrumb did not leave");
+        return performed("left one scope");
+    }
+
+    Outcome readAgainAction() {
+        h_.readAgain();
+        return performed("read again");
+    }
+
+    Outcome dragAction(
+        const std::function<bool(const std::string &, const std::string &)> &accept = {}) {
+        const auto nodes = drawnNodes();
+        if (nodes.empty()) return skipped("there is no drawn node");
+        // A heading can sit under chrome (the breadcrumb, a zone bar). A
+        // click there is that chrome's gesture, not a drag of the node, so
+        // find a node whose heading the scene really picks for it.
+        const std::size_t start_at = rng_.below(nodes.size());
+        QGraphicsItem *node = nullptr;
+        QPointF at;
+        std::string chosen_scope;
+        std::string chosen_id;
+        for (std::size_t offset = 0; offset < nodes.size(); ++offset) {
+            const auto &[scope, id] = nodes[(start_at + offset) % nodes.size()];
+            if (accept && !accept(scope, id)) continue;
+            QGraphicsItem *candidate = scopedNode(h_.scene, QString::fromStdString(scope),
+                                                  QString::fromStdString(id));
+            if (candidate == nullptr) continue;
+            const QPointF heading = headingOf(candidate);
+            bool picked_it = false;
+            for (QGraphicsItem *hit = h_.scene.itemAt(heading, QTransform()); hit != nullptr;
+                 hit = hit->parentItem()) {
+                if (hit == candidate) {
+                    picked_it = true;
+                    break;
+                }
+            }
+            if (!picked_it) continue;
+            node = candidate;
+            at = heading;
+            chosen_scope = scope;
+            chosen_id = id;
+            break;
+        }
+        if (node == nullptr) return skipped("every node heading is covered by chrome");
+        const double dx = (rng_.chance(0.5) ? -1.0 : 1.0) * (12.0 + rng_.below(48));
+        const double dy = (rng_.chance(0.5) ? -1.0 : 1.0) * (12.0 + rng_.below(48));
+        drag(h_.scene, at, at + QPointF{dx, dy});
+        h_.scene.flushLayout();
+        return commitEdit("drag", scopeToken(chosen_scope) + "/" + chosen_id);
+    }
+
+    Outcome selectNodeAction() {
+        const auto nodes = drawnNodes();
+        if (nodes.empty()) return skipped("there is no drawn node");
+        const auto &[scope, id] = nodes[rng_.below(nodes.size())];
+        h_.scene.selectNode(scope, id);
+        QCoreApplication::processEvents();
+        if (!h_.scene.selectedNode() || *h_.scene.selectedNode() != id)
+            return skipped("the node did not pick");
+        return performed("picked " + id);
+    }
+
+    Outcome selectEdgeAction() {
+        const auto all = connectedWires(h_.document);
+        const std::string scope = h_.model.currentScope();
+        std::vector<Wire> wires;
+        for (const Wire &wire : all)
+            if (wire.scope == scope) wires.push_back(wire);
+        if (wires.empty()) return skipped("the drawn scope has no line");
+        const Wire &wire = wires[rng_.below(wires.size())];
+        h_.scene.selectEdge(
+            wire.scope,
+            PelicanStudio::GraphCanvasEdge{wire.from, wire.from_port, wire.node, wire.port},
+            false);
+        QCoreApplication::processEvents();
+        if (h_.scene.selectedEdges().empty()) return skipped("the line did not pick");
+        return performed("picked a line");
+    }
+
+    Outcome deleteSelectionAction() {
+        if (!h_.scene.selectedNode() && h_.scene.selectedEdges().empty())
+            return skipped("nothing is picked");
+        if (!h_.scene.deleteSelection()) return skipped("Delete sent no edit");
+        return commitEdit("remove_node", "Delete");
+    }
+
+    bool driveSequenceStep(const std::string &kind, const std::string &detail,
+                           const std::function<Outcome()> &fn, Outcome &outcome) {
+        outcome = action(kind, detail, fn);
+        return outcome.performed && !fatal_;
+    }
+
+    bool runSequence(int which) {
+        if (!normalizeRoot()) return false;
+        switch (which) {
+        case 0: return sequenceAddConnectRemoveUndoRedo();
+        case 1: return sequenceFoldEditUnfoldUndo();
+        case 2: return sequenceEnterEditLeaveUndoReenter();
+        case 3: return sequenceDragLineValue();
+        case 4: return sequenceSelectRemoveUndoRedo();
+        case 5: return sequenceEditReadEditUndo();
+        default: return false;
+        }
+    }
+
+    bool normalizeRoot() {
+        for (int round = 0; round < 8 && !h_.model.currentScope().empty(); ++round) {
+            const auto crumbs =
+                itemsOfKind(h_.scene, PelicanStudio::GraphCanvasBreadcrumbItem);
+            if (crumbs.empty()) break;
+            click(h_.scene, centreOf(crumbs.front()));
+            QCoreApplication::processEvents();
+            (void)h_.settle();
+        }
+        if (!h_.model.currentScope().empty()) {
+            fail("driver", "could not return to the root before a required sequence");
+            fatal_ = true;
+            return false;
+        }
+        return true;
+    }
+
+    bool sequenceAddConnectRemoveUndoRedo() {
+        const std::string id = "f2_seq1_" + std::to_string(seed_);
+        Outcome add;
+        if (!driveSequenceStep("add_node", "sequence 1 add " + id,
+                               [&] { return addNode(std::string{}, id, "add_node"); }, add))
+            return false;
+        Outcome connect;
+        if (!driveSequenceStep("connect", "sequence 1 connect " + id + ".a",
+                               [&] {
+                                   return connectSpecific(std::string{}, id, "a", "a",
+                                                          "value");
+                               },
+                               connect))
+            return false;
+        const Json before_remove = h_.document;
+        Outcome remove;
+        if (!driveSequenceStep("remove_node", "sequence 1 remove " + id,
+                               [&] { return removeNode(std::string{}, id); }, remove))
+            return false;
+        const std::size_t failures_before = failures_.size();
+        Outcome undo;
+        if (!driveSequenceStep("undo", "sequence 1 undo",
+                               [&] { return undoAction(false); }, undo))
+            return false;
+        if (i2DocumentMismatch(before_remove, h_.document)) {
+            fail("I2", "sequence 1: Undo did not restore the document before the removal");
+            return false;
+        }
+        Outcome redo;
+        if (!driveSequenceStep("redo", "sequence 1 redo",
+                               [&] { return undoAction(true); }, redo))
+            return false;
+        if (failures_.size() == failures_before) ++stats_.i2_roundtrips;
+        return true;
+    }
+
+    bool sequenceFoldEditUnfoldUndo() {
+        Outcome fold;
+        if (!driveSequenceStep("fold", "sequence 2 fold m",
+                               [&] { return foldSpecific(std::string{}, "m", true); }, fold))
+            return false;
+        Outcome edit;
+        if (!driveSequenceStep("value_root", "sequence 2 edit hidden m",
+                               [&] { return valueEdit(std::string{}, "m", "value_root", false); },
+                               edit))
+            return false;
+        Outcome unfold;
+        if (!driveSequenceStep("unfold", "sequence 2 unfold m",
+                               [&] { return foldSpecific(std::string{}, "m", false); }, unfold))
+            return false;
+        Outcome undo;
+        return driveSequenceStep("undo", "sequence 2 undo",
+                                 [&] { return undoAction(false); }, undo);
+    }
+
+    bool sequenceEnterEditLeaveUndoReenter() {
+        Outcome enter;
+        if (!driveSequenceStep("enter_scope", "sequence 3 enter steps",
+                               [&] { return enterSpecific("steps"); }, enter))
+            return false;
+        if (h_.model.currentScope().empty()) return false;
+        const std::string body = h_.model.currentScope();
+        Outcome edit;
+        if (!driveSequenceStep("value_body", "sequence 3 edit a body value",
+                               [&] {
+                                   const auto refs = parameterNodes(h_.document, true);
+                                   if (refs.empty()) return skipped("no body value");
+                                   const NodeRef &ref = refs[rng_.below(refs.size())];
+                                   return valueEdit(ref.scope, ref.id, "value_body", false);
+                               },
+                               edit))
+            return false;
+        Outcome leave;
+        if (!driveSequenceStep("leave_scope", "sequence 3 leave",
+                               [&] { return leaveSpecific(); }, leave))
+            return false;
+        Outcome undo;
+        if (!driveSequenceStep("undo", "sequence 3 undo",
+                               [&] { return undoAction(false); }, undo))
+            return false;
+        Outcome reenter;
+        if (!driveSequenceStep("enter_scope", "sequence 3 re-enter",
+                               [&] { return enterSpecific("steps"); }, reenter))
+            return false;
+        return h_.model.currentScope() == body;
+    }
+
+    bool sequenceDragLineValue() {
+        Outcome drag;
+        if (!driveSequenceStep("drag", "sequence 4 drag",
+                               [&] { return dragAction(); }, drag))
+            return false;
+        const auto wires = connectedWires(h_.document);
+        std::optional<Wire> target;
+        for (const Wire &wire : wires)
+            if (wire.scope.empty() && wire.node == "steps" && wire.port == "target")
+                target = wire;
+        if (!target) return false;
+        Outcome cut;
+        if (!driveSequenceStep("disconnect", "sequence 4 cut steps.target",
+                               [&] { return disconnectSpecific(*target); }, cut))
+            return false;
+        Outcome edit;
+        return driveSequenceStep("value_root", "sequence 4 edit a",
+                                 [&] { return valueEdit(std::string{}, "a", "value_root", false); },
+                                 edit);
+    }
+
+    bool sequenceSelectRemoveUndoRedo() {
+        Outcome pick;
+        if (!driveSequenceStep("select_node", "sequence 5 pick m",
+                               [&] {
+                                   h_.scene.selectNode(std::string{}, "m");
+                                   QCoreApplication::processEvents();
+                                   if (!h_.scene.selectedNode() ||
+                                       *h_.scene.selectedNode() != "m")
+                                       return skipped("m did not pick");
+                                   return performed("picked m");
+                               },
+                               pick))
+            return false;
+        const Json before_remove = h_.document;
+        Outcome remove;
+        if (!driveSequenceStep("remove_node", "sequence 5 Delete m",
+                               [&] { return deleteSelectionAction(); }, remove))
+            return false;
+        const std::size_t failures_before = failures_.size();
+        Outcome undo;
+        if (!driveSequenceStep("undo", "sequence 5 undo",
+                               [&] { return undoAction(false); }, undo))
+            return false;
+        if (i2DocumentMismatch(before_remove, h_.document)) {
+            fail("I2", "sequence 5: Undo did not restore the picked node");
+            return false;
+        }
+        Outcome redo;
+        if (!driveSequenceStep("redo", "sequence 5 redo",
+                               [&] { return undoAction(true); }, redo))
+            return false;
+        if (failures_.size() == failures_before) ++stats_.i2_roundtrips;
+        return true;
+    }
+
+    bool sequenceEditReadEditUndo() {
+        Outcome first;
+        if (!driveSequenceStep("value_root", "sequence 6 first edit",
+                               [&] { return valueEdit(std::string{}, "a", "value_root", false); },
+                               first))
+            return false;
+        Outcome read;
+        if (!driveSequenceStep("read_again", "sequence 6 read again",
+                               [&] { return readAgainAction(); }, read))
+            return false;
+        const Json before_second = h_.document;
+        Outcome second;
+        if (!driveSequenceStep("value_root", "sequence 6 second edit",
+                               [&] { return valueEdit(std::string{}, "a", "value_root", false); },
+                               second))
+            return false;
+        Outcome undo;
+        if (!driveSequenceStep("undo", "sequence 6 undo",
+                               [&] { return undoAction(false); }, undo))
+            return false;
+        if (i2DocumentMismatch(before_second, h_.document)) {
+            fail("I2", "sequence 6: Undo did not restore the document before the second edit");
+            return false;
+        }
+        return true;
+    }
+
+    [[nodiscard]] std::vector<std::pair<std::string, std::string>> drawnNodes() const {
+        std::vector<std::pair<std::string, std::string>> nodes;
+        for (QGraphicsItem *item : h_.scene.items()) {
+            using namespace PelicanStudio;
+            if (item->data(NodeGraphItemKindRole).toString() !=
+                QLatin1String{GraphCanvasNodeItem})
+                continue;
+            const QString id = item->data(NodeGraphNameRole).toString();
+            if (id.isEmpty()) continue;
+            const std::string scope =
+                item->data(GraphCanvasScopeRole).toString().toStdString();
+            const auto key = std::make_pair(scope, id.toStdString());
+            if (std::find(nodes.begin(), nodes.end(), key) == nodes.end()) nodes.push_back(key);
+        }
+        return nodes;
+    }
+
+    [[nodiscard]] bool available(const std::string &kind) const {
+        if (kind == "value_root") return !parameterNodes(h_.document, false).empty();
+        if (kind == "value_body") return !parameterNodes(h_.document, true).empty();
+        if (kind == "value_body_reaches") return !bodyValueNodes(true).empty();
+        if (kind == "value_body_plain") return !bodyValueNodes(false).empty();
+        if (kind == "undo_body")
+            return h_.model.canUndo() && cursor_ > 0 && cursor_ < history_body_.size() &&
+                   history_body_[cursor_];
+        if (kind == "redo_body")
+            return h_.model.canRedo() && cursor_ + 1 < history_body_.size() &&
+                   history_body_[cursor_ + 1];
+        if (kind == "drag_body_edit" || kind == "select_body_edit")
+            return !drawnBodyNodes().empty() &&
+                   (!bodyValueNodes(true).empty() || !bodyValueNodes(false).empty());
+        if (kind == "body_add") return !zoneBodyScope().empty();
+        if (kind == "body_remove") return !bodyRemovableNodes().empty();
+        if (kind == "body_connect")
+            return !bodyEmptyPorts().empty() && !bodyValueSources().empty();
+        if (kind == "body_disconnect") return !bodyWires().empty();
+        if (kind == "value_loop") {
+            for (const NodeRef &ref : nodeRefs(h_.document))
+                if (ref.op == "graph.loop" && ref.scope.empty()) return true;
+            return false;
+        }
+        if (kind == "add_node") return true;
+        if (kind == "remove_node") return !removableNodes(h_.document).empty();
+        if (kind == "connect")
+            return !emptyPorts(h_.document).empty() && !valueSources(h_.document).empty();
+        if (kind == "disconnect") return !connectedWires(h_.document).empty();
+        if (kind == "undo") return h_.model.canUndo();
+        if (kind == "redo") return h_.model.canRedo();
+        if (kind == "enter_scope") {
+            if (!h_.model.currentScope().empty()) return false;
+            for (const NodeRef &ref : nodeRefs(h_.document))
+                if (ref.scope.empty() && h_.model.canEnterInstance(ref.id)) return true;
+            return false;
+        }
+        if (kind == "leave_scope") return !h_.model.currentScope().empty();
+        if (kind == "fold" || kind == "unfold") {
+            for (const auto &[scope, id] : drawnNodes()) {
+                const auto view = h_.scene.nodeView(scope, id);
+                if (kind == "fold" && view == PelicanStudio::GraphCanvasNodeView::open)
+                    return true;
+                if (kind == "unfold" && view != PelicanStudio::GraphCanvasNodeView::open)
+                    return true;
+            }
+            return false;
+        }
+        if (kind == "drag" || kind == "select_node") return !drawnNodes().empty();
+        if (kind == "select_edge") return !connectedWires(h_.document).empty();
+        if (kind == "read_again") return true;
+        return false;
+    }
+
+    void runRandom(const std::string &kind) {
+        if (kind == "value_root") {
+            const auto refs = parameterNodes(h_.document, false);
+            if (refs.empty()) return;
+            const NodeRef &ref = refs[rng_.below(refs.size())];
+            (void)action(kind, scopeToken(ref.scope) + "/" + ref.id,
+                         [&] { return valueEdit(ref.scope, ref.id, kind, false); });
+        } else if (kind == "value_body") {
+            const auto refs = parameterNodes(h_.document, true);
+            if (refs.empty()) return;
+            const NodeRef &ref = refs[rng_.below(refs.size())];
+            (void)action(kind, scopeToken(ref.scope) + "/" + ref.id,
+                         [&] { return valueEdit(ref.scope, ref.id, kind, false); });
+        } else if (kind == "value_body_reaches" || kind == "value_body_plain") {
+            const auto refs = bodyValueNodes(kind == "value_body_reaches");
+            if (refs.empty()) return;
+            const NodeRef &ref = refs[rng_.below(refs.size())];
+            (void)action(kind, scopeToken(ref.scope) + "/" + ref.id,
+                         [&] { return valueEdit(ref.scope, ref.id, kind, false); });
+        } else if (kind == "undo_body") {
+            (void)action(kind, "history", [&] { return undoAction(false); });
+        } else if (kind == "redo_body") {
+            (void)action(kind, "history", [&] { return undoAction(true); });
+        } else if (kind == "drag_body_edit") {
+            (void)action(kind, "a body drag then a body value",
+                         [&] { return dragBodyThenEdit(); });
+        } else if (kind == "select_body_edit") {
+            (void)action(kind, "a picked body node then its value",
+                         [&] { return selectBodyThenEdit(); });
+        } else if (kind == "body_add") {
+            const std::string body = zoneBodyScope();
+            if (body.empty()) return;
+            const std::string id =
+                "f3_" + std::to_string(seed_) + "_" + std::to_string(unique_++);
+            (void)action(kind, scopeToken(body) + "/" + id,
+                         [&] { return addNode(body, id, kind); });
+        } else if (kind == "body_remove") {
+            // Leave the nodes that feed a body output alone while a
+            // standalone one is there: removing those cuts the body's lines.
+            std::vector<NodeRef> refs = bodyRemovableNodes();
+            std::erase_if(refs, [&](const NodeRef &ref) {
+                return bodyReachesOutput(h_.document, ref.scope, ref.id);
+            });
+            if (refs.empty()) refs = bodyRemovableNodes();
+            Outcome outcome = skipped("no body node removal was legal");
+            for (int attempt = 0; attempt < 12 && !refs.empty() && !fatal_; ++attempt) {
+                const std::size_t choice = rng_.below(refs.size());
+                const NodeRef ref = refs[choice];
+                refs.erase(refs.begin() + static_cast<std::ptrdiff_t>(choice));
+                Json ops = Json::array({Json{{"op", "remove_node"},
+                                             {"scope", scopeToken(ref.scope)},
+                                             {"node", ref.id}}});
+                if (!submit(ops)) continue;
+                outcome = commitEdit(kind, scopeToken(ref.scope) + "/" + ref.id);
+                break;
+            }
+            (void)action(kind, "a body node removal", [&] { return outcome; });
+        } else if (kind == "body_connect") {
+            const auto empties = bodyEmptyPorts();
+            const auto sources = bodyValueSources();
+            Outcome outcome = skipped("no body line was legal");
+            for (int attempt = 0; attempt < 24 && !empties.empty() && !sources.empty() &&
+                                    !fatal_;
+                 ++attempt) {
+                const EmptyPort &port = empties[rng_.below(empties.size())];
+                const ValueSource &source = sources[rng_.below(sources.size())];
+                if (source.node == port.node) continue;
+                Json ops = Json::array({Json{
+                    {"op", "set_input"},
+                    {"scope", scopeToken(port.scope)},
+                    {"node", port.node},
+                    {"port", port.port},
+                    {"source", Json{{"node", source.node}, {"port", source.port}}}}});
+                if (!submit(ops)) continue;
+                outcome = commitEdit(kind, scopeToken(port.scope) + "/" + port.node + "." +
+                                               port.port);
+                break;
+            }
+            (void)action(kind, "a body line", [&] { return outcome; });
+        } else if (kind == "body_disconnect") {
+            const auto wires = bodyWires();
+            if (wires.empty()) return;
+            const Wire &wire = wires[rng_.below(wires.size())];
+            (void)action(kind, scopeToken(wire.scope) + "/" + wire.node + "." + wire.port,
+                         [&] { return disconnectSpecific(wire, kind); });
+        } else if (kind == "value_loop") {
+            std::vector<NodeRef> loops;
+            for (const NodeRef &ref : nodeRefs(h_.document))
+                if (ref.op == "graph.loop" && ref.scope.empty()) loops.push_back(ref);
+            if (loops.empty()) return;
+            const NodeRef &ref = loops[rng_.below(loops.size())];
+            (void)action(kind, "root/" + ref.id,
+                         [&] { return valueEdit(ref.scope, ref.id, kind, true); });
+        } else if (kind == "add_node") {
+            std::vector<std::string> scopes{std::string{}};
+            for (const std::string &scope : scopesOf(h_.document))
+                if (!scope.empty()) scopes.push_back(scope);
+            const std::string scope = scopes[rng_.below(scopes.size())];
+            const std::string id =
+                "f2_" + std::to_string(seed_) + "_" + std::to_string(unique_++);
+            (void)action(kind, scopeToken(scope) + "/" + id,
+                         [&] { return addNode(scope, id, kind); });
+        } else if (kind == "remove_node") {
+            auto refs = removableNodes(h_.document);
+            Outcome outcome = skipped("no removable node was legal");
+            for (int attempt = 0; attempt < 12 && !refs.empty() && !fatal_; ++attempt) {
+                const std::size_t choice = rng_.below(refs.size());
+                const NodeRef ref = refs[choice];
+                refs.erase(refs.begin() + static_cast<std::ptrdiff_t>(choice));
+                Json ops = Json::array({Json{{"op", "remove_node"},
+                                             {"scope", scopeToken(ref.scope)},
+                                             {"node", ref.id}}});
+                if (!submit(ops)) continue;
+                outcome = commitEdit(kind, scopeToken(ref.scope) + "/" + ref.id);
+                break;
+            }
+            (void)action(kind, "random removal",
+                         [&] { return outcome; });
+        } else if (kind == "connect") {
+            const auto empties = emptyPorts(h_.document);
+            const auto sources = valueSources(h_.document);
+            Outcome outcome = skipped("no line was legal");
+            try {
+                for (int attempt = 0; attempt < 24; ++attempt) {
+                    const EmptyPort &port = empties[rng_.below(empties.size())];
+                    std::vector<ValueSource> same;
+                    for (const auto &source : sources)
+                        if (source.scope == port.scope && source.node != port.node)
+                            same.push_back(source);
+                    if (same.empty()) continue;
+                    const ValueSource &source = same[rng_.below(same.size())];
+                    Json ops = Json::array({Json{
+                        {"op", "set_input"},
+                        {"scope", scopeToken(port.scope)},
+                        {"node", port.node},
+                        {"port", port.port},
+                        {"source", Json{{"node", source.node}, {"port", source.port}}}}});
+                    if (!submit(ops)) continue;
+                    outcome = commitEdit(kind, scopeToken(port.scope) + "/" + port.node +
+                                                   "." + port.port);
+                    break;
+                }
+            } catch (...) {
+                outcome = skipped("no line was legal");
+            }
+            (void)action(kind, "random line", [&] { return outcome; });
+        } else if (kind == "disconnect") {
+            const auto wires = connectedWires(h_.document);
+            if (wires.empty()) return;
+            const Wire wire = wires[rng_.below(wires.size())];
+            (void)action(kind, scopeToken(wire.scope) + "/" + wire.node + "." + wire.port,
+                         [&] { return disconnectSpecific(wire); });
+        } else if (kind == "undo") {
+            (void)action(kind, "history", [&] { return undoAction(false); });
+        } else if (kind == "redo") {
+            (void)action(kind, "history", [&] { return undoAction(true); });
+        } else if (kind == "enter_scope") {
+            std::vector<std::string> ids;
+            for (const NodeRef &ref : nodeRefs(h_.document))
+                if (ref.scope.empty() && h_.model.canEnterInstance(ref.id)) ids.push_back(ref.id);
+            if (ids.empty()) return;
+            const std::string id = ids[rng_.below(ids.size())];
+            (void)action(kind, id, [&] { return enterSpecific(id); });
+        } else if (kind == "leave_scope") {
+            (void)action(kind, "breadcrumb", [&] { return leaveSpecific(); });
+        } else if (kind == "fold" || kind == "unfold") {
+            std::vector<std::pair<std::string, std::string>> choices;
+            for (const auto &entry : drawnNodes()) {
+                const auto view = h_.scene.nodeView(entry.first, entry.second);
+                if (kind == "fold" &&
+                    view == PelicanStudio::GraphCanvasNodeView::open)
+                    choices.push_back(entry);
+                if (kind == "unfold" &&
+                    view != PelicanStudio::GraphCanvasNodeView::open)
+                    choices.push_back(entry);
+            }
+            if (choices.empty()) return;
+            const auto &[scope, id] = choices[rng_.below(choices.size())];
+            (void)action(kind, scopeToken(scope) + "/" + id,
+                         [&] { return foldSpecific(scope, id, kind == "fold"); });
+        } else if (kind == "drag") {
+            (void)action(kind, "node heading", [&] { return dragAction(); });
+        } else if (kind == "select_node") {
+            (void)action(kind, "node", [&] { return selectNodeAction(); });
+        } else if (kind == "select_edge") {
+            (void)action(kind, "edge", [&] { return selectEdgeAction(); });
+        } else if (kind == "read_again") {
+            (void)action(kind, "refresh", [&] { return readAgainAction(); });
+        }
+    }
+
+    Outcome skipped(const std::string &note) {
+        Outcome outcome;
+        outcome.skipped = true;
+        outcome.note = note;
+        return outcome;
+    }
+
+    Outcome performed(const std::string &note) {
+        Outcome outcome;
+        outcome.performed = true;
+        outcome.note = note;
+        return outcome;
+    }
+
+    ZoneHarness h_;
+    Rng rng_;
+    int seed_ = 0;
+    std::size_t random_steps_ = 0;
+    Stats &stats_;
+    std::vector<Failure> &failures_;
+    bool verbose_ = false;
+    Mix mix_ = Mix::fuzz2;
+    std::vector<Step> trail_;
+    std::vector<std::string> states_;
+    // GS-FUZZ3: whether the edit that made states_[i] was a body edit.
+    std::vector<bool> history_body_;
+    std::size_t cursor_ = 0;
+    std::string last_notice_;
+    int rebuilds_ = 0;
+    int redraws_ = 0;
+    bool fatal_ = false;
+    std::string current_kind_;
+    std::string current_detail_;
+    Outcome current_outcome_;
+    std::uint64_t ticket_ = 0;
+    std::uint64_t unique_ = 0;
+};
+void printStats(const Stats &stats, const char *label) {
+    std::printf("\nGS-FUZZ2 %s summary: replies=%zu partial-actions=%zu whole-actions=%zu "
+                "refusals=%zu\n",
+                label, stats.replies, stats.partial_actions, stats.whole_actions,
+                stats.refusals);
+    std::printf("GS-FUZZ2 invariants: I1 %zu/%zu failed, I2 %zu/%zu failed "
+                "(%zu round-trips), I3 %zu/%zu, I4 %zu/%zu, I5 %zu/%zu; "
+                "settle=%zu scope=%zu\n",
+                stats.i1_failures, stats.i1_runs, stats.i2_failures, stats.i2_checks,
+                stats.i2_roundtrips, stats.i3_failures, stats.i3_runs, stats.i4_failures,
+                stats.i4_runs, stats.i5_failures, stats.i5_runs, stats.settle_failures,
+                stats.scope_failures);
+    std::printf("GS-FUZZ2 actions:");
+    for (const auto &[kind, count] : stats.by_kind)
+        std::printf(" %s=%zu/%zu/%zu/%zu", kind.c_str(), count.attempted, count.performed,
+                    count.skipped, count.noop);
+    std::printf("\nGS-FUZZ2 sequences:");
+    for (std::size_t index = 0; index < stats.sequence_runs.size(); ++index)
+        std::printf(" %zu=%zu/%zu", index + 1, stats.sequence_completed[index],
+                    stats.sequence_runs[index]);
+    std::printf("\n");
+}
+
+void checkCoverage(Stats &stats, std::size_t seeds, std::vector<Failure> &failures) {
+    if (seeds < 300) return;
+    const std::array<const char *, 17> kinds{
+        "add_node",  "connect",     "disconnect",  "drag",       "enter_scope",
+        "fold",      "leave_scope", "read_again",  "redo",       "remove_node",
+        "select_edge", "select_node", "undo",      "unfold",     "value_body",
+        "value_loop", "value_root"};
+    for (const char *kind : kinds) {
+        const auto found = stats.by_kind.find(kind);
+        const std::size_t performed = found == stats.by_kind.end() ? 0 : found->second.performed;
+        if (performed < 50)
+            recordFailure(stats, failures, "coverage", 0, 0, {},
+                          std::string{"only "} + std::to_string(performed) +
+                              " of " + kind + " were performed; 50 are required");
+    }
+    for (std::size_t index = 0; index < stats.sequence_completed.size(); ++index)
+        if (stats.sequence_completed[index] < 50)
+            recordFailure(stats, failures, "coverage", 0, 0, {},
+                          "required sequence " + std::to_string(index + 1) + " completed " +
+                              std::to_string(stats.sequence_completed[index]) +
+                              " times; 50 are required");
+    if (stats.i2_roundtrips < 50)
+        recordFailure(stats, failures, "coverage", 0, 0, {},
+                      "only " + std::to_string(stats.i2_roundtrips) +
+                          " Undo/Redo round-trips were checked; 50 are required");
+}
+
+void runFuzz2(const char *label, std::size_t default_seeds, std::size_t default_steps,
+              bool enforce_coverage) {
+    (void)application();
+    const std::size_t seed0 = environmentCount("GS_FUZZ2_SEED0", 0);
+    const std::size_t seeds = environmentCount("GS_FUZZ2_SEEDS", default_seeds);
+    const std::size_t steps = environmentCount("GS_FUZZ2_STEPS", default_steps);
+    Stats stats;
+    std::vector<Failure> failures;
+    // The handler is installed before the first ZoneHarness exists and stays
+    // until the last one has been destroyed.
+    WarningScope warnings(static_cast<int>(seed0));
+    for (std::size_t index = 0; index < seeds; ++index) {
+        const int seed = static_cast<int>(seed0 + index);
+        const std::size_t first = warningCount();
+        {
+            Driver driver(seed, steps, stats, failures, true);
+            driver.run();
+        }
+        for (const std::string &hit : warningsSince(first))
+            recordFailure(stats, failures, "I5", seed, 0, {},
+                          "a Qt warning survived the fixture: " + hit);
+    }
+    printStats(stats, label);
+    if (enforce_coverage) checkCoverage(stats, seeds, failures);
+    std::printf("GS-FUZZ2 failures: %zu\n", failures.size());
+    for (std::size_t index = 0; index < failures.size() && index < 80; ++index) {
+        const Failure &failure = failures[index];
+        std::printf("  #%zu %s seed=%d action=%zu: %s\n    trail: %s\n", index + 1,
+                    failure.invariant.c_str(), failure.seed, failure.action,
+                    failure.message.c_str(), trailText(failure.trail).c_str());
+    }
+    INFO("GS-FUZZ2 recorded failures; see the log above");
+    CHECK(failures.empty());
+}
+
+TEST_CASE("GS-FUZZ2: random Graph sequences keep the scene invariants",
+          "[gs-fuzz2-short]") {
+    runFuzz2("short", 20, 20, false);
+}
+
+TEST_CASE("GS-FUZZ2: long random Graph sequences keep the scene invariants",
+          "[gs-fuzz2-long][.]") {
+    runFuzz2("long", 300, 40, true);
+}
+
+TEST_CASE("GS-FUZZ2 self-check: I2 reports a skipped Undo", "[gs-fuzz2-short]") {
+    const Json document = zoneFuzzDocument();
+    CHECK_FALSE(i2DocumentMismatch(document, document).has_value());
+    Json changed = document;
+    changed["nodes"][0]["parameters"]["value"] = 1234.5;
+    CHECK(i2DocumentMismatch(document, changed).has_value());
+}
+
+TEST_CASE("GS-FUZZ2 self-check: I3 reports an item that is not in the scene",
+          "[gs-fuzz2-short]") {
+    (void)application();
+    ZoneHarness h{fuzz1::zoneFuzzDocument()};
+    gs3bOpen(h);
+    SelectionView selection;
+    selection.node = "not-in-this-scene";
+    const auto mismatch = selectionMismatch(selection, h.scene.items());
+    REQUIRE(mismatch.has_value());
+    CHECK(mismatch->find("not-in-this-scene") != std::string::npos);
+
+    h.scene.selectNode(std::string{}, "a");
+    SelectionView present;
+    present.node = "a";
+    CHECK_FALSE(selectionMismatch(present, h.scene.items()).has_value());
+
+    // The loop body's boundary input is a socket when the root draws that
+    // body in a zone. It is still what the pick names; the same name in
+    // another scope is not.
+    SelectionView boundary;
+    boundary.scope = "first";
+    boundary.node = "target";
+    CHECK_FALSE(selectionMismatch(boundary, h.scene.items()).has_value());
+    SelectionView wrong_scope;
+    wrong_scope.node = "target";
+    CHECK(selectionMismatch(wrong_scope, h.scene.items()).has_value());
+}
+
+TEST_CASE("GS-FUZZ2 self-check: I4 reports a changed routing snapshot",
+          "[gs-fuzz2-short]") {
+    (void)application();
+    ZoneHarness h{fuzz1::zoneFuzzDocument()};
+    gs3bOpen(h);
+    const fuzz1::Signature signature = fuzz1::signatureOf(h.scene);
+    fuzz1::Signature broken = signature;
+    broken.index_valid = !broken.index_valid;
+    CHECK_FALSE(indexDifferences(signature, broken).empty());
+    if (!broken.find.empty()) {
+        fuzz1::Signature changed = signature;
+        changed.find.begin()->second = QStringLiteral("not-this-node");
+        CHECK_FALSE(indexDifferences(signature, changed).empty());
+    }
+}
+
+TEST_CASE("GS-FUZZ2 self-check: I5 sees the scene warning it must count",
+          "[gs-fuzz2-short]") {
+    WarningScope warnings{123};
+    qWarning("%s", "QGraphicsScene::removeItem: item 1 (0x1) scene is different");
+    const auto hits = warningsSince(warnings.first);
+    REQUIRE(hits.size() == 1);
+    CHECK(hits.front().find("seed=123") != std::string::npos);
+    qWarning("%s", "an unrelated message must not be counted");
+    CHECK(warningsSince(warnings.first).size() == 1);
+}
+
+} // namespace fuzz2
+} // namespace
+// ---- GS-FUZZ2 end ----
+
+// ---- GS-FUZZ3 begin ----
+// A body-heavy action mix over GS-FUZZ2's driver and invariants, aimed at
+// GS-3b3b: the same GraphCanvasScene keeps the scene invariants under body
+// node value edits (reaching a body output or not),
+// root value edits, Undo/Redo of body edits, a body drag then a body value
+// edit, picking a body node and editing it, entering/leaving the body, body
+// structure edits and read-again. The test also counts the traces GS-3b3b
+// leaves: a body partial redraw (`graph_scene_redraw_node`, detail2 1) and a
+// body refusal (`graph_redraw_refused`, bit 12, detail2 2..6).
+//
+// The coverage gate fails a 300-seed run when fewer than 300 body partial
+// redraws actually happened, and when a reachable refusal reason is too rare.
+// 2, 3, 4 and 6 are not reachable from these actions; the comment on each of
+// them says which production condition makes it so.
+namespace {
+namespace fuzz3 {
+
+using namespace fuzz1;
+using fuzz2::Driver;
+using fuzz2::Failure;
+using fuzz2::Mix;
+using fuzz2::Stats;
+using fuzz2::recordFailure;
+using fuzz2::trailText;
+using fuzz2::WarningScope;
+using fuzz2::warningCount;
+using fuzz2::warningsSince;
+
+using PelicanStudio::GuiTrace;
+
+// Why the body partial path refused. `redrawChangedNodes` refuses with the
+// node-body bit (1<<12) and puts the reason in detail2:
+//   2 a folded view, `if (now.folded_view || ... !now.folded.empty())` at the
+//     start of the body checks,
+//   3 a loop/stack/card reached through the body's lines, or the root's pass
+//     lines into/out of the zone changed, in the same function,
+//   4 the zone/body pick, content entry, frame or prepared body items do not
+//     match the last whole draw,
+//   5 a changed body item's prepared size or placed geometry is not what the
+//     last whole draw recorded (this is the ordinary "numeric text width
+//     changed, behave like a whole draw" refusal), or a zone refit is queued,
+//   6 a selected child, a carry into a changed node's socket, or another body
+//     node's band/opacity differs from what repopulate() drew.
+struct Coverage {
+    std::size_t body_redraws = 0;
+    std::size_t body_redrawn_nodes = 0;
+    std::map<int, std::size_t> refusals;
+    GuiTrace::Sink saved_sink = GuiTrace::sink;
+    void *saved_owner = GuiTrace::owner;
+
+    Coverage() {
+        GuiTrace::sink = &Coverage::record;
+        GuiTrace::owner = this;
+    }
+    ~Coverage() {
+        GuiTrace::sink = saved_sink;
+        GuiTrace::owner = saved_owner;
+    }
+    Coverage(const Coverage &) = delete;
+    Coverage &operator=(const Coverage &) = delete;
+
+    static void record(void *owner, const char *stage, int64_t, int64_t, double detail,
+                       double detail2) {
+        auto *coverage = static_cast<Coverage *>(owner);
+        const std::string_view name{stage};
+        if (name == "graph_scene_redraw_node" && detail2 == 1.0) {
+            ++coverage->body_redraws;
+            coverage->body_redrawn_nodes += static_cast<std::size_t>(detail);
+        } else if (name == "graph_redraw_refused" &&
+                   (static_cast<int>(detail) & (1 << 12)) != 0 && detail2 >= 2.0 && detail2 <= 6.0) {
+            ++coverage->refusals[static_cast<int>(detail2)];
+        }
+    }
+
+    [[nodiscard]] std::size_t refused(int why) const {
+        const auto found = refusals.find(why);
+        return found == refusals.end() ? 0 : found->second;
+    }
+};
+
+void printStats(const Stats &stats, const Coverage &coverage, const char *label) {
+    std::printf("\nGS-FUZZ3 %s summary: replies=%zu partial-actions=%zu whole-actions=%zu "
+                "refusals=%zu\n",
+                label, stats.replies, stats.partial_actions, stats.whole_actions,
+                stats.refusals);
+    std::printf("GS-FUZZ3 invariants: I1 %zu/%zu failed, I2 %zu/%zu failed "
+                "(%zu round-trips), I3 %zu/%zu, I4 %zu/%zu, I5 %zu/%zu; "
+                "settle=%zu scope=%zu\n",
+                stats.i1_failures, stats.i1_runs, stats.i2_failures, stats.i2_checks,
+                stats.i2_roundtrips, stats.i3_failures, stats.i3_runs, stats.i4_failures,
+                stats.i4_runs, stats.i5_failures, stats.i5_runs, stats.settle_failures,
+                stats.scope_failures);
+    std::printf("GS-FUZZ3 actions:");
+    for (const auto &[kind, count] : stats.by_kind)
+        std::printf(" %s=%zu/%zu/%zu/%zu", kind.c_str(), count.attempted, count.performed,
+                    count.skipped, count.noop);
+    std::printf("\nGS-FUZZ3 body partial redraws: %zu across %zu nodes\n",
+                coverage.body_redraws, coverage.body_redrawn_nodes);
+    std::printf("GS-FUZZ3 body refusals (detail2): 2=%zu (unreachable), 3=%zu "
+                "(unreachable), 4=%zu (unreachable), 5=%zu (reachable), 6=%zu "
+                "(unreachable)\n",
+                coverage.refused(2), coverage.refused(3), coverage.refused(4),
+                coverage.refused(5), coverage.refused(6));
+}
+
+void checkCoverage(const Coverage &coverage, std::size_t seeds, Stats &stats,
+                   std::vector<Failure> &failures) {
+    if (seeds < 300) return;
+    if (coverage.body_redraws < 300)
+        recordFailure(stats, failures, "coverage", 0, 0, {},
+                      "only " + std::to_string(coverage.body_redraws) +
+                          " body partial redraws happened; 300 are required");
+    // 5 is the reachable refusal: a body value edit that changes the numeric
+    // text's width makes the item's prepared size differ from the drawn one.
+    if (coverage.refused(5) < 10)
+        recordFailure(stats, failures, "coverage", 0, 0, {},
+                      "body refusal detail2 5 happened " +
+                          std::to_string(coverage.refused(5)) +
+                          " times; 10 are required (a body value edit whose numeric "
+                          "text width changed)");
+    // 2: the mix has no fold/unfold action, the fixture sets no plan or node
+    // view, and no value/drag/select/structure action folds a node; the body
+    // checks return detail2 2 only when the drawn or new view says folded.
+    // 3: the fixture's body holds only graph.input, value.constant and
+    // value.add, and add_node adds value.constant; no guarded op (loop, stack,
+    // card) can be reached, and the body class requires the root's pass lines
+    // to be the drawn ones, so they cannot have changed.
+    // 4: a root-scope edit that changes the body's nodes or edges is
+    // classified `other` before `body`, and no action mutates the scene's
+    // item data, so the zone/body pick, content entries, frame and prepared
+    // items stay the ones the whole draw made.
+    // 6: the first check is `child->isSelected()` on a changed body item's
+    // children. select_body_edit calls scene.selectNode(), which only sets the
+    // scene's selected-node pointer and never a child item's selected flag;
+    // the fixture has no loop-element bands and its carries end at the body's
+    // output, not at a changed node's socket, so all three checks stay clear.
+    for (const int why : {2, 3, 4, 6})
+        if (coverage.refused(why) != 0)
+            recordFailure(stats, failures, "coverage", 0, 0, {},
+                          "body refusal detail2 " + std::to_string(why) +
+                              " was expected unreachable (see the comment above) but "
+                              "happened " + std::to_string(coverage.refused(why)) +
+                              " times; gate it as reachable or update the reason");
+}
+
+void runFuzz3(const char *label, std::size_t default_seeds, std::size_t default_steps,
+              bool enforce_coverage) {
+    (void)application();
+    const std::size_t seed0 = environmentCount("GS_FUZZ3_SEED0", 0);
+    const std::size_t seeds = environmentCount("GS_FUZZ3_SEEDS", default_seeds);
+    const std::size_t steps = environmentCount("GS_FUZZ3_STEPS", default_steps);
+    Stats stats;
+    std::vector<Failure> failures;
+    // The handler is installed before the first ZoneHarness exists and stays
+    // until the last one has been destroyed; the coverage sink wraps only the
+    // drivers, so a fixture's own setup traces are not counted.
+    WarningScope warnings(static_cast<int>(seed0));
+    Coverage coverage;
+    for (std::size_t index = 0; index < seeds; ++index) {
+        const int seed = static_cast<int>(seed0 + index);
+        const std::size_t first = warningCount();
+        {
+            Driver driver(seed, steps, stats, failures, true, Mix::body_fuzz3);
+            driver.run();
+        }
+        for (const std::string &hit : warningsSince(first))
+            recordFailure(stats, failures, "I5", seed, 0, {},
+                          "a Qt warning survived the fixture: " + hit);
+    }
+    printStats(stats, coverage, label);
+    if (enforce_coverage) checkCoverage(coverage, seeds, stats, failures);
+    std::printf("GS-FUZZ3 failures: %zu\n", failures.size());
+    for (std::size_t index = 0; index < failures.size() && index < 80; ++index) {
+        const Failure &failure = failures[index];
+        std::printf("  #%zu %s seed=%d action=%zu: %s\n    trail: %s\n", index + 1,
+                    failure.invariant.c_str(), failure.seed, failure.action,
+                    failure.message.c_str(), trailText(failure.trail).c_str());
+    }
+    INFO("GS-FUZZ3 recorded failures; see the log above");
+    CHECK(failures.empty());
+}
+
+} // namespace fuzz3
+} // namespace
+
+TEST_CASE("GS-FUZZ3: body-heavy random edits keep the scene invariants",
+          "[gs-fuzz3-short]") {
+    fuzz3::runFuzz3("short", 20, 20, false);
+}
+
+TEST_CASE("GS-FUZZ3: long body-heavy random edits keep the scene invariants",
+          "[gs-fuzz3-long][.]") {
+    fuzz3::runFuzz3("long", 300, 40, true);
+}
+
+// ---- GS-FUZZ3 end ----
